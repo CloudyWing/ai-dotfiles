@@ -1,0 +1,33 @@
+# .ai-agents 全域 AI 設定目錄專用 .gitignore
+# 此目錄主要為 Markdown 文件與設定檔，排除以下系統與編輯器雜訊
+
+# ---- OS ----
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# ---- 編輯器 ----
+# VS Code（僅排除使用者個人設定，保留 settings.json 可版控）
+.vscode/*
+!.vscode/settings.json
+
+# JetBrains / Rider
+.idea/
+
+# ---- 備份與暫存 ----
+*.bak
+*.tmp
+*.swp
+*~
+
+# ---- 不應納入版控的機敏資訊 ----
+# 如有 API Key、Token 等放在本目錄的設定檔，請在此排除
+# secrets.md
+# *.env

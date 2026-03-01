@@ -1,0 +1,31 @@
+# .gitattributes for .ai-agents global AI settings
+# Ensures consistent line endings across platforms
+
+# Force CRLF for all text files on checkout (Windows standard)
+* text=auto eol=crlf
+
+# Markdown files — ensure CRLF
+*.md text eol=crlf
+
+# EditorConfig
+.editorconfig text eol=crlf
+
+# Shell scripts (cross-platform) — use LF
+*.sh text eol=lf
+
+# PowerShell — keep CRLF (required for PS 5.1 BOM compatibility)
+*.ps1 text eol=crlf
+
+# Binary files — no line-ending conversion
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary
+*.zip binary
+*.tar.gz binary
