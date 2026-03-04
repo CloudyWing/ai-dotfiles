@@ -64,6 +64,6 @@ https://raw.githubusercontent.com/github/gitignore/main/VisualStudio.gitignore
 
 ## 限制
 
-- 必須先下載官方範本，不可自行憑空捏造 .gitignore 規則。
+- 優先從官方 GitHub 倉庫下載範本，確保規則完整可靠，不自行憑空產生規則。
 - 若下載失敗，告知使用者手動至 <https://github.com/github/gitignore> 複製對應內容。
-- 不要刪除使用者手動加入的現有自訂規則（如現有 `.gitignore` 已存在，請先確認是否合併或覆蓋）。
+- 保留使用者既有的自訂規則；若現有 `.gitignore` 已存在，確認合並或覆蓋策略後再執行。

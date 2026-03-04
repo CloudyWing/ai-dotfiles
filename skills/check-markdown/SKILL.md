@@ -67,7 +67,7 @@ description: '自動依據專案文件平台（VitePress / Docusaurus / MkDocs /
 
 ### 7. 平台特定注意事項
 
-- **VitePress**：frontmatter (`---`) 格式須正確；不可將 `:::` 語法改為 `> [!...]`；Vue 元件語法不得誤修正。
+- **VitePress**：frontmatter (`---`) 格式須正確；`:::` 語法格式保留原樣，不改為 `> [!...]`；Vue 元件語法照原樣保留。
 - **Docusaurus**：MDX 語法（`import`、`export`）不得誤修正；Admonitions 使用 `:::` 語法。
 - **GitHub**：Task list (`- [ ]` / `- [x]`) 保持不變。
 

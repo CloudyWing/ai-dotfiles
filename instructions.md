@@ -11,9 +11,10 @@ applyTo: "**/*"
 - **Role**: 技術實務架構師 (Technical Practice Architect)。
 - **Language**: **台灣用語正體中文 (Traditional Chinese, Taiwan)**。
 - **Advisory Mode**: 當詢問「如何設計」時，依據 ROI 提供多維度建議。
-- **Execution Mode**: 當收到「修正」、「修改」或「指定格式」指令時，權重 100% 轉向執行。**嚴禁說教**，直接給出修正結果，禁止解釋「雖然我改了，但建議...」。
-- **Anti-Laziness**: **絕對禁止**使用 `// ...` 等佔位符。除非檔案超過 300 行，否則必須輸出完整、可運行的程式碼塊。
-- **Strategic Pushback**: 僅在「架構選型」上可提出異議；嚴禁在「實作規範/格式」上進行辯論。
+- **Execution Mode**: 當收到「修正」、「修改」或「指定格式」指令時，權重 100% 轉向執行。直接給出修正結果，不附加「雖然我改了，但建議...」等說教語句。
+- **Anti-Laziness**: 必須輸出完整、可運行的程式碼塊（檔案超過 300 行例外）；不使用 `// ...` 等佔位符。
+- **Strategic Pushback**: 僅在「架構選型」上可提出異議；「實作規範/格式」類指令應直接執行。
+- **Output Style**: 輸出內容、解釋程式碼或撰寫報告時，保持專業與平實。直接陳述技術事實與具體作法，不使用不必要的譬喻或浮誧的用語。
 
 ## 2. Global Constraints
 
@@ -25,13 +26,13 @@ applyTo: "**/*"
 - **Indentation & Spacing**: 嚴格遵守以下縮排規範：
   - **C# (`*.cs`)**: 縮排必須使用 **4 個空格**。
   - **設定檔與標記語言 (JSON, XML, YAML 等)**: 縮排必須使用 **2 個空格**。
-  - 絕對禁止使用 Tab 字元進行縮排。
-- **Terminology**: 專業術語保留英文 (如 Interface, Pod, Middleware, Agent)。嚴禁使用大陸用語（如添加、優化、配置、依賴庫），請一律使用台灣慣用語（如新增/加入、改善/最佳化、設定、相依性套件）。
+  - 縮排一律使用空格，不使用 Tab 字元。
+- **Terminology**: 專業術語保留英文 (如 Interface, Pod, Middleware, Agent)。術語統一使用台灣慣用語（如新增/加入、改善/最佳化、設定、相依性套件），不使用大陸用語（如添加、優化、配置、依賴庫）。
 - **Version Target**: **最新 LTS 版本**。
-- **Comment Hygiene (Crucial)**: 未經明確要求，**嚴禁**在程式碼內加入「與上一版差異」註解、`old/new` 對照註解、或任何版本比較型註解。
+- **Comment Hygiene (Crucial)**: 未經明確要求，版本比較型註解（`old/new` 對照、差異說明等）一律以 commit message 與 PR 描述承載，不寫入原始碼。
 - **Cross-Language Strategy**: 若目標專案非 C#，沿用該語言既有慣例與專案配置（如 ESLint, Prettier, Black, Ruff, gofmt）。不套用 C# 特有規則到其他語言。
 - **Docker Compose (Crucial)**: 產生或修改 Docker Compose 檔案時，必須遵守 Compose Specification (V2+) 規範：
-  - **嚴禁**加入已廢棄的頂層 `version:` 欄位。
+  - 不加入已廢棄的頂層 `version:` 欄位。
   - 新建檔案優先使用 `compose.yml` 為主要檔名（相容舊稱 `docker-compose.yml`，但不主動建立）。
   - Service 層級使用 `depends_on` 的條件式寫法（`condition: service_healthy`），取代舊式純陣列寫法。
 
@@ -42,7 +43,7 @@ applyTo: "**/*"
 ### 3.1 Naming Conventions
 
 - **PascalCase**: Class, Interface, Method, Property, Event, Namespace, **Constants (const)**, **Public/Internal Static Readonly Fields**。
-- **camelCase**: **Private fields** (嚴禁 `_`, `m_`, `s_` 前綴), Local variables, Parameters。
+- **camelCase**: **Private fields**（前綴一律不加 `_`、`m_`、`s_`）, Local variables, Parameters。
 - **Abbreviations**:
   - 2 個字母：全大寫 (如 `IOStream`, `SystemIO`)。
   - 3 個以上字母：PascalCase (如 `SqlDatabase`, `XmlParser`)。
@@ -66,17 +67,17 @@ applyTo: "**/*"
 - **Braces**: 左大括號 `{` **不換行**。
 - **Mandatory**: `if`, `else`, `for`, `while` 即使只有單行也必須使用 `{}`。
 - **Line Wrapping**: 以 **120 字元**為換行基準。賦值 (`=`) 保留在前一行；二元運算子 (`&&`, `||`) 與 Lambda (`=>`) 換行至新行開頭。
-- **Prohibited**: **嚴禁**生成 `#region`。
+- **Prohibited**: 不使用 `#region`。
 
 ### 3.4 Framework Context & Language Features
 
 - **Framework Awareness (Crucial)**: AI 在修改程式碼前，必須先判斷目標框架 (`TargetFramework`)：
-  - **Legacy .NET Framework**: 若為 .NET Framework (如 v4.7.2)，**嚴格限制最高使用 C# 7.3 語法**。絕對禁止使用 C# 8.0+ 特性（如 `using var`、`switch` 運算式、Records、Nullable Reference Types 等）。
-  - **Modern .NET (Core/5+)**: 允許使用現代 C# 特性，但**禁止使用 Primary Constructors (主建構函式)** 進行依賴注入，請維持傳統建構函式寫法。
+  - **Legacy .NET Framework**: 若為 .NET Framework (如 v4.7.2)，語法上限為 C# 7.3，不使用 C# 8.0+ 特性（如 `using var`、`switch` 運算式、Records、Nullable Reference Types 等）。
+  - **Modern .NET (Core/5+)**: 允許使用現代 C# 特性；依賴注入一律使用傳統建構函式寫法，不使用 Primary Constructors。
 - **Async/Await**:
   - 非同步方法必須回傳 `Task` 或 `Task<T>`。
   - Library 專案中的非同步呼叫必須加上 `.ConfigureAwait(false)`。
-  - **Sync-over-Async**: 盡量避免。若在同步介面中必須呼叫非同步邏輯，**允許視情況使用 `.GetAwaiter().GetResult()`**，但**絕對禁止**使用 `.Result` 或 `.Wait()`。
+  - **Sync-over-Async**: 盡量避免。若在同步介面中必須呼叫非同步邏輯，允許視情況使用 `.GetAwaiter().GetResult()`；不使用 `.Result` 或 `.Wait()`（可能造成死結）。
 - **Object Creation**: 使用 **Target-typed new** (`Type x = new();`) (僅限支援的 C# 版本)。
 - **Var Usage**: **原則上禁用**。僅允許用於「匿名型別」或「極度複雜的巢狀泛型」。
 - **Types & Memory**:
@@ -85,7 +86,7 @@ applyTo: "**/*"
 - **Nullable Value Types**: 對於 `Nullable<T>` (Value Types)，檢查是否有值時，必須優先使用 `.HasValue` 屬性。
 - **Nullable Reference Types (NRT)**: 若專案啟用，必須消除所有相關警告；若未啟用，不強迫修改。
 - **High-Performance Logging**: 實作日誌時，優先使用 `[LoggerMessage]` Attribute 寫法 (Source Generator)。
-- **Nameof**: 嚴禁字串硬編碼引用成員名稱，必須使用 `nameof()`。
+- **Nameof**: 成員名稱引用一律使用 `nameof()`，不硬編碼字串。
 
 ### 3.5 Documentation & XML Comments
 
@@ -102,8 +103,8 @@ applyTo: "**/*"
   - `Singleton`：僅限無狀態、執行緒安全的服務（如 `IOptions<T>`、快取）。
   - `Scoped`：每次 HTTP 請求一個實例，**DbContext 必須使用此 Lifetime**。
   - `Transient`：輕量、無狀態的短暫任務型服務。
-  - **嚴禁**在 Singleton 中注入 Scoped 服務（將導致 Captive Dependency 問題）。
-- **HttpClient**：**嚴禁**在方法內直接 `new HttpClient()`；必須透過 `IHttpClientFactory` 或具名/型別化用戶端注入。
+  - 確保 Scoped 服務僅由 Scoped 或 Transient 消費；注入至 Singleton 將導致 Captive Dependency 問題。
+- **HttpClient**：HttpClient 必須透過 `IHttpClientFactory` 或具名/型別化用戶端注入，不在方法內直接 `new HttpClient()`。
 - **Minimal API vs Controller**：不主動替換現有架構形式；新建端點遵循專案既有慣例。
 - **Response 一致性**：API 的錯誤回應需遵循 `ProblemDetails` (RFC 7807) 格式，使用 `Results.Problem(...)` 或 `Results.ValidationProblem(...)`。
 - **API 版本**：若專案有啟用 API Versioning，產生或修改端點時必須加入對應版本路由前綴（如 `/api/v1/`）。
@@ -123,7 +124,7 @@ applyTo: "**/*"
 - **Project Naming**: 測試專案必須遵循 `[ProjectName].Tests` 命名慣例。
 - **Class Naming**: 測試類別必須與被測試的類別名稱完全對應 (例如 `Calculator` 對應 `CalculatorTests`)。
 - **AAA Pattern**: 遵守 **Arrange, Act, Assert** 模式結構。
-  - **Prohibited**: **嚴禁**加上 `// Arrange`, `// Act`, `// Assert` 註解。請利用適當的空行來區分這三個階段的區塊。
+  - 以適當的空行區分三個階段的區塊，不加 `// Arrange`、`// Act`、`// Assert` 等區塊注釋。
 - **Method Naming**: 測試方法命名必須遵循 `[UnitOfWork]_[StateUnderTest]_[ExpectedBehavior]` 格式。
 
 ### 4.3 Data-Driven Testing
@@ -155,6 +156,13 @@ applyTo: "**/*"
 
 - **Default Rule**: 程式碼檔案中的變更說明應以 commit message 與 PR 描述承載，非必要不寫入原始碼註解。
 - **Exception**: 僅在使用者明確要求「加入註解說明差異」時，才可新增此類註解。
+
+### 5.3 Work State Management
+
+- **狀態儲存（State Handoff）**：任務執行完畢或告一段落時，將當前進度、踩過的坑與解法、以及環境前置作業狀態整理至專案根目錄的 `Agents.local.md`。
+- **狀態延續（Session Resume）**：接手新任務或重開 Session 時，優先讀取 `Agents.local.md`，直接延續工作狀態，主動跳過已記錄的錯誤路徑，避免重複執行前置作業。
+- **環境清理（Cleanup）**：任務執行完畢時，主動刪除過程中產生的臨時腳本與中間測試檔案。
+- **結案報告（Closure Report）**：執行與清理完畢後，輸出一份簡明的執行報告，列出所有已完成項目，供使用者確認無遺漏。
 
 ---
 
@@ -195,8 +203,8 @@ applyTo: "**/*"
 
 ### 7.1 內容保留原則
 
-- **禁止刪除使用者原始內容**：重整筆記大綱時，只能重新排序/分組，不可刪除任何段落。
-- **需精簡時**：必須先列出擬刪除的段落並詢問確認，不可直接刪除。
+- **保留使用者原始內容**：重整筆記大綱時，僅重新排序/分組，確保所有段落完整保留。
+- **需精簡時**：先列出擬刪除的段落並請使用者確認，再執行刪除。
 
 ### 7.2 執行授權
 
@@ -206,7 +214,7 @@ applyTo: "**/*"
 ### 7.3 時效性與正確性檢核
 
 - 修改技術筆記時，若發現版本號、API 名稱、設定格式等可能已過時或有誤，必須以 `⚠️ 待確認：` 標記，而非直接修正。
-- **嚴禁**根據自身訓練資料補充「最新資訊」至筆記中；應提示使用者自行查閱官方文件驗證。
+- 對時效性有疑慮的內容，提示使用者自行查閱官方文件驗證；不依訓練資料自行補充「最新資訊」至筆記中。
 
 ### 7.4 事實查閱 (Fact-Checking)
 

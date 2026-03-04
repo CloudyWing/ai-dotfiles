@@ -52,5 +52,5 @@ This project is licensed under the [LICENSE](./LICENSE.md).
 
 ## 限制
 
-- 未確認前，不得自動假設使用 MIT。
+- 授權選擇需使用者明確確認後才執行。
 - 若有第三方授權衝突，先列出風險，再請使用者決策。

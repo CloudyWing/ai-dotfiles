@@ -17,12 +17,12 @@ description: 'C# 非同步設計最佳實踐：強制套用 Task/ValueTask 與 C
 - 當方法有回傳值時，回傳 `Task<T>`。
 - 當方法無回傳值時，回傳 `Task`。
 - 高頻/效能敏感場景中，為了減少記憶體配置，請考慮使用 `ValueTask<T>`。
-- 除非是事件處理函式 (Event Handlers)，否則**絕對避免**回傳 `async void`。
+- 回傳型別使用 `Task` 或 `Task<T>`；僅事件處理函式允許使用 `async void`。
 
 ## 例外處理
 
 - 將 `await` 運算式包裝在 `try/catch` 區塊中。
-- 避免在非同步方法中吞掉例外 (swallow exceptions)。
+- 確保例外正確傳播，在非同步方法中使用 try/catch 明確處理例外，避免靜默吞噬。
 - 在類別庫 (Library) 程式碼中，使用 `ConfigureAwait(false)` 預防潛在的死結。
 - 若僅回傳 `Task` 但不使用 async 關鍵字，請直接以 `Task.FromException()` 傳遞例外。
 
@@ -35,6 +35,6 @@ description: 'C# 非同步設計最佳實踐：強制套用 Task/ValueTask 與 C
 
 ## 常見陷阱
 
-- **絕對不要** 在非同步程式碼中使用 `.Wait()`, `.Result`, 或 `.GetAwaiter().GetResult()` 以免死結。
+- 在純非同步程式碼中，一律使用 `await` 取得結果；使用 `.Wait()`、`.Result` 或 `.GetAwaiter().GetResult()` 可能造成死結。
 - 避免混合阻擋式 (blocking) 與非同步 (async) 程式碼。
 - 確保所有回傳 Task 的方法都被正確 `await` 或妥善處置。
