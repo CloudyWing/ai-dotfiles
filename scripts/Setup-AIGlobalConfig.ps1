@@ -17,7 +17,7 @@ $skillsPath = "$configRoot\skills"
 $promptsPath = "$configRoot\prompts"
 $rulesPath = "$configRoot\rules"
 
-# 3. 實體檔案檢查
+# 3. 實體檔案與原始目錄檢查
 if (!(Test-Path $mainInstructions)) {
     Write-Host "ERROR: 找不到 $mainInstructions" -ForegroundColor Red
     return
@@ -26,6 +26,8 @@ if (!(Test-Path $commitRules)) {
     Write-Host "ERROR: 找不到 $commitRules" -ForegroundColor Red
     return
 }
+
+
 
 # 4. 準備工具目錄
 $geminiDir = "$env:USERPROFILE\.gemini"
@@ -42,16 +44,27 @@ function Set-SymbolicLink {
         [string]$TargetPath,
         [string]$ItemType = "SymbolicLink"
     )
-    if (Test-Path $LinkPath) {
-        $existing = Get-Item $LinkPath -Force
+    
+    # 支援偵測斷鍊 (Broken Symlink)：Test-Path 會對斷鍊回傳 false，需改用 Get-Item / Get-ChildItem
+    $existing = Get-Item -LiteralPath $LinkPath -Force -ErrorAction SilentlyContinue
+    if (-not $existing) {
+        $parent = Split-Path $LinkPath
+        $leaf = Split-Path $LinkPath -Leaf
+        if (Test-Path $parent) {
+            $existing = Get-ChildItem -Path $parent -Filter $leaf -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    if ($existing) {
         if ($existing.Attributes -match "ReparsePoint") {
-            Remove-Item $LinkPath -Force
+            Remove-Item -LiteralPath $existing.FullName -Force
         }
         else {
             Write-Host "  ⚠️  略過：$LinkPath 已存在且非符號連結，請手動移除後重新執行。" -ForegroundColor Yellow
             return
         }
     }
+
     if (Test-Path $TargetPath) {
         New-Item -ItemType $ItemType -Path $LinkPath -Target $TargetPath -Force | Out-Null
         Write-Host "  ✅  $($LinkPath.Replace($env:USERPROFILE, '~'))  →  $TargetPath" -ForegroundColor DarkGreen
@@ -65,12 +78,10 @@ function Set-SymbolicLink {
 Write-Host "`n>>> 正在建立符號連結..." -ForegroundColor Cyan
 
 # Gemini CLI：全域規則（單一檔案連結）
-$geminiMd = "$geminiDir\GEMINI.md"
-if (Test-Path $geminiMd) {
-    Remove-Item $geminiMd -Force
-}
-New-Item -ItemType SymbolicLink -Path $geminiMd -Target $mainInstructions -Force | Out-Null
-Write-Host "  ✅  ~/.gemini/GEMINI.md  →  $mainInstructions" -ForegroundColor DarkGreen
+Set-SymbolicLink -LinkPath "$geminiDir\GEMINI.md" -TargetPath $mainInstructions
+
+# Gemini CLI：rules/ → ~/.ai-agents/rules/
+Set-SymbolicLink -LinkPath "$geminiDir\rules" -TargetPath $rulesPath
 
 # Antigravity：global_workflows → prompts/
 Set-SymbolicLink -LinkPath $agyWorkflowsDir -TargetPath $promptsPath
@@ -110,6 +121,7 @@ Write-Host ""
 Write-Host "注意事項：" -ForegroundColor Yellow
 Write-Host "  - 設定來源目錄為 ~/.ai-agents/"
 Write-Host "  - Gemini CLI 透過 ~/.gemini/GEMINI.md 符號連結讀取"
+Write-Host "  - ~/.gemini/rules/ 連結至 ~/.ai-agents/rules/（確保相對路徑可解析）"
 Write-Host "  - Antigravity skills → ~/.ai-agents/skills/（和 Copilot 共用）"
 Write-Host "  - Antigravity global_workflows → ~/.ai-agents/prompts/（Prompt = Workflow）"
 Write-Host "  - ~/.copilot/skills/ 和 ~/.copilot/prompts/ 連結至 ~/.ai-agents/ 對應目錄"
