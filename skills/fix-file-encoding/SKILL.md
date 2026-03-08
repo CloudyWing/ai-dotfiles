@@ -1,6 +1,6 @@
 ---
 name: fix-file-encoding
-description: '偵測並修正檔案編碼問題，依副檔名決定目標編碼 (如 Big5 轉 UTF-8)，確保舊專案遷移時不會產生亂碼。'
+description: '當遇到中文亂碼、編碼錯誤，或要求轉換檔案編碼時使用。為文字檔依據副檔名轉換目標編碼。'
 ---
 
 # fix-file-encoding

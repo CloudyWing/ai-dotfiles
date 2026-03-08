@@ -109,6 +109,12 @@ applyTo: "**/*"
 - **Response 一致性**：API 的錯誤回應需遵循 `ProblemDetails` (RFC 7807) 格式，使用 `Results.Problem(...)` 或 `Results.ValidationProblem(...)`。
 - **API 版本**：若專案有啟用 API Versioning，產生或修改端點時必須加入對應版本路由前綴（如 `/api/v1/`）。
 
+### 3.7 .NET 最佳實踐品質檢查 (主動套用)
+
+- **資源管理**：所有實作 `IDisposable` 或 `IAsyncDisposable` 的物件，**必須**在 `using` 區塊或 `try/finally` 中確保釋放。若發現暴露中的 `new HttpClient()`，主動提醒改用 `IHttpClientFactory`。
+- **SOLID 原則守護**：若一個類別混合了「資料存取」與「商業邏輯」，主動建議拆分；若遇到大型 `switch/if-else` 依型別分派，建議策略模式或多型替代；若發現直接 `new` 建立具體實作，提示改用 DI。
+- **效能陷阱**：字串串接迴圈中，必須建議改用 `StringBuilder` 或 `string.Join()`；對 `IEnumerable<T>` 執行多次 `.Count()` 或迴圈，建議先物化 (`.ToList()`)；使用同步 I/O 方法時，建議改為非同步版本。
+
 ---
 
 ## 4. Testing Standards

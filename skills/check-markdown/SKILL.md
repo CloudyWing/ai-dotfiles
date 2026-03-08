@@ -1,6 +1,6 @@
 ---
 name: check-markdown
-description: '自動依據專案文件平台（VitePress / Docusaurus / MkDocs / GitHub）的語法，檢查並修正 Markdown 格式與排版問題。'
+description: '當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。'
 ---
 
 # check-markdown

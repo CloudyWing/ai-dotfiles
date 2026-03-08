@@ -41,6 +41,7 @@ https://raw.githubusercontent.com/github/gitignore/main/VisualStudio.gitignore
 ```
 
 > 如果使用者同時有多個技術棧（例如 C# + Node.js），請合併下載多個範本。
+> **退路指示**：若你的環境支援讀取 URL 取回內容，請下載；若不支援連網下載技能，請基於你的內部知識庫，盡可能還原該官方範本的標準內容。
 
 ### 3. 輸出目標檔案
 
