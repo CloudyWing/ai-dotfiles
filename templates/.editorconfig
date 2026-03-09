@@ -3,6 +3,7 @@ root = true
 
 # 通用基礎設定（非 C# 專案可直接沿用）
 [*]
+charset = utf-8
 end_of_line = crlf
 insert_final_newline = true
 trim_trailing_whitespace = true
@@ -12,7 +13,7 @@ trim_trailing_whitespace = true
 trim_trailing_whitespace = false
 
 # 常見前端與設定檔縮排
-[*.{json,yml,yaml,xml,html,css,scss,js,jsx,ts,tsx}]
+[*.{json,yml,yaml,xml,html,css,scss,js,jsx,ts,tsx,cshtml}]
 indent_style = space
 indent_size = 2
 
@@ -23,12 +24,18 @@ indent_size = 4
 
 # PowerShell 腳本
 [*.ps1]
+charset = utf-8-bom
 indent_style = space
 indent_size = 4
+
+# Excel 與舊平台相容性檔案
+[*.{csv,bat,cmd}]
+charset = utf-8-bom
 
 #### .NET / C# 共用規則（適用 C# 和 VB） ####
 
 [*.{cs,vb}]
+charset = utf-8-bom
 end_of_line = crlf
 tab_width = 4
 indent_size = 4
