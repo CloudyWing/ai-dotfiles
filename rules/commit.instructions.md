@@ -14,7 +14,7 @@ applyTo: "**/*"
 
 ## 2. Header Format
 
-**Pattern**: `<type>(<scope>): <subject>`
+**Pattern**: `<type>([scope]): <subject>`
 
 ### 2.1 Type Whitelist (Ref: Angular & Modern Standards)
 
@@ -28,14 +28,22 @@ applyTo: "**/*"
 - `test`: 新增或修正測試。
 - `chore`: 建置流程、相依性套件 (Dependencies) 更新、雜項 (如 .gitignore)。
 
-### 2.2 Subject Rules
+### 2.2 Scope Rules (建議省略)
+
+- **預設省略**：Scope 為非必填項目，對於多數一般性修改，**強烈建議直接省略**。
+- **白名單機制**：若確實需要說明影響範圍，僅允許填寫第一層目錄名稱（如 `prompts`, `rules`, `skills`, `scripts`, `templates`）。不在白名單內的異動一律不寫 Scope。
+- **禁止隨意創造**：不接受 `all`, `update`, `config` 等無明確邊界的無效 Scope。
+
+### 2.3 Subject Rules
 
 - **Language**: **台灣用語正體中文 (Traditional Chinese, Taiwan)**。
 - **Style**: **命令式動詞開頭**（例如：新增, 修正, 移除, 重構）。
 - **Length**: 不限制長度，以完整表達變更重點為優先。
 - **Forbidden**:
   - 結尾不加句號。
-    - 使用具體說明變更內容，避免模糊字眼（如「更新程式碼」、「修改檔案」、「調整邏輯」）。
+  - 避免使用模糊字眼（如「更新程式碼」、「修改檔案」、「調整邏輯」），必須具體說明變更內容。
+
+## 3. Body Rules
 
 - **Trigger**: 僅在 **「變更邏輯複雜」** 或 **「包含 Breaking Change (破壞性變更)」** 時生成。若標題已能充分說明變更，即使涉及多個檔案亦無需 Body。
 - **Format**:
@@ -49,21 +57,28 @@ applyTo: "**/*"
 **✅ 正確範例 (Specific & Objective):**
 
 ```text
-feat(auth): 新增 JWT Token 自動重新整理機制
+feat(skills): 新增 check-markdown 技能
 
-- 實作 RefreshTokenMiddleware 以處理過期請求。
-- 調整 LoginController 回傳結構以包含 RefreshToken。
+- 實作段落空白與全半形符號的自動校對規則。
+- 新增技能說明與測試範例。
+```
+
+```text
+fix: 修正 commit 規範格式錯誤
+
+- 補齊遺漏的 Body 標題。
+- 修正列表縮排層級。
 ```
 
 **❌ 錯誤範例 (常見問題):**
 
 ```text
-# 模糊動詞 + 無 scope
-fix: 修改程式碼
+# 模糊動詞 + 不必要的自創 Scope
+fix(all): 修改程式碼
 
 # 行銷用語 + 主觀修飾
-refactor(api): 大幅提升 API 效能與使用者體驗
+refactor(prompts): 大幅提升 Prompt 效能與使用者體驗
 
 # 結尾加句號 + 大陸用語
-feat(config): 添加新的配置項。
+feat: 添加新的配置項。
 ```
