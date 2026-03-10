@@ -60,4 +60,4 @@ public class ClassNameTests
 
 - 若方法邏輯過於複雜，先輸出骨架，再個別補充測試情境。
 - 所有外部依賴透過 Mock 建立；在單元測試中直接 `new` 相依物件違反隔離原則。
-- 僅针對 `public`/`internal` 方法產生測試；`private` 方法透過公開介面進行間接驗證。
+- 僅針對 `public`/`internal` 方法產生測試；`private` 方法透過公開介面進行間接驗證。

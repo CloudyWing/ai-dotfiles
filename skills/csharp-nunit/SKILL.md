@@ -1,5 +1,5 @@
 ---
-name: csharp-xunit
+name: csharp-nunit
 description: 'C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。'
 ---
 

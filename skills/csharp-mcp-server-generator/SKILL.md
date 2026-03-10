@@ -10,7 +10,7 @@ description: '產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最
 ## 專案核心要求
 
 - **專案結構**：建立標準的 Console 應用程式 (`dotnet new console`)。
-- **套件相依性**：必須包含支援星期的 MCP SDK (例如官方或社群的 `ModelContextProtocol` 預覽套件)，以及 `Microsoft.Extensions.Hosting` (DI 容器與生命週期管理)。
+- **套件相依性**：必須包含支援的 MCP SDK (例如官方或社群的 `ModelContextProtocol` 預覽套件)，以及 `Microsoft.Extensions.Hosting` (DI 容器與生命週期管理)。
 - **Log 管控**：為避免干擾 `stdio` 用來傳輸 JSON-RPC，必須將所有的 Logging (如 ILogger) 導向 `stderr`，或是寫入實體檔案之中。
 
 ## 工具實作 (Tools Implementation)

@@ -21,7 +21,8 @@ description: '當遇到中文亂碼、編碼錯誤，或要求轉換檔案編碼
 
 | 副檔名 | 目標編碼 | 原因 |
 | --- | --- | --- |
-| `.cs` / `.aspx` / `.resx` | UTF-8 with BOM | 避免舊工具或編譯器誤判 |
+| `.cs` / `.aspx` / `.resx` (Legacy .NET Framework) | UTF-8 with BOM | 避免舊工具或編譯器誤判 |
+| `.cs` (Modern .NET Core/5+) | UTF-8（無 BOM） | 現代工具鏈已無需 BOM |
 | `.ps1` | UTF-8 with BOM | 向下相容 PowerShell 5.1 |
 | `.csv` | UTF-8 with BOM | 避免 Excel 開啟亂碼 |
 | `.json` / `.xml` / `.yaml` | UTF-8（無 BOM） | 標準慣例 |

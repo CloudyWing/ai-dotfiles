@@ -3,9 +3,9 @@ name: csharp-async
 description: 'C# 非同步設計最佳實踐：強制套用 Task/ValueTask 與 ConfigureAwait 等非同步開發規範。'
 ---
 
-# C# 異步程式設計最佳實踐
+# C# 非同步程式設計最佳實踐
 
-當使用者要求撰寫或重構 C# 異步 (Asynchronous) 程式碼時，請自動套用以下準則。
+當使用者要求撰寫或重構 C# 非同步 (Asynchronous) 程式碼時，請自動套用以下準則。
 
 ## 命名慣例
 
