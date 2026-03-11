@@ -18,7 +18,7 @@
 ### 本專案策略
 
 - 以 `instructions.md` 作為唯一主規則檔（Single Rule）。
-- 僅保留 `rules/commit.instructions.md` 作為 Commit 專用補充規則（因 VS Code 讀取情境需求）。
+- Commit 訊息生成以 `skills/generate-commit/` Skill 形式獨立管理，不再列為頂層 Rule。
 - 暫不拆分更多獨立 rule 檔案，避免維護成本升高。
 
 ---
@@ -58,7 +58,6 @@
 | 檔案 / 資料夾 | 用途 |
 | --- | --- |
 | `copilot-instructions.md` | 主要全域規則，自動注入所有對話 |
-| `rules/commit.instructions.md` | Commit 訊息生成時使用的補充規則 |
 | `prompts/*.prompt.md` | 可重用提示範本 |
 | `skills/<name>/SKILL.md` | 技能模組，AI 依上下文自動載入 |
 
@@ -82,7 +81,7 @@
 ```json
 {
     "github.copilot.chat.commitMessageGeneration.instructions": [
-        { "file": "C:/Users/<你的帳號>/.ai-agents/rules/commit.instructions.md" }
+        { "file": "C:/Users/<你的帳號>/.ai-agents/skills/generate-commit/SKILL.md" }
     ]
 }
 ```
@@ -108,8 +107,6 @@
 ├── .gitattributes                      # 行尾格式與二進位標記
 ├── README.md                           # 本文件
 ├── instructions.md                     # 核心開發規範（主 Rule）
-├── rules/
-│   └── commit.instructions.md         # Git Commit 補充規範
 ├── prompts/                            # 提示範本（Prompt）
 │   ├── code-review.prompt.md
 │   ├── fact-check-note.prompt.md
@@ -130,7 +127,8 @@
 │   ├── csharp-mcp-server-generator/    # C# MCP Server 建立指南
 │   ├── csharp-nunit/                   # C# NUnit + NSubstitute 測試規範
 │   ├── dotnet-best-practices/          # .NET 通用品質守門員
-│   └── fix-file-encoding/              # 檔案編碼偵測與修正
+│   ├── fix-file-encoding/              # 檔案編碼偵測與修正
+│   └── generate-commit/                # Git Commit 訊息生成（Diff-based + 拆分建議）
 ├── templates/                          # 新專案初始化範本
 │   ├── .editorconfig                   # 全語言 EditorConfig 範本
 │   └── LICENSE.md                      # MIT 授權範本（含佔位符）
@@ -170,6 +168,7 @@
 | `csharp-nunit` | C# 測試：NUnit + NSubstitute 的 AAA 模式與資料驅動測試規範。 |
 | `dotnet-best-practices` | .NET 品質守門：資源管理、SOLID 違反、效能陷阱偵測。 |
 | `fix-file-encoding` | 偵測編碼（Big5/ANSI/UTF-8）並依副檔名轉換，特別處理 `.ps1`、`.cs`。 |
+| `generate-commit` | Git Commit 訊息生成：強制 Diff-based 流程、過渡檔案過濾、拆分建議。 |
 
 ---
 

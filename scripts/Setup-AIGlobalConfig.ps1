@@ -1,4 +1,4 @@
-﻿# ----------------------------------------------------------------
+# ----------------------------------------------------------------
 # Setup-AiGlobalConfig.ps1 - AI 全域設定連結自動化 (全版本相容驗證版)
 # ----------------------------------------------------------------
 
@@ -12,18 +12,12 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 # 2. 定義路徑 (來源：~/.ai-agents/)
 $configRoot = "$env:USERPROFILE\.ai-agents"
 $mainInstructions = "$configRoot\instructions.md"
-$commitRules = "$configRoot\rules\commit.instructions.md"
 $skillsPath = "$configRoot\skills"
 $promptsPath = "$configRoot\prompts"
-$rulesPath = "$configRoot\rules"
 
 # 3. 實體檔案與原始目錄檢查
 if (!(Test-Path $mainInstructions)) {
     Write-Host "ERROR: 找不到 $mainInstructions" -ForegroundColor Red
-    return
-}
-if (!(Test-Path $commitRules)) {
-    Write-Host "ERROR: 找不到 $commitRules" -ForegroundColor Red
     return
 }
 
@@ -80,8 +74,7 @@ Write-Host "`n>>> 正在建立符號連結..." -ForegroundColor Cyan
 # Gemini CLI：全域規則（單一檔案連結）
 Set-SymbolicLink -LinkPath "$geminiDir\GEMINI.md" -TargetPath $mainInstructions
 
-# Gemini CLI：rules/ → ~/.ai-agents/rules/
-Set-SymbolicLink -LinkPath "$geminiDir\rules" -TargetPath $rulesPath
+
 
 # Antigravity：global_workflows → prompts/
 Set-SymbolicLink -LinkPath $agyWorkflowsDir -TargetPath $promptsPath
@@ -93,10 +86,9 @@ Set-SymbolicLink -LinkPath "$agyDir\skills" -TargetPath $skillsPath
 $copilotDir = "$env:USERPROFILE\.copilot"
 if (!(Test-Path $copilotDir)) { New-Item $copilotDir -ItemType Directory -Force | Out-Null }
 
-# Copilot：skills/、prompts/、rules/ 三個連結
+# Copilot：skills/、prompts/ 兩個連結
 Set-SymbolicLink -LinkPath "$copilotDir\skills"  -TargetPath $skillsPath
 Set-SymbolicLink -LinkPath "$copilotDir\prompts" -TargetPath $promptsPath
-Set-SymbolicLink -LinkPath "$copilotDir\rules"   -TargetPath $rulesPath
 
 # 6. 驗證回饋
 Write-Host "`n>>> 設定完成！詳細連結路徑如下：" -ForegroundColor Green
@@ -121,9 +113,7 @@ Write-Host ""
 Write-Host "注意事項：" -ForegroundColor Yellow
 Write-Host "  - 設定來源目錄為 ~/.ai-agents/"
 Write-Host "  - Gemini CLI 透過 ~/.gemini/GEMINI.md 符號連結讀取"
-Write-Host "  - ~/.gemini/rules/ 連結至 ~/.ai-agents/rules/（確保相對路徑可解析）"
 Write-Host "  - Antigravity skills → ~/.ai-agents/skills/（和 Copilot 共用）"
 Write-Host "  - Antigravity global_workflows → ~/.ai-agents/prompts/（Prompt = Workflow）"
 Write-Host "  - ~/.copilot/skills/ 和 ~/.copilot/prompts/ 連結至 ~/.ai-agents/ 對應目錄"
-Write-Host "  - ~/.copilot/rules/ 連結至 ~/.ai-agents/rules/（確保相對路徑可解析）"
 Write-Host "  - Visual Studio 不支援全域設定，需在各專案下放置 .github/"

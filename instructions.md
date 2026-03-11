@@ -77,7 +77,7 @@ applyTo: "**/*"
 ## 2. Global Constraints
 
 - **Rule Zero**: **`.editorconfig` 擁有最高優先權**。若下述規則與專案設定衝突，以 `.editorconfig` 為準。
-- **Single Rule Policy**: 除 `rules/commit.instructions.md` 外，其他規範統一維護在本檔，避免規則碎片化。
+- **Single Rule Policy**: 規範統一維護在本檔，避免規則碎片化。特定任務流程（如 Commit 訊息生成）則以 Skill 形式獨立管理。
 - **Encoding Strategy (Crucial)**: 除非檔案有特殊相容性需求，否則**預設皆須使用 UTF-8 (無 BOM)**。例外情境（必須強制使用 UTF-8 with BOM）：
   - **PowerShell 腳本 (`*.ps1`)**: 確保向下相容 Windows PowerShell 5.1。
   - **CSV 檔案 (`*.csv`)**: 確保 Windows 上的 Excel 雙擊開啟時能正確解析中文。
@@ -94,6 +94,12 @@ applyTo: "**/*"
   - 不加入已廢棄的頂層 `version:` 欄位。
   - 新建檔案優先使用 `compose.yml` 為主要檔名（相容舊稱 `docker-compose.yml`，但不主動建立）。
   - Service 層級使用 `depends_on` 的條件式寫法（`condition: service_healthy`），取代舊式純陣列寫法。
+- **Windows Terminal Encoding (Crucial)**: 在 Windows 環境執行終端機命令時，必須遵守以下規則以避免中文亂碼與輸出截斷：
+  - 執行可能輸出中文的命令（如 `dotnet test`、`git log`、`git diff`）前，先執行 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` 確保輸出編碼正確。
+  - 寫入 `.ps1` 檔案時，必須確保使用 **UTF-8 with BOM** 編碼，不得用無 BOM 的 UTF-8（PowerShell 5.1 會誤判為 ANSI）。
+  - 讀取終端機輸出時，若出現亂碼或截斷，**第一優先檢查編碼設定**（而非嘗試換命令或換工具）。標準修復流程：確認 `[Console]::OutputEncoding` → 確認檔案本身編碼 → 確認 `chcp` Code Page。
+  - **截斷 ≠ 亂碼**：若輸出內容在結尾處不完整但可讀字元正常，問題是「截斷」而非「編碼」。不要因為截斷就去改編碼設定。截斷的處理方式：限制輸出長度（如 `git log -n 10`、`git diff -- [specific file]`），或將輸出導向檔案後再讀取。
+  - **禁止盲目輪迴**：遇到終端機輸出亂碼時，不得未經診斷就反覆嘗試不同的命令組合。必須先確認編碼狀態，再針對性修正。
 
 ---
 
@@ -215,16 +221,12 @@ applyTo: "**/*"
 
 ## 5. Workflow & Source Control
 
-### 5.1 Git Commit Standards
-
-- **External Reference**: AI 在生成或協助撰寫 Git Commit 訊息時，必須強制參閱並遵守 `./rules/commit.instructions.md` 檔案中的規範。
-
-### 5.2 Change Notes Policy
+### 5.1 Change Notes Policy
 
 - **Default Rule**: 程式碼檔案中的變更說明應以 commit message 與 PR 描述承載，非必要不寫入原始碼註解。
 - **Exception**: 僅在使用者明確要求「加入註解說明差異」時，才可新增此類註解。
 
-### 5.3 Work State Management
+### 5.2 Work State Management
 
 - **觸發時機 (Trigger Condition)**：AI 不會每個對話回合都更新狀態，**僅在使用者明確表示「任務結束」、「告一段落」、「幫我總結」，或 AI 準備輸出最終 Closure Report 時**，才必須執行下列盤點。
 - **狀態儲存（State Handoff）**：任務執行完畢或告一段落時，將當前進度、踩過的坑與解法、以及環境前置作業狀態整理至專案根目錄的 `Agents.local.md`。
@@ -232,7 +234,7 @@ applyTo: "**/*"
 - **環境清理（Cleanup）**：任務執行完畢時，主動刪除過程中產生的臨時腳本與中間測試檔案。
 - **結案報告（Closure Report）**：執行與清理完畢後，輸出一份簡明的執行報告，列出所有已完成項目，供使用者確認無遺漏。
 
-### 5.4 經驗萃取與技能建議 (Skill & Prompt Extraction)
+### 5.3 經驗萃取與技能建議 (Skill & Prompt Extraction)
 
 - **價值評估 (Evaluation)**：在任務執行完畢並準備輸出「結案報告」時，AI 必須自我評估剛才的任務是否符合以下任一條件：
   - 具備高度**重複使用價值**的工作流或重構模式 (如特定架構的 CRUD 生成)。
