@@ -53,13 +53,13 @@
 | --- | --- |
 | `global_workflows/` | 跨專案可用的 Workflow 定義 |
 
-### GitHub Copilot — `<repo>/.github/` 或 `~/.copilot/`
+### GitHub Copilot — `<repo>/.github/`（專案）或 `%APPDATA%\Code\User\`（全域）
 
-| 檔案 / 資料夾 | 用途 |
+| 路徑 | 用途 |
 | --- | --- |
-| `copilot-instructions.md` | 主要全域規則，自動注入所有對話 |
-| `prompts/*.prompt.md` | 可重用提示範本 |
-| `skills/<name>/SKILL.md` | 技能模組，AI 依上下文自動載入 |
+| `instructions/*.instructions.md` | 全域指令規則（需 `applyTo: "**"` 以套用至所有檔案） |
+| `prompts/*.prompt.md` | 全域提示範本，Chat 中以 `/` 呼叫 |
+| `~/.copilot/skills/<name>/SKILL.md` | 全域技能模組，AI 依上下文自動載入 |
 
 > 本專案實際來源為 `~/.ai-agents/`，再由腳本建立至各工具入口的符號連結。
 
@@ -69,10 +69,11 @@
 
 | 來源 | 載入方式 |
 | --- | --- |
-| 全域/工作區規則 | 建立符號連結至專案的 `.github/copilot-instructions.md` |
+| 全域指令規則 | 符號連結至 `%APPDATA%\Code\User\instructions\*.instructions.md` |
+| 工作區規則 | 符號連結至各專案的 `.github/copilot-instructions.md` |
 | Commit 補充規則 | 透過 VS Code 設定 `commitMessageGeneration.instructions` |
-| 提示範本 | 使用者在 Chat 中手動匯入 |
-| 技能模組 | AI 依上下文自動查閱 |
+| 提示範本 | 符號連結至 `%APPDATA%\Code\User\prompts\*.prompt.md` |
+| 技能模組 | 放置於 `~/.copilot/skills/`，AI 依上下文自動查閱 |
 
 ### `settings.json` 範例
 
@@ -86,7 +87,7 @@
 }
 ```
 
-> **注意**：一般程式碼與測試規則，Copilot 建議放至專案的 `.github/copilot-instructions.md`，不再透過 `settings.json` 指定。
+> **注意**：一般程式碼與測試規則，建議放至全域 `instructions/` 目錄或各專案的 `.github/copilot-instructions.md`，不透過 `settings.json` 逐一指定。
 
 ---
 

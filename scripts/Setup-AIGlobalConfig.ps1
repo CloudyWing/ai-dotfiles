@@ -1,4 +1,4 @@
-# ----------------------------------------------------------------
+﻿# ----------------------------------------------------------------
 # Setup-AiGlobalConfig.ps1 - AI 全域設定連結自動化 (全版本相容驗證版)
 # ----------------------------------------------------------------
 
@@ -20,8 +20,6 @@ if (!(Test-Path $mainInstructions)) {
     Write-Host "ERROR: 找不到 $mainInstructions" -ForegroundColor Red
     return
 }
-
-
 
 # 4. 準備工具目錄
 $geminiDir = "$env:USERPROFILE\.gemini"
@@ -54,8 +52,16 @@ function Set-SymbolicLink {
             Remove-Item -LiteralPath $existing.FullName -Force
         }
         else {
-            Write-Host "  ⚠️  略過：$LinkPath 已存在且非符號連結，請手動移除後重新執行。" -ForegroundColor Yellow
-            return
+            # 空目錄可安全替換為符號連結
+            $isEmptyDir = ($existing -is [System.IO.DirectoryInfo]) -and
+                          ((Get-ChildItem -Path $existing.FullName -Force | Measure-Object).Count -eq 0)
+            if ($isEmptyDir) {
+                Remove-Item -LiteralPath $existing.FullName -Force
+            }
+            else {
+                Write-Host "  ⚠️  略過：$LinkPath 已存在且非符號連結，請手動移除後重新執行。" -ForegroundColor Yellow
+                return
+            }
         }
     }
 
@@ -74,30 +80,37 @@ Write-Host "`n>>> 正在建立符號連結..." -ForegroundColor Cyan
 # Gemini CLI：全域規則（單一檔案連結）
 Set-SymbolicLink -LinkPath "$geminiDir\GEMINI.md" -TargetPath $mainInstructions
 
-
-
 # Antigravity：global_workflows → prompts/
 Set-SymbolicLink -LinkPath $agyWorkflowsDir -TargetPath $promptsPath
 
 # Antigravity：skills/ → ~/.ai-agents/skills/
 Set-SymbolicLink -LinkPath "$agyDir\skills" -TargetPath $skillsPath
 
-# Copilot：建立根目錄
+# Copilot / VS Code：建立必要目錄
 $copilotDir = "$env:USERPROFILE\.copilot"
-if (!(Test-Path $copilotDir)) { New-Item $copilotDir -ItemType Directory -Force | Out-Null }
+$vscodeUserDir = "$env:APPDATA\Code\User"
+$vscodeInstructionsDir = "$vscodeUserDir\instructions"
+foreach ($dir in @($copilotDir, $vscodeInstructionsDir)) {
+    if (!(Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
+}
 
-# Copilot：skills/、prompts/ 兩個連結
-Set-SymbolicLink -LinkPath "$copilotDir\skills"  -TargetPath $skillsPath
-Set-SymbolicLink -LinkPath "$copilotDir\prompts" -TargetPath $promptsPath
+# VS Code Copilot：全域指令規則（.instructions.md 格式，applyTo: "**" 自動注入所有對話）
+Set-SymbolicLink -LinkPath "$vscodeInstructionsDir\global.instructions.md" -TargetPath $mainInstructions
+
+# VS Code Copilot：全域 Prompts（將 VS Code 空目錄替換為符號連結）
+Set-SymbolicLink -LinkPath "$vscodeUserDir\prompts" -TargetPath $promptsPath
+
+# Copilot：skills/ 連結（供 instructions.md 中的技能路徑引用）
+Set-SymbolicLink -LinkPath "$copilotDir\skills" -TargetPath $skillsPath
 
 # 6. 驗證回饋
 Write-Host "`n>>> 設定完成！詳細連結路徑如下：" -ForegroundColor Green
 Write-Host "----------------------------------------------------------------"
 
 # 使用計算屬性，同時相容 PS 5.1 (.Target) 與 PS 7 (.LinkTarget)
-$allDirs = @($geminiDir, $copilotDir)
+$allDirs = @($geminiDir, $agyDir, $vscodeInstructionsDir, $vscodeUserDir, $copilotDir)
 foreach ($dir in $allDirs) {
-    Get-ChildItem -Path $dir -Force -Recurse |
+    Get-ChildItem -Path $dir -Force |
     Where-Object { $_.Attributes -match "ReparsePoint" } |
     Select-Object `
     @{Name = "工具入口 (Entry)"; Expression = { $_.FullName.Replace($env:USERPROFILE, "~") } },
@@ -115,5 +128,7 @@ Write-Host "  - 設定來源目錄為 ~/.ai-agents/"
 Write-Host "  - Gemini CLI 透過 ~/.gemini/GEMINI.md 符號連結讀取"
 Write-Host "  - Antigravity skills → ~/.ai-agents/skills/（和 Copilot 共用）"
 Write-Host "  - Antigravity global_workflows → ~/.ai-agents/prompts/（Prompt = Workflow）"
-Write-Host "  - ~/.copilot/skills/ 和 ~/.copilot/prompts/ 連結至 ~/.ai-agents/ 對應目錄"
+Write-Host "  - Copilot 全域規則透過 %APPDATA%\Code\User\instructions\global.instructions.md 連結讀取"
+Write-Host "  - Copilot 全域 Prompts 透過 %APPDATA%\Code\User\prompts\ 符號連結至 ~/.ai-agents/prompts/"
+Write-Host "  - ~/.copilot/skills/ 連結至 ~/.ai-agents/skills/（供指令檔中的技能路徑引用）"
 Write-Host "  - Visual Studio 不支援全域設定，需在各專案下放置 .github/"
