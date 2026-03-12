@@ -77,11 +77,12 @@ applyTo: "**/*"
 ## 2. Global Constraints
 
 - **Rule Zero**: **`.editorconfig` 擁有最高優先權**。若下述規則與專案設定衝突，以 `.editorconfig` 為準。
-- **Single Rule Policy**: 規範統一維護在本檔，避免規則碎片化。特定任務流程（如 Commit 訊息生成）則以 Skill 形式獨立管理。
+- **Single Rule Policy**: 規範統一維護在本檔，避免規則碎片化。
 - **Encoding Strategy (Crucial)**: 除非檔案有特殊相容性需求，否則**預設皆須使用 UTF-8 (無 BOM)**。例外情境（必須強制使用 UTF-8 with BOM）：
   - **PowerShell 腳本 (`*.ps1`)**: 確保向下相容 Windows PowerShell 5.1。
   - **CSV 檔案 (`*.csv`)**: 確保 Windows 上的 Excel 雙擊開啟時能正確解析中文。
-  - **Legacy C# 專案檔案 (`*.cs`, `*.vb`)**: 若為舊版 .NET Framework 或需要相容舊版 Visual Studio，可視團隊習慣保留 BOM。
+  - **Legacy C# 專案檔案 (`*.cs`, `*.vb`)**: 若為舊版 .NET Framework 或需要相容舊版 Visual Studio，則保留 BOM。
+  - **寫入防護**: 使用腳本或工具修改/寫入現有檔案前，必須先檢查原檔案編碼並維持一致。此為「常規檔案內容更新」的防禦性檢查；若任務目標為「修正已知亂碼」或「轉換檔案編碼」，則不在此限，依該任務需求處理。
 - **Indentation & Spacing**: 嚴格遵守以下縮排規範：
   - **C# (`*.cs`)**: 縮排必須使用 **4 個空格**。
   - **設定檔與標記語言 (JSON, XML, YAML 等)**: 縮排必須使用 **2 個空格**。
