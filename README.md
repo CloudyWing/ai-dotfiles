@@ -111,6 +111,7 @@
 ├── prompts/                            # 提示範本（Prompt）
 │   ├── code-review.prompt.md
 │   ├── fact-check-note.prompt.md
+│   ├── fix-file-encoding.prompt.md
 │   ├── generate-api-doc.prompt.md
 │   ├── generate-changelog-zh-tw.prompt.md
 │   ├── generate-editorconfig-by-techstack.prompt.md
@@ -128,7 +129,6 @@
 │   ├── csharp-mcp-server-generator/    # C# MCP Server 建立指南
 │   ├── csharp-nunit/                   # C# NUnit + NSubstitute 測試規範
 │   ├── dotnet-best-practices/          # .NET 通用品質守門員
-│   ├── fix-file-encoding/              # 檔案編碼偵測與修正
 │   └── generate-commit/                # Git Commit 訊息生成（Diff-based + 拆分建議）
 ├── templates/                          # 新專案初始化範本
 │   ├── .editorconfig                   # 全語言 EditorConfig 範本
@@ -145,6 +145,7 @@
 | --- | --- |
 | `code-review` | 程式碼審查：從安全性、正確性、SOLID 設計到可讀性進行分層評估。 |
 | `fact-check-note` | 事實校閱：逐條檢查內容觀念與術語，標註明確無法確認的資訊。 |
+| `fix-file-encoding` | 偵測檔案編碼（Big5/ANSI/UTF-8）並依副檔名轉換目標編碼，特別處理 `.ps1`、`.csv`、`.cs`。 |
 | `generate-api-doc` | API 文件：為 ASP.NET Core Controller 或 Minimal API 補齊 OpenAPI 標註。 |
 | `generate-changelog-zh-tw` | 產生 CHANGELOG：依提交紀錄產生並插入區段，支援 MinVer 版本推進規格。 |
 | `generate-editorconfig-by-techstack` | `.editorconfig` 設定：自動偵測技術棧产生或補齊設定，保留既有偏好。 |
@@ -168,7 +169,6 @@
 | `csharp-mcp-server-generator` | C# MCP Server：Console App 起手式、DI 設定、stdio Log 管控。 |
 | `csharp-nunit` | C# 測試：NUnit + NSubstitute 的 AAA 模式與資料驅動測試規範。 |
 | `dotnet-best-practices` | .NET 品質守門：資源管理、SOLID 違反、效能陷阱偵測。 |
-| `fix-file-encoding` | 偵測編碼（Big5/ANSI/UTF-8）並依副檔名轉換，特別處理 `.ps1`、`.cs`。 |
 | `generate-commit` | Git Commit 訊息生成：強制 Diff-based 流程、過渡檔案過濾、拆分建議。 |
 
 ---

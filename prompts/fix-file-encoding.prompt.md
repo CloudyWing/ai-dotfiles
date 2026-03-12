@@ -1,11 +1,11 @@
 ---
-name: fix-file-encoding
-description: '當遇到中文亂碼、編碼錯誤，或要求轉換檔案編碼時使用。為文字檔依據副檔名轉換目標編碼。'
+agent: ask
+description: "偵測並修正檔案亂碼問題，依副檔名轉換至正確目標編碼（Big5/ANSI → UTF-8 系列）。"
 ---
 
-# fix-file-encoding
+# 修正檔案編碼 (Fix File Encoding)
 
-當使用者提到「中文亂碼」、「編碼錯誤」、「Big5 轉 UTF-8」，且目標為文字檔案（如 `.cs`, `.ps1`, `.csv` 等）時，請自動套用本技能。
+你是熟悉 Windows 編碼環境的工具工程師。請依照以下流程，協助使用者解決檔案的中文亂碼或編碼錯誤問題。
 
 ## 執行步驟
 
