@@ -2,7 +2,7 @@
 
 如有需要建立個人開發設定，建議參考 [awesome-copilot](https://github.com/github/awesome-copilot)。
 
-本目錄為個人全域 AI 輔助開發設定，適用於 GitHub Copilot、Gemini CLI、Antigravity 等工具，內容充滿個人習慣與偏好，僅供參考。
+本目錄為個人全域 AI 輔助開發設定，適用於 GitHub Copilot、Gemini CLI、Claude Code、Codex、Antigravity 等工具，內容充滿個人習慣與偏好，僅供參考。
 
 ---
 
@@ -53,6 +53,25 @@
 | --- | --- |
 | `global_workflows/` | 跨專案可用的 Workflow 定義 |
 
+### Claude Code — `~/.claude/`
+
+| 路徑 | 用途 |
+| --- | --- |
+| `CLAUDE.md` | 全域記憶與指令（Claude Code 會自動讀取） |
+| `skills/<name>/SKILL.md` | Skills（可自動觸發與 `/skill-name` 指令） |
+| `commands/*.md` | 舊版自訂指令位置，仍可用，與 skills 等效 |
+
+### Codex — `~/.codex/`（或 `$CODEX_HOME`）
+
+| 檔案 | 用途 |
+| --- | --- |
+| `AGENTS.md` | 全域指令檔（Codex 會載入） |
+| `AGENTS.override.md` | 全域覆蓋檔（若存在且非空會優先套用） |
+
+| 路徑 | 用途 |
+| --- | --- |
+| `~/.agents/skills/<name>/SKILL.md` | 使用者技能（Codex 會掃描） |
+
 ### GitHub Copilot — `<repo>/.github/`（專案）或 `%APPDATA%\Code\User\`（全域）
 
 | 路徑 | 用途 |
@@ -62,6 +81,10 @@
 | `~/.copilot/skills/<name>/SKILL.md` | 全域技能模組，AI 依上下文自動載入 |
 
 > 本專案實際來源為 `~/.ai-agents/`，再由腳本建立至各工具入口的符號連結。
+
+> ⚠️ **以上全域路徑僅適用於 Windows 原生 VS Code。**  
+> 若使用 **Remote - WSL**，VS Code Server 實際運行於 WSL 環境中，路徑應改為 Linux home 下的對應位置。  
+> 例如：`%APPDATA%\Code\User\instructions\` 在 WSL 中對應為 `~/.vscode-server/data/User/instructions/`
 
 ---
 
@@ -87,8 +110,10 @@
 }
 ```
 
-> **注意**：一般程式碼與測試規則，建議放至全域 `instructions/` 目錄或各專案的 `.github/copilot-instructions.md`，不透過 `settings.json` 逐一指定。
+> ⚠️ **以下路徑以 Windows 原生 VS Code 為基準。**  
+> 若使用 Remote - WSL 開發，符號連結目標須改為 WSL 內的路徑（如 `~/.vscode-server/data/User/instructions/`），否則 VS Code Server 將無法讀取。
 
+> **注意**：一般程式碼與測試規則，建議放至全域 `instructions/` 目錄或各專案的 `.github/copilot-instructions.md`，不透過 `settings.json` 逐一指定。
 ---
 
 ## 5. Visual Studio 限制
