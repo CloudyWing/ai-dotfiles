@@ -152,7 +152,7 @@ applyTo: "**/*"
 - **Var Usage**: **原則上禁用**。僅允許用於「匿名型別」或「極度複雜的巢狀泛型」。
 - **Types & Memory**:
   - 字串比較必須明確指定規則 (如 `StringComparison.OrdinalIgnoreCase`)。
-  - 時間記錄優先使用 `DateTimeOffset`，並明確指定 `DateTimeKind`。
+  - 時間型別遵循**專案現有慣例**：若專案已統一使用 `DateTime`，則維持；若已統一使用 `DateTimeOffset`，則維持。新建程式碼無既有慣例時，優先使用 `DateTimeOffset`。無論何種型別，禁止在同一專案內混用不同 `Kind`（`Local`、`Utc`、`Unspecified`）的 `DateTime`。
   - 空字串一律使用 `""`，不使用 `string.Empty`。
 - **Nullable Value Types**: 對於 `Nullable<T>` (Value Types)，檢查是否有值時，必須優先使用 `.HasValue` 屬性。
 - **Nullable Reference Types (NRT)**: 若專案啟用，必須消除所有相關警告；若未啟用，不強迫修改。
