@@ -133,7 +133,12 @@
 ├── .gitattributes                      # 行尾格式與二進位標記
 ├── README.md                           # 本文件
 ├── instructions.md                     # 核心開發規範（主 Rule）
-├── prompts/                            # 提示範本（Prompt）
+├── prompts/                            # 提示範本（Prompt）與自訂 Agent
+│   ├── blueprint.agent.md
+│   ├── clarify.agent.md
+│   ├── debug.agent.md
+│   ├── design.agent.md
+│   ├── janitor.agent.md
 │   ├── code-review.prompt.md
 │   ├── fact-check-note.prompt.md
 │   ├── fix-file-encoding.prompt.md
@@ -153,7 +158,6 @@
 │   ├── csharp-docs/                    # C# XML 註解標準
 │   ├── csharp-mcp-server-generator/    # C# MCP Server 建立指南
 │   ├── csharp-nunit/                   # C# NUnit + NSubstitute 測試規範
-│   ├── dotnet-best-practices/          # .NET 通用品質守門員
 │   └── generate-commit/                # Git Commit 訊息生成（Diff-based + 拆分建議）
 ├── templates/                          # 新專案初始化範本
 │   ├── .editorconfig                   # 全語言 EditorConfig 範本
@@ -193,8 +197,20 @@
 | `csharp-docs` | C# XML 文件：統一 `<summary>`、`<param>`、`<returns>` 標準語法。 |
 | `csharp-mcp-server-generator` | C# MCP Server：Console App 起手式、DI 設定、stdio Log 管控。 |
 | `csharp-nunit` | C# 測試：NUnit + NSubstitute 的 AAA 模式與資料驅動測試規範。 |
-| `dotnet-best-practices` | .NET 品質守門：資源管理、SOLID 違反、效能陷阱偵測。 |
 | `generate-commit` | Git Commit 訊息生成：強制 Diff-based 流程、過渡檔案過濾、拆分建議。 |
+
+---
+
+## 9. 內建 Agent 清單
+
+| Agent | 用途 |
+| --- | --- |
+| `Survey` | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。 |
+| `Clarify` | 需求解構與釐清，透過來回提問將模糊需求轉化為可驗證標準，產出結構化需求元素清單。 |
+| `Design` | 以 SA/SD 視角將需求元素轉化為系統設計文件，含架構、技術選型與分階段實作計畫。 |
+| `Implement` | 依據設計文件或使用者指示實作功能，確保每個階段完成後通過驗證再繼續。 |
+| `Debug` | 系統化除錯：以 Phase-based 流程診斷並修復程式錯誤，強制假設先行，禁止盲目嘗試。 |
+| `Cleanup` | 技術債清除：掃描 C#/.NET 專案，清除死程式碼、強制命名規範、現代化語法，每批修改後驗證測試。 |
 
 ---
 
