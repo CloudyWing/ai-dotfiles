@@ -14,6 +14,7 @@ $configRoot = "$env:USERPROFILE\.ai-agents"
 $mainInstructions = "$configRoot\instructions.md"
 $skillsPath = "$configRoot\skills"
 $promptsPath = "$configRoot\prompts"
+$agentsSourcePath = "$configRoot\agents"
 
 # 3. 實體檔案與原始目錄檢查
 if (!(Test-Path $mainInstructions)) {
@@ -58,7 +59,7 @@ function Set-SymbolicLink {
         else {
             # 空目錄可安全替換為符號連結
             $isEmptyDir = ($existing -is [System.IO.DirectoryInfo]) -and
-                          ((Get-ChildItem -Path $existing.FullName -Force | Measure-Object).Count -eq 0)
+            ((Get-ChildItem -Path $existing.FullName -Force | Measure-Object).Count -eq 0)
             if ($isEmptyDir) {
                 Remove-Item -LiteralPath $existing.FullName -Force
             }
@@ -99,13 +100,16 @@ Set-SymbolicLink -LinkPath "$claudeDir\skills" -TargetPath $skillsPath
 # Claude Code：commands/ → ~/.ai-agents/prompts/
 Set-SymbolicLink -LinkPath "$claudeDir\commands" -TargetPath $promptsPath
 
+# Claude Code：agents/ → ~/.ai-agents/agents/
+Set-SymbolicLink -LinkPath "$claudeDir\agents" -TargetPath $agentsSourcePath
+
 # Codex：全域規則（AGENTS.md）
 Set-SymbolicLink -LinkPath "$codexDir\AGENTS.md" -TargetPath $mainInstructions
 
 # Codex：~/.agents/skills/ → ~/.ai-agents/skills/
 Set-SymbolicLink -LinkPath $agentsSkillsDir -TargetPath $skillsPath
 
-# Copilot / VS Code：建立必要目錄
+# Copilot CLI / VS Code：建立必要目錄
 $copilotDir = "$env:USERPROFILE\.copilot"
 $vscodeUserDir = "$env:APPDATA\Code\User"
 $vscodeInstructionsDir = "$vscodeUserDir\instructions"
@@ -121,8 +125,11 @@ Set-SymbolicLink -LinkPath "$vscodeInstructionsDir\global.instructions.md" -Targ
 # VS Code Copilot：全域 Prompts（將 VS Code 空目錄替換為符號連結）
 Set-SymbolicLink -LinkPath "$vscodeUserDir\prompts" -TargetPath $promptsPath
 
-# Copilot：skills/ 連結（供 instructions.md 中的技能路徑引用）
+# Copilot CLI：skills/ 連結（供指令檔中的技能路徑引用）
 Set-SymbolicLink -LinkPath "$copilotDir\skills" -TargetPath $skillsPath
+
+# Copilot CLI：agents/ → ~/.ai-agents/agents/
+Set-SymbolicLink -LinkPath "$copilotDir\agents" -TargetPath $agentsSourcePath
 
 # 6. 驗證回饋
 Write-Host "`n>>> 設定完成！詳細連結路徑如下：" -ForegroundColor Green
@@ -149,13 +156,15 @@ Write-Host "注意事項：" -ForegroundColor Yellow
 Write-Host "  - 設定來源目錄為 ~/.ai-agents/"
 Write-Host "  - Gemini CLI 透過 ~/.gemini/GEMINI.md 符號連結讀取"
 Write-Host "  - Antigravity global_workflows → ~/.ai-agents/prompts/（Prompt = Workflow）"
-Write-Host "  - Antigravity skills → ~/.ai-agents/skills/（和 Copilot 共用）"
+Write-Host "  - Antigravity skills → ~/.ai-agents/skills/"
 Write-Host "  - Claude Code 透過 ~/.claude/CLAUDE.md 符號連結讀取"
 Write-Host "  - Claude Code commands → ~/.ai-agents/prompts/"
 Write-Host "  - Claude Code skills → ~/.ai-agents/skills/"
+Write-Host "  - Claude Code agents → ~/.ai-agents/agents/"
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
-Write-Host "  - Codex skills → ~/.agents/skills/（和 Copilot 共用）"
+Write-Host "  - Codex skills → ~/.agents/skills/"
 Write-Host "  - Copilot 全域規則透過 %APPDATA%\\Code\\User\\instructions\\global.instructions.md 連結讀取"
 Write-Host "  - Copilot 全域 Prompts 透過 %APPDATA%\\Code\\User\\prompts\\ 符號連結至 ~/.ai-agents/prompts/"
-Write-Host "  - ~/.copilot/skills/ 連結至 ~/.ai-agents/skills/（供指令檔中的技能路徑引用）"
+Write-Host "  - Copilot CLI ~/.copilot/skills/ → ~/.ai-agents/skills/"
+Write-Host "  - Copilot CLI ~/.copilot/agents/ → ~/.ai-agents/agents/"
 Write-Host "  - Visual Studio 不支援全域設定，需在各專案下放置 .github/"

@@ -1,7 +1,6 @@
 ---
 name: Clarify
 description: 需求解構與釐清，透過來回提問將模糊需求轉化為可驗證標準，產出結構化需求元素清單。
-tools: [vscode, read, agent, edit, search, web, browser, 'pylance-mcp-server/*', vscode.mermaid-chat-features/renderMermaidDiagram, ms-azuretools.vscode-containers/containerToolsConfig, todo]
 ---
 
 # Clarify — 需求解構器

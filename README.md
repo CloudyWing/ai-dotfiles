@@ -60,6 +60,7 @@
 | `CLAUDE.md` | 全域記憶與指令（Claude Code 會自動讀取） |
 | `skills/<name>/SKILL.md` | Skills（可自動觸發與 `/skill-name` 指令） |
 | `commands/*.md` | 舊版自訂指令位置，仍可用，與 skills 等效 |
+| `agents/*.agent.md` | 全域自訂 Agent（可用 `@agent-name` 呼叫） |
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）
 
@@ -72,19 +73,21 @@
 | --- | --- |
 | `~/.agents/skills/<name>/SKILL.md` | 使用者技能（Codex 會掃描） |
 
+### GitHub Copilot CLI — `~/.copilot/`（全域）或 `.github/agents/`（專案）
+
+| 路徑 | 用途 |
+| --- | --- |
+| `agents/*.agent.md` | 全域自訂 Agent（可用 slash command 呼叫） |
+| `skills/<name>/SKILL.md` | 全域技能模組，AI 依上下文自動載入 |
+
 ### GitHub Copilot — `<repo>/.github/`（專案）或 `%APPDATA%\Code\User\`（全域）
 
 | 路徑 | 用途 |
 | --- | --- |
 | `instructions/*.instructions.md` | 全域指令規則（需 `applyTo: "**"` 以套用至所有檔案） |
 | `prompts/*.prompt.md` | 全域提示範本，Chat 中以 `/` 呼叫 |
-| `~/.copilot/skills/<name>/SKILL.md` | 全域技能模組，AI 依上下文自動載入 |
 
 > 本專案實際來源為 `~/.ai-agents/`，再由腳本建立至各工具入口的符號連結。
-
-> ⚠️ **以上全域路徑僅適用於 Windows 原生 VS Code。**  
-> 若使用 **Remote - WSL**，VS Code Server 實際運行於 WSL 環境中，路徑應改為 Linux home 下的對應位置。  
-> 例如：`%APPDATA%\Code\User\instructions\` 在 WSL 中對應為 `~/.vscode-server/data/User/instructions/`
 
 ---
 
@@ -110,9 +113,9 @@
 }
 ```
 
-> ⚠️ **以下路徑以 Windows 原生 VS Code 為基準。**  
+> ⚠️ **以下路徑以 Windows 原生 VS Code 為基準。**
 > 若使用 Remote - WSL 開發，符號連結目標須改為 WSL 內的路徑（如 `~/.vscode-server/data/User/instructions/`），否則 VS Code Server 將無法讀取。
-
+>
 > **注意**：一般程式碼與測試規則，建議放至全域 `instructions/` 目錄或各專案的 `.github/copilot-instructions.md`，不透過 `settings.json` 逐一指定。
 ---
 
@@ -133,12 +136,14 @@
 ├── .gitattributes                      # 行尾格式與二進位標記
 ├── README.md                           # 本文件
 ├── instructions.md                     # 核心開發規範（主 Rule）
-├── prompts/                            # 提示範本（Prompt）與自訂 Agent
-│   ├── blueprint.agent.md
+├── agents/                             # 自訂 Agent 定義
 │   ├── clarify.agent.md
+│   ├── cleanup.agent.md
 │   ├── debug.agent.md
 │   ├── design.agent.md
-│   ├── janitor.agent.md
+│   ├── implement.agent.md
+│   └── survey.agent.md
+├── prompts/                            # 提示範本（Prompt）
 │   ├── code-review.prompt.md
 │   ├── fact-check-note.prompt.md
 │   ├── fix-file-encoding.prompt.md
@@ -202,6 +207,8 @@
 ---
 
 ## 9. 內建 Agent 清單
+
+Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/` 與 Copilot CLI `~/.copilot/agents/`。
 
 | Agent | 用途 |
 | --- | --- |

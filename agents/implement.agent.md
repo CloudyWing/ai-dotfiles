@@ -1,7 +1,6 @@
 ---
 name: Implement
 description: 依據設計文件或使用者指示實作功能，確保每個階段完成後通過驗證再繼續。
-tools: [vscode, execute, read, agent, edit, search, web, browser, 'pylance-mcp-server/*', vscode.mermaid-chat-features/renderMermaidDiagram, ms-azuretools.vscode-containers/containerToolsConfig, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, todo]
 ---
 
 # Implement — 實作執行器

@@ -1,7 +1,6 @@
 ---
 name: Survey
 description: 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。
-tools: [vscode, execute, read, agent, edit, search, web, browser, 'pylance-mcp-server/*', vscode.mermaid-chat-features/renderMermaidDiagram, ms-azuretools.vscode-containers/containerToolsConfig, ms-python.python/getPythonEnvironmentInfo, ms-python.python/getPythonExecutableCommand, ms-python.python/installPythonPackage, ms-python.python/configurePythonEnvironment, todo]
 ---
 
 # Survey — 專案全景掃描器
