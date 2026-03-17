@@ -73,11 +73,10 @@
 | --- | --- |
 | `~/.agents/skills/<name>/SKILL.md` | 使用者技能（Codex 會掃描） |
 
-### GitHub Copilot CLI — `~/.copilot/`（全域）或 `.github/agents/`（專案）
+### GitHub Copilot CLI — `~/.copilot/`（全域）
 
 | 路徑 | 用途 |
 | --- | --- |
-| `agents/*.agent.md` | 全域自訂 Agent（可用 slash command 呼叫） |
 | `skills/<name>/SKILL.md` | 全域技能模組，AI 依上下文自動載入 |
 
 ### GitHub Copilot — `<repo>/.github/`（專案）或 `%APPDATA%\Code\User\`（全域）
@@ -182,7 +181,7 @@
 | `fix-file-encoding` | 偵測檔案編碼（Big5/ANSI/UTF-8）並依副檔名轉換目標編碼，特別處理 `.ps1`、`.csv`、`.cs`。 |
 | `generate-api-doc` | API 文件：為 ASP.NET Core Controller 或 Minimal API 補齊 OpenAPI 標註。 |
 | `generate-changelog-zh-tw` | 產生 CHANGELOG：依提交紀錄產生並插入區段，支援 MinVer 版本推進規格。 |
-| `generate-editorconfig-by-techstack` | `.editorconfig` 設定：自動偵測技術棧产生或補齊設定，保留既有偏好。 |
+| `generate-editorconfig-by-techstack` | `.editorconfig` 設定：自動偵測技術棧產生或補齊設定，保留既有偏好。 |
 | `generate-unit-test` | 產生單元測試：針對指定類別自動產生 NUnit + NSubstitute 骨架。 |
 | `create-license-and-readme-link` | 開源授權設定：推薦授權選項、建立 LICENSE 並連結至 README。 |
 | `create-readme-zh-tw` | 產生 README：生成結構清晰、工程導向的繁中說明文件。 |
@@ -208,7 +207,13 @@
 
 ## 9. 內建 Agent 清單
 
-Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/` 與 Copilot CLI `~/.copilot/agents/`。
+Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/`。
+
+> **關於 Agent 共用與放置策略：**
+> - **VS Code** 會讀到 `%APPDATA%\Code\User\prompts\` 裡的 `.agent.md`、`~/.copilot/agents/` 以及 `~/.claude/agents/`。
+> - **Copilot CLI** 會讀到 `~/.copilot/agents/` 以及 `~/.claude/agents/`。
+> - 若重複放置清單會導致顯示多個相同名稱的 agent。
+> - 故本專案統一集中在 `~/.claude/agents/` 建立連結管理，以避免重複顯示。
 
 | Agent | 用途 |
 | --- | --- |
