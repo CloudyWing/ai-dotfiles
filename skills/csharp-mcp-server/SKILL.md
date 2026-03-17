@@ -1,5 +1,5 @@
 ---
-name: csharp-mcp-server-generator
+name: csharp-mcp-server
 description: '產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最佳實踐與專案結構規劃。'
 ---
 

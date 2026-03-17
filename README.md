@@ -34,7 +34,7 @@
 | 對程式透明 | ❌ 視為獨立檔案 | ✅ | ✅ | ✅ |
 | 刪除本尊後 | 捷徑失效 | **內容還在** | 連結失效 | 連結失效 |
 
-> **建需系統管理員權限建立 Symbolic Link。**
+> **建立時需要系統管理員權限建立 Symbolic Link。**
 
 ---
 
@@ -144,23 +144,25 @@
 │   └── survey.agent.md
 ├── prompts/                            # 提示範本（Prompt）
 │   ├── code-review.prompt.md
+│   ├── create-license-and-readme-link.prompt.md
+│   ├── draft-note.prompt.md
 │   ├── fact-check-note.prompt.md
 │   ├── fix-file-encoding.prompt.md
 │   ├── generate-api-doc.prompt.md
 │   ├── generate-changelog-zh-tw.prompt.md
 │   ├── generate-editorconfig-by-techstack.prompt.md
+│   ├── generate-gitignore-by-techstack.prompt.md
+│   ├── generate-readme-zh-tw.prompt.md
 │   ├── generate-unit-test.prompt.md
-│   ├── create-license-and-readme-link.prompt.md
-│   ├── create-readme-zh-tw.prompt.md
 │   ├── proofread-note.prompt.md
-│   ├── setup-gitignore-by-techstack.prompt.md
+│   ├── spec-doc.prompt.md
 │   └── translate-zh-en.prompt.md
 ├── skills/                             # 技能模組（Skill）
 │   ├── check-markdown/                 # Markdown 格式檢查（平台感知）
 │   ├── context-map/                    # 大型重構前建立變更影響範圍分析
 │   ├── csharp-async/                   # C# 非同步設計最佳實踐
 │   ├── csharp-docs/                    # C# XML 註解標準
-│   ├── csharp-mcp-server-generator/    # C# MCP Server 建立指南
+│   ├── csharp-mcp-server/              # C# MCP Server 建立指南
 │   ├── csharp-nunit/                   # C# NUnit + NSubstitute 測試規範
 │   └── generate-commit/                # Git Commit 訊息生成（Diff-based + 拆分建議）
 ├── templates/                          # 新專案初始化範本
@@ -177,16 +179,18 @@
 | Prompt | 用途 |
 | --- | --- |
 | `code-review` | 程式碼審查：從安全性、正確性、SOLID 設計到可讀性進行分層評估。 |
+| `create-license-and-readme-link` | 開源授權設定：推薦授權選項、建立 LICENSE 並連結至 README。 |
+| `draft-note` | 整理筆記草稿：將討論素材或鬆散草稿整理成結構完整、可發佈的技術筆記。 |
 | `fact-check-note` | 事實校閱：逐條檢查內容觀念與術語，標註明確無法確認的資訊。 |
 | `fix-file-encoding` | 偵測檔案編碼（Big5/ANSI/UTF-8）並依副檔名轉換目標編碼，特別處理 `.ps1`、`.csv`、`.cs`。 |
 | `generate-api-doc` | API 文件：為 ASP.NET Core Controller 或 Minimal API 補齊 OpenAPI 標註。 |
 | `generate-changelog-zh-tw` | 產生 CHANGELOG：依提交紀錄產生並插入區段，支援 MinVer 版本推進規格。 |
 | `generate-editorconfig-by-techstack` | `.editorconfig` 設定：自動偵測技術棧產生或補齊設定，保留既有偏好。 |
+| `generate-gitignore-by-techstack` | `.gitignore` 設定：自動偵測技術棧，從 github/gitignore 下載官方範本並客製化。 |
+| `generate-readme-zh-tw` | 產生 README：生成結構清晰、工程導向的繁中說明文件。 |
 | `generate-unit-test` | 產生單元測試：針對指定類別自動產生 NUnit + NSubstitute 骨架。 |
-| `create-license-and-readme-link` | 開源授權設定：推薦授權選項、建立 LICENSE 並連結至 README。 |
-| `create-readme-zh-tw` | 產生 README：生成結構清晰、工程導向的繁中說明文件。 |
 | `proofread-note` | 校稿筆記：改善文章可讀性，修正語句，保留原始內容與語氣。 |
-| `setup-gitignore-by-techstack` | `.gitignore` 設定：自動偵測技術棧，從 github/gitignore 下載官方範本並客製化。 |
+| `spec-doc` | 需求規格文件：將 `clarify-output.md` 轉化為人類可讀的開發需求規格，供同事參考討論。 |
 | `translate-zh-en` | 技術文件翻譯：繁中 ↔ 英文，保留程式碼區塊，維持術語一致性。 |
 
 ---
@@ -199,7 +203,7 @@
 | `context-map` | 大型重構前建立受影響類別清單，確認影響範圍後再動手修改。 |
 | `csharp-async` | C# 非同步設計：Task/ValueTask 規範、禁止 `.Wait()` 與 `async void`。 |
 | `csharp-docs` | C# XML 文件：統一 `<summary>`、`<param>`、`<returns>` 標準語法。 |
-| `csharp-mcp-server-generator` | C# MCP Server：Console App 起手式、DI 設定、stdio Log 管控。 |
+| `csharp-mcp-server` | C# MCP Server：Console App 起手式、DI 設定、stdio Log 管控。 |
 | `csharp-nunit` | C# 測試：NUnit + NSubstitute 的 AAA 模式與資料驅動測試規範。 |
 | `generate-commit` | Git Commit 訊息生成：強制 Diff-based 流程、過渡檔案過濾、拆分建議。 |
 

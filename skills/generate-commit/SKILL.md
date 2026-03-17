@@ -15,7 +15,8 @@ description: '依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔
 
 1. 執行 `git diff --cached --stat` 查看已 staged 的檔案清單。
 2. 若無 staged 內容，改執行 `git diff --stat` 查看 unstaged 變更。
-3. 對關鍵檔案執行 `git diff --cached [file]`（或 `git diff [file]`）取得具體的程式碼差異。
+3. **若兩者皆為空**，告知使用者目前沒有任何變更可 commit，流程終止，不產生 commit 訊息。
+4. 對變更量較大或邏輯較複雜的檔案，執行 `git diff --cached [file]`（或 `git diff [file]`）取得具體的程式碼差異；變更量小且檔名已能說明意圖的檔案（如純文件、設定檔小幅調整）可略過此步驟。
 
 🚨 **絕對禁止**僅根據對話上下文或記憶推斷變更內容。Commit 訊息必須 100% 反映 `git diff` 的實際輸出。
 
@@ -52,6 +53,13 @@ Commit 2：<commit message>
   - file_d.md
 ```
 
+使用者確認拆分後，依序引導操作：
+
+1. 先 `git reset HEAD <files>` unstage 其他組的檔案，僅保留 Commit 1 的檔案。
+2. 產生 Commit 1 的訊息，由使用者執行 commit。
+3. 重新 stage Commit 2 的檔案，產生 Commit 2 的訊息，由使用者執行 commit。
+4. 依此類推，直到所有 commit 完成。
+
 若使用者選擇不拆分，則產生一個涵蓋所有變更的合併 commit 訊息。
 
 ### 4. 產生 Commit 訊息
@@ -81,7 +89,7 @@ Commit 2：<commit message>
 #### Scope Rules（建議省略）
 
 - **預設省略**：Scope 為非必填項目，對於多數一般性修改，**強烈建議直接省略**。
-- **白名單機制**：若確實需要說明影響範圍，僅允許填寫第一層目錄名稱（如 `prompts`, `rules`, `skills`, `scripts`, `templates`）。不在白名單內的異動一律不寫 Scope。
+- **白名單機制**：若確實需要說明影響範圍，僅允許填寫**專案的第一層目錄名稱**（依當前專案結構判斷，如 `src`, `tests`, `docs` 等）。不在專案目錄結構內的名稱一律不寫 Scope。
 - **禁止隨意創造**：不接受 `all`, `update`, `config` 等無明確邊界的無效 Scope。
 
 #### Subject Rules
