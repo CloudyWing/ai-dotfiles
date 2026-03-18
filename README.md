@@ -21,6 +21,17 @@
 - Commit 訊息生成以 `skills/generate-commit/` Skill 形式獨立管理，不再列為頂層 Rule。
 - 暫不拆分更多獨立 rule 檔案，避免維護成本升高。
 
+### 本地檔案慣例（不 commit）
+
+`.local.` 後綴表示「本機私有、不進版控」，對應兩種用途：
+
+| 檔案 | 用途 | 說明 |
+| --- | --- | --- |
+| `AGENTS.local.md` | 個人私有 AI 規則 | 覆蓋 `instructions.md` 的個人偏好 |
+| `CONTEXT.local.md` | Session 上下文交接 | 記錄當前任務進度、踩過的坑與環境狀態，跨 session 延續用（自行定義，非業界標準） |
+
+兩個檔案均已列入 `.gitignore`，適用於本目錄及各專案根目錄。
+
 ---
 
 ## 2. Windows 連結類型對照表

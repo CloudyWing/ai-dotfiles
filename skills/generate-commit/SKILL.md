@@ -25,7 +25,7 @@ description: '依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔
 檢查 diff 結果，將以下類型的檔案標記為「建議不 commit」：
 
 - Agent 產生的臨時檔案（如 `*.bak`、`*.tmp`）
-- 工作狀態檔案（如 `Agents.local.md`）
+- 工作狀態檔案（如 `CONTEXT.local.md`）
 - 中間測試腳本或除錯用途的暫存檔
 
 標記後**不自動排除**，僅提示使用者確認是否需要 unstage。

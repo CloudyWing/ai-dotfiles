@@ -27,6 +27,10 @@ $RECYCLE.BIN/
 *.swp
 *~
 
+# ---- 本地 AI 工作檔案（不應 commit）----
+# Session 上下文交接
+*.local.md
+
 # ---- 不應納入版控的機敏資訊 ----
 # 如有 API Key、Token 等放在本目錄的設定檔，請在此排除
 # secrets.md
