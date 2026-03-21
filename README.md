@@ -171,6 +171,7 @@
 ├── skills/                             # 技能模組（Skill）
 │   ├── check-markdown/                 # Markdown 格式檢查（平台感知）
 │   ├── context-map/                    # 大型重構前建立變更影響範圍分析
+│   ├── csharp-aspnetcore/              # ASP.NET Core DI Lifetime、HttpClient、ProblemDetails
 │   ├── csharp-async/                   # C# 非同步設計最佳實踐
 │   ├── csharp-docs/                    # C# XML 註解標準
 │   ├── csharp-mcp-server/              # C# MCP Server 建立指南
@@ -212,6 +213,7 @@
 | --- | --- |
 | `check-markdown` | 偵測文件平台（GitHub/VitePress 等），套用對應語法規則並修正格式。 |
 | `context-map` | 大型重構前建立受影響類別清單，確認影響範圍後再動手修改。 |
+| `csharp-aspnetcore` | ASP.NET Core 開發規範：DI Lifetime、HttpClient、ProblemDetails、API 版本控制。 |
 | `csharp-async` | C# 非同步設計：Task/ValueTask 規範、禁止 `.Wait()` 與 `async void`。 |
 | `csharp-docs` | C# XML 文件：統一 `<summary>`、`<param>`、`<returns>` 標準語法。 |
 | `csharp-mcp-server` | C# MCP Server：Console App 起手式、DI 設定、stdio Log 管控。 |
