@@ -69,7 +69,7 @@ applyTo: "**/*"
 - **逐條比對原則 (Crucial)**：執行**大幅改版或全文重寫**（章節結構異動、超過半數內容變動）時，必須：
   1. 先建立原文件的**結構大綱**（列出所有章節標題與關鍵規則的摘要）。
   2. 完成改版後，**逐條比對大綱**，確認每一項原始規則都已保留或有明確的移除/合併理由。
-  3. 若有項目在新版中被省略，必須在輸出時附上差異清單，供使用者確認。
+  3. 若有項目在新版中被省略，必須在輸出時附上差異清單，說明每項的移除或合併原因。
 - **不容許靜默刪除**：原文件中的任何條目，不得在重寫過程中被靜默移除。若認為某條規則已過時或應刪除，必須明確標示並附上理由。
 
 ## 2. Global Constraints
@@ -125,6 +125,7 @@ applyTo: "**/*"
 ### 3.2 Structure & Locality
 
 - **Namespaces**: 現代 .NET 專案使用 **File-scoped namespaces** (`namespace MyProject;`)。
+- **One Type Per File**: 每個 `.cs` 檔案只能包含**一個頂層型別**（Class、Interface、Enum、Struct、Record）。Inner Class 不受此限，允許巢狀於父類別中。
 - **Using Directives**: `System.*` 優先置頂，其餘按字母順序排列。
 - **Member Order & Spacing**: Fields -> Constructors -> Properties -> Methods。類別成員之間必須保留一個空行，但欄位 (fields) 之間不應有空行。
 - **Locality**: `private` 方法必須緊跟在「第一個呼叫它的 public 方法」下方。
@@ -172,6 +173,21 @@ applyTo: "**/*"
   - 字串比較必須明確指定規則 (如 `StringComparison.OrdinalIgnoreCase`)。
   - 時間型別遵循**專案現有慣例**：若專案已統一使用 `DateTime`，則維持；若已統一使用 `DateTimeOffset`，則維持。新建程式碼無既有慣例時，優先使用 `DateTimeOffset`。無論何種型別，禁止在同一專案內混用不同 `Kind`（`Local`、`Utc`、`Unspecified`）的 `DateTime`。
   - 空字串一律使用 `""`，不使用 `string.Empty`。
+- **Collection Type Selection (Crucial)**：依語意選擇最窄的集合介面，不預設使用 `List<T>`。介面選型由窄至寬：
+
+  | 介面 | 能力 | 適用情境 |
+  | --- | --- | --- |
+  | `IEnumerable<T>` | 迭代 | 方法參數、只需走訪的回傳值 |
+  | `IReadOnlyCollection<T>` | 迭代 + Count | 需要數量但無需索引存取 |
+  | `IReadOnlyList<T>` | 迭代 + Count + 索引 | DTO 屬性、唯讀回傳值 |
+  | `ICollection<T>` | 迭代 + Count + Add/Remove | 可修改但不需索引的集合 |
+  | `IList<T>` | 迭代 + Count + 索引 + Add/Remove | 可修改且需索引的集合 |
+  | `List<T>` | 具體型別 | 僅限內部實作或明確需要 `List<T>` 方法時 |
+
+  - **DTO / Response 物件的集合屬性**：使用 `IReadOnlyList<T> { get; init; }`，搭配 `= []` 預設值防止 null。
+  - **可修改的聚合根 / Builder 物件**：使用 `{ get; } = new List<T>();`（屬性參考固定，元素可增減）或 `ICollection<T> { get; } = new List<T>();`。
+  - **禁止模式**：`List<T> { get; set; }` 同時暴露具體型別與可替換屬性，DTO 嚴禁使用。
+  - **方法參數**：偏好 `IEnumerable<T>`；需要索引時用 `IReadOnlyList<T>`。不要求呼叫端傳入 `List<T>` 具體型別。
 - **Nullable Value Types**: 對於 `Nullable<T>` (Value Types)，檢查是否有值時，必須優先使用 `.HasValue` 屬性。
 - **Nullable Reference Types (NRT)**: 若專案啟用，必須消除所有相關警告；若未啟用，不強迫修改。
 - **High-Performance Logging**: 實作日誌時，優先使用 `[LoggerMessage]` Attribute 寫法 (Source Generator)。
@@ -189,15 +205,7 @@ applyTo: "**/*"
 
 ### 3.6 ASP.NET Core Conventions
 
-- **DI Lifetime (Crucial)**:
-  - `Singleton`：僅限無狀態、執行緒安全的服務（如 `IOptions<T>`、快取）。
-  - `Scoped`：每次 HTTP 請求一個實例，**DbContext 必須使用此 Lifetime**。
-  - `Transient`：輕量、無狀態的短暫任務型服務。
-  - 確保 Scoped 服務僅由 Scoped 或 Transient 消費；注入至 Singleton 將導致 Captive Dependency 問題。
-- **HttpClient**：HttpClient 必須透過 `IHttpClientFactory` 或具名/型別化用戶端注入，不在方法內直接 `new HttpClient()`。
-- **Minimal API vs Controller**：不主動替換現有架構形式；新建端點遵循專案既有慣例。
-- **Response 一致性**：API 的錯誤回應需遵循 `ProblemDetails` (RFC 7807) 格式，使用 `Results.Problem(...)` 或 `Results.ValidationProblem(...)`。
-- **API 版本**：若專案有啟用 API Versioning，產生或修改端點時必須加入對應版本路由前綴（如 `/api/v1/`）。
+偵測到 ASP.NET Core 專案時，套用 `csharp-aspnetcore` skill 的完整規範（DI Lifetime、HttpClient、ProblemDetails、API 版本）。
 
 ### 3.7 .NET 最佳實踐品質檢查 (主動套用)
 
@@ -209,36 +217,10 @@ applyTo: "**/*"
 
 ## 4. Testing Standards
 
-### 4.1 Framework & Tools
-
-- **Testing**: NUnit
-- **Mocking**: NSubstitute
-- **Assertions**: 必須使用 `Assert.That` (Fluent 語法)。
-
-### 4.2 Structure & Project Setup
-
-- **Project Naming**: 測試專案必須遵循 `[ProjectName].Tests` 命名慣例。
-- **Class Naming**: 測試類別必須與被測試的類別名稱完全對應 (例如 `Calculator` 對應 `CalculatorTests`)。
-- **AAA Pattern**: 遵守 **Arrange, Act, Assert** 模式結構。
-  - 以適當的空行區分三個階段的區塊，不加 `// Arrange`、`// Act`、`// Assert` 等區塊注釋。
-- **Method Naming**: 測試方法命名必須遵循 `[UnitOfWork]_[StateUnderTest]_[ExpectedBehavior]` 格式。
-
-### 4.3 Data-Driven Testing
-
-- **Attribute Usage**: 強烈建議使用 `[TestCase]` (單一/內聯數據)、`[TestCaseSource]` (複雜/共用數據)、`[Values]` 或 `[Random]` 來覆蓋多種邊界值，減少重複的測試方法。
-
-### 4.4 Assertion Best Practices
-
-- **Exception Testing**: 驗證例外拋出時，必須使用 `Assert.Throws<T>` 或 `Assert.ThrowsAsync<T>`。
-- **Collections & Strings**: 集合比對優先使用 `CollectionAssert`；字串特定比對優先使用 `StringAssert`。
-- **Multiple Asserts**: 當單一測試包含多個 Assert 驗證時，**優先使用新的 `using` 範圍寫法**：
-
-  ```csharp
-  using (Assert.EnterMultipleScope()) {
-      Assert.That(...);
-      Assert.That(...);
-  }
-  ```
+- **Framework**: NUnit + NSubstitute（Mocking）
+- **Project Naming**: 測試專案遵循 `[ProjectName].Tests` 命名慣例。
+- **Class Naming**: 測試類別與被測試類別完全對應（如 `Calculator` → `CalculatorTests`）。
+- 詳細規範（AAA 模式、資料驅動、斷言最佳實踐）參閱 `csharp-nunit` skill。
 
 ---
 
