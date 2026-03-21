@@ -21,17 +21,23 @@ $RECYCLE.BIN/
 # JetBrains / Rider
 .idea/
 
+# ---- AI 工具工作目錄 ----
+# Claude Code 產生的對話紀錄與內部狀態
+.claude/
+
 # ---- 備份與暫存 ----
 *.bak
 *.tmp
 *.swp
 *~
 
-# ---- 本地 AI 工作檔案（不應 commit）----
+# ---- 本地工作檔案（不應 commit）----
 # Session 上下文交接
 *.local.md
 
-# ---- 不應納入版控的機敏資訊 ----
-# 如有 API Key、Token 等放在本目錄的設定檔，請在此排除
-# secrets.md
-# *.env
+# 跨 Agent 交接目錄
+.local/
+
+# ---- 機敏資訊 ----
+*.env
+*.env.*
