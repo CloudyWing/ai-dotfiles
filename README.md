@@ -173,10 +173,14 @@
 │   ├── context-map/                    # 大型重構前建立變更影響範圍分析
 │   ├── csharp-aspnetcore/              # ASP.NET Core DI Lifetime、HttpClient、ProblemDetails
 │   ├── csharp-async/                   # C# 非同步設計最佳實踐
+│   ├── csharp-di/                      # .NET DI 進階：Generic Host、Keyed Services、Decorator
 │   ├── csharp-docs/                    # C# XML 註解標準
 │   ├── csharp-mcp-server/              # C# MCP Server 建立指南
 │   ├── csharp-nunit/                   # C# NUnit + NSubstitute 測試規範
-│   └── generate-commit/                # Git Commit 訊息生成（Diff-based + 拆分建議）
+│   ├── docker/                         # Dockerfile 多階段建置、非 root、層快取
+│   ├── ef-core/                        # EF Core DbContext、查詢效能、Migration
+│   ├── generate-commit/                # Git Commit 訊息生成（Diff-based + 拆分建議）
+│   └── sql-query/                      # T-SQL 查詢規範、索引友善、參數化
 ├── templates/                          # 新專案初始化範本
 │   ├── .editorconfig                   # 全語言 EditorConfig 範本
 │   └── LICENSE.md                      # MIT 授權範本（含佔位符）
@@ -215,10 +219,14 @@
 | `context-map` | 大型重構前建立受影響類別清單，確認影響範圍後再動手修改。 |
 | `csharp-aspnetcore` | ASP.NET Core 開發規範：DI Lifetime、HttpClient、ProblemDetails、API 版本控制。 |
 | `csharp-async` | C# 非同步設計：Task/ValueTask 規範、禁止 `.Wait()` 與 `async void`。 |
+| `csharp-di` | .NET DI 進階：Generic Host、Worker Service、Keyed Services、Decorator 模式。 |
 | `csharp-docs` | C# XML 文件：統一 `<summary>`、`<param>`、`<returns>` 標準語法。 |
 | `csharp-mcp-server` | C# MCP Server：Console App 起手式、DI 設定、stdio Log 管控。 |
 | `csharp-nunit` | C# 測試：NUnit + NSubstitute 的 AAA 模式與資料驅動測試規範。 |
+| `docker` | Dockerfile 與容器化：多階段建置、非 root 執行、層快取最佳化。 |
+| `ef-core` | Entity Framework Core：DbContext Lifetime、N+1 防範、Migration 管理。 |
 | `generate-commit` | Git Commit 訊息生成：強制 Diff-based 流程、過渡檔案過濾、拆分建議。 |
+| `sql-query` | T-SQL 查詢撰寫：參數化查詢、索引友善寫法、效能陷阱迴避。 |
 
 ---
 
