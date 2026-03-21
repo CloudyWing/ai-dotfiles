@@ -55,11 +55,51 @@ https://raw.githubusercontent.com/github/gitignore/main/VisualStudio.gitignore
 
 2. 移除重複或互相衝突的規則（優先保留較嚴謹的那條）。
 
-### 4. 針對專案調整
+### 4. 補充 AI 工具與本地工作目錄排除
+
+無論技術棧為何，一律在 `.gitignore` 中補上以下固定區塊（若尚未存在）。未存在的路徑對應的 `!` 規則在 Git 中為靜默無效（no-op），不影響其他規則，直接套用即可：
+
+```gitignore
+# ---- AI 工具工作目錄 ----
+# Claude Code
+.claude/
+!.claude/CLAUDE.md
+!.claude/skills/
+!.claude/agents/
+!.claude/commands/
+
+# Cursor
+.cursor/
+!.cursor/rules/
+
+# Gemini CLI
+.gemini/
+!.gemini/GEMINI.md
+
+# Windsurf
+.windsurfrules
+
+# Augment Code
+.augmentignore
+
+# ---- 本地工作檔案 ----
+.local/
+*.local.md
+```
+
+**注意事項：**
+
+- 若專案已有自訂的 AI 相關排除規則，以既有規則為準，僅補齊缺漏。
+- `.claude/` 內的 `settings.json`、`settings.local.json`、對話紀錄等個人設定不應納入版控，不加 `!` 取消。
+- `.github/` 通常整個目錄本就不排除（含 `copilot-instructions.md`、`prompts/`），無需處理。
+- 若偵測到其他 AI 工具的設定目錄（如 `.aider/`、`.codeium/`），一併加入排除。
+
+### 5. 針對專案調整
 
 根據走查到的專案特徵，補充客製化規則，例如：
 
-- 若有 `.env` 或 `appsettings.*.json`（含機敏資料），主動加入排除。
+- 若有 `.env`，主動加入排除。
+- 若有 `appsettings.*.json`，詢問使用者是否含機敏資料需要排除，不主動加入（部分專案無額外的機敏管理機制，此檔案本身即需版控）。
 - 若有 `docker-compose.override.yml`，主動提醒是否需要排除。
 - 若有自訂的輸出目錄（非標準 `bin/obj`），詢問使用者是否需要排除。
 
