@@ -125,6 +125,9 @@ Set-SymbolicLink -LinkPath "$vscodeInstructionsDir\global.instructions.md" -Targ
 # VS Code Copilot：全域 Prompts（將 VS Code 空目錄替換為符號連結）
 Set-SymbolicLink -LinkPath "$vscodeUserDir\prompts" -TargetPath $promptsPath
 
+# Copilot CLI：全域規則（copilot-instructions.md）
+Set-SymbolicLink -LinkPath "$copilotDir\copilot-instructions.md" -TargetPath $mainInstructions
+
 # Copilot CLI：skills/ 連結（供指令檔中的技能路徑引用）
 Set-SymbolicLink -LinkPath "$copilotDir\skills" -TargetPath $skillsPath
 
@@ -163,5 +166,6 @@ Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODE
 Write-Host "  - Codex skills → ~/.agents/skills/"
 Write-Host "  - Copilot 全域規則透過 %APPDATA%\\Code\\User\\instructions\\global.instructions.md 連結讀取"
 Write-Host "  - Copilot 全域 Prompts 透過 %APPDATA%\\Code\\User\\prompts\\ 符號連結至 ~/.ai-agents/prompts/"
+Write-Host "  - Copilot CLI ~/.copilot/copilot-instructions.md → ~/.ai-agents/instructions.md"
 Write-Host "  - Copilot CLI ~/.copilot/skills/ → ~/.ai-agents/skills/"
 Write-Host "  - Visual Studio 不支援全域設定，需在各專案下放置 .github/"

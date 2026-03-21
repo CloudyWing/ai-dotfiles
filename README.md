@@ -88,6 +88,7 @@
 
 | 路徑 | 用途 |
 | --- | --- |
+| `copilot-instructions.md` | 全域規則：注入每次對話的核心指令 |
 | `skills/<name>/SKILL.md` | 全域技能模組，AI 依上下文自動載入 |
 
 ### GitHub Copilot — `<repo>/.github/`（專案）或 `%APPDATA%\Code\User\`（全域）
