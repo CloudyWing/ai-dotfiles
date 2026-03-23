@@ -117,15 +117,15 @@ Commit 2：<commit message>
 
 #### Type Whitelist
 
-- `feat`: 新增功能實作
-- `fix`: 修正錯誤
-- `refactor`: 程式碼重構（非功能性異動）
-- `style`: 格式調整（如括號位置、分號，不影響邏輯）
-- `docs`: 僅文件異動
-- `perf`: 效能改善（不含行銷詞彙）
-- `ci`: CI 設定與腳本異動（如 GitHub Actions, GitLab CI, scripts）
-- `test`: 新增或修正測試
-- `chore`: 建置流程、相依性套件更新、雜項（如 .gitignore）
+- `feat`: 新增功能實作。
+- `fix`: 修正錯誤。
+- `refactor`: 程式碼重構（非功能性異動）。
+- `style`: 格式調整（如括號位置、分號，不影響邏輯）。
+- `docs`: 僅文件異動。
+- `perf`: 效能改善（不含行銷詞彙）。
+- `ci`: CI 設定與腳本異動（如 GitHub Actions, GitLab CI, scripts）。
+- `test`: 新增或修正測試。
+- `chore`: 建置流程、相依性套件更新、雜項（如 .gitignore）。
 
 #### Scope Rules（建議省略）
 
