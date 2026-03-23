@@ -153,6 +153,7 @@
 │   ├── debug.agent.md
 │   ├── design.agent.md
 │   ├── implement.agent.md
+│   ├── review.agent.md
 │   └── survey.agent.md
 ├── prompts/                            # 提示範本（Prompt）
 │   ├── code-review.prompt.md
@@ -207,7 +208,7 @@
 | `generate-readme-zh-tw` | 產生 README：生成結構清晰、工程導向的繁中說明文件。 |
 | `generate-unit-test` | 產生單元測試：針對指定類別自動產生 NUnit + NSubstitute 骨架。 |
 | `proofread-note` | 校稿筆記：改善文章可讀性，修正語句，保留原始內容與語氣。 |
-| `spec-doc` | 需求規格文件：將 `clarify-output.md` 轉化為人類可讀的開發需求規格，供同事參考討論。 |
+| `spec-doc` | 需求規格文件：將 `clarify.md` 轉化為人類可讀的開發需求規格，供同事參考討論。 |
 | `translate-zh-en` | 技術文件翻譯：繁中 ↔ 英文，保留程式碼區塊，維持術語一致性。 |
 
 ---
@@ -247,6 +248,7 @@ Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/`。
 | `Clarify` | 需求解構與釐清，透過來回提問將模糊需求轉化為可驗證標準，產出結構化需求元素清單。 |
 | `Design` | 以 SA/SD 視角將需求元素轉化為系統設計文件，含架構、技術選型與分階段實作計畫。 |
 | `Implement` | 依據設計文件或使用者指示實作功能，確保每個階段完成後通過驗證再繼續。 |
+| `Review` | 實作驗收：比對設計文件與實際程式碼，盤點遺漏與品質問題，產出差異報告並銜接 Clarify。 |
 | `Debug` | 系統化除錯：以 Phase-based 流程診斷並修復程式錯誤，強制假設先行，禁止盲目嘗試。 |
 | `Cleanup` | 技術債清除：掃描 C#/.NET 專案，清除死程式碼、強制命名規範、現代化語法，每批修改後驗證測試。 |
 
