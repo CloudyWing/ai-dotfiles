@@ -124,7 +124,7 @@ applyTo: "**/*"
   - 3 個以上字母：PascalCase (如 `SqlDatabase`, `XmlParser`)。
 - **Interfaces**: 必須以 `I` 開頭 (如 `IService`)。
 - **Class Suffixes**:
-  - **Extensions**: 擴充方法 (Extension Methods) 的靜態類別必須以 `Extensions` 結尾 (如 `StringExtensions`)。
+  - **Extensions**: 擴充方法 (Extension Methods) 的靜態類別必須以 `Extensions` 結尾 (如 `StringExtensions`)。例外：Minimal API 的 Endpoint 映射類別使用 `XxxEndpoints` 命名（如 `ProductEndpoints`）。
   - **Utils**: 靜態工具類別必須以 `Utils` 結尾 (如 `StringUtils`)。
   - **Helper**: 若為非靜態工具類別，且無其他更適合的領域驅動命名時，允許以 `Helper` 結尾 (如 `ViewHelper`)。
 - **Enums**: 標註 `[Flags]` 的 Enum 必須使用**複數**命名 (如 `FileAccessRights`)；一般 Enum 則使用單數。
