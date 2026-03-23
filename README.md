@@ -152,13 +152,13 @@
 │   ├── cleanup.agent.md
 │   ├── debug.agent.md
 │   ├── design.agent.md
+│   ├── editor.agent.md
 │   ├── implement.agent.md
 │   ├── review.agent.md
 │   └── survey.agent.md
 ├── prompts/                            # 提示範本（Prompt）
 │   ├── code-review.prompt.md
 │   ├── create-license-and-readme-link.prompt.md
-│   ├── draft-note.prompt.md
 │   ├── fact-check-note.prompt.md
 │   ├── fix-file-encoding.prompt.md
 │   ├── generate-api-doc.prompt.md
@@ -167,7 +167,6 @@
 │   ├── generate-gitignore-by-techstack.prompt.md
 │   ├── generate-readme-zh-tw.prompt.md
 │   ├── generate-unit-test.prompt.md
-│   ├── proofread-note.prompt.md
 │   ├── spec-doc.prompt.md
 │   └── translate-zh-en.prompt.md
 ├── skills/                             # 技能模組（Skill）
@@ -198,7 +197,6 @@
 | --- | --- |
 | `code-review` | 程式碼審查：從安全性、正確性、SOLID 設計到可讀性進行分層評估。 |
 | `create-license-and-readme-link` | 開源授權設定：推薦授權選項、建立 LICENSE 並連結至 README。 |
-| `draft-note` | 整理筆記草稿：將討論素材或鬆散草稿整理成結構完整、可發佈的技術筆記。 |
 | `fact-check-note` | 事實校閱：逐條檢查內容觀念與術語，標註明確無法確認的資訊。 |
 | `fix-file-encoding` | 偵測檔案編碼（Big5/ANSI/UTF-8）並依副檔名轉換目標編碼，特別處理 `.ps1`、`.csv`、`.cs`。 |
 | `generate-api-doc` | API 文件：為 ASP.NET Core Controller 或 Minimal API 補齊 OpenAPI 標註。 |
@@ -207,7 +205,6 @@
 | `generate-gitignore-by-techstack` | `.gitignore` 設定：自動偵測技術棧，從 github/gitignore 下載官方範本並客製化。 |
 | `generate-readme-zh-tw` | 產生 README：生成結構清晰、工程導向的繁中說明文件。 |
 | `generate-unit-test` | 產生單元測試：針對指定類別自動產生 NUnit + NSubstitute 骨架。 |
-| `proofread-note` | 校稿筆記：改善文章可讀性，修正語句，保留原始內容與語氣。 |
 | `spec-doc` | 需求規格文件：將 `clarify.md` 轉化為人類可讀的開發需求規格，供同事參考討論。 |
 | `translate-zh-en` | 技術文件翻譯：繁中 ↔ 英文，保留程式碼區塊，維持術語一致性。 |
 
@@ -247,6 +244,7 @@ Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/`。
 | `Survey` | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。 |
 | `Clarify` | 需求解構與釐清，透過來回提問將模糊需求轉化為可驗證標準，產出結構化需求元素清單。 |
 | `Design` | 以 SA/SD 視角將需求元素轉化為系統設計文件，含架構、技術選型與分階段實作計畫。 |
+| `Editor` | 文件編輯：分析 Markdown 結構、內容與格式，產出建議清單，確認後直接執行修改。 |
 | `Implement` | 依據設計文件或使用者指示實作功能，確保每個階段完成後通過驗證再繼續。 |
 | `Review` | 實作驗收：比對設計文件與實際程式碼，盤點遺漏與品質問題，產出差異報告並銜接 Clarify。 |
 | `Debug` | 系統化除錯：以 Phase-based 流程診斷並修復程式錯誤，強制假設先行，禁止盲目嘗試。 |
