@@ -154,6 +154,7 @@
 │   ├── design.agent.md
 │   ├── editor.agent.md
 │   ├── implement.agent.md
+│   ├── propose.agent.md
 │   ├── review.agent.md
 │   └── survey.agent.md
 ├── prompts/                            # 提示範本（Prompt）
@@ -242,6 +243,7 @@ Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/`。
 | Agent | 用途 |
 | --- | --- |
 | `Survey` | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。 |
+| `Propose` | 構想探索：針對現有專案挖掘擴充方向，或將模糊想法塑形為功能藍圖，產出提案清單供決定範圍。 |
 | `Clarify` | 需求解構與釐清，透過來回提問將模糊需求轉化為可驗證標準，產出結構化需求元素清單。 |
 | `Design` | 以 SA/SD 視角將需求元素轉化為系統設計文件，含架構、技術選型與分階段實作計畫。 |
 | `Editor` | 文件編輯：分析 Markdown 結構、內容與格式，產出建議清單，確認後直接執行修改。 |
