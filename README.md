@@ -4,6 +4,12 @@
 
 本目錄為個人全域 AI 輔助開發設定，適用於 GitHub Copilot、Gemini CLI、Claude Code、Codex、Antigravity 等工具，內容充滿個人習慣與偏好，僅供參考。
 
+**本專案必須 clone 至 `~/.ai-agents/`，setup script 與各工具連結皆依賴此路徑：**
+
+```bash
+git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
+```
+
 ---
 
 ## 1. 核心概念對照
@@ -235,6 +241,7 @@
 Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/`。
 
 > **關於 Agent 共用與放置策略：**
+>
 > - **VS Code** 會讀到 `%APPDATA%\Code\User\prompts\` 裡的 `.agent.md`、`~/.copilot/agents/` 以及 `~/.claude/agents/`。
 > - **Copilot CLI** 會讀到 `~/.copilot/agents/` 以及 `~/.claude/agents/`。
 > - 若重複放置清單會導致顯示多個相同名稱的 agent。
@@ -251,6 +258,27 @@ Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/`。
 | `Review` | 實作驗收：比對設計文件與實際程式碼，盤點遺漏與品質問題，產出差異報告並銜接 Clarify。 |
 | `Debug` | 系統化除錯：以 Phase-based 流程診斷並修復程式錯誤，強制假設先行，禁止盲目嘗試。 |
 | `Cleanup` | 技術債清除：掃描 C#/.NET 專案，清除死程式碼、強制命名規範、現代化語法，每批修改後驗證測試。 |
+
+### Agent 執行流程
+
+```mermaid
+flowchart TD
+    Propose["**Propose**<br />構想探索"]
+    Clarify["**Clarify**<br />需求解構"]
+    Design["**Design**<br />系統設計"]
+    Implement["**Implement**<br />實作執行"]
+    Review["**Review**<br />實作驗收"]
+    Done(["任務完成"])
+
+    Propose -->|需釐清細節| Clarify
+    Propose -->|範圍已明確| Design
+    Clarify --> Design
+    Design --> Implement
+    Implement --> Review
+    Review -->|補完實作| Implement
+    Review -->|重新評估範圍| Clarify
+    Review --> Done
+```
 
 ---
 
