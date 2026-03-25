@@ -19,14 +19,24 @@ description: "偵測並修正檔案亂碼問題，依副檔名轉換至正確目
 
 ### 2. 判斷目標編碼
 
-| 副檔名 | 目標編碼 | 原因 |
+框架版本相依的副檔名（`.cs`、`.vb`、`.aspx`、`.master`、`.cshtml`），須先執行框架偵測：
+
+1. 在目標目錄及其父層目錄向上尋找 `.csproj` 檔案。
+2. 讀取 `<TargetFramework>` 欄位：
+   - `net4x`（如 `net472`）→ Legacy .NET Framework。
+   - `net5+`、`netcoreapp`（如 `net8.0`）→ Modern .NET。
+3. 找不到 `.csproj` 時，依副檔名的預設慣例處理（見下表備註）。
+
+| 副檔名 | 目標編碼 | 備註 |
 | --- | --- | --- |
-| `.cs` / `.aspx` / `.resx` (Legacy .NET Framework) | UTF-8 with BOM | 避免舊工具或編譯器誤判 |
-| `.cs` (Modern .NET Core/5+) | UTF-8（無 BOM） | 現代工具鏈已無需 BOM |
-| `.ps1` | UTF-8 with BOM | 向下相容 PowerShell 5.1 |
-| `.csv` | UTF-8 with BOM | 避免 Excel 開啟亂碼 |
-| `.json` / `.xml` / `.yaml` | UTF-8（無 BOM） | 標準慣例 |
-| 其他文字檔 | UTF-8（無 BOM） | 通用預設 |
+| `.cs` / `.vb` / `.aspx` / `.master` / `.resx`（Legacy .NET Framework） | UTF-8 with BOM | 避免舊工具或編譯器誤判。`.aspx` 為 Web Forms 頁面，`.master` 為 Web Forms Master Pages，兩者皆僅存在於 .NET Framework 專案。 |
+| `.cs` / `.vb`（Modern .NET Core/5+） | UTF-8（無 BOM） | 現代工具鏈已無需 BOM。 |
+| `.cshtml`（Legacy .NET Framework MVC） | UTF-8 with BOM | 視同 Legacy C# 處理。 |
+| `.cshtml`（ASP.NET Core） | UTF-8（無 BOM） | 現代工具鏈已無需 BOM。 |
+| `.ps1` | UTF-8 with BOM | 向下相容 PowerShell 5.1。 |
+| `.csv` | UTF-8 with BOM | 避免 Excel 開啟亂碼。 |
+| `.json` / `.xml` / `.yaml` | UTF-8（無 BOM） | 標準慣例。 |
+| 其他文字檔 | UTF-8（無 BOM） | 通用預設。 |
 
 ### 3. 執行轉換
 

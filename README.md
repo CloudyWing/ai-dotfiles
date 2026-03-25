@@ -78,6 +78,49 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | `skills/<name>/SKILL.md` | Skills（可自動觸發與 `/skill-name` 指令） |
 | `commands/*.md` | 舊版自訂指令位置，仍可用，與 skills 等效 |
 | `agents/*.agent.md` | 全域自訂 Agent（可用 `@agent-name` 呼叫） |
+| `settings.json` | Hook 設定（工具呼叫前後的自動化行為） |
+
+#### Claude Code Hook 設定
+
+Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行 Shell 命令，輸出文字會被注入回 Claude 的上下文。
+
+本專案目前啟用兩個 PostToolUse Hook，腳本放置於 `~/.ai-agents/scripts/hooks/`：
+
+| Hook 腳本 | 觸發條件 | 用途 |
+| --- | --- | --- |
+| `check-markdown-hook.ps1` | Edit 或 Write 工具寫入 `.md` 檔案後 | 提示執行 check-markdown skill 進行格式檢查 |
+| `fix-encoding-hook.ps1` | Write 工具寫入檔案後 | 驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
+
+`~/.claude/settings.json` 範例（路徑請改為實際使用者名稱）：
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NonInteractive -File C:/Users/<帳號>/.ai-agents/scripts/hooks/check-markdown-hook.ps1"
+          }
+        ]
+      },
+      {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "powershell -NonInteractive -File C:/Users/<帳號>/.ai-agents/scripts/hooks/fix-encoding-hook.ps1"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+> `settings.json` 不由 `Setup-AIGlobalConfig.ps1` 自動建立，需手動建立並填入實際路徑。
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）
 
@@ -193,7 +236,10 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 │   ├── .editorconfig                   # 全語言 EditorConfig 範本
 │   └── LICENSE.md                      # MIT 授權範本（含佔位符）
 └── scripts/
-    └── Setup-AIGlobalConfig.ps1        # 全域設定連結自動化腳本
+    ├── Setup-AIGlobalConfig.ps1        # 全域設定連結自動化腳本
+    └── hooks/                          # Claude Code Hook 腳本（由 ~/.claude/settings.json 引用）
+        ├── check-markdown-hook.ps1     # 寫入 .md 後提示執行 check-markdown skill
+        └── fix-encoding-hook.ps1       # 寫入後驗證 BOM 規範（.ps1/.csv 需有 BOM，.md 等不可有 BOM）
 ```
 
 ---
@@ -205,7 +251,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | `code-review` | 程式碼審查：從安全性、正確性、SOLID 設計到可讀性進行分層評估。 |
 | `create-license-and-readme-link` | 開源授權設定：推薦授權選項、建立 LICENSE 並連結至 README。 |
 | `fact-check-note` | 事實校閱：逐條檢查內容觀念與術語，標註明確無法確認的資訊。 |
-| `fix-file-encoding` | 偵測檔案編碼（Big5/ANSI/UTF-8）並依副檔名轉換目標編碼，特別處理 `.ps1`、`.csv`、`.cs`。 |
+| `fix-file-encoding` | 偵測檔案編碼（Big5/ANSI/UTF-8）並依副檔名轉換目標編碼，支援 `.ps1`、`.csv`、`.cs`、`.aspx`、`.master`、`.cshtml` 等格式的 BOM 規範判斷（`.cshtml` 依 `<TargetFramework>` 條件判斷）。 |
 | `generate-api-doc` | API 文件：為 ASP.NET Core Controller 或 Minimal API 補齊 OpenAPI 標註。 |
 | `generate-changelog-zh-tw` | 產生 CHANGELOG：依提交紀錄產生並插入區段，支援 MinVer 版本推進規格。 |
 | `generate-editorconfig-by-techstack` | `.editorconfig` 設定：自動偵測技術棧產生或補齊設定，保留既有偏好。 |
@@ -229,7 +275,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | `csharp-docs` | C# XML 文件：統一 `<summary>`、`<param>`、`<returns>` 標準語法。 |
 | `csharp-mcp-server` | C# MCP Server：Console App 起手式、DI 設定、stdio Log 管控。 |
 | `csharp-nunit` | C# 測試：NUnit + NSubstitute 的 AAA 模式與資料驅動測試規範。 |
-| `docker` | Dockerfile 與容器化：多階段建置、非 root 執行、層快取最佳化。 |
+| `docker` | Dockerfile 與 Docker Compose：多階段建置、非 root 執行、層快取最佳化與 Compose Specification 規範。 |
 | `ef-core` | Entity Framework Core：DbContext Lifetime、N+1 防範、Migration 管理。 |
 | `generate-commit` | Git Commit 訊息生成：強制 Diff-based 流程、過渡檔案過濾、拆分建議。 |
 | `sql-query` | T-SQL 查詢撰寫：參數化查詢、索引友善寫法、效能陷阱迴避。 |
