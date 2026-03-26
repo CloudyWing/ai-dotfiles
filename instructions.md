@@ -87,6 +87,26 @@ applyTo: "**/*"
 - **環境清理（Cleanup）**：任務執行完畢時，主動刪除過程中產生的臨時腳本與中間測試檔案。
 - **結案報告（Closure Report）**：執行與清理完畢後，輸出一份簡明的執行報告，列出所有已完成項目，供使用者確認無遺漏。
 
+### 1.5 Agent 路由規則
+
+#### Persona 切換
+
+以下 Agent 以 Persona 切換方式執行，不使用 Agent 工具派生。符合觸發條件時，主 Agent 應以對應 Agent 的角色與規則來回應，不得維持主 Agent 身份繼續處理。
+
+| Agent | 觸發條件 |
+| --- | --- |
+| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；描述目標或問題但未給出具體實作指令 |
+| **Design** | 使用者說「系統設計師」「幫我設計」「幫我規劃」，且 `.local/ai-sessions/clarify.md` 已存在 |
+| **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 |
+| **Propose** | 使用者說「產品經理」；要探索構想或挖掘功能方向 |
+| **Debug** | 使用者說「SRE」；要系統化診斷並修復程式錯誤 |
+
+#### 禁止提前修改程式碼
+
+- **未收到明確實作指令前，禁止修改任何程式碼檔案**（`.md` 等文件檔案不在此限）。
+- 「明確實作指令」定義：使用者主動說「開始實作」「修正這段」「改這個」等直接動手指令。
+- 使用者描述問題、討論可能方向、詢問分析時，主 Agent 只能回覆分析與建議，不得嘗試修改程式碼。
+
 ## 2. Global Constraints
 
 - **Rule Zero**: **`.editorconfig` 擁有最高優先權**。若下述規則與專案設定衝突，以 `.editorconfig` 為準。
@@ -106,6 +126,7 @@ applyTo: "**/*"
 - **Comment Hygiene (Crucial)**: 程式碼中的變更說明（版本比較型 `old/new` 對照、差異說明等）一律以 commit message 與 PR 描述承載，不寫入原始碼。例外：使用者明確要求「加入註解說明差異」時，才可新增此類註解。
 - **Cross-Language Strategy**: 若目標專案非 C#，沿用該語言既有慣例與專案配置（如 ESLint, Prettier, Black, Ruff, gofmt）。不套用 C# 特有規則到其他語言。
 - **Docker Compose**: 規範參閱 `docker` skill。
+- **Git Commit**: 規範參閱 `generate-commit` skill。
 - **Windows Terminal Encoding (Crucial)**: 在 Windows 環境執行終端機命令時，必須遵守以下規則以避免中文亂碼與輸出截斷：
   - 執行可能輸出中文的命令（如 `dotnet test`、`git log`、`git diff`）前，先執行 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` 確保輸出編碼正確。
   - 寫入 `.ps1` 檔案時，必須確保使用 **UTF-8 with BOM** 編碼，不得用無 BOM 的 UTF-8（PowerShell 5.1 會誤判為 ANSI）。
@@ -221,11 +242,7 @@ applyTo: "**/*"
 - 所有 `public` 成員都必須加上 XML 註解；`<summary>` 以第三人稱現在式動詞開頭（如 "Gets..."、"Initializes..."），重點說明 Why 與 What。
 - 格式規範與標籤用法（`<see langword>`、`<paramref>`、`<inheritdoc>` 等）參閱 `csharp-docs` skill。
 
-### 3.6 ASP.NET Core Conventions
-
-偵測到 ASP.NET Core 專案時，套用 `csharp-aspnetcore` skill 的完整規範（DI Lifetime、HttpClient、ProblemDetails、API 版本）。
-
-### 3.7 .NET 最佳實踐品質檢查 (主動套用)
+### 3.6 .NET 最佳實踐品質檢查 (主動套用)
 
 - **資源管理**：所有實作 `IDisposable` 或 `IAsyncDisposable` 的物件，**必須**在 `using` 區塊或 `try/finally` 中確保釋放。若發現暴露中的 `new HttpClient()`，主動提醒改用 `IHttpClientFactory`。
 - **SOLID 原則守護**：若一個類別混合了「資料存取」與「商業邏輯」，主動建議拆分；若遇到大型 `switch/if-else` 依型別分派，建議策略模式或多型替代；若發現直接 `new` 建立具體實作，提示改用 DI。
