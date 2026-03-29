@@ -230,6 +230,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 │   ├── csharp-nunit/                   # C# NUnit + NSubstitute 測試規範
 │   ├── docker/                         # Dockerfile 多階段建置、非 root、層快取
 │   ├── ef-core/                        # EF Core DbContext、查詢效能、Migration
+│   ├── export-excel/                   # Excel 匯出：支援 Grid 與 RecordSet 模板、自訂樣式與格式
 │   ├── generate-commit/                # Git Commit 訊息生成（Diff-based + 拆分建議）
 │   └── sql-query/                      # T-SQL 查詢規範、索引友善、參數化
 ├── templates/                          # 新專案初始化範本
@@ -277,6 +278,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 | `csharp-nunit` | C# 測試：NUnit + NSubstitute 的 AAA 模式與資料驅動測試規範。 |
 | `docker` | Dockerfile 與 Docker Compose：多階段建置、非 root 執行、層快取最佳化與 Compose Specification 規範。 |
 | `ef-core` | Entity Framework Core：DbContext Lifetime、N+1 防範、Migration 管理。 |
+| `export-excel` | Excel 匯出：支援 Grid 與 RecordSet 模板，並可自訂樣式、格式與工作表設定。 |
 | `generate-commit` | Git Commit 訊息生成：強制 Diff-based 流程、過渡檔案過濾、拆分建議。 |
 | `sql-query` | T-SQL 查詢撰寫：參數化查詢、索引友善寫法、效能陷阱迴避。 |
 
