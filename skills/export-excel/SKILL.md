@@ -7,7 +7,10 @@ description: '匯出 Excel 試算表的技能，支援 Grid 與 RecordSet 模板
 
 ## 觸發條件
 
-使用者要求「匯出 Excel」、「產生試算表」或明確說「使用 export-excel」時，執行本 Skill。
+使用者提到 Excel 相關的建立、匯出、產生、製作需求時，執行本 Skill。常見觸發語句包含但不限於：
+
+- 「幫我建立 / 產生 / 製作 / 匯出 xxx Excel」
+- 明確說「使用 export-excel」
 
 ## 執行流程
 
@@ -105,6 +108,8 @@ dotnet script export-excel.csx <json-or-json-file> <output-path>
 | `Font.Size` | 字型大小（數字） |
 | `Font.Style` | `None`、`Bold`、`Italic`、`Underline`、`Strikeout`（可組合以 `,` 分隔） |
 
+**空白列與 Template 起始位置**：在 Grid 的 `Rows` 陣列中插入無 `Cells` 內容（或 `Cells` 為空陣列）的列，可作為空白間隔列，用於控制下一個 Template 的起始列位置。
+
 ---
 
 ### RecordSet — 資料繫結表格
@@ -119,12 +124,12 @@ dotnet script export-excel.csx <json-or-json-file> <output-path>
     {
       "HeaderText": "金額",
       "FieldKey": "Amount",
-      "FieldStyle": { "HorizontalAlignment": "Right", "DataFormat": "#,##0.00" }
+      "FieldStyle": { "HasBorder": true, "HorizontalAlignment": "Right", "DataFormat": "#,##0.00" }
     },
     {
       "HeaderText": "狀態",
       "FieldKey": "Status",
-      "HeaderStyle": { "Font": { "Style": "Bold" } }
+      "HeaderStyle": { "HasBorder": true, "Font": { "Style": "Bold" } }
     }
   ],
   "Records": [
@@ -136,6 +141,11 @@ dotnet script export-excel.csx <json-or-json-file> <output-path>
 
 - **FieldKey** 對應 Records 內的 JSON 屬性名稱（區分大小寫）。
 - **HeaderStyle** / **FieldStyle** 結構與 Grid 的 `Style` 相同。
+- **樣式預設值**：
+  - **RecordSet `HeaderStyle`**：預設框線 + 粗體（Bold）。
+  - **RecordSet `FieldStyle`**：預設框線，無粗體。
+  - **Grid `Style`**：無預設，未指定則一律空白樣式。
+  - 指定 `HeaderStyle` 或 `FieldStyle` 後，預設值完全失效，所有需要的屬性（含框線）都必須明確寫出。
 
 ---
 
@@ -184,12 +194,12 @@ dotnet script export-excel.csx <json-or-json-file> <output-path>
           {
             "HeaderText": "數量",
             "FieldKey": "Qty",
-            "FieldStyle": { "HorizontalAlignment": "Right" }
+            "FieldStyle": { "HasBorder": true, "HorizontalAlignment": "Right" }
           },
           {
             "HeaderText": "金額",
             "FieldKey": "Amount",
-            "FieldStyle": { "HorizontalAlignment": "Right", "DataFormat": "#,##0.00" }
+            "FieldStyle": { "HasBorder": true, "HorizontalAlignment": "Right", "DataFormat": "#,##0.00" }
           }
         ],
         "Records": [
