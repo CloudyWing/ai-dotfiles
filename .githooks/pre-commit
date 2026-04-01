@@ -1,0 +1,3 @@
+#!/bin/bash
+SCRIPT="$(cygpath -w "$(git rev-parse --show-toplevel)/.githooks/Update-Docs.ps1")"
+powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "$SCRIPT"

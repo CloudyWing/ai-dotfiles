@@ -84,12 +84,11 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行 Shell 命令，輸出文字會被注入回 Claude 的上下文。
 
-本專案目前啟用兩個 PostToolUse Hook，腳本放置於 `~/.ai-agents/scripts/hooks/`：
+本專案啟用一個 PostToolUse Hook，腳本放置於 `~/.ai-agents/scripts/hooks/`：
 
 | Hook 腳本 | 觸發條件 | 用途 |
 | --- | --- | --- |
-| `check-markdown-hook.ps1` | Edit 或 Write 工具寫入 `.md` 檔案後 | 提示執行 check-markdown skill 進行格式檢查 |
-| `fix-encoding-hook.ps1` | Write 工具寫入檔案後 | 驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
+| `post-edit-write-hook.ps1` | Edit 或 Write 工具寫入檔案後 | 提示執行 check-markdown skill（`.md`）；驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
 
 `~/.claude/settings.json` 範例（路徑請改為實際使用者名稱）：
 
@@ -102,16 +101,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
         "hooks": [
           {
             "type": "command",
-            "command": "powershell -NonInteractive -File C:/Users/<帳號>/.ai-agents/scripts/hooks/check-markdown-hook.ps1"
-          }
-        ]
-      },
-      {
-        "matcher": "Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -NonInteractive -File C:/Users/<帳號>/.ai-agents/scripts/hooks/fix-encoding-hook.ps1"
+            "command": "powershell -NonInteractive -File C:/Users/<帳號>/.ai-agents/scripts/hooks/post-edit-write-hook.ps1"
           }
         ]
       }
@@ -196,97 +186,49 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 ├── .gitattributes                      # 行尾格式與二進位標記
 ├── README.md                           # 本文件
 ├── instructions.md                     # 核心開發規範（主 Rule）
+├── docs/                               # 詳細索引與補充說明文件
 ├── agents/                             # 自訂 Agent 定義
-│   ├── clarify.agent.md
-│   ├── cleanup.agent.md
-│   ├── debug.agent.md
-│   ├── design.agent.md
-│   ├── editor.agent.md
-│   ├── implement.agent.md
-│   ├── propose.agent.md
-│   ├── review.agent.md
-│   └── survey.agent.md
 ├── prompts/                            # 提示範本（Prompt）
-│   ├── code-review.prompt.md
-│   ├── create-license-and-readme-link.prompt.md
-│   ├── fact-check-note.prompt.md
-│   ├── fix-file-encoding.prompt.md
-│   ├── generate-api-doc.prompt.md
-│   ├── generate-changelog-zh-tw.prompt.md
-│   ├── generate-editorconfig-by-techstack.prompt.md
-│   ├── generate-gitignore-by-techstack.prompt.md
-│   ├── generate-readme-zh-tw.prompt.md
-│   ├── generate-unit-test.prompt.md
-│   ├── spec-doc.prompt.md
-│   └── translate-zh-en.prompt.md
 ├── skills/                             # 技能模組（Skill）
-│   ├── check-markdown/                 # Markdown 格式檢查（平台感知）
-│   ├── context-map/                    # 大型重構前建立變更影響範圍分析
-│   ├── csharp-aspnetcore/              # ASP.NET Core DI Lifetime、HttpClient、ProblemDetails
-│   ├── csharp-async/                   # C# 非同步設計最佳實踐
-│   ├── csharp-di/                      # .NET DI 進階：Generic Host、Keyed Services、Decorator
-│   ├── csharp-docs/                    # C# XML 註解標準
-│   ├── csharp-mcp-server/              # C# MCP Server 建立指南
-│   ├── csharp-nunit/                   # C# NUnit + NSubstitute 測試規範
-│   ├── docker/                         # Dockerfile 多階段建置、非 root、層快取
-│   ├── ef-core/                        # EF Core DbContext、查詢效能、Migration
-│   ├── export-excel/                   # Excel 匯出：支援 Grid 與 RecordSet 模板、自訂樣式與格式
-│   ├── generate-commit/                # Git Commit 訊息生成（Diff-based + 拆分建議）
-│   └── sql-query/                      # T-SQL 查詢規範、索引友善、參數化
 ├── templates/                          # 新專案初始化範本
-│   ├── .editorconfig                   # 全語言 EditorConfig 範本
-│   └── LICENSE.md                      # MIT 授權範本（含佔位符）
-└── scripts/
-    ├── Setup-AIGlobalConfig.ps1        # 全域設定連結自動化腳本
-    └── hooks/                          # Claude Code Hook 腳本（由 ~/.claude/settings.json 引用）
-        ├── check-markdown-hook.ps1     # 寫入 .md 後提示執行 check-markdown skill
-        └── fix-encoding-hook.ps1       # 寫入後驗證 BOM 規範（.ps1/.csv 需有 BOM，.md 等不可有 BOM）
+└── scripts/                            # 安裝、檢查與 hooks 腳本
 ```
 
 ---
 
-## 7. 內建 Prompt 清單
+## 7. Scripts 與命名慣例
 
-| Prompt | 用途 |
-| --- | --- |
-| `code-review` | 程式碼審查：從安全性、正確性、SOLID 設計到可讀性進行分層評估。 |
-| `create-license-and-readme-link` | 開源授權設定：推薦授權選項、建立 LICENSE 並連結至 README。 |
-| `fact-check-note` | 事實校閱：逐條檢查內容觀念與術語，標註明確無法確認的資訊。 |
-| `fix-file-encoding` | 偵測檔案編碼（Big5/ANSI/UTF-8）並依副檔名轉換目標編碼，支援 `.ps1`、`.csv`、`.cs`、`.aspx`、`.master`、`.cshtml` 等格式的 BOM 規範判斷（`.cshtml` 依 `<TargetFramework>` 條件判斷）。 |
-| `generate-api-doc` | API 文件：為 ASP.NET Core Controller 或 Minimal API 補齊 OpenAPI 標註。 |
-| `generate-changelog-zh-tw` | 產生 CHANGELOG：依提交紀錄產生並插入區段，支援 MinVer 版本推進規格。 |
-| `generate-editorconfig-by-techstack` | `.editorconfig` 設定：自動偵測技術棧產生或補齊設定，保留既有偏好。 |
-| `generate-gitignore-by-techstack` | `.gitignore` 設定：自動偵測技術棧，從 github/gitignore 下載官方範本並客製化。 |
-| `generate-readme-zh-tw` | 產生 README：生成結構清晰、工程導向的繁中說明文件。 |
-| `generate-unit-test` | 產生單元測試：針對指定類別自動產生 NUnit + NSubstitute 骨架。 |
-| `spec-doc` | 需求規格文件：將 `clarify.md` 轉化為人類可讀的開發需求規格，供同事參考討論。 |
-| `translate-zh-en` | 技術文件翻譯：繁中 ↔ 英文，保留程式碼區塊，維持術語一致性。 |
+- `scripts/` 根目錄下可由使用者直接執行的 PowerShell 腳本，使用 `Verb-Noun.ps1` 命名。
+- `scripts/hooks/` 內由工具自動呼叫的 Hook 腳本，使用全小寫 kebab-case 命名。
+- `.githooks/` 內為 Git 原生 Hook，由 `Setup-AIGlobalConfig.ps1` 透過 `core.hooksPath` 啟用。
 
----
+### Git Hook 設定
 
-## 8. 內建 Skill 清單
+執行 `Setup-AIGlobalConfig.ps1` 時會自動完成以下設定：
 
-| Skill | 用途 |
-| --- | --- |
-| `check-markdown` | 偵測文件平台（GitHub/VitePress 等），套用對應語法規則並修正格式。 |
-| `context-map` | 大型重構前建立受影響類別清單，確認影響範圍後再動手修改。 |
-| `csharp-aspnetcore` | ASP.NET Core 開發規範：DI Lifetime、HttpClient、ProblemDetails、API 版本控制。 |
-| `csharp-async` | C# 非同步設計：Task/ValueTask 規範、禁止 `.Wait()` 與 `async void`。 |
-| `csharp-di` | .NET DI 進階：Generic Host、Worker Service、Keyed Services、Decorator 模式。 |
-| `csharp-docs` | C# XML 文件：統一 `<summary>`、`<param>`、`<returns>` 標準語法。 |
-| `csharp-mcp-server` | C# MCP Server：Console App 起手式、DI 設定、stdio Log 管控。 |
-| `csharp-nunit` | C# 測試：NUnit + NSubstitute 的 AAA 模式與資料驅動測試規範。 |
-| `docker` | Dockerfile 與 Docker Compose：多階段建置、非 root 執行、層快取最佳化與 Compose Specification 規範。 |
-| `ef-core` | Entity Framework Core：DbContext Lifetime、N+1 防範、Migration 管理。 |
-| `export-excel` | Excel 匯出：支援 Grid 與 RecordSet 模板，並可自訂樣式、格式與工作表設定。 |
-| `generate-commit` | Git Commit 訊息生成：強制 Diff-based 流程、過渡檔案過濾、拆分建議。 |
-| `sql-query` | T-SQL 查詢撰寫：參數化查詢、索引友善寫法、效能陷阱迴避。 |
+```powershell
+git config core.hooksPath .githooks
+```
+
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md`、`docs/prompts.md` 並納入本次 commit。
 
 ---
 
-## 9. 內建 Agent 清單
+## 8. 內建 Prompt 清單
 
-Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/`。
+詳見 [docs/prompts.md](./docs/prompts.md)。
+
+---
+
+## 9. 內建 Skill 清單
+
+詳見 [docs/skills.md](./docs/skills.md)。
+
+---
+
+## 10. 內建 Agent 清單
+
+詳見 [docs/agents.md](./docs/agents.md)。
 
 > **關於 Agent 共用與放置策略：**
 >
@@ -294,18 +236,6 @@ Agent 存放於 `agents/` 目錄，同步至 Claude Code `~/.claude/agents/`。
 > - **Copilot CLI** 會讀到 `~/.copilot/agents/` 以及 `~/.claude/agents/`。
 > - 若重複放置清單會導致顯示多個相同名稱的 agent。
 > - 故本專案統一集中在 `~/.claude/agents/` 建立連結管理，以避免重複顯示。
-
-| Agent | 用途 |
-| --- | --- |
-| `Survey` | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。 |
-| `Propose` | 構想探索：針對現有專案挖掘擴充方向，或將模糊想法塑形為功能藍圖，產出提案清單供決定範圍。 |
-| `Clarify` | 需求解構與釐清，透過來回提問將模糊需求轉化為可驗證標準，產出結構化需求元素清單。 |
-| `Design` | 以 SA/SD 視角將需求元素轉化為系統設計文件，含架構、技術選型與分階段實作計畫。 |
-| `Editor` | 文件編輯：分析 Markdown 結構、內容與格式，產出建議清單，確認後直接執行修改。 |
-| `Implement` | 依據設計文件或使用者指示實作功能，確保每個階段完成後通過驗證再繼續。 |
-| `Review` | 實作驗收：比對設計文件與實際程式碼，盤點遺漏與品質問題，產出差異報告並銜接 Clarify。 |
-| `Debug` | 系統化除錯：以 Phase-based 流程診斷並修復程式錯誤，強制假設先行，禁止盲目嘗試。 |
-| `Cleanup` | 技術債清除：掃描 C#/.NET 專案，清除死程式碼、強制命名規範、現代化語法，每批修改後驗證測試。 |
 
 ### Agent 執行流程
 

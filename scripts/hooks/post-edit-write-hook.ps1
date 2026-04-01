@@ -4,12 +4,20 @@
 $raw = [Console]::In.ReadToEnd()
 try { $data = $raw | ConvertFrom-Json } catch { exit 0 }
 
-if ($data.tool_name -ne 'Write') { exit 0 }
+$allowedTools = @('Write', 'Edit')
+if ($allowedTools -notcontains $data.tool_name) { exit 0 }
 
 $path = $data.tool_input.file_path
 if (-not $path) { exit 0 }
 
 $ext = [System.IO.Path]::GetExtension($path).ToLower()
+
+# Markdown 格式檢查提示
+if ($ext -eq '.md') {
+    Write-Output "[post-edit-write hook] $path was written. Please run check-markdown skill to verify Markdown formatting."
+}
+
+# BOM 規範檢查
 $alwaysBom = @('.ps1', '.csv')
 $neverBom = @('.md', '.json', '.xml', '.yaml', '.yml', '.sh', '.txt')
 
@@ -19,11 +27,11 @@ try {
 
     if ($alwaysBom -contains $ext) {
         if (-not $hasBom) {
-            Write-Output "[fix-encoding hook] WARNING: $path is missing UTF-8 BOM. '$ext' files require BOM. Please rewrite with BOM or run /fix-file-encoding."
+            Write-Output "[post-edit-write hook] WARNING: $path is missing UTF-8 BOM. '$ext' files require BOM. Please rewrite with BOM or run /fix-file-encoding."
         }
     } elseif ($neverBom -contains $ext) {
         if ($hasBom) {
-            Write-Output "[fix-encoding hook] WARNING: $path has unexpected UTF-8 BOM. '$ext' files should not have BOM. Please rewrite without BOM or run /fix-file-encoding."
+            Write-Output "[post-edit-write hook] WARNING: $path has unexpected UTF-8 BOM. '$ext' files should not have BOM. Please rewrite without BOM or run /fix-file-encoding."
         }
     }
 } catch { exit 0 }

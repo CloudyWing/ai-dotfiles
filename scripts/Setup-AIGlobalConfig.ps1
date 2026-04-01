@@ -1,5 +1,5 @@
 ﻿# ----------------------------------------------------------------
-# Setup-AiGlobalConfig.ps1 - AI 全域設定連結自動化 (全版本相容驗證版)
+# Setup-AIGlobalConfig.ps1 - AI 全域設定連結自動化 (全版本相容驗證版)
 # ----------------------------------------------------------------
 
 # 1. 管理員權限檢查
@@ -132,7 +132,12 @@ Set-SymbolicLink -LinkPath "$copilotDir\copilot-instructions.md" -TargetPath $ma
 Set-SymbolicLink -LinkPath "$copilotDir\skills" -TargetPath $skillsPath
 
 
-# 6. 驗證回饋
+# 7. 設定 Git Hooks 路徑
+Write-Host "`n>>> 正在設定 Git Hooks..." -ForegroundColor Cyan
+git -C $configRoot config core.hooksPath .githooks
+Write-Host "  ✅  core.hooksPath → .githooks" -ForegroundColor DarkGreen
+
+# 8. 驗證回饋
 Write-Host "`n>>> 設定完成！詳細連結路徑如下：" -ForegroundColor Green
 Write-Host "----------------------------------------------------------------"
 
