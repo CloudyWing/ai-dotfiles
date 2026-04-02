@@ -235,7 +235,7 @@ applyTo: "**/*"
   - **禁止模式**：`List<T> { get; set; }` 同時暴露具體型別與可替換屬性，DTO 嚴禁使用。
   - **方法參數**：偏好 `IEnumerable<T>`；需要索引時用 `IReadOnlyList<T>`。不要求呼叫端傳入 `List<T>` 具體型別。
 - **Nullable Value Types**: 對於 `Nullable<T>` (Value Types)，檢查是否有值時，必須優先使用 `.HasValue` 屬性。
-- **Nullable Reference Types (NRT)**: 若專案啟用，必須消除所有相關警告；若未啟用，不強迫修改。
+- **Nullable Reference Types (NRT)**: 若專案啟用，必須消除所有相關警告；若未啟用，不強迫修改。屬性宣告策略（`required`、`init`/`set` 選用、禁止假預設值）與 null 檢查寫法（統一使用 `is not null`）等詳細規範參閱 `csharp-nrt` skill。
 - **High-Performance Logging**: 實作日誌時，優先使用 `[LoggerMessage]` Attribute 寫法 (Source Generator)。
 - **Nameof**: 成員名稱引用一律使用 `nameof()`，不硬編碼字串。
 

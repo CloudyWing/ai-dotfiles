@@ -9,6 +9,7 @@
 | `csharp-di` | .NET 相依性注入進階規範：Generic Host、Worker Service、Keyed Services 與 Decorator 模式。 |
 | `csharp-docs` | C# 文件與 XML 註解標準：強制使用標準標籤與用詞規範產生類別與方法的說明。 |
 | `csharp-mcp-server` | 產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最佳實踐與專案結構規劃。 |
+| `csharp-nrt` | C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。 |
 | `csharp-nunit` | C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。 |
 | `docker` | Dockerfile 與 Docker Compose 最佳實踐：多階段建置、非 root 執行、層快取最佳化與 Compose Specification 規範。 |
 | `ef-core` | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理與變更追蹤最佳實踐。 |
