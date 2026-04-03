@@ -56,7 +56,7 @@ dotnet_style_parentheses_in_other_operators = never_if_unnecessary:silent
 dotnet_style_parentheses_in_relational_binary_operators = always_for_clarity:silent
 
 # 修飾元喜好設定
-dotnet_style_require_accessibility_modifiers = for_non_interface_members:silent
+dotnet_style_require_accessibility_modifiers = for_non_interface_members:suggestion
 
 # 運算式層級喜好設定
 dotnet_style_coalesce_expression = true:suggestion
@@ -219,9 +219,9 @@ csharp_prefer_static_local_function = true:suggestion
 csharp_preferred_modifier_order = public,private,protected,internal,file,static,extern,new,virtual,abstract,sealed,override,readonly,unsafe,required,volatile,async
 
 # 程式碼區塊喜好設定
-csharp_prefer_braces = true:silent
+csharp_prefer_braces = true:suggestion
 csharp_prefer_simple_using_statement = true:suggestion
-csharp_style_namespace_declarations = file_scoped:silent
+csharp_style_namespace_declarations = file_scoped:suggestion
 csharp_style_prefer_method_group_conversion = true:silent
 csharp_style_prefer_primary_constructors = false:silent
 csharp_style_prefer_top_level_statements = true:silent
