@@ -32,6 +32,30 @@ description: "針對指定的 C# 類別或方法，自動產生 NUnit 單元測�
 - 設定行為使用 `.Returns(...)` 或 `.ReturnsForAnyArgs(...)`。
 - 驗證呼叫使用 `.Received()` 或 `.DidNotReceive()`。
 
+### 4. 非同步測試
+
+- 非同步測試方法回傳 `Task`，不回傳 `void`。
+- 非同步例外驗證使用 `Assert.ThrowsAsync<T>()`。
+- 非同步 [SetUp] / [TearDown] 方法同樣回傳 `Task`（NUnit 4+ 原生支援）。
+
+### 5. 邊界值與參數化測試產生
+
+分析目標方法的參數時，識別以下邊界情境並產生對應的 `[TestCase]`：
+
+- 數值型：最小值、最大值、零、負值（若允許）、剛好超出範圍值。
+- 字串型：`null`、空字串、只有空白、正常值、超長字串。
+- 集合型：`null`、空集合、單一元素、多元素。
+
+```csharp
+[TestCase(0, ExpectedResult = 0)]
+[TestCase(1, ExpectedResult = 1)]
+[TestCase(100, ExpectedResult = 100)]
+[TestCase(-1, ExpectedResult = 0)]  // 負值回傳 0
+public int Clamp_VariousInputs_ReturnsExpectedValue(int input) {
+    return MathUtils.Clamp(input, 0, 100);
+}
+```
+
 ## 輸出格式
 
 ```csharp
@@ -56,8 +80,36 @@ public class ClassNameTests
 }
 ```
 
-## 限制
+## 約束
 
 - 若方法邏輯過於複雜，先輸出骨架，再個別補充測試情境。
 - 所有外部依賴透過 Mock 建立；在單元測試中直接 `new` 相依物件違反隔離原則。
 - 僅針對 `public`/`internal` 方法產生測試；`private` 方法透過公開介面進行間接驗證。
+
+## 輸出範本（非同步版本）
+
+當目標方法為非同步時，輸出使用以下範本：
+
+```csharp
+[TestFixture]
+public class ClassNameTests
+{
+    private IDepedency depedency;
+    private ClassName sut;
+
+    [SetUp]
+    public void SetUp()
+    {
+        depedency = Substitute.For<IDepedency>();
+        sut = new ClassName(depedency);
+    }
+
+    [Test]
+    public async Task MethodName_Scenario_ExpectedResultAsync()
+    {
+        // 你的非同步測試內容
+        await sut.MethodAsync();
+        await depedency.Received(1).SomeDependencyCallAsync();
+    }
+}
+```

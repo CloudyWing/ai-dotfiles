@@ -15,7 +15,7 @@ description: '匯出 Excel 試算表的技能，支援 Grid 與 RecordSet 模板
 ## 執行流程
 
 1. **分析需求** — 從使用者描述中確認：工作表數量、欄位清單、是否需要靜態標題列（Grid）、資料來源格式、輸出路徑。
-2. **產生 JSON** — 依下方格式規範產生 JSON 內容，寫入暫存檔（例如 `/tmp/spreadsheet.json`）。
+2. **產生 JSON** — 依下方格式規範產生 JSON 內容，寫入暫存檔（例如工作目錄下的 `spreadsheet.json`）。
 3. **執行腳本** — 呼叫 `export-excel.csx` 並傳入 JSON 檔路徑與輸出路徑。
 4. **回報結果** — 告知使用者輸出檔路徑與工作表摘要。
 
@@ -215,7 +215,7 @@ dotnet script export-excel.csx <json-or-json-file> <output-path>
 執行：
 
 ```bash
-dotnet script export-excel.csx /tmp/report.json output.xlsx
+dotnet script export-excel.csx report.json output.xlsx
 ```
 
 ---

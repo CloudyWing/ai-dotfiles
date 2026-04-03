@@ -99,6 +99,34 @@ try {
 }
 ```
 
+## 樂觀並發控制（Optimistic Concurrency）
+
+- 需要防止更新衝突的實體，使用 `[Timestamp]` Attribute（SQL Server `rowversion`）或 `[ConcurrencyToken]`（任意欄位）。
+- EF Core 偵測到並發衝突時拋出 `DbUpdateConcurrencyException`，必須明確處理（重試或提示使用者）。
+
+```csharp
+public class Order {
+    public int Id { get; set; }
+
+    [Timestamp]
+    public byte[] RowVersion { get; set; } = [];
+}
+
+// 並發衝突處理
+try {
+    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
+} catch (DbUpdateConcurrencyException ex) {
+    // 重新從資料庫取得最新值，決定合併策略
+    await ex.Entries.Single().ReloadAsync(cancellationToken).ConfigureAwait(false);
+    throw;
+}
+```
+
+## Lazy Loading 警告
+
+- EF Core **預設停用** Lazy Loading。若安裝 `Microsoft.EntityFrameworkCore.Proxies` 並呼叫 `.UseLazyLoadingProxies()`，Navigation Property 將在存取時觸發額外查詢，容易引發隱性 N+1。
+- 正式環境建議維持停用（預設值），改用明確的 `Include()`、`ThenInclude()` 或投影。
+
 ## 原生 SQL 與 FromSql
 
 - 優先使用 LINQ 查詢；僅在 LINQ 無法表達或效能明確不足時，才使用 `FromSqlInterpolated()` 或 `FromSqlRaw()`。

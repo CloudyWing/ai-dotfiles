@@ -60,3 +60,46 @@ return Results.Json(new { error = "Not found" }, statusCode: 404);
 
 - 若專案已啟用 API Versioning（如 `Asp.Versioning.Http`），產生或修改端點時必須加入對應版本路由前綴（如 `/api/v1/`）。
 - 不在未啟用版本控制的專案中自行加入版本前綴。
+
+## 設定讀取（IOptions vs IConfiguration）
+
+- **禁止**在服務類別中直接注入 `IConfiguration` 並以字串索引取值，會散落硬編碼 Key 且缺乏型別安全。
+- 統一使用 **Options Pattern**：定義 POCO 設定類別，以 `IOptions<T>` / `IOptionsSnapshot<T>` / `IOptionsMonitor<T>` 注入。
+
+| 介面 | Lifetime | 適用情境 |
+| --- | --- | --- |
+| `IOptions<T>` | Singleton | 應用程式啟動後不會變更的設定 |
+| `IOptionsSnapshot<T>` | Scoped | 每次請求重新讀取（支援熱更新，不可用於 Singleton） |
+| `IOptionsMonitor<T>` | Singleton | 需要即時感知設定變更（支援 `OnChange` 回呼） |
+
+```csharp
+// 註冊
+builder.Services.Configure<SmtpOptions>(
+    builder.Configuration.GetSection("Smtp")
+);
+
+// 注入
+public class EmailService(IOptions<SmtpOptions> options) {
+    private readonly SmtpOptions smtp = options.Value;
+}
+```
+
+## 背景服務
+
+- **`BackgroundService`**：實作長期執行迴圈的背景工作首選（覆寫 `ExecuteAsync`，搭配 `CancellationToken`）。
+- **`IHostedService`**：需要精確控制 `StartAsync` / `StopAsync` 生命週期時使用（如啟動前的初始化任務）。
+- 兩者均透過 `AddHostedService<T>()` 或 `AddSingleton<IHostedService, T>()` 註冊；不要在 Controller / Service 中自行 `Task.Run` 長期工作。
+
+```csharp
+// ✅ 正確：BackgroundService 長期輪詢
+public class DataSyncService(IDbContextFactory<AppDbContext> factory) : BackgroundService {
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
+        while (!stoppingToken.IsCancellationRequested) {
+            await using AppDbContext db = await factory.CreateDbContextAsync(stoppingToken)
+                .ConfigureAwait(false);
+            // 同步邏輯...
+            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken).ConfigureAwait(false);
+        }
+    }
+}
+```
