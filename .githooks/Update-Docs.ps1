@@ -1,4 +1,4 @@
-﻿# ----------------------------------------------------------------
+# ----------------------------------------------------------------
 # Update-Docs.ps1 - 自動產生 docs/*.md 索引表格
 # ----------------------------------------------------------------
 
@@ -8,7 +8,6 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $docsDir = Join-Path $repoRoot "docs"
 $agentsDir = Join-Path $repoRoot "agents"
 $skillsDir = Join-Path $repoRoot "skills"
-$promptsDir = Join-Path $repoRoot "prompts"
 
 function Get-FrontMatterValue {
     param (
@@ -55,6 +54,8 @@ Write-DocFile -Path (Join-Path $docsDir "agents.md") -Lines (@(
 ) + $agentRows)
 
 # 2. 產生 docs/skills.md
+# 類型判斷：disable-model-invocation: true → 指令型（使用者手動觸發）
+#           未設定或 false              → 知識型（Claude 依上下文自動載入）
 $skillRows = Get-ChildItem -LiteralPath $skillsDir -Directory |
     Sort-Object Name |
     ForEach-Object {
@@ -63,34 +64,19 @@ $skillRows = Get-ChildItem -LiteralPath $skillsDir -Directory |
         $content = Get-Content -LiteralPath $skillFile -Encoding UTF8
         $name = Get-FrontMatterValue -Content $content -Key "name"
         $description = Get-FrontMatterValue -Content $content -Key "description"
-        "| ``$name`` | $description |"
+        $disableInvocation = Get-FrontMatterValue -Content $content -Key "disable-model-invocation"
+        $type = if ($disableInvocation -eq "true") { "指令型" } else { "知識型" }
+        "| ``$name`` | $type | $description |"
     }
 
 Write-DocFile -Path (Join-Path $docsDir "skills.md") -Lines (@(
     "# 內建 Skill 清單",
     "",
-    "| Skill | 用途 |",
-    "| --- | --- |"
+    "| Skill | 類型 | 用途 |",
+    "| --- | --- | --- |"
 ) + $skillRows)
 
-# 3. 產生 docs/prompts.md
-$promptRows = Get-ChildItem -LiteralPath $promptsDir -File -Filter "*.prompt.md" |
-    Sort-Object Name |
-    ForEach-Object {
-        $name = $_.Name -replace '\.prompt\.md$', ''
-        $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
-        $description = Get-FrontMatterValue -Content $content -Key "description"
-        "| ``$name`` | $description |"
-    }
-
-Write-DocFile -Path (Join-Path $docsDir "prompts.md") -Lines (@(
-    "# 內建 Prompt 清單",
-    "",
-    "| Prompt | 用途 |",
-    "| --- | --- |"
-) + $promptRows)
-
-# 4. 納入本次 commit
-git -C $repoRoot add "docs/agents.md" "docs/skills.md" "docs/prompts.md"
+# 3. 納入本次 commit
+git -C $repoRoot add "docs/agents.md" "docs/skills.md"
 
 Write-Host "docs/*.md 已更新並暫存。" -ForegroundColor Green

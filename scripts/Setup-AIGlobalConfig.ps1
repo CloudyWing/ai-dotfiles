@@ -13,7 +13,6 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 $configRoot = "$env:USERPROFILE\.ai-agents"
 $mainInstructions = "$configRoot\instructions.md"
 $skillsPath = "$configRoot\skills"
-$promptsPath = "$configRoot\prompts"
 $agentsSourcePath = "$configRoot\agents"
 
 # 3. 實體檔案與原始目錄檢查
@@ -25,7 +24,6 @@ if (!(Test-Path $mainInstructions)) {
 # 4. 準備工具目錄
 $geminiDir = "$env:USERPROFILE\.gemini"
 $agyDir = "$env:USERPROFILE\.gemini\antigravity"
-$agyWorkflowsDir = "$env:USERPROFILE\.gemini\antigravity\global_workflows"
 $claudeDir = "$env:USERPROFILE\.claude"
 $codexDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$env:USERPROFILE\.codex" }
 $agentsDir = "$env:USERPROFILE\.agents"
@@ -85,9 +83,6 @@ Write-Host "`n>>> 正在建立符號連結..." -ForegroundColor Cyan
 # Gemini CLI：全域規則（單一檔案連結）
 Set-SymbolicLink -LinkPath "$geminiDir\GEMINI.md" -TargetPath $mainInstructions
 
-# Antigravity：global_workflows → prompts/
-Set-SymbolicLink -LinkPath $agyWorkflowsDir -TargetPath $promptsPath
-
 # Antigravity：skills/ → ~/.ai-agents/skills/
 Set-SymbolicLink -LinkPath "$agyDir\skills" -TargetPath $skillsPath
 
@@ -96,9 +91,6 @@ Set-SymbolicLink -LinkPath "$claudeDir\CLAUDE.md" -TargetPath $mainInstructions
 
 # Claude Code：skills/ → ~/.ai-agents/skills/
 Set-SymbolicLink -LinkPath "$claudeDir\skills" -TargetPath $skillsPath
-
-# Claude Code：commands/ → ~/.ai-agents/prompts/
-Set-SymbolicLink -LinkPath "$claudeDir\commands" -TargetPath $promptsPath
 
 # Claude Code：agents/ → ~/.ai-agents/agents/
 Set-SymbolicLink -LinkPath "$claudeDir\agents" -TargetPath $agentsSourcePath
@@ -121,9 +113,6 @@ foreach ($dir in @($copilotDir, $vscodeInstructionsDir)) {
 
 # VS Code Copilot：全域指令規則（.instructions.md 格式，applyTo: "**" 自動注入所有對話）
 Set-SymbolicLink -LinkPath "$vscodeInstructionsDir\global.instructions.md" -TargetPath $mainInstructions
-
-# VS Code Copilot：全域 Prompts（將 VS Code 空目錄替換為符號連結）
-Set-SymbolicLink -LinkPath "$vscodeUserDir\prompts" -TargetPath $promptsPath
 
 # Copilot CLI：全域規則（copilot-instructions.md）
 Set-SymbolicLink -LinkPath "$copilotDir\copilot-instructions.md" -TargetPath $mainInstructions
@@ -161,17 +150,14 @@ Write-Host ""
 Write-Host "注意事項：" -ForegroundColor Yellow
 Write-Host "  - 設定來源目錄為 ~/.ai-agents/"
 Write-Host "  - Gemini CLI 透過 ~/.gemini/GEMINI.md 符號連結讀取"
-Write-Host "  - Antigravity global_workflows → ~/.ai-agents/prompts/（Prompt = Workflow）"
 Write-Host "  - Antigravity skills → ~/.ai-agents/skills/"
 Write-Host "  - Claude Code 透過 ~/.claude/CLAUDE.md 符號連結讀取"
-Write-Host "  - Claude Code commands → ~/.ai-agents/prompts/"
 Write-Host "  - Claude Code skills → ~/.ai-agents/skills/"
 Write-Host "  - Claude Code agents → ~/.ai-agents/agents/"
 Write-Host "  - Claude Code Hook 腳本位於 ~/.ai-agents/scripts/hooks/，由 ~/.claude/settings.json 直接引用"
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
 Write-Host "  - Codex skills → ~/.agents/skills/"
 Write-Host "  - Copilot 全域規則透過 %APPDATA%\\Code\\User\\instructions\\global.instructions.md 連結讀取"
-Write-Host "  - Copilot 全域 Prompts 透過 %APPDATA%\\Code\\User\\prompts\\ 符號連結至 ~/.ai-agents/prompts/"
 Write-Host "  - Copilot CLI ~/.copilot/copilot-instructions.md → ~/.ai-agents/instructions.md"
 Write-Host "  - Copilot CLI ~/.copilot/skills/ → ~/.ai-agents/skills/"
 Write-Host "  - Visual Studio 不支援全域設定，需在各專案下放置 .github/"

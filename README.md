@@ -17,8 +17,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | 概念 | 定位 | 何時生效 | 用途 |
 | --- | --- | --- | --- |
 | **Rule** | 規範文件 | 始終生效（自動注入每次對話） | 強制編碼規範、風格約束，AI 無法繞過 |
-| **Prompt** | 可重用提示範本 | 使用者手動以 `/` 呼叫 | 封裝常用指令，如 code review、commit 生成 |
-| **Skill** | 專門能力模組 | AI 判斷與請求相關時自動載入 | 結合指令 + 腳本 + 資源的複合任務 |
+| **Skill** | 專門能力模組 | 知識型：AI 自動載入；指令型：使用者以 `/` 呼叫 | 封裝知識規範、可執行任務，支援腳本與資源 |
 | **Agent** | 獨立代理人設定 | 依設定檔觸發或手動指定 | 定義 AI 角色、行為框架與可用工具 |
 
 ### 本專案策略
@@ -75,8 +74,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | 路徑 | 用途 |
 | --- | --- |
 | `CLAUDE.md` | 全域記憶與指令（Claude Code 會自動讀取） |
-| `skills/<name>/SKILL.md` | Skills（可自動觸發與 `/skill-name` 指令） |
-| `commands/*.md` | 舊版自訂指令位置，仍可用，與 skills 等效 |
+| `skills/<name>/SKILL.md` | Skills（知識型自動載入；指令型以 `/skill-name` 呼叫） |
 | `agents/*.agent.md` | 全域自訂 Agent（可用 `@agent-name` 呼叫） |
 | `settings.json` | Hook 設定（工具呼叫前後的自動化行為） |
 
@@ -135,7 +133,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 | 路徑 | 用途 |
 | --- | --- |
 | `instructions/*.instructions.md` | 全域指令規則（需 `applyTo: "**"` 以套用至所有檔案） |
-| `prompts/*.prompt.md` | 全域提示範本，Chat 中以 `/` 呼叫 |
+| `skills/<name>/SKILL.md` | 全域 Skills，AI 依上下文自動載入或以 `/skill-name` 呼叫 |
 
 > 本專案實際來源為 `~/.ai-agents/`，再由腳本建立至各工具入口的符號連結。
 
@@ -148,7 +146,6 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 | 全域指令規則 | 符號連結至 `%APPDATA%\Code\User\instructions\*.instructions.md` |
 | 工作區規則 | 符號連結至各專案的 `.github/copilot-instructions.md` |
 | Commit 補充規則 | 透過 VS Code 設定 `commitMessageGeneration.instructions` |
-| 提示範本 | 符號連結至 `%APPDATA%\Code\User\prompts\*.prompt.md` |
 | 技能模組 | 放置於 `~/.copilot/skills/`，AI 依上下文自動查閱 |
 
 ### `settings.json` 範例
@@ -188,7 +185,6 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 ├── instructions.md                     # 核心開發規範（主 Rule）
 ├── docs/                               # 詳細索引與補充說明文件
 ├── agents/                             # 自訂 Agent 定義
-├── prompts/                            # 提示範本（Prompt）
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本
 └── scripts/                            # 安裝、檢查與 hooks 腳本
@@ -210,23 +206,31 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 git config core.hooksPath .githooks
 ```
 
-啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md`、`docs/prompts.md` 並納入本次 commit。
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 並納入本次 commit。
 
 ---
 
-## 8. 內建 Prompt 清單
-
-詳見 [docs/prompts.md](./docs/prompts.md)。
-
----
-
-## 9. 內建 Skill 清單
+## 8. 內建 Skill 清單
 
 詳見 [docs/skills.md](./docs/skills.md)。
 
+Skill 分為兩種類型：
+
+- **知識型**：Claude 依上下文自動載入並套用（如編碼規範、LINQ 查詢規則）。
+- **指令型**：須使用者以 `/skill-name` 明確觸發（如 `/generate-changelog-zh-tw`、`/generate-unit-test`）。
+
+各家 AI 工具對「可呼叫的任務模組」各有不同名稱，且已逐漸整併成指令型 Skill：
+
+| 工具 | 原始術語 |
+| --- | --- |
+| Claude Code | Command（`commands/*.md`） |
+| GitHub Copilot Chat | Prompt（`prompts/*.prompt.md`） |
+| Antigravity | Workflow（`global_workflows/`） |
+| Codex / Copilot CLI | Skill（`skills/*/SKILL.md`） |
+
 ---
 
-## 10. 內建 Agent 清單
+## 9. 內建 Agent 清單
 
 詳見 [docs/agents.md](./docs/agents.md)。
 
