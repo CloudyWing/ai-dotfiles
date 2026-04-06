@@ -24,7 +24,7 @@ disable-model-invocation: true
 
 1. 執行 `git tag --sort=-v:refname | head -1` 取得最新標籤（MinVer 格式）。
 2. 讀取自上次標籤以來的 commit 類型，依下列規則推算：
-   - 有任何 `feat!:` 或 `BREAKING CHANGE` → 升 MAJOR。
+   - 有任何 `BREAKING CHANGE` → 升 MAJOR。
    - 有 `feat:` 但無 Breaking Change → 升 MINOR。
    - 僅有 `fix:`、`docs:`、`chore:` 等 → 升 PATCH。
 3. 若無任何標籤，詢問使用者初始版本號（預設建議 `0.1.0`）。
@@ -49,10 +49,9 @@ git log --pretty=format:"%H %s" --no-merges
 
 | 類型 | CHANGELOG 分類 | 顯示 |
 | --- | --- | --- |
-| `feat` | 新功能 | ✅ |
-| `fix` | 錯誤修正 | ✅ |
-| `perf` | 效能改善 | ✅ |
-| `feat!` / `BREAKING CHANGE` | 重大變更 | ✅（置頂） |
+| `feat` | New Features | ✅ |
+| `fix` | Bug Fixes | ✅ |
+| `perf` | Improvements | ✅ |
 | `docs` | 文件 | 僅在 commit 標題明確有使用者影響時顯示 |
 | `refactor` | - | ❌ 略過 |
 | `style` | - | ❌ 略過 |
@@ -67,22 +66,22 @@ git log --pretty=format:"%H %s" --no-merges
 ```markdown
 ## [1.2.0] - 2026-04-04
 
-### 重大變更
-
-- 移除 `IUserRepository.GetById(int)` 方法，請改用 `GetByIdAsync(Guid)`。
-
-### 新功能
+### New Features
 
 - 新增使用者頭像上傳功能，支援 JPG 與 PNG 格式。
 - 新增多語言切換 API 端點 `POST /api/locale`。
 
-### 錯誤修正
+### Bug Fixes
 
 - 修正訂單金額在特定幣別下計算錯誤的問題。
 
-### 效能改善
+### Improvements
 
 - 最佳化商品列表查詢，減少 N+1 查詢。
+
+### BREAKING CHANGE
+
+- 移除 `IUserRepository.GetById(int)` 方法，請改用 `GetByIdAsync(Guid)`。
 ```
 
 規則：
@@ -100,9 +99,6 @@ git log --pretty=format:"%H %s" --no-merges
 
 ```markdown
 # CHANGELOG
-
-所有重要的版本變更將記錄於此文件。
-格式依據 [Keep a Changelog](https://keepachangelog.com/zh-TW/1.0.0/)，版本號遵循 [語意化版本](https://semver.org/lang/zh-TW/)。
 
 ## [Unreleased]
 
