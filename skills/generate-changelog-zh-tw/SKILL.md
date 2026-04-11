@@ -20,14 +20,16 @@ disable-model-invocation: true
 
 **已傳入版本號**：直接使用，確認格式符合 `MAJOR.MINOR.PATCH`（可含預發布後綴如 `-preview.1`）。
 
-**未傳入版本號**：
+**未傳入版本號**，依序嘗試以下來源：
 
-1. 執行 `git tag --sort=-v:refname | head -1` 取得最新標籤（MinVer 格式）。
-2. 讀取自上次標籤以來的 commit 類型，依下列規則推算：
+1. **從分支名稱推算**：執行 `git branch --show-current` 取得當前分支名稱。
+   - 若符合 `release/vX.Y.Z` 或 `hotfix/vX.Y.Z` 格式，擷取版本號（去掉 `v` 前綴），直接使用。
+   - 若不符合上述格式，進入下一步。
+2. **從 Git Tag 推算**：執行 `git tag --sort=-v:refname | head -1` 取得最新標籤，讀取自上次標籤以來的 commit 類型，依下列規則推算：
    - 有任何 `BREAKING CHANGE` → 升 MAJOR。
    - 有 `feat:` 但無 Breaking Change → 升 MINOR。
    - 僅有 `fix:`、`docs:`、`chore:` 等 → 升 PATCH。
-3. 若無任何標籤，詢問使用者初始版本號（預設建議 `0.1.0`）。
+3. **無任何標籤**：詢問使用者初始版本號（預設建議 `0.1.0`）。
 
 ### 2. 取得 Commit 紀錄
 
@@ -64,7 +66,7 @@ git log --pretty=format:"%H %s" --no-merges
 輸出格式：
 
 ```markdown
-## [1.2.0] - 2026-04-04
+## v1.2.0 (2026-04-04)
 
 ### New Features
 
@@ -86,21 +88,19 @@ git log --pretty=format:"%H %s" --no-merges
 
 規則：
 
-- 日期固定使用今日日期（`YYYY-MM-DD`）。
+- 版本號格式為 `v{MAJOR}.{MINOR}.{PATCH}`，日期格式為 `(YYYY-MM-DD)`，固定使用今日日期。
 - 條列項目以命令式動詞開頭（新增、修正、移除、最佳化）。
 - 不包含 commit hash。
 - 若某分類無條目，略去該標題。
 
 ### 5. 寫入 CHANGELOG.md
 
-**已存在 `CHANGELOG.md`**：將新區段插入至第一個 `## [` 標題之前（Append 模式，追加於標頭之後）。
+**已存在 `CHANGELOG.md`**：將新區段插入至第一個 `## v` 標題之前（Append 模式，追加於標頭之後）。
 
 **不存在 `CHANGELOG.md`**：建立新檔，結構如下：
 
 ```markdown
 # CHANGELOG
-
-## [Unreleased]
 
 [新產生的區段]
 ```
