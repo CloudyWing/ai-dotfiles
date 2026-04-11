@@ -5,7 +5,11 @@ description: '依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔
 
 # 產生 Git Commit 訊息
 
-當使用者要求產生、撰寫或協助撰寫 Git Commit 訊息時，請自動套用本技能。
+當使用者的意圖是「建立一個 git commit」時，無論措辭為何，都必須透過本技能執行，不得直接用 Bash 執行 git 指令。涵蓋但不限於以下語意：
+
+- 明確提及 commit：「幫我 commit」「commit 一下」「commit 這些變更」「建立 commit」「產生 commit 訊息」。
+- 提交動作：「幫我提交」「把這些提交上去」「存成一個版本」。
+- 詢問 commit 訊息寫法：「commit message 怎麼寫」「這段變更的 commit 訊息」。
 
 ## 執行步驟
 
