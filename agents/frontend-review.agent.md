@@ -1,6 +1,7 @@
 ---
 name: Frontend Review
-description: 比對前端設計文件（或使用者指定的需求）與實際 Vue 3 前端程式碼，盤點元件品質、效能問題與規範偏離，產出差異報告。
+description: 比對設計文件與實際 Vue 3 前端程式碼，盤點元件品質、效能問題與規範偏離，產出差異報告。
+model: "GPT-5.4 (copilot)"
 ---
 
 # Frontend Review — 前端實作驗收審查

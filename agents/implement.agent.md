@@ -1,6 +1,20 @@
 ---
 name: Implement
 description: 依據設計文件或使用者指示實作功能，確保每個階段完成後通過驗證再繼續。
+model: "GPT-5.4 (copilot)"
+handoffs:
+  - agent: Review
+    label: Backend Review
+    prompt: >-
+      後端實作已完成。請讀取 .local/ai-sessions/design.md，
+      依 §9 實作任務清單逐項比對程式碼實作狀態，
+      依 §6 驗證步驟執行可執行的測試，產出完整差異報告。
+  - agent: Frontend Review
+    label: Frontend Review
+    prompt: >-
+      前端實作已完成。請讀取 .local/ai-sessions/design.md，
+      依其中的前端相關任務清單逐項比對 Vue 3 程式碼實作狀態，
+      並執行元件品質與規範符合度審查，產出完整差異報告。
 ---
 
 # Implement — 實作執行器

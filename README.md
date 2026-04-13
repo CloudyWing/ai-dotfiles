@@ -249,18 +249,24 @@ flowchart TD
     Clarify["**Clarify**<br />需求解構"]
     Design["**Design**<br />系統設計"]
     Implement["**Implement**<br />實作執行"]
-    Review["**Review**<br />實作驗收"]
+    Review["**Review**<br />後端驗收"]
+    FrontendReview["**Frontend Review**<br />前端驗收"]
     Done(["任務完成"])
 
     Propose -->|需釐清細節| Clarify
     Propose -->|範圍已明確| Design
     Clarify --> Design
     Design --> Implement
-    Implement --> Review
+    Implement -->|Backend Review<br />handoff| Review
+    Implement -->|Frontend Review<br />handoff| FrontendReview
     Review -->|補完實作| Implement
     Review -->|重新評估範圍| Clarify
     Review --> Done
+    FrontendReview -->|補完實作| Implement
+    FrontendReview --> Done
 ```
+
+> Backend Review 與 Frontend Review 兩個分支透過 Implement agent 的 `handoffs` 設定在 Copilot UI 上提供按鈕派發；後續回補實作或重新釐清則由使用者手動切換。
 
 ---
 
