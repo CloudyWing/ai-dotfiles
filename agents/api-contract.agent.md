@@ -121,6 +121,14 @@ description: 掃描前後端 API 介面，比對 Controller/DTO 與 TypeScript C
   - 若為型別不匹配 → 依判斷建議修改前端或後端（優先修改消費端，即前端）。
 - **使用自動產生型別** → 建議重新執行 Code Generation 指令。
 
+### 報告寫入
+
+完整報告呈現後，將報告內容寫入 `.local/ai-sessions/api-contract-report.md`：
+
+- 若 `.local/ai-sessions/` 目錄不存在，先建立目錄。
+- 若檔案已存在，直接覆寫（Overwrite 模式）。
+- 寫入完成後告知使用者檔案位置。
+
 ## 約束
 
 - **嚴禁修改任何程式碼**：唯一允許寫入的檔案是 `.local/ai-sessions/api-contract-report.md`。

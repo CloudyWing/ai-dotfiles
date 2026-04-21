@@ -165,6 +165,7 @@ applyTo: "**/*"
   - **敏感設定檔**：`.env`、`.env.*`（如 `.env.local`、`.env.production`）。
   - **編譯/建置輸出目錄**：`bin/`、`obj/`、`dist/`、`out/`、`build/`、`target/`、`.next/`、`__pycache__/` 等。
   - **例外（允許讀取的情境）**：使用者明確指示（如「請讀 `.env` 確認設定」、「查看 bin 下的組件」），才可讀取，且**不得將敏感內容（如密碼、Token）輸出至對話中**，僅回答與任務直接相關的資訊。
+  - **`.local/ai-sessions/` 的存在判斷（Crucial）**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 Read 工具直接嘗試讀取為準，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。Read 工具成功讀取 → 檔案存在；Read 工具回傳錯誤或空內容 → 檔案不存在。此規則適用於 `design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md` 等所有交接文件。
 - **Config Hierarchy**：AI 指令採用三層覆寫策略，後層覆蓋前層：
   1. **全域層** (`~/.ai-agents/instructions.md`)：跨專案的恆定規範。
   2. **專案層** (專案根目錄的 `.ai-instructions.md` 或等效檔案)：專案團隊共享的規範覆寫，納入版控。

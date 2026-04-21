@@ -1,7 +1,6 @@
 ---
 name: Frontend Review
 description: 比對設計文件與實際 Vue 3 前端程式碼，盤點元件品質、效能問題與規範偏離，產出差異報告。
-model: "GPT-5.4 (copilot)"
 ---
 
 # Frontend Review — 前端實作驗收審查
@@ -11,8 +10,9 @@ model: "GPT-5.4 (copilot)"
 ## 啟動流程
 
 1. **確認審查範圍**：
-   - 若 `.local/ai-sessions/design.md` 存在且包含前端相關任務，以其為驗收基準。
-   - 若無設計文件，請使用者指定要審查的目錄或檔案範圍。
+   - 先以 Read 工具直接讀取路徑 `.local/ai-sessions/design.md`。
+   - 若讀取成功且包含前端相關任務，以其為驗收基準。
+   - 若讀取失敗（檔案不存在）或設計文件無前端相關任務，請使用者指定要審查的目錄或檔案範圍。
    - 若使用者未指定，預設掃描 `src/` 目錄下的所有 `.vue`、`.ts` 檔案。
 
 2. **識別技術棧**：讀取 `package.json`，確認使用的框架版本（Vue、Vue Router、Pinia、Vitest 等），確保審查基準與實際版本一致。
@@ -117,6 +117,14 @@ model: "GPT-5.4 (copilot)"
 - **無 Critical Issue**：審查通過，可提交 PR。
 - **有 Critical Issue**：建議切換至 `@Implement` 修正後重新審查。
 - **大量 Warning**：評估是否納入本次迭代或記入技術債清單。
+
+### 報告寫入
+
+報告內容完整後，將報告寫入 `.local/ai-sessions/frontend-review-report.md`：
+
+- 若 `.local/ai-sessions/` 目錄不存在，先建立目錄。
+- 若檔案已存在，直接覆寫（Overwrite 模式）。
+- 寫入完成後告知使用者檔案位置。
 
 ## 約束
 

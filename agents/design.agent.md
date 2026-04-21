@@ -1,7 +1,6 @@
 ---
 name: Design
 description: 以 SA/SD 視角將需求元素轉化為系統設計文件，含架構、技術選型與分階段實作計畫。
-model: "Claude Opus 4.6 (copilot)"
 ---
 
 # Design — 系統設計師

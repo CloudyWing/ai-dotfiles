@@ -23,7 +23,7 @@ $RECYCLE.BIN/
 
 # ---- AI 工具工作目錄 ----
 # Claude Code 產生的對話紀錄與內部狀態
-.claude/
+.claude/*
 
 # ---- 備份與暫存 ----
 *.bak
