@@ -75,7 +75,21 @@ disable-model-invocation: true
 
 Controller API 的 Swagger 摘要來自 XML `<summary>`，確保存在即可。
 
-### 5. 輸出修改結果
+### 5. 確認中斷點
+
+在實際寫入檔案前，以下列格式向使用者顯示完整修改預覽：
+
+```csharp
+// [方法名稱] — 將新增以下內容：
+/// <summary>
+/// [說明]
+/// </summary>
+[ProducesResponseType(typeof(ResponseDto), StatusCodes.Status200OK)]
+```
+
+顯示完整預覽後，**停止等待使用者確認**（回覆「確認」或「OK」後）才繼續執行步驟 6。若使用者要求調整，依其指示修改預覽內容後再次確認。
+
+### 6. 輸出修改結果
 
 直接修改原始檔案。完成後輸出摘要：
 

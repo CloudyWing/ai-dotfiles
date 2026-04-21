@@ -69,6 +69,32 @@ disable-model-invocation: true
 
 [核心功能的使用範例，包含程式碼區塊]
 
+## 開發流程
+
+### 測試
+
+```bash
+# 執行所有單元測試
+[測試指令，如 dotnet test / npm test / pytest]
+
+# 執行特定測試
+[指令範例]
+```
+
+### 格式化
+
+```bash
+# 格式化程式碼
+[格式化指令，如 dotnet format / npm run lint:fix]
+```
+
+### 建置
+
+```bash
+# 建置專案
+[建置指令，如 dotnet build / npm run build]
+```
+
 ## 貢獻指南
 
 [PR 流程、分支命名慣例的簡要說明，若有的話]
@@ -83,6 +109,7 @@ disable-model-invocation: true
 - 無需每個章節都產出，視專案實際內容決定。
 - 若某章節資訊無法從現有檔案取得，略去該章節（不寫「待補充」）。
 - 若已有 `LICENSE`，必須加入「授權條款」章節。
+- 若專案有可執行的測試、格式化或建置指令，必須加入「開發流程」章節。
 
 ### 4. 語言與格式規範
 

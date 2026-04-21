@@ -16,7 +16,24 @@ disable-model-invocation: true
 - `*.csproj`、`package.json`、`pyproject.toml` 等專案檔：確認語言與框架
 - 是否已有 `LICENSE` 或 `LICENSE.md` 檔案（若已存在，詢問使用者是否要取代）
 
-### 2. 推薦授權
+### 2. 掃描相依性授權相容性
+
+在推薦授權前，掃描以下檔案取得主要相依套件清單：
+
+- `package.json` → `dependencies`、`peerDependencies`
+- `*.csproj` → `<PackageReference>`
+- `requirements.txt`、`pyproject.toml` → 套件清單
+- `go.mod` → `require` 區塊
+
+若清單中出現採用 **GPL-2.0**、**GPL-3.0** 或 **AGPL-3.0** 授權的套件，在推薦授權前明確告知使用者：
+
+- 相依套件名稱與其授權
+- 採用 GPL/AGPL 相依套件對專案授權選擇的限制（若選擇 MIT/Apache 等寬鬆授權，需注意 GPL 的「傳染性」是否適用於你的使用情境）
+- 若使用者不確定，建議諮詢法律顧問
+
+若無 GPL/AGPL 相依套件，略過此步驟，直接進入授權推薦。
+
+### 3. 推薦授權
 
 依下列準則推薦，並向使用者確認後再執行：
 
@@ -29,9 +46,17 @@ disable-model-invocation: true
 | 個人作品集或文件 | CC BY 4.0 |
 | 完全公眾領域 | Unlicense |
 
+推薦前，以一個引導問題縮小選擇範圍：
+
+**問**：「此專案是否允許他人商業使用或將程式碼嵌入閉源產品？」
+
+- **允許**：推薦 MIT 或 Apache-2.0（視是否需要專利保護而定）。
+- **不允許**（要求衍生物開源）：推薦 GPL-3.0 或 AGPL-3.0。
+- **不確定**：列出完整表格讓使用者對照選擇。
+
 列出推薦選項（最多 3 個），說明理由，等待使用者選擇。
 
-### 3. 建立 LICENSE 檔案
+### 4. 建立 LICENSE 檔案
 
 - 使用使用者選定的授權。
 - 從公開來源取得該授權的標準全文（若 WebFetch 可用）；若無法取得，告知使用者自行複製。
@@ -39,7 +64,7 @@ disable-model-invocation: true
 - 檔案名稱固定為 `LICENSE`（無副檔名），儲存於專案根目錄。
 - 編碼：UTF-8 無 BOM。
 
-### 4. 更新 README.md
+### 5. 更新 README.md
 
 若 `README.md` 存在：
 
@@ -64,7 +89,7 @@ disable-model-invocation: true
 
 若 `README.md` 不存在，告知使用者並略過此步驟。
 
-### 5. 完成確認
+### 6. 完成確認
 
 輸出執行摘要：
 
