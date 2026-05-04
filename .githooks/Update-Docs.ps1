@@ -6,7 +6,8 @@
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $docsDir = Join-Path $repoRoot "docs"
-$agentsDir = Join-Path $repoRoot "agents"
+$claudeAgentsDir = Join-Path $repoRoot "agents\claude"
+$codexAgentsDir  = Join-Path $repoRoot "agents\codex"
 $skillsDir = Join-Path $repoRoot "skills"
 
 function Get-FrontMatterValue {
@@ -25,6 +26,22 @@ function Get-FrontMatterValue {
     return $null
 }
 
+function Get-TomlValue {
+    param (
+        [string[]]$Content,
+        [string]$Key
+    )
+
+    $pattern = "^\s*${Key}\s*=\s*`"?(.+?)`"?\s*$"
+    foreach ($line in $Content) {
+        if ($line -match $pattern) {
+            return $matches[1].Trim('"')
+        }
+    }
+
+    return $null
+}
+
 function Write-DocFile {
     param (
         [string]$Path,
@@ -37,21 +54,30 @@ function Write-DocFile {
 }
 
 # 1. 產生 docs/agents.md
-$agentRows = Get-ChildItem -LiteralPath $agentsDir -File -Filter "*.agent.md" |
+$claudeRows = Get-ChildItem -LiteralPath $claudeAgentsDir -File -Filter "*.md" |
     Sort-Object Name |
     ForEach-Object {
         $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
         $name = Get-FrontMatterValue -Content $content -Key "name"
         $description = Get-FrontMatterValue -Content $content -Key "description"
-        "| ``$name`` | $description |"
+        "| ``$name`` | Claude | $description |"
+    }
+
+$codexRows = Get-ChildItem -LiteralPath $codexAgentsDir -File -Filter "*.toml" |
+    Sort-Object Name |
+    ForEach-Object {
+        $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
+        $name = Get-TomlValue -Content $content -Key "name"
+        $description = Get-TomlValue -Content $content -Key "description"
+        "| ``$name`` | Codex | $description |"
     }
 
 Write-DocFile -Path (Join-Path $docsDir "agents.md") -Lines (@(
     "# 內建 Agent 清單",
     "",
-    "| Agent | 用途 |",
-    "| --- | --- |"
-) + $agentRows)
+    "| Agent | 平台 | 用途 |",
+    "| --- | --- | --- |"
+) + $claudeRows + $codexRows)
 
 # 2. 產生 docs/skills.md
 # 類型判斷：disable-model-invocation: true → 指令型（使用者手動觸發）

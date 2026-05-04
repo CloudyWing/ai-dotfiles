@@ -1,4 +1,4 @@
-﻿# ----------------------------------------------------------------
+# ----------------------------------------------------------------
 # Setup-AIGlobalConfig.ps1 - AI 全域設定連結自動化 (全版本相容驗證版)
 # ----------------------------------------------------------------
 
@@ -13,7 +13,8 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 $configRoot = "$env:USERPROFILE\.ai-agents"
 $mainInstructions = "$configRoot\instructions.md"
 $skillsPath = "$configRoot\skills"
-$agentsSourcePath = "$configRoot\agents"
+$claudeAgentsPath = "$configRoot\agents\claude"
+$codexAgentsPath  = "$configRoot\agents\codex"
 
 # 3. 實體檔案與原始目錄檢查
 if (!(Test-Path $mainInstructions)) {
@@ -39,7 +40,7 @@ function Set-SymbolicLink {
         [string]$TargetPath,
         [string]$ItemType = "SymbolicLink"
     )
-    
+
     # 支援偵測斷鍊 (Broken Symlink)：Test-Path 會對斷鍊回傳 false，需改用 Get-Item / Get-ChildItem
     $existing = Get-Item -LiteralPath $LinkPath -Force -ErrorAction SilentlyContinue
     if (-not $existing) {
@@ -92,34 +93,17 @@ Set-SymbolicLink -LinkPath "$claudeDir\CLAUDE.md" -TargetPath $mainInstructions
 # Claude Code：skills/ → ~/.ai-agents/skills/
 Set-SymbolicLink -LinkPath "$claudeDir\skills" -TargetPath $skillsPath
 
-# Claude Code：agents/ → ~/.ai-agents/agents/
-Set-SymbolicLink -LinkPath "$claudeDir\agents" -TargetPath $agentsSourcePath
+# Claude Code：agents/ → ~/.ai-agents/agents/claude/
+Set-SymbolicLink -LinkPath "$claudeDir\agents" -TargetPath $claudeAgentsPath
 
 # Codex：全域規則（AGENTS.md）
 Set-SymbolicLink -LinkPath "$codexDir\AGENTS.md" -TargetPath $mainInstructions
 
+# Codex：agents/ → ~/.ai-agents/agents/codex/
+Set-SymbolicLink -LinkPath "$codexDir\agents" -TargetPath $codexAgentsPath
+
 # Codex：~/.agents/skills/ → ~/.ai-agents/skills/
 Set-SymbolicLink -LinkPath $agentsSkillsDir -TargetPath $skillsPath
-
-# Copilot CLI / VS Code：建立必要目錄
-$copilotDir = "$env:USERPROFILE\.copilot"
-$vscodeUserDir = "$env:APPDATA\Code\User"
-$vscodeInstructionsDir = "$vscodeUserDir\instructions"
-foreach ($dir in @($copilotDir, $vscodeInstructionsDir)) {
-    if (!(Test-Path $dir)) {
-        New-Item $dir -ItemType Directory -Force | Out-Null
-    }
-}
-
-# VS Code Copilot：全域指令規則（.instructions.md 格式，applyTo: "**" 自動注入所有對話）
-Set-SymbolicLink -LinkPath "$vscodeInstructionsDir\global.instructions.md" -TargetPath $mainInstructions
-
-# Copilot CLI：全域規則（copilot-instructions.md）
-Set-SymbolicLink -LinkPath "$copilotDir\copilot-instructions.md" -TargetPath $mainInstructions
-
-# Copilot CLI：skills/ 連結（供指令檔中的技能路徑引用）
-Set-SymbolicLink -LinkPath "$copilotDir\skills" -TargetPath $skillsPath
-
 
 # 7. 設定 Git Hooks 路徑
 Write-Host "`n>>> 正在設定 Git Hooks..." -ForegroundColor Cyan
@@ -131,7 +115,7 @@ Write-Host "`n>>> 設定完成！詳細連結路徑如下：" -ForegroundColor G
 Write-Host "----------------------------------------------------------------"
 
 # 使用計算屬性，同時相容 PS 5.1 (.Target) 與 PS 7 (.LinkTarget)
-$allDirs = @($geminiDir, $agyDir, $claudeDir, $codexDir, $agentsDir, $vscodeInstructionsDir, $vscodeUserDir, $copilotDir)
+$allDirs = @($geminiDir, $agyDir, $claudeDir, $codexDir, $agentsDir)
 foreach ($dir in $allDirs) {
     Get-ChildItem -Path $dir -Force |
     Where-Object { $_.Attributes -match "ReparsePoint" } |
@@ -153,11 +137,9 @@ Write-Host "  - Gemini CLI 透過 ~/.gemini/GEMINI.md 符號連結讀取"
 Write-Host "  - Antigravity skills → ~/.ai-agents/skills/"
 Write-Host "  - Claude Code 透過 ~/.claude/CLAUDE.md 符號連結讀取"
 Write-Host "  - Claude Code skills → ~/.ai-agents/skills/"
-Write-Host "  - Claude Code agents → ~/.ai-agents/agents/"
+Write-Host "  - Claude Code agents → ~/.ai-agents/agents/claude/"
 Write-Host "  - Claude Code Hook 腳本位於 ~/.ai-agents/scripts/hooks/，由 ~/.claude/settings.json 直接引用"
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
+Write-Host "  - Codex agents → ~/.ai-agents/agents/codex/"
 Write-Host "  - Codex skills → ~/.agents/skills/"
-Write-Host "  - Copilot 全域規則透過 %APPDATA%\\Code\\User\\instructions\\global.instructions.md 連結讀取"
-Write-Host "  - Copilot CLI ~/.copilot/copilot-instructions.md → ~/.ai-agents/instructions.md"
-Write-Host "  - Copilot CLI ~/.copilot/skills/ → ~/.ai-agents/skills/"
-Write-Host "  - Visual Studio 不支援全域設定，需在各專案下放置 .github/"
+Write-Host "  - Codex Hook 腳本範本位於 ~/.ai-agents/scripts/hooks/codex-hooks.json，需手動複製至 ~/.codex/hooks.json 並調整路徑"

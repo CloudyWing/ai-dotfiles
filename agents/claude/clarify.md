@@ -164,7 +164,7 @@ Design sub-agent 回傳後，Clarify 必須自己驗收產出的 `design.md`，�
 
 > 設計文件已儲存至 `.local/ai-sessions/design.md`（驗收：N 輪）。
 > 請先閱讀第 7 章「已知盲點與未涵蓋情境」。
-> 確認無誤後，可在 Copilot 中切換至 `Implement` 開始開發。
+> 確認無誤後，可切換至 Codex 的 `implement` agent 開始開發。
 
 ---
 

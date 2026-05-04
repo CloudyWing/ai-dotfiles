@@ -1,8 +1,6 @@
 # AI 全域設定 (.ai-agents)
 
-如有需要建立個人開發設定，建議參考 [awesome-copilot](https://github.com/github/awesome-copilot)。
-
-本目錄為個人全域 AI 輔助開發設定，適用於 GitHub Copilot、Gemini CLI、Claude Code、Codex、Antigravity 等工具，內容充滿個人習慣與偏好，僅供參考。
+本目錄為個人全域 AI 輔助開發設定，適用於 Claude Code、Codex、Gemini CLI、Antigravity 等工具，內容充滿個人習慣與偏好，僅供參考。
 
 **本專案必須 clone 至 `~/.ai-agents/`，setup script 與各工具連結皆依賴此路徑：**
 
@@ -25,6 +23,10 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 - 以 `instructions.md` 作為唯一主規則檔（Single Rule）。
 - Commit 訊息生成以 `skills/generate-commit/` Skill 形式獨立管理，不再列為頂層 Rule。
 - 暫不拆分更多獨立 rule 檔案，避免維護成本升高。
+
+### 平台分工
+
+討論型 Agent（Clarify、Design、Propose、Editor、Debug）在 Claude Code 執行；執行型 Agent（Implement、Review、Frontend Review、API Contract、Survey、Cleanup）在 Codex 執行。
 
 ### 本地檔案慣例（不 commit）
 
@@ -75,7 +77,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | --- | --- |
 | `CLAUDE.md` | 全域記憶與指令（Claude Code 會自動讀取） |
 | `skills/<name>/SKILL.md` | Skills（知識型自動載入；指令型以 `/skill-name` 呼叫） |
-| `agents/*.agent.md` | 全域自訂 Agent（可用 `@agent-name` 呼叫） |
+| `agents/*.md` | 全域自訂 Agent（討論型，可用 `@agent-name` 呼叫） |
 | `settings.json` | Hook 設定（工具呼叫前後的自動化行為） |
 
 #### Claude Code Hook 設定
@@ -119,63 +121,43 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 | 路徑 | 用途 |
 | --- | --- |
+| `agents/<name>.toml` | 自訂 Agent（執行型，以 `/agent <name>` 切換） |
 | `~/.agents/skills/<name>/SKILL.md` | 使用者技能（Codex 會掃描） |
 
-### GitHub Copilot CLI — `~/.copilot/`（全域）
+#### Codex Hook 設定
 
-| 路徑 | 用途 |
-| --- | --- |
-| `copilot-instructions.md` | 全域規則：注入每次對話的核心指令 |
-| `skills/<name>/SKILL.md` | 全域技能模組，AI 依上下文自動載入 |
+Hook 透過 `~/.codex/hooks.json` 設定，需手動建立並填入實際路徑。Hook 腳本放置於 `~/.ai-agents/scripts/hooks/`。
 
-### GitHub Copilot — `<repo>/.github/`（專案）或 `%APPDATA%\Code\User\`（全域）
+啟用 hooks 功能須在 `~/.codex/config.toml` 中加入：
 
-| 路徑 | 用途 |
-| --- | --- |
-| `instructions/*.instructions.md` | 全域指令規則（需 `applyTo: "**"` 以套用至所有檔案） |
-| `skills/<name>/SKILL.md` | 全域 Skills，AI 依上下文自動載入或以 `/skill-name` 呼叫 |
+```toml
+[features]
+codex_hooks = true
+```
 
-> 本專案實際來源為 `~/.ai-agents/`，再由腳本建立至各工具入口的符號連結。
-
----
-
-## 4. VS Code 引用方式
-
-| 來源 | 載入方式 |
-| --- | --- |
-| 全域指令規則 | 符號連結至 `%APPDATA%\Code\User\instructions\*.instructions.md` |
-| 工作區規則 | 符號連結至各專案的 `.github/copilot-instructions.md` |
-| Commit 補充規則 | 透過 VS Code 設定 `commitMessageGeneration.instructions` |
-| 技能模組 | 放置於 `~/.copilot/skills/`，AI 依上下文自動查閱 |
-
-### `settings.json` 範例
-
-為了避免路徑解析錯誤，請一律使用**絕對路徑**（`~` 不保證支援）：
+`~/.codex/hooks.json` 範例（路徑請改為實際使用者名稱）：
 
 ```json
 {
-    "github.copilot.chat.commitMessageGeneration.instructions": [
-        { "file": "C:/Users/<你的帳號>/.ai-agents/skills/generate-commit/SKILL.md" }
-    ]
+  "PostToolUse": [
+    {
+      "matcher": "apply_patch",
+      "hooks": [
+        {
+          "type": "command",
+          "command": "pwsh -NonInteractive -File C:/Users/<帳號>/.ai-agents/scripts/hooks/codex-post-patch-hook.ps1"
+        }
+      ]
+    }
+  ]
 }
 ```
 
-> ⚠️ **以下路徑以 Windows 原生 VS Code 為基準。**
-> 若使用 Remote - WSL 開發，符號連結目標須改為 WSL 內的路徑（如 `~/.vscode-server/data/User/instructions/`），否則 VS Code Server 將無法讀取。
->
-> **注意**：一般程式碼與測試規則，建議放至全域 `instructions/` 目錄或各專案的 `.github/copilot-instructions.md`，不透過 `settings.json` 逐一指定。
----
-
-## 5. Visual Studio 限制
-
-> ⚠️ **Visual Studio（非 VS Code）不支援使用者層級全域 AI 設定。**
->
-> 僅支援方案層級的 `.github/copilot-instructions.md` 或 GitHub Organization 集中管理。
-> 若需跨專案共用規則，須透過符號連結讓各方案指向同一來源。
+> `hooks.json` 不由 `Setup-AIGlobalConfig.ps1` 自動建立，需手動建立並填入實際路徑。
 
 ---
 
-## 6. 目錄結構總覽
+## 4. 目錄結構總覽
 
 ```plaintext
 ~/.ai-agents/
@@ -184,7 +166,9 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 ├── README.md                           # 本文件
 ├── instructions.md                     # 核心開發規範（主 Rule）
 ├── docs/                               # 詳細索引與補充說明文件
-├── agents/                             # 自訂 Agent 定義
+├── agents/
+│   ├── claude/                         # 討論型 Agent（.md 格式，連結至 ~/.claude/agents/）
+│   └── codex/                          # 執行型 Agent（.toml 格式，連結至 ~/.codex/agents/）
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本
 └── scripts/                            # 安裝、檢查與 hooks 腳本
@@ -192,7 +176,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 ---
 
-## 7. Scripts 與命名慣例
+## 5. Scripts 與命名慣例
 
 - `scripts/` 根目錄下可由使用者直接執行的 PowerShell 腳本，使用 `Verb-Noun.ps1` 命名。
 - `scripts/hooks/` 內由工具自動呼叫的 Hook 腳本，使用全小寫 kebab-case 命名。
@@ -210,7 +194,7 @@ git config core.hooksPath .githooks
 
 ---
 
-## 8. 內建 Skill 清單
+## 6. 內建 Skill 清單
 
 詳見 [docs/skills.md](./docs/skills.md)。
 
@@ -224,22 +208,19 @@ Skill 分為兩種類型：
 | 工具 | 原始術語 |
 | --- | --- |
 | Claude Code | Command（`commands/*.md`） |
-| GitHub Copilot Chat | Prompt（`prompts/*.prompt.md`） |
 | Antigravity | Workflow（`global_workflows/`） |
-| Codex / Copilot CLI | Skill（`skills/*/SKILL.md`） |
+| Codex | Skill（`skills/*/SKILL.md`） |
 
 ---
 
-## 9. 內建 Agent 清單
+## 7. 內建 Agent 清單
 
 詳見 [docs/agents.md](./docs/agents.md)。
 
-> **關於 Agent 共用與放置策略：**
->
-> - **VS Code** 會讀到 `%APPDATA%\Code\User\prompts\` 裡的 `.agent.md`、`~/.copilot/agents/` 以及 `~/.claude/agents/`。
-> - **Copilot CLI** 會讀到 `~/.copilot/agents/` 以及 `~/.claude/agents/`。
-> - 若重複放置清單會導致顯示多個相同名稱的 agent。
-> - 故本專案統一集中在 `~/.claude/agents/` 建立連結管理，以避免重複顯示。
+Agent 依執行平台分為兩類：
+
+- **討論型（Claude）**：放置於 `agents/claude/`，連結至 `~/.claude/agents/`，以 `@agent-name` 呼叫。適合需要多輪對話的需求分析、系統設計、文件編輯等任務。
+- **執行型（Codex）**：放置於 `agents/codex/`，連結至 `~/.codex/agents/`，以 `/agent <name>` 切換。適合程式碼實作、審查、掃描等批次執行任務。
 
 ### Agent 執行流程
 
@@ -266,7 +247,7 @@ flowchart TD
     FrontendReview --> Done
 ```
 
-> Backend Review 與 Frontend Review 兩個分支透過 Implement agent 的 `handoffs` 設定在 Copilot UI 上提供按鈕派發；後續回補實作或重新釐清則由使用者手動切換。
+> Propose → Design 為 Claude 討論階段；Design → Implement 以後切換至 Codex 執行。
 
 ---
 

@@ -174,7 +174,7 @@ description: 以 SA/SD 視角將需求元素轉化為系統設計文件，含架
 
      > 設計文件已儲存至 `.local/ai-sessions/design.md`。
      > 請先閱讀第 7 章「已知盲點與未涵蓋情境」。
-     > 確認無誤後，可在 Copilot 中切換至 `Implement` 開始開發。
+     > 確認無誤後，可切換至 Codex 的 `implement` agent 開始開發。
 
 ## 約束
 
@@ -182,5 +182,5 @@ description: 以 SA/SD 視角將需求元素轉化為系統設計文件，含架
 - 圖表使用 Mermaid 語法。
 - 設計文件以中性客觀語氣撰寫，不涉及當前任務脈絡或時間軸（Context-Free）。
 - 設計決策呈現結論與理由，不展開完整的比較過程（除非使用者要求）。
-- **嚴禁修改任何程式碼或專案檔案（Crucial）**：整個設計過程中，不得對任何程式碼、設定檔或專案檔案進行新增、修改或刪除。唯一允許寫入的檔案是 `.local/ai-sessions/design.md`。若使用者要求直接實作，告知應切換至 `@Implement`。
+- **嚴禁修改任何程式碼或專案檔案（Crucial）**：整個設計過程中，不得對任何程式碼、設定檔或專案檔案進行新增、修改或刪除。唯一允許寫入的檔案是 `.local/ai-sessions/design.md`。若使用者要求直接實作，告知應切換至 Codex 的 `implement` agent 執行。
 - **掃描排除**：掃描程式碼庫時，排除 `.local/`、`.env`、`bin/`、`obj/` 等非原始碼目錄（`.local/ai-sessions/` 中的交接檔案僅在啟動流程中依指定路徑讀取，不作為 codebase 掃描對象）。

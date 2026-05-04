@@ -110,15 +110,15 @@ applyTo: "**/*"
 - 「明確實作指令」定義：使用者主動說「開始實作」「修正這段」「改這個」等直接動手指令。
 - 使用者描述問題、討論可能方向、詢問分析時，主 Agent 只能回覆分析與建議，不得嘗試修改程式碼。
 
-#### Agent 工具派生
+#### 執行型 Agent
 
-以下 Agent 以 Agent 工具派生方式執行，不以 Persona 切換觸發：
+以下 Agent 負責實際執行任務，不以 Persona 切換方式運作，由使用者在對應工具中觸發：
 
 | Agent | 觸發方式 | 說明 |
 | --- | --- | --- |
 | **Implement** | 使用者下達明確實作指令 | 依 `design.md` 逐階段實作，每階段驗證後才繼續 |
-| **Review** | 實作完成後由 Implement handoff 或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告 |
-| **Frontend Review** | 實作完成後由 Implement handoff 或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
+| **Review** | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告 |
+| **Frontend Review** | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
 | **API Contract** | 使用者指定執行 | 比對前後端 API 介面契約一致性，產出差異報告 |
 | **Cleanup** | 使用者指定執行 | 掃描並清理技術債，每批修改後驗證測試 |
 | **Survey** | 使用者指定執行 | 掃描專案結構產出技術文件索引 |
