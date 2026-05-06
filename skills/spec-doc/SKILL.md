@@ -13,7 +13,7 @@ disable-model-invocation: true
 執行此 Skill 前，需具備需求來源，依以下優先序取用：
 
 1. 對話 context 中 Clarify Agent 剛整理完的需求摘要（含需求背景、程式面/功能面項目、排除範圍、假設清單、驗收方向）。
-2. 若對話 context 無 Clarify 整理內容，改讀取 `.local/ai-sessions/design.md` 的第 1 章「需求摘要」。
+2. 若對話 context 無 Clarify 整理內容，改讀取 `<work-root>/.local/ai-sessions/design.md` 的第 1 章「需求摘要」。
 3. 若兩者均無，告知使用者需先執行 Clarify Agent 完成需求釐清。
 
 ## 執行步驟

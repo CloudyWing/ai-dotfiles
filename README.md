@@ -26,7 +26,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-討論型 Agent（Clarify、Design、Propose、Editor、Debug）在 Claude Code 執行；執行型 Agent（Implement、Review、Frontend Review、API Contract、Survey、Cleanup）在 Codex 執行。
+Persona Agent（Clarify、Implement、Propose、Editor、Debug）以語意切換方式執行；sub-agent（Design、Review、Frontend Review、API Contract、Survey、Cleanup）以派生方式執行。建議 Clarify / Design 在 Claude Code 處理，Design 完成後再切至 Codex 執行 Implement / Review 鏈。
 
 ### 本地檔案慣例（不 commit）
 
@@ -35,9 +35,24 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | 檔案 | 用途 | 說明 |
 | --- | --- | --- |
 | `AGENTS.local.md` | 個人私有 AI 規則 | 覆蓋 `instructions.md` 的個人偏好 |
-| `CONTEXT.local.md` | Session 上下文交接 | 記錄當前任務進度、踩過的坑與環境狀態，跨 session 延續用（自行定義，非業界標準） |
+| `CONTEXT.local.md` | Session 上下文交接 | 可選的本機交接檔；僅記錄跨 session 仍有效的環境前置作業、本機限制與已知陷阱 |
 
 兩個檔案均已列入 `.gitignore`，適用於本目錄及各專案根目錄。
+
+### `work-root` 與交接檔
+
+- `.local/ai-sessions/`、`design.md`、各類 review report 與 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。
+- `work-root` 判定順序：
+  1. 使用者明確指定的目錄。
+  2. 從目前工作目錄往上找最近的技術棧根標記。
+  3. 找不到時退到 `git root`。
+  4. 若連 `git root` 都沒有，才用目前工作區目錄。
+- 技術棧根標記：
+  - .NET：`*.sln`、`*.slnx`
+  - Node / 前端：`package.json`
+  - Python：`pyproject.toml`、`requirements.txt`
+  - Java：`pom.xml`、`build.gradle`、`settings.gradle`
+  - Go：`go.mod`
 
 ---
 
@@ -77,7 +92,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | --- | --- |
 | `CLAUDE.md` | 全域記憶與指令（Claude Code 會自動讀取） |
 | `skills/<name>/SKILL.md` | Skills（知識型自動載入；指令型以 `/skill-name` 呼叫） |
-| `agents/*.md` | 全域自訂 Agent（討論型，可用 `@agent-name` 呼叫） |
+| `agents/*.md` | 全域自訂 Persona 與 Claude 端 sub-agent |
 | `settings.json` | Hook 設定（工具呼叫前後的自動化行為） |
 
 #### Claude Code Hook 設定
@@ -167,8 +182,8 @@ codex_hooks = true
 ├── instructions.md                     # 核心開發規範（主 Rule）
 ├── docs/                               # 詳細索引與補充說明文件
 ├── agents/
-│   ├── claude/                         # 討論型 Agent（.md 格式，連結至 ~/.claude/agents/）
-│   └── codex/                          # 執行型 Agent（.toml 格式，連結至 ~/.codex/agents/）
+│   ├── claude/                         # Claude 端 Persona 與 sub-agent（.md 格式）
+│   └── codex/                          # Codex 端 Persona 與 sub-agent（.toml 格式）
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本
 └── scripts/                            # 安裝、檢查與 hooks 腳本
@@ -219,8 +234,8 @@ Skill 分為兩種類型：
 
 Agent 依執行平台分為兩類：
 
-- **討論型（Claude）**：放置於 `agents/claude/`，連結至 `~/.claude/agents/`，以 `@agent-name` 呼叫。適合需要多輪對話的需求分析、系統設計、文件編輯等任務。
-- **執行型（Codex）**：放置於 `agents/codex/`，連結至 `~/.codex/agents/`，以 `/agent <name>` 切換。適合程式碼實作、審查、掃描等批次執行任務。
+- **Persona**：以語意切換方式執行。適合需要多輪對話、強依賴上下文的需求分析、實作階段控制、文件編輯與除錯。
+- **sub-agent**：由主 Agent 派生。適合有明確輸入與交接檔案的設計、審查、掃描與清理任務。
 
 ### Agent 執行流程
 
@@ -229,7 +244,7 @@ flowchart TD
     Propose["**Propose**<br />構想探索"]
     Clarify["**Clarify**<br />需求解構"]
     Design["**Design**<br />系統設計"]
-    Implement["**Implement**<br />實作執行"]
+    Implement["**Implement**<br />實作工程師"]
     Review["**Review**<br />後端驗收"]
     FrontendReview["**Frontend Review**<br />前端驗收"]
     Done(["任務完成"])
@@ -247,7 +262,7 @@ flowchart TD
     FrontendReview --> Done
 ```
 
-> Propose → Design 為 Claude 討論階段；Design → Implement 以後切換至 Codex 執行。
+> Propose → Design 為需求收斂與設計階段；Design 完成後，切換至 `Implement` Persona 進入實作與審查循環。
 
 ---
 

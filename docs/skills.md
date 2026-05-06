@@ -39,5 +39,5 @@
 | `translate-zh-en` | 知識型 | 技術文件雙向翻譯（繁體中文 ↔ 英文），保留程式碼區塊原文，並維持術語一致性。Use when the user asks to translate documentation, comments, or technical content between Traditional Chinese and English. |
 | `typescript-frontend` | 知識型 | 前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。 |
 | `vitest` | 知識型 | 前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。 |
-| `vue-router` | 知識型 | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。 |
 | `vue3` | 知識型 | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
+| `vue-router` | 知識型 | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。 |

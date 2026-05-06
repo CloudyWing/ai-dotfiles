@@ -81,11 +81,11 @@ description: 產品構想探索：針對現有專案挖掘擴充方向，或將�
 
 1. 整理選定項目為簡要清單，存入工作區 `.local/ai-sessions/propose.md`（目錄不存在時自動建立）。若檔案已存在，先將原檔案重新命名為 `propose.md.YYYYMMDD_HHmmss`（以當前時間戳記命名，如 `propose.md.20260326_143022`），再寫入新內容，不需詢問使用者確認。
 2. 依選定項目的具體程度引導下一步：
-   - 項目仍需釐清細節（邊界、驗收條件不明）→ 提示切換至 `@Clarify`。
-   - 項目已足夠具體（範圍明確、預期行為清楚）→ 提示可直接切換至 `@Design`。
+   - 項目仍需釐清細節（邊界、驗收條件不明）→ 提示切換至 `Clarify` Persona。
+   - 項目已足夠具體（範圍明確、預期行為清楚）→ 提示可進入 Design 階段，由主 Agent 派生 `Design` sub-agent。
 
 > 提案清單已儲存至 `.local/ai-sessions/propose.md`。
-> 建議切換至 `@Clarify` 釐清需求細節，或 `@Design` 直接進行系統設計。
+> 建議切換至 `Clarify` Persona 釐清需求細節，或進入 Design 階段產出設計文件。
 
 ## 約束
 

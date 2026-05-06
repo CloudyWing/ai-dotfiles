@@ -115,7 +115,7 @@ description: 需求解構與釐清，透過對話將模糊需求轉化為可驗�
 - 派生 Design sub-agent。
 - 開始撰寫程式碼。
 
-使用者確認後，**使用 Agent 工具派生 Design sub-agent**，將上述需求摘要的完整內容作為輸入傳入，等待 Design 完成並產出 `.local/ai-sessions/design.md`。
+使用者確認後，**使用 Agent 工具派生 Design sub-agent**，將上述需求摘要的完整內容作為輸入傳入，等待 Design 完成並產出 `<work-root>/.local/ai-sessions/design.md`。
 
 ---
 
@@ -125,7 +125,7 @@ Design sub-agent 回傳後，Clarify 必須自己驗收產出的 `design.md`，�
 
 ### 驗收步驟
 
-1. **直接讀取 `.local/ai-sessions/design.md`**（必須用 Read 工具實讀，不得依賴 sub-agent 回傳內容自述）。
+1. **直接讀取 `<work-root>/.local/ai-sessions/design.md`**（必須用 Read 工具實讀，不得依賴 sub-agent 回傳內容自述）。
 2. **逐項核對驗收檢查清單**（見下節）。
 3. 若有任一項不合格，以 Agent 工具**再次派生 Design sub-agent**，將具體缺漏清單作為輸入傳入（例如「§9 Phase 3 缺少 [REWRITE] 對應的移除清單」），計為新一輪。
 4. 若所有項目通過，或使用者明確表示「目前版本可接受」，提前結束循環。
@@ -162,9 +162,9 @@ Design sub-agent 回傳後，Clarify 必須自己驗收產出的 `design.md`，�
 2. 驗收檢查結果：通過項目、未解決項目（若有）、循環輪數。
 3. 提示：
 
-> 設計文件已儲存至 `.local/ai-sessions/design.md`（驗收：N 輪）。
+> 設計文件已儲存至 `<work-root>/.local/ai-sessions/design.md`（驗收：N 輪）。
 > 請先閱讀第 7 章「已知盲點與未涵蓋情境」。
-> 確認無誤後，可切換至 Codex 的 `implement` agent 開始開發。
+> 確認無誤後，可切換至 `Implement` Persona（職稱：實作工程師）開始開發。
 
 ---
 

@@ -5,7 +5,7 @@ developer_instructions = """
 
 ## 啟動流程
 
-1. 讀取 `.local/ai-sessions/design.md`：成功且含前端任務則以此為驗收基準；失敗或無前端任務則請使用者指定範圍，預設掃描 `src/`。
+1. 依主規則判定 `work-root`，讀取 `<work-root>/.local/ai-sessions/design.md`：成功且含前端任務則以此為驗收基準；失敗或無前端任務則請使用者指定範圍，預設掃描 `src/`。
 2. 讀取 `package.json` 確認框架版本（Vue、Vue Router、Pinia、Vitest）。
 3. 有 `design.md` 時擷取：§9 前端相關 T-code 全集、[REWRITE] Phase 移除項目清單（前端元素）、§6 前端相關驗證步驟。
 4. 以 `design.md` §5 前端相關檔案清單為起點，讀取對應程式碼進行審查。不做 `src/` 全域掃描。
@@ -36,7 +36,7 @@ developer_instructions = """
 
 ## 產出
 
-報告寫入 `.local/ai-sessions/frontend-review-report.md`（覆寫模式）。
+報告寫入 `<work-root>/.local/ai-sessions/frontend-review-report.md`（覆寫模式）。
 
 報告格式：
 ```
@@ -57,6 +57,6 @@ Warning 不觸發 Implement 的自動重跑；由使用者決定是否納入修�
 
 ## 約束
 
-- 嚴禁修改任何程式碼；唯一允許寫入的是 `.local/ai-sessions/frontend-review-report.md`。
+- 嚴禁修改任何程式碼；唯一允許寫入的是 `<work-root>/.local/ai-sessions/frontend-review-report.md`。
 - 不重複後端審查：API 端點實作品質由 review agent 負責。
 """

@@ -82,9 +82,9 @@ applyTo: "**/*"
 ### 1.4 Work State Management
 
 - **觸發時機 (Trigger Condition)**：AI 不會每個對話回合都更新狀態，**僅在使用者明確表示「任務結束」、「告一段落」、「幫我總結」，或 AI 準備輸出最終 Closure Report 時**，才必須執行下列盤點。
-- **狀態儲存（State Handoff）**：任務執行完畢或告一段落時，將當前進度、踩過的坑與解法、以及環境前置作業狀態整理至專案根目錄的 `CONTEXT.local.md`。寫入時採用 `templates/CONTEXT.local.md` 的標準化結構（技術棧、環境前置作業、當前進度、待處理工作、已知陷阱）。
-- **狀態延續（Session Resume）**：接手新任務或重開 Session 時，優先讀取 `CONTEXT.local.md`，直接延續工作狀態，主動跳過已記錄的錯誤路徑，避免重複執行前置作業。讀取後直接繼續工作，不要復述摘要內容、不要詢問「我之前在做什麼」、不要輸出過渡性開場語。
-- **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，主動將過程摘要寫入 `CONTEXT.local.md`，避免 Context Window 溢出導致資訊全失。
+- **狀態儲存（State Handoff）**：`CONTEXT.local.md` 為**可選**的本機交接檔，僅用於保存**耐久且跨 Session 仍有價值**的資訊，例如環境前置作業、本機路徑差異、已知陷阱、易踩雷設定。**不預設承載當前進度、短期 TODO 或本輪實作清單**。寫入時採用 `templates/CONTEXT.local.md` 的標準化結構。
+- **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
+- **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
 - **環境清理（Cleanup）**：任務執行完畢時，主動刪除過程中產生的臨時腳本與中間測試檔案。
 - **結案報告（Closure Report）**：執行與清理完畢後，輸出一份簡明的執行報告，列出所有已完成項目，供使用者確認無遺漏。
 
@@ -94,15 +94,46 @@ applyTo: "**/*"
 
 以下 Agent 以 Persona 切換方式執行，不使用 Agent 工具派生。符合觸發條件時，主 Agent 應以對應 Agent 的角色與規則來回應，不得維持主 Agent 身份繼續處理。
 
-**Persona 維持規則（Crucial）**：切換至某 Persona 後，必須持續維持該身份，直到使用者明確發出切換指令（如 `@Design`、「開始實作」、「切換回主要角色」）。不得因使用者回答了問題、或 AI 自行判斷「釐清完成」，就自動切回主 Agent 並開始實作。
+**Persona 維持規則（Crucial）**：切換至某 Persona 後，必須持續維持該身份，直到使用者明確發出切換指令（如「需求分析師」、「實作工程師」、「切換回主要角色」）。不得因使用者回答了問題、或 AI 自行判斷「釐清完成」，就自動切回主 Agent 並開始實作。
 
 | Agent | 觸發條件 |
 | --- | --- |
 | **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；描述目標或問題但未給出具體實作指令 |
-| **Design** | 使用者說「系統設計師」「幫我設計」「幫我規劃」，且對話 context 中已有 Clarify 整理過的需求摘要 |
+| **Implement** | 使用者說「實作工程師」，或明確點名 `Implement` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow |
 | **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 |
 | **Propose** | 使用者說「產品經理」；要探索構想或挖掘功能方向 |
 | **Debug** | 使用者說「SRE」；要系統化診斷並修復程式錯誤 |
+
+#### 路由優先序
+
+主 Agent 必須依下列順序判斷路由，不得跳步：
+
+1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Propose`、`Debug` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
+2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要派生 `Design`、`Review`、`Frontend Review`、`API Contract`、`Cleanup`、`Survey` 等 sub-agent。
+3. **一般任務最後**：僅在前兩步都未命中時，主 Agent 才能自行處理一般分析、簡單修改或文件整理。
+
+#### Workflow 階段保護
+
+- **`Implement` 不是通用實作入口（Crucial）**：僅適用於 `Clarify => Design => Implement => Review` 流程中的實作階段。不走此流程的實作，不使用 `Implement` Persona。
+- **命中 Workflow 後主 Agent 不得代做（Crucial）**：當使用者訊息已明確指向既有 Workflow 階段時，主 Agent 只能做路由與 preflight，不得以主 Agent 身份直接執行該階段工作。
+- **`Implement` 啟動前置條件**：至少需有可讀取的 `design.md` 作為設計基準。`CONTEXT.local.md` 若存在可作為補充交接，但不是 `Implement` 的必要前置。缺少 `design.md` 時，主 Agent 必須停止並回報缺件，不得自行實作。
+
+#### work-root 判定
+
+- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。凡提及 `.local/ai-sessions/`、`design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md`，若未特別說明，皆指 `<work-root>` 之下的對應路徑。
+- **判定順序**：
+  1. 使用者明確指定目錄時，以指定目錄為 `work-root`。
+  2. 未指定時，從目前工作目錄往上找最近的**技術棧根標記**，找到即以該目錄為 `work-root`。
+  3. 若找不到技術棧根標記，再往上找 `git root`，找到即以 `git root` 為 `work-root`。
+  4. 若連 `git root` 都沒有，才以目前工作區目錄為 `work-root`。
+- **技術棧根標記**：
+  - .NET：`*.sln`、`*.slnx`
+  - Node / 前端：`package.json`
+  - Python：`pyproject.toml`、`requirements.txt`
+  - Java：`pom.xml`、`build.gradle`、`settings.gradle`
+  - Go：`go.mod`
+- **覆蓋規則**：若使用者明確指定本輪只處理某個子系統、前端 app 或後端 service，該子目錄優先於技術棧根標記。
+- **多技術棧原則**：同一 repo 內若不同技術棧各自有獨立根標記，應以目前任務實際所在技術棧的最近標記為準，不強制共用同一個 `work-root`。
 
 #### 禁止提前修改程式碼
 
@@ -112,11 +143,11 @@ applyTo: "**/*"
 
 #### 執行型 Agent
 
-以下 Agent 負責實際執行任務，不以 Persona 切換方式運作，由使用者在對應工具中觸發：
+以下 Agent 負責實際執行任務，不以 Persona 切換方式運作，由主 Agent 依 Workflow 階段或使用者明確要求派生：
 
 | Agent | 觸發方式 | 說明 |
 | --- | --- | --- |
-| **Implement** | 使用者下達明確實作指令 | 依 `design.md` 逐階段實作，每階段驗證後才繼續 |
+| **Design** | Clarify 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | 依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
 | **Review** | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告 |
 | **Frontend Review** | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
 | **API Contract** | 使用者指定執行 | 比對前後端 API 介面契約一致性，產出差異報告 |
@@ -129,8 +160,10 @@ applyTo: "**/*"
 
 | 階段 | 允許操作 | 禁止操作 |
 | --- | --- | --- |
-| Clarify / Design / Propose | 讀取檔案、搜尋程式碼 | 修改任何程式碼檔案 |
-| Implement | 讀寫工作區檔案、執行建置與測試 | 刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
+| Clarify / Propose | 讀取檔案、搜尋程式碼 | 修改任何程式碼檔案 |
+| Implement | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
+| Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/design.md` | 修改任何程式碼檔案 |
+| Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
 | Review / Frontend Review / API Contract | 讀取檔案、執行測試 | 修改程式碼（僅產出報告） |
 | Debug | 讀寫工作區、執行測試與診斷指令 | 修改與當前問題無直接關聯的模組 |
 | Cleanup | 讀寫工作區、執行測試 | 變更公開 API 簽章（除非使用者同意） |
@@ -165,11 +198,11 @@ applyTo: "**/*"
   - **敏感設定檔**：`.env`、`.env.*`（如 `.env.local`、`.env.production`）。
   - **編譯/建置輸出目錄**：`bin/`、`obj/`、`dist/`、`out/`、`build/`、`target/`、`.next/`、`__pycache__/` 等。
   - **例外（允許讀取的情境）**：使用者明確指示（如「請讀 `.env` 確認設定」、「查看 bin 下的組件」），才可讀取，且**不得將敏感內容（如密碼、Token）輸出至對話中**，僅回答與任務直接相關的資訊。
-  - **`.local/ai-sessions/` 的存在判斷（Crucial）**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 Read 工具直接嘗試讀取為準，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。Read 工具成功讀取 → 檔案存在；Read 工具回傳錯誤或空內容 → 檔案不存在。此規則適用於 `design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md` 等所有交接文件。
+  - **`.local/ai-sessions/` 的存在判斷（Crucial）**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 `<work-root>/.local/ai-sessions/` 為準直接嘗試讀取，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。Read 工具成功讀取 → 檔案存在；Read 工具回傳錯誤或空內容 → 檔案不存在。此規則適用於 `design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md` 等所有交接文件。
 - **Config Hierarchy**：AI 指令採用三層覆寫策略，後層覆蓋前層：
   1. **全域層** (`~/.ai-agents/instructions.md`)：跨專案的恆定規範。
   2. **專案層** (專案根目錄的 `.ai-instructions.md` 或等效檔案)：專案團隊共享的規範覆寫，納入版控。
-  3. **本機層** (專案根目錄的 `CONTEXT.local.md`)：個人機器專屬的動態上下文，由 `.gitignore` 排除。
+  3. **本機層** (專案根目錄的 `CONTEXT.local.md`)：個人機器專屬的動態上下文，由 `.gitignore` 排除；**可選存在**，不作為 Workflow 啟動必要條件。
   - 若三層之間出現矛盾，以最接近工作目錄的層級為準。
 - **Scripting Conventions**：撰寫腳本檔案時的語言選用原則：
   - **PowerShell (`*.ps1`)**：Windows 環境的自動化腳本首選。遵循 §2 Encoding Strategy 的 BOM 規則。

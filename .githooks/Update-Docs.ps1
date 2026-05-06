@@ -1,4 +1,4 @@
-# ----------------------------------------------------------------
+﻿# ----------------------------------------------------------------
 # Update-Docs.ps1 - 自動產生 docs/*.md 索引表格
 # ----------------------------------------------------------------
 
@@ -9,6 +9,7 @@ $docsDir = Join-Path $repoRoot "docs"
 $claudeAgentsDir = Join-Path $repoRoot "agents\claude"
 $codexAgentsDir  = Join-Path $repoRoot "agents\codex"
 $skillsDir = Join-Path $repoRoot "skills"
+$personaAgents = @("Clarify", "Implement", "Debug", "Editor", "Propose")
 
 function Get-FrontMatterValue {
     param (
@@ -53,6 +54,18 @@ function Write-DocFile {
     [System.IO.File]::WriteAllText($Path, $content, $encoding)
 }
 
+function Get-AgentType {
+    param (
+        [string]$Name
+    )
+
+    if ($personaAgents -contains $Name) {
+        return "Persona"
+    }
+
+    return "sub-agent"
+}
+
 # 1. 產生 docs/agents.md
 $claudeRows = Get-ChildItem -LiteralPath $claudeAgentsDir -File -Filter "*.md" |
     Sort-Object Name |
@@ -60,7 +73,8 @@ $claudeRows = Get-ChildItem -LiteralPath $claudeAgentsDir -File -Filter "*.md" |
         $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
         $name = Get-FrontMatterValue -Content $content -Key "name"
         $description = Get-FrontMatterValue -Content $content -Key "description"
-        "| ``$name`` | Claude | $description |"
+        $agentType = Get-AgentType -Name $name
+        "| ``$name`` | $agentType / Claude | $description |"
     }
 
 $codexRows = Get-ChildItem -LiteralPath $codexAgentsDir -File -Filter "*.toml" |
@@ -69,13 +83,14 @@ $codexRows = Get-ChildItem -LiteralPath $codexAgentsDir -File -Filter "*.toml" |
         $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
         $name = Get-TomlValue -Content $content -Key "name"
         $description = Get-TomlValue -Content $content -Key "description"
-        "| ``$name`` | Codex | $description |"
+        $agentType = Get-AgentType -Name $name
+        "| ``$name`` | $agentType / Codex | $description |"
     }
 
 Write-DocFile -Path (Join-Path $docsDir "agents.md") -Lines (@(
     "# 內建 Agent 清單",
     "",
-    "| Agent | 平台 | 用途 |",
+    "| Agent | 類型 / 平台 | 用途 |",
     "| --- | --- | --- |"
 ) + $claudeRows + $codexRows)
 

@@ -5,7 +5,7 @@ developer_instructions = """
 
 ## 啟動流程
 
-1. 讀取 `.local/ai-sessions/design.md`，失敗時詢問使用者提供設計內容或回到 Design 階段。
+1. 依主規則判定 `work-root`，讀取 `<work-root>/.local/ai-sessions/design.md`，失敗時詢問使用者提供設計內容或回到 Design 階段。
 2. 從 `design.md` 擷取三份驗收資料（不可互相替代）：
    - §9 任務全集（所有 Phase 的每一條 T-code，即使使用者指定部分範圍仍須擷取完整集合）。
    - [REWRITE] Phase 的移除項目清單（從 §4 對應 Phase 提取）。
@@ -33,7 +33,7 @@ developer_instructions = """
 
 ## 產出
 
-報告寫入 `.local/ai-sessions/review-report.md`（覆寫模式）。
+報告寫入 `<work-root>/.local/ai-sessions/review-report.md`（覆寫模式）。
 
 報告格式：
 ```
@@ -56,6 +56,6 @@ developer_instructions = """
 
 ## 約束
 
-- 嚴禁修改任何程式碼；唯一允許寫入的是 `.local/ai-sessions/review-report.md`。
+- 嚴禁修改任何程式碼；唯一允許寫入的是 `<work-root>/.local/ai-sessions/review-report.md`。
 - 審查範圍僅限 `design.md` 任務清單已列出的項目；程式碼中發現的其他問題列入「品質備註」。
 """
