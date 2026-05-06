@@ -109,7 +109,7 @@ applyTo: "**/*"
 主 Agent 必須依下列順序判斷路由，不得跳步：
 
 1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Propose`、`Debug` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
-2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要派生 `Design`、`Review`、`Frontend Review`、`API Contract`、`Cleanup`、`Survey` 等 sub-agent。
+2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要派生 `Design`、`Review`、`Frontend Review`、`API Contract`、`Cleanup` 等 sub-agent，或套用對應 Skill。
 3. **一般任務最後**：僅在前兩步都未命中時，主 Agent 才能自行處理一般分析、簡單修改或文件整理。
 
 #### Workflow 階段保護
@@ -152,7 +152,6 @@ applyTo: "**/*"
 | **Frontend Review** | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
 | **API Contract** | 使用者指定執行 | 比對前後端 API 介面契約一致性，產出差異報告 |
 | **Cleanup** | 使用者指定執行 | 掃描並清理技術債，每批修改後驗證測試 |
-| **Survey** | 使用者指定執行 | 掃描專案結構產出技術文件索引 |
 
 #### 階段式行為約束
 

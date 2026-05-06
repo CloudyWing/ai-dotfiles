@@ -26,7 +26,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Clarify、Implement、Propose、Editor、Debug）以語意切換方式執行；sub-agent（Design、Review、Frontend Review、API Contract、Survey、Cleanup）以派生方式執行。建議 Clarify / Design 在 Claude Code 處理，Design 完成後再切至 Codex 執行 Implement / Review 鏈。
+Persona Agent（Clarify、Implement、Propose、Editor、Debug）以語意切換方式執行；sub-agent（Design、Review、Frontend Review、API Contract、Cleanup）以派生方式執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議 Clarify / Design 在 Claude Code 處理，Design 完成後再切至 Codex 執行 Implement / Review 鏈。
 
 ### 本地檔案慣例（不 commit）
 

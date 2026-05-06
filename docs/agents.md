@@ -12,4 +12,3 @@
 | `frontend-review` | sub-agent / Codex | 比對設計文件與實際 Vue 3 前端程式碼，盤點元件品質、效能問題與規範偏離，產出差異報告。 |
 | `implement` | Persona / Codex | 依據設計文件實作功能，屬於 Clarify => Design => Implement => Review 流程中的實作階段 Persona。 |
 | `review` | sub-agent / Codex | 實作完成後比對設計文件與實際程式碼，盤點遺漏、品質不足與刻意略過的項目，產出差異報告。 |
-| `survey` | sub-agent / Codex | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。 |

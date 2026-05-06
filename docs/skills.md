@@ -3,7 +3,6 @@
 | Skill | 類型 | 用途 |
 | --- | --- | --- |
 | `check-markdown` | 知識型 | 當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。 |
-| `code-review` | 知識型 | 對程式碼進行結構化審查，從可讀性、維護性、安全性、效能等面向提供分層建議。Use when the user asks to review, audit, or critique code quality, or when code is selected and the user asks "幫我看看" or "有什麼問題". |
 | `context-map` | 知識型 | 當要求重構、移植、拆分、合併或介面變更時使用。建立相依關係圖與變更影響範圍分析，降低遺漏修改的風險。 |
 | `create-license-and-readme-link` | 指令型 | 自動判斷專案屬性並推薦合適的開源授權，建立 LICENSE 檔案並將其連結補入 README.md 中。 |
 | `csharp-aspnetcore` | 知識型 | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
@@ -36,7 +35,7 @@
 | `pinia` | 知識型 | Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。 |
 | `spec-doc` | 指令型 | 將 Clarify 整理的需求摘要轉化為人類可讀的開發需求規格文件，供同事參考討論。 |
 | `sql-query` | 知識型 | T-SQL 查詢撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求。適用於 SQL Server 與 Oracle 雙資料庫。 |
-| `translate-zh-en` | 知識型 | 技術文件雙向翻譯（繁體中文 ↔ 英文），保留程式碼區塊原文，並維持術語一致性。Use when the user asks to translate documentation, comments, or technical content between Traditional Chinese and English. |
+| `survey` | 知識型 | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。 |
 | `typescript-frontend` | 知識型 | 前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。 |
 | `vitest` | 知識型 | 前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。 |
 | `vue3` | 知識型 | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
