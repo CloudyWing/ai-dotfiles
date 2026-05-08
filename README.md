@@ -139,37 +139,6 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 | `agents/<name>.toml` | 自訂 Agent（執行型，以 `/agent <name>` 切換） |
 | `~/.agents/skills/<name>/SKILL.md` | 使用者技能（Codex 會掃描） |
 
-#### Codex Hook 設定
-
-Hook 透過 `~/.codex/hooks.json` 設定，需手動建立並填入實際路徑。Hook 腳本放置於 `~/.ai-agents/scripts/hooks/`。
-
-啟用 hooks 功能須在 `~/.codex/config.toml` 中加入：
-
-```toml
-[features]
-codex_hooks = true
-```
-
-`~/.codex/hooks.json` 範例（路徑請改為實際使用者名稱）：
-
-```json
-{
-  "PostToolUse": [
-    {
-      "matcher": "apply_patch",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "pwsh -NonInteractive -File C:/Users/<帳號>/.ai-agents/scripts/hooks/codex-post-patch-hook.ps1"
-        }
-      ]
-    }
-  ]
-}
-```
-
-> `hooks.json` 不由 `Setup-AIGlobalConfig.ps1` 自動建立，需手動建立並填入實際路徑。
-
 ---
 
 ## 4. 目錄結構總覽
