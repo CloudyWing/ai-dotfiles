@@ -9,7 +9,7 @@ $docsDir = Join-Path $repoRoot "docs"
 $claudeAgentsDir = Join-Path $repoRoot "agents\claude"
 $codexAgentsDir  = Join-Path $repoRoot "agents\codex"
 $skillsDir = Join-Path $repoRoot "skills"
-$personaAgents = @("Clarify", "Implement", "Debug", "Editor", "Propose")
+$personaAgents = @("Clarify", "Implement", "Editor", "Propose")
 
 function Get-FrontMatterValue {
     param (

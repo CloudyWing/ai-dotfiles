@@ -49,7 +49,7 @@ applyTo: "**/*"
   - 已嘗試的方法及各自失敗的原因。
   - 對可行方向的判斷（若有把握的新方向可直接提議；若無則明確說明已無頭緒）。
 - **禁止盲目嘗試 (No Shotgun Debugging)**：不得在沒有明確假設的情況下，隨機修改程式碼碰運氣。每一次修改都必須基於對問題根因的分析，能清楚回答「我認為問題出在 X，因為 Y，所以我要改 Z」。
-- **範圍鎖定**：修正 Bug 時，不得在未告知使用者的情況下，擅自修改與當前問題無直接關聯的檔案或邏輯。若發現需要連帶修改其他模組，先列出影響範圍，經使用者同意後再執行。
+- **範圍鎖定**：修正 Bug 時，不得在未告知使用者的情況下，擅自修改與當前問題根因無直接關聯的檔案或邏輯。若發現需要擴大到非根因相關模組，先列出影響範圍，經使用者同意後再執行。
 
 ### 1.3 Output Discipline
 
@@ -102,14 +102,13 @@ applyTo: "**/*"
 | **Implement** | 使用者說「實作工程師」，或明確點名 `Implement` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow |
 | **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 |
 | **Propose** | 使用者說「產品經理」；要探索構想或挖掘功能方向 |
-| **Debug** | 使用者說「SRE」；要系統化診斷並修復程式錯誤 |
 
 #### 路由優先序
 
 主 Agent 必須依下列順序判斷路由，不得跳步：
 
-1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Propose`、`Debug` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
-2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要派生 `Design`、`Review`、`Frontend Review`、`API Contract`、`Cleanup` 等 sub-agent，或套用對應 Skill。
+1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Propose` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
+2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要派生 `Design`、`Debug`、`Review`、`Frontend Review`、`API Contract`、`Cleanup` 等 sub-agent，或套用對應 Skill。
 3. **一般任務最後**：僅在前兩步都未命中時，主 Agent 才能自行處理一般分析、簡單修改或文件整理。
 
 #### Workflow 階段保護
@@ -151,7 +150,8 @@ applyTo: "**/*"
 | **Review** | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告 |
 | **Frontend Review** | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
 | **API Contract** | 使用者指定執行 | 比對前後端 API 介面契約一致性，產出差異報告 |
-| **Cleanup** | 使用者指定執行 | 掃描並清理技術債，每批修改後驗證測試 |
+| **Cleanup** | 主 Agent 判斷任務屬於大範圍技術債清理 / 現代化，或使用者明確要求 Cleanup | 掃描並清理技術債，每批修改後驗證測試 |
+| **Debug** | 主 Agent 判斷 Bug 需要系統化診斷，或使用者明確要求 debug / 除錯 | 依假設、重現、修正、驗證流程定位並修復 Bug |
 
 #### 階段式行為約束
 
@@ -164,7 +164,7 @@ applyTo: "**/*"
 | Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/design.md` | 修改任何程式碼檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
 | Review / Frontend Review / API Contract | 讀取檔案、執行測試 | 修改程式碼（僅產出報告） |
-| Debug | 讀寫工作區、執行測試與診斷指令 | 修改與當前問題無直接關聯的模組 |
+| Debug | 讀寫工作區、執行測試與診斷指令 | 修改與當前問題根因無直接關聯的模組 |
 | Cleanup | 讀寫工作區、執行測試 | 變更公開 API 簽章（除非使用者同意） |
 
 ## 2. Global Constraints
