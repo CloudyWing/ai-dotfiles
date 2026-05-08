@@ -33,6 +33,7 @@
 | `git-workflow` | 知識型 | Git 分支策略與協作規範：分支命名、PR 流程、Merge 策略與版本標籤管理。 |
 | `openapi-client` | 知識型 | 前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。 |
 | `pinia` | 知識型 | Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。 |
+| `requirement-context` | 知識型 | 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。 |
 | `spec-doc` | 指令型 | 將 Clarify 整理的需求摘要轉化為人類可讀的開發需求規格文件，供同事參考討論。 |
 | `sql-query` | 知識型 | T-SQL 查詢撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求。適用於 SQL Server 與 Oracle 雙資料庫。 |
 | `survey` | 知識型 | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。 |
