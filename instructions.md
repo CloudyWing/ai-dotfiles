@@ -120,19 +120,26 @@ applyTo: "**/*"
 #### work-root 判定
 
 - **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。凡提及 `.local/ai-sessions/`、`design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md`，若未特別說明，皆指 `<work-root>` 之下的對應路徑。
-- **判定順序**：
-  1. 使用者明確指定目錄時，以指定目錄為 `work-root`。
-  2. 未指定時，從目前工作目錄往上找最近的**技術棧根標記**，找到即以該目錄為 `work-root`。
+- **`task anchor` 定義（Crucial）**：本輪任務判定 `work-root` 的起點，代表使用者真正想處理的範圍。**不得直接以 Agent 執行命令時的 process cwd 作為 `task anchor`**，process cwd 只代表目前 Agent 所在的工作區，不一定等於本輪指定的檔案或子系統。
+- **`task anchor` 判定順序**：
+  1. 使用者本輪明確指定的目標，依下列優先序解析：
+     - 目錄：直接以該目錄為 `task anchor`。
+     - 檔案：以該檔案所在目錄為 `task anchor`。若只提供檔名或相對路徑，必須先在可見 workspace 內解析成實際路徑；若同名檔案有多個且無法判斷，先回報候選並要求確認。
+     - 子系統 / 前端 app / 後端 service / 模組名稱：以可解析出的對應目錄為 `task anchor`。
+  2. 若本輪沒有新指定路徑，但對話上下文明確延續同一個已討論檔案或目錄，沿用該檔案或目錄。
+  3. 上述皆無法取得時，才使用目前工作區目錄作為 fallback。
+- **`work-root` 判定順序**：
+  1. 先依上述順序取得 `task anchor`。
+  2. 從 `task anchor` 往上找最近的**技術棧根標記**，找到即以該目錄為 `work-root`。
   3. 若找不到技術棧根標記，再往上找 `git root`，找到即以 `git root` 為 `work-root`。
-  4. 若連 `git root` 都沒有，才以目前工作區目錄為 `work-root`。
+  4. 若連 `git root` 都沒有，才以 `task anchor` 為 `work-root`。
 - **技術棧根標記**：
-  - .NET：`*.sln`、`*.slnx`
+  - .NET：`*.sln`、`*.slnx`、`*.csproj`
   - Node / 前端：`package.json`
   - Python：`pyproject.toml`、`requirements.txt`
   - Java：`pom.xml`、`build.gradle`、`settings.gradle`
   - Go：`go.mod`
-- **覆蓋規則**：若使用者明確指定本輪只處理某個子系統、前端 app 或後端 service，該子目錄優先於技術棧根標記。
-- **多技術棧原則**：同一 repo 內若不同技術棧各自有獨立根標記，應以目前任務實際所在技術棧的最近標記為準，不強制共用同一個 `work-root`。
+- **多技術棧原則**：同一 repo 內若不同技術棧各自有獨立根標記，應以目前 `task anchor` 所在技術棧的最近標記為準，不強制共用同一個 `work-root`。
 
 #### 禁止提前修改程式碼
 

@@ -41,18 +41,21 @@ Persona Agent（Clarify、Implement、Propose、Editor）以語意切換方式�
 
 ### `work-root` 與交接檔
 
-- `.local/ai-sessions/`、`design.md`、各類 review report 與 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。
-- `work-root` 判定順序：
-  1. 使用者明確指定的目錄。
-  2. 從目前工作目錄往上找最近的技術棧根標記。
-  3. 找不到時退到 `git root`。
-  4. 若連 `git root` 都沒有，才用目前工作區目錄。
-- 技術棧根標記：
-  - .NET：`*.sln`、`*.slnx`
-  - Node / 前端：`package.json`
-  - Python：`pyproject.toml`、`requirements.txt`
-  - Java：`pom.xml`、`build.gradle`、`settings.gradle`
-  - Go：`go.mod`
+`.local/ai-sessions/`、`design.md`、各類 review report 與 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。判定流程分兩步：
+
+1. **先取得 `task anchor`**（本輪任務真正想處理的範圍，不等於 AI 的 process cwd）。優先序：
+   1. 使用者本輪明確指定的目錄、檔案所在目錄、或子系統 / 前端 app / 後端 service / 模組目錄。
+   2. 對話上下文明確延續的已討論檔案或目錄。
+   3. 以上皆無時，才退到目前工作區目錄。
+2. **再從 `task anchor` 往外推導 `work-root`**：最近的技術棧根標記 → `git root` → `task anchor` 本身。
+
+技術棧根標記：
+
+- .NET：`*.sln`、`*.slnx`、`*.csproj`
+- Node / 前端：`package.json`
+- Python：`pyproject.toml`、`requirements.txt`
+- Java：`pom.xml`、`build.gradle`、`settings.gradle`
+- Go：`go.mod`
 
 ---
 
