@@ -61,7 +61,7 @@ disable-model-invocation: true
 - 使用使用者選定的授權。
 - 從公開來源取得該授權的標準全文（若 WebFetch 可用）；若無法取得，告知使用者自行複製。
 - 替換授權文本中的 `[year]`（填入當前年份）與 `[fullname]`（詢問使用者或從 `git config user.name` 取得）。
-- 檔案名稱固定為 `LICENSE`（無副檔名），儲存於專案根目錄。
+- 檔案名稱固定為 `LICENSE.md`，儲存於專案根目錄。
 - 編碼：UTF-8 無 BOM。
 
 ### 5. 更新 README.md
@@ -70,13 +70,13 @@ disable-model-invocation: true
 
 1. 搜尋是否已有 License 段落或 badge。
 2. **已有 badge**：更新 shield URL 與連結。
-3. **已有文字連結**：更新連結指向 `LICENSE`。
+3. **已有文字連結**：更新連結指向 `LICENSE.md`。
 4. **完全沒有**：在 README 末尾加入以下區塊（Merge 模式，融入既有風格）：
 
    ```markdown
    ## License
 
-   This project is licensed under the [MIT License](LICENSE).
+   This project is licensed under the [MIT License](LICENSE.md).
    ```
 
    若 README 以繁體中文撰寫，改用：
@@ -84,7 +84,7 @@ disable-model-invocation: true
    ```markdown
    ## 授權條款
 
-   本專案採用 [MIT 授權條款](LICENSE)。
+   本專案採用 [MIT 授權條款](LICENSE.md)。
    ```
 
 若 `README.md` 不存在，告知使用者並略過此步驟。
