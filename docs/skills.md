@@ -2,6 +2,8 @@
 
 | Skill | 類型 | 用途 |
 | --- | --- | --- |
+| `api-smoke` | 知識型 | Web API 煙霧驗證流程。當需要在修改或開發 Web API 端點後驗證 API 行為，或使用者要求呼叫 Swagger、寫腳本測試 API、進行多情境 API 測試時使用。 |
+| `browser-smoke` | 知識型 | 瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。 |
 | `check-markdown` | 知識型 | 當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。 |
 | `context-map` | 知識型 | 當要求重構、移植、拆分、合併或介面變更時使用。建立相依關係圖與變更影響範圍分析，降低遺漏修改的風險。 |
 | `create-license-and-readme-link` | 指令型 | 自動判斷專案屬性並推薦合適的開源授權，建立 LICENSE 檔案並將其連結補入 README.md 中。 |
@@ -18,6 +20,7 @@
 | `csharp-nunit` | 知識型 | C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。 |
 | `csharp-signalr` | 知識型 | SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。 |
 | `csharp-validation` | 知識型 | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。 |
+| `desktop-smoke` | 知識型 | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
 | `docker` | 知識型 | Dockerfile 與 Docker Compose 最佳實踐：多階段建置、非 root 執行、層快取最佳化與 Compose Specification 規範。 |
 | `ef-core` | 知識型 | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理與變更追蹤最佳實踐。 |
 | `export-excel` | 知識型 | 匯出 Excel 試算表的技能，支援 Grid 與 RecordSet 模板，並可自訂樣式與格式。 |
@@ -31,6 +34,7 @@
 | `generate-readme-zh-tw` | 指令型 | 自動分析目前專案結構與功能，產生一份結構清晰、工程導向的 README.md（繁體中文）。 |
 | `generate-unit-test` | 指令型 | 針對指定的 C# 類別或方法，自動產生 NUnit 單元測試骨架，包含 Arrange/Act/Assert 結構與 NSubstitute Mock 設定。 |
 | `git-workflow` | 知識型 | Git 分支策略與協作規範：分支命名、PR 流程、Merge 策略與版本標籤管理。 |
+| `integration-verify` | 知識型 | 開發完成後的整合驗證入口。當使用者要求在功能開發完成後自行驗證、做整合測試，或說「幫我驗證」「驗證一下功能」但未指定驗證方式時使用。判斷專案類型後先執行既有單元測試，再路由到對應的煙霧驗證流程。 |
 | `openapi-client` | 知識型 | 前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。 |
 | `pinia` | 知識型 | Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。 |
 | `requirement-context` | 知識型 | 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。 |
