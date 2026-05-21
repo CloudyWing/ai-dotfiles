@@ -23,13 +23,11 @@ if (!(Test-Path $mainInstructions)) {
 }
 
 # 4. 準備工具目錄
-$geminiDir = "$env:USERPROFILE\.gemini"
-$agyDir = "$env:USERPROFILE\.gemini\antigravity"
 $claudeDir = "$env:USERPROFILE\.claude"
 $codexDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$env:USERPROFILE\.codex" }
 $agentsDir = "$env:USERPROFILE\.agents"
 $agentsSkillsDir = "$agentsDir\skills"
-foreach ($dir in @($geminiDir, $agyDir, $claudeDir, $codexDir, $agentsDir)) {
+foreach ($dir in @($claudeDir, $codexDir, $agentsDir)) {
     if (!(Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
 }
 
@@ -81,12 +79,6 @@ function Set-SymbolicLink {
 # 6. 建立符號連結
 Write-Host "`n>>> 正在建立符號連結..." -ForegroundColor Cyan
 
-# Gemini CLI：全域規則（單一檔案連結）
-Set-SymbolicLink -LinkPath "$geminiDir\GEMINI.md" -TargetPath $mainInstructions
-
-# Antigravity：skills/ → ~/.ai-agents/skills/
-Set-SymbolicLink -LinkPath "$agyDir\skills" -TargetPath $skillsPath
-
 # Claude Code：全域記憶（CLAUDE.md）
 Set-SymbolicLink -LinkPath "$claudeDir\CLAUDE.md" -TargetPath $mainInstructions
 
@@ -115,7 +107,7 @@ Write-Host "`n>>> 設定完成！詳細連結路徑如下：" -ForegroundColor G
 Write-Host "----------------------------------------------------------------"
 
 # 使用計算屬性，同時相容 PS 5.1 (.Target) 與 PS 7 (.LinkTarget)
-$allDirs = @($geminiDir, $agyDir, $claudeDir, $codexDir, $agentsDir)
+$allDirs = @($claudeDir, $codexDir, $agentsDir)
 foreach ($dir in $allDirs) {
     Get-ChildItem -Path $dir -Force |
     Where-Object { $_.Attributes -match "ReparsePoint" } |
@@ -133,8 +125,6 @@ Write-Host "----------------------------------------------------------------"
 Write-Host ""
 Write-Host "注意事項：" -ForegroundColor Yellow
 Write-Host "  - 設定來源目錄為 ~/.ai-agents/"
-Write-Host "  - Gemini CLI 透過 ~/.gemini/GEMINI.md 符號連結讀取"
-Write-Host "  - Antigravity skills → ~/.ai-agents/skills/"
 Write-Host "  - Claude Code 透過 ~/.claude/CLAUDE.md 符號連結讀取"
 Write-Host "  - Claude Code skills → ~/.ai-agents/skills/"
 Write-Host "  - Claude Code agents → ~/.ai-agents/agents/claude/"

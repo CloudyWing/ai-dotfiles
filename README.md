@@ -1,6 +1,6 @@
 # AI 全域設定 (.ai-agents)
 
-本目錄為個人全域 AI 輔助開發設定，適用於 Claude Code、Codex、Gemini CLI、Antigravity 等工具，內容充滿個人習慣與偏好，僅供參考。
+本目錄為個人全域 AI 輔助開發設定，適用於 Claude Code、Codex 等工具，內容充滿個人習慣與偏好，僅供參考。
 
 **本專案必須 clone 至 `~/.ai-agents/`，setup script 與各工具連結皆依賴此路徑：**
 
@@ -75,19 +75,6 @@ Persona Agent（Clarify、Implement、Propose、Editor）以語意切換方式�
 ---
 
 ## 3. 各家 AI 工具全域設定位置
-
-### Gemini CLI — `~/.gemini/`
-
-| 檔案 | 用途 |
-| --- | --- |
-| `GEMINI.md` | 全域規則：注入每次對話的核心指令 |
-| `settings.json` | CLI 偏好設定（模型、主題、語言等） |
-
-### Antigravity — `~/.gemini/antigravity/`
-
-| 資料夾 | 用途 |
-| --- | --- |
-| `global_workflows/` | 跨專案可用的 Workflow 定義 |
 
 ### Claude Code — `~/.claude/`
 
@@ -190,12 +177,11 @@ Skill 分為兩種類型：
 - **知識型**：Claude 依上下文自動載入並套用（如編碼規範、LINQ 查詢規則）。
 - **指令型**：須使用者以 `/skill-name` 明確觸發（如 `/generate-changelog-zh-tw`、`/generate-unit-test`）。
 
-各家 AI 工具對「可呼叫的任務模組」各有不同名稱，且已逐漸整併成指令型 Skill：
+Claude Code 與 Codex 對「可呼叫的任務模組」各有不同名稱，且已逐漸整併成指令型 Skill：
 
 | 工具 | 原始術語 |
 | --- | --- |
 | Claude Code | Command（`commands/*.md`） |
-| Antigravity | Workflow（`global_workflows/`） |
 | Codex | Skill（`skills/*/SKILL.md`） |
 
 ---

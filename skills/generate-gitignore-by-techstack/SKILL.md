@@ -83,9 +83,6 @@ https://raw.githubusercontent.com/github/gitignore/main/{TemplateName}.gitignore
    !.claude/CLAUDE.md
    !.claude/skills/
    !.claude/agents/
-
-   .gemini/*
-   !.gemini/GEMINI.md
    ```
 
    排除整個 AI 工具目錄時使用 `/*`（而非 `/`），以便後續用 `!` 指定需追蹤的共用檔案。個人設定檔（如 `settings.json`、本機快取）不加 `!` 例外，保持被排除狀態。`.github/` 目錄通常整個納入版控，無需特別排除。
