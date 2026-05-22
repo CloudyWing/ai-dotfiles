@@ -76,6 +76,11 @@ Commit 2：<commit message>
 - **單一 commit / 檔案級拆分**：直接執行 `git commit`（拆分時依序 stage → commit 每個群組）。
 - **含 hunk 級拆分**：輸出拆分計畫後暫停，等待使用者完成 `git add -p` 並回報，再執行對應的 commit。
 
+**訊息傳遞方式（強制）**：含 Body 的多行訊息一律以 `git commit -F` 從檔案或 stdin 讀取，逐字保留換行與空行。不得用多個 `-m` 逐行傳遞；git 會將每個 `-m` 視為獨立段落並在段落間插入空行，使 Body 的條列之間出現多餘空行。
+
+- PowerShell：用單引號 here-string 接 `git commit -F -`。
+- Bash：用 here-doc 接 `git commit -F -`，或先將訊息寫入暫存檔再以 `git commit -F <檔案>` 提交。
+
 Commit 執行完畢後，輸出最終的 commit 訊息內容供使用者確認是否需要至 git 調整。
 
 ---
