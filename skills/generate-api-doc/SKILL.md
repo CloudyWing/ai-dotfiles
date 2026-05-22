@@ -105,6 +105,6 @@ Controller API 的 Swagger 摘要來自 XML `<summary>`，確保存在即可。
 
 ## 注意事項
 
-- 遵循 CLAUDE.md §3 的 C# 格式規範（K&R 風格、4 空格縮排）。
+- 產生的 C# 程式碼遵循專案 `.editorconfig` 與 `csharp-style` skill 的風格規範。
 - 若專案使用 `Swashbuckle.AspNetCore` 以外的 OpenAPI 套件，輸出前確認 Attribute 名稱是否相容。
 - 不修改業務邏輯，僅新增文件相關的 Attributes 與 XML 註解。

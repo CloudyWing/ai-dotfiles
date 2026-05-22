@@ -123,6 +123,12 @@ applyTo: "**/*"
 2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要派生 `Design`、`Debug`、`Review`、`Frontend Review`、`API Contract`、`Cleanup` 等 sub-agent，或套用對應 Skill。
 3. **一般任務最後**：僅在前兩步都未命中時，主 Agent 才能自行處理一般分析、簡單修改或文件整理。
 
+#### Skill 載入紀律
+
+- 當本輪工作的檔案類型或技術棧落入某個 skill 的適用範圍時，必須主動載入並套用該 skill，不得僅憑模型自身記憶判斷而略過。
+- 禁止以「我已掌握該規範」為由跳過載入；以 skill 實際內容為準，不以模型既有印象為準。
+- 僅載入與當前工作直接相關的 skill，不需預先載入同技術棧下的所有 skill。例如編輯任何 C# 檔即須套用 `csharp-style`；非同步、DI、EF Core 等主題相關工作才另載對應 skill。
+
 #### Workflow 階段保護
 
 - **`Implement` 不是通用實作入口（Crucial）**：僅適用於 `Clarify => Design => Implement => Review` 流程中的實作階段。不走此流程的實作，不使用 `Implement` Persona。
@@ -236,67 +242,13 @@ applyTo: "**/*"
 
 ## 3. C# Code Style (⚠️ 核心強制規範)
 
-**套用優先級：**
+### 3.1 Code Style
 
-進入既有程式碼庫前，先掃描 2–3 個現有 `.cs` 檔案，識別實際使用的命名慣例、縮排與格式風格，以此為準。§3 規則僅適用於下列情境：
+- **既有專案強制對齊既有慣例**：修改既有 C# 專案前，必須先抽樣鄰近 `.cs` 檔案（至少 2~3 個，涵蓋將被修改的目錄），辨識其命名、縮排、大括號、成員排列與 `using` 組織的實際慣例，逐項對齊後再動手。既有慣例優先於 `csharp-style` skill 的預設風格，不主動將既有風格「修正」成預設風格，以避免製造無謂的 diff 雜訊。
+- **可機械強制的部分以 `.editorconfig` 為準**：命名大小寫、縮排、大括號位置、`using` 排序、`var` 使用等，由專案 `.editorconfig` 與內建 analyzer 強制，不在本文件重複條列。
+- **無既有慣例時的風格細則**：建立全新專案、或在無可識別慣例的專案新增全新檔案時，套用 `csharp-style` skill 的命名、結構與排版規範。
 
-- 建立全新專案。
-- 在現有專案中新增全新檔案，且該專案尚無可識別的既有慣例。
-
-若既有程式碼已有一致慣例（即使與 §3 不符），維持該慣例，不主動「修正」成 §3 風格，以避免製造無謂的 diff 雜訊。
-
-### 3.1 Naming Conventions
-
-- **PascalCase**: Class, Interface, Method, Property, Event, Namespace, **Constants (const)**, **Public/Internal Static Readonly Fields**。
-- **camelCase**: **Private fields**（前綴一律不加 `_`、`m_`、`s_`）, Local variables, Parameters。
-- **Abbreviations**:
-  - 2 個字母：全大寫 (如 `IOStream`, `SystemIO`)。
-  - 3 個以上字母：PascalCase (如 `SqlDatabase`, `XmlParser`)。
-- **Interfaces**: 必須以 `I` 開頭 (如 `IService`)。
-- **Class Suffixes**:
-  - **Extensions**: 擴充方法 (Extension Methods) 的靜態類別必須以 `Extensions` 結尾 (如 `StringExtensions`)。例外：Minimal API 的 Endpoint 映射類別使用 `XxxEndpoints` 命名（如 `ProductEndpoints`）。
-  - **Utils**: 靜態工具類別必須以 `Utils` 結尾 (如 `StringUtils`)。
-  - **Helper**: 若為非靜態工具類別，且無其他更適合的領域驅動命名時，允許以 `Helper` 結尾 (如 `ViewHelper`)。
-- **Enums**: 標註 `[Flags]` 的 Enum 必須使用**複數**命名 (如 `FileAccessRights`)；一般 Enum 則使用單數。
-
-### 3.2 Structure & Locality
-
-- **Namespaces**: 現代 .NET 專案使用 **File-scoped namespaces** (`namespace MyProject;`)。
-- **One Type Per File**: 每個 `.cs` 檔案只能包含**一個頂層型別**（Class、Interface、Enum、Struct、Record）。Inner Class 不受此限，允許巢狀於父類別中。
-- **Using Directives**: `System.*` 優先置頂，其餘按字母順序排列。
-- **Member Order & Spacing**: Fields -> Constructors -> Properties -> Methods。類別成員之間必須保留一個空行，但欄位 (fields) 之間不應有空行。
-- **Locality**: `private` 方法必須緊跟在「第一個呼叫它的 public 方法」下方。
-- **Visibility**: 必須明確指定存取修飾詞 (Explicit access modifiers)。
-
-### 3.3 Formatting (K&R Style)
-
-- **Braces**: 左大括號 `{` **不換行**。
-- **Mandatory**: `if`, `else`, `for`, `while` 即使只有單行也必須使用 `{}`。
-- **Line Wrapping**: 以 **120 字元**為換行基準。賦值 (`=`) 保留在前一行；二元運算子 (`&&`, `||`) 與 Lambda (`=>`) 換行至新行開頭。
-- **多行括弧收尾**：條件式或方法參數需換行時，右括弧 `)` 必須獨立成行，縮排與開頭關鍵字對齊，`{` 緊接於 `)` 後方同行。
-
-  ```csharp
-  // ✅ 正確
-  if (conditionA
-    && conditionB
-  ) {
-  }
-
-  void MyMethod(
-    string param1,
-    string param2
-  ) {
-  }
-
-  // ❌ 錯誤
-  if (conditionA
-    && conditionB) {
-  }
-  ```
-
-- **Prohibited**: 不使用 `#region`。
-
-### 3.4 Framework Context & Language Features
+### 3.2 Framework Context & Language Features
 
 - **Framework Awareness (Crucial)**: AI 在修改程式碼前，必須先判斷目標框架 (`TargetFramework`)：
   - **Legacy .NET Framework**: 若為 .NET Framework (如 v4.7.2)，語法上限為 C# 7.3，不使用 C# 8.0+ 特性（如 `using var`、`switch` 運算式、Records、Nullable Reference Types 等）。
@@ -331,12 +283,12 @@ applyTo: "**/*"
 - **High-Performance Logging**: 實作日誌時，優先使用 `[LoggerMessage]` Attribute 寫法 (Source Generator)。
 - **Nameof**: 成員名稱引用一律使用 `nameof()`，不硬編碼字串。
 
-### 3.5 XML Documentation & Comments
+### 3.3 XML Documentation & Comments
 
 - 所有 `public` 成員都必須加上 XML 註解；`<summary>` 以第三人稱現在式動詞開頭（如 "Gets..."、"Initializes..."），重點說明 Why 與 What。
 - 格式規範與標籤用法（`<see langword>`、`<paramref>`、`<inheritdoc>` 等）參閱 `csharp-docs` skill。
 
-### 3.6 .NET 最佳實踐品質檢查 (主動套用)
+### 3.4 .NET 最佳實踐品質檢查 (主動套用)
 
 - **資源管理**：所有實作 `IDisposable` 或 `IAsyncDisposable` 的物件，**必須**在 `using` 區塊或 `try/finally` 中確保釋放。若發現暴露中的 `new HttpClient()`，主動提醒改用 `IHttpClientFactory`。
 - **SOLID 原則守護**：若一個類別混合了「資料存取」與「商業邏輯」，主動建議拆分；若遇到大型 `switch/if-else` 依型別分派，建議策略模式或多型替代；若發現直接 `new` 建立具體實作，提示改用 DI。

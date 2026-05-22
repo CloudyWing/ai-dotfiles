@@ -10,6 +10,7 @@
 | `csharp-aspnetcore` | 知識型 | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
 | `csharp-async` | 知識型 | C# 非同步設計最佳實踐：強制套用 Task/ValueTask 與 ConfigureAwait 等非同步開發規範。 |
 | `csharp-background-service` | 知識型 | Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。 |
+| `csharp-comments` | 知識型 | C# 註解風格：單行註解格式、註解用途原則，以及 TODO / UNDONE / HACK 工作清單關鍵字的分類與使用時機。撰寫或檢視 C# 程式碼註解時套用。 |
 | `csharp-di` | 知識型 | .NET 相依性注入進階規範：Generic Host、Worker Service、Keyed Services 與 Decorator 模式。 |
 | `csharp-docs` | 知識型 | C# 文件與 XML 註解標準：強制使用標準標籤與用詞規範產生類別與方法的說明。 |
 | `csharp-error-handling` | 知識型 | C# 例外處理規範：例外設計原則、Guard Clause、全域錯誤處理與 ProblemDetails 回應標準化。 |
@@ -19,6 +20,7 @@
 | `csharp-nrt` | 知識型 | C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。 |
 | `csharp-nunit` | 知識型 | C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。 |
 | `csharp-signalr` | 知識型 | SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。 |
+| `csharp-style` | 知識型 | C# 程式碼風格規範：縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的細則。建立全新 C# 專案，或在無既有慣例的專案新增全新檔案時套用。 |
 | `csharp-validation` | 知識型 | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。 |
 | `desktop-smoke` | 知識型 | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
 | `docker` | 知識型 | Dockerfile 與 Docker Compose 最佳實踐：多階段建置、非 root 執行、層快取最佳化與 Compose Specification 規範。 |
