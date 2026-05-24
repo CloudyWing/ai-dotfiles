@@ -1,6 +1,6 @@
 #!/usr/bin/env dotnet-script
-#r "nuget: CloudyWing.SpreadsheetExporter, 3.0.0"
-#r "nuget: CloudyWing.SpreadsheetExporter.Renderer.ClosedXML, 3.0.0"
+#r "nuget: CloudyWing.SpreadsheetExporter, 3.1.0"
+#r "nuget: CloudyWing.SpreadsheetExporter.Renderer.ClosedXML, 3.1.0"
 
 using System;
 using System.Collections.Generic;
