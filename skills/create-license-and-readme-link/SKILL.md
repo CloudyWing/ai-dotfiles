@@ -58,9 +58,11 @@ disable-model-invocation: true
 
 ### 4. 建立 LICENSE 檔案
 
-- 使用使用者選定的授權。
-- 從公開來源取得該授權的標準全文（若 WebFetch 可用）；若無法取得，告知使用者自行複製。
-- 替換授權文本中的 `[year]`（填入當前年份）與 `[fullname]`（詢問使用者或從 `git config user.name` 取得）。
+授權取得策略：
+
+1. **MIT 走本地範本**：若使用者選擇 MIT，優先讀取 `~/.ai-agents/templates/LICENSE.md.template`（含使用者預設姓名），僅替換 `{YEAR}` 為當前年份。不需詢問 fullname。
+2. **其他授權走線上來源**：從公開來源取得該授權的標準全文（若 WebFetch 可用）；若無法取得，告知使用者自行複製。替換授權文本中的 `[year]`（填入當前年份）與 `[fullname]`（詢問使用者或從 `git config user.name` 取得）。
+
 - 檔案名稱固定為 `LICENSE.md`，儲存於專案根目錄。
 - 編碼：UTF-8 無 BOM。
 

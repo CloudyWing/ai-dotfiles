@@ -82,7 +82,7 @@ applyTo: "**/*"
 ### 1.4 Work State Management
 
 - **觸發時機 (Trigger Condition)**：AI 不會每個對話回合都更新狀態，**僅在使用者明確表示「任務結束」、「告一段落」、「幫我總結」，或 AI 準備輸出最終 Closure Report 時**，才必須執行下列盤點。
-- **狀態儲存（State Handoff）**：`CONTEXT.local.md` 為**可選**的本機交接檔，僅用於保存**耐久且跨 Session 仍有價值**的資訊，例如環境前置作業、本機路徑差異、已知陷阱、易踩雷設定。**不預設承載當前進度、短期 TODO 或本輪實作清單**。寫入時採用 `templates/CONTEXT.local.md` 的標準化結構。
+- **狀態儲存（State Handoff）**：`CONTEXT.local.md` 為**可選**的本機交接檔，僅用於保存**耐久且跨 Session 仍有價值**的資訊，例如環境前置作業、本機路徑差異、已知陷阱、易踩雷設定。**不預設承載當前進度、短期 TODO 或本輪實作清單**。寫入時採用 `~/.ai-agents/templates/CONTEXT.local.md.template` 的標準化結構。
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
 - **工作產物落點（Artifact Placement）**：agent 執行任務過程中產生的檔案，依用途分三類存放，不散落於 process cwd 或系統暫存目錄：

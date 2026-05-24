@@ -4,7 +4,7 @@ root = true
 # 通用基礎設定
 [*]
 charset = utf-8
-end_of_line = crlf
+end_of_line = lf
 insert_final_newline = true
 trim_trailing_whitespace = true
 
@@ -25,17 +25,18 @@ indent_size = 4
 # PowerShell 腳本
 [*.ps1]
 charset = utf-8-bom
+end_of_line = crlf
 indent_style = space
 indent_size = 4
 
 # Excel 與舊平台相容性檔案
 [*.{csv,bat,cmd}]
 charset = utf-8-bom
+end_of_line = crlf
 
 #### .NET / C# 共用規則（適用 C# 和 VB） ####
 
 [*.{cs,vb}]
-end_of_line = crlf
 tab_width = 4
 indent_size = 4
 

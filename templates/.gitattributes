@@ -1,0 +1,58 @@
+# 預設所有文字檔使用 LF，二進位檔不轉換
+* text=auto eol=lf
+
+# Windows 專用腳本維持 CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Unix 腳本與 git hooks 強制 LF
+*.sh text eol=lf
+.githooks/* text eol=lf
+
+# 容器與 CI（Linux 環境，必須 LF）
+Dockerfile text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# SVG 是 XML 文字，需要 diff
+*.svg text
+
+# Lock files 不計入語言統計，PR diff 不展開
+package-lock.json -diff linguist-generated
+pnpm-lock.yaml -diff linguist-generated
+yarn.lock -diff linguist-generated
+Pipfile.lock -diff linguist-generated
+poetry.lock -diff linguist-generated
+composer.lock -diff linguist-generated
+Cargo.lock -diff linguist-generated
+
+# 圖片
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.bmp binary
+*.tiff binary
+
+# 字型
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+
+# 文件
+*.pdf binary
+*.docx binary
+*.xlsx binary
+*.pptx binary
+
+# 壓縮與執行檔
+*.zip binary
+*.7z binary
+*.gz binary
+*.tar.gz binary
+*.dll binary
+*.exe binary
+*.so binary

@@ -34,7 +34,6 @@ $RECYCLE.BIN/
 # ---- 本地工作檔案（不應 commit）----
 # Session 上下文交接
 *.local.md
-!templates/CONTEXT.local.md
 
 # 跨 Agent 交接目錄
 .local/
