@@ -16,29 +16,29 @@ description: 'Vue 3 開發規範：Composition API、<script setup>、Composable
 ```vue
 <!-- ✅ 正確 -->
 <script setup lang="ts">
-import { ref, computed } from 'vue'
-import type { Order } from '@/types/order'
+import { ref, computed } from 'vue';
+import type { Order } from '@/types/order';
 
 const props = defineProps<{
-  orderId: number
-}>()
+  orderId: number;
+}>();
 
 const emit = defineEmits<{
-  update: [order: Order]
-  delete: [id: number]
-}>()
+  update: [order: Order];
+  delete: [id: number];
+}>();
 
-const count = ref(0)
-const doubled = computed(() => count.value * 2)
+const count = ref(0);
+const doubled = computed(() => count.value * 2);
 </script>
 
 <!-- ❌ 錯誤：Options API -->
 <script lang="ts">
 export default {
   data() {
-    return { count: 0 }
+    return { count: 0 };
   }
-}
+};
 </script>
 ```
 
@@ -52,24 +52,24 @@ export default {
 ```typescript
 // ✅ 正確：Type-based
 const props = defineProps<{
-  title: string
-  count?: number
-  items: ReadonlyArray<Item>
-}>()
+  title: string;
+  count?: number;
+  items: ReadonlyArray<Item>;
+}>();
 
 // ✅ 帶預設值
 const props = withDefaults(defineProps<{
-  title: string
-  count?: number
+  title: string;
+  count?: number;
 }>(), {
   count: 0
-})
+});
 
 // ❌ 錯誤：Runtime 宣告
 const props = defineProps({
   title: { type: String, required: true },
   count: { type: Number, default: 0 }
-})
+});
 ```
 
 ### defineModel（Vue 3.4+）
@@ -79,8 +79,8 @@ const props = defineProps({
 ```vue
 <script setup lang="ts">
 // ✅ 簡潔的 v-model 支援
-const modelValue = defineModel<string>({ required: true })
-const title = defineModel<string>('title')
+const modelValue = defineModel<string>({ required: true });
+const title = defineModel<string>('title');
 </script>
 ```
 
@@ -136,32 +136,32 @@ const title = defineModel<string>('title')
 
 ```typescript
 // composables/useOrderList.ts
-import { ref, computed, onMounted } from 'vue'
-import type { Order } from '@/types/order'
-import { orderApi } from '@/api/order'
+import { ref, computed, onMounted } from 'vue';
+import type { Order } from '@/types/order';
+import { orderApi } from '@/api/order';
 
 export function useOrderList() {
-  const orders = ref<Order[]>([])
-  const isLoading = ref(false)
-  const error = ref<string | null>(null)
+  const orders = ref<Order[]>([]);
+  const isLoading = ref(false);
+  const error = ref<string | null>(null);
 
   const pendingOrders = computed(() =>
     orders.value.filter(o => o.status === 'pending')
-  )
+  );
 
   async function fetchOrders() {
-    isLoading.value = true
-    error.value = null
+    isLoading.value = true;
+    error.value = null;
     try {
-      orders.value = await orderApi.getAll()
+      orders.value = await orderApi.getAll();
     } catch (e) {
-      error.value = e instanceof Error ? e.message : '載入失敗'
+      error.value = e instanceof Error ? e.message : '載入失敗';
     } finally {
-      isLoading.value = false
+      isLoading.value = false;
     }
   }
 
-  onMounted(fetchOrders)
+  onMounted(fetchOrders);
 
   return {
     orders: computed(() => orders.value),
@@ -169,7 +169,7 @@ export function useOrderList() {
     isLoading: computed(() => isLoading.value),
     error: computed(() => error.value),
     fetchOrders
-  }
+  };
 }
 ```
 
@@ -191,16 +191,16 @@ export function useOrderList() {
 
 ```typescript
 // ✅ 預設用 ref
-const count = ref(0)
-const user = ref<User | null>(null)
-const items = ref<Item[]>([])
+const count = ref(0);
+const user = ref<User | null>(null);
+const items = ref<Item[]>([]);
 
 // ❌ 錯誤：reactive 整體重新賦值
-const state = reactive({ items: [] as Item[] })
-state = reactive({ items: newItems }) // 斷開響應式
+const state = reactive({ items: [] as Item[] });
+state = reactive({ items: newItems }); // 斷開響應式
 
 // ✅ 若用 reactive，修改屬性
-state.items = newItems
+state.items = newItems;
 ```
 
 ### computed vs watch
@@ -215,19 +215,19 @@ state.items = newItems
 
 ```typescript
 // ✅ computed：衍生值
-const fullName = computed(() => `${firstName.value} ${lastName.value}`)
+const fullName = computed(() => `${firstName.value} ${lastName.value}`);
 
 // ✅ watch：副作用
 watch(selectedId, async (newId) => {
   if (newId) {
-    detail.value = await fetchDetail(newId)
+    detail.value = await fetchDetail(newId);
   }
-})
+});
 
 // ✅ watchEffect：自動追蹤依賴
 watchEffect(() => {
-  console.log(`目前選取：${selectedId.value}`)
-})
+  console.log(`目前選取：${selectedId.value}`);
+});
 ```
 
 ## Template 規範
@@ -270,9 +270,9 @@ watchEffect(() => {
 
 ```typescript
 // vite.config.ts
-import { defineConfig } from 'vite'
-import vue from '@vitejs/plugin-vue'
-import { fileURLToPath, URL } from 'node:url'
+import { defineConfig } from 'vite';
+import vue from '@vitejs/plugin-vue';
+import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
   plugins: [vue()],
@@ -290,7 +290,7 @@ export default defineConfig({
       }
     }
   }
-})
+});
 ```
 
 ### 路徑別名
@@ -306,10 +306,10 @@ export default defineConfig({
 
 ```typescript
 // ✅ 使用環境變數
-const apiBase = import.meta.env.VITE_API_BASE_URL
+const apiBase = import.meta.env.VITE_API_BASE_URL;
 
 // ❌ 機密不可放前端環境變數
-const apiKey = import.meta.env.VITE_API_SECRET_KEY // 會暴露在 bundle 中
+const apiKey = import.meta.env.VITE_API_SECRET_KEY; // 會暴露在 bundle 中
 ```
 
 ### Build 最佳化
@@ -320,12 +320,12 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ['vue', 'vue-router', 'pinia'],
+          vendor: ['vue', 'vue-router', 'pinia']
         }
       }
     }
   }
-})
+});
 ```
 
 - 第三方套件拆為獨立 chunk（`vendor`），利用瀏覽器快取。

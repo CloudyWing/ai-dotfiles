@@ -15,47 +15,47 @@ description: 'Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨
 
 ```typescript
 // stores/order.ts
-import { ref, computed } from 'vue'
-import { defineStore } from 'pinia'
-import type { Order } from '@/types/order'
-import { orderApi } from '@/api/order'
+import { ref, computed } from 'vue';
+import { defineStore } from 'pinia';
+import type { Order } from '@/types/order';
+import { orderApi } from '@/api/order';
 
 export const useOrderStore = defineStore('order', () => {
   // State
-  const orders = ref<Order[]>([])
-  const isLoading = ref(false)
-  const error = ref<string | null>(null)
+  const orders = ref<Order[]>([]);
+  const isLoading = ref(false);
+  const error = ref<string | null>(null);
 
   // Getters
   const pendingOrders = computed(() =>
     orders.value.filter(o => o.status === 'pending')
-  )
-  const orderCount = computed(() => orders.value.length)
+  );
+  const orderCount = computed(() => orders.value.length);
 
   // Actions
   async function fetchOrders() {
-    isLoading.value = true
-    error.value = null
+    isLoading.value = true;
+    error.value = null;
     try {
-      orders.value = await orderApi.getAll()
+      orders.value = await orderApi.getAll();
     } catch (e) {
-      error.value = e instanceof Error ? e.message : '載入失敗'
-      throw e
+      error.value = e instanceof Error ? e.message : '載入失敗';
+      throw e;
     } finally {
-      isLoading.value = false
+      isLoading.value = false;
     }
   }
 
   async function createOrder(input: CreateOrderInput) {
-    const newOrder = await orderApi.create(input)
-    orders.value.push(newOrder)
-    return newOrder
+    const newOrder = await orderApi.create(input);
+    orders.value.push(newOrder);
+    return newOrder;
   }
 
   function $reset() {
-    orders.value = []
-    isLoading.value = false
-    error.value = null
+    orders.value = [];
+    isLoading.value = false;
+    error.value = null;
   }
 
   return {
@@ -69,9 +69,9 @@ export const useOrderStore = defineStore('order', () => {
     // Actions
     fetchOrders,
     createOrder,
-    $reset,
-  }
-})
+    $reset
+  };
+});
 ```
 
 ### Options Store（僅限既有專案）
@@ -82,15 +82,15 @@ export const useOrderStore = defineStore('order', () => {
 // ❌ 避免在新專案使用
 export const useOrderStore = defineStore('order', {
   state: () => ({
-    orders: [] as Order[],
+    orders: [] as Order[]
   }),
   getters: {
-    pendingOrders: (state) => state.orders.filter(o => o.status === 'pending'),
+    pendingOrders: (state) => state.orders.filter(o => o.status === 'pending')
   },
   actions: {
-    async fetchOrders() { /* ... */ },
-  },
-})
+    async fetchOrders() { /* ... */ }
+  }
+});
 ```
 
 ## 命名慣例
@@ -130,18 +130,18 @@ stores/
 // stores/order.ts
 export const useOrderStore = defineStore('order', () => {
   async function createOrder(input: CreateOrderInput) {
-    const newOrder = await orderApi.create(input)
-    orders.value.push(newOrder)
+    const newOrder = await orderApi.create(input);
+    orders.value.push(newOrder);
 
     // ✅ 在 Action 內部使用其他 Store
-    const notificationStore = useNotificationStore()
-    notificationStore.showSuccess('訂單建立成功')
+    const notificationStore = useNotificationStore();
+    notificationStore.showSuccess('訂單建立成功');
 
-    return newOrder
+    return newOrder;
   }
 
-  return { createOrder }
-})
+  return { createOrder };
+});
 ```
 
 - 跨 Store 呼叫**必須**在 Action 函式內部取得 Store 實例，不在模組頂層。
@@ -153,16 +153,16 @@ export const useOrderStore = defineStore('order', () => {
 
 ```vue
 <script setup lang="ts">
-import { useOrderStore } from '@/stores/order'
-import { storeToRefs } from 'pinia'
+import { useOrderStore } from '@/stores/order';
+import { storeToRefs } from 'pinia';
 
-const orderStore = useOrderStore()
+const orderStore = useOrderStore();
 
 // ✅ storeToRefs：解構 State 與 Getter，保持響應式
-const { orders, pendingOrders, isLoading, error } = storeToRefs(orderStore)
+const { orders, pendingOrders, isLoading, error } = storeToRefs(orderStore);
 
 // ✅ Action 直接解構（函式不需要響應式）
-const { fetchOrders, createOrder } = orderStore
+const { fetchOrders, createOrder } = orderStore;
 </script>
 ```
 
@@ -170,14 +170,14 @@ const { fetchOrders, createOrder } = orderStore
 
 ```typescript
 // ❌ 錯誤：直接解構 State 會失去響應式
-const { orders, isLoading } = orderStore // orders 不再響應
+const { orders, isLoading } = orderStore; // orders 不再響應
 
 // ✅ 正確：使用 storeToRefs
-const { orders, isLoading } = storeToRefs(orderStore)
+const { orders, isLoading } = storeToRefs(orderStore);
 
 // ✅ 正確：不解構，直接用 store 存取
-orderStore.orders
-orderStore.isLoading
+orderStore.orders;
+orderStore.isLoading;
 ```
 
 ## $reset 實作
@@ -186,17 +186,17 @@ Setup Store 不像 Options Store 自帶 `$reset()`，必須手動實作。
 
 ```typescript
 export const useOrderStore = defineStore('order', () => {
-  const orders = ref<Order[]>([])
-  const currentPage = ref(1)
+  const orders = ref<Order[]>([]);
+  const currentPage = ref(1);
 
   // ✅ 手動實作 $reset
   function $reset() {
-    orders.value = []
-    currentPage.value = 1
+    orders.value = [];
+    currentPage.value = 1;
   }
 
-  return { orders, currentPage, $reset }
-})
+  return { orders, currentPage, $reset };
+});
 ```
 
 - 在登出或頁面切換時呼叫 `$reset()` 清除狀態，防止資料洩漏。
@@ -205,26 +205,26 @@ export const useOrderStore = defineStore('order', () => {
 
 ```typescript
 export const useOrderStore = defineStore('order', () => {
-  const orders = ref<Order[]>([])
-  const isLoading = ref(false)
-  const error = ref<string | null>(null)
+  const orders = ref<Order[]>([]);
+  const isLoading = ref(false);
+  const error = ref<string | null>(null);
 
   // ✅ 非同步 Action 模式
   async function fetchOrders() {
-    isLoading.value = true
-    error.value = null
+    isLoading.value = true;
+    error.value = null;
     try {
-      orders.value = await orderApi.getAll()
+      orders.value = await orderApi.getAll();
     } catch (e) {
-      error.value = e instanceof Error ? e.message : '載入訂單失敗'
-      throw e // 重新拋出，讓元件決定是否顯示 Toast
+      error.value = e instanceof Error ? e.message : '載入訂單失敗';
+      throw e; // 重新拋出，讓元件決定是否顯示 Toast
     } finally {
-      isLoading.value = false
+      isLoading.value = false;
     }
   }
 
-  return { orders, isLoading, error, fetchOrders }
-})
+  return { orders, isLoading, error, fetchOrders };
+});
 ```
 
 - 每個非同步 Action 搭配 `isLoading` 和 `error` 狀態。
@@ -236,26 +236,26 @@ export const useOrderStore = defineStore('order', () => {
 
 ```typescript
 // main.ts
-import { createPinia } from 'pinia'
-import piniaPluginPersistedstate from 'pinia-plugin-persistedstate'
+import { createPinia } from 'pinia';
+import piniaPluginPersistedstate from 'pinia-plugin-persistedstate';
 
-const pinia = createPinia()
-pinia.use(piniaPluginPersistedstate)
+const pinia = createPinia();
+pinia.use(piniaPluginPersistedstate);
 ```
 
 ```typescript
 // 需要持久化的 Store
 export const useAuthStore = defineStore('auth', () => {
-  const token = ref<string | null>(null)
-  const user = ref<User | null>(null)
+  const token = ref<string | null>(null);
+  const user = ref<User | null>(null);
 
-  return { token, user }
+  return { token, user };
 }, {
   persist: {
     pick: ['token'], // 僅持久化 Token，不持久化完整 User
-    storage: localStorage,
-  },
-})
+    storage: localStorage
+  }
+});
 ```
 
 ### 持久化原則
@@ -267,21 +267,21 @@ export const useAuthStore = defineStore('auth', () => {
 ## 測試
 
 ```typescript
-import { setActivePinia, createPinia } from 'pinia'
-import { useOrderStore } from '@/stores/order'
+import { setActivePinia, createPinia } from 'pinia';
+import { useOrderStore } from '@/stores/order';
 
 describe('useOrderStore', () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
-  })
+    setActivePinia(createPinia());
+  });
 
   it('fetchOrders should populate orders', async () => {
-    const store = useOrderStore()
+    const store = useOrderStore();
     // Mock API...
-    await store.fetchOrders()
-    expect(store.orders).toHaveLength(3)
-  })
-})
+    await store.fetchOrders();
+    expect(store.orders).toHaveLength(3);
+  });
+});
 ```
 
 - 每個測試前呼叫 `setActivePinia(createPinia())` 建立全新的 Pinia 實例。

@@ -12,9 +12,9 @@ description: '前端測試規範：Vitest 設定、Vue 元件測試、Composable
 ### vitest.config.ts
 
 ```typescript
-import { defineConfig } from 'vitest/config'
-import vue from '@vitejs/plugin-vue'
-import { fileURLToPath, URL } from 'node:url'
+import { defineConfig } from 'vitest/config';
+import vue from '@vitejs/plugin-vue';
+import { fileURLToPath, URL } from 'node:url';
 
 export default defineConfig({
   plugins: [vue()],
@@ -34,7 +34,7 @@ export default defineConfig({
       exclude: ['src/**/*.d.ts', 'src/**/*.test.ts', 'src/main.ts']
     }
   }
-})
+});
 ```
 
 - `globals: true`：啟用全域 API（`describe`、`it`、`expect`），不需逐一 import。
@@ -52,16 +52,16 @@ describe('OrderService', () => {
     // Arrange
     const items: OrderItem[] = [
       { productId: 1, quantity: 2, unitPrice: 100 },
-      { productId: 2, quantity: 1, unitPrice: 200 },
-    ]
+      { productId: 2, quantity: 1, unitPrice: 200 }
+    ];
 
     // Act
-    const total = calculateTotal(items, 0.05)
+    const total = calculateTotal(items, 0.05);
 
     // Assert
-    expect(total).toBe(420)
-  })
-})
+    expect(total).toBe(420);
+  });
+});
 ```
 
 - 三個區塊間空一行，不加 `// Arrange`、`// Act`、`// Assert` 註解。
@@ -76,10 +76,10 @@ describe('OrderService', () => {
 
 // 測試描述：使用 should + 動詞
 describe('useOrderList', () => {
-  it('should fetch orders on mount', () => {})
-  it('should filter pending orders', () => {})
-  it('should handle fetch error gracefully', () => {})
-})
+  it('should fetch orders on mount', () => {});
+  it('should filter pending orders', () => {});
+  it('should handle fetch error gracefully', () => {});
+});
 ```
 
 ### 測試檔案位置
@@ -102,9 +102,9 @@ src/
 ### 基本結構
 
 ```typescript
-import { describe, it, expect } from 'vitest'
-import { mount } from '@vue/test-utils'
-import OrderCard from '@/components/OrderCard.vue'
+import { describe, it, expect } from 'vitest';
+import { mount } from '@vue/test-utils';
+import OrderCard from '@/components/OrderCard.vue';
 
 describe('OrderCard', () => {
   it('should render order title', () => {
@@ -113,27 +113,27 @@ describe('OrderCard', () => {
         order: {
           id: 1,
           title: '測試訂單',
-          status: 'pending',
+          status: 'pending'
         }
       }
-    })
+    });
 
-    expect(wrapper.text()).toContain('測試訂單')
-  })
+    expect(wrapper.text()).toContain('測試訂單');
+  });
 
   it('should emit delete event when delete button clicked', async () => {
     const wrapper = mount(OrderCard, {
       props: {
         order: { id: 1, title: '測試', status: 'pending' }
       }
-    })
+    });
 
-    await wrapper.find('[data-testid="delete-btn"]').trigger('click')
+    await wrapper.find('[data-testid="delete-btn"]').trigger('click');
 
-    expect(wrapper.emitted('delete')).toHaveLength(1)
-    expect(wrapper.emitted('delete')![0]).toEqual([1])
-  })
-})
+    expect(wrapper.emitted('delete')).toHaveLength(1);
+    expect(wrapper.emitted('delete')![0]).toEqual([1]);
+  });
+});
 ```
 
 ### 測試選擇器
@@ -149,24 +149,24 @@ describe('OrderCard', () => {
 ### 全域插件與 Mock
 
 ```typescript
-import { createTestingPinia } from '@pinia/testing'
-import { createRouter, createMemoryHistory } from 'vue-router'
+import { createTestingPinia } from '@pinia/testing';
+import { createRouter, createMemoryHistory } from 'vue-router';
 
 function mountWithPlugins(component: Component, options = {}) {
   return mount(component, {
     global: {
       plugins: [
         createTestingPinia({
-          createSpy: vi.fn,
+          createSpy: vi.fn
         }),
         createRouter({
           history: createMemoryHistory(),
-          routes: [{ path: '/', component: { template: '<div />' } }],
-        }),
-      ],
+          routes: [{ path: '/', component: { template: '<div />' } }]
+        })
+      ]
     },
-    ...options,
-  })
+    ...options
+  });
 }
 ```
 
@@ -175,42 +175,42 @@ function mountWithPlugins(component: Component, options = {}) {
 ### 獨立測試（不依賴元件）
 
 ```typescript
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { useOrderList } from '@/composables/useOrderList'
-import { orderApi } from '@/api/order'
-import { flushPromises } from '@vue/test-utils'
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { useOrderList } from '@/composables/useOrderList';
+import { orderApi } from '@/api/order';
+import { flushPromises } from '@vue/test-utils';
 
-vi.mock('@/api/order')
+vi.mock('@/api/order');
 
 describe('useOrderList', () => {
   beforeEach(() => {
-    vi.clearAllMocks()
-  })
+    vi.clearAllMocks();
+  });
 
   it('should fetch orders on initialization', async () => {
     const mockOrders = [
       { id: 1, title: '訂單 A', status: 'pending' },
-      { id: 2, title: '訂單 B', status: 'completed' },
-    ]
-    vi.mocked(orderApi.getAll).mockResolvedValue(mockOrders)
+      { id: 2, title: '訂單 B', status: 'completed' }
+    ];
+    vi.mocked(orderApi.getAll).mockResolvedValue(mockOrders);
 
-    const { orders, isLoading } = useOrderList()
+    const { orders, isLoading } = useOrderList();
 
-    expect(isLoading.value).toBe(true)
-    await flushPromises()
-    expect(isLoading.value).toBe(false)
-    expect(orders.value).toEqual(mockOrders)
-  })
+    expect(isLoading.value).toBe(true);
+    await flushPromises();
+    expect(isLoading.value).toBe(false);
+    expect(orders.value).toEqual(mockOrders);
+  });
 
   it('should handle fetch error', async () => {
-    vi.mocked(orderApi.getAll).mockRejectedValue(new Error('Network Error'))
+    vi.mocked(orderApi.getAll).mockRejectedValue(new Error('Network Error'));
 
-    const { error } = useOrderList()
+    const { error } = useOrderList();
 
-    await flushPromises()
-    expect(error.value).toBe('Network Error')
-  })
-})
+    await flushPromises();
+    expect(error.value).toBe('Network Error');
+  });
+});
 ```
 
 ### 需要 Vue 生命週期的 Composable
@@ -218,22 +218,22 @@ describe('useOrderList', () => {
 若 Composable 使用 `onMounted` 等生命週期 Hook，需要在元件 setup 中執行：
 
 ```typescript
-import { withSetup } from '@/test-utils/withSetup'
+import { withSetup } from '@/test-utils/withSetup';
 
 function withSetup<T>(composable: () => T) {
-  let result: T
+  let result: T;
   const app = createApp({
     setup() {
-      result = composable()
-      return () => {}
+      result = composable();
+      return () => {};
     }
-  })
-  app.mount(document.createElement('div'))
-  return { result: result!, app }
+  });
+  app.mount(document.createElement('div'));
+  return { result: result!, app };
 }
 
 // 使用
-const { result } = withSetup(() => useOrderList())
+const { result } = withSetup(() => useOrderList());
 ```
 
 ## Mock 策略
@@ -246,12 +246,12 @@ vi.mock('@/api/order', () => ({
   orderApi: {
     getAll: vi.fn(),
     create: vi.fn(),
-    delete: vi.fn(),
+    delete: vi.fn()
   }
-}))
+}));
 
 // 或自動 Mock（所有匯出替換為 vi.fn()）
-vi.mock('@/api/order')
+vi.mock('@/api/order');
 ```
 
 ### Timer Mock
@@ -259,23 +259,23 @@ vi.mock('@/api/order')
 ```typescript
 describe('debounced search', () => {
   beforeEach(() => {
-    vi.useFakeTimers()
-  })
+    vi.useFakeTimers();
+  });
 
   afterEach(() => {
-    vi.useRealTimers()
-  })
+    vi.useRealTimers();
+  });
 
   it('should debounce search input', async () => {
-    const { search } = useSearch()
+    const { search } = useSearch();
 
-    search('test')
-    expect(searchApi.query).not.toHaveBeenCalled()
+    search('test');
+    expect(searchApi.query).not.toHaveBeenCalled();
 
-    vi.advanceTimersByTime(300)
-    expect(searchApi.query).toHaveBeenCalledWith('test')
-  })
-})
+    vi.advanceTimersByTime(300);
+    expect(searchApi.query).toHaveBeenCalledWith('test');
+  });
+});
 ```
 
 ### API Mock
@@ -287,80 +287,80 @@ vi.mock('@/lib/axios', () => ({
     get: vi.fn(),
     post: vi.fn(),
     put: vi.fn(),
-    delete: vi.fn(),
+    delete: vi.fn()
   }
-}))
+}));
 ```
 
 ## Pinia Store 測試
 
 ```typescript
-import { setActivePinia, createPinia } from 'pinia'
-import { useOrderStore } from '@/stores/order'
+import { setActivePinia, createPinia } from 'pinia';
+import { useOrderStore } from '@/stores/order';
 
-vi.mock('@/api/order')
+vi.mock('@/api/order');
 
 describe('useOrderStore', () => {
   beforeEach(() => {
-    setActivePinia(createPinia())
-    vi.clearAllMocks()
-  })
+    setActivePinia(createPinia());
+    vi.clearAllMocks();
+  });
 
   it('should fetch and store orders', async () => {
-    const mockOrders = [{ id: 1, title: '訂單 A', status: 'pending' }]
-    vi.mocked(orderApi.getAll).mockResolvedValue(mockOrders)
+    const mockOrders = [{ id: 1, title: '訂單 A', status: 'pending' }];
+    vi.mocked(orderApi.getAll).mockResolvedValue(mockOrders);
 
-    const store = useOrderStore()
-    await store.fetchOrders()
+    const store = useOrderStore();
+    await store.fetchOrders();
 
-    expect(store.orders).toEqual(mockOrders)
-    expect(store.isLoading).toBe(false)
-  })
+    expect(store.orders).toEqual(mockOrders);
+    expect(store.isLoading).toBe(false);
+  });
 
   it('should compute pending orders', async () => {
-    const store = useOrderStore()
+    const store = useOrderStore();
     store.orders = [
       { id: 1, status: 'pending' },
       { id: 2, status: 'completed' },
-      { id: 3, status: 'pending' },
-    ] as Order[]
+      { id: 3, status: 'pending' }
+    ] as Order[];
 
-    expect(store.pendingOrders).toHaveLength(2)
-  })
-})
+    expect(store.pendingOrders).toHaveLength(2);
+  });
+});
 ```
 
 ## 斷言最佳實踐
 
 ```typescript
 // ✅ 具體斷言
-expect(result).toBe(42)                    // 嚴格相等
-expect(result).toEqual({ id: 1, name: 'A' }) // 深度相等
-expect(list).toHaveLength(3)
-expect(wrapper.text()).toContain('訂單')
-expect(fn).toHaveBeenCalledWith(1, 'test')
-expect(fn).toHaveBeenCalledTimes(1)
+expect(result).toBe(42);                    // 嚴格相等
+expect(result).toEqual({ id: 1, name: 'A' }); // 深度相等
+expect(list).toHaveLength(3);
+expect(wrapper.text()).toContain('訂單');
+expect(fn).toHaveBeenCalledWith(1, 'test');
+expect(fn).toHaveBeenCalledTimes(1);
 
 // ❌ 避免模糊斷言
-expect(result).toBeTruthy()                // 不具體
-expect(list.length > 0).toBe(true)         // 用 toHaveLength
+expect(result).toBeTruthy();                // 不具體
+expect(list.length > 0).toBe(true);         // 用 toHaveLength
 ```
 
 ## 禁止模式
 
 ```typescript
 // ❌ 測試實作細節（元件內部 ref 的值）
-expect(wrapper.vm.internalCount).toBe(3)
+expect(wrapper.vm.internalCount).toBe(3);
 
 // ✅ 測試行為與輸出
-expect(wrapper.text()).toContain('3')
+expect(wrapper.text()).toContain('3');
 
 // ❌ 快照測試濫用（UI 頻繁變動時快照會不斷失敗）
-expect(wrapper.html()).toMatchSnapshot()
+expect(wrapper.html()).toMatchSnapshot();
 
 // ❌ 不寫斷言的測試
 it('should work', () => {
-  const result = doSomething()
+  const result = doSomething();
   // 沒有 expect
-})
+});
 ```

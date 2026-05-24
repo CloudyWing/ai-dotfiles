@@ -39,17 +39,17 @@ description: '前端 TypeScript 規範：strict 模式、型別設計、泛型�
 ```typescript
 // ✅ interface：物件形狀
 interface Order {
-  id: number
-  customerName: string
-  items: ReadonlyArray<OrderItem>
-  note?: string
+  id: number;
+  customerName: string;
+  items: ReadonlyArray<OrderItem>;
+  note?: string;
 }
 
 // ✅ type：聯合型別
-type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled'
+type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled';
 
 // ✅ type：複雜型別操作
-type PartialOrder = Partial<Pick<Order, 'customerName' | 'note'>>
+type PartialOrder = Partial<Pick<Order, 'customerName' | 'note'>>;
 ```
 
 - 同一專案中選定一種作為物件定義的預設，保持一致。
@@ -60,7 +60,7 @@ type PartialOrder = Partial<Pick<Order, 'customerName' | 'note'>>
 ```typescript
 // ❌ 禁止
 function process(data: any) { }
-const result: any = fetchData()
+const result: any = fetchData();
 
 // ✅ 替代方案
 function process(data: unknown) {
@@ -81,7 +81,7 @@ function process<T>(data: T): T { }
 
 ```typescript
 // ❌ 避免：型別斷言（跳過檢查）
-const order = response.data as Order
+const order = response.data as Order;
 
 // ✅ 正確：使用 Type Guard 做執行期驗證
 function isOrder(data: unknown): data is Order {
@@ -90,7 +90,7 @@ function isOrder(data: unknown): data is Order {
     && data !== null
     && 'id' in data
     && 'customerName' in data
-  )
+  );
 }
 
 if (isOrder(response.data)) {
@@ -109,31 +109,31 @@ if (isOrder(response.data)) {
 // typeof guard
 function formatValue(value: string | number): string {
   if (typeof value === 'string') {
-    return value.toUpperCase()
+    return value.toUpperCase();
   }
-  return value.toFixed(2)
+  return value.toFixed(2);
 }
 
 // in operator
 function getArea(shape: Circle | Rectangle): number {
   if ('radius' in shape) {
-    return Math.PI * shape.radius ** 2
+    return Math.PI * shape.radius ** 2;
   }
-  return shape.width * shape.height
+  return shape.width * shape.height;
 }
 
 // Discriminated Union（推薦）
 type ApiResult<T> =
   | { success: true; data: T }
-  | { success: false; error: string }
+  | { success: false; error: string };
 
 function handleResult(result: ApiResult<Order>) {
   if (result.success) {
     // result.data 可用
-    console.log(result.data.id)
+    console.log(result.data.id);
   } else {
     // result.error 可用
-    console.error(result.error)
+    console.error(result.error);
   }
 }
 ```
@@ -157,14 +157,14 @@ enum Status {
 const Status = {
   Pending: 'pending',
   Active: 'active',
-  Closed: 'closed',
-} as const
+  Closed: 'closed'
+} as const;
 
-type Status = typeof Status[keyof typeof Status]
+type Status = typeof Status[keyof typeof Status];
 // => 'pending' | 'active' | 'closed'
 
 // ✅ 簡單場景直接用聯合型別
-type Status = 'pending' | 'active' | 'closed'
+type Status = 'pending' | 'active' | 'closed';
 ```
 
 - TypeScript `enum` 產生額外的 IIFE 程式碼，增加 bundle 大小。
@@ -177,13 +177,13 @@ type Status = 'pending' | 'active' | 'closed'
 ```vue
 <script setup lang="ts" generic="T">
 defineProps<{
-  items: ReadonlyArray<T>
-  selected?: T
-}>()
+  items: ReadonlyArray<T>;
+  selected?: T;
+}>();
 
 const emit = defineEmits<{
-  select: [item: T]
-}>()
+  select: [item: T];
+}>();
 </script>
 ```
 
@@ -195,16 +195,16 @@ function groupBy<T, K extends string | number>(
   items: ReadonlyArray<T>,
   keyFn: (item: T) => K
 ): Record<K, T[]> {
-  const result = {} as Record<K, T[]>
+  const result = {} as Record<K, T[]>;
   for (const item of items) {
-    const key = keyFn(item)
-    ;(result[key] ??= []).push(item)
+    const key = keyFn(item);
+    (result[key] ??= []).push(item);
   }
-  return result
+  return result;
 }
 
 // 使用時自動推斷型別
-const grouped = groupBy(orders, o => o.status)
+const grouped = groupBy(orders, o => o.status);
 ```
 
 - 泛型參數只在需要關聯多個位置的型別時使用，不為了泛型而泛型。
@@ -226,8 +226,8 @@ const grouped = groupBy(orders, o => o.status)
 
 ```typescript
 // 常見組合
-type CreateOrderInput = Omit<Order, 'id' | 'createdAt'>
-type OrderUpdate = Partial<Pick<Order, 'customerName' | 'note'>>
+type CreateOrderInput = Omit<Order, 'id' | 'createdAt'>;
+type OrderUpdate = Partial<Pick<Order, 'customerName' | 'note'>>;
 ```
 
 ## 型別檔案組織
@@ -247,18 +247,18 @@ src/types/
 ```typescript
 // types/order.ts
 export interface Order {
-  id: number
-  customerName: string
-  items: ReadonlyArray<OrderItem>
+  id: number;
+  customerName: string;
+  items: ReadonlyArray<OrderItem>;
 }
 
 export interface OrderItem {
-  productId: number
-  quantity: number
-  unitPrice: number
+  productId: number;
+  quantity: number;
+  unitPrice: number;
 }
 
-export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled'
+export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled';
 ```
 
 ## 非同步型別安全
@@ -266,21 +266,21 @@ export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled'
 ```typescript
 // ✅ API 回應型別
 interface ApiResponse<T> {
-  data: T
-  message: string
+  data: T;
+  message: string;
 }
 
 interface PaginatedResponse<T> {
-  data: ReadonlyArray<T>
-  total: number
-  page: number
-  pageSize: number
+  data: ReadonlyArray<T>;
+  total: number;
+  page: number;
+  pageSize: number;
 }
 
 // ✅ 非同步函式回傳型別明確標註
 async function fetchOrder(id: number): Promise<Order> {
-  const response = await api.get<ApiResponse<Order>>(`/orders/${id}`)
-  return response.data.data
+  const response = await api.get<ApiResponse<Order>>(`/orders/${id}`);
+  return response.data.data;
 }
 ```
 
@@ -289,31 +289,31 @@ async function fetchOrder(id: number): Promise<Order> {
 ### 元件實例型別
 
 ```typescript
-import type { ComponentPublicInstance } from 'vue'
+import type { ComponentPublicInstance } from 'vue';
 
 // Template Ref 型別
-const formRef = ref<InstanceType<typeof MyForm> | null>(null)
+const formRef = ref<InstanceType<typeof MyForm> | null>(null);
 
 // 使用
-formRef.value?.validate()
+formRef.value?.validate();
 ```
 
 ### Provide / Inject 型別安全
 
 ```typescript
 // keys.ts
-import type { InjectionKey } from 'vue'
-import type { AuthService } from '@/services/auth'
+import type { InjectionKey } from 'vue';
+import type { AuthService } from '@/services/auth';
 
-export const authServiceKey: InjectionKey<AuthService> = Symbol('authService')
+export const authServiceKey: InjectionKey<AuthService> = Symbol('authService');
 
 // 提供方
-provide(authServiceKey, authService)
+provide(authServiceKey, authService);
 
 // 注入方
-const authService = inject(authServiceKey)
+const authService = inject(authServiceKey);
 if (!authService) {
-  throw new Error('AuthService 未提供')
+  throw new Error('AuthService 未提供');
 }
 ```
 
@@ -323,7 +323,7 @@ if (!authService) {
 // ✅ 原生事件型別
 function handleClick(event: MouseEvent) { }
 function handleInput(event: Event) {
-  const target = event.target as HTMLInputElement
-  console.log(target.value)
+  const target = event.target as HTMLInputElement;
+  console.log(target.value);
 }
 ```

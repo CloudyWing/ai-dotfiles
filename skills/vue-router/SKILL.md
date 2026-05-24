@@ -13,8 +13,8 @@ description: 'Vue Router 4 開發規範：路由設計、Navigation Guard、動�
 
 ```typescript
 // router/index.ts
-import { createRouter, createWebHistory } from 'vue-router'
-import type { RouteRecordRaw } from 'vue-router'
+import { createRouter, createWebHistory } from 'vue-router';
+import type { RouteRecordRaw } from 'vue-router';
 
 const routes: ReadonlyArray<RouteRecordRaw> = [
   {
@@ -24,42 +24,42 @@ const routes: ReadonlyArray<RouteRecordRaw> = [
       {
         path: '',
         name: 'Home',
-        component: () => import('@/views/HomeView.vue'),
+        component: () => import('@/views/HomeView.vue')
       },
       {
         path: 'orders',
         name: 'OrderList',
         component: () => import('@/views/orders/OrderListView.vue'),
-        meta: { requiresAuth: true },
+        meta: { requiresAuth: true }
       },
       {
         path: 'orders/:id',
         name: 'OrderDetail',
         component: () => import('@/views/orders/OrderDetailView.vue'),
         meta: { requiresAuth: true },
-        props: true,
-      },
-    ],
+        props: true
+      }
+    ]
   },
   {
     path: '/login',
     name: 'Login',
     component: () => import('@/views/LoginView.vue'),
-    meta: { guestOnly: true },
+    meta: { guestOnly: true }
   },
   {
     path: '/:pathMatch(.*)*',
     name: 'NotFound',
-    component: () => import('@/views/NotFoundView.vue'),
-  },
-]
+    component: () => import('@/views/NotFoundView.vue')
+  }
+];
 
 const router = createRouter({
   history: createWebHistory(import.meta.env.BASE_URL),
-  routes,
-})
+  routes
+});
 
-export default router
+export default router;
 ```
 
 ### 命名規範
@@ -89,7 +89,7 @@ export default router
 }
 
 // ❌ 錯誤：靜態 import（會全部打包進主 bundle）
-import OrderListView from '@/views/orders/OrderListView.vue'
+import OrderListView from '@/views/orders/OrderListView.vue';
 {
   path: '/orders',
   component: OrderListView
@@ -106,21 +106,21 @@ import OrderListView from '@/views/orders/OrderListView.vue'
 ```typescript
 // router/index.ts
 router.beforeEach(async (to, from) => {
-  const authStore = useAuthStore()
+  const authStore = useAuthStore();
 
   // 需要認證的路由
   if (to.meta.requiresAuth && !authStore.isAuthenticated) {
     return {
       name: 'Login',
-      query: { redirect: to.fullPath },
-    }
+      query: { redirect: to.fullPath }
+    };
   }
 
   // 僅限訪客（已登入不可進入）
   if (to.meta.guestOnly && authStore.isAuthenticated) {
-    return { name: 'Home' }
+    return { name: 'Home' };
   }
-})
+});
 ```
 
 ### 路由層級 Guard
@@ -130,9 +130,9 @@ router.beforeEach(async (to, from) => {
   path: '/admin',
   component: () => import('@/views/admin/AdminView.vue'),
   beforeEnter: (to, from) => {
-    const authStore = useAuthStore()
+    const authStore = useAuthStore();
     if (!authStore.hasRole('admin')) {
-      return { name: 'Forbidden' }
+      return { name: 'Forbidden' };
     }
   }
 }
@@ -142,18 +142,18 @@ router.beforeEach(async (to, from) => {
 
 ```vue
 <script setup lang="ts">
-import { onBeforeRouteLeave } from 'vue-router'
+import { onBeforeRouteLeave } from 'vue-router';
 
-const hasUnsavedChanges = ref(false)
+const hasUnsavedChanges = ref(false);
 
 onBeforeRouteLeave((to, from) => {
   if (hasUnsavedChanges.value) {
-    const answer = window.confirm('尚有未儲存的變更，確定離開？')
+    const answer = window.confirm('尚有未儲存的變更，確定離開？');
     if (!answer) {
-      return false
+      return false;
     }
   }
-})
+});
 </script>
 ```
 
@@ -169,14 +169,14 @@ onBeforeRouteLeave((to, from) => {
 
 ```typescript
 // router/types.ts
-export {}
+export {};
 
 declare module 'vue-router' {
   interface RouteMeta {
-    requiresAuth?: boolean
-    guestOnly?: boolean
-    roles?: ReadonlyArray<string>
-    title?: string
+    requiresAuth?: boolean;
+    guestOnly?: boolean;
+    roles?: ReadonlyArray<string>;
+    title?: string;
   }
 }
 ```
@@ -214,22 +214,22 @@ declare module 'vue-router' {
 ## 程式化導航
 
 ```typescript
-import { useRouter, useRoute } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router';
 
-const router = useRouter()
-const route = useRoute()
+const router = useRouter();
+const route = useRoute();
 
 // ✅ 使用 name 導航（路徑變更時不需改程式碼）
-router.push({ name: 'OrderDetail', params: { id: orderId } })
+router.push({ name: 'OrderDetail', params: { id: orderId } });
 
 // ✅ 附帶 query
-router.push({ name: 'OrderList', query: { status: 'pending' } })
+router.push({ name: 'OrderList', query: { status: 'pending' } });
 
 // ✅ 替換歷史記錄（返回鍵不會回到前一頁）
-router.replace({ name: 'Home' })
+router.replace({ name: 'Home' });
 
 // ❌ 避免：硬編碼路徑
-router.push(`/orders/${orderId}`)
+router.push(`/orders/${orderId}`);
 ```
 
 - 程式化導航優先使用 `name`，避免硬編碼路徑。
@@ -239,9 +239,9 @@ router.push(`/orders/${orderId}`)
 
 ```typescript
 router.afterEach((to) => {
-  const title = to.meta.title
-  document.title = title ? `${title} | MyApp` : 'MyApp'
-})
+  const title = to.meta.title;
+  document.title = title ? `${title} | MyApp` : 'MyApp';
+});
 ```
 
 ## Scroll Behavior
@@ -252,14 +252,14 @@ const router = createRouter({
   routes,
   scrollBehavior(to, from, savedPosition) {
     if (savedPosition) {
-      return savedPosition // 瀏覽器返回時恢復滾動位置
+      return savedPosition; // 瀏覽器返回時恢復滾動位置
     }
     if (to.hash) {
-      return { el: to.hash } // 錨點定位
+      return { el: to.hash }; // 錨點定位
     }
-    return { top: 0 } // 新頁面回到頂端
+    return { top: 0 }; // 新頁面回到頂端
   }
-})
+});
 ```
 
 ## 路由模組化
@@ -268,27 +268,27 @@ const router = createRouter({
 
 ```typescript
 // router/modules/order.ts
-import type { RouteRecordRaw } from 'vue-router'
+import type { RouteRecordRaw } from 'vue-router';
 
 export const orderRoutes: ReadonlyArray<RouteRecordRaw> = [
   {
     path: 'orders',
     name: 'OrderList',
     component: () => import('@/views/orders/OrderListView.vue'),
-    meta: { requiresAuth: true, title: '訂單列表' },
+    meta: { requiresAuth: true, title: '訂單列表' }
   },
   {
     path: 'orders/:id',
     name: 'OrderDetail',
     component: () => import('@/views/orders/OrderDetailView.vue'),
     meta: { requiresAuth: true, title: '訂單明細' },
-    props: true,
-  },
-]
+    props: true
+  }
+];
 
 // router/index.ts
-import { orderRoutes } from './modules/order'
-import { customerRoutes } from './modules/customer'
+import { orderRoutes } from './modules/order';
+import { customerRoutes } from './modules/customer';
 
 const routes: ReadonlyArray<RouteRecordRaw> = [
   {
@@ -296,8 +296,8 @@ const routes: ReadonlyArray<RouteRecordRaw> = [
     component: () => import('@/layouts/DefaultLayout.vue'),
     children: [
       ...orderRoutes,
-      ...customerRoutes,
-    ],
-  },
-]
+      ...customerRoutes
+    ]
+  }
+];
 ```

@@ -33,28 +33,28 @@ description: '前後端 API 契約規範：OpenAPI Client 產生策略、Axios �
 
 ```typescript
 // lib/axios.ts
-import axios from 'axios'
-import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios'
+import axios from 'axios';
+import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
 
 const apiClient: AxiosInstance = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   timeout: 30000,
   headers: {
-    'Content-Type': 'application/json',
-  },
-})
+    'Content-Type': 'application/json'
+  }
+});
 
 // Request Interceptor
 apiClient.interceptors.request.use(
   (config: InternalAxiosRequestConfig) => {
-    const token = localStorage.getItem('token')
+    const token = localStorage.getItem('token');
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`
+      config.headers.Authorization = `Bearer ${token}`;
     }
-    return config
+    return config;
   },
   (error: AxiosError) => Promise.reject(error)
-)
+);
 
 // Response Interceptor
 apiClient.interceptors.response.use(
@@ -62,13 +62,13 @@ apiClient.interceptors.response.use(
   (error: AxiosError) => {
     if (error.response?.status === 401) {
       // Token 過期，導向登入頁
-      window.location.href = '/login'
+      window.location.href = '/login';
     }
-    return Promise.reject(error)
+    return Promise.reject(error);
   }
-)
+);
 
-export default apiClient
+export default apiClient;
 ```
 
 ### Axios 規範
@@ -83,35 +83,35 @@ export default apiClient
 
 ```typescript
 // api/order.ts
-import apiClient from '@/lib/axios'
-import type { Order, CreateOrderInput, UpdateOrderInput } from '@/types/order'
-import type { PaginatedResponse } from '@/types/api'
+import apiClient from '@/lib/axios';
+import type { Order, CreateOrderInput, UpdateOrderInput } from '@/types/order';
+import type { PaginatedResponse } from '@/types/api';
 
 export const orderApi = {
   async getAll(params?: { status?: string; page?: number }): Promise<PaginatedResponse<Order>> {
-    const response = await apiClient.get<PaginatedResponse<Order>>('/orders', { params })
-    return response.data
+    const response = await apiClient.get<PaginatedResponse<Order>>('/orders', { params });
+    return response.data;
   },
 
   async getById(id: number): Promise<Order> {
-    const response = await apiClient.get<Order>(`/orders/${id}`)
-    return response.data
+    const response = await apiClient.get<Order>(`/orders/${id}`);
+    return response.data;
   },
 
   async create(input: CreateOrderInput): Promise<Order> {
-    const response = await apiClient.post<Order>('/orders', input)
-    return response.data
+    const response = await apiClient.post<Order>('/orders', input);
+    return response.data;
   },
 
   async update(id: number, input: UpdateOrderInput): Promise<Order> {
-    const response = await apiClient.put<Order>(`/orders/${id}`, input)
-    return response.data
+    const response = await apiClient.put<Order>(`/orders/${id}`, input);
+    return response.data;
   },
 
   async delete(id: number): Promise<void> {
-    await apiClient.delete(`/orders/${id}`)
-  },
-}
+    await apiClient.delete(`/orders/${id}`);
+  }
+};
 ```
 
 ### API 模組原則
@@ -128,27 +128,27 @@ export const orderApi = {
 
 /** API 標準回應包裝 */
 interface ApiResponse<T> {
-  data: T
-  message: string
+  data: T;
+  message: string;
 }
 
 /** 分頁回應 */
 interface PaginatedResponse<T> {
-  data: ReadonlyArray<T>
-  total: number
-  page: number
-  pageSize: number
-  totalPages: number
+  data: ReadonlyArray<T>;
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
 }
 
 /** ProblemDetails（RFC 9457）對應 */
 interface ProblemDetails {
-  type?: string
-  title: string
-  status: number
-  detail?: string
-  instance?: string
-  errors?: Record<string, string[]>
+  type?: string;
+  title: string;
+  status: number;
+  detail?: string;
+  instance?: string;
+  errors?: Record<string, string[]>;
 }
 ```
 
@@ -160,28 +160,28 @@ interface ProblemDetails {
 
 ```typescript
 // lib/apiError.ts
-import type { AxiosError } from 'axios'
-import type { ProblemDetails } from '@/types/api'
+import type { AxiosError } from 'axios';
+import type { ProblemDetails } from '@/types/api';
 
 export function isApiError(error: unknown): error is AxiosError<ProblemDetails> {
-  return axios.isAxiosError(error) && error.response?.data?.title !== undefined
+  return axios.isAxiosError(error) && error.response?.data?.title !== undefined;
 }
 
 export function getErrorMessage(error: unknown): string {
   if (isApiError(error)) {
-    return error.response!.data.detail ?? error.response!.data.title
+    return error.response!.data.detail ?? error.response!.data.title;
   }
   if (error instanceof Error) {
-    return error.message
+    return error.message;
   }
-  return '發生未預期的錯誤'
+  return '發生未預期的錯誤';
 }
 
 export function getValidationErrors(error: unknown): Record<string, string[]> {
   if (isApiError(error) && error.response?.status === 422) {
-    return error.response.data.errors ?? {}
+    return error.response.data.errors ?? {};
   }
-  return {}
+  return {};
 }
 ```
 
@@ -189,18 +189,18 @@ export function getValidationErrors(error: unknown): Record<string, string[]> {
 
 ```vue
 <script setup lang="ts">
-import { getErrorMessage, getValidationErrors } from '@/lib/apiError'
+import { getErrorMessage, getValidationErrors } from '@/lib/apiError';
 
 async function handleSubmit() {
   try {
-    await orderStore.createOrder(formData.value)
-    router.push({ name: 'OrderList' })
+    await orderStore.createOrder(formData.value);
+    router.push({ name: 'OrderList' });
   } catch (error) {
-    const validationErrors = getValidationErrors(error)
+    const validationErrors = getValidationErrors(error);
     if (Object.keys(validationErrors).length > 0) {
-      fieldErrors.value = validationErrors
+      fieldErrors.value = validationErrors;
     } else {
-      toast.error(getErrorMessage(error))
+      toast.error(getErrorMessage(error));
     }
   }
 }
@@ -214,33 +214,33 @@ async function handleSubmit() {
 ```typescript
 // Composable 中管理請求取消
 export function useOrderDetail(id: Ref<number>) {
-  const order = ref<Order | null>(null)
-  let abortController: AbortController | null = null
+  const order = ref<Order | null>(null);
+  let abortController: AbortController | null = null;
 
   async function fetchDetail() {
     // 取消前一次請求
-    abortController?.abort()
-    abortController = new AbortController()
+    abortController?.abort();
+    abortController = new AbortController();
 
     try {
       const response = await apiClient.get<Order>(`/orders/${id.value}`, {
-        signal: abortController.signal,
-      })
-      order.value = response.data
+        signal: abortController.signal
+      });
+      order.value = response.data;
     } catch (error) {
       if (!axios.isCancel(error)) {
-        throw error
+        throw error;
       }
     }
   }
 
-  watch(id, fetchDetail, { immediate: true })
+  watch(id, fetchDetail, { immediate: true });
 
   onUnmounted(() => {
-    abortController?.abort()
-  })
+    abortController?.abort();
+  });
 
-  return { order }
+  return { order };
 }
 ```
 
@@ -272,20 +272,20 @@ npx openapi-typescript https://localhost:5001/swagger/v1/swagger.json -o src/typ
 
 ```typescript
 async function uploadFile(file: File): Promise<UploadResult> {
-  const formData = new FormData()
-  formData.append('file', file)
+  const formData = new FormData();
+  formData.append('file', file);
 
   const response = await apiClient.post<UploadResult>('/files/upload', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
     onUploadProgress: (progressEvent) => {
       const percent = Math.round(
         (progressEvent.loaded * 100) / (progressEvent.total ?? 1)
-      )
-      uploadProgress.value = percent
-    },
-  })
+      );
+      uploadProgress.value = percent;
+    }
+  });
 
-  return response.data
+  return response.data;
 }
 ```
 
