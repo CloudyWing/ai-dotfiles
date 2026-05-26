@@ -4,7 +4,7 @@
 | --- | --- | --- |
 | `Clarify` | Persona / Claude | 需求解構與釐清，透過對話將模糊需求轉化為可驗證標準。 |
 | `Design` | sub-agent / Claude | 以 SA/SD 視角將需求元素轉化為系統設計文件，含架構、技術選型與分階段實作計畫。 |
-| `Editor` | Persona / Claude | 文件編輯：分析 Markdown 檔案的結構與內容，產出改善建議清單，經使用者確認後執行修改。 |
+| `Editor` | Persona / Claude | 文件編輯：與作者討論文件結構與內容，協助潤稿與重組敘事。寫作過程中的協作為主要用法。 |
 | `Propose` | Persona / Claude | 產品構想探索：針對現有專案挖掘擴充方向，或將模糊想法塑形為功能藍圖，產出提案清單供使用者決定範圍。 |
 | `api-contract` | sub-agent / Codex | 掃描前後端 API 介面，比對 Controller/DTO 與 TypeScript Client 型別的一致性，列出不一致點與修正建議。 |
 | `cleanup` | sub-agent / Codex | 掃描 C#/.NET 專案，清除技術債、現代化程式碼語法，並強化符合專案慣例的程式碼品質。每次清理後執行測試確保行為不變。 |
