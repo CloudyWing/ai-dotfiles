@@ -32,7 +32,7 @@
 | `generate-api-doc` | 指令型 | 為 ASP.NET Core Controller 或 Minimal API 自動補齊 XML 文件與 Swagger Attributes，讓 OpenAPI 文件完整呈現。 |
 | `generate-changelog-zh-tw` | 指令型 | 依據 Git 提交紀錄自動產生 CHANGELOG 區段（繁體中文），並支援 MinVer 版本號推進規格。 |
 | `generate-commit` | 知識型 | 依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔案過濾與拆分建議。 |
-| `generate-editorconfig-by-techstack` | 指令型 | 自動偵測專案的技術棧與主流工具，產生或補齊 .editorconfig 設定，保留既有自訂偏好。 |
+| `generate-editorconfig-by-techstack` | 指令型 | 依專案技術棧與 .NET 框架版本，從範本過濾出對應的 .editorconfig 段落並補齊，保留既有自訂偏好。 |
 | `generate-frontend-lint-config` | 指令型 | 產生或補齊前端 Lint 設定（Prettier + ESLint Flat Config），統一格式化與程式碼品質規則，保留既有自訂偏好。 |
 | `generate-gitattributes` | 指令型 | 產生或補齊 .gitattributes，統一行尾處理、二進位識別與 lock files 標記，保留既有自訂偏好。 |
 | `generate-gitignore-by-techstack` | 指令型 | 從 github/gitignore 下載對應技術棧的 .gitignore 範本，合併並針對當前專案調整。 |

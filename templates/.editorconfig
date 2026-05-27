@@ -1,3 +1,15 @@
+# =============================================================================
+# 本範本含 @profile 標記區塊，需透過 generate-editorconfig-by-techstack skill
+# 依技術棧過濾後產生最終 .editorconfig。
+# 直接複製整份範本到專案會包含所有 profile 段落（IDE 對不適用的設定鍵會忽略，
+# 不致命但不精準）。
+#
+# Profile 命名：
+#   - 未標記                     通用，所有技術棧都套用
+#   - @profile: csharp-modern    C# 8+ / .NET Core / .NET 5+ 才適用的 C# 設定
+#   - @profile: dotnet-framework .NET Framework 專屬（檔案編碼 BOM 等）
+# =============================================================================
+
 # 如果要從更高的目錄繼承 .editorconfig 設定，請移除以下行
 root = true
 
@@ -199,7 +211,7 @@ dotnet_naming_style.begins_with_t.required_suffix =
 dotnet_naming_style.begins_with_t.word_separator =
 dotnet_naming_style.begins_with_t.capitalization = pascal_case
 
-#### C# 專屬規則 ####
+#### C# 專屬規則（C# 7.3 可用，.NET Framework 與 .NET Core 通用） ####
 
 [*.cs]
 indent_style = space
@@ -219,13 +231,10 @@ csharp_style_expression_bodied_methods = false:silent
 csharp_style_expression_bodied_operators = true:suggestion
 csharp_style_expression_bodied_properties = true:suggestion
 
-# 模式比對喜好設定
+# 模式比對喜好設定（C# 7）
 csharp_style_pattern_matching_over_as_with_null_check = true:suggestion
 csharp_style_pattern_matching_over_is_with_cast_check = true:suggestion
-csharp_style_prefer_extended_property_pattern = true:suggestion
-csharp_style_prefer_not_pattern = true:suggestion
 csharp_style_prefer_pattern_matching = true:silent
-csharp_style_prefer_switch_expression = true:suggestion
 
 # Null 檢查喜好設定
 csharp_style_conditional_delegate_call = true:suggestion
@@ -237,27 +246,13 @@ csharp_preferred_modifier_order = public,private,protected,internal,file,static,
 
 # 程式碼區塊喜好設定
 csharp_prefer_braces = true:suggestion
-csharp_prefer_simple_using_statement = true:suggestion
-csharp_style_namespace_declarations = file_scoped:suggestion
-csharp_style_prefer_method_group_conversion = true:silent
-csharp_style_prefer_primary_constructors = false:silent
-csharp_style_prefer_top_level_statements = true:silent
 
 # 運算式層級喜好設定
-# 集合運算式 []：空集合、陣列字面值等導向 [] (C# 12+)
-dotnet_style_prefer_collection_expression = when_types_loosely_match:suggestion
-# 保留 .ToList() / .ToArray()，不建議改寫成 [.. source]
-dotnet_diagnostic.IDE0305.severity = none
 csharp_prefer_simple_default_expression = true:suggestion
 csharp_style_deconstructed_variable_declaration = true:suggestion
-csharp_style_implicit_object_creation_when_type_is_apparent = true:suggestion
 csharp_style_inlined_variable_declaration = true:suggestion
-csharp_style_prefer_index_operator = true:suggestion
 csharp_style_prefer_local_over_anonymous_function = true:suggestion
-csharp_style_prefer_null_check_over_type_check = true:suggestion
-csharp_style_prefer_range_operator = true:suggestion
 csharp_style_prefer_tuple_swap = true:suggestion
-csharp_style_prefer_utf8_string_literals = true:suggestion
 csharp_style_throw_expression = true:suggestion
 csharp_style_unused_value_assignment_preference = discard_variable
 csharp_style_unused_value_expression_statement_preference = discard_variable
@@ -314,3 +309,43 @@ csharp_space_between_square_brackets = false
 # 換行喜好設定
 csharp_preserve_single_line_blocks = true
 csharp_preserve_single_line_statements = false
+
+#### C# 現代化設定（C# 8+ / .NET Core / .NET 5+） ####
+# @profile: csharp-modern
+
+[*.cs]
+# 模式比對喜好設定（C# 9+）
+csharp_style_prefer_extended_property_pattern = true:suggestion
+csharp_style_prefer_not_pattern = true:suggestion
+csharp_style_prefer_switch_expression = true:suggestion
+
+# 程式碼區塊喜好設定
+csharp_prefer_simple_using_statement = true:suggestion
+csharp_style_namespace_declarations = file_scoped:suggestion
+csharp_style_prefer_method_group_conversion = true:silent
+csharp_style_prefer_primary_constructors = false:silent
+csharp_style_prefer_top_level_statements = true:silent
+
+# 運算式層級喜好設定
+# 集合運算式 []：空集合、陣列字面值等導向 [] (C# 12+)
+dotnet_style_prefer_collection_expression = when_types_loosely_match:suggestion
+# 保留 .ToList() / .ToArray()，不建議改寫成 [.. source]
+dotnet_diagnostic.IDE0305.severity = none
+csharp_style_implicit_object_creation_when_type_is_apparent = true:suggestion
+csharp_style_prefer_index_operator = true:suggestion
+csharp_style_prefer_null_check_over_type_check = true:suggestion
+csharp_style_prefer_range_operator = true:suggestion
+csharp_style_prefer_utf8_string_literals = true:suggestion
+
+#### .NET Framework 專屬檔案編碼 ####
+# @profile: dotnet-framework
+
+# .NET Framework 專案的 C# / VB / Web Forms 檔案需保留 BOM，
+# 確保中文識別字與字串在舊版 Visual Studio 與 MSBuild 正確解析。
+[*.{cs,vb,aspx,master}]
+charset = utf-8-bom
+
+# .NET Framework 的 ASP.NET MVC Razor 檢視同樣保留 BOM；
+# ASP.NET Core 專案使用本 skill 時會跳過此 profile，cshtml 將套用 [*] 的 utf-8 無 BOM。
+[*.cshtml]
+charset = utf-8-bom
