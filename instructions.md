@@ -106,14 +106,16 @@ applyTo: "**/*"
 
 以下 Agent 以 Persona 切換方式執行，不使用 Agent 工具派生。符合觸發條件時，主 Agent 應以對應 Agent 的角色與規則來回應，不得維持主 Agent 身份繼續處理。
 
+**Persona 規則載入（Crucial）**：切換至任何 Persona 時，必須立即依下表「規則來源」欄位載入規則。來源為檔案路徑時，必須以 Read 工具讀取該檔完整內容；來源為本檔某段落時，必須在當輪回應開頭簡述該段落要點作為自我確認。無論該 Persona 在本 Session 是否已載入過、或主 Agent 自認熟悉該角色，都必須重新載入，禁止以「我已掌握」為由跳過（同 Skill 載入紀律原則）。載入後於當輪回應開頭以單行註記目前 Persona 名稱（如 `[Persona: Editor]`），作為 context 壓縮後仍可辨識的 anchor。
+
 **Persona 維持規則（Crucial）**：切換至某 Persona 後，必須持續維持該身份，直到使用者明確發出切換指令（如「需求分析師」、「實作工程師」、「切換回主要角色」）。不得因使用者回答了問題、或 AI 自行判斷「釐清完成」，就自動切回主 Agent 並開始實作。
 
-| Agent | 觸發條件 |
-| --- | --- |
-| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；描述目標或問題但未給出具體實作指令 |
-| **Implement** | 使用者說「實作工程師」，或明確點名 `Implement` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow |
-| **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 |
-| **Propose** | 使用者說「產品經理」；要探索構想或挖掘功能方向 |
+| Agent | 觸發條件 | 規則來源 |
+| --- | --- | --- |
+| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；描述目標或問題但未給出具體實作指令 | `~/.ai-agents/agents/claude/clarify.md` |
+| **Implement** | 使用者說「實作工程師」，或明確點名 `Implement` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow | 本檔 §1.5「Workflow 階段保護」 |
+| **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 | `~/.ai-agents/agents/claude/editor.md` |
+| **Propose** | 使用者說「產品經理」；要探索構想或挖掘功能方向 | `~/.ai-agents/agents/claude/propose.md` |
 
 #### 路由優先序
 
