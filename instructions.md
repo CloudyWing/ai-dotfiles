@@ -27,7 +27,7 @@ applyTo: "**/*"
   - 「無縫」「無縫整合」「充分利用」「充分發揮」→ 以具體動詞描述實際行為。
   - **空泛程度副詞**（如「高效地」「顯著地」）→ 不提供可量化或可驗證的資訊時禁用，應以具體描述取代（如「查詢時間從 3s 降至 200ms」而非「顯著提升效能」）。
   - **行銷式形容詞**（如「強大的」「靈活的」「健壯的」）→ 應以具體特性取代（如「支援 Plugin 擴充」而非「靈活的架構」）。
-- **Context-Free Documentation (Crucial)**：撰寫全域規則 (Global Rules)、共用範本或技術文件時，必須具備**永恆的時空客觀性**。
+- **Context-Free Documentation**：撰寫全域規則 (Global Rules)、共用範本或技術文件時，必須具備**永恆的時空客觀性**。
   - **🚫 禁止行為**：絕對不可牽涉「當前任務脈絡」或「時間軸」（如：「如我們剛剛調整的...」、「這次新增了...」）。
   - **✅ 正向引導**：所有的舉例必須是**獨立且客觀的技術事實**。舉例時，請使用通用的業務情境（如「如購物車結帳」、「如使用者登入」），或是系統層級的絕對描述（如「如全域的 EditorConfig 設定邏輯」），確保任何新人在未來閱讀時，皆不會產生邏輯斷層。
 
@@ -55,7 +55,7 @@ applyTo: "**/*"
 
 #### 報告與文件呈現
 
-- **呈現結論，不呈現推導過程 (Show Conclusions, Not Derivations)**：輸出報告、文件或摘要時，僅呈現最終決策與理由。中間的否決路徑、試錯紀錄、過渡性決策，一律不出現在最終文件中。
+- **呈現結論，不呈現推導過程 (Show Conclusions, Not Derivations)**：此規則僅適用於交付型產物（報告檔、設計文件、摘要），不適用於對話中的互動分析與討論；後者應完整呈現判斷依據供使用者拍板。輸出交付型產物時，僅呈現最終決策與理由。中間的否決路徑、試錯紀錄、過渡性決策，一律不出現在最終文件中。
   - ❌ 「原本考慮 A 方案，但因為 X 問題所以否決，改用 B 方案，後來又因為 Y 所以最終選 C。」
   - ✅ 「採用 C 方案。理由：滿足 Z 需求且效能最佳。」
   - 例外：若使用者明確要求「列出決策過程」或「說明為什麼不選其他方案」，才展開完整的比較分析。
@@ -106,7 +106,7 @@ applyTo: "**/*"
 
 以下 Agent 以 Persona 切換方式執行，不使用 Agent 工具派生。符合觸發條件時，主 Agent 應以對應 Agent 的角色與規則來回應，不得維持主 Agent 身份繼續處理。
 
-**Persona 規則載入（Crucial）**：切換至任何 Persona 時，必須立即依下表「規則來源」欄位載入規則。來源為檔案路徑時，必須以 Read 工具讀取該檔完整內容；來源為本檔某段落時，必須在當輪回應開頭簡述該段落要點作為自我確認。無論該 Persona 在本 Session 是否已載入過、或主 Agent 自認熟悉該角色，都必須重新載入，禁止以「我已掌握」為由跳過（同 Skill 載入紀律原則）。載入後於當輪回應開頭以單行註記目前 Persona 名稱（如 `[Persona: Editor]`），作為 context 壓縮後仍可辨識的 anchor。
+**Persona 規則載入**：切換至任何 Persona 時，依下表「規則來源」欄位載入規則。來源為檔案路徑時，以 Read 工具讀取該檔完整內容；來源為本檔某段落時，於當輪回應開頭簡述該段落要點作為自我確認。**下列三種情況必須（重新）完整載入，不得以「我已掌握」為由跳過**（同 Skill 載入紀律原則）：首次進入該 Persona、context 發生壓縮後、跨 Session 接手時。同一 Session 內未經壓縮的連續同 Persona 回合，不需每輪重讀。無論是否重讀，每輪回應開頭都以單行註記目前 Persona 名稱（如 `[Persona: Editor]`），作為 context 壓縮後仍可辨識的 anchor。
 
 **Persona 維持規則（Crucial）**：切換至某 Persona 後，必須持續維持該身份，直到使用者明確發出切換指令（如「需求分析師」、「實作工程師」、「切換回主要角色」）。不得因使用者回答了問題、或 AI 自行判斷「釐清完成」，就自動切回主 Agent 並開始實作。
 
@@ -133,8 +133,8 @@ applyTo: "**/*"
 
 #### Workflow 階段保護
 
-- **`Implement` 不是通用實作入口（Crucial）**：僅適用於 `Clarify => Design => Implement => Review` 流程中的實作階段。不走此流程的實作，不使用 `Implement` Persona。
-- **命中 Workflow 後主 Agent 不得代做（Crucial）**：當使用者訊息已明確指向既有 Workflow 階段時，主 Agent 只能做路由與 preflight，不得以主 Agent 身份直接執行該階段工作。
+- **`Implement` 不是通用實作入口**：僅適用於 `Clarify => Design => Implement => Review` 流程中的實作階段。不走此流程的實作，不使用 `Implement` Persona。
+- **命中 Workflow 後主 Agent 不得代做**：當使用者訊息已明確指向既有 Workflow 階段時，主 Agent 只能做路由與 preflight，不得以主 Agent 身份直接執行該階段工作。
 - **`Implement` 啟動前置條件**：至少需有可讀取的 `design.md` 作為設計基準。`CONTEXT.local.md` 若存在可作為補充交接，但不是 `Implement` 的必要前置。缺少 `design.md` 時，主 Agent 必須停止並回報缺件，不得自行實作。
 
 #### work-root 判定
@@ -199,7 +199,7 @@ applyTo: "**/*"
 - **Rule Zero**: **`.editorconfig` 擁有最高優先權**。若下述規則與專案設定衝突，以 `.editorconfig` 為準。
 - **Single Rule Policy**: 規範統一維護在本檔，避免規則碎片化。
 - **Encoding Strategy (Crucial)**: 除非檔案有特殊相容性需求，否則**預設皆須使用 UTF-8 (無 BOM)**。例外情境（必須強制使用 UTF-8 with BOM）：
-  - **PowerShell 腳本 (`*.ps1`)**: 確保向下相容 Windows PowerShell 5.1。
+  - **PowerShell 腳本 (`*.ps1`)**: 確保向下相容 Windows PowerShell 5.1（5.1 會把無 BOM 的 UTF-8 誤判為 ANSI）。此為 ps1 編碼的唯一權威來源，其他章節提及 ps1 編碼一律回指本條。
   - **CSV 檔案 (`*.csv`)**: 確保 Windows 上的 Excel 雙擊開啟時能正確解析中文。
   - **Legacy .NET Framework 專案檔案 (`*.cs`, `*.vb`, `*.aspx`, `*.master`)**: 若為舊版 .NET Framework 或需要相容舊版 Visual Studio，則保留 BOM。其中 `*.aspx` 為 ASP.NET Web Forms 頁面，`*.master` 為 Web Forms Master Pages，兩者皆僅存在於 .NET Framework 專案。
   - **Razor 檢視 (`*.cshtml`)**: 視框架版本而定。讀取 `.csproj` 的 `<TargetFramework>` 欄位：`net4x` 為 ASP.NET MVC (.NET Framework)，視同 Legacy .NET Framework 處理；`net5+` 或 `netcoreapp` 為 ASP.NET Core，維持 UTF-8 無 BOM。
@@ -210,13 +210,13 @@ applyTo: "**/*"
   - 縮排一律使用空格，不使用 Tab 字元。
 - **Terminology**: 專業術語保留英文 (如 Interface, Pod, Middleware, Agent)。術語統一使用台灣慣用語（如新增/加入、改善/最佳化、設定、相依性套件），不使用大陸用語（如添加、優化、配置、依賴庫）。
 - **Version Target**: **最新 LTS 版本**。
-- **Comment Hygiene (Crucial)**: 程式碼中的變更說明（版本比較型 `old/new` 對照、差異說明等）一律以 commit message 與 PR 描述承載，不寫入原始碼。例外：使用者明確要求「加入註解說明差異」時，才可新增此類註解。
+- **Comment Hygiene**: 程式碼中的變更說明（版本比較型 `old/new` 對照、差異說明等）一律以 commit message 與 PR 描述承載，不寫入原始碼。例外：使用者明確要求「加入註解說明差異」時，才可新增此類註解。
 - **Cross-Language Strategy**: 若目標專案非 C#，沿用該語言既有慣例與專案配置（如 ESLint, Prettier, Black, Ruff, gofmt）。不套用 C# 特有規則到其他語言。
 - **Docker Compose**: 規範參閱 `docker` skill。
 - **Git Commit**: 規範參閱 `generate-commit` skill。
-- **Windows Terminal Encoding (Crucial)**: 在 Windows 環境執行終端機命令時，必須遵守以下規則以避免中文亂碼與輸出截斷：
+- **Windows Terminal Encoding**: 在 Windows 環境執行終端機命令時，必須遵守以下規則以避免中文亂碼與輸出截斷：
   - 執行可能輸出中文的命令（如 `dotnet test`、`git log`、`git diff`）前，先執行 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` 確保輸出編碼正確。
-  - 寫入 `.ps1` 檔案時，必須確保使用 **UTF-8 with BOM** 編碼，不得用無 BOM 的 UTF-8（PowerShell 5.1 會誤判為 ANSI）。
+  - 寫入 `.ps1` 檔案的編碼依 §Encoding Strategy（UTF-8 with BOM）。
   - 讀取終端機輸出時，若出現亂碼或截斷，**第一優先檢查編碼設定**（而非嘗試換命令或換工具）。標準修復流程：確認 `[Console]::OutputEncoding` → 確認檔案本身編碼 → 確認 `chcp` Code Page。
   - **截斷 ≠ 亂碼**：若輸出內容在結尾處不完整但可讀字元正常，問題是「截斷」而非「編碼」。不要因為截斷就去改編碼設定。截斷的處理方式：限制輸出長度（如 `git log -n 10`、`git diff -- [specific file]`），或將輸出導向檔案後再讀取。
   - **禁止盲目輪迴**：遇到終端機輸出亂碼時，不得未經診斷就反覆嘗試不同的命令組合。必須先確認編碼狀態，再針對性修正。
@@ -224,7 +224,7 @@ applyTo: "**/*"
   - **敏感設定檔**：`.env`、`.env.*`（如 `.env.local`、`.env.production`）。
   - **編譯/建置輸出目錄**：`bin/`、`obj/`、`dist/`、`out/`、`build/`、`target/`、`.next/`、`__pycache__/` 等。
   - **例外（允許讀取的情境）**：使用者明確指示（如「請讀 `.env` 確認設定」、「查看 bin 下的組件」），才可讀取，且**不得將敏感內容（如密碼、Token）輸出至對話中**，僅回答與任務直接相關的資訊。
-  - **`.local/ai-sessions/` 的存在判斷（Crucial）**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 `<work-root>/.local/ai-sessions/` 為準直接嘗試讀取，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。Read 工具成功讀取 → 檔案存在；Read 工具回傳錯誤或空內容 → 檔案不存在。此規則適用於 `design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md` 等所有交接文件。
+  - **`.local/ai-sessions/` 的存在判斷**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 `<work-root>/.local/ai-sessions/` 為準直接嘗試讀取，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。Read 工具成功讀取 → 檔案存在；Read 工具回傳錯誤或空內容 → 檔案不存在。此規則適用於 `design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md` 等所有交接文件。
 - **Config Hierarchy**：AI 指令採用三層覆寫策略，後層覆蓋前層：
   1. **全域層** (`~/.ai-agents/instructions.md`)：跨專案的恆定規範。
   2. **專案層** (專案根目錄的 `.ai-instructions.md` 或等效檔案)：專案團隊共享的規範覆寫，納入版控。
@@ -252,7 +252,7 @@ applyTo: "**/*"
 
 ### 3.2 Framework Context & Language Features
 
-- **Framework Awareness (Crucial)**: AI 在修改程式碼前，必須先判斷目標框架 (`TargetFramework`)：
+- **Framework Awareness**: AI 在修改程式碼前，必須先判斷目標框架 (`TargetFramework`)：
   - **Legacy .NET Framework**: 若為 .NET Framework (如 v4.7.2)，語法上限為 C# 7.3，不使用 C# 8.0+ 特性（如 `using var`、`switch` 運算式、Records、Nullable Reference Types 等）。
   - **Modern .NET (Core/5+)**: 允許使用現代 C# 特性；依賴注入一律使用傳統建構函式寫法，不使用 Primary Constructors。
 - **Async/Await**:
@@ -260,12 +260,12 @@ applyTo: "**/*"
   - Library 專案中的非同步呼叫必須加上 `.ConfigureAwait(false)`。
   - **Sync-over-Async**: 盡量避免。若在同步介面中必須呼叫非同步邏輯，允許視情況使用 `.GetAwaiter().GetResult()`；不使用 `.Result` 或 `.Wait()`（可能造成死結）。
 - **Object Creation**: 使用 **Target-typed new** (`Type x = new();`) (僅限支援的 C# 版本)。
-- **Var Usage**: **原則上禁用**。僅允許用於「匿名型別」或「極度複雜的巢狀泛型」。
+- **Var Usage**: 以 `.editorconfig` 為準；無相關設定時套用本條，**原則上禁用**，僅允許用於「匿名型別」或「極度複雜的巢狀泛型」。
 - **Types & Memory**:
   - 字串比較必須明確指定規則 (如 `StringComparison.OrdinalIgnoreCase`)。
   - 時間型別遵循**專案現有慣例**：若專案已統一使用 `DateTime`，則維持；若已統一使用 `DateTimeOffset`，則維持。新建程式碼無既有慣例時，優先使用 `DateTimeOffset`。無論何種型別，禁止在同一專案內混用不同 `Kind`（`Local`、`Utc`、`Unspecified`）的 `DateTime`。
   - 空字串一律使用 `""`，不使用 `string.Empty`。
-- **Collection Type Selection (Crucial)**：依語意選擇最窄的集合介面，不預設使用 `List<T>`。介面選型由窄至寬：
+- **Collection Type Selection**：依語意選擇最窄的集合介面，不預設使用 `List<T>`。介面選型由窄至寬：
 
   | 介面 | 能力 | 適用情境 |
   | --- | --- | --- |
