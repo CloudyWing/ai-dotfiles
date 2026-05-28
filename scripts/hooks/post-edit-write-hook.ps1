@@ -15,6 +15,19 @@ $ext = [System.IO.Path]::GetExtension($path).ToLower()
 # Markdown 格式檢查提示
 if ($ext -eq '.md') {
     Write-Output "[post-edit-write hook] $path was written. Please run check-markdown skill to verify Markdown formatting."
+
+    # 全形破折號禁用檢查（連續兩個 U+2014）
+    $dashPattern = "$([char]0x2014)$([char]0x2014)"
+    try {
+        $mdLines = [System.IO.File]::ReadAllLines($path)
+        $hits = for ($i = 0; $i -lt $mdLines.Count; $i++) {
+            if ($mdLines[$i].Contains($dashPattern)) { "  line $($i + 1): $($mdLines[$i].Trim())" }
+        }
+        if ($hits) {
+            Write-Output "[post-edit-write hook] WARNING: $path contains forbidden full-width dash (two consecutive U+2014). Replace with comma/semicolon or split into separate sentences:"
+            $hits | ForEach-Object { Write-Output $_ }
+        }
+    } catch {}
 }
 
 # BOM 規範檢查
