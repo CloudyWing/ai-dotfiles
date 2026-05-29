@@ -106,7 +106,7 @@ applyTo: "**/*"
 
 以下 Agent 以 Persona 切換方式執行，不使用 Agent 工具派生。符合觸發條件時，主 Agent 應以對應 Agent 的角色與規則來回應，不得維持主 Agent 身份繼續處理。
 
-**Persona 規則載入**：切換至任何 Persona 時，依下表「規則來源」欄位載入規則。來源為檔案路徑時，以 Read 工具讀取該檔完整內容；來源為本檔某段落時，於當輪回應開頭簡述該段落要點作為自我確認。**下列三種情況必須（重新）完整載入，不得以「我已掌握」為由跳過**（同 Skill 載入紀律原則）：首次進入該 Persona、context 發生壓縮後、跨 Session 接手時。同一 Session 內未經壓縮的連續同 Persona 回合，不需每輪重讀。無論是否重讀，每輪回應開頭都以單行註記目前 Persona 名稱（如 `[Persona: Editor]`），作為 context 壓縮後仍可辨識的 anchor。
+**Persona 規則載入**：切換至任何 Persona 時，依下表「規則來源」欄位載入規則。來源為檔案路徑時，以 Read 工具讀取該檔完整內容；來源為本檔某段落時，於當輪回應開頭簡述該段落要點作為自我確認。**下列三種情況必須（重新）完整載入，不得以「我已掌握」為由跳過**（同 Skill 載入紀律原則）：首次進入該 Persona、context 發生壓縮後、跨 Session 接手時。同一 Session 內未經壓縮的連續同 Persona 回合，不需每輪重讀。無論是否重讀，每輪回應開頭都以單行註記目前 Persona，作為 context 壓縮後仍可辨識的 anchor。格式為 `[Persona: <英文 key> (<中文職稱>)]`，英文 key 與下表一致並後接一個半形空格與半形括號內的中文職稱，四個 Persona 對照為：`[Persona: Clarify (需求分析師)]`、`[Persona: Implement (實作工程師)]`、`[Persona: Editor (責任編輯)]`、`[Persona: Propose (產品經理)]`。
 
 **Persona 維持規則（Crucial）**：切換至某 Persona 後，必須持續維持該身份，直到使用者明確發出切換指令（如「需求分析師」、「實作工程師」、「切換回主要角色」）。不得因使用者回答了問題、或 AI 自行判斷「釐清完成」，就自動切回主 Agent 並開始實作。
 
