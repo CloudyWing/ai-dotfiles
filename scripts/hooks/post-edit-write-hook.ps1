@@ -12,20 +12,54 @@ if (-not $path) { exit 0 }
 
 $ext = [System.IO.Path]::GetExtension($path).ToLower()
 
-# Markdown 格式檢查提示
+# Markdown 排版檢查提示
 if ($ext -eq '.md') {
     Write-Output "[post-edit-write hook] $path was written. Please run check-markdown skill to verify Markdown formatting."
 
-    # 全形破折號禁用檢查（連續兩個 U+2014）
-    $dashPattern = "$([char]0x2014)$([char]0x2014)"
+    $dashPattern = "$([char]0x2014)$([char]0x2014)"   # 連續兩個 U+2014
+    $colon = [char]0xFF1A                              # 全形冒號 U+FF1A
     try {
         $mdLines = [System.IO.File]::ReadAllLines($path)
-        $hits = for ($i = 0; $i -lt $mdLines.Count; $i++) {
-            if ($mdLines[$i].Contains($dashPattern)) { "  line $($i + 1): $($mdLines[$i].Trim())" }
+        $dashHits = @()
+        $colonHits = @()
+        $inFence = $false
+        $colonLeadWhitelist = @('如下', '例', '例如', '注意', '說明', '步驟', '格式', '適用情境', '限制', '用途', '條件', '定義', '原則')
+
+        for ($i = 0; $i -lt $mdLines.Count; $i++) {
+            $line = $mdLines[$i]
+
+            # fenced code block 內整段跳過
+            if ($line -match '^\s*```') { $inFence = -not $inFence; continue }
+            if ($inFence) { continue }
+
+            # 移除行內 `code` span，避免程式碼內符號誤判
+            $scan = [regex]::Replace($line, '`[^`]*`', '')
+
+            # 全形破折號（句中轉折）
+            if ($scan.Contains($dashPattern)) {
+                $dashHits += "  line $($i + 1): $($line.Trim())"
+            }
+
+            # 散文式冒號候選：CJK：CJK，冒號非行尾，冒號後為完整句（以。」結尾），且引言非標籤白名單
+            if ($scan -match "[一-鿿]$colon[一-鿿]") {
+                $parts = $scan -split $colon, 2
+                $lead = $parts[0].Trim()
+                $tail = $parts[1].Trim()
+                $isLabel = $false
+                foreach ($w in $colonLeadWhitelist) { if ($lead.EndsWith($w)) { $isLabel = $true; break } }
+                if (-not $isLabel -and $tail -ne '' -and $tail -match '[。」]\s*$') {
+                    $colonHits += "  line $($i + 1): $($line.Trim())"
+                }
+            }
         }
-        if ($hits) {
+
+        if ($dashHits) {
             Write-Output "[post-edit-write hook] WARNING: $path contains forbidden full-width dash (two consecutive U+2014). Replace with comma/semicolon or split into separate sentences:"
-            $hits | ForEach-Object { Write-Output $_ }
+            $dashHits | ForEach-Object { Write-Output $_ }
+        }
+        if ($colonHits) {
+            Write-Output "[post-edit-write hook] REVIEW: $path has candidate prose-colon lines (mid-sentence CJK colon with a full-sentence tail). Confirm each is not a narrative 'X:Y' continuation; legit lead-ins (e.g. '...如下:') and label fields are acceptable:"
+            $colonHits | ForEach-Object { Write-Output $_ }
         }
     } catch {}
 }
