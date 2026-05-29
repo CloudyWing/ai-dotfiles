@@ -85,6 +85,7 @@ description: 開發完成後的整合驗證入口。當使用者要求在功能�
 | Web UI | `package.json` 含前端框架（Vue / React 等）並有 dev server；或 ASP.NET Core 專案含 SPA / Views。 |
 | Web API | ASP.NET Core 專案 SDK 為 `Microsoft.NET.Sdk.Web`，含 Controller 或 Minimal API，無前端畫面；或專案提供 Swagger / OpenAPI。 |
 | 桌面應用 | `*.csproj` 的 `OutputType` 為 `WinExe`，且 `UseWindowsForms` 或 `UseWPF` 為 `true`。 |
+| CLI / 主控台 | `*.csproj` 的 `OutputType` 為 `Exe` 且非 GUI（無 `UseWindowsForms` / `UseWPF`）；或 `package.json` 有 `bin` 指向可執行 CLI，無前端畫面。 |
 | 套件 (Library) | `*.csproj` 的 `OutputType` 為 `Library` 並產生 NuGet 套件；或 `package.json` 為發佈用 npm 套件，無 app 進入點。 |
 
 若無法判斷類型，回報無法判定並請使用者指明。
@@ -92,6 +93,8 @@ description: 開發完成後的整合驗證入口。當使用者要求在功能�
 ## 步驟二：判定執行環境
 
 驗證只能對**本機環境**執行。判定方式不得僅憑單一線索，必須**列出至少 3 種判定依據**才能下結論。
+
+若本次驗證標的不連任何外部服務（純本機執行的桌面應用、CLI 或套件，無資料庫、API、佇列等外部依賴），環境天然為本機，記一句說明即可，不需湊滿 3 種依據。
 
 判定依據（從下列項目蒐集，至少湊滿 3 種）：
 
@@ -155,6 +158,7 @@ description: 開發完成後的整合驗證入口。當使用者要求在功能�
 | Web UI | **必須使用 Skill 工具呼叫 `browser-smoke`**，由其完成瀏覽器煙霧驗證。 |
 | Web API | **必須使用 Skill 工具呼叫 `api-smoke`**，由其完成 API 煙霧驗證。 |
 | 桌面應用 | **必須使用 Skill 工具呼叫 `desktop-smoke`**，由其完成桌面應用煙霧驗證。 |
+| CLI / 主控台 | 依本檔「CLI 驗證」小節處理。 |
 | 套件 (Library) | 依本檔「套件驗證」小節處理。 |
 
 ### 套件驗證
@@ -165,6 +169,15 @@ description: 開發完成後的整合驗證入口。當使用者要求在功能�
 2. 建立最小消費端：使用專案既有的 sample / example 專案，或新建一個最小專案引用本套件，呼叫本次修改相關的代表性 public API，確認行為符合預期。
 3. 確認封裝產物可產生：執行 `dotnet pack` 或 `npm pack` 並確認成功。
 4. **不得發佈套件到任何 registry**（NuGet.org、npm registry 等），驗證僅止於本機打包。
+
+### CLI 驗證
+
+主控台程式以實際執行與輸出比對為主：
+
+1. 單元測試已於步驟四執行。
+2. 以專案既有方式執行（如 `dotnet run -- <參數>`、`node <bin> <參數>`），對本次修改相關的子命令或參數，至少涵蓋正常、邊界與錯誤輸入三種情境。
+3. 比對 stdout / stderr 內容與 exit code 是否符合各情境預期，不以「有跑完」當作通過。
+4. 程式會寫入檔案或產生其他副作用時，依步驟六回查資料來源。
 
 ## 步驟六：寫入回查 gate
 

@@ -13,7 +13,7 @@ developer_instructions = """
 
 1. 依主規則判定 `work-root`，後續所有交接檔均使用 `<work-root>/.local/ai-sessions/`。
 2. 讀取 `<work-root>/.local/ai-sessions/design.md`：
-   - 比對 TL;DR 與當前任務是否一致。
+   - 比對 §1 需求摘要與當前任務是否一致。
    - 確認後掌握分階段計畫、§5 影響範圍與 §6 驗證步驟。
    - 讀取失敗時：停止，回報缺少設計基準，要求先完成 Design 階段。
 3. 若 `<work-root>/CONTEXT.local.md` 存在則讀取：

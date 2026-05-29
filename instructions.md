@@ -62,6 +62,7 @@ applyTo: "**/*"
   - ❌ 「原本考慮 A 方案，但因為 X 問題所以否決，改用 B 方案，後來又因為 Y 所以最終選 C。」
   - ✅ 「採用 C 方案。理由：滿足 Z 需求且效能最佳。」
   - 例外：若使用者明確要求「列出決策過程」或「說明為什麼不選其他方案」，才展開完整的比較分析。
+  - 例外：設計文件的技術選型章節屬 ADR（架構決策紀錄）性質，需常態列出選定方案與排除的替代方案及其原因，不受本規則限制。
 - **殘雜資訊清除 (Noise Removal)**：最終輸出中不得包含以下雜訊：
   - 任務過程中的除錯紀錄、暫時性的假設與推測。
   - 對已被否決方案的描述或辯護。
@@ -88,7 +89,8 @@ applyTo: "**/*"
 - **狀態儲存（State Handoff）**：`CONTEXT.local.md` 為**可選**的本機交接檔，僅用於保存**耐久且跨 Session 仍有價值**的資訊，例如環境前置作業、本機路徑差異、已知陷阱、易踩雷設定。**不預設承載當前進度、短期 TODO 或本輪實作清單**。寫入時採用 `~/.ai-agents/templates/CONTEXT.local.md.template` 的標準化結構。
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
-- **工作產物落點（Artifact Placement）**：agent 執行任務過程中產生的檔案，依用途分三類存放，不散落於 process cwd 或系統暫存目錄：
+- **工作產物落點（Artifact Placement）**：agent 執行任務過程中產生的檔案，依用途分四類存放，不散落於 process cwd 或系統暫存目錄：
+  - **交接檔（Handoff）**（`design.md`、`propose.md`、各類 review / contract 報告、`verify-pending.md`、`cleanup-review.md` 等跨階段或跨 Session 傳遞的文件）：存入 `<work-root>/.local/ai-sessions/` 根目錄，不放入下列子目錄。
   - **過程性可棄**（一次性腳本、重導向的終端輸出與日誌、為取得工具或相依套件的暫存下載）：存入 `<work-root>/.local/ai-sessions/scratch/`。
   - **需保留非交付**（原地改寫前的備份、為整合任務抓取的資料素材、用於說明問題的截圖）：分別存入 `<work-root>/.local/ai-sessions/` 下的 `backups/`、`inputs/`、`screenshots/`。
   - **交付產物**（整合後的資料檔、產生的程式碼與文件）：存放於專案內使用者預期的位置，不得放入 `.local/ai-sessions/`，避免被當作暫存內容清除。

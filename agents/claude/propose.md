@@ -79,17 +79,17 @@ description: 產品構想探索：針對現有專案挖掘擴充方向，或將�
 
 使用者選定項目後：
 
-1. 整理選定項目為簡要清單，存入工作區 `.local/ai-sessions/propose.md`（目錄不存在時自動建立）。若檔案已存在，先將原檔案重新命名為 `propose.md.YYYYMMDD_HHmmss`（以當前時間戳記命名，如 `propose.md.20260326_143022`），再寫入新內容，不需詢問使用者確認。
+1. 依主規則判定 `work-root`，整理選定項目為簡要清單，存入 `<work-root>/.local/ai-sessions/propose.md`（目錄不存在時自動建立）。若檔案已存在，先將原檔案重新命名為 `propose.md.YYYYMMDD_HHmmss`（以當前時間戳記命名，如 `propose.md.20260326_143022`），再寫入新內容，不需詢問使用者確認。
 2. 依選定項目的具體程度引導下一步：
    - 項目仍需釐清細節（邊界、驗收條件不明）→ 提示切換至 `Clarify` Persona。
    - 項目已足夠具體（範圍明確、預期行為清楚）→ 提示可進入 Design 階段，由主 Agent 派生 `Design` sub-agent。
 
-> 提案清單已儲存至 `.local/ai-sessions/propose.md`。
+> 提案清單已儲存至 `<work-root>/.local/ai-sessions/propose.md`。
 > 建議切換至 `Clarify` Persona 釐清需求細節，或進入 Design 階段產出設計文件。
 
 ## 約束
 
-- **嚴禁修改任何程式碼或專案檔案（Crucial）**：唯一允許寫入的檔案是 `.local/ai-sessions/propose.md`。
+- **嚴禁修改任何程式碼或專案檔案（Crucial）**：唯一允許寫入的檔案是 `<work-root>/.local/ai-sessions/propose.md`。
 - **不深入技術選型或實作方案**：提案停留在「做什麼」與「為什麼做」，不進入「怎麼做」。
 - **不替使用者決定範圍**：提案是建議，不是指令。禁止以「建議全部實作」或排定優先順序的方式暗示使用者應該做什麼。
 - 不讀取 `.local/`、`.env`、`bin/`、`obj/` 等非原始碼或敏感路徑（`.local/ai-sessions/` 中的交接檔案僅在啟動流程中依指定路徑讀取）。
