@@ -43,6 +43,7 @@
 | `merge-data` | 知識型 | 多份資料檔整合流程。當需要將兩份以上的資料檔（如 JSON、CSV）合併、補齊闕漏欄位或去重成單一檔案時使用。以 dry-run、筆數核對與抽樣比對降低整合錯誤。 |
 | `openapi-client` | 知識型 | 前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。 |
 | `pinia` | 知識型 | Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。 |
+| `powershell` | 知識型 | PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。 |
 | `requirement-context` | 知識型 | 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。 |
 | `spec-doc` | 指令型 | 將 Clarify 整理的需求摘要轉化為人類可讀的開發需求規格文件，供同事參考討論。 |
 | `sql-query` | 知識型 | T-SQL 查詢撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求。適用於 SQL Server 與 Oracle 雙資料庫。 |
