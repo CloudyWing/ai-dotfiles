@@ -1,6 +1,6 @@
 ---
 name: csharp-docs
-description: 'C# 文件與 XML 註解標準：強制使用標準標籤與用詞規範產生類別與方法的說明。'
+description: 'C# 文件與 XML 註解標準：強制使用標準標籤與用詞規範產生類別與方法的說明。Use when writing, reviewing, or generating XML documentation comments (///) in C# files, or when the user asks to add, fix, or supplement XML docs.'
 ---
 
 # C# 原始碼註解最佳實踐
@@ -9,7 +9,7 @@ description: 'C# 文件與 XML 註解標準：強制使用標準標籤與用詞�
 
 ## 通用 API 指南
 
-- 針對公開 (Public) 成員必須包含 XML 註解；內部 (Internal) 若有複雜邏輯亦強烈建議加入。
+- XML 註解的強制程度依專案性質與成員類型而定，分級規則見 `instructions.md` §3.3。
 - `<summary>`：提供一句話的簡短描述。中文應直接描述動作（例如：取得或設定...、初始化...）。
 - `<remarks>`：用於補充詳細資訊、實作細節或上下文。
 - `<see langword>`：用於語言關鍵字（如 `null`, `true`, `false`, `int`, `bool`）。

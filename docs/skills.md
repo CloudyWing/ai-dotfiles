@@ -13,7 +13,7 @@
 | `csharp-background-service` | 知識型 | Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。 |
 | `csharp-comments` | 知識型 | C# 註解風格：單行註解格式、註解用途原則，以及 TODO / UNDONE / HACK 工作清單關鍵字的分類與使用時機。撰寫或檢視 C# 程式碼註解時套用。 |
 | `csharp-di` | 知識型 | .NET 相依性注入進階規範：Generic Host、Worker Service、Keyed Services 與 Decorator 模式。 |
-| `csharp-docs` | 知識型 | C# 文件與 XML 註解標準：強制使用標準標籤與用詞規範產生類別與方法的說明。 |
+| `csharp-docs` | 知識型 | C# 文件與 XML 註解標準：強制使用標準標籤與用詞規範產生類別與方法的說明。Use when writing, reviewing, or generating XML documentation comments (///) in C# files, or when the user asks to add, fix, or supplement XML docs. |
 | `csharp-error-handling` | 知識型 | C# 例外處理規範：例外設計原則、Guard Clause、全域錯誤處理與 ProblemDetails 回應標準化。 |
 | `csharp-grpc` | 知識型 | gRPC 服務開發規範：Proto 檔案管理、服務實作、攔截器、錯誤處理與用戶端工廠模式。 |
 | `csharp-linq` | 知識型 | LINQ 查詢規範：延遲執行、物化時機、查詢可讀性與效能陷阱迴避。當撰寫 In-Memory 集合操作或 LINQ to Objects 時自動套用。 |

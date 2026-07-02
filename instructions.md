@@ -292,8 +292,23 @@ applyTo: "**/*"
 
 ### 3.3 XML Documentation & Comments
 
-- 所有 `public` 成員都必須加上 XML 註解；`<summary>` 以第三人稱現在式動詞開頭（如 "Gets..."、"Initializes..."），重點說明 Why 與 What。
+XML 註解的強制程度依專案性質而定：
+
+- **套件 / Library 專案**（產出為 NuGet Package 或共用類別庫）：所有 `public` 成員都必須加上 XML 註解。
+- **Web 專案**（ASP.NET Core Web API / MVC / Razor Pages 等應用程式）：依成員類型分級：
+
+  | 層級 | 對象 | 規則 |
+  | --- | --- | --- |
+  | 應寫 | Web API Controller Action | 含 `<summary>`、`<param>`、`<returns>`，供 Swagger/OpenAPI 產生文件 |
+  | 應寫 | 共用 Interface 的方法 | 跨模組契約描述，實作類別用 `<inheritdoc/>` |
+  | 應寫 | 公開 Enum 值 | 補充命名無法表達的語意邊界 |
+  | 應寫 | DTO / ViewModel / Entity 屬性 | 補充業務含義、格式約束、單位等 |
+  | 視情況 | 其他 public 成員 | 名稱已充分表達時可省略，有非直覺行為時應補 |
+  | 不寫 | private / internal | 用 `//` 註解處理即可 |
+
+- `<summary>` 以第三人稱現在式動詞開頭（如 "Gets..."、"Initializes..."），重點說明 Why 與 What。
 - 格式規範與標籤用法（`<see langword>`、`<paramref>`、`<inheritdoc>` 等）參閱 `csharp-docs` skill。
+- 單行 `//` 註解的風格、位置與應寫情境參閱 `csharp-comments` skill。
 
 ### 3.4 .NET 最佳實踐品質檢查 (主動套用)
 
