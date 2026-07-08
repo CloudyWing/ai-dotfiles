@@ -26,7 +26,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Clarify、Implement、Propose、Editor）以語意切換方式執行；sub-agent（Design、Review、Frontend Review、API Contract、Cleanup）以派生方式執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議 Clarify / Design 在 Claude Code 處理，Design 完成後再切至 Codex 執行 Implement / Review 鏈。
+Persona Agent（Clarify、Implement、Editor）以語意切換方式執行；執行型 agent 中 Design 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 完成後再切至 Codex 執行 Implement / Review 鏈；bug 由 Codex 的 Debug 線診斷與修正。
 
 ### 本地檔案慣例（不 commit）
 
@@ -199,16 +199,15 @@ Agent 依執行平台分為兩類：
 
 ```mermaid
 flowchart TD
-    Propose["**Propose**<br />構想探索"]
-    Clarify["**Clarify**<br />需求解構"]
+    Clarify["**Clarify**<br />需求解構＋構想發散"]
     Design["**Design**<br />系統設計"]
     Implement["**Implement**<br />實作工程師"]
     Review["**Review**<br />後端驗收"]
     FrontendReview["**Frontend Review**<br />前端驗收"]
+    Debug["**Debug**<br />bug 線協調者"]
+    FixSub["匿名 subagent<br />執行修正"]
     Done(["任務完成"])
 
-    Propose -->|需釐清細節| Clarify
-    Propose -->|範圍已明確| Design
     Clarify --> Design
     Design --> Implement
     Implement -->|Backend Review<br />handoff| Review
@@ -218,9 +217,13 @@ flowchart TD
     Review --> Done
     FrontendReview -->|補完實作| Implement
     FrontendReview --> Done
+
+    Debug -->|派生＋fix-plan| FixSub
+    FixSub -->|回報| Debug
+    Debug --> Done
 ```
 
-> Propose → Design 為需求收斂與設計階段；Design 完成後，切換至 `Implement` Persona 進入實作與審查循環。
+> 功能線：Clarify 收斂需求後由 Design 設計，切換至 `Implement` Persona 進入實作與審查循環。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
 
 ---
 

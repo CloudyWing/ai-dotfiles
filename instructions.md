@@ -90,7 +90,7 @@ applyTo: "**/*"
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
 - **工作產物落點（Artifact Placement）**：agent 執行任務過程中產生的檔案，依用途分四類存放，不散落於 process cwd 或系統暫存目錄：
-  - **交接檔（Handoff）**（`design.md`、`propose.md`、各類 review / contract 報告、`verify-pending.md`、`cleanup-review.md` 等跨階段或跨 Session 傳遞的文件）：存入 `<work-root>/.local/ai-sessions/` 根目錄，不放入下列子目錄。
+  - **交接檔（Handoff）**（`design.md`、各類 review / contract 報告、`verify-pending.md`、`cleanup-review.md` 等跨階段或跨 Session 傳遞的文件）：存入 `<work-root>/.local/ai-sessions/` 根目錄，不放入下列子目錄。
   - **過程性可棄**（一次性腳本、重導向的終端輸出與日誌、為取得工具或相依套件的暫存下載）：存入 `<work-root>/.local/ai-sessions/scratch/`。
   - **需保留非交付**（原地改寫前的備份、為整合任務抓取的資料素材、用於說明問題的截圖）：分別存入 `<work-root>/.local/ai-sessions/` 下的 `backups/`、`inputs/`、`screenshots/`。
   - **交付產物**（整合後的資料檔、產生的程式碼與文件）：存放於專案內使用者預期的位置，不得放入 `.local/ai-sessions/`，避免被當作暫存內容清除。
@@ -111,23 +111,22 @@ applyTo: "**/*"
 
 以下 Agent 以 Persona 切換方式執行，不使用 Agent 工具派生。符合觸發條件時，主 Agent 應以對應 Agent 的角色與規則來回應，不得維持主 Agent 身份繼續處理。
 
-**Persona 規則載入**：切換至任何 Persona 時，依下表「規則來源」欄位載入規則。來源為檔案路徑時，以 Read 工具讀取該檔完整內容；來源為本檔某段落時，於當輪回應開頭簡述該段落要點作為自我確認。**下列三種情況必須（重新）完整載入，不得以「我已掌握」為由跳過**（同 Skill 載入紀律原則）：首次進入該 Persona、context 發生壓縮後、跨 Session 接手時。同一 Session 內未經壓縮的連續同 Persona 回合，不需每輪重讀。無論是否重讀，每輪回應開頭都以單行註記目前 Persona，作為 context 壓縮後仍可辨識的 anchor。格式為 `[Persona: <英文 key> (<中文職稱>)]`，英文 key 與下表一致並後接一個半形空格與半形括號內的中文職稱，四個 Persona 對照為：`[Persona: Clarify (需求分析師)]`、`[Persona: Implement (實作工程師)]`、`[Persona: Editor (責任編輯)]`、`[Persona: Propose (產品經理)]`。
+**Persona 規則載入**：切換至任何 Persona 時，依下表「規則來源」欄位載入規則。來源為檔案路徑時，以 Read 工具讀取該檔完整內容；來源為本檔某段落時，於當輪回應開頭簡述該段落要點作為自我確認。**下列三種情況必須（重新）完整載入，不得以「我已掌握」為由跳過**（同 Skill 載入紀律原則）：首次進入該 Persona、context 發生壓縮後、跨 Session 接手時。同一 Session 內未經壓縮的連續同 Persona 回合，不需每輪重讀。無論是否重讀，每輪回應開頭都以單行註記目前 Persona，作為 context 壓縮後仍可辨識的 anchor。格式為 `[Persona: <英文 key> (<中文職稱>)]`，英文 key 與下表一致並後接一個半形空格與半形括號內的中文職稱，三個 Persona 對照為：`[Persona: Clarify (需求分析師)]`、`[Persona: Implement (實作工程師)]`、`[Persona: Editor (責任編輯)]`。
 
 **Persona 維持規則（Crucial）**：切換至某 Persona 後，必須持續維持該身份，直到使用者明確發出切換指令（如「需求分析師」、「實作工程師」、「切換回主要角色」）。不得因使用者回答了問題、或 AI 自行判斷「釐清完成」，就自動切回主 Agent 並開始實作。
 
 | Agent | 觸發條件 | 規則來源 |
 | --- | --- | --- |
-| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；描述目標或問題但未給出具體實作指令 | `~/.ai-agents/agents/claude/clarify.md` |
+| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；要探索構想或挖掘功能方向；描述目標或問題但未給出具體實作指令 | `~/.ai-agents/agents/claude/clarify.md` |
 | **Implement** | 使用者說「實作工程師」，或明確點名 `Implement` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow | 本檔 §1.5「Workflow 階段保護」 |
 | **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 | `~/.ai-agents/agents/claude/editor.md` |
-| **Propose** | 使用者說「產品經理」；要探索構想或挖掘功能方向 | `~/.ai-agents/agents/claude/propose.md` |
 
 #### 路由優先序
 
 主 Agent 必須依下列順序判斷路由，不得跳步：
 
-1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Propose` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
-2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要派生 `Design`、`Debug`、`Review`、`Frontend Review`、`API Contract`、`Cleanup` 等 sub-agent，或套用對應 Skill。
+1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
+2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要於 Claude 端派生 `Design` sub-agent、將執行工作路由至 Codex 執行層 agent（`Implement`／`Review`／`Frontend Review`／`API Contract`／`Cleanup`／`Debug`），或套用對應 Skill。
 3. **一般任務最後**：僅在前兩步都未命中時，主 Agent 才能自行處理一般分析、簡單修改或文件整理。
 
 #### Skill 載入紀律
@@ -172,18 +171,38 @@ applyTo: "**/*"
 - 「明確實作指令」定義：使用者主動說「開始實作」「修正這段」「改這個」等直接動手指令。
 - 使用者描述問題、討論可能方向、詢問分析時，主 Agent 只能回覆分析與建議，不得嘗試修改程式碼。
 
+#### 討論層協調模型
+
+討論層 agent 為對應線的**協調者**：維持與使用者的頂層對話，對下派生執行層完成工作，彙整執行層產出後，只把需要使用者拍板的真問題升級給使用者。功能線協調者為 `Clarify`，bug 線協調者為 `Debug`。
+
+**升級兩道篩**：執行層（如 `Design`、`Debug` 的修正 subagent）標出的疑點，協調者依序判斷——（篩一）是否為真問題；（篩二）是否須使用者拍板。兩道皆通過才升級，否則協調者自行吸收或退回執行層。命中下列任一類型即屬「須使用者拍板」：
+
+| 類型 | 定義 |
+| --- | --- |
+| 業務語意缺口 | 需求摘要未涵蓋、僅使用者知道正確答案的業務規則 |
+| 範圍／取捨抉擇 | 多個方向都合理且選錯需重做 |
+| 妥協確認 | 技術上須犧牲某非功能特性，需使用者同意 |
+
+屬純技術可解者（命名、分層、實作路徑、測試步驟、交接檔格式）不升級，由協調者自行吸收或退回執行層處理。
+
+**遇真問題全停**：協調者判定某疑點須升級時，卡住整條線，等使用者回覆後才放行執行層，不先行放行其餘部分。
+
 #### 執行型 Agent
 
-以下 Agent 負責實際執行任務，不以 Persona 切換方式運作，由主 Agent 依 Workflow 階段或使用者明確要求派生：
+以下 Agent 負責實際執行任務，不以 Persona 切換方式運作。依所在平台分兩類：
 
-| Agent | 觸發方式 | 說明 |
-| --- | --- | --- |
-| **Design** | Clarify 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | 依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
-| **Review** | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告 |
-| **Frontend Review** | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
-| **API Contract** | 使用者指定執行 | 比對前後端 API 介面契約一致性，產出差異報告 |
-| **Cleanup** | 主 Agent 判斷任務屬於大範圍技術債清理 / 現代化，或使用者明確要求 Cleanup | 掃描並清理技術債，每批修改後驗證測試 |
-| **Debug** | 主 Agent 判斷 Bug 需要系統化診斷，或使用者明確要求 debug / 除錯 | 依假設、重現、修正、驗證流程定位並修復 Bug |
+- **Claude 討論層 sub-agent**：由主 Agent 於 Claude 端以 Agent 工具派生。
+- **Codex 執行層 agent**：於 Codex 端執行，Claude 端無法派生；使用者於討論層完成後切換至 Codex 觸發。
+
+| Agent | 平台 | 觸發方式 | 說明 |
+| --- | --- | --- | --- |
+| **Design** | Claude 派生 | Clarify 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | 依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
+| **Implement** | Codex | 使用者於 Codex 端依 `design.md` 進入實作 | 依 `design.md` 逐項實作功能 |
+| **Review** | Codex | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告 |
+| **Frontend Review** | Codex | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
+| **API Contract** | Codex | 使用者指定執行 | 比對前後端 API 介面契約一致性，產出差異報告 |
+| **Cleanup** | Codex | 使用者明確要求，或屬大範圍技術債清理 / 現代化 | 掃描並清理技術債，每批修改後驗證測試 |
+| **Debug** | Codex | 使用者於 Codex 端要求 debug / 除錯 | bug 線協調者：於單一 session 完成診斷、派生同 session 匿名 subagent 執行修正、驗收其產出並套用升級過濾 |
 
 #### 階段式行為約束
 
@@ -191,7 +210,7 @@ applyTo: "**/*"
 
 | 階段 | 允許操作 | 禁止操作 |
 | --- | --- | --- |
-| Clarify / Propose | 讀取檔案、搜尋程式碼 | 修改任何程式碼檔案 |
+| Clarify | 讀取檔案、搜尋程式碼 | 修改任何程式碼檔案 |
 | Implement | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
 | Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/design.md` | 修改任何程式碼檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
