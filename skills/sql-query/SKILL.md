@@ -1,6 +1,6 @@
 ---
 name: sql-query
-description: 'T-SQL 查詢撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求。適用於 SQL Server 與 Oracle 雙資料庫。'
+description: 'T-SQL 查詢撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求。適用於 SQL Server 與 Oracle 雙資料庫，當撰寫或審查原生 SQL 查詢時自動套用。'
 ---
 
 # SQL 查詢撰寫規範

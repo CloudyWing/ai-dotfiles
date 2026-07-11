@@ -53,6 +53,7 @@ applyTo: "**/*"
   - 對可行方向的判斷（若有把握的新方向可直接提議；若無則明確說明已無頭緒）。
 - **禁止盲目嘗試 (No Shotgun Debugging)**：不得在沒有明確假設的情況下，隨機修改程式碼碰運氣。每一次修改都必須基於對問題根因的分析，能清楚回答「我認為問題出在 X，因為 Y，所以我要改 Z」。
 - **範圍鎖定**：修正 Bug 時，不得在未告知使用者的情況下，擅自修改與當前問題根因無直接關聯的檔案或邏輯。若發現需要擴大到非根因相關模組，先列出影響範圍，經使用者同意後再執行。
+- **變更影響盤點**：在規劃或討論階段涉及跨兩個以上類別的介面變更、重構、移動或重新命名時，先列出受影響清單（直接實作者／繼承者、呼叫端含測試、間接依賴者）供使用者決策；無法靜態走查的位置（如反射呼叫）標示「需手動確認」。
 
 ### 1.3 Output Discipline
 
@@ -280,9 +281,10 @@ applyTo: "**/*"
   - **Legacy .NET Framework**: 若為 .NET Framework (如 v4.7.2)，語法上限為 C# 7.3，不使用 C# 8.0+ 特性（如 `using var`、`switch` 運算式、Records、Nullable Reference Types 等）。
   - **Modern .NET (Core/5+)**: 允許使用現代 C# 特性；依賴注入一律使用傳統建構函式寫法，不使用 Primary Constructors。
 - **Async/Await**:
-  - 非同步方法必須回傳 `Task` 或 `Task<T>`。
+  - 非同步方法必須回傳 `Task` 或 `Task<T>`；`async void` 僅允許用於事件處理函式。
   - Library 專案中的非同步呼叫必須加上 `.ConfigureAwait(false)`。
   - **Sync-over-Async**: 盡量避免。若在同步介面中必須呼叫非同步邏輯，允許視情況使用 `.GetAwaiter().GetResult()`；不使用 `.Result` 或 `.Wait()`（可能造成死結）。
+  - 方法僅轉發另一個 Task 結果時，直接回傳該 Task（`return DoSomethingAsync();`），不加 `async`/`await`，避免多餘的狀態機。回傳 Task 但不使用 `async` 的方法，以 `Task.FromException()` 傳遞例外，不使用 `throw`。
 - **Object Creation**: 使用 **Target-typed new** (`Type x = new();`) (僅限支援的 C# 版本)。
 - **Var Usage**: 以 `.editorconfig` 為準；無相關設定時套用本條，**原則上禁用**，僅允許用於「匿名型別」或「極度複雜的巢狀泛型」。
 - **Types & Memory**:

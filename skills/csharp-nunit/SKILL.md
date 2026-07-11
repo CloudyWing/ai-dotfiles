@@ -1,6 +1,6 @@
 ---
 name: csharp-nunit
-description: 'C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。'
+description: 'C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。'
 ---
 
 # NUnit 單元測試最佳實踐

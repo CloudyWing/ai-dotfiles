@@ -61,10 +61,10 @@ if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $by
 ```powershell
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $content = [System.IO.File]::ReadAllText("$FilePath", [System.Text.Encoding]::GetEncoding(950))  # Big5
-# 目標為 UTF-8 無 BOM
-[System.IO.File]::WriteAllText("$OutputPath", $content, [System.Text.Encoding]::UTF8)
+# 目標為 UTF-8 無 BOM（不可用 [System.Text.Encoding]::UTF8，該屬性會寫出 BOM）
+[System.IO.File]::WriteAllText("$OutputPath", $content, (New-Object System.Text.UTF8Encoding($false)))
 # 目標為 UTF-8 with BOM
-[System.IO.File]::WriteAllText("$OutputPath", $content, [System.Text.Encoding]::UTF8)  # 再手動加 BOM
+[System.IO.File]::WriteAllText("$OutputPath", $content, (New-Object System.Text.UTF8Encoding($true)))
 ```
 
 ### 5. 驗證結果
@@ -84,5 +84,5 @@ $content = [System.IO.File]::ReadAllText("$FilePath", [System.Text.Encoding]::Ge
 
 ## 注意事項
 
-- 轉換前不自動備份，建議使用者先確認 git 狀態或自行備份。
+- **轉換前必須備份**：編碼轉換屬於原地改寫非本 Session 產生的檔案，依全域 §1.4「腳本改寫安全」，先將受影響檔案複製到 `<work-root>/.local/ai-sessions/backups/<時間戳>/`（保留原始相對路徑），並寫入一行 `manifest.txt` 記錄該次操作。不因專案有 git 而省略。
 - 若檔案為二進位檔（如圖片、PDF），跳過並警告。

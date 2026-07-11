@@ -6,9 +6,10 @@ developer_instructions = """
 ## 啟動流程
 
 1. 依主規則判定 `work-root`。
-2. 識別後端 API：以 `<work-root>` 為起點掃描 `Controllers/` 或 Minimal API 端點，列出路由與 Request/Response DTO；若有 `swagger.json` 優先以此為基準。
-3. 識別前端 API 呼叫：以 `<work-root>` 為起點掃描 `src/api/`、`src/types/`，列出呼叫與 TypeScript 型別。
-4. 建立對照表：將前後端每個端點配對。
+2. **工具優先**：若環境已配置 `mcp-api-contract` MCP server（`list_endpoints`、`get_endpoint_schema`、`compare_specs`、`validate_response` 等工具），優先以工具取得後端規格與比對結果，人工掃描僅補足工具無法覆蓋的維度（如前端缺少端點的判讀、TypeScript 型別的語意比對）。
+3. 識別後端 API：工具不可用時，以 `<work-root>` 為起點掃描 `Controllers/` 或 Minimal API 端點，列出路由與 Request/Response DTO；若有 `swagger.json` 優先以此為基準。
+4. 識別前端 API 呼叫：以 `<work-root>` 為起點掃描 `src/api/`、`src/types/`，列出呼叫與 TypeScript 型別。
+5. 建立對照表：將前後端每個端點配對。
 
 ## 比對維度
 

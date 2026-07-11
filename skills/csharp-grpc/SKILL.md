@@ -1,6 +1,6 @@
 ---
 name: csharp-grpc
-description: 'gRPC 服務開發規範：Proto 檔案管理、服務實作、攔截器、錯誤處理與用戶端工廠模式。'
+description: 'gRPC 服務開發規範：Proto 檔案管理、服務實作、攔截器、錯誤處理與用戶端工廠模式。當偵測到 gRPC 專案或撰寫 .proto、gRPC 服務與用戶端時自動套用。'
 ---
 
 # gRPC 服務開發規範
@@ -86,10 +86,15 @@ message OrderItemMessage {
 ## 服務實作
 
 ```csharp
-public class OrderGrpcService(
-    IOrderService orderService,
-    ILogger<OrderGrpcService> logger
-) : OrderService.OrderServiceBase {
+public class OrderGrpcService : OrderService.OrderServiceBase {
+    private readonly IOrderService orderService;
+    private readonly ILogger<OrderGrpcService> logger;
+
+    public OrderGrpcService(IOrderService orderService, ILogger<OrderGrpcService> logger) {
+        this.orderService = orderService;
+        this.logger = logger;
+    }
+
     public override async Task<GetOrderResponse> GetOrder(
         GetOrderRequest request,
         ServerCallContext context
@@ -160,7 +165,13 @@ throw new ArgumentException("客戶名稱不可為空");
 ### 全域錯誤攔截器
 
 ```csharp
-public class ErrorInterceptor(ILogger<ErrorInterceptor> logger) : Interceptor {
+public class ErrorInterceptor : Interceptor {
+    private readonly ILogger<ErrorInterceptor> logger;
+
+    public ErrorInterceptor(ILogger<ErrorInterceptor> logger) {
+        this.logger = logger;
+    }
+
     public override async Task<TResponse> UnaryServerHandler<TRequest, TResponse>(
         TRequest request,
         ServerCallContext context,
@@ -203,7 +214,13 @@ builder.Services.AddGrpcClient<OrderService.OrderServiceClient>(options => {
 });
 
 // 使用
-public class OrderProxy(OrderService.OrderServiceClient client) {
+public class OrderProxy {
+    private readonly OrderService.OrderServiceClient client;
+
+    public OrderProxy(OrderService.OrderServiceClient client) {
+        this.client = client;
+    }
+
     public async Task<GetOrderResponse> GetOrderAsync(int id, CancellationToken cancellationToken) {
         return await client.GetOrderAsync(
             new GetOrderRequest { Id = id },

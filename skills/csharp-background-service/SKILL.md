@@ -1,6 +1,6 @@
 ---
 name: csharp-background-service
-description: 'Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。'
+description: 'Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。'
 ---
 
 # Background Service 開發規範
@@ -22,10 +22,15 @@ description: 'Background Service 開發規範：BackgroundService、IHostedServi
 ### 基本結構
 
 ```csharp
-public class OrderSyncService(
-    IServiceScopeFactory scopeFactory,
-    ILogger<OrderSyncService> logger
-) : BackgroundService {
+public class OrderSyncService : BackgroundService {
+    private readonly IServiceScopeFactory scopeFactory;
+    private readonly ILogger<OrderSyncService> logger;
+
+    public OrderSyncService(IServiceScopeFactory scopeFactory, ILogger<OrderSyncService> logger) {
+        this.scopeFactory = scopeFactory;
+        this.logger = logger;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
         logger.LogInformation("OrderSyncService 已啟動");
 
@@ -62,10 +67,18 @@ BackgroundService 註冊為 Singleton，**不能**直接注入 Scoped 服務（�
 
 ```csharp
 // ❌ 錯誤：直接注入 Scoped 服務
-public class MyWorker(AppDbContext db) : BackgroundService { }
+public class MyWorker : BackgroundService {
+    public MyWorker(AppDbContext db) { /* ... */ }
+}
 
 // ✅ 正確：透過 IServiceScopeFactory
-public class MyWorker(IServiceScopeFactory scopeFactory) : BackgroundService {
+public class MyWorker : BackgroundService {
+    private readonly IServiceScopeFactory scopeFactory;
+
+    public MyWorker(IServiceScopeFactory scopeFactory) {
+        this.scopeFactory = scopeFactory;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
         await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
         AppDbContext db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -73,7 +86,13 @@ public class MyWorker(IServiceScopeFactory scopeFactory) : BackgroundService {
 }
 
 // ✅ 正確：EF Core 場景優先使用 IDbContextFactory
-public class MyWorker(IDbContextFactory<AppDbContext> factory) : BackgroundService {
+public class MyWorker : BackgroundService {
+    private readonly IDbContextFactory<AppDbContext> factory;
+
+    public MyWorker(IDbContextFactory<AppDbContext> factory) {
+        this.factory = factory;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
         await using AppDbContext db = await factory.CreateDbContextAsync(stoppingToken)
             .ConfigureAwait(false);
@@ -84,11 +103,21 @@ public class MyWorker(IDbContextFactory<AppDbContext> factory) : BackgroundServi
 ## IHostedService 實作規範
 
 ```csharp
-public class CacheWarmupService(
-    IServiceScopeFactory scopeFactory,
-    IMemoryCache cache,
-    ILogger<CacheWarmupService> logger
-) : IHostedService {
+public class CacheWarmupService : IHostedService {
+    private readonly IServiceScopeFactory scopeFactory;
+    private readonly IMemoryCache cache;
+    private readonly ILogger<CacheWarmupService> logger;
+
+    public CacheWarmupService(
+        IServiceScopeFactory scopeFactory,
+        IMemoryCache cache,
+        ILogger<CacheWarmupService> logger
+    ) {
+        this.scopeFactory = scopeFactory;
+        this.cache = cache;
+        this.logger = logger;
+    }
+
     public async Task StartAsync(CancellationToken cancellationToken) {
         logger.LogInformation("開始預熱快取");
 
@@ -146,11 +175,21 @@ public class BackgroundTaskQueue {
 ### 消費者
 
 ```csharp
-public class QueuedHostedService(
-    BackgroundTaskQueue taskQueue,
-    IServiceScopeFactory scopeFactory,
-    ILogger<QueuedHostedService> logger
-) : BackgroundService {
+public class QueuedHostedService : BackgroundService {
+    private readonly BackgroundTaskQueue taskQueue;
+    private readonly IServiceScopeFactory scopeFactory;
+    private readonly ILogger<QueuedHostedService> logger;
+
+    public QueuedHostedService(
+        BackgroundTaskQueue taskQueue,
+        IServiceScopeFactory scopeFactory,
+        ILogger<QueuedHostedService> logger
+    ) {
+        this.taskQueue = taskQueue;
+        this.scopeFactory = scopeFactory;
+        this.logger = logger;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
         while (!stoppingToken.IsCancellationRequested) {
             Func<IServiceScopeFactory, CancellationToken, ValueTask> workItem
@@ -199,7 +238,13 @@ builder.Services.AddHostedService<QueuedHostedService>();
 ### PeriodicTimer（.NET 6+，推薦）
 
 ```csharp
-public class MetricsCollector(ILogger<MetricsCollector> logger) : BackgroundService {
+public class MetricsCollector : BackgroundService {
+    private readonly ILogger<MetricsCollector> logger;
+
+    public MetricsCollector(ILogger<MetricsCollector> logger) {
+        this.logger = logger;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
         using PeriodicTimer timer = new(TimeSpan.FromSeconds(30));
 

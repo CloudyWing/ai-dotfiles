@@ -1,6 +1,6 @@
 ---
 name: vitest
-description: '前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。'
+description: '前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。'
 ---
 
 # 前端測試規範（Vitest）

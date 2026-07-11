@@ -5,14 +5,14 @@ description: '產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最
 
 # C# MCP Server 建立與實作指南
 
-當使用者需要建立擴充 AI 能力的 MCP (Model Context Protocol) 伺服器，且語言選定為 C# (通常為 .NET 10.0 以上) 時，請遵循此指南。
+當使用者需要建立擴充 AI 能力的 MCP (Model Context Protocol) 伺服器，且語言選定為 C# (.NET 8 以上) 時，請遵循此指南。
 
 ## 專案核心要求
 
 - **專案結構**：依部署模式選擇：
   - **STDIO 模式**（本機整合）：建立標準 Console 應用程式 (`dotnet new console`)，使用 `Microsoft.Extensions.Hosting` 管理生命週期。
   - **Streamable HTTP 模式**（Container/Server 部署）：建立 Web 應用程式 (`dotnet new web`)，以 `WebApplicationBuilder` 啟動，通常搭配 Docker 使用。端點預設為 `/mcp`。
-- **套件相依性**：必須包含支援的 MCP SDK（例如官方或社群的 `ModelContextProtocol` 預覽套件）；Streamable HTTP 模式需要 `ModelContextProtocol.AspNetCore`。
+- **套件相依性**：使用官方 `ModelContextProtocol` 套件（穩定版 1.x，含 Hosting 與 DI 擴充）；Streamable HTTP 模式另需 `ModelContextProtocol.AspNetCore`；僅需 client 或低階 server API 時可改用最小相依的 `ModelContextProtocol.Core`。
 - **Log 管控**（僅 STDIO 模式）：為避免干擾 `stdio` 用來傳輸 JSON-RPC，必須將所有 Logging (如 ILogger) 導向 `stderr`，或是寫入實體檔案之中。Streamable HTTP 模式使用獨立 HTTP channel，無此限制。
 
 ## 工具實作 (Tools Implementation)

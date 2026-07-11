@@ -1,6 +1,6 @@
 ---
 name: csharp-validation
-description: 'C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。'
+description: 'C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。'
 ---
 
 # C# 輸入驗證規範
@@ -219,7 +219,13 @@ builder.Services.Configure<ApiBehaviorOptions>(options => {
 
 ```csharp
 // ✅ 正確：公開方法驗證參數
-public class OrderService(IOrderRepository repository) {
+public class OrderService {
+    private readonly IOrderRepository repository;
+
+    public OrderService(IOrderRepository repository) {
+        this.repository = repository;
+    }
+
     public async Task<Order> GetOrderAsync(int orderId, CancellationToken cancellationToken) {
         ArgumentOutOfRangeException.ThrowIfNegativeOrZero(orderId);
 

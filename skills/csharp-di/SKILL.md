@@ -1,6 +1,6 @@
 ---
 name: csharp-di
-description: '.NET 相依性注入進階規範：Generic Host、Worker Service、Keyed Services 與 Decorator 模式。'
+description: '.NET 相依性注入進階規範：Generic Host、Keyed Services、Decorator 模式與容器驗證。當撰寫涉及 DI 容器進階配置（多實作、裝飾、非 Web 宿主）的程式碼時自動套用。'
 ---
 
 # .NET 相依性注入進階規範
@@ -27,30 +27,7 @@ ServiceProvider provider = services.BuildServiceProvider();
 
 ## Worker Service（BackgroundService）
 
-- 繼承 `BackgroundService` 並覆寫 `ExecuteAsync()`。
-- `ExecuteAsync()` 內的迴圈**必須**檢查 `CancellationToken`，確保 Graceful Shutdown。
-- 需要使用 Scoped 服務時，透過 `IServiceScopeFactory` 在迴圈內建立 Scope：
-
-```csharp
-public class OrderProcessorWorker(
-    IServiceScopeFactory scopeFactory,
-    ILogger<OrderProcessorWorker> logger
-) : BackgroundService {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        while (!stoppingToken.IsCancellationRequested) {
-            await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-            IOrderService orderService = scope.ServiceProvider
-                .GetRequiredService<IOrderService>();
-
-            await orderService.ProcessPendingOrdersAsync(stoppingToken)
-                .ConfigureAwait(false);
-
-            await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken)
-                .ConfigureAwait(false);
-        }
-    }
-}
-```
+- 實作規範（`ExecuteAsync` 結構、`CancellationToken`、例外處理）與 Scoped 服務存取（`IServiceScopeFactory` / `IDbContextFactory`），參閱 `csharp-background-service` skill，本文件不重複。
 
 ## 註冊慣例
 
@@ -76,9 +53,13 @@ builder.Services.AddKeyedScoped<INotificationService, EmailNotificationService>(
 builder.Services.AddKeyedScoped<INotificationService, SmsNotificationService>("sms");
 
 // 消費端
-public class OrderController(
-    [FromKeyedServices("email")] INotificationService emailNotifier
-) { }
+public class OrderController {
+    private readonly INotificationService emailNotifier;
+
+    public OrderController([FromKeyedServices("email")] INotificationService emailNotifier) {
+        this.emailNotifier = emailNotifier;
+    }
+}
 ```
 
 - 若需注入所有實作，使用 `IEnumerable<T>` 接收：
@@ -88,7 +69,13 @@ builder.Services.AddScoped<IValidator, NameValidator>();
 builder.Services.AddScoped<IValidator, EmailValidator>();
 
 // 消費端：注入所有 IValidator 實作
-public class ValidationService(IEnumerable<IValidator> validators) { }
+public class ValidationService {
+    private readonly IEnumerable<IValidator> validators;
+
+    public ValidationService(IEnumerable<IValidator> validators) {
+        this.validators = validators;
+    }
+}
 ```
 
 ## Decorator 模式

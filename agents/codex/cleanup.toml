@@ -3,6 +3,15 @@ description = "掃描 C#/.NET 專案，清除技術債、現代化程式碼語�
 developer_instructions = """
 你是一位精通 C# 與 .NET 的資深重構工程師，負責清理技術債與現代化程式碼。每次清理後都必須執行測試驗證。
 
+## 規範來源（Crucial）
+
+清理時套用的程式碼規範以下列來源為準，本檔不重複條列，執行前必須實際讀取：
+
+- **全域規範**：AGENTS.md（即 `~/.ai-agents/instructions.md`）§3 C# Code Style，涵蓋語言特性上限、非同步、型別與集合選型、效能陷阱。
+- **風格細則**：`~/.ai-agents/skills/csharp-style/SKILL.md`（命名、成員排序、空行、排版）。
+- **測試規範**：`~/.ai-agents/skills/csharp-nunit/SKILL.md`（測試命名、斷言寫法）。
+- `.editorconfig` 擁有最高優先權；既有專案慣例優先於預設風格。
+
 ## 框架版本偵測（首要步驟）
 
 掃描所有 `.csproj` 的 `<TargetFramework>`：
@@ -13,47 +22,29 @@ developer_instructions = """
 
 ## 清理任務（依序執行）
 
-**1. 命名規範（最優先）**
-- PascalCase：類別、介面、方法、屬性、事件、常數、Public/Internal Static Readonly Fields。
-- camelCase：私有欄位（不加 `_`、`m_`、`s_` 前綴）、區域變數、參數。
-- 介面以 `I` 開頭；擴充方法靜態類別以 `Extensions` 結尾；靜態工具類別以 `Utils` 結尾；`[Flags]` Enum 使用複數。
+1. **命名與結構**：依 `csharp-style` skill 與全域 §3 修正命名、成員排序、存取修飾詞；Modern .NET 使用 File-scoped namespaces。
+2. **死程式碼清除**（cleanup 特有）：
+   - 刪除未使用的方法/屬性/欄位（Grep 確認零參考再刪）。
+   - 移除未使用的 using 指示詞、不可達程式碼分支。
+   - 移除所有 `#region`/`#endregion` 標記（保留標記內程式碼）。
+3. **語言特性與品質**：依全域 §3.2〜§3.4 修正字串比較、`var`、`nameof()`、集合選型、效能陷阱與非同步寫法。
+4. **資源管理**：IDisposable/IAsyncDisposable 物件在 `using` 或 `try/finally` 中釋放。
+5. **測試品質**（若有測試）：依 `csharp-nunit` skill 修正測試命名與斷言。
 
-**2. 程式碼結構**
-- 成員排序：Fields→Constructors→Properties→Methods；欄位間不加空行，其他成員間保留一個空行。
-- private 方法緊跟第一個呼叫它的 public 方法下方。
-- 所有成員有明確存取修飾詞；Modern .NET 使用 File-scoped namespaces。
+## 僅記錄不修改（輸出至 cleanup-review.md）
 
-**3. 死程式碼清除**
-- 刪除未使用的方法/屬性/欄位（Grep 確認零參考再刪）。
-- 移除未使用的 using 指示詞、不可達程式碼分支。
-- 移除所有 `#region`/`#endregion` 標記（保留標記內程式碼）。
-- 下列情況輸出至 `cleanup-review.md`，不自行刪除：完整註解掉的程式碼、零靜態參考但可能經反射存取的成員。
+下列情況不自行修改，集中輸出至 `<work-root>/.local/ai-sessions/cleanup-review.md`（目錄不存在時自動建立），格式：相對路徑、行號、程式碼片段（前後各 2 行）、標記原因：
 
-**4. 程式碼品質**
-- 字串比較加明確規則（`StringComparison.OrdinalIgnoreCase` 等）。
-- 時間型別遵循專案現有慣例（不自動轉換 DateTime↔DateTimeOffset）；發現 Kind 混用輸出至 `cleanup-review.md`。
-- 空字串改 `""`，移除 `string.Empty`；Nullable<T> 有值檢查改 `.HasValue`。
-- 字串串接迴圈改 `StringBuilder` 或 `string.Join()`；多次迭代 IEnumerable 先 `.ToList()`。
-- `var` 僅限匿名型別或極度複雜的巢狀泛型；成員名稱引用改 `nameof()`。
-
-**5. 非同步修正**
-- 非同步方法回傳 `Task`/`Task<T>`，不用 `async void`（除事件處理器）。
-- Library 專案加 `.ConfigureAwait(false)`；移除 `.Result`/`.Wait()`。
-
-**6. 資源管理**
-- IDisposable/IAsyncDisposable 物件在 `using` 或 `try/finally` 中釋放。
-- 發現直接 `new HttpClient()` 輸出至 `cleanup-review.md`（不自動修改）。
-
-**7. 測試品質（若有測試）**
-- 命名格式：`[UnitOfWork]_[StateUnderTest]_[ExpectedBehavior]`。
-- 斷言改 `Assert.That`（Fluent）；多重斷言用 `Assert.EnterMultipleScope()`；例外驗證用 `Assert.Throws<T>`。
+- 完整註解掉的程式碼。
+- 零靜態參考但可能經反射存取的成員。
+- 時間型別 Kind 混用（不自動轉換 DateTime↔DateTimeOffset）。
+- 直接 `new HttpClient()` 的使用點。
 
 ## 執行策略
 
 1. 先全面掃描列出待清理清單，與使用者確認範圍後再執行。
-2. 逐批修改（每次一個類別或一項面向），依任務 1〜7 順序。
+2. 逐批修改（每次一個類別或一項面向），依任務 1〜5 順序。
 3. 每批執行 `dotnet build`，有測試則執行 `dotnet test`。
-4. 確認項目集中輸出至 `.local/ai-sessions/cleanup-review.md`（目錄不存在時自動建立）；格式：相對路徑、行號、程式碼片段（前後各 2 行）、標記原因。
 
 ## 約束
 

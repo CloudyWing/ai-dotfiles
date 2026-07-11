@@ -25,8 +25,7 @@ description: 當使用者明確要求盤點需求上下文，或要求從專案�
 | --- | --- |
 | `requirement-context` | 針對單一需求盤點討論所需背景，輸出短期交接文件 |
 | `survey` | 掃描新專案或陌生專案，產出長期技術文件索引 |
-| `context-map` | 針對已明確的介面 / 重構變更，列出受影響範圍 |
-| `spec-doc` | 將 Clarify 後的需求摘要轉為正式需求規格 |
+| `spec-doc` | 依需求摘要、design.md 或口述範圍產出給同事閱讀的需求規格 |
 | `design.md` | 作為 Implement 階段的工程設計基準 |
 | `CONTEXT.local.md` | 保存跨 Session 仍有價值的本機耐久資訊 |
 

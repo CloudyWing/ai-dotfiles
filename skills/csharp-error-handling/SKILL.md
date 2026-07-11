@@ -1,6 +1,6 @@
 ---
 name: csharp-error-handling
-description: 'C# 例外處理規範：例外設計原則、Guard Clause、全域錯誤處理與 ProblemDetails 回應標準化。'
+description: 'C# 例外處理規範：例外設計原則、Guard Clause、全域錯誤處理與 ProblemDetails 回應標準化。當設計例外、撰寫 try-catch 或全域錯誤處理時自動套用。'
 ---
 
 # C# 例外處理規範
@@ -164,7 +164,13 @@ app.UseStatusCodePages();
 ### IExceptionHandler（.NET 8+）
 
 ```csharp
-public class GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger) : IExceptionHandler {
+public class GlobalExceptionHandler : IExceptionHandler {
+    private readonly ILogger<GlobalExceptionHandler> logger;
+
+    public GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger) {
+        this.logger = logger;
+    }
+
     public async ValueTask<bool> TryHandleAsync(
         HttpContext httpContext,
         Exception exception,

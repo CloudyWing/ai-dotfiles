@@ -1,6 +1,6 @@
 ---
 name: pinia
-description: 'Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。'
+description: 'Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。當撰寫或修改 Pinia Store 及其元件整合時自動套用。'
 ---
 
 # Pinia 狀態管理規範

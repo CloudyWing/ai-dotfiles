@@ -27,7 +27,13 @@ description: 'ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格�
 // ✅ 正確
 builder.Services.AddHttpClient<MyService>();
 
-public class MyService(HttpClient httpClient) { }
+public class MyService {
+    private readonly HttpClient httpClient;
+
+    public MyService(HttpClient httpClient) {
+        this.httpClient = httpClient;
+    }
+}
 
 // ❌ 錯誤
 public void DoWork() {
@@ -79,27 +85,16 @@ builder.Services.Configure<SmtpOptions>(
 );
 
 // 注入
-public class EmailService(IOptions<SmtpOptions> options) {
-    private readonly SmtpOptions smtp = options.Value;
+public class EmailService {
+    private readonly SmtpOptions smtp;
+
+    public EmailService(IOptions<SmtpOptions> options) {
+        smtp = options.Value;
+    }
 }
 ```
 
 ## 背景服務
 
-- **`BackgroundService`**：實作長期執行迴圈的背景工作首選（覆寫 `ExecuteAsync`，搭配 `CancellationToken`）。
-- **`IHostedService`**：需要精確控制 `StartAsync` / `StopAsync` 生命週期時使用（如啟動前的初始化任務）。
-- 兩者均透過 `AddHostedService<T>()` 或 `AddSingleton<IHostedService, T>()` 註冊；不要在 Controller / Service 中自行 `Task.Run` 長期工作。
-
-```csharp
-// ✅ 正確：BackgroundService 長期輪詢
-public class DataSyncService(IDbContextFactory<AppDbContext> factory) : BackgroundService {
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        while (!stoppingToken.IsCancellationRequested) {
-            await using AppDbContext db = await factory.CreateDbContextAsync(stoppingToken)
-                .ConfigureAwait(false);
-            // 同步邏輯...
-            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken).ConfigureAwait(false);
-        }
-    }
-}
-```
+- 不要在 Controller / Service 中自行 `Task.Run` 長期工作，一律改用 Hosted Service。
+- 選型（`BackgroundService` vs `IHostedService`）、實作規範與 Scoped 服務存取，參閱 `csharp-background-service` skill，本文件不重複。

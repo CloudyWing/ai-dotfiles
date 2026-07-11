@@ -1,6 +1,6 @@
 ---
 name: csharp-signalr
-description: 'SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。'
+description: 'SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。'
 ---
 
 # SignalR Hub 開發規範
@@ -24,7 +24,13 @@ public class ChatHub : Hub {
 }
 
 // ✅ 正確：使用外部服務管理狀態
-public class ChatHub(IChatService chatService) : Hub {
+public class ChatHub : Hub {
+    private readonly IChatService chatService;
+
+    public ChatHub(IChatService chatService) {
+        this.chatService = chatService;
+    }
+
     public async Task SendMessage(string message) {
         await chatService.SaveMessageAsync(message).ConfigureAwait(false);
         await Clients.All.SendAsync("ReceiveMessage", message).ConfigureAwait(false);
@@ -60,7 +66,13 @@ public interface IChatClient {
     Task UserLeft(string user);
 }
 
-public class ChatHub(IChatService chatService) : Hub<IChatClient> {
+public class ChatHub : Hub<IChatClient> {
+    private readonly IChatService chatService;
+
+    public ChatHub(IChatService chatService) {
+        this.chatService = chatService;
+    }
+
     public async Task SendMessage(string message) {
         string user = Context.User?.Identity?.Name ?? "匿名";
         await chatService.SaveMessageAsync(user, message).ConfigureAwait(false);
@@ -113,7 +125,13 @@ public async Task LeaveRoom(string roomId) {
 
 ```csharp
 // 非強型別 Hub
-public class NotificationService(IHubContext<NotificationHub> hubContext) {
+public class NotificationService {
+    private readonly IHubContext<NotificationHub> hubContext;
+
+    public NotificationService(IHubContext<NotificationHub> hubContext) {
+        this.hubContext = hubContext;
+    }
+
     public async Task NotifyOrderCompletedAsync(int orderId, CancellationToken cancellationToken) {
         await hubContext.Clients.Group($"order:{orderId}")
             .SendAsync("OrderCompleted", orderId, cancellationToken)
@@ -122,7 +140,13 @@ public class NotificationService(IHubContext<NotificationHub> hubContext) {
 }
 
 // 強型別 Hub
-public class NotificationService(IHubContext<NotificationHub, INotificationClient> hubContext) {
+public class NotificationService {
+    private readonly IHubContext<NotificationHub, INotificationClient> hubContext;
+
+    public NotificationService(IHubContext<NotificationHub, INotificationClient> hubContext) {
+        this.hubContext = hubContext;
+    }
+
     public async Task NotifyOrderCompletedAsync(int orderId, CancellationToken cancellationToken) {
         await hubContext.Clients.Group($"order:{orderId}")
             .OrderCompleted(orderId)

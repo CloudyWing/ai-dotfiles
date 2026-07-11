@@ -1,6 +1,6 @@
 ---
 name: vue-router
-description: 'Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。'
+description: 'Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。'
 ---
 
 # Vue Router 4 開發規範

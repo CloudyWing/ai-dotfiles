@@ -1,6 +1,6 @@
 ---
 name: openapi-client
-description: '前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。'
+description: '前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。當撰寫前端 API 呼叫層或同步前後端型別時自動套用。'
 ---
 
 # 前後端 API 契約規範

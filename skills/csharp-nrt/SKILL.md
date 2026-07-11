@@ -1,6 +1,6 @@
 ---
 name: csharp-nrt
-description: 'C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。'
+description: 'C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。當專案啟用 NRT 且撰寫或修改型別宣告時自動套用。'
 ---
 
 # C# Nullable Reference Types (NRT) 規範

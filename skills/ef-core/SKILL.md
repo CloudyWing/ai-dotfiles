@@ -1,6 +1,6 @@
 ---
 name: ef-core
-description: 'Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理與變更追蹤最佳實踐。'
+description: 'Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理與變更追蹤最佳實踐。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。'
 ---
 
 # Entity Framework Core 開發規範
@@ -15,7 +15,13 @@ description: 'Entity Framework Core 開發規範：DbContext Lifetime、查詢�
 
 ```csharp
 // ✅ 正確：背景服務使用 IDbContextFactory
-public class MyBackgroundService(IDbContextFactory<AppDbContext> contextFactory) : BackgroundService {
+public class MyBackgroundService : BackgroundService {
+    private readonly IDbContextFactory<AppDbContext> contextFactory;
+
+    public MyBackgroundService(IDbContextFactory<AppDbContext> contextFactory) {
+        this.contextFactory = contextFactory;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
         await using AppDbContext db = await contextFactory.CreateDbContextAsync(stoppingToken)
             .ConfigureAwait(false);
@@ -24,7 +30,9 @@ public class MyBackgroundService(IDbContextFactory<AppDbContext> contextFactory)
 }
 
 // ❌ 錯誤：直接注入 DbContext 至 Singleton
-public class MyBackgroundService(AppDbContext db) : BackgroundService { }
+public class MyBackgroundService : BackgroundService {
+    public MyBackgroundService(AppDbContext db) { /* ... */ }
+}
 ```
 
 ## 查詢效能（Crucial）
