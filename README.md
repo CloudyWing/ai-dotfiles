@@ -26,7 +26,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Clarify、Implement、Editor）以語意切換方式執行；執行型 agent 中 Design 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 完成後再切至 Codex 執行 Implement / Review 鏈；bug 由 Codex 的 Debug 線診斷與修正。
+Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 完成後再切至 Codex 執行 Implement / Review 鏈；bug 由 Codex 的 Debug 線診斷與修正。
 
 ### 本地檔案慣例（不 commit）
 
@@ -164,7 +164,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 git config core.hooksPath .githooks
 ```
 
-啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 並納入本次 commit。
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 並納入本次 commit。此二檔為生成檔，請勿手動編輯；agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
 
 ---
 

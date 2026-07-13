@@ -52,5 +52,5 @@
 | `survey` | 知識型 | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。當要求掃描專案、建立文件索引、補齊技術文件或盤點專案結構時使用。 |
 | `typescript-frontend` | 知識型 | 前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。 |
 | `vitest` | 知識型 | 前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。 |
-| `vue-router` | 知識型 | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。 |
 | `vue3` | 知識型 | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
+| `vue-router` | 知識型 | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。 |

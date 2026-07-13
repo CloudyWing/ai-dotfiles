@@ -15,13 +15,14 @@
 
 ## 3. Persona 路由規則
 
-- `instructions.md` §1.5 的 Persona 路由表**只列 Persona**（Clarify / Implement / Editor），不列 skill。
+- `instructions.md` §1.5 的 Persona 路由表**只列 Persona**（Clarify / Implement / Editor / Debug），不列 skill。
 - Skill 的觸發靠 SKILL.md 內 description 的 `Use when ...` 句子。新增 skill 時不需動 §1.5 Persona 表。
 
 ## 4. 設定散佈與 Hook
 
 - `scripts/Setup-AIGlobalConfig.ps1` 是建立所有 symlink 的入口。新增需要散佈的目錄或檔案時，需同步更新此腳本。
 - 修改 `.githooks/`、`scripts/hooks/`、`agents/`、`.editorconfig` 等基礎設定時，確認 `Setup-AIGlobalConfig.ps1` 與 `README.md` §3 是否需要對應更新。
+- `docs/agents.md` 與 `docs/skills.md` 為 `.githooks/Update-Docs.ps1` 於 pre-commit 產生的生成檔，請勿手動編輯，手改會在下次 commit 被覆蓋。Agent 的 Persona／sub-agent 分類由該腳本的 `$personaAgents` 清單決定；新增 Persona 時需同步更新此清單。
 
 ## 5. 設定位置權威對照
 
