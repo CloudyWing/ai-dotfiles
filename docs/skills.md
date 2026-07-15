@@ -48,7 +48,7 @@
 | `redis-caching` | 知識型 | Redis 快取開發規範：Key 命名階層、TTL 策略、Cache-Aside 模式與 StackExchange.Redis 連線管理。當撰寫或修改快取邏輯時自動套用。 |
 | `requirement-context` | 知識型 | 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。 |
 | `spec-doc` | 指令型 | 依 Clarify 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。 |
-| `sql-query` | 知識型 | T-SQL 查詢撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求。適用於 SQL Server 與 Oracle 雙資料庫，當撰寫或審查原生 SQL 查詢時自動套用。 |
+| `sql-query` | 知識型 | SQL 撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求，涵蓋 SQL Server（T-SQL）與 Oracle 雙資料庫的語法差異與語意陷阱。當撰寫或審查原生 SQL 時自動套用。 |
 | `survey` | 知識型 | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。當要求掃描專案、建立文件索引、補齊技術文件或盤點專案結構時使用。 |
 | `typescript-frontend` | 知識型 | 前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。 |
 | `vitest` | 知識型 | 前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。 |
