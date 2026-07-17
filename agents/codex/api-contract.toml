@@ -23,7 +23,7 @@ developer_instructions = """
 
 ## 產出
 
-覆寫前備份：若目標檔案已存在，先將既有檔案移至 `<work-root>/.local/ai-sessions/history/<yyyyMMdd_HHmmss>/`（時間戳為備份當下時間，保留原檔名，目錄不存在時自動建立），再寫入新內容。
+覆寫前備份：若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>`（時間戳為備份當下時間）移入 `<work-root>/.local/ai-sessions/history/`（目錄不存在時自動建立），再寫入新內容。
 
 報告寫入 `<work-root>/.local/ai-sessions/api-contract-report.md`。
 

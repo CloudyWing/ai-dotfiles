@@ -169,7 +169,7 @@ description: 以 SA/SD 視角將需求元素轉化為系統設計文件，含架
 
 設計文件完成後，立即執行：
 
-1. 將設計文件存入 `<work-root>/.local/ai-sessions/design.md`（目錄不存在時自動建立）。覆寫前備份：若目標檔案已存在，先將既有檔案移至 `<work-root>/.local/ai-sessions/history/<yyyyMMdd_HHmmss>/`（時間戳為備份當下時間，保留原檔名，目錄不存在時自動建立），再寫入新內容。備份不需詢問使用者確認。
+1. 將設計文件存入 `<work-root>/.local/ai-sessions/design.md`（目錄不存在時自動建立）。覆寫前備份：若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>`（時間戳為備份當下時間）移入 `<work-root>/.local/ai-sessions/history/`（目錄不存在時自動建立），再寫入新內容。備份不需詢問使用者確認。
 
 2. 回傳檔案路徑與一段不超過 200 字的產出摘要（涵蓋：總 Phase 數、是否含 [REWRITE] Phase、§9 總任務數、已知盲點數）。
    - 不主動呈現全文，由派生你的上游 Agent 負責驗收與對外呈現。
