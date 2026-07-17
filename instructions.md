@@ -206,6 +206,21 @@ applyTo: "**/*"
 | **Cleanup** | Codex | 使用者明確要求，或屬大範圍技術債清理 / 現代化 | 掃描並清理技術債，每批修改後驗證測試 |
 | **Debug** | Codex | 使用者於 Codex 端要求 debug / 除錯 | bug 線協調者：於單一 session 完成診斷、派生同 session 匿名 subagent 執行修正、驗收其產出並套用升級過濾 |
 
+#### 驗證分層與 integration-verify 掛載點
+
+Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗證：
+
+| 層 | 執行者 | 深度 | 時機 |
+| --- | --- | --- | --- |
+| 淺層探針 | Implement | 對改動的端點或畫面單發確認路徑通 | 每階段完成後，依 `design.md` §6 |
+| 建置與測試 gate | Implement | 建置與既有測試各執行一次 | 結案時一次 |
+| 缺陷審查 | Review | diff-scoped 靜態審查，不執行測試 | Implement 結案派生 |
+| 完整煙霧 | `integration-verify` skill | 多情境、寫入回查、持久化往返 | 交付節點 |
+
+- `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Implement 結案自動流程。
+- Review 不執行測試與動態驗證，信任 Implement 結案報告附帶的建置與測試證據。
+- Debug 不承擔常規驗證，維持被動反應定位。
+
 #### 階段式行為約束
 
 依 Agent 階段自動套用操作權限約束，強化「禁止提前修改程式碼」規則：
@@ -216,7 +231,7 @@ applyTo: "**/*"
 | Implement | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
 | Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/design.md` | 修改任何程式碼檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
-| Review / Frontend Review / API Contract | 讀取檔案、執行測試 | 修改程式碼（僅產出報告） |
+| Review / Frontend Review / API Contract | 讀取檔案、讀取 git diff | 修改程式碼（僅產出報告）；執行建置與測試 |
 | Debug | 讀寫工作區、執行測試與診斷指令 | 修改與當前問題根因無直接關聯的模組 |
 | Cleanup | 讀寫工作區、執行測試 | 變更公開 API 簽章（除非使用者同意） |
 

@@ -10,4 +10,4 @@
 | `debug` | Persona / Codex | bug 線協調者：系統化診斷 bug 根因、產出輕量 fix-plan、派生同 session 匿名 subagent 執行修正並驗收其產出，每次修改都有明確假設依據。 |
 | `frontend-review` | sub-agent / Codex | 比對設計文件與實際 Vue 3 前端程式碼，盤點元件品質、效能問題與規範偏離，產出差異報告。 |
 | `implement` | Persona / Codex | 依據設計文件實作功能，屬於 Clarify => Design => Implement => Review 流程中的實作階段 Persona。 |
-| `review` | sub-agent / Codex | 實作完成後比對設計文件與實際程式碼，盤點遺漏、品質不足與刻意略過的項目，產出差異報告。 |
+| `review` | sub-agent / Codex | 實作完成後比對設計文件與實際程式碼，執行帳面核對與 diff-scoped 缺陷審查，產出差異報告。 |

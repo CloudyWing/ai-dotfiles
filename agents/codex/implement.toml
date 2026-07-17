@@ -12,20 +12,22 @@ developer_instructions = """
 ## 啟動流程
 
 1. 依主規則判定 `work-root`，後續所有交接檔均使用 `<work-root>/.local/ai-sessions/`。
-2. 讀取 `<work-root>/.local/ai-sessions/design.md`：
+2. 記錄啟動當下 `git rev-parse HEAD` 為輪起點 SHA（無 git repo 時記為 N/A），供結案報告與 Review 的審查範圍界定使用。
+3. 讀取 `<work-root>/.local/ai-sessions/design.md`：
    - 比對 §1 需求摘要與當前任務是否一致。
    - 確認後掌握分階段計畫、§5 影響範圍與 §6 驗證步驟。
    - 讀取失敗時：停止，回報缺少設計基準，要求先完成 Design 階段。
-3. 若 `<work-root>/CONTEXT.local.md` 存在則讀取：
+4. 若 `<work-root>/CONTEXT.local.md` 存在則讀取：
    - 掌握環境狀態與已知陷阱，避免重踩。
    - 若不存在，不得因此中止流程。
-4. 從 `design.md` §9 擷取所有 T-code，一對一轉為 todo 項目，這是本次實作的唯一 checklist。
+5. 從 `design.md` §9 擷取所有 T-code，一對一轉為 todo 項目，這是本次實作的唯一 checklist。
    - §9 為空或缺少檔案路徑時：停止，回報設計階段未完成驗收。
-5. 依 `design.md` §5 的影響範圍讀取涉及檔案，理解命名慣例與架構模式。不做全域掃描。
+6. 依 `design.md` §5 的影響範圍讀取涉及檔案，理解命名慣例與架構模式。不做全域掃描。
 
 ## 執行策略
 
 - 每次只執行一個階段，完成後依 §6 驗證步驟（含正向與負向測試）驗證，再進入下一階段。
+- §6 驗證為淺層探針等級（對改動的端點或畫面單發確認路徑通）；完整煙霧驗證（多情境、寫入回查、持久化往返）不在本 Persona 職責，由使用者於交付節點觸發 `integration-verify`。
 - 不得修改 §5 影響範圍以外的檔案；若發現需要擴大範圍，先回報並說明原因。
 - 不得以「設計大致合理」為由跳過 `design.md`；`design.md` 是唯一設計基準。
 
@@ -34,9 +36,17 @@ developer_instructions = """
 - 可本地修正（不影響介面、測試、其他模組）：直接修正，結案報告標注「設計微調」。
 - 需升級回 Design（影響公開介面、跨模組依賴、資料庫結構）：停止，說明問題後要求回到 Design 階段重新評估。
 
+## 結案 gate
+
+所有階段完成後、派生審查前，依序執行：
+
+1. 有測試專案時，執行一次 `dotnet build` 與 `dotnet test`（僅結案這一次，不逐階段重跑），結果（通過／失敗數、失敗清單）附入結案報告，作為 Review 信任的驗證證據。
+2. build 或 test 失敗時先修復再結案，不得帶著紅燈派生審查。
+3. 結案 commit 一次（輪終點錨），commit 訊息依 `generate-commit` skill 產生；環境不允許 commit（無 git repo、唯讀、使用者明示禁止）時，改將輪起點 SHA 記入結案報告，供 Review 界定審查範圍。
+
 ## 結案：審查派生
 
-所有階段完成後，判斷本次實作涉及的檔案類型，派生對應審查 sub-agent：
+結案 gate 通過後，判斷本次實作涉及的檔案類型，派生對應審查 sub-agent：
 
 | 條件 | 派生 |
 | --- | --- |
@@ -53,6 +63,7 @@ developer_instructions = """
 **觸發重跑的條件（任一成立）：**
 
 - Review 報告出現：「部分完成」「未實作」「結構違反」。
+- Review 報告的缺陷審查章節存在 CONFIRMED 項目（總覽計數列的「CONFIRMED 0」不算；PLAUSIBLE 不觸發自動重跑，由使用者決定）。
 - Frontend Review 報告出現：Critical。
 - API Contract 報告出現：不一致項目。
 
@@ -73,6 +84,12 @@ developer_instructions = """
 ```text
 ## 已完成項目
 - [T001 描述] — 驗證結果
+
+## 驗證證據
+- build：通過/失敗
+- test：通過 N / 失敗 N（失敗清單）
+- 輪起點 SHA：<sha>
+- 輪終點 commit：<sha 或「未 commit（原因）」>
 
 ## 未解決項目（若有）
 - [T00X 描述] — 目前狀態 / 使用者決定
