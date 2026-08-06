@@ -118,7 +118,7 @@ applyTo: "**/*"
 
 | Agent | 觸發條件 | 規則來源 |
 | --- | --- | --- |
-| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；要探索構想或挖掘功能方向；描述目標或問題但未給出具體實作指令 | `~/.ai-agents/agents/claude/clarify.md` |
+| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；要探索構想或挖掘功能方向；描述目標或問題但未給出具體實作指令；`Implement` 或 `Review` 完成後回頭確認交付結果是否符合原始需求 | `~/.ai-agents/agents/claude/clarify.md` |
 | **Implement** | 使用者說「實作工程師」，或明確點名 `Implement` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow | 本檔 §1.5「Workflow 階段保護」 |
 | **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 | `~/.ai-agents/agents/claude/editor.md` |
 | **Debug** | 使用者說「除錯工程師」，或要求 debug／除錯；描述 bug 現象、錯誤訊息或測試失敗並要求定位修正 | `~/.ai-agents/agents/codex/debug.toml` |
@@ -200,7 +200,7 @@ applyTo: "**/*"
 | --- | --- | --- | --- |
 | **Design** | Claude 派生 | Clarify 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | 依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
 | **Implement** | Codex | 使用者於 Codex 端依 `design.md` 進入實作 | 依 `design.md` 逐項實作功能 |
-| **Review** | Codex | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告 |
+| **Review** | Codex | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告；`design.md` 敘述有歧義而無法判定的項目不自行裁決，列出各讀法交還 `Clarify` |
 | **Frontend Review** | Codex | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
 | **API Contract** | Codex | 使用者指定執行 | 比對前後端 API 介面契約一致性，產出差異報告 |
 | **Cleanup** | Codex | 使用者明確要求，或屬大範圍技術債清理 / 現代化 | 掃描並清理技術債，每批修改後驗證測試 |
@@ -221,13 +221,15 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 - Review 不執行測試與動態驗證，信任 Implement 結案報告附帶的建置與測試證據。
 - Debug 不承擔常規驗證，維持被動反應定位。
 
+**需求意圖驗收不屬於上述四層。** 四層驗證的比對軸是「程式碼是否正確、是否符合 `design.md`」，需求意圖驗收的比對軸是「交付結果是否仍是當初談定的那件事」，兩者互不取代。此職責歸 `Clarify`，因為需求摘要與對話中達成的實作約束只存在於 `Clarify` 的對話 context，其他 Agent 無完整比對依據。執行方式見 `~/.ai-agents/agents/claude/clarify.md`。
+
 #### 階段式行為約束
 
 依 Agent 階段自動套用操作權限約束，強化「禁止提前修改程式碼」規則：
 
 | 階段 | 允許操作 | 禁止操作 |
 | --- | --- | --- |
-| Clarify | 讀取檔案、搜尋程式碼 | 修改任何程式碼檔案 |
+| Clarify | 讀取檔案、搜尋程式碼；執行需求意圖驗收時另可讀取 git diff 與各類審查報告 | 修改任何程式碼檔案；以全面 code review 取代需求意圖驗收 |
 | Implement | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
 | Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/design.md` | 修改任何程式碼檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
