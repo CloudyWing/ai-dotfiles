@@ -52,7 +52,7 @@
 | `survey` | 知識型 | 掃描專案結構並產出完整技術文件索引，供團隊成員與 AI 快速理解專案全貌。當要求掃描專案、建立文件索引、補齊技術文件或盤點專案結構時使用。 |
 | `typescript-frontend` | 知識型 | 前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。 |
 | `uiux` | 知識型 | UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。 |
-| `uiux-baseline` | 知識型 | 掃描專案產出樣式基準，抽取色彩、間距、字級、圓角與常用版型的實際使用值，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced. |
+| `uiux-baseline` | 知識型 | 掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced. |
 | `vitest` | 知識型 | 前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。 |
 | `vue3` | 知識型 | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
 | `vue-router` | 知識型 | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。 |
