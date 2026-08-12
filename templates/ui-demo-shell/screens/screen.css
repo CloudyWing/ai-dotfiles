@@ -1,0 +1,66 @@
+/*
+ * 畫面層共用樣式。
+ *
+ * 下列 token 的值一律取自樣式基準檔，不自創數值：
+ *   <work-root>/.local/ai-sessions/baselines/ui-style-baseline.md
+ *
+ * 各 token 對應基準檔的章節已標於註解。基準檔的「待決策項」中的值在採用前須先取得使用者確認。
+ * 自訂屬性以空值宣告，代表尚未填入；產出實際 Demo 時逐項補上。
+ */
+
+:root {
+  /* 取自「已統一慣例 > 色彩」 */
+  --color-text: ;
+  --color-text-muted: ;
+  --color-bg: ;
+  --color-surface: ;
+  --color-border: ;
+  --color-primary: ;
+  --color-success: ;
+  --color-warning: ;
+  --color-danger: ;
+  --color-disabled: ;
+
+  /* 取自「已統一慣例 > 間距與尺寸」 */
+  --space-xs: ;
+  --space-sm: ;
+  --space-md: ;
+  --space-lg: ;
+  --space-xl: ;
+  --control-height: ;
+  --container-max-width: ;
+
+  /* 取自「已統一慣例 > 字級與字重」 */
+  --font-family-base: ;
+  --font-size-h1: ;
+  --font-size-h2: ;
+  --font-size-h3: ;
+  --font-size-body: ;
+  --font-size-caption: ;
+  --font-weight-regular: ;
+  --font-weight-bold: ;
+
+  /* 取自「已統一慣例 > 圓角與陰影」 */
+  --radius-sm: ;
+  --radius-md: ;
+  --shadow-sm: ;
+  --shadow-md: ;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-family-base);
+  font-size: var(--font-size-body);
+  color: var(--color-text);
+  background: var(--color-bg);
+}
+
+/*
+ * 版面容器。實際區塊依 uiux skill 的 P0 / P1 / P2 層級歸類配置，
+ * 元件樣式對應基準檔「已統一慣例 > 常用版型與元件樣式」。
+ */
+.page {
+  max-width: var(--container-max-width);
+  margin: 0 auto;
+  padding: var(--space-lg);
+}

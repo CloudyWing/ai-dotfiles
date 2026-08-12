@@ -1,0 +1,229 @@
+/*
+ * Demo 外框樣式。
+ * 僅作用於 shell 外框元素，選擇器一律以 .shell- 前綴命名，與畫面層樣式完全隔離。
+ * 畫面層樣式請寫在 screens/screen.css，不要寫進本檔。
+ */
+
+.shell-root {
+  --shell-bg: #1f2229;
+  --shell-surface: #2a2e37;
+  --shell-border: #3c414d;
+  --shell-text: #e6e8ec;
+  --shell-text-muted: #9aa1ad;
+  --shell-accent: #4c8dff;
+
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  margin: 0;
+  font-family: "Segoe UI", "Microsoft JhengHei", sans-serif;
+  font-size: 14px;
+  color: var(--shell-text);
+  background: var(--shell-bg);
+}
+
+body {
+  margin: 0;
+}
+
+.shell-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--shell-border);
+  background: var(--shell-surface);
+}
+
+.shell-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.shell-tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.shell-viewport-group {
+  display: flex;
+  gap: 4px;
+}
+
+.shell-btn {
+  padding: 6px 12px;
+  font: inherit;
+  color: var(--shell-text);
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--shell-border);
+  border-radius: 4px;
+}
+
+.shell-btn:hover {
+  border-color: var(--shell-accent);
+}
+
+.shell-btn-active {
+  color: #fff;
+  background: var(--shell-accent);
+  border-color: var(--shell-accent);
+}
+
+.shell-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.shell-nav {
+  flex: 0 0 200px;
+  padding: 12px;
+  overflow-y: auto;
+  border-right: 1px solid var(--shell-border);
+  background: var(--shell-surface);
+}
+
+.shell-nav-heading,
+.shell-panel-heading {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--shell-text-muted);
+  text-transform: uppercase;
+}
+
+.shell-nav-list {
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+
+.shell-nav-item {
+  padding: 8px 10px;
+  margin-bottom: 4px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.shell-nav-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.shell-nav-item-active {
+  color: #fff;
+  background: var(--shell-accent);
+}
+
+.shell-stage {
+  display: flex;
+  flex: 1;
+  justify-content: center;
+  min-width: 0;
+  padding: 20px;
+  overflow: auto;
+}
+
+.shell-frame-wrap {
+  position: relative;
+  flex: 0 0 auto;
+  height: 100%;
+  background: #fff;
+  border: 1px solid var(--shell-border);
+  border-radius: 4px;
+}
+
+.shell-frame {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+}
+
+.shell-overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.shell-bubble {
+  position: absolute;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  font-size: 12px;
+  font-weight: 700;
+  color: #fff;
+  pointer-events: auto;
+  cursor: default;
+  background: #d9480f;
+  border: 2px solid #fff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+}
+
+.shell-panel {
+  flex: 0 0 300px;
+  padding: 12px 16px;
+  overflow-y: auto;
+  border-left: 1px solid var(--shell-border);
+  background: var(--shell-surface);
+}
+
+.shell-panel-collapsed {
+  display: none;
+}
+
+.shell-panel-section {
+  padding-bottom: 12px;
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--shell-border);
+}
+
+.shell-panel-section:last-child {
+  border-bottom: 0;
+}
+
+.shell-panel-text {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.shell-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.shell-table th,
+.shell-table td {
+  padding: 6px 4px;
+  font-size: 13px;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid var(--shell-border);
+}
+
+.shell-table th {
+  color: var(--shell-text-muted);
+  font-weight: 600;
+}
+
+.shell-annotation-list {
+  padding-left: 20px;
+  margin: 0;
+  line-height: 1.6;
+}
+
+.shell-annotation-list li {
+  margin-bottom: 6px;
+}
+
+.shell-empty {
+  margin: 0;
+  color: var(--shell-text-muted);
+}

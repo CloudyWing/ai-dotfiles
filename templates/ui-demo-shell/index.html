@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>UI Demo</title>
+  <link rel="stylesheet" href="shell.css">
+</head>
+<body>
+  <div class="shell-root">
+    <header class="shell-topbar">
+      <h1 class="shell-title" id="shellTitle">UI Demo</h1>
+      <div class="shell-tools">
+        <button type="button" class="shell-btn" id="annotationToggle" aria-pressed="false">註解模式：關</button>
+        <div class="shell-viewport-group" role="group">
+          <button type="button" class="shell-btn shell-btn-active" data-width="1280">桌面 1280</button>
+          <button type="button" class="shell-btn" data-width="768">平板 768</button>
+          <button type="button" class="shell-btn" data-width="390">手機 390</button>
+        </div>
+        <button type="button" class="shell-btn" id="panelToggle">收合說明</button>
+      </div>
+    </header>
+
+    <div class="shell-body">
+      <nav class="shell-nav">
+        <p class="shell-nav-heading">畫面清單</p>
+        <ul class="shell-nav-list" id="screenList"></ul>
+      </nav>
+
+      <main class="shell-stage">
+        <div class="shell-frame-wrap" id="frameWrap">
+          <iframe class="shell-frame" id="screenFrame" title="Demo 畫面"></iframe>
+          <div class="shell-overlay" id="annotationOverlay"></div>
+        </div>
+      </main>
+
+      <aside class="shell-panel" id="infoPanel">
+        <section class="shell-panel-section">
+          <h2 class="shell-panel-heading">畫面用途</h2>
+          <p class="shell-panel-text" id="screenSummary"></p>
+        </section>
+        <section class="shell-panel-section">
+          <h2 class="shell-panel-heading">版面層級</h2>
+          <table class="shell-table">
+            <thead>
+              <tr><th>區塊</th><th>層級</th><th>理由</th></tr>
+            </thead>
+            <tbody id="layerRows"></tbody>
+          </table>
+        </section>
+        <section class="shell-panel-section" id="annotationSection">
+          <h2 class="shell-panel-heading">註解</h2>
+          <ol class="shell-annotation-list" id="annotationList"></ol>
+        </section>
+      </aside>
+    </div>
+  </div>
+
+  <script src="demo-data.js"></script>
+  <script src="shell.js"></script>
+</body>
+</html>

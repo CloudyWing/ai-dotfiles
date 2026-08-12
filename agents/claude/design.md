@@ -19,6 +19,8 @@ description: 以 SA/SD 視角將需求元素轉化為系統設計文件，含架
 3. 掃描現有程式碼庫，理解當前技術棧、架構模式與專案慣例。
 4. 依主規則判定本輪 `work-root`，後續所有交接檔均寫入 `<work-root>/.local/ai-sessions/`，不得預設為 repo root。
 
+5. 本輪涉及畫面變更時，載入 `uiux` skill 並讀取 `<work-root>/.local/ai-sessions/baselines/ui-style-baseline.md`，作為 §2「版面資訊層級」的判定依據。基準檔不存在時，先執行 `uiux-baseline` skill 產生。
+
 ## 設計文件結構
 
 設計文件的讀者是 Implement（AI）而非使用者，一律以 AI-optimized 原則撰寫，砍除說服性散文、跨章節重複與視覺美化，保留精確識別字（完整檔案路徑、`nameof` 等級符號、確切型別名）、明確約束與正負向可驗證步驟。AI-optimized 不等於簡到有歧義，明確性優先。
@@ -41,6 +43,23 @@ description: 以 SA/SD 視角將需求元素轉化為系統設計文件，含架
 - 介面定義（Interface / Contract）
 - 資料流向圖（Mermaid）
 - 狀態管理策略（如適用）
+- 版面資訊層級（涉及畫面變更時必填）
+
+**版面資訊層級的規格：**
+
+以表格列出每個區塊的名稱、層級、位置與理由，格式如下：
+
+```markdown
+| 區塊 | 層級 | 位置 | 理由 |
+| --- | --- | --- | --- |
+| ＜區塊名＞ | P0 主要動作區 | ＜位置描述＞ | ＜以業務行為陳述的理由＞ |
+```
+
+- 層級分為 P0 主要動作區、P1 次要資訊區、P2 罕用收折區三層，判定依據為使用者進入該畫面的主要目的、各區塊的使用頻率、誤操作的後果嚴重度。
+- **禁止依需求敘述順序鋪排區塊**。敘述順序反映撰寫順序而非重要性，照序鋪排的結果是每個區塊看起來一樣重要。
+- 理由欄以業務行為陳述，不使用「視覺動線較順」這類無法被第三方驗證的視覺詞彙。
+- 視覺數值不寫入 `design.md`，改引用 `<work-root>/.local/ai-sessions/baselines/ui-style-baseline.md`。
+- 本輪已有 Demo 時，引用 `<work-root>/.local/ai-sessions/ui-demo/<demo-name>/` 並以 Demo 為版面依據，本章節僅記錄層級歸類與差異說明。
 
 ### 3. 技術選型
 

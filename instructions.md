@@ -93,7 +93,7 @@ applyTo: "**/*"
 - **工作產物落點（Artifact Placement）**：agent 執行任務過程中產生的檔案，依用途分四類存放，不散落於 process cwd 或系統暫存目錄：
   - **交接檔（Handoff）**（`design.md`、各類 review / contract 報告、`verify-pending.md`、`cleanup-review.md` 等跨階段或跨 Session 傳遞的文件）：存入 `<work-root>/.local/ai-sessions/` 根目錄，不放入下列子目錄。
   - **過程性可棄**（一次性腳本、重導向的終端輸出與日誌、為取得工具或相依套件的暫存下載）：存入 `<work-root>/.local/ai-sessions/scratch/`。
-  - **需保留非交付**（原地改寫前的備份、為整合任務抓取的資料素材、用於說明問題的截圖）：分別存入 `<work-root>/.local/ai-sessions/` 下的 `backups/`、`inputs/`、`screenshots/`。
+  - **需保留非交付**（原地改寫前的備份、為整合任務抓取的資料素材、用於說明問題的截圖、掃描產出的專案視覺樣式基準、供需求訪談與版面確認的 UI Demo 畫面）：分別存入 `<work-root>/.local/ai-sessions/` 下的 `backups/`、`inputs/`、`screenshots/`、`baselines/`、`ui-demo/`。
   - **交付產物**（整合後的資料檔、產生的程式碼與文件）：存放於專案內使用者預期的位置，不得放入 `.local/ai-sessions/`，避免被當作暫存內容清除。
 - **腳本改寫安全（Script Rewrite Safety）**：用腳本或批次指令大量改寫檔案時，優先採「讀來源、寫新檔」，不原地覆寫輸入檔，使來源檔本身即為還原依據。當下列條件同時成立時，改寫前必須先將受影響的既有檔案複製到 `<work-root>/.local/ai-sessions/backups/<時間戳>/`（保留原始相對路徑），並附一行 `manifest.txt` 記錄該次操作：
   - 透過腳本或批次指令改檔，而非單次 `Edit` / `Write` 工具操作。
@@ -103,7 +103,7 @@ applyTo: "**/*"
 - **背景進程清理（Background Process Cleanup）**：本流程自行啟動的背景進程（無頭瀏覽器、dev server、背景 worker、驗證用容器等），同一用途重用單一實例，不重複 spawn；預設於任務結束時關閉。刻意保留的進程（如 dev server 供使用者繼續開發），必須在結案報告中註明仍在執行，並附 port 或 PID。
   - 清理對象僅限本流程自行啟動的進程。資料庫、MCP server、既有服務，以及非本流程建立的連線一律不碰。
   - 此規範僅涉及進程關閉，不涉及任何資料異動。破壞性或不可逆的資料操作另依驗證流程的資料異動安全規範處理。
-- **環境清理（Cleanup）**：任務執行完畢時，主動刪除 `.local/ai-sessions/scratch/` 下的臨時腳本與中間檔案。`backups/`、`inputs/`、`screenshots/` 屬保留性質，不在自動清理範圍，其留存與刪除由使用者決定。
+- **環境清理（Cleanup）**：任務執行完畢時，主動刪除 `.local/ai-sessions/scratch/` 下的臨時腳本與中間檔案。`backups/`、`inputs/`、`screenshots/`、`baselines/`、`ui-demo/` 屬保留性質，不在自動清理範圍，其留存與刪除由使用者決定。
 - **結案報告（Closure Report）**：執行與清理完畢後，輸出一份簡明的執行報告，列出所有已完成項目、清理範圍與保留產物的位置，供使用者確認無遺漏。
 
 ### 1.5 Agent 路由規則
@@ -118,7 +118,7 @@ applyTo: "**/*"
 
 | Agent | 觸發條件 | 規則來源 |
 | --- | --- | --- |
-| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；要探索構想或挖掘功能方向；描述目標或問題但未給出具體實作指令；`Implement` 或 `Review` 完成後回頭確認交付結果是否符合原始需求 | `~/.ai-agents/agents/claude/clarify.md` |
+| **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；要探索構想或挖掘功能方向；描述目標或問題但未給出具體實作指令；需求涉及畫面時判定本輪的 UI 線別；`Implement` 或 `Review` 完成後回頭確認交付結果是否符合原始需求 | `~/.ai-agents/agents/claude/clarify.md` |
 | **Implement** | 使用者說「實作工程師」，或明確點名 `Implement` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow | 本檔 §1.5「Workflow 階段保護」 |
 | **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 | `~/.ai-agents/agents/claude/editor.md` |
 | **Debug** | 使用者說「除錯工程師」，或要求 debug／除錯；描述 bug 現象、錯誤訊息或測試失敗並要求定位修正 | `~/.ai-agents/agents/codex/debug.toml` |
@@ -128,7 +128,7 @@ applyTo: "**/*"
 主 Agent 必須依下列順序判斷路由，不得跳步：
 
 1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Debug` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
-2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要於 Claude 端派生 `Design` sub-agent、將工作路由至 Codex 端執行（實作走 `Implement`、bug 線交由協調者 `Debug`，審查與清理類 sub-agent 為 `Review`／`Frontend Review`／`API Contract`／`Cleanup`），或套用對應 Skill。
+2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要於 Claude 端派生 `Design` 或 `UI Demo` sub-agent、將工作路由至 Codex 端執行（實作走 `Implement`、bug 線交由協調者 `Debug`，審查與清理類 sub-agent 為 `Review`／`Frontend Review`／`API Contract`／`Cleanup`），或套用對應 Skill。
 3. **一般任務最後**：僅在前兩步都未命中時，主 Agent 才能自行處理一般分析、簡單修改或文件整理。
 
 #### Skill 載入紀律
@@ -177,7 +177,7 @@ applyTo: "**/*"
 
 討論層 agent 為對應線的**協調者**：維持與使用者的頂層對話，對下派生執行層完成工作，彙整執行層產出後，只把需要使用者拍板的真問題升級給使用者。功能線協調者為 `Clarify`，bug 線協調者為 `Debug`。
 
-**升級兩道篩**：執行層（如 `Design`、`Debug` 的修正 subagent）標出的疑點，協調者依序判斷——（篩一）是否為真問題；（篩二）是否須使用者拍板。兩道皆通過才升級，否則協調者自行吸收或退回執行層。命中下列任一類型即屬「須使用者拍板」：
+**升級兩道篩**：執行層（如 `Design`、`UI Demo`、`Debug` 的修正 subagent）標出的疑點，協調者依序判斷（篩一）是否為真問題，以及（篩二）是否須使用者拍板。兩道皆通過才升級，否則協調者自行吸收或退回執行層。命中下列任一類型即屬「須使用者拍板」：
 
 | 類型 | 定義 |
 | --- | --- |
@@ -199,6 +199,7 @@ applyTo: "**/*"
 | Agent | 平台 | 觸發方式 | 說明 |
 | --- | --- | --- | --- |
 | **Design** | Claude 派生 | Clarify 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | 依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
+| **UI Demo** | Claude 派生 | `Clarify` 判定為 C 線時派生；或使用者明確要求產出 Demo 畫面 | 依需求摘要與樣式基準產出 Demo 畫面，供需求訪談與版面確認 |
 | **Implement** | Codex | 使用者於 Codex 端依 `design.md` 進入實作 | 依 `design.md` 逐項實作功能 |
 | **Review** | Codex | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告；`design.md` 敘述有歧義而無法判定的項目不自行裁決，列出各讀法交還 `Clarify` |
 | **Frontend Review** | Codex | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
@@ -232,6 +233,7 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 | Clarify | 讀取檔案、搜尋程式碼；執行需求意圖驗收時另可讀取 git diff 與各類審查報告 | 修改任何程式碼檔案；以全面 code review 取代需求意圖驗收 |
 | Implement | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
 | Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/design.md` | 修改任何程式碼檔案 |
+| UI Demo | 讀取檔案與樣式基準、寫入 `<work-root>/.local/ai-sessions/ui-demo/` | 修改任何程式碼或專案檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
 | Review / Frontend Review / API Contract | 讀取檔案、讀取 git diff | 修改程式碼（僅產出報告）；執行建置與測試 |
 | Debug | 讀寫工作區、執行測試與診斷指令 | 修改與當前問題根因無直接關聯的模組 |

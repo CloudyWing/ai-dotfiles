@@ -26,7 +26,9 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 完成後再切至 Codex 執行 Implement / Review 鏈；bug 由 Codex 的 Debug 線診斷與修正。
+Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 與 UI Demo 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 完成後再切至 Codex 執行 Implement / Review 鏈；bug 由 Codex 的 Debug 線診斷與修正。
+
+涉及畫面的需求由 Clarify 判定 UI 線別，版面複雜或需對外溝通時派生 UI Demo 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
 ### 本地檔案慣例（不 commit）
 
@@ -144,7 +146,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 │   ├── claude/                         # Claude 端 Persona 與 sub-agent（.md 格式）
 │   └── codex/                          # Codex 端 Persona 與 sub-agent（.toml 格式）
 ├── skills/                             # 技能模組（Skill）
-├── templates/                          # 新專案初始化範本
+├── templates/                          # 新專案初始化範本與 Demo 外框範本
 └── scripts/                            # 安裝、檢查與 hooks 腳本
 ```
 
@@ -200,6 +202,7 @@ Agent 依執行平台分為兩類：
 ```mermaid
 flowchart TD
     Clarify["**Clarify**<br />需求解構＋構想發散"]
+    UIDemo["**UI Demo**<br />Demo 畫面產出"]
     Design["**Design**<br />系統設計"]
     Implement["**Implement**<br />實作工程師"]
     Review["**Review**<br />後端驗收"]
@@ -209,6 +212,8 @@ flowchart TD
     Done(["任務完成"])
 
     Clarify --> Design
+    Clarify -->|C 線| UIDemo
+    UIDemo -->|回填需求摘要| Clarify
     Design --> Implement
     Implement -->|Backend Review<br />handoff| Review
     Implement -->|Frontend Review<br />handoff| FrontendReview
@@ -223,7 +228,7 @@ flowchart TD
     Debug --> Done
 ```
 
-> 功能線：Clarify 收斂需求後由 Design 設計，切換至 `Implement` Persona 進入實作與審查循環。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
+> 功能線：Clarify 收斂需求後由 Design 設計，切換至 `Implement` Persona 進入實作與審查循環。判定為 C 線時，Clarify 先派生 UI Demo 產出 Demo 畫面，驗收並回填需求摘要後再進入 Design。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
 
 ---
 
