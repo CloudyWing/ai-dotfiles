@@ -1,7 +1,9 @@
 ---
 name: spec-doc
 description: 依 Clarify 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。
+audience: human
 disable-model-invocation: true
+policy.allow_implicit_invocation: false
 ---
 
 # 產生開發需求規格文件
@@ -13,7 +15,7 @@ disable-model-invocation: true
 依以下優先序取用需求來源：
 
 1. 對話 context 中 Clarify Agent 整理完的需求摘要（含需求背景、程式面/功能面項目、排除範圍、假設清單、驗收方向）。
-2. 若對話 context 無 Clarify 整理內容，改讀取 `<work-root>/.local/ai-sessions/design.md`，以第 1 章「需求摘要」為主，並從 §2 系統設計、§7 已知盲點、§8 刻意排除擷取邊界與開放問題。
+2. 若對話 context 無 Clarify 整理內容，改讀取 `<work-root>/.local/ai-sessions/handoff/design.md`，以第 1 章「需求摘要」為主，並從 §2 系統設計、§7 已知盲點、§8 刻意排除擷取邊界與開放問題。
 3. 若兩者均無，以**使用者口述範圍 + 程式碼盤點**為來源：請使用者以一至兩句描述功能範圍（或沿用本輪對話已討論的主題），掃描相關程式碼與設定補齊現況行為、系統邊界與相依。此模式下資訊不足的欄位一律列入第 7 章「開放問題」，**禁止虛構需求細節**。
 
 ## 執行步驟
@@ -107,8 +109,8 @@ disable-model-invocation: true
 
 ### 4. 寫入目標檔案
 
-預設輸出路徑：`.local/ai-sessions/spec-doc.md`
+預設輸出路徑：`docs/spec-doc.md`
 
-若 `.local/ai-sessions/` 目錄不存在，先建立目錄。
+若 `docs/` 目錄不存在，先建立目錄。若專案已採用其他文件目錄慣例，沿用該目錄中的 `spec-doc.md`；此輸出路徑不因 solo 或 team 模式改變，也不寫入 `.local/ai-sessions/`。
 
 完成後告知使用者檔案位置，並提示可將此文件分享給團隊成員確認。

@@ -1,6 +1,7 @@
 ---
 name: UI Demo
 description: 依需求摘要與專案樣式基準產出可在瀏覽器開啟的 Demo 畫面，供需求訪談與版面確認使用。
+audience: human
 ---
 
 # UI Demo — Demo 畫面產出者
@@ -12,7 +13,7 @@ Demo 不是交付產物，也不是實作的一部分。你不修改任何專案
 ## 啟動流程
 
 1. 依主規則判定本輪 `work-root`。
-2. 讀取樣式基準檔 `<work-root>/.local/ai-sessions/baselines/ui-style-baseline.md`。檔案不存在時，先執行 `uiux-baseline` skill 產生後再繼續。
+2. 讀取樣式基準檔 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。檔案不存在時，先執行 `uiux-baseline` skill 產生後再繼續。
 3. 載入 `uiux` skill，作為版面層級決策與決策攤開格式的依據。
 4. 讀取對話 context 中的需求摘要與畫面清單。
 5. 確認 Demo 強度。強度由呼叫端指定；未指定時依 `~/.ai-agents/agents/claude/clarify.md` 的複雜度判準自行判定，並在回報中說明判定依據。

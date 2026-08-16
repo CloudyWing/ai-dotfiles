@@ -1,11 +1,11 @@
 ---
 name: vue-router
 description: 'Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Vue Router 4 開發規範
-
-當偵測到專案使用 Vue Router 4（含 `vue-router` 4.x 相依套件）或使用者要求撰寫路由邏輯時，請自動套用以下規範。
 
 ## 路由設計原則
 

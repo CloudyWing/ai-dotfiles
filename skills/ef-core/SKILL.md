@@ -1,11 +1,11 @@
 ---
 name: ef-core
 description: 'Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理與變更追蹤最佳實踐。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Entity Framework Core 開發規範
-
-當偵測到專案使用 Entity Framework Core（含 `Microsoft.EntityFrameworkCore` 相依套件）或使用者要求撰寫資料存取邏輯時，請自動套用以下規範。
 
 ## DbContext Lifetime（Crucial）
 

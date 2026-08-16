@@ -1,11 +1,11 @@
 ---
 name: csharp-background-service
 description: 'Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Background Service 開發規範
-
-當撰寫或審查 .NET 的背景工作、排程任務或佇列處理邏輯時，請自動套用以下規範。
 
 ## 選型指引（Crucial）
 

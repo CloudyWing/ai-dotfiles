@@ -1,6 +1,7 @@
 ---
 name: Editor
 description: 文件編輯：與作者討論文件結構與內容，協助潤稿與重組敘事。寫作過程中的協作為主要用法。
+audience: human
 ---
 
 # Editor — 文件編輯

@@ -26,24 +26,48 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 與 UI Demo 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 完成後再切至 Codex 執行 Implement / Review 鏈；bug 由 Codex 的 Debug 線診斷與修正。
+Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 與 UI Demo 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 完成後再切至 Codex 執行 Implement / Review 鏈；bug 由 Codex 的 Debug 線診斷與修正。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
 
 涉及畫面的需求由 Clarify 判定 UI 線別，版面複雜或需對外溝通時派生 UI Demo 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
 ### 本地檔案慣例（不 commit）
 
-`.local.` 後綴表示「本機私有、不進版控」，對應兩種用途：
+`.local/` 與 `.local.` 後綴表示「本機私有、不進版控」，前者收納 AI 工作產物，後者保存本機覆寫設定：
 
 | 檔案 | 用途 | 說明 |
 | --- | --- | --- |
-| `AGENTS.local.md` | 個人私有 AI 規則 | 覆蓋 `instructions.md` 的個人偏好 |
+| `AGENTS.md` | 專案共享規範 | 專案層規則與 `AI-DECLARATIONS` 宣告，依專案版控策略管理 |
+| `AGENTS.local.md` | 個人對此專案的偏好覆寫 | 僅影響目前專案，不取代專案共享規範 |
 | `CONTEXT.local.md` | Session 上下文交接 | 可選的本機交接檔；僅記錄跨 session 仍有效的環境前置作業、本機限制與已知陷阱 |
+| `GLOSSARY.md` | 專案專屬業務術語 | 由 `glossary` skill 依使用者確認維護 |
+| `docs/adr/` | Architecture Decision Record | 由 `adr` skill 依決策門檻追加 |
 
-兩個檔案均已列入 `.gitignore`，適用於本目錄及各專案根目錄。
+`.local/` 與 `*.local.md` 由機器層 `git-global-excludes` 排除。專案既有 `.gitignore` 保留專案自己的排除規則。`team` 模式另外將 `AGENTS.md`、`GLOSSARY.md` 與 `docs/adr/` 追加至目前 clone 的 `.git/info/exclude`；`solo` 模式不自動修改這三項路徑的版控狀態。
+
+排除規則分三層。機器層負責所有 clone 共用的 `.local/` 與 `*.local.md`，repository-local 層的 `.git/info/exclude` 負責 team 模式的三項專案層檔案，專案層 `.gitignore` 只保留專案自身規則。Setup 不把機器層規則複製到 `.gitignore` 或 `.git/info/exclude`。
+
+`.local/` 目錄結構如下：
+
+```text
+.local/
+├── ai-context/                         # AI 脈絡索引產物
+└── ai-sessions/
+    ├── handoff/
+    ├── report/
+    ├── history/
+    ├── scratch/
+    ├── backups/
+    ├── inputs/
+    ├── screenshots/
+    ├── style-baselines/
+    └── ui-demo/
+```
+
+結案清理會移除 `scratch/` 全部內容與 `handoff/` 中除 `design.md` 與 `requirement-summary.md` 以外的檔案。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 保留供後續查閱。
 
 ### `work-root` 與交接檔
 
-`.local/ai-sessions/`、`design.md`、各類 review report 與 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。判定流程分兩步：
+`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。需求基準位於 `handoff/requirement-summary.md`，設計基準位於 `handoff/design.md`，人員閱讀的審查報告位於 `report/`。判定流程分兩步：
 
 1. **先取得 `task anchor`**（本輪任務真正想處理的範圍，不等於 AI 的 process cwd）。優先序：
    1. 使用者本輪明確指定的目錄、檔案所在目錄、或子系統 / 前端 app / 後端 service / 模組目錄。
@@ -142,6 +166,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 ├── README.md                           # 本文件
 ├── instructions.md                     # 核心開發規範（主 Rule）
 ├── docs/                               # 詳細索引與補充說明文件
+├── git-global-excludes                 # 機器層 Git 排除清單
 ├── agents/
 │   ├── claude/                         # Claude 端 Persona 與 sub-agent（.md 格式）
 │   └── codex/                          # Codex 端 Persona 與 sub-agent（.toml 格式）
@@ -166,7 +191,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 git config core.hooksPath .githooks
 ```
 
-啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 並納入本次 commit。此二檔為生成檔，請勿手動編輯；agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 與 `instructions.md` 的 Skill 指標索引並納入本次 commit。`docs/agents.md` 與 `docs/skills.md` 為生成檔，請勿手動編輯；表格會列出讀者欄，Skill 另依 `user-invoked` 與 `model-invoked` 分組。腳本會先驗證 `disable-model-invocation` 與 `policy.allow_implicit_invocation` 的語意一致性，發現不一致時以非零結束碼阻止 commit。agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
 
 ---
 
@@ -178,6 +203,10 @@ Skill 分為兩種類型：
 
 - **知識型**：Claude 依上下文自動載入並套用（如編碼規範、LINQ 查詢規則）。
 - **指令型**：須使用者以 `/skill-name` 明確觸發（如 `/generate-changelog-zh-tw`、`/generate-unit-test`）。
+
+`docs/skills.md` 將 Skill 依 `user-invoked` 與 `model-invoked` 分組，並列出 Skill 的讀者欄。讀者值為 `agent` 或 `human`，用來區分規範載入對象與人員直接使用的任務模組。
+
+`.githooks/Update-Docs.ps1` 會將所有 Skill 名稱與說明同步到 `instructions.md` 的 `SKILL-INDEX` 區塊。腳本只替換 BEGIN／END 標記之間的內容，保留區塊外的主規則。frontmatter 的雙端觸發欄位不一致時，腳本會以非零結束碼停止 commit。
 
 Claude Code 與 Codex 對「可呼叫的任務模組」各有不同名稱，且已逐漸整併成指令型 Skill：
 
@@ -196,6 +225,8 @@ Agent 依執行平台分為兩類：
 
 - **Persona**：以語意切換方式執行。適合需要多輪對話、強依賴上下文的需求分析、實作階段控制與文件編輯。
 - **sub-agent**：由主 Agent 派生。適合有明確輸入與交接檔案的設計、審查、掃描與清理任務。
+- **Cleanup**：Codex 執行型 agent，處理語法現代化、死程式碼、資源管理與既有規範清理；每批修改後驗證測試。
+- **architecture-improvement**：人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出 `.local/ai-sessions/report/architecture-review.md` 再等待範圍決策。
 
 ### Agent 執行流程
 
@@ -207,6 +238,8 @@ flowchart TD
     Implement["**Implement**<br />實作工程師"]
     Review["**Review**<br />後端驗收"]
     FrontendReview["**Frontend Review**<br />前端驗收"]
+    Cleanup["**Cleanup**<br />技術債清理"]
+    ArchitectureImprovement["**architecture-improvement**<br />候選分析"]
     Debug["**Debug**<br />bug 線協調者"]
     FixSub["匿名 subagent<br />執行修正"]
     Done(["任務完成"])
@@ -217,18 +250,22 @@ flowchart TD
     Design --> Implement
     Implement -->|Backend Review<br />handoff| Review
     Implement -->|Frontend Review<br />handoff| FrontendReview
+    Implement -->|技術債清理| Cleanup
     Review -->|補完實作| Implement
     Review -->|重新評估範圍| Clarify
     Review --> Done
     FrontendReview -->|補完實作| Implement
     FrontendReview --> Done
+    Cleanup -->|驗證後交付| Done
+
+    ArchitectureImprovement -->|候選報告| Clarify
 
     Debug -->|派生＋fix-plan| FixSub
     FixSub -->|回報| Debug
     Debug --> Done
 ```
 
-> 功能線：Clarify 收斂需求後由 Design 設計，切換至 `Implement` Persona 進入實作與審查循環。判定為 C 線時，Clarify 先派生 UI Demo 產出 Demo 畫面，驗收並回填需求摘要後再進入 Design。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
+> 功能線：Clarify 收斂需求後由 Design 設計，切換至 `Implement` Persona 進入實作與審查循環。判定為 C 線時，Clarify 先派生 UI Demo 產出 Demo 畫面，驗收並回填需求摘要後再進入 Design。Cleanup 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
 
 ---
 

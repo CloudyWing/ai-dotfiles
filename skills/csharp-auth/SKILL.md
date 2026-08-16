@@ -1,11 +1,13 @@
 ---
 name: csharp-auth
 description: 'ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # ASP.NET Core 認證授權規範
 
-當撰寫或修改認證（Authentication）、授權（Authorization）、JWT / OIDC Token 驗證相關程式碼時，請自動套用以下規範。機密管理（signing key、client secret 不落原始碼）依全域 §2 Security Baseline，本文件不重複。
+機密管理（signing key、client secret 不落原始碼）依全域 §2 Security Baseline，本文件不重複。
 
 ## JWT Bearer 驗證（Crucial）
 

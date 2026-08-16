@@ -1,6 +1,8 @@
 ---
 name: integration-verify
 description: 開發完成後的整合驗證入口。當使用者要求在功能開發完成後自行驗證、做整合測試，或說「幫我驗證」「驗證一下功能」但未指定驗證方式時使用。判斷專案類型後先執行既有單元測試，再路由到對應的煙霧驗證流程。
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Integration Verification
@@ -274,7 +276,7 @@ description: 開發完成後的整合驗證入口。當使用者要求在功能�
 
 驗證**全部通過且無未解項目**時，只在對話回報，不寫檔。
 
-彙整後仍有下列任一類內容時，將其寫入 `<work-root>/.local/ai-sessions/verify-pending.md`，供後續或跨 Session 接手：
+彙整後仍有下列任一類內容時，將其寫入 `<work-root>/.local/ai-sessions/report/verify-unresolved.md`，供後續或跨 Session 接手：
 
 - 未解問題（已嘗試修正但未解決，或超出修正迴圈上限）。
 - 阻塞條件（缺少測試帳號、服務、資料等）。

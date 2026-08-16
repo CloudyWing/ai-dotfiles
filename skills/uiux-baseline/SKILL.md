@@ -1,6 +1,8 @@
 ---
 name: uiux-baseline
 description: 掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced.
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # 專案樣式基準抽取
@@ -91,7 +93,7 @@ description: 掃描專案產出樣式基準，抽取色彩、間距、字級、�
 
 ### Phase 6：產出
 
-寫入 `<work-root>/.local/ai-sessions/baselines/ui-style-baseline.md`。多個前端 app 時，檔名為 `ui-style-baseline.<app-name>.md`。
+寫入 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。多個前端 app 時，檔名為 `ui-style-baseline.<app-name>.md`。
 
 檔案的一級章節固定為下列六節，順序不得調換：
 
@@ -140,7 +142,7 @@ HTML 骨架與 CSS 規則皆為專案既有程式碼的引用。除縮排外不�
 
 ## 約束
 
-- 不修改任何專案樣式檔。此 Skill 唯一可寫入的位置為 `<work-root>/.local/ai-sessions/baselines/`。
+- 不修改任何專案樣式檔。此 Skill 唯一可寫入的位置為 `<work-root>/.local/ai-sessions/style-baselines/`。
 - 不讀取 `.env` 與建置輸出目錄。
 - 不對專案樣式的優劣下評價，只陳述統計事實。基準檔中不出現「建議改為」「應改用」等措辭。
 - 某面向掃描不到資料時，列入「未偵測到的面向」章節，不以框架預設值或通用值填補。

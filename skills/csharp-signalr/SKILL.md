@@ -1,11 +1,11 @@
 ---
 name: csharp-signalr
 description: 'SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # SignalR Hub 開發規範
-
-當偵測到專案使用 SignalR（含 `Microsoft.AspNetCore.SignalR` 相依套件）或使用者要求撰寫即時通訊功能時，請自動套用以下規範。
 
 ## Hub Lifetime（Crucial）
 

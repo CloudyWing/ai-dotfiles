@@ -1,0 +1,30 @@
+# 專案 Agent 規範
+
+本檔定義專案層的 Agent 共通規則，供所有 AI 工具讀取。個人機器偏好寫入 `AGENTS.local.md`，Session 狀態寫入 `CONTEXT.local.md`。
+
+## 共通規範
+
+- 專案目標與範圍：
+- 主要工作目錄與交付位置：
+- 不可違反的安全或合規限制：
+
+## 開發規範
+
+- 技術棧與版本：
+- 建置、測試與驗證命令：
+- 程式碼、API 與資料變更慣例：
+
+## 寫作規範
+
+- 文件語言與讀者：
+- 文件平台與 Markdown 慣例：
+- 術語與專案專屬名詞以 `GLOSSARY.md` 為準：
+
+<!-- AI-DECLARATIONS:BEGIN -->
+## AI Context Declarations
+
+- `context-index-query`：<專案宣告的索引查詢工具或命令>
+- `glossary`：`GLOSSARY.md`
+- `adr`：`docs/adr/`
+- `context-index`：`.local/ai-context/`
+<!-- AI-DECLARATIONS:END -->

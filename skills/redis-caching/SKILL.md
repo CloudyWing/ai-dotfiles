@@ -1,11 +1,11 @@
 ---
 name: redis-caching
 description: 'Redis 快取開發規範：Key 命名階層、TTL 策略、Cache-Aside 模式與 StackExchange.Redis 連線管理。當撰寫或修改快取邏輯時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Redis 快取開發規範
-
-當撰寫或修改 Redis 快取相關程式碼時，請自動套用以下規範。
 
 ## Key 命名（Crucial）
 

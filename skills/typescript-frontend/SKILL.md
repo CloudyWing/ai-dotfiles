@@ -1,11 +1,11 @@
 ---
 name: typescript-frontend
 description: '前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # 前端 TypeScript 規範
-
-當偵測到前端 TypeScript 專案（`tsconfig.json` 中包含 Vue/React 相關設定）或使用者要求撰寫前端 TypeScript 程式碼時，請自動套用以下規範。
 
 ## 嚴格模式（Crucial）
 

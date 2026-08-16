@@ -1,7 +1,9 @@
 ---
 name: generate-readme-zh-tw
 description: 自動分析目前專案結構與功能，產生一份結構清晰、工程導向的 README.md（繁體中文）。
+audience: human
 disable-model-invocation: true
+policy.allow_implicit_invocation: false
 ---
 
 # 產生 README.md（繁體中文）

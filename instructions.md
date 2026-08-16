@@ -36,6 +36,7 @@ applyTo: "**/*"
     - **改寫既有文件時的額外限制**：不得把「原本的寫法」當成被否定的對象寫進正文。讀者看不到改動前的版本，X 對讀者不成立。此限制與 §2 Comment Hygiene 同源，版本比較型的 old/new 對照一律由 commit message 承載。
     - **密度上限**：連續 5 個段落內至多出現一次。段落計入清單塊，程式碼區塊不計。此上限不依賴標題結構，無章節劃分的文件與第一個 `##` 之前的背景段同樣適用。
     - **替代寫法**：直接正面陳述 Y。對比確有價值但 X 僅屬背景時，拆成兩句獨立陳述（如「常見誤解是 X。實際上 Y。」）。
+  - **Negation 反模式（僅新增規則）**：新增規則優先使用正面陳述。只有讀者確實可能採取錯誤方向，且刪除否定前件會造成誤解時，才保留否定句。既有 Crucial 級禁令不追溯改寫。
 - **Context-Free Documentation**：撰寫全域規則 (Global Rules)、共用範本或技術文件時，必須具備**永恆的時空客觀性**。
   - **🚫 禁止行為**：絕對不可牽涉「當前任務脈絡」或「時間軸」（如：「如我們剛剛調整的...」、「這次新增了...」）。
   - **✅ 正向引導**：所有的舉例必須是**獨立且客觀的技術事實**。舉例時，請使用通用的業務情境（如「如購物車結帳」、「如使用者登入」），或是系統層級的絕對描述（如「如全域的 EditorConfig 設定邏輯」），確保任何新人在未來閱讀時，皆不會產生邏輯斷層。
@@ -60,8 +61,15 @@ applyTo: "**/*"
 - **禁止盲目嘗試 (No Shotgun Debugging)**：不得在沒有明確假設的情況下，隨機修改程式碼碰運氣。每一次修改都必須基於對問題根因的分析，能清楚回答「我認為問題出在 X，因為 Y，所以我要改 Z」。
 - **範圍鎖定**：修正 Bug 時，不得在未告知使用者的情況下，擅自修改與當前問題根因無直接關聯的檔案或邏輯。若發現需要擴大到非根因相關模組，先列出影響範圍，經使用者同意後再執行。
 - **變更影響盤點**：在規劃或討論階段涉及跨兩個以上類別的介面變更、重構、移動或重新命名時，先列出受影響清單（直接實作者／繼承者、呼叫端含測試、間接依賴者）供使用者決策；無法靜態走查的位置（如反射呼叫）標示「需手動確認」。
+- **Merge Conflict 紀律**：遇到合併衝突時，逐 hunk 追溯雙方的 primary source 意圖，再決定保留、合併或重寫內容。先確認需求、設計文件、測試或專案設定哪一項是該 hunk 的來源，再以來源的驗收條件解決衝突；無法判定來源時停止並回報，不以檔案先後或文字較長者決定。
 
 ### 1.3 Output Discipline
+
+#### 讀者前置區分
+
+- 產出前先判定讀者是人員或下一階段 Agent。
+- **Human-facing 產物**：套用本節既有的精簡、結論優先與雜訊清除規則，讓人員能快速理解決策與待辦事項。
+- **AI-facing 產物**：以下一階段能機械對照為準，完整保留輸入、限制、路徑、驗證條件與例外。Human-facing 的精簡規則不適用於此類產物。
 
 #### 報告與文件呈現
 
@@ -93,14 +101,22 @@ applyTo: "**/*"
 ### 1.4 Work State Management
 
 - **觸發時機 (Trigger Condition)**：AI 不會每個對話回合都更新狀態，**僅在使用者明確表示「任務結束」、「告一段落」、「幫我總結」，或 AI 準備輸出最終 Closure Report 時**，才必須執行下列盤點。
+- **Phase boundary 決策樹**：在階段完成、上下文壓力升高或需要交接時，依序評估下列選項，前一項可行即停止往後判斷：
+  1. `continue`：目前仍能直接讀取 primary source 並完成下一個明確步驟時，繼續在同一 Session 執行。
+  2. `clear`：需要清除暫存輸出、關閉本流程啟動的背景進程或整理工作狀態時，先完成清理再繼續。
+  3. `handoff`：下一階段需要另一個 Agent、設計文件或報告才能執行時，寫入規定的交接檔並交接。
+  4. `subagent`：工作可由獨立 Agent 依完整輸入執行且不需要共享未保存的決策時，派生 sub-agent。
+  5. `compact`：只有 primary source 已讀取、當前 Session 無法維持必要 context，且前四項都不可行時才壓縮；摘要後無法恢復未保存的 primary source 細節，因此不可把 `compact` 當成一般進度工具。
 - **狀態儲存（State Handoff）**：`CONTEXT.local.md` 為**可選**的本機交接檔，僅用於保存**耐久且跨 Session 仍有價值**的資訊，例如環境前置作業、本機路徑差異、已知陷阱、易踩雷設定。**不預設承載當前進度、短期 TODO 或本輪實作清單**。寫入時採用 `~/.ai-agents/templates/CONTEXT.local.md.template` 的標準化結構。
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
-- **工作產物落點（Artifact Placement）**：agent 執行任務過程中產生的檔案，依用途分四類存放，不散落於 process cwd 或系統暫存目錄：
-  - **交接檔（Handoff）**（`design.md`、各類 review / contract 報告、`verify-pending.md`、`cleanup-review.md` 等跨階段或跨 Session 傳遞的文件）：存入 `<work-root>/.local/ai-sessions/` 根目錄，不放入下列子目錄。
-  - **過程性可棄**（一次性腳本、重導向的終端輸出與日誌、為取得工具或相依套件的暫存下載）：存入 `<work-root>/.local/ai-sessions/scratch/`。
-  - **需保留非交付**（原地改寫前的備份、為整合任務抓取的資料素材、用於說明問題的截圖、掃描產出的專案視覺樣式基準、供需求訪談與版面確認的 UI Demo 畫面）：分別存入 `<work-root>/.local/ai-sessions/` 下的 `backups/`、`inputs/`、`screenshots/`、`baselines/`、`ui-demo/`。
-  - **交付產物**（整合後的資料檔、產生的程式碼與文件）：存放於專案內使用者預期的位置，不得放入 `.local/ai-sessions/`，避免被當作暫存內容清除。
+- **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途分三類，存放於固定目錄，不散落於 process cwd 或系統暫存目錄：
+  - **單次任務交接檔**：下一階段 Agent 需要讀取的 `design.md`、`requirement-summary.md` 與需求脈絡檔存入 `<work-root>/.local/ai-sessions/handoff/`。人員閱讀的 review、contract、`report/verify-unresolved.md`、驗證與事實報告存入 `<work-root>/.local/ai-sessions/report/`。
+  - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/backups/`。
+  - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
+  - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
+  - **需保留非交付**：整合任務素材、截圖、樣式基準與 UI Demo 分別存入 `<work-root>/.local/ai-sessions/inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/`。
+  - **交付產物**：使用者預期交付的資料檔、程式碼與文件存放於專案原本的位置，不放入 `.local/ai-sessions/`。
 - **腳本改寫安全（Script Rewrite Safety）**：用腳本或批次指令大量改寫檔案時，優先採「讀來源、寫新檔」，不原地覆寫輸入檔，使來源檔本身即為還原依據。當下列條件同時成立時，改寫前必須先將受影響的既有檔案複製到 `<work-root>/.local/ai-sessions/backups/<時間戳>/`（保留原始相對路徑），並附一行 `manifest.txt` 記錄該次操作：
   - 透過腳本或批次指令改檔，而非單次 `Edit` / `Write` 工具操作。
   - 對既有檔案做原地覆寫或刪除，而非輸出至新檔。
@@ -109,8 +125,20 @@ applyTo: "**/*"
 - **背景進程清理（Background Process Cleanup）**：本流程自行啟動的背景進程（無頭瀏覽器、dev server、背景 worker、驗證用容器等），同一用途重用單一實例，不重複 spawn；預設於任務結束時關閉。刻意保留的進程（如 dev server 供使用者繼續開發），必須在結案報告中註明仍在執行，並附 port 或 PID。
   - 清理對象僅限本流程自行啟動的進程。資料庫、MCP server、既有服務，以及非本流程建立的連線一律不碰。
   - 此規範僅涉及進程關閉，不涉及任何資料異動。破壞性或不可逆的資料操作另依驗證流程的資料異動安全規範處理。
-- **環境清理（Cleanup）**：任務執行完畢時，主動刪除 `.local/ai-sessions/scratch/` 下的臨時腳本與中間檔案。`backups/`、`inputs/`、`screenshots/`、`baselines/`、`ui-demo/` 屬保留性質，不在自動清理範圍，其留存與刪除由使用者決定。
-- **結案報告（Closure Report）**：執行與清理完畢後，輸出一份簡明的執行報告，列出所有已完成項目、清理範圍與保留產物的位置，供使用者確認無遺漏。
+- **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容，以及 `.local/ai-sessions/handoff/` 中除 `design.md` 與 `requirement-summary.md` 以外的內容。這兩個檔案為自動清理的例外：`handoff/design.md` 供跨 Session 重跑 Review 與落差盤點，`handoff/requirement-summary.md` 供需求意圖驗收與設計驗收在 context 壓縮後仍有原始比對依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。
+- **Exceptions 紀錄**：執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。Debug Persona 作為 bug 線協調者的身分不適用於自身診斷紀錄。
+
+  條目格式如下：
+
+  ```markdown
+  ## <yyyy-MM-dd HH:mm:ss> - <觸發類型>
+
+  - 觸發類型：偏離設計 | 自行採用假設 | 替代方案 | 範圍外既有問題 | 繞過授權
+  - 內容：<發生什麼>
+  - 依據：<為何這樣決定；替代方案須含原方案失敗原因>
+  - 位置：<檔案:行號 或 T-code>
+  ```
+- **結案報告（Closure Report）**：執行與清理完畢後，從 `<work-root>/.local/ai-sessions/report/` 讀取報告內容，完整列出「需要你決定」「已自行處理」與「僅供知悉」三區。另列出完成項目、清理範圍與保留產物的位置，供使用者確認無遺漏。
 
 ### 1.5 Agent 路由規則
 
@@ -141,7 +169,30 @@ applyTo: "**/*"
 
 - 當本輪工作的檔案類型或技術棧落入某個 skill 的適用範圍時，必須主動載入並套用該 skill，不得僅憑模型自身記憶判斷而略過。
 - 禁止以「我已掌握該規範」為由跳過載入；以 skill 實際內容為準，不以模型既有印象為準。
-- 僅載入與當前工作直接相關的 skill，不需預先載入同技術棧下的所有 skill。例如編輯任何 C# 檔即須套用 `csharp-style`；非同步、DI、EF Core 等主題相關工作才另載對應 skill。
+- 僅載入與當前工作直接相關的 skill，不需預先載入同技術棧下的所有 skill。依副檔名與工作內容套用下列對照：
+
+| 觸發條件 | 必載 skill |
+| --- | --- |
+| 編輯 `*.cs` | `csharp-style`、`csharp-language-features`、`csharp-comments` |
+| 編輯 `*.cs` 且成員為 `public`（套件／Library 專案全體） | 追加 `csharp-docs` |
+| 編輯 `*Tests/**/*.cs` 或含 `[Test]`／`[TestCase]` 的 `*.cs` | 追加 `csharp-nunit` |
+| 讀取或修改 `*.csproj`、`*.sln`、`*.slnx` | `csharp-language-features` |
+| 編輯 `*.md` | `check-markdown`、`doc-editing` |
+| 編輯 `*.ps1`、`*.psm1` | `powershell`、`scripting-conventions` |
+| 編輯 `*.sh` | `scripting-conventions` |
+| 編輯 `*.csx` | `scripting-conventions`、`csharp-style` |
+| 在 Windows 執行終端機命令 | `windows-terminal` |
+| 編輯 `*.vue` | `vue3`、`typescript-frontend` |
+| 編輯前端 `*.ts`、`*.tsx` | `typescript-frontend` |
+| 編輯 `router/**`、含 `createRouter` 的檔案 | 追加 `vue-router` |
+| 編輯 `stores/**`、含 `defineStore` 的檔案 | 追加 `pinia` |
+| 編輯 `*.spec.ts`、`*.test.ts` | 追加 `vitest` |
+| 編輯 `*.sql` | `sql-query` |
+| 編輯 `Dockerfile`、`compose.yml`、`compose.yaml` | `docker` |
+| 修改跨模組介面、分層或依賴方向 | `codebase-design` |
+| 撰寫或修改 `instructions.md` 與任何 `SKILL.md` | `writing-for-agents` |
+
+- 專案根目錄存在 `AGENTS.md` 的 `AI-DECLARATIONS` 宣告區塊時，先依宣告的 `context-index-query` 查詢索引，再定位 glossary、ADR 與其他專案脈絡；只有宣告不存在或格式無效時才使用 raw grep 作為 fallback。`ai-context-index` skill 只維護宣告格式與索引產物，不內建工具清單。
 
 #### Workflow 階段保護
 
@@ -151,7 +202,7 @@ applyTo: "**/*"
 
 #### work-root 判定
 
-- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。凡提及 `.local/ai-sessions/`、`design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md`，若未特別說明，皆指 `<work-root>` 之下的對應路徑。
+- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。凡提及 `.local/ai-sessions/handoff/design.md`、`.local/ai-sessions/report/review-report.md`、`.local/ai-sessions/report/frontend-review-report.md`、`.local/ai-sessions/report/api-contract-report.md`，若未特別說明，皆指 `<work-root>` 之下的對應路徑。
 - **`task anchor` 定義（Crucial）**：本輪任務判定 `work-root` 的起點，代表使用者真正想處理的範圍。**不得直接以 Agent 執行命令時的 process cwd 作為 `task anchor`**，process cwd 只代表目前 Agent 所在的工作區，不一定等於本輪指定的檔案或子系統。
 - **`task anchor` 判定順序**：
   1. 使用者本輪明確指定的目標，依下列優先序解析：
@@ -210,7 +261,7 @@ applyTo: "**/*"
 | **Review** | Codex | Implement 完成後或使用者要求 | 比對 `design.md` 與實際程式碼，產出後端差異報告；`design.md` 敘述有歧義而無法判定的項目不自行裁決，列出各讀法交還 `Clarify` |
 | **Frontend Review** | Codex | Implement 完成後或使用者要求 | 審查 Vue 3 前端元件品質與規範符合度 |
 | **API Contract** | Codex | 使用者指定執行 | 比對前後端 API 介面契約一致性，產出差異報告 |
-| **Cleanup** | Codex | 使用者明確要求，或屬大範圍技術債清理 / 現代化 | 掃描並清理技術債，每批修改後驗證測試 |
+| **Cleanup** | Codex | 使用者明確要求，或屬技術債清理 / 語法現代化 | 依既有規範清理技術債，每批修改後驗證測試；模組邊界與依賴方向交由 `architecture-improvement` skill |
 | **Debug** | Codex | 使用者於 Codex 端要求 debug / 除錯 | bug 線協調者：於單一 session 完成診斷、派生同 session 匿名 subagent 執行修正、驗收其產出並套用升級過濾 |
 
 #### 驗證分層與 integration-verify 掛載點
@@ -228,7 +279,7 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 - Review 不執行測試與動態驗證，信任 Implement 結案報告附帶的建置與測試證據。
 - Debug 不承擔常規驗證，維持被動反應定位。
 
-**需求意圖驗收不屬於上述四層。** 四層驗證的比對軸是「程式碼是否正確、是否符合 `design.md`」，需求意圖驗收的比對軸是「交付結果是否仍是當初談定的那件事」，兩者互不取代。此職責歸 `Clarify`，因為需求摘要與對話中達成的實作約束只存在於 `Clarify` 的對話 context，其他 Agent 無完整比對依據。執行方式見 `~/.ai-agents/agents/claude/clarify.md`。
+**需求意圖驗收不屬於上述四層。** 四層驗證的比對軸是「程式碼是否正確、是否符合 `design.md`」，需求意圖驗收的比對軸是「交付結果是否仍是當初談定的那件事」，兩者互不取代。此職責歸 `Clarify`，因為需求摘要與對話中達成的實作約束由 `Clarify` 產生並保管於 `handoff/requirement-summary.md`，其他 Agent 只拿得到轉述後的版本。執行方式見 `~/.ai-agents/agents/claude/clarify.md`。
 
 #### 階段式行為約束
 
@@ -236,9 +287,9 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 
 | 階段 | 允許操作 | 禁止操作 |
 | --- | --- | --- |
-| Clarify | 讀取檔案、搜尋程式碼；執行需求意圖驗收時另可讀取 git diff 與各類審查報告 | 修改任何程式碼檔案；以全面 code review 取代需求意圖驗收 |
+| Clarify | 讀取檔案、搜尋程式碼；使用者確認後寫入 `<work-root>/.local/ai-sessions/handoff/requirement-summary.md`；執行需求意圖驗收時另可讀取 git diff 與各類審查報告；使用者當輪明確授權時就地執行指名範圍內的單點修改 | 修改任何程式碼檔案（授權例外見 `clarify.md`）；以全面 code review 取代需求意圖驗收 |
 | Implement | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
-| Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/design.md` | 修改任何程式碼檔案 |
+| Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/handoff/design.md` | 修改任何程式碼檔案 |
 | UI Demo | 讀取檔案與樣式基準、寫入 `<work-root>/.local/ai-sessions/ui-demo/` | 修改任何程式碼或專案檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
 | Review / Frontend Review / API Contract | 讀取檔案、讀取 git diff | 修改程式碼（僅產出報告）；執行建置與測試 |
@@ -248,7 +299,77 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 ## 2. Global Constraints
 
 - **Rule Zero**: **`.editorconfig` 擁有最高優先權**。若下述規則與專案設定衝突，以 `.editorconfig` 為準。
-- **Single Rule Policy**: 規範統一維護在本檔，避免規則碎片化。
+- **Single Rule Policy**：規則依 branch test 判定歸屬。所有 Agent 與語言都會走到的常駐規則留在本檔；只有特定檔案類型、技術棧或工作內容會走到的規則下放至對應 Skill。觸發對照表維持在 §1.5，避免規則下放後失去載入依據。
+
+Skill 指標索引由 `.githooks/Update-Docs.ps1` 依現有 Skill frontmatter 生成：
+
+<!-- SKILL-INDEX:BEGIN -->
+- `adr`：依決策門檻建立追加式 Architecture Decision Record，管理序號、狀態與被推翻的決策。
+- `ai-context-index`：依 AGENTS.md 宣告探索技術棧與既有產物，呼叫宣告工具產生 AI 脈絡索引並寫入 .local/ai-context/。
+- `api-smoke`：Web API 煙霧驗證流程。當需要在修改或開發 Web API 端點後驗證 API 行為，或使用者要求呼叫 Swagger、寫腳本測試 API、進行多情境 API 測試時使用。
+- `apply-fact-check`：依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md.
+- `architecture-improvement`：以 Git hotspot 縮小分析範圍，使用 deletion test 篩選改善候選並產出架構改善報告。
+- `browser-smoke`：瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。
+- `check-markdown`：當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。
+- `codebase-design`：Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。
+- `create-license-and-readme-link`：自動判斷專案屬性並推薦合適的開源授權，建立 LICENSE 檔案並將其連結補入 README.md 中。
+- `csharp-aspnetcore`：ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。
+- `csharp-auth`：ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。
+- `csharp-background-service`：Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。
+- `csharp-comments`：C# 註解風格：單行註解格式、註解用途原則，以及 TODO / UNDONE / HACK 工作清單關鍵字的分類與使用時機。撰寫或檢視 C# 程式碼註解時套用。
+- `csharp-di`：.NET 相依性注入進階規範：Generic Host、Keyed Services、Decorator 模式與容器驗證。當撰寫涉及 DI 容器進階配置（多實作、裝飾、非 Web 宿主）的程式碼時自動套用。
+- `csharp-docs`：C# 文件與 XML 註解標準：強制使用標準標籤與用詞規範產生類別與方法的說明。Use when writing, reviewing, or generating XML documentation comments (///) in C# files, or when the user asks to add, fix, or supplement XML docs.
+- `csharp-error-handling`：C# 例外處理規範：例外設計原則、Guard Clause、全域錯誤處理與 ProblemDetails 回應標準化。當設計例外、撰寫 try-catch 或全域錯誤處理時自動套用。
+- `csharp-grpc`：gRPC 服務開發規範：Proto 檔案管理、服務實作、攔截器、錯誤處理與用戶端工廠模式。當偵測到 gRPC 專案或撰寫 .proto、gRPC 服務與用戶端時自動套用。
+- `csharp-integration-test`：C# 整合測試規範：WebApplicationFactory、Testcontainers、資料隔離與認證繞道。當撰寫或修改整合測試（跨資料庫、HTTP 管線、外部相依）時自動套用。
+- `csharp-language-features`：Use when 讀取或修改 C# 專案設定、TargetFramework 或 C# 程式碼，需判斷語言特性、非同步與型別選用時。
+- `csharp-linq`：LINQ 查詢規範：物化時機、回傳型別、語法選用與鏈式排版的專案慣例。當撰寫 In-Memory 集合操作或 LINQ to Objects 時自動套用。
+- `csharp-mcp-server`：產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最佳實踐與專案結構規劃。
+- `csharp-nrt`：C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。當專案啟用 NRT 且撰寫或修改型別宣告時自動套用。
+- `csharp-nunit`：C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。
+- `csharp-signalr`：SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。
+- `csharp-style`：C# 程式碼風格規範：縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的細則。建立全新 C# 專案，或在無既有慣例的專案新增全新檔案時套用。
+- `csharp-validation`：C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。
+- `desktop-smoke`：Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。
+- `doc-editing`：Use when 修改技術筆記、規格文件或 Markdown 文件，需要保留內容、查閱事實與維持文件結構時。
+- `docker`：Dockerfile 與 Docker Compose 專案慣例：.NET 多階段建置的快取層寫法、非 root 執行、Compose Specification 檔名與相依寫法。當撰寫或檢視 Dockerfile 與 Compose 設定時自動套用。
+- `ef-core`：Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理與變更追蹤最佳實踐。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。
+- `export-excel`：匯出 Excel 試算表的技能，主要支援 Grid 與 RecordSet 兩種模板，可自訂樣式、命名樣式、資料驗證與工作表保護。當要求匯出或產生 Excel 檔案時使用。
+- `fact-check-note`：技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes.
+- `fix-file-encoding`：偵測並修正檔案亂碼問題，依副檔名轉換至正確目標編碼（Big5/ANSI → UTF-8 系列）。
+- `generate-api-doc`：為 ASP.NET Core Controller 或 Minimal API 自動補齊 XML 文件與 Swagger Attributes，讓 OpenAPI 文件完整呈現。
+- `generate-changelog-zh-tw`：依據 Git 提交紀錄自動產生 CHANGELOG 區段（繁體中文），並支援 MinVer 版本號推進規格。
+- `generate-commit`：依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔案過濾與拆分建議。當使用者要求提交變更或產生 commit 訊息時使用。
+- `generate-editorconfig-by-techstack`：依專案技術棧與 .NET 框架版本，從範本過濾出對應的 .editorconfig 段落並補齊，保留既有自訂偏好。
+- `generate-frontend-lint-config`：產生或補齊前端 Lint 設定（Prettier + ESLint Flat Config），統一格式化與程式碼品質規則，保留既有自訂偏好。
+- `generate-gitattributes`：產生或補齊 .gitattributes，統一行尾處理、二進位識別與 lock files 標記，保留既有自訂偏好。
+- `generate-gitignore-by-techstack`：從 github/gitignore 下載對應技術棧的 .gitignore 範本，合併並針對當前專案調整。
+- `generate-readme-zh-tw`：自動分析目前專案結構與功能，產生一份結構清晰、工程導向的 README.md（繁體中文）。
+- `generate-unit-test`：針對指定的 C# 類別或方法，自動產生 NUnit 單元測試骨架，包含 Arrange/Act/Assert 結構與 NSubstitute Mock 設定。
+- `git-workflow`：Git 分支策略與協作規範：分支命名、PR 模板、Merge 策略選用與 Git Hooks 慣例。當討論分支管理、PR 流程或版本發布時自動套用。
+- `glossary`：維護專案專屬業務術語表，處理使用者用詞衝突、程式碼語意矛盾與即時寫入。Use when 專案已宣告詞彙表，且當前對話或程式碼使用了表中既有術語但語意與定義不符時。
+- `integration-verify`：開發完成後的整合驗證入口。當使用者要求在功能開發完成後自行驗證、做整合測試，或說「幫我驗證」「驗證一下功能」但未指定驗證方式時使用。判斷專案類型後先執行既有單元測試，再路由到對應的煙霧驗證流程。
+- `merge-data`：多份資料檔整合流程。當需要將兩份以上的資料檔（如 JSON、CSV）合併、補齊闕漏欄位或去重成單一檔案時使用。以 dry-run、筆數核對與抽樣比對降低整合錯誤。
+- `messaging`：訊息佇列開發規範：RabbitMQ 與 MQTT 的命名慣例、冪等消費、重試與 DLQ 策略、訊息版本演進。當撰寫或修改訊息發佈與消費邏輯時自動套用。
+- `openapi-client`：前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。當撰寫前端 API 呼叫層或同步前後端型別時自動套用。
+- `pinia`：Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。當撰寫或修改 Pinia Store 及其元件整合時自動套用。
+- `powershell`：PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。
+- `project-setup`：探索專案的 solo／team 模式與既有規範產物，建立 AGENTS.md、CLAUDE.md、GLOSSARY.md、docs/adr/ 與 AI 宣告區塊。
+- `redis-caching`：Redis 快取開發規範：Key 命名階層、TTL 策略、Cache-Aside 模式與 StackExchange.Redis 連線管理。當撰寫或修改快取邏輯時自動套用。
+- `requirement-context`：當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。
+- `scripting-conventions`：Use when 選擇或撰寫 PowerShell、Shell 或 C# Script，需判斷執行平台、編碼與相依工具時。
+- `spec-doc`：依 Clarify 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。
+- `sql-query`：SQL 撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求，涵蓋 SQL Server（T-SQL）與 Oracle 雙資料庫的語法差異與語意陷阱。當撰寫或審查原生 SQL 時自動套用。
+- `survey`：掃描專案結構並產出供團隊成員閱讀的技術文件索引。當要求掃描專案、建立文件索引、補齊技術文件或盤點專案結構時使用。
+- `typescript-frontend`：前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。
+- `uiux`：UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。
+- `uiux-baseline`：掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced.
+- `vitest`：前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。
+- `vue3`：Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。
+- `vue-router`：Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。
+- `windows-terminal`：Use when 在 Windows 執行終端機命令，需要處理輸出編碼、中文亂碼或輸出截斷時。
+- `writing-for-agents`：Use when 撰寫或修改全域 Agent 規範、Skill 文件或交接文件，需要控制資訊密度與驗收條件時。
+<!-- SKILL-INDEX:END -->
 - **Encoding Strategy (Crucial)**: 除非檔案有特殊相容性需求，否則**預設皆須使用 UTF-8 (無 BOM)**。例外情境（必須強制使用 UTF-8 with BOM）：
   - **PowerShell 腳本 (`*.ps1`)**: 確保向下相容 Windows PowerShell 5.1（5.1 會把無 BOM 的 UTF-8 誤判為 ANSI）。此為 ps1 編碼的唯一權威來源，其他章節提及 ps1 編碼一律回指本條。
   - **CSV 檔案 (`*.csv`)**: 確保 Windows 上的 Excel 雙擊開啟時能正確解析中文。
@@ -265,27 +386,19 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 - **Cross-Language Strategy**: 若目標專案非 C#，沿用該語言既有慣例與專案配置（如 ESLint, Prettier, Black, Ruff, gofmt）。不套用 C# 特有規則到其他語言。
 - **Docker Compose**: 規範參閱 `docker` skill。
 - **Git Commit**: 規範參閱 `generate-commit` skill。
-- **Windows Terminal Encoding**: 在 Windows 環境執行終端機命令時，必須遵守以下規則以避免中文亂碼與輸出截斷：
-  - 執行可能輸出中文的命令（如 `dotnet test`、`git log`、`git diff`）前，先執行 `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8` 確保輸出編碼正確。
-  - 寫入 `.ps1` 檔案的編碼依 §Encoding Strategy（UTF-8 with BOM）。
-  - 讀取終端機輸出時，若出現亂碼或截斷，**第一優先檢查編碼設定**（而非嘗試換命令或換工具）。標準修復流程：確認 `[Console]::OutputEncoding` → 確認檔案本身編碼 → 確認 `chcp` Code Page。
-  - **截斷 ≠ 亂碼**：若輸出內容在結尾處不完整但可讀字元正常，問題是「截斷」而非「編碼」。不要因為截斷就去改編碼設定。截斷的處理方式：限制輸出長度（如 `git log -n 10`、`git diff -- [specific file]`），或將輸出導向檔案後再讀取。
-  - **禁止盲目輪迴**：遇到終端機輸出亂碼時，不得未經診斷就反覆嘗試不同的命令組合。必須先確認編碼狀態，再針對性修正。
+- **Windows 終端命令**：終端輸出編碼、亂碼診斷與截斷處理規則參閱 `windows-terminal` skill。
 - **Sensitive File & Build Output Guard (Crucial)**: 在未獲使用者明確授權前，禁止主動讀取下列類型的路徑：
   - **敏感設定檔**：`.env`、`.env.*`（如 `.env.local`、`.env.production`）。
   - **編譯/建置輸出目錄**：`bin/`、`obj/`、`dist/`、`out/`、`build/`、`target/`、`.next/`、`__pycache__/` 等。
   - **例外（允許讀取的情境）**：使用者明確指示（如「請讀 `.env` 確認設定」、「查看 bin 下的組件」），才可讀取，且**不得將敏感內容（如密碼、Token）輸出至對話中**，僅回答與任務直接相關的資訊。
-  - **`.local/ai-sessions/` 的存在判斷**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 `<work-root>/.local/ai-sessions/` 為準直接嘗試讀取，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。Read 工具成功讀取 → 檔案存在；Read 工具回傳錯誤或空內容 → 檔案不存在。此規則適用於 `design.md`、`review-report.md`、`frontend-review-report.md`、`api-contract-report.md` 等所有交接文件。
+  - **`.local/ai-sessions/` 的存在判斷**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 `<work-root>/.local/ai-sessions/` 為準直接嘗試讀取，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。Read 工具成功讀取代表檔案存在，Read 工具回傳錯誤或空內容代表檔案不存在。此規則適用於 `handoff/design.md`、`report/review-report.md`、`report/frontend-review-report.md`、`report/api-contract-report.md` 等所有交接文件。
 - **Config Hierarchy**：AI 指令採用三層覆寫策略，後層覆蓋前層：
   1. **全域層** (`~/.ai-agents/instructions.md`)：跨專案的恆定規範。
-  2. **專案層** (專案根目錄的 `.ai-instructions.md` 或等效檔案)：專案團隊共享的規範覆寫，納入版控。
-  3. **本機層** (專案根目錄的 `CONTEXT.local.md`)：個人機器專屬的動態上下文，由 `.gitignore` 排除；**可選存在**，不作為 Workflow 啟動必要條件。
+  2. **專案層**（專案根目錄的 `AGENTS.md`）：專案團隊共享的規範，換機器仍適用，依專案版控策略管理。
+  3. **本機層**（專案根目錄的 `AGENTS.local.md`）：個人對此專案的偏好覆寫，永不進版控，由機器層排除設定隔離。
   - 若三層之間出現矛盾，以最接近工作目錄的層級為準。
-- **Scripting Conventions**：撰寫腳本檔案時的語言選用原則：
-  - **PowerShell (`*.ps1`)**：Windows 環境的自動化腳本首選。遵循 §2 Encoding Strategy 的 BOM 規則。
-  - **Shell (`*.sh`)**：跨平台或 CI/CD 環境使用。行尾強制 LF。
-  - **C# Script (`*.csx`)**：需要存取 .NET API 或 NuGet 套件的一次性腳本。需搭配 `dotnet-script` 工具。
-  - 選用原則：若腳本僅在 Windows 上執行，優先使用 ps1；若需跨平台，優先使用 sh；若需要 .NET 型別系統與 NuGet 套件，使用 csx。
+  - `CONTEXT.local.md` 是可選的 Session 狀態交接檔，不屬於規則覆寫層；它只保存跨 Session 仍有效的環境前置作業、本機限制與已知陷阱。
+- **腳本選用與規範**：PowerShell、Shell 與 C# Script 的選用、編碼與執行規則參閱 `scripting-conventions` skill。
 - **Security Baseline**：以下安全原則跨語言適用：
   - **禁止硬編碼機密資料**：API Key、密碼、連線字串等一律透過環境變數、Secret Manager 或 Key Vault 注入，不得出現在原始碼中。
   - **輸入驗證**：所有外部輸入（使用者輸入、API 參數、檔案內容）在進入業務邏輯前必須經過驗證與消毒。
@@ -295,126 +408,25 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 
 ## 3. C# Code Style (⚠️ 核心強制規範)
 
-### 3.1 Code Style
+C# 程式碼的框架判定、語言特性、命名、成員排序、XML 註解、註解風格、資源管理與效能檢查依下列 Skill 載入：
 
-- **既有專案強制對齊既有慣例**：修改既有 C# 專案前，必須先抽樣鄰近 `.cs` 檔案（至少 2~3 個，涵蓋將被修改的目錄），辨識其命名、縮排、大括號、成員排列與 `using` 組織的實際慣例，逐項對齊後再動手。既有慣例優先於 `csharp-style` skill 的預設風格，不主動將既有風格「修正」成預設風格，以避免製造無謂的 diff 雜訊。
-- **可機械強制的部分以 `.editorconfig` 為準**：命名大小寫、縮排、大括號位置、`using` 排序、`var` 使用等，由專案 `.editorconfig` 與內建 analyzer 強制，不在本文件重複條列。
-- **無既有慣例時的風格細則**：建立全新專案、或在無可識別慣例的專案新增全新檔案時，套用 `csharp-style` skill 的命名、結構與排版規範。
-
-### 3.2 Framework Context & Language Features
-
-- **Framework Awareness**: AI 在修改程式碼前，必須先判斷目標框架 (`TargetFramework`)：
-  - **Legacy .NET Framework**: 若為 .NET Framework (如 v4.7.2)，語法上限為 C# 7.3，不使用 C# 8.0+ 特性（如 `using var`、`switch` 運算式、Records、Nullable Reference Types 等）。
-  - **Modern .NET (Core/5+)**: 允許使用現代 C# 特性；依賴注入一律使用傳統建構函式寫法，不使用 Primary Constructors。
-- **Async/Await**:
-  - 非同步方法必須回傳 `Task` 或 `Task<T>`；`async void` 僅允許用於事件處理函式。
-  - Library 專案中的非同步呼叫必須加上 `.ConfigureAwait(false)`。
-  - **Sync-over-Async**: 盡量避免。若在同步介面中必須呼叫非同步邏輯，允許視情況使用 `.GetAwaiter().GetResult()`；不使用 `.Result` 或 `.Wait()`（可能造成死結）。
-  - 方法僅轉發另一個 Task 結果時，直接回傳該 Task（`return DoSomethingAsync();`），不加 `async`/`await`，避免多餘的狀態機。回傳 Task 但不使用 `async` 的方法，以 `Task.FromException()` 傳遞例外，不使用 `throw`。
-- **Object Creation**: 使用 **Target-typed new** (`Type x = new();`) (僅限支援的 C# 版本)。
-- **Var Usage**: 以 `.editorconfig` 為準；無相關設定時套用本條，**原則上禁用**，僅允許用於「匿名型別」或「極度複雜的巢狀泛型」。
-- **Types & Memory**:
-  - 字串比較必須明確指定規則 (如 `StringComparison.OrdinalIgnoreCase`)。
-  - 時間型別遵循**專案現有慣例**：若專案已統一使用 `DateTime`，則維持；若已統一使用 `DateTimeOffset`，則維持。新建程式碼無既有慣例時，優先使用 `DateTimeOffset`。無論何種型別，禁止在同一專案內混用不同 `Kind`（`Local`、`Utc`、`Unspecified`）的 `DateTime`。
-  - 空字串一律使用 `""`，不使用 `string.Empty`。
-- **Collection Type Selection**：依語意選擇最窄的集合介面，不預設使用 `List<T>`。介面選型由窄至寬：
-
-  | 介面 | 能力 | 適用情境 |
-  | --- | --- | --- |
-  | `IEnumerable<T>` | 迭代 | 方法參數、只需走訪的回傳值 |
-  | `IReadOnlyCollection<T>` | 迭代 + Count | 需要數量但無需索引存取 |
-  | `IReadOnlyList<T>` | 迭代 + Count + 索引 | DTO 屬性、唯讀回傳值 |
-  | `ICollection<T>` | 迭代 + Count + Add/Remove | 可修改但不需索引的集合 |
-  | `IList<T>` | 迭代 + Count + 索引 + Add/Remove | 可修改且需索引的集合 |
-  | `List<T>` | 具體型別 | 僅限內部實作或明確需要 `List<T>` 方法時 |
-
-  - **DTO / Response 物件的集合屬性**：使用 `IReadOnlyList<T> { get; init; }`，搭配 `= []` 預設值防止 null。
-  - **可修改的聚合根 / Builder 物件**：使用 `{ get; } = new List<T>();`（屬性參考固定，元素可增減）或 `ICollection<T> { get; } = new List<T>();`。
-  - **禁止模式**：`List<T> { get; set; }` 同時暴露具體型別與可替換屬性，DTO 嚴禁使用。
-  - **方法參數**：偏好 `IEnumerable<T>`；需要索引時用 `IReadOnlyList<T>`。不要求呼叫端傳入 `List<T>` 具體型別。
-- **Nullable Value Types**: 對於 `Nullable<T>` (Value Types)，檢查是否有值時，必須優先使用 `.HasValue` 屬性。
-- **Nullable Reference Types (NRT)**: 若專案啟用，必須消除所有相關警告；若未啟用，不強迫修改。屬性宣告策略（`required`、`init`/`set` 選用、禁止假預設值）與 null 檢查寫法（統一使用 `is not null`）等詳細規範參閱 `csharp-nrt` skill。
-- **High-Performance Logging**: 實作日誌時，優先使用 `[LoggerMessage]` Attribute 寫法 (Source Generator)。
-- **Nameof**: 成員名稱引用一律使用 `nameof()`，不硬編碼字串。
-
-### 3.3 XML Documentation & Comments
-
-XML 註解的強制程度依專案性質而定：
-
-- **套件 / Library 專案**（產出為 NuGet Package 或共用類別庫）：所有 `public` 成員都必須加上 XML 註解。
-- **Web 專案**（ASP.NET Core Web API / MVC / Razor Pages 等應用程式）：依成員類型分級：
-
-  | 層級 | 對象 | 規則 |
-  | --- | --- | --- |
-  | 應寫 | Web API Controller Action | 含 `<summary>`、`<param>`、`<returns>`，供 Swagger/OpenAPI 產生文件 |
-  | 應寫 | 共用 Interface 的方法 | 跨模組契約描述，實作類別用 `<inheritdoc/>` |
-  | 應寫 | 公開 Enum 值 | 補充命名無法表達的語意邊界 |
-  | 應寫 | DTO / ViewModel / Entity 屬性 | 補充業務含義、格式約束、單位等 |
-  | 視情況 | 其他 public 成員 | 名稱已充分表達時可省略，有非直覺行為時應補 |
-  | 不寫 | private / internal | 用 `//` 註解處理即可 |
-
-- `<summary>` 以第三人稱現在式動詞開頭（如 "Gets..."、"Initializes..."），重點說明 Why 與 What。
-- 格式規範與標籤用法（`<see langword>`、`<paramref>`、`<inheritdoc>` 等）參閱 `csharp-docs` skill。
-- 單行 `//` 註解的風格、位置與應寫情境參閱 `csharp-comments` skill。
-
-### 3.4 .NET 最佳實踐品質檢查 (主動套用)
-
-- **資源管理**：所有實作 `IDisposable` 或 `IAsyncDisposable` 的物件，**必須**在 `using` 區塊或 `try/finally` 中確保釋放。若發現暴露中的 `new HttpClient()`，主動提醒改用 `IHttpClientFactory`。
-- **SOLID 原則守護**：若一個類別混合了「資料存取」與「商業邏輯」，主動建議拆分；若遇到大型 `switch/if-else` 依型別分派，建議策略模式或多型替代；若發現直接 `new` 建立具體實作，提示改用 DI。
-- **效能陷阱**：字串串接迴圈中，必須建議改用 `StringBuilder` 或 `string.Join()`；對 `IEnumerable<T>` 執行多次 `.Count()` 或迴圈，建議先物化 (`.ToList()`)；使用同步 I/O 方法時，建議改為非同步版本。
+- `csharp-style`：既有慣例、命名、成員排序、排版、資源管理與效能檢查。
+- `csharp-language-features`：TargetFramework、非同步、型別與集合選型、Nullable、日誌與 `nameof()`。
+- `csharp-docs`：XML Documentation 與 public 成員文件分級。
+- `csharp-comments`：單行 `//` 註解風格與使用時機。
+- `codebase-design`：模組邊界、Interface、Adapter、依賴方向與刪除測試。
 
 ---
 
 ## 4. Testing Standards
 
-- **Framework**: NUnit + NSubstitute（Mocking）
-- **Project Naming**: 測試專案遵循 `[ProjectName].Tests` 命名慣例。
-- **Class Naming**: 測試類別與被測試類別完全對應（如 `Calculator` → `CalculatorTests`）。
-- 詳細規範（AAA 模式、資料驅動、斷言最佳實踐）參閱 `csharp-nunit` skill。
+- NUnit、NSubstitute、測試專案命名、測試類別命名、AAA、資料驅動與斷言規則參閱 `csharp-nunit` skill。
 
 ---
 
 ## 5. Markdown Standards
 
-### 5.1 清單符號 (List Symbols)
-
-- **現有檔案統一時**：若整份檔案清單符號統一（全 `-` 或全 `*`），**尊重原檔案，不做更改**。
-- **混用時**：若 `-` 與 `*` 混用，一律統一改為 `-`。
-- **新產生清單**：預設使用 `-`。
-
-### 5.2 清單結尾符號 (List Endings)
-
-**不加結尾符號的情境（純列舉型）：**
-
-- 名詞列舉、工具清單、人名清單
-- URL 列舉
-- 版本號列舉（如 `v1.0.0`）
-- 路徑列舉（如 `src/components/`）
-- 程式碼識別字列舉（如 `IService`、`GetAsync`）
-
-**需要結尾符號的情境（說明型）：**
-
-- 含有動詞或構成完整句子的清單項目，中文用 `。`，英文用 `.`。
-
-> ⚠️ **強制執行**：同一清單中若部分項目為說明型，則**整個清單的說明型項目都必須加句號**，不得混用（部分有、部分沒有）。純列舉型與說明型不應混在同一清單中；若混用，以說明型規則為準，所有項目補齊句號。
-
-### 5.3 表格格式 (Tables)
-
-- **分隔列必須有空格**：`| --- |` 而非 `|---|`，每個 `---` 前後各至少一個空格。
-- **Skill 參閱**：詳細的多欄位判斷規則，參閱 `./skills/check-markdown/SKILL.md`。
-
-### 5.4 空行規則 (Blank Lines)
-
-- **清單與程式碼區塊**：清單塊 (List) 以及程式碼區塊 (Fenced code block) 的前後必須保留一個空行。即使在清單項目內部，嵌套的程式碼區塊前後亦須有空行。
-
-### 5.5 清單縮排與間距 (List Indentation & Spacing)
-
-- **清單符號後方**：`-` 或 `*` 後方**恰好一個半形空格**，不多不少。
-- **巢狀縮排**：統一使用 **2 個空格**進行巢狀縮排，不使用 3、4 或更多空格。
-- **項目間空行**：
-  - 同層級的簡短清單項目之間**不插入空行**。
-  - 僅當項目內部包含多段落或程式碼區塊時，該項目前後才允許空行。
-- **尾端空格**：清單項目行末不留 trailing whitespace。
+- 清單符號、清單結尾、表格、空行、縮排與中英文排版規則參閱 `check-markdown` skill。
 
 ---
 
@@ -422,54 +434,18 @@ XML 註解的強制程度依專案性質而定：
 
 ### 6.1 內容保留原則
 
-- **保留使用者原始內容**：重整筆記大綱時，僅重新排序/分組，確保所有段落完整保留。
-- **需精簡時**：先列出擬刪除的段落並請使用者確認，再執行刪除。
+- 內容保留、精簡前確認與文件合併規則參閱 `doc-editing` skill。
 
 ### 6.2 內容驗證與事實查閱
 
-**AI 主動發現時：**
-
-- 修改技術筆記時，若發現版本號、API 名稱、設定格式等可能已過時或有誤，以 `⚠️ 待確認：` 標記，不直接修正。
-- 對時效性有疑慮的內容，提示使用者自行查閱官方文件驗證；不依訓練資料自行補充「最新資訊」至筆記中。
-
-**使用者要求驗證時：**
-
-- 必須**明確說明查閱依據**（如官方文件、規格文、實驗結果）。
-- 若訓練資料無法確認，必須誠實告知，而非給出貌似正確的答案。
-- 若說法有**部分正確、部分有誤**，拆開逐條說明，不籠統評論。
+- 版本、API、設定與事實查閱規則參閱 `doc-editing` skill；需要官方來源的技術驗證依該 Skill 的查閱要求執行。
 
 ### 6.3 排版校稿 (Layout Proofreading)
 
-- 校稿範圍包含：標點符號使用、全形/半形混用、中英文間距、段落對齊。
-- **中英文夾排空格**：中文字和英文字母/數字之間，加一個半形空格（如 `C# 的 IDisposable 介面`）。
-- **標點符號**：中文語境使用全形標點（`，。：「」`），英文語境使用半形（`,.:"`）。
-- **不應更動**：程式碼區塊內的內容、引用的原始訊息、使用者刻意保留的格式。
+- 標點、全形半形、中英文間距、段落對齊與程式碼區塊保留規則參閱 `doc-editing` skill。
 
 ### 6.4 文件寫入模式 (Document Write Mode)
 
-修改現有文件時，預設使用 **Merge 模式**；僅在符合條件時才切換為 Append 模式。
-
-**Merge 模式（融入）**：
-
-1. 先通讀現有文件全文，理解現有架構、行文風格與詳細程度。
-2. 找出語意對應的位置，將新內容插入現有結構中。
-3. 補充內容的深度與精細度必須與現有文件一致。
-4. 最終文件看起來是一體撰寫的，無法辨別哪些段落是後補的。
-5. **禁止**另建補充或附錄檔案（如 `*-supplement.md`、`*-appendix.md`）來填補同一文件的缺口。
-6. **插入後一致性重讀**：完成插入或刪除後，重讀受影響的區段（範圍隨改動規模縮放，大改讀整章、小改讀鄰近段落），逐項檢核下列五點，發現問題在輸出前修正：
-   - **計數與列舉**：增刪項目後，前文的總數與「分 N 類」「以下三點」等敘述是否需同步更新。
-   - **交叉引用**：本檔內以編號或名稱互指的章節、步驟、清單是否仍指向正確位置。
-   - **重複**：新增內容是否與本檔他處段落重複，重複時擇一保留並改為指向。
-   - **前後矛盾**：新內容是否與既有敘述衝突。
-   - **銜接**：插入段落與上下文的語氣、邏輯是否連貫，無外掛感。
-
-   單點機械修改（錯字、單一詞替換）不需重讀整段，僅確認該行上下文即可。
-
-**Append 模式（疊加）**：
-
-允許直接附加於文件末尾或新增獨立章節。僅適用於以下情境：
-
-- 文件本質為 log / changelog / 進度紀錄（如 `CONTEXT.local.md`）。
-- Agent 在其產出規範中明確宣告使用 Append 模式。
+- 內容保留、事實查閱、排版校稿與 Merge / Append 寫入規則參閱 `doc-editing` skill。
 
 ---

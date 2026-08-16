@@ -1,11 +1,11 @@
 ---
 name: openapi-client
 description: '前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。當撰寫前端 API 呼叫層或同步前後端型別時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # 前後端 API 契約規範
-
-當撰寫或審查前端 API 呼叫層，或處理前後端型別同步時，請自動套用以下規範。
 
 ## API 契約策略（Crucial）
 

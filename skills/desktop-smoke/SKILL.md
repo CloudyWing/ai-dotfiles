@@ -1,6 +1,8 @@
 ---
 name: desktop-smoke
 description: Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Desktop Smoke Verification
@@ -98,5 +100,5 @@ AI 看不到桌面視窗，實際能做到的程度取決於環境提供的工�
 有未解項目或阻塞條件時的檔案輸出：
 
 - 本流程由 `integration-verify` 呼叫時，未解項目交回由其統一輸出，不自行寫檔。
-- 本流程為獨立執行時，將未解項目、阻塞條件與手動檢查清單寫入 `<work-root>/.local/ai-sessions/verify-pending.md`（覆寫模式）。
+- 本流程為獨立執行時，將未解項目、阻塞條件與手動檢查清單寫入 `<work-root>/.local/ai-sessions/report/verify-unresolved.md`（覆寫模式）。
 - 全部通過時不寫檔；若該檔先前已存在，刪除它。

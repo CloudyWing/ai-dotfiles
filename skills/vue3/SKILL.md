@@ -1,11 +1,11 @@
 ---
 name: vue3
 description: 'Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Vue 3 開發規範
-
-當偵測到 Vue 3 專案（含 `vue` 3.x 相依套件）或使用者要求撰寫 Vue 元件時，請自動套用以下規範。
 
 ## Composition API（Crucial）
 

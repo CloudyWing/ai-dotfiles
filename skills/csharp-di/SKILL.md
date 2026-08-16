@@ -1,11 +1,13 @@
 ---
 name: csharp-di
 description: '.NET 相依性注入進階規範：Generic Host、Keyed Services、Decorator 模式與容器驗證。當撰寫涉及 DI 容器進階配置（多實作、裝飾、非 Web 宿主）的程式碼時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # .NET 相依性注入進階規範
 
-當使用者撰寫涉及 DI 容器進階配置的程式碼（如 Worker Service、多實作切換、Decorator 模式）時，請自動套用以下規範。基礎 DI Lifetime 規範參閱 `csharp-aspnetcore` skill。
+基礎 DI Lifetime 規範參閱 `csharp-aspnetcore` skill。
 
 ## Generic Host
 

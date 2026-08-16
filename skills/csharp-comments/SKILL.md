@@ -1,6 +1,8 @@
 ---
 name: csharp-comments
 description: C# 註解風格：單行註解格式、註解用途原則，以及 TODO / UNDONE / HACK 工作清單關鍵字的分類與使用時機。撰寫或檢視 C# 程式碼註解時套用。
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # C# Comments

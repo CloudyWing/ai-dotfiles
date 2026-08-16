@@ -1,6 +1,8 @@
 ---
 name: browser-smoke
 description: 瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Browser Smoke Verification
@@ -101,5 +103,5 @@ description: 瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、
 有未解項目或阻塞條件時的檔案輸出：
 
 - 本流程由 `integration-verify` 呼叫時，未解項目交回由其統一輸出，不自行寫檔。
-- 本流程為獨立執行時，將未解項目與阻塞條件寫入 `<work-root>/.local/ai-sessions/verify-pending.md`（覆寫模式）。
+- 本流程為獨立執行時，將未解項目與阻塞條件寫入 `<work-root>/.local/ai-sessions/report/verify-unresolved.md`（覆寫模式）。
 - 全部通過時不寫檔；若該檔先前已存在，刪除它。

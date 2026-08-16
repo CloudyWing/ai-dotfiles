@@ -1,7 +1,9 @@
 ---
 name: fix-file-encoding
 description: 偵測並修正檔案亂碼問題，依副檔名轉換至正確目標編碼（Big5/ANSI → UTF-8 系列）。
+audience: human
 disable-model-invocation: true
+policy.allow_implicit_invocation: false
 ---
 
 # 修正檔案編碼
@@ -71,6 +73,8 @@ $content = [System.IO.File]::ReadAllText("$FilePath", [System.Text.Encoding]::Ge
 
 轉換後重新以 UTF-8 讀取，確認中文內容可正常顯示，輸出前幾行供使用者確認。
 
+若驗證無法完成，將檔案路徑、偵測到的編碼與錯誤訊息寫入 `<work-root>/.local/ai-sessions/report/verify-unresolved.md`，保留原始檔案與備份供後續處理。
+
 ### 6. 輸出摘要
 
 ```markdown
@@ -84,5 +88,5 @@ $content = [System.IO.File]::ReadAllText("$FilePath", [System.Text.Encoding]::Ge
 
 ## 注意事項
 
-- **轉換前必須備份**：編碼轉換屬於原地改寫非本 Session 產生的檔案，依全域 §1.4「腳本改寫安全」，先將受影響檔案複製到 `<work-root>/.local/ai-sessions/backups/<時間戳>/`（保留原始相對路徑），並寫入一行 `manifest.txt` 記錄該次操作。不因專案有 git 而省略。
+- **轉換前必須備份**：編碼轉換屬於原地改寫非本 Session 產生的檔案，依全域 §1.4「腳本改寫安全」，先將受影響檔案複製到 `<work-root>/.local/ai-sessions/backups/<時間戳>/`（保留原始相對路徑），並寫入一行 `manifest.txt` 記錄該次操作。不因專案有 git 而省略。備份保留於 `backups/`，不放入 `report/`。
 - 若檔案為二進位檔（如圖片、PDF），跳過並警告。

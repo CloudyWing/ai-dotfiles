@@ -1,11 +1,13 @@
 ---
 name: git-workflow
 description: 'Git 分支策略與協作規範：分支命名、PR 模板、Merge 策略選用與 Git Hooks 慣例。當討論分支管理、PR 流程或版本發布時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Git 分支策略與協作規範
 
-當使用者詢問 Git 分支管理、Pull Request 流程或版本發布策略時，請自動套用以下規範。rebase 改寫歷史風險、衝突解決步驟等通用知識不在此複述，本文件只收專案慣例。
+rebase 改寫歷史風險、衝突解決步驟等通用知識不在此複述，本文件只收專案慣例。
 
 ## 分支策略
 

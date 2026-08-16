@@ -1,6 +1,8 @@
 ---
 name: sql-query
 description: 'SQL 撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求，涵蓋 SQL Server（T-SQL）與 Oracle 雙資料庫的語法差異與語意陷阱。當撰寫或審查原生 SQL 時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # SQL 撰寫規範

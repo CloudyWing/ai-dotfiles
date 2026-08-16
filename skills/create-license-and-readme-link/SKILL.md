@@ -1,7 +1,9 @@
 ---
 name: create-license-and-readme-link
 description: 自動判斷專案屬性並推薦合適的開源授權，建立 LICENSE 檔案並將其連結補入 README.md 中。
+audience: human
 disable-model-invocation: true
+policy.allow_implicit_invocation: false
 ---
 
 # 建立開源授權並更新 README 連結

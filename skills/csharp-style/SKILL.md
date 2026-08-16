@@ -1,6 +1,8 @@
 ---
 name: csharp-style
 description: C# 程式碼風格規範：縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的細則。建立全新 C# 專案，或在無既有慣例的專案新增全新檔案時套用。
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # C# Code Style
@@ -10,9 +12,7 @@ description: C# 程式碼風格規範：縮寫大小寫、泛型型別參數、�
 ## 套用範圍
 
 - **既有專案**：以鄰近檔案的既有慣例為準，既有慣例優先於本 Skill。本 Skill 僅在既有專案無可識別慣例時，作為新增檔案的風格基準。
-- **全新專案**：直接套用本 Skill 的規範。
-
-不主動將既有程式碼「修正」成本 Skill 的風格，以避免製造無謂的 diff 雜訊。
+不主動將既有程式碼「修正」成為 Skill 的風格，以避免製造無謂的 diff 雜訊。
 
 ## 命名
 
@@ -300,3 +300,9 @@ description: C# 程式碼風格規範：縮寫大小寫、泛型型別參數、�
   [Required, StringLength(50)]
   public string CustomerName { get; init; }
   ```
+
+## .NET 品質檢查
+
+- 實作 `IDisposable` 或 `IAsyncDisposable` 的物件必須在 `using` 區塊或 `try/finally` 中釋放。發現 `new HttpClient()` 時改用 `IHttpClientFactory`。
+- SOLID 的模組邊界、Interface、Adapter、依賴方向與刪除測試規則參閱 `codebase-design` skill。
+- 字串串接迴圈使用 `StringBuilder` 或 `string.Join()`。對 `IEnumerable<T>` 多次執行 `.Count()` 或迴圈時先物化。同步 I/O 優先改用非同步版本。

@@ -1,10 +1,25 @@
 ---
 name: generate-changelog-zh-tw
 description: 依據 Git 提交紀錄自動產生 CHANGELOG 區段（繁體中文），並支援 MinVer 版本號推進規格。
+audience: human
 disable-model-invocation: true
+policy.allow_implicit_invocation: false
 ---
 
 # 產生 CHANGELOG（繁體中文）
+
+## 格式基礎
+
+檔名為 `CHANGELOG.md`，文件標題為 `# Changelog`。全大寫是根目錄檔名慣例（與 `README.md`、`LICENSE.md` 同類），標題屬於給人閱讀的散文層，採一般標題大小寫，兩者不共用同一套規則。[Keep a Changelog](https://keepachangelog.com/) 的規格頁範例與該專案自身的 `CHANGELOG.md` 皆採 `# Changelog`。
+
+版本區段的結構沿用 conventional-changelog 風格，與 Keep a Changelog 規格不同，差異如下：
+
+| 項目 | 本 Skill | Keep a Changelog |
+| --- | --- | --- |
+| 版本標題 | `## v1.2.0 (2026-04-04)` | `## [1.2.0] - 2026-04-04` |
+| 分類名稱 | New Features／Bug Fixes／Improvements／BREAKING CHANGE | Added／Changed／Deprecated／Removed／Fixed／Security |
+
+採 conventional-changelog 分類的理由是條目由 Conventional Commits 的 type 推導，分類與 commit type 一對一對應。版本號依 MinVer 規格推進，條目語言使用台灣用語正體中文。
 
 ## 使用方式
 
@@ -100,10 +115,12 @@ git log --pretty=format:"%H %s" --no-merges
 **不存在 `CHANGELOG.md`**：建立新檔，結構如下：
 
 ```markdown
-# CHANGELOG
+# Changelog
 
 [新產生的區段]
 ```
+
+既有 `CHANGELOG.md` 的標題為 `# CHANGELOG` 或其他寫法時，沿用該檔現有標題，不順手改寫。標題變更屬於獨立決策，交由使用者提出。
 
 ### 6. 完成確認
 

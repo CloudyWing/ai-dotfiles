@@ -1,23 +1,23 @@
 ---
 name: requirement-context
 description: 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # 需求上下文盤點
-
-當使用者提出需求、功能構想或改善方向，並要求先盤點背景、整理需求討論用的資訊、或確認可能牽涉哪些文件 / 程式碼 / 資料庫物件時，請套用本 Skill。
 
 本 Skill 的產出是需求討論前的短期交接資料，不是正式規格文件、設計文件或完整專案文件。
 
 ## 產出位置
 
-固定寫入：
+依需求主題產生 slug，寫入：
 
 ```text
-<work-root>/.local/ai-sessions/requirement-context.md
+<work-root>/.local/ai-sessions/handoff/requirement-context-<slug>.md
 ```
 
-寫入模式採覆寫模式。每一輪需求上下文只保留最新內容，避免舊需求殘留干擾後續討論。
+Slug 使用小寫 kebab-case，能表達需求主題且不含機密資料。寫入前確認目標檔案不存在；若相同 slug 已存在，追加時間戳形成新檔名，不覆寫既有需求上下文。
 
 ## 與其他 Skill / 文件的分工
 
@@ -70,9 +70,9 @@ description: 當使用者明確要求盤點需求上下文，或要求從專案�
 - **間接影響**：可能受資料流、呼叫鏈、共用型別或流程影響的項目。
 - **僅供參考**：理解業務或系統背景有幫助，但目前沒有修改跡象的項目。
 
-### 6. 寫入 requirement-context.md
+### 6. 寫入需求上下文檔
 
-使用下列格式覆寫輸出檔：
+使用下列格式寫入 `handoff/requirement-context-<slug>.md`：
 
 ```markdown
 # Requirement Context
@@ -134,7 +134,7 @@ description: 當使用者明確要求盤點需求上下文，或要求從專案�
 
 ## 約束
 
-- 嚴禁修改任何程式碼或正式文件；唯一允許寫入的是 `<work-root>/.local/ai-sessions/requirement-context.md`。
+- 嚴禁修改任何程式碼或正式文件；唯一允許寫入的是 `<work-root>/.local/ai-sessions/handoff/requirement-context-<slug>.md`。
 - 不產出解法設計、實作步驟或工期估算；僅整理需求討論會用到的背景。
 - 不讀取 `.env`、`.env.*`、`bin/`、`obj/`、`dist/`、`out/`、`build/`、`target/`、`.next/`、`__pycache__/` 等敏感或建置輸出路徑，除非使用者明確授權。
 - 讀取資料庫時不得輸出密碼、Token、連線字串或個資資料值；只整理 schema、物件名稱、欄位、關聯與行為。

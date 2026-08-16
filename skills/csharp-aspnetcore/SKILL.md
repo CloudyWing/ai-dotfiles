@@ -1,11 +1,11 @@
 ---
 name: csharp-aspnetcore
 description: 'ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # ASP.NET Core 開發規範
-
-當偵測到 ASP.NET Core 專案（含 `Microsoft.AspNetCore` 相依套件）或使用者要求撰寫 API 端點、Controller、Middleware 時，請自動套用以下規範。
 
 ## DI Lifetime（Crucial）
 

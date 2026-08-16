@@ -1,6 +1,8 @@
 ---
 name: uiux
 description: UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # UI/UX 決策規範
@@ -13,7 +15,7 @@ description: UI/UX 決策規範，含版面資訊層級、改動邊界與不可�
 
 專案既有的畫面慣例優先於本 Skill 的預設作法。兩者衝突時以專案既有慣例為準，不主動將既有風格改成本 Skill 的預設。此原則對稱於全域規則 §3.1 對既有 C# 專案的慣例對齊要求。
 
-視覺數值一律引用 `<work-root>/.local/ai-sessions/baselines/ui-style-baseline.md`。基準檔不存在時，先執行 `uiux-baseline` skill 產生，不以記憶中的通用數值代替。基準檔的「待決策項」中的值在被採用前須先取得使用者確認。
+視覺數值一律引用 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。基準檔不存在時，先執行 `uiux-baseline` skill 產生，不以記憶中的通用數值代替。基準檔的「待決策項」中的值在被採用前須先取得使用者確認。
 
 慣例對齊的層次高於數值對齊。畫面中的查詢條件列、資料表格、彈窗等結構，優先整段複用基準檔「常用模式範例」的骨架，其次才用原子值自行組裝。只對齊色彩與間距而重寫結構，產出的畫面仍會偏離專案既有版型。
 

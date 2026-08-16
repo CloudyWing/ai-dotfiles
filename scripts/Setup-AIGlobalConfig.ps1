@@ -6,6 +6,9 @@
 [CmdletBinding(SupportsShouldProcess)]
 param()
 
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
 # 1. 管理員權限檢查
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -17,11 +20,17 @@ if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Adm
 $configRoot = "$env:USERPROFILE\.ai-agents"
 $configRootDisplay = $configRoot.Replace($env:USERPROFILE, '~')
 $mainInstructions = Join-Path $configRoot "instructions.md"
+$gitGlobalExcludes = Join-Path $configRoot "git-global-excludes"
 
 # 3. 實體檔案與原始目錄檢查
 if (!(Test-Path $mainInstructions)) {
     Write-Host "ERROR: 找不到 $mainInstructions" -ForegroundColor Red
     Write-Host "       請確認腳本位於 <configRoot>\scripts\ 之下。" -ForegroundColor Red
+    return
+}
+
+if (!(Test-Path $gitGlobalExcludes)) {
+    Write-Host "ERROR: 找不到機器層排除清單 $gitGlobalExcludes" -ForegroundColor Red
     return
 }
 
@@ -137,11 +146,33 @@ if ($orphans.Count -eq 0 -and -not $WhatIfPreference) {
 Write-Host "`n>>> 正在設定 Git Hooks..." -ForegroundColor Cyan
 if ($PSCmdlet.ShouldProcess("$configRoot", "設定 core.hooksPath → .githooks")) {
     git -C $configRoot config core.hooksPath .githooks
+    if ($LASTEXITCODE -ne 0) {
+        throw "設定 core.hooksPath 失敗，結束碼：$LASTEXITCODE"
+    }
     Write-Host "  ✅  core.hooksPath → .githooks" -ForegroundColor DarkGreen
 }
 
-# 10. 驗證回饋
+# 10. 設定機器層 Git 排除清單
+Write-Host "`n>>> 正在設定 Git 機器層排除清單..." -ForegroundColor Cyan
+if ($PSCmdlet.ShouldProcess("$gitGlobalExcludes", "設定 core.excludesFile")) {
+    git config --global core.excludesFile $gitGlobalExcludes
+    if ($LASTEXITCODE -ne 0) {
+        throw "設定 core.excludesFile 失敗，結束碼：$LASTEXITCODE"
+    }
+    Write-Host "  ✅  core.excludesFile → $gitGlobalExcludes" -ForegroundColor DarkGreen
+}
+
+# 11. 驗證回饋
 if ($WhatIfPreference) { return }
+
+$configuredExcludes = git config --global --get core.excludesFile
+if ($LASTEXITCODE -ne 0) {
+    throw "讀取 core.excludesFile 失敗，結束碼：$LASTEXITCODE"
+}
+if (-not [System.String]::Equals($configuredExcludes, $gitGlobalExcludes, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "core.excludesFile 設定值不符，實際值：$configuredExcludes"
+}
+Write-Host "  ✅  已驗證 core.excludesFile → $configuredExcludes" -ForegroundColor DarkGreen
 
 Write-Host "`n>>> 設定完成！詳細連結路徑如下：" -ForegroundColor Green
 Write-Host "----------------------------------------------------------------"
@@ -165,6 +196,9 @@ Write-Host "----------------------------------------------------------------"
 Write-Host ""
 Write-Host "注意事項：" -ForegroundColor Yellow
 Write-Host "  - 設定來源目錄為 $configRootDisplay/"
+Write-Host "  - 專案層範本位於 $configRootDisplay/templates/，可搭配 project-setup skill 建立 AGENTS.md 與相關宣告"
+Write-Host "  - Roslyn C# Script 位於 $configRootDisplay/scripts/*.csx，需先執行 dotnet tool install -g dotnet-script"
+Write-Host "  - 機器層 Git 排除清單位於 $configRootDisplay/git-global-excludes"
 Write-Host "  - Claude Code 透過 ~/.claude/CLAUDE.md 符號連結讀取"
 Write-Host "  - Claude Code skills → $configRootDisplay/skills/"
 Write-Host "  - Claude Code agents → $configRootDisplay/agents/claude/"

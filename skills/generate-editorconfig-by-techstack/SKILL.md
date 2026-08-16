@@ -1,7 +1,9 @@
 ---
 name: generate-editorconfig-by-techstack
 description: 依專案技術棧與 .NET 框架版本，從範本過濾出對應的 .editorconfig 段落並補齊，保留既有自訂偏好。
+audience: human
 disable-model-invocation: true
+policy.allow_implicit_invocation: false
 ---
 
 # 產生或補齊 .editorconfig

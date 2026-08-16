@@ -1,11 +1,13 @@
 ---
 name: csharp-linq
 description: 'LINQ 查詢規範：物化時機、回傳型別、語法選用與鏈式排版的專案慣例。當撰寫 In-Memory 集合操作或 LINQ to Objects 時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # LINQ 查詢規範
 
-當撰寫 LINQ to Objects（In-Memory 集合操作）或審查非 EF Core 的 LINQ 查詢時，請自動套用以下規範。EF Core 的 LINQ to SQL 查詢由 `ef-core` skill 管轄，本文件不重複。延遲執行、操作子語意等通用知識不在此複述，本文件只收專案慣例。
+EF Core 的 LINQ to SQL 查詢由 `ef-core` skill 管轄，本文件不重複。延遲執行、操作子語意等通用知識不在此複述，本文件只收專案慣例。
 
 ## 物化時機與回傳型別
 

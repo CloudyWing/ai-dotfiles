@@ -1,0 +1,13 @@
+@AGENTS.md
+
+# Claude 專屬機制
+
+## Hooks
+
+- Hook 設定位置：
+- 執行前置檢查：
+
+## Claude 專屬 Agent 與 Skill
+
+- 需要 Claude 端 sub-agent 時：
+- 需要 Claude 專屬工具時：

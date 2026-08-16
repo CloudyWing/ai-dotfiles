@@ -1,7 +1,9 @@
 ---
 name: generate-gitattributes
 description: 產生或補齊 .gitattributes，統一行尾處理、二進位識別與 lock files 標記，保留既有自訂偏好。
+audience: human
 disable-model-invocation: true
+policy.allow_implicit_invocation: false
 ---
 
 # 產生或補齊 .gitattributes

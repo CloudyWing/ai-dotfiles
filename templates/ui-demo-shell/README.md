@@ -4,7 +4,7 @@
 
 ## 使用步驟
 
-1. 讀取樣式基準檔 `<work-root>/.local/ai-sessions/baselines/ui-style-baseline.md`。檔案不存在時，先執行 `uiux-baseline` skill 產生。
+1. 讀取樣式基準檔 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。檔案不存在時，先執行 `uiux-baseline` skill 產生。
 2. 將本目錄整份複製到 `<work-root>/.local/ai-sessions/ui-demo/<demo-name>/`。`<demo-name>` 取自需求主題，使用 kebab-case。
 3. 依基準檔「已統一慣例」節填入 `screens/screen.css` 的 token 值。
 4. 以 `screens/_screen-template.html` 為起點，逐一產出畫面檔，檔名對應 `demo-data.js` 的 `id`。

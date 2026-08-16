@@ -1,11 +1,11 @@
 ---
 name: csharp-validation
 description: 'C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # C# 輸入驗證規範
-
-當撰寫或審查輸入驗證邏輯時，請自動套用以下規範。
 
 ## 驗證層級（Crucial）
 

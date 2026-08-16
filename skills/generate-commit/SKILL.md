@@ -1,6 +1,8 @@
 ---
 name: generate-commit
 description: '依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔案過濾與拆分建議。當使用者要求提交變更或產生 commit 訊息時使用。'
+audience: human
+policy.allow_implicit_invocation: true
 ---
 
 # 產生 Git Commit 訊息

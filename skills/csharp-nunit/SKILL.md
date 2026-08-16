@@ -1,11 +1,13 @@
 ---
 name: csharp-nunit
 description: 'C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # NUnit 單元測試最佳實踐
 
-當要求為 C# 撰寫單元測試時，請自動套用以下規範 (以 NUnit 為主)。
+測試框架使用 NUnit + NSubstitute。測試專案遵循 `[ProjectName].Tests` 命名慣例，測試類別與被測試類別完全對應，例如 `Calculator` 對應 `CalculatorTests`。
 
 ## 測試結構 (Structure)
 
@@ -82,3 +84,8 @@ public async Task TearDownAsync() {
     await db.DisposeAsync();
 }
 ```
+
+## 反模式與測試接縫
+
+- **Tautological assertion**：禁止以與被測實作相同的方式重新計算期望值。若測試與實作共享同一演算法、查詢或轉換流程，該斷言依構造必然通過，無法捕捉同一錯誤。
+- **測試接縫需先議定**：未經需求或設計議定的 Interface、Adapter、時間來源、資料來源或其他測試接縫不自行新增。先確認接縫的責任與驗收價值，再撰寫測試。

@@ -1,11 +1,13 @@
 ---
 name: vitest
 description: '前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # 前端測試規範（Vitest）
 
-當撰寫或審查前端測試時，請自動套用以下規範。以 Vitest + Vue Test Utils 為主要框架。
+以 Vitest + Vue Test Utils 為主要框架。
 
 ## 測試框架設定
 

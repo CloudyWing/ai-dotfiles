@@ -2,7 +2,7 @@
  * 畫面層共用樣式。
  *
  * 下列 token 的值一律取自樣式基準檔，不自創數值：
- *   <work-root>/.local/ai-sessions/baselines/ui-style-baseline.md
+ *   <work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md
  *
  * 各 token 對應基準檔的章節已標於註解。基準檔的「待決策項」中的值在採用前須先取得使用者確認。
  * 自訂屬性以空值宣告，代表尚未填入；產出實際 Demo 時逐項補上。

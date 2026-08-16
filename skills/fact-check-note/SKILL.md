@@ -1,6 +1,8 @@
 ---
 name: fact-check-note
 description: 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes.
+audience: human
+policy.allow_implicit_invocation: true
 ---
 
 # 技術內容事實校閱
@@ -56,7 +58,7 @@ description: 技術內容事實校閱：逐條檢查技術文件的觀念、術�
 
 ## 輸出位置與 Rotation
 
-校閱完成後，將報告寫入 `<work-root>/.local/ai-sessions/fact-check-report.md`。
+校閱完成後，將 human-facing 報告寫入 `<work-root>/.local/ai-sessions/report/fact-check-report.md`。
 
 ### 寫入前 Rotation（避免覆蓋歷史）
 
@@ -65,7 +67,7 @@ description: 技術內容事實校閱：逐條檢查技術文件的觀念、術�
 1. 讀取舊檔的 `校閱時間` 欄位（格式 `YYYY-MM-DD HH:mm`）。
 2. 將舊檔 rename 為 `fact-check-report-<YYYYMMDD-HHmm>.md`（去除分隔符號）。
 3. 若舊檔缺少有效時間欄位，改以舊檔的最後修改時間（mtime）作為命名依據。
-4. Rotation 完成後，再寫入新報告至 `fact-check-report.md`。
+4. Rotation 完成後，再寫入新報告至 `report/fact-check-report.md`。
 
 此 rotation 由校閱端負責，`apply-fact-check` 永遠只讀固定名稱的 `fact-check-report.md`。
 

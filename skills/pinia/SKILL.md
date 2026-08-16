@@ -1,11 +1,11 @@
 ---
 name: pinia
 description: 'Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。當撰寫或修改 Pinia Store 及其元件整合時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Pinia 狀態管理規範
-
-當偵測到專案使用 Pinia（含 `pinia` 相依套件）或使用者要求撰寫狀態管理邏輯時，請自動套用以下規範。
 
 ## Store 設計原則（Crucial）
 

@@ -1,11 +1,13 @@
 ---
 name: messaging
 description: '訊息佇列開發規範：RabbitMQ 與 MQTT 的命名慣例、冪等消費、重試與 DLQ 策略、訊息版本演進。當撰寫或修改訊息發佈與消費邏輯時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # 訊息佇列開發規範
 
-當撰寫或修改 RabbitMQ、MQTT（Mosquitto）的訊息發佈與消費邏輯時，請自動套用以下規範。消費者的宿主模式（BackgroundService、Scoped 服務存取）參閱 `csharp-background-service` skill，本文件不重複。
+消費者的宿主模式（BackgroundService、Scoped 服務存取）參閱 `csharp-background-service` skill，本文件不重複。
 
 ## 命名慣例（Crucial）
 

@@ -1,11 +1,11 @@
 ---
 name: csharp-grpc
 description: 'gRPC 服務開發規範：Proto 檔案管理、服務實作、攔截器、錯誤處理與用戶端工廠模式。當偵測到 gRPC 專案或撰寫 .proto、gRPC 服務與用戶端時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # gRPC 服務開發規範
-
-當偵測到專案使用 gRPC（含 `Grpc.AspNetCore` 或 `Google.Protobuf` 相依套件）或使用者要求撰寫 gRPC 服務時，請自動套用以下規範。
 
 ## Proto 檔案管理（Crucial）
 

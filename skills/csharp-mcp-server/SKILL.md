@@ -1,11 +1,11 @@
 ---
 name: csharp-mcp-server
 description: '產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最佳實踐與專案結構規劃。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # C# MCP Server 建立與實作指南
-
-當使用者需要建立擴充 AI 能力的 MCP (Model Context Protocol) 伺服器，且語言選定為 C# (.NET 8 以上) 時，請遵循此指南。
 
 ## 專案核心要求
 

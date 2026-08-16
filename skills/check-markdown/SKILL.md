@@ -1,11 +1,11 @@
 ---
 name: check-markdown
 description: '當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。'
+audience: human
+policy.allow_implicit_invocation: true
 ---
 
 # check-markdown
-
-當使用者要求「檢查 Markdown」、「修正格式」或「整理文件」時，或是目標檔案為 `.md` / `.mdx`，請自動套用本技能。
 
 ## 執行步驟
 

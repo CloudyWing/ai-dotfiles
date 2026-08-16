@@ -1,11 +1,13 @@
 ---
 name: csharp-integration-test
 description: 'C# 整合測試規範：WebApplicationFactory、Testcontainers、資料隔離與認證繞道。當撰寫或修改整合測試（跨資料庫、HTTP 管線、外部相依）時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # C# 整合測試規範
 
-當撰寫或修改整合測試（驗證 HTTP 管線、資料庫、訊息佇列等真實相依的測試）時，請自動套用以下規範。單元測試規範參閱 `csharp-nunit` skill；測試框架同樣使用 NUnit。
+單元測試規範參閱 `csharp-nunit` skill；測試框架同樣使用 NUnit。
 
 ## 專案結構與命名
 

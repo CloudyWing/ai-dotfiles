@@ -1,11 +1,11 @@
 ---
 name: csharp-error-handling
 description: 'C# 例外處理規範：例外設計原則、Guard Clause、全域錯誤處理與 ProblemDetails 回應標準化。當設計例外、撰寫 try-catch 或全域錯誤處理時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # C# 例外處理規範
-
-當撰寫或審查 C# 的錯誤處理邏輯時，請自動套用以下規範。
 
 ## 例外設計原則（Crucial）
 

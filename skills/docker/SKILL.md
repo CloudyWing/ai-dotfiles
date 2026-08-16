@@ -1,11 +1,13 @@
 ---
 name: docker
 description: 'Dockerfile 與 Docker Compose 專案慣例：.NET 多階段建置的快取層寫法、非 root 執行、Compose Specification 檔名與相依寫法。當撰寫或檢視 Dockerfile 與 Compose 設定時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Docker 容器化規範
 
-當使用者要求撰寫或檢視 Dockerfile、Compose 檔案或容器化部署設定時，請自動套用以下規範。多階段建置、HEALTHCHECK、機密注入等通用實踐不在此複述（機密規範見全域 §2 Security Baseline），本文件只收專案慣例與易錯點。
+多階段建置、HEALTHCHECK、機密注入等通用實踐不在此複述（機密規範見全域 §2 Security Baseline），本文件只收專案慣例與易錯點。
 
 ## Dockerfile（.NET 專案）
 

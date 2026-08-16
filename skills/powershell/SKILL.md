@@ -1,11 +1,11 @@
 ---
 name: powershell
 description: 'PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # PowerShell 腳本規範
-
-當撰寫或修改 `*.ps1`、`*.psm1` 檔案時，請自動套用以下規範。
 
 ## 編碼與版本目標
 
