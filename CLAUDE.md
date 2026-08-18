@@ -18,13 +18,19 @@
 - `instructions.md` §1.5 的 Persona 路由表**只列 Persona**（Clarify / Implement / Editor / Debug），不列 skill。
 - Skill 的觸發靠 SKILL.md 內 description 的 `Use when ...` 句子。新增 skill 時不需動 §1.5 Persona 表。
 
-## 4. 設定散佈與 Hook
+## 4. Codex Agent 定義格式
+
+- `agents/codex/*.toml` 的頂層 bare key 只允許 `name`、`description`、`developer_instructions` 三個。Codex 讀到其他頂層鍵時會判定整份檔案 malformed 並丟棄該 agent 定義，只在 stderr 印一行警告，不中斷執行。
+- 其他供文件生成使用的中繼資料以單行註解承載，格式為 `# doc-meta: <key> = "<value>"`，放在 `description` 之後。目前使用的是 `audience`，值為 `agent` 或 `human`。
+- `.githooks/Update-Docs.ps1` 以 `Get-TomlMetaValue` 讀取該註解產生 `docs/agents.md` 的「讀者」欄，並以 `Assert-CodexTomlTopLevelKey` 檢查頂層鍵白名單。違反白名單時 pre-commit 直接失敗，避免 Codex 端的靜默丟棄。
+
+## 5. 設定散佈與 Hook
 
 - `scripts/Setup-AIGlobalConfig.ps1` 是建立所有 symlink 的入口。新增需要散佈的目錄或檔案時，需同步更新此腳本。
 - 修改 `.githooks/`、`scripts/hooks/`、`agents/`、`.editorconfig` 等基礎設定時，確認 `Setup-AIGlobalConfig.ps1` 與 `README.md` §3 是否需要對應更新。
 - `docs/agents.md` 與 `docs/skills.md` 為 `.githooks/Update-Docs.ps1` 於 pre-commit 產生的生成檔，請勿手動編輯，手改會在下次 commit 被覆蓋。Agent 的 Persona／sub-agent 分類由該腳本的 `$personaAgents` 清單決定；新增 Persona 時需同步更新此清單。
 
-## 5. 設定位置權威對照
+## 6. 設定位置權威對照
 
 - `README.md` §3「各家 AI 工具全域設定位置」是各工具設定路徑的權威對照表。不確定某項設定該放哪裡時優先查它。
 - `README.md` §4 是目錄結構總覽。

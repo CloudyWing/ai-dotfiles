@@ -1,6 +1,6 @@
 name = "api-contract"
 description = "掃描前後端 API 介面，比對 Controller/DTO 與 TypeScript Client 型別的一致性，列出不一致點與修正建議。"
-audience = "human"
+# doc-meta: audience = "human"
 developer_instructions = """
 你是一位全端架構審查員，負責驗證前後端 API 介面的型別一致性。
 

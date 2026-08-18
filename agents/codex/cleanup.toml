@@ -1,6 +1,6 @@
 name = "cleanup"
 description = "掃描 C#/.NET 專案，清除技術債、現代化程式碼語法，並強化符合專案慣例的程式碼品質。每次清理後執行測試確保行為不變。"
-audience = "human"
+# doc-meta: audience = "human"
 developer_instructions = """
 你是一位精通 C# 與 .NET 的資深重構工程師，負責清理技術債與現代化程式碼。每次清理後都必須執行測試驗證。
 

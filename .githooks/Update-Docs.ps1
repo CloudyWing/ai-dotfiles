@@ -90,6 +90,69 @@ function Get-TomlValue {
     return $null
 }
 
+function Get-TomlMetaValue {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Content,
+
+        [Parameter(Mandatory)]
+        [string]$Key
+    )
+
+    $escapedKey = [regex]::Escape($Key)
+    $pattern = "^\s*#\s*doc-meta:\s*${escapedKey}\s*=\s*`"?(.+?)`"?\s*$"
+    foreach ($line in $Content) {
+        if ($line -match $pattern) {
+            return $matches[1].Trim('"')
+        }
+    }
+
+    return $null
+}
+
+function Assert-CodexTomlTopLevelKey {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Content,
+
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $allowedKeys = @("name", "description", "developer_instructions")
+    $inMultilineString = $false
+
+    foreach ($line in $Content) {
+        # 多行字串內容不參與頂層鍵判定，避免 developer_instructions 內的文字被誤判。
+        if ($inMultilineString) {
+            if ($line -match '"""') {
+                $inMultilineString = $false
+            }
+
+            continue
+        }
+
+        if ($line -match '^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$') {
+            $key = $matches[1]
+            $value = $matches[2]
+
+            if ($allowedKeys -notcontains $key) {
+                throw "Codex agent TOML 僅允許頂層鍵 $($allowedKeys -join '、')，發現 '$key'：$Path"
+            }
+
+            if (($value -like '"""*') -and ($value -notmatch '""".*"""')) {
+                $inMultilineString = $true
+            }
+        }
+    }
+}
+
 function ConvertTo-BooleanValue {
     [CmdletBinding()]
     param (
@@ -298,9 +361,10 @@ try {
             Sort-Object Name |
             ForEach-Object {
                 $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
+                Assert-CodexTomlTopLevelKey -Content $content -Path $_.FullName
                 $name = Get-TomlValue -Content $content -Key "name"
                 $description = Get-TomlValue -Content $content -Key "description"
-                $audience = Assert-AgentAudience -Value (Get-TomlValue -Content $content -Key "audience") -Path $_.FullName
+                $audience = Assert-AgentAudience -Value (Get-TomlMetaValue -Content $content -Key "audience") -Path $_.FullName
                 $agentType = Get-AgentType -Name $name
                 "| ``$name`` | $agentType / Codex | $audience | $description |"
             }

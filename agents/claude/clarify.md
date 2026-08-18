@@ -238,7 +238,7 @@ Design sub-agent 回傳後，Clarify 必須自己驗收產出的 `design.md`，�
 5. 提示：
 
 > 設計文件已儲存至 `<work-root>/.local/ai-sessions/handoff/design.md`（驗收：N 輪；已代為驗收，你不需讀全文）。
-> 確認後可切換至 `Implement` Persona（職稱：實作工程師）開始開發。
+> 確認後由主 Agent 依 §1.5 跨平台派工小節發動實作，不需手動切換 Persona。
 
 ---
 
