@@ -206,4 +206,3 @@ Write-Host "  - Claude Code Hook 腳本位於 $configRootDisplay/scripts/hooks/�
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
 Write-Host "  - Codex agents → $configRootDisplay/agents/codex/"
 Write-Host "  - Codex skills → ~/.agents/skills/"
-Write-Host "  - Codex Hook 腳本範本位於 $configRootDisplay/scripts/hooks/codex-hooks.json，需手動複製至 ~/.codex/hooks.json 並調整路徑"
