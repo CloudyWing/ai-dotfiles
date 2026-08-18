@@ -155,6 +155,13 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 | `agents/<name>.toml` | 自訂 Agent（執行型，以 `/agent <name>` 切換） |
 | `~/.agents/skills/<name>/SKILL.md` | 使用者技能（Codex 會掃描） |
 
+#### Codex CLI 前置需求
+
+- 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附 binary 不作為派工執行檔。
+- 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
+- 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。
+- 更換機器後，第一步執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
+
 ---
 
 ## 4. 目錄結構總覽
@@ -268,6 +275,20 @@ flowchart TD
 > 功能線：Clarify 收斂需求後由 Design 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex exec` 進入實作與審查循環。判定為 C 線時，Clarify 先派生 UI Demo 產出 Demo 畫面，驗收並回填需求摘要後再進入 Design。Cleanup 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
 
 ---
+
+## 8. 疑難排解
+
+### `model_reasoning_effort` 版本相容性
+
+Codex 0.130 只接受 `model_reasoning_effort` 為 `none`、`minimal`、`low`、`medium`、`high` 或 `xhigh`。設定為 `max` 時，會在讀取 `config.toml` 階段整份載入失敗，任何子命令皆無法執行。Codex 0.147 已接受 `max`。
+
+若對桌面版隨附 binary 執行 `codex update`，會回傳下列訊息：
+
+```text
+Could not detect the Codex installation method
+```
+
+請改用 npm 全域安裝的 Codex CLI，並以 `codex --version` 確認 PATH 解析到正確的執行檔。
 
 ## License
 

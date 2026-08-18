@@ -206,3 +206,71 @@ Write-Host "  - Claude Code Hook 腳本位於 $configRootDisplay/scripts/hooks/�
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
 Write-Host "  - Codex agents → $configRootDisplay/agents/codex/"
 Write-Host "  - Codex skills → ~/.agents/skills/"
+
+# 12. Codex 執行環境檢查
+Write-Host "`n>>> 檢查 Codex 執行環境..." -ForegroundColor Cyan
+
+$codexCommand = Get-Command codex -ErrorAction SilentlyContinue
+$codexVersion = $null
+if ($null -eq $codexCommand) {
+    Write-Warning "  ⚠️ 找不到 PATH 上的 codex。"
+    Write-Host "  請執行下列指令安裝 Codex CLI："
+    Write-Host ('  npm' + ' i -g @openai/codex')
+    Write-Host "  參考 README.md §3「Codex CLI 前置需求」。"
+}
+else {
+    $codexVersionOutput = (& codex --version 2>&1 | Out-String).Trim()
+    $codexVersionExitCode = $LASTEXITCODE
+    if ($codexVersionExitCode -ne 0) {
+        Write-Warning "  ⚠️ codex --version 執行失敗，結束碼：$codexVersionExitCode。輸出：$codexVersionOutput"
+    }
+    else {
+        $versionMatch = [regex]::Match($codexVersionOutput, '\d+\.\d+\.\d+')
+        if (-not $versionMatch.Success) {
+            Write-Warning "  ⚠️ 無法從 codex --version 解析版本：$codexVersionOutput"
+        }
+        else {
+            $codexVersion = [version]$versionMatch.Value
+            Write-Host "  ✅ Codex CLI 可用：$codexVersionOutput" -ForegroundColor DarkGreen
+        }
+    }
+}
+
+$codexConfigPath = Join-Path $codexDir "config.toml"
+$bulkProfilePath = Join-Path $codexDir "bulk.config.toml"
+$deepProfilePath = Join-Path $codexDir "deep.config.toml"
+$maxEffortMatches = @()
+if (Test-Path -LiteralPath $codexConfigPath) {
+    $maxEffortMatches = @(Select-String -LiteralPath $codexConfigPath -Pattern '^\s*model_reasoning_effort\s*=\s*["'']max["'']\s*$')
+}
+else {
+    Write-Warning "  ⚠️ 找不到 Codex 設定檔：$codexConfigPath"
+}
+
+$minimumMaxVersion = [version]'0.147.0'
+if ($maxEffortMatches.Count -eq 0) {
+    Write-Host "  ✅ 未偵測到需要檢查版本相容性的 max effort 設定。" -ForegroundColor DarkGreen
+}
+elseif ($null -eq $codexVersion) {
+    Write-Warning "  ⚠️ 設定檔含 max effort，但目前無法取得 Codex 版本，請參考 README.md §8「疑難排解」。"
+}
+elseif ($codexVersion -lt $minimumMaxVersion) {
+    Write-Warning "  ⚠️ Codex $codexVersion 不支援設定檔中的 max effort。請更新至不低於 $minimumMaxVersion 的版本，並參考 README.md §8「疑難排解」。"
+}
+else {
+    Write-Host "  ✅ Codex $codexVersion 與 max effort 相容。" -ForegroundColor DarkGreen
+}
+
+$missingProfiles = @()
+if (-not (Test-Path -LiteralPath $bulkProfilePath -PathType Leaf)) {
+    $missingProfiles += 'bulk.config.toml'
+}
+if (-not (Test-Path -LiteralPath $deepProfilePath -PathType Leaf)) {
+    $missingProfiles += 'deep.config.toml'
+}
+if ($missingProfiles.Count -gt 0) {
+    Write-Warning "  ⚠️ Codex 檔位設定檔缺件：$($missingProfiles -join ', ')。請參考 README.md §3「Codex CLI 前置需求」。"
+}
+else {
+    Write-Host "  ✅ Codex bulk.config.toml 與 deep.config.toml 均存在。" -ForegroundColor DarkGreen
+}
