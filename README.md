@@ -191,7 +191,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 git config core.hooksPath .githooks
 ```
 
-啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 與 `instructions.md` 的 Skill 指標索引並納入本次 commit。`docs/agents.md` 與 `docs/skills.md` 為生成檔，請勿手動編輯；表格會列出讀者欄，Skill 另依 `user-invoked` 與 `model-invoked` 分組。腳本會先驗證 `disable-model-invocation` 與 `policy.allow_implicit_invocation` 的語意一致性，發現不一致時以非零結束碼阻止 commit。agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 與 `instructions.md` 的 Skill 指標索引並納入本次 commit。`docs/agents.md` 與 `docs/skills.md` 為生成檔，請勿手動編輯；表格會列出讀者欄，Skill 另依 `user-invoked` 與 `model-invoked` 分組。腳本會先驗證 `disable-model-invocation` 與 `policy.allow_implicit_invocation` 的語意一致性，並檢查 `agents/codex/*.toml` 的頂層 bare key 是否超出 `name`／`description`／`developer_instructions` 白名單，任一項不符時以非零結束碼阻止 commit。Codex agent 的 `audience` 以 `# doc-meta: audience = "..."` 註解承載，避免頂層鍵使 Codex 丟棄整份定義。agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
 
 ---
 

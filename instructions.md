@@ -292,6 +292,8 @@ Design 驗收通過後，由 Claude 端主 Agent 發動 Codex 執行 Implement�
 
 **派工承載者（Crucial）**：主 Agent 派生一個 sub-agent 承載整段派工，自身只接收該 sub-agent 回傳的摘要與報告路徑。sub-agent 的職責為背景執行下方指令、等待其結束、從事件流取得 thread id 寫入 `scratch/codex-thread.txt`、讀取結案報告並執行回接判定、回傳摘要與結案報告的絕對路徑。
 
+「等待其結束」指以背景任務的完成通知，或以輪詢終止條件（如結案報告檔出現且非空、`codex` 行程已結束）確認指令確實離開執行狀態，取得結案報告內容後才回傳。指令送入背景後隨即回傳視為未完成職責。此時報告檔尚未產生，主 Agent 收到的是一個指向空檔的路徑，且會誤判該輪派工已完成。
+
 採 sub-agent 承載的理由有二。其一，sub-agent 為冷啟動 context，符合 Implement 僅依 `design.md` 動工的要求。其二，sub-agent 的工具輸出不進入主 session，討論線的需求脈絡得以完整保留，供後續需求意圖驗收比對。
 
 不採「另開獨立 session 執行派工」與「派工前執行 `/clear`」兩種作法。需求意圖驗收同時依賴討論線 context 與 `handoff/requirement-summary.md`，清除 context 會損失尚未落檔的口頭共識。
