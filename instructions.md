@@ -290,7 +290,7 @@ Design 驗收通過後，由 Claude 端主 Agent 發動 Codex 執行 Implement�
 
 不可發動時的失敗模式是靜默無事發生，因此處置以顯性回報為準，不以沒有錯誤訊息推定成功。
 
-**派工承載者（Crucial）**：主 Agent 派生一個 sub-agent 承載整段派工，自身只接收該 sub-agent 回傳的摘要與報告路徑。sub-agent 的職責為背景執行下方指令、等待其結束、從事件流取得 thread id 寫入 `scratch/codex-thread.txt`、讀取結案報告並執行回接判定、回傳摘要與結案報告的絕對路徑。
+**派工承載者（Crucial）**：主 Agent 派生一個 sub-agent 承載整段派工，自身只接收該 sub-agent 回傳的摘要與報告路徑。sub-agent 的職責為以 Bash 工具背景執行下方指令（`run_in_background`）、等待其結束、從事件流取得 thread id 寫入 `scratch/codex-thread.txt`、讀取結案報告並執行回接判定、回傳摘要與結案報告的絕對路徑。
 
 「等待其結束」指以背景任務的完成通知，或以輪詢終止條件（如結案報告檔出現且非空、`codex` 行程已結束）確認指令確實離開執行狀態，取得結案報告內容後才回傳。指令送入背景後隨即回傳視為未完成職責。此時報告檔尚未產生，主 Agent 收到的是一個指向空檔的路徑，且會誤判該輪派工已完成。
 
@@ -326,8 +326,10 @@ codex exec \
 **續 session**：
 
 ```bash
-codex exec resume <thread-id> --cd "<work-root>" --sandbox workspace-write --json --output-last-message "<報告路徑>"
+codex --cd "<work-root>" --sandbox workspace-write exec resume <thread-id> --json --output-last-message "<報告路徑>" "<prompt>"
 ```
+
+`--cd` 與 `--sandbox` 是 `codex` 的父層選項，`exec resume` 子命令不接受這兩個。放在子命令之後會以 `unexpected argument '--cd'` 中止，補齊流程不會執行。`exec` 子命令本身則接受兩者，因此只有 resume 需要改寫成父層形式。
 
 `<thread-id>` 取自 `<work-root>/.local/ai-sessions/scratch/codex-thread.txt`，該檔由事件流的 `thread.started` 事件寫入。判定方式為讀取該檔，讀取成功即續原 session，讀取失敗即開新 session，並於 prompt 附上 `design.md` 與退回報告的絕對路徑。
 

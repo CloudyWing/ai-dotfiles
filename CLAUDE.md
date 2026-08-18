@@ -21,7 +21,7 @@
 ## 4. Codex Agent 定義格式
 
 - `agents/codex/*.toml` 的頂層 bare key 只允許 `name`、`description`、`developer_instructions` 三個。Codex 讀到其他頂層鍵時會判定整份檔案 malformed 並丟棄該 agent 定義，只在 stderr 印一行警告，不中斷執行。
-- 其他供文件生成使用的中繼資料以單行註解承載，格式為 `# doc-meta: <key> = "<value>"`，放在 `description` 之後。目前使用的是 `audience`，值為 `agent` 或 `human`。
+- 其他供文件生成使用的中繼資料以單行註解承載，格式為 `# doc-meta: <key> = "<value>"`，放在 `description` 之後、`developer_instructions` 之前。位置固定的理由是 `developer_instructions` 為多行字串，寫在其內部會成為 agent 指令內容的一部分，不再是中繼資料。目前使用的是 `audience`，值為 `agent` 或 `human`。
 - `.githooks/Update-Docs.ps1` 以 `Get-TomlMetaValue` 讀取該註解產生 `docs/agents.md` 的「讀者」欄，並以 `Assert-CodexTomlTopLevelKey` 檢查頂層鍵白名單。違反白名單時 pre-commit 直接失敗，避免 Codex 端的靜默丟棄。
 
 ## 5. 設定散佈與 Hook
