@@ -105,6 +105,11 @@ function Get-TomlMetaValue {
     $escapedKey = [regex]::Escape($Key)
     $pattern = "^\s*#\s*doc-meta:\s*${escapedKey}\s*=\s*`"?(.+?)`"?\s*$"
     foreach ($line in $Content) {
+        # 多行字串開始後即停止掃描，避免 developer_instructions 內的範例文字被當成中繼資料。
+        if (($line -match '^\s*[A-Za-z0-9_-]+\s*=\s*"""') -and ($line -notmatch '""".*"""')) {
+            break
+        }
+
         if ($line -match $pattern) {
             return $matches[1].Trim('"')
         }

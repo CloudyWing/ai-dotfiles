@@ -298,7 +298,7 @@ Design 驗收通過後，由 Claude 端主 Agent 發動 Codex 執行 Implement�
 
 不採「另開獨立 session 執行派工」與「派工前執行 `/clear`」兩種作法。需求意圖驗收同時依賴討論線 context 與 `handoff/requirement-summary.md`，清除 context 會損失尚未落檔的口頭共識。
 
-**指令契約**：
+**指令契約**：執行前先確保 `<work-root>/.local/ai-sessions/scratch/` 與 `<work-root>/.local/ai-sessions/report/` 存在，不存在即建立。重導向與 `--output-last-message` 都不會自行建立父目錄，目錄缺席時指令在 shell 層就失敗，`codex exec` 不會啟動，且錯誤訊息不像派工失敗。
 
 ```bash
 codex exec \
