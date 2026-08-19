@@ -35,6 +35,10 @@ codex --version
 
 一般派工使用下列契約。若工作需要網路查證，將 `--search` 放在 `exec` 前方的父層選項位置。
 
+以下正式派工的 `bash` 範例適用於 Bash 或 WSL。Bash 使用反斜線作為行接續，使用 `>` 與 `2>&1` 將標準輸出與錯誤輸出合併，並在命令末尾加上 `&` 以背景執行。
+
+Windows PowerShell 不使用反斜線作為行接續，改用反引號。PowerShell 的 `Start-Process` 可啟動背景程序，標準輸出與錯誤輸出分別使用 `-RedirectStandardOutput` 與 `-RedirectStandardError`，再使用 `Wait-Process` 等待完成。兩個輸出檔應分開保存，避免將兩個串流指定到同一個檔案。
+
 ```bash
 codex \
   --cd "<work-root>" \
@@ -45,7 +49,36 @@ codex \
   --json \
   --output-last-message "<work-root>/.local/ai-sessions/history/codex-last-message-<yyyyMMdd_HHmmss>.md" \
   "<prompt>" \
-  > "<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl" 2>&1
+  > "<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl" 2>&1 &
+```
+
+Windows PowerShell 等價寫法如下。
+
+```powershell
+$workRoot = "<work-root>"
+$historyDir = Join-Path $workRoot ".local\ai-sessions\history"
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$lastMessagePath = Join-Path $historyDir "codex-last-message-$timestamp.md"
+$eventStreamPath = Join-Path $historyDir "codex-exec-$timestamp.jsonl"
+$errorStreamPath = Join-Path $historyDir "codex-exec-$timestamp.stderr.log"
+$prompt = "<prompt>"
+
+$process = Start-Process -FilePath "codex" `
+  -ArgumentList @(
+    "--cd", $workRoot,
+    "--sandbox", "workspace-write",
+    "--add-dir", "<work-root> 外的寫入落點",
+    "--search",
+    "exec",
+    "--json",
+    "--output-last-message", $lastMessagePath,
+    $prompt
+  ) `
+  -RedirectStandardOutput $eventStreamPath `
+  -RedirectStandardError $errorStreamPath `
+  -PassThru
+
+$process | Wait-Process
 ```
 
 沒有網路需求時省略 `--search`。沒有 work-root 外寫入落點時省略 `--add-dir`。參數職責如下。
@@ -122,6 +155,10 @@ thread id 事件格式如下。
 
 若需要補齊欄位或修正純技術驗收問題，依上一輪事件流的 `thread.started` 事件取得 `<thread-id>`，再使用同一 session 續行。
 
+以下 `bash` 範例適用於 Bash 或 WSL。Bash 使用反斜線作為行接續；需要背景執行時在命令末尾加上 `&`，需要記錄標準輸出與錯誤輸出時使用 `>` 與 `2>&1`。
+
+Windows PowerShell 使用反引號作為行接續。使用 `Start-Process` 背景執行 `exec resume`，以 `-RedirectStandardOutput` 與 `-RedirectStandardError` 分開保存輸出，再使用 `Wait-Process` 等待完成。
+
 ```bash
 codex \
   --cd "<work-root>" \
@@ -131,6 +168,34 @@ codex \
   --json \
   -o "<work-root>/.local/ai-sessions/history/codex-last-message-<yyyyMMdd_HHmmss>.md" \
   "<prompt>"
+```
+
+Windows PowerShell 等價寫法如下。
+
+```powershell
+$workRoot = "<work-root>"
+$historyDir = Join-Path $workRoot ".local\ai-sessions\history"
+$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$lastMessagePath = Join-Path $historyDir "codex-last-message-$timestamp.md"
+$eventStreamPath = Join-Path $historyDir "codex-exec-resume-$timestamp.jsonl"
+$errorStreamPath = Join-Path $historyDir "codex-exec-resume-$timestamp.stderr.log"
+$prompt = "<prompt>"
+
+$process = Start-Process -FilePath "codex" `
+  -ArgumentList @(
+    "--cd", $workRoot,
+    "--sandbox", "<sandbox-mode>",
+    "--add-dir", "<work-root> 外的寫入落點",
+    "exec", "resume", "<thread-id>",
+    "--json",
+    "-o", $lastMessagePath,
+    $prompt
+  ) `
+  -RedirectStandardOutput $eventStreamPath `
+  -RedirectStandardError $errorStreamPath `
+  -PassThru
+
+$process | Wait-Process
 ```
 
 `exec resume` 不接受父層選項。`--cd`、`--sandbox` 與 `--add-dir` 必須放在 `exec resume` 前方，`-o` 放在子命令後方。需要網路查證時，將 `--search` 加在 `exec resume` 前方。
