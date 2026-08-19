@@ -111,7 +111,7 @@ applyTo: "**/*"
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
 - **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途分三類，存放於固定目錄，不散落於 process cwd 或系統暫存目錄：
-  - **單次任務交接檔**：下一階段 Agent 需要讀取的 `design.md`、`requirement-summary.md` 與需求脈絡檔存入 `<work-root>/.local/ai-sessions/handoff/`。人員閱讀的 review、contract、`report/verify-unresolved.md`、驗證與事實報告存入 `<work-root>/.local/ai-sessions/report/`。跨平台派工的 `report/implement-closure-report.md` 同樣存入 `report/`，它既是 Review 界定審查範圍的依據，也是使用者確認實作結果的對象。
+  - **單次任務交接檔**：下一階段 Agent 需要讀取的 `design.md`、`requirement-summary.md` 與需求脈絡檔存入 `<work-root>/.local/ai-sessions/handoff/`。人員閱讀的 review、contract、`report/verify-unresolved.md`、驗證與事實報告存入 `<work-root>/.local/ai-sessions/report/`。跨平台派工的 `report/implement-closure-report.md` 同樣存入 `report/`，僅供 Workflow 派工確認實作結果，不作為資源派遣 Review 的審查範圍來源。
   - **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<slug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<slug>.md`。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。
   - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt` 存入 `history/`。
   - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
@@ -308,7 +308,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 ##### Review 派遣發動判準
 
-Review 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用者明示的固定規則。派遣單第 6 欄固定寫「唯讀，不得修改任何程式碼；不得執行建置與測試」。
+Review 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用者明示的固定規則。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 **必發清單（命中任一即發）**：
 
@@ -321,7 +321,7 @@ Review 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用
 
 **可不發**：本輪僅改動 Markdown 規則檔或文件，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
 
-主 Agent 判定不發時，必須以一句話說明理由，不得默默略過。此條與 §2.4 灰帶層「主 Agent 判斷某工作雖屬執行類但仍應自行處理時，必須在動手前以一句話說明理由」同源，都是補償「該做的事沒做且無人察覺」失效模式的規則。
+主 Agent 判定不發時，必須以一句話說明理由，不得默默略過。此條與 `F1 派工判準` 的「主 Agent 判斷某工作雖屬執行類但仍應自行處理時，必須在動手前以一句話說明理由」同源，都是補償「該做的事沒做且無人察覺」失效模式的規則。
 
 Review 回收後，設計歧義由同一 session 的 `Clarify` 裁決。Review Agent 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`（若有），依第 5 欄逐條回報驗收結果，不自行修改程式碼、執行建置或測試。
 
@@ -358,26 +358,6 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 | Engineer | 讀寫工作區、執行測試與診斷指令 | 修改與當前任務根因無直接關聯的模組 |
 | Cleanup | 讀寫工作區、執行測試 | 變更公開 API 簽章（除非使用者同意） |
 | 跨平台派工（主 Agent） | 依 F1 判準決定是否派工、撰寫派遣單、回收「收下／退回／升級」三態結果 | 直接修改程式碼；跳過 `codex-dispatch` skill 的機制流程 |
-
-#### §2.1 O1 至 O13 比對結果
-
-以下逐條對應 §2.1 的原始大綱與目前規則位置。
-
-| 編號 | 處置結果 | 比對證據 |
-| --- | --- | --- |
-| O1 | 保留 | `### 1.5 Agent 路由規則` 標題仍存在 |
-| O2 | 修改 | `#### Persona 切換` 保留，Persona 表改用 `Engineer`，並加入工程師邊界句 |
-| O3 | 保留 | `#### 平台自我判定` 及三項平台判準仍存在 |
-| O4 | 修改 | `#### 路由優先序` 第 2 步指向「跨平台派工掛載點」 |
-| O5 | 修改 | `#### Skill 載入紀律` 保留，觸發對照表新增 `codex-dispatch` |
-| O6 | 保留 | `#### Workflow 階段保護` 的三項前置規則仍存在 |
-| O7 | 保留 | `#### work-root 判定` 的 task anchor、技術棧根標記與多技術棧原則仍存在 |
-| O8 | 保留 | `#### 禁止提前修改程式碼` 的明確實作指令判準仍存在 |
-| O9 | 修改 | `#### 討論層協調模型` 改用 `Engineer`，並補上派遣結果三態回收責任 |
-| O10 | 修改 | `#### 執行型 Agent` 的 `Review` 改為派遣單發動，`Engineer` 改為 bug／task 分流 |
-| O11 | 移入 skill 並保留掛載點 | `M1 掛載點` 保留路由判準，機制內容集中於 `codex-dispatch` |
-| O12 | 修改 | `#### 驗證分層與 integration-verify 掛載點` 的 Review 時機改為主 Agent 依派遣判準發動 |
-| O13 | 修改 | `#### 階段式行為約束` 改用 `Engineer`，跨平台派工列補派遣單與三態回收 |
 
 ## 2. Global Constraints
 

@@ -25,7 +25,7 @@ codex --version
 | Dispatch 對話本身或 cloud session | 不可發動 | 明確回報「當前 session 不載入全域規則，請於 local Code session 發動」，不嘗試執行 `codex` |
 | Dispatch 派生的 local Code session | 可發動 | 依本 Skill 的指令契約執行 |
 
-派工命令執行前由主 Agent 準備 `<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/report/`。這是主 Agent 的事件流與報告落點前置作業，不屬於 Codex 子工作。唯讀派遣的 Codex 子工作不得建立或修改這些目錄；若主 Agent 無法完成前置作業，停止啟動並回報缺件。重導向與 `--output-last-message` 不會建立父目錄，目錄缺少時 shell 會先失敗。
+派工命令執行前由主 Agent 準備 `<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/report/`。這是主 Agent 的事件流與報告落點前置作業，不屬於 Codex 子工作。唯讀派遣的 Codex 子工作不得建立或修改 `history/` 目錄；第 7 欄報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 依第 6 欄的明文寫入例外處理。若主 Agent 無法完成前置作業，停止啟動並回報缺件。重導向與 `--output-last-message` 不會建立父目錄，目錄缺少時 shell 會先失敗。
 
 ## 指令契約
 
@@ -135,7 +135,7 @@ codex \
 
 `exec resume` 不接受父層選項。`--cd`、`--sandbox` 與 `--add-dir` 必須放在 `exec resume` 前方，`-o` 放在子命令後方。需要網路查證時，將 `--search` 加在 `exec resume` 前方。
 
-`<sandbox-mode>` 必須沿用原派工的 sandbox 邊界。唯讀查證沿用 `read-only`；只有派遣單明確授權第 7 欄報告寫入時才使用 `workspace-write`。續 session 不得把 `read-only` 升級為 `workspace-write`。
+`<sandbox-mode>` 必須沿用原派工的 sandbox 邊界。當派遣單包含第 7 欄報告檔或 `<work-root>/.local/ai-sessions/report/exceptions.md` 的明文寫入例外時，沿用足以寫入該落點的 sandbox 模式；除此以外不得修改目標物件、執行建置與測試或建立 commit。續 session 不得擴大其他寫入範圍或提高 sandbox 權限。
 
 讀不到 thread id 檔案時開新 session，並在 prompt 附上設計文件與退回報告的絕對路徑。跨介面接手視為新 session，依序讀取下列交接物重建狀態。
 
@@ -183,7 +183,7 @@ codex \
 | 3 | 目標物件 | 檔案、目錄或端點的絕對路徑，逐項列出 |
 | 4 | 任務內容 | 含動詞與具體對象，不使用「處理 X」或「改善 Y」等無法驗收的描述 |
 | 5 | 驗收條件 | 以表格逐列提供條件與判定方式 |
-| 6 | 邊界 | 列出不得改動的範圍。唯讀任務固定寫「唯讀，不得寫入任何檔案」 |
+| 6 | 邊界 | 列出不得改動的範圍。「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。 |
 | 7 | 產出落點 | 報告或產物的絕對路徑 |
 | 8 | 回報必備欄位 | Codex 端回報必須出現的欄位清單 |
 
