@@ -21,10 +21,10 @@ policy.allow_implicit_invocation: false
 
 ## 產生與更新
 
-- `AGENTS.md` 不存在時，以 `templates/AGENTS.md.template` 建立；存在時只補上或更新 `AI-DECLARATIONS` 區塊。
-- `CLAUDE.md` 不存在時，以 `templates/CLAUDE.md.template` 建立，首行必須是 `@AGENTS.md`。存在時保留 Claude 專屬區塊，確保首行仍為 `@AGENTS.md`。
-- 建立 `GLOSSARY.md` 時使用 `templates/GLOSSARY.md.template`，詞彙內容交由 `glossary` skill 與使用者逐項確認。
-- 建立 `docs/adr/` 與 `.local/ai-context/` 目錄。ADR 範本使用 `templates/adr/0000-template.md`，索引產物由 `ai-context-index` skill 產生。
+- `AGENTS.md` 不存在時，以 `~/.ai-agents/templates/AGENTS.md.template` 建立；存在時只補上或更新 `AI-DECLARATIONS` 區塊。
+- `CLAUDE.md` 不存在時，以 `~/.ai-agents/templates/CLAUDE.md.template` 建立，首行必須是 `@AGENTS.md`。存在時保留 Claude 專屬區塊，確保首行仍為 `@AGENTS.md`。
+- 建立 `GLOSSARY.md` 時使用 `~/.ai-agents/templates/GLOSSARY.md.template`，詞彙內容交由 `glossary` skill 與使用者逐項確認。
+- 建立 `docs/adr/` 與 `.local/ai-context/` 目錄。ADR 範本使用 `~/.ai-agents/templates/adr/0000-template.md`，索引產物由 `ai-context-index` skill 產生。
 - 宣告格式只使用下列四個鍵。路徑與命令必須反映本次探索結果：
 
   ```markdown
