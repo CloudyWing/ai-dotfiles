@@ -112,9 +112,9 @@ applyTo: "**/*"
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
 - **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途分三類，存放於固定目錄，不散落於 process cwd 或系統暫存目錄：
   - **單次任務交接檔**：下一階段 Agent 需要讀取的 `design.md`、`requirement-summary.md` 與需求脈絡檔存入 `<work-root>/.local/ai-sessions/handoff/`。人員閱讀的 review、contract、`report/verify-unresolved.md`、驗證與事實報告存入 `<work-root>/.local/ai-sessions/report/`。跨平台派工的 `report/implement-closure-report.md` 同樣存入 `report/`，它既是 Review 界定審查範圍的依據，也是使用者確認實作結果的對象。
-  - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/backups/`。
+  - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt` 存入 `history/`。
   - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
-  - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。跨平台派工的 `scratch/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 事件流與 `scratch/codex-thread.txt` 亦歸此類，隨清理一併刪除。
+  - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
   - **需保留非交付**：整合任務素材、截圖、樣式基準與 UI Demo 分別存入 `<work-root>/.local/ai-sessions/inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/`。
   - **交付產物**：使用者預期交付的資料檔、程式碼與文件存放於專案原本的位置，不放入 `.local/ai-sessions/`。
 - **腳本改寫安全（Script Rewrite Safety）**：用腳本或批次指令大量改寫檔案時，優先採「讀來源、寫新檔」，不原地覆寫輸入檔，使來源檔本身即為還原依據。當下列條件同時成立時，改寫前必須先將受影響的既有檔案複製到 `<work-root>/.local/ai-sessions/backups/<時間戳>/`（保留原始相對路徑），並附一行 `manifest.txt` 記錄該次操作：
@@ -125,7 +125,7 @@ applyTo: "**/*"
 - **背景進程清理（Background Process Cleanup）**：本流程自行啟動的背景進程（無頭瀏覽器、dev server、背景 worker、驗證用容器等），同一用途重用單一實例，不重複 spawn；預設於任務結束時關閉。刻意保留的進程（如 dev server 供使用者繼續開發），必須在結案報告中註明仍在執行，並附 port 或 PID。
   - 清理對象僅限本流程自行啟動的進程。資料庫、MCP server、既有服務，以及非本流程建立的連線一律不碰。
   - 此規範僅涉及進程關閉，不涉及任何資料異動。破壞性或不可逆的資料操作另依驗證流程的資料異動安全規範處理。
-- **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容，以及 `.local/ai-sessions/handoff/` 中除 `design.md` 與 `requirement-summary.md` 以外的內容。這兩個檔案為自動清理的例外：`handoff/design.md` 供跨 Session 重跑 Review 與落差盤點，`handoff/requirement-summary.md` 供需求意圖驗收與設計驗收在 context 壓縮後仍有原始比對依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。
+- **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容，以及 `.local/ai-sessions/handoff/` 中除 `design.md` 與 `requirement-summary.md` 以外的內容。這兩個檔案為自動清理的例外：`handoff/design.md` 供跨 Session 重跑 Review 與落差盤點，`handoff/requirement-summary.md` 供需求意圖驗收與設計驗收在 context 壓縮後仍有原始比對依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工事件流與 thread id 檔位於 `history/`，不在自動刪除範圍內。
 - **Exceptions 紀錄**：執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。Debug Persona 作為 bug 線協調者的身分不適用於自身診斷紀錄。
 
   條目格式如下：
@@ -292,33 +292,40 @@ Design 驗收通過後，由 Claude 端主 Agent 發動 Codex 執行 Implement�
 
 **第二個必要條件：Codex 執行檔可用性**。派工前需確認 `codex` 可由 PATH 解析，且 `codex --version` 能回傳版本。`codex` 不在 PATH 時通常會出現 `command not found`；舊版讀取不支援的設定值時，可能在載入設定階段失敗，導致任何子命令都無法執行。這兩種訊息都不是派工本身失敗，需先排除執行環境問題。
 
-**派工承載者（Crucial）**：主 Agent 派生一個 sub-agent 承載整段派工，自身只接收該 sub-agent 回傳的摘要與報告路徑。sub-agent 的職責為以 Bash 工具背景執行下方指令（`run_in_background`）、等待其結束、從事件流取得 thread id 寫入 `scratch/codex-thread.txt`、讀取結案報告並執行回接判定、回傳摘要與結案報告的絕對路徑。
+**背景執行與等待（Crucial）**：主 Agent 以 Bash 工具的 `run_in_background` 直接執行 `codex exec`，不派生 sub-agent 承載派工。主 Agent 依契約 D 的三個出口輪詢背景指令與事件流，並負責事件流取證、回接判定及結案報告寫入。事件流的 thread id 由 `thread.started` 事件寫入 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt`，續 session 依該檔判定。
 
-「等待其結束」指以背景任務的完成通知，或以輪詢終止條件（如結案報告檔出現且非空、`codex` 行程已結束）確認指令確實離開執行狀態，取得結案報告內容後才回傳。指令送入背景後隨即回傳視為未完成職責。此時報告檔尚未產生，主 Agent 收到的是一個指向空檔的路徑，且會誤判該輪派工已完成。
+| 出口 | 判定條件 | 後續動作 |
+| --- | --- | --- |
+| A 正常結束 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 為 `turn.completed` | 執行事件流取證，進入回接判定 |
+| B 停滯 | 背景指令仍在執行，但事件流檔案大小連續 20 次輪詢（間隔 30 秒，合計 10 分鐘）無增長 | 停止等待，回報最後一則事件的 `type` 與時間，交使用者決定續等或中止 |
+| C 早夭 | 背景指令已離開執行狀態，事件流無 `turn.completed` 且不含任何 `agent_message` | 判定為啟動失敗，讀取事件流末尾錯誤文字回報，不進入回接判定 |
 
-主 Agent 收到 sub-agent 回傳後，必須自行確認結案報告檔存在且非空，不成立時接手等待，不採信「已啟動」「等待中」這類描述中間狀態的回報。此檢查不可省略：承載者提早回傳的回報在措辭上與正常完成無異，實測顯示同一份派工指示下，承載者是否確實等待並不穩定，因此可靠度必須由主 Agent 這側的檔案檢查提供，而非由承載者的自述提供。
+出口 B 的理由是事件流檔案大小為唯一可觀測的存活訊號。僅以結案報告出現作為終止條件時，Codex 中途崩潰與仍在執行無法區分。
 
-採 sub-agent 承載的理由有二。其一，sub-agent 為冷啟動 context，符合 Implement 僅依 `design.md` 動工的要求。其二，sub-agent 的工具輸出不進入主 session，討論線的需求脈絡得以完整保留，供後續需求意圖驗收比對。
+不採「另開獨立 session 執行派工」與「派工前執行 `/clear`」兩種作法。此規則保留的理由是需求意圖驗收同時依賴討論線 context 與 `handoff/requirement-summary.md`，清除 context 會損失尚未落檔的口頭共識。
 
-不採「另開獨立 session 執行派工」與「派工前執行 `/clear`」兩種作法。需求意圖驗收同時依賴討論線 context 與 `handoff/requirement-summary.md`，清除 context 會損失尚未落檔的口頭共識。
-
-**指令契約**：執行前先確保 `<work-root>/.local/ai-sessions/scratch/` 與 `<work-root>/.local/ai-sessions/report/` 存在，不存在即建立。重導向與 `--output-last-message` 都不會自行建立父目錄，目錄缺席時指令在 shell 層就失敗，`codex exec` 不會啟動，且錯誤訊息不像派工失敗。
+**指令契約**：執行前先確保 `<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/report/` 存在，不存在即建立。重導向與 `--output-last-message` 都不會自行建立父目錄，目錄缺席時指令在 shell 層就失敗，`codex exec` 不會啟動，且錯誤訊息不像派工失敗。`<slug>` 為該輪派工的簡短識別字，使用小寫英數與連字號，於派工發動時決定並於續 session 沿用。並行派工若共用單一 thread id 檔名，後發動者會覆蓋先發動者的 thread id；事件流檔名已含時間戳，不另加 slug。
 
 ```bash
 codex exec \
   --cd "<work-root>" \
   --sandbox workspace-write \
+  --add-dir "<work-root> 外的寫入落點" \
   --json \
-  --output-last-message "<work-root>/.local/ai-sessions/report/implement-closure-report.md" \
+  --output-last-message "<work-root>/.local/ai-sessions/history/codex-last-message-<yyyyMMdd_HHmmss>.md" \
   "<prompt>" \
-  > "<work-root>/.local/ai-sessions/scratch/codex-exec-<yyyyMMdd_HHmmss>.jsonl" 2>&1
+  > "<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl" 2>&1
 ```
 
-`--json` 的事件流必須以重導向寫入 `scratch/*.jsonl`，不得作為工具回傳值進入 context。事件流逐項增長，進入 context 後會成為常駐成本，且在結案報告落地後即無保留價值。
+上述額外寫入目錄選項的判斷依據是 `design.md` 是否存在 work-root 之外的寫入落點；無此類落點時省略該選項。
+
+**sandbox 外環境動作**：需要網路或 work-root 外環境變更（全域套件安裝、PATH 變更、系統層設定）的任務，由主 Agent 於派工前代執行。代執行前必須取得使用者當輪明確同意。非互動情境（使用者不在場、無法取得當輪同意）一律停止並回報缺件，不得自行代執行。不得以開放網路或解除沙箱替代此流程。代執行後必須依 §1.4 追加 `report/exceptions.md` 條目，觸發類型為「偏離設計」，這是硬性要求。
+
+`--json` 的事件流必須以重導向寫入 `history/*.jsonl`，不得作為工具回傳值進入 context。事件流逐項增長，進入 context 後會成為常駐成本，並須保留至該輪回接判定完成。
 
 **模型檔位規則（Crucial）**：
 
-- `bulk` 適用於可拆分、需要較多平行處理的工作。`deep` 適用於需要較多推理與驗證的工作。不帶 `-p` 時使用預設省用檔位。
+- `bulk` 屬額度軸，於判斷額度充裕、想加速消耗配額時選用，適用日常大批量標準化編輯，與任務難度無關。`deep` 屬難度軸，適用需要自行找路、步驟未寫明的高難度任務。兩者為獨立的軸，不得以難度語意解讀 `bulk`。不帶 `-p` 時使用預設省用檔位。
 - 實際 model id 與 effort 只存在於 `~/.codex/<檔位名稱>.config.toml` 的本機檔位檔案，規則層只使用語意檔位名稱。
 - profile 名稱採封閉白名單。`-p` 只允許 `bulk` 或 `deep`。Codex 遇到不存在的 profile 時不報錯、exit 0，並靜默回退預設值，打錯名稱後無跡可循。
 - 規則不自行帶 `-p`。本輪派工屬 Debug 線，或 Implement 回報 `design.md` 未涵蓋檔位而需自行判斷時，先提示使用者選擇；使用者不表態即使用預設檔位。
@@ -328,23 +335,43 @@ codex exec \
 1. 使用本檔 Persona 表所列的 Implement 觸發詞（如「實作工程師」），由 Codex 主 agent 自行依規則來源路徑讀檔並扮演該 Persona。
 2. `design.md` 的絕對路徑。
 3. `work-root` 的絕對路徑。
-4. 結案報告須含輪起點 SHA、開工基準線、輪終點 commit 與「判定為既有實作而未動工」節。
+4. 結案報告須含輪起點 SHA、開工基準線、輪終點 commit 與「判定為既有實作而未動工」節。續 session 的 prompt 必須要求本輪結案報告重述前輪已列入該節的全部條目，不得因前輪已列而省略。結案報告屬覆寫式產物，未重述者等同消失；Review 與需求意圖驗收皆以該節界定審查範圍。此要求只作用於 prompt，不改 Review 的取用契約，也不做追加式合併。
 
-第 1 項採 Persona 觸發詞而非 agent registry 的識別名。Persona 走本檔的規則來源路由，不經 registry，在非互動的 `codex exec` 同樣成立；此時 Codex 主 agent 即為 Implement 本身，結案報告由它直接產出，`--output-last-message` 截取的最後一則訊息即該報告。
+第 1 項採 Persona 觸發詞而非 agent registry 的識別名。Persona 走本檔的規則來源路由，不經 registry，在非互動的 `codex exec` 同樣成立；此時 Codex 主 agent 即為 Implement 本身，結案報告由事件流擷取規則產生。
 
-**回接判定**：背景指令結束後，讀取 `report/implement-closure-report.md`，確認「驗證證據」節的輪起點 SHA、開工基準線與輪終點 commit 三欄皆有值。三欄齊備則回報使用者可發起需求意圖驗收；任一欄缺失則依下方續 session 契約要求補齊。
+**結案報告取證**：`codex exec --json` 的事件流為 append-only 的 JSON Lines。每則助理輸出對應一行下列形狀的事件：
+
+```json
+{"type":"item.completed","item":{"id":"item_68","type":"agent_message","text":"# Implement 續輪結案報告\n..."}}
+```
+
+thread id 事件形狀為：
+
+```json
+{"type":"thread.started","thread_id":"01a01619-fbef-7ee2-aea3-39598e04388e"}
+```
+
+由後往前掃描事件流中 `item.type` 為 `agent_message` 的事件，取第一則其 `text` 同時含「驗證證據」與三欄標籤（輪起點 SHA、開工基準線、輪終點 commit）者，將 `text` 原文寫入 `<work-root>/.local/ai-sessions/report/implement-closure-report.md`。
+
+失效模式處置如下：
+
+- `F1`：Codex 從未產出含三欄的訊息。擷取結果為空，等同三欄缺失，依續 session 契約補齊。
+- `F2`：事件流未落地（重導向於 shell 層失敗或磁碟寫入失敗）。回退讀取該輪 `history/codex-last-message-<yyyyMMdd_HHmmss>.md`，並於回報中註明取證來源為 last-message 檔。該檔可能已被同輪後續訊息覆寫。
+- `F3`：事件流含多則符合條件的訊息（續 session 各補一次）。取最後一則，輪終點 commit 以最新為準。
+
+**回接判定**：背景指令結束後，依事件流取證規則掃描事件流，將擷取結果寫入 `report/implement-closure-report.md`，再讀取該檔確認「驗證證據」節的輪起點 SHA、開工基準線與輪終點 commit 三欄皆有值。三欄齊備則回報使用者可發起需求意圖驗收；任一欄缺失則依下方續 session 契約要求補齊。
 
 **續 session**：
 
 ```bash
-codex --cd "<work-root>" --sandbox workspace-write exec resume <thread-id> --json --output-last-message "<報告路徑>" "<prompt>"
+codex --cd "<work-root>" --sandbox workspace-write --add-dir "<work-root> 外的寫入落點" exec resume <thread-id> --json -o "<work-root>/.local/ai-sessions/history/codex-last-message-<yyyyMMdd_HHmmss>.md" "<prompt>"
 ```
 
-`--cd` 與 `--sandbox` 是 `codex` 的父層選項，`exec resume` 子命令不接受這兩個。放在子命令之後會以 `unexpected argument '--cd'` 中止，補齊流程不會執行。`exec` 子命令本身則接受兩者，因此只有 resume 需要改寫成父層形式。
+`--cd`、`--sandbox` 與額外寫入目錄選項是 `codex` 的父層選項，`exec resume` 子命令不接受這三個。放在子命令之後會以 `unexpected argument '--cd'` 中止，補齊流程不會執行。`exec resume` 僅接受 `-o, --output-last-message` 等自身選項，因此額外寫入目錄選項必須放在 `exec resume` 之前。
 
-`<thread-id>` 取自 `<work-root>/.local/ai-sessions/scratch/codex-thread.txt`，該檔由事件流的 `thread.started` 事件寫入。判定方式為讀取該檔，讀取成功即續原 session，讀取失敗即開新 session，並於 prompt 附上 `design.md` 與退回報告的絕對路徑。
+`<thread-id>` 取自 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt`，該檔由事件流的 `thread.started` 事件寫入。判定方式為讀取該檔，讀取成功即續原 session，讀取失敗即開新 session，並於 prompt 附上 `design.md` 與退回報告的絕對路徑。
 
-**跨介面接手**：Desktop 與 CLI 的 session 歷史不共用，換介面等同新 session，對話脈絡不可攜。接手一律以 `.local/ai-sessions/` 的交接檔重建，取用順序為 `handoff/design.md`、`handoff/requirement-summary.md`、`report/implement-closure-report.md`。thread id 的可用性依上一段的讀檔結果判定，接手介面本身不影響判定。
+**跨介面接手**：Desktop 與 CLI 的 session 歷史不共用，換介面等同新 session，對話脈絡不可攜。接手一律以 `.local/ai-sessions/` 的交接檔重建，取用順序為 `handoff/design.md`、`handoff/requirement-summary.md`、該輪 `history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 事件流，以及由事件流取證規則產生的 `report/implement-closure-report.md`。thread id 的可用性依上一段的讀檔結果判定，接手介面本身不影響判定。
 
 #### 驗證分層與 integration-verify 掛載點
 
@@ -377,7 +404,7 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 | Review / Frontend Review / API Contract | 讀取檔案、讀取 git diff | 修改程式碼（僅產出報告）；執行建置與測試 |
 | Debug | 讀寫工作區、執行測試與診斷指令 | 修改與當前問題根因無直接關聯的模組 |
 | Cleanup | 讀寫工作區、執行測試 | 變更公開 API 簽章（除非使用者同意） |
-| 跨平台派工（派工 sub-agent） | 背景執行 `codex exec` 與 `codex exec resume`、讀取事件流與結案報告、回傳摘要與報告路徑 | 直接修改程式碼；前景同步等待 `codex exec` 結束 |
+| 跨平台派工（主 Agent） | 以背景方式執行 `codex exec` 與 `codex exec resume`、輪詢事件流、擷取與寫入結案報告 | 直接修改程式碼；前景同步等待 `codex exec` 結束；派生 sub-agent 承載派工 |
 
 ## 2. Global Constraints
 
