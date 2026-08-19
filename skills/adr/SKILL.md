@@ -2,6 +2,7 @@
 name: adr
 description: '依決策門檻建立追加式 Architecture Decision Record，管理序號、狀態與被推翻的決策。'
 audience: human
+dispatch: claude-side
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---

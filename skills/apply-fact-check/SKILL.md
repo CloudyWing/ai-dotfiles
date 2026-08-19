@@ -2,6 +2,7 @@
 name: apply-fact-check
 description: 依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md.
 audience: human
+dispatch: claude-side
 policy.allow_implicit_invocation: true
 ---
 
@@ -73,3 +74,18 @@ policy.allow_implicit_invocation: true
 - **不擴大修改範圍**：僅修改報告中明確列出的條目所在位置。發現報告外的疑似錯誤，須另行回報，不得順手修改。
 - **保留文件編碼與格式**：依全域 Encoding Strategy 維持目標文件原編碼。
 - **校閱報告為審計紀錄**：完成改檔後不刪除 `report/fact-check-report.md`，保留在 `report/`，不納入結案自動清理。
+
+## Claude 端四個 gate
+
+`apply-fact-check` 在 Claude 端保管討論脈絡與表達層責任。使用者介入位置固定為下列四個 gate，任一 gate 未取得使用者回應時停止後續流程。
+
+| Gate | 位置 | 使用者決定的事項 |
+| --- | --- | --- |
+| G1 | 派遣前 | 確認校閱目標文件與範圍 |
+| G2 | 回收後、改檔前 | 逐條裁決 `❌` 與 `⚠️` 條目，選擇套用、保留或跳過 |
+| G3 | `apply-fact-check` 執行中 | 裁決 `⚠️` 條目，以及改檔方提出技術反駁時的處置 |
+| G4 | 改檔後 | 複核對照清單，確認措辭與文件語氣一致 |
+
+## 不派遣
+
+`apply-fact-check` 負責改檔的表達層，依賴 Claude 端保管的討論脈絡與使用者裁決，因此不派遣改檔工作。`fact-check-note` 只產出唯讀校閱報告，事實查證與文件改寫保持責任分界。

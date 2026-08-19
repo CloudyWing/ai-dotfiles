@@ -2,6 +2,7 @@
 name: generate-frontend-lint-config
 description: 產生或補齊前端 Lint 設定（Prettier + ESLint Flat Config），統一格式化與程式碼品質規則，保留既有自訂偏好。
 audience: human
+dispatch: dispatchable
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---

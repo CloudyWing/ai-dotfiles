@@ -15,7 +15,7 @@
 
 ## 3. Persona 路由規則
 
-- `instructions.md` §1.5 的 Persona 路由表**只列 Persona**（Clarify / Implement / Editor / Debug），不列 skill。
+- `instructions.md` §1.5 的 Persona 路由表**只列 Persona**（Clarify / Implement / Editor / Engineer），不列 skill。
 - Skill 的觸發靠 SKILL.md 內 description 的 `Use when ...` 句子。新增 skill 時不需動 §1.5 Persona 表。
 
 ## 4. Codex Agent 定義格式

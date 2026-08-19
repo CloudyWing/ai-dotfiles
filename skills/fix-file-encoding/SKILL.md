@@ -2,6 +2,7 @@
 name: fix-file-encoding
 description: 偵測並修正檔案亂碼問題，依副檔名轉換至正確目標編碼（Big5/ANSI → UTF-8 系列）。
 audience: human
+dispatch: dispatchable
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---

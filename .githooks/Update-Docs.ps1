@@ -17,7 +17,7 @@ $claudeAgentsDir = Join-Path $repoRoot "agents\claude"
 $codexAgentsDir = Join-Path $repoRoot "agents\codex"
 $skillsDir = Join-Path $repoRoot "skills"
 $instructionsPath = Join-Path $repoRoot "instructions.md"
-$personaAgents = @("Clarify", "Implement", "Editor", "Debug")
+$personaAgents = @("Clarify", "Implement", "Editor", "Engineer")
 
 function Get-FrontMatterValue {
     [CmdletBinding()]
@@ -210,6 +210,17 @@ function Get-AgentType {
     return "sub-agent"
 }
 
+function Get-OrdinalSortKey {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    return (($Value.ToCharArray() | ForEach-Object { "{0:D6}" -f [int][char]$_ }) -join "")
+}
+
 function Assert-AgentAudience {
     [CmdletBinding()]
     param (
@@ -243,6 +254,7 @@ function Get-SkillMetadata {
     $name = Get-FrontMatterValue -Content $content -Key "name"
     $description = Get-FrontMatterValue -Content $content -Key "description"
     $audience = Get-FrontMatterValue -Content $content -Key "audience"
+    $dispatch = Get-FrontMatterValue -Content $content -Key "dispatch"
     $disableModelInvocationText = Get-FrontMatterValue -Content $content -Key "disable-model-invocation"
     $allowImplicitInvocationText = Get-FrontMatterValue -Content $content -Key "policy.allow_implicit_invocation"
 
@@ -258,10 +270,23 @@ function Get-SkillMetadata {
         throw "Skill audience 必須為 agent 或 human：$skillFile"
     }
 
+    if ($audience -eq "human") {
+        $allowedDispatchValues = @("dispatchable", "claude-side", "split")
+        if ([string]::IsNullOrWhiteSpace($dispatch) -or ($allowedDispatchValues -notcontains $dispatch)) {
+            throw "human-facing Skill 必須設定有效的 dispatch 欄位（dispatchable、claude-side 或 split）：$skillFile"
+        }
+
+        $hasDispatchBoundary = (($content -join "`n") -match "(?m)^## 派遣分界\s*$")
+        if (($dispatch -eq "split") -and (-not $hasDispatchBoundary)) {
+            throw "dispatch: split 的 Skill 必須包含 ## 派遣分界：$skillFile"
+        }
+    }
+
     [pscustomobject]@{
         Name = $name
         Description = $description
         Audience = $audience
+        Dispatch = $dispatch
         DisableModelInvocation = ConvertTo-BooleanValue -Value $disableModelInvocationText -DefaultValue $false
         AllowImplicitInvocation = ConvertTo-BooleanValue -Value $allowImplicitInvocationText -DefaultValue $true
         Path = $skillFile
@@ -297,7 +322,7 @@ function Get-SkillRows {
         [object[]]$Skills
     )
 
-    @($Skills | Sort-Object Name | ForEach-Object {
+    @($Skills | Sort-Object { Get-OrdinalSortKey -Value $_.Name } | ForEach-Object {
         $type = if ($_.DisableModelInvocation) { "指令型" } else { "知識型" }
         "| ``$($_.Name)`` | $type | $($_.Audience) | $($_.Description) |"
     })
@@ -325,7 +350,7 @@ function Update-SkillIndex {
 
     $indexLines = New-Object 'System.Collections.Generic.List[string]'
     [void]$indexLines.Add($beginMarker)
-    foreach ($skill in ($Skills | Sort-Object Name)) {
+    foreach ($skill in ($Skills | Sort-Object { Get-OrdinalSortKey -Value $_.Name })) {
         [void]$indexLines.Add("- ``$($skill.Name)``：$($skill.Description)")
     }
     [void]$indexLines.Add($endMarker)
@@ -342,7 +367,7 @@ try {
     # 1. 讀取並驗證 Skill frontmatter。
     $skillMetadata = @(
         Get-ChildItem -LiteralPath $skillsDir -Directory |
-            Sort-Object Name |
+            Sort-Object { Get-OrdinalSortKey -Value $_.Name } |
             ForEach-Object { Get-SkillMetadata -Directory $_ }
     )
     Assert-SkillFrontMatterConsistency -Skills $skillMetadata
@@ -350,7 +375,7 @@ try {
     # 2. 產生 docs/agents.md。
     $claudeRows = @(
         Get-ChildItem -LiteralPath $claudeAgentsDir -File -Filter "*.md" |
-            Sort-Object Name |
+            Sort-Object { Get-OrdinalSortKey -Value $_.Name } |
             ForEach-Object {
                 $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
                 $name = Get-FrontMatterValue -Content $content -Key "name"
@@ -363,7 +388,7 @@ try {
 
     $codexRows = @(
         Get-ChildItem -LiteralPath $codexAgentsDir -File -Filter "*.toml" |
-            Sort-Object Name |
+            Sort-Object { Get-OrdinalSortKey -Value $_.Name } |
             ForEach-Object {
                 $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
                 Assert-CodexTomlTopLevelKey -Content $content -Path $_.FullName

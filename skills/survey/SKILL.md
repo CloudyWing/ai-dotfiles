@@ -2,6 +2,7 @@
 name: survey
 description: 掃描專案結構並產出供團隊成員閱讀的技術文件索引。當要求掃描專案、建立文件索引、補齊技術文件或盤點專案結構時使用。
 audience: human
+dispatch: dispatchable
 policy.allow_implicit_invocation: true
 ---
 

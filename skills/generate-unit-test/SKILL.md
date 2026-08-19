@@ -2,6 +2,7 @@
 name: generate-unit-test
 description: 針對指定的 C# 類別或方法，自動產生 NUnit 單元測試骨架，包含 Arrange/Act/Assert 結構與 NSubstitute Mock 設定。
 audience: human
+dispatch: dispatchable
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---

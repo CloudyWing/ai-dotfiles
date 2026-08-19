@@ -8,7 +8,7 @@
 | `UI Demo` | sub-agent / Claude | human | 依需求摘要與專案樣式基準產出可在瀏覽器開啟的 Demo 畫面，供需求訪談與版面確認使用。 |
 | `api-contract` | sub-agent / Codex | human | 掃描前後端 API 介面，比對 Controller/DTO 與 TypeScript Client 型別的一致性，列出不一致點與修正建議。 |
 | `cleanup` | sub-agent / Codex | human | 掃描 C#/.NET 專案，清除技術債、現代化程式碼語法，並強化符合專案慣例的程式碼品質。每次清理後執行測試確保行為不變。 |
-| `debug` | Persona / Codex | human | bug 線協調者：系統化診斷 bug 根因、產出輕量 fix-plan、派生同 session 匿名 subagent 執行修正並驗收其產出，每次修改都有明確假設依據。 |
+| `engineer` | Persona / Codex | human | 值班工程師：承接具可重現非預期行為的 bug 診斷與修正，以及有明確目標的 task 執行。 |
 | `frontend-review` | sub-agent / Codex | human | 比對設計文件與實際 Vue 3 前端程式碼，盤點元件品質、效能問題與規範偏離，產出差異報告。 |
 | `implement` | Persona / Codex | agent | 依據設計文件實作功能，屬於 Clarify => Design => Implement => Review 流程中的實作階段 Persona。 |
-| `review` | sub-agent / Codex | human | 實作完成後比對設計文件與實際程式碼，執行帳面核對與 diff-scoped 缺陷審查，產出差異報告。 |
+| `review` | sub-agent / Codex | human | 依派遣單執行設計核對、規範掃描與 diff-scoped 缺陷審查，逐條回報驗收條件並產出差異報告。 |

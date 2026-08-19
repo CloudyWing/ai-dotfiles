@@ -2,6 +2,7 @@
 name: generate-readme-zh-tw
 description: 自動分析目前專案結構與功能，產生一份結構清晰、工程導向的 README.md（繁體中文）。
 audience: human
+dispatch: split
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---
@@ -127,3 +128,8 @@ policy.allow_implicit_invocation: false
 **不存在 README.md**：建立完整新檔。
 
 完成後告知使用者新增或更新的章節清單。
+
+## 派遣分界
+
+- 可派遣段：分析專案結構與功能，整理可由檔案、設定與命令驗證的專案資訊。
+- Claude 端段：以繁體中文撰寫 README 行文，決定章節取捨與既有內容的合併方式。

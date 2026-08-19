@@ -112,6 +112,7 @@ applyTo: "**/*"
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
 - **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途分三類，存放於固定目錄，不散落於 process cwd 或系統暫存目錄：
   - **單次任務交接檔**：下一階段 Agent 需要讀取的 `design.md`、`requirement-summary.md` 與需求脈絡檔存入 `<work-root>/.local/ai-sessions/handoff/`。人員閱讀的 review、contract、`report/verify-unresolved.md`、驗證與事實報告存入 `<work-root>/.local/ai-sessions/report/`。跨平台派工的 `report/implement-closure-report.md` 同樣存入 `report/`，它既是 Review 界定審查範圍的依據，也是使用者確認實作結果的對象。
+  - **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<slug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<slug>.md`。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。
   - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt` 存入 `history/`。
   - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
   - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
@@ -126,7 +127,7 @@ applyTo: "**/*"
   - 清理對象僅限本流程自行啟動的進程。資料庫、MCP server、既有服務，以及非本流程建立的連線一律不碰。
   - 此規範僅涉及進程關閉，不涉及任何資料異動。破壞性或不可逆的資料操作另依驗證流程的資料異動安全規範處理。
 - **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容，以及 `.local/ai-sessions/handoff/` 中除 `design.md` 與 `requirement-summary.md` 以外的內容。這兩個檔案為自動清理的例外：`handoff/design.md` 供跨 Session 重跑 Review 與落差盤點，`handoff/requirement-summary.md` 供需求意圖驗收與設計驗收在 context 壓縮後仍有原始比對依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工事件流與 thread id 檔位於 `history/`，不在自動刪除範圍內。
-- **Exceptions 紀錄**：執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。Debug Persona 作為 bug 線協調者的身分不適用於自身診斷紀錄。
+- **Exceptions 紀錄**：執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。值班工程師作為 bug 線協調者的身分不適用於自身診斷紀錄。
 
   條目格式如下：
 
@@ -146,16 +147,20 @@ applyTo: "**/*"
 
 以下 Agent 以 Persona 切換方式執行，不使用 Agent 工具派生。符合觸發條件時，主 Agent 應以對應 Agent 的角色與規則來回應，不得維持主 Agent 身份繼續處理。
 
-**Persona 規則載入**：切換至任何 Persona 時，依下表「規則來源」欄位載入規則。來源為檔案路徑時，以 Read 工具讀取該檔完整內容；來源為本檔某段落時，於當輪回應開頭簡述該段落要點作為自我確認。**下列三種情況必須（重新）完整載入，不得以「我已掌握」為由跳過**（同 Skill 載入紀律原則）：首次進入該 Persona、context 發生壓縮後、跨 Session 接手時。同一 Session 內未經壓縮的連續同 Persona 回合，不需每輪重讀。無論是否重讀，每輪回應開頭都以單行註記目前 Persona，作為 context 壓縮後仍可辨識的 anchor。格式為 `[Persona: <英文 key> (<中文職稱>) @<平台>]`，英文 key 與下表一致並後接一個半形空格與半形括號內的中文職稱，再接一個半形空格與 `@` 開頭的平台標記，平台取值為 `Claude` 或 `Codex`，依下節「平台自我判定」的結果填入。四個 Persona 的格式範例為 `[Persona: Clarify (需求分析師) @Claude]`、`[Persona: Implement (實作工程師) @Codex]`、`[Persona: Editor (責任編輯) @Claude]`、`[Persona: Debug (除錯工程師) @Codex]`，其中的平台僅為示例，實際值以當下判定為準。
+**Persona 規則載入**：切換至任何 Persona 時，依下表「規則來源」欄位載入規則。來源為檔案路徑時，以 Read 工具讀取該檔完整內容；來源為本檔某段落時，於當輪回應開頭簡述該段落要點作為自我確認。**下列三種情況必須（重新）完整載入，不得以「我已掌握」為由跳過**（同 Skill 載入紀律原則）：首次進入該 Persona、context 發生壓縮後、跨 Session 接手時。同一 Session 內未經壓縮的連續同 Persona 回合，不需每輪重讀。無論是否重讀，每輪回應開頭都以單行註記目前 Persona，作為 context 壓縮後仍可辨識的 anchor。格式為 `[Persona: <英文 key> (<中文職稱>) @<平台>]`，英文 key 與下表一致並後接一個半形空格與半形括號內的中文職稱，再接一個半形空格與 `@` 開頭的平台標記，平台取值為 `Claude` 或 `Codex`，依下節「平台自我判定」的結果填入。四個 Persona 的格式範例為 `[Persona: Clarify (需求分析師) @Claude]`、`[Persona: Implement (實作工程師) @Codex]`、`[Persona: Editor (責任編輯) @Claude]`、`[Persona: Engineer (值班工程師) @Codex]`，其中的平台僅為示例，實際值以當下判定為準。
 
-**Persona 維持規則（Crucial）**：切換至某 Persona 後，必須持續維持該身份，直到使用者明確發出切換指令（如「需求分析師」、「實作工程師」、「責任編輯」、「除錯工程師」、「切換回主要角色」）。不得因使用者回答了問題、或 AI 自行判斷「釐清完成」，就自動切回主 Agent 並開始實作。
+**Persona 維持規則（Crucial）**：切換至某 Persona 後，必須持續維持該身份，直到使用者明確發出切換指令（如「需求分析師」、「實作工程師」、「責任編輯」、「值班工程師」、「除錯工程師」、「切換回主要角色」）。不得因使用者回答了問題、或 AI 自行判斷「釐清完成」，就自動切回主 Agent 並開始實作。
 
 | Agent | 觸發條件 | 規則來源 |
 | --- | --- | --- |
 | **Clarify** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；要探索構想或挖掘功能方向；描述目標或問題但未給出具體實作指令；需求涉及畫面時判定本輪的 UI 線別；`Implement` 或 `Review` 完成後回頭確認交付結果是否符合原始需求 | `~/.ai-agents/agents/claude/clarify.md` |
 | **Implement** | 使用者說「實作工程師」，或明確點名 `Implement` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow | `~/.ai-agents/agents/codex/implement.toml` |
 | **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 | `~/.ai-agents/agents/claude/editor.md` |
-| **Debug** | 使用者說「除錯工程師」，或要求 debug／除錯；描述 bug 現象、錯誤訊息或測試失敗並要求定位修正 | `~/.ai-agents/agents/codex/debug.toml` |
+| **Engineer** | 使用者說「值班工程師」；相容觸發詞為「除錯工程師」、「debug」或「除錯」；描述 bug 現象、錯誤訊息或測試失敗時預設進入 bug 分流 | `~/.ai-agents/agents/codex/engineer.toml` |
+
+`Implement`（實作工程師）僅適用於 `Clarify => Design => Implement => Review` 流程的實作階段，且必須有 `design.md`。其餘一切由 `Engineer`（值班工程師）承接。
+
+派遣契約選用依 Agent 名稱判定。`Implement` 走 Workflow 派工契約，`Review` 與其餘一切走資源派遣。
 
 `Implement` 除了載入上表的規則檔，同時受本檔「Workflow 階段保護」約束，兩者並存而非擇一。規則檔規範實作階段的執行方式，「Workflow 階段保護」規範它能否啟動。
 
@@ -171,8 +176,8 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 主 Agent 必須依下列順序判斷路由，不得跳步：
 
-1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Debug` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
-2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要於 Claude 端派生 `Design` 或 `UI Demo` sub-agent、依「跨平台派工（Claude 至 Codex）」小節發動 `codex exec`（實作走 `Implement`、bug 線交由協調者 `Debug`，審查與清理類 sub-agent 為 `Review`／`Frontend Review`／`API Contract`／`Cleanup`），或套用對應 Skill。
+1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Engineer` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
+2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要於 Claude 端派生 `Design` 或 `UI Demo` sub-agent，或依「跨平台派工掛載點」判斷派工與選用的 Codex 端 Agent；審查與清理類工作分別使用 `Review`／`Frontend Review`／`API Contract`／`Cleanup`。
 3. **一般任務最後**：僅在前兩步都未命中時，主 Agent 才能自行處理一般分析、簡單修改或文件整理。
 
 #### Skill 載入紀律
@@ -201,6 +206,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | 編輯 `Dockerfile`、`compose.yml`、`compose.yaml` | `docker` |
 | 修改跨模組介面、分層或依賴方向 | `codebase-design` |
 | 撰寫或修改 `instructions.md` 與任何 `SKILL.md` | `writing-for-agents` |
+| 發動 `codex exec`、撰寫派遣單或執行派遣回收判定 | `codex-dispatch` |
 
 - 專案根目錄存在 `AGENTS.md` 的 `AI-DECLARATIONS` 宣告區塊時，先依宣告的 `context-index-query` 查詢索引，再定位 glossary、ADR 與其他專案脈絡；只有宣告不存在或格式無效時才使用 raw grep 作為 fallback。`ai-context-index` skill 只維護宣告格式與索引產物，不內建工具清單。
 
@@ -242,9 +248,11 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 #### 討論層協調模型
 
-討論層 agent 為對應線的**協調者**：維持與使用者的頂層對話，對下派生執行層完成工作，彙整執行層產出後，只把需要使用者拍板的真問題升級給使用者。功能線協調者為 `Clarify`，bug 線協調者為 `Debug`。
+討論層 Agent 為對應線的**協調者**：維持與使用者的頂層對話，對下派生執行層完成工作，彙整執行層產出後，只把需要使用者拍板的真問題升級給使用者。功能線協調者為 `Clarify`，bug 線協調者為 `Engineer`。
 
-**升級兩道篩**：執行層（如 `Design`、`UI Demo`、`Debug` 的修正 subagent）標出的疑點，協調者依序判斷（篩一）是否為真問題，以及（篩二）是否須使用者拍板。兩道皆通過才升級，否則協調者自行吸收或退回執行層。命中下列任一類型即屬「須使用者拍板」：
+協調者也負責回收資源派遣結果，依派遣單驗收條件處理「收下」、「退回」與「升級」三態。
+
+**升級兩道篩**：執行層（如 `Design`、`UI Demo`、`Engineer` 的修正 subagent）標出的疑點，協調者依序判斷（篩一）是否為真問題，以及（篩二）是否須使用者拍板。兩道皆通過才升級，否則協調者自行吸收或退回執行層。命中下列任一類型即屬「須使用者拍板」：
 
 | 類型 | 定義 |
 | --- | --- |
@@ -261,117 +269,62 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 以下 Agent 負責實際執行任務，不以 Persona 切換方式運作。依所在平台分兩類：
 
 - **Claude 討論層 sub-agent**：由主 Agent 於 Claude 端以 Agent 工具派生。
-- **Codex 執行層 agent**：於 Codex 端執行。由 Claude 端依下節「跨平台派工（Claude 至 Codex）」發動，或由使用者直接在 Codex 端觸發。
+- **Codex 執行層 Agent**：於 Codex 端執行。由主 Agent 依「跨平台派工掛載點」判定並發動，或由使用者直接在 Codex 端觸發。
 
 | Agent | 平台 | 觸發方式 | 規則來源 | 說明 |
 | --- | --- | --- | --- | --- |
 | **Design** | Claude 派生 | Clarify 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | `~/.ai-agents/agents/claude/design.md` | 依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
 | **UI Demo** | Claude 派生 | `Clarify` 判定為 C 線時派生；或使用者明確要求產出 Demo 畫面 | `~/.ai-agents/agents/claude/ui-demo.md` | 依需求摘要與樣式基準產出 Demo 畫面，供需求訪談與版面確認 |
-| **Implement** | Codex | Design 驗收通過後由 Claude 端主 Agent 依「跨平台派工」小節背景發動 `codex exec`；亦可由使用者直接在 Codex 端進入實作 | `~/.ai-agents/agents/codex/implement.toml` | 依 `design.md` 逐項實作功能 |
-| **Review** | Codex | Implement 完成後或使用者要求 | `~/.ai-agents/agents/codex/review.toml` | 比對 `design.md` 與實際程式碼，產出後端差異報告；`design.md` 敘述有歧義而無法判定的項目不自行裁決，列出各讀法交還 `Clarify` |
+| **Implement** | Codex | Design 驗收通過後由主 Agent 依 Workflow 派工發動；亦可由使用者直接在 Codex 端進入實作 | `~/.ai-agents/agents/codex/implement.toml` | 依 `design.md` 逐項實作功能 |
+| **Review** | Codex | 主 Agent 依 Review 派遣判準以派遣單發動，或由使用者要求 | `~/.ai-agents/agents/codex/review.toml` | 依派遣單執行 Spec 與 Standards 審查，逐條回報驗收條件；設計歧義由同一 session 的 `Clarify` 就地裁決 |
 | **Frontend Review** | Codex | Implement 完成後或使用者要求 | `~/.ai-agents/agents/codex/frontend-review.toml` | 審查 Vue 3 前端元件品質與規範符合度 |
 | **API Contract** | Codex | 使用者指定執行 | `~/.ai-agents/agents/codex/api-contract.toml` | 比對前後端 API 介面契約一致性，產出差異報告 |
 | **Cleanup** | Codex | 使用者明確要求，或屬技術債清理 / 語法現代化 | `~/.ai-agents/agents/codex/cleanup.toml` | 依既有規範清理技術債，每批修改後驗證測試；模組邊界與依賴方向交由 `architecture-improvement` skill |
-| **Debug** | Codex | 使用者於 Codex 端要求 debug / 除錯 | `~/.ai-agents/agents/codex/debug.toml` | bug 線協調者：於單一 session 完成診斷、派生同 session 匿名 subagent 執行修正、驗收其產出並套用升級過濾 |
+| **Engineer** | Codex | 使用者於 Codex 端要求「值班工程師」或以派遣單發動；相容觸發詞為 debug／除錯 | `~/.ai-agents/agents/codex/engineer.toml` | 先判定 bug 或 task，再依分流執行診斷、修正或派遣單任務 |
 
 上表的規則來源同時是跨平台執行的依據。任一 Agent 在非其預設平台被叫起時，依此欄的路徑讀取規則檔，不因平台不同而改用簡化規則。
 
-#### 跨平台派工（Claude 至 Codex）
+#### 跨平台派工掛載點
 
-Design 驗收通過後，由 Claude 端主 Agent 發動 Codex 執行 Implement，不需使用者手動切換平台。
+派工分為 Workflow 派工與資源派遣。Workflow 派工服務 `Clarify => Design => Implement => Review` 的實作階段，資源派遣服務 `Review`、`Engineer` 與其他需要 Codex 端執行的工作。
 
-**派工執行前提（Crucial）**：派工能力來自本檔，只有實際載入 `~/.claude` 規則與 skill 的 session 才具備。
+規則層只判斷是否派工與使用哪個 Codex 端 Agent。指令參數、落點、等待、事件流取證、續 session 與回收方式由 `codex-dispatch` skill 提供。
 
-| session 型態 | 是否載入本檔 | 派工可用性 | 處置 |
-| --- | --- | --- | --- |
-| Desktop Code tab、VS Code 擴充、CLI、SSH 與 WSL 的 local session | 是 | 可發動 | 依下方指令契約執行 |
-| Dispatch（Cowork tab）對話本身、cloud session | 否 | 不可發動 | 明確回報「當前 session 不載入全域規則，請於 local Code session 發動」，不嘗試執行 `codex exec` |
-| Dispatch 派生的 local Code session | 是 | 可發動 | 依下方指令契約執行 |
+##### F1 派工判準
 
-不可發動時的失敗模式是靜默無事發生，因此處置以顯性回報為準，不以沒有錯誤訊息推定成功。
+主 Agent 依下列三層判準逐次判斷。
 
-**第二個必要條件：Codex 執行檔可用性**。派工前需確認 `codex` 可由 PATH 解析，且 `codex --version` 能回傳版本。`codex` 不在 PATH 時通常會出現 `command not found`；舊版讀取不支援的設定值時，可能在載入設定階段失敗，導致任何子命令都無法執行。這兩種訊息都不是派工本身失敗，需先排除執行環境問題。
-
-**背景執行與等待（Crucial）**：主 Agent 以 Bash 工具的 `run_in_background` 直接執行 `codex exec`，不派生 sub-agent 承載派工。主 Agent 依契約 D 的三個出口輪詢背景指令與事件流，並負責事件流取證、回接判定及結案報告寫入。事件流的 thread id 由 `thread.started` 事件寫入 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt`，續 session 依該檔判定。
-
-| 出口 | 判定條件 | 後續動作 |
+| 層 | 條件 | 處置 |
 | --- | --- | --- |
-| A 正常結束 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 為 `turn.completed` | 執行事件流取證，進入回接判定 |
-| B 停滯 | 背景指令仍在執行，但事件流檔案大小連續 20 次輪詢（間隔 30 秒，合計 10 分鐘）無增長 | 停止等待，回報最後一則事件的 `type` 與時間，交使用者決定續等或中止 |
-| C 早夭 | 背景指令已離開執行狀態，事件流無 `turn.completed` 且不含任何 `agent_message` | 判定為啟動失敗，讀取事件流末尾錯誤文字回報，不進入回接判定 |
+| 必派 | 需要 Codex 獨有能力，例如桌面控制、影像產生、多 Agent 並行，或需要上網查證 | 一律派工，主 Agent 不自行處理 |
+| 不派 | 需要 Claude 端獨有資源，例如帶使用者登入 session 的瀏覽器操作、Artifacts 發布，或討論脈絡的保管與判斷 | 一律由 Claude 端處理，不派工 |
+| 灰帶預設 | 前兩層皆未命中 | 查證與執行類工作預設派工，判斷與表達留在 Claude 端 |
 
-出口 B 的理由是事件流檔案大小為唯一可觀測的存活訊號。僅以結案報告出現作為終止條件時，Codex 中途崩潰與仍在執行無法區分。
+使用者未明說由哪一端執行時，屬查證與執行類的工作預設派工，主 Agent 不得逕自處理。
 
-不採「另開獨立 session 執行派工」與「派工前執行 `/clear`」兩種作法。此規則保留的理由是需求意圖驗收同時依賴討論線 context 與 `handoff/requirement-summary.md`，清除 context 會損失尚未落檔的口頭共識。
+主 Agent 判斷某工作雖屬執行類但仍應自行處理時，必須在動手前以一句話說明理由，不得默默完成。
 
-**指令契約**：執行前先確保 `<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/report/` 存在，不存在即建立。重導向與 `--output-last-message` 都不會自行建立父目錄，目錄缺席時指令在 shell 層就失敗，`codex exec` 不會啟動，且錯誤訊息不像派工失敗。`<slug>` 為該輪派工的簡短識別字，使用小寫英數與連字號，於派工發動時決定並於續 session 沿用。並行派工若共用單一 thread id 檔名，後發動者會覆蓋先發動者的 thread id；事件流檔名已含時間戳，不另加 slug。
+派工前載入 `codex-dispatch` skill。`Implement` 使用 Workflow 派工契約，`Review` 與其餘一切使用資源派遣契約。
 
-```bash
-codex exec \
-  --cd "<work-root>" \
-  --sandbox workspace-write \
-  --add-dir "<work-root> 外的寫入落點" \
-  --json \
-  --output-last-message "<work-root>/.local/ai-sessions/history/codex-last-message-<yyyyMMdd_HHmmss>.md" \
-  "<prompt>" \
-  > "<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl" 2>&1
-```
+##### Review 派遣發動判準
 
-上述額外寫入目錄選項的判斷依據是 `design.md` 是否存在 work-root 之外的寫入落點；無此類落點時省略該選項。
+Review 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用者明示的固定規則。派遣單第 6 欄固定寫「唯讀，不得修改任何程式碼；不得執行建置與測試」。
 
-**sandbox 外環境動作**：需要網路或 work-root 外環境變更（全域套件安裝、PATH 變更、系統層設定）的任務，由主 Agent 於派工前代執行。代執行前必須取得使用者當輪明確同意。非互動情境（使用者不在場、無法取得當輪同意）一律停止並回報缺件，不得自行代執行。不得以開放網路或解除沙箱替代此流程。代執行後必須依 §1.4 追加 `report/exceptions.md` 條目，觸發類型為「偏離設計」，這是硬性要求。
+**必發清單（命中任一即發）**：
 
-`--json` 的事件流必須以重導向寫入 `history/*.jsonl`，不得作為工具回傳值進入 context。事件流逐項增長，進入 context 後會成為常駐成本，並須保留至該輪回接判定完成。
+| # | 條件 |
+| --- | --- |
+| 1 | 本輪 diff 觸及程式碼檔，例如 `.cs`、`.vue`、`.ts` 或 `.ps1` |
+| 2 | 涉及跨模組介面、分層或依賴方向變更 |
+| 3 | Implement 結案報告的 exception 含「偏離設計」或「替代方案」條目 |
+| 4 | Implement 結案報告有「未解決項目」 |
 
-**模型檔位規則（Crucial）**：
+**可不發**：本輪僅改動 Markdown 規則檔或文件，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
 
-- `bulk` 屬額度軸，於判斷額度充裕、想加速消耗配額時選用，適用日常大批量標準化編輯，與任務難度無關。`deep` 屬難度軸，適用需要自行找路、步驟未寫明的高難度任務。兩者為獨立的軸，不得以難度語意解讀 `bulk`。不帶 `-p` 時使用預設省用檔位。
-- 實際 model id 與 effort 只存在於 `~/.codex/<檔位名稱>.config.toml` 的本機檔位檔案，規則層只使用語意檔位名稱。
-- profile 名稱採封閉白名單。`-p` 只允許 `bulk` 或 `deep`。Codex 遇到不存在的 profile 時不報錯、exit 0，並靜默回退預設值，打錯名稱後無跡可循。
-- 規則不自行帶 `-p`。本輪派工屬 Debug 線，或 Implement 回報 `design.md` 未涵蓋檔位而需自行判斷時，先提示使用者選擇；使用者不表態即使用預設檔位。
+主 Agent 判定不發時，必須以一句話說明理由，不得默默略過。此條與 §2.4 灰帶層「主 Agent 判斷某工作雖屬執行類但仍應自行處理時，必須在動手前以一句話說明理由」同源，都是補償「該做的事沒做且無人察覺」失效模式的規則。
 
-**prompt 必要元素（四項，缺一即視為契約未滿足）**：
+Review 回收後，設計歧義由同一 session 的 `Clarify` 裁決。Review Agent 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`（若有），依第 5 欄逐條回報驗收結果，不自行修改程式碼、執行建置或測試。
 
-1. 使用本檔 Persona 表所列的 Implement 觸發詞（如「實作工程師」），由 Codex 主 agent 自行依規則來源路徑讀檔並扮演該 Persona。
-2. `design.md` 的絕對路徑。
-3. `work-root` 的絕對路徑。
-4. 結案報告須含輪起點 SHA、開工基準線、輪終點 commit 與「判定為既有實作而未動工」節。續 session 的 prompt 必須要求本輪結案報告重述前輪已列入該節的全部條目，不得因前輪已列而省略。結案報告屬覆寫式產物，未重述者等同消失；Review 與需求意圖驗收皆以該節界定審查範圍。此要求只作用於 prompt，不改 Review 的取用契約，也不做追加式合併。
-
-第 1 項採 Persona 觸發詞而非 agent registry 的識別名。Persona 走本檔的規則來源路由，不經 registry，在非互動的 `codex exec` 同樣成立；此時 Codex 主 agent 即為 Implement 本身，結案報告由事件流擷取規則產生。
-
-**結案報告取證**：`codex exec --json` 的事件流為 append-only 的 JSON Lines。每則助理輸出對應一行下列形狀的事件：
-
-```json
-{"type":"item.completed","item":{"id":"item_68","type":"agent_message","text":"# Implement 續輪結案報告\n..."}}
-```
-
-thread id 事件形狀為：
-
-```json
-{"type":"thread.started","thread_id":"01a01619-fbef-7ee2-aea3-39598e04388e"}
-```
-
-由後往前掃描事件流中 `item.type` 為 `agent_message` 的事件，取第一則其 `text` 同時含「驗證證據」與三欄標籤（輪起點 SHA、開工基準線、輪終點 commit）者，將 `text` 原文寫入 `<work-root>/.local/ai-sessions/report/implement-closure-report.md`。
-
-失效模式處置如下：
-
-- `F1`：Codex 從未產出含三欄的訊息。擷取結果為空，等同三欄缺失，依續 session 契約補齊。
-- `F2`：事件流未落地（重導向於 shell 層失敗或磁碟寫入失敗）。回退讀取該輪 `history/codex-last-message-<yyyyMMdd_HHmmss>.md`，並於回報中註明取證來源為 last-message 檔。該檔可能已被同輪後續訊息覆寫。
-- `F3`：事件流含多則符合條件的訊息（續 session 各補一次）。取最後一則，輪終點 commit 以最新為準。
-
-**回接判定**：背景指令結束後，依事件流取證規則掃描事件流，將擷取結果寫入 `report/implement-closure-report.md`，再讀取該檔確認「驗證證據」節的輪起點 SHA、開工基準線與輪終點 commit 三欄皆有值。三欄齊備則回報使用者可發起需求意圖驗收；任一欄缺失則依下方續 session 契約要求補齊。
-
-**續 session**：
-
-```bash
-codex --cd "<work-root>" --sandbox workspace-write --add-dir "<work-root> 外的寫入落點" exec resume <thread-id> --json -o "<work-root>/.local/ai-sessions/history/codex-last-message-<yyyyMMdd_HHmmss>.md" "<prompt>"
-```
-
-`--cd`、`--sandbox` 與額外寫入目錄選項是 `codex` 的父層選項，`exec resume` 子命令不接受這三個。放在子命令之後會以 `unexpected argument '--cd'` 中止，補齊流程不會執行。`exec resume` 僅接受 `-o, --output-last-message` 等自身選項，因此額外寫入目錄選項必須放在 `exec resume` 之前。
-
-`<thread-id>` 取自 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt`，該檔由事件流的 `thread.started` 事件寫入。判定方式為讀取該檔，讀取成功即續原 session，讀取失敗即開新 session，並於 prompt 附上 `design.md` 與退回報告的絕對路徑。
-
-**跨介面接手**：Desktop 與 CLI 的 session 歷史不共用，換介面等同新 session，對話脈絡不可攜。接手一律以 `.local/ai-sessions/` 的交接檔重建，取用順序為 `handoff/design.md`、`handoff/requirement-summary.md`、該輪 `history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 事件流，以及由事件流取證規則產生的 `report/implement-closure-report.md`。thread id 的可用性依上一段的讀檔結果判定，接手介面本身不影響判定。
 
 #### 驗證分層與 integration-verify 掛載點
 
@@ -381,12 +334,12 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 | --- | --- | --- | --- |
 | 淺層探針 | Implement | 對改動的端點或畫面單發確認路徑通 | 每階段完成後，依 `design.md` §6 |
 | 建置與測試 gate | Implement | 建置與既有測試各執行一次 | 結案時一次 |
-| 缺陷審查 | Review | diff-scoped 靜態審查，不執行測試 | Implement 結案派生 |
+| 缺陷審查 | Review | diff-scoped 靜態審查，不執行測試 | 主 Agent 依 Review 派遣判準以派遣單發動 |
 | 完整煙霧 | `integration-verify` skill | 多情境、寫入回查、持久化往返 | 交付節點 |
 
 - `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Implement 結案自動流程。
 - Review 不執行測試與動態驗證，信任 Implement 結案報告附帶的建置與測試證據。
-- Debug 不承擔常規驗證，維持被動反應定位。
+- Engineer 不承擔常規驗證，依進入類型執行 bug 或 task 分流。
 
 **需求意圖驗收不屬於上述四層。** 四層驗證的比對軸是「程式碼是否正確、是否符合 `design.md`」，需求意圖驗收的比對軸是「交付結果是否仍是當初談定的那件事」，兩者互不取代。此職責歸 `Clarify`，因為需求摘要與對話中達成的實作約束由 `Clarify` 產生並保管於 `handoff/requirement-summary.md`，其他 Agent 只拿得到轉述後的版本。執行方式見 `~/.ai-agents/agents/claude/clarify.md`。
 
@@ -402,9 +355,29 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 | UI Demo | 讀取檔案與樣式基準、寫入 `<work-root>/.local/ai-sessions/ui-demo/` | 修改任何程式碼或專案檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
 | Review / Frontend Review / API Contract | 讀取檔案、讀取 git diff | 修改程式碼（僅產出報告）；執行建置與測試 |
-| Debug | 讀寫工作區、執行測試與診斷指令 | 修改與當前問題根因無直接關聯的模組 |
+| Engineer | 讀寫工作區、執行測試與診斷指令 | 修改與當前任務根因無直接關聯的模組 |
 | Cleanup | 讀寫工作區、執行測試 | 變更公開 API 簽章（除非使用者同意） |
-| 跨平台派工（主 Agent） | 以背景方式執行 `codex exec` 與 `codex exec resume`、輪詢事件流、擷取與寫入結案報告 | 直接修改程式碼；前景同步等待 `codex exec` 結束；派生 sub-agent 承載派工 |
+| 跨平台派工（主 Agent） | 依 F1 判準決定是否派工、撰寫派遣單、回收「收下／退回／升級」三態結果 | 直接修改程式碼；跳過 `codex-dispatch` skill 的機制流程 |
+
+#### §2.1 O1 至 O13 比對結果
+
+以下逐條對應 §2.1 的原始大綱與目前規則位置。
+
+| 編號 | 處置結果 | 比對證據 |
+| --- | --- | --- |
+| O1 | 保留 | `### 1.5 Agent 路由規則` 標題仍存在 |
+| O2 | 修改 | `#### Persona 切換` 保留，Persona 表改用 `Engineer`，並加入工程師邊界句 |
+| O3 | 保留 | `#### 平台自我判定` 及三項平台判準仍存在 |
+| O4 | 修改 | `#### 路由優先序` 第 2 步指向「跨平台派工掛載點」 |
+| O5 | 修改 | `#### Skill 載入紀律` 保留，觸發對照表新增 `codex-dispatch` |
+| O6 | 保留 | `#### Workflow 階段保護` 的三項前置規則仍存在 |
+| O7 | 保留 | `#### work-root 判定` 的 task anchor、技術棧根標記與多技術棧原則仍存在 |
+| O8 | 保留 | `#### 禁止提前修改程式碼` 的明確實作指令判準仍存在 |
+| O9 | 修改 | `#### 討論層協調模型` 改用 `Engineer`，並補上派遣結果三態回收責任 |
+| O10 | 修改 | `#### 執行型 Agent` 的 `Review` 改為派遣單發動，`Engineer` 改為 bug／task 分流 |
+| O11 | 移入 skill 並保留掛載點 | `M1 掛載點` 保留路由判準，機制內容集中於 `codex-dispatch` |
+| O12 | 修改 | `#### 驗證分層與 integration-verify 掛載點` 的 Review 時機改為主 Agent 依派遣判準發動 |
+| O13 | 修改 | `#### 階段式行為約束` 改用 `Engineer`，跨平台派工列補派遣單與三態回收 |
 
 ## 2. Global Constraints
 
@@ -422,6 +395,7 @@ Skill 指標索引由 `.githooks/Update-Docs.ps1` 依現有 Skill frontmatter �
 - `browser-smoke`：瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。
 - `check-markdown`：當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。
 - `codebase-design`：Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。
+- `codex-dispatch`：Codex 派工機制：依派工類型建立執行契約、啟動 Codex、等待事件流、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。
 - `create-license-and-readme-link`：自動判斷專案屬性並推薦合適的開源授權，建立 LICENSE 檔案並將其連結補入 README.md 中。
 - `csharp-aspnetcore`：ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。
 - `csharp-auth`：ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。
@@ -475,8 +449,8 @@ Skill 指標索引由 `.githooks/Update-Docs.ps1` 依現有 Skill frontmatter �
 - `uiux`：UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。
 - `uiux-baseline`：掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced.
 - `vitest`：前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。
-- `vue3`：Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。
 - `vue-router`：Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。
+- `vue3`：Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。
 - `windows-terminal`：Use when 在 Windows 執行終端機命令，需要處理輸出編碼、中文亂碼或輸出截斷時。
 - `writing-for-agents`：Use when 撰寫或修改全域 Agent 規範、Skill 文件或交接文件，需要控制資訊密度與驗收條件時。
 <!-- SKILL-INDEX:END -->

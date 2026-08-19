@@ -2,6 +2,7 @@
 name: project-setup
 description: '探索專案的 solo／team 模式與既有規範產物，建立 AGENTS.md、CLAUDE.md、GLOSSARY.md、docs/adr/ 與 AI 宣告區塊。'
 audience: human
+dispatch: split
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---
@@ -62,3 +63,7 @@ policy.allow_implicit_invocation: false
 - 確認 `CLAUDE.md` 首行為 `@AGENTS.md`。
 - `team` 模式確認 `.git/info/exclude` 含三項固定清單，且 `git status --porcelain` 不列出這三項。
 - 確認未修改 `.gitignore`，且不存在 `.out-of-scope/`。
+## 派遣分界
+
+  - 可派遣段：探索既有規範產物、Git 追蹤狀態與專案結構。
+  - Claude 端段：決定規範內容、宣告語意與使用者需要確認的排除範圍。

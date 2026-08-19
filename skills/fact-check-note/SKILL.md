@@ -2,6 +2,7 @@
 name: fact-check-note
 description: 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes.
 audience: human
+dispatch: dispatchable
 policy.allow_implicit_invocation: true
 ---
 
@@ -117,3 +118,11 @@ policy.allow_implicit_invocation: true
 - **誠實標示不確定性**：若無法以官方依據確認，必須降為 `⚠️`，不得包裝為 `❌`。
 - **不補充「最新資訊」**：若原文說法有時效性疑慮，僅標記並提示使用者查閱，不依訓練資料自行補充最新資訊。
 - **完成後不主動套用修改**：此 skill 職責止於產出報告。後續是否進入改檔流程由使用者決定並另行呼叫 `apply-fact-check`。
+
+## 派遣發動
+
+`fact-check-note` 屬於可派遣段。主 Agent 判定需要 Codex 端查證時，先載入 `codex-dispatch` skill，再建立派遣單並將本文件指定為執行 skill。
+
+派遣單第 6 欄固定寫「唯讀，不得寫入目標文件」。指令契約使用 `--sandbox read-only`，需要官方網路查證時將 `--search` 放在 `exec` 前方。查證結果寫入派遣單第 7 欄指定的報告落點，原始文件維持不變。
+
+派遣回收時依派遣單第 5 欄逐條執行判定方式，再依 `codex-dispatch` 的「收下」、「退回」或「升級」三態處理。回報只提供事實層、官方來源與待使用者裁決的條目，不直接改寫目標文件。

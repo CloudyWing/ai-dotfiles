@@ -2,6 +2,7 @@
 name: spec-doc
 description: 依 Clarify 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。
 audience: human
+dispatch: claude-side
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---

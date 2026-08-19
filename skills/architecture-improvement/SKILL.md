@@ -2,6 +2,7 @@
 name: architecture-improvement
 description: '以 Git hotspot 縮小分析範圍，使用 deletion test 篩選改善候選並產出架構改善報告。'
 audience: human
+dispatch: split
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---
@@ -68,3 +69,8 @@ git rev-parse HEAD
 - 本 Skill 不直接決定模組拆分、公開 API 變更或資料流改造。
 - 未取得使用者選定範圍前，不修改程式碼與專案設定。
 - 不使用外部網頁產生報告，候選依據限定為目標 repository 的 Git、程式碼與測試。
+
+## 派遣分界
+
+- 可派遣段：Git hotspot 掃描與 deletion test 篩選，產出候選清單與證據。
+- Claude 端段：改善候選的取捨與是否進入設計或實作的決定。
