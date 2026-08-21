@@ -162,6 +162,19 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 - 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。
 - 更換機器後，第一步執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
 
+#### Codex profile 檔位設定
+
+1. 檔名規則為 `~/.codex/<檔位名稱>.config.toml`。本專案使用 `burn` 與 `deep` 兩個檔位。
+2. 檔位檔只包含兩個頂層鍵 `model` 與 `model_reasoning_effort`。設定範例如下：
+
+   ```toml
+   model = "gpt-5.6-terra"
+   model_reasoning_effort = "max"
+   ```
+
+3. Codex 0.134.0 起，`--profile` 改讀獨立檔案。`config.toml` 內的 `[profiles.*]` 為 legacy 格式，該版本以後不再受理。
+4. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段會偵測缺件並印出修復指引。
+
 ---
 
 ## 4. 目錄結構總覽
