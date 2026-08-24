@@ -113,7 +113,9 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ### 額度快照
 
-`codex usage` 是 TUI，需要真實終端機。主 Agent 在非互動環境無法執行，實測 Bash 與 PowerShell 皆回傳 `stdin is not a terminal`。因此由使用者在終端機執行後提供兩個數字，剩餘額度百分比與距離重置天數。快照當天有效，隔日沒有新快照時一律使用預設省用檔位。
+主 Agent 從 `<CODEX_HOME>/sessions/<yyyy>/<MM>/<dd>/rollout-<時間戳>-<thread-id>.jsonl` 讀取 session 記錄。額度資料位於 `payload.rate_limits`。使用 `payload.rate_limits.primary.used_percent`、`payload.rate_limits.primary.window_minutes` 與 `payload.rate_limits.primary.resets_at`，其中 `used_percent` 為數值百分比、`window_minutes` 為分鐘數，`resets_at` 為 Unix timestamp（秒）。剩餘額度百分比為 `100 - used_percent`，`window_minutes` 除以 `1440` 得到週期天數。
+
+主 Agent 每次派工前呼叫 `scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，僅採用 `resets_at` 大於目前時間的候選，並在候選中選擇 `resets_at` 最大者，避免週期滾動後以最新檔案的歸零值誤判額度。找不到有效快照時，腳本以非零結束碼回報錯誤，不使用預設值。
 
 ### 額度門檻
 
@@ -137,10 +139,6 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 ### 升級須說明理由
 
 預設永遠是省用檔位。主 Agent 決定升級時必須以一句話說明依據，引用快照數字與規模判定，不得默默升級。
-
-### 大輪後快照失效
-
-單輪派工達大任務標準時，該輪結束後先前快照即失效。下一輪需新的數字才能再升級。
 
 Codex 遇到不存在的 profile 可能靜默回退預設值並以成功結束。執行前確認名稱只使用白名單，結束後以實際事件流與產出驗證結果判定，不以 exit code 單獨推論檔位已生效。
 
@@ -279,7 +277,7 @@ $process | Wait-Process
 | 3 | 目標物件 | 檔案、目錄或端點的絕對路徑，逐項列出 |
 | 4 | 任務內容 | 含動詞與具體對象，不使用「處理 X」或「改善 Y」等無法驗收的描述 |
 | 5 | 驗收條件 | 以表格逐列提供條件與判定方式 |
-| 6 | 邊界 | 列出不得改動的範圍。「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。 |
+| 6 | 邊界 | 列出不得改動的範圍。「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；非唯讀派遣同樣不建立 commit，commit 由主 Agent 回收後處理。派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。 |
 | 7 | 產出落點 | 報告或產物的絕對路徑 |
 | 8 | 回報必備欄位 | Codex 端回報必須出現的欄位清單 |
 
@@ -295,6 +293,8 @@ $process | Wait-Process
 ## 回收三態判定
 
 背景指令結束後，主 Agent 讀取派遣單第 7 欄的產出落點，依第 5 欄逐條執行判定方式。主 Agent 不以 Codex 端回報中的自述取代實際判定。派遣單第 8 欄必須要求 Codex 端逐條回報每條驗收條件的命令原文與完整輸出。主 Agent 以抽驗方式複核回報內容，對輸出與結論不一致的條件逐條重跑。回報只寫「已完成」而未附命令輸出者，該條計為未成立。
+
+Codex 端無論派遣是否為唯讀，都不建立 commit。commit 由主 Agent 回收後處理。
 
 | 判定 | 成立條件 | 後續動作 |
 | --- | --- | --- |

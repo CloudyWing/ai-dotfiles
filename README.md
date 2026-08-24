@@ -157,6 +157,8 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 #### Codex CLI 前置需求
 
+額度快照由主 Agent 於每次派工前執行 `scripts/Get-CodexQuota.ps1`，從 `$CODEX_HOME/sessions/` 的 rollout 記錄自動讀取。
+
 - 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附 binary 不作為派工執行檔。
 - 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
 - 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。
