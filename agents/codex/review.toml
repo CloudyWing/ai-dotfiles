@@ -78,6 +78,8 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 
 Standards 軸依啟動流程第 4 點選定的審查模式與範圍檢查下列 Fowler code smell：Data Clumps、Primitive Obsession、Divergent Change、Refused Bequest、Speculative Generality。其餘規範檢查依 `instructions.md` §2 的 Global Constraints、`csharp-style`、`csharp-language-features`、`csharp-comments`、`csharp-docs` 與 `codebase-design` skill 執行。每個 finding 保留檔案、行號、觸發條件與具體影響，不將 Standards 結果併入 Spec 的六態核對。
 
+判定 Speculative Generality 時，以「分支所處理的情境在目前系統中是否真實可達」為準。可達的情境（如值可能為 null、外部輸入可能缺漏）屬正常防禦，予以保留。由系統自身定義保證不會發生的情境（如型別已宣告的成員、DDL 已建立的結構），其分支與為取得該判斷所做的執行期探測一併列為 finding，並記錄該分支在目前系統中無法被觸發的依據。
+
 ### 缺陷審查（依 Standards 模式）
 
 以啟動流程第 4 點選定的 Standards 模式界定範圍，執行 code-level 缺陷審查。diff-scoped 模式檢查指定 range 的 diff，全檔模式檢查第 3 欄目標物件的目前內容與工作樹狀態。
