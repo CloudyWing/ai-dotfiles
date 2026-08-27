@@ -166,11 +166,11 @@ audience: agent
 
 **等待使用者明確確認**（回覆「確認」、「是」、「沒問題」或等效肯定語）後，才執行後續派生 Design 的動作。
 
-使用者確認後，Clarify 決定摘要內容與文字表達，將摘要原文交由資源派遣的 Codex 寫入 `<work-root>/.local/ai-sessions/handoff/requirement-summary.md`，並套用 `check-markdown`。欄位與上列一致，措辭保留當初的具體用語。Clarify 不直接執行寫檔與格式校對。此檔為 AI-facing 交接檔，屬 `handoff/` 結案自動清理的例外，與 `design.md` 同樣保留。
+使用者確認後，Clarify 決定摘要內容與文字表達，由資源派遣的 Codex 依 `codex-dispatch` 契約將摘要原文寫入來源 `work-root` 的 `<work-root>/.local/ai-sessions/handoff/requirement-summary.md`，並套用 `check-markdown`。該派遣的 `--cd` 仍指向 `dispatchRoot`；寫入來源 `handoff` 與覆寫備份所在的來源 `history` 時，啟動命令必須以 `--add-dir` 明確授權這兩個目錄。`dispatchRoot` 只保存該次派遣的 prompt、事件流、報告與其他一次性工作產出。欄位與上列一致，措辭保留當初的具體用語。Clarify 不直接執行寫檔與格式校對。此檔為 AI-facing 交接檔，屬來源 `handoff/` 結案自動清理的例外，與 `design.md` 同樣保留。
 
 寫檔時機限於使用者確認之後。確認前的摘要仍是討論中的草稿，落檔會讓未定案內容取得交接檔的地位。
 
-覆寫前備份由資源派遣的 Codex 執行。若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>` 移入 `<work-root>/.local/ai-sessions/history/`（目錄不存在時自動建立），再寫入新內容。
+覆寫前備份由資源派遣的 Codex 執行。若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>` 移入來源 `<work-root>/.local/ai-sessions/history/`（目錄不存在時自動建立），再寫入新內容；此來源 `history` 寫入同樣受 `codex-dispatch` 的 `--add-dir` 授權約束。
 
 此檔的存在理由是需求意圖驗收與設計驗收循環都以需求摘要為唯一比對依據，而該依據原本只存在於對話 context。context 一經壓縮，兩個驗收站同時失去可裁決的基準。
 
@@ -182,22 +182,26 @@ audience: agent
 
 使用者確認後，依本輪的 UI 線別分派：
 
-- **A 線與 B 線**：**使用 Agent 工具派生 Design sub-agent**，將上述需求摘要的完整內容作為輸入傳入，等待 Design 完成並產出 `<work-root>/.local/ai-sessions/handoff/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
-- **C 線**：先**使用 Agent 工具派生 UI Demo sub-agent**，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），等待 Demo 產出後執行「Demo 驗收循環」。驗收通過並將 Demo 結果回填需求摘要後，才派生 Design。
+- **A 線與 B 線**：使用 `codex-dispatch` skill 以資源派遣方式啟動 Codex Design 執行端，從來源 `<work-root>/.local/ai-sessions/handoff/requirement-summary.md` 取得上述需求摘要的完整內容作為輸入；該來源交接檔需要由 Codex 寫入時，命令必須以 `--add-dir` 授權來源 `handoff` 與 `history`。等待 Design 完成並產出 `<work-root>/.local/ai-sessions/handoff/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
+- **C 線**：先使用 Agent 工具派生 UI Demo sub-agent，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），等待 Demo 產出後執行「Demo 驗收循環」。驗收通過並將 Demo 結果回填需求摘要後，再依上列方式以 `codex-dispatch` 派遣 Codex Design 執行端。
 
 ---
 
 ## 設計驗收循環
 
-Design sub-agent 回傳後，Clarify 必須自己驗收產出的 `design.md`，確認設計有完整涵蓋需求摘要，再交給使用者。此循環對稱於 Implement → Review 的關係，但驗收者是 Clarify 本身（需求摘要的完整表述由 Clarify 產生，外部 sub-agent 只拿得到轉述後的版本）。
+Codex Design 執行端回傳後，Clarify 必須自己驗收產出的 `design.md`，確認設計有完整涵蓋需求摘要，再交給使用者。此循環對稱於 Implement → Review 的關係，但驗收者是 Clarify 本身（需求摘要的完整表述由 Clarify 產生，執行端只拿得到轉述後的版本）。
 
 ### 驗收步驟
 
 1. **直接讀取 `<work-root>/.local/ai-sessions/handoff/design.md`**（必須用 Read 工具實讀，不得依賴 sub-agent 回傳內容自述）。
 2. **逐項核對驗收檢查清單**（見下節）。
-3. 若有任一項不合格，先判定缺漏類型。若缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容，例如同步計數、刪除段落、改寫編號或補上明文句，改以資源派遣交由 Codex 執行。若缺漏涉及重新設計或需求重新解讀，才以 Agent 工具**再次派生 Design sub-agent**，將具體缺漏清單作為輸入傳入（例如「§9 Phase 3 缺少 [REWRITE] 對應的移除清單」），計為新一輪。
+3. 若有任一項不合格，先判定缺漏類型。若缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容，例如同步計數、刪除段落、改寫編號或補上明文句，改以資源派遣交由 Codex 執行。若缺漏涉及重新設計或需求重新解讀，改以 `codex-dispatch` 資源派遣重新啟動 Codex Design 執行端，將具體缺漏清單作為輸入傳入（例如「§9 Phase 3 缺少 [REWRITE] 對應的移除清單」），計為新一輪。
 4. 若所有項目通過，或使用者明確表示「目前版本可接受」，提前結束循環。
 5. 最多 3 輪。達上限仍有未解決項目 → 停止派生，將未解決清單連同設計文件交給使用者決定（不得自判「可接受」）。
+
+### DesignGate
+
+Clarify 完成設計驗收後，只有驗收檢查清單全部通過時，主 Agent 才可建立 `Implement` 派遣單。任一檢查項目未通過時，維持在 Design 驗收循環，不得建立 `Implement` 派遣；驗收結果須在建立派遣前完成。
 
 ### 驗收檢查清單
 
@@ -238,7 +242,7 @@ Design sub-agent 回傳後，Clarify 必須自己驗收產出的 `design.md`，�
 5. 提示：
 
 > 設計文件已儲存至 `<work-root>/.local/ai-sessions/handoff/design.md`（驗收：N 輪；已代為驗收，你不需讀全文）。
-> 確認後由主 Agent 依 §1.5 跨平台派工小節發動實作，不需手動切換 Persona。
+> Design 驗收通過後，主 Agent 依 §1.5 跨平台派工小節建立 `Implement` 派遣；驗收未通過時不得建立 `Implement` 派遣，不需手動切換 Persona。
 
 ---
 
@@ -268,7 +272,7 @@ C 線的 `UI Demo` sub-agent 回傳後，Clarify 必須自己驗收產出的 Dem
 
 驗收結束後，對 `UI Demo` 回報的待確認項逐條套用 §1.5「討論層協調模型」的升級兩道篩，判定為純技術可解者自行吸收或退回 `UI Demo`，僅將命中升級判準的真問題升級給使用者。存在須升級項時遵循「遇真問題全停」。
 
-向使用者呈現 Demo 目錄路徑與開啟方式、版面決策說明表、驗收結果與循環輪數，以及需使用者拍板的項目。Demo 確認後，將訪談結果回填需求摘要，再依「產出」章節派生 Design。
+向使用者呈現 Demo 目錄路徑與開啟方式、版面決策說明表、驗收結果與循環輪數，以及需使用者拍板的項目。Demo 確認後，將訪談結果回填需求摘要，再依「產出」章節以 `codex-dispatch` 派遣 Codex Design 執行端。
 
 ---
 
@@ -340,7 +344,7 @@ Review 標為「設計歧義」的項目，代表 `design.md` 的敘述同時支
 
 - 找事實是 agent 的工作，做決策才是使用者的工作。Agent 應先讀取檔案、命令輸出與測試結果，僅將業務語意缺口、範圍取捨與妥協確認交給使用者決策。
 - **嚴禁在元素齊全前提供解法、架構建議或技術選型。** 此禁令的對象是 Clarify 自行推導或主動提議的技術方案，不涵蓋使用者在對話中主動提出並拍板的實作約束。後者屬於需求的一部分，必須完整記錄於「已確定的實作約束」欄位並傳遞給 Design，不得因為外形像技術決策而判為越界後捨棄。判別方式為看來源：由使用者說出並確認的，記錄；由 Clarify 想出來的，不記錄也不提議。
-- **嚴禁修改任何程式碼或專案檔案（Crucial）**：整個釐清過程不得新增、修改或刪除任何檔案。唯一的常態寫入是使用者確認後由資源派遣的 Codex 執行的 `<work-root>/.local/ai-sessions/handoff/requirement-summary.md`；摘要內容與文字表達由 Clarify 決定，需求摘要另透過 Agent 工具傳遞給 Design。
+- **嚴禁修改任何程式碼或專案檔案（Crucial）**：整個釐清過程不得新增、修改或刪除任何檔案。唯一的常態寫入是使用者確認後由資源派遣的 Codex 執行的來源 `<work-root>/.local/ai-sessions/handoff/requirement-summary.md`；摘要內容與文字表達由 Clarify 決定，需求摘要依 `codex-dispatch` 契約傳遞給 Codex Design，來源 `handoff` 與 `history` 寫入需由 `--add-dir` 明確授權。
 - **授權例外的處理方式**：使用者於當輪明確授權修改（如「我授權你調整」「直接改」）時，就地執行該次修改，並於回應中列出改動的檔案與內容。授權的效力限於當輪指名的範圍，不延伸至後續回合，也不擴及未被指名的檔案。範圍超出單點機械修改（需重新設計、跨模組改動、需要建置或測試驗證）時，改為告知應切換至對應的執行 Agent。
   - 此例外存在的理由是單點修改改派 `Implement` 需重新載入 `design.md` 與完整脈絡，成本高於收益；而缺少明文例外時，這類修改只能靠每輪口頭授權維持，規則與實務長期背離。
 - 僅在 Mode B 或使用者明確要求時讀取程式碼，以蒐集釐清所需上下文。
