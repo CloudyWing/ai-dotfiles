@@ -9,15 +9,92 @@ policy.allow_implicit_invocation: true
 
 本 Skill 負責派工的執行機制。是否派工由 `instructions.md` §1.5 的路由規則判定，本 Skill 只處理指令、落點、等待、取證、續 session 與回收。
 
-## 執行前提與可用性檢查
+## Git 前置探針與 worktree 生命週期
 
-派工前確認目前 session 能執行本地命令，並確認 `codex` 可由 `PATH` 解析。執行下列命令取得版本並檢查啟動環境。
+所有派遣先建立 `DispatchPreflight`。`sourceRoot` 是使用者指定且已解析的 work-root 絕對路徑，`dispatchRoot` 固定為 `<sourceRoot>\.local\ai-sessions\worktrees\<slug>`。`<slug>` 只使用小寫英數與連字號，且在同一個 `sourceRoot` 內不得重複。PID 並行檢查先於 Git 前置流程執行，檢查通過後才可啟動派工。
 
-```powershell
-codex --version
+前置流程依下列順序執行。
+
+1. 解析 `sourceRoot` 與 `dispatchRoot` 的絕對路徑，並確認 `slug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`。
+2. 在 `sourceRoot` 執行 `git -C <sourceRoot> rev-parse --is-inside-work-tree`。
+   - 以 exit code 為主要分流依據。只有 exit code 為 0 且 stdout 為 `true` 時，才設定 `gitOrigin=existing`，保留既有 Git，不建立 marker。
+   - work-root 不在 Git 工作樹時，命令會以非零 exit code 與 `fatal` 錯誤結束，不會輸出 `false`；不能等待 `false` 作為分流結果。
+   - 命令因 work-root 不在 Git 工作樹而失敗時，先告知使用者將在該目錄建立臨時 `.git`，再進入臨時 Git 流程。
+   - Git 執行檔不存在或回傳其他 Git 錯誤時，停止並回報原始錯誤，不把錯誤當成可初始化的目錄。
+3. 臨時 Git 流程先呼叫 `generate-gitignore-by-techstack`。範本取不到時，先告知使用者，再寫入最小內建清單 `bin/`、`obj/`、`node_modules/`、`.env` 與 `.local/`。
+   Fallback 完成後不停止派工，流程繼續執行。
+4. 以 `.gitignore` 過濾建置輸出、機密檔案與 `.local/` 後執行 `git init`，建立一筆僅供派工使用的初始機械 commit。初始 commit 失敗時停止後續派工並保留現況。
+5. 臨時 Git 建立成功後，在 `sourceRoot\.local\ai-sessions\agent-created-git.marker` 寫入 UTF-8 無 BOM 的純文字 key-value 內容。至少包含下列欄位。
+
+   ```text
+   schema=codex-dispatch.temp-git.v1
+   created-by=codex-dispatch
+   work-root=<sourceRoot 的絕對路徑>
+   created-at-utc=<ISO 8601 UTC 時間>
+   ```
+
+marker 是來源工作樹的控制資料，不納入初始 commit。marker 寫入失敗時停止後續派工並保留已建立的 `.git`；marker 缺失時不得刪除 `.git`。此流程的 `gitOrigin` 設為 `agent-created`，`markerPath` 設為 marker 的絕對路徑。
+
+6. 在 `sourceRoot\.local\ai-sessions\worktrees\<slug>` 執行 `git worktree add --detach <dispatchRoot> <baseSha>`。`baseSha` 是 Git 探針完成後記錄的來源 `HEAD`，必須在 worktree 建立前固定。
+7. 在 `dispatchRoot` 建立 `.local\ai-sessions\handoff`、`report`、`history` 與 `scratch`，再複製本次派遣所需的設計文件、派遣單與其他一次性輸入。跨派遣的 `sourceRoot\.local\ai-sessions\handoff\requirement-summary.md` 維持在來源工作樹，不複製為 `dispatchRoot` 的寫入目標。Codex 的有效工作目錄與本次派遣產出的 report、history、scratch 及一次性 handoff 產物使用 `dispatchRoot`。
+8. Codex 結束後，先確認回收判定成立，再將事件流、thread id、last-message、派遣報告與核准的一次性交接產物同步回 `sourceRoot` 的同相對路徑。`requirement-summary.md` 與其覆寫前備份固定寫入 `sourceRoot`，不透過 dispatch worktree 回收；需要這類來源寫入的派遣必須以 `--add-dir` 明確授權來源的 `handoff` 與 `history` 目錄。
+   - Design、Review 與其他資源派遣直接同步報告與允許的交接產物，不透過 commit 回收。
+   - Workflow `Implement` 只回收 `baseSha..dispatchHead` 內的派工機械 commit，依 `design.md` Phase 分組重整後回收。Phase 回收規則由 `git-workflow` skill 定義。
+9. 完成同步後，確認 `dispatchRoot` 的實際絕對路徑仍位於 `sourceRoot\.local\ai-sessions\worktrees\<slug>`，再執行 `git worktree remove --force <dispatchRoot>`。三態尚未結束或需要續 session 時保留同一個 dispatch worktree。
+
+臨時 Git 保留在 `sourceRoot`，直到使用者明確觸發清理。清理前讀取並驗證 marker 的 `schema`、`created-by` 與 `work-root`。marker 不存在、格式錯誤或 `work-root` 與目前絕對路徑不一致時，拒絕刪除 `.git` 並回報原因。驗證成功且收到使用者清理指令後，才可刪除舊 `.git`、重新 `git init`、建立乾淨的 initial commit，成功後移除 marker。
+
+主工作樹在 Codex 執行期間維持啟動前的 `HEAD` 與 `git status`。Codex 的 `--cd` 固定指向 `dispatchRoot`，不得以 `sourceRoot` 作為執行目錄。需求摘要及其 history 備份是跨派遣交接例外，仍寫入 `sourceRoot`；需由 Codex 寫入時，`--add-dir` 只授權 `sourceRoot\.local\ai-sessions\handoff` 與 `sourceRoot\.local\ai-sessions\history`。
+
+## Codex 進程 PID 與並行檢查
+
+PID 記錄歸屬來源工作樹的 `history`，格式為 `<sourceRoot>\.local\ai-sessions\history\codex-pid-<yyyyMMdd_HHmmss>.txt`。記錄中的 `pid` 是進程樹根，不代表一定是 Codex leaf process。Windows 以 PowerShell 的 `ProcessStartInfo` 啟動 `(Get-Command codex.cmd).Source` 時，實測 `Process.Id` 為 `35048`，查詢該 PID 的 `ProcessName` 得到 `cmd`，不是 `codex` 或 `node`；實際執行 Codex 的程序是其子進程。因此 Windows 端必須以根 PID 追查整個進程樹。
+
+每次成功啟動 Codex 並取得進程識別碼後，立即建立一份新的 UTF-8 無 BOM 純文字檔，至少包含下列欄位。`pid` 保留作為相容欄位，值與 `root-pid` 相同。
+
+```text
+pid=<進程樹根 PID，與 root-pid 相同>
+root-pid=<進程樹根 PID>
+root-process-name=<根程序名稱，例如 cmd>
+root-parent-pid=<根程序的 ParentProcessId>
+root-started-at-utc=<ISO 8601 UTC 時間>
+process-tree-scope=<Windows: pid-and-descendants；Unix: process-group>
+process-tree-query=<Windows: Win32_Process.ParentProcessId；Unix: ps PGID 成員>
+process-group-id=<Unix process group ID；Windows 不適用>
+work-root=<sourceRoot 的絕對路徑>
+started-at-utc=<ISO 8601 UTC 時間>
 ```
 
-`codex --version` 失敗時，先回報執行檔不存在或設定載入失敗的具體訊息。版本檢查失敗不等同派工工作失敗，需先處理執行環境問題。
+派工前掃描同一個 `sourceRoot` 的 `codex-pid-*.txt`。逐檔解析 `work-root`、`root-pid`（舊格式回退讀取 `pid`）與進程樹欄位，只處理 `work-root` 與目前絕對路徑相同的記錄。Windows 以 `Win32_Process` 的 `ProcessId`、`ParentProcessId`、`Name` 與 `CreationDate` 查詢根程序及其所有後代，遞迴追查每一層子程序；根程序已結束但仍有任何後代存活時，仍判定為活躍實例。Unix 以 PID 檔的 `process-group-id` 查詢 process group 成員，群組內仍有任何程序存活時，仍判定為活躍實例。歷史進程樹已完全結束時不阻塞派工；發現活躍 Codex 實例時回報活躍 PID 記錄檔、根 PID 與存活後代或 process group，停止流程，不啟動第二個實例。
+
+中斷或重派前讀取對應 PID 記錄並解析 `root-pid`（舊格式使用 `pid`）。Windows 執行 `taskkill /PID <root-pid> /T /F`，由系統終止根程序及整個後代樹。若根程序已先結束，先以 `Win32_Process.ParentProcessId` 找出仍存活的後代，再對每個仍存活的樹根執行 `taskkill /PID <descendant-pid> /T /F`，直到重新查詢不到任何後代。Unix 執行 `kill -TERM -- -<process-group-id>` 終止整個 process group；若依中斷策略需要強制收尾，對同一個 process group 使用 `kill -KILL -- -<process-group-id>`。終止後再次以進程樹或 process group 查詢確認全部程序已結束，確認完成後才可重派。只終止 PID 檔記錄的單一進程或包裝 Codex 的 shell 不符合本契約。
+
+PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移除或 `scratch` 清理而刪除。PID 檔案是否存在不能單獨作為並行判定依據，必須合併 `work-root` 比對結果與完整進程樹或 process group 的存活狀態；wrapper 已結束但子進程仍存活時，不得判定為可並行啟動。
+
+## Phase commit 回收與驗證
+
+Workflow `Implement` 的 dispatch worktree 回收只處理 `baseSha..dispatchHead` 內的派工機械 commit。`baseSha` 是建立 worktree 前記錄的來源 `HEAD`，`dispatchHead` 是 Codex 結束後 dispatch worktree 的終點 commit。
+
+主 Agent 先列出 `baseSha..dispatchHead` 的機械 commit，依 `design.md` 的 Phase 對照每筆變更，完成 Phase 重整。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。
+
+回收不將全部 Phase squash 成單一 commit，不以 merge commit 取代 Phase commit，也不使用 cherry-pick 逐條搬移機械 commit。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
+
+Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執行重整後驗證，再同步報告與核准交接產物，最後才移除 dispatch worktree。Design、Review 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物。
+
+## 執行前提與可用性檢查
+
+派工前確認目前 session 能執行本地命令。Windows 先以 `Get-Command codex.cmd` 解析 PATH 上的實體命令，將結果保存為 `codexPath`，再以該路徑取得版本並檢查啟動環境。
+
+```powershell
+$codexCommand = Get-Command codex.cmd -ErrorAction SilentlyContinue
+if ($null -eq $codexCommand) {
+  throw "codex.cmd was not found on PATH."
+}
+$codexPath = $codexCommand.Source
+& $codexPath --version
+```
+
+版本檢查失敗時，先回報執行檔不存在或設定載入失敗的具體訊息。版本檢查失敗不等同派工工作失敗，需先處理執行環境問題。
 
 | Session 型態 | 派工能力 | 處置 |
 | --- | --- | --- |
@@ -25,81 +102,140 @@ codex --version
 | Dispatch 對話本身或 cloud session | 不可發動 | 明確回報「當前 session 不載入全域規則，請於 local Code session 發動」，不嘗試執行 `codex` |
 | Dispatch 派生的 local Code session | 可發動 | 依本 Skill 的指令契約執行 |
 
-派工命令執行前由主 Agent 準備 `<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/report/`。這是主 Agent 的事件流與報告落點前置作業，不屬於 Codex 子工作。唯讀派遣的 Codex 子工作不得建立或修改 `history/` 目錄；第 7 欄報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 依第 6 欄的明文寫入例外處理。若主 Agent 無法完成前置作業，停止啟動並回報缺件。重導向與 `--output-last-message` 不會建立父目錄，目錄缺少時 shell 會先失敗。
+派工命令執行前由主 Agent 準備 `sourceRoot\.local\ai-sessions\handoff`、`sourceRoot\.local\ai-sessions\history`，以及 `dispatchRoot\.local\ai-sessions\handoff`、`report`、`history` 與 `scratch`。來源 `handoff\requirement-summary.md` 與來源 `history` 的覆寫備份保存跨派遣交接及 PID 取證；事件流、報告與一次性輸出預設落在 dispatch worktree。資源派遣若需更新來源需求摘要或其 history 備份，啟動命令必須以 `--add-dir` 授權上述兩個來源目錄。報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 依派遣契約的明文寫入例外處理。若主 Agent 無法完成前置作業，停止啟動並回報缺件。重導向與 `--output-last-message` 不會建立父目錄，目錄缺少時 shell 會先失敗。
 
 ## 指令契約
 
-正式啟動使用 `codex exec`，沿用既有 session 使用 `codex exec resume`。實際父層選項位置依下方範例執行。
+正式啟動使用 `codex exec`，沿用既有 session 使用 `codex exec resume`。`sourceRoot`、`dispatchRoot`、`<slug>` 與各輸出檔案路徑都使用絕對路徑；`dispatchRoot` 固定為 `<sourceRoot>\.local\ai-sessions\worktrees\<slug>`。事件流檔名使用時間戳，不另外加入 slug。
 
-`<work-root>`、`<slug>` 與各輸出檔案路徑都使用絕對路徑。`<slug>` 限用小寫英數與連字號，且在同一個 `<work-root>` 內不得重複。事件流檔名使用時間戳，不另外加入 slug。
+一般派工的 Codex 工作目錄固定為 `dispatchRoot`。主 Agent 先建立 prompt scratch 檔，再從檔案讀取單一 prompt 字串。PowerShell 不可將未處理的 `$prompt` 直接放入 `Start-Process -ArgumentList`，因為該參數會把陣列重新組合成單一命令列字串，內容中的引號、空白與換行會在再次解析時改變引數邊界。PowerShell 範例改以 `ProcessStartInfo.ArgumentList` 逐項傳遞固定選項，將 prompt 參數設為 `-`，再把 scratch 的完整內容寫入 `StandardInput`；`-` 是 Codex 從 stdin 讀取 prompt 的指示，直接寫入 stdin 可保留完整多行內容。`--cd`、`--sandbox`、`--add-dir` 與 `--search` 是 `codex` 的父層選項，必須放在 `exec` 或 `exec resume` 前方；`--output-last-message` 屬執行子命令的選項，放在子命令後方。
 
-一般派工使用下列契約。若工作需要網路查證，將 `--search` 放在 `exec` 前方的父層選項位置。
-
-以下正式派工的 `bash` 範例適用於 Bash 或 WSL。Bash 使用反斜線作為行接續，使用 `>` 與 `2>&1` 將標準輸出與錯誤輸出合併，並在命令末尾加上 `&` 以背景執行。
-
-Windows PowerShell 不使用反斜線作為行接續，改用反引號。PowerShell 的 `Start-Process` 可啟動背景程序，標準輸出與錯誤輸出分別使用 `-RedirectStandardOutput` 與 `-RedirectStandardError`，再使用 `Wait-Process` 等待完成。兩個輸出檔應分開保存，避免將兩個串流指定到同一個檔案。
+以下 `bash` 範例適用於 Bash 或 WSL。沒有網路需求時省略 `--search`，沒有 worktree 外寫入需求時省略 `--add-dir`。
 
 ```bash
-codex \
-  --cd "<work-root>" \
+sourceRoot="<sourceRoot>"
+dispatchRoot="$sourceRoot/.local/ai-sessions/worktrees/<slug>"
+sourceHistoryDir="$sourceRoot/.local/ai-sessions/history"
+historyDir="$dispatchRoot/.local/ai-sessions/history"
+scratchDir="$dispatchRoot/.local/ai-sessions/scratch"
+timestamp="$(date +%Y%m%d_%H%M%S)"
+promptPath="$scratchDir/codex-prompt-$timestamp.md"
+lastMessagePath="$historyDir/codex-last-message-$timestamp.md"
+eventStreamPath="$historyDir/codex-exec-$timestamp.jsonl"
+errorStreamPath="$historyDir/codex-exec-$timestamp.stderr.log"
+
+cat > "$promptPath" <<'PROMPT'
+<prompt>
+PROMPT
+prompt="$(cat "$promptPath")"
+
+setsid codex \
+  --cd "$dispatchRoot" \
   --sandbox workspace-write \
-  --add-dir "<work-root> 外的寫入落點" \
-  --search \
   exec \
   --json \
-  --output-last-message "<work-root>/.local/ai-sessions/history/codex-last-message-<yyyyMMdd_HHmmss>.md" \
-  "<prompt>" \
-  > "<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl" 2>&1 &
+  --output-last-message "$lastMessagePath" \
+  "$prompt" \
+  > "$eventStreamPath" 2> "$errorStreamPath" &
+codexPid=$!
+startedAtUtc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+rootProcessName="$(ps -o comm= -p "$codexPid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+rootParentPid="$(ps -o ppid= -p "$codexPid" | tr -d '[:space:]')"
+processGroupId="$(ps -o pgid= -p "$codexPid" | tr -d '[:space:]')"
+printf 'pid=%s\nroot-pid=%s\nroot-process-name=%s\nroot-parent-pid=%s\nroot-started-at-utc=%s\nprocess-tree-scope=process-group\nprocess-tree-query=ps-pgid-membership\nprocess-group-id=%s\nwork-root=%s\nstarted-at-utc=%s\n' "$codexPid" "$codexPid" "$rootProcessName" "$rootParentPid" "$startedAtUtc" "$processGroupId" "$sourceRoot" "$startedAtUtc" > "$sourceHistoryDir/codex-pid-$timestamp.txt"
 ```
 
-Windows PowerShell 等價寫法如下。
+Unix 範例以 `setsid` 建立專用 process group，`codexPid` 是該群組的根程序；若環境沒有 `setsid`，停止並回報缺件，不得退回只記錄單一 PID。Windows PowerShell 使用 `Get-Command codex.cmd` 解析 PATH 上的實體命令。解析失敗時回報缺件並停止。PowerShell 使用 `ProcessStartInfo` 的 `ArgumentList` 傳遞固定選項，以 `-` 指示 Codex 從標準輸入讀取 prompt；成功啟動後立即查詢根程序的 `Name` 與 `ParentProcessId` 並記錄進程樹欄位，再分別保存標準輸出與錯誤輸出並使用 `WaitForExit()` 等待完成。
 
 ```powershell
-$workRoot = "<work-root>"
-$historyDir = Join-Path $workRoot ".local\ai-sessions\history"
+$sourceRoot = "<sourceRoot>"
+$dispatchRoot = Join-Path $sourceRoot ".local\ai-sessions\worktrees\<slug>"
+$sourceHistoryDir = Join-Path $sourceRoot ".local\ai-sessions\history"
+$historyDir = Join-Path $dispatchRoot ".local\ai-sessions\history"
+$scratchDir = Join-Path $dispatchRoot ".local\ai-sessions\scratch"
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$promptPath = Join-Path $scratchDir "codex-prompt-$timestamp.md"
 $lastMessagePath = Join-Path $historyDir "codex-last-message-$timestamp.md"
 $eventStreamPath = Join-Path $historyDir "codex-exec-$timestamp.jsonl"
 $errorStreamPath = Join-Path $historyDir "codex-exec-$timestamp.stderr.log"
-$prompt = "<prompt>"
 
-$process = Start-Process -FilePath "codex" `
-  -ArgumentList @(
-    "--cd", $workRoot,
-    "--sandbox", "workspace-write",
-    "--add-dir", "<work-root> 外的寫入落點",
-    "--search",
-    "exec",
-    "--json",
-    "--output-last-message", $lastMessagePath,
-    $prompt
-  ) `
-  -RedirectStandardOutput $eventStreamPath `
-  -RedirectStandardError $errorStreamPath `
-  -PassThru
+$codexCommand = Get-Command codex.cmd -ErrorAction SilentlyContinue
+if ($null -eq $codexCommand) {
+  throw "codex.cmd was not found on PATH."
+}
+$codexPath = $codexCommand.Source
+[System.IO.File]::WriteAllText($promptPath, "<prompt>", [System.Text.UTF8Encoding]::new($false))
+$prompt = Get-Content -LiteralPath $promptPath -Raw
 
-$process | Wait-Process
+$startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName = $codexPath
+$startInfo.UseShellExecute = $false
+$startInfo.RedirectStandardInput = $true
+$startInfo.RedirectStandardOutput = $true
+$startInfo.RedirectStandardError = $true
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$startInfo.StandardInputEncoding = $utf8NoBom
+$startInfo.StandardOutputEncoding = $utf8NoBom
+$startInfo.StandardErrorEncoding = $utf8NoBom
+[void]$startInfo.ArgumentList.Add("--cd")
+[void]$startInfo.ArgumentList.Add($dispatchRoot)
+[void]$startInfo.ArgumentList.Add("--sandbox")
+[void]$startInfo.ArgumentList.Add("workspace-write")
+[void]$startInfo.ArgumentList.Add("exec")
+[void]$startInfo.ArgumentList.Add("--json")
+[void]$startInfo.ArgumentList.Add("--output-last-message")
+[void]$startInfo.ArgumentList.Add($lastMessagePath)
+[void]$startInfo.ArgumentList.Add("-")
+
+$process = [System.Diagnostics.Process]::new()
+$process.StartInfo = $startInfo
+if (-not $process.Start()) {
+  throw "codex.cmd could not be started."
+}
+$startedAtUtc = [DateTime]::UtcNow.ToString("o")
+$rootProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
+if ($null -eq $rootProcess) {
+  throw "The started process could not be found in Win32_Process."
+}
+$pidPath = Join-Path $sourceHistoryDir "codex-pid-$timestamp.txt"
+$pidText = @(
+  "pid=$($process.Id)"
+  "root-pid=$($process.Id)"
+  "root-process-name=$($rootProcess.Name)"
+  "root-parent-pid=$($rootProcess.ParentProcessId)"
+  "root-started-at-utc=$startedAtUtc"
+  "process-tree-scope=pid-and-descendants"
+  "process-tree-query=Win32_Process.ParentProcessId"
+  "work-root=$sourceRoot"
+  "started-at-utc=$startedAtUtc"
+) -join [Environment]::NewLine
+[System.IO.File]::WriteAllText($pidPath, $pidText, [System.Text.UTF8Encoding]::new($false))
+
+$stdoutTask = $process.StandardOutput.ReadToEndAsync()
+$stderrTask = $process.StandardError.ReadToEndAsync()
+$process.StandardInput.Write($prompt)
+$process.StandardInput.Close()
+$process.WaitForExit()
+$stdout = $stdoutTask.GetAwaiter().GetResult()
+$stderr = $stderrTask.GetAwaiter().GetResult()
+[System.IO.File]::WriteAllText($eventStreamPath, $stdout, [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllText($errorStreamPath, $stderr, [System.Text.UTF8Encoding]::new($false))
 ```
 
-沒有網路需求時省略 `--search`。沒有 work-root 外寫入落點時省略 `--add-dir`。參數職責如下。
+`--cd` 固定指向 `dispatchRoot`。`--sandbox` 使用 `workspace-write`，隔離由 dispatch worktree 提供。`--add-dir` 只有在需求明確需要 worktree 外寫入時才加入，並列出絕對路徑。資源派遣若要更新來源 `requirement-summary.md` 或寫入其覆寫備份，必須在 `exec` 前加入下列兩個父層選項，且不可改用 `dispatchRoot` 作為寫入目標。
 
-| 參數 | 用途 |
-| --- | --- |
-| `--cd` | 指定 Codex 執行時的工作根目錄 |
-| `--sandbox` | 指定執行權限。寫入型派工使用 `workspace-write`，唯讀查證使用 `read-only` |
-| `--add-dir` | 授權 work-root 以外的必要寫入落點 |
-| `--search` | 啟用 Codex 的網路查證能力，位置必須在 `exec` 前方 |
-| `--json` | 將事件流輸出為 JSON Lines |
-| `--output-last-message` | 將最後一則訊息寫入獨立檔案，供事件流無法落地時回退取證 |
-| `>` | 將事件流導向 `history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` |
+```text
+--add-dir <sourceRoot>\.local\ai-sessions\handoff
+--add-dir <sourceRoot>\.local\ai-sessions\history
+```
 
-`--cd`、`--sandbox`、`--add-dir` 與 `--search` 都是 `codex` 的父層選項。它們必須放在 `exec` 或 `exec resume` 前方。`--output-last-message` 屬執行子命令的選項，放在 `exec` 後方。
+`--search` 只有在需求明確需要網路查證時才加入，且放在 `exec` 或 `exec resume` 前方。`--json` 將事件流輸出為 JSON Lines，`--output-last-message` 將最後一則訊息寫入獨立檔案。
 
 Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 1. 執行角色的觸發詞或 skill 名稱。Workflow 派工使用 `Implement` 的觸發詞；資源派遣使用派遣單第 2 欄指定的角色或 skill。
 2. Workflow 派工使用 `design.md` 的絕對路徑，資源派遣使用派遣單的絕對路徑。
-3. `<work-root>` 的絕對路徑。
+3. `sourceRoot`、`dispatchRoot` 與相關產出落點的絕對路徑。
 4. 回報格式、產出落點與驗收條件。Workflow 派工另須要求結案報告包含輪起點 SHA、開工基準線、輪終點 commit，以及「判定為既有實作而未動工」節。續 session 必須重述前輪該節的全部條目。
 
 ## 模型檔位規則
@@ -144,7 +280,7 @@ Codex 遇到不存在的 profile 可能靜默回退預設值並以成功結束�
 
 ## 背景執行與三出口等待
 
-主 Agent 以背景方式執行 `codex exec`，持續觀察背景指令狀態與事件流檔案大小。事件流檔案大小是執行中的唯一可觀測存活訊號。
+主 Agent 以背景方式執行 `codex exec`，持續觀察背景指令狀態與事件流檔案大小。事件流檔案大小只表示事件流是否有新進度；背景進程存活與並行檢查依 PID 記錄的完整進程樹或 process group 判定。
 
 | 出口 | 判定條件 | 後續動作 |
 | --- | --- | --- |
@@ -170,73 +306,142 @@ thread id 事件格式如下。
 
 由後往前掃描事件流，取最後一則符合目前派工類型的 `agent_message`。Workflow 派工取同時包含「驗證證據」與輪起點 SHA、開工基準線、輪終點 commit 三欄的訊息，寫入 `report/implement-closure-report.md`。資源派遣取符合派遣單第 8 欄要求的訊息，寫入派遣單第 7 欄指定的落點。
 
-主 Agent 將 `thread.started` 的 `thread_id` 寫入 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt`，續 session 先讀取該檔。
+主 Agent 將 `thread.started` 的 `thread_id` 寫入 `dispatchRoot\.local\ai-sessions\history\codex-thread-<slug>.txt`，同步回來源工作樹後保留於 `sourceRoot\.local\ai-sessions\history`，續 session 先讀取同一份記錄。
 
 取證失效時依下列狀態處理。
 
 - F1。事件流中沒有符合條件的結案訊息。判定必要欄位缺失，Workflow 派工依續 session 契約補齊；資源派遣依回收三態判定為未達成驗收條件。
-- F2。事件流沒有落地。回退讀取本輪 `history/codex-last-message-<yyyyMMdd_HHmmss>.md`，並在回報中標示取證來源為 last-message 檔。
+- F2。事件流沒有落地。回退讀取本輪 `dispatchRoot\.local\ai-sessions\history\codex-last-message-<yyyyMMdd_HHmmss>.md`，並在回報中標示取證來源為 last-message 檔。
 - F3。事件流含多則符合條件的訊息。取最後一則，並以其輪終點 commit 或回報欄位作為最新值。
 
-事件流、thread id 與 last-message 檔都保留於 `history/`，直到回收判定完成。`history/` 不屬於自動清理範圍。
+事件流、thread id 與 last-message 檔在回收判定完成前保留於 `dispatchRoot\.local\ai-sessions\history`。同步回來源工作樹後，來源 `history` 依既有保留規則保存取證，不屬於自動清理範圍。
 
 ## 續 session 與跨介面接手
 
 若需要補齊欄位或修正純技術驗收問題，依上一輪事件流的 `thread.started` 事件取得 `<thread-id>`，再使用同一 session 續行。
 
-以下 `bash` 範例適用於 Bash 或 WSL。Bash 使用反斜線作為行接續；需要背景執行時在命令末尾加上 `&`，需要記錄標準輸出與錯誤輸出時使用 `>` 與 `2>&1`。
-
-Windows PowerShell 使用反引號作為行接續。使用 `Start-Process` 背景執行 `exec resume`，以 `-RedirectStandardOutput` 與 `-RedirectStandardError` 分開保存輸出，再使用 `Wait-Process` 等待完成。
+以下 `bash` 範例適用於 Bash 或 WSL。續 session 沿用同一個 `dispatchRoot` 與原派工的 sandbox 邊界。Prompt 仍先寫入 `scratch`，再以 `$(cat "$promptPath")` 讀取單一字串；需要背景執行時在命令末尾加上 `&`，標準輸出與錯誤輸出分別保存。
 
 ```bash
-codex \
-  --cd "<work-root>" \
-  --sandbox "<sandbox-mode>" \
-  --add-dir "<work-root> 外的寫入落點" \
+sourceRoot="<sourceRoot>"
+dispatchRoot="$sourceRoot/.local/ai-sessions/worktrees/<slug>"
+sourceHistoryDir="$sourceRoot/.local/ai-sessions/history"
+historyDir="$dispatchRoot/.local/ai-sessions/history"
+scratchDir="$dispatchRoot/.local/ai-sessions/scratch"
+timestamp="$(date +%Y%m%d_%H%M%S)"
+promptPath="$scratchDir/codex-prompt-$timestamp.md"
+lastMessagePath="$historyDir/codex-last-message-$timestamp.md"
+eventStreamPath="$historyDir/codex-exec-resume-$timestamp.jsonl"
+errorStreamPath="$historyDir/codex-exec-resume-$timestamp.stderr.log"
+
+cat > "$promptPath" <<'PROMPT'
+<prompt>
+PROMPT
+prompt="$(cat "$promptPath")"
+
+setsid codex \
+  --cd "$dispatchRoot" \
+  --sandbox workspace-write \
   exec resume "<thread-id>" \
   --json \
-  -o "<work-root>/.local/ai-sessions/history/codex-last-message-<yyyyMMdd_HHmmss>.md" \
-  "<prompt>"
+  --output-last-message "$lastMessagePath" \
+  "$prompt" \
+  > "$eventStreamPath" 2> "$errorStreamPath" &
+codexPid=$!
+startedAtUtc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+rootProcessName="$(ps -o comm= -p "$codexPid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+rootParentPid="$(ps -o ppid= -p "$codexPid" | tr -d '[:space:]')"
+processGroupId="$(ps -o pgid= -p "$codexPid" | tr -d '[:space:]')"
+printf 'pid=%s\nroot-pid=%s\nroot-process-name=%s\nroot-parent-pid=%s\nroot-started-at-utc=%s\nprocess-tree-scope=process-group\nprocess-tree-query=ps-pgid-membership\nprocess-group-id=%s\nwork-root=%s\nstarted-at-utc=%s\n' "$codexPid" "$codexPid" "$rootProcessName" "$rootParentPid" "$startedAtUtc" "$processGroupId" "$sourceRoot" "$startedAtUtc" > "$sourceHistoryDir/codex-pid-$timestamp.txt"
 ```
 
-Windows PowerShell 等價寫法如下。
+Windows PowerShell 以 `(Get-Command codex.cmd).Source` 解析實體路徑。解析失敗時停止並回報缺件。使用 `ProcessStartInfo` 的 `ArgumentList` 傳遞固定選項，以 `-` 指示 Codex 從標準輸入讀取 prompt；續 session 啟動成功後同樣立即查詢根程序的 `Name` 與 `ParentProcessId` 並寫入來源工作樹的 PID 記錄，再分別保存標準輸出與錯誤輸出並使用 `WaitForExit()` 等待完成。
 
 ```powershell
-$workRoot = "<work-root>"
-$historyDir = Join-Path $workRoot ".local\ai-sessions\history"
+$sourceRoot = "<sourceRoot>"
+$dispatchRoot = Join-Path $sourceRoot ".local\ai-sessions\worktrees\<slug>"
+$sourceHistoryDir = Join-Path $sourceRoot ".local\ai-sessions\history"
+$historyDir = Join-Path $dispatchRoot ".local\ai-sessions\history"
+$scratchDir = Join-Path $dispatchRoot ".local\ai-sessions\scratch"
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+$promptPath = Join-Path $scratchDir "codex-prompt-$timestamp.md"
 $lastMessagePath = Join-Path $historyDir "codex-last-message-$timestamp.md"
 $eventStreamPath = Join-Path $historyDir "codex-exec-resume-$timestamp.jsonl"
 $errorStreamPath = Join-Path $historyDir "codex-exec-resume-$timestamp.stderr.log"
-$prompt = "<prompt>"
 
-$process = Start-Process -FilePath "codex" `
-  -ArgumentList @(
-    "--cd", $workRoot,
-    "--sandbox", "<sandbox-mode>",
-    "--add-dir", "<work-root> 外的寫入落點",
-    "exec", "resume", "<thread-id>",
-    "--json",
-    "-o", $lastMessagePath,
-    $prompt
-  ) `
-  -RedirectStandardOutput $eventStreamPath `
-  -RedirectStandardError $errorStreamPath `
-  -PassThru
+$codexCommand = Get-Command codex.cmd -ErrorAction SilentlyContinue
+if ($null -eq $codexCommand) {
+  throw "codex.cmd was not found on PATH."
+}
+$codexPath = $codexCommand.Source
+[System.IO.File]::WriteAllText($promptPath, "<prompt>", [System.Text.UTF8Encoding]::new($false))
+$prompt = Get-Content -LiteralPath $promptPath -Raw
 
-$process | Wait-Process
+$startInfo = [System.Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName = $codexPath
+$startInfo.UseShellExecute = $false
+$startInfo.RedirectStandardInput = $true
+$startInfo.RedirectStandardOutput = $true
+$startInfo.RedirectStandardError = $true
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$startInfo.StandardInputEncoding = $utf8NoBom
+$startInfo.StandardOutputEncoding = $utf8NoBom
+$startInfo.StandardErrorEncoding = $utf8NoBom
+[void]$startInfo.ArgumentList.Add("--cd")
+[void]$startInfo.ArgumentList.Add($dispatchRoot)
+[void]$startInfo.ArgumentList.Add("--sandbox")
+[void]$startInfo.ArgumentList.Add("workspace-write")
+[void]$startInfo.ArgumentList.Add("exec")
+[void]$startInfo.ArgumentList.Add("resume")
+[void]$startInfo.ArgumentList.Add("<thread-id>")
+[void]$startInfo.ArgumentList.Add("--json")
+[void]$startInfo.ArgumentList.Add("--output-last-message")
+[void]$startInfo.ArgumentList.Add($lastMessagePath)
+[void]$startInfo.ArgumentList.Add("-")
+
+$process = [System.Diagnostics.Process]::new()
+$process.StartInfo = $startInfo
+if (-not $process.Start()) {
+  throw "codex.cmd could not be started."
+}
+$startedAtUtc = [DateTime]::UtcNow.ToString("o")
+$rootProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
+if ($null -eq $rootProcess) {
+  throw "The resumed process could not be found in Win32_Process."
+}
+$pidPath = Join-Path $sourceHistoryDir "codex-pid-$timestamp.txt"
+$pidText = @(
+  "pid=$($process.Id)"
+  "root-pid=$($process.Id)"
+  "root-process-name=$($rootProcess.Name)"
+  "root-parent-pid=$($rootProcess.ParentProcessId)"
+  "root-started-at-utc=$startedAtUtc"
+  "process-tree-scope=pid-and-descendants"
+  "process-tree-query=Win32_Process.ParentProcessId"
+  "work-root=$sourceRoot"
+  "started-at-utc=$startedAtUtc"
+) -join [Environment]::NewLine
+[System.IO.File]::WriteAllText($pidPath, $pidText, [System.Text.UTF8Encoding]::new($false))
+
+$stdoutTask = $process.StandardOutput.ReadToEndAsync()
+$stderrTask = $process.StandardError.ReadToEndAsync()
+$process.StandardInput.Write($prompt)
+$process.StandardInput.Close()
+$process.WaitForExit()
+$stdout = $stdoutTask.GetAwaiter().GetResult()
+$stderr = $stderrTask.GetAwaiter().GetResult()
+[System.IO.File]::WriteAllText($eventStreamPath, $stdout, [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllText($errorStreamPath, $stderr, [System.Text.UTF8Encoding]::new($false))
 ```
 
-`exec resume` 不接受父層選項。`--cd`、`--sandbox` 與 `--add-dir` 必須放在 `exec resume` 前方，`-o` 放在子命令後方。需要網路查證時，將 `--search` 加在 `exec resume` 前方。
-
-`<sandbox-mode>` 必須沿用原派工的 sandbox 邊界。當派遣單包含第 7 欄報告檔或 `<work-root>/.local/ai-sessions/report/exceptions.md` 的明文寫入例外時，沿用足以寫入該落點的 sandbox 模式；除此以外不得修改目標物件、執行建置與測試或建立 commit。續 session 不得擴大其他寫入範圍或提高 sandbox 權限。
+`--cd`、`--sandbox`、`--add-dir` 與 `--search` 都是 `codex` 的父層選項，必須放在 `exec resume` 前方。`--output-last-message` 屬執行子命令的選項，放在子命令後方。`<sandbox-mode>` 必須沿用原派工邊界；續 session 不擴大其他寫入範圍或提高 sandbox 權限。需要網路查證時，將 `--search` 加在 `exec resume` 前方。
 
 讀不到 thread id 檔案時開新 session，並在 prompt 附上設計文件與退回報告的絕對路徑。跨介面接手視為新 session，依序讀取下列交接物重建狀態。
 
-1. `<work-root>/.local/ai-sessions/handoff/design.md`。
-2. `<work-root>/.local/ai-sessions/handoff/requirement-summary.md`。
-3. 本輪 `history/codex-exec-<yyyyMMdd_HHmmss>.jsonl`。
-4. 事件流取證產生的 `report/implement-closure-report.md` 或派遣單第 7 欄指定報告。
+1. `dispatchRoot\.local\ai-sessions\handoff\design.md`。
+2. `sourceRoot\.local\ai-sessions\handoff\requirement-summary.md`。需要由 Codex 寫入或讀取來源交接時，沿用啟動命令的 `--add-dir` 授權。
+3. 本輪 `dispatchRoot\.local\ai-sessions\history\codex-exec-<yyyyMMdd_HHmmss>.jsonl`。
+4. 事件流取證產生的 `dispatchRoot\.local\ai-sessions\report\implement-closure-report.md` 或派遣單第 7 欄指定報告。
 
 ## sandbox 外環境動作
 
@@ -258,17 +463,19 @@ $process | Wait-Process
 
 ## 兩種派工差異
 
-共用本 Skill 的機制。Workflow 派工與資源派遣只以輸入、產出與結案要求區分。
+共用本 Skill 的機制。Workflow 派工與資源派遣只以輸入、產出與結案要求區分；兩者都先使用同一個 dispatch worktree。
 
-| 面向 | Workflow 派工（`Implement`） | 資源派遣（`Review`、`Engineer`、其餘一切） |
+| 面向 | Workflow 派工（`Implement`） | 資源派遣（`Design`、`Review`、`Engineer`、其餘一切） |
 | --- | --- | --- |
-| 必備輸入 | `<work-root>/.local/ai-sessions/handoff/design.md` 絕對路徑 | `<work-root>/.local/ai-sessions/handoff/dispatch-order-<slug>.md` 派遣單絕對路徑 |
-| 產出落點 | `<work-root>/.local/ai-sessions/report/implement-closure-report.md` | `<work-root>/.local/ai-sessions/report/dispatch-report-<slug>.md` |
-| 結案要求 | 「驗證證據」節的輪起點 SHA、開工基準線、輪終點 commit 三欄皆有值 | 逐條執行派遣單第 5 欄的判定方式，得出本 Skill 的「收下」、「退回」或「升級」之一 |
+| 必備輸入 | `dispatchRoot\.local\ai-sessions\handoff\design.md` 絕對路徑 | `dispatchRoot\.local\ai-sessions\handoff\dispatch-order-<slug>.md` 派遣單絕對路徑 |
+| 產出落點 | `dispatchRoot\.local\ai-sessions\report\implement-closure-report.md`，回收後同步至 `sourceRoot` | `dispatchRoot\.local\ai-sessions\report\dispatch-report-<slug>.md`，回收後同步至 `sourceRoot` |
+| 結案要求 | 「驗證證據」節的輪起點 SHA、開工基準線、輪終點 commit 三欄皆有值 | 先通過 `RecoveryPrecheck`，再逐條執行派遣單第 5 欄的命令並得出「收下」、「退回」或「升級」之一 |
+
+`requirement-summary.md` 是跨派遣的持久交接檔，固定位於 `sourceRoot\.local\ai-sessions\handoff\requirement-summary.md`；覆寫前備份固定位於 `sourceRoot\.local\ai-sessions\history`。這兩個來源落點不屬於 `dispatchRoot` 的派遣產出，資源派遣若需寫入它們，必須在 `exec` 或 `exec resume` 前以 `--add-dir` 分別授權來源 `handoff` 與 `history` 目錄。
 
 ## 派遣單契約
 
-資源派遣使用 Markdown 派遣單，路徑為 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<slug>.md`。`<slug>` 限用小寫英數與連字號，同一個 `<work-root>` 內不得重複。八個欄位全部必填，缺少任一欄即視為契約未滿足。
+資源派遣使用 Markdown 派遣單，來源路徑為 `sourceRoot\.local\ai-sessions\handoff\dispatch-order-<slug>.md`，複製至 `dispatchRoot` 後供 Codex 讀取。派遣單屬該次派遣輸入；它與跨派遣的 `requirement-summary.md` 使用不同落點，後者仍固定在 `sourceRoot`。`<slug>` 限用小寫英數與連字號，同一個 `sourceRoot` 內不得重複。八個欄位全部必填，缺少任一欄即視為契約未滿足。
 
 | # | 欄位 | 內容要求 |
 | --- | --- | --- |
@@ -276,30 +483,50 @@ $process | Wait-Process
 | 2 | 執行角色 | Codex 端 Agent 觸發詞，例如「值班工程師」或 `review`，也可填 skill 名稱，例如 `fact-check-note` |
 | 3 | 目標物件 | 檔案、目錄或端點的絕對路徑，逐項列出 |
 | 4 | 任務內容 | 含動詞與具體對象，不使用「處理 X」或「改善 Y」等無法驗收的描述 |
-| 5 | 驗收條件 | 以表格逐列提供條件與判定方式 |
-| 6 | 邊界 | 列出不得改動的範圍。「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；非唯讀派遣同樣不建立 commit，commit 由主 Agent 回收後處理。派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。 |
+| 5 | 驗收條件與 Codex 命令 | 以表格逐列提供驗收條件與第三方可執行命令；Codex 必須回報命令原文與原始輸出，包含完整 stdout、完整 stderr、exit code 與執行時間 |
+| 6 | 執行邊界 | 描述工作類型、目標物件、允許的報告與交接寫入，以及不得修改目標物件等行為限制。第 6 欄不描述 repository 排除檔案清單，隔離由 dispatch worktree 與 `--cd` 提供。「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；非唯讀派遣同樣不建立 commit，commit 由主 Agent 回收後處理。派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 是所有派遣共用的明文寫入例外。需要完全不寫入任何檔案時，明文寫出「不產生任何檔案寫入」。 |
 | 7 | 產出落點 | 報告或產物的絕對路徑 |
-| 8 | 回報必備欄位 | Codex 端回報必須出現的欄位清單 |
+| 8 | 回報必備欄位 | Codex 端回報必須逐條列出第 5 欄命令原文、完整 stdout、完整 stderr、exit code、執行時間與判定結果 |
 
-第 5 欄的每條判定方式必須是第三方可執行的命令或機械檢查動作。格式如下。
+第 5 欄格式如下。
 
 ```markdown
-| # | 驗收條件 | 判定方式 |
+| # | 驗收條件 | Codex 命令 |
 | --- | --- | --- |
-| <n> | `<絕對路徑>` 存在且非空 | Read 該檔確認內容非空 |
-| <n> | 報告含「校閱時間」欄位且格式為 `YYYY-MM-DD HH:mm` | Grep `^- \*\*校閱時間\*\*：` |
+| <n> | `<absolute-path>` 存在且非空 | `Get-Item -LiteralPath '<absolute-path>'` |
+| <n> | 內容含指定欄位 | `rg -n '<pattern>' '<absolute-path>'` |
 ```
+
+建置與測試由主 Agent 自行執行，不列為 Codex 第 5 欄的命令輸出責任。主 Agent 依需要抽驗 Codex 回報的命令，不整套重跑；只有輸出與結論不一致的條件才重跑該條命令。
+
+## RecoveryPrecheck
+
+事件流取證後，先從符合目前派工類型的 `agent_message` 取最後一則結案訊息。結案訊息必須同時包含派遣單絕對路徑與 `<slug>`。缺少任一識別字時，狀態設為 `PromptNotDelivered`，修正啟動方式後重新派遣；此狀態不計入退回次數，也不進入第 5 欄驗收缺漏的退回計數。只有 `RecoveryPrecheck` 通過後，才可進入回收三態判定。
 
 ## 回收三態判定
 
-背景指令結束後，主 Agent 讀取派遣單第 7 欄的產出落點，依第 5 欄逐條執行判定方式。主 Agent 不以 Codex 端回報中的自述取代實際判定。派遣單第 8 欄必須要求 Codex 端逐條回報每條驗收條件的命令原文與完整輸出。主 Agent 以抽驗方式複核回報內容，對輸出與結論不一致的條件逐條重跑。回報只寫「已完成」而未附命令輸出者，該條計為未成立。
+背景指令結束後，主 Agent 先執行 `RecoveryPrecheck`，再讀取 dispatch worktree 內派遣單第 7 欄的產出落點，依第 5 欄逐條執行命令。主 Agent 不以 Codex 端回報中的自述取代實際判定。派遣單第 8 欄必須要求 Codex 端逐條回報每條驗收條件的命令原文與完整 stdout、完整 stderr、exit code 與執行時間。主 Agent 以抽驗方式複核回報內容，對輸出與結論不一致的條件只重跑該條命令。回報只寫「已完成」而未附命令輸出者，該條計為未成立。
 
-Codex 端無論派遣是否為唯讀，都不建立 commit。commit 由主 Agent 回收後處理。
+Codex 端不建立 commit。Workflow `Implement` 的機械 commit 由主 Agent 依 `design.md` Phase 重整後回收，資源派遣的報告與核准交接產物直接同步至來源工作樹。
 
 | 判定 | 成立條件 | 後續動作 |
 | --- | --- | --- |
-| 收下 | 產出落點檔案存在且非空，全部驗收條件逐條成立 | 進入 Claude 端整合，派遣結束 |
-| 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏、範圍溢出第 6 欄或未執行判定方式 | 依續 session 契約 resume，附未達成條件清單。退回上限 2 次 |
-| 升級 | 原因命中 `instructions.md` §1.5 升級兩道篩的三類拍板判準，或退回已達 2 次仍不成立 | 停止派遣，依「遇真問題全停」升級使用者拍板 |
+| 收下 | 產出落點檔案存在且非空，全部驗收條件逐條成立 | 同步報告與核准交接產物；Workflow `Implement` 進入 Phase commit 回收，資源派遣結束 |
+| 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏或未執行第 5 欄命令 | 依續 session 契約使用同一個 dispatch worktree resume，附未達成條件清單。退回上限 2 次；`PromptNotDelivered` 不計入此上限 |
+| 升級 | 原因命中 `instructions.md` §1.5 升級兩道篩的三類拍板判準，或退回已達 2 次仍不成立 | 保留 dispatch worktree 與證據，停止派遣，依「遇真問題全停」升級使用者拍板 |
 
-回報寫明「已完成」而判定方式未實際執行時，該條仍計為未成立。派遣報告固定寫入 `<work-root>/.local/ai-sessions/report/dispatch-report-<slug>.md`，除非派遣單第 7 欄指定其他產出落點。
+回收判定成立且不需續 session 時，先完成事件流、thread id、last-message、報告與核准交接產物同步，再依 Git 前置探針的路徑檢查移除 dispatch worktree。派遣報告固定同步至 `sourceRoot\.local\ai-sessions\report\dispatch-report-<slug>.md`，除非派遣單第 7 欄指定其他產出落點。
+
+## 結案報告與臨時 Git 提醒
+
+每次結案報告都要記錄 `gitOrigin` 與 marker 狀態。`gitOrigin=agent-created` 且 `sourceRoot\.local\ai-sessions\agent-created-git.marker` 仍存在時，報告加入下列資訊。
+
+```text
+臨時 Git 狀態：agent-created
+marker：<sourceRoot>\.local\ai-sessions\agent-created-git.marker（仍存在）
+清理提醒：提示使用者確認初版完成後，由使用者觸發臨時 Git 清理。
+```
+
+報告必須提示使用者觸發清理，Agent 不自行判定初版完成，也不執行 `.git` 清理。清理動作仍須重新讀取並驗證 marker 的 `schema`、`created-by` 與 `work-root`；marker 缺失、格式錯誤或路徑不一致時，報告標示拒絕清理並保留 `.git`。
+
+`gitOrigin=existing` 時，報告記錄來源工作樹沿用既有 Git，且未建立 Agent marker。dispatch worktree 被移除不代表來源 `.git` 可被清理。臨時 Git 的 marker 狀態與清理提醒屬結案資訊，不能取代使用者觸發的清理流程。

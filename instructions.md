@@ -177,7 +177,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 主 Agent 必須依下列順序判斷路由，不得跳步：
 
 1. **Persona 職稱 / 明確 Agent 名稱優先**：若命中 `Clarify`、`Implement`、`Editor`、`Engineer` 的職稱或明確 Agent 名稱，必須立即切換 Persona。
-2. **Workflow 階段次之**：若未命中 Persona，才判斷是否要於 Claude 端派生 `Design` 或 `UI Demo` sub-agent，或依「跨平台派工掛載點」判斷派工與選用的 Codex 端 Agent；審查與清理類工作分別使用 `Review`／`Frontend Review`／`API Contract`／`Cleanup`。
+2. **Workflow 階段次之**：若未命中 Persona，才判斷是否依「跨平台派工掛載點」派遣 Codex 執行端的 `Design`，或於 Claude 端派生 `UI Demo` sub-agent；審查與清理類工作分別使用 `Review`／`Frontend Review`／`API Contract`／`Cleanup`。
 3. **一般任務最後**：僅在前兩步都未命中時，主 Agent 才能自行處理一般分析、簡單修改或文件整理。
 
 #### Skill 載入紀律
@@ -214,7 +214,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 - **`Implement` 不是通用實作入口**：僅適用於 `Clarify => Design => Implement => Review` 流程中的實作階段。不走此流程的實作，不使用 `Implement` Persona。
 - **命中 Workflow 後主 Agent 不得代做**：當使用者訊息已明確指向既有 Workflow 階段時，主 Agent 只能做路由與 preflight，不得以主 Agent 身份直接執行該階段工作。
-- **`Implement` 啟動前置條件**：至少需有可讀取的 `design.md` 作為設計基準。`CONTEXT.local.md` 若存在可作為補充交接，但不是 `Implement` 的必要前置。缺少 `design.md` 時，主 Agent 必須停止並回報缺件，不得自行實作。
+- **`Implement` 啟動前置條件**：至少需有可讀取的 `design.md` 作為設計基準，且 `Clarify` 已確認 Design 驗收通過與檢查清單全部通過。`CONTEXT.local.md` 若存在可作為補充交接，但不是 `Implement` 的必要前置。缺少 `design.md` 或設計驗收未通過時，主 Agent 必須停止並回報原因，不得建立 `Implement` 派遣；驗收結果須在建立派遣前完成。
 
 #### work-root 判定
 
@@ -273,7 +273,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 | Agent | 平台 | 觸發方式 | 規則來源 | 說明 |
 | --- | --- | --- | --- | --- |
-| **Design** | Claude 派生 | Clarify 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | `~/.ai-agents/agents/claude/design.md` | 依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
+| **Design** | Codex | Clarify 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | 依「跨平台派工掛載點」由主 Agent 以資源派遣發動 | 讀取 `~/.ai-agents/agents/claude/design.md` 規則來源與需求摘要，產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
 | **UI Demo** | Claude 派生 | `Clarify` 判定為 C 線時派生；或使用者明確要求產出 Demo 畫面 | `~/.ai-agents/agents/claude/ui-demo.md` | 依需求摘要與樣式基準產出 Demo 畫面，供需求訪談與版面確認 |
 | **Implement** | Codex | Design 驗收通過後由主 Agent 依 Workflow 派工發動；亦可由使用者直接在 Codex 端進入實作 | `~/.ai-agents/agents/codex/implement.toml` | 依 `design.md` 逐項實作功能 |
 | **Review** | Codex | 主 Agent 依 Review 派遣判準以派遣單發動，或由使用者要求 | `~/.ai-agents/agents/codex/review.toml` | 依派遣單執行 Spec 與 Standards 審查，逐條回報驗收條件；設計歧義由同一 session 的 `Clarify` 就地裁決 |
@@ -301,6 +301,8 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | 灰帶預設 | 前兩層皆未命中 | 查證與執行類工作預設派工，判斷與表達留在 Claude 端 |
 
 使用者未明說由哪一端執行時，屬查證與執行類的工作預設派工，主 Agent 不得逕自處理。
+
+工作需要安裝套件或下載相依性時，主 Agent 必須先取得使用者當輪明確同意。未取得明確同意時停止派工，不啟動 Codex 或其他執行端。
 
 主 Agent 判斷某工作雖屬執行類但仍應自行處理時，必須在動手前以一句話說明理由，不得默默完成。
 
@@ -351,7 +353,7 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 | --- | --- | --- |
 | Clarify | 讀取檔案、搜尋程式碼；使用者確認後寫入 `<work-root>/.local/ai-sessions/handoff/requirement-summary.md`；執行需求意圖驗收時另可讀取 git diff 與各類審查報告；使用者當輪明確授權時就地執行指名範圍內的單點修改 | 修改任何程式碼檔案（授權例外見 `clarify.md`）；以全面 code review 取代需求意圖驗收 |
 | Implement | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
-| Design | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/handoff/design.md` | 修改任何程式碼檔案 |
+| Design（Codex） | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/handoff/design.md` | 不得修改任何程式碼或專案檔案 |
 | UI Demo | 讀取檔案與樣式基準、寫入 `<work-root>/.local/ai-sessions/ui-demo/` | 修改任何程式碼或專案檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
 | Review / Frontend Review / API Contract | 讀取檔案、讀取 git diff | 修改程式碼（僅產出報告）；執行建置與測試 |
