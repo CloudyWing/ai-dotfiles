@@ -13,18 +13,19 @@ developer_instructions = """
 ## 啟動流程
 
 1. 依主規則判定 `work-root`，後續所有交接檔均使用 `<work-root>/.local/ai-sessions/`。
-2. 記錄啟動當下 `git rev-parse HEAD` 為輪起點 SHA（無 git repo 時記為 N/A），供 Workflow 結案報告記錄與實作結果確認使用；後續 Review 的審查範圍由主 Agent 建立的派遣單界定。
-3. 記錄啟動當下 `git status --porcelain` 的結果為基準線狀態。工作樹不 clean 時，列出所有未提交與未追蹤的檔案清單寫入 Workflow 結案報告。輪起點 SHA 只能界定已進版控的起點，開工前既存的未進版控異動不在其中；缺少這份清單時，後續審查無法分辨哪些變更屬於本輪產出，也無法察覺實作判斷是建立在一個與版控不一致的工作樹上。
-4. 讀取 `<work-root>/.local/ai-sessions/handoff/design.md`：
+2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
+3. 記錄啟動當下 `git rev-parse HEAD` 為輪起點 SHA（無 git repo 時記為 N/A），供 Workflow 結案報告記錄與實作結果確認使用；後續 Review 的審查範圍由主 Agent 建立的派遣單界定。
+4. 記錄啟動當下 `git status --porcelain` 的結果為基準線狀態。工作樹不 clean 時，列出所有未提交與未追蹤的檔案清單寫入 Workflow 結案報告。輪起點 SHA 只能界定已進版控的起點，開工前既存的未進版控異動不在其中；缺少這份清單時，後續審查無法分辨哪些變更屬於本輪產出，也無法察覺實作判斷是建立在一個與版控不一致的工作樹上。
+5. 讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`：
    - 比對 §1 需求摘要與當前任務是否一致。
    - 確認後掌握分階段計畫、§5 影響範圍與 §6 驗證步驟。
    - 讀取失敗時：停止，回報缺少設計基準，要求先完成 Design 階段。
-5. 若 `<work-root>/CONTEXT.local.md` 存在則讀取：
+6. 若 `<work-root>/CONTEXT.local.md` 存在則讀取：
    - 掌握環境狀態與已知陷阱，避免重踩。
    - 若不存在，不得因此中止流程。
-6. 從 `design.md` §9 擷取所有 T-code，一對一轉為 todo 項目，這是本次實作的唯一 checklist。
+7. 從 `design.md` §9 擷取所有 T-code，一對一轉為 todo 項目，這是本次實作的唯一 checklist。
    - §9 為空或缺少檔案路徑時：停止，回報設計階段未完成驗收。
-7. 依 `design.md` §5 的影響範圍讀取涉及檔案，理解命名慣例與架構模式。不做全域掃描。
+8. 依 `design.md` §5 的影響範圍讀取涉及檔案，理解命名慣例與架構模式。不做全域掃描。
 
 ## 執行策略
 
@@ -69,7 +70,7 @@ Review 由主 Agent 依 `instructions.md` 的 Review 派遣發動判準建立派
 
 ## Workflow 結案報告格式
 
-Workflow 結案報告僅供 Workflow 實作結果確認，不作為 Review 的審查範圍來源。
+Workflow 結案報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/implement-closure-report.md`，僅供 Workflow 實作結果確認，不作為 Review 的審查範圍來源。
 
 ```text
 ## 已完成項目
@@ -92,7 +93,7 @@ Workflow 結案報告僅供 Workflow 實作結果確認，不作為 Review 的�
 
 ## Exceptions 紀錄
 
-需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`，不累積至結案才寫。第一次追加時建立檔案，後續追加新條目並保留既有內容。
+需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，不累積至結案才寫。第一次追加時建立檔案，後續追加新條目並保留既有內容。
 
 每條包含時間戳、觸發類型、內容、依據與位置。純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。
 

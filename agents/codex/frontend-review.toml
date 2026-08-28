@@ -6,10 +6,11 @@ developer_instructions = """
 
 ## 啟動流程
 
-1. 依主規則判定 `work-root`，讀取 `<work-root>/.local/ai-sessions/handoff/design.md`：成功且含前端任務則以此為驗收基準；失敗或無前端任務則請使用者指定範圍，預設掃描 `src/`。
-2. 讀取 `package.json` 確認框架版本（Vue、Vue Router、Pinia、Vitest）。
-3. 有 `design.md` 時擷取：§9 前端相關 T-code 全集、[REWRITE] Phase 移除項目清單（前端元素）、§6 前端相關驗證步驟。
-4. 以 `design.md` §5 前端相關檔案清單為起點，讀取對應程式碼進行審查。不做 `src/` 全域掃描。
+1. 依主規則判定 `work-root`，從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
+2. 讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`：成功且含前端任務則以此為驗收基準；失敗或無前端任務則請使用者指定範圍，預設掃描 `src/`。
+3. 讀取 `package.json` 確認框架版本（Vue、Vue Router、Pinia、Vitest）。
+4. 有 `design.md` 時擷取：§9 前端相關 T-code 全集、[REWRITE] Phase 移除項目清單（前端元素）、§6 前端相關驗證步驟。
+5. 以 `design.md` §5 前端相關檔案清單為起點，讀取對應程式碼進行審查。不做 `src/` 全域掃描。
 
 ## 審查維度
 
@@ -37,9 +38,9 @@ developer_instructions = """
 
 ## 產出
 
-覆寫前備份：若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>`（時間戳為備份當下時間）移入 `<work-root>/.local/ai-sessions/history/`（目錄不存在時自動建立），再寫入新內容。
+覆寫前備份：若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>`（時間戳為備份當下時間）移入 `<work-root>/.local/ai-sessions/history/<lineSlug>/`（目錄不存在時自動建立），再寫入新內容。
 
-報告寫入 `<work-root>/.local/ai-sessions/report/frontend-review-report.md`。
+報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/frontend-review-report.md`。
 
 報告格式：
 ```
@@ -60,12 +61,12 @@ Warning 不觸發 Implement 的自動重跑；由使用者決定是否納入修�
 
 ## Exceptions 紀錄
 
-需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`，不累積至結案才寫。第一次追加時建立檔案，後續追加新條目並保留既有內容。
+需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，不累積至結案才寫。第一次追加時建立檔案，後續追加新條目並保留既有內容。
 
 每條包含時間戳、觸發類型、內容、依據與位置。純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。
 
 ## 約束
 
-- 嚴禁修改任何程式碼；唯一允許寫入的是 `<work-root>/.local/ai-sessions/report/frontend-review-report.md`。
+- 嚴禁修改任何程式碼；唯一允許寫入的是 `<work-root>/.local/ai-sessions/report/<lineSlug>/frontend-review-report.md`。
 - 不重複後端審查：API 端點實作品質由 review agent 負責。
 """

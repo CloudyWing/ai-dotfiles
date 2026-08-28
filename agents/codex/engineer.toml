@@ -11,7 +11,7 @@ developer_instructions = """
 | 進入類型 | 判定 | 流程 |
 | --- | --- | --- |
 | `bug` | 使用者描述現象、錯誤訊息或測試失敗，且存在可重現的非預期行為 | 進入分流 A，執行完整診斷與修正流程 |
-| `task` 有派遣單 | 存在 `handoff/dispatch-order-<slug>.md` | 進入分流 B，依派遣單執行並逐條驗收 |
+| `task` 有派遣單 | 存在 `handoff/dispatch-order-<dispatchSlug>.md` | 進入分流 B，依派遣單執行並逐條驗收 |
 | `task` 無派遣單 | 有明確執行目標，沒有可重現的非預期行為，且不存在派遣單 | 進入分流 C，當一般小需求處理並從簡回報 |
 
 `task` 的兩支只依派遣單是否存在判定，不依賴語意推測。判定不明時預設進入分流 A 的問題確認步驟，取得資訊後再定型。此時尚未提出根因假設，不會跳過紅燈命令硬門檻。
@@ -97,11 +97,12 @@ developer_instructions = """
 
 ## 分流 B：派遣單任務
 
-1. 讀取 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<slug>.md`，確認八個欄位都存在。
-2. 依派遣單第 4 欄的任務內容執行，遵守第 6 欄的邊界，不擴大目標檔案、目錄或端點範圍。
-3. 逐條執行第 5 欄的驗收條件與判定方式，回報每一條的實際命令、輸出摘要與結果。
-4. 將報告或產物寫入第 7 欄指定的絕對路徑，並在第 8 欄要求的欄位中回報執行時間、變更範圍與驗證證據。
-5. 派遣單指定唯讀時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
+1. 讀取 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，確認八個欄位都存在。
+2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
+3. 依派遣單第 4 欄的任務內容執行，遵守第 6 欄的邊界，不擴大目標檔案、目錄或端點範圍。
+4. 逐條執行第 5 欄的驗收條件與判定方式，回報每一條的實際命令、輸出摘要與結果。
+5. 將報告或產物寫入第 7 欄指定的絕對路徑，並在第 8 欄要求的欄位中回報執行時間、變更範圍與驗證證據。
+6. 派遣單指定唯讀時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 ## 分流 C：一般小需求
 
@@ -129,7 +130,7 @@ fix-plan 以 in-context 傳給 subagent，不落交接檔。若某個修正大�
 
 ## Exceptions 紀錄
 
-需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`，不累積至結案才寫。第一次追加時建立檔案，後續追加新條目並保留既有內容。
+需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，先取得 `LineContext` 的 `lineSlug` 並驗證對應 manifest，再立即追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，不累積至結案才寫。缺少有效 `LineContext` 時停止固定例外紀錄寫入，要求上游先建立 Clarify 線脈絡；不得以預設值、時間戳或 dispatch slug 代替。第一次追加時建立檔案，後續追加新條目並保留既有內容。
 
 每條包含時間戳、觸發類型、內容、依據與位置。純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。
 

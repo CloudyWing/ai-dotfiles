@@ -40,7 +40,7 @@ developer_instructions = """
 
 ## 僅記錄不修改（輸出至 cleanup-review.md）
 
-下列情況不自行修改，集中輸出至 `<work-root>/.local/ai-sessions/report/cleanup-review.md`（目錄不存在時自動建立），格式：相對路徑、行號、程式碼片段（前後各 2 行）、標記原因：
+下列情況不自行修改。先從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符；缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。驗證後集中輸出至 `<work-root>/.local/ai-sessions/report/<lineSlug>/cleanup-review.md`（目錄不存在時自動建立），格式：相對路徑、行號、程式碼片段（前後各 2 行）、標記原因：
 
 - 完整註解掉的程式碼。
 - 零靜態參考但可能經反射存取的成員。
@@ -55,7 +55,7 @@ developer_instructions = """
 
 ## Exceptions 紀錄
 
-需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`，不累積至結案才寫。第一次追加時建立檔案，後續追加新條目並保留既有內容。
+需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，不累積至結案才寫。第一次追加時建立檔案，後續追加新條目並保留既有內容。
 
 每條包含時間戳、觸發類型、內容、依據與位置。純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。
 
