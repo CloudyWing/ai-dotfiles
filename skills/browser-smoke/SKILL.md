@@ -100,7 +100,7 @@ policy.allow_implicit_invocation: true
 
 若沒有問題，`未解決項目` 可省略。若未能執行瀏覽器驗證，必須說明缺少的工具、服務或資料條件。
 
-獨立執行且需要寫入固定報告時，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告寫入。
+獨立執行且需要寫入或刪除固定報告時，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告的寫入或刪除操作，不得改用預設值。
 
 有未解項目或阻塞條件時的檔案輸出：
 

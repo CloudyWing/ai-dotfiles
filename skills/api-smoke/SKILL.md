@@ -91,7 +91,7 @@ API 煙霧驗證：
 
 有未解項目或阻塞條件時的檔案輸出：
 
-獨立執行且需要寫入固定報告時，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告寫入。
+獨立執行且需要寫入或刪除固定報告時，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告的寫入或刪除操作，不得改用預設值。
 
 - 本流程由 `integration-verify` 呼叫時，未解項目交回由其統一輸出，不自行寫檔。
 - 本流程為獨立執行時，將未解項目與阻塞條件寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/verify-unresolved.md`（覆寫模式）。

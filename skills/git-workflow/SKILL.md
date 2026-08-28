@@ -88,7 +88,7 @@ Codex 端不建立 commit，Workflow `Implement` 的成果以 dispatch worktree 
 
 pre-commit hook 會重新產生索引或格式化產物並自行 `git add`。分組 commit 時，被 hook 自動暫存的檔案若仍帶有未暫存的變更，會被掃進當下這一筆 commit，破壞分組邊界。
 
-先確認本 repo 的 pre-commit hook 會自動暫存哪些檔案，再安排順序：含這些檔案的那一組最先 commit。無法把它們集中在同一組時，改為先單獨 commit hook 產物，再依序建立其餘分組。
+先確認本 repo 的 pre-commit hook 會自動暫存哪些檔案。含這些檔案的那一組最先 commit。無法把它們集中在同一組時，改為先單獨 commit hook 產物，再依序建立其餘分組。
 
 判定方式為讀取 hook 腳本中的 `git add` 目標，或於第一筆 commit 後以 `git show --stat` 確認實際納入的檔案與預期分組一致。
 

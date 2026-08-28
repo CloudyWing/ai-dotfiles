@@ -67,6 +67,6 @@ Warning 不觸發 Implement 的自動重跑；由使用者決定是否納入修�
 
 ## 約束
 
-- 嚴禁修改任何程式碼；唯一允許寫入的是 `<work-root>/.local/ai-sessions/report/<lineSlug>/frontend-review-report.md`。
+- 嚴禁修改任何程式碼；唯一允許寫入的是同線的 `<work-root>/.local/ai-sessions/report/<lineSlug>/frontend-review-report.md` 與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。
 - 不重複後端審查：API 端點實作品質由 review agent 負責。
 """

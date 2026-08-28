@@ -58,7 +58,7 @@ developer_instructions = """
 
 1. 有測試專案時，執行一次 `dotnet build` 與 `dotnet test`（僅結案這一次，不逐階段重跑），結果（通過／失敗數、失敗清單）附入 Workflow 結案報告，供 Workflow 實作結果確認。
 2. build 或 test 失敗時先修復再結案，不得帶著紅燈產出 Workflow 結案報告。
-3. 結案 commit 一次（輪終點錨），commit 訊息依 `generate-commit` skill 產生；環境不允許 commit（無 git repo、唯讀、使用者明示禁止）時，改將輪起點 SHA 記入 Workflow 結案報告。
+3. 本 Agent 不建立結案 commit；Phase commit 由主 Agent 依「Phase 對照」節回收。無 git repo 時，將輪起點 SHA 記入 Workflow 結案報告。
 4. 確認 Workflow 結案報告「驗證證據」節的輪起點 SHA、開工基準線與工作區變更三欄皆已填值（無 git repo 時填 `N/A` 並註明原因），且「Phase 對照」節逐 Phase 列出實際修改的檔案清單。任一項缺漏即停止，補齊後才產出 Workflow 結案報告。本階段不建立 commit，Phase commit 由主 Agent 依「Phase 對照」節回收。後續 Review 的審查範圍以主 Agent 建立的派遣單為準，不取用 Implement 結案資料界定。
 5. 確認每筆動態驗證證據附有命令原文與執行時間。證據記錄的是產生當下的環境狀態，缺少這兩項時後續審查無法複核，該筆證據會被標為不可複核。
 
