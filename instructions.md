@@ -111,9 +111,9 @@ applyTo: "**/*"
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
 - **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途分三類，存放於固定目錄，不散落於 process cwd 或系統暫存目錄：
-  - **單次任務交接檔**：下一階段 Agent 需要讀取的 `design.md`、`requirement-summary.md` 與需求脈絡檔存入 `<work-root>/.local/ai-sessions/handoff/`。人員閱讀的 review、contract、`report/verify-unresolved.md`、驗證與事實報告存入 `<work-root>/.local/ai-sessions/report/`。跨平台派工的 `report/implement-closure-report.md` 同樣存入 `report/`，僅供 Workflow 派工確認實作結果，不作為資源派遣 Review 的審查範圍來源。
-  - **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<slug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<slug>.md`。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。
-  - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<slug>.txt` 存入 `history/`。
+  - **線層交接檔與固定報告**：Clarify 為每個已確認需求摘要產生並登記 `lineSlug`。線登記資料、需求摘要與設計文件分別存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json`、`<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。Implement 結案、Review、未解驗證、Frontend Review、API Contract、Architecture Review、Cleanup Review、fact-check 與例外紀錄存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/`。固定名稱交接檔或報告的寫入者必須取得已驗證的 `LineContext`；缺少 `lineSlug` 時停止寫入並交由上游建立線脈絡。
+  - **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<dispatchSlug>.md`。`dispatchSlug` 識別單次派遣，與識別 Clarify 對話的 `lineSlug` 分屬不同名稱空間。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。
+  - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/<lineSlug>/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<dispatchSlug>.txt` 存入 `history/`。
   - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
   - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
   - **需保留非交付**：整合任務素材、截圖、樣式基準與 UI Demo 分別存入 `<work-root>/.local/ai-sessions/inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/`。
@@ -126,8 +126,8 @@ applyTo: "**/*"
 - **背景進程清理（Background Process Cleanup）**：本流程自行啟動的背景進程（無頭瀏覽器、dev server、背景 worker、驗證用容器等），同一用途重用單一實例，不重複 spawn；預設於任務結束時關閉。刻意保留的進程（如 dev server 供使用者繼續開發），必須在結案報告中註明仍在執行，並附 port 或 PID。
   - 清理對象僅限本流程自行啟動的進程。資料庫、MCP server、既有服務，以及非本流程建立的連線一律不碰。
   - 此規範僅涉及進程關閉，不涉及任何資料異動。破壞性或不可逆的資料操作另依驗證流程的資料異動安全規範處理。
-- **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容，以及 `.local/ai-sessions/handoff/` 中除 `design.md` 與 `requirement-summary.md` 以外的內容。這兩個檔案為自動清理的例外：`handoff/design.md` 供跨 Session 重跑 Review 與落差盤點，`handoff/requirement-summary.md` 供需求意圖驗收與設計驗收在 context 壓縮後仍有原始比對依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工事件流與 thread id 檔位於 `history/`，不在自動刪除範圍內。
-- **Exceptions 紀錄**：執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/exceptions.md`。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。值班工程師作為 bug 線協調者的身分不適用於自身診斷紀錄。
+- **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容。清理 `.local/ai-sessions/handoff/` 的其他項目時，保留每個 `<lineSlug>/` 目錄中的 `line.json`、`requirement-summary.md` 與 `design.md`。這三種線層資料分別保存線歸屬、需求意圖驗收與跨 Session 的設計驗收依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工事件流與 thread id 檔位於 `history/`，不在自動刪除範圍內。
+- **Exceptions 紀錄**：執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。寫入前驗證 `lineSlug` 與同線 `line.json` 的 `line-slug` 欄位一致。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。值班工程師作為 bug 線協調者的身分不適用於自身診斷紀錄。
 
   條目格式如下：
 
@@ -218,7 +218,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 #### work-root 判定
 
-- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。凡提及 `.local/ai-sessions/handoff/design.md`、`.local/ai-sessions/report/review-report.md`、`.local/ai-sessions/report/frontend-review-report.md`、`.local/ai-sessions/report/api-contract-report.md`，若未特別說明，皆指 `<work-root>` 之下的對應路徑。
+- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。固定名稱交接檔與報告一律透過 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/` 或 `<work-root>/.local/ai-sessions/report/<lineSlug>/` 定位；`lineSlug` 由 Clarify 登記並以 `line.json` 驗證。已帶有 `dispatchSlug` 或時間戳的派遣、事件流與 PID 檔案維持既有根目錄形式。
 - **`task anchor` 定義（Crucial）**：本輪任務判定 `work-root` 的起點，代表使用者真正想處理的範圍。**不得直接以 Agent 執行命令時的 process cwd 作為 `task anchor`**，process cwd 只代表目前 Agent 所在的工作區，不一定等於本輪指定的檔案或子系統。
 - **`task anchor` 判定順序**：
   1. 使用者本輪明確指定的目標，依下列優先序解析：
@@ -310,7 +310,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 ##### Review 派遣發動判準
 
-Review 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用者明示的固定規則。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
+Review 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用者明示的固定規則。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 **必發清單（命中任一即發）**：
 
@@ -343,7 +343,7 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 - Review 不執行測試與動態驗證，信任 Implement 結案報告附帶的建置與測試證據。
 - Engineer 不承擔常規驗證，依進入類型執行 bug 或 task 分流。
 
-**需求意圖驗收不屬於上述四層。** 四層驗證的比對軸是「程式碼是否正確、是否符合 `design.md`」，需求意圖驗收的比對軸是「交付結果是否仍是當初談定的那件事」，兩者互不取代。此職責歸 `Clarify`，因為需求摘要與對話中達成的實作約束由 `Clarify` 產生並保管於 `handoff/requirement-summary.md`，其他 Agent 只拿得到轉述後的版本。執行方式見 `~/.ai-agents/agents/claude/clarify.md`。
+**需求意圖驗收不屬於上述四層。** 四層驗證的比對軸是「程式碼是否正確、是否符合 `design.md`」，需求意圖驗收的比對軸是「交付結果是否仍是當初談定的那件事」，兩者互不取代。此職責歸 `Clarify`，因為需求摘要與對話中達成的實作約束由 `Clarify` 產生並保管於 `handoff/<lineSlug>/requirement-summary.md`，其他 Agent 只拿得到轉述後的版本。執行方式見 `~/.ai-agents/agents/claude/clarify.md`。
 
 #### 階段式行為約束
 
@@ -351,9 +351,9 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 
 | 階段 | 允許操作 | 禁止操作 |
 | --- | --- | --- |
-| Clarify | 讀取檔案、搜尋程式碼；使用者確認後寫入 `<work-root>/.local/ai-sessions/handoff/requirement-summary.md`；執行需求意圖驗收時另可讀取 git diff 與各類審查報告；使用者當輪明確授權時就地執行指名範圍內的單點修改 | 修改任何程式碼檔案（授權例外見 `clarify.md`）；以全面 code review 取代需求意圖驗收 |
+| Clarify | 讀取檔案、搜尋程式碼；使用者確認後建立 `lineSlug` 並寫入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`；執行需求意圖驗收時另可讀取 git diff 與同線各類審查報告；使用者當輪明確授權時就地執行指名範圍內的單點修改 | 修改任何程式碼檔案（授權例外見 `clarify.md`）；以全面 code review 取代需求意圖驗收 |
 | Implement | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
-| Design（Codex） | 讀取檔案、寫入 `<work-root>/.local/ai-sessions/handoff/design.md` | 不得修改任何程式碼或專案檔案 |
+| Design（Codex） | 讀取同線需求摘要、寫入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md` | 不得修改任何程式碼或專案檔案 |
 | UI Demo | 讀取檔案與樣式基準、寫入 `<work-root>/.local/ai-sessions/ui-demo/` | 修改任何程式碼或專案檔案 |
 | Editor | 讀寫 Markdown 文件 | 修改程式碼檔案（除非使用者明確要求文件內嵌程式碼片段同步調整） |
 | Review / Frontend Review / API Contract | 讀取檔案、讀取 git diff | 修改程式碼（僅產出報告）；執行建置與測試 |
@@ -457,7 +457,7 @@ Skill 指標索引由 `.githooks/Update-Docs.ps1` 依現有 Skill frontmatter �
   - **敏感設定檔**：`.env`、`.env.*`（如 `.env.local`、`.env.production`）。
   - **編譯/建置輸出目錄**：`bin/`、`obj/`、`dist/`、`out/`、`build/`、`target/`、`.next/`、`__pycache__/` 等。
   - **例外（允許讀取的情境）**：使用者明確指示（如「請讀 `.env` 確認設定」、「查看 bin 下的組件」），才可讀取，且**不得將敏感內容（如密碼、Token）輸出至對話中**，僅回答與任務直接相關的資訊。
-  - **`.local/ai-sessions/` 的存在判斷**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 `<work-root>/.local/ai-sessions/` 為準直接嘗試讀取，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。Read 工具成功讀取代表檔案存在，Read 工具回傳錯誤或空內容代表檔案不存在。此規則適用於 `handoff/design.md`、`report/review-report.md`、`report/frontend-review-report.md`、`report/api-contract-report.md` 等所有交接文件。
+  - **`.local/ai-sessions/` 的存在判斷**：此路徑雖被 `.gitignore` 排除（不在 git 追蹤範圍內），但內容為 Agent 執行時產生的交接文件，實體存在於磁碟。**必須以 `<work-root>/.local/ai-sessions/` 為準直接嘗試讀取，不得依賴 git 狀態或 Glob 掃描結果來判斷檔案是否存在**。先取得並驗證 `lineSlug`，再讀取同線的 `handoff/<lineSlug>/design.md`、`report/<lineSlug>/review-report.md`、`report/<lineSlug>/frontend-review-report.md`、`report/<lineSlug>/api-contract-report.md` 等交接文件。Read 工具成功讀取代表檔案存在，Read 工具回傳錯誤或空內容代表檔案不存在。
 - **Config Hierarchy**：AI 指令採用三層覆寫策略，後層覆蓋前層：
   1. **全域層** (`~/.ai-agents/instructions.md`)：跨專案的恆定規範。
   2. **專案層**（專案根目錄的 `AGENTS.md`）：專案團隊共享的規範，換機器仍適用，依專案版控策略管理。

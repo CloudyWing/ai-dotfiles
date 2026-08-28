@@ -63,11 +63,11 @@ Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執�
     └── ui-demo/
 ```
 
-結案清理會移除 `scratch/` 全部內容與 `handoff/` 中除 `design.md` 與 `requirement-summary.md` 以外的檔案。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 保留供後續查閱。
+結案清理會移除 `scratch/` 全部內容。`handoff/<lineSlug>/` 中的 `line.json`、`requirement-summary.md` 與 `design.md` 均受保護，其他 handoff 項目依清理規則移除。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 保留供後續查閱。
 
 ### `work-root` 與交接檔
 
-`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。需求基準位於 `handoff/requirement-summary.md`，設計基準位於 `handoff/design.md`，人員閱讀的審查報告位於 `report/`。判定流程分兩步：
+`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。Clarify 會從已確認需求摘要推導並登記語意化 `lineSlug`，每一條線以 `handoff/<lineSlug>/line.json` 識別。需求基準位於 `handoff/<lineSlug>/requirement-summary.md`，設計基準位於 `handoff/<lineSlug>/design.md`，固定名稱審查與驗證報告位於 `report/<lineSlug>/`。`dispatchSlug` 只識別單次派遣，與 `lineSlug` 分開使用。判定流程分兩步：
 
 1. **先取得 `task anchor`**（本輪任務真正想處理的範圍，不等於 AI 的 process cwd）。優先序：
    1. 使用者本輪明確指定的目錄、檔案所在目錄、或子系統 / 前端 app / 後端 service / 模組目錄。
@@ -157,7 +157,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 #### Codex CLI 前置需求
 
-額度快照由主 Agent 於每次派工前執行 `scripts/Get-CodexQuota.ps1`，從 `$CODEX_HOME/sessions/` 的 rollout 記錄自動讀取。
+額度快照由主 Agent 於每次派工前執行 `~/.ai-agents/scripts/Get-CodexQuota.ps1`，從 `$CODEX_HOME/sessions/` 的 rollout 記錄自動讀取。
 
 - 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附 binary 不作為派工執行檔。
 - 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
@@ -248,7 +248,7 @@ Agent 依執行平台分為兩類：
 - **Persona**：以語意切換方式執行。適合需要多輪對話、強依賴上下文的需求分析、實作階段控制與文件編輯。
 - **sub-agent**：由主 Agent 派生。適合有明確輸入與交接檔案的設計、審查、掃描與清理任務。
 - **Cleanup**：Codex 執行型 agent，處理語法現代化、死程式碼、資源管理與既有規範清理；每批修改後驗證測試。
-- **architecture-improvement**：人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出 `.local/ai-sessions/report/architecture-review.md` 再等待範圍決策。
+- **architecture-improvement**：人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出 `.local/ai-sessions/report/<lineSlug>/architecture-review.md` 再等待範圍決策。
 
 ### Agent 執行流程
 
