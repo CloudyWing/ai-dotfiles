@@ -48,8 +48,9 @@ git rev-parse HEAD
 1. 掃描 Git hotspot 與候選程式碼。
 2. 對每個候選執行 deletion test，保留檢查證據。
 3. 先產出候選清單、影響範圍、風險與建議順序。
-4. 將報告寫入 `<work-root>/.local/ai-sessions/report/architecture-review.md`。
-5. 等使用者選定候選與改動範圍後，才進入設計或實作階段。
+4. 先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止報告寫入。
+5. 將報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/architecture-review.md`。
+6. 等使用者選定候選與改動範圍後，才進入設計或實作階段。
 
 報告至少包含以下標題：
 

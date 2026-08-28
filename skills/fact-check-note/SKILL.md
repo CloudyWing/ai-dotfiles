@@ -59,18 +59,20 @@ policy.allow_implicit_invocation: true
 
 ## 輸出位置與 Rotation
 
-校閱完成後，將 human-facing 報告寫入 `<work-root>/.local/ai-sessions/report/fact-check-report.md`。
+校閱完成前，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告寫入。
+
+校閱完成後，將 human-facing 報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
 
 ### 寫入前 Rotation（避免覆蓋歷史）
 
-寫入新報告前，若 `fact-check-report.md` 已存在：
+寫入新報告前，若同線的 `fact-check-report.md` 已存在：
 
 1. 讀取舊檔的 `校閱時間` 欄位（格式 `YYYY-MM-DD HH:mm`）。
-2. 將舊檔 rename 為 `fact-check-report-<YYYYMMDD-HHmm>.md`（去除分隔符號）。
+2. 將舊檔 rename 為 `fact-check-report-<YYYYMMDD-HHmm>.md`（去除分隔符號），保留在同一個 `report/<lineSlug>/` 目錄。
 3. 若舊檔缺少有效時間欄位，改以舊檔的最後修改時間（mtime）作為命名依據。
-4. Rotation 完成後，再寫入新報告至 `report/fact-check-report.md`。
+4. Rotation 完成後，再寫入新報告至 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
 
-此 rotation 由校閱端負責，`apply-fact-check` 永遠只讀固定名稱的 `fact-check-report.md`。
+此 rotation 由校閱端負責，rotation 範圍限於同一條線。`apply-fact-check` 永遠只讀同線固定名稱的 `fact-check-report.md`。
 
 ### 報告格式
 

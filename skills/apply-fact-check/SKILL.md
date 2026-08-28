@@ -12,9 +12,11 @@ policy.allow_implicit_invocation: true
 
 ## 啟動前置條件
 
+啟動前先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時，停止固定報告讀取與寫入。
+
 啟動前必須確認以下檔案存在：
 
-1. **校閱報告**：`<work-root>/.local/ai-sessions/report/fact-check-report.md`。若不存在，停止並請使用者先執行 `fact-check-note`。
+1. **校閱報告**：`<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。若不存在，停止並請使用者先執行 `fact-check-note`。
 2. **目標文件**：報告中 `目標文件` 欄位指向的路徑。若不存在或無法存取，停止並回報。
 
 不得在缺少校閱報告的情況下，憑空對文件做「事實修正」。
@@ -73,7 +75,7 @@ policy.allow_implicit_invocation: true
 - **不重新校閱**：本 skill 不對「校閱結論本身」做事實再判斷。若懷疑校閱有誤，必須以技術理由提出，由使用者裁決，不得自行降級或忽略。
 - **不擴大修改範圍**：僅修改報告中明確列出的條目所在位置。發現報告外的疑似錯誤，須另行回報，不得順手修改。
 - **保留文件編碼與格式**：依全域 Encoding Strategy 維持目標文件原編碼。
-- **校閱報告為審計紀錄**：完成改檔後不刪除 `report/fact-check-report.md`，保留在 `report/`，不納入結案自動清理。
+- **校閱報告為審計紀錄**：完成改檔後不刪除 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`，保留在同線 report 目錄，不納入結案自動清理。
 
 ## Claude 端四個 gate
 

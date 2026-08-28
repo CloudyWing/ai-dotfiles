@@ -74,7 +74,7 @@ $content = [System.IO.File]::ReadAllText("$FilePath", [System.Text.Encoding]::Ge
 
 轉換後重新以 UTF-8 讀取，確認中文內容可正常顯示，輸出前幾行供使用者確認。
 
-若驗證無法完成，將檔案路徑、偵測到的編碼與錯誤訊息寫入 `<work-root>/.local/ai-sessions/report/verify-unresolved.md`，保留原始檔案與備份供後續處理。
+若驗證無法完成，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符；確認後將檔案路徑、偵測到的編碼與錯誤訊息寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/verify-unresolved.md`，保留原始檔案與備份供後續處理。缺少有效 `LineContext` 或 manifest 時停止固定報告寫入。
 
 ### 6. 輸出摘要
 

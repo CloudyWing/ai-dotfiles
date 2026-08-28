@@ -97,8 +97,10 @@ AI 看不到桌面視窗，實際能做到的程度取決於環境提供的工�
 
 若沒有問題，`未解決項目` 可省略。採用層級 C 時，必須附上手動檢查清單。若未能執行驗證，必須說明缺少的工具、服務或資料條件。
 
+獨立執行且需要寫入固定報告時，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告寫入。
+
 有未解項目或阻塞條件時的檔案輸出：
 
 - 本流程由 `integration-verify` 呼叫時，未解項目交回由其統一輸出，不自行寫檔。
-- 本流程為獨立執行時，將未解項目、阻塞條件與手動檢查清單寫入 `<work-root>/.local/ai-sessions/report/verify-unresolved.md`（覆寫模式）。
+- 本流程為獨立執行時，將未解項目、阻塞條件與手動檢查清單寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/verify-unresolved.md`（覆寫模式）。
 - 全部通過時不寫檔；若該檔先前已存在，刪除它。
