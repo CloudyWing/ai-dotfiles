@@ -33,7 +33,7 @@ audience: agent
 1. 依下列優先順序並行掃描（掃描完成前禁止提問）：
    - **第一批（同時啟動）**：專案設定（`*.sln`、`*.csproj`、`appsettings.json`、`compose.yml`）
    - **第二批（第一批完成後，依需求相關性同時啟動）**：主要進入點（`Program.cs`、路由設定）與需求相關模組
-2. 續輪落差盤點（同一 Clarify 線的後續輪次）：優先讀取 `<work-root>/.local/ai-sessions/history/<lineSlug>/` 下的上輪報告，與同線 Implement 結案報告記錄的 commit range（`git diff <輪起點 SHA>..<輪終點 commit>`）盤點落差，不重掃程式碼；history 或結案報告缺件時才回退為第 1 點的一般掃描。
+2. 續輪落差盤點（同一 Clarify 線的後續輪次）：優先讀取 `<work-root>/.local/ai-sessions/history/<lineSlug>/` 下的上輪報告，與同線 Implement 結案報告記錄的輪起點 SHA 及其回收後的最後一筆 Phase commit（`git diff <輪起點 SHA>..<最後一筆 Phase commit>`）盤點落差，不重掃程式碼；history 或結案報告缺件時才回退為第 1 點的一般掃描。
 3. 產出「目前理解摘要」（格式如下），視為已完成 Step 1〜4，不重複執行。
 4. 若使用者已提供具體項目清單，直接納入清單，視為所有項目皆在範圍內，不詢問優先順序或要求選擇。repo 掃描後補充額外觀察到的項目即可。
 5. 若掃描後發現有多個合理的實作方向，必須在「仍無法判斷的項目」中明確列出各方向的取捨，讓使用者決定，不自行選擇。

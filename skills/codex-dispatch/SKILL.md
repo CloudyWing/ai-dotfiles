@@ -53,7 +53,7 @@ marker 是來源工作樹的控制資料，不納入初始 commit。marker 寫�
 9. 在 `dispatchRoot` 建立 `.local\ai-sessions\handoff`、`report`、`history` 與 `scratch`，並建立 `dispatchLineRoot` 與 `reportLineRoot`。建立來源 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>` 與 `sourceReportLineRoot` 後，將 `<sourceLineRoot>` 的 `line.json`、`requirement-summary.md` 與派遣所需的 `design.md` 複製至 `dispatchLineRoot`。需求摘要的正本與覆寫前備份維持來源寫入模式；Codex 的有效工作目錄與本次派遣產出的同線 report、history、scratch 及一次性 handoff 產物使用 `dispatchRoot`。
 10. Codex 結束後，先確認回收判定成立，再將事件流、thread id、last-message、派遣報告與核准的一次性交接產物同步回 `sourceRoot` 的同相對路徑。同線設計文件從 `dispatchLineRoot` 同步至 `sourceLineRoot`，固定報告從 `reportLineRoot` 同步至 `sourceReportLineRoot`。需求摘要與其覆寫前備份固定寫入 `sourceLineRoot` 與 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`，不透過 dispatch worktree 回收；需要這類來源寫入的派遣必須以 `--add-dir` 明確授權這兩個線層目錄。
    - Design、Review 與其他資源派遣直接同步報告與允許的交接產物，不透過 commit 回收。
-   - Workflow `Implement` 只回收 `baseSha..dispatchHead` 內的派工機械 commit，依 `design.md` Phase 分組重整後回收。Phase 回收規則由 `git-workflow` skill 定義。
+   - Workflow `Implement` 回收 dispatch worktree 的工作區差異，依結案報告「Phase 對照」節分組後建立 Phase commit。Phase 回收規則由 `git-workflow` skill 定義。
 11. 完成同步後，確認 `dispatchRoot` 的實際絕對路徑仍位於 `sourceRoot\.local\ai-sessions\worktrees\<dispatchSlug>`，再執行 `git worktree remove --force <dispatchRoot>`。三態尚未結束或需要續 session 時保留同一個 dispatch worktree。
 
 臨時 Git 保留在 `sourceRoot`，直到使用者明確觸發清理。清理前讀取並驗證 marker 的 `schema`、`created-by` 與 `work-root`。marker 不存在、格式錯誤或 `work-root` 與目前絕對路徑不一致時，拒絕刪除 `.git` 並回報原因。驗證成功且收到使用者清理指令後，才可刪除舊 `.git`、重新 `git init`、建立乾淨的 initial commit，成功後移除 marker。
@@ -82,17 +82,25 @@ started-at-utc=<ISO 8601 UTC 時間>
 
 派工前掃描同一個 `sourceRoot` 的 `codex-pid-*.txt`。逐檔解析 `work-root`、`line-slug`、`root-pid`（舊格式回退讀取 `pid`）與進程樹欄位。只有 `work-root` 與目前絕對路徑相同、`line-slug` 與目前 `LineContext.lineSlug` 相同，且進程樹或 process group 仍存活的記錄才阻塞派遣。缺少 `line-slug` 的舊格式記錄不具備線歸屬，不滿足雙鍵比對。Windows 以 `Win32_Process` 的 `ProcessId`、`ParentProcessId`、`Name` 與 `CreationDate` 查詢根程序及其所有後代，遞迴追查每一層子程序；根程序已結束但仍有任何後代存活時，仍判定為活躍實例。Unix 以 PID 檔的 `process-group-id` 查詢 process group 成員，群組內仍有任何程序存活時，仍判定為活躍實例。歷史進程樹已完全結束時不阻塞派工；發現同線的活躍 Codex 實例時回報活躍 PID 記錄檔、根 PID 與存活後代或 process group，停止流程，不啟動第二個同線實例。
 
-中斷或重派前只讀取雙鍵匹配目前 `sourceRoot` 與 `lineSlug` 的 PID 記錄，再解析 `root-pid`（舊格式使用 `pid`）。Windows 執行 `taskkill /PID <root-pid> /T /F`，由系統終止根程序及整個後代樹。若根程序已先結束，先以 `Win32_Process.ParentProcessId` 找出仍存活的後代，再對每個仍存活的樹根執行 `taskkill /PID <descendant-pid> /T /F`，直到重新查詢不到任何後代。Unix 執行 `kill -TERM -- -<process-group-id>` 終止整個 process group；若依中斷策略需要強制收尾，對同一個 process group 使用 `kill -KILL -- -<process-group-id>`。終止後再次以進程樹或 process group 查詢確認全部程序已結束，確認完成後才可重派。只終止 PID 檔記錄的單一進程或包裝 Codex 的 shell 不符合本契約。
+中斷或重派前只讀取雙鍵匹配目前 `sourceRoot` 與 `lineSlug` 的 PID 記錄，再解析 `root-pid`（舊格式使用 `pid`）。Windows 執行 `taskkill /PID <root-pid> /T /F`，由系統終止根程序及整個後代樹。若根程序已先結束，先以 `Win32_Process.ParentProcessId` 找出仍存活的後代，再對每個仍存活的樹根執行 `taskkill /PID <descendant-pid> /T /F`，直到重新查詢不到任何後代。Unix 執行 `kill -TERM -- -<process-group-id>` 終止整個 process group；若依中斷策略需要強制收尾，對同一個 process group 使用 `kill -KILL -- -<process-group-id>`。終止後再次以進程樹或 process group 查詢確認全部程序已結束。只終止 PID 檔記錄的單一進程或包裝 Codex 的 shell 不符合本契約。
+
+**被強制終止過的 dispatch worktree 不得重用（Crucial）**。sandbox helper 在正常結束時才移除自己套用的 ACL；被 `taskkill` 或 session 中止時來不及清理，worktree 根目錄會殘留一條明確（非繼承）的存取控制項目，其 SID 已無對應帳號。之後在該目錄啟動的 Codex 會在套用 sandbox ACL 時失敗，全程無法執行任何命令。以 `icacls <dispatchRoot>` 與來源工作樹比對即可確認：報廢的 worktree 會多出不帶 `(I)` 標記的條目。
+
+重派時建立新的 dispatch worktree，並以 `git -C <舊 dispatchRoot> diff` 產出的 patch 將既有成果轉移至新 worktree，不要嘗試修改 ACL。新 worktree 沿用同一個 `lineSlug`，`dispatchSlug` 另取未使用的名稱。轉移完成後，舊 worktree 依既有路徑檢查移除。
 
 PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移除或 `scratch` 清理而刪除。PID 檔案是否存在不能單獨作為並行判定依據，必須合併 `work-root`、`line-slug` 與完整進程樹或 process group 的存活狀態；wrapper 已結束但子進程仍存活時，不得判定為可並行啟動。不同 `lineSlug` 的存活記錄必須可同時存在且不互相阻塞。
 
 ## Phase commit 回收與驗證
 
-Workflow `Implement` 的 dispatch worktree 回收只處理 `baseSha..dispatchHead` 內的派工機械 commit。`baseSha` 是建立 worktree 前記錄的來源 `HEAD`，`dispatchHead` 是 Codex 結束後 dispatch worktree 的終點 commit。
+Codex 端不建立 commit，因此 dispatch worktree 的 `HEAD` 在派工全程維持 `baseSha`，實作成果以未 commit 的工作區變更形式存在。回收的輸入是這份工作區差異，不是 commit 區間。
 
-主 Agent 先列出 `baseSha..dispatchHead` 的機械 commit，依 `design.md` 的 Phase 對照每筆變更，完成 Phase 重整。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。
+主 Agent 以 `git -C <dispatchRoot> diff` 取得工作區差異，依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。
 
-回收不將全部 Phase squash 成單一 commit，不以 merge commit 取代 Phase commit，也不使用 cherry-pick 逐條搬移機械 commit。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
+「Phase 對照」節缺失時停止回收並依續 session 契約要求補齊。缺少該節時，主 Agent 只能看到一份混合全部 Phase 的差異，無從還原 Phase 邊界。
+
+單一檔案橫跨兩個以上 Phase 時，該檔的差異歸入其最早出現的 Phase，並在回收回報中列出該檔與涉及的全部 Phase。
+
+回收不將全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
 
 Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執行重整後驗證，再同步報告與核准交接產物，最後才移除 dispatch worktree。Design、Review 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物。
 
@@ -237,15 +245,16 @@ $pidText = @(
 ) -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($pidPath, $pidText, [System.Text.UTF8Encoding]::new($false))
 
-$stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
 $process.StandardInput.Write($prompt)
 $process.StandardInput.Close()
+
+$writer = [System.IO.StreamWriter]::new($eventStreamPath, $false, [System.Text.UTF8Encoding]::new($false))
+$writer.AutoFlush = $true
+while ($null -ne ($line = $process.StandardOutput.ReadLine())) { $writer.WriteLine($line) }
+$writer.Close()
 $process.WaitForExit()
-$stdout = $stdoutTask.GetAwaiter().GetResult()
-$stderr = $stderrTask.GetAwaiter().GetResult()
-[System.IO.File]::WriteAllText($eventStreamPath, $stdout, [System.Text.UTF8Encoding]::new($false))
-[System.IO.File]::WriteAllText($errorStreamPath, $stderr, [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllText($errorStreamPath, $stderrTask.GetAwaiter().GetResult(), [System.Text.UTF8Encoding]::new($false))
 ```
 
 `--cd` 固定指向 `dispatchRoot`。`--sandbox` 使用 `workspace-write`，隔離由 dispatch worktree 提供。`--add-dir` 只有在需求明確需要 worktree 外寫入時才加入，並列出絕對路徑。資源派遣若要更新來源 `sourceLineRoot\requirement-summary.md` 或寫入其覆寫備份，必須在 `exec` 前加入下列兩個線層選項，且不可改用 `dispatchRoot` 作為寫入目標。
@@ -271,7 +280,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 1. 執行角色的觸發詞或 skill 名稱。Workflow 派工使用 `Implement` 的觸發詞；資源派遣使用派遣單第 2 欄指定的角色或 skill。
 2. Workflow 派工使用 `dispatchLineRoot\design.md` 的絕對路徑，資源派遣使用派遣單的絕對路徑。
 3. `LineContext` 的 `lineSlug`、`sourceLineRoot`、`dispatchLineRoot`、`reportLineRoot`、`sourceRoot`、`dispatchRoot` 與相關產出落點的絕對路徑。
-4. 回報格式、產出落點與驗收條件。Workflow 派工另須要求結案報告包含輪起點 SHA、開工基準線、輪終點 commit，以及「判定為既有實作而未動工」節。續 session 必須重述前輪該節的全部條目。
+4. 回報格式、產出落點與驗收條件。Workflow 派工另須要求結案報告包含輪起點 SHA、開工基準線、「Phase 對照」節與「判定為既有實作而未動工」節。「Phase 對照」節逐 Phase 列出該 Phase 實際修改的檔案清單，供主 Agent 依 Phase 分組建立 commit。續 session 必須重述前輪這兩節的全部條目。
 
 ## 模型檔位規則
 
@@ -325,6 +334,8 @@ Codex 遇到不存在的 profile 可能靜默回退預設值並以成功結束�
 
 只以報告檔是否出現作為終止條件，無法區分 Codex 中途崩潰與仍在執行。出口 B 使用檔案大小停滯作為停止依據。
 
+出口 B 成立的前提是事件流在執行期間逐行落地。啟動範例以逐行 `StreamWriter` 搭配 `AutoFlush` 寫入事件流，Bash 端則以重導向達成同一效果。改用 `ReadToEndAsync` 之類的作法會把整份 stdout 留在啟動端的記憶體，事件流檔案在進程結束前維持 0 bytes，出口 B 的檔案大小判準恆不成立，且啟動端被終止時整份事件流一併遺失。
+
 ## 事件流取證
 
 `--json` 事件流是 append-only 的 JSON Lines。每則助理輸出對應 `item.completed` 事件，格式如下。
@@ -339,7 +350,7 @@ thread id 事件格式如下。
 {"type":"thread.started","thread_id":"01a01619-fbef-7ee2-aea3-39598e04388e"}
 ```
 
-由後往前掃描事件流，取最後一則符合目前派工類型的 `agent_message`。Workflow 派工取同時包含「驗證證據」與輪起點 SHA、開工基準線、輪終點 commit 三欄的訊息，寫入 `reportLineRoot\implement-closure-report.md`，再同步至 `sourceReportLineRoot`。資源派遣取符合派遣單第 8 欄要求的訊息，寫入派遣單第 7 欄指定的落點。
+由後往前掃描事件流，取最後一則符合目前派工類型的 `agent_message`。Workflow 派工取同時包含「驗證證據」與「Phase 對照」兩節的訊息，寫入 `reportLineRoot\implement-closure-report.md`，再同步至 `sourceReportLineRoot`。資源派遣取符合派遣單第 8 欄要求的訊息，寫入派遣單第 7 欄指定的落點。
 
 主 Agent 將 `thread.started` 的 `thread_id` 寫入 `dispatchRoot\.local\ai-sessions\history\codex-thread-<dispatchSlug>.txt`，同步回來源工作樹後保留於 `sourceRoot\.local\ai-sessions\history`，續 session 先讀取同一份記錄。
 
@@ -347,7 +358,7 @@ thread id 事件格式如下。
 
 - F1。事件流中沒有符合條件的結案訊息。判定必要欄位缺失，Workflow 派工依續 session 契約補齊；資源派遣依回收三態判定為未達成驗收條件。
 - F2。事件流沒有落地。回退讀取本輪 `dispatchRoot\.local\ai-sessions\history\codex-last-message-<yyyyMMdd_HHmmss>.md`，並在回報中標示取證來源為 last-message 檔。
-- F3。事件流含多則符合條件的訊息。取最後一則，並以其輪終點 commit 或回報欄位作為最新值。
+- F3。事件流含多則符合條件的訊息。取最後一則，並以其回報欄位作為最新值。
 
 事件流、thread id 與 last-message 檔在回收判定完成前保留於 `dispatchRoot\.local\ai-sessions\history`。同步回來源工作樹後，來源 `history` 依既有保留規則保存取證，不屬於自動清理範圍。
 
@@ -469,15 +480,16 @@ $pidText = @(
 ) -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($pidPath, $pidText, [System.Text.UTF8Encoding]::new($false))
 
-$stdoutTask = $process.StandardOutput.ReadToEndAsync()
 $stderrTask = $process.StandardError.ReadToEndAsync()
 $process.StandardInput.Write($prompt)
 $process.StandardInput.Close()
+
+$writer = [System.IO.StreamWriter]::new($eventStreamPath, $false, [System.Text.UTF8Encoding]::new($false))
+$writer.AutoFlush = $true
+while ($null -ne ($line = $process.StandardOutput.ReadLine())) { $writer.WriteLine($line) }
+$writer.Close()
 $process.WaitForExit()
-$stdout = $stdoutTask.GetAwaiter().GetResult()
-$stderr = $stderrTask.GetAwaiter().GetResult()
-[System.IO.File]::WriteAllText($eventStreamPath, $stdout, [System.Text.UTF8Encoding]::new($false))
-[System.IO.File]::WriteAllText($errorStreamPath, $stderr, [System.Text.UTF8Encoding]::new($false))
+[System.IO.File]::WriteAllText($errorStreamPath, $stderrTask.GetAwaiter().GetResult(), [System.Text.UTF8Encoding]::new($false))
 ```
 
 `--cd`、`--sandbox`、`--add-dir` 與 `--search` 都是 `codex` 的父層選項，必須放在 `exec resume` 前方。`--output-last-message` 屬執行子命令的選項，放在子命令後方。`<sandbox-mode>` 必須沿用原派工邊界；續 session 不擴大其他寫入範圍或提高 sandbox 權限。需要網路查證時，將 `--search` 加在 `exec resume` 前方。
@@ -515,7 +527,7 @@ $stderr = $stderrTask.GetAwaiter().GetResult()
 | --- | --- | --- |
 | 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `dispatchRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
 | 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `dispatchRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |
-| 結案要求 | 「驗證證據」節的輪起點 SHA、開工基準線、輪終點 commit 三欄皆有值 | 先通過 `RecoveryPrecheck`，再逐條執行派遣單第 5 欄的命令並得出「收下」、「退回」或「升級」之一 |
+| 結案要求 | 「驗證證據」節的輪起點 SHA 與開工基準線皆有值，且「Phase 對照」節逐 Phase 列出修改的檔案清單 | 先通過 `RecoveryPrecheck`，再逐條執行派遣單第 5 欄的命令並得出「收下」、「退回」或「升級」之一 |
 
 `requirement-summary.md` 是跨派遣的持久交接檔，固定於 `sourceLineRoot\requirement-summary.md`；覆寫前備份固定於 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`。這兩個來源落點不屬於 `dispatchRoot` 的派遣產出，資源派遣若需寫入它們，必須在 `exec` 或 `exec resume` 前以 `--add-dir` 分別授權來源線層 `handoff` 與 `history` 目錄。
 

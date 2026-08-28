@@ -28,7 +28,8 @@
 
 - `scripts/Setup-AIGlobalConfig.ps1` 是建立所有 symlink 的入口。新增需要散佈的目錄或檔案時，需同步更新此腳本。
 - 修改 `.githooks/`、`scripts/hooks/`、`agents/`、`.editorconfig` 等基礎設定時，確認 `Setup-AIGlobalConfig.ps1` 與 `README.md` §3 是否需要對應更新。
-- `docs/agents.md` 與 `docs/skills.md` 為 `.githooks/Update-Docs.ps1` 於 pre-commit 產生的生成檔，請勿手動編輯，手改會在下次 commit 被覆蓋。Agent 的 Persona／sub-agent 分類由該腳本的 `$personaAgents` 清單決定；新增 Persona 時需同步更新此清單。
+- `docs/agents.md` 與 `docs/skills.md` 為 `.githooks/Update-Docs.ps1` 於 pre-commit 產生的生成檔，請勿手動編輯，手改會在下次 commit 被覆蓋。
+- `Update-Docs.ps1` 在 pre-commit 階段對 `docs/agents.md`、`docs/skills.md` 與 `instructions.md` 執行 `git add`。將一批變更拆成多筆 commit 時，`instructions.md` 若仍有未暫存的變更會被掃進當下這一筆，因此含 `instructions.md` 的那一組必須最先 commit。分組規則見 `git-workflow` skill。Agent 的 Persona／sub-agent 分類由該腳本的 `$personaAgents` 清單決定；新增 Persona 時需同步更新此清單。
 
 ## 6. 設定位置權威對照
 

@@ -80,9 +80,17 @@ refactor/extract-email-service
 
 ### Phase commit 回收
 
-Workflow `Implement` 的 dispatch worktree 回收只涵蓋 `baseSha..dispatchHead` 內的派工機械 commit。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依 `design.md` 的 Phase 分組變更，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
+Codex 端不建立 commit，Workflow `Implement` 的成果以 dispatch worktree 的工作區差異形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
 
-回收時依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。保留每個 Phase 的獨立語意，不將全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。dispatch 的機械 commit 不逐條搬移，回收衝突時停止並保留 worktree 與證據。
+回收時依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。保留每個 Phase 的獨立語意，不將全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收衝突時停止並保留 worktree 與證據。
+
+### 分組 commit 與 pre-commit hook 的先後順序
+
+pre-commit hook 會重新產生索引或格式化產物並自行 `git add`。分組 commit 時，被 hook 自動暫存的檔案若仍帶有未暫存的變更，會被掃進當下這一筆 commit，破壞分組邊界。
+
+先確認本 repo 的 pre-commit hook 會自動暫存哪些檔案，再安排順序：含這些檔案的那一組最先 commit。無法把它們集中在同一組時，改為先單獨 commit hook 產物，再依序建立其餘分組。
+
+判定方式為讀取 hook 腳本中的 `git add` 目標，或於第一筆 commit 後以 `git show --stat` 確認實際納入的檔案與預期分組一致。
 
 ### 重整後驗證
 
