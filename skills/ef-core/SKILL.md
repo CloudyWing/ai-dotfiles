@@ -70,6 +70,11 @@ List<Order> orders = await db.Orders
 - 若只需 Entity 的部分欄位，優先使用 `Select()` 投影至 DTO，避免載入整個 Entity。
 - 投影可同時解決 AsNoTracking 的需求（投影查詢本身不追蹤）。
 
+### 分頁查詢
+
+- 使用 `Skip` / `Take` 前，先以唯一且穩定的欄位排序。非唯一的排序欄位必須以 `ThenBy` 追加 unique key、identity 或 sequence，固定同一資料快照內的順序，避免相同排序值的順序不確定。
+- 唯一排序鍵只固定單一資料快照內的順序，不保證跨請求的資料集合一致。資料新增、刪除或更新排序鍵可能造成 offset 頁面漂移。keyset pagination（seek method）也不等於 snapshot。其排序鍵與 cursor 鍵必須不可變，鍵變更時視為新序列；資料列在 cursor 前後移動仍可能漏列或重複；它只能以前後 cursor 翻相鄰頁，無法任意跳頁。需要固定資料集合時，快照隔離必須涵蓋所有頁面的同一交易範圍，並使用與資料庫相容的隔離層級。
+
 ## 全域查詢篩選 (Global Query Filter)
 
 - 軟刪除（`IsDeleted`）、多租戶（`TenantId`）等橫切條件，優先在 `OnModelCreating` 中透過 `.HasQueryFilter()` 統一設定。
@@ -143,12 +148,12 @@ try {
 ```csharp
 // ✅ 正確：參數化
 IReadOnlyList<Product> products = await db.Products
-    .FromSqlInterpolated($"SELECT * FROM Products WHERE CategoryId = {categoryId}")
+    .FromSqlInterpolated($"SELECT ProductId, ProductName, CategoryId FROM Products WHERE CategoryId = {categoryId}")
     .ToListAsync(cancellationToken)
     .ConfigureAwait(false);
 
 // ❌ 錯誤：字串串接
 IReadOnlyList<Product> products = await db.Products
-    .FromSqlRaw("SELECT * FROM Products WHERE CategoryId = " + categoryId)
+    .FromSqlRaw("SELECT ProductId, ProductName, CategoryId FROM Products WHERE CategoryId = " + categoryId)
     .ToListAsync(cancellationToken);
 ```

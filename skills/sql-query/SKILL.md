@@ -110,11 +110,11 @@ WHERE Status = 1
 
 ```sql
 -- ❌ 當子查詢含 NULL 時，NOT IN 會回傳空結果
-SELECT * FROM Products
+SELECT ProductId, ProductName, CategoryId FROM Products
 WHERE CategoryId NOT IN (SELECT CategoryId FROM ExcludedCategories);
 
 -- ✅ NOT EXISTS 不受 NULL 影響
-SELECT p.*
+SELECT p.ProductId, p.ProductName, p.CategoryId
 FROM Products p
 WHERE NOT EXISTS (
     SELECT 1
@@ -126,6 +126,7 @@ WHERE NOT EXISTS (
 ### 分頁查詢
 
 - 使用 `OFFSET ... FETCH NEXT` 語法，不使用舊式 `ROW_NUMBER()` 子查詢包裝。此語法在 SQL Server 2012+ 與 Oracle 12c+ 相同；Oracle 11g 以下的替代寫法見 Oracle 專屬節。
+- SQL Server 的 `OFFSET` / `FETCH`、Oracle 12c+ 的等效分頁，以及 Oracle 11g 以下的 `ROWNUM` 雙層查詢，都必須先建立唯一且穩定的 `ORDER BY`。唯一排序鍵只固定單一資料快照內相同排序值的順序，不保證跨請求的資料集合一致。keyset pagination（seek method）可避免 offset 位移造成的部分頁面漂移，但不等於 snapshot。其排序鍵與 cursor 鍵必須不可變，鍵變更時視為新序列；資料列在 cursor 前後移動仍可能漏列或重複；它只能以前後 cursor 翻相鄰頁，無法任意跳頁。需要固定資料集合時，快照隔離必須涵蓋所有頁面的同一交易範圍，並使用與資料庫相容的隔離層級。
 
 ```sql
 SELECT
@@ -156,7 +157,7 @@ FETCH NEXT @PageSize ROWS ONLY;
 ```sql
 -- ✅ 正確
 EXEC sp_executesql
-    N'SELECT * FROM Products WHERE CategoryId = @CategoryId',
+    N'SELECT ProductId, ProductName FROM Products WHERE CategoryId = @CategoryId',
     N'@CategoryId INT',
     @CategoryId = @inputCategoryId;
 
@@ -218,7 +219,7 @@ SELECT FirstName || ' ' || LastName AS FullName FROM Employees;
 
 ```sql
 -- ✅ 正確
-EXECUTE IMMEDIATE 'SELECT * FROM Products WHERE CategoryId = :cid'
+EXECUTE IMMEDIATE 'SELECT ProductId, ProductName FROM Products WHERE CategoryId = :cid'
     USING v_category_id;
 
 -- ❌ 錯誤
@@ -228,6 +229,8 @@ EXECUTE IMMEDIATE 'SELECT * FROM Products WHERE CategoryId = ' || v_category_id;
 ### 分頁查詢
 
 - Oracle 12c 以上使用 `OFFSET ... FETCH NEXT`（與共通規範的分頁語法相同）：
+
+  `ORDER BY` 必須包含唯一且穩定的排序鍵；非唯一欄位須追加 unique key。唯一排序鍵只固定單一資料快照內的順序，不保證跨請求的資料集合一致。keyset pagination（seek method）不等於 snapshot，其排序鍵與 cursor 鍵必須不可變，鍵變更時視為新序列；資料列在 cursor 前後移動仍可能漏列或重複；keyset 只能以前後 cursor 翻相鄰頁，無法任意跳頁。需要固定資料集合時，快照隔離必須涵蓋所有頁面的同一交易範圍，並使用與資料庫相容的隔離層級。
 
 ```sql
 SELECT ProductId, ProductName
@@ -239,10 +242,12 @@ FETCH NEXT :page_size ROWS ONLY;
 
 - Oracle 11g 以下使用 `ROWNUM` 雙層包裝：
 
+  內層查詢必須先以唯一且穩定的 `ORDER BY` 排序，再由外層套用 `ROWNUM` 範圍。唯一排序鍵只固定單一資料快照內的順序，不保證跨請求的資料集合一致。keyset pagination（seek method）不等於 snapshot，其排序鍵與 cursor 鍵必須不可變，鍵變更時視為新序列；資料列在 cursor 前後移動仍可能漏列或重複；keyset 只能以前後 cursor 翻相鄰頁，無法任意跳頁。需要固定資料集合時，快照隔離必須涵蓋所有頁面的同一交易範圍，並使用與資料庫相容的隔離層級。
+
 ```sql
-SELECT *
+SELECT ProductId, ProductName
 FROM (
-    SELECT inner_q.*, ROWNUM AS rn
+    SELECT inner_q.ProductId, inner_q.ProductName, ROWNUM AS rn
     FROM (
         SELECT ProductId, ProductName
         FROM Products
