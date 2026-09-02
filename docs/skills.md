@@ -45,6 +45,7 @@
 | `csharp-nrt` | 知識型 | agent | C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。當專案啟用 NRT 且撰寫或修改型別宣告時自動套用。 |
 | `csharp-nunit` | 知識型 | agent | C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。 |
 | `csharp-signalr` | 知識型 | agent | SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。 |
+| `csharp-silent-defects` | 知識型 | agent | Use when 讀取或修改 C# 程式碼，需要檢查合法且不易在開發環境顯現的執行期、時序、文化、數值、集合順序或資源陷阱時。 |
 | `csharp-style` | 知識型 | agent | C# 程式碼風格規範：縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的細則。建立全新 C# 專案，或在無既有慣例的專案新增全新檔案時套用。 |
 | `csharp-validation` | 知識型 | agent | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。 |
 | `desktop-smoke` | 知識型 | agent | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |

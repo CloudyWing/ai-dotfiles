@@ -188,7 +188,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 | 觸發條件 | 必載 skill |
 | --- | --- |
-| 編輯 `*.cs` | `csharp-style`、`csharp-language-features`、`csharp-comments` |
+| 編輯 `*.cs` | `csharp-style`、`csharp-language-features`、`csharp-comments`、`csharp-silent-defects` |
 | 編輯 `*.cs` 且成員為 `public`（套件／Library 專案全體） | 追加 `csharp-docs` |
 | 編輯 `*Tests/**/*.cs` 或含 `[Test]`／`[TestCase]` 的 `*.cs` | 追加 `csharp-nunit` |
 | 讀取或修改 `*.csproj`、`*.sln`、`*.slnx` | `csharp-language-features` |
@@ -394,6 +394,7 @@ Skill 指標索引由 `.githooks/Update-Docs.ps1` 依現有 Skill frontmatter �
 - `csharp-nrt`：C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。當專案啟用 NRT 且撰寫或修改型別宣告時自動套用。
 - `csharp-nunit`：C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。
 - `csharp-signalr`：SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。
+- `csharp-silent-defects`：Use when 讀取或修改 C# 程式碼，需要檢查合法且不易在開發環境顯現的執行期、時序、文化、數值、集合順序或資源陷阱時。
 - `csharp-style`：C# 程式碼風格規範：縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的細則。建立全新 C# 專案，或在無既有慣例的專案新增全新檔案時套用。
 - `csharp-validation`：C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。
 - `desktop-smoke`：Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。

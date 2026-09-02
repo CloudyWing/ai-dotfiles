@@ -63,6 +63,19 @@ audience: agent
 - 視覺數值不寫入 `design.md`，改引用 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。
 - 本輪已有 Demo 時，引用 `<work-root>/.local/ai-sessions/ui-demo/<demo-name>/` 並以 Demo 為版面依據，本章節僅記錄層級歸類與差異說明。
 
+### 空白情境明文表態
+
+每個程式面項目或垂直功能路徑都必須建立空白情境表，逐列填入具體處置。情境若刻意排除，必須在「### 8. 刻意排除的範圍」明列排除理由。缺少任一列的決策時，設計不得進入 Implement。
+
+| 情境 | 必填決策 | 缺少決策時的處置 |
+| --- | --- | --- |
+| 無資料 | 回傳空集合、空值、錯誤或其他業務允許的結果 | 設計不通過，Implement 不得自行產生補償資料 |
+| 資料異常 | 拒絕、隔離、降級、記錄或修復路徑 | 設計不通過，不能以正常資料流程代替 |
+| 外部呼叫失敗 | 重試、回源、排隊、失敗回應或刻意排除 | 設計不通過，不能由實作自行決定重試或補償 |
+| 併發衝突 | 序列化、樂觀並發、去重、最後寫入或刻意排除 | 設計不通過，不能以單機測試結果推定安全 |
+
+無資料時的回應語意，以及是否允許補償資料或回補工作的邊界，必須在設計中明文記錄。缺少需求授權時，Implement 不得自行推導額外資料或處置。
+
 ### 3. 技術選型
 
 - 選定方案與選擇理由
@@ -177,7 +190,9 @@ audience: agent
 
 設計文件完成後，在呈現給使用者**前**，主動逐一驗查以下高風險規則，若有違反必須於設計中修正或在 §7「已知盲點」中說明：
 
-- **集合型別**：DTO 屬性使用 `IReadOnlyList<T> { get; init; } = []`；禁止 `List<T> { get; set; }`
+- **集合型別（Modern .NET）**：在語言版本支援時，DTO 屬性使用 `IReadOnlyList<T> { get; init; } = []`。
+- **集合型別（Legacy .NET Framework）**：使用 C# 7.3 可編譯的 `IReadOnlyList<T> { get; private set; }` 搭配建構函式或 `new List<T>()` 初始化，不使用 `init` 與集合運算式 `[]`。
+- **集合型別共通**：禁止 `List<T> { get; set; }`
 - **One Type Per File**：每個 `.cs` 規劃對應單一類別 / 介面，不規劃多型別共存於同一檔案
 - **DI Lifetime**：`DbContext` 必須 Scoped；Scoped 服務不得注入至 Singleton
 - **HttpClient**：禁止直接 `new HttpClient()`，一律透過 `IHttpClientFactory`
