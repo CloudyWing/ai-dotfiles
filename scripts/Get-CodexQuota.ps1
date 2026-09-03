@@ -73,51 +73,60 @@ function Get-RolloutSnapshotCandidate {
                     }
 
                     $rateLimits = $rateLimitsProperty.Value
-                    $primaryProperty = $rateLimits.PSObject.Properties['primary']
-                    if ($null -eq $primaryProperty -or $null -eq $primaryProperty.Value) {
-                        continue
-                    }
+                    foreach ($windowName in @('primary', 'secondary')) {
+                        $windowProperty = $rateLimits.PSObject.Properties[$windowName]
+                        if ($null -eq $windowProperty -or $null -eq $windowProperty.Value) {
+                            continue
+                        }
 
-                    $primary = $primaryProperty.Value
-                    $usedProperty = $primary.PSObject.Properties['used_percent']
-                    $windowProperty = $primary.PSObject.Properties['window_minutes']
-                    $resetProperty = $primary.PSObject.Properties['resets_at']
-                    if (
-                        $null -eq $usedProperty -or
-                        $null -eq $windowProperty -or
-                        $null -eq $resetProperty
-                    ) {
-                        continue
-                    }
+                        $window = $windowProperty.Value
+                        $usedProperty = $window.PSObject.Properties['used_percent']
+                        $minutesProperty = $window.PSObject.Properties['window_minutes']
+                        $resetProperty = $window.PSObject.Properties['resets_at']
+                        if (
+                            $null -eq $usedProperty -or
+                            $null -eq $minutesProperty -or
+                            $null -eq $resetProperty
+                        ) {
+                            continue
+                        }
 
-                    try {
-                        $usedPercent = [double]$usedProperty.Value
-                        $windowMinutes = [int64]$windowProperty.Value
-                        $resetsAt = [int64]$resetProperty.Value
-                    }
-                    catch {
-                        continue
-                    }
+                        try {
+                            $usedPercent = [double]$usedProperty.Value
+                            $windowMinutesValue = [double]$minutesProperty.Value
+                            $resetsAtValue = [double]$resetProperty.Value
+                        }
+                        catch {
+                            continue
+                        }
 
-                    if (
-                        [double]::IsNaN($usedPercent) -or
-                        [double]::IsInfinity($usedPercent) -or
-                        $usedPercent -lt 0 -or
-                        $usedPercent -gt 100 -or
-                        $windowMinutes -le 0 -or
-                        $resetsAt -le 0
-                    ) {
-                        continue
-                    }
+                        if (
+                            [double]::IsNaN($usedPercent) -or
+                            [double]::IsInfinity($usedPercent) -or
+                            $usedPercent -lt 0 -or
+                            $usedPercent -gt 100 -or
+                            [double]::IsNaN($windowMinutesValue) -or
+                            [double]::IsInfinity($windowMinutesValue) -or
+                            $windowMinutesValue -le 0 -or
+                            [math]::Truncate($windowMinutesValue) -ne $windowMinutesValue -or
+                            [double]::IsNaN($resetsAtValue) -or
+                            [double]::IsInfinity($resetsAtValue) -or
+                            $resetsAtValue -le 0 -or
+                            [math]::Truncate($resetsAtValue) -ne $resetsAtValue
+                        ) {
+                            continue
+                        }
 
-                    [pscustomobject]@{
-                        UsedPercent         = $usedPercent
-                        WindowMinutes       = $windowMinutes
-                        ResetsAt            = $resetsAt
-                        SourceFile          = $file.Name
-                        SourceLastWriteTime = $file.LastWriteTimeUtc
-                        RecordIndex         = $recordIndex
-                        FileIndex            = $fileIndex
+                        [pscustomobject]@{
+                            WindowName          = $windowName
+                            UsedPercent         = $usedPercent
+                            WindowMinutes       = [int64]$windowMinutesValue
+                            ResetsAt            = [int64]$resetsAtValue
+                            SourceFile          = $file.Name
+                            SourceLastWriteTime = $file.LastWriteTimeUtc
+                            RecordIndex         = $recordIndex
+                            FileIndex            = $fileIndex
+                        }
                     }
                 }
                 catch {
@@ -141,7 +150,49 @@ function Format-InvariantNumber {
         [double]$Value
     )
 
-    return $Value.ToString('0.##', [System.Globalization.CultureInfo]::InvariantCulture)
+    return $Value.ToString('0.########', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Format-InvariantInteger {
+    param(
+        [Parameter(Mandatory)]
+        [int64]$Value
+    )
+
+    return $Value.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function Write-QuotaWindow {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WindowName,
+
+        [Parameter(Mandatory)]
+        [pscustomobject]$Snapshot,
+
+        [Parameter(Mandatory)]
+        [int64]$CurrentUnixTime
+    )
+
+    $prefix = $WindowName + '_'
+    $remainingPercent = 100.0 - [double]$Snapshot.UsedPercent
+    $daysToReset = (
+        [double]$Snapshot.ResetsAt - [double]$CurrentUnixTime
+    ) / 86400.0
+    $windowDays = [double]$Snapshot.WindowMinutes / 1440.0
+    $resetsAtLocal = [DateTimeOffset]::FromUnixTimeSeconds([long]$Snapshot.ResetsAt).ToLocalTime().ToString(
+        'yyyy-MM-dd HH:mm',
+        [System.Globalization.CultureInfo]::InvariantCulture
+    )
+
+    Write-Output ($prefix + 'used_percent=' + (Format-InvariantNumber -Value $Snapshot.UsedPercent))
+    Write-Output ($prefix + 'remaining_percent=' + (Format-InvariantNumber -Value $remainingPercent))
+    Write-Output ($prefix + 'days_to_reset=' + (Format-InvariantNumber -Value $daysToReset))
+    Write-Output ($prefix + 'window_minutes=' + (Format-InvariantInteger -Value $Snapshot.WindowMinutes))
+    Write-Output ($prefix + 'window_days=' + (Format-InvariantNumber -Value $windowDays))
+    Write-Output ($prefix + 'resets_at=' + (Format-InvariantInteger -Value $Snapshot.ResetsAt))
+    Write-Output ($prefix + 'resets_at_local=' + $resetsAtLocal)
+    Write-Output ($prefix + 'source_file=' + $Snapshot.SourceFile)
 }
 
 try {
@@ -149,43 +200,40 @@ try {
     $sessionsPath = Join-Path -Path $codexHomePath -ChildPath 'sessions'
     $currentUnixTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $candidates = @(Get-RolloutSnapshotCandidate -SessionsPath $sessionsPath)
-    $futureCandidates = @(
-        $candidates | Where-Object { $_.ResetsAt -gt $currentUnixTime }
-    )
+    $selectedSnapshots = @{}
 
-    if ($futureCandidates.Count -eq 0) {
-        throw "找不到有效額度快照：最近 20 個 rollout 檔沒有 resets_at 大於目前時間的候選。掃描路徑：$sessionsPath"
+    foreach ($windowName in @('primary', 'secondary')) {
+        $futureCandidates = @(
+            $candidates | Where-Object {
+                $_.WindowName -eq $windowName -and $_.ResetsAt -gt $currentUnixTime
+            }
+        )
+
+        if ($futureCandidates.Count -eq 0) {
+            throw "找不到有效額度快照：$windowName 視窗在最近 20 個 rollout 檔沒有 resets_at 大於目前時間的候選。掃描路徑：$sessionsPath"
+        }
+
+        $maxResetsAt = ($futureCandidates | Measure-Object -Property ResetsAt -Maximum).Maximum
+        $currentWindowCandidates = @(
+            $futureCandidates | Where-Object { $_.ResetsAt -eq $maxResetsAt }
+        )
+        $selectedSnapshot = $currentWindowCandidates |
+            Sort-Object -Property @(
+                @{ Expression = 'SourceLastWriteTime'; Descending = $true }
+                @{ Expression = 'RecordIndex'; Descending = $true }
+                @{ Expression = 'FileIndex'; Descending = $true }
+            ) |
+            Select-Object -First 1
+
+        if ($null -eq $selectedSnapshot) {
+            throw "找不到有效額度快照：無法選出 $windowName 視窗的最大 resets_at 候選。"
+        }
+
+        $selectedSnapshots[$windowName] = $selectedSnapshot
     }
 
-    $maxResetsAt = ($futureCandidates | Measure-Object -Property ResetsAt -Maximum).Maximum
-    $currentWindowCandidates = @(
-        $futureCandidates | Where-Object { $_.ResetsAt -eq $maxResetsAt }
-    )
-    $selectedSnapshot = $currentWindowCandidates |
-        Sort-Object -Property SourceLastWriteTime, RecordIndex -Descending |
-        Select-Object -First 1
-
-    if ($null -eq $selectedSnapshot) {
-        throw '找不到有效額度快照：無法選出最大 resets_at 的候選。'
-    }
-
-    $remainingPercent = 100.0 - [double]$selectedSnapshot.UsedPercent
-    $daysToReset = (
-        [double]$selectedSnapshot.ResetsAt - [double]$currentUnixTime
-    ) / 86400.0
-    $windowDays = [double]$selectedSnapshot.WindowMinutes / 1440.0
-    $resetsAtLocal = [DateTimeOffset]::FromUnixTimeSeconds([long]$selectedSnapshot.ResetsAt).ToLocalTime().ToString(
-        'yyyy-MM-dd HH:mm',
-        [System.Globalization.CultureInfo]::InvariantCulture
-    )
-
-    Write-Output ('used_percent={0}' -f (Format-InvariantNumber -Value $selectedSnapshot.UsedPercent))
-    Write-Output ('remaining_percent={0}' -f (Format-InvariantNumber -Value $remainingPercent))
-    Write-Output ('days_to_reset={0}' -f (Format-InvariantNumber -Value $daysToReset))
-    Write-Output ('window_days={0}' -f (Format-InvariantNumber -Value $windowDays))
-    Write-Output ('resets_at={0}' -f $selectedSnapshot.ResetsAt)
-    Write-Output ('resets_at_local={0}' -f $resetsAtLocal)
-    Write-Output ('source_file={0}' -f $selectedSnapshot.SourceFile)
+    Write-QuotaWindow -WindowName 'primary' -Snapshot $selectedSnapshots['primary'] -CurrentUnixTime $currentUnixTime
+    Write-QuotaWindow -WindowName 'secondary' -Snapshot $selectedSnapshots['secondary'] -CurrentUnixTime $currentUnixTime
     exit 0
 }
 catch {

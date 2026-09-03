@@ -1,4 +1,6 @@
-﻿# ----------------------------------------------------------------
+﻿#Requires -Version 5.1
+
+# ----------------------------------------------------------------
 # Setup-AIGlobalConfig.ps1 - AI 全域設定連結自動化（收斂式安裝 / 含斷鍊清除）
 # 支援 -WhatIf 預覽；相容 Windows PowerShell 5.1 與 PowerShell 7+。
 # ----------------------------------------------------------------
@@ -12,8 +14,8 @@ $ErrorActionPreference = 'Stop'
 # 1. 管理員權限檢查
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "ERROR: 此腳本必須以『系統管理員身分』執行！" -ForegroundColor Red
-    return
+    Write-Error "此腳本必須以『系統管理員身分』執行！" -ErrorAction Continue
+    exit 1
 }
 
 # 2. 定義路徑：刻意寫死，與內容層 instructions.md / skill 的 ~/.ai-agents/ 引用共用同一不變量
@@ -24,14 +26,14 @@ $gitGlobalExcludes = Join-Path $configRoot "git-global-excludes"
 
 # 3. 實體檔案與原始目錄檢查
 if (!(Test-Path $mainInstructions)) {
-    Write-Host "ERROR: 找不到 $mainInstructions" -ForegroundColor Red
-    Write-Host "       請確認腳本位於 <configRoot>\scripts\ 之下。" -ForegroundColor Red
-    return
+    Write-Error "找不到 $mainInstructions" -ErrorAction Continue
+    Write-Error "請確認腳本位於 <configRoot>\scripts\ 之下。" -ErrorAction Continue
+    exit 1
 }
 
 if (!(Test-Path $gitGlobalExcludes)) {
-    Write-Host "ERROR: 找不到機器層排除清單 $gitGlobalExcludes" -ForegroundColor Red
-    return
+    Write-Error "找不到機器層排除清單 $gitGlobalExcludes" -ErrorAction Continue
+    exit 1
 }
 
 # 4. 準備工具目錄
@@ -119,6 +121,7 @@ foreach ($entry in $desired) {
 # 8. 清除斷鍊孤兒：只刪「指向 configRoot 但來源已不存在」者；仍能解析的連結保留
 Write-Host "`n>>> 正在清除斷鍊孤兒..." -ForegroundColor Cyan
 $rootPrefix = $configRoot.TrimEnd('\')
+$rootPrefixWithSeparator = $rootPrefix + [System.IO.Path]::DirectorySeparatorChar
 $orphans = foreach ($root in ($sweepRoots | Sort-Object -Unique)) {
     if (!(Test-Path $root)) { continue }
     Get-ChildItem -Path $root -Recurse -Depth 3 -Force -ErrorAction SilentlyContinue |
@@ -126,7 +129,10 @@ $orphans = foreach ($root in ($sweepRoots | Sort-Object -Unique)) {
         if (-not ($_.Attributes -match 'ReparsePoint')) { return $false }
         $t = if ($_.Target) { $_.Target } else { $_.LinkTarget }
         $t = ($t -join '')
-        if (-not $t.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        # 路徑分隔符邊界可避免 .ai-agents-backup 被誤判為 .ai-agents 的子路徑，防止清除根目錄外的 link。
+        $isWithinConfigRoot = [System.String]::Equals($t, $rootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $t.StartsWith($rootPrefixWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)
+        if (-not $isWithinConfigRoot) { return $false }
         -not (Test-Path -LiteralPath $t)   # 僅保留斷鍊者
     }
 }
@@ -237,7 +243,6 @@ else {
 }
 
 $codexConfigPath = Join-Path $codexDir "config.toml"
-$bulkProfilePath = Join-Path $codexDir "bulk.config.toml"
 $deepProfilePath = Join-Path $codexDir "deep.config.toml"
 $maxEffortMatches = @()
 if (Test-Path -LiteralPath $codexConfigPath) {
@@ -262,9 +267,6 @@ else {
 }
 
 $missingProfiles = @()
-if (-not (Test-Path -LiteralPath $bulkProfilePath -PathType Leaf)) {
-    $missingProfiles += 'bulk.config.toml'
-}
 if (-not (Test-Path -LiteralPath $deepProfilePath -PathType Leaf)) {
     $missingProfiles += 'deep.config.toml'
 }
@@ -272,5 +274,5 @@ if ($missingProfiles.Count -gt 0) {
     Write-Warning "  ⚠️ Codex 檔位設定檔缺件：$($missingProfiles -join ', ')。請參考 README.md §3「Codex CLI 前置需求」。"
 }
 else {
-    Write-Host "  ✅ Codex bulk.config.toml 與 deep.config.toml 均存在。" -ForegroundColor DarkGreen
+    Write-Host "  ✅ Codex 預設檔位與 deep.config.toml 均存在。" -ForegroundColor DarkGreen
 }

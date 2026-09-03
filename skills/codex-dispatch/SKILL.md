@@ -106,7 +106,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 ## 執行前提與可用性檢查
 
-派工前確認目前 session 能執行本地命令。Windows 先以 `Get-Command codex.cmd` 解析 PATH 上的實體命令，將結果保存為 `codexPath`，再以該路徑取得版本並檢查啟動環境。
+派工前確認目前 session 能執行本地命令。Windows 先以 `Get-Command codex.cmd -ErrorAction SilentlyContinue` 解析 PATH 上的實體命令，將結果保存為 `codexPath`，再以該路徑取得版本與 app-server 能力資訊。版本或能力檢查失敗時停止派工，回報原始錯誤與結束碼。
 
 ```powershell
 $codexCommand = Get-Command codex.cmd -ErrorAction SilentlyContinue
@@ -114,10 +114,18 @@ if ($null -eq $codexCommand) {
   throw "codex.cmd was not found on PATH."
 }
 $codexPath = $codexCommand.Source
-& $codexPath --version
+$versionOutput = (& $codexPath --version 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) {
+  throw "codex --version failed with exit code $LASTEXITCODE. Output: $versionOutput"
+}
+
+$helpOutput = (& $codexPath --cd . --sandbox workspace-write app-server --help 2>&1 | Out-String).Trim()
+if ($LASTEXITCODE -ne 0) {
+  throw "codex app-server --help failed with exit code $LASTEXITCODE. Output: $helpOutput"
+}
 ```
 
-版本檢查失敗時，先回報執行檔不存在或設定載入失敗的具體訊息。版本檢查失敗不等同派工工作失敗，需先處理執行環境問題。
+版本檢查失敗表示執行環境尚未可用，先處理 PATH、設定載入或 CLI 版本問題。app-server help probe 成功後才可建立 protocol connection。
 
 | Session 型態 | 派工能力 | 處置 |
 | --- | --- | --- |
@@ -125,55 +133,17 @@ $codexPath = $codexCommand.Source
 | Dispatch 對話本身或 cloud session | 不可發動 | 明確回報「當前 session 不載入全域規則，請於 local Code session 發動」，不嘗試執行 `codex` |
 | Dispatch 派生的 local Code session | 可發動 | 依本 Skill 的指令契約執行 |
 
-派工命令執行前由主 Agent 準備 `sourceLineRoot`、`<sourceRoot>\.local\ai-sessions\history\<lineSlug>`、`sourceReportLineRoot`、`dispatchLineRoot`、`reportLineRoot`，以及 `dispatchRoot\.local\ai-sessions\history` 與 `scratch`。來源 `sourceLineRoot\requirement-summary.md` 與同線來源 `history` 的覆寫備份保存跨派遣交接；事件流與 PID 記錄維持在既有的 `history` 根目錄；固定報告與例外紀錄落在 `reportLineRoot`。資源派遣若需更新來源需求摘要或其 history 備份，啟動命令必須以 `--add-dir` 授權這兩個來源線層目錄。報告檔與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md` 依派遣契約的明文寫入例外處理。若主 Agent 無法完成前置作業，停止啟動並回報缺件。重導向與 `--output-last-message` 不會建立父目錄，目錄缺少時 shell 會先失敗。
+派工命令執行前由主 Agent 準備 `sourceLineRoot`、`<sourceRoot>\.local\ai-sessions\history\<lineSlug>`、`sourceReportLineRoot`、`dispatchLineRoot`、`reportLineRoot`，以及 `dispatchRoot\.local\ai-sessions\history` 與 `scratch`。來源 `sourceLineRoot\requirement-summary.md` 與同線來源 `history` 的覆寫備份保存跨派遣交接；protocol transcript、stderr、thread id 與 PID 記錄維持在既有的 `history` 根目錄；固定報告與例外紀錄落在 `reportLineRoot`。資源派遣若需更新來源需求摘要或其 history 備份，啟動命令必須以 `--add-dir` 授權這兩個來源線層目錄。報告檔與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md` 依派遣契約的明文寫入例外處理。若主 Agent 無法完成前置作業，停止啟動並回報缺件。所有輸出父目錄必須在建立 connection 前完成建立。
 
 ## 指令契約
 
-正式啟動使用 `codex exec`，沿用既有 session 使用 `codex exec resume`。`sourceRoot`、`dispatchRoot`、`dispatchSlug`、`lineSlug` 與各輸出檔案路徑都使用絕對路徑；`dispatchRoot` 固定為 `<sourceRoot>\.local\ai-sessions\worktrees\<dispatchSlug>`。事件流檔名使用時間戳，不另外加入 slug。
+正式啟動使用 `codex app-server`。新工作與續 session 都在同一個 JSON-RPC over JSONL connection 上執行，`sourceRoot`、`dispatchRoot`、`dispatchSlug`、`lineSlug` 與各輸出檔案路徑都使用絕對路徑；`dispatchRoot` 固定為 `<sourceRoot>\.local\ai-sessions\worktrees\<dispatchSlug>`。protocol transcript、stderr、thread id 與 last-message 檔名使用時間戳，不另外加入未驗證的工作目錄。
 
-一般派工的 Codex 工作目錄固定為 `dispatchRoot`。主 Agent 先建立 prompt scratch 檔，再從檔案讀取單一 prompt 字串。PowerShell 不可將未處理的 `$prompt` 直接放入 `Start-Process -ArgumentList`，因為該參數會把陣列重新組合成單一命令列字串，內容中的引號、空白與換行會在再次解析時改變引數邊界。PowerShell 範例改以 `ProcessStartInfo.ArgumentList` 逐項傳遞固定選項，將 prompt 參數設為 `-`，再把 scratch 的完整內容寫入 `StandardInput`；`-` 是 Codex 從 stdin 讀取 prompt 的指示，直接寫入 stdin 可保留完整多行內容。`--cd`、`--sandbox`、`--add-dir` 與 `--search` 是 `codex` 的父層選項，必須放在 `exec` 或 `exec resume` 前方；`--output-last-message` 屬執行子命令的選項，放在子命令後方。
+一般派工的 Codex 工作目錄固定為 `dispatchRoot`。主 Agent 先建立 prompt scratch 檔，再從檔案讀取單一 prompt 字串。Prompt 不作為命令列引數，完整內容放入 `turn/start` 的單一 text item。PowerShell 端使用 `ProcessStartInfo.ArgumentList` 逐項傳遞固定選項，避免將路徑或 profile 重新組合為未處理的命令列字串。
 
-以下 `bash` 範例適用於 Bash 或 WSL。沒有網路需求時省略 `--search`，沒有 worktree 外寫入需求時省略 `--add-dir`。
+### Windows app-server 啟動
 
-```bash
-sourceRoot="<sourceRoot>"
-dispatchRoot="$sourceRoot/.local/ai-sessions/worktrees/<dispatchSlug>"
-lineSlug="<lineSlug>"
-sourceLineRoot="$sourceRoot/.local/ai-sessions/handoff/$lineSlug"
-sourceLineHistoryDir="$sourceRoot/.local/ai-sessions/history/$lineSlug"
-dispatchLineRoot="$dispatchRoot/.local/ai-sessions/handoff/$lineSlug"
-reportLineRoot="$dispatchRoot/.local/ai-sessions/report/$lineSlug"
-sourceHistoryDir="$sourceRoot/.local/ai-sessions/history"
-historyDir="$dispatchRoot/.local/ai-sessions/history"
-scratchDir="$dispatchRoot/.local/ai-sessions/scratch"
-timestamp="$(date +%Y%m%d_%H%M%S)"
-promptPath="$scratchDir/codex-prompt-$timestamp.md"
-lastMessagePath="$historyDir/codex-last-message-$timestamp.md"
-eventStreamPath="$historyDir/codex-exec-$timestamp.jsonl"
-errorStreamPath="$historyDir/codex-exec-$timestamp.stderr.log"
-
-cat > "$promptPath" <<'PROMPT'
-<prompt>
-PROMPT
-prompt="$(cat "$promptPath")"
-
-setsid codex \
-  --cd "$dispatchRoot" \
-  --sandbox workspace-write \
-  exec \
-  --json \
-  --output-last-message "$lastMessagePath" \
-  "$prompt" \
-  > "$eventStreamPath" 2> "$errorStreamPath" &
-codexPid=$!
-startedAtUtc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-rootProcessName="$(ps -o comm= -p "$codexPid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-rootParentPid="$(ps -o ppid= -p "$codexPid" | tr -d '[:space:]')"
-processGroupId="$(ps -o pgid= -p "$codexPid" | tr -d '[:space:]')"
-printf 'pid=%s\nroot-pid=%s\nroot-process-name=%s\nroot-parent-pid=%s\nroot-started-at-utc=%s\nprocess-tree-scope=process-group\nprocess-tree-query=ps-pgid-membership\nprocess-group-id=%s\nwork-root=%s\nline-slug=%s\nstarted-at-utc=%s\n' "$codexPid" "$codexPid" "$rootProcessName" "$rootParentPid" "$startedAtUtc" "$processGroupId" "$sourceRoot" "$lineSlug" "$startedAtUtc" > "$sourceHistoryDir/codex-pid-$timestamp.txt"
-```
-
-Unix 範例以 `setsid` 建立專用 process group，`codexPid` 是該群組的根程序；若環境沒有 `setsid`，停止並回報缺件，不得退回只記錄單一 PID。Windows PowerShell 使用 `Get-Command codex.cmd` 解析 PATH 上的實體命令。解析失敗時回報缺件並停止。PowerShell 使用 `ProcessStartInfo` 的 `ArgumentList` 傳遞固定選項，以 `-` 指示 Codex 從標準輸入讀取 prompt；成功啟動後立即查詢根程序的 `Name` 與 `ParentProcessId` 並記錄進程樹欄位，再分別保存標準輸出與錯誤輸出並使用 `WaitForExit()` 等待完成。
+以下 PowerShell 片段以 PowerShell 7+ 為目標。`Get-CodexQuota.ps1` 與 `Setup-AIGlobalConfig.ps1` 仍維持 Windows PowerShell 5.1 相容性。所有輸出目錄由主 Agent 在啟動前建立，Transport 的 `cwd` 固定為 `dispatchRoot`。
 
 ```powershell
 $sourceRoot = "<sourceRoot>"
@@ -188,21 +158,28 @@ $historyDir = Join-Path $dispatchRoot ".local\ai-sessions\history"
 $scratchDir = Join-Path $dispatchRoot ".local\ai-sessions\scratch"
 $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
 $promptPath = Join-Path $scratchDir "codex-prompt-$timestamp.md"
+$transcriptPath = Join-Path $historyDir "codex-app-server-$timestamp.jsonl"
 $lastMessagePath = Join-Path $historyDir "codex-last-message-$timestamp.md"
-$eventStreamPath = Join-Path $historyDir "codex-exec-$timestamp.jsonl"
-$errorStreamPath = Join-Path $historyDir "codex-exec-$timestamp.stderr.log"
+$stderrPath = Join-Path $historyDir "codex-app-server-$timestamp.stderr.log"
+$profile = "default"
+$needsSearch = $false
+$extraDirectories = @()
 
 $codexCommand = Get-Command codex.cmd -ErrorAction SilentlyContinue
 if ($null -eq $codexCommand) {
   throw "codex.cmd was not found on PATH."
 }
 $codexPath = $codexCommand.Source
-[System.IO.File]::WriteAllText($promptPath, "<prompt>", [System.Text.UTF8Encoding]::new($false))
+if ($profile -notin @("default", "deep")) {
+  throw "Unsupported Codex profile: $profile"
+}
 $prompt = Get-Content -LiteralPath $promptPath -Raw
 
 $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $startInfo.FileName = $codexPath
+$startInfo.WorkingDirectory = $dispatchRoot
 $startInfo.UseShellExecute = $false
+$startInfo.CreateNoWindow = $true
 $startInfo.RedirectStandardInput = $true
 $startInfo.RedirectStandardOutput = $true
 $startInfo.RedirectStandardError = $true
@@ -214,57 +191,153 @@ $startInfo.StandardErrorEncoding = $utf8NoBom
 [void]$startInfo.ArgumentList.Add($dispatchRoot)
 [void]$startInfo.ArgumentList.Add("--sandbox")
 [void]$startInfo.ArgumentList.Add("workspace-write")
-[void]$startInfo.ArgumentList.Add("exec")
-[void]$startInfo.ArgumentList.Add("--json")
-[void]$startInfo.ArgumentList.Add("--output-last-message")
-[void]$startInfo.ArgumentList.Add($lastMessagePath)
-[void]$startInfo.ArgumentList.Add("-")
+if ($profile -eq "deep") {
+  [void]$startInfo.ArgumentList.Add("-p")
+  [void]$startInfo.ArgumentList.Add("deep")
+}
+foreach ($directory in $extraDirectories) {
+  [void]$startInfo.ArgumentList.Add("--add-dir")
+  [void]$startInfo.ArgumentList.Add($directory)
+}
+if ($needsSearch) {
+  [void]$startInfo.ArgumentList.Add("--search")
+}
+[void]$startInfo.ArgumentList.Add("app-server")
 
 $process = [System.Diagnostics.Process]::new()
 $process.StartInfo = $startInfo
-if (-not $process.Start()) {
-  throw "codex.cmd could not be started."
+function Stop-VerifiedAppServerTree {
+  param(
+    [Parameter(Mandatory)]
+    [int]$RootPid,
+
+    [Parameter(Mandatory)]
+    [pscustomobject]$RootProcess,
+
+    [Parameter(Mandatory)]
+    [DateTime]$RootCreationDateUtc
+  )
+
+  if (
+    $null -eq $RootProcess -or
+    [string]::IsNullOrWhiteSpace([string]$RootProcess.Name) -or
+    $null -eq $RootProcess.CreationDate
+  ) {
+    throw "The app-server root identity is incomplete; cannot safely terminate the process tree."
+  }
+
+  $currentRoot = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $RootPid" -ErrorAction Stop
+  if ($null -eq $currentRoot) {
+    throw "The app-server root identity could not be revalidated; cannot safely terminate the process tree."
+  }
+  $currentCreationDateUtc = ([DateTime]$currentRoot.CreationDate).ToUniversalTime()
+  if (
+    [int]$currentRoot.ProcessId -ne $RootPid -or
+    [string]$currentRoot.Name -ine [string]$RootProcess.Name -or
+    [Math]::Abs(($currentCreationDateUtc - $RootCreationDateUtc).TotalSeconds) -gt 1
+  ) {
+    throw "The app-server root identity changed; cannot safely terminate the process tree."
+  }
+
+  & taskkill.exe /PID $RootPid /T /F | Out-Null
+  if ($LASTEXITCODE -ne 0) {
+    throw "taskkill failed for the verified app-server process tree with exit code $LASTEXITCODE."
+  }
 }
+
+$processStarted = $false
+$rootProcess = $null
+$rootCreationDateUtc = $null
 $startedAtUtc = [DateTime]::UtcNow.ToString("o")
-$rootProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
-if ($null -eq $rootProcess) {
-  throw "The started process could not be found in Win32_Process."
+try {
+  if (-not $process.Start()) {
+    throw "codex app-server could not be started."
+  }
+  $processStarted = $true
+  $rootProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
+  if ($null -eq $rootProcess) {
+    throw "The app-server root process could not be found in Win32_Process."
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$rootProcess.Name)) {
+    throw "The app-server root process name could not be read from Win32_Process."
+  }
+  if ($null -eq $rootProcess.CreationDate) {
+    throw "The app-server root process CreationDate could not be read from Win32_Process."
+  }
+  try {
+    $rootCreationDateUtc = ([DateTime]$rootProcess.CreationDate).ToUniversalTime()
+  }
+  catch {
+    throw "The app-server root process CreationDate could not be converted to UTC. $($_.Exception.Message)"
+  }
+
+  $pidPath = Join-Path $sourceHistoryDir "codex-pid-$timestamp.txt"
+  $pidText = @(
+    "pid=$($process.Id)"
+    "root-pid=$($process.Id)"
+    "root-process-name=$($rootProcess.Name)"
+    "root-parent-pid=$($rootProcess.ParentProcessId)"
+    "root-started-at-utc=$($rootCreationDateUtc.ToString('o'))"
+    "process-tree-scope=pid-and-descendants"
+    "process-tree-query=Win32_Process.ParentProcessId"
+    "work-root=$sourceRoot"
+    "line-slug=$lineSlug"
+    "started-at-utc=$startedAtUtc"
+  ) -join [Environment]::NewLine
+  [System.IO.File]::WriteAllText($pidPath, $pidText, $utf8NoBom)
 }
-$pidPath = Join-Path $sourceHistoryDir "codex-pid-$timestamp.txt"
-$pidText = @(
-  "pid=$($process.Id)"
-  "root-pid=$($process.Id)"
-  "root-process-name=$($rootProcess.Name)"
-  "root-parent-pid=$($rootProcess.ParentProcessId)"
-  "root-started-at-utc=$startedAtUtc"
-  "process-tree-scope=pid-and-descendants"
-  "process-tree-query=Win32_Process.ParentProcessId"
-  "work-root=$sourceRoot"
-  "line-slug=$lineSlug"
-  "started-at-utc=$startedAtUtc"
-) -join [Environment]::NewLine
-[System.IO.File]::WriteAllText($pidPath, $pidText, [System.Text.UTF8Encoding]::new($false))
+catch {
+  $startupError = $_
+  if (-not $processStarted) {
+    throw $startupError
+  }
 
-$stderrTask = $process.StandardError.ReadToEndAsync()
-$process.StandardInput.Write($prompt)
-$process.StandardInput.Close()
+  if ($null -eq $rootProcess -or $null -eq $rootCreationDateUtc) {
+    Write-Error "codex app-server started but its root identity is unavailable; cannot safely terminate the process tree. $($startupError.Exception.Message)" -ErrorAction Continue
+  }
+  else {
+    try {
+      Stop-VerifiedAppServerTree `
+        -RootPid $process.Id `
+        -RootProcess $rootProcess `
+        -RootCreationDateUtc $rootCreationDateUtc
+    }
+    catch {
+      Write-Error "codex app-server cleanup could not be completed safely; the process tree may still be running. $($_.Exception.Message)" -ErrorAction Continue
+    }
+  }
 
-$writer = [System.IO.StreamWriter]::new($eventStreamPath, $false, [System.Text.UTF8Encoding]::new($false))
-$writer.AutoFlush = $true
-while ($null -ne ($line = $process.StandardOutput.ReadLine())) { $writer.WriteLine($line) }
-$writer.Close()
-$process.WaitForExit()
-[System.IO.File]::WriteAllText($errorStreamPath, $stderrTask.GetAwaiter().GetResult(), [System.Text.UTF8Encoding]::new($false))
+  throw $startupError
+}
 ```
 
-`--cd` 固定指向 `dispatchRoot`。`--sandbox` 使用 `workspace-write`，隔離由 dispatch worktree 提供。`--add-dir` 只有在需求明確需要 worktree 外寫入時才加入，並列出絕對路徑。資源派遣若要更新來源 `sourceLineRoot\requirement-summary.md` 或寫入其覆寫備份，必須在 `exec` 前加入下列兩個線層選項，且不可改用 `dispatchRoot` 作為寫入目標。
+Unix client 在啟動後以 root PID 查詢實際建立時間與程序名稱，將查得的建立時間轉為 UTC ISO 8601 後寫入 `root-started-at-utc`，並以 process group id 與查得的身分完成後續比對。啟動成功後若 metadata、身分轉換或 PID 記錄寫入失敗，先以已取得且重新驗證的 root 身分終止同一個 process group；身分資料不足或重新驗證失敗時，記錄無法安全終止並回報。`started-at-utc` 僅記錄啟動時刻，不得取代 root PID 的實際建立時間。
+
+### app-server method 順序
+
+每條 connection 建立獨立的遞增 `Int64` request id。發送 request 前先把 entry 放入 `$pendingRequests`，key 使用 invariant string；收到 response 後先以相同 key 取出並移除，再設定 result 或 RPC error。`turn/started` 可能先於 `turn/start` response 到達，先放入 `$bufferedNotifications`，取得 turn id 後只重播相同 root thread 的通知。
+
+`thread/started` notification 只記錄 thread id、名稱、parent thread id 與暫定的 `root-candidate`／`subagent` 關係。`Job.ThreadId` 只能由已驗證的 `thread/start` 或 `thread/resume` response 設定；response 到達後再將相同 id 的候選關係確認為 `root`，其他候選維持 `subagent`。
+
+| Method | 類型 | Params 重點 | 順序與結果 |
+| --- | --- | --- | --- |
+| `initialize` | request | `clientInfo`、`capabilities` | connection 第一個 request；收到 result 後才能繼續 |
+| `initialized` | notification | `{}` | `initialize` 成功後立即送出 |
+| `thread/start` | request | `cwd`、`model = $null`、`approvalPolicy = never`、`sandbox = workspace-write`、`ephemeral = $false` | 新 Job 建立 root thread 後取得 `thread.id` |
+| `thread/resume` | request | `threadId`、`cwd`、`model = $null`、`approvalPolicy = never`、`sandbox = workspace-write` | 續 session 必須確認 response 的 `thread.id` 等於要求值 |
+| `turn/start` | request | `threadId`、單一 `input` text item、`model = $null`、`effort = $null`、`outputSchema = $null` | thread 建立或恢復後送出；取得 `turn.id` 後開始 root Job |
+| `turn/interrupt` | request | root `threadId`、root `turnId` | 取消時送出；只有收到 `turn/completed` 的 `cancelled`，或通過 `Test-CancelCorrelation` 的 app-server raw status `interrupted`，才能標記取消 |
+
+新 Job 的順序固定為 `initialize`、`initialized`、`thread/start`、`turn/start`。續 session 的順序固定為 `initialize`、`initialized`、`thread/resume`、`turn/start`。每個 `turn/start` 只帶一個完整 prompt text item，prompt 內容來自已建立的 scratch 檔案。
+
+`--cd` 固定指向 `dispatchRoot`。`--sandbox` 使用 `workspace-write`，隔離由 dispatch worktree 提供。`--add-dir` 只有在需求明確需要 worktree 外寫入時才加入，並列出絕對路徑。資源派遣若要更新來源 `sourceLineRoot\requirement-summary.md` 或寫入其覆寫備份，必須加入下列兩個線層選項，且不可改用 `dispatchRoot` 作為寫入目標。
 
 ```text
 --add-dir <sourceRoot>\.local\ai-sessions\handoff\<lineSlug>
 --add-dir <sourceRoot>\.local\ai-sessions\history\<lineSlug>
 ```
 
-`--search` 只有在需求明確需要網路查證時才加入，且放在 `exec` 或 `exec resume` 前方。`--json` 將事件流輸出為 JSON Lines，`--output-last-message` 將最後一則訊息寫入獨立檔案。
+`--search` 只有在需求明確需要網路查證時才加入，並放在最後的 `app-server` 子命令前方。預設 profile 不加入 `-p`；`deep` 依額度與任務條件加入 `-p deep`。Transport stdout 只包含 app-server JSONL。
 
 Prompt 必須明列已驗證的 `LineContext`，格式如下：
 
@@ -284,222 +357,1041 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ## 模型檔位規則
 
-`burn` 與 `deep` 是兩條獨立軸線。
+本 Skill 只使用預設檔位與 `deep`。預設檔位省略 `-p`，`deep` 檔位使用 `-p deep`。實際 model id 與 reasoning effort 只存在於 `~/.codex/<檔位名稱>.config.toml`，規則層只傳遞語意檔位名稱。
 
-- `burn` 用於額度充裕時加速日常的大批量標準化編輯。
-- `deep` 用於需要自行找路、步驟未明確的高難度任務。
-
-實際 model id 與 effort 只存在於 `~/.codex/<檔位名稱>.config.toml`。本 Skill 只使用 `burn` 與 `deep` 這兩個白名單名稱。未指定 `-p` 時使用預設省用檔位。規則不得自行加入 `-p`。
+`deep` 僅適用於需要自行找路、探索未知相依性或處理步驟未明確的高難度工作。例行編輯、操作步驟完整的任務、單一命令驗證與單純文件整理使用預設檔位。
 
 ### 額度快照
 
-主 Agent 從 `<CODEX_HOME>/sessions/<yyyy>/<MM>/<dd>/rollout-<時間戳>-<thread-id>.jsonl` 讀取 session 記錄。額度資料位於 `payload.rate_limits`。使用 `payload.rate_limits.primary.used_percent`、`payload.rate_limits.primary.window_minutes` 與 `payload.rate_limits.primary.resets_at`，其中 `used_percent` 為數值百分比、`window_minutes` 為分鐘數，`resets_at` 為 Unix timestamp（秒）。剩餘額度百分比為 `100 - used_percent`，`window_minutes` 除以 `1440` 得到週期天數。
+主 Agent 從 `<CODEX_HOME>/sessions/<yyyy>/<MM>/<dd>/rollout-<時間戳>-<thread-id>.jsonl` 讀取 session 記錄。額度資料位於 `payload.rate_limits`，必須同時取得 `primary` 與 `secondary` 視窗。每個視窗使用 `used_percent`、`window_minutes` 與 `resets_at`，其中 `used_percent` 為數值百分比、`window_minutes` 為分鐘數，`resets_at` 為 Unix timestamp（秒）。剩餘額度百分比為 `100 - used_percent`，`window_days` 為 `window_minutes / 1440`。
 
-主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，僅採用 `resets_at` 大於目前時間的候選，並在候選中選擇 `resets_at` 最大者，避免週期滾動後以最新檔案的歸零值誤判額度。找不到有效快照時，腳本以非零結束碼回報錯誤，不使用預設值。
+主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗獨立略過無效資料與 `resets_at` 不大於目前時間的候選，再選取該視窗 `resets_at` 最大的候選。`resets_at` 相同時以來源檔案寫入時間與 record index 由新到舊排序。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
 
-### 額度門檻
+腳本成功時依序輸出下列兩組 key-value。主 Agent 以同一次讀取的 `primary_remaining_percent` 與 `secondary_remaining_percent` 進行檔位判定。
 
-| 距離重置 | 允許升級至 `burn` 的剩餘額度門檻 |
-| --- | --- |
-| 4 天以上 | 不升級，無論剩餘多少 |
-| 3 天 | 剩餘 ≥ 70% |
-| 2 天 | 剩餘 ≥ 45% |
-| 1 天 | 剩餘 ≥ 15% |
+```text
+primary_used_percent=
+primary_remaining_percent=
+primary_days_to_reset=
+primary_window_minutes=
+primary_window_days=
+primary_resets_at=
+primary_resets_at_local=
+primary_source_file=
+secondary_used_percent=
+secondary_remaining_percent=
+secondary_days_to_reset=
+secondary_window_minutes=
+secondary_window_days=
+secondary_resets_at=
+secondary_resets_at_local=
+secondary_source_file=
+```
 
-曲線為前緊後鬆。前段封死是為了避免過早開啟；最後一天門檻最低，因為未使用的額度於重置時作廢。
+### 額度門檻與檔位選擇
 
-### 任務規模推級
-
-本輪任務規模大時，門檻上推一級，例如剩 2 天套用 3 天那格。判定大任務的依據為下列任一條件，T-code 數達 40 條以上、含 `[REWRITE]` Phase，或涉及檔案數達 20 個以上。
+1. 主 Agent 先判斷任務是否需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題。
+2. 兩個視窗的剩餘額度均大於或等於 15%，且任務符合高難度條件時，加入 `-p deep`。
+3. 任一視窗剩餘額度低於 15% 時，省略 `-p` 使用預設檔位。
+4. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
+5. 預設檔位省略 `-p`。profile 名稱只允許預設與 `deep` 的語意集合。
 
 ### 決策歸屬
 
-檔位由主 Agent 於派工當下決定，不逐次詢問使用者。判斷需同時知道剩餘額度與任務規模，前者只有使用者取得，後者只有主 Agent 掌握；將決策交給使用者等同要求其判斷看不到的量。
+檔位由主 Agent 於派工當下決定。主 Agent 必須保留兩個視窗的剩餘額度與任務難度判定，供回報與後續複核使用。
 
 ### 升級須說明理由
 
-預設永遠是省用檔位。主 Agent 決定升級時必須以一句話說明依據，引用快照數字與規模判定，不得默默升級。
+主 Agent 選用 `deep` 時，以一句話說明兩個剩餘額度與任務難度均符合條件。檔位判定不得只依 exit code 推論 profile 已生效，必須同時確認啟動參數與產出證據。
 
-Codex 遇到不存在的 profile 可能靜默回退預設值並以成功結束。執行前確認名稱只使用白名單，結束後以實際事件流與產出驗證結果判定，不以 exit code 單獨推論檔位已生效。
+## Job 狀態與程序等待
 
-## 背景執行與三出口等待
+Transport 建立 Job record 時將 `status` 設為 `queued`。stdout reader 逐行處理 app-server JSONL，Job State Reducer 依 root thread 的 notification、pending request response 與 process health 更新狀態。
 
-主 Agent 以背景方式執行 `codex exec`，持續觀察背景指令狀態與事件流檔案大小。事件流檔案大小只表示事件流是否有新進度；背景進程存活與並行檢查依 PID 記錄的完整進程樹或 process group 判定。
+| 目前狀態 | 觸發事件 | 下一狀態 | 判定依據 |
+| --- | --- | --- | --- |
+| `queued` | root `turn/started` 到達，或 `turn/start` response 的狀態為 `inProgress` | `running` | app-server 已接受 root turn |
+| `queued` | `initialize`、`thread/start` 或 `thread/resume` 回傳 RPC error | `failed` | pending request 以 request id 對應錯誤 |
+| `queued` | process 在取得有效 root turn 前結束 | `failed` | 沒有有效 turn 終止訊號 |
+| `running` | root `turn/completed` 的 `turn.status` 為 `completed` | `completed` | app-server 明確回報正常終止 |
+| `running` | root `turn/completed` 的 `turn.status` 為 `cancelled`，或已送出 `turn/interrupt` 後收到 raw status `interrupted` | `cancelled` | app-server 取消終止正規化為 Job 的 `cancelled` |
+| `running` | `error`、malformed JSONL、stdout EOF 或 process 非預期離開 | `failed` | protocol 或程序生命週期失效 |
+| 任一非終端狀態 | 已驗證 root `threadId`／`turnId` 的 `turn/interrupt` request 完成取消 | `cancelled` | `Test-CancelCorrelation` 確認取消 request 與 root thread／turn 一致 |
+| 任一非終端狀態 | response id 不在 pending map，或 thread／turn 關聯不一致 | `failed` | protocol anomaly 無法安全歸屬 |
 
-| 出口 | 判定條件 | 後續動作 |
-| --- | --- | --- |
-| A 正常結束 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 為 `turn.completed` | 進行事件流取證，再執行回收判定 |
-| B 停滯 | 背景指令仍在執行，事件流檔案大小連續 20 次輪詢未增加。每次間隔 30 秒，合計 10 分鐘 | 停止等待，回報最後一則事件的 `type` 與時間，交由使用者決定續等或中止 |
-| C 早夭 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 不是 `turn.completed` | 事件流含 `agent_message` 時取最後一則作為未完成回報，依 F1 與回收三態判定，不視為正常結束；沒有 `agent_message` 時讀取事件流末尾錯誤文字並回報啟動失敗 |
+只要 process 仍存活且沒有 terminal notification，Job 保持 `queued` 或 `running`。stdout reader 等待下一行，程序存活狀態由 process object 與既有 PID 進程樹驗證提供。Transport 不以報告檔是否出現或輸出閒置時間推導完成與失敗。
 
-只以報告檔是否出現作為終止條件，無法區分 Codex 中途崩潰與仍在執行。出口 B 使用檔案大小停滯作為停止依據。
+終端狀態具有不可逆性。收到終端 notification 後，後續重複 notification 或 response 只追加 protocol evidence，不覆寫 `completed`、`failed` 或 `cancelled`。process 結束時保存 exit code、signal 與 stderr。終端 notification 先到達時保留已判定的 Job 狀態；process 在 terminal notification 前結束時將 Job 設為 `failed`。
 
-出口 B 成立的前提是事件流在執行期間逐行落地。啟動範例以逐行 `StreamWriter` 搭配 `AutoFlush` 寫入事件流，Bash 端則以重導向達成同一效果。改用 `ReadToEndAsync` 之類的作法會把整份 stdout 留在啟動端的記憶體，事件流檔案在進程結束前維持 0 bytes，出口 B 的檔案大小判準恆不成立，且啟動端被終止時整份事件流一併遺失。
+目前 app-server 可能以 raw `turn.status = interrupted` 回報 `turn/interrupt` 的結果。只有 `Test-CancelCorrelation` 同時確認取消 request、root thread id 與 root turn id 一致時，才將此 raw status 正規化為 `cancelled`；未經取消要求或關聯不一致的 `interrupted` 與其他未知 status 均設為 `failed`。
 
-## 事件流取證
+每個 connection 初始化 `$bufferedNotifications = [System.Collections.ArrayList]::new()` 與 `$maxBufferedNotifications = 128`，並將兩者綁定至同一個 Job record。
 
-`--json` 事件流是 append-only 的 JSON Lines。每則助理輸出對應 `item.completed` 事件，格式如下。
-
-```json
-{"type":"item.completed","item":{"id":"item_68","type":"agent_message","text":"# 派工結案報告\n..."}}
+```powershell
+$maxBufferedNotifications = 128
+$bufferedNotifications = [System.Collections.ArrayList]::new()
+$Job.MaxBufferedNotifications = $maxBufferedNotifications
+$Job.BufferedNotifications = $bufferedNotifications
 ```
 
-thread id 事件格式如下。
+stdout reader 呼叫 `Handle-AppServerMessage` 時傳入同一個 collection；`turn/start` response 取得 root turn id 後由 `Replay-BufferedNotifications` 重播符合 root thread／turn 的通知。單一 stdout reader 擁有該 collection，加入前檢查最大筆數；Job 進入任何 terminal 狀態時清空 collection。
 
-```json
-{"type":"thread.started","thread_id":"01a01619-fbef-7ee2-aea3-39598e04388e"}
+`Handle-AppServerMessage` 只接受 `jsonrpc = "2.0"`。response 必須有 `id`、沒有 `method`，且恰有 `result` 或 `error` 其中一個欄位；schema 不可判讀時保存原始行、記錄 protocol error 並使 Job 進入 `failed`，不移除 pending entry 或繼續送出後續 method。
+
+Job record 至少包含下列欄位。
+
+| 欄位 | 語意 |
+| --- | --- |
+| `jobId` | 單次派遣的 Job 識別 |
+| `status` | `queued`、`running`、`completed`、`failed` 或 `cancelled` |
+| `threadId` | root app-server thread 識別 |
+| `turnId` | root app-server turn 識別 |
+| `selectedProfile` | `default` 或 `deep` |
+| `cancelRequested` | 是否已送出 root `turn/interrupt` request |
+| `cancelRequestId` | 已送出的 root `turn/interrupt` request id |
+| `cancelThreadId` | 取消 request 指向的 root thread id |
+| `cancelTurnId` | 取消 request 指向的 root turn id |
+| `finalMessage` | root thread 最新 `agentMessage` 文字，可為空 |
+| `finalMessageReady` | root `agentMessage` 是否已收到 `final_answer` phase |
+| `outputValid` | 最後訊息是否同時包含派遣單絕對路徑、`dispatchSlug` 與 `lineSlug` |
+| `responses` | 以 method 為 key 保存已完成 request 的 result |
+| `threadRelations` | 保存 thread id、名稱、parent thread id 與 root／subagent 關係 |
+| `threadCandidates` | root response 到達前收到的 thread 關聯候選 |
+| `maxBufferedNotifications` | `bufferedNotifications` 的最大筆數，預設為 128 |
+| `bufferedNotifications` | 尚未取得 turn id 前暫存的 `turn/started` notification |
+| `protocolError` | JSON 解析、RPC、schema 或連線錯誤 |
+| `protocolEvidence` | 終端後仍到達的重複 response、notification 或其他 protocol anomaly |
+| `stderr` | app-server stderr 完整內容 |
+| `startedAtUtc`、`completedAtUtc` | Job 生命週期時間 |
+
+## protocol transcript 與回報取證
+
+stdout reader 收到每一行後先原樣寫入 `dispatchRoot\.local\ai-sessions\history\codex-app-server-<yyyyMMdd_HHmmss>.jsonl`，再執行 JSON 解析。空白行略過。非空行解析失敗時保存原始 line 與例外，立即將 Job 設為 `failed`，後續內容不再用於完成判定。
+
+notification reader 即時處理 `item/completed`。`item.type = agentMessage` 且 `threadId` 為 root thread 時，將 `item.text` 更新至 `finalMessage`；`item.phase = final_answer` 時標記 final message 已可供回收前檢查。subagent thread 的訊息只寫入 progress evidence，不覆蓋 root `finalMessage`。
+
+notification 與 Job failure 的實際分流如下。下列條件發生於尚未進入 terminal 狀態的 Job 時，會保存 `protocolError` 或原始行並使 Job 進入 `failed`。
+
+1. JSONL 解析或 schema 失敗。包括 malformed JSON、訊息不是 JSON object、`jsonrpc` 缺少或不是 `2.0`、缺少 response 的 `id`、`id = null`、response 同時具備或同時缺少 `result`／`error`、response id 不在 pending map、object 既不是 response 也不是 notification 或 server request，以及 notification 的 `method` property 缺少、為 `null`、空字串或只含空白。
+2. RPC 與 process 生命週期失敗。包括 pending response 的 `error`、`process-exit`、`timeout`，以及 stdout reader 將 malformed line、EOF 或連線錯誤轉成的 protocol event。
+3. request／response 關聯失敗。包括 `thread/start`／`thread/resume` response 缺少 `thread.id`、續行 thread mismatch、既有 root thread mismatch、`turn/start` 缺少 pending entry、`turn` 或 `turn.id`、root thread mismatch、既有 root turn mismatch，以及未經取消關聯驗證的 `turn/start` `interrupted` response。
+4. notification 欄位與 root 關聯失敗。包括 `thread/started` 缺少 `params.thread.id`、`thread/name/updated` 缺少 `threadId` 或 `threadName`、`turn/started` 缺少 `threadId` 或 `turn.id`、root `turn/completed` 的 thread／turn mismatch、未經取消關聯驗證的 `turn/completed` `interrupted`，以及 `error` notification。
+5. 狀態與 buffer 失敗。包括 `turn/start` 或 `turn/completed` 的未知 turn status、`bufferedNotifications` 上限小於 1 或超過上限，以及 `Set-JobStatus` 收到不在五狀態合法轉移表內的逆向或不合法指定。未知的目前 Job status 會直接拋出例外，不被當成合法轉移。
+
+下列路徑會放行且不使 Job 失敗。合法的 `inProgress`、`completed`、`cancelled` 與通過 `Test-CancelCorrelation` 的 `interrupted` 依狀態表處理；同時含有非空 `id` 與 `method` 的 server request 回覆 `-32601`；合法的 `initialize` 或其他成功 response 依既有 response reducer 完成或略過。已確認與 Job 狀態無關的 `$script:IgnoredNotificationMethods`，其正常內容直接忽略；同一 method 帶有 `status = failed`／`status = error`、`error` 或 `failureReason` 時只寫入 `ProtocolEvidence`，仍放行。忽略清單以外的未處理 notification method 也只寫入 method 名稱與原始行的 `ProtocolEvidence`，不使 Job 失敗。terminal Job 收到後續事件時清空 buffer、保留 evidence 並維持原終端狀態。
+
+`$script:IgnoredNotificationMethods` 是抑制已確認高頻雜訊的觀察清單，不是 Job failure 白名單。app-server 版本更新後清單可能增減；每個清單 method 都必須依內容區分正常通知與失敗診斷。
+
+`Handle-AppServerMessage` 依下列順序分流每個 JSON object。
+
+```powershell
+$script:IgnoredNotificationMethods = @(
+  'mcpServer/startupStatus/updated'
+  'item/agentMessage/delta'
+  'thread/status/changed'
+  'thread/tokenUsage/updated'
+  'remoteControl/status/changed'
+  'account/rateLimits/updated'
+)
+
+function Test-IgnoredNotificationFailure {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Message
+  )
+
+  $params = $Message.params
+  if ($null -eq $params) {
+    return $false
+  }
+
+  $status = ''
+  if ($null -ne $params.PSObject.Properties['status']) {
+    $status = [string]$params.status
+  }
+  if ($status -ieq 'failed' -or $status -ieq 'error') {
+    return $true
+  }
+
+  return (
+    $null -ne $params.PSObject.Properties['error'] -or
+    $null -ne $params.PSObject.Properties['failureReason']
+  )
+}
+
+function ConvertTo-JsonLine {
+  param(
+    [Parameter(Mandatory)]
+    [object]$Payload
+  )
+
+  return ($Payload | ConvertTo-Json -Depth 30 -Compress)
+}
+
+function Send-JsonRpcRequest {
+  param(
+    [Parameter(Mandatory)]
+    [System.IO.StreamWriter]$Writer,
+
+    [Parameter(Mandatory)]
+    [hashtable]$Pending,
+
+    [Parameter(Mandatory)]
+    [ref]$NextRequestId,
+
+    [Parameter(Mandatory)]
+    [string]$Method,
+
+    [Parameter(Mandatory)]
+    [object]$Params
+  )
+
+  $id = [string]$NextRequestId.Value
+  $NextRequestId.Value++
+  $pendingThreadId = $null
+  $pendingTurnId = $null
+  if ($null -ne $Params) {
+    if ($null -ne $Params.PSObject.Properties['threadId']) {
+      $pendingThreadId = [string]$Params.threadId
+    }
+    if ($null -ne $Params.PSObject.Properties['turnId']) {
+      $pendingTurnId = [string]$Params.turnId
+    }
+  }
+  $Pending[$id] = [pscustomobject]@{
+    Method = $Method
+    CreatedAtUtc = [DateTime]::UtcNow
+    ThreadId = $pendingThreadId
+    TurnId = $pendingTurnId
+  }
+  $request = [ordered]@{
+    jsonrpc = '2.0'
+    id = [int64]$id
+    method = $Method
+    params = $Params
+  }
+
+  try {
+    $Writer.WriteLine((ConvertTo-JsonLine -Payload $request))
+    $Writer.Flush()
+  }
+  catch {
+    $Pending.Remove($id)
+    throw
+  }
+
+  return $id
+}
+
+function Send-JsonRpcNotification {
+  param(
+    [Parameter(Mandatory)]
+    [System.IO.StreamWriter]$Writer,
+
+    [Parameter(Mandatory)]
+    [string]$Method,
+
+    [Parameter(Mandatory)]
+    [object]$Params
+  )
+
+  $notification = [ordered]@{
+    jsonrpc = '2.0'
+    method = $Method
+    params = $Params
+  }
+  $Writer.WriteLine((ConvertTo-JsonLine -Payload $notification))
+  $Writer.Flush()
+}
+
+function Clear-JobBufferedNotifications {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Job
+  )
+
+  if ($null -ne $Job.BufferedNotifications) {
+    [void]$Job.BufferedNotifications.Clear()
+  }
+}
+
+function Add-BufferedNotification {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Job,
+
+    [Parameter(Mandatory)]
+    [AllowEmptyCollection()]
+    [System.Collections.ArrayList]$BufferedNotifications,
+
+    [Parameter(Mandatory)]
+    [pscustomobject]$Entry
+  )
+
+  if ($null -eq $Job.BufferedNotifications) {
+    $Job.BufferedNotifications = $BufferedNotifications
+  }
+  elseif (-not [object]::ReferenceEquals($Job.BufferedNotifications, $BufferedNotifications)) {
+    [void]$Job.BufferedNotifications.Clear()
+    $Job.BufferedNotifications = $BufferedNotifications
+  }
+
+  $maximum = [int]$Job.MaxBufferedNotifications
+  if ($maximum -lt 1) {
+    $Job.ProtocolError = 'bufferedNotifications maximum must be greater than zero.'
+    Clear-JobBufferedNotifications -Job $Job
+    Set-JobStatus -Job $Job -Status 'failed'
+    return $false
+  }
+  if ($BufferedNotifications.Count -ge $maximum) {
+    $Job.ProtocolError = "bufferedNotifications maximum of $maximum was exceeded."
+    if ($null -ne $Job.ProtocolEvidence) {
+      [void]$Job.ProtocolEvidence.Add("$($Job.ProtocolError) raw=$($Entry.RawLine)")
+    }
+    Clear-JobBufferedNotifications -Job $Job
+    Set-JobStatus -Job $Job -Status 'failed'
+    return $false
+  }
+
+  [void]$BufferedNotifications.Add($Entry)
+  return $true
+}
+
+function Set-JobStatus {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Job,
+
+    [Parameter(Mandatory)]
+    [ValidateSet('queued', 'running', 'completed', 'failed', 'cancelled')]
+    [string]$Status,
+
+    [string]$Evidence
+  )
+
+  $terminalStatuses = @('completed', 'failed', 'cancelled')
+  if ($Status -in $terminalStatuses) {
+    Clear-JobBufferedNotifications -Job $Job
+  }
+  if ($Job.Status -in $terminalStatuses) {
+    if ($null -ne $Job.ProtocolEvidence -and -not [string]::IsNullOrWhiteSpace($Evidence)) {
+      [void]$Job.ProtocolEvidence.Add($Evidence)
+    }
+    return
+  }
+
+  $allowedTransitions = @{
+    queued = @('queued', 'running', 'failed', 'cancelled')
+    running = @('running', 'completed', 'failed', 'cancelled')
+    completed = @('completed')
+    failed = @('failed')
+    cancelled = @('cancelled')
+  }
+  $currentStatus = [string]$Job.Status
+  if (-not $allowedTransitions.ContainsKey($currentStatus)) {
+    throw "Unknown current Job status: $currentStatus"
+  }
+  if ($Status -notin $allowedTransitions[$currentStatus]) {
+    $transitionError = "Illegal Job status transition: $currentStatus -> $Status"
+    $Job.ProtocolError = $transitionError
+    if ($null -ne $Job.ProtocolEvidence) {
+      [void]$Job.ProtocolEvidence.Add($transitionError)
+    }
+    $Job.Status = 'failed'
+    $Job.CompletedAtUtc = [DateTime]::UtcNow
+    Clear-JobBufferedNotifications -Job $Job
+    return
+  }
+
+  $Job.Status = $Status
+  if ($Status -in $terminalStatuses) {
+    $Job.CompletedAtUtc = [DateTime]::UtcNow
+  }
+}
+
+function Test-CancelCorrelation {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Job,
+
+    [Parameter(Mandatory)]
+    [string]$ThreadId,
+
+    [Parameter(Mandatory)]
+    [string]$TurnId
+  )
+
+  if (-not $Job.CancelRequested) {
+    return $false
+  }
+  if ([string]::IsNullOrWhiteSpace($ThreadId) -or [string]::IsNullOrWhiteSpace($TurnId)) {
+    return $false
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$Job.ThreadId) -or [string]::IsNullOrWhiteSpace([string]$Job.TurnId)) {
+    return $false
+  }
+  if ([string]$ThreadId -ne [string]$Job.ThreadId -or [string]$TurnId -ne [string]$Job.TurnId) {
+    return $false
+  }
+  if ([string]$Job.CancelThreadId -ne [string]$ThreadId -or [string]$Job.CancelTurnId -ne [string]$TurnId) {
+    return $false
+  }
+  if ([string]::IsNullOrWhiteSpace([string]$Job.CancelRequestId)) {
+    return $false
+  }
+
+  return $true
+}
+
+function Resolve-ThreadCandidates {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Job
+  )
+
+  if (
+    $null -eq $Job.ThreadCandidates -or
+    [string]::IsNullOrWhiteSpace([string]$Job.ThreadId)
+  ) {
+    return
+  }
+
+  foreach ($candidate in @($Job.ThreadCandidates)) {
+    if ([string]$candidate.ThreadId -eq [string]$Job.ThreadId) {
+      $candidate.Relation = 'root'
+    }
+    else {
+      $candidate.Relation = 'subagent'
+      if ($null -ne $Job.ProtocolEvidence) {
+        [void]$Job.ProtocolEvidence.Add("Resolved thread $($candidate.ThreadId) as subagent; root=$($Job.ThreadId)")
+      }
+    }
+    [void]$Job.ThreadCandidates.Remove($candidate)
+  }
+}
+
+function Reduce-JobState {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Job,
+
+    [Parameter(Mandatory)]
+    [ValidateSet('protocol-error', 'rpc-error', 'response', 'notification', 'process-exit', 'timeout')]
+    [string]$Event,
+
+    [string]$Method,
+
+    [pscustomobject]$Message,
+
+    [Parameter(Mandatory)]
+    [AllowEmptyCollection()]
+    [System.Collections.ArrayList]$BufferedNotifications,
+
+    [pscustomobject]$PendingEntry,
+
+    [string]$RawLine
+  )
+
+  if ($null -eq $Job.BufferedNotifications) {
+    $Job.BufferedNotifications = $BufferedNotifications
+  }
+  elseif (-not [object]::ReferenceEquals($Job.BufferedNotifications, $BufferedNotifications)) {
+    [void]$Job.BufferedNotifications.Clear()
+    $Job.BufferedNotifications = $BufferedNotifications
+  }
+
+  if ($Job.Status -in @('completed', 'failed', 'cancelled')) {
+    Clear-JobBufferedNotifications -Job $Job
+    if ($null -ne $Job.ProtocolEvidence) {
+      if (
+        $Event -eq 'notification' -and
+        $null -ne $Message -and
+        $null -ne $Message.PSObject.Properties['method']
+      ) {
+        [void]$Job.ProtocolEvidence.Add("Ignored app-server notification method $([string]$Message.method) after terminal status $($Job.Status); raw=$RawLine")
+      } else {
+        [void]$Job.ProtocolEvidence.Add("Ignored $Event after terminal status $($Job.Status).")
+      }
+    }
+    return
+  }
+
+  switch ($Event) {
+    'protocol-error' {
+      Set-JobStatus -Job $Job -Status 'failed'
+      return
+    }
+    'rpc-error' {
+      Set-JobStatus -Job $Job -Status 'failed'
+      return
+    }
+    'process-exit' {
+      Set-JobStatus -Job $Job -Status 'failed'
+      return
+    }
+    'timeout' {
+      if ([string]::IsNullOrWhiteSpace([string]$Job.ProtocolError)) {
+        $Job.ProtocolError = 'app-server Job timed out before reaching a terminal state.'
+      }
+      Set-JobStatus -Job $Job -Status 'failed'
+      return
+    }
+    'response' {
+      if ($Method -in @('thread/start', 'thread/resume')) {
+        $threadResult = $Job.Responses[$Method]
+        if (
+          $null -eq $threadResult -or
+          $null -eq $threadResult.PSObject.Properties['thread'] -or
+          $null -eq $threadResult.thread -or
+          $null -eq $threadResult.thread.PSObject.Properties['id'] -or
+          [string]::IsNullOrWhiteSpace([string]$threadResult.thread.id)
+        ) {
+          $Job.ProtocolError = "$Method response did not contain thread.id."
+          Set-JobStatus -Job $Job -Status 'failed'
+          return
+        }
+        $responseThreadId = [string]$threadResult.thread.id
+        if (
+          $Method -eq 'thread/resume' -and
+          ($null -eq $PendingEntry -or [string]$PendingEntry.ThreadId -ne $responseThreadId)
+        ) {
+          $Job.ProtocolError = 'thread/resume response thread mismatch.'
+          Set-JobStatus -Job $Job -Status 'failed'
+          return
+        }
+        if (
+          -not [string]::IsNullOrWhiteSpace([string]$Job.ThreadId) -and
+          [string]$Job.ThreadId -ne $responseThreadId
+        ) {
+          $Job.ProtocolError = "$Method response thread mismatch."
+          Set-JobStatus -Job $Job -Status 'failed'
+          return
+        }
+        $Job.ThreadId = $responseThreadId
+        $threadName = ''
+        $parentThreadId = ''
+        if ($null -ne $threadResult.thread.PSObject.Properties['name']) {
+          $threadName = [string]$threadResult.thread.name
+        }
+        if ($null -ne $threadResult.thread.PSObject.Properties['parentThreadId']) {
+          $parentThreadId = [string]$threadResult.thread.parentThreadId
+        }
+        if ($null -eq $Job.ThreadRelations) {
+          $Job.ThreadRelations = [System.Collections.ArrayList]::new()
+        }
+        [void]$Job.ThreadRelations.Add([pscustomobject]@{
+            ThreadId = $responseThreadId
+            Name = $threadName
+            ParentThreadId = $parentThreadId
+            Relation = 'root'
+            Source = $Method
+          })
+        Resolve-ThreadCandidates -Job $Job
+        return
+      }
+      if ($Method -ne 'turn/start' -or -not $Job.Responses.ContainsKey('turn/start')) {
+        return
+      }
+      if ($null -eq $PendingEntry) {
+        $Job.ProtocolError = 'turn/start response did not have a pending request entry.'
+        Set-JobStatus -Job $Job -Status 'failed'
+        return
+      }
+      $turnStartResult = $Job.Responses['turn/start']
+      if (
+        $null -eq $turnStartResult -or
+        $null -eq $turnStartResult.PSObject.Properties['turn'] -or
+        $null -eq $turnStartResult.turn
+      ) {
+        $Job.ProtocolError = 'turn/start response did not contain turn.'
+        Set-JobStatus -Job $Job -Status 'failed'
+        return
+      }
+      $turn = $turnStartResult.turn
+      $responseThreadId = [string]$PendingEntry.ThreadId
+      if (
+        [string]::IsNullOrWhiteSpace($responseThreadId) -or
+        [string]::IsNullOrWhiteSpace([string]$Job.ThreadId) -or
+        $responseThreadId -ne [string]$Job.ThreadId
+      ) {
+        $Job.ProtocolError = 'turn/start response thread mismatch.'
+        Set-JobStatus -Job $Job -Status 'failed'
+        return
+      }
+      $responseTurnId = [string]$turn.id
+      if ([string]::IsNullOrWhiteSpace($responseTurnId)) {
+        $Job.ProtocolError = 'turn/start response did not contain turn.id.'
+        Set-JobStatus -Job $Job -Status 'failed'
+        return
+      }
+      if (
+        -not [string]::IsNullOrWhiteSpace([string]$Job.TurnId) -and
+        [string]$Job.TurnId -ne $responseTurnId
+      ) {
+        $Job.ProtocolError = 'turn/start response turn mismatch.'
+        Set-JobStatus -Job $Job -Status 'failed'
+        return
+      }
+      if ([string]::IsNullOrWhiteSpace([string]$Job.TurnId)) {
+        $Job.TurnId = $responseTurnId
+      }
+      Replay-BufferedNotifications -Job $Job -BufferedNotifications $BufferedNotifications
+      switch ([string]$turn.status) {
+        'inProgress' { Set-JobStatus -Job $Job -Status 'running' }
+        'completed' {
+          if ($Job.Status -eq 'queued') {
+            Set-JobStatus -Job $Job -Status 'running'
+          }
+          Set-JobStatus -Job $Job -Status 'completed'
+        }
+        'cancelled' { Set-JobStatus -Job $Job -Status 'cancelled' }
+        'interrupted' {
+          if (Test-CancelCorrelation -Job $Job -ThreadId $responseThreadId -TurnId $responseTurnId) {
+            Set-JobStatus -Job $Job -Status 'cancelled'
+          } else {
+            $Job.ProtocolError = 'Uncorrelated turn/start interrupted response.'
+            Set-JobStatus -Job $Job -Status 'failed'
+          }
+        }
+        default {
+          $Job.ProtocolError = "Unknown turn status: $($turn.status)"
+          Set-JobStatus -Job $Job -Status 'failed'
+        }
+      }
+      return
+    }
+    'notification' {
+      if (
+        $null -eq $Message -or
+        $null -eq $Message.PSObject.Properties['method'] -or
+        [string]::IsNullOrWhiteSpace([string]$Message.method)
+      ) {
+        $Job.ProtocolError = 'Notification did not contain method.'
+        Set-JobStatus -Job $Job -Status 'failed'
+        return
+      }
+
+      $params = $Message.params
+      switch ([string]$Message.method) {
+        'thread/started' {
+          if (
+            $null -eq $params -or
+            $null -eq $params.PSObject.Properties['thread'] -or
+            $null -eq $params.thread -or
+            $null -eq $params.thread.PSObject.Properties['id'] -or
+            [string]::IsNullOrWhiteSpace([string]$params.thread.id)
+          ) {
+            $Job.ProtocolError = 'thread/started did not contain thread.id.'
+            Set-JobStatus -Job $Job -Status 'failed'
+            return
+          }
+
+          $notificationThreadId = [string]$params.thread.id
+          $notificationThreadName = ''
+          $parentThreadId = ''
+          if ($null -ne $params.thread.PSObject.Properties['name']) {
+            $notificationThreadName = [string]$params.thread.name
+          }
+          if ($null -ne $params.thread.PSObject.Properties['parentThreadId']) {
+            $parentThreadId = [string]$params.thread.parentThreadId
+          }
+          if ($null -eq $Job.ThreadRelations) {
+            $Job.ThreadRelations = [System.Collections.ArrayList]::new()
+          }
+          if ([string]::IsNullOrWhiteSpace([string]$Job.ThreadId)) {
+            $relation = if ([string]::IsNullOrWhiteSpace($parentThreadId)) { 'root-candidate' } else { 'subagent' }
+          }
+          elseif ($notificationThreadId -eq [string]$Job.ThreadId) {
+            $relation = 'root'
+          }
+          else {
+            $relation = 'subagent'
+          }
+          $threadRelation = [pscustomobject]@{
+            ThreadId = $notificationThreadId
+            Name = $notificationThreadName
+            ParentThreadId = $parentThreadId
+            Relation = $relation
+            Source = 'thread/started'
+          }
+          [void]$Job.ThreadRelations.Add($threadRelation)
+          if ($null -eq $Job.ThreadCandidates) {
+            $Job.ThreadCandidates = [System.Collections.ArrayList]::new()
+          }
+          if ($relation -eq 'root-candidate') {
+            [void]$Job.ThreadCandidates.Add($threadRelation)
+          }
+          elseif ($relation -eq 'subagent' -and [string]::IsNullOrWhiteSpace([string]$Job.ThreadId)) {
+            [void]$Job.ThreadCandidates.Add($threadRelation)
+            if ($null -ne $Job.ProtocolEvidence) {
+              [void]$Job.ProtocolEvidence.Add("Recorded subagent thread $notificationThreadId before root confirmation; parent=$parentThreadId")
+            }
+          }
+          elseif ($relation -eq 'subagent' -and $null -ne $Job.ProtocolEvidence) {
+            [void]$Job.ProtocolEvidence.Add("Recorded subagent thread $notificationThreadId; root=$($Job.ThreadId); parent=$parentThreadId")
+          }
+          return
+        }
+        'thread/name/updated' {
+          if (
+            $null -eq $params -or
+            $null -eq $params.PSObject.Properties['threadId'] -or
+            [string]::IsNullOrWhiteSpace([string]$params.threadId) -or
+            $null -eq $params.PSObject.Properties['threadName']
+          ) {
+            $Job.ProtocolError = 'thread/name/updated did not contain threadId and threadName.'
+            Set-JobStatus -Job $Job -Status 'failed'
+            return
+          }
+
+          $updatedThreadId = [string]$params.threadId
+          $updatedThreadName = [string]$params.threadName
+          $updatedRelation = if ([string]::IsNullOrWhiteSpace([string]$Job.ThreadId)) {
+            'root-candidate'
+          }
+          elseif ($updatedThreadId -eq [string]$Job.ThreadId) {
+            'root'
+          }
+          else {
+            'subagent'
+          }
+          $matchingRelations = @($Job.ThreadRelations | Where-Object { [string]$_.ThreadId -eq $updatedThreadId })
+          if ($matchingRelations.Count -eq 0) {
+            if ($null -eq $Job.ThreadRelations) {
+              $Job.ThreadRelations = [System.Collections.ArrayList]::new()
+            }
+            $nameRelation = [pscustomobject]@{
+              ThreadId = $updatedThreadId
+              Name = $updatedThreadName
+              ParentThreadId = ''
+              Relation = $updatedRelation
+              Source = 'thread/name/updated'
+            }
+            [void]$Job.ThreadRelations.Add($nameRelation)
+            if ([string]::IsNullOrWhiteSpace([string]$Job.ThreadId)) {
+              if ($null -eq $Job.ThreadCandidates) {
+                $Job.ThreadCandidates = [System.Collections.ArrayList]::new()
+              }
+              [void]$Job.ThreadCandidates.Add($nameRelation)
+            }
+          }
+          else {
+            foreach ($relation in $matchingRelations) {
+              $relation.Name = $updatedThreadName
+            }
+          }
+          return
+        }
+        'turn/started' {
+          $notificationThreadId = [string]$params.threadId
+          $notificationTurnId = [string]$params.turn.id
+          if (
+            [string]::IsNullOrWhiteSpace($notificationThreadId) -or
+            [string]::IsNullOrWhiteSpace($notificationTurnId)
+          ) {
+            $Job.ProtocolError = 'turn/started did not contain threadId and turn.id.'
+            Set-JobStatus -Job $Job -Status 'failed'
+            return
+          }
+          if ([string]::IsNullOrWhiteSpace([string]$Job.ThreadId)) {
+            [void](Add-BufferedNotification -Job $Job -BufferedNotifications $BufferedNotifications -Entry ([pscustomobject]@{
+                Method = 'turn/started'
+                ThreadId = $notificationThreadId
+                TurnId = $notificationTurnId
+                Message = $Message
+                RawLine = $RawLine
+              }))
+            return
+          }
+          if ($notificationThreadId -ne [string]$Job.ThreadId) {
+            if ($null -ne $Job.ProtocolEvidence) {
+              [void]$Job.ProtocolEvidence.Add("Ignored turn/started for non-root thread $notificationThreadId; raw=$RawLine")
+            }
+            return
+          }
+          if ([string]::IsNullOrWhiteSpace([string]$Job.TurnId)) {
+            [void](Add-BufferedNotification -Job $Job -BufferedNotifications $BufferedNotifications -Entry ([pscustomobject]@{
+                Method = 'turn/started'
+                ThreadId = $notificationThreadId
+                TurnId = $notificationTurnId
+                Message = $Message
+                RawLine = $RawLine
+              }))
+            return
+          }
+          if ($notificationTurnId -ne [string]$Job.TurnId) {
+            if ($null -ne $Job.ProtocolEvidence) {
+              [void]$Job.ProtocolEvidence.Add("Ignored turn/started for different turn $notificationTurnId; raw=$RawLine")
+            }
+            return
+          }
+          $Job.TurnId = $notificationTurnId
+          Set-JobStatus -Job $Job -Status 'running'
+          return
+        }
+        'item/started' {
+          if ([string]$params.threadId -eq [string]$Job.ThreadId) {
+            Set-JobStatus -Job $Job -Status 'running'
+          }
+          return
+        }
+        'item/completed' {
+          if ([string]$params.threadId -ne [string]$Job.ThreadId) {
+            return
+          }
+          if ($null -ne $params.item -and [string]$params.item.type -eq 'agentMessage') {
+            $Job.FinalMessage = [string]$params.item.text
+            $Job.FinalMessageReady = [string]$params.item.phase -eq 'final_answer'
+          }
+          return
+        }
+        'error' {
+          $Job.ProtocolError = $params | ConvertTo-Json -Depth 20 -Compress
+          Set-JobStatus -Job $Job -Status 'failed'
+          return
+        }
+        'turn/completed' {
+          if (
+            [string]$params.threadId -ne [string]$Job.ThreadId -or
+            [string]$params.turn.id -ne [string]$Job.TurnId
+          ) {
+            $Job.ProtocolError = 'Root turn/completed thread or turn mismatch.'
+            Set-JobStatus -Job $Job -Status 'failed'
+            return
+          }
+          switch ([string]$params.turn.status) {
+            'completed' { Set-JobStatus -Job $Job -Status 'completed' }
+            'cancelled' { Set-JobStatus -Job $Job -Status 'cancelled' }
+            'interrupted' {
+              if (Test-CancelCorrelation -Job $Job -ThreadId $params.threadId -TurnId $params.turn.id) {
+                Set-JobStatus -Job $Job -Status 'cancelled'
+              } else {
+                $Job.ProtocolError = 'Uncorrelated turn/completed interrupted notification.'
+                Set-JobStatus -Job $Job -Status 'failed'
+              }
+            }
+            default {
+              $Job.ProtocolError = "Unknown turn/completed status: $($params.turn.status)"
+              Set-JobStatus -Job $Job -Status 'failed'
+            }
+           }
+           return
+         }
+        default {
+          $unknownMethod = [string]$Message.method
+          if ($unknownMethod -in $script:IgnoredNotificationMethods) {
+            if (Test-IgnoredNotificationFailure -Message $Message) {
+              $diagnostic = "Ignored app-server notification method reported failure: $unknownMethod; raw=$RawLine"
+              if ($null -ne $Job.ProtocolEvidence) {
+                [void]$Job.ProtocolEvidence.Add($diagnostic)
+              }
+            }
+            return
+          }
+
+          $diagnostic = "Unhandled app-server notification method: $unknownMethod; raw=$RawLine"
+          if ($null -ne $Job.ProtocolEvidence) {
+            [void]$Job.ProtocolEvidence.Add($diagnostic)
+          }
+          return
+        }
+       }
+       return
+    }
+  }
+}
+
+function Replay-BufferedNotifications {
+  param(
+    [Parameter(Mandatory)]
+    [pscustomobject]$Job,
+
+    [Parameter(Mandatory)]
+    [AllowEmptyCollection()]
+    [System.Collections.ArrayList]$BufferedNotifications
+  )
+
+  if (
+    [string]::IsNullOrWhiteSpace([string]$Job.ThreadId) -or
+    [string]::IsNullOrWhiteSpace([string]$Job.TurnId)
+  ) {
+    return
+  }
+
+  $bufferedSnapshot = @($BufferedNotifications)
+  foreach ($entry in $bufferedSnapshot) {
+    if ([string]$entry.Method -ne 'turn/started') {
+      continue
+    }
+    $entryThreadId = [string]$entry.ThreadId
+    $entryTurnId = [string]$entry.TurnId
+    [void]$BufferedNotifications.Remove($entry)
+    if (
+      $entryThreadId -eq [string]$Job.ThreadId -and
+      $entryTurnId -eq [string]$Job.TurnId
+    ) {
+      Reduce-JobState `
+        -Job $Job `
+        -Event 'notification' `
+        -Method 'turn/started' `
+        -Message $entry.Message `
+        -BufferedNotifications $BufferedNotifications `
+        -RawLine $entry.RawLine
+      continue
+    }
+    if ($null -ne $Job.ProtocolEvidence) {
+      [void]$Job.ProtocolEvidence.Add("Ignored buffered turn/started for thread $entryThreadId and turn $entryTurnId; raw=$($entry.RawLine)")
+    }
+  }
+}
+
+function Handle-AppServerMessage {
+  param(
+    [Parameter(Mandatory)]
+    [string]$Line,
+
+    [Parameter(Mandatory)]
+    [pscustomobject]$Job,
+
+    [Parameter(Mandatory)]
+    [hashtable]$Pending,
+
+    [Parameter(Mandatory)]
+    [System.IO.StreamWriter]$TranscriptWriter,
+
+    [Parameter(Mandatory)]
+    [System.IO.StreamWriter]$Writer,
+
+
+    [Parameter(Mandatory)]
+    [AllowEmptyCollection()]
+    [System.Collections.ArrayList]$BufferedNotifications
+  )
+
+  if ([string]::IsNullOrWhiteSpace($Line)) {
+    return
+  }
+  $TranscriptWriter.WriteLine($Line)
+  $TranscriptWriter.Flush()
+
+  try {
+    $message = $Line | ConvertFrom-Json -ErrorAction Stop
+  }
+  catch {
+    $Job.ProtocolError = "Malformed JSONL: $($_.Exception.Message); line=$Line"
+    Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+    return
+  }
+
+  if ($null -eq $message -or $message -isnot [pscustomobject]) {
+    $Job.ProtocolError = "JSON-RPC message must be a JSON object; line=$Line"
+    Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+    return
+  }
+
+  $hasJsonRpc = $null -ne $message.PSObject.Properties['jsonrpc']
+  if (-not $hasJsonRpc -or [string]$message.jsonrpc -ne '2.0') {
+    $Job.ProtocolError = "Invalid JSON-RPC version; line=$Line"
+    Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+    return
+  }
+
+  $hasId = $null -ne $message.PSObject.Properties['id']
+  $hasMethod = $null -ne $message.PSObject.Properties['method']
+  if ($hasMethod -and [string]::IsNullOrWhiteSpace([string]$message.method)) {
+    $Job.ProtocolError = "JSON-RPC method must be a non-empty string; line=$Line"
+    Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+    return
+  }
+  if ($hasId -and $hasMethod) {
+    $errorMessage = [ordered]@{
+      jsonrpc = '2.0'
+      id = $message.id
+      error = [ordered]@{ code = -32601; message = 'Unsupported server request' }
+    }
+    $Writer.WriteLine((ConvertTo-JsonLine -Payload $errorMessage))
+    $Writer.Flush()
+    return
+  }
+
+  if ($hasId) {
+    if ($null -eq $message.id) {
+      $Job.ProtocolError = "JSON-RPC response id was null; line=$Line"
+      Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+      return
+    }
+    $hasResult = $null -ne $message.PSObject.Properties['result']
+    $hasError = $null -ne $message.PSObject.Properties['error']
+    if ($hasResult -eq $hasError) {
+      $Job.ProtocolError = "JSON-RPC response must contain exactly one of result or error; line=$Line"
+      Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+      return
+    }
+    $idKey = [string]$message.id
+    if (-not $Pending.ContainsKey($idKey)) {
+      $Job.ProtocolError = "Unknown response id: $idKey"
+      Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+      return
+    }
+    $pendingEntry = $Pending[$idKey]
+    [void]$Pending.Remove($idKey)
+    if ($hasError) {
+      $Job.ProtocolError = $message.error | ConvertTo-Json -Depth 20 -Compress
+      Reduce-JobState -Job $Job -Event 'rpc-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+      return
+    }
+    $Job.Responses[$pendingEntry.Method] = $message.result
+    Reduce-JobState `
+      -Job $Job `
+      -Event 'response' `
+      -Method $pendingEntry.Method `
+      -PendingEntry $pendingEntry `
+      -BufferedNotifications $BufferedNotifications `
+      -RawLine $Line
+    return
+  }
+
+  if ($hasMethod) {
+    Reduce-JobState `
+      -Job $Job `
+      -Event 'notification' `
+      -Message $message `
+      -BufferedNotifications $BufferedNotifications `
+      -RawLine $Line
+    return
+  }
+
+  $Job.ProtocolError = "JSON object is not a response, notification or server request: $Line"
+  Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
+}
 ```
 
-由後往前掃描事件流，取最後一則符合目前派工類型的 `agent_message`。Workflow 派工取同時包含「驗證證據」與「Phase 對照」兩節的訊息，寫入 `reportLineRoot\implement-closure-report.md`，再同步至 `sourceReportLineRoot`。資源派遣取符合派遣單第 8 欄要求的訊息，寫入派遣單第 7 欄指定的落點。
+stderr 以獨立 `ReadToEndAsync()` task 收集，避免 stderr buffer 阻塞 stdout reader。Job 終端後關閉 stdin，等待 process 完成，再把完整 stderr 寫入 `dispatchRoot\.local\ai-sessions\history\codex-app-server-<yyyyMMdd_HHmmss>.stderr.log`。thread id 寫入 `dispatchRoot\.local\ai-sessions\history\codex-thread-<dispatchSlug>.txt`，同步回來源工作樹後由來源 `history` 依既有保留規則保存。
 
-主 Agent 將 `thread.started` 的 `thread_id` 寫入 `dispatchRoot\.local\ai-sessions\history\codex-thread-<dispatchSlug>.txt`，同步回來源工作樹後保留於 `sourceRoot\.local\ai-sessions\history`，續 session 先讀取同一份記錄。
-
-取證失效時依下列狀態處理。
-
-- F1。事件流中沒有符合條件的結案訊息。判定必要欄位缺失，Workflow 派工依續 session 契約補齊；資源派遣依回收三態判定為未達成驗收條件。
-- F2。事件流沒有落地。回退讀取本輪 `dispatchRoot\.local\ai-sessions\history\codex-last-message-<yyyyMMdd_HHmmss>.md`，並在回報中標示取證來源為 last-message 檔。
-- F3。事件流含多則符合條件的訊息。取最後一則，並以其回報欄位作為最新值。
-
-事件流、thread id 與 last-message 檔在回收判定完成前保留於 `dispatchRoot\.local\ai-sessions\history`。同步回來源工作樹後，來源 `history` 依既有保留規則保存取證，不屬於自動清理範圍。
+Workflow 派工將 normalized Job result 的 `finalMessage` 寫入 `reportLineRoot\implement-closure-report.md`，資源派遣寫入派遣單第 7 欄指定落點。`outputValid` 僅檢查最後訊息是否同時包含派遣單絕對路徑、`dispatchSlug` 與 `lineSlug`，結果再交給 `RecoveryPrecheck`。沒有 final message 時保留空值並設為無效，不建立補償訊息。
 
 ## 續 session 與跨介面接手
 
-若需要補齊欄位或修正純技術驗收問題，依上一輪事件流的 `thread.started` 事件取得 `<thread-id>`，再使用同一 session 續行。
+若需要補齊欄位或修正純技術驗收問題，先從既有 thread id 產物讀取 `<thread-id>`，再使用同一個 app-server thread 續行。續 session 沿用同一個 `dispatchRoot`、sandbox 邊界、`LineContext` 與 PID 身分驗證。
 
-以下 `bash` 範例適用於 Bash 或 WSL。續 session 沿用同一個 `dispatchRoot` 與原派工的 sandbox 邊界。Prompt 仍先寫入 `scratch`，再以 `$(cat "$promptPath")` 讀取單一字串；需要背景執行時在命令末尾加上 `&`，標準輸出與錯誤輸出分別保存。
+續 session 的 Unix client 必須使用同一個 JSON-RPC over JSONL method 順序，並沿用 PID section 的 process group 身分驗證與安全關閉規則。
 
-```bash
-sourceRoot="<sourceRoot>"
-dispatchRoot="$sourceRoot/.local/ai-sessions/worktrees/<dispatchSlug>"
-lineSlug="<lineSlug>"
-sourceLineRoot="$sourceRoot/.local/ai-sessions/handoff/$lineSlug"
-sourceLineHistoryDir="$sourceRoot/.local/ai-sessions/history/$lineSlug"
-dispatchLineRoot="$dispatchRoot/.local/ai-sessions/handoff/$lineSlug"
-reportLineRoot="$dispatchRoot/.local/ai-sessions/report/$lineSlug"
-sourceHistoryDir="$sourceRoot/.local/ai-sessions/history"
-historyDir="$dispatchRoot/.local/ai-sessions/history"
-scratchDir="$dispatchRoot/.local/ai-sessions/scratch"
-timestamp="$(date +%Y%m%d_%H%M%S)"
-promptPath="$scratchDir/codex-prompt-$timestamp.md"
-lastMessagePath="$historyDir/codex-last-message-$timestamp.md"
-eventStreamPath="$historyDir/codex-exec-resume-$timestamp.jsonl"
-errorStreamPath="$historyDir/codex-exec-resume-$timestamp.stderr.log"
+Windows PowerShell 以 `(Get-Command codex.cmd).Source` 解析實體路徑。解析失敗時停止並回報缺件。使用 `ProcessStartInfo.ArgumentList` 傳遞固定選項，將 `cwd` 固定為 `dispatchRoot`，以 `StreamWriter` 將續行 request 寫入同一個 app-server connection。續 session 啟動成功後同樣立即查詢根程序的 `Name`、`ParentProcessId` 與建立時間，再寫入來源工作樹的 PID 記錄。
 
-cat > "$promptPath" <<'PROMPT'
-<prompt>
-PROMPT
-prompt="$(cat "$promptPath")"
+讀取 thread id 產物後，先完成 `initialize` 與 `initialized`，再送出 `thread/resume`。必須確認 response 的 `thread.id` 與要求的 `<thread-id>` 完全相同，接著以同一個 thread id 送出 `turn/start`。續行 prompt 仍來自 scratch 檔案，並以單一 text item 傳送。
 
-setsid codex \
-  --cd "$dispatchRoot" \
-  --sandbox workspace-write \
-  exec resume "<thread-id>" \
-  --json \
-  --output-last-message "$lastMessagePath" \
-  "$prompt" \
-  > "$eventStreamPath" 2> "$errorStreamPath" &
-codexPid=$!
-startedAtUtc="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-rootProcessName="$(ps -o comm= -p "$codexPid" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
-rootParentPid="$(ps -o ppid= -p "$codexPid" | tr -d '[:space:]')"
-processGroupId="$(ps -o pgid= -p "$codexPid" | tr -d '[:space:]')"
-printf 'pid=%s\nroot-pid=%s\nroot-process-name=%s\nroot-parent-pid=%s\nroot-started-at-utc=%s\nprocess-tree-scope=process-group\nprocess-tree-query=ps-pgid-membership\nprocess-group-id=%s\nwork-root=%s\nline-slug=%s\nstarted-at-utc=%s\n' "$codexPid" "$codexPid" "$rootProcessName" "$rootParentPid" "$startedAtUtc" "$processGroupId" "$sourceRoot" "$lineSlug" "$startedAtUtc" > "$sourceHistoryDir/codex-pid-$timestamp.txt"
-```
-
-Windows PowerShell 以 `(Get-Command codex.cmd).Source` 解析實體路徑。解析失敗時停止並回報缺件。使用 `ProcessStartInfo` 的 `ArgumentList` 傳遞固定選項，以 `-` 指示 Codex 從標準輸入讀取 prompt；續 session 啟動成功後同樣立即查詢根程序的 `Name` 與 `ParentProcessId` 並寫入來源工作樹的 PID 記錄，再分別保存標準輸出與錯誤輸出並使用 `WaitForExit()` 等待完成。
-
-```powershell
-$sourceRoot = "<sourceRoot>"
-$dispatchRoot = Join-Path $sourceRoot ".local\ai-sessions\worktrees\<dispatchSlug>"
-$lineSlug = "<lineSlug>"
-$sourceLineRoot = Join-Path $sourceRoot ".local\ai-sessions\handoff\$lineSlug"
-$sourceLineHistoryDir = Join-Path $sourceRoot ".local\ai-sessions\history\$lineSlug"
-$dispatchLineRoot = Join-Path $dispatchRoot ".local\ai-sessions\handoff\$lineSlug"
-$reportLineRoot = Join-Path $dispatchRoot ".local\ai-sessions\report\$lineSlug"
-$sourceHistoryDir = Join-Path $sourceRoot ".local\ai-sessions\history"
-$historyDir = Join-Path $dispatchRoot ".local\ai-sessions\history"
-$scratchDir = Join-Path $dispatchRoot ".local\ai-sessions\scratch"
-$timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-$promptPath = Join-Path $scratchDir "codex-prompt-$timestamp.md"
-$lastMessagePath = Join-Path $historyDir "codex-last-message-$timestamp.md"
-$eventStreamPath = Join-Path $historyDir "codex-exec-resume-$timestamp.jsonl"
-$errorStreamPath = Join-Path $historyDir "codex-exec-resume-$timestamp.stderr.log"
-
-$codexCommand = Get-Command codex.cmd -ErrorAction SilentlyContinue
-if ($null -eq $codexCommand) {
-  throw "codex.cmd was not found on PATH."
-}
-$codexPath = $codexCommand.Source
-[System.IO.File]::WriteAllText($promptPath, "<prompt>", [System.Text.UTF8Encoding]::new($false))
-$prompt = Get-Content -LiteralPath $promptPath -Raw
-
-$startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-$startInfo.FileName = $codexPath
-$startInfo.UseShellExecute = $false
-$startInfo.RedirectStandardInput = $true
-$startInfo.RedirectStandardOutput = $true
-$startInfo.RedirectStandardError = $true
-$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-$startInfo.StandardInputEncoding = $utf8NoBom
-$startInfo.StandardOutputEncoding = $utf8NoBom
-$startInfo.StandardErrorEncoding = $utf8NoBom
-[void]$startInfo.ArgumentList.Add("--cd")
-[void]$startInfo.ArgumentList.Add($dispatchRoot)
-[void]$startInfo.ArgumentList.Add("--sandbox")
-[void]$startInfo.ArgumentList.Add("workspace-write")
-[void]$startInfo.ArgumentList.Add("exec")
-[void]$startInfo.ArgumentList.Add("resume")
-[void]$startInfo.ArgumentList.Add("<thread-id>")
-[void]$startInfo.ArgumentList.Add("--json")
-[void]$startInfo.ArgumentList.Add("--output-last-message")
-[void]$startInfo.ArgumentList.Add($lastMessagePath)
-[void]$startInfo.ArgumentList.Add("-")
-
-$process = [System.Diagnostics.Process]::new()
-$process.StartInfo = $startInfo
-if (-not $process.Start()) {
-  throw "codex.cmd could not be started."
-}
-$startedAtUtc = [DateTime]::UtcNow.ToString("o")
-$rootProcess = Get-CimInstance -ClassName Win32_Process -Filter "ProcessId = $($process.Id)" -ErrorAction Stop
-if ($null -eq $rootProcess) {
-  throw "The resumed process could not be found in Win32_Process."
-}
-$pidPath = Join-Path $sourceHistoryDir "codex-pid-$timestamp.txt"
-$pidText = @(
-  "pid=$($process.Id)"
-  "root-pid=$($process.Id)"
-  "root-process-name=$($rootProcess.Name)"
-  "root-parent-pid=$($rootProcess.ParentProcessId)"
-  "root-started-at-utc=$startedAtUtc"
-  "process-tree-scope=pid-and-descendants"
-  "process-tree-query=Win32_Process.ParentProcessId"
-  "work-root=$sourceRoot"
-  "line-slug=$lineSlug"
-  "started-at-utc=$startedAtUtc"
-) -join [Environment]::NewLine
-[System.IO.File]::WriteAllText($pidPath, $pidText, [System.Text.UTF8Encoding]::new($false))
-
-$stderrTask = $process.StandardError.ReadToEndAsync()
-$process.StandardInput.Write($prompt)
-$process.StandardInput.Close()
-
-$writer = [System.IO.StreamWriter]::new($eventStreamPath, $false, [System.Text.UTF8Encoding]::new($false))
-$writer.AutoFlush = $true
-while ($null -ne ($line = $process.StandardOutput.ReadLine())) { $writer.WriteLine($line) }
-$writer.Close()
-$process.WaitForExit()
-[System.IO.File]::WriteAllText($errorStreamPath, $stderrTask.GetAwaiter().GetResult(), [System.Text.UTF8Encoding]::new($false))
-```
-
-`--cd`、`--sandbox`、`--add-dir` 與 `--search` 都是 `codex` 的父層選項，必須放在 `exec resume` 前方。`--output-last-message` 屬執行子命令的選項，放在子命令後方。`<sandbox-mode>` 必須沿用原派工邊界；續 session 不擴大其他寫入範圍或提高 sandbox 權限。需要網路查證時，將 `--search` 加在 `exec resume` 前方。
-
-讀不到 thread id 檔案時開新 session，並在 prompt 附上設計文件與退回報告的絕對路徑。跨介面接手視為新 session，依序讀取下列交接物重建狀態。
+跨介面接手視為同一條 line 的續行，依序讀取下列交接物重建狀態。
 
 1. `dispatchLineRoot\design.md`。
 2. `sourceLineRoot\requirement-summary.md`。需要由 Codex 寫入或讀取來源交接時，沿用啟動命令的 `--add-dir` 授權。
-3. 本輪 `dispatchRoot\.local\ai-sessions\history\codex-exec-<yyyyMMdd_HHmmss>.jsonl`。
-4. 事件流取證產生的 `reportLineRoot\implement-closure-report.md` 或派遣單第 7 欄指定報告。
+3. 本輪 `dispatchRoot\.local\ai-sessions\history\codex-app-server-<yyyyMMdd_HHmmss>.jsonl`。
+4. normalized Job result 產生的 `reportLineRoot\implement-closure-report.md` 或派遣單第 7 欄指定報告。
+
+### 取消與安全關閉
+
+取消只針對已驗證的 root `threadId`、`turnId` 與 PID 進程樹。以 root thread／turn 建立 `turn/interrupt` request，request id 寫入 pending map；request 成功送出後同步保存 `cancelRequested`、`cancelRequestId`、`cancelThreadId` 與 `cancelTurnId`。`Test-CancelCorrelation` 必須同時確認回報事件的 thread／turn 等於 Job 的 root 關聯，且等於取消 request 的目標。只有收到 root `turn/completed` 且 `turn.status = cancelled`，或通過 `Test-CancelCorrelation` 的 raw status `interrupted`，才把 Job 設為 `cancelled`。`turn/start` response 與 `turn/completed` notification 共用此 helper；RPC error、連線消失或缺少取消終止通知時保存失敗證據，Job 設為 `failed`，再依 PID section 的根程序身分比對與完整進程樹規則收尾。
+
+關閉 connection 時先停止寫入 stdin，讀完 stdout 與 stderr，等待 process 結束，再保存 transcript、thread id、last-message、stderr 與 exit 資訊。任何 `taskkill` 或 `kill` 都必須先通過既有的根程序名稱、建立時間、PID 或 process group 身分比對；Transport 不直接終止單一 PID、wrapper 或 leaf process。
 
 ## sandbox 外環境動作
 
@@ -509,7 +1401,7 @@ $process.WaitForExit()
 
 ## 網路能力硬邊界
 
-`--search` 是 Codex 的唯一上網路徑，且必須放在 `exec` 或 `exec resume` 前方。Codex shell 無法以 `curl` 或其他一般 shell 工具出網；開啟 sandbox network access 也不代表 shell 查證可用。
+`--search` 是 Codex 的唯一上網路徑，且必須放在最後的 `app-server` 子命令前方。Codex shell 無法以 `curl` 或其他一般 shell 工具出網；開啟 sandbox network access 也不代表 shell 查證可用。
 
 下列工作需要 shell 出網，應由 Claude 端依外環境動作規則處理，或先取得使用者當輪同意後由主 Agent 代執行。
 
@@ -529,7 +1421,7 @@ $process.WaitForExit()
 | 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `dispatchRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |
 | 結案要求 | 「驗證證據」節的輪起點 SHA 與開工基準線皆有值，且「Phase 對照」節逐 Phase 列出修改的檔案清單 | 先通過 `RecoveryPrecheck`，再逐條執行派遣單第 5 欄的命令並得出「收下」、「退回」或「升級」之一 |
 
-`requirement-summary.md` 是跨派遣的持久交接檔，固定於 `sourceLineRoot\requirement-summary.md`；覆寫前備份固定於 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`。這兩個來源落點不屬於 `dispatchRoot` 的派遣產出，資源派遣若需寫入它們，必須在 `exec` 或 `exec resume` 前以 `--add-dir` 分別授權來源線層 `handoff` 與 `history` 目錄。
+`requirement-summary.md` 是跨派遣的持久交接檔，固定於 `sourceLineRoot\requirement-summary.md`；覆寫前備份固定於 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`。這兩個來源落點不屬於 `dispatchRoot` 的派遣產出，資源派遣若需寫入它們，必須在最後的 `app-server` 子命令前以 `--add-dir` 分別授權來源線層 `handoff` 與 `history` 目錄。
 
 ## 派遣單契約
 
