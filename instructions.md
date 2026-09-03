@@ -383,7 +383,7 @@ Skill 指標索引由 `.githooks/Update-Docs.ps1` 依現有 Skill frontmatter �
 - `browser-smoke`：瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。
 - `check-markdown`：當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。
 - `codebase-design`：Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。
-- `codex-dispatch`：Codex 派工機制：依派工類型建立執行契約、啟動 Codex、等待事件流、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。
+- `codex-dispatch`：Codex 派工機制：依派工類型建立執行契約、以 app-server 啟動 Codex、背景等待、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。
 - `create-license-and-readme-link`：自動判斷專案屬性並推薦合適的開源授權，建立 LICENSE 檔案並將其連結補入 README.md 中。
 - `csharp-aspnetcore`：ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。
 - `csharp-auth`：ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。

@@ -1,6 +1,6 @@
 ---
 name: codex-dispatch
-description: 'Codex 派工機制：依派工類型建立執行契約、啟動 Codex、等待事件流、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。'
+description: 'Codex 派工機制：依派工類型建立執行契約、以 app-server 啟動 Codex、背景等待、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
@@ -463,6 +463,16 @@ Job record 至少包含下列欄位。
 | `protocolEvidence` | 終端後仍到達的重複 response、notification 或其他 protocol anomaly |
 | `stderr` | app-server stderr 完整內容 |
 | `startedAtUtc`、`completedAtUtc` | Job 生命週期時間 |
+
+### 主 Agent 的等待方式
+
+上述狀態判定發生在 Transport 進程內部。主 Agent 這一層不參與該判定，也不觀察 Job 狀態的中間變化。
+
+主 Agent 將整段 Transport 指令以背景方式啟動，該回合即結束，不停留等待。指令結束時由執行環境的事件通知重新叫起主 Agent，主 Agent 再讀取 transcript、last-message 與報告檔進行取證與回收。主 Agent 不輪詢檔案大小、不輪詢 Job 狀態、不使用 sleep 迴圈，也不派生 sub-agent 代為等待。
+
+此方式的前提是執行環境具備背景執行與完成通知。缺少該機制時，退回為同步阻塞執行同一段指令，取證與回收的判準不變。兩種方式的差別只在主 Agent 是否佔用回合等待，不影響 Transport 的狀態判定與終端狀態語意。
+
+主 Agent 只在兩種情形提前介入未結束的 Transport：使用者要求中止，或依中斷策略需要強制收尾。兩者都走既有的 PID 進程樹身分比對後終止，不以其他方式停止 Transport。
 
 ## protocol transcript 與回報取證
 
