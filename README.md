@@ -26,7 +26,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 與 UI Demo 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 驗收通過後由 Claude 端主 Agent 派生 sub-agent 背景執行 `codex exec` 發動 Implement / Review 鏈，不需手動切換平台；bug 由 Codex 的 Debug 線診斷與修正。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
+Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 與 UI Demo 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 驗收通過後由 Claude 端主 Agent 派生 sub-agent 背景執行 `codex app-server` 發動 Implement / Review 鏈，不需手動切換平台；bug 由 Codex 的 Debug 線診斷與修正。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
 
 涉及畫面的需求由 Clarify 判定 UI 線別，版面複雜或需對外溝通時派生 UI Demo 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
@@ -160,22 +160,25 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 額度快照由主 Agent 於每次派工前執行 `~/.ai-agents/scripts/Get-CodexQuota.ps1`，從 `$CODEX_HOME/sessions/` 的 rollout 記錄自動讀取。
 
 - 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附 binary 不作為派工執行檔。
+- 啟動 app-server 前執行 `codex --cd . --sandbox workspace-write app-server --help`，確認目前 CLI 支援 direct app-server JSON-RPC over JSONL。
+- PowerShell Transport 使用 `ProcessStartInfo.ArgumentList` 與 UTF-8 stdin／stdout／stderr；Transport 啟動端需要 PowerShell 7+。
 - 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
 - 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。
 - 更換機器後，第一步執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
 
 #### Codex profile 檔位設定
 
-1. 檔名規則為 `~/.codex/<檔位名稱>.config.toml`。本專案使用 `burn` 與 `deep` 兩個檔位。
-2. 檔位檔只包含兩個頂層鍵 `model` 與 `model_reasoning_effort`。設定範例如下：
+1. 預設檔位省略 `-p`；`deep` 檔位使用 `-p deep`，只保留預設與 `deep` 兩個選項。
+2. `deep` 只在任務需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題，且 `primary` 與 `secondary` 兩個額度視窗的剩餘百分比均大於或等於 15% 時使用。
+3. `deep` 的本機設定檔為 `~/.codex/deep.config.toml`，只包含兩個頂層鍵 `model` 與 `model_reasoning_effort`。設定範例如下：
 
    ```toml
    model = "gpt-5.6-terra"
    model_reasoning_effort = "max"
    ```
 
-3. Codex 0.134.0 起，`--profile` 改讀獨立檔案。`config.toml` 內的 `[profiles.*]` 為 legacy 格式，該版本以後不再受理。
-4. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段會偵測缺件並印出修復指引。
+4. Codex 0.134.0 起，`--profile` 改讀獨立檔案。`config.toml` 內的 `[profiles.*]` 為 legacy 格式，該版本以後不再受理。
+5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段只偵測 `deep.config.toml` 缺件並印出修復指引。
 
 ---
 
@@ -287,7 +290,7 @@ flowchart TD
     Debug --> Done
 ```
 
-> 功能線：Clarify 收斂需求後由 Design 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex exec` 進入實作與審查循環。判定為 C 線時，Clarify 先派生 UI Demo 產出 Demo 畫面，驗收並回填需求摘要後再進入 Design。Cleanup 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
+> 功能線：Clarify 收斂需求後由 Design 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex app-server` 進入實作與審查循環。判定為 C 線時，Clarify 先派生 UI Demo 產出 Demo 畫面，驗收並回填需求摘要後再進入 Design。Cleanup 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
 
 ---
 
