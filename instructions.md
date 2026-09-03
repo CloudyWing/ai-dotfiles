@@ -113,7 +113,7 @@ applyTo: "**/*"
 - **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途分三類，存放於固定目錄，不散落於 process cwd 或系統暫存目錄：
   - **線層交接檔與固定報告**：Clarify 為每個已確認需求摘要產生並登記 `lineSlug`。線登記資料、需求摘要與設計文件分別存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json`、`<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。Implement 結案、Review、未解驗證、Frontend Review、API Contract、Architecture Review、Cleanup Review、fact-check 與例外紀錄存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/`。固定名稱交接檔或報告的寫入者必須取得已驗證的 `LineContext`；缺少 `lineSlug` 時停止寫入並交由上游建立線脈絡。
   - **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<dispatchSlug>.md`。`dispatchSlug` 識別單次派遣，與識別 Clarify 對話的 `lineSlug` 分屬不同名稱空間。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。
-  - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/<lineSlug>/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<dispatchSlug>.txt` 存入 `history/`。
+  - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/<lineSlug>/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的 protocol transcript `<work-root>/.local/ai-sessions/history/codex-app-server-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<dispatchSlug>.txt` 存入 `history/`。
   - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
   - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
   - **需保留非交付**：整合任務素材、截圖、樣式基準與 UI Demo 分別存入 `<work-root>/.local/ai-sessions/inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/`。
@@ -126,7 +126,7 @@ applyTo: "**/*"
 - **背景進程清理（Background Process Cleanup）**：本流程自行啟動的背景進程（無頭瀏覽器、dev server、背景 worker、驗證用容器等），同一用途重用單一實例，不重複 spawn；預設於任務結束時關閉。刻意保留的進程（如 dev server 供使用者繼續開發），必須在結案報告中註明仍在執行，並附 port 或 PID。
   - 清理對象僅限本流程自行啟動的進程。資料庫、MCP server、既有服務，以及非本流程建立的連線一律不碰。
   - 此規範僅涉及進程關閉，不涉及任何資料異動。破壞性或不可逆的資料操作另依驗證流程的資料異動安全規範處理。
-- **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容。清理 `.local/ai-sessions/handoff/` 的其他項目時，保留每個 `<lineSlug>/` 目錄中的 `line.json`、`requirement-summary.md` 與 `design.md`。這三種線層資料分別保存線歸屬、需求意圖驗收與跨 Session 的設計驗收依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工事件流與 thread id 檔位於 `history/`，不在自動刪除範圍內。
+- **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容。清理 `.local/ai-sessions/handoff/` 的其他項目時，保留每個 `<lineSlug>/` 目錄中的 `line.json`、`requirement-summary.md` 與 `design.md`。這三種線層資料分別保存線歸屬、需求意圖驗收與跨 Session 的設計驗收依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工 protocol transcript 與 thread id 檔位於 `history/`，不在自動刪除範圍內。
 - **Exceptions 紀錄**：執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。寫入前驗證 `lineSlug` 與同線 `line.json` 的 `line-slug` 欄位一致。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。值班工程師作為 bug 線協調者的身分不適用於自身診斷紀錄。
 
   條目格式如下：
@@ -170,7 +170,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 - **主判準（工具集）**：可呼叫 `Skill`、`Agent`、`Edit`、`Write` 者為 Claude 端；可呼叫 `apply_patch`、`shell_command`、`collaboration.spawn_agent` 者為 Codex 端。工具集由 runtime 注入，不受行程環境繼承影響，因此列為主判準。
 - **輔助判準（環境變數）**：主判準無法區分時，檢查 `CODEX_THREAD_ID`。該變數有值即為 Codex 端。
-- **禁用判準**：`CLAUDECODE` 與其餘 `CLAUDE*` 環境變數不得作為判準。Claude 端呼叫 `codex exec` 時，這組變數會被 Codex 子行程繼承，Codex 端據此判定必然誤判為 Claude 端。
+- **禁用判準**：`CLAUDECODE` 與其餘 `CLAUDE*` 環境變數不得作為判準。Claude 端呼叫 `codex app-server` 時，這組變數會被 Codex 子行程繼承，Codex 端據此判定必然誤判為 Claude 端。
 
 #### 路由優先序
 
@@ -206,7 +206,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | 編輯 `Dockerfile`、`compose.yml`、`compose.yaml` | `docker` |
 | 修改跨模組介面、分層或依賴方向 | `codebase-design` |
 | 撰寫或修改 `instructions.md` 與任何 `SKILL.md` | `writing-for-agents` |
-| 發動 `codex exec`、撰寫派遣單或執行派遣回收判定 | `codex-dispatch` |
+| 發動 `codex app-server`、撰寫派遣單或執行派遣回收判定 | `codex-dispatch` |
 
 - 專案根目錄存在 `AGENTS.md` 的 `AI-DECLARATIONS` 宣告區塊時，先依宣告的 `context-index-query` 查詢索引，再定位 glossary、ADR 與其他專案脈絡；只有宣告不存在或格式無效時才使用 raw grep 作為 fallback。`ai-context-index` skill 只維護宣告格式與索引產物，不內建工具清單。
 
@@ -218,7 +218,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 #### work-root 判定
 
-- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。固定名稱交接檔與報告一律透過 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/` 或 `<work-root>/.local/ai-sessions/report/<lineSlug>/` 定位；`lineSlug` 由 Clarify 登記並以 `line.json` 驗證。已帶有 `dispatchSlug` 或時間戳的派遣、事件流與 PID 檔案維持既有根目錄形式。
+- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。固定名稱交接檔與報告一律透過 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/` 或 `<work-root>/.local/ai-sessions/report/<lineSlug>/` 定位；`lineSlug` 由 Clarify 登記並以 `line.json` 驗證。已帶有 `dispatchSlug` 或時間戳的 protocol transcript 與 PID 檔案維持既有根目錄形式。
 - **`task anchor` 定義（Crucial）**：本輪任務判定 `work-root` 的起點，代表使用者真正想處理的範圍。**不得直接以 Agent 執行命令時的 process cwd 作為 `task anchor`**，process cwd 只代表目前 Agent 所在的工作區，不一定等於本輪指定的檔案或子系統。
 - **`task anchor` 判定順序**：
   1. 使用者本輪明確指定的目標，依下列優先序解析：
@@ -282,13 +282,19 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | **Cleanup** | Codex | 使用者明確要求，或屬技術債清理 / 語法現代化 | `~/.ai-agents/agents/codex/cleanup.toml` | 依既有規範清理技術債，每批修改後驗證測試；模組邊界與依賴方向交由 `architecture-improvement` skill |
 | **Engineer** | Codex | 使用者於 Codex 端要求「值班工程師」或以派遣單發動；相容觸發詞為 debug／除錯 | `~/.ai-agents/agents/codex/engineer.toml` | 先判定 bug 或 task，再依分流執行診斷、修正或派遣單任務 |
 
+#### Claude 端 sub-agent 模型指定
+
+Claude 端使用 Agent 工具建立 `UI Demo` 或主 Agent 臨時派生的搜尋型 agent 時，呼叫參數必須包含 `model: sonnet`。Agent 工具的 `model` 參數只接受模型名稱，不得傳入 `effort` 或 `model_reasoning_effort`；`sonnet` 的 `med` effort 由 agent 自身承載。
+
+此規則只適用於 `UI Demo` 與臨時搜尋型 agent，不套用於 Claude Persona、Codex 端 Agent、`codex app-server` profile 或其他未列出的 sub-agent。其他 Claude sub-agent 的模型設定由各自呼叫者依既有規則負責。
+
 上表的規則來源同時是跨平台執行的依據。任一 Agent 在非其預設平台被叫起時，依此欄的路徑讀取規則檔，不因平台不同而改用簡化規則。
 
 #### 跨平台派工掛載點
 
 派工分為 Workflow 派工與資源派遣。Workflow 派工服務 `Clarify => Design => Implement => Review` 的實作階段，資源派遣服務 `Review`、`Engineer` 與其他需要 Codex 端執行的工作。
 
-規則層只判斷是否派工與使用哪個 Codex 端 Agent。指令參數、落點、等待、事件流取證、續 session 與回收方式由 `codex-dispatch` skill 提供。
+規則層只判斷是否派工與使用哪個 Codex 端 Agent。指令參數、落點、等待、protocol transcript 取證、續 session 與回收方式由 `codex-dispatch` skill 提供。
 
 ##### F1 派工判準
 
