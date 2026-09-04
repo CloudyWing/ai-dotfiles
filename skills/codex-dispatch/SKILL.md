@@ -365,7 +365,9 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 主 Agent 從 `<CODEX_HOME>/sessions/<yyyy>/<MM>/<dd>/rollout-<時間戳>-<thread-id>.jsonl` 讀取 session 記錄。額度資料位於 `payload.rate_limits`，必須同時取得 `primary` 與 `secondary` 視窗。每個視窗使用 `used_percent`、`window_minutes` 與 `resets_at`，其中 `used_percent` 為數值百分比、`window_minutes` 為分鐘數，`resets_at` 為 Unix timestamp（秒）。剩餘額度百分比為 `100 - used_percent`，`window_days` 為 `window_minutes / 1440`。
 
-主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗獨立略過無效資料與 `resets_at` 不大於目前時間的候選，再選取該視窗 `resets_at` 最大的候選。`resets_at` 相同時以來源檔案寫入時間與 record index 由新到舊排序。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
+主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗獨立略過無效資料與 `resets_at` 不大於目前時間的候選，再選取來源檔案寫入時間最新的候選，同檔內以 record index 由新到舊決勝。不得改用 `resets_at` 最大值挑選候選，週視窗重新錨定時 `resets_at` 會往回跳，取最大值會淘汰當日全部記錄並鎖死在舊快照。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
+
+兩個視窗都是固定視窗，`used_percent` 在視窗內單調累積，跨過 `resets_at` 後歸零並跳至下一格，額度不連續回補。`primary` 為 5 小時視窗，`secondary` 為 7 天視窗，容量相差約 33 倍，因此同一件任務在 `primary` 消耗的百分點約為 `secondary` 的 30 倍。
 
 腳本成功時依序輸出下列兩組 key-value。主 Agent 以同一次讀取的 `primary_remaining_percent` 與 `secondary_remaining_percent` 進行檔位判定。
 
@@ -390,11 +392,16 @@ secondary_source_file=
 
 ### 額度門檻與檔位選擇
 
+兩個視窗的門檻不同。`primary` 為 30%，`secondary` 為 15%。門檻差異來自容量差：一次 `deep` 派工實測消耗 `primary` 約 19 至 28 個百分點，15% 撐不完單次派工；同樣的消耗量在 `secondary` 不足 1 個百分點，15% 仍有數次派工的餘裕。
+
 1. 主 Agent 先判斷任務是否需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題。
-2. 兩個視窗的剩餘額度均大於或等於 15%，且任務符合高難度條件時，加入 `-p deep`。
-3. 任一視窗剩餘額度低於 15% 時，省略 `-p` 使用預設檔位。
-4. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
-5. 預設檔位省略 `-p`。profile 名稱只允許預設與 `deep` 的語意集合。
+2. `primary_remaining_percent` 大於或等於 30、`secondary_remaining_percent` 大於或等於 15，且任務符合高難度條件時，加入 `-p deep`。
+3. `secondary_remaining_percent` 低於 15 時，省略 `-p` 使用預設檔位。週視窗重設通常在數天後，不採等待。
+4. `secondary` 通過門檻但 `primary_remaining_percent` 低於 30 時，依 `primary_days_to_reset` 決定處置。距重設 30 分鐘以內時，向使用者提議等待重設後再以 `deep` 派工，不降檔；距重設超過 30 分鐘時，省略 `-p` 使用預設檔位。
+5. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
+6. 預設檔位省略 `-p`。profile 名稱只允許預設與 `deep` 的語意集合。
+
+第 4 條的等待選項只適用於 `primary`。剩餘時間影響的是「要不要等一下再派工」，不得用來放寬百分比門檻。
 
 ### 決策歸屬
 

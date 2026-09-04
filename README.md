@@ -169,7 +169,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 #### Codex profile 檔位設定
 
 1. 預設檔位省略 `-p`；`deep` 檔位使用 `-p deep`，只保留預設與 `deep` 兩個選項。
-2. `deep` 只在任務需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題，且 `primary` 與 `secondary` 兩個額度視窗的剩餘百分比均大於或等於 15% 時使用。
+2. `deep` 只在任務需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題，且 `primary` 額度視窗剩餘百分比大於或等於 30%、`secondary` 大於或等於 15% 時使用。兩個視窗門檻不同的理由與 `primary` 接近重設時的等待選項見 `codex-dispatch` skill。
 3. `deep` 的本機設定檔為 `~/.codex/deep.config.toml`，只包含兩個頂層鍵 `model` 與 `model_reasoning_effort`。設定範例如下：
 
    ```toml
