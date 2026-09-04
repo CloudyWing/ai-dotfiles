@@ -213,20 +213,17 @@ try {
             throw "找不到有效額度快照：$windowName 視窗在最近 20 個 rollout 檔沒有 resets_at 大於目前時間的候選。掃描路徑：$sessionsPath"
         }
 
-        $maxResetsAt = ($futureCandidates | Measure-Object -Property ResetsAt -Maximum).Maximum
-        $currentWindowCandidates = @(
-            $futureCandidates | Where-Object { $_.ResetsAt -eq $maxResetsAt }
-        )
-        $selectedSnapshot = $currentWindowCandidates |
+        # 週視窗重新錨定時 resets_at 會往回跳，不可用最大 resets_at 選候選，
+        # 一律取寫入時間最新的一筆觀測值。
+        $selectedSnapshot = $futureCandidates |
             Sort-Object -Property @(
                 @{ Expression = 'SourceLastWriteTime'; Descending = $true }
                 @{ Expression = 'RecordIndex'; Descending = $true }
-                @{ Expression = 'FileIndex'; Descending = $true }
             ) |
             Select-Object -First 1
 
         if ($null -eq $selectedSnapshot) {
-            throw "找不到有效額度快照：無法選出 $windowName 視窗的最大 resets_at 候選。"
+            throw "找不到有效額度快照：無法選出 $windowName 視窗的最新候選。"
         }
 
         $selectedSnapshots[$windowName] = $selectedSnapshot
