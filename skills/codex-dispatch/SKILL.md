@@ -1443,7 +1443,7 @@ Windows PowerShell 以 `(Get-Command codex.cmd).Source` 解析實體路徑。解
 
 共用本 Skill 的機制。Workflow 派工與資源派遣只以輸入、產出與結案要求區分；兩者都先使用同一個 dispatch worktree。
 
-| 面向 | Workflow 派工（`Developer`） | 資源派遣（`Architect`、`Reviewer`、`Engineer`、其餘一切） |
+| 面向 | Workflow 派工（`Developer`） | 資源派遣（`Architect`、`Reviewer`、`Support Engineer`、其餘一切） |
 | --- | --- | --- |
 | 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `dispatchRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
 | 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `dispatchRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |

@@ -26,7 +26,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Analyst、Developer、Editor、Engineer）以語意切換方式執行；執行型 agent 中 Architect 與 Prototyper 於 Claude 端派生，Developer、Reviewer、Frontend Reviewer、Contract Auditor、Refactorer、Engineer 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 派生 sub-agent 背景執行 `codex app-server` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Engineer 線診斷與修正。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
+Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方式執行；執行型 agent 中 Architect 與 Prototyper 於 Claude 端派生，Developer、Reviewer、Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 派生 sub-agent 背景執行 `codex app-server` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Maintainer 線診斷，實作交由 Support Engineer 完成。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
 
 涉及畫面的需求由 Analyst 判定 UI 線別，版面複雜或需對外溝通時派生 Prototyper 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
@@ -260,13 +260,13 @@ flowchart TD
     Analyst["**Analyst**<br />需求解構＋構想發散"]
     Prototyper["**Prototyper**<br />Demo 畫面產出"]
     Architect["**Architect**<br />系統設計"]
-    Developer["**Developer**<br />實作工程師"]
+    Developer["**Developer**<br />程式設計師"]
     Reviewer["**Reviewer**<br />後端驗收"]
     FrontendReviewer["**Frontend Reviewer**<br />前端驗收"]
     Refactorer["**Refactorer**<br />技術債清理"]
     ArchitectureImprovement["**architecture-improvement**<br />候選分析"]
-    Engineer["**Engineer**<br />bug 線協調者"]
-    FixSub["匿名 subagent<br />執行修正"]
+    Maintainer["**Maintainer**<br />bug 線協調者"]
+    SupportEngineer["**Support Engineer**<br />實作修改"]
     Done(["任務完成"])
 
     Analyst --> Architect
@@ -285,12 +285,12 @@ flowchart TD
 
     ArchitectureImprovement -->|候選報告| Analyst
 
-    Engineer -->|派生＋fix-plan| FixSub
-    FixSub -->|回報| Engineer
-    Engineer --> Done
+    Maintainer -->|派生＋fix-plan| SupportEngineer
+    SupportEngineer -->|回報| Maintainer
+    Maintainer --> Done
 ```
 
-> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex app-server` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Engineer 診斷後派生匿名 subagent 修正並驗收。
+> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex app-server` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
 
 ---
 
