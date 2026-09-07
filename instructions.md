@@ -126,7 +126,7 @@ applyTo: "**/*"
 - **背景進程清理（Background Process Cleanup）**：本流程自行啟動的背景進程（無頭瀏覽器、dev server、背景 worker、驗證用容器等），同一用途重用單一實例，不重複 spawn；預設於任務結束時關閉。刻意保留的進程（如 dev server 供使用者繼續開發），必須在結案報告中註明仍在執行，並附 port 或 PID。
   - 清理對象僅限本流程自行啟動的進程。資料庫、MCP server、既有服務，以及非本流程建立的連線一律不碰。
   - 此規範僅涉及進程關閉，不涉及任何資料異動。破壞性或不可逆的資料操作另依驗證流程的資料異動安全規範處理。
-- **環境清理（Cleanup）**：任務執行完畢時，刪除 `.local/ai-sessions/scratch/` 的全部內容。清理 `.local/ai-sessions/handoff/` 的其他項目時，保留每個 `<lineSlug>/` 目錄中的 `line.json`、`requirement-summary.md` 與 `design.md`。這三種線層資料分別保存線歸屬、需求意圖驗收與跨 Session 的設計驗收依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工事件流與 thread id 檔位於 `history/`，不在自動刪除範圍內。
+- **環境清理（Cleanup）**：任務執行完畢時，刪除 `<work-root>/.local/ai-sessions/scratch/` 的全部內容。「任務執行完畢」指主 Agent 完成回收判定之後，不是執行端單一 turn 結束；執行端在自己的 turn 結束時不清理 scratch，否則會刪除主 Agent 回收時要複核的驗證證據。dispatch worktree 內的 `scratch/` 一律不清理，它隨 worktree 移除一併消失，先清一次沒有任何效果。清理由主 Agent 執行，不派工，理由見 §1.5 F1 判準。清理 `.local/ai-sessions/handoff/` 的其他項目時，保留每個 `<lineSlug>/` 目錄中的 `line.json`、`requirement-summary.md` 與 `design.md`。這三種線層資料分別保存線歸屬、需求意圖驗收與跨 Session 的設計驗收依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工事件流與 thread id 檔位於 `history/`，不在自動刪除範圍內。
 - **Exceptions 紀錄**：執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。寫入前驗證 `lineSlug` 與同線 `line.json` 的 `line-slug` 欄位一致。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。維護工程師作為 bug 線協調者的身分不適用於自身診斷紀錄。
 
   條目格式如下：
@@ -313,6 +313,8 @@ skill 未宣告 `dispatch` 或本輪工作不對應任何 skill 時，主 Agent 
 | 灰帶 | 前兩層皆未命中 | 拆成判斷與動作兩段，判斷留在 Claude 端，動作派往 Codex；無法拆分時預設派工 |
 
 單一命令即可完成且不寫入任何檔案的查詢，不視為掃描類工作，由 Claude 端直接執行。判準是命令數與寫入行為，不是檔案涵蓋範圍。
+
+本流程自行產生的暫存清理由主 Agent 執行，不派工，即使它涉及檔案刪除。理由是清理需要判斷哪些是本輪產物、哪些屬保留清單，該脈絡只有主 Agent 具備；派工反而要在派遣單完整描述保留清單，描述漏項就會刪錯，且刪除不可逆。此例外只涵蓋本流程產生的暫存，不涵蓋任何交付物或目標物件。
 
 使用者未明說由哪一端執行時，依上表判定，主 Agent 不得逕自處理。
 
