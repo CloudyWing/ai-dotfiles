@@ -26,7 +26,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方式執行；執行型 agent 中 Architect 與 Prototyper 於 Claude 端派生，Developer、Reviewer、Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 派生 sub-agent 背景執行 `codex app-server` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Maintainer 線診斷，實作交由 Support Engineer 完成。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
+Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方式執行；執行型 agent 中 Architect 與 Prototyper 於 Claude 端派生，Developer、Reviewer、Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 背景執行 `codex exec` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Maintainer 線診斷，實作交由 Support Engineer 完成。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
 
 涉及畫面的需求由 Analyst 判定 UI 線別，版面複雜或需對外溝通時派生 Prototyper 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
@@ -160,15 +160,15 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 額度快照由主 Agent 於每次派工前執行 `~/.ai-agents/scripts/Get-CodexQuota.ps1`，從 `$CODEX_HOME/sessions/` 的 rollout 記錄自動讀取。
 
 - 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附 binary 不作為派工執行檔。
-- 啟動 app-server 前執行 `codex --cd . --sandbox workspace-write app-server --help`，確認目前 CLI 支援 direct app-server JSON-RPC over JSONL。
-- PowerShell Transport 使用 `ProcessStartInfo.ArgumentList` 與 UTF-8 stdin／stdout／stderr；Transport 啟動端需要 PowerShell 7+。
+- 派工前執行 `codex --version` 確認 CLI 可用，再以本次派遣的完整父層選項執行一次極短的 `codex exec --json` 啟動探針，確認事件流出現 `turn.completed`。`--help` 在參數驗證前短路輸出，不具驗證力。
+- PowerShell 啟動端使用 `ProcessStartInfo.ArgumentList` 與 UTF-8 stdin／stdout／stderr，prompt 以 `-` 從 stdin 傳入；啟動端需要 PowerShell 7+。
 - 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
 - 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。
 - 更換機器後，第一步執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
 
 #### Codex profile 檔位設定
 
-1. 預設檔位省略 `-p`；`deep` 檔位使用 `-p deep`，只保留預設與 `deep` 兩個選項。
+1. 預設檔位省略 `--profile`；`deep` 檔位使用 `--profile deep`，只保留預設與 `deep` 兩個選項。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
 2. `deep` 只在任務需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題，且 `primary` 額度視窗剩餘百分比大於或等於 30%、`secondary` 大於或等於 15% 時使用。兩個視窗門檻不同的理由與 `primary` 接近重設時的等待選項見 `codex-dispatch` skill。
 3. `deep` 的本機設定檔為 `~/.codex/deep.config.toml`，只包含兩個頂層鍵 `model` 與 `model_reasoning_effort`。設定範例如下：
 
@@ -290,7 +290,7 @@ flowchart TD
     Maintainer --> Done
 ```
 
-> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex app-server` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
+> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex exec` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
 
 ---
 
