@@ -53,7 +53,8 @@ marker 是來源工作樹的控制資料，不納入初始 commit。marker 寫�
 8. 在 `sourceRoot\.local\ai-sessions\worktrees\<dispatchSlug>` 執行 `git worktree add --detach <dispatchRoot> <baseSha>`。`baseSha` 是 Git 探針完成後記錄的來源 `HEAD`，必須在 worktree 建立前固定。
 9. 在 `dispatchRoot` 建立 `.local\ai-sessions\handoff`、`report`、`history` 與 `scratch`，並建立 `dispatchLineRoot` 與 `reportLineRoot`。建立來源 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>` 與 `sourceReportLineRoot` 後，將 `<sourceLineRoot>` 的 `line.json`、`requirement-summary.md` 與派遣所需的 `design.md` 複製至 `dispatchLineRoot`。需求摘要的正本與覆寫前備份維持來源寫入模式；Codex 的有效工作目錄與本次派遣產出的同線 report、history、scratch 及一次性 handoff 產物使用 `dispatchRoot`。
 10. Codex 結束後，先確認回收判定成立，再將事件流、thread id、last-message、派遣報告與核准的一次性交接產物同步回 `sourceRoot` 的同相對路徑。同線設計文件從 `dispatchLineRoot` 同步至 `sourceLineRoot`，固定報告從 `reportLineRoot` 同步至 `sourceReportLineRoot`。需求摘要與其覆寫前備份固定寫入 `sourceLineRoot` 與 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`，不透過 dispatch worktree 回收；需要這類來源寫入的派遣必須以 `--add-dir` 明確授權這兩個線層目錄。
-   - Architect、Reviewer 與其他資源派遣直接同步報告與允許的交接產物，不透過 commit 回收。
+   - 唯讀資源派遣直接同步報告與允許的交接產物，不透過 commit 回收。
+   - 寫入模式的資源派遣，例如 `Support Engineer` 的修正任務，除同步報告外必須先回收 dispatch worktree 的程式碼差異。回收方式與 Workflow 相同，差異在於沒有 Phase 分組，改以單一 commit 或依派遣單指定的分組建立。未完成程式碼回收前不得移除 worktree，否則修正成果會隨 worktree 一併消失。
    - Workflow `Developer` 回收 dispatch worktree 的工作區差異，依結案報告「Phase 對照」節分組後建立 Phase commit。Phase 回收規則由 `git-workflow` skill 定義。
 11. 完成同步後，確認 `dispatchRoot` 的實際絕對路徑仍位於 `sourceRoot\.local\ai-sessions\worktrees\<dispatchSlug>`，再執行 `git worktree remove --force <dispatchRoot>`。三態尚未結束或需要續 session 時保留同一個 dispatch worktree。
 
@@ -93,7 +94,7 @@ Windows 以 `Win32_Process` 的 `ProcessId`、`ParentProcessId`、`Name` 與 `Cr
 
 **被強制終止過的 dispatch worktree 不得重用（Crucial）**。sandbox helper 在正常結束時才移除自己套用的 ACL；被 `taskkill` 或 session 中止時來不及清理，worktree 根目錄會殘留一條明確（非繼承）的存取控制項目，其 SID 已無對應帳號。之後在該目錄啟動的 Codex 會在套用 sandbox ACL 時失敗，全程無法執行任何命令。以 `icacls <dispatchRoot>` 與來源工作樹比對即可確認：報廢的 worktree 會多出不帶 `(I)` 標記的條目。
 
-重派時建立新的 dispatch worktree，並以 `git -C <舊 dispatchRoot> diff` 產出的 patch 將既有成果轉移至新 worktree，不要嘗試修改 ACL。新 worktree 沿用同一個 `lineSlug`，`dispatchSlug` 另取未使用的名稱。轉移完成後，舊 worktree 依既有路徑檢查移除。
+重派時建立新的 dispatch worktree，並以 `git -C <舊 dispatchRoot> diff HEAD` 產出的 patch 將既有成果轉移至新 worktree，另以 `git -C <舊 dispatchRoot> ls-files --others --exclude-standard` 取得未追蹤檔案並逐一複製。不要嘗試修改 ACL。新 worktree 沿用同一個 `lineSlug`，`dispatchSlug` 另取未使用的名稱。轉移完成後，舊 worktree 依既有路徑檢查移除。
 
 PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移除或 `scratch` 清理而刪除。PID 檔案是否存在不能單獨作為並行判定依據，必須合併 `work-root`、`line-slug`、`write-mode`、進程身分比對與完整進程樹或 process group 的存活狀態；wrapper 已結束但子進程仍存活時，不得判定為可並行啟動。不同 `lineSlug` 的存活記錄必須可同時存在且不互相阻塞。同一 `lineSlug` 下兩個 `readonly` 記錄同樣必須可同時存在。
 
@@ -101,7 +102,9 @@ PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移�
 
 Codex 端不建立 commit，因此 dispatch worktree 的 `HEAD` 在派工全程維持 `baseSha`，實作成果以未 commit 的工作區變更形式存在。回收的輸入是這份工作區差異，不是 commit 區間。
 
-主 Agent 以 `git -C <dispatchRoot> diff` 取得工作區差異，依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。
+主 Agent 以 `git -C <dispatchRoot> diff HEAD` 取得工作區差異，並以 `git -C <dispatchRoot> ls-files --others --exclude-standard` 取得未追蹤檔案，兩者合併後才是完整成果。`git diff` 不含已暫存變更，也不含未追蹤的新增檔案；只用它回收會在實作包含新檔案時靜默遺失成果。回收前以合併後的清單與結案報告記載的檔案清單逐項核對，數量或路徑不符時停止回收並回報差異。
+
+差異取得後依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。
 
 「Phase 對照」節缺失時停止回收並依續 session 契約要求補齊。缺少該節時，主 Agent 只能看到一份混合全部 Phase 的差異，無從還原 Phase 邊界。
 
@@ -290,7 +293,14 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 `codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位省略 `--profile`，沿用 `~/.codex/config.toml`。
 
-啟動探針與機制驗證可使用成本較低的獨立檔位，避免以 `deep` 驗證流程本身。該檔位的名稱與內容由使用者提供，規則層不預設其存在。
+探針分兩種，證明範圍不同，不可互相取代。
+
+| 探針 | 檔位 | 證明範圍 |
+| --- | --- | --- |
+| 機制探針 | 成本較低的獨立檔位 | 派工流程本身可運作，例如路徑、prompt 傳遞與事件流解析 |
+| 正式參數探針 | 與本次派遣完全相同的檔位 | 本次啟動參數合法且該檔位可用 |
+
+機制探針只在驗證流程改動時使用，不能代替正式參數探針。正式派工前一律執行正式參數探針；以 `deep` 派工時，該探針同樣使用 `deep`，其消耗計入本次派遣。低成本檔位的名稱與內容由使用者提供，規則層不預設其存在。
 
 `deep` 僅適用於推理密集且執行量不大的工作，例如需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題。例行編輯、操作步驟完整的任務、單一命令驗證與單純文件整理使用預設檔位。
 
@@ -381,11 +391,13 @@ secondary_source_file=
 
 | 出口 | 判定條件 | 後續動作 |
 | --- | --- | --- |
-| A 正常結束 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 為 `turn.completed` | 進行事件流取證，再執行回收判定 |
+| A 正常結束 | 背景指令已離開執行狀態、exit code 為 0，且事件流最後一則事件的 `type` 為 `turn.completed` | 進行事件流取證，再執行回收判定 |
 | B 執行中查詢 | 背景指令仍在執行，使用者要求現況 | 回報事件流最後一則事件的 `type` 與時間，不中止也不改變等待方式 |
 | C 早夭 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 不是 `turn.completed` | 最後一則為 `turn.failed` 時取其 `error.message` 作為失敗原因；事件流含 `agent_message` 時取最後一則作為未完成回報，依回收三態判定，不視為正常結束；兩者皆無時讀取 stderr 與 exit code 並回報啟動失敗 |
 
-C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、額度用盡與 sandbox 權限失敗。這些都只在 stderr 留下訊息，因此 stderr 必須在兩條路徑都保存。
+`turn.completed` 與 exit code 0 必須同時成立才走 A 出口。任一不成立即走 C 出口，包含事件流以 `turn.completed` 結束但進程以非零結束碼離開的組合。無法取得 exit code 時同樣走 C 出口，不以事件流單方面判定成功。
+
+C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、額度用盡與 sandbox 權限失敗。參數與環境類失敗在 stderr 留下訊息，額度與伺服器類失敗只出現在事件流的 `turn.failed`，因此兩者都必須保存並在判定時一併查看。
 
 ### 主 Agent 的等待方式
 
@@ -415,7 +427,11 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 `usage` 只作為事後記錄與額度對照，不取代派工前的額度快照判定。
 
-Workflow 派工將 `finalMessage` 寫入 `reportLineRoot\implement-closure-report.md`，資源派遣寫入派遣單第 7 欄指定落點。結果再交給 `RecoveryPrecheck`。
+`finalMessage` 一律保留在 `history` 的 last-message 檔，不寫入報告落點。
+
+執行角色已在派遣單第 7 欄與其規則檔指定的落點寫入報告，該檔是驗收對象。回收端若把結案摘要寫進同一路徑，會在驗收前覆蓋角色產出的完整報告。Workflow 派工的 `reportLineRoot\implement-closure-report.md` 同樣由 `Developer` 自行寫入，回收端只讀取與驗收。
+
+報告落點檔案不存在或為空時，依回收三態的「退回」處理，要求角色補齊，不以 `finalMessage` 代寫。
 
 ## 續 session 與跨介面接手
 
@@ -507,15 +523,24 @@ codex \
 | <n> | 內容含指定欄位 | `rg -n '<pattern>' '<absolute-path>'` |
 ```
 
-建置與測試由主 Agent 自行執行，不列為 Codex 第 5 欄的命令輸出責任。主 Agent 依需要抽驗 Codex 回報的命令，不整套重跑；只有輸出與結論不一致的條件才重跑該條命令。
+建置與測試由主 Agent 自行執行，不列為 Codex 第 5 欄的命令輸出責任。
+
+複核政策唯一：主 Agent 逐條核對 Codex 回報的命令原文與輸出是否支持其判定結論，這是核對而非重新執行。只有在輸出與結論不一致、輸出缺漏，或回報只寫「已完成」而無命令輸出時，才實際重跑該條命令。不整套重跑全部條件。
 
 ## RecoveryPrecheck
 
-事件流取證後，先從符合目前派工類型的 `agent_message` 取最後一則結案訊息。結案訊息必須同時包含派遣單絕對路徑、`dispatchSlug` 與 `lineSlug`。缺少任一識別字時，狀態設為 `PromptNotDelivered`，修正啟動方式後重新派遣；此狀態不計入退回次數，也不進入第 5 欄驗收缺漏的退回計數。只有 `RecoveryPrecheck` 通過後，才可進入回收三態判定。
+事件流取證後，先從符合目前派工類型的 `agent_message` 取最後一則結案訊息。識別字依派工類型判定，兩種類型都必須包含 `dispatchSlug` 與 `lineSlug`，第三項識別字如下。
+
+| 派工類型 | 第三項識別字 |
+| --- | --- |
+| Workflow 派工 | `dispatchLineRoot\design.md` 的絕對路徑 |
+| 資源派遣 | 派遣單的絕對路徑 |
+
+Workflow 派工沒有派遣單，以派遣單絕對路徑作為共同條件會使正常結案一律被判為 `PromptNotDelivered` 並重派。缺少任一識別字時，狀態設為 `PromptNotDelivered`，修正啟動方式後重新派遣；此狀態不計入退回次數，也不進入第 5 欄驗收缺漏的退回計數。只有 `RecoveryPrecheck` 通過後，才可進入回收三態判定。
 
 ## 回收三態判定
 
-背景指令結束後，主 Agent 先執行 `RecoveryPrecheck`，再讀取 dispatch worktree 內派遣單第 7 欄的產出落點，依第 5 欄逐條執行命令。主 Agent 不以 Codex 端回報中的自述取代實際判定。派遣單第 8 欄必須要求 Codex 端逐條回報每條驗收條件的命令原文與完整 stdout、完整 stderr、exit code 與執行時間。主 Agent 以抽驗方式複核回報內容，對輸出與結論不一致的條件只重跑該條命令。回報只寫「已完成」而未附命令輸出者，該條計為未成立。
+背景指令結束後，主 Agent 先執行 `RecoveryPrecheck`，再讀取 dispatch worktree 內派遣單第 7 欄的產出落點，依第 5 欄逐條核對。核對與重跑的分界見上節的複核政策。主 Agent 不以 Codex 端回報中的自述取代實際判定。派遣單第 8 欄必須要求 Codex 端逐條回報每條驗收條件的命令原文與完整 stdout、完整 stderr、exit code 與執行時間。主 Agent 以抽驗方式複核回報內容，對輸出與結論不一致的條件只重跑該條命令。回報只寫「已完成」而未附命令輸出者，該條計為未成立。
 
 Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent 依 `design.md` Phase 重整後回收，資源派遣的報告與核准交接產物直接同步至來源工作樹。
 
