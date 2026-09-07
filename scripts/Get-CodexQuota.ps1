@@ -39,13 +39,11 @@ function Get-RolloutSnapshotCandidate {
 
     $rolloutFiles = @(
         Get-ChildItem -LiteralPath $SessionsPath -Recurse -File -Filter 'rollout-*.jsonl' |
-            Sort-Object -Property LastWriteTime -Descending |
+            Sort-Object -Property Name -Descending |
             Select-Object -First 20
     )
 
-    $fileIndex = 0
     foreach ($file in $rolloutFiles) {
-        $fileIndex++
         $recordIndex = 0
 
         try {
@@ -58,6 +56,23 @@ function Get-RolloutSnapshotCandidate {
                 try {
                     $record = $line | ConvertFrom-Json -ErrorAction Stop
                     if ($null -eq $record) {
+                        continue
+                    }
+
+                    $timestampProperty = $record.PSObject.Properties['timestamp']
+                    if ($null -eq $timestampProperty -or $null -eq $timestampProperty.Value) {
+                        continue
+                    }
+
+                    try {
+                        $eventTimestamp = [DateTimeOffset]$timestampProperty.Value
+                        $eventTimestampUnix = $eventTimestamp.ToUnixTimeSeconds()
+                    }
+                    catch {
+                        continue
+                    }
+
+                    if ($eventTimestampUnix -le 0) {
                         continue
                     }
 
@@ -123,9 +138,9 @@ function Get-RolloutSnapshotCandidate {
                             WindowMinutes       = [int64]$windowMinutesValue
                             ResetsAt            = [int64]$resetsAtValue
                             SourceFile          = $file.Name
-                            SourceLastWriteTime = $file.LastWriteTimeUtc
+                            EventTimestamp      = $eventTimestamp
+                            EventTimestampUnix  = $eventTimestampUnix
                             RecordIndex         = $recordIndex
-                            FileIndex            = $fileIndex
                         }
                     }
                 }
@@ -203,22 +218,25 @@ try {
     $selectedSnapshots = @{}
 
     foreach ($windowName in @('primary', 'secondary')) {
-        $futureCandidates = @(
+        $validCandidates = @(
             $candidates | Where-Object {
-                $_.WindowName -eq $windowName -and $_.ResetsAt -gt $currentUnixTime
+                $_.WindowName -eq $windowName -and
+                $_.ResetsAt -gt $currentUnixTime -and
+                ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -ge 0 -and
+                ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -le ([double]$_.WindowMinutes * 60.0)
             }
         )
 
-        if ($futureCandidates.Count -eq 0) {
-            throw "找不到有效額度快照：$windowName 視窗在最近 20 個 rollout 檔沒有 resets_at 大於目前時間的候選。掃描路徑：$sessionsPath"
+        if ($validCandidates.Count -eq 0) {
+            throw "找不到有效額度快照：$windowName 視窗沒有 resets_at 在未來且位於自身額度視窗內的候選。掃描路徑：$sessionsPath"
         }
 
-        # 週視窗重新錨定時 resets_at 會往回跳，不可用最大 resets_at 選候選，
-        # 一律取寫入時間最新的一筆觀測值。
-        $selectedSnapshot = $futureCandidates |
+        # 以額度事件時間排序與判斷新鮮度，避免後續追加事件改變來源檔案時間。
+        $selectedSnapshot = $validCandidates |
             Sort-Object -Property @(
-                @{ Expression = 'SourceLastWriteTime'; Descending = $true }
+                @{ Expression = 'EventTimestamp'; Descending = $true }
                 @{ Expression = 'RecordIndex'; Descending = $true }
+                @{ Expression = 'SourceFile'; Descending = $true }
             ) |
             Select-Object -First 1
 

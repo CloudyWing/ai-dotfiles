@@ -137,7 +137,14 @@ static IEnumerable<string> EnumerateSourceFiles(string projectDirectory)
         .Where(path => path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             .All(segment => !segment.Equals("bin", StringComparison.OrdinalIgnoreCase)
                             && !segment.Equals("obj", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals(".git", StringComparison.OrdinalIgnoreCase)))
+                            && !segment.Equals(".git", StringComparison.OrdinalIgnoreCase)
+                            && !segment.Equals("dist", StringComparison.OrdinalIgnoreCase)
+                            && !segment.Equals("out", StringComparison.OrdinalIgnoreCase)
+                            && !segment.Equals("build", StringComparison.OrdinalIgnoreCase)
+                            && !segment.Equals("target", StringComparison.OrdinalIgnoreCase)
+                            && !segment.Equals("node_modules", StringComparison.OrdinalIgnoreCase)
+                            && !segment.Equals("__pycache__", StringComparison.OrdinalIgnoreCase)
+                            && !segment.Equals(".local", StringComparison.OrdinalIgnoreCase)))
         .OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
 }
 

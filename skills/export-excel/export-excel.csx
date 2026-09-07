@@ -22,7 +22,7 @@ if (Args.Count < 2) {
 string jsonArg = Args[0];
 string outputPath = Args[1];
 string json = "";
-bool isTempFile = false;
+HashSet<string> temporaryFilesCreatedByScript = new(StringComparer.OrdinalIgnoreCase);
 
 try {
     if (jsonArg == "-") {
@@ -34,11 +34,6 @@ try {
             throw new FileNotFoundException($"找不到指定的 JSON 檔案：{jsonArg}");
         }
         json = File.ReadAllText(jsonArg);
-        
-        // 識別是否為臨時檔案，以便後續清理
-        if (jsonArg.Contains(Path.GetTempPath()) || jsonArg.Contains("tmp")) {
-            isTempFile = true;
-        }
     } else {
         json = jsonArg;
     }
@@ -64,9 +59,13 @@ try {
         // 預覽僅供參考，不應中斷主匯出流程
     }
 
-    if (isTempFile && File.Exists(jsonArg)) {
+    foreach (string temporaryFile in temporaryFilesCreatedByScript) {
+        if (!File.Exists(temporaryFile)) {
+            continue;
+        }
+
         try {
-            File.Delete(jsonArg);
+            File.Delete(temporaryFile);
         } catch {
             // 避免因檔案鎖定導致清理失敗時拋出例外
         }
