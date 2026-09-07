@@ -276,7 +276,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | --- | --- | --- | --- | --- |
 | **Architect** | Codex | Analyst 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | 依「跨平台派工掛載點」由主 Agent 以資源派遣發動 | 讀取 `~/.ai-agents/agents/claude/architect.md` 規則來源與需求摘要，產出 `design.md`，作為後續 Implement 階段的唯一設計基準 |
 | **Prototyper** | Claude 派生 | `Analyst` 判定為 C 線時派生；或使用者明確要求產出 Demo 畫面 | `~/.ai-agents/agents/claude/prototyper.md` | 依需求摘要與樣式基準產出 Demo 畫面，供需求訪談與版面確認 |
-| **Developer** | Codex | Design 驗收通過後由主 Agent 依 Workflow 派工發動；亦可由使用者直接在 Codex 端進入實作 | `~/.ai-agents/agents/codex/developer.toml` | 依 `design.md` 逐項實作功能 |
+| **Developer** | Codex | Design 驗收通過後由主 Agent 依 Workflow 派工發動；使用者亦可直接在 Codex 端進入實作，此時由 `Developer` 自行驗證 `design.md` 存在且可讀，缺件時停止並回報，不自行補寫設計 | `~/.ai-agents/agents/codex/developer.toml` | 依 `design.md` 逐項實作功能 |
 | **Reviewer** | Codex | 主 Agent 依 Reviewer 派遣判準以派遣單發動，或由使用者要求 | `~/.ai-agents/agents/codex/reviewer.toml` | 依派遣單執行 Spec 與 Standards 審查，逐條回報驗收條件；設計歧義由同一 session 的 `Analyst` 就地裁決 |
 | **Frontend Reviewer** | Codex | Developer 完成後或使用者要求 | `~/.ai-agents/agents/codex/frontend-reviewer.toml` | 審查 Vue 3 前端元件品質與規範符合度 |
 | **Contract Auditor** | Codex | 使用者指定執行 | `~/.ai-agents/agents/codex/contract-auditor.toml` | 比對前後端 API 介面契約一致性，產出差異報告 |
@@ -324,7 +324,7 @@ skill 未宣告 `dispatch` 或本輪工作不對應任何 skill 時，主 Agent 
 
 ##### Reviewer 派遣發動判準
 
-Reviewer 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用者明示的固定規則。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
+Reviewer 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用者明示的固定規則。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 **必發清單（命中任一即發）**：
 

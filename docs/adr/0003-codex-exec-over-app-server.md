@@ -15,4 +15,4 @@ date: 2026-09-07
 
 ## Consequences
 
-完成判定改以 `turn.completed` 事件與 process exit code 為準，結案報告結構改由 `--output-schema` 約束，續行以 `thread.started` 事件回報的 `thread_id` 作為 `exec resume` 的 session 識別。app-server 的 protocol 狀態機規範自 `codex-dispatch` skill 移除，未來若新增需要核准的派遣類型，須另建 ADR 評估是否恢復該路徑。
+完成判定改以 `turn.completed` 事件與 process exit code 為準，續行以 `thread.started` 事件回報的 `thread_id` 作為 `exec resume` 的 session 識別，需要結構化結案的派遣另以 `--output-schema` 約束回應形狀。app-server 的 protocol 狀態機規範自 `codex-dispatch` skill 移除，未來若新增需要核准的派遣類型，須另建 ADR 評估是否恢復該路徑。
