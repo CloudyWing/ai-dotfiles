@@ -1,5 +1,6 @@
 ---
-status: accepted
+status: superseded
+superseded-by: 0004
 ---
 
 # ADR-0001：模型檔位分層，規則層只認語意名稱

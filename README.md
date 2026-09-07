@@ -26,7 +26,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方式執行；執行型 agent 中 Architect 與 Prototyper 於 Claude 端派生，Developer、Reviewer、Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 背景執行 `codex exec` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Maintainer 線診斷，實作交由 Support Engineer 完成。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
+Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方式執行；執行型 agent 中 Prototyper 於 Claude 端派生，Architect 於 Codex 端以資源派遣執行，Developer、Reviewer、Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 背景執行 `codex exec` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Maintainer 線診斷，實作交由 Support Engineer 完成。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
 
 涉及畫面的需求由 Analyst 判定 UI 線別，版面複雜或需對外溝通時派生 Prototyper 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
