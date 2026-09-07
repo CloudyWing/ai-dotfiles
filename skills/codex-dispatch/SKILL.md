@@ -323,17 +323,17 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 本機檔位設定調整後，冷啟動的消耗結構隨之改變，前述門檻應依調整後的實測值重新校準，不沿用調整前的數據。
 
-兩段式派遣可進一步降低成本：先以預設檔位冷啟動建立 context 並產出初步結果，再以 `deep` 續行同一個 thread。實測續行的快取命中率可達 92%，消耗降低一個量級。此作法的前提是同一 thread 可跨檔位續行，該行為尚未實測，首次使用前先以極短任務驗證。
+續行同一 thread 時快取命中率高，實測可達 92%，消耗降低一個量級，因此續行的門檻低於冷啟動。續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立；以預設檔位冷啟動後改用 `deep` 續行會同時違反續行契約，不採用。
 
 ### 額度快照
 
 主 Agent 從 `<CODEX_HOME>/sessions/<yyyy>/<MM>/<dd>/rollout-<時間戳>-<thread-id>.jsonl` 讀取 session 記錄。額度資料位於 `payload.rate_limits`，必須同時取得 `primary` 與 `secondary` 視窗。每個視窗使用 `used_percent`、`window_minutes` 與 `resets_at`，其中 `used_percent` 為數值百分比、`window_minutes` 為分鐘數，`resets_at` 為 Unix timestamp（秒）。剩餘額度百分比為 `100 - used_percent`，`window_days` 為 `window_minutes / 1440`。
 
-主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗獨立略過無效資料與 `resets_at` 不大於目前時間的候選，再選取來源檔案寫入時間最新的候選，同檔內以 record index 由新到舊決勝。不得改用 `resets_at` 最大值挑選候選，週視窗重新錨定時 `resets_at` 會往回跳，取最大值會淘汰當日全部記錄並鎖死在舊快照。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
+主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗獨立略過無效資料與 `resets_at` 不大於目前時間的候選，再依額度事件自身的時間選取最新候選，同檔內以 record index 由新到舊決勝。不得改用 `resets_at` 最大值挑選候選，週視窗重新錨定時 `resets_at` 會往回跳，取最大值會淘汰當日全部記錄並鎖死在舊快照。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
 
 快照必須落在目前的 `primary` 視窗內才可用於檔位判定。`resets_at` 位於未來只證明該視窗尚未重設，不證明 `used_percent` 反映目前用量：一筆數天前的 rollout，其 `secondary.resets_at` 仍可能在未來而被選為有效候選，但它記錄的是當時的累積值，不含之後的全部消耗。兩個視窗由所有檔位共用，不依模型分別計量。快照的失準來源是消耗速率而非歸屬：`deep` 單次派遣可能在數十分鐘內耗盡整個 `primary` 視窗，使派工當下的剩餘百分比無法代表派遣全程可用的額度。
 
-判定前先確認 `primary_source_file` 的寫入時間距今不超過 `primary_window_minutes`，即快照不得比一個 primary 視窗更舊。不滿足時視為快照過期，停止需要額度判定的派工，並回報來源檔名與其時間。不以 `primary_resets_at` 減 `primary_window_minutes` 反推視窗起點再比對，該算式在記錄寫入時間落在視窗邊界前後數秒時會判定為過期。
+判定前逐一確認兩個視窗的來源檔時間距今都不超過各自的 `window_minutes`，即任一視窗的快照都不得比該視窗更舊。只驗證 `primary` 時，`primary` 在 5 小時內而 `secondary` 已數天未更新的組合會通過檢查，使 `secondary_remaining_percent` 採用過期值。任一視窗不滿足時視為快照過期，停止需要額度判定的派工，並回報該視窗的來源檔名與其時間。不以 `primary_resets_at` 減 `primary_window_minutes` 反推視窗起點再比對，該算式在記錄寫入時間落在視窗邊界前後數秒時會判定為過期。
 
 兩個視窗都是固定視窗，`used_percent` 在視窗內單調累積，跨過 `resets_at` 後歸零並跳至下一格，額度不連續回補。`primary` 為 5 小時視窗，`secondary` 為 7 天視窗，容量相差約 33 倍，因此同一件任務在 `primary` 消耗的百分點約為 `secondary` 的 30 倍。
 
@@ -379,7 +379,7 @@ secondary_source_file=
 `deep` 的實際消耗依模型而異，設定檔更換模型後前一組實測值即失效。發現實測值與本節記載明顯不符時，以該次派遣的 `turn.completed` usage 與快照變化為準更新本節，不沿用過期基準。
 
 1. 主 Agent 先判斷任務是否推理密集且執行量不大，判準是需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題，且不以大量讀寫、掃描或命令執行為主體。
-2. `primary_remaining_percent` 大於或等於 30、`secondary_remaining_percent` 大於或等於 15，且任務符合第 1 條條件時，依「升級確認」節向使用者提出確認。取得當輪明確同意後才加入 `--profile deep`；未取得同意時省略該選項，使用預設檔位。
+2. 兩個視窗的剩餘額度都達到上表對應派工方式的門檻，且任務符合第 1 條條件時，依「升級確認」節向使用者提出確認。取得當輪明確同意後才加入 `--profile deep`；未取得同意時省略該選項，使用預設檔位。門檻數值以上表為準，本節不重複記載。
 3. `secondary_remaining_percent` 低於 15 時，省略 `--profile`，使用預設檔位。週視窗重設通常在數天後，不採等待。
 4. `secondary` 通過門檻但 `primary_remaining_percent` 低於 30 時，依 `primary_days_to_reset` 決定處置。距重設 30 分鐘以內時，向使用者提議等待重設後再以 `deep` 派工，不降檔；距重設超過 30 分鐘時，省略 `--profile`，使用預設檔位。
 5. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。

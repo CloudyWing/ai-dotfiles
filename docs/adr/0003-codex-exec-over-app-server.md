@@ -11,7 +11,7 @@ date: 2026-09-07
 
 ## Decision
 
-一般派工與退回續行改用 `codex exec` 與 `codex exec resume`，僅在派遣確實需要執行核准或即時控制時才使用 `app-server`。`codex exec` 支援 `--profile`，因此檔位回歸 `-p <檔位名稱>`，不再以 `-c` 逐鍵展開設定檔。
+一般派工與退回續行改用 `codex exec` 與 `codex exec resume`，僅在派遣確實需要執行核准或即時控制時才使用 `app-server`。`codex exec` 支援 `--profile`，因此檔位回歸 `--profile <檔位名稱>` 並置於 `exec` 子命令之前，不再以 `-c` 逐鍵展開設定檔。
 
 ## Consequences
 
