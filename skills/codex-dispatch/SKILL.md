@@ -308,6 +308,19 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 `deep` 相對預設檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。判定任務是否值得升級前，先讀取 `~/.codex/deep.config.toml` 與 `~/.codex/config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵，再據此說明升級能帶來什麼。
 
+### deep 的前置準備
+
+`deep` 的消耗主要由未快取的 input token 決定，而不是推理長度。實測 `gpt-6-astra` 的 `reasoning_output_tokens` 僅 252，同一次派遣的 input 卻超過 200 萬。降低成本的方式是減少執行端自行探索的讀取量，不是縮小任務範圍。
+
+派工前完成下列準備。準備不足時 `deep` 會把額度花在自行摸索目標物件，而不是產出結論。
+
+- 派遣單第 3 欄逐一列出目標物件的絕對路徑，不使用目錄萬用字元，避免執行端自行決定讀取範圍。
+- prompt 明列已知結論、已讀過的檔案與不需重讀的部分，讓執行端直接進入判斷。
+- 需要控制讀取量時，在 prompt 明文要求單一 agent 執行並說明理由。實測 `gpt-6-astra` 冷啟動會自行派生多個 subagent 並行讀取目標物件，讀取量成倍增加。
+- 額度不足以支撐完整任務時，在 prompt 加入降級指示：要求先寫出已確認的結果並註明實際覆蓋範圍，不要在零產出的情況下中斷。實測該指示可使中斷的派遣仍交付部分成果。
+
+兩段式派遣可進一步降低成本：先以預設檔位冷啟動建立 context 並產出初步結果，再以 `deep` 續行同一個 thread。實測續行的快取命中率可達 92%，消耗降低一個量級。此作法的前提是同一 thread 可跨檔位續行，該行為尚未實測，首次使用前先以極短任務驗證。
+
 ### 額度快照
 
 主 Agent 從 `<CODEX_HOME>/sessions/<yyyy>/<MM>/<dd>/rollout-<時間戳>-<thread-id>.jsonl` 讀取 session 記錄。額度資料位於 `payload.rate_limits`，必須同時取得 `primary` 與 `secondary` 視窗。每個視窗使用 `used_percent`、`window_minutes` 與 `resets_at`，其中 `used_percent` 為數值百分比、`window_minutes` 為分鐘數，`resets_at` 為 Unix timestamp（秒）。剩餘額度百分比為 `100 - used_percent`，`window_days` 為 `window_minutes / 1440`。
