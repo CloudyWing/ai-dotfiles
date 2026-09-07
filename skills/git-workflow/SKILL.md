@@ -80,7 +80,7 @@ refactor/extract-email-service
 
 ### Phase commit 回收
 
-Codex 端不建立 commit，Workflow `Implement` 的成果以 dispatch worktree 的工作區差異形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
+Codex 端不建立 commit，Workflow `Developer` 的成果以 dispatch worktree 的工作區差異形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
 
 回收時依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。保留每個 Phase 的獨立語意，不將全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收衝突時停止並保留 worktree 與證據。
 

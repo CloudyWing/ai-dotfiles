@@ -26,9 +26,9 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 與 UI Demo 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 驗收通過後由 Claude 端主 Agent 派生 sub-agent 背景執行 `codex app-server` 發動 Implement / Review 鏈，不需手動切換平台；bug 由 Codex 的 Debug 線診斷與修正。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
+Persona Agent（Analyst、Developer、Editor、Engineer）以語意切換方式執行；執行型 agent 中 Architect 與 Prototyper 於 Claude 端派生，Developer、Reviewer、Frontend Reviewer、Contract Auditor、Refactorer、Engineer 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 派生 sub-agent 背景執行 `codex app-server` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Engineer 線診斷與修正。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
 
-涉及畫面的需求由 Clarify 判定 UI 線別，版面複雜或需對外溝通時派生 UI Demo 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
+涉及畫面的需求由 Analyst 判定 UI 線別，版面複雜或需對外溝通時派生 Prototyper 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
 ### 本地檔案慣例（不 commit）
 
@@ -67,7 +67,7 @@ Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執�
 
 ### `work-root` 與交接檔
 
-`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。Clarify 會從已確認需求摘要推導並登記語意化 `lineSlug`，每一條線以 `handoff/<lineSlug>/line.json` 識別。需求基準位於 `handoff/<lineSlug>/requirement-summary.md`，設計基準位於 `handoff/<lineSlug>/design.md`，固定名稱審查與驗證報告位於 `report/<lineSlug>/`。`dispatchSlug` 只識別單次派遣，與 `lineSlug` 分開使用。判定流程分兩步：
+`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。Analyst 會從已確認需求摘要推導並登記語意化 `lineSlug`，每一條線以 `handoff/<lineSlug>/line.json` 識別。需求基準位於 `handoff/<lineSlug>/requirement-summary.md`，設計基準位於 `handoff/<lineSlug>/design.md`，固定名稱審查與驗證報告位於 `report/<lineSlug>/`。`dispatchSlug` 只識別單次派遣，與 `lineSlug` 分開使用。判定流程分兩步：
 
 1. **先取得 `task anchor`**（本輪任務真正想處理的範圍，不等於 AI 的 process cwd）。優先序：
    1. 使用者本輪明確指定的目錄、檔案所在目錄、或子系統 / 前端 app / 後端 service / 模組目錄。
@@ -250,47 +250,47 @@ Agent 依執行平台分為兩類：
 
 - **Persona**：以語意切換方式執行。適合需要多輪對話、強依賴上下文的需求分析、實作階段控制與文件編輯。
 - **sub-agent**：由主 Agent 派生。適合有明確輸入與交接檔案的設計、審查、掃描與清理任務。
-- **Cleanup**：Codex 執行型 agent，處理語法現代化、死程式碼、資源管理與既有規範清理；每批修改後驗證測試。
+- **Refactorer**：Codex 執行型 agent，處理語法現代化、死程式碼、資源管理與既有規範清理；每批修改後驗證測試。
 - **architecture-improvement**：人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出 `.local/ai-sessions/report/<lineSlug>/architecture-review.md` 再等待範圍決策。
 
 ### Agent 執行流程
 
 ```mermaid
 flowchart TD
-    Clarify["**Clarify**<br />需求解構＋構想發散"]
-    UIDemo["**UI Demo**<br />Demo 畫面產出"]
-    Design["**Design**<br />系統設計"]
-    Implement["**Implement**<br />實作工程師"]
-    Review["**Review**<br />後端驗收"]
-    FrontendReview["**Frontend Review**<br />前端驗收"]
-    Cleanup["**Cleanup**<br />技術債清理"]
+    Analyst["**Analyst**<br />需求解構＋構想發散"]
+    Prototyper["**Prototyper**<br />Demo 畫面產出"]
+    Architect["**Architect**<br />系統設計"]
+    Developer["**Developer**<br />實作工程師"]
+    Reviewer["**Reviewer**<br />後端驗收"]
+    FrontendReviewer["**Frontend Reviewer**<br />前端驗收"]
+    Refactorer["**Refactorer**<br />技術債清理"]
     ArchitectureImprovement["**architecture-improvement**<br />候選分析"]
-    Debug["**Debug**<br />bug 線協調者"]
+    Engineer["**Engineer**<br />bug 線協調者"]
     FixSub["匿名 subagent<br />執行修正"]
     Done(["任務完成"])
 
-    Clarify --> Design
-    Clarify -->|C 線| UIDemo
-    UIDemo -->|回填需求摘要| Clarify
-    Design --> Implement
-    Implement -->|Backend Review<br />handoff| Review
-    Implement -->|Frontend Review<br />handoff| FrontendReview
-    Implement -->|技術債清理| Cleanup
-    Review -->|補完實作| Implement
-    Review -->|重新評估範圍| Clarify
-    Review --> Done
-    FrontendReview -->|補完實作| Implement
-    FrontendReview --> Done
-    Cleanup -->|驗證後交付| Done
+    Analyst --> Architect
+    Analyst -->|C 線| Prototyper
+    Prototyper -->|回填需求摘要| Analyst
+    Architect --> Developer
+    Developer -->|後端審查<br />handoff| Reviewer
+    Developer -->|前端審查<br />handoff| FrontendReviewer
+    Developer -->|技術債清理| Refactorer
+    Reviewer -->|補完實作| Developer
+    Reviewer -->|重新評估範圍| Analyst
+    Reviewer --> Done
+    FrontendReviewer -->|補完實作| Developer
+    FrontendReviewer --> Done
+    Refactorer -->|驗證後交付| Done
 
-    ArchitectureImprovement -->|候選報告| Clarify
+    ArchitectureImprovement -->|候選報告| Analyst
 
-    Debug -->|派生＋fix-plan| FixSub
-    FixSub -->|回報| Debug
-    Debug --> Done
+    Engineer -->|派生＋fix-plan| FixSub
+    FixSub -->|回報| Engineer
+    Engineer --> Done
 ```
 
-> 功能線：Clarify 收斂需求後由 Design 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex app-server` 進入實作與審查循環。判定為 C 線時，Clarify 先派生 UI Demo 產出 Demo 畫面，驗收並回填需求摘要後再進入 Design。Cleanup 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
+> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex app-server` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Engineer 診斷後派生匿名 subagent 修正並驗收。
 
 ---
 

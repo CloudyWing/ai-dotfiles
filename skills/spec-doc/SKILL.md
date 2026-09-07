@@ -1,6 +1,6 @@
 ---
 name: spec-doc
-description: 依 Clarify 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。
+description: 依 Analyst 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。
 audience: human
 dispatch: claude-side
 disable-model-invocation: true
@@ -9,14 +9,14 @@ policy.allow_implicit_invocation: false
 
 # 產生開發需求規格文件
 
-產生一份正式的需求規格文件，供開發團隊成員閱讀與討論。不限定於 Clarify 流程中使用，任何需要「把一個功能或改動整理成給同事看的規格」的時機皆可執行。
+產生一份正式的需求規格文件，供開發團隊成員閱讀與討論。不限定於 Analyst 流程中使用，任何需要「把一個功能或改動整理成給同事看的規格」的時機皆可執行。
 
 ## 需求來源
 
 依以下優先序取用需求來源：
 
-1. 對話 context 中 Clarify Agent 整理完的需求摘要（含需求背景、程式面/功能面項目、排除範圍、假設清單、驗收方向）。
-2. 若對話 context 無 Clarify 整理內容，且呼叫端提供 `LineContext`，先驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符，再讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`，以第 1 章「需求摘要」為主，並從 §2 系統設計、§7 已知盲點、§8 刻意排除擷取邊界與開放問題。缺少有效 `LineContext` 或 manifest 時，改依第 3 點以使用者口述範圍與程式碼盤點為來源。
+1. 對話 context 中 Analyst Agent 整理完的需求摘要（含需求背景、程式面/功能面項目、排除範圍、假設清單、驗收方向）。
+2. 若對話 context 無 Analyst 整理內容，且呼叫端提供 `LineContext`，先驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符，再讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`，以第 1 章「需求摘要」為主，並從 §2 系統設計、§7 已知盲點、§8 刻意排除擷取邊界與開放問題。缺少有效 `LineContext` 或 manifest 時，改依第 3 點以使用者口述範圍與程式碼盤點為來源。
 3. 若兩者均無，以**使用者口述範圍 + 程式碼盤點**為來源：請使用者以一至兩句描述功能範圍（或沿用本輪對話已討論的主題），掃描相關程式碼與設定補齊現況行為、系統邊界與相依。此模式下資訊不足的欄位一律列入第 7 章「開放問題」，**禁止虛構需求細節**。
 
 ## 執行步驟

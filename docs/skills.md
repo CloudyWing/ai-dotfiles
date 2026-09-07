@@ -17,7 +17,7 @@
 | `generate-readme-zh-tw` | 指令型 | human | 自動分析目前專案結構與功能，產生一份結構清晰、工程導向的 README.md（繁體中文）。 |
 | `generate-unit-test` | 指令型 | human | 針對指定的 C# 類別或方法，自動產生 NUnit 單元測試骨架，包含 Arrange/Act/Assert 結構與 NSubstitute Mock 設定。 |
 | `project-setup` | 指令型 | human | 探索專案的 solo／team 模式與既有規範產物，建立 AGENTS.md、CLAUDE.md、GLOSSARY.md、docs/adr/ 與 AI 宣告區塊。 |
-| `spec-doc` | 指令型 | human | 依 Clarify 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。 |
+| `spec-doc` | 指令型 | human | 依 Analyst 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。 |
 
 ## model-invoked
 

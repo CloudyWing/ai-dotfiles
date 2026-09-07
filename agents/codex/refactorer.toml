@@ -1,4 +1,4 @@
-name = "cleanup"
+name = "refactorer"
 description = "掃描 C#/.NET 專案，清除技術債、現代化程式碼語法，並強化符合專案慣例的程式碼品質。每次清理後執行測試確保行為不變。"
 # doc-meta: audience = "human"
 developer_instructions = """

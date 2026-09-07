@@ -66,7 +66,7 @@ git rev-parse HEAD
 
 ## 邊界
 
-- 本 Skill 不取代 `Cleanup`。`Cleanup` 處理語法現代化、死程式碼與既有規範清理。
+- 本 Skill 不取代 `Refactorer`。`Refactorer` 處理語法現代化、死程式碼與既有規範清理。
 - 本 Skill 不直接決定模組拆分、公開 API 變更或資料流改造。
 - 未取得使用者選定範圍前，不修改程式碼與專案設定。
 - 不使用外部網頁產生報告，候選依據限定為目標 repository 的 Git、程式碼與測試。

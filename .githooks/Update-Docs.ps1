@@ -17,7 +17,7 @@ $claudeAgentsDir = Join-Path $repoRoot "agents\claude"
 $codexAgentsDir = Join-Path $repoRoot "agents\codex"
 $skillsDir = Join-Path $repoRoot "skills"
 $instructionsPath = Join-Path $repoRoot "instructions.md"
-$personaAgents = @("Clarify", "Implement", "Editor", "Engineer")
+$personaAgents = @("Analyst", "Developer", "Editor", "Engineer")
 
 function Get-FrontMatterValue {
     [CmdletBinding()]
