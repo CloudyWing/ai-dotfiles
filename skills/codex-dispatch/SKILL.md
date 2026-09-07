@@ -132,7 +132,15 @@ if ($LASTEXITCODE -ne 0) {
 }
 ```
 
-版本檢查失敗表示執行環境尚未可用，先處理 PATH、設定載入或 CLI 版本問題。app-server help probe 成功後才可建立 protocol connection。
+版本檢查失敗表示執行環境尚未可用，先處理 PATH、設定載入或 CLI 版本問題。
+
+`--help` 在參數驗證之前就短路輸出，因此 help probe 只證明子命令存在，不證明本次要使用的啟動參數合法。實際的參數驗證由啟動探針負責：以本次派遣的完整參數啟動 app-server，送出 `initialize`，收到 response 後才視為參數可用。啟動探針失敗時，回報 stderr 原文與 exit code，不進入 protocol connection。
+
+```powershell
+$probeArguments = @('--cd', $dispatchRoot, '--sandbox', 'workspace-write') + $profileOverrides + @('app-server')
+```
+
+`$profileOverrides` 是檔位覆寫展開後的 `-c` 陣列，預設檔位為空陣列。探針與正式啟動必須使用同一組參數，否則探針不具驗證力。
 
 | Session 型態 | 派工能力 | 處置 |
 | --- | --- | --- |
@@ -170,17 +178,40 @@ $promptPath = Join-Path $scratchDir "codex-prompt-$timestamp.md"
 $transcriptPath = Join-Path $historyDir "codex-app-server-$timestamp.jsonl"
 $lastMessagePath = Join-Path $historyDir "codex-last-message-$timestamp.md"
 $stderrPath = Join-Path $historyDir "codex-app-server-$timestamp.stderr.log"
-$profile = "default"
+$profileName = "default"
 $needsSearch = $false
 $extraDirectories = @()
+
+# 檔位覆寫：預設檔位為空陣列，deep 由 ~/.codex/deep.config.toml 逐鍵展開為 -c。
+$profileOverrides = @()
+if ($profileName -eq "deep") {
+  $deepConfigPath = Join-Path $env:USERPROFILE ".codex\deep.config.toml"
+  if (-not (Test-Path -LiteralPath $deepConfigPath)) {
+    throw "deep.config.toml was not found at $deepConfigPath"
+  }
+  $currentTable = ""
+  foreach ($rawLine in (Get-Content -LiteralPath $deepConfigPath)) {
+    $line = $rawLine.Trim()
+    if ($line -eq "" -or $line.StartsWith("#")) { continue }
+    if ($line -match '^\[(.+)\]$') { $currentTable = $Matches[1]; continue }
+    if ($line -notmatch '^([^=]+)=(.+)$') { continue }
+    $key = $Matches[1].Trim()
+    $value = $Matches[2].Trim()
+    if ($currentTable -ne "") { $key = "$currentTable.$key" }
+    $profileOverrides += @("-c", "$key=$value")
+  }
+  if ($profileOverrides.Count -eq 0) {
+    throw "deep.config.toml did not yield any override keys."
+  }
+}
 
 $codexCommand = Get-Command codex.cmd -ErrorAction SilentlyContinue
 if ($null -eq $codexCommand) {
   throw "codex.cmd was not found on PATH."
 }
 $codexPath = $codexCommand.Source
-if ($profile -notin @("default", "deep")) {
-  throw "Unsupported Codex profile: $profile"
+if ($profileName -notin @("default", "deep")) {
+  throw "Unsupported Codex profile: $profileName"
 }
 $prompt = Get-Content -LiteralPath $promptPath -Raw
 
@@ -200,9 +231,8 @@ $startInfo.StandardErrorEncoding = $utf8NoBom
 [void]$startInfo.ArgumentList.Add($dispatchRoot)
 [void]$startInfo.ArgumentList.Add("--sandbox")
 [void]$startInfo.ArgumentList.Add("workspace-write")
-if ($profile -eq "deep") {
-  [void]$startInfo.ArgumentList.Add("-p")
-  [void]$startInfo.ArgumentList.Add("deep")
+foreach ($override in $profileOverrides) {
+  [void]$startInfo.ArgumentList.Add($override)
 }
 foreach ($directory in $extraDirectories) {
   [void]$startInfo.ArgumentList.Add("--add-dir")
@@ -304,7 +334,9 @@ catch {
   }
 
   if ($null -eq $rootProcess -or $null -eq $rootCreationDateUtc) {
-    Write-Error "codex app-server started but its root identity is unavailable; cannot safely terminate the process tree. $($startupError.Exception.Message)" -ErrorAction Continue
+    # 身分讀不到的最常見原因是進程已因參數錯誤結束，此時 Process handle 仍可安全終止整棵樹。
+    try { $process.Kill($true) } catch { }
+    Write-Error "codex app-server started but its root identity is unavailable; terminated via the owned process handle. $($startupError.Exception.Message)" -ErrorAction Continue
   }
   else {
     try {
@@ -321,6 +353,10 @@ catch {
   throw $startupError
 }
 ```
+
+啟動失敗路徑必須先把已收集的 stderr 寫入 `dispatchRoot\.local\ai-sessions\history\codex-app-server-<yyyyMMdd_HHmmss>.stderr.log`，再拋出原始例外。app-server 因參數錯誤而立即結束時，唯一能指出原因的證據只存在於 stderr；先拋例外會使該檔從未建立，錯誤表面化為 `Win32_Process` 查不到進程，掩蓋真正的失敗原因。
+
+`Win32_Process` 查不到剛啟動的 PID 有兩種成因，處置不同。進程仍存活但 WMI 尚未填入 `CreationDate` 時，以最多 20 次、每次 150 毫秒的間隔重試。進程已結束時重試不會成功，此時以 `Process.HasExited` 與 `ExitCode` 判定並讀取 stderr。兩者都必須在放棄前完成，不得只依單次查詢結果就判定身分不可得。
 
 Unix client 在啟動後以 root PID 查詢實際建立時間與程序名稱，將查得的建立時間轉為 UTC ISO 8601 後寫入 `root-started-at-utc`，並以 process group id 與查得的身分完成後續比對。啟動成功後若 metadata、身分轉換或 PID 記錄寫入失敗，先以已取得且重新驗證的 root 身分終止同一個 process group；身分資料不足或重新驗證失敗時，記錄無法安全終止並回報。`started-at-utc` 僅記錄啟動時刻，不得取代 root PID 的實際建立時間。
 
@@ -348,7 +384,7 @@ Unix client 在啟動後以 root PID 查詢實際建立時間與程序名稱，�
 --add-dir <sourceRoot>\.local\ai-sessions\history\<lineSlug>
 ```
 
-`--search` 只有在需求明確需要網路查證時才加入，並放在最後的 `app-server` 子命令前方。預設 profile 不加入 `-p`；`deep` 在額度與任務條件皆成立且取得使用者同意後才加入 `-p deep`。Transport stdout 只包含 app-server JSONL。
+`--search` 只有在需求明確需要網路查證時才加入，並放在最後的 `app-server` 子命令前方。預設檔位不加 `-c` 覆寫；`deep` 在額度與任務條件皆成立且取得使用者同意後，才加入 `deep.config.toml` 逐鍵轉出的 `-c` 覆寫。Transport stdout 只包含 app-server JSONL。
 
 Prompt 必須明列已驗證的 `LineContext`，格式如下：
 
@@ -368,17 +404,23 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ## 模型檔位規則
 
-本 Skill 只使用預設檔位與 `deep`。預設檔位省略 `-p`，`deep` 檔位使用 `-p deep`。實際 model id 與 reasoning effort 只存在於 `~/.codex/<檔位名稱>.config.toml`，規則層只傳遞語意檔位名稱。
+本 Skill 只使用預設檔位與 `deep`。實際 model id 與其餘設定只存在於 `~/.codex/<檔位名稱>.config.toml`，規則層只傳遞語意檔位名稱。
+
+`codex app-server` 不接受 `--profile` 與 `-p`。該選項只適用於 runtime commands 與 `codex mcp`，帶入時 app-server 於啟動瞬間以 exit code 1 結束，stderr 為 `--profile only applies to runtime commands`。檔位改以 `-c key=value` 逐鍵覆寫：讀取 `~/.codex/<檔位名稱>.config.toml`，將其每一個 key-value 轉為一組 `-c`，巢狀 table 以點號路徑表示，例如 `features.fast_mode`。字串值必須帶雙引號，布林與數值不加引號。預設檔位不加任何 `-c` 覆寫，沿用 `~/.codex/config.toml`。
 
 `deep` 僅適用於推理密集且執行量不大的工作，例如需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題。例行編輯、操作步驟完整的任務、單一命令驗證與單純文件整理使用預設檔位。
 
-執行量大但步驟明確的任務即使規模龐大也使用預設檔位。`deep` 提高的是單步推理深度，不是讀寫與命令執行的吞吐，用在大量執行類工作只會拉高消耗而不改變結果。
+執行量大但步驟明確的任務即使規模龐大也使用預設檔位。`deep` 改變的是模型與推理設定，不是讀寫與命令執行的吞吐，用在大量執行類工作只會拉高消耗而不改變結果。
+
+`deep` 相對預設檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。判定任務是否值得升級前，先讀取 `~/.codex/deep.config.toml` 與 `~/.codex/config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵，再據此說明升級能帶來什麼。
 
 ### 額度快照
 
 主 Agent 從 `<CODEX_HOME>/sessions/<yyyy>/<MM>/<dd>/rollout-<時間戳>-<thread-id>.jsonl` 讀取 session 記錄。額度資料位於 `payload.rate_limits`，必須同時取得 `primary` 與 `secondary` 視窗。每個視窗使用 `used_percent`、`window_minutes` 與 `resets_at`，其中 `used_percent` 為數值百分比、`window_minutes` 為分鐘數，`resets_at` 為 Unix timestamp（秒）。剩餘額度百分比為 `100 - used_percent`，`window_days` 為 `window_minutes / 1440`。
 
 主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗獨立略過無效資料與 `resets_at` 不大於目前時間的候選，再選取來源檔案寫入時間最新的候選，同檔內以 record index 由新到舊決勝。不得改用 `resets_at` 最大值挑選候選，週視窗重新錨定時 `resets_at` 會往回跳，取最大值會淘汰當日全部記錄並鎖死在舊快照。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
+
+快照必須落在目前的 `primary` 視窗內才可用於檔位判定。`resets_at` 位於未來只證明該視窗尚未重設，不證明 `used_percent` 反映目前用量：一筆數天前的 rollout，其 `secondary.resets_at` 仍可能在未來而被選為有效候選，但它記錄的是當時的累積值，不含之後的全部消耗。判定前先確認 `primary_source_file` 的寫入時間不早於 `primary_resets_at` 減去 `primary_window_minutes`。不滿足時視為快照過期，停止需要額度判定的派工，並回報來源檔名與其時間。
 
 兩個視窗都是固定視窗，`used_percent` 在視窗內單調累積，跨過 `resets_at` 後歸零並跳至下一格，額度不連續回補。`primary` 為 5 小時視窗，`secondary` 為 7 天視窗，容量相差約 33 倍，因此同一件任務在 `primary` 消耗的百分點約為 `secondary` 的 30 倍。
 
@@ -408,11 +450,11 @@ secondary_source_file=
 兩個視窗的門檻不同。`primary` 為 30%，`secondary` 為 15%。門檻差異來自容量差：一次 `deep` 派工實測消耗 `primary` 約 19 至 28 個百分點，15% 撐不完單次派工；同樣的消耗量在 `secondary` 不足 1 個百分點，15% 仍有數次派工的餘裕。
 
 1. 主 Agent 先判斷任務是否推理密集且執行量不大，判準是需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題，且不以大量讀寫、掃描或命令執行為主體。
-2. `primary_remaining_percent` 大於或等於 30、`secondary_remaining_percent` 大於或等於 15，且任務符合第 1 條條件時，依「升級確認」節向使用者提出確認。取得當輪明確同意後才加入 `-p deep`；未取得同意時省略 `-p` 使用預設檔位。
-3. `secondary_remaining_percent` 低於 15 時，省略 `-p` 使用預設檔位。週視窗重設通常在數天後，不採等待。
-4. `secondary` 通過門檻但 `primary_remaining_percent` 低於 30 時，依 `primary_days_to_reset` 決定處置。距重設 30 分鐘以內時，向使用者提議等待重設後再以 `deep` 派工，不降檔；距重設超過 30 分鐘時，省略 `-p` 使用預設檔位。
+2. `primary_remaining_percent` 大於或等於 30、`secondary_remaining_percent` 大於或等於 15，且任務符合第 1 條條件時，依「升級確認」節向使用者提出確認。取得當輪明確同意後才加入 `deep.config.toml` 的 `-c` 覆寫；未取得同意時不加覆寫，使用預設檔位。
+3. `secondary_remaining_percent` 低於 15 時，不加覆寫，使用預設檔位。週視窗重設通常在數天後，不採等待。
+4. `secondary` 通過門檻但 `primary_remaining_percent` 低於 30 時，依 `primary_days_to_reset` 決定處置。距重設 30 分鐘以內時，向使用者提議等待重設後再以 `deep` 派工，不降檔；距重設超過 30 分鐘時，不加覆寫，使用預設檔位。
 5. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
-6. 預設檔位省略 `-p`。profile 名稱只允許預設與 `deep` 的語意集合。
+6. 預設檔位不加任何 `-c` 覆寫。檔位名稱只允許預設與 `deep` 的語意集合。
 
 第 4 條的等待選項只適用於 `primary`。剩餘時間影響的是「要不要等一下再派工」，不得用來放寬百分比門檻。等待提議與升級確認併為同一次詢問，不分兩輪問使用者。
 
@@ -468,7 +510,11 @@ $Job.BufferedNotifications = $bufferedNotifications
 
 stdout reader 呼叫 `Handle-AppServerMessage` 時傳入同一個 collection；`turn/start` response 取得 root turn id 後由 `Replay-BufferedNotifications` 重播符合 root thread／turn 的通知。單一 stdout reader 擁有該 collection，加入前檢查最大筆數；Job 進入任何 terminal 狀態時清空 collection。
 
-`Handle-AppServerMessage` 只接受 `jsonrpc = "2.0"`。response 必須有 `id`、沒有 `method`，且恰有 `result` 或 `error` 其中一個欄位；schema 不可判讀時保存原始行、記錄 protocol error 並使 Job 進入 `failed`，不移除 pending entry 或繼續送出後續 method。
+app-server 的 response 與 notification 都不帶 `jsonrpc` 欄位。實測 codex-cli 0.147.0 與 0.153.4 的完整 transcript，`jsonrpc` 出現次數為零。因此 `Handle-AppServerMessage` 只在該欄位存在時驗證它等於 `2.0`，欄位缺席屬正常情形，不得據此判定 protocol error。
+
+response 必須有 `id`、沒有 `method`，且恰有 `result` 或 `error` 其中一個欄位；schema 不可判讀時保存原始行、記錄 protocol error 並使 Job 進入 `failed`，不移除 pending entry 或繼續送出後續 method。
+
+送出端仍在自己的 request 與 notification 帶上 `jsonrpc = "2.0"`，這是 client 對 JSON-RPC 的遵循，與接收端的寬鬆驗證並行不悖。
 
 Job record 至少包含下列欄位。
 
@@ -514,7 +560,7 @@ notification reader 即時處理 `item/completed`。`item.type = agentMessage` �
 
 notification 與 Job failure 的實際分流如下。下列條件發生於尚未進入 terminal 狀態的 Job 時，會保存 `protocolError` 或原始行並使 Job 進入 `failed`。
 
-1. JSONL 解析或 schema 失敗。包括 malformed JSON、訊息不是 JSON object、`jsonrpc` 缺少或不是 `2.0`、缺少 response 的 `id`、`id = null`、response 同時具備或同時缺少 `result`／`error`、response id 不在 pending map、object 既不是 response 也不是 notification 或 server request，以及 notification 的 `method` property 缺少、為 `null`、空字串或只含空白。
+1. JSONL 解析或 schema 失敗。包括 malformed JSON、訊息不是 JSON object、`jsonrpc` 存在但不是 `2.0`、缺少 response 的 `id`、`id = null`、response 同時具備或同時缺少 `result`／`error`、response id 不在 pending map、object 既不是 response 也不是 notification 或 server request，以及 notification 的 `method` property 缺少、為 `null`、空字串或只含空白。
 2. RPC 與 process 生命週期失敗。包括 pending response 的 `error`、`process-exit`、`timeout`，以及 stdout reader 將 malformed line、EOF 或連線錯誤轉成的 protocol event。
 3. request／response 關聯失敗。包括 `thread/start`／`thread/resume` response 缺少 `thread.id`、續行 thread mismatch、既有 root thread mismatch、`turn/start` 缺少 pending entry、`turn` 或 `turn.id`、root thread mismatch、既有 root turn mismatch，以及未經取消關聯驗證的 `turn/start` `interrupted` response。
 4. notification 欄位與 root 關聯失敗。包括 `thread/started` 缺少 `params.thread.id`、`thread/name/updated` 缺少 `threadId` 或 `threadName`、`turn/started` 缺少 `threadId` 或 `turn.id`、root `turn/completed` 的 thread／turn mismatch、未經取消關聯驗證的 `turn/completed` `interrupted`，以及 `error` notification。
@@ -1331,8 +1377,9 @@ function Handle-AppServerMessage {
     return
   }
 
+  # app-server omits the jsonrpc member; validate it only when present.
   $hasJsonRpc = $null -ne $message.PSObject.Properties['jsonrpc']
-  if (-not $hasJsonRpc -or [string]$message.jsonrpc -ne '2.0') {
+  if ($hasJsonRpc -and [string]$message.jsonrpc -ne '2.0') {
     $Job.ProtocolError = "Invalid JSON-RPC version; line=$Line"
     Reduce-JobState -Job $Job -Event 'protocol-error' -BufferedNotifications $BufferedNotifications -RawLine $Line
     return
