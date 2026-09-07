@@ -22,7 +22,6 @@ if (Args.Count < 2) {
 string jsonArg = Args[0];
 string outputPath = Args[1];
 string json = "";
-HashSet<string> temporaryFilesCreatedByScript = new(StringComparer.OrdinalIgnoreCase);
 
 try {
     if (jsonArg == "-") {
@@ -57,18 +56,6 @@ try {
         PrintPreview(json);
     } catch {
         // 預覽僅供參考，不應中斷主匯出流程
-    }
-
-    foreach (string temporaryFile in temporaryFilesCreatedByScript) {
-        if (!File.Exists(temporaryFile)) {
-            continue;
-        }
-
-        try {
-            File.Delete(temporaryFile);
-        } catch {
-            // 避免因檔案鎖定導致清理失敗時拋出例外
-        }
     }
 
 } catch (Exception ex) {
