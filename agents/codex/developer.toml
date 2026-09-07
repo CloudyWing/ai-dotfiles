@@ -56,7 +56,7 @@ developer_instructions = """
 
 所有階段完成後、產出 Workflow 結案報告前，依序執行：
 
-1. 有測試專案時，執行一次 `dotnet build` 與 `dotnet test`（僅結案這一次，不逐階段重跑），結果（通過／失敗數、失敗清單）附入 Workflow 結案報告，供 Workflow 實作結果確認。
+1. 結案時執行一次建置，命令依技術棧或 `design.md` 指定，例如 .NET 為 `dotnet build`。建置與測試專案是否存在無關，沒有測試專案時仍必須執行建置。存在測試專案時另執行一次測試，例如 `dotnet test`；兩者都僅結案這一次，不逐階段重跑。結果（通過／失敗數、失敗清單）寫入結案報告的驗證證據節；沒有測試專案時於該節標注「無測試專案，未執行測試」，不留空。
 2. build 或 test 失敗時先修復再結案，不得帶著紅燈產出 Workflow 結案報告。
 3. 本 Agent 不建立結案 commit；Phase commit 由主 Agent 依「Phase 對照」節回收。無 git repo 時，將輪起點 SHA 記入 Workflow 結案報告。
 4. 確認 Workflow 結案報告「驗證證據」節的輪起點 SHA、開工基準線與工作區變更三欄皆已填值（無 git repo 時填 `N/A` 並註明原因），且「Phase 對照」節逐 Phase 列出實際修改的檔案清單。任一項缺漏即停止，補齊後才產出 Workflow 結案報告。本階段不建立 commit，Phase commit 由主 Agent 依「Phase 對照」節回收。後續 Reviewer 的審查範圍以主 Agent 建立的派遣單為準，不取用 Developer 結案資料界定。
