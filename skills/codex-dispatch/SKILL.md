@@ -175,7 +175,12 @@ PowerShell 不可將未處理的 prompt 直接放入 `Start-Process -ArgumentLis
 | --- | --- |
 | `thread.started` | `thread_id` 是續行識別，寫入 `dispatchRoot\.local\ai-sessions\history\codex-thread-<dispatchSlug>.txt` |
 | `item.completed` 且 `item.type` 為 `agent_message` | 最後一則的 `text` 是結案訊息 |
+| `item.completed` 且 `item.type` 為 `command_execution` | 累計次數反映實際讀取與執行量，可用於判斷派遣是否確實走完目標物件 |
 | `turn.completed` | 唯一的正常完成證據，其 `usage` 提供本次實際 token 用量 |
+| `error` | 伺服器端錯誤，`message` 是原文，通常緊接在 `turn.failed` 之前 |
+| `turn.failed` | 明確的失敗終止，`error.message` 是原因，例如額度耗盡或模型不被接受 |
+
+`turn.failed` 與 `error` 只出現在事件流，不寫入 stderr。派遣失敗時 stderr 可能完全為空，因此失敗原因一律從事件流末尾取得，不以 stderr 是否有內容判斷是否失敗。
 
 stdout 只包含事件流 JSONL，診斷訊息一律走 stderr，兩者分別重導至不同檔案。
 
@@ -299,7 +304,11 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗獨立略過無效資料與 `resets_at` 不大於目前時間的候選，再選取來源檔案寫入時間最新的候選，同檔內以 record index 由新到舊決勝。不得改用 `resets_at` 最大值挑選候選，週視窗重新錨定時 `resets_at` 會往回跳，取最大值會淘汰當日全部記錄並鎖死在舊快照。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
 
-快照必須落在目前的 `primary` 視窗內才可用於檔位判定。`resets_at` 位於未來只證明該視窗尚未重設，不證明 `used_percent` 反映目前用量：一筆數天前的 rollout，其 `secondary.resets_at` 仍可能在未來而被選為有效候選，但它記錄的是當時的累積值，不含之後的全部消耗。判定前先確認 `primary_source_file` 的寫入時間距今不超過 `primary_window_minutes`，即快照不得比一個 primary 視窗更舊。不滿足時視為快照過期，停止需要額度判定的派工，並回報來源檔名與其時間。不以 `primary_resets_at` 減 `primary_window_minutes` 反推視窗起點再比對，該算式在記錄寫入時間落在視窗邊界前後數秒時會判定為過期。
+快照必須落在目前的 `primary` 視窗內才可用於檔位判定。`resets_at` 位於未來只證明該視窗尚未重設，不證明 `used_percent` 反映目前用量：一筆數天前的 rollout，其 `secondary.resets_at` 仍可能在未來而被選為有效候選，但它記錄的是當時的累積值，不含之後的全部消耗。額度按模型分別計量。`Get-CodexQuota.ps1` 取最近一筆有效 rollout，不區分該筆使用的模型，因此一份快照只對產生它的檔位有效，不得跨檔位套用。以預設檔位的快照判定 `deep` 是否可行必然失準，實測曾出現預設檔位顯示剩餘 100%、而 `deep` 檔位當下已用掉 96% 的情形。
+
+因此 `deep` 的門檻判定必須使用 `deep` 檔位產生的快照。取得方式是先以正式檔位執行啟動探針，探針本身會產生同檔位的 rollout 記錄，再重新讀取快照並據此判定。探針前讀到的快照只用於確認腳本可用，不作為門檻依據。
+
+判定前先確認 `primary_source_file` 的寫入時間距今不超過 `primary_window_minutes`，即快照不得比一個 primary 視窗更舊。不滿足時視為快照過期，停止需要額度判定的派工，並回報來源檔名與其時間。不以 `primary_resets_at` 減 `primary_window_minutes` 反推視窗起點再比對，該算式在記錄寫入時間落在視窗邊界前後數秒時會判定為過期。
 
 兩個視窗都是固定視窗，`used_percent` 在視窗內單調累積，跨過 `resets_at` 後歸零並跳至下一格，額度不連續回補。`primary` 為 5 小時視窗，`secondary` 為 7 天視窗，容量相差約 33 倍，因此同一件任務在 `primary` 消耗的百分點約為 `secondary` 的 30 倍。
 
@@ -365,7 +374,7 @@ secondary_source_file=
 | --- | --- | --- |
 | A 正常結束 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 為 `turn.completed` | 進行事件流取證，再執行回收判定 |
 | B 執行中查詢 | 背景指令仍在執行，使用者要求現況 | 回報事件流最後一則事件的 `type` 與時間，不中止也不改變等待方式 |
-| C 早夭 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 不是 `turn.completed` | 事件流含 `agent_message` 時取最後一則作為未完成回報，依回收三態判定，不視為正常結束；沒有 `agent_message` 時讀取 stderr 與 exit code 並回報啟動或執行失敗 |
+| C 早夭 | 背景指令已離開執行狀態，且事件流最後一則事件的 `type` 不是 `turn.completed` | 最後一則為 `turn.failed` 時取其 `error.message` 作為失敗原因；事件流含 `agent_message` 時取最後一則作為未完成回報，依回收三態判定，不視為正常結束；兩者皆無時讀取 stderr 與 exit code 並回報啟動失敗 |
 
 C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、額度用盡與 sandbox 權限失敗。這些都只在 stderr 留下訊息，因此 stderr 必須在兩條路徑都保存。
 
