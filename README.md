@@ -181,7 +181,11 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
    default_subagent_reasoning_effort = "<effort>"
    ```
 
-   `[agents]` 段用於降低 subagent 的模型成本。Codex 的 subagent 預設繼承父 Agent 的模型與推理強度，未設定時每個 subagent 都以父 Agent 的模型執行，token 隨並行數累加。
+   `[agents]` 段用於降低 subagent 的模型成本。Codex 的 subagent 預設繼承父 Agent 的模型與推理強度，未設定時每個 subagent 都以父 Agent 的模型執行，token 隨並行數累加；以高成本模型作為主 Agent 時，建議將 subagent 指定為成本較低的模型，讓讀取類工作不使用高階模型。
+
+   未設定 `max_concurrent_threads_per_session` 時使用 Codex 預設並行數，該並行數直接乘上每個 subagent 的消耗，需要上限時於同一檔案明列。
+
+   `model_reasoning_effort` 只影響推理長度，不影響模型單價。把高成本模型的 effort 調低不會使其變便宜，控制成本須從模型選用與 subagent 配置著手。
 
 4. Codex 0.134.0 起，`--profile` 改讀獨立檔案。`config.toml` 內的 `[profiles.*]` 為 legacy 格式，該版本以後不再受理。
 5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段只偵測 `deep.config.toml` 缺件並印出修復指引。
