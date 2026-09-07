@@ -17,6 +17,7 @@ policy.allow_implicit_invocation: true
 | --- | --- |
 | `sourceRoot` | 使用者指定且已解析的 work-root 絕對路徑 |
 | `lineSlug` | Analyst 已登記的語意化線識別 |
+| `writeMode` | 本次派遣的寫入模式，派遣單第 6 欄標示「唯讀」時為 `readonly`，其餘為 `write` |
 | `sourceLineRoot` | `<sourceRoot>\.local\ai-sessions\handoff\<lineSlug>` |
 | `dispatchRoot` | `<sourceRoot>\.local\ai-sessions\worktrees\<dispatchSlug>` |
 | `dispatchLineRoot` | `<dispatchRoot>\.local\ai-sessions\handoff\<lineSlug>` |
@@ -29,7 +30,7 @@ policy.allow_implicit_invocation: true
 
 1. 解析 `sourceRoot`、`dispatchRoot`、`sourceLineRoot`、`dispatchLineRoot`、`sourceReportLineRoot` 與 `reportLineRoot` 的絕對路徑，確認 `dispatchSlug` 與 `lineSlug` 均符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`。
 2. 讀取 `<sourceLineRoot>\line.json`，確認其 `schema` 與 `line-slug`。manifest 缺失、格式錯誤或歸屬不一致時停止派遣；既有但缺少 manifest 的目錄視為已被占用，不建立或覆寫它。
-3. 掃描 PID 記錄，以 `sourceRoot` 與 `lineSlug` 執行雙鍵並行檢查。不同 `lineSlug` 的活躍記錄不阻塞派遣。
+3. 掃描 PID 記錄，以 `sourceRoot`、`lineSlug` 與 `writeMode` 執行三鍵並行檢查。不同 `lineSlug` 的活躍記錄不阻塞派遣。`writeMode` 取自派遣單第 6 欄，第 6 欄標示「唯讀」時為 `readonly`，其餘為 `write`。
 4. 在 `sourceRoot` 執行 `git -C <sourceRoot> rev-parse --is-inside-work-tree`。
    - 以 exit code 為主要分流依據。只有 exit code 為 0 且 stdout 為 `true` 時，才設定 `gitOrigin=existing`，保留既有 Git，不建立 marker。
    - work-root 不在 Git 工作樹時，命令會以非零 exit code 與 `fatal` 錯誤結束，不會輸出 `false`；不能等待 `false` 作為分流結果。
@@ -77,18 +78,24 @@ process-tree-query=<Windows: Win32_Process.ParentProcessId；Unix: ps PGID 成�
 process-group-id=<Unix process group ID；Windows 不適用>
 work-root=<sourceRoot 的絕對路徑>
 line-slug=<LineContext 的 lineSlug>
+dispatch-slug=<本次派遣的 dispatchSlug>
+write-mode=<readonly 或 write>
 started-at-utc=<ISO 8601 UTC 時間>
 ```
 
-派工前掃描同一個 `sourceRoot` 的 `codex-pid-*.txt`。逐檔解析 `work-root`、`line-slug`、`root-pid`（舊格式回退讀取 `pid`）與進程樹欄位。只有 `work-root` 與目前絕對路徑相同、`line-slug` 與目前 `LineContext.lineSlug` 相同、進程樹或 process group 仍存活，且根程序身分比對通過的記錄才阻塞派遣。缺少 `line-slug` 的舊格式記錄不具備線歸屬，不滿足雙鍵比對。Windows 以 `Win32_Process` 的 `ProcessId`、`ParentProcessId`、`Name` 與 `CreationDate` 查詢根程序及其所有後代，遞迴追查每一層子程序。將查得根程序的 `Name` 與 `CreationDate` 轉為 UTC 後，分別比對 PID 記錄的 `root-process-name` 與 `root-started-at-utc`。名稱採不分大小寫的完全相等比對，建立時間差距容許最多 1 秒，以涵蓋查詢與記錄序列化的時鐘精度差異；兩項必須同時符合。任一項不符或無法查詢時，判定為 PID 重用，該筆記錄不阻塞派工，也不把其目前後代視為同一個 Codex 進程樹。根程序已結束但仍有後代時，只有在根 PID 目前不存在且未發現 PID 重用的情況下，才可依 `ParentProcessId` 鏈保留活躍判定。根 PID 已被其他程序占用且身分不符時，依 PID 重用處理。Unix 以 PID 檔的 `process-group-id` 查詢 process group 成員，並以 `root-pid` 查詢根程序，依相同規則比對 `root-process-name`、`root-started-at-utc` 與查得的程序名稱、建立時間。根程序身分比對通過且群組內仍有任何程序存活時，才判定為活躍實例。根程序在身分驗證後結束但群組成員仍存活時，沿用已驗證的根程序身分與仍存在的 `process-group-id` 判定活躍；根 PID 被其他程序占用、身分比對失敗或無法完成身分驗證時，判定為 PID 重用，該筆記錄不阻塞派工。舊格式 PID 記錄若缺少 `root-process-name` 或 `root-started-at-utc`，視為無法確認身分的歷史記錄，不阻塞派工。理由是僅憑 PID、process group 或存活狀態無法排除 PID 重用。歷史進程樹已完全結束時不阻塞派工；發現同線的活躍 Codex 實例時回報活躍 PID 記錄檔、根 PID 與存活後代或 process group，停止流程，不啟動第二個同線實例。
+派工前掃描同一個 `sourceRoot` 的 `codex-pid-*.txt`。逐檔解析 `work-root`、`line-slug`、`write-mode`、`root-pid`（舊格式回退讀取 `pid`）與進程樹欄位。`work-root` 與目前絕對路徑相同、`line-slug` 與目前 `LineContext.lineSlug` 相同、進程樹或 process group 仍存活，且根程序身分比對通過的記錄，才進入 `write-mode` 判定。缺少 `line-slug` 的舊格式記錄不具備線歸屬，不滿足三鍵比對。
 
-中斷或重派前只讀取雙鍵匹配目前 `sourceRoot` 與 `lineSlug` 的 PID 記錄，再解析 `root-pid`（舊格式使用 `pid`）。Windows 執行任何 `taskkill` 前，必須先以 `Win32_Process` 查詢根程序，確認查得的 `Name` 與 `CreationDate` 分別符合 `root-process-name` 與 `root-started-at-utc`，名稱不分大小寫完全相等且建立時間差距不超過 1 秒。兩項身分比對通過後，才可執行 `taskkill /PID <root-pid> /T /F`，由系統終止根程序及整個後代樹。若根程序已先結束，先以 `Win32_Process.ParentProcessId` 找出仍存活的後代，並沿用已通過的根程序身分驗證確認其仍屬同一進程樹，再對每個仍存活的樹根執行 `taskkill /PID <descendant-pid> /T /F`，直到重新查詢不到任何後代。根 PID 被其他程序占用、身分比對失敗或舊格式缺少任一身分欄位時，判定為 PID 重用或無法確認身分，不得執行 `taskkill`，以免終止重用該 PID 的無關程序。Unix 執行 `kill -TERM -- -<process-group-id>` 前，同樣必須先完成根程序名稱與建立時間的身分比對，再確認 `process-group-id` 仍屬於該已驗證的 process group；比對失敗或無法完成比對時不得執行任何 `kill`。若依中斷策略需要強制收尾，僅對同一個已驗證的 process group 使用 `kill -KILL -- -<process-group-id>`。終止後再次以進程樹或 process group 查詢確認全部程序已結束。只終止 PID 檔記錄的單一進程或包裝 Codex 的 shell 不符合本契約。
+Windows 以 `Win32_Process` 的 `ProcessId`、`ParentProcessId`、`Name` 與 `CreationDate` 查詢根程序及其所有後代，遞迴追查每一層子程序。將查得根程序的 `Name` 與 `CreationDate` 轉為 UTC 後，分別比對 PID 記錄的 `root-process-name` 與 `root-started-at-utc`。名稱採不分大小寫的完全相等比對，建立時間差距容許最多 1 秒，以涵蓋查詢與記錄序列化的時鐘精度差異；兩項必須同時符合。任一項不符或無法查詢時，判定為 PID 重用，該筆記錄不阻塞派工，也不把其目前後代視為同一個 Codex 進程樹。根程序已結束但仍有後代時，只有在根 PID 目前不存在且未發現 PID 重用的情況下，才可依 `ParentProcessId` 鏈保留活躍判定。根 PID 已被其他程序占用且身分不符時，依 PID 重用處理。Unix 以 PID 檔的 `process-group-id` 查詢 process group 成員，並以 `root-pid` 查詢根程序，依相同規則比對 `root-process-name`、`root-started-at-utc` 與查得的程序名稱、建立時間。根程序身分比對通過且群組內仍有任何程序存活時，才判定為活躍實例。根程序在身分驗證後結束但群組成員仍存活時，沿用已驗證的根程序身分與仍存在的 `process-group-id` 判定活躍；根 PID 被其他程序占用、身分比對失敗或無法完成身分驗證時，判定為 PID 重用，該筆記錄不阻塞派工。舊格式 PID 記錄若缺少 `root-process-name` 或 `root-started-at-utc`，視為無法確認身分的歷史記錄，不阻塞派工。理由是僅憑 PID、process group 或存活狀態無法排除 PID 重用。歷史進程樹已完全結束時不阻塞派工；發現依 `write-mode` 判定為衝突的同線活躍 Codex 實例時，回報活躍 PID 記錄檔、根 PID 與存活後代或 process group，停止流程。
+
+`write-mode` 判定分三種結果。既有記錄與本次派遣都是 `readonly` 時互不阻塞，理由是唯讀派遣不修改目標物件，各自只寫入派遣單第 7 欄指定的報告檔，沒有共用寫入面。任一方為 `write` 時阻塞。同線同時活躍的 `readonly` 實例上限為 2，已達上限時停止派遣並等待既有實例結束，理由是回收端為單線，超過兩份同線報告會使統籌端的判定塞車。缺少 `write-mode` 的舊格式記錄一律視為 `write`。
+
+中斷或重派前只讀取 `work-root`、`line-slug` 與 `dispatch-slug` 三者均匹配本次派遣的 PID 記錄，再解析 `root-pid`（舊格式使用 `pid`）。同線允許並行時，`dispatch-slug` 是區分同線多個活躍實例的唯一依據；缺少 `dispatch-slug` 的舊格式記錄不得作為終止對象。Windows 執行任何 `taskkill` 前，必須先以 `Win32_Process` 查詢根程序，確認查得的 `Name` 與 `CreationDate` 分別符合 `root-process-name` 與 `root-started-at-utc`，名稱不分大小寫完全相等且建立時間差距不超過 1 秒。兩項身分比對通過後，才可執行 `taskkill /PID <root-pid> /T /F`，由系統終止根程序及整個後代樹。若根程序已先結束，先以 `Win32_Process.ParentProcessId` 找出仍存活的後代，並沿用已通過的根程序身分驗證確認其仍屬同一進程樹，再對每個仍存活的樹根執行 `taskkill /PID <descendant-pid> /T /F`，直到重新查詢不到任何後代。根 PID 被其他程序占用、身分比對失敗或舊格式缺少任一身分欄位時，判定為 PID 重用或無法確認身分，不得執行 `taskkill`，以免終止重用該 PID 的無關程序。Unix 執行 `kill -TERM -- -<process-group-id>` 前，同樣必須先完成根程序名稱與建立時間的身分比對，再確認 `process-group-id` 仍屬於該已驗證的 process group；比對失敗或無法完成比對時不得執行任何 `kill`。若依中斷策略需要強制收尾，僅對同一個已驗證的 process group 使用 `kill -KILL -- -<process-group-id>`。終止後再次以進程樹或 process group 查詢確認全部程序已結束。只終止 PID 檔記錄的單一進程或包裝 Codex 的 shell 不符合本契約。
 
 **被強制終止過的 dispatch worktree 不得重用（Crucial）**。sandbox helper 在正常結束時才移除自己套用的 ACL；被 `taskkill` 或 session 中止時來不及清理，worktree 根目錄會殘留一條明確（非繼承）的存取控制項目，其 SID 已無對應帳號。之後在該目錄啟動的 Codex 會在套用 sandbox ACL 時失敗，全程無法執行任何命令。以 `icacls <dispatchRoot>` 與來源工作樹比對即可確認：報廢的 worktree 會多出不帶 `(I)` 標記的條目。
 
 重派時建立新的 dispatch worktree，並以 `git -C <舊 dispatchRoot> diff` 產出的 patch 將既有成果轉移至新 worktree，不要嘗試修改 ACL。新 worktree 沿用同一個 `lineSlug`，`dispatchSlug` 另取未使用的名稱。轉移完成後，舊 worktree 依既有路徑檢查移除。
 
-PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移除或 `scratch` 清理而刪除。PID 檔案是否存在不能單獨作為並行判定依據，必須合併 `work-root`、`line-slug`、進程身分比對與完整進程樹或 process group 的存活狀態；wrapper 已結束但子進程仍存活時，不得判定為可並行啟動。不同 `lineSlug` 的存活記錄必須可同時存在且不互相阻塞。
+PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移除或 `scratch` 清理而刪除。PID 檔案是否存在不能單獨作為並行判定依據，必須合併 `work-root`、`line-slug`、`write-mode`、進程身分比對與完整進程樹或 process group 的存活狀態；wrapper 已結束但子進程仍存活時，不得判定為可並行啟動。不同 `lineSlug` 的存活記錄必須可同時存在且不互相阻塞。同一 `lineSlug` 下兩個 `readonly` 記錄同樣必須可同時存在。
 
 ## Phase commit 回收與驗證
 
@@ -147,8 +154,10 @@ if ($LASTEXITCODE -ne 0) {
 
 ```powershell
 $sourceRoot = "<sourceRoot>"
-$dispatchRoot = Join-Path $sourceRoot ".local\ai-sessions\worktrees\<dispatchSlug>"
+$dispatchSlug = "<dispatchSlug>"
+$dispatchRoot = Join-Path $sourceRoot ".local\ai-sessions\worktrees\$dispatchSlug"
 $lineSlug = "<lineSlug>"
+$writeMode = "<readonly 或 write>"
 $sourceLineRoot = Join-Path $sourceRoot ".local\ai-sessions\handoff\$lineSlug"
 $sourceLineHistoryDir = Join-Path $sourceRoot ".local\ai-sessions\history\$lineSlug"
 $dispatchLineRoot = Join-Path $dispatchRoot ".local\ai-sessions\handoff\$lineSlug"
@@ -282,6 +291,8 @@ try {
     "process-tree-query=Win32_Process.ParentProcessId"
     "work-root=$sourceRoot"
     "line-slug=$lineSlug"
+    "dispatch-slug=$dispatchSlug"
+    "write-mode=$writeMode"
     "started-at-utc=$startedAtUtc"
   ) -join [Environment]::NewLine
   [System.IO.File]::WriteAllText($pidPath, $pidText, $utf8NoBom)

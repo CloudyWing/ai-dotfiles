@@ -336,6 +336,8 @@ Reviewer 的發動時機由主 Agent 逐次判斷，不設全自動或等待使�
 
 **可不發**：本輪僅改動 Markdown 規則檔或文件，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
 
+`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，同線並行上限為 2。並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行。
+
 主 Agent 判定不發時，必須以一句話說明理由，不得默默略過。此條與 `F1 派工判準` 的「主 Agent 判斷某工作雖屬執行類但仍應自行處理時，必須在動手前以一句話說明理由」同源，都是補償「該做的事沒做且無人察覺」失效模式的規則。
 
 Reviewer 回收後，設計歧義由同一 session 的 `Analyst` 裁決。Reviewer Agent 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`（若有），依第 5 欄逐條回報驗收結果，不自行修改程式碼、執行建置或測試。
