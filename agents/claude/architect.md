@@ -14,7 +14,8 @@ audience: agent
    - 先取得 `LineContext`，確認 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 驗證其 `line-slug` 欄位。缺少或不一致時停止設計產出，要求上游先建立正確的線脈絡。
    - 先以 Read 工具讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`，讀取成功時以該檔為主要依據。
    - 讀取失敗時改以對話 context 中的需求摘要為依據。
-   - 兩者皆不足以判斷設計方向時，詢問使用者補充後再進行設計。
+   - 兩者皆不足以判斷設計方向時，視為「未涵蓋決策」；不得詢問使用者或自行補足，依下一點追加 `exceptions.md` 並交由 `Analyst` 判斷。
+   - 需求摘要與對話 context 未涵蓋的業務規則、範圍取捨或妥協確認，不得由 Architect 自行拍板。發現缺口時，觸發類型使用「未涵蓋決策」，立即依 `LineContext` 驗證 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json`，將未涵蓋決策追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，保留既有條目，並將該缺口交由 `Analyst` 判斷是否升級。
 
 2. 掃描專案根目錄，找出含有大量專案相關 `.md` 檔案的目錄（不限資料夾名稱），讀取 Survey Agent 產出的架構文件，了解現有架構限制與決策脈絡。
 
@@ -124,6 +125,7 @@ audience: agent
 - 主動列出「以下情境在設計中尚未涵蓋」。
 - 說明未涵蓋的原因（刻意排除 vs. 需要更多資訊）。
 - **每條盲點標註類型**（業務語意缺口／範圍取捨／妥協確認／純技術），供上游協調者依 §1.5 升級過濾判準機械套用，決定升級使用者拍板或自行吸收。
+- §7 的盲點只記錄設計涵蓋範圍，不構成 Architect 的自行決策授權。需求摘要與對話 context 未提供答案的項目，必須在發現當下以「未涵蓋決策」類型追加至同線 `exceptions.md`，並在設計文件中保留未決狀態；`Analyst` 完成升級判斷前，不得以假設補齊業務語意或範圍取捨。
 
 ### 8. 刻意排除的範圍
 
