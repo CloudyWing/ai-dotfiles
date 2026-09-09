@@ -90,7 +90,7 @@ PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移�
 
 Codex 端不建立 commit，因此 dispatch worktree 的 `HEAD` 在派工全程維持 `baseSha`，實作成果以未 commit 的工作區變更形式存在。回收的輸入是這份工作區差異，不是 commit 區間。
 
-`Invoke-CodexDispatch.ps1 -Operation Collect` 取得 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard`，再合併成完整成果清單。回收前以合併後的檔案清單與結案報告「Phase 對照」節逐項核對，數量或路徑不符時腳本以非零結束碼停止並回報差異。已暫存變更與未追蹤新增檔案都必須出現在核對結果中。
+`Invoke-CodexDispatch.ps1 -Operation Collect` 依 `Preflight` 的 `worktreeCreated` 分流回收。`true` 時取得 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard`，再合併成完整成果清單。`false` 時不要求 `DispatchRoot` 或 `BaseSha`，改從 Preflight 的 `targetStates` 逐一核對核准輸出檔案，保存非空檔案的長度、最後寫入時間與 SHA-256 證據。direct-write 的結案報告也必須存在且非空。任何必要欄位、檔案證據或報告核對失敗時，腳本以非零結束碼停止，不把空 `baseSha` 當成 Git 基準。
 
 差異取得後依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。
 
@@ -111,9 +111,10 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `Preflight` | `SourceRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、`WriteMode`、`TargetPath[]` | `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`、同線目錄、`pidCheck` | manifest、PID、Git、根目錄界線、worktree、patch 或檔案複製驗證失敗時 stderr 並 exit code 1 |
 | `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`DeepRequestSource`、`SecondaryDaysToReset`、`SecondaryRemainingPercent`、`DowngradeInstruction`、Codex 父層選項 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id 路徑、實際參數、有效 profile、週期位置與降級狀態 | deep 主動提議未通過週期 gate、執行檔、工作目錄、啟動參數或根程序身分取得失敗時 stderr 並 exit code 1 |
 | `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、冷啟動／續行、派工前後快照 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、校準紀錄路徑、分組樣本數與提議訊號 | JSONL 格式錯誤、必要輸入缺失或校準快照格式錯誤時 stderr 並 exit code 1 |
-| `Collect` | `DispatchRoot`、`BaseSha`、`ReportPath[]` | tracked diff、staged diff、未追蹤檔案、合併清單與報告逐項核對結果 | 差異清單與結案報告不一致時 stderr 並 exit code 1，保留 worktree |
+| `Collect` | worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據 | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；不把空 `baseSha` 視為 Git 基準 |
+| `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `turn.completed`、exit code 0、實際參數、事件流、stderr、last-message、thread id、rollout 來源路徑與回復紀錄 | 只允許 `PostResetNoSnapshot`；`ProbeAttempt > 1`、啟動參數、根程序身分或事件流驗證失敗時 stderr 並 exit code 1 |
 
-`Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot` 與 `worktreeCreated=false`。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。
+`Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot`、`worktreeCreated=false`、空 `baseSha` 與核准輸出清單。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
 
 `Start` 會固定 `--cd`、`--sandbox`、`--profile`、`--add-dir`、`--search` 等父層選項的位置，再執行 `codex exec` 或同一 thread 的 `codex exec resume`。`--json`、`--output-last-message` 與 prompt 選項位於子命令之後。事件流、stderr、last-message、thread id 與 PID 記錄各自保存，啟動結果包含實際參數，供後續複核。
 
@@ -123,7 +124,26 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 `Inspect` 在提供 `sourceRoot` 或 `CalibrationPath` 時追加校準紀錄。紀錄使用 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`，分組鍵為 `model`、`profile`、冷啟動／續行，任務類型只保留為欄位。紀錄不足 5 筆時只回報觀測數量；達到 5 筆時只輸出由主 Agent 提議新門檻的訊號，腳本不修改規則。
 
-`Collect` 合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單，再以結案報告「Phase 對照」節逐項比對。任一數量或路徑不一致都停止回收，且在程式碼差異尚未完成回收前不得移除 worktree。
+`Collect` 在 worktree 路徑合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單，再以結案報告「Phase 對照」節逐項比對。direct-write 路徑則讀取 Preflight 的 `targetStates`，確認每個核准輸出都存在、為非空檔案，並回傳檔案長度、最後寫入時間與 SHA-256。任一數量、路徑、檔案證據或報告不一致都停止回收，且在成果尚未完成回收前不得移除 worktree。
+
+### 額度狀態與回復探針
+
+`Get-CodexQuota.ps1` 先保留通過結構驗證的候選，再依事件時間與各自的 `window_minutes` 計算 `isRecent`、`isFutureSnapshot` 與 `isPreResetSnapshot`。既有跳變失效化完成後，視窗狀態依下列順序判定。
+
+| 狀態 | 判定條件 | 處置 |
+| --- | --- | --- |
+| `Valid` | 存在 `isFutureSnapshot`，且既有跳變失效化後仍能選出候選 | 維持既有額度欄位、格式與候選排序，進入額度門檻判定 |
+| `PostResetNoSnapshot` | 沒有 `isFutureSnapshot`，且至少一筆 `isPreResetSnapshot` | 只允許一次 `QuotaProbe`，完成後重試額度讀取一次 |
+| `SnapshotExpired` | 存在結構有效候選，但沒有 `isFutureSnapshot` 或 `isPreResetSnapshot` | 以非零結束碼停止，不估算、不執行探針 |
+| `SnapshotUnavailable` | 沒有結構有效候選可證明視窗狀態 | 以非零結束碼停止，不把無資料當成重設後尚無快照 |
+
+失敗狀態寫入 stderr 的可解析欄位為 `quota_state=<狀態> window=<primary 或 secondary>`。只要任一視窗為 `SnapshotExpired` 或 `SnapshotUnavailable`，立即停止。只有所有失效視窗均為 `PostResetNoSnapshot` 時，才可進入一次性回復流程。`Valid` 不新增 stdout 欄位，避免改變既有正向輸出。
+
+`QuotaProbe` 只處理視窗重設後的額度回復探針，不承接一般派工任務。它沿用已驗證的 `--cd`、`--sandbox`、`--add-dir`、`--search`、父層選項與已選檔位，使用 `codex exec --json`、短提示與 `--output-last-message`，並在提示中要求不得修改目標物件。預設檔位不需要額外確認。使用者明示 `deep` 且重設後週期快照尚未知時，探針保留 `deep` 檔位授權，將未知狀態明確寫入提示與輸出，不填入舊值或估算值，也不套用需要數值的週期 gate；其餘 `deep` 路徑沿用既有 `DeepRequestSource` 與週期 gate。
+
+回復流程的 `probeAttempt` 上限為 1。成功或失敗的探針都會寫入 `.local\ai-sessions\history\<lineSlug>\quota-recovery-<dispatchSlug>.json`，至少保留初始視窗狀態、觸發視窗、探針嘗試次數、事件流、stderr、last-message、thread id、實際參數、rollout 來源路徑、重試結果與最終狀態。回復紀錄是派工證據，不是額度快照來源，不得讀回當作額度估算。
+
+探針成功後，呼叫端只重試 `Get-CodexQuota.ps1` 一次。成功證據必須包含非空的事件流、last-message、thread id 與至少一個新增或更新且非空的 rollout 來源路徑；無法解析 Codex home、沒有 rollout 或任一必要證據為空時，`QuotaProbe` 以非零結束碼回報，不輸出 `success=true`。重試成功才進入既有額度門檻與檔位判定；重試失敗、探針失敗、事件流缺欄位或回復紀錄無法驗證時停止派工，不執行第二次 `QuotaProbe`。若重試後符合主動升級 `deep` 的條件，仍須套用 `secondary` 週期 gate 與既有使用者確認。
 
 ### 執行可用性
 
@@ -169,7 +189,7 @@ stdout 只包含事件流 JSONL，診斷訊息一律走 stderr，兩者分別重
 
 ### 跨平台啟動
 
-`Start` 由腳本建立固定的工作目錄、父層選項、子命令選項與 prompt stdin。Windows 以進程樹根 PID 啟動並保存 `Win32_Process` 的名稱、父 PID 與建立時間；Unix 以 `setsid` 建立 process group。環境缺少必要執行檔、無法取得根程序身分或無法建立輸出路徑時，腳本以非零結束碼失敗，保留已寫入的 stderr 與事件路徑。
+`Start` 由腳本建立固定的工作目錄、父層選項、子命令選項與 prompt stdin。Windows 以進程樹根 PID 啟動並保存 `Win32_Process` 的名稱、父 PID 與建立時間；Unix 以 `setsid` 建立 process group，並由同一份快照驗證 PID、parent PID、process group、程序名稱與建立時間後，才產生 `IdentityStatus=confirmed` 與 `IdentityVerified=true`。任一欄位缺漏、格式錯誤或建立時間無法取得時，快照維持未確認狀態，腳本以非零結束碼失敗，保留已寫入的 stderr 與事件路徑。
 
 啟動參數位置、prompt 傳遞與 PID 記錄欄位由腳本固定產生。這些輸出是後續 `Inspect`、續 session 與安全中止的輸入，主 Agent 不重新拼接命令列或以單一 PID 推論整棵進程樹。
 
@@ -235,7 +255,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 本機檔位設定調整後，冷啟動的消耗結構隨之改變，前述門檻應依調整後的實測值重新校準，不沿用調整前的數據。
 
-續行同一 thread 的輸入快取狀態與冷啟動不同，因此續行與冷啟動必須分組校準。續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立；以預設檔位冷啟動後改用 `deep` 續行會同時違反續行契約，不採用。
+續行同一 thread 的輸入快取狀態與冷啟動不同，因此續行與冷啟動必須分組校準。續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立。`ResumeThreadId` 與 `DowngradeInstruction` 互斥。deep 續行遇低額度時，唯一合法出口是攜帶完整交接、以預設檔位建立新的 cold-start；腳本拒絕在同一 thread 上改用預設檔位。
 
 ### 額度快照
 
@@ -290,7 +310,7 @@ secondary_source_file=
 2. 主 Agent 主動提議 `deep` 時，兩個視窗的剩餘額度必須達到上表對應門檻，且 `secondary_days_to_reset <= 2`、`secondary_remaining_percent >= 40`。任一週期條件不成立時，不提出 `deep` 確認。
 3. 使用者明示要求 `deep` 時，週期位置 gate 不阻擋派遣，但主 Agent 必須先告知 `secondary_days_to_reset`、`secondary_remaining_percent` 與一小時即可用完整個 `primary` 5 小時視窗的實測成本基準。
 4. 主動提議符合條件時，依「升級確認」節向使用者提出確認。取得當輪明確同意後才加入 `--profile deep`；未取得同意時使用預設檔位。週期位置 gate 與使用者明示要求是兩條分開處理的路徑。
-5. 低於目標 profile 門檻但快照有效時，一律省略 `--profile`，使用預設檔位，並在 prompt 加入下列降級指示。請先交付已確認的結果，明確標明實際覆蓋範圍；即使額度不足，也不得在零產出的情況下中斷。
+5. 低於目標 profile 門檻但快照有效時，冷啟動一律省略 `--profile`，使用預設檔位，並在 prompt 加入下列降級指示。請先交付已確認的結果，明確標明實際覆蓋範圍；即使額度不足，也不得在零產出的情況下中斷。若目前有 `ResumeThreadId`，不得套用降級指示到同一 thread；應停止該續行並依續行契約建立新的 cold-start，腳本拒絕這組互斥參數。
 6. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
 7. 預設檔位省略 `--profile`。檔位名稱只允許預設與 `deep` 的語意集合，臨時驗證檔位不進入派工判定。
 
@@ -366,9 +386,9 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 ## 續 session 與跨介面接手
 
-若需要補齊欄位或修正純技術驗收問題，先從 `codex-thread-<dispatchSlug>.txt` 讀取 `thread_id`，再以 `codex exec resume` 續行。續 session 沿用同一個 `dispatchRoot`、sandbox 邊界、`LineContext`、檔位與 PID 身分驗證規則。
+若需要補齊欄位或修正純技術驗收問題，先從 `codex-thread-<dispatchSlug>.txt` 讀取 `thread_id`，再以 `codex exec resume` 續行。續 session 沿用同一個 `dispatchRoot`、sandbox 邊界、`LineContext`、檔位與 PID 身分驗證規則。低額度降級不屬於同一 thread 的續行出口；若需降級，必須以完整交接建立新的 cold-start。
 
-續行的父層選項必須與初始啟動完全相同，包含 `--profile`、`--add-dir` 與 `--search`。這組選項從初始啟動記錄重建，不依當下判斷重新推導；任一項缺漏都會改變檔位、寫入權限或網路能力，使續行的執行條件與前一輪不一致。
+續行的父層選項必須與初始啟動完全相同，包含 `--profile`、`--add-dir` 與 `--search`。這組選項從初始啟動記錄重建，不依當下判斷重新推導；任一項缺漏都會改變檔位、寫入權限或網路能力，使續行的執行條件與前一輪不一致。`Start` 收到 `ResumeThreadId` 與 `DowngradeInstruction` 時直接拒絕，避免以同一 thread 偷換檔位。
 
 `Start` 以 `ResumeThreadId` 讀取指定 `thread_id` 後建立續行命令，重新產生事件流與 stderr 檔案，不覆寫前一輪記錄。續行的父層選項從初始啟動結果重建，包含 `--profile`、`--add-dir` 與 `--search`。
 
@@ -478,7 +498,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 判定 | 成立條件 | 後續動作 |
 | --- | --- | --- |
 | 收下 | 產出落點檔案存在且非空，全部驗收條件逐條成立 | 同步報告與核准交接產物；Workflow `Developer` 進入 Phase commit 回收，資源派遣結束 |
-| 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏或未執行第 5 欄命令 | 依續 session 契約使用同一個 dispatch worktree resume，附未達成條件清單。退回上限 2 次；`PromptNotDelivered` 不計入此上限 |
+| 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏或未執行第 5 欄命令 | 一般純技術補件依續 session 契約使用同一個 dispatch worktree resume，附未達成條件清單。若低額度要求降級，沿用同一 thread 不成立，改以完整交接建立新的 cold-start；`Start` 拒絕 `ResumeThreadId` 與 `DowngradeInstruction` 的組合。退回上限 2 次；`PromptNotDelivered` 不計入此上限 |
 | 升級 | 原因命中 `instructions.md` §1.5 升級兩道篩的三類拍板判準，或退回已達 2 次仍不成立 | 保留 dispatch worktree 與證據，停止派遣，依「遇真問題全停」升級使用者拍板 |
 
 回收判定成立且不需續 session 時，先完成事件流、thread id、last-message、報告與核准交接產物同步，再依 Git 前置探針的路徑檢查移除 dispatch worktree。派遣報告固定同步至 `sourceRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，除非派遣單第 7 欄指定其他產出落點。

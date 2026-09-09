@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Preflight', 'Start', 'Inspect', 'Collect')]
+    [ValidateSet('Preflight', 'Start', 'Inspect', 'Collect', 'QuotaProbe')]
     [string]$Operation,
 
     [string]$SourceRoot,
@@ -33,6 +33,17 @@ param(
 
     [ValidateSet('default', 'deep')]
     [string]$Profile = 'default',
+
+    [ValidateSet('Valid', 'PostResetNoSnapshot', 'SnapshotExpired', 'SnapshotUnavailable')]
+    [string]$InitialQuotaState = 'PostResetNoSnapshot',
+
+    [ValidateSet('primary', 'secondary', 'both', 'unknown')]
+    [string]$TriggerWindow = 'unknown',
+
+    [ValidateRange(1, 2)]
+    [int]$ProbeAttempt = 1,
+
+    [string]$CodexHome,
 
     [string]$Model = 'gpt-5.6-luna',
 
@@ -487,7 +498,9 @@ function Get-DeepCycleDecision {
 
         [Nullable[double]]$DaysToReset,
 
-        [Nullable[double]]$RemainingPercent
+        [Nullable[double]]$RemainingPercent,
+
+        [switch]$AllowUnknownForUserExplicit
     )
 
     if ($RequestedProfile -ne 'deep') {
@@ -505,6 +518,17 @@ function Get-DeepCycleDecision {
         throw '使用 deep 時必須明確指定 DeepRequestSource，區分主 Agent 主動提議與使用者明示要求。'
     }
     if ($null -eq $DaysToReset -or $null -eq $RemainingPercent) {
+        if ($RequestSource -eq 'user-explicit' -and $AllowUnknownForUserExplicit) {
+            return [ordered]@{
+                applicable       = $true
+                requestSource    = $RequestSource
+                gatePassed       = $null
+                cycleDataKnown   = $false
+                daysToReset      = $DaysToReset
+                remainingPercent = $RemainingPercent
+                notice           = 'secondary 週期位置與剩餘額度尚未知；QuotaProbe 尚未取得重設後新快照。使用者明示要求 deep，保留 deep 檔位授權，暫不套用週期位置 gate。'
+            }
+        }
         throw '使用 deep 時必須提供 SecondaryDaysToReset 與 SecondaryRemainingPercent。'
     }
     if ($DaysToReset -lt 0 -or $RemainingPercent -lt 0 -or $RemainingPercent -gt 100) {
@@ -524,6 +548,7 @@ function Get-DeepCycleDecision {
         applicable       = $true
         requestSource    = $RequestSource
         gatePassed       = $gatePassed
+        cycleDataKnown   = $true
         daysToReset      = $DaysToReset
         remainingPercent = $RemainingPercent
         notice           = $notice
@@ -922,6 +947,7 @@ function Get-WindowsProcessSnapshots {
 function Format-UnconfirmedProcessDetails {
     param(
         [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
         [object[]]$Processes
     )
 
@@ -971,7 +997,7 @@ function Get-UnixProcessSnapshot {
     )
 
     $psPath = Get-CommandPath -Name 'ps'
-    $result = Invoke-ExternalCommand -FileName $psPath -WorkingDirectory (Get-Location).Path -Arguments @('-o', 'pid=,pgid=,comm=', '-p', [string]$ProcessId) -AllowFailure
+    $result = Invoke-ExternalCommand -FileName $psPath -WorkingDirectory (Get-Location).Path -Arguments @('-o', 'pid=,ppid=,pgid=,comm=', '-p', [string]$ProcessId) -AllowFailure
     if ($result.ExitCode -ne 0) {
         if ($result.ExitCode -eq 1 -and [string]::IsNullOrWhiteSpace($result.StdOut) -and [string]::IsNullOrWhiteSpace($result.StdErr)) {
             return $null
@@ -984,15 +1010,20 @@ function Get-UnixProcessSnapshot {
         return $null
     }
 
-    $fields = $line.Trim() -split '\s+', 3
-    if ($fields.Count -lt 3) {
+    $fields = $line.Trim() -split '\s+', 4
+    if ($fields.Count -lt 4) {
         throw "Unix PID 查詢結果格式錯誤：$($result.StdOut.Trim())"
     }
 
     $parsedPid = 0
+    $parsedParentId = 0
     $parsedGroupId = 0
-    if (-not [int]::TryParse($fields[0], [ref]$parsedPid) -or $parsedPid -ne $ProcessId -or -not [int]::TryParse($fields[1], [ref]$parsedGroupId) -or $parsedGroupId -le 0) {
-        throw "Unix PID 查詢結果無法取得有效 PID 或 process group id：$($result.StdOut.Trim())"
+    if (-not [int]::TryParse($fields[0], [ref]$parsedPid) -or $parsedPid -ne $ProcessId -or -not [int]::TryParse($fields[1], [ref]$parsedParentId) -or $parsedParentId -lt 0 -or -not [int]::TryParse($fields[2], [ref]$parsedGroupId) -or $parsedGroupId -le 0) {
+        throw "Unix PID 查詢結果無法取得有效 PID、parent PID 或 process group id：$($result.StdOut.Trim())"
+    }
+    $processName = $fields[3].Trim()
+    if ([string]::IsNullOrWhiteSpace($processName)) {
+        throw "Unix PID 查詢結果缺少 process name：$($result.StdOut.Trim())"
     }
 
     try {
@@ -1004,11 +1035,15 @@ function Get-UnixProcessSnapshot {
     }
 
     return [pscustomobject]@{
-        ProcessId       = $parsedPid
-        ParentProcessId = 0
-        ProcessName     = $fields[2].Trim()
-        CreationUtc     = $creationUtc
-        ProcessGroupId  = $parsedGroupId
+        ProcessId             = $parsedPid
+        ParentProcessId       = $parsedParentId
+        ProcessName           = $processName
+        CreationUtc           = $creationUtc
+        ProcessGroupId        = $parsedGroupId
+        IdentityStatus        = 'confirmed'
+        IdentityMissingFields = @()
+        IdentityFailureFields = @()
+        IdentityVerified      = $true
     }
 }
 
@@ -1139,6 +1174,12 @@ function Test-RecordedUnixProcessIdentity {
     }
 
     if ($recordGroupId -ne $Snapshot.ProcessGroupId) {
+        return $false
+    }
+
+    $identityStatusProperty = $Snapshot.PSObject.Properties['IdentityStatus']
+    $identityVerifiedProperty = $Snapshot.PSObject.Properties['IdentityVerified']
+    if ($null -eq $identityStatusProperty -or $identityStatusProperty.Value -ne 'confirmed' -or $null -eq $identityVerifiedProperty -or $identityVerifiedProperty.Value -ne $true) {
         return $false
     }
 
@@ -1849,7 +1890,6 @@ function Get-StartedProcessSnapshot {
         if ($null -eq $snapshot) {
             return $null
         }
-        $snapshot | Add-Member -MemberType NoteProperty -Name IdentityVerified -Value $true -Force
         return $snapshot
     }
 
@@ -2152,7 +2192,590 @@ function New-StartFailureEvidenceMessage {
         $cleanupErrorText)
 }
 
+function Get-QuotaProbeRolloutFiles {
+    param(
+        [string]$CodexHomePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CodexHomePath)) {
+        throw 'QuotaProbe 缺少 CodexHome，無法核對 rollout 證據。'
+    }
+
+    $sessionsPath = Join-Path -Path $CodexHomePath -ChildPath 'sessions'
+    if (-not (Test-Path -LiteralPath $sessionsPath -PathType Container)) {
+        return @()
+    }
+
+    return @(
+        Get-ChildItem -LiteralPath $sessionsPath -Recurse -File -Filter 'rollout-*.jsonl' |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Path             = $_.FullName
+                    Length           = [int64]$_.Length
+                    LastWriteTimeUtc = $_.LastWriteTimeUtc
+                }
+            }
+    )
+}
+
+function Get-QuotaProbeRolloutSourcePaths {
+    param(
+        [AllowEmptyCollection()]
+        [object[]]$BeforeFiles,
+
+        [AllowEmptyCollection()]
+        [object[]]$AfterFiles
+    )
+
+    $beforeByPath = @{}
+    foreach ($file in @($BeforeFiles)) {
+        $beforeByPath[$file.Path] = $file
+    }
+
+    return @(
+        @($AfterFiles) |
+            Where-Object {
+                $previous = $beforeByPath[$_.Path]
+                $null -eq $previous -or
+                $_.Length -gt $previous.Length -or
+                $_.LastWriteTimeUtc -gt $previous.LastWriteTimeUtc
+            } |
+            Sort-Object -Property LastWriteTimeUtc -Descending |
+            ForEach-Object { $_.Path }
+    )
+}
+
+function Get-QuotaProbeEvidenceFile {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$EvidenceName
+    )
+
+    $evidencePath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $evidencePath -PathType Leaf)) {
+        throw "QuotaProbe 缺少 $EvidenceName 證據檔案：$evidencePath"
+    }
+
+    $evidenceFile = Get-Item -LiteralPath $evidencePath -Force
+    if ($evidenceFile.Length -le 0) {
+        throw "QuotaProbe 的 $EvidenceName 證據檔案為空：$evidencePath"
+    }
+
+    $evidenceContent = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($evidenceContent)) {
+        throw "QuotaProbe 的 $EvidenceName 證據內容為空：$evidencePath"
+    }
+
+    return $evidenceFile
+}
+
+function Resolve-QuotaProbeCodexHome {
+    param(
+        [string]$ConfiguredCodexHome
+    )
+
+    $configuredPath = $ConfiguredCodexHome
+    if ([string]::IsNullOrWhiteSpace($configuredPath)) {
+        $configuredPath = $env:CODEX_HOME
+    }
+    if ([string]::IsNullOrWhiteSpace($configuredPath)) {
+        $userProfile = [System.Environment]::GetFolderPath([System.Environment+SpecialFolder]::UserProfile)
+        if ([string]::IsNullOrWhiteSpace($userProfile)) {
+            throw '無法判定使用者 Profile 路徑，請提供 CodexHome 或設定 CODEX_HOME。'
+        }
+        $configuredPath = Join-Path -Path $userProfile -ChildPath '.codex'
+    }
+
+    $path = Resolve-AbsolutePath -Path $configuredPath
+    if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+        throw "CodexHome 不存在或不是目錄：$path"
+    }
+
+    return $path
+}
+
+function Test-QuotaProbeUsageObject {
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value -or -not ($Value -is [pscustomobject])) {
+        return $false
+    }
+
+    foreach ($requiredName in @('input_tokens', 'output_tokens')) {
+        if ($null -eq $Value.PSObject.Properties[$requiredName]) {
+            return $false
+        }
+    }
+
+    $numericTypes = @(
+        [System.Byte], [System.SByte], [System.Int16], [System.UInt16],
+        [System.Int32], [System.UInt32], [System.Int64], [System.UInt64],
+        [System.Single], [System.Double], [System.Decimal]
+    )
+    foreach ($property in @($Value.PSObject.Properties)) {
+        if ($null -eq $property.Value -or $property.Value -is [bool] -or $property.Value.GetType() -notin $numericTypes -or [double]$property.Value -lt 0) {
+            return $false
+        }
+    }
+
+    return @($Value.PSObject.Properties).Count -gt 0
+}
+
+function Get-QuotaProbeEventSummary {
+    param(
+        [Parameter(Mandatory)]
+        [string]$EventPath
+    )
+
+    if (-not (Test-Path -LiteralPath $EventPath -PathType Leaf)) {
+        throw "QuotaProbe 事件流檔案不存在：$EventPath"
+    }
+
+    $events = New-Object System.Collections.Generic.List[object]
+    $lineNumber = 0
+    foreach ($line in Get-Content -LiteralPath $EventPath -Encoding UTF8) {
+        $lineNumber++
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        try {
+            $event = $line | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            throw "QuotaProbe 事件流第 $lineNumber 行格式錯誤：$($_.Exception.Message)"
+        }
+
+        $typeProperty = if ($null -eq $event) { $null } else { $event.PSObject.Properties['type'] }
+        if ($null -eq $typeProperty -or -not ($typeProperty.Value -is [string]) -or [string]::IsNullOrWhiteSpace($typeProperty.Value)) {
+            throw "QuotaProbe 事件流第 $lineNumber 行缺少 type。"
+        }
+        $events.Add($event)
+    }
+
+    if ($events.Count -eq 0) {
+        throw 'QuotaProbe 事件流沒有可解析的事件。'
+    }
+
+    $threadId = ''
+    foreach ($event in $events) {
+        if ($event.type -eq 'thread.started' -and [string]::IsNullOrWhiteSpace($threadId)) {
+            $threadIdValue = $event.PSObject.Properties['thread_id']
+            if ($null -eq $threadIdValue -or -not ($threadIdValue.Value -is [string]) -or [string]::IsNullOrWhiteSpace($threadIdValue.Value)) {
+                throw 'QuotaProbe 的 thread.started.thread_id 必須為非空字串。'
+            }
+            $threadId = $threadIdValue.Value
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($threadId)) {
+        throw 'QuotaProbe 事件流缺少 thread.started.thread_id。'
+    }
+
+    $lastEvent = $events[$events.Count - 1]
+    $lastEventType = [string]$lastEvent.type
+    if ($lastEventType -ne 'turn.completed') {
+        throw "QuotaProbe 事件流最後事件不是 turn.completed：$lastEventType"
+    }
+
+    $usageProperty = $lastEvent.PSObject.Properties['usage']
+    if ($null -eq $usageProperty -or -not (Test-QuotaProbeUsageObject -Value $usageProperty.Value)) {
+        throw 'QuotaProbe 事件流缺少 turn.completed.usage。'
+    }
+
+    return [ordered]@{
+        eventCount      = $events.Count
+        lastEventType   = $lastEventType
+        threadId        = $threadId
+        usage           = $usageProperty.Value
+        completed       = $true
+    }
+}
+
+function Invoke-QuotaProbe {
+    if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
+        throw 'QuotaProbe 必須提供 SourceRoot。'
+    }
+    if ([string]::IsNullOrWhiteSpace($ExecutionRoot)) {
+        throw 'QuotaProbe 必須提供 ExecutionRoot。'
+    }
+    if ([string]::IsNullOrWhiteSpace($LineSlug)) {
+        throw 'QuotaProbe 必須提供 LineSlug。'
+    }
+    if ([string]::IsNullOrWhiteSpace($DispatchSlug)) {
+        throw 'QuotaProbe 必須提供 DispatchSlug。'
+    }
+    if ($InitialQuotaState -ne 'PostResetNoSnapshot') {
+        throw "QuotaProbe 僅允許回復 PostResetNoSnapshot，收到：$InitialQuotaState"
+    }
+    if ($ProbeAttempt -gt 1) {
+        throw "QuotaProbe 已限制為一次，拒絕 probeAttempt=$ProbeAttempt。"
+    }
+    if ([string]::IsNullOrWhiteSpace($PromptPath)) {
+        throw 'QuotaProbe 必須提供 PromptPath。'
+    }
+
+    $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
+    $executionRootPath = Resolve-AbsolutePath -Path $ExecutionRoot
+    if (-not (Test-Path -LiteralPath $sourceRootPath -PathType Container)) {
+        throw "SourceRoot 不存在或不是目錄：$sourceRootPath"
+    }
+    if (-not (Test-Path -LiteralPath $executionRootPath -PathType Container)) {
+        throw "ExecutionRoot 不存在或不是目錄：$executionRootPath"
+    }
+    if (-not (Test-PathWithinRoot -Path $executionRootPath -Root $sourceRootPath) -and $executionRootPath -ne $sourceRootPath) {
+        if ([string]::IsNullOrWhiteSpace($DispatchRoot) -or (Resolve-AbsolutePath -Path $DispatchRoot) -ne $executionRootPath) {
+            throw 'QuotaProbe 的 ExecutionRoot 未通過 SourceRoot／DispatchRoot 界線驗證。'
+        }
+    }
+
+    $promptPathValue = Resolve-AbsolutePath -Path $PromptPath
+    if (-not (Test-Path -LiteralPath $promptPathValue -PathType Leaf)) {
+        throw "Prompt 檔案不存在：$promptPathValue"
+    }
+
+    $historyRoot = Join-Path -Path $executionRootPath -ChildPath ('.local\ai-sessions\history\' + $LineSlug)
+    New-Item -ItemType Directory -Path $historyRoot -Force | Out-Null
+    $recoveryPath = Join-Path -Path $historyRoot -ChildPath ('quota-recovery-' + $DispatchSlug + '.json')
+    if (Test-Path -LiteralPath $recoveryPath -PathType Leaf) {
+        throw "QuotaProbe 回復紀錄已存在，拒絕再次執行：$recoveryPath"
+    }
+
+    $codexHomePath = Resolve-QuotaProbeCodexHome -ConfiguredCodexHome $CodexHome
+    $timestamp = [datetime]::UtcNow.ToString('yyyyMMdd_HHmmss_fff')
+    $eventPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-' + $timestamp + '.jsonl')
+    $errorPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-' + $timestamp + '.stderr.log')
+    $lastMessagePath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-last-message-' + $timestamp + '.md')
+    $threadPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-thread-' + $DispatchSlug + '.txt')
+    $pidPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-pid-' + $timestamp + '.txt')
+    if (Test-IsWindowsPlatform) {
+        $launcherPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-launch-' + $timestamp + '.cmd')
+    }
+    else {
+        $launcherPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-launch-' + $timestamp + '.sh')
+    }
+
+    $beforeRolloutFiles = @(Get-QuotaProbeRolloutFiles -CodexHomePath $codexHomePath)
+    $codexExecutable = $null
+    $launcher = $null
+    $startInfo = $null
+    $process = $null
+    $startedSnapshot = $null
+    $processStarted = $false
+    $processExitCodeValue = $null
+    $probeSummary = $null
+    $rolloutSourcePaths = @()
+    $phase = 'preparation'
+    $cleanupStatus = 'not-started'
+    $cleanupError = $null
+
+    try {
+        $codexExecutable = Get-CodexExecutablePath -ConfiguredPath $CodexPath
+        if ($Profile -eq 'deep') {
+            $deepCycleDecision = Get-DeepCycleDecision -RequestedProfile $Profile -RequestSource $DeepRequestSource -DaysToReset $SecondaryDaysToReset -RemainingPercent $SecondaryRemainingPercent -AllowUnknownForUserExplicit
+        }
+        else {
+            $deepCycleDecision = [ordered]@{
+                applicable       = $false
+                requestSource    = $DeepRequestSource
+                gatePassed       = $null
+                daysToReset      = $SecondaryDaysToReset
+                remainingPercent = $SecondaryRemainingPercent
+                notice           = ''
+            }
+        }
+
+        $promptDirectives = @(
+            '[QuotaProbe]' + [Environment]::NewLine +
+            '本次執行只用於視窗重設後的額度回復探針。請勿修改任何目標物件、規則檔或設定檔；完成後只回報探針結果。'
+        )
+        if ($null -ne $deepCycleDecision -and $deepCycleDecision.applicable) {
+            $promptDirectives += '[deep 週期位置告知]' + [Environment]::NewLine + $deepCycleDecision.notice
+        }
+        $probePromptPath = New-DispatchPrompt -PromptPath $promptPathValue -HistoryRoot $historyRoot -Timestamp $timestamp -Directive $promptDirectives
+
+        $codexArguments = New-Object System.Collections.Generic.List[string]
+        $codexArguments.Add('--cd')
+        $codexArguments.Add($executionRootPath)
+        $codexArguments.Add('--sandbox')
+        $codexArguments.Add('workspace-write')
+        if ($Profile -ne 'default') {
+            $codexArguments.Add('--profile')
+            $codexArguments.Add($Profile)
+        }
+        if ($null -ne $AddDirectory) {
+            foreach ($directory in $AddDirectory) {
+                $directoryPath = Resolve-AbsolutePath -Path $directory
+                if (-not (Test-Path -LiteralPath $directoryPath -PathType Container)) {
+                    throw "--add-dir 目錄不存在：$directoryPath"
+                }
+                $codexArguments.Add('--add-dir')
+                $codexArguments.Add($directoryPath)
+            }
+        }
+        if ($Search) {
+            $codexArguments.Add('--search')
+        }
+        if ($null -ne $CodexParentOption) {
+            foreach ($option in $CodexParentOption) {
+                if ([string]::IsNullOrWhiteSpace($option)) {
+                    throw 'CodexParentOption 不可包含空白選項。'
+                }
+                $codexArguments.Add($option)
+            }
+        }
+        $codexArguments.Add('exec')
+        $codexArguments.Add('--json')
+        $codexArguments.Add('--output-last-message')
+        $codexArguments.Add($lastMessagePath)
+        $codexArguments.Add('-')
+
+        $launcher = New-CodexLauncher -CodexExecutable $codexExecutable -CodexArguments @($codexArguments.ToArray()) -PromptPath $probePromptPath -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyRoot -LauncherPath $launcherPath
+        $launcherPath = $launcher.Path
+        $startInfo = New-ProcessStartInfo -FileName $launcher.FileName -WorkingDirectory $executionRootPath -Arguments @($launcher.Arguments)
+        if ($null -ne $codexHomePath) {
+            $startInfo.EnvironmentVariables['CODEX_HOME'] = $codexHomePath
+        }
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            throw 'QuotaProbe Codex 啟動失敗。'
+        }
+        $processStarted = $true
+        $startedSnapshot = Get-StartedProcessSnapshot -ProcessId $process.Id
+        if ($null -eq $startedSnapshot) {
+            throw "無法取得 QuotaProbe 根程序身分，PID $($process.Id) 未通過驗證。"
+        }
+        if ($startedSnapshot.IdentityStatus -ne 'confirmed' -or $startedSnapshot.IdentityVerified -ne $true) {
+            throw "QuotaProbe 根程序身分無法確認：PID $($process.Id); identity-status=$($startedSnapshot.IdentityStatus)"
+        }
+
+        $processGroupValue = ''
+        if (-not (Test-IsWindowsPlatform)) {
+            if ($null -eq $startedSnapshot.PSObject.Properties['ProcessGroupId'] -or $startedSnapshot.ProcessGroupId -le 0) {
+                throw "無法取得 QuotaProbe process group，PID $($process.Id) 未通過驗證。"
+            }
+            $processGroupValue = [string]$startedSnapshot.ProcessGroupId
+        }
+
+        $pidContent = @(
+            ('pid=' + $process.Id)
+            ('root-pid=' + $process.Id)
+            ('root-process-name=' + $startedSnapshot.ProcessName)
+            ('root-parent-pid=' + $startedSnapshot.ParentProcessId)
+            ('root-started-at-utc=' + $startedSnapshot.CreationUtc.ToString('o'))
+            'identity-verified=true'
+            ('process-tree-scope=' + $(if (Test-IsWindowsPlatform) { 'pid-and-descendants' } else { 'process-group' }))
+            ('process-tree-query=' + $(if (Test-IsWindowsPlatform) { 'Win32_Process.ParentProcessId' } else { 'ps PGID 成員' }))
+            ('process-group-id=' + $processGroupValue)
+            ('work-root=' + $sourceRootPath)
+            ('line-slug=' + $LineSlug)
+            ('dispatch-slug=' + $DispatchSlug)
+            'write-mode=readonly'
+            ('started-at-utc=' + [datetime]::UtcNow.ToString('o'))
+        ) -join "`n"
+        Write-Utf8NoBom -Path $pidPath -Content ($pidContent + "`n")
+        Write-Utf8NoBom -Path $threadPath -Content ''
+        $phase = 'started'
+
+        $process.WaitForExit()
+        $processExitCodeValue = Get-ProcessExitCodeIfExited -Process $process
+        if ($null -eq $processExitCodeValue) {
+            throw 'QuotaProbe 無法取得 Codex process exit code。'
+        }
+        $phase = 'completed'
+        Ensure-StartEvidenceFiles -Path @($eventPath, $errorPath)
+        $probeSummary = Get-QuotaProbeEventSummary -EventPath $eventPath
+        Write-Utf8NoBom -Path $threadPath -Content ($probeSummary.threadId + "`n")
+        if ($processExitCodeValue -ne 0) {
+            throw "QuotaProbe Codex 以非零 exit code 結束：$processExitCodeValue"
+        }
+        $null = Get-QuotaProbeEvidenceFile -Path $lastMessagePath -EvidenceName 'last-message'
+        $rolloutSourcePaths = @(Get-QuotaProbeRolloutSourcePaths -BeforeFiles $beforeRolloutFiles -AfterFiles @(Get-QuotaProbeRolloutFiles -CodexHomePath $codexHomePath))
+        if ($rolloutSourcePaths.Count -eq 0) {
+            throw 'QuotaProbe 未觀測到新增或更新的 rollout 證據，拒絕回報 success=true。'
+        }
+        foreach ($rolloutSourcePath in $rolloutSourcePaths) {
+            $null = Get-QuotaProbeEvidenceFile -Path $rolloutSourcePath -EvidenceName 'rollout'
+        }
+
+        $recoveryRecord = [ordered]@{
+            schema              = 'quota-recovery.v1'
+            operation           = 'QuotaProbe'
+            lineSlug            = $LineSlug
+            dispatchSlug        = $DispatchSlug
+            initialQuotaState   = $InitialQuotaState
+            profile             = $Profile
+            deepRequestSource   = $DeepRequestSource
+            deepCycleGatePassed = $deepCycleDecision.gatePassed
+            secondaryDaysToReset = $deepCycleDecision.daysToReset
+            secondaryRemainingPercent = $deepCycleDecision.remainingPercent
+            deepCycleNotice     = $deepCycleDecision.notice
+            initialWindowState  = [ordered]@{
+                primary   = if ($TriggerWindow -eq 'primary' -or $TriggerWindow -eq 'both') { $InitialQuotaState } else { 'unknown' }
+                secondary = if ($TriggerWindow -eq 'secondary' -or $TriggerWindow -eq 'both') { $InitialQuotaState } else { 'unknown' }
+            }
+            triggerWindow       = $TriggerWindow
+            probeAttempt        = $ProbeAttempt
+            probeAttemptLimit   = 1
+            probeEvidence       = [ordered]@{
+                eventStreamPath    = $eventPath
+                stderrPath         = $errorPath
+                lastMessagePath    = $lastMessagePath
+                threadIdPath       = $threadPath
+                pidRecordPath      = $pidPath
+                launcherPath       = $launcher.Path
+                codexPath          = $codexExecutable
+                codexArguments     = @($codexArguments.ToArray())
+                processExitCode    = $processExitCodeValue
+                eventCount         = $probeSummary.eventCount
+                lastEventType      = $probeSummary.lastEventType
+                threadId           = $probeSummary.threadId
+                rolloutSourcePath  = if ($rolloutSourcePaths.Count -gt 0) { $rolloutSourcePaths[0] } else { $null }
+                rolloutSourcePaths = @($rolloutSourcePaths)
+            }
+            retryResult          = [ordered]@{
+                status       = 'pending'
+                attempted    = $false
+                attemptLimit = 1
+                command      = 'Get-CodexQuota.ps1 -CodexHome <fixture-or-configured-CODEX_HOME>'
+                result       = 'QuotaProbe 完成後由呼叫端重試一次額度讀取。'
+            }
+            finalStatus         = 'probe-completed-awaiting-quota-retry'
+            createdAtUtc        = [datetime]::UtcNow.ToString('o')
+        }
+        Write-Utf8NoBom -Path $recoveryPath -Content (($recoveryRecord | ConvertTo-Json -Depth 12) + "`n")
+
+        return [ordered]@{
+            operation          = 'QuotaProbe'
+            success            = $true
+            lineSlug           = $LineSlug
+            dispatchSlug       = $DispatchSlug
+            initialQuotaState  = $InitialQuotaState
+            initialWindowState = [ordered]@{
+                primary   = if ($TriggerWindow -eq 'primary' -or $TriggerWindow -eq 'both') { $InitialQuotaState } else { 'unknown' }
+                secondary = if ($TriggerWindow -eq 'secondary' -or $TriggerWindow -eq 'both') { $InitialQuotaState } else { 'unknown' }
+            }
+            triggerWindow      = $TriggerWindow
+            probeAttempt       = $ProbeAttempt
+            probeAttemptLimit  = 1
+            profile             = $Profile
+            deepRequestSource   = $DeepRequestSource
+            deepCycleGatePassed = $deepCycleDecision.gatePassed
+            secondaryDaysToReset = $deepCycleDecision.daysToReset
+            secondaryRemainingPercent = $deepCycleDecision.remainingPercent
+            deepCycleNotice     = $deepCycleDecision.notice
+            eventStreamPath    = $eventPath
+            stderrPath         = $errorPath
+            lastMessagePath    = $lastMessagePath
+            threadIdPath       = $threadPath
+            pidRecordPath      = $pidPath
+            launcherPath       = $launcher.Path
+            codexPath          = $codexExecutable
+            codexArguments     = @($codexArguments.ToArray())
+            processExitCode    = $processExitCodeValue
+            threadId           = $probeSummary.threadId
+            rolloutSourcePath  = if ($rolloutSourcePaths.Count -gt 0) { $rolloutSourcePaths[0] } else { $null }
+            rolloutSourcePaths = @($rolloutSourcePaths)
+            recoveryRecordPath = $recoveryPath
+            retryRequired      = $true
+            retryResult        = $recoveryRecord.retryResult
+            finalStatus        = $recoveryRecord.finalStatus
+        }
+    }
+    catch {
+        $originalMessage = $_.Exception.Message
+        $processExitCodeValue = if ($null -ne $process) { Get-ProcessExitCodeIfExited -Process $process } else { $null }
+        if ($null -ne $startedSnapshot -and $startedSnapshot.IdentityVerified -eq $true -and $null -ne $processExitCodeValue) {
+            $cleanupStatus = 'already-terminated'
+        }
+        elseif ($null -ne $startedSnapshot -and $startedSnapshot.IdentityVerified -eq $true) {
+            try {
+                $cleanupResult = Stop-VerifiedProcessTree -Snapshot $startedSnapshot
+                $cleanupStatus = $cleanupResult.CleanupStatus
+                $cleanupError = $cleanupResult.ErrorMessage
+            }
+            catch {
+                $cleanupStatus = 'verified-tree-cleanup-failed'
+                $cleanupError = $_.Exception.Message
+            }
+        }
+        elseif ($processStarted) {
+            $cleanupStatus = 'not-attempted-unconfirmed-identity'
+        }
+        if ($processStarted) {
+            try {
+                Ensure-StartEvidenceFiles -Path @($eventPath, $errorPath)
+            }
+            catch {
+                $cleanupError = if ([string]::IsNullOrWhiteSpace($cleanupError)) { $_.Exception.Message } else { $cleanupError + '；' + $_.Exception.Message }
+            }
+        }
+        $rolloutSourcePaths = @(Get-QuotaProbeRolloutSourcePaths -BeforeFiles $beforeRolloutFiles -AfterFiles @(Get-QuotaProbeRolloutFiles -CodexHomePath $codexHomePath))
+        $failureRecord = [ordered]@{
+            schema             = 'quota-recovery.v1'
+            operation          = 'QuotaProbe'
+            lineSlug           = $LineSlug
+            dispatchSlug       = $DispatchSlug
+            initialQuotaState  = $InitialQuotaState
+            triggerWindow      = $TriggerWindow
+            probeAttempt       = $ProbeAttempt
+            probeAttemptLimit  = 1
+            probeEvidence      = [ordered]@{
+                eventStreamPath    = $eventPath
+                stderrPath         = $errorPath
+                lastMessagePath    = $lastMessagePath
+                threadIdPath       = $threadPath
+                pidRecordPath      = $pidPath
+                launcherPath       = $launcherPath
+                codexPath          = $codexExecutable
+                processExitCode    = $processExitCodeValue
+                threadId           = if ($null -ne $probeSummary) { $probeSummary.threadId } else { $null }
+                phase              = $phase
+                cleanupStatus      = $cleanupStatus
+                cleanupError       = $cleanupError
+                rolloutSourcePath  = if ($rolloutSourcePaths.Count -gt 0) { $rolloutSourcePaths[0] } else { $null }
+                rolloutSourcePaths = @($rolloutSourcePaths)
+            }
+            retryResult         = [ordered]@{
+                status       = 'not-run'
+                attempted    = $false
+                attemptLimit = 1
+                command      = 'Get-CodexQuota.ps1 -CodexHome <fixture-or-configured-CODEX_HOME>'
+                result       = 'QuotaProbe 失敗，停止額度重試。'
+            }
+            finalStatus        = 'probe-failed'
+            error              = $originalMessage
+            createdAtUtc       = [datetime]::UtcNow.ToString('o')
+        }
+        try {
+            Write-Utf8NoBom -Path $recoveryPath -Content (($failureRecord | ConvertTo-Json -Depth 12) + "`n")
+        }
+        catch {
+            $originalMessage = $originalMessage + '；寫入 QuotaProbe 回復紀錄失敗：' + $_.Exception.Message
+        }
+        throw $originalMessage
+    }
+    finally {
+        if ($null -ne $process) {
+            $process.Dispose()
+        }
+    }
+}
+
 function Invoke-Start {
+    if ($DowngradeInstruction -and -not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
+        throw 'Start 拒絕互斥參數：DowngradeInstruction 不得與 ResumeThreadId 同時使用。deep 續行遇低額度時，唯一合法出口是攜帶完整交接的新 cold-start 預設檔位派遣。'
+    }
+
     $preflight = $null
     $sourceRootPath = $null
     $executionRootPath = $null
@@ -2513,7 +3136,7 @@ function Test-UsageObject {
     }
 
     $numericTypes = @(
-        [byte], [sbyte], [short], [ushort], [int], [uint], [long], [ulong],
+        [System.Byte], [System.SByte], [System.Int16], [System.UInt16], [System.Int32], [System.UInt32], [System.Int64], [System.UInt64],
         [single], [double], [decimal]
     )
     foreach ($property in @($Value.PSObject.Properties)) {
@@ -2770,12 +3393,151 @@ function Get-ReportReferencedPaths {
     return @($references | Sort-Object -Unique)
 }
 
-function Invoke-Collect {
-    if ([string]::IsNullOrWhiteSpace($DispatchRoot) -or [string]::IsNullOrWhiteSpace($BaseSha)) {
-        throw 'Collect 必須提供 DispatchRoot 與 BaseSha。'
+function Get-DirectWriteFileEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$EvidenceName
+    )
+
+    $fullPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-PathWithinRoot -Path $fullPath -Root $SourceRoot)) {
+        throw "direct-write 的 $EvidenceName 超出 sourceRoot：$fullPath"
     }
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "direct-write 缺少 $EvidenceName 檔案證據：$fullPath"
+    }
+
+    $file = Get-Item -LiteralPath $fullPath -Force
+    if ($file.Length -le 0) {
+        throw "direct-write 的 $EvidenceName 檔案為空：$fullPath"
+    }
+
+    $hash = Get-FileHash -LiteralPath $fullPath -Algorithm SHA256
+    return [ordered]@{
+        path             = $fullPath
+        relativePath     = Get-RelativePathFromRoot -Path $fullPath -Root $SourceRoot
+        length           = [int64]$file.Length
+        lastWriteTimeUtc = $file.LastWriteTimeUtc.ToString('o')
+        sha256           = $hash.Hash
+    }
+}
+
+function Invoke-DirectWriteCollect {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$TargetStates,
+
+        [Parameter(Mandatory)]
+        [string[]]$ReportPath
+    )
+
+    if ($TargetStates.Count -eq 0) {
+        throw 'direct-write 的 Preflight 輸出缺少核准輸出清單 targetStates。'
+    }
+
+    $approvedOutputs = New-Object System.Collections.Generic.List[object]
+    foreach ($targetState in @($TargetStates)) {
+        $fullPathProperty = $targetState.PSObject.Properties['FullPath']
+        if ($null -eq $fullPathProperty -or [string]::IsNullOrWhiteSpace([string]$fullPathProperty.Value)) {
+            throw 'direct-write 的 targetStates 缺少有效 FullPath。'
+        }
+        $inputPathProperty = $targetState.PSObject.Properties['InputPath']
+        $inputPath = if ($null -ne $inputPathProperty) { [string]$inputPathProperty.Value } else { '' }
+        $approvedOutputs.Add([ordered]@{
+                inputPath = $inputPath
+                evidence  = Get-DirectWriteFileEvidence -Path ([string]$fullPathProperty.Value) -SourceRoot $SourceRoot -EvidenceName '核准輸出'
+            })
+    }
+
+    $reportEvidence = New-Object System.Collections.Generic.List[object]
+    foreach ($report in @($ReportPath)) {
+        $reportEvidence.Add((Get-DirectWriteFileEvidence -Path $report -SourceRoot $SourceRoot -EvidenceName '結案報告'))
+    }
+
+    return [ordered]@{
+        operation          = 'Collect'
+        collectionMode     = 'direct-write'
+        sourceRoot         = $SourceRoot
+        executionRoot      = $ExecutionRoot
+        dispatchRoot       = ''
+        baseSha            = ''
+        worktreeCreated    = $false
+        approvedOutputs    = @($approvedOutputs.ToArray())
+        reportPaths        = @($ReportPath | ForEach-Object { Resolve-AbsolutePath -Path $_ })
+        reportEvidence     = @($reportEvidence.ToArray())
+        trackedDiff        = @()
+        stagedDiff         = @()
+        untrackedFiles     = @()
+        allFiles           = @()
+        reportReferences   = @()
+        missingFromReport  = @()
+        unexpectedInReport = @()
+        itemChecks         = @()
+        outputValid        = $true
+        worktreeRemoved    = $false
+    }
+}
+
+function Invoke-Collect {
     if ($null -eq $ReportPath -or $ReportPath.Count -eq 0) {
         throw 'Collect 必須提供至少一個 ReportPath。'
+    }
+
+    $preflight = $null
+    $worktreeCreated = $true
+    if (-not [string]::IsNullOrWhiteSpace($PreflightResultPath)) {
+        $preflight = Get-PreflightData
+        $operationProperty = $preflight.PSObject.Properties['operation']
+        if ($null -ne $operationProperty -and [string]$operationProperty.Value -ne 'Preflight') {
+            throw 'Collect 的 PreflightResultPath 必須指向 Preflight 輸出。'
+        }
+        $preflightSourceRoot = Resolve-AbsolutePath -Path (Get-RequiredPreflightProperty -Object $preflight -Name 'sourceRoot')
+        $preflightExecutionRoot = Resolve-AbsolutePath -Path (Get-RequiredPreflightProperty -Object $preflight -Name 'executionRoot')
+        $worktreeProperty = $preflight.PSObject.Properties['worktreeCreated']
+        if ($null -eq $worktreeProperty -or $worktreeProperty.Value -isnot [bool]) {
+            throw 'Collect 的 Preflight 輸出缺少布林欄位 worktreeCreated。'
+        }
+        $worktreeCreated = [bool]$worktreeProperty.Value
+        if (-not $worktreeCreated) {
+            if (-not [string]::Equals($preflightSourceRoot, $preflightExecutionRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw 'direct-write 的 Preflight 輸出必須讓 executionRoot 等於 sourceRoot。'
+            }
+            $baseProperty = $preflight.PSObject.Properties['baseSha']
+            if ($null -eq $baseProperty -or -not [string]::IsNullOrEmpty([string]$baseProperty.Value)) {
+                throw 'direct-write 的 Preflight 輸出必須保留空 baseSha，不得偽造 Git 基準。'
+            }
+            $targetStatesProperty = $preflight.PSObject.Properties['targetStates']
+            if ($null -eq $targetStatesProperty) {
+                throw 'direct-write 的 Preflight 輸出缺少 targetStates。'
+            }
+            return Invoke-DirectWriteCollect -SourceRoot $preflightSourceRoot -ExecutionRoot $preflightExecutionRoot -TargetStates @($targetStatesProperty.Value) -ReportPath $ReportPath
+        }
+
+        $preflightDispatchRootProperty = $preflight.PSObject.Properties['dispatchRoot']
+        if ([string]::IsNullOrWhiteSpace($DispatchRoot) -and $null -ne $preflightDispatchRootProperty) {
+            $DispatchRoot = [string]$preflightDispatchRootProperty.Value
+        }
+        $preflightBaseShaProperty = $preflight.PSObject.Properties['baseSha']
+        if ([string]::IsNullOrWhiteSpace($BaseSha) -and $null -ne $preflightBaseShaProperty) {
+            $BaseSha = [string]$preflightBaseShaProperty.Value
+        }
+    }
+
+    if (-not $worktreeCreated -or [string]::IsNullOrWhiteSpace($DispatchRoot) -or [string]::IsNullOrWhiteSpace($BaseSha)) {
+        throw 'Collect 必須提供 worktree 的 DispatchRoot 與 BaseSha，或提供 worktreeCreated=false 的 PreflightResultPath。'
     }
 
     $dispatchRootPath = Resolve-AbsolutePath -Path $DispatchRoot
@@ -2846,6 +3608,7 @@ try {
         'Start'     { Invoke-Start }
         'Inspect'   { Invoke-Inspect }
         'Collect'   { Invoke-Collect }
+        'QuotaProbe' { Invoke-QuotaProbe }
         default     { throw "不支援的 operation：$Operation" }
     }
     Write-OperationResult -Result $result

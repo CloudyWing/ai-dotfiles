@@ -210,23 +210,40 @@ function Write-QuotaWindow {
     Write-Output ($prefix + 'source_file=' + $Snapshot.SourceFile)
 }
 
-try {
-    $codexHomePath = Get-CodexHomeDirectory -ConfiguredCodexHome $CodexHome
-    $sessionsPath = Join-Path -Path $codexHomePath -ChildPath 'sessions'
-    $currentUnixTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
-    $candidates = @(Get-RolloutSnapshotCandidate -SessionsPath $sessionsPath)
-    $selectedSnapshots = @{}
+function Get-QuotaWindowDecision {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [object[]]$Candidates,
 
-    foreach ($windowName in @('primary', 'secondary')) {
-        $validCandidates = @(
-            $candidates |
-                Where-Object { $_.WindowName -eq $windowName } |
-                Where-Object {
-                    $_.ResetsAt -gt $currentUnixTime -and
-                    ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -ge 0 -and
-                    ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -le ([double]$_.WindowMinutes * 60.0)
-                }
-        )
+        [Parameter(Mandatory)]
+        [string]$WindowName,
+
+        [Parameter(Mandatory)]
+        [int64]$CurrentUnixTime
+    )
+
+    $windowCandidates = @(
+        $Candidates | Where-Object { $_.WindowName -eq $WindowName }
+    )
+    $recentCandidates = @(
+        $windowCandidates | Where-Object {
+            ([double]$CurrentUnixTime - [double]$_.EventTimestampUnix) -ge 0 -and
+            ([double]$CurrentUnixTime - [double]$_.EventTimestampUnix) -le ([double]$_.WindowMinutes * 60.0)
+        }
+    )
+    $futureCandidates = @(
+        $recentCandidates | Where-Object { $_.ResetsAt -gt $CurrentUnixTime }
+    )
+    $preResetCandidates = @(
+        $recentCandidates | Where-Object {
+            [double]$_.EventTimestampUnix -lt [double]$_.ResetsAt -and
+            [double]$_.ResetsAt -le [double]$CurrentUnixTime
+        }
+    )
+
+    if ($futureCandidates.Count -gt 0) {
+        $validCandidates = @($futureCandidates)
         $chronologicalCandidates = @(
             $validCandidates |
                 Sort-Object -Property @(
@@ -270,24 +287,93 @@ try {
             }
         )
 
-        if ($validCandidates.Count -eq 0) {
-            throw "找不到有效額度快照：$windowName 視窗沒有 resets_at 在未來且位於自身額度視窗內的候選。掃描路徑：$sessionsPath"
+        if ($validCandidates.Count -gt 0) {
+            # 以額度事件時間排序與判斷新鮮度，避免後續追加事件改變來源檔案時間。
+            $selectedSnapshot = $validCandidates |
+                Sort-Object -Property @(
+                    @{ Expression = 'EventTimestamp'; Descending = $true }
+                    @{ Expression = 'RecordIndex'; Descending = $true }
+                    @{ Expression = 'SourceFile'; Descending = $true }
+                ) |
+                Select-Object -First 1
+
+            if ($null -ne $selectedSnapshot) {
+                return [pscustomobject]@{
+                    WindowName             = $WindowName
+                    State                  = 'Valid'
+                    SelectedSnapshot      = $selectedSnapshot
+                    StructuralCandidateCount = $windowCandidates.Count
+                    RecentCandidateCount   = $recentCandidates.Count
+                    FutureCandidateCount   = $futureCandidates.Count
+                    PreResetCandidateCount = $preResetCandidates.Count
+                    JumpPointUnix          = $jumpPointUnix
+                }
+            }
         }
 
-        # 以額度事件時間排序與判斷新鮮度，避免後續追加事件改變來源檔案時間。
-        $selectedSnapshot = $validCandidates |
-            Sort-Object -Property @(
-                @{ Expression = 'EventTimestamp'; Descending = $true }
-                @{ Expression = 'RecordIndex'; Descending = $true }
-                @{ Expression = 'SourceFile'; Descending = $true }
-            ) |
-            Select-Object -First 1
-
-        if ($null -eq $selectedSnapshot) {
-            throw "找不到有效額度快照：無法選出 $windowName 視窗的最新候選。"
+        return [pscustomobject]@{
+            WindowName             = $WindowName
+            State                  = 'SnapshotUnavailable'
+            SelectedSnapshot       = $null
+            StructuralCandidateCount = $windowCandidates.Count
+            RecentCandidateCount   = $recentCandidates.Count
+            FutureCandidateCount   = $futureCandidates.Count
+            PreResetCandidateCount = $preResetCandidates.Count
+            JumpPointUnix          = $jumpPointUnix
+            Reason                 = '跳變失效化後沒有可選候選。'
         }
+    }
 
-        $selectedSnapshots[$windowName] = $selectedSnapshot
+    if ($preResetCandidates.Count -gt 0) {
+        return [pscustomobject]@{
+            WindowName             = $WindowName
+            State                  = 'PostResetNoSnapshot'
+            SelectedSnapshot       = $null
+            StructuralCandidateCount = $windowCandidates.Count
+            RecentCandidateCount   = $recentCandidates.Count
+            FutureCandidateCount   = $futureCandidates.Count
+            PreResetCandidateCount = $preResetCandidates.Count
+            JumpPointUnix          = $null
+        }
+    }
+
+    $state = if ($windowCandidates.Count -gt 0) { 'SnapshotExpired' } else { 'SnapshotUnavailable' }
+    return [pscustomobject]@{
+        WindowName             = $WindowName
+        State                  = $state
+        SelectedSnapshot       = $null
+        StructuralCandidateCount = $windowCandidates.Count
+        RecentCandidateCount   = $recentCandidates.Count
+        FutureCandidateCount   = $futureCandidates.Count
+        PreResetCandidateCount = $preResetCandidates.Count
+        JumpPointUnix          = $null
+    }
+}
+
+try {
+    $codexHomePath = Get-CodexHomeDirectory -ConfiguredCodexHome $CodexHome
+    $sessionsPath = Join-Path -Path $codexHomePath -ChildPath 'sessions'
+    $currentUnixTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+    $candidates = @(Get-RolloutSnapshotCandidate -SessionsPath $sessionsPath)
+    $selectedSnapshots = @{}
+    $windowDecisions = New-Object System.Collections.Generic.List[object]
+
+    foreach ($windowName in @('primary', 'secondary')) {
+        $decision = Get-QuotaWindowDecision -Candidates $candidates -WindowName $windowName -CurrentUnixTime $currentUnixTime
+        $windowDecisions.Add($decision)
+        if ($decision.State -eq 'Valid') {
+            $selectedSnapshots[$windowName] = $decision.SelectedSnapshot
+        }
+    }
+
+    $failedDecisions = @($windowDecisions | Where-Object { $_.State -ne 'Valid' })
+    if ($failedDecisions.Count -gt 0) {
+        $stateDetails = @(
+            $failedDecisions | ForEach-Object {
+                'quota_state={0} window={1}' -f $_.State, $_.WindowName
+            }
+        ) -join '; '
+        throw "額度快照狀態無法進入門檻判定：$stateDetails；掃描路徑：$sessionsPath"
     }
 
     Write-QuotaWindow -WindowName 'primary' -Snapshot $selectedSnapshots['primary'] -CurrentUnixTime $currentUnixTime
