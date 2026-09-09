@@ -158,6 +158,28 @@ Analyst 在使用者確認需求摘要後、首次寫入交接檔前產生並登
 4. 目錄保留成功後立即寫入 `line.json`。寫入失敗時停止後續交接檔寫入，保留該目錄作為已占用的候選值，並回報錯誤。
 5. 同一對話的後續寫入、Design 驗收、Developer 與 Reviewer 均沿用已登記的 `lineSlug`。每次跨派遣時傳遞 `LineContext`，接收端必須確認傳入的 `lineSlug` 與 `line.json` 的 `line-slug` 欄位一致。
 
+### 同線交接寫入白名單
+
+使用者確認需求摘要後，Analyst 可自行執行下列五項操作：
+
+1. 建立同線 `line.json`，並驗證 `line-slug` 與已登記的 `lineSlug` 相符。
+2. 寫入同線 `requirement-summary.md`，內容與文字表達由 Analyst 決定。
+3. 對上述兩類同線交接文件執行 `check-markdown`。`requirement-summary.md` 執行 Markdown 格式檢查，`line.json` 同時執行 manifest 欄位驗證。
+4. 使用者明確授權的單點文件修改依主規則另行處理，授權只限當輪指名的檔案與內容。
+5. 覆寫前備份。使用者確認需求摘要後，若既有 `requirement-summary.md` 存在，Analyst 可自行將其改名為 `requirement-summary.md.<yyyyMMdd_HHmmss>` 並移入 `<work-root>\.local\ai-sessions\history\<lineSlug>\`；備份完成後才寫入新內容。
+
+Analyst 仍不得自行寫入下列對象：
+
+- `design.md`。
+- 程式碼。
+- 設定檔。
+- 腳本。
+- `agents\` 規則檔。
+- `skills\` 規則檔。
+- 未由角色規則指定的固定報告。
+
+上述白名單屬執行能力限制的 F1 例外。三題全否時，Analyst 可在 Claude 端自行完成上述交接寫入、備份與檢查；三題至少一題為是時，依 F1 路由判定是否派遣。此例外只適用於白名單列出的操作，不改變 `Architect`、`Reviewer` 或其他角色的平台與責任。
+
 `line.json` 的內容如下：
 
 ```json
@@ -195,11 +217,11 @@ Analyst 在使用者確認需求摘要後、首次寫入交接檔前產生並登
 
 **等待使用者明確確認**（回覆「確認」、「是」、「沒問題」或等效肯定語）後，才執行後續派生 Architect 的動作。
 
-使用者確認後，Analyst 依「線識別與交接」章節登記 `lineSlug`，決定摘要內容與文字表達，並將 `LineContext` 交給資源派遣的 Codex。Codex 依 `codex-dispatch` 契約將摘要原文寫入來源 `<sourceLineRoot>/requirement-summary.md`，並套用 `check-markdown`。該派遣的 `--cd` 仍指向 `dispatchRoot`；寫入來源 `sourceLineRoot` 與覆寫備份所在的 `<sourceRoot>/.local/ai-sessions/history/<lineSlug>/` 時，啟動命令必須以 `--add-dir` 明確授權這兩個目錄。`dispatchRoot` 只保存該次派遣的 prompt、事件流、報告與其他一次性工作產出。欄位與上列一致，措辭保留當初的具體用語。Analyst 不直接執行寫檔與格式校對。此檔為 AI-facing 交接檔，屬來源 `handoff/<lineSlug>/` 結案自動清理的保留資料。
+使用者確認後，Analyst 依「線識別與交接」章節登記 `lineSlug`，決定摘要內容與文字表達，自行建立同線 `line.json`；若既有來源 `<sourceLineRoot>/requirement-summary.md` 存在，先將其改名為 `requirement-summary.md.<yyyyMMdd_HHmmss>` 並移入 `<work-root>\.local\ai-sessions\history\<lineSlug>\`，備份完成後才寫入新的來源 `<sourceLineRoot>/requirement-summary.md`，再依白名單執行 `check-markdown`。完成後將 `LineContext` 交給資源派遣的 Codex Architect。Codex 依 `codex-dispatch` 契約讀取來源交接檔；Codex Architect 需存取來源 `sourceLineRoot` 與覆寫備份所在的 `<sourceRoot>/.local/ai-sessions/history/<lineSlug>/` 時，其啟動命令必須以 `--add-dir` 明確授權這兩個目錄。`dispatchRoot` 只保存該次派遣的 prompt、事件流、報告與其他一次性工作產出。欄位與上列一致，措辭保留當初的具體用語。此檔為 AI-facing 交接檔，屬來源 `handoff/<lineSlug>/` 結案自動清理的保留資料。
 
 寫檔時機限於使用者確認之後。確認前的摘要仍是討論中的草稿，落檔會讓未定案內容取得交接檔的地位。
 
-覆寫前備份由資源派遣的 Codex 執行。若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>` 移入來源 `<work-root>/.local/ai-sessions/history/<lineSlug>/`（目錄不存在時自動建立），再寫入新內容；此來源 `history` 寫入同樣受 `codex-dispatch` 的 `--add-dir` 授權約束。
+覆寫前備份由 Analyst 依白名單執行。若目標檔案已存在，使用者確認需求摘要後，先將既有檔案改名為 `requirement-summary.md.<yyyyMMdd_HHmmss>` 移入來源 `<work-root>\.local\ai-sessions\history\<lineSlug>\`（目錄不存在時自動建立），備份完成後才寫入新內容。Analyst 依白名單自行備份並寫入來源 `history` 時不涉及 `--add-dir`。只有在備份改由 Codex 執行時，Codex 的啟動命令才需要以 `--add-dir` 明確授權來源 `<work-root>\.local\ai-sessions\history\<lineSlug>\` 目錄。
 
 此檔的存在理由是需求意圖驗收與設計驗收循環都以需求摘要為唯一比對依據，而該依據原本只存在於對話 context。context 一經壓縮，兩個驗收站同時失去可裁決的基準。
 
@@ -211,7 +233,7 @@ Analyst 在使用者確認需求摘要後、首次寫入交接檔前產生並登
 
 使用者確認後，依本輪的 UI 線別分派：
 
-- **A 線與 B 線**：使用 `codex-dispatch` skill 以資源派遣方式啟動 Codex Architect 執行端，傳入 `LineContext`，並從來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 取得上述需求摘要的完整內容作為輸入；該來源交接檔需要由 Codex 寫入時，命令必須以 `--add-dir` 授權來源 `handoff/<lineSlug>` 與 `history/<lineSlug>`。等待 Architect 完成並產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
+- **A 線與 B 線**：使用 `codex-dispatch` skill 以資源派遣方式啟動 Codex Architect 執行端，傳入 `LineContext`，並從來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 取得上述需求摘要的完整內容作為輸入；Analyst 依白名單自行寫入來源交接檔時不涉及 `--add-dir`。若該來源交接檔需要由 Codex 寫入，Codex 的啟動命令才必須以 `--add-dir` 授權來源 `handoff/<lineSlug>` 與 `history/<lineSlug>`。等待 Architect 完成並產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
 - **C 線**：先使用 Agent 工具派生 Prototyper sub-agent，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），等待 Demo 產出後執行「Demo 驗收循環」。驗收通過並將 Demo 結果回填需求摘要後，再依上列方式以 `codex-dispatch` 派遣 Codex Architect 執行端。
 
 ---
@@ -373,7 +395,7 @@ Reviewer 標為「設計歧義」的項目，代表 `design.md` 的敘述同時�
 
 - 找事實是 agent 的工作，做決策才是使用者的工作。Agent 應先讀取檔案、命令輸出與測試結果，僅將業務語意缺口、範圍取捨與妥協確認交給使用者決策。
 - **嚴禁在元素齊全前提供解法、架構建議或技術選型。** 此禁令的對象是 Analyst 自行推導或主動提議的技術方案，不涵蓋使用者在對話中主動提出並拍板的實作約束。後者屬於需求的一部分，必須完整記錄於「已確定的實作約束」欄位並傳遞給 Architect，不得因為外形像技術決策而判為越界後捨棄。判別方式為看來源：由使用者說出並確認的，記錄；由 Analyst 想出來的，不記錄也不提議。
-- **嚴禁修改任何程式碼或專案檔案（Crucial）**：整個釐清過程不得新增、修改或刪除任何檔案。唯一的常態寫入是使用者確認後由資源派遣的 Codex 執行的來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`；摘要內容與文字表達由 Analyst 決定，需求摘要依 `codex-dispatch` 契約與 `LineContext` 傳遞給 Codex Architect，來源 `handoff/<lineSlug>` 與 `history/<lineSlug>` 寫入需由 `--add-dir` 明確授權。
+- **嚴禁自行寫入白名單以外的檔案（Crucial）**：整個釐清過程不得新增、修改或刪除任何程式碼、設定檔、腳本、`agents\` 規則檔、`skills\` 規則檔、`design.md` 或未由角色規則指定的固定報告。使用者確認後，Analyst 可依「同線交接寫入白名單」建立同線 `line.json`、在覆寫前備份既有 `requirement-summary.md`、寫入來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`，並執行 `check-markdown`；Analyst 依白名單自行寫入來源 `handoff/<lineSlug>` 與 `history/<lineSlug>` 備份時不涉及 `--add-dir`。只有該等寫入改由 Codex 執行時，Codex 的啟動命令才需以 `--add-dir` 分別授權來源 `handoff/<lineSlug>` 與 `history/<lineSlug>`。摘要內容與文字表達由 Analyst 決定，需求摘要依 `codex-dispatch` 契約與 `LineContext` 傳遞給 Codex Architect。使用者明確授權的單點文件修改依主規則另行處理。
 - **授權例外的處理方式**：使用者於當輪明確授權修改（如「我授權你調整」「直接改」）時，就地執行該次修改，並於回應中列出改動的檔案與內容。授權的效力限於當輪指名的範圍，不延伸至後續回合，也不擴及未被指名的檔案。範圍超出單點機械修改（需重新設計、跨模組改動、需要建置或測試驗證）時，改為告知應切換至對應的執行 Agent。
   - 此例外存在的理由是單點修改改派 `Developer` 需重新載入 `design.md` 與完整脈絡，成本高於收益；而缺少明文例外時，這類修改只能靠每輪口頭授權維持，規則與實務長期背離。
 - 僅在 Mode B 或使用者明確要求時讀取程式碼，以蒐集釐清所需上下文。
