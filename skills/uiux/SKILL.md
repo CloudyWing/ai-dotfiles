@@ -2,6 +2,7 @@
 name: uiux
 description: UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。
 audience: agent
+dispatch: claude-side
 policy.allow_implicit_invocation: true
 ---
 
@@ -15,9 +16,15 @@ policy.allow_implicit_invocation: true
 
 專案既有的畫面慣例優先於本 Skill 的預設作法。兩者衝突時以專案既有慣例為準，不主動將既有風格改成本 Skill 的預設。此原則對稱於全域規則 §3.1 對既有 C# 專案的慣例對齊要求。
 
-視覺數值一律引用 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。基準檔不存在時，先執行 `uiux-baseline` skill 產生，不以記憶中的通用數值代替。基準檔的「待決策項」中的值在被採用前須先取得使用者確認。
+視覺數值依前端 app 情境引用樣式基準。單一 app 讀取 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。多個 app 時，呼叫端必須提供 `uiux-baseline` Phase 7 回報中已選定的 `app-name` 與對應 `baseline-path`；該路徑必須位於同一個 `work-root` 的 `style-baselines` 目錄，且檔名為 `ui-style-baseline.<app-name>.md`。基準檔不存在或交接配對無效時，停止並回報缺件，交由呼叫端重新執行 `uiux-baseline`。基準檔的「待決策項」中的值在被採用前須先取得使用者確認。
 
 慣例對齊的層次高於數值對齊。畫面中的查詢條件列、資料表格、彈窗等結構，優先整段複用基準檔「常用模式範例」的骨架，其次才用原子值自行組裝。只對齊色彩與間距而重寫結構，產出的畫面仍會偏離專案既有版型。
+
+## 跨端交接
+
+`uiux` 是 Claude 決策段，只讀取 `uiux-baseline` 產出的指定基準檔。單一 app 使用 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`；多個 app 使用呼叫端傳入且與 `app-name` 相符的 `baseline-path`，只消費該 app 的檔案。本段負責判定版面重要性與不可自由裁量項，並消費基準檔中的已統一慣例、常用模式與待決策項。
+
+若無法讀取同一個 `work-root` 下的指定基準檔，或多 app 的 `app-name` 與 `baseline-path` 不相符，立即停止並回報缺件，交由呼叫端重新執行 `uiux-baseline`。不自行尋找其他後綴檔案，也不採用未經指定基準檔支持的資料。
 
 ## 版面資訊層級決策
 

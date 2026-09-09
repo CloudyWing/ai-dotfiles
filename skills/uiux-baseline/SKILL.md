@@ -2,6 +2,7 @@
 name: uiux-baseline
 description: 掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced.
 audience: agent
+dispatch: dispatchable
 policy.allow_implicit_invocation: true
 ---
 
@@ -31,7 +32,7 @@ policy.allow_implicit_invocation: true
    - 樣式表：`.css`、`.scss`、`.less`
 3. 一併納入主題設定檔，包含 Tailwind 設定檔、CSS 變數定義檔、Bootstrap 或其他框架的覆寫檔。
 4. 排除 `bin/`、`obj/`、`dist/`、`out/`、`build/`、`node_modules/`、`.local/`。
-5. 單一 `work-root` 下存在多個前端 app 時，逐一產出獨立基準檔，以檔名後綴區分。
+5. 單一 `work-root` 下存在多個前端 app 時，逐一產出獨立基準檔，以檔名後綴區分。每個 app 以穩定的 `app-name` 識別，供 Phase 7 回報實際基準檔路徑。
 
 ### Phase 2：來源分層
 
@@ -93,7 +94,7 @@ policy.allow_implicit_invocation: true
 
 ### Phase 6：產出
 
-寫入 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。多個前端 app 時，檔名為 `ui-style-baseline.<app-name>.md`。
+寫入 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。單一 app 維持此固定檔名，不建立額外索引。多個前端 app 時，檔名為 `ui-style-baseline.<app-name>.md`，每個檔案只包含對應 app 的掃描結果。
 
 檔案的一級章節固定為下列六節，順序不得調換：
 
@@ -139,6 +140,20 @@ HTML 骨架與 CSS 規則皆為專案既有程式碼的引用。除縮排外不�
 - 基準檔的完整路徑。
 - 已統一項數、模式數與待決策項數。
 - 待決策清單，供呼叫端決定是否需先請使用者確認。
+
+多個前端 app 時，另外逐一回報下列交接欄位。呼叫端先選定目標 app，再將同一筆 `app-name` 與 `baseline-path` 傳給 `uiux`。
+
+| 欄位 | 內容 |
+| --- | --- |
+| `app-name` | 產生該基準檔的前端 app 識別名稱 |
+| `baseline-path` | 該 app 實際產出的完整基準檔路徑，檔名必須為 `ui-style-baseline.<app-name>.md` |
+
+## 跨端交接
+
+- `uiux-baseline` 是 Codex 執行段，負責依已固定的前端來源範圍掃描樣式。單一 app 將基準與待決策項寫入 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`；多個 app 則逐一寫入帶 `app-name` 後綴的獨立檔案。
+- 上游完成後，單一 app 的固定基準檔仍是 `uiux` 的唯一輸入。多個 app 時，呼叫端必須從本階段回報中選定一筆 `app-name` 與 `baseline-path`，再交給 `uiux` 定位對應檔案。`baseline-path` 必須位於同一個 `work-root` 的 `style-baselines` 目錄，且檔名與 `app-name` 相符。
+- 下游讀取指定基準檔失敗、交接欄位缺少或兩者不相符時，立即停止並回報缺件。下游只讀取通過驗證的指定檔案，不改用其他 app 的基準檔。
+- `uiux` 是 Claude 決策段，讀取基準檔的已統一慣例、常用模式與待決策項，判定版面重要性及不可自由裁量項；本 Skill 不替下游做 UI 取捨。
 
 ## 約束
 

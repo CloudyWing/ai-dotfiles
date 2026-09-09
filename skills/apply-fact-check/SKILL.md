@@ -14,12 +14,31 @@ policy.allow_implicit_invocation: true
 
 啟動前先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時，停止固定報告讀取與寫入。
 
-啟動前必須確認以下檔案存在：
+以下檔案檢查的時點是「進入本 Skill 時」。使用者觸發單一入口時，入口層先完成上游報告產出與回收，再進入本 Skill。
 
-1. **校閱報告**：`<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。若不存在，停止並請使用者先執行 `fact-check-note`。
+### 直接觸發本 Skill
+
+使用者單獨要求套用既有校閱結果時，視為直接觸發本 Skill。此路徑進入本 Skill 前必須確認以下檔案存在：
+
+1. **校閱報告**：`<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。若不存在，停止於本 Skill 入口並回報缺件，提示可改用「跨端交接入口」。
 2. **目標文件**：報告中 `目標文件` 欄位指向的路徑。若不存在或無法存取，停止並回報。
 
 不得在缺少校閱報告的情況下，憑空對文件做「事實修正」。
+
+### 經單一入口進入本 Skill
+
+使用者經 Claude 端單一入口進入時，入口層先執行 G1，取得確認後自動派遣 Codex 執行 `fact-check-note`，再回收同線固定報告。只有在固定報告已成功回收且可讀取時，才進入本 Skill 並執行上述前置條件檢查。入口層回收不到報告時，於入口層停止並回報缺件，不進入本 Skill。
+
+## 跨端交接入口
+
+本鏈由 Claude 端單一入口管理，固定交接流程如下：
+
+1. 使用者在 Claude 端觸發後，流程於 G1 停止並回報校閱目標與範圍，等待使用者確認。
+2. G1 取得確認後，流程自動派遣 Codex 執行 `fact-check-note`，回收 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
+3. 回收時若無法讀取同線固定報告，流程在入口層停止並回報缺件，不進入本 Skill，也不使用替代輸入。
+4. 進入本 Skill 後，流程於 G2 停止並回報待裁決條目；G3 與 G4 依下表在後續改檔階段逐一執行。
+
+原有 G1 至 G4 是完整的使用者裁決點。串接只負責平台切換與固定檔交接，不省略或自動通過任何 gate。
 
 ## 分層處理原則 (Crucial)
 

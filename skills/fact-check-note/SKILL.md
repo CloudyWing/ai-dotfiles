@@ -74,6 +74,12 @@ policy.allow_implicit_invocation: true
 
 此 rotation 由校閱端負責，rotation 範圍限於同一條線。`apply-fact-check` 永遠只讀同線固定名稱的 `fact-check-report.md`。
 
+## 跨端交接契約
+
+- `fact-check-note` 是交接鏈的 Codex 查證段。Claude 端單一入口在 G1 取得使用者確認後，依派遣契約自動派遣 Codex 執行本 Skill。
+- 校閱完成後，上游只將報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。此固定檔是 `apply-fact-check` 的唯一輸入；下游讀取失敗時停止並回報缺件，不建立替代報告。
+- 回收固定報告後，Claude 端進入 `apply-fact-check`，由其 G2、G3、G4 gate 管理後續使用者裁決。上游不改寫目標文件，也不替下游穿越 gate。
+
 ### 報告格式
 
 ```markdown
