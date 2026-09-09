@@ -218,9 +218,17 @@ try {
     $selectedSnapshots = @{}
 
     foreach ($windowName in @('primary', 'secondary')) {
-        $chronologicalCandidates = @(
+        $validCandidates = @(
             $candidates |
                 Where-Object { $_.WindowName -eq $windowName } |
+                Where-Object {
+                    $_.ResetsAt -gt $currentUnixTime -and
+                    ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -ge 0 -and
+                    ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -le ([double]$_.WindowMinutes * 60.0)
+                }
+        )
+        $chronologicalCandidates = @(
+            $validCandidates |
                 Sort-Object -Property @(
                     @{ Expression = 'EventTimestamp'; Descending = $false }
                     @{ Expression = 'RecordIndex'; Descending = $false }
@@ -257,11 +265,7 @@ try {
         }
 
         $validCandidates = @(
-            $candidates | Where-Object {
-                $_.WindowName -eq $windowName -and
-                $_.ResetsAt -gt $currentUnixTime -and
-                ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -ge 0 -and
-                ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -le ([double]$_.WindowMinutes * 60.0) -and
+            $validCandidates | Where-Object {
                 ($null -eq $jumpPointUnix -or [double]$_.EventTimestampUnix -ge [double]$jumpPointUnix)
             }
         )

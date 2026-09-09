@@ -104,20 +104,24 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 ## 腳本介面與執行前提
 
-本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責 F1 路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
+本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責 F1 路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定；腳本驗證 deep 週期位置、套用已選定的降級出口，並保存校準觀測。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
 
 | Operation | 主要參數 | 成功輸出 | 致命失敗 |
 | --- | --- | --- | --- |
 | `Preflight` | `SourceRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、`WriteMode`、`TargetPath[]` | `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`、同線目錄、`pidCheck` | manifest、PID、Git、根目錄界線、worktree、patch 或檔案複製驗證失敗時 stderr 並 exit code 1 |
-| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、Codex 父層選項 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id 路徑與實際參數 | 執行檔、工作目錄、啟動參數或根程序身分取得失敗時 stderr 並 exit code 1 |
-| `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success` | JSONL 格式錯誤或必要輸入缺失時 stderr 並 exit code 1 |
+| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`DeepRequestSource`、`SecondaryDaysToReset`、`SecondaryRemainingPercent`、`DowngradeInstruction`、Codex 父層選項 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id 路徑、實際參數、有效 profile、週期位置與降級狀態 | deep 主動提議未通過週期 gate、執行檔、工作目錄、啟動參數或根程序身分取得失敗時 stderr 並 exit code 1 |
+| `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、冷啟動／續行、派工前後快照 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、校準紀錄路徑、分組樣本數與提議訊號 | JSONL 格式錯誤、必要輸入缺失或校準快照格式錯誤時 stderr 並 exit code 1 |
 | `Collect` | `DispatchRoot`、`BaseSha`、`ReportPath[]` | tracked diff、staged diff、未追蹤檔案、合併清單與報告逐項核對結果 | 差異清單與結案報告不一致時 stderr 並 exit code 1，保留 worktree |
 
 `Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot` 與 `worktreeCreated=false`。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。
 
 `Start` 會固定 `--cd`、`--sandbox`、`--profile`、`--add-dir`、`--search` 等父層選項的位置，再執行 `codex exec` 或同一 thread 的 `codex exec resume`。`--json`、`--output-last-message` 與 prompt 選項位於子命令之後。事件流、stderr、last-message、thread id 與 PID 記錄各自保存，啟動結果包含實際參數，供後續複核。
 
+`Start` 收到 `DowngradeInstruction` 時固定改用預設檔位，並在派工 prompt 的副本加入降級指示。收到 `Profile=deep` 時必須指定 `DeepRequestSource`。`agent-proposal` 只在兩個 `secondary` gate 條件同時成立時啟動；`user-explicit` 不受該 gate 阻擋，但 prompt 與 JSON 輸出都保留週期位置和剩餘額度。
+
 `Inspect` 逐行解析 JSONL。空白行略過；單行解析失敗時保存原文與行號，繼續解析其餘事件，讓完整事件流仍可供診斷，但只要存在壞行，`Inspect` 就以非零結束碼拒絕產出成功狀態。可解析且具備必要欄位的 `turn.failed` 或非零 process exit code 是派工證據中的失敗結果，腳本仍輸出 `success=false`；缺少事件、非空 `type`、必要的 `thread_id`、成功事件的 `usage`、最後一則 `agent_message` 或其他必要欄位時，`Inspect` operation 以非零結束。`outputValid=false` 只表示存在 final message 但該訊息缺少必要識別字。
+
+`Inspect` 在提供 `sourceRoot` 或 `CalibrationPath` 時追加校準紀錄。紀錄使用 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`，分組鍵為 `model`、`profile`、冷啟動／續行，任務類型只保留為欄位。紀錄不足 5 筆時只回報觀測數量；達到 5 筆時只輸出由主 Agent 提議新門檻的訊號，腳本不修改規則。
 
 `Collect` 合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單，再以結案報告「Phase 對照」節逐項比對。任一數量或路徑不一致都停止回收，且在程式碼差異尚未完成回收前不得移除 worktree。
 
@@ -195,7 +199,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ## 模型檔位規則
 
-本 Skill 只使用預設檔位與 `deep`。實際 model id 與其餘設定只存在於 `~/.codex/<檔位名稱>.config.toml`，規則層只傳遞語意檔位名稱。
+本 Skill 只使用預設檔位與 `deep`。預設檔位的實測基準標註為 `gpt-5.6-luna @ xhigh`。實際 model id 與其餘設定仍以 `~/.codex/<檔位名稱>.config.toml` 為準，規則層只傳遞語意檔位名稱。
 
 `codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位省略 `--profile`，沿用 `~/.codex/config.toml`。
 
@@ -218,7 +222,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ### deep 的前置準備
 
-`deep` 的消耗主要由未快取的 input token 決定，而不是推理長度。實測 `gpt-6-astra` 的 `reasoning_output_tokens` 僅 252，同一次派遣的 input 卻超過 200 萬。
+預設檔位的實測基準為 `gpt-5.6-luna @ xhigh`。`deep` 的實測成本基準為一小時即可用完整個 `primary` 5 小時視窗。這項數據只用來說明週期位置風險，不直接取代依分組累積的校準門檻。
 
 降低成本的方式是減少執行端自行探索的讀取量，不是縮小任務範圍。檔位本身的成本特性由本機檔位設定決定，配置方式見 README 的 Codex profile 檔位設定章節。
 
@@ -231,13 +235,13 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 本機檔位設定調整後，冷啟動的消耗結構隨之改變，前述門檻應依調整後的實測值重新校準，不沿用調整前的數據。
 
-續行同一 thread 時快取命中率高，實測可達 92%，消耗降低一個量級，因此續行的門檻低於冷啟動。續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立；以預設檔位冷啟動後改用 `deep` 續行會同時違反續行契約，不採用。
+續行同一 thread 的輸入快取狀態與冷啟動不同，因此續行與冷啟動必須分組校準。續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立；以預設檔位冷啟動後改用 `deep` 續行會同時違反續行契約，不採用。
 
 ### 額度快照
 
 主 Agent 從 `<CODEX_HOME>/sessions/<yyyy>/<MM>/<dd>/rollout-<時間戳>-<thread-id>.jsonl` 讀取 session 記錄。額度資料位於 `payload.rate_limits`，必須同時取得 `primary` 與 `secondary` 視窗。每個視窗使用 `used_percent`、`window_minutes` 與 `resets_at`，其中 `used_percent` 為數值百分比、`window_minutes` 為分鐘數，`resets_at` 為 Unix timestamp（秒）。剩餘額度百分比為 `100 - used_percent`，`window_days` 為 `window_minutes / 1440`。
 
-主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗先依事件時間由早到晚比較相鄰候選。若較晚候選的 `used_percent` 低於較早候選，且兩筆事件之間尚未跨過較早候選的 `resets_at`，則將較晚事件視為帳號切換跳變點，作廢該視窗跳變點之前的候選。完成跳變失效化後，腳本獨立略過無效資料與 `resets_at` 不大於目前時間的候選，再依額度事件自身的時間選取最新候選，同檔內以 record index 由新到舊決勝。不得改用 `resets_at` 最大值挑選候選，週視窗重新錨定時 `resets_at` 會往回跳，取最大值會淘汰當日全部記錄並鎖死在舊快照。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
+主 Agent 每次派工前呼叫 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 取得快照。腳本掃描最近 20 個 rollout 檔，對每個視窗先捨棄格式無效、`resets_at` 已過期、事件時間不在自身視窗內的候選，再依事件時間由早到晚比較相鄰的有效候選。若較晚候選的 `used_percent` 低於較早候選，且兩筆事件之間尚未跨過較早候選的 `resets_at`，則將較晚事件視為帳號切換跳變點，作廢該視窗跳變點之前的候選。完成跳變失效化後，從剩下的有效候選依額度事件自身的時間選取最新候選，同檔內以 record index 由新到舊決勝。不得改用 `resets_at` 最大值挑選候選，週視窗重新錨定時 `resets_at` 會往回跳，取最大值會淘汰當日全部記錄並鎖死在舊快照。任一視窗沒有有效候選時，腳本以非零結束碼回報錯誤，不輸出估算值。
 
 快照必須落在目前的 `primary` 視窗內才可用於檔位判定。`resets_at` 位於未來只證明該視窗尚未重設，不證明 `used_percent` 反映目前用量：一筆數天前的 rollout，其 `secondary.resets_at` 仍可能在未來而被選為有效候選，但它記錄的是當時的累積值，不含之後的全部消耗。兩個視窗由所有檔位共用，不依模型分別計量。快照的失準來源是消耗速率而非歸屬：`deep` 單次派遣可能在數十分鐘內耗盡整個 `primary` 視窗，使派工當下的剩餘百分比無法代表派遣全程可用的額度。
 
@@ -268,6 +272,8 @@ secondary_source_file=
 
 ### 額度門檻與檔位選擇
 
+`Inspect` 預設唯讀。未提供 `sourceRoot` 與 `CalibrationPath` 時不寫入 `quota-calibration.jsonl`；只有明確提供其中一個校準落點時才追加校準紀錄。
+
 兩個視窗的門檻不同，且依檔位分別設定。
 
 | 檔位 | `primary` 門檻 | `secondary` 門檻 |
@@ -276,24 +282,19 @@ secondary_source_file=
 | `deep` 冷啟動 | 60% | 15% |
 | `deep` 續行 | 30% | 15% |
 
-預設檔位的門檻差異來自容量差：一次派工實測消耗 `primary` 約 19 至 28 個百分點，15% 撐不完單次派工；同樣的消耗量在 `secondary` 不足 1 個百分點。
+預設檔位與 `deep` 的門檻依 `model`、`profile`、冷啟動／續行分組校準。上表是目前規則值，只有在同一分組累積至少 5 筆觀測後，主 Agent 才能提出新門檻；使用者確認後才可修改規則。
 
-`deep` 的門檻較高，理由是其單次消耗量級不同，且冷啟動與續行相差一個量級。
-
-實測 `gpt-6-astra` 續行既有 thread 時，快取命中率 92%，單次消耗 `primary` 8 個百分點。同一模型冷啟動時會自行派生多個 subagent 並行讀取目標物件，未快取的 input token 大幅增加，實測在單一 `primary` 視窗內累積至接近耗盡，且該次派遣尚未產出任何結論即以 `turn.failed` 終止。
-
-因此門檻依派工方式分列：冷啟動的 `deep` 派工要求 `primary_remaining_percent` 大於或等於 60，續行既有 thread 時沿用預設檔位的 30。剩餘額度不足時改用預設檔位或等待視窗重設。
-
-`deep` 的實際消耗依模型而異，設定檔更換模型後前一組實測值即失效。發現實測值與本節記載明顯不符時，以該次派遣的 `turn.completed` usage 與快照變化為準更新本節，不沿用過期基準。
+`deep` 的實際消耗依模型與派工方式而異。設定檔更換模型後，既有實測值只能作為歷史觀測，不能直接套用到新的分組。
 
 1. 主 Agent 先判斷任務是否推理密集且執行量不大，判準是需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題，且不以大量讀寫、掃描或命令執行為主體。
-2. 兩個視窗的剩餘額度都達到上表對應派工方式的門檻，且任務符合第 1 條條件時，依「升級確認」節向使用者提出確認。取得當輪明確同意後才加入 `--profile deep`；未取得同意時省略該選項，使用預設檔位。門檻數值以上表為準，本節不重複記載。
-3. `secondary_remaining_percent` 低於 15 時，省略 `--profile`，使用預設檔位。週視窗重設通常在數天後，不採等待。
-4. `secondary` 通過門檻但 `primary_remaining_percent` 低於 30 時，依 `primary_days_to_reset` 決定處置。距重設 30 分鐘以內時，向使用者提議等待重設後再以 `deep` 派工，不降檔；距重設超過 30 分鐘時，省略 `--profile`，使用預設檔位。
-5. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
-6. 預設檔位省略 `--profile`。檔位名稱只允許預設與 `deep` 的語意集合，臨時驗證檔位不進入派工判定。
+2. 主 Agent 主動提議 `deep` 時，兩個視窗的剩餘額度必須達到上表對應門檻，且 `secondary_days_to_reset <= 2`、`secondary_remaining_percent >= 40`。任一週期條件不成立時，不提出 `deep` 確認。
+3. 使用者明示要求 `deep` 時，週期位置 gate 不阻擋派遣，但主 Agent 必須先告知 `secondary_days_to_reset`、`secondary_remaining_percent` 與一小時即可用完整個 `primary` 5 小時視窗的實測成本基準。
+4. 主動提議符合條件時，依「升級確認」節向使用者提出確認。取得當輪明確同意後才加入 `--profile deep`；未取得同意時使用預設檔位。週期位置 gate 與使用者明示要求是兩條分開處理的路徑。
+5. 低於目標 profile 門檻但快照有效時，一律省略 `--profile`，使用預設檔位，並在 prompt 加入下列降級指示。請先交付已確認的結果，明確標明實際覆蓋範圍；即使額度不足，也不得在零產出的情況下中斷。
+6. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
+7. 預設檔位省略 `--profile`。檔位名稱只允許預設與 `deep` 的語意集合，臨時驗證檔位不進入派工判定。
 
-第 4 條的等待選項只適用於 `primary`。剩餘時間影響的是「要不要等一下再派工」，不得用來放寬百分比門檻。等待提議與升級確認併為同一次詢問，不分兩輪問使用者。
+每次派遣結束時，`Invoke-CodexDispatch.ps1 -Operation Inspect` 追加一筆 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`。紀錄至少包含 `model`、`profile`、冷啟動／續行、任務類型、`turn.completed.usage`、派工前後的 `primary` 與 `secondary` 快照，以及完成、失敗與實際輸出結果。校準分組鍵只有 `model`、`profile`、冷啟動／續行，任務類型只作紀錄欄位。樣本少於 5 筆時只保留觀測紀錄；達到 5 筆時輸出供主 Agent 判讀的提議訊號，腳本不修改門檻，也不輸出自動更新值。
 
 ### 決策歸屬
 

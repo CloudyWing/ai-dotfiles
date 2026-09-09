@@ -31,7 +31,32 @@ param(
 
     [string]$PromptPath,
 
+    [ValidateSet('default', 'deep')]
     [string]$Profile = 'default',
+
+    [string]$Model = 'gpt-5.6-luna',
+
+    [string]$ReasoningEffort = 'xhigh',
+
+    [string]$TaskType = 'unspecified',
+
+    [ValidateSet('cold-start', 'continuation')]
+    [string]$SessionMode = 'cold-start',
+
+    [ValidateSet('agent-proposal', 'user-explicit')]
+    [string]$DeepRequestSource,
+
+    [Nullable[double]]$SecondaryDaysToReset,
+
+    [Nullable[double]]$SecondaryRemainingPercent,
+
+    [switch]$DowngradeInstruction,
+
+    [string]$QuotaBeforePath,
+
+    [string]$QuotaAfterPath,
+
+    [string]$CalibrationPath,
 
     [string[]]$AddDirectory,
 
@@ -354,6 +379,318 @@ function Write-Utf8NoBom {
 
     $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
     [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+}
+
+function Append-Utf8NoBom {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Content
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+
+    $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
+    [System.IO.File]::AppendAllText($Path, $Content + [Environment]::NewLine, $encoding)
+}
+
+function ConvertTo-InvariantDouble {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Value,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    try {
+        return [double]::Parse($Value, [System.Globalization.CultureInfo]::InvariantCulture)
+    }
+    catch {
+        throw "額度快照欄位 $Name 不是有效數值：$Value"
+    }
+}
+
+function Read-QuotaSnapshot {
+    param(
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    $snapshotPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
+        throw "找不到額度快照：$snapshotPath"
+    }
+
+    $values = [ordered]@{}
+    foreach ($line in Get-Content -LiteralPath $snapshotPath -Encoding UTF8) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+
+        $match = [regex]::Match($line, '^([^=]+)=(.*)$')
+        if (-not $match.Success) {
+            throw "額度快照格式錯誤：$snapshotPath；內容：$line"
+        }
+
+        $name = $match.Groups[1].Value.Trim()
+        $value = $match.Groups[2].Value
+        if ($name -match '(?i)(used_percent|remaining_percent|days_to_reset|window_days)$') {
+            $values[$name] = ConvertTo-InvariantDouble -Value $value -Name $name
+        }
+        elseif ($name -match '(?i)(window_minutes|resets_at)$') {
+            $values[$name] = [int64](ConvertTo-InvariantDouble -Value $value -Name $name)
+        }
+        else {
+            $values[$name] = $value
+        }
+    }
+
+    foreach ($requiredName in @(
+            'primary_used_percent',
+            'primary_remaining_percent',
+            'primary_days_to_reset',
+            'primary_window_minutes',
+            'primary_resets_at',
+            'secondary_used_percent',
+            'secondary_remaining_percent',
+            'secondary_days_to_reset',
+            'secondary_window_minutes',
+            'secondary_resets_at'
+        )) {
+        if (-not $values.Contains($requiredName)) {
+            throw "額度快照缺少欄位：$snapshotPath；$requiredName"
+        }
+    }
+
+    return [ordered]@{
+        path   = $snapshotPath
+        values = $values
+    }
+}
+
+function Get-DeepCycleDecision {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RequestedProfile,
+
+        [string]$RequestSource,
+
+        [Nullable[double]]$DaysToReset,
+
+        [Nullable[double]]$RemainingPercent
+    )
+
+    if ($RequestedProfile -ne 'deep') {
+        return [ordered]@{
+            applicable       = $false
+            requestSource    = $RequestSource
+            gatePassed       = $null
+            daysToReset      = $DaysToReset
+            remainingPercent = $RemainingPercent
+            notice           = ''
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($RequestSource)) {
+        throw '使用 deep 時必須明確指定 DeepRequestSource，區分主 Agent 主動提議與使用者明示要求。'
+    }
+    if ($null -eq $DaysToReset -or $null -eq $RemainingPercent) {
+        throw '使用 deep 時必須提供 SecondaryDaysToReset 與 SecondaryRemainingPercent。'
+    }
+    if ($DaysToReset -lt 0 -or $RemainingPercent -lt 0 -or $RemainingPercent -gt 100) {
+        throw "deep 週期位置或剩餘額度無效：days_to_reset=$DaysToReset; remaining_percent=$RemainingPercent"
+    }
+
+    $gatePassed = $DaysToReset -le 2 -and $RemainingPercent -ge 40
+    $notice = 'secondary 距重設 {0} 天、剩餘 {1}%；' -f $DaysToReset, $RemainingPercent
+    if ($RequestSource -eq 'agent-proposal' -and -not $gatePassed) {
+        throw "主 Agent 主動提議 deep 已被週期位置 gate 擋下：$notice 需要 days_to_reset <= 2 且 remaining_percent >= 40。"
+    }
+    if ($RequestSource -eq 'user-explicit') {
+        $notice = $notice + '使用者明示要求 deep，週期位置 gate 不阻擋本次派遣。'
+    }
+
+    return [ordered]@{
+        applicable       = $true
+        requestSource    = $RequestSource
+        gatePassed       = $gatePassed
+        daysToReset      = $DaysToReset
+        remainingPercent = $RemainingPercent
+        notice           = $notice
+    }
+}
+
+function New-DispatchPrompt {
+    param(
+        [Parameter(Mandatory)]
+        [string]$PromptPath,
+
+        [Parameter(Mandatory)]
+        [string]$HistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$Timestamp,
+
+        [string[]]$Directive
+    )
+
+    if ($null -eq $Directive -or $Directive.Count -eq 0) {
+        return $PromptPath
+    }
+
+    $promptContent = Get-Content -LiteralPath $PromptPath -Raw -Encoding UTF8
+    $derivedPromptPath = Join-Path -Path $HistoryRoot -ChildPath ('codex-prompt-' + $Timestamp + '.md')
+    $suffix = "`n`n" + ($Directive -join "`n`n") + "`n"
+    Write-Utf8NoBom -Path $derivedPromptPath -Content ($promptContent + $suffix)
+    return $derivedPromptPath
+}
+
+function Get-CalibrationRecords {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @()
+    }
+
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        try {
+            $record = $line | ConvertFrom-Json -ErrorAction Stop
+            $records.Add($record)
+        }
+        catch {
+            throw "額度校準紀錄格式錯誤：$Path；$($_.Exception.Message)"
+        }
+    }
+
+    return @($records.ToArray())
+}
+
+function Add-CalibrationObservation {
+    param(
+        [string]$SourceRoot,
+
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [Parameter(Mandatory)]
+        [string]$Profile,
+
+        [Parameter(Mandatory)]
+        [string]$Model,
+
+        [Parameter(Mandatory)]
+        [string]$ReasoningEffort,
+
+        [Parameter(Mandatory)]
+        [string]$TaskType,
+
+        [Parameter(Mandatory)]
+        [string]$SessionMode,
+
+        [AllowNull()]
+        [object]$Usage,
+
+        [Parameter(Mandatory)]
+        [psobject]$ExecutionResult,
+
+        [string]$QuotaBeforePath,
+
+        [string]$QuotaAfterPath
+    )
+
+    $calibrationPath = $Path
+    if ([string]::IsNullOrWhiteSpace($calibrationPath)) {
+        if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
+            return $null
+        }
+        $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
+        $calibrationPath = Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history\quota-calibration.jsonl'
+    }
+    else {
+        $calibrationPath = Resolve-AbsolutePath -Path $calibrationPath
+        if (-not [string]::IsNullOrWhiteSpace($SourceRoot) -and -not (Test-PathWithinRoot -Path $calibrationPath -Root $SourceRoot)) {
+            throw "額度校準紀錄必須位於 sourceRoot 內：$calibrationPath"
+        }
+    }
+
+    $beforeSnapshot = Read-QuotaSnapshot -Path $QuotaBeforePath
+    $afterSnapshot = Read-QuotaSnapshot -Path $QuotaAfterPath
+    $modelLabel = if ([string]::IsNullOrWhiteSpace($Model)) { 'unlabeled' } else { $Model }
+    $taskTypeLabel = if ([string]::IsNullOrWhiteSpace($TaskType)) { 'unspecified' } else { $TaskType }
+    $sessionModeLabel = if ([string]::IsNullOrWhiteSpace($SessionMode)) { 'unspecified' } else { $SessionMode }
+    $hasMarkedModel = $modelLabel -ne 'unlabeled'
+    $hasMarkedTaskType = $taskTypeLabel -ne 'unspecified'
+    $hasSnapshots = $null -ne $beforeSnapshot -and $null -ne $afterSnapshot
+    $hasUsage = Test-UsageObject -Value $Usage
+    $eligible = $hasMarkedModel -and $hasMarkedTaskType -and $hasSnapshots -and $hasUsage
+
+    $record = [ordered]@{
+        schema                = 'codex-dispatch.quota-calibration.v1'
+        recorded_at_utc       = [datetime]::UtcNow.ToString('o')
+        line_slug             = $LineSlug
+        dispatch_slug         = $DispatchSlug
+        model                 = $modelLabel
+        profile               = $Profile
+        session_mode          = $sessionModeLabel
+        group                 = [ordered]@{
+            model        = $modelLabel
+            profile      = $Profile
+            session_mode = $sessionModeLabel
+        }
+        task_type             = $taskTypeLabel
+        reasoning_effort     = $ReasoningEffort
+        calibration_eligible  = $eligible
+        'turn.completed.usage' = $Usage
+        usage                 = $Usage
+        dispatch_before_snapshot = if ($null -eq $beforeSnapshot) { $null } else { $beforeSnapshot.values }
+        dispatch_after_snapshot  = if ($null -eq $afterSnapshot) { $null } else { $afterSnapshot.values }
+        execution_result      = $ExecutionResult
+    }
+    Append-Utf8NoBom -Path $calibrationPath -Content (($record | ConvertTo-Json -Depth 16 -Compress))
+
+    $matchingRecords = @(Get-CalibrationRecords -Path $calibrationPath | Where-Object {
+            $_.calibration_eligible -eq $true -and
+            $_.model -eq $modelLabel -and
+            $_.profile -eq $Profile -and
+            $_.session_mode -eq $sessionModeLabel
+        })
+    $recommendationReady = $matchingRecords.Count -ge 5
+    $calibrationStatus = [ordered]@{
+        path                          = $calibrationPath
+        recordWritten                 = $true
+        calibrationEligible           = $eligible
+        group                         = $record.group
+        sampleCount                   = $matchingRecords.Count
+        thresholdRecommendationReady = $recommendationReady
+        automaticThresholdUpdate      = $false
+    }
+    if ($recommendationReady) {
+        $calibrationStatus.recommendationSignal = '主 Agent 可提出新門檻，須先取得使用者確認；腳本不自動更新規則。'
+    }
+
+    return $calibrationStatus
 }
 
 function Get-ManifestProperty {
@@ -1840,6 +2177,11 @@ function Invoke-Start {
     $phase = 'preparation'
     $cleanupStatus = 'not-started'
     $cleanupError = $null
+    $requestedProfileValue = $Profile
+    $effectiveProfileValue = $Profile
+    $sessionModeValue = $SessionMode
+    $deepCycleDecision = $null
+    $downgradeApplied = $false
 
     try {
     $preflight = Get-PreflightData
@@ -1911,14 +2253,45 @@ function Invoke-Start {
     New-Item -ItemType Directory -Path $historyRoot, $sourceHistoryRoot -Force | Out-Null
     $codexExecutable = Get-CodexExecutablePath -ConfiguredPath $CodexPath
 
+    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
+        $sessionModeValue = 'continuation'
+    }
+    if (-not $DowngradeInstruction) {
+        $deepCycleDecision = Get-DeepCycleDecision -RequestedProfile $requestedProfileValue -RequestSource $DeepRequestSource -DaysToReset $SecondaryDaysToReset -RemainingPercent $SecondaryRemainingPercent
+    }
+    else {
+        $deepCycleDecision = [ordered]@{
+            applicable       = $false
+            requestSource    = $DeepRequestSource
+            gatePassed       = $null
+            daysToReset      = $SecondaryDaysToReset
+            remainingPercent = $SecondaryRemainingPercent
+            notice           = '額度低於目標門檻，已改用預設檔位。'
+        }
+        $effectiveProfileValue = 'default'
+        $downgradeApplied = $true
+    }
+
+    $promptDirectives = New-Object System.Collections.Generic.List[string]
+    if ($DowngradeInstruction) {
+        $promptDirectives.Add(
+            '[額度降級指示]' + [Environment]::NewLine +
+            '本次派工使用預設檔位，因有效額度快照低於目標門檻。請先交付已確認的結果，明確標明實際覆蓋範圍；即使額度不足，也不得在零產出的情況下中斷。'
+        )
+    }
+    if ($null -ne $deepCycleDecision -and $deepCycleDecision.applicable -and $DeepRequestSource -eq 'user-explicit') {
+        $promptDirectives.Add(('[deep 週期位置告知]' + [Environment]::NewLine + $deepCycleDecision.notice + ' 請在回報中保留此週期位置與剩餘額度。'))
+    }
+    $promptPathValue = New-DispatchPrompt -PromptPath $promptPathValue -HistoryRoot $historyRoot -Timestamp $timestamp -Directive @($promptDirectives.ToArray())
+
     $codexArguments = New-Object System.Collections.Generic.List[string]
     $codexArguments.Add('--cd')
     $codexArguments.Add($executionRootPath)
     $codexArguments.Add('--sandbox')
     $codexArguments.Add('workspace-write')
-    if ($Profile -ne 'default') {
+    if ($effectiveProfileValue -ne 'default') {
         $codexArguments.Add('--profile')
-        $codexArguments.Add($Profile)
+        $codexArguments.Add($effectiveProfileValue)
     }
     if ($null -ne $AddDirectory) {
         foreach ($directory in $AddDirectory) {
@@ -2004,7 +2377,19 @@ function Invoke-Start {
             executionRoot    = $executionRootPath
             lineSlug         = $lineSlugValue
             dispatchSlug     = $dispatchSlugValue
-            profile          = $Profile
+            requestedProfile = $requestedProfileValue
+            profile          = $effectiveProfileValue
+            profileDowngraded = $downgradeApplied
+            downgradeInstructionApplied = $DowngradeInstruction.IsPresent
+            model            = $Model
+            reasoningEffort  = $ReasoningEffort
+            taskType         = $TaskType
+            sessionMode      = $sessionModeValue
+            deepRequestSource = $DeepRequestSource
+            deepCycleGatePassed = $deepCycleDecision.gatePassed
+            secondaryDaysToReset = $deepCycleDecision.daysToReset
+            secondaryRemainingPercent = $deepCycleDecision.remainingPercent
+            deepCycleNotice  = $deepCycleDecision.notice
             resumeThreadId   = $ResumeThreadId
             rootPid          = $process.Id
             pidRecordPath    = $pidPath
@@ -2012,6 +2397,7 @@ function Invoke-Start {
             stderrPath       = $errorPath
             errorStreamPath  = $errorPath
             lastMessagePath  = $lastMessagePathValue
+            promptPath       = $promptPathValue
             threadIdPath     = $threadPath
             launcherPath     = $launcher.Path
             codexPath        = $codexExecutable
@@ -2288,7 +2674,17 @@ function Invoke-Inspect {
         Write-Utf8NoBom -Path (Resolve-AbsolutePath -Path $ThreadIdPath) -Content ($threadId + "`n")
     }
 
-    return [ordered]@{
+    $executionResult = [ordered]@{
+        completed        = $lastEventType -eq 'turn.completed'
+        success          = $lastEventType -eq 'turn.completed' -and [int]$ProcessExitCode -eq 0
+        lastEventType    = $lastEventType
+        processExitCode  = [int]$ProcessExitCode
+        turnFailedReason = $turnFailedReason
+        outputValid      = $outputValid
+    }
+    $calibrationResult = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath
+
+    $result = [ordered]@{
         operation        = 'Inspect'
         eventStreamPath  = $eventPath
         processExitCode  = [int]$ProcessExitCode
@@ -2303,6 +2699,11 @@ function Invoke-Inspect {
         usage            = $usage
         stderr           = if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) { Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8 } else { '' }
     }
+    if ($null -ne $calibrationResult) {
+        $result.calibration = $calibrationResult
+    }
+
+    return $result
 }
 
 function Get-NameOnlyList {
