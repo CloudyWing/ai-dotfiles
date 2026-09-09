@@ -11,58 +11,42 @@ policy.allow_implicit_invocation: true
 
 ## Git 前置探針與 worktree 生命週期
 
-所有派遣先建立 `DispatchPreflight`。每次派遣必須取得上游傳入且已驗證的 `LineContext`。`lineSlug` 識別同一條 Analyst 線，`dispatchSlug` 識別單次 dispatch worktree，兩者分屬不同名稱空間。缺少 `LineContext`、`lineSlug` 不符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，或 `line.json` 的 `line-slug` 與傳入值不一致時，停止於 PID 與 Git 前置流程之前，不建立預設線或以 `dispatchSlug` 代替。
+所有派遣先呼叫 `scripts\Invoke-CodexDispatch.ps1 -Operation Preflight`。每次派遣必須取得上游傳入且已驗證的 `LineContext`。`lineSlug` 識別同一條 Analyst 線，`dispatchSlug` 識別單次派遣，兩者分屬不同名稱空間。缺少 `LineContext`、識別字不符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，或 `line.json` 的 `line-slug` 與傳入值不一致時，腳本以非零結束碼停止，且不建立成功狀態。
 
 | 欄位 | 路徑或用途 |
 | --- | --- |
 | `sourceRoot` | 使用者指定且已解析的 work-root 絕對路徑 |
 | `lineSlug` | Analyst 已登記的語意化線識別 |
-| `writeMode` | 本次派遣的寫入模式，派遣單第 6 欄標示「唯讀」時為 `readonly`，其餘為 `write` |
+| `writeMode` | 派遣單第 6 欄標示「唯讀」時為 `readonly`，其餘為 `write` |
 | `sourceLineRoot` | `<sourceRoot>\.local\ai-sessions\handoff\<lineSlug>` |
-| `dispatchRoot` | `<sourceRoot>\.local\ai-sessions\worktrees\<dispatchSlug>` |
-| `dispatchLineRoot` | `<dispatchRoot>\.local\ai-sessions\handoff\<lineSlug>` |
+| `dispatchRoot` | `<sourceRoot>\.local\ai-sessions\worktrees\<dispatchSlug>` 的隔離 worktree 目標絕對路徑 |
+| `dispatchLineRoot` | `<executionRoot>\.local\ai-sessions\handoff\<lineSlug>` |
 | `sourceReportLineRoot` | `<sourceRoot>\.local\ai-sessions\report\<lineSlug>` |
-| `reportLineRoot` | `<dispatchRoot>\.local\ai-sessions\report\<lineSlug>` |
+| `reportLineRoot` | `<executionRoot>\.local\ai-sessions\report\<lineSlug>` |
 
-`DispatchPreflight` 讀取 `<sourceLineRoot>\line.json`，確認 `schema=ai-sessions.line.v1` 與 `line-slug=<lineSlug>` 後，才建立 dispatch worktree 與同線目錄。`dispatchSlug` 只使用小寫英數與連字號，且在同一個 `sourceRoot` 內不得重複。PID 並行檢查先於 Git 前置流程執行，檢查通過後才可啟動派工。
+`Preflight` 先驗證 manifest、目錄界線與同線 PID，再依寫入面判定是否需要 worktree。`write` 模式先執行不修改來源的既有 Git 探針，只有確認目標含 tracked 檔案後才進入 Git 狀態、`baseSha` 與 worktree 流程；非 Git 目錄的 direct-write 不建立臨時 Git。需要 worktree 時，Git 探針只有 exit code 為 0 且 stdout 為 `true` 時才採用 `gitOrigin=existing`；不在 Git 工作樹的明確 `fatal` 才可進入臨時 Git 流程，其他 Git 錯誤以非零結束碼回報。臨時 Git 的 `.git`、marker 與初始 commit 由腳本建立並保留，直到使用者明確觸發清理。
 
-前置流程依下列順序執行。
+腳本依寫入面分流 `executionRoot`。`readonly` 固定使用隔離 worktree，`write` 只有在目標路徑包含既有 tracked 檔案時建立 worktree；只寫 Git ignored 範圍或全新輸出檔案的 `write` 直接使用 `sourceRoot`，輸出 `worktreeCreated=false`。直接寫入路徑仍須通過 sourceRoot 界線驗證。
 
-1. 解析 `sourceRoot`、`dispatchRoot`、`sourceLineRoot`、`dispatchLineRoot`、`sourceReportLineRoot` 與 `reportLineRoot` 的絕對路徑，確認 `dispatchSlug` 與 `lineSlug` 均符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`。
-2. 讀取 `<sourceLineRoot>\line.json`，確認其 `schema` 與 `line-slug`。manifest 缺失、格式錯誤或歸屬不一致時停止派遣；既有但缺少 manifest 的目錄視為已被占用，不建立或覆寫它。
-3. 掃描 PID 記錄，以 `sourceRoot`、`lineSlug` 與 `writeMode` 執行三鍵並行檢查。不同 `lineSlug` 的活躍記錄不阻塞派遣。`writeMode` 取自派遣單第 6 欄，第 6 欄標示「唯讀」時為 `readonly`，其餘為 `write`。
-4. 在 `sourceRoot` 執行 `git -C <sourceRoot> rev-parse --is-inside-work-tree`。
-   - 以 exit code 為主要分流依據。只有 exit code 為 0 且 stdout 為 `true` 時，才設定 `gitOrigin=existing`，保留既有 Git，不建立 marker。
-   - work-root 不在 Git 工作樹時，命令會以非零 exit code 與 `fatal` 錯誤結束，不會輸出 `false`；不能等待 `false` 作為分流結果。
-   - 命令因 work-root 不在 Git 工作樹而失敗時，先告知使用者將在該目錄建立臨時 `.git`，再進入臨時 Git 流程。
-   - Git 執行檔不存在或回傳其他 Git 錯誤時，停止並回報原始錯誤，不把錯誤當成可初始化的目錄。
-5. 臨時 Git 流程先呼叫 `generate-gitignore-by-techstack`。範本取不到時，先告知使用者，再寫入最小內建清單 `bin/`、`obj/`、`node_modules/`、`.env` 與 `.local/`。
-   Fallback 完成後不停止派工，流程繼續執行。
-6. 以 `.gitignore` 過濾建置輸出、機密檔案與 `.local/` 後執行 `git init`，建立一筆僅供派工使用的初始機械 commit。初始 commit 失敗時停止後續派工並保留現況。
-7. 臨時 Git 建立成功後，在 `sourceRoot\.local\ai-sessions\agent-created-git.marker` 寫入 UTF-8 無 BOM 的純文字 key-value 內容。至少包含下列欄位。
+需要 worktree 時，腳本在建立前固定 `baseSha`，以來源 `git diff HEAD --binary --no-ext-diff` 產生 tracked carry-in，並以 `git ls-files --others --exclude-standard` 取得未追蹤檔案。patch 與未追蹤檔案都在 dispatch worktree 套用或複製，路徑與目的檔案先通過根目錄界線檢查。套用或複製衝突時以非零結束碼停止並保留現況，不覆寫來源檔案。
 
-   ```text
-   schema=codex-dispatch.temp-git.v1
-   created-by=codex-dispatch
-   work-root=<sourceRoot 的絕對路徑>
-   created-at-utc=<ISO 8601 UTC 時間>
-   ```
+`dispatchSlug` 限用小寫英數與連字號，同一個 `sourceRoot` 內不得重複。腳本以固定的 `sourceRoot\.local\ai-sessions\worktrees\<dispatchSlug>` 驗證 `dispatchRoot`，目標已存在時視為已被占用並停止，不以其他目錄代替隔離邊界。
 
-marker 是來源工作樹的控制資料，不納入初始 commit。marker 寫入失敗時停止後續派工並保留已建立的 `.git`；marker 缺失時不得刪除 `.git`。此流程的 `gitOrigin` 設為 `agent-created`，`markerPath` 設為 marker 的絕對路徑。
+臨時 Git 的 marker 是來源工作樹的控制資料，不納入初始機械 commit。marker 寫入失敗時停止後續派工並保留已建立的 `.git`；marker 缺失時不得刪除 `.git`。清理前必須重新讀取並驗證 marker 的 `schema`、`created-by` 與 `work-root`，任一缺失、格式錯誤或路徑不一致都拒絕清理。
 
-8. 在 `sourceRoot\.local\ai-sessions\worktrees\<dispatchSlug>` 執行 `git worktree add --detach <dispatchRoot> <baseSha>`。`baseSha` 是 Git 探針完成後記錄的來源 `HEAD`，必須在 worktree 建立前固定。
-9. 在 `dispatchRoot` 建立 `.local\ai-sessions\handoff`、`report`、`history` 與 `scratch`，並建立 `dispatchLineRoot` 與 `reportLineRoot`。建立來源 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>` 與 `sourceReportLineRoot` 後，將 `<sourceLineRoot>` 的 `line.json`、`requirement-summary.md` 與派遣所需的 `design.md` 複製至 `dispatchLineRoot`。需求摘要的正本與覆寫前備份維持來源寫入模式；Codex 的有效工作目錄與本次派遣產出的同線 report、history、scratch 及一次性 handoff 產物使用 `dispatchRoot`。
-10. Codex 結束後，先確認回收判定成立，再將事件流、thread id、last-message、派遣報告與核准的一次性交接產物同步回 `sourceRoot` 的同相對路徑。同線設計文件從 `dispatchLineRoot` 同步至 `sourceLineRoot`，固定報告從 `reportLineRoot` 同步至 `sourceReportLineRoot`。需求摘要與其覆寫前備份固定寫入 `sourceLineRoot` 與 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`，不透過 dispatch worktree 回收；需要這類來源寫入的派遣必須以 `--add-dir` 明確授權這兩個線層目錄。
-   - 唯讀資源派遣直接同步報告與允許的交接產物，不透過 commit 回收。
-   - 寫入模式的資源派遣，例如 `Support Engineer` 的修正任務，除同步報告外必須先回收 dispatch worktree 的程式碼差異。回收方式與 Workflow 相同，差異在於沒有 Phase 分組，改以單一 commit 或依派遣單指定的分組建立。未完成程式碼回收前不得移除 worktree，否則修正成果會隨 worktree 一併消失。
-   - Workflow `Developer` 回收 dispatch worktree 的工作區差異，依結案報告「Phase 對照」節分組後建立 Phase commit。Phase 回收規則由 `git-workflow` skill 定義。
-11. 完成同步後，確認 `dispatchRoot` 的實際絕對路徑仍位於 `sourceRoot\.local\ai-sessions\worktrees\<dispatchSlug>`，再執行 `git worktree remove --force <dispatchRoot>`。三態尚未結束或需要續 session 時保留同一個 dispatch worktree。
+腳本成功時輸出 JSON，至少包含 `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`、同線目錄與 `pidCheck`。任何 manifest、PID、Git、worktree、patch、複製或路徑驗證錯誤均輸出具體 stderr 並以非零結束碼結束，不輸出空值、預設值或部分成功狀態。
 
-執行端不清理 dispatch worktree 內的 `scratch/`。該目錄隨 worktree 移除一併消失，提前清理只會刪掉主 Agent 回收時要複核的驗證證據，例如測試輸入、匯出產物與命令輸出。續 session 時該目錄的 prompt 檔仍需保留。
+## Worktree 安全不變量
 
-臨時 Git 保留在 `sourceRoot`，直到使用者明確觸發清理。清理前讀取並驗證 marker 的 `schema`、`created-by` 與 `work-root`。marker 不存在、格式錯誤或 `work-root` 與目前絕對路徑不一致時，拒絕刪除 `.git` 並回報原因。驗證成功且收到使用者清理指令後，才可刪除舊 `.git`、重新 `git init`、建立乾淨的 initial commit，成功後移除 marker。
+被強制終止過的 dispatch worktree 不得重用。判別方式、失效後果與重派時的成果轉移程序見「Codex 進程 PID 與並行檢查」節，該節為此不變量的唯一權威敘述。
 
-主工作樹在 Codex 執行期間維持啟動前的 `HEAD` 與 `git status`。Codex 的 `--cd` 固定指向 `dispatchRoot`，不得以 `sourceRoot` 作為執行目錄。需求摘要及其 history 備份是跨派遣交接例外，仍寫入 `sourceLineRoot` 與 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`；需由 Codex 寫入時，`--add-dir` 只授權這兩個線層目錄。
+PID 重用判定以 `work-root`、`line-slug`、`write-mode`、根 PID、根程序名稱、根程序建立時間與完整進程樹為依據。Windows 以 `Win32_Process.ParentProcessId` 查詢根程序及後代，根程序名稱採不分大小寫完全相等，建立時間差距最多 1 秒；Unix 以根程序與記錄的 process group 核對。任一身分欄位不符、PID 被其他程序占用或身分無法驗證時，視為 PID 重用或不可確認，不阻塞派遣，也不得將目前後代視為同一棵樹。中止時只有身分驗證通過的根程序或 process group 才能進入終止流程，避免誤殺無關程序。
+
+唯讀與寫入模式依同線三鍵判定。不同 `lineSlug` 的活躍記錄不互相阻塞；同線的 `write` 與任何其他活躍模式互斥；同線 `readonly` 可並行，但上限為 2。缺少 `write-mode` 的舊 PID 記錄視為 `write`。同線 readonly 已達上限或存在衝突時，`Preflight` 以非零結束碼停止。
+
+主工作樹在 Codex 執行期間維持啟動前的 `HEAD` 與 `git status`。Codex 的工作目錄使用腳本輸出的 `executionRoot`。需求摘要及其 history 備份是跨派遣交接例外，仍寫入 `sourceLineRoot` 與 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`；需由 Codex 寫入時，啟動參數必須明確授權這兩個線層目錄。
+
+執行端不清理 dispatch worktree 內的 `scratch/`。該目錄隨 worktree 移除一併消失，提前清理會刪掉主 Agent 回收時需要複核的驗證證據。三態尚未結束、需要續 session 或程式碼尚未完成回收時，保留同一個 dispatch worktree。
 
 ## Codex 進程 PID 與並行檢查
 
@@ -76,6 +60,7 @@ root-pid=<進程樹根 PID>
 root-process-name=<根程序名稱，例如 cmd>
 root-parent-pid=<根程序的 ParentProcessId>
 root-started-at-utc=<ISO 8601 UTC 時間>
+identity-verified=true
 process-tree-scope=<Windows: pid-and-descendants；Unix: process-group>
 process-tree-query=<Windows: Win32_Process.ParentProcessId；Unix: ps PGID 成員>
 process-group-id=<Unix process group ID；Windows 不適用>
@@ -88,11 +73,12 @@ started-at-utc=<ISO 8601 UTC 時間>
 
 派工前掃描同一個 `sourceRoot` 的 `codex-pid-*.txt`。逐檔解析 `work-root`、`line-slug`、`write-mode`、`root-pid`（舊格式回退讀取 `pid`）與進程樹欄位。`work-root` 與目前絕對路徑相同、`line-slug` 與目前 `LineContext.lineSlug` 相同、進程樹或 process group 仍存活，且根程序身分比對通過的記錄，才進入 `write-mode` 判定。缺少 `line-slug` 的舊格式記錄不具備線歸屬，不滿足三鍵比對。
 
-Windows 以 `Win32_Process` 的 `ProcessId`、`ParentProcessId`、`Name` 與 `CreationDate` 查詢根程序及其所有後代，遞迴追查每一層子程序。將查得根程序的 `Name` 與 `CreationDate` 轉為 UTC 後，分別比對 PID 記錄的 `root-process-name` 與 `root-started-at-utc`。名稱採不分大小寫的完全相等比對，建立時間差距容許最多 1 秒，以涵蓋查詢與記錄序列化的時鐘精度差異；兩項必須同時符合。任一項不符或無法查詢時，判定為 PID 重用，該筆記錄不阻塞派工，也不把其目前後代視為同一個 Codex 進程樹。根程序已結束但仍有後代時，只有在根 PID 目前不存在且未發現 PID 重用的情況下，才可依 `ParentProcessId` 鏈保留活躍判定。根 PID 已被其他程序占用且身分不符時，依 PID 重用處理。Unix 以 PID 檔的 `process-group-id` 查詢 process group 成員，並以 `root-pid` 查詢根程序，依相同規則比對 `root-process-name`、`root-started-at-utc` 與查得的程序名稱、建立時間。根程序身分比對通過且群組內仍有任何程序存活時，才判定為活躍實例。根程序在身分驗證後結束但群組成員仍存活時，沿用已驗證的根程序身分與仍存在的 `process-group-id` 判定活躍；根 PID 被其他程序占用、身分比對失敗或無法完成身分驗證時，判定為 PID 重用，該筆記錄不阻塞派工。舊格式 PID 記錄若缺少 `root-process-name` 或 `root-started-at-utc`，視為無法確認身分的歷史記錄，不阻塞派工。理由是僅憑 PID、process group 或存活狀態無法排除 PID 重用。歷史進程樹已完全結束時不阻塞派工；發現依 `write-mode` 判定為衝突的同線活躍 Codex 實例時，回報活躍 PID 記錄檔、根 PID 與存活後代或 process group，停止流程。
+Windows 以 `Win32_Process` 的 `ProcessId`、`ParentProcessId`、`Name` 與 `CreationDate` 查詢根程序及其所有後代，遞迴追查每一層子程序。將查得根程序的 `Name` 與 `CreationDate` 轉為 UTC 後，分別比對 PID 記錄的 `root-process-name` 與 `root-started-at-utc`。名稱採不分大小寫的完全相等比對，建立時間差距容許最多 1 秒，以涵蓋查詢與記錄序列化的時鐘精度差異；兩項必須同時符合。任一項不符或無法查詢時，判定為 PID 重用，該筆記錄不阻塞派工，也不把其目前後代視為同一個 Codex 進程樹。根程序已結束但仍有後代時，只有在根 PID 目前不存在、PID 記錄含有由腳本寫入的 `identity-verified=true`、身分欄位完整且未發現 PID 重用的情況下，才可依 `ParentProcessId` 鏈保留活躍判定。根 PID 已被其他程序占用且身分不符時，依 PID 重用處理。Unix 以 PID 檔的 `process-group-id` 查詢 process group 成員，並以 `root-pid` 查詢根程序，依相同規則比對 `root-process-name`、`root-started-at-utc` 與查得的程序名稱、建立時間。根程序身分比對通過且群組內仍有任何程序存活時，才判定為活躍實例。根程序在身分驗證後結束但群組成員仍存活時，只有 PID 記錄包含由腳本在身分驗證後寫入的 `identity-verified=true`，且 `root-process-name`、`root-started-at-utc` 與有效的 `process-group-id` 都存在時，才沿用已驗證的根程序身分與仍存在的 process group 判定活躍；根 PID 被其他程序占用、身分比對失敗或無法完成身分驗證時，判定為 PID 重用，該筆記錄不阻塞派工。舊格式 PID 記錄若缺少 `root-process-name` 或 `root-started-at-utc`，視為無法確認身分的歷史記錄，不阻塞派工。理由是僅憑 PID、process group 或存活狀態無法排除 PID 重用。歷史進程樹已完全結束時不阻塞派工；發現依 `write-mode` 判定為衝突的同線活躍 Codex 實例時，回報活躍 PID 記錄檔、根 PID 與存活後代或 process group，停止流程。
 
 `write-mode` 判定分三種結果。既有記錄與本次派遣都是 `readonly` 時互不阻塞，理由是唯讀派遣不修改目標物件，各自只寫入派遣單第 7 欄指定的報告檔，沒有共用寫入面。任一方為 `write` 時阻塞。同線同時活躍的 `readonly` 實例上限為 2，已達上限時停止派遣並等待既有實例結束，理由是回收端為單線，超過兩份同線報告會使統籌端的判定塞車。缺少 `write-mode` 的舊格式記錄一律視為 `write`。
 
-中斷或重派前只讀取 `work-root`、`line-slug` 與 `dispatch-slug` 三者均匹配本次派遣的 PID 記錄，再解析 `root-pid`（舊格式使用 `pid`）。同線允許並行時，`dispatch-slug` 是區分同線多個活躍實例的唯一依據；缺少 `dispatch-slug` 的舊格式記錄不得作為終止對象。Windows 執行任何 `taskkill` 前，必須先以 `Win32_Process` 查詢根程序，確認查得的 `Name` 與 `CreationDate` 分別符合 `root-process-name` 與 `root-started-at-utc`，名稱不分大小寫完全相等且建立時間差距不超過 1 秒。兩項身分比對通過後，才可執行 `taskkill /PID <root-pid> /T /F`，由系統終止根程序及整個後代樹。若根程序已先結束，先以 `Win32_Process.ParentProcessId` 找出仍存活的後代，並沿用已通過的根程序身分驗證確認其仍屬同一進程樹，再對每個仍存活的樹根執行 `taskkill /PID <descendant-pid> /T /F`，直到重新查詢不到任何後代。根 PID 被其他程序占用、身分比對失敗或舊格式缺少任一身分欄位時，判定為 PID 重用或無法確認身分，不得執行 `taskkill`，以免終止重用該 PID 的無關程序。Unix 執行 `kill -TERM -- -<process-group-id>` 前，同樣必須先完成根程序名稱與建立時間的身分比對，再確認 `process-group-id` 仍屬於該已驗證的 process group；比對失敗或無法完成比對時不得執行任何 `kill`。若依中斷策略需要強制收尾，僅對同一個已驗證的 process group 使用 `kill -KILL -- -<process-group-id>`。終止後再次以進程樹或 process group 查詢確認全部程序已結束。只終止 PID 檔記錄的單一進程或包裝 Codex 的 shell 不符合本契約。
+
+Start catch 只會使用同一次啟動時已通過身分驗證的 in-memory snapshot。根程序在驗證後消失時，腳本先查詢同一 process group；仍有成員才沿用該 snapshot 終止，群組已空時直接完成收尾。沒有這份已通過驗證的 snapshot，或 PID 記錄缺少 identity-verified=true 時，不得終止 process group。
 
 **被強制終止過的 dispatch worktree 不得重用（Crucial）**。sandbox helper 在正常結束時才移除自己套用的 ACL；被 `taskkill` 或 session 中止時來不及清理，worktree 根目錄會殘留一條明確（非繼承）的存取控制項目，其 SID 已無對應帳號。之後在該目錄啟動的 Codex 會在套用 sandbox ACL 時失敗，全程無法執行任何命令。以 `icacls <dispatchRoot>` 與來源工作樹比對即可確認：報廢的 worktree 會多出不帶 `(I)` 標記的條目。
 
@@ -104,7 +90,7 @@ PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移�
 
 Codex 端不建立 commit，因此 dispatch worktree 的 `HEAD` 在派工全程維持 `baseSha`，實作成果以未 commit 的工作區變更形式存在。回收的輸入是這份工作區差異，不是 commit 區間。
 
-主 Agent 以 `git -C <dispatchRoot> diff HEAD` 取得工作區差異，並以 `git -C <dispatchRoot> ls-files --others --exclude-standard` 取得未追蹤檔案，兩者合併後才是完整成果。`git diff` 不含已暫存變更，也不含未追蹤的新增檔案；只用它回收會在實作包含新檔案時靜默遺失成果。回收前以合併後的清單與結案報告記載的檔案清單逐項核對，數量或路徑不符時停止回收並回報差異。
+`Invoke-CodexDispatch.ps1 -Operation Collect` 取得 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard`，再合併成完整成果清單。回收前以合併後的檔案清單與結案報告「Phase 對照」節逐項核對，數量或路徑不符時腳本以非零結束碼停止並回報差異。已暫存變更與未追蹤新增檔案都必須出現在核對結果中。
 
 差異取得後依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。
 
@@ -114,32 +100,30 @@ Codex 端不建立 commit，因此 dispatch worktree 的 `HEAD` 在派工全程�
 
 回收不將全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
 
-Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執行重整後驗證，再同步報告與核准交接產物，最後才移除 dispatch worktree。Architect、Reviewer 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物。
+Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執行重整後驗證，再同步報告與核准交接產物，最後才移除 dispatch worktree。Architect、Reviewer 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物。程式碼差異尚未完成回收前不得移除 worktree。
 
-## 執行前提與可用性檢查
+## 腳本介面與執行前提
 
-派工前確認目前 session 能執行本地命令。Windows 先以 `Get-Command codex.cmd -ErrorAction SilentlyContinue` 解析 PATH 上的實體命令，將結果保存為 `codexPath`，再以該路徑取得版本。版本或探針失敗時停止派工，回報原始錯誤與結束碼。
+本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責 F1 路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
 
-```powershell
-$codexCommand = Get-Command codex.cmd -ErrorAction SilentlyContinue
-if ($null -eq $codexCommand) {
-  throw "codex.cmd was not found on PATH."
-}
-$codexPath = $codexCommand.Source
-$versionOutput = (& $codexPath --version 2>&1 | Out-String).Trim()
-if ($LASTEXITCODE -ne 0) {
-  throw "codex --version failed with exit code $LASTEXITCODE. Output: $versionOutput"
-}
-```
+| Operation | 主要參數 | 成功輸出 | 致命失敗 |
+| --- | --- | --- | --- |
+| `Preflight` | `SourceRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、`WriteMode`、`TargetPath[]` | `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`、同線目錄、`pidCheck` | manifest、PID、Git、根目錄界線、worktree、patch 或檔案複製驗證失敗時 stderr 並 exit code 1 |
+| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、Codex 父層選項 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id 路徑與實際參數 | 執行檔、工作目錄、啟動參數或根程序身分取得失敗時 stderr 並 exit code 1 |
+| `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success` | JSONL 格式錯誤或必要輸入缺失時 stderr 並 exit code 1 |
+| `Collect` | `DispatchRoot`、`BaseSha`、`ReportPath[]` | tracked diff、staged diff、未追蹤檔案、合併清單與報告逐項核對結果 | 差異清單與結案報告不一致時 stderr 並 exit code 1，保留 worktree |
 
-版本檢查只證明 CLI 可執行，不證明本次啟動參數合法。`--help` 在參數驗證之前就短路輸出，同樣不具驗證力。參數合法性由啟動探針負責：以本次派遣的完整父層選項加上一個極短 prompt 執行 `codex exec`，確認事件流出現 `turn.completed`。探針與正式啟動必須使用同一組父層選項，否則探針不具驗證力。
+`Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot` 與 `worktreeCreated=false`。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。
 
-```powershell
-$probeOutput = (& $codexPath --cd $dispatchRoot --sandbox workspace-write @profileOption exec --json "Reply with exactly: PONG" 2>&1 | Out-String)
-if ($LASTEXITCODE -ne 0 -or $probeOutput -notmatch '"type"\s*:\s*"turn\.completed"') {
-  throw "codex exec probe failed with exit code $LASTEXITCODE. Output: $probeOutput"
-}
-```
+`Start` 會固定 `--cd`、`--sandbox`、`--profile`、`--add-dir`、`--search` 等父層選項的位置，再執行 `codex exec` 或同一 thread 的 `codex exec resume`。`--json`、`--output-last-message` 與 prompt 選項位於子命令之後。事件流、stderr、last-message、thread id 與 PID 記錄各自保存，啟動結果包含實際參數，供後續複核。
+
+`Inspect` 逐行解析 JSONL。空白行略過；單行解析失敗時保存原文與行號，繼續解析其餘事件，讓完整事件流仍可供診斷，但只要存在壞行，`Inspect` 就以非零結束碼拒絕產出成功狀態。可解析且具備必要欄位的 `turn.failed` 或非零 process exit code 是派工證據中的失敗結果，腳本仍輸出 `success=false`；缺少事件、非空 `type`、必要的 `thread_id`、成功事件的 `usage`、最後一則 `agent_message` 或其他必要欄位時，`Inspect` operation 以非零結束。`outputValid=false` 只表示存在 final message 但該訊息缺少必要識別字。
+
+`Collect` 合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單，再以結案報告「Phase 對照」節逐項比對。任一數量或路徑不一致都停止回收，且在程式碼差異尚未完成回收前不得移除 worktree。
+
+### 執行可用性
+
+`Invoke-CodexDispatch.ps1` 解析 `git` 與 `codex` 的實體路徑，並在 `Start` 輸出實際的父層與子命令參數。執行檔、工作目錄或參數探針失敗時，腳本保留 stderr 與事件證據並以非零結束碼回報。
 
 | Session 型態 | 派工能力 | 處置 |
 | --- | --- | --- |
@@ -147,23 +131,13 @@ if ($LASTEXITCODE -ne 0 -or $probeOutput -notmatch '"type"\s*:\s*"turn\.complete
 | Dispatch 對話本身或 cloud session | 不可發動 | 明確回報「當前 session 不載入全域規則，請於 local Code session 發動」，不嘗試執行 `codex` |
 | Dispatch 派生的 local Code session | 可發動 | 依本 Skill 的指令契約執行 |
 
-派工命令執行前由主 Agent 準備 `sourceLineRoot`、`<sourceRoot>\.local\ai-sessions\history\<lineSlug>`、`sourceReportLineRoot`、`dispatchLineRoot`、`reportLineRoot`，以及 `dispatchRoot\.local\ai-sessions\history` 與 `scratch`。來源 `sourceLineRoot\requirement-summary.md` 與同線來源 `history` 的覆寫備份保存跨派遣交接；事件流、stderr、thread id 與 PID 記錄維持在既有的 `history` 根目錄；固定報告與例外紀錄落在 `reportLineRoot`。資源派遣若需更新來源需求摘要或其 history 備份，啟動命令必須以 `--add-dir` 授權這兩個來源線層目錄。報告檔與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md` 依派遣契約的明文寫入例外處理。若主 Agent 無法完成前置作業，停止啟動並回報缺件。所有輸出父目錄必須在啟動前完成建立。
+派工命令執行前由主 Agent 準備 `sourceLineRoot`、`<sourceRoot>\.local\ai-sessions\history\<lineSlug>`、`sourceReportLineRoot`、`dispatchLineRoot`、`reportLineRoot`，以及 `executionRoot\.local\ai-sessions\history` 與 `scratch`。來源 `sourceLineRoot\requirement-summary.md` 與同線來源 `history` 的覆寫備份保存跨派遣交接；事件流、stderr、thread id 與 PID 記錄維持在既有的 `history` 根目錄；固定報告與例外紀錄落在 `reportLineRoot`。資源派遣若需更新來源需求摘要或其 history 備份，啟動命令必須以 `--add-dir` 授權這兩個來源線層目錄。報告檔與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md` 依派遣契約的明文寫入例外處理。若主 Agent 無法完成前置作業，停止啟動並回報缺件。所有輸出父目錄必須在啟動前完成建立。
 
 ## 指令契約
 
-正式啟動使用 `codex exec`，沿用既有 session 使用 `codex exec resume`。`sourceRoot`、`dispatchRoot`、`dispatchSlug`、`lineSlug` 與各輸出檔案路徑都使用絕對路徑；`dispatchRoot` 固定為 `<sourceRoot>\.local\ai-sessions\worktrees\<dispatchSlug>`。事件流、stderr、thread id 與 last-message 檔名使用時間戳。
+正式啟動與續行都由 `Invoke-CodexDispatch.ps1 -Operation Start` 執行。`sourceRoot`、`executionRoot`、`dispatchSlug`、`lineSlug` 與輸出檔案路徑使用絕對路徑。腳本保存 `codex exec` 或 `codex exec resume` 的實際參數，並以 `-` 從 prompt 檔案傳遞完整內容。
 
-### 參數位置（Crucial）
-
-`--cd`、`--sandbox`、`--add-dir`、`--search` 與 `--profile` 是 `codex` 的父層選項，必須放在 `exec` 或 `exec resume` 之前。`--json`、`--output-last-message` 與 `--output-schema` 是執行子命令的選項，放在子命令之後。位置放錯時 CLI 以 `unexpected argument` 拒絕啟動，錯誤只出現在 stderr。
-
-`--search` 只有在需求明確需要網路查證時才加入。`--add-dir` 只有在需求明確需要 worktree 外寫入時才加入，並列出絕對路徑。
-
-### Prompt 傳遞
-
-一般派工的 Codex 工作目錄固定為 `dispatchRoot`。主 Agent 先建立 prompt scratch 檔，再以 `-` 作為 prompt 參數並將 scratch 的完整內容寫入標準輸入。`-` 是 Codex 從 stdin 讀取 prompt 的指示，直接寫入 stdin 可保留完整多行內容。
-
-PowerShell 不可將未處理的 prompt 直接放入 `Start-Process -ArgumentList`，該參數會把陣列重新組合成單一命令列字串，內容中的引號、空白與換行會在再次解析時改變引數邊界。改以 `ProcessStartInfo.ArgumentList` 逐項傳遞固定選項。
+`--cd`、`--sandbox`、`--add-dir`、`--search` 與 `--profile` 是 `codex` 的父層選項，必須放在 `exec` 或 `exec resume` 之前。`--json`、`--output-last-message` 與 `--output-schema` 是子命令選項，必須放在子命令之後。`--search` 只有在需求明確需要網路查證時才加入；`--add-dir` 只有在需求明確需要 worktree 外寫入時才加入，並列出絕對路徑。
 
 ### 事件流形狀
 
@@ -178,7 +152,7 @@ PowerShell 不可將未處理的 prompt 直接放入 `Start-Process -ArgumentLis
 
 | 事件 | 用途 |
 | --- | --- |
-| `thread.started` | `thread_id` 是續行識別，寫入 `dispatchRoot\.local\ai-sessions\history\codex-thread-<dispatchSlug>.txt` |
+| `thread.started` | `thread_id` 是續行識別，寫入 `executionRoot\.local\ai-sessions\history\codex-thread-<dispatchSlug>.txt` |
 | `item.completed` 且 `item.type` 為 `agent_message` | 最後一則的 `text` 是結案訊息 |
 | `item.completed` 且 `item.type` 為 `command_execution` | 累計次數反映實際讀取與執行量，可用於判斷派遣是否確實走完目標物件 |
 | `turn.completed` | 唯一的正常完成證據，其 `usage` 提供本次實際 token 用量 |
@@ -189,85 +163,13 @@ PowerShell 不可將未處理的 prompt 直接放入 `Start-Process -ArgumentLis
 
 stdout 只包含事件流 JSONL，診斷訊息一律走 stderr，兩者分別重導至不同檔案。
 
-### Unix 啟動
+### 跨平台啟動
 
-以下 `bash` 範例適用於 Bash 或 WSL。以 `setsid` 建立專用 process group，`codexPid` 是該群組的根程序；環境沒有 `setsid` 時停止並回報缺件，不退回只記錄單一 PID。
+`Start` 由腳本建立固定的工作目錄、父層選項、子命令選項與 prompt stdin。Windows 以進程樹根 PID 啟動並保存 `Win32_Process` 的名稱、父 PID 與建立時間；Unix 以 `setsid` 建立 process group。環境缺少必要執行檔、無法取得根程序身分或無法建立輸出路徑時，腳本以非零結束碼失敗，保留已寫入的 stderr 與事件路徑。
 
-```bash
-sourceRoot="<sourceRoot>"
-dispatchSlug="<dispatchSlug>"
-lineSlug="<lineSlug>"
-writeMode="<readonly 或 write>"
-dispatchRoot="$sourceRoot/.local/ai-sessions/worktrees/$dispatchSlug"
-sourceHistoryDir="$sourceRoot/.local/ai-sessions/history"
-historyDir="$dispatchRoot/.local/ai-sessions/history"
-scratchDir="$dispatchRoot/.local/ai-sessions/scratch"
-timestamp="$(date +%Y%m%d_%H%M%S)"
-promptPath="$scratchDir/codex-prompt-$timestamp.md"
-lastMessagePath="$historyDir/codex-last-message-$timestamp.md"
-eventStreamPath="$historyDir/codex-exec-$timestamp.jsonl"
-errorStreamPath="$historyDir/codex-exec-$timestamp.stderr.log"
+啟動參數位置、prompt 傳遞與 PID 記錄欄位由腳本固定產生。這些輸出是後續 `Inspect`、續 session 與安全中止的輸入，主 Agent 不重新拼接命令列或以單一 PID 推論整棵進程樹。
 
-setsid codex \
-  --cd "$dispatchRoot" \
-  --sandbox workspace-write \
-  exec \
-  --json \
-  --output-last-message "$lastMessagePath" \
-  - \
-  < "$promptPath" \
-  > "$eventStreamPath" 2> "$errorStreamPath" &
-codexPid=$!
-```
-
-PID 記錄的欄位與寫入規則見「Codex 進程 PID 與並行檢查」，Unix 端以 `ps` 取得 `comm`、`ppid` 與 `pgid` 後寫入同一組欄位。
-
-### Windows 啟動
-
-`ProcessStartInfo.ArgumentList` 逐項傳遞固定選項，`cwd` 固定為 `dispatchRoot`。
-
-```powershell
-$startInfo = [System.Diagnostics.ProcessStartInfo]::new()
-$startInfo.FileName = $codexPath
-$startInfo.WorkingDirectory = $dispatchRoot
-$startInfo.UseShellExecute = $false
-$startInfo.CreateNoWindow = $true
-$startInfo.RedirectStandardInput = $true
-$startInfo.RedirectStandardOutput = $true
-$startInfo.RedirectStandardError = $true
-$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
-$startInfo.StandardInputEncoding = $utf8NoBom
-$startInfo.StandardOutputEncoding = $utf8NoBom
-$startInfo.StandardErrorEncoding = $utf8NoBom
-foreach ($argument in @("--cd", $dispatchRoot, "--sandbox", "workspace-write")) {
-  [void]$startInfo.ArgumentList.Add($argument)
-}
-if ($profileName -ne "default") {
-  [void]$startInfo.ArgumentList.Add("--profile")
-  [void]$startInfo.ArgumentList.Add($profileName)
-}
-foreach ($directory in $extraDirectories) {
-  [void]$startInfo.ArgumentList.Add("--add-dir")
-  [void]$startInfo.ArgumentList.Add($directory)
-}
-if ($needsSearch) {
-  [void]$startInfo.ArgumentList.Add("--search")
-}
-foreach ($argument in @("exec", "--json", "--output-last-message", $lastMessagePath, "-")) {
-  [void]$startInfo.ArgumentList.Add($argument)
-}
-```
-
-啟動後的根程序身分查詢沿用「Codex 進程 PID 與並行檢查」的規則。`Win32_Process` 查不到剛啟動的 PID 有兩種成因，處置不同。進程仍存活但 WMI 尚未填入 `CreationDate` 時，以最多 20 次、每次 150 毫秒的間隔重試。進程已結束時重試不會成功，改以 `Process.HasExited` 與 `ExitCode` 判定並讀取 stderr。
-
-啟動失敗路徑必須先把已收集的 stderr 寫入 `errorStreamPath`，再拋出原始例外，並以持有的 Process handle 呼叫 `Kill($true)` 終止整棵樹。參數錯誤導致的立即結束，唯一能指出原因的證據只存在於 stderr；先拋例外會使該檔從未建立，錯誤表面化為 `Win32_Process` 查不到進程，掩蓋真正的失敗原因。
-
-Prompt 內容在啟動後寫入標準輸入並關閉該串流。
-
-```powershell
-$process.StandardInput.Write((Get-Content -LiteralPath $promptPath -Raw))
-$process.StandardInput.Close()
-```
+Codex 已啟動但在根程序快照完成前早夭，或身分查詢拋出例外時，失敗路徑必須先保存已收集的 stderr，再回報 `eventStreamPath`、`errorStreamPath`、process exit code 與其他證據路徑，最後使用已持有的 process handle 或已驗證的 process group 收尾。不能以「查不到根 PID」取代原始啟動錯誤，也不能在身分無法確認時終止現有記錄所指向的程序。
 
 ### Prompt 必備元素
 
@@ -276,9 +178,11 @@ Prompt 必須明列已驗證的 `LineContext`，格式如下：
 ```text
 lineSlug=<lineSlug>
 sourceLineRoot=<sourceRoot>\.local\ai-sessions\handoff\<lineSlug>
-dispatchLineRoot=<dispatchRoot>\.local\ai-sessions\handoff\<lineSlug>
-reportLineRoot=<dispatchRoot>\.local\ai-sessions\report\<lineSlug>
+dispatchLineRoot=<executionRoot>\.local\ai-sessions\handoff\<lineSlug>
+reportLineRoot=<executionRoot>\.local\ai-sessions\report\<lineSlug>
 ```
+
+`executionRoot` 取自 `Preflight` 的輸出，不由 Agent 自行推導。`worktreeCreated=false` 的直接寫入派遣沒有 dispatch worktree，此時 `executionRoot` 等於 `sourceRoot`，`dispatchLineRoot` 與 `reportLineRoot` 隨之落在來源工作樹。以 `dispatchRoot` 組出的路徑在該情境會指向不存在的位置。
 
 Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
@@ -303,6 +207,8 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 | 正式參數探針 | 與本次派遣完全相同的檔位 | 本次啟動參數合法且該檔位可用 |
 
 機制探針只在驗證流程改動時使用，不能代替正式參數探針。正式派工前一律執行正式參數探針；以 `deep` 派工時，該探針同樣使用 `deep`，其消耗計入本次派遣。低成本檔位的名稱與內容由使用者提供，規則層不預設其存在。
+
+版本探針只證明 CLI 可執行，不證明本次啟動參數合法。`--help` 在參數驗證前短路輸出，也不具正式參數證明力。正式參數探針必須沿用本次派遣完整的父層選項與檔位；腳本的 `Start` 輸出實際參數與證據路徑，供呼叫端執行及核對該探針，不能以機制探針的成功取代正式參數探針。
 
 `deep` 僅適用於推理密集且執行量不大的工作，例如需要自行找路、探索未知相依性或處理步驟未明確的多步驟問題。例行編輯、操作步驟完整的任務、單一命令驗證與單純文件整理使用預設檔位。
 
@@ -423,19 +329,19 @@ secondary_source_file=
 
 C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、額度用盡與 sandbox 權限失敗。參數與環境類失敗在 stderr 留下訊息，額度與伺服器類失敗只出現在事件流的 `turn.failed`，因此兩者都必須保存並在判定時一併查看。
 
+### 腳本背景與證據
+
+`Start` 將 Codex 置於背景執行，立即輸出根 PID 與所有證據檔案路徑。主 Agent 由執行環境的完成通知接續，再呼叫 `Inspect` 與 `Collect`；不以檔案大小、stdout 閒置或單一 exit code 判定完成。
+
+需要中止時，腳本只對已通過 PID 身分比對的根程序或 process group 執行安全關閉，並再次查詢確認進程樹已結束。無法完成身分驗證時保留進程與證據，不執行終止。
+
 ### 主 Agent 的等待方式
 
-主 Agent 將整段啟動指令以背景方式執行，該回合即結束，不停留等待。指令結束時由執行環境的事件通知重新叫起主 Agent，主 Agent 再讀取事件流、last-message 與報告檔進行取證與回收。主 Agent 不輪詢檔案大小、不使用 sleep 迴圈，也不派生 sub-agent 代為等待。
-
-此方式的前提是執行環境具備背景執行與完成通知。缺少該機制時，退回為同步阻塞執行同一段指令，取證與回收的判準不變。兩種方式的差別只在主 Agent 是否佔用回合等待，不影響完成判定。
-
-主 Agent 只在兩種情形提前介入未結束的執行：使用者要求中止，或依中斷策略需要強制收尾。兩者都走既有的 PID 進程樹身分比對後終止。
+主 Agent 優先以背景方式執行 `Start`，由執行環境的完成通知重新接手，再讀取事件流、last-message 與報告檔。若執行環境沒有背景完成通知，改以相同父層選項、子命令、prompt 與證據路徑同步阻塞執行；背景與同步的完成判定完全相同。主 Agent 不以輪詢檔案大小、stdout 閒置或派生 subagent 等待取代事件流取證。
 
 ## 事件流取證
 
-事件流逐行寫入 `dispatchRoot\.local\ai-sessions\history\codex-exec-<yyyyMMdd_HHmmss>.jsonl`，stderr 寫入同目錄的 `codex-exec-<yyyyMMdd_HHmmss>.stderr.log`。兩者都必須在正常結束與失敗兩條路徑保存。
-
-取證時逐行解析事件流，空白行略過。解析失敗的行保存原文並記入取證結果，不因單行解析失敗放棄整份事件流；事件流是逐行獨立的記錄，一行損毀不影響其餘行的證據價值。
+`Start` 將事件流寫入 `executionRoot\.local\ai-sessions\history\codex-exec-<yyyyMMdd_HHmmss>.jsonl`，將 stderr 寫入同目錄的 `codex-exec-<yyyyMMdd_HHmmss>.stderr.log`。兩者都必須在正常結束與失敗路徑保存。`Inspect` 逐行解析事件流，空白行略過；任一非空行格式錯誤或缺少 `type` 時保存壞行原文並以非零結束碼拒絕產出成功狀態，不放棄其餘可解析事件的診斷價值。
 
 | 取證項目 | 來源 |
 | --- | --- |
@@ -447,7 +353,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 | `exitCode` | process 結束碼 |
 | `stderr` | stderr 檔案完整內容 |
 
-`--output-last-message` 由 CLI 直接寫檔，比從事件流反推更可靠，因此列為 `finalMessage` 的第一來源。沒有 final message 時保留空值並將 `outputValid` 設為無效，不建立補償訊息。
+`--output-last-message` 由 CLI 直接寫檔，比從事件流反推更可靠，因此列為 `finalMessage` 的第一來源。事件流沒有最後的 `agent_message` 時，`Inspect` 以非零結束碼停止；只有已取得 final message 但識別字不完整時才輸出 `outputValid=false`。
 
 `usage` 只作為事後記錄與額度對照，不取代派工前的額度快照判定。
 
@@ -463,33 +369,22 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 續行的父層選項必須與初始啟動完全相同，包含 `--profile`、`--add-dir` 與 `--search`。這組選項從初始啟動記錄重建，不依當下判斷重新推導；任一項缺漏都會改變檔位、寫入權限或網路能力，使續行的執行條件與前一輪不一致。
 
-```bash
-codex \
-  --cd "$dispatchRoot" \
-  --sandbox workspace-write \
-  --profile "$profileName" \
-  exec resume "$threadId" \
-  --json \
-  --output-last-message "$lastMessagePath" \
-  - \
-  < "$promptPath" \
-  > "$eventStreamPath" 2> "$errorStreamPath"
-```
+`Start` 以 `ResumeThreadId` 讀取指定 `thread_id` 後建立續行命令，重新產生事件流與 stderr 檔案，不覆寫前一輪記錄。續行的父層選項從初始啟動結果重建，包含 `--profile`、`--add-dir` 與 `--search`。
 
 `exec resume` 的 session 識別接受 `thread_id` 或 thread 名稱，UUID 優先解析。省略識別並改用 `--last` 會選取最近一次記錄的 session，該行為依賴本機記錄狀態而非本次派遣的識別，因此派工流程一律明列 `thread_id`，不使用 `--last`。
 
-續行 prompt 仍來自 scratch 檔案並以 `-` 從 stdin 傳入，內容必須附上未達成條件清單。續行產生新的事件流與 stderr 檔案，不覆寫前一輪的記錄。
+續行 prompt 仍來自 scratch 檔案並以 `-` 從 stdin 傳入，內容必須重述同一組 `LineContext`、`dispatchRoot`、檔位與父層選項，列出前輪「驗證證據」及「Phase 對照」的既有條目，並逐項附上未達成條件清單。已完成的條件不得以摘要取代，續行只補齊明列的缺漏。
 
 跨介面接手視為同一條 line 的續行，依序讀取下列交接物重建狀態。
 
 1. `dispatchLineRoot\design.md`。
 2. `sourceLineRoot\requirement-summary.md`。需要由 Codex 寫入或讀取來源交接時，沿用啟動命令的 `--add-dir` 授權。
-3. 本輪 `dispatchRoot\.local\ai-sessions\history\codex-exec-<yyyyMMdd_HHmmss>.jsonl`。
+3. 本輪 `executionRoot\.local\ai-sessions\history\codex-exec-<yyyyMMdd_HHmmss>.jsonl`。
 4. `reportLineRoot\implement-closure-report.md` 或派遣單第 7 欄指定報告。
 
 ### 中止與安全關閉
 
-中止只針對 PID 記錄中 `work-root`、`line-slug` 與 `dispatch-slug` 三者均匹配本次派遣的進程樹，並依「Codex 進程 PID 與並行檢查」的根程序身分比對後執行。終止後再次查詢確認全部程序已結束，並保存事件流、stderr 與 exit 資訊。
+中止只針對 PID 記錄中 `work-root`、`line-slug` 與 `dispatch-slug` 三者均匹配本次派遣的進程樹，並依「Codex 進程 PID 與並行檢查」的根程序名稱、建立時間及 process group 或後代鏈身分比對後執行。使用者要求中止前若無法完成身分驗證，保留進程與證據，不執行任何 `taskkill` 或 `kill`。終止後再次查詢確認全部程序已結束，並保存事件流、stderr 與 exit 資訊。
 
 被中止的派遣不視為完成，依 C 出口處理。
 
@@ -513,12 +408,12 @@ codex \
 
 ## 兩種派工差異
 
-共用本 Skill 的機制。Workflow 派工與資源派遣只以輸入、產出與結案要求區分；兩者都先使用同一個 dispatch worktree。
+共用本 Skill 的機制。Workflow 派工與資源派遣只以輸入、產出與結案要求區分；兩者都先使用 `Preflight` 依寫入面選擇 dispatch worktree 或 `sourceRoot`。
 
 | 面向 | Workflow 派工（`Developer`） | 資源派遣（`Architect`、`Reviewer`、`Support Engineer`、其餘一切） |
 | --- | --- | --- |
-| 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `dispatchRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
-| 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `dispatchRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |
+| 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `executionRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
+| 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `executionRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |
 | 結案要求 | 「驗證證據」節的輪起點 SHA 與開工基準線皆有值，且「Phase 對照」節逐 Phase 列出修改的檔案清單 | 先通過 `RecoveryPrecheck`，再逐條執行派遣單第 5 欄的命令並得出「收下」、「退回」或「升級」之一 |
 
 `requirement-summary.md` 是跨派遣的持久交接檔，固定於 `sourceLineRoot\requirement-summary.md`；覆寫前備份固定於 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`。這兩個來源落點不屬於 `dispatchRoot` 的派遣產出，資源派遣若需寫入它們，必須在 `exec` 子命令前以 `--add-dir` 分別授權來源線層 `handoff` 與 `history` 目錄。
