@@ -218,12 +218,51 @@ try {
     $selectedSnapshots = @{}
 
     foreach ($windowName in @('primary', 'secondary')) {
+        $chronologicalCandidates = @(
+            $candidates |
+                Where-Object { $_.WindowName -eq $windowName } |
+                Sort-Object -Property @(
+                    @{ Expression = 'EventTimestamp'; Descending = $false }
+                    @{ Expression = 'RecordIndex'; Descending = $false }
+                    @{ Expression = 'SourceFile'; Descending = $false }
+                )
+        )
+        $jumpPointUnix = $null
+
+        for ($candidateIndex = 1; $candidateIndex -lt $chronologicalCandidates.Count; $candidateIndex++) {
+            $candidate = $chronologicalCandidates[$candidateIndex]
+
+            $earlierCandidate = $chronologicalCandidates[$candidateIndex - 1]
+            $isLaterEvent = (
+                [double]$candidate.EventTimestampUnix -gt
+                [double]$earlierCandidate.EventTimestampUnix
+            )
+            $hasNotCrossedReset = (
+                [double]$candidate.EventTimestampUnix -lt
+                [double]$earlierCandidate.ResetsAt
+            )
+            $usedPercentDecreased = (
+                [double]$candidate.UsedPercent -lt
+                [double]$earlierCandidate.UsedPercent
+            )
+
+            if ($isLaterEvent -and $hasNotCrossedReset -and $usedPercentDecreased) {
+                if (
+                    $null -eq $jumpPointUnix -or
+                    [double]$candidate.EventTimestampUnix -gt [double]$jumpPointUnix
+                ) {
+                    $jumpPointUnix = [int64]$candidate.EventTimestampUnix
+                }
+            }
+        }
+
         $validCandidates = @(
             $candidates | Where-Object {
                 $_.WindowName -eq $windowName -and
                 $_.ResetsAt -gt $currentUnixTime -and
                 ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -ge 0 -and
-                ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -le ([double]$_.WindowMinutes * 60.0)
+                ([double]$currentUnixTime - [double]$_.EventTimestampUnix) -le ([double]$_.WindowMinutes * 60.0) -and
+                ($null -eq $jumpPointUnix -or [double]$_.EventTimestampUnix -ge [double]$jumpPointUnix)
             }
         )
 
