@@ -111,7 +111,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `Preflight` | `SourceRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、`WriteMode`、`TargetPath[]` | `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`、同線目錄、`pidCheck` | manifest、PID、Git、根目錄界線、worktree、patch 或檔案複製驗證失敗時 stderr 並 exit code 1 |
 | `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`DeepRequestSource`、`SecondaryDaysToReset`、`SecondaryRemainingPercent`、`DowngradeInstruction`、Codex 父層選項 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id 路徑、實際參數、有效 profile、週期位置與降級狀態 | deep 主動提議未通過週期 gate、執行檔、工作目錄、啟動參數或根程序身分取得失敗時 stderr 並 exit code 1 |
 | `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、冷啟動／續行、派工前後快照 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、校準紀錄路徑、分組樣本數與提議訊號 | JSONL 格式錯誤、必要輸入缺失或校準快照格式錯誤時 stderr 並 exit code 1 |
-| `Collect` | worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據 | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；不把空 `baseSha` 視為 Git 基準 |
+| `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果 | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
 | `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `turn.completed`、exit code 0、實際參數、事件流、stderr、last-message、thread id、rollout 來源路徑與回復紀錄 | 只允許 `PostResetNoSnapshot`；`ProbeAttempt > 1`、啟動參數、根程序身分或事件流驗證失敗時 stderr 並 exit code 1 |
 
 `Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot`、`worktreeCreated=false`、空 `baseSha` 與核准輸出清單。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
@@ -124,7 +124,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 `Inspect` 在提供 `sourceRoot` 或 `CalibrationPath` 時追加校準紀錄。紀錄使用 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`，分組鍵為 `model`、`profile`、冷啟動／續行，任務類型只保留為欄位。紀錄不足 5 筆時只回報觀測數量；達到 5 筆時只輸出由主 Agent 提議新門檻的訊號，腳本不修改規則。
 
-`Collect` 在 worktree 路徑合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單，再以結案報告「Phase 對照」節逐項比對。direct-write 路徑則讀取 Preflight 的 `targetStates`，確認每個核准輸出都存在、為非空檔案，並回傳檔案長度、最後寫入時間與 SHA-256。任一數量、路徑、檔案證據或報告不一致都停止回收，且在成果尚未完成回收前不得移除 worktree。
+`Collect` 在 worktree 路徑合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單。報告核對方式依 `DispatchKind` 分流：`workflow` 以結案報告「Phase 對照」節逐項比對檔案清單，`resource` 只確認報告存在且非空並回傳其長度與 SHA-256。resource 的結案要求是逐條驗收，不逐 Phase 列出檔案清單，對它要求「Phase 對照」節會使每次資源派遣都無法回收。direct-write 路徑則讀取 Preflight 的 `targetStates`，確認每個核准輸出都存在、為非空檔案，並回傳檔案長度、最後寫入時間與 SHA-256。任一數量、路徑、檔案證據或報告不一致都停止回收，且在成果尚未完成回收前不得移除 worktree。
 
 ### 額度狀態與回復探針
 
@@ -471,6 +471,29 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 | `rg -n '^## 標題$'` | 目標檔為 CRLF 時，`$` 錨點在 `\r` 之前匹配失敗，即使該行確實存在 | `rg -n '^## 標題'` 或 `rg -n '^## 標題\r?$'` |
 
 負向驗證不得只以 `rg` 的 exit code 1 作為通過依據，必須另附一條明確計數命令佐證。理由是 exit code 1 同時代表「確實無匹配」與「模式寫錯導致無匹配」，兩者無法從結束碼區分。
+
+第 5 欄的驗收條件分兩類，主 Agent 為每一條標示所屬類別。
+
+| 類別 | 斷言對象 | 未修改狀態下的預期 |
+| --- | --- | --- |
+| 新行為條件 | 本輪要達成的結果 | 不成立 |
+| 回歸守衛條件 | 本輪不得破壞的既有行為 | 成立 |
+
+主 Agent 送出派遣單前，對每一條新行為條件執行一次自我測試。自我測試在目標尚未修改的狀態下實際跑該條命令，確認它回報不成立。任一條在未修改狀態下就回報成立時，該條無法區分「已完成」與「檢查失效」，改寫後重測，改寫前不得送出派遣單。
+
+回歸守衛條件在未修改狀態下必然成立，無法用同一方式檢驗，改以在派遣單寫明其守衛對象，讓回收時能判斷該對象是否仍受檢查。把回歸守衛條件當成新行為條件送去自我測試，會得到「條件恆真」的錯誤結論並導致無效改寫。
+
+報告在派遣單第 8 欄之外另附各條的類別與未修改狀態輸出，供回收時比對。
+
+自我測試涵蓋三類失效，這三類的共同特徵是命令正常結束、exit code 符合預期，只有輸出是空的或結論是錯的。
+
+| 失效類型 | 實例 | 自我測試如何攔截 |
+| --- | --- | --- |
+| 模式寫錯導致永遠無匹配 | `rg` 的 `\|` alternation 與 CRLF 下的 `$` 錨點 | 未修改狀態下應有匹配卻回報無匹配 |
+| 門檻寫錯導致條件恆真 | 以「縮排不超過 N 個空格」約束縮排，使所有行被壓到同一數值 | 未修改狀態下就回報成立 |
+| 比對範圍過寬導致條件恆假 | 比對縮排時連內容一起比，而內容本就會因其他改動而變 | 未修改狀態下的失敗原因與待驗收項目無關 |
+
+透過 PowerShell 取得 `git show` 輸出時，以位元組讀取後自行以 UTF-8 解碼。PowerShell 會以 console 編碼解碼子行程輸出，非 ASCII 內容會變成替代字元，使逐字比對產生假性不一致。改在 Bash 以管線處理位元組同樣可行。
 
 建置與測試由主 Agent 自行執行，不列為 Codex 第 5 欄的命令輸出責任。
 
