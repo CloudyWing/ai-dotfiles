@@ -67,8 +67,7 @@ try {
 void PrintPreview(string jsonContent) {
     using JsonDocument document = JsonDocument.Parse(jsonContent);
     JsonElement firstSheet = document.RootElement.EnumerateArray().FirstOrDefault();
-    if (firstSheet.ValueKind == JsonValueKind.Undefined)
-    {
+    if (firstSheet.ValueKind == JsonValueKind.Undefined) {
         return;
     }
 
@@ -76,16 +75,14 @@ void PrintPreview(string jsonContent) {
     JsonElement firstRecordSet = templates.EnumerateArray()
         .FirstOrDefault(t => t.GetProperty("Type").GetString() == "RecordSet");
 
-    if (firstRecordSet.ValueKind == JsonValueKind.Undefined)
-    {
+    if (firstRecordSet.ValueKind == JsonValueKind.Undefined) {
         return;
     }
 
     List<JsonElement> columns = firstRecordSet.GetProperty("Columns").EnumerateArray().ToList();
     List<JsonElement> records = firstRecordSet.GetProperty("Records").EnumerateArray().Take(5).ToList();
 
-    if (!columns.Any() || !records.Any())
-    {
+    if (!columns.Any() || !records.Any()) {
         return;
     }
 
@@ -96,13 +93,10 @@ void PrintPreview(string jsonContent) {
     Console.WriteLine(header);
     Console.WriteLine(separator);
 
-    foreach (JsonElement record in records)
-    {
-        IEnumerable<string> rowValues = columns.Select(c =>
-        {
+    foreach (JsonElement record in records) {
+        IEnumerable<string> rowValues = columns.Select(c => {
             string key = c.GetProperty("FieldKey").GetString();
-            if (record.TryGetProperty(key, out JsonElement val))
-            {
+            if (record.TryGetProperty(key, out JsonElement val)) {
                 return val.ToString();
             }
             return "";
@@ -110,8 +104,7 @@ void PrintPreview(string jsonContent) {
         Console.WriteLine("| " + string.Join(" | ", rowValues) + " |");
     }
 
-    if (firstRecordSet.GetProperty("Records").GetArrayLength() > 5)
-    {
+    if (firstRecordSet.GetProperty("Records").GetArrayLength() > 5) {
         Console.WriteLine($"... 還有 {firstRecordSet.GetProperty("Records").GetArrayLength() - 5} 筆資料");
     }
     Console.WriteLine();
