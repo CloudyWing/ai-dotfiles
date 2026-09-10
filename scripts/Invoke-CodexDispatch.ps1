@@ -94,6 +94,9 @@ param(
 
     [string]$BaseSha,
 
+    [ValidateSet('workflow', 'resource')]
+    [string]$DispatchKind,
+
     [string[]]$ReportPath
 )
 
@@ -1307,11 +1310,17 @@ function Get-PidCheckResult {
                 }
             }
             else {
-                $liveProcessIds = @(Get-DescendantProcessIds -RootProcessId $rootPid -ProcessesById $processesById -ConfirmedOnly)
-                if ($liveProcessIds.Count -gt 0 -and (Test-RecordedIdentityEvidence -Record $record)) {
-                    $identityVerified = $true
-                    $isActive = $true
-                }
+                $dispatchProperty = $record.PSObject.Properties['dispatch-slug']
+                $unconfirmedRecords.Add([pscustomobject]@{
+                        Path             = $recordFile.FullName
+                        RootPid          = $rootPid
+                        DispatchSlug     = if ($null -ne $dispatchProperty) { [string]$dispatchProperty.Value } else { '' }
+                        IdentityStatus   = 'root-process-absent'
+                        MissingFields    = @()
+                        FailureFields    = @()
+                        TerminationScope = 'none'
+                        StatusMessage    = '記錄的根程序已不存在，視為該次派遣已結束，未阻塞派工且未列入終止對象。'
+                    })
             }
         }
         else {
@@ -3437,6 +3446,10 @@ function Invoke-DirectWriteCollect {
         [string]$ExecutionRoot,
 
         [Parameter(Mandatory)]
+        [ValidateSet('workflow', 'resource')]
+        [string]$DispatchKind,
+
+        [Parameter(Mandatory)]
         [AllowEmptyCollection()]
         [object[]]$TargetStates,
 
@@ -3474,6 +3487,7 @@ function Invoke-DirectWriteCollect {
         executionRoot      = $ExecutionRoot
         dispatchRoot       = ''
         baseSha            = ''
+        dispatchKind       = $DispatchKind
         worktreeCreated    = $false
         approvedOutputs    = @($approvedOutputs.ToArray())
         reportPaths        = @($ReportPath | ForEach-Object { Resolve-AbsolutePath -Path $_ })
@@ -3494,6 +3508,9 @@ function Invoke-DirectWriteCollect {
 function Invoke-Collect {
     if ($null -eq $ReportPath -or $ReportPath.Count -eq 0) {
         throw 'Collect 必須提供至少一個 ReportPath。'
+    }
+    if ([string]::IsNullOrWhiteSpace($DispatchKind)) {
+        throw 'Collect 必須提供 DispatchKind。'
     }
 
     $preflight = $null
@@ -3523,7 +3540,7 @@ function Invoke-Collect {
             if ($null -eq $targetStatesProperty) {
                 throw 'direct-write 的 Preflight 輸出缺少 targetStates。'
             }
-            return Invoke-DirectWriteCollect -SourceRoot $preflightSourceRoot -ExecutionRoot $preflightExecutionRoot -TargetStates @($targetStatesProperty.Value) -ReportPath $ReportPath
+            return Invoke-DirectWriteCollect -SourceRoot $preflightSourceRoot -ExecutionRoot $preflightExecutionRoot -DispatchKind $DispatchKind -TargetStates @($targetStatesProperty.Value) -ReportPath $ReportPath
         }
 
         $preflightDispatchRootProperty = $preflight.PSObject.Properties['dispatchRoot']
@@ -3552,29 +3569,44 @@ function Invoke-Collect {
     $stagedDiff = @(Get-NameOnlyList -Result (Invoke-GitCommand -WorkingDirectory $dispatchRootPath -Arguments @('diff', '--cached', '--name-only', '-z', '--')))
     $untrackedFiles = @(Get-NameOnlyList -Result (Invoke-GitCommand -WorkingDirectory $dispatchRootPath -Arguments @('ls-files', '--others', '--exclude-standard', '-z')))
     $allFiles = @($trackedDiff + $untrackedFiles | Sort-Object -Unique)
-    $reportReferences = @(Get-ReportReferencedPaths -ReportPath $ReportPath -DispatchRoot $dispatchRootPath)
-    $matches = New-Object System.Collections.Generic.List[object]
-    foreach ($file in $allFiles) {
-        $normalizedFile = $file.Replace('/', '\')
-        $inReport = $reportReferences -contains $normalizedFile
-        $matches.Add([pscustomobject]@{
-                Path      = $normalizedFile
-                InReport  = $inReport
-                IsStaged  = $stagedDiff -contains $file
-                IsTracked = $trackedDiff -contains $file
-            })
+    $reportReferences = @()
+    $missingFromReport = @()
+    $unexpectedInReport = @()
+    $matchesArray = @()
+    $reportEvidence = @()
+    if ($DispatchKind -eq 'workflow') {
+        $reportReferences = @(Get-ReportReferencedPaths -ReportPath $ReportPath -DispatchRoot $dispatchRootPath)
+        $matches = New-Object System.Collections.Generic.List[object]
+        foreach ($file in $allFiles) {
+            $normalizedFile = $file.Replace('/', '\')
+            $inReport = $reportReferences -contains $normalizedFile
+            $matches.Add([pscustomobject]@{
+                    Path      = $normalizedFile
+                    InReport  = $inReport
+                    IsStaged  = $stagedDiff -contains $file
+                    IsTracked = $trackedDiff -contains $file
+                })
+        }
+        $matchesArray = @($matches.ToArray())
+        $missingFromReport = @($matchesArray | Where-Object { -not $_.InReport } | ForEach-Object { $_.Path })
+        $unexpectedInReport = @($reportReferences | Where-Object { $allFiles -notcontains $_ })
+        if ($missingFromReport.Count -gt 0 -or $unexpectedInReport.Count -gt 0) {
+            throw "差異清單與結案報告不一致。missingFromReport=$($missingFromReport -join ','); unexpectedInReport=$($unexpectedInReport -join ',')"
+        }
     }
-    $matchesArray = @($matches.ToArray())
-    $missingFromReport = @($matchesArray | Where-Object { -not $_.InReport } | ForEach-Object { $_.Path })
-    $unexpectedInReport = @($reportReferences | Where-Object { $allFiles -notcontains $_ })
-    if ($missingFromReport.Count -gt 0 -or $unexpectedInReport.Count -gt 0) {
-        throw "差異清單與結案報告不一致。missingFromReport=$($missingFromReport -join ','); unexpectedInReport=$($unexpectedInReport -join ',')"
+    else {
+        $reportEvidenceList = New-Object System.Collections.Generic.List[object]
+        foreach ($report in @($ReportPath)) {
+            $reportEvidenceList.Add((Get-DirectWriteFileEvidence -Path $report -SourceRoot $dispatchRootPath -EvidenceName '結案報告'))
+        }
+        $reportEvidence = @($reportEvidenceList.ToArray())
     }
 
     return [ordered]@{
         operation          = 'Collect'
         dispatchRoot       = $dispatchRootPath
         baseSha            = $BaseSha
+        dispatchKind       = $DispatchKind
         trackedDiff        = @($trackedDiff)
         stagedDiff         = @($stagedDiff)
         untrackedFiles     = @($untrackedFiles)
@@ -3584,6 +3616,7 @@ function Invoke-Collect {
         missingFromReport  = @($missingFromReport)
         unexpectedInReport = @($unexpectedInReport)
         itemChecks         = $matchesArray
+        reportEvidence     = @($reportEvidence)
         outputValid        = $true
         worktreeRemoved    = $false
     }
