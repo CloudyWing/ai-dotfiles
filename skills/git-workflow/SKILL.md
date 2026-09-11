@@ -82,7 +82,9 @@ refactor/extract-email-service
 
 Codex 端不建立 commit，Workflow `Developer` 的成果以 dispatch worktree 的工作區差異形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
 
-回收時依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。保留每個 Phase 的獨立語意，不將全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收衝突時停止並保留 worktree 與證據。
+Workflow Developer 收下時先將成果套回來源工作樹，維持未 commit 的工作區變更，不建立 Phase commit，並保留 dispatch worktree。只有在 Reviewer 收下、需求意圖驗收完成、結案報告產出且使用者授權 commit 後，才依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。Phase commit 回收完成且驗證通過後，才可移除 Workflow Developer dispatch worktree。Reviewer 退回時，續行沿用保留的同一 dispatch worktree 與 thread。
+
+Phase commit 回收步驟依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。保留每個 Phase 的獨立語意，不在此步驟把全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收完成後可在 `rewrite-branch` 依成果整理並 squash。每筆 commit 必須通過可用性驗證，且回收後歷史整理必須通過第一層零差異 gate。回收衝突時停止並保留 worktree 與證據。
 
 ### 分組 commit 與 pre-commit hook 的先後順序
 
@@ -148,13 +150,21 @@ Git 只會回報 patch 套用成功或衝突，不會回報內容遺失。Squash
 
 所有矩陣列都通過時，該輪才可判定為回歸通過並進入回收。若目前症狀已消失但任一先前已接受行為的 assertion 失敗，整輪仍判定為失敗，不得回收，也不得重設 `return-count`。矩陣缺少必要欄位、命令輸出無法判定，或先前行為的識別不完整時，停止該輪並升級，不以新增測試取代原有基準。
 
-### 第三層：固定 `problem-key` 與退回次數上限
+### 第三層：固定 `problem-key` 與共同收斂判定
 
 適用時機是每個修正循環建立、退回或準備重試前。呼叫端必須提供一個跨修正輪次固定的短識別字 `problem-key`。來源優先取審查報告的 finding 編號；沒有審查報告時，由主 Agent 指定並記錄於派遣單。缺少 `problem-key`，或呼叫端要求變更既有 key 時，立即停止並交由使用者判斷，Agent 不得自行選定或改名。
 
-每個 `problem-key` 使用追加式紀錄保存 `return-count`、完整回歸矩陣結果、證據路徑與升級原因。初次修正的 `return-count=0`。第一次回歸失敗後增加為 1，才允許一次後續修正；第二次回歸失敗後增加為 2，達到退回上限 2 次，立即停止後續嘗試並升級使用者。不得建立第三輪修正。相同目標、相同症狀或同一回歸 assertion 失敗時，不得藉由重新命名分支或改寫 `problem-key` 將計數歸零；變更 key 必須先取得使用者判斷。
+每個 `problem-key` 使用追加式紀錄保存 `return-count`、完整回歸矩陣結果、證據路徑與升級原因。一次修正連同其驗收或回歸判定為一輪，初次執行為第 1 輪。後續續行各增加 1 輪。Git 修正的 `area-key` 使用同一函式或同一節規則的穩定識別；相同問題在各輪沿用同一 `problem-key`。前輪未通過的問題在本輪相同 key 通過且沒有反證時標記 `closed`；本輪 key 不在前輪未解決問題集合且沒有同一 key 的改寫或重新命名時標記 `new-problem`。
 
-此 `problem-key` 的 Git 修正循環計數與 `codex-dispatch` 回收契約的退回上限 2 次分開保存、分開判定，不能共用或相互重設。任一層的觸發條件、判定結果、失敗處置、來源分支、`beforeSha`／`afterSha`、`git diff` exit-code、回歸矩陣逐列結果或 `return-count` 缺漏時，Agent 不得回報成功。
+Git 修正的嚴重度映射如下。
+
+| 循環 | `Critical` | `Major` | `Minor` |
+| --- | --- | --- | --- |
+| Git 修正 | 資料遺失、無法建置或安全性結果錯誤 | 目前症狀或既有行為回歸結果錯誤 | 單一邊界 assertion 或記錄欄位錯誤 |
+
+`return-count` 只記錄該 `problem-key` 的 Git 回歸修正次數，初次值為 `0`，每次回歸失敗後增加，不作一般停止條件。全部回歸矩陣列通過時進入回收。前輪問題連續兩輪未閉合、同一 `area-key` 連續兩輪出現新的 `Major` 以上問題、修正需要改變需求或已確認設計，或 `round` 達到 6 輪時停止，保留回歸矩陣、Git 命令輸出與替代方向。所有問題均屬純技術可解、未命中上述停止訊號，且前輪問題已閉合或本輪新問題只有 `Minor` 時自動續行。新出現的 Major 在尚未形成停止訊號前依純技術路徑續行；`return-count` 只在回歸失敗後增加，`round` 依一次修正連同其驗收或回歸判定增加一輪，兩者均不提前取代停止訊號判定。
+
+此 `problem-key` 的 Git 修正循環計數與 `codex-dispatch` 回收契約的 `dispatch-return-count` 分開保存、分開判定，不能共用或相互重設。相同目標、相同症狀或同一回歸 assertion 失敗時，不得藉由重新命名分支或改寫 `problem-key` 將計數歸零；變更 key 必須先取得使用者判斷。任一層的觸發條件、判定結果、失敗處置、來源分支、`beforeSha`／`afterSha`、`git diff` exit-code、回歸矩陣逐列結果或 `return-count` 缺漏時，Agent 不得回報成功。
 
 ## 版本標籤
 

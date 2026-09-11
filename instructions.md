@@ -111,7 +111,7 @@ applyTo: "**/*"
   1. 確認同線 `requirement-summary.md` 已含全部使用者拍板的需求與實作約束，並保留具體措辭。摘要確認後才在對話中出現的補充約束，須向使用者逐條呈現並取得當輪明確確認，才依 Analyst 的覆寫前備份流程追加落檔；未取得確認者列入未決事項，此時本項不成立。
   2. 寫入同線 `report/<lineSlug>/handoff-checkpoint.md`（覆寫同名舊檔），必要欄位如下，全部路徑使用絕對路徑：`lineSlug`、`work-root`、檢查點類型（`design-accepted` 或 `developer-collected`）、`requirement-summary.md` 路徑、`design.md` 路徑與 Design 驗收結果、已回收的派遣報告與結案報告路徑及各自的回收三態、下一站（尚未執行的 Developer 派工、Reviewer 或需求意圖驗收）、未決事項清單、未結案取證紀錄（每筆含 `problemId`、問題描述、目前計數與已取得證據的來源位置，無未結案問題時填「無」）。任一必要欄位無值時本項不成立。此檔不寫入 `CONTEXT.local.md`。
   3. 確認沒有待當前 Session 裁決的設計歧義或升級問題；有則先裁決或升級，完成後再檢查。
-  4. 三項皆成立時，`continue` 不再優先，改走 `handoff`。兩種檢查點的接手 Persona 固定為功能線協調者 `Analyst`，觸發詞為「需求分析師」。主 Agent 輸出單行接手指令，格式為 `[交接檢查點] 建議開新 Session：需求分析師，lineSlug=<lineSlug>，先讀 <handoff-checkpoint.md 絕對路徑>`，由使用者決定是否切換。任一項不成立時不輸出接手指令，維持同一 Session 並先補齊缺件。
+  4. 三項皆成立時，`continue` 不再優先，改走 `handoff`。兩種檢查點的接手 Persona 固定為功能線協調者 `Analyst`，觸發詞為「需求分析師」。主 Agent 輸出單行建議接手指令，格式為 `[交接檢查點] 建議開新 Session：需求分析師，lineSlug=<lineSlug>，先讀 <handoff-checkpoint.md 絕對路徑>`。此指令是狀態通知，輸出後原 Session 直接繼續下一站，不等待回覆。任一項不成立時不輸出接手指令，維持同一 Session 並先補齊缺件。
   5. 新 Session 接手時，實讀 `handoff-checkpoint.md` 與其列出的全部檔案，並依角色規則重新載入 Persona 與 skill；任一列出的檔案讀取失敗時停止並回報，不依記憶重建。
 - **狀態儲存（State Handoff）**：`CONTEXT.local.md` 為**可選**的本機交接檔，僅用於保存**耐久且跨 Session 仍有價值**的資訊，例如環境前置作業、本機路徑差異、已知陷阱、易踩雷設定。**不預設承載當前進度、短期 TODO 或本輪實作清單**。寫入時採用 `~/.ai-agents/templates/CONTEXT.local.md.template` 的標準化結構。
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
@@ -356,7 +356,7 @@ skill 未宣告 `dispatch` 或本輪工作不對應任何 skill 時，主 Agent 
 
 ##### Reviewer 派遣發動判準
 
-Reviewer 的發動時機由主 Agent 逐次判斷，不設全自動或等待使用者明示的固定規則。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
+Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，接著進入需求意圖驗收。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 **必發清單（命中任一即發）**：
 
@@ -369,6 +369,46 @@ Reviewer 的發動時機由主 Agent 逐次判斷，不設全自動或等待使�
 | 5 | 本輪改寫了 `instructions.md`、任何 `SKILL.md` 或 agent 規則檔的機制條款 |
 
 **可不發**：本輪僅改動文件敘述、排版或用詞，未觸及任何機制條款，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
+
+##### Workflow 自動推進鏈與共同收斂契約
+
+Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢查點的建檔與建檔內容仍依 §1.4 執行，建議接手指令輸出後原 Session 直接繼續。
+
+1. 寫入 `design-accepted` 交接檢查點，輸出建議接手指令後直接派工進入 Developer。
+2. 派遣 Developer 並回收結果。Workflow Developer 收下時，先將成果套回來源工作樹，不建立 Phase commit，並保留 dispatch worktree 供後續 Reviewer 退回續行。
+3. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點。
+4. 命中 Reviewer 必發清單時，命中必發清單即直接派出 Reviewer，不詢問使用者。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
+5. Reviewer 以純技術原因退回時，使用保留的同一 dispatch worktree 與 thread 自動續行 Developer 修正；修正完成後回到 Developer 回收與 Reviewer 判定。
+6. Reviewer 收下時進入 Analyst 需求意圖驗收。需求意圖驗收完成後輸出 Workflow 結案報告。
+7. 結案報告完成後等待使用者當輪授權 commit；取得授權後才執行 Phase commit 回收，完成驗證與報告同步後移除 dispatch worktree。
+
+自動推進鏈有兩類停頓處置。
+
+- 授權類停頓：`deep` 升級確認、安裝套件或下載相依性、commit 與 push，等待使用者當輪回覆。
+- 升級與收斂停止：業務語意缺口、範圍取捨、妥協確認或共同收斂契約的停止訊號，停止相關派遣，保留證據，回報未閉合清單與替代方向，等待使用者選擇方向。
+
+四處循環共用下列收斂契約。下游規則檔只補充自身循環的識別來源與驗收方式。
+
+| 名稱 | 機械定義 | 來源 |
+| --- | --- | --- |
+| `round` | 一次修正連同其驗收或回歸判定為一輪，初次執行為第 1 輪。後續續行各增加 1 輪 | 交接 prompt、回報或回歸紀錄 |
+| `area-key` | 同一函式或同一節規則的穩定識別。規則文件使用檔案絕對路徑加最近的 Markdown 標題；檢查清單使用所屬循環與檢查項目區段 | 原始檔案標題、函式位置或驗收清單區段 |
+| `problem-key` | 同一問題跨輪次不變的識別。Review 使用 `F-<三位數>`；Design 與 Demo 使用驗收檢查項目 key；派遣回收使用 `dispatchSlug` 加第 5 欄驗收列序號；Git 使用既有 finding ID 或建立時指定的固定 key | Reviewer 報告、驗收清單、派遣單第 5 欄或 Git 修正紀錄 |
+| `closed` | 前輪仍未解決的問題，在本輪相同 key 的驗收結果通過，且本輪沒有該 key 的反證 | 本輪完整驗收輸出與證據 |
+| `new-problem` | 本輪問題 key 不在前輪未解決問題集合，且沒有同一 key 的改寫或重新命名 | 前後輪問題集合比對 |
+| `severity` | `Critical`、`Major`、`Minor`。Review 沿用 `reviewer.toml`；其他循環依檢查項目影響映射 | Reviewer 規則或各循環的嚴重度映射 |
+| `max-rounds` | 6 輪。只防止失控，不取代問題閉合與方向變更判定 | 需求摘要與設計文件 |
+
+收斂判定依下列順序執行。
+
+1. 全部檢查項目通過時結束循環並進入下一站。
+2. 任一前輪問題連續兩輪未閉合時停止，保留證據並提出替代方向。
+3. 同一 `area-key` 連續兩輪出現新的 `Major` 以上問題時停止，保留證據並提出替代方向。
+4. 所有問題均屬純技術可解、未命中前兩項停止訊號，且前輪問題已閉合或本輪新問題只有 `Minor` 時自動續行。新出現的 `Major` 在尚未形成兩輪同區域或同問題停止訊號前，依純技術路徑續行修正。
+5. 修正需要改變 `requirement-summary.md` 的需求、範圍或 `design.md` 的已確認設計時停止，依升級兩道篩交由使用者拍板。
+6. `round` 達到 6 輪時停止，不以「仍有進展」覆寫安全上限；回報未閉合問題、證據與替代方向。
+
+`RecoveryPrecheck` 未通過的 `PromptNotDelivered` 屬啟動契約錯誤。先修正啟動條件，再重新派遣；此狀態不計入派遣回收計數。純技術的報告欄位缺漏、驗收輸出缺漏與格式錯誤直接進入自動補件路徑，不形成使用者詢問站點。`dispatch-return-count` 與 Git 的 `return-count` 分開保存、分開增加、分開判定，任一循環的成功或續行都不重設另一循環的計數。
 
 規則檔的機制條款改寫必發，且審查者不得是改寫者。改寫者對自己剛產出的條款存在盲點，實測一次規則檔改寫後由外部 Agent 稽核，找出改寫者自審未發現的七處機制漏洞，其中三處會直接造成成果遺失或誤判。
 
