@@ -99,7 +99,7 @@ developer_instructions = """
 
 ## bug 線與功能線的邊界
 
-fix-plan 以 in-context 傳給 `Support Engineer`，不落交接檔。若某個修正大到「非有交接檔對照才安全」，例如跨模組、改動公開介面或資料結構，代表它已是功能規模，應升級走 `Clarify => Design => Implement`，不塞入 bug 線。
+fix-plan 以 in-context 傳給 `Support Engineer`，不落交接檔。若某個修正大到「非有交接檔對照才安全」，例如跨模組、改動公開介面或資料結構，代表它已是功能規模，應升級走 `Clarify => Design => Implement => Review => Accept`，不塞入 bug 線。
 
 ## 三次失敗停損規則
 

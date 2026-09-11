@@ -107,7 +107,7 @@ applyTo: "**/*"
   3. `handoff`：下一階段需要另一個 Agent、設計文件或報告才能執行時，寫入規定的交接檔並交接。
   4. `subagent`：工作可由獨立 Agent 依完整輸入執行且不需要共享未保存的決策時，派生 sub-agent。
   5. `compact`：只有 primary source 已讀取、當前 Session 無法維持必要 context，且前四項都不可行時才壓縮；摘要後無法恢復未保存的 primary source 細節，因此不可把 `compact` 當成一般進度工具。
-- **Workflow 交接檢查點**：`Clarify => Design => Implement => Review` 流程在「Design 驗收通過」與「每次 Developer 回收完成」兩個節點，先執行交接完整性檢查，再進入上列決策樹。理由是 Claude 端每次呼叫都重送整段 Session，脈絡長度乘上呼叫次數才是主要成本，跨階段延續同一 Session 會讓後續每次呼叫都攜帶前一階段的全部過程。
+- **Workflow 交接檢查點**：`Clarify => Design => Implement => Review => Accept` 流程在「Design 驗收通過」與「每次 Developer 回收完成」兩個節點，先執行交接完整性檢查，再進入上列決策樹。理由是 Claude 端每次呼叫都重送整段 Session，脈絡長度乘上呼叫次數才是主要成本，跨階段延續同一 Session 會讓後續每次呼叫都攜帶前一階段的全部過程。
   1. 確認同線 `requirement-summary.md` 已含全部使用者拍板的需求與實作約束，並保留具體措辭。摘要確認後才在對話中出現的補充約束，須向使用者逐條呈現並取得當輪明確確認，才依 Analyst 的覆寫前備份流程追加落檔；未取得確認者列入未決事項，此時本項不成立。
   2. 寫入同線 `report/<lineSlug>/handoff-checkpoint.md`（覆寫同名舊檔），必要欄位如下，全部路徑使用絕對路徑：`lineSlug`、`work-root`、檢查點類型（`design-accepted` 或 `developer-collected`）、`requirement-summary.md` 路徑、`design.md` 路徑與 Design 驗收結果、已回收的派遣報告與結案報告路徑及各自的回收三態、下一站（尚未執行的 Developer 派工、Reviewer 或需求意圖驗收）、未決事項清單、未結案取證紀錄（每筆含 `problemId`、問題描述、目前計數與已取得證據的來源位置，無未結案問題時填「無」）。任一必要欄位無值時本項不成立。此檔不寫入 `CONTEXT.local.md`。
   3. 確認沒有待當前 Session 裁決的設計歧義或升級問題；有則先裁決或升級，完成後再檢查。
@@ -160,11 +160,11 @@ applyTo: "**/*"
 | Agent | 觸發條件 | 規則來源 |
 | --- | --- | --- |
 | **Analyst** | 使用者說「需求分析師」或「我想討論需求」；提出新功能或改善方向；要探索構想或挖掘功能方向；描述目標或問題但未給出具體實作指令；需求涉及畫面時判定本輪的 UI 線別；`Developer` 或 `Reviewer` 完成後回頭確認交付結果是否符合原始需求 | `~/.ai-agents/agents/claude/analyst.md` |
-| **Developer** | 使用者說「程式設計師」，相容觸發詞為「實作工程師」，或明確點名 `Developer` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review` Workflow | `~/.ai-agents/agents/codex/developer.toml` |
+| **Developer** | 使用者說「程式設計師」，相容觸發詞為「實作工程師」，或明確點名 `Developer` 進入實作階段；且任務屬於 `Clarify => Design => Implement => Review => Accept` Workflow | `~/.ai-agents/agents/codex/developer.toml` |
 | **Editor** | 使用者說「責任編輯」；要求分析或修改 Markdown 文件的結構與內容 | `~/.ai-agents/agents/claude/editor.md` |
 | **Maintainer** | 使用者說「維護工程師」；相容觸發詞為「值班工程師」、「除錯工程師」、「debug」或「除錯」；描述 bug 現象、錯誤訊息或測試失敗時預設進入 bug 分流 | `~/.ai-agents/agents/codex/maintainer.toml` |
 
-`Developer`（程式設計師）僅適用於 `Clarify => Design => Implement => Review` 流程的實作階段，且必須有 `design.md`。其餘一切由 `Maintainer`（維護工程師）承接。
+`Developer`（程式設計師）僅適用於 `Clarify => Design => Implement => Review => Accept` 流程的實作階段，且必須有 `design.md`。其餘一切由 `Maintainer`（維護工程師）承接。
 
 派遣契約選用依 Agent 名稱判定。`Developer` 走 Workflow 派工契約，`Reviewer` 與其餘一切走資源派遣。
 
@@ -219,7 +219,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 #### Workflow 階段保護
 
-- **`Developer` 不是通用實作入口**：僅適用於 `Clarify => Design => Implement => Review` 流程中的實作階段。不走此流程的實作，不使用 `Developer` Persona。
+- **`Developer` 不是通用實作入口**：僅適用於 `Clarify => Design => Implement => Review => Accept` 流程中的實作階段。不走此流程的實作，不使用 `Developer` Persona。
 - **命中 Workflow 後主 Agent 不得代做**：當使用者訊息已明確指向既有 Workflow 階段時，主 Agent 只能做路由與 preflight，不得以主 Agent 身份直接執行該階段工作。
 - **`Developer` 啟動前置條件**：至少需有可讀取的 `design.md` 作為設計基準，且 `Analyst` 已確認 Design 驗收通過與檢查清單全部通過。`CONTEXT.local.md` 若存在可作為補充交接，但不是 `Developer` 的必要前置。缺少 `design.md` 或設計驗收未通過時，主 Agent 必須停止並回報原因，不得建立 `Developer` 派遣；驗收結果須在建立派遣前完成。
 
@@ -300,7 +300,7 @@ Claude 端使用 Agent 工具建立 `Prototyper` 或主 Agent 臨時派生的搜
 
 #### 跨平台派工掛載點
 
-派工分為 Workflow 派工與資源派遣。Workflow 派工服務 `Clarify => Design => Implement => Review` 的實作階段，資源派遣服務 `Reviewer`、`Support Engineer` 與其他需要 Codex 端執行的工作。
+派工分為 Workflow 派工與資源派遣。Workflow 派工服務 `Clarify => Design => Implement => Review => Accept` 的實作階段，資源派遣服務 `Reviewer`、`Support Engineer` 與其他需要 Codex 端執行的工作。
 
 規則層只判斷是否派工與使用哪個 Codex 端 Agent。指令參數、落點、等待、事件流取證、續 session 與回收方式由 `codex-dispatch` skill 提供。
 
@@ -381,6 +381,8 @@ Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢
 5. Reviewer 以純技術原因退回時，使用保留的同一 dispatch worktree 與 thread 自動續行 Developer 修正；修正完成後回到 Developer 回收與 Reviewer 判定。
 6. Reviewer 收下時進入 Analyst 需求意圖驗收。需求意圖驗收完成後輸出 Workflow 結案報告。
 7. 結案報告完成後等待使用者當輪授權 commit；取得授權後才執行 Phase commit 回收，完成驗證與報告同步後移除 dispatch worktree。
+
+第 1 步是 Design 階段的收尾，第 2、3 步屬 Implement，第 4、5 步屬 Review，第 6、7 步屬 Accept。Accept 階段涵蓋 Analyst 需求意圖驗收、Workflow 結案報告，以及使用者授權後的 Phase commit 回收。
 
 自動推進鏈有兩類停頓處置。
 
