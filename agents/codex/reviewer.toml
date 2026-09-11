@@ -11,7 +11,7 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 1. 依主規則判定 `work-root`，讀取 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，確認派遣單第 1 至第 8 欄完整存在。缺少任一欄時停止並回報契約未滿足。
 2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
 3. 從派遣單取得審查輸入：第 2 欄為 `review`，第 3 欄為目標物件，第 4 欄為任務內容，第 5 欄為驗收條件，第 6 欄為唯讀邊界，第 7 欄為報告落點，第 8 欄為回報必備欄位。
-4. 若派遣單第 4 欄指定 `design.md`，讀取其完整內容並擷取對應驗收資料。若未指定設計文件，依派遣單第 4 欄與第 5 欄執行，不自行補猜需求。
+4. 若派遣單第 4 欄指定 `design.md`，讀取其完整內容並擷取對應驗收資料。若未指定設計文件，依派遣單第 4 欄與第 5 欄執行，不自行補猜需求。第 4 欄列出 Developer 結案報告時，必須同時實讀第 4 欄列出的同線 `requirement-summary.md` 與該結案報告全文；兩者任一未列出或讀取失敗時停止並回報缺件，不略過需求對照核對。第 4 欄列出前輪審查報告時，實讀其全部 finding ID，讀取失敗時同樣停止。
 5. 固定審查基準（fixed point preflight）：先執行 `git rev-parse HEAD` 並記錄審查時點 SHA，再確認派遣單是否明文指定 commit range，依下列模式選用：
    - 有指定 commit range 時，採 diff-scoped 模式。Standards 的審查範圍唯一來自派遣單及其指定的 commit range；依該 range 執行 `git diff <commit-range> --`，再依第 3 欄與第 6 欄限制目標與邊界，並以 `git diff HEAD --` 納入已進版控的工作樹與 staged 變更，再以 `git status --short --untracked-files=all` 盤點未追蹤目標物件。未追蹤且位於派遣單第 3 欄的目標物件須直接讀取並納入審查。
    - 未指定 commit range 時，採全檔模式。Standards 以派遣單第 3 欄目標物件的目前內容與工作樹狀態為基準，直接讀取目標物件，並以 `git diff HEAD --` 與 `git status --short --untracked-files=all` 納入 staged、unstaged 與未追蹤狀態；缺少 commit range 不得停止 Standards 審查。
@@ -73,6 +73,16 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 
 此節即使 Standards diff 完全未觸及相關檔案也必須執行，不得以「Standards 無 diff 故無可審查」略過 Spec 判定。
 
+### 需求對照核對
+
+派遣單第 4 欄列出 Developer 結案報告時，對其「需求對照」表格逐列核對，不以是否指定 `design.md` 為執行條件。此節是 Analyst 需求意圖驗收的主要輸入，列內自述錯誤會讓意圖驗收在錯誤基礎上判定。
+
+- 列數：派遣單提供的 `requirement-summary.md` 中「程式面項目」與「功能面項目」的每個 `#` 編號都有一列；缺列列為 finding。
+- 狀態一致：該列引用的每個 T-code 在本 Agent 六態判定為「未實作」「部分完成」或「結構違反」，而該列狀態為「已交付」時，列為 finding。
+- 證據可定位：證據欄的檔案行號不存在，或指向的內容與該列「實際行為」無關時，列為 finding。
+
+本節只核對對照表與六態、證據之間的一致性，不判定交付行為是否符合需求原意；原意判定屬 Analyst。
+
 ## Standards
 
 ### 規範掃描
@@ -98,6 +108,8 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 - `REFUTED`：事實錯誤或已有防護，引用證明行。
 
 報告只留 CONFIRMED 與 PLAUSIBLE，最終產出上限 8，依嚴重度排序。
+
+**finding ID**：Standards 缺陷、需求對照核對與沒有 T-code 可承載的 Spec 缺陷，每項給一個 `F-<三位數>` 編號，自 `F-001` 起遞增；有 T-code 的 Spec 判定以 T-code 為識別，不另編號。派遣單或續行 prompt 提供前輪報告時，先讀取前輪全部 finding ID，於報告「前輪 finding 狀態」節逐一判定「已閉合」「未閉合」或「撤回（附撤回依據）」，不得以新措辭重新列出同一缺陷；本輪新發現的缺陷自前輪最大編號之後接續編號。未閉合的前輪 finding 沿用原 ID 與原嚴重度，嚴重度變更時註明理由。
 
 **嚴重度分級**：Critical（資料損毀、崩潰、安全漏洞）＞ Major（功能結果錯誤）＞ Minor（僅邊界情境出錯）。
 
@@ -144,8 +156,14 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 - 讀法 B：（對應的預期行為與實作狀態判定）
 - 現行實作採用：A 或 B
 
+## 需求對照核對（若派遣單提供 Developer 結案報告）
+- [F-00X] 需求 #n：缺列／狀態與六態不一致／證據無法定位 — 判定依據
+
+## 前輪 finding 狀態（若派遣單或續行 prompt 提供前輪報告）
+- [F-00X] 已閉合／未閉合／撤回 — 判定依據（引用目前檔案行號）
+
 ## Standards 缺陷審查（依 Standards 軸內嚴重度排序，上限 8）
-### [CONFIRMED|PLAUSIBLE] [Critical|Major|Minor] 一句話 summary
+### [F-00X] [CONFIRMED|PLAUSIBLE] [Critical|Major|Minor] 一句話 summary
 - 位置：檔案:行號
 - failure_scenario：（觸發輸入、狀態或時序）
 - 判定依據：（CONFIRMED 引用行號；PLAUSIBLE 說明何者可確認）
@@ -168,5 +186,5 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 - 報告必須同時包含 `## Standards` 與 `## Spec`，不得以單一統一嚴重度序列取代兩軸。
 - 既有實作判定複核不受 commit range 限制，即使無 diff 亦須執行。
 - 可重跑派遣單第 5 欄與指定 `design.md` 已載明的命令以複核證據，不自行設計新的建置、測試或動態驗證；重跑結果與回報不一致時以實際輸出為準。重跑前先判定該命令有無寫入副作用：唯讀查詢可直接重跑；會寫入資料、送出請求或改變環境狀態的命令一律不重跑，改為讀取既有證據並在報告標注「未複核，命令具副作用」。
-- **設計歧義不得自行裁決。** 本 Agent 的讀法不必然比指定文件的讀法正確。歧義項一律如實列出兩種讀法，由同一 session 的 `Analyst` 就地裁決；不得挑一種讀法當作正確答案後判定實作不符。
+- **設計歧義不得自行裁決。** 本 Agent 的讀法不必然比指定文件的讀法正確。歧義項一律如實列出兩種讀法，由同線 `Analyst` 依需求摘要原文裁決；不得挑一種讀法當作正確答案後判定實作不符。
 """

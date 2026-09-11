@@ -111,7 +111,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `Preflight` | `SourceRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、`WriteMode`、`TargetPath[]` | `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`、同線目錄、`pidCheck` | manifest、PID、Git、根目錄界線、worktree、patch 或檔案複製驗證失敗時 stderr 並 exit code 1 |
 | `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`DeepRequestSource`、`SecondaryDaysToReset`、`SecondaryRemainingPercent`、`DowngradeInstruction`、Codex 父層選項 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id 路徑、實際參數、有效 profile、週期位置與降級狀態 | deep 主動提議未通過週期 gate、執行檔、工作目錄、啟動參數或根程序身分取得失敗時 stderr 並 exit code 1 |
 | `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、冷啟動／續行、派工前後快照 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、校準紀錄路徑、分組樣本數與提議訊號 | JSONL 格式錯誤、必要輸入缺失或校準快照格式錯誤時 stderr 並 exit code 1 |
-| `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果 | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
+| `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果 | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
 | `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `turn.completed`、exit code 0、實際參數、事件流、stderr、last-message、thread id、rollout 來源路徑與回復紀錄 | 只允許 `PostResetNoSnapshot`；`ProbeAttempt > 1`、啟動參數、根程序身分或事件流驗證失敗時 stderr 並 exit code 1 |
 
 `Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot`、`worktreeCreated=false`、空 `baseSha` 與核准輸出清單。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
@@ -124,7 +124,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 `Inspect` 在提供 `sourceRoot` 或 `CalibrationPath` 時追加校準紀錄。紀錄使用 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`，分組鍵為 `model`、`profile`、冷啟動／續行，任務類型只保留為欄位。紀錄不足 5 筆時只回報觀測數量；達到 5 筆時只輸出由主 Agent 提議新門檻的訊號，腳本不修改規則。
 
-`Collect` 在 worktree 路徑合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單。報告核對方式依 `DispatchKind` 分流：`workflow` 以結案報告「Phase 對照」節逐項比對檔案清單，`resource` 只確認報告存在且非空並回傳其長度與 SHA-256。resource 的結案要求是逐條驗收，不逐 Phase 列出檔案清單，對它要求「Phase 對照」節會使每次資源派遣都無法回收。direct-write 路徑則讀取 Preflight 的 `targetStates`，確認每個核准輸出都存在、為非空檔案，並回傳檔案長度、最後寫入時間與 SHA-256。任一數量、路徑、檔案證據或報告不一致都停止回收，且在成果尚未完成回收前不得移除 worktree。
+`Collect` 在 worktree 路徑合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單。報告核對方式依 `DispatchKind` 分流：`workflow` 以結案報告「Phase 對照」節逐項比對檔案清單，並以「需求對照」節比對 `RequirementSummaryPath` 的需求項目編號，`resource` 只確認報告存在且非空並回傳其長度與 SHA-256。「需求對照」核對要求需求摘要同時具備 `## 程式面項目` 與 `## 功能面項目` 兩節，兩節表格的 `#` 編號合併後不得重複，且每個編號在結案報告「需求對照」表格恰有一列 `#<n>`；表格固定 6 欄（需求、驗收方向、T-code、實際行為、證據、狀態），以未跳脫的 `|` 切欄，每欄非空，狀態為四個合法值之一。缺節、摘要編號重複、缺列、重複列、多出摘要沒有的編號、欄數不符或欄位為空時，以非零結束碼停止並列出不符的編號。此核對只驗結構完整，不判定內容是否正確，內容一致性由 Reviewer 的需求對照核對負責。resource 的結案要求是逐條驗收，不逐 Phase 列出檔案清單，對它要求「Phase 對照」節會使每次資源派遣都無法回收。direct-write 路徑則讀取 Preflight 的 `targetStates`，確認每個核准輸出都存在、為非空檔案，並回傳檔案長度、最後寫入時間與 SHA-256。任一數量、路徑、檔案證據或報告不一致都停止回收，且在成果尚未完成回收前不得移除 worktree。
 
 ### 額度狀態與回復探針
 
@@ -213,7 +213,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 1. 執行角色的觸發詞或 skill 名稱。Workflow 派工使用 `Developer` 的觸發詞；資源派遣使用派遣單第 2 欄指定的角色或 skill。
 2. Workflow 派工使用 `dispatchLineRoot\design.md` 的絕對路徑，資源派遣使用派遣單的絕對路徑。
 3. `LineContext` 的 `lineSlug`、`sourceLineRoot`、`dispatchLineRoot`、`reportLineRoot`、`sourceRoot`、`dispatchRoot` 與相關產出落點的絕對路徑。
-4. 回報格式、產出落點與驗收條件。Workflow 派工另須要求結案報告包含輪起點 SHA、開工基準線、「Phase 對照」節與「判定為既有實作而未動工」節。「Phase 對照」節逐 Phase 列出該 Phase 實際修改的檔案清單，供主 Agent 依 Phase 分組建立 commit。續 session 必須重述前輪這兩節的全部條目。
+4. 回報格式、產出落點與驗收條件。Workflow 派工另須要求結案報告包含輪起點 SHA、開工基準線、「Phase 對照」節、「需求對照」節與「判定為既有實作而未動工」節，並列出 `sourceLineRoot\requirement-summary.md` 的絕對路徑供 Developer 產出「需求對照」節。「Phase 對照」節逐 Phase 列出該 Phase 實際修改的檔案清單，供主 Agent 依 Phase 分組建立 commit。續 session 必須重述前輪「Phase 對照」與「判定為既有實作而未動工」兩節的全部條目。
 
 需要以結構約束結案報告時，另建立 JSON Schema 檔並加入 `--output-schema <FILE>`。該選項只約束最終回應的形狀，不改變事件流格式。
 
@@ -394,7 +394,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 `exec resume` 的 session 識別接受 `thread_id` 或 thread 名稱，UUID 優先解析。省略識別並改用 `--last` 會選取最近一次記錄的 session，該行為依賴本機記錄狀態而非本次派遣的識別，因此派工流程一律明列 `thread_id`，不使用 `--last`。
 
-續行 prompt 仍來自 scratch 檔案並以 `-` 從 stdin 傳入，內容必須重述同一組 `LineContext`、`dispatchRoot`、檔位與父層選項，列出前輪「驗證證據」及「Phase 對照」的既有條目，並逐項附上未達成條件清單。已完成的條件不得以摘要取代，續行只補齊明列的缺漏。
+續行 prompt 仍來自 scratch 檔案並以 `-` 從 stdin 傳入，內容必須重述同一組 `LineContext`、`dispatchRoot`、檔位與父層選項，列出前輪「驗證證據」及「Phase 對照」的既有條目，並逐項附上未達成條件清單。已完成的條件不得以摘要取代，續行只補齊明列的缺漏。續行的對象是 Reviewer 時，未達成條件以前輪報告的 finding ID 逐一列出（例如 `F-003 未閉合：<一句話>`），並附上主 Agent 對每個 ID 所做修正的位置；不以新措辭重述缺陷，讓 Reviewer 依 ID 判定閉合狀態。
 
 跨介面接手視為同一條 line 的續行，依序讀取下列交接物重建狀態。
 
@@ -435,7 +435,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 | --- | --- | --- |
 | 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `executionRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
 | 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `executionRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |
-| 結案要求 | 「驗證證據」節的輪起點 SHA 與開工基準線皆有值，且「Phase 對照」節逐 Phase 列出修改的檔案清單 | 先通過 `RecoveryPrecheck`，再逐條執行派遣單第 5 欄的命令並得出「收下」、「退回」或「升級」之一 |
+| 結案要求 | 「驗證證據」節的輪起點 SHA 與開工基準線皆有值，「Phase 對照」節逐 Phase 列出修改的檔案清單，且「需求對照」節涵蓋需求摘要的全部項目編號 | 先通過 `RecoveryPrecheck`，再逐條執行派遣單第 5 欄的命令並得出「收下」、「退回」或「升級」之一 |
 
 `requirement-summary.md` 是跨派遣的持久交接檔，固定於 `sourceLineRoot\requirement-summary.md`；覆寫前備份固定於 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>`。這兩個來源落點不屬於 `dispatchRoot` 的派遣產出，資源派遣若需寫入它們，必須在 `exec` 子命令前以 `--add-dir` 分別授權來源線層 `handoff` 與 `history` 目錄。
 

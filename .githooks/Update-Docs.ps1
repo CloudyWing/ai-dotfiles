@@ -158,6 +158,73 @@ function Assert-CodexTomlTopLevelKey {
     }
 }
 
+function Assert-CodexTomlEscapeSequence {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Content,
+
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    # TOML 基本字串中，反斜線一律視為跳脫序列的開頭。後接非法字元時整份檔案判定 malformed，
+    # Codex 只在 stderr 印一行警告並丟棄該 agent 定義，執行不中斷，因此必須在 commit 前攔下。
+    # 合法清單取自 Codex 解析器的錯誤訊息，另補上 `t`：該字元未出現在訊息中，但屬 TOML 規格
+    # 明定的合法跳脫，視為訊息未列全，一併放行以免誤擋。
+    $validEscapeChars = @('b', 't', 'e', 'f', 'n', 'r', '\', '"', 'x', 'u', 'U')
+    $inMultilineString = $false
+    $lineNumber = 0
+
+    foreach ($line in $Content) {
+        $lineNumber++
+        $scanText = $null
+
+        if ($inMultilineString) {
+            $scanText = $line
+
+            if ($line -match '"""') {
+                $inMultilineString = $false
+            }
+        }
+        elseif ($line -match '^\s*[A-Za-z0-9_-]+\s*=\s*"""') {
+            $scanText = $line
+
+            if ($line -notmatch '""".*"""') {
+                $inMultilineString = $true
+            }
+        }
+
+        if ($null -eq $scanText) {
+            continue
+        }
+
+        $trimmed = $scanText.TrimEnd()
+
+        for ($i = 0; $i -lt $trimmed.Length; $i++) {
+            if ($trimmed[$i] -ne '\') {
+                continue
+            }
+
+            # 行尾反斜線是多行基本字串的續行語法，不是跳脫序列。
+            if ($i -eq ($trimmed.Length - 1)) {
+                continue
+            }
+
+            $nextChar = $trimmed[$i + 1]
+
+            if ($validEscapeChars -notcontains [string]$nextChar) {
+                throw "Codex agent TOML 第 $lineNumber 行有非法跳脫序列 '\$nextChar'，合法跳脫字元為 $($validEscapeChars -join '、')：$Path"
+            }
+
+            # 跳過已驗證的跳脫字元，避免 `\\` 的第二個反斜線被當成新的跳脫起點。
+            $i++
+        }
+    }
+}
+
 function ConvertTo-BooleanValue {
     [CmdletBinding()]
     param (
@@ -392,6 +459,7 @@ try {
             ForEach-Object {
                 $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
                 Assert-CodexTomlTopLevelKey -Content $content -Path $_.FullName
+            Assert-CodexTomlEscapeSequence -Content $content -Path $_.FullName
                 $name = Get-TomlValue -Content $content -Key "name"
                 $description = Get-TomlValue -Content $content -Key "description"
                 $audience = Assert-AgentAudience -Value (Get-TomlMetaValue -Content $content -Key "audience") -Path $_.FullName

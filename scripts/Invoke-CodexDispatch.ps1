@@ -97,6 +97,8 @@ param(
     [ValidateSet('workflow', 'resource')]
     [string]$DispatchKind,
 
+    [string]$RequirementSummaryPath,
+
     [string[]]$ReportPath
 )
 
@@ -3367,6 +3369,530 @@ function Convert-ReportPathForComparison {
     return $normalized
 }
 
+function Get-RequirementSection {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Content,
+
+        [Parameter(Mandatory)]
+        [string]$Heading
+    )
+
+    $headingPattern = '(?ms)^##[ \t]+' + [regex]::Escape($Heading) + '[ \t]*\r?\n(?<section>.*?)(?=^##[ \t]|\z)'
+    $match = [regex]::Match($Content, $headingPattern)
+    if (-not $match.Success) {
+        return $null
+    }
+
+    return $match.Groups['section'].Value
+}
+
+function Split-MarkdownTableRow {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Line
+    )
+
+    $cells = New-Object 'System.Collections.Generic.List[string]'
+    $current = ''
+    $characters = $Line.ToCharArray()
+    for ($index = 0; $index -lt $characters.Length; $index++) {
+        $character = [string]$characters[$index]
+        if ($character -eq '\' -and $index + 1 -lt $characters.Length -and [string]$characters[$index + 1] -eq '|') {
+            $current += '|'
+            $index++
+            continue
+        }
+        if ($character -eq '|') {
+            $cells.Add($current)
+            $current = ''
+            continue
+        }
+        $current += $character
+    }
+    $cells.Add($current)
+
+    $trimmedLine = $Line.Trim()
+    if ($trimmedLine.StartsWith('|') -and $cells.Count -gt 0 -and $cells[0] -eq '') {
+        $cells.RemoveAt(0)
+    }
+    if ($trimmedLine.EndsWith('|') -and $cells.Count -gt 0 -and $cells[$cells.Count - 1] -eq '') {
+        $cells.RemoveAt($cells.Count - 1)
+    }
+
+    return @($cells | ForEach-Object { $_.Trim() })
+}
+
+function Get-TrimmedSectionLines {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Section
+    )
+
+    $rawLines = [regex]::Split($Section, '\r?\n')
+    $firstIndex = 0
+    while ($firstIndex -lt $rawLines.Count -and [string]::IsNullOrWhiteSpace($rawLines[$firstIndex])) {
+        $firstIndex++
+    }
+
+    $lastIndex = $rawLines.Count - 1
+    while ($lastIndex -ge $firstIndex -and [string]::IsNullOrWhiteSpace($rawLines[$lastIndex])) {
+        $lastIndex--
+    }
+
+    $lines = New-Object 'System.Collections.Generic.List[object]'
+    for ($index = $firstIndex; $index -le $lastIndex; $index++) {
+        $lines.Add([pscustomobject]@{
+                Text       = [string]$rawLines[$index]
+                LineNumber = $index + 1
+            })
+    }
+
+    return @($lines.ToArray())
+}
+
+function Add-InvalidSectionContent {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$InvalidSectionContent,
+
+        [Parameter(Mandatory)]
+        [string]$Heading,
+
+        [Parameter(Mandatory)]
+        [string]$LineNumber,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Line
+    )
+
+    $sectionPrefix = $Heading + '#'
+    foreach ($existing in $InvalidSectionContent) {
+        if ($existing.StartsWith($sectionPrefix, [System.StringComparison]::Ordinal)) {
+            return
+        }
+    }
+
+    $displayLine = if ($Line.Length -gt 80) { $Line.Substring(0, 80) } else { $Line }
+    $InvalidSectionContent.Add(('{0}#{1}={2}' -f $Heading, $LineNumber, $displayLine))
+}
+
+function Get-RequirementIdsFromSummary {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Content,
+
+        [Parameter(Mandatory)]
+        [string]$SummaryPath
+    )
+
+    $summaryIds = New-Object 'System.Collections.Generic.List[int]'
+    $missingSections = New-Object 'System.Collections.Generic.List[string]'
+    $invalidSummaryHeaders = New-Object 'System.Collections.Generic.List[string]'
+    $invalidSummaryRows = New-Object 'System.Collections.Generic.List[string]'
+    $emptySummaryFieldIds = New-Object 'System.Collections.Generic.List[string]'
+    $invalidSectionContent = New-Object 'System.Collections.Generic.List[string]'
+    $duplicateSummarySections = New-Object 'System.Collections.Generic.List[string]'
+    $emptySectionCount = 0
+    $expectedHeaders = @('#', '項目', '內容')
+    $fieldNames = @('#', '項目', '內容')
+
+    foreach ($heading in @('程式面項目', '功能面項目')) {
+        $headingPattern = '(?m)^##[ \t]+' + [regex]::Escape($heading) + '[ \t]*\r?$'
+        $headingMatches = [regex]::Matches($Content, $headingPattern)
+        if ($headingMatches.Count -eq 0) {
+            $missingSections.Add($heading)
+            continue
+        }
+
+        if ($headingMatches.Count -gt 1) {
+            $duplicateSummarySections.Add(('{0}:{1}={2}' -f [System.IO.Path]::GetFileName($SummaryPath), $heading, $headingMatches.Count))
+        }
+
+        $sectionPattern = '(?ms)^##[ \t]+' + [regex]::Escape($heading) + '[ \t]*\r?\n(?<section>.*?)(?=^##[ \t]|\z)'
+        $sectionMatches = [regex]::Matches($Content, $sectionPattern)
+        foreach ($sectionMatch in $sectionMatches) {
+            $sectionLabel = '{0}:{1}' -f [System.IO.Path]::GetFileName($SummaryPath), $heading
+            $sectionLines = @(Get-TrimmedSectionLines -Section $sectionMatch.Groups['section'].Value)
+            if ($sectionLines.Count -eq 1 -and [string]::Equals($sectionLines[0].Text.Trim(), '無', [System.StringComparison]::Ordinal)) {
+                $emptySectionCount++
+                continue
+            }
+
+            if ($sectionLines.Count -eq 0) {
+                $invalidSummaryHeaders.Add($heading)
+                Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber 'EOF' -Line '缺少表格資料列'
+                continue
+            }
+
+            $headerLine = $sectionLines[0]
+            $headerCells = @(Split-MarkdownTableRow -Line $headerLine.Text)
+            $headerValid = $headerCells.Count -eq $expectedHeaders.Count
+            if ($headerValid) {
+                for ($headerIndex = 0; $headerIndex -lt $expectedHeaders.Count; $headerIndex++) {
+                    if (-not [string]::Equals($headerCells[$headerIndex], $expectedHeaders[$headerIndex], [System.StringComparison]::Ordinal)) {
+                        $headerValid = $false
+                        break
+                    }
+                }
+            }
+            if (-not $headerValid) {
+                $invalidSummaryHeaders.Add($heading)
+                Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber ([string]$headerLine.LineNumber) -Line $headerLine.Text
+            }
+
+            $separatorValid = $false
+            if ($sectionLines.Count -gt 1) {
+                $separatorLine = $sectionLines[1]
+                $separatorCells = @(Split-MarkdownTableRow -Line $separatorLine.Text)
+                $separatorValid = $separatorCells.Count -eq $expectedHeaders.Count
+                if ($separatorValid) {
+                    foreach ($separatorCell in $separatorCells) {
+                        if ($separatorCell -notmatch '^:?-{3,}:?$') {
+                            $separatorValid = $false
+                            break
+                        }
+                    }
+                }
+                if (-not $separatorValid) {
+                    $invalidSummaryHeaders.Add($heading)
+                    Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber ([string]$separatorLine.LineNumber) -Line $separatorLine.Text
+                }
+            }
+            else {
+                $invalidSummaryHeaders.Add($heading)
+                Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber 'EOF' -Line '缺少表格分隔列'
+            }
+
+            $dataRowIndex = 0
+            if ($separatorValid) {
+                for ($lineIndex = 2; $lineIndex -lt $sectionLines.Count; $lineIndex++) {
+                    $dataLine = $sectionLines[$lineIndex]
+                    if ([string]::IsNullOrWhiteSpace($dataLine.Text)) {
+                        Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber ([string]$dataLine.LineNumber) -Line $dataLine.Text
+                        continue
+                    }
+
+                    $dataRowIndex++
+                    $dataCells = @(Split-MarkdownTableRow -Line $dataLine.Text)
+                    if ($dataCells.Count -le 1 -or $dataLine.Text.IndexOf('|') -lt 0) {
+                        Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber ([string]$dataLine.LineNumber) -Line $dataLine.Text
+                        continue
+                    }
+
+                    if ($dataCells.Count -ne $expectedHeaders.Count) {
+                        $invalidSummaryRows.Add(('{0}#{1}' -f $heading, $dataRowIndex))
+                        Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber ([string]$dataLine.LineNumber) -Line $dataLine.Text
+                        continue
+                    }
+
+                    $idCell = $dataCells[0]
+                    $rowLabel = if ($idCell -match '^\d+$') { $idCell } else { 'row' + $dataRowIndex }
+                    $rowValid = $true
+                    for ($fieldIndex = 0; $fieldIndex -lt $dataCells.Count; $fieldIndex++) {
+                        if ([string]::IsNullOrWhiteSpace($dataCells[$fieldIndex])) {
+                            $emptySummaryFieldIds.Add(('{0}#{1}:{2}' -f $heading, $rowLabel, $fieldNames[$fieldIndex]))
+                            $rowValid = $false
+                        }
+                    }
+
+                    if ($idCell -match '^\d+$') {
+                        $summaryIds.Add([int]$idCell)
+                    }
+                    else {
+                        $invalidSummaryRows.Add(('{0}#{1}' -f $heading, $dataRowIndex))
+                        $rowValid = $false
+                    }
+
+                    if (-not $rowValid) {
+                        Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber ([string]$dataLine.LineNumber) -Line $dataLine.Text
+                    }
+                }
+            }
+
+            if ($dataRowIndex -eq 0) {
+                $invalidSummaryHeaders.Add($heading)
+                Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading $sectionLabel -LineNumber 'EOF' -Line '缺少表格資料列'
+            }
+        }
+    }
+
+    if ($missingSections.Count -gt 0) {
+        throw "需求摘要缺少必要節。missingSections=$($missingSections -join ','); summaryPath=$SummaryPath"
+    }
+
+    $duplicateSummaryIds = @($summaryIds | Group-Object | Where-Object { $_.Count -gt 1 } | ForEach-Object { [int]$_.Name } | Sort-Object -Unique)
+    $invalidSummaryHeaders = @($invalidSummaryHeaders | Sort-Object -Unique)
+    $invalidSummaryRows = @($invalidSummaryRows | Sort-Object -Unique)
+    $emptySummaryFieldIds = @($emptySummaryFieldIds | Sort-Object -Unique)
+    $invalidSectionContent = @($invalidSectionContent | Sort-Object -Unique)
+    $duplicateSummarySections = @($duplicateSummarySections | Sort-Object -Unique)
+    if ($duplicateSummarySections.Count -gt 0 -or
+        $invalidSectionContent.Count -gt 0 -or
+        $invalidSummaryHeaders.Count -gt 0 -or
+        $invalidSummaryRows.Count -gt 0 -or
+        $emptySummaryFieldIds.Count -gt 0) {
+        throw "需求摘要結構不一致。duplicateSummarySections=$($duplicateSummarySections -join ','); invalidSectionContent=$($invalidSectionContent -join ','); invalidSummaryHeader=$($invalidSummaryHeaders -join ','); invalidSummaryRows=$($invalidSummaryRows -join ','); emptySummaryFieldIds=$($emptySummaryFieldIds -join ','); duplicateSummaryIds=$($duplicateSummaryIds -join ','); summaryPath=$SummaryPath"
+    }
+    if ($summaryIds.Count -eq 0) {
+        throw "需求摘要未解析到任何需求編號：$SummaryPath"
+    }
+    if ($duplicateSummaryIds.Count -gt 0) {
+        throw "需求摘要編號重複。duplicateSummaryIds=$($duplicateSummaryIds -join ','); summaryPath=$SummaryPath"
+    }
+
+    return @($summaryIds | Sort-Object -Unique)
+}
+
+function Get-RequirementTableRows {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Section,
+
+        [Parameter(Mandatory)]
+        [string]$ReportName,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$InvalidColumnCountRows,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$EmptyFieldIds,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$InvalidRequirementCells,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$InvalidHeader
+
+        ,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$InvalidSectionContent
+    )
+
+    $expectedHeaders = @('需求', '驗收方向', 'T-code', '實際行為', '證據', '狀態')
+    $fieldNames = @('需求', '驗收方向', 'T-code', '實際行為', '證據', '狀態')
+    $sectionLabel = '{0}:需求對照' -f $ReportName
+    $sectionLines = @(Get-TrimmedSectionLines -Section $Section)
+    if ($sectionLines.Count -lt 2) {
+        $InvalidHeader.Add($ReportName + ':header-or-separator')
+        if ($sectionLines.Count -eq 1) {
+            Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$sectionLines[0].LineNumber) -Line $sectionLines[0].Text
+        }
+        else {
+            Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber 'EOF' -Line '缺少需求對照表格'
+        }
+        return @()
+    }
+
+    $headerLine = $sectionLines[0]
+    $headerCells = @(Split-MarkdownTableRow -Line $headerLine.Text)
+    $headerValid = $headerCells.Count -eq $expectedHeaders.Count
+    if ($headerValid) {
+        for ($index = 0; $index -lt $expectedHeaders.Count; $index++) {
+            if (-not [string]::Equals($headerCells[$index], $expectedHeaders[$index], [System.StringComparison]::Ordinal)) {
+                $headerValid = $false
+                break
+            }
+        }
+    }
+    if (-not $headerValid) {
+        $InvalidHeader.Add($ReportName + ':header')
+        Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$headerLine.LineNumber) -Line $headerLine.Text
+    }
+
+    $separatorLine = $sectionLines[1]
+    $separatorCells = @(Split-MarkdownTableRow -Line $separatorLine.Text)
+    $separatorValid = $separatorCells.Count -eq $expectedHeaders.Count
+    if ($separatorValid) {
+        foreach ($separatorCell in $separatorCells) {
+            if ($separatorCell -notmatch '^:?-{3,}:?$') {
+                $separatorValid = $false
+                break
+            }
+        }
+    }
+    if (-not $separatorValid) {
+        $InvalidHeader.Add($ReportName + ':separator')
+        Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$separatorLine.LineNumber) -Line $separatorLine.Text
+    }
+
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    $dataRowIndex = 0
+    for ($lineIndex = 2; $lineIndex -lt $sectionLines.Count; $lineIndex++) {
+        $line = $sectionLines[$lineIndex]
+        if ([string]::IsNullOrWhiteSpace($line.Text)) {
+            Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line $line.Text
+            continue
+        }
+
+        $dataRowIndex++
+        $cells = @(Split-MarkdownTableRow -Line $line.Text)
+        if ($cells.Count -ne $expectedHeaders.Count) {
+            $InvalidColumnCountRows.Add(('{0}#{1}' -f $ReportName, $dataRowIndex))
+            Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line $line.Text
+            continue
+        }
+
+        $requirementCell = $cells[0]
+        $requirementLabel = if ($requirementCell -match '^#\d+$') { $requirementCell } else { 'row' + $dataRowIndex }
+        $rowValid = $true
+        for ($index = 0; $index -lt $cells.Count; $index++) {
+            if ([string]::IsNullOrWhiteSpace($cells[$index])) {
+                $EmptyFieldIds.Add(('{0}:{1}' -f $requirementLabel, $fieldNames[$index]))
+                $rowValid = $false
+            }
+        }
+
+        if ($requirementCell -notmatch '^#\d+$') {
+            $InvalidRequirementCells.Add(('{0}#{1}:{2}' -f $ReportName, $dataRowIndex, $requirementCell))
+            Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line $line.Text
+            continue
+        }
+
+        $id = [int]$requirementCell.Substring(1)
+        $status = $cells[5]
+        if ($status -eq '排除(design.md §8)') {
+            $status = '排除（design.md §8）'
+        }
+        if ($status -notin @('已交付', '部分交付', '未交付', '排除（design.md §8）')) {
+            $rowValid = $false
+        }
+        if (-not $rowValid) {
+            Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading '需求對照' -LineNumber ([string]$line.LineNumber) -Line $line.Text
+        }
+        $rows.Add([pscustomobject]@{
+                Id       = $id
+                Evidence = $cells[4]
+                Status   = $status
+            })
+    }
+
+    if ($dataRowIndex -eq 0) {
+        Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber 'EOF' -Line '缺少需求對照資料列'
+    }
+
+    return @($rows.ToArray())
+}
+
+function Get-RequirementMap {
+    param(
+        [AllowEmptyString()]
+        [string]$RequirementSummaryPath,
+
+        [Parameter(Mandatory)]
+        [string[]]$ReportPath
+    )
+
+    $summaryDisplayPath = if ([string]::IsNullOrWhiteSpace($RequirementSummaryPath)) { '<empty>' } else { $RequirementSummaryPath }
+    if ([string]::IsNullOrWhiteSpace($RequirementSummaryPath)) {
+        throw "workflow Collect 必須提供 RequirementSummaryPath：$summaryDisplayPath"
+    }
+
+    $summaryFullPath = Resolve-AbsolutePath -Path $RequirementSummaryPath
+    if (-not (Test-Path -LiteralPath $summaryFullPath -PathType Leaf)) {
+        throw "找不到需求摘要：$summaryFullPath"
+    }
+
+    $summaryContent = Get-Content -LiteralPath $summaryFullPath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($summaryContent)) {
+        throw "需求摘要為空：$summaryFullPath"
+    }
+
+    $requirementIds = @(Get-RequirementIdsFromSummary -Content $summaryContent -SummaryPath $summaryFullPath)
+    $rows = New-Object 'System.Collections.Generic.List[object]'
+    $invalidColumnCountRows = New-Object 'System.Collections.Generic.List[string]'
+    $emptyFieldIds = New-Object 'System.Collections.Generic.List[string]'
+    $invalidRequirementCells = New-Object 'System.Collections.Generic.List[string]'
+    $invalidHeader = New-Object 'System.Collections.Generic.List[string]'
+    $invalidSectionContent = New-Object 'System.Collections.Generic.List[string]'
+    $duplicateRequirementSections = New-Object 'System.Collections.Generic.List[string]'
+    $statusCounts = [ordered]@{
+        '已交付'          = 0
+        '部分交付'        = 0
+        '未交付'          = 0
+        '排除（design.md §8）' = 0
+    }
+    $validStatuses = New-Object 'System.Collections.Generic.HashSet[string]'
+    foreach ($status in $statusCounts.Keys) {
+        [void]$validStatuses.Add([string]$status)
+    }
+
+    foreach ($report in @($ReportPath)) {
+        $reportFullPath = Resolve-AbsolutePath -Path $report
+        if (-not (Test-Path -LiteralPath $reportFullPath -PathType Leaf)) {
+            throw "找不到結案報告：$reportFullPath"
+        }
+
+        $reportContent = Get-Content -LiteralPath $reportFullPath -Raw -Encoding UTF8
+        if ([string]::IsNullOrWhiteSpace($reportContent)) {
+            throw "結案報告為空：$reportFullPath"
+        }
+
+        $reportName = [System.IO.Path]::GetFileName($reportFullPath)
+        $requirementHeadingMatches = [regex]::Matches($reportContent, '(?m)^##[ \t]+需求對照[ \t]*\r?$')
+        if ($requirementHeadingMatches.Count -eq 0) {
+            throw "結案報告缺少需求對照節：$reportFullPath"
+        }
+
+        if ($requirementHeadingMatches.Count -gt 1) {
+            $duplicateRequirementSections.Add(('{0}={1}' -f $reportName, $requirementHeadingMatches.Count))
+            continue
+        }
+
+        $requirementMatch = [regex]::Match($reportContent, '(?ms)^##[ \t]+需求對照[ \t]*\r?\n(?<section>.*?)(?=^##[ \t]|\z)')
+        if (-not $requirementMatch.Success) {
+            throw "結案報告缺少需求對照節：$reportFullPath"
+        }
+
+        $reportRows = @(Get-RequirementTableRows -Section $requirementMatch.Groups['section'].Value -ReportName $reportName -InvalidColumnCountRows $invalidColumnCountRows -EmptyFieldIds $emptyFieldIds -InvalidRequirementCells $invalidRequirementCells -InvalidHeader $invalidHeader -InvalidSectionContent $invalidSectionContent)
+        foreach ($row in $reportRows) {
+            $status = $row.Status
+            if ($validStatuses.Contains($status)) {
+                $statusCounts[$status] = [int]$statusCounts[$status] + 1
+            }
+            $rows.Add($row)
+        }
+    }
+
+    $reportedIds = @($rows | ForEach-Object { $_.Id } | Sort-Object -Unique)
+    $missingRequirementIds = @($requirementIds | Where-Object { $reportedIds -notcontains $_ } | Sort-Object)
+    $duplicateRequirementIds = @($rows | Group-Object -Property Id | Where-Object { $_.Count -gt 1 } | ForEach-Object { [int]$_.Name } | Sort-Object)
+    $unknownRequirementIds = @($reportedIds | Where-Object { $requirementIds -notcontains $_ } | Sort-Object)
+    $invalidStatusIds = @($rows | Where-Object { -not $validStatuses.Contains($_.Status) } | ForEach-Object { $_.Id } | Sort-Object -Unique)
+    $duplicateRequirementSections = @($duplicateRequirementSections | Sort-Object -Unique)
+    $invalidSectionContent = @($invalidSectionContent | Sort-Object -Unique)
+
+    if ($duplicateRequirementSections.Count -gt 0 -or
+        $invalidSectionContent.Count -gt 0 -or
+        $missingRequirementIds.Count -gt 0 -or
+        $duplicateRequirementIds.Count -gt 0 -or
+        $unknownRequirementIds.Count -gt 0 -or
+        $invalidColumnCountRows.Count -gt 0 -or
+        $emptyFieldIds.Count -gt 0 -or
+        $invalidRequirementCells.Count -gt 0 -or
+        $invalidHeader.Count -gt 0 -or
+        $invalidStatusIds.Count -gt 0) {
+        throw "需求對照結構不一致。duplicateRequirementSections=$($duplicateRequirementSections -join ','); invalidSectionContent=$($invalidSectionContent -join ','); missingRequirementIds=$($missingRequirementIds -join ','); duplicateRequirementIds=$($duplicateRequirementIds -join ','); unknownRequirementIds=$($unknownRequirementIds -join ','); invalidColumnCountRows=$($invalidColumnCountRows -join ','); emptyFieldIds=$($emptyFieldIds -join ','); invalidRequirementCells=$($invalidRequirementCells -join ','); invalidHeader=$($invalidHeader -join ','); invalidStatusIds=$($invalidStatusIds -join ',')"
+    }
+
+    return [ordered]@{
+        summaryPath     = $summaryFullPath
+        requirementIds  = @($requirementIds)
+        reportRowCount  = $rows.Count
+        statusCounts    = $statusCounts
+    }
+}
+
 function Get-ReportReferencedPaths {
     param(
         [Parameter(Mandatory)]
@@ -3454,7 +3980,10 @@ function Invoke-DirectWriteCollect {
         [object[]]$TargetStates,
 
         [Parameter(Mandatory)]
-        [string[]]$ReportPath
+        [string[]]$ReportPath,
+
+        [AllowNull()]
+        [object]$RequirementMap
     )
 
     if ($TargetStates.Count -eq 0) {
@@ -3480,7 +4009,7 @@ function Invoke-DirectWriteCollect {
         $reportEvidence.Add((Get-DirectWriteFileEvidence -Path $report -SourceRoot $SourceRoot -EvidenceName '結案報告'))
     }
 
-    return [ordered]@{
+    $result = [ordered]@{
         operation          = 'Collect'
         collectionMode     = 'direct-write'
         sourceRoot         = $SourceRoot
@@ -3503,6 +4032,12 @@ function Invoke-DirectWriteCollect {
         outputValid        = $true
         worktreeRemoved    = $false
     }
+
+    if ($DispatchKind -eq 'workflow') {
+        $result.requirementMap = $RequirementMap
+    }
+
+    return $result
 }
 
 function Invoke-Collect {
@@ -3511,6 +4046,11 @@ function Invoke-Collect {
     }
     if ([string]::IsNullOrWhiteSpace($DispatchKind)) {
         throw 'Collect 必須提供 DispatchKind。'
+    }
+
+    $requirementMap = $null
+    if ($DispatchKind -eq 'workflow') {
+        $requirementMap = Get-RequirementMap -RequirementSummaryPath $RequirementSummaryPath -ReportPath $ReportPath
     }
 
     $preflight = $null
@@ -3540,7 +4080,7 @@ function Invoke-Collect {
             if ($null -eq $targetStatesProperty) {
                 throw 'direct-write 的 Preflight 輸出缺少 targetStates。'
             }
-            return Invoke-DirectWriteCollect -SourceRoot $preflightSourceRoot -ExecutionRoot $preflightExecutionRoot -DispatchKind $DispatchKind -TargetStates @($targetStatesProperty.Value) -ReportPath $ReportPath
+            return Invoke-DirectWriteCollect -SourceRoot $preflightSourceRoot -ExecutionRoot $preflightExecutionRoot -DispatchKind $DispatchKind -TargetStates @($targetStatesProperty.Value) -ReportPath $ReportPath -RequirementMap $requirementMap
         }
 
         $preflightDispatchRootProperty = $preflight.PSObject.Properties['dispatchRoot']
@@ -3602,7 +4142,7 @@ function Invoke-Collect {
         $reportEvidence = @($reportEvidenceList.ToArray())
     }
 
-    return [ordered]@{
+    $result = [ordered]@{
         operation          = 'Collect'
         dispatchRoot       = $dispatchRootPath
         baseSha            = $BaseSha
@@ -3620,6 +4160,12 @@ function Invoke-Collect {
         outputValid        = $true
         worktreeRemoved    = $false
     }
+
+    if ($DispatchKind -eq 'workflow') {
+        $result.requirementMap = $requirementMap
+    }
+
+    return $result
 }
 
 function Write-OperationResult {
