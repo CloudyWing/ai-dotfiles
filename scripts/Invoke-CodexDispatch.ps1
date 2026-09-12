@@ -1317,6 +1317,10 @@ function Get-ThreadIdsFromEventStream {
         }
         $threadId = Get-OptionalObjectProperty -Object $event -Name 'thread_id'
         if ($threadId -is [string] -and -not [string]::IsNullOrWhiteSpace($threadId)) {
+            $parsedThreadId = [guid]::Empty
+            if (-not [guid]::TryParse($threadId, [ref]$parsedThreadId)) {
+                throw "事件流 thread.started.thread_id 必須為 UUID：$threadId"
+            }
             $ids.Add($threadId)
         }
     }
@@ -1339,6 +1343,12 @@ function Set-ThreadIdFromEventStream {
     $existingId = ''
     if (Test-Path -LiteralPath $threadPathValue -PathType Leaf) {
         $existingId = (Get-Content -LiteralPath $threadPathValue -Raw -Encoding UTF8).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($existingId)) {
+            $parsedExistingId = [guid]::Empty
+            if (-not [guid]::TryParse($existingId, [ref]$parsedExistingId)) {
+                throw "既有 thread id 檔案內容必須為 UUID：$existingId"
+            }
+        }
     }
     $distinctIds = @($eventIds | Sort-Object -Unique)
     if ($distinctIds.Count -gt 1) {
@@ -3994,13 +4004,22 @@ function New-StartFailureEvidenceMessage {
         [string]$LauncherPath,
         [Nullable[int]]$ProcessExitCode,
         [string]$CleanupStatus,
-        [string]$CleanupError
+        [string]$CleanupError,
+        [string]$RelaySource,
+        [Nullable[bool]]$RelayTimedOut,
+        [Nullable[int]]$RelayTimeoutSeconds
     )
 
     $processExitText = if ($null -eq $ProcessExitCode) { 'not-started-or-unknown' } else { [string]$ProcessExitCode }
     $cleanupErrorText = if ([string]::IsNullOrWhiteSpace($CleanupError)) { '<none>' } else { $CleanupError }
-    return ('phase={0}; eventStreamPath={1}; errorStreamPath={2}; lastMessagePath={3}; threadIdPath={4}; pidRecordPath={5}; launcherPath={6}; processExitCode={7}; cleanupStatus={8}; cleanupError={9}' -f `
+    $relaySourceText = if ([string]::IsNullOrWhiteSpace($RelaySource)) { '<none>' } else { $RelaySource }
+    $relayTimedOutText = if ($null -eq $RelayTimedOut) { '<none>' } else { [string]$RelayTimedOut }
+    $relayTimeoutSecondsText = if ($null -eq $RelayTimeoutSeconds) { '<none>' } else { [string]$RelayTimeoutSeconds }
+    return ('phase={0}; source={1}; timedOut={2}; timeoutSeconds={3}; eventStreamPath={4}; errorStreamPath={5}; lastMessagePath={6}; threadIdPath={7}; pidRecordPath={8}; launcherPath={9}; processExitCode={10}; cleanupStatus={11}; cleanupError={12}' -f `
         $Phase,
+        $relaySourceText,
+        $relayTimedOutText,
+        $relayTimeoutSecondsText,
         (Format-StartEvidencePath -Path $EventPath),
         (Format-StartEvidencePath -Path $ErrorPath),
         (Format-StartEvidencePath -Path $LastMessagePath),
@@ -4617,6 +4636,7 @@ function Invoke-Start {
     $launcher = $null
     $startInfo = $null
     $process = $null
+    $relay = $null
     $startedSnapshot = $null
     $processStarted = $false
     $skipProcessCleanup = $false
@@ -5123,7 +5143,34 @@ function Invoke-Start {
                 }
             }
         }
-        $evidenceMessage = New-StartFailureEvidenceMessage -Phase $phase -EventPath $eventPath -ErrorPath $errorPath -LastMessagePath $lastMessagePathValue -ThreadPath $threadPath -PidPath $pidPath -LauncherPath $launcherPath -ProcessExitCode $processExitCodeValue -CleanupStatus $cleanupStatus -CleanupError $cleanupError
+        $relaySourceValue = $null
+        $relayTimedOutValue = $null
+        $relayTimeoutSecondsValue = $null
+        if ($null -ne $relay) {
+            if ($relay -is [System.Collections.IDictionary]) {
+                if ($relay.Contains('source')) {
+                    $relaySourceValue = [string]$relay['source']
+                }
+                if ($relay.Contains('timedOut')) {
+                    $relayTimedOutValue = [bool]$relay['timedOut']
+                }
+                if ($relay.Contains('timeoutSeconds')) {
+                    $relayTimeoutSecondsValue = [int]$relay['timeoutSeconds']
+                }
+            }
+            else {
+                $relaySourceValue = [string](Get-OptionalObjectProperty -Object $relay -Name 'source')
+                $relayTimedOutProperty = $relay.PSObject.Properties['timedOut']
+                if ($null -ne $relayTimedOutProperty) {
+                    $relayTimedOutValue = [bool]$relayTimedOutProperty.Value
+                }
+                $relayTimeoutSecondsProperty = $relay.PSObject.Properties['timeoutSeconds']
+                if ($null -ne $relayTimeoutSecondsProperty) {
+                    $relayTimeoutSecondsValue = [int]$relayTimeoutSecondsProperty.Value
+                }
+            }
+        }
+        $evidenceMessage = New-StartFailureEvidenceMessage -Phase $phase -EventPath $eventPath -ErrorPath $errorPath -LastMessagePath $lastMessagePathValue -ThreadPath $threadPath -PidPath $pidPath -LauncherPath $launcherPath -ProcessExitCode $processExitCodeValue -CleanupStatus $cleanupStatus -CleanupError $cleanupError -RelaySource $relaySourceValue -RelayTimedOut $relayTimedOutValue -RelayTimeoutSeconds $relayTimeoutSecondsValue
         if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
             try {
                 $failureResultPath = Resolve-AbsolutePath -Path $ResultPath
@@ -5273,6 +5320,10 @@ function Invoke-Inspect {
             if ($null -eq $threadIdValue -or -not ($threadIdValue -is [string]) -or [string]::IsNullOrWhiteSpace($threadIdValue)) {
                 throw 'thread.started.thread_id 必須為非空字串。'
             }
+            $parsedThreadId = [guid]::Empty
+            if (-not [guid]::TryParse($threadIdValue, [ref]$parsedThreadId)) {
+                throw "事件流 thread.started.thread_id 必須為 UUID：$threadIdValue"
+            }
             $threadIds.Add($threadIdValue)
         }
         $item = Get-EventPropertyValue -Object $event -Name 'item'
@@ -5410,15 +5461,42 @@ function Invoke-Inspect {
         sessionMode = $SessionMode
     }
     $budgetMonitor = $null
-    if (-not [string]::IsNullOrWhiteSpace($BudgetMonitorPath) -and (Test-Path -LiteralPath $BudgetMonitorPath -PathType Leaf)) {
-        $budgetMonitor = @(Get-Content -LiteralPath $BudgetMonitorPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
-    }
     $budgetMonitorRejected = $false
+    $budgetMonitorRejectionReason = ''
+    if (-not [string]::IsNullOrWhiteSpace($BudgetMonitorPath)) {
+        $budgetMonitorPathValue = Resolve-AbsolutePath -Path $BudgetMonitorPath
+        if (-not (Test-Path -LiteralPath $budgetMonitorPathValue -PathType Leaf)) {
+            $budgetMonitorRejected = $true
+            $budgetMonitorRejectionReason = "BudgetMonitor 檔案不存在或不是檔案：$budgetMonitorPathValue"
+        }
+        else {
+            try {
+                $budgetMonitor = @(Get-Content -LiteralPath $budgetMonitorPathValue -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
+                if ($budgetMonitor.Count -eq 0) {
+                    $budgetMonitorRejected = $true
+                    $budgetMonitorRejectionReason = "BudgetMonitor 檔案沒有可解析的 JSON：$budgetMonitorPathValue"
+                }
+            }
+            catch {
+                $budgetMonitorRejected = $true
+                $budgetMonitorRejectionReason = "BudgetMonitor 無法讀取或解析 JSON：$budgetMonitorPathValue；$($_.Exception.Message)"
+                $budgetMonitor = $null
+            }
+        }
+    }
     foreach ($monitorRecord in @($budgetMonitor)) {
         $monitorState = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'state')
         $monitorEvent = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'event')
-        if ($monitorState -eq 'AbortedByBudget' -or $monitorEvent -eq 'monitor.terminal-budget-exceeded') {
+        if ($monitorState -eq 'AbortedByBudget' -or $monitorState -eq 'SnapshotFailed' -or $monitorEvent -eq 'monitor.terminal-budget-exceeded' -or $monitorEvent -eq 'monitor.snapshot-failed') {
             $budgetMonitorRejected = $true
+            if ([string]::IsNullOrWhiteSpace($budgetMonitorRejectionReason)) {
+                if ($monitorState -eq 'SnapshotFailed' -or $monitorEvent -eq 'monitor.snapshot-failed') {
+                    $budgetMonitorRejectionReason = 'BudgetMonitor 偵測到 snapshot 失敗。'
+                }
+                else {
+                    $budgetMonitorRejectionReason = 'BudgetMonitor 偵測到行程結束後超出 primary budget。'
+                }
+            }
             break
         }
     }
@@ -5426,7 +5504,7 @@ function Invoke-Inspect {
         $executionResult.success = $false
         $executionResult.budgetMonitorRejected = $true
         if ([string]::IsNullOrWhiteSpace($executionResult.turnFailedReason)) {
-            $executionResult.turnFailedReason = 'BudgetMonitor 偵測到行程結束後超出 primary budget。'
+            $executionResult.turnFailedReason = $budgetMonitorRejectionReason
         }
     }
     $calibrationResult = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -InterruptionStatus $interruptionStatus -BudgetMonitor $budgetMonitor
