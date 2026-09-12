@@ -61,13 +61,36 @@ param(
 
     [Nullable[double]]$SecondaryRemainingPercent,
 
-    [switch]$DowngradeInstruction,
+    [Alias('DowngradeInstruction')]
+    [switch]$InterruptionSafeguard,
 
     [string]$QuotaBeforePath,
 
     [string]$QuotaAfterPath,
 
     [string]$CalibrationPath,
+
+    [string]$ScopePlanPath,
+
+    [string[]]$RequestedUnit,
+
+    [ValidateSet('workflow-phase', 'resource-target', 'deep-evidence-pack')]
+    [string]$UnitKind,
+
+    [ValidateRange(0, 100)]
+    [Nullable[double]]$PrimaryBudgetPercent,
+
+    [ValidateRange(0, 100)]
+    [Nullable[double]]$PrimaryReservePercent,
+
+    [string]$EvidencePackPath,
+
+    [string]$DeepConsultReportPath,
+
+    [ValidateRange(5, 60)]
+    [int]$AbortGraceSeconds = 30,
+
+    [string]$BudgetMonitorPath,
 
     [string[]]$AddDirectory,
 
@@ -447,8 +470,104 @@ function Read-QuotaSnapshot {
         throw "找不到額度快照：$snapshotPath"
     }
 
+    $content = Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        throw "額度快照為空：$snapshotPath"
+    }
+
+    if ($content.TrimStart().StartsWith('{')) {
+        try {
+            $document = $content | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            throw "額度快照 JSON 格式錯誤：$snapshotPath；$($_.Exception.Message)"
+        }
+
+        $schemaProperty = $document.PSObject.Properties['schema']
+        $stateProperty = $document.PSObject.Properties['state']
+        if ($null -eq $schemaProperty -or $schemaProperty.Value -ne 'quota-snapshot.v1') {
+            throw "額度快照 schema 不支援：$snapshotPath"
+        }
+        if ($null -eq $stateProperty -or $stateProperty.Value -ne 'Valid') {
+            $stateValue = if ($null -eq $stateProperty) { '<missing>' } else { [string]$stateProperty.Value }
+            throw "額度快照 state 不可用：$snapshotPath；quota_state=$stateValue"
+        }
+
+        $windowValues = [ordered]@{}
+        $windowObjects = [ordered]@{}
+        foreach ($windowName in @('primary', 'secondary')) {
+            $windowProperty = $document.PSObject.Properties[$windowName]
+            if ($null -eq $windowProperty -or $null -eq $windowProperty.Value) {
+                throw "額度快照缺少視窗：$snapshotPath；$windowName"
+            }
+
+            $window = $windowProperty.Value
+            foreach ($requiredName in @('used_percent', 'remaining_percent', 'window_minutes', 'resets_at', 'source_file')) {
+                $requiredProperty = $window.PSObject.Properties[$requiredName]
+                if ($null -eq $requiredProperty -or $null -eq $requiredProperty.Value -or ([string]$requiredName -eq 'source_file' -and [string]::IsNullOrWhiteSpace([string]$requiredProperty.Value))) {
+                    throw "額度快照缺少欄位：$snapshotPath；$windowName.$requiredName"
+                }
+            }
+
+            $usedPercent = [double]$window.used_percent
+            $remainingPercent = [double]$window.remaining_percent
+            $windowMinutes = [int64]$window.window_minutes
+            $resetsAt = [int64]$window.resets_at
+            if ($usedPercent -lt 0 -or $usedPercent -gt 100 -or $remainingPercent -lt 0 -or $remainingPercent -gt 100 -or $windowMinutes -le 0 -or $resetsAt -le 0) {
+                throw "額度快照欄位超出有效範圍：$snapshotPath；$windowName"
+            }
+
+            $windowObject = [ordered]@{
+                used_percent      = $usedPercent
+                remaining_percent = $remainingPercent
+                window_minutes    = $windowMinutes
+                resets_at         = $resetsAt
+                source_file       = [string]$window.source_file
+            }
+            $windowObjects[$windowName] = $windowObject
+            $prefix = $windowName + '_'
+            $windowValues[$prefix + 'used_percent'] = $usedPercent
+            $windowValues[$prefix + 'remaining_percent'] = $remainingPercent
+            $windowValues[$prefix + 'window_minutes'] = $windowMinutes
+            $windowValues[$prefix + 'resets_at'] = $resetsAt
+            $windowValues[$prefix + 'source_file'] = [string]$window.source_file
+            if ($null -ne $window.PSObject.Properties['days_to_reset']) {
+                $windowValues[$prefix + 'days_to_reset'] = [double]$window.days_to_reset
+            }
+            if ($null -ne $window.PSObject.Properties['window_days']) {
+                $windowValues[$prefix + 'window_days'] = [double]$window.window_days
+            }
+        }
+
+        $capturedAtUtc = $null
+        $capturedAtValid = $true
+        $capturedAtProperty = $document.PSObject.Properties['captured_at_utc']
+        if ($null -ne $capturedAtProperty -and -not [string]::IsNullOrWhiteSpace([string]$capturedAtProperty.Value)) {
+            try {
+                $capturedAtUtc = [DateTimeOffset]$capturedAtProperty.Value
+            }
+            catch {
+                $capturedAtValid = $false
+            }
+        }
+        elseif ($null -eq $capturedAtProperty -or [string]::IsNullOrWhiteSpace([string]$capturedAtProperty.Value)) {
+            $capturedAtValid = $false
+        }
+
+        return [ordered]@{
+            path          = $snapshotPath
+            schema        = 'quota-snapshot.v1'
+            state         = if ($capturedAtValid) { 'Valid' } else { 'Invalid' }
+            capturedAtUtc = $capturedAtUtc
+            values        = $windowValues
+            primary       = $windowObjects['primary']
+            secondary     = $windowObjects['secondary']
+            document      = $document
+        }
+    }
+
     $values = [ordered]@{}
-    foreach ($line in Get-Content -LiteralPath $snapshotPath -Encoding UTF8) {
+    foreach ($line in ($content -split "`r?`n")) {
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
         }
@@ -489,9 +608,76 @@ function Read-QuotaSnapshot {
     }
 
     return [ordered]@{
-        path   = $snapshotPath
-        values = $values
+        path          = $snapshotPath
+        schema        = 'legacy-key-value'
+        state         = 'Valid'
+        capturedAtUtc = $null
+        values        = $values
+        primary       = [ordered]@{
+            used_percent      = $values['primary_used_percent']
+            remaining_percent = $values['primary_remaining_percent']
+            window_minutes    = $values['primary_window_minutes']
+            resets_at         = $values['primary_resets_at']
+            source_file       = if ($values.Contains('primary_source_file')) { [string]$values['primary_source_file'] } else { [string]$snapshotPath }
+        }
+        secondary     = [ordered]@{
+            used_percent      = $values['secondary_used_percent']
+            remaining_percent = $values['secondary_remaining_percent']
+            window_minutes    = $values['secondary_window_minutes']
+            resets_at         = $values['secondary_resets_at']
+            source_file       = if ($values.Contains('secondary_source_file')) { [string]$values['secondary_source_file'] } else { [string]$snapshotPath }
+        }
+        document      = $null
     }
+}
+
+function Get-OptionalObjectProperty {
+    param(
+        [AllowNull()]
+        [object]$Object,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Test-QuotaSnapshotFresh {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Snapshot,
+
+        [int]$MaxAgeMinutes = 30
+    )
+
+    if ($Snapshot.state -ne 'Valid' -or $null -eq $Snapshot.capturedAtUtc) {
+        return $false
+    }
+    $ageMinutes = ([DateTimeOffset]::UtcNow - [DateTimeOffset]$Snapshot.capturedAtUtc).TotalMinutes
+    return $ageMinutes -ge 0 -and $ageMinutes -le $MaxAgeMinutes
+}
+
+function Get-QuotaSnapshotDelta {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Before,
+
+        [Parameter(Mandatory)]
+        [psobject]$After
+    )
+
+    if ($null -eq $Before -or $null -eq $After) {
+        return $null
+    }
+    return [double]$Before.primary.remaining_percent - [double]$After.primary.remaining_percent
 }
 
 function Get-DeepCycleDecision {
@@ -560,6 +746,334 @@ function Get-DeepCycleDecision {
     }
 }
 
+function Get-ConservativeEstimate {
+    param(
+        [Parameter(Mandatory)]
+        [string]$TaskType
+    )
+
+    switch ($TaskType.ToLowerInvariant()) {
+        'deep-consult' { return 24.0 }
+        'readonly-review' { return 7.0 }
+        'review' { return 7.0 }
+        'script-change' { return 14.0 }
+        default { return $null }
+    }
+}
+
+function Get-CalibrationEstimate {
+    param(
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$Model,
+
+        [Parameter(Mandatory)]
+        [string]$Profile,
+
+        [Parameter(Mandatory)]
+        [string]$SessionMode,
+
+        [Parameter(Mandatory)]
+        [string]$TaskType
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return [ordered]@{
+            estimate = $null
+            source   = 'none'
+            sampleCount = 0
+        }
+    }
+
+    $records = @(Get-CalibrationRecords -Path $Path | Where-Object {
+            $_.calibration_eligible -eq $true -and
+            $_.model -eq $Model -and
+            $_.profile -eq $Profile -and
+            $_.session_mode -eq $SessionMode -and
+            $_.task_type -eq $TaskType -and
+            $null -ne $_.observed_primary_delta_percent
+        })
+    $deltas = @($records | ForEach-Object { [double]$_.observed_primary_delta_percent } | Where-Object { $_ -ge 0 })
+    if ($deltas.Count -ge 5) {
+        $sorted = @($deltas | Sort-Object)
+        $index = [math]::Ceiling($sorted.Count * 0.75) - 1
+        if ($index -lt 0) {
+            $index = 0
+        }
+        return [ordered]@{
+            estimate = [double]$sorted[$index]
+            source   = 'p75'
+            sampleCount = $sorted.Count
+        }
+    }
+
+    return [ordered]@{
+        estimate = $null
+        source   = 'insufficient-samples'
+        sampleCount = $deltas.Count
+    }
+}
+
+function Get-DispatchUnitList {
+    param(
+        [string[]]$RequestedUnit,
+
+        [string]$DispatchKind,
+
+        [string]$UnitKind,
+
+        [string]$ExecutionRoot,
+
+        [string]$LineSlug,
+
+        [string]$EvidencePackPath,
+
+        [string[]]$TargetPath
+    )
+
+    $units = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $RequestedUnit -and $RequestedUnit.Count -gt 0) {
+        foreach ($unit in $RequestedUnit) {
+            if ([string]::IsNullOrWhiteSpace($unit)) {
+                throw 'RequestedUnit 不可包含空白項目。'
+            }
+            $units.Add($unit.Trim())
+        }
+    }
+    elseif ($UnitKind -eq 'deep-evidence-pack' -or $EvidencePackPath) {
+        $units.Add('evidence-pack')
+    }
+    elseif ($DispatchKind -eq 'workflow') {
+        $designPath = Join-Path -Path $ExecutionRoot -ChildPath ('.local\ai-sessions\handoff\' + $LineSlug + '\design.md')
+        if (-not (Test-Path -LiteralPath $designPath -PathType Leaf)) {
+            throw "找不到 Workflow 設計文件，無法建立 Phase 單位清單：$designPath"
+        }
+        foreach ($line in Get-Content -LiteralPath $designPath -Encoding UTF8) {
+            if ($line -match '^###\s+Phase\s+[^：:]+') {
+                $units.Add($line.TrimStart('#', ' '))
+            }
+        }
+    }
+    elseif ($DispatchKind -eq 'resource' -and $null -ne $TargetPath -and $TargetPath.Count -gt 0) {
+        foreach ($target in $TargetPath) {
+            if ([string]::IsNullOrWhiteSpace($target)) {
+                throw 'TargetPath 不可包含空白項目。'
+            }
+            $units.Add($target.Trim())
+        }
+    }
+    else {
+        $units.Add('dispatch-unit')
+    }
+
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($unit in $units) {
+        if (-not $seen.Add($unit)) {
+            throw "派工單位不可重複：$unit"
+        }
+    }
+    return @($units.ToArray())
+}
+
+function Test-DefaultProfileThreshold {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Snapshot
+    )
+
+    if ($null -eq $Snapshot -or $Snapshot.state -ne 'Valid') {
+        return $false
+    }
+
+    return [double]$Snapshot.primary.remaining_percent -ge 30.0 -and
+        [double]$Snapshot.secondary.remaining_percent -ge 15.0
+}
+
+function Get-DefaultUnitKind {
+    param(
+        [string]$DispatchKind,
+
+        [string]$UnitKind,
+
+        [string]$TaskType
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($UnitKind)) {
+        return $UnitKind
+    }
+    if ($TaskType -eq 'deep-consult') {
+        return 'deep-evidence-pack'
+    }
+    if ($DispatchKind -eq 'workflow') {
+        return 'workflow-phase'
+    }
+    return 'resource-target'
+}
+
+function New-ScopePlan {
+    param(
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchKind,
+
+        [Parameter(Mandatory)]
+        [string]$TaskType,
+
+        [Parameter(Mandatory)]
+        [string]$RequestedProfile,
+
+        [Parameter(Mandatory)]
+        [string]$SessionMode,
+
+        [Parameter(Mandatory)]
+        [psobject]$BeforeSnapshot,
+
+        [string]$CalibrationPath,
+
+        [string[]]$Units,
+
+        [Parameter(Mandatory)]
+        [string]$UnitKind,
+
+        [Nullable[double]]$RequestedBudgetPercent,
+
+        [Nullable[double]]$RequestedReservePercent,
+
+        [Parameter(Mandatory)]
+        [string]$Model
+    )
+
+    if ($null -eq $BeforeSnapshot -or $BeforeSnapshot.state -ne 'Valid') {
+        throw 'ScopePlan 必須使用有效的 before quota snapshot。'
+    }
+    if (-not (Test-QuotaSnapshotFresh -Snapshot $BeforeSnapshot)) {
+        throw 'ScopePlan 必須使用含有效 captured_at_utc 且仍新鮮的 before quota snapshot。'
+    }
+    if ($Units.Count -eq 0) {
+        throw 'ScopePlan 不可使用空的單位清單。'
+    }
+
+    $remaining = [double]$BeforeSnapshot.primary.remaining_percent
+    if ($TaskType -eq 'deep-consult') {
+        if ($null -eq $RequestedReservePercent) {
+            $reserve = 30.0
+        }
+        else {
+            $reserve = [math]::Max(30.0, [double]$RequestedReservePercent)
+        }
+    }
+    else {
+        $reserve = if ($null -eq $RequestedReservePercent) { 30.0 } else { [double]$RequestedReservePercent }
+    }
+    $calibration = Get-CalibrationEstimate -Path $CalibrationPath -Model $Model -Profile $RequestedProfile -SessionMode $SessionMode -TaskType $TaskType
+    $conservative = Get-ConservativeEstimate -TaskType $TaskType
+    $estimate = $null
+    $estimateSource = 'none'
+    if ($null -ne $calibration.estimate) {
+        $estimate = [math]::Max([double]$calibration.estimate, $(if ($null -eq $conservative) { 0.0 } else { [double]$conservative }))
+        $estimateSource = $calibration.source
+    }
+    elseif ($null -ne $conservative) {
+        $estimate = [double]$conservative
+        $estimateSource = 'conservative-default'
+    }
+
+    $plan = [ordered]@{
+        dispatch_slug              = $DispatchSlug
+        dispatch_kind              = $DispatchKind
+        task_type                  = $TaskType
+        requested_profile          = $RequestedProfile
+        session_mode               = $SessionMode
+        primary_remaining_percent  = $remaining
+        primary_reserve_percent    = $reserve
+        primary_budget_percent     = $null
+        estimate_percent           = $estimate
+        estimate_source            = $estimateSource
+        unit_kind                  = $UnitKind
+        requested_units            = @($Units)
+        selected_units             = @()
+        deferred_units             = @($Units)
+        decision                   = 'blocked-no-estimate'
+        decision_reason            = ''
+        calibration_sample_count   = $calibration.sampleCount
+    }
+
+    if ($TaskType -ne 'deep-consult' -and $RequestedProfile -eq 'default' -and (Test-DefaultProfileThreshold -Snapshot $BeforeSnapshot)) {
+        $plan.primary_budget_percent = $remaining - $reserve
+        if ($plan.primary_budget_percent -lt 0) {
+            $plan.primary_budget_percent = 0.0
+        }
+        $plan.estimate_percent = $null
+        $plan.estimate_source = 'not-required-above-threshold'
+        $plan.selected_units = @($Units)
+        $plan.deferred_units = @()
+        $plan.decision = 'full'
+        $plan.decision_reason = 'primary 剩餘至少 30% 且 secondary 剩餘至少 15%，高於預設檔位門檻，不要求估算並完整派工。'
+        return $plan
+    }
+
+    if ($null -eq $estimate) {
+        if ($TaskType -eq 'deep-consult') {
+            $plan.decision_reason = 'deep-consult 找不到同分組 eligible 校準樣本，也沒有 task type 保守量級。'
+        }
+        else {
+            $plan.decision = 'user-decision-required'
+            $plan.decision_reason = '額度低於目標檔位門檻，且找不到同分組 eligible 校準樣本或 task type 保守量級，需要使用者決定等待 primary_resets_at 或調整範圍。'
+        }
+        return $plan
+    }
+
+    $hardLimit = if ($TaskType -eq 'deep-consult') { [double]$estimate * 1.25 } else { [double]::PositiveInfinity }
+    $remainingBudget = $remaining - $reserve
+    $budget = if ($null -eq $RequestedBudgetPercent) { $remainingBudget } else { [double]$RequestedBudgetPercent }
+    if ($TaskType -eq 'deep-consult') {
+        $budget = [math]::Min($hardLimit, $remainingBudget)
+    }
+    else {
+        $budget = [math]::Min($budget, $remainingBudget)
+    }
+    $plan.primary_budget_percent = $budget
+
+    if ($budget -le 0) {
+        $plan.decision = 'blocked-insufficient-budget'
+        $plan.decision_reason = 'primary 預估保留門檻後沒有可用預算，等待 primary_resets_at 或使用者決定。'
+        return $plan
+    }
+
+    $selected = New-Object System.Collections.Generic.List[string]
+    $consumed = 0.0
+    foreach ($unit in $Units) {
+        if ($consumed + [double]$estimate -le $budget) {
+            $selected.Add($unit)
+            $consumed += [double]$estimate
+        }
+        else {
+            break
+        }
+    }
+    $plan.selected_units = @($selected.ToArray())
+    $plan.deferred_units = @($Units | Where-Object { $plan.selected_units -notcontains $_ })
+    if ($plan.selected_units.Count -eq 0) {
+        $plan.decision = 'blocked-insufficient-budget'
+        $plan.decision_reason = '第一個最小單位超出可用預算，等待 primary_resets_at 或使用者決定。'
+    }
+    elseif ($plan.selected_units.Count -eq $Units.Count) {
+        $plan.decision = 'full'
+        $plan.decision_reason = '完整單位清單可容納於保留門檻後的有效預算。'
+    }
+    else {
+        $plan.decision = 'scoped'
+        $plan.decision_reason = '依宣告順序取可容納的最長前綴，延後未選單位。'
+    }
+    if ($TaskType -eq 'deep-consult') {
+        $plan.deep_hard_limit_percent = $hardLimit
+    }
+    return $plan
+}
+
 function New-DispatchPrompt {
     param(
         [Parameter(Mandatory)]
@@ -583,6 +1097,854 @@ function New-DispatchPrompt {
     $suffix = "`n`n" + ($Directive -join "`n`n") + "`n"
     Write-Utf8NoBom -Path $derivedPromptPath -Content ($promptContent + $suffix)
     return $derivedPromptPath
+}
+
+function Get-OrCreateQuotaSnapshot {
+    param(
+        [string]$Path,
+
+        [string]$CodexHome,
+
+        [Parameter(Mandatory)]
+        [string]$HistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$Purpose,
+
+        [switch]$Required
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        $resolvedPath = Resolve-AbsolutePath -Path $Path
+        if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+            throw "找不到 $Purpose quota snapshot：$resolvedPath"
+        }
+        $null = Read-QuotaSnapshot -Path $resolvedPath
+        return $resolvedPath
+    }
+
+    $configuredHome = $CodexHome
+    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+        $configuredHome = $env:CODEX_HOME
+    }
+    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+        if ($Required) {
+            throw "$Purpose 需要 quota snapshot，請提供 QuotaBeforePath 或 CodexHome。"
+        }
+        return $null
+    }
+
+    $snapshotPath = Join-Path -Path $HistoryRoot -ChildPath ('quota-' + $Purpose.ToLowerInvariant() + '-' + [datetime]::UtcNow.ToString('yyyyMMdd_HHmmss_fff') + '.json')
+    $quotaScript = Join-Path -Path $PSScriptRoot -ChildPath 'Get-CodexQuota.ps1'
+    if (-not (Test-Path -LiteralPath $quotaScript -PathType Leaf)) {
+        throw "找不到額度快照腳本：$quotaScript"
+    }
+    if ([string]::IsNullOrWhiteSpace($CodexHome)) {
+        $quotaOutput = & $quotaScript -SnapshotPath $snapshotPath 2>&1
+    }
+    else {
+        $quotaOutput = & $quotaScript -CodexHome $CodexHome -SnapshotPath $snapshotPath 2>&1
+    }
+    $quotaExitCode = $LASTEXITCODE
+    if ($quotaExitCode -ne 0 -or -not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
+        $details = ($quotaOutput | Out-String).Trim()
+        throw "$Purpose quota snapshot 失敗，exit code $quotaExitCode。$details"
+    }
+    $null = Read-QuotaSnapshot -Path $snapshotPath
+    return $snapshotPath
+}
+
+function Set-QuotaSnapshotFromCodex {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [string]$CodexHome
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    $configuredHome = $CodexHome
+    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+        $configuredHome = $env:CODEX_HOME
+    }
+    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+        throw 'quota snapshot 更新需要 CodexHome 或 CODEX_HOME。'
+    }
+
+    $parent = Split-Path -Parent $resolvedPath
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $quotaScript = Join-Path -Path $PSScriptRoot -ChildPath 'Get-CodexQuota.ps1'
+    if (-not (Test-Path -LiteralPath $quotaScript -PathType Leaf)) {
+        throw "找不到額度快照腳本：$quotaScript"
+    }
+    $quotaOutput = & $quotaScript -CodexHome $configuredHome -SnapshotPath $resolvedPath 2>&1
+    $quotaExitCode = $LASTEXITCODE
+    if ($quotaExitCode -ne 0 -or -not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        $details = ($quotaOutput | Out-String).Trim()
+        throw "quota snapshot 更新失敗，exit code $quotaExitCode。$details"
+    }
+    $null = Read-QuotaSnapshot -Path $resolvedPath
+    return $resolvedPath
+}
+
+function Get-DeepConsultReportPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug
+    )
+
+    $fullPath = Resolve-AbsolutePath -Path $Path
+    $reportRoot = Join-Path -Path (Resolve-AbsolutePath -Path $ExecutionRoot) -ChildPath ('.local\ai-sessions\report\' + $LineSlug)
+    if (-not (Test-PathWithinRoot -Path $fullPath -Root $reportRoot)) {
+        throw "DeepConsultReportPath 必須位於同線 report root 內：$fullPath"
+    }
+    $expectedName = 'deep-consult-' + $DispatchSlug + '.md'
+    if (-not [string]::Equals([System.IO.Path]::GetFileName($fullPath), $expectedName, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "DeepConsultReportPath 檔名必須為 $expectedName：$fullPath"
+    }
+    return $fullPath
+}
+
+function Test-EvidencePack {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug
+    )
+
+    $fullPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-PathWithinRoot -Path $fullPath -Root $ExecutionRoot)) {
+        throw "evidence pack 必須位於 executionRoot 內：$fullPath"
+    }
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "找不到 evidence pack：$fullPath"
+    }
+    $content = Get-Content -LiteralPath $fullPath -Raw -Encoding UTF8
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        throw "evidence pack 不可為空：$fullPath"
+    }
+    foreach ($requiredPattern in @(
+            '(?m)^schema:\s*deep-consult\.evidence\.v1\s*$',
+            '(?m)^line-slug:\s*' + [regex]::Escape($LineSlug) + '\s*$',
+            '(?m)^dispatch-slug:\s*' + [regex]::Escape($DispatchSlug) + '\s*$',
+            '(?m)^##\s+目標段落\s*$',
+            '(?m)^##\s+已知結論\s*$',
+            '(?m)^##\s+待答問題\s*$',
+            '(?m)^##\s+可能反證\s*$',
+            '(?m)^##\s+邊界\s*$',
+            '(?m)^-\s+allowed-input:\s*this evidence pack only',
+            '(?m)^-\s+forbidden-action:\s*source exploration, repository scan, file mutation, external dispatch'
+        )) {
+        if (-not [regex]::IsMatch($content, $requiredPattern)) {
+            throw "evidence pack 缺少必要內容：$requiredPattern"
+        }
+    }
+
+    $sectionBodies = [ordered]@{}
+    foreach ($sectionName in @('目標段落', '已知結論', '待答問題', '可能反證', '邊界')) {
+        $sectionMatch = [regex]::Match($content, '(?ms)^##\s+' + [regex]::Escape($sectionName) + '\s*\r?\n(?<body>.*?)(?=^##\s|\z)')
+        if (-not $sectionMatch.Success -or [string]::IsNullOrWhiteSpace($sectionMatch.Groups['body'].Value)) {
+            throw "evidence pack 必要區段不可為空：$sectionName"
+        }
+        $sectionBodies[$sectionName] = $sectionMatch.Groups['body'].Value.Trim()
+    }
+    if ($sectionBodies['目標段落'] -notmatch '(?m)^\s*source:\s*\S+' -or
+        $sectionBodies['目標段落'] -notmatch '(?m)^\s*excerpt:\s*\S+') {
+        throw 'evidence pack 目標段落必須包含非空 source 與 excerpt。'
+    }
+    if ($sectionBodies['待答問題'] -notmatch '(?m)^\s*question:\s*\S+' -or
+        $sectionBodies['待答問題'] -notmatch '(?m)^\s*required-output:\s*\S+') {
+        throw 'evidence pack 待答問題必須包含非空 question 與 required-output。'
+    }
+
+    $hash = Get-FileSha256 -Path $fullPath
+    $sandboxRoot = Join-Path -Path $ExecutionRoot -ChildPath ('.local\ai-sessions\scratch\deep-consult\' + $DispatchSlug)
+    $sandboxPath = Join-Path -Path $sandboxRoot -ChildPath 'evidence-pack.md'
+    if (-not [string]::Equals($fullPath, (Resolve-AbsolutePath -Path $sandboxPath), [System.StringComparison]::OrdinalIgnoreCase)) {
+        New-Item -ItemType Directory -Path $sandboxRoot -Force | Out-Null
+        Copy-Item -LiteralPath $fullPath -Destination $sandboxPath -Force
+    }
+
+    return [ordered]@{
+        path        = $fullPath
+        sandboxPath = Resolve-AbsolutePath -Path $sandboxPath
+        sha256      = $hash
+        length      = [int64](Get-Item -LiteralPath $fullPath).Length
+    }
+}
+
+function Get-ThreadIdsFromEventStream {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $ids = New-Object System.Collections.Generic.List[string]
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return @()
+    }
+    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        try {
+            $event = $line | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            continue
+        }
+        if ((Get-OptionalObjectProperty -Object $event -Name 'type') -ne 'thread.started') {
+            continue
+        }
+        $threadId = Get-OptionalObjectProperty -Object $event -Name 'thread_id'
+        if ($threadId -is [string] -and -not [string]::IsNullOrWhiteSpace($threadId)) {
+            $ids.Add($threadId)
+        }
+    }
+    return @($ids.ToArray())
+}
+
+function Set-ThreadIdFromEventStream {
+    param(
+        [Parameter(Mandatory)]
+        [string]$EventPath,
+
+        [Parameter(Mandatory)]
+        [string]$ThreadPath,
+
+        [switch]$RequireThreadId
+    )
+
+    $threadPathValue = Resolve-AbsolutePath -Path $ThreadPath
+    $eventIds = @(Get-ThreadIdsFromEventStream -Path $EventPath)
+    $existingId = ''
+    if (Test-Path -LiteralPath $threadPathValue -PathType Leaf) {
+        $existingId = (Get-Content -LiteralPath $threadPathValue -Raw -Encoding UTF8).Trim()
+    }
+    $distinctIds = @($eventIds | Sort-Object -Unique)
+    if ($distinctIds.Count -gt 1) {
+        throw "事件流包含不同 thread id：$($distinctIds -join ',')"
+    }
+    if ($distinctIds.Count -eq 0) {
+        if ($RequireThreadId) {
+            throw 'thread.started.thread_id 尚未取得。'
+        }
+        return [ordered]@{
+            threadId = $existingId
+            relayed  = $false
+            source   = 'existing-or-not-ready'
+        }
+    }
+    $eventId = $distinctIds[0]
+    if (-not [string]::IsNullOrWhiteSpace($existingId) -and $existingId -ne $eventId) {
+        throw "thread id 衝突：既有=$existingId；事件流=$eventId"
+    }
+    if ([string]::IsNullOrWhiteSpace($existingId)) {
+        Write-Utf8NoBom -Path $threadPathValue -Content ($eventId + "`n")
+        return [ordered]@{
+            threadId = $eventId
+            relayed  = $true
+            source   = 'thread.started'
+        }
+    }
+    return [ordered]@{
+        threadId = $existingId
+        relayed  = $false
+        source   = 'existing'
+    }
+}
+
+function Wait-ForThreadRelay {
+    param(
+        [Parameter(Mandatory)]
+        [string]$EventPath,
+
+        [Parameter(Mandatory)]
+        [string]$ThreadPath,
+
+        [int]$TimeoutSeconds = 5
+    )
+
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    do {
+        $relay = Set-ThreadIdFromEventStream -EventPath $EventPath -ThreadPath $ThreadPath
+        if (-not [string]::IsNullOrWhiteSpace($relay.threadId)) {
+            return $relay
+        }
+        if (Test-Path -LiteralPath $EventPath -PathType Leaf) {
+            $eventContent = Get-Content -LiteralPath $EventPath -Raw -Encoding UTF8
+            if ($eventContent -match '(?m)"type"\s*:\s*"turn\.(completed|failed)"') {
+                break
+            }
+        }
+        Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    $finalRelay = Set-ThreadIdFromEventStream -EventPath $EventPath -ThreadPath $ThreadPath
+    if ([string]::IsNullOrWhiteSpace($finalRelay.threadId)) {
+        return [ordered]@{
+            threadId = ''
+            relayed = $false
+            source = 'not-ready'
+            ready = $false
+            timedOut = $true
+            timeoutSeconds = $TimeoutSeconds
+        }
+    }
+    return $finalRelay
+}
+
+function Read-ScopePlanFile {
+    param(
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+    $fullPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "找不到 ScopePlan：$fullPath"
+    }
+    try {
+        $plan = Get-Content -LiteralPath $fullPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+    }
+    catch {
+        throw "ScopePlan 格式錯誤：$fullPath；$($_.Exception.Message)"
+    }
+    foreach ($requiredName in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'session_mode', 'primary_remaining_percent', 'primary_reserve_percent', 'primary_budget_percent', 'estimate_percent', 'estimate_source', 'unit_kind', 'requested_units', 'selected_units', 'deferred_units', 'decision', 'decision_reason')) {
+        if ($null -eq $plan.PSObject.Properties[$requiredName]) {
+            throw "ScopePlan 缺少欄位：$fullPath；$requiredName"
+        }
+    }
+    if (-not (Test-ScopePlanCompleteness -ScopePlan $plan)) {
+        throw "ScopePlan 欄位不完整或單位清單不一致：$fullPath"
+    }
+    return $plan
+}
+
+function Test-StringArrayEqual {
+    param(
+        [AllowNull()]
+        [object]$Left,
+
+        [AllowNull()]
+        [object]$Right
+    )
+
+    $leftItems = @($Left | ForEach-Object { [string]$_ })
+    $rightItems = @($Right | ForEach-Object { [string]$_ })
+    if ($leftItems.Count -ne $rightItems.Count) {
+        return $false
+    }
+    for ($index = 0; $index -lt $leftItems.Count; $index++) {
+        if (-not [string]::Equals($leftItems[$index], $rightItems[$index], [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-ScopePlanContinuationFields {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$OriginalScopePlan,
+
+        [Parameter(Mandatory)]
+        [psobject]$ContinuationScopePlan
+    )
+
+    foreach ($propertyName in @('selected_units', 'deferred_units')) {
+        if (-not (Test-StringArrayEqual -Left $OriginalScopePlan.$propertyName -Right $ContinuationScopePlan.$propertyName)) {
+            return $false
+        }
+    }
+    if (-not [string]::Equals([string]$OriginalScopePlan.decision, [string]$ContinuationScopePlan.decision, [System.StringComparison]::Ordinal)) {
+        return $false
+    }
+    if (-not [string]::Equals([string]$OriginalScopePlan.estimate_source, [string]$ContinuationScopePlan.estimate_source, [System.StringComparison]::Ordinal)) {
+        return $false
+    }
+    $originalEstimate = Get-OptionalObjectProperty -Object $OriginalScopePlan -Name 'estimate_percent'
+    $continuationEstimate = Get-OptionalObjectProperty -Object $ContinuationScopePlan -Name 'estimate_percent'
+    if ($null -eq $originalEstimate -or $null -eq $continuationEstimate) {
+        return $null -eq $originalEstimate -and $null -eq $continuationEstimate
+    }
+    try {
+        return [math]::Abs([double]$originalEstimate - [double]$continuationEstimate) -le 0.000001
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-ScopePlanFingerprint {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$ScopePlan
+    )
+
+    $normalizedScopePlan = $ScopePlan | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $fingerprintInput = [ordered]@{}
+    foreach ($property in @($normalizedScopePlan.PSObject.Properties | Sort-Object -Property Name)) {
+        if ($property.Name -ne 'scope_plan_fingerprint') {
+            if ($property.Name -in @('requested_units', 'selected_units', 'deferred_units')) {
+                $fingerprintInput[$property.Name] = @($property.Value | ForEach-Object { [string]$_ })
+            }
+            else {
+                $value = $property.Value
+                if ($null -ne $value -and $value -is [ValueType] -and $value -isnot [bool]) {
+                    try {
+                        $value = ([double]$value).ToString('R', [System.Globalization.CultureInfo]::InvariantCulture)
+                    }
+                    catch {
+                        $value = $property.Value
+                    }
+                }
+                $fingerprintInput[$property.Name] = $value
+            }
+        }
+    }
+    $json = $fingerprintInput | ConvertTo-Json -Depth 20 -Compress
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-FileSha256 {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        throw "找不到要計算 SHA-256 的檔案：$resolvedPath"
+    }
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.IO.File]::ReadAllBytes($resolvedPath)
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-ScopePlanHashRecordPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceHistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug
+    )
+
+    return Join-Path -Path $SourceHistoryRoot -ChildPath ('scope-plan-hash-' + $DispatchSlug + '.json')
+}
+
+function Write-ScopePlanHashRecordIfMissing {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceHistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$ScopePlanPath
+    )
+
+    $recordPath = Get-ScopePlanHashRecordPath -SourceHistoryRoot $SourceHistoryRoot -DispatchSlug $DispatchSlug
+    if (Test-Path -LiteralPath $recordPath -PathType Leaf) {
+        return $recordPath
+    }
+
+    $resolvedScopePlanPath = Resolve-AbsolutePath -Path $ScopePlanPath
+    $record = [ordered]@{
+        dispatch_slug   = $DispatchSlug
+        line_slug       = $LineSlug
+        scope_plan_path = $resolvedScopePlanPath
+        sha256          = Get-FileSha256 -Path $resolvedScopePlanPath
+        created_at_utc  = [datetime]::UtcNow.ToString('o')
+    }
+    Write-Utf8NoBom -Path $recordPath -Content (($record | ConvertTo-Json -Depth 8) + "`n")
+    return $recordPath
+}
+
+function Test-ScopePlanHashRecord {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceHistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$ScopePlanPath
+    )
+
+    $recordPath = Get-ScopePlanHashRecordPath -SourceHistoryRoot $SourceHistoryRoot -DispatchSlug $DispatchSlug
+    if (-not (Test-Path -LiteralPath $recordPath -PathType Leaf)) {
+        throw "續行缺少 ScopePlan SHA-256 紀錄：$recordPath"
+    }
+
+    try {
+        $record = Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    }
+    catch {
+        throw "ScopePlan SHA-256 紀錄無法解析：$recordPath；$($_.Exception.Message)"
+    }
+    foreach ($requiredProperty in @('dispatch_slug', 'line_slug', 'scope_plan_path', 'sha256', 'created_at_utc')) {
+        if ($null -eq $record.PSObject.Properties[$requiredProperty] -or [string]::IsNullOrWhiteSpace([string]$record.$requiredProperty)) {
+            throw "ScopePlan SHA-256 紀錄缺少必要欄位：$requiredProperty"
+        }
+    }
+
+    $resolvedScopePlanPath = Resolve-AbsolutePath -Path $ScopePlanPath
+    $recordScopePlanPath = Resolve-AbsolutePath -Path ([string]$record.scope_plan_path)
+    if (-not [string]::Equals([string]$record.dispatch_slug, $DispatchSlug, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$record.line_slug, $LineSlug, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ScopePlan SHA-256 紀錄的 dispatchSlug 或 lineSlug 不一致：$recordPath"
+    }
+    if (-not [string]::Equals($recordScopePlanPath, $resolvedScopePlanPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ScopePlan SHA-256 紀錄的路徑不一致：record=$recordScopePlanPath；requested=$resolvedScopePlanPath"
+    }
+
+    $actualHash = Get-FileSha256 -Path $resolvedScopePlanPath
+    if (-not [string]::Equals([string]$record.sha256, $actualHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ScopePlan SHA-256 不一致：record=$($record.sha256)；actual=$actualHash"
+    }
+    return $true
+}
+
+function Test-ScopePlanCompleteness {
+    param(
+        [AllowNull()]
+        [object]$ScopePlan
+    )
+
+    if ($null -eq $ScopePlan) {
+        return $false
+    }
+
+    foreach ($requiredName in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'session_mode', 'primary_remaining_percent', 'primary_reserve_percent', 'primary_budget_percent', 'estimate_percent', 'estimate_source', 'unit_kind', 'requested_units', 'selected_units', 'deferred_units', 'decision', 'decision_reason')) {
+        if ($null -eq $ScopePlan.PSObject.Properties[$requiredName]) {
+            return $false
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$ScopePlan.dispatch_slug) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.dispatch_kind) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.task_type) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.requested_profile) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.session_mode) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.unit_kind) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.estimate_source)) {
+        return $false
+    }
+
+    if ($null -ne $ScopePlan.estimate_percent) {
+        try {
+            $estimateValue = [double]$ScopePlan.estimate_percent
+        }
+        catch {
+            return $false
+        }
+        if ([double]::IsNaN($estimateValue) -or [double]::IsInfinity($estimateValue) -or $estimateValue -lt 0) {
+            return $false
+        }
+    }
+    if ([string]$ScopePlan.estimate_source -eq 'not-required-above-threshold' -and $null -ne $ScopePlan.estimate_percent) {
+        return $false
+    }
+    if ([string]$ScopePlan.estimate_source -in @('calibration-p75', 'conservative-default') -and $null -eq $ScopePlan.estimate_percent) {
+        return $false
+    }
+
+    if ($ScopePlan.unit_kind -notin @('workflow-phase', 'resource-target', 'deep-evidence-pack') -or
+        $ScopePlan.decision -notin @('full', 'scoped', 'blocked-insufficient-budget', 'blocked-no-estimate', 'user-decision-required')) {
+        return $false
+    }
+
+    $requestedUnits = @($ScopePlan.requested_units | ForEach-Object { [string]$_ })
+    $selectedUnits = @($ScopePlan.selected_units | ForEach-Object { [string]$_ })
+    $deferredUnits = @($ScopePlan.deferred_units | ForEach-Object { [string]$_ })
+    $hasBlankSelected = @($selectedUnits | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
+    $hasBlankDeferred = @($deferredUnits | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
+    if ($requestedUnits.Count -eq 0 -or $hasBlankSelected -or $hasBlankDeferred) {
+        return $false
+    }
+
+    $requestedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $selectedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $deferredSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($unit in $requestedUnits) {
+        if (-not $requestedSet.Add($unit)) {
+            return $false
+        }
+    }
+    foreach ($unit in $selectedUnits) {
+        if (-not $selectedSet.Add($unit) -or -not $requestedSet.Contains($unit)) {
+            return $false
+        }
+    }
+    foreach ($unit in $deferredUnits) {
+        if (-not $deferredSet.Add($unit) -or -not $requestedSet.Contains($unit) -or $selectedSet.Contains($unit)) {
+            return $false
+        }
+    }
+    if ($selectedUnits.Count + $deferredUnits.Count -ne $requestedUnits.Count) {
+        return $false
+    }
+    foreach ($unit in $requestedUnits) {
+        if (-not $selectedSet.Contains($unit) -and -not $deferredSet.Contains($unit)) {
+            return $false
+        }
+    }
+
+    try {
+        $budget = [double]$ScopePlan.primary_budget_percent
+        $remaining = [double]$ScopePlan.primary_remaining_percent
+        $reserve = [double]$ScopePlan.primary_reserve_percent
+    }
+    catch {
+        return $false
+    }
+    if ([double]::IsNaN($budget) -or [double]::IsInfinity($budget) -or $budget -lt 0 -or
+        [double]::IsNaN($remaining) -or [double]::IsInfinity($remaining) -or $remaining -lt 0 -or
+        [double]::IsNaN($reserve) -or [double]::IsInfinity($reserve) -or $reserve -lt 0) {
+        return $false
+    }
+
+    switch ([string]$ScopePlan.decision) {
+        'full' {
+            return $selectedUnits.Count -eq $requestedUnits.Count -and $deferredUnits.Count -eq 0
+        }
+        'scoped' {
+            return $selectedUnits.Count -gt 0 -and $deferredUnits.Count -gt 0
+        }
+        'blocked-insufficient-budget' { return $selectedUnits.Count -eq 0 }
+        'blocked-no-estimate' { return $selectedUnits.Count -eq 0 }
+        'user-decision-required' { return $selectedUnits.Count -eq 0 }
+    }
+    return $false
+}
+
+function Test-ContinuationScopePlan {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$ScopePlan,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchKind,
+
+        [Parameter(Mandatory)]
+        [string]$TaskType,
+
+        [Parameter(Mandatory)]
+        [string]$RequestedProfile,
+
+        [Parameter(Mandatory)]
+        [string]$UnitKind,
+
+        [Parameter(Mandatory)]
+        [string[]]$Units
+    )
+
+    if (-not (Test-ScopePlanCompleteness -ScopePlan $ScopePlan)) {
+        return $false
+    }
+    $selectedUnits = @($ScopePlan.selected_units | ForEach-Object { [string]$_ })
+    $deferredUnits = @($ScopePlan.deferred_units | ForEach-Object { [string]$_ })
+    $continuationUnits = @($selectedUnits + $deferredUnits)
+    if (-not (Test-StringArrayEqual -Left $continuationUnits -Right $ScopePlan.requested_units) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.decision) -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.estimate_source)) {
+        return $false
+    }
+    if (-not [string]::Equals([string]$ScopePlan.dispatch_slug, $DispatchSlug, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$ScopePlan.dispatch_kind, $DispatchKind, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$ScopePlan.task_type, $TaskType, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$ScopePlan.requested_profile, $RequestedProfile, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$ScopePlan.unit_kind, $UnitKind, [System.StringComparison]::OrdinalIgnoreCase) -or
+        $ScopePlan.session_mode -ne 'cold-start' -or
+        -not (Test-StringArrayEqual -Left $ScopePlan.requested_units -Right $Units)) {
+        return $false
+    }
+    return $true
+}
+
+function Get-LatestSafePointMessage {
+    param(
+        [Parameter(Mandatory)]
+        [string]$EventPath
+    )
+
+    $latest = ''
+    if (-not (Test-Path -LiteralPath $EventPath -PathType Leaf)) {
+        return $latest
+    }
+    foreach ($line in Get-Content -LiteralPath $EventPath -Encoding UTF8) {
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            continue
+        }
+        try {
+            $event = $line | ConvertFrom-Json -ErrorAction Stop
+        }
+        catch {
+            continue
+        }
+        $item = Get-OptionalObjectProperty -Object $event -Name 'item'
+        if ($null -eq $item -or (Get-OptionalObjectProperty -Object $item -Name 'type') -ne 'agent_message') {
+            continue
+        }
+        $message = Get-OptionalObjectProperty -Object $item -Name 'text'
+        if ($message -is [string] -and (Test-SafePointMessage -Message $message)) {
+            $latest = $message
+        }
+    }
+    return $latest
+}
+
+function Test-SafePointMessage {
+    param(
+        [AllowNull()]
+        [string]$Message
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Message) -or -not $Message.Contains('## 中斷保全結論')) {
+        return $false
+    }
+    $sectionMatch = [regex]::Match($Message, '(?ms)^##\s+中斷保全結論\s*\r?\n(?<body>.*?)(?=^##\s|\z)')
+    if (-not $sectionMatch.Success -or [string]::IsNullOrWhiteSpace($sectionMatch.Groups['body'].Value)) {
+        return $false
+    }
+    $body = $sectionMatch.Groups['body'].Value
+    foreach ($requiredPattern in @(
+            '(?m)已確認結論\s*[:：]\s*\S+',
+            '(?m)證據位置\s*[:：]\s*\S+',
+            '(?m)實際覆蓋範圍\s*[:：]\s*\S+'
+        )) {
+        if ($body -notmatch $requiredPattern) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Write-BudgetMonitorRecord {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [object]$Record
+    )
+
+    Add-AtomicJsonLine -Path $Path -Content (($Record | ConvertTo-Json -Depth 20 -Compress))
+}
+
+function Write-DeepConsultReport {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [Parameter(Mandatory)]
+        [string]$EvidencePackPath,
+
+        [Parameter(Mandatory)]
+        [string]$EvidencePackSha256,
+
+        [Parameter(Mandatory)]
+        [string]$FinalMessage,
+
+        [Parameter(Mandatory)]
+        [string]$Status,
+
+        [AllowNull()]
+        [object]$BudgetMonitor
+    )
+
+    $fullPath = Resolve-AbsolutePath -Path $Path
+    $reportRoot = Join-Path -Path (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $fullPath))) -ChildPath ''
+    $reportParent = Split-Path -Parent $fullPath
+    New-Item -ItemType Directory -Path $reportParent -Force | Out-Null
+    $message = if ([string]::IsNullOrWhiteSpace($FinalMessage)) { '尚未取得執行端結案訊息。' } else { $FinalMessage.Trim() }
+    $content = @(
+        ('# Deep consult report')
+        ''
+        ('- line-slug: ' + $LineSlug)
+        ('- dispatch-slug: ' + $DispatchSlug)
+        ('- status: ' + $Status)
+        ('- evidence-pack: ' + $EvidencePackPath)
+        ('- evidence-pack-sha256: ' + $EvidencePackSha256)
+        ''
+        '## 中斷保全結論'
+        ''
+        $message
+        ''
+        '## 證據支持'
+        ''
+        ('- evidence pack 已通過 schema、line slug、dispatch slug 與 SHA-256 驗證：' + $EvidencePackSha256)
+        ''
+        '## 推論'
+        ''
+        '- 僅依 evidence pack 與執行端訊息整理，未加入 repository 探索結果。'
+        ''
+        '## 未決問題'
+        ''
+        '- 由 Claude 端依證據支持內容決定是否採用本報告。'
+        ''
+        '## Budget monitor'
+        ''
+        ('```json')
+        (($BudgetMonitor | ConvertTo-Json -Depth 20))
+        '```'
+        ''
+    ) -join "`r`n"
+    Write-Utf8NoBom -Path $fullPath -Content $content
+    return $fullPath
 }
 
 function Get-CalibrationRecords {
@@ -610,6 +1972,51 @@ function Get-CalibrationRecords {
     }
 
     return @($records.ToArray())
+}
+
+function Add-AtomicJsonLine {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$Content
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
+    $bytes = $encoding.GetBytes($Content + [Environment]::NewLine)
+    $deadline = [DateTime]::UtcNow.AddSeconds(10)
+    do {
+        $stream = $null
+        try {
+            $stream = New-Object System.IO.FileStream(
+                $Path,
+                [System.IO.FileMode]::Append,
+                [System.IO.FileAccess]::Write,
+                [System.IO.FileShare]::Read
+            )
+            $stream.Write($bytes, 0, $bytes.Length)
+            $stream.Flush()
+            return
+        }
+        catch [System.IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) {
+                throw "校準紀錄互斥追加逾時：$Path；$($_.Exception.Message)"
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        finally {
+            if ($null -ne $stream) {
+                $stream.Dispose()
+            }
+        }
+    } while ([DateTime]::UtcNow -lt $deadline)
+
+    throw "校準紀錄互斥追加失敗：$Path"
 }
 
 function Add-CalibrationObservation {
@@ -647,7 +2054,16 @@ function Add-CalibrationObservation {
 
         [string]$QuotaBeforePath,
 
-        [string]$QuotaAfterPath
+        [string]$QuotaAfterPath,
+
+        [AllowNull()]
+        [object]$ScopePlan,
+
+        [AllowNull()]
+        [object]$InterruptionStatus,
+
+        [AllowNull()]
+        [object]$BudgetMonitor
     )
 
     $calibrationPath = $Path
@@ -665,8 +2081,26 @@ function Add-CalibrationObservation {
         }
     }
 
-    $beforeSnapshot = Read-QuotaSnapshot -Path $QuotaBeforePath
-    $afterSnapshot = Read-QuotaSnapshot -Path $QuotaAfterPath
+    $beforeSnapshot = $null
+    $afterSnapshot = $null
+    $snapshotFailure = ''
+    try {
+        $beforeSnapshot = Read-QuotaSnapshot -Path $QuotaBeforePath
+    }
+    catch {
+        $snapshotFailure = 'before: ' + $_.Exception.Message
+    }
+    try {
+        $afterSnapshot = Read-QuotaSnapshot -Path $QuotaAfterPath
+    }
+    catch {
+        if ([string]::IsNullOrWhiteSpace($snapshotFailure)) {
+            $snapshotFailure = 'after: ' + $_.Exception.Message
+        }
+        else {
+            $snapshotFailure = $snapshotFailure + '; after: ' + $_.Exception.Message
+        }
+    }
     $modelLabel = if ([string]::IsNullOrWhiteSpace($Model)) { 'unlabeled' } else { $Model }
     $taskTypeLabel = if ([string]::IsNullOrWhiteSpace($TaskType)) { 'unspecified' } else { $TaskType }
     $sessionModeLabel = if ([string]::IsNullOrWhiteSpace($SessionMode)) { 'unspecified' } else { $SessionMode }
@@ -674,7 +2108,65 @@ function Add-CalibrationObservation {
     $hasMarkedTaskType = $taskTypeLabel -ne 'unspecified'
     $hasSnapshots = $null -ne $beforeSnapshot -and $null -ne $afterSnapshot
     $hasUsage = Test-UsageObject -Value $Usage
-    $eligible = $hasMarkedModel -and $hasMarkedTaskType -and $hasSnapshots -and $hasUsage
+    $sameResetWindow = $false
+    $nonNegativeDelta = $false
+    $deltaWithinLimit = $false
+    $scopePlanComplete = Test-ScopePlanCompleteness -ScopePlan $ScopePlan
+    $observedDelta = $null
+    if ($hasSnapshots) {
+        $sameResetWindow = [double]$afterSnapshot.primary.resets_at -eq [double]$beforeSnapshot.primary.resets_at -and [double]$afterSnapshot.secondary.resets_at -eq [double]$beforeSnapshot.secondary.resets_at
+        $observedDelta = Get-QuotaSnapshotDelta -Before $beforeSnapshot -After $afterSnapshot
+        $nonNegativeDelta = $observedDelta -ge 0
+    }
+    $deltaLimits = New-Object System.Collections.Generic.List[double]
+    $monitorAllowsCalibration = $true
+    if ($scopePlanComplete) {
+        try {
+            $scopeBudget = [double]$ScopePlan.primary_budget_percent
+            if ($scopeBudget -ge 0 -and -not [double]::IsInfinity($scopeBudget) -and -not [double]::IsNaN($scopeBudget)) {
+                $deltaLimits.Add($scopeBudget)
+            }
+            $deepHardLimit = Get-OptionalObjectProperty -Object $ScopePlan -Name 'deep_hard_limit_percent'
+            if ($null -ne $deepHardLimit) {
+                $deepHardLimitValue = [double]$deepHardLimit
+                if ($deepHardLimitValue -ge 0 -and -not [double]::IsInfinity($deepHardLimitValue) -and -not [double]::IsNaN($deepHardLimitValue)) {
+                    $deltaLimits.Add($deepHardLimitValue)
+                }
+            }
+        }
+        catch {
+            $scopePlanComplete = $false
+        }
+    }
+    foreach ($monitorRecord in @($BudgetMonitor)) {
+        $monitorState = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'state')
+        if ($monitorState -in @('CrossReset', 'IdentityUnverified', 'SnapshotFailed', 'AbortedByBudget')) {
+            $monitorAllowsCalibration = $false
+        }
+        $monitorEvent = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'event')
+        if ($monitorEvent -in @('monitor.cross-reset', 'monitor.identity-unverified', 'monitor.snapshot-failed', 'monitor.terminal-budget-exceeded')) {
+            $monitorAllowsCalibration = $false
+        }
+        $monitorBudget = Get-OptionalObjectProperty -Object $monitorRecord -Name 'primary_budget_percent'
+        if ($null -ne $monitorBudget) {
+            try {
+                $monitorBudgetValue = [double]$monitorBudget
+                if ($monitorBudgetValue -ge 0 -and -not [double]::IsInfinity($monitorBudgetValue) -and -not [double]::IsNaN($monitorBudgetValue)) {
+                    $deltaLimits.Add($monitorBudgetValue)
+                }
+            }
+            catch {
+                continue
+            }
+        }
+    }
+    if ($null -ne $observedDelta -and $deltaLimits.Count -gt 0) {
+        $deltaUpperBound = [double]($deltaLimits | Measure-Object -Minimum).Minimum
+        $deltaWithinLimit = $observedDelta -le ($deltaUpperBound + 0.000001)
+    }
+    $freshSnapshots = $hasSnapshots -and (Test-QuotaSnapshotFresh -Snapshot $beforeSnapshot) -and (Test-QuotaSnapshotFresh -Snapshot $afterSnapshot)
+    $executionCompleted = $null -ne $ExecutionResult -and $ExecutionResult.completed -eq $true -and [int]$ExecutionResult.processExitCode -eq 0
+    $eligible = $hasMarkedModel -and $hasMarkedTaskType -and $hasSnapshots -and $freshSnapshots -and $sameResetWindow -and $nonNegativeDelta -and $deltaWithinLimit -and $monitorAllowsCalibration -and $hasUsage -and $executionCompleted -and $scopePlanComplete
 
     $record = [ordered]@{
         schema                = 'codex-dispatch.quota-calibration.v1'
@@ -688,23 +2180,38 @@ function Add-CalibrationObservation {
             model        = $modelLabel
             profile      = $Profile
             session_mode = $sessionModeLabel
+            task_type    = $taskTypeLabel
         }
         task_type             = $taskTypeLabel
         reasoning_effort     = $ReasoningEffort
         calibration_eligible  = $eligible
+        calibration_checks    = [ordered]@{
+            same_reset_window = $sameResetWindow
+            scope_plan_complete = $scopePlanComplete
+            delta_within_limit = $deltaWithinLimit
+            monitor_allows_calibration = $monitorAllowsCalibration
+            delta_upper_bound = if ($deltaLimits.Count -eq 0) { $null } else { [double]($deltaLimits | Measure-Object -Minimum).Minimum }
+        }
         'turn.completed.usage' = $Usage
         usage                 = $Usage
         dispatch_before_snapshot = if ($null -eq $beforeSnapshot) { $null } else { $beforeSnapshot.values }
         dispatch_after_snapshot  = if ($null -eq $afterSnapshot) { $null } else { $afterSnapshot.values }
-        execution_result      = $ExecutionResult
+        observed_primary_delta_percent = $observedDelta
+        scope_plan           = $ScopePlan
+        interruption_status = $InterruptionStatus
+        budget_monitor       = $BudgetMonitor
+        snapshot_failure     = if ([string]::IsNullOrWhiteSpace($snapshotFailure)) { $null } else { $snapshotFailure }
+        execution_result     = $ExecutionResult
     }
-    Append-Utf8NoBom -Path $calibrationPath -Content (($record | ConvertTo-Json -Depth 16 -Compress))
+    Add-AtomicJsonLine -Path $calibrationPath -Content (($record | ConvertTo-Json -Depth 20 -Compress))
 
     $matchingRecords = @(Get-CalibrationRecords -Path $calibrationPath | Where-Object {
             $_.calibration_eligible -eq $true -and
             $_.model -eq $modelLabel -and
             $_.profile -eq $Profile -and
-            $_.session_mode -eq $sessionModeLabel
+            $_.session_mode -eq $sessionModeLabel -and
+            $_.task_type -eq $taskTypeLabel -and
+            $null -ne $_.observed_primary_delta_percent
         })
     $recommendationReady = $matchingRecords.Count -ge 5
     $calibrationStatus = [ordered]@{
@@ -715,12 +2222,76 @@ function Add-CalibrationObservation {
         sampleCount                   = $matchingRecords.Count
         thresholdRecommendationReady = $recommendationReady
         automaticThresholdUpdate      = $false
+        observedPrimaryDeltaPercent   = $observedDelta
+        snapshotFailure               = if ([string]::IsNullOrWhiteSpace($snapshotFailure)) { $null } else { $snapshotFailure }
     }
     if ($recommendationReady) {
         $calibrationStatus.recommendationSignal = '主 Agent 可提出新門檻，須先取得使用者確認；腳本不自動更新規則。'
     }
 
     return $calibrationStatus
+}
+
+function Add-SnapshotFailureCalibrationObservation {
+    param(
+        [string]$SourceRoot,
+
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [Parameter(Mandatory)]
+        [string]$Profile,
+
+        [Parameter(Mandatory)]
+        [string]$Model,
+
+        [Parameter(Mandatory)]
+        [string]$ReasoningEffort,
+
+        [Parameter(Mandatory)]
+        [string]$TaskType,
+
+        [Parameter(Mandatory)]
+        [string]$SessionMode,
+
+        [AllowNull()]
+        [object]$Usage,
+
+        [Parameter(Mandatory)]
+        [psobject]$ExecutionResult,
+
+        [string]$QuotaBeforePath,
+
+        [string]$QuotaAfterPath,
+
+        [AllowNull()]
+        [object]$ScopePlan,
+
+        [Parameter(Mandatory)]
+        [string]$Failure
+    )
+
+    $interruptionStatus = [ordered]@{
+        applied = $true
+        snapshot_failure = $Failure
+        calibration_eligible = $false
+        sessionMode = $SessionMode
+    }
+    try {
+        $result = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $Path -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $Usage -ExecutionResult $ExecutionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $ScopePlan -InterruptionStatus $interruptionStatus -BudgetMonitor $null
+        if ($null -eq $result -or $result.recordWritten -ne $true -or $result.calibrationEligible -ne $false) {
+            throw '校準失敗觀測未寫入或未標記 calibration_eligible=false。'
+        }
+        return $result
+    }
+    catch {
+        throw ('{0}；snapshot_failure 觀測寫入失敗：{1}' -f $Failure, $_.Exception.Message)
+    }
 }
 
 function Get-ManifestProperty {
@@ -938,7 +2509,7 @@ function Get-WindowsProcessSnapshots {
             $snapshots[$processId] = $snapshot
         }
 
-        if ($identityStatus -ne 'confirmed') {
+        if ($identityStatus -ne 'confirmed' -and $processId -gt 0) {
             $unconfirmedProcesses.Add($snapshot)
         }
     }
@@ -1749,6 +3320,8 @@ function Invoke-Preflight {
         lineSlug        = $LineSlug
         dispatchSlug    = $DispatchSlug
         writeMode       = $WriteMode
+        dispatchKind    = $DispatchKind
+        taskType        = $TaskType
         gitOrigin       = $gitState.GitOrigin
         markerPath      = $gitState.MarkerPath
         baseSha         = $baseShaValue
@@ -2154,6 +3727,242 @@ function Stop-VerifiedProcessTree {
     }
 }
 
+function Invoke-DeepBudgetMonitor {
+    param(
+        [Parameter(Mandatory)]
+        [System.Diagnostics.Process]$Process,
+
+        [Parameter(Mandatory)]
+        [psobject]$StartedSnapshot,
+
+        [Parameter(Mandatory)]
+        [string]$EventPath,
+
+        [Parameter(Mandatory)]
+        [string]$MonitorPath,
+
+        [Parameter(Mandatory)]
+        [psobject]$BeforeSnapshot,
+
+        [Parameter(Mandatory)]
+        [string]$AfterSnapshotPath,
+
+        [string]$CodexHome,
+
+        [Parameter(Mandatory)]
+        [double]$PrimaryBudgetPercent,
+
+        [Parameter(Mandatory)]
+        [int]$AbortGraceSeconds
+    )
+
+    $monitor = [ordered]@{
+        state = 'running'
+        stopRequested = $false
+        safePointFound = $false
+        safePointMissing = $false
+        abortReason = $null
+        observedPrimaryDeltaPercent = $null
+        calibrationEligible = $true
+        terminalSnapshotTaken = $false
+    }
+    Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+            event = 'monitor.started'
+            recorded_at_utc = [datetime]::UtcNow.ToString('o')
+            primary_budget_percent = $PrimaryBudgetPercent
+        })
+
+    while (-not $Process.HasExited) {
+        try {
+            $null = Set-QuotaSnapshotFromCodex -Path $AfterSnapshotPath -CodexHome $CodexHome
+            $afterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
+            $delta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $afterSnapshot
+            $monitor.observedPrimaryDeltaPercent = $delta
+            if ([double]$afterSnapshot.primary.resets_at -ne [double]$BeforeSnapshot.primary.resets_at) {
+                $monitor.state = 'CrossReset'
+                $monitor.calibrationEligible = $false
+                $monitor.abortReason = 'primary-reset-window-changed'
+                Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                        event = 'monitor.cross-reset'
+                        recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                        state = $monitor.state
+                        calibration_eligible = $false
+                        before_primary_resets_at = $BeforeSnapshot.primary.resets_at
+                        after_primary_resets_at = $afterSnapshot.primary.resets_at
+                        observed_primary_delta_percent = $delta
+                    })
+                return $monitor
+            }
+            if ($delta -gt $PrimaryBudgetPercent -or [double]$afterSnapshot.primary.remaining_percent -lt ([double]$BeforeSnapshot.primary.remaining_percent - $PrimaryBudgetPercent)) {
+                    $monitor.stopRequested = $true
+                    $monitor.abortReason = 'primary-budget-percent-exceeded'
+                    $monitor.state = 'stop-requested'
+                    Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                            event = 'stop-request'
+                            recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                            observed_primary_delta_percent = $delta
+                            primary_budget_percent = $PrimaryBudgetPercent
+                        })
+                    $safePointMessage = ''
+                    $safePointDeadline = [DateTime]::UtcNow.AddSeconds($AbortGraceSeconds)
+                    do {
+                        $safePointMessage = Get-LatestSafePointMessage -EventPath $EventPath
+                        if (-not [string]::IsNullOrWhiteSpace($safePointMessage)) {
+                            $monitor.safePointFound = $true
+                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                    event = 'safe-point-found'
+                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                    message_length = $safePointMessage.Length
+                                })
+                            break
+                        }
+                        if ($Process.HasExited) {
+                            break
+                        }
+                        Start-Sleep -Milliseconds 100
+                    } while ([DateTime]::UtcNow -lt $safePointDeadline)
+                    if (-not $monitor.safePointFound) {
+                        $monitor.safePointMissing = $true
+                        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                event = 'safe-point-missing'
+                                recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                abort_grace_seconds = $AbortGraceSeconds
+                            })
+                    }
+                    try {
+                        $cleanupResult = Stop-VerifiedProcessTree -Snapshot $StartedSnapshot
+                        $monitor.state = if ($cleanupResult.CleanupStatus -eq 'verified-tree-terminated' -or $cleanupResult.CleanupStatus -eq 'already-terminated') { 'AbortedByBudget' } else { 'IdentityUnverified' }
+                        if ($monitor.state -eq 'IdentityUnverified') {
+                            $monitor.calibrationEligible = $false
+                        }
+                        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                event = 'budget-monitor.completed'
+                                recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                state = $monitor.state
+                                calibration_eligible = $monitor.calibrationEligible
+                                cleanup_status = $cleanupResult.CleanupStatus
+                                cleanup_error = $cleanupResult.ErrorMessage
+                                safe_point_missing = $monitor.safePointMissing
+                            })
+                        return $monitor
+                    }
+                    catch {
+                        $monitor.state = 'IdentityUnverified'
+                        $monitor.calibrationEligible = $false
+                        $monitor.abortReason = $_.Exception.Message
+                        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                event = 'monitor.identity-unverified'
+                                recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                state = $monitor.state
+                                calibration_eligible = $false
+                                cleanup_status = 'not-terminated'
+                                termination_executed = $false
+                                evidence_preserved = $true
+                                error = $_.Exception.Message
+                                safe_point_missing = $monitor.safePointMissing
+                            })
+                        return $monitor
+                    }
+                }
+        }
+        catch {
+            $monitor.state = 'SnapshotFailed'
+            $monitor.calibrationEligible = $false
+            $monitor.abortReason = $_.Exception.Message
+            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                    event = 'monitor.snapshot-failed'
+                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                    error = $_.Exception.Message
+                })
+            return $monitor
+        }
+        Start-Sleep -Milliseconds 100
+    }
+
+    try {
+        $null = Set-QuotaSnapshotFromCodex -Path $AfterSnapshotPath -CodexHome $CodexHome
+        $terminalAfterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
+        $terminalDelta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $terminalAfterSnapshot
+        $monitor.observedPrimaryDeltaPercent = $terminalDelta
+        $monitor.terminalSnapshotTaken = $true
+        if ([double]$terminalAfterSnapshot.primary.resets_at -ne [double]$BeforeSnapshot.primary.resets_at) {
+            $monitor.state = 'CrossReset'
+            $monitor.calibrationEligible = $false
+            $monitor.abortReason = 'primary-reset-window-changed'
+            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                    event = 'monitor.cross-reset'
+                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                    state = $monitor.state
+                    calibration_eligible = $false
+                    terminal_snapshot = $true
+                    before_primary_resets_at = $BeforeSnapshot.primary.resets_at
+                    after_primary_resets_at = $terminalAfterSnapshot.primary.resets_at
+                    observed_primary_delta_percent = $terminalDelta
+                })
+            return $monitor
+        }
+        $terminalBudgetExceeded = $terminalDelta -gt $PrimaryBudgetPercent -or [double]$terminalAfterSnapshot.primary.remaining_percent -lt ([double]$BeforeSnapshot.primary.remaining_percent - $PrimaryBudgetPercent)
+        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                event = 'monitor.terminal-snapshot'
+                recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                primary_budget_percent = $PrimaryBudgetPercent
+                observed_primary_delta_percent = $terminalDelta
+                before_primary_remaining_percent = $BeforeSnapshot.primary.remaining_percent
+                after_primary_remaining_percent = $terminalAfterSnapshot.primary.remaining_percent
+                over_budget = $terminalBudgetExceeded
+            })
+        if ($terminalBudgetExceeded) {
+            $monitor.stopRequested = $true
+            $monitor.state = 'AbortedByBudget'
+            $monitor.calibrationEligible = $false
+            $monitor.abortReason = 'primary-budget-percent-exceeded-after-process-exit'
+            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                    event = 'monitor.terminal-budget-exceeded'
+                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                    state = $monitor.state
+                    calibration_eligible = $false
+                    terminal_snapshot = $true
+                    observed_primary_delta_percent = $terminalDelta
+                    primary_budget_percent = $PrimaryBudgetPercent
+                    before_primary_remaining_percent = $BeforeSnapshot.primary.remaining_percent
+                    after_primary_remaining_percent = $terminalAfterSnapshot.primary.remaining_percent
+                })
+            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                    event = 'budget-monitor.completed'
+                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                    state = $monitor.state
+                    calibration_eligible = $monitor.calibrationEligible
+                    terminal_snapshot = $true
+                    abort_reason = $monitor.abortReason
+                })
+            return $monitor
+        }
+    }
+    catch {
+        $monitor.state = 'SnapshotFailed'
+        $monitor.calibrationEligible = $false
+        $monitor.abortReason = $_.Exception.Message
+        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                event = 'monitor.snapshot-failed'
+                recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                state = $monitor.state
+                calibration_eligible = $false
+                terminal_snapshot = $true
+                error = $_.Exception.Message
+            })
+        return $monitor
+    }
+
+    $monitor.state = 'completed'
+    Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+            event = 'monitor.completed'
+            recorded_at_utc = [datetime]::UtcNow.ToString('o')
+            state = $monitor.state
+            terminal_snapshot = $monitor.terminalSnapshotTaken
+        })
+    return $monitor
+}
+
 function Format-StartEvidencePath {
     param(
         [string]$Path
@@ -2376,6 +4185,7 @@ function Get-QuotaProbeEventSummary {
     }
 
     $threadId = ''
+    $threadIds = New-Object System.Collections.Generic.List[string]
     foreach ($event in $events) {
         if ($event.type -eq 'thread.started' -and [string]::IsNullOrWhiteSpace($threadId)) {
             $threadIdValue = $event.PSObject.Properties['thread_id']
@@ -2783,10 +4593,6 @@ function Invoke-QuotaProbe {
 }
 
 function Invoke-Start {
-    if ($DowngradeInstruction -and -not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
-        throw 'Start 拒絕互斥參數：DowngradeInstruction 不得與 ResumeThreadId 同時使用。deep 續行遇低額度時，唯一合法出口是攜帶完整交接的新 cold-start 預設檔位派遣。'
-    }
-
     $preflight = $null
     $sourceRootPath = $null
     $executionRootPath = $null
@@ -2808,6 +4614,7 @@ function Invoke-Start {
     $process = $null
     $startedSnapshot = $null
     $processStarted = $false
+    $skipProcessCleanup = $false
     $phase = 'preparation'
     $cleanupStatus = 'not-started'
     $cleanupError = $null
@@ -2815,7 +4622,24 @@ function Invoke-Start {
     $effectiveProfileValue = $Profile
     $sessionModeValue = $SessionMode
     $deepCycleDecision = $null
-    $downgradeApplied = $false
+    $dispatchKindValue = $DispatchKind
+    $beforeSnapshotPathValue = $null
+    $beforeSnapshotObject = $null
+    $afterSnapshotPathValue = $QuotaAfterPath
+    $scopePlan = $null
+    $scopePlanPathValue = $null
+    $continuationContextPath = $null
+    $continuationContextMessage = $null
+    $evidencePackInfo = $null
+    $interruptionSafeguardApplied = $true
+    $budgetMonitorStatus = [ordered]@{
+        state = 'not-started'
+        stopRequested = $false
+        safePointFound = $false
+        safePointMissing = $false
+        abortReason = $null
+    }
+    $monitorPathValue = $BudgetMonitorPath
 
     try {
     $preflight = Get-PreflightData
@@ -2832,6 +4656,13 @@ function Invoke-Start {
         if (-not [string]::IsNullOrWhiteSpace($writeModeProperty.Value)) {
             $writeModeValue = $writeModeProperty.Value
         }
+    }
+    $dispatchKindProperty = $preflight.PSObject.Properties['dispatchKind']
+    if ([string]::IsNullOrWhiteSpace($dispatchKindValue) -and $null -ne $dispatchKindProperty) {
+        $dispatchKindValue = [string]$dispatchKindProperty.Value
+    }
+    if ([string]::IsNullOrWhiteSpace($dispatchKindValue)) {
+        $dispatchKindValue = 'resource'
     }
     $sourceRootPath = Resolve-AbsolutePath -Path $sourceRootValue
     $executionRootPath = Resolve-AbsolutePath -Path $executionRootValue
@@ -2858,7 +4689,31 @@ function Invoke-Start {
     $eventPath = Join-Path -Path $historyRoot -ChildPath ('codex-exec-' + $timestamp + '.jsonl')
     $errorPath = Join-Path -Path $historyRoot -ChildPath ('codex-exec-' + $timestamp + '.stderr.log')
     $lastMessagePathValue = $LastMessagePath
-    if ([string]::IsNullOrWhiteSpace($lastMessagePathValue)) {
+    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
+        if (-not [string]::IsNullOrWhiteSpace($LastMessagePath)) {
+            $continuationContextPath = Resolve-AbsolutePath -Path $LastMessagePath
+        }
+        else {
+            $previousLastMessages = @(Get-ChildItem -LiteralPath $historyRoot -Filter 'codex-last-message-*.md' -File | Sort-Object -Property LastWriteTimeUtc -Descending)
+            if ($previousLastMessages.Count -eq 0) {
+                throw '續行缺少前輪 last-message 交接資料。'
+            }
+            $continuationContextPath = $previousLastMessages[0].FullName
+        }
+        if (-not (Test-Path -LiteralPath $continuationContextPath -PathType Leaf)) {
+            throw "續行 last-message 交接檔不存在：$continuationContextPath"
+        }
+        $continuationContextMessage = Get-Content -LiteralPath $continuationContextPath -Raw -Encoding UTF8
+        foreach ($requiredContextText in @('已確認結論', '未完成單位', '證據位置')) {
+            $contextPattern = '(?m)^[ \t-]*' + [regex]::Escape($requiredContextText) + '[ \t]*[:：][ \t]*(?<value>[^\r\n]+?)\s*$'
+            $contextMatch = [regex]::Match($continuationContextMessage, $contextPattern)
+            if (-not $contextMatch.Success -or [string]::IsNullOrWhiteSpace($contextMatch.Groups['value'].Value)) {
+                throw "續行 last-message 缺少必要交接欄位：$requiredContextText"
+            }
+        }
+        $lastMessagePathValue = Join-Path -Path $historyRoot -ChildPath ('codex-last-message-' + $timestamp + '.md')
+    }
+    elseif ([string]::IsNullOrWhiteSpace($lastMessagePathValue)) {
         $lastMessagePathValue = Join-Path -Path $historyRoot -ChildPath ('codex-last-message-' + $timestamp + '.md')
     }
     else {
@@ -2890,27 +4745,126 @@ function Invoke-Start {
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
         $sessionModeValue = 'continuation'
     }
-    if (-not $DowngradeInstruction) {
+    if ($TaskType -eq 'deep-consult') {
+        if ($dispatchKindValue -ne 'resource') {
+            throw 'deep-consult 必須使用 DispatchKind=resource。'
+        }
+        if ($writeModeValue -ne 'readonly') {
+            throw 'deep-consult 必須使用 read-only 派遣。'
+        }
+        if ([string]::IsNullOrWhiteSpace($EvidencePackPath)) {
+            throw 'deep-consult 必須提供 EvidencePackPath。'
+        }
+        if ([string]::IsNullOrWhiteSpace($DeepConsultReportPath)) {
+            throw 'deep-consult 必須提供 DeepConsultReportPath。'
+        }
+        $DeepConsultReportPath = Get-DeepConsultReportPath -Path $DeepConsultReportPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+        if ([string]::IsNullOrWhiteSpace($QuotaAfterPath)) {
+            throw 'deep-consult 必須提供可在執行期間更新的 QuotaAfterPath。'
+        }
+        if ($null -ne $AddDirectory -and $AddDirectory.Count -gt 0) {
+            throw 'deep-consult 不允許額外 --add-dir，執行端只可讀取 evidence pack。'
+        }
+        $evidencePackInfo = Test-EvidencePack -Path $EvidencePackPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+        $evidenceHashPath = Join-Path -Path $historyRoot -ChildPath ('evidence-pack-' + $dispatchSlugValue + '.sha256')
+        Write-Utf8NoBom -Path $evidenceHashPath -Content ($evidencePackInfo.sha256 + "`n")
+    }
+    if ($TaskType -ne 'deep-consult' -and -not [string]::IsNullOrWhiteSpace($DeepConsultReportPath)) {
+        throw 'DeepConsultReportPath 只適用 TaskType=deep-consult。'
+    }
+    if ($TaskType -ne 'deep-consult' -and -not [string]::IsNullOrWhiteSpace($EvidencePackPath)) {
+        throw 'EvidencePackPath 只適用 TaskType=deep-consult。'
+    }
+
+    $beforeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $QuotaBeforePath -CodexHome $CodexHome -HistoryRoot $historyRoot -Purpose 'before' -Required
+    $beforeSnapshotObject = Read-QuotaSnapshot -Path $beforeSnapshotPathValue
+    if ($TaskType -eq 'deep-consult') {
+        $afterSnapshotPathValue = Resolve-AbsolutePath -Path $QuotaAfterPath
+        if (-not (Test-PathWithinRoot -Path $afterSnapshotPathValue -Root $executionRootPath)) {
+            throw "deep-consult QuotaAfterPath 必須位於 executionRoot 內：$afterSnapshotPathValue"
+        }
+        $afterSnapshotPathValue = Set-QuotaSnapshotFromCodex -Path $afterSnapshotPathValue -CodexHome $CodexHome
+    }
+    $calibrationPathValue = $CalibrationPath
+    if ([string]::IsNullOrWhiteSpace($calibrationPathValue)) {
+        $calibrationPathValue = Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history\quota-calibration.jsonl'
+    }
+    $unitKindValue = Get-DefaultUnitKind -DispatchKind $dispatchKindValue -UnitKind $UnitKind -TaskType $TaskType
+    $units = @(Get-DispatchUnitList -RequestedUnit $RequestedUnit -DispatchKind $dispatchKindValue -UnitKind $unitKindValue -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -EvidencePackPath $EvidencePackPath -TargetPath $TargetPath)
+    $scopePlanPathValue = $ScopePlanPath
+    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId) -and [string]::IsNullOrWhiteSpace($scopePlanPathValue)) {
+        throw '續行必須提供既有 ScopePlanPath，禁止重新建立 ScopePlan。'
+    }
+    if ([string]::IsNullOrWhiteSpace($scopePlanPathValue)) {
+        $scopePlanPathValue = Join-Path -Path $historyRoot -ChildPath ('scope-plan-' + $dispatchSlugValue + '-' + $timestamp + '.json')
+    }
+    else {
+        $scopePlanPathValue = Resolve-AbsolutePath -Path $scopePlanPathValue
+        if (-not (Test-PathWithinRoot -Path $scopePlanPathValue -Root $executionRootPath)) {
+            throw "ScopePlanPath 必須位於 executionRoot 內：$scopePlanPathValue"
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
+        $null = Test-ScopePlanHashRecord -SourceHistoryRoot $sourceHistoryRoot -DispatchSlug $dispatchSlugValue -LineSlug $lineSlugValue -ScopePlanPath $scopePlanPathValue
+        $existingScopePlan = Read-ScopePlanFile -Path $scopePlanPathValue
+        if (-not (Test-ContinuationScopePlan -ScopePlan $existingScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -UnitKind $unitKindValue -Units $units)) {
+            throw '續行的 ScopePlan 不存在、欄位不完整或與目前派工契約不一致。'
+        }
+        $scopePlan = $existingScopePlan
+    }
+    else {
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -SessionMode $sessionModeValue -BeforeSnapshot (Read-QuotaSnapshot -Path $beforeSnapshotPathValue) -CalibrationPath $calibrationPathValue -Units $units -UnitKind $unitKindValue -RequestedBudgetPercent $PrimaryBudgetPercent -RequestedReservePercent $PrimaryReservePercent -Model $Model
+        $scopePlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $scopePlan
+        Write-Utf8NoBom -Path $scopePlanPathValue -Content (($scopePlan | ConvertTo-Json -Depth 20) + "`n")
+        $null = Write-ScopePlanHashRecordIfMissing -SourceHistoryRoot $sourceHistoryRoot -DispatchSlug $dispatchSlugValue -LineSlug $lineSlugValue -ScopePlanPath $scopePlanPathValue
+    }
+    if ($scopePlan.decision -eq 'blocked-no-estimate' -or $scopePlan.decision -eq 'blocked-insufficient-budget' -or $scopePlan.decision -eq 'user-decision-required') {
+        throw "ScopePlan 阻擋派工：decision=$($scopePlan.decision); reason=$($scopePlan.decision_reason)"
+    }
+    if ($TaskType -eq 'deep-consult') {
+        if ([string]::IsNullOrWhiteSpace($monitorPathValue)) {
+            $monitorPathValue = Join-Path -Path $historyRoot -ChildPath ('quota-monitor-' + $dispatchSlugValue + '-' + $timestamp + '.jsonl')
+        }
+        else {
+            $monitorPathValue = Resolve-AbsolutePath -Path $monitorPathValue
+            if (-not (Test-PathWithinRoot -Path $monitorPathValue -Root $executionRootPath)) {
+                throw "BudgetMonitorPath 必須位於 executionRoot 內：$monitorPathValue"
+            }
+        }
+    }
+
+    if ($TaskType -ne 'deep-consult') {
         $deepCycleDecision = Get-DeepCycleDecision -RequestedProfile $requestedProfileValue -RequestSource $DeepRequestSource -DaysToReset $SecondaryDaysToReset -RemainingPercent $SecondaryRemainingPercent
     }
     else {
         $deepCycleDecision = [ordered]@{
-            applicable       = $false
+            applicable       = $true
             requestSource    = $DeepRequestSource
             gatePassed       = $null
             daysToReset      = $SecondaryDaysToReset
             remainingPercent = $SecondaryRemainingPercent
-            notice           = '額度低於目標門檻，已改用預設檔位。'
+            notice           = 'deep-consult 使用獨立額度門檻，僅以 evidence pack 與 primary reserve 判定。'
         }
-        $effectiveProfileValue = 'default'
-        $downgradeApplied = $true
     }
 
     $promptDirectives = New-Object System.Collections.Generic.List[string]
-    if ($DowngradeInstruction) {
+    $promptDirectives.Add(
+        '[中斷保全]' + [Environment]::NewLine +
+        '本次工作必須可在任意中斷點交付已確認結果。開始主要探索前，先寫出目前已確認的結論、證據位置與尚未確認項目。每完成一個範圍單位，更新一次「已確認結論」與「實際覆蓋範圍」。收到中止要求時，先保存已確認結論、證據位置、未完成單位與不應推論的內容，再結束本次工作。不得以未執行的單位補寫結論。'
+    )
+    $promptDirectives.Add(('[ScopePlan]' + [Environment]::NewLine + ($scopePlan | ConvertTo-Json -Depth 20)))
+    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
         $promptDirectives.Add(
-            '[額度降級指示]' + [Environment]::NewLine +
-            '本次派工使用預設檔位，因有效額度快照低於目標門檻。請先交付已確認的結果，明確標明實際覆蓋範圍；即使額度不足，也不得在零產出的情況下中斷。'
+            '[續行交接資料]' + [Environment]::NewLine +
+            ('前輪 last-message 路徑：' + $continuationContextPath + [Environment]::NewLine) +
+            '前輪已確認結論、未完成單位與證據位置如下，必須沿用且不得重建 ScopePlan：' + [Environment]::NewLine +
+            $continuationContextMessage.Trim()
+        )
+    }
+    if ($TaskType -eq 'deep-consult') {
+        $promptDirectives.Add(
+            '[deep-consult evidence-only]' + [Environment]::NewLine +
+            ('只可讀取 evidence pack：' + $evidencePackInfo.sandboxPath + '。禁止 repository 探索、掃描、檔案變更與外部派遣。請先輸出 ## 中斷保全結論，再輸出證據支持、推論與未決問題。')
         )
     }
     if ($null -ne $deepCycleDecision -and $deepCycleDecision.applicable -and $DeepRequestSource -eq 'user-explicit') {
@@ -2920,9 +4874,13 @@ function Invoke-Start {
 
     $codexArguments = New-Object System.Collections.Generic.List[string]
     $codexArguments.Add('--cd')
-    $codexArguments.Add($executionRootPath)
+    $codexWorkingRoot = $executionRootPath
+    if ($null -ne $evidencePackInfo) {
+        $codexWorkingRoot = Split-Path -Parent $evidencePackInfo.sandboxPath
+    }
+    $codexArguments.Add($codexWorkingRoot)
     $codexArguments.Add('--sandbox')
-    $codexArguments.Add('workspace-write')
+    $codexArguments.Add($(if ($TaskType -eq 'deep-consult') { 'read-only' } else { 'workspace-write' }))
     if ($effectiveProfileValue -ne 'default') {
         $codexArguments.Add('--profile')
         $codexArguments.Add($effectiveProfileValue)
@@ -3002,7 +4960,31 @@ function Invoke-Start {
             ('started-at-utc=' + [datetime]::UtcNow.ToString('o'))
         ) -join "`n"
         Write-Utf8NoBom -Path $pidPath -Content ($pidContent + "`n")
-        Write-Utf8NoBom -Path $threadPath -Content ''
+        $relay = Wait-ForThreadRelay -EventPath $eventPath -ThreadPath $threadPath -TimeoutSeconds 5
+        if ([string]::IsNullOrWhiteSpace($relay.threadId)) {
+            $phase = 'thread-relay-not-ready'
+            throw ('thread relay not-ready：逾時 {0} 秒仍未取得非空 threadId；保留事件流與 relay 證據。' -f $relay.timeoutSeconds)
+        }
+        $budgetMonitorStatus.state = 'running'
+        if ($TaskType -eq 'deep-consult') {
+            $budgetMonitorStatus = Invoke-DeepBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -CodexHome $CodexHome -PrimaryBudgetPercent ([double]$scopePlan.primary_budget_percent) -AbortGraceSeconds $AbortGraceSeconds
+            if ($budgetMonitorStatus.state -eq 'AbortedByBudget') {
+                $phase = 'aborted-by-budget'
+                throw "deep-consult 已由 BudgetMonitor 中止：$($budgetMonitorStatus.state)"
+            }
+            if ($budgetMonitorStatus.state -eq 'IdentityUnverified') {
+                $skipProcessCleanup = $true
+                $phase = 'identity-unverified'
+                throw 'deep-consult BudgetMonitor 無法確認進程身分，保留未清理證據且不再終止程序。'
+            }
+            if ($budgetMonitorStatus.state -eq 'CrossReset') {
+                $phase = 'cross-reset'
+                throw 'deep-consult BudgetMonitor 偵測到 primary reset window 變更，停止監看並拒絕校準。'
+            }
+            if ($budgetMonitorStatus.state -eq 'SnapshotFailed') {
+                throw 'deep-consult BudgetMonitor 無法取得有效 after quota snapshot。'
+            }
+        }
         $phase = 'started'
 
         return [ordered]@{
@@ -3013,8 +4995,9 @@ function Invoke-Start {
             dispatchSlug     = $dispatchSlugValue
             requestedProfile = $requestedProfileValue
             profile          = $effectiveProfileValue
-            profileDowngraded = $downgradeApplied
-            downgradeInstructionApplied = $DowngradeInstruction.IsPresent
+            profileDowngraded = $false
+            interruptionSafeguardApplied = $interruptionSafeguardApplied
+            downgradeInstructionApplied = $interruptionSafeguardApplied
             model            = $Model
             reasoningEffort  = $ReasoningEffort
             taskType         = $TaskType
@@ -3033,6 +5016,16 @@ function Invoke-Start {
             lastMessagePath  = $lastMessagePathValue
             promptPath       = $promptPathValue
             threadIdPath     = $threadPath
+            threadId         = $relay.threadId
+            scopePlanPath    = $scopePlanPathValue
+            scopePlan         = $scopePlan
+            quotaBeforePath  = $beforeSnapshotPathValue
+            quotaAfterPath   = $afterSnapshotPathValue
+            evidencePackPath = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.path }
+            evidencePackSandboxPath = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sandboxPath }
+            evidencePackSha256 = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sha256 }
+            budgetMonitorPath = $monitorPathValue
+            budgetMonitor     = $budgetMonitorStatus
             launcherPath     = $launcher.Path
             codexPath        = $codexExecutable
             codexArguments   = @($codexArguments.ToArray())
@@ -3046,7 +5039,11 @@ function Invoke-Start {
             $processExitCodeValue = Get-ProcessExitCodeIfExited -Process $process
         }
         if ($null -ne $startedSnapshot) {
-            if ($startedSnapshot.IdentityVerified -eq $true) {
+            if ($skipProcessCleanup) {
+                $cleanupStatus = 'not-attempted-identity-unverified'
+                $cleanupError = '身分驗證例外後保留進程與未清理證據。'
+            }
+            elseif ($startedSnapshot.IdentityVerified -eq $true) {
                 try {
                     $cleanupResult = Stop-VerifiedProcessTree -Snapshot $startedSnapshot
                     $cleanupStatus = $cleanupResult.CleanupStatus
@@ -3182,6 +5179,7 @@ function Invoke-Inspect {
 
     $events = New-Object System.Collections.Generic.List[object]
     $malformedLines = New-Object System.Collections.Generic.List[object]
+    $threadIds = New-Object System.Collections.Generic.List[string]
     $lineNumber = 0
     foreach ($line in Get-Content -LiteralPath $eventPath -Encoding UTF8) {
         $lineNumber++
@@ -3225,12 +5223,12 @@ function Invoke-Inspect {
     $usage = $null
     foreach ($event in $events) {
         $eventType = Get-EventPropertyValue -Object $event -Name 'type'
-        if ($eventType -eq 'thread.started' -and [string]::IsNullOrWhiteSpace($threadId)) {
+        if ($eventType -eq 'thread.started') {
             $threadIdValue = Get-EventPropertyValue -Object $event -Name 'thread_id'
             if ($null -eq $threadIdValue -or -not ($threadIdValue -is [string]) -or [string]::IsNullOrWhiteSpace($threadIdValue)) {
                 throw 'thread.started.thread_id 必須為非空字串。'
             }
-            $threadId = $threadIdValue
+            $threadIds.Add($threadIdValue)
         }
         $item = Get-EventPropertyValue -Object $event -Name 'item'
         if ($null -ne $item) {
@@ -3263,9 +5261,14 @@ function Invoke-Inspect {
         throw "事件流最後事件不是必要的 turn.completed 或 turn.failed：$lastEventType"
     }
 
-    if ([string]::IsNullOrWhiteSpace($threadId)) {
+    $distinctThreadIds = @($threadIds.ToArray() | Sort-Object -Unique)
+    if ($distinctThreadIds.Count -gt 1) {
+        throw "事件流包含不同 thread id：$($distinctThreadIds -join ',')"
+    }
+    if ($distinctThreadIds.Count -eq 0) {
         throw '事件流缺少 thread.started.thread_id。'
     }
+    $threadId = $distinctThreadIds[0]
 
     if ([string]::IsNullOrWhiteSpace($lastAgentMessage)) {
         throw '事件流缺少必要的最後 agent_message。'
@@ -3304,8 +5307,9 @@ function Invoke-Inspect {
     }
 
     $outputValid = -not [string]::IsNullOrWhiteSpace($finalMessage) -and $finalMessage.Contains($RequiredIdentifier) -and $finalMessage.Contains($DispatchSlug) -and $finalMessage.Contains($LineSlug)
-    if (-not [string]::IsNullOrWhiteSpace($ThreadIdPath) -and -not [string]::IsNullOrWhiteSpace($threadId)) {
-        Write-Utf8NoBom -Path (Resolve-AbsolutePath -Path $ThreadIdPath) -Content ($threadId + "`n")
+    $threadRelay = $null
+    if (-not [string]::IsNullOrWhiteSpace($ThreadIdPath)) {
+        $threadRelay = Set-ThreadIdFromEventStream -EventPath $eventPath -ThreadPath (Resolve-AbsolutePath -Path $ThreadIdPath) -RequireThreadId
     }
 
     $executionResult = [ordered]@{
@@ -3316,7 +5320,98 @@ function Invoke-Inspect {
         turnFailedReason = $turnFailedReason
         outputValid      = $outputValid
     }
-    $calibrationResult = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath
+    $scopePlan = Read-ScopePlanFile -Path $ScopePlanPath
+    if ([string]::IsNullOrWhiteSpace($QuotaBeforePath)) {
+        $snapshotFailure = 'Inspect 缺少 before quota snapshot。'
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $scopePlan -Failure $snapshotFailure
+        throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
+    }
+    try {
+        $beforeSnapshot = Read-QuotaSnapshot -Path $QuotaBeforePath
+    }
+    catch {
+        $snapshotFailure = 'Inspect before quota snapshot 無效：' + $_.Exception.Message
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $scopePlan -Failure $snapshotFailure
+        throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
+    }
+    $afterSnapshotPathValue = $QuotaAfterPath
+    try {
+        if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue) -and (-not [string]::IsNullOrWhiteSpace($CodexHome) -or -not [string]::IsNullOrWhiteSpace($env:CODEX_HOME))) {
+            $historyRoot = Join-Path -Path (Resolve-AbsolutePath -Path $ExecutionRoot) -ChildPath '.local\ai-sessions\history'
+            $afterSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $null -CodexHome $CodexHome -HistoryRoot $historyRoot -Purpose 'after' -Required
+        }
+    }
+    catch {
+        $snapshotFailure = 'Inspect after quota snapshot 取得失敗：' + $_.Exception.Message
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
+        throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
+    }
+    if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue)) {
+        $snapshotFailure = 'Inspect 缺少 after quota snapshot。'
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
+        throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
+    }
+    try {
+        $afterSnapshot = Read-QuotaSnapshot -Path $afterSnapshotPathValue
+    }
+    catch {
+        $snapshotFailure = 'Inspect after quota snapshot 無效：' + $_.Exception.Message
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
+        throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
+    }
+    $interruptionStatus = [ordered]@{
+        applied = $true
+        safePointPresent = -not [string]::IsNullOrWhiteSpace((Get-LatestSafePointMessage -EventPath $eventPath))
+        sessionMode = $SessionMode
+    }
+    $budgetMonitor = $null
+    if (-not [string]::IsNullOrWhiteSpace($BudgetMonitorPath) -and (Test-Path -LiteralPath $BudgetMonitorPath -PathType Leaf)) {
+        $budgetMonitor = @(Get-Content -LiteralPath $BudgetMonitorPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
+    }
+    $budgetMonitorRejected = $false
+    foreach ($monitorRecord in @($budgetMonitor)) {
+        $monitorState = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'state')
+        $monitorEvent = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'event')
+        if ($monitorState -eq 'AbortedByBudget' -or $monitorEvent -eq 'monitor.terminal-budget-exceeded') {
+            $budgetMonitorRejected = $true
+            break
+        }
+    }
+    if ($budgetMonitorRejected) {
+        $executionResult.success = $false
+        $executionResult.budgetMonitorRejected = $true
+        if ([string]::IsNullOrWhiteSpace($executionResult.turnFailedReason)) {
+            $executionResult.turnFailedReason = 'BudgetMonitor 偵測到行程結束後超出 primary budget。'
+        }
+    }
+    $calibrationResult = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -InterruptionStatus $interruptionStatus -BudgetMonitor $budgetMonitor
+
+    $deepReportPathValue = $DeepConsultReportPath
+    if ($TaskType -eq 'deep-consult') {
+        if ($null -eq $scopePlan -or $scopePlan.task_type -ne 'deep-consult') {
+            throw 'deep-consult Inspect 缺少一致的 ScopePlan。'
+        }
+        if ([string]::IsNullOrWhiteSpace($deepReportPathValue)) {
+            throw 'deep-consult Inspect 必須提供 DeepConsultReportPath。'
+        }
+        if ([string]::IsNullOrWhiteSpace($EvidencePackPath)) {
+            throw 'deep-consult Inspect 必須提供 EvidencePackPath。'
+        }
+        $deepReportPathValue = Get-DeepConsultReportPath -Path $deepReportPathValue -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        $evidencePackInfo = Test-EvidencePack -Path $EvidencePackPath -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        $evidencePathValue = $evidencePackInfo.path
+        $evidenceHash = Get-FileSha256 -Path $evidencePathValue
+        $evidenceHashRecordPath = Join-Path -Path (Split-Path -Parent $eventPath) -ChildPath ('evidence-pack-' + $DispatchSlug + '.sha256')
+        if (-not (Test-Path -LiteralPath $evidenceHashRecordPath -PathType Leaf)) {
+            throw 'evidence pack 缺少 Start SHA-256 紀錄，拒絕成功 Inspect。'
+        }
+        $expectedHash = (Get-Content -LiteralPath $evidenceHashRecordPath -Raw -Encoding UTF8).Trim()
+        if ([string]::IsNullOrWhiteSpace($expectedHash) -or -not [string]::Equals($expectedHash, $evidenceHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'evidence pack SHA-256 在 Start 與 Inspect 之間變更。'
+        }
+        $deepStatus = if ($executionResult.success) { 'completed' } else { 'failed' }
+        $deepReportWrittenPath = Write-DeepConsultReport -Path $deepReportPathValue -LineSlug $LineSlug -DispatchSlug $DispatchSlug -EvidencePackPath $evidencePathValue -EvidencePackSha256 $evidenceHash -FinalMessage $finalMessage -Status $deepStatus -BudgetMonitor $budgetMonitor
+    }
 
     $result = [ordered]@{
         operation        = 'Inspect'
@@ -3325,12 +5420,20 @@ function Invoke-Inspect {
         eventCount       = $events.Count
         lastEventType    = $lastEventType
         threadId         = $threadId
-        completed        = $lastEventType -eq 'turn.completed'
-        success          = $lastEventType -eq 'turn.completed' -and [int]$ProcessExitCode -eq 0
-        turnFailedReason = $turnFailedReason
+        completed        = $executionResult.completed
+        success          = $executionResult.success
+        turnFailedReason = $executionResult.turnFailedReason
         finalMessage     = $finalMessage
         outputValid      = $outputValid
         usage            = $usage
+        threadIdPath     = $ThreadIdPath
+        threadRelay      = $threadRelay
+        quotaBeforePath  = $QuotaBeforePath
+        quotaAfterPath   = $afterSnapshotPathValue
+        afterSnapshot    = $afterSnapshot.values
+        scopePlan        = $scopePlan
+        budgetMonitorRejected = $budgetMonitorRejected
+        deepConsultReportPath = if ($TaskType -eq 'deep-consult') { $deepReportWrittenPath } else { $null }
         stderr           = if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) { Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8 } else { '' }
     }
     if ($null -ne $calibrationResult) {
@@ -3362,9 +5465,22 @@ function Convert-ReportPathForComparison {
         [string]$DispatchRoot
     )
 
-    $normalized = $Path.Trim().Trim('`', '"', "'").Replace('/', '\')
+    $normalized = $Path.Trim().Trim('`', '"', "'").Replace('\', '/')
     if ([System.IO.Path]::IsPathRooted($normalized) -and (Test-PathWithinRoot -Path $normalized -Root $DispatchRoot)) {
-        return (Get-RelativePathFromRoot -Path $normalized -Root $DispatchRoot).Replace('/', '\')
+        return (Get-RelativePathFromRoot -Path $normalized -Root $DispatchRoot).Replace('\', '/')
+    }
+    return $normalized
+}
+
+function Convert-ComparisonPath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $normalized = $Path.Trim().Trim('`', '"', "'").Replace('\', '/')
+    while ($normalized.StartsWith('./', [System.StringComparison]::Ordinal)) {
+        $normalized = $normalized.Substring(2)
     }
     return $normalized
 }
@@ -3953,13 +6069,13 @@ function Get-DirectWriteFileEvidence {
         throw "direct-write 的 $EvidenceName 檔案為空：$fullPath"
     }
 
-    $hash = Get-FileHash -LiteralPath $fullPath -Algorithm SHA256
+    $hash = Get-FileSha256 -Path $fullPath
     return [ordered]@{
         path             = $fullPath
         relativePath     = Get-RelativePathFromRoot -Path $fullPath -Root $SourceRoot
         length           = [int64]$file.Length
         lastWriteTimeUtc = $file.LastWriteTimeUtc.ToString('o')
-        sha256           = $hash.Hash
+        sha256           = $hash
     }
 }
 
@@ -4114,22 +6230,25 @@ function Invoke-Collect {
     $unexpectedInReport = @()
     $matchesArray = @()
     $reportEvidence = @()
+    $normalizedReportReferences = @()
     if ($DispatchKind -eq 'workflow') {
         $reportReferences = @(Get-ReportReferencedPaths -ReportPath $ReportPath -DispatchRoot $dispatchRootPath)
         $matches = New-Object System.Collections.Generic.List[object]
-        foreach ($file in $allFiles) {
-            $normalizedFile = $file.Replace('/', '\')
-            $inReport = $reportReferences -contains $normalizedFile
+        $normalizedAllFiles = @($allFiles | ForEach-Object { Convert-ComparisonPath -Path $_ } | Sort-Object -Unique)
+        $normalizedReportReferences = @($reportReferences | ForEach-Object { Convert-ComparisonPath -Path $_ } | Sort-Object -Unique)
+        foreach ($file in $normalizedAllFiles) {
+            $normalizedFile = $file
+            $inReport = $normalizedReportReferences -contains $normalizedFile
             $matches.Add([pscustomobject]@{
                     Path      = $normalizedFile
                     InReport  = $inReport
-                    IsStaged  = $stagedDiff -contains $file
-                    IsTracked = $trackedDiff -contains $file
+                    IsStaged  = @($stagedDiff | ForEach-Object { Convert-ComparisonPath -Path $_ }) -contains $normalizedFile
+                    IsTracked = @($trackedDiff | ForEach-Object { Convert-ComparisonPath -Path $_ }) -contains $normalizedFile
                 })
         }
         $matchesArray = @($matches.ToArray())
         $missingFromReport = @($matchesArray | Where-Object { -not $_.InReport } | ForEach-Object { $_.Path })
-        $unexpectedInReport = @($reportReferences | Where-Object { $allFiles -notcontains $_ })
+        $unexpectedInReport = @($normalizedReportReferences | Where-Object { $normalizedAllFiles -notcontains $_ })
         if ($missingFromReport.Count -gt 0 -or $unexpectedInReport.Count -gt 0) {
             throw "差異清單與結案報告不一致。missingFromReport=$($missingFromReport -join ','); unexpectedInReport=$($unexpectedInReport -join ',')"
         }
@@ -4152,7 +6271,7 @@ function Invoke-Collect {
         untrackedFiles     = @($untrackedFiles)
         allFiles           = @($allFiles)
         reportPaths        = @($ReportPath | ForEach-Object { Resolve-AbsolutePath -Path $_ })
-        reportReferences   = @($reportReferences)
+        reportReferences   = @($normalizedReportReferences)
         missingFromReport  = @($missingFromReport)
         unexpectedInReport = @($unexpectedInReport)
         itemChecks         = $matchesArray

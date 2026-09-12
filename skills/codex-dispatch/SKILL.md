@@ -9,6 +9,58 @@ policy.allow_implicit_invocation: true
 
 本 Skill 負責派工的執行機制。是否派工由 `instructions.md` §1.5 的路由規則判定，本 Skill 只處理指令、落點、等待、取證、續 session 與回收。
 
+## 額度與範圍契約
+
+`QuotaSnapshot` 是每次派工的額度輸入。`Get-CodexQuota.ps1 -SnapshotPath <path>` 保留既有 key-value stdout，另外寫入 `quota-snapshot.v1` JSON。有效快照必須包含 `captured_at_utc`、`state=Valid`，以及 `primary` 與 `secondary` 的 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at` 與 `source_file`。任何視窗缺欄位、狀態不是 `Valid`、來源過期或 reset 造成差值不可解釋時，派工以非零結束碼停止，不產生估算值。寫入 snapshot 失敗時保留失敗狀態並在 stderr 輸出 `quota_state=<狀態>`。
+
+`ScopePlan` 是派工前唯一的範圍決策，欄位固定如下。
+
+```text
+dispatch_slug
+dispatch_kind
+task_type
+requested_profile
+session_mode
+primary_remaining_percent
+primary_reserve_percent
+primary_budget_percent
+estimate_percent
+estimate_source
+unit_kind
+requested_units[]
+selected_units[]
+deferred_units[]
+decision
+decision_reason
+```
+
+`unit_kind` 只允許 `workflow-phase`、`resource-target` 與 `deep-evidence-pack`。`decision` 只允許 `full`、`scoped`、`blocked-insufficient-budget`、`blocked-no-estimate` 與 `user-decision-required`。Workflow 以 `design.md` 的 Phase 為最小單位，資源派遣以派遣單第 3 欄的目標物件為最小單位，deep consult 以單一 evidence pack 為最小單位。執行端不得自行增加或拆分單位。
+
+先判定目標檔位門檻，再決定是否需要估算。預設檔位的門檻為 primary 剩餘 30% 與 secondary 剩餘 15%。兩個視窗都達到門檻時，`ScopePlan` 直接使用 `decision=full`、`estimate_source=not-required-above-threshold`，不要求校準樣本或保守量級。`deep-consult` 不適用高額度放寬，一律計算預算與中止上限。任一視窗低於門檻時，才使用相同 `model`、`profile`、`session_mode` 與 `task_type` 分組的 eligible 樣本第 75 百分位或已核准的保守量級。低於門檻且沒有估算資料的非 deep 派工使用 `user-decision-required`，等待 `primary_resets_at` 或使用者決定；deep 派工使用 `blocked-no-estimate`。
+
+一般派工將 primary 剩餘扣除 reserve 後作為可用預算。`deep-consult` 的機械中止上限為 `estimate_percent × 1.25`，有效預算為 `min(estimate_percent × 1.25, primary_remaining_percent - 30)`。deep 分支固定至少保留 primary 30%，`PrimaryReservePercent` 未指定或小於 30% 時均以 30% 計算，不產生可執行的超額 ScopePlan。低於門檻時依宣告順序取可容納的最長前綴。完整清單使用 `full`，部分前綴使用 `scoped`，第一個最小單位超出預算使用 `blocked-insufficient-budget`，等待 `primary_resets_at` 或交由使用者決定。目標檔位為預設檔位且低於門檻時維持預設檔位，改走範圍 gate，不切換其他檔位。
+
+`CalibrationObservation` 必須保留 `dispatch_before_snapshot`、`dispatch_after_snapshot`、`observed_primary_delta_percent`、`scope_plan`、`interruption_status`、`budget_monitor` 與 `calibration_eligible`。`calibration_eligible=true` 必須同時具備新鮮且完整的 before／after、同分組欄位、primary 與 secondary 的 `resets_at` 完全相同、`turn.completed`、process exit code 0、完整非負 usage、完整且可分割的 ScopePlan，以及不超過 ScopePlan 預算、deep hard limit 與 monitor evidence 的 observed delta。校準紀錄以同線互斥追加保存，既有紀錄的缺欄位樣本維持不可校準。
+
+## InterruptionSafeguard
+
+`InterruptionSafeguard` 套用所有冷啟動與續行。PowerShell 參數保留 `DowngradeInstruction` 作為 alias，alias 只代表相同的中斷保全語意，不代表換檔或低額度降級。輸出同時保留 `interruptionSafeguardApplied` 與 `downgradeInstructionApplied`，兩者固定為相同布林值。中斷保全參數與續行 thread id 可以同時存在，續行仍沿用原始 profile 與父層選項。
+
+每次 `Start` 都將下列原文加入 prompt。
+
+```text
+[中斷保全]
+本次工作必須可在任意中斷點交付已確認結果。開始主要探索前，先寫出目前已確認的結論、證據位置與尚未確認項目。每完成一個範圍單位，更新一次「已確認結論」與「實際覆蓋範圍」。收到中止要求時，先保存已確認結論、證據位置、未完成單位與不應推論的內容，再結束本次工作。不得以未執行的單位補寫結論。
+```
+
+## Deep consult resource dispatch
+
+`TaskType=deep-consult` 必須使用 `DispatchKind=resource`、`WriteMode=readonly` 與單一 evidence pack。evidence pack schema 為 `deep-consult.evidence.v1`，必須包含目標段落原文摘錄與來源位置、已知結論、待答問題及 `required-output`、可能反證與邊界。deep 執行端只可讀取該 evidence pack，不得探索 repository、讀取其他來源、修改檔案或寫入 report。
+
+`Start` 只驗證並保存 evidence pack SHA-256，不建立 deep report。必要的 after quota snapshot 必須由 `Get-CodexQuota.ps1` 在 Start 前建立，並由 Budget monitor 在執行期間更新；缺少 `QuotaAfterPath`、Codex home 或任一次更新失敗時以非零結束。Budget monitor 在 Codex 行程結束後仍必須補做一次 terminal quota snapshot 與 budget gate；terminal snapshot 超過 `primary_budget_percent` 時寫入 `AbortedByBudget` 事件、保留對應證據並使 `Start` 以非零結束，未超限時維持 completed。`Inspect` 或回收步驟依事件流與 last-message 寫入同線 `report/<lineSlug>/deep-consult-<dispatchSlug>.md`，`DeepConsultReportPath` 必須位於同線 `reportLineRoot` 且檔名固定為 `deep-consult-<dispatchSlug>.md`。報告區分證據支持、推論與未決問題。Start 前後的 SHA-256 不一致、Inspect 缺少 Start hash 紀錄或讀到 `AbortedByBudget` 時拒絕成功判定。
+
+Budget monitor 同時觀察事件流與可更新的 after quota snapshot。每輪比較 primary `resets_at`，reset window 改變時寫入跨 reset 紀錄並標記不可校準，停止監看。超過 `primary-budget-percent` 時先寫入 stop request，等待最新 `agent_message` 的 `## 中斷保全結論` 區段含非空保全結論、已確認結論、證據位置與實際覆蓋範圍，最多等待 `abort-grace-seconds`，再使用已驗證的 `Stop-VerifiedProcessTree`。Codex 行程結束後仍執行一次 terminal snapshot 與 budget gate。中止後確認整棵程序樹已結束，保存 `AbortedByBudget`；等待期間沒有完整保全結論時追加 `safe-point-missing`。根程序身分無法確認時不得終止，保存 `IdentityUnverified`。
+
 ## Git 前置探針與 worktree 生命週期
 
 所有派遣先呼叫 `scripts\Invoke-CodexDispatch.ps1 -Operation Preflight`。每次派遣必須取得上游傳入且已驗證的 `LineContext`。`lineSlug` 識別同一條 Analyst 線，`dispatchSlug` 識別單次派遣，兩者分屬不同名稱空間。缺少 `LineContext`、識別字不符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，或 `line.json` 的 `line-slug` 與傳入值不一致時，腳本以非零結束碼停止，且不建立成功狀態。
@@ -106,13 +158,13 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 ## 腳本介面與執行前提
 
-本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責 F1 路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定；腳本驗證 deep 週期位置、套用已選定的降級出口，並保存校準觀測。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
+本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責 F1 路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定；腳本驗證額度快照、ScopePlan、deep evidence-only 邊界、thread relay、安全中止與校準觀測。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
 
 | Operation | 主要參數 | 成功輸出 | 致命失敗 |
 | --- | --- | --- | --- |
 | `Preflight` | `SourceRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、`WriteMode`、`TargetPath[]` | `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`、同線目錄、`pidCheck` | manifest、PID、Git、根目錄界線、worktree、patch 或檔案複製驗證失敗時 stderr 並 exit code 1 |
-| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`DeepRequestSource`、`SecondaryDaysToReset`、`SecondaryRemainingPercent`、`DowngradeInstruction`、Codex 父層選項 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id 路徑、實際參數、有效 profile、週期位置與降級狀態 | deep 主動提議未通過週期 gate、執行檔、工作目錄、啟動參數或根程序身分取得失敗時 stderr 並 exit code 1 |
-| `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、冷啟動／續行、派工前後快照 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、校準紀錄路徑、分組樣本數與提議訊號 | JSONL 格式錯誤、必要輸入缺失或校準快照格式錯誤時 stderr 並 exit code 1 |
+| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`TaskType`、before snapshot、`InterruptionSafeguard`（舊參數 alias 為 `DowngradeInstruction`）、ScopePlan、Codex 父層選項；deep 另需 evidence pack、read-only 與預算欄位 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id relay、before snapshot、ScopePlan、實際參數、有效 profile、中斷保全狀態與 monitor 證據 | 快照、ScopePlan、evidence pack、執行檔、工作目錄、啟動參數或根程序身分驗證失敗時 stderr 並 exit code 1 |
+| `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、ScopePlan、派工前後快照、thread id 路徑 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、after snapshot、校準紀錄、thread relay、deep report 與 monitor 證據 | JSONL、thread id、必要輸入、證據包 hash 或校準快照格式錯誤時 stderr 並 exit code 1 |
 | `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果 | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
 | `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `turn.completed`、exit code 0、實際參數、事件流、stderr、last-message、thread id、rollout 來源路徑與回復紀錄 | 只允許 `PostResetNoSnapshot`；`ProbeAttempt > 1`、啟動參數、根程序身分或事件流驗證失敗時 stderr 並 exit code 1 |
 
@@ -120,11 +172,11 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 `Start` 會固定 `--cd`、`--sandbox`、`--profile`、`--add-dir`、`--search` 等父層選項的位置，再執行 `codex exec` 或同一 thread 的 `codex exec resume`。`--json`、`--output-last-message` 與 prompt 選項位於子命令之後。事件流、stderr、last-message、thread id 與 PID 記錄各自保存，啟動結果包含實際參數，供後續複核。
 
-`Start` 收到 `DowngradeInstruction` 時固定改用預設檔位，並在派工 prompt 的副本加入降級指示。收到 `Profile=deep` 時必須指定 `DeepRequestSource`。`agent-proposal` 只在兩個 `secondary` gate 條件同時成立時啟動；`user-explicit` 不受該 gate 阻擋，但 prompt 與 JSON 輸出都保留週期位置和剩餘額度。
+`Start` 每次都加入 `InterruptionSafeguard` prompt。收到 `Profile=deep` 時，非 `deep-consult` 路徑沿用 `DeepRequestSource` 與既有週期 gate；`TaskType=deep-consult` 使用獨立的 evidence pack、primary reserve 與機械中止 gate。預設檔位低於門檻時維持預設檔位，改由 ScopePlan 控制範圍。中斷保全不改變 profile，也不作為換檔出口。
 
 `Inspect` 逐行解析 JSONL。空白行略過；單行解析失敗時保存原文與行號，繼續解析其餘事件，讓完整事件流仍可供診斷，但只要存在壞行，`Inspect` 就以非零結束碼拒絕產出成功狀態。可解析且具備必要欄位的 `turn.failed` 或非零 process exit code 是派工證據中的失敗結果，腳本仍輸出 `success=false`；缺少事件、非空 `type`、必要的 `thread_id`、成功事件的 `usage`、最後一則 `agent_message` 或其他必要欄位時，`Inspect` operation 以非零結束。`outputValid=false` 只表示存在 final message 但該訊息缺少必要識別字。
 
-`Inspect` 在提供 `sourceRoot` 或 `CalibrationPath` 時追加校準紀錄。紀錄使用 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`，分組鍵為 `model`、`profile`、冷啟動／續行，任務類型只保留為欄位。紀錄不足 5 筆時只回報觀測數量；達到 5 筆時只輸出由主 Agent 提議新門檻的訊號，腳本不修改規則。
+`Inspect` 在提供 `sourceRoot` 或 `CalibrationPath` 時追加校準紀錄。紀錄使用 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`，分組鍵為 `model`、`profile`、冷啟動／續行與 `task_type`，並保存前後快照、ScopePlan、observed delta、`interruption_status` 與 `budget_monitor`。紀錄不足 5 筆時只回報觀測數量；達到 5 筆時只輸出由主 Agent 提議新門檻的訊號，腳本不修改規則。Inspect 發現 before 或 after 快照缺失、無法解析或不完整時，先追加一筆 `snapshot_failure` 且 `calibration_eligible=false` 的觀測，再以非零結束；觀測寫入失敗時保留原始快照錯誤並同樣以非零結束。其他快照或 usage 不完整時保留觀測但標記 `calibration_eligible=false`，Inspect 以非零結束碼回報。
 
 `Collect` 在 worktree 路徑合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單。報告核對方式依 `DispatchKind` 分流：`workflow` 以結案報告「Phase 對照」節逐項比對檔案清單，並以「需求對照」節比對 `RequirementSummaryPath` 的需求項目編號，`resource` 只確認報告存在且非空並回傳其長度與 SHA-256。「需求對照」核對要求需求摘要同時具備 `## 程式面項目` 與 `## 功能面項目` 兩節，兩節表格的 `#` 編號合併後不得重複，且每個編號在結案報告「需求對照」表格恰有一列 `#<n>`；表格固定 6 欄（需求、驗收方向、T-code、實際行為、證據、狀態），以未跳脫的 `|` 切欄，每欄非空，狀態為四個合法值之一。缺節、摘要編號重複、缺列、重複列、多出摘要沒有的編號、欄數不符或欄位為空時，以非零結束碼停止並列出不符的編號。此核對只驗結構完整，不判定內容是否正確，內容一致性由 Reviewer 的需求對照核對負責。resource 的結案要求是逐條驗收，不逐 Phase 列出檔案清單，對它要求「Phase 對照」節會使每次資源派遣都無法回收。direct-write 路徑則讀取 Preflight 的 `targetStates`，確認每個核准輸出都存在、為非空檔案，並回傳檔案長度、最後寫入時間與 SHA-256。任一數量、路徑、檔案證據或報告不一致都停止回收，且在成果尚未完成回收前不得移除 worktree。
 
@@ -253,11 +305,11 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 - 派遣單第 3 欄逐一列出目標物件的絕對路徑，不使用目錄萬用字元，避免執行端自行決定讀取範圍。
 - prompt 明列已知結論、已讀過的檔案與不需重讀的部分，讓執行端直接進入判斷。
 - 需要限制讀取量時，在 prompt 明文要求單一 agent 執行並說明理由。執行端派生 subagent 時每個 subagent 各自消耗額度，讀取量隨並行數累加。
-- 額度不足以支撐完整任務時，在 prompt 加入降級指示：要求先寫出已確認的結果並註明實際覆蓋範圍，不要在零產出的情況下中斷。實測該指示可使中斷的派遣仍交付部分成果。
+- 額度不足以支撐完整任務時，在 prompt 加入中斷保全指示：要求先寫出已確認的結果並註明實際覆蓋範圍，於安全點保存結論與證據，再結束目前派遣。實測該指示可使中斷的派遣仍交付部分成果。
 
 本機檔位設定調整後，冷啟動的消耗結構隨之改變，前述門檻應依調整後的實測值重新校準，不沿用調整前的數據。
 
-續行同一 thread 的輸入快取狀態與冷啟動不同，因此續行與冷啟動必須分組校準。續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立。`ResumeThreadId` 與 `DowngradeInstruction` 互斥。deep 續行遇低額度時，唯一合法出口是攜帶完整交接、以預設檔位建立新的 cold-start；腳本拒絕在同一 thread 上改用預設檔位。
+續行同一 thread 的輸入快取狀態與冷啟動不同，因此續行與冷啟動必須分組校準。續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立。所有續行仍注入中斷保全指示，並沿用同一份 `ScopePlan` 與保全狀態。
 
 ### 額度快照
 
@@ -312,11 +364,11 @@ secondary_source_file=
 2. 主 Agent 主動提議 `deep` 時，兩個視窗的剩餘額度必須達到上表對應門檻，且 `secondary_days_to_reset <= 2`、`secondary_remaining_percent >= 40`。任一週期條件不成立時，不提出 `deep` 確認。
 3. 使用者明示要求 `deep` 時，週期位置 gate 不阻擋派遣，但主 Agent 必須先告知 `secondary_days_to_reset`、`secondary_remaining_percent` 與一小時即可用完整個 `primary` 5 小時視窗的實測成本基準。
 4. 主動提議符合條件時，依「升級確認」節向使用者提出確認。取得當輪明確同意後才加入 `--profile deep`；未取得同意時使用預設檔位。週期位置 gate 與使用者明示要求是兩條分開處理的路徑。
-5. 低於目標 profile 門檻但快照有效時，冷啟動一律省略 `--profile`，使用預設檔位，並在 prompt 加入下列降級指示。請先交付已確認的結果，明確標明實際覆蓋範圍；即使額度不足，也不得在零產出的情況下中斷。若目前有 `ResumeThreadId`，不得套用降級指示到同一 thread；應停止該續行並依續行契約建立新的 cold-start，腳本拒絕這組互斥參數。
+5. 低於目標 profile 門檻但快照有效時，冷啟動與續行維持原始 profile，改由 `ScopePlan` 依最小單位決定完整、部分或阻擋出口。所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
 6. 額度腳本失敗、輸出缺少任一視窗欄位或 `deep.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
 7. 預設檔位省略 `--profile`。檔位名稱只允許預設與 `deep` 的語意集合，臨時驗證檔位不進入派工判定。
 
-每次派遣結束時，`Invoke-CodexDispatch.ps1 -Operation Inspect` 追加一筆 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`。紀錄至少包含 `model`、`profile`、冷啟動／續行、任務類型、`turn.completed.usage`、派工前後的 `primary` 與 `secondary` 快照，以及完成、失敗與實際輸出結果。校準分組鍵只有 `model`、`profile`、冷啟動／續行，任務類型只作紀錄欄位。樣本少於 5 筆時只保留觀測紀錄；達到 5 筆時輸出供主 Agent 判讀的提議訊號，腳本不修改門檻，也不輸出自動更新值。
+每次派遣結束時，`Invoke-CodexDispatch.ps1 -Operation Inspect` 追加一筆 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`。紀錄至少包含 `model`、`profile`、冷啟動／續行、`task_type`、`turn.completed.usage`、派工前後的 `primary` 與 `secondary` 快照，以及完成、失敗與實際輸出結果。校準分組鍵為 `model`、`profile`、冷啟動／續行與 `task_type`。樣本少於 5 筆時只保留觀測紀錄；達到 5 筆時輸出供主 Agent 判讀的提議訊號，腳本不修改門檻，也不輸出自動更新值。
 
 ### 決策歸屬
 
@@ -376,11 +428,11 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 | `exitCode` | process 結束碼 |
 | `stderr` | stderr 檔案完整內容 |
 
-`--output-last-message` 由 CLI 直接寫檔，比從事件流反推更可靠，因此列為 `finalMessage` 的第一來源。事件流沒有最後的 `agent_message` 時，`Inspect` 以非零結束碼停止；只有已取得 final message 但識別字不完整時才輸出 `outputValid=false`。
+`--output-last-message` 由 CLI 直接寫檔，比從事件流反推更可靠，因此列為 `finalMessage` 的第一來源。事件流沒有最後的 `agent_message` 時，`Inspect` 以非零結束碼停止；只有已取得 final message 但識別字不完整時才輸出 `outputValid=false`。若事件流最後為 `turn.completed` 但 monitor 含 `AbortedByBudget` 或 `monitor.terminal-budget-exceeded`，`Inspect` 保留完整事件與 monitor 證據，輸出 `success=false`。
 
 `usage` 只作為事後記錄與額度對照，不取代派工前的額度快照判定。
 
-`finalMessage` 一律保留在 `history` 的 last-message 檔，不寫入報告落點。
+`finalMessage` 一律保留在 `history` 的 last-message 檔，不寫入報告落點。`Wait-ForThreadRelay` 逾時後若未取得非空 `threadId`，`Start` 必須輸出 `source=not-ready` 與事件流、stderr、PID 等證據並以非零結束，不得以空字串表示成功；收到有效 `thread.started` 時才以非空 thread id 繼續。
 
 執行角色已在派遣單第 7 欄與其規則檔指定的落點寫入報告，該檔是驗收對象。回收端若把結案摘要寫進同一路徑，會在驗收前覆蓋角色產出的完整報告。Workflow 派工的 `reportLineRoot\implement-closure-report.md` 同樣由 `Developer` 自行寫入，回收端只讀取與驗收。
 
@@ -388,13 +440,13 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 ## 續 session 與跨介面接手
 
-若需要補齊欄位或修正純技術驗收問題，先從 `codex-thread-<dispatchSlug>.txt` 讀取 `thread_id`，再以 `codex exec resume` 續行。續 session 沿用同一個 `dispatchRoot`、sandbox 邊界、`LineContext`、檔位與 PID 身分驗證規則。低額度降級不屬於同一 thread 的續行出口；若需降級，必須以完整交接建立新的 cold-start。
+若需要補齊欄位或修正純技術驗收問題，先從 `codex-thread-<dispatchSlug>.txt` 讀取 `thread_id`，再以 `codex exec resume` 續行。續 session 沿用同一個 `dispatchRoot`、sandbox 邊界、`LineContext`、檔位、完整 `ScopePlan` 與 PID 身分驗證規則，並重新注入 `InterruptionSafeguard`。冷啟動寫入 ScopePlan 後，Start 以原始檔案位元組計算 SHA-256，保存至 `<sourceRoot>\.local\ai-sessions\history\scope-plan-hash-<dispatchSlug>.json`；紀錄固定包含 `dispatch_slug`、`line_slug`、`scope_plan_path`、`sha256` 與 `created_at_utc`，既有同名紀錄不得覆寫。`ResumeThreadId` 必須同時提供既有 `ScopePlanPath` 與前輪 last-message 交接資料；Start 必須讀取同名 hash 紀錄、確認 ScopePlan 絕對路徑一致並重新計算檔案 SHA-256，紀錄缺失、路徑不符或 hash 不一致時以非零結束，且不得啟動 Codex。hash 紀錄是 ScopePlan 未被改寫的唯一判定依據，不使用 `.original.json` sidecar 或自行計算 fingerprint。hash 通過後，Start 再確認 ScopePlan 欄位完整、`selected_units` 加 `deferred_units` 等於 `requested_units`、`session_mode=cold-start`，且 `dispatch_slug`、`dispatch_kind`、`task_type`、`requested_profile`、`unit_kind` 與 `requested_units` 和本次續行呼叫參數一致；任一不一致時以非零結束，且不得啟動 Codex。範圍不足時依既有 ScopePlan 保存已確認結果與證據，再由回收端決定後續 cold-start。
 
-續行的父層選項必須與初始啟動完全相同，包含 `--profile`、`--add-dir` 與 `--search`。這組選項從初始啟動記錄重建，不依當下判斷重新推導；任一項缺漏都會改變檔位、寫入權限或網路能力，使續行的執行條件與前一輪不一致。`Start` 收到 `ResumeThreadId` 與 `DowngradeInstruction` 時直接拒絕，避免以同一 thread 偷換檔位。
+續行的父層選項必須與初始啟動完全相同，包含 `--profile`、`--add-dir` 與 `--search`。這組選項從初始啟動記錄重建，不依當下判斷重新推導；任一項缺漏都會改變檔位、寫入權限或網路能力，使續行的執行條件與前一輪不一致。`Start` 會檢查續行識別、保全指示與 `ScopePlan` 是否一致，拒絕缺少必要交接資料的請求。
 
 `Start` 以 `ResumeThreadId` 讀取指定 `thread_id` 後建立續行命令，重新產生事件流與 stderr 檔案，不覆寫前一輪記錄。續行的父層選項從初始啟動結果重建，包含 `--profile`、`--add-dir` 與 `--search`。
 
-`exec resume` 的 session 識別接受 `thread_id` 或 thread 名稱，UUID 優先解析。省略識別並改用 `--last` 會選取最近一次記錄的 session，該行為依賴本機記錄狀態而非本次派遣的識別，因此派工流程一律明列 `thread_id`，不使用 `--last`。
+`exec resume` 的 session 識別接受 `thread_id` 或 thread 名稱，UUID 優先解析。省略識別並改用 `--last` 會選取最近一次記錄的 session，該行為依賴本機記錄狀態而非本次派遣的識別，因此派工流程一律明列 `thread_id`，不使用 `--last`。前輪 last-message 必須明列已確認結論、未完成單位與證據位置，Start 將其原文注入續行 prompt，缺少任一項時拒絕續行。
 
 續行 prompt 仍來自 scratch 檔案並以 `-` 從 stdin 傳入，內容必須重述同一組 `LineContext`、`dispatchRoot`、檔位與父層選項，列出前輪「驗證證據」及「Phase 對照」的既有條目，並逐項附上未達成條件清單。已完成的條件不得以摘要取代，續行只補齊明列的缺漏。續行的對象是 Reviewer 時，未達成條件以前輪報告的 finding ID 逐一列出（例如 `F-003 未閉合：<一句話>`），並附上主 Agent 對每個 ID 所做修正的位置；不以新措辭重述缺陷，讓 Reviewer 依 ID 判定閉合狀態。
 
@@ -538,7 +590,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 判定 | 成立條件 | 後續動作 |
 | --- | --- | --- |
 | 收下 | 產出落點檔案存在且非空，全部驗收條件逐條成立 | Workflow `Developer` 先將成果套回來源工作樹且不建立 Phase commit，保留 dispatch worktree；Reviewer、需求意圖驗收與結案報告完成後，等待使用者授權 commit 再進入 Phase commit 回收。資源派遣同步報告與核准交接產物後結束 |
-| 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏或未執行第 5 欄命令 | 一般純技術補件依續 session 契約使用同一個 dispatch worktree resume，帶入未達成條件清單與下一個 `recovery-round`，自動續行且不詢問使用者。完成後回到 Developer 或 Reviewer 站點。若低額度要求降級，沿用同一 thread 不成立，改以完整交接建立新的 cold-start；`Start` 拒絕 `ResumeThreadId` 與 `DowngradeInstruction` 的組合。 |
+| 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏或未執行第 5 欄命令 | 一般純技術補件依續 session 契約使用同一個 dispatch worktree resume，帶入未達成條件清單與下一個 `recovery-round`，自動續行且不詢問使用者。完成後回到 Developer 或 Reviewer 站點。額度不足時依 `ScopePlan` 的中止保全流程保存已取得的結論與證據，再由回收端判定是否重新建立 cold-start。 |
 | 升級 | 原因命中 `instructions.md` §1.5 升級兩道篩的三類拍板判準，或命中共同收斂契約的停止訊號 | 停止派遣，保留 dispatch worktree 與證據，回報未閉合清單與替代方向，等待使用者選擇方向 |
 
 回收判定成立且不需續 session 時，先完成事件流、thread id、last-message、報告與核准交接產物同步，再依 Git 前置探針的路徑檢查移除資源派遣 worktree。Workflow Developer dispatch worktree 僅在使用者授權 commit、Phase commit 回收與驗證完成後移除。派遣報告固定同步至 `sourceRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，除非派遣單第 7 欄指定其他產出落點。

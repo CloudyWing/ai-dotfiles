@@ -2,7 +2,9 @@
 
 [CmdletBinding()]
 param(
-    [string]$CodexHome = $env:CODEX_HOME
+    [string]$CodexHome = $env:CODEX_HOME,
+
+    [string]$SnapshotPath
 )
 
 Set-StrictMode -Version Latest
@@ -210,6 +212,61 @@ function Write-QuotaWindow {
     Write-Output ($prefix + 'source_file=' + $Snapshot.SourceFile)
 }
 
+function Write-QuotaSnapshotDocument {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$State,
+
+        [Parameter(Mandatory)]
+        [int64]$CurrentUnixTime,
+
+        [AllowNull()]
+        [object]$Primary,
+
+        [AllowNull()]
+        [object]$Secondary,
+
+        [string]$ErrorMessage
+    )
+
+    $parent = Split-Path -Parent $Path
+    if (-not [string]::IsNullOrWhiteSpace($parent)) {
+        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    }
+    $document = [ordered]@{
+        schema         = 'quota-snapshot.v1'
+        captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        state          = $State
+        primary        = $null
+        secondary      = $null
+        error          = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
+    }
+    foreach ($window in @(
+            [pscustomobject]@{ Name = 'primary'; Value = $Primary }
+            [pscustomobject]@{ Name = 'secondary'; Value = $Secondary }
+        )) {
+        if ($null -eq $window.Value) {
+            continue
+        }
+        $daysToReset = ([double]$window.Value.ResetsAt - [double]$CurrentUnixTime) / 86400.0
+        $windowDays = [double]$window.Value.WindowMinutes / 1440.0
+        $document[$window.Name] = [ordered]@{
+            used_percent      = [double]$window.Value.UsedPercent
+            remaining_percent = 100.0 - [double]$window.Value.UsedPercent
+            window_minutes    = [int64]$window.Value.WindowMinutes
+            resets_at         = [int64]$window.Value.ResetsAt
+            source_file       = [string]$window.Value.SourceFile
+            days_to_reset     = $daysToReset
+            window_days       = $windowDays
+        }
+    }
+    $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
+    [System.IO.File]::WriteAllText($Path, (($document | ConvertTo-Json -Depth 8) + "`r`n"), $encoding)
+}
+
 function Get-QuotaWindowDecision {
     param(
         [Parameter(Mandatory)]
@@ -351,13 +408,12 @@ function Get-QuotaWindowDecision {
 }
 
 try {
+    $windowDecisions = New-Object System.Collections.Generic.List[object]
     $codexHomePath = Get-CodexHomeDirectory -ConfiguredCodexHome $CodexHome
     $sessionsPath = Join-Path -Path $codexHomePath -ChildPath 'sessions'
     $currentUnixTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $candidates = @(Get-RolloutSnapshotCandidate -SessionsPath $sessionsPath)
     $selectedSnapshots = @{}
-    $windowDecisions = New-Object System.Collections.Generic.List[object]
-
     foreach ($windowName in @('primary', 'secondary')) {
         $decision = Get-QuotaWindowDecision -Candidates $candidates -WindowName $windowName -CurrentUnixTime $currentUnixTime
         $windowDecisions.Add($decision)
@@ -376,11 +432,31 @@ try {
         throw "額度快照狀態無法進入門檻判定：$stateDetails；掃描路徑：$sessionsPath"
     }
 
+    if (-not [string]::IsNullOrWhiteSpace($SnapshotPath)) {
+        $snapshotFullPath = [System.IO.Path]::GetFullPath($SnapshotPath)
+        Write-QuotaSnapshotDocument -Path $snapshotFullPath -State 'Valid' -CurrentUnixTime $currentUnixTime -Primary $selectedSnapshots['primary'] -Secondary $selectedSnapshots['secondary']
+    }
+
     Write-QuotaWindow -WindowName 'primary' -Snapshot $selectedSnapshots['primary'] -CurrentUnixTime $currentUnixTime
     Write-QuotaWindow -WindowName 'secondary' -Snapshot $selectedSnapshots['secondary'] -CurrentUnixTime $currentUnixTime
     exit 0
 }
 catch {
+    if (-not [string]::IsNullOrWhiteSpace($SnapshotPath)) {
+        try {
+            $failureState = 'SnapshotUnavailable'
+            if ($null -ne $windowDecisions -and $windowDecisions.Count -gt 0) {
+                $failedDecision = @($windowDecisions | Where-Object { $_.State -ne 'Valid' } | Select-Object -First 1)
+                if ($failedDecision.Count -gt 0) {
+                    $failureState = [string]$failedDecision[0].State
+                }
+            }
+            Write-QuotaSnapshotDocument -Path ([System.IO.Path]::GetFullPath($SnapshotPath)) -State $failureState -CurrentUnixTime ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -Primary $null -Secondary $null -ErrorMessage $_.Exception.Message
+        }
+        catch {
+            [Console]::Error.WriteLine(('quota snapshot 寫入失敗：{0}' -f $_.Exception.Message))
+        }
+    }
     [Console]::Error.WriteLine(('Get-CodexQuota.ps1 失敗：{0}' -f $_.Exception.Message))
     exit 1
 }

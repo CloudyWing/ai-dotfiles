@@ -327,6 +327,32 @@ skill 未宣告 `dispatch` 或本輪工作不對應任何 skill 時，主 Agent 
 | 不派 | 對話中的系統設計與方案取捨；bug 根因假設的形成；需求釐清與需求意圖驗收；規則檔與文件的撰寫或改寫；討論脈絡的保管與判斷；帶使用者登入 session 的瀏覽器操作；Artifacts 發布 | 一律由 Claude 端處理，不派工 |
 | 灰帶 | 前兩層皆未命中 | 依下列順序判定，命中一項即停止，不再評估後續分支：1. 工作必須留在 Claude 端時，再看是否會污染主 Agent context；會污染時送 Claude subagent，輸出「灰帶→派工」；不會污染時由主 Agent 自理，輸出「灰帶→自理」。2. 工作不須留在 Claude 端，且輸入、限制、驗收條件與產出落點可完整寫成派遣單時，送 Codex，輸出「灰帶→派工」。3. 前兩項皆不成立且工作可拆分時，拆成判斷與動作兩段，判斷留在 Claude 端，動作派往 Codex，輸出「灰帶→派工」。4. 前三項皆不成立時，視為無法拆分，預設派工，輸出「灰帶→派工」。 |
 
+##### 派工前額度範圍 gate
+
+派工先完成能力歸屬，再取得 `QuotaSnapshot` 的 `primary` 與 `secondary` 快照。`state=Valid` 且兩個視窗欄位完整的新鮮快照，才可進入 `ScopePlan` 判定。快照失敗、reset 造成差值不可解釋或缺少必要視窗時，派工以非零結束碼停止，不把缺資料轉為估算值。
+
+`ScopePlan` 的最小單位固定如下。Workflow 使用 `design.md` 宣告順序的 Phase，資源派遣使用派遣單第 3 欄的目標物件，`deep-consult` 使用單一 evidence pack。執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
+
+先判定目標檔位門檻。預設檔位的門檻為 primary 剩餘 30% 與 secondary 剩餘 15%。兩個視窗都達到門檻時，ScopePlan 使用 `decision=full` 與 `estimate_source=not-required-above-threshold`，不要求校準樣本或保守量級。`deep-consult` 不適用此放寬，一律計算預算與中止上限。任一視窗低於門檻時，才使用相同 `model`、`profile`、`session_mode` 與 `task_type` 分組的 `calibration_eligible=true` 樣本第 75 百分位或需求摘要核准的保守量級。低於門檻且沒有估算資料的非 deep 派工回傳 `user-decision-required`；deep 派工回傳 `blocked-no-estimate`，不跨分組借用。
+
+`primary_budget_percent` 以最長前綴計算。低於門檻的一般派工使用可用 primary 剩餘扣除 reserve；`deep-consult` 使用 `min(estimate_percent × 1.25, primary_remaining_percent - 30)`，且預估後至少保留 30%。完整清單可容納時使用 `full`，部分前綴可容納時使用 `scoped`，第一個最小單位超出預算時使用 `blocked-insufficient-budget`，等待 `primary_resets_at` 或交由使用者決定。目標為預設檔位且低於門檻時維持預設檔位，改走 `ScopePlan`，不切換其他檔位。
+
+每次派工都保存 before／after 快照與 `ScopePlan`。`CalibrationObservation` 必須記錄 `observed_primary_delta_percent`、`calibration_eligible`、`interruption_status` 與 `budget_monitor`。before／after、完成事件、exit code、usage、primary 與 secondary 的 `resets_at`、ScopePlan 單位欄位或 delta 上限任一條件不成立時，觀測保留原始值並標記 `calibration_eligible=false`。
+
+##### deep consult 的不限階段掛載點
+
+`deep-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在 Clarify、Design、Implement、Review、Accept 或 bug 線任一站提出。適用條件是推理密集，且判斷資料可事先整理成單一 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 deep。
+
+預設檔位先建立 evidence pack，內容必須含非空的目標段落原文摘錄與來源位置、已知結論、待答問題與 required output、可能反證與邊界。deep 執行端只可讀取 evidence pack，使用 read-only sandbox，不得探索 repository、讀取其他來源、修改檔案或寫入 report。`Start` 前必須建立可在執行期間更新的 after quota snapshot，`Inspect` 缺少 Start SHA-256 紀錄或前後 hash 不一致時以非零結束。報告由主 Agent 的 `Inspect` 或回收步驟寫入同線 `report/<lineSlug>/deep-consult-<dispatchSlug>.md`，再交由 Claude 端與使用者決定是否採用。
+
+只有 evidence pack 完整、沒有同線衝突、有效預算為正數且足以容納本次估算時，主 Agent 才能提出使用者確認。確認原文固定如下。
+
+```text
+[deep 諮詢確認] primary 剩餘 <n>%、預估 <m> 個百分點、機械中止上限 <h> 個百分點、有效預算 <b> 個百分點、預估後至少保留 30%；<推理密集點與資料已整理成 evidence pack 的理由>。是否執行 deep 諮詢？
+```
+
+使用者未明確同意時，不加入 `--profile deep`，也不啟動 deep consult。使用者明示 deep consult 仍須通過 evidence pack、primary reserve、read-only 與機械中止上限檢查。
+
 對話中的系統設計與方案取捨由 Claude 主 Agent 負責。取捨定案後，`Architect` 依需求摘要展開 `design.md`，此 Codex 文件產出路徑不受不派層的對話規則涵蓋。
 
 灰帶處置依表列順序判定。工作必須留在 Claude 端時，先依 context 污染判定，該分支完成後不再評估完整派遣單判準。完整派遣單判準只適用於不須留在 Claude 端的灰帶工作。規則檔與文件的撰寫或改寫仍由 Claude 端處理，不因輸入、限制、驗收條件與產出落點可寫成派遣單而改派 Codex。Claude subagent 只處理已進入灰帶、必須留在 Claude 端且會污染主 Agent context 的工作，以及下述回收覆核的覆核取證助手。
