@@ -4233,8 +4233,13 @@ function Invoke-QuotaProbe {
     if ([string]::IsNullOrWhiteSpace($DispatchSlug)) {
         throw 'QuotaProbe 必須提供 DispatchSlug。'
     }
-    if ($InitialQuotaState -ne 'PostResetNoSnapshot') {
-        throw "QuotaProbe 僅允許回復 PostResetNoSnapshot，收到：$InitialQuotaState"
+    # 探針的作用是讓 Codex 寫出一筆新 rollout，新快照的正確性只來自該筆新記錄，與探針前的狀態無關。
+    # 因此可回復的狀態以「解析是否可信」區分：SnapshotExpired 代表解析正常、僅資料過期，屬探針要解決的
+    # 對象；SnapshotUnavailable 代表連一筆結構有效候選都讀不到，前提本身可能已壞，探針成功也讀不回來。
+    $recoverableQuotaStates = @('PostResetNoSnapshot', 'SnapshotExpired')
+
+    if ($recoverableQuotaStates -notcontains $InitialQuotaState) {
+        throw "QuotaProbe 僅允許回復 $($recoverableQuotaStates -join '、')，收到：$InitialQuotaState"
     }
     if ($ProbeAttempt -gt 1) {
         throw "QuotaProbe 已限制為一次，拒絕 probeAttempt=$ProbeAttempt。"
@@ -4704,11 +4709,47 @@ function Invoke-Start {
             throw "續行 last-message 交接檔不存在：$continuationContextPath"
         }
         $continuationContextMessage = Get-Content -LiteralPath $continuationContextPath -Raw -Encoding UTF8
-        foreach ($requiredContextText in @('已確認結論', '未完成單位', '證據位置')) {
-            $contextPattern = '(?m)^[ \t-]*' + [regex]::Escape($requiredContextText) + '[ \t]*[:：][ \t]*(?<value>[^\r\n]+?)\s*$'
-            $contextMatch = [regex]::Match($continuationContextMessage, $contextPattern)
-            if (-not $contextMatch.Success -or [string]::IsNullOrWhiteSpace($contextMatch.Groups['value'].Value)) {
-                throw "續行 last-message 缺少必要交接欄位：$requiredContextText"
+        if ([string]::IsNullOrWhiteSpace($continuationContextMessage)) {
+            throw "續行 last-message 交接檔為空：$continuationContextPath"
+        }
+
+        # 三個保全欄位由中斷保全指示於中止路徑產生。正常完成的派遣沒有收到中止要求，
+        # 結案訊息不含這些欄位，因此依前輪事件流的終止事件決定要求哪一組前置條件。
+        # 前輪終止狀態無法判定時採保守處置，仍要求完整保全欄位。
+        $previousRunCompleted = $false
+        $continuationTimestamp = [regex]::Match(
+            [System.IO.Path]::GetFileNameWithoutExtension($continuationContextPath),
+            '^codex-last-message-(?<stamp>.+)$'
+        )
+
+        if ($continuationTimestamp.Success) {
+            $previousEventPath = Join-Path -Path $historyRoot -ChildPath ('codex-exec-' + $continuationTimestamp.Groups['stamp'].Value + '.jsonl')
+
+            if (Test-Path -LiteralPath $previousEventPath -PathType Leaf) {
+                $previousEventLines = @(
+                    Get-Content -LiteralPath $previousEventPath -Encoding UTF8 |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+                )
+
+                if ($previousEventLines.Count -gt 0) {
+                    try {
+                        $previousTerminalEvent = $previousEventLines[$previousEventLines.Count - 1] | ConvertFrom-Json
+                        $previousRunCompleted = ($previousTerminalEvent.type -eq 'turn.completed')
+                    }
+                    catch {
+                        $previousRunCompleted = $false
+                    }
+                }
+            }
+        }
+
+        if (-not $previousRunCompleted) {
+            foreach ($requiredContextText in @('已確認結論', '未完成單位', '證據位置')) {
+                $contextPattern = '(?m)^[ \t-]*' + [regex]::Escape($requiredContextText) + '[ \t]*[:：][ \t]*(?<value>[^\r\n]+?)\s*$'
+                $contextMatch = [regex]::Match($continuationContextMessage, $contextPattern)
+                if (-not $contextMatch.Success -or [string]::IsNullOrWhiteSpace($contextMatch.Groups['value'].Value)) {
+                    throw "續行 last-message 缺少必要交接欄位：$requiredContextText"
+                }
             }
         }
         $lastMessagePathValue = Join-Path -Path $historyRoot -ChildPath ('codex-last-message-' + $timestamp + '.md')
@@ -4850,7 +4891,11 @@ function Invoke-Start {
     $promptDirectives = New-Object System.Collections.Generic.List[string]
     $promptDirectives.Add(
         '[中斷保全]' + [Environment]::NewLine +
-        '本次工作必須可在任意中斷點交付已確認結果。開始主要探索前，先寫出目前已確認的結論、證據位置與尚未確認項目。每完成一個範圍單位，更新一次「已確認結論」與「實際覆蓋範圍」。收到中止要求時，先保存已確認結論、證據位置、未完成單位與不應推論的內容，再結束本次工作。不得以未執行的單位補寫結論。'
+        '本次工作必須可在任意中斷點交付已確認結果。開始主要探索前，先寫出目前已確認的結論、證據位置與尚未確認項目。每完成一個範圍單位，更新一次「已確認結論」與「實際覆蓋範圍」。收到中止要求時，先保存已確認結論、證據位置、未完成單位與不應推論的內容，再結束本次工作。不得以未執行的單位補寫結論。' + [Environment]::NewLine +
+        '結案訊息一律以下列三行結尾，中止與正常完成都適用，讓後續續行取得交接資料。每行為單行鍵值對，值不得為空；沒有未完成單位時填「無」。' + [Environment]::NewLine +
+        '已確認結論：<一句話>' + [Environment]::NewLine +
+        '未完成單位：<清單或「無」>' + [Environment]::NewLine +
+        '證據位置：<絕對路徑或檔案:行號>'
     )
     $promptDirectives.Add(('[ScopePlan]' + [Environment]::NewLine + ($scopePlan | ConvertTo-Json -Depth 20)))
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {

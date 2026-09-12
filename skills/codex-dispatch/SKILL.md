@@ -51,7 +51,13 @@ decision_reason
 ```text
 [中斷保全]
 本次工作必須可在任意中斷點交付已確認結果。開始主要探索前，先寫出目前已確認的結論、證據位置與尚未確認項目。每完成一個範圍單位，更新一次「已確認結論」與「實際覆蓋範圍」。收到中止要求時，先保存已確認結論、證據位置、未完成單位與不應推論的內容，再結束本次工作。不得以未執行的單位補寫結論。
+結案訊息一律以下列三行結尾，中止與正常完成都適用，讓後續續行取得交接資料。每行為單行鍵值對，值不得為空；沒有未完成單位時填「無」。
+已確認結論：<一句話>
+未完成單位：<清單或「無」>
+證據位置：<絕對路徑或檔案:行號>
 ```
+
+續行的前置條件依前輪終止狀態分流。前輪事件流以 `turn.completed` 結束時，`Start` 只要求 last-message 存在且非空；前輪被中止、早夭或終止狀態無法判定時，`Start` 另要求 last-message 具備 `已確認結論`、`未完成單位` 與 `證據位置` 三個單行鍵值對。無條件要求三欄位會使正常完成的派遣無法續行，因為中止路徑才會產生這些欄位。
 
 ## Deep consult resource dispatch
 
@@ -166,7 +172,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`TaskType`、before snapshot、`InterruptionSafeguard`（舊參數 alias 為 `DowngradeInstruction`）、ScopePlan、Codex 父層選項；deep 另需 evidence pack、read-only 與預算欄位 | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id relay、before snapshot、ScopePlan、實際參數、有效 profile、中斷保全狀態與 monitor 證據 | 快照、ScopePlan、evidence pack、執行檔、工作目錄、啟動參數或根程序身分驗證失敗時 stderr 並 exit code 1 |
 | `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、ScopePlan、派工前後快照、thread id 路徑 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、after snapshot、校準紀錄、thread relay、deep report 與 monitor 證據 | JSONL、thread id、必要輸入、證據包 hash 或校準快照格式錯誤時 stderr 並 exit code 1 |
 | `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果 | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
-| `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `turn.completed`、exit code 0、實際參數、事件流、stderr、last-message、thread id、rollout 來源路徑與回復紀錄 | 只允許 `PostResetNoSnapshot`；`ProbeAttempt > 1`、啟動參數、根程序身分或事件流驗證失敗時 stderr 並 exit code 1 |
+| `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `turn.completed`、exit code 0、實際參數、事件流、stderr、last-message、thread id、rollout 來源路徑與回復紀錄 | 只允許 `PostResetNoSnapshot` 與 `SnapshotExpired`；`ProbeAttempt > 1`、啟動參數、根程序身分或事件流驗證失敗時 stderr 並 exit code 1 |
 
 `Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot`、`worktreeCreated=false`、空 `baseSha` 與核准輸出清單。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
 
@@ -182,16 +188,16 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 ### 額度狀態與回復探針
 
-`Get-CodexQuota.ps1` 先保留通過結構驗證的候選，再依事件時間與各自的 `window_minutes` 計算 `isRecent`、`isFutureSnapshot` 與 `isPreResetSnapshot`。既有跳變失效化完成後，視窗狀態依下列順序判定。
+`Get-CodexQuota.ps1` 先保留通過結構驗證的候選，再依事件時間與各自的 `window_minutes` 計算 `isRecent`、`isFutureSnapshot` 與 `isPreResetSnapshot`。`isFutureSnapshot` 與 `isPreResetSnapshot` 都只在通過 `isRecent` 的候選中判定，因此候選比自身視窗更舊時兩者皆不成立，該視窗落入 `SnapshotExpired`。既有跳變失效化完成後，視窗狀態依下列順序判定。
 
 | 狀態 | 判定條件 | 處置 |
 | --- | --- | --- |
 | `Valid` | 存在 `isFutureSnapshot`，且既有跳變失效化後仍能選出候選 | 維持既有額度欄位、格式與候選排序，進入額度門檻判定 |
-| `PostResetNoSnapshot` | 沒有 `isFutureSnapshot`，且至少一筆 `isPreResetSnapshot` | 只允許一次 `QuotaProbe`，完成後重試額度讀取一次 |
-| `SnapshotExpired` | 存在結構有效候選，但沒有 `isFutureSnapshot` 或 `isPreResetSnapshot` | 以非零結束碼停止，不估算、不執行探針 |
+| `PostResetNoSnapshot` | 沒有 `isFutureSnapshot`，且至少一筆同時通過 `isRecent` 與 `isPreResetSnapshot` 的候選 | 只允許一次 `QuotaProbe`，完成後重試額度讀取一次 |
+| `SnapshotExpired` | 存在結構有效候選，但沒有 `isFutureSnapshot` 或 `isPreResetSnapshot` | 只允許一次 `QuotaProbe`，完成後重試額度讀取一次 |
 | `SnapshotUnavailable` | 沒有結構有效候選可證明視窗狀態 | 以非零結束碼停止，不把無資料當成重設後尚無快照 |
 
-失敗狀態寫入 stderr 的可解析欄位為 `quota_state=<狀態> window=<primary 或 secondary>`。只要任一視窗為 `SnapshotExpired` 或 `SnapshotUnavailable`，立即停止。只有所有失效視窗均為 `PostResetNoSnapshot` 時，才可進入一次性回復流程。`Valid` 不新增 stdout 欄位，避免改變既有正向輸出。
+失敗狀態寫入 stderr 的可解析欄位為 `quota_state=<狀態> window=<primary 或 secondary>`，並附最新候選的 `latest_source_file`、`latest_event_age_minutes` 與 `window_minutes`，供呼叫端分辨資料過期與解析前提已壞。沒有任何候選時輸出 `latest_source_file=none`。任一視窗為 `SnapshotUnavailable` 時立即停止，該狀態連結構有效候選都沒有，探針成功也讀不回來。所有失效視窗均為 `PostResetNoSnapshot` 或 `SnapshotExpired` 時進入一次性回復流程，此時 stderr 另附回復提示。`Valid` 不新增 stdout 欄位，避免改變既有正向輸出。
 
 `QuotaProbe` 只處理視窗重設後的額度回復探針，不承接一般派工任務。它沿用已驗證的 `--cd`、`--sandbox`、`--add-dir`、`--search`、父層選項與已選檔位，使用 `codex exec --json`、短提示與 `--output-last-message`，並在提示中要求不得修改目標物件。預設檔位不需要額外確認。使用者明示 `deep` 且重設後週期快照尚未知時，探針保留 `deep` 檔位授權，將未知狀態明確寫入提示與輸出，不填入舊值或估算值，也不套用需要數值的週期 gate；其餘 `deep` 路徑沿用既有 `DeepRequestSource` 與週期 gate。
 

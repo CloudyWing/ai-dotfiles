@@ -424,12 +424,51 @@ try {
 
     $failedDecisions = @($windowDecisions | Where-Object { $_.State -ne 'Valid' })
     if ($failedDecisions.Count -gt 0) {
+        # 失效視窗附上最新候選的來源與時間差。缺少這項時，呼叫端只知道判定失敗，
+        # 無從分辨是「資料過期、跑一次 Codex 即可回復」或「解析前提已壞」。
         $stateDetails = @(
             $failedDecisions | ForEach-Object {
-                'quota_state={0} window={1}' -f $_.State, $_.WindowName
+                $failedWindowName = $_.WindowName
+                $detail = 'quota_state={0} window={1}' -f $_.State, $failedWindowName
+                $latestCandidate = @(
+                    $candidates |
+                        Where-Object { $_.WindowName -eq $failedWindowName } |
+                        Sort-Object -Property @(
+                            @{ Expression = 'EventTimestamp'; Descending = $true }
+                            @{ Expression = 'RecordIndex'; Descending = $true }
+                        ) |
+                        Select-Object -First 1
+                )
+
+                if ($latestCandidate.Count -gt 0) {
+                    $ageMinutes = ([double]$currentUnixTime - [double]$latestCandidate[0].EventTimestampUnix) / 60.0
+                    $detail += ' latest_source_file={0} latest_event_age_minutes={1} window_minutes={2}' -f
+                        $latestCandidate[0].SourceFile,
+                        (Format-InvariantNumber -Value $ageMinutes),
+                        (Format-InvariantInteger -Value $latestCandidate[0].WindowMinutes)
+                }
+                else {
+                    $detail += ' latest_source_file=none'
+                }
+
+                $detail
             }
         ) -join '; '
-        throw "額度快照狀態無法進入門檻判定：$stateDetails；掃描路徑：$sessionsPath"
+        # 回復提示只在解析可信、僅資料過期時才成立。SnapshotUnavailable 連結構有效候選都沒有，
+        # 附上提示會把「前提已壞」誤導成「跑一次 Codex 就好」。
+        # 判定條件是「全部失效視窗都可回復」。取「任一」會在 primary 為 SnapshotExpired、
+        # secondary 為 SnapshotUnavailable 時仍附提示，但探針解決不了 SnapshotUnavailable。
+        $recoverableStates = @('PostResetNoSnapshot', 'SnapshotExpired')
+        $allStatesRecoverable = @(
+            $failedDecisions | Where-Object { $recoverableStates -notcontains $_.State }
+        ).Count -eq 0
+        $message = "額度快照狀態無法進入門檻判定：$stateDetails；掃描路徑：$sessionsPath"
+
+        if ($allStatesRecoverable) {
+            $message += '；於本機執行一次 codex exec 產生新 rollout 後重讀即可回復。'
+        }
+
+        throw $message
     }
 
     if (-not [string]::IsNullOrWhiteSpace($SnapshotPath)) {
