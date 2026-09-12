@@ -181,19 +181,49 @@ function Assert-CodexTomlEscapeSequence {
     foreach ($line in $Content) {
         $lineNumber++
         $scanText = $null
+        # 行尾反斜線的續行語法只存在於多行基本字串，單行字串沿用時會放過未結束的字串。
+        $allowLineContinuation = $false
 
         if ($inMultilineString) {
             $scanText = $line
+            $allowLineContinuation = $true
 
             if ($line -match '"""') {
                 $inMultilineString = $false
             }
         }
-        elseif ($line -match '^\s*[A-Za-z0-9_-]+\s*=\s*"""') {
-            $scanText = $line
+        elseif ($line -match '^\s*[A-Za-z0-9_-]+\s*=\s*(.*)$') {
+            $value = $matches[1]
 
-            if ($line -notmatch '""".*"""') {
-                $inMultilineString = $true
+            if ($value -like '"""*') {
+                $scanText = $line
+                $allowLineContinuation = $true
+
+                if ($value -notmatch '""".*"""') {
+                    $inMultilineString = $true
+                }
+            }
+            elseif ($value -like '"*') {
+                # 單行基本字串的反斜線同樣是跳脫序列開頭，非法跳脫一樣使整份檔案 malformed。
+                # 字面字串（單引號）不解析跳脫序列，不在掃描範圍。
+                # 掃描到未跳脫的結束引號為止，避免把字串後方 inline comment 的反斜線誤判為跳脫序列。
+                # 找不到結束引號時掃描整段，使未結束的字串仍被攔截。
+                $scanText = $value
+                $valueIndex = 1
+
+                while ($valueIndex -lt $value.Length) {
+                    if ($value[$valueIndex] -eq '\') {
+                        $valueIndex += 2
+                        continue
+                    }
+
+                    if ($value[$valueIndex] -eq '"') {
+                        $scanText = $value.Substring(0, $valueIndex + 1)
+                        break
+                    }
+
+                    $valueIndex++
+                }
             }
         }
 
@@ -208,9 +238,12 @@ function Assert-CodexTomlEscapeSequence {
                 continue
             }
 
-            # 行尾反斜線是多行基本字串的續行語法，不是跳脫序列。
             if ($i -eq ($trimmed.Length - 1)) {
-                continue
+                if ($allowLineContinuation) {
+                    continue
+                }
+
+                throw "Codex agent TOML 第 $lineNumber 行以反斜線結尾，但該行不是多行基本字串的續行：$Path"
             }
 
             $nextChar = $trimmed[$i + 1]
@@ -459,7 +492,7 @@ try {
             ForEach-Object {
                 $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
                 Assert-CodexTomlTopLevelKey -Content $content -Path $_.FullName
-            Assert-CodexTomlEscapeSequence -Content $content -Path $_.FullName
+                Assert-CodexTomlEscapeSequence -Content $content -Path $_.FullName
                 $name = Get-TomlValue -Content $content -Key "name"
                 $description = Get-TomlValue -Content $content -Key "description"
                 $audience = Assert-AgentAudience -Value (Get-TomlMetaValue -Content $content -Key "audience") -Path $_.FullName
