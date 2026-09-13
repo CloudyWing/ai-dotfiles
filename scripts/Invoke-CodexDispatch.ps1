@@ -2124,7 +2124,9 @@ function Add-CalibrationObservation {
     $scopePlanComplete = Test-ScopePlanCompleteness -ScopePlan $ScopePlan
     $observedDelta = $null
     if ($hasSnapshots) {
-        $sameResetWindow = [double]$afterSnapshot.primary.resets_at -eq [double]$beforeSnapshot.primary.resets_at -and [double]$afterSnapshot.secondary.resets_at -eq [double]$beforeSnapshot.secondary.resets_at
+        $primaryResetWindowChanged = Test-QuotaResetWindowChanged -BeforeSnapshot $beforeSnapshot -AfterSnapshot $afterSnapshot -WindowName 'primary'
+        $secondaryResetWindowChanged = Test-QuotaResetWindowChanged -BeforeSnapshot $beforeSnapshot -AfterSnapshot $afterSnapshot -WindowName 'secondary'
+        $sameResetWindow = -not $primaryResetWindowChanged -and -not $secondaryResetWindowChanged
         $observedDelta = Get-QuotaSnapshotDelta -Before $beforeSnapshot -After $afterSnapshot
         $nonNegativeDelta = $observedDelta -ge 0
     }
@@ -3737,6 +3739,93 @@ function Stop-VerifiedProcessTree {
     }
 }
 
+function Test-QuotaResetWindowChanged {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$BeforeSnapshot,
+
+        [Parameter(Mandatory)]
+        [psobject]$AfterSnapshot,
+
+        [ValidateSet('primary', 'secondary')]
+        [string]$WindowName = 'primary'
+    )
+
+    $resetWindowToleranceSeconds = 60
+    $beforeWindow = $null
+    $afterWindow = $null
+    if ($BeforeSnapshot -is [System.Collections.IDictionary]) {
+        if ($BeforeSnapshot.Contains($WindowName)) {
+            $beforeWindow = $BeforeSnapshot[$WindowName]
+        }
+    }
+    else {
+        $beforeWindowProperty = $BeforeSnapshot.PSObject.Properties[$WindowName]
+        if ($null -ne $beforeWindowProperty) {
+            $beforeWindow = $beforeWindowProperty.Value
+        }
+    }
+    if ($AfterSnapshot -is [System.Collections.IDictionary]) {
+        if ($AfterSnapshot.Contains($WindowName)) {
+            $afterWindow = $AfterSnapshot[$WindowName]
+        }
+    }
+    else {
+        $afterWindowProperty = $AfterSnapshot.PSObject.Properties[$WindowName]
+        if ($null -ne $afterWindowProperty) {
+            $afterWindow = $afterWindowProperty.Value
+        }
+    }
+    if ($null -eq $beforeWindow -or $null -eq $afterWindow) {
+        throw "快照缺少視窗：$WindowName"
+    }
+
+    $beforeUsedPercent = $null
+    $afterUsedPercent = $null
+    $beforeResetsAt = $null
+    $afterResetsAt = $null
+    if ($beforeWindow -is [System.Collections.IDictionary]) {
+        if ($beforeWindow.Contains('used_percent')) {
+            $beforeUsedPercent = $beforeWindow['used_percent']
+        }
+        if ($beforeWindow.Contains('resets_at')) {
+            $beforeResetsAt = $beforeWindow['resets_at']
+        }
+    }
+    else {
+        $beforeUsedPercentProperty = $beforeWindow.PSObject.Properties['used_percent']
+        if ($null -ne $beforeUsedPercentProperty) {
+            $beforeUsedPercent = $beforeUsedPercentProperty.Value
+        }
+        $beforeResetsAtProperty = $beforeWindow.PSObject.Properties['resets_at']
+        if ($null -ne $beforeResetsAtProperty) {
+            $beforeResetsAt = $beforeResetsAtProperty.Value
+        }
+    }
+    if ($afterWindow -is [System.Collections.IDictionary]) {
+        if ($afterWindow.Contains('used_percent')) {
+            $afterUsedPercent = $afterWindow['used_percent']
+        }
+        if ($afterWindow.Contains('resets_at')) {
+            $afterResetsAt = $afterWindow['resets_at']
+        }
+    }
+    else {
+        $afterUsedPercentProperty = $afterWindow.PSObject.Properties['used_percent']
+        if ($null -ne $afterUsedPercentProperty) {
+            $afterUsedPercent = $afterUsedPercentProperty.Value
+        }
+        $afterResetsAtProperty = $afterWindow.PSObject.Properties['resets_at']
+        if ($null -ne $afterResetsAtProperty) {
+            $afterResetsAt = $afterResetsAtProperty.Value
+        }
+    }
+    $usedPercentDecreased = [double]$afterUsedPercent -lt [double]$beforeUsedPercent
+    $resetWindowChanged = [math]::Abs([double]$afterResetsAt - [double]$beforeResetsAt) -gt $resetWindowToleranceSeconds
+
+    return $usedPercentDecreased -or $resetWindowChanged
+}
+
 function Invoke-DeepBudgetMonitor {
     param(
         [Parameter(Mandatory)]
@@ -3788,7 +3877,7 @@ function Invoke-DeepBudgetMonitor {
             $afterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
             $delta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $afterSnapshot
             $monitor.observedPrimaryDeltaPercent = $delta
-            if ([double]$afterSnapshot.primary.resets_at -ne [double]$BeforeSnapshot.primary.resets_at) {
+            if (Test-QuotaResetWindowChanged -BeforeSnapshot $BeforeSnapshot -AfterSnapshot $afterSnapshot) {
                 $monitor.state = 'CrossReset'
                 $monitor.calibrationEligible = $false
                 $monitor.abortReason = 'primary-reset-window-changed'
@@ -3895,7 +3984,7 @@ function Invoke-DeepBudgetMonitor {
         $terminalDelta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $terminalAfterSnapshot
         $monitor.observedPrimaryDeltaPercent = $terminalDelta
         $monitor.terminalSnapshotTaken = $true
-        if ([double]$terminalAfterSnapshot.primary.resets_at -ne [double]$BeforeSnapshot.primary.resets_at) {
+        if (Test-QuotaResetWindowChanged -BeforeSnapshot $BeforeSnapshot -AfterSnapshot $terminalAfterSnapshot) {
             $monitor.state = 'CrossReset'
             $monitor.calibrationEligible = $false
             $monitor.abortReason = 'primary-reset-window-changed'
