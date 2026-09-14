@@ -149,8 +149,27 @@ function New-DispatchOrderContent {
     }
 
     $reportDirectory = Split-Path -Parent $ReportPath
-    $lineReportRoot = Join-Path -Path $reportDirectory -ChildPath $LineSlug
-    $fixedReportPath = Join-Path -Path $lineReportRoot -ChildPath 'support-engineer-report.md'
+    $lineReportRoot = $reportDirectory
+    if ((Split-Path -Leaf $reportDirectory) -ne $LineSlug) {
+        $lineReportRoot = Join-Path -Path $reportDirectory -ChildPath $LineSlug
+    }
+
+    $fixedReportName = switch ($Role.Trim()) {
+        'Support Engineer' { 'support-engineer-report.md' }
+        '支援工程師' { 'support-engineer-report.md' }
+        'Reviewer' { 'review-report.md' }
+        'review' { 'review-report.md' }
+        '審查' { 'review-report.md' }
+        'Frontend Reviewer' { 'frontend-reviewer-report.md' }
+        'Contract Auditor' { 'contract-auditor-report.md' }
+        default { $null }
+    }
+
+    $fixedReportDescription = '執行角色規則檔指定的同線固定報告（位於 ' + $lineReportRoot + '）'
+    if ($null -ne $fixedReportName) {
+        $fixedReportPath = Join-Path -Path $lineReportRoot -ChildPath $fixedReportName
+        $fixedReportDescription = '執行角色規則檔指定的同線固定報告 `' + $fixedReportPath + '`'
+    }
     $exceptionsPath = Join-Path -Path $lineReportRoot -ChildPath 'exceptions.md'
     $targetBlock = $TargetPath -join "`n"
     $acceptanceTable = $acceptanceRows -join "`n"
@@ -192,7 +211,7 @@ $commandSource
 $Boundary
 
 - 明文寫入例外：第 7 欄報告檔 REPORT_PATH_VALUE。
-- 明文寫入例外：執行角色規則檔指定的同線固定報告 FIXED_REPORT_PATH_VALUE。
+- 明文寫入例外：FIXED_REPORT_DESCRIPTION_VALUE。
 - 明文寫入例外：同線 EXCEPTIONS_LABEL 的絕對路徑 EXCEPTIONS_PATH_VALUE。
 
 ## 7. 產出落點
@@ -203,7 +222,7 @@ CODE_FENCE
 
 ## 8. 回報必備欄位
 
-逐條列出第 5 欄命令原文、完整 stdout、完整 stderr、exit code、執行時間與判定結果，另附每條類別與未修改狀態輸出，以及驗收腳本完整內容與新腳本的行數。
+逐條列出第 5 欄命令原文、完整 stdout、完整 stderr、exit code、執行時間、執行狀態與判定結果，另附每條類別與未修改狀態輸出，以及驗收腳本完整內容與新腳本的行數。執行狀態為已執行、受阻、未執行或已補驗四選一，執行端只可使用前三者；受阻須說明缺少的環境能力與原始錯誤。已補驗只由主 Agent 於回收補驗後填寫。
 
 結案訊息須含派遣單絕對路徑、DISPATCH_SLUG_VALUE 與 LINE_SLUG_VALUE。
 
@@ -218,7 +237,7 @@ CODE_FENCE
     $content = $content.Replace('CODE_FENCE', '```')
     $content = $content.Replace('ROLE_VALUE', ('`' + $Role + '`'))
     $content = $content.Replace('EXCEPTIONS_LABEL', '`exceptions.md`')
-    $content = $content.Replace('FIXED_REPORT_PATH_VALUE', ('`' + $fixedReportPath + '`'))
+    $content = $content.Replace('FIXED_REPORT_DESCRIPTION_VALUE', $fixedReportDescription)
     $content = $content.Replace('REPORT_PATH_VALUE', ('`' + $ReportPath + '`'))
     $content = $content.Replace('EXCEPTIONS_PATH_VALUE', ('`' + $exceptionsPath + '`'))
     $content = $content.Replace('DISPATCH_SLUG_VALUE', ('`' + $DispatchSlug + '`'))
