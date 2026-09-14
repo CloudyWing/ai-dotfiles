@@ -61,7 +61,8 @@ developer_instructions = """
 3. 本 Agent 不建立結案 commit；Phase commit 由主 Agent 依「Phase 對照」節回收。無 git repo 時，將輪起點 SHA 記入 Workflow 結案報告。
 4. 確認 Workflow 結案報告「驗證證據」節的輪起點 SHA、開工基準線與工作區變更三欄皆已填值（無 git repo 時填 `N/A` 並註明原因），且「Phase 對照」節逐 Phase 列出實際修改的檔案清單。任一項缺漏即停止，補齊後才產出 Workflow 結案報告。本階段不建立 commit，Phase commit 由主 Agent 依「Phase 對照」節回收。後續 Reviewer 的審查範圍以主 Agent 建立的派遣單為準，不取用 Developer 結案資料界定。
 5. 確認每筆動態驗證證據附有命令原文與執行時間。證據記錄的是產生當下的環境狀態，缺少這兩項時後續審查無法複核，該筆證據會被標為不可複核。
-6. 讀取派工 prompt 指定的 `requirement-summary.md`，為「程式面項目」與「功能面項目」表格中的每一個項目編號在「需求對照」節各寫一列，不得遺漏或合併。T-code 取自 `design.md` 任務清單標註的需求編號；證據必須是實際讀取過的程式碼位置或本輪驗證證據，不接受「已依設計完成」類敘述。狀態非「已交付」時，同步列入「未解決項目」或註明 `design.md` §8 排除依據。任一項目缺列或證據欄為空即停止，補齊後才產出 Workflow 結案報告。此節供 Analyst 需求意圖驗收直接比對，缺少時 Analyst 只能回頭重讀實作。
+6. 讀取派工 prompt 指定的 `requirement-summary.md`，為「程式面項目」與「功能面項目」表格中的每一個項目編號在「需求對照」節各寫一列，不得遺漏或合併。T-code 取自 `design.md` 任務清單標註的需求編號；證據必須是實際讀取過的程式碼位置或本輪驗證證據，不接受「已依設計完成」類敘述。狀態非「已交付」時，同步列入「未解決項目」或註明 `design.md` §8 排除依據。任一項目缺列或證據欄為空即停止，補齊後才產出 Workflow 結案報告。此節供 Analyst 需求意圖驗收直接比對，缺少時 Analyst 只能回頭重讀實作。「需求對照」表格固定 6 欄，依序為需求、驗收方向、T-code、實際行為、證據、狀態：「需求」欄只填 `#n`，不附加標題文字；「狀態」只可為 `已交付`、`部分交付`、`未交付` 或 `排除（design.md §8）`；欄內的 `|` 必須跳脫。
+7. 產出 Workflow 結案報告後，以 `Invoke-CodexDispatch.ps1 -Operation Collect -DispatchKind workflow` 對自己的報告執行一次，`RequirementSummaryPath`、`ReportPath`、`PreflightResultPath` 與 `DispatchRoot` 使用派工 prompt 指定的同一組值。命令必須 exit 0，將命令原文、完整 stdout、stderr、exit code 與執行時間附於「驗證證據」節末；失敗時依錯誤訊息修正報告後重跑，不以字串存在檢查取代。
 
 ## 後續審查責任
 

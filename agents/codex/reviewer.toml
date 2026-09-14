@@ -111,6 +111,17 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 
 **finding ID**：Standards 缺陷、需求對照核對與沒有 T-code 可承載的 Spec 缺陷，每項給一個 `F-<三位數>` 編號，自 `F-001` 起遞增；有 T-code 的 Spec 判定以 T-code 為識別，不另編號。派遣單或續行 prompt 提供前輪報告時，先讀取前輪全部 finding ID，於報告「前輪 finding 狀態」節逐一判定「已閉合」「未閉合」或「撤回（附撤回依據）」，不得以新措辭重新列出同一缺陷；本輪新發現的缺陷自前輪最大編號之後接續編號。未閉合的前輪 finding 沿用原 ID 與原嚴重度，嚴重度變更時註明理由。
 
+**Finding manifest**：報告在 `## 總覽` 之後必須有唯一的 `## Finding manifest` 區段，區段內只放一個 json fenced block，schema 為 `codex-dispatch.review-findings.v1`，欄位如下。manifest 是一致性索引，Standards 與 Spec 仍各自保留原始 finding 順序。
+
+- `current_findings`：只列本輪仍未解決的 finding，每筆含 `id`、`axis`（Standards 或 Spec）、`status`（固定 `open`）、`severity`、`disposition`（`new` 或 `carried`）與 `summary`。`carried` 的 ID 必須在前輪狀態為未閉合。
+- `previous_status`：前輪每個 finding ID 一筆，`status` 為 `closed`、`open` 或 `withdrawn`，另含 `severity`。沒有前輪報告時為空陣列。
+- `counts`：`previous_closed`、`previous_open`、`current_new`、`current_open`，一律以 unique ID 計算，同一 ID 重複引用只計一次。
+- `conclusion`：`pass` 或 `fail`。
+
+manifest 必須與正文一致：`## Standards`、`## Standards 缺陷審查`、`## 需求對照核對` 與 `## Spec` 四個區段中出現的本輪 `[F-xxx]` ID 集合等於 `current_findings` 的 unique ID 集合；`## 前輪 finding 狀態` 的 ID 集合等於 `previous_status`，同一 ID 的狀態與嚴重度需與 `previous_status` 相同。`axis` 只可為 `Standards` 或 `Spec`。fence 以原始三個反引號撰寫，不加反斜線跳脫；寫檔後以 `Invoke-CodexDispatch.ps1 -Operation Collect -ReviewerReportPath <報告路徑>` 自行驗證 `reviewerFindings.valid=true`，驗證失敗時修正後才結案。同一 ID 的嚴重度、狀態或 disposition 不可互相衝突，發現衝突時修正正文與 manifest，不以另開 ID 迴避。
+
+**審查結論門檻**：本輪 unique finding 含任一 Critical 或 Major 時，`conclusion=fail`；只有 Minor 或沒有本輪 finding 時，`conclusion=pass`，Minor 仍完整列出。結論依嚴重度判定，不依 finding 數量判定。
+
 **嚴重度分級**：Critical（資料損毀、崩潰、安全漏洞）＞ Major（功能結果錯誤）＞ Minor（僅邊界情境出錯）。
 
 **執行方式**：優先於 session 內派生匿名 subagent（三個 finder 可並行，verifier 單一實例）；環境不支援 subagent 時，退化為單 agent 依序執行三個 finder 再執行 verifier。
@@ -134,6 +145,9 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 - 建置與測試證據：（依派遣單第 6 欄執行；唯讀審查標注「未執行」）
 - 動態證據複核：重跑 N 項 / 一致 N 項 / 不一致 N 項 / 無法複核 N 項
 - 缺陷審查：CONFIRMED N / PLAUSIBLE N
+
+## Finding manifest
+（唯一一個 json fenced block，schema 與一致性規則見上方「Finding manifest」與「審查結論門檻」）
 
 ## 動態證據複核
 - [Phase N] 命令原文 → 重跑輸出摘要 → 一致／不一致／無法複核（不一致時列出 Developer 記錄值與重跑值）

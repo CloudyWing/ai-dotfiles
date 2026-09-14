@@ -333,7 +333,7 @@ skill 未宣告 `dispatch` 或本輪工作不對應任何 skill 時，主 Agent 
 
 `ScopePlan` 的最小單位固定如下。Workflow 使用 `design.md` 宣告順序的 Phase，資源派遣使用派遣單第 3 欄的目標物件，`deep-consult` 使用單一 evidence pack。執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
 
-先判定目標檔位門檻。預設檔位的門檻為 primary 剩餘 30% 與 secondary 剩餘 15%。兩個視窗都達到門檻時，ScopePlan 使用 `decision=full` 與 `estimate_source=not-required-above-threshold`，不要求校準樣本或保守量級。`deep-consult` 不適用此放寬，一律計算預算與中止上限。任一視窗低於門檻時，才使用相同 `model`、`profile`、`session_mode` 與 `task_type` 分組的 `calibration_eligible=true` 樣本第 75 百分位或需求摘要核准的保守量級。低於門檻且沒有估算資料的非 deep 派工回傳 `user-decision-required`；deep 派工回傳 `blocked-no-estimate`，不跨分組借用。
+先判定目標檔位門檻。預設檔位的門檻為 primary 剩餘 30% 與 secondary 剩餘 15%。兩個視窗都達到門檻時，ScopePlan 使用 `decision=full` 與 `estimate_source=not-required-above-threshold`，不要求校準樣本或保守量級。`deep-consult` 不適用此放寬，一律計算預算與中止上限。任一視窗低於門檻時，才使用相同 `model`、`profile`、`session_mode` 與 `task_type` 分組的 `calibration_eligible=true` 樣本第 75 百分位或需求摘要核准的保守量級。低於門檻且沒有估算資料的非 deep 派工回傳 `decision=scoped` 與 `estimate_source=bounded-single-unit`，只選第一個宣告單位並在該單位後停止，不等待使用者決定；deep 派工回傳 `blocked-no-estimate`，不跨分組借用。
 
 `primary_budget_percent` 以最長前綴計算。低於門檻的一般派工使用可用 primary 剩餘扣除 reserve；`deep-consult` 使用 `min(estimate_percent × 1.25, primary_remaining_percent - 30)`，且預估後至少保留 30%。完整清單可容納時使用 `full`，部分前綴可容納時使用 `scoped`，第一個最小單位超出預算時使用 `blocked-insufficient-budget`，等待 `primary_resets_at` 或交由使用者決定。目標為預設檔位且低於門檻時維持預設檔位，改走 `ScopePlan`，不切換其他檔位。
 
