@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Preflight', 'Start', 'Inspect', 'Collect', 'QuotaProbe')]
+    [ValidateSet('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'RecoveryHandoff')]
     [string]$Operation,
 
     [string]$SourceRoot,
@@ -25,6 +25,17 @@ param(
 
     [string]$ResultPath,
 
+    [string]$RequestPath,
+
+    [string]$PrepareResultPath,
+
+    [ValidateSet('usage-limit-no-last-message', 'launch-failed', 'worktree-acl-residue', 'unknown-interruption')]
+    [string]$RebuildReason,
+
+    [string]$RecoveryHandoffPath,
+
+    [string]$RecoveryHandoffId,
+
     [string]$PreflightResultPath,
 
     [string]$CodexPath,
@@ -34,7 +45,7 @@ param(
     [ValidateSet('default', 'deep')]
     [string]$Profile = 'default',
 
-    [ValidateSet('Valid', 'PostResetNoSnapshot', 'SnapshotExpired', 'SnapshotUnavailable')]
+    [ValidateSet('Valid', 'PostResetNoSnapshot', 'SnapshotExpired', 'SnapshotUnavailable', 'ServiceRejected')]
     [string]$InitialQuotaState = 'PostResetNoSnapshot',
 
     [ValidateSet('primary', 'secondary', 'both', 'unknown')]
@@ -45,9 +56,9 @@ param(
 
     [string]$CodexHome,
 
-    [string]$Model = 'gpt-5.6-luna',
+    [string]$Model,
 
-    [string]$ReasoningEffort = 'xhigh',
+    [string]$ReasoningEffort,
 
     [string]$TaskType = 'unspecified',
 
@@ -102,9 +113,13 @@ param(
 
     [string]$EventStreamPath,
 
+    [string]$StdoutPath,
+
     [string]$ErrorStreamPath,
 
     [string]$LastMessagePath,
+
+    [string]$RunRecordPath,
 
     [string]$ThreadIdPath,
 
@@ -117,16 +132,34 @@ param(
 
     [string]$BaseSha,
 
+    [string]$BaselinePath,
+
+    [string]$BaselineSha256,
+
     [ValidateSet('workflow', 'resource')]
     [string]$DispatchKind,
 
     [string]$RequirementSummaryPath,
 
-    [string[]]$ReportPath
+    [string[]]$ReportPath,
+
+    [string]$ReviewerReportPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:InvocationBoundParameters = [ordered]@{}
+foreach ($boundName in $PSBoundParameters.Keys) {
+    $script:InvocationBoundParameters[[string]$boundName] = $PSBoundParameters[$boundName]
+}
+$script:RequestContext = $null
+$script:RequestLiteralValues = @()
+$script:RequestPrepareArtifacts = @()
+$script:WorkflowCollectContractVersion = 'workflow-collect-v1'
+$script:AddDirectoryExplicit = $script:InvocationBoundParameters.Contains('AddDirectory')
+$script:SearchExplicit = $script:InvocationBoundParameters.Contains('Search')
+$script:CodexParentOptionExplicit = $script:InvocationBoundParameters.Contains('CodexParentOption')
+$script:ProfileExplicit = $script:InvocationBoundParameters.Contains('Profile')
 
 function Test-IsWindowsPlatform {
     return [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
@@ -485,84 +518,190 @@ function Read-QuotaSnapshot {
 
         $schemaProperty = $document.PSObject.Properties['schema']
         $stateProperty = $document.PSObject.Properties['state']
-        if ($null -eq $schemaProperty -or $schemaProperty.Value -ne 'quota-snapshot.v1') {
+        $supportedSchemas = @('quota-snapshot.v1', 'ai-sessions.quota-snapshot.v1')
+        if ($null -eq $schemaProperty -or $supportedSchemas -notcontains [string]$schemaProperty.Value) {
             throw "額度快照 schema 不支援：$snapshotPath"
         }
-        if ($null -eq $stateProperty -or $stateProperty.Value -ne 'Valid') {
-            $stateValue = if ($null -eq $stateProperty) { '<missing>' } else { [string]$stateProperty.Value }
-            throw "額度快照 state 不可用：$snapshotPath；quota_state=$stateValue"
+        if ($null -eq $stateProperty) {
+            throw "額度快照缺少 state：$snapshotPath"
+        }
+        $stateValue = [string]$stateProperty.Value
+        $supportedStates = @('Valid', 'PostResetNoSnapshot', 'SnapshotExpired', 'SnapshotUnavailable', 'ServiceRejected', 'Invalid')
+        if ($supportedStates -notcontains $stateValue) {
+            throw "額度快照 state 不支援：$snapshotPath；quota_state=$stateValue"
         }
 
         $windowValues = [ordered]@{}
         $windowObjects = [ordered]@{}
+        $observationObjects = [ordered]@{}
         foreach ($windowName in @('primary', 'secondary')) {
             $windowProperty = $document.PSObject.Properties[$windowName]
             if ($null -eq $windowProperty -or $null -eq $windowProperty.Value) {
-                throw "額度快照缺少視窗：$snapshotPath；$windowName"
+                if ($stateValue -eq 'Valid') {
+                    throw "額度快照缺少視窗：$snapshotPath；$windowName"
+                }
+                $windowObjects[$windowName] = $null
             }
+            else {
+                $window = $windowProperty.Value
+                foreach ($requiredName in @('used_percent', 'remaining_percent', 'window_minutes', 'resets_at', 'source_file')) {
+                    $requiredProperty = $window.PSObject.Properties[$requiredName]
+                    if ($null -eq $requiredProperty -or $null -eq $requiredProperty.Value -or ([string]$requiredName -eq 'source_file' -and [string]::IsNullOrWhiteSpace([string]$requiredProperty.Value))) {
+                        throw "額度快照缺少欄位：$snapshotPath；$windowName.$requiredName"
+                    }
+                }
 
-            $window = $windowProperty.Value
-            foreach ($requiredName in @('used_percent', 'remaining_percent', 'window_minutes', 'resets_at', 'source_file')) {
-                $requiredProperty = $window.PSObject.Properties[$requiredName]
-                if ($null -eq $requiredProperty -or $null -eq $requiredProperty.Value -or ([string]$requiredName -eq 'source_file' -and [string]::IsNullOrWhiteSpace([string]$requiredProperty.Value))) {
-                    throw "額度快照缺少欄位：$snapshotPath；$windowName.$requiredName"
+                try {
+                    $usedPercent = [double]$window.used_percent
+                    $remainingPercent = [double]$window.remaining_percent
+                    $windowMinutes = [int64]$window.window_minutes
+                    $resetsAt = [int64]$window.resets_at
+                }
+                catch {
+                    throw "額度快照欄位不是有效數值：$snapshotPath；$windowName"
+                }
+                if ($usedPercent -lt 0 -or $usedPercent -gt 100 -or $remainingPercent -lt 0 -or $remainingPercent -gt 100 -or $windowMinutes -le 0 -or $resetsAt -le 0) {
+                    throw "額度快照欄位超出有效範圍：$snapshotPath；$windowName"
+                }
+
+                $windowObject = [ordered]@{
+                    used_percent      = $usedPercent
+                    remaining_percent = $remainingPercent
+                    window_minutes    = $windowMinutes
+                    resets_at         = $resetsAt
+                    source_file       = [string]$window.source_file
+                }
+                $windowObjects[$windowName] = $windowObject
+                $prefix = $windowName + '_'
+                $windowValues[$prefix + 'used_percent'] = $usedPercent
+                $windowValues[$prefix + 'remaining_percent'] = $remainingPercent
+                $windowValues[$prefix + 'window_minutes'] = $windowMinutes
+                $windowValues[$prefix + 'resets_at'] = $resetsAt
+                $windowValues[$prefix + 'source_file'] = [string]$window.source_file
+                if ($null -ne $window.PSObject.Properties['days_to_reset']) {
+                    $windowValues[$prefix + 'days_to_reset'] = [double]$window.days_to_reset
+                }
+                if ($null -ne $window.PSObject.Properties['window_days']) {
+                    $windowValues[$prefix + 'window_days'] = [double]$window.window_days
                 }
             }
 
-            $usedPercent = [double]$window.used_percent
-            $remainingPercent = [double]$window.remaining_percent
-            $windowMinutes = [int64]$window.window_minutes
-            $resetsAt = [int64]$window.resets_at
-            if ($usedPercent -lt 0 -or $usedPercent -gt 100 -or $remainingPercent -lt 0 -or $remainingPercent -gt 100 -or $windowMinutes -le 0 -or $resetsAt -le 0) {
-                throw "額度快照欄位超出有效範圍：$snapshotPath；$windowName"
+            $observation = $null
+            $observationsProperty = $document.PSObject.Properties['observations']
+            if ($null -ne $observationsProperty -and $null -ne $observationsProperty.Value) {
+                $observationProperty = $observationsProperty.Value.PSObject.Properties[$windowName]
+                if ($null -ne $observationProperty) {
+                    $observation = $observationProperty.Value
+                }
             }
 
-            $windowObject = [ordered]@{
-                used_percent      = $usedPercent
-                remaining_percent = $remainingPercent
-                window_minutes    = $windowMinutes
-                resets_at         = $resetsAt
-                source_file       = [string]$window.source_file
+            if ($null -ne $observation) {
+                foreach ($requiredObservationName in @('used_percent', 'remaining_percent', 'source', 'freshness', 'window', 'resets_at')) {
+                    $requiredObservationProperty = $observation.PSObject.Properties[$requiredObservationName]
+                    if ($null -eq $requiredObservationProperty -or
+                        ($null -eq $requiredObservationProperty.Value -and ($stateValue -eq 'Valid' -or ([string]$requiredObservationName -in @('source', 'window', 'freshness')))) -or
+                        ([string]$requiredObservationName -in @('source', 'window', 'freshness') -and [string]::IsNullOrWhiteSpace([string]$requiredObservationProperty.Value))) {
+                        throw "額度 observation 缺少欄位：$snapshotPath；observations.$windowName.$requiredObservationName"
+                    }
+                }
+                if ([string]$observation.window -ne $windowName -or [string]$observation.freshness -notin @('fresh', 'stale', 'unknown')) {
+                    throw "額度 observation 欄位無效：$snapshotPath；observations.$windowName"
+                }
+                $observationUsed = $null
+                $observationRemaining = $null
+                $observationReset = $null
+                if ($null -ne $observation.used_percent) {
+                    $observationUsed = [double]$observation.used_percent
+                }
+                if ($null -ne $observation.remaining_percent) {
+                    $observationRemaining = [double]$observation.remaining_percent
+                }
+                if ($null -ne $observation.resets_at) {
+                    $observationReset = [int64]$observation.resets_at
+                }
+                if (($null -ne $observationUsed -and ($observationUsed -lt 0 -or $observationUsed -gt 100)) -or
+                    ($null -ne $observationRemaining -and ($observationRemaining -lt 0 -or $observationRemaining -gt 100)) -or
+                    ($null -ne $observationReset -and $observationReset -le 0)) {
+                    throw "額度 observation 欄位超出有效範圍：$snapshotPath；observations.$windowName"
+                }
+                $observedAtUtc = $null
+                $observedAtProperty = $observation.PSObject.Properties['observed_at_utc']
+                if ($null -ne $observedAtProperty -and -not [string]::IsNullOrWhiteSpace([string]$observedAtProperty.Value)) {
+                    try {
+                        $observedAtUtc = [DateTimeOffset]$observedAtProperty.Value
+                    }
+                    catch {
+                        throw "額度 observation observed_at_utc 無效：$snapshotPath；observations.$windowName"
+                    }
+                }
+                $observationObjects[$windowName] = [ordered]@{
+                    used_percent      = $observationUsed
+                    remaining_percent = $observationRemaining
+                    observed_at_utc   = $observedAtUtc
+                    source            = [string]$observation.source
+                    freshness         = [string]$observation.freshness
+                    window            = $windowName
+                    resets_at         = $observationReset
+                }
             }
-            $windowObjects[$windowName] = $windowObject
-            $prefix = $windowName + '_'
-            $windowValues[$prefix + 'used_percent'] = $usedPercent
-            $windowValues[$prefix + 'remaining_percent'] = $remainingPercent
-            $windowValues[$prefix + 'window_minutes'] = $windowMinutes
-            $windowValues[$prefix + 'resets_at'] = $resetsAt
-            $windowValues[$prefix + 'source_file'] = [string]$window.source_file
-            if ($null -ne $window.PSObject.Properties['days_to_reset']) {
-                $windowValues[$prefix + 'days_to_reset'] = [double]$window.days_to_reset
-            }
-            if ($null -ne $window.PSObject.Properties['window_days']) {
-                $windowValues[$prefix + 'window_days'] = [double]$window.window_days
+            else {
+                $windowObject = $windowObjects[$windowName]
+                $observationObjects[$windowName] = [ordered]@{
+                    used_percent      = if ($null -eq $windowObject) { $null } else { $windowObject.used_percent }
+                    remaining_percent = if ($null -eq $windowObject) { $null } else { $windowObject.remaining_percent }
+                    observed_at_utc   = $null
+                    source            = if ($null -eq $windowObject) { 'snapshot-unavailable' } else { [string]$windowObject.source_file }
+                    freshness         = 'unknown'
+                    window            = $windowName
+                    resets_at         = if ($null -eq $windowObject) { $null } else { $windowObject.resets_at }
+                }
             }
         }
 
         $capturedAtUtc = $null
-        $capturedAtValid = $true
         $capturedAtProperty = $document.PSObject.Properties['captured_at_utc']
         if ($null -ne $capturedAtProperty -and -not [string]::IsNullOrWhiteSpace([string]$capturedAtProperty.Value)) {
             try {
                 $capturedAtUtc = [DateTimeOffset]$capturedAtProperty.Value
             }
             catch {
-                $capturedAtValid = $false
+                throw "額度快照 captured_at_utc 無效：$snapshotPath"
             }
         }
-        elseif ($null -eq $capturedAtProperty -or [string]::IsNullOrWhiteSpace([string]$capturedAtProperty.Value)) {
-            $capturedAtValid = $false
+
+        $serviceRejection = $null
+        $serviceRejectionProperty = $document.PSObject.Properties['service_rejection']
+        if ($null -ne $serviceRejectionProperty -and $null -ne $serviceRejectionProperty.Value) {
+            $serviceRejection = $serviceRejectionProperty.Value
+            foreach ($requiredRejectionName in @('status', 'window', 'reason_code', 'observed_at_utc', 'raw_evidence_path', 'raw_evidence_sha256', 'retry_allowed')) {
+                $requiredRejectionProperty = $serviceRejection.PSObject.Properties[$requiredRejectionName]
+                if ($null -eq $requiredRejectionProperty -or $null -eq $requiredRejectionProperty.Value -or ([string]$requiredRejectionName -in @('status', 'window', 'reason_code', 'raw_evidence_path', 'raw_evidence_sha256') -and [string]::IsNullOrWhiteSpace([string]$requiredRejectionProperty.Value))) {
+                    throw "額度 service_rejection 缺少欄位：$snapshotPath；$requiredRejectionName"
+                }
+            }
+            if ([string]$serviceRejection.status -ne 'quota-rejected' -or $serviceRejection.retry_allowed -ne $false) {
+                throw "額度 service_rejection 欄位無效：$snapshotPath"
+            }
+        }
+
+        $serviceRejectionEvidence = $null
+        $serviceRejectionEvidenceProperty = $document.PSObject.Properties['service_rejection_evidence']
+        if ($null -ne $serviceRejectionEvidenceProperty -and $null -ne $serviceRejectionEvidenceProperty.Value) {
+            $serviceRejectionEvidence = $serviceRejectionEvidenceProperty.Value
         }
 
         return [ordered]@{
-            path          = $snapshotPath
-            schema        = 'quota-snapshot.v1'
-            state         = if ($capturedAtValid) { 'Valid' } else { 'Invalid' }
-            capturedAtUtc = $capturedAtUtc
-            values        = $windowValues
-            primary       = $windowObjects['primary']
-            secondary     = $windowObjects['secondary']
-            document      = $document
+            path              = $snapshotPath
+            schema            = [string]$schemaProperty.Value
+            state             = $stateValue
+            capturedAtUtc     = $capturedAtUtc
+            values            = $windowValues
+            primary           = $windowObjects['primary']
+            secondary         = $windowObjects['secondary']
+            observations      = $observationObjects
+            serviceRejection  = $serviceRejection
+            serviceRejectionEvidence = $serviceRejectionEvidence
+            document          = $document
         }
     }
 
@@ -627,6 +766,28 @@ function Read-QuotaSnapshot {
             resets_at         = $values['secondary_resets_at']
             source_file       = if ($values.Contains('secondary_source_file')) { [string]$values['secondary_source_file'] } else { [string]$snapshotPath }
         }
+        observations  = [ordered]@{
+            primary   = [ordered]@{
+                used_percent      = $values['primary_used_percent']
+                remaining_percent = $values['primary_remaining_percent']
+                observed_at_utc   = $null
+                source            = if ($values.Contains('primary_source_file')) { [string]$values['primary_source_file'] } else { [string]$snapshotPath }
+                freshness         = 'unknown'
+                window            = 'primary'
+                resets_at         = $values['primary_resets_at']
+            }
+            secondary = [ordered]@{
+                used_percent      = $values['secondary_used_percent']
+                remaining_percent = $values['secondary_remaining_percent']
+                observed_at_utc   = $null
+                source            = if ($values.Contains('secondary_source_file')) { [string]$values['secondary_source_file'] } else { [string]$snapshotPath }
+                freshness         = 'unknown'
+                window            = 'secondary'
+                resets_at         = $values['secondary_resets_at']
+            }
+        }
+        serviceRejection = $null
+        serviceRejectionEvidence = $null
         document      = $null
     }
 }
@@ -647,7 +808,121 @@ function Get-OptionalObjectProperty {
     if ($null -eq $property) {
         return $null
     }
-    return $property.Value
+    Write-Output -NoEnumerate -InputObject $property.Value
+}
+
+function Get-QuotaSnapshotObservation {
+    param(
+        [AllowNull()]
+        [object]$Snapshot,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('primary', 'secondary')]
+        [string]$WindowName
+    )
+
+    if ($null -eq $Snapshot) {
+        return $null
+    }
+    $observations = Get-DispatchJsonProperty -Object $Snapshot -Name 'observations'
+    if ($null -eq $observations) {
+        return $null
+    }
+    return Get-DispatchJsonProperty -Object $observations -Name $WindowName
+}
+
+function Test-QuotaSnapshotObservationContract {
+    param(
+        [AllowNull()]
+        [object]$Snapshot
+    )
+
+    if ($null -eq $Snapshot) {
+        return $false
+    }
+    if ($Snapshot -is [System.Collections.IDictionary]) {
+        return $Snapshot.Contains('observations')
+    }
+    return $null -ne $Snapshot.PSObject.Properties['observations']
+}
+
+function Test-QuotaSnapshotHasObservations {
+    param(
+        [AllowNull()]
+        [object]$Snapshot
+    )
+
+    if (-not (Test-QuotaSnapshotObservationContract -Snapshot $Snapshot)) {
+        return $false
+    }
+    foreach ($windowName in @('primary', 'secondary')) {
+        $observation = Get-QuotaSnapshotObservation -Snapshot $Snapshot -WindowName $windowName
+        if ($null -eq $observation) {
+            return $false
+        }
+        $used = Get-DispatchJsonProperty -Object $observation -Name 'used_percent'
+        $remaining = Get-DispatchJsonProperty -Object $observation -Name 'remaining_percent'
+        $resetsAt = Get-DispatchJsonProperty -Object $observation -Name 'resets_at'
+        try {
+            $usedValue = [double]$used
+            $remainingValue = [double]$remaining
+            $resetValue = [int64]$resetsAt
+        }
+        catch {
+            return $false
+        }
+        if ([double]::IsNaN($usedValue) -or [double]::IsInfinity($usedValue) -or $usedValue -lt 0 -or $usedValue -gt 100 -or
+            [double]::IsNaN($remainingValue) -or [double]::IsInfinity($remainingValue) -or $remainingValue -lt 0 -or $remainingValue -gt 100 -or
+            $resetValue -le 0) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Get-QuotaSnapshotFreshness {
+    param(
+        [AllowNull()]
+        [object]$Snapshot
+    )
+
+    if (-not (Test-QuotaSnapshotObservationContract -Snapshot $Snapshot)) {
+        return 'unknown'
+    }
+    $freshnessValues = New-Object System.Collections.Generic.List[string]
+    foreach ($windowName in @('primary', 'secondary')) {
+        $observation = Get-QuotaSnapshotObservation -Snapshot $Snapshot -WindowName $windowName
+        $freshness = [string](Get-DispatchJsonProperty -Object $observation -Name 'freshness')
+        if ($freshness -notin @('fresh', 'stale', 'unknown')) {
+            return 'unknown'
+        }
+        $freshnessValues.Add($freshness)
+    }
+    if ($freshnessValues -contains 'stale') {
+        return 'stale'
+    }
+    if ($freshnessValues.Count -eq 2 -and @($freshnessValues | Where-Object { $_ -eq 'fresh' }).Count -eq 2) {
+        return 'fresh'
+    }
+    return 'unknown'
+}
+
+function Get-QuotaSnapshotServiceRejection {
+    param(
+        [AllowNull()]
+        [object]$Snapshot
+    )
+
+    return Get-DispatchJsonProperty -Object $Snapshot -Name 'serviceRejection'
+}
+
+function Get-QuotaSnapshotServiceRejectionEvidence {
+    param(
+        [AllowNull()]
+        [object]$Snapshot
+    )
+
+    return Get-DispatchJsonProperty -Object $Snapshot -Name 'serviceRejectionEvidence'
 }
 
 function Test-QuotaSnapshotFresh {
@@ -658,11 +933,29 @@ function Test-QuotaSnapshotFresh {
         [int]$MaxAgeMinutes = 30
     )
 
-    if ($Snapshot.state -ne 'Valid' -or $null -eq $Snapshot.capturedAtUtc) {
+    if ($null -eq $Snapshot -or $Snapshot.state -ne 'Valid' -or $null -ne (Get-QuotaSnapshotServiceRejection -Snapshot $Snapshot)) {
         return $false
     }
-    $ageMinutes = ([DateTimeOffset]::UtcNow - [DateTimeOffset]$Snapshot.capturedAtUtc).TotalMinutes
-    return $ageMinutes -ge 0 -and $ageMinutes -le $MaxAgeMinutes
+    if (-not (Test-QuotaSnapshotHasObservations -Snapshot $Snapshot) -or (Get-QuotaSnapshotFreshness -Snapshot $Snapshot) -ne 'fresh') {
+        return $false
+    }
+    foreach ($windowName in @('primary', 'secondary')) {
+        $observation = Get-QuotaSnapshotObservation -Snapshot $Snapshot -WindowName $windowName
+        $observedAt = Get-DispatchJsonProperty -Object $observation -Name 'observed_at_utc'
+        if ($null -eq $observedAt -or [string]::IsNullOrWhiteSpace([string]$observedAt)) {
+            return $false
+        }
+        try {
+            $ageMinutes = ([DateTimeOffset]::UtcNow - [DateTimeOffset]$observedAt).TotalMinutes
+        }
+        catch {
+            return $false
+        }
+        if ($ageMinutes -lt 0 -or $ageMinutes -gt $MaxAgeMinutes) {
+            return $false
+        }
+    }
+    return $true
 }
 
 function Get-QuotaSnapshotDelta {
@@ -765,8 +1058,15 @@ function Get-CalibrationEstimate {
     param(
         [string]$Path,
 
-        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$ModelEvidence,
+
+        [AllowNull()]
+        [object]$ReasoningEffortEvidence,
+
         [string]$Model,
+
+        [string]$ReasoningEffort,
 
         [Parameter(Mandatory)]
         [string]$Profile,
@@ -778,20 +1078,75 @@ function Get-CalibrationEstimate {
         [string]$TaskType
     )
 
+    $normalizedModelEvidence = $null
+    if ($null -ne $ModelEvidence) {
+        $normalizedModelEvidence = ConvertTo-DispatchEvidence -Evidence $ModelEvidence -Field 'model'
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($Model)) {
+        $normalizedModelEvidence = New-ConfirmedDispatchEvidence -Value $Model -Source 'compatibility-parameter' -Field 'model'
+    }
+    else {
+        $normalizedModelEvidence = New-UnknownDispatchEvidence -Field 'model' -Reason '校準缺少 resolved model evidence。' -Source 'evidence-missing'
+    }
+    $normalizedEffortEvidence = $null
+    if ($null -ne $ReasoningEffortEvidence) {
+        $normalizedEffortEvidence = ConvertTo-DispatchEvidence -Evidence $ReasoningEffortEvidence -Field 'model_reasoning_effort'
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
+        $normalizedEffortEvidence = New-ConfirmedDispatchEvidence -Value $ReasoningEffort -Source 'compatibility-parameter' -Field 'model_reasoning_effort'
+    }
+    else {
+        $normalizedEffortEvidence = New-UnknownDispatchEvidence -Field 'model_reasoning_effort' -Reason '校準缺少 resolved reasoning effort evidence。' -Source 'evidence-missing'
+    }
+    $resolvedModel = Get-DispatchEvidenceValue -Evidence $normalizedModelEvidence
+    $resolvedEffort = Get-DispatchEvidenceValue -Evidence $normalizedEffortEvidence
+    if ($null -eq $resolvedModel -or $null -eq $resolvedEffort) {
+        return [ordered]@{
+            estimate = $null
+            source   = 'evidence-unknown'
+            sampleCount = 0
+            model = $normalizedModelEvidence
+            reasoning_effort = $normalizedEffortEvidence
+        }
+    }
+
     if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return [ordered]@{
             estimate = $null
             source   = 'none'
             sampleCount = 0
+            model = $normalizedModelEvidence
+            reasoning_effort = $normalizedEffortEvidence
         }
     }
 
     $records = @(Get-CalibrationRecords -Path $Path | Where-Object {
+            $groupProperty = $_.PSObject.Properties['group']
+            $group = if ($null -eq $groupProperty) { $null } else { $groupProperty.Value }
+            $groupModel = Get-DispatchJsonProperty -Object $group -Name 'model'
+            $groupEffort = Get-DispatchJsonProperty -Object $group -Name 'reasoning_effort'
+            $evidenceProperty = $_.PSObject.Properties['model_evidence']
+            $effortEvidenceProperty = $_.PSObject.Properties['reasoning_effort_evidence']
+            $recordEvidence = if ($null -eq $evidenceProperty) { $null } else { $evidenceProperty.Value }
+            $recordEffortEvidence = if ($null -eq $effortEvidenceProperty) { $null } else { $effortEvidenceProperty.Value }
+            $recordResolvedModelEvidence = Get-DispatchJsonProperty -Object $recordEvidence -Name 'resolved'
+            $recordRuntimeModelEvidence = Get-DispatchJsonProperty -Object $recordEvidence -Name 'runtime_verifiable'
+            $recordResolvedEffortEvidence = Get-DispatchJsonProperty -Object $recordEffortEvidence -Name 'resolved'
+            $recordRuntimeEffortEvidence = Get-DispatchJsonProperty -Object $recordEffortEvidence -Name 'runtime_verifiable'
+            $recordResolvedModel = Get-DispatchEvidenceValue -Evidence $recordResolvedModelEvidence
+            $recordRuntimeModel = Get-DispatchEvidenceValue -Evidence $recordRuntimeModelEvidence
+            $recordResolvedEffort = Get-DispatchEvidenceValue -Evidence $recordResolvedEffortEvidence
+            $recordRuntimeEffort = Get-DispatchEvidenceValue -Evidence $recordRuntimeEffortEvidence
             $_.calibration_eligible -eq $true -and
-            $_.model -eq $Model -and
+            $groupModel -eq $resolvedModel -and
+            $groupEffort -eq $resolvedEffort -and
             $_.profile -eq $Profile -and
             $_.session_mode -eq $SessionMode -and
             $_.task_type -eq $TaskType -and
+            $recordResolvedModel -eq $resolvedModel -and
+            $recordRuntimeModel -eq $resolvedModel -and
+            $recordResolvedEffort -eq $resolvedEffort -and
+            $recordRuntimeEffort -eq $resolvedEffort -and
             $null -ne $_.observed_primary_delta_percent
         })
     $deltas = @($records | ForEach-Object { [double]$_.observed_primary_delta_percent } | Where-Object { $_ -ge 0 })
@@ -805,6 +1160,8 @@ function Get-CalibrationEstimate {
             estimate = [double]$sorted[$index]
             source   = 'p75'
             sampleCount = $sorted.Count
+            model = $normalizedModelEvidence
+            reasoning_effort = $normalizedEffortEvidence
         }
     }
 
@@ -812,6 +1169,8 @@ function Get-CalibrationEstimate {
         estimate = $null
         source   = 'insufficient-samples'
         sampleCount = $deltas.Count
+        model = $normalizedModelEvidence
+        reasoning_effort = $normalizedEffortEvidence
     }
 }
 
@@ -882,12 +1241,14 @@ function Test-DefaultProfileThreshold {
         [psobject]$Snapshot
     )
 
-    if ($null -eq $Snapshot -or $Snapshot.state -ne 'Valid') {
+    if ($null -eq $Snapshot -or $Snapshot.state -ne 'Valid' -or -not (Test-QuotaSnapshotHasObservations -Snapshot $Snapshot) -or (Get-QuotaSnapshotFreshness -Snapshot $Snapshot) -ne 'fresh') {
         return $false
     }
 
-    return [double]$Snapshot.primary.remaining_percent -ge 30.0 -and
-        [double]$Snapshot.secondary.remaining_percent -ge 15.0
+    $primaryObservation = Get-QuotaSnapshotObservation -Snapshot $Snapshot -WindowName 'primary'
+    $secondaryObservation = Get-QuotaSnapshotObservation -Snapshot $Snapshot -WindowName 'secondary'
+    return [double](Get-DispatchJsonProperty -Object $primaryObservation -Name 'remaining_percent') -ge 30.0 -and
+        [double](Get-DispatchJsonProperty -Object $secondaryObservation -Name 'remaining_percent') -ge 15.0
 }
 
 function Get-DefaultUnitKind {
@@ -942,21 +1303,37 @@ function New-ScopePlan {
 
         [Nullable[double]]$RequestedReservePercent,
 
-        [Parameter(Mandatory)]
-        [string]$Model
+        [string]$Model,
+
+        [AllowNull()]
+        [object]$ModelEvidence,
+
+        [AllowNull()]
+        [object]$ReasoningEffortEvidence
     )
 
-    if ($null -eq $BeforeSnapshot -or $BeforeSnapshot.state -ne 'Valid') {
-        throw 'ScopePlan 必須使用有效的 before quota snapshot。'
+    if ($null -eq $BeforeSnapshot) {
+        throw 'ScopePlan 必須提供 before quota snapshot。'
     }
-    if (-not (Test-QuotaSnapshotFresh -Snapshot $BeforeSnapshot)) {
-        throw 'ScopePlan 必須使用含有效 captured_at_utc 且仍新鮮的 before quota snapshot。'
-    }
-    if ($Units.Count -eq 0) {
+    if ($null -eq $Units -or $Units.Count -eq 0) {
         throw 'ScopePlan 不可使用空的單位清單。'
     }
 
-    $remaining = [double]$BeforeSnapshot.primary.remaining_percent
+    $primaryWindow = Get-DispatchJsonProperty -Object $BeforeSnapshot -Name 'primary'
+    $primaryObservation = Get-QuotaSnapshotObservation -Snapshot $BeforeSnapshot -WindowName 'primary'
+    $remainingValue = Get-DispatchJsonProperty -Object $primaryObservation -Name 'remaining_percent'
+    if ($null -eq $remainingValue) {
+        $remainingValue = Get-DispatchJsonProperty -Object $primaryWindow -Name 'remaining_percent'
+    }
+    $remaining = 0.0
+    if ($null -ne $remainingValue) {
+        try {
+            $remaining = [double]$remainingValue
+        }
+        catch {
+            $remaining = 0.0
+        }
+    }
     if ($TaskType -eq 'deep-consult') {
         if ($null -eq $RequestedReservePercent) {
             $reserve = 30.0
@@ -968,18 +1345,29 @@ function New-ScopePlan {
     else {
         $reserve = if ($null -eq $RequestedReservePercent) { 30.0 } else { [double]$RequestedReservePercent }
     }
-    $calibration = Get-CalibrationEstimate -Path $CalibrationPath -Model $Model -Profile $RequestedProfile -SessionMode $SessionMode -TaskType $TaskType
-    $conservative = Get-ConservativeEstimate -TaskType $TaskType
+    $calibration = Get-CalibrationEstimate -Path $CalibrationPath -ModelEvidence $ModelEvidence -ReasoningEffortEvidence $ReasoningEffortEvidence -Model $Model -Profile $RequestedProfile -SessionMode $SessionMode -TaskType $TaskType
     $estimate = $null
     $estimateSource = 'none'
     if ($null -ne $calibration.estimate) {
-        $estimate = [math]::Max([double]$calibration.estimate, $(if ($null -eq $conservative) { 0.0 } else { [double]$conservative }))
+        $estimate = [double]$calibration.estimate
         $estimateSource = $calibration.source
     }
-    elseif ($null -ne $conservative) {
-        $estimate = [double]$conservative
-        $estimateSource = 'conservative-default'
+    $quotaFreshness = Get-QuotaSnapshotFreshness -Snapshot $BeforeSnapshot
+    $hasObservations = Test-QuotaSnapshotHasObservations -Snapshot $BeforeSnapshot
+    $serviceRejection = Get-QuotaSnapshotServiceRejection -Snapshot $BeforeSnapshot
+    $quotaState = [string](Get-DispatchJsonProperty -Object $BeforeSnapshot -Name 'state')
+    if ($null -eq $serviceRejection) {
+        if (-not $hasObservations) {
+            $quotaState = 'SnapshotUnavailable'
+        }
+        elseif ([string]::IsNullOrWhiteSpace($quotaState)) {
+            $quotaState = 'Valid'
+        }
     }
+    else {
+        $quotaState = 'ServiceRejected'
+    }
+    $remainingBudget = [math]::Max(0.0, $remaining - $reserve)
 
     $plan = [ordered]@{
         dispatch_slug              = $DispatchSlug
@@ -999,9 +1387,42 @@ function New-ScopePlan {
         decision                   = 'blocked-no-estimate'
         decision_reason            = ''
         calibration_sample_count   = $calibration.sampleCount
+        resolved_model             = Get-DispatchEvidenceValue -Evidence $ModelEvidence
+        resolved_reasoning_effort  = Get-DispatchEvidenceValue -Evidence $ReasoningEffortEvidence
+        quota_state                 = $quotaState
+        quota_freshness             = $quotaFreshness
+        quota_observation_available = $hasObservations
+        service_rejection           = $serviceRejection
+        retry_allowed               = if ($null -eq $serviceRejection) { $null } else { $false }
+        stop_after_selected_units  = $false
     }
 
-    if ($TaskType -ne 'deep-consult' -and $RequestedProfile -eq 'default' -and (Test-DefaultProfileThreshold -Snapshot $BeforeSnapshot)) {
+    if ($null -ne $serviceRejection) {
+        $plan.primary_budget_percent = $remainingBudget
+        if ($TaskType -eq 'deep-consult' -and $null -eq $estimate) {
+            $estimate = Get-ConservativeEstimate -TaskType $TaskType
+            $estimateSource = if ($null -eq $estimate) { 'blocked-no-fresh-quota' } else { 'conservative-default' }
+            $plan.estimate_percent = $estimate
+            $plan.estimate_source = $estimateSource
+            if ($null -ne $estimate) {
+                $plan.deep_hard_limit_percent = [double]$estimate * 1.25
+            }
+        }
+        $plan.decision = 'blocked-no-fresh-quota'
+        $plan.decision_reason = 'quota service rejection 已保留 last observation；retry_allowed=false，等待 reset 或新 quota evidence。'
+        return $plan
+    }
+
+    if (-not $hasObservations) {
+        $plan.primary_budget_percent = 0.0
+        $plan.estimate_percent = $null
+        $plan.estimate_source = 'blocked-no-fresh-quota'
+        $plan.decision = 'blocked-no-fresh-quota'
+        $plan.decision_reason = 'Quota snapshot 沒有可用 observation，狀態為 SnapshotUnavailable，停止建立可執行 ScopePlan。'
+        return $plan
+    }
+
+    if ($TaskType -ne 'deep-consult' -and $RequestedProfile -eq 'default' -and $quotaFreshness -eq 'fresh' -and (Test-DefaultProfileThreshold -Snapshot $BeforeSnapshot)) {
         $plan.primary_budget_percent = $remaining - $reserve
         if ($plan.primary_budget_percent -lt 0) {
             $plan.primary_budget_percent = 0.0
@@ -1015,19 +1436,72 @@ function New-ScopePlan {
         return $plan
     }
 
-    if ($null -eq $estimate) {
+    if ($quotaFreshness -eq 'stale') {
         if ($TaskType -eq 'deep-consult') {
-            $plan.decision_reason = 'deep-consult 找不到同分組 eligible 校準樣本，也沒有 task type 保守量級。'
+            $plan.primary_budget_percent = $remainingBudget
+            if ($null -eq $estimate) {
+                $plan.estimate_source = 'blocked-no-fresh-quota'
+            }
+            $plan.decision = 'blocked-no-fresh-quota'
+            $plan.decision_reason = 'Quota observation 已過期，deep 必須取得 fresh evidence；保留至少 30% primary reserve。'
+            if ($TaskType -eq 'deep-consult' -and $null -ne $estimate) {
+                $plan.deep_hard_limit_percent = [double]$estimate * 1.25
+            }
+            return $plan
         }
-        else {
-            $plan.decision = 'user-decision-required'
-            $plan.decision_reason = '額度低於目標檔位門檻，且找不到同分組 eligible 校準樣本或 task type 保守量級，需要使用者決定等待 primary_resets_at 或調整範圍。'
+        if ($remainingBudget -le 0) {
+            $plan.primary_budget_percent = 0.0
+            $plan.decision = 'blocked-insufficient-budget'
+            $plan.decision_reason = 'Quota observation 已過期且保留門檻後沒有可用預算，等待 fresh evidence 或 primary reset。'
+            return $plan
         }
+        $plan.primary_budget_percent = $remainingBudget
+        $plan.estimate_percent = $null
+        $plan.estimate_source = 'bounded-single-unit'
+        $plan.selected_units = @($Units | Select-Object -First 1)
+        $plan.deferred_units = @($Units | Select-Object -Skip 1)
+        $plan.stop_after_selected_units = $true
+        $plan.decision = if ($plan.deferred_units.Count -eq 0) { 'full' } else { 'scoped' }
+        $plan.decision_reason = 'Quota observation 已過期，保留 last observed 並採單一 declared unit 的保守範圍。'
         return $plan
     }
 
+    if ($null -eq $estimate) {
+        if ($TaskType -eq 'deep-consult') {
+            if ($quotaFreshness -eq 'fresh') {
+                $estimate = Get-ConservativeEstimate -TaskType $TaskType
+                if ($null -ne $estimate) {
+                    $estimate = [double]$estimate
+                    $estimateSource = 'conservative-default'
+                    $plan.estimate_percent = $estimate
+                    $plan.estimate_source = $estimateSource
+                }
+            }
+            if ($null -eq $estimate) {
+                $plan.decision_reason = 'deep-consult 找不到同分組 eligible 校準樣本，也沒有 task type 保守量級。'
+            }
+        }
+        else {
+            if ($remainingBudget -le 0) {
+                $plan.primary_budget_percent = 0.0
+                $plan.decision = 'blocked-insufficient-budget'
+                $plan.decision_reason = '額度低於目標檔位門檻，保留門檻後沒有可用預算，等待 primary reset。'
+                return $plan
+            }
+            $plan.primary_budget_percent = $remainingBudget
+            $plan.estimate_source = 'bounded-single-unit'
+            $plan.selected_units = @($Units | Select-Object -First 1)
+            $plan.deferred_units = @($Units | Select-Object -Skip 1)
+            $plan.stop_after_selected_units = $true
+            $plan.decision = if ($plan.deferred_units.Count -eq 0) { 'full' } else { 'scoped' }
+            $plan.decision_reason = '額度低於目標檔位門檻且沒有 eligible calibration sample，固定只選第一個 declared unit。'
+        }
+        if ($null -eq $estimate) {
+            return $plan
+        }
+    }
+
     $hardLimit = if ($TaskType -eq 'deep-consult') { [double]$estimate * 1.25 } else { [double]::PositiveInfinity }
-    $remainingBudget = $remaining - $reserve
     $budget = if ($null -eq $RequestedBudgetPercent) { $remainingBudget } else { [double]$RequestedBudgetPercent }
     if ($TaskType -eq 'deep-consult') {
         $budget = [math]::Min($hardLimit, $remainingBudget)
@@ -1128,8 +1602,11 @@ function Get-OrCreateQuotaSnapshot {
         $configuredHome = $env:CODEX_HOME
     }
     if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+        $configuredHome = Resolve-CodexHomeForEvidence -CodexHomePath $null
+    }
+    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
         if ($Required) {
-            throw "$Purpose 需要 quota snapshot，請提供 QuotaBeforePath 或 CodexHome。"
+            throw "$Purpose 需要 quota snapshot，無法解析有效 CodexHome。"
         }
         return $null
     }
@@ -1139,12 +1616,7 @@ function Get-OrCreateQuotaSnapshot {
     if (-not (Test-Path -LiteralPath $quotaScript -PathType Leaf)) {
         throw "找不到額度快照腳本：$quotaScript"
     }
-    if ([string]::IsNullOrWhiteSpace($CodexHome)) {
-        $quotaOutput = & $quotaScript -SnapshotPath $snapshotPath 2>&1
-    }
-    else {
-        $quotaOutput = & $quotaScript -CodexHome $CodexHome -SnapshotPath $snapshotPath 2>&1
-    }
+    $quotaOutput = & $quotaScript -CodexHome $configuredHome -SnapshotPath $snapshotPath 2>&1
     $quotaExitCode = $LASTEXITCODE
     if ($quotaExitCode -ne 0 -or -not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
         $details = ($quotaOutput | Out-String).Trim()
@@ -1168,7 +1640,10 @@ function Set-QuotaSnapshotFromCodex {
         $configuredHome = $env:CODEX_HOME
     }
     if ([string]::IsNullOrWhiteSpace($configuredHome)) {
-        throw 'quota snapshot 更新需要 CodexHome 或 CODEX_HOME。'
+        $configuredHome = Resolve-CodexHomeForEvidence -CodexHomePath $null
+    }
+    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+        throw 'quota snapshot 更新需要有效的 CodexHome。'
     }
 
     $parent = Split-Path -Parent $resolvedPath
@@ -1276,6 +1751,22 @@ function Test-EvidencePack {
         throw 'evidence pack 待答問題必須包含非空 question 與 required-output。'
     }
 
+    $requiredOutputMatches = [regex]::Matches($sectionBodies['待答問題'], '(?m)^\s*required-output:\s*(?<value>.*?)\s*$')
+    if ($requiredOutputMatches.Count -ne 1) {
+        throw 'evidence pack required-output 必須恰好宣告一次。'
+    }
+    $requiredOutputValue = $requiredOutputMatches[0].Groups['value'].Value.Trim()
+    $requiredOutput = @($requiredOutputValue.Split(';') | ForEach-Object { $_.Trim() })
+    if ($requiredOutput.Count -eq 0 -or @($requiredOutput | Where-Object { $_ -notmatch '^#{1,6}[ \t]+\S' }).Count -gt 0) {
+        throw 'evidence pack required-output 必須由非空 Markdown heading 組成。'
+    }
+    $requiredOutputSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
+    foreach ($heading in $requiredOutput) {
+        if (-not $requiredOutputSet.Add($heading)) {
+            throw "evidence pack required-output 不可重複：$heading"
+        }
+    }
+
     $hash = Get-FileSha256 -Path $fullPath
     $sandboxRoot = Join-Path -Path $ExecutionRoot -ChildPath ('.local\ai-sessions\scratch\deep-consult\' + $DispatchSlug)
     $sandboxPath = Join-Path -Path $sandboxRoot -ChildPath 'evidence-pack.md'
@@ -1289,6 +1780,9 @@ function Test-EvidencePack {
         sandboxPath = Resolve-AbsolutePath -Path $sandboxPath
         sha256      = $hash
         length      = [int64](Get-Item -LiteralPath $fullPath).Length
+        content     = $content
+        required_output = $requiredOutput
+        requiredOutput = $requiredOutput
     }
 }
 
@@ -1494,6 +1988,13 @@ function Test-ScopePlanContinuationFields {
     if (-not [string]::Equals([string]$OriginalScopePlan.estimate_source, [string]$ContinuationScopePlan.estimate_source, [System.StringComparison]::Ordinal)) {
         return $false
     }
+    $originalStopAfter = Get-OptionalObjectProperty -Object $OriginalScopePlan -Name 'stop_after_selected_units'
+    $continuationStopAfter = Get-OptionalObjectProperty -Object $ContinuationScopePlan -Name 'stop_after_selected_units'
+    if ($null -ne $originalStopAfter -or $null -ne $continuationStopAfter) {
+        if ($null -eq $originalStopAfter -or $null -eq $continuationStopAfter -or [bool]$originalStopAfter -ne [bool]$continuationStopAfter) {
+            return $false
+        }
+    }
     $originalEstimate = Get-OptionalObjectProperty -Object $OriginalScopePlan -Name 'estimate_percent'
     $continuationEstimate = Get-OptionalObjectProperty -Object $ContinuationScopePlan -Name 'estimate_percent'
     if ($null -eq $originalEstimate -or $null -eq $continuationEstimate) {
@@ -1534,7 +2035,7 @@ function Get-ScopePlanFingerprint {
             }
         }
     }
-    $json = $fingerprintInput | ConvertTo-Json -Depth 20 -Compress
+    $json = ConvertTo-Json -InputObject $fingerprintInput -Depth 20 -Compress
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
@@ -1564,6 +2065,1894 @@ function Get-FileSha256 {
     finally {
         $sha256.Dispose()
     }
+}
+
+function Get-JsonSha256 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Value
+    )
+
+    $json = ConvertTo-Json -InputObject $Value -Depth 30 -Compress
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Compare-DispatchStringArrays {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [string[]]$Left,
+
+        [AllowEmptyCollection()]
+        [string[]]$Right,
+
+        [switch]$OrdinalIgnoreCase
+    )
+
+    $leftValues = @($Left)
+    $rightValues = @($Right)
+    if ($leftValues.Count -ne $rightValues.Count) {
+        return $false
+    }
+    $comparison = if ($OrdinalIgnoreCase) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    for ($index = 0; $index -lt $leftValues.Count; $index++) {
+        if (-not [string]::Equals([string]$leftValues[$index], [string]$rightValues[$index], $comparison)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function New-ParentOptionsModel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Profile,
+
+        [Parameter(Mandatory)]
+        [string]$Sandbox,
+
+        [Parameter(Mandatory)]
+        [string]$WorkingDirectory,
+
+        [AllowEmptyCollection()]
+        [string[]]$AddDirectory,
+
+        [bool]$Search,
+
+        [AllowEmptyCollection()]
+        [string[]]$CodexParentOption
+    )
+
+    $normalizedDirectories = New-Object 'System.Collections.Generic.List[string]'
+    $directoryValues = if ($null -eq $AddDirectory) { @() } else { @($AddDirectory) }
+    foreach ($directory in $directoryValues) {
+        if ([string]::IsNullOrWhiteSpace($directory)) {
+            throw 'parent_options.add_directory 不可包含空白項目。'
+        }
+        $normalizedDirectories.Add((Resolve-AbsolutePath -Path $directory))
+    }
+
+    $parentOptions = New-Object 'System.Collections.Generic.List[string]'
+    $optionValues = if ($null -eq $CodexParentOption) { @() } else { @($CodexParentOption) }
+    foreach ($option in $optionValues) {
+        if ([string]::IsNullOrWhiteSpace($option)) {
+            throw 'parent_options.codex_parent_option 不可包含空白項目。'
+        }
+        $parentOptions.Add([string]$option)
+    }
+
+    $model = [ordered]@{
+        profile              = $Profile
+        sandbox              = $Sandbox
+        add_directory        = @($normalizedDirectories.ToArray())
+        search               = [bool]$Search
+        codex_parent_option  = @($parentOptions.ToArray())
+        working_directory    = Resolve-AbsolutePath -Path $WorkingDirectory
+    }
+    $model.fingerprint = Get-JsonSha256 -Value $model
+    return $model
+}
+
+function Compare-ParentOptions {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Current,
+
+        [AllowNull()]
+        [object]$Anchor
+    )
+
+    if ($null -eq $Anchor) {
+        return [ordered]@{
+            matches     = $false
+            code        = 'ParentOptionsUnknown'
+            differences = @('anchor.parent_options')
+        }
+    }
+    if ($null -eq $Current) {
+        return [ordered]@{
+            matches     = $false
+            code        = 'ParentOptionsUnknown'
+            differences = @('current.parent_options')
+        }
+    }
+
+    $differences = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($name in @('profile', 'sandbox', 'search', 'working_directory')) {
+        $currentValue = Get-DispatchJsonProperty -Object $Current -Name $name
+        $anchorValue = Get-DispatchJsonProperty -Object $Anchor -Name $name
+        $equal = if ($name -eq 'working_directory') {
+            [string]::Equals([string]$currentValue, [string]$anchorValue, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        else {
+            [string]::Equals([string]$currentValue, [string]$anchorValue, [System.StringComparison]::Ordinal)
+        }
+        if (-not $equal) {
+            $differences.Add($name)
+        }
+    }
+    $currentDirectories = @((Get-DispatchJsonProperty -Object $Current -Name 'add_directory'))
+    $anchorDirectories = @((Get-DispatchJsonProperty -Object $Anchor -Name 'add_directory'))
+    if (-not (Compare-DispatchStringArrays -Left $currentDirectories -Right $anchorDirectories -OrdinalIgnoreCase)) {
+        $differences.Add('add_directory')
+    }
+    $currentOptions = @((Get-DispatchJsonProperty -Object $Current -Name 'codex_parent_option'))
+    $anchorOptions = @((Get-DispatchJsonProperty -Object $Anchor -Name 'codex_parent_option'))
+    if (-not (Compare-DispatchStringArrays -Left $currentOptions -Right $anchorOptions)) {
+        $differences.Add('codex_parent_option')
+    }
+    $anchorFingerprint = [string](Get-DispatchJsonProperty -Object $Anchor -Name 'fingerprint')
+    if ([string]::IsNullOrWhiteSpace($anchorFingerprint)) {
+        $differences.Add('fingerprint')
+    }
+    return [ordered]@{
+        matches     = $differences.Count -eq 0
+        code        = if ($differences.Count -eq 0) { $null } else { 'ParentOptionsMismatch' }
+        differences = @($differences.ToArray())
+    }
+}
+
+function Resolve-ParentOptionsForStart {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Profile,
+
+        [bool]$ProfileProvided,
+
+        [Parameter(Mandatory)]
+        [string]$Sandbox,
+
+        [Parameter(Mandatory)]
+        [string]$WorkingDirectory,
+
+        [AllowEmptyCollection()]
+        [string[]]$AddDirectory,
+
+        [bool]$Search,
+
+        [bool]$AddDirectoryProvided,
+
+        [bool]$SearchProvided,
+
+        [AllowEmptyCollection()]
+        [string[]]$CodexParentOption,
+
+        [bool]$CodexParentOptionProvided,
+
+        [AllowNull()]
+        [object]$Anchor
+    )
+
+    if ($null -eq $Anchor) {
+        $model = New-ParentOptionsModel -Profile $Profile -Sandbox $Sandbox -WorkingDirectory $WorkingDirectory -AddDirectory $AddDirectory -Search $Search -CodexParentOption $CodexParentOption
+        return [ordered]@{
+            model = $model
+            differences = @()
+            code = $null
+            restored = $false
+        }
+    }
+
+    $anchorProfile = [string](Get-DispatchJsonProperty -Object $Anchor -Name 'profile')
+    $anchorSandbox = [string](Get-DispatchJsonProperty -Object $Anchor -Name 'sandbox')
+    $anchorWorkingDirectory = [string](Get-DispatchJsonProperty -Object $Anchor -Name 'working_directory')
+    $anchorDirectories = @((Get-DispatchJsonProperty -Object $Anchor -Name 'add_directory'))
+    $anchorSearch = [bool](Get-DispatchJsonProperty -Object $Anchor -Name 'search')
+    $anchorOptions = @((Get-DispatchJsonProperty -Object $Anchor -Name 'codex_parent_option'))
+    $differences = New-Object 'System.Collections.Generic.List[string]'
+
+    $effectiveProfile = $anchorProfile
+    if ($ProfileProvided) {
+        if ($Profile -ne $anchorProfile) {
+            $differences.Add('profile')
+        }
+        $effectiveProfile = $Profile
+    }
+    if ($Sandbox -ne $anchorSandbox) {
+        $differences.Add('sandbox')
+    }
+    $resolvedWorkingDirectory = Resolve-AbsolutePath -Path $WorkingDirectory
+    if (-not [string]::Equals($resolvedWorkingDirectory, $anchorWorkingDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+        $differences.Add('working_directory')
+    }
+
+    $effectiveDirectories = $anchorDirectories
+    if ($AddDirectoryProvided) {
+        $currentDirectoriesModel = New-ParentOptionsModel -Profile $effectiveProfile -Sandbox $Sandbox -WorkingDirectory $WorkingDirectory -AddDirectory $AddDirectory -Search $Search -CodexParentOption @()
+        $currentDirectories = @((Get-DispatchJsonProperty -Object $currentDirectoriesModel -Name 'add_directory'))
+        if (-not (Compare-DispatchStringArrays -Left $currentDirectories -Right $anchorDirectories -OrdinalIgnoreCase)) {
+            $differences.Add('add_directory')
+        }
+        $effectiveDirectories = $currentDirectories
+    }
+
+    $effectiveSearch = $anchorSearch
+    if ($SearchProvided) {
+        if ($Search -ne $anchorSearch) {
+            $differences.Add('search')
+        }
+        $effectiveSearch = $Search
+    }
+
+    $effectiveParentOptions = $anchorOptions
+    if ($CodexParentOptionProvided) {
+        if (-not (Compare-DispatchStringArrays -Left $CodexParentOption -Right $anchorOptions)) {
+            $differences.Add('codex_parent_option')
+        }
+        $effectiveParentOptions = @($CodexParentOption)
+    }
+
+    $model = New-ParentOptionsModel -Profile $effectiveProfile -Sandbox $Sandbox -WorkingDirectory $WorkingDirectory -AddDirectory $effectiveDirectories -Search $effectiveSearch -CodexParentOption $effectiveParentOptions
+    return [ordered]@{
+        model = $model
+        differences = @($differences.ToArray())
+        code = if ($differences.Count -eq 0) { $null } else { 'ParentOptionsMismatch' }
+        restored = $true
+    }
+}
+
+function New-UnknownDispatchEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Field,
+
+        [Parameter(Mandatory)]
+        [string]$Reason,
+
+        [string]$Source = 'unknown',
+
+        [string]$Path,
+
+        [Nullable[int]]$Line,
+
+        [string]$Sha256
+    )
+
+    return [ordered]@{
+        value = $null
+        status = 'unknown'
+        source = if ([string]::IsNullOrWhiteSpace($Source)) { 'unknown' } else { $Source }
+        field = $Field
+        path = if ([string]::IsNullOrWhiteSpace($Path)) { $null } else { $Path }
+        line = $Line
+        reason = $Reason
+        captured_at_utc = [datetime]::UtcNow.ToString('o')
+        sha256 = if ([string]::IsNullOrWhiteSpace($Sha256)) { $null } else { $Sha256 }
+    }
+}
+
+function New-ConfirmedDispatchEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Value,
+
+        [Parameter(Mandatory)]
+        [string]$Source,
+
+        [Parameter(Mandatory)]
+        [string]$Field,
+
+        [string]$Path,
+
+        [Nullable[int]]$Line,
+
+        [string]$Sha256
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return New-UnknownDispatchEvidence -Field $Field -Reason '證據值為空。' -Source 'unknown' -Path $Path -Line $Line -Sha256 $Sha256
+    }
+    return [ordered]@{
+        value = $Value
+        status = 'confirmed'
+        source = $Source
+        field = $Field
+        path = if ([string]::IsNullOrWhiteSpace($Path)) { $null } else { $Path }
+        line = $Line
+        reason = $null
+        captured_at_utc = [datetime]::UtcNow.ToString('o')
+        sha256 = if ([string]::IsNullOrWhiteSpace($Sha256)) { $null } else { $Sha256 }
+    }
+}
+
+function ConvertTo-DispatchEvidence {
+    param(
+        [AllowNull()]
+        [object]$Evidence,
+
+        [Parameter(Mandatory)]
+        [string]$Field,
+
+        [string]$UnknownReason = '缺少證據。'
+    )
+
+    if ($null -eq $Evidence) {
+        return New-UnknownDispatchEvidence -Field $Field -Reason $UnknownReason
+    }
+    $value = Get-DispatchJsonProperty -Object $Evidence -Name 'value'
+    $status = Get-DispatchJsonProperty -Object $Evidence -Name 'status'
+    if ($null -eq $value -or $null -eq $status) {
+        return New-UnknownDispatchEvidence -Field $Field -Reason $UnknownReason
+    }
+    $value = [string]$value
+    $status = [string]$status
+    if ($status -ne 'confirmed' -or [string]::IsNullOrWhiteSpace($value)) {
+        $reasonValue = Get-DispatchJsonProperty -Object $Evidence -Name 'reason'
+        $reason = if ($null -ne $reasonValue -and -not [string]::IsNullOrWhiteSpace([string]$reasonValue)) { [string]$reasonValue } else { $UnknownReason }
+        $sourceValue = Get-DispatchJsonProperty -Object $Evidence -Name 'source'
+        $source = if ($null -ne $sourceValue) { [string]$sourceValue } else { 'unknown' }
+        $pathValue = Get-DispatchJsonProperty -Object $Evidence -Name 'path'
+        $path = if ($null -ne $pathValue) { [string]$pathValue } else { $null }
+        $lineValue = Get-DispatchJsonProperty -Object $Evidence -Name 'line'
+        $line = if ($null -ne $lineValue) { [int]$lineValue } else { $null }
+        $shaValue = Get-DispatchJsonProperty -Object $Evidence -Name 'sha256'
+        $sha = if ($null -ne $shaValue) { [string]$shaValue } else { $null }
+        return New-UnknownDispatchEvidence -Field $Field -Reason $reason -Source $source -Path $path -Line $line -Sha256 $sha
+    }
+    $sourceValue = Get-DispatchJsonProperty -Object $Evidence -Name 'source'
+    $source = if ($null -ne $sourceValue) { [string]$sourceValue } else { 'unknown' }
+    $pathValue = Get-DispatchJsonProperty -Object $Evidence -Name 'path'
+    $path = if ($null -ne $pathValue) { [string]$pathValue } else { $null }
+    $lineValue = Get-DispatchJsonProperty -Object $Evidence -Name 'line'
+    $line = if ($null -ne $lineValue) { [int]$lineValue } else { $null }
+    $shaValue = Get-DispatchJsonProperty -Object $Evidence -Name 'sha256'
+    $sha = if ($null -ne $shaValue) { [string]$shaValue } else { $null }
+    return New-ConfirmedDispatchEvidence -Value $value -Source $source -Field $Field -Path $path -Line $line -Sha256 $sha
+}
+
+function New-ModelEvidence {
+    param(
+        [AllowNull()]
+        [object]$RequestedModel,
+
+        [AllowNull()]
+        [object]$ResolvedModel,
+
+        [AllowNull()]
+        [object]$RuntimeModel,
+
+        [AllowNull()]
+        [object]$RequestedReasoningEffort,
+
+        [AllowNull()]
+        [object]$ResolvedReasoningEffort,
+
+        [AllowNull()]
+        [object]$RuntimeReasoningEffort
+    )
+
+    return [ordered]@{
+        evidence_contract = 'codex-dispatch.model-evidence.v1'
+        model = [ordered]@{
+            requested = ConvertTo-DispatchEvidence -Evidence $RequestedModel -Field 'Model'
+            resolved = ConvertTo-DispatchEvidence -Evidence $ResolvedModel -Field 'model'
+            runtime_verifiable = ConvertTo-DispatchEvidence -Evidence $RuntimeModel -Field 'payload.model'
+        }
+        reasoning_effort = [ordered]@{
+            requested = ConvertTo-DispatchEvidence -Evidence $RequestedReasoningEffort -Field 'ReasoningEffort'
+            resolved = ConvertTo-DispatchEvidence -Evidence $ResolvedReasoningEffort -Field 'model_reasoning_effort'
+            runtime_verifiable = ConvertTo-DispatchEvidence -Evidence $RuntimeReasoningEffort -Field 'payload.effort'
+        }
+    }
+}
+
+function ConvertTo-DispatchEvidenceGroup {
+    param(
+        [AllowNull()]
+        [object]$Evidence,
+
+        [Parameter(Mandatory)]
+        [string]$Field,
+
+        [string]$CompatibilityValue
+    )
+
+    $requested = $null
+    $resolved = $null
+    $runtime = $null
+    if ($null -ne $Evidence) {
+        $requested = Get-DispatchJsonProperty -Object $Evidence -Name 'requested'
+        $resolved = Get-DispatchJsonProperty -Object $Evidence -Name 'resolved'
+        $runtime = Get-DispatchJsonProperty -Object $Evidence -Name 'runtime_verifiable'
+    }
+    if ($null -eq $requested -and $null -eq $resolved -and $null -eq $runtime) {
+        if ([string]::IsNullOrWhiteSpace($CompatibilityValue)) {
+            $single = ConvertTo-DispatchEvidence -Evidence $Evidence -Field $Field
+            $requested = New-UnknownDispatchEvidence -Field $Field -Reason '校準缺少 requested evidence。' -Source 'evidence-missing'
+            $resolved = $single
+            $runtime = New-UnknownDispatchEvidence -Field $Field -Reason '校準缺少 runtime_verifiable evidence。' -Source 'evidence-missing'
+        }
+        else {
+            $requested = New-ConfirmedDispatchEvidence -Value $CompatibilityValue -Source 'compatibility-parameter' -Field $Field
+            $resolved = New-ConfirmedDispatchEvidence -Value $CompatibilityValue -Source 'compatibility-parameter' -Field $Field
+            $runtime = New-ConfirmedDispatchEvidence -Value $CompatibilityValue -Source 'compatibility-parameter' -Field $Field
+        }
+    }
+    return [ordered]@{
+        requested = ConvertTo-DispatchEvidence -Evidence $requested -Field $Field -UnknownReason 'requested evidence 無法正規化。'
+        resolved = ConvertTo-DispatchEvidence -Evidence $resolved -Field $Field -UnknownReason 'resolved evidence 無法正規化。'
+        runtime_verifiable = ConvertTo-DispatchEvidence -Evidence $runtime -Field $Field -UnknownReason 'runtime_verifiable evidence 無法正規化。'
+    }
+}
+
+function Test-DispatchEvidencePair {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$EvidenceGroup
+    )
+
+    $resolvedEvidence = Get-DispatchJsonProperty -Object $EvidenceGroup -Name 'resolved'
+    $runtimeEvidence = Get-DispatchJsonProperty -Object $EvidenceGroup -Name 'runtime_verifiable'
+    $resolved = Get-DispatchEvidenceValue -Evidence $resolvedEvidence
+    $runtime = Get-DispatchEvidenceValue -Evidence $runtimeEvidence
+    $matches = $null -ne $resolved -and $null -ne $runtime -and [string]::Equals($resolved, $runtime, [StringComparison]::Ordinal)
+    return [ordered]@{
+        eligible = $matches
+        resolved = $resolved
+        runtime = $runtime
+        reason = if ($matches) { $null } elseif ($null -eq $resolved -or $null -eq $runtime) { 'resolved 或 runtime_verifiable evidence unknown。' } else { 'resolved 與 runtime_verifiable evidence 不一致。' }
+    }
+}
+
+function Get-DispatchEvidenceValue {
+    param(
+        [AllowNull()]
+        [object]$Evidence
+    )
+
+    if ($null -eq $Evidence) {
+        return $null
+    }
+    $status = Get-DispatchJsonProperty -Object $Evidence -Name 'status'
+    $value = Get-DispatchJsonProperty -Object $Evidence -Name 'value'
+    if ($null -eq $status -or $null -eq $value -or [string]$status -ne 'confirmed') {
+        return $null
+    }
+    return [string]$value
+}
+
+function New-RequestedDispatchEvidence {
+    param(
+        [string]$Value,
+
+        [Parameter(Mandatory)]
+        [string]$Field
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Value)) {
+        return New-UnknownDispatchEvidence -Field $Field -Reason '呼叫端沒有明確提供參數。' -Source 'parameter-omitted'
+    }
+    return New-ConfirmedDispatchEvidence -Value $Value -Source 'parameter' -Field $Field
+}
+
+function Resolve-CodexHomeForEvidence {
+    param(
+        [string]$CodexHomePath
+    )
+
+    $configured = $CodexHomePath
+    if ([string]::IsNullOrWhiteSpace($configured)) {
+        $configured = $env:CODEX_HOME
+    }
+    if ([string]::IsNullOrWhiteSpace($configured)) {
+        $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+        if (-not [string]::IsNullOrWhiteSpace($userProfile)) {
+            $configured = Join-Path -Path $userProfile -ChildPath '.codex'
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($configured)) {
+        return $null
+    }
+    return Resolve-AbsolutePath -Path $configured
+}
+
+function Resolve-ProfileConfigPath {
+    param(
+        [string]$CodexHome,
+
+        [string]$Profile
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CodexHome) -or $Profile -notin @('default', 'deep')) {
+        return $null
+    }
+    $homePath = Resolve-AbsolutePath -Path $CodexHome
+    $fileName = if ($Profile -eq 'deep') { 'deep.config.toml' } else { 'config.toml' }
+    $configPath = Join-Path -Path $homePath -ChildPath $fileName
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        return $null
+    }
+    return Resolve-AbsolutePath -Path $configPath
+}
+
+function Read-ProfileModelEvidence {
+    param(
+        [string]$ConfigPath,
+
+        [string]$Profile
+    )
+
+    $modelField = 'model'
+    $effortField = 'model_reasoning_effort'
+    $unknownPath = if ([string]::IsNullOrWhiteSpace($ConfigPath)) { $null } else { Resolve-AbsolutePath -Path $ConfigPath }
+    if ([string]::IsNullOrWhiteSpace($unknownPath) -or -not (Test-Path -LiteralPath $unknownPath -PathType Leaf)) {
+        return [ordered]@{
+            config_path = $unknownPath
+            config_sha256 = $null
+            model = New-UnknownDispatchEvidence -Field $modelField -Reason 'Profile 設定檔不存在。' -Source 'profile-config-missing' -Path $unknownPath
+            reasoning_effort = New-UnknownDispatchEvidence -Field $effortField -Reason 'Profile 設定檔不存在。' -Source 'profile-config-missing' -Path $unknownPath
+        }
+    }
+
+    $hash = $null
+    $content = $null
+    try {
+        $hash = Get-FileSha256 -Path $unknownPath
+        $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $content = $utf8.GetString([IO.File]::ReadAllBytes($unknownPath))
+    }
+    catch {
+        $reason = 'Profile 設定檔讀取失敗：' + $_.Exception.Message
+        return [ordered]@{
+            config_path = $unknownPath
+            config_sha256 = $hash
+            model = New-UnknownDispatchEvidence -Field $modelField -Reason $reason -Source 'profile-config-read-failed' -Path $unknownPath -Sha256 $hash
+            reasoning_effort = New-UnknownDispatchEvidence -Field $effortField -Reason $reason -Source 'profile-config-read-failed' -Path $unknownPath -Sha256 $hash
+        }
+    }
+
+    $assignments = @{
+        model = New-Object System.Collections.Generic.List[object]
+        model_reasoning_effort = New-Object System.Collections.Generic.List[object]
+    }
+    $invalidFields = @{}
+    $lines = [regex]::Split($content, '\r?\n')
+    for ($index = 0; $index -lt $lines.Count; $index++) {
+        $line = [string]$lines[$index]
+        if ($index -eq 0 -and $line.Length -gt 0 -and $line[0] -eq [char]0xFEFF) {
+            $line = $line.Substring(1)
+        }
+        if ($line -match '^\s*\[\[?') {
+            break
+        }
+        if ($line -match '^\s*(?<field>model|model_reasoning_effort)\s*=\s*(?<value>.*?)(?:\s+#.*)?$') {
+            $field = $Matches['field']
+            $rawValue = $Matches['value'].Trim()
+            $value = $null
+            if ($rawValue -match '^"(?<quoted>(?:[^"\\]|\\.)*)"$') {
+                $value = $Matches['quoted']
+                $value = $value.Replace('\\"', '"').Replace('\\\\', '\\')
+            }
+            elseif ($rawValue -match "^'(?<quoted>[^']*)'$") {
+                $value = $Matches['quoted']
+            }
+            else {
+                $invalidFields[$field] = '格式不是字串 assignment'
+            }
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $assignments[$field].Add([pscustomobject]@{ Value = $value; Line = $index + 1 })
+            }
+            elseif (-not $invalidFields.ContainsKey($field)) {
+                $invalidFields[$field] = '值為空'
+            }
+        }
+    }
+
+    $buildEvidence = {
+        param($Field, $Items, $InvalidFields)
+        if ($InvalidFields.ContainsKey($Field)) {
+            return New-UnknownDispatchEvidence -Field $Field -Reason ('Profile top-level assignment 無法解析：' + $InvalidFields[$Field]) -Source 'profile-config-invalid' -Path $unknownPath -Sha256 $hash
+        }
+        if ($Items.Count -eq 0) {
+            return New-UnknownDispatchEvidence -Field $Field -Reason 'Profile 設定檔缺少 top-level assignment。' -Source 'profile-config-missing-field' -Path $unknownPath -Sha256 $hash
+        }
+        $first = $Items[0]
+        foreach ($item in $Items) {
+            if ($item.Value -cne $first.Value) {
+                return New-UnknownDispatchEvidence -Field $Field -Reason 'Profile top-level assignment 重複且值衝突。' -Source 'profile-config-conflict' -Path $unknownPath -Line $first.Line -Sha256 $hash
+            }
+        }
+        return New-ConfirmedDispatchEvidence -Value $first.Value -Source 'profile-config' -Field $Field -Path $unknownPath -Line ([int]$first.Line) -Sha256 $hash
+    }
+    $modelEvidence = & $buildEvidence 'model' $assignments.model $invalidFields
+    $effortEvidence = & $buildEvidence 'model_reasoning_effort' $assignments.model_reasoning_effort $invalidFields
+    return [ordered]@{
+        config_path = $unknownPath
+        config_sha256 = $hash
+        model = $modelEvidence
+        reasoning_effort = $effortEvidence
+    }
+}
+
+function Get-DispatchJsonProperty {
+    param(
+        [AllowNull()]
+        [object]$Object,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+    if ($Object -is [System.Collections.IDictionary]) {
+        if (-not $Object.Contains($Name)) {
+            return $null
+        }
+        Write-Output -NoEnumerate -InputObject $Object[$Name]
+        return
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    Write-Output -NoEnumerate -InputObject $property.Value
+    return
+}
+
+function Get-DispatchByteArraySha256 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [byte[]]$Bytes
+    )
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha256.Dispose()
+    }
+}
+
+function Get-DispatchStringArraySha256 {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [string[]]$Values
+    )
+
+    $valueList = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($value in @($Values)) {
+        $valueList.Add([string]$value)
+    }
+    [object]$arrayValue = $valueList.ToArray()
+    $json = ConvertTo-Json -InputObject $arrayValue -Depth 10 -Compress
+    return Get-DispatchByteArraySha256 -Bytes ([System.Text.Encoding]::UTF8.GetBytes($json))
+}
+
+function Throw-DispatchRequestFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Code,
+
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [string]$RequestPathValue,
+
+        [string]$Field,
+
+        [AllowNull()]
+        [object]$Detail
+    )
+
+    $detailValue = if ($null -eq $Detail) { [ordered]@{} } else { $Detail }
+    $result = [ordered]@{
+        operation      = 'DispatchRequest'
+        schema         = 'ai-sessions.dispatch-request.v1'
+        code           = $Code
+        error_code     = $Code
+        reason_code    = $Code
+        message        = $Message
+        request_path   = if ([string]::IsNullOrWhiteSpace($RequestPathValue)) { $null } else { $RequestPathValue }
+        field          = if ([string]::IsNullOrWhiteSpace($Field)) { $null } else { $Field }
+        process_started = $false
+        output_valid   = $false
+        detail         = $detailValue
+    }
+    $exception = New-Object System.InvalidOperationException($Message)
+    $exception.Data['operationResult'] = $result
+    throw $exception
+}
+
+function Test-DispatchRequestFieldPresent {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Document,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    return $null -ne $Document.PSObject.Properties[$Name]
+}
+
+function Get-DispatchRequestStringArray {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Field,
+
+        [Parameter(Mandatory)]
+        [object]$Value,
+
+        [Parameter(Mandatory)]
+        [string]$RequestPathValue
+    )
+
+    if ($Value -isnot [array]) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message ("request 欄位 {0} 必須是 string array。" -f $Field) -RequestPathValue $RequestPathValue -Field $Field -Detail ([ordered]@{ expected_type = 'string[]'; actual_type = $Value.GetType().FullName })
+    }
+
+    $values = New-Object 'System.Collections.Generic.List[string]'
+    $index = 0
+    foreach ($item in @($Value)) {
+        if ($null -eq $item) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestNullArrayElement' -Message ("request 欄位 {0} 的第 {1} 項不可為 null。" -f $Field, $index) -RequestPathValue $RequestPathValue -Field $Field -Detail ([ordered]@{ index = $index })
+        }
+        if ($item -isnot [string]) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message ("request 欄位 {0} 的第 {1} 項必須是 string。" -f $Field, $index) -RequestPathValue $RequestPathValue -Field $Field -Detail ([ordered]@{ index = $index; expected_type = 'string'; actual_type = $item.GetType().FullName })
+        }
+        $stringValue = [string]$item
+        if ($Field -ne 'literal_values' -and [string]::IsNullOrWhiteSpace($stringValue)) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 {0} 的第 {1} 項不可為空白。" -f $Field, $index) -RequestPathValue $RequestPathValue -Field $Field -Detail ([ordered]@{ index = $index })
+        }
+        $values.Add($stringValue)
+        $index++
+    }
+
+    return @($values.ToArray())
+}
+
+function Get-DispatchRequestArtifacts {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Value,
+
+        [Parameter(Mandatory)]
+        [string]$RequestPathValue
+    )
+
+    if ($Value -isnot [array]) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 prepare_artifacts 必須是 object array。' -RequestPathValue $RequestPathValue -Field 'prepare_artifacts' -Detail ([ordered]@{ expected_type = 'object[]'; actual_type = $Value.GetType().FullName })
+    }
+
+    $artifacts = New-Object 'System.Collections.Generic.List[object]'
+    $allowedArtifactFields = @('source', 'destination', 'sha256', 'purpose')
+    $requiredArtifactFields = @('source', 'destination', 'sha256', 'purpose')
+    $index = 0
+    foreach ($item in @($Value)) {
+        if ($null -eq $item -or $item -isnot [psobject]) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message ("request 欄位 prepare_artifacts 的第 {0} 項必須是 object。" -f $index) -RequestPathValue $RequestPathValue -Field ('prepare_artifacts[' + $index + ']') -Detail ([ordered]@{ index = $index; expected_type = 'object' })
+        }
+        foreach ($property in $item.PSObject.Properties) {
+            if ($allowedArtifactFields -notcontains $property.Name) {
+                Throw-DispatchRequestFailure -Code 'DispatchRequestUnknownField' -Message ("request 欄位 prepare_artifacts[{0}] 含未知欄位 {1}。" -f $index, $property.Name) -RequestPathValue $RequestPathValue -Field ('prepare_artifacts[' + $index + '].' + $property.Name) -Detail ([ordered]@{ index = $index; name = $property.Name })
+            }
+        }
+        foreach ($requiredField in $requiredArtifactFields) {
+            $property = $item.PSObject.Properties[$requiredField]
+            if ($null -eq $property) {
+                Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message ("request 欄位 prepare_artifacts[{0}] 缺少 {1}。" -f $index, $requiredField) -RequestPathValue $RequestPathValue -Field ('prepare_artifacts[' + $index + '].' + $requiredField) -Detail ([ordered]@{ index = $index; name = $requiredField })
+            }
+            if ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$property.Value)) {
+                Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 prepare_artifacts[{0}].{1} 必須是非空字串。" -f $index, $requiredField) -RequestPathValue $RequestPathValue -Field ('prepare_artifacts[' + $index + '].' + $requiredField) -Detail ([ordered]@{ index = $index; name = $requiredField })
+            }
+        }
+        if ([string]$item.sha256 -notmatch '^[a-fA-F0-9]{64}$') {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 prepare_artifacts[{0}].sha256 必須是 64 碼 SHA-256。" -f $index) -RequestPathValue $RequestPathValue -Field ('prepare_artifacts[' + $index + '].sha256') -Detail ([ordered]@{ index = $index })
+        }
+        $artifacts.Add($item)
+        $index++
+    }
+
+    return @($artifacts.ToArray())
+}
+
+function Read-DispatchRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message 'RequestPath 不可為空。' -Field 'RequestPath'
+    }
+
+    try {
+        $requestPathValue = Resolve-AbsolutePath -Path $Path
+    }
+    catch {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message ('RequestPath 無法解析：' + $_.Exception.Message) -RequestPathValue $Path -Field 'RequestPath'
+    }
+    if (-not (Test-Path -LiteralPath $requestPathValue -PathType Leaf)) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestMissingFile' -Message ('找不到 request file：' + $requestPathValue) -RequestPathValue $requestPathValue -Field 'RequestPath'
+    }
+
+    $bytesBefore = [System.IO.File]::ReadAllBytes($requestPathValue)
+    if ($bytesBefore.Length -ge 3 -and $bytesBefore[0] -eq 239 -and $bytesBefore[1] -eq 187 -and $bytesBefore[2] -eq 191) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestEncoding' -Message ('request file 必須是 UTF-8 無 BOM：' + $requestPathValue) -RequestPathValue $requestPathValue -Field 'encoding'
+    }
+    $hashBefore = Get-DispatchByteArraySha256 -Bytes $bytesBefore
+    $encoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false, $true)
+    try {
+        $content = [System.IO.File]::ReadAllText($requestPathValue, $encoding)
+    }
+    catch {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestEncoding' -Message ('request file 不是有效 UTF-8：' + $requestPathValue + '；' + $_.Exception.Message) -RequestPathValue $requestPathValue -Field 'encoding'
+    }
+    try {
+        $document = ConvertFrom-DispatchJson -Content $content
+    }
+    catch {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidJson' -Message ('request file JSON 無法解析：' + $_.Exception.Message) -RequestPathValue $requestPathValue
+    }
+    $bytesAfter = [System.IO.File]::ReadAllBytes($requestPathValue)
+    $hashAfter = Get-DispatchByteArraySha256 -Bytes $bytesAfter
+    if (-not [string]::Equals($hashBefore, $hashAfter, [System.StringComparison]::OrdinalIgnoreCase)) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestChanged' -Message ('request file 在解析期間變更：' + $requestPathValue) -RequestPathValue $requestPathValue -Detail ([ordered]@{ before_sha256 = $hashBefore; after_sha256 = $hashAfter })
+    }
+    if ($null -eq $document -or $document -isnot [pscustomobject]) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidJson' -Message 'request file 根節點必須是 JSON object。' -RequestPathValue $requestPathValue
+    }
+
+    $allowedFields = @('schema', 'operation', 'line_slug', 'dispatch_slug', 'profile', 'target_path', 'add_directory', 'search', 'codex_parent_option', 'literal_values', 'prepare_artifacts')
+    foreach ($property in $document.PSObject.Properties) {
+        if ($allowedFields -notcontains $property.Name) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestUnknownField' -Message ("request file 含未知欄位：{0}" -f $property.Name) -RequestPathValue $requestPathValue -Field $property.Name -Detail ([ordered]@{ name = $property.Name })
+        }
+    }
+
+    foreach ($requiredField in @('schema', 'operation', 'line_slug', 'dispatch_slug')) {
+        if (-not (Test-DispatchRequestFieldPresent -Document $document -Name $requiredField)) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message ("request file 缺少必要欄位：{0}" -f $requiredField) -RequestPathValue $requestPathValue -Field $requiredField
+        }
+    }
+
+    if ($document.schema -isnot [string] -or [string]$document.schema -cne 'ai-sessions.dispatch-request.v1') {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestSchemaMismatch' -Message 'request file schema 不符。' -RequestPathValue $requestPathValue -Field 'schema' -Detail ([ordered]@{ expected = 'ai-sessions.dispatch-request.v1'; received = [string]$document.schema })
+    }
+    $validOperations = @('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'RecoveryHandoff')
+    if ($document.operation -isnot [string] -or $validOperations -notcontains [string]$document.operation) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ('request operation 不支援：' + [string]$document.operation) -RequestPathValue $requestPathValue -Field 'operation' -Detail ([ordered]@{ valid_operations = $validOperations; received = [string]$document.operation })
+    }
+    foreach ($identityField in @('line_slug', 'dispatch_slug')) {
+        $identityValue = $document.$identityField
+        if ($identityValue -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$identityValue) -or [regex]::IsMatch([string]$identityValue, '^[a-z0-9]+(?:-[a-z0-9]+)*$') -eq $false) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 {0} 必須是小寫 slug。" -f $identityField) -RequestPathValue $requestPathValue -Field $identityField -Detail ([ordered]@{ received = [string]$identityValue })
+        }
+    }
+
+    $fieldPresence = [ordered]@{}
+    $arrayValues = [ordered]@{}
+    foreach ($arrayField in @('target_path', 'add_directory', 'codex_parent_option', 'literal_values')) {
+        $present = Test-DispatchRequestFieldPresent -Document $document -Name $arrayField
+        $fieldPresence[$arrayField] = $present
+        if ($present) {
+            $arrayProperty = $document.PSObject.Properties[$arrayField]
+            $arrayValues[$arrayField] = @(Get-DispatchRequestStringArray -Field $arrayField -Value $arrayProperty.Value -RequestPathValue $requestPathValue)
+        }
+        else {
+            $arrayValues[$arrayField] = $null
+        }
+    }
+    $searchPresent = Test-DispatchRequestFieldPresent -Document $document -Name 'search'
+    $fieldPresence.search = $searchPresent
+    if ($searchPresent -and $document.search -isnot [bool]) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 search 必須是 boolean。' -RequestPathValue $requestPathValue -Field 'search' -Detail ([ordered]@{ expected_type = 'boolean'; actual_type = $document.search.GetType().FullName })
+    }
+    $profilePresent = Test-DispatchRequestFieldPresent -Document $document -Name 'profile'
+    $fieldPresence.profile = $profilePresent
+    $profileValue = $null
+    if ($profilePresent) {
+        if ($document.profile -isnot [string]) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 profile 必須是 string。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ expected_type = 'string'; actual_type = $document.profile.GetType().FullName })
+        }
+        $profileValue = [string]$document.profile
+        if (@('default', 'deep') -notcontains $profileValue) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ('request 欄位 profile 不支援：' + $profileValue) -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = @('default', 'deep'); received = $profileValue })
+        }
+    }
+    $fieldPresence.prepare_artifacts = Test-DispatchRequestFieldPresent -Document $document -Name 'prepare_artifacts'
+    $prepareArtifacts = @()
+    if ($fieldPresence.prepare_artifacts) {
+        $prepareArtifactsProperty = $document.PSObject.Properties['prepare_artifacts']
+        $prepareArtifacts = @(Get-DispatchRequestArtifacts -Value $prepareArtifactsProperty.Value -RequestPathValue $requestPathValue)
+    }
+
+    return [ordered]@{
+        path                  = $requestPathValue
+        sha256                = $hashBefore
+        length                = [int64]$bytesBefore.Length
+        schema                = 'ai-sessions.dispatch-request.v1'
+        document              = $document
+        field_presence        = $fieldPresence
+        values                = $arrayValues
+        profile               = $profileValue
+        search                = if ($searchPresent) { [bool]$document.search } else { $null }
+        prepare_artifacts     = @($prepareArtifacts)
+        literal_values_sha256 = if ($fieldPresence.literal_values) { Get-DispatchStringArraySha256 -Values $arrayValues.literal_values } else { $null }
+    }
+}
+
+function Test-DispatchInvocationParameterBound {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    return $script:InvocationBoundParameters.Contains($Name)
+}
+
+function Get-DispatchInvocationParameterValue {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if (-not (Test-DispatchInvocationParameterBound -Name $Name)) {
+        return $null
+    }
+    return $script:InvocationBoundParameters[$Name]
+}
+
+function New-DispatchRequestArrayMismatchDetail {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Field,
+
+        [AllowEmptyCollection()]
+        [string[]]$Expected,
+
+        [AllowEmptyCollection()]
+        [string[]]$Received
+    )
+
+    $expectedValues = @($Expected)
+    $receivedValues = @($Received)
+    $mismatches = New-Object 'System.Collections.Generic.List[object]'
+    $firstMismatchIndex = $null
+    $maxCount = [math]::Max($expectedValues.Count, $receivedValues.Count)
+    for ($index = 0; $index -lt $maxCount; $index++) {
+        $expectedValue = if ($index -lt $expectedValues.Count) { $expectedValues[$index] } else { $null }
+        $receivedValue = if ($index -lt $receivedValues.Count) { $receivedValues[$index] } else { $null }
+        if ($null -eq $firstMismatchIndex -and -not [string]::Equals([string]$expectedValue, [string]$receivedValue, [System.StringComparison]::Ordinal)) {
+            $firstMismatchIndex = $index
+        }
+        if (-not [string]::Equals([string]$expectedValue, [string]$receivedValue, [System.StringComparison]::Ordinal) -or ($null -eq $expectedValue -xor $null -eq $receivedValue)) {
+            $mismatches.Add([ordered]@{ index = $index; expected = $expectedValue; received = $receivedValue })
+        }
+    }
+    return [ordered]@{
+        field                 = $Field
+        expected_count        = $expectedValues.Count
+        received_count        = $receivedValues.Count
+        first_mismatch_index  = $firstMismatchIndex
+        mismatches             = @($mismatches.ToArray())
+    }
+}
+
+function Apply-DispatchRequest {
+    [CmdletBinding()]
+    param()
+
+    if ([string]::IsNullOrWhiteSpace($RequestPath)) {
+        return $null
+    }
+
+    $context = Read-DispatchRequest -Path $RequestPath
+    $script:RequestContext = $context
+    $document = $context.document
+    $requestPathValue = $context.path
+
+    $operationBound = Test-DispatchInvocationParameterBound -Name 'Operation'
+    if ($operationBound -and [string]$Operation -cne [string]$document.operation) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestMismatch' -Message 'request operation 與命令列 Operation 不一致。' -RequestPathValue $requestPathValue -Field 'operation' -Detail ([ordered]@{ expected = [string]$document.operation; received = [string]$Operation; process_started = $false })
+    }
+    elseif (-not (Test-DispatchInvocationParameterBound -Name 'Operation')) {
+        $script:Operation = [string]$document.operation
+    }
+
+    if ([bool]$context.field_presence.profile) {
+        $requestProfile = [string]$context.profile
+        if (Test-DispatchInvocationParameterBound -Name 'Profile') {
+            $receivedProfile = [string](Get-DispatchInvocationParameterValue -Name 'Profile')
+            if ($receivedProfile -cne $requestProfile) {
+                Throw-DispatchRequestFailure -Code 'DispatchRequestMismatch' -Message 'request profile 與命令列參數不一致。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ expected = $requestProfile; received = $receivedProfile; process_started = $false })
+            }
+        }
+        else {
+            $script:Profile = $requestProfile
+            $script:ProfileExplicit = $true
+        }
+    }
+
+    foreach ($identityField in @('LineSlug', 'DispatchSlug')) {
+        $requestField = if ($identityField -eq 'LineSlug') { 'line_slug' } else { 'dispatch_slug' }
+        $requestValue = [string](Get-DispatchJsonProperty -Object $document -Name $requestField)
+        if (Test-DispatchInvocationParameterBound -Name $identityField) {
+            $currentValue = [string](Get-DispatchInvocationParameterValue -Name $identityField)
+            if ($currentValue -cne $requestValue) {
+                Throw-DispatchRequestFailure -Code 'DispatchRequestMismatch' -Message ("request {0} 與命令列參數不一致。" -f $requestField) -RequestPathValue $requestPathValue -Field $requestField -Detail ([ordered]@{ expected = $requestValue; received = $currentValue; process_started = $false })
+            }
+        }
+        else {
+            if ($identityField -eq 'LineSlug') { $script:LineSlug = $requestValue } else { $script:DispatchSlug = $requestValue }
+        }
+    }
+
+    foreach ($mapping in @(
+            @('TargetPath', 'target_path'),
+            @('AddDirectory', 'add_directory'),
+            @('CodexParentOption', 'codex_parent_option'))) {
+        $cliField = [string]$mapping[0]
+        $requestField = [string]$mapping[1]
+        if (-not [bool]$context.field_presence[$requestField]) {
+            continue
+        }
+        $requestValues = @($context.values[$requestField])
+        if (Test-DispatchInvocationParameterBound -Name $cliField) {
+            $receivedValues = @((Get-DispatchInvocationParameterValue -Name $cliField))
+            if (-not (Compare-DispatchStringArrays -Left $requestValues -Right $receivedValues)) {
+                $detail = New-DispatchRequestArrayMismatchDetail -Field $requestField -Expected $requestValues -Received $receivedValues
+                Throw-DispatchRequestFailure -Code 'DispatchRequestMismatch' -Message ("request {0} 與命令列參數不一致。" -f $requestField) -RequestPathValue $requestPathValue -Field $requestField -Detail $detail
+            }
+        }
+        else {
+            switch ($cliField) {
+                'TargetPath' {
+                    $script:TargetPath = if ($requestValues.Count -eq 0) { New-Object 'System.String[]' 0 } else { [string[]]$requestValues }
+                }
+                'AddDirectory' {
+                    $script:AddDirectory = if ($requestValues.Count -eq 0) { New-Object 'System.String[]' 0 } else { [string[]]$requestValues }
+                    $script:AddDirectoryExplicit = $true
+                }
+                'CodexParentOption' {
+                    $script:CodexParentOption = if ($requestValues.Count -eq 0) { New-Object 'System.String[]' 0 } else { [string[]]$requestValues }
+                    $script:CodexParentOptionExplicit = $true
+                }
+            }
+        }
+    }
+
+    if ([bool]$context.field_presence.search) {
+        $requestSearch = [bool]$context.search
+        if (Test-DispatchInvocationParameterBound -Name 'Search') {
+            $receivedSearch = [bool](Get-DispatchInvocationParameterValue -Name 'Search')
+            if ($requestSearch -ne $receivedSearch) {
+                Throw-DispatchRequestFailure -Code 'DispatchRequestMismatch' -Message 'request search 與命令列參數不一致。' -RequestPathValue $requestPathValue -Field 'search' -Detail ([ordered]@{ expected = $requestSearch; received = $receivedSearch; process_started = $false })
+            }
+        }
+        else {
+            $script:Search = $requestSearch
+            $script:SearchExplicit = $true
+        }
+    }
+
+    if ([bool]$context.field_presence.literal_values) {
+        $script:RequestLiteralValues = @($context.values.literal_values)
+    }
+    else {
+        $script:RequestLiteralValues = New-Object 'System.String[]' 0
+    }
+    if ([bool]$context.field_presence.prepare_artifacts) {
+        $script:RequestPrepareArtifacts = @($context.prepare_artifacts)
+    }
+    else {
+        $script:RequestPrepareArtifacts = New-Object 'System.Object[]' 0
+    }
+    return $context
+}
+
+function ConvertTo-NonNullObjectArray {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Values
+    )
+
+    $valueList = New-Object 'System.Collections.Generic.List[object]'
+    if ($null -ne $Values) {
+        foreach ($value in @($Values)) {
+            if ($null -ne $value) {
+                $valueList.Add($value)
+            }
+        }
+    }
+    return ,$valueList.ToArray()
+}
+
+function Get-DispatchRequestEvidence {
+    [CmdletBinding()]
+    param()
+
+    if ($null -eq $script:RequestContext) {
+        return $null
+    }
+    $context = $script:RequestContext
+    $arrayEvidence = [ordered]@{}
+    foreach ($field in @('target_path', 'add_directory', 'codex_parent_option', 'literal_values')) {
+        $provided = [bool]$context.field_presence[$field]
+        $valueList = New-Object 'System.Collections.Generic.List[string]'
+        if ($provided) {
+            foreach ($value in @($context.values[$field])) {
+                if ($null -ne $value) {
+                    $valueList.Add([string]$value)
+                }
+            }
+        }
+        $values = $valueList.ToArray()
+        $arrayEvidence[$field] = [ordered]@{
+            provided = $provided
+            count    = $values.Count
+            sha256   = if ($provided) { Get-DispatchStringArraySha256 -Values $values } else { $null }
+            values   = $values
+        }
+    }
+    return [ordered]@{
+        schema                = $context.schema
+        path                  = $context.path
+        sha256                = $context.sha256
+        length                = $context.length
+        literal_values_sha256 = $context.literal_values_sha256
+        profile               = [ordered]@{
+            provided = [bool]$context.field_presence.profile
+            value    = if ([bool]$context.field_presence.profile) { [string]$context.profile } else { $null }
+        }
+        arrays                = $arrayEvidence
+        prepare_artifacts     = ConvertTo-NonNullObjectArray -Values $context.prepare_artifacts
+    }
+}
+
+function ConvertTo-DispatchTimestamp {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value -or [string]::IsNullOrWhiteSpace([string]$Value)) {
+        return $null
+    }
+    $parsed = [datetimeoffset]::MinValue
+    if (-not [datetimeoffset]::TryParse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) {
+        return $null
+    }
+    return $parsed.ToUniversalTime()
+}
+
+function Get-RuntimeModelEvidence {
+    param(
+        [string]$CodexHome,
+
+        [string]$ThreadId,
+
+        [string]$StartedAtUtc
+    )
+
+    $modelUnknown = New-UnknownDispatchEvidence -Field 'payload.model' -Reason '尚未找到與本 thread 對應的 rollout turn_context。' -Source 'rollout-not-observed'
+    $effortUnknown = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason '尚未找到與本 thread 對應的 rollout turn_context。' -Source 'rollout-not-observed'
+    if ([string]::IsNullOrWhiteSpace($CodexHome) -or [string]::IsNullOrWhiteSpace($ThreadId)) {
+        return [ordered]@{ model = $modelUnknown; reasoning_effort = $effortUnknown; rollout_paths = @() }
+    }
+    $started = ConvertTo-DispatchTimestamp -Value $StartedAtUtc
+    if ($null -eq $started) {
+        $reason = 'started_at_utc 缺失或無法解析，無法判定 turn_context 時間範圍。'
+        return [ordered]@{
+            model = New-UnknownDispatchEvidence -Field 'payload.model' -Reason $reason -Source 'rollout-time-unknown'
+            reasoning_effort = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason $reason -Source 'rollout-time-unknown'
+            rollout_paths = @()
+        }
+    }
+
+    $matchedFiles = New-Object System.Collections.Generic.List[object]
+    $modelValues = New-Object System.Collections.Generic.List[object]
+    $effortValues = New-Object System.Collections.Generic.List[object]
+    $modelMissing = $false
+    $effortMissing = $false
+    $turnContextFound = $false
+    $timeUnknown = $false
+    try {
+        $rolloutFiles = @(Get-QuotaProbeRolloutFiles -CodexHomePath (Resolve-AbsolutePath -Path $CodexHome))
+    }
+    catch {
+        $reason = 'rollout 掃描失敗：' + $_.Exception.Message
+        return [ordered]@{
+            model = New-UnknownDispatchEvidence -Field 'payload.model' -Reason $reason -Source 'rollout-scan-failed'
+            reasoning_effort = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason $reason -Source 'rollout-scan-failed'
+            rollout_paths = @()
+        }
+    }
+
+    foreach ($file in $rolloutFiles) {
+        $sessionMatched = $false
+        $fileEvents = New-Object System.Collections.Generic.List[object]
+        $lineNumber = 0
+        try {
+            foreach ($rawLine in Get-Content -LiteralPath $file.Path -Encoding UTF8 -ErrorAction Stop) {
+                $lineNumber++
+                if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
+                try { $event = ConvertFrom-DispatchJson -Content $rawLine } catch { continue }
+                $fileEvents.Add([pscustomobject]@{ Event = $event; Line = $lineNumber; Raw = $rawLine })
+                $type = [string](Get-DispatchJsonProperty -Object $event -Name 'type')
+                if ($type -eq 'session_meta') {
+                    $payload = Get-DispatchJsonProperty -Object $event -Name 'payload'
+                    $sessionId = [string](Get-DispatchJsonProperty -Object $payload -Name 'session_id')
+                    if ([string]::IsNullOrWhiteSpace($sessionId)) {
+                        $sessionId = [string](Get-DispatchJsonProperty -Object $payload -Name 'id')
+                    }
+                    if ($sessionId -ceq $ThreadId) { $sessionMatched = $true }
+                }
+            }
+        }
+        catch {
+            continue
+        }
+        if (-not $sessionMatched) { continue }
+        $matchedFiles.Add($file)
+        foreach ($entry in $fileEvents) {
+            $type = [string](Get-DispatchJsonProperty -Object $entry.Event -Name 'type')
+            if ($type -ne 'turn_context') { continue }
+            $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'timestamp'
+            if ($null -eq $timestampValue) { $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'created_at_utc' }
+            if ($null -eq $timestampValue) { $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'created_at' }
+            $turnTime = ConvertTo-DispatchTimestamp -Value $timestampValue
+            if ($null -eq $turnTime) { $timeUnknown = $true; continue }
+            if ($turnTime -le $started) { continue }
+            $turnContextFound = $true
+            $payload = Get-DispatchJsonProperty -Object $entry.Event -Name 'payload'
+            $modelValue = [string](Get-DispatchJsonProperty -Object $payload -Name 'model')
+            $effortValue = [string](Get-DispatchJsonProperty -Object $payload -Name 'effort')
+            if ([string]::IsNullOrWhiteSpace($modelValue)) { $modelMissing = $true } else { $modelValues.Add([pscustomobject]@{ Value = $modelValue; File = $file.Path; Line = $entry.Line }) }
+            if ([string]::IsNullOrWhiteSpace($effortValue)) { $effortMissing = $true } else { $effortValues.Add([pscustomobject]@{ Value = $effortValue; File = $file.Path; Line = $entry.Line }) }
+        }
+    }
+
+    $rolloutPaths = @($matchedFiles | ForEach-Object { $_.Path } | Sort-Object -Unique)
+    $firstFile = if ($matchedFiles.Count -gt 0) { $matchedFiles[0] } else { $null }
+    $firstHash = if ($null -ne $firstFile) { Get-FileSha256 -Path $firstFile.Path } else { $null }
+    $createValueEvidence = {
+        param($Field, $Values, $Missing, $PayloadField)
+        if ($matchedFiles.Count -eq 0) {
+            return New-UnknownDispatchEvidence -Field $PayloadField -Reason '沒有 rollout 的 exact session ID。' -Source 'rollout-session-not-found'
+        }
+        if (-not $turnContextFound -or $timeUnknown) {
+            return New-UnknownDispatchEvidence -Field $PayloadField -Reason 'rollout 缺少可判定時間範圍的 turn_context。' -Source 'rollout-time-unknown' -Path (if ($null -eq $firstFile) { $null } else { $firstFile.Path }) -Sha256 $firstHash
+        }
+        if ($Missing -or $Values.Count -eq 0) {
+            return New-UnknownDispatchEvidence -Field $PayloadField -Reason 'turn_context 欄位缺失。' -Source 'rollout-field-missing' -Path (if ($null -eq $firstFile) { $null } else { $firstFile.Path }) -Sha256 $firstHash
+        }
+        $first = $Values[0]
+        foreach ($valueEntry in $Values) {
+            if ($valueEntry.Value -cne $first.Value) {
+                return New-UnknownDispatchEvidence -Field $PayloadField -Reason '多筆 turn_context 值衝突。' -Source 'rollout-values-conflict' -Path $first.File -Line ([int]$first.Line) -Sha256 (Get-FileSha256 -Path $first.File)
+            }
+        }
+        $evidence = New-ConfirmedDispatchEvidence -Value $first.Value -Source 'rollout' -Field $PayloadField -Path $first.File -Line ([int]$first.Line) -Sha256 (Get-FileSha256 -Path $first.File)
+        $evidence.source_paths = @($rolloutPaths)
+        return $evidence
+    }
+    return [ordered]@{
+        model = & $createValueEvidence 'model' $modelValues $modelMissing 'payload.model'
+        reasoning_effort = & $createValueEvidence 'reasoning_effort' $effortValues $effortMissing 'payload.effort'
+        rollout_paths = $rolloutPaths
+    }
+}
+
+function Get-OriginalThreadModelEvidence {
+    param(
+        [AllowNull()]
+        [object]$AnchorRecord,
+
+        [string]$AnchorEventStreamPath
+    )
+
+    $eventPath = $AnchorEventStreamPath
+    if ([string]::IsNullOrWhiteSpace($eventPath) -and $null -ne $AnchorRecord) {
+        $eventPath = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'event_stream_path')
+    }
+    if ([string]::IsNullOrWhiteSpace($eventPath)) {
+        return New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'anchor 缺少 event stream 路徑。' -Source 'event-stream-missing'
+    }
+    $fullPath = Resolve-AbsolutePath -Path $eventPath
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        return New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'anchor event stream 不存在。' -Source 'event-stream-missing' -Path $fullPath
+    }
+    $values = New-Object System.Collections.Generic.List[object]
+    $lineNumber = 0
+    foreach ($rawLine in Get-Content -LiteralPath $fullPath -Encoding UTF8) {
+        $lineNumber++
+        if ($rawLine -match '(?i)recorded\s+with\s+model\s+(?<model>[A-Za-z0-9._-]+)') {
+            $values.Add([pscustomobject]@{ Value = $Matches['model']; Line = $lineNumber; Raw = $rawLine })
+        }
+    }
+    $uniqueValues = @($values | ForEach-Object Value | Sort-Object -Unique)
+    $hash = Get-FileSha256 -Path $fullPath
+    if ($uniqueValues.Count -eq 1) {
+        $first = $values[0]
+        $evidence = New-ConfirmedDispatchEvidence -Value $uniqueValues[0] -Source 'event-stream-diagnostic' -Field 'original_thread_model' -Path $fullPath -Line ([int]$first.Line) -Sha256 $hash
+        $evidence.raw_line = $first.Raw
+        return $evidence
+    }
+    if ($uniqueValues.Count -gt 1) {
+        return New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'event stream diagnostic 包含多個衝突的 recorded model。' -Source 'event-stream-diagnostic-conflict' -Path $fullPath -Sha256 $hash
+    }
+    return New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'event stream 沒有可解析的 recorded with model diagnostic。' -Source 'event-stream-diagnostic-missing' -Path $fullPath -Sha256 $hash
+}
+
+function Compare-ResumeThreadModel {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$AnchorRecord,
+
+        [Parameter(Mandatory)]
+        [psobject]$CurrentModelEvidence,
+
+        [string]$CodexHome
+    )
+
+    $current = ConvertTo-DispatchEvidence -Evidence $CurrentModelEvidence -Field 'model'
+    $original = New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'anchor 沒有可驗證的 runtime model。' -Source 'anchor-evidence-unknown'
+    $recordEvidence = Get-DispatchJsonProperty -Object $AnchorRecord -Name 'model_evidence'
+    if ($null -ne $recordEvidence) {
+        $runtimeEvidence = Get-DispatchJsonProperty -Object $recordEvidence -Name 'runtime_verifiable'
+        if ($null -ne $runtimeEvidence -and (Get-DispatchEvidenceValue -Evidence $runtimeEvidence)) {
+            $original = ConvertTo-DispatchEvidence -Evidence $runtimeEvidence -Field 'payload.model'
+        }
+    }
+    if ($null -eq (Get-DispatchEvidenceValue -Evidence $original)) {
+        $anchorThread = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'thread_id')
+        $anchorStarted = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'started_at_utc')
+        $runtime = Get-RuntimeModelEvidence -CodexHome $CodexHome -ThreadId $anchorThread -StartedAtUtc $anchorStarted
+        if ($null -ne $runtime -and (Get-DispatchEvidenceValue -Evidence $runtime.model)) {
+            $original = $runtime.model
+        }
+    }
+    if ($null -eq (Get-DispatchEvidenceValue -Evidence $original)) {
+        $original = Get-OriginalThreadModelEvidence -AnchorRecord $AnchorRecord
+    }
+    $originalValue = Get-DispatchEvidenceValue -Evidence $original
+    $currentValue = Get-DispatchEvidenceValue -Evidence $current
+    $status = 'unknown'
+    $reasonCode = 'ThreadModelUnknown'
+    if ($null -ne $originalValue -and $null -ne $currentValue) {
+        if ([string]::Equals($originalValue, $currentValue, [StringComparison]::Ordinal)) {
+            $status = 'match'
+            $reasonCode = 'None'
+        }
+        else {
+            $status = 'mismatch'
+            $reasonCode = 'ThreadModelMismatch'
+        }
+    }
+    return [ordered]@{
+        status = $status
+        reason_code = $reasonCode
+        original_thread_model = $originalValue
+        current_resolved_model = $currentValue
+        original_evidence = $original
+        current_evidence = $current
+        process_started = $false
+    }
+}
+
+function Test-RequiredOutputSections {
+    param(
+        [AllowNull()]
+        [string]$Message,
+
+        [AllowNull()]
+        [object[]]$RequiredOutput
+    )
+
+    $required = @($RequiredOutput | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $present = New-Object System.Collections.Generic.List[string]
+    $missing = New-Object System.Collections.Generic.List[string]
+    $duplicates = New-Object System.Collections.Generic.List[string]
+    $details = New-Object System.Collections.Generic.List[object]
+    foreach ($heading in $required) {
+        $pattern = '(?ms)^' + [regex]::Escape($heading) + '[ \t]*\r?\n(?<body>.*?)(?=^#{1,6}[ \t]+|\z)'
+        $matches = [regex]::Matches([string]$Message, $pattern)
+        if ($matches.Count -eq 0) {
+            $missing.Add($heading)
+            $details.Add([ordered]@{ heading = $heading; present = $false; body_non_empty = $false })
+            continue
+        }
+        if ($matches.Count -gt 1) { $duplicates.Add($heading) }
+        $body = $matches[0].Groups['body'].Value.Trim()
+        $present.Add($heading)
+        $details.Add([ordered]@{ heading = $heading; present = $true; body_non_empty = -not [string]::IsNullOrWhiteSpace($body) })
+        if ([string]::IsNullOrWhiteSpace($body)) { $missing.Add($heading) }
+    }
+    return [ordered]@{
+        valid = $missing.Count -eq 0 -and $duplicates.Count -eq 0
+        required = @($required)
+        present = @($present.ToArray())
+        missing = @($missing.ToArray() | Sort-Object -Unique)
+        duplicate = @($duplicates.ToArray() | Sort-Object -Unique)
+        sections = @($details.ToArray())
+    }
+}
+
+function New-DeepInlineEvidenceDirective {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$EvidencePackInfo
+    )
+
+    $content = [string]$EvidencePackInfo.content
+    $contentWithLineBreak = $content
+    if (-not $contentWithLineBreak.EndsWith("`n", [StringComparison]::Ordinal)) {
+        $contentWithLineBreak += "`r`n"
+    }
+    return ('[deep-consult evidence-only]' + "`r`n" +
+        'evidence-pack-sha256=' + [string]$EvidencePackInfo.sha256 + "`r`n" +
+        'evidence-pack-length=' + [string]$EvidencePackInfo.length + "`r`n" +
+        '---BEGIN INLINE EVIDENCE PACK---' + "`r`n" +
+        $contentWithLineBreak +
+        '---END INLINE EVIDENCE PACK---' + "`r`n" +
+        '執行端只能依上述 inline evidence pack 回答。禁止 repository 探索、檔案掃描、檔案變更與外部派遣。')
+}
+
+function Test-DeepInlineEvidenceDirective {
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$PromptContent,
+
+        [Parameter(Mandatory)]
+        [psobject]$EvidencePackInfo
+    )
+
+    $content = [string]$EvidencePackInfo.content
+    $hashMarker = 'evidence-pack-sha256=' + [string]$EvidencePackInfo.sha256
+    $lengthMarker = 'evidence-pack-length=' + [string]$EvidencePackInfo.length
+    $beginMarker = '---BEGIN INLINE EVIDENCE PACK---'
+    $endMarker = '---END INLINE EVIDENCE PACK---'
+    $hasMarkers = $PromptContent.Contains('[deep-consult evidence-only]') -and
+        $PromptContent.Contains($hashMarker) -and
+        $PromptContent.Contains($lengthMarker) -and
+        $PromptContent.Contains($beginMarker) -and
+        $PromptContent.Contains($endMarker)
+    $hasFullContent = $PromptContent.Contains($content)
+    return [ordered]@{
+        valid = $hasMarkers -and $hasFullContent
+        has_markers = $hasMarkers
+        has_full_content = $hasFullContent
+        expected_sha256 = [string]$EvidencePackInfo.sha256
+        expected_length = [int64]$EvidencePackInfo.length
+        reason = if ($hasMarkers -and $hasFullContent) { $null } else { 'prompt 缺少完整 evidence pack、hash、length 或 inline marker。' }
+    }
+}
+
+function Get-ReviewerPropertyValue {
+    param(
+        [AllowNull()]
+        [object]$Object,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $null
+    }
+    return $property.Value
+}
+
+function Test-ReviewerJsonArray {
+    param(
+        [AllowNull()]
+        [object]$Object,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $false
+    }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) {
+        return $false
+    }
+    $value = $property.Value
+    return $null -ne $value -and $value -is [System.Collections.IEnumerable] -and $value -isnot [string] -and $value -isnot [System.Collections.IDictionary]
+}
+
+function Get-ReviewerDeclaredCount {
+    param(
+        [AllowNull()]
+        [object]$Counts,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$Inconsistencies
+    )
+
+    $property = if ($null -eq $Counts) { $null } else { $Counts.PSObject.Properties[$Name] }
+    if ($null -eq $property) {
+        $Inconsistencies.Add('counts.' + $Name + ' missing')
+        return $null
+    }
+
+    try {
+        $value = [int64]$property.Value
+    }
+    catch {
+        $Inconsistencies.Add('counts.' + $Name + ' is not an integer')
+        return $null
+    }
+    if ($value -lt 0) {
+        $Inconsistencies.Add('counts.' + $Name + ' is negative')
+        return $null
+    }
+    return $value
+}
+
+function Test-ReviewerFindingReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $fullPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Reviewer report 不存在：$fullPath"
+    }
+
+    try {
+        $utf8 = New-Object System.Text.UTF8Encoding($false, $true)
+        $content = $utf8.GetString([System.IO.File]::ReadAllBytes($fullPath))
+    }
+    catch {
+        throw "Reviewer report 無法讀取：$fullPath；$($_.Exception.Message)"
+    }
+    if ([string]::IsNullOrWhiteSpace($content)) {
+        throw "Reviewer report 為空：$fullPath"
+    }
+
+    $inconsistencies = New-Object System.Collections.Generic.List[string]
+    $overviewMatches = [regex]::Matches($content, '(?m)^##[ \t]+總覽[ \t]*\r?$')
+    $manifestMatches = [regex]::Matches($content, '(?m)^##[ \t]+Finding manifest[ \t]*\r?$')
+    if ($overviewMatches.Count -ne 1) {
+        $inconsistencies.Add(('overview heading count={0}' -f $overviewMatches.Count))
+    }
+    if ($manifestMatches.Count -ne 1) {
+        $inconsistencies.Add(('Finding manifest heading count={0}' -f $manifestMatches.Count))
+    }
+    if ($overviewMatches.Count -eq 1 -and $manifestMatches.Count -eq 1 -and $manifestMatches[0].Index -lt $overviewMatches[0].Index) {
+        $inconsistencies.Add('Finding manifest must follow 總覽')
+    }
+
+    $manifest = $null
+    $manifestSection = ''
+    if ($manifestMatches.Count -eq 1) {
+        $manifestStart = $manifestMatches[0].Index + $manifestMatches[0].Length
+        $remaining = $content.Substring($manifestStart)
+        $nextHeading = [regex]::Match($remaining, '(?m)^##[ \t]+')
+        if ($nextHeading.Success) {
+            $manifestSection = $remaining.Substring(0, $nextHeading.Index)
+        }
+        else {
+            $manifestSection = $remaining
+        }
+
+        $jsonBlocks = [regex]::Matches($manifestSection, '(?ms)^```json[ \t]*\r?\n(?<json>.*?)^```[ \t]*\r?$')
+        $fenceLines = [regex]::Matches($manifestSection, '(?m)^```')
+        if ($jsonBlocks.Count -ne 1 -or $fenceLines.Count -ne 2) {
+            $inconsistencies.Add(('Finding manifest JSON block count={0}; fence line count={1}' -f $jsonBlocks.Count, $fenceLines.Count))
+        }
+        elseif ($jsonBlocks.Count -eq 1) {
+            try {
+                $manifest = ConvertFrom-DispatchJson -Content $jsonBlocks[0].Groups['json'].Value.Trim()
+            }
+            catch {
+                $inconsistencies.Add('Finding manifest JSON parse failed: ' + $_.Exception.Message)
+            }
+        }
+    }
+
+    $currentEntries = @()
+    $previousEntries = @()
+    $currentSeen = @{}
+    $previousSeen = @{}
+    $duplicateIds = New-Object System.Collections.Generic.List[string]
+    if ($null -ne $manifest) {
+        if ([string](Get-ReviewerPropertyValue -Object $manifest -Name 'schema') -cne 'codex-dispatch.review-findings.v1') {
+            $inconsistencies.Add('schema must be codex-dispatch.review-findings.v1')
+        }
+        if (-not (Test-ReviewerJsonArray -Object $manifest -Name 'current_findings')) {
+            $inconsistencies.Add('current_findings must be an array')
+        }
+        else {
+            $currentEntries = @($manifest.PSObject.Properties['current_findings'].Value)
+        }
+        if (-not (Test-ReviewerJsonArray -Object $manifest -Name 'previous_status')) {
+            $inconsistencies.Add('previous_status must be an array')
+        }
+        else {
+            $previousEntries = @($manifest.PSObject.Properties['previous_status'].Value)
+        }
+
+        foreach ($entry in $currentEntries) {
+            if ($null -eq $entry -or $entry -isnot [pscustomobject]) {
+                $inconsistencies.Add('current_findings contains a non-object entry')
+                continue
+            }
+            $id = [string](Get-ReviewerPropertyValue -Object $entry -Name 'id')
+            $axis = [string](Get-ReviewerPropertyValue -Object $entry -Name 'axis')
+            $status = [string](Get-ReviewerPropertyValue -Object $entry -Name 'status')
+            $severity = [string](Get-ReviewerPropertyValue -Object $entry -Name 'severity')
+            $disposition = [string](Get-ReviewerPropertyValue -Object $entry -Name 'disposition')
+            $summary = [string](Get-ReviewerPropertyValue -Object $entry -Name 'summary')
+            if ($id -notmatch '^F-[0-9]{3}$') { $inconsistencies.Add('current finding ID invalid: ' + $id); continue }
+            if ($axis -notin @('Standards', 'Spec')) { $inconsistencies.Add($id + ' axis invalid: ' + $axis) }
+            if ($status -cne 'open') { $inconsistencies.Add($id + ' current status must be open') }
+            if ($severity -notin @('Critical', 'Major', 'Minor')) { $inconsistencies.Add($id + ' severity invalid: ' + $severity) }
+            if ($disposition -notin @('new', 'carried')) { $inconsistencies.Add($id + ' disposition invalid: ' + $disposition) }
+            if ([string]::IsNullOrWhiteSpace($summary)) { $inconsistencies.Add($id + ' summary missing') }
+            $normalizedEntry = [pscustomobject]@{ id = $id; status = $status; severity = $severity; disposition = $disposition }
+            if ($currentSeen.ContainsKey($id)) {
+                $duplicateIds.Add($id)
+                $previousEntry = $currentSeen[$id]
+                if ($previousEntry.status -cne $status -or $previousEntry.severity -cne $severity -or $previousEntry.disposition -cne $disposition) {
+                    $inconsistencies.Add($id + ' duplicate fields conflict')
+                }
+            }
+            else {
+                $currentSeen[$id] = $normalizedEntry
+            }
+        }
+
+        foreach ($entry in $previousEntries) {
+            if ($null -eq $entry -or $entry -isnot [pscustomobject]) {
+                $inconsistencies.Add('previous_status contains a non-object entry')
+                continue
+            }
+            $id = [string](Get-ReviewerPropertyValue -Object $entry -Name 'id')
+            $status = [string](Get-ReviewerPropertyValue -Object $entry -Name 'status')
+            $severity = [string](Get-ReviewerPropertyValue -Object $entry -Name 'severity')
+            if ($id -notmatch '^F-[0-9]{3}$') { $inconsistencies.Add('previous finding ID invalid: ' + $id); continue }
+            if ($status -notin @('closed', 'open', 'withdrawn')) { $inconsistencies.Add($id + ' previous status invalid: ' + $status) }
+            if ($severity -notin @('Critical', 'Major', 'Minor')) { $inconsistencies.Add($id + ' previous severity invalid: ' + $severity) }
+            $normalizedEntry = [pscustomobject]@{ id = $id; status = $status; severity = $severity }
+            if ($previousSeen.ContainsKey($id)) {
+                $previousEntry = $previousSeen[$id]
+                if ($previousEntry.status -cne $status -or $previousEntry.severity -cne $severity) {
+                    $inconsistencies.Add($id + ' previous duplicate fields conflict')
+                }
+            }
+            else {
+                $previousSeen[$id] = $normalizedEntry
+            }
+        }
+    }
+
+    foreach ($id in @($currentSeen.Keys)) {
+        $current = $currentSeen[$id]
+        $previous = if ($previousSeen.ContainsKey($id)) { $previousSeen[$id] } else { $null }
+        if ($current.disposition -ceq 'carried' -and ($null -eq $previous -or $previous.status -cne 'open')) {
+            $inconsistencies.Add($id + ' carried finding must have previous open status')
+        }
+        if ($current.disposition -ceq 'carried' -and $null -ne $previous -and $current.severity -cne $previous.severity) {
+            $inconsistencies.Add($id + ' carried finding severity conflicts with previous_status')
+        }
+        if ($current.disposition -ceq 'new' -and $null -ne $previous) {
+            $inconsistencies.Add($id + ' new finding must not appear in previous_status')
+        }
+        if ($null -ne $previous -and $previous.status -in @('closed', 'withdrawn')) {
+            $inconsistencies.Add($id + ' closed or withdrawn finding cannot be current')
+        }
+    }
+
+    $previousProseEntries = @{}
+    $previousProseMatches = [regex]::Matches($content, '(?ms)^##[ \t]+前輪 finding 狀態(?:[ \t]*（[^\r\n]*）)?[ \t]*\r?\n(?<section>.*?)(?=^##[ \t]|\z)')
+    if ($previousProseMatches.Count -gt 1) {
+        $inconsistencies.Add(('previous prose section count={0}' -f $previousProseMatches.Count))
+    }
+    if ($previousProseMatches.Count -eq 1) {
+        foreach ($line in [regex]::Split($previousProseMatches[0].Groups['section'].Value, '\r?\n')) {
+            $idMatch = [regex]::Match($line, '\[(?<id>F-[0-9]{3})\]')
+            if (-not $idMatch.Success) {
+                continue
+            }
+            $id = $idMatch.Groups['id'].Value
+            $statusMatch = [regex]::Match($line, '(?<status>已閉合|未閉合|撤回)')
+            $severityMatch = [regex]::Match($line, '(?:\[(?<bracket>Critical|Major|Minor)\]|（(?<full>Critical|Major|Minor)）)')
+            $status = $null
+            if ($statusMatch.Success) {
+                $status = switch ($statusMatch.Groups['status'].Value) {
+                    '已閉合' { 'closed' }
+                    '未閉合' { 'open' }
+                    '撤回' { 'withdrawn' }
+                }
+            }
+            $severity = $null
+            if ($severityMatch.Success) {
+                $severity = if (-not [string]::IsNullOrWhiteSpace($severityMatch.Groups['bracket'].Value)) { $severityMatch.Groups['bracket'].Value } else { $severityMatch.Groups['full'].Value }
+            }
+            if ($null -eq $status) {
+                $inconsistencies.Add($id + ' previous prose status missing')
+            }
+            if ($null -eq $severity) {
+                $inconsistencies.Add($id + ' previous prose severity missing')
+            }
+            $normalizedEntry = [pscustomobject]@{ id = $id; status = $status; severity = $severity }
+            if ($previousProseEntries.ContainsKey($id)) {
+                $previousProseEntry = $previousProseEntries[$id]
+                if ($previousProseEntry.status -cne $status -or $previousProseEntry.severity -cne $severity) {
+                    $inconsistencies.Add($id + ' previous prose duplicate fields conflict')
+                }
+            }
+            else {
+                $previousProseEntries[$id] = $normalizedEntry
+            }
+        }
+    }
+    if ($previousSeen.Count -gt 0 -and $previousProseMatches.Count -eq 0) {
+        $inconsistencies.Add('missing previous prose section: 前輪 finding 狀態')
+    }
+    foreach ($id in @($previousSeen.Keys)) {
+        if (-not $previousProseEntries.ContainsKey($id)) {
+            $inconsistencies.Add('previous finding missing from prose: ' + $id)
+            continue
+        }
+        $previous = $previousSeen[$id]
+        $previousProse = $previousProseEntries[$id]
+        if ($previousProse.status -cne $previous.status) {
+            $inconsistencies.Add($id + ' previous prose status conflicts with previous_status')
+        }
+        if ($previousProse.severity -cne $previous.severity) {
+            $inconsistencies.Add($id + ' previous prose severity conflicts with previous_status')
+        }
+    }
+    foreach ($id in @($previousProseEntries.Keys)) {
+        if (-not $previousSeen.ContainsKey($id)) {
+            $inconsistencies.Add('previous prose finding missing from previous_status: ' + $id)
+        }
+    }
+
+    $proseIds = New-Object System.Collections.Generic.List[string]
+    foreach ($heading in @('Standards', 'Standards 缺陷審查', '需求對照核對', 'Spec')) {
+        $sectionMatches = [regex]::Matches($content, '(?ms)^##[ \t]+' + [regex]::Escape($heading) + '[ \t]*\r?\n(?<section>.*?)(?=^##[ \t]|\z)')
+        if ($sectionMatches.Count -eq 0) {
+            $inconsistencies.Add('missing current prose section: ' + $heading)
+            continue
+        }
+        foreach ($sectionMatch in $sectionMatches) {
+            foreach ($idMatch in [regex]::Matches($sectionMatch.Groups['section'].Value, '\[F-[0-9]{3}\]')) {
+                $proseIds.Add($idMatch.Value.Substring(1, $idMatch.Value.Length - 2))
+            }
+        }
+    }
+
+    $currentIdSet = @($currentSeen.Keys | Sort-Object)
+    $proseIdSet = @($proseIds | Sort-Object -Unique)
+    foreach ($id in $currentIdSet) {
+        if ($proseIdSet -notcontains $id) { $inconsistencies.Add('current finding missing from prose: ' + $id) }
+    }
+    foreach ($id in $proseIdSet) {
+        if ($currentIdSet -notcontains $id) { $inconsistencies.Add('prose finding missing from current_findings: ' + $id) }
+    }
+
+    $counts = Get-ReviewerPropertyValue -Object $manifest -Name 'counts'
+    $declaredCounts = [ordered]@{}
+    foreach ($name in @('previous_closed', 'previous_open', 'current_new', 'current_open')) {
+        $declaredCounts[$name] = Get-ReviewerDeclaredCount -Counts $counts -Name $name -Inconsistencies $inconsistencies
+    }
+    $expectedCounts = [ordered]@{
+        previous_closed = @($previousSeen.Values | Where-Object { $_.status -ceq 'closed' }).Count
+        previous_open = @($previousSeen.Values | Where-Object { $_.status -ceq 'open' }).Count
+        current_new = @($currentSeen.Values | Where-Object { $_.disposition -ceq 'new' }).Count
+        current_open = $currentSeen.Count
+    }
+    foreach ($name in $expectedCounts.Keys) {
+        if ($null -ne $declaredCounts[$name] -and [int64]$declaredCounts[$name] -ne [int64]$expectedCounts[$name]) {
+            $inconsistencies.Add(('counts.{0} declared={1}; expected={2}' -f $name, $declaredCounts[$name], $expectedCounts[$name]))
+        }
+    }
+
+    $conclusion = [string](Get-ReviewerPropertyValue -Object $manifest -Name 'conclusion')
+    if ($conclusion -notin @('pass', 'fail')) {
+        $inconsistencies.Add('conclusion must be pass or fail')
+    }
+    $expectedConclusion = if (@($currentSeen.Values | Where-Object { $_.severity -in @('Critical', 'Major') }).Count -gt 0) { 'fail' } else { 'pass' }
+    if ($conclusion -in @('pass', 'fail') -and $conclusion -cne $expectedConclusion) {
+        $inconsistencies.Add(('conclusion declared={0}; expected={1}' -f $conclusion, $expectedConclusion))
+    }
+
+    $uniqueInconsistencies = @($inconsistencies | Sort-Object -Unique)
+    return [ordered]@{
+        reviewer_report_path = $fullPath
+        reviewer_report_sha256 = Get-FileSha256 -Path $fullPath
+        valid = $uniqueInconsistencies.Count -eq 0
+        conclusion = if ($conclusion -in @('pass', 'fail')) { $conclusion } else { $null }
+        current_finding_count = $currentSeen.Count
+        previous_closed_count = $expectedCounts.previous_closed
+        previous_open_count = $expectedCounts.previous_open
+        previous_withdrawn_count = @($previousSeen.Values | Where-Object { $_.status -ceq 'withdrawn' }).Count
+        current_new_count = $expectedCounts.current_new
+        current_open_count = $expectedCounts.current_open
+        duplicate_ids = @($duplicateIds | Sort-Object -Unique)
+        inconsistencies = $uniqueInconsistencies
+    }
+}
+
+function Get-ReviewerFindingsForCollect {
+    param(
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $null
+    }
+
+    return Test-ReviewerFindingReport -Path $Path
+}
+
+function Throw-ReviewerFindingCollectFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Result
+    )
+
+    $reviewerFindings = $Result['reviewerFindings']
+    $Result['outputValid'] = $false
+    $message = 'Reviewer report 結構無效，Collect 拒絕回收：' + ([string]::Join('; ', @($reviewerFindings.inconsistencies)))
+    $operationException = New-Object System.Exception($message)
+    $operationException = Write-DispatchOperationFailureResult -Exception $operationException -Result $Result
+    throw $operationException
 }
 
 function Get-ScopePlanHashRecordPath {
@@ -1699,12 +4088,28 @@ function Test-ScopePlanCompleteness {
     if ([string]$ScopePlan.estimate_source -eq 'not-required-above-threshold' -and $null -ne $ScopePlan.estimate_percent) {
         return $false
     }
-    if ([string]$ScopePlan.estimate_source -in @('calibration-p75', 'conservative-default') -and $null -eq $ScopePlan.estimate_percent) {
+    if ([string]$ScopePlan.estimate_source -in @('calibration-p75', 'p75', 'conservative-default') -and $null -eq $ScopePlan.estimate_percent) {
+        return $false
+    }
+    if ([string]$ScopePlan.estimate_source -eq 'bounded-single-unit' -and $null -ne $ScopePlan.estimate_percent) {
         return $false
     }
 
     if ($ScopePlan.unit_kind -notin @('workflow-phase', 'resource-target', 'deep-evidence-pack') -or
-        $ScopePlan.decision -notin @('full', 'scoped', 'blocked-insufficient-budget', 'blocked-no-estimate', 'user-decision-required')) {
+        $ScopePlan.decision -notin @('full', 'scoped', 'blocked-insufficient-budget', 'blocked-no-estimate', 'blocked-no-fresh-quota', 'user-decision-required')) {
+        return $false
+    }
+
+    $stopAfterSelectedProperty = $ScopePlan.PSObject.Properties['stop_after_selected_units']
+    if ($null -ne $stopAfterSelectedProperty -and $stopAfterSelectedProperty.Value -isnot [bool]) {
+        return $false
+    }
+    $quotaFreshnessProperty = $ScopePlan.PSObject.Properties['quota_freshness']
+    if ($null -ne $quotaFreshnessProperty -and [string]$quotaFreshnessProperty.Value -notin @('fresh', 'stale', 'unknown')) {
+        return $false
+    }
+    $quotaStateProperty = $ScopePlan.PSObject.Properties['quota_state']
+    if ($null -ne $quotaStateProperty -and [string]$quotaStateProperty.Value -notin @('Valid', 'SnapshotUnavailable', 'ServiceRejected', 'PostResetNoSnapshot', 'SnapshotExpired', 'Invalid')) {
         return $false
     }
 
@@ -1767,6 +4172,7 @@ function Test-ScopePlanCompleteness {
         }
         'blocked-insufficient-budget' { return $selectedUnits.Count -eq 0 }
         'blocked-no-estimate' { return $selectedUnits.Count -eq 0 }
+        'blocked-no-fresh-quota' { return $selectedUnits.Count -eq 0 }
         'user-decision-required' { return $selectedUnits.Count -eq 0 }
     }
     return $false
@@ -1906,6 +4312,8 @@ function Write-DeepConsultReport {
         [Parameter(Mandatory)]
         [string]$EvidencePackSha256,
 
+        [Nullable[int64]]$EvidencePackLength,
+
         [Parameter(Mandatory)]
         [string]$FinalMessage,
 
@@ -1913,7 +4321,10 @@ function Write-DeepConsultReport {
         [string]$Status,
 
         [AllowNull()]
-        [object]$BudgetMonitor
+        [object]$BudgetMonitor,
+
+        [AllowNull()]
+        [object]$RequiredOutputGate
     )
 
     $fullPath = Resolve-AbsolutePath -Path $Path
@@ -1921,6 +4332,26 @@ function Write-DeepConsultReport {
     $reportParent = Split-Path -Parent $fullPath
     New-Item -ItemType Directory -Path $reportParent -Force | Out-Null
     $message = if ([string]::IsNullOrWhiteSpace($FinalMessage)) { '尚未取得執行端結案訊息。' } else { $FinalMessage.Trim() }
+    $declaredOutput = @()
+    $presentOutput = @()
+    $missingOutput = @()
+    $gateValid = $false
+    if ($null -ne $RequiredOutputGate) {
+        $declaredProperty = $RequiredOutputGate.PSObject.Properties['required']
+        $presentProperty = $RequiredOutputGate.PSObject.Properties['present']
+        $missingProperty = $RequiredOutputGate.PSObject.Properties['missing']
+        $validProperty = $RequiredOutputGate.PSObject.Properties['valid']
+        if ($null -ne $declaredProperty) { $declaredOutput = @($declaredProperty.Value) }
+        if ($null -ne $presentProperty) { $presentOutput = @($presentProperty.Value) }
+        if ($null -ne $missingProperty) { $missingOutput = @($missingProperty.Value) }
+        if ($null -ne $validProperty) { $gateValid = [bool]$validProperty.Value }
+    }
+    $gateObject = [ordered]@{
+        declared = $declaredOutput
+        present = $presentOutput
+        missing = $missingOutput
+        valid = $gateValid
+    }
     $content = @(
         ('# Deep consult report')
         ''
@@ -1929,6 +4360,7 @@ function Write-DeepConsultReport {
         ('- status: ' + $Status)
         ('- evidence-pack: ' + $EvidencePackPath)
         ('- evidence-pack-sha256: ' + $EvidencePackSha256)
+        ('- evidence-pack-length: ' + $(if ($null -eq $EvidencePackLength) { '<unknown>' } else { [string]$EvidencePackLength }))
         ''
         '## 中斷保全結論'
         ''
@@ -1945,6 +4377,13 @@ function Write-DeepConsultReport {
         '## 未決問題'
         ''
         '- 由 Claude 端依證據支持內容決定是否採用本報告。'
+        ''
+        '## Required output gate'
+        ''
+        ('- declared: ' + (($declaredOutput -join '; ')))
+        ('- present: ' + (($presentOutput -join '; ')))
+        ('- missing: ' + (($missingOutput -join '; ')))
+        ('- valid: ' + [string]$gateValid)
         ''
         '## Budget monitor'
         ''
@@ -2044,11 +4483,15 @@ function Add-CalibrationObservation {
         [Parameter(Mandatory)]
         [string]$Profile,
 
-        [Parameter(Mandatory)]
         [string]$Model,
 
-        [Parameter(Mandatory)]
         [string]$ReasoningEffort,
+
+        [AllowNull()]
+        [object]$ModelEvidence,
+
+        [AllowNull()]
+        [object]$ReasoningEffortEvidence,
 
         [Parameter(Mandatory)]
         [string]$TaskType,
@@ -2111,10 +4554,16 @@ function Add-CalibrationObservation {
             $snapshotFailure = $snapshotFailure + '; after: ' + $_.Exception.Message
         }
     }
-    $modelLabel = if ([string]::IsNullOrWhiteSpace($Model)) { 'unlabeled' } else { $Model }
+    $modelEvidenceGroup = ConvertTo-DispatchEvidenceGroup -Evidence $ModelEvidence -Field 'model' -CompatibilityValue $Model
+    $effortEvidenceGroup = ConvertTo-DispatchEvidenceGroup -Evidence $ReasoningEffortEvidence -Field 'model_reasoning_effort' -CompatibilityValue $ReasoningEffort
+    $modelPair = Test-DispatchEvidencePair -EvidenceGroup $modelEvidenceGroup
+    $effortPair = Test-DispatchEvidencePair -EvidenceGroup $effortEvidenceGroup
+    $resolvedModel = $modelPair.resolved
+    $resolvedEffort = $effortPair.resolved
+    $modelLabel = if ($null -eq $resolvedModel) { 'unknown' } else { $resolvedModel }
     $taskTypeLabel = if ([string]::IsNullOrWhiteSpace($TaskType)) { 'unspecified' } else { $TaskType }
     $sessionModeLabel = if ([string]::IsNullOrWhiteSpace($SessionMode)) { 'unspecified' } else { $SessionMode }
-    $hasMarkedModel = $modelLabel -ne 'unlabeled'
+    $hasMarkedModel = $modelPair.eligible
     $hasMarkedTaskType = $taskTypeLabel -ne 'unspecified'
     $hasSnapshots = $null -ne $beforeSnapshot -and $null -ne $afterSnapshot
     $hasUsage = Test-UsageObject -Value $Usage
@@ -2123,6 +4572,33 @@ function Add-CalibrationObservation {
     $deltaWithinLimit = $false
     $scopePlanComplete = Test-ScopePlanCompleteness -ScopePlan $ScopePlan
     $observedDelta = $null
+    $snapshotPathsStable = $true
+    if (-not [string]::IsNullOrWhiteSpace($QuotaBeforePath) -and -not [string]::IsNullOrWhiteSpace($QuotaAfterPath)) {
+        $snapshotPathsStable = -not [string]::Equals((Resolve-AbsolutePath -Path $QuotaBeforePath), (Resolve-AbsolutePath -Path $QuotaAfterPath), [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    $observationContractValid = $true
+    foreach ($snapshot in @($beforeSnapshot, $afterSnapshot)) {
+        if ($null -eq $snapshot) {
+            continue
+        }
+        if (Test-QuotaSnapshotObservationContract -Snapshot $snapshot) {
+            $observationContractValid = $observationContractValid -and (Test-QuotaSnapshotHasObservations -Snapshot $snapshot)
+        }
+    }
+    $beforeServiceRejection = Get-QuotaSnapshotServiceRejection -Snapshot $beforeSnapshot
+    $afterServiceRejection = Get-QuotaSnapshotServiceRejection -Snapshot $afterSnapshot
+    $executionServiceRejection = Get-OptionalObjectProperty -Object $ExecutionResult -Name 'service_rejection'
+    $serviceRejectionFree = $null -eq $beforeServiceRejection -and $null -eq $afterServiceRejection -and $null -eq $executionServiceRejection
+    $scopePlanFingerprintMatch = $true
+    $scopePlanFingerprintValue = Get-OptionalObjectProperty -Object $ScopePlan -Name 'scope_plan_fingerprint'
+    if (-not [string]::IsNullOrWhiteSpace([string]$scopePlanFingerprintValue)) {
+        try {
+            $scopePlanFingerprintMatch = [string]::Equals([string]$scopePlanFingerprintValue, [string](Get-ScopePlanFingerprint -ScopePlan $ScopePlan), [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        catch {
+            $scopePlanFingerprintMatch = $false
+        }
+    }
     if ($hasSnapshots) {
         $primaryResetWindowChanged = Test-QuotaResetWindowChanged -BeforeSnapshot $beforeSnapshot -AfterSnapshot $afterSnapshot -WindowName 'primary'
         $secondaryResetWindowChanged = Test-QuotaResetWindowChanged -BeforeSnapshot $beforeSnapshot -AfterSnapshot $afterSnapshot -WindowName 'secondary'
@@ -2177,8 +4653,8 @@ function Add-CalibrationObservation {
         $deltaWithinLimit = $observedDelta -le ($deltaUpperBound + 0.000001)
     }
     $freshSnapshots = $hasSnapshots -and (Test-QuotaSnapshotFresh -Snapshot $beforeSnapshot) -and (Test-QuotaSnapshotFresh -Snapshot $afterSnapshot)
-    $executionCompleted = $null -ne $ExecutionResult -and $ExecutionResult.completed -eq $true -and [int]$ExecutionResult.processExitCode -eq 0
-    $eligible = $hasMarkedModel -and $hasMarkedTaskType -and $hasSnapshots -and $freshSnapshots -and $sameResetWindow -and $nonNegativeDelta -and $deltaWithinLimit -and $monitorAllowsCalibration -and $hasUsage -and $executionCompleted -and $scopePlanComplete
+    $executionCompleted = $null -ne $ExecutionResult -and $ExecutionResult.completed -eq $true -and [int]$ExecutionResult.processExitCode -eq 0 -and (Get-OptionalObjectProperty $ExecutionResult 'outputValid') -ne $false -and (Get-OptionalObjectProperty $ExecutionResult 'success') -ne $false
+    $eligible = $hasMarkedModel -and $effortPair.eligible -and $hasMarkedTaskType -and $hasSnapshots -and $observationContractValid -and $freshSnapshots -and $sameResetWindow -and $snapshotPathsStable -and $scopePlanFingerprintMatch -and $serviceRejectionFree -and $nonNegativeDelta -and $deltaWithinLimit -and $monitorAllowsCalibration -and $hasUsage -and $executionCompleted -and $scopePlanComplete
 
     $record = [ordered]@{
         schema                = 'codex-dispatch.quota-calibration.v1'
@@ -2189,25 +4665,40 @@ function Add-CalibrationObservation {
         profile               = $Profile
         session_mode          = $sessionModeLabel
         group                 = [ordered]@{
-            model        = $modelLabel
-            profile      = $Profile
-            session_mode = $sessionModeLabel
-            task_type    = $taskTypeLabel
+            model             = if ($modelPair.eligible) { $resolvedModel } else { $null }
+            reasoning_effort  = if ($effortPair.eligible) { $resolvedEffort } else { $null }
+            profile           = $Profile
+            session_mode      = $sessionModeLabel
+            task_type          = $taskTypeLabel
         }
         task_type             = $taskTypeLabel
-        reasoning_effort     = $ReasoningEffort
+        reasoning_effort     = if ($effortPair.eligible) { $resolvedEffort } else { $null }
+        model_evidence       = $modelEvidenceGroup
+        reasoning_effort_evidence = $effortEvidenceGroup
         calibration_eligible  = $eligible
         calibration_checks    = [ordered]@{
             same_reset_window = $sameResetWindow
             scope_plan_complete = $scopePlanComplete
             delta_within_limit = $deltaWithinLimit
+            snapshot_paths_stable = $snapshotPathsStable
+            observation_contract_valid = $observationContractValid
+            service_rejection_free = $serviceRejectionFree
+            scope_plan_fingerprint_match = $scopePlanFingerprintMatch
             monitor_allows_calibration = $monitorAllowsCalibration
+            model_evidence_match = $modelPair.eligible
+            reasoning_effort_evidence_match = $effortPair.eligible
+            model_evidence_reason = $modelPair.reason
+            reasoning_effort_evidence_reason = $effortPair.reason
             delta_upper_bound = if ($deltaLimits.Count -eq 0) { $null } else { [double]($deltaLimits | Measure-Object -Minimum).Minimum }
         }
         'turn.completed.usage' = $Usage
         usage                 = $Usage
         dispatch_before_snapshot = if ($null -eq $beforeSnapshot) { $null } else { $beforeSnapshot.values }
         dispatch_after_snapshot  = if ($null -eq $afterSnapshot) { $null } else { $afterSnapshot.values }
+        dispatch_before_observations = if ($null -eq $beforeSnapshot) { $null } else { Get-DispatchJsonProperty -Object $beforeSnapshot -Name 'observations' }
+        dispatch_after_observations = if ($null -eq $afterSnapshot) { $null } else { Get-DispatchJsonProperty -Object $afterSnapshot -Name 'observations' }
+        service_rejection_before = $beforeServiceRejection
+        service_rejection_after = $afterServiceRejection
         observed_primary_delta_percent = $observedDelta
         scope_plan           = $ScopePlan
         interruption_status = $InterruptionStatus
@@ -2218,11 +4709,21 @@ function Add-CalibrationObservation {
     Add-AtomicJsonLine -Path $calibrationPath -Content (($record | ConvertTo-Json -Depth 20 -Compress))
 
     $matchingRecords = @(Get-CalibrationRecords -Path $calibrationPath | Where-Object {
+            $group = Get-DispatchJsonProperty -Object $_ -Name 'group'
+            $recordModel = Get-DispatchJsonProperty -Object $group -Name 'model'
+            $recordEffort = Get-DispatchJsonProperty -Object $group -Name 'reasoning_effort'
+            $recordModelGroup = Get-DispatchJsonProperty -Object $_ -Name 'model_evidence'
+            $recordEffortGroup = Get-DispatchJsonProperty -Object $_ -Name 'reasoning_effort_evidence'
+            $recordModelPair = if ($null -eq $recordModelGroup) { [ordered]@{ eligible = $false } } else { Test-DispatchEvidencePair -EvidenceGroup $recordModelGroup }
+            $recordEffortPair = if ($null -eq $recordEffortGroup) { [ordered]@{ eligible = $false } } else { Test-DispatchEvidencePair -EvidenceGroup $recordEffortGroup }
             $_.calibration_eligible -eq $true -and
-            $_.model -eq $modelLabel -and
+            $recordModel -eq $resolvedModel -and
+            $recordEffort -eq $resolvedEffort -and
             $_.profile -eq $Profile -and
             $_.session_mode -eq $sessionModeLabel -and
             $_.task_type -eq $taskTypeLabel -and
+            $recordModelPair.eligible -and
+            $recordEffortPair.eligible -and
             $null -ne $_.observed_primary_delta_percent
         })
     $recommendationReady = $matchingRecords.Count -ge 5
@@ -2259,11 +4760,15 @@ function Add-SnapshotFailureCalibrationObservation {
         [Parameter(Mandatory)]
         [string]$Profile,
 
-        [Parameter(Mandatory)]
         [string]$Model,
 
-        [Parameter(Mandatory)]
         [string]$ReasoningEffort,
+
+        [AllowNull()]
+        [object]$ModelEvidence,
+
+        [AllowNull()]
+        [object]$ReasoningEffortEvidence,
 
         [Parameter(Mandatory)]
         [string]$TaskType,
@@ -2295,7 +4800,7 @@ function Add-SnapshotFailureCalibrationObservation {
         sessionMode = $SessionMode
     }
     try {
-        $result = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $Path -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $Usage -ExecutionResult $ExecutionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $ScopePlan -InterruptionStatus $interruptionStatus -BudgetMonitor $null
+        $result = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $Path -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -ModelEvidence $ModelEvidence -ReasoningEffortEvidence $ReasoningEffortEvidence -TaskType $TaskType -SessionMode $SessionMode -Usage $Usage -ExecutionResult $ExecutionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $ScopePlan -InterruptionStatus $interruptionStatus -BudgetMonitor $null
         if ($null -eq $result -or $result.recordWritten -ne $true -or $result.calibrationEligible -ne $false) {
             throw '校準失敗觀測未寫入或未標記 calibration_eligible=false。'
         }
@@ -2869,13 +5374,13 @@ function Get-PidCheckResult {
             $recordMode = 'readonly'
         }
 
-        $isActive = $false
-        $identityVerified = $false
-        $liveProcessIds = @()
-        if (Test-IsWindowsPlatform) {
-            $rootSnapshot = Get-WindowsProcessSnapshot -ProcessId $rootPid -ProcessesById $processesById
-            if ($null -ne $rootSnapshot) {
-                if ($rootSnapshot.IdentityStatus -ne 'confirmed') {
+            $isActive = $false
+            $identityVerified = $false
+            $liveProcessIds = @()
+            if (Test-IsWindowsPlatform) {
+                $rootSnapshot = Get-WindowsProcessSnapshot -ProcessId $rootPid -ProcessesById $processesById
+                if ($null -ne $rootSnapshot) {
+                    if ($rootSnapshot.IdentityStatus -ne 'confirmed') {
                     $dispatchProperty = $record.PSObject.Properties['dispatch-slug']
                     $unconfirmedRecords.Add([pscustomobject]@{
                             Path             = $recordFile.FullName
@@ -2887,13 +5392,39 @@ function Get-PidCheckResult {
                             TerminationScope = 'none'
                             StatusMessage    = '根程序身分無法確認，未阻塞派工且未列入終止對象。'
                         })
+                    }
+                    elseif (-not ([string]::Equals([string](Get-OptionalObjectProperty -Object $record -Name 'identity-verified'), 'true', [StringComparison]::OrdinalIgnoreCase))) {
+                        $dispatchProperty = $record.PSObject.Properties['dispatch-slug']
+                        $unconfirmedRecords.Add([pscustomobject]@{
+                                Path             = $recordFile.FullName
+                                RootPid          = $rootPid
+                                DispatchSlug     = if ($null -ne $dispatchProperty) { [string]$dispatchProperty.Value } else { '' }
+                                IdentityStatus   = 'record-identity-unconfirmed'
+                                MissingFields    = @('identity-verified')
+                                FailureFields    = @()
+                                TerminationScope = 'none'
+                                StatusMessage    = 'PID 紀錄標示身分未確認，程序仍存在時阻擋後續派工。'
+                            })
+                    }
+                    elseif (Test-RecordedProcessIdentity -Record $record -Snapshot $rootSnapshot) {
+                        $identityVerified = $true
+                        $isActive = $true
+                        $liveProcessIds = @(Get-DescendantProcessIds -RootProcessId $rootPid -ProcessesById $processesById -ConfirmedOnly)
+                    }
+                    else {
+                        $dispatchProperty = $record.PSObject.Properties['dispatch-slug']
+                        $unconfirmedRecords.Add([pscustomobject]@{
+                                Path             = $recordFile.FullName
+                                RootPid          = $rootPid
+                                DispatchSlug     = if ($null -ne $dispatchProperty) { [string]$dispatchProperty.Value } else { '' }
+                                IdentityStatus   = 'record-identity-mismatch'
+                                MissingFields    = @()
+                                FailureFields    = @('root-process-name', 'root-started-at-utc')
+                                TerminationScope = 'none'
+                                StatusMessage    = 'PID 紀錄與目前程序身分不一致，程序仍存在時阻擋後續派工。'
+                            })
+                    }
                 }
-                elseif (Test-RecordedProcessIdentity -Record $record -Snapshot $rootSnapshot) {
-                    $identityVerified = $true
-                    $isActive = $true
-                    $liveProcessIds = @(Get-DescendantProcessIds -RootProcessId $rootPid -ProcessesById $processesById -ConfirmedOnly)
-                }
-            }
             else {
                 $dispatchProperty = $record.PSObject.Properties['dispatch-slug']
                 $unconfirmedRecords.Add([pscustomobject]@{
@@ -3212,6 +5743,2250 @@ function Apply-SourceCarryIn {
     }
 }
 
+function Get-DispatchSnapshotPath {
+    [CmdletBinding()]
+    param([string]$Root, [string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path) -or $Path.Contains('\') -or $Path.Contains(':') -or [IO.Path]::IsPathRooted($Path) -or @($Path.Split('/') | Where-Object { $_ -in @('', '.', '..', '.git') }).Count -gt 0) {
+        throw "Baseline 相對路徑異常：$Path"
+    }
+    $rootPath = Resolve-AbsolutePath $Root
+    $current = $rootPath
+    foreach ($part in @('') + $Path.Split('/')) {
+        if ($part.Length -gt 0) { $current = Join-Path $current $part }
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Baseline 不支援重解析點：$Path" }
+        }
+    }
+    if (-not (Test-PathWithinRoot $current $rootPath)) { throw "Baseline 路徑超出工作樹：$Path" }
+    return $current
+}
+
+function Get-DispatchWorkingTreeModes {
+    [CmdletBinding()]
+    param([string]$DispatchRoot)
+
+    $result = Invoke-GitCommand -WorkingDirectory $DispatchRoot -Arguments @('diff-files', '--raw', '-z', '--')
+    $parts = @($result.StdOut.Split([char]0) | Where-Object { $_.Length -gt 0 })
+    if (($parts.Count % 2) -ne 0) { throw 'Baseline Git working tree mode 輸出格式異常。' }
+
+    $modes = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    for ($index = 0; $index -lt $parts.Count; $index += 2) {
+        $header = $parts[$index]
+        $path = $parts[$index + 1]
+        if ($header -notmatch '^:(?<oldMode>[0-7]{6}) (?<newMode>[0-7]{6}) (?<oldObject>[0-9a-fA-F]{40,64}) (?<newObject>[0-9a-fA-F]{40,64}) (?<status>[A-Z])$' -or [string]::IsNullOrEmpty($path)) {
+            throw 'Baseline Git working tree mode 輸出格式異常。'
+        }
+        if ($Matches.newMode -in @('100644', '100755')) {
+            $modes[$path] = $Matches.newMode
+        }
+    }
+
+    return $modes
+}
+
+function Get-DispatchFileSnapshot {
+    [CmdletBinding()]
+    param([string]$DispatchRoot, [string]$BaseSha)
+
+    if ($BaseSha -notmatch '^[a-fA-F0-9]{7,64}$') { throw 'Baseline baseSha 格式異常。' }
+    $paths = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
+    $modes = New-Object 'System.Collections.Generic.Dictionary[string,string]' ([StringComparer]::Ordinal)
+    $tree = Invoke-GitCommand -WorkingDirectory $DispatchRoot -Arguments @('ls-tree', '-r', '-z', $BaseSha, '--')
+    foreach ($entry in $tree.StdOut.Split([char]0)) {
+        if ($entry.Length -eq 0) { continue }
+        $separator = $entry.IndexOf("`t")
+        if ($separator -lt 0) { throw 'Baseline Git tree 輸出格式異常。' }
+        $header = $entry.Substring(0, $separator).Split(' ')
+        $path = $entry.Substring($separator + 1)
+        if ($header.Count -ne 3 -or $header[0] -notin @('100644', '100755') -or $header[1] -ne 'blob') { throw "Baseline 不支援 Git kind：$path" }
+        $null = $paths.Add($path)
+        $modes[$path] = $header[0]
+    }
+    $index = Invoke-GitCommand -WorkingDirectory $DispatchRoot -Arguments @('ls-files', '--stage', '-z')
+    foreach ($entry in $index.StdOut.Split([char]0)) {
+        if ($entry.Length -eq 0) { continue }
+        $separator = $entry.IndexOf("`t")
+        if ($separator -lt 0) { throw 'Baseline Git index 輸出格式異常。' }
+        $header = $entry.Substring(0, $separator).Split(' ')
+        $path = $entry.Substring($separator + 1)
+        if ($header.Count -ne 3 -or $header[0] -notin @('100644', '100755') -or $header[2] -ne '0') { throw "Baseline 不支援 Git kind 或未解決 index：$path" }
+        $null = $paths.Add($path)
+        $modes[$path] = $header[0]
+    }
+    $workingTreeModes = Get-DispatchWorkingTreeModes -DispatchRoot $DispatchRoot
+    $untracked = Invoke-GitCommand -WorkingDirectory $DispatchRoot -Arguments @('ls-files', '--others', '--exclude-standard', '-z')
+    foreach ($path in $untracked.StdOut.Split([char]0)) {
+        if ($path.Length -eq 0) { continue }
+        $null = $paths.Add($path)
+        if (-not $modes.ContainsKey($path)) { $modes[$path] = '100644' }
+    }
+    foreach ($path in $paths) {
+        $fullPath = Get-DispatchSnapshotPath -Root $DispatchRoot -Path $path
+        $exists = Test-Path -LiteralPath $fullPath
+        $length = 0L
+        $hash = $null
+        if ($exists) {
+            $item = Get-Item -LiteralPath $fullPath -Force
+            if ($item.PSIsContainer) { throw "Baseline 不支援目錄 kind：$path" }
+            $length = $item.Length
+            $hash = Get-FileSha256 $fullPath
+        }
+        $gitMode = $modes[$path]
+        if ($workingTreeModes.ContainsKey($path)) { $gitMode = $workingTreeModes[$path] }
+        [pscustomobject]@{ path = $path; kind = 'file'; exists = [bool]$exists; byte_length = $length; sha256 = $hash; git_mode = $gitMode }
+    }
+}
+
+function New-DispatchBaseline {
+    [CmdletBinding()]
+    param(
+        [string]$SourceRoot, [string]$DispatchRoot,
+        [ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')][string]$LineSlug,
+        [ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')][string]$DispatchSlug,
+        [string]$BaseSha
+    )
+
+    $record = [ordered]@{
+        schema = 'ai-sessions.dispatch-baseline.v1'
+        baseline_id = [guid]::NewGuid().ToString('D')
+        line_slug = $LineSlug
+        dispatch_slug = $DispatchSlug
+        source_root = Resolve-AbsolutePath $SourceRoot
+        dispatch_root = Resolve-AbsolutePath $DispatchRoot
+        base_sha = $BaseSha
+        created_at_utc = [datetime]::UtcNow.ToString('o')
+        files = @(Get-DispatchFileSnapshot -DispatchRoot $DispatchRoot -BaseSha $BaseSha)
+    }
+    $directory = Join-Path (Join-Path (Join-Path $record.source_root '.local/ai-sessions/history') $LineSlug) 'baselines'
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $path = Join-Path $directory ($DispatchSlug + '-' + $record.baseline_id + '.json')
+    $temporaryPath = Join-Path $directory ([guid]::NewGuid().ToString('D') + '.tmp')
+    Write-Utf8NoBom $temporaryPath (($record | ConvertTo-Json -Depth 12) + "`n")
+    [IO.File]::Move($temporaryPath, $path)
+    return [pscustomobject]@{ Path = $path; Sha256 = Get-FileSha256 $path }
+}
+
+function Read-DispatchBaseline {
+    [CmdletBinding()]
+    param([string]$Path, [string]$Sha256, [string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$BaseSha)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw '缺少有效 Baseline 路徑或 SHA-256。' }
+    $pathValue = Resolve-AbsolutePath $Path
+    if ((Get-FileSha256 $pathValue) -ine $Sha256) { throw 'Baseline SHA-256 不一致。' }
+    $record = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $pathValue -Raw -Encoding UTF8)
+    if ($null -eq $record -or $record -isnot [pscustomobject]) { throw 'Baseline 必須為 JSON object。' }
+    foreach ($name in @('schema', 'baseline_id', 'line_slug', 'dispatch_slug', 'source_root', 'dispatch_root', 'base_sha', 'created_at_utc')) {
+        $property = $record.PSObject.Properties[$name]
+        if ($null -eq $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)) { throw "Baseline 欄位異常：$name" }
+    }
+    $id = [guid]::Empty
+    $created = [datetimeoffset]::MinValue
+    if (-not [guid]::TryParseExact($record.baseline_id, 'D', [ref]$id) -or $record.created_at_utc -notmatch '^\d{4}-\d{2}-\d{2}T.*(?:Z|\+00:00)$' -or -not [datetimeoffset]::TryParse($record.created_at_utc, [ref]$created) -or $created.Offset -ne [timespan]::Zero) { throw 'Baseline ID 或 UTC 時間異常。' }
+    if ($record.schema -cne 'ai-sessions.dispatch-baseline.v1' -or $record.line_slug -cne $LineSlug -or $record.dispatch_slug -cne $DispatchSlug -or $record.base_sha -cne $BaseSha) { throw 'Baseline schema／line／dispatch／baseSha 不一致。' }
+    foreach ($entry in @(@('source_root', $SourceRoot), @('dispatch_root', $DispatchRoot))) {
+        if (-not [string]::Equals($record.($entry[0]), (Resolve-AbsolutePath $entry[1]), [StringComparison]::OrdinalIgnoreCase)) { throw 'Baseline roots 不一致。' }
+    }
+    $directory = Join-Path (Join-Path (Join-Path (Resolve-AbsolutePath $SourceRoot) '.local/ai-sessions/history') $LineSlug) 'baselines'
+    $expectedPath = Join-Path $directory ($DispatchSlug + '-' + $record.baseline_id + '.json')
+    if (-not [string]::Equals($pathValue, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) { throw 'Baseline 路徑與身分不一致。' }
+    $filesProperty = $record.PSObject.Properties['files']
+    if ($null -eq $filesProperty -or $filesProperty.Value -isnot [array]) { throw 'Baseline files 必須為陣列。' }
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $previousPath = $null
+    foreach ($file in $record.files) {
+        if ($null -eq $file -or $file -isnot [pscustomobject]) { throw 'Baseline file 必須為 object。' }
+        foreach ($name in @('path', 'kind', 'exists', 'byte_length', 'sha256', 'git_mode')) {
+            if ($null -eq $file.PSObject.Properties[$name]) { throw "Baseline file 缺少欄位：$name" }
+        }
+        if ($file.path -isnot [string] -or -not $seen.Add($file.path) -or ($null -ne $previousPath -and [string]::CompareOrdinal($previousPath, $file.path) -ge 0)) { throw 'Baseline file 路徑重複或未排序。' }
+        $null = Get-DispatchSnapshotPath -Root $DispatchRoot -Path $file.path
+        $previousPath = $file.path
+        if ($file.kind -cne 'file' -or $file.exists -isnot [bool] -or $file.git_mode -cnotin @('100644', '100755') -or ($file.byte_length -isnot [int] -and $file.byte_length -isnot [long]) -or $file.byte_length -lt 0) { throw "Baseline file kind／狀態異常：$($file.path)" }
+        if ($file.exists) {
+            if ($file.sha256 -isnot [string] -or $file.sha256 -notmatch '^[a-fA-F0-9]{64}$') { throw "Baseline file hash 異常：$($file.path)" }
+        }
+        elseif ($null -ne $file.sha256 -or $file.byte_length -ne 0) { throw "Baseline absent 欄位異常：$($file.path)" }
+    }
+    return $record
+}
+
+function Get-DispatchIncrementalChanges {
+    [CmdletBinding()]
+    param([psobject]$Baseline, [string]$DispatchRoot)
+
+    $before = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
+    $after = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::Ordinal)
+    $paths = New-Object 'System.Collections.Generic.SortedSet[string]' ([StringComparer]::Ordinal)
+    foreach ($file in $Baseline.files) { $before[$file.path] = $file; $null = $paths.Add($file.path) }
+    foreach ($file in @(Get-DispatchFileSnapshot -DispatchRoot $DispatchRoot -BaseSha $Baseline.base_sha)) { $after[$file.path] = $file; $null = $paths.Add($file.path) }
+    foreach ($path in $paths) {
+        $old = if ($before.ContainsKey($path)) { $before[$path] } else { $null }
+        $new = if ($after.ContainsKey($path)) { $after[$path] } else { $null }
+        $oldExists = $null -ne $old -and $old.exists
+        $newExists = $null -ne $new -and $new.exists
+        if ($oldExists -ne $newExists -or ($oldExists -and ($old.kind -cne $new.kind -or $old.git_mode -cne $new.git_mode -or $old.byte_length -ne $new.byte_length -or $old.sha256 -ine $new.sha256))) { $path }
+    }
+}
+
+function Resolve-DispatchBaselineBinding {
+    [CmdletBinding()]
+    param([psobject]$Preflight, [string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$BaseSha, [string]$Path, [string]$Sha256)
+
+    if ($null -ne $Preflight) {
+        foreach ($entry in @(@('sourceRoot', $SourceRoot), @('executionRoot', $DispatchRoot), @('dispatchRoot', $DispatchRoot))) {
+            if (-not [string]::Equals((Get-RequiredPreflightProperty $Preflight $entry[0]), (Resolve-AbsolutePath $entry[1]), [StringComparison]::OrdinalIgnoreCase)) { throw 'Baseline Preflight roots 不一致。' }
+        }
+        foreach ($entry in @(@('lineSlug', $LineSlug), @('dispatchSlug', $DispatchSlug), @('baseSha', $BaseSha))) {
+            if ((Get-RequiredPreflightProperty $Preflight $entry[0]) -cne $entry[1]) { throw 'Baseline Preflight 身分或 baseSha 不一致。' }
+        }
+        $boundPath = Get-RequiredPreflightProperty $Preflight 'baselinePath'
+        $boundHash = Get-RequiredPreflightProperty $Preflight 'baselineSha256'
+        if ((-not [string]::IsNullOrWhiteSpace($Path) -and -not [string]::Equals((Resolve-AbsolutePath $Path), $boundPath, [StringComparison]::OrdinalIgnoreCase)) -or (-not [string]::IsNullOrWhiteSpace($Sha256) -and $Sha256 -ine $boundHash)) { throw 'Baseline 顯式輸入與 Preflight 不一致。' }
+        $Path = $boundPath
+        $Sha256 = $boundHash
+    }
+    $record = Read-DispatchBaseline -Path $Path -Sha256 $Sha256 -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha $BaseSha
+    return [pscustomobject]@{ Path = Resolve-AbsolutePath $Path; Sha256 = $Sha256; Record = $record }
+}
+
+function Get-ExplicitAclSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Container)) {
+        return [ordered]@{
+            status = 'unknown'
+            path = $resolvedPath
+            fingerprint = $null
+            explicit_entries = @()
+            error = 'ACL 目標目錄不存在。'
+        }
+    }
+    try {
+        $acl = Get-Acl -LiteralPath $resolvedPath -ErrorAction Stop
+        $entries = @(
+            $acl.Access |
+                Where-Object { -not $_.IsInherited } |
+                ForEach-Object {
+                    [ordered]@{
+                        identity = [string]$_.IdentityReference.Value
+                        access_control_type = [string]$_.AccessControlType
+                        rights = [string]$_.FileSystemRights
+                        inheritance_flags = [string]$_.InheritanceFlags
+                        propagation_flags = [string]$_.PropagationFlags
+                        is_inherited = [bool]$_.IsInherited
+                    }
+                } |
+                Sort-Object -Property @{ Expression = { $_.identity } }, @{ Expression = { $_.access_control_type } }, @{ Expression = { $_.rights } }, @{ Expression = { $_.inheritance_flags } }, @{ Expression = { $_.propagation_flags } }
+        )
+        return [ordered]@{
+            status = 'known'
+            path = $resolvedPath
+            fingerprint = Get-JsonSha256 -Value @($entries)
+            explicit_entries = @($entries)
+            error = $null
+        }
+    }
+    catch {
+        return [ordered]@{
+            status = 'unknown'
+            path = $resolvedPath
+            fingerprint = $null
+            explicit_entries = @()
+            error = $_.Exception.Message
+        }
+    }
+}
+
+function Get-WorktreeAclGate {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$WriteMode
+    )
+
+    $sourcePath = Resolve-AbsolutePath -Path $SourceRoot
+    $executionPath = Resolve-AbsolutePath -Path $ExecutionRoot
+    if ([string]::Equals($sourcePath, $executionPath, [StringComparison]::OrdinalIgnoreCase)) {
+        return [ordered]@{
+            status = 'not-applicable'
+            rejection_code = $null
+            source = [ordered]@{ status = 'not-applicable'; path = $sourcePath; fingerprint = $null; explicit_entries = @() }
+            dispatch = [ordered]@{ status = 'not-applicable'; path = $executionPath; fingerprint = $null; explicit_entries = @() }
+            residue = @()
+            write_mode = $WriteMode
+        }
+    }
+
+    $sourceAcl = Get-ExplicitAclSnapshot -Path $sourcePath
+    $dispatchAcl = Get-ExplicitAclSnapshot -Path $executionPath
+    if ($sourceAcl.status -eq 'unknown' -or $dispatchAcl.status -eq 'unknown') {
+        return [ordered]@{
+            status = 'unknown'
+            rejection_code = 'WorktreeAclUnknown'
+            source = $sourceAcl
+            dispatch = $dispatchAcl
+            residue = @()
+            write_mode = $WriteMode
+        }
+    }
+
+    $sourceKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($sourceAcl.explicit_entries)) {
+        $null = $sourceKeys.Add(($entry | ConvertTo-Json -Depth 10 -Compress))
+    }
+    $residue = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($entry in @($dispatchAcl.explicit_entries)) {
+        $key = $entry | ConvertTo-Json -Depth 10 -Compress
+        if (-not $sourceKeys.Contains($key)) {
+            $residue.Add($entry)
+        }
+    }
+    if ($residue.Count -gt 0) {
+        return [ordered]@{
+            status = 'residue'
+            rejection_code = 'WorktreeAclResidue'
+            source = $sourceAcl
+            dispatch = $dispatchAcl
+            residue = @($residue.ToArray())
+            write_mode = $WriteMode
+        }
+    }
+    return [ordered]@{
+        status = 'clean'
+        rejection_code = $null
+        source = $sourceAcl
+        dispatch = $dispatchAcl
+        residue = @()
+        write_mode = $WriteMode
+    }
+}
+
+function Get-DispatchFileEvidenceSafe {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    $resolvedPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        $resolvedPath = Resolve-AbsolutePath -Path $Path
+    }
+    if ($null -eq $resolvedPath -or -not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        return [ordered]@{
+            name = $Name
+            path = $resolvedPath
+            exists = $false
+            length = 0
+            sha256 = $null
+            reason = 'not-produced'
+        }
+    }
+    $file = Get-Item -LiteralPath $resolvedPath -Force
+    return [ordered]@{
+        name = $Name
+        path = $resolvedPath
+        exists = $true
+        length = [int64]$file.Length
+        sha256 = Get-FileSha256 -Path $resolvedPath
+        reason = $null
+    }
+}
+
+function Get-DispatchEventEvidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$EventPath
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $EventPath
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        return [ordered]@{
+            path = $resolvedPath
+            exists = $false
+            sha256 = $null
+            event_state = 'not-started'
+            last_event_type = $null
+            raw_lines = @()
+            usage_limit = $false
+        }
+    }
+
+    $rawLines = @(Get-Content -LiteralPath $resolvedPath -Encoding UTF8 -ErrorAction Stop | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $events = New-Object 'System.Collections.Generic.List[object]'
+    $usageLimit = $false
+    foreach ($rawLine in $rawLines) {
+        if ($rawLine -match '(?i)(?:usage|rate)[\s_-]*limit(?:ed| exceeded|\b)|quota\s+exceeded|too\s+many\s+requests|\b429\b') {
+            $usageLimit = $true
+        }
+        try {
+            $events.Add((ConvertFrom-DispatchJson -Content $rawLine))
+        }
+        catch {
+        }
+    }
+    $lastType = $null
+    if ($events.Count -gt 0) {
+        $lastType = [string](Get-DispatchJsonProperty -Object $events[$events.Count - 1] -Name 'type')
+    }
+    $state = 'unknown'
+    if ($usageLimit) {
+        $state = 'quota-rejected'
+    }
+    elseif ($lastType -eq 'turn.completed') {
+        $state = 'completed'
+    }
+    elseif ($lastType -eq 'turn.failed') {
+        $state = 'launch-failed'
+    }
+    elseif ($lastType -eq 'turn.started') {
+        $state = 'unknown'
+    }
+    return [ordered]@{
+        path = $resolvedPath
+        exists = $true
+        sha256 = Get-FileSha256 -Path $resolvedPath
+        event_state = $state
+        last_event_type = $lastType
+        raw_lines = @($rawLines)
+        usage_limit = $usageLimit
+    }
+}
+
+function Convert-EventEvidenceToServiceRejection {
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$EventEvidence
+    )
+
+    if ($EventEvidence.usage_limit -ne $true) {
+        return $null
+    }
+    $reasonCode = 'usage-limit'
+    $observedAtUtc = [DateTimeOffset]::UtcNow
+    foreach ($rawLine in @($EventEvidence.raw_lines | Select-Object -Last 20)) {
+        if ($rawLine -match '(?i)rate[\s_-]*limit(?:ed| exceeded|\b)') {
+            $reasonCode = 'rate-limit'
+        }
+        elseif ($rawLine -match '(?i)quota\s+exceeded') {
+            $reasonCode = 'quota-exceeded'
+        }
+        elseif ($rawLine -match '(?i)too\s+many\s+requests|\b429\b') {
+            $reasonCode = 'too-many-requests'
+        }
+        try {
+            $event = ConvertFrom-DispatchJson -Content $rawLine
+            $timestamp = Get-DispatchJsonProperty -Object $event -Name 'timestamp'
+            if ($null -ne $timestamp) {
+                $observedAtUtc = [DateTimeOffset]$timestamp
+            }
+        }
+        catch {
+        }
+    }
+    return [ordered]@{
+        status              = 'quota-rejected'
+        window              = 'unknown'
+        reason_code         = $reasonCode
+        observed_at_utc     = $observedAtUtc.ToUniversalTime().ToString('o')
+        raw_evidence_path   = [string]$EventEvidence.path
+        raw_evidence_sha256 = [string]$EventEvidence.sha256
+        resets_at           = $null
+        retry_allowed       = $false
+    }
+}
+
+function Get-RecoveryChainInterruptedUnknownRecords {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyCollection()]
+        [object[]]$Records
+    )
+
+    $unknownRecords = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($record in @($Records)) {
+        if ($null -eq $record) {
+            continue
+        }
+        $unknownInterruption = Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $record -Name 'unknown_interruption') -Name 'status'
+        if ([string]$unknownInterruption -ceq 'InterruptedUnknown') {
+            $unknownRecords.Add($record)
+        }
+    }
+    return @($unknownRecords.ToArray())
+}
+
+function New-InterruptedUnknownResumeRejectedException {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug,
+        [Parameter(Mandatory)][psobject]$Record,
+        [AllowNull()][object]$Events
+    )
+
+    $recordPath = Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($Record.run_id + '.json')
+    $message = 'InterruptedUnknownResumeRejected process_started=false cold_start_recommended=true new_dispatch_worktree_required=true worktree="' + $ExecutionRoot + '" record="' + $recordPath + '" reason=InterruptedUnknown'
+    $exception = New-Object System.Exception($message)
+    $exception.Data['recoveryResumeGate'] = [ordered]@{
+        code = 'InterruptedUnknownResumeRejected'
+        process_started = $false
+        cold_start_recommended = $true
+        new_dispatch_worktree_required = $true
+        worktree = $ExecutionRoot
+        record_path = $recordPath
+        run_id = $Record.run_id
+        evidence = $Events
+    }
+    return $exception
+}
+
+function Get-RecoveryChainModel {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$LatestRecord,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug
+    )
+
+    $records = New-Object 'System.Collections.Generic.List[object]'
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $current = $LatestRecord
+    while ($null -ne $current) {
+        if (-not $seen.Add([string]$current.run_id)) {
+            throw 'RecoveryHandoff chain 存在循環。'
+        }
+        $records.Add($current)
+        $parentId = [string](Get-DispatchJsonProperty -Object $current -Name 'attempt_parent_run_id')
+        if ([string]::IsNullOrWhiteSpace($parentId)) {
+            $parentId = [string](Get-DispatchJsonProperty -Object $current -Name 'previous_run_id')
+        }
+        if ([string]::IsNullOrWhiteSpace($parentId)) {
+            $current = $null
+            continue
+        }
+        $parentPath = Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($parentId + '.json')
+        if (-not (Test-Path -LiteralPath $parentPath -PathType Leaf)) {
+            throw 'RecoveryHandoff chain 斷鏈：' + $parentId
+        }
+        $current = Read-DispatchRunRecord -Path $parentPath -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    }
+
+    $interruptedUnknownRecords = @(Get-RecoveryChainInterruptedUnknownRecords -Records @($records.ToArray()))
+    $anchor = $null
+    foreach ($candidate in @($records.ToArray())) {
+        $unknownInterruption = Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $candidate -Name 'unknown_interruption') -Name 'status'
+        if ($candidate.launch_state -ne 'launch-failed' -and $unknownInterruption -ne 'InterruptedUnknown') {
+            $anchor = $candidate
+            break
+        }
+    }
+    $chainItems = New-Object 'System.Collections.Generic.List[object]'
+    $reverseRecords = @($records.ToArray())
+    [array]::Reverse($reverseRecords)
+    foreach ($record in $reverseRecords) {
+        $chainItems.Add([ordered]@{
+                run_id = $record.run_id
+                path = Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($record.run_id + '.json')
+                sha256 = Get-FileSha256 -Path (Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($record.run_id + '.json'))
+                launch_state = $record.launch_state
+            })
+    }
+    $chainFingerprint = Get-JsonSha256 -Value @($chainItems.ToArray())
+    return [ordered]@{
+        latest = $LatestRecord
+        anchor = $anchor
+        records = @($records.ToArray())
+        items = @($chainItems.ToArray())
+        fingerprint = $chainFingerprint
+        interrupted_unknown_records = @($interruptedUnknownRecords)
+        contains_interrupted_unknown = $interruptedUnknownRecords.Count -gt 0
+        skipped_attempts = @($records.ToArray() | Where-Object {
+                $_.launch_state -eq 'launch-failed' -or
+                (Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $_ -Name 'unknown_interruption') -Name 'status') -eq 'InterruptedUnknown'
+            } | ForEach-Object {
+                [ordered]@{
+                    run_id = $_.run_id
+                    path = Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($_.run_id + '.json')
+                    sha256 = Get-FileSha256 -Path (Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($_.run_id + '.json'))
+                    reason = [string](Get-DispatchJsonProperty -Object $_.failure -Name 'reason_code')
+                    failure = Get-DispatchJsonProperty -Object $_ -Name 'failure'
+                }
+            })
+    }
+}
+
+function Test-RecoveryHandoffPropertyPresent {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Object,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if ($null -eq $Object) {
+        return $false
+    }
+    if ($Object -is [System.Collections.IDictionary]) {
+        return $Object.Contains($Name)
+    }
+    return $null -ne $Object.PSObject.Properties[$Name]
+}
+
+function ConvertTo-RecoveryHandoffDiagnosticValue {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return '<null>'
+    }
+    if ($Value -is [string]) {
+        return [string]$Value
+    }
+    return ConvertTo-Json -InputObject $Value -Depth 20 -Compress
+}
+
+function Throw-RecoveryHandoffValidation {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Code,
+
+        [Parameter(Mandatory)]
+        [string]$HandoffPath,
+
+        [Parameter(Mandatory)]
+        [string]$Field,
+
+        [AllowNull()]
+        [object]$Expected,
+
+        [AllowNull()]
+        [object]$Received,
+
+        [AllowNull()]
+        [object]$Evidence
+    )
+
+    $detail = [ordered]@{
+        code = $Code
+        process_started = $false
+        handoff_path = $HandoffPath
+        field = $Field
+        expected = $Expected
+        received = $Received
+        evidence = $Evidence
+    }
+    $script:LastRecoveryHandoffGateEvidence = $detail
+    $expectedText = ConvertTo-RecoveryHandoffDiagnosticValue -Value $Expected
+    $receivedText = ConvertTo-RecoveryHandoffDiagnosticValue -Value $Received
+    $message = '{0} process_started=false handoff_path="{1}" field="{2}" expected={3} received={4}' -f $Code, $HandoffPath, $Field, $expectedText, $receivedText
+    if ($null -ne $Evidence) {
+        $message += ' evidence=' + (ConvertTo-RecoveryHandoffDiagnosticValue -Value $Evidence)
+    }
+    $exception = New-Object System.Exception($message)
+    $exception.Data['recoveryHandoffGate'] = $detail
+    throw $exception
+}
+
+function Get-RecoveryHandoffRequiredProperty {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Document,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-RecoveryHandoffPropertyPresent -Object $Document -Name $Name)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $Path -Field $Name -Expected 'present' -Received 'missing' -Evidence @{ document = $Path }
+    }
+    return Get-DispatchJsonProperty -Object $Document -Name $Name
+}
+
+function Test-RecoveryHandoffStringArray {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $true
+    }
+    foreach ($item in @($Value)) {
+        if ($null -eq $item -or $item -isnot [string]) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-RecoveryHandoffArrayEqual {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Left,
+
+        [AllowNull()]
+        [object]$Right
+    )
+
+    $leftItems = @($Left | ForEach-Object { [string]$_ })
+    $rightItems = @($Right | ForEach-Object { [string]$_ })
+    if ($leftItems.Count -ne $rightItems.Count) {
+        return $false
+    }
+    for ($index = 0; $index -lt $leftItems.Count; $index++) {
+        if (-not [string]::Equals($leftItems[$index], $rightItems[$index], [StringComparison]::Ordinal)) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Write-ImmutableDispatchJson {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Document
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    if (Test-Path -LiteralPath $resolvedPath) {
+        throw 'RecoveryHandoffCollision：目標檔案已存在，拒絕覆寫：' + $resolvedPath
+    }
+    $parent = Split-Path -Parent $resolvedPath
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $temporaryPath = Join-Path -Path $parent -ChildPath ([guid]::NewGuid().ToString('D') + '.tmp')
+    try {
+        Write-Utf8NoBom -Path $temporaryPath -Content (($Document | ConvertTo-Json -Depth 40) + "`n")
+        if (Test-Path -LiteralPath $resolvedPath) {
+            throw 'RecoveryHandoffCollision：原子移動前發現目標檔案已存在。'
+        }
+        [System.IO.File]::Move($temporaryPath, $resolvedPath)
+    }
+    catch {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+    return $resolvedPath
+}
+
+function Read-RecoveryHandoff {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        throw 'RecoveryHandoffMissing：找不到恢復交接檔：' + $resolvedPath
+    }
+    $document = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $resolvedPath -Raw -Encoding UTF8)
+    if ($null -eq $document -or $document -isnot [pscustomobject]) {
+        throw 'RecoveryHandoffInvalid：恢復交接檔必須為 JSON object。'
+    }
+    $requiredTopLevelFields = @(
+        'schema',
+        'recovery_id',
+        'line_slug',
+        'dispatch_slug',
+        'source_root',
+        'dispatch_root',
+        'dispatch_line_root',
+        'write_mode',
+        'authorization',
+        'created_at_utc',
+        'author_type',
+        'author_id',
+        'rebuild_reason',
+        'run_chain',
+        'event_evidence',
+        'baseline',
+        'scope',
+        'parent_options',
+        'process_gate',
+        'acl_gate',
+        'progress',
+        'recovery_eligibility',
+        'deliverable_acceptance',
+        'audit_sources',
+        'handoff_sha256'
+    )
+    foreach ($field in $requiredTopLevelFields) {
+        Get-RecoveryHandoffRequiredProperty -Document $document -Name $field -Path $resolvedPath | Out-Null
+    }
+
+    if ([string](Get-DispatchJsonProperty -Object $document -Name 'schema') -cne 'ai-sessions.recovery-handoff.v1') {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'schema' -Expected 'ai-sessions.recovery-handoff.v1' -Received (Get-DispatchJsonProperty -Object $document -Name 'schema') -Evidence @{ document = $resolvedPath }
+    }
+    $documentLineSlug = [string](Get-DispatchJsonProperty -Object $document -Name 'line_slug')
+    $documentDispatchSlug = [string](Get-DispatchJsonProperty -Object $document -Name 'dispatch_slug')
+    if ($documentLineSlug -cne $LineSlug -or $documentDispatchSlug -cne $DispatchSlug) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffCrossLine' -HandoffPath $resolvedPath -Field 'line_slug/dispatch_slug' -Expected @{ line_slug = $LineSlug; dispatch_slug = $DispatchSlug } -Received @{ line_slug = $documentLineSlug; dispatch_slug = $documentDispatchSlug } -Evidence @{ handoff_path = $resolvedPath }
+    }
+
+    $recoveryId = [string](Get-DispatchJsonProperty -Object $document -Name 'recovery_id')
+    if ($recoveryId -notmatch '^[a-f0-9]{32}$') {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'recovery_id' -Expected 'lowercase 32-character hexadecimal UUID' -Received $recoveryId -Evidence @{ document = $resolvedPath }
+    }
+    $writeMode = [string](Get-DispatchJsonProperty -Object $document -Name 'write_mode')
+    if ($writeMode -notin @('direct-write', 'worktree')) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'write_mode' -Expected @('direct-write', 'worktree') -Received $writeMode -Evidence @{ document = $resolvedPath }
+    }
+    if ([string](Get-DispatchJsonProperty -Object $document -Name 'author_type') -cne 'coordinator') {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'author_type' -Expected 'coordinator' -Received (Get-DispatchJsonProperty -Object $document -Name 'author_type') -Evidence @{ document = $resolvedPath }
+    }
+    $createdAt = [string](Get-DispatchJsonProperty -Object $document -Name 'created_at_utc')
+    $createdAtValue = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse($createdAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$createdAtValue)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'created_at_utc' -Expected 'ISO-8601 timestamp' -Received $createdAt -Evidence @{ document = $resolvedPath }
+    }
+    $sourcePath = Resolve-AbsolutePath -Path $SourceRoot
+    $documentSourceRoot = [string](Get-DispatchJsonProperty -Object $document -Name 'source_root')
+    $resolvedDocumentSourceRoot = $null
+    try {
+        $resolvedDocumentSourceRoot = Resolve-AbsolutePath -Path $documentSourceRoot
+    }
+    catch {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffCrossLine' -HandoffPath $resolvedPath -Field 'source_root' -Expected $sourcePath -Received $documentSourceRoot -Evidence @{ handoff_path = $resolvedPath }
+    }
+    if (-not [string]::Equals($resolvedDocumentSourceRoot, $sourcePath, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffCrossLine' -HandoffPath $resolvedPath -Field 'source_root' -Expected $sourcePath -Received $resolvedDocumentSourceRoot -Evidence @{ handoff_path = $resolvedPath }
+    }
+
+    $documentDispatchRoot = [string](Get-DispatchJsonProperty -Object $document -Name 'dispatch_root')
+    try {
+        $resolvedDocumentDispatchRoot = Resolve-AbsolutePath -Path $documentDispatchRoot
+    }
+    catch {
+        $resolvedDocumentDispatchRoot = $documentDispatchRoot
+    }
+    $expectedDispatchLineRoot = Join-Path -Path $resolvedDocumentDispatchRoot -ChildPath (Join-Path -Path '.local\ai-sessions\handoff' -ChildPath $LineSlug)
+    $documentDispatchLineRoot = [string](Get-DispatchJsonProperty -Object $document -Name 'dispatch_line_root')
+    $resolvedDocumentDispatchLineRoot = $null
+    try {
+        $resolvedDocumentDispatchLineRoot = Resolve-AbsolutePath -Path $documentDispatchLineRoot
+    }
+    catch {
+        $resolvedDocumentDispatchLineRoot = $documentDispatchLineRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($documentDispatchRoot) -or [string]::IsNullOrWhiteSpace($documentDispatchLineRoot) -or -not [string]::Equals($resolvedDocumentDispatchLineRoot, $expectedDispatchLineRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffCrossLine' -HandoffPath $resolvedPath -Field 'dispatch_line_root' -Expected $expectedDispatchLineRoot -Received $documentDispatchLineRoot -Evidence @{ dispatch_root = $documentDispatchRoot; dispatch_line_root = $documentDispatchLineRoot }
+    }
+    $authorization = Get-DispatchJsonProperty -Object $document -Name 'authorization'
+    foreach ($field in @('dispatch_order_path', 'dispatch_order_sha256', 'requested_units', 'allowed_write_scope')) {
+        if (-not (Test-RecoveryHandoffPropertyPresent -Object $authorization -Name $field)) {
+            Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field ('authorization.' + $field) -Expected 'present' -Received 'missing' -Evidence @{ document = $resolvedPath }
+        }
+    }
+    if (-not (Test-RecoveryHandoffStringArray -Value (Get-DispatchJsonProperty -Object $authorization -Name 'requested_units'))) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'authorization.requested_units' -Expected 'string array' -Received (Get-DispatchJsonProperty -Object $authorization -Name 'requested_units') -Evidence @{ document = $resolvedPath }
+    }
+    if (-not (Test-RecoveryHandoffStringArray -Value (Get-DispatchJsonProperty -Object $authorization -Name 'allowed_write_scope'))) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'authorization.allowed_write_scope' -Expected 'string array' -Received (Get-DispatchJsonProperty -Object $authorization -Name 'allowed_write_scope') -Evidence @{ document = $resolvedPath }
+    }
+    $requiredNestedFields = [ordered]@{
+        run_chain = @('latest_run_id', 'latest_run_record_path', 'latest_run_record_sha256', 'anchor_run_id', 'anchor_run_record_path', 'anchor_run_record_sha256', 'attempt_parent_run_id', 'previous_run_id', 'thread_id', 'skipped_attempts', 'chain_fingerprint')
+        event_evidence = @('event_stream_path', 'event_stream_sha256', 'stdout_path', 'stdout_sha256', 'stderr_path', 'stderr_sha256', 'exit_code', 'exit_code_status', 'last_message_present', 'last_message_sha256', 'event_state', 'raw_event_lines')
+        baseline = @('status', 'path', 'sha256', 'relation')
+        scope = @('status', 'path', 'sha256', 'fingerprint', 'selected_units', 'deferred_units')
+        parent_options = @('status', 'fingerprint', 'value')
+        process_gate = @('status', 'pid_check', 'active_records', 'stopped_evidence')
+        acl_gate = @('status', 'write_mode', 'source', 'dispatch', 'residue', 'unknown_reason')
+        progress = @('confirmed_facts', 'unfinished_units', 'unknown_units', 'completion_declaration_supported')
+        recovery_eligibility = @('status', 'resume_eligible', 'cold_start_eligible', 'rejection_codes', 'reason')
+        deliverable_acceptance = @('status', 'accepted', 'reason')
+    }
+    foreach ($containerName in $requiredNestedFields.Keys) {
+        $container = Get-DispatchJsonProperty -Object $document -Name $containerName
+        foreach ($field in @($requiredNestedFields[$containerName])) {
+            if (-not (Test-RecoveryHandoffPropertyPresent -Object $container -Name $field)) {
+                Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field ($containerName + '.' + $field) -Expected 'present' -Received 'missing' -Evidence @{ document = $resolvedPath }
+            }
+        }
+    }
+    $auditSources = Get-DispatchJsonProperty -Object $document -Name 'audit_sources'
+    if ($null -eq $auditSources) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'audit_sources' -Expected 'array' -Received 'null' -Evidence @{ document = $resolvedPath }
+    }
+    $acceptance = Get-DispatchJsonProperty -Object $document -Name 'deliverable_acceptance'
+    $acceptanceStatus = [string](Get-DispatchJsonProperty -Object $acceptance -Name 'status')
+    if ([bool](Get-DispatchJsonProperty -Object $acceptance -Name 'accepted') -or $acceptanceStatus -eq 'accepted') {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffUnsupportedCompletion' -HandoffPath $resolvedPath -Field 'deliverable_acceptance' -Expected 'pending or not-eligible' -Received $acceptanceStatus -Evidence @{ handoff_path = $resolvedPath }
+    }
+    $expectedHash = Get-FileSha256 -Path $resolvedPath
+    $storedHash = [string](Get-DispatchJsonProperty -Object $document -Name 'handoff_sha256')
+    if ([string]::IsNullOrWhiteSpace($storedHash)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffInvalid' -HandoffPath $resolvedPath -Field 'handoff_sha256' -Expected 'present' -Received 'missing' -Evidence @{ document = $resolvedPath }
+    }
+    $canonicalDocument = [ordered]@{}
+    foreach ($property in @($document.PSObject.Properties)) {
+        if ($property.Name -ne 'handoff_sha256') {
+            $canonicalDocument[$property.Name] = $property.Value
+        }
+    }
+    $canonicalHash = Get-JsonSha256 -Value $canonicalDocument
+    if (-not [string]::Equals($storedHash, $canonicalHash, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $resolvedPath -Field 'handoff_sha256' -Expected $canonicalHash -Received $storedHash -Evidence @{ handoff_path = $resolvedPath; file_sha256 = $expectedHash }
+    }
+    $expectedContent = ($document | ConvertTo-Json -Depth 40) + "`n"
+    $actualContent = [System.IO.File]::ReadAllText($resolvedPath, (New-Object System.Text.UTF8Encoding($false)))
+    if (-not [string]::Equals($actualContent, $expectedContent, [StringComparison]::Ordinal)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $resolvedPath -Field 'handoff_bytes' -Expected $expectedContent.Length -Received $actualContent.Length -Evidence @{ handoff_path = $resolvedPath; file_sha256 = $expectedHash }
+    }
+    return [pscustomobject]@{
+        Path = $resolvedPath
+        Sha256 = $expectedHash
+        Document = $document
+    }
+}
+
+function Get-RecoveryRebuildReason {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [string]$RequestedReason,
+
+        [AllowNull()]
+        [psobject]$Record,
+
+        [Parameter(Mandatory)]
+        [psobject]$EventEvidence
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($RequestedReason)) {
+        return $RequestedReason
+    }
+    if ($EventEvidence.usage_limit -eq $true) {
+        return 'usage-limit-no-last-message'
+    }
+    if ($null -ne $Record -and $Record.launch_state -eq 'launch-failed') {
+        return 'launch-failed'
+    }
+    if ($EventEvidence.last_event_type -eq 'turn.started') {
+        return 'unknown-interruption'
+    }
+    return 'unknown-interruption'
+}
+
+function Resolve-RecoveryHandoffBinding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [AllowNull()]
+        [psobject]$ValidationContext
+    )
+
+    $handoff = Read-RecoveryHandoff -Path $Path -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $document = $handoff.Document
+    $expectedExecutionRoot = Resolve-AbsolutePath -Path $ExecutionRoot
+    $documentDispatchRoot = [string](Get-DispatchJsonProperty -Object $document -Name 'dispatch_root')
+    $resolvedDocumentDispatchRoot = $null
+    try {
+        $resolvedDocumentDispatchRoot = Resolve-AbsolutePath -Path $documentDispatchRoot
+    }
+    catch {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffCrossLine' -HandoffPath $handoff.Path -Field 'dispatch_root' -Expected $expectedExecutionRoot -Received $documentDispatchRoot -Evidence @{ handoff_path = $handoff.Path }
+    }
+    if ([string]::IsNullOrWhiteSpace($documentDispatchRoot) -or -not [string]::Equals($resolvedDocumentDispatchRoot, $expectedExecutionRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffCrossLine' -HandoffPath $handoff.Path -Field 'dispatch_root' -Expected $expectedExecutionRoot -Received $resolvedDocumentDispatchRoot -Evidence @{ handoff_path = $handoff.Path }
+    }
+    $eligibility = Get-DispatchJsonProperty -Object $document -Name 'recovery_eligibility'
+    $eligibilityStatus = [string](Get-DispatchJsonProperty -Object $eligibility -Name 'status')
+    if ($eligibilityStatus -ne 'ready') {
+        $codes = @((Get-DispatchJsonProperty -Object $eligibility -Name 'rejection_codes'))
+        if ($codes -contains 'InterruptedUnknownResumeRejected') {
+            Throw-RecoveryHandoffValidation -Code 'InterruptedUnknownResumeRejected' -HandoffPath $handoff.Path -Field 'recovery_eligibility' -Expected ([ordered]@{ resume_eligible = $false; process_started = $false; cold_start_recommended = $true; new_dispatch_worktree_required = $true }) -Received $eligibility -Evidence ([ordered]@{ rejection_codes = $codes; process_started = $false; cold_start_recommended = $true; new_dispatch_worktree_required = $true })
+        }
+        throw 'RecoveryBlocked：RecoveryHandoff 不具備啟動資格；rejection_codes=' + ($codes -join ',')
+    }
+    $acceptance = Get-DispatchJsonProperty -Object $document -Name 'deliverable_acceptance'
+    if ([bool](Get-DispatchJsonProperty -Object $acceptance -Name 'accepted') -or [string](Get-DispatchJsonProperty -Object $acceptance -Name 'status') -eq 'accepted') {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffUnsupportedCompletion' -HandoffPath $handoff.Path -Field 'deliverable_acceptance' -Expected 'pending or not-eligible' -Received (Get-DispatchJsonProperty -Object $acceptance -Name 'status') -Evidence @{ handoff_path = $handoff.Path }
+    }
+    if ($null -eq $ValidationContext) {
+        return $handoff
+    }
+
+    $currentRecord = Get-DispatchJsonProperty -Object $ValidationContext -Name 'current_record'
+    $currentChain = Get-DispatchJsonProperty -Object $ValidationContext -Name 'current_chain'
+    if ($null -eq $currentRecord -or $null -eq $currentChain) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffNoChain' -HandoffPath $handoff.Path -Field 'current_run_chain' -Expected 'current RunRecord chain with anchor' -Received 'missing' -Evidence @{ handoff_path = $handoff.Path; process_started = $false }
+    }
+    $currentInterruptedUnknownRecords = @((Get-DispatchJsonProperty -Object $currentChain -Name 'interrupted_unknown_records'))
+    if ($currentInterruptedUnknownRecords.Count -gt 0) {
+        Throw-RecoveryHandoffValidation -Code 'InterruptedUnknownResumeRejected' -HandoffPath $handoff.Path -Field 'current_run_chain' -Expected ([ordered]@{ resume_eligible = $false; process_started = $false; cold_start_recommended = $true; new_dispatch_worktree_required = $true }) -Received ([ordered]@{ interrupted_unknown_records = $currentInterruptedUnknownRecords; process_started = $false; cold_start_recommended = $true; new_dispatch_worktree_required = $true }) -Evidence ([ordered]@{ current_chain = $currentChain; process_started = $false; cold_start_recommended = $true; new_dispatch_worktree_required = $true })
+    }
+    $handoffChain = Get-DispatchJsonProperty -Object $document -Name 'run_chain'
+    $currentAnchor = Get-DispatchJsonProperty -Object $currentChain -Name 'anchor'
+    $handoffAnchorId = [string](Get-DispatchJsonProperty -Object $handoffChain -Name 'anchor_run_id')
+    $currentAnchorId = if ($null -eq $currentAnchor) { '' } else { [string](Get-DispatchJsonProperty -Object $currentAnchor -Name 'run_id') }
+    if ([string]::IsNullOrWhiteSpace($handoffAnchorId) -or [string]::IsNullOrWhiteSpace($currentAnchorId)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffNoChain' -HandoffPath $handoff.Path -Field 'run_chain.anchor_run_id' -Expected 'non-empty anchor' -Received @{ handoff = $handoffAnchorId; current = $currentAnchorId } -Evidence @{ handoff_chain = $handoffChain; current_chain = $currentChain }
+    }
+    $handoffLatestId = [string](Get-DispatchJsonProperty -Object $handoffChain -Name 'latest_run_id')
+    $currentLatest = Get-DispatchJsonProperty -Object $currentChain -Name 'latest'
+    $currentLatestId = if ($null -eq $currentLatest) { '' } else { [string](Get-DispatchJsonProperty -Object $currentLatest -Name 'run_id') }
+    if ($handoffAnchorId -cne $currentAnchorId -or $handoffLatestId -cne $currentLatestId) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffNoChain' -HandoffPath $handoff.Path -Field 'run_chain' -Expected @{ anchor_run_id = $handoffAnchorId; latest_run_id = $handoffLatestId } -Received @{ anchor_run_id = $currentAnchorId; latest_run_id = $currentLatestId } -Evidence @{ handoff_chain = $handoffChain; current_chain = $currentChain }
+    }
+    $currentChainFingerprint = [string](Get-DispatchJsonProperty -Object $currentChain -Name 'fingerprint')
+    $handoffChainFingerprint = [string](Get-DispatchJsonProperty -Object $handoffChain -Name 'chain_fingerprint')
+    if ([string]::IsNullOrWhiteSpace($currentChainFingerprint) -or $handoffChainFingerprint -ine $currentChainFingerprint) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'run_chain.chain_fingerprint' -Expected $handoffChainFingerprint -Received $currentChainFingerprint -Evidence @{ handoff_chain = $handoffChain; current_chain = $currentChain }
+    }
+
+    $currentRunRecordPath = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'current_run_record_path')
+    if ([string]::IsNullOrWhiteSpace($currentRunRecordPath)) {
+        $currentRunRecordPath = Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($currentLatestId + '.json')
+    }
+    $handoffLatestPath = [string](Get-DispatchJsonProperty -Object $handoffChain -Name 'latest_run_record_path')
+    if (-not [string]::Equals((Resolve-AbsolutePath -Path $handoffLatestPath), (Resolve-AbsolutePath -Path $currentRunRecordPath), [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'run_chain.latest_run_record_path' -Expected $handoffLatestPath -Received $currentRunRecordPath -Evidence @{ handoff_chain = $handoffChain; current_run_record_path = $currentRunRecordPath }
+    }
+    if (-not (Test-Path -LiteralPath $currentRunRecordPath -PathType Leaf)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'run_chain.latest_run_record' -Expected 'existing file' -Received 'missing' -Evidence @{ path = $currentRunRecordPath }
+    }
+    $currentRunRecordHash = Get-FileSha256 -Path $currentRunRecordPath
+    $handoffLatestHash = [string](Get-DispatchJsonProperty -Object $handoffChain -Name 'latest_run_record_sha256')
+    if ($handoffLatestHash -ine $currentRunRecordHash) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'run_chain.latest_run_record_sha256' -Expected $handoffLatestHash -Received $currentRunRecordHash -Evidence @{ path = $currentRunRecordPath }
+    }
+    $handoffAnchorPath = [string](Get-DispatchJsonProperty -Object $handoffChain -Name 'anchor_run_record_path')
+    $currentAnchorPath = [string](Get-DispatchJsonProperty -Object $currentAnchor -Name 'path')
+    if ([string]::IsNullOrWhiteSpace($currentAnchorPath)) {
+        $currentAnchorPath = Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($currentAnchorId + '.json')
+    }
+    $handoffAnchorHash = [string](Get-DispatchJsonProperty -Object $handoffChain -Name 'anchor_run_record_sha256')
+    $currentAnchorHash = [string](Get-DispatchJsonProperty -Object $currentAnchor -Name 'sha256')
+    if ([string]::IsNullOrWhiteSpace($currentAnchorHash) -and (Test-Path -LiteralPath $currentAnchorPath -PathType Leaf)) {
+        $currentAnchorHash = Get-FileSha256 -Path $currentAnchorPath
+    }
+    if ($handoffAnchorHash -ine $currentAnchorHash) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'run_chain.anchor_run_record_sha256' -Expected $handoffAnchorHash -Received $currentAnchorHash -Evidence @{ path = $currentAnchorPath }
+    }
+
+    $currentEventPath = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'current_event_path')
+    if ([string]::IsNullOrWhiteSpace($currentEventPath)) {
+        $currentEventPath = [string](Get-DispatchJsonProperty -Object $currentRecord -Name 'event_stream_path')
+    }
+    $handoffEventEvidence = Get-DispatchJsonProperty -Object $document -Name 'event_evidence'
+    $handoffEventPath = [string](Get-DispatchJsonProperty -Object $handoffEventEvidence -Name 'event_stream_path')
+    if (-not [string]::Equals((Resolve-AbsolutePath -Path $handoffEventPath), (Resolve-AbsolutePath -Path $currentEventPath), [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'event_evidence.event_stream_path' -Expected $handoffEventPath -Received $currentEventPath -Evidence @{ handoff_event = $handoffEventEvidence; current_event_path = $currentEventPath }
+    }
+    if (-not (Test-Path -LiteralPath $currentEventPath -PathType Leaf)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'event_evidence.event_stream' -Expected 'existing file' -Received 'missing' -Evidence @{ path = $currentEventPath }
+    }
+    $currentEventHash = Get-FileSha256 -Path $currentEventPath
+    $handoffEventHash = [string](Get-DispatchJsonProperty -Object $handoffEventEvidence -Name 'event_stream_sha256')
+    if ($handoffEventHash -ine $currentEventHash) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'event_evidence.event_stream_sha256' -Expected $handoffEventHash -Received $currentEventHash -Evidence @{ path = $currentEventPath }
+    }
+
+    $handoffScope = Get-DispatchJsonProperty -Object $document -Name 'scope'
+    $currentScopePath = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'scope_path')
+    if ([string]::IsNullOrWhiteSpace($currentScopePath)) {
+        $currentScopePath = [string](Get-DispatchJsonProperty -Object $currentRecord -Name 'scope_plan_path')
+    }
+    $currentScopeHash = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'scope_hash')
+    if ([string]::IsNullOrWhiteSpace($currentScopeHash)) {
+        $currentScopeHash = [string](Get-DispatchJsonProperty -Object $currentRecord -Name 'scope_plan_sha256')
+    }
+    $currentScopePlan = Get-DispatchJsonProperty -Object $ValidationContext -Name 'scope_plan'
+    if ($null -eq $currentScopePlan -and -not [string]::IsNullOrWhiteSpace($currentScopePath) -and (Test-Path -LiteralPath $currentScopePath -PathType Leaf)) {
+        $currentScopePlan = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $currentScopePath -Raw -Encoding UTF8)
+    }
+    if ($null -eq $currentScopePlan -or [string](Get-DispatchJsonProperty -Object $handoffScope -Name 'status') -ne 'confirmed') {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffScopeMismatch' -HandoffPath $handoff.Path -Field 'scope' -Expected 'confirmed current ScopePlan' -Received @{ handoff_status = Get-DispatchJsonProperty -Object $handoffScope -Name 'status'; current_path = $currentScopePath } -Evidence @{ handoff_scope = $handoffScope }
+    }
+    $handoffScopePath = [string](Get-DispatchJsonProperty -Object $handoffScope -Name 'path')
+    if (-not [string]::Equals((Resolve-AbsolutePath -Path $handoffScopePath), (Resolve-AbsolutePath -Path $currentScopePath), [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffScopeMismatch' -HandoffPath $handoff.Path -Field 'scope.path' -Expected $handoffScopePath -Received $currentScopePath -Evidence @{ handoff_scope = $handoffScope }
+    }
+    if (-not (Test-Path -LiteralPath $currentScopePath -PathType Leaf)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffScopeMismatch' -HandoffPath $handoff.Path -Field 'scope.path' -Expected 'existing file' -Received 'missing' -Evidence @{ path = $currentScopePath }
+    }
+    $actualScopeHash = Get-FileSha256 -Path $currentScopePath
+    $handoffScopeHash = [string](Get-DispatchJsonProperty -Object $handoffScope -Name 'sha256')
+    if ($handoffScopeHash -ine $actualScopeHash -or (-not [string]::IsNullOrWhiteSpace($currentScopeHash) -and $currentScopeHash -ine $actualScopeHash)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'scope.sha256' -Expected $handoffScopeHash -Received $actualScopeHash -Evidence @{ path = $currentScopePath }
+    }
+    $currentScopeFingerprint = [string](Get-DispatchJsonProperty -Object $currentScopePlan -Name 'scope_plan_fingerprint')
+    $handoffScopeFingerprint = [string](Get-DispatchJsonProperty -Object $handoffScope -Name 'fingerprint')
+    $currentSelectedUnits = @((Get-DispatchJsonProperty -Object $currentScopePlan -Name 'selected_units'))
+    $currentDeferredUnits = @((Get-DispatchJsonProperty -Object $currentScopePlan -Name 'deferred_units'))
+    $handoffSelectedUnits = @((Get-DispatchJsonProperty -Object $handoffScope -Name 'selected_units'))
+    $handoffDeferredUnits = @((Get-DispatchJsonProperty -Object $handoffScope -Name 'deferred_units'))
+    if ($handoffScopeFingerprint -cne $currentScopeFingerprint -or -not (Test-RecoveryHandoffArrayEqual -Left $handoffSelectedUnits -Right $currentSelectedUnits) -or -not (Test-RecoveryHandoffArrayEqual -Left $handoffDeferredUnits -Right $currentDeferredUnits)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffScopeMismatch' -HandoffPath $handoff.Path -Field 'scope.fingerprint/units' -Expected @{ fingerprint = $handoffScopeFingerprint; selected_units = $handoffSelectedUnits; deferred_units = $handoffDeferredUnits } -Received @{ fingerprint = $currentScopeFingerprint; selected_units = $currentSelectedUnits; deferred_units = $currentDeferredUnits } -Evidence @{ handoff_scope = $handoffScope; current_scope_path = $currentScopePath }
+    }
+
+    $handoffBaseline = Get-DispatchJsonProperty -Object $document -Name 'baseline'
+    $currentBaselineStatus = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'baseline_status')
+    $currentBaselinePath = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'baseline_path')
+    $currentBaselineHash = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'baseline_hash')
+    $handoffBaselineStatus = [string](Get-DispatchJsonProperty -Object $handoffBaseline -Name 'status')
+    if ([string]::Equals($SourceRoot, $ExecutionRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        if ($handoffBaselineStatus -ne 'not-applicable' -or $currentBaselineStatus -ne 'not-applicable') {
+            Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffBaselineUnknown' -HandoffPath $handoff.Path -Field 'baseline.status' -Expected 'not-applicable' -Received @{ handoff = $handoffBaselineStatus; current = $currentBaselineStatus } -Evidence @{ relation = 'direct-write' }
+        }
+    }
+    else {
+        $handoffBaselinePath = [string](Get-DispatchJsonProperty -Object $handoffBaseline -Name 'path')
+        $handoffBaselineHash = [string](Get-DispatchJsonProperty -Object $handoffBaseline -Name 'sha256')
+        if ($handoffBaselineStatus -ne 'confirmed' -or $currentBaselineStatus -ne 'confirmed' -or [string]::IsNullOrWhiteSpace($currentBaselinePath) -or [string]::IsNullOrWhiteSpace($currentBaselineHash)) {
+            Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffBaselineUnknown' -HandoffPath $handoff.Path -Field 'baseline' -Expected 'confirmed baseline' -Received @{ handoff = $handoffBaseline; current = @{ status = $currentBaselineStatus; path = $currentBaselinePath; sha256 = $currentBaselineHash } } -Evidence @{ relation = 'worktree' }
+        }
+        if (-not [string]::Equals((Resolve-AbsolutePath -Path $handoffBaselinePath), (Resolve-AbsolutePath -Path $currentBaselinePath), [StringComparison]::OrdinalIgnoreCase) -or $handoffBaselineHash -ine $currentBaselineHash) {
+            Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'baseline.path/sha256' -Expected @{ path = $handoffBaselinePath; sha256 = $handoffBaselineHash } -Received @{ path = $currentBaselinePath; sha256 = $currentBaselineHash } -Evidence @{ relation = 'worktree' }
+        }
+        if (-not (Test-Path -LiteralPath $currentBaselinePath -PathType Leaf) -or (Get-FileSha256 -Path $currentBaselinePath) -ine $currentBaselineHash) {
+            Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffBaselineUnknown' -HandoffPath $handoff.Path -Field 'baseline' -Expected $currentBaselineHash -Received 'file missing or hash unavailable' -Evidence @{ path = $currentBaselinePath }
+        }
+    }
+
+    $handoffProcessGate = Get-DispatchJsonProperty -Object $document -Name 'process_gate'
+    $currentProcessGate = Get-DispatchJsonProperty -Object $ValidationContext -Name 'process_gate'
+    $handoffActiveRecords = @((Get-DispatchJsonProperty -Object $handoffProcessGate -Name 'active_records'))
+    $currentActiveRecords = @((Get-DispatchJsonProperty -Object $currentProcessGate -Name 'active_records'))
+    $processInvalid = [string](Get-DispatchJsonProperty -Object $handoffProcessGate -Name 'status') -ne 'stopped' -or
+        [string](Get-DispatchJsonProperty -Object $currentProcessGate -Name 'status') -ne 'stopped' -or
+        [bool](Get-DispatchJsonProperty -Object $handoffProcessGate -Name 'stopped_evidence') -ne $true -or
+        [bool](Get-DispatchJsonProperty -Object $currentProcessGate -Name 'stopped_evidence') -ne $true -or
+        $handoffActiveRecords.Count -gt 0 -or
+        $currentActiveRecords.Count -gt 0
+    if ($processInvalid) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffProcessAlive' -HandoffPath $handoff.Path -Field 'process_gate' -Expected @{ status = 'stopped'; active_records = @() } -Received @{ handoff = $handoffProcessGate; current = $currentProcessGate } -Evidence @{ process_started = $false }
+    }
+
+    $handoffAclGate = Get-DispatchJsonProperty -Object $document -Name 'acl_gate'
+    $currentAclGate = Get-DispatchJsonProperty -Object $ValidationContext -Name 'acl_gate'
+    $handoffAclStatus = [string](Get-DispatchJsonProperty -Object $handoffAclGate -Name 'status')
+    $currentAclStatus = [string](Get-DispatchJsonProperty -Object $currentAclGate -Name 'status')
+    if ($handoffAclStatus -eq 'residue' -or $currentAclStatus -eq 'residue') {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffAclResidue' -HandoffPath $handoff.Path -Field 'acl_gate' -Expected 'clean or not-applicable' -Received @{ handoff = $handoffAclGate; current = $currentAclGate } -Evidence @{ residue = Get-DispatchJsonProperty -Object $currentAclGate -Name 'residue' }
+    }
+    if ($handoffAclStatus -eq 'unknown' -or $currentAclStatus -eq 'unknown' -or $handoffAclStatus -notin @('clean', 'not-applicable') -or $currentAclStatus -notin @('clean', 'not-applicable')) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffAclUnknown' -HandoffPath $handoff.Path -Field 'acl_gate' -Expected 'known clean or not-applicable' -Received @{ handoff = $handoffAclGate; current = $currentAclGate } -Evidence @{ handoff = $handoffAclGate; current = $currentAclGate }
+    }
+    if ($handoffAclStatus -ne $currentAclStatus) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'acl_gate.status' -Expected $handoffAclStatus -Received $currentAclStatus -Evidence @{ handoff = $handoffAclGate; current = $currentAclGate }
+    }
+
+    $handoffModelEvidence = Get-DispatchJsonProperty -Object $document -Name 'model_evidence'
+    if ($null -eq $handoffModelEvidence) {
+        $handoffModelEvidence = Get-DispatchJsonProperty -Object $currentAnchor -Name 'model_evidence'
+    }
+    $currentModelEvidence = Get-DispatchJsonProperty -Object $ValidationContext -Name 'model_evidence'
+    $handoffResolvedModel = Get-DispatchEvidenceValue -Evidence (Get-DispatchJsonProperty -Object $handoffModelEvidence -Name 'resolved')
+    $currentResolvedModel = Get-DispatchEvidenceValue -Evidence (Get-DispatchJsonProperty -Object $currentModelEvidence -Name 'resolved')
+    $resumeDiagnostics = Get-DispatchJsonProperty -Object $ValidationContext -Name 'resume_diagnostics'
+    $resumeStatus = [string](Get-DispatchJsonProperty -Object $resumeDiagnostics -Name 'status')
+    if ($resumeStatus -eq 'mismatch') {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffModelMismatch' -HandoffPath $handoff.Path -Field 'model_evidence' -Expected $handoffModelEvidence -Received $resumeDiagnostics -Evidence @{ handoff_model = $handoffModelEvidence; current_model = $currentModelEvidence }
+    }
+    if ($resumeStatus -eq 'unknown' -or [string]::IsNullOrWhiteSpace($handoffResolvedModel) -or [string]::IsNullOrWhiteSpace($currentResolvedModel)) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffModelUnknown' -HandoffPath $handoff.Path -Field 'model_evidence' -Expected 'resolved model evidence' -Received @{ handoff = $handoffModelEvidence; current = $currentModelEvidence; diagnostics = $resumeDiagnostics } -Evidence @{ handoff_path = $handoff.Path }
+    }
+    if ($handoffResolvedModel -cne $currentResolvedModel) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffModelMismatch' -HandoffPath $handoff.Path -Field 'model_evidence.resolved' -Expected $handoffResolvedModel -Received $currentResolvedModel -Evidence @{ handoff_model = $handoffModelEvidence; current_model = $currentModelEvidence }
+    }
+
+    $handoffParentOptions = Get-DispatchJsonProperty -Object $document -Name 'parent_options'
+    $currentParentOptions = Get-DispatchJsonProperty -Object $ValidationContext -Name 'parent_options'
+    if ([string](Get-DispatchJsonProperty -Object $handoffParentOptions -Name 'status') -ne 'confirmed' -or $null -eq $currentParentOptions) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffParentOptionsMismatch' -HandoffPath $handoff.Path -Field 'parent_options' -Expected 'confirmed matching parent options' -Received @{ handoff = $handoffParentOptions; current = $currentParentOptions } -Evidence @{ handoff_path = $handoff.Path }
+    }
+    $parentComparison = Compare-ParentOptions -Current $currentParentOptions -Anchor (Get-DispatchJsonProperty -Object $handoffParentOptions -Name 'value')
+    $handoffParentFingerprint = [string](Get-DispatchJsonProperty -Object $handoffParentOptions -Name 'fingerprint')
+    $currentParentFingerprint = [string](Get-DispatchJsonProperty -Object $currentParentOptions -Name 'fingerprint')
+    if (-not $parentComparison.matches -or $handoffParentFingerprint -cne $currentParentFingerprint) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffParentOptionsMismatch' -HandoffPath $handoff.Path -Field 'parent_options' -Expected @{ fingerprint = $handoffParentFingerprint; value = Get-DispatchJsonProperty -Object $handoffParentOptions -Name 'value' } -Received @{ fingerprint = $currentParentFingerprint; value = $currentParentOptions; differences = $parentComparison.differences } -Evidence @{ differences = $parentComparison.differences }
+    }
+
+    $handoffAuthorization = Get-DispatchJsonProperty -Object $document -Name 'authorization'
+    $currentAuthorizedUnits = @((Get-DispatchJsonProperty -Object $ValidationContext -Name 'authorized_units'))
+    if ($currentAuthorizedUnits.Count -eq 0) {
+        $currentRequestedUnits = Get-DispatchJsonProperty -Object $currentScopePlan -Name 'requested_units'
+        if ($null -ne $currentRequestedUnits) {
+            $currentAuthorizedUnits = @($currentRequestedUnits)
+        }
+        else {
+            $currentAuthorizedUnits = @($currentSelectedUnits + $currentDeferredUnits)
+        }
+    }
+    $handoffAuthorizedUnits = @((Get-DispatchJsonProperty -Object $handoffAuthorization -Name 'requested_units'))
+    $unitExpansion = $false
+    foreach ($unit in $currentAuthorizedUnits) {
+        if ($handoffAuthorizedUnits -notcontains $unit) {
+            $unitExpansion = $true
+            break
+        }
+    }
+    $handoffUnitExpansion = $false
+    foreach ($unit in $handoffAuthorizedUnits) {
+        if ($currentAuthorizedUnits -notcontains $unit) {
+            $handoffUnitExpansion = $true
+            break
+        }
+    }
+    if (-not (Test-RecoveryHandoffArrayEqual -Left $handoffAuthorizedUnits -Right $currentAuthorizedUnits)) {
+        $authorizationCode = if ($unitExpansion -or $handoffUnitExpansion) { 'RecoveryHandoffAuthorizationExpansion' } else { 'RecoveryHandoffScopeMismatch' }
+        Throw-RecoveryHandoffValidation -Code $authorizationCode -HandoffPath $handoff.Path -Field 'authorization.requested_units' -Expected $handoffAuthorizedUnits -Received $currentAuthorizedUnits -Evidence @{ original_authorization = $handoffAuthorizedUnits; current_authorization = $currentAuthorizedUnits }
+    }
+    $targetPathsProvided = [bool](Get-DispatchJsonProperty -Object $ValidationContext -Name 'target_paths_provided')
+    if ($targetPathsProvided) {
+        $handoffTargetPaths = @((Get-DispatchJsonProperty -Object $handoffAuthorization -Name 'allowed_write_scope'))
+        $currentTargetPaths = @((Get-DispatchJsonProperty -Object $ValidationContext -Name 'target_paths'))
+        if (-not (Test-RecoveryHandoffArrayEqual -Left $handoffTargetPaths -Right $currentTargetPaths)) {
+            Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffAuthorizationExpansion' -HandoffPath $handoff.Path -Field 'authorization.allowed_write_scope' -Expected $handoffTargetPaths -Received $currentTargetPaths -Evidence @{ original_authorization = $handoffTargetPaths; current_authorization = $currentTargetPaths }
+        }
+    }
+    $handoffOrderPath = [string](Get-DispatchJsonProperty -Object $handoffAuthorization -Name 'dispatch_order_path')
+    $handoffOrderHash = [string](Get-DispatchJsonProperty -Object $handoffAuthorization -Name 'dispatch_order_sha256')
+    $currentOrderPath = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'dispatch_order_path')
+    $currentOrderHash = [string](Get-DispatchJsonProperty -Object $ValidationContext -Name 'dispatch_order_hash')
+    if ($handoffOrderPath -ne 'not-specified' -and -not [string]::IsNullOrWhiteSpace($currentOrderPath) -and $handoffOrderPath -ine $currentOrderPath) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffAuthorizationExpansion' -HandoffPath $handoff.Path -Field 'authorization.dispatch_order_path' -Expected $handoffOrderPath -Received $currentOrderPath -Evidence @{ original_authorization = $handoffAuthorization; current_authorization = $ValidationContext }
+    }
+    if ($handoffOrderHash -ne $null -and -not [string]::IsNullOrWhiteSpace($handoffOrderHash) -and -not [string]::IsNullOrWhiteSpace($currentOrderHash) -and $handoffOrderHash -ine $currentOrderHash) {
+        Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffHashMismatch' -HandoffPath $handoff.Path -Field 'authorization.dispatch_order_sha256' -Expected $handoffOrderHash -Received $currentOrderHash -Evidence @{ dispatch_order_path = $handoffOrderPath }
+    }
+
+    return $handoff
+}
+
+function Invoke-RecoveryHandoff {
+    [CmdletBinding()]
+    param()
+
+    if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($ExecutionRoot) -or [string]::IsNullOrWhiteSpace($LineSlug) -or [string]::IsNullOrWhiteSpace($DispatchSlug)) {
+        throw 'RecoveryHandoff 必須提供 SourceRoot、ExecutionRoot、LineSlug 與 DispatchSlug。'
+    }
+    if ([string]::IsNullOrWhiteSpace($RunRecordPath)) {
+        throw 'RecoveryHandoff 必須提供 RunRecordPath。'
+    }
+    $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
+    $executionRootPath = Resolve-AbsolutePath -Path $ExecutionRoot
+    $recordPath = Resolve-AbsolutePath -Path $RunRecordPath
+    $record = Read-DispatchRunRecord -Path $recordPath -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $manifestInfo = Read-LineManifest -SourceRoot $sourceRootPath -LineSlug $LineSlug
+    $eventEvidence = Get-DispatchEventEvidence -EventPath $record.event_stream_path
+    $rawEventLineList = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($rawLine in @($eventEvidence.raw_lines)) {
+        if ($rawLine -is [string]) { $rawEventLineList.Add([string]$rawLine) } else { $rawEventLineList.Add([string](Get-DispatchJsonProperty -Object $rawLine -Name 'raw')) }
+    }
+    $rawEventLines = @($rawEventLineList.ToArray())
+    $failure = Get-DispatchJsonProperty -Object $record -Name 'failure'
+    $rebuildReason = Get-RecoveryRebuildReason -RequestedReason $RebuildReason -Record $record -EventEvidence $eventEvidence
+    $lastMessageEvidence = Get-DispatchFileEvidenceSafe -Path $record.last_message_path -Name 'last_message'
+    $errorPath = $ErrorStreamPath
+    if ([string]::IsNullOrWhiteSpace($errorPath) -and $null -ne $failure) {
+        $originalOutput = Get-DispatchJsonProperty -Object $failure -Name 'original_output'
+        $stderrEvidence = Get-DispatchJsonProperty -Object $originalOutput -Name 'stderr'
+        $errorPath = [string](Get-DispatchJsonProperty -Object $stderrEvidence -Name 'path')
+    }
+    $stderrEvidence = Get-DispatchFileEvidenceSafe -Path $errorPath -Name 'stderr'
+    $stdoutEvidence = Get-DispatchFileEvidenceSafe -Path $StdoutPath -Name 'stdout'
+    $lastMessageText = ''
+    if ($lastMessageEvidence.exists) {
+        $lastMessageText = Get-Content -LiteralPath $lastMessageEvidence.path -Raw -Encoding UTF8
+    }
+    $processResult = Get-PidCheckResult -SourceRoot $sourceRootPath -LineSlug $LineSlug -WriteMode $WriteMode
+    $activeRecords = @()
+    if ($null -ne $processResult) {
+        $activeRecordsValue = Get-DispatchJsonProperty -Object $processResult -Name 'ActiveRecords'
+        if ($null -ne $activeRecordsValue) {
+            $activeRecords = @($activeRecordsValue | Where-Object { [string](Get-DispatchJsonProperty -Object $_ -Name 'DispatchSlug') -eq $DispatchSlug })
+        }
+    }
+    $processAlive = @($activeRecords).Count -gt 0
+    $processGate = [ordered]@{
+        status = if ($processAlive) { 'alive' } else { 'stopped' }
+        pid_check = $processResult
+        active_records = @($activeRecords)
+        stopped_evidence = -not $processAlive
+    }
+    $writeModeValue = if ([string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase)) { 'direct-write' } else { 'worktree' }
+    $aclGate = Get-WorktreeAclGate -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -WriteMode $writeModeValue
+    $chain = Get-RecoveryChainModel -LatestRecord $record -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $interruptedUnknownRecords = @((Get-DispatchJsonProperty -Object $chain -Name 'interrupted_unknown_records'))
+    $scopePath = [string](Get-DispatchJsonProperty -Object $record -Name 'scope_plan_path')
+    $scopeHash = [string](Get-DispatchJsonProperty -Object $record -Name 'scope_plan_sha256')
+    $scopePlan = $null
+    $scopeStatus = 'unknown'
+    if (-not [string]::IsNullOrWhiteSpace($scopePath) -and (Test-Path -LiteralPath $scopePath -PathType Leaf) -and $scopeHash -match '^[a-fA-F0-9]{64}$') {
+        if ((Get-FileSha256 -Path $scopePath) -ine $scopeHash) {
+            $scopeStatus = 'mismatch'
+        }
+        else {
+            $scopePlan = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $scopePath -Raw -Encoding UTF8)
+            $scopeStatus = 'confirmed'
+        }
+    }
+    $baselinePath = [string](Get-DispatchJsonProperty -Object $record -Name 'baseline_path')
+    $baselineHash = [string](Get-DispatchJsonProperty -Object $record -Name 'baseline_sha256')
+    $baselineStatus = if ([string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase)) { 'not-applicable' } elseif (-not [string]::IsNullOrWhiteSpace($baselinePath) -and $baselineHash -match '^[a-fA-F0-9]{64}$' -and (Test-Path -LiteralPath $baselinePath -PathType Leaf) -and (Get-FileSha256 -Path $baselinePath) -ieq $baselineHash) { 'confirmed' } else { 'unknown' }
+    $parentOptions = Get-DispatchJsonProperty -Object $record -Name 'parent_options'
+    $parentOptionsStatus = if ($null -eq $parentOptions) { 'unknown' } else { [string](Get-DispatchJsonProperty -Object $record -Name 'parent_options_status') }
+    $modelEvidence = Get-DispatchJsonProperty -Object $record -Name 'model_evidence'
+    $modelResolvedEvidence = Get-DispatchJsonProperty -Object $modelEvidence -Name 'resolved'
+    $modelValue = Get-DispatchEvidenceValue -Evidence $modelResolvedEvidence
+    $modelStatus = if ([string]::IsNullOrWhiteSpace($modelValue)) { 'unknown' } else { 'confirmed' }
+    $rejectionCodes = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::Equals($record.line_slug, $LineSlug, [StringComparison]::Ordinal)) { $rejectionCodes.Add('RecoveryHandoffCrossLine') }
+    if (-not [string]::Equals($record.dispatch_slug, $DispatchSlug, [StringComparison]::Ordinal)) { $rejectionCodes.Add('RecoveryHandoffCrossLine') }
+    if (-not $eventEvidence.exists) { $rejectionCodes.Add('RecoveryHandoffHashMismatch') }
+    if ($null -eq $chain.anchor) { $rejectionCodes.Add('RecoveryHandoffNoChain') }
+    if ($interruptedUnknownRecords.Count -gt 0) { $rejectionCodes.Add('InterruptedUnknownResumeRejected') }
+    if ($processAlive) { $rejectionCodes.Add('RecoveryHandoffProcessAlive') }
+    if ($aclGate.status -eq 'residue') { $rejectionCodes.Add('RecoveryHandoffAclResidue') }
+    elseif ($aclGate.status -eq 'unknown') { $rejectionCodes.Add('RecoveryHandoffAclUnknown') }
+    if ($scopeStatus -eq 'mismatch') { $rejectionCodes.Add('RecoveryHandoffHashMismatch') }
+    elseif ($scopeStatus -ne 'confirmed') { $rejectionCodes.Add('RecoveryHandoffScopeMismatch') }
+    if ($baselineStatus -eq 'unknown') { $rejectionCodes.Add('RecoveryHandoffBaselineUnknown') }
+    if ($parentOptionsStatus -ne 'confirmed') { $rejectionCodes.Add('RecoveryHandoffParentOptionsMismatch') }
+    if ($modelStatus -ne 'confirmed') { $rejectionCodes.Add('RecoveryHandoffModelUnknown') }
+    if ($lastMessageText -match '(?im)deliverable[_ -]?acceptance\s*[:=].*accepted|acceptance\s*[:=].*accepted') { $rejectionCodes.Add('RecoveryHandoffUnsupportedCompletion') }
+    $rejectionCodes = @($rejectionCodes | Sort-Object -Unique)
+    $selectedUnits = if ($null -ne $scopePlan) { @((Get-DispatchJsonProperty -Object $scopePlan -Name 'selected_units')) } else { @() }
+    $deferredUnits = if ($null -ne $scopePlan) { @((Get-DispatchJsonProperty -Object $scopePlan -Name 'deferred_units')) } else { @() }
+    $unknownUnits = if ($lastMessageEvidence.exists) { @() } else { @($selectedUnits) }
+    $historyRoot = Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history'
+    $historyLineRoot = Join-Path -Path $historyRoot -ChildPath $LineSlug
+    $recoveryId = $RecoveryHandoffId
+    if ([string]::IsNullOrWhiteSpace($recoveryId)) {
+        $recoveryId = ([guid]::NewGuid().ToString('N')).ToLowerInvariant()
+    }
+    if ($recoveryId -notmatch '^[a-f0-9]{32}$') {
+        throw 'RecoveryHandoff recovery_id 必須為小寫十六進位 UUID。'
+    }
+    $handoffPathValue = $RecoveryHandoffPath
+    if ([string]::IsNullOrWhiteSpace($handoffPathValue)) {
+        $handoffPathValue = Join-Path -Path $historyLineRoot -ChildPath ('recovery-handoff-' + $DispatchSlug + '-' + $recoveryId + '.json')
+    }
+    $dispatchOrderPath = $RequiredIdentifier
+    $dispatchOrderPathValue = 'not-specified'
+    if (-not [string]::IsNullOrWhiteSpace($dispatchOrderPath) -and [System.IO.Path]::IsPathRooted($dispatchOrderPath)) {
+        $dispatchOrderPathValue = Resolve-AbsolutePath -Path $dispatchOrderPath
+    }
+    $requestedAuthorizationUnits = if ($null -ne $scopePlan) {
+        $requestedUnitsValue = Get-DispatchJsonProperty -Object $scopePlan -Name 'requested_units'
+        if ($null -ne $requestedUnitsValue) { @($requestedUnitsValue) } else { @($selectedUnits + $deferredUnits) }
+    }
+    elseif (@($selectedUnits + $deferredUnits).Count -gt 0) {
+        @($selectedUnits + $deferredUnits)
+    }
+    else {
+        @($RequestedUnit)
+    }
+    $allowedWriteScope = @($TargetPath | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    $authorization = [ordered]@{
+        dispatch_order_path = $dispatchOrderPathValue
+        dispatch_order_sha256 = if ($dispatchOrderPathValue -ne 'not-specified' -and (Test-Path -LiteralPath $dispatchOrderPathValue -PathType Leaf)) { Get-FileSha256 -Path $dispatchOrderPathValue } else { $null }
+        requested_units = @($requestedAuthorizationUnits)
+        allowed_write_scope = @($allowedWriteScope)
+    }
+    $aclDocument = [ordered]@{
+        status = [string](Get-DispatchJsonProperty -Object $aclGate -Name 'status')
+        write_mode = [string](Get-DispatchJsonProperty -Object $aclGate -Name 'write_mode')
+        source = Get-DispatchJsonProperty -Object $aclGate -Name 'source'
+        dispatch = Get-DispatchJsonProperty -Object $aclGate -Name 'dispatch'
+        residue = @((Get-DispatchJsonProperty -Object $aclGate -Name 'residue'))
+        unknown_reason = if ([string](Get-DispatchJsonProperty -Object $aclGate -Name 'status') -eq 'unknown') { [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $aclGate -Name 'source') -Name 'error') } else { $null }
+    }
+    $sourceLineRoot = $manifestInfo.SourceLineRoot
+    $dispatchLineRoot = Join-Path -Path $executionRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\handoff' -ChildPath $LineSlug)
+    $auditSources = @(
+        [ordered]@{ source = $recordPath; sha256 = Get-FileSha256 -Path $recordPath; field = 'run_record' }
+        [ordered]@{ source = $record.event_stream_path; sha256 = $eventEvidence.sha256; field = 'event_evidence' }
+        [ordered]@{ source = $sourceLineRoot + '\line.json'; sha256 = Get-FileSha256 -Path ($sourceLineRoot + '\line.json'); field = 'line_manifest' }
+    )
+    $eligibilityStatus = if (@($rejectionCodes).Count -eq 0) { 'ready' } else { 'blocked' }
+    $document = [ordered]@{
+        schema = 'ai-sessions.recovery-handoff.v1'
+        recovery_id = $recoveryId
+        line_slug = $LineSlug
+        dispatch_slug = $DispatchSlug
+        source_root = $sourceRootPath
+        dispatch_root = $executionRootPath
+        dispatch_line_root = $dispatchLineRoot
+        write_mode = $writeModeValue
+        authorization = $authorization
+        model_evidence = $modelEvidence
+        created_at_utc = [datetime]::UtcNow.ToString('o')
+        author_type = 'coordinator'
+        author_id = 'process:' + [string]$PID
+        rebuild_reason = $rebuildReason
+        run_chain = [ordered]@{
+            latest_run_id = $record.run_id
+            latest_run_record_path = $recordPath
+            latest_run_record_sha256 = Get-FileSha256 -Path $recordPath
+            anchor_run_id = if ($null -eq $chain.anchor) { $null } else { $chain.anchor.run_id }
+            anchor_run_record_path = if ($null -eq $chain.anchor) { $null } else { Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($chain.anchor.run_id + '.json') }
+            anchor_run_record_sha256 = if ($null -eq $chain.anchor) { $null } else { Get-FileSha256 -Path (Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ($chain.anchor.run_id + '.json')) }
+            attempt_parent_run_id = $record.run_id
+            previous_run_id = $record.previous_run_id
+            thread_id = $record.thread_id
+            skipped_attempts = @($chain.skipped_attempts)
+            chain_fingerprint = $chain.fingerprint
+        }
+        event_evidence = [ordered]@{
+            event_stream_path = $eventEvidence.path
+            event_stream_sha256 = $eventEvidence.sha256
+            stdout_path = $stdoutEvidence.path
+            stdout_sha256 = $stdoutEvidence.sha256
+            stderr_path = $stderrEvidence.path
+            stderr_sha256 = $stderrEvidence.sha256
+            exit_code = $ProcessExitCode
+            exit_code_status = if ($null -eq $ProcessExitCode) { 'unknown' } else { 'known' }
+            last_message_present = $lastMessageEvidence.exists -and -not [string]::IsNullOrWhiteSpace($lastMessageText)
+            last_message_sha256 = if ($lastMessageEvidence.exists) { $lastMessageEvidence.sha256 } else { $null }
+            event_state = $eventEvidence.event_state
+            raw_event_lines = @($rawEventLines)
+        }
+        baseline = [ordered]@{
+            status = $baselineStatus
+            path = if ([string]::IsNullOrWhiteSpace($baselinePath)) { $null } else { $baselinePath }
+            sha256 = if ([string]::IsNullOrWhiteSpace($baselineHash)) { $null } else { $baselineHash }
+            relation = if ($baselineStatus -eq 'not-applicable') { 'direct-write' } else { 'worktree' }
+        }
+        scope = [ordered]@{
+            status = $scopeStatus
+            path = if ([string]::IsNullOrWhiteSpace($scopePath)) { $null } else { $scopePath }
+            sha256 = if ([string]::IsNullOrWhiteSpace($scopeHash)) { $null } else { $scopeHash }
+            fingerprint = if ($null -eq $scopePlan) { $null } else { [string](Get-DispatchJsonProperty -Object $scopePlan -Name 'scope_plan_fingerprint') }
+            selected_units = @($selectedUnits)
+            deferred_units = @($deferredUnits)
+        }
+        parent_options = if ($null -eq $parentOptions) { [ordered]@{ status = 'unknown'; fingerprint = $null; value = $null } } else { [ordered]@{ status = $parentOptionsStatus; fingerprint = [string](Get-DispatchJsonProperty -Object $parentOptions -Name 'fingerprint'); value = $parentOptions } }
+        process_gate = $processGate
+        acl_gate = $aclDocument
+        progress = [ordered]@{
+            confirmed_facts = @()
+            unfinished_units = @($deferredUnits)
+            unknown_units = @($unknownUnits)
+            completion_declaration_supported = $false
+        }
+        recovery_eligibility = [ordered]@{
+            status = $eligibilityStatus
+            resume_eligible = $eligibilityStatus -eq 'ready'
+            cold_start_eligible = $eligibilityStatus -eq 'ready'
+            process_started = $false
+            cold_start_recommended = $interruptedUnknownRecords.Count -gt 0
+            new_dispatch_worktree_required = $interruptedUnknownRecords.Count -gt 0
+            rejection_codes = @($rejectionCodes)
+            reason = if ($eligibilityStatus -eq 'ready') { '所有恢復 gate 通過。' } else { '恢復 gate 未全部通過。' }
+        }
+        deliverable_acceptance = [ordered]@{
+            status = if ($eligibilityStatus -eq 'ready') { 'pending' } else { 'not-eligible' }
+            accepted = $false
+            reason = 'RecoveryHandoff 不負責成果驗收。'
+        }
+        audit_sources = @($auditSources)
+    }
+    $document.handoff_sha256 = Get-JsonSha256 -Value $document
+    $writtenPath = Write-ImmutableDispatchJson -Path $handoffPathValue -Document $document
+    $handoffSha256 = Get-FileSha256 -Path $writtenPath
+    $document.handoff_sha256 = $handoffSha256
+    $result = [ordered]@{
+        operation = 'RecoveryHandoff'
+        recoveryId = $recoveryId
+        recoveryHandoffPath = $writtenPath
+        recoveryHandoffSha256 = $handoffSha256
+        recoveryStatus = $eligibilityStatus
+        recoveryEligibility = $document.recovery_eligibility
+        deliverableAcceptance = $document.deliverable_acceptance
+        processGate = $processGate
+        aclGate = $aclGate
+        eventEvidence = $document.event_evidence
+        outputValid = $true
+        processStarted = $false
+        coldStartRecommended = $interruptedUnknownRecords.Count -gt 0
+        newDispatchWorktreeRequired = $interruptedUnknownRecords.Count -gt 0
+    }
+    return $result
+}
+
+function Get-PrepareRootInfo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [string]$ExecutionRoot,
+
+        [string]$DispatchRoot,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')]
+        [string]$DispatchSlug
+    )
+
+    if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
+        throw 'Prepare 必須提供 SourceRoot。'
+    }
+
+    $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
+    if (-not (Test-Path -LiteralPath $sourceRootPath -PathType Container)) {
+        throw "sourceRoot 不存在或不是目錄：$sourceRootPath"
+    }
+
+    $executionRootValue = $ExecutionRoot
+    if ([string]::IsNullOrWhiteSpace($executionRootValue)) {
+        $executionRootValue = $DispatchRoot
+    }
+    if ([string]::IsNullOrWhiteSpace($executionRootValue)) {
+        $executionRootValue = $sourceRootPath
+    }
+    $executionRootPath = Resolve-AbsolutePath -Path $executionRootValue
+    if (-not (Test-Path -LiteralPath $executionRootPath -PathType Container)) {
+        throw "executionRoot 不存在或不是目錄：$executionRootPath"
+    }
+
+    $dispatchRootValue = $DispatchRoot
+    if ([string]::IsNullOrWhiteSpace($dispatchRootValue)) {
+        $dispatchRootValue = $executionRootPath
+    }
+    $dispatchRootPath = Resolve-AbsolutePath -Path $dispatchRootValue
+    if (-not [string]::Equals($dispatchRootPath, $executionRootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Prepare 的 DispatchRoot 必須與 ExecutionRoot 一致。'
+    }
+
+    $manifestInfo = Read-LineManifest -SourceRoot $sourceRootPath -LineSlug $LineSlug
+    $dispatchLineRoot = Join-Path -Path $executionRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\handoff' -ChildPath $LineSlug)
+    $reportLineRoot = Join-Path -Path $executionRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\report' -ChildPath $LineSlug)
+    $historyLineRoot = Join-Path -Path $executionRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\history' -ChildPath $LineSlug)
+
+    return [pscustomobject]@{
+        SourceRoot       = $sourceRootPath
+        ExecutionRoot    = $executionRootPath
+        DispatchRoot     = $dispatchRootPath
+        LineSlug         = $LineSlug
+        DispatchSlug     = $DispatchSlug
+        ManifestInfo     = $manifestInfo
+        SourceLineRoot   = $manifestInfo.SourceLineRoot
+        DispatchLineRoot = $dispatchLineRoot
+        ReportLineRoot   = $reportLineRoot
+        HistoryLineRoot  = $historyLineRoot
+        DestinationRoots = @(
+            [pscustomobject]@{ Name = 'dispatch-line-root'; Path = $dispatchLineRoot }
+            [pscustomobject]@{ Name = 'report-line-root'; Path = $reportLineRoot }
+            [pscustomobject]@{ Name = 'history-line-root'; Path = $historyLineRoot }
+        )
+    }
+}
+
+function Resolve-PrepareDestinationRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [object[]]$DestinationRoots
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    foreach ($root in @($DestinationRoots)) {
+        if (Test-PathWithinRoot -Path $resolvedPath -Root ([string]$root.Path)) {
+            return [pscustomobject]@{
+                Name = [string]$root.Name
+                Path = Resolve-AbsolutePath -Path ([string]$root.Path)
+            }
+        }
+    }
+    return $null
+}
+
+function Get-PrepareDocumentFingerprint {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Document
+    )
+
+    $fingerprintDocument = [ordered]@{}
+    if ($Document -is [System.Collections.IDictionary]) {
+        foreach ($key in $Document.Keys) {
+            if ([string]$key -cne 'result_sha256') {
+                $fingerprintDocument[[string]$key] = $Document[$key]
+            }
+        }
+    }
+    else {
+        foreach ($property in $Document.PSObject.Properties) {
+            if ($property.Name -cne 'result_sha256') {
+                $fingerprintDocument[$property.Name] = $property.Value
+            }
+        }
+    }
+    return Get-JsonSha256 -Value $fingerprintDocument
+}
+
+function Write-PrepareResultDocument {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [psobject]$Document
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    $resultHash = Get-PrepareDocumentFingerprint -Document $Document
+    if ($Document -is [System.Collections.IDictionary]) {
+        $Document['result_sha256'] = $resultHash
+    }
+    else {
+        $resultHashProperty = $Document.PSObject.Properties['result_sha256']
+        if ($null -eq $resultHashProperty) {
+            $Document | Add-Member -MemberType NoteProperty -Name 'result_sha256' -Value $resultHash
+        }
+        else {
+            $Document.result_sha256 = $resultHash
+        }
+    }
+
+    $parent = Split-Path -Parent $resolvedPath
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $temporaryPath = Join-Path -Path $parent -ChildPath ([guid]::NewGuid().ToString('D') + '.prepare.tmp')
+    try {
+        Write-Utf8NoBom -Path $temporaryPath -Content ((ConvertTo-Json -InputObject $Document -Depth 40) + "`n")
+        if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
+            [System.IO.File]::Replace($temporaryPath, $resolvedPath, [System.Management.Automation.Language.NullString]::Value)
+        }
+        elseif (Test-Path -LiteralPath $resolvedPath) {
+            throw "Prepare result 目的路徑不是檔案：$resolvedPath"
+        }
+        else {
+            [System.IO.File]::Move($temporaryPath, $resolvedPath)
+        }
+    }
+    catch {
+        if (Test-Path -LiteralPath $temporaryPath) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+
+    return [pscustomobject]@{
+        Path     = $resolvedPath
+        Sha256   = Get-FileSha256 -Path $resolvedPath
+        Document = $Document
+    }
+}
+
+function Read-PrepareResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')]
+        [string]$DispatchSlug,
+
+        [AllowEmptyString()]
+        [string]$ExpectedSha256
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        throw "PreparedResultMissing：找不到 Prepare result：$resolvedPath"
+    }
+    $actualFileHash = Get-FileSha256 -Path $resolvedPath
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedSha256) -and $actualFileHash -ine $ExpectedSha256) {
+        throw "PrepareArtifactMismatch：Prepare result hash 不一致；path=$resolvedPath; expected=$ExpectedSha256; actual=$actualFileHash"
+    }
+
+    $bytes = [System.IO.File]::ReadAllBytes($resolvedPath)
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) {
+        throw "PrepareArtifactMismatch：Prepare result 必須是 UTF-8 無 BOM：$resolvedPath"
+    }
+    try {
+        $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+        $content = $encoding.GetString($bytes)
+        $document = ConvertFrom-DispatchJson -Content $content
+    }
+    catch {
+        throw "PrepareArtifactMismatch：Prepare result JSON 無法解析：$resolvedPath；$($_.Exception.Message)"
+    }
+    if ($null -eq $document -or $document -isnot [pscustomobject]) {
+        throw "PrepareArtifactMismatch：Prepare result 根節點必須是 JSON object：$resolvedPath"
+    }
+
+    foreach ($requiredName in @('schema', 'operation', 'status', 'line_slug', 'dispatch_slug', 'source_root', 'execution_root', 'artifacts', 'result_sha256')) {
+        $property = $document.PSObject.Properties[$requiredName]
+        if ($null -eq $property) {
+            throw "PrepareArtifactMismatch：Prepare result 缺少欄位 $requiredName：$resolvedPath"
+        }
+    }
+    if ($document.schema -cne 'ai-sessions.prepare.v1' -or $document.operation -cne 'Prepare') {
+        throw "PrepareArtifactMismatch：Prepare result schema 或 operation 不符：$resolvedPath"
+    }
+    if ($document.status -notin @('Preparing', 'Prepared', 'PrepareFailed', 'not-required')) {
+        throw "PrepareArtifactMismatch：Prepare result status 不符：$resolvedPath"
+    }
+    if ($document.line_slug -cne $LineSlug -or $document.dispatch_slug -cne $DispatchSlug) {
+        throw "PrepareArtifactMismatch：Prepare result line／dispatch 不一致：$resolvedPath"
+    }
+    if ((Resolve-AbsolutePath -Path ([string]$document.source_root)) -cne (Resolve-AbsolutePath -Path $SourceRoot)) {
+        throw "PrepareArtifactMismatch：Prepare result source root 不一致：$resolvedPath"
+    }
+    if ((Resolve-AbsolutePath -Path ([string]$document.execution_root)) -cne (Resolve-AbsolutePath -Path $ExecutionRoot)) {
+        throw "PrepareArtifactMismatch：Prepare result execution root 不一致：$resolvedPath"
+    }
+    if ([string]$document.result_sha256 -notmatch '^[a-fA-F0-9]{64}$') {
+        throw "PrepareArtifactMismatch：Prepare result result_sha256 格式不符：$resolvedPath"
+    }
+    $computedResultHash = Get-PrepareDocumentFingerprint -Document $document
+    if ($computedResultHash -ine [string]$document.result_sha256) {
+        throw "PrepareArtifactMismatch：Prepare result 內容 hash 不一致：$resolvedPath"
+    }
+
+    return [pscustomobject]@{
+        Path     = $resolvedPath
+        Sha256   = $actualFileHash
+        Document = $document
+        Status   = [string]$document.status
+    }
+}
+
+function Throw-PrepareValidationFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Code,
+
+        [Parameter(Mandatory)]
+        [string]$Message
+    )
+
+    $exception = New-Object System.InvalidOperationException($Message)
+    $exception.Data['prepareCode'] = $Code
+    throw $exception
+}
+
+function New-PrepareDocument {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$RootInfo,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('Preparing', 'Prepared', 'PrepareFailed', 'not-required')]
+        [string]$Status,
+
+        [AllowEmptyString()]
+        [string]$RequestPathValue,
+
+        [AllowEmptyString()]
+        [string]$RequestSha256Value,
+
+        [AllowNull()]
+        [object]$EffectiveCodexHome,
+
+        [AllowEmptyCollection()]
+        [object[]]$Artifacts,
+
+        [AllowNull()]
+        [object]$ErrorValue
+    )
+
+    $artifactList = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($artifact in @($Artifacts)) {
+        if ($null -ne $artifact) {
+            $artifactList.Add($artifact)
+        }
+    }
+
+    $now = [datetime]::UtcNow.ToString('o')
+    return [ordered]@{
+        schema                 = 'ai-sessions.prepare.v1'
+        operation              = 'Prepare'
+        status                 = $Status
+        line_slug              = $RootInfo.LineSlug
+        dispatch_slug          = $RootInfo.DispatchSlug
+        source_root            = $RootInfo.SourceRoot
+        execution_root         = $RootInfo.ExecutionRoot
+        dispatch_line_root     = $RootInfo.DispatchLineRoot
+        report_line_root       = $RootInfo.ReportLineRoot
+        history_line_root      = $RootInfo.HistoryLineRoot
+        request_path           = if ([string]::IsNullOrWhiteSpace($RequestPathValue)) { $null } else { $RequestPathValue }
+        request_sha256         = if ([string]::IsNullOrWhiteSpace($RequestSha256Value)) { $null } else { $RequestSha256Value }
+        effective_codex_home   = if ($null -eq $EffectiveCodexHome) { $null } else { [string]$EffectiveCodexHome }
+        artifacts              = $artifactList.ToArray()
+        error                   = $ErrorValue
+        created_at_utc          = $now
+        completed_at_utc        = if ($Status -in @('Prepared', 'PrepareFailed', 'not-required')) { $now } else { $null }
+        result_sha256           = $null
+    }
+}
+
+function Get-PrepareResultTargetPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$RootInfo,
+
+        [AllowEmptyString()]
+        [string]$PrepareResultPathValue,
+
+        [AllowEmptyString()]
+        [string]$ResultPathValue
+    )
+
+    $candidate = $PrepareResultPathValue
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        $candidate = $ResultPathValue
+    }
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        $candidate = Join-Path -Path $RootInfo.HistoryLineRoot -ChildPath ('prepare-result-' + $RootInfo.DispatchSlug + '-' + [guid]::NewGuid().ToString('D') + '.json')
+    }
+    try {
+        $resolvedCandidate = Resolve-AbsolutePath -Path $candidate
+    }
+    catch {
+        Throw-PrepareValidationFailure -Code 'PrepareResultBoundary' -Message ('Prepare result 路徑無法解析：' + $_.Exception.Message)
+    }
+    $destinationRoot = Resolve-PrepareDestinationRoot -Path $resolvedCandidate -DestinationRoots $RootInfo.DestinationRoots
+    if ($null -eq $destinationRoot) {
+        Throw-PrepareValidationFailure -Code 'PrepareResultBoundary' -Message "Prepare result 路徑超出允許 root：$resolvedCandidate"
+    }
+    return $resolvedCandidate
+}
+
+function Resolve-PrepareResultBinding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')]
+        [string]$DispatchSlug,
+
+        [AllowEmptyString()]
+        [string]$ExpectedSha256
+    )
+
+    $rootInfo = Get-PrepareRootInfo -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -DispatchRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $resultInfo = Read-PrepareResult -Path $Path -SourceRoot $rootInfo.SourceRoot -ExecutionRoot $rootInfo.ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -ExpectedSha256 $ExpectedSha256
+    $document = $resultInfo.Document
+    $status = [string]$document.status
+    if ($status -eq 'PrepareFailed' -or $status -eq 'Preparing') {
+        throw "PrepareArtifactMismatch：Prepare result 尚未完成：$($resultInfo.Path); status=$status"
+    }
+
+    if ($status -eq 'not-required') {
+        if (-not [string]::Equals($rootInfo.SourceRoot, $rootInfo.ExecutionRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'PrepareArtifactMismatch：not-required 只適用 source root 與 dispatch root 相同的 direct-write。'
+        }
+        if (@($document.artifacts).Count -ne 0) {
+            throw 'PrepareArtifactMismatch：not-required result 不可包含 artifact。'
+        }
+        return [pscustomobject]@{
+            Path              = $resultInfo.Path
+            Sha256            = $resultInfo.Sha256
+            Status            = $status
+            Document          = $document
+            Artifacts         = @()
+            EffectiveCodexHome = [string]$document.effective_codex_home
+        }
+    }
+
+    $artifactValues = @($document.artifacts)
+    if ($artifactValues.Count -eq 0) {
+        throw 'PrepareArtifactMismatch：Prepared result 缺少 artifact。'
+    }
+    $verifiedArtifacts = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($artifact in $artifactValues) {
+        foreach ($name in @('source', 'destination', 'purpose', 'expected_sha256', 'source_sha256', 'destination_sha256')) {
+            if ($null -eq $artifact.PSObject.Properties[$name]) {
+                throw "PrepareArtifactMismatch：artifact 缺少 $name。"
+            }
+        }
+        $sourcePath = Resolve-AbsolutePath -Path ([string]$artifact.source)
+        $destinationPath = Resolve-AbsolutePath -Path ([string]$artifact.destination)
+        $destinationRoot = Resolve-PrepareDestinationRoot -Path $destinationPath -DestinationRoots $rootInfo.DestinationRoots
+        if (-not (Test-PathWithinRoot -Path $sourcePath -Root $rootInfo.SourceLineRoot)) {
+            throw "PrepareArtifactMismatch：artifact source 超出 source line root：$sourcePath"
+        }
+        if ($null -eq $destinationRoot) {
+            throw "PrepareArtifactMismatch：artifact destination 超出允許 root：$destinationPath"
+        }
+        if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+            throw "PrepareArtifactMismatch：artifact source 不存在：$sourcePath"
+        }
+        if (-not (Test-Path -LiteralPath $destinationPath -PathType Leaf)) {
+            throw "PrepareArtifactMismatch：artifact destination 不存在：$destinationPath"
+        }
+        $sourceHash = Get-FileSha256 -Path $sourcePath
+        $destinationHash = Get-FileSha256 -Path $destinationPath
+        $expectedHash = [string]$artifact.expected_sha256
+        if ($sourceHash -ine $expectedHash -or $destinationHash -ine $expectedHash -or $sourceHash -ine $destinationHash) {
+            throw "PrepareArtifactMismatch：artifact hash 不一致；source=$sourcePath; destination=$destinationPath; expected=$expectedHash; source_sha256=$sourceHash; destination_sha256=$destinationHash"
+        }
+        if ([string]$artifact.source_sha256 -ine $sourceHash -or [string]$artifact.destination_sha256 -ine $destinationHash) {
+            throw "PrepareArtifactMismatch：Prepare result artifact hash 與目前檔案不一致：$destinationPath"
+        }
+        $verifiedArtifacts.Add([ordered]@{
+                source             = $sourcePath
+                destination        = $destinationPath
+                purpose            = [string]$artifact.purpose
+                destination_root   = $destinationRoot.Name
+                expected_sha256    = $expectedHash
+                source_sha256      = $sourceHash
+                destination_sha256 = $destinationHash
+            })
+    }
+
+    return [pscustomobject]@{
+        Path               = $resultInfo.Path
+        Sha256             = $resultInfo.Sha256
+        Status             = $status
+        Document           = $document
+        Artifacts          = @($verifiedArtifacts.ToArray())
+        EffectiveCodexHome = [string]$document.effective_codex_home
+    }
+}
+
+function New-PrepareOperationResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Document,
+
+        [AllowEmptyString()]
+        [string]$ResultPathValue,
+
+        [AllowEmptyString()]
+        [string]$ResultSha256Value,
+
+        [AllowEmptyString()]
+        [string]$ErrorCode,
+
+        [AllowEmptyString()]
+        [string]$ErrorMessage
+    )
+
+    $status = [string]$Document.status
+    return [ordered]@{
+        operation             = 'Prepare'
+        schema                = 'ai-sessions.prepare.v1'
+        status                = $status
+        prepareStatus         = $status
+        lineSlug              = [string]$Document.line_slug
+        dispatchSlug          = [string]$Document.dispatch_slug
+        sourceRoot            = [string]$Document.source_root
+        executionRoot         = [string]$Document.execution_root
+        requestPath           = [string]$Document.request_path
+        requestSha256         = [string]$Document.request_sha256
+        effectiveCodexHome    = [string]$Document.effective_codex_home
+        prepareResultPath     = if ([string]::IsNullOrWhiteSpace($ResultPathValue)) { $null } else { $ResultPathValue }
+        prepareResultSha256   = if ([string]::IsNullOrWhiteSpace($ResultSha256Value)) { $null } else { $ResultSha256Value }
+        artifacts             = ConvertTo-NonNullObjectArray -Values $Document.artifacts
+        errorCode             = if ([string]::IsNullOrWhiteSpace($ErrorCode)) { $null } else { $ErrorCode }
+        error                 = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
+        processStarted        = $false
+        outputValid           = $status -in @('Prepared', 'not-required')
+        prepareResult         = $Document
+    }
+}
+
+function Invoke-Prepare {
+    [CmdletBinding()]
+    param()
+
+    $rootInfo = $null
+    $resultPathValue = $null
+    $resultSha256Value = $null
+    $resultDocument = $null
+    $temporaryPaths = New-Object 'System.Collections.Generic.List[string]'
+    $temporaryByDestination = @{}
+    $committedPaths = New-Object 'System.Collections.Generic.List[string]'
+    $requestContext = $script:RequestContext
+    try {
+        if ($null -eq $requestContext -and -not [string]::IsNullOrWhiteSpace($RequestPath)) {
+            $requestContext = Read-DispatchRequest -Path $RequestPath
+            $script:RequestContext = $requestContext
+            $script:RequestPrepareArtifacts = @($requestContext.prepare_artifacts)
+        }
+        $rootInfo = Get-PrepareRootInfo -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        $effectiveCodexHome = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
+        $requestPathValue = if ($null -eq $requestContext) { $null } else { [string]$requestContext.path }
+        $requestSha256Value = if ($null -eq $requestContext) { $null } else { [string]$requestContext.sha256 }
+        $resultPathValue = Get-PrepareResultTargetPath -RootInfo $rootInfo -PrepareResultPathValue $PrepareResultPath -ResultPathValue $ResultPath
+        if (Test-Path -LiteralPath $resultPathValue) {
+            Throw-PrepareValidationFailure -Code 'PrepareResultCollision' -Message "Prepare result 已存在，拒絕覆寫：$resultPathValue"
+        }
+
+        $requestArtifacts = @($script:RequestPrepareArtifacts)
+        if ([string]::Equals($rootInfo.SourceRoot, $rootInfo.ExecutionRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            if ($requestArtifacts.Count -gt 0) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message 'direct-write 不應同步 artifact，請使用空的 prepare_artifacts。'
+            }
+            $resultDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'not-required' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts @() -ErrorValue $null
+            $written = Write-PrepareResultDocument -Path $resultPathValue -Document $resultDocument
+            return New-PrepareOperationResult -Document $written.Document -ResultPathValue $written.Path -ResultSha256Value $written.Sha256
+        }
+
+        if ($null -eq $requestContext -or $requestArtifacts.Count -eq 0) {
+            Throw-PrepareValidationFailure -Code 'PrepareRequired' -Message 'worktree Prepare 必須提供非空 prepare_artifacts 清單。'
+        }
+
+        $artifactPlans = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($artifact in $requestArtifacts) {
+            $sourcePath = $null
+            $destinationPath = $null
+            try {
+                $sourcePath = Resolve-AbsolutePath -Path ([string]$artifact.source)
+                $destinationPath = Resolve-AbsolutePath -Path ([string]$artifact.destination)
+            }
+            catch {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message ('artifact 路徑無法解析：' + $_.Exception.Message)
+            }
+            if (-not (Test-PathWithinRoot -Path $sourcePath -Root $rootInfo.SourceLineRoot)) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact source 超出 source line root：$sourcePath"
+            }
+            $destinationRoot = Resolve-PrepareDestinationRoot -Path $destinationPath -DestinationRoots $rootInfo.DestinationRoots
+            if ($null -eq $destinationRoot) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact destination 超出允許 root：$destinationPath"
+            }
+            if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact source 不存在：$sourcePath"
+            }
+            if (Test-Path -LiteralPath $destinationPath) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact destination 已被占用：$destinationPath"
+            }
+            $artifactPlans.Add([ordered]@{
+                    source             = $sourcePath
+                    destination        = $destinationPath
+                    purpose            = [string]$artifact.purpose
+                    destination_root   = $destinationRoot.Name
+                    expected_sha256    = ([string]$artifact.sha256).ToLowerInvariant()
+                    source_sha256      = $null
+                    destination_sha256 = $null
+                })
+        }
+
+        $resultDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'Preparing' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts @($artifactPlans.ToArray()) -ErrorValue $null
+        $null = Write-PrepareResultDocument -Path $resultPathValue -Document $resultDocument
+
+        $verifiedPlans = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($plan in @($artifactPlans.ToArray())) {
+            $sourcePath = [string]$plan.source
+            $destinationPath = [string]$plan.destination
+            $sourceHashBefore = Get-FileSha256 -Path $sourcePath
+            if ($sourceHashBefore -ine [string]$plan.expected_sha256) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact source hash 不符：$sourcePath; expected=$($plan.expected_sha256); actual=$sourceHashBefore"
+            }
+            $sourceBytes = [System.IO.File]::ReadAllBytes($sourcePath)
+            $sourceHashRead = Get-DispatchByteArraySha256 -Bytes $sourceBytes
+            $sourceHashAfter = Get-FileSha256 -Path $sourcePath
+            if ($sourceHashBefore -ine $sourceHashRead -or $sourceHashBefore -ine $sourceHashAfter) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact source 在複製期間變更：$sourcePath"
+            }
+            $destinationParent = Split-Path -Parent $destinationPath
+            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+            $temporaryPath = Join-Path -Path $destinationParent -ChildPath ([guid]::NewGuid().ToString('D') + '.prepare.tmp')
+            $temporaryPaths.Add($temporaryPath)
+            $temporaryByDestination[$destinationPath] = $temporaryPath
+            [System.IO.File]::WriteAllBytes($temporaryPath, $sourceBytes)
+            $destinationHash = Get-FileSha256 -Path $temporaryPath
+            if ($destinationHash -ine $sourceHashBefore -or $destinationHash -ine [string]$plan.expected_sha256) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact temporary destination hash 不符：$destinationPath; expected=$($plan.expected_sha256); actual=$destinationHash"
+            }
+            $verifiedPlans.Add([ordered]@{
+                    source             = $sourcePath
+                    destination        = $destinationPath
+                    purpose            = [string]$plan.purpose
+                    destination_root   = [string]$plan.destination_root
+                    expected_sha256    = [string]$plan.expected_sha256
+                    source_sha256      = $sourceHashBefore
+                    destination_sha256 = $destinationHash
+                })
+        }
+
+        foreach ($plan in @($verifiedPlans.ToArray())) {
+            $destinationPath = [string]$plan.destination
+            if (Test-Path -LiteralPath $destinationPath) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact destination 在提交前被占用：$destinationPath"
+            }
+            $temporaryPath = [string]$temporaryByDestination[$destinationPath]
+            if ([string]::IsNullOrWhiteSpace([string]$temporaryPath) -or -not (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "找不到 artifact temporary destination：$destinationPath"
+            }
+            [System.IO.File]::Move([string]$temporaryPath, $destinationPath)
+            $committedPaths.Add($destinationPath)
+            $null = $temporaryPaths.Remove([string]$temporaryPath)
+            $finalHash = Get-FileSha256 -Path $destinationPath
+            if ($finalHash -ine [string]$plan.destination_sha256) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact destination hash 不符：$destinationPath; expected=$($plan.destination_sha256); actual=$finalHash"
+            }
+        }
+
+        $resultDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'Prepared' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts @($verifiedPlans.ToArray()) -ErrorValue $null
+        $writtenResult = Write-PrepareResultDocument -Path $resultPathValue -Document $resultDocument
+        return New-PrepareOperationResult -Document $writtenResult.Document -ResultPathValue $writtenResult.Path -ResultSha256Value $writtenResult.Sha256
+    }
+    catch {
+        $originalMessage = $_.Exception.Message
+        $failureCode = [string]$_.Exception.Data['prepareCode']
+        if ([string]::IsNullOrWhiteSpace($failureCode)) {
+            $failureCode = 'PrepareFailed'
+        }
+        foreach ($temporaryPath in @($temporaryPaths.ToArray())) {
+            if (Test-Path -LiteralPath $temporaryPath) {
+                Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        foreach ($committedPath in @($committedPaths.ToArray())) {
+            if (Test-Path -LiteralPath $committedPath) {
+                Remove-Item -LiteralPath $committedPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($null -ne $rootInfo -and [string]::IsNullOrWhiteSpace($resultPathValue)) {
+            try {
+                $resultPathValue = Get-PrepareResultTargetPath -RootInfo $rootInfo -PrepareResultPathValue $PrepareResultPath -ResultPathValue $ResultPath
+            }
+            catch {
+                $resultPathValue = $null
+            }
+        }
+        if ($null -ne $rootInfo) {
+            $requestPathValue = if ($null -eq $requestContext) { $null } else { [string]$requestContext.path }
+            $requestSha256Value = if ($null -eq $requestContext) { $null } else { [string]$requestContext.sha256 }
+            $effectiveCodexHome = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
+            $failureArtifacts = if ($null -eq $resultDocument) { ConvertTo-NonNullObjectArray -Values $null } else { ConvertTo-NonNullObjectArray -Values $resultDocument.artifacts }
+            $failureError = [ordered]@{
+                code    = $failureCode
+                message = $originalMessage
+            }
+            $failureDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'PrepareFailed' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts $failureArtifacts -ErrorValue $failureError
+            if (-not [string]::IsNullOrWhiteSpace($resultPathValue)) {
+                try {
+                    $writtenFailure = Write-PrepareResultDocument -Path $resultPathValue -Document $failureDocument
+                    $resultDocument = $writtenFailure.Document
+                    $resultPathValue = $writtenFailure.Path
+                    $resultSha256Value = $writtenFailure.Sha256
+                }
+                catch {
+                    $resultDocument = $failureDocument
+                }
+            }
+            else {
+                $resultDocument = $failureDocument
+            }
+        }
+        if ($null -ne $resultDocument) {
+            $failureResult = New-PrepareOperationResult -Document $resultDocument -ResultPathValue $resultPathValue -ResultSha256Value ([string]$resultSha256Value) -ErrorCode $failureCode -ErrorMessage $originalMessage
+            $operationException = New-Object System.InvalidOperationException($originalMessage)
+            $operationException.Data['operationResult'] = $failureResult
+            throw $operationException
+        }
+        throw
+    }
+}
+
 function Invoke-Preflight {
     if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($DispatchRoot) -or [string]::IsNullOrWhiteSpace($LineSlug) -or [string]::IsNullOrWhiteSpace($DispatchSlug)) {
         throw 'Preflight 必須提供 SourceRoot、DispatchRoot、LineSlug 與 DispatchSlug。'
@@ -3268,6 +8043,7 @@ function Invoke-Preflight {
 
     $gitState = $null
     $baseShaValue = ''
+    $baseline = $null
     if ($worktreeCreated) {
         if ($null -ne $gitProbeState -and $gitProbeState.IsRepository) {
             $gitState = [ordered]@{
@@ -3295,6 +8071,7 @@ function Invoke-Preflight {
         }
         $executionRootPath = $dispatchRootPath
         $carryInManifest = Apply-SourceCarryIn -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
+        $baseline = New-DispatchBaseline -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha $baseShaValue
     }
     elseif ($WriteMode -eq 'write' -and $null -ne $gitProbeState -and $gitProbeState.IsRepository) {
         $gitState = [ordered]@{
@@ -3316,13 +8093,21 @@ function Invoke-Preflight {
     $dispatchLineRoot = Join-Path -Path $executionHandoffRoot -ChildPath $LineSlug
     $reportLineRoot = Join-Path -Path $executionReportRoot -ChildPath $LineSlug
     New-Item -ItemType Directory -Path $executionHandoffRoot, $executionReportRoot, $executionHistoryRoot, $executionScratchRoot, $dispatchLineRoot, $reportLineRoot -Force | Out-Null
-    foreach ($handoffFileName in @('line.json', 'requirement-summary.md', 'design.md')) {
-        $sourceHandoffPath = Join-Path -Path $manifestInfo.SourceLineRoot -ChildPath $handoffFileName
-        $dispatchHandoffPath = Join-Path -Path $dispatchLineRoot -ChildPath $handoffFileName
-        if ((Test-Path -LiteralPath $sourceHandoffPath -PathType Leaf) -and -not [string]::Equals($sourceHandoffPath, $dispatchHandoffPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-            Copy-Item -LiteralPath $sourceHandoffPath -Destination $dispatchHandoffPath -Force
-        }
+
+    $prepareBinding = $null
+    $prepareStatusValue = 'not-provided'
+    $prepareResultPathValue = $null
+    $prepareResultSha256Value = $null
+    if (-not [string]::IsNullOrWhiteSpace($PrepareResultPath)) {
+        $prepareResultPathValue = Resolve-AbsolutePath -Path $PrepareResultPath
+        $prepareBinding = Resolve-PrepareResultBinding -Path $prepareResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        $prepareStatusValue = $prepareBinding.Status
+        $prepareResultSha256Value = $prepareBinding.Sha256
     }
+    elseif ([string]::Equals($sourceRootPath, $executionRootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $prepareStatusValue = 'not-required'
+    }
+    $effectiveCodexHomeValue = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
 
     $result = [ordered]@{
         operation       = 'Preflight'
@@ -3339,11 +8124,17 @@ function Invoke-Preflight {
         baseSha         = $baseShaValue
         worktreeCreated = $worktreeCreated
         carryInManifest = $carryInManifest
+        baselinePath    = if ($null -ne $baseline) { $baseline.Path } else { $null }
+        baselineSha256  = if ($null -ne $baseline) { $baseline.Sha256 } else { $null }
         targetStates    = @($targetStates)
         sourceLineRoot  = $manifestInfo.SourceLineRoot
         dispatchLineRoot = $dispatchLineRoot
         reportLineRoot  = $reportLineRoot
         pidCheck        = $pidCheck
+        prepareResultPath = $prepareResultPathValue
+        prepareResultSha256 = $prepareResultSha256Value
+        prepareStatus = $prepareStatusValue
+        effectiveCodexHome = $effectiveCodexHomeValue
     }
 
     return $result
@@ -3380,7 +8171,7 @@ function Get-PreflightData {
             throw "找不到 Preflight 輸出：$path"
         }
         try {
-            return Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+            return ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $path -Raw -Encoding UTF8)
         }
         catch {
             throw "Preflight 輸出格式錯誤：$path；$($_.Exception.Message)"
@@ -3582,6 +8373,59 @@ function Ensure-StartEvidenceFiles {
     }
 }
 
+function Write-StartPidRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][int]$ProcessId,
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug,
+        [Parameter(Mandatory)][ValidateSet('readonly', 'write')][string]$WriteMode,
+        [AllowNull()][psobject]$Snapshot
+    )
+
+    $processName = [string](Get-OptionalObjectProperty -Object $Snapshot -Name 'ProcessName')
+    if ([string]::IsNullOrWhiteSpace($processName)) { $processName = 'unknown' }
+    $parentProcessId = [string](Get-OptionalObjectProperty -Object $Snapshot -Name 'ParentProcessId')
+    if ([string]::IsNullOrWhiteSpace($parentProcessId)) { $parentProcessId = 'unknown' }
+    $startedAtUtc = 'unknown'
+    $creationUtc = Get-OptionalObjectProperty -Object $Snapshot -Name 'CreationUtc'
+    if ($null -ne $creationUtc) {
+        try {
+            $startedAtUtc = ([datetime]$creationUtc).ToUniversalTime().ToString('o')
+        }
+        catch {
+            $startedAtUtc = 'unknown'
+        }
+    }
+    $identityStatus = [string](Get-OptionalObjectProperty -Object $Snapshot -Name 'IdentityStatus')
+    if ([string]::IsNullOrWhiteSpace($identityStatus)) { $identityStatus = 'unknown' }
+    $identityVerified = [string](Get-OptionalObjectProperty -Object $Snapshot -Name 'IdentityVerified')
+    if (-not [string]::Equals($identityVerified, 'true', [StringComparison]::OrdinalIgnoreCase)) { $identityVerified = 'false' }
+    $processGroupId = [string](Get-OptionalObjectProperty -Object $Snapshot -Name 'ProcessGroupId')
+    if ([string]::IsNullOrWhiteSpace($processGroupId)) { $processGroupId = 'unknown' }
+
+    $pidContent = @(
+        ('pid=' + $ProcessId)
+        ('root-pid=' + $ProcessId)
+        ('root-process-name=' + $processName)
+        ('root-parent-pid=' + $parentProcessId)
+        ('root-started-at-utc=' + $startedAtUtc)
+        ('identity-status=' + $identityStatus)
+        ('identity-verified=' + $identityVerified)
+        ('process-tree-scope=' + $(if (Test-IsWindowsPlatform) { 'pid-and-descendants' } else { 'process-group' }))
+        ('process-tree-query=' + $(if (Test-IsWindowsPlatform) { 'Win32_Process.ParentProcessId' } else { 'ps PGID 成員' }))
+        ('process-group-id=' + $processGroupId)
+        ('work-root=' + $SourceRoot)
+        ('line-slug=' + $LineSlug)
+        ('dispatch-slug=' + $DispatchSlug)
+        ('write-mode=' + $WriteMode)
+        ('started-at-utc=' + [datetime]::UtcNow.ToString('o'))
+    ) -join "`n"
+    Write-Utf8NoBom -Path $Path -Content ($pidContent + "`n")
+}
+
 function New-ProcessTreeCleanupResult {
     param(
         [Parameter(Mandatory)]
@@ -3777,7 +8621,7 @@ function Test-QuotaResetWindowChanged {
         }
     }
     if ($null -eq $beforeWindow -or $null -eq $afterWindow) {
-        throw "快照缺少視窗：$WindowName"
+        return $true
     }
 
     $beforeUsedPercent = $null
@@ -3820,6 +8664,10 @@ function Test-QuotaResetWindowChanged {
             $afterResetsAt = $afterResetsAtProperty.Value
         }
     }
+    if ($null -eq $beforeUsedPercent -or $null -eq $afterUsedPercent -or $null -eq $beforeResetsAt -or $null -eq $afterResetsAt) {
+        return $true
+    }
+
     $usedPercentDecreased = [double]$afterUsedPercent -lt [double]$beforeUsedPercent
     $resetWindowChanged = [math]::Abs([double]$afterResetsAt - [double]$beforeResetsAt) -gt $resetWindowToleranceSeconds
 
@@ -4344,7 +9192,7 @@ function Invoke-QuotaProbe {
     # 探針的作用是讓 Codex 寫出一筆新 rollout，新快照的正確性只來自該筆新記錄，與探針前的狀態無關。
     # 因此可回復的狀態以「解析是否可信」區分：SnapshotExpired 代表解析正常、僅資料過期，屬探針要解決的
     # 對象；SnapshotUnavailable 代表連一筆結構有效候選都讀不到，前提本身可能已壞，探針成功也讀不回來。
-    $recoverableQuotaStates = @('PostResetNoSnapshot', 'SnapshotExpired')
+    $recoverableQuotaStates = @('PostResetNoSnapshot', 'SnapshotExpired', 'ServiceRejected')
 
     if ($recoverableQuotaStates -notcontains $InitialQuotaState) {
         throw "QuotaProbe 僅允許回復 $($recoverableQuotaStates -join '、')，收到：$InitialQuotaState"
@@ -4394,6 +9242,90 @@ function Invoke-QuotaProbe {
     }
     else {
         $launcherPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-launch-' + $timestamp + '.sh')
+    }
+
+    if ($InitialQuotaState -eq 'ServiceRejected') {
+        $serviceRejection = $null
+        $rejectionSnapshot = $null
+        if (-not [string]::IsNullOrWhiteSpace($QuotaBeforePath) -and (Test-Path -LiteralPath (Resolve-AbsolutePath -Path $QuotaBeforePath) -PathType Leaf)) {
+            try {
+                $rejectionSnapshot = Read-QuotaSnapshot -Path $QuotaBeforePath
+                $serviceRejection = Get-QuotaSnapshotServiceRejection -Snapshot $rejectionSnapshot
+            }
+            catch {
+            }
+        }
+        if ($null -eq $serviceRejection) {
+            $rejectionPath = if ([string]::IsNullOrWhiteSpace($QuotaBeforePath)) { $null } else { Resolve-AbsolutePath -Path $QuotaBeforePath }
+            $rejectionHash = if ($null -eq $rejectionPath -or -not (Test-Path -LiteralPath $rejectionPath -PathType Leaf)) { $null } else { Get-FileSha256 -Path $rejectionPath }
+            $rejectionObservedAt = if ($null -eq $rejectionSnapshot) { [DateTimeOffset]::UtcNow.ToString('o') } else { [string](Get-DispatchJsonProperty -Object $rejectionSnapshot -Name 'captured_at_utc') }
+            if ([string]::IsNullOrWhiteSpace($rejectionObservedAt)) {
+                $rejectionObservedAt = [DateTimeOffset]::UtcNow.ToString('o')
+            }
+            $rejectionResetAt = $null
+            if ($null -ne $rejectionSnapshot) {
+                $rejectionResetAt = Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $rejectionSnapshot -Name 'primary') -Name 'resets_at'
+            }
+            $serviceRejection = [ordered]@{
+                status              = 'quota-rejected'
+                window              = 'unknown'
+                reason_code         = 'service-rejection'
+                observed_at_utc     = $rejectionObservedAt
+                raw_evidence_path   = if ($null -eq $rejectionPath) { '<quota-before-not-provided>' } else { $rejectionPath }
+                raw_evidence_sha256 = if ($null -eq $rejectionHash) { '<quota-before-hash-not-provided>' } else { $rejectionHash }
+                resets_at           = $rejectionResetAt
+                retry_allowed       = $false
+            }
+        }
+        $noRetryRecord = [ordered]@{
+            schema             = 'quota-recovery.v1'
+            operation          = 'QuotaProbe'
+            lineSlug           = $LineSlug
+            dispatchSlug       = $DispatchSlug
+            initialQuotaState  = $InitialQuotaState
+            triggerWindow      = $TriggerWindow
+            probeAttempt       = $ProbeAttempt
+            probeAttemptLimit  = 1
+            probeEvidence      = [ordered]@{
+                eventStreamPath    = $eventPath
+                stderrPath         = $errorPath
+                lastMessagePath    = $lastMessagePath
+                threadIdPath       = $threadPath
+                pidRecordPath      = $pidPath
+                launcherPath       = $launcherPath
+                codexPath          = $null
+                processStarted     = $false
+                serviceRejection   = $serviceRejection
+            }
+            service_rejection   = $serviceRejection
+            retryResult         = [ordered]@{
+                status        = 'not-allowed-service-rejection'
+                attempted     = $false
+                retry_allowed = $false
+                attemptLimit  = 0
+                command       = $null
+                result        = '已收到明確 service rejection，等待 reset 或新 quota evidence。'
+            }
+            finalStatus        = 'service-rejected-no-retry'
+            createdAtUtc       = [datetime]::UtcNow.ToString('o')
+        }
+        Write-Utf8NoBom -Path $recoveryPath -Content (($noRetryRecord | ConvertTo-Json -Depth 12) + "`n")
+        return [ordered]@{
+            operation          = 'QuotaProbe'
+            success            = $false
+            lineSlug           = $LineSlug
+            dispatchSlug       = $DispatchSlug
+            initialQuotaState  = $InitialQuotaState
+            triggerWindow      = $TriggerWindow
+            probeAttempt       = $ProbeAttempt
+            probeAttemptLimit  = 1
+            processStarted     = $false
+            service_rejection  = $serviceRejection
+            recoveryRecordPath = $recoveryPath
+            retryRequired      = $false
+            retryResult        = $noRetryRecord.retryResult
+            finalStatus        = $noRetryRecord.finalStatus
+        }
     }
 
     $beforeRolloutFiles = @(Get-QuotaProbeRolloutFiles -CodexHomePath $codexHomePath)
@@ -4705,6 +9637,773 @@ function Invoke-QuotaProbe {
     }
 }
 
+function Get-DispatchRunDirectory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')][string]$LineSlug,
+        [Parameter(Mandatory)][ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')][string]$DispatchSlug
+    )
+
+    $history = Join-Path (Resolve-AbsolutePath $SourceRoot) '.local\ai-sessions\history'
+    return Join-Path (Join-Path (Join-Path $history $LineSlug) 'runs') $DispatchSlug
+}
+
+function Get-DispatchPathEvidence {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [string]$Path
+    )
+
+    $resolvedPath = $null
+    if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        try {
+            $resolvedPath = Resolve-AbsolutePath -Path $Path
+        }
+        catch {
+            $resolvedPath = $Path
+        }
+    }
+    $exists = $false
+    $length = [int64]0
+    $sha256 = $null
+    $readError = $null
+    if (-not [string]::IsNullOrWhiteSpace($resolvedPath) -and (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        $exists = $true
+        try {
+            $file = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
+            $length = [int64]$file.Length
+            $sha256 = Get-FileSha256 -Path $resolvedPath
+        }
+        catch {
+            $readError = $_.Exception.Message
+        }
+    }
+    return [ordered]@{
+        path = $resolvedPath
+        exists = $exists
+        length = $length
+        sha256 = $sha256
+        error = $readError
+    }
+}
+
+function Get-DispatchFailureReasonCode {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [string]$Message,
+
+        [AllowNull()]
+        [string]$Phase
+    )
+
+    $text = if ($null -eq $Message) { '' } else { $Message }
+    foreach ($code in @(
+            'RequestedResolutionMismatch',
+            'EvidencePackInlineMismatch',
+            'EvidencePackInvalid',
+            'EvidencePackMissing',
+            'ThreadModelMismatch',
+            'ThreadModelUnknown',
+            'NoValidResumeAnchor',
+            'ProfileEvidenceUnknown',
+            'BudgetMonitorStopped',
+            'QuotaStop',
+            'ThreadRelayTimeout',
+            'ProcessIdentityUnknown',
+            'CodexLaunchFailed',
+            'ParentOptionsMismatch',
+            'ParentOptionsUnknown',
+            'WorktreeAclResidue',
+            'WorktreeAclUnknown',
+            'RecoveryHandoffCrossLine',
+            'RecoveryHandoffHashMismatch',
+            'RecoveryHandoffNoChain',
+            'RecoveryHandoffProcessAlive',
+            'RecoveryHandoffAclResidue',
+            'RecoveryHandoffAclUnknown',
+            'RecoveryHandoffScopeMismatch',
+            'RecoveryHandoffBaselineUnknown',
+            'RecoveryHandoffModelMismatch',
+            'RecoveryHandoffModelUnknown',
+            'RecoveryHandoffParentOptionsMismatch',
+            'InterruptedUnknownResumeRejected',
+            'InterruptedUnknown',
+            'RecoveryHandoffUnsupportedCompletion',
+            'RecoveryHandoffAuthorizationExpansion',
+            'CrossLine',
+            'ScopePlanMismatch',
+            'BaselineUnknown',
+            'ProcessAlive',
+            'ModelUnknown',
+            'PrepareRequired',
+            'PrepareArtifactMismatch',
+            'PreparedResultMissing',
+            'QuotaServiceRejected',
+            'RecoveryBlocked')) {
+        if ($text.Contains($code)) {
+            return $code
+        }
+    }
+    if ($text -match 'ScopePlan 阻擋派工') {
+        return 'QuotaStop'
+    }
+    if ($Phase -eq 'thread-relay-not-ready') {
+        return 'ThreadRelayTimeout'
+    }
+    if ($Phase -eq 'identity-unverified') {
+        return 'ProcessIdentityUnknown'
+    }
+    if ($Phase -in @('aborted-by-budget', 'cross-reset')) {
+        return 'BudgetMonitorStopped'
+    }
+    if ($Phase -eq 'preparation') {
+        return 'ProfileEvidenceUnknown'
+    }
+    if ($Phase -eq 'started') {
+        return 'CodexLaunchFailed'
+    }
+    return 'CodexLaunchFailed'
+}
+
+function New-DispatchFailureRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Phase,
+
+        [Parameter(Mandatory)]
+        [string]$Message,
+
+        [string]$ReasonCode,
+
+        [bool]$ProcessStarted,
+
+        [Nullable[int]]$ProcessExitCode,
+
+        [string]$EventPath,
+
+        [string]$ErrorPath,
+
+        [string]$LastMessagePath,
+
+        [string]$ThreadPath,
+
+        [string]$PidPath,
+
+        [string]$LauncherPath,
+
+        [string[]]$RolloutPaths,
+
+        [AllowNull()]
+        [object]$Observation
+    )
+
+    $effectiveReasonCode = if ([string]::IsNullOrWhiteSpace($ReasonCode)) { Get-DispatchFailureReasonCode -Message $Message -Phase $Phase } else { $ReasonCode }
+    $processExit = if ($null -eq $ProcessExitCode) { $null } else { [int]$ProcessExitCode }
+    $originalOutput = [ordered]@{
+        exception = $Message
+        event_stream = Get-DispatchPathEvidence -Path $EventPath
+        stderr = Get-DispatchPathEvidence -Path $ErrorPath
+        last_message = Get-DispatchPathEvidence -Path $LastMessagePath
+        thread_id = Get-DispatchPathEvidence -Path $ThreadPath
+        pid_record = Get-DispatchPathEvidence -Path $PidPath
+        launcher = Get-DispatchPathEvidence -Path $LauncherPath
+        rollout = @($RolloutPaths | ForEach-Object { Get-DispatchPathEvidence -Path $_ })
+        raw_message = $Message
+    }
+    $failureObservation = if ($null -eq $Observation) {
+        [ordered]@{
+            process_started = $ProcessStarted
+            process_exit_code = $processExit
+        }
+    }
+    else {
+        $Observation
+    }
+    return [ordered]@{
+        status = 'failed'
+        phase = $Phase
+        reason_code = $effectiveReasonCode
+        message = $Message
+        observation = $failureObservation
+        original_output = $originalOutput
+        resumable = $false
+        recorded_at_utc = [datetime]::UtcNow.ToString('o')
+    }
+}
+
+function New-DispatchInspectDiagnosis {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ReasonCode,
+
+        [Parameter(Mandatory)]
+        [string]$Observation,
+
+        [Parameter(Mandatory)]
+        [string]$EventStreamPath,
+
+        [string]$ErrorStreamPath,
+
+        [AllowEmptyCollection()]
+        [object[]]$RawEventLines,
+
+        [AllowEmptyString()]
+        [string]$Stderr
+    )
+
+    return [ordered]@{
+        status = 'failed'
+        reason_code = $ReasonCode
+        observation = $Observation
+        original_output = [ordered]@{
+            event_stream_path = $EventStreamPath
+            error_stream_path = if ([string]::IsNullOrWhiteSpace($ErrorStreamPath)) { $null } else { $ErrorStreamPath }
+            raw_event_lines = @($RawEventLines | ForEach-Object {
+                    if ($_ -is [string]) { $_ } else { [string](Get-DispatchJsonProperty -Object $_ -Name 'raw') }
+                })
+            stderr = $Stderr
+        }
+    }
+}
+
+function Write-DispatchOperationFailureResult {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Exception]$Exception,
+
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Result
+    )
+
+    try {
+        $Exception.Data['operationResult'] = $Result
+    }
+    catch {
+        # 例外型別可能不允許寫入 Data，保留原始例外供外層 catch 處理。
+    }
+    return $Exception
+}
+
+function Write-DispatchRunRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][psobject]$Record,
+        [switch]$Update
+    )
+
+    $directory = Get-DispatchRunDirectory -SourceRoot $Record.source_root -LineSlug $Record.line_slug -DispatchSlug $Record.dispatch_slug
+    $runGuid = [guid]::Empty
+    if (-not [guid]::TryParseExact($Record.run_id, 'D', [ref]$runGuid)) {
+        throw 'RunRecord run_id 必須為 GUID。'
+    }
+    $path = Join-Path $directory ($Record.run_id + '.json')
+    New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    $temporaryPath = Join-Path $directory ([guid]::NewGuid().ToString('D') + '.tmp')
+    Write-Utf8NoBom -Path $temporaryPath -Content (($Record | ConvertTo-Json -Depth 12) + "`n")
+    if ($Update) {
+        [System.IO.File]::Replace($temporaryPath, $path, [System.Management.Automation.Language.NullString]::Value)
+    }
+    else {
+        [System.IO.File]::Move($temporaryPath, $path)
+    }
+    return $path
+}
+
+function ConvertFrom-DispatchJson {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Content)
+
+    $options = @{ InputObject = $Content; ErrorAction = 'Stop' }
+    if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey('DateKind')) {
+        $options.DateKind = 'String'
+    }
+    return ConvertFrom-Json @options
+}
+
+function Read-DispatchRunRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug
+    )
+
+    $pathValue = Resolve-AbsolutePath $Path
+    $directory = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    if (-not [string]::Equals((Split-Path $pathValue -Parent), $directory, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'RunRecord 路徑不屬於指定 line／dispatch。'
+    }
+    $record = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $pathValue -Raw -Encoding UTF8)
+    if ($null -eq $record -or $record -isnot [pscustomobject]) { throw 'RunRecord 必須為 JSON object。' }
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'prompt_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'acl_gate', 'unknown_interruption', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
+        if ($null -eq $record.PSObject.Properties[$name]) {
+            $value = $null
+            if ($name -eq 'attempt_parent_run_id') {
+                $value = Get-DispatchJsonProperty -Object $record -Name 'previous_run_id'
+            }
+            elseif ($name -eq 'skipped_attempts') {
+                $value = @()
+            }
+            elseif ($name -eq 'parent_options_status') {
+                $value = 'unknown'
+            }
+            $record | Add-Member -MemberType NoteProperty -Name $name -Value $value
+        }
+    }
+    if ($null -eq $record.model_evidence) {
+        $record.model_evidence = ConvertTo-DispatchEvidenceGroup -Evidence $null -Field 'model'
+    }
+    if ($null -eq $record.reasoning_effort_evidence) {
+        $record.reasoning_effort_evidence = ConvertTo-DispatchEvidenceGroup -Evidence $null -Field 'model_reasoning_effort'
+    }
+    if ($null -ne $record.parent_options) {
+        $parentFingerprint = [string](Get-DispatchJsonProperty -Object $record.parent_options -Name 'fingerprint')
+        if ([string]::IsNullOrWhiteSpace($parentFingerprint)) {
+            throw 'RunRecord parent_options 缺少 fingerprint。'
+        }
+        if ($record.parent_options_status -ne 'confirmed') {
+            throw 'RunRecord parent_options 存在但狀態不是 confirmed。'
+        }
+        if ($record.parent_options_sha256 -notmatch '^[a-fA-F0-9]{64}$' -or $record.parent_options_sha256 -ine $parentFingerprint) {
+            throw 'RunRecord parent_options SHA-256 不一致。'
+        }
+    }
+    elseif ($record.parent_options_status -eq 'confirmed' -or $null -ne $record.parent_options_sha256) {
+        throw 'RunRecord parent_options 狀態與內容不一致。'
+    }
+    foreach ($name in @('schema', 'run_id', 'dispatch_slug', 'line_slug', 'source_root', 'execution_root', 'event_stream_path', 'last_message_path', 'preflight_result_path', 'preflight_sha256', 'created_at_utc', 'launch_state', 'pid_record_path')) {
+        $property = $record.PSObject.Properties[$name]
+        if ($null -eq $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)) {
+            throw "RunRecord 缺少有效欄位：$name"
+        }
+    }
+    $scopePathProperty = $record.PSObject.Properties['scope_plan_path']
+    $scopeHashProperty = $record.PSObject.Properties['scope_plan_sha256']
+    if ($null -eq $scopePathProperty -or $null -eq $scopeHashProperty) {
+        throw 'RunRecord 缺少 ScopePlan 欄位。'
+    }
+    $scopePathValue = $scopePathProperty.Value
+    $scopeHashValue = $scopeHashProperty.Value
+    $failureValue = $record.failure
+    $failurePhase = if ($null -eq $failureValue) { $null } else { [string](Get-DispatchJsonProperty -Object $failureValue -Name 'phase') }
+    $scopeMayBeNull = $record.launch_state -eq 'launch-failed' -and $failurePhase -eq 'preparation'
+    if ([string]::IsNullOrWhiteSpace([string]$scopePathValue)) {
+        if (-not $scopeMayBeNull -or $null -ne $scopeHashValue) {
+            throw 'RunRecord ScopePlan path 與 SHA-256 必須成對存在；只有 preparation failed 可同時為 null。'
+        }
+    }
+    elseif ($scopePathValue -isnot [string] -or $scopeHashValue -isnot [string] -or [string]::IsNullOrWhiteSpace($scopeHashValue)) {
+        throw 'RunRecord ScopePlan 欄位型別或 SHA-256 異常。'
+    }
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'prompt_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
+        $property = $record.PSObject.Properties[$name]
+        if ($null -eq $property -or ($null -ne $property.Value -and ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)))) {
+            throw "RunRecord nullable 欄位異常：$name"
+        }
+    }
+    foreach ($name in @('quota_before_observations', 'quota_before_service_rejection')) {
+        if ($null -eq $record.PSObject.Properties[$name]) {
+            $record | Add-Member -MemberType NoteProperty -Name $name -Value $null
+        }
+    }
+    if ($record.schema -cne 'ai-sessions.dispatch-run.v1' -or $record.line_slug -cne $LineSlug -or $record.dispatch_slug -cne $DispatchSlug) {
+        throw 'RunRecord schema／line／dispatch 不一致。'
+    }
+    foreach ($name in @('run_id', 'previous_run_id', 'requested_thread_id', 'thread_id', 'attempt_parent_run_id', 'resume_anchor_run_id')) {
+        $parsed = [guid]::Empty
+        if ($null -ne $record.$name -and -not [guid]::TryParseExact($record.$name, 'D', [ref]$parsed)) { throw "RunRecord GUID 異常：$name" }
+    }
+    if ($null -ne $record.attempt_parent_run_id -and $record.attempt_parent_run_id -ceq $record.run_id) { throw 'RunRecord attempt parent 不可指向自身。' }
+    if ([IO.Path]::GetFileName($pathValue) -cne ($record.run_id + '.json')) { throw 'RunRecord 檔名與 run_id 不一致。' }
+    if ($record.launch_state -cnotin @('prepared', 'started', 'launch-failed')) { throw 'RunRecord launch_state 異常。' }
+    if ($record.launch_state -eq 'started' -and $null -eq $record.thread_id) { throw 'started RunRecord 缺少 thread。' }
+    if (($null -eq $record.previous_run_id) -ne ($null -eq $record.requested_thread_id) -and $record.launch_state -ne 'launch-failed') { throw 'RunRecord previous 與 requested thread 不一致。' }
+    if ($null -ne $record.thread_id -and $null -ne $record.requested_thread_id -and $record.thread_id -cne $record.requested_thread_id) { throw 'RunRecord thread 與 requested thread 不一致。' }
+    $created = [datetimeoffset]::MinValue
+    if (-not [datetimeoffset]::TryParse($record.created_at_utc, [ref]$created) -or $created.Offset -ne [timespan]::Zero) { throw 'RunRecord UTC 時間異常。' }
+    if ($null -ne $record.started_at_utc) {
+        $started = [datetimeoffset]::MinValue
+        if (-not [datetimeoffset]::TryParse($record.started_at_utc, [ref]$started) -or $started.Offset -ne [timespan]::Zero) { throw 'RunRecord started_at_utc 時間異常。' }
+    }
+    foreach ($entry in @(@('source_root', $SourceRoot), @('execution_root', $ExecutionRoot))) {
+        if (-not [string]::Equals((Resolve-AbsolutePath $record.($entry[0])), (Resolve-AbsolutePath $entry[1]), [StringComparison]::OrdinalIgnoreCase)) { throw 'RunRecord roots 不一致。' }
+    }
+    $executionHistory = Join-Path (Resolve-AbsolutePath $ExecutionRoot) '.local\ai-sessions\history'
+    foreach ($name in @('event_stream_path', 'last_message_path', 'preflight_result_path', 'pid_record_path')) {
+        $resolved = Resolve-AbsolutePath $record.$name
+        if (-not [string]::Equals($resolved, $record.$name, [StringComparison]::OrdinalIgnoreCase)) { throw "RunRecord 路徑未正規化：$name" }
+    }
+    foreach ($name in @('thread_id_path', 'launcher_path', 'prompt_path', 'evidence_pack_path')) {
+        if ($null -ne $record.$name) {
+            $resolved = Resolve-AbsolutePath $record.$name
+            if (-not [string]::Equals($resolved, $record.$name, [StringComparison]::OrdinalIgnoreCase)) { throw "RunRecord 路徑未正規化：$name" }
+        }
+    }
+    if (-not (Test-PathWithinRoot $record.event_stream_path $executionHistory) -or -not (Test-PathWithinRoot $record.last_message_path $ExecutionRoot)) { throw 'RunRecord 證據超出 executionRoot。' }
+    if (-not [string]::IsNullOrWhiteSpace([string]$scopePathValue) -and -not (Test-PathWithinRoot $scopePathValue $ExecutionRoot)) { throw 'RunRecord ScopePlan 超出 executionRoot。' }
+    if (-not (Test-PathWithinRoot $record.pid_record_path (Join-Path $SourceRoot '.local\ai-sessions\history'))) { throw 'RunRecord PID 路徑超出 history。' }
+    foreach ($name in @('thread_id_path', 'launcher_path', 'prompt_path')) {
+        if ($null -ne $record.$name -and -not (Test-PathWithinRoot $record.$name $ExecutionRoot)) { throw "RunRecord 證據超出 executionRoot：$name" }
+    }
+    if ($null -ne $record.evidence_pack_path -and -not (Test-PathWithinRoot $record.evidence_pack_path $ExecutionRoot)) { throw 'RunRecord evidence pack 超出 executionRoot。' }
+    if (-not [string]::IsNullOrWhiteSpace([string]$scopePathValue)) {
+        if ($scopeHashValue -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileSha256 $scopePathValue) -ne $scopeHashValue) { throw 'RunRecord 證據 SHA-256 不一致。' }
+    }
+    if ($record.preflight_sha256 -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileSha256 $record.preflight_result_path) -ne $record.preflight_sha256) {
+        throw 'RunRecord 證據 SHA-256 不一致。'
+    }
+    $handoffPathValue = [string](Get-DispatchJsonProperty -Object $record -Name 'recovery_handoff_path')
+    $handoffIdValue = [string](Get-DispatchJsonProperty -Object $record -Name 'recovery_handoff_id')
+    $handoffHashValue = [string](Get-DispatchJsonProperty -Object $record -Name 'recovery_handoff_sha256')
+    if ([string]::IsNullOrWhiteSpace($handoffPathValue)) {
+        if (-not [string]::IsNullOrWhiteSpace($handoffIdValue) -or -not [string]::IsNullOrWhiteSpace($handoffHashValue)) {
+            throw 'RunRecord RecoveryHandoff 欄位必須成對存在。'
+        }
+    }
+    else {
+        $sourceHistoryRoot = Join-Path (Resolve-AbsolutePath $SourceRoot) '.local\ai-sessions\history'
+        if (-not (Test-PathWithinRoot $handoffPathValue $sourceHistoryRoot)) { throw 'RunRecord RecoveryHandoff 路徑超出 source history。' }
+        if (-not (Test-Path -LiteralPath $handoffPathValue -PathType Leaf) -or $handoffHashValue -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileSha256 $handoffPathValue) -ine $handoffHashValue) { throw 'RunRecord RecoveryHandoff 雜湊不一致。' }
+        if ($handoffIdValue -notmatch '^[a-fA-F0-9]{32}$') { throw 'RunRecord RecoveryHandoff id 異常。' }
+    }
+    $preflight = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $record.preflight_result_path -Raw -Encoding UTF8)
+    foreach ($entry in @(@('sourceRoot', $SourceRoot), @('executionRoot', $ExecutionRoot))) {
+        $value = Get-RequiredPreflightProperty $preflight $entry[0]
+        if (-not [string]::Equals((Resolve-AbsolutePath $value), (Resolve-AbsolutePath $entry[1]), [StringComparison]::OrdinalIgnoreCase)) { throw 'RunRecord Preflight roots 不一致。' }
+    }
+    if ((Get-RequiredPreflightProperty $preflight 'lineSlug') -cne $LineSlug -or (Get-RequiredPreflightProperty $preflight 'dispatchSlug') -cne $DispatchSlug) { throw 'RunRecord Preflight 身分不一致。' }
+    $baselineResolutionValue = $record.baseline_resolution
+    $baselineResolutionStatus = $null
+    if ($null -ne $baselineResolutionValue) {
+        if ($baselineResolutionValue -isnot [psobject]) { throw 'RunRecord baseline_resolution 必須為 object。' }
+        $baselineResolutionStatus = [string](Get-DispatchJsonProperty -Object $baselineResolutionValue -Name 'status')
+        if ($baselineResolutionStatus -notin @('pending', 'confirmed', 'failed', 'not-applicable')) { throw 'RunRecord baseline_resolution status 異常。' }
+        $baselineQueryLocation = [string](Get-DispatchJsonProperty -Object $baselineResolutionValue -Name 'query_location')
+        if ([string]::IsNullOrWhiteSpace($baselineQueryLocation)) { throw 'RunRecord baseline_resolution 缺少 query_location。' }
+        if ($baselineResolutionStatus -eq 'failed' -and [string]::IsNullOrWhiteSpace([string](Get-DispatchJsonProperty -Object $baselineResolutionValue -Name 'error'))) {
+            throw 'RunRecord baseline_resolution failed 缺少 error。'
+        }
+        if ($baselineResolutionStatus -eq 'confirmed') {
+            $confirmedBaselinePath = [string](Get-DispatchJsonProperty -Object $baselineResolutionValue -Name 'path')
+            $confirmedBaselineSha256 = [string](Get-DispatchJsonProperty -Object $baselineResolutionValue -Name 'sha256')
+            if ([string]::IsNullOrWhiteSpace($confirmedBaselinePath) -or $confirmedBaselineSha256 -notmatch '^[a-fA-F0-9]{64}$') { throw 'RunRecord baseline_resolution confirmed 缺少有效 Baseline。' }
+        }
+    }
+    else {
+        $baselineResolutionStatus = if ([string]::Equals((Resolve-AbsolutePath $SourceRoot), (Resolve-AbsolutePath $ExecutionRoot), [StringComparison]::OrdinalIgnoreCase)) { 'not-applicable' } elseif (-not [string]::IsNullOrWhiteSpace($record.baseline_path) -and $record.baseline_sha256 -match '^[a-fA-F0-9]{64}$') { 'confirmed' } else { $null }
+    }
+    $baselineResolutionFailure = $record.launch_state -eq 'launch-failed' -and $baselineResolutionStatus -eq 'failed'
+    if (-not [string]::Equals((Resolve-AbsolutePath $SourceRoot), (Resolve-AbsolutePath $ExecutionRoot), [StringComparison]::OrdinalIgnoreCase)) {
+        if ($baselineResolutionFailure) {
+            if ($null -ne $record.baseline_path -or $null -ne $record.baseline_sha256) { throw 'baseline resolution failed 的 RunRecord 不可宣稱已綁定 Baseline。' }
+        }
+        else {
+            $null = Resolve-DispatchBaselineBinding -Preflight $preflight -SourceRoot $SourceRoot -DispatchRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha (Get-RequiredPreflightProperty $preflight 'baseSha') -Path $record.baseline_path -Sha256 $record.baseline_sha256
+            if ([string]::IsNullOrWhiteSpace($record.baseline_path) -or [string]::IsNullOrWhiteSpace($record.baseline_sha256)) { throw 'worktree RunRecord 缺少 Baseline 綁定。' }
+        }
+    }
+    elseif ($null -ne $record.baseline_path -or $null -ne $record.baseline_sha256) { throw 'direct-write RunRecord Baseline 必須為 null。' }
+    if ($record.launch_state -eq 'launch-failed') {
+        if ($null -eq $failureValue -or $failureValue -isnot [psobject]) { throw 'launch-failed RunRecord 缺少 failure object。' }
+        foreach ($name in @('status', 'phase', 'reason_code', 'message', 'recorded_at_utc')) {
+            $property = $failureValue.PSObject.Properties[$name]
+            if ($null -eq $property -or $property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)) { throw "failure 缺少有效欄位：$name" }
+        }
+        if ($failureValue.status -cne 'failed' -or $failureValue.resumable -ne $false) { throw 'failure status 或 resumable 不符合契約。' }
+        foreach ($name in @('observation', 'original_output')) {
+            if ($null -eq $failureValue.PSObject.Properties[$name] -or $null -eq $failureValue.$name) { throw "failure 缺少欄位：$name" }
+        }
+        $failureRecordedAt = [datetimeoffset]::MinValue
+        if (-not [datetimeoffset]::TryParse($failureValue.recorded_at_utc, [ref]$failureRecordedAt) -or $failureRecordedAt.Offset -ne [timespan]::Zero) { throw 'failure recorded_at_utc 時間異常。' }
+    }
+    elseif ($null -ne $failureValue) {
+        throw '成功或 prepared RunRecord 不可包含 failure object。'
+    }
+    return $record
+}
+
+function Get-DispatchRunEvents {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][psobject]$Record)
+
+    $events = @(
+        foreach ($line in Get-Content -LiteralPath $Record.event_stream_path -Encoding UTF8 -ErrorAction Stop) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            $event = $line | ConvertFrom-Json -ErrorAction Stop
+            $typeProperty = if ($null -eq $event) { $null } else { $event.PSObject.Properties['type'] }
+            if ($null -eq $event -or $event -isnot [pscustomobject] -or $null -eq $typeProperty -or -not ($typeProperty.Value -is [string]) -or [string]::IsNullOrWhiteSpace($typeProperty.Value)) { throw 'RunRecord 事件缺少 type。' }
+            $event
+        }
+    )
+    if ($events.Count -eq 0) { throw 'RunRecord 事件流為空。' }
+    $threads = @($events | Where-Object { $_.type -eq 'thread.started' })
+    if ($threads.Count -ne 1) { throw 'RunRecord 事件必須包含唯一 thread.started。' }
+    $thread = Get-EventPropertyValue $threads[0] 'thread_id'
+    $parsed = [guid]::Empty
+    if ($thread -isnot [string] -or -not [guid]::TryParseExact($thread, 'D', [ref]$parsed)) { throw 'RunRecord 事件 thread 無效。' }
+    if (($null -ne $Record.thread_id -and $Record.thread_id -cne $thread) -or ($null -ne $Record.requested_thread_id -and $Record.requested_thread_id -cne $thread)) { throw 'RunRecord 事件 thread 不一致。' }
+    $lastType = [string]$events[-1].type
+    return [pscustomobject]@{
+        ThreadId = $thread
+        Completed = $lastType -eq 'turn.completed'
+        Terminal = $lastType -in @('turn.completed', 'turn.failed')
+        LastEventType = $lastType
+        UnknownInterruption = $lastType -eq 'turn.started'
+    }
+}
+
+function Get-DispatchRunRecordList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug
+    )
+
+    $directory = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        return @()
+    }
+    $records = New-Object System.Collections.Generic.List[object]
+    foreach ($file in @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File -ErrorAction Stop)) {
+        $record = Read-DispatchRunRecord -Path $file.FullName -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        if (@($records | Where-Object { $_.run_id -ceq $record.run_id }).Count -gt 0) { throw 'RunRecord 重複 run_id。' }
+        $records.Add($record)
+    }
+    return @($records.ToArray())
+}
+
+function Resolve-LatestColdStartFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug
+    )
+
+    $records = @(Get-DispatchRunRecordList -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug)
+    if ($records.Count -eq 0) {
+        return $null
+    }
+    $latest = @(
+        $records | Sort-Object -Property @(
+            @{ Expression = { ConvertTo-DispatchTimestamp -Value $_.created_at_utc }; Descending = $true }
+            @{ Expression = { $_.run_id }; Descending = $true }
+        )
+    )[0]
+    if ($latest.launch_state -ne 'launch-failed') {
+        throw '同派遣最新 RunRecord 不是 launch-failed，拒絕另建 cold-start。'
+    }
+    $pidCheck = Get-PidCheckResult -SourceRoot $SourceRoot -LineSlug $LineSlug -WriteMode 'readonly'
+    $activeRecords = @()
+    $unconfirmedRecords = @()
+    if ($null -ne $pidCheck) {
+        $activeValue = Get-DispatchJsonProperty -Object $pidCheck -Name 'ActiveRecords'
+        $unconfirmedValue = Get-DispatchJsonProperty -Object $pidCheck -Name 'UnconfirmedRecords'
+        if ($null -ne $activeValue) { $activeRecords = @($activeValue) }
+        if ($null -ne $unconfirmedValue) { $unconfirmedRecords = @($unconfirmedValue) }
+    }
+    $blockingUnconfirmedRecords = @(
+        $unconfirmedRecords | Where-Object {
+            $recordDispatchSlug = [string](Get-OptionalObjectProperty -Object $_ -Name 'DispatchSlug')
+            $identityStatus = [string](Get-OptionalObjectProperty -Object $_ -Name 'IdentityStatus')
+            $recordDispatchSlug -eq $DispatchSlug -and $identityStatus -ne 'root-process-absent'
+        }
+    )
+    if (@($activeRecords | Where-Object { $_.DispatchSlug -eq $DispatchSlug }).Count -gt 0 -or $blockingUnconfirmedRecords.Count -gt 0) {
+        throw '最新 failed attempt 仍有 active 或未確認的程序，拒絕 cold-start。'
+    }
+    return $latest
+}
+
+function Resolve-PreviousDispatchRun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug,
+        [Parameter(Mandatory)][string]$ResumeThreadId,
+        [string]$LastMessagePath
+    )
+
+    $recordsList = @(Get-DispatchRunRecordList -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug)
+    if ($recordsList.Count -eq 0) { throw '續行缺少 RunRecord。' }
+    $records = @{}
+    foreach ($record in $recordsList) {
+        $records[$record.run_id] = $record
+    }
+    $childrenByParent = @{}
+    $parentByRun = @{}
+    foreach ($record in $recordsList) {
+        $parentId = [string](Get-DispatchJsonProperty -Object $record -Name 'attempt_parent_run_id')
+        if ([string]::IsNullOrWhiteSpace($parentId)) {
+            $parentId = [string](Get-DispatchJsonProperty -Object $record -Name 'previous_run_id')
+        }
+        if ([string]::IsNullOrWhiteSpace($parentId)) {
+            $parentId = $null
+        }
+        $parentByRun[$record.run_id] = $parentId
+        if ($null -ne $parentId) {
+            if ($childrenByParent.ContainsKey($parentId)) { throw 'RunRecord 存在分支。' }
+            $childrenByParent[$parentId] = $record.run_id
+        }
+    }
+    foreach ($parentId in @($parentByRun.Values | Where-Object { $null -ne $_ } | Sort-Object -Unique)) {
+        if (-not $records.ContainsKey($parentId)) { throw 'RunRecord 斷鏈。' }
+    }
+    $tails = @($recordsList | Where-Object { -not $childrenByParent.ContainsKey($_.run_id) })
+    if ($tails.Count -ne 1) { throw 'RunRecord 必須有唯一鏈尾。' }
+    $tail = $tails[0]
+    $chain = New-Object System.Collections.Generic.List[object]
+    $seen = @{}
+    $current = $tail
+    while ($null -ne $current) {
+        if ($seen.ContainsKey($current.run_id)) { throw 'RunRecord 存在循環。' }
+        $seen[$current.run_id] = $true
+        $chain.Add($current)
+        $parentId = $parentByRun[$current.run_id]
+        if ($null -eq $parentId) { break }
+        $current = $records[$parentId]
+    }
+    if ($seen.Count -ne $recordsList.Count) { throw 'RunRecord 存在不相連的紀錄或循環。' }
+
+    for ($index = 0; $index -lt $chain.Count - 1; $index++) {
+        $child = $chain[$index]
+        $parent = $chain[$index + 1]
+        if ($child.launch_state -eq 'launch-failed' -or $parent.launch_state -eq 'launch-failed') {
+            continue
+        }
+        $parentEvents = Get-DispatchRunEvents -Record $parent
+        if ($child.requested_thread_id -cne $parentEvents.ThreadId) { throw 'RunRecord 前後輪 thread 不一致。' }
+        if ([string]::IsNullOrWhiteSpace([string]$child.scope_plan_path) -or [string]::IsNullOrWhiteSpace([string]$parent.scope_plan_path)) {
+            throw 'RunRecord 前後輪 ScopePlan 不一致。'
+        }
+        if ($child.scope_plan_path -ne $parent.scope_plan_path -or $child.scope_plan_sha256 -ne $parent.scope_plan_sha256) { throw 'RunRecord 前後輪 ScopePlan 不一致。' }
+    }
+
+    $interruptedUnknownRecords = @(Get-RecoveryChainInterruptedUnknownRecords -Records @($chain.ToArray()))
+    if ($interruptedUnknownRecords.Count -gt 0) {
+        $unknownRecord = $interruptedUnknownRecords[0]
+        $unknownEvents = $null
+        try {
+            $unknownEvents = Get-DispatchRunEvents -Record $unknownRecord
+        }
+        catch {
+            $unknownEvents = [ordered]@{
+                path = $unknownRecord.event_stream_path
+                error = $_.Exception.Message
+            }
+        }
+        throw (New-InterruptedUnknownResumeRejectedException -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Record $unknownRecord -Events $unknownEvents)
+    }
+
+    $anchor = $null
+    $anchorEvents = $null
+    foreach ($candidate in @($chain.ToArray())) {
+        if ($candidate.launch_state -eq 'launch-failed') { continue }
+        $candidateEvents = Get-DispatchRunEvents -Record $candidate
+        if ($candidateEvents.ThreadId -ceq $ResumeThreadId) {
+            if ($null -eq $anchor) {
+                $anchor = $candidate
+                $anchorEvents = $candidateEvents
+            }
+        }
+    }
+    if ($null -eq $anchor) {
+        throw 'NoValidResumeAnchor：找不到與 ResumeThreadId 相符的有效 anchor。'
+    }
+
+    $pidCheck = Get-PidCheckResult -SourceRoot $SourceRoot -LineSlug $LineSlug -WriteMode 'readonly'
+    $activeRecords = @()
+    $unconfirmedRecords = @()
+    if ($null -ne $pidCheck) {
+        $activeValue = Get-DispatchJsonProperty -Object $pidCheck -Name 'ActiveRecords'
+        $unconfirmedValue = Get-DispatchJsonProperty -Object $pidCheck -Name 'UnconfirmedRecords'
+        if ($null -ne $activeValue) { $activeRecords = @($activeValue) }
+        if ($null -ne $unconfirmedValue) { $unconfirmedRecords = @($unconfirmedValue) }
+    }
+    if (@($activeRecords | Where-Object { $_.DispatchSlug -eq $DispatchSlug }).Count -gt 0 -or @($unconfirmedRecords | Where-Object { $_.DispatchSlug -eq $DispatchSlug -and $_.IdentityStatus -ne 'root-process-absent' }).Count -gt 0) { throw '鏈尾仍執行中或程序身分無法確認。' }
+    if (-not (Test-Path -LiteralPath $anchor.pid_record_path -PathType Leaf) -and -not $anchorEvents.Terminal) { throw '鏈尾缺少 PID 停止證據。' }
+    if (-not [string]::IsNullOrWhiteSpace($LastMessagePath) -and -not [string]::Equals((Resolve-AbsolutePath $LastMessagePath), $anchor.last_message_path, [StringComparison]::OrdinalIgnoreCase)) { throw '續行顯式 last-message 與鏈尾不一致。' }
+    $message = Get-Content -LiteralPath $anchor.last_message_path -Raw -Encoding UTF8 -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace($message)) { throw '續行 last-message 為空。' }
+    if (-not $anchorEvents.Completed) {
+        foreach ($name in @('已確認結論', '未完成單位', '證據位置')) {
+            $match = [regex]::Match($message, ('(?m)^[ \t-]*' + [regex]::Escape($name) + '[ \t]*[:：][ \t]*(?<value>[^\r\n]+)\r?$'))
+            if (-not $match.Success -or [string]::IsNullOrWhiteSpace($match.Groups['value'].Value)) { throw "續行 last-message 缺少必要交接欄位：$name" }
+        }
+    }
+    $skippedAttempts = @(
+        @($chain.ToArray()) |
+            Where-Object { $_.launch_state -eq 'launch-failed' } |
+            ForEach-Object {
+                $failure = Get-DispatchJsonProperty -Object $_ -Name 'failure'
+                [ordered]@{
+                    run_id = $_.run_id
+                    phase = Get-DispatchJsonProperty -Object $failure -Name 'phase'
+                    reason_code = Get-DispatchJsonProperty -Object $failure -Name 'reason_code'
+                    message = Get-DispatchJsonProperty -Object $failure -Name 'message'
+                    original_output = Get-DispatchJsonProperty -Object $failure -Name 'original_output'
+                }
+            }
+    )
+    [array]::Reverse($skippedAttempts)
+    return [pscustomobject]@{
+        Record = $tail
+        AnchorRecord = $anchor
+        ChainTailRecord = $tail
+        SkippedAttempts = @($skippedAttempts)
+        Message = $message
+        ResumeThreadId = $ResumeThreadId
+    }
+}
+
+function Resolve-InspectDispatchRun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug,
+        [Parameter(Mandatory)][string]$EventStreamPath,
+        [AllowEmptyString()][string]$ScopePlanPath,
+        [string]$RunRecordPath
+    )
+
+    $directory = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $paths = @($RunRecordPath)
+    if ([string]::IsNullOrWhiteSpace($RunRecordPath)) { $paths = @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File -ErrorAction Stop | Select-Object -ExpandProperty FullName) }
+    $matches = @(
+        foreach ($path in $paths) {
+            $record = Read-DispatchRunRecord -Path $path -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+            if ([string]::Equals($record.event_stream_path, (Resolve-AbsolutePath $EventStreamPath), [StringComparison]::OrdinalIgnoreCase)) { [pscustomobject]@{ Record = $record; Path = $path } }
+        }
+    )
+    if ($matches.Count -ne 1) { throw 'Inspect 事件必須精確對應唯一 RunRecord。' }
+    $match = $matches[0]
+    if ($match.Record.launch_state -eq 'launch-failed') {
+        if (-not [string]::IsNullOrWhiteSpace($ScopePlanPath) -and -not [string]::IsNullOrWhiteSpace([string]$match.Record.scope_plan_path) -and -not [string]::Equals($match.Record.scope_plan_path, (Resolve-AbsolutePath $ScopePlanPath), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Inspect ScopePlan 與 RunRecord 不一致。'
+        }
+        return $match
+    }
+    if ([string]::IsNullOrWhiteSpace($ScopePlanPath)) { throw 'Inspect 必須提供 ScopePlanPath。' }
+    if (-not [string]::Equals($match.Record.scope_plan_path, (Resolve-AbsolutePath $ScopePlanPath), [StringComparison]::OrdinalIgnoreCase)) { throw 'Inspect ScopePlan 與 RunRecord 不一致。' }
+    $null = Get-DispatchRunEvents $match.Record
+    return $match
+}
+
 function Invoke-Start {
     $preflight = $null
     $sourceRootPath = $null
@@ -4727,6 +10426,7 @@ function Invoke-Start {
     $process = $null
     $relay = $null
     $startedSnapshot = $null
+    $startedSnapshotError = $null
     $processStarted = $false
     $skipProcessCleanup = $false
     $phase = 'preparation'
@@ -4744,7 +10444,48 @@ function Invoke-Start {
     $scopePlanPathValue = $null
     $continuationContextPath = $null
     $continuationContextMessage = $null
+    $previousRun = $null
+    $runRecord = $null
+    $runRecordPathValue = $null
+    $latestColdStartFailure = $null
+    $attemptParentRunIdValue = $null
+    $resumeAnchorRunIdValue = $null
+    $skippedAttemptsValue = @()
+    $parentOptionsModel = $null
+    $parentOptionsGate = $null
+    $processGate = $null
+    $aclGate = $null
+    $recoveryHandoffInfo = $null
+    $effectiveCodexHomePath = $null
+    $prepareBinding = $null
+    $prepareResultPathValue = $null
+    $prepareResultSha256Value = $null
+    $prepareStatusValue = $null
+    $beforeSnapshotSha256Value = $null
+    $beforeSnapshotCapturedAtUtcValue = $null
+    $baselineBinding = $null
+    $baselineResolution = $null
+    $baselineQueryPathValue = $null
+    $baselineQuerySha256Value = $null
+    $baselineQueryLocationValue = $null
+    $runId = [guid]::NewGuid().ToString('D')
     $evidencePackInfo = $null
+    $requestedModelEvidence = $null
+    $requestedReasoningEffortEvidence = $null
+    $resolvedModelEvidence = $null
+    $resolvedReasoningEffortEvidence = $null
+    $modelEvidence = $null
+    $profileConfigPathValue = $null
+    $profileConfigSha256AtCompare = $null
+    $codexHomeEvidencePath = $null
+    $resolvedModelValue = $null
+    $resolvedReasoningEffortValue = $null
+    $resumeDiagnostics = $null
+    $startedAtUtcValue = $null
+    $preflightPathValue = $null
+    $preflightSha256Value = $null
+    $createdAtUtcValue = $null
+    $failureReasonCode = $null
     $interruptionSafeguardApplied = $true
     $budgetMonitorStatus = [ordered]@{
         state = 'not-started'
@@ -4757,6 +10498,9 @@ function Invoke-Start {
 
     try {
     $preflight = Get-PreflightData
+    if ([string]::IsNullOrWhiteSpace($PreflightResultPath)) {
+        throw 'Start 必須提供 PreflightResultPath，供 RunRecord 綁定原始證據。'
+    }
     $sourceRootValue = Get-RequiredPreflightProperty -Object $preflight -Name 'sourceRoot'
     $executionRootValue = Get-RequiredPreflightProperty -Object $preflight -Name 'executionRoot'
     $lineSlugValue = Get-RequiredPreflightProperty -Object $preflight -Name 'lineSlug'
@@ -4789,6 +10533,9 @@ function Invoke-Start {
                 throw 'executionRoot 未通過 sourceRoot／dispatchRoot 界線驗證。'
             }
     }
+    if (-not [string]::IsNullOrWhiteSpace($RecoveryHandoffPath)) {
+        $recoveryHandoffInfo = Read-RecoveryHandoff -Path $RecoveryHandoffPath -SourceRoot $sourceRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+    }
     if ([string]::IsNullOrWhiteSpace($PromptPath)) {
         throw 'Start 必須提供 PromptPath。'
     }
@@ -4799,76 +10546,108 @@ function Invoke-Start {
 
     $historyRoot = Join-Path -Path $executionRootPath -ChildPath '.local\ai-sessions\history'
     $sourceHistoryRoot = Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history'
-    $timestamp = [datetime]::UtcNow.ToString('yyyyMMdd_HHmmss_fff')
-    $eventPath = Join-Path -Path $historyRoot -ChildPath ('codex-exec-' + $timestamp + '.jsonl')
-    $errorPath = Join-Path -Path $historyRoot -ChildPath ('codex-exec-' + $timestamp + '.stderr.log')
-    $lastMessagePathValue = $LastMessagePath
-    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
-        if (-not [string]::IsNullOrWhiteSpace($LastMessagePath)) {
-            $continuationContextPath = Resolve-AbsolutePath -Path $LastMessagePath
+    $effectiveCodexHomePath = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
+    $preflightPreparePathProperty = $preflight.PSObject.Properties['prepareResultPath']
+    $preflightPrepareShaProperty = $preflight.PSObject.Properties['prepareResultSha256']
+    $preflightPreparePathValue = if ($null -eq $preflightPreparePathProperty -or $null -eq $preflightPreparePathProperty.Value) { $null } else { [string]$preflightPreparePathProperty.Value }
+    $preflightPrepareShaValue = if ($null -eq $preflightPrepareShaProperty -or $null -eq $preflightPrepareShaProperty.Value) { $null } else { [string]$preflightPrepareShaProperty.Value }
+    if (-not [string]::IsNullOrWhiteSpace($PrepareResultPath) -and -not [string]::IsNullOrWhiteSpace($preflightPreparePathValue) -and -not [string]::Equals((Resolve-AbsolutePath -Path $PrepareResultPath), (Resolve-AbsolutePath -Path $preflightPreparePathValue), [System.StringComparison]::OrdinalIgnoreCase)) {
+        $phase = 'preparation'
+        throw 'PrepareArtifactMismatch：Start 的 PrepareResultPath 與 Preflight result 不一致。'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PrepareResultPath)) {
+        $prepareResultPathValue = Resolve-AbsolutePath -Path $PrepareResultPath
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($preflightPreparePathValue)) {
+        $prepareResultPathValue = Resolve-AbsolutePath -Path $preflightPreparePathValue
+    }
+    if ([string]::Equals($sourceRootPath, $executionRootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not [string]::IsNullOrWhiteSpace($prepareResultPathValue)) {
+            $prepareBinding = Resolve-PrepareResultBinding -Path $prepareResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ExpectedSha256 $preflightPrepareShaValue
+            if ($prepareBinding.Status -ne 'not-required') {
+                $phase = 'preparation'
+                throw 'PrepareArtifactMismatch：direct-write 的 Prepare result status 必須是 not-required。'
+            }
         }
         else {
-            $previousLastMessages = @(Get-ChildItem -LiteralPath $historyRoot -Filter 'codex-last-message-*.md' -File | Sort-Object -Property LastWriteTimeUtc -Descending)
-            if ($previousLastMessages.Count -eq 0) {
-                throw '續行缺少前輪 last-message 交接資料。'
-            }
-            $continuationContextPath = $previousLastMessages[0].FullName
-        }
-        if (-not (Test-Path -LiteralPath $continuationContextPath -PathType Leaf)) {
-            throw "續行 last-message 交接檔不存在：$continuationContextPath"
-        }
-        $continuationContextMessage = Get-Content -LiteralPath $continuationContextPath -Raw -Encoding UTF8
-        if ([string]::IsNullOrWhiteSpace($continuationContextMessage)) {
-            throw "續行 last-message 交接檔為空：$continuationContextPath"
-        }
-
-        # 三個保全欄位由中斷保全指示於中止路徑產生。正常完成的派遣沒有收到中止要求，
-        # 結案訊息不含這些欄位，因此依前輪事件流的終止事件決定要求哪一組前置條件。
-        # 前輪終止狀態無法判定時採保守處置，仍要求完整保全欄位。
-        $previousRunCompleted = $false
-        $continuationTimestamp = [regex]::Match(
-            [System.IO.Path]::GetFileNameWithoutExtension($continuationContextPath),
-            '^codex-last-message-(?<stamp>.+)$'
-        )
-
-        if ($continuationTimestamp.Success) {
-            $previousEventPath = Join-Path -Path $historyRoot -ChildPath ('codex-exec-' + $continuationTimestamp.Groups['stamp'].Value + '.jsonl')
-
-            if (Test-Path -LiteralPath $previousEventPath -PathType Leaf) {
-                $previousEventLines = @(
-                    Get-Content -LiteralPath $previousEventPath -Encoding UTF8 |
-                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
-                )
-
-                if ($previousEventLines.Count -gt 0) {
-                    try {
-                        $previousTerminalEvent = $previousEventLines[$previousEventLines.Count - 1] | ConvertFrom-Json
-                        $previousRunCompleted = ($previousTerminalEvent.type -eq 'turn.completed')
-                    }
-                    catch {
-                        $previousRunCompleted = $false
-                    }
-                }
+            $directPrepareRootInfo = Get-PrepareRootInfo -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -DispatchRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+            $directPrepareDocument = New-PrepareDocument -RootInfo $directPrepareRootInfo -Status 'not-required' -RequestPathValue $null -RequestSha256Value $null -EffectiveCodexHome $effectiveCodexHomePath -Artifacts @() -ErrorValue $null
+            $directPreparePath = Get-PrepareResultTargetPath -RootInfo $directPrepareRootInfo -PrepareResultPathValue $null -ResultPathValue $null
+            $directPrepareWritten = Write-PrepareResultDocument -Path $directPreparePath -Document $directPrepareDocument
+            $prepareResultPathValue = $directPrepareWritten.Path
+            $prepareResultSha256Value = $directPrepareWritten.Sha256
+            $prepareBinding = [pscustomobject]@{
+                Path               = $directPrepareWritten.Path
+                Sha256             = $directPrepareWritten.Sha256
+                Status             = 'not-required'
+                Document           = $directPrepareWritten.Document
+                Artifacts          = @()
+                EffectiveCodexHome = $effectiveCodexHomePath
             }
         }
-
-        if (-not $previousRunCompleted) {
-            foreach ($requiredContextText in @('已確認結論', '未完成單位', '證據位置')) {
-                $contextPattern = '(?m)^[ \t-]*' + [regex]::Escape($requiredContextText) + '[ \t]*[:：][ \t]*(?<value>[^\r\n]+?)\s*$'
-                $contextMatch = [regex]::Match($continuationContextMessage, $contextPattern)
-                if (-not $contextMatch.Success -or [string]::IsNullOrWhiteSpace($contextMatch.Groups['value'].Value)) {
-                    throw "續行 last-message 缺少必要交接欄位：$requiredContextText"
-                }
-            }
+        if ($null -ne $prepareBinding) {
+            $prepareResultPathValue = $prepareBinding.Path
+            $prepareResultSha256Value = $prepareBinding.Sha256
+            $prepareStatusValue = $prepareBinding.Status
         }
-        $lastMessagePathValue = Join-Path -Path $historyRoot -ChildPath ('codex-last-message-' + $timestamp + '.md')
-    }
-    elseif ([string]::IsNullOrWhiteSpace($lastMessagePathValue)) {
-        $lastMessagePathValue = Join-Path -Path $historyRoot -ChildPath ('codex-last-message-' + $timestamp + '.md')
+        else {
+            $prepareStatusValue = 'not-required'
+        }
     }
     else {
-        $lastMessagePathValue = Resolve-AbsolutePath -Path $lastMessagePathValue
+        if ([string]::IsNullOrWhiteSpace($prepareResultPathValue)) {
+            $phase = 'preparation'
+            throw 'PrepareRequired：worktree Start 必須提供 status=Prepared 的 PrepareResultPath。'
+        }
+        $prepareBinding = Resolve-PrepareResultBinding -Path $prepareResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ExpectedSha256 $preflightPrepareShaValue
+        if ($prepareBinding.Status -ne 'Prepared') {
+            $phase = 'preparation'
+            throw 'PrepareArtifactMismatch：worktree Start 的 Prepare result status 必須是 Prepared。'
+        }
+        $prepareResultSha256Value = $prepareBinding.Sha256
+        $prepareStatusValue = $prepareBinding.Status
     }
+    $runDirectory = Get-DispatchRunDirectory -SourceRoot $sourceRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+    if ([string]::IsNullOrWhiteSpace($ResumeThreadId)) {
+        $latestColdStartFailure = Resolve-LatestColdStartFailure -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+        if ($null -ne $latestColdStartFailure) {
+            $attemptParentRunIdValue = $latestColdStartFailure.run_id
+        }
+    }
+    $timestamp = [datetime]::UtcNow.ToString('yyyyMMdd_HHmmss_fff') + '-' + $runId
+    $eventPath = Join-Path -Path $historyRoot -ChildPath ('codex-exec-' + $timestamp + '.jsonl')
+    $errorPath = Join-Path -Path $historyRoot -ChildPath ('codex-exec-' + $timestamp + '.stderr.log')
+    $generatedLastMessagePath = Join-Path $historyRoot ('codex-last-message-' + $timestamp + '.md')
+    $lastMessagePathValue = $generatedLastMessagePath
+    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
+        $previousRun = Resolve-PreviousDispatchRun -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ResumeThreadId $ResumeThreadId -LastMessagePath $LastMessagePath
+        $attemptParentRunIdValue = $previousRun.ChainTailRecord.run_id
+        $resumeAnchorRunIdValue = $previousRun.AnchorRecord.run_id
+        $skippedAttemptsValue = @($previousRun.SkippedAttempts)
+        $continuationContextPath = $previousRun.AnchorRecord.last_message_path
+        $continuationContextMessage = $previousRun.Message
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($LastMessagePath)) {
+        $lastMessagePathValue = Resolve-AbsolutePath $LastMessagePath
+    }
+    $sandboxValue = if ($TaskType -eq 'deep-consult') { 'read-only' } else { 'workspace-write' }
+    $anchorParentOptions = $null
+    if ($null -ne $previousRun) {
+        $anchorParentOptions = Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'parent_options'
+        if ($null -eq $anchorParentOptions) {
+            $phase = 'preparation'
+            throw 'ParentOptionsUnknown：anchor RunRecord 缺少 parent_options，拒絕以當次呼叫重建續行選項。'
+        }
+    }
+    $parentOptionsResolution = Resolve-ParentOptionsForStart -Profile $effectiveProfileValue -ProfileProvided ([bool]$script:ProfileExplicit) -Sandbox $sandboxValue -WorkingDirectory $executionRootPath -AddDirectory $AddDirectory -Search ([bool]$Search) -AddDirectoryProvided ([bool]$script:AddDirectoryExplicit) -SearchProvided ([bool]$script:SearchExplicit) -CodexParentOption $CodexParentOption -CodexParentOptionProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
+    if (-not [string]::IsNullOrWhiteSpace([string]$parentOptionsResolution.code)) {
+        $phase = 'preparation'
+        throw ($parentOptionsResolution.code + '：父層選項差異欄位=' + (($parentOptionsResolution.differences) -join ','))
+    }
+    $parentOptionsModel = $parentOptionsResolution.model
+    $effectiveProfileValue = [string](Get-DispatchJsonProperty -Object $parentOptionsModel -Name 'profile')
+    if (-not (Test-PathWithinRoot $lastMessagePathValue $executionRootPath)) { throw 'LastMessagePath 必須位於 executionRoot 內。' }
+    if (Test-Path -LiteralPath $lastMessagePathValue) { throw 'LastMessagePath 已存在，拒絕覆寫證據。' }
     $threadPath = $ThreadIdPath
     if ([string]::IsNullOrWhiteSpace($threadPath)) {
         $threadPath = Join-Path -Path $historyRoot -ChildPath ('codex-thread-' + $dispatchSlugValue + '.txt')
@@ -4890,10 +10669,194 @@ function Invoke-Start {
         $launcherPath = Join-Path -Path $historyRoot -ChildPath ('codex-launch-' + $timestamp + '.sh')
     }
     New-Item -ItemType Directory -Path $historyRoot, $sourceHistoryRoot -Force | Out-Null
+    $preflightPathValue = Resolve-AbsolutePath -Path $PreflightResultPath
+    $preflightSha256Value = Get-FileSha256 -Path $preflightPathValue
+    $createdAtUtcValue = [datetime]::UtcNow.ToString('o')
+    $isWorktreeStart = -not [string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase)
+    if ($isWorktreeStart) {
+        $baselinePathProperty = $preflight.PSObject.Properties['baselinePath']
+        $baselineSha256Property = $preflight.PSObject.Properties['baselineSha256']
+        $baselineQueryPathValue = if ($null -eq $baselinePathProperty -or $null -eq $baselinePathProperty.Value) { $null } else { [string]$baselinePathProperty.Value }
+        $baselineQuerySha256Value = if ($null -eq $baselineSha256Property -or $null -eq $baselineSha256Property.Value) { $null } else { [string]$baselineSha256Property.Value }
+        $baselineQueryLocationValue = 'Preflight.baselinePath,Preflight.baselineSha256'
+        $baselineResolution = [ordered]@{
+            status = 'pending'
+            requested_path = $baselineQueryPathValue
+            requested_sha256 = $baselineQuerySha256Value
+            query_location = $baselineQueryLocationValue
+            path = $null
+            sha256 = $null
+            error = $null
+        }
+    }
+    else {
+        $baselineQueryLocationValue = 'direct-write'
+        $baselineResolution = [ordered]@{
+            status = 'not-applicable'
+            requested_path = $null
+            requested_sha256 = $null
+            query_location = $baselineQueryLocationValue
+            path = $null
+            sha256 = $null
+            error = $null
+        }
+    }
+    $runRecord = [pscustomobject]@{
+        schema = 'ai-sessions.dispatch-run.v1'
+        run_id = $runId
+        dispatch_slug = $dispatchSlugValue
+        line_slug = $lineSlugValue
+        source_root = $sourceRootPath
+        execution_root = $executionRootPath
+        previous_run_id = if ($null -eq $previousRun) { $null } else { $previousRun.AnchorRecord.run_id }
+        attempt_parent_run_id = $attemptParentRunIdValue
+        resume_anchor_run_id = $resumeAnchorRunIdValue
+        skipped_attempts = @($skippedAttemptsValue)
+        requested_thread_id = if ([string]::IsNullOrWhiteSpace($ResumeThreadId)) { $null } else { $ResumeThreadId }
+        thread_id = $null
+        event_stream_path = $eventPath
+        last_message_path = $lastMessagePathValue
+        scope_plan_path = $null
+        scope_plan_sha256 = $null
+        preflight_result_path = $preflightPathValue
+        preflight_sha256 = $preflightSha256Value
+        prepare_result_path = $prepareResultPathValue
+        prepare_result_sha256 = $prepareResultSha256Value
+        prepare_status = $prepareStatusValue
+        created_at_utc = $createdAtUtcValue
+        started_at_utc = $null
+        launch_state = 'prepared'
+        failure = $null
+        resume_diagnostics = $null
+        model_evidence = ConvertTo-DispatchEvidenceGroup -Evidence $null -Field 'model'
+        reasoning_effort_evidence = ConvertTo-DispatchEvidenceGroup -Evidence $null -Field 'model_reasoning_effort'
+        baseline_path = $null
+        baseline_sha256 = $null
+        baseline_resolution = $baselineResolution
+        pid_record_path = $pidPath
+        thread_id_path = $threadPath
+        launcher_path = $launcherPath
+        prompt_path = $promptPathValue
+        profile_config_path = $null
+        codex_home = $effectiveCodexHomePath
+        effective_codex_home = $effectiveCodexHomePath
+        evidence_pack_path = $null
+        evidence_pack_sha256 = $null
+        evidence_pack_length = $null
+        parent_options = $null
+        parent_options_sha256 = $null
+        parent_options_status = 'unknown'
+        acl_gate = $null
+        recovery_handoff_id = if ($null -eq $recoveryHandoffInfo) { $null } else { [string](Get-DispatchJsonProperty -Object $recoveryHandoffInfo.Document -Name 'recovery_id') }
+        recovery_handoff_path = if ($null -eq $recoveryHandoffInfo) { $null } else { $recoveryHandoffInfo.Path }
+        recovery_handoff_sha256 = if ($null -eq $recoveryHandoffInfo) { $null } else { $recoveryHandoffInfo.Sha256 }
+        quota_before_path = $null
+        quota_before_sha256 = $null
+        quota_before_captured_at_utc = $null
+        quota_before_freshness = $null
+        quota_before_observations = $null
+        quota_before_service_rejection = $null
+    }
+    try {
+        $runRecordPathValue = Write-DispatchRunRecord -Record $runRecord
+    }
+    catch {
+        $runRecord = $null
+        throw
+    }
+    if ($isWorktreeStart) {
+        try {
+            $baselineBinding = Resolve-DispatchBaselineBinding -Preflight $preflight -SourceRoot $sourceRootPath -DispatchRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -BaseSha (Get-RequiredPreflightProperty $preflight 'baseSha')
+            $baselineResolution.status = 'confirmed'
+            $baselineResolution.path = $baselineBinding.Path
+            $baselineResolution.sha256 = $baselineBinding.Sha256
+            $baselineResolution.error = $null
+        }
+        catch {
+            $failureReasonCode = 'BaselineUnknown'
+            $baselineResolution.status = 'failed'
+            $baselineResolution.path = $null
+            $baselineResolution.sha256 = $null
+            $baselineResolution.error = $_.Exception.Message
+            throw
+        }
+    }
     $codexExecutable = Get-CodexExecutablePath -ConfiguredPath $CodexPath
+    $startProcessResult = Get-PidCheckResult -SourceRoot $sourceRootPath -LineSlug $lineSlugValue -WriteMode $writeModeValue
+    $startActiveRecords = @()
+    $startUnconfirmedRecords = @()
+    if ($null -ne $startProcessResult) {
+        $startActiveValue = Get-DispatchJsonProperty -Object $startProcessResult -Name 'ActiveRecords'
+        $startUnconfirmedValue = Get-DispatchJsonProperty -Object $startProcessResult -Name 'UnconfirmedRecords'
+        if ($null -ne $startActiveValue) {
+            $startActiveRecords = @($startActiveValue | Where-Object { [string](Get-DispatchJsonProperty -Object $_ -Name 'DispatchSlug') -eq $dispatchSlugValue })
+        }
+        if ($null -ne $startUnconfirmedValue) {
+            $startUnconfirmedRecords = @($startUnconfirmedValue | Where-Object {
+                    [string](Get-DispatchJsonProperty -Object $_ -Name 'DispatchSlug') -eq $dispatchSlugValue -and
+                    [string](Get-DispatchJsonProperty -Object $_ -Name 'IdentityStatus') -ne 'root-process-absent'
+                })
+        }
+    }
+    $processGate = [ordered]@{
+        status = if ($null -eq $startProcessResult) { 'unknown' } elseif (@($startActiveRecords).Count -gt 0) { 'alive' } elseif (@($startUnconfirmedRecords).Count -gt 0) { 'unknown' } elseif ([bool](Get-DispatchJsonProperty -Object $startProcessResult -Name 'Blocked')) { 'alive' } else { 'stopped' }
+        pid_check = $startProcessResult
+        active_records = @($startActiveRecords)
+        unconfirmed_records = @($startUnconfirmedRecords)
+        stopped_evidence = $null -ne $startProcessResult -and @($startActiveRecords).Count -eq 0 -and @($startUnconfirmedRecords).Count -eq 0 -and -not [bool](Get-DispatchJsonProperty -Object $startProcessResult -Name 'Blocked')
+    }
+    if ($processGate.status -ne 'stopped') {
+        $phase = 'preparation'
+        if ($null -ne $recoveryHandoffInfo) {
+            Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffProcessAlive' -HandoffPath $recoveryHandoffInfo.Path -Field 'process_gate' -Expected @{ status = 'stopped'; active_records = @(); unconfirmed_records = @(); stopped_evidence = $true } -Received $processGate -Evidence $processGate
+        }
+        throw ('ProcessAlive：Start process gate 未確認 stopped；evidence=' + (ConvertTo-Json -InputObject $processGate -Depth 20 -Compress))
+    }
+    $aclGate = Get-WorktreeAclGate -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -WriteMode $writeModeValue
+    if ($aclGate.status -in @('residue', 'unknown')) {
+        $phase = 'preparation'
+        if ($null -ne $recoveryHandoffInfo) {
+            $aclCode = if ($aclGate.status -eq 'residue') { 'RecoveryHandoffAclResidue' } else { 'RecoveryHandoffAclUnknown' }
+            Throw-RecoveryHandoffValidation -Code $aclCode -HandoffPath $recoveryHandoffInfo.Path -Field 'acl_gate' -Expected 'clean or not-applicable' -Received $aclGate -Evidence $aclGate
+        }
+        throw ($aclGate.rejection_code + '：ACL gate status=' + $aclGate.status)
+    }
 
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
         $sessionModeValue = 'continuation'
+    }
+    $requestedModelEvidence = New-RequestedDispatchEvidence -Value $Model -Field 'Model'
+    $requestedReasoningEffortEvidence = New-RequestedDispatchEvidence -Value $ReasoningEffort -Field 'ReasoningEffort'
+    $effectiveCodexHomePath = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
+    $codexHomeEvidencePath = $effectiveCodexHomePath
+    $profileConfigPathValue = Resolve-ProfileConfigPath -CodexHome $codexHomeEvidencePath -Profile $effectiveProfileValue
+    $profileEvidence = Read-ProfileModelEvidence -ConfigPath $profileConfigPathValue -Profile $effectiveProfileValue
+    $resolvedModelEvidence = $profileEvidence.model
+    $resolvedReasoningEffortEvidence = $profileEvidence.reasoning_effort
+    $profileConfigSha256AtCompare = $profileEvidence.config_sha256
+    $resolvedModelValue = Get-DispatchEvidenceValue -Evidence $resolvedModelEvidence
+    $resolvedReasoningEffortValue = Get-DispatchEvidenceValue -Evidence $resolvedReasoningEffortEvidence
+    $requestedModelValue = Get-DispatchEvidenceValue -Evidence $requestedModelEvidence
+    $requestedReasoningEffortValue = Get-DispatchEvidenceValue -Evidence $requestedReasoningEffortEvidence
+    if ($null -ne $requestedModelValue -and $null -ne $resolvedModelValue -and -not [string]::Equals($requestedModelValue, $resolvedModelValue, [StringComparison]::Ordinal)) {
+        $phase = 'profile-evidence'
+        throw "RequestedResolutionMismatch：requested model=$requestedModelValue；resolved model=$resolvedModelValue。"
+    }
+    if ($null -ne $requestedReasoningEffortValue -and $null -ne $resolvedReasoningEffortValue -and -not [string]::Equals($requestedReasoningEffortValue, $resolvedReasoningEffortValue, [StringComparison]::Ordinal)) {
+        $phase = 'profile-evidence'
+        throw "RequestedResolutionMismatch：requested reasoning effort=$requestedReasoningEffortValue；resolved reasoning effort=$resolvedReasoningEffortValue。"
+    }
+    $modelEvidence = New-ModelEvidence -RequestedModel $requestedModelEvidence -ResolvedModel $resolvedModelEvidence -RuntimeModel $null -RequestedReasoningEffort $requestedReasoningEffortEvidence -ResolvedReasoningEffort $resolvedReasoningEffortEvidence -RuntimeReasoningEffort $null
+    if ($null -ne $previousRun) {
+        $resumeDiagnostics = Compare-ResumeThreadModel -AnchorRecord $previousRun.AnchorRecord -CurrentModelEvidence $resolvedModelEvidence -CodexHome $codexHomeEvidencePath
+        if ($resumeDiagnostics.status -ne 'match') {
+            $phase = 'preparation'
+            if ($null -ne $recoveryHandoffInfo) {
+                $modelCode = if ($resumeDiagnostics.status -eq 'mismatch') { 'RecoveryHandoffModelMismatch' } else { 'RecoveryHandoffModelUnknown' }
+                Throw-RecoveryHandoffValidation -Code $modelCode -HandoffPath $recoveryHandoffInfo.Path -Field 'model_evidence' -Expected $resumeDiagnostics.original_thread_model -Received $resumeDiagnostics.current_resolved_model -Evidence $resumeDiagnostics
+            }
+            throw ($resumeDiagnostics.reason_code + '：Resume model 比對未通過。')
+        }
     }
     if ($TaskType -eq 'deep-consult') {
         if ($dispatchKindValue -ne 'resource') {
@@ -4912,12 +10875,15 @@ function Invoke-Start {
         if ([string]::IsNullOrWhiteSpace($QuotaAfterPath)) {
             throw 'deep-consult 必須提供可在執行期間更新的 QuotaAfterPath。'
         }
-        if ($null -ne $AddDirectory -and $AddDirectory.Count -gt 0) {
+        $effectiveAddDirectory = @((Get-DispatchJsonProperty -Object $parentOptionsModel -Name 'add_directory'))
+        if ($effectiveAddDirectory.Count -gt 0) {
             throw 'deep-consult 不允許額外 --add-dir，執行端只可讀取 evidence pack。'
         }
         $evidencePackInfo = Test-EvidencePack -Path $EvidencePackPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
         $evidenceHashPath = Join-Path -Path $historyRoot -ChildPath ('evidence-pack-' + $dispatchSlugValue + '.sha256')
         Write-Utf8NoBom -Path $evidenceHashPath -Content ($evidencePackInfo.sha256 + "`n")
+        $evidenceLengthPath = Join-Path -Path $historyRoot -ChildPath ('evidence-pack-' + $dispatchSlugValue + '.length')
+        Write-Utf8NoBom -Path $evidenceLengthPath -Content ([string]$evidencePackInfo.length + "`n")
     }
     if ($TaskType -ne 'deep-consult' -and -not [string]::IsNullOrWhiteSpace($DeepConsultReportPath)) {
         throw 'DeepConsultReportPath 只適用 TaskType=deep-consult。'
@@ -4926,14 +10892,22 @@ function Invoke-Start {
         throw 'EvidencePackPath 只適用 TaskType=deep-consult。'
     }
 
-    $beforeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $QuotaBeforePath -CodexHome $CodexHome -HistoryRoot $historyRoot -Purpose 'before' -Required
+    $beforeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $QuotaBeforePath -CodexHome $effectiveCodexHomePath -HistoryRoot $historyRoot -Purpose 'before' -Required
     $beforeSnapshotObject = Read-QuotaSnapshot -Path $beforeSnapshotPathValue
+    $beforeSnapshotSha256Value = Get-FileSha256 -Path $beforeSnapshotPathValue
+    $beforeSnapshotCapturedAtUtcValue = [string](Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'captured_at_utc')
+    if ([string]::IsNullOrWhiteSpace($beforeSnapshotCapturedAtUtcValue)) {
+        $beforeSnapshotCapturedAtUtcValue = $null
+    }
+    $beforeSnapshotFreshnessValue = Get-QuotaSnapshotFreshness -Snapshot $beforeSnapshotObject
+    $beforeSnapshotObservationsValue = Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'observations'
+    $beforeSnapshotServiceRejectionValue = Get-QuotaSnapshotServiceRejection -Snapshot $beforeSnapshotObject
     if ($TaskType -eq 'deep-consult') {
         $afterSnapshotPathValue = Resolve-AbsolutePath -Path $QuotaAfterPath
         if (-not (Test-PathWithinRoot -Path $afterSnapshotPathValue -Root $executionRootPath)) {
             throw "deep-consult QuotaAfterPath 必須位於 executionRoot 內：$afterSnapshotPathValue"
         }
-        $afterSnapshotPathValue = Set-QuotaSnapshotFromCodex -Path $afterSnapshotPathValue -CodexHome $CodexHome
+        $afterSnapshotPathValue = Set-QuotaSnapshotFromCodex -Path $afterSnapshotPathValue -CodexHome $effectiveCodexHomePath
     }
     $calibrationPathValue = $CalibrationPath
     if ([string]::IsNullOrWhiteSpace($calibrationPathValue)) {
@@ -4956,6 +10930,9 @@ function Invoke-Start {
     }
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
         $null = Test-ScopePlanHashRecord -SourceHistoryRoot $sourceHistoryRoot -DispatchSlug $dispatchSlugValue -LineSlug $lineSlugValue -ScopePlanPath $scopePlanPathValue
+        if ($previousRun.AnchorRecord.scope_plan_path -ne $scopePlanPathValue -or $previousRun.AnchorRecord.scope_plan_sha256 -ne (Get-FileSha256 $scopePlanPathValue)) {
+            throw '續行 ScopePlan 與前輪 RunRecord 不一致。'
+        }
         $existingScopePlan = Read-ScopePlanFile -Path $scopePlanPathValue
         if (-not (Test-ContinuationScopePlan -ScopePlan $existingScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -UnitKind $unitKindValue -Units $units)) {
             throw '續行的 ScopePlan 不存在、欄位不完整或與目前派工契約不一致。'
@@ -4963,12 +10940,12 @@ function Invoke-Start {
         $scopePlan = $existingScopePlan
     }
     else {
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -SessionMode $sessionModeValue -BeforeSnapshot (Read-QuotaSnapshot -Path $beforeSnapshotPathValue) -CalibrationPath $calibrationPathValue -Units $units -UnitKind $unitKindValue -RequestedBudgetPercent $PrimaryBudgetPercent -RequestedReservePercent $PrimaryReservePercent -Model $Model
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -SessionMode $sessionModeValue -BeforeSnapshot (Read-QuotaSnapshot -Path $beforeSnapshotPathValue) -CalibrationPath $calibrationPathValue -Units $units -UnitKind $unitKindValue -RequestedBudgetPercent $PrimaryBudgetPercent -RequestedReservePercent $PrimaryReservePercent -Model $resolvedModelValue -ModelEvidence $resolvedModelEvidence -ReasoningEffortEvidence $resolvedReasoningEffortEvidence
         $scopePlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $scopePlan
         Write-Utf8NoBom -Path $scopePlanPathValue -Content (($scopePlan | ConvertTo-Json -Depth 20) + "`n")
         $null = Write-ScopePlanHashRecordIfMissing -SourceHistoryRoot $sourceHistoryRoot -DispatchSlug $dispatchSlugValue -LineSlug $lineSlugValue -ScopePlanPath $scopePlanPathValue
     }
-    if ($scopePlan.decision -eq 'blocked-no-estimate' -or $scopePlan.decision -eq 'blocked-insufficient-budget' -or $scopePlan.decision -eq 'user-decision-required') {
+    if ($scopePlan.decision -eq 'blocked-no-estimate' -or $scopePlan.decision -eq 'blocked-insufficient-budget' -or $scopePlan.decision -eq 'blocked-no-fresh-quota' -or $scopePlan.decision -eq 'user-decision-required') {
         throw "ScopePlan 阻擋派工：decision=$($scopePlan.decision); reason=$($scopePlan.decision_reason)"
     }
     if ($TaskType -eq 'deep-consult') {
@@ -5016,15 +10993,20 @@ function Invoke-Start {
         )
     }
     if ($TaskType -eq 'deep-consult') {
-        $promptDirectives.Add(
-            '[deep-consult evidence-only]' + [Environment]::NewLine +
-            ('只可讀取 evidence pack：' + $evidencePackInfo.sandboxPath + '。禁止 repository 探索、掃描、檔案變更與外部派遣。請先輸出 ## 中斷保全結論，再輸出證據支持、推論與未決問題。')
-        )
+        $promptDirectives.Add((New-DeepInlineEvidenceDirective -EvidencePackInfo $evidencePackInfo))
     }
     if ($null -ne $deepCycleDecision -and $deepCycleDecision.applicable -and $DeepRequestSource -eq 'user-explicit') {
         $promptDirectives.Add(('[deep 週期位置告知]' + [Environment]::NewLine + $deepCycleDecision.notice + ' 請在回報中保留此週期位置與剩餘額度。'))
     }
     $promptPathValue = New-DispatchPrompt -PromptPath $promptPathValue -HistoryRoot $historyRoot -Timestamp $timestamp -Directive @($promptDirectives.ToArray())
+    if ($TaskType -eq 'deep-consult') {
+        $promptContentForVerification = Get-Content -LiteralPath $promptPathValue -Raw -Encoding UTF8
+        $inlineGate = Test-DeepInlineEvidenceDirective -PromptContent $promptContentForVerification -EvidencePackInfo $evidencePackInfo
+        if (-not $inlineGate.valid) {
+            $phase = 'evidence-pack-inline'
+            throw ('EvidencePackInlineMismatch：' + $inlineGate.reason)
+        }
+    }
 
     $codexArguments = New-Object System.Collections.Generic.List[string]
     $codexArguments.Add('--cd')
@@ -5039,26 +11021,25 @@ function Invoke-Start {
         $codexArguments.Add('--profile')
         $codexArguments.Add($effectiveProfileValue)
     }
-    if ($null -ne $AddDirectory) {
-        foreach ($directory in $AddDirectory) {
+    $effectiveAddDirectory = @((Get-DispatchJsonProperty -Object $parentOptionsModel -Name 'add_directory'))
+    foreach ($directory in $effectiveAddDirectory) {
             $directoryPath = Resolve-AbsolutePath -Path $directory
             if (-not (Test-Path -LiteralPath $directoryPath -PathType Container)) {
                 throw "--add-dir 目錄不存在：$directoryPath"
             }
             $codexArguments.Add('--add-dir')
             $codexArguments.Add($directoryPath)
-        }
     }
-    if ($Search) {
+    $effectiveSearch = [bool](Get-DispatchJsonProperty -Object $parentOptionsModel -Name 'search')
+    if ($effectiveSearch) {
         $codexArguments.Add('--search')
     }
-    if ($null -ne $CodexParentOption) {
-        foreach ($option in $CodexParentOption) {
+    $effectiveCodexParentOption = @((Get-DispatchJsonProperty -Object $parentOptionsModel -Name 'codex_parent_option'))
+    foreach ($option in $effectiveCodexParentOption) {
             if ([string]::IsNullOrWhiteSpace($option)) {
                 throw 'CodexParentOption 不可包含空白選項。'
             }
             $codexArguments.Add($option)
-        }
     }
     $codexArguments.Add('exec')
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
@@ -5070,6 +11051,76 @@ function Invoke-Start {
     $codexArguments.Add($lastMessagePathValue)
     $codexArguments.Add('-')
 
+    if ($null -ne $previousRun) {
+        $profileConfigSha256AfterCompare = $null
+        if ([string]::IsNullOrWhiteSpace($profileConfigPathValue) -or -not (Test-Path -LiteralPath $profileConfigPathValue -PathType Leaf)) {
+            $phase = 'preparation'
+            throw 'ProfileEvidenceUnknown：Resume compare 後找不到 Profile 設定檔，無法重新確認 SHA-256。'
+        }
+        try {
+            $profileConfigSha256AfterCompare = Get-FileSha256 -Path $profileConfigPathValue
+        }
+        catch {
+            $phase = 'preparation'
+            throw ('ProfileEvidenceUnknown：Resume compare 後無法重新計算 Profile 設定檔 SHA-256：' + $_.Exception.Message)
+        }
+        if ([string]::IsNullOrWhiteSpace($profileConfigSha256AtCompare) -or -not [string]::Equals($profileConfigSha256AtCompare, $profileConfigSha256AfterCompare, [StringComparison]::OrdinalIgnoreCase)) {
+            $phase = 'preparation'
+            throw ('ProfileEvidenceUnknown：Resume compare 後 Profile 設定檔已變更；compare-sha256={0}; current-sha256={1}' -f $profileConfigSha256AtCompare, $profileConfigSha256AfterCompare)
+        }
+    }
+
+    if ($null -ne $recoveryHandoffInfo) {
+        $handoffCurrentRecord = if ($null -eq $previousRun) { $null } else { $previousRun.ChainTailRecord }
+        $handoffCurrentChain = $null
+        if ($null -ne $handoffCurrentRecord) {
+            try {
+                $handoffCurrentChain = Get-RecoveryChainModel -LatestRecord $handoffCurrentRecord -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+            }
+            catch {
+                Throw-RecoveryHandoffValidation -Code 'RecoveryHandoffNoChain' -HandoffPath $recoveryHandoffInfo.Path -Field 'current_run_chain' -Expected 'readable current RunRecord chain' -Received $_.Exception.Message -Evidence @{ current_record = $handoffCurrentRecord; process_started = $false }
+            }
+        }
+        $handoffCurrentAuthorizedUnits = @((Get-DispatchJsonProperty -Object $scopePlan -Name 'requested_units'))
+        if ($handoffCurrentAuthorizedUnits.Count -eq 0) {
+            $handoffCurrentAuthorizedUnits = @((Get-DispatchJsonProperty -Object $scopePlan -Name 'selected_units')) + @((Get-DispatchJsonProperty -Object $scopePlan -Name 'deferred_units'))
+        }
+        $handoffCurrentOrderPath = 'not-specified'
+        $handoffCurrentOrderHash = $null
+        if (-not [string]::IsNullOrWhiteSpace($RequiredIdentifier) -and [System.IO.Path]::IsPathRooted($RequiredIdentifier)) {
+            $handoffCurrentOrderPath = Resolve-AbsolutePath -Path $RequiredIdentifier
+            if (Test-Path -LiteralPath $handoffCurrentOrderPath -PathType Leaf) {
+                $handoffCurrentOrderHash = Get-FileSha256 -Path $handoffCurrentOrderPath
+            }
+        }
+        $handoffValidationContext = [ordered]@{
+            current_record = $handoffCurrentRecord
+            current_chain = $handoffCurrentChain
+            current_run_record_path = if ($null -eq $handoffCurrentRecord) { $null } else { Join-Path -Path $runDirectory -ChildPath ($handoffCurrentRecord.run_id + '.json') }
+            current_event_path = if ($null -eq $handoffCurrentRecord) { $null } else { $handoffCurrentRecord.event_stream_path }
+            scope_path = $scopePlanPathValue
+            scope_hash = Get-FileSha256 -Path $scopePlanPathValue
+            scope_plan = $scopePlan
+            baseline_path = if ($null -eq $baselineBinding) { $null } else { $baselineBinding.Path }
+            baseline_hash = if ($null -eq $baselineBinding) { $null } else { $baselineBinding.Sha256 }
+            baseline_status = if ([string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase)) { 'not-applicable' } elseif ($null -eq $baselineBinding) { 'unknown' } else { 'confirmed' }
+            process_gate = $processGate
+            acl_gate = $aclGate
+            model_evidence = [ordered]@{
+                resolved = $resolvedModelEvidence
+                reasoning_effort = $resolvedReasoningEffortEvidence
+            }
+            resume_diagnostics = $resumeDiagnostics
+            parent_options = $parentOptionsModel
+            authorized_units = @($handoffCurrentAuthorizedUnits)
+            target_paths_provided = $null -ne $TargetPath -and @($TargetPath).Count -gt 0
+            target_paths = @($TargetPath)
+            dispatch_order_path = $handoffCurrentOrderPath
+            dispatch_order_hash = $handoffCurrentOrderHash
+        }
+        $recoveryHandoffInfo = Resolve-RecoveryHandoffBinding -Path $recoveryHandoffInfo.Path -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ValidationContext $handoffValidationContext
+    }
+
     $launcher = New-CodexLauncher -CodexExecutable $codexExecutable -CodexArguments @($codexArguments.ToArray()) -PromptPath $promptPathValue -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyRoot -LauncherPath $launcherPath
     $launcherPath = $launcher.Path
     $startInfo = New-ProcessStartInfo -FileName $launcher.FileName -WorkingDirectory $executionRootPath -Arguments @($launcher.Arguments)
@@ -5077,48 +11128,100 @@ function Invoke-Start {
     $process.StartInfo = $startInfo
     $startedSnapshot = $null
     $processStarted = $false
+    if (-not [string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase)) {
+        if ($null -eq $baselineBinding) {
+            throw 'BaselineUnknown：worktree Start 缺少已驗證 Baseline。'
+        }
+        if ($null -ne $previousRun -and (-not [string]::Equals($previousRun.AnchorRecord.baseline_path, $baselineBinding.Path, [StringComparison]::OrdinalIgnoreCase) -or $previousRun.AnchorRecord.baseline_sha256 -ine $baselineBinding.Sha256)) { throw 'Resume 必須沿用前輪 Baseline。' }
+    }
+    $runRecord.scope_plan_path = $scopePlanPathValue
+    $runRecord.scope_plan_sha256 = Get-FileSha256 -Path $scopePlanPathValue
+    $runRecord.model_evidence = $modelEvidence.model
+    $runRecord.reasoning_effort_evidence = $modelEvidence.reasoning_effort
+    $runRecord.profile_config_path = $profileConfigPathValue
+    $runRecord.codex_home = $codexHomeEvidencePath
+    $runRecord.effective_codex_home = $effectiveCodexHomePath
+    $runRecord.prepare_result_path = $prepareResultPathValue
+    $runRecord.prepare_result_sha256 = $prepareResultSha256Value
+    $runRecord.prepare_status = $prepareStatusValue
+    $runRecord.parent_options = $parentOptionsModel
+    $runRecord.parent_options_sha256 = $parentOptionsModel.fingerprint
+    $runRecord.parent_options_status = 'confirmed'
+    $runRecord.acl_gate = $aclGate
+    $runRecord.quota_before_path = $beforeSnapshotPathValue
+    $runRecord.quota_before_sha256 = $beforeSnapshotSha256Value
+    $runRecord.quota_before_captured_at_utc = $beforeSnapshotCapturedAtUtcValue
+    $runRecord.quota_before_freshness = $beforeSnapshotFreshnessValue
+    $runRecord.quota_before_observations = $beforeSnapshotObservationsValue
+    $runRecord.quota_before_service_rejection = $beforeSnapshotServiceRejectionValue
+    if ($null -ne $recoveryHandoffInfo) {
+        $runRecord.recovery_handoff_id = [string](Get-DispatchJsonProperty -Object $recoveryHandoffInfo.Document -Name 'recovery_id')
+        $runRecord.recovery_handoff_path = $recoveryHandoffInfo.Path
+        $runRecord.recovery_handoff_sha256 = $recoveryHandoffInfo.Sha256
+        $handoffChain = Get-DispatchJsonProperty -Object $recoveryHandoffInfo.Document -Name 'run_chain'
+        $handoffParent = [string](Get-DispatchJsonProperty -Object $handoffChain -Name 'attempt_parent_run_id')
+        if (-not [string]::IsNullOrWhiteSpace($handoffParent) -and $handoffParent -cne $attemptParentRunIdValue) {
+            $phase = 'preparation'
+            throw 'RecoveryHandoffChainMismatch：下一筆 RunRecord 的 attempt_parent_run_id 與 Handoff 不一致。'
+        }
+    }
+    $runRecord.evidence_pack_path = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.path }
+    $runRecord.evidence_pack_sha256 = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sha256 }
+    $runRecord.evidence_pack_length = if ($null -eq $evidencePackInfo) { $null } else { [int64]$evidencePackInfo.length }
+    $runRecord.resume_diagnostics = $resumeDiagnostics
+    $runRecord.attempt_parent_run_id = $attemptParentRunIdValue
+    $runRecord.resume_anchor_run_id = $resumeAnchorRunIdValue
+    $runRecord.skipped_attempts = @($skippedAttemptsValue)
+    $runRecord.baseline_path = if ($null -ne $baselineBinding) { $baselineBinding.Path } else { $null }
+    $runRecord.baseline_sha256 = if ($null -ne $baselineBinding) { $baselineBinding.Sha256 } else { $null }
+    $runRecord.baseline_resolution = $baselineResolution
+    $null = Write-DispatchRunRecord -Record $runRecord -Update
+    $null = Read-DispatchRunRecord -Path $runRecordPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
         if (-not $process.Start()) {
             throw 'Codex 啟動失敗。'
         }
         $processStarted = $true
-        $startedSnapshot = Get-StartedProcessSnapshot -ProcessId $process.Id
+        try {
+            $startedSnapshot = Get-StartedProcessSnapshot -ProcessId $process.Id
+        }
+        catch {
+            $startedSnapshotError = $_.Exception.Message
+            $startedSnapshot = $null
+        }
+        Write-StartPidRecord -Path $pidPath -ProcessId $process.Id -SourceRoot $sourceRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -WriteMode $writeModeValue -Snapshot $startedSnapshot
+        if (-not [string]::IsNullOrWhiteSpace($startedSnapshotError)) {
+            $phase = 'identity-unverified'
+            throw "無法取得 Codex 根程序身分，PID $($process.Id) snapshot 查詢失敗：$startedSnapshotError"
+        }
         if ($null -eq $startedSnapshot) {
+            $phase = 'identity-unverified'
             throw "無法取得 Codex 根程序身分，PID $($process.Id) 未通過驗證。"
         }
         if ($startedSnapshot.IdentityStatus -ne 'confirmed' -or $startedSnapshot.IdentityVerified -ne $true) {
+            $phase = 'identity-unverified'
             throw "Codex 根程序身分無法確認，拒絕以未驗證程序收尾：PID $($process.Id); identity-status=$($startedSnapshot.IdentityStatus); failure-fields=$($startedSnapshot.IdentityFailureFields -join ','); missing-fields=$($startedSnapshot.IdentityMissingFields -join ',')"
         }
-
-        $processGroupValue = ''
         if (-not (Test-IsWindowsPlatform)) {
             if ($null -eq $startedSnapshot.PSObject.Properties['ProcessGroupId'] -or $startedSnapshot.ProcessGroupId -le 0) {
+                $phase = 'identity-unverified'
                 throw "無法取得 Codex 根程序的 process group，PID $($process.Id) 未通過驗證。"
             }
-            $processGroupValue = [string]$startedSnapshot.ProcessGroupId
         }
+        $startedAtUtcValue = [datetime]::UtcNow.ToString('o')
+        $runRecord.started_at_utc = $startedAtUtcValue
 
-        $pidContent = @(
-            ('pid=' + $process.Id)
-            ('root-pid=' + $process.Id)
-            ('root-process-name=' + $startedSnapshot.ProcessName)
-            ('root-parent-pid=' + $startedSnapshot.ParentProcessId)
-            ('root-started-at-utc=' + $startedSnapshot.CreationUtc.ToString('o'))
-            'identity-verified=true'
-            ('process-tree-scope=' + $(if (Test-IsWindowsPlatform) { 'pid-and-descendants' } else { 'process-group' }))
-            ('process-tree-query=' + $(if (Test-IsWindowsPlatform) { 'Win32_Process.ParentProcessId' } else { 'ps PGID 成員' }))
-            ('process-group-id=' + $processGroupValue)
-            ('work-root=' + $sourceRootPath)
-            ('line-slug=' + $lineSlugValue)
-            ('dispatch-slug=' + $dispatchSlugValue)
-            ('write-mode=' + $writeModeValue)
-            ('started-at-utc=' + [datetime]::UtcNow.ToString('o'))
-        ) -join "`n"
-        Write-Utf8NoBom -Path $pidPath -Content ($pidContent + "`n")
         $relay = Wait-ForThreadRelay -EventPath $eventPath -ThreadPath $threadPath -TimeoutSeconds 5
         if ([string]::IsNullOrWhiteSpace($relay.threadId)) {
             $phase = 'thread-relay-not-ready'
             throw ('thread relay not-ready：逾時 {0} 秒仍未取得非空 threadId；保留事件流與 relay 證據。' -f $relay.timeoutSeconds)
         }
+        if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId) -and $relay.threadId -cne $ResumeThreadId) {
+            throw 'thread relay 與 ResumeThreadId 不一致。'
+        }
+        $runRecord.thread_id = $relay.threadId
+        $null = Get-DispatchRunEvents $runRecord
+        $runRecord.launch_state = 'started'
+        $null = Write-DispatchRunRecord -Record $runRecord -Update
         $budgetMonitorStatus.state = 'running'
         if ($TaskType -eq 'deep-consult') {
             $budgetMonitorStatus = Invoke-DeepBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -CodexHome $CodexHome -PrimaryBudgetPercent ([double]$scopePlan.primary_budget_percent) -AbortGraceSeconds $AbortGraceSeconds
@@ -5143,6 +11246,8 @@ function Invoke-Start {
 
         return [ordered]@{
             operation        = 'Start'
+            runId            = $runId
+            runRecordPath    = $runRecordPathValue
             sourceRoot       = $sourceRootPath
             executionRoot    = $executionRootPath
             lineSlug         = $lineSlugValue
@@ -5152,8 +11257,14 @@ function Invoke-Start {
             profileDowngraded = $false
             interruptionSafeguardApplied = $interruptionSafeguardApplied
             downgradeInstructionApplied = $interruptionSafeguardApplied
-            model            = $Model
-            reasoningEffort  = $ReasoningEffort
+            model            = $resolvedModelValue
+            reasoningEffort  = $resolvedReasoningEffortValue
+            requestedModel   = $requestedModelEvidence
+            requestedReasoningEffort = $requestedReasoningEffortEvidence
+            resolvedModel    = $resolvedModelEvidence
+            resolvedReasoningEffort = $resolvedReasoningEffortEvidence
+            modelEvidence    = $modelEvidence
+            reasoningEffortEvidence = $modelEvidence.reasoning_effort
             taskType         = $TaskType
             sessionMode      = $sessionModeValue
             deepRequestSource = $DeepRequestSource
@@ -5172,15 +11283,35 @@ function Invoke-Start {
             threadIdPath     = $threadPath
             threadId         = $relay.threadId
             scopePlanPath    = $scopePlanPathValue
-            scopePlan         = $scopePlan
-            quotaBeforePath  = $beforeSnapshotPathValue
+             scopePlan         = $scopePlan
+             prepareResultPath  = $prepareResultPathValue
+             prepareResultSha256 = $prepareResultSha256Value
+             prepareStatus       = $prepareStatusValue
+             quotaBeforePath  = $beforeSnapshotPathValue
             quotaAfterPath   = $afterSnapshotPathValue
             evidencePackPath = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.path }
             evidencePackSandboxPath = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sandboxPath }
             evidencePackSha256 = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sha256 }
+            evidencePackLength = if ($null -eq $evidencePackInfo) { $null } else { [int64]$evidencePackInfo.length }
+            profileConfigPath = $profileConfigPathValue
+            codexHome = $codexHomeEvidencePath
+            effectiveCodexHome = $effectiveCodexHomePath
+            parentOptions = $parentOptionsModel
+            parentOptionsSha256 = if ($null -eq $parentOptionsModel) { $null } else { $parentOptionsModel.fingerprint }
+            aclGate = $aclGate
+            recoveryHandoffId = if ($null -eq $recoveryHandoffInfo) { $null } else { [string](Get-DispatchJsonProperty -Object $recoveryHandoffInfo.Document -Name 'recovery_id') }
+            recoveryHandoffPath = if ($null -eq $recoveryHandoffInfo) { $null } else { $recoveryHandoffInfo.Path }
+            recoveryHandoffSha256 = if ($null -eq $recoveryHandoffInfo) { $null } else { $recoveryHandoffInfo.Sha256 }
+            startedAtUtc = $startedAtUtcValue
+            resumeDiagnostics = $resumeDiagnostics
             budgetMonitorPath = $monitorPathValue
-            budgetMonitor     = $budgetMonitorStatus
-            launcherPath     = $launcher.Path
+             budgetMonitor     = $budgetMonitorStatus
+             quotaBeforeSha256 = $beforeSnapshotSha256Value
+             quotaBeforeCapturedAtUtc = $beforeSnapshotCapturedAtUtcValue
+             quotaBeforeFreshness = $beforeSnapshotFreshnessValue
+             quotaBeforeObservations = $beforeSnapshotObservationsValue
+             quotaBeforeServiceRejection = $beforeSnapshotServiceRejectionValue
+             launcherPath     = $launcher.Path
             codexPath        = $codexExecutable
             codexArguments   = @($codexArguments.ToArray())
             processTreeScope = if (Test-IsWindowsPlatform) { 'pid-and-descendants' } else { 'process-group' }
@@ -5260,27 +11391,124 @@ function Invoke-Start {
             }
         }
         $evidenceMessage = New-StartFailureEvidenceMessage -Phase $phase -EventPath $eventPath -ErrorPath $errorPath -LastMessagePath $lastMessagePathValue -ThreadPath $threadPath -PidPath $pidPath -LauncherPath $launcherPath -ProcessExitCode $processExitCodeValue -CleanupStatus $cleanupStatus -CleanupError $cleanupError -RelaySource $relaySourceValue -RelayTimedOut $relayTimedOutValue -RelayTimeoutSeconds $relayTimeoutSecondsValue
-        if (-not [string]::IsNullOrWhiteSpace($ResultPath)) {
+        $failurePhase = $phase
+        if (-not $processStarted -and [string]::IsNullOrWhiteSpace([string]$scopePlanPathValue)) {
+            $failurePhase = 'preparation'
+        }
+        $failureObservation = [ordered]@{
+            process_started = $processStarted
+            process_exit_code = $processExitCodeValue
+            cleanup_status = $cleanupStatus
+            cleanup_error = $cleanupError
+            relay_source = $relaySourceValue
+            relay_timed_out = $relayTimedOutValue
+            relay_timeout_seconds = $relayTimeoutSecondsValue
+            budget_monitor = $budgetMonitorStatus
+            failure_stage = $phase
+        }
+        $failure = New-DispatchFailureRecord -Phase $failurePhase -Message $originalMessage -ReasonCode $failureReasonCode -ProcessStarted $processStarted -ProcessExitCode $processExitCodeValue -EventPath $eventPath -ErrorPath $errorPath -LastMessagePath $lastMessagePathValue -ThreadPath $threadPath -PidPath $pidPath -LauncherPath $launcherPath -RolloutPaths @() -Observation $failureObservation
+        $recordWriteError = $null
+        if ($null -ne $runRecord -and -not [string]::IsNullOrWhiteSpace($runRecordPathValue)) {
             try {
-                $failureResultPath = Resolve-AbsolutePath -Path $ResultPath
-                $failureResult = [ordered]@{
-                    operation = 'Start'
-                    success = $false
-                    error = $originalMessage
-                    evidence = $evidenceMessage
+                $runRecord.event_stream_path = $eventPath
+                $runRecord.last_message_path = $lastMessagePathValue
+                $runRecord.thread_id_path = $threadPath
+                $runRecord.launcher_path = $launcherPath
+                $runRecord.prompt_path = $promptPathValue
+                $runRecord.pid_record_path = $pidPath
+                $runRecord.attempt_parent_run_id = $attemptParentRunIdValue
+                $runRecord.resume_anchor_run_id = $resumeAnchorRunIdValue
+                $runRecord.skipped_attempts = @($skippedAttemptsValue)
+                $runRecord.resume_diagnostics = $resumeDiagnostics
+                $runRecord.started_at_utc = $startedAtUtcValue
+                if ($null -ne $modelEvidence) {
+                    $runRecord.model_evidence = $modelEvidence.model
+                    $runRecord.reasoning_effort_evidence = $modelEvidence.reasoning_effort
                 }
-                Write-Utf8NoBom -Path $failureResultPath -Content (($failureResult | ConvertTo-Json -Depth 8) + "`n")
-            }
-            catch {
-                if ([string]::IsNullOrWhiteSpace($cleanupError)) {
-                    $cleanupError = '寫入 Start 失敗結果檔失敗：' + $_.Exception.Message
+                if (-not [string]::IsNullOrWhiteSpace($profileConfigPathValue)) { $runRecord.profile_config_path = $profileConfigPathValue }
+                if (-not [string]::IsNullOrWhiteSpace($codexHomeEvidencePath)) { $runRecord.codex_home = $codexHomeEvidencePath }
+                if (-not [string]::IsNullOrWhiteSpace($effectiveCodexHomePath)) { $runRecord.effective_codex_home = $effectiveCodexHomePath }
+                if (-not [string]::IsNullOrWhiteSpace($prepareResultPathValue)) { $runRecord.prepare_result_path = $prepareResultPathValue }
+                if (-not [string]::IsNullOrWhiteSpace($prepareResultSha256Value)) { $runRecord.prepare_result_sha256 = $prepareResultSha256Value }
+                if (-not [string]::IsNullOrWhiteSpace($prepareStatusValue)) { $runRecord.prepare_status = $prepareStatusValue }
+                if ($null -ne $parentOptionsModel) {
+                    $runRecord.parent_options = $parentOptionsModel
+                    $runRecord.parent_options_sha256 = $parentOptionsModel.fingerprint
+                    $runRecord.parent_options_status = 'confirmed'
+                }
+                if ($null -ne $aclGate) { $runRecord.acl_gate = $aclGate }
+                if ($null -ne $recoveryHandoffInfo) {
+                    $runRecord.recovery_handoff_id = [string](Get-DispatchJsonProperty -Object $recoveryHandoffInfo.Document -Name 'recovery_id')
+                    $runRecord.recovery_handoff_path = $recoveryHandoffInfo.Path
+                    $runRecord.recovery_handoff_sha256 = $recoveryHandoffInfo.Sha256
+                }
+                if (-not [string]::IsNullOrWhiteSpace($beforeSnapshotPathValue) -and (Test-Path -LiteralPath $beforeSnapshotPathValue -PathType Leaf)) {
+                    $runRecord.quota_before_path = $beforeSnapshotPathValue
+                    $runRecord.quota_before_sha256 = Get-FileSha256 -Path $beforeSnapshotPathValue
+                    $runRecord.quota_before_captured_at_utc = $beforeSnapshotCapturedAtUtcValue
+                }
+                if ($null -ne $evidencePackInfo) {
+                    $runRecord.evidence_pack_path = $evidencePackInfo.path
+                    $runRecord.evidence_pack_sha256 = $evidencePackInfo.sha256
+                    $runRecord.evidence_pack_length = [int64]$evidencePackInfo.length
+                }
+                if (-not [string]::IsNullOrWhiteSpace($scopePlanPathValue) -and (Test-Path -LiteralPath $scopePlanPathValue -PathType Leaf)) {
+                    $runRecord.scope_plan_path = $scopePlanPathValue
+                    $runRecord.scope_plan_sha256 = Get-FileSha256 -Path $scopePlanPathValue
                 }
                 else {
-                    $cleanupError = $cleanupError + '；寫入 Start 失敗結果檔失敗：' + $_.Exception.Message
+                    $runRecord.scope_plan_path = $null
+                    $runRecord.scope_plan_sha256 = $null
                 }
+                if ($null -ne $baselineBinding) {
+                    $runRecord.baseline_path = $baselineBinding.Path
+                    $runRecord.baseline_sha256 = $baselineBinding.Sha256
+                }
+                if ($null -ne $baselineResolution) {
+                    $runRecord.baseline_resolution = $baselineResolution
+                }
+                $runRecord.failure = $failure
+                $runRecord.launch_state = 'launch-failed'
+                $null = Write-DispatchRunRecord -Record $runRecord -Update
+                $null = Read-DispatchRunRecord -Path $runRecordPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+            }
+            catch {
+                $recordWriteError = $_.Exception.Message
+                $runRecordPathValue = $null
             }
         }
-        throw "$originalMessage`nStart 失敗證據：$evidenceMessage"
+        if (-not [string]::IsNullOrWhiteSpace($recordWriteError)) {
+            $failure.write_error = $recordWriteError
+        }
+        $failureResult = [ordered]@{
+            operation = 'Start'
+            runId = $runId
+            runRecordPath = $runRecordPathValue
+            prepareResultPath = $prepareResultPathValue
+            prepareResultSha256 = $prepareResultSha256Value
+            prepareStatus = $prepareStatusValue
+            effectiveCodexHome = $effectiveCodexHomePath
+            success = $false
+            outputValid = $false
+            processStarted = $processStarted
+            processExitCode = $processExitCodeValue
+            errorCode = $failure.reason_code
+            error = $originalMessage
+            failure = $failure
+            modelEvidence = if ($null -eq $modelEvidence) { $null } else { $modelEvidence }
+            reasoningEffortEvidence = if ($null -eq $modelEvidence) { $null } else { $modelEvidence.reasoning_effort }
+            resumeDiagnostics = $resumeDiagnostics
+            evidence = $evidenceMessage
+            eventStreamPath = $eventPath
+            errorStreamPath = $errorPath
+            lastMessagePath = $lastMessagePathValue
+            threadIdPath = $threadPath
+            pidRecordPath = $pidPath
+            launcherPath = $launcherPath
+        }
+        $operationException = New-Object System.Exception($originalMessage + "`nStart 失敗證據：" + $evidenceMessage)
+        $operationException = Write-DispatchOperationFailureResult -Exception $operationException -Result $failureResult
+        throw $operationException
     }
     finally {
         if ($null -ne $process) {
@@ -5337,7 +11565,24 @@ function Test-UsageObject {
     return @($Value.PSObject.Properties).Count -gt 0
 }
 
+function ConvertTo-ComparableDispatchMessage {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Message)
+
+    $normalized = $Message.Replace("`r`n", "`n").Replace("`r", "`n")
+    if ($normalized.Length -gt 0 -and $normalized[0] -eq [char]0xFEFF) {
+        $normalized = $normalized.Substring(1)
+    }
+    return $normalized.TrimEnd([char[]]@([char]10))
+}
+
 function Invoke-Inspect {
+    $modelEvidence = $null
+    $requiredOutputGate = $null
+    $evidencePackInfo = $null
+    $runtimeModelEvidence = $null
+    $runtimeReasoningEffortEvidence = $null
+    $diagnosis = $null
     if ([string]::IsNullOrWhiteSpace($RequiredIdentifier)) {
         throw 'Inspect 必須提供 RequiredIdentifier。'
     }
@@ -5354,12 +11599,61 @@ function Invoke-Inspect {
         throw 'Inspect 必須提供 ProcessExitCode。'
     }
     $eventPath = Resolve-AbsolutePath -Path $EventStreamPath
+    $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath
+    $serviceRejectionEvidence = Convert-EventEvidenceToServiceRejection -EventEvidence $eventEvidence
+    $inspectRun = Resolve-InspectDispatchRun -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -EventStreamPath $eventPath -ScopePlanPath $ScopePlanPath -RunRecordPath $RunRecordPath
+    if ($inspectRun.Record.launch_state -eq 'launch-failed') {
+        $failure = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'failure'
+        $failureOriginalOutput = Get-DispatchJsonProperty -Object $failure -Name 'original_output'
+        $diagnosis = [ordered]@{
+            status = 'failed'
+            reason_code = [string](Get-DispatchJsonProperty -Object $failure -Name 'reason_code')
+            observation = Get-DispatchJsonProperty -Object $failure -Name 'observation'
+            original_output = $failureOriginalOutput
+        }
+        $failureErrorPath = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'error_stream_path')
+        $failureStderr = ''
+        if ([string]::IsNullOrWhiteSpace($failureErrorPath)) {
+            $failureErrorPath = [string](Get-DispatchJsonProperty -Object $failureOriginalOutput -Name 'stderr').path
+        }
+        if (-not [string]::IsNullOrWhiteSpace($failureErrorPath) -and (Test-Path -LiteralPath $failureErrorPath -PathType Leaf)) {
+            $failureStderr = Get-Content -LiteralPath $failureErrorPath -Raw -Encoding UTF8
+        }
+        return [ordered]@{
+            operation = 'Inspect'
+            runId = $inspectRun.Record.run_id
+            runRecordPath = $inspectRun.Path
+            lastMessageConsistency = 'NotApplicable'
+            finalMessageSource = 'none'
+            eventStreamPath = $eventPath
+            errorStreamPath = if ([string]::IsNullOrWhiteSpace($failureErrorPath)) { $null } else { $failureErrorPath }
+            processExitCode = [int]$ProcessExitCode
+            eventCount = 0
+            lastEventType = 'none'
+            threadId = $null
+            completed = $false
+            success = $false
+            turnFailedReason = [string](Get-DispatchJsonProperty -Object $failure -Name 'message')
+            finalMessage = $null
+            outputValid = $false
+            diagnosis = $diagnosis
+            failure = $failure
+            eventEvidence = $eventEvidence
+            service_rejection = $serviceRejectionEvidence
+            retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
+            modelEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'model_evidence'
+            reasoningEffortEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'reasoning_effort_evidence'
+            calibration = [ordered]@{ calibrationEligible = $false; reason = 'launch-failed' }
+            stderr = $failureStderr
+        }
+    }
     if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
         throw "事件流檔案不存在：$eventPath"
     }
 
     $events = New-Object System.Collections.Generic.List[object]
     $malformedLines = New-Object System.Collections.Generic.List[object]
+    $rawEventLines = New-Object System.Collections.Generic.List[string]
     $threadIds = New-Object System.Collections.Generic.List[string]
     $lineNumber = 0
     foreach ($line in Get-Content -LiteralPath $eventPath -Encoding UTF8) {
@@ -5367,6 +11661,7 @@ function Invoke-Inspect {
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
         }
+        $rawEventLines.Add($line)
         try {
             $event = $line | ConvertFrom-Json -ErrorAction Stop
         }
@@ -5392,10 +11687,108 @@ function Invoke-Inspect {
     }
     if ($malformedLines.Count -gt 0) {
         $details = @($malformedLines | ForEach-Object { "line=$($_.LineNumber); error=$($_.Error); raw=$($_.Raw)" }) -join "`n"
-        throw "事件流包含無法解析的行，已保留其餘可解析事件，Inspect 以非零結束碼停止：`n$details"
+        $malformedMessage = "事件流包含無法解析的行，已保留其餘可解析事件，Inspect 以非零結束碼停止：`n$details"
+        $malformedStderr = if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) { Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8 } else { '' }
+        $malformedDiagnosis = New-DispatchInspectDiagnosis -ReasonCode 'Unknown' -Observation '事件流包含無法解析的 raw line。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $malformedStderr
+        $malformedResult = [ordered]@{
+            operation = 'Inspect'
+            runId = $inspectRun.Record.run_id
+            runRecordPath = $inspectRun.Path
+            success = $false
+            outputValid = $false
+            errorCode = 'Unknown'
+            error = $malformedMessage
+            diagnosis = $malformedDiagnosis
+            eventEvidence = $eventEvidence
+            service_rejection = $serviceRejectionEvidence
+            retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
+            eventStreamPath = $eventPath
+            errorStreamPath = $ErrorStreamPath
+            processExitCode = [int]$ProcessExitCode
+        }
+        $malformedException = New-Object System.Exception($malformedMessage)
+        $malformedException = Write-DispatchOperationFailureResult -Exception $malformedException -Result $malformedResult
+        throw $malformedException
     }
     if ($events.Count -eq 0) {
-        throw '事件流沒有可解析的事件。'
+        $emptyMessage = '事件流沒有可解析的事件。'
+        $emptyStderr = if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) { Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8 } else { '' }
+        $emptyDiagnosis = New-DispatchInspectDiagnosis -ReasonCode 'Unknown' -Observation '事件流沒有可解析的 raw event。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $emptyStderr
+        $emptyResult = [ordered]@{
+            operation = 'Inspect'
+            runId = $inspectRun.Record.run_id
+            runRecordPath = $inspectRun.Path
+            success = $false
+            outputValid = $false
+            errorCode = 'Unknown'
+            error = $emptyMessage
+            diagnosis = $emptyDiagnosis
+            eventEvidence = $eventEvidence
+            service_rejection = $serviceRejectionEvidence
+            retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
+            eventStreamPath = $eventPath
+            errorStreamPath = $ErrorStreamPath
+            processExitCode = [int]$ProcessExitCode
+        }
+        $emptyException = New-Object System.Exception($emptyMessage)
+        $emptyException = Write-DispatchOperationFailureResult -Exception $emptyException -Result $emptyResult
+        throw $emptyException
+    }
+
+    $eventTailType = [string](Get-EventPropertyValue -Object $events[$events.Count - 1] -Name 'type')
+    if ($eventTailType -eq 'turn.started' -and [int]$ProcessExitCode -ne 0) {
+        $unknownStderr = ''
+        if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) {
+            $unknownStderr = Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8
+        }
+        $recordWriteMode = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'write_mode')
+        if ([string]::IsNullOrWhiteSpace($recordWriteMode)) {
+            $recordWriteMode = if ([string]::Equals((Resolve-AbsolutePath -Path $SourceRoot), (Resolve-AbsolutePath -Path $ExecutionRoot), [StringComparison]::OrdinalIgnoreCase)) { 'direct-write' } else { 'worktree' }
+        }
+        $unknownAclGate = Get-WorktreeAclGate -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -WriteMode $recordWriteMode
+        $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'InterruptedUnknown' -Observation '事件流在 turn.started 後沒有後續事件，且 process exit code 非零。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $unknownStderr
+        $unknownInterruption = [ordered]@{
+            status = 'InterruptedUnknown'
+            cold_start_recommended = $true
+            last_event_type = $eventTailType
+            process_exit_code = [int]$ProcessExitCode
+            event_tail = @($rawEventLines.ToArray() | Select-Object -Last 3)
+            acl_gate = $unknownAclGate
+        }
+        if ($null -eq $inspectRun.Record.PSObject.Properties['unknown_interruption']) {
+            $inspectRun.Record | Add-Member -MemberType NoteProperty -Name 'unknown_interruption' -Value $unknownInterruption
+        }
+        else {
+            $inspectRun.Record.unknown_interruption = $unknownInterruption
+        }
+        $null = Write-DispatchRunRecord -Record $inspectRun.Record -Update
+        return [ordered]@{
+            operation = 'Inspect'
+            runId = $inspectRun.Record.run_id
+            runRecordPath = $inspectRun.Path
+            lastMessageConsistency = 'NotApplicable'
+            finalMessageSource = 'none'
+            eventStreamPath = $eventPath
+            errorStreamPath = $ErrorStreamPath
+            processExitCode = [int]$ProcessExitCode
+            eventCount = $events.Count
+            lastEventType = $eventTailType
+            threadId = [string](Get-EventPropertyValue -Object $events[0] -Name 'thread_id')
+            completed = $false
+            success = $false
+            turnFailedReason = ''
+            finalMessage = $null
+            outputValid = $false
+            diagnosis = $diagnosis
+            cold_start_recommended = $true
+            recoveryState = 'InterruptedUnknown'
+            unknownInterruption = $unknownInterruption
+            eventEvidence = $eventEvidence
+            service_rejection = $serviceRejectionEvidence
+            retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
+            calibration = [ordered]@{ calibrationEligible = $false; reason = 'InterruptedUnknown' }
+            stderr = $unknownStderr
+        }
     }
 
     $threadId = ''
@@ -5418,7 +11811,7 @@ function Invoke-Inspect {
         $item = Get-EventPropertyValue -Object $event -Name 'item'
         if ($null -ne $item) {
             $itemType = Get-EventPropertyValue -Object $item -Name 'type'
-            if (($itemType -is [string]) -and $itemType -eq 'agent_message') {
+            if ($eventType -eq 'item.completed' -and ($itemType -is [string]) -and $itemType -eq 'agent_message') {
                 $textValue = Get-EventPropertyValue -Object $item -Name 'text'
                 if ($null -eq $textValue -or -not ($textValue -is [string]) -or [string]::IsNullOrWhiteSpace($textValue)) {
                     throw 'agent_message.text 必須為非空字串。'
@@ -5455,6 +11848,39 @@ function Invoke-Inspect {
     }
     $threadId = $distinctThreadIds[0]
 
+    $recordModelEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'model_evidence'
+    $recordReasoningEffortEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'reasoning_effort_evidence'
+    $modelEvidenceGroup = ConvertTo-DispatchEvidenceGroup -Evidence $recordModelEvidence -Field 'model'
+    $effortEvidenceGroup = ConvertTo-DispatchEvidenceGroup -Evidence $recordReasoningEffortEvidence -Field 'model_reasoning_effort'
+    $runtimeCodexHome = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'codex_home')
+    if ([string]::IsNullOrWhiteSpace($runtimeCodexHome)) {
+        $runtimeCodexHome = $CodexHome
+    }
+    $runtimeStartedAt = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'started_at_utc')
+    $runtimeEvidence = Get-RuntimeModelEvidence -CodexHome $runtimeCodexHome -ThreadId $threadId -StartedAtUtc $runtimeStartedAt
+    $runtimeModelEvidence = $runtimeEvidence.model
+    $runtimeReasoningEffortEvidence = $runtimeEvidence.reasoning_effort
+    $modelEvidenceGroup.runtime_verifiable = $runtimeModelEvidence
+    $effortEvidenceGroup.runtime_verifiable = $runtimeReasoningEffortEvidence
+    $modelEvidence = [ordered]@{
+        evidence_contract = 'codex-dispatch.model-evidence.v1'
+        model = $modelEvidenceGroup
+        reasoning_effort = $effortEvidenceGroup
+    }
+    if ($null -eq $inspectRun.Record.PSObject.Properties['model_evidence']) {
+        $inspectRun.Record | Add-Member -MemberType NoteProperty -Name 'model_evidence' -Value $modelEvidenceGroup
+    }
+    else {
+        $inspectRun.Record.model_evidence = $modelEvidenceGroup
+    }
+    if ($null -eq $inspectRun.Record.PSObject.Properties['reasoning_effort_evidence']) {
+        $inspectRun.Record | Add-Member -MemberType NoteProperty -Name 'reasoning_effort_evidence' -Value $effortEvidenceGroup
+    }
+    else {
+        $inspectRun.Record.reasoning_effort_evidence = $effortEvidenceGroup
+    }
+    $null = Write-DispatchRunRecord -Record $inspectRun.Record -Update
+
     if ([string]::IsNullOrWhiteSpace($lastAgentMessage)) {
         throw '事件流缺少必要的最後 agent_message。'
     }
@@ -5482,16 +11908,80 @@ function Invoke-Inspect {
             $turnFailedReason = $finalEventMessage
         }
     }
-
-    $finalMessage = ''
-    if (-not [string]::IsNullOrWhiteSpace($LastMessagePath) -and (Test-Path -LiteralPath $LastMessagePath -PathType Leaf)) {
-        $finalMessage = Get-Content -LiteralPath $LastMessagePath -Raw -Encoding UTF8
+    $inspectStderr = ''
+    if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) {
+        $inspectStderr = Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8
     }
-    if ([string]::IsNullOrWhiteSpace($finalMessage)) {
-        $finalMessage = $lastAgentMessage
+    if ($lastEventType -eq 'turn.failed' -or [int]$ProcessExitCode -ne 0) {
+        $diagnosisReasonCode = if ([string]::IsNullOrWhiteSpace($turnFailedReason)) { 'Unknown' } else { 'CodexLaunchFailed' }
+        $diagnosisObservation = if ([string]::IsNullOrWhiteSpace($turnFailedReason)) {
+            if ($lastEventType -eq 'turn.failed') { 'turn.failed 沒有提供可解析的 error.message。' } else { 'process exit code 非零，但事件流沒有可確認的錯誤原因。' }
+        }
+        else {
+            '事件流提供 turn.failed error.message。'
+        }
+        $diagnosis = New-DispatchInspectDiagnosis -ReasonCode $diagnosisReasonCode -Observation $diagnosisObservation -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
     }
 
-    $outputValid = -not [string]::IsNullOrWhiteSpace($finalMessage) -and $finalMessage.Contains($RequiredIdentifier) -and $finalMessage.Contains($DispatchSlug) -and $finalMessage.Contains($LineSlug)
+    $finalMessage = $lastAgentMessage
+    $explicitMessagePath = -not [string]::IsNullOrWhiteSpace($LastMessagePath)
+    $messagePath = $inspectRun.Record.last_message_path
+    $lastMessageConsistency = 'Missing'
+    if ($explicitMessagePath -and -not [string]::Equals((Resolve-AbsolutePath $LastMessagePath), $messagePath, [StringComparison]::OrdinalIgnoreCase)) {
+        $lastMessageConsistency = 'BindingMismatch'
+    }
+    else {
+        $externalMessage = ''
+        if (Test-Path -LiteralPath $messagePath -PathType Leaf) {
+            $utf8 = New-Object Text.UTF8Encoding($false, $true)
+            $externalMessage = $utf8.GetString([IO.File]::ReadAllBytes($messagePath))
+        }
+        if ([string]::IsNullOrWhiteSpace($externalMessage)) {
+            if ($explicitMessagePath) { throw '明確指定的 last-message 缺失或空白。' }
+        }
+        elseif ([string]::Equals((ConvertTo-ComparableDispatchMessage $finalMessage), (ConvertTo-ComparableDispatchMessage $externalMessage), [StringComparison]::Ordinal)) {
+            $lastMessageConsistency = 'Match'
+        }
+        else {
+            $lastMessageConsistency = 'Mismatch'
+        }
+    }
+
+    $outputValid = $lastMessageConsistency -in @('Match', 'Missing') -and -not [string]::IsNullOrWhiteSpace($finalMessage) -and $finalMessage.Contains($RequiredIdentifier) -and $finalMessage.Contains($DispatchSlug) -and $finalMessage.Contains($LineSlug)
+    if ($TaskType -eq 'deep-consult') {
+        $inspectEvidencePath = $EvidencePackPath
+        if ([string]::IsNullOrWhiteSpace($inspectEvidencePath)) {
+            $inspectEvidencePath = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'evidence_pack_path')
+        }
+        if ([string]::IsNullOrWhiteSpace($inspectEvidencePath)) {
+            throw 'EvidencePackMissing：deep-consult Inspect 缺少 EvidencePackPath。'
+        }
+        $evidencePackInfo = Test-EvidencePack -Path $inspectEvidencePath -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        $evidenceHashRecordPath = Join-Path -Path (Split-Path -Parent $eventPath) -ChildPath ('evidence-pack-' + $DispatchSlug + '.sha256')
+        $evidenceLengthRecordPath = Join-Path -Path (Split-Path -Parent $eventPath) -ChildPath ('evidence-pack-' + $DispatchSlug + '.length')
+        if (-not (Test-Path -LiteralPath $evidenceHashRecordPath -PathType Leaf)) {
+            throw 'EvidencePackInvalid：evidence pack 缺少 Start SHA-256 紀錄。'
+        }
+        $expectedHash = (Get-Content -LiteralPath $evidenceHashRecordPath -Raw -Encoding UTF8).Trim()
+        if ([string]::IsNullOrWhiteSpace($expectedHash) -or -not [string]::Equals($expectedHash, $evidencePackInfo.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw 'EvidencePackInlineMismatch：evidence pack SHA-256 在 Start 與 Inspect 之間變更。'
+        }
+        if (-not (Test-Path -LiteralPath $evidenceLengthRecordPath -PathType Leaf)) {
+            throw 'EvidencePackInvalid：evidence pack 缺少 Start length 紀錄。'
+        }
+        $expectedLengthText = (Get-Content -LiteralPath $evidenceLengthRecordPath -Raw -Encoding UTF8).Trim()
+        $expectedLength = [int64]0
+        if (-not [int64]::TryParse($expectedLengthText, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref]$expectedLength) -or $expectedLength -ne [int64]$evidencePackInfo.length) {
+            throw 'EvidencePackInlineMismatch：evidence pack length 在 Start 與 Inspect 之間變更。'
+        }
+        $requiredOutputGate = Test-RequiredOutputSections -Message $finalMessage -RequiredOutput $evidencePackInfo.required_output
+        if (-not $requiredOutputGate.valid) {
+            $outputValid = $false
+            if ($null -eq $diagnosis) {
+                $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'EvidencePackInvalid' -Observation '最後訊息缺少 evidence pack 宣告的 required output section 或 body。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
+            }
+        }
+    }
     $threadRelay = $null
     if (-not [string]::IsNullOrWhiteSpace($ThreadIdPath)) {
         $threadRelay = Set-ThreadIdFromEventStream -EventPath $eventPath -ThreadPath (Resolve-AbsolutePath -Path $ThreadIdPath) -RequireThreadId
@@ -5499,16 +11989,27 @@ function Invoke-Inspect {
 
     $executionResult = [ordered]@{
         completed        = $lastEventType -eq 'turn.completed'
-        success          = $lastEventType -eq 'turn.completed' -and [int]$ProcessExitCode -eq 0
+        success          = $lastEventType -eq 'turn.completed' -and [int]$ProcessExitCode -eq 0 -and $outputValid
         lastEventType    = $lastEventType
         processExitCode  = [int]$ProcessExitCode
         turnFailedReason = $turnFailedReason
         outputValid      = $outputValid
     }
+    if ($null -ne $serviceRejectionEvidence) {
+        $executionResult.service_rejection = $serviceRejectionEvidence
+        $executionResult.retry_allowed = $false
+        $executionResult.success = $false
+        if ([string]::IsNullOrWhiteSpace([string]$executionResult.turnFailedReason)) {
+            $executionResult.turnFailedReason = 'quota service rejection'
+        }
+        if ($null -eq $diagnosis) {
+            $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'QuotaRejected' -Observation '事件流包含 quota service rejection，禁止自動 retry。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
+        }
+    }
     $scopePlan = Read-ScopePlanFile -Path $ScopePlanPath
     if ([string]::IsNullOrWhiteSpace($QuotaBeforePath)) {
         $snapshotFailure = 'Inspect 缺少 before quota snapshot。'
-        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $scopePlan -Failure $snapshotFailure
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -ModelEvidence $modelEvidence.model -ReasoningEffortEvidence $modelEvidence.reasoning_effort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $scopePlan -Failure $snapshotFailure
         throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
     }
     try {
@@ -5516,7 +12017,7 @@ function Invoke-Inspect {
     }
     catch {
         $snapshotFailure = 'Inspect before quota snapshot 無效：' + $_.Exception.Message
-        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $scopePlan -Failure $snapshotFailure
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -ModelEvidence $modelEvidence.model -ReasoningEffortEvidence $modelEvidence.reasoning_effort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath -ScopePlan $scopePlan -Failure $snapshotFailure
         throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
     }
     $afterSnapshotPathValue = $QuotaAfterPath
@@ -5528,12 +12029,12 @@ function Invoke-Inspect {
     }
     catch {
         $snapshotFailure = 'Inspect after quota snapshot 取得失敗：' + $_.Exception.Message
-        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -ModelEvidence $modelEvidence.model -ReasoningEffortEvidence $modelEvidence.reasoning_effort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
         throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
     }
     if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue)) {
         $snapshotFailure = 'Inspect 缺少 after quota snapshot。'
-        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -ModelEvidence $modelEvidence.model -ReasoningEffortEvidence $modelEvidence.reasoning_effort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
         throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
     }
     try {
@@ -5541,7 +12042,7 @@ function Invoke-Inspect {
     }
     catch {
         $snapshotFailure = 'Inspect after quota snapshot 無效：' + $_.Exception.Message
-        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
+        $null = Add-SnapshotFailureCalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -ModelEvidence $modelEvidence.model -ReasoningEffortEvidence $modelEvidence.reasoning_effort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -Failure $snapshotFailure
         throw ($snapshotFailure + ' 已寫入 calibration_eligible=false 觀測。')
     }
     $interruptionStatus = [ordered]@{
@@ -5596,7 +12097,7 @@ function Invoke-Inspect {
             $executionResult.turnFailedReason = $budgetMonitorRejectionReason
         }
     }
-    $calibrationResult = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -InterruptionStatus $interruptionStatus -BudgetMonitor $budgetMonitor
+    $calibrationResult = Add-CalibrationObservation -SourceRoot $SourceRoot -Path $CalibrationPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Profile $Profile -Model $Model -ReasoningEffort $ReasoningEffort -ModelEvidence $modelEvidence.model -ReasoningEffortEvidence $modelEvidence.reasoning_effort -TaskType $TaskType -SessionMode $SessionMode -Usage $usage -ExecutionResult $executionResult -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $afterSnapshotPathValue -ScopePlan $scopePlan -InterruptionStatus $interruptionStatus -BudgetMonitor $budgetMonitor
 
     $deepReportPathValue = $DeepConsultReportPath
     if ($TaskType -eq 'deep-consult') {
@@ -5606,27 +12107,18 @@ function Invoke-Inspect {
         if ([string]::IsNullOrWhiteSpace($deepReportPathValue)) {
             throw 'deep-consult Inspect 必須提供 DeepConsultReportPath。'
         }
-        if ([string]::IsNullOrWhiteSpace($EvidencePackPath)) {
-            throw 'deep-consult Inspect 必須提供 EvidencePackPath。'
-        }
         $deepReportPathValue = Get-DeepConsultReportPath -Path $deepReportPathValue -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
-        $evidencePackInfo = Test-EvidencePack -Path $EvidencePackPath -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
         $evidencePathValue = $evidencePackInfo.path
-        $evidenceHash = Get-FileSha256 -Path $evidencePathValue
-        $evidenceHashRecordPath = Join-Path -Path (Split-Path -Parent $eventPath) -ChildPath ('evidence-pack-' + $DispatchSlug + '.sha256')
-        if (-not (Test-Path -LiteralPath $evidenceHashRecordPath -PathType Leaf)) {
-            throw 'evidence pack 缺少 Start SHA-256 紀錄，拒絕成功 Inspect。'
-        }
-        $expectedHash = (Get-Content -LiteralPath $evidenceHashRecordPath -Raw -Encoding UTF8).Trim()
-        if ([string]::IsNullOrWhiteSpace($expectedHash) -or -not [string]::Equals($expectedHash, $evidenceHash, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw 'evidence pack SHA-256 在 Start 與 Inspect 之間變更。'
-        }
         $deepStatus = if ($executionResult.success) { 'completed' } else { 'failed' }
-        $deepReportWrittenPath = Write-DeepConsultReport -Path $deepReportPathValue -LineSlug $LineSlug -DispatchSlug $DispatchSlug -EvidencePackPath $evidencePathValue -EvidencePackSha256 $evidenceHash -FinalMessage $finalMessage -Status $deepStatus -BudgetMonitor $budgetMonitor
+        $deepReportWrittenPath = Write-DeepConsultReport -Path $deepReportPathValue -LineSlug $LineSlug -DispatchSlug $DispatchSlug -EvidencePackPath $evidencePathValue -EvidencePackSha256 $evidencePackInfo.sha256 -EvidencePackLength $evidencePackInfo.length -FinalMessage $finalMessage -Status $deepStatus -BudgetMonitor $budgetMonitor -RequiredOutputGate $requiredOutputGate
     }
 
     $result = [ordered]@{
         operation        = 'Inspect'
+        runId            = $inspectRun.Record.run_id
+        runRecordPath    = $inspectRun.Path
+        lastMessageConsistency = $lastMessageConsistency
+        finalMessageSource = 'event-stream'
         eventStreamPath  = $eventPath
         processExitCode  = [int]$ProcessExitCode
         eventCount       = $events.Count
@@ -5637,7 +12129,14 @@ function Invoke-Inspect {
         turnFailedReason = $executionResult.turnFailedReason
         finalMessage     = $finalMessage
         outputValid      = $outputValid
+        modelEvidence    = $modelEvidence
+        reasoningEffortEvidence = $modelEvidence.reasoning_effort
+        runtimeRolloutPaths = $runtimeEvidence.rollout_paths
+        requiredOutput   = $requiredOutputGate
         usage            = $usage
+        eventEvidence   = $eventEvidence
+        service_rejection = $serviceRejectionEvidence
+        retry_allowed   = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
         threadIdPath     = $ThreadIdPath
         threadRelay      = $threadRelay
         quotaBeforePath  = $QuotaBeforePath
@@ -5646,7 +12145,8 @@ function Invoke-Inspect {
         scopePlan        = $scopePlan
         budgetMonitorRejected = $budgetMonitorRejected
         deepConsultReportPath = if ($TaskType -eq 'deep-consult') { $deepReportWrittenPath } else { $null }
-        stderr           = if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) { Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8 } else { '' }
+         diagnosis        = $diagnosis
+         stderr           = $inspectStderr
     }
     if ($null -ne $calibrationResult) {
         $result.calibration = $calibrationResult
@@ -6005,6 +12505,11 @@ function Get-RequirementTableRows {
         [Parameter(Mandatory)]
         [AllowEmptyCollection()]
         [System.Collections.Generic.List[string]]$InvalidSectionContent
+
+        ,
+
+        [AllowNull()]
+        [System.Collections.Generic.List[string]]$InvalidStatusFields
     )
 
     $expectedHeaders = @('需求', '驗收方向', 'T-code', '實際行為', '證據', '狀態')
@@ -6089,11 +12594,11 @@ function Get-RequirementTableRows {
 
         $id = [int]$requirementCell.Substring(1)
         $status = $cells[5]
-        if ($status -eq '排除(design.md §8)') {
-            $status = '排除（design.md §8）'
-        }
         if ($status -notin @('已交付', '部分交付', '未交付', '排除（design.md §8）')) {
             $rowValid = $false
+            if ($null -ne $InvalidStatusFields) {
+                $InvalidStatusFields.Add(('{0}#{1}:狀態={2}' -f $ReportName, $dataRowIndex, $status))
+            }
         }
         if (-not $rowValid) {
             Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading '需求對照' -LineNumber ([string]$line.LineNumber) -Line $line.Text
@@ -6131,19 +12636,26 @@ function Get-RequirementMap {
         throw "找不到需求摘要：$summaryFullPath"
     }
 
+    $summarySha256Before = Get-FileSha256 -Path $summaryFullPath
     $summaryContent = Get-Content -LiteralPath $summaryFullPath -Raw -Encoding UTF8
     if ([string]::IsNullOrWhiteSpace($summaryContent)) {
         throw "需求摘要為空：$summaryFullPath"
     }
 
     $requirementIds = @(Get-RequirementIdsFromSummary -Content $summaryContent -SummaryPath $summaryFullPath)
+    $summarySha256After = Get-FileSha256 -Path $summaryFullPath
+    if (-not [string]::Equals($summarySha256Before, $summarySha256After, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "需求摘要在 Collect 解析期間變更。contractVersion=$script:WorkflowCollectContractVersion; summaryPath=$summaryFullPath; beforeSha256=$summarySha256Before; afterSha256=$summarySha256After"
+    }
     $rows = New-Object 'System.Collections.Generic.List[object]'
     $invalidColumnCountRows = New-Object 'System.Collections.Generic.List[string]'
     $emptyFieldIds = New-Object 'System.Collections.Generic.List[string]'
     $invalidRequirementCells = New-Object 'System.Collections.Generic.List[string]'
+    $invalidStatusFields = New-Object 'System.Collections.Generic.List[string]'
     $invalidHeader = New-Object 'System.Collections.Generic.List[string]'
     $invalidSectionContent = New-Object 'System.Collections.Generic.List[string]'
     $duplicateRequirementSections = New-Object 'System.Collections.Generic.List[string]'
+    $reportEvidence = New-Object 'System.Collections.Generic.List[object]'
     $statusCounts = [ordered]@{
         '已交付'          = 0
         '部分交付'        = 0
@@ -6161,6 +12673,7 @@ function Get-RequirementMap {
             throw "找不到結案報告：$reportFullPath"
         }
 
+        $reportSha256Before = Get-FileSha256 -Path $reportFullPath
         $reportContent = Get-Content -LiteralPath $reportFullPath -Raw -Encoding UTF8
         if ([string]::IsNullOrWhiteSpace($reportContent)) {
             throw "結案報告為空：$reportFullPath"
@@ -6174,6 +12687,11 @@ function Get-RequirementMap {
 
         if ($requirementHeadingMatches.Count -gt 1) {
             $duplicateRequirementSections.Add(('{0}={1}' -f $reportName, $requirementHeadingMatches.Count))
+            $reportSha256After = Get-FileSha256 -Path $reportFullPath
+            if (-not [string]::Equals($reportSha256Before, $reportSha256After, [System.StringComparison]::OrdinalIgnoreCase)) {
+                throw "結案報告在 Collect 解析期間變更。contractVersion=$script:WorkflowCollectContractVersion; reportPath=$reportFullPath; beforeSha256=$reportSha256Before; afterSha256=$reportSha256After"
+            }
+            $reportEvidence.Add([ordered]@{ path = $reportFullPath; sha256 = $reportSha256After; row_count = 0 })
             continue
         }
 
@@ -6182,7 +12700,7 @@ function Get-RequirementMap {
             throw "結案報告缺少需求對照節：$reportFullPath"
         }
 
-        $reportRows = @(Get-RequirementTableRows -Section $requirementMatch.Groups['section'].Value -ReportName $reportName -InvalidColumnCountRows $invalidColumnCountRows -EmptyFieldIds $emptyFieldIds -InvalidRequirementCells $invalidRequirementCells -InvalidHeader $invalidHeader -InvalidSectionContent $invalidSectionContent)
+        $reportRows = @(Get-RequirementTableRows -Section $requirementMatch.Groups['section'].Value -ReportName $reportName -InvalidColumnCountRows $invalidColumnCountRows -EmptyFieldIds $emptyFieldIds -InvalidRequirementCells $invalidRequirementCells -InvalidHeader $invalidHeader -InvalidSectionContent $invalidSectionContent -InvalidStatusFields $invalidStatusFields)
         foreach ($row in $reportRows) {
             $status = $row.Status
             if ($validStatuses.Contains($status)) {
@@ -6190,6 +12708,11 @@ function Get-RequirementMap {
             }
             $rows.Add($row)
         }
+        $reportSha256After = Get-FileSha256 -Path $reportFullPath
+        if (-not [string]::Equals($reportSha256Before, $reportSha256After, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "結案報告在 Collect 解析期間變更。contractVersion=$script:WorkflowCollectContractVersion; reportPath=$reportFullPath; beforeSha256=$reportSha256Before; afterSha256=$reportSha256After"
+        }
+        $reportEvidence.Add([ordered]@{ path = $reportFullPath; sha256 = $reportSha256After; row_count = $reportRows.Count })
     }
 
     $reportedIds = @($rows | ForEach-Object { $_.Id } | Sort-Object -Unique)
@@ -6198,6 +12721,7 @@ function Get-RequirementMap {
     $unknownRequirementIds = @($reportedIds | Where-Object { $requirementIds -notcontains $_ } | Sort-Object)
     $invalidStatusIds = @($rows | Where-Object { -not $validStatuses.Contains($_.Status) } | ForEach-Object { $_.Id } | Sort-Object -Unique)
     $duplicateRequirementSections = @($duplicateRequirementSections | Sort-Object -Unique)
+    $invalidStatusFields = @($invalidStatusFields | Sort-Object -Unique)
     $invalidSectionContent = @($invalidSectionContent | Sort-Object -Unique)
 
     if ($duplicateRequirementSections.Count -gt 0 -or
@@ -6209,13 +12733,17 @@ function Get-RequirementMap {
         $emptyFieldIds.Count -gt 0 -or
         $invalidRequirementCells.Count -gt 0 -or
         $invalidHeader.Count -gt 0 -or
+        $invalidStatusFields.Count -gt 0 -or
         $invalidStatusIds.Count -gt 0) {
-        throw "需求對照結構不一致。duplicateRequirementSections=$($duplicateRequirementSections -join ','); invalidSectionContent=$($invalidSectionContent -join ','); missingRequirementIds=$($missingRequirementIds -join ','); duplicateRequirementIds=$($duplicateRequirementIds -join ','); unknownRequirementIds=$($unknownRequirementIds -join ','); invalidColumnCountRows=$($invalidColumnCountRows -join ','); emptyFieldIds=$($emptyFieldIds -join ','); invalidRequirementCells=$($invalidRequirementCells -join ','); invalidHeader=$($invalidHeader -join ','); invalidStatusIds=$($invalidStatusIds -join ',')"
+        throw "需求對照結構不一致。contractVersion=$script:WorkflowCollectContractVersion; duplicateRequirementSections=$($duplicateRequirementSections -join ','); invalidSectionContent=$($invalidSectionContent -join ','); missingRequirementIds=$($missingRequirementIds -join ','); duplicateRequirementIds=$($duplicateRequirementIds -join ','); unknownRequirementIds=$($unknownRequirementIds -join ','); invalidColumnCountRows=$($invalidColumnCountRows -join ','); emptyFieldIds=$($emptyFieldIds -join ','); invalidRequirementCells=$($invalidRequirementCells -join ','); invalidHeader=$($invalidHeader -join ','); invalidStatusFields=$($invalidStatusFields -join ','); invalidStatusIds=$($invalidStatusIds -join ',')"
     }
 
     return [ordered]@{
+        contractVersion = $script:WorkflowCollectContractVersion
         summaryPath     = $summaryFullPath
+        summarySha256   = $summarySha256After
         requirementIds  = @($requirementIds)
+        reportEvidence  = @($reportEvidence.ToArray())
         reportRowCount  = $rows.Count
         statusCounts    = $statusCounts
     }
@@ -6311,7 +12839,9 @@ function Invoke-DirectWriteCollect {
         [string[]]$ReportPath,
 
         [AllowNull()]
-        [object]$RequirementMap
+        [object]$RequirementMap,
+
+        [string]$ReviewerReportPath
     )
 
     if ($TargetStates.Count -eq 0) {
@@ -6336,6 +12866,7 @@ function Invoke-DirectWriteCollect {
     foreach ($report in @($ReportPath)) {
         $reportEvidence.Add((Get-DirectWriteFileEvidence -Path $report -SourceRoot $SourceRoot -EvidenceName '結案報告'))
     }
+    $reviewerFindings = Get-ReviewerFindingsForCollect -Path $ReviewerReportPath
 
     $result = [ordered]@{
         operation          = 'Collect'
@@ -6357,12 +12888,17 @@ function Invoke-DirectWriteCollect {
         missingFromReport  = @()
         unexpectedInReport = @()
         itemChecks         = @()
+        reviewerFindings   = $reviewerFindings
         outputValid        = $true
         worktreeRemoved    = $false
     }
 
     if ($DispatchKind -eq 'workflow') {
         $result.requirementMap = $RequirementMap
+    }
+
+    if ($null -ne $reviewerFindings -and $reviewerFindings.valid -ne $true) {
+        Throw-ReviewerFindingCollectFailure -Result $result
     }
 
     return $result
@@ -6408,7 +12944,7 @@ function Invoke-Collect {
             if ($null -eq $targetStatesProperty) {
                 throw 'direct-write 的 Preflight 輸出缺少 targetStates。'
             }
-            return Invoke-DirectWriteCollect -SourceRoot $preflightSourceRoot -ExecutionRoot $preflightExecutionRoot -DispatchKind $DispatchKind -TargetStates @($targetStatesProperty.Value) -ReportPath $ReportPath -RequirementMap $requirementMap
+            return Invoke-DirectWriteCollect -SourceRoot $preflightSourceRoot -ExecutionRoot $preflightExecutionRoot -DispatchKind $DispatchKind -TargetStates @($targetStatesProperty.Value) -ReportPath $ReportPath -RequirementMap $requirementMap -ReviewerReportPath $ReviewerReportPath
         }
 
         $preflightDispatchRootProperty = $preflight.PSObject.Properties['dispatchRoot']
@@ -6436,7 +12972,22 @@ function Invoke-Collect {
     $trackedDiff = @(Get-NameOnlyList -Result (Invoke-GitCommand -WorkingDirectory $dispatchRootPath -Arguments @('diff', $BaseSha, '--name-only', '-z', '--')))
     $stagedDiff = @(Get-NameOnlyList -Result (Invoke-GitCommand -WorkingDirectory $dispatchRootPath -Arguments @('diff', '--cached', '--name-only', '-z', '--')))
     $untrackedFiles = @(Get-NameOnlyList -Result (Invoke-GitCommand -WorkingDirectory $dispatchRootPath -Arguments @('ls-files', '--others', '--exclude-standard', '-z')))
-    $allFiles = @($trackedDiff + $untrackedFiles | Sort-Object -Unique)
+    $baselineSourceRoot = $SourceRoot
+    $baselineLineSlug = $LineSlug
+    $baselineDispatchSlug = $DispatchSlug
+    if ($null -ne $preflight) {
+        foreach ($entry in @(@('sourceRoot', $SourceRoot), @('lineSlug', $LineSlug), @('dispatchSlug', $DispatchSlug))) {
+            $value = Get-RequiredPreflightProperty $preflight $entry[0]
+            if (-not [string]::IsNullOrWhiteSpace($entry[1]) -and $value -cne $entry[1]) { throw 'Collect 顯式身分與 Preflight 不一致。' }
+        }
+        $baselineSourceRoot = $preflightSourceRoot
+        $baselineLineSlug = Get-RequiredPreflightProperty $preflight 'lineSlug'
+        $baselineDispatchSlug = Get-RequiredPreflightProperty $preflight 'dispatchSlug'
+    }
+    $baselineBinding = Resolve-DispatchBaselineBinding -Preflight $preflight -SourceRoot $baselineSourceRoot -DispatchRoot $dispatchRootPath -LineSlug $baselineLineSlug -DispatchSlug $baselineDispatchSlug -BaseSha $BaseSha -Path $BaselinePath -Sha256 $BaselineSha256
+    $dispatchDiff = @(Get-DispatchIncrementalChanges -Baseline $baselineBinding.Record -DispatchRoot $dispatchRootPath)
+    $allFiles = @($dispatchDiff)
+    $indexTracked = @(Get-NameOnlyList -Result (Invoke-GitCommand -WorkingDirectory $dispatchRootPath -Arguments @('ls-files', '-z')))
     $reportReferences = @()
     $missingFromReport = @()
     $unexpectedInReport = @()
@@ -6455,7 +13006,7 @@ function Invoke-Collect {
                     Path      = $normalizedFile
                     InReport  = $inReport
                     IsStaged  = @($stagedDiff | ForEach-Object { Convert-ComparisonPath -Path $_ }) -contains $normalizedFile
-                    IsTracked = @($trackedDiff | ForEach-Object { Convert-ComparisonPath -Path $_ }) -contains $normalizedFile
+                    IsTracked = @($indexTracked | ForEach-Object { Convert-ComparisonPath -Path $_ }) -contains $normalizedFile
                 })
         }
         $matchesArray = @($matches.ToArray())
@@ -6472,6 +13023,7 @@ function Invoke-Collect {
         }
         $reportEvidence = @($reportEvidenceList.ToArray())
     }
+    $reviewerFindings = Get-ReviewerFindingsForCollect -Path $ReviewerReportPath
 
     $result = [ordered]@{
         operation          = 'Collect'
@@ -6482,6 +13034,9 @@ function Invoke-Collect {
         stagedDiff         = @($stagedDiff)
         untrackedFiles     = @($untrackedFiles)
         allFiles           = @($allFiles)
+        dispatchDiff       = @($dispatchDiff)
+        baselinePath       = $baselineBinding.Path
+        baselineSha256     = $baselineBinding.Sha256
         reportPaths        = @($ReportPath | ForEach-Object { Resolve-AbsolutePath -Path $_ })
         reportReferences   = @($normalizedReportReferences)
         missingFromReport  = @($missingFromReport)
@@ -6489,11 +13044,16 @@ function Invoke-Collect {
         itemChecks         = $matchesArray
         reportEvidence     = @($reportEvidence)
         outputValid        = $true
+        reviewerFindings   = $reviewerFindings
         worktreeRemoved    = $false
     }
 
     if ($DispatchKind -eq 'workflow') {
         $result.requirementMap = $requirementMap
+    }
+
+    if ($null -ne $reviewerFindings -and $reviewerFindings.valid -ne $true) {
+        Throw-ReviewerFindingCollectFailure -Result $result
     }
 
     return $result
@@ -6513,18 +13073,28 @@ function Write-OperationResult {
 }
 
 try {
+    $null = Apply-DispatchRequest
     $result = switch ($Operation) {
         'Preflight' { Invoke-Preflight }
+        'Prepare'   { Invoke-Prepare }
         'Start'     { Invoke-Start }
         'Inspect'   { Invoke-Inspect }
         'Collect'   { Invoke-Collect }
         'QuotaProbe' { Invoke-QuotaProbe }
+        'RecoveryHandoff' { Invoke-RecoveryHandoff }
         default     { throw "不支援的 operation：$Operation" }
+    }
+    if ($null -ne $script:RequestContext -and $result -is [System.Collections.IDictionary]) {
+        $result.dispatch_request = Get-DispatchRequestEvidence
     }
     Write-OperationResult -Result $result
     exit 0
 }
 catch {
+    $operationResultProperty = $_.Exception.Data['operationResult']
+    if ($null -ne $operationResultProperty -and $operationResultProperty -is [System.Collections.IDictionary]) {
+        Write-OperationResult -Result $operationResultProperty
+    }
     [Console]::Error.WriteLine(('Invoke-CodexDispatch.ps1 失敗：{0}' -f $_.Exception.Message))
     exit 1
 }

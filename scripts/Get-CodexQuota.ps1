@@ -135,14 +135,15 @@ function Get-RolloutSnapshotCandidate {
                         }
 
                         [pscustomobject]@{
-                            WindowName          = $windowName
-                            UsedPercent         = $usedPercent
-                            WindowMinutes       = [int64]$windowMinutesValue
-                            ResetsAt            = [int64]$resetsAtValue
-                            SourceFile          = $file.Name
-                            EventTimestamp      = $eventTimestamp
-                            EventTimestampUnix  = $eventTimestampUnix
-                            RecordIndex         = $recordIndex
+                             WindowName          = $windowName
+                             UsedPercent         = $usedPercent
+                             WindowMinutes       = [int64]$windowMinutesValue
+                             ResetsAt            = [int64]$resetsAtValue
+                             SourceFile          = $file.Name
+                             SourcePath          = $file.FullName
+                             EventTimestamp      = $eventTimestamp
+                             EventTimestampUnix  = $eventTimestampUnix
+                             RecordIndex         = $recordIndex
                         }
                     }
                 }
@@ -158,6 +159,418 @@ function Get-RolloutSnapshotCandidate {
                 $_.Exception.Message
             )
         }
+    }
+}
+
+function Get-FileSha256 {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    $stream = $null
+    try {
+        $stream = New-Object System.IO.FileStream($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        return ([System.BitConverter]::ToString($sha256.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+        $sha256.Dispose()
+    }
+}
+
+function Get-ObjectPropertyValue {
+    param(
+        [AllowNull()]
+        [object]$Object,
+
+        [Parameter(Mandatory)]
+        [string[]]$Names
+    )
+
+    if ($null -eq $Object) {
+        return $null
+    }
+    foreach ($name in $Names) {
+        if ($Object -is [System.Collections.IDictionary] -and $Object.Contains($name)) {
+            if ($null -ne $Object[$name]) {
+                return $Object[$name]
+            }
+            continue
+        }
+        $property = $Object.PSObject.Properties[$name]
+        if ($null -ne $property -and $null -ne $property.Value) {
+            return $property.Value
+        }
+    }
+    return $null
+}
+
+function Get-RolloutServiceRejection {
+    param(
+        [Parameter(Mandatory)]
+        [string]$SessionsPath
+    )
+
+    if (-not (Test-Path -LiteralPath $SessionsPath -PathType Container)) {
+        return $null
+    }
+
+    $rejections = New-Object System.Collections.Generic.List[object]
+    $hashByPath = @{}
+    $rolloutFiles = @(
+        Get-ChildItem -LiteralPath $SessionsPath -Recurse -File -Filter 'rollout-*.jsonl' |
+            Sort-Object -Property Name -Descending |
+            Select-Object -First 20
+    )
+    foreach ($file in $rolloutFiles) {
+        try {
+            if (-not $hashByPath.ContainsKey($file.FullName)) {
+                $hashByPath[$file.FullName] = Get-FileSha256 -Path $file.FullName
+            }
+            $recordIndex = 0
+            foreach ($line in Get-Content -LiteralPath $file.FullName -Encoding UTF8) {
+                $recordIndex++
+                if ([string]::IsNullOrWhiteSpace($line) -or $line -notmatch '(?i)(?:usage|rate)[\s_-]*limit(?:ed| exceeded|\b)|quota\s+exceeded|too\s+many\s+requests|\b429\b') {
+                    continue
+                }
+
+                $record = $null
+                try {
+                    $record = $line | ConvertFrom-Json -ErrorAction Stop
+                }
+                catch {
+                }
+                $timestampValue = Get-ObjectPropertyValue -Object $record -Names @('timestamp', 'created_at', 'observed_at_utc')
+                $observedAtUtc = [DateTimeOffset]::UtcNow
+                if ($null -ne $timestampValue) {
+                    try {
+                        $observedAtUtc = [DateTimeOffset]$timestampValue
+                    }
+                    catch {
+                    }
+                }
+                $reasonCode = 'quota-rejected'
+                if ($line -match '(?i)usage[\s_-]*limit(?:ed| exceeded|\b)') {
+                    $reasonCode = 'usage-limit'
+                }
+                elseif ($line -match '(?i)rate[\s_-]*limit(?:ed| exceeded|\b)') {
+                    $reasonCode = 'rate-limit'
+                }
+                elseif ($line -match '(?i)quota\s+exceeded') {
+                    $reasonCode = 'quota-exceeded'
+                }
+                elseif ($line -match '(?i)too\s+many\s+requests|\b429\b') {
+                    $reasonCode = 'too-many-requests'
+                }
+
+                $windowName = 'unknown'
+                if ($line -match '(?i)secondary') {
+                    $windowName = 'secondary'
+                }
+                elseif ($line -match '(?i)primary') {
+                    $windowName = 'primary'
+                }
+                $payload = Get-ObjectPropertyValue -Object $record -Names @('payload', 'error', 'data')
+                $rateLimits = Get-ObjectPropertyValue -Object $payload -Names @('rate_limits', 'rateLimits')
+                $windowObject = if ($windowName -in @('primary', 'secondary')) { Get-ObjectPropertyValue -Object $rateLimits -Names @($windowName) } else { $null }
+                $resetValue = Get-ObjectPropertyValue -Object $windowObject -Names @('resets_at', 'reset_at', 'resetAt')
+                $resetAt = $null
+                if ($null -ne $resetValue) {
+                    try {
+                        $resetAt = [int64]$resetValue
+                    }
+                    catch {
+                    }
+                }
+
+                $rejections.Add([pscustomobject]@{
+                        Status              = 'quota-rejected'
+                        Window              = $windowName
+                        ReasonCode          = $reasonCode
+                        ObservedAtUtc       = $observedAtUtc
+                        RawEvidencePath     = $file.FullName
+                        RawEvidenceFileName = $file.Name
+                        RawEvidenceSha256   = $hashByPath[$file.FullName]
+                        ResetsAt            = $resetAt
+                        RetryAllowed        = $false
+                        RecordIndex         = $recordIndex
+                    })
+            }
+        }
+        catch {
+            Write-Verbose ('略過無法讀取的 service rejection rollout 檔：{0}。原因：{1}' -f $file.FullName, $_.Exception.Message)
+        }
+    }
+
+    if ($rejections.Count -eq 0) {
+        return $null
+    }
+    return @(
+        $rejections.ToArray() |
+            Sort-Object -Property @(
+                @{ Expression = 'ObservedAtUtc'; Descending = $true }
+                @{ Expression = 'RecordIndex'; Descending = $true }
+                @{ Expression = 'RawEvidencePath'; Descending = $true }
+            ) |
+            Select-Object -First 1
+    )[0]
+}
+
+function Get-ObservationFreshness {
+    param(
+        [Parameter(Mandatory)]
+        [DateTimeOffset]$ObservedAtUtc,
+
+        [int]$MaxAgeMinutes = 30
+    )
+
+    $ageMinutes = ([DateTimeOffset]::UtcNow - $ObservedAtUtc).TotalMinutes
+    if ($ageMinutes -ge 0 -and $ageMinutes -le $MaxAgeMinutes) {
+        return 'fresh'
+    }
+    if ($ageMinutes -gt $MaxAgeMinutes) {
+        return 'stale'
+    }
+    return 'unknown'
+}
+
+function New-QuotaObservation {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WindowName,
+
+        [Parameter(Mandatory)]
+        [pscustomobject]$Candidate
+    )
+
+    return [ordered]@{
+        used_percent      = [double]$Candidate.UsedPercent
+        remaining_percent = 100.0 - [double]$Candidate.UsedPercent
+        observed_at_utc   = $Candidate.EventTimestamp.ToUniversalTime().ToString('o')
+        source            = 'Get-CodexQuota.ps1:' + [string]$Candidate.SourcePath
+        freshness         = Get-ObservationFreshness -ObservedAtUtc $Candidate.EventTimestamp.ToUniversalTime()
+        window            = $WindowName
+        resets_at         = [int64]$Candidate.ResetsAt
+    }
+}
+
+function ConvertTo-ServiceRejectionDocumentValue {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$ServiceRejection,
+
+        [switch]$IncludeAudit
+    )
+
+    if ($null -eq $ServiceRejection) {
+        return $null
+    }
+
+    $rawEvidencePath = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('raw_evidence_path', 'RawEvidencePath'))
+    $rawEvidenceFile = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('raw_evidence_file', 'RawEvidenceFileName'))
+    if ([string]::IsNullOrWhiteSpace($rawEvidenceFile) -and -not [string]::IsNullOrWhiteSpace($rawEvidencePath)) {
+        $rawEvidenceFile = Split-Path -Leaf $rawEvidencePath
+    }
+
+    $observedAtValue = Get-ObjectPropertyValue -Object $ServiceRejection -Names @('observed_at_utc', 'ObservedAtUtc')
+    $observedAtText = if ($null -eq $observedAtValue) { '' } else { [string]$observedAtValue }
+    try {
+        $observedAtText = ([DateTimeOffset]$observedAtValue).ToUniversalTime().ToString('o')
+    }
+    catch {
+    }
+
+    $document = [ordered]@{
+        status              = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('status', 'Status'))
+        window              = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('window', 'Window'))
+        reason_code         = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('reason_code', 'ReasonCode'))
+        observed_at_utc     = $observedAtText
+        raw_evidence_path   = $rawEvidencePath
+        raw_evidence_sha256 = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('raw_evidence_sha256', 'RawEvidenceSha256'))
+        resets_at           = Get-ObjectPropertyValue -Object $ServiceRejection -Names @('resets_at', 'ResetsAt')
+        retry_allowed       = [bool](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('retry_allowed', 'RetryAllowed'))
+    }
+
+    if ($IncludeAudit) {
+        $supersededValue = Get-ObjectPropertyValue -Object $ServiceRejection -Names @('superseded')
+        $supersededByValue = Get-ObjectPropertyValue -Object $ServiceRejection -Names @('superseded_by_observation')
+        $supersededByDocument = $null
+        if ($null -ne $supersededByValue) {
+            $supersededObservedAtValue = Get-ObjectPropertyValue -Object $supersededByValue -Names @('observed_at_utc')
+            $supersededObservedAtText = if ($null -eq $supersededObservedAtValue) { $null } else { [string]$supersededObservedAtValue }
+            try {
+                $supersededObservedAtText = ([DateTimeOffset]$supersededObservedAtValue).ToUniversalTime().ToString('o')
+            }
+            catch {
+            }
+            $recordIndexValue = Get-ObjectPropertyValue -Object $supersededByValue -Names @('record_index')
+            $supersededByDocument = [ordered]@{
+                window          = [string](Get-ObjectPropertyValue -Object $supersededByValue -Names @('window'))
+                observed_at_utc = $supersededObservedAtText
+                source_file     = [string](Get-ObjectPropertyValue -Object $supersededByValue -Names @('source_file'))
+                source_path     = [string](Get-ObjectPropertyValue -Object $supersededByValue -Names @('source_path'))
+                freshness       = [string](Get-ObjectPropertyValue -Object $supersededByValue -Names @('freshness'))
+                record_index    = if ($null -eq $recordIndexValue) { $null } else { [int64]$recordIndexValue }
+            }
+        }
+        $document['raw_evidence_file'] = $rawEvidenceFile
+        $document['superseded'] = if ($null -eq $supersededValue) { $false } else { [bool]$supersededValue }
+        $document['superseded_by_observation'] = $supersededByDocument
+    }
+
+    return $document
+}
+
+function Resolve-ServiceRejectionState {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$ServiceRejection,
+
+        [AllowEmptyCollection()]
+        [object[]]$Candidates
+    )
+
+    if ($null -eq $ServiceRejection) {
+        return [pscustomobject]@{
+            Active   = $null
+            Evidence = $null
+        }
+    }
+
+    $evidence = ConvertTo-ServiceRejectionDocumentValue -ServiceRejection $ServiceRejection -IncludeAudit
+    $observedAtValue = Get-ObjectPropertyValue -Object $ServiceRejection -Names @('observed_at_utc', 'ObservedAtUtc')
+    $observedAtUtc = [DateTimeOffset]::MinValue
+    try {
+        $observedAtUtc = [DateTimeOffset]$observedAtValue
+    }
+    catch {
+        return [pscustomobject]@{
+            Active   = $ServiceRejection
+            Evidence = $evidence
+        }
+    }
+
+    $rejectionWindow = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('window', 'Window'))
+    $rejectionPath = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('raw_evidence_path', 'RawEvidencePath'))
+    $rejectionFile = [string](Get-ObjectPropertyValue -Object $ServiceRejection -Names @('raw_evidence_file', 'RawEvidenceFileName'))
+    if ([string]::IsNullOrWhiteSpace($rejectionFile) -and -not [string]::IsNullOrWhiteSpace($rejectionPath)) {
+        $rejectionFile = Split-Path -Leaf $rejectionPath
+    }
+
+    $supersedingCandidates = @(
+        foreach ($candidate in @($Candidates)) {
+            if ($null -eq $candidate) {
+                continue
+            }
+            if ($rejectionWindow -in @('primary', 'secondary') -and [string]$candidate.WindowName -ne $rejectionWindow) {
+                continue
+            }
+
+            $candidatePath = [string]$candidate.SourcePath
+            $candidateFile = [string]$candidate.SourceFile
+            $sameSource = -not [string]::IsNullOrWhiteSpace($rejectionPath) -and
+                [string]::Equals($candidatePath, $rejectionPath, [StringComparison]::OrdinalIgnoreCase)
+            $newerRollout = $false
+            if (-not $sameSource -and -not [string]::IsNullOrWhiteSpace($rejectionFile) -and -not [string]::IsNullOrWhiteSpace($candidateFile)) {
+                $newerRollout = [StringComparer]::OrdinalIgnoreCase.Compare($candidateFile, $rejectionFile) -gt 0
+            }
+            if (-not $sameSource -and -not $newerRollout) {
+                continue
+            }
+
+            try {
+                $candidateObservedAtUtc = ([DateTimeOffset]$candidate.EventTimestamp).ToUniversalTime()
+                if ($candidateObservedAtUtc -le $observedAtUtc -or (Get-ObservationFreshness -ObservedAtUtc $candidateObservedAtUtc) -ne 'fresh') {
+                    continue
+                }
+            }
+            catch {
+                continue
+            }
+            $candidate
+        }
+    )
+    $supersedingCandidate = $supersedingCandidates |
+        Sort-Object -Property @(
+            @{ Expression = 'EventTimestamp'; Descending = $true }
+            @{ Expression = 'RecordIndex'; Descending = $true }
+            @{ Expression = 'SourceFile'; Descending = $true }
+        ) |
+        Select-Object -First 1
+
+    if ($null -eq $supersedingCandidate) {
+        return [pscustomobject]@{
+            Active   = $ServiceRejection
+            Evidence = $evidence
+        }
+    }
+
+    $supersedingTimestamp = ([DateTimeOffset]$supersedingCandidate.EventTimestamp).ToUniversalTime()
+    $evidence['superseded'] = $true
+    $evidence['superseded_by_observation'] = [ordered]@{
+        window          = [string]$supersedingCandidate.WindowName
+        observed_at_utc = $supersedingTimestamp.ToString('o')
+        source_file     = [string]$supersedingCandidate.SourceFile
+        source_path     = [string]$supersedingCandidate.SourcePath
+        freshness       = 'fresh'
+        record_index    = [int64]$supersedingCandidate.RecordIndex
+    }
+    return [pscustomobject]@{
+        Active   = $null
+        Evidence = $evidence
+    }
+}
+
+function New-UnknownQuotaObservation {
+    param(
+        [Parameter(Mandatory)]
+        [string]$WindowName,
+
+        [AllowNull()]
+        [object]$Window
+    )
+
+    if ($null -eq $Window) {
+        return [ordered]@{
+            used_percent      = $null
+            remaining_percent = $null
+            observed_at_utc   = $null
+            source            = 'snapshot-unavailable'
+            freshness         = 'unknown'
+            window            = $WindowName
+            resets_at         = $null
+        }
+    }
+    return [ordered]@{
+        used_percent      = [double]$Window.used_percent
+        remaining_percent = [double]$Window.remaining_percent
+        observed_at_utc   = $null
+        source            = [string]$Window.source_file
+        freshness         = 'unknown'
+        window            = $WindowName
+        resets_at         = [int64]$Window.resets_at
+    }
+}
+
+function Get-PreviousQuotaDocument {
+    param(
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+        return $null
+    }
+    try {
+        return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop)
+    }
+    catch {
+        return $null
     }
 }
 
@@ -229,20 +642,52 @@ function Write-QuotaSnapshotDocument {
         [AllowNull()]
         [object]$Secondary,
 
-        [string]$ErrorMessage
+        [string]$ErrorMessage,
+
+        [AllowNull()]
+        [object]$Observations,
+
+        [AllowNull()]
+        [object]$ServiceRejection,
+
+        [AllowNull()]
+        [object]$ServiceRejectionEvidence,
+
+        [AllowNull()]
+        [object]$PreviousDocument,
+
+        [string]$CodexHomePath
     )
 
     $parent = Split-Path -Parent $Path
     if (-not [string]::IsNullOrWhiteSpace($parent)) {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
+    $normalizedServiceRejection = ConvertTo-ServiceRejectionDocumentValue -ServiceRejection $ServiceRejection
+    $normalizedServiceRejectionEvidence = $null
+    if ($null -ne $ServiceRejectionEvidence) {
+        $normalizedServiceRejectionEvidence = ConvertTo-ServiceRejectionDocumentValue -ServiceRejection $ServiceRejectionEvidence -IncludeAudit
+    }
+    elseif ($null -ne $ServiceRejection) {
+        $normalizedServiceRejectionEvidence = ConvertTo-ServiceRejectionDocumentValue -ServiceRejection $ServiceRejection -IncludeAudit
+    }
+    elseif ($null -ne $PreviousDocument) {
+        $previousEvidenceProperty = $PreviousDocument.PSObject.Properties['service_rejection_evidence']
+        if ($null -ne $previousEvidenceProperty -and $null -ne $previousEvidenceProperty.Value) {
+            $normalizedServiceRejectionEvidence = ConvertTo-ServiceRejectionDocumentValue -ServiceRejection $previousEvidenceProperty.Value -IncludeAudit
+        }
+    }
     $document = [ordered]@{
-        schema         = 'quota-snapshot.v1'
-        captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
-        state          = $State
-        primary        = $null
-        secondary      = $null
-        error          = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
+        schema          = 'ai-sessions.quota-snapshot.v1'
+        captured_at_utc = $null
+        state           = $State
+        primary         = $null
+        secondary       = $null
+        observations    = $null
+        service_rejection = $normalizedServiceRejection
+        service_rejection_evidence = $normalizedServiceRejectionEvidence
+        error           = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
+        codex_home      = if ([string]::IsNullOrWhiteSpace($CodexHomePath)) { $null } else { $CodexHomePath }
     }
     foreach ($window in @(
             [pscustomobject]@{ Name = 'primary'; Value = $Primary }
@@ -261,6 +706,60 @@ function Write-QuotaSnapshotDocument {
             source_file       = [string]$window.Value.SourceFile
             days_to_reset     = $daysToReset
             window_days       = $windowDays
+        }
+    }
+    if ($null -eq $document.primary -and $null -ne $PreviousDocument) {
+        $previousPrimary = $PreviousDocument.PSObject.Properties['primary']
+        if ($null -ne $previousPrimary -and $null -ne $previousPrimary.Value) {
+            $document.primary = $previousPrimary.Value
+        }
+    }
+    if ($null -eq $document.secondary -and $null -ne $PreviousDocument) {
+        $previousSecondary = $PreviousDocument.PSObject.Properties['secondary']
+        if ($null -ne $previousSecondary -and $null -ne $previousSecondary.Value) {
+            $document.secondary = $previousSecondary.Value
+        }
+    }
+    if ($null -ne $Observations) {
+        $document.observations = $Observations
+    }
+    elseif ($null -ne $PreviousDocument) {
+        $previousObservations = $PreviousDocument.PSObject.Properties['observations']
+        if ($null -ne $previousObservations -and $null -ne $previousObservations.Value) {
+            $document.observations = $previousObservations.Value
+        }
+        else {
+            $document.observations = [ordered]@{
+                primary   = New-UnknownQuotaObservation -WindowName 'primary' -Window $document.primary
+                secondary = New-UnknownQuotaObservation -WindowName 'secondary' -Window $document.secondary
+            }
+        }
+    }
+    if ($null -ne $document.observations) {
+        $capturedCandidates = New-Object System.Collections.Generic.List[DateTimeOffset]
+        foreach ($windowName in @('primary', 'secondary')) {
+            $observation = Get-ObjectPropertyValue -Object $document.observations -Names @($windowName)
+            if ($null -eq $observation) {
+                continue
+            }
+            $observedAtValue = Get-ObjectPropertyValue -Object $observation -Names @('observed_at_utc')
+            if ($null -eq $observedAtValue -or [string]::IsNullOrWhiteSpace([string]$observedAtValue)) {
+                continue
+            }
+            try {
+                $capturedCandidates.Add([DateTimeOffset]$observedAtValue)
+            }
+            catch {
+            }
+        }
+        if ($capturedCandidates.Count -gt 0) {
+            $document.captured_at_utc = ($capturedCandidates | Sort-Object | Select-Object -Last 1).ToUniversalTime().ToString('o')
+        }
+    }
+    if ($null -eq $document.captured_at_utc -and $null -ne $PreviousDocument) {
+        $previousCaptured = $PreviousDocument.PSObject.Properties['captured_at_utc']
+        if ($null -ne $previousCaptured -and -not [string]::IsNullOrWhiteSpace([string]$previousCaptured.Value)) {
+            $document.captured_at_utc = [string]$previousCaptured.Value
         }
     }
     $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
@@ -407,12 +906,21 @@ function Get-QuotaWindowDecision {
     }
 }
 
+$windowDecisions = $null
+$previousDocument = $null
+$serviceRejection = $null
+$serviceRejectionEvidence = $null
+$codexHomePath = $null
+
 try {
     $windowDecisions = New-Object System.Collections.Generic.List[object]
     $codexHomePath = Get-CodexHomeDirectory -ConfiguredCodexHome $CodexHome
     $sessionsPath = Join-Path -Path $codexHomePath -ChildPath 'sessions'
+    $previousDocument = Get-PreviousQuotaDocument -Path $SnapshotPath
+    $serviceRejection = $null
     $currentUnixTime = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
     $candidates = @(Get-RolloutSnapshotCandidate -SessionsPath $sessionsPath)
+    $serviceRejection = Get-RolloutServiceRejection -SessionsPath $sessionsPath
     $selectedSnapshots = @{}
     foreach ($windowName in @('primary', 'secondary')) {
         $decision = Get-QuotaWindowDecision -Candidates $candidates -WindowName $windowName -CurrentUnixTime $currentUnixTime
@@ -421,6 +929,9 @@ try {
             $selectedSnapshots[$windowName] = $decision.SelectedSnapshot
         }
     }
+    $serviceRejectionResolution = Resolve-ServiceRejectionState -ServiceRejection $serviceRejection -Candidates @($selectedSnapshots.Values)
+    $serviceRejection = $serviceRejectionResolution.Active
+    $serviceRejectionEvidence = $serviceRejectionResolution.Evidence
 
     $failedDecisions = @($windowDecisions | Where-Object { $_.State -ne 'Valid' })
     if ($failedDecisions.Count -gt 0) {
@@ -463,6 +974,9 @@ try {
             $failedDecisions | Where-Object { $recoverableStates -notcontains $_.State }
         ).Count -eq 0
         $message = "額度快照狀態無法進入門檻判定：$stateDetails；掃描路徑：$sessionsPath"
+        if ($null -ne $serviceRejection) {
+            $message += '；service rejection 已保存，禁止無條件 retry：' + $serviceRejection.ReasonCode
+        }
 
         if ($allStatesRecoverable) {
             $message += '；於本機執行一次 codex exec 產生新 rollout 後重讀即可回復。'
@@ -473,11 +987,23 @@ try {
 
     if (-not [string]::IsNullOrWhiteSpace($SnapshotPath)) {
         $snapshotFullPath = [System.IO.Path]::GetFullPath($SnapshotPath)
-        Write-QuotaSnapshotDocument -Path $snapshotFullPath -State 'Valid' -CurrentUnixTime $currentUnixTime -Primary $selectedSnapshots['primary'] -Secondary $selectedSnapshots['secondary']
+        $observations = [ordered]@{
+            primary   = New-QuotaObservation -WindowName 'primary' -Candidate $selectedSnapshots['primary']
+            secondary = New-QuotaObservation -WindowName 'secondary' -Candidate $selectedSnapshots['secondary']
+        }
+        Write-QuotaSnapshotDocument -Path $snapshotFullPath -State 'Valid' -CurrentUnixTime $currentUnixTime -Primary $selectedSnapshots['primary'] -Secondary $selectedSnapshots['secondary'] -Observations $observations -ServiceRejection $serviceRejection -ServiceRejectionEvidence $serviceRejectionEvidence -PreviousDocument $previousDocument -CodexHomePath $codexHomePath
     }
 
     Write-QuotaWindow -WindowName 'primary' -Snapshot $selectedSnapshots['primary'] -CurrentUnixTime $currentUnixTime
     Write-QuotaWindow -WindowName 'secondary' -Snapshot $selectedSnapshots['secondary'] -CurrentUnixTime $currentUnixTime
+    if ($null -ne $serviceRejection) {
+        Write-Output ('service_rejection_status=' + $serviceRejection.Status)
+        Write-Output ('service_rejection_window=' + $serviceRejection.Window)
+        Write-Output ('service_rejection_reason_code=' + $serviceRejection.ReasonCode)
+        Write-Output ('service_rejection_raw_evidence_path=' + $serviceRejection.RawEvidencePath)
+        Write-Output ('service_rejection_raw_evidence_sha256=' + $serviceRejection.RawEvidenceSha256)
+        Write-Output 'service_rejection_retry_allowed=false'
+    }
     exit 0
 }
 catch {
@@ -490,7 +1016,27 @@ catch {
                     $failureState = [string]$failedDecision[0].State
                 }
             }
-            Write-QuotaSnapshotDocument -Path ([System.IO.Path]::GetFullPath($SnapshotPath)) -State $failureState -CurrentUnixTime ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -Primary $null -Secondary $null -ErrorMessage $_.Exception.Message
+            $failureServiceRejection = $serviceRejection
+            if ($null -eq $failureServiceRejection -and $null -ne $previousDocument) {
+                $previousServiceRejection = $previousDocument.PSObject.Properties['service_rejection']
+                if ($null -ne $previousServiceRejection) {
+                    $failureServiceRejection = $previousServiceRejection.Value
+                }
+            }
+            $failureServiceRejectionEvidence = $serviceRejectionEvidence
+            if ($null -eq $failureServiceRejectionEvidence -and $null -ne $previousDocument) {
+                $previousServiceRejectionEvidence = $previousDocument.PSObject.Properties['service_rejection_evidence']
+                if ($null -ne $previousServiceRejectionEvidence) {
+                    $failureServiceRejectionEvidence = $previousServiceRejectionEvidence.Value
+                }
+            }
+            if ($null -eq $failureServiceRejectionEvidence -and $null -ne $failureServiceRejection) {
+                $failureServiceRejectionEvidence = ConvertTo-ServiceRejectionDocumentValue -ServiceRejection $failureServiceRejection -IncludeAudit
+            }
+            if ($null -ne $failureServiceRejection) {
+                $failureState = 'ServiceRejected'
+            }
+            Write-QuotaSnapshotDocument -Path ([System.IO.Path]::GetFullPath($SnapshotPath)) -State $failureState -CurrentUnixTime ([DateTimeOffset]::UtcNow.ToUnixTimeSeconds()) -Primary $null -Secondary $null -ErrorMessage $_.Exception.Message -ServiceRejection $failureServiceRejection -ServiceRejectionEvidence $failureServiceRejectionEvidence -PreviousDocument $previousDocument -CodexHomePath $codexHomePath
         }
         catch {
             [Console]::Error.WriteLine(('quota snapshot 寫入失敗：{0}' -f $_.Exception.Message))
