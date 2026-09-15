@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-07
+superseded-by: 0005
 ---
 
 # ADR-0004：檔位集合與同線並行政策
