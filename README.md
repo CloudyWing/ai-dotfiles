@@ -168,9 +168,9 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 #### Codex profile 檔位設定
 
-1. 預設檔位省略 `--profile`；`deep` 檔位使用 `--profile deep`，只保留預設與 `deep` 兩個選項。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
-2. `deep` 只在任務推理密集且執行量不大時使用，並須經使用者確認。額度門檻依派工方式與視窗分列，實際數值、門檻差異的理由與 `primary` 接近重設時的等待選項，一律以 `codex-dispatch` skill 為準，本文件不重複記載。
-3. `deep` 的本機設定檔為 `~/.codex/deep.config.toml`，內容為該檔位要覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
+1. 預設檔位省略 `--profile`；`advisor` 檔位使用 `--profile advisor`，只保留預設與 `advisor` 兩個選項。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
+2. 實作一律使用預設檔位。`advisor` 只作意見評估，額度充足時可直接發動，額度不足時經使用者授權後發動，並依剩餘額度縮小評估範圍。預設檔位週額度不足時不需授權，繼續派工。啟用條件與範圍計算一律以 `codex-dispatch` skill 為準，本文件不重複記載。
+3. `advisor` 的本機設定檔為 `~/.codex/advisor.config.toml`，內容為該檔位要覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
 
    ```toml
    model = "<model-id>"
@@ -188,7 +188,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
    `model_reasoning_effort` 只影響推理長度，不影響模型單價。把高成本模型的 effort 調低不會使其變便宜，控制成本須從模型選用與 subagent 配置著手。
 
 4. Codex 0.134.0 起，`--profile` 改讀獨立檔案。`config.toml` 內的 `[profiles.*]` 為 legacy 格式，該版本以後不再受理。
-5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段只偵測 `deep.config.toml` 缺件並印出修復指引。
+5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段偵測 `advisor.config.toml` 缺件，以及舊檔名殘留或新舊檔同時存在的衝突，並印出修復指引。
 
 ---
 
