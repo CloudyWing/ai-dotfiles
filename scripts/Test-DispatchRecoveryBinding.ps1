@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet(1, 2, 3, 4, 5, 6, 7)]
+    [ValidateSet(1, 2, 3, 4, 5, 6, 7, 8)]
     [int]$Phase = 1,
 
     [switch]$Child,
@@ -25,6 +25,75 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
 $root = Split-Path $PSScriptRoot -Parent
 $sourcePath = Join-Path $PSScriptRoot 'Invoke-CodexDispatch.ps1'
+$activeSourcePaths = @(
+    $sourcePath,
+    (Join-Path $PSScriptRoot 'Setup-AIGlobalConfig.ps1'),
+    (Join-Path $PSScriptRoot 'Get-CodexQuota.ps1'),
+    (Join-Path $root 'instructions.md'),
+    (Join-Path $root 'skills\codex-dispatch\SKILL.md'),
+    (Join-Path $root 'README.md'),
+    $PSCommandPath
+)
+$phase1RemovalTerms = @(
+    ('[ValidateSet(' + "'default', 'deep'" + ')]'),
+    ('d' + 'eep' + '-consult'),
+    ('d' + 'eep' + '-evidence-pack'),
+    ('d' + 'eep' + '_hard_limit_percent'),
+    ('d' + 'eep' + '.config.toml'),
+    ('Deep' + 'RequestSource'),
+    ('Deep' + 'ConsultReportPath'),
+    ('Get-' + 'Deep' + 'ConsultReportPath'),
+    ('Get-' + 'Deep' + 'CycleDecision'),
+    ('New-' + 'Deep' + 'InlineEvidenceDirective'),
+    ('Test-' + 'Deep' + 'InlineEvidenceDirective'),
+    ('Write-' + 'Deep' + 'ConsultReport'),
+    ('Invoke-' + 'Deep' + 'BudgetMonitor'),
+    ('Test-' + 'EvidencePack'),
+    ('deep' + '-consult.evidence.v1'),
+    ('[' + 'deep' + ' 諮詢確認]')
+)
+$phase2RemovalTerms = @(
+    ('[ValidateSet(' + "'default', 'deep'" + ')]'),
+    ('deep' + '-consult'),
+    ('deep' + '-evidence-pack'),
+    ('deep' + '_hard_limit_percent'),
+    ('deep' + '.config.toml'),
+    ('Deep' + 'RequestSource'),
+    ('Deep' + 'ConsultReportPath'),
+    ('deep' + 'RequestSource'),
+    ('deep' + 'ConsultReportPath'),
+    ('Get-' + 'Deep' + 'ConsultReportPath'),
+    ('Get-' + 'Deep' + 'CycleDecision'),
+    ('deep' + 'CycleDecision'),
+    ('deep' + 'CycleGatePassed'),
+    ('deep' + 'CycleNotice'),
+    ('New-' + 'Deep' + 'InlineEvidenceDirective'),
+    ('Test-' + 'Deep' + 'InlineEvidenceDirective'),
+    ('Write-' + 'Deep' + 'ConsultReport'),
+    ('Invoke-' + 'Deep' + 'BudgetMonitor'),
+    ('Test-' + 'EvidencePack'),
+    ('deep' + '-consult.evidence.v1'),
+    ('[' + 'deep' + ' 諮詢確認]'),
+    ('[' + 'deep' + ' 週期位置告知]')
+)
+
+function Assert-ActiveSourceNotFound {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Label,
+
+        [Parameter(Mandatory)]
+        [string[]]$Terms
+    )
+
+    foreach ($term in $Terms) {
+        foreach ($path in $activeSourcePaths) {
+            $matches = @(Select-String -LiteralPath $path -SimpleMatch -Pattern $term)
+            Assert-True ($matches.Count -eq 0) ("{0} active source 仍找到 `{1}`：{2}" -f $Label, $term, $path)
+        }
+    }
+}
 
 function ConvertTo-ProcessArgument {
     [CmdletBinding()]
@@ -122,6 +191,18 @@ function Invoke-TestChildProcess {
         $startInfo.WorkingDirectory = (Get-Location).Path
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
+        if ($HostLabel -eq 'powershell.exe') {
+            $windowsPowerShellModulePaths = New-Object System.Collections.Generic.List[string]
+            foreach ($modulePath in @(
+                    (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'),
+                    (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
+                    (Join-Path $env:WINDIR 'system32\WindowsPowerShell\v1.0\Modules'))) {
+                if (-not [string]::IsNullOrWhiteSpace($modulePath)) {
+                    $windowsPowerShellModulePaths.Add($modulePath)
+                }
+            }
+            $startInfo.EnvironmentVariables['PSModulePath'] = $windowsPowerShellModulePaths -join ';'
+        }
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
         $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -365,7 +446,7 @@ if ($parseErrors.Count -gt 0) { exit 1 }
 $functions = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] }, $false))
 foreach ($function in $functions) {
     $definition = $function.Extent.Text
-    if ($function.Name -eq 'Invoke-Start') {
+    if ($function.Name -in @('Invoke-Start', 'Invoke-QuotaProbe')) {
         $definition = $definition.Replace('$process = New-Object System.Diagnostics.Process', '$process = New-TestProcess')
     }
     . ([scriptblock]::Create($definition))
@@ -383,6 +464,16 @@ $script:startSnapshotMode = 'confirmed'
 $script:quotaFixtureFailure = $false
 $script:aclFixtureStatus = 'clean'
 $script:scopePlanFixtureDecision = 'full'
+$script:launcherFixtureFailure = $false
+$script:quotaSnapshotPathOverride = $null
+$script:dispatchUnitListOverride = $null
+$script:advisorStartPromptMode = $false
+$script:phase8CapturedActivation = $null
+$script:phase8CapturedScopePlan = $null
+$script:quotaProbeCaptureArguments = $false
+$script:quotaProbeCapturedArguments = @()
+$script:quotaProbeCodexHome = $null
+$script:quotaProbeStartCalls = 0
 $script:InvocationBoundParameters = [ordered]@{}
 $script:RequestContext = $null
 $script:RequestPrepareArtifacts = @()
@@ -405,10 +496,28 @@ function Get-WorktreeAclGate {
     return [ordered]@{ status = 'clean'; rejection_code = $null; source = @{}; dispatch = @{}; residue = @(); write_mode = $WriteMode }
 }
 function Get-CodexExecutablePath { param($ConfiguredPath) return 'fixture-codex' }
-function Get-OrCreateQuotaSnapshot { param($Path, $CodexHome, $HistoryRoot, $Purpose, [switch]$Required) if ($script:quotaFixtureFailure) { throw 'quota fixture failure' }; $quotaPath = Join-Path $fixtureRoot 'quota.json'; if (-not (Test-Path -LiteralPath $quotaPath -PathType Leaf)) { Write-Utf8NoBom -Path $quotaPath -Content '{}'; }; return $quotaPath }
+function Get-OrCreateQuotaSnapshot {
+    param($Path, $CodexHome, $HistoryRoot, $Purpose, [switch]$Required)
+    if ($script:quotaFixtureFailure) { throw 'quota fixture failure' }
+    if (-not [string]::IsNullOrWhiteSpace($script:quotaSnapshotPathOverride)) {
+        return $script:quotaSnapshotPathOverride
+    }
+    $quotaPath = Join-Path $fixtureRoot 'quota.json'
+    if (-not (Test-Path -LiteralPath $quotaPath -PathType Leaf)) {
+        Write-Utf8NoBom -Path $quotaPath -Content '{}'
+    }
+    return $quotaPath
+}
 function Read-QuotaSnapshot { param($Path) return [pscustomobject]@{ values = @{} } }
 function Read-ScopePlanFile { param($Path) return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json) }
-function Get-DispatchUnitList { param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $TargetPath) return 'Phase 1' }
+function Set-QuotaSnapshotFromCodex { param($Path, $CodexHome) return $Path }
+function Get-DispatchUnitList {
+    param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath)
+    if ($null -ne $script:dispatchUnitListOverride) {
+        return @($script:dispatchUnitListOverride)
+    }
+    return 'Phase 1'
+}
 function New-ScopePlan {
     if ($script:scopePlanFixtureDecision -ne 'full') {
         return [pscustomobject]@{
@@ -424,20 +533,50 @@ function New-ScopePlan {
 }
 function Get-ScopePlanFingerprint { param($ScopePlan) return 'fixture' }
 function Test-ContinuationScopePlan { return $true }
-function Get-DeepCycleDecision { return [pscustomobject]@{ applicable = $false; gatePassed = $true; daysToReset = 1; remainingPercent = 100; notice = '' } }
-function New-DispatchPrompt { param($PromptPath, $HistoryRoot, $Timestamp, $Directive) return $PromptPath }
+function New-DispatchPrompt {
+    param($PromptPath, $HistoryRoot, $Timestamp, $Directive)
+    if ($script:advisorStartPromptMode) {
+        $content = Get-Content -LiteralPath $PromptPath -Raw -Encoding UTF8
+        $content = $content.TrimEnd() + [Environment]::NewLine + (@($Directive) -join [Environment]::NewLine) + [Environment]::NewLine
+        Write-Utf8NoBom -Path $PromptPath -Content $content
+    }
+    return $PromptPath
+}
 function New-CodexLauncher {
     param($CodexExecutable, $CodexArguments, $PromptPath, $EventPath, $ErrorPath, $HistoryRoot, $LauncherPath)
+    if ($script:quotaProbeCaptureArguments) {
+        $script:quotaProbeCapturedArguments = @($CodexArguments)
+        $script:quotaProbeEventPath = $EventPath
+        $script:quotaProbeErrorPath = $ErrorPath
+        $script:quotaProbeLauncherPath = $LauncherPath
+        Write-TestEvents -Path $EventPath -Thread $script:testThread
+        Write-Utf8NoBom -Path $ErrorPath -Content ''
+        Write-Utf8NoBom -Path $LauncherPath -Content 'fixture launcher'
+        $lastMessageIndex = [Array]::IndexOf([string[]]$CodexArguments, '--output-last-message')
+        if ($lastMessageIndex -ge 0 -and $lastMessageIndex + 1 -lt @($CodexArguments).Count) {
+            Write-Utf8NoBom -Path $CodexArguments[$lastMessageIndex + 1] -Content 'QuotaProbe fixture'
+        }
+        $rolloutDirectory = Join-Path $script:quotaProbeCodexHome 'sessions/phase8'
+        New-Item -ItemType Directory -Path $rolloutDirectory -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $rolloutDirectory 'rollout-phase8-f017.jsonl') -Content '{"type":"fixture"}'
+    }
+    if ($script:launcherFixtureFailure) {
+        throw 'fixture launcher failure'
+    }
     if ($script:mutateProfileAfterCompare) {
         Write-Utf8NoBom -Path $script:profileMutationPath -Content $script:profileMutationContent
         $script:mutateProfileAfterCompare = $false
     }
     return [pscustomobject]@{ Path = $LauncherPath; FileName = 'fixture'; Arguments = @() }
 }
-function New-ProcessStartInfo { return $null }
+function New-ProcessStartInfo { return [pscustomobject]@{ EnvironmentVariables = @{} } }
 function New-TestProcess {
     $process = [pscustomobject]@{ StartInfo = $null; Id = 123; HasExited = $true; ExitCode = 0 }
     $process | Add-Member ScriptMethod Start {
+        if ($script:quotaProbeCaptureArguments) {
+            $script:quotaProbeStartCalls++
+            return $true
+        }
         $script:startCalls++
         $records = @(Get-ChildItem (Get-DispatchRunDirectory $SourceRoot $LineSlug $DispatchSlug) -Filter '*.json')
         Assert-True ($records.Count -gt 0) 'process.Start 前沒有紀錄。'
@@ -446,6 +585,7 @@ function New-TestProcess {
         if ($script:failLaunch) { throw 'fixture launch failure' }
         return $true
     }
+    $process | Add-Member ScriptMethod WaitForExit { }
     $process | Add-Member ScriptMethod Dispose { }
     return $process
 }
@@ -990,6 +1130,10 @@ Invoke-Case 'Inspect 最終輸出包含 runId 與 runRecordPath' {
     $result = Invoke-Inspect
     Assert-True ($result.runId -eq $a.run_id -and $result.runRecordPath -eq $aPath -and $result.success) 'Inspect 最終輸出異常。'
 }
+Invoke-Case 'Phase 1 advisor active source removal' {
+    Assert-ActiveSourceNotFound -Label 'Phase 1' -Terms $phase1RemovalTerms
+}
+
 if ($Phase -ge 2) {
     $profileFixtureRoot = Join-Path $fixtureRoot 'profile-evidence'
     $profileSessionsRoot = Join-Path $profileFixtureRoot 'sessions/2026/09/14'
@@ -1077,11 +1221,11 @@ if ($Phase -ge 2) {
         Assert-True (-not (Test-DispatchEvidencePair -EvidenceGroup $mismatch.model).eligible) 'resolved／runtime mismatch 仍可收樣。'
     }
 
-    $phase2EvidenceRoot = Join-Path $fixtureRoot 'deep-evidence'
+    $phase2EvidenceRoot = Join-Path $fixtureRoot 'advisor-evidence'
     New-Item -ItemType Directory -Path $phase2EvidenceRoot -Force | Out-Null
     $phase2EvidencePackPath = Join-Path $phase2EvidenceRoot 'pack.md'
     $evidencePackContent = @(
-        'schema: deep-consult.evidence.v1'
+        'schema: advisor-consult.evidence.v1'
         'line-slug: line-a'
         'dispatch-slug: phase-2'
         ''
@@ -1096,8 +1240,10 @@ if ($Phase -ge 2) {
         ''
         '## 待答問題'
         ''
-        'question: fixture question'
+        'question-001: fixture question'
+        'question-002: fixture second question'
         'required-output: ## 中斷保全結論; ## 證據支持; ## 推論; ## 未決問題'
+        'output-rules: 每一個問題需以 question-<id> 回報完成狀態'
         ''
         '## 可能反證'
         ''
@@ -1114,21 +1260,21 @@ if ($Phase -ge 2) {
     Write-Utf8NoBom -Path $phase2EvidencePackPath -Content ($evidencePackContent + "
 ")
     Invoke-Case 'Evidence pack required-output 與 inline hash length' {
-        $pack = Test-EvidencePack -Path $phase2EvidencePackPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
-        $directive = New-DeepInlineEvidenceDirective -EvidencePackInfo $pack
-        $inline = Test-DeepInlineEvidenceDirective -PromptContent $directive -EvidencePackInfo $pack
-        Assert-True ($pack.length -gt 0 -and $pack.sha256 -match '^[a-f0-9]{64}$' -and @($pack.required_output).Count -eq 4 -and $inline.valid) 'inline evidence pack contract 異常。'
+        $pack = Test-AdvisorEvidencePack -Path $phase2EvidencePackPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
+        $directive = New-AdvisorInlineEvidenceDirective -EvidencePackInfo $pack
+        $inline = Test-AdvisorInlineEvidenceDirective -PromptContent $directive -EvidencePackInfo $pack
+        Assert-True ($pack.length -gt 0 -and $pack.sha256 -match '^[a-f0-9]{64}$' -and @($pack.required_output).Count -eq 4 -and @($pack.question_units).Count -eq 2 -and $inline.valid) 'inline advisor evidence pack contract 異常。'
     }
     Invoke-Case 'Evidence pack required-output 缺失或重複拒絕' -Reject {
         $invalidPackPath = Join-Path $phase2EvidenceRoot 'invalid.md'
         Write-Utf8NoBom -Path $invalidPackPath -Content ($evidencePackContent -replace '(?m)^required-output:.*\r?\n', '')
-        Test-EvidencePack -Path $invalidPackPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
+        Test-AdvisorEvidencePack -Path $invalidPackPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
     }
     Invoke-Case 'Inline evidence 截短拒絕' {
-        $pack = Test-EvidencePack -Path $phase2EvidencePackPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
-        $directive = New-DeepInlineEvidenceDirective -EvidencePackInfo $pack
+        $pack = Test-AdvisorEvidencePack -Path $phase2EvidencePackPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
+        $directive = New-AdvisorInlineEvidenceDirective -EvidencePackInfo $pack
         $truncated = $directive.Replace($pack.content, $pack.content.Substring(0, [Math]::Max(1, $pack.content.Length - 8)))
-        $inline = Test-DeepInlineEvidenceDirective -PromptContent $truncated -EvidencePackInfo $pack
+        $inline = Test-AdvisorInlineEvidenceDirective -PromptContent $truncated -EvidencePackInfo $pack
         Assert-True (-not $inline.valid -and -not $inline.has_full_content) '截短 inline evidence 未拒絕。'
     }
     Invoke-Case 'Required output heading body gate' {
@@ -1339,6 +1485,10 @@ Invoke-Case '移除修改時間排序與檔名反推' {
     Assert-True ($startText -notmatch 'LastWriteTimeUtc|continuationTimestamp|previousLastMessages|GetFileNameWithoutExtension') '舊路徑殘留。'
     Assert-True ($startText.Contains('Resolve-PreviousDispatchRun') -and $startText.Contains('-LastMessagePath $LastMessagePath')) '顯式路徑未共用驗證。'
 }
+Invoke-Case 'Phase 2 advisor active source removal' {
+    Assert-ActiveSourceNotFound -Label 'Phase 2' -Terms $phase2RemovalTerms
+}
+
 if ($Phase -ge 3) {
     function New-Phase3FailedRecord {
         [CmdletBinding()]
@@ -1968,18 +2118,18 @@ if ($Phase -ge 4) {
         Assert-True ($restored.restored -and $null -eq $restored.code -and (Compare-ParentOptions -Current $restored.model -Anchor $anchorOptions).matches) '續行未從 anchor 還原省略的父層選項。'
     }
 
-    Invoke-Case 'Phase 4 T001 anchor=deep 顯式 Profile default 與 request profile 都拒絕 mismatch' {
-        $deepAnchorRun = New-TestRun -Line 'line-a' -Dispatch 'phase4-profile-anchor'
-        $deepAnchorRun.parent_options = New-ParentOptionsModel -Profile 'deep' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
-        $deepAnchorRun.parent_options_sha256 = $deepAnchorRun.parent_options.fingerprint
-        $deepAnchorRun.parent_options_status = 'confirmed'
-        $deepAnchorRunPath = Write-DispatchRunRecord -Record $deepAnchorRun -Update
-        $deepAnchorRecord = Read-DispatchRunRecord -Path $deepAnchorRunPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase4-profile-anchor'
-        $deepAnchor = $deepAnchorRecord.parent_options
-        $explicitMismatch = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $true -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $deepAnchor
-        Assert-True ($explicitMismatch.code -eq 'ParentOptionsMismatch' -and $explicitMismatch.differences -contains 'profile') 'anchor=deep 且顯式 Profile default 未拒絕。'
-        $omittedRestore = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $false -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $deepAnchor
-        Assert-True ($omittedRestore.code -eq $null -and $omittedRestore.model.profile -eq 'deep') '省略 Profile 未從 deep anchor 還原。'
+    Invoke-Case 'Phase 4 T001 anchor=advisor 顯式 Profile default 與 request profile 都拒絕 mismatch' {
+        $advisorAnchorRun = New-TestRun -Line 'line-a' -Dispatch 'phase4-profile-anchor'
+        $advisorAnchorRun.parent_options = New-ParentOptionsModel -Profile 'advisor' -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
+        $advisorAnchorRun.parent_options_sha256 = $advisorAnchorRun.parent_options.fingerprint
+        $advisorAnchorRun.parent_options_status = 'confirmed'
+        $advisorAnchorRunPath = Write-DispatchRunRecord -Record $advisorAnchorRun -Update
+        $advisorAnchorRecord = Read-DispatchRunRecord -Path $advisorAnchorRunPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase4-profile-anchor'
+        $advisorAnchor = $advisorAnchorRecord.parent_options
+        $explicitMismatch = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $true -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $advisorAnchor
+        Assert-True ($explicitMismatch.code -eq 'ParentOptionsMismatch' -and $explicitMismatch.differences -contains 'profile') 'anchor=advisor 且顯式 Profile default 未拒絕。'
+        $omittedRestore = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $false -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $advisorAnchor
+        Assert-True ($omittedRestore.code -eq $null -and $omittedRestore.model.profile -eq 'advisor') '省略 Profile 未從 advisor anchor 還原。'
 
         $profileRequestPath = Join-Path $fixtureRoot 'phase4-profile-request.json'
         $profileRequest = [ordered]@{
@@ -2004,7 +2154,7 @@ if ($Phase -ge 4) {
                 DispatchSlug = 'phase4-profile-request'
             }
             $requestContext = Apply-DispatchRequest
-            $requestMismatch = Resolve-ParentOptionsForStart -Profile $script:Profile -ProfileProvided ([bool]$script:ProfileExplicit) -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $deepAnchor
+            $requestMismatch = Resolve-ParentOptionsForStart -Profile $script:Profile -ProfileProvided ([bool]$script:ProfileExplicit) -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $advisorAnchor
             Assert-True ($requestContext.field_presence.profile -and $script:ProfileExplicit -and $requestMismatch.code -eq 'ParentOptionsMismatch' -and $requestMismatch.differences -contains 'profile') 'request profile 未視為顯式父層選項。'
         }
         finally {
@@ -3076,6 +3226,7 @@ if ($Phase -ge 7) {
             'Get-QuotaSnapshotFreshness',
             'Get-QuotaSnapshotServiceRejection',
             'Get-QuotaSnapshotServiceRejectionEvidence',
+            'Get-AdvisorActivationDecision',
             'New-ScopePlan',
             'Get-ScopePlanFingerprint',
             'Test-ScopePlanCompleteness',
@@ -3088,7 +3239,11 @@ if ($Phase -ge 7) {
         if ($null -eq $definitionAst) {
             throw "Phase 7 找不到 production function：$functionName"
         }
-        . ([scriptblock]::Create($definitionAst.Extent.Text))
+        $definitionText = $definitionAst.Extent.Text
+        if ($functionName -eq 'Invoke-QuotaProbe') {
+            $definitionText = $definitionText.Replace('$process = New-Object System.Diagnostics.Process', '$process = New-TestProcess')
+        }
+        . ([scriptblock]::Create($definitionText))
     }
 
     function Write-Phase7JsonLines {
@@ -3190,6 +3345,103 @@ if ($Phase -ge 7) {
         Assert-True ($script:phase7RejectedDocument.observations.primary.observed_at_utc -eq $script:phase7ValidDocument.observations.primary.observed_at_utc -and $script:phase7RejectedDocument.observations.primary.source -eq $script:phase7ValidDocument.observations.primary.source -and $rejection.raw_evidence_path -eq $phase7RolloutPath -and $rejection.raw_evidence_sha256 -match '^[a-f0-9]{64}$') 'observation 時間、來源或 raw evidence hash 未保留。'
     }
 
+    function Invoke-Phase7ServiceRejectionRegression {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$CaseName,
+            [Parameter(Mandatory)][object]$AdditionalEvent,
+            [Parameter(Mandatory)][bool]$ExpectRejection,
+            [string]$ExpectedReasonCode,
+            [string]$ExpectedWindow
+        )
+
+        $root = Join-Path $phase7Root ('a3-' + $CaseName)
+        $caseCodexHome = Join-Path $root 'codex-home'
+        $sessions = Join-Path $caseCodexHome 'sessions'
+        $snapshotPath = Join-Path $root 'snapshot.json'
+        $rolloutPath = Join-Path $sessions ('rollout-' + $CaseName + '.jsonl')
+        New-Item -ItemType Directory -Path $sessions -Force | Out-Null
+        Write-Phase7JsonLines -Path $rolloutPath -Objects @($phase7ValidEvent, $AdditionalEvent)
+        $result = Invoke-Phase7QuotaScript -CodexHomePath $caseCodexHome -SnapshotPath $snapshotPath
+        Assert-True ($result.exit_code -eq 0 -and (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) ($CaseName + ' quota snapshot 建立失敗：' + $result.output)
+        $document = Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($ExpectRejection) {
+            Assert-True ($null -ne $document.service_rejection -and $document.service_rejection.reason_code -eq $ExpectedReasonCode -and $document.service_rejection.window -eq $ExpectedWindow) ($CaseName + ' 未保存預期 service rejection。')
+        }
+        else {
+            Assert-True ($null -eq $document.service_rejection) ($CaseName + ' 將非錯誤紀錄誤判為 service rejection。')
+        }
+        return $document
+    }
+
+    Invoke-Case 'Phase 7 A3(g) compacted 文字不產生 service rejection' {
+        $compactedEvent = [ordered]@{
+            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            type = 'compacted'
+            content = 'usage-limit 事件記為 service_rejection；secondary'
+        }
+        $null = Invoke-Phase7ServiceRejectionRegression -CaseName 'g-compacted' -AdditionalEvent $compactedEvent -ExpectRejection $false
+    }
+
+    Invoke-Case 'Phase 7 A3(h) response_item 使用者訊息不產生 service rejection' {
+        $responseItemEvent = [ordered]@{
+            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            type = 'response_item'
+            payload = [ordered]@{
+                type = 'message'
+                role = 'user'
+                content = '429 rate limit'
+            }
+        }
+        $null = Invoke-Phase7ServiceRejectionRegression -CaseName 'h-response-item' -AdditionalEvent $responseItemEvent -ExpectRejection $false
+    }
+
+    Invoke-Case 'Phase 7 A3(i) structured error usage-limit 仍產生 rejection' {
+        $errorEvent = [ordered]@{
+            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            type = 'error'
+            message = 'usage-limit'
+            window = 'primary'
+        }
+        $null = Invoke-Phase7ServiceRejectionRegression -CaseName 'i-error' -AdditionalEvent $errorEvent -ExpectRejection $true -ExpectedReasonCode 'usage-limit' -ExpectedWindow 'primary'
+    }
+
+    Invoke-Case 'Phase 7 A3(j) token_count reached type 取 secondary window' {
+        $tokenCountEvent = [ordered]@{
+            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            type = 'token_count'
+            payload = [ordered]@{
+                rate_limits = [ordered]@{
+                    rate_limit_reached_type = 'secondary'
+                    secondary = [ordered]@{ resets_at = $phase7SecondaryReset }
+                }
+            }
+        }
+        $null = Invoke-Phase7ServiceRejectionRegression -CaseName 'j-token-count' -AdditionalEvent $tokenCountEvent -ExpectRejection $true -ExpectedReasonCode 'rate-limit' -ExpectedWindow 'secondary'
+    }
+
+    Invoke-Case 'Phase 7 F-007 structured error code separator 與 reason code' {
+        foreach ($case in @(
+                [pscustomobject]@{ name = 'k-usage-underscore'; code = 'usage_limit_reached'; reason = 'usage-limit' },
+                [pscustomobject]@{ name = 'l-rate-hyphen'; code = 'rate-limit-exceeded'; reason = 'rate-limit' },
+                [pscustomobject]@{ name = 'm-quota-hyphen'; code = 'quota-exceeded'; reason = 'quota-exceeded' },
+                [pscustomobject]@{ name = 'n-too-many-underscore'; code = 'too_many_requests'; reason = 'too-many-requests' },
+                [pscustomobject]@{ name = 'o-http-429'; code = '429'; reason = 'too-many-requests' }
+            )) {
+            $structuredCodeEvent = [ordered]@{
+                timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+                type = 'turn.failed'
+                error = [ordered]@{
+                    code = $case.code
+                    message = 'structured error fixture'
+                }
+                window = 'primary'
+            }
+            $document = Invoke-Phase7ServiceRejectionRegression -CaseName $case.name -AdditionalEvent $structuredCodeEvent -ExpectRejection $true -ExpectedReasonCode $case.reason -ExpectedWindow 'primary'
+            Assert-True ($document.service_rejection.reason_code -eq $case.reason) ('F-007 ' + $case.code + ' reason code 不符。')
+        }
+    }
+
     $phase7StaleRoot = Join-Path $phase7Root 'stale'
     $phase7StaleHome = Join-Path $phase7StaleRoot 'codex-home'
     $phase7StaleSessionsPath = Join-Path $phase7StaleHome 'sessions'
@@ -3234,10 +3486,10 @@ if ($Phase -ge 7) {
         schema = 'ai-sessions.quota-snapshot.v1'
         state = 'Valid'
         captured_at_utc = $phase7LowObservedAt
-        primary = [ordered]@{ used_percent = 65; remaining_percent = 35; window_minutes = 120; resets_at = $phase7PrimaryReset; source_file = 'phase7-low.jsonl' }
+        primary = [ordered]@{ used_percent = 80; remaining_percent = 20; window_minutes = 120; resets_at = $phase7PrimaryReset; source_file = 'phase7-low.jsonl' }
         secondary = [ordered]@{ used_percent = 90; remaining_percent = 10; window_minutes = 10080; resets_at = $phase7SecondaryReset; source_file = 'phase7-low.jsonl' }
         observations = [ordered]@{
-            primary = [ordered]@{ used_percent = 65; remaining_percent = 35; observed_at_utc = $phase7LowObservedAt; source = 'phase7-low.jsonl'; freshness = 'fresh'; window = 'primary'; resets_at = $phase7PrimaryReset }
+            primary = [ordered]@{ used_percent = 80; remaining_percent = 20; observed_at_utc = $phase7LowObservedAt; source = 'phase7-low.jsonl'; freshness = 'fresh'; window = 'primary'; resets_at = $phase7PrimaryReset }
             secondary = [ordered]@{ used_percent = 90; remaining_percent = 10; observed_at_utc = $phase7LowObservedAt; source = 'phase7-low.jsonl'; freshness = 'fresh'; window = 'secondary'; resets_at = $phase7SecondaryReset }
         }
         service_rejection = $null
@@ -3246,7 +3498,7 @@ if ($Phase -ge 7) {
     $script:phase7LowSnapshot = Read-QuotaSnapshot -Path $phase7LowSnapshotPath
     Invoke-Case 'Phase 7 default 低額度無 calibration 採 bounded single-unit' {
         $plan = New-ScopePlan -DispatchSlug 'phase7-default-low' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7LowSnapshot -CalibrationPath (Join-Path $phase7Root 'missing-calibration.jsonl') -Units @('unit-1', 'unit-2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
-        Assert-True ($plan.decision -eq 'scoped' -and @($plan.selected_units).Count -eq 1 -and $plan.selected_units[0] -eq 'unit-1' -and @($plan.deferred_units).Count -eq 1 -and $plan.estimate_source -eq 'bounded-single-unit' -and $plan.stop_after_selected_units -eq $true -and $plan.decision -ne 'user-decision-required') 'default 低額度 ScopePlan 未固定第一個 declared unit。'
+        Assert-True ($plan.decision -eq 'scoped' -and @($plan.selected_units).Count -eq 1 -and $plan.selected_units[0] -eq 'unit-1' -and @($plan.deferred_units).Count -eq 1 -and $plan.estimate_source -eq 'bounded-single-unit' -and $plan.primary_reserve_percent -eq 0 -and $plan.primary_budget_percent -eq 20 -and $plan.stop_after_selected_units -eq $true -and $plan.decision -ne 'user-decision-required') 'default 低額度 ScopePlan 未固定第一個 declared unit 或未套用 reserve 0。'
     }
 
     $phase7ModelEvidence = New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'phase7-profile' -Field 'model'
@@ -3261,20 +3513,20 @@ if ($Phase -ge 7) {
         resolved = $phase7EffortEvidence
         runtime_verifiable = New-ConfirmedDispatchEvidence -Value 'high' -Source 'phase7-rollout' -Field 'payload.effort'
     }
-    $phase7CalibrationPath = Join-Path $phase7Root 'deep-calibration.jsonl'
+    $phase7CalibrationPath = Join-Path $phase7Root 'advisor-calibration.jsonl'
     $phase7CalibrationRecords = @(
-        [ordered]@{ calibration_eligible = $true; profile = 'deep'; session_mode = 'cold-start'; task_type = 'deep-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 8 }
-        [ordered]@{ calibration_eligible = $true; profile = 'deep'; session_mode = 'cold-start'; task_type = 'deep-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 10 }
-        [ordered]@{ calibration_eligible = $true; profile = 'deep'; session_mode = 'cold-start'; task_type = 'deep-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 12 }
-        [ordered]@{ calibration_eligible = $true; profile = 'deep'; session_mode = 'cold-start'; task_type = 'deep-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 14 }
-        [ordered]@{ calibration_eligible = $true; profile = 'deep'; session_mode = 'cold-start'; task_type = 'deep-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 16 }
+        [ordered]@{ calibration_eligible = $true; profile = 'advisor'; session_mode = 'cold-start'; task_type = 'advisor-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 8 }
+        [ordered]@{ calibration_eligible = $true; profile = 'advisor'; session_mode = 'cold-start'; task_type = 'advisor-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 10 }
+        [ordered]@{ calibration_eligible = $true; profile = 'advisor'; session_mode = 'cold-start'; task_type = 'advisor-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 12 }
+        [ordered]@{ calibration_eligible = $true; profile = 'advisor'; session_mode = 'cold-start'; task_type = 'advisor-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 14 }
+        [ordered]@{ calibration_eligible = $true; profile = 'advisor'; session_mode = 'cold-start'; task_type = 'advisor-consult'; group = [ordered]@{ model = 'fixture-model'; reasoning_effort = 'high' }; model_evidence = $phase7ModelGroup; reasoning_effort_evidence = $phase7EffortGroup; observed_primary_delta_percent = 16 }
     )
     Write-Phase7JsonLines -Path $phase7CalibrationPath -Objects $phase7CalibrationRecords
-    $script:phase7DeepPlan = $null
-    Invoke-Case 'Phase 7 deep calibration P75、reserve 與 hard limit' {
-        $script:phase7DeepPlan = New-ScopePlan -DispatchSlug 'phase7-deep' -DispatchKind 'resource' -TaskType 'deep-consult' -RequestedProfile 'deep' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7ValidSnapshot -CalibrationPath $phase7CalibrationPath -Units @('evidence-1', 'evidence-2') -UnitKind 'deep-evidence-pack' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
-        $script:phase7DeepPlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $script:phase7DeepPlan
-        Assert-True ($script:phase7DeepPlan.estimate_source -eq 'p75' -and $script:phase7DeepPlan.estimate_percent -eq 14 -and $script:phase7DeepPlan.primary_reserve_percent -ge 30 -and $script:phase7DeepPlan.deep_hard_limit_percent -eq 17.5 -and $script:phase7DeepPlan.primary_budget_percent -eq 17.5) 'deep calibration P75、reserve 或 hard limit 異常。'
+    $script:phase7AdvisorPlan = $null
+    Invoke-Case 'Phase 7 advisor calibration P75、reserve 與 hard limit' {
+        $script:phase7AdvisorPlan = New-ScopePlan -DispatchSlug 'phase7-advisor' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7ValidSnapshot -CalibrationPath $phase7CalibrationPath -Units @('question-001', 'question-002') -UnitKind 'advisor-evidence-question' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
+        $script:phase7AdvisorPlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $script:phase7AdvisorPlan
+        Assert-True ($script:phase7AdvisorPlan.estimate_source -eq 'p75' -and $script:phase7AdvisorPlan.estimate_percent -eq 14 -and $script:phase7AdvisorPlan.primary_reserve_percent -ge 30 -and $script:phase7AdvisorPlan.advisor_hard_limit_percent -eq 17.5 -and $script:phase7AdvisorPlan.advisor_unit_estimate_percent -eq 7) 'advisor calibration P75、reserve 或 unit estimate 異常。'
     }
 
     $phase7D5CalibrationPath = Join-Path $phase7Root 'quota-calibration.jsonl'
@@ -3287,9 +3539,9 @@ if ($Phase -ge 7) {
     }
     $phase7D5OtherModelRecord = [ordered]@{
         calibration_eligible = $true
-        profile = 'deep'
+        profile = 'advisor'
         session_mode = 'cold-start'
-        task_type = 'deep-consult'
+        task_type = 'advisor-consult'
         group = [ordered]@{ model = 'other-model'; reasoning_effort = 'high' }
         model_evidence = $phase7D5OtherModelGroup
         reasoning_effort_evidence = $phase7EffortGroup
@@ -3333,18 +3585,18 @@ if ($Phase -ge 7) {
     $phase7D5LowSnapshot = Read-QuotaSnapshot -Path $phase7D5LowSnapshotPath
 
     Invoke-Case 'Phase 7 D5 fresh 無同分組樣本使用 conservative-default' {
-        $plan = New-ScopePlan -DispatchSlug 'phase7-d5-primary-68' -DispatchKind 'resource' -TaskType 'deep-consult' -RequestedProfile 'deep' -SessionMode 'cold-start' -BeforeSnapshot $phase7D5HighSnapshot -CalibrationPath $phase7D5CalibrationPath -Units @('evidence-1') -UnitKind 'deep-evidence-pack' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
-        Assert-True ($plan.quota_freshness -eq 'fresh' -and $plan.quota_state -eq 'Valid' -and $plan.decision -eq 'full' -and @($plan.selected_units).Count -eq 1 -and $plan.estimate_source -eq 'conservative-default' -and $plan.estimate_percent -eq 24 -and $plan.primary_budget_percent -eq 30 -and $plan.deep_hard_limit_percent -eq 30) 'D5 primary 68% 未使用 deep conservative-default 或 budget／hard limit 異常。'
+        $plan = New-ScopePlan -DispatchSlug 'phase7-d5-primary-68' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $phase7D5HighSnapshot -CalibrationPath $phase7D5CalibrationPath -Units @('question-001') -UnitKind 'advisor-evidence-question' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
+        Assert-True ($plan.quota_freshness -eq 'fresh' -and $plan.quota_state -eq 'Valid' -and $plan.decision -eq 'full' -and @($plan.selected_units).Count -eq 1 -and $plan.estimate_source -eq 'conservative-default' -and $plan.estimate_percent -eq 24 -and $plan.primary_budget_percent -eq 30 -and $plan.advisor_hard_limit_percent -eq 30) 'D5 primary 68% 未使用 advisor conservative-default 或 budget／hard limit 異常。'
     }
 
-    Invoke-Case 'Phase 7 D5 primary 40% 低於 deep estimate 阻擋' {
-        $plan = New-ScopePlan -DispatchSlug 'phase7-d5-primary-40' -DispatchKind 'resource' -TaskType 'deep-consult' -RequestedProfile 'deep' -SessionMode 'cold-start' -BeforeSnapshot $phase7D5LowSnapshot -CalibrationPath $phase7D5CalibrationPath -Units @('evidence-1') -UnitKind 'deep-evidence-pack' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
-        Assert-True ($plan.decision -eq 'blocked-insufficient-budget' -and $plan.primary_budget_percent -eq 10 -and $plan.estimate_source -eq 'conservative-default' -and $plan.estimate_percent -eq 24 -and $plan.deep_hard_limit_percent -eq 30 -and @($plan.selected_units).Count -eq 0) 'D5 primary 40% 未以 10% 有效預算阻擋超出估算的第一個單位。'
+    Invoke-Case 'Phase 7 D5 primary 40% advisor scope plan 保留授權前條件' {
+        $plan = New-ScopePlan -DispatchSlug 'phase7-d5-primary-40' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $phase7D5LowSnapshot -CalibrationPath $phase7D5CalibrationPath -Units @('question-001') -UnitKind 'advisor-evidence-question' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
+        Assert-True ($plan.decision -eq 'blocked-insufficient-budget' -and $plan.primary_budget_percent -eq 10 -and $plan.estimate_source -eq 'conservative-default' -and $plan.estimate_percent -eq 24 -and $plan.advisor_hard_limit_percent -eq 30 -and @($plan.selected_units).Count -eq 0) 'D5 primary 40% advisor ScopePlan 未保留未授權時的阻擋結果。'
     }
 
     Write-Phase7JsonLines -Path $phase7D5CalibrationPath -Objects $phase7CalibrationRecords
     Invoke-Case 'Phase 7 D5 同分組 eligible 樣本優先使用 P75' {
-        $plan = New-ScopePlan -DispatchSlug 'phase7-d5-p75' -DispatchKind 'resource' -TaskType 'deep-consult' -RequestedProfile 'deep' -SessionMode 'cold-start' -BeforeSnapshot $phase7D5HighSnapshot -CalibrationPath $phase7D5CalibrationPath -Units @('evidence-1') -UnitKind 'deep-evidence-pack' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
+        $plan = New-ScopePlan -DispatchSlug 'phase7-d5-p75' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $phase7D5HighSnapshot -CalibrationPath $phase7D5CalibrationPath -Units @('question-001') -UnitKind 'advisor-evidence-question' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
         Assert-True ($plan.decision -eq 'full' -and $plan.estimate_source -eq 'p75' -and $plan.estimate_percent -eq 14 -and $plan.estimate_percent -ne 24 -and $plan.primary_budget_percent -eq 17.5) 'D5 同分組 eligible 樣本未優先使用 P75。'
     }
 
@@ -3358,7 +3610,7 @@ if ($Phase -ge 7) {
                 return $null
             }
             . ([scriptblock]::Create($definition))
-            return (New-ScopePlan -DispatchSlug 'phase7-d5-unknown-estimate' -DispatchKind 'resource' -TaskType 'deep-consult' -RequestedProfile 'deep' -SessionMode 'cold-start' -BeforeSnapshot $snapshot -CalibrationPath $calibrationPath -Units @('evidence-1') -UnitKind 'deep-evidence-pack' -Model 'fixture-model' -ModelEvidence $modelEvidence -ReasoningEffortEvidence $effortEvidence)
+            return (New-ScopePlan -DispatchSlug 'phase7-d5-unknown-estimate' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $snapshot -CalibrationPath $calibrationPath -Units @('question-001') -UnitKind 'advisor-evidence-question' -Model 'fixture-model' -ModelEvidence $modelEvidence -ReasoningEffortEvidence $effortEvidence)
         } $phase7ScopePlanDefinition $phase7D5HighSnapshot $phase7D5NoMatchCalibrationPath $phase7ModelEvidence $phase7EffortEvidence
         Assert-True ($null -eq $unknownEstimate -and $isolatedPlan.decision -eq 'blocked-no-estimate' -and @($isolatedPlan.selected_units).Count -eq 0) '未知 task type 或 conservative estimate null 未維持 blocked-no-estimate。'
     }
@@ -3378,13 +3630,13 @@ if ($Phase -ge 7) {
     $script:phase7UnavailableSnapshot = Read-QuotaSnapshot -Path $phase7UnavailableSnapshotPath
     Invoke-Case 'Phase 7 無 observation 輸出 SnapshotUnavailable' {
         $defaultPlan = New-ScopePlan -DispatchSlug 'phase7-unavailable-default' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7UnavailableSnapshot -CalibrationPath $null -Units @('unit-1', 'unit-2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
-        $deepPlan = New-ScopePlan -DispatchSlug 'phase7-unavailable-deep' -DispatchKind 'resource' -TaskType 'deep-consult' -RequestedProfile 'deep' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7UnavailableSnapshot -CalibrationPath $null -Units @('unit-1') -UnitKind 'deep-evidence-pack' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
-        Assert-True ($defaultPlan.quota_state -eq 'SnapshotUnavailable' -and $defaultPlan.decision -eq 'blocked-no-fresh-quota' -and $deepPlan.decision -eq 'blocked-no-fresh-quota' -and @($defaultPlan.selected_units).Count -eq 0 -and @($deepPlan.selected_units).Count -eq 0) '無 observation 未安全阻擋 ScopePlan。'
+        $advisorPlan = New-ScopePlan -DispatchSlug 'phase7-unavailable-advisor' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7UnavailableSnapshot -CalibrationPath $null -Units @('question-001') -UnitKind 'advisor-evidence-question' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
+        Assert-True ($defaultPlan.quota_state -eq 'SnapshotUnavailable' -and $defaultPlan.decision -eq 'blocked-no-fresh-quota' -and $advisorPlan.decision -eq 'blocked-no-fresh-quota' -and @($defaultPlan.selected_units).Count -eq 0 -and @($advisorPlan.selected_units).Count -eq 0) '無 observation 未安全阻擋 ScopePlan。'
     }
 
-    Invoke-Case 'Phase 7 stale deep 要求 fresh quota 並保留 reserve' {
-        $staleDeepPlan = New-ScopePlan -DispatchSlug 'phase7-stale-deep' -DispatchKind 'resource' -TaskType 'deep-consult' -RequestedProfile 'deep' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7StaleSnapshot -CalibrationPath $null -Units @('unit-1') -UnitKind 'deep-evidence-pack' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
-        Assert-True ($staleDeepPlan.quota_freshness -eq 'stale' -and $staleDeepPlan.decision -eq 'blocked-no-fresh-quota' -and $staleDeepPlan.primary_reserve_percent -ge 30 -and $staleDeepPlan.estimate_source -eq 'blocked-no-fresh-quota') 'stale deep 未阻擋或未保留 reserve gate。'
+    Invoke-Case 'Phase 7 stale advisor 要求 fresh quota 並保留 reserve' {
+        $staleAdvisorPlan = New-ScopePlan -DispatchSlug 'phase7-stale-advisor' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7StaleSnapshot -CalibrationPath $null -Units @('question-001') -UnitKind 'advisor-evidence-question' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
+        Assert-True ($staleAdvisorPlan.quota_freshness -eq 'stale' -and $staleAdvisorPlan.decision -eq 'blocked-no-fresh-quota' -and $staleAdvisorPlan.primary_reserve_percent -ge 30 -and $staleAdvisorPlan.estimate_source -eq 'blocked-no-fresh-quota') 'stale advisor 未阻擋或未保留 reserve gate。'
     }
 
     Invoke-Case 'Phase 7 service rejection ScopePlan 保留觀測且禁止 retry' {
@@ -3431,7 +3683,7 @@ if ($Phase -ge 7) {
 
     $phase7ProbePromptPath = Join-Path $phase7Root 'probe-prompt.md'
     Write-Utf8NoBom -Path $phase7ProbePromptPath -Content 'phase7 quota probe prompt'
-    $phase7ProbeVariableNames = @('SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'LineSlug', 'DispatchSlug', 'PromptPath', 'CodexHome', 'InitialQuotaState', 'QuotaBeforePath', 'ProbeAttempt', 'TriggerWindow', 'Profile', 'DeepRequestSource', 'SecondaryDaysToReset', 'SecondaryRemainingPercent', 'AddDirectory', 'Search', 'CodexParentOption', 'CodexPath')
+    $phase7ProbeVariableNames = @('SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'LineSlug', 'DispatchSlug', 'PromptPath', 'CodexHome', 'InitialQuotaState', 'QuotaBeforePath', 'ProbeAttempt', 'TriggerWindow', 'Profile', 'AdvisorRequestSource', 'SecondaryDaysToReset', 'SecondaryRemainingPercent', 'AddDirectory', 'Search', 'CodexParentOption', 'CodexPath')
     $script:phase7SavedVariables = [ordered]@{}
     foreach ($name in $phase7ProbeVariableNames) {
         $variable = Get-Variable -Name $name -Scope Script -ErrorAction SilentlyContinue
@@ -3451,7 +3703,7 @@ if ($Phase -ge 7) {
             $script:ProbeAttempt = 1
             $script:TriggerWindow = 'primary'
             $script:Profile = 'default'
-            $script:DeepRequestSource = $null
+            $script:AdvisorRequestSource = $null
             $script:SecondaryDaysToReset = $null
             $script:SecondaryRemainingPercent = $null
             $script:AddDirectory = $null
@@ -3473,23 +3725,957 @@ if ($Phase -ge 7) {
 
     $phase7CalibrationAfterPath = Join-Path $phase7Root 'calibration-after.json'
     [IO.File]::Copy($phase7ValidSnapshotPath, $phase7CalibrationAfterPath, $true)
-    $phase7MismatchedPlan = $script:phase7DeepPlan | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+    $phase7MismatchedPlan = $script:phase7AdvisorPlan | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $phase7MismatchedPlan.scope_plan_fingerprint = '0000000000000000000000000000000000000000000000000000000000000000'
     $phase7ExecutionResult = [pscustomobject]@{ completed = $true; processExitCode = 0; success = $true; outputValid = $true }
     $phase7Usage = [pscustomobject]@{ input_tokens = 1; output_tokens = 1 }
     $phase7InterruptionStatus = [ordered]@{ applied = $true; sessionMode = 'cold-start' }
     Invoke-Case 'Phase 7 ScopePlan fingerprint 改變時 calibration ineligible' {
-        $calibrationResult = Add-CalibrationObservation -SourceRoot $phase7Root -Path (Join-Path $phase7Root 'fingerprint-mismatch.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase7-fingerprint-mismatch' -Profile 'deep' -Model 'fixture-model' -ReasoningEffort 'high' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence -TaskType 'deep-consult' -SessionMode 'cold-start' -Usage $phase7Usage -ExecutionResult $phase7ExecutionResult -QuotaBeforePath $phase7ValidSnapshotPath -QuotaAfterPath $phase7CalibrationAfterPath -ScopePlan $phase7MismatchedPlan -InterruptionStatus $phase7InterruptionStatus -BudgetMonitor @()
+        $calibrationResult = Add-CalibrationObservation -SourceRoot $phase7Root -Path (Join-Path $phase7Root 'fingerprint-mismatch.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase7-fingerprint-mismatch' -Profile 'advisor' -Model 'fixture-model' -ReasoningEffort 'high' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence -TaskType 'advisor-consult' -SessionMode 'cold-start' -Usage $phase7Usage -ExecutionResult $phase7ExecutionResult -QuotaBeforePath $phase7ValidSnapshotPath -QuotaAfterPath $phase7CalibrationAfterPath -ScopePlan $phase7MismatchedPlan -InterruptionStatus $phase7InterruptionStatus -BudgetMonitor @()
         $record = @(Get-CalibrationRecords -Path (Join-Path $phase7Root 'fingerprint-mismatch.jsonl'))[0]
         Assert-True (-not $calibrationResult.calibrationEligible -and -not $record.calibration_checks.scope_plan_fingerprint_match) 'ScopePlan fingerprint mismatch 未標記 calibration ineligible。'
     }
 
     Invoke-Case 'Phase 7 before／after 同一路徑時 calibration ineligible' {
-        $calibrationResult = Add-CalibrationObservation -SourceRoot $phase7Root -Path (Join-Path $phase7Root 'same-path.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase7-same-snapshot-path' -Profile 'deep' -Model 'fixture-model' -ReasoningEffort 'high' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence -TaskType 'deep-consult' -SessionMode 'cold-start' -Usage $phase7Usage -ExecutionResult $phase7ExecutionResult -QuotaBeforePath $phase7ValidSnapshotPath -QuotaAfterPath $phase7ValidSnapshotPath -ScopePlan $script:phase7DeepPlan -InterruptionStatus $phase7InterruptionStatus -BudgetMonitor @()
+        $calibrationResult = Add-CalibrationObservation -SourceRoot $phase7Root -Path (Join-Path $phase7Root 'same-path.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase7-same-snapshot-path' -Profile 'advisor' -Model 'fixture-model' -ReasoningEffort 'high' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence -TaskType 'advisor-consult' -SessionMode 'cold-start' -Usage $phase7Usage -ExecutionResult $phase7ExecutionResult -QuotaBeforePath $phase7ValidSnapshotPath -QuotaAfterPath $phase7ValidSnapshotPath -ScopePlan $script:phase7AdvisorPlan -InterruptionStatus $phase7InterruptionStatus -BudgetMonitor @()
         $record = @(Get-CalibrationRecords -Path (Join-Path $phase7Root 'same-path.jsonl'))[0]
         Assert-True (-not $calibrationResult.calibrationEligible -and -not $record.calibration_checks.snapshot_paths_stable) 'before／after 相同來源未標記 calibration ineligible。'
     }
 }
+
+if ($Phase -ge 8) {
+        foreach ($functionName in @(
+            'Get-DispatchUnitList',
+            'Get-AdvisorActivationDecision',
+            'Get-AdvisorEvidenceQuestionUnits',
+            'Test-AdvisorEvidencePack',
+            'New-ScopePlan',
+            'Test-ContinuationScopePlan',
+            'Write-AdvisorConsultReport',
+            'Get-DispatchEventEvidence',
+            'Convert-EventEvidenceToServiceRejection',
+            'Get-DispatchFailureReasonCode',
+            'New-DispatchFailureRecord')) {
+        $definitionAst = $functions | Where-Object { $_.Name -eq $functionName } | Select-Object -First 1
+        if ($null -eq $definitionAst) {
+            throw "Phase 8 找不到 production function：$functionName"
+        }
+        . ([scriptblock]::Create($definitionAst.Extent.Text))
+    }
+
+    $phase8ProductionScopePlanDefinition = (Get-Command -Name New-ScopePlan -CommandType Function).ScriptBlock
+    function New-ScopePlan {
+        param(
+            [string]$DispatchSlug,
+            [string]$DispatchKind,
+            [string]$TaskType,
+            [string]$RequestedProfile,
+            [string]$SessionMode,
+            [psobject]$BeforeSnapshot,
+            [string]$CalibrationPath,
+            [string[]]$Units,
+            [string]$UnitKind,
+            [Nullable[double]]$RequestedBudgetPercent,
+            [Nullable[double]]$RequestedReservePercent,
+            [string]$Model,
+            [AllowNull()][object]$ModelEvidence,
+            [AllowNull()][object]$ReasoningEffortEvidence,
+            [AllowNull()][object]$ActivationDecision
+        )
+
+        $script:phase8CapturedActivation = $ActivationDecision
+        $result = @(& $script:phase8ProductionScopePlanDefinition @PSBoundParameters)
+        $plan = if ($result.Count -eq 1) { $result[0] } else { $result[$result.Count - 1] }
+        $script:phase8CapturedScopePlan = $plan
+        return ,$plan
+    }
+
+    function New-Phase8QuotaSnapshot {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [Parameter(Mandatory)][double]$PrimaryRemainingPercent
+        )
+
+        $observedAt = [DateTimeOffset]::UtcNow
+        $primaryReset = $observedAt.AddHours(2).ToUnixTimeSeconds()
+        $secondaryReset = $observedAt.AddDays(5).ToUnixTimeSeconds()
+        $primaryUsed = 100.0 - $PrimaryRemainingPercent
+        $document = [ordered]@{
+            schema = 'ai-sessions.quota-snapshot.v1'
+            state = 'Valid'
+            captured_at_utc = $observedAt.ToString('o')
+            primary = [ordered]@{ used_percent = $primaryUsed; remaining_percent = $PrimaryRemainingPercent; window_minutes = 120; resets_at = $primaryReset; source_file = 'phase8-start.jsonl' }
+            secondary = [ordered]@{ used_percent = 50; remaining_percent = 50; window_minutes = 10080; resets_at = $secondaryReset; source_file = 'phase8-start.jsonl' }
+            observations = [ordered]@{
+                primary = [ordered]@{ used_percent = $primaryUsed; remaining_percent = $PrimaryRemainingPercent; observed_at_utc = $observedAt.ToString('o'); source = 'phase8-start.jsonl'; freshness = 'fresh'; window = 'primary'; resets_at = $primaryReset }
+                secondary = [ordered]@{ used_percent = 50; remaining_percent = 50; observed_at_utc = $observedAt.ToString('o'); source = 'phase8-start.jsonl'; freshness = 'fresh'; window = 'secondary'; resets_at = $secondaryReset }
+            }
+            service_rejection = $null
+        }
+        Write-Utf8NoBom -Path $Path -Content (($document | ConvertTo-Json -Depth 12) + "`r`n")
+        return $Path
+    }
+
+    $phase8Root = Join-Path $fixtureRoot 'phase8-regressions'
+    New-Item -ItemType Directory -Path $phase8Root -Force | Out-Null
+
+    function New-Phase8RegressionArtifacts {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$CaseRoot,
+            [Parameter(Mandatory)][string]$DispatchSlug
+        )
+
+        New-Item -ItemType Directory -Path $CaseRoot -Force | Out-Null
+        $quotaSnapshotPath = Join-Path $CaseRoot 'quota-snapshot.json'
+        $evidencePackPath = Join-Path $CaseRoot 'evidence-pack.md'
+        $finalMessagePath = Join-Path $CaseRoot 'final-message.md'
+        $null = New-Phase8QuotaSnapshot -Path $quotaSnapshotPath -PrimaryRemainingPercent 80
+        $packLines = @($evidencePackContent -split '\r?\n' | ForEach-Object {
+                if ($_ -match '^dispatch-slug:') {
+                    'dispatch-slug: ' + $DispatchSlug
+                }
+                else {
+                    $_
+                }
+            })
+        Write-Utf8NoBom -Path $evidencePackPath -Content (($packLines -join [Environment]::NewLine) + [Environment]::NewLine)
+        $finalMessage = @(
+            '## 中斷保全結論'
+            '已確認結論：Phase 1 fixture 已寫入 quota snapshot 與 evidence pack。'
+            '證據位置：' + $quotaSnapshotPath + '; ' + $evidencePackPath + '; ' + $finalMessagePath
+            '實際覆蓋範圍：Phase 1 Setup profile 檢查回歸。'
+            '已完成單位：question-001'
+            '## 證據支持'
+            'fixture evidence'
+            '## 推論'
+            'fixture inference'
+            '## 未決問題'
+            '無'
+        ) -join [Environment]::NewLine
+        Write-Utf8NoBom -Path $finalMessagePath -Content ($finalMessage + [Environment]::NewLine)
+        return [pscustomobject]@{
+            quota_snapshot_path = $quotaSnapshotPath
+            evidence_pack_path = $evidencePackPath
+            final_message_path = $finalMessagePath
+        }
+    }
+
+    function Invoke-SetupProfileCheck {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$CodexDirectory
+        )
+
+        $setupPath = Join-Path $PSScriptRoot 'Setup-AIGlobalConfig.ps1'
+        $setupContent = Get-Content -LiteralPath $setupPath -Raw -Encoding UTF8
+        $sectionMarker = '$codexConfigPath = Join-Path'
+        $sectionStart = $setupContent.IndexOf($sectionMarker, [StringComparison]::Ordinal)
+        if ($sectionStart -lt 0) {
+            throw '找不到 Setup profile 檢查段。'
+        }
+        $section = $setupContent.Substring($sectionStart)
+        $codexDir = $CodexDirectory
+        $codexVersion = $null
+        $minimumMaxVersion = [version]'0.147.0'
+        $legacyProfileName = 'deep' + '.config.toml'
+        $legacyProfilePath = Join-Path $codexDir $legacyProfileName
+        $profileConflictDetected = $false
+        $hostMessages = New-Object System.Collections.Generic.List[string]
+        $warningMessages = New-Object System.Collections.Generic.List[string]
+
+        function Write-Host {
+            param(
+                [AllowNull()][object]$Object,
+                [ConsoleColor]$ForegroundColor,
+                [switch]$NoNewline
+            )
+            [void]$hostMessages.Add([string]$Object)
+        }
+
+        function Write-Warning {
+            param(
+                [Parameter(Position = 0)][AllowEmptyString()][string]$Message
+            )
+            [void]$warningMessages.Add($Message)
+        }
+
+        $resultMarker = [Environment]::NewLine +
+            '$profileCheckResult = [pscustomobject]@{' +
+            ' profile_check_result = $true;' +
+            ' missing_profiles = @($missingProfiles);' +
+            ' profile_conflict_detected = $profileConflictDetected;' +
+            ' legacy_profile_name = $legacyProfileName;' +
+            ' legacy_profile_path = $legacyProfilePath;' +
+            ' codex_config_path = $codexConfigPath;' +
+            ' advisor_profile_path = $advisorProfilePath' +
+            '};' +
+            '$profileCheckResult'
+        $sectionResult = @(& ([scriptblock]::Create($section + $resultMarker)))
+        $profileResult = @($sectionResult | Where-Object {
+                $null -ne $_ -and $null -ne $_.PSObject.Properties['profile_check_result']
+            } | Select-Object -Last 1)
+        if ($profileResult.Count -ne 1) {
+            throw 'Setup profile 檢查段未回傳結果。'
+        }
+        return [pscustomobject]@{
+            missing_profiles = @($profileResult[0].missing_profiles)
+            profile_conflict_detected = [bool]$profileResult[0].profile_conflict_detected
+            legacy_profile_name = [string]$profileResult[0].legacy_profile_name
+            legacy_profile_path = [string]$profileResult[0].legacy_profile_path
+            codex_config_path = [string]$profileResult[0].codex_config_path
+            advisor_profile_path = [string]$profileResult[0].advisor_profile_path
+            host_messages = @($hostMessages.ToArray())
+            warning_messages = @($warningMessages.ToArray())
+        }
+    }
+
+    function Invoke-Phase8StartPreparation {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$CaseName,
+            [Parameter(Mandatory)][double]$PrimaryRemainingPercent,
+            [AllowNull()][string]$AdvisorRequestSourceValue,
+            [switch]$OmitAdvisorConsultReportPath
+        )
+
+        $startRoot = Join-Path $fixtureRoot ('p8-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $codexHome = Join-Path $startRoot 'codex-home'
+        $handoffLineRoot = Join-Path $startRoot '.local\ai-sessions\handoff\line-a'
+        $reportRoot = Join-Path $startRoot '.local\ai-sessions\report\line-a'
+        New-Item -ItemType Directory -Path $codexHome, $handoffLineRoot, $reportRoot -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $handoffLineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'line-a' } | ConvertTo-Json -Depth 4) + "`r`n")
+        $dispatchSlug = 'phase8-start-' + $CaseName
+        $configPath = Join-Path $codexHome 'advisor.config.toml'
+        $promptPath = Join-Path $startRoot 'prompt.md'
+        $packPath = Join-Path $startRoot 'evidence.md'
+        $preflightPath = Join-Path $startRoot 'preflight.json'
+        $beforePath = Join-Path $startRoot 'quota-before.json'
+        $afterPath = Join-Path $startRoot 'quota-after.json'
+        $reportPath = Join-Path $reportRoot ('advisor-consult-' + $dispatchSlug + '.md')
+        $calibrationPath = Join-Path $startRoot 'missing-calibration.jsonl'
+        $packLines = @($evidencePackContent -split '\r?\n' | ForEach-Object {
+                if ($_ -match '^dispatch-slug:') {
+                    'dispatch-slug: ' + $dispatchSlug
+                }
+                elseif ($_ -match '^question-002:') {
+                    $_
+                    'question-003: fixture third question'
+                }
+                else {
+                    $_
+                }
+            })
+        $packContent = ($packLines -join [Environment]::NewLine) + [Environment]::NewLine
+        Write-Utf8NoBom -Path $configPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        Write-Utf8NoBom -Path $promptPath -Content 'fixture advisor prompt'
+        Write-Utf8NoBom -Path $packPath -Content $packContent
+        Write-Utf8NoBom -Path $preflightPath -Content (([ordered]@{
+                    sourceRoot = $startRoot
+                    executionRoot = $startRoot
+                    dispatchRoot = $startRoot
+                    lineSlug = 'line-a'
+                    dispatchSlug = $dispatchSlug
+                    writeMode = 'readonly'
+                    dispatchKind = 'resource'
+                } | ConvertTo-Json -Depth 12) + "`r`n")
+        $null = New-Phase8QuotaSnapshot -Path $beforePath -PrimaryRemainingPercent $PrimaryRemainingPercent
+        $null = New-Phase8QuotaSnapshot -Path $afterPath -PrimaryRemainingPercent $PrimaryRemainingPercent
+
+        $script:SourceRoot = $startRoot
+        $script:ExecutionRoot = $startRoot
+        $script:DispatchRoot = $startRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatchSlug
+        $script:DispatchKind = 'resource'
+        $script:TaskType = 'advisor-consult'
+        $script:WriteMode = 'readonly'
+        $script:SessionMode = 'cold-start'
+        $script:Profile = 'advisor'
+        $script:ProfileExplicit = $true
+        $script:Model = $null
+        $script:ReasoningEffort = $null
+        $script:CodexHome = $codexHome
+        $script:CodexPath = $null
+        $script:CodexParentOption = $null
+        $script:AddDirectory = $null
+        $script:Search = $false
+        $script:RequestedUnit = $null
+        $script:UnitKind = 'advisor-evidence-question'
+        $script:PrimaryBudgetPercent = $null
+        $script:PrimaryReservePercent = $null
+        $script:PreflightResultPath = $preflightPath
+        $script:PromptPath = $promptPath
+        $script:EvidencePackPath = $packPath
+        $script:AdvisorConsultReportPath = if ($OmitAdvisorConsultReportPath) { $null } else { $reportPath }
+        $script:ResultPath = $null
+        $script:PrepareResultPath = $null
+        $script:QuotaBeforePath = $beforePath
+        $script:QuotaAfterPath = $afterPath
+        $script:CalibrationPath = $calibrationPath
+        $script:BudgetMonitorPath = $null
+        $script:ScopePlanPath = $null
+        $script:LastMessagePath = $null
+        $script:ResumeThreadId = $null
+        $script:RecoveryHandoffPath = $null
+        $script:RequestPath = $null
+        $script:InitialQuotaState = 'Valid'
+        $script:AdvisorRequestSource = $AdvisorRequestSourceValue
+        $script:InvocationBoundParameters = [ordered]@{}
+        $script:RequestContext = $null
+        $script:RequestPrepareArtifacts = @()
+        $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
+        $script:quotaSnapshotPathOverride = $beforePath
+        $script:dispatchUnitListOverride = @('question-001', 'question-002', 'question-003')
+        $script:advisorStartPromptMode = $true
+        $script:launcherFixtureFailure = $true
+        $script:phase8CapturedActivation = $null
+        $script:phase8CapturedScopePlan = $null
+        $caughtException = $null
+        $operationResult = $null
+        try {
+            $null = Invoke-Start
+        }
+        catch {
+            $caughtException = $_.Exception
+            $operationResult = $caughtException.Data['operationResult']
+        }
+        $runRecord = $null
+        if ($null -ne $operationResult -and -not [string]::IsNullOrWhiteSpace([string]$operationResult.runRecordPath) -and (Test-Path -LiteralPath $operationResult.runRecordPath -PathType Leaf)) {
+            $runRecord = Get-Content -LiteralPath $operationResult.runRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        $result = [pscustomobject]@{
+            case_name = $CaseName
+            root = $startRoot
+            before_path = $beforePath
+            exception = $caughtException
+            operation_result = $operationResult
+            activation = $script:phase8CapturedActivation
+            scope_plan = $script:phase8CapturedScopePlan
+            run_record = $runRecord
+        }
+        $script:advisorStartPromptMode = $false
+        $script:launcherFixtureFailure = $false
+        $script:quotaSnapshotPathOverride = $null
+        $script:dispatchUnitListOverride = $null
+        return $result
+    }
+
+    Invoke-Case 'Phase 8 advisor 契約矩陣與拒絕碼' {
+        Assert-AdvisorContract -RequestedProfile 'advisor' -TaskType 'advisor-consult' -DispatchKind 'resource' -WriteMode 'readonly'
+        foreach ($case in @(
+                [ordered]@{ profile = 'advisor'; task = 'script-change'; kind = 'resource'; mode = 'readonly'; code = 'AdvisorImplementationProfileRejected' }
+                [ordered]@{ profile = 'advisor'; task = 'advisor-consult'; kind = 'workflow'; mode = 'readonly'; code = 'AdvisorImplementationProfileRejected' }
+                [ordered]@{ profile = 'advisor'; task = 'advisor-consult'; kind = 'resource'; mode = 'write'; code = 'AdvisorImplementationProfileRejected' }
+                [ordered]@{ profile = 'default'; task = 'advisor-consult'; kind = 'resource'; mode = 'readonly'; code = 'AdvisorProfileRequired' })) {
+            $caught = $null
+            try {
+                Assert-AdvisorContract -RequestedProfile $case.profile -TaskType $case.task -DispatchKind $case.kind -WriteMode $case.mode
+            }
+            catch {
+                $caught = $_.Exception.Message
+            }
+            Assert-True ($null -ne $caught -and $caught.Contains($case.code)) ('契約拒絕碼不符：' + ($case | ConvertTo-Json -Compress))
+        }
+    }
+
+    Invoke-Case 'Phase 8 F-009 Setup 缺少 default 設定檔不宣稱雙檔完整' {
+        $caseRoot = Join-Path $phase8Root 'f009-missing-default'
+        $artifacts = New-Phase8RegressionArtifacts -CaseRoot $caseRoot -DispatchSlug 'phase8-f009-missing-default'
+        $advisorPath = Join-Path $caseRoot 'advisor.config.toml'
+        Write-Utf8NoBom -Path $advisorPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        $missing = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $successMessage = '  ✅ Codex 預設檔位與 advisor.config.toml 均存在。'
+        $warningOutput = @($missing.warning_messages) -join [Environment]::NewLine
+        $hostOutput = @($missing.host_messages) -join [Environment]::NewLine
+        Assert-True ((Test-Path -LiteralPath $artifacts.quota_snapshot_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.evidence_pack_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.final_message_path -PathType Leaf)) 'F-009 fixture 未實際寫入 quota snapshot、evidence pack 或 final message。'
+        Assert-True (@($missing.missing_profiles) -contains 'config.toml' -and $warningOutput.Contains('config.toml')) ('缺少 config.toml 未列入 missingProfiles。warnings=' + $warningOutput)
+        Assert-True (-not $hostOutput.Contains($successMessage)) ('缺少 config.toml 仍輸出雙檔成功訊息。host=' + $hostOutput)
+
+        $configPath = Join-Path $caseRoot 'config.toml'
+        Write-Utf8NoBom -Path $configPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        $complete = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $completeHostOutput = @($complete.host_messages) -join [Environment]::NewLine
+        Assert-True (@($complete.missing_profiles).Count -eq 0 -and $completeHostOutput.Contains($successMessage)) ('兩個設定檔都存在時未輸出成功訊息。host=' + $completeHostOutput)
+    }
+
+    Invoke-Case 'Phase 8 F-010 active source guard 覆蓋完整來源與舊識別字' {
+        $requiredPaths = @(
+            $sourcePath
+            (Join-Path $PSScriptRoot 'Setup-AIGlobalConfig.ps1')
+            (Join-Path $PSScriptRoot 'Get-CodexQuota.ps1')
+            (Join-Path $root 'instructions.md')
+            (Join-Path $root 'skills\codex-dispatch\SKILL.md')
+            (Join-Path $root 'README.md')
+            $PSCommandPath
+        )
+        foreach ($requiredPath in $requiredPaths) {
+            $normalizedRequiredPath = [IO.Path]::GetFullPath($requiredPath)
+            $pathFound = @($activeSourcePaths | Where-Object {
+                    [String]::Equals([IO.Path]::GetFullPath([string]$_), $normalizedRequiredPath, [StringComparison]::OrdinalIgnoreCase)
+                }).Count -gt 0
+            Assert-True $pathFound ('active source 缺少指定來源：' + $requiredPath)
+        }
+
+        $expectedPhase1Terms = @(
+            ('[' + 'ValidateSet(' + "'default', 'deep'" + ')]')
+            ('d' + 'eep' + '-consult')
+            ('d' + 'eep' + '-evidence-pack')
+            ('d' + 'eep' + '-consult.evidence.v1')
+            ('Deep' + 'RequestSource')
+            ('Deep' + 'ConsultReportPath')
+            ('Get-' + 'Deep' + 'ConsultReportPath')
+            ('New-' + 'Deep' + 'InlineEvidenceDirective')
+            ('Test-' + 'Deep' + 'InlineEvidenceDirective')
+            ('Write-' + 'Deep' + 'ConsultReport')
+            ('Invoke-' + 'Deep' + 'BudgetMonitor')
+            ('d' + 'eep' + '.config.toml')
+            ('[' + 'deep' + ' 諮詢確認]')
+        )
+        foreach ($term in $expectedPhase1Terms) {
+            Assert-True (@($phase1RemovalTerms | Where-Object { $_ -ceq $term }).Count -eq 1) ('Phase 1 搜尋詞缺少：' + $term)
+            Assert-True (@($phase2RemovalTerms | Where-Object { $_ -ceq $term }).Count -eq 1) ('Phase 2 未沿用 Phase 1 搜尋詞：' + $term)
+        }
+        foreach ($term in @(
+                ('deep' + 'RequestSource')
+                ('deep' + 'CycleDecision')
+                ('deep' + 'CycleGatePassed')
+                ('deep' + 'CycleNotice')
+                ('deep' + 'ConsultReportPath')
+                ('deep' + '_hard_limit_percent')
+                ('[' + 'deep' + ' 週期位置告知]'))) {
+            Assert-True (@($phase2RemovalTerms | Where-Object { $_ -ceq $term }).Count -eq 1) ('Phase 2 搜尋詞缺少：' + $term)
+        }
+
+        $probePath = Join-Path $phase8Root 'f010-active-source-probe.md'
+        $probeTerm = 'Write-' + 'Deep' + 'ConsultReport'
+        Write-Utf8NoBom -Path $probePath -Content $probeTerm
+        $previousActiveSourcePaths = @($script:activeSourcePaths)
+        try {
+            $script:activeSourcePaths = @($previousActiveSourcePaths + $probePath)
+            $caught = $null
+            try { Assert-ActiveSourceNotFound -Label 'F-010 probe' -Terms @($probeTerm) }
+            catch { $caught = $_.Exception.Message }
+            Assert-True ($null -ne $caught -and $caught.Contains($probePath) -and $caught.Contains($probeTerm)) 'active source guard 未對新增來源的舊識別字回報匹配。'
+        }
+        finally {
+            $script:activeSourcePaths = $previousActiveSourcePaths
+        }
+    }
+
+    Invoke-Case 'Phase 8 F-013 Setup 舊設定檔殘留與新舊衝突指引' {
+        $caseRoot = Join-Path $phase8Root 'f013-legacy-profile'
+        $artifacts = New-Phase8RegressionArtifacts -CaseRoot $caseRoot -DispatchSlug 'phase8-f013-legacy-profile'
+        $configPath = Join-Path $caseRoot 'config.toml'
+        $advisorPath = Join-Path $caseRoot 'advisor.config.toml'
+        $legacyName = 'deep' + '.config.toml'
+        $legacyPath = Join-Path $caseRoot $legacyName
+        $profileContent = "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        Write-Utf8NoBom -Path $configPath -Content $profileContent
+        Write-Utf8NoBom -Path $legacyPath -Content $profileContent
+
+        $renameGuidance = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $renameOutput = (@($renameGuidance.warning_messages) + @($renameGuidance.host_messages)) -join [Environment]::NewLine
+        $successMessage = '  ✅ Codex 預設檔位與 advisor.config.toml 均存在。'
+        Assert-True ($renameOutput.Contains($legacyName) -and $renameOutput.Contains('重新命名') -and -not $renameOutput.Contains($successMessage)) ('舊設定檔殘留未提供重新命名指引。output=' + $renameOutput)
+        Assert-True ((Test-Path -LiteralPath $legacyPath -PathType Leaf) -and -not (Test-Path -LiteralPath $advisorPath -PathType Leaf)) '舊設定檔殘留案例被自動搬移或刪除。'
+
+        Write-Utf8NoBom -Path $advisorPath -Content $profileContent
+        $conflict = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $conflictOutput = (@($conflict.warning_messages) + @($conflict.host_messages)) -join [Environment]::NewLine
+        Assert-True ($conflict.profile_conflict_detected -and $conflictOutput.Contains($legacyName) -and $conflictOutput.Contains('衝突') -and $conflictOutput.Contains('人工處理') -and -not $conflictOutput.Contains($successMessage)) ('新舊設定檔並存未停止成功訊息或提供人工處理指引。output=' + $conflictOutput)
+        Assert-True ((Test-Path -LiteralPath $legacyPath -PathType Leaf) -and (Test-Path -LiteralPath $advisorPath -PathType Leaf)) '設定檔衝突案例自動搬移或刪除了檔案。'
+        Assert-True ((Test-Path -LiteralPath $artifacts.quota_snapshot_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.evidence_pack_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.final_message_path -PathType Leaf)) 'F-013 fixture 未實際寫入 quota snapshot、evidence pack 或 final message。'
+    }
+
+    Invoke-Case 'Phase 8 F-001 advisor activation 嚴格檢查 snapshot state' {
+        $expiredSnapshot = $script:phase7ValidSnapshot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $expiredSnapshot.state = 'SnapshotExpired'
+        $automaticExpired = Get-AdvisorActivationDecision -QuotaSnapshot $expiredSnapshot -State 'SnapshotExpired' -EstimatePercent 24 -RequestSource 'automatic-quota' -HasFreshObservations $true -ServiceRejected $false
+        $explicitExpired = Get-AdvisorActivationDecision -QuotaSnapshot $expiredSnapshot -State 'SnapshotExpired' -EstimatePercent 24 -RequestSource 'user-explicit' -HasFreshObservations $true -ServiceRejected $false
+        Assert-True (-not $automaticExpired.granted -and -not $explicitExpired.granted -and $automaticExpired.reasonCode -eq 'blocked-no-fresh-quota' -and $explicitExpired.reasonCode -eq 'blocked-no-fresh-quota') 'SnapshotExpired 在 fresh observation 下仍授予 advisor activation。'
+    }
+
+    Invoke-Case 'Phase 8 advisor activation automatic、user explicit 與低額度' {
+        $automatic = Get-AdvisorActivationDecision -QuotaSnapshot $script:phase7ValidSnapshot -EstimatePercent 24 -RequestSource 'automatic-quota' -HasFreshObservations $true -ServiceRejected $false
+        Assert-True ($automatic.granted -and $automatic.activationMode -eq 'automatic-quota' -and $automatic.authorizationSource -eq 'automatic-quota' -and -not $automatic.reserveBypassed) 'automatic-quota advisor activation 未通過。'
+        $denied = Get-AdvisorActivationDecision -QuotaSnapshot $script:phase7LowSnapshot -EstimatePercent 24 -RequestSource 'automatic-quota' -HasFreshObservations $true -ServiceRejected $false
+        Assert-True (-not $denied.granted -and $denied.reasonCode -eq 'AdvisorAuthorizationRequired' -and $denied.activationMode -eq 'none') '低額度 automatic-quota 未要求 user-explicit。'
+        $authorized = Get-AdvisorActivationDecision -QuotaSnapshot $script:phase7LowSnapshot -EstimatePercent 24 -RequestSource 'user-explicit' -HasFreshObservations $true -ServiceRejected $false
+        Assert-True ($authorized.granted -and $authorized.activationMode -eq 'user-authorized' -and $authorized.reserveBypassed -and $authorized.minimumUnitOverBudget) 'user-explicit 低額度未略過 reserve 或保留最小單位授權。'
+    }
+
+    Invoke-Case 'Phase 8 A1(a) 缺漏來源走 automatic-quota activation' {
+        $absent = Invoke-Phase8StartPreparation -CaseName 'a-absent' -PrimaryRemainingPercent 80 -AdvisorRequestSourceValue $null
+        $explicit = Invoke-Phase8StartPreparation -CaseName 'a-explicit-automatic' -PrimaryRemainingPercent 80 -AdvisorRequestSourceValue 'automatic-quota'
+        foreach ($case in @($absent, $explicit)) {
+            $operationResult = $case.operation_result
+            $diagnostic = [ordered]@{ error = if ($null -eq $operationResult) { $null } else { $operationResult.error }; error_code = if ($null -eq $operationResult) { $null } else { $operationResult.errorCode }; activation = $case.activation; scope_plan = $case.scope_plan; exception = if ($null -eq $case.exception) { $null } else { $case.exception.Message } } | ConvertTo-Json -Depth 12 -Compress
+            Assert-True ($null -ne $operationResult -and $operationResult.errorCode -ne 'RequiredParameterMissing' -and -not $operationResult.processStarted) ($case.case_name + ' 仍將缺漏 AdvisorRequestSource 視為 RequiredParameterMissing。diagnostic=' + $diagnostic)
+            Assert-True ($null -ne $case.activation -and $case.activation.activationMode -eq 'automatic-quota' -and $case.activation.authorizationSource -eq 'automatic-quota') ($case.case_name + ' 未進入 automatic-quota activation。diagnostic=' + $diagnostic)
+            Assert-True ($null -ne $case.run_record -and $case.run_record.advisor_request_source -eq 'automatic-quota') ($case.case_name + ' 未在 RunRecord 標記 automatic-quota。')
+            Assert-True (-not (Test-Path -LiteralPath ([string]$operationResult.pidRecordPath) -PathType Leaf) -and -not (Test-Path -LiteralPath ([string]$operationResult.eventStreamPath) -PathType Leaf)) ($case.case_name + ' 啟動失敗前建立 PID 或 event stream。')
+        }
+        Assert-True ($absent.activation.activationMode -eq $explicit.activation.activationMode -and $absent.activation.authorizationSource -eq $explicit.activation.authorizationSource) '缺漏來源與顯式 automatic-quota 行為不一致。'
+    }
+
+    Invoke-Case 'Phase 8 A1(b) 缺漏來源低額度回報 AdvisorAuthorizationRequired' {
+        $case = Invoke-Phase8StartPreparation -CaseName 'b-insufficient' -PrimaryRemainingPercent 20 -AdvisorRequestSourceValue $null
+        $operationResult = $case.operation_result
+        Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'AdvisorAuthorizationRequired' -and -not $operationResult.processStarted -and [string]$operationResult.error -match 'AdvisorAuthorizationRequired') '缺漏來源低額度未回報 AdvisorAuthorizationRequired。'
+        Assert-True (-not (Test-Path -LiteralPath ([string]$operationResult.pidRecordPath) -PathType Leaf) -and -not (Test-Path -LiteralPath ([string]$operationResult.eventStreamPath) -PathType Leaf)) 'AdvisorAuthorizationRequired 拒絕前建立 PID 或 event stream。'
+    }
+
+    Invoke-Case 'Phase 8 F-014 automatic-quota 拒絕保存 activation metadata' {
+        $beforeStartCalls = $script:startCalls
+        $case = Invoke-Phase8StartPreparation -CaseName 'f014-automatic-insufficient' -PrimaryRemainingPercent 20 -AdvisorRequestSourceValue 'automatic-quota'
+        $operationResult = $case.operation_result
+        $runRecord = $case.run_record
+        $failure = if ($null -eq $runRecord) { $null } else { $runRecord.failure }
+        $expectedFields = $null -ne $operationResult -and
+            $operationResult.errorCode -eq 'AdvisorAuthorizationRequired' -and
+            -not $operationResult.processStarted -and
+            $operationResult.activationMode -eq 'none' -and
+            $operationResult.authorizationSource -eq $null -and
+            $operationResult.primaryRemainingPercent -eq 20 -and
+            $operationResult.requiredSource -eq 'user-explicit'
+        Assert-True $expectedFields ('F-014 Start failure summary 缺少 activation metadata：' + ($operationResult | ConvertTo-Json -Depth 12 -Compress))
+        Assert-True ($null -ne $runRecord -and $runRecord.activationMode -eq 'none' -and $runRecord.authorizationSource -eq $null -and $runRecord.primaryRemainingPercent -eq 20 -and $runRecord.requiredSource -eq 'user-explicit') 'F-014 RunRecord top-level activation metadata 缺失。'
+        Assert-True ($null -ne $failure -and $failure.activationMode -eq 'none' -and $failure.authorizationSource -eq $null -and $failure.primaryRemainingPercent -eq 20 -and $failure.requiredSource -eq 'user-explicit') 'F-014 RunRecord.failure activation metadata 缺失。'
+        Assert-True ($script:startCalls -eq $beforeStartCalls) 'F-014 AdvisorAuthorizationRequired 仍嘗試啟動 process。'
+    }
+
+    Invoke-Case 'Phase 8 A1(c) 缺少 AdvisorConsultReportPath 仍為 RequiredParameterMissing' {
+        $case = Invoke-Phase8StartPreparation -CaseName 'c-report-missing' -PrimaryRemainingPercent 80 -AdvisorRequestSourceValue $null -OmitAdvisorConsultReportPath
+        $operationResult = $case.operation_result
+        $diagnostic = [ordered]@{ error = if ($null -eq $operationResult) { $null } else { $operationResult.error }; error_code = if ($null -eq $operationResult) { $null } else { $operationResult.errorCode }; exception = if ($null -eq $case.exception) { $null } else { $case.exception.Message } } | ConvertTo-Json -Depth 8 -Compress
+        Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'RequiredParameterMissing' -and [string]$operationResult.error -match 'AdvisorConsultReportPath' -and -not $operationResult.processStarted) ('缺少 AdvisorConsultReportPath 未保留 RequiredParameterMissing。diagnostic=' + $diagnostic)
+    }
+
+    Invoke-Case 'Phase 8 A2(d) user-authorized 預算使用 primary remaining' {
+        $case = Invoke-Phase8StartPreparation -CaseName 'd-user-50' -PrimaryRemainingPercent 50 -AdvisorRequestSourceValue 'user-explicit'
+        $plan = $case.scope_plan
+        Assert-True ($null -ne $plan -and $plan.activation_mode -eq 'user-authorized' -and $plan.primary_reserve_percent -eq 0 -and $plan.primary_budget_percent -eq 50 -and $plan.advisor_hard_limit_percent -eq 30 -and @($plan.selected_units).Count -eq 3 -and @($plan.deferred_units).Count -eq 0) 'user-authorized primary 50% 未使用完整剩餘額度或 hard limit 錯誤限制 budget。'
+    }
+
+    Invoke-Case 'Phase 8 F-005 A2(e) user-authorized 低額度取最長前綴' {
+        $case = Invoke-Phase8StartPreparation -CaseName 'e-user-10' -PrimaryRemainingPercent 10 -AdvisorRequestSourceValue 'user-explicit'
+        $plan = $case.scope_plan
+        Assert-True ($null -ne $plan -and $plan.activation_mode -eq 'user-authorized' -and $plan.primary_reserve_percent -eq 0 -and $plan.primary_budget_percent -eq 10 -and $plan.advisor_hard_limit_percent -eq 30 -and $plan.decision -eq 'scoped' -and @($plan.selected_units).Count -eq 1 -and $plan.selected_units[0] -eq 'question-001' -and @($plan.deferred_units).Count -eq 2 -and $plan.deferred_units[0] -eq 'question-002' -and $plan.deferred_units[1] -eq 'question-003' -and -not $plan.minimum_unit_over_budget -and $plan.stop_after_selected_units) 'F-005 user-authorized primary 10% 在第一個問題可容納時誤標記 minimum unit over budget。'
+    }
+
+    Invoke-Case 'Phase 8 A2(f) automatic-quota 維持 hard limit budget' {
+        $case = Invoke-Phase8StartPreparation -CaseName 'f-automatic-80' -PrimaryRemainingPercent 80 -AdvisorRequestSourceValue 'automatic-quota'
+        $plan = $case.scope_plan
+        Assert-True ($null -ne $plan -and $plan.activation_mode -eq 'automatic-quota' -and $plan.primary_reserve_percent -eq 30 -and $plan.primary_budget_percent -eq 30 -and $plan.advisor_hard_limit_percent -eq 30) 'automatic-quota primary 80% 未維持 min(hardLimit, remaining - reserve) budget。'
+    }
+
+    Invoke-Case 'Phase 8 A2 decision_reason 不使用等待指示' {
+        $scopePlanSource = ($functions | Where-Object { $_.Name -eq 'New-ScopePlan' } | Select-Object -First 1).Extent.Text
+        Assert-True ($scopePlanSource -notmatch '等待 primary_resets_at 或使用者決定' -and $scopePlanSource -notmatch '等待 primary reset') 'New-ScopePlan 仍含 primary reset 等待指示。'
+        $unauthorized = New-ScopePlan -DispatchSlug 'phase8-advisor-unauthorized-reason' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7LowSnapshot -CalibrationPath (Join-Path $phase7Root 'missing-phase8-unauthorized-reason-calibration.jsonl') -Units @('question-001') -UnitKind 'advisor-evidence-question' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
+        Assert-True ($unauthorized.decision -eq 'blocked-insufficient-budget' -and $unauthorized.decision_reason -match 'AdvisorAuthorizationRequired' -and $unauthorized.decision_reason -notmatch '等待') 'advisor 未授權 ScopePlan 說明未指向 AdvisorAuthorizationRequired。'
+    }
+
+    Invoke-Case 'Phase 8 default zero remaining 最小單位且不繞過 advisor gate' {
+        $defaultZeroSnapshot = $script:phase7LowSnapshot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $defaultZeroSnapshot.observations.primary.remaining_percent = 0
+        $defaultZeroSnapshot.observations.primary.used_percent = 100
+        $defaultZeroSnapshot.primary.remaining_percent = 0
+        $defaultZeroSnapshot.primary.used_percent = 100
+        $defaultZeroPlan = New-ScopePlan -DispatchSlug 'phase8-default-zero' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -BeforeSnapshot $defaultZeroSnapshot -CalibrationPath (Join-Path $phase7Root 'missing-phase8-default-calibration.jsonl') -Units @('unit-1', 'unit-2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
+        Assert-True ($defaultZeroPlan.decision -eq 'scoped' -and $defaultZeroPlan.primary_reserve_percent -eq 0 -and $defaultZeroPlan.primary_budget_percent -eq 0 -and @($defaultZeroPlan.selected_units).Count -eq 1 -and $defaultZeroPlan.selected_units[0] -eq 'unit-1' -and @($defaultZeroPlan.deferred_units).Count -eq 1 -and $defaultZeroPlan.stop_after_selected_units -and $defaultZeroPlan.decision -ne 'blocked-insufficient-budget' -and $defaultZeroPlan.decision -ne 'user-decision-required' -and $defaultZeroPlan.decision_reason -notmatch '等待') 'default zero remaining 未建立最小 ScopePlan，或產生不允許的等待決策。'
+        $advisorGateCaught = $null
+        try { Assert-AdvisorContract -RequestedProfile 'default' -TaskType 'advisor-consult' -DispatchKind 'resource' -WriteMode 'readonly' }
+        catch { $advisorGateCaught = $_.Exception.Message }
+        Assert-True ($null -ne $advisorGateCaught -and $advisorGateCaught.Contains('AdvisorProfileRequired')) 'default zero remaining 路徑繞過 advisor profile gate。'
+    }
+
+    Invoke-Case 'Phase 8 F-006 service rejection 停止派工並保存 QuotaServiceRejected' {
+        Assert-True ($null -ne $script:phase7RejectedSnapshot -and $null -ne $script:phase7RejectedDocument) 'F-006 缺少 Phase 7 service rejection fixture。'
+        $caseRoot = Join-Path $phase8Root 'f006-service-rejection'
+        $artifacts = New-Phase8RegressionArtifacts -CaseRoot $caseRoot -DispatchSlug 'phase8-f006-service-rejection'
+        Write-Utf8NoBom -Path $artifacts.quota_snapshot_path -Content (($script:phase7RejectedDocument | ConvertTo-Json -Depth 20) + "`r`n")
+        $eventPath = Join-Path $caseRoot 'event-stream.jsonl'
+        $errorPath = Join-Path $caseRoot 'stderr.log'
+        $lastMessagePath = Join-Path $caseRoot 'last-message.md'
+        $threadPath = Join-Path $caseRoot 'thread-id.txt'
+        $pidPath = Join-Path $caseRoot 'pid.json'
+        $launcherPath = Join-Path $caseRoot 'launcher.json'
+        Write-Phase7JsonLines -Path $eventPath -Objects @([ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'usage_limit_reached' } })
+        Write-Utf8NoBom -Path $errorPath -Content 'service rejection fixture'
+        Write-Utf8NoBom -Path $lastMessagePath -Content 'ScopePlan service rejection fixture'
+        Write-Utf8NoBom -Path $threadPath -Content 'thread-f006'
+        Write-Utf8NoBom -Path $pidPath -Content '{"pid":0}'
+        Write-Utf8NoBom -Path $launcherPath -Content '{"launcher":"fixture"}'
+        $f006Plan = New-ScopePlan -DispatchSlug 'phase8-f006-service-rejection' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7RejectedSnapshot -CalibrationPath (Join-Path $phase7Root 'missing-phase8-f006-calibration.jsonl') -Units @('Phase 3') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
+        $f006Message = 'ScopePlan 阻擋派工：decision=' + [string]$f006Plan.decision + '; reason=quota service rejection 已保留 last observation。'
+        $f006Failure = New-DispatchFailureRecord -Phase 'preparation' -Message $f006Message -ProcessStarted $false -ProcessExitCode $null -EventPath $eventPath -ErrorPath $errorPath -LastMessagePath $lastMessagePath -ThreadPath $threadPath -PidPath $pidPath -LauncherPath $launcherPath -RolloutPaths @($eventPath)
+        Assert-True ($f006Plan.quota_state -eq 'ServiceRejected' -and $f006Plan.decision -eq 'blocked-no-fresh-quota' -and $f006Plan.retry_allowed -eq $false -and $f006Failure.reason_code -eq 'QuotaServiceRejected') 'F-006 service rejection 未停止派工或未回傳 QuotaServiceRejected。'
+        Assert-True ((Test-Path -LiteralPath $artifacts.quota_snapshot_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.evidence_pack_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.final_message_path -PathType Leaf) -and $f006Failure.original_output.event_stream.exists) 'F-006 fixture 未保存 quota snapshot、evidence pack、final message 或 event evidence。'
+    }
+
+    Invoke-Case 'Phase 8 A4 command_execution 輸出與不可解析文字不產生 usage-limit' {
+        $commandEvidencePath = Join-Path $phase8Root 'a4-command-output.jsonl'
+        $commandEvent = [ordered]@{
+            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            type = 'item.completed'
+            item = [ordered]@{
+                type = 'command_execution'
+                command = 'Write-Output usage_limit_reached'
+                aggregated_output = 'usage_limit_reached'
+            }
+        }
+        Write-Phase7JsonLines -Path $commandEvidencePath -Objects @($commandEvent)
+        Add-Content -LiteralPath $commandEvidencePath -Value 'not-json usage_limit_reached' -Encoding UTF8
+        $commandEvidence = Get-DispatchEventEvidence -EventPath $commandEvidencePath
+        Assert-True ($commandEvidence.usage_limit -eq $false -and @($commandEvidence.usage_limit_evidence).Count -eq 0 -and $commandEvidence.last_event_type -eq 'item.completed') 'A4 將 command_execution 輸出或不可解析文字誤判為 usage-limit。'
+    }
+
+    Invoke-Case 'Phase 8 A4 turn.failed usage-limit 結構化事件仍產生 rejection' {
+        $failedEvidencePath = Join-Path $phase8Root 'a4-turn-failed.jsonl'
+        $failedEvent = [ordered]@{
+            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            type = 'turn.failed'
+            error = [ordered]@{
+                code = 'usage_limit_reached'
+                message = 'usage limit reached'
+            }
+        }
+        Write-Phase7JsonLines -Path $failedEvidencePath -Objects @($failedEvent)
+        $failedEvidence = Get-DispatchEventEvidence -EventPath $failedEvidencePath
+        $failedRejection = Convert-EventEvidenceToServiceRejection -EventEvidence $failedEvidence
+        Assert-True ($failedEvidence.usage_limit -eq $true -and @($failedEvidence.usage_limit_evidence).Count -eq 1 -and $failedEvidence.usage_limit_evidence[0].reason_code -eq 'usage-limit' -and $failedRejection.reason_code -eq 'usage-limit' -and $failedRejection.retry_allowed -eq $false) 'A4 真實 turn.failed usage-limit 事件未產生 usage-limit service rejection。'
+    }
+
+    Invoke-Case 'Phase 8 F-015 Inspect service rejection 使用 QuotaServiceRejected' {
+        $caseRoot = Join-Path $phase8Root 'f015-inspect-service-rejection'
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        $record = New-TestRun -Line 'line-a' -Dispatch 'phase8-f015-inspect'
+        $recordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'phase8-f015-inspect') ($record.run_id + '.json')
+        $scopePlan = New-ScopePlan -DispatchSlug 'phase8-f015-inspect' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7ValidSnapshot -CalibrationPath (Join-Path $caseRoot 'calibration.jsonl') -Units @('Phase 3') -UnitKind 'workflow-phase' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + "`r`n")
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        Write-Phase7JsonLines -Path $record.event_stream_path -Objects @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = 'design.md phase8-f015-inspect line-a' } }
+            [ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'usage_limit_reached'; message = 'usage limit reached' } }
+        )
+        Write-Utf8NoBom -Path $record.last_message_path -Content 'design.md phase8-f015-inspect line-a'
+        $errorPath = Join-Path $caseRoot 'stderr.log'
+        Write-Utf8NoBom -Path $errorPath -Content 'structured quota rejection fixture'
+        $beforePath = Join-Path $caseRoot 'quota-before.json'
+        $afterPath = Join-Path $caseRoot 'quota-after.json'
+        $null = New-Phase8QuotaSnapshot -Path $beforePath -PrimaryRemainingPercent 80
+        $null = New-Phase8QuotaSnapshot -Path $afterPath -PrimaryRemainingPercent 79
+        $previousValues = [ordered]@{
+            SourceRoot = $SourceRoot
+            ExecutionRoot = $ExecutionRoot
+            LineSlug = $LineSlug
+            DispatchSlug = $DispatchSlug
+            CodexHome = $CodexHome
+            EventStreamPath = $EventStreamPath
+            ScopePlanPath = $ScopePlanPath
+            RequiredIdentifier = $RequiredIdentifier
+            ProcessExitCode = $ProcessExitCode
+            QuotaBeforePath = $QuotaBeforePath
+            QuotaAfterPath = $QuotaAfterPath
+            CalibrationPath = $CalibrationPath
+            ErrorStreamPath = $ErrorStreamPath
+            RunRecordPath = $RunRecordPath
+            Profile = $Profile
+            TaskType = $TaskType
+            SessionMode = $SessionMode
+        }
+        try {
+            $SourceRoot = $fixtureRoot
+            $ExecutionRoot = $fixtureRoot
+            $LineSlug = 'line-a'
+            $DispatchSlug = 'phase8-f015-inspect'
+            $CodexHome = $startCodexHome
+            $EventStreamPath = $record.event_stream_path
+            $ScopePlanPath = $record.scope_plan_path
+            $RequiredIdentifier = 'design.md'
+            $ProcessExitCode = 1
+            $QuotaBeforePath = $beforePath
+            $QuotaAfterPath = $afterPath
+            $CalibrationPath = Join-Path $caseRoot 'calibration.jsonl'
+            $ErrorStreamPath = $errorPath
+            $RunRecordPath = $recordPath
+            $Profile = 'default'
+            $TaskType = 'script-change'
+            $SessionMode = 'cold-start'
+            $result = Invoke-Inspect
+        }
+        finally {
+            $SourceRoot = $previousValues.SourceRoot
+            $ExecutionRoot = $previousValues.ExecutionRoot
+            $LineSlug = $previousValues.LineSlug
+            $DispatchSlug = $previousValues.DispatchSlug
+            $CodexHome = $previousValues.CodexHome
+            $EventStreamPath = $previousValues.EventStreamPath
+            $ScopePlanPath = $previousValues.ScopePlanPath
+            $RequiredIdentifier = $previousValues.RequiredIdentifier
+            $ProcessExitCode = $previousValues.ProcessExitCode
+            $QuotaBeforePath = $previousValues.QuotaBeforePath
+            $QuotaAfterPath = $previousValues.QuotaAfterPath
+            $CalibrationPath = $previousValues.CalibrationPath
+            $ErrorStreamPath = $previousValues.ErrorStreamPath
+            $RunRecordPath = $previousValues.RunRecordPath
+            $Profile = $previousValues.Profile
+            $TaskType = $previousValues.TaskType
+            $SessionMode = $previousValues.SessionMode
+        }
+        $inspectDiagnosisValid = -not $result.success -and $result.service_rejection.reason_code -eq 'usage-limit' -and $result.diagnosis.reason_code -eq 'QuotaServiceRejected'
+        $inspectDiagnosisDiagnostic = if ($inspectDiagnosisValid) { 'pass' } else { $result | ConvertTo-Json -Depth 16 -Compress }
+        Assert-True $inspectDiagnosisValid ('F-015 Inspect diagnosis reason code 不符：' + $inspectDiagnosisDiagnostic)
+        Assert-True ((Test-Path -LiteralPath $record.event_stream_path -PathType Leaf) -and (Test-Path -LiteralPath $recordPath -PathType Leaf) -and (Test-Path -LiteralPath $beforePath -PathType Leaf) -and (Test-Path -LiteralPath $afterPath -PathType Leaf)) 'F-015 fixture 未保存事件流、RunRecord 或 quota snapshot。'
+    }
+
+    Invoke-Case 'Phase 8 F-017 QuotaProbe advisor requested profile 強制 effective default' {
+        $caseRoot = Join-Path $phase8Root 'f017-quotaprobe-effective-default'
+        $codexHome = Join-Path $caseRoot 'codex-home'
+        $promptPath = Join-Path $caseRoot 'prompt.md'
+        $snapshotPath = Join-Path $caseRoot 'quota-before.json'
+        New-Item -ItemType Directory -Path (Join-Path $codexHome 'sessions') -Force | Out-Null
+        Write-Utf8NoBom -Path $promptPath -Content 'QuotaProbe fixture prompt'
+        $null = New-Phase8QuotaSnapshot -Path $snapshotPath -PrimaryRemainingPercent 60
+        $previousValues = [ordered]@{
+            SourceRoot = $SourceRoot
+            DispatchRoot = $DispatchRoot
+            ExecutionRoot = $ExecutionRoot
+            LineSlug = $LineSlug
+            DispatchSlug = $DispatchSlug
+            Profile = $Profile
+            InitialQuotaState = $InitialQuotaState
+            TriggerWindow = $TriggerWindow
+            ProbeAttempt = $ProbeAttempt
+            CodexHome = $CodexHome
+            CodexPath = $CodexPath
+            PromptPath = $PromptPath
+            AddDirectory = $AddDirectory
+            Search = $Search
+            CodexParentOption = $CodexParentOption
+            AdvisorRequestSource = $AdvisorRequestSource
+            QuotaBeforePath = $QuotaBeforePath
+        }
+        $script:quotaProbeCaptureArguments = $true
+        $script:quotaProbeCapturedArguments = @()
+        $script:quotaProbeCodexHome = $codexHome
+        $script:quotaProbeStartCalls = 0
+        try {
+            $SourceRoot = $caseRoot
+            $DispatchRoot = $caseRoot
+            $ExecutionRoot = $caseRoot
+            $LineSlug = 'line-a'
+            $DispatchSlug = 'phase8-f017-quotaprobe'
+            $Profile = 'advisor'
+            $InitialQuotaState = 'PostResetNoSnapshot'
+            $TriggerWindow = 'primary'
+            $ProbeAttempt = 1
+            $CodexHome = $codexHome
+            $CodexPath = $null
+            $PromptPath = $promptPath
+            $AddDirectory = $null
+            $Search = $false
+            $CodexParentOption = $null
+            $AdvisorRequestSource = $null
+            $QuotaBeforePath = $snapshotPath
+            $probeResult = Invoke-QuotaProbe
+        }
+        finally {
+            $script:quotaProbeCaptureArguments = $false
+            $script:quotaProbeCodexHome = $null
+            $SourceRoot = $previousValues.SourceRoot
+            $DispatchRoot = $previousValues.DispatchRoot
+            $ExecutionRoot = $previousValues.ExecutionRoot
+            $LineSlug = $previousValues.LineSlug
+            $DispatchSlug = $previousValues.DispatchSlug
+            $Profile = $previousValues.Profile
+            $InitialQuotaState = $previousValues.InitialQuotaState
+            $TriggerWindow = $previousValues.TriggerWindow
+            $ProbeAttempt = $previousValues.ProbeAttempt
+            $CodexHome = $previousValues.CodexHome
+            $CodexPath = $previousValues.CodexPath
+            $PromptPath = $previousValues.PromptPath
+            $AddDirectory = $previousValues.AddDirectory
+            $Search = $previousValues.Search
+            $CodexParentOption = $previousValues.CodexParentOption
+            $AdvisorRequestSource = $previousValues.AdvisorRequestSource
+            $QuotaBeforePath = $previousValues.QuotaBeforePath
+        }
+        $recovery = Get-Content -LiteralPath $probeResult.recoveryRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($probeResult.success -and $probeResult.processStarted -and $script:quotaProbeStartCalls -eq 1 -and @($probeResult.codexArguments) -notcontains '--profile' -and $probeResult.requested_profile -eq 'advisor' -and $probeResult.effective_profile -eq 'default') ('F-017 Start result 或 codex arguments 不符：' + ($probeResult | ConvertTo-Json -Depth 16 -Compress))
+        Assert-True ($recovery.requested_profile -eq 'advisor' -and $recovery.effective_profile -eq 'default' -and @($recovery.probeEvidence.codexArguments) -notcontains '--profile' -and (Test-Path -LiteralPath $script:quotaProbeEventPath -PathType Leaf) -and (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) 'F-017 recovery record、event stream 或 quota snapshot 未保存 requested/effective profile。'
+    }
+
+    Invoke-Case 'Phase 8 A4 payload.type 結構化錯誤事件仍可判定' {
+        $payloadEvidencePath = Join-Path $phase8Root 'a4-payload-type.jsonl'
+        $payloadEvent = [ordered]@{
+            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
+            type = 'response'
+            payload = [ordered]@{
+                type = 'turn_failed'
+                error = [ordered]@{
+                    code = 'rate-limit-exceeded'
+                }
+            }
+        }
+        Write-Phase7JsonLines -Path $payloadEvidencePath -Objects @($payloadEvent)
+        $payloadEvidence = Get-DispatchEventEvidence -EventPath $payloadEvidencePath
+        $payloadRejection = Convert-EventEvidenceToServiceRejection -EventEvidence $payloadEvidence
+        Assert-True ($payloadEvidence.usage_limit -eq $true -and $payloadRejection.reason_code -eq 'rate-limit') 'A4 payload.type 結構化錯誤事件未判定為 rate-limit。'
+    }
+
+    Invoke-Case 'Phase 8 F-003 required-output 續行拒絕' -Reject -ErrorPattern 'C25 EvidencePackRequiredOutputInvalid' {
+        $continuationPath = Join-Path $phase7Root 'phase8-required-output-continuation.md'
+        $continuationContent = [regex]::Replace($evidencePackContent, '(?m)^(required-output:[^\r\n]*\r?\n)', ('$1' + 'unmarked continuation' + [Environment]::NewLine))
+        Write-Utf8NoBom -Path $continuationPath -Content $continuationContent
+        Test-AdvisorEvidencePack -Path $continuationPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
+    }
+
+    Invoke-Case 'Phase 8 F-003 required-output 重複宣告拒絕' -Reject -ErrorPattern 'C25 EvidencePackRequiredOutputInvalid' {
+        $duplicatePath = Join-Path $phase7Root 'phase8-required-output-duplicate.md'
+        $requiredLine = [regex]::Match($evidencePackContent, '(?m)^required-output:[^\r\n]*\r?\n').Value
+        Write-Utf8NoBom -Path $duplicatePath -Content $evidencePackContent.Replace($requiredLine, $requiredLine + $requiredLine)
+        Test-AdvisorEvidencePack -Path $duplicatePath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
+    }
+
+    Invoke-Case 'Phase 8 F-003 required-output 冒號後換行接縮排 heading 拒絕' -Reject -ErrorPattern 'C25 EvidencePackRequiredOutputInvalid' {
+        $wrappedPath = Join-Path $phase7Root 'phase8-required-output-wrapped-heading.md'
+        $wrappedContent = [regex]::Replace($evidencePackContent, '(?m)^required-output:[ \t]*(?<value>[^\r\n]*)(?=\r?$)', ('required-output:' + [Environment]::NewLine + '  ${value}'))
+        Assert-True ($wrappedContent -match '(?m)^required-output:\r?$' -and $wrappedContent -match '(?m)^  ## 中斷保全結論') 'F-003 fixture 未產生冒號後換行接縮排 heading 的宣告。'
+        Write-Utf8NoBom -Path $wrappedPath -Content $wrappedContent
+        Test-AdvisorEvidencePack -Path $wrappedPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2'
+    }
+
+    Invoke-Case 'Phase 8 A6 required-output 低層子標題保留於 body' {
+        $required = @('## 推論')
+        $message = @(
+            '## 推論'
+            '### question-001｜已完成'
+            'question-001 content'
+        ) -join [Environment]::NewLine
+        $result = Test-RequiredOutputSections -Message $message -RequiredOutput $required
+        $section = @($result.sections | Where-Object { $_.heading -ceq '## 推論' })[0]
+        Assert-True ($result.valid -and $section.present -and $section.body_non_empty) ('低層子標題未保留於 required section body：' + ($result | ConvertTo-Json -Depth 8 -Compress))
+    }
+
+    Invoke-Case 'Phase 8 A6 required-output 同層 heading 使 body 維持空白' {
+        $required = @('## 推論')
+        $message = @(
+            '## 推論'
+            '## 未決問題'
+            'unresolved'
+        ) -join [Environment]::NewLine
+        $result = Test-RequiredOutputSections -Message $message -RequiredOutput $required
+        $section = @($result.sections | Where-Object { $_.heading -ceq '## 推論' })[0]
+        Assert-True (-not $result.valid -and $result.missing -contains '## 推論' -and -not $section.body_non_empty) ('同層 heading 後的空 body 未被拒絕：' + ($result | ConvertTo-Json -Depth 8 -Compress))
+    }
+
+    Invoke-Case 'Phase 8 A6 T208 案例 1 finalMessage required-output 通過' {
+        $message = @(
+            '## 中斷保全結論'
+            '已完成 question-001、question-002、question-003。'
+            '## 證據支持'
+            'T208 advisor finalMessage required-output fixture。'
+            '## 推論'
+            '### question-001｜已完成'
+            'question-001 content'
+            '### question-002｜已完成'
+            'question-002 content'
+            '### question-003｜已完成'
+            'question-003 content'
+            '## 未決問題'
+            '無'
+            '已確認結論：三個問題的 required-output 內容均已完成驗證。'
+            '未完成單位：無'
+            '證據位置：Test-DispatchRecoveryBinding.ps1'
+        ) -join [Environment]::NewLine
+        $required = @('## 中斷保全結論', '## 證據支持', '## 推論', '## 未決問題')
+        $result = Test-RequiredOutputSections -Message $message -RequiredOutput $required
+        $section = @($result.sections | Where-Object { $_.heading -ceq '## 推論' })[0]
+        Assert-True ($result.valid -and $section.present -and $section.body_non_empty) ('T208 finalMessage required-output 驗證失敗：' + ($result | ConvertTo-Json -Depth 8 -Compress))
+    }
+
+    Invoke-Case 'Phase 8 evidence question ID、required-output 與 C25' {
+        $units = @(Get-AdvisorEvidenceQuestionUnits -QuestionSection "question-001: first`r`nquestion-alpha: second`r`nrequired-output: ## A; ## B`r`noutput-rules: each question")
+        Assert-True ($units.Count -eq 2 -and $units[0] -eq 'question-001' -and $units[1] -eq 'question-alpha') 'advisor question ID 順序或形式異常。'
+        $invalidOutputPath = Join-Path $phase7Root 'phase8-invalid-output.md'
+        $invalidOutput = $evidencePackContent -replace '(?m)^required-output:.*\r?\n', "required-output: 說明文字`r`n"
+        Write-Utf8NoBom -Path $invalidOutputPath -Content ($invalidOutput + "`r`n")
+        $caught = $null
+        try { Test-AdvisorEvidencePack -Path $invalidOutputPath -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase-2' }
+        catch { $caught = $_.Exception.Message }
+        Assert-True ($null -ne $caught -and $caught.Contains('C25 EvidencePackRequiredOutputInvalid')) 'required-output 無效未回報 C25。'
+    }
+
+    Invoke-Case 'Phase 8 F-004 RequestedUnit 必須符合 evidence pack 順序' -Reject -ErrorPattern 'EvidencePackUnitOrderMismatch' {
+        Get-DispatchUnitList -RequestedUnit @('question-002', 'question-001') -DispatchKind 'resource' -UnitKind 'advisor-evidence-question' -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -EvidencePackPath $phase2EvidencePackPath -EvidenceQuestionUnits @('question-001', 'question-002') -TargetPath @()
+    }
+
+    Invoke-Case 'Phase 8 F-004 RequestedUnit 不可跳過 evidence pack 問題' -Reject -ErrorPattern 'EvidencePackUnitOrderMismatch' {
+        Get-DispatchUnitList -RequestedUnit @('question-001', 'question-003') -DispatchKind 'resource' -UnitKind 'advisor-evidence-question' -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -EvidencePackPath $phase2EvidencePackPath -EvidenceQuestionUnits @('question-001', 'question-002', 'question-003') -TargetPath @()
+    }
+
+    Invoke-Case 'Phase 8 F-004 ScopePlan selected prefix 與 deferred suffix' {
+        $partitionSnapshot = $script:phase7LowSnapshot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $partitionActivation = Get-AdvisorActivationDecision -QuotaSnapshot $partitionSnapshot -EstimatePercent 24 -RequestSource 'user-explicit' -HasFreshObservations $true -ServiceRejected $false
+        $partitionPlan = New-ScopePlan -DispatchSlug 'phase8-f004-partition' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $partitionSnapshot -CalibrationPath (Join-Path $phase7Root 'missing-phase8-f004-calibration.jsonl') -Units @('question-001', 'question-002') -UnitKind 'advisor-evidence-question' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $partitionActivation
+        $invalidPartition = $partitionPlan | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $invalidPartition.selected_units = @('question-002')
+        $invalidPartition.deferred_units = @('question-001')
+        Assert-True (-not (Test-ScopePlanCompleteness -ScopePlan $invalidPartition) -and -not (Test-ContinuationScopePlan -ScopePlan $invalidPartition -DispatchSlug 'phase8-f004-partition' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -UnitKind 'advisor-evidence-question' -Units @('question-001', 'question-002'))) 'F-004 ScopePlan 未拒絕非 prefix／suffix 的 selected 與 deferred partition。'
+    }
+
+    Invoke-Case 'Phase 8 F-002 advisor safe point 必須宣告已完成單位' {
+        $f2Snapshot = $script:phase7LowSnapshot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $f2Activation = Get-AdvisorActivationDecision -QuotaSnapshot $f2Snapshot -EstimatePercent 24 -RequestSource 'user-explicit' -HasFreshObservations $true -ServiceRejected $false
+        $f2Plan = New-ScopePlan -DispatchSlug 'phase8-f002-partition' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $f2Snapshot -CalibrationPath (Join-Path $phase7Root 'missing-phase8-f002-calibration.jsonl') -Units @('question-001', 'question-002') -UnitKind 'advisor-evidence-question' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $f2Activation
+        $missingCompletedUnitsMessage = @(
+            '## 中斷保全結論'
+            '已確認結論：fixture conclusion'
+            '證據位置：fixture.md:1'
+            '實際覆蓋範圍：question-001'
+        ) -join [Environment]::NewLine
+        Assert-True (-not (Test-SafePointMessage -Message $missingCompletedUnitsMessage -TaskType 'advisor-consult')) 'F-002 缺少已完成單位欄位仍被視為 advisor safe point。'
+
+        $missingReportPath = Join-Path $phase7Root 'advisor-consult-phase8-missing-completed.md'
+        $missingReport = Write-AdvisorConsultReport -Path $missingReportPath -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-missing-completed' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage $missingCompletedUnitsMessage -Status 'completed' -BudgetMonitor @() -RequiredOutputGate ([pscustomobject]@{ required = @(); present = @(); missing = @(); valid = $true }) -ScopePlan $f2Plan -InterruptionStatus ([ordered]@{ applied = $true; safePointPresent = $false })
+        $missingReportContent = Get-Content -LiteralPath $missingReport -Raw -Encoding UTF8
+        Assert-True ($missingReportContent.Contains('- completed: unknown') -and $missingReportContent.Contains('- incomplete: unknown')) 'F-002 缺少已完成單位時仍從訊息文字推論 completion partition。'
+
+        $deferredMessage = @(
+            '## 中斷保全結論'
+            '已確認結論：fixture conclusion'
+            '證據位置：fixture.md:1'
+            '實際覆蓋範圍：question-001'
+            '已完成單位：question-002'
+        ) -join [Environment]::NewLine
+        $deferredPartition = Get-AdvisorCompletionPartition -Message $deferredMessage -SelectedUnits @('question-001') -DeferredUnits @('question-002')
+        Assert-True ($deferredPartition.status -eq 'invalid' -and $deferredPartition.completed_units[0] -eq 'unknown' -and $deferredPartition.incomplete_units[0] -eq 'unknown') 'F-002 未拒絕將 deferred unit 標記為已完成。'
+    }
+
+    Invoke-Case 'Phase 8 advisor 最長前綴與 report partition' {
+        $zeroSnapshot = $script:phase7LowSnapshot | ConvertTo-Json -Depth 20 | ConvertFrom-Json
+        $zeroSnapshot.observations.primary.remaining_percent = 0
+        $zeroSnapshot.observations.primary.used_percent = 100
+        $zeroSnapshot.primary.remaining_percent = 0
+        $zeroSnapshot.primary.used_percent = 100
+        $activation = Get-AdvisorActivationDecision -QuotaSnapshot $zeroSnapshot -EstimatePercent 24 -RequestSource 'user-explicit' -HasFreshObservations $true -ServiceRejected $false
+        $plan = New-ScopePlan -DispatchSlug 'phase8-advisor-partition' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $zeroSnapshot -CalibrationPath (Join-Path $phase7Root 'missing-phase8-calibration.jsonl') -Units @('question-001', 'question-002') -UnitKind 'advisor-evidence-question' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $activation
+        Assert-True ($plan.activation_mode -eq 'user-authorized' -and $plan.authorization_source -eq 'user-explicit' -and $plan.primary_reserve_percent -eq 0 -and $plan.primary_budget_percent -eq 0 -and $plan.minimum_unit_over_budget -and @($plan.selected_units).Count -eq 1 -and $plan.selected_units[0] -eq 'question-001' -and $plan.deferred_units[0] -eq 'question-002' -and $plan.stop_after_selected_units) 'advisor ScopePlan 未依宣告順序保留最小單位。'
+        $reportPath = Join-Path $phase7Root 'advisor-consult-phase8.md'
+        $finalMessage = "## 中斷保全結論`r`n已確認結論：question-001 completed`r`n證據位置：fixture.md:1`r`n實際覆蓋範圍：question-001`r`n已完成單位：question-001`r`n## 證據支持`r`nsupported`r`n## 推論`r`ninferred`r`n## 未決問題`r`nnone"
+        $gate = [pscustomobject]@{ required = @('## 中斷保全結論', '## 證據支持', '## 推論', '## 未決問題'); present = @('## 中斷保全結論', '## 證據支持', '## 推論', '## 未決問題'); missing = @(); valid = $true }
+        $written = Write-AdvisorConsultReport -Path $reportPath -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-partition' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage $finalMessage -Status 'completed' -BudgetMonitor @() -RequiredOutputGate $gate -ScopePlan $plan -InterruptionStatus ([ordered]@{ applied = $true; safePointPresent = $true })
+        $report = Get-Content -LiteralPath $written -Raw -Encoding UTF8
+        Assert-True ($report.Contains('- activation-mode: user-authorized') -and $report.Contains('- authorization-source: user-explicit') -and $report.Contains('- completed: question-001') -and $report.Contains('- incomplete: question-002') -and $report.Contains('## Interruption status') -and $report.Contains('## Budget monitor')) 'advisor report 未保存 activation、units 或保全欄位。'
+    }
+}
+
 Write-Output "TOTAL: $script:caseCount; FAILED: $script:failures; FIXTURES: $fixtureRoot"
 if ($script:failures -gt 0) { exit 1 }
 exit 0

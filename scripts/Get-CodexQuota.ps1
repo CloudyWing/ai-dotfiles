@@ -220,6 +220,11 @@ function Get-RolloutServiceRejection {
     }
 
     $rejections = New-Object System.Collections.Generic.List[object]
+    $usageLimitPattern = '(?i)usage[\s_-]*limit(?:ed|[\s_-]*(?:reached|exceeded)|\b)'
+    $rateLimitPattern = '(?i)rate[\s_-]*limit(?:ed|[\s_-]*(?:reached|exceeded)|\b)'
+    $quotaExceededPattern = '(?i)quota[\s_-]+exceeded'
+    $tooManyRequestsPattern = '(?i)too[\s_-]+many[\s_-]+requests|\b429\b'
+    $serviceRejectionPattern = '(?i)(?:usage|rate)[\s_-]*limit(?:ed|[\s_-]*(?:reached|exceeded)|\b)|quota[\s_-]+exceeded|too[\s_-]+many[\s_-]+requests|\b429\b|rate[\s_-]*limit[\s_-]*reached[\s_-]*type"\s*:\s*"'
     $hashByPath = @{}
     $rolloutFiles = @(
         Get-ChildItem -LiteralPath $SessionsPath -Recurse -File -Filter 'rollout-*.jsonl' |
@@ -234,7 +239,7 @@ function Get-RolloutServiceRejection {
             $recordIndex = 0
             foreach ($line in Get-Content -LiteralPath $file.FullName -Encoding UTF8) {
                 $recordIndex++
-                if ([string]::IsNullOrWhiteSpace($line) -or $line -notmatch '(?i)(?:usage|rate)[\s_-]*limit(?:ed| exceeded|\b)|quota\s+exceeded|too\s+many\s+requests|\b429\b') {
+                if ([string]::IsNullOrWhiteSpace($line) -or $line -notmatch $serviceRejectionPattern) {
                     continue
                 }
 
@@ -243,7 +248,47 @@ function Get-RolloutServiceRejection {
                     $record = $line | ConvertFrom-Json -ErrorAction Stop
                 }
                 catch {
+                    continue
                 }
+                if ($null -eq $record) {
+                    continue
+                }
+
+                $payload = Get-ObjectPropertyValue -Object $record -Names @('payload', 'data')
+                $errorTypes = @('error', 'turn.failed', 'turn_failed', 'stream_error', 'turn_aborted')
+                $recordType = [string](Get-ObjectPropertyValue -Object $record -Names @('type'))
+                $payloadType = [string](Get-ObjectPropertyValue -Object $payload -Names @('type'))
+                $isErrorEvent = ($recordType -in $errorTypes) -or ($payloadType -in $errorTypes)
+                $rateLimits = Get-ObjectPropertyValue -Object $payload -Names @('rate_limits', 'rateLimits')
+                $reachedType = [string](Get-ObjectPropertyValue -Object $rateLimits -Names @('rate_limit_reached_type', 'rateLimitReachedType'))
+                if (-not $isErrorEvent -and [string]::IsNullOrWhiteSpace($reachedType)) {
+                    continue
+                }
+
+                $messageParts = New-Object System.Collections.Generic.List[string]
+                foreach ($source in @($record, $payload)) {
+                    $messageValue = Get-ObjectPropertyValue -Object $source -Names @('message', 'reason', 'code')
+                    if ($null -ne $messageValue) {
+                        $messageParts.Add([string]$messageValue)
+                    }
+                    $errorObject = Get-ObjectPropertyValue -Object $source -Names @('error')
+                    if ($errorObject -is [string]) {
+                        $messageParts.Add($errorObject)
+                    }
+                    elseif ($null -ne $errorObject) {
+                        foreach ($name in @('message', 'code', 'type')) {
+                            $errorValue = Get-ObjectPropertyValue -Object $errorObject -Names @($name)
+                            if ($null -ne $errorValue) {
+                                $messageParts.Add([string]$errorValue)
+                            }
+                        }
+                    }
+                }
+                $messageText = $messageParts -join ' '
+                if ([string]::IsNullOrWhiteSpace($reachedType) -and $messageText -notmatch ('(?:' + $usageLimitPattern + ')|(?:' + $rateLimitPattern + ')|(?:' + $quotaExceededPattern + ')|(?:' + $tooManyRequestsPattern + ')')) {
+                    continue
+                }
+
                 $timestampValue = Get-ObjectPropertyValue -Object $record -Names @('timestamp', 'created_at', 'observed_at_utc')
                 $observedAtUtc = [DateTimeOffset]::UtcNow
                 if ($null -ne $timestampValue) {
@@ -254,28 +299,31 @@ function Get-RolloutServiceRejection {
                     }
                 }
                 $reasonCode = 'quota-rejected'
-                if ($line -match '(?i)usage[\s_-]*limit(?:ed| exceeded|\b)') {
+                if ($messageText -match $usageLimitPattern -or $reachedType -match '(?i)usage') {
                     $reasonCode = 'usage-limit'
                 }
-                elseif ($line -match '(?i)rate[\s_-]*limit(?:ed| exceeded|\b)') {
+                elseif ($messageText -match $rateLimitPattern -or -not [string]::IsNullOrWhiteSpace($reachedType)) {
                     $reasonCode = 'rate-limit'
                 }
-                elseif ($line -match '(?i)quota\s+exceeded') {
+                elseif ($messageText -match $quotaExceededPattern) {
                     $reasonCode = 'quota-exceeded'
                 }
-                elseif ($line -match '(?i)too\s+many\s+requests|\b429\b') {
+                elseif ($messageText -match $tooManyRequestsPattern) {
                     $reasonCode = 'too-many-requests'
                 }
 
                 $windowName = 'unknown'
-                if ($line -match '(?i)secondary') {
+                $declaredWindow = [string](Get-ObjectPropertyValue -Object $record -Names @('window'))
+                if ([string]::IsNullOrWhiteSpace($declaredWindow)) {
+                    $declaredWindow = [string](Get-ObjectPropertyValue -Object $payload -Names @('window'))
+                }
+                $windowText = ($declaredWindow, $reachedType, $messageText) -join ' '
+                if ($windowText -match '(?i)secondary') {
                     $windowName = 'secondary'
                 }
-                elseif ($line -match '(?i)primary') {
+                elseif ($windowText -match '(?i)primary') {
                     $windowName = 'primary'
                 }
-                $payload = Get-ObjectPropertyValue -Object $record -Names @('payload', 'error', 'data')
-                $rateLimits = Get-ObjectPropertyValue -Object $payload -Names @('rate_limits', 'rateLimits')
                 $windowObject = if ($windowName -in @('primary', 'secondary')) { Get-ObjectPropertyValue -Object $rateLimits -Names @($windowName) } else { $null }
                 $resetValue = Get-ObjectPropertyValue -Object $windowObject -Names @('resets_at', 'reset_at', 'resetAt')
                 $resetAt = $null

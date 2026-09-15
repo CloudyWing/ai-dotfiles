@@ -243,7 +243,9 @@ else {
 }
 
 $codexConfigPath = Join-Path $codexDir "config.toml"
-$deepProfilePath = Join-Path $codexDir "deep.config.toml"
+$advisorProfilePath = Join-Path $codexDir "advisor.config.toml"
+$legacyProfileName = 'deep' + '.config.toml'
+$legacyProfilePath = Join-Path $codexDir $legacyProfileName
 $maxEffortMatches = @()
 if (Test-Path -LiteralPath $codexConfigPath) {
     $maxEffortMatches = @(Select-String -LiteralPath $codexConfigPath -Pattern '^\s*model_reasoning_effort\s*=\s*["'']max["'']\s*$')
@@ -267,12 +269,27 @@ else {
 }
 
 $missingProfiles = @()
-if (-not (Test-Path -LiteralPath $deepProfilePath -PathType Leaf)) {
-    $missingProfiles += 'deep.config.toml'
+$profileConflictDetected = $false
+if (-not (Test-Path -LiteralPath $codexConfigPath -PathType Leaf)) {
+    $missingProfiles += 'config.toml'
 }
+if (-not (Test-Path -LiteralPath $advisorProfilePath -PathType Leaf)) {
+    $missingProfiles += 'advisor.config.toml'
+}
+
+if (Test-Path -LiteralPath $legacyProfilePath -PathType Leaf) {
+    if (-not (Test-Path -LiteralPath $advisorProfilePath -PathType Leaf)) {
+        Write-Warning "  ⚠️ 偵測到舊設定檔 $legacyProfileName。請將其重新命名為 advisor.config.toml 後重新執行 Setup。腳本不會自動搬移或刪除檔案。"
+    }
+    else {
+        $profileConflictDetected = $true
+        Write-Warning "  ⚠️ 偵測到 $legacyProfileName 與 advisor.config.toml 同時存在，設定檔發生衝突。請人工處理後再重新執行 Setup。腳本不會自動搬移或刪除檔案。"
+    }
+}
+
 if ($missingProfiles.Count -gt 0) {
     Write-Warning "  ⚠️ Codex 檔位設定檔缺件：$($missingProfiles -join ', ')。請參考 README.md §3「Codex CLI 前置需求」。"
 }
-else {
-    Write-Host "  ✅ Codex 預設檔位與 deep.config.toml 均存在。" -ForegroundColor DarkGreen
+elseif (-not $profileConflictDetected) {
+    Write-Host "  ✅ Codex 預設檔位與 advisor.config.toml 均存在。" -ForegroundColor DarkGreen
 }
