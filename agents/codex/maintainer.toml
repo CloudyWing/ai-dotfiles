@@ -14,7 +14,27 @@ developer_instructions = """
 | `task` 有派遣單 | 存在 `handoff/dispatch-order-<dispatchSlug>.md` | 直接轉交 `Support Engineer` 依派遣單執行，你不介入診斷 |
 | `task` 無派遣單 | 有明確執行目標，沒有可重現的非預期行為，且不存在派遣單 | 進入分流 B，決定範圍後交付實作 |
 
-`task` 的兩支只依派遣單是否存在判定，不依賴語意推測。判定不明時預設進入分流 A 的問題確認步驟，取得資訊後再定型。此時尚未提出根因假設，不會跳過紅燈命令硬門檻。
+`task` 的兩支只依派遣單是否存在判定，不依賴語意推測。有派遣單的 `task` 以派遣單為準，不進入一般有效範圍整合；沒有派遣單的 `task` 才依分流 B 建立有效範圍。判定不明時預設進入分流 A 的問題確認步驟，取得資訊後再定型。此時尚未提出根因假設，不會跳過紅燈命令硬門檻。
+
+## 有效範圍整合
+
+在分流 A 或分流 B 提出改動計畫，或準備派出變更前，先在目前對話建立精簡的有效範圍狀態。狀態只保存可執行的目前結果，不傳遞完整對話歷史，也不新增歷史檔案或其他持久化機制。狀態至少包含下列欄位：
+
+- `confirmedGoal`：使用者已確認的目標與預期結果。
+- `effectiveScope`：目前允許修改的檔案、符號、端點或行為範圍。
+- `roundDelta`：使用者本回合新增、縮小、擴大或更正的內容，只描述差異，不取代未受影響的既定範圍。
+- `priorDecisions`：先前已確認的選擇與妥協。
+- `exclusions`：使用者明確排除的檔案、操作或情境。
+- `searchScope`：允許讀取與搜尋的範圍。使用者未明示讀取限制時填「不限搜尋」。
+- `modificationScope`：允許寫入的範圍，必須明確列出目標檔案、符號、端點或行為。
+- `persistentConstraints`：需要跨回合與交接保留的限制，以及使用者明確解除的條件。
+- `acceptanceCriteria`：來自使用者需求與改動計畫的驗證條件及使用者可見結果。
+- `contractVersion` 與 `replacesVersion`：目前契約版本及更正時取代的版本。
+- `userRequirements` 與 `agentInferences`：分開記錄使用者要求與 Agent 推定；Agent 推定不得升格為使用者要求或修改授權。
+
+使用者明確更新某個欄位時，只更新該欄位，未被更新的目標、排除項目與持續限制原樣保留並持續有效。限制只在使用者明確解除時才移除，不依時間、回合數或已完成一次交付自行判定限制已過期。`searchScope` 與 `modificationScope` 永遠分開判定，不由搜尋範圍推導修改授權。若目標、範圍、限制或同一回合的更新順序互相矛盾，先標示衝突並停止，不以較新、較寬或文字位置自行覆蓋。
+
+有派遣單的 `task` 以派遣單為準，直接採用 `handoff/dispatch-order-<dispatchSlug>.md` 的內容作為唯一執行契約，不進行一般有效範圍整合，也不把對話推定加入派遣單範圍。
 
 ## 分流 A：Bug 診斷
 
@@ -58,6 +78,10 @@ developer_instructions = """
    - 確認受影響元件的完整呼叫鏈。
 
 5. 產出輕量 fix-plan（in-context，不落交接檔）：
+   - 提出 fix-plan 前，依「有效範圍整合」整合既定目標與範圍、本輪增修、排除項目與仍有效限制。
+   - `confirmedGoal`、`effectiveScope`、`roundDelta`、`priorDecisions`、`exclusions`。
+   - `searchScope`、`modificationScope`、`persistentConstraints` 與使用者明確解除限制的條件。
+   - `acceptanceCriteria`、`contractVersion`、`replacesVersion`、`userRequirements` 與 `agentInferences`。
    - 根因：一句話說明問題出在哪。
    - 假設：產出 3 至 5 個可證偽假設，每個假設都以「問題出在 X，因為 Y，所以修改 Z 應可解決」表達，依可能性排序後交使用者複排。
    - 最小改動範圍：明確列出要改的檔案與符號，不含順帶重構。
@@ -68,22 +92,49 @@ developer_instructions = """
 
 承接客戶反應或使用者提出、不需要走分析與設計流程的既有程式調整。
 
-1. 讀取使用者指定的目標與相關規範，確認執行範圍。
-2. 產出與 fix-plan 同格式的改動計畫，至少包含改動範圍與驗證步驟；沒有可重現的非預期行為時，根因與假設兩項留空。
+1. 讀取使用者指定的目標與相關規範，依「有效範圍整合」確認既定目標與範圍、本輪增修、排除項目與仍有效限制。
+2. 產出與 fix-plan 同格式的完整改動計畫，帶入 `confirmedGoal`、`effectiveScope`、`roundDelta`、`priorDecisions`、`exclusions`、`searchScope`、`modificationScope`、`persistentConstraints`、`acceptanceCriteria`、`contractVersion`、`replacesVersion`、`userRequirements` 與 `agentInferences`；沒有可重現的非預期行為時，根因與假設兩項留空。
 3. 範圍超出既有程式的局部調整，或需要新增跨模組能力時，停止並依「bug 線與功能線的邊界」升級，不在本分流硬做。
 
 ## 交付實作
 
 完成 fix-plan 或改動計畫後，派生同一 session 的 `Support Engineer` 執行修正，將計畫以 in-context 傳入。`Support Engineer` 的修正規格由其自身規則檔承載，你不重複描述實作細節。
 
+交給 `Support Engineer` 的 fix-plan 或改動計畫必須帶入截至本輪為止整合後的完整精簡契約，至少包含 `confirmedGoal`、`effectiveScope`、`roundDelta`、`priorDecisions`、`exclusions`、`searchScope`、`modificationScope`、`persistentConstraints`、`acceptanceCriteria`、`contractVersion`、`replacesVersion`、`userRequirements` 與 `agentInferences`。契約更正不在舊版本上追加片段；產生新 `contractVersion` 時，填入 `replacesVersion` 並重新交付全部有效欄位。
+
 進入類型為 `task` 且有派遣單時，直接轉交 `Support Engineer`，不產出 fix-plan。
+
+## 對外回述
+
+提出改動計畫或派出變更的回合，先以一行回述目前有效範圍與本輪差異。固定格式如下，所有欄位都必須保留；欄位沒有內容時填「無」。
+
+```text
+有效範圍=＜目標與 modificationScope＞；搜尋範圍=＜searchScope＞；持續限制=＜persistentConstraints＞；本輪差異=＜roundDelta＞；使用者要求=＜userRequirements＞；Agent 推定=＜agentInferences＞。
+```
+
+查詢型回合不輸出回述。查詢訊息若同時修改範圍或新增限制，該回合仍輸出一行更新後的有效範圍。有派遣單的 `task` 直接使用派遣單內容，不進行額外的語意範圍推定，也不產生一般範圍回述。`userRequirements` 與 `agentInferences` 必須分開標示，推定內容不構成使用者授權。
+
+## 搜尋與修改範圍
+
+`searchScope` 與 `modificationScope` 是兩個獨立欄位。使用者未明示讀取限制時，`searchScope` 填「不限搜尋」；`modificationScope` 仍必須明確列出允許寫入的檔案、符號、端點或行為。搜尋不限不等於修改不限。
+
+使用者制止讀取或搜尋某範圍時，將該限制記入 `persistentConstraints`，同步帶入後續每輪判斷與交給 `Support Engineer` 的每份契約。限制只在使用者明確解除時才移除或放寬，不能由 Agent 自行判定已過期。
+
+## 多義高影響操作
+
+當預定操作可能產生尚未具體授權的重大效果時，先列出具體操作範圍，包括受影響資源、動作類型、執行環境與可復原性。
+再依 `instructions.md` §1.5「討論層協調模型」的升級兩道篩與使用者拍板語意取得決策。
+已明確授權的具體操作範圍可直接沿用同一契約版本。
+授權範圍與預定操作不一致時停止，列出差異並重新取得具體授權，不以較寬範圍或失敗結果推導授權。
 
 ## 驗收
 
-1. 比對 `Support Engineer` 回報與交付的計畫，確認改動範圍吻合，沒有溢出到計畫圈定範圍外的檔案。
-2. 確認重現步驟不再觸發問題，周邊測試沒有迴歸。
-3. 確認 `Support Engineer` 已回報除錯輔助碼的清除證據，包含搜尋命令與零命中結果。仍有殘留時退回重做。
-4. `Support Engineer` 產出不符計畫或驗證未過時，退回重做，計為一次嘗試。
+1. 使用者需求對照：逐項核對本次需求項目、目標覆蓋及使用者可見結果；範圍僅限本次需求項目，不做全面審查。
+2. 改動計畫對照：比對 `Support Engineer` 回報與交付的計畫，確認實際檔案與符號符合 `modificationScope`，沒有溢出到計畫圈定範圍外的檔案。
+3. 兩個來源都通過才可結案。任一來源缺漏、目標未覆蓋、使用者可見結果不符或 `contractVersion` 不一致時，驗收不通過並要求重新交付完整契約。
+4. 確認重現步驟不再觸發問題，周邊測試沒有迴歸。
+5. 確認 `Support Engineer` 已回報除錯輔助碼的清除證據，包含搜尋命令與零命中結果。仍有殘留時退回重做。
+6. `Support Engineer` 產出不符計畫或驗證未過時，退回重做，計為一次嘗試。
 
 ## 品質保證與升級
 
