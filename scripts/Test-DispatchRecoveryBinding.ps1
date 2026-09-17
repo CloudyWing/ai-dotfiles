@@ -2,7 +2,7 @@
 
 [CmdletBinding()]
 param(
-    [ValidateSet(1, 2, 3, 4, 5, 6, 7, 8)]
+    [ValidateSet(1, 2, 3, 4, 5, 6, 7, 8, 9)]
     [int]$Phase = 1,
 
     [switch]$Child,
@@ -130,6 +130,93 @@ function ConvertTo-ProcessArgument {
     }
     $null = $builder.Append('"')
     return $builder.ToString()
+}
+
+function Invoke-Phase9Process {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$HostPath,
+
+        [Parameter(Mandatory)]
+        [string[]]$Arguments,
+
+        [Parameter(Mandatory)]
+        [string]$WorkingDirectory,
+
+        [AllowNull()]
+        [hashtable]$EnvironmentVariables
+    )
+
+    $argumentText = ($Arguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
+    $process = New-Object System.Diagnostics.Process
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $HostPath
+    $startInfo.Arguments = $argumentText
+    $startInfo.WorkingDirectory = $WorkingDirectory
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $startInfo.StandardOutputEncoding = $utf8
+    $startInfo.StandardErrorEncoding = $utf8
+    if ($null -ne $EnvironmentVariables) {
+        foreach ($environmentEntry in Get-ChildItem Env:) {
+            $startInfo.EnvironmentVariables[[string]$environmentEntry.Name] = [string]$environmentEntry.Value
+        }
+        if ([string]::Equals([IO.Path]::GetFileName($HostPath), 'powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            $windowsPowerShellModulePaths = New-Object System.Collections.Generic.List[string]
+            foreach ($modulePath in @(
+                    (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'),
+                    (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
+                    (Join-Path $env:WINDIR 'system32\WindowsPowerShell\v1.0\Modules'))) {
+                if (-not [string]::IsNullOrWhiteSpace($modulePath)) {
+                    $windowsPowerShellModulePaths.Add($modulePath)
+                }
+            }
+            $startInfo.EnvironmentVariables['PSModulePath'] = $windowsPowerShellModulePaths -join ';'
+        }
+        foreach ($key in $EnvironmentVariables.Keys) {
+            $startInfo.EnvironmentVariables[[string]$key] = [string]$EnvironmentVariables[$key]
+        }
+    }
+    $process.StartInfo = $startInfo
+    $start = [DateTimeOffset]::UtcNow
+    try {
+        if (-not $process.Start()) {
+            throw 'Phase 9 外部程序 Process.Start() 回傳 false。'
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        return [pscustomobject]@{
+            host_path = $HostPath
+            arguments = @($Arguments)
+            command = $HostPath + ' ' + $argumentText
+            start_utc = $start.ToString('o')
+            finish_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            exit_code = $process.ExitCode
+            stdout = $stdoutTask.Result
+            stderr = $stderrTask.Result
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            host_path = $HostPath
+            arguments = @($Arguments)
+            command = $HostPath + ' ' + $argumentText
+            start_utc = $start.ToString('o')
+            finish_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            exit_code = 1
+            stdout = ''
+            stderr = ''
+            launch_error = $_.Exception.Message
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 function Invoke-TestChildProcess {
@@ -411,6 +498,21 @@ function Assert-True {
     if (-not $Value) { throw $Message }
 }
 
+function Write-Phase9Evidence {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Label,
+
+        [AllowNull()]
+        [object]$Value
+    )
+
+    [Console]::WriteLine('EVIDENCE_BEGIN: ' + $Label)
+    [Console]::WriteLine((ConvertTo-Json -InputObject $Value -Depth 80))
+    [Console]::WriteLine('EVIDENCE_END: ' + $Label)
+}
+
 if ($Child) {
     Write-Output ('PROBE_DATE_ECHO: <' + $ProbeDate + '>')
     Write-Output ('PROBE_EMPTY_ECHO: <' + $ProbeEmpty + '>')
@@ -452,6 +554,12 @@ foreach ($function in $functions) {
     . ([scriptblock]::Create($definition))
 }
 
+$phase9ProductionFunctionDefinitions = @{}
+foreach ($functionName in @('Invoke-Preflight', 'Invoke-Prepare', 'Invoke-Start', 'Add-CalibrationObservation')) {
+    $productionCommand = Get-Command -Name $functionName -CommandType Function -ErrorAction Stop
+    $phase9ProductionFunctionDefinitions[$functionName] = $productionCommand.ScriptBlock
+}
+
 $initialLineRoot = Join-Path $fixtureRoot '.local/ai-sessions/handoff/line-a'
 New-Item -ItemType Directory -Path $initialLineRoot -Force | Out-Null
 Write-Utf8NoBom -Path (Join-Path $initialLineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'line-a' } | ConvertTo-Json) + "`n")
@@ -481,25 +589,33 @@ $script:AddDirectoryExplicit = $false
 $script:SearchExplicit = $false
 $script:CodexParentOptionExplicit = $false
 $script:ProfileExplicit = $false
+$script:phase9RealDispatchGitSourceRoot = $null
+$script:phase9RealDispatchGitRoot = $null
+$script:phase9RealDispatchGitInitialized = $false
 function Get-PidCheckResult { param($SourceRoot, $LineSlug, $WriteMode) return $script:pidResult }
 function Get-WorktreeAclGate {
-    param($SourceRoot, $ExecutionRoot, $WriteMode)
+    param($SourceRoot, $ExecutionRoot, $WriteMode, $ContinuationRecord)
     if ([string]::Equals([string]$SourceRoot, [string]$ExecutionRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        return [ordered]@{ status = 'not-applicable'; rejection_code = $null; source = @{}; dispatch = @{}; residue = @(); write_mode = $WriteMode }
+        return [ordered]@{ status = 'not-applicable'; rejection_code = $null; source = @{}; dispatch = @{}; residue = @(); raw_residue = @(); accepted_sandbox_entries = @(); allowed_sandbox_entries = @(); sandbox_evidence_status = 'not-applicable'; write_mode = $WriteMode }
     }
     if ($script:aclFixtureStatus -eq 'residue') {
-        return [ordered]@{ status = 'residue'; rejection_code = 'WorktreeAclResidue'; source = @{}; dispatch = @{}; residue = @([ordered]@{ identity = 'fixture'; rights = 'Modify' }); write_mode = $WriteMode }
+        return [ordered]@{ status = 'residue'; rejection_code = 'WorktreeAclResidue'; source = @{}; dispatch = @{}; residue = @([ordered]@{ identity = 'fixture'; rights = 'Modify' }); raw_residue = @([ordered]@{ identity = 'fixture'; rights = 'Modify' }); accepted_sandbox_entries = @(); allowed_sandbox_entries = @(); sandbox_evidence_status = 'rejected'; write_mode = $WriteMode }
     }
     if ($script:aclFixtureStatus -eq 'unknown') {
-        return [ordered]@{ status = 'unknown'; rejection_code = 'WorktreeAclUnknown'; source = @{}; dispatch = @{}; residue = @(); write_mode = $WriteMode }
+        return [ordered]@{ status = 'unknown'; rejection_code = 'WorktreeAclUnknown'; source = @{}; dispatch = @{}; residue = @(); raw_residue = @(); accepted_sandbox_entries = @(); allowed_sandbox_entries = @(); sandbox_evidence_status = 'unknown'; write_mode = $WriteMode }
     }
-    return [ordered]@{ status = 'clean'; rejection_code = $null; source = @{}; dispatch = @{}; residue = @(); write_mode = $WriteMode }
+    return [ordered]@{ status = 'clean'; rejection_code = $null; source = @{}; dispatch = @{}; residue = @(); raw_residue = @(); accepted_sandbox_entries = @(); allowed_sandbox_entries = @(); sandbox_evidence_status = 'none'; write_mode = $WriteMode }
 }
 function Get-CodexExecutablePath { param($ConfiguredPath) return 'fixture-codex' }
 function Get-OrCreateQuotaSnapshot {
     param($Path, $CodexHome, $HistoryRoot, $Purpose, [switch]$Required)
     if ($script:quotaFixtureFailure) { throw 'quota fixture failure' }
     if (-not [string]::IsNullOrWhiteSpace($script:quotaSnapshotPathOverride)) {
+        if (-not (Test-Path -LiteralPath $script:quotaSnapshotPathOverride -PathType Leaf)) {
+            $quotaParent = Split-Path -Parent $script:quotaSnapshotPathOverride
+            New-Item -ItemType Directory -Path $quotaParent -Force | Out-Null
+            $null = New-Phase8QuotaSnapshot -Path $script:quotaSnapshotPathOverride -PrimaryRemainingPercent 80
+        }
         return $script:quotaSnapshotPathOverride
     }
     $quotaPath = Join-Path $fixtureRoot 'quota.json'
@@ -543,7 +659,7 @@ function New-DispatchPrompt {
     return $PromptPath
 }
 function New-CodexLauncher {
-    param($CodexExecutable, $CodexArguments, $PromptPath, $EventPath, $ErrorPath, $HistoryRoot, $LauncherPath)
+    param($CodexExecutable, $CodexArguments, $PromptPath, $EventPath, $ErrorPath, $HistoryRoot, $LauncherPath, $ExitSidecarPath, $LineSlug, $DispatchSlug, $RunId)
     if ($script:quotaProbeCaptureArguments) {
         $script:quotaProbeCapturedArguments = @($CodexArguments)
         $script:quotaProbeEventPath = $EventPath
@@ -589,6 +705,10 @@ function New-TestProcess {
     $process | Add-Member ScriptMethod Dispose { }
     return $process
 }
+function Invoke-GitCommand {
+    param($WorkingDirectory, $Arguments, $StandardInput, [switch]$AllowFailure)
+    return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fatal: not a git repository' }
+}
 function Get-StartedProcessSnapshot {
     param($ProcessId)
     switch ($script:startSnapshotMode) {
@@ -600,8 +720,8 @@ function Get-StartedProcessSnapshot {
 function Wait-ForThreadRelay {
     param($EventPath, $ThreadPath, $TimeoutSeconds)
     Write-TestEvents -Path $EventPath -Thread $script:testThread
-    if ($script:relayFailure) { return [pscustomobject]@{ threadId = ''; timeoutSeconds = 5; source = 'fixture'; timedOut = $true } }
-    return [pscustomobject]@{ threadId = $script:testThread; timeoutSeconds = 5; source = 'fixture'; timedOut = $false }
+    if ($script:relayFailure) { return [pscustomobject]@{ threadId = ''; existingThreadId = ''; ready = $false; eventObserved = $false; timeoutSeconds = 5; source = 'fixture'; timedOut = $true } }
+    return [pscustomobject]@{ threadId = $script:testThread; existingThreadId = ''; ready = $true; eventObserved = $true; timeoutSeconds = 5; source = 'fixture'; timedOut = $false }
 }
 function Stop-VerifiedProcessTree { return [pscustomobject]@{ CleanupStatus = 'fixture'; ErrorMessage = '' } }
 function Get-ProcessExitCodeIfExited { param($Process) return 0 }
@@ -1126,6 +1246,10 @@ $ProcessExitCode = 0
 $QuotaBeforePath = Join-Path $fixtureRoot 'before.json'
 $QuotaAfterPath = Join-Path $fixtureRoot 'after.json'
 Write-Utf8NoBom $a.last_message_path 'design.md dispatch-a line-a'
+function Invoke-GitCommand {
+    param($WorkingDirectory, $Arguments, $StandardInput, [switch]$AllowFailure)
+    return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fatal: not a git repository' }
+}
 Invoke-Case 'Inspect 最終輸出包含 runId 與 runRecordPath' {
     $result = Invoke-Inspect
     Assert-True ($result.runId -eq $a.run_id -and $result.runRecordPath -eq $aPath -and $result.success) 'Inspect 最終輸出異常。'
@@ -1771,7 +1895,59 @@ if ($Phase -ge 3) {
         param($WorkingDirectory, $Arguments, $StandardInput, [switch]$AllowFailure)
         $command = $Arguments -join ' '
         $output = ''
-        if ($Arguments[0] -eq 'ls-tree') {
+        $realGitRoots = @($script:phase9RealDispatchGitSourceRoot, $script:phase9RealDispatchGitRoot) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+        $isRealDispatchGit = @($realGitRoots | Where-Object { [string]::Equals([IO.Path]::GetFullPath($WorkingDirectory), [IO.Path]::GetFullPath([string]$_), [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0
+        if ($Arguments[0] -eq '-C' -and $Arguments.Count -ge 2 -and @($realGitRoots | Where-Object { [string]::Equals([IO.Path]::GetFullPath($Arguments[1]), [IO.Path]::GetFullPath([string]$_), [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+            $isRealDispatchGit = $true
+        }
+        if ($isRealDispatchGit) {
+            if ($Arguments[0] -eq '-C' -and $Arguments.Count -ge 4 -and $Arguments[2] -eq 'rev-parse' -and $Arguments[3] -eq '--is-inside-work-tree') {
+                if ($script:phase9RealDispatchGitInitialized) {
+                    return [pscustomobject]@{ ExitCode = 0; StdOut = 'true'; StdErr = '' }
+                }
+                return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fatal: not a git repository' }
+            }
+            elseif ($Arguments[0] -eq 'init') {
+                $script:phase9RealDispatchGitInitialized = $true
+            }
+            elseif ($Arguments[0] -eq 'rev-parse') {
+                $output = 'c' * 40
+            }
+            elseif ($Arguments[0] -eq 'ls-files' -and $Arguments -contains '--error-unmatch') {
+                return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'error: pathspec did not match any file' }
+            }
+            elseif ($Arguments[0] -eq 'check-ignore' -and $Arguments -contains '--quiet') {
+                return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = '' }
+            }
+            elseif ($Arguments -contains 'worktree') {
+                $worktreeIndex = [Array]::IndexOf([string[]]$Arguments, 'worktree')
+                $worktreePath = [string]$Arguments[$worktreeIndex + 3]
+                New-Item -ItemType Directory -Path $worktreePath -Force | Out-Null
+                New-Item -ItemType Directory -Path (Join-Path $worktreePath '.local\ai-sessions\history\line-real') -Force | Out-Null
+                $sourcePromptPath = Join-Path $script:phase9RealDispatchGitSourceRoot 'dispatch-prompt.md'
+                if (Test-Path -LiteralPath $sourcePromptPath -PathType Leaf) {
+                    Copy-Item -LiteralPath $sourcePromptPath -Destination (Join-Path $worktreePath 'dispatch-prompt.md') -Force
+                }
+            }
+            return [pscustomobject]@{ ExitCode = 0; StdOut = $output; StdErr = '' }
+        }
+        if ($Arguments[0] -eq '-C' -and $Arguments.Count -ge 4 -and $Arguments[2] -eq 'rev-parse' -and $Arguments[3] -eq '--is-inside-work-tree') {
+            if ([string]::Equals([IO.Path]::GetFullPath($Arguments[1]), [IO.Path]::GetFullPath($root), [StringComparison]::OrdinalIgnoreCase)) {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = 'true'; StdErr = '' }
+            }
+            return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fatal: not a git repository' }
+        }
+        elseif ($Arguments[0] -eq 'ls-files' -and $Arguments -contains '--error-unmatch') {
+            $relative = [string]$Arguments[$Arguments.Count - 1]
+            if ([string]::Equals([IO.Path]::GetFullPath($WorkingDirectory), [IO.Path]::GetFullPath($root), [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath (Join-Path $WorkingDirectory $relative) -PathType Leaf)) {
+                return [pscustomobject]@{ ExitCode = 0; StdOut = $relative + "`n"; StdErr = '' }
+            }
+            return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'error: pathspec did not match any file' }
+        }
+        elseif ($Arguments[0] -eq 'check-ignore' -and $Arguments -contains '--quiet') {
+            return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = '' }
+        }
+        elseif ($Arguments[0] -eq 'ls-tree') {
             $output = (@($gitTree.Keys | Sort-Object | ForEach-Object { $gitTree[$_] + ' blob ' + ('a' * 40) + "`t" + $_ }) -join [char]0) + [char]0
         }
         elseif ($command -eq 'ls-files --stage -z') {
@@ -2857,7 +3033,13 @@ if ($Phase -ge 6) {
     $phase6PreflightSourceContent = 'phase6 preflight source document'
     Write-Utf8NoBom -Path $phase6PreflightSourceDocument -Content $phase6PreflightSourceContent
     $phase6PreflightDispatchRoot = Join-Path $fixtureRoot '.local/ai-sessions/worktrees/phase6-preflight'
-    function Get-ExistingGitRepositoryState { return [pscustomobject]@{ IsRepository = $false } }
+    function Get-ExistingGitRepositoryState {
+        param([string]$SourceRoot)
+        if ([string]::Equals([IO.Path]::GetFullPath($SourceRoot), [IO.Path]::GetFullPath($root), [StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ IsRepository = $true }
+        }
+        return [pscustomobject]@{ IsRepository = $false }
+    }
     Invoke-Case 'Phase 6 Preflight verify-only 不複製交接物' {
         $preflightText = ($functions | Where-Object { $_.Name -eq 'Invoke-Preflight' }).Extent.Text
         Assert-True (-not $preflightText.Contains('Copy-Item') -and -not $preflightText.Contains('handoffFileName')) 'Preflight 仍包含交接物複製路徑。'
@@ -3807,6 +3989,10 @@ if ($Phase -ge 8) {
             captured_at_utc = $observedAt.ToString('o')
             primary = [ordered]@{ used_percent = $primaryUsed; remaining_percent = $PrimaryRemainingPercent; window_minutes = 120; resets_at = $primaryReset; source_file = 'phase8-start.jsonl' }
             secondary = [ordered]@{ used_percent = 50; remaining_percent = 50; window_minutes = 10080; resets_at = $secondaryReset; source_file = 'phase8-start.jsonl' }
+            values = [ordered]@{
+                primary = [ordered]@{ used_percent = $primaryUsed; remaining_percent = $PrimaryRemainingPercent; resets_at = $primaryReset }
+                secondary = [ordered]@{ used_percent = 50; remaining_percent = 50; resets_at = $secondaryReset }
+            }
             observations = [ordered]@{
                 primary = [ordered]@{ used_percent = $primaryUsed; remaining_percent = $PrimaryRemainingPercent; observed_at_utc = $observedAt.ToString('o'); source = 'phase8-start.jsonl'; freshness = 'fresh'; window = 'primary'; resets_at = $primaryReset }
                 secondary = [ordered]@{ used_percent = 50; remaining_percent = 50; observed_at_utc = $observedAt.ToString('o'); source = 'phase8-start.jsonl'; freshness = 'fresh'; window = 'secondary'; resets_at = $secondaryReset }
@@ -4673,6 +4859,3715 @@ if ($Phase -ge 8) {
         $written = Write-AdvisorConsultReport -Path $reportPath -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-partition' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage $finalMessage -Status 'completed' -BudgetMonitor @() -RequiredOutputGate $gate -ScopePlan $plan -InterruptionStatus ([ordered]@{ applied = $true; safePointPresent = $true })
         $report = Get-Content -LiteralPath $written -Raw -Encoding UTF8
         Assert-True ($report.Contains('- activation-mode: user-authorized') -and $report.Contains('- authorization-source: user-explicit') -and $report.Contains('- completed: question-001') -and $report.Contains('- incomplete: question-002') -and $report.Contains('## Interruption status') -and $report.Contains('## Budget monitor')) 'advisor report 未保存 activation、units 或保全欄位。'
+    }
+}
+
+if ($Phase -ge 9) {
+    $phase9Root = Join-Path $fixtureRoot 'phase9'
+    New-Item -ItemType Directory -Path $phase9Root -Force | Out-Null
+    $sRealDispatchParent = Split-Path -Parent $fixtureRoot
+
+    $aclFunctionAst = @($functions | Where-Object { $_.Name -eq 'Get-WorktreeAclGate' } | Select-Object -First 1)
+    Assert-True ($aclFunctionAst.Count -eq 1) 'Phase 9 找不到 production Get-WorktreeAclGate AST。'
+    $aclFunctionDefinition = $aclFunctionAst[0].Extent.Text -replace '^function Get-WorktreeAclGate', 'function Invoke-Phase9ProductionAclGate'
+    . ([scriptblock]::Create($aclFunctionDefinition))
+
+    $phase9AclSourceRoot = Join-Path $phase9Root 'acl-source'
+    $phase9AclExecutionRoot = Join-Path $phase9Root 'acl-dispatch'
+    New-Item -ItemType Directory -Path $phase9AclSourceRoot, $phase9AclExecutionRoot -Force | Out-Null
+    $phase9SandboxEntry = [ordered]@{
+        identity = 'S-1-5-21-100-200-300-400'
+        identity_resolution = 'unresolved'
+        access_control_type = 'Allow'
+        rights = 'Modify'
+        inheritance_flags = @('ObjectInherit', 'ContainerInherit')
+        propagation_flags = @('None')
+        is_inherited = $false
+        canonical = '(OI)(CI)(M)'
+        fingerprint = ('a' * 64)
+    }
+    $phase9ExtraAclEntry = [ordered]@{
+        identity = 'S-1-5-21-100-200-300-401'
+        identity_resolution = 'unresolved'
+        access_control_type = 'Allow'
+        rights = 'Read'
+        inheritance_flags = @('ObjectInherit', 'ContainerInherit')
+        propagation_flags = @('None')
+        is_inherited = $false
+        canonical = '(OI)(CI)(R)'
+        fingerprint = ('b' * 64)
+    }
+    $script:phase9AclMode = 'sandbox'
+    function Get-ExplicitAclSnapshot {
+        param([string]$Path)
+        if ($script:phase9AclMode -eq 'unknown') {
+            return [ordered]@{ status = 'unknown'; path = $Path; fingerprint = $null; entries = @(); explicit_entries = @(); captured_at_utc = [datetime]::UtcNow.ToString('o'); error = 'fixture ACL read failure' }
+        }
+        $entries = if ([string]::Equals([IO.Path]::GetFullPath($Path), [IO.Path]::GetFullPath($phase9AclExecutionRoot), [StringComparison]::OrdinalIgnoreCase)) {
+            if ($script:phase9AclMode -eq 'extra') { @($phase9SandboxEntry, $phase9ExtraAclEntry) } else { @($phase9SandboxEntry) }
+        }
+        else {
+            @()
+        }
+        return [ordered]@{ status = 'known'; path = $Path; fingerprint = ('c' * 64); entries = @($entries); explicit_entries = @($entries); captured_at_utc = [datetime]::UtcNow.ToString('o'); error = $null }
+    }
+
+    Invoke-Case 'Phase 9 P1 A5 normal sandbox ACE continuation' {
+        $script:phase9AclMode = 'sandbox'
+        $firstGate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write'
+        Assert-True ($firstGate.status -eq 'clean') ('sandbox ACE 未被 fallback 接受：' + ($firstGate | ConvertTo-Json -Depth 12 -Compress))
+        Assert-True (@($firstGate.accepted_sandbox_entries).Count -eq 1) 'sandbox ACE 未記錄為 accepted_sandbox_entries。'
+        $normalRecord = [pscustomobject]@{
+            sandbox_acl_evidence = [pscustomobject]@{
+                capture_status = 'captured'
+                entries = @($phase9SandboxEntry)
+                captured_at_utc = [DateTime]::UtcNow.ToString('o')
+                normal_completion = $true
+                continuation_allowed = $true
+            }
+        }
+        $continuedGate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write' -ContinuationRecord $normalRecord
+        Assert-True ($continuedGate.status -eq 'clean') '正常完成 RunRecord 的 whitelist 未允許同一 sandbox ACE。'
+    }
+
+    Invoke-Case 'Phase 9 P1 A5 forced termination residue' -Reject -ErrorPattern 'WorktreeAclResidue' {
+        $script:phase9AclMode = 'extra'
+        $gate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write'
+        Assert-True ($gate.status -eq 'residue' -and $gate.rejection_code -eq 'WorktreeAclResidue') 'forced termination residue 未拒絕。'
+        throw ('WorktreeAclResidue：' + ($gate | ConvertTo-Json -Depth 12 -Compress))
+    }
+
+    Invoke-Case 'Phase 9 P1 A5 extra residue and unknown ACL' -Reject -ErrorPattern 'WorktreeAclUnknown' {
+        $script:phase9AclMode = 'unknown'
+        $gate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write'
+        Assert-True ($gate.status -eq 'unknown' -and $gate.rejection_code -eq 'WorktreeAclUnknown') 'ACL unknown 未保留拒絕狀態。'
+        throw ('WorktreeAclUnknown：' + ($gate | ConvertTo-Json -Depth 12 -Compress))
+    }
+
+    Invoke-Case 'Phase 9 F-001 actual Start continuation reaches production ACL gate' {
+        $f001FunctionNames = @('Get-WorktreeAclGate', 'Resolve-PreviousDispatchRun', 'Resolve-DispatchBaselineBinding', 'Resolve-PrepareResultBinding', 'Test-ScopePlanHashRecord', 'Get-DispatchUnitList', 'Test-ContinuationScopePlan')
+        $f001OriginalFunctions = @{}
+        foreach ($functionName in $f001FunctionNames) {
+            $f001OriginalFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function -ErrorAction Stop).ScriptBlock
+        }
+        $previousTestThread = $script:testThread
+        $previousQuotaOverride = $script:quotaSnapshotPathOverride
+        $previousAclMode = $script:phase9AclMode
+        $previousDispatchUnitOverride = $script:dispatchUnitListOverride
+        $f001SourceRoot = $phase9AclSourceRoot
+        $f001ExecutionRoot = $phase9AclExecutionRoot
+        $f001LineSlug = 'line-a'
+        $f001DispatchSlug = 'f001-start-chain'
+        $f001Thread = [guid]::NewGuid().ToString('D')
+        $f001HistoryRoot = Join-Path $f001ExecutionRoot '.local\ai-sessions\history'
+        $f001LineHistoryRoot = Join-Path $f001HistoryRoot $f001LineSlug
+        $f001ScopePath = Join-Path $f001LineHistoryRoot 'f001-scope.json'
+        $f001PreparePath = Join-Path $f001LineHistoryRoot 'f001-prepare.json'
+        $f001BaselinePath = Join-Path $f001LineHistoryRoot 'f001-baseline.json'
+        $f001PreflightPath = Join-Path $f001LineHistoryRoot 'f001-preflight.json'
+        $f001PromptPath = Join-Path $f001ExecutionRoot 'f001-prompt.md'
+        $f001QuotaPath = Join-Path $f001SourceRoot 'f001-quota.json'
+        $f001CodexHome = Join-Path $f001ExecutionRoot 'f001-codex-home'
+        New-Item -ItemType Directory -Path $f001LineHistoryRoot, $f001CodexHome -Force | Out-Null
+        Write-Utf8NoBom -Path $f001ScopePath -Content (([ordered]@{ decision = 'full'; requested_units = @('Phase 1'); selected_units = @('Phase 1'); deferred_units = @(); scope_plan_fingerprint = 'fixture' } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $f001PreparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'Prepared' } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $f001BaselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $f001PromptPath -Content 'f001 continuation prompt'
+        $null = New-Phase8QuotaSnapshot -Path $f001QuotaPath -PrimaryRemainingPercent 80
+        Write-Utf8NoBom -Path (Join-Path $f001CodexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        $f001BaselineSha256 = Get-FileSha256 -Path $f001BaselinePath
+        $f001PrepareSha256 = Get-FileSha256 -Path $f001PreparePath
+        $f001ParentOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $f001ExecutionRoot -AddDirectory @() -Search $false -CodexParentOption @()
+        $f001PreviousAnchor = [pscustomobject]@{
+            schema = 'ai-sessions.dispatch-run.v1'
+            run_id = [guid]::NewGuid().ToString('D')
+            line_slug = $f001LineSlug
+            dispatch_slug = $f001DispatchSlug
+            source_root = $f001SourceRoot
+            execution_root = $f001ExecutionRoot
+            thread_id = $f001Thread
+            last_message_path = Join-Path $f001LineHistoryRoot 'f001-previous-message.md'
+            scope_plan_path = $f001ScopePath
+            scope_plan_sha256 = Get-FileSha256 -Path $f001ScopePath
+            baseline_path = $f001BaselinePath
+            baseline_sha256 = $f001BaselineSha256
+            model_evidence = $a.model_evidence
+            reasoning_effort_evidence = $a.reasoning_effort_evidence
+            parent_options = $f001ParentOptions
+            sandbox_acl_evidence = [pscustomobject]@{
+                capture_status = 'captured'
+                entries = @($phase9SandboxEntry, $phase9ExtraAclEntry)
+                captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+                normal_completion = $true
+                continuation_allowed = $true
+            }
+        }
+        Write-Utf8NoBom -Path $f001PreviousAnchor.last_message_path -Content 'f001 previous message'
+        $f001PreviousRun = [pscustomobject]@{
+            Record = $f001PreviousAnchor
+            AnchorRecord = $f001PreviousAnchor
+            ChainTailRecord = $f001PreviousAnchor
+            Message = 'f001 previous message'
+            SkippedAttempts = @()
+        }
+        $f001Preflight = [ordered]@{
+            sourceRoot = $f001SourceRoot
+            executionRoot = $f001ExecutionRoot
+            dispatchRoot = $f001ExecutionRoot
+            lineSlug = $f001LineSlug
+            dispatchSlug = $f001DispatchSlug
+            writeMode = 'write'
+            baseSha = ('a' * 40)
+            baselinePath = $f001BaselinePath
+            baselineSha256 = $f001BaselineSha256
+            prepareResultPath = $f001PreparePath
+            prepareResultSha256 = $f001PrepareSha256
+            prepareStatus = 'Prepared'
+        }
+        Write-Utf8NoBom -Path $f001PreflightPath -Content (($f001Preflight | ConvertTo-Json -Depth 20) + "`n")
+        $f001ActualAclDefinition = $aclFunctionAst[0].Body.Extent.Text.Trim()
+        $f001ActualAclDefinition = $f001ActualAclDefinition.Substring(1, $f001ActualAclDefinition.Length - 2)
+        $f001CaptureStatement = '    $script:phase9F001AclCalls = @($script:phase9F001AclCalls) + @([pscustomobject]@{ continuation_present = $null -ne $ContinuationRecord })' + [Environment]::NewLine
+        $f001ActualAclDefinition = $f001ActualAclDefinition.Replace('    $sourcePath = Resolve-AbsolutePath -Path $SourceRoot', $f001CaptureStatement + '    $sourcePath = Resolve-AbsolutePath -Path $SourceRoot')
+        $f001StartAst = @($functions | Where-Object { $_.Name -eq 'Invoke-Start' } | Select-Object -First 1)
+        Assert-True ($f001StartAst.Count -eq 1) 'F-001 找不到 production Invoke-Start AST。'
+        $f001MutantStartDefinition = $f001StartAst[0].Extent.Text.Replace('$process = New-Object System.Diagnostics.Process', '$process = New-TestProcess').Replace('function Invoke-Start', 'function Invoke-Phase9MutantStart').Replace(' -ContinuationRecord $continuationAclRecord', '')
+        try {
+            Set-Item -Path Function:\Get-WorktreeAclGate -Value ([scriptblock]::Create($f001ActualAclDefinition))
+            Set-Item -Path Function:\Resolve-PreviousDispatchRun -Value ([scriptblock]::Create('param($SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ResumeThreadId, $LastMessagePath) return $script:phase9F001PreviousRun'))
+            Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value ([scriptblock]::Create('param($Preflight, $SourceRoot, $DispatchRoot, $LineSlug, $DispatchSlug, $BaseSha) return [pscustomobject]@{ Path = $script:phase9F001BaselinePath; Sha256 = $script:phase9F001BaselineSha256 }'))
+            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value ([scriptblock]::Create('param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ExpectedSha256) return [pscustomobject]@{ Path = $script:phase9F001PreparePath; Sha256 = $script:phase9F001PrepareSha256; Status = ''Prepared''; Document = [pscustomobject]@{ operation = ''Prepare''; status = ''Prepared'' }; Artifacts = @() }'))
+            Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
+            Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
+            Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
+            . ([scriptblock]::Create($f001MutantStartDefinition))
+            $script:phase9F001PreviousRun = $f001PreviousRun
+            $script:phase9F001BaselinePath = $f001BaselinePath
+            $script:phase9F001BaselineSha256 = $f001BaselineSha256
+            $script:phase9F001PreparePath = $f001PreparePath
+            $script:phase9F001PrepareSha256 = $f001PrepareSha256
+            $script:phase9F001AclCalls = @()
+            $script:phase9AclMode = 'extra'
+            $f001DirectAclGate = Get-WorktreeAclGate -SourceRoot $f001SourceRoot -ExecutionRoot $f001ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $f001PreviousAnchor
+            Assert-True ($null -ne $f001DirectAclGate -and [string](Get-DispatchJsonProperty -Object $f001DirectAclGate -Name 'status') -eq 'clean') ('F-001 actual ACL function direct call 未回傳 clean：' + ($f001DirectAclGate | ConvertTo-Json -Depth 20 -Compress))
+            $script:phase9F001AclCalls = @()
+            $script:dispatchUnitListOverride = @('Phase 1')
+            $script:testThread = $f001Thread
+            $script:quotaSnapshotPathOverride = $f001QuotaPath
+            $script:startCalls = 0
+            $script:failLaunch = $false
+            $SourceRoot = $f001SourceRoot
+            $ExecutionRoot = $f001ExecutionRoot
+            $LineSlug = $f001LineSlug
+            $DispatchSlug = $f001DispatchSlug
+            $WriteMode = 'write'
+            $PreflightResultPath = $f001PreflightPath
+            $PrepareResultPath = $f001PreparePath
+            $ScopePlanPath = $f001ScopePath
+            $PromptPath = $f001PromptPath
+            $CodexHome = $f001CodexHome
+            $CodexPath = 'fixture-codex'
+            $TargetPath = @('target.txt')
+            $ResumeThreadId = $f001Thread
+            $LastMessagePath = $null
+            $QuotaBeforePath = $f001QuotaPath
+            $QuotaAfterPath = $null
+            $CalibrationPath = $null
+            $TaskType = 'script-change'
+            $DispatchKind = 'workflow'
+            $Profile = 'default'
+            $SessionMode = 'continuation'
+            $Model = $null
+            $ReasoningEffort = $null
+            $AdvisorRequestSource = $null
+            $EvidencePackPath = $null
+            $AdvisorConsultReportPath = $null
+            $PrimaryBudgetPercent = $null
+            $PrimaryReservePercent = $null
+            $AddDirectory = @()
+            $Search = $false
+            $CodexParentOption = @()
+            $RequiredIdentifier = $null
+            $RecoveryHandoffPath = $null
+            $EventStreamPath = $null
+            $ErrorStreamPath = $null
+            $ThreadIdPath = $null
+            $PidRecordPath = $null
+            $RunRecordPath = $null
+            $ProcessExitCode = $null
+            $f001StartOutput = @(Invoke-Start)
+            Assert-True ($f001StartOutput.Count -eq 1) ('F-001 Invoke-Start 輸出筆數不唯一：' + ($f001StartOutput | ConvertTo-Json -Depth 20 -Compress))
+            $script:phase9F001ValidStart = $f001StartOutput[0]
+            $f001ValidAclGate = Get-DispatchJsonProperty -Object $script:phase9F001ValidStart -Name 'aclGate'
+            Assert-True ($script:phase9F001ValidStart.processStarted -and $null -ne $f001ValidAclGate -and [string](Get-DispatchJsonProperty -Object $f001ValidAclGate -Name 'status') -eq 'clean' -and @((Get-DispatchJsonProperty -Object $f001ValidAclGate -Name 'accepted_sandbox_entries')).Count -eq 2) ('F-001 actual Start 未通過 production ACL continuation：' + ($script:phase9F001ValidStart | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ($script:phase9F001AclCalls.Count -eq 1 -and $script:phase9F001AclCalls[0].continuation_present) ('F-001 Invoke-Start 未以 continuation record 呼叫 production ACL gate：' + ($script:phase9F001AclCalls | ConvertTo-Json -Depth 10 -Compress))
+            $f001ValidAclCalls = @($script:phase9F001AclCalls)
+            $script:phase9F001AclCalls = @()
+            $f001ReverseFailure = $null
+            try {
+                $null = Invoke-Phase9MutantStart
+            }
+            catch {
+                $f001ReverseFailure = $_.Exception.Message
+            }
+            Assert-True (-not [string]::IsNullOrWhiteSpace($f001ReverseFailure) -and $f001ReverseFailure.Contains('WorktreeAclResidue') -and $script:phase9F001AclCalls.Count -eq 1 -and -not $script:phase9F001AclCalls[0].continuation_present) ('F-001 移除 continuation 接線後未拒絕：' + [string]$f001ReverseFailure)
+            $f001ReverseAclCalls = @($script:phase9F001AclCalls)
+            $script:phase9F001AclCalls = @()
+            $f001RestoredStartOutput = @(Invoke-Start)
+            Assert-True ($f001RestoredStartOutput.Count -eq 1) ('F-001 reverse 後還原 Invoke-Start 輸出筆數不唯一：' + ($f001RestoredStartOutput | ConvertTo-Json -Depth 20 -Compress))
+            $f001RestoredStart = $f001RestoredStartOutput[0]
+            $f001RestoredAclGate = Get-DispatchJsonProperty -Object $f001RestoredStart -Name 'aclGate'
+            Assert-True ($f001RestoredStart.processStarted -and $null -ne $f001RestoredAclGate -and [string](Get-DispatchJsonProperty -Object $f001RestoredAclGate -Name 'status') -eq 'clean' -and @((Get-DispatchJsonProperty -Object $f001RestoredAclGate -Name 'accepted_sandbox_entries')).Count -eq 2) ('F-001 reverse 後還原 production Start 未通過 continuation：' + ($f001RestoredStart | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ($script:phase9F001AclCalls.Count -eq 1 -and $script:phase9F001AclCalls[0].continuation_present) ('F-001 reverse 後還原 ACL gate 未收到 continuation record：' + ($script:phase9F001AclCalls | ConvertTo-Json -Depth 10 -Compress))
+            $f001RestoredAclCalls = @($script:phase9F001AclCalls)
+            $script:phase9F001Evidence = [pscustomobject]@{ valid = $script:phase9F001ValidStart; valid_acl_calls = $f001ValidAclCalls; reverse_acl_calls = $f001ReverseAclCalls; reverse_failure = $f001ReverseFailure; restored_after_reverse = $f001RestoredStart; restored_after_reverse_acl_calls = $f001RestoredAclCalls }
+            Write-Phase9Evidence -Label 'F001_RESTORED_PASS' -Value ([ordered]@{ status = 'pass'; before_reverse = [ordered]@{ start = $script:phase9F001ValidStart; acl_calls = $f001ValidAclCalls }; after_reverse = [ordered]@{ start = $f001RestoredStart; acl_calls = $f001RestoredAclCalls } })
+            Write-Phase9Evidence -Label 'F001_REVERSE_FAILURE' -Value ([ordered]@{ status = 'failed'; error = $f001ReverseFailure; acl_calls = $f001ReverseAclCalls })
+        }
+        finally {
+            Set-Item -Path Function:\Get-WorktreeAclGate -Value $f001OriginalFunctions['Get-WorktreeAclGate']
+            Set-Item -Path Function:\Resolve-PreviousDispatchRun -Value $f001OriginalFunctions['Resolve-PreviousDispatchRun']
+            Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value $f001OriginalFunctions['Resolve-DispatchBaselineBinding']
+            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value $f001OriginalFunctions['Resolve-PrepareResultBinding']
+            Set-Item -Path Function:\Test-ScopePlanHashRecord -Value $f001OriginalFunctions['Test-ScopePlanHashRecord']
+            Set-Item -Path Function:\Get-DispatchUnitList -Value $f001OriginalFunctions['Get-DispatchUnitList']
+            Set-Item -Path Function:\Test-ContinuationScopePlan -Value $f001OriginalFunctions['Test-ContinuationScopePlan']
+            $script:testThread = $previousTestThread
+            $script:quotaSnapshotPathOverride = $previousQuotaOverride
+            $script:phase9AclMode = $previousAclMode
+            $script:dispatchUnitListOverride = $previousDispatchUnitOverride
+        }
+    }
+
+    $script:phase9AclMode = 'sandbox'
+
+    Invoke-Case 'Phase 9 F-001 real Start RunRecord Inspect continuation matrix' {
+        $f001ChainFunctionNames = @(
+            'Get-WorktreeAclGate'
+            'Get-ExplicitAclSnapshot'
+            'Resolve-DispatchBaselineBinding'
+            'Resolve-PrepareResultBinding'
+            'Test-ScopePlanHashRecord'
+            'Get-DispatchUnitList'
+            'Test-ContinuationScopePlan'
+            'Get-RuntimeModelEvidence'
+            'Write-TestEvents'
+        )
+        $f001ChainOriginalFunctions = @{}
+        foreach ($functionName in $f001ChainFunctionNames) {
+            $f001ChainOriginalFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function -ErrorAction Stop).ScriptBlock
+        }
+        $f001ChainOriginalAclEvidence = (Get-Command -Name Get-SandboxAclInspectEvidence -CommandType Function -ErrorAction Stop).ScriptBlock
+        $f001ChainMakeSnapshot = {
+            param(
+                [Parameter(Mandatory)][string]$Status,
+                [AllowEmptyCollection()][object[]]$Entries = @(),
+                [AllowEmptyString()][string]$ErrorMessage
+            )
+            $entryValues = @($Entries | Where-Object { $null -ne $_ })
+            return [pscustomobject]@{
+                status = $Status
+                path = $null
+                fingerprint = if ($Status -eq 'known') { Get-JsonSha256 -Value @($entryValues) } else { $null }
+                entries = @($entryValues)
+                explicit_entries = @($entryValues)
+                captured_at_utc = [DateTime]::UtcNow.ToString('o')
+                error = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
+            }
+        }
+        $f001ChainAclFunction = {
+            param([string]$Path)
+            $script:f001AclReadCount++
+            if (@($script:f001AclQueue).Count -eq 0) {
+                throw ('F-001 ACL fixture queue exhausted：' + $Path)
+            }
+            $next = $script:f001AclQueue[0]
+            if (@($script:f001AclQueue).Count -eq 1) {
+                $script:f001AclQueue = @()
+            }
+            else {
+                $script:f001AclQueue = @($script:f001AclQueue | Select-Object -Skip 1)
+            }
+            $entries = @((Get-DispatchJsonProperty -Object $next -Name 'entries') | Where-Object { $null -ne $_ })
+            $status = [string](Get-DispatchJsonProperty -Object $next -Name 'status')
+            return [ordered]@{
+                status = $status
+                path = (Resolve-AbsolutePath -Path $Path)
+                fingerprint = if ($status -eq 'known') { Get-JsonSha256 -Value @($entries) } else { $null }
+                entries = @($entries)
+                explicit_entries = @($entries)
+                captured_at_utc = [string](Get-DispatchJsonProperty -Object $next -Name 'captured_at_utc')
+                error = Get-DispatchJsonProperty -Object $next -Name 'error'
+            }
+        }
+        $f001ChainEventFunction = {
+            [CmdletBinding()]
+            param([string]$Path, [string]$Thread, [string]$Terminal = 'turn.completed')
+            $message = 'design.md ' + $script:f001EventDispatchSlug + ' ' + $script:f001EventLineSlug
+            $events = New-Object System.Collections.Generic.List[object]
+            $events.Add([ordered]@{ type = 'thread.started'; thread_id = $Thread })
+            $events.Add([ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $message } })
+            if ($Terminal -eq 'turn.failed') {
+                $events.Add([ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = 'fixture abnormal completion' } })
+            }
+            else {
+                $events.Add([ordered]@{ type = 'turn.completed'; usage = [ordered]@{ input_tokens = 1; output_tokens = 1 } })
+            }
+            Write-Utf8NoBom -Path $Path -Content (($events | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 10 }) -join "`r`n")
+        }
+        $script:f001AclQueue = @()
+        $script:f001AclReadCount = 0
+        $script:f001EventDispatchSlug = ''
+        $script:f001EventLineSlug = ''
+        $script:f001Terminal = 'turn.completed'
+
+        $f001ChainScenario = {
+            param(
+                [Parameter(Mandatory)][string]$Name,
+                [Parameter(Mandatory)][string]$PostStatus,
+                [AllowEmptyCollection()][object[]]$PostEntries = @(),
+                [AllowEmptyString()][string]$PostError,
+                [Parameter(Mandatory)][bool]$NormalCompletion,
+                [Parameter(Mandatory)][bool]$ContinuationPass,
+                [Parameter(Mandatory)][string]$ExpectedContinuationCode,
+                [bool]$InspectContinuation,
+                [bool]$InspectDuplicate
+            )
+            $scenarioRoot = Join-Path $phase9Root ('f1-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+            $sourceRoot = Join-Path $scenarioRoot 'source'
+            $executionRoot = Join-Path $scenarioRoot 'dispatch'
+            $lineSlug = 'line-a'
+            $dispatchSlug = 'f001-' + $Name
+            $historyRoot = Join-Path $executionRoot '.local\ai-sessions\history'
+            $sourceHistoryRoot = Join-Path $sourceRoot '.local\ai-sessions\history'
+            $lineHistoryRoot = Join-Path $sourceHistoryRoot ($lineSlug + '\runs\' + $dispatchSlug)
+            $executionLineHistoryRoot = Join-Path $historyRoot $lineSlug
+            $lineRoot = Join-Path $sourceRoot '.local\ai-sessions\handoff\line-a'
+            $codexHome = Join-Path $executionRoot 'codex-home'
+            $scopePath = Join-Path $historyRoot ($dispatchSlug + '-scope.json')
+            $preparePath = Join-Path $historyRoot ($dispatchSlug + '-prepare.json')
+            $baselinePath = Join-Path $historyRoot ($dispatchSlug + '-baseline.json')
+            $preflightPath = Join-Path $historyRoot ($dispatchSlug + '-preflight.json')
+            $quotaBeforePath = Join-Path $historyRoot ($dispatchSlug + '-quota-before.json')
+            $quotaAfterPath = Join-Path $historyRoot ($dispatchSlug + '-quota-after.json')
+            $calibrationPath = Join-Path $sourceHistoryRoot ($dispatchSlug + '-calibration.jsonl')
+            $promptPath = Join-Path $executionRoot ($dispatchSlug + '-prompt.md')
+            New-Item -ItemType Directory -Path $lineHistoryRoot, $executionLineHistoryRoot, $lineRoot, $codexHome, $historyRoot -Force | Out-Null
+            Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = $lineSlug } | ConvertTo-Json -Depth 10) + "`n")
+            Write-Utf8NoBom -Path $promptPath -Content ('f001 chain ' + $Name)
+            Write-Utf8NoBom -Path (Join-Path $codexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+            $rolloutRoot = Join-Path $codexHome 'sessions\f001'
+            New-Item -ItemType Directory -Path $rolloutRoot -Force | Out-Null
+            Write-Utf8NoBom -Path (Join-Path $rolloutRoot 'rollout.jsonl') -Content (([ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = '' } } | ConvertTo-Json -Compress -Depth 10) + "`r`n" + ([ordered]@{ type = 'turn_context'; payload = [ordered]@{ model = 'fixture-model'; effort = 'high' } } | ConvertTo-Json -Compress -Depth 10) + "`r`n")
+            Write-Utf8NoBom -Path $baselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + "`n")
+            Write-Utf8NoBom -Path $preparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'Prepared' } | ConvertTo-Json -Depth 10) + "`n")
+            Write-Utf8NoBom -Path $scopePath -Content (([ordered]@{ decision = 'full'; requested_units = @('Phase 1'); selected_units = @('Phase 1'); deferred_units = @(); scope_plan_fingerprint = 'fixture' } | ConvertTo-Json -Depth 10) + "`n")
+            $null = New-Phase8QuotaSnapshot -Path $quotaBeforePath -PrimaryRemainingPercent 80
+            Copy-Item -LiteralPath $quotaBeforePath -Destination $quotaAfterPath -Force
+            $baselineSha = Get-FileSha256 -Path $baselinePath
+            $prepareSha = Get-FileSha256 -Path $preparePath
+            $scopeSha = Get-FileSha256 -Path $scopePath
+            $preflight = [ordered]@{
+                sourceRoot = $sourceRoot
+                executionRoot = $executionRoot
+                dispatchRoot = $executionRoot
+                lineSlug = $lineSlug
+                dispatchSlug = $dispatchSlug
+                writeMode = 'write'
+                dispatchKind = 'workflow'
+                baseSha = ('a' * 40)
+                baselinePath = $baselinePath
+                baselineSha256 = $baselineSha
+                prepareResultPath = $preparePath
+                prepareResultSha256 = $prepareSha
+                prepareStatus = 'Prepared'
+            }
+            Write-Utf8NoBom -Path $preflightPath -Content (($preflight | ConvertTo-Json -Depth 20) + "`n")
+            $thread = [guid]::NewGuid().ToString('D')
+            $script:testThread = $thread
+            $script:f001EventDispatchSlug = $dispatchSlug
+            $script:f001EventLineSlug = $lineSlug
+            $script:f001Terminal = if ($NormalCompletion) { 'turn.completed' } else { 'turn.failed' }
+            $script:startCalls = 0
+            $script:failLaunch = $false
+            $script:startSnapshotMode = 'confirmed'
+            $script:pidResult.ActiveRecords = @()
+            $script:pidResult.UnconfirmedRecords = @()
+            $script:pidResult.Blocked = $false
+            $script:ProfileExplicit = $false
+            $script:AddDirectoryExplicit = $false
+            $script:SearchExplicit = $false
+            $script:CodexParentOptionExplicit = $false
+            $script:dispatchUnitListOverride = @('Phase 1')
+            $script:quotaSnapshotPathOverride = $quotaBeforePath
+            $script:f001CurrentBaselinePath = $baselinePath
+            $script:f001CurrentBaselineSha256 = $baselineSha
+            $script:f001CurrentPreparePath = $preparePath
+            $script:f001CurrentPrepareSha256 = $prepareSha
+            $emptySnapshot = & $f001ChainMakeSnapshot 'known' @() $null
+            $gateSnapshot = & $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null
+            $baselineSnapshot = & $f001ChainMakeSnapshot 'known' @() $null
+            $script:f001AclQueue = @($emptySnapshot, $gateSnapshot, $baselineSnapshot)
+            $postSnapshotStatus = if ($PostStatus -in @('captured', 'rejected', 'no_match')) { 'known' } else { $PostStatus }
+            $SourceRoot = $sourceRoot
+            $ExecutionRoot = $executionRoot
+            $DispatchRoot = $executionRoot
+            $LineSlug = $lineSlug
+            $DispatchSlug = $dispatchSlug
+            $WriteMode = 'write'
+            $PreflightResultPath = $preflightPath
+            $PrepareResultPath = $preparePath
+            $ScopePlanPath = $scopePath
+            $PromptPath = $promptPath
+            $CodexHome = $codexHome
+            $CodexPath = 'fixture-codex'
+            $TargetPath = @('target.txt')
+            $ResumeThreadId = $null
+            $LastMessagePath = $null
+            $QuotaBeforePath = $quotaBeforePath
+            $QuotaAfterPath = $null
+            $CalibrationPath = $calibrationPath
+            $TaskType = 'script-change'
+            $DispatchKind = 'workflow'
+            $Profile = 'default'
+            $SessionMode = 'cold-start'
+            $Model = $null
+            $ReasoningEffort = $null
+            $AdvisorRequestSource = $null
+            $EvidencePackPath = $null
+            $AdvisorConsultReportPath = $null
+            $PrimaryBudgetPercent = $null
+            $PrimaryReservePercent = $null
+            $AddDirectory = @()
+            $Search = $false
+            $CodexParentOption = @()
+            $RequiredIdentifier = $null
+            $RecoveryHandoffPath = $null
+            $EventStreamPath = $null
+            $ErrorStreamPath = $null
+            $ThreadIdPath = $null
+            $PidRecordPath = $null
+            $RunRecordPath = $null
+            $ProcessExitCode = $null
+            $AbortGraceSeconds = 30
+            $InvocationBoundParameters = [ordered]@{}
+            New-Item -ItemType Directory -Path (Get-DispatchRunDirectory -SourceRoot $sourceRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug) -Force | Out-Null
+            $firstStart = @(Invoke-Start)
+            Assert-True ($firstStart.Count -eq 1 -and [bool](Get-DispatchJsonProperty -Object $firstStart[0] -Name 'processStarted')) ('F-001 ' + $Name + ' 首次 Start 未成功：' + ($firstStart | ConvertTo-Json -Depth 30 -Compress))
+            $firstRecordPath = [string](Get-DispatchJsonProperty -Object $firstStart[0] -Name 'runRecordPath')
+            $firstRecord = Read-DispatchRunRecord -Path $firstRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
+            $firstEvidence = Get-DispatchJsonProperty -Object $firstRecord -Name 'sandbox_acl_evidence'
+            $firstBaseline = Get-DispatchJsonProperty -Object $firstRecord -Name 'sandbox_acl_baseline'
+            Assert-True ([string](Get-DispatchJsonProperty -Object $firstBaseline -Name 'status') -eq 'known' -and @((Get-DispatchJsonProperty -Object $firstBaseline -Name 'entries')).Count -eq 0) ('F-001 ' + $Name + ' baseline 未保存 Start spawn 前實際零筆 snapshot。')
+            Assert-True ([string](Get-DispatchJsonProperty -Object $firstEvidence -Name 'capture_status') -eq 'pending' -and @((Get-DispatchJsonProperty -Object $firstEvidence -Name 'entries')).Count -eq 0) ('F-001 ' + $Name + ' Start pending evidence 含有 gate entry：' + ($firstEvidence | ConvertTo-Json -Depth 20 -Compress))
+            $rolloutFile = Join-Path $rolloutRoot 'rollout.jsonl'
+            $rolloutLines = @(
+                ([ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = $thread } } | ConvertTo-Json -Compress -Depth 10)
+                ([ordered]@{ type = 'turn_context'; payload = [ordered]@{ model = 'fixture-model'; effort = 'high' } } | ConvertTo-Json -Compress -Depth 10)
+            )
+            Write-Utf8NoBom -Path $rolloutFile -Content (($rolloutLines -join "`r`n") + "`r`n")
+            $script:f001AclQueue = if ($NormalCompletion) { @(& $f001ChainMakeSnapshot $postSnapshotStatus $PostEntries $PostError) } else { @() }
+            $script:SourceRoot = $sourceRoot
+            $script:ExecutionRoot = $executionRoot
+            $script:LineSlug = $lineSlug
+            $script:DispatchSlug = $dispatchSlug
+            $script:DispatchResultPath = $null
+            $script:EventStreamPath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'event_stream_path')
+            $script:RunRecordPath = $firstRecordPath
+            $script:ScopePlanPath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'scope_plan_path')
+            $script:QuotaBeforePath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'quota_before_path')
+            $script:QuotaAfterPath = $quotaAfterPath
+            $script:CalibrationPath = $calibrationPath
+            $SourceRoot = $sourceRoot
+            $ExecutionRoot = $executionRoot
+            $LineSlug = $lineSlug
+            $DispatchSlug = $dispatchSlug
+            $DispatchResultPath = $null
+            $EventStreamPath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'event_stream_path')
+            $RunRecordPath = $firstRecordPath
+            $ScopePlanPath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'scope_plan_path')
+            $QuotaBeforePath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'quota_before_path')
+            $QuotaAfterPath = $quotaAfterPath
+            $CalibrationPath = $calibrationPath
+            $RequiredIdentifier = 'design.md'
+            $script:RequiredIdentifier = 'design.md'
+            $global:RequiredIdentifier = 'design.md'
+            $script:ErrorStreamPath = $null
+            $script:LastMessagePath = $null
+            $script:ThreadIdPath = $null
+            $script:EvidencePackPath = $null
+            $script:BudgetMonitorPath = $null
+            $script:AdvisorConsultReportPath = $null
+            $script:Profile = 'default'
+            $script:Model = 'fixture-model'
+            $script:ReasoningEffort = 'high'
+            $script:TaskType = 'script-change'
+            $script:SessionMode = 'cold-start'
+            $script:InvocationBoundParameters = [ordered]@{}
+            $script:ProcessExitCode = if ($NormalCompletion) { 0 } else { 1 }
+            $ProcessExitCode = if ($NormalCompletion) { 0 } else { 1 }
+            $inspectResult = Invoke-Inspect
+            $afterFirstRecord = Read-DispatchRunRecord -Path $firstRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
+            $afterFirstEvidence = Get-DispatchJsonProperty -Object $afterFirstRecord -Name 'sandbox_acl_evidence'
+            $expectedStatus = if ($NormalCompletion) { $PostStatus } else { 'pending' }
+            Assert-True ([string](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'capture_status') -eq $expectedStatus -and [bool](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'continuation_allowed') -eq $ContinuationPass) (("F-001 {0} Inspect status 不符：expected={1}; actual={2}" -f $Name, $expectedStatus, ($afterFirstEvidence | ConvertTo-Json -Depth 20 -Compress)))
+            if ($NormalCompletion -and $PostStatus -eq 'captured') {
+                Assert-True (@((Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'entries')).Count -eq @($PostEntries).Count) ('F-001 ' + $Name + ' captured entries 未來自 post snapshot。')
+            }
+            $duplicateReadCount = $script:f001AclReadCount
+            $duplicateEvidence = $null
+            if ($InspectDuplicate) {
+                $duplicateResult = Invoke-Inspect
+                $duplicateRecord = Read-DispatchRunRecord -Path $firstRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
+                $duplicateEvidence = Get-DispatchJsonProperty -Object $duplicateRecord -Name 'sandbox_acl_evidence'
+                Assert-True ($script:f001AclReadCount -eq $duplicateReadCount -and [string](Get-DispatchJsonProperty -Object $duplicateEvidence -Name 'capture_status') -eq $expectedStatus -and [string](Get-DispatchJsonProperty -Object $duplicateEvidence -Name 'fingerprint') -eq [string](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'fingerprint')) ('F-001 duplicate Inspect 非冪等：' + ($duplicateEvidence | ConvertTo-Json -Depth 20 -Compress))
+            }
+            $messagePath = [string](Get-DispatchJsonProperty -Object $afterFirstRecord -Name 'last_message_path')
+            Write-Utf8NoBom -Path $messagePath -Content ('design.md ' + $dispatchSlug + ' ' + $lineSlug)
+            $script:f001AclQueue = @(
+                (& $f001ChainMakeSnapshot 'known' @() $null)
+                (& $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null)
+                (& $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null)
+            )
+            $ResumeThreadId = $thread
+            $SessionMode = 'continuation'
+            $script:SessionMode = 'continuation'
+            $script:ProcessExitCode = $null
+            $nextStart = @()
+            $nextStartException = $null
+            try {
+                $nextStart = @(Invoke-Start)
+            }
+            catch {
+                $nextStartException = $_.Exception
+            }
+            $nextStartObject = if ($nextStart.Count -eq 1) { $nextStart[0] } else { $null }
+            if ($null -ne $nextStartException) {
+                $operationResult = $nextStartException.Data['operationResult']
+                if ($null -eq $operationResult) {
+                    throw $nextStartException
+                }
+                $nextStartObject = $operationResult
+            }
+            $nextStartJson = if ($null -eq $nextStartObject) { '' } else { $nextStartObject | ConvertTo-Json -Depth 40 -Compress }
+            if ($ContinuationPass) {
+                Assert-True ($null -ne $nextStartObject -and [bool](Get-DispatchJsonProperty -Object $nextStartObject -Name 'processStarted')) ('F-001 ' + $Name + ' 預期續行通過但 Start 失敗：' + $nextStartJson)
+            }
+            else {
+                Assert-True ($null -ne $nextStartObject -and -not [bool](Get-DispatchJsonProperty -Object $nextStartObject -Name 'processStarted') -and $nextStartJson.Contains($ExpectedContinuationCode)) ('F-001 ' + $Name + ' 預期拒絕但未回傳 ' + $ExpectedContinuationCode + '：' + $nextStartJson)
+            }
+            $secondEvidence = $null
+            if ($ContinuationPass -and $InspectContinuation) {
+                $secondRecordPath = [string](Get-DispatchJsonProperty -Object $nextStartObject -Name 'runRecordPath')
+                $secondRecord = Read-DispatchRunRecord -Path $secondRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
+                $secondPost = & $f001ChainMakeSnapshot $postSnapshotStatus $PostEntries $PostError
+                $script:f001AclQueue = @($secondPost)
+                $script:EventStreamPath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'event_stream_path')
+                $script:RunRecordPath = $secondRecordPath
+                $script:ScopePlanPath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'scope_plan_path')
+                $script:QuotaBeforePath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'quota_before_path')
+                $EventStreamPath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'event_stream_path')
+                $RunRecordPath = $secondRecordPath
+                $ScopePlanPath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'scope_plan_path')
+                $QuotaBeforePath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'quota_before_path')
+                $script:ProcessExitCode = 0
+                $ProcessExitCode = 0
+                $secondInspect = Invoke-Inspect
+                $secondAfter = Read-DispatchRunRecord -Path $secondRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
+                $secondEvidence = Get-DispatchJsonProperty -Object $secondAfter -Name 'sandbox_acl_evidence'
+                Assert-True ([string](Get-DispatchJsonProperty -Object $secondEvidence -Name 'capture_status') -eq 'captured' -and [bool](Get-DispatchJsonProperty -Object $secondEvidence -Name 'continuation_allowed')) ('F-001 ' + $Name + ' 續行 Inspect 未保持 captured：' + ($secondEvidence | ConvertTo-Json -Depth 20 -Compress))
+            }
+            return [pscustomobject]@{
+                scenario = $Name
+                inspect_status = [string](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'capture_status')
+                continuation_allowed = [bool](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'continuation_allowed')
+                next_start = if ($null -eq $nextStartObject) { $null } else { [bool](Get-DispatchJsonProperty -Object $nextStartObject -Name 'processStarted') }
+                next_start_error = if ($null -eq $nextStartObject) { $null } else { [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $nextStartObject -Name 'failure') -Name 'reason_code') }
+                duplicate_status = if ($null -eq $duplicateEvidence) { $null } else { [string](Get-DispatchJsonProperty -Object $duplicateEvidence -Name 'capture_status') }
+                second_inspect_status = if ($null -eq $secondEvidence) { $null } else { [string](Get-DispatchJsonProperty -Object $secondEvidence -Name 'capture_status') }
+            }
+        }
+
+        try {
+            Set-Item -Path Function:\Get-WorktreeAclGate -Value (Get-Command -Name Invoke-Phase9ProductionAclGate -CommandType Function).ScriptBlock
+            Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $f001ChainAclFunction
+            Set-Item -Path Function:\Write-TestEvents -Value $f001ChainEventFunction
+            $f001RuntimeEvidenceFunction = {
+                param($CodexHome, $ThreadId, $StartedAtUtc)
+                return [ordered]@{
+                    model = [ordered]@{ value = 'fixture-model'; status = 'confirmed' }
+                    reasoning_effort = [ordered]@{ value = 'high'; status = 'confirmed' }
+                    rollout_paths = @()
+                }
+            }
+            Set-Item -Path Function:\Get-RuntimeModelEvidence -Value $f001RuntimeEvidenceFunction
+            Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value ([scriptblock]::Create('param($Preflight, $SourceRoot, $DispatchRoot, $LineSlug, $DispatchSlug, $BaseSha) return [pscustomobject]@{ Path = $script:f001CurrentBaselinePath; Sha256 = $script:f001CurrentBaselineSha256 }'))
+            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value ([scriptblock]::Create('param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ExpectedSha256) return [pscustomobject]@{ Path = $script:f001CurrentPreparePath; Sha256 = $script:f001CurrentPrepareSha256; Status = ''Prepared''; Document = [pscustomobject]@{ operation = ''Prepare''; status = ''Prepared'' }; Artifacts = @() }'))
+            Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
+            Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
+            Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
+            $f001Results = New-Object System.Collections.Generic.List[object]
+            $f001Results.Add((& $f001ChainScenario -Name 'first-captured' -PostStatus 'captured' -PostEntries @($phase9SandboxEntry) -NormalCompletion $true -ContinuationPass $true -ExpectedContinuationCode 'WorktreeAclResidue' -InspectDuplicate $false -InspectContinuation $false))
+            $f001Results.Add((& $f001ChainScenario -Name 'continuation-captured' -PostStatus 'captured' -PostEntries @($phase9SandboxEntry) -NormalCompletion $true -ContinuationPass $true -ExpectedContinuationCode 'WorktreeAclResidue' -InspectDuplicate $false -InspectContinuation $true))
+            $f001Results.Add((& $f001ChainScenario -Name 'zero-match' -PostStatus 'no_match' -PostEntries @() -NormalCompletion $true -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclContinuationDenied' -InspectDuplicate $false -InspectContinuation $false))
+            $f001Results.Add((& $f001ChainScenario -Name 'acl-unknown' -PostStatus 'unknown' -PostEntries @() -PostError 'fixture ACL unknown' -NormalCompletion $true -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclContinuationDenied' -InspectDuplicate $false -InspectContinuation $false))
+            $f001Results.Add((& $f001ChainScenario -Name 'acl-failed' -PostStatus 'failed' -PostEntries @() -PostError 'fixture ACL failed' -NormalCompletion $true -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclContinuationDenied' -InspectDuplicate $false -InspectContinuation $false))
+            $f001Results.Add((& $f001ChainScenario -Name 'unauthorized-residue' -PostStatus 'rejected' -PostEntries @($phase9SandboxEntry, $phase9ExtraAclEntry) -PostError 'fixture unauthorized residue' -NormalCompletion $true -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclResidue' -InspectDuplicate $false -InspectContinuation $false))
+            $f001Results.Add((& $f001ChainScenario -Name 'abnormal-completion' -PostStatus 'known' -PostEntries @($phase9SandboxEntry) -NormalCompletion $false -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclContinuationDenied' -InspectDuplicate $false -InspectContinuation $false))
+            $f001Results.Add((& $f001ChainScenario -Name 'duplicate-inspect' -PostStatus 'captured' -PostEntries @($phase9SandboxEntry) -NormalCompletion $true -ContinuationPass $true -ExpectedContinuationCode 'WorktreeAclResidue' -InspectDuplicate $true -InspectContinuation $false))
+            Assert-True ($f001Results.Count -eq 8) ('F-001 八情境結果數量錯誤：' + $f001Results.Count)
+            $script:phase9F001ScenarioEvidence = @($f001Results.ToArray())
+            Write-Phase9Evidence -Label 'F001_8_SCENARIOS' -Value $script:phase9F001ScenarioEvidence
+
+            $reverseRecord = [pscustomobject]@{
+                sandbox_acl_baseline = (& $f001ChainMakeSnapshot 'known' @() $null)
+                sandbox_acl_evidence = [pscustomobject]@{ capture_status = 'pending'; entries = @(); captured_at_utc = $null; normal_completion = $false; continuation_allowed = $false }
+                source_root = $phase9AclSourceRoot
+                execution_root = $phase9AclExecutionRoot
+                line_slug = 'line-a'
+                dispatch_slug = 'f001-reverse'
+                previous_run_id = $null
+                resume_anchor_run_id = $null
+            }
+            $reverseSnapshotQueue = @((& $f001ChainMakeSnapshot 'known' @() $null), (& $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null))
+            $script:f001AclQueue = @((& $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null))
+            $reverseDefinition = "function Invoke-Phase9MutantInspectEvidence {`r`n" + (Get-Command -Name Get-SandboxAclInspectEvidence -CommandType Function).ScriptBlock.ToString() + "`r`n}"
+            $reverseTarget = 'return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus ''no_match'' -NormalCompletion $true -ContinuationAllowed $false -Error $null'
+            $reverseReplacement = 'return New-SandboxAclEvidenceDocument -Entries @($script:f001ReverseGateEntries) -CaptureStatus ''captured'' -NormalCompletion $true -ContinuationAllowed $true'
+            $reverseDefinition = $reverseDefinition.Replace($reverseTarget, $reverseReplacement)
+            $script:f001ReverseGateEntries = @($phase9SandboxEntry)
+            . ([scriptblock]::Create($reverseDefinition))
+            $reverseSnapshot = & $f001ChainMakeSnapshot 'known' @() $null
+            $script:f001AclQueue = @($reverseSnapshot)
+            $mutantEvidence = Invoke-Phase9MutantInspectEvidence -Record $reverseRecord -ExecutionRoot $phase9AclExecutionRoot -NormalCompletion $true
+            Assert-True ([string](Get-DispatchJsonProperty -Object $mutantEvidence -Name 'capture_status') -eq 'captured') ('F-001 reverse mutant 未顯示 gate entry 回填為 captured：' + ($mutantEvidence | ConvertTo-Json -Depth 20 -Compress))
+            Set-Item -Path Function:\Get-SandboxAclInspectEvidence -Value $f001ChainOriginalAclEvidence
+            $script:f001AclQueue = @($reverseSnapshot)
+            $restoredEvidence = Get-SandboxAclInspectEvidence -Record $reverseRecord -ExecutionRoot $phase9AclExecutionRoot -NormalCompletion $true
+            Assert-True ([string](Get-DispatchJsonProperty -Object $restoredEvidence -Name 'capture_status') -eq 'no_match' -and -not [bool](Get-DispatchJsonProperty -Object $restoredEvidence -Name 'continuation_allowed')) ('F-001 reverse 還原後未回到 no_match：' + ($restoredEvidence | ConvertTo-Json -Depth 20 -Compress))
+            $script:phase9F001ReverseEvidence = [ordered]@{
+                mutant = [ordered]@{ expected = 'no_match'; actual = $mutantEvidence; result = 'FAIL' }
+                restored = [ordered]@{ expected = 'no_match'; actual = $restoredEvidence; result = 'PASS' }
+                mutation = 'Inspect known zero-match branch replaced by gate accepted entry fallback.'
+            }
+            Write-Phase9Evidence -Label 'F001_REVERSE_FAILURE' -Value $script:phase9F001ReverseEvidence.mutant
+            Write-Phase9Evidence -Label 'F001_RESTORED_PASS' -Value $script:phase9F001ReverseEvidence.restored
+        }
+        finally {
+            foreach ($functionName in $f001ChainFunctionNames) {
+                Set-Item -Path ('Function:' + $functionName) -Value $f001ChainOriginalFunctions[$functionName]
+            }
+            Set-Item -Path Function:\Get-SandboxAclInspectEvidence -Value $f001ChainOriginalAclEvidence
+            $script:Model = $null
+            $script:ReasoningEffort = $null
+            $script:TaskType = $null
+            $script:SessionMode = 'cold-start'
+            $script:RequiredIdentifier = 'design.md'
+            $script:ProcessExitCode = $null
+            $script:InvocationBoundParameters = [ordered]@{}
+            $global:Model = $null
+            $global:ReasoningEffort = $null
+            $global:RequiredIdentifier = 'design.md'
+        }
+    }
+
+    Invoke-Case 'Phase 9 F-010 bidirectional baseline ACL comparison' {
+        $originalAclSnapshot = (Get-Command -Name Get-ExplicitAclSnapshot -CommandType Function -ErrorAction Stop).ScriptBlock
+        $entryA = [ordered]@{
+            identity = 'A'
+            identity_resolution = 'resolved'
+            access_control_type = 'Allow'
+            rights = 'Read'
+            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
+            propagation_flags = @('None')
+            is_inherited = $false
+            canonical = '(OI)(CI)(R)'
+            fingerprint = ('1' * 64)
+        }
+        $entryB = [ordered]@{
+            identity = 'B'
+            identity_resolution = 'resolved'
+            access_control_type = 'Allow'
+            rights = 'ReadAndExecute'
+            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
+            propagation_flags = @('None')
+            is_inherited = $false
+            canonical = '(OI)(CI)(RX)'
+            fingerprint = ('2' * 64)
+        }
+        $entryC = [ordered]@{
+            identity = 'C'
+            identity_resolution = 'unresolved'
+            access_control_type = 'Allow'
+            rights = 'Modify'
+            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
+            propagation_flags = @('None')
+            is_inherited = $false
+            canonical = '(OI)(CI)(M)'
+            fingerprint = ('3' * 64)
+        }
+        $script:phase9F010PostEntries = @($entryA, $entryC)
+        $script:phase9F010SnapshotFunction = {
+            param([string]$Path)
+            return [ordered]@{
+                status = 'known'
+                path = (Resolve-AbsolutePath -Path $Path)
+                fingerprint = Get-JsonSha256 -Value @($script:phase9F010PostEntries)
+                entries = @($script:phase9F010PostEntries)
+                explicit_entries = @($script:phase9F010PostEntries)
+                captured_at_utc = [datetime]::UtcNow.ToString('o')
+                error = $null
+            }
+        }
+        try {
+            Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $script:phase9F010SnapshotFunction
+            $record = [pscustomobject]@{
+                source_root = $phase9Root
+                line_slug = 'line-a'
+                dispatch_slug = 'f010-baseline-missing'
+                previous_run_id = $null
+                resume_anchor_run_id = $null
+                sandbox_acl_baseline = [pscustomobject]@{
+                    status = 'known'
+                    entries = @($entryA, $entryB)
+                    explicit_entries = @($entryA, $entryB)
+                    fingerprint = Get-JsonSha256 -Value @($entryA, $entryB)
+                }
+                sandbox_acl_evidence = [pscustomobject]@{
+                    capture_status = 'pending'
+                    entries = @()
+                    captured_at_utc = $null
+                    normal_completion = $false
+                    continuation_allowed = $false
+                }
+            }
+            $missingEntriesOriginal = (Get-Command -Name Get-SandboxAclMissingEntries -CommandType Function -ErrorAction Stop).ScriptBlock
+            $fixedEvidence = Get-SandboxAclInspectEvidence -Record $record -ExecutionRoot $phase9Root -NormalCompletion $true
+            $oneWayExtraEntries = @(Get-SandboxAclExtraEntries -BaselineEntries @($entryA, $entryB) -SnapshotEntries @($entryA, $entryC))
+            if ($oneWayExtraEntries.Count -ne 1 -or [string](Get-DispatchJsonProperty -Object $oneWayExtraEntries[0] -Name 'identity') -ne 'C') {
+                throw ('F-010 單向差集 fixture 未形成 candidate C：' + ($oneWayExtraEntries | ConvertTo-Json -Depth 20 -Compress))
+            }
+            $script:phase9F010MissingEntriesMutant = {
+                param($BaselineEntries, $SnapshotEntries)
+                return @()
+            }
+            $reverseMutantEvidence = $null
+            try {
+                Set-Item -Path Function:\Get-SandboxAclMissingEntries -Value $script:phase9F010MissingEntriesMutant
+                $reverseMutantEvidence = Get-SandboxAclInspectEvidence -Record $record -ExecutionRoot $phase9Root -NormalCompletion $true
+            }
+            finally {
+                Set-Item -Path Function:\Get-SandboxAclMissingEntries -Value $missingEntriesOriginal
+            }
+            $restoredEvidence = Get-SandboxAclInspectEvidence -Record $record -ExecutionRoot $phase9Root -NormalCompletion $true
+            $script:phase9F010PostEntries = @($entryA, $entryB, $entryC)
+            $normalEvidence = Get-SandboxAclInspectEvidence -Record $record -ExecutionRoot $phase9Root -NormalCompletion $true
+            $script:phase9F010Evidence = [ordered]@{
+                failure_scenario = [ordered]@{
+                    baseline = @('A', 'B')
+                    post = @('A', 'C')
+                    expected = 'rejected because baseline entry B is missing'
+                }
+                wrong_single_direction = $reverseMutantEvidence
+                fixed_missing_baseline = $fixedEvidence
+                reverse_mutant_failure = [ordered]@{
+                    expected = 'rejected'
+                    actual = $reverseMutantEvidence
+                    result = 'FAIL'
+                }
+                restored_pass = [ordered]@{
+                    expected = 'rejected'
+                    actual = $restoredEvidence
+                    result = 'PASS'
+                }
+                normal_first_run = [ordered]@{
+                    baseline = @('A', 'B')
+                    post = @('A', 'B', 'C')
+                    evidence = $normalEvidence
+                }
+            }
+            Write-Phase9Evidence -Label 'F010_BIDIRECTIONAL_COMPARISON' -Value $script:phase9F010Evidence
+            Write-Phase9Evidence -Label 'F010_REVERSE_FAILURE' -Value $script:phase9F010Evidence.reverse_mutant_failure
+            Write-Phase9Evidence -Label 'F010_RESTORED_PASS' -Value $script:phase9F010Evidence.restored_pass
+            Assert-True ([string](Get-DispatchJsonProperty -Object $fixedEvidence -Name 'capture_status') -eq 'rejected' -and -not [bool](Get-DispatchJsonProperty -Object $fixedEvidence -Name 'continuation_allowed')) ('F-010 baseline entry 消失仍被 captured：' + ($fixedEvidence | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ([string](Get-DispatchJsonProperty -Object $reverseMutantEvidence -Name 'capture_status') -eq 'captured') ('F-010 反向單向差集案例未重現 captured 失敗：' + ($reverseMutantEvidence | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ([string](Get-DispatchJsonProperty -Object $restoredEvidence -Name 'capture_status') -eq 'rejected') ('F-010 還原雙向比較後未回到 rejected：' + ($restoredEvidence | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ([string](Get-DispatchJsonProperty -Object $normalEvidence -Name 'capture_status') -eq 'captured' -and [bool](Get-DispatchJsonProperty -Object $normalEvidence -Name 'continuation_allowed')) ('F-010 正常首輪被雙向比較誤擋：' + ($normalEvidence | ConvertTo-Json -Depth 20 -Compress))
+        }
+        finally {
+            Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $originalAclSnapshot
+        }
+    }
+
+    Invoke-Case 'Phase 9 F-011 bidirectional continuation gate reaches actual Invoke-Start' {
+        $f011FunctionNames = @(
+            'Get-WorktreeAclGate'
+            'Get-ExplicitAclSnapshot'
+            'Resolve-PreviousDispatchRun'
+            'Resolve-DispatchBaselineBinding'
+            'Resolve-PrepareResultBinding'
+            'Test-ScopePlanHashRecord'
+            'Get-DispatchUnitList'
+            'Test-ContinuationScopePlan'
+            'Get-RuntimeModelEvidence'
+            'Get-SandboxAclMissingEntries'
+            'Invoke-Prepare'
+        )
+        $f011OriginalFunctions = @{}
+        foreach ($functionName in $f011FunctionNames) {
+            $f011OriginalFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function -ErrorAction Stop).ScriptBlock
+        }
+        $entryA = [ordered]@{
+            identity = 'A'
+            identity_resolution = 'resolved'
+            access_control_type = 'Allow'
+            rights = 'Read'
+            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
+            propagation_flags = @('None')
+            is_inherited = $false
+            canonical = '(OI)(CI)(R)'
+            fingerprint = ('4' * 64)
+        }
+        $entryB = [ordered]@{
+            identity = 'B'
+            identity_resolution = 'resolved'
+            access_control_type = 'Allow'
+            rights = 'ReadAndExecute'
+            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
+            propagation_flags = @('None')
+            is_inherited = $false
+            canonical = '(OI)(CI)(RX)'
+            fingerprint = ('5' * 64)
+        }
+        $f011Root = Join-Path $phase9Root 'f011-start'
+        $f011SourceRoot = Join-Path $f011Root 'source'
+        $f011ExecutionRoot = Join-Path $f011Root 'dispatch'
+        $f011LineSlug = 'line-a'
+        $f011DispatchSlug = 'f011-missing-whitelist'
+        $f011HistoryRoot = Join-Path $f011ExecutionRoot '.local\ai-sessions\history\line-a'
+        $f011SourceHistoryRoot = Join-Path $f011SourceRoot '.local\ai-sessions\history'
+        $f011RunDirectory = Join-Path (Join-Path $f011SourceHistoryRoot 'line-a\runs') $f011DispatchSlug
+        $f011LineRoot = Join-Path $f011SourceRoot '.local\ai-sessions\handoff\line-a'
+        $f011ScopePath = Join-Path $f011HistoryRoot 'scope.json'
+        $f011PreparePath = Join-Path $f011HistoryRoot 'prepare.json'
+        $f011BaselinePath = Join-Path $f011HistoryRoot 'baseline.json'
+        $f011PreflightPath = Join-Path $f011HistoryRoot 'preflight.json'
+        $f011PromptPath = Join-Path $f011ExecutionRoot 'prompt.md'
+        $f011QuotaPath = Join-Path $f011SourceRoot 'quota.json'
+        $f011CodexHome = Join-Path $f011ExecutionRoot 'codex-home'
+        $f011Thread = [guid]::NewGuid().ToString('D')
+        New-Item -ItemType Directory -Path $f011RunDirectory, $f011HistoryRoot, $f011LineRoot, $f011CodexHome -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $f011LineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = $f011LineSlug } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $f011ScopePath -Content (([ordered]@{ decision = 'full'; requested_units = @('Phase 1'); selected_units = @('Phase 1'); deferred_units = @(); scope_plan_fingerprint = 'fixture' } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $f011PreparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'Prepared' } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $f011BaselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $f011PromptPath -Content 'f011 continuation prompt'
+        Write-Utf8NoBom -Path (Join-Path $f011CodexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        $f011QuotaSnapshot = New-Phase8QuotaSnapshot -Path $f011QuotaPath -PrimaryRemainingPercent 80
+        $f011BaselineSha256 = Get-FileSha256 -Path $f011BaselinePath
+        $f011PrepareSha256 = Get-FileSha256 -Path $f011PreparePath
+        $f011ScopeSha256 = Get-FileSha256 -Path $f011ScopePath
+        $f011ParentOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $f011ExecutionRoot -AddDirectory @() -Search $false -CodexParentOption @()
+        $f011PreviousMessagePath = Join-Path $f011HistoryRoot 'previous-message.md'
+        Write-Utf8NoBom -Path $f011PreviousMessagePath -Content 'f011 previous message'
+        $f011PreviousAnchor = [pscustomobject]@{
+            schema = 'ai-sessions.dispatch-run.v1'
+            run_id = [guid]::NewGuid().ToString('D')
+            line_slug = $f011LineSlug
+            dispatch_slug = $f011DispatchSlug
+            source_root = $f011SourceRoot
+            execution_root = $f011ExecutionRoot
+            thread_id = $f011Thread
+            last_message_path = $f011PreviousMessagePath
+            scope_plan_path = $f011ScopePath
+            scope_plan_sha256 = $f011ScopeSha256
+            baseline_path = $f011BaselinePath
+            baseline_sha256 = $f011BaselineSha256
+            model_evidence = $a.model_evidence
+            reasoning_effort_evidence = $a.reasoning_effort_evidence
+            parent_options = $f011ParentOptions
+            sandbox_acl_evidence = [pscustomobject]@{
+                capture_status = 'captured'
+                entries = @($entryA, $entryB)
+                captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+                normal_completion = $true
+                continuation_allowed = $true
+            }
+        }
+        $f011PreviousRun = [pscustomobject]@{
+            Record = $f011PreviousAnchor
+            AnchorRecord = $f011PreviousAnchor
+            ChainTailRecord = $f011PreviousAnchor
+            Message = 'f011 previous message'
+            SkippedAttempts = @()
+        }
+        $f011Preflight = [ordered]@{
+            sourceRoot = $f011SourceRoot
+            executionRoot = $f011ExecutionRoot
+            dispatchRoot = $f011ExecutionRoot
+            lineSlug = $f011LineSlug
+            dispatchSlug = $f011DispatchSlug
+            writeMode = 'write'
+            dispatchKind = 'workflow'
+            baseSha = ('a' * 40)
+            baselinePath = $f011BaselinePath
+            baselineSha256 = $f011BaselineSha256
+            prepareResultPath = $f011PreparePath
+            prepareResultSha256 = $f011PrepareSha256
+            prepareStatus = 'Prepared'
+        }
+        Write-Utf8NoBom -Path $f011PreflightPath -Content (($f011Preflight | ConvertTo-Json -Depth 20) + "`n")
+        $script:phase9F011SourceRoot = $f011SourceRoot
+        $script:phase9F011ExecutionRoot = $f011ExecutionRoot
+        $script:phase9F011SourceEntries = @($entryA)
+        $script:phase9F011DispatchEntries = @($entryA, $entryB)
+        $script:phase9F011PreviousRun = $f011PreviousRun
+        $script:phase9F011CurrentBaselinePath = $f011BaselinePath
+        $script:phase9F011CurrentBaselineSha256 = $f011BaselineSha256
+        $script:phase9F011CurrentPreparePath = $f011PreparePath
+        $script:phase9F011CurrentPrepareSha256 = $f011PrepareSha256
+        $script:phase9F011SnapshotFunction = {
+            param([string]$Path)
+            $isExecutionRoot = [string]::Equals([IO.Path]::GetFullPath($Path), [IO.Path]::GetFullPath($script:phase9F011ExecutionRoot), [StringComparison]::OrdinalIgnoreCase)
+            $entries = if ($isExecutionRoot) { @($script:phase9F011DispatchEntries) } else { @($script:phase9F011SourceEntries) }
+            return [ordered]@{
+                status = 'known'
+                path = (Resolve-AbsolutePath -Path $Path)
+                fingerprint = Get-JsonSha256 -Value @($entries)
+                entries = @($entries)
+                explicit_entries = @($entries)
+                captured_at_utc = [datetime]::UtcNow.ToString('o')
+                error = $null
+            }
+        }
+        $f011OneWayGate = $null
+        $f011FixedGate = $null
+        $f011StartResult = $null
+        try {
+            Set-Item -Path Function:\Get-WorktreeAclGate -Value (Get-Command -Name Invoke-Phase9ProductionAclGate -CommandType Function).ScriptBlock
+            Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $script:phase9F011SnapshotFunction
+            Set-Item -Path Function:\Resolve-PreviousDispatchRun -Value ([scriptblock]::Create('param($SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ResumeThreadId, $LastMessagePath) return $script:phase9F011PreviousRun'))
+            Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value ([scriptblock]::Create('param($Preflight, $SourceRoot, $DispatchRoot, $LineSlug, $DispatchSlug, $BaseSha) return [pscustomobject]@{ Path = $script:phase9F011CurrentBaselinePath; Sha256 = $script:phase9F011CurrentBaselineSha256 }'))
+            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value ([scriptblock]::Create('param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ExpectedSha256) return [pscustomobject]@{ Path = $script:phase9F011CurrentPreparePath; Sha256 = $script:phase9F011CurrentPrepareSha256; Status = ''Prepared''; Document = [pscustomobject]@{ operation = ''Prepare''; status = ''Prepared'' }; Artifacts = @() }'))
+            Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
+            Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
+            Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
+            Set-Item -Path Function:\Get-RuntimeModelEvidence -Value ([scriptblock]::Create('param($CodexHome, $ThreadId, $StartedAtUtc) return [ordered]@{ model = [ordered]@{ value = ''fixture-model''; status = ''confirmed'' }; reasoning_effort = [ordered]@{ value = ''high''; status = ''confirmed'' }; rollout_paths = @() }'))
+            Set-Item -Path Function:\Invoke-Prepare -Value ([scriptblock]::Create('$script:phase9F011PrepareCalls++; throw ''F-011 fixture must reject before Invoke-Prepare.'''))
+            $continuationRecord = [pscustomobject]@{ sandbox_acl_evidence = $f011PreviousAnchor.sandbox_acl_evidence }
+            $script:phase9F011DispatchEntries = @($entryA, $entryB)
+            $normalGate = Invoke-Phase9ProductionAclGate -SourceRoot $f011SourceRoot -ExecutionRoot $f011ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $continuationRecord
+            $script:phase9F011DispatchEntries = @($entryA)
+            $f011FixedGate = Invoke-Phase9ProductionAclGate -SourceRoot $f011SourceRoot -ExecutionRoot $f011ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $continuationRecord
+            $f011MissingEntriesMutant = {
+                param($BaselineEntries, $SnapshotEntries)
+                return @()
+            }
+            Set-Item -Path Function:\Get-SandboxAclMissingEntries -Value $f011MissingEntriesMutant
+            $f011ReverseMutantGate = Invoke-Phase9ProductionAclGate -SourceRoot $f011SourceRoot -ExecutionRoot $f011ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $continuationRecord
+            Set-Item -Path Function:\Get-SandboxAclMissingEntries -Value $f011OriginalFunctions['Get-SandboxAclMissingEntries']
+            $f011RestoredGate = Invoke-Phase9ProductionAclGate -SourceRoot $f011SourceRoot -ExecutionRoot $f011ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $continuationRecord
+            $script:phase9F011DispatchEntries = @($entryA)
+            $script:testThread = $f011Thread
+            $script:startCalls = 0
+            $script:phase9F011PrepareCalls = 0
+            $script:failLaunch = $false
+            $script:pidResult.ActiveRecords = @()
+            $script:pidResult.UnconfirmedRecords = @()
+            $script:pidResult.Blocked = $false
+            $script:quotaSnapshotPathOverride = $f011QuotaSnapshot
+            $script:phase9F011CurrentBaselinePath = $f011BaselinePath
+            $script:phase9F011CurrentPreparePath = $f011PreparePath
+            $SourceRoot = $f011SourceRoot
+            $ExecutionRoot = $f011ExecutionRoot
+            $DispatchRoot = $f011ExecutionRoot
+            $LineSlug = $f011LineSlug
+            $DispatchSlug = $f011DispatchSlug
+            $WriteMode = 'write'
+            $PreflightResultPath = $f011PreflightPath
+            $PrepareResultPath = $f011PreparePath
+            $ScopePlanPath = $f011ScopePath
+            $PromptPath = $f011PromptPath
+            $CodexHome = $f011CodexHome
+            $CodexPath = 'fixture-codex'
+            $TargetPath = @('target.txt')
+            $ResumeThreadId = $f011Thread
+            $LastMessagePath = $null
+            $QuotaBeforePath = $f011QuotaSnapshot
+            $QuotaAfterPath = $null
+            $CalibrationPath = $null
+            $TaskType = 'script-change'
+            $DispatchKind = 'workflow'
+            $Profile = 'default'
+            $SessionMode = 'continuation'
+            $Model = $null
+            $ReasoningEffort = $null
+            $AdvisorRequestSource = $null
+            $EvidencePackPath = $null
+            $AdvisorConsultReportPath = $null
+            $PrimaryBudgetPercent = $null
+            $PrimaryReservePercent = $null
+            $AddDirectory = @()
+            $Search = $false
+            $CodexParentOption = @()
+            $RequiredIdentifier = $null
+            $RecoveryHandoffPath = $null
+            $EventStreamPath = $null
+            $ErrorStreamPath = $null
+            $ThreadIdPath = $null
+            $PidRecordPath = $null
+            $RunRecordPath = $null
+            $ProcessExitCode = $null
+            $AbortGraceSeconds = 30
+            $script:SessionMode = 'continuation'
+            $script:ProfileExplicit = $false
+            $script:AddDirectoryExplicit = $false
+            $script:SearchExplicit = $false
+            $script:CodexParentOptionExplicit = $false
+            $script:InvocationBoundParameters = [ordered]@{}
+            $startException = $null
+            try {
+                $f011StartOutput = @(Invoke-Start)
+                if ($f011StartOutput.Count -eq 1) {
+                    $f011StartResult = $f011StartOutput[0]
+                }
+            }
+            catch {
+                $startException = $_.Exception
+                $f011StartResult = $startException.Data['operationResult']
+            }
+            $f011Records = @()
+            if (Test-Path -LiteralPath $f011RunDirectory -PathType Container) {
+                $f011Records = @(Get-ChildItem -LiteralPath $f011RunDirectory -Filter '*.json' -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json })
+            }
+            $f011Failure = if ($null -eq $f011StartResult) { $null } else { Get-DispatchJsonProperty -Object $f011StartResult -Name 'failure' }
+            $script:phase9F011Evidence = [ordered]@{
+                failure_scenario = [ordered]@{
+                    whitelist = @('A', 'B')
+                    dispatch_acl = @('A')
+                    expected = 'reject continuation before preparation proceeds to external start'
+                }
+                wrong_single_direction = $f011ReverseMutantGate
+                normal_continuation = $normalGate
+                fixed_missing_whitelist = $f011FixedGate
+                reverse_mutant_failure = [ordered]@{
+                    expected = 'residue'
+                    actual = $f011ReverseMutantGate
+                    result = 'FAIL'
+                }
+                restored_pass = [ordered]@{
+                    expected = 'residue'
+                    actual = $f011RestoredGate
+                    result = 'PASS'
+                }
+                actual_invoke_start = [ordered]@{
+                    process_started = if ($null -eq $f011StartResult) { $null } else { [bool](Get-DispatchJsonProperty -Object $f011StartResult -Name 'processStarted') }
+                    external_start_calls = $script:startCalls
+                    invoke_prepare_calls = $script:phase9F011PrepareCalls
+                    run_record_states = @($f011Records | ForEach-Object { $_.launch_state })
+                    error_code = if ($null -eq $f011StartResult) { $null } else { [string](Get-DispatchJsonProperty -Object $f011StartResult -Name 'errorCode') }
+                    failure_stage = if ($null -eq $f011Failure) { $null } else { [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $f011Failure -Name 'observation') -Name 'failure_stage') }
+                    exception = if ($null -eq $startException) { $null } else { $startException.Message }
+                }
+            }
+            Write-Phase9Evidence -Label 'F011_BIDIRECTIONAL_CONTINUATION' -Value $script:phase9F011Evidence
+            Write-Phase9Evidence -Label 'F011_REVERSE_FAILURE' -Value $script:phase9F011Evidence.reverse_mutant_failure
+            Write-Phase9Evidence -Label 'F011_RESTORED_PASS' -Value $script:phase9F011Evidence.restored_pass
+            Assert-True ([string](Get-DispatchJsonProperty -Object $normalGate -Name 'status') -eq 'clean') ('F-011 正常續行被雙向比較誤擋：' + ($normalGate | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ([string](Get-DispatchJsonProperty -Object $f011FixedGate -Name 'status') -eq 'residue' -and [string](Get-DispatchJsonProperty -Object $f011FixedGate -Name 'rejection_code') -eq 'WorktreeAclResidue') ('F-011 whitelist entry 消失仍回傳 clean：' + ($f011FixedGate | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ([string](Get-DispatchJsonProperty -Object $f011ReverseMutantGate -Name 'status') -eq 'clean') ('F-011 反向單向差集案例未重現 clean 失敗：' + ($f011ReverseMutantGate | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ([string](Get-DispatchJsonProperty -Object $f011RestoredGate -Name 'status') -eq 'residue') ('F-011 還原雙向比較後未回到 residue：' + ($f011RestoredGate | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True ($null -ne $f011StartResult -and -not [bool](Get-DispatchJsonProperty -Object $f011StartResult -Name 'processStarted') -and $script:phase9F011PrepareCalls -eq 0 -and $script:startCalls -eq 0) ('F-011 真實 Invoke-Start 未在 Invoke-Prepare 或 external start 前拒絕：' + ($script:phase9F011Evidence.actual_invoke_start | ConvertTo-Json -Depth 20 -Compress))
+        }
+        finally {
+            foreach ($functionName in $f011FunctionNames) {
+                Set-Item -Path ('Function:' + $functionName) -Value $f011OriginalFunctions[$functionName]
+            }
+            $script:SessionMode = 'cold-start'
+            $script:quotaSnapshotPathOverride = $null
+            $script:InvocationBoundParameters = [ordered]@{}
+        }
+    }
+
+    $writerFunctionAst = @($functions | Where-Object { $_.Name -eq 'Write-Utf8NoBom' } | Select-Object -First 1)
+    Assert-True ($writerFunctionAst.Count -eq 1) 'Phase 9 找不到 production Write-Utf8NoBom AST。'
+    $writerFunctionDefinition = $writerFunctionAst[0].Extent.Text -replace '^function Write-Utf8NoBom', 'function Invoke-Phase9OriginalWriteUtf8NoBom'
+    . ([scriptblock]::Create($writerFunctionDefinition))
+    $atomicFunctionAst = @($functions | Where-Object { $_.Name -eq 'Write-DispatchAtomicJsonDocument' } | Select-Object -First 1)
+    Assert-True ($atomicFunctionAst.Count -eq 1) 'Phase 9 找不到 production Write-DispatchAtomicJsonDocument AST。'
+    $atomicAfterCasInjection = @'
+        if ($null -ne $script:phase9AtomicAfterCasHook) {
+            & $script:phase9AtomicAfterCasHook
+        }
+'@
+    $atomicFunctionDefinition = $atomicFunctionAst[0].Extent.Text -replace '^function Write-DispatchAtomicJsonDocument', 'function Invoke-Phase9ProductionAtomicWriter'
+    $atomicFunctionDefinition = $atomicFunctionDefinition.Replace('        if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {', ($atomicAfterCasInjection + '        if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {'))
+    try {
+        . ([scriptblock]::Create($atomicFunctionDefinition))
+    }
+    catch {
+        throw ('Phase 9 atomic production writer clone failed: ' + $_.Exception.Message + ' | script=' + $_.ScriptStackTrace)
+    }
+    $atomicMutantDefinition = $atomicFunctionDefinition.Replace('        $lock = Open-DispatchResultLock -ResolvedPath $resolvedPath', '        $lock = $null')
+    $atomicMutantDefinition = $atomicMutantDefinition -replace '^function Invoke-Phase9ProductionAtomicWriter', 'function Invoke-Phase9MutantAtomicWriter'
+    try {
+        . ([scriptblock]::Create($atomicMutantDefinition))
+    }
+    catch {
+        throw ('Phase 9 atomic mutant writer clone failed: ' + $_.Exception.Message + ' | script=' + $_.ScriptStackTrace)
+    }
+    $script:phase9CaptureOnly = $false
+    $script:phase9CapturedWrites = New-Object System.Collections.Generic.List[object]
+    $script:phase9AtomicAfterCasHook = $null
+    $script:phase9CapturePath = $null
+    $script:phase9CasMutationTargetPath = $null
+    $script:phase9CasMutationDone = $false
+    $script:phase9RealDispatchGitSourceRoot = $null
+    $script:phase9RealDispatchGitRoot = $null
+    $script:phase9RealDispatchGitInitialized = $false
+    function Write-Utf8NoBom {
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [Parameter(Mandatory)][AllowEmptyString()][string]$Content
+        )
+        if (-not $script:phase9CasMutationDone -and
+            -not [string]::IsNullOrWhiteSpace($script:phase9CasMutationTargetPath) -and
+            [IO.Path]::GetFileName($Path) -like '*.dispatch.tmp' -and
+            (Test-Path -LiteralPath $script:phase9CasMutationTargetPath -PathType Leaf)) {
+            $script:phase9CasMutationDone = $true
+            $concurrentDocument = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $script:phase9CasMutationTargetPath -Raw -Encoding UTF8)
+            $concurrentDocument | Add-Member -MemberType NoteProperty -Name 'concurrent_marker' -Value 'phase9-cas-fixture' -Force
+            $concurrentDocument.result_sha256 = Get-PrepareDocumentFingerprint -Document $concurrentDocument
+            Invoke-Phase9OriginalWriteUtf8NoBom -Path $script:phase9CasMutationTargetPath -Content (($concurrentDocument | ConvertTo-Json -Depth 40) + "`n")
+        }
+        if ($script:phase9CaptureOnly -and [string]::Equals([IO.Path]::GetFullPath($Path), [IO.Path]::GetFullPath($script:phase9CapturePath), [StringComparison]::OrdinalIgnoreCase)) {
+            $script:phase9CapturedWrites.Add([pscustomobject]@{ path = $Path; content = $Content })
+            return
+        }
+        Invoke-Phase9OriginalWriteUtf8NoBom -Path $Path -Content $Content
+    }
+
+    Invoke-Case 'Phase 9 P2 output path local history allowed' {
+        $allowedPath = Join-Path $phase9Root '.local\ai-sessions\history\allowed-result.json'
+        $script:SourceRoot = $phase9Root
+        $script:TargetPath = @()
+        $script:ResultPath = $allowedPath
+        $script:phase9CaptureOnly = $false
+        $null = Write-OperationResult -Result ([ordered]@{ schema = 'fixture.result.v1'; status = 'ok' })
+        Assert-True (Test-Path -LiteralPath $allowedPath -PathType Leaf) 'local history result 未寫入。'
+        $bytes = [IO.File]::ReadAllBytes($allowedPath)
+        Assert-True (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191)) 'result file 不應含 BOM。'
+    }
+
+    Invoke-Case 'Phase 9 P2 non-local result path allowed' {
+        $nonLocalRoot = Join-Path $phase9Root 'reviewer'
+        New-Item -ItemType Directory -Path $nonLocalRoot -Force | Out-Null
+        $nonLocalPath = Join-Path $nonLocalRoot 'non-local-result.json'
+        $unmatchedTargetPath = Join-Path $phase9Root 'fixture-target.txt'
+        $script:SourceRoot = $phase9Root
+        $script:ExecutionRoot = $phase9Root
+        $script:TargetPath = @($unmatchedTargetPath)
+        $script:ResultPath = $nonLocalPath
+        $script:phase9CaptureOnly = $false
+        $writeSucceeded = $false
+        $writeError = $null
+        try {
+            $null = Write-OperationResult -Result ([ordered]@{ schema = 'fixture.result.v1'; status = 'ok' })
+            $writeSucceeded = Test-Path -LiteralPath $nonLocalPath -PathType Leaf
+        }
+        catch {
+            $writeError = $_.Exception.Message
+        }
+        Assert-True $writeSucceeded ('DispatchOutputBoundary；write_succeeded=' + $writeSucceeded + '；result=FAIL；error=' + [string]$writeError)
+        $writtenResult = Get-Content -LiteralPath $nonLocalPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($writtenResult.schema -eq 'fixture.result.v1' -and $writtenResult.status -eq 'ok') '非 .local 結果檔內容不符。'
+    }
+
+    Invoke-Case 'Phase 9 P2 tracked result path rejected' {
+        $trackedPath = Join-Path $root 'scripts\Invoke-CodexDispatch.ps1'
+        $beforeHash = Get-FileSha256 -Path $trackedPath
+        $script:SourceRoot = $root
+        $script:TargetPath = @($trackedPath)
+        $script:ResultPath = $trackedPath
+        $script:phase9CapturePath = $trackedPath
+        $script:phase9CaptureOnly = $true
+        $script:phase9CapturedWrites.Clear()
+        $caught = $null
+        try {
+            $null = Write-OperationResult -Result ([ordered]@{ schema = 'fixture.result.v1'; status = 'should-reject' })
+        }
+        catch {
+            $caught = $_.Exception
+        }
+        $afterHash = Get-FileSha256 -Path $trackedPath
+        Assert-True ($null -ne $caught -and $caught.Message.Contains('DispatchOutputTrackedTarget')) 'tracked result path 未回傳明確拒絕碼。'
+        Assert-True ($beforeHash -eq $afterHash -and $script:phase9CapturedWrites.Count -eq 0) 'tracked file 已被寫入或 temporary writer 已啟動。'
+    }
+
+    Invoke-Case 'Phase 9 P2 TargetPath result collision rejected' {
+        $collisionRoot = Join-Path $phase9Root 'target-collision'
+        New-Item -ItemType Directory -Path $collisionRoot -Force | Out-Null
+        $collisionPath = Join-Path $collisionRoot 'result.json'
+        $script:SourceRoot = $phase9Root
+        $script:TargetPath = @($collisionRoot)
+        $script:ResultPath = $collisionPath
+        $script:phase9CapturePath = $collisionPath
+        $script:phase9CaptureOnly = $true
+        $script:phase9CapturedWrites.Clear()
+        $caught = $null
+        try {
+            $null = Write-OperationResult -Result ([ordered]@{ schema = 'fixture.result.v1'; status = 'should-reject' })
+        }
+        catch {
+            $caught = $_.Exception
+        }
+        Assert-True ($null -ne $caught -and $caught.Message.Contains('DispatchOutputTargetCollision')) 'TargetPath collision 未回傳明確拒絕碼。'
+        Assert-True (-not (Test-Path -LiteralPath $collisionPath -PathType Leaf) -and $script:phase9CapturedWrites.Count -eq 0) 'TargetPath collision 已建立結果或 temporary file。'
+    }
+
+    $dispatchRequestPath = Join-Path $phase9Root 'dispatch-request.json'
+    $dispatchResultPath = Join-Path $phase9Root '.local\ai-sessions\history\dispatch-result.json'
+    $dispatchRequest = [ordered]@{
+        schema = 'ai-sessions.dispatch-request.v1'
+        operation = 'Dispatch'
+        source_root = $phase9Root
+        dispatch_root = (Join-Path $phase9Root 'dispatch-root')
+        line_slug = 'line-a'
+        dispatch_slug = 'phase9-dispatch'
+        write_mode = 'readonly'
+        dispatch_kind = 'workflow'
+        prompt_path = (Join-Path $phase9Root 'dispatch-prompt.md')
+        task_type = 'script-change'
+        session_mode = 'cold-start'
+        unit_kind = 'workflow-phase'
+        requested_unit = @('Phase 1')
+        failure_receipt_path = (Join-Path $phase9Root '.local\ai-sessions\history\failure-receipt.json')
+        result_path = $dispatchResultPath
+        preflight_result_path = (Join-Path $phase9Root '.local\ai-sessions\history\preflight.json')
+        prepare_result_path = (Join-Path $phase9Root '.local\ai-sessions\history\prepare.json')
+        quota_before_path = (Join-Path $phase9Root '.local\ai-sessions\history\quota-before.json')
+        target_path = @('fixture-target.txt')
+        prepare_artifacts = @()
+    }
+    $script:phase9CaptureOnly = $false
+    Write-Utf8NoBom -Path $dispatchRequest.prompt_path -Content 'fixture dispatch prompt'
+    Write-Utf8NoBom -Path $dispatchRequestPath -Content (($dispatchRequest | ConvertTo-Json -Depth 20) + "`n")
+
+    $phase9RequiredDispatchFields = @(
+        'source_root'
+        'dispatch_root'
+        'write_mode'
+        'dispatch_kind'
+        'target_path'
+        'prepare_artifacts'
+        'prompt_path'
+        'task_type'
+        'session_mode'
+        'unit_kind'
+        'requested_unit'
+        'failure_receipt_path'
+    )
+    Invoke-Case 'Phase 9 F-005 actual Dispatch CLI rejects every missing field before external start' {
+        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $counterPath = Join-Path $phase9Root 'f005-external-started.txt'
+        $fakeCodexPath = Join-Path $phase9Root 'codex.cmd'
+        Write-Utf8NoBom -Path $fakeCodexPath -Content ('@echo off' + "`r`n" + ('>"' + $counterPath + '" echo started') + "`r`n" + 'exit /b 0' + "`r`n")
+        $pathValue = $phase9Root + ';' + [string]$env:PATH
+        $runRecords = New-Object System.Collections.Generic.List[object]
+        foreach ($field in $phase9RequiredDispatchFields) {
+            $candidate = [ordered]@{}
+            foreach ($propertyName in $dispatchRequest.Keys) {
+                $candidate[$propertyName] = $dispatchRequest[$propertyName]
+            }
+            $candidate.Remove($field)
+            $candidatePath = Join-Path $phase9Root ('dispatch-request-missing-' + $field + '.json')
+            Write-Utf8NoBom -Path $candidatePath -Content (($candidate | ConvertTo-Json -Depth 20) + "`n")
+            $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+                '-NoProfile'
+                '-File'
+                $sourcePath
+                '-Operation'
+                'Dispatch'
+                '-RequestPath'
+                $candidatePath
+            ) -WorkingDirectory $root -EnvironmentVariables @{ PATH = $pathValue }
+            $runRecords.Add([pscustomobject]@{ field = $field; request_path = $candidatePath; run = $run })
+            Assert-True ([int]$run.exit_code -ne 0) ('缺少 ' + $field + ' 時 CLI 應以非零結束。')
+            Assert-True ([string]$run.stdout -match 'DispatchRequestMissingField' -or [string]$run.stderr -match 'DispatchRequestMissingField') ('缺少 ' + $field + ' 時未回傳 DispatchRequestMissingField：' + [string]$run.stdout + [string]$run.stderr)
+            Assert-True (-not (Test-Path -LiteralPath $counterPath -PathType Leaf)) ('缺少 ' + $field + ' 時已啟動外部工作。')
+        }
+        Assert-True ($runRecords.Count -eq $phase9RequiredDispatchFields.Count) 'F-005 未逐一執行所有 required dispatch field 的實際 CLI 入口。'
+        $script:phase9F005CliEvidence = @($runRecords.ToArray())
+    }
+
+    Invoke-Case 'Phase 9 F-005 reverse bypassed request validation is observable at CLI' {
+        $readRequestAst = @($functions | Where-Object { $_.Name -eq 'Read-DispatchRequest' } | Select-Object -First 1)
+        Assert-True ($readRequestAst.Count -eq 1) 'F-005 找不到 production Read-DispatchRequest AST。'
+        $missingFieldThrow = 'Throw-DispatchRequestFailure -Code ''DispatchRequestMissingField'' -Message ("Dispatch request file 缺少必要欄位：{0}" -f $requiredDispatchField) -RequestPathValue $requestPathValue -Field $requiredDispatchField'
+        $mutantSource = $readRequestAst[0].Extent.Text.Replace('function Read-DispatchRequest', 'function Read-DispatchRequest')
+        Assert-True ($mutantSource.Contains($missingFieldThrow)) 'F-005 reverse fixture 找不到 required field rejection。'
+        $mutantSource = $mutantSource.Replace($missingFieldThrow, '$null = $requiredDispatchField')
+        $mutantPath = Join-Path $phase9Root 'f005-mutant-Invoke-CodexDispatch.ps1'
+        $bomEncoding = New-Object System.Text.UTF8Encoding($true)
+        [IO.File]::WriteAllText($mutantPath, (Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8).Replace($readRequestAst[0].Extent.Text, $mutantSource), $bomEncoding)
+        $missingRequestPath = [string]$script:phase9F005CliEvidence[0].request_path
+        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $pathValue = $phase9Root + ';' + [string]$env:PATH
+        $reverseRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $mutantPath
+            '-Operation'
+            'Dispatch'
+            '-RequestPath'
+            $missingRequestPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{ PATH = $pathValue }
+        $reverseOutput = [string]$reverseRun.stdout + [string]$reverseRun.stderr
+        Assert-True ([int]$reverseRun.exit_code -ne 0 -and $reverseOutput -match '"status"\s*:\s*"failed"' -and $reverseOutput -match '"failed_stage"\s*:\s*"validation"') ('F-005 reverse mutant did not expose the late validation regression：' + $reverseOutput)
+        Assert-True ($reverseOutput -notmatch 'DispatchRequestMissingField') ('F-005 reverse mutant still rejected at request validation：' + $reverseOutput)
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $phase9Root 'f005-external-started.txt') -PathType Leaf)) ('F-005 reverse mutant unexpectedly launched external work：' + $reverseOutput)
+        $restoredRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Dispatch'
+            '-RequestPath'
+            $missingRequestPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{ PATH = $pathValue }
+        $restoredOutput = [string]$restoredRun.stdout + [string]$restoredRun.stderr
+        Assert-True ([int]$restoredRun.exit_code -ne 0 -and $restoredOutput -match 'DispatchRequestMissingField') ('F-005 restored production did not reject the request at the CLI boundary：' + $restoredOutput)
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $phase9Root 'f005-external-started.txt') -PathType Leaf)) ('F-005 restored production launched external work：' + $restoredOutput)
+        $script:phase9F005ReverseEvidence = [pscustomobject]@{
+            mutant = $reverseRun
+            restored = $restoredRun
+            mutation = 'Read-DispatchRequest required dispatch field throw replaced with a no-op.'
+        }
+        Write-Phase9Evidence -Label 'F005_NORMAL_FAILURES' -Value @($script:phase9F005CliEvidence)
+        Write-Phase9Evidence -Label 'F005_REVERSE_FAILURE' -Value $reverseRun
+        Write-Phase9Evidence -Label 'F005_RESTORED_PASS' -Value $restoredRun
+    }
+
+    $invokeF009Case = {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$Name,
+            [Parameter(Mandatory)][ValidateSet('existing', 'boundary', 'manifest')][string]$Scenario,
+            [Parameter(Mandatory)][string]$ScriptPath,
+            [switch]$ReceiptDirectory
+        )
+
+        $caseRoot = Join-Path $phase9Root ('f009-' + $Name + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $sourceRoot = Join-Path $caseRoot 'source'
+        $lineRoot = Join-Path $sourceRoot '.local\ai-sessions\handoff\line-a'
+        $sourceHistoryRoot = Join-Path $sourceRoot '.local\ai-sessions\history'
+        $expectedDispatchRoot = Join-Path $sourceRoot ('.local\ai-sessions\worktrees\f009-' + $Name)
+        $dispatchRoot = $expectedDispatchRoot
+        if ($Scenario -eq 'boundary') {
+            $dispatchRoot = Join-Path $caseRoot 'outside-dispatch-root'
+        }
+        $promptPath = Join-Path $sourceRoot 'dispatch-prompt.md'
+        $targetPath = Join-Path $sourceRoot 'target.txt'
+        $requestPath = Join-Path $caseRoot 'dispatch-request.json'
+        $resultPath = Join-Path $sourceHistoryRoot ('f009-' + $Name + '-result.json')
+        $preflightResultPath = Join-Path $sourceHistoryRoot ('f009-' + $Name + '-preflight.json')
+        $prepareResultPath = Join-Path $sourceHistoryRoot ('f009-' + $Name + '-prepare.json')
+        $quotaBeforePath = Join-Path $sourceHistoryRoot ('f009-' + $Name + '-quota-before.json')
+        $receiptPath = Join-Path $sourceHistoryRoot ('f009-' + $Name + '-failure-receipt.json')
+        $counterPath = Join-Path $caseRoot 'external-started.txt'
+        $fakeCodexPath = Join-Path $caseRoot 'codex.cmd'
+
+        New-Item -ItemType Directory -Path $sourceRoot, $lineRoot, $sourceHistoryRoot -Force | Out-Null
+        Write-Utf8NoBom -Path $promptPath -Content ('F-009 ' + $Name + ' prompt')
+        Write-Utf8NoBom -Path $targetPath -Content ('F-009 ' + $Name + ' target')
+        if ($Scenario -eq 'manifest') {
+            Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content '{invalid-json'
+        }
+        else {
+            Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'line-a' } | ConvertTo-Json -Depth 10) + "`n")
+        }
+        if ($Scenario -eq 'existing') {
+            New-Item -ItemType Directory -Path $expectedDispatchRoot -Force | Out-Null
+        }
+        if ($ReceiptDirectory) {
+            New-Item -ItemType Directory -Path $receiptPath -Force | Out-Null
+        }
+        Write-Utf8NoBom -Path $fakeCodexPath -Content (('@echo off' + "`r`n") + ('>"' + $counterPath + '" echo started' + "`r`n") + ('exit /b 0' + "`r`n"))
+
+        $request = [ordered]@{
+            schema = 'ai-sessions.dispatch-request.v1'
+            operation = 'Dispatch'
+            source_root = $sourceRoot
+            dispatch_root = $dispatchRoot
+            line_slug = 'line-a'
+            dispatch_slug = 'f009-' + $Name
+            profile = 'default'
+            write_mode = 'readonly'
+            dispatch_kind = 'workflow'
+            target_path = @('target.txt')
+            prepare_artifacts = @()
+            prompt_path = $promptPath
+            task_type = 'script-change'
+            session_mode = 'cold-start'
+            unit_kind = 'workflow-phase'
+            requested_unit = @('Phase 1')
+            failure_receipt_path = $receiptPath
+            result_path = $resultPath
+            preflight_result_path = $preflightResultPath
+            prepare_result_path = $prepareResultPath
+            quota_before_path = $quotaBeforePath
+        }
+        Write-Utf8NoBom -Path $requestPath -Content (($request | ConvertTo-Json -Depth 20) + "`n")
+
+        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $ScriptPath
+            '-CodexPath'
+            $fakeCodexPath
+            '-Operation'
+            'Dispatch'
+            '-RequestPath'
+            $requestPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $outputDocument = $null
+        try {
+            $outputDocument = ConvertFrom-Json -InputObject ([string]$run.stdout)
+        }
+        catch {
+            $outputDocument = $null
+        }
+        $receiptDocument = $null
+        if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+            try {
+                $receiptDocument = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            }
+            catch {
+                $receiptDocument = $null
+            }
+        }
+        return [pscustomobject]@{
+            name = $Name
+            scenario = $Scenario
+            request_path = $requestPath
+            receipt_path = $receiptPath
+            case_root = $caseRoot
+            run = $run
+            output_text = ([string]$run.stdout + [string]$run.stderr)
+            output_document = $outputDocument
+            receipt_document = $receiptDocument
+            receipt_exists = Test-Path -LiteralPath $receiptPath -PathType Leaf
+            receipt_directory_exists = Test-Path -LiteralPath $receiptPath -PathType Container
+            start_counter_exists = Test-Path -LiteralPath $counterPath -PathType Leaf
+        }
+    }
+
+    $assertF009Receipt = {
+        param([psobject]$Record, [string]$Label)
+        Assert-True ([string]$Record.run.command -match 'Operation.*Dispatch' -and [string]$Record.run.command -match 'RequestPath') ('F-009 ' + $Label + ' 未透過實際 Dispatch CLI 入口：' + [string]$Record.run.command)
+        Assert-True ([int]$Record.run.exit_code -ne 0) ('F-009 ' + $Label + ' CLI failed envelope 未以非零結束碼回傳：' + [string]$Record.output_text)
+        Assert-True ($null -ne $Record.output_document -and [string]$Record.output_document.status -eq 'failed' -and [string]$Record.output_document.failed_stage -eq 'preflight' -and -not [bool]$Record.output_document.process_started) ('F-009 ' + $Label + ' CLI failed envelope 欄位不符：' + [string]$Record.output_text)
+        Assert-True ($Record.receipt_exists -and $null -ne $Record.receipt_document) ('F-009 ' + $Label + ' failure receipt missing：' + [string]$Record.output_text)
+        $receipt = $Record.receipt_document
+        Assert-True ([string]$receipt.schema -eq 'ai-sessions.dispatch-failure-receipt.v1' -and [string]$receipt.status -eq 'failed' -and [string]$receipt.failed_stage -eq 'preflight' -and -not [bool]$receipt.process_started) ('F-009 ' + $Label + ' receipt status contract 不符：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$receipt.error_code) -and -not [string]::IsNullOrWhiteSpace([string]$receipt.dispatch_slug)) ('F-009 ' + $Label + ' receipt 缺少 error_code 或 dispatch_slug：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
+        $dispatchExecutionId = [guid]::Empty
+        Assert-True ([Guid]::TryParse([string]$receipt.dispatch_execution_id, [ref]$dispatchExecutionId)) ('F-009 ' + $Label + ' receipt 缺少 dispatch_execution_id：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ([bool]$receipt.failure_receipt_saved -and [string]::Equals([string]$receipt.failure_receipt_path, [string]$Record.receipt_path, [StringComparison]::OrdinalIgnoreCase)) ('F-009 ' + $Label + ' receipt saved metadata 不符：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ($null -eq $receipt.PSObject.Properties['stage_binding']) ('F-009 ' + $Label + ' receipt 不得帶入 stage_binding。')
+        Assert-True (-not [bool]$Record.start_counter_exists) ('F-009 ' + $Label + ' Preflight failure 已呼叫外部 Start。')
+    }
+
+    Invoke-Case 'Phase 9 F-009 actual Dispatch Preflight failure receipt matrix' {
+        $f009NormalRecords = New-Object System.Collections.Generic.List[object]
+        foreach ($scenario in @('existing', 'boundary', 'manifest')) {
+            $record = & $invokeF009Case -Name ('normal-' + $scenario) -Scenario $scenario -ScriptPath $sourcePath
+            & $assertF009Receipt $record ('normal-' + $scenario)
+            $f009NormalRecords.Add($record)
+        }
+        $script:phase9F009NormalEvidence = @($f009NormalRecords.ToArray())
+        Write-Phase9Evidence -Label 'F009_NORMAL_PASS' -Value $script:phase9F009NormalEvidence
+    }
+
+    Invoke-Case 'Phase 9 F-009 failure receipt persistence failure returns nonzero' {
+        $persistenceRecord = & $invokeF009Case -Name 'normal-persistence' -Scenario 'existing' -ScriptPath $sourcePath -ReceiptDirectory
+        Assert-True ([string]$persistenceRecord.run.command -match 'Operation.*Dispatch' -and [string]$persistenceRecord.run.command -match 'RequestPath') ('F-009 persistence 未透過實際 Dispatch CLI 入口：' + [string]$persistenceRecord.run.command)
+        Assert-True ([int]$persistenceRecord.run.exit_code -ne 0) ('F-009 receipt persistence failure 未以非零結束：' + [string]$persistenceRecord.output_text)
+        Assert-True ($null -ne $persistenceRecord.output_document -and [string]$persistenceRecord.output_document.error_code -eq 'DispatchFailureReceiptPersistenceFailed' -and -not [bool]$persistenceRecord.output_document.failure_receipt_saved -and -not [bool]$persistenceRecord.output_document.process_started) ('F-009 receipt persistence failure envelope 不符：' + [string]$persistenceRecord.output_text)
+        Assert-True ($persistenceRecord.receipt_directory_exists -and -not $persistenceRecord.receipt_exists -and -not [bool]$persistenceRecord.start_counter_exists) ('F-009 receipt persistence failure 宣告了 receipt 或啟動外部工作。')
+        $script:phase9F009PersistenceEvidence = $persistenceRecord
+        Write-Phase9Evidence -Label 'F009_PERSISTENCE_FAILURE' -Value $persistenceRecord
+    }
+
+    Invoke-Case 'Phase 9 F-009 reverse execution-root receipt guard fails closed' {
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $receiptCondition = 'if ($failedStage -eq ''preflight'' -and -not [string]::IsNullOrWhiteSpace($failureReceiptPathValue)) {'
+        $mutantCondition = 'if ($failedStage -eq ''preflight'' -and -not [string]::IsNullOrWhiteSpace($failureReceiptPathValue) -and -not [string]::IsNullOrWhiteSpace($executionRootPath)) {'
+        Assert-True ($productionText.Contains($receiptCondition)) 'F-009 reverse 找不到 failure receipt writer 的 production guard。'
+        $mutantText = $productionText.Replace($receiptCondition, $mutantCondition)
+        Assert-True ($mutantText -ne $productionText) 'F-009 reverse mutant 未改變 executionRoot guard。'
+        $mutantPath = Join-Path $phase9Root 'f009-mutant-Invoke-CodexDispatch.ps1'
+        $bomEncoding = New-Object System.Text.UTF8Encoding($true)
+        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $reverseRecords = New-Object System.Collections.Generic.List[object]
+        foreach ($scenario in @('existing', 'boundary', 'manifest')) {
+            $record = & $invokeF009Case -Name ('reverse-' + $scenario) -Scenario $scenario -ScriptPath $mutantPath
+            Assert-True ([string]$record.run.command -match 'Operation.*Dispatch' -and [string]$record.run.command -match 'RequestPath') ('F-009 reverse ' + $scenario + ' 未透過實際 Dispatch CLI 入口。')
+            Assert-True ([int]$record.run.exit_code -ne 0 -and $null -ne $record.output_document -and [string]$record.output_document.status -eq 'failed' -and [string]$record.output_document.failed_stage -eq 'preflight') ('F-009 reverse ' + $scenario + ' 未留下 late failed envelope：' + [string]$record.output_text)
+            Assert-True (-not $record.receipt_exists -and -not [bool]$record.start_counter_exists -and -not [bool]$record.output_document.failure_receipt_saved) ('F-009 reverse ' + $scenario + ' 意外宣告 failure receipt 已保存：' + [string]$record.output_text)
+            $reverseRecords.Add($record)
+        }
+        $script:phase9F009ReverseEvidence = [ordered]@{ mutation = 'failure receipt writer required executionRootPath to be non-empty'; records = @($reverseRecords.ToArray()) }
+        Write-Phase9Evidence -Label 'F009_REVERSE_FAILURE' -Value $script:phase9F009ReverseEvidence
+    }
+
+    Invoke-Case 'Phase 9 F-009 restored receipt writer persists after reverse' {
+        $restoredRecords = New-Object System.Collections.Generic.List[object]
+        foreach ($scenario in @('existing', 'boundary', 'manifest')) {
+            $record = & $invokeF009Case -Name ('restored-' + $scenario) -Scenario $scenario -ScriptPath $sourcePath
+            & $assertF009Receipt $record ('restored-' + $scenario)
+            $restoredRecords.Add($record)
+        }
+        $restoredPersistence = & $invokeF009Case -Name 'restored-persistence' -Scenario 'existing' -ScriptPath $sourcePath -ReceiptDirectory
+        Assert-True ([int]$restoredPersistence.run.exit_code -ne 0 -and $null -ne $restoredPersistence.output_document -and [string]$restoredPersistence.output_document.error_code -eq 'DispatchFailureReceiptPersistenceFailed' -and -not [bool]$restoredPersistence.output_document.failure_receipt_saved -and -not [bool]$restoredPersistence.start_counter_exists) ('F-009 restored persistence failure contract 不符：' + [string]$restoredPersistence.output_text)
+        $script:phase9F009RestoredEvidence = [ordered]@{ matrix = @($restoredRecords.ToArray()); persistence_failure = $restoredPersistence }
+        Write-Phase9Evidence -Label 'F009_RESTORED_PASS' -Value $script:phase9F009RestoredEvidence
+    }
+
+    $invokeSRealDispatchCase = {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$Name,
+            [Parameter(Mandatory)][string]$ScriptPath,
+            [switch]$OmitQuotaBeforePath,
+            [switch]$PrepareFailure,
+            [switch]$CreateQuotaBeforePath
+        )
+
+        $caseSlug = 's' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+        $caseRoot = Join-Path $sRealDispatchParent $caseSlug
+        $sourceRoot = $caseRoot
+        $lineRoot = Join-Path $sourceRoot '.local\ai-sessions\handoff\a'
+        $sourceHistoryRoot = Join-Path $sourceRoot '.local\ai-sessions\history\a'
+        $dispatchRoot = Join-Path $sourceRoot ('.local\ai-sessions\worktrees\' + $caseSlug)
+        $dispatchHistoryRoot = Join-Path $dispatchRoot '.local\ai-sessions\history\a'
+        $promptSourcePath = Join-Path $sourceRoot 'dispatch-prompt.md'
+        $promptPath = Join-Path $dispatchRoot 'dispatch-prompt.md'
+        $targetPath = Join-Path $sourceRoot 'target.txt'
+        $requestPath = Join-Path $caseRoot 'dispatch-request.json'
+        $resultPath = Join-Path $dispatchHistoryRoot 'dispatch-result.json'
+        $preflightResultPath = Join-Path $sourceRoot 'preflight-result.json'
+        $prepareResultPath = Join-Path $dispatchHistoryRoot 'prepare.json'
+        $quotaBeforePath = Join-Path $sourceHistoryRoot 'quota-before.json'
+        $failureReceiptPath = Join-Path $sourceHistoryRoot 'failure-receipt.json'
+        $artifactSourcePath = Join-Path $lineRoot 'artifact.txt'
+        $artifactDestinationPath = Join-Path $dispatchHistoryRoot 'artifact.txt'
+        $codexHome = Join-Path $caseRoot 'codex-home'
+        $fakeCodexPath = Join-Path $caseRoot 'codex.cmd'
+        $counterPath = Join-Path $caseRoot 'external-started.txt'
+        $threadId = [guid]::NewGuid().ToString('D')
+
+        New-Item -ItemType Directory -Path $sourceRoot, $lineRoot, $sourceHistoryRoot, $codexHome -Force | Out-Null
+        Write-Utf8NoBom -Path $promptSourcePath -Content ('S finding dispatch prompt: ' + $Name)
+        Write-Utf8NoBom -Path $targetPath -Content ('S finding target: ' + $Name)
+        Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'a' } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $artifactSourcePath -Content ('S finding artifact: ' + $Name)
+        Write-Utf8NoBom -Path (Join-Path $codexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+
+        $quotaTimestamp = [DateTimeOffset]::UtcNow.AddMinutes(-1)
+        $quotaReset = $quotaTimestamp.AddHours(1).ToUnixTimeSeconds()
+        $quotaRollout = [ordered]@{
+            timestamp = $quotaTimestamp.ToString('o')
+            payload = [ordered]@{
+                rate_limits = [ordered]@{
+                    primary = [ordered]@{ used_percent = 20; window_minutes = 300; resets_at = $quotaReset }
+                    secondary = [ordered]@{ used_percent = 10; window_minutes = 10080; resets_at = $quotaReset }
+                }
+            }
+        }
+        $quotaSessionsPath = Join-Path $codexHome 'sessions'
+        New-Item -ItemType Directory -Path $quotaSessionsPath -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $quotaSessionsPath 'rollout-s-finding.jsonl') -Content (($quotaRollout | ConvertTo-Json -Compress -Depth 20) + "`n")
+
+        $gitHostPath = (Get-Command git.exe -ErrorAction Stop).Source
+        $gitInit = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('init') -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
+        Assert-True ([int]$gitInit.exit_code -eq 0) ('S finding fixture git init 失敗：' + [string]$gitInit.stdout + [string]$gitInit.stderr)
+        $gitAdd = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('add', '--', 'target.txt', 'dispatch-prompt.md') -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
+        Assert-True ([int]$gitAdd.exit_code -eq 0) ('S finding fixture git add 失敗：' + [string]$gitAdd.stdout + [string]$gitAdd.stderr)
+        $gitCommit = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('-c', 'user.name=phase9-s-finding', '-c', 'user.email=phase9-s-finding@example.invalid', 'commit', '--no-verify', '-m', 'phase9 S finding fixture') -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
+        Assert-True ([int]$gitCommit.exit_code -eq 0) ('S finding fixture git commit 失敗：' + [string]$gitCommit.stdout + [string]$gitCommit.stderr)
+
+        if ($CreateQuotaBeforePath) {
+            $null = New-Phase8QuotaSnapshot -Path $quotaBeforePath -PrimaryRemainingPercent 80
+        }
+
+        $fakeCodexLines = @(
+            '@echo off'
+            ('>"' + $counterPath + '" echo started')
+            ('echo {"type":"thread.started","thread_id":"' + $threadId + '"}')
+            ('echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md S finding a"}}')
+            'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+            'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 1"'
+            'exit /b 0'
+        )
+        Write-Utf8NoBom -Path $fakeCodexPath -Content (($fakeCodexLines -join "`r`n") + "`r`n")
+
+        $artifactDocument = [ordered]@{
+            source = if ($PrepareFailure) { Join-Path $lineRoot 'missing-artifact.txt' } else { $artifactSourcePath }
+            destination = $artifactDestinationPath
+            sha256 = if ($PrepareFailure) { '0' * 64 } else { Get-FileSha256 -Path $artifactSourcePath }
+            purpose = 'S finding Prepare fixture'
+        }
+        $request = [ordered]@{
+            schema = 'ai-sessions.dispatch-request.v1'
+            operation = 'Dispatch'
+            source_root = $sourceRoot
+            dispatch_root = $dispatchRoot
+            line_slug = 'a'
+            dispatch_slug = $caseSlug
+            profile = 'default'
+            write_mode = 'write'
+            dispatch_kind = 'workflow'
+            target_path = @('target.txt')
+            prepare_artifacts = @($artifactDocument)
+            prompt_path = $promptPath
+            task_type = 'script-change'
+            session_mode = 'cold-start'
+            unit_kind = 'workflow-phase'
+            requested_unit = @('Phase 1')
+            failure_receipt_path = $failureReceiptPath
+            result_path = $resultPath
+            preflight_result_path = $preflightResultPath
+            prepare_result_path = $prepareResultPath
+        }
+        if (-not $OmitQuotaBeforePath) {
+            $request.quota_before_path = $quotaBeforePath
+        }
+        Write-Utf8NoBom -Path $requestPath -Content (($request | ConvertTo-Json -Depth 20) + "`n")
+
+        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $ScriptPath
+            '-CodexPath'
+            $fakeCodexPath
+            '-CodexHome'
+            $codexHome
+            '-Operation'
+            'Dispatch'
+            '-RequestPath'
+            $requestPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $outputDocument = $null
+        try {
+            $outputDocument = ConvertFrom-Json -InputObject ([string]$run.stdout)
+        }
+        catch {
+            $outputDocument = $null
+        }
+        $resultDocument = $null
+        if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+            try {
+                $resultDocument = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            }
+            catch {
+                $resultDocument = $null
+            }
+        }
+        $receiptDocument = $null
+        if (Test-Path -LiteralPath $failureReceiptPath -PathType Leaf) {
+            try {
+                $receiptDocument = Get-Content -LiteralPath $failureReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            }
+            catch {
+                $receiptDocument = $null
+            }
+        }
+        $sidecarPath = $null
+        if ($null -ne $outputDocument -and $null -ne $outputDocument.inspect_binding) {
+            $sidecarPath = [string]$outputDocument.inspect_binding.process_exit_code_sidecar_path
+        }
+        if (-not [string]::IsNullOrWhiteSpace($sidecarPath)) {
+            for ($attempt = 1; $attempt -le 50; $attempt++) {
+                if (Test-Path -LiteralPath $sidecarPath -PathType Leaf) {
+                    break
+                }
+                Start-Sleep -Milliseconds 100
+            }
+        }
+        return [pscustomobject]@{
+            name = $Name
+            dispatch_slug = $caseSlug
+            case_root = $caseRoot
+            request_path = $requestPath
+            request = $request
+            run = $run
+            output_text = ([string]$run.stdout + [string]$run.stderr)
+            output_document = $outputDocument
+            result_path = $resultPath
+            result_document = $resultDocument
+            receipt_path = $failureReceiptPath
+            receipt_document = $receiptDocument
+            preflight_result_path = $preflightResultPath
+            prepare_result_path = $prepareResultPath
+            quota_before_path = $quotaBeforePath
+            bound_quota_before_path = if ($null -eq $outputDocument) { $null } else { [string]$outputDocument.quota_before_path }
+            sidecar_path = $sidecarPath
+            sidecar_exists = -not [string]::IsNullOrWhiteSpace($sidecarPath) -and (Test-Path -LiteralPath $sidecarPath -PathType Leaf)
+            external_start_exists = Test-Path -LiteralPath $counterPath -PathType Leaf
+            quota_before_exists = Test-Path -LiteralPath $quotaBeforePath -PathType Leaf
+            preflight_exists = Test-Path -LiteralPath $preflightResultPath -PathType Leaf
+            prepare_exists = Test-Path -LiteralPath $prepareResultPath -PathType Leaf
+            result_exists = Test-Path -LiteralPath $resultPath -PathType Leaf
+            receipt_exists = Test-Path -LiteralPath $failureReceiptPath -PathType Leaf
+        }
+    }
+
+    Invoke-Case 'Phase 9 S-1 real Dispatch omitted quota path reaches bound before snapshot, Prepare and Start' {
+        $s1Normal = & $invokeSRealDispatchCase -Name 's1-omitted' -ScriptPath $sourcePath -OmitQuotaBeforePath
+        Assert-True ([int]$s1Normal.run.exit_code -eq 0) ('S-1 omitted quota path CLI 未成功：' + [string]$s1Normal.output_text)
+        Assert-True ($null -ne $s1Normal.output_document -and [string]$s1Normal.output_document.status -eq 'started') ('S-1 omitted quota path 未建立 started envelope：' + [string]$s1Normal.output_text)
+        Assert-True (@($s1Normal.output_document.completed_stages) -contains 'preflight' -and @($s1Normal.output_document.completed_stages) -contains 'before-snapshot' -and @($s1Normal.output_document.completed_stages) -contains 'prepare' -and @($s1Normal.output_document.completed_stages) -contains 'start') ('S-1 omitted quota path 未完整通過 Prepare 與 Start：' + [string]$s1Normal.output_text)
+        Assert-True (-not [string]::IsNullOrWhiteSpace($s1Normal.bound_quota_before_path) -and (Test-Path -LiteralPath $s1Normal.bound_quota_before_path -PathType Leaf) -and $s1Normal.result_document.quota_before_path -eq $s1Normal.bound_quota_before_path) ('S-1 未在 bound quota_before_path 建立快照：' + ($s1Normal | ConvertTo-Json -Depth 30 -Compress))
+
+        $s1ExplicitMissing = & $invokeSRealDispatchCase -Name 's1-explicit-missing' -ScriptPath $sourcePath
+        Assert-True ([int]$s1ExplicitMissing.run.exit_code -ne 0) ('S-1 explicit missing quota path 未以非零結束：' + [string]$s1ExplicitMissing.output_text)
+        Assert-True ($null -ne $s1ExplicitMissing.output_document -and [string]$s1ExplicitMissing.output_document.status -eq 'failed' -and [string]$s1ExplicitMissing.output_document.failed_stage -eq 'before-snapshot') ('S-1 explicit missing quota path 未在 before-snapshot 失敗：' + [string]$s1ExplicitMissing.output_text)
+        Assert-True (-not [bool]$s1ExplicitMissing.output_document.process_started -and -not $s1ExplicitMissing.external_start_exists -and -not $s1ExplicitMissing.quota_before_exists) ('S-1 explicit missing quota path 已進入 external Start 或建立不存在的快照：' + [string]$s1ExplicitMissing.output_text)
+
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedSnapshotCall = '$quotaBeforePathValue = Set-QuotaSnapshotFromCodex -Path ([string]$stageBinding.quota_before_path) -CodexHome $CodexHome'
+        $oldSnapshotCall = '$quotaBeforePathValue = Get-OrCreateQuotaSnapshot -Path ([string]$stageBinding.quota_before_path) -CodexHome $CodexHome -HistoryRoot $historyRoot -Purpose ''before'' -Required'
+        Assert-True ($productionText.Contains($fixedSnapshotCall)) 'S-1 reverse 找不到省略 quota path 的 production snapshot writer。'
+        $mutantText = $productionText.Replace($fixedSnapshotCall, $oldSnapshotCall)
+        Assert-True ($mutantText -ne $productionText) 'S-1 reverse mutant 未恢復既有路徑驗證邏輯。'
+        $mutantPath = Join-Path $phase9Root 's1-mutant-Invoke-CodexDispatch.ps1'
+        $mutantQuotaScriptPath = Join-Path $phase9Root 'Get-CodexQuota.ps1'
+        Copy-Item -LiteralPath (Join-Path $root 'scripts\Get-CodexQuota.ps1') -Destination $mutantQuotaScriptPath -Force
+        $bomEncoding = New-Object System.Text.UTF8Encoding($true)
+        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $s1Reverse = & $invokeSRealDispatchCase -Name 's1-reverse' -ScriptPath $mutantPath -OmitQuotaBeforePath
+        Assert-True ([int]$s1Reverse.run.exit_code -ne 0 -and $null -ne $s1Reverse.output_document -and [string]$s1Reverse.output_document.status -eq 'failed' -and [string]$s1Reverse.output_document.failed_stage -eq 'before-snapshot') ('S-1 reverse 未暴露 bound path 尚未存在的失敗：' + [string]$s1Reverse.output_text)
+        Assert-True (-not [bool]$s1Reverse.output_document.process_started -and -not $s1Reverse.external_start_exists) ('S-1 reverse 意外進入 external Start：' + [string]$s1Reverse.output_text)
+        $s1Restored = & $invokeSRealDispatchCase -Name 's1-restored' -ScriptPath $sourcePath -OmitQuotaBeforePath
+        Assert-True ([int]$s1Restored.run.exit_code -eq 0 -and $null -ne $s1Restored.output_document -and [string]$s1Restored.output_document.status -eq 'started' -and (Test-Path -LiteralPath $s1Restored.bound_quota_before_path -PathType Leaf)) ('S-1 reverse 後還原 production 未重新通過：' + [string]$s1Restored.output_text)
+        $script:phase9S1Evidence = [ordered]@{
+            normal = $s1Normal
+            explicit_missing = $s1ExplicitMissing
+            reverse_failure = $s1Reverse
+            restored = $s1Restored
+            mutation = '將省略 quota_before_path 的 Set-QuotaSnapshotFromCodex 改回要求 bound path 已存在的 Get-OrCreateQuotaSnapshot。'
+        }
+        Write-Phase9Evidence -Label 'S001_PRE_FIX_FAILURE' -Value $s1Reverse
+        Write-Phase9Evidence -Label 'S001_NORMAL_PASS' -Value ([ordered]@{ omitted = $s1Normal; explicit_missing = $s1ExplicitMissing })
+        Write-Phase9Evidence -Label 'S001_REVERSE_FAILURE' -Value $s1Reverse
+        Write-Phase9Evidence -Label 'S001_RESTORED_PASS' -Value $s1Restored
+    }
+
+    Invoke-Case 'Phase 9 S-2 real Dispatch exit code follows failed or started status' {
+        $s2Preflight = & $invokeF009Case -Name 's2-preflight' -Scenario 'existing' -ScriptPath $sourcePath
+        & $assertF009Receipt $s2Preflight 's2-preflight'
+        $s2Before = & $invokeSRealDispatchCase -Name 's2-before' -ScriptPath $sourcePath
+        Assert-True ([int]$s2Before.run.exit_code -ne 0 -and $null -ne $s2Before.output_document -and [string]$s2Before.output_document.status -eq 'failed' -and [string]$s2Before.output_document.failed_stage -eq 'before-snapshot') ('S-2 before-snapshot 失敗未以非零結束：' + [string]$s2Before.output_text)
+        $s2Prepare = & $invokeSRealDispatchCase -Name 's2-prepare' -ScriptPath $sourcePath -CreateQuotaBeforePath -PrepareFailure
+        Assert-True ([int]$s2Prepare.run.exit_code -ne 0 -and $null -ne $s2Prepare.output_document -and [string]$s2Prepare.output_document.status -eq 'failed' -and [string]$s2Prepare.output_document.failed_stage -eq 'prepare') ('S-2 Prepare 失敗未以非零結束：' + [string]$s2Prepare.output_text)
+        $s2Success = & $invokeSRealDispatchCase -Name 's2-success' -ScriptPath $sourcePath -CreateQuotaBeforePath
+        Assert-True ([int]$s2Success.run.exit_code -eq 0 -and $null -ne $s2Success.output_document -and [string]$s2Success.output_document.status -eq 'started') ('S-2 started 成功未以 0 結束：' + [string]$s2Success.output_text)
+
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedExitBlock = "if (`$Operation -eq 'Dispatch' -and `$null -ne `$result -and [string]`$result.status -ceq 'failed') {`r`n        `$dispatchExitCode = 1`r`n    }"
+        Assert-True ($productionText.Contains($fixedExitBlock)) 'S-2 reverse 找不到 Dispatch failed exit code production block。'
+        $mutantExitBlock = $fixedExitBlock.Replace('$dispatchExitCode = 1', '$dispatchExitCode = 0')
+        $mutantText = $productionText.Replace($fixedExitBlock, $mutantExitBlock)
+        Assert-True ($mutantText -ne $productionText) 'S-2 reverse mutant 未改變 failed exit code。'
+        $mutantPath = Join-Path $phase9Root 's2-mutant-Invoke-CodexDispatch.ps1'
+        $bomEncoding = New-Object System.Text.UTF8Encoding($true)
+        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $s2Reverse = & $invokeSRealDispatchCase -Name 's2-reverse' -ScriptPath $mutantPath -CreateQuotaBeforePath -PrepareFailure
+        Assert-True ([int]$s2Reverse.run.exit_code -eq 0 -and $null -ne $s2Reverse.output_document -and [string]$s2Reverse.output_document.status -eq 'failed' -and [string]$s2Reverse.output_document.failed_stage -eq 'prepare') ('S-2 reverse 未暴露 status=failed 與 exit 0 的回歸：' + [string]$s2Reverse.output_text)
+        $s2Restored = & $invokeSRealDispatchCase -Name 's2-restored' -ScriptPath $sourcePath -CreateQuotaBeforePath -PrepareFailure
+        Assert-True ([int]$s2Restored.run.exit_code -ne 0 -and $null -ne $s2Restored.output_document -and [string]$s2Restored.output_document.status -eq 'failed' -and [string]$s2Restored.output_document.failed_stage -eq 'prepare') ('S-2 reverse 後還原 production 未回到非零：' + [string]$s2Restored.output_text)
+        $script:phase9S2Evidence = [ordered]@{
+            preflight = $s2Preflight
+            before_snapshot = $s2Before
+            prepare = $s2Prepare
+            success = $s2Success
+            reverse_failure = $s2Reverse
+            restored = $s2Restored
+            mutation = '將 Dispatch status=failed 的 main switch 結束碼由 1 改為 0。'
+        }
+        Write-Phase9Evidence -Label 'S002_PRE_FIX_FAILURE' -Value ([ordered]@{ preflight = $s2Preflight; before_snapshot = $s2Before; prepare = $s2Prepare })
+        Write-Phase9Evidence -Label 'S002_NORMAL_PASS' -Value ([ordered]@{ preflight = $s2Preflight; before_snapshot = $s2Before; prepare = $s2Prepare; success = $s2Success })
+        Write-Phase9Evidence -Label 'S002_REVERSE_FAILURE' -Value $s2Reverse
+        Write-Phase9Evidence -Label 'S002_RESTORED_PASS' -Value $s2Restored
+    }
+
+    $invokeS3ResumeCase = {
+        [CmdletBinding()]
+        param([switch]$Mutant)
+
+        $caseSlug = 's3' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+        $caseRoot = Join-Path $sRealDispatchParent $caseSlug
+        $historyRoot = Join-Path $caseRoot '.local\ai-sessions\history'
+        $codexHome = Join-Path $caseRoot 'codex-home'
+        $rolloutRoot = Join-Path $codexHome 'sessions'
+        $configPath = Join-Path $codexHome 'config.toml'
+        $preflightPath = Join-Path $historyRoot 's3-preflight.json'
+        $scopePlanPath = Join-Path $historyRoot 's3-scope.json'
+        $quotaBeforePath = Join-Path $historyRoot 's3-quota-before.json'
+        $quotaAfterPath = Join-Path $historyRoot 's3-quota-after.json'
+        $calibrationPath = Join-Path $historyRoot 's3-calibration.jsonl'
+        $promptPath = Join-Path $caseRoot 's3-prompt.md'
+        $targetPath = Join-Path $caseRoot 'target.txt'
+        $threadIdPath = Join-Path $historyRoot ('codex-thread-' + $caseSlug + '.txt')
+        $fakeCodexPath = Join-Path $caseRoot 'codex.cmd'
+        $externalStartedPath = Join-Path $caseRoot 'external-started.txt'
+        $threadId = [guid]::NewGuid().ToString('D')
+        $runtimeTimestamp = [DateTimeOffset]::UtcNow.AddMinutes(1).ToString('o')
+        $scriptVariableNames = @(
+            'fixtureRoot', 'testThread', 'quotaSnapshotPathOverride', 'pidResult', 'relayFailure',
+            'SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'LineSlug', 'DispatchSlug', 'WriteMode',
+            'PreflightResultPath', 'PrepareResultPath', 'PromptPath', 'CodexHome', 'CodexPath',
+            'TargetPath', 'ResumeThreadId', 'LastMessagePath', 'QuotaBeforePath', 'QuotaAfterPath',
+            'CalibrationPath', 'ScopePlanPath', 'ResultPath', 'RunRecordPath', 'EventStreamPath',
+            'ErrorStreamPath', 'ThreadIdPath', 'PidRecordPath', 'ProcessExitCode', 'RequiredIdentifier',
+            'Profile', 'Model', 'ReasoningEffort', 'TaskType', 'SessionMode', 'DispatchKind',
+            'UnitKind', 'RequestedUnit', 'AddDirectory', 'Search', 'CodexParentOption',
+            'RecoveryHandoffPath', 'BudgetMonitorPath', 'EvidencePackPath', 'AdvisorConsultReportPath',
+            'AdvisorRequestSource', 'PrimaryBudgetPercent', 'PrimaryReservePercent', 'AbortGraceSeconds',
+            'DispatchResultPath', 'InvocationBoundParameters', 'DispatchStageBinding', 'RequestContext',
+            'ProfileExplicit', 'AddDirectoryExplicit', 'SearchExplicit', 'CodexParentOptionExplicit',
+            's3PreviousRun', 's3PreviousMessage', 's3FakeCodexPath', 's3StopCalls', 's3StopSnapshots'
+        )
+        $savedVariables = @{}
+        foreach ($variableName in $scriptVariableNames) {
+            $existingVariable = Get-Variable -Name $variableName -Scope Script -ErrorAction SilentlyContinue
+            $savedVariables[$variableName] = if ($null -eq $existingVariable) {
+                [pscustomobject]@{ exists = $false; value = $null }
+            }
+            else {
+                [pscustomobject]@{ exists = $true; value = $existingVariable.Value }
+            }
+        }
+        $functionNames = @(
+            'Invoke-Start', 'Invoke-Inspect', 'New-CodexLauncher', 'New-ProcessStartInfo',
+            'Wait-ForThreadRelay', 'Set-ThreadIdFromEventStream', 'Get-DispatchRunEvents', 'Get-CodexExecutablePath',
+            'Resolve-PreviousDispatchRun', 'Compare-ResumeThreadModel', 'Test-ScopePlanHashRecord',
+            'Test-ContinuationScopePlan', 'Get-DispatchUnitList', 'Get-StartedProcessSnapshot',
+            'Stop-VerifiedProcessTree', 'Add-CalibrationObservation', 'Get-RuntimeModelEvidence'
+        )
+        $savedFunctions = @{}
+        foreach ($functionName in $functionNames) {
+            $savedFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function -ErrorAction Stop).ScriptBlock
+        }
+
+        try {
+            $script:fixtureRoot = $caseRoot
+            $script:testThread = $threadId
+            $script:quotaSnapshotPathOverride = $quotaBeforePath
+            $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
+            $script:relayFailure = $false
+            $script:s3StopCalls = 0
+            $script:s3StopSnapshots = @()
+            New-Item -ItemType Directory -Path $caseRoot, $historyRoot, $codexHome, $rolloutRoot -Force | Out-Null
+            $lineManifestPath = Join-Path $caseRoot '.local\ai-sessions\handoff\a\line.json'
+            New-Item -ItemType Directory -Path (Split-Path -Parent $lineManifestPath) -Force | Out-Null
+            Write-Utf8NoBom -Path $lineManifestPath -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'a' } | ConvertTo-Json -Compress) + "`r`n")
+            Write-Utf8NoBom -Path $configPath -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+            Write-Utf8NoBom -Path $promptPath -Content ('S-3 continuation prompt: ' + $caseSlug)
+            Write-Utf8NoBom -Path $targetPath -Content ('S-3 target: ' + $caseSlug)
+            Write-Utf8NoBom -Path $threadIdPath -Content ($threadId + "`r`n")
+            $rolloutLines = @(
+                ([ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = $threadId } } | ConvertTo-Json -Compress -Depth 10)
+                ([ordered]@{ type = 'turn_context'; timestamp = $runtimeTimestamp; payload = [ordered]@{ model = 'fixture-model'; effort = 'high' } } | ConvertTo-Json -Compress -Depth 10)
+            )
+            Write-Utf8NoBom -Path (Join-Path $rolloutRoot 'rollout-s3-runtime.jsonl') -Content (($rolloutLines -join "`r`n") + "`r`n")
+            $null = New-Phase8QuotaSnapshot -Path $quotaBeforePath -PrimaryRemainingPercent 80
+            $null = New-Phase8QuotaSnapshot -Path $quotaAfterPath -PrimaryRemainingPercent 79
+
+            $fakeCodexLines = @(
+                '@echo off'
+                ('>"' + $externalStartedPath + '" echo started')
+                'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 7"'
+                ('echo {"type":"thread.started","thread_id":"' + $threadId + '"}')
+                ('echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md ' + $caseSlug + ' a"}}')
+                'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+                'exit /b 0'
+            )
+            Write-Utf8NoBom -Path $fakeCodexPath -Content (($fakeCodexLines -join "`r`n") + "`r`n")
+
+            $previous = New-TestRun -Line 'a' -Dispatch $caseSlug
+            $previous.thread_id = $threadId
+            $previous.thread_id_path = $threadIdPath
+            $previous.prompt_path = $promptPath
+            $previous.profile_config_path = $configPath
+            $previous.codex_home = $codexHome
+            $previous.effective_codex_home = $codexHome
+            $previous.quota_before_path = $quotaBeforePath
+            $previous.quota_before_sha256 = Get-FileSha256 -Path $quotaBeforePath
+            $previous | Add-Member -MemberType NoteProperty -Name quota_before_freshness -Value 'fresh' -Force
+            $previous | Add-Member -MemberType NoteProperty -Name quota_before_captured_at_utc -Value ([DateTime]::UtcNow.ToString('o')) -Force
+            $previous.launch_state = 'started'
+            $previous.source_root = $caseRoot
+            $previous.execution_root = $caseRoot
+            $previous.last_message_path = Join-Path $historyRoot 's3-previous-last-message.md'
+            Write-Utf8NoBom -Path $previous.last_message_path -Content ('已確認結論：前輪續行 anchor 已完成' + "`r`n" + '未完成單位：無' + "`r`n" + '證據位置：' + $previous.event_stream_path)
+
+            $scopePlan = [ordered]@{
+                schema = 'ai-sessions.scope-plan.v1'
+                version = 1
+                dispatch_slug = $caseSlug
+                dispatch_kind = 'workflow'
+                task_type = 'script-change'
+                requested_profile = 'default'
+                session_mode = 'continuation'
+                unit_kind = 'workflow-phase'
+                requested_units = @('Phase 1')
+                selected_units = @('Phase 1')
+                deferred_units = @()
+                decision = 'full'
+                decision_reason = 'S-3 real continuation fixture'
+                primary_remaining_percent = 80
+                primary_reserve_percent = 30
+                primary_budget_percent = 50
+                model = 'fixture-model'
+                model_evidence = $previous.model_evidence
+                reasoning_effort = 'high'
+                reasoning_effort_evidence = $previous.reasoning_effort_evidence
+                scope_plan_fingerprint = 'fixture'
+            }
+            Write-Utf8NoBom -Path $scopePlanPath -Content (($scopePlan | ConvertTo-Json -Depth 30) + "`r`n")
+            $previous.scope_plan_path = $scopePlanPath
+            $previous.scope_plan_sha256 = Get-FileSha256 -Path $scopePlanPath
+            $previous.preflight_result_path = $preflightPath
+            $previous.preflight_sha256 = $null
+            $previous | Add-Member -MemberType NoteProperty -Name write_mode -Value 'write' -Force
+            $null = Write-DispatchRunRecord -Record $previous -Update
+            $script:s3PreviousRun = $previous
+            $script:s3PreviousMessage = Get-Content -LiteralPath $previous.last_message_path -Raw -Encoding UTF8
+
+            $preflight = [ordered]@{
+                operation = 'Preflight'
+                status = 'completed'
+                sourceRoot = $caseRoot
+                executionRoot = $caseRoot
+                dispatchRoot = $caseRoot
+                lineSlug = 'a'
+                dispatchSlug = $caseSlug
+                writeMode = 'write'
+                prepareResultPath = $null
+                prepareResultSha256 = $null
+            }
+            Write-Utf8NoBom -Path $preflightPath -Content (($preflight | ConvertTo-Json -Depth 20) + "`r`n")
+            $previous.preflight_sha256 = Get-FileSha256 -Path $preflightPath
+            $null = Write-DispatchRunRecord -Record $previous -Update
+
+            $script:SourceRoot = $caseRoot
+            $script:ExecutionRoot = $caseRoot
+            $script:DispatchRoot = $caseRoot
+            $script:LineSlug = 'a'
+            $script:DispatchSlug = $caseSlug
+            $script:WriteMode = 'write'
+            $script:PreflightResultPath = $preflightPath
+            $script:PrepareResultPath = $null
+            $script:PromptPath = $promptPath
+            $script:CodexHome = $codexHome
+            $script:CodexPath = $fakeCodexPath
+            $script:TargetPath = @('target.txt')
+            $script:ResumeThreadId = $threadId
+            $script:LastMessagePath = $null
+            $script:QuotaBeforePath = $quotaBeforePath
+            $script:QuotaAfterPath = $quotaAfterPath
+            $script:CalibrationPath = $calibrationPath
+            $script:ScopePlanPath = $scopePlanPath
+            $script:ResultPath = $null
+            $script:RunRecordPath = $null
+            $script:EventStreamPath = $null
+            $script:ErrorStreamPath = $null
+            $script:ThreadIdPath = $threadIdPath
+            $script:PidRecordPath = $null
+            $script:ProcessExitCode = $null
+            $script:RequiredIdentifier = 'design.md'
+            $script:Profile = 'default'
+            $script:Model = $null
+            $script:ReasoningEffort = $null
+            $script:TaskType = 'script-change'
+            $script:SessionMode = 'continuation'
+            $script:DispatchKind = 'workflow'
+            $script:UnitKind = 'workflow-phase'
+            $script:RequestedUnit = @('Phase 1')
+            $script:AddDirectory = @()
+            $script:Search = $false
+            $script:CodexParentOption = @()
+            $script:RecoveryHandoffPath = $null
+            $script:BudgetMonitorPath = $null
+            $script:EvidencePackPath = $null
+            $script:AdvisorConsultReportPath = $null
+            $script:AdvisorRequestSource = $null
+            $script:PrimaryBudgetPercent = $null
+            $script:PrimaryReservePercent = $null
+            $script:AbortGraceSeconds = 30
+            $script:DispatchResultPath = $null
+            $script:InvocationBoundParameters = [ordered]@{}
+            $script:DispatchStageBinding = $null
+            $script:RequestContext = $null
+            $script:ProfileExplicit = $false
+            $script:AddDirectoryExplicit = $false
+            $script:SearchExplicit = $false
+            $script:CodexParentOptionExplicit = $false
+            $script:s3FakeCodexPath = $fakeCodexPath
+
+            $productionDefinitions = @{}
+            foreach ($functionName in @('Invoke-Start', 'Invoke-Inspect', 'New-CodexLauncher', 'New-ProcessStartInfo', 'Wait-ForThreadRelay', 'Set-ThreadIdFromEventStream', 'Get-RuntimeModelEvidence')) {
+                $functionAst = @($functions | Where-Object { $_.Name -eq $functionName } | Select-Object -First 1)
+                Assert-True ($functionAst.Count -eq 1) ('S-3 找不到 production ' + $functionName + ' AST。')
+                $productionBody = $functionAst[0].Body.Extent.Text
+                Assert-True ($productionBody.Length -ge 2 -and $productionBody[0] -eq '{' -and $productionBody[$productionBody.Length - 1] -eq '}') ('S-3 production ' + $functionName + ' body 邊界異常。')
+                $productionDefinitions[$functionName] = $productionBody.Substring(1, $productionBody.Length - 2)
+            }
+            Set-Item -Path Function:\New-CodexLauncher -Value ([scriptblock]::Create($productionDefinitions['New-CodexLauncher']))
+            Set-Item -Path Function:\New-ProcessStartInfo -Value ([scriptblock]::Create($productionDefinitions['New-ProcessStartInfo']))
+            Set-Item -Path Function:\Wait-ForThreadRelay -Value ([scriptblock]::Create($productionDefinitions['Wait-ForThreadRelay']))
+            Set-Item -Path Function:\Set-ThreadIdFromEventStream -Value ([scriptblock]::Create($productionDefinitions['Set-ThreadIdFromEventStream']))
+            Set-Item -Path Function:\Get-RuntimeModelEvidence -Value ([scriptblock]::Create($productionDefinitions['Get-RuntimeModelEvidence']))
+            Set-Item -Path Function:\Invoke-Inspect -Value ([scriptblock]::Create($productionDefinitions['Invoke-Inspect']))
+            Set-Item -Path Function:\Get-CodexExecutablePath -Value ([scriptblock]::Create('param($ConfiguredPath) return $script:s3FakeCodexPath'))
+            Set-Item -Path Function:\Resolve-PreviousDispatchRun -Value ([scriptblock]::Create('param($SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ResumeThreadId, $LastMessagePath) return [pscustomobject]@{ Record = $script:s3PreviousRun; AnchorRecord = $script:s3PreviousRun; ChainTailRecord = $script:s3PreviousRun; SkippedAttempts = @(); Message = $script:s3PreviousMessage; ResumeThreadId = $ResumeThreadId }'))
+            Set-Item -Path Function:\Compare-ResumeThreadModel -Value ([scriptblock]::Create('param($AnchorRecord, $CurrentModelEvidence, $CodexHome) return [ordered]@{ status = ''match''; reason_code = $null; original_thread_model = $AnchorRecord.model_evidence; current_resolved_model = $CurrentModelEvidence }'))
+            Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
+            Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
+            Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
+            Set-Item -Path Function:\Stop-VerifiedProcessTree -Value ([scriptblock]::Create('param($Snapshot) $script:s3StopCalls++; $script:s3StopSnapshots += $Snapshot; return [pscustomobject]@{ CleanupStatus = ''fixture-observed''; ErrorMessage = $null }'))
+            $calibrationDefinition = @'
+param(
+    [string]$SourceRoot,
+    [string]$Path,
+    [string]$LineSlug,
+    [string]$DispatchSlug,
+    [string]$Profile,
+    [string]$Model,
+    [string]$ReasoningEffort,
+    [object]$ModelEvidence,
+    [object]$ReasoningEffortEvidence,
+    [string]$TaskType,
+    [string]$SessionMode,
+    [object]$Usage,
+    [object]$ExecutionResult,
+    [string]$QuotaBeforePath,
+    [string]$QuotaAfterPath,
+    [object]$ScopePlan,
+    [object]$InterruptionStatus,
+    [object]$BudgetMonitor,
+    [Nullable[bool]]$BeforeSnapshotFreshAtStart,
+    [string]$BeforeSnapshotCapturedAtStartUtc
+)
+return [ordered]@{ path = $Path; recordWritten = $true; calibrationEligible = $false; ineligibleReasons = @('S-3 fixture') }
+'@
+            Set-Item -Path Function:\Add-CalibrationObservation -Value ([scriptblock]::Create($calibrationDefinition))
+            $startDefinition = $productionDefinitions['Invoke-Start']
+            if ($Mutant) {
+                $patchedRelayBlock = @(
+                    '        $relay = Wait-ForThreadRelay -EventPath $eventPath -ThreadPath $threadPath -TimeoutSeconds 5'
+                    '        $relayReady = [bool](Get-DispatchJsonProperty -Object $relay -Name ''ready'')'
+                    '        if (-not $relayReady) {'
+                    '            if ([string]::IsNullOrWhiteSpace($ResumeThreadId)) {'
+                    '                $phase = ''thread-relay-not-ready'''
+                    '                throw (''thread relay not-ready：逾時 {0} 秒仍未取得本次 launch 的 thread.started；保留事件流與 relay 證據。'' -f $relay.timeoutSeconds)'
+                    '            }'
+                    '            $runRecord.thread_id = $ResumeThreadId'
+                    '        }'
+                    '        else {'
+                    '            if ([string]::IsNullOrWhiteSpace($relay.threadId)) {'
+                    '                $phase = ''thread-relay-not-ready'''
+                    '                throw ''thread relay not-ready：本次 launch relay 標記 ready 但未提供 threadId。'''
+                    '            }'
+                    '            if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId) -and $relay.threadId -cne $ResumeThreadId) {'
+                    '                throw ''thread relay 與 ResumeThreadId 不一致。'''
+                    '            }'
+                    '            $runRecord.thread_id = $relay.threadId'
+                    '            $null = Get-DispatchRunEvents $runRecord'
+                    '        }'
+                ) -join "`r`n"
+                $oldRelayBlock = @(
+                    '        $relay = Wait-ForThreadRelay -EventPath $eventPath -ThreadPath $threadPath -TimeoutSeconds 5'
+                    '        if ([string]::IsNullOrWhiteSpace($relay.threadId)) {'
+                    '            $phase = ''thread-relay-not-ready'''
+                    '            throw (''thread relay not-ready：逾時 {0} 秒仍未取得本次 launch 的 thread.started；保留事件流與 relay 證據。'' -f $relay.timeoutSeconds)'
+                    '        }'
+                    '        if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId) -and $relay.threadId -cne $ResumeThreadId) {'
+                    '            throw ''thread relay 與 ResumeThreadId 不一致。'''
+                    '        }'
+                    '        $runRecord.thread_id = $relay.threadId'
+                    '        $null = Get-DispatchRunEvents $runRecord'
+                ) -join "`r`n"
+                Assert-True ($startDefinition.Contains($patchedRelayBlock)) 'S-3 reverse 找不到 patched relay readiness block。'
+                $startDefinition = $startDefinition.Replace($patchedRelayBlock, $oldRelayBlock)
+                Assert-True ($startDefinition -ne $productionDefinitions['Invoke-Start']) 'S-3 reverse Invoke-Start mutant 未恢復既有空事件流解析。'
+                Set-Item -Path Function:\Wait-ForThreadRelay -Value ([scriptblock]::Create(@'
+param([string]$EventPath, [string]$ThreadPath, [int]$TimeoutSeconds)
+$existingThreadId = (Get-Content -LiteralPath $ThreadPath -Raw -Encoding UTF8).Trim()
+return [pscustomobject]@{ threadId = $existingThreadId; existingThreadId = $existingThreadId; relayed = $false; ready = $true; eventObserved = $false; source = 'existing-or-not-ready'; timedOut = $false; timeoutSeconds = $TimeoutSeconds }
+'@))
+                Set-Item -Path Function:\Get-DispatchRunEvents -Value ([scriptblock]::Create(@'
+param([psobject]$Record)
+throw 'RunRecord 事件流為空。'
+'@))
+            }
+            Set-Item -Path Function:\Invoke-Start -Value ([scriptblock]::Create($startDefinition))
+
+            $startResult = $null
+            $startException = $null
+            $startObjects = @()
+            $startErrors = @()
+            $Error.Clear()
+            try {
+                $startObjects = @(Invoke-Start)
+                if ($startObjects.Count -eq 1) {
+                    $startResult = $startObjects[0]
+                }
+            }
+            catch {
+                $startException = $_.Exception
+                $startResult = $startException.Data['operationResult']
+            }
+            $startErrors = @($Error | Select-Object -First 5 | ForEach-Object { $_.Exception.Message })
+            $startOutputText = (@($startObjects | ForEach-Object {
+                    if ($_ -is [string]) { $_ } else { $_ | ConvertTo-Json -Depth 20 -Compress }
+                }) -join ' || ')
+
+            $eventPath = if ($null -eq $startResult) { $null } else { [string](Get-DispatchJsonProperty -Object $startResult -Name 'eventStreamPath') }
+            $sidecarPath = if ($null -eq $startResult) { $null } else { [string](Get-DispatchJsonProperty -Object $startResult -Name 'processExitCodeSidecarPath') }
+            $initialEventLength = if ([string]::IsNullOrWhiteSpace($eventPath) -or -not (Test-Path -LiteralPath $eventPath -PathType Leaf)) { 0 } else { (Get-Item -LiteralPath $eventPath).Length }
+
+            if (-not $Mutant) {
+                Assert-True ($null -eq $startException -and $null -ne $startResult) ('S-3 normal Start 拋出例外：' + [string]$startException + '; outputCount=' + $startObjects.Count + '; output=' + $startOutputText + '; errors=' + ($startErrors -join ' | '))
+                $threadRelay = Get-DispatchJsonProperty -Object $startResult -Name 'threadRelay'
+                Assert-True ([bool](Get-DispatchJsonProperty -Object $startResult -Name 'processStarted')) ('S-3 normal processStarted=false：' + ($startResult | ConvertTo-Json -Depth 30 -Compress))
+                Assert-True (-not [bool](Get-DispatchJsonProperty -Object $startResult -Name 'relayReady') -and [string](Get-DispatchJsonProperty -Object $threadRelay -Name 'source') -eq 'not-ready') ('S-3 normal relay 未回報 not-ready：' + ($startResult | ConvertTo-Json -Depth 30 -Compress))
+                Assert-True ($initialEventLength -eq 0 -and (Test-Path -LiteralPath $externalStartedPath -PathType Leaf)) ('S-3 normal 啟動視窗內事件流非空或 launcher 未啟動：eventLength=' + $initialEventLength)
+                $rootPid = [int](Get-DispatchJsonProperty -Object $startResult -Name 'rootPid')
+                Assert-True ($null -ne (Get-Process -Id $rootPid -ErrorAction SilentlyContinue)) ('S-3 normal process tree 在啟動視窗內已消失：pid=' + $rootPid)
+                $completed = $false
+                for ($attempt = 1; $attempt -le 120; $attempt++) {
+                    $eventReady = (Test-Path -LiteralPath $eventPath -PathType Leaf) -and ((Get-Item -LiteralPath $eventPath).Length -gt 0)
+                    $sidecarReady = Test-Path -LiteralPath $sidecarPath -PathType Leaf
+                    $rootAlive = $null -ne (Get-Process -Id $rootPid -ErrorAction SilentlyContinue)
+                    if ($eventReady -and $sidecarReady -and -not $rootAlive) {
+                        $completed = $true
+                        break
+                    }
+                    Start-Sleep -Milliseconds 250
+                }
+                Assert-True $completed 'S-3 normal launcher 未在等待期限內完成事件流與 sidecar。'
+                $runRecordPath = [string](Get-DispatchJsonProperty -Object $startResult -Name 'runRecordPath')
+                $runRecord = Read-DispatchRunRecord -Path $runRecordPath -SourceRoot $caseRoot -ExecutionRoot $caseRoot -LineSlug 'a' -DispatchSlug $caseSlug
+                $runEvents = Get-DispatchRunEvents -Record $runRecord
+                Assert-True ($runEvents.Completed -and $runEvents.ThreadId -ceq $threadId) ('S-3 normal 完成後 RunRecord 事件證據不符：' + ($runEvents | ConvertTo-Json -Depth 20 -Compress))
+                $finalMessage = 'design.md ' + $caseSlug + ' a'
+                Write-Utf8NoBom -Path $runRecord.last_message_path -Content $finalMessage
+                $script:EventStreamPath = $runRecord.event_stream_path
+                $script:ErrorStreamPath = [string](Get-DispatchJsonProperty -Object $startResult -Name 'stderrPath')
+                $script:RunRecordPath = $runRecordPath
+                $script:ScopePlanPath = $scopePlanPath
+                $script:QuotaBeforePath = $quotaBeforePath
+                $script:QuotaAfterPath = $quotaAfterPath
+                $script:ThreadIdPath = $threadIdPath
+                $script:ProcessExitCode = 0
+                $script:LastMessagePath = $null
+                $script:TaskType = 'script-change'
+                $script:SessionMode = 'continuation'
+                $script:CalibrationPath = $calibrationPath
+                $script:RequiredIdentifier = 'design.md'
+                $script:Profile = 'default'
+                $script:Model = 'fixture-model'
+                $script:ReasoningEffort = 'high'
+                $script:CodexHome = $codexHome
+                $inspectResult = Invoke-Inspect
+                $inspectModelEvidence = Get-DispatchJsonProperty -Object $inspectResult -Name 'modelEvidence'
+                $runtimeModelEvidence = Get-DispatchJsonProperty -Object $inspectModelEvidence -Name 'model'
+                $runtimeModelEvidence = Get-DispatchJsonProperty -Object $runtimeModelEvidence -Name 'runtime_verifiable'
+                $runtimeEffortEvidence = Get-DispatchJsonProperty -Object $inspectModelEvidence -Name 'reasoning_effort'
+                $runtimeEffortEvidence = Get-DispatchJsonProperty -Object $runtimeEffortEvidence -Name 'runtime_verifiable'
+                Assert-True ([bool](Get-DispatchJsonProperty -Object $inspectResult -Name 'success') -and [bool](Get-DispatchJsonProperty -Object $inspectResult -Name 'outputValid')) ('S-3 normal 後續 Inspect 未成功：' + ($inspectResult | ConvertTo-Json -Depth 40 -Compress))
+                Assert-True ([string](Get-DispatchJsonProperty -Object $runtimeModelEvidence -Name 'status') -eq 'confirmed' -and [string](Get-DispatchJsonProperty -Object $runtimeEffortEvidence -Name 'status') -eq 'confirmed') ('S-3 normal Inspect 未讀取 runtime model evidence：' + ($inspectResult | ConvertTo-Json -Depth 40 -Compress))
+                return [pscustomobject]@{
+                    case_root = $caseRoot
+                    dispatch_slug = $caseSlug
+                    start = $startResult
+                    inspect = $inspectResult
+                    initial_event_length = $initialEventLength
+                    process_exited_after_inspect = $completed
+                    stop_calls = $script:s3StopCalls
+                    event_path = $eventPath
+                    sidecar_path = $sidecarPath
+                    run_record_path = $runRecordPath
+                    runtime_model_evidence = $runtimeModelEvidence
+                    runtime_effort_evidence = $runtimeEffortEvidence
+                }
+            }
+
+            $failureText = if ($null -eq $startException) { '' } else { $startException.ToString() }
+            if ($null -ne $startResult) {
+                $failureText = $failureText + "`r`n" + ($startResult | ConvertTo-Json -Depth 40 -Compress)
+            }
+            Assert-True ($null -ne $startException -and $failureText.Contains('RunRecord 事件流為空')) ('S-3 reverse 未暴露舊版空事件流失敗：' + $failureText)
+            Assert-True ($null -ne $startResult -and [bool](Get-DispatchJsonProperty -Object $startResult -Name 'processStarted') -and [int]$script:s3StopCalls -eq 1) ('S-3 reverse 未觀察到已啟動程序的 cleanup：' + $failureText)
+            $failureRecord = Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $startResult -Name 'failure') -Name 'observation'
+            Assert-True ([string](Get-DispatchJsonProperty -Object $failureRecord -Name 'cleanup_status') -eq 'fixture-observed' -and $initialEventLength -eq 0) ('S-3 reverse cleanup 或初始空事件流證據不符：' + $failureText)
+            $rootPid = if ($null -eq $startResult) { 0 } else { [int](Get-DispatchJsonProperty -Object $startResult -Name 'rootPid') }
+            for ($attempt = 1; $attempt -le 80; $attempt++) {
+                if ($rootPid -le 0 -or $null -eq (Get-Process -Id $rootPid -ErrorAction SilentlyContinue)) {
+                    break
+                }
+                Start-Sleep -Milliseconds 250
+            }
+            return [pscustomobject]@{
+                case_root = $caseRoot
+                dispatch_slug = $caseSlug
+                start = $startResult
+                start_exception = $failureText
+                initial_event_length = $initialEventLength
+                stop_calls = $script:s3StopCalls
+                event_path = $eventPath
+                sidecar_path = $sidecarPath
+                run_record_path = if ($null -eq $startResult) { $null } else { [string](Get-DispatchJsonProperty -Object $startResult -Name 'runRecordPath') }
+            }
+        }
+        finally {
+            foreach ($functionName in $functionNames) {
+                Set-Item -Path ('Function:' + $functionName) -Value $savedFunctions[$functionName]
+            }
+            foreach ($variableName in $scriptVariableNames) {
+                $savedVariable = $savedVariables[$variableName]
+                if ($savedVariable.exists) {
+                    Set-Variable -Name $variableName -Scope Script -Value $savedVariable.value
+                }
+                else {
+                    Remove-Variable -Name $variableName -Scope Script -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 S-3 real continuation Start waits for new relay and Inspect reads runtime evidence' {
+        $s3Normal = & $invokeS3ResumeCase
+        Assert-True ([bool](Get-DispatchJsonProperty -Object $s3Normal.start -Name 'processStarted') -and -not [bool](Get-DispatchJsonProperty -Object $s3Normal.start -Name 'relayReady') -and $s3Normal.initial_event_length -eq 0 -and $s3Normal.stop_calls -eq 0) ('S-3 normal Start contract 不符：' + ($s3Normal | ConvertTo-Json -Depth 40 -Compress))
+        Assert-True ([bool](Get-DispatchJsonProperty -Object $s3Normal.inspect -Name 'success') -and [string](Get-DispatchJsonProperty -Object $s3Normal.runtime_model_evidence -Name 'value') -eq 'fixture-model') ('S-3 後續 Inspect runtime evidence 不符：' + ($s3Normal | ConvertTo-Json -Depth 40 -Compress))
+        $s3Reverse = & $invokeS3ResumeCase -Mutant
+        Assert-True ($s3Reverse.stop_calls -eq 1 -and $s3Reverse.initial_event_length -eq 0 -and [string]$s3Reverse.start_exception -match 'RunRecord 事件流為空') ('S-3 reverse 未暴露舊版 relay race：' + ($s3Reverse | ConvertTo-Json -Depth 40 -Compress))
+        $s3Restored = & $invokeS3ResumeCase
+        Assert-True ($s3Restored.stop_calls -eq 0 -and $s3Restored.initial_event_length -eq 0 -and [bool](Get-DispatchJsonProperty -Object $s3Restored.inspect -Name 'success')) ('S-3 reverse 後還原 production 未通過：' + ($s3Restored | ConvertTo-Json -Depth 40 -Compress))
+        $script:phase9S3Evidence = [ordered]@{
+            normal = $s3Normal
+            reverse_failure = $s3Reverse
+            restored = $s3Restored
+            mutation = '將 Invoke-Start 恢復為以既有 thread id 的非空值判定 relay ready，並在空事件流上呼叫 Get-DispatchRunEvents；Wait-ForThreadRelay 同步恢復為立即回傳既有 thread id。'
+        }
+        Write-Phase9Evidence -Label 'S003_PRE_FIX_FAILURE' -Value $s3Reverse
+        Write-Phase9Evidence -Label 'S003_NORMAL_PASS' -Value $s3Normal
+        Write-Phase9Evidence -Label 'S003_REVERSE_FAILURE' -Value $s3Reverse
+        Write-Phase9Evidence -Label 'S003_RESTORED_PASS' -Value $s3Restored
+    }
+
+    $script:phase9DispatchCalls = New-Object System.Collections.Generic.List[string]
+    $script:phase9DispatchFailure = $null
+    $script:phase9DispatchStartCalls = 0
+    function Invoke-Preflight {
+        $script:phase9DispatchCalls.Add('preflight')
+        if ($script:phase9DispatchFailure -eq 'preflight') { throw 'fixture preflight failure' }
+        return [ordered]@{ operation = 'Preflight'; status = 'completed'; sourceRoot = $script:SourceRoot; executionRoot = $script:ExecutionRoot; dispatchRoot = $script:DispatchRoot; lineSlug = $script:LineSlug; dispatchSlug = $script:DispatchSlug }
+    }
+    function Invoke-Prepare {
+        param([string[]]$GuardTargetPath)
+        $script:phase9DispatchCalls.Add('prepare')
+        if ($script:phase9DispatchFailure -eq 'prepare') { throw 'fixture prepare failure' }
+        return [ordered]@{ operation = 'Prepare'; status = 'completed'; resultPath = $script:PrepareResultPath }
+    }
+    function Invoke-Start {
+        $script:phase9DispatchCalls.Add('start')
+        $script:phase9DispatchStartCalls++
+        return [ordered]@{ operation = 'Start'; status = 'started'; processStarted = $true; runRecordPath = (Join-Path $script:ExecutionRoot 'run.json'); eventStreamPath = (Join-Path $script:ExecutionRoot 'events.jsonl'); scopePlanPath = (Join-Path $script:ExecutionRoot 'scope.json'); processExitCodeSidecarPath = (Join-Path $script:ExecutionRoot 'exit.json') }
+    }
+
+    Invoke-Case 'Phase 9 P3 one request dispatches four stages' {
+        $script:SourceRoot = $phase9Root
+        $script:ExecutionRoot = Join-Path $phase9Root 'execution'
+        $script:DispatchRoot = $script:ExecutionRoot
+        New-Item -ItemType Directory -Path $script:ExecutionRoot -Force | Out-Null
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = 'phase9-dispatch'
+        $script:DispatchKind = 'workflow'
+        $script:TaskType = 'script-change'
+        $script:SessionMode = 'cold-start'
+        $script:WriteMode = 'write'
+        $script:PreflightResultPath = Join-Path $phase9Root '.local\ai-sessions\history\preflight.json'
+        $script:PrepareResultPath = Join-Path $phase9Root '.local\ai-sessions\history\prepare.json'
+        $script:QuotaBeforePath = Join-Path $phase9Root '.local\ai-sessions\history\quota-before.json'
+        $script:QuotaAfterPath = $null
+        $script:ResultPath = $dispatchResultPath
+        $script:RequestPath = $dispatchRequestPath
+        $script:InvocationBoundParameters = [ordered]@{}
+        $script:RequestContext = $null
+        $script:phase9DispatchCalls.Clear()
+        $script:phase9DispatchFailure = $null
+        Write-Utf8NoBom -Path $script:QuotaBeforePath -Content '{}'
+        $script:quotaSnapshotPathOverride = $script:QuotaBeforePath
+        $null = Apply-DispatchRequest
+        $dispatchResult = Invoke-Dispatch
+        Assert-True ($dispatchResult.status -eq 'started' -and (($script:phase9DispatchCalls -join ',') -eq 'preflight,prepare,start')) 'Dispatch stage 順序或成功狀態不符。'
+        Assert-True (Test-Path -LiteralPath $dispatchResultPath -PathType Leaf) 'Dispatch result 未寫入。'
+    }
+
+    Invoke-Case 'Phase 9 F-002 real Dispatch leaves Prepare binding unset during Preflight' {
+        $realSourceRoot = Join-Path $phase9Root 's'
+        $realLineRoot = Join-Path $realSourceRoot '.local\ai-sessions\handoff\l'
+        $realPromptPath = Join-Path $realSourceRoot 'dispatch-prompt.md'
+        $realTargetPaths = @(
+            (Join-Path $realSourceRoot 'target-one.txt')
+            (Join-Path $realSourceRoot 'target-two.txt')
+        )
+        $realDispatchSlug = 'd'
+        $realDispatchRoot = Join-Path $realSourceRoot ('.local\ai-sessions\worktrees\' + $realDispatchSlug)
+        $realExecutionPromptPath = Join-Path $realDispatchRoot 'dispatch-prompt.md'
+        $realHistoryRoot = Join-Path $realDispatchRoot '.local\ai-sessions\history'
+        $realSourceHistoryRoot = Join-Path $realSourceRoot '.local\ai-sessions\history\l'
+        $realDispatchLineRoot = Join-Path $realDispatchRoot '.local\ai-sessions\handoff\l'
+        $realArtifactSourcePath = Join-Path $realLineRoot 'artifact-source.txt'
+        $realArtifactDestinationPath = Join-Path $realDispatchLineRoot 'artifact-destination.txt'
+        $realRequestPath = Join-Path $phase9Root 'real-dispatch-request.json'
+        $realResultPath = Join-Path $realHistoryRoot 'dispatch-result.json'
+        $realPreflightResultPath = Join-Path $realHistoryRoot 'preflight.json'
+        $realPrepareResultPath = Join-Path $realDispatchLineRoot 'prepare.json'
+        $realQuotaBeforePath = Join-Path $realHistoryRoot 'quota-before.json'
+        New-Item -ItemType Directory -Path $realLineRoot -Force | Out-Null
+        New-Item -ItemType Directory -Path $realSourceHistoryRoot -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $realLineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'l' } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $realPromptPath -Content 'real dispatch prompt'
+        Write-Utf8NoBom -Path $realArtifactSourcePath -Content 'real prepare artifact'
+        $realRequest = [ordered]@{
+            schema = 'ai-sessions.dispatch-request.v1'
+            operation = 'Dispatch'
+            source_root = $realSourceRoot
+            dispatch_root = $realDispatchRoot
+            line_slug = 'l'
+            dispatch_slug = $realDispatchSlug
+            profile = 'default'
+            write_mode = 'readonly'
+            dispatch_kind = 'workflow'
+            target_path = $realTargetPaths
+            prepare_artifacts = @([ordered]@{ source = $realArtifactSourcePath; destination = $realArtifactDestinationPath; sha256 = (Get-FileSha256 -Path $realArtifactSourcePath); purpose = 'real dispatch fixture' })
+            prompt_path = $realExecutionPromptPath
+            task_type = 'script-change'
+            session_mode = 'cold-start'
+            unit_kind = 'workflow-phase'
+            requested_unit = @('Phase 1')
+            failure_receipt_path = (Join-Path $realSourceRoot '.local\ai-sessions\history\l\failure-receipt.json')
+            result_path = $realResultPath
+            preflight_result_path = $realPreflightResultPath
+            prepare_result_path = $realPrepareResultPath
+            quota_before_path = $realQuotaBeforePath
+        }
+        Write-Utf8NoBom -Path $realRequestPath -Content (($realRequest | ConvertTo-Json -Depth 20) + "`n")
+
+        $restoredFixtureFunctions = @{}
+        foreach ($functionName in @('Invoke-Preflight', 'Invoke-Prepare', 'Invoke-Start')) {
+            $restoredFixtureFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function -ErrorAction Stop).ScriptBlock
+            Set-Item -Path ('Function:' + $functionName) -Value $phase9ProductionFunctionDefinitions[$functionName]
+        }
+        try {
+            $script:SourceRoot = $null
+            $script:ExecutionRoot = $null
+            $script:DispatchRoot = $null
+            $script:LineSlug = $null
+            $script:DispatchSlug = $null
+            $script:WriteMode = 'readonly'
+            $script:TargetPath = @()
+            $script:PromptPath = $null
+            $script:ResultPath = $null
+            $script:PreflightResultPath = $null
+            $script:PrepareResultPath = $null
+            $script:QuotaBeforePath = $null
+            $script:QuotaAfterPath = $null
+            $script:CodexHome = $null
+            $script:RequestPath = $realRequestPath
+            $script:RequestContext = $null
+            $script:InvocationBoundParameters = [ordered]@{}
+            $Model = $null
+            $ReasoningEffort = $null
+            $RequiredIdentifier = 'design.md'
+            $SourceRoot = $null
+            $ExecutionRoot = $null
+            $DispatchRoot = $null
+            $LineSlug = $null
+            $DispatchSlug = $null
+            $WriteMode = 'readonly'
+            $TargetPath = @()
+            $PromptPath = $null
+            $ResultPath = $null
+            $PreflightResultPath = $null
+            $PrepareResultPath = $null
+            $QuotaBeforePath = $null
+            $QuotaAfterPath = $null
+            $CodexHome = $null
+            $ScopePlanPath = $null
+            $EventStreamPath = $null
+            $RunRecordPath = $null
+            $global:Model = $null
+            $global:ReasoningEffort = $null
+            $script:quotaSnapshotPathOverride = $realQuotaBeforePath
+            $script:phase9RealDispatchGitSourceRoot = $realSourceRoot
+            $script:phase9RealDispatchGitRoot = $realDispatchRoot
+            $script:phase9RealDispatchGitInitialized = $false
+            $script:EvidencePackPath = $null
+            $script:AdvisorConsultReportPath = $null
+            $script:AdvisorRequestSource = $null
+            $script:startSnapshotMode = 'confirmed'
+            $script:failLaunch = $false
+            $script:launcherFixtureFailure = $false
+            $script:pidResult.ActiveRecords = @()
+            $script:pidResult.UnconfirmedRecords = @()
+            $script:quotaFixtureFailure = $false
+            $script:aclFixtureStatus = 'clean'
+            $script:scopePlanFixtureDecision = 'full'
+            $script:dispatchUnitListOverride = $null
+            $script:phase9DispatchFailure = $null
+            $script:phase9CaptureOnly = $false
+            $null = Apply-DispatchRequest
+            $SourceRoot = $realSourceRoot
+            $ExecutionRoot = $realDispatchRoot
+            $DispatchRoot = $realDispatchRoot
+            $LineSlug = 'l'
+            $DispatchSlug = $realDispatchSlug
+            $WriteMode = 'readonly'
+            $TargetPath = $realTargetPaths
+            $ResultPath = $realResultPath
+            $PreflightResultPath = $realPreflightResultPath
+            $PrepareResultPath = $realPrepareResultPath
+            $QuotaBeforePath = $realQuotaBeforePath
+            $PromptPath = $realExecutionPromptPath
+            $realResult = Invoke-Dispatch
+            Assert-True ($realResult.status -eq 'started' -and @($realResult.completed_stages).Count -eq 4 -and [string]::IsNullOrWhiteSpace([string]$realResult.failed_stage)) ('real Dispatch 未依序完成四階段：' + ($realResult | ConvertTo-Json -Depth 20 -Compress))
+            Assert-True (Test-Path -LiteralPath $realResultPath -PathType Leaf) 'real Dispatch 未寫入 result。'
+        }
+        finally {
+            foreach ($functionName in @('Invoke-Preflight', 'Invoke-Prepare', 'Invoke-Start')) {
+                Set-Item -Path ('Function:' + $functionName) -Value $restoredFixtureFunctions[$functionName]
+            }
+            $script:RequestPath = $dispatchRequestPath
+            $script:RequestContext = $null
+            $script:InvocationBoundParameters = [ordered]@{}
+            $script:quotaSnapshotPathOverride = Join-Path $phase9Root '.local\ai-sessions\history\quota-before.json'
+            $script:phase9RealDispatchGitSourceRoot = $null
+            $script:phase9RealDispatchGitRoot = $null
+            $script:phase9RealDispatchGitInitialized = $false
+            $script:EvidencePackPath = $null
+            $script:AdvisorConsultReportPath = $null
+            $script:AdvisorRequestSource = $null
+            $null = Apply-DispatchRequest
+        }
+    }
+
+    function Invoke-Phase9StageBindingDispatchCase {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [bool]$DifferentExecutionRoot,
+
+            [Parameter(Mandatory)]
+            [bool]$OmitPrepareResultPath
+        )
+
+        $caseName = 'stage-binding-' + $(if ($DifferentExecutionRoot) { 'different' } else { 'equal' }) + '-' + $(if ($OmitPrepareResultPath) { 'omitted' } else { 'explicit' })
+        $caseSlug = 'f007-' + $(if ($DifferentExecutionRoot) { 'd' } else { 'e' }) + $(if ($OmitPrepareResultPath) { 'o' } else { 'x' })
+        $caseSourceRoot = $phase9Root
+        $caseExecutionRoot = if ($DifferentExecutionRoot) { Join-Path $phase9Root ($caseSlug + '-execution') } else { $caseSourceRoot }
+        $caseDispatchRoot = Join-Path $caseSourceRoot ('.local\ai-sessions\worktrees\' + $caseSlug)
+        $caseHistoryRoot = Join-Path $caseExecutionRoot '.local\ai-sessions\history'
+        $caseRequestPath = Join-Path $phase9Root ($caseSlug + '-request.json')
+        $caseResultPath = Join-Path $caseHistoryRoot 'dispatch-result.json'
+        $casePreflightPath = Join-Path $caseHistoryRoot 'preflight.json'
+        $casePreparePath = Join-Path $caseHistoryRoot 'prepare.json'
+        $caseQuotaPath = Join-Path $caseHistoryRoot 'quota-before.json'
+        New-Item -ItemType Directory -Path $caseExecutionRoot, $caseHistoryRoot -Force | Out-Null
+        $caseRequest = [ordered]@{
+            schema = 'ai-sessions.dispatch-request.v1'
+            operation = 'Dispatch'
+            source_root = $caseSourceRoot
+            dispatch_root = $caseDispatchRoot
+            line_slug = 'line-a'
+            dispatch_slug = $caseSlug
+            write_mode = 'write'
+            dispatch_kind = 'workflow'
+            prompt_path = $dispatchRequest.prompt_path
+            task_type = 'script-change'
+            session_mode = 'cold-start'
+            unit_kind = 'workflow-phase'
+            requested_unit = @('Phase 1')
+            failure_receipt_path = (Join-Path $caseSourceRoot '.local\ai-sessions\history\line-a\failure-receipt.json')
+            result_path = $caseResultPath
+            preflight_result_path = $casePreflightPath
+            quota_before_path = $caseQuotaPath
+            target_path = @('fixture-target.txt')
+            prepare_artifacts = @()
+        }
+        if (-not $OmitPrepareResultPath) {
+            $caseRequest.prepare_result_path = $casePreparePath
+        }
+        Write-Utf8NoBom -Path $caseRequestPath -Content (($caseRequest | ConvertTo-Json -Depth 20) + "`n")
+        $null = New-Phase8QuotaSnapshot -Path $caseQuotaPath -PrimaryRemainingPercent 80
+        $script:SourceRoot = $caseSourceRoot
+        $script:ExecutionRoot = $caseExecutionRoot
+        $script:DispatchRoot = $caseDispatchRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $caseName
+        $script:WriteMode = 'write'
+        $script:TargetPath = @('fixture-target.txt')
+        $script:PromptPath = $dispatchRequest.prompt_path
+        $script:ResultPath = $caseResultPath
+        $script:PreflightResultPath = $casePreflightPath
+        $script:PrepareResultPath = if ($OmitPrepareResultPath) { $null } else { $casePreparePath }
+        $script:QuotaBeforePath = $caseQuotaPath
+        $script:QuotaAfterPath = $null
+        $script:RequestPath = $caseRequestPath
+        $script:RequestContext = $null
+        $script:InvocationBoundParameters = [ordered]@{}
+        $script:quotaSnapshotPathOverride = $caseQuotaPath
+        $script:phase9DispatchCalls.Clear()
+        $script:phase9DispatchFailure = $null
+        $script:phase9CaptureOnly = $false
+        $script:scopePlanFixtureDecision = 'full'
+        $null = Apply-DispatchRequest
+        $dispatchResult = Invoke-Dispatch
+        Assert-True ($dispatchResult.status -eq 'started' -and $dispatchResult.stage_binding.fingerprint -match '^[a-f0-9]{64}$') ('stage binding dispatch 未成功：' + ($dispatchResult | ConvertTo-Json -Depth 30 -Compress))
+        $expectedPreparePath = [string]$dispatchResult.stage_binding.prepare_result_path
+        if ($OmitPrepareResultPath) {
+            $expectedHistoryLineRoot = Join-Path $caseHistoryRoot 'line-a'
+            Assert-True (Test-PathWithinRoot -Path $expectedPreparePath -Root $expectedHistoryLineRoot) ('omitted prepare path 未在 post-Preflight execution history line root 產生：' + $expectedPreparePath)
+        }
+        else {
+            Assert-True ([string]::Equals($expectedPreparePath, $casePreparePath, [StringComparison]::OrdinalIgnoreCase)) ('explicit prepare path 未沿用 binding：' + $expectedPreparePath)
+        }
+        $stagePaths = @(
+            [string]$dispatchResult.preflight_result_path
+            [string]$dispatchResult.prepare_result_path
+            [string]$dispatchResult.start_result_path
+        )
+        foreach ($stagePath in $stagePaths) {
+            Assert-True (Test-Path -LiteralPath $stagePath -PathType Leaf) ('stage binding output 不存在：' + $stagePath)
+            $stageDocument = Get-Content -LiteralPath $stagePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-True ($stageDocument.stage_binding_fingerprint -eq $dispatchResult.stage_binding.fingerprint) ('stage binding fingerprint 不一致：' + $stagePath)
+        }
+        Assert-True ([string]::Equals([string]$dispatchResult.quota_before_path, $caseQuotaPath, [StringComparison]::OrdinalIgnoreCase)) 'quota-before 未沿用同一 stage binding 路徑。'
+        Assert-True (($script:phase9DispatchCalls -join ',') -eq 'preflight,prepare,start') ('stage binding dispatch 順序異常：' + ($script:phase9DispatchCalls -join ','))
+        return [pscustomobject]@{
+            name = $caseName
+            different_execution_root = $DifferentExecutionRoot
+            omitted_prepare_result_path = $OmitPrepareResultPath
+            request_path = $caseRequestPath
+            result_path = $caseResultPath
+            preflight_path = $casePreflightPath
+            prepare_path = $expectedPreparePath
+            dispatch_result = $dispatchResult
+        }
+    }
+
+    Invoke-Case 'Phase 9 F-007 stage binding omitted prepare path with equal roots' {
+        $script:phase9F007EqualOmitted = Invoke-Phase9StageBindingDispatchCase -DifferentExecutionRoot $false -OmitPrepareResultPath $true
+    }
+    Invoke-Case 'Phase 9 F-007 stage binding explicit prepare path with equal roots' {
+        $script:phase9F007EqualExplicit = Invoke-Phase9StageBindingDispatchCase -DifferentExecutionRoot $false -OmitPrepareResultPath $false
+    }
+    Invoke-Case 'Phase 9 F-007 stage binding omitted prepare path with different roots' {
+        $script:phase9F007DifferentOmitted = Invoke-Phase9StageBindingDispatchCase -DifferentExecutionRoot $true -OmitPrepareResultPath $true
+    }
+    Invoke-Case 'Phase 9 F-007 stage binding explicit prepare path with different roots' {
+        $script:phase9F007DifferentExplicit = Invoke-Phase9StageBindingDispatchCase -DifferentExecutionRoot $true -OmitPrepareResultPath $false
+    }
+    Invoke-Case 'Phase 9 F-007 reverse wrong-root binding is rejected and restored binding passes' {
+        $validCase = $script:phase9F007DifferentOmitted
+        $validBinding = $validCase.dispatch_result.stage_binding
+        $wrongPreparePath = Join-Path $phase9Root '.local\ai-sessions\history\wrong-root-prepare.json'
+        $wrongBinding = New-DispatchStageBinding -SourceRoot ([string]$validBinding.source_root) -ExecutionRoot ([string]$validBinding.execution_root) -DispatchRoot ([string]$validBinding.dispatch_root) -LineSlug 'line-a' -DispatchSlug ([string]$validBinding.dispatch_slug) -TargetPath @('fixture-target.txt') -ResultPath ([string]$validBinding.result_path) -PreflightResultPath ([string]$validBinding.preflight_result_path) -PrepareResultPath $wrongPreparePath -QuotaBeforePath ([string]$validBinding.quota_before_path) -QuotaAfterPath ''
+        $reverseFailure = $null
+        try {
+            $null = Assert-DispatchStageBinding -Binding $wrongBinding -Stage 'prepare' -SourceRoot ([string]$validBinding.source_root) -ExecutionRoot ([string]$validBinding.execution_root) -DispatchRoot ([string]$validBinding.dispatch_root) -LineSlug ([string]$validBinding.line_slug) -DispatchSlug ([string]$validBinding.dispatch_slug) -TargetPath @('fixture-target.txt') -ResultPath ([string]$validBinding.result_path) -PreflightResultPath ([string]$validBinding.preflight_result_path) -PrepareResultPath ([string]$validBinding.prepare_result_path) -QuotaBeforePath ([string]$validBinding.quota_before_path) -QuotaAfterPath ''
+        }
+        catch {
+            $reverseFailure = $_.Exception
+        }
+        Assert-True ($null -ne $reverseFailure -and $reverseFailure.Message -match 'DispatchStageBindingConflict') ('wrong-root reverse 未被拒絕：' + [string]$reverseFailure)
+        $restoredPass = Assert-DispatchStageBinding -Binding $validBinding -Stage 'prepare' -SourceRoot ([string]$validBinding.source_root) -ExecutionRoot ([string]$validBinding.execution_root) -DispatchRoot ([string]$validBinding.dispatch_root) -LineSlug ([string]$validBinding.line_slug) -DispatchSlug ([string]$validBinding.dispatch_slug) -TargetPath @('fixture-target.txt') -ResultPath ([string]$validBinding.result_path) -PreflightResultPath ([string]$validBinding.preflight_result_path) -PrepareResultPath ([string]$validBinding.prepare_result_path) -QuotaBeforePath ([string]$validBinding.quota_before_path) -QuotaAfterPath ''
+        Assert-True $restoredPass '還原後 stage binding 未通過。'
+        $script:phase9F007ReverseEvidence = [pscustomobject]@{ wrong_binding = $wrongBinding; failure = $reverseFailure.Message; restored_pass = $restoredPass }
+        Write-Phase9Evidence -Label 'F007_NORMAL_PASS' -Value @($script:phase9F007EqualOmitted, $script:phase9F007EqualExplicit, $script:phase9F007DifferentOmitted, $script:phase9F007DifferentExplicit)
+        Write-Phase9Evidence -Label 'F007_REVERSE_FAILURE' -Value ([ordered]@{ status = 'failed'; wrong_binding = $wrongBinding; error = $reverseFailure.Message })
+        Write-Phase9Evidence -Label 'F007_RESTORED_PASS' -Value ([ordered]@{ status = 'pass'; binding = $validBinding; result = $restoredPass })
+    }
+
+    Invoke-Case 'Phase 9 P3 pre-Start stage failure does not launch' {
+        $script:phase9DispatchCalls.Clear()
+        $script:phase9DispatchStartCalls = 0
+        $script:phase9DispatchFailure = 'prepare'
+        $failureResult = Invoke-Dispatch
+        Assert-True ($failureResult.status -eq 'failed' -and $failureResult.failed_stage -eq 'prepare' -and -not [bool]$failureResult.process_started) 'Prepare failure 未產生 failed envelope。'
+        Assert-True ($script:phase9DispatchStartCalls -eq 0) 'Prepare failure 仍呼叫 Start。'
+        $script:phase9DispatchFailure = $null
+    }
+
+    Invoke-Case 'Phase 9 P3 seven legacy operations remain' {
+        foreach ($operationName in @('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'RecoveryHandoff')) {
+            $legacyPath = Join-Path $phase9Root ('legacy-' + $operationName + '.json')
+            $legacyDocument = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = $operationName; line_slug = 'line-a'; dispatch_slug = ('legacy-' + $operationName).ToLowerInvariant() }
+            Write-Utf8NoBom -Path $legacyPath -Content (($legacyDocument | ConvertTo-Json -Depth 12) + "`n")
+            $legacyContext = Read-DispatchRequest -Path $legacyPath
+            Assert-True ([string]$legacyContext.document.operation -ceq $operationName) ('legacy operation parser 失敗：' + $operationName)
+        }
+    }
+
+    $launcherFunctionAst = @($functions | Where-Object { $_.Name -eq 'New-CodexLauncher' } | Select-Object -First 1)
+    Assert-True ($launcherFunctionAst.Count -eq 1) 'Phase 9 找不到 production New-CodexLauncher AST。'
+    $launcherFunctionDefinition = $launcherFunctionAst[0].Extent.Text -replace '^function New-CodexLauncher', 'function Invoke-Phase9ProductionCodexLauncher'
+    . ([scriptblock]::Create($launcherFunctionDefinition))
+    Invoke-Case 'Phase 9 P3 Dispatch exit sidecar launcher contract' {
+        $launcherPath = Join-Path $phase9Root 'codex-launcher.cmd'
+        $eventPath = Join-Path $phase9Root 'events.jsonl'
+        $errorPath = Join-Path $phase9Root 'errors.log'
+        $historyPath = Join-Path $fixtureRoot '.local\ai-sessions\history'
+        $sidecarPath = Join-Path $historyPath 'codex-exit-fixture-run.json'
+        New-Item -ItemType Directory -Path $historyPath -Force | Out-Null
+        $null = Invoke-Phase9ProductionCodexLauncher -CodexExecutable 'codex.exe' -CodexArguments @('exec') -PromptPath (Join-Path $phase9Root 'prompt.md') -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyPath -LauncherPath $launcherPath -ExitSidecarPath $sidecarPath -LineSlug 'line-a' -DispatchSlug 'phase9-dispatch' -RunId ([guid]::NewGuid().ToString('D'))
+        $launcherContent = Get-Content -LiteralPath $launcherPath -Raw -Encoding UTF8
+        Assert-True ($launcherContent.Contains('ai-sessions.dispatch-exit.v1') -and $launcherContent.Contains('process_exit_code') -and $launcherContent.Contains('exit /b')) 'Windows launcher 未保存並傳遞原始 exit code sidecar。'
+    }
+
+    Invoke-Case 'Phase 9 F-003 POSIX launcher uses printf format string for sidecar' {
+        $launcherPath = Join-Path $phase9Root 'codex-launcher.sh'
+        $eventPath = Join-Path $phase9Root 'posix-events.jsonl'
+        $errorPath = Join-Path $phase9Root 'posix-errors.log'
+        $historyPath = Join-Path $fixtureRoot '.local\ai-sessions\history'
+        $sidecarPath = Join-Path $historyPath 'posix-exit-sidecar.json'
+        $platformFunction = (Get-Command -Name Test-IsWindowsPlatform -CommandType Function -ErrorAction Stop).ScriptBlock
+        $externalFunction = (Get-Command -Name Invoke-ExternalCommand -CommandType Function -ErrorAction Stop).ScriptBlock
+        $commandPathFunction = (Get-Command -Name Get-CommandPath -CommandType Function -ErrorAction Stop).ScriptBlock
+        function Invoke-Phase9NoopExternalCommand {
+            param($FileName, $WorkingDirectory, $Arguments, [switch]$AllowFailure)
+            return [pscustomobject]@{ ExitCode = 0; StdOut = ''; StdErr = '' }
+        }
+        function Invoke-Phase9FixtureCommandPath {
+            param([string]$Name)
+            return (Get-Command -Name sh -ErrorAction Stop).Source
+        }
+        try {
+            Set-Item -Path Function:\global:Test-IsWindowsPlatform -Value ([scriptblock]::Create('return $false'))
+            Set-Item -Path Function:\global:Invoke-ExternalCommand -Value (Get-Command -Name Invoke-Phase9NoopExternalCommand -CommandType Function).ScriptBlock
+            Set-Item -Path Function:\global:Get-CommandPath -Value (Get-Command -Name Invoke-Phase9FixtureCommandPath -CommandType Function).ScriptBlock
+            $runId = '00000000-0000-0000-0000-000000000001'
+            $null = Invoke-Phase9ProductionCodexLauncher -CodexExecutable '/usr/bin/codex' -CodexArguments @('exec') -PromptPath (Join-Path $phase9Root 'posix-prompt.md') -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyPath -LauncherPath $launcherPath -ExitSidecarPath $sidecarPath -LineSlug 'line-a' -DispatchSlug 'phase9-posix' -RunId $runId
+            $launcherContent = Get-Content -LiteralPath $launcherPath -Raw -Encoding UTF8
+            $sidecarTemplate = '{"schema":"ai-sessions.dispatch-exit.v1","line_slug":"line-a","dispatch_slug":"phase9-posix","run_id":"' + $runId + '","process_exit_code":%s,"exit_code_status":"known"}'
+            $expectedPrintf = "printf '$sidecarTemplate\n' " + '"$_codex_exit"' + ' > ' + '"$_sidecar_tmp"'
+            Assert-True ($launcherContent.Contains($expectedPrintf) -and -not $launcherContent.Contains("printf '%s\n' '")) ('POSIX launcher printf 格式不符：' + $launcherContent)
+        }
+        finally {
+            Set-Item -Path Function:\global:Test-IsWindowsPlatform -Value $platformFunction
+            Set-Item -Path Function:\global:Invoke-ExternalCommand -Value $externalFunction
+            Set-Item -Path Function:\global:Get-CommandPath -Value $commandPathFunction
+        }
+    }
+
+    $calibrationFunctionAst = @($functions | Where-Object { $_.Name -eq 'Add-CalibrationObservation' } | Select-Object -First 1)
+    Assert-True ($calibrationFunctionAst.Count -eq 1) 'Phase 9 找不到 production Add-CalibrationObservation AST。'
+    $calibrationBeforePath = Join-Path $phase9Root 'calibration-before.json'
+    $calibrationAfterPath = Join-Path $phase9Root 'calibration-after.json'
+    $calibrationStaleAfterPath = Join-Path $phase9Root 'calibration-after-stale.json'
+    $calibrationPath = Join-Path $phase9Root '.local\ai-sessions\history\quota-calibration.jsonl'
+    $null = New-Phase8QuotaSnapshot -Path $calibrationBeforePath -PrimaryRemainingPercent 80
+    $null = New-Phase8QuotaSnapshot -Path $calibrationAfterPath -PrimaryRemainingPercent 79
+    $staleAfterSnapshot = Get-Content -LiteralPath $calibrationAfterPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $staleObservedAt = [DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o')
+    $staleAfterSnapshot.captured_at_utc = $staleObservedAt
+    foreach ($windowName in @('primary', 'secondary')) {
+        $staleObservation = Get-DispatchJsonProperty -Object $staleAfterSnapshot.observations -Name $windowName
+        $staleObservation.observed_at_utc = $staleObservedAt
+        $staleObservation.freshness = 'stale'
+    }
+    Write-Utf8NoBom -Path $calibrationStaleAfterPath -Content (($staleAfterSnapshot | ConvertTo-Json -Depth 20) + "`n")
+
+    Invoke-Case 'Phase 9 F-003 Windows Dispatch CLI sidecar is produced by Start launcher' {
+        $actualRoot = Join-Path $fixtureRoot 'w'
+        $actualDispatchRoot = Join-Path $actualRoot '.local\ai-sessions\worktrees\x'
+        $actualLineRoot = Join-Path $actualRoot '.local\ai-sessions\handoff\a'
+        $actualHistoryRoot = Join-Path $actualDispatchRoot '.local\ai-sessions\history\a'
+        $actualPromptSourcePath = Join-Path $actualRoot 'dispatch-prompt.md'
+        $actualPromptPath = Join-Path $actualDispatchRoot 'dispatch-prompt.md'
+        $actualTargetPath = Join-Path $actualRoot 'target.txt'
+        $actualQuotaPath = Join-Path $actualRoot 'quota-before.json'
+        $actualCodexHome = Join-Path $actualRoot 'codex-home'
+        $actualCodexPath = Join-Path $actualRoot 'codex.cmd'
+        $actualRequestPath = Join-Path $actualRoot 'dispatch-request.json'
+        $actualResultPath = Join-Path $actualHistoryRoot 'dispatch-result.json'
+        $actualInspectResultPath = Join-Path $actualRoot 'dispatch-inspect-result.json'
+        $actualQuotaAfterPath = Join-Path $actualRoot 'quota-after.json'
+        $actualCalibrationPath = Join-Path $actualHistoryRoot 'quota-calibration.jsonl'
+        $actualPreflightResultPath = Join-Path $actualRoot 'preflight-result.json'
+        $actualPrepareResultPath = Join-Path $actualHistoryRoot 'prepare.json'
+        $actualArtifactSourcePath = Join-Path $actualLineRoot 'artifact.txt'
+        $actualArtifactDestinationPath = Join-Path $actualHistoryRoot 'artifact.txt'
+        New-Item -ItemType Directory -Path $actualRoot, $actualLineRoot, $actualCodexHome -Force | Out-Null
+        Write-Utf8NoBom -Path $actualTargetPath -Content "actual Windows sidecar target`n"
+        Write-Utf8NoBom -Path $actualPromptSourcePath -Content 'actual Windows sidecar dispatch prompt'
+        $gitHostPath = (Get-Command git.exe -ErrorAction Stop).Source
+        $gitInit = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('init') -WorkingDirectory $actualRoot -EnvironmentVariables @{}
+        Assert-True ([int]$gitInit.exit_code -eq 0) ('實際 Windows Dispatch fixture git init 失敗：' + [string]$gitInit.stdout + [string]$gitInit.stderr)
+        $gitAdd = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('add', '--', 'target.txt', 'dispatch-prompt.md') -WorkingDirectory $actualRoot -EnvironmentVariables @{}
+        Assert-True ([int]$gitAdd.exit_code -eq 0) ('實際 Windows Dispatch fixture git add 失敗：' + [string]$gitAdd.stdout + [string]$gitAdd.stderr)
+        $gitCommit = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('-c', 'user.name=phase9-fixture', '-c', 'user.email=phase9-fixture@example.invalid', 'commit', '--no-verify', '-m', 'phase9 fixture') -WorkingDirectory $actualRoot -EnvironmentVariables @{}
+        Assert-True ([int]$gitCommit.exit_code -eq 0) ('實際 Windows Dispatch fixture git commit 失敗：' + [string]$gitCommit.stdout + [string]$gitCommit.stderr)
+        Write-Utf8NoBom -Path (Join-Path $actualLineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'a' } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $actualArtifactSourcePath -Content 'actual Windows sidecar artifact'
+        $actualArtifactSha256 = Get-FileSha256 -Path $actualArtifactSourcePath
+        Write-Utf8NoBom -Path (Join-Path $actualCodexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        Copy-Item -LiteralPath $calibrationBeforePath -Destination $actualQuotaPath -Force
+        $actualThreadId = '00000000-0000-0000-0000-000000000009'
+        $fakeCodexContent = @(
+            '@echo off'
+            ('echo {"type":"thread.started","thread_id":"' + $actualThreadId + '"}')
+            'echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md x a actual sidecar fixture"}}'
+            'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+            'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 3"'
+            'exit /b 0'
+        ) -join "`r`n"
+        Write-Utf8NoBom -Path $actualCodexPath -Content ($fakeCodexContent + "`r`n")
+        $actualRequest = [ordered]@{
+            schema = 'ai-sessions.dispatch-request.v1'
+            operation = 'Dispatch'
+            source_root = $actualRoot
+            dispatch_root = $actualDispatchRoot
+            line_slug = 'a'
+            dispatch_slug = 'x'
+            profile = 'default'
+            write_mode = 'write'
+            dispatch_kind = 'workflow'
+            target_path = @('target.txt')
+            prepare_artifacts = @([ordered]@{ source = $actualArtifactSourcePath; destination = $actualArtifactDestinationPath; sha256 = $actualArtifactSha256; purpose = 'actual Windows sidecar' })
+            prompt_path = $actualPromptPath
+            task_type = 'script-change'
+            session_mode = 'cold-start'
+            unit_kind = 'workflow-phase'
+            requested_unit = @('Phase 1')
+            failure_receipt_path = (Join-Path $actualRoot '.local\ai-sessions\history\a\failure-receipt.json')
+            result_path = $actualResultPath
+            preflight_result_path = $actualPreflightResultPath
+            prepare_result_path = $actualPrepareResultPath
+            quota_before_path = $actualQuotaPath
+        }
+        Write-Utf8NoBom -Path $actualRequestPath -Content (($actualRequest | ConvertTo-Json -Depth 20) + "`n")
+        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-CodexPath'
+            $actualCodexPath
+            '-CodexHome'
+            $actualCodexHome
+            '-Operation'
+            'Dispatch'
+            '-RequestPath'
+            $actualRequestPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        Assert-True ([int]$run.exit_code -eq 0) ('實際 Windows Dispatch CLI 未成功：' + [string]$run.stdout + [string]$run.stderr)
+        $dispatchResultFile = $null
+        for ($attempt = 1; $attempt -le 20; $attempt++) {
+            if (Test-Path -LiteralPath $actualResultPath -PathType Leaf) {
+                $dispatchResultFile = Get-Item -LiteralPath $actualResultPath
+                break
+            }
+            Start-Sleep -Milliseconds 100
+        }
+        Assert-True ($null -ne $dispatchResultFile) ('實際 Windows Dispatch 未找到結果檔。CLI exit=' + [string]$run.exit_code + '; command=' + [string]$run.command + '; stdout=' + [string]$run.stdout + '; stderr=' + [string]$run.stderr)
+        $dispatchDocument = Get-Content -LiteralPath $dispatchResultFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        $startPath = [string]$dispatchDocument.start_result_path
+        Assert-True ($dispatchDocument.status -eq 'started' -and [bool]$dispatchDocument.process_started -and $dispatchDocument.completed_stages -contains 'start') ('實際 Windows Dispatch 結果未完成 Start：' + ($dispatchDocument | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$dispatchDocument.inspect_binding.process_exit_code_sidecar_path)) 'Dispatch 結果未綁定 sidecar path。'
+        $sidecarPath = [string]$dispatchDocument.inspect_binding.process_exit_code_sidecar_path
+        for ($attempt = 1; $attempt -le 30; $attempt++) {
+            if (Test-Path -LiteralPath $sidecarPath -PathType Leaf) {
+                break
+            }
+            Start-Sleep -Milliseconds 150
+        }
+        Assert-True (Test-Path -LiteralPath $sidecarPath -PathType Leaf) ('Windows launcher 未產生 sidecar：' + $sidecarPath)
+        $sidecarDocument = Get-Content -LiteralPath $sidecarPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($sidecarDocument.schema -eq 'ai-sessions.dispatch-exit.v1' -and $sidecarDocument.process_exit_code -eq 0 -and $sidecarDocument.exit_code_status -eq 'known') ('Windows sidecar 內容不符：' + ($sidecarDocument | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (Test-Path -LiteralPath $startPath -PathType Leaf) '實際 Windows Start stage result 不存在。'
+        $startDocument = Get-Content -LiteralPath $startPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($startDocument.processExitCodeSidecarPath -eq $sidecarPath) 'Start stage 未保存相同 sidecar path。'
+        Copy-Item -LiteralPath $calibrationAfterPath -Destination $actualQuotaAfterPath -Force
+        $inspectRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Inspect'
+            '-DispatchResultPath'
+            $actualResultPath
+            '-SourceRoot'
+            $actualRoot
+            '-ExecutionRoot'
+            $actualDispatchRoot
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            'x'
+            '-RequiredIdentifier'
+            'design.md'
+            '-TargetPath'
+            'target.txt'
+            '-QuotaAfterPath'
+            $actualQuotaAfterPath
+            '-CalibrationPath'
+            $actualCalibrationPath
+            '-TaskType'
+            'script-change'
+            '-SessionMode'
+            'cold-start'
+            '-CodexHome'
+            $actualCodexHome
+            '-ResultPath'
+            $actualInspectResultPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        Assert-True ([int]$inspectRun.exit_code -eq 0) ('實際 Windows Inspect 未成功：' + [string]$inspectRun.stdout + [string]$inspectRun.stderr)
+        Assert-True (Test-Path -LiteralPath $actualInspectResultPath -PathType Leaf) '實際 Windows Inspect 結果不存在。'
+        $inspectDocument = Get-Content -LiteralPath $actualInspectResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($inspectDocument.processExitCode -eq 0 -and $inspectDocument.processExitCodeSource -eq 'sidecar' -and $inspectDocument.processExitCodeSidecarPath -eq $sidecarPath) ('Inspect 未以 sidecar 填入 process exit code：' + ($inspectDocument | ConvertTo-Json -Depth 20 -Compress))
+        $launcherCallText = '-ExitSidecarPath $exitSidecarPathValue'
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        Assert-True ($productionText.Contains($launcherCallText)) 'F-003 reverse fixture 找不到 Invoke-Start sidecar 接線。'
+        $mutantText = $productionText.Replace($launcherCallText, '')
+        $mutantPath = Join-Path $phase9Root 'f003-mutant-Invoke-CodexDispatch.ps1'
+        $bomEncoding = New-Object System.Text.UTF8Encoding($true)
+        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $reverseDispatchSlug = 'y'
+        $reverseDispatchRoot = Join-Path $actualRoot '.local\ai-sessions\worktrees\y'
+        $reverseHistoryRoot = Join-Path $reverseDispatchRoot '.local\ai-sessions\history\a'
+        $reversePromptPath = Join-Path $reverseDispatchRoot 'dispatch-prompt.md'
+        $reverseQuotaPath = Join-Path $actualRoot 'quota-before-reverse.json'
+        $reverseRequestPath = Join-Path $actualRoot 'dispatch-request-reverse.json'
+        Copy-Item -LiteralPath $actualQuotaPath -Destination $reverseQuotaPath -Force
+        $reverseRequest = [ordered]@{}
+        foreach ($property in $actualRequest.GetEnumerator()) {
+            $reverseRequest[$property.Key] = $property.Value
+        }
+        $reverseRequest.dispatch_root = $reverseDispatchRoot
+        $reverseRequest.dispatch_slug = $reverseDispatchSlug
+        $reverseRequest.result_path = Join-Path $reverseHistoryRoot 'dispatch-result.json'
+        $reverseRequest.preflight_result_path = Join-Path $actualRoot 'preflight-result-reverse.json'
+        $reverseRequest.prepare_result_path = Join-Path $reverseHistoryRoot 'prepare.json'
+        $reverseRequest.prepare_artifacts = @([ordered]@{ source = $actualArtifactSourcePath; destination = (Join-Path $reverseHistoryRoot 'artifact.txt'); sha256 = $actualArtifactSha256; purpose = 'actual Windows sidecar reverse' })
+        $reverseRequest.prompt_path = $reversePromptPath
+        $reverseRequest.quota_before_path = $reverseQuotaPath
+        Write-Utf8NoBom -Path $reverseRequestPath -Content (($reverseRequest | ConvertTo-Json -Depth 20) + "`n")
+        $reverseRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $mutantPath
+            '-CodexPath'
+            $actualCodexPath
+            '-CodexHome'
+            $actualCodexHome
+            '-Operation'
+            'Dispatch'
+            '-RequestPath'
+            $reverseRequestPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $reverseDispatchOutput = [string]$reverseRun.stdout + [string]$reverseRun.stderr
+        $reverseDispatchDocument = if (-not [string]::IsNullOrWhiteSpace($reverseDispatchOutput)) { $reverseDispatchOutput | ConvertFrom-Json } else { $null }
+        Assert-True ([int]$reverseRun.exit_code -eq 0 -and $null -ne $reverseDispatchDocument -and $reverseDispatchDocument.status -eq 'started') ('F-003 reverse Dispatch 未建立可供 Inspect 驗證的 started 結果：' + $reverseDispatchOutput)
+        $reverseResultPath = [string]$reverseRequest.result_path
+        Assert-True (Test-Path -LiteralPath $reverseResultPath -PathType Leaf) ('F-003 reverse Dispatch result 不存在：' + $reverseResultPath)
+        $reverseDispatchResultDocument = Get-Content -LiteralPath $reverseResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $reverseStartPath = [string]$reverseDispatchResultDocument.start_result_path
+        Assert-True (Test-Path -LiteralPath $reverseStartPath -PathType Leaf) ('F-003 reverse Start stage result 不存在：' + $reverseStartPath)
+        $reverseStartDocument = Get-Content -LiteralPath $reverseStartPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $reverseSidecarPath = [string]$reverseDispatchResultDocument.inspect_binding.process_exit_code_sidecar_path
+        $reverseRootPidProperty = $reverseStartDocument.PSObject.Properties['root_pid']
+        if ($null -eq $reverseRootPidProperty) {
+            $reverseRootPidProperty = $reverseStartDocument.PSObject.Properties['rootPid']
+        }
+        $reverseRootPid = if ($null -eq $reverseRootPidProperty) { 0 } else { [int]$reverseRootPidProperty.Value }
+        if ($reverseRootPid -gt 0) {
+            for ($attempt = 1; $attempt -le 40; $attempt++) {
+                if ($null -eq (Get-Process -Id $reverseRootPid -ErrorAction SilentlyContinue)) {
+                    break
+                }
+                Start-Sleep -Milliseconds 150
+            }
+        }
+        Assert-True (-not [string]::IsNullOrWhiteSpace($reverseSidecarPath) -and -not (Test-Path -LiteralPath $reverseSidecarPath -PathType Leaf)) ('F-003 reverse mutant unexpectedly produced sidecar：' + $reverseSidecarPath)
+        $reverseInspectResultPath = Join-Path $actualRoot 'dispatch-inspect-result-reverse.json'
+        $reverseInspectRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $mutantPath
+            '-Operation'
+            'Inspect'
+            '-DispatchResultPath'
+            $reverseResultPath
+            '-SourceRoot'
+            $actualRoot
+            '-ExecutionRoot'
+            $reverseDispatchRoot
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $reverseDispatchSlug
+            '-RequiredIdentifier'
+            'design.md'
+            '-TargetPath'
+            'target.txt'
+            '-QuotaAfterPath'
+            $actualQuotaAfterPath
+            '-CalibrationPath'
+            $actualCalibrationPath
+            '-TaskType'
+            'script-change'
+            '-SessionMode'
+            'cold-start'
+            '-CodexHome'
+            $actualCodexHome
+            '-ResultPath'
+            $reverseInspectResultPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $reverseInspectOutput = [string]$reverseInspectRun.stdout + [string]$reverseInspectRun.stderr
+        $reverseInspectDocument = if (Test-Path -LiteralPath $reverseInspectResultPath -PathType Leaf) { Get-Content -LiteralPath $reverseInspectResultPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+        Assert-True ([int]$reverseInspectRun.exit_code -eq 1 -and $null -ne $reverseInspectDocument -and $reverseInspectDocument.errorCode -eq 'DispatchExitCodeUnavailable') ('F-003 reverse Inspect 未因 sidecar 缺失失敗：' + $reverseInspectOutput)
+        Assert-True ($reverseInspectOutput -match 'sidecar|DispatchExitCodeUnavailable|process_exit_code') ('F-003 reverse failure did not expose missing sidecar evidence：' + $reverseInspectOutput)
+        $restoredInspectResultPath = Join-Path $actualRoot 'dispatch-inspect-result-restored.json'
+        $restoredInspectRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Inspect'
+            '-DispatchResultPath'
+            $actualResultPath
+            '-SourceRoot'
+            $actualRoot
+            '-ExecutionRoot'
+            $actualDispatchRoot
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            'x'
+            '-RequiredIdentifier'
+            'design.md'
+            '-TargetPath'
+            'target.txt'
+            '-QuotaAfterPath'
+            $actualQuotaAfterPath
+            '-CalibrationPath'
+            $actualCalibrationPath
+            '-TaskType'
+            'script-change'
+            '-SessionMode'
+            'cold-start'
+            '-CodexHome'
+            $actualCodexHome
+            '-ResultPath'
+            $restoredInspectResultPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $restoredInspectDocument = if (Test-Path -LiteralPath $restoredInspectResultPath -PathType Leaf) { Get-Content -LiteralPath $restoredInspectResultPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+        Assert-True ([int]$restoredInspectRun.exit_code -eq 0 -and $null -ne $restoredInspectDocument -and $restoredInspectDocument.processExitCode -eq 0 -and $restoredInspectDocument.processExitCodeSource -eq 'sidecar') ('F-003 reverse 後還原 Inspect 未通過：' + [string]$restoredInspectRun.stdout + [string]$restoredInspectRun.stderr)
+        $script:phase9F003WindowsEvidence = [pscustomobject]@{
+            run = $run
+            result_path = $dispatchResultFile.FullName
+            sidecar_path = $sidecarPath
+            start_path = $startPath
+            sidecar = $sidecarDocument
+            inspect = $inspectRun
+            inspect_result_path = $actualInspectResultPath
+            inspect_document = $inspectDocument
+            reverse = $reverseRun
+            reverse_dispatch_document = $reverseDispatchResultDocument
+            reverse_inspect = $reverseInspectRun
+            reverse_inspect_result_path = $reverseInspectResultPath
+            reverse_inspect_document = $reverseInspectDocument
+            reverse_dispatch_root = $reverseDispatchRoot
+            restored_inspect = $restoredInspectRun
+            restored_inspect_result_path = $restoredInspectResultPath
+            restored_inspect_document = $restoredInspectDocument
+            mutation = 'Invoke-Start -ExitSidecarPath argument removed before the reverse CLI run.'
+        }
+        Write-Phase9Evidence -Label 'F003_NORMAL_PASS' -Value ([ordered]@{ dispatch = $run; sidecar = $sidecarDocument; inspect = $inspectRun; inspect_document = $inspectDocument })
+        Write-Phase9Evidence -Label 'F003_REVERSE_FAILURE' -Value ([ordered]@{ dispatch = $reverseRun; dispatch_document = $reverseDispatchDocument; inspect = $reverseInspectRun; inspect_document = $reverseInspectDocument; mutation = 'Invoke-Start -ExitSidecarPath argument removed before the reverse CLI run.' })
+        Write-Phase9Evidence -Label 'F003_RESTORED_PASS' -Value ([ordered]@{ inspect = $restoredInspectRun; inspect_result_path = $restoredInspectResultPath; inspect_document = $restoredInspectDocument })
+        $rootPidProperty = $startDocument.PSObject.Properties['root_pid']
+        if ($null -eq $rootPidProperty) {
+            $rootPidProperty = $startDocument.PSObject.Properties['rootPid']
+        }
+        $rootPid = if ($null -eq $rootPidProperty) { 0 } else { [int]$rootPidProperty.Value }
+        if ($rootPid -gt 0) {
+            $rootProcess = Get-Process -Id $rootPid -ErrorAction SilentlyContinue
+            if ($null -ne $rootProcess) {
+                Stop-Process -Id $rootPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if ($reverseRootPid -gt 0) {
+            $reverseProcess = Get-Process -Id $reverseRootPid -ErrorAction SilentlyContinue
+            if ($null -ne $reverseProcess) {
+                Stop-Process -Id $reverseRootPid -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    function Read-QuotaSnapshot {
+        param([string]$Path)
+        return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    }
+    $calibrationScopePlan = [pscustomobject]@{
+        dispatch_slug = 'phase9-calibration'
+        dispatch_kind = 'workflow'
+        task_type = 'script-change'
+        requested_profile = 'default'
+        session_mode = 'cold-start'
+        primary_remaining_percent = 80
+        primary_reserve_percent = 30
+        primary_budget_percent = 10
+        estimate_percent = $null
+        estimate_source = 'not-required-above-threshold'
+        unit_kind = 'workflow-phase'
+        requested_units = @('Phase 1')
+        selected_units = @('Phase 1')
+        deferred_units = @()
+        decision = 'full'
+        decision_reason = 'fixture'
+        scope_plan_fingerprint = 'fixture'
+    }
+    $calibrationScopePlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $calibrationScopePlan
+    $calibrationExecution = [pscustomobject]@{ completed = $true; processExitCode = 0; outputValid = $true; success = $true }
+    Invoke-Case 'Phase 9 P4 over-30-minute start-fresh calibration' {
+        $calibrationResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path $calibrationPath -LineSlug 'line-a' -DispatchSlug 'phase9-calibration' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTime]::UtcNow.AddMinutes(-31).ToString('o'))
+        Assert-True ($calibrationResult.calibrationEligible -and $calibrationResult.recordWritten) 'Start fresh 的 calibration 未標記 eligible。'
+        foreach ($name in @('snapshots_present', 'snapshots_fresh', 'usage_present', 'execution_completed', 'task_type_present', 'non_negative_delta')) {
+            $calibrationChecks = Get-DispatchJsonProperty -Object $calibrationResult -Name 'calibrationChecks'
+            Assert-True ($null -ne $calibrationChecks -and [bool](Get-DispatchJsonProperty -Object $calibrationChecks -Name $name)) ('缺少 calibration check：' + $name)
+        }
+    }
+
+    Invoke-Case 'Phase 9 P4 calibration checks identify missing usage' {
+        $missingUsageResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path $calibrationPath -LineSlug 'line-a' -DispatchSlug 'phase9-calibration-missing-usage' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage $null -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTime]::UtcNow.AddMinutes(-31).ToString('o'))
+        Assert-True (-not $missingUsageResult.calibrationEligible -and -not $missingUsageResult.calibrationChecks.usage_present -and @($missingUsageResult.ineligibleReasons) -contains 'usage_present') 'usage 缺漏未映射至 calibration check 與 ineligible reason。'
+    }
+
+    Invoke-Case 'Phase 9 P4 stale after and abnormal completion' {
+        $abnormalExecution = [pscustomobject]@{ completed = $false; processExitCode = 9; outputValid = $true; success = $false }
+        $abnormalResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path $calibrationPath -LineSlug 'line-a' -DispatchSlug 'phase9-calibration-abnormal' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $abnormalExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $false -BeforeSnapshotCapturedAtStartUtc ([DateTime]::UtcNow.AddMinutes(-31).ToString('o'))
+        Assert-True (-not $abnormalResult.calibrationEligible -and -not $abnormalResult.calibrationChecks.snapshots_fresh -and -not $abnormalResult.calibrationChecks.execution_completed) 'stale after 或 abnormal completion 未阻止 calibration。'
+    }
+
+    Invoke-Case 'Phase 9 F-008 before freshness reason is independent' {
+        $beforeFreshResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-before-freshness.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-before-freshness' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $false -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o'))
+        $beforeReasons = @($beforeFreshResult.ineligibleReasons)
+        Assert-True (-not $beforeFreshResult.calibrationEligible -and -not $beforeFreshResult.calibrationChecks.before_fresh_at_start -and [bool]$beforeFreshResult.calibrationChecks.after_fresh_at_inspect) 'before freshness negative case 未維持獨立 check。'
+        Assert-True ($beforeReasons -contains 'before_fresh_at_start' -and $beforeReasons -notcontains 'after_fresh_at_inspect') ('before freshness reason 不精確：' + ($beforeReasons -join ', '))
+        $script:phase9F008BeforeEvidence = $beforeFreshResult
+    }
+
+    Invoke-Case 'Phase 9 F-008 after freshness reason is independent' {
+        $afterFreshResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-after-freshness.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-after-freshness' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationStaleAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.ToString('o'))
+        $afterReasons = @($afterFreshResult.ineligibleReasons)
+        Assert-True (-not $afterFreshResult.calibrationEligible -and [bool]$afterFreshResult.calibrationChecks.before_fresh_at_start -and -not $afterFreshResult.calibrationChecks.after_fresh_at_inspect) 'after freshness negative case 未維持獨立 check。'
+        Assert-True ($afterReasons -contains 'after_fresh_at_inspect' -and $afterReasons -notcontains 'before_fresh_at_start') ('after freshness reason 不精確：' + ($afterReasons -join ', '))
+        $script:phase9F008AfterEvidence = $afterFreshResult
+    }
+
+    Invoke-Case 'Phase 9 F-008 reverse removal of each freshness reason fails' {
+        $calibrationDefinition = $calibrationFunctionAst[0].Extent.Text
+        $mutantBeforeDefinition = $calibrationDefinition.Replace('function Add-CalibrationObservation', 'function Invoke-Phase9MutantBeforeCalibration') -replace "'before_fresh_at_start',\s*'after_fresh_at_inspect',", "'after_fresh_at_inspect',"
+        $mutantAfterDefinition = $calibrationDefinition.Replace('function Add-CalibrationObservation', 'function Invoke-Phase9MutantAfterCalibration') -replace "'before_fresh_at_start',\s*'after_fresh_at_inspect',", "'before_fresh_at_start',"
+        Assert-True ($mutantBeforeDefinition -notmatch "'before_fresh_at_start',\s*'after_fresh_at_inspect',") 'F-008 before mutant 未移除 reason。'
+        Assert-True ($mutantAfterDefinition -notmatch "'before_fresh_at_start',\s*'after_fresh_at_inspect',") 'F-008 after mutant 未移除 reason。'
+        Set-Item -Path Function:\Invoke-Phase9MutantBeforeCalibration -Value ([scriptblock]::Create($mutantBeforeDefinition))
+        Set-Item -Path Function:\Invoke-Phase9MutantAfterCalibration -Value ([scriptblock]::Create($mutantAfterDefinition))
+        $beforeReverseFailure = $null
+        try {
+            $mutantBeforeResult = Invoke-Phase9MutantBeforeCalibration -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-before-mutant.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-before-mutant' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $false -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o'))
+            Assert-True (@($mutantBeforeResult.ineligibleReasons) -contains 'before_fresh_at_start') '移除 before_fresh_at_start reason 後仍錯誤通過。'
+        }
+        catch {
+            $beforeReverseFailure = $_.Exception.Message
+        }
+        $afterReverseFailure = $null
+        try {
+            $mutantAfterResult = Invoke-Phase9MutantAfterCalibration -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-after-mutant.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-after-mutant' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationStaleAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.ToString('o'))
+            Assert-True (@($mutantAfterResult.ineligibleReasons) -contains 'after_fresh_at_inspect') '移除 after_fresh_at_inspect reason 後仍錯誤通過。'
+        }
+        catch {
+            $afterReverseFailure = $_.Exception.Message
+        }
+        Assert-True (-not [string]::IsNullOrWhiteSpace($beforeReverseFailure) -and -not [string]::IsNullOrWhiteSpace($afterReverseFailure)) ('F-008 reverse 未暴露 reason 遺漏：before=' + [string]$beforeReverseFailure + '; after=' + [string]$afterReverseFailure)
+        $script:phase9F008ReverseEvidence = [pscustomobject]@{ before_failure = $beforeReverseFailure; after_failure = $afterReverseFailure }
+        $restoredBeforeResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-before-restored.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-before-restored' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $false -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o'))
+        $restoredAfterResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-after-restored.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-after-restored' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationStaleAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.ToString('o'))
+        Assert-True (@($restoredBeforeResult.ineligibleReasons) -contains 'before_fresh_at_start' -and @($restoredBeforeResult.ineligibleReasons) -notcontains 'after_fresh_at_inspect' -and @($restoredAfterResult.ineligibleReasons) -contains 'after_fresh_at_inspect' -and @($restoredAfterResult.ineligibleReasons) -notcontains 'before_fresh_at_start') ('F-008 reverse 後還原 production freshness reasons 不正確：before=' + (($restoredBeforeResult.ineligibleReasons) -join ',') + '; after=' + (($restoredAfterResult.ineligibleReasons) -join ','))
+        Write-Phase9Evidence -Label 'F008_NORMAL_PASS' -Value ([ordered]@{ before = $script:phase9F008BeforeEvidence; after = $script:phase9F008AfterEvidence })
+        Write-Phase9Evidence -Label 'F008_PRE_FIX_FAILURE' -Value ([ordered]@{
+                before = [ordered]@{ expected = 'ineligibleReasons contains before_fresh_at_start'; actual = $mutantBeforeResult; failure = $beforeReverseFailure; result = 'FAIL' }
+                after = [ordered]@{ expected = 'ineligibleReasons contains after_fresh_at_inspect'; actual = $mutantAfterResult; failure = $afterReverseFailure; result = 'FAIL' }
+                mutation = 'Each freshness reason was removed from the Add-CalibrationObservation mutant before the reverse invocation.'
+            })
+        Write-Phase9Evidence -Label 'F008_REVERSE_FAILURE' -Value $script:phase9F008ReverseEvidence
+        Write-Phase9Evidence -Label 'F008_RESTORED_PASS' -Value ([ordered]@{ before = $restoredBeforeResult; after = $restoredAfterResult })
+    }
+
+    function Set-Phase9DispatchInspectFixture {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [int]$SidecarExitCode
+        )
+
+        $historyPath = Join-Path $fixtureRoot '.local\ai-sessions\history'
+        $preparePath = Join-Path $historyPath 'sidecar-prepare.json'
+        $startPath = Join-Path $historyPath 'sidecar-start.json'
+        $sidecarPath = Join-Path $historyPath 'codex-exit-sidecar.json'
+        $resultPath = Join-Path $historyPath 'dispatch-result-sidecar.json'
+        $scopePath = $a.scope_plan_path
+        $capturedAt = [DateTimeOffset]::UtcNow.ToString('o')
+
+        foreach ($propertyName in @('prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_captured_at_utc', 'quota_before_freshness', 'process_exit_code_sidecar_path')) {
+            if ($null -eq $a.PSObject.Properties[$propertyName]) {
+                $a | Add-Member -MemberType NoteProperty -Name $propertyName -Value $null
+            }
+        }
+
+        Write-Utf8NoBom -Path $scopePath -Content (($calibrationScopePlan | ConvertTo-Json -Depth 20) + "`n")
+        Write-Utf8NoBom -Path $preparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'completed' } | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $startPath -Content (([ordered]@{ operation = 'Start'; status = 'started'; process_started = $true } | ConvertTo-Json -Depth 10) + "`n")
+        Write-TestEvents -Path $a.event_stream_path -Thread $a.thread_id
+        Write-Utf8NoBom -Path $a.last_message_path -Content 'design.md dispatch-a line-a'
+        Write-Utf8NoBom -Path $sidecarPath -Content (([ordered]@{
+                    schema = 'ai-sessions.dispatch-exit.v1'
+                    line_slug = 'line-a'
+                    dispatch_slug = 'dispatch-a'
+                    run_id = $a.run_id
+                    process_exit_code = $SidecarExitCode
+                    exit_code_status = 'known'
+                } | ConvertTo-Json -Depth 10) + "`n")
+        $codexHome = Join-Path $fixtureRoot 'sidecar-codex-home'
+        $rolloutDirectory = Join-Path $codexHome 'sessions\sidecar'
+        $rolloutPath = Join-Path $rolloutDirectory 'rollout-sidecar.jsonl'
+        New-Item -ItemType Directory -Path $rolloutDirectory -Force | Out-Null
+        $rolloutLines = @(
+            ([ordered]@{
+                    type = 'session_meta'
+                    payload = [ordered]@{ session_id = $a.thread_id }
+                } | ConvertTo-Json -Compress -Depth 10)
+            ([ordered]@{
+                    type = 'turn_context'
+                    timestamp = [DateTime]::UtcNow.ToString('o')
+                    payload = [ordered]@{ model = 'fixture-model'; effort = 'high' }
+                } | ConvertTo-Json -Compress -Depth 10)
+        )
+        Write-Utf8NoBom -Path $rolloutPath -Content (($rolloutLines -join "`n") + "`n")
+        $a.codex_home = $codexHome
+
+        $a.scope_plan_sha256 = Get-FileSha256 -Path $scopePath
+        $a.prepare_result_path = $preparePath
+        $a.prepare_result_sha256 = Get-FileSha256 -Path $preparePath
+        $a.prepare_status = 'completed'
+        $a.quota_before_path = $calibrationBeforePath
+        $a.quota_before_sha256 = Get-FileSha256 -Path $calibrationBeforePath
+        $a.quota_before_captured_at_utc = $capturedAt
+        $a.quota_before_freshness = 'fresh'
+        if ($null -eq $a.PSObject.Properties['process_exit_code_sidecar_path']) {
+            $a | Add-Member -MemberType NoteProperty -Name 'process_exit_code_sidecar_path' -Value $sidecarPath
+        }
+        else {
+            $a.process_exit_code_sidecar_path = $sidecarPath
+        }
+        $null = Write-DispatchRunRecord -Record $a -Update
+
+        $dispatchResult = [ordered]@{
+            schema = 'ai-sessions.dispatch-result.v1'
+            operation = 'Dispatch'
+            status = 'started'
+            line_slug = 'line-a'
+            dispatch_slug = 'dispatch-a'
+            completed_stages = @('preflight', 'before-snapshot', 'prepare', 'start')
+            failed_stage = $null
+            error_code = $null
+            process_started = $true
+            preflight_result_path = $a.preflight_result_path
+            preflight_result_sha256 = Get-FileSha256 -Path $a.preflight_result_path
+            prepare_result_path = $preparePath
+            prepare_result_sha256 = Get-FileSha256 -Path $preparePath
+            quota_before_path = $calibrationBeforePath
+            quota_before_sha256 = Get-FileSha256 -Path $calibrationBeforePath
+            start_result_path = $startPath
+            inspect_binding = [ordered]@{
+                run_record_path = $aPath
+                event_stream_path = $a.event_stream_path
+                scope_plan_path = $scopePath
+                quota_before_path = $calibrationBeforePath
+                process_exit_code_sidecar_path = $sidecarPath
+                process_exit_code = $null
+                process_exit_code_source = 'sidecar-pending'
+                sidecar_sha256 = $null
+            }
+            stage_results = [ordered]@{
+                preflight = [ordered]@{ path = $a.preflight_result_path; sha256 = (Get-FileSha256 -Path $a.preflight_result_path); status = 'completed' }
+                prepare = [ordered]@{ path = $preparePath; sha256 = (Get-FileSha256 -Path $preparePath); status = 'completed' }
+                start = [ordered]@{ path = $startPath; sha256 = (Get-FileSha256 -Path $startPath); status = 'started' }
+            }
+            result_path = $resultPath
+        }
+        $written = Write-DispatchAtomicJsonDocument -Path $resultPath -Document $dispatchResult -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -TargetPath @()
+        return [pscustomobject]@{
+            ResultPath = $written.Path
+            SidecarPath = $sidecarPath
+            CalibrationPath = (Join-Path $phase9Root '.local\ai-sessions\history\sidecar-calibration.jsonl')
+        }
+    }
+
+    function Set-Phase9DispatchInspectContext {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [int]$SidecarExitCode,
+
+            [switch]$ExplicitProcessExitCode
+        )
+
+        $fixture = Set-Phase9DispatchInspectFixture -SidecarExitCode $SidecarExitCode
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = 'dispatch-a'
+        $script:DispatchResultPath = $fixture.ResultPath
+        $script:EventStreamPath = $null
+        $script:RunRecordPath = $null
+        $script:ScopePlanPath = $null
+        $script:QuotaBeforePath = $null
+        $script:QuotaAfterPath = $calibrationAfterPath
+        $script:CalibrationPath = $fixture.CalibrationPath
+        $script:RequiredIdentifier = 'design.md'
+        $script:ErrorStreamPath = $null
+        $script:LastMessagePath = $null
+        $script:ThreadIdPath = $null
+        $script:EvidencePackPath = $null
+        $script:BudgetMonitorPath = $null
+        $script:AdvisorConsultReportPath = $null
+        $script:Profile = 'default'
+        $script:Model = 'fixture-model'
+        $script:ReasoningEffort = 'high'
+        $script:TaskType = 'script-change'
+        $script:SessionMode = 'cold-start'
+        $script:InvocationBoundParameters = [ordered]@{}
+        if ($ExplicitProcessExitCode) {
+            $script:ProcessExitCode = $SidecarExitCode + 1
+            $script:InvocationBoundParameters['ProcessExitCode'] = $script:ProcessExitCode
+        }
+        else {
+            $script:ProcessExitCode = $null
+        }
+        return $fixture
+    }
+
+    Invoke-Case 'Phase 9 F-001 Inspect pending ACL evidence cannot allow continuation' {
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
+        $inspectRecord = Read-DispatchRunRecord -Path $aPath @binding
+        $inspectRecord.sandbox_acl_baseline = [ordered]@{
+            status = 'known'
+            path = $fixtureRoot
+            fingerprint = Get-JsonSha256 -Value @()
+            entries = @()
+            explicit_entries = @()
+            captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            error = $null
+        }
+        $inspectRecord.sandbox_acl_evidence = [ordered]@{
+            capture_status = 'pending'
+            entries = @()
+            captured_at_utc = $null
+            fingerprint = $null
+            error = $null
+            normal_completion = $false
+            continuation_allowed = $false
+        }
+        $null = Write-DispatchRunRecord -Record $inspectRecord -Update
+        $null = Invoke-Inspect
+        $afterRecord = Read-DispatchRunRecord -Path $aPath @binding
+        $afterEvidence = Get-DispatchJsonProperty -Object $afterRecord -Name 'sandbox_acl_evidence'
+        Assert-True ([string](Get-DispatchJsonProperty -Object $afterEvidence -Name 'capture_status') -eq 'no_match' -and -not [bool](Get-DispatchJsonProperty -Object $afterEvidence -Name 'continuation_allowed')) ('Inspect 將 pending evidence 標記為可續行：' + ($afterEvidence | ConvertTo-Json -Depth 20 -Compress))
+        $script:phase9AclMode = 'sandbox'
+        $gate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write' -ContinuationRecord $afterRecord
+        Assert-True ($gate.status -eq 'continuation-denied' -and $gate.rejection_code -eq 'WorktreeAclContinuationDenied' -and @($gate.accepted_sandbox_entries).Count -eq 0) ('pending/no_match evidence 被 ACL gate 當成 whitelist：' + ($gate | ConvertTo-Json -Depth 20 -Compress))
+    }
+
+    Invoke-Case 'Phase 9 F-004 real Inspect forwards Start before freshness to calibration' {
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
+        $oldCapturedAt = [DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o')
+        $beforeSnapshot = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $calibrationBeforePath -Raw -Encoding UTF8)
+        $beforeSnapshot.captured_at_utc = $oldCapturedAt
+        foreach ($windowName in @('primary', 'secondary')) {
+            $observation = Get-DispatchJsonProperty -Object $beforeSnapshot.observations -Name $windowName
+            $observation.observed_at_utc = $oldCapturedAt
+        }
+        Write-Utf8NoBom -Path $calibrationBeforePath -Content (($beforeSnapshot | ConvertTo-Json -Depth 20) + "`n")
+        $inspectRecord = Read-DispatchRunRecord -Path $aPath @binding
+        $inspectRecord.quota_before_sha256 = Get-FileSha256 -Path $calibrationBeforePath
+        $inspectRecord.quota_before_captured_at_utc = $oldCapturedAt
+        $inspectRecord.quota_before_freshness = 'fresh'
+        $null = Write-DispatchRunRecord -Record $inspectRecord -Update
+
+        $fixtureCalibrationFunction = (Get-Command -Name Add-CalibrationObservation -CommandType Function -ErrorAction Stop).ScriptBlock
+        Set-Item -Path Function:\Add-CalibrationObservation -Value $phase9ProductionFunctionDefinitions['Add-CalibrationObservation']
+        try {
+            $inspectResult = Invoke-Inspect
+        }
+        finally {
+            Set-Item -Path Function:\Add-CalibrationObservation -Value $fixtureCalibrationFunction
+            $null = New-Phase8QuotaSnapshot -Path $calibrationBeforePath -PrimaryRemainingPercent 80
+        }
+        $calibrationResult = $inspectResult.calibration
+        Assert-True ([bool]$calibrationResult.calibrationEligible -and [bool]$calibrationResult.calibrationChecks.before_fresh_at_start -and [bool]$calibrationResult.calibrationChecks.snapshots_fresh) ('real Inspect 未使用 Start 保存的 before freshness：' + ($calibrationResult | ConvertTo-Json -Depth 30 -Compress))
+    }
+
+    function Invoke-Phase9AtomicRaceRound {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [scriptblock]$Writer,
+
+            [Parameter(Mandatory)]
+            [string]$SourceRoot,
+
+            [Parameter(Mandatory)]
+            [string]$ResultPath,
+
+            [Parameter(Mandatory)]
+            [psobject]$FirstDocument,
+
+            [Parameter(Mandatory)]
+            [string]$ExpectedSha256,
+
+            [Parameter(Mandatory)]
+            [string]$SecondDocumentPath,
+
+            [Parameter(Mandatory)]
+            [string]$WorkerPath,
+
+            [Parameter(Mandatory)]
+            [string]$Label
+        )
+
+        $readyPath = Join-Path $phase9Root ('atomic-' + $Label + '-ready.txt')
+        $acquiredPath = Join-Path $phase9Root ('atomic-' + $Label + '-acquired.txt')
+        $readPath = Join-Path $phase9Root ('atomic-' + $Label + '-read.txt')
+        $outcomePath = Join-Path $phase9Root ('atomic-' + $Label + '-outcome.json')
+        $script:phase9AtomicSourceRoot = $SourceRoot
+        $script:phase9AtomicResultPath = $ResultPath
+        $script:phase9AtomicExpectedSha256 = $ExpectedSha256
+        $script:phase9AtomicSecondDocumentPath = $SecondDocumentPath
+        $script:phase9AtomicWorkerPath = $WorkerPath
+        $script:phase9AtomicReadyPath = $readyPath
+        $script:phase9AtomicAcquiredPath = $acquiredPath
+        $script:phase9AtomicReadPath = $readPath
+        $script:phase9AtomicOutcomePath = $outcomePath
+        $script:phase9AtomicSecondProcess = $null
+        $script:phase9AtomicWaitForWorkerAcquired = $Label -eq 'reverse'
+        $script:phase9AtomicWaitForWorkerRead = $Label -eq 'reverse'
+        $script:phase9AtomicAfterCasHook = {
+            $workerArguments = @(
+                '-NoProfile'
+                '-File'
+                $script:phase9AtomicWorkerPath
+                '-ResultPath'
+                $script:phase9AtomicResultPath
+                '-ExpectedSha256'
+                $script:phase9AtomicExpectedSha256
+                '-DocumentPath'
+                $script:phase9AtomicSecondDocumentPath
+                '-ReadyPath'
+                $script:phase9AtomicReadyPath
+                '-AcquiredPath'
+                $script:phase9AtomicAcquiredPath
+                '-ReadPath'
+                $script:phase9AtomicReadPath
+                '-OutcomePath'
+                $script:phase9AtomicOutcomePath
+            )
+            $workerArgumentText = ($workerArguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
+            $secondProcess = New-Object System.Diagnostics.Process
+            $secondStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+            $secondStartInfo.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
+            $secondStartInfo.Arguments = $workerArgumentText
+            $secondStartInfo.WorkingDirectory = $root
+            $secondStartInfo.UseShellExecute = $false
+            $secondStartInfo.CreateNoWindow = $true
+            $secondProcess.StartInfo = $secondStartInfo
+            $script:phase9AtomicSecondProcess = $secondProcess
+            if (-not $secondProcess.Start()) {
+                throw 'cooperative second writer Process.Start() 回傳 false。'
+            }
+            $readyDeadline = [DateTime]::UtcNow.AddSeconds(5)
+            while (-not (Test-Path -LiteralPath $script:phase9AtomicReadyPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readyDeadline) {
+                Start-Sleep -Milliseconds 25
+            }
+            if (-not (Test-Path -LiteralPath $script:phase9AtomicReadyPath -PathType Leaf)) {
+                throw 'cooperative second writer 未抵達 lock 等待點。'
+            }
+            if ($script:phase9AtomicWaitForWorkerAcquired) {
+                $acquiredDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                while (-not (Test-Path -LiteralPath $script:phase9AtomicAcquiredPath -PathType Leaf) -and [DateTime]::UtcNow -lt $acquiredDeadline) {
+                    Start-Sleep -Milliseconds 25
+                }
+                if (-not (Test-Path -LiteralPath $script:phase9AtomicAcquiredPath -PathType Leaf)) {
+                    throw 'cooperative second writer 未取得 shared lock。'
+                }
+            }
+            if ($script:phase9AtomicWaitForWorkerRead) {
+                $readDeadline = [DateTime]::UtcNow.AddSeconds(5)
+                while (-not (Test-Path -LiteralPath $script:phase9AtomicReadPath -PathType Leaf) -and [DateTime]::UtcNow -lt $readDeadline) {
+                    Start-Sleep -Milliseconds 25
+                }
+                if (-not (Test-Path -LiteralPath $script:phase9AtomicReadPath -PathType Leaf)) {
+                    throw 'cooperative second writer 未回報已重讀結果檔。'
+                }
+            }
+        }
+        $writerOutput = $null
+        $writerError = $null
+        try {
+            $writerOutput = & $Writer -Path $ResultPath -Document $FirstDocument -SourceRoot $SourceRoot -ExecutionRoot $SourceRoot -TargetPath @() -ExpectedExistingSha256 $ExpectedSha256
+        }
+        catch {
+            $writerError = $_.Exception.Message
+        }
+        finally {
+            $script:phase9AtomicAfterCasHook = $null
+            $script:phase9AtomicWaitForWorkerAcquired = $false
+            $script:phase9AtomicWaitForWorkerRead = $false
+            if ($null -ne $script:phase9AtomicSecondProcess) {
+                $null = $script:phase9AtomicSecondProcess.WaitForExit(10000)
+            }
+        }
+        $workerExitCode = $null
+        if ($null -ne $script:phase9AtomicSecondProcess) {
+            $workerExitCode = $script:phase9AtomicSecondProcess.ExitCode
+            $script:phase9AtomicSecondProcess.Dispose()
+        }
+        $workerOutcome = $null
+        if (Test-Path -LiteralPath $outcomePath -PathType Leaf) {
+            $workerOutcome = Get-Content -LiteralPath $outcomePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        $finalDocument = if (Test-Path -LiteralPath $ResultPath -PathType Leaf) { Get-Content -LiteralPath $ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+        return [pscustomobject]@{
+            label = $Label
+            result_path = $ResultPath
+            expected_sha256 = $ExpectedSha256
+            writer_output = $writerOutput
+            writer_error = $writerError
+            worker_exit_code = $workerExitCode
+            worker_outcome = $workerOutcome
+            final_document = $finalDocument
+            ready_path = $readyPath
+            acquired_path = $acquiredPath
+            read_path = $readPath
+            outcome_path = $outcomePath
+        }
+    }
+
+    Invoke-Case 'Phase 9 F-006 cooperative result writer lock rejects stale replacement' {
+        $workerPath = Join-Path $phase9Root 'atomic-cooperative-writer.ps1'
+        $workerScript = @'
+#Requires -Version 5.1
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$ResultPath,
+    [Parameter(Mandatory)][string]$ExpectedSha256,
+    [Parameter(Mandatory)][string]$DocumentPath,
+    [Parameter(Mandatory)][string]$ReadyPath,
+    [Parameter(Mandatory)][string]$AcquiredPath,
+    [Parameter(Mandatory)][string]$ReadPath,
+    [Parameter(Mandatory)][string]$OutcomePath
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+$normalizedResultPath = [IO.Path]::GetFullPath($ResultPath)
+if ([IO.Path]::DirectorySeparatorChar -eq '\') {
+    $normalizedResultPath = $normalizedResultPath.ToUpperInvariant()
+}
+$lockSha256 = [Security.Cryptography.SHA256]::Create()
+try {
+    $lockIdentity = ([BitConverter]::ToString(
+            $lockSha256.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalizedResultPath)))).Replace('-', '').ToLowerInvariant()
+}
+finally {
+    $lockSha256.Dispose()
+}
+$lockRoot = Join-Path ([IO.Path]::GetTempPath()) 'codex-dispatch-result-locks'
+New-Item -ItemType Directory -Path $lockRoot -Force | Out-Null
+$lockPath = Join-Path $lockRoot ('.dispatch-' + $lockIdentity + '.lock')
+$lock = $null
+$temporaryPath = $null
+function Get-Phase9FileSha256 {
+    param([Parameter(Mandatory)][string]$Path)
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $sha.Dispose()
+    }
+}
+try {
+    [IO.File]::WriteAllText($ReadyPath, 'ready', $utf8)
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    while ($null -eq $lock -and [DateTime]::UtcNow -lt $deadline) {
+        try {
+            $lock = [IO.File]::Open($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        }
+        catch [IO.IOException] {
+            Start-Sleep -Milliseconds 25
+        }
+    }
+    if ($null -eq $lock) {
+        throw 'cooperative second writer lock timeout'
+    }
+    [IO.File]::WriteAllText($AcquiredPath, 'acquired', $utf8)
+    $actualSha256 = Get-Phase9FileSha256 -Path $ResultPath
+    [IO.File]::WriteAllText($ReadPath, 'read', $utf8)
+    if (-not [string]::Equals($ExpectedSha256, $actualSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        [IO.File]::WriteAllText($OutcomePath, (([ordered]@{ status = 'conflict'; expected_sha256 = $ExpectedSha256; actual_sha256 = $actualSha256; path = $ResultPath } | ConvertTo-Json -Compress) + "`n"), $utf8)
+        exit 2
+    }
+    $document = [IO.File]::ReadAllText($DocumentPath, $utf8) | ConvertFrom-Json
+    $temporaryPath = Join-Path (Split-Path -Parent $ResultPath) ([guid]::NewGuid().ToString('D') + '.cooperative.tmp')
+    [IO.File]::WriteAllText($temporaryPath, (($document | ConvertTo-Json -Depth 40) + "`n"), $utf8)
+    if ([IO.File]::Exists($ResultPath)) {
+        [IO.File]::Replace($temporaryPath, $ResultPath, [Management.Automation.Language.NullString]::Value)
+    }
+    else {
+        [IO.File]::Move($temporaryPath, $ResultPath)
+    }
+    [IO.File]::WriteAllText($OutcomePath, (([ordered]@{ status = 'committed'; path = $ResultPath } | ConvertTo-Json -Compress) + "`n"), $utf8)
+    exit 0
+}
+catch {
+    [IO.File]::WriteAllText($OutcomePath, (([ordered]@{ status = 'error'; error = $_.Exception.Message; path = $ResultPath } | ConvertTo-Json -Compress) + "`n"), $utf8)
+    exit 1
+}
+finally {
+    if ($null -ne $temporaryPath -and [IO.File]::Exists($temporaryPath)) {
+        [IO.File]::Delete($temporaryPath)
+    }
+    if ($null -ne $lock) {
+        $lock.Dispose()
+    }
+}
+'@
+        Write-Utf8NoBom -Path $workerPath -Content $workerScript
+        $resultPath = Join-Path $phase9Root '.local\ai-sessions\history\f006-cooperative-result.json'
+        $baseDocument = [ordered]@{ schema = 'fixture.dispatch-result.v1'; version = 'base'; marker = 'initial-result' }
+        $firstDocument = [ordered]@{ schema = 'fixture.dispatch-result.v1'; version = 'first'; marker = 'first-writer' }
+        $secondDocument = [ordered]@{ schema = 'fixture.dispatch-result.v1'; version = 'second'; marker = 'second-writer' }
+        $secondDocumentPath = Join-Path $phase9Root 'f006-second-document.json'
+        Write-Utf8NoBom -Path $secondDocumentPath -Content (($secondDocument | ConvertTo-Json -Depth 20) + "`n")
+        $null = Invoke-Phase9ProductionAtomicWriter -Path $resultPath -Document $baseDocument -SourceRoot $phase9Root -ExecutionRoot $phase9Root -TargetPath @()
+        $expectedSha256 = Get-FileSha256 -Path $resultPath
+        $productionWriter = (Get-Command -Name Invoke-Phase9ProductionAtomicWriter -CommandType Function -ErrorAction Stop).ScriptBlock
+        $normalRound = Invoke-Phase9AtomicRaceRound -Writer $productionWriter -SourceRoot $phase9Root -ResultPath $resultPath -FirstDocument $firstDocument -ExpectedSha256 $expectedSha256 -SecondDocumentPath $secondDocumentPath -WorkerPath $workerPath -Label 'normal'
+        Assert-True ($null -eq $normalRound.writer_error -and $normalRound.worker_exit_code -eq 2 -and $normalRound.worker_outcome.status -eq 'conflict') ('cooperative writer 未在 lock 內觀測衝突：' + ($normalRound | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ($normalRound.final_document.version -eq 'first' -and $normalRound.final_document.marker -eq 'first-writer') ('cooperative writer 改寫了第一 writer 的結果：' + ($normalRound.final_document | ConvertTo-Json -Depth 20 -Compress))
+
+        $null = Invoke-Phase9ProductionAtomicWriter -Path $resultPath -Document $baseDocument -SourceRoot $phase9Root -ExecutionRoot $phase9Root -TargetPath @()
+        $reverseExpectedSha256 = Get-FileSha256 -Path $resultPath
+        $mutantWriter = (Get-Command -Name Invoke-Phase9MutantAtomicWriter -CommandType Function -ErrorAction Stop).ScriptBlock
+        $reverseRound = Invoke-Phase9AtomicRaceRound -Writer $mutantWriter -SourceRoot $phase9Root -ResultPath $resultPath -FirstDocument $firstDocument -ExpectedSha256 $reverseExpectedSha256 -SecondDocumentPath $secondDocumentPath -WorkerPath $workerPath -Label 'reverse'
+        $reverseValidationFailure = $null
+        try {
+            Assert-True ($reverseRound.worker_exit_code -eq 2 -and $reverseRound.worker_outcome.status -eq 'conflict') '移除 shared lock 後仍錯誤宣稱 cooperative conflict。'
+        }
+        catch {
+            $reverseValidationFailure = $_.Exception.Message
+        }
+        Assert-True ($null -ne $reverseValidationFailure -and $reverseRound.worker_outcome.status -eq 'committed') ('移除 shared lock 的 reverse 未暴露 stale overwrite：' + ($reverseRound | ConvertTo-Json -Depth 20 -Compress))
+
+        $null = Invoke-Phase9ProductionAtomicWriter -Path $resultPath -Document $baseDocument -SourceRoot $phase9Root -ExecutionRoot $phase9Root -TargetPath @()
+        $restoredExpectedSha256 = Get-FileSha256 -Path $resultPath
+        $restoredRound = Invoke-Phase9AtomicRaceRound -Writer $productionWriter -SourceRoot $phase9Root -ResultPath $resultPath -FirstDocument $firstDocument -ExpectedSha256 $restoredExpectedSha256 -SecondDocumentPath $secondDocumentPath -WorkerPath $workerPath -Label 'restored'
+        Assert-True ($null -eq $restoredRound.writer_error -and $restoredRound.worker_exit_code -eq 2 -and $restoredRound.worker_outcome.status -eq 'conflict') ('還原 shared lock 後未恢復衝突拒絕：' + ($restoredRound | ConvertTo-Json -Depth 20 -Compress))
+        $script:phase9F006RaceEvidence = [pscustomobject]@{ normal = $normalRound; reverse = $reverseRound; reverse_validation_failure = $reverseValidationFailure; restored = $restoredRound }
+        Write-Phase9Evidence -Label 'F006_NORMAL_PASS' -Value $normalRound
+        Write-Phase9Evidence -Label 'F006_REVERSE_FAILURE' -Value ([ordered]@{ status = 'failed'; validation_failure = $reverseValidationFailure; round = $reverseRound })
+        Write-Phase9Evidence -Label 'F006_RESTORED_PASS' -Value $restoredRound
+    }
+
+    function Align-Phase9CalibrationResetWindow {
+        $beforeSnapshot = Get-Content -LiteralPath $calibrationBeforePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $afterSnapshot = Get-Content -LiteralPath $calibrationAfterPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        foreach ($windowName in @('primary', 'secondary')) {
+            $resetAt = [int64](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $afterSnapshot -Name $windowName) -Name 'resets_at')
+            (Get-DispatchJsonProperty -Object $beforeSnapshot -Name $windowName).resets_at = $resetAt
+            (Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $beforeSnapshot -Name 'values') -Name $windowName).resets_at = $resetAt
+            (Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $beforeSnapshot -Name 'observations') -Name $windowName).resets_at = $resetAt
+        }
+        Write-Utf8NoBom -Path $calibrationBeforePath -Content (($beforeSnapshot | ConvertTo-Json -Depth 20) + "`n")
+    }
+
+    Invoke-Case 'Phase 9 P3 Dispatch exit sidecar supplies ProcessExitCode' {
+        Align-Phase9CalibrationResetWindow
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
+        $inspectResult = Invoke-Inspect
+        $dispatchDocument = Get-Content -LiteralPath $fixture.ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($inspectResult.success -and $inspectResult.processExitCode -eq 0 -and $inspectResult.dispatchResultPath -eq $fixture.ResultPath) 'sidecar 未提供有效的 ProcessExitCode 給 Inspect。'
+        Assert-True ($dispatchDocument.inspect_binding.process_exit_code -eq 0 -and $dispatchDocument.inspect_binding.process_exit_code_source -eq 'sidecar' -and $dispatchDocument.inspect_binding.sidecar_sha256 -match '^[a-f0-9]{64}$') 'Inspect 未持久化 sidecar binding。'
+        Assert-True ($inspectResult.calibration.calibrationEligible -and (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf)) ('sidecar 正常結束未產生 eligible calibration observation：' + ($inspectResult.calibration | ConvertTo-Json -Depth 20 -Compress))
+    }
+
+    Invoke-Case 'Phase 9 P3 Dispatch exit sidecar mismatch stops Inspect' {
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0 -ExplicitProcessExitCode
+        $beforeHash = Get-FileSha256 -Path $fixture.ResultPath
+        $beforeCalibrationCount = if (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf) { @(Get-Content -LiteralPath $fixture.CalibrationPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count } else { 0 }
+        $caught = $null
+        try {
+            $null = Invoke-Inspect
+        }
+        catch {
+            $caught = $_.Exception
+        }
+        $operationResult = if ($null -eq $caught) { $null } else { $caught.Data['operationResult'] }
+        $afterCalibrationCount = if (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf) { @(Get-Content -LiteralPath $fixture.CalibrationPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count } else { 0 }
+        Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'DispatchExitCodeMismatch') 'sidecar 與顯式 ProcessExitCode 不一致未回傳結構化錯誤。'
+        Assert-True ((Get-FileSha256 -Path $fixture.ResultPath) -eq $beforeHash -and $afterCalibrationCount -eq $beforeCalibrationCount) 'mismatch 不應更新 Dispatch binding 或 calibration observation。'
+    }
+
+    Invoke-Case 'Phase 9 P3 Dispatch nonzero exit sidecar is preserved' {
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 9
+        $inspectResult = Invoke-Inspect
+        $dispatchDocument = Get-Content -LiteralPath $fixture.ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True (-not $inspectResult.success -and $inspectResult.processExitCode -eq 9 -and $dispatchDocument.inspect_binding.process_exit_code -eq 9) '非零 sidecar 結束碼未保留。'
+        Assert-True (-not $inspectResult.calibration.calibrationEligible -and -not $inspectResult.calibration.calibrationChecks.execution_completed) '非零 sidecar 未標記 execution_completed=false。'
+    }
+
+    Invoke-Case 'Phase 9 P3 Dispatch exit sidecar unavailable stops Inspect' {
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
+        Write-Utf8NoBom -Path $fixture.SidecarPath -Content '{"schema":"ai-sessions.dispatch-exit.v1","exit_code_status":"pending"}'
+        $caught = $null
+        try {
+            $null = Invoke-Inspect
+        }
+        catch {
+            $caught = $_.Exception
+        }
+        $operationResult = if ($null -eq $caught) { $null } else { $caught.Data['operationResult'] }
+        Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'DispatchExitCodeUnavailable') 'sidecar 缺失或未完成時未回傳 unavailable。'
     }
 }
 
