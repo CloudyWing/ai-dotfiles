@@ -17,7 +17,10 @@ param(
     [string]$ProbeWhitespace,
 
     [AllowEmptyString()]
-    [string]$ProbeText
+    [string]$ProbeText,
+
+    [AllowEmptyString()]
+    [string]$FixtureBaseRootPath
 )
 
 Set-StrictMode -Version Latest
@@ -248,7 +251,11 @@ function Invoke-TestChildProcess {
 
         [Parameter(Mandatory)]
         [AllowEmptyString()]
-        [string]$TextValue
+        [string]$TextValue,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$FixtureBaseRootPath
     )
 
     $arguments = @(
@@ -267,6 +274,12 @@ function Invoke-TestChildProcess {
         '-ProbeText'
         $TextValue
     )
+    if (-not [string]::IsNullOrWhiteSpace($FixtureBaseRootPath)) {
+        $arguments += @(
+            '-FixtureBaseRootPath'
+            $FixtureBaseRootPath
+        )
+    }
     $argumentText = ($arguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
     $commandText = $HostPath + ' ' + $argumentText
     $start = [DateTimeOffset]::UtcNow
@@ -418,7 +431,7 @@ if (-not $Child) {
             continue
         }
         $hostPath = if (-not [string]::IsNullOrWhiteSpace($command.Source)) { $command.Source } else { $command.Path }
-        $childResult = Invoke-TestChildProcess -HostPath $hostPath -HostLabel $hostDefinition.Label -PhaseNumber $Phase -ScriptPath $scriptPathValue -DateValue $probeDateValue -EmptyValue $probeEmptyValue -WhitespaceValue $probeWhitespaceValue -TextValue $probeTextValue
+        $childResult = Invoke-TestChildProcess -HostPath $hostPath -HostLabel $hostDefinition.Label -PhaseNumber $Phase -ScriptPath $scriptPathValue -DateValue $probeDateValue -EmptyValue $probeEmptyValue -WhitespaceValue $probeWhitespaceValue -TextValue $probeTextValue -FixtureBaseRootPath $FixtureBaseRootPath
         $aggregateResults.Add($childResult)
         $summary = Test-ChildSummary -ChildResult $childResult -ExpectedDate $probeDateValue -ExpectedEmpty $probeEmptyValue -ExpectedWhitespace $probeWhitespaceValue -ExpectedText $probeTextValue
         $childResult | Add-Member NoteProperty summary_valid $summary.valid
@@ -470,7 +483,14 @@ if (-not $Child) {
     exit 0
 }
 
-$fixtureRoot = Join-Path $root ('.local/ai-sessions/scratch/r-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+$fixtureBaseRoot = $root
+if (-not [string]::IsNullOrWhiteSpace($FixtureBaseRootPath)) {
+    if (-not (Test-Path -LiteralPath $FixtureBaseRootPath -PathType Container)) {
+        throw ('指定的 fixture root 不存在：' + $FixtureBaseRootPath)
+    }
+    $fixtureBaseRoot = [IO.Path]::GetFullPath($FixtureBaseRootPath)
+}
+$fixtureRoot = Join-Path $fixtureBaseRoot ('.local/ai-sessions/scratch/r-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 $script:caseCount = 0
 $script:failures = 0
@@ -582,6 +602,15 @@ $script:quotaProbeCaptureArguments = $false
 $script:quotaProbeCapturedArguments = @()
 $script:quotaProbeCodexHome = $null
 $script:quotaProbeStartCalls = 0
+$script:profileIsolationProbe = $false
+$script:profileIsolationCapturedArguments = @()
+$script:profileIsolationCodexHome = $null
+$script:profileIsolationRolloutPath = $null
+$script:profileIsolationSelectedProfile = $null
+$script:profileIsolationSelectedConfigPath = $null
+$script:profileIsolationSelectedModel = $null
+$script:profileIsolationSelectedEffort = $null
+$script:profileIsolationLauncherPath = $null
 $script:InvocationBoundParameters = [ordered]@{}
 $script:RequestContext = $null
 $script:RequestPrepareArtifacts = @()
@@ -660,6 +689,16 @@ function New-DispatchPrompt {
 }
 function New-CodexLauncher {
     param($CodexExecutable, $CodexArguments, $PromptPath, $EventPath, $ErrorPath, $HistoryRoot, $LauncherPath, $ExitSidecarPath, $LineSlug, $DispatchSlug, $RunId)
+    if ($script:profileIsolationProbe) {
+        $script:profileIsolationCapturedArguments = @($CodexArguments)
+        $script:profileIsolationLauncherPath = $LauncherPath
+        Write-Utf8NoBom -Path $ErrorPath -Content ''
+        Write-Utf8NoBom -Path $LauncherPath -Content 'fixture launcher'
+        $lastMessageIndex = [Array]::IndexOf([string[]]$CodexArguments, '--output-last-message')
+        if ($lastMessageIndex -ge 0 -and $lastMessageIndex + 1 -lt @($CodexArguments).Count) {
+            Write-Utf8NoBom -Path $CodexArguments[$lastMessageIndex + 1] -Content 'default profile isolation fixture'
+        }
+    }
     if ($script:quotaProbeCaptureArguments) {
         $script:quotaProbeCapturedArguments = @($CodexArguments)
         $script:quotaProbeEventPath = $EventPath
@@ -689,6 +728,28 @@ function New-ProcessStartInfo { return [pscustomobject]@{ EnvironmentVariables =
 function New-TestProcess {
     $process = [pscustomobject]@{ StartInfo = $null; Id = 123; HasExited = $true; ExitCode = 0 }
     $process | Add-Member ScriptMethod Start {
+        if ($script:profileIsolationProbe) {
+            $actualArguments = @($script:profileIsolationCapturedArguments | ForEach-Object { [string]$_ })
+            $profileIndex = [Array]::IndexOf([string[]]$actualArguments, '--profile')
+            Assert-True ($profileIndex -ge 0 -and $profileIndex + 1 -lt $actualArguments.Count) 'profile isolation fixture 未從實際 launcher 引數取得 --profile。'
+            $selectedProfile = $actualArguments[$profileIndex + 1]
+            $selectedConfigPath = Resolve-ProfileConfigPath -CodexHome $script:profileIsolationCodexHome -Profile $selectedProfile
+            Assert-True (-not [string]::IsNullOrWhiteSpace($selectedConfigPath)) 'profile isolation fixture 無法依實際 CodexHome 與 profile 解析設定檔。'
+            $selectedEvidence = Read-ProfileModelEvidence -ConfigPath $selectedConfigPath -Profile $selectedProfile
+            $selectedModel = [string](Get-DispatchEvidenceValue -Evidence $selectedEvidence.model)
+            $selectedEffort = [string](Get-DispatchEvidenceValue -Evidence $selectedEvidence.reasoning_effort)
+            Assert-True (-not [string]::IsNullOrWhiteSpace($selectedModel) -and -not [string]::IsNullOrWhiteSpace($selectedEffort)) 'profile isolation fixture 無法從實際選用的設定檔取得 model 與 reasoning effort。'
+            $script:profileIsolationSelectedProfile = $selectedProfile
+            $script:profileIsolationSelectedConfigPath = $selectedConfigPath
+            $script:profileIsolationSelectedModel = $selectedModel
+            $script:profileIsolationSelectedEffort = $selectedEffort
+            $rolloutLines = @(
+                ([ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = $script:testThread } } | ConvertTo-Json -Compress -Depth 10)
+                ([ordered]@{ type = 'turn_context'; timestamp = [DateTimeOffset]::UtcNow.AddSeconds(1).ToString('o'); payload = [ordered]@{ model = $selectedModel; effort = $selectedEffort } } | ConvertTo-Json -Compress -Depth 10)
+            )
+            Write-Utf8NoBom -Path $script:profileIsolationRolloutPath -Content (($rolloutLines -join "`r`n") + "`r`n")
+            return $true
+        }
         if ($script:quotaProbeCaptureArguments) {
             $script:quotaProbeStartCalls++
             return $true
@@ -1235,7 +1296,7 @@ $LineSlug = 'line-a'
 $DispatchSlug = 'dispatch-a'
 $startCodexHome = Join-Path $fixtureRoot 'start-codex-home'
 New-Item -ItemType Directory -Path $startCodexHome -Force | Out-Null
-Write-Utf8NoBom (Join-Path $startCodexHome 'config.toml') "model = 'fixture-model'
+Write-Utf8NoBom (Join-Path $startCodexHome 'default.config.toml') "model = 'fixture-model'
 model_reasoning_effort = 'high'
 "
 $CodexHome = $startCodexHome
@@ -1262,7 +1323,7 @@ if ($Phase -ge 2) {
     $profileFixtureRoot = Join-Path $fixtureRoot 'profile-evidence'
     $profileSessionsRoot = Join-Path $profileFixtureRoot 'sessions/2026/09/14'
     New-Item -ItemType Directory -Path $profileSessionsRoot -Force | Out-Null
-    $defaultProfilePath = Join-Path $profileFixtureRoot 'config.toml'
+    $defaultProfilePath = Join-Path $profileFixtureRoot 'default.config.toml'
     Write-Utf8NoBom -Path $defaultProfilePath -Content ((@(
         'model = "fixture-model"'
         'model_reasoning_effort = "high"'
@@ -1751,7 +1812,7 @@ if ($Phase -ge 3) {
     $phase3MismatchAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-model-mismatch'
     $phase3MismatchHome = Join-Path $fixtureRoot 'phase3-mismatch-home'
     New-Item -ItemType Directory -Path $phase3MismatchHome -Force | Out-Null
-    Write-Utf8NoBom -Path (Join-Path $phase3MismatchHome 'config.toml') -Content "model = 'other-model'
+    Write-Utf8NoBom -Path (Join-Path $phase3MismatchHome 'default.config.toml') -Content "model = 'other-model'
 model_reasoning_effort = 'high'
 "
     Invoke-Case 'Resume model mismatch 在 process.Start 前阻擋' {
@@ -1781,7 +1842,7 @@ model_reasoning_effort = 'high'
 
     $phase3ProfileAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-profile-change'
     $phase3ProfileHome = Join-Path $fixtureRoot 'phase3-profile-change-home'
-    $phase3ProfileConfigPath = Join-Path $phase3ProfileHome 'config.toml'
+    $phase3ProfileConfigPath = Join-Path $phase3ProfileHome 'default.config.toml'
     New-Item -ItemType Directory -Path $phase3ProfileHome -Force | Out-Null
     $phase3ProfileConfigContent = "model = 'fixture-model'
 model_reasoning_effort = 'high'
@@ -4095,6 +4156,7 @@ if ($Phase -ge 8) {
             ' legacy_profile_name = $legacyProfileName;' +
             ' legacy_profile_path = $legacyProfilePath;' +
             ' codex_config_path = $codexConfigPath;' +
+            ' default_profile_path = $defaultProfilePath;' +
             ' advisor_profile_path = $advisorProfilePath' +
             '};' +
             '$profileCheckResult'
@@ -4111,6 +4173,7 @@ if ($Phase -ge 8) {
             legacy_profile_name = [string]$profileResult[0].legacy_profile_name
             legacy_profile_path = [string]$profileResult[0].legacy_profile_path
             codex_config_path = [string]$profileResult[0].codex_config_path
+            default_profile_path = [string]$profileResult[0].default_profile_path
             advisor_profile_path = [string]$profileResult[0].advisor_profile_path
             host_messages = @($hostMessages.ToArray())
             warning_messages = @($warningMessages.ToArray())
@@ -4276,11 +4339,11 @@ if ($Phase -ge 8) {
         $warningOutput = @($missing.warning_messages) -join [Environment]::NewLine
         $hostOutput = @($missing.host_messages) -join [Environment]::NewLine
         Assert-True ((Test-Path -LiteralPath $artifacts.quota_snapshot_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.evidence_pack_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.final_message_path -PathType Leaf)) 'F-009 fixture 未實際寫入 quota snapshot、evidence pack 或 final message。'
-        Assert-True (@($missing.missing_profiles) -contains 'config.toml' -and $warningOutput.Contains('config.toml')) ('缺少 config.toml 未列入 missingProfiles。warnings=' + $warningOutput)
-        Assert-True (-not $hostOutput.Contains($successMessage)) ('缺少 config.toml 仍輸出雙檔成功訊息。host=' + $hostOutput)
+        Assert-True (@($missing.missing_profiles) -contains 'default.config.toml' -and $warningOutput.Contains('default.config.toml')) ('缺少 default.config.toml 未列入 missingProfiles。warnings=' + $warningOutput)
+        Assert-True (-not $hostOutput.Contains($successMessage)) ('缺少 default.config.toml 仍輸出雙檔成功訊息。host=' + $hostOutput)
 
-        $configPath = Join-Path $caseRoot 'config.toml'
-        Write-Utf8NoBom -Path $configPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        $defaultPath = Join-Path $caseRoot 'default.config.toml'
+        Write-Utf8NoBom -Path $defaultPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
         $complete = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
         $completeHostOutput = @($complete.host_messages) -join [Environment]::NewLine
         Assert-True (@($complete.missing_profiles).Count -eq 0 -and $completeHostOutput.Contains($successMessage)) ('兩個設定檔都存在時未輸出成功訊息。host=' + $completeHostOutput)
@@ -4354,11 +4417,13 @@ if ($Phase -ge 8) {
         $caseRoot = Join-Path $phase8Root 'f013-legacy-profile'
         $artifacts = New-Phase8RegressionArtifacts -CaseRoot $caseRoot -DispatchSlug 'phase8-f013-legacy-profile'
         $configPath = Join-Path $caseRoot 'config.toml'
+        $defaultPath = Join-Path $caseRoot 'default.config.toml'
         $advisorPath = Join-Path $caseRoot 'advisor.config.toml'
         $legacyName = 'deep' + '.config.toml'
         $legacyPath = Join-Path $caseRoot $legacyName
         $profileContent = "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
         Write-Utf8NoBom -Path $configPath -Content $profileContent
+        Write-Utf8NoBom -Path $defaultPath -Content $profileContent
         Write-Utf8NoBom -Path $legacyPath -Content $profileContent
 
         $renameGuidance = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
@@ -4693,8 +4758,14 @@ if ($Phase -ge 8) {
             $QuotaBeforePath = $previousValues.QuotaBeforePath
         }
         $recovery = Get-Content -LiteralPath $probeResult.recoveryRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        Assert-True ($probeResult.success -and $probeResult.processStarted -and $script:quotaProbeStartCalls -eq 1 -and @($probeResult.codexArguments) -notcontains '--profile' -and $probeResult.requested_profile -eq 'advisor' -and $probeResult.effective_profile -eq 'default') ('F-017 Start result 或 codex arguments 不符：' + ($probeResult | ConvertTo-Json -Depth 16 -Compress))
-        Assert-True ($recovery.requested_profile -eq 'advisor' -and $recovery.effective_profile -eq 'default' -and @($recovery.probeEvidence.codexArguments) -notcontains '--profile' -and (Test-Path -LiteralPath $script:quotaProbeEventPath -PathType Leaf) -and (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) 'F-017 recovery record、event stream 或 quota snapshot 未保存 requested/effective profile。'
+        $probeArguments = @($probeResult.codexArguments | ForEach-Object { [string]$_ })
+        $probeProfileIndex = [Array]::IndexOf([string[]]$probeArguments, '--profile')
+        $probeProfileArgumentValid = $probeProfileIndex -ge 0 -and $probeProfileIndex + 1 -lt $probeArguments.Count -and $probeArguments[$probeProfileIndex + 1] -ceq 'default'
+        Assert-True ($probeResult.success -and $probeResult.processStarted -and $script:quotaProbeStartCalls -eq 1 -and $probeProfileArgumentValid -and $probeResult.requested_profile -eq 'advisor' -and $probeResult.effective_profile -eq 'default') ('F-017 Start result 或 codex arguments 不符：' + ($probeResult | ConvertTo-Json -Depth 16 -Compress))
+        $recoveryArguments = @($recovery.probeEvidence.codexArguments | ForEach-Object { [string]$_ })
+        $recoveryProfileIndex = [Array]::IndexOf([string[]]$recoveryArguments, '--profile')
+        $recoveryProfileArgumentValid = $recoveryProfileIndex -ge 0 -and $recoveryProfileIndex + 1 -lt $recoveryArguments.Count -and $recoveryArguments[$recoveryProfileIndex + 1] -ceq 'default'
+        Assert-True ($recovery.requested_profile -eq 'advisor' -and $recovery.effective_profile -eq 'default' -and $recoveryProfileArgumentValid -and (Test-Path -LiteralPath $script:quotaProbeEventPath -PathType Leaf) -and (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) 'F-017 recovery record、event stream 或 quota snapshot 未保存 requested/effective profile。'
     }
 
     Invoke-Case 'Phase 8 A4 payload.type 結構化錯誤事件仍可判定' {
@@ -4867,6 +4938,422 @@ if ($Phase -ge 9) {
     New-Item -ItemType Directory -Path $phase9Root -Force | Out-Null
     $sRealDispatchParent = Split-Path -Parent $fixtureRoot
 
+    $invokeDefaultProfileIsolationStart = {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$CaseRoot,
+            [Parameter(Mandatory)][string]$RunName,
+            [Parameter(Mandatory)][string]$DefaultModel,
+            [Parameter(Mandatory)][string]$DefaultEffort,
+            [Parameter(Mandatory)][string]$ApplicationModel,
+            [Parameter(Mandatory)][string]$ApplicationEffort
+        )
+
+        $codexHome = Join-Path $CaseRoot 'codex-home'
+        $sessionsRoot = Join-Path $codexHome 'sessions'
+        $historyRoot = Join-Path $CaseRoot '.local\ai-sessions\history'
+        $lineRoot = Join-Path $CaseRoot '.local\ai-sessions\handoff\line-a'
+        $promptPath = Join-Path $CaseRoot ($RunName + '-prompt.md')
+        $preflightPath = Join-Path $CaseRoot ($RunName + '-preflight.json')
+        $quotaPath = Join-Path $CaseRoot ($RunName + '-quota-before.json')
+        $scopePlanPath = Join-Path $historyRoot ($RunName + '-scope-plan.json')
+        $defaultConfigPath = Join-Path $codexHome 'default.config.toml'
+        $applicationConfigPath = Join-Path $codexHome 'config.toml'
+        $rolloutPath = Join-Path $sessionsRoot ('rollout-' + $RunName + '.jsonl')
+        $threadId = [guid]::NewGuid().ToString('D')
+
+        New-Item -ItemType Directory -Path $sessionsRoot, $historyRoot, $lineRoot -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'line-a' } | ConvertTo-Json -Compress) + "`r`n")
+        Write-Utf8NoBom -Path $promptPath -Content ('T003 default profile isolation: ' + $RunName)
+        Write-Utf8NoBom -Path $preflightPath -Content (([ordered]@{
+                    sourceRoot = $CaseRoot
+                    dispatchRoot = $CaseRoot
+                    executionRoot = $CaseRoot
+                    lineSlug = 'line-a'
+                    dispatchSlug = $RunName
+                    writeMode = 'write'
+                    dispatchKind = 'workflow'
+                } | ConvertTo-Json -Depth 12) + "`r`n")
+        $defaultContent = @(
+            ('model = "' + $DefaultModel + '"')
+            ('model_reasoning_effort = "' + $DefaultEffort + '"')
+            ''
+            '[agents]'
+            'default_subagent_model = "synthetic-subagent"'
+            'default_subagent_reasoning_effort = "low"'
+        ) -join "`r`n"
+        $applicationContent = @(
+            ('model = "' + $ApplicationModel + '"')
+            ('model_reasoning_effort = "' + $ApplicationEffort + '"')
+            ''
+            '[agents]'
+            'default_subagent_model = "synthetic-subagent"'
+            'default_subagent_reasoning_effort = "low"'
+        ) -join "`r`n"
+        Write-Utf8NoBom -Path $defaultConfigPath -Content ($defaultContent + "`r`n")
+        Write-Utf8NoBom -Path $applicationConfigPath -Content ($applicationContent + "`r`n")
+        $null = New-Phase8QuotaSnapshot -Path $quotaPath -PrimaryRemainingPercent 80
+
+        $script:profileIsolationProbe = $true
+        $script:profileIsolationCapturedArguments = @()
+        $script:profileIsolationCodexHome = $codexHome
+        $script:profileIsolationRolloutPath = $rolloutPath
+        $script:profileIsolationSelectedProfile = $null
+        $script:profileIsolationSelectedConfigPath = $null
+        $script:profileIsolationSelectedModel = $null
+        $script:profileIsolationSelectedEffort = $null
+        $script:profileIsolationLauncherPath = $null
+        $script:testThread = $threadId
+        $script:quotaSnapshotPathOverride = $quotaPath
+        $script:dispatchUnitListOverride = @('Phase 1')
+        $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
+        $script:relayFailure = $false
+        $script:failLaunch = $false
+        $script:aclFixtureStatus = 'clean'
+        $script:scopePlanFixtureDecision = 'full'
+        $script:launcherFixtureFailure = $false
+        $script:InvocationBoundParameters = [ordered]@{}
+        $script:RequestContext = $null
+        $script:RequestPrepareArtifacts = @()
+        $script:SourceRoot = $CaseRoot
+        $script:DispatchRoot = $CaseRoot
+        $script:ExecutionRoot = $CaseRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $RunName
+        $script:WriteMode = 'write'
+        $script:PreflightResultPath = $preflightPath
+        $script:PrepareResultPath = $null
+        $script:PromptPath = $promptPath
+        $script:CodexHome = $codexHome
+        $script:CodexPath = 'fixture-codex'
+        $script:TargetPath = @()
+        $script:ResumeThreadId = $null
+        $script:LastMessagePath = $null
+        $script:QuotaBeforePath = $quotaPath
+        $script:QuotaAfterPath = $null
+        $script:CalibrationPath = $null
+        $script:ScopePlanPath = $scopePlanPath
+        $script:ResultPath = $null
+        $script:RunRecordPath = $null
+        $script:ThreadIdPath = $null
+        $script:PidRecordPath = $null
+        $script:Profile = 'default'
+        $script:Model = $null
+        $script:ReasoningEffort = $null
+        $script:TaskType = 'script-change'
+        $script:SessionMode = 'cold-start'
+        $script:DispatchKind = 'workflow'
+        $script:UnitKind = 'workflow-phase'
+        $script:RequestedUnit = 'Phase 1'
+        $script:AddDirectory = $null
+        $script:Search = $false
+        $script:CodexParentOption = $null
+        $script:EvidencePackPath = $null
+        $script:AdvisorConsultReportPath = $null
+        $script:AdvisorRequestSource = $null
+        $script:BudgetMonitorPath = $null
+        $script:RecoveryHandoffPath = $null
+        $script:InitialQuotaState = 'Valid'
+        $script:PrimaryBudgetPercent = 34
+        $script:PrimaryReservePercent = 30
+        $script:ProfileExplicit = $true
+        $script:AddDirectoryExplicit = $false
+        $script:SearchExplicit = $false
+        $script:CodexParentOptionExplicit = $false
+        $script:DispatchStageBinding = $null
+
+        $startResult = Invoke-Start
+        $runRecord = Get-Content -LiteralPath $startResult.runRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $runtimeEvidence = Get-RuntimeModelEvidence -CodexHome $codexHome -ThreadId $startResult.threadId -StartedAtUtc $startResult.startedAtUtc
+        $eventStream = Get-Content -LiteralPath $startResult.eventStreamPath -Raw -Encoding UTF8
+        $stderr = Get-Content -LiteralPath $startResult.stderrPath -Raw -Encoding UTF8
+        return [pscustomobject]@{
+            run_name = $RunName
+            case_root = $CaseRoot
+            codex_home = $codexHome
+            default_config_path = $defaultConfigPath
+            application_config_path = $applicationConfigPath
+            default_config_content = Get-Content -LiteralPath $defaultConfigPath -Raw -Encoding UTF8
+            application_config_content = Get-Content -LiteralPath $applicationConfigPath -Raw -Encoding UTF8
+            start_result = $startResult
+            run_record = $runRecord
+            runtime_evidence = $runtimeEvidence
+            codex_arguments = @($script:profileIsolationCapturedArguments)
+            event_stream = $eventStream
+            stderr = $stderr
+            exit_code = 0
+            launcher_path = $script:profileIsolationLauncherPath
+            selected_profile = $script:profileIsolationSelectedProfile
+            selected_config_path = $script:profileIsolationSelectedConfigPath
+            selected_model = $script:profileIsolationSelectedModel
+            selected_effort = $script:profileIsolationSelectedEffort
+            rollout_path = $rolloutPath
+            thread_id = $threadId
+        }
+    }
+
+    Invoke-Case 'Phase 9 T003 default profile isolation actual Start and reverse probe' {
+        $caseRoot = Join-Path $phase9Root 't3'
+        $defaultModelA = 'synthetic-default-model-a'
+        $defaultEffortA = 'synthetic-default-effort-a'
+        $applicationModelA = 'synthetic-application-model-a'
+        $applicationEffortA = 'synthetic-application-effort-a'
+        $defaultModelB = 'synthetic-default-model-b'
+        $defaultEffortB = 'synthetic-default-effort-b'
+        $applicationModelB = 'synthetic-application-model-b'
+        $applicationEffortB = 'synthetic-application-effort-b'
+        $profileIsolationVariableNames = @(
+            'profileIsolationProbe', 'profileIsolationCapturedArguments', 'profileIsolationCodexHome', 'profileIsolationRolloutPath',
+            'profileIsolationSelectedProfile', 'profileIsolationSelectedConfigPath', 'profileIsolationSelectedModel', 'profileIsolationSelectedEffort',
+            'profileIsolationLauncherPath', 'testThread',
+            'quotaSnapshotPathOverride', 'dispatchUnitListOverride', 'pidResult', 'relayFailure', 'failLaunch', 'aclFixtureStatus',
+            'scopePlanFixtureDecision', 'launcherFixtureFailure', 'InvocationBoundParameters', 'RequestContext', 'RequestPrepareArtifacts',
+            'SourceRoot', 'DispatchRoot', 'ExecutionRoot', 'LineSlug', 'DispatchSlug', 'WriteMode', 'PreflightResultPath',
+            'PrepareResultPath', 'PromptPath', 'CodexHome', 'CodexPath', 'TargetPath', 'ResumeThreadId', 'LastMessagePath',
+            'QuotaBeforePath', 'QuotaAfterPath', 'CalibrationPath', 'ScopePlanPath', 'ResultPath', 'RunRecordPath', 'ThreadIdPath',
+            'PidRecordPath', 'Profile', 'Model', 'ReasoningEffort', 'TaskType', 'SessionMode', 'DispatchKind', 'UnitKind',
+            'RequestedUnit', 'AddDirectory', 'Search', 'CodexParentOption', 'EvidencePackPath', 'AdvisorConsultReportPath',
+            'AdvisorRequestSource', 'BudgetMonitorPath', 'RecoveryHandoffPath', 'InitialQuotaState', 'PrimaryBudgetPercent',
+            'PrimaryReservePercent', 'ProfileExplicit', 'AddDirectoryExplicit', 'SearchExplicit', 'CodexParentOptionExplicit',
+            'DispatchStageBinding'
+        )
+        $profileIsolationSavedVariables = @{}
+        foreach ($variableName in $profileIsolationVariableNames) {
+            $existingVariable = Get-Variable -Name $variableName -Scope Script -ErrorAction SilentlyContinue
+            $profileIsolationSavedVariables[$variableName] = if ($null -eq $existingVariable) {
+                [pscustomobject]@{ exists = $false; value = $null }
+            }
+            else {
+                [pscustomobject]@{ exists = $true; value = $existingVariable.Value }
+            }
+        }
+        $script:profileIsolationProbe = $false
+        $profileResolverCommand = Get-Command -Name Resolve-ProfileConfigPath -CommandType Function -ErrorAction Stop
+        $profileResolverOriginal = $profileResolverCommand.ScriptBlock
+        $profileResolverDefinition = $profileResolverOriginal.ToString()
+        $profileResolverMutantDefinition = $profileResolverDefinition.Replace("'default.config.toml'", "'config.toml'")
+        Assert-True ($profileResolverMutantDefinition -ne $profileResolverDefinition) 'T003 無法建立 default resolver 的 config.toml mutant。'
+        $profileResolverMutant = [scriptblock]::Create($profileResolverMutantDefinition)
+        $profileResolverMutantApplied = $false
+        try {
+            $runA = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'run-a' -DefaultModel $defaultModelA -DefaultEffort $defaultEffortA -ApplicationModel $applicationModelA -ApplicationEffort $applicationEffortA
+            $defaultHashBefore = Get-FileSha256 -Path $runA.default_config_path
+            $applicationHashBefore = Get-FileSha256 -Path $runA.application_config_path
+            $defaultContentBefore = Get-Content -LiteralPath $runA.default_config_path -Raw -Encoding UTF8
+            $applicationContentBefore = Get-Content -LiteralPath $runA.application_config_path -Raw -Encoding UTF8
+            Assert-True ($defaultContentBefore.Contains('[agents]') -and $applicationContentBefore.Contains('[agents]')) 'T003 兩個設定檔都應保留 [agents]。'
+            Assert-True ($defaultContentBefore.Contains($defaultModelA) -and $applicationContentBefore.Contains($applicationModelA) -and $defaultModelA -ne $applicationModelA) 'T003 fixture sentinel 未形成不同的 default 與 application 設定。'
+
+            $runAArguments = @($runA.start_result.codexArguments | ForEach-Object { [string]$_ })
+            $runAProfileIndex = [Array]::IndexOf([string[]]$runAArguments, '--profile')
+            $runAProfileValid = $runAProfileIndex -ge 0 -and $runAProfileIndex + 1 -lt $runAArguments.Count -and $runAArguments[$runAProfileIndex + 1] -ceq 'default'
+            $runAParentOptions = @($runA.start_result.parentOptions.codex_parent_option | ForEach-Object { [string]$_ })
+            Assert-True ($runAProfileValid -and $runAParentOptions -notcontains '--profile') ('T003 run-a profile argument 或 codex_parent_option 不符：' + ($runA.start_result | ConvertTo-Json -Depth 30 -Compress))
+            Assert-True ([String]::Equals([string]$runA.start_result.profileConfigPath, [string]$runA.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runA.run_record.profile_config_path, [string]$runA.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 run-a profile path 未指向 default.config.toml。'
+            Assert-True ((Get-DispatchEvidenceValue -Evidence $runA.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runA.start_result.resolvedReasoningEffort) -ceq $defaultEffortA) 'T003 run-a profile evidence 未讀取 default sentinel。'
+            Assert-True ((Get-DispatchEvidenceValue -Evidence $runA.runtime_evidence.model) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runA.runtime_evidence.reasoning_effort) -ceq $defaultEffortA -and $runA.runtime_evidence.model.source -eq 'rollout' -and $runA.runtime_evidence.reasoning_effort.source -eq 'rollout') 'T003 run-a runtime evidence 未讀取 default sentinel。'
+
+            $applicationContentAfterMutation = @(
+                ('model = "' + $applicationModelB + '"')
+                ('model_reasoning_effort = "' + $applicationEffortB + '"')
+                ''
+                '[agents]'
+                'default_subagent_model = "synthetic-subagent"'
+                'default_subagent_reasoning_effort = "low"'
+            ) -join "`r`n"
+            Write-Utf8NoBom -Path $runA.application_config_path -Content ($applicationContentAfterMutation + "`r`n")
+            Assert-True ((Get-FileSha256 -Path $runA.default_config_path) -eq $defaultHashBefore -and (Get-FileSha256 -Path $runA.application_config_path) -ne $applicationHashBefore) 'T003 reverse fixture 未確認只修改 config.toml sentinel。'
+
+            $runB = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'run-b' -DefaultModel $defaultModelA -DefaultEffort $defaultEffortA -ApplicationModel $applicationModelB -ApplicationEffort $applicationEffortB
+            $runBArguments = @($runB.start_result.codexArguments | ForEach-Object { [string]$_ })
+            $runBProfileIndex = [Array]::IndexOf([string[]]$runBArguments, '--profile')
+            $runBProfileValid = $runBProfileIndex -ge 0 -and $runBProfileIndex + 1 -lt $runBArguments.Count -and $runBArguments[$runBProfileIndex + 1] -ceq 'default'
+            Assert-True ($runBProfileValid -and [String]::Equals([string]$runB.start_result.profileConfigPath, [string]$runB.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runB.run_record.profile_config_path, [string]$runB.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 run-b profile path 或顯式 profile 不符。'
+            Assert-True ((Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedReasoningEffort) -ceq $defaultEffortA -and (Get-DispatchEvidenceValue -Evidence $runB.runtime_evidence.model) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runB.runtime_evidence.reasoning_effort) -ceq $defaultEffortA) 'T003 修改 config.toml 後 default profile 或 runtime evidence 發生變化。'
+            Assert-True ((Get-FileSha256 -Path $runB.default_config_path) -eq $defaultHashBefore -and (Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8).Contains($applicationModelB) -and (Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8).Contains('[agents]')) 'T003 run-b 未保留 default.config.toml 或 config.toml 的反向 fixture 狀態。'
+
+            Set-Item -Path 'Function:\script:Resolve-ProfileConfigPath' -Value $profileResolverMutant
+            $profileResolverMutantApplied = $true
+            $mutantFailure = $null
+            $mutantRun = $null
+            try {
+                $mutantRun = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'resolver-mutant' -DefaultModel $defaultModelA -DefaultEffort $defaultEffortA -ApplicationModel $applicationModelB -ApplicationEffort $applicationEffortB
+                Assert-True ([String]::Equals([string]$mutantRun.start_result.profileConfigPath, [string]$mutantRun.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and (Get-DispatchEvidenceValue -Evidence $mutantRun.runtime_evidence.model) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $mutantRun.runtime_evidence.reasoning_effort) -ceq $defaultEffortA) 'T003 resolver mutant 使 runtime evidence 偏離 default 設定檔。'
+            }
+            catch {
+                $mutantFailure = $_.Exception.Message
+            }
+            Assert-True (-not [string]::IsNullOrWhiteSpace($mutantFailure)) 'T003 resolver mutant 未被 runtime evidence 斷言拒絕。'
+            Assert-True ([String]::Equals([string]$script:profileIsolationSelectedProfile, 'default', [StringComparison]::Ordinal) -and [String]::Equals([string]$script:profileIsolationSelectedConfigPath, [string]$runB.application_config_path, [StringComparison]::OrdinalIgnoreCase) -and [string]$script:profileIsolationSelectedModel -ceq $applicationModelB -and [string]$script:profileIsolationSelectedEffort -ceq $applicationEffortB) 'T003 resolver mutant 未使 rollout 讀取實際 config.toml sentinel。'
+            $mutantOutput = [ordered]@{
+                resolver_default_branch = 'temporarily changed from default.config.toml to config.toml'
+                actual_launcher_profile = [string]$script:profileIsolationSelectedProfile
+                actual_codex_home = [string]$script:profileIsolationCodexHome
+                actual_resolved_config_path = [string]$script:profileIsolationSelectedConfigPath
+                actual_rollout_model = [string]$script:profileIsolationSelectedModel
+                actual_rollout_effort = [string]$script:profileIsolationSelectedEffort
+                expected = 'runtime evidence assertion rejects config.toml sentinel'
+                observed = 'reject'
+                failure = [string]$mutantFailure
+                rollout_path = [string]$script:profileIsolationRolloutPath
+                exit_code = 1
+            }
+
+            Set-Item -Path 'Function:\script:Resolve-ProfileConfigPath' -Value $profileResolverOriginal
+            $profileResolverMutantApplied = $false
+            $runC = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'restored' -DefaultModel $defaultModelA -DefaultEffort $defaultEffortA -ApplicationModel $applicationModelB -ApplicationEffort $applicationEffortB
+            Assert-True ([String]::Equals([string]$runC.start_result.profileConfigPath, [string]$runC.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runC.run_record.profile_config_path, [string]$runC.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 還原 resolver 後 profile path 未回到 default.config.toml。'
+            Assert-True ((Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedReasoningEffort) -ceq $defaultEffortA -and (Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.model) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.reasoning_effort) -ceq $defaultEffortA) 'T003 還原 resolver 後 runtime evidence 未回到 default sentinel。'
+            $restoredOutput = [ordered]@{
+                resolver_default_branch = 'restored to default.config.toml'
+                actual_launcher_profile = [string]$runC.selected_profile
+                actual_codex_home = [string]$runC.codex_home
+                actual_resolved_config_path = [string]$runC.selected_config_path
+                actual_rollout_model = [string]$runC.selected_model
+                actual_rollout_effort = [string]$runC.selected_effort
+                expected = 'default sentinel'
+                observed = 'pass'
+                runtime_model = [string](Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.model)
+                runtime_effort = [string](Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.reasoning_effort)
+                profile_config_path = [string]$runC.start_result.profileConfigPath
+                rollout_path = [string]$runC.rollout_path
+                exit_code = 0
+            }
+
+            $reverseRoot = Join-Path $caseRoot 'reverse-config-only'
+            $reverseHome = Join-Path $reverseRoot 'codex-home'
+            New-Item -ItemType Directory -Path $reverseHome -Force | Out-Null
+            $reverseConfigPath = Join-Path $reverseHome 'config.toml'
+            Write-Utf8NoBom -Path $reverseConfigPath -Content "model = 'synthetic-legacy-default'`r`nmodel_reasoning_effort = 'synthetic-legacy-effort'`r`n`r`n[agents]`r`ndefault_subagent_model = 'synthetic-subagent'`r`n"
+            $reverseResolvedPath = Resolve-ProfileConfigPath -CodexHome $reverseHome -Profile 'default'
+            $reverseLegacyEvidence = Read-ProfileModelEvidence -ConfigPath $reverseConfigPath -Profile 'default'
+            Assert-True ($null -eq $reverseResolvedPath -and (Get-DispatchEvidenceValue -Evidence $reverseLegacyEvidence.model) -ceq 'synthetic-legacy-default') 'T003 只保留 config.toml 的舊 fixture 未被 fixed resolver 拒絕。'
+            $reverseOutput = [ordered]@{
+                fixed_resolver_path = $reverseResolvedPath
+                legacy_config_path = $reverseConfigPath
+                legacy_config_evidence = $reverseLegacyEvidence
+                result = 'fixed default resolver rejected config.toml-only fixture'
+                exit_code = 0
+            }
+            $passOutput = [ordered]@{
+                run_a = [ordered]@{
+                    codex_home = [string]$runA.codex_home
+                    default_config_path = [string]$runA.default_config_path
+                    application_config_path = [string]$runA.application_config_path
+                    default_config_content = [string]$runA.default_config_content
+                    application_config_content = [string]$runA.application_config_content
+                    start = [ordered]@{
+                        profile = [string]$runA.start_result.profile
+                        profile_config_path = [string]$runA.start_result.profileConfigPath
+                        codex_arguments = @($runA.start_result.codexArguments | ForEach-Object { [string]$_ })
+                        codex_parent_option = @($runA.start_result.parentOptions.codex_parent_option | ForEach-Object { [string]$_ })
+                        resolved_model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runA.start_result.resolvedModel); source = [string]$runA.start_result.resolvedModel.source }
+                        resolved_reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runA.start_result.resolvedReasoningEffort); source = [string]$runA.start_result.resolvedReasoningEffort.source }
+                    }
+                    run_record = [ordered]@{
+                        profile_config_path = [string]$runA.run_record.profile_config_path
+                        codex_parent_option = @($runA.run_record.parent_options.codex_parent_option | ForEach-Object { [string]$_ })
+                    }
+                    runtime_evidence = [ordered]@{
+                        rollout_path = [string]$runA.rollout_path
+                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runA.runtime_evidence.model); source = [string]$runA.runtime_evidence.model.source }
+                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runA.runtime_evidence.reasoning_effort); source = [string]$runA.runtime_evidence.reasoning_effort.source }
+                    }
+                    event_stream = [string]$runA.event_stream
+                    stderr = [string]$runA.stderr
+                }
+                run_b = [ordered]@{
+                    codex_home = [string]$runB.codex_home
+                    default_config_path = [string]$runB.default_config_path
+                    application_config_path = [string]$runB.application_config_path
+                    default_config_content = [string]$runB.default_config_content
+                    application_config_content = [string]$runB.application_config_content
+                    start = [ordered]@{
+                        profile = [string]$runB.start_result.profile
+                        profile_config_path = [string]$runB.start_result.profileConfigPath
+                        codex_arguments = @($runB.start_result.codexArguments | ForEach-Object { [string]$_ })
+                        codex_parent_option = @($runB.start_result.parentOptions.codex_parent_option | ForEach-Object { [string]$_ })
+                        resolved_model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedModel); source = [string]$runB.start_result.resolvedModel.source }
+                        resolved_reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedReasoningEffort); source = [string]$runB.start_result.resolvedReasoningEffort.source }
+                    }
+                    run_record = [ordered]@{
+                        profile_config_path = [string]$runB.run_record.profile_config_path
+                        codex_parent_option = @($runB.run_record.parent_options.codex_parent_option | ForEach-Object { [string]$_ })
+                    }
+                    runtime_evidence = [ordered]@{
+                        rollout_path = [string]$runB.rollout_path
+                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runB.runtime_evidence.model); source = [string]$runB.runtime_evidence.model.source }
+                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runB.runtime_evidence.reasoning_effort); source = [string]$runB.runtime_evidence.reasoning_effort.source }
+                    }
+                    event_stream = [string]$runB.event_stream
+                    stderr = [string]$runB.stderr
+                }
+                run_c = [ordered]@{
+                    codex_home = [string]$runC.codex_home
+                    default_config_path = [string]$runC.default_config_path
+                    application_config_path = [string]$runC.application_config_path
+                    selected_profile = [string]$runC.selected_profile
+                    selected_config_path = [string]$runC.selected_config_path
+                    selected_model = [string]$runC.selected_model
+                    selected_effort = [string]$runC.selected_effort
+                    start = [ordered]@{
+                        profile = [string]$runC.start_result.profile
+                        profile_config_path = [string]$runC.start_result.profileConfigPath
+                        codex_arguments = @($runC.start_result.codexArguments | ForEach-Object { [string]$_ })
+                        codex_parent_option = @($runC.start_result.parentOptions.codex_parent_option | ForEach-Object { [string]$_ })
+                        resolved_model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedModel); source = [string]$runC.start_result.resolvedModel.source }
+                        resolved_reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedReasoningEffort); source = [string]$runC.start_result.resolvedReasoningEffort.source }
+                    }
+                    run_record = [ordered]@{
+                        profile_config_path = [string]$runC.run_record.profile_config_path
+                        codex_parent_option = @($runC.run_record.parent_options.codex_parent_option | ForEach-Object { [string]$_ })
+                    }
+                    runtime_evidence = [ordered]@{
+                        rollout_path = [string]$runC.rollout_path
+                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.model); source = [string]$runC.runtime_evidence.model.source }
+                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.reasoning_effort); source = [string]$runC.runtime_evidence.reasoning_effort.source }
+                    }
+                    exit_code = 0
+                }
+                default_config_hash_before = [string]$defaultHashBefore
+                default_config_hash_after_application_mutation = [string](Get-FileSha256 -Path $runB.default_config_path)
+                application_config_content_before = [string]$applicationContentBefore
+                application_config_content_after = [string](Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8)
+                explicit_profile = '--profile default'
+                parent_option_profile = 'absent from codex_parent_option'
+                exit_code = 0
+            }
+            Write-Phase9Evidence -Label 'T003_DEFAULT_PROFILE_ISOLATION_MUTANT_FAIL' -Value $mutantOutput
+            Write-Phase9Evidence -Label 'T003_DEFAULT_PROFILE_ISOLATION_RESTORED_PASS' -Value $restoredOutput
+            Write-Phase9Evidence -Label 'T003_DEFAULT_PROFILE_ISOLATION_PASS' -Value $passOutput
+            Write-Phase9Evidence -Label 'T003_DEFAULT_PROFILE_ISOLATION_REVERSE_PASS' -Value $reverseOutput
+        }
+        finally {
+            if ($profileResolverMutantApplied) {
+                Set-Item -Path 'Function:\script:Resolve-ProfileConfigPath' -Value $profileResolverOriginal
+                $profileResolverMutantApplied = $false
+            }
+            $script:profileIsolationProbe = $false
+            $script:profileIsolationCapturedArguments = @()
+            $script:profileIsolationCodexHome = $null
+            $script:profileIsolationRolloutPath = $null
+            $script:profileIsolationSelectedProfile = $null
+            $script:profileIsolationSelectedConfigPath = $null
+            $script:profileIsolationSelectedModel = $null
+            $script:profileIsolationSelectedEffort = $null
+            $script:profileIsolationLauncherPath = $null
+            foreach ($variableName in $profileIsolationVariableNames) {
+                $savedVariable = $profileIsolationSavedVariables[$variableName]
+                if ($savedVariable.exists) {
+                    Set-Variable -Name $variableName -Scope Script -Value $savedVariable.value
+                }
+                else {
+                    Set-Variable -Name $variableName -Scope Script -Value $null
+                }
+            }
+        }
+    }
+
     $aclFunctionAst = @($functions | Where-Object { $_.Name -eq 'Get-WorktreeAclGate' } | Select-Object -First 1)
     Assert-True ($aclFunctionAst.Count -eq 1) 'Phase 9 找不到 production Get-WorktreeAclGate AST。'
     $aclFunctionDefinition = $aclFunctionAst[0].Extent.Text -replace '^function Get-WorktreeAclGate', 'function Invoke-Phase9ProductionAclGate'
@@ -4974,7 +5461,7 @@ if ($Phase -ge 9) {
         Write-Utf8NoBom -Path $f001BaselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + "`n")
         Write-Utf8NoBom -Path $f001PromptPath -Content 'f001 continuation prompt'
         $null = New-Phase8QuotaSnapshot -Path $f001QuotaPath -PrimaryRemainingPercent 80
-        Write-Utf8NoBom -Path (Join-Path $f001CodexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        Write-Utf8NoBom -Path (Join-Path $f001CodexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
         $f001BaselineSha256 = Get-FileSha256 -Path $f001BaselinePath
         $f001PrepareSha256 = Get-FileSha256 -Path $f001PreparePath
         $f001ParentOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $f001ExecutionRoot -AddDirectory @() -Search $false -CodexParentOption @()
@@ -5255,7 +5742,7 @@ if ($Phase -ge 9) {
             New-Item -ItemType Directory -Path $lineHistoryRoot, $executionLineHistoryRoot, $lineRoot, $codexHome, $historyRoot -Force | Out-Null
             Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = $lineSlug } | ConvertTo-Json -Depth 10) + "`n")
             Write-Utf8NoBom -Path $promptPath -Content ('f001 chain ' + $Name)
-            Write-Utf8NoBom -Path (Join-Path $codexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+            Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
             $rolloutRoot = Join-Path $codexHome 'sessions\f001'
             New-Item -ItemType Directory -Path $rolloutRoot -Force | Out-Null
             Write-Utf8NoBom -Path (Join-Path $rolloutRoot 'rollout.jsonl') -Content (([ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = '' } } | ConvertTo-Json -Compress -Depth 10) + "`r`n" + ([ordered]@{ type = 'turn_context'; payload = [ordered]@{ model = 'fixture-model'; effort = 'high' } } | ConvertTo-Json -Compress -Depth 10) + "`r`n")
@@ -5762,7 +6249,7 @@ if ($Phase -ge 9) {
         Write-Utf8NoBom -Path $f011PreparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'Prepared' } | ConvertTo-Json -Depth 10) + "`n")
         Write-Utf8NoBom -Path $f011BaselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + "`n")
         Write-Utf8NoBom -Path $f011PromptPath -Content 'f011 continuation prompt'
-        Write-Utf8NoBom -Path (Join-Path $f011CodexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        Write-Utf8NoBom -Path (Join-Path $f011CodexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
         $f011QuotaSnapshot = New-Phase8QuotaSnapshot -Path $f011QuotaPath -PrimaryRemainingPercent 80
         $f011BaselineSha256 = Get-FileSha256 -Path $f011BaselinePath
         $f011PrepareSha256 = Get-FileSha256 -Path $f011PreparePath
@@ -6473,7 +6960,7 @@ if ($Phase -ge 9) {
         Write-Utf8NoBom -Path $targetPath -Content ('S finding target: ' + $Name)
         Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'a' } | ConvertTo-Json -Depth 10) + "`n")
         Write-Utf8NoBom -Path $artifactSourcePath -Content ('S finding artifact: ' + $Name)
-        Write-Utf8NoBom -Path (Join-Path $codexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
 
         $quotaTimestamp = [DateTimeOffset]::UtcNow.AddMinutes(-1)
         $quotaReset = $quotaTimestamp.AddHours(1).ToUnixTimeSeconds()
@@ -6713,7 +7200,7 @@ if ($Phase -ge 9) {
         $historyRoot = Join-Path $caseRoot '.local\ai-sessions\history'
         $codexHome = Join-Path $caseRoot 'codex-home'
         $rolloutRoot = Join-Path $codexHome 'sessions'
-        $configPath = Join-Path $codexHome 'config.toml'
+        $configPath = Join-Path $codexHome 'default.config.toml'
         $preflightPath = Join-Path $historyRoot 's3-preflight.json'
         $scopePlanPath = Join-Path $historyRoot 's3-scope.json'
         $quotaBeforePath = Join-Path $historyRoot 's3-quota-before.json'
@@ -7628,7 +8115,7 @@ throw 'RunRecord 事件流為空。'
         Write-Utf8NoBom -Path (Join-Path $actualLineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'a' } | ConvertTo-Json -Depth 10) + "`n")
         Write-Utf8NoBom -Path $actualArtifactSourcePath -Content 'actual Windows sidecar artifact'
         $actualArtifactSha256 = Get-FileSha256 -Path $actualArtifactSourcePath
-        Write-Utf8NoBom -Path (Join-Path $actualCodexHome 'config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        Write-Utf8NoBom -Path (Join-Path $actualCodexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
         Copy-Item -LiteralPath $calibrationBeforePath -Destination $actualQuotaPath -Force
         $actualThreadId = '00000000-0000-0000-0000-000000000009'
         $fakeCodexContent = @(

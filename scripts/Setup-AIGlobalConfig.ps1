@@ -243,15 +243,19 @@ else {
 }
 
 $codexConfigPath = Join-Path $codexDir "config.toml"
+$defaultProfilePath = Join-Path $codexDir "default.config.toml"
 $advisorProfilePath = Join-Path $codexDir "advisor.config.toml"
 $legacyProfileName = 'deep' + '.config.toml'
 $legacyProfilePath = Join-Path $codexDir $legacyProfileName
 $maxEffortMatches = @()
-if (Test-Path -LiteralPath $codexConfigPath) {
-    $maxEffortMatches = @(Select-String -LiteralPath $codexConfigPath -Pattern '^\s*model_reasoning_effort\s*=\s*["'']max["'']\s*$')
+if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) {
+    Write-Host "  ✅ Codex 基礎設定檔存在：$codexConfigPath" -ForegroundColor DarkGreen
 }
 else {
     Write-Warning "  ⚠️ 找不到 Codex 設定檔：$codexConfigPath"
+}
+if (Test-Path -LiteralPath $defaultProfilePath -PathType Leaf) {
+    $maxEffortMatches = @(Select-String -LiteralPath $defaultProfilePath -Pattern '^\s*model_reasoning_effort\s*=\s*["'']max["'']\s*$')
 }
 
 $minimumMaxVersion = [version]'0.147.0'
@@ -270,8 +274,8 @@ else {
 
 $missingProfiles = @()
 $profileConflictDetected = $false
-if (-not (Test-Path -LiteralPath $codexConfigPath -PathType Leaf)) {
-    $missingProfiles += 'config.toml'
+if (-not (Test-Path -LiteralPath $defaultProfilePath -PathType Leaf)) {
+    $missingProfiles += 'default.config.toml'
 }
 if (-not (Test-Path -LiteralPath $advisorProfilePath -PathType Leaf)) {
     $missingProfiles += 'advisor.config.toml'

@@ -2955,7 +2955,7 @@ function Resolve-ProfileConfigPath {
         return $null
     }
     $homePath = Resolve-AbsolutePath -Path $CodexHome
-    $fileName = if ($Profile -eq 'advisor') { 'advisor.config.toml' } else { 'config.toml' }
+    $fileName = if ($Profile -eq 'advisor') { 'advisor.config.toml' } else { 'default.config.toml' }
     $configPath = Join-Path -Path $homePath -ChildPath $fileName
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         return $null
@@ -11767,10 +11767,8 @@ function Invoke-QuotaProbe {
         $codexArguments.Add($executionRootPath)
         $codexArguments.Add('--sandbox')
         $codexArguments.Add('workspace-write')
-        if ($effectiveProfileValue -ne 'default') {
-            $codexArguments.Add('--profile')
-            $codexArguments.Add($effectiveProfileValue)
-        }
+        $codexArguments.Add('--profile')
+        $codexArguments.Add($effectiveProfileValue)
         if ($null -ne $AddDirectory) {
             foreach ($directory in $AddDirectory) {
                 $directoryPath = Resolve-AbsolutePath -Path $directory
@@ -13580,10 +13578,8 @@ function Invoke-Start {
     $codexArguments.Add($codexWorkingRoot)
     $codexArguments.Add('--sandbox')
     $codexArguments.Add($(if ($TaskType -eq 'advisor-consult') { 'read-only' } else { 'workspace-write' }))
-    if ($effectiveProfileValue -ne 'default') {
-        $codexArguments.Add('--profile')
-        $codexArguments.Add($effectiveProfileValue)
-    }
+    $codexArguments.Add('--profile')
+    $codexArguments.Add($effectiveProfileValue)
     $effectiveAddDirectory = @((Get-DispatchJsonProperty -Object $parentOptionsModel -Name 'add_directory'))
     foreach ($directory in $effectiveAddDirectory) {
             $directoryPath = Resolve-AbsolutePath -Path $directory

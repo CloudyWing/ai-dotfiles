@@ -210,7 +210,7 @@ Start、Inspect、RunRecord 與校準紀錄的 model 與 reasoning effort 分為
 | 層 | 來源 | unknown 條件 |
 | --- | --- | --- |
 | `requested` | 呼叫端明確傳入的 `-Model`、`-ReasoningEffort`，只作為 assertion | 未傳入 |
-| `resolved` | 實際 profile 設定檔的 top-level `model`、`model_reasoning_effort`；預設檔位讀 `<CodexHome>\config.toml`，`advisor` 讀 `<CodexHome>\advisor.config.toml` | 檔案不存在、欄位缺少、格式錯誤或重複衝突 |
+| `resolved` | 實際 profile 設定檔的 top-level `model`、`model_reasoning_effort`；預設檔位讀 `<CodexHome>\default.config.toml`，`advisor` 讀 `<CodexHome>\advisor.config.toml` | 檔案不存在、欄位缺少、格式錯誤或重複衝突 |
 | `runtime_verifiable` | 以 `session_meta.payload.session_id` 精確對應事件流 `thread_id` 的 rollout，取本輪 `turn_context.payload.model` 與 `payload.effort` | 找不到對應 rollout、欄位缺少或多筆值衝突 |
 
 明確 assertion 與 resolved 值衝突時，Start 在啟動前以 `RequestedResolutionMismatch` 停止。resolved 或 runtime 任一為 unknown，或兩者不一致時，該觀測 `calibration_eligible=false`；校準分組使用 resolved model 與 resolved effort。事件流 error 中的「recorded with model X」只作為原 thread 模型的診斷證據，不填入本輪 runtime 值。
@@ -318,9 +318,9 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ## 模型檔位規則
 
-本 Skill 只使用預設檔位與 `advisor`。實作、審查、掃描與命令執行一律使用預設檔位；`advisor` 只作意見評估。預設檔位的實測基準標註為 `gpt-5.6-luna @ xhigh`。實際 model id 與其餘設定仍以 `~/.codex/<檔位名稱>.config.toml` 為準，規則層只傳遞語意檔位名稱。
+本 Skill 只使用預設檔位與 `advisor`。實作、審查、掃描與命令執行一律使用預設檔位；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `~/.codex/default.config.toml` 為準，兩份 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
 
-`codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位省略 `--profile`，沿用 `~/.codex/config.toml`。
+`codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位一律傳入 `--profile default`，讀取 `~/.codex/default.config.toml`。
 
 探針分兩種，證明範圍不同，不可互相取代。
 
@@ -335,13 +335,13 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 `advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描一律使用預設檔位，不以 `advisor` 執行。
 
-`advisor` 相對預設檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `~/.codex/advisor.config.toml` 與 `~/.codex/config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
+`advisor` 相對預設檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `~/.codex/advisor.config.toml` 與 `~/.codex/default.config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
 
 ### advisor 的前置準備
 
-預設檔位的實測基準為 `gpt-5.6-luna @ xhigh`。`advisor` 的實測成本基準為一小時即可用完整個 `primary` 5 小時視窗。這項數據只用來估計諮詢規模，不直接取代依分組累積的校準值。
+預設檔位的成本與推理特性由 `default.config.toml` 的 model 與 effort 決定。`advisor` 的實測成本基準為一小時即可用完整個 `primary` 5 小時視窗。這項數據只用來估計諮詢規模，不直接取代依分組累積的校準值。
 
-降低成本的方式是減少執行端自行探索的讀取量，不是縮小任務範圍。檔位本身的成本特性由本機檔位設定決定，配置方式見 README 的 Codex profile 檔位設定章節。
+降低成本的方式是減少執行端自行探索的讀取量，不是縮小任務範圍。檔位本身的成本特性由本機檔位設定決定，設定方式見 README 的 Codex profile 檔位設定章節。
 
 派工前完成下列準備。準備不足時 `advisor` 會把額度花在自行摸索，而不是產出結論。
 
@@ -400,7 +400,7 @@ secondary_source_file=
 3. 額度不足時，只有使用者授權才發動 `advisor`，並以 `AdvisorRequestSource=user-explicit` 傳入；授權後不檢查額度剩餘，範圍依剩餘額度縮小問題前綴。
 4. 預設檔位低於門檻、快照 `state=Valid` 時（observation 為 fresh 或 stale 皆同），冷啟動與續行維持預設檔位，依低額度分支繼續派工，不等待使用者決定。所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
 5. 額度腳本失敗、輸出缺少任一視窗欄位，或以 `advisor` 派工而 `advisor.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
-6. 預設檔位省略 `--profile`。檔位名稱只允許預設與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。
+6. 預設檔位一律傳入 `--profile default`，檔位名稱只允許預設與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。
 
 每次派遣結束時，`Invoke-CodexDispatch.ps1 -Operation Inspect` 追加一筆 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl`。紀錄至少包含 `model`、`profile`、冷啟動／續行、`task_type`、`turn.completed.usage`、派工前後的 `primary` 與 `secondary` 快照，以及完成、失敗與實際輸出結果。校準分組鍵為 `model`、`profile`、冷啟動／續行與 `task_type`。樣本少於 5 筆時只保留觀測紀錄；達到 5 筆時輸出供主 Agent 判讀的提議訊號，腳本不修改門檻，也不輸出自動更新值。
 
