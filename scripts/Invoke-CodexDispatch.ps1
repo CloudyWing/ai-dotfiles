@@ -66,7 +66,6 @@ param(
 
     [string]$TaskType = 'unspecified',
 
-    [ValidateSet('cold-start', 'continuation')]
     [string]$SessionMode = 'cold-start',
 
     [ValidateSet('automatic-quota', 'user-explicit')]
@@ -86,6 +85,8 @@ param(
     [string]$CalibrationPath,
 
     [string]$ScopePlanPath,
+
+    [switch]$ContinueFromScopePlan,
 
     [string[]]$RequestedUnit,
 
@@ -168,6 +169,26 @@ $script:ProfileExplicit = $script:InvocationBoundParameters.Contains('Profile')
 
 function Test-IsWindowsPlatform {
     return [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
+}
+
+function ConvertTo-FileSystemApiPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-IsWindowsPlatform)) {
+        return $Path
+    }
+    if ($Path.StartsWith('\\?\', [System.StringComparison]::Ordinal)) {
+        return $Path
+    }
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    if ($fullPath.StartsWith('\\', [System.StringComparison]::Ordinal)) {
+        return '\\?\UNC\' + $fullPath.Substring(2)
+    }
+    return '\\?\' + $fullPath
 }
 
 function Resolve-AbsolutePath {
@@ -599,7 +620,7 @@ function Write-Utf8NoBom {
     }
 
     $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
-    [System.IO.File]::WriteAllText($Path, $Content, $encoding)
+    [System.IO.File]::WriteAllText((ConvertTo-FileSystemApiPath -Path $Path), $Content, $encoding)
 }
 
 function Append-Utf8NoBom {
@@ -2419,13 +2440,14 @@ function Get-FileSha256 {
     )
 
     $resolvedPath = Resolve-AbsolutePath -Path $Path
-    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+    $fileApiPath = ConvertTo-FileSystemApiPath -Path $resolvedPath
+    if (-not [System.IO.File]::Exists($fileApiPath)) {
         throw "找不到要計算 SHA-256 的檔案：$resolvedPath"
     }
 
     $sha256 = [System.Security.Cryptography.SHA256]::Create()
     try {
-        $bytes = [System.IO.File]::ReadAllBytes($resolvedPath)
+        $bytes = [System.IO.File]::ReadAllBytes($fileApiPath)
         return ([System.BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant()
     }
     finally {
@@ -3170,6 +3192,38 @@ function Test-DispatchRequestFieldPresent {
     return $null -ne $Document.PSObject.Properties[$Name]
 }
 
+function Assert-DispatchRequestRequiredField {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Document,
+
+        [Parameter(Mandatory)]
+        [string]$Name,
+
+        [Parameter(Mandatory)]
+        [string]$RequestPathValue
+    )
+
+    $property = $Document.PSObject.Properties[$Name]
+    if ($null -eq $property -or $null -eq $property.Value) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message ("request file 缺少必要欄位：{0}" -f $Name) -RequestPathValue $RequestPathValue -Field $Name
+    }
+}
+
+function Get-DispatchRequestTypeName {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return 'null'
+    }
+    return $Value.GetType().FullName
+}
+
 function Get-DispatchRequestStringArray {
     [CmdletBinding()]
     param(
@@ -3177,6 +3231,7 @@ function Get-DispatchRequestStringArray {
         [string]$Field,
 
         [Parameter(Mandatory)]
+        [AllowNull()]
         [object]$Value,
 
         [Parameter(Mandatory)]
@@ -3184,7 +3239,7 @@ function Get-DispatchRequestStringArray {
     )
 
     if ($Value -isnot [array]) {
-        Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message ("request 欄位 {0} 必須是 string array。" -f $Field) -RequestPathValue $RequestPathValue -Field $Field -Detail ([ordered]@{ expected_type = 'string[]'; actual_type = $Value.GetType().FullName })
+        Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message ("request 欄位 {0} 必須是 string array。" -f $Field) -RequestPathValue $RequestPathValue -Field $Field -Detail ([ordered]@{ expected_type = 'string[]'; actual_type = Get-DispatchRequestTypeName -Value $Value })
     }
 
     $values = New-Object 'System.Collections.Generic.List[string]'
@@ -3211,6 +3266,7 @@ function Get-DispatchRequestArtifacts {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
+        [AllowNull()]
         [object]$Value,
 
         [Parameter(Mandatory)]
@@ -3218,7 +3274,7 @@ function Get-DispatchRequestArtifacts {
     )
 
     if ($Value -isnot [array]) {
-        Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 prepare_artifacts 必須是 object array。' -RequestPathValue $RequestPathValue -Field 'prepare_artifacts' -Detail ([ordered]@{ expected_type = 'object[]'; actual_type = $Value.GetType().FullName })
+        Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 prepare_artifacts 必須是 object array。' -RequestPathValue $RequestPathValue -Field 'prepare_artifacts' -Detail ([ordered]@{ expected_type = 'object[]'; actual_type = Get-DispatchRequestTypeName -Value $Value })
     }
 
     $artifacts = New-Object 'System.Collections.Generic.List[object]'
@@ -3347,7 +3403,7 @@ function Read-DispatchRequest {
         Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidJson' -Message 'request file 根節點必須是 JSON object。' -RequestPathValue $requestPathValue
     }
 
-    $dispatchOnlyFields = @('source_root', 'dispatch_root', 'write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path')
+    $dispatchOnlyFields = @('source_root', 'dispatch_root', 'write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path')
     $allowedFields = @('schema', 'operation', 'line_slug', 'dispatch_slug', 'profile', 'advisor_request_source', 'target_path', 'add_directory', 'search', 'codex_parent_option', 'literal_values', 'prepare_artifacts') + $dispatchOnlyFields
     foreach ($property in $document.PSObject.Properties) {
         if ($allowedFields -notcontains $property.Name) {
@@ -3356,9 +3412,7 @@ function Read-DispatchRequest {
     }
 
     foreach ($requiredField in @('schema', 'operation', 'line_slug', 'dispatch_slug')) {
-        if (-not (Test-DispatchRequestFieldPresent -Document $document -Name $requiredField)) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message ("request file 缺少必要欄位：{0}" -f $requiredField) -RequestPathValue $requestPathValue -Field $requiredField
-        }
+        Assert-DispatchRequestRequiredField -Document $document -Name $requiredField -RequestPathValue $requestPathValue
     }
 
     if ($document.schema -isnot [string] -or [string]$document.schema -cne 'ai-sessions.dispatch-request.v1') {
@@ -3377,7 +3431,8 @@ function Read-DispatchRequest {
     }
     else {
         foreach ($requiredDispatchField in @('source_root', 'dispatch_root', 'write_mode', 'dispatch_kind', 'target_path', 'prepare_artifacts', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'failure_receipt_path')) {
-            if (-not (Test-DispatchRequestFieldPresent -Document $document -Name $requiredDispatchField)) {
+            $requiredDispatchProperty = $document.PSObject.Properties[$requiredDispatchField]
+            if ($null -eq $requiredDispatchProperty -or $null -eq $requiredDispatchProperty.Value) {
                 Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message ("Dispatch request file 缺少必要欄位：{0}" -f $requiredDispatchField) -RequestPathValue $requestPathValue -Field $requiredDispatchField
             }
         }
@@ -3405,14 +3460,14 @@ function Read-DispatchRequest {
     $searchPresent = Test-DispatchRequestFieldPresent -Document $document -Name 'search'
     $fieldPresence.search = $searchPresent
     if ($searchPresent -and $document.search -isnot [bool]) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 search 必須是 boolean。' -RequestPathValue $requestPathValue -Field 'search' -Detail ([ordered]@{ expected_type = 'boolean'; actual_type = $document.search.GetType().FullName })
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 search 必須是 boolean。' -RequestPathValue $requestPathValue -Field 'search' -Detail ([ordered]@{ expected_type = 'boolean'; actual_type = Get-DispatchRequestTypeName -Value $document.search })
     }
     $profilePresent = Test-DispatchRequestFieldPresent -Document $document -Name 'profile'
     $fieldPresence.profile = $profilePresent
     $profileValue = $null
     if ($profilePresent) {
         if ($document.profile -isnot [string]) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 profile 必須是 string。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ expected_type = 'string'; actual_type = $document.profile.GetType().FullName })
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 profile 必須是 string。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ expected_type = 'string'; actual_type = Get-DispatchRequestTypeName -Value $document.profile })
         }
         $profileValue = [string]$document.profile
         if (@('default', 'advisor') -notcontains $profileValue) {
@@ -3424,7 +3479,7 @@ function Read-DispatchRequest {
     $advisorRequestSourceValue = $null
     if ($advisorRequestSourcePresent) {
         if ($document.advisor_request_source -isnot [string]) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 advisor_request_source 必須是 string。' -RequestPathValue $requestPathValue -Field 'advisor_request_source' -Detail ([ordered]@{ expected_type = 'string'; actual_type = $document.advisor_request_source.GetType().FullName })
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 advisor_request_source 必須是 string。' -RequestPathValue $requestPathValue -Field 'advisor_request_source' -Detail ([ordered]@{ expected_type = 'string'; actual_type = Get-DispatchRequestTypeName -Value $document.advisor_request_source })
         }
         $advisorRequestSourceValue = [string]$document.advisor_request_source
         if (@('automatic-quota', 'user-explicit') -notcontains $advisorRequestSourceValue) {
@@ -3465,6 +3520,11 @@ function Read-DispatchRequest {
         else {
             $dispatchValues.requested_unit = $null
         }
+        $dispatchFieldPresence.continue_from_scope_plan = Test-DispatchRequestFieldPresent -Document $document -Name 'continue_from_scope_plan'
+        if ($dispatchFieldPresence.continue_from_scope_plan -and $document.continue_from_scope_plan -isnot [bool]) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 continue_from_scope_plan 必須是 boolean。' -RequestPathValue $requestPathValue -Field 'continue_from_scope_plan' -Detail ([ordered]@{ expected_type = 'boolean'; actual_type = Get-DispatchRequestTypeName -Value $document.continue_from_scope_plan })
+        }
+        $dispatchValues.continue_from_scope_plan = if ($dispatchFieldPresence.continue_from_scope_plan) { [bool]$document.continue_from_scope_plan } else { $null }
     }
 
     return [ordered]@{
@@ -3565,6 +3625,34 @@ function Apply-DispatchRequestScalarField {
     if (Test-DispatchInvocationParameterBound -Name $CliField) {
         $receivedValue = [string](Get-DispatchInvocationParameterValue -Name $CliField)
         if ($receivedValue -cne $requestValue) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestMismatch' -Message ("request {0} 與命令列參數不一致。" -f $RequestField) -RequestPathValue ([string]$Context.path) -Field $RequestField -Detail ([ordered]@{ expected = $requestValue; received = $receivedValue; process_started = $false })
+        }
+    }
+    else {
+        Set-Variable -Name $CliField -Scope Script -Value $requestValue
+    }
+}
+
+function Apply-DispatchRequestBooleanField {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Context,
+
+        [Parameter(Mandatory)]
+        [string]$CliField,
+
+        [Parameter(Mandatory)]
+        [string]$RequestField
+    )
+
+    if (-not [bool]$Context.dispatch_field_presence[$RequestField]) {
+        return
+    }
+    $requestValue = [bool]$Context.dispatch_values[$RequestField]
+    if (Test-DispatchInvocationParameterBound -Name $CliField) {
+        $receivedValue = [bool](Get-DispatchInvocationParameterValue -Name $CliField)
+        if ($receivedValue -ne $requestValue) {
             Throw-DispatchRequestFailure -Code 'DispatchRequestMismatch' -Message ("request {0} 與命令列參數不一致。" -f $RequestField) -RequestPathValue ([string]$Context.path) -Field $RequestField -Detail ([ordered]@{ expected = $requestValue; received = $receivedValue; process_started = $false })
         }
     }
@@ -3714,6 +3802,7 @@ function Apply-DispatchRequest {
                 @('QuotaAfterPath', 'quota_after_path'))) {
             Apply-DispatchRequestScalarField -Context $context -CliField ([string]$mapping[0]) -RequestField ([string]$mapping[1])
         }
+        Apply-DispatchRequestBooleanField -Context $context -CliField 'ContinueFromScopePlan' -RequestField 'continue_from_scope_plan'
         if ([bool]$context.dispatch_field_presence.requested_unit) {
             $requestValues = @($context.dispatch_values.requested_unit)
             if (Test-DispatchInvocationParameterBound -Name 'RequestedUnit') {
@@ -3729,6 +3818,21 @@ function Apply-DispatchRequest {
         }
     }
     return $context
+}
+
+function Assert-DispatchSessionMode {
+    [CmdletBinding()]
+    param()
+
+    $validValues = @('cold-start', 'continuation')
+    if ($validValues -contains [string]$SessionMode) {
+        return
+    }
+    $receivedValue = if ($null -eq $SessionMode) { $null } else { [string]$SessionMode }
+    if ($null -ne $script:RequestContext) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ('request 欄位 session_mode 不支援：' + [string]$receivedValue) -RequestPathValue ([string]$script:RequestContext.path) -Field 'session_mode' -Detail ([ordered]@{ valid_values = $validValues; received = $receivedValue })
+    }
+    throw ('SessionMode 不支援：received={0}; valid_values={1}' -f [string]$receivedValue, ($validValues -join ', '))
 }
 
 function ConvertTo-NonNullObjectArray {
@@ -4534,11 +4638,25 @@ function Write-ScopePlanHashRecordIfMissing {
         [string]$LineSlug,
 
         [Parameter(Mandatory)]
-        [string]$ScopePlanPath
+        [string]$ScopePlanPath,
+
+        [string]$RootRunId
     )
 
     $recordPath = Get-ScopePlanHashRecordPath -SourceHistoryRoot $SourceHistoryRoot -DispatchSlug $DispatchSlug
     if (Test-Path -LiteralPath $recordPath -PathType Leaf) {
+        try {
+            $existingRecord = Get-Content -LiteralPath $recordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        catch {
+            throw "既有 ScopePlan SHA-256 紀錄無法解析：$recordPath；$($_.Exception.Message)"
+        }
+        if (-not [string]::IsNullOrWhiteSpace($RootRunId)) {
+            $existingRootRunIdProperty = $existingRecord.PSObject.Properties['root_run_id']
+            if ($null -eq $existingRootRunIdProperty -or [string]$existingRootRunIdProperty.Value -cne $RootRunId) {
+                throw "既有 ScopePlan SHA-256 紀錄的 root run 不一致：record=$([string](Get-OptionalObjectProperty -Object $existingRecord -Name 'root_run_id'))；expected=$RootRunId"
+            }
+        }
         return $recordPath
     }
 
@@ -4549,6 +4667,7 @@ function Write-ScopePlanHashRecordIfMissing {
         scope_plan_path = $resolvedScopePlanPath
         sha256          = Get-FileSha256 -Path $resolvedScopePlanPath
         created_at_utc  = [datetime]::UtcNow.ToString('o')
+        root_run_id     = if ([string]::IsNullOrWhiteSpace($RootRunId)) { $null } else { $RootRunId }
     }
     Write-Utf8NoBom -Path $recordPath -Content (($record | ConvertTo-Json -Depth 8) + "`n")
     return $recordPath
@@ -4566,7 +4685,9 @@ function Test-ScopePlanHashRecord {
         [string]$LineSlug,
 
         [Parameter(Mandatory)]
-        [string]$ScopePlanPath
+        [string]$ScopePlanPath,
+
+        [string]$ExpectedRootRunId
     )
 
     $recordPath = Get-ScopePlanHashRecordPath -SourceHistoryRoot $SourceHistoryRoot -DispatchSlug $DispatchSlug
@@ -4594,6 +4715,12 @@ function Test-ScopePlanHashRecord {
     }
     if (-not [string]::Equals($recordScopePlanPath, $resolvedScopePlanPath, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "ScopePlan SHA-256 紀錄的路徑不一致：record=$recordScopePlanPath；requested=$resolvedScopePlanPath"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedRootRunId)) {
+        $rootRunIdProperty = $record.PSObject.Properties['root_run_id']
+        if ($null -eq $rootRunIdProperty -or [string]$rootRunIdProperty.Value -cne $ExpectedRootRunId) {
+            throw "ScopePlan SHA-256 紀錄的 root run 不一致：record=$([string]$record.root_run_id)；expected=$ExpectedRootRunId"
+        }
     }
 
     $actualHash = Get-FileSha256 -Path $resolvedScopePlanPath
@@ -4802,11 +4929,79 @@ function Test-ContinuationScopePlan {
         -not [string]::Equals([string]$ScopePlan.task_type, $TaskType, [System.StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([string]$ScopePlan.requested_profile, $RequestedProfile, [System.StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([string]$ScopePlan.unit_kind, $UnitKind, [System.StringComparison]::OrdinalIgnoreCase) -or
-        $ScopePlan.session_mode -ne 'cold-start' -or
+        [string]$ScopePlan.session_mode -notin @('cold-start', 'continuation') -or
         -not (Test-StringArrayEqual -Left $ScopePlan.requested_units -Right $Units)) {
         return $false
     }
     return $true
+}
+
+function New-ContinuationScopePlanSubset {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$ParentScopePlan,
+
+        [Parameter(Mandatory)]
+        [string[]]$RequestedUnits,
+
+        [Parameter(Mandatory)]
+        [string]$ParentScopePlanPath,
+
+        [Parameter(Mandatory)]
+        [string]$ParentScopePlanSha256,
+
+        [Parameter(Mandatory)]
+        [string]$ParentRunId
+    )
+
+    if (-not (Test-ScopePlanCompleteness -ScopePlan $ParentScopePlan)) {
+        throw '續行的父 ScopePlan 不完整，拒絕建立子集。'
+    }
+    if ($null -eq $RequestedUnits -or $RequestedUnits.Count -eq 0) {
+        throw 'ContinueFromScopePlan 必須提供至少一個 RequestedUnit。'
+    }
+
+    $parentUnits = @($ParentScopePlan.requested_units | ForEach-Object { [string]$_ })
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    $previousParentIndex = -1
+    foreach ($requestedUnit in @($RequestedUnits)) {
+        if ([string]::IsNullOrWhiteSpace($requestedUnit)) {
+            throw 'ContinueFromScopePlan 的 RequestedUnit 不可為空白。'
+        }
+        if (-not $seen.Add([string]$requestedUnit)) {
+            throw ('ContinueFromScopePlan 的 RequestedUnit 不可重複：' + [string]$requestedUnit)
+        }
+        $parentIndex = -1
+        for ($index = 0; $index -lt $parentUnits.Count; $index++) {
+            if ([string]::Equals($parentUnits[$index], [string]$requestedUnit, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $parentIndex = $index
+                break
+            }
+        }
+        if ($parentIndex -lt 0) {
+            throw ('ContinueFromScopePlan 的 RequestedUnit 不在父集合：' + [string]$requestedUnit)
+        }
+        if ($parentIndex -le $previousParentIndex) {
+            throw 'ContinueFromScopePlan 的 RequestedUnit 必須維持父 ScopePlan 宣告順序。'
+        }
+        $previousParentIndex = $parentIndex
+    }
+
+    $child = $ParentScopePlan | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+    $child.requested_units = @($RequestedUnits | ForEach-Object { [string]$_ })
+    $child.selected_units = @($RequestedUnits | ForEach-Object { [string]$_ })
+    $child.deferred_units = @()
+    $child.decision = 'full'
+    $child.decision_reason = 'continuation subset 已依父 ScopePlan 宣告順序建立。'
+    $child.session_mode = 'continuation'
+    $child.stop_after_selected_units = $false
+    $child | Add-Member -MemberType NoteProperty -Name 'parent_scope_plan_path' -Value (Resolve-AbsolutePath -Path $ParentScopePlanPath) -Force
+    $child | Add-Member -MemberType NoteProperty -Name 'parent_scope_plan_sha256' -Value $ParentScopePlanSha256 -Force
+    $child | Add-Member -MemberType NoteProperty -Name 'parent_run_id' -Value $ParentRunId -Force
+    $child | Add-Member -MemberType NoteProperty -Name 'selection_classification' -Value 'subset' -Force
+    $child.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $child
+    return $child
 }
 
 function Get-LatestSafePointMessage {
@@ -6634,7 +6829,7 @@ function New-DispatchBaseline {
     $path = Join-Path $directory ($DispatchSlug + '-' + $record.baseline_id + '.json')
     $temporaryPath = Join-Path $directory ([guid]::NewGuid().ToString('D') + '.tmp')
     Write-Utf8NoBom $temporaryPath (($record | ConvertTo-Json -Depth 12) + "`n")
-    [IO.File]::Move($temporaryPath, $path)
+    [IO.File]::Move((ConvertTo-FileSystemApiPath -Path $temporaryPath), (ConvertTo-FileSystemApiPath -Path $path))
     return [pscustomobject]@{ Path = $path; Sha256 = Get-FileSha256 $path }
 }
 
@@ -9180,6 +9375,7 @@ function Write-DispatchAtomicJsonDocument {
     New-Item -ItemType Directory -Path $parent -Force | Out-Null
     $lock = $null
     $temporaryPath = $null
+    $resolvedFileApiPath = ConvertTo-FileSystemApiPath -Path $resolvedPath
     try {
         $lock = Open-DispatchResultLock -ResolvedPath $resolvedPath
         if ($RequireAbsent -and (Test-Path -LiteralPath $resolvedPath)) {
@@ -9214,13 +9410,13 @@ function Write-DispatchAtomicJsonDocument {
                 $collision.Data['path'] = $resolvedPath
                 throw $collision
             }
-            [System.IO.File]::Replace($temporaryPath, $resolvedPath, [System.Management.Automation.Language.NullString]::Value)
+            [System.IO.File]::Replace((ConvertTo-FileSystemApiPath -Path $temporaryPath), $resolvedFileApiPath, [System.Management.Automation.Language.NullString]::Value)
         }
-        elseif (Test-Path -LiteralPath $resolvedPath) {
+        elseif ([System.IO.File]::Exists($resolvedFileApiPath)) {
             throw "Dispatch result 目的路徑不是檔案：$resolvedPath"
         }
         else {
-            [System.IO.File]::Move($temporaryPath, $resolvedPath)
+            [System.IO.File]::Move((ConvertTo-FileSystemApiPath -Path $temporaryPath), $resolvedFileApiPath)
         }
     }
     catch {
@@ -12353,7 +12549,7 @@ function Read-DispatchRunRecord {
     }
     $record = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $pathValue -Raw -Encoding UTF8)
     if ($null -eq $record -or $record -isnot [pscustomobject]) { throw 'RunRecord 必須為 JSON object。' }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'acl_gate', 'sandbox_acl_baseline', 'sandbox_acl_evidence', 'unknown_interruption', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'acl_gate', 'sandbox_acl_baseline', 'sandbox_acl_evidence', 'unknown_interruption', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
         if ($null -eq $record.PSObject.Properties[$name]) {
             $value = $null
             if ($name -eq 'attempt_parent_run_id') {
@@ -12364,6 +12560,9 @@ function Read-DispatchRunRecord {
             }
             elseif ($name -eq 'parent_options_status') {
                 $value = 'unknown'
+            }
+            elseif ($name -eq 'scope_plan_selection') {
+                $value = 'root'
             }
             $record | Add-Member -MemberType NoteProperty -Name $name -Value $value
         }
@@ -12505,7 +12704,7 @@ function Read-DispatchRunRecord {
     elseif ($scopePathValue -isnot [string] -or $scopeHashValue -isnot [string] -or [string]::IsNullOrWhiteSpace($scopeHashValue)) {
         throw 'RunRecord ScopePlan 欄位型別或 SHA-256 異常。'
     }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
         $property = $record.PSObject.Properties[$name]
         if ($null -eq $property -or ($null -ne $property.Value -and ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)))) {
             throw "RunRecord nullable 欄位異常：$name"
@@ -12519,7 +12718,7 @@ function Read-DispatchRunRecord {
     if ($record.schema -cne 'ai-sessions.dispatch-run.v1' -or $record.line_slug -cne $LineSlug -or $record.dispatch_slug -cne $DispatchSlug) {
         throw 'RunRecord schema／line／dispatch 不一致。'
     }
-    foreach ($name in @('run_id', 'previous_run_id', 'requested_thread_id', 'thread_id', 'attempt_parent_run_id', 'resume_anchor_run_id')) {
+    foreach ($name in @('run_id', 'previous_run_id', 'requested_thread_id', 'thread_id', 'attempt_parent_run_id', 'resume_anchor_run_id', 'scope_plan_parent_run_id', 'scope_plan_root_run_id')) {
         $parsed = [guid]::Empty
         if ($null -ne $record.$name -and -not [guid]::TryParseExact($record.$name, 'D', [ref]$parsed)) { throw "RunRecord GUID 異常：$name" }
     }
@@ -12559,6 +12758,31 @@ function Read-DispatchRunRecord {
     if ($null -ne $record.process_exit_code_sidecar_path -and -not (Test-PathWithinRoot $record.process_exit_code_sidecar_path $executionHistory)) { throw 'RunRecord exit sidecar 超出 execution history。' }
     if (-not [string]::IsNullOrWhiteSpace([string]$scopePathValue)) {
         if ($scopeHashValue -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileSha256 $scopePathValue) -ne $scopeHashValue) { throw 'RunRecord 證據 SHA-256 不一致。' }
+    }
+    if ([string]$record.scope_plan_selection -notin @('root', 'subset')) {
+        throw 'RunRecord scope_plan_selection 異常。'
+    }
+    $scopeParentPath = [string](Get-DispatchJsonProperty -Object $record -Name 'scope_plan_parent_path')
+    $scopeParentSha256 = [string](Get-DispatchJsonProperty -Object $record -Name 'scope_plan_parent_sha256')
+    $scopeParentRunId = [string](Get-DispatchJsonProperty -Object $record -Name 'scope_plan_parent_run_id')
+    if ([string]::IsNullOrWhiteSpace($scopeParentPath)) {
+        if (-not [string]::IsNullOrWhiteSpace($scopeParentSha256) -or -not [string]::IsNullOrWhiteSpace($scopeParentRunId) -or $record.scope_plan_selection -eq 'subset') {
+            throw 'RunRecord ScopePlan parent 欄位必須成對存在。'
+        }
+    }
+    else {
+        if ($scopeParentSha256 -notmatch '^[a-fA-F0-9]{64}$' -or [string]::IsNullOrWhiteSpace($scopeParentRunId)) {
+            throw 'RunRecord ScopePlan parent 欄位型別或 SHA-256 異常。'
+        }
+        if (-not [string]::Equals((Resolve-AbsolutePath $scopeParentPath), $scopeParentPath, [StringComparison]::OrdinalIgnoreCase) -or -not (Test-PathWithinRoot $scopeParentPath $ExecutionRoot)) {
+            throw 'RunRecord ScopePlan parent path 必須是 executionRoot 內的正規化路徑。'
+        }
+        if (-not (Test-Path -LiteralPath $scopeParentPath -PathType Leaf) -or (Get-FileSha256 $scopeParentPath) -ine $scopeParentSha256) {
+            throw 'RunRecord ScopePlan parent SHA-256 不一致。'
+        }
+        if ($record.scope_plan_selection -ne 'subset') {
+            throw 'RunRecord 有 ScopePlan parent 時 selection 必須是 subset。'
+        }
     }
     if ($record.preflight_sha256 -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileSha256 $record.preflight_result_path) -ne $record.preflight_sha256) {
         throw 'RunRecord 證據 SHA-256 不一致。'
@@ -12685,6 +12909,82 @@ function Get-DispatchRunRecordList {
     return @($records.ToArray())
 }
 
+function Get-DispatchRunRecordStartClassification {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Record
+    )
+
+    $launchStateProperty = $Record.PSObject.Properties['launch_state']
+    $launchState = if ($null -eq $launchStateProperty) { $null } else { [string]$launchStateProperty.Value }
+    $preStartStages = @('preparation', 'profile-evidence', 'evidence-pack-inline')
+    if ($launchState -eq 'started') {
+        return [pscustomobject]@{
+            classification = 'actual-start'
+            reason = 'launch_state=started。'
+            launch_state = $launchState
+            process_started = $true
+            phase = $null
+            failure_stage = $null
+        }
+    }
+
+    $failureProperty = $Record.PSObject.Properties['failure']
+    $failure = if ($null -eq $failureProperty) { $null } else { $failureProperty.Value }
+    $failurePhaseProperty = if ($null -eq $failure) { $null } else { $failure.PSObject.Properties['phase'] }
+    $phase = if ($null -eq $failurePhaseProperty) { $null } else { [string]$failurePhaseProperty.Value }
+    $observationProperty = if ($null -eq $failure) { $null } else { $failure.PSObject.Properties['observation'] }
+    $observation = if ($null -eq $observationProperty) { $null } else { $observationProperty.Value }
+    $processStartedProperty = if ($null -eq $observation) { $null } else { $observation.PSObject.Properties['process_started'] }
+    $failureStageProperty = if ($null -eq $observation) { $null } else { $observation.PSObject.Properties['failure_stage'] }
+    $failureStage = if ($null -eq $failureStageProperty) { $null } else { [string]$failureStageProperty.Value }
+    $knownStages = @($phase, $failureStage) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
+    $hasPreStartStage = @($knownStages | Where-Object { $preStartStages -contains [string]$_ }).Count -gt 0
+    $hasNonPreStartStage = @($knownStages | Where-Object { $preStartStages -notcontains [string]$_ }).Count -gt 0
+
+    if ($launchState -eq 'launch-failed' -and $null -ne $processStartedProperty -and $processStartedProperty.Value -is [bool]) {
+        $processStarted = [bool]$processStartedProperty.Value
+        if ($processStarted) {
+            return [pscustomobject]@{
+                classification = 'actual-start'
+                reason = 'launch-failed 但 failure.observation.process_started=true，不能略過。'
+                launch_state = $launchState
+                process_started = $true
+                phase = $phase
+                failure_stage = $failureStage
+            }
+        }
+        if ($hasPreStartStage -and -not $hasNonPreStartStage) {
+            return [pscustomobject]@{
+                classification = 'unstarted-sandbox'
+                reason = 'launch-failed、process_started=false，且失敗階段為已知 pre-start 階段。'
+                launch_state = $launchState
+                process_started = $false
+                phase = $phase
+                failure_stage = $failureStage
+            }
+        }
+        return [pscustomobject]@{
+            classification = 'unknown'
+            reason = 'process_started=false 但缺少或衝突的已定義 pre-start 階段。'
+            launch_state = $launchState
+            process_started = $false
+            phase = $phase
+            failure_stage = $failureStage
+        }
+    }
+
+    return [pscustomobject]@{
+        classification = 'unknown'
+        reason = if ($launchState -eq 'launch-failed') { 'launch-failed 缺少明確布林 process_started 或 observation。' } else { 'RunRecord 狀態不是可判定的 started 或 launch-failed。' }
+        launch_state = $launchState
+        process_started = $null
+        phase = $phase
+        failure_stage = $failureStage
+    }
+}
+
 function Resolve-LatestColdStartFailure {
     [CmdletBinding()]
     param(
@@ -12698,13 +12998,20 @@ function Resolve-LatestColdStartFailure {
     if ($records.Count -eq 0) {
         return $null
     }
+    $classifiedRecords = @($records | ForEach-Object {
+            [pscustomobject]@{
+                record = $_
+                classification = Get-DispatchRunRecordStartClassification -Record $_
+            }
+        })
     $latest = @(
-        $records | Sort-Object -Property @(
-            @{ Expression = { ConvertTo-DispatchTimestamp -Value $_.created_at_utc }; Descending = $true }
-            @{ Expression = { $_.run_id }; Descending = $true }
+        $classifiedRecords | Sort-Object -Property @(
+            @{ Expression = { ConvertTo-DispatchTimestamp -Value $_.record.created_at_utc }; Descending = $true }
+            @{ Expression = { $_.record.run_id }; Descending = $true }
         )
     )[0]
-    if ($latest.launch_state -ne 'launch-failed') {
+    $latestRecord = $latest.record
+    if ($latestRecord.launch_state -ne 'launch-failed' -or $latest.classification.classification -ne 'unstarted-sandbox') {
         throw '同派遣最新 RunRecord 不是 launch-failed，拒絕另建 cold-start。'
     }
     $pidCheck = Get-PidCheckResult -SourceRoot $SourceRoot -LineSlug $LineSlug -WriteMode 'readonly'
@@ -12726,7 +13033,7 @@ function Resolve-LatestColdStartFailure {
     if (@($activeRecords | Where-Object { $_.DispatchSlug -eq $DispatchSlug }).Count -gt 0 -or $blockingUnconfirmedRecords.Count -gt 0) {
         throw '最新 failed attempt 仍有 active 或未確認的程序，拒絕 cold-start。'
     }
-    return $latest
+    return $latestRecord
 }
 
 function Resolve-PreviousDispatchRun {
@@ -12781,6 +13088,15 @@ function Resolve-PreviousDispatchRun {
     }
     if ($seen.Count -ne $recordsList.Count) { throw 'RunRecord 存在不相連的紀錄或循環。' }
 
+    $startClassifications = @{}
+    foreach ($candidate in @($chain.ToArray())) {
+        $classification = Get-DispatchRunRecordStartClassification -Record $candidate
+        $startClassifications[$candidate.run_id] = $classification
+        if ($candidate.launch_state -eq 'launch-failed' -and $classification.classification -eq 'unknown') {
+            throw ('UnknownRunRecordStartClassification：run_id={0}; reason={1}; phase={2}; failure_stage={3}; process_started={4}' -f $candidate.run_id, $classification.reason, [string]$classification.phase, [string]$classification.failure_stage, [string]$classification.process_started)
+        }
+    }
+
     for ($index = 0; $index -lt $chain.Count - 1; $index++) {
         $child = $chain[$index]
         $parent = $chain[$index + 1]
@@ -12792,7 +13108,26 @@ function Resolve-PreviousDispatchRun {
         if ([string]::IsNullOrWhiteSpace([string]$child.scope_plan_path) -or [string]::IsNullOrWhiteSpace([string]$parent.scope_plan_path)) {
             throw 'RunRecord 前後輪 ScopePlan 不一致。'
         }
-        if ($child.scope_plan_path -ne $parent.scope_plan_path -or $child.scope_plan_sha256 -ne $parent.scope_plan_sha256) { throw 'RunRecord 前後輪 ScopePlan 不一致。' }
+        $childScopePlanSelection = [string](Get-DispatchJsonProperty -Object $child -Name 'scope_plan_selection')
+        $childScopePlanParentPath = [string](Get-DispatchJsonProperty -Object $child -Name 'scope_plan_parent_path')
+        $childScopePlanParentSha256 = [string](Get-DispatchJsonProperty -Object $child -Name 'scope_plan_parent_sha256')
+        $childScopePlanParentRunId = [string](Get-DispatchJsonProperty -Object $child -Name 'scope_plan_parent_run_id')
+        $isScopePlanSubsetChild = [string]::Equals($childScopePlanSelection, 'subset', [StringComparison]::Ordinal) -and
+            -not [string]::IsNullOrWhiteSpace($childScopePlanParentPath) -and
+            -not [string]::IsNullOrWhiteSpace($childScopePlanParentSha256) -and
+            -not [string]::IsNullOrWhiteSpace($childScopePlanParentRunId)
+        if ($isScopePlanSubsetChild) {
+            if (-not [string]::Equals((Resolve-AbsolutePath -Path $childScopePlanParentPath), (Resolve-AbsolutePath -Path ([string]$parent.scope_plan_path)), [StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals($childScopePlanParentSha256, [string]$parent.scope_plan_sha256, [StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals($childScopePlanParentRunId, [string]$parent.run_id, [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals([string]$child.scope_plan_path, $childScopePlanParentPath, [StringComparison]::OrdinalIgnoreCase) -or
+                [string]::Equals([string]$child.scope_plan_sha256, $childScopePlanParentSha256, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'RunRecord 子集 ScopePlan 父計畫綁定不一致。'
+            }
+        }
+        elseif ($child.scope_plan_path -ne $parent.scope_plan_path -or $child.scope_plan_sha256 -ne $parent.scope_plan_sha256) {
+            throw 'RunRecord 前後輪 ScopePlan 不一致。'
+        }
     }
 
     $interruptedUnknownRecords = @(Get-RecoveryChainInterruptedUnknownRecords -Records @($chain.ToArray()))
@@ -12813,18 +13148,49 @@ function Resolve-PreviousDispatchRun {
 
     $anchor = $null
     $anchorEvents = $null
+    $latestActualStartRecord = $null
+    $latestActualStartEvents = $null
+    $preparedAnchor = $null
+    $preparedAnchorEvents = $null
     foreach ($candidate in @($chain.ToArray())) {
-        if ($candidate.launch_state -eq 'launch-failed') { continue }
+        $classification = $startClassifications[$candidate.run_id]
+        if ($classification.classification -eq 'unstarted-sandbox') { continue }
+        if ($candidate.launch_state -eq 'launch-failed' -and $classification.classification -ne 'actual-start') { continue }
         $candidateEvents = Get-DispatchRunEvents -Record $candidate
-        if ($candidateEvents.ThreadId -ceq $ResumeThreadId) {
+        if ($candidateEvents.ThreadId -cne $ResumeThreadId) { continue }
+        if ($classification.classification -eq 'actual-start') {
+            if ($null -eq $latestActualStartRecord) {
+                $latestActualStartRecord = $candidate
+                $latestActualStartEvents = $candidateEvents
+            }
             if ($null -eq $anchor) {
                 $anchor = $candidate
                 $anchorEvents = $candidateEvents
             }
         }
+        elseif ($candidate.launch_state -eq 'prepared' -and $null -eq $preparedAnchor) {
+            $preparedAnchor = $candidate
+            $preparedAnchorEvents = $candidateEvents
+        }
+    }
+    if ($null -eq $anchor -and $null -ne $preparedAnchor) {
+        $anchor = $preparedAnchor
+        $anchorEvents = $preparedAnchorEvents
     }
     if ($null -eq $anchor) {
         throw 'NoValidResumeAnchor：找不到與 ResumeThreadId 相符的有效 anchor。'
+    }
+
+    $scopePlanRootRecord = @(
+        @($chain.ToArray()) |
+            Where-Object {
+                [string]::Equals([string](Get-DispatchJsonProperty -Object $_ -Name 'scope_plan_selection'), 'root', [StringComparison]::OrdinalIgnoreCase) -and
+                -not [string]::IsNullOrWhiteSpace([string](Get-DispatchJsonProperty -Object $_ -Name 'scope_plan_path'))
+            } |
+            Select-Object -Last 1
+    )
+    if ($scopePlanRootRecord.Count -eq 0) {
+        $scopePlanRootRecord = @($anchor)
     }
 
     $pidCheck = Get-PidCheckResult -SourceRoot $SourceRoot -LineSlug $LineSlug -WriteMode 'readonly'
@@ -12849,11 +13215,14 @@ function Resolve-PreviousDispatchRun {
     }
     $skippedAttempts = @(
         @($chain.ToArray()) |
-            Where-Object { $_.launch_state -eq 'launch-failed' } |
+            Where-Object { $startClassifications[$_.run_id].classification -eq 'unstarted-sandbox' } |
             ForEach-Object {
                 $failure = Get-DispatchJsonProperty -Object $_ -Name 'failure'
+                $classification = $startClassifications[$_.run_id]
                 [ordered]@{
                     run_id = $_.run_id
+                    classification = $classification.classification
+                    classification_reason = $classification.reason
                     phase = Get-DispatchJsonProperty -Object $failure -Name 'phase'
                     reason_code = Get-DispatchJsonProperty -Object $failure -Name 'reason_code'
                     message = Get-DispatchJsonProperty -Object $failure -Name 'message'
@@ -12866,7 +13235,17 @@ function Resolve-PreviousDispatchRun {
         Record = $tail
         AnchorRecord = $anchor
         ChainTailRecord = $tail
+        LatestActualStartRecord = $latestActualStartRecord
+        LatestActualStartEvents = $latestActualStartEvents
+        ScopePlanRootRecord = $scopePlanRootRecord[0]
         SkippedAttempts = @($skippedAttempts)
+        StartClassifications = @($chain.ToArray() | ForEach-Object {
+                [ordered]@{
+                    run_id = $_.run_id
+                    classification = $startClassifications[$_.run_id].classification
+                    reason = $startClassifications[$_.run_id].reason
+                }
+            })
         Message = $message
         ResumeThreadId = $ResumeThreadId
     }
@@ -12950,6 +13329,11 @@ function Invoke-Start {
     $afterSnapshotPathValue = $QuotaAfterPath
     $scopePlan = $null
     $scopePlanPathValue = $null
+    $scopePlanParentPathValue = $null
+    $scopePlanParentSha256Value = $null
+    $scopePlanParentRunIdValue = $null
+    $scopePlanRootRunIdValue = $null
+    $scopePlanSelectionValue = 'root'
     $continuationContextPath = $null
     $continuationContextMessage = $null
     $previousRun = $null
@@ -13242,6 +13626,11 @@ function Invoke-Start {
         last_message_path = $lastMessagePathValue
         scope_plan_path = $null
         scope_plan_sha256 = $null
+        scope_plan_parent_path = $null
+        scope_plan_parent_sha256 = $null
+        scope_plan_parent_run_id = $null
+        scope_plan_root_run_id = $null
+        scope_plan_selection = 'root'
         preflight_result_path = $preflightPathValue
         preflight_sha256 = $preflightSha256Value
         prepare_result_path = $prepareResultPathValue
@@ -13349,10 +13738,10 @@ function Invoke-Start {
         }
         throw ('ProcessAlive：Start process gate 未確認 stopped；evidence=' + (ConvertTo-Json -InputObject $processGate -Depth 20 -Compress))
     }
-    $continuationAclRecord = if ($null -eq $previousRun) { $null } else { $previousRun.ChainTailRecord }
+    $continuationAclRecord = if ($null -eq $previousRun) { $null } else { $previousRun.LatestActualStartRecord }
     if ($null -ne $previousRun -and $null -eq $continuationAclRecord) {
         $phase = 'preparation'
-        throw 'WorktreeAclResidue：續行缺少前次 RunRecord 的 ChainTailRecord。'
+        throw 'WorktreeAclContinuationDenied：續行沒有可作為 ACL 錨點的 actual-start RunRecord。'
     }
     $aclGate = Get-WorktreeAclGate -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -WriteMode $writeModeValue -ContinuationRecord $continuationAclRecord
     if ($aclGate.status -in @('residue', 'unknown', 'failed', 'continuation-denied')) {
@@ -13485,6 +13874,12 @@ function Invoke-Start {
     $unitKindValue = Get-DefaultUnitKind -DispatchKind $dispatchKindValue -UnitKind $UnitKind -TaskType $TaskType
     $units = @(Get-DispatchUnitList -RequestedUnit $RequestedUnit -DispatchKind $dispatchKindValue -UnitKind $unitKindValue -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -EvidencePackPath $EvidencePackPath -EvidenceQuestionUnits $(if ($null -eq $evidencePackInfo) { $null } else { @($evidencePackInfo.question_units) }) -TargetPath $TargetPath)
     $scopePlanPathValue = $ScopePlanPath
+    if ($ContinueFromScopePlan -and [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
+        throw 'ContinueFromScopePlan 僅允許在存在有效 AnchorRecord 的續行中使用。'
+    }
+    if ($ContinueFromScopePlan -and -not [string]::Equals($SessionMode, 'continuation', [StringComparison]::Ordinal)) {
+        throw 'ContinueFromScopePlan 僅允許在 SessionMode=continuation 時使用。'
+    }
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId) -and [string]::IsNullOrWhiteSpace($scopePlanPathValue)) {
         throw '續行必須提供既有 ScopePlanPath，禁止重新建立 ScopePlan。'
     }
@@ -13498,21 +13893,100 @@ function Invoke-Start {
         }
     }
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
-        $null = Test-ScopePlanHashRecord -SourceHistoryRoot $sourceHistoryRoot -DispatchSlug $dispatchSlugValue -LineSlug $lineSlugValue -ScopePlanPath $scopePlanPathValue
-        if ($previousRun.AnchorRecord.scope_plan_path -ne $scopePlanPathValue -or $previousRun.AnchorRecord.scope_plan_sha256 -ne (Get-FileSha256 $scopePlanPathValue)) {
+        $anchorScopePlanPath = [string](Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'scope_plan_path')
+        $anchorScopePlanSha256 = [string](Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'scope_plan_sha256')
+        if ([string]::IsNullOrWhiteSpace($anchorScopePlanPath) -or [string]::IsNullOrWhiteSpace($anchorScopePlanSha256)) {
+            throw '續行 AnchorRecord 缺少 ScopePlan 路徑或 SHA-256。'
+        }
+        $anchorScopePlanPath = Resolve-AbsolutePath -Path $anchorScopePlanPath
+        if (-not (Test-PathWithinRoot -Path $anchorScopePlanPath -Root $executionRootPath)) {
+            throw "AnchorRecord ScopePlan 必須位於 executionRoot 內：$anchorScopePlanPath"
+        }
+        $anchorScopePlanCurrentSha256 = Get-FileSha256 -Path $anchorScopePlanPath
+        if (-not [string]::Equals($anchorScopePlanPath, $scopePlanPathValue, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($anchorScopePlanSha256, $anchorScopePlanCurrentSha256, [StringComparison]::OrdinalIgnoreCase)) {
             throw '續行 ScopePlan 與前輪 RunRecord 不一致。'
         }
-        $existingScopePlan = Read-ScopePlanFile -Path $scopePlanPathValue
-        if (-not (Test-ContinuationScopePlan -ScopePlan $existingScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -UnitKind $unitKindValue -Units $units)) {
-            throw '續行的 ScopePlan 不存在、欄位不完整或與目前派工契約不一致。'
+        $anchorScopePlanRootRunId = [string](Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'scope_plan_root_run_id')
+        $witnessScopePlanPath = $anchorScopePlanPath
+        $rootScopePlanRecord = Get-DispatchJsonProperty -Object $previousRun -Name 'ScopePlanRootRecord'
+        if ($null -ne $rootScopePlanRecord -and -not [string]::IsNullOrWhiteSpace([string](Get-DispatchJsonProperty -Object $rootScopePlanRecord -Name 'scope_plan_path'))) {
+            $witnessScopePlanPath = Resolve-AbsolutePath -Path ([string](Get-DispatchJsonProperty -Object $rootScopePlanRecord -Name 'scope_plan_path'))
         }
-        $scopePlan = $existingScopePlan
+        if (-not [string]::IsNullOrWhiteSpace($anchorScopePlanRootRunId) -and
+            $null -ne $rootScopePlanRecord -and
+            -not [string]::Equals([string](Get-DispatchJsonProperty -Object $rootScopePlanRecord -Name 'run_id'), $anchorScopePlanRootRunId, [StringComparison]::OrdinalIgnoreCase)) {
+            throw '續行 ScopePlan root run 與 AnchorRecord 不一致。'
+        }
+        $hashRecordParameters = @{
+            SourceHistoryRoot = $sourceHistoryRoot
+            DispatchSlug      = $dispatchSlugValue
+            LineSlug          = $lineSlugValue
+            ScopePlanPath     = $witnessScopePlanPath
+        }
+        if (-not [string]::IsNullOrWhiteSpace($anchorScopePlanRootRunId)) {
+            $hashRecordParameters.ExpectedRootRunId = $anchorScopePlanRootRunId
+        }
+        $null = Test-ScopePlanHashRecord @hashRecordParameters
+        $existingScopePlan = Read-ScopePlanFile -Path $anchorScopePlanPath
+        if ($ContinueFromScopePlan) {
+            if (-not [string]::Equals($SessionMode, 'continuation', [StringComparison]::Ordinal)) {
+                throw 'ContinueFromScopePlan 僅允許在 SessionMode=continuation 時使用。'
+            }
+            if (-not (Test-ContinuationScopePlan -ScopePlan $existingScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -UnitKind $unitKindValue -Units @($existingScopePlan.requested_units))) {
+                throw '續行的父 ScopePlan 不存在、欄位不完整或與目前派工契約不一致。'
+            }
+            $scopePlanParentPathValue = $anchorScopePlanPath
+            $scopePlanParentSha256Value = $anchorScopePlanSha256
+            $scopePlanParentRunIdValue = [string](Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'run_id')
+            $scopePlanRootRunIdValue = if ([string]::IsNullOrWhiteSpace($anchorScopePlanRootRunId)) { $scopePlanParentRunIdValue } else { $anchorScopePlanRootRunId }
+            $scopePlanSelectionValue = 'subset'
+            $scopePlanPathValue = Join-Path -Path $historyRoot -ChildPath ('scope-plan-' + $dispatchSlugValue + '-' + $runId + '-subset.json')
+            $scopePlan = New-ContinuationScopePlanSubset -ParentScopePlan $existingScopePlan -RequestedUnits $units -ParentScopePlanPath $anchorScopePlanPath -ParentScopePlanSha256 $anchorScopePlanSha256 -ParentRunId $scopePlanParentRunIdValue
+            Write-Utf8NoBom -Path $scopePlanPathValue -Content (($scopePlan | ConvertTo-Json -Depth 30) + "`n")
+        }
+        else {
+            if (-not (Test-ContinuationScopePlan -ScopePlan $existingScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -UnitKind $unitKindValue -Units $units)) {
+                throw '續行的 ScopePlan 不存在、欄位不完整或與目前派工契約不一致。'
+            }
+            $scopePlan = $existingScopePlan
+            $scopePlanParentPathValue = Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'scope_plan_parent_path'
+            $scopePlanParentSha256Value = Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'scope_plan_parent_sha256'
+            $scopePlanParentRunIdValue = Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'scope_plan_parent_run_id'
+            if ([string]::IsNullOrWhiteSpace([string]$scopePlanParentPathValue)) {
+                $scopePlanParentPathValue = $null
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$scopePlanParentSha256Value)) {
+                $scopePlanParentSha256Value = $null
+            }
+            if ([string]::IsNullOrWhiteSpace([string]$scopePlanParentRunIdValue)) {
+                $scopePlanParentRunIdValue = $null
+            }
+            $scopePlanRootRunIdValue = if ([string]::IsNullOrWhiteSpace($anchorScopePlanRootRunId)) { [string](Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'run_id') } else { $anchorScopePlanRootRunId }
+            $scopePlanSelectionValue = [string](Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'scope_plan_selection')
+            if ([string]::IsNullOrWhiteSpace($scopePlanSelectionValue)) {
+                $scopePlanSelectionValue = 'root'
+            }
+        }
     }
     else {
         $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -SessionMode $sessionModeValue -BeforeSnapshot (Read-QuotaSnapshot -Path $beforeSnapshotPathValue) -CalibrationPath $calibrationPathValue -Units $units -UnitKind $unitKindValue -RequestedBudgetPercent $PrimaryBudgetPercent -RequestedReservePercent $PrimaryReservePercent -Model $resolvedModelValue -ModelEvidence $resolvedModelEvidence -ReasoningEffortEvidence $resolvedReasoningEffortEvidence -ActivationDecision $advisorActivationDecision
         $scopePlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $scopePlan
         Write-Utf8NoBom -Path $scopePlanPathValue -Content (($scopePlan | ConvertTo-Json -Depth 20) + "`n")
-        $null = Write-ScopePlanHashRecordIfMissing -SourceHistoryRoot $sourceHistoryRoot -DispatchSlug $dispatchSlugValue -LineSlug $lineSlugValue -ScopePlanPath $scopePlanPathValue
+        $scopePlanRootRunIdValue = $runId
+        if ($null -ne $latestColdStartFailure) {
+            $inheritedRootRunId = [string](Get-DispatchJsonProperty -Object $latestColdStartFailure -Name 'scope_plan_root_run_id')
+            if ([string]::IsNullOrWhiteSpace($inheritedRootRunId)) {
+                $inheritedRootRunId = [string](Get-DispatchJsonProperty -Object $latestColdStartFailure -Name 'run_id')
+            }
+            if ([string]::IsNullOrWhiteSpace($inheritedRootRunId)) {
+                $phase = 'preparation'
+                throw 'ScopePlanRootRunIdMissing：同 slug cold-start 重試缺少可沿用的 root run id。'
+            }
+            $scopePlanRootRunIdValue = $inheritedRootRunId
+        }
+        $scopePlanSelectionValue = 'root'
+        $null = Write-ScopePlanHashRecordIfMissing -SourceHistoryRoot $sourceHistoryRoot -DispatchSlug $dispatchSlugValue -LineSlug $lineSlugValue -ScopePlanPath $scopePlanPathValue -RootRunId $scopePlanRootRunIdValue
     }
     if ($scopePlan.decision -eq 'blocked-no-estimate' -or $scopePlan.decision -eq 'blocked-insufficient-budget' -or $scopePlan.decision -eq 'blocked-no-fresh-quota' -or $scopePlan.decision -eq 'user-decision-required') {
         throw "ScopePlan 阻擋派工：decision=$($scopePlan.decision); reason=$($scopePlan.decision_reason)"
@@ -13697,6 +14171,11 @@ function Invoke-Start {
     }
     $runRecord.scope_plan_path = $scopePlanPathValue
     $runRecord.scope_plan_sha256 = Get-FileSha256 -Path $scopePlanPathValue
+    $runRecord.scope_plan_parent_path = $scopePlanParentPathValue
+    $runRecord.scope_plan_parent_sha256 = $scopePlanParentSha256Value
+    $runRecord.scope_plan_parent_run_id = $scopePlanParentRunIdValue
+    $runRecord.scope_plan_root_run_id = if ([string]::IsNullOrWhiteSpace($scopePlanRootRunIdValue)) { $runId } else { $scopePlanRootRunIdValue }
+    $runRecord.scope_plan_selection = $scopePlanSelectionValue
     $runRecord.model_evidence = $modelEvidence.model
     $runRecord.reasoning_effort_evidence = $modelEvidence.reasoning_effort
     $runRecord.profile_config_path = $profileConfigPathValue
@@ -14082,10 +14561,20 @@ function Invoke-Start {
                 if (-not [string]::IsNullOrWhiteSpace($scopePlanPathValue) -and (Test-Path -LiteralPath $scopePlanPathValue -PathType Leaf)) {
                     $runRecord.scope_plan_path = $scopePlanPathValue
                     $runRecord.scope_plan_sha256 = Get-FileSha256 -Path $scopePlanPathValue
+                    $runRecord.scope_plan_parent_path = $scopePlanParentPathValue
+                    $runRecord.scope_plan_parent_sha256 = $scopePlanParentSha256Value
+                    $runRecord.scope_plan_parent_run_id = $scopePlanParentRunIdValue
+                    $runRecord.scope_plan_root_run_id = if ([string]::IsNullOrWhiteSpace($scopePlanRootRunIdValue)) { $runId } else { $scopePlanRootRunIdValue }
+                    $runRecord.scope_plan_selection = $scopePlanSelectionValue
                 }
                 else {
                     $runRecord.scope_plan_path = $null
                     $runRecord.scope_plan_sha256 = $null
+                    $runRecord.scope_plan_parent_path = $null
+                    $runRecord.scope_plan_parent_sha256 = $null
+                    $runRecord.scope_plan_parent_run_id = $null
+                    $runRecord.scope_plan_root_run_id = $null
+                    $runRecord.scope_plan_selection = 'root'
                 }
                 if ($null -ne $baselineBinding) {
                     $runRecord.baseline_path = $baselineBinding.Path
@@ -16181,6 +16670,7 @@ function Write-OperationResult {
 
 try {
     $null = Apply-DispatchRequest
+    Assert-DispatchSessionMode
     $result = switch ($Operation) {
         'Preflight' { Invoke-Preflight }
         'Prepare'   { Invoke-Prepare -GuardTargetPath @($TargetPath) }
