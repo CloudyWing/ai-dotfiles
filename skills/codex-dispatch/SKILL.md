@@ -67,6 +67,10 @@ decision_reason
 
 `TaskType=advisor-consult` 使用單一 evidence pack，schema 為 `advisor-consult.evidence.v1`，必須包含目標段落原文摘錄與來源位置、已知結論、待答問題、可能反證與邊界。advisor 執行端只可讀取該 evidence pack，不得探索 repository、讀取其他來源、修改檔案或寫入 report。
 
+advisor 的 worktree `Start` 仍必須提供 `PrepareResultPath`，且該檔案的狀態必須是 `Prepared`。`advisor-consult` 必須提供 `AdvisorConsultReportPath` 與 `QuotaAfterPath`。前者固定位於 `executionRoot\.local\ai-sessions\report\<lineSlug>`，檔名為 `advisor-consult-<dispatchSlug>.md`；後者必須位於 `executionRoot` 內。這兩項路徑都不能改指 `sourceRoot` 的同線 report 或其他來源落點。
+
+evidence pack 必須位於 `executionRoot` 內，並以 `schema: advisor-consult.evidence.v1`、相同的 `line-slug` 與 `dispatch-slug` 開頭。正文固定包含 `目標段落`、`已知結論`、`待答問題`、`可能反證` 與 `邊界` 五個區段。`目標段落` 內必須有非空的 `source:` 與 `excerpt:`；`待答問題` 至少列出一個 `question-<id>:`，並恰好列出一次非空的 `required-output:`；文件另以非空 `output-rules:` 說明回傳規則。`邊界` 內必須各有一行 `- allowed-input:` 與 `- forbidden-action:`，限制 advisor 只讀取該 evidence pack，禁止探索來源、掃描 repository、修改檔案與發動其他派遣。
+
 `## 待答問題` 以穩定 ID 逐行列出問題，格式為 `question-<id>: <問題>`，ID 在同一份 pack 內不可重複，順序即 ScopePlan 單位順序。同一節必須恰有一行 `required-output:`，值以半形分號分隔，每個值符合 `^#{1,6}[ \t]+\S`；說明文字另寫在 `output-rules:` 行。範例如下。
 
 ```text
@@ -77,6 +81,8 @@ output-rules: 每一個問題以 question-<id> 回報完成狀態
 ```
 
 `required-output` 缺漏、重複、分行、含非 heading 值或混入說明文字時，Start 以 `EvidencePackRequiredOutputInvalid` 停止。Start 的 advisor 必要參數為 `AdvisorConsultReportPath`、`EvidencePackPath`、`QuotaAfterPath` 與 read-only 邊界；缺少必要參數時以 `RequiredParameterMissing` 停止並列出欄位名稱。`ProfileEvidenceUnknown` 只用於 profile 設定檔的 model 或 reasoning effort 證據不可證明，不承接參數缺漏或 evidence 格式錯誤。
+
+request 的 `prepare_artifacts` 必須是 object array。PowerShell 以 `ConvertTo-Json` 序列化單一元素時可能把陣列塌縮成 object，該形狀會被拒絕；即使只有一個 artifact，也要保留陣列形狀。
 
 `Start` 將 evidence pack 全文內嵌 prompt，以 `---BEGIN INLINE EVIDENCE PACK---` 與 `---END INLINE EVIDENCE PACK---` 包夾，並附 `evidence-pack-sha256` 與 `evidence-pack-length`。執行端依內嵌內容作答，不需讀檔；read-only sandbox 下以工具讀檔會被核准政策阻擋，只給路徑的 prompt 會產生沒有技術結論的回覆。Start 產生 prompt 後重讀確認全文、hash 與長度，不符時以 `EvidencePackInlineMismatch` 停止。evidence pack 的 `## 待答問題` 必須有一行 `required-output:`，以分號分隔列出最終訊息必須包含的 Markdown heading。`Inspect` 逐一確認這些 heading 存在且內容非空，任一缺少時 `outputValid=false`、`success=false`，該觀測 `calibration_eligible=false`，advisor report 另列「Required output gate」小節。
 
@@ -103,9 +109,9 @@ Budget monitor 同時觀察事件流與可更新的 after quota snapshot。每�
 
 `Preflight` 先驗證 manifest、目錄界線與同線 PID，再依寫入面判定是否需要 worktree。`write` 模式先執行不修改來源的既有 Git 探針，只有確認目標含 tracked 檔案後才進入 Git 狀態、`baseSha` 與 worktree 流程；非 Git 目錄的 direct-write 不建立臨時 Git。需要 worktree 時，Git 探針只有 exit code 為 0 且 stdout 為 `true` 時才採用 `gitOrigin=existing`；不在 Git 工作樹的明確 `fatal` 才可進入臨時 Git 流程，其他 Git 錯誤以非零結束碼回報。臨時 Git 的 `.git`、marker 與初始 commit 由腳本建立並保留，直到使用者明確觸發清理。
 
-腳本依寫入面分流 `executionRoot`。`readonly` 固定使用隔離 worktree，`write` 只有在目標路徑包含既有 tracked 檔案時建立 worktree；只寫 Git ignored 範圍或全新輸出檔案的 `write` 直接使用 `sourceRoot`，輸出 `worktreeCreated=false`。直接寫入路徑仍須通過 sourceRoot 界線驗證。
+腳本依寫入面分流 `executionRoot`。`readonly` 固定使用隔離 worktree，`write` 只有在目標路徑包含既有 tracked 檔案時建立 worktree；只寫 Git ignored 範圍或全新輸出檔案的 `write` 直接使用 `sourceRoot`，輸出 `worktreeCreated=false`。若 `Preflight` 的 `target_path` 指向尚不存在的 dispatch worktree 內路徑，該路徑不會觸發 worktree 建立，`executionRoot` 退回 `sourceRoot`；需要建立 worktree 時，target 必須是 `sourceRoot` 內已存在且可辨識的 tracked 目標。直接寫入路徑仍須通過 sourceRoot 界線驗證。
 
-需要 worktree 時，腳本在建立前固定 `baseSha`，以來源 `git diff HEAD --binary --no-ext-diff` 產生 tracked carry-in，並以 `git ls-files --others --exclude-standard` 取得未追蹤檔案。patch 與未追蹤檔案都在 dispatch worktree 套用或複製，路徑與目的檔案先通過根目錄界線檢查。套用或複製衝突時以非零結束碼停止並保留現況，不覆寫來源檔案。
+需要 worktree 時，腳本在建立前固定 `baseSha`，以來源 `git diff HEAD --binary --no-ext-diff` 產生 tracked carry-in，並以 `git ls-files --others --exclude-standard` 取得未追蹤檔案。來源工作樹的未提交變更會帶入 dispatch worktree，`carryInManifest` 記錄 tracked patch、未追蹤檔案、複製結果與相關路徑。patch 與未追蹤檔案都在 dispatch worktree 套用或複製，路徑與目的檔案先通過根目錄界線檢查。套用或複製衝突時以非零結束碼停止並保留現況，不覆寫來源檔案。
 
 `dispatchSlug` 限用小寫英數與連字號，同一個 `sourceRoot` 內不得重複。腳本以固定的 `sourceRoot\.local\ai-sessions\worktrees\<dispatchSlug>` 驗證 `dispatchRoot`，目標已存在時視為已被占用並停止，不以其他目錄代替隔離邊界。
 

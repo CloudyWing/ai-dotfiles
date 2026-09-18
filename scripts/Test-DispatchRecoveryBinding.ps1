@@ -518,6 +518,30 @@ function Assert-True {
     if (-not $Value) { throw $Message }
 }
 
+function Test-ByteArrayEqual {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [byte[]]$Left,
+
+        [AllowNull()]
+        [byte[]]$Right
+    )
+
+    if ($null -eq $Left -or $null -eq $Right) {
+        return $null -eq $Left -and $null -eq $Right
+    }
+    if ($Left.Length -ne $Right.Length) {
+        return $false
+    }
+    for ($index = 0; $index -lt $Left.Length; $index++) {
+        if ($Left[$index] -ne $Right[$index]) {
+            return $false
+        }
+    }
+    return $true
+}
+
 function Write-Phase9Evidence {
     [CmdletBinding()]
     param(
@@ -531,6 +555,153 @@ function Write-Phase9Evidence {
     [Console]::WriteLine('EVIDENCE_BEGIN: ' + $Label)
     [Console]::WriteLine((ConvertTo-Json -InputObject $Value -Depth 80))
     [Console]::WriteLine('EVIDENCE_END: ' + $Label)
+}
+
+function Invoke-Phase9GitCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepositoryRoot,
+
+        [Parameter(Mandatory)]
+        [string[]]$Arguments
+    )
+
+    $gitOutput = & git -C $RepositoryRoot @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    $outputLines = @($gitOutput | ForEach-Object { [string]$_ })
+    return [pscustomobject]@{
+        command = 'git -C "' + $RepositoryRoot + '" ' + ($Arguments -join ' ')
+        exit_code = $exitCode
+        output = ($outputLines -join [Environment]::NewLine)
+    }
+}
+
+function Assert-Phase9GitCommandSucceeded {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Result
+    )
+
+    if ([int]$Result.exit_code -ne 0) {
+        throw ('Git 命令失敗：' + [string]$Result.command + [Environment]::NewLine + [string]$Result.output)
+    }
+}
+
+function ConvertTo-Phase9ComparablePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    while ($fullPath.Length -gt 3 -and ($fullPath.EndsWith('\') -or $fullPath.EndsWith('/'))) {
+        $fullPath = $fullPath.Substring(0, $fullPath.Length - 1)
+    }
+    return $fullPath
+}
+
+function Test-Phase9GitWorktreeListed {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$WorktreeList,
+
+        [Parameter(Mandatory)]
+        [string]$WorktreePath
+    )
+
+    $expectedPath = ConvertTo-Phase9ComparablePath -Path $WorktreePath
+    foreach ($line in ($WorktreeList -split "`r?`n")) {
+        if (-not $line.StartsWith('worktree ')) {
+            continue
+        }
+        $candidatePath = $line.Substring('worktree '.Length).Trim()
+        if ([string]::IsNullOrWhiteSpace($candidatePath)) {
+            continue
+        }
+        if ([string]::Equals((ConvertTo-Phase9ComparablePath -Path $candidatePath), $expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-Phase9GitWorktreeList {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepositoryRoot
+    )
+
+    $result = Invoke-Phase9GitCommand -RepositoryRoot $RepositoryRoot -Arguments @('worktree', 'list', '--porcelain')
+    Assert-Phase9GitCommandSucceeded -Result $result
+    return [string]$result.output
+}
+
+function Initialize-Phase9IsolatedGitRepository {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$SourceScriptPath,
+
+        [Parameter(Mandatory)]
+        [string]$TargetRelativePath
+    )
+
+    $targetPath = Join-Path $SourceRoot $TargetRelativePath
+    $null = New-Item -ItemType Directory -Path (Split-Path -Parent $targetPath) -Force
+    $null = Copy-Item -LiteralPath $SourceScriptPath -Destination $targetPath -Force
+
+    $initResult = Invoke-Phase9GitCommand -RepositoryRoot $SourceRoot -Arguments @('init')
+    Assert-Phase9GitCommandSucceeded -Result $initResult
+    $null = Invoke-Phase9GitCommand -RepositoryRoot $SourceRoot -Arguments @('config', 'user.name', 'Phase 9 Fixture')
+    $null = Invoke-Phase9GitCommand -RepositoryRoot $SourceRoot -Arguments @('config', 'user.email', 'phase9-fixture@example.invalid')
+    $addResult = Invoke-Phase9GitCommand -RepositoryRoot $SourceRoot -Arguments @('add', '--all')
+    Assert-Phase9GitCommandSucceeded -Result $addResult
+    $forceHistoryResult = Invoke-Phase9GitCommand -RepositoryRoot $SourceRoot -Arguments @('add', '--force', '--', '.local/ai-sessions/history')
+    Assert-Phase9GitCommandSucceeded -Result $forceHistoryResult
+    $commitResult = Invoke-Phase9GitCommand -RepositoryRoot $SourceRoot -Arguments @('commit', '-m', 'Initialize isolated Phase 9 source repository')
+    Assert-Phase9GitCommandSucceeded -Result $commitResult
+}
+
+function Remove-Phase9GitWorktree {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchRoot
+    )
+
+    $beforeList = Get-Phase9GitWorktreeList -RepositoryRoot $SourceRoot
+    $registeredBefore = Test-Phase9GitWorktreeListed -WorktreeList $beforeList -WorktreePath $DispatchRoot
+    $pathExistedBefore = Test-Path -LiteralPath $DispatchRoot -PathType Container
+    $removeResult = $null
+    if ($registeredBefore) {
+        $removeResult = Invoke-Phase9GitCommand -RepositoryRoot $SourceRoot -Arguments @('worktree', 'remove', '--force', '--', $DispatchRoot)
+    }
+    $afterList = Get-Phase9GitWorktreeList -RepositoryRoot $SourceRoot
+    $registeredAfter = Test-Phase9GitWorktreeListed -WorktreeList $afterList -WorktreePath $DispatchRoot
+    $pathExistsAfter = Test-Path -LiteralPath $DispatchRoot -PathType Container
+    return [ordered]@{
+        source_root = $SourceRoot
+        dispatch_root = $DispatchRoot
+        path_existed_before = $pathExistedBefore
+        registered_before = $registeredBefore
+        remove_result = $removeResult
+        registered_after = $registeredAfter
+        path_exists_after = $pathExistsAfter
+        removed = (-not $registeredAfter -and -not $pathExistsAfter)
+        worktree_list_before = $beforeList
+        worktree_list_after = $afterList
+    }
 }
 
 if ($Child) {
@@ -679,13 +850,14 @@ function New-ScopePlan {
 function Get-ScopePlanFingerprint { param($ScopePlan) return 'fixture' }
 function Test-ContinuationScopePlan { return $true }
 function New-DispatchPrompt {
-    param($PromptPath, $HistoryRoot, $Timestamp, $Directive)
-    if ($script:advisorStartPromptMode) {
-        $content = Get-Content -LiteralPath $PromptPath -Raw -Encoding UTF8
+    param($PromptPath, $HistoryRoot, $Timestamp, $Directive, $OutputPath)
+    $targetPath = if ([string]::IsNullOrWhiteSpace($OutputPath)) { $PromptPath } else { $OutputPath }
+    if ($script:advisorStartPromptMode -or -not [string]::IsNullOrWhiteSpace($OutputPath)) {
+        $content = Read-DispatchUtf8Text -Path $PromptPath
         $content = $content.TrimEnd() + [Environment]::NewLine + (@($Directive) -join [Environment]::NewLine) + [Environment]::NewLine
-        Write-Utf8NoBom -Path $PromptPath -Content $content
+        Write-Utf8NoBom -Path $targetPath -Content $content
     }
-    return $PromptPath
+    return $targetPath
 }
 function New-CodexLauncher {
     param($CodexExecutable, $CodexArguments, $PromptPath, $EventPath, $ErrorPath, $HistoryRoot, $LauncherPath, $ExitSidecarPath, $LineSlug, $DispatchSlug, $RunId)
@@ -1215,8 +1387,8 @@ Invoke-Case 'Collect direct-write 接入 reviewerFindings' {
     Write-Utf8NoBom -Path $outputPath -Content 'approved output'
     Write-Utf8NoBom -Path $closurePath -Content '# Fixture closure'
     $finding = [ordered]@{ id = 'F-007'; axis = 'Spec'; status = 'open'; severity = 'Minor'; disposition = 'new'; summary = 'collect fixture' }
-    $manifest = New-ReviewerManifest -CurrentFindings @($finding) -CurrentNew 1 -CurrentOpen 1 -Conclusion pass
-    Write-ReviewerFixture -Path $reviewerPath -Manifest $manifest -CurrentIds @('F-007')
+    $manifest = New-ReviewerManifest
+    Write-ReviewerFixture -Path $reviewerPath -Manifest $manifest
     $preflightPath = Join-Path $reviewerRoot 'preflight.json'
     $preflight = [ordered]@{
         operation = 'Preflight'
@@ -3014,6 +3186,278 @@ if ($Phase -ge 6) {
         Assert-True ($binding.Document.effective_codex_home -eq (Resolve-CodexHomeForEvidence -CodexHomePath $null)) 'Prepare result 未保存有效 CodexHome。'
     }
 
+    $phase4ReportLineRoot = Join-Path $fixtureRoot '.local/ai-sessions/report/line-a'
+    New-Item -ItemType Directory -Path $phase4ReportLineRoot -Force | Out-Null
+    $phase4ReportSourcePath = Join-Path $phase4ReportLineRoot 'phase4-report-input.txt'
+    $phase4ReportSourceContent = 'phase4 report source content'
+    Write-Utf8NoBom -Path $phase4ReportSourcePath -Content $phase4ReportSourceContent
+    $phase4ReportSourceHash = Get-FileSha256 -Path $phase4ReportSourcePath
+    $phase4ReportDestinationPath = Join-Path $phase6DispatchRoot '.local/ai-sessions/handoff/line-a/phase4-report-input.txt'
+    $phase4ReportResultPath = Join-Path $phase6DispatchRoot '.local/ai-sessions/history/line-a/phase4-report-result.json'
+
+    Invoke-Case 'Phase 4 T015 Prepare 接受同線 report source' {
+        Set-Phase6PrepareRequest -Dispatch 'phase4-report-source' -Source $phase4ReportSourcePath -Destination $phase4ReportDestinationPath -Hash $phase4ReportSourceHash -ResultPath $phase4ReportResultPath | Out-Null
+        $prepared = Invoke-Prepare
+        $binding = Resolve-PrepareResultBinding -Path $prepared.prepareResultPath -SourceRoot $fixtureRoot -ExecutionRoot $phase6DispatchRoot -LineSlug 'line-a' -DispatchSlug 'phase4-report-source' -ExpectedSha256 $prepared.prepareResultSha256
+        Assert-True ($prepared.status -eq 'Prepared' -and $binding.Status -eq 'Prepared' -and $binding.Artifacts.Count -eq 1) 'report source Prepare 未完成 Prepared binding。'
+        Assert-True ($binding.Artifacts[0].destination_root -eq 'dispatch-line-root' -and (Get-Content -LiteralPath $phase4ReportDestinationPath -Raw -Encoding UTF8) -eq $phase4ReportSourceContent) 'report source artifact 未寫入 executionRoot。'
+        Assert-True ($binding.Document.artifacts[0].source -eq (Resolve-AbsolutePath -Path $phase4ReportSourcePath)) 'Prepared result 未保留 report source 絕對路徑。'
+        Set-Phase6PrepareRequest -Dispatch 'phase6-prepare' -Source $phase6SourcePath -Destination $phase6DestinationPath -Hash $phase6SourceHash -ResultPath $phase6PrepareResultPath | Out-Null
+    }
+
+    $phase4ReportOutsidePath = Join-Path $fixtureRoot 'phase4-outside-report.txt'
+    Write-Utf8NoBom -Path $phase4ReportOutsidePath -Content 'outside report source'
+    Invoke-Case 'Phase 4 T015 Prepare report source boundary 拒絕' -Reject -ErrorPattern 'PrepareArtifactMismatch|handoff/report line roots' {
+        Set-Phase6PrepareRequest -Dispatch 'phase4-report-boundary' -Source $phase4ReportOutsidePath -Destination (Join-Path $phase6DispatchRoot '.local/ai-sessions/handoff/line-a/phase4-report-boundary.txt') -Hash $phase4ReportSourceHash -ResultPath (Join-Path $phase6DispatchRoot '.local/ai-sessions/history/line-a/phase4-report-boundary-result.json') | Out-Null
+        Invoke-Prepare
+    }
+
+    Invoke-Case 'Phase 4 T015 report source reverse mutant 被辨識' {
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedSourceRootCall = '$sourceRoot = Resolve-PrepareSourceRoot -Path $sourcePath -SourceRoots @($rootInfo.SourceLineRoots)'
+        $oldSourceRootCall = '$sourceRoot = Resolve-PrepareSourceRoot -Path $sourcePath -SourceRoots @($rootInfo.SourceLineRoot)'
+        Assert-True $productionText.Contains($fixedSourceRootCall) 'T015 reverse 找不到 SourceLineRoots production call。'
+        $mutantText = $productionText.Replace($fixedSourceRootCall, $oldSourceRootCall)
+        Assert-True ($mutantText -ne $productionText) 'T015 reverse mutant 未移除 report source root。'
+        $mutantSlug = 'phase4-report-mutant'
+        $mutantDispatchRoot = Join-Path $fixtureRoot ('.local/ai-sessions/worktrees/' + $mutantSlug)
+        New-Item -ItemType Directory -Path $mutantDispatchRoot -Force | Out-Null
+        $mutantDestination = Join-Path $mutantDispatchRoot '.local/ai-sessions/handoff/line-a/phase4-report-mutant.txt'
+        $mutantResult = Join-Path $mutantDispatchRoot '.local/ai-sessions/history/line-a/phase4-report-mutant-result.json'
+        $mutantRequestPath = Join-Path $fixtureRoot 'phase4-report-mutant-request.json'
+        $mutantRequest = [ordered]@{
+            schema = 'ai-sessions.dispatch-request.v1'
+            operation = 'Prepare'
+            line_slug = 'line-a'
+            dispatch_slug = $mutantSlug
+            prepare_artifacts = @([ordered]@{
+                    source = $phase4ReportSourcePath
+                    destination = $mutantDestination
+                    sha256 = $phase4ReportSourceHash
+                    purpose = 'T015 reverse mutant'
+                })
+        }
+        Write-Utf8NoBom -Path $mutantRequestPath -Content (($mutantRequest | ConvertTo-Json -Depth 10) + "`n")
+        $mutantPath = Join-Path $fixtureRoot 'phase4-report-source-mutant-Invoke-CodexDispatch.ps1'
+        [IO.File]::WriteAllText($mutantPath, $mutantText, (New-Object Text.UTF8Encoding($true)))
+        $mutantRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+            '-NoProfile'
+            '-File'
+            $mutantPath
+            '-Operation'
+            'Prepare'
+            '-RequestPath'
+            $mutantRequestPath
+            '-SourceRoot'
+            $fixtureRoot
+            '-ExecutionRoot'
+            $mutantDispatchRoot
+            '-DispatchRoot'
+            $mutantDispatchRoot
+            '-LineSlug'
+            'line-a'
+            '-DispatchSlug'
+            $mutantSlug
+            '-ResultPath'
+            $mutantResult
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        Assert-True ([int]$mutantRun.exit_code -ne 0 -and ([string]$mutantRun.stdout + [string]$mutantRun.stderr) -match 'PrepareArtifactMismatch|handoff/report line roots') ('T015 reverse mutant 未拒絕 report source：' + [string]$mutantRun.stdout + [string]$mutantRun.stderr)
+        Assert-True (-not (Test-Path -LiteralPath $mutantDestination -PathType Leaf)) 'T015 reverse mutant 不應寫入 report source artifact。'
+    }
+
+    Invoke-Case 'Phase 4 T016 Prepare failure rollback 與 reverse mutant' {
+        $rollbackSourceOne = Join-Path $phase4LineRoot 'phase4-rollback-one.txt'
+        $rollbackSourceTwo = Join-Path $phase4LineRoot 'phase4-rollback-two.txt'
+        Write-Utf8NoBom -Path $rollbackSourceOne -Content 'rollback source one'
+        Write-Utf8NoBom -Path $rollbackSourceTwo -Content 'rollback source two'
+        $rollbackProductionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedFinalHashCall = '$finalHash = Get-FileSha256 -Path $destinationPath'
+        $forcedFailureFinalHash = '$finalHash = (''0'' * 64)'
+        Assert-True $rollbackProductionText.Contains($fixedFinalHashCall) 'T016 reverse 找不到 final hash production call。'
+        $failureProbeText = $rollbackProductionText.Replace($fixedFinalHashCall, $forcedFailureFinalHash)
+        $cleanupLoop = @(
+            '        foreach ($committedPath in @($committedPaths.ToArray())) {',
+            '            if (Test-Path -LiteralPath $committedPath) {',
+            '                Remove-Item -LiteralPath $committedPath -Force -ErrorAction SilentlyContinue',
+            '            }',
+            '        }'
+        ) -join "`r`n"
+        $mutantCleanupLoop = @(
+            '        foreach ($committedPath in @($committedPaths.ToArray())) {',
+            '        }'
+        ) -join "`r`n"
+        Assert-True $failureProbeText.Contains($cleanupLoop) 'T016 reverse 找不到 committed path rollback cleanup。'
+        $rollbackMutantText = $failureProbeText.Replace($cleanupLoop, $mutantCleanupLoop)
+        Assert-True ($rollbackMutantText -ne $failureProbeText) 'T016 reverse mutant 未移除 rollback cleanup。'
+
+        $invokeFailureProbe = {
+            param([Parameter(Mandatory)][string]$ScriptText, [Parameter(Mandatory)][string]$Slug, [Parameter(Mandatory)][string]$Label)
+            $caseDispatchRoot = Join-Path $fixtureRoot ('w-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+            New-Item -ItemType Directory -Path $caseDispatchRoot -Force | Out-Null
+            $caseRequestPath = Join-Path $fixtureRoot ($Label + '-request.json')
+            $caseResultPath = Join-Path $caseDispatchRoot ('.local/ai-sessions/history/line-a/' + $Label + '-result.json')
+            $caseDestinationOne = Join-Path $caseDispatchRoot ('.local/ai-sessions/handoff/line-a/' + $Label + '-one.txt')
+            $caseDestinationTwo = Join-Path $caseDispatchRoot ('.local/ai-sessions/handoff/line-a/' + $Label + '-two.txt')
+            $caseRequest = [ordered]@{
+                schema = 'ai-sessions.dispatch-request.v1'
+                operation = 'Prepare'
+                line_slug = 'line-a'
+                dispatch_slug = $Slug
+                prepare_artifacts = @(
+                    [ordered]@{
+                        source = $rollbackSourceOne
+                        destination = $caseDestinationOne
+                        sha256 = Get-FileSha256 -Path $rollbackSourceOne
+                        purpose = 'T016 first artifact'
+                    }
+                    [ordered]@{
+                        source = $rollbackSourceTwo
+                        destination = $caseDestinationTwo
+                        sha256 = Get-FileSha256 -Path $rollbackSourceTwo
+                        purpose = 'T016 second artifact'
+                    }
+                )
+            }
+            Write-Utf8NoBom -Path $caseRequestPath -Content (($caseRequest | ConvertTo-Json -Depth 12) + "`n")
+            $caseScriptPath = Join-Path $fixtureRoot ($Label + '-Invoke-CodexDispatch.ps1')
+            [IO.File]::WriteAllText($caseScriptPath, $ScriptText, (New-Object Text.UTF8Encoding($true)))
+            $caseRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+                '-NoProfile'
+                '-File'
+                $caseScriptPath
+                '-Operation'
+                'Prepare'
+                '-RequestPath'
+                $caseRequestPath
+                '-SourceRoot'
+                $fixtureRoot
+                '-ExecutionRoot'
+                $caseDispatchRoot
+                '-DispatchRoot'
+                $caseDispatchRoot
+                '-LineSlug'
+                'line-a'
+                '-DispatchSlug'
+                $Slug
+                '-ResultPath'
+                $caseResultPath
+            ) -WorkingDirectory $root -EnvironmentVariables @{}
+            return [pscustomobject]@{
+                run = $caseRun
+                result_path = $caseResultPath
+                destination_one = $caseDestinationOne
+                destination_two = $caseDestinationTwo
+            }
+        }
+
+        $failureProbePath = Join-Path $fixtureRoot 'phase4-rollback-failure-probe-Invoke-CodexDispatch.ps1'
+        [IO.File]::WriteAllText($failureProbePath, $failureProbeText, (New-Object Text.UTF8Encoding($true)))
+        $normalFailure = & $invokeFailureProbe -ScriptText $failureProbeText -Slug ('rb-normal-' + [guid]::NewGuid().ToString('N').Substring(0, 6)) -Label 'rb-normal'
+        Assert-True ([int]$normalFailure.run.exit_code -ne 0 -and -not (Test-Path -LiteralPath $normalFailure.destination_one -PathType Leaf) -and -not (Test-Path -LiteralPath $normalFailure.destination_two -PathType Leaf)) ('T016 production rollback 未清除已提交 artifact：' + [string]$normalFailure.run.stdout + [string]$normalFailure.run.stderr)
+        $mutantFailure = & $invokeFailureProbe -ScriptText $rollbackMutantText -Slug ('rb-mutant-' + [guid]::NewGuid().ToString('N').Substring(0, 6)) -Label 'rb-mutant'
+        Assert-True ([int]$mutantFailure.run.exit_code -ne 0 -and (Test-Path -LiteralPath $mutantFailure.destination_one -PathType Leaf)) ('T016 reverse mutant 未暴露缺少 rollback：' + [string]$mutantFailure.run.stdout + [string]$mutantFailure.run.stderr)
+        Write-Phase9Evidence -Label 'T016_PREPARE_ROLLBACK_MUTANT' -Value ([ordered]@{
+                production_failure = $normalFailure
+                reverse_mutant_failure = $mutantFailure
+                mutation = '將 Invoke-Prepare catch 的 committed artifact cleanup 改為空迴圈。'
+        })
+    }
+
+    Invoke-Case 'Phase 4 T017 Collect current_open 與 conclusion pass 不一致時拒絕' {
+        $collectSlug = 'phase4-collect-reviewer-gate'
+        $collectOutputPath = Join-Path $reviewerRoot 'phase4-collect-output.txt'
+        $collectClosurePath = Join-Path $reviewerRoot 'phase4-collect-closure.md'
+        $collectReviewerPath = Join-Path $reviewerRoot 'phase4-current-open-pass.md'
+        $collectPreflightPath = Join-Path $reviewerRoot 'phase4-collect-preflight.json'
+        $collectResultPath = Join-Path $reviewerRoot 'phase4-collect-result.json'
+        Write-Utf8NoBom -Path $collectOutputPath -Content 'phase4 collect output'
+        Write-Utf8NoBom -Path $collectClosurePath -Content '# Phase 4 collect closure'
+        $collectFinding = [ordered]@{ id = 'F-017'; axis = 'Standards'; status = 'open'; severity = 'Minor'; disposition = 'new'; summary = 'phase4 current open pass' }
+        $collectManifest = New-ReviewerManifest -CurrentFindings @($collectFinding) -CurrentNew 1 -CurrentOpen 1 -Conclusion pass
+        Write-ReviewerFixture -Path $collectReviewerPath -Manifest $collectManifest -CurrentIds @('F-017')
+        $collectPreflight = [ordered]@{
+            operation = 'Preflight'
+            sourceRoot = $fixtureRoot
+            executionRoot = $fixtureRoot
+            lineSlug = 'line-a'
+            dispatchSlug = $collectSlug
+            worktreeCreated = $false
+            baseSha = ''
+            targetStates = @([ordered]@{ FullPath = $collectOutputPath; InputPath = 'phase4-collect-output.txt' })
+        }
+        Write-Utf8NoBom -Path $collectPreflightPath -Content (($collectPreflight | ConvertTo-Json -Depth 10) + "`n")
+        $collectRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Collect'
+            '-DispatchKind'
+            'resource'
+            '-SourceRoot'
+            $fixtureRoot
+            '-ExecutionRoot'
+            $fixtureRoot
+            '-PreflightResultPath'
+            $collectPreflightPath
+            '-ReportPath'
+            $collectClosurePath
+            '-ReviewerReportPath'
+            $collectReviewerPath
+            '-ResultPath'
+            $collectResultPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        Assert-True ([int]$collectRun.exit_code -ne 0) ('T017 production Collect 應拒絕不一致 reviewer manifest：' + [string]$collectRun.stdout + [string]$collectRun.stderr)
+        $collectResultDocument = Get-Content -LiteralPath $collectResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True (-not $collectResultDocument.outputValid -and -not $collectResultDocument.reviewerFindings.valid -and $collectResultDocument.reviewerFindings.current_open_count -eq 1 -and (@($collectResultDocument.reviewerFindings.inconsistencies) -join ';') -match 'current_open>0') 'T017 Collect 未輸出結構化不一致 reviewerFindings。'
+
+        $collectProductionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedReviewerGate = "if ([int64]`$result.current_open_count -gt 0 -and [string]`$result.conclusion -ceq 'pass') {"
+        $mutantReviewerGate = 'if ($false) {'
+        Assert-True $collectProductionText.Contains($fixedReviewerGate) 'T017 reverse 找不到 reviewer current_open gate。'
+        $collectMutantText = $collectProductionText.Replace($fixedReviewerGate, $mutantReviewerGate)
+        Assert-True ($collectMutantText -ne $collectProductionText) 'T017 reverse mutant 未移除 current_open gate。'
+        $collectMutantSlug = 'phase4-collect-reviewer-mutant'
+        $collectMutantPreflightPath = Join-Path $reviewerRoot 'phase4-collect-mutant-preflight.json'
+        $collectMutantResultPath = Join-Path $reviewerRoot 'phase4-collect-mutant-result.json'
+        $collectMutantPreflight = [ordered]@{}
+        foreach ($preflightProperty in $collectPreflight.Keys) {
+            $collectMutantPreflight[$preflightProperty] = $collectPreflight[$preflightProperty]
+        }
+        $collectMutantPreflight.dispatchSlug = $collectMutantSlug
+        Write-Utf8NoBom -Path $collectMutantPreflightPath -Content (($collectMutantPreflight | ConvertTo-Json -Depth 10) + "`n")
+        $collectMutantPath = Join-Path $fixtureRoot 'phase4-collect-reviewer-mutant-Invoke-CodexDispatch.ps1'
+        [IO.File]::WriteAllText($collectMutantPath, $collectMutantText, (New-Object Text.UTF8Encoding($true)))
+        $collectMutantRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+            '-NoProfile'
+            '-File'
+            $collectMutantPath
+            '-Operation'
+            'Collect'
+            '-DispatchKind'
+            'resource'
+            '-SourceRoot'
+            $fixtureRoot
+            '-ExecutionRoot'
+            $fixtureRoot
+            '-PreflightResultPath'
+            $collectMutantPreflightPath
+            '-ReportPath'
+            $collectClosurePath
+            '-ReviewerReportPath'
+            $collectReviewerPath
+            '-ResultPath'
+            $collectMutantResultPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $collectMutantResultDocument = Get-Content -LiteralPath $collectMutantResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ([int]$collectMutantRun.exit_code -eq 0 -and $collectMutantResultDocument.outputValid -and $collectMutantResultDocument.reviewerFindings.valid) ('T017 reverse mutant 未暴露 Collect gate 遺失：' + [string]$collectMutantRun.stdout + [string]$collectMutantRun.stderr)
+        Write-Phase9Evidence -Label 'T017_COLLECT_REVIEWER_GATE_MUTANT' -Value ([ordered]@{
+                production = [ordered]@{ run = $collectRun; result = $collectResultDocument }
+                reverse_mutant = [ordered]@{ run = $collectMutantRun; result = $collectMutantResultDocument }
+                mutation = '將 Collect 專用 current_open>0 且 conclusion=pass gate 改為永不成立。'
+            })
+    }
+
     $phase6MinimalDispatchRoot = Join-Path $fixtureRoot '.local/ai-sessions/worktrees/phase6-minimal-request'
     $phase6MinimalDestinationPath = Join-Path $phase6MinimalDispatchRoot '.local/ai-sessions/handoff/line-a/minimal-input.txt'
     $phase6MinimalRequestPath = Join-Path $fixtureRoot 'phase6-minimal-request.json'
@@ -3158,7 +3602,7 @@ if ($Phase -ge 6) {
     $phase6OutsideSourcePath = Join-Path $fixtureRoot 'phase6-outside-source.txt'
     Write-Utf8NoBom -Path $phase6OutsideSourcePath -Content 'outside source'
     Set-Phase6PrepareRequest -Dispatch 'phase6-source-boundary' -Source $phase6OutsideSourcePath -Destination (Join-Path $phase6DispatchRoot '.local/ai-sessions/handoff/line-a/outside-source.txt') -Hash $phase6SourceHash -ResultPath (Join-Path $phase6DispatchRoot '.local/ai-sessions/history/line-a/source-boundary-result.json') | Out-Null
-    Invoke-Case 'Phase 6 Prepare source boundary 拒絕' -Reject -ErrorPattern 'PrepareArtifactMismatch|source line root' {
+    Invoke-Case 'Phase 6 Prepare source boundary 拒絕' -Reject -ErrorPattern 'PrepareArtifactMismatch|handoff/report line roots' {
         Invoke-Prepare
     }
 
@@ -3429,6 +3873,229 @@ if ($Phase -ge 6) {
             Assert-True (-not (Test-Path -LiteralPath (Join-Path $realDispatchRoot ('.local/ai-sessions/handoff/line-real/' + $handoffFile)) -PathType Leaf)) ('Preflight 不應複製交接物：' + $handoffFile)
         }
         Assert-True ($realResult.baselinePath -and (Test-Path -LiteralPath $realResult.baselinePath -PathType Leaf) -and $realResult.baselineSha256 -match '^[a-f0-9]{64}$') '真實 Git Preflight 未建立 Baseline。'
+    }
+
+    Invoke-Case 'Phase 5 T021 非法 SessionMode 回報收到值與合法值' {
+        $phase5IllegalSessionPromptPath = Join-Path $fixtureRoot 'phase5-illegal-session-prompt.md'
+        Write-Utf8NoBom -Path $phase5IllegalSessionPromptPath -Content 'phase5 illegal session mode probe'
+        $illegalSessionRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Start'
+            '-SourceRoot'
+            $fixtureRoot
+            '-ExecutionRoot'
+            $fixtureRoot
+            '-DispatchRoot'
+            $fixtureRoot
+            '-LineSlug'
+            'line-a'
+            '-DispatchSlug'
+            'phase5-illegal-session'
+            '-SessionMode'
+            'invalid-session-mode'
+            '-PromptPath'
+            $phase5IllegalSessionPromptPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $illegalSessionOutput = ([string]$illegalSessionRun.stdout + [Environment]::NewLine + [string]$illegalSessionRun.stderr)
+        Assert-True ([int]$illegalSessionRun.exit_code -ne 0 -and $illegalSessionOutput -match 'received=invalid-session-mode' -and $illegalSessionOutput -match 'cold-start' -and $illegalSessionOutput -match 'continuation') ('非法 SessionMode 未完整回報：' + $illegalSessionOutput)
+    }
+
+    $phase5PrepareRootInfo = Get-PrepareRootInfo -SourceRoot $fixtureRoot -ExecutionRoot $phase6DispatchRoot -DispatchRoot $phase6DispatchRoot -LineSlug 'line-a' -DispatchSlug 'phase5-result-path'
+    $phase5OutsideResultPath = Join-Path $fixtureRoot 'phase5-outside-result.json'
+    Invoke-Case 'Phase 5 T021 Prepare result boundary 錯誤包含診斷欄位' -Reject -ErrorPattern 'received_filename=phase5-outside-result\.json; resolved_path=.*allowed_destination_roots=.*correction=' {
+        Get-PrepareResultTargetPath -RootInfo $phase5PrepareRootInfo -PrepareResultPathValue $phase5OutsideResultPath -ResultPathValue $null -TargetPathValue @()
+    }
+
+    $phase5InvalidResultPath = Join-Path $fixtureRoot ('phase5-invalid' + [char]0 + 'result.json')
+    Invoke-Case 'Phase 5 T021 Prepare result unresolvable 錯誤包含診斷欄位' -Reject -ErrorPattern 'received_filename=.*; resolved_path=<unresolved>; allowed_destination_roots=.*; correction=' {
+        Get-PrepareResultTargetPath -RootInfo $phase5PrepareRootInfo -PrepareResultPathValue $phase5InvalidResultPath -ResultPathValue $null -TargetPathValue @()
+    }
+
+    $phase5CollisionDispatch = 'phase5-result-collision'
+    $phase5CollisionResultPath = Join-Path $phase6DispatchRoot '.local/ai-sessions/history/line-a/phase5-result-collision.json'
+    $phase5CollisionDestinationPath = Join-Path $phase6DispatchRoot '.local/ai-sessions/handoff/line-a/phase5-result-collision.txt'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $phase5CollisionResultPath), (Split-Path -Parent $phase5CollisionDestinationPath) -Force | Out-Null
+    $phase5CollisionSentinel = 'F-002 existing result sentinel: preserve every byte.'
+    Write-Utf8NoBom -Path $phase5CollisionResultPath -Content $phase5CollisionSentinel
+    Set-Phase6PrepareRequest -Dispatch $phase5CollisionDispatch -Source $phase6SourcePath -Destination $phase5CollisionDestinationPath -Hash $phase6SourceHash -ResultPath $phase5CollisionResultPath | Out-Null
+    Invoke-Case 'Phase 5 T021 Prepare result collision 錯誤包含診斷欄位' -Reject -ErrorPattern 'PrepareResultCollision|received_filename=phase5-result-collision\.json; resolved_path=.*allowed_destination_roots=.*correction=' {
+        Invoke-Prepare
+    }
+
+    if ($Phase -lt 9) {
+        Invoke-Case 'Phase 5 F-002 Prepare result collision 不覆寫既有結果位元組' {
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedFailureWriterCall = '                    $writtenFailure = Write-PrepareResultDocument -Path $resultPathValue -Document $failureDocument -GuardSourceRoot $rootInfo.SourceRoot -GuardExecutionRoot $rootInfo.ExecutionRoot -GuardTargetPath $guardTargetPathValue -RequireAbsent'
+        $legacyFailureWriterCall = '                    $writtenFailure = Write-PrepareResultDocument -Path $resultPathValue -Document $failureDocument -GuardSourceRoot $rootInfo.SourceRoot -GuardExecutionRoot $rootInfo.ExecutionRoot -GuardTargetPath $guardTargetPathValue'
+        Assert-True $productionText.Contains($fixedFailureWriterCall) 'F-002 reverse 找不到 RequireAbsent failure writer。'
+        $mutantText = $productionText.Replace($fixedFailureWriterCall, $legacyFailureWriterCall)
+        Assert-True ($mutantText -ne $productionText) 'F-002 reverse mutant 未移除 RequireAbsent。'
+        $mutantPath = Join-Path $fixtureRoot 'phase5-f002-mutant-Invoke-CodexDispatch.ps1'
+        [IO.File]::WriteAllText($mutantPath, $mutantText, (New-Object Text.UTF8Encoding($true)))
+        $requestPath = Join-Path $fixtureRoot ('phase6-request-' + $phase5CollisionDispatch + '.json')
+        $prepareArguments = @(
+            '-NoProfile'
+            '-File'
+            $mutantPath
+            '-Operation'
+            'Prepare'
+            '-SourceRoot'
+            $fixtureRoot
+            '-ExecutionRoot'
+            $phase6DispatchRoot
+            '-DispatchRoot'
+            $phase6DispatchRoot
+            '-LineSlug'
+            'line-a'
+            '-DispatchSlug'
+            $phase5CollisionDispatch
+            '-WriteMode'
+            'write'
+            '-RequestPath'
+            $requestPath
+            '-ResultPath'
+            $phase5CollisionResultPath
+        )
+        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        try {
+            Write-Utf8NoBom -Path $phase5CollisionResultPath -Content $phase5CollisionSentinel
+            $preFixBytes = [IO.File]::ReadAllBytes($phase5CollisionResultPath)
+            $preFixSha256 = Get-FileSha256 -Path $phase5CollisionResultPath
+            $preFixRun = Invoke-Phase9Process -HostPath $hostPath -Arguments $prepareArguments -WorkingDirectory $root -EnvironmentVariables @{}
+            $preFixOutput = ([string]$preFixRun.stdout + [Environment]::NewLine + [string]$preFixRun.stderr).Trim()
+            $preFixAfterBytes = [IO.File]::ReadAllBytes($phase5CollisionResultPath)
+            $preFixAfterSha256 = Get-FileSha256 -Path $phase5CollisionResultPath
+            $preFixChanged = -not (Test-ByteArrayEqual -Left $preFixBytes -Right $preFixAfterBytes)
+            Assert-True ([int]$preFixRun.exit_code -ne 0 -and $preFixOutput -match 'PrepareResultCollision' -and $preFixChanged) ('F-002 pre-fix mutant 未暴露碰撞寫回：' + $preFixOutput)
+
+            Write-Utf8NoBom -Path $phase5CollisionResultPath -Content $phase5CollisionSentinel
+            $restoredBeforeBytes = [IO.File]::ReadAllBytes($phase5CollisionResultPath)
+            $restoredBeforeSha256 = Get-FileSha256 -Path $phase5CollisionResultPath
+            $restoredRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+                '-NoProfile'
+                '-File'
+                $sourcePath
+                '-Operation'
+                'Prepare'
+                '-SourceRoot'
+                $fixtureRoot
+                '-ExecutionRoot'
+                $phase6DispatchRoot
+                '-DispatchRoot'
+                $phase6DispatchRoot
+                '-LineSlug'
+                'line-a'
+                '-DispatchSlug'
+                $phase5CollisionDispatch
+                '-WriteMode'
+                'write'
+                '-RequestPath'
+                $requestPath
+                '-ResultPath'
+                $phase5CollisionResultPath
+            ) -WorkingDirectory $root -EnvironmentVariables @{}
+            $restoredOutput = ([string]$restoredRun.stdout + [Environment]::NewLine + [string]$restoredRun.stderr).Trim()
+            $restoredAfterBytes = [IO.File]::ReadAllBytes($phase5CollisionResultPath)
+            $restoredAfterSha256 = Get-FileSha256 -Path $phase5CollisionResultPath
+            $restoredUnchanged = Test-ByteArrayEqual -Left $restoredBeforeBytes -Right $restoredAfterBytes
+            Assert-True ([int]$restoredRun.exit_code -ne 0 -and $restoredOutput -match 'PrepareResultCollision' -and $restoredUnchanged -and $restoredBeforeSha256 -eq $restoredAfterSha256) ('F-002 restored collision guard 未保留原始位元組：' + $restoredOutput)
+
+            $script:phase5F002Evidence = [ordered]@{
+                pre_fix_failure = [ordered]@{
+                    exit_code = $preFixRun.exit_code
+                    error = $preFixOutput
+                    sentinel = $phase5CollisionSentinel
+                    before_sha256 = $preFixSha256
+                    after_sha256 = $preFixAfterSha256
+                    bytes_changed = $preFixChanged
+                    result = 'FAIL'
+                }
+                restored_pass = [ordered]@{
+                    exit_code = $restoredRun.exit_code
+                    error = $restoredOutput
+                    sentinel = $phase5CollisionSentinel
+                    before_sha256 = $restoredBeforeSha256
+                    after_sha256 = $restoredAfterSha256
+                    bytes_unchanged = $restoredUnchanged
+                    result = 'PASS'
+                }
+                mutation = '移除 Prepare failure writer 的 RequireAbsent，模擬修正前 File.Replace 覆寫碰撞結果。'
+            }
+            Write-Phase9Evidence -Label 'F002_PRE_FIX_FAILURE' -Value $script:phase5F002Evidence.pre_fix_failure
+            Write-Phase9Evidence -Label 'F002_RESTORED_PASS' -Value $script:phase5F002Evidence.restored_pass
+        }
+        finally {
+            Write-Utf8NoBom -Path $phase5CollisionResultPath -Content $phase5CollisionSentinel
+            Set-Phase6PrepareRequest -Dispatch 'phase6-prepare' -Source $phase6SourcePath -Destination $phase6DestinationPath -Hash $phase6SourceHash -ResultPath $phase6PrepareResultPath | Out-Null
+        }
+        }
+    }
+
+    Invoke-Case 'Phase 5 T021 Prepare result diagnostic reverse mutant 被辨識' {
+        $diagnosticProductionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedCollisionCall = '            Throw-PrepareValidationFailure -Code ''PrepareResultCollision'' -Message (''Prepare result 已存在，拒絕覆寫：'' + $diagnostic)'
+        $legacyCollisionCall = '            Throw-PrepareValidationFailure -Code ''PrepareResultCollision'' -Message (''Prepare result 已存在，拒絕覆寫：'' + $resultPathValue)'
+        Assert-True $diagnosticProductionText.Contains($fixedCollisionCall) 'T021 reverse 找不到 Prepare result diagnostic collision call。'
+        $diagnosticMutantText = $diagnosticProductionText.Replace($fixedCollisionCall, $legacyCollisionCall)
+        Assert-True ($diagnosticMutantText -ne $diagnosticProductionText) 'T021 reverse mutant 未移除 collision 診斷欄位。'
+        $diagnosticMutantPath = Join-Path $fixtureRoot 'phase5-result-diagnostic-mutant-Invoke-CodexDispatch.ps1'
+        [IO.File]::WriteAllText($diagnosticMutantPath, $diagnosticMutantText, (New-Object Text.UTF8Encoding($true)))
+        $diagnosticMutantRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+            '-NoProfile'
+            '-File'
+            $diagnosticMutantPath
+            '-Operation'
+            'Prepare'
+            '-SourceRoot'
+            $fixtureRoot
+            '-ExecutionRoot'
+            $phase6DispatchRoot
+            '-DispatchRoot'
+            $phase6DispatchRoot
+            '-LineSlug'
+            'line-a'
+            '-DispatchSlug'
+            $phase5CollisionDispatch
+            '-WriteMode'
+            'write'
+            '-RequestPath'
+            (Join-Path $fixtureRoot ('phase6-request-' + $phase5CollisionDispatch + '.json'))
+            '-ResultPath'
+            $phase5CollisionResultPath
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $diagnosticMutantOutput = ([string]$diagnosticMutantRun.stdout + [Environment]::NewLine + [string]$diagnosticMutantRun.stderr)
+        Assert-True ([int]$diagnosticMutantRun.exit_code -ne 0 -and $diagnosticMutantOutput -notmatch 'received_filename=') ('T021 reverse mutant 未暴露診斷欄位缺失：' + $diagnosticMutantOutput)
+        Write-Phase9Evidence -Label 'T021_PREPARE_RESULT_DIAGNOSTIC_MUTANT' -Value ([ordered]@{
+                production = [ordered]@{ boundary = 'passed'; unresolvable = 'passed'; collision = 'passed' }
+                reverse_mutant = [ordered]@{ exit_code = $diagnosticMutantRun.exit_code; output = $diagnosticMutantOutput }
+                mutation = '將 PrepareResultCollision 的診斷訊息改回只輸出 result path。'
+            })
+        Set-Phase6PrepareRequest -Dispatch 'phase6-prepare' -Source $phase6SourcePath -Destination $phase6DestinationPath -Hash $phase6SourceHash -ResultPath $phase6PrepareResultPath | Out-Null
+    }
+
+    Invoke-Case 'Phase 5 T021 不存在的 dispatch worktree target 維持 direct-write' {
+        $phase5NoWorktreeDispatchRoot = Join-Path $fixtureRoot '.local/ai-sessions/worktrees/phase5-no-worktree'
+        $phase5NoWorktreeTargetPath = Join-Path $phase5NoWorktreeDispatchRoot 'new-target.txt'
+        try {
+            Assert-True (-not (Test-Path -LiteralPath $phase5NoWorktreeDispatchRoot)) 'T021 negative target fixture 不應預先存在。'
+            $script:SourceRoot = $fixtureRoot
+            $script:ExecutionRoot = $null
+            $script:DispatchRoot = $phase5NoWorktreeDispatchRoot
+            $script:LineSlug = 'line-a'
+            $script:DispatchSlug = 'phase5-no-worktree'
+            $script:TargetPath = @($phase5NoWorktreeTargetPath)
+            $script:WriteMode = 'write'
+            $script:PrepareResultPath = $null
+            $phase5NoWorktreeResult = Invoke-Preflight
+            Assert-True (-not [bool]$phase5NoWorktreeResult.worktreeCreated -and [string]::Equals([string]$phase5NoWorktreeResult.executionRoot, (Resolve-AbsolutePath -Path $fixtureRoot), [StringComparison]::OrdinalIgnoreCase) -and [string]::Equals([string]$phase5NoWorktreeResult.dispatchRoot, (Resolve-AbsolutePath -Path $phase5NoWorktreeDispatchRoot), [StringComparison]::OrdinalIgnoreCase)) ('不存在 dispatch worktree target 的 Preflight 分流異常：' + ($phase5NoWorktreeResult | ConvertTo-Json -Depth 20 -Compress))
+        }
+        finally {
+            Set-Phase6PrepareRequest -Dispatch 'phase6-prepare' -Source $phase6SourcePath -Destination $phase6DestinationPath -Hash $phase6SourceHash -ResultPath $phase6PrepareResultPath | Out-Null
+            $script:TargetPath = @()
+        }
     }
 
     $phase6StartSuccessPreflightPath = Join-Path $fixtureRoot 'phase6-start-success-preflight.json'
@@ -4952,7 +5619,8 @@ if ($Phase -ge 8) {
 if ($Phase -ge 9) {
     $phase9Root = Join-Path $fixtureRoot 'phase9'
     New-Item -ItemType Directory -Path $phase9Root -Force | Out-Null
-    $sRealDispatchParent = Split-Path -Parent $fixtureRoot
+    $sRealDispatchParent = Join-Path $fixtureBaseRoot 'p9-real'
+    New-Item -ItemType Directory -Path $sRealDispatchParent -Force | Out-Null
 
     $invokeDefaultProfileIsolationStart = {
         [CmdletBinding()]
@@ -7425,7 +8093,12 @@ if ($Phase -ge 9) {
         }
 '@
     $atomicFunctionDefinition = $atomicFunctionAst[0].Extent.Text -replace '^function Write-DispatchAtomicJsonDocument', 'function Invoke-Phase9ProductionAtomicWriter'
-    $atomicFunctionDefinition = $atomicFunctionDefinition.Replace('        if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {', ($atomicAfterCasInjection + '        if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {'))
+    $atomicInjectionMarker = '        if ([System.IO.File]::Exists($resolvedFileApiPath)) {'
+    if (-not $atomicFunctionDefinition.Contains($atomicInjectionMarker)) {
+        $atomicInjectionMarker = '        if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {'
+    }
+    Assert-True ($atomicFunctionDefinition.Contains($atomicInjectionMarker)) 'Phase 9 atomic production writer clone 缺少 CAS injection marker。'
+    $atomicFunctionDefinition = $atomicFunctionDefinition.Replace($atomicInjectionMarker, ($atomicAfterCasInjection + $atomicInjectionMarker))
     try {
         . ([scriptblock]::Create($atomicFunctionDefinition))
     }
@@ -7826,8 +8499,8 @@ if ($Phase -ge 9) {
 
     Invoke-Case 'Phase 9 F-009 reverse execution-root receipt guard fails closed' {
         $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
-        $receiptCondition = 'if ($failedStage -eq ''preflight'' -and -not [string]::IsNullOrWhiteSpace($failureReceiptPathValue)) {'
-        $mutantCondition = 'if ($failedStage -eq ''preflight'' -and -not [string]::IsNullOrWhiteSpace($failureReceiptPathValue) -and -not [string]::IsNullOrWhiteSpace($executionRootPath)) {'
+        $receiptCondition = 'if (-not [string]::IsNullOrWhiteSpace($failureReceiptPathValue)) {'
+        $mutantCondition = 'if (-not [string]::IsNullOrWhiteSpace($failureReceiptPathValue) -and -not [string]::IsNullOrWhiteSpace($executionRootPath)) {'
         Assert-True ($productionText.Contains($receiptCondition)) 'F-009 reverse 找不到 failure receipt writer 的 production guard。'
         $mutantText = $productionText.Replace($receiptCondition, $mutantCondition)
         Assert-True ($mutantText -ne $productionText) 'F-009 reverse mutant 未改變 executionRoot guard。'
@@ -7842,7 +8515,7 @@ if ($Phase -ge 9) {
             Assert-True (-not $record.receipt_exists -and -not [bool]$record.start_counter_exists -and -not [bool]$record.output_document.failure_receipt_saved) ('F-009 reverse ' + $scenario + ' 意外宣告 failure receipt 已保存：' + [string]$record.output_text)
             $reverseRecords.Add($record)
         }
-        $script:phase9F009ReverseEvidence = [ordered]@{ mutation = 'failure receipt writer required executionRootPath to be non-empty'; records = @($reverseRecords.ToArray()) }
+        $script:phase9F009ReverseEvidence = [ordered]@{ mutation = 'failure receipt writer additionally required executionRootPath to be non-empty'; records = @($reverseRecords.ToArray()) }
         Write-Phase9Evidence -Label 'F009_REVERSE_FAILURE' -Value $script:phase9F009ReverseEvidence
     }
 
@@ -7930,7 +8603,7 @@ if ($Phase -ge 9) {
             '@echo off'
             ('>"' + $counterPath + '" echo started')
             ('echo {"type":"thread.started","thread_id":"' + $threadId + '"}')
-            ('echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md S finding a"}}')
+            ('echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md ' + $Name + ' ' + $caseSlug + ' a"}}')
             'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 1"'
             'exit /b 0'
@@ -7955,7 +8628,7 @@ if ($Phase -ge 9) {
             dispatch_kind = 'workflow'
             target_path = @('target.txt')
             prepare_artifacts = @($artifactDocument)
-            prompt_path = $promptPath
+            prompt_path = $promptSourcePath
             task_type = 'script-change'
             session_mode = 'cold-start'
             unit_kind = 'workflow-phase'
@@ -8021,6 +8694,41 @@ if ($Phase -ge 9) {
                 Start-Sleep -Milliseconds 100
             }
         }
+        $startResultPath = if ($null -eq $outputDocument -or $null -eq $outputDocument.stage_results -or $null -eq $outputDocument.stage_results.start) { $null } else { [string]$outputDocument.stage_results.start.path }
+        $startResultDocument = $null
+        if (-not [string]::IsNullOrWhiteSpace($startResultPath) -and (Test-Path -LiteralPath $startResultPath -PathType Leaf)) {
+            try {
+                $startResultDocument = Get-Content -LiteralPath $startResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            }
+            catch {
+                $startResultDocument = $null
+            }
+        }
+        $inspectResultPath = if ($null -eq $startResultDocument) { $null } else { [string]$startResultDocument.inspectResultPath }
+        $inspectResultDocument = $null
+        if (-not [string]::IsNullOrWhiteSpace($inspectResultPath) -and [IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $inspectResultPath))) {
+            try {
+                $inspectResultDocument = ConvertFrom-Json -InputObject (Read-DispatchUtf8Text -Path $inspectResultPath)
+            }
+            catch {
+                $inspectResultDocument = $null
+            }
+        }
+        $runRecordPath = if ($null -eq $startResultDocument) { $null } else { [string]$startResultDocument.runRecordPath }
+        $runRecordDocument = $null
+        if (-not [string]::IsNullOrWhiteSpace($runRecordPath) -and (Test-Path -LiteralPath $runRecordPath -PathType Leaf)) {
+            try {
+                $runRecordDocument = Get-Content -LiteralPath $runRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            }
+            catch {
+                $runRecordDocument = $null
+            }
+        }
+        $eventStreamPath = if ($null -eq $startResultDocument) { $null } else { [string]$startResultDocument.eventStreamPath }
+        $turnCompleted = $false
+        if (-not [string]::IsNullOrWhiteSpace($eventStreamPath) -and (Test-Path -LiteralPath $eventStreamPath -PathType Leaf)) {
+            $turnCompleted = (Get-Content -LiteralPath $eventStreamPath -Raw -Encoding UTF8).Contains('turn.completed')
+        }
         return [pscustomobject]@{
             name = $Name
             dispatch_slug = $caseSlug
@@ -8046,6 +8754,19 @@ if ($Phase -ge 9) {
             prepare_exists = Test-Path -LiteralPath $prepareResultPath -PathType Leaf
             result_exists = Test-Path -LiteralPath $resultPath -PathType Leaf
             receipt_exists = Test-Path -LiteralPath $failureReceiptPath -PathType Leaf
+            source_root = $sourceRoot
+            dispatch_root = $dispatchRoot
+            execution_root = $dispatchRoot
+            prompt_source_path = $promptSourcePath
+            codex_home = $codexHome
+            start_result_path = $startResultPath
+            start_result_document = $startResultDocument
+            inspect_result_path = $inspectResultPath
+            inspect_result_document = $inspectResultDocument
+            run_record_path = $runRecordPath
+            run_record_document = $runRecordDocument
+            event_stream_path = $eventStreamPath
+            turn_completed = $turnCompleted
         }
     }
 
@@ -8126,6 +8847,443 @@ if ($Phase -ge 9) {
         Write-Phase9Evidence -Label 'S002_NORMAL_PASS' -Value ([ordered]@{ preflight = $s2Preflight; before_snapshot = $s2Before; prepare = $s2Prepare; success = $s2Success })
         Write-Phase9Evidence -Label 'S002_REVERSE_FAILURE' -Value $s2Reverse
         Write-Phase9Evidence -Label 'S002_RESTORED_PASS' -Value $s2Restored
+    }
+
+    Invoke-Case 'Phase 9 T010/T011 real Dispatch prompt transfer and direct Inspect binding' {
+        $real = & $invokeSRealDispatchCase -Name 't010-t011' -ScriptPath $sourcePath -CreateQuotaBeforePath
+        Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.output_document -and [string]$real.output_document.status -eq 'started') ('T010 real Dispatch 未完成：' + [string]$real.output_text)
+        Assert-True ($real.turn_completed) ('T010 real Dispatch 尚未取得 turn.completed：' + [string]$real.output_text)
+        Assert-True ($null -ne $real.run_record_document) 'T010 real Dispatch 未讀取 RunRecord。'
+        Assert-True (Test-PathWithinRoot -Path $real.run_record_document.prompt_path -Root $real.execution_root) ('T010 RunRecord prompt_path 未位於 executionRoot：' + ($real.run_record_document | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (Test-Path -LiteralPath $real.run_record_document.prompt_path -PathType Leaf) 'T010 RunRecord prompt_path 不存在。'
+        Assert-True (Test-PathWithinRoot -Path $real.run_record_document.prompt_source_path -Root $real.source_root) 'T010 prompt_source_path 未位於 sourceRoot。'
+        Assert-True (Test-PathWithinRoot -Path $real.run_record_document.prompt_transfer_path -Root (Join-Path $real.execution_root '.local\ai-sessions\history')) 'T010 prompt_transfer_path 未位於 execution history。'
+        Assert-True ($null -ne $real.inspect_result_path -and [IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $real.inspect_result_path))) 'T011 Start 未輸出可直接使用的 inspectResultPath。'
+        Assert-True (Test-PathWithinRoot -Path $real.inspect_result_path -Root (Join-Path $real.execution_root '.local\ai-sessions\history')) 'T011 inspectResultPath 未位於 execution history。'
+
+        $inspectHost = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $inspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-CodexHome'
+            $real.codex_home
+            '-Operation'
+            'Inspect'
+            '-DispatchResultPath'
+            $real.inspect_result_path
+            '-SourceRoot'
+            $real.source_root
+            '-ExecutionRoot'
+            $real.execution_root
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $real.dispatch_slug
+            '-RequiredIdentifier'
+            'design.md'
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        $inspectDocument = $null
+        try {
+            $inspectDocument = ConvertFrom-Json -InputObject ([string]$inspectRun.stdout)
+        }
+        catch {
+            $inspectDocument = $null
+        }
+        Assert-True ([int]$inspectRun.exit_code -eq 0 -and $null -ne $inspectDocument -and [bool]$inspectDocument.success) ('T011 Start inspectResultPath 無法直接作為 Inspect 輸入：' + [string]$inspectRun.stdout + [string]$inspectRun.stderr)
+
+        $inspectApiPath = ConvertTo-FileSystemApiPath -Path $real.inspect_result_path
+        $originalInspectBytes = [IO.File]::ReadAllBytes($inspectApiPath)
+        $inspectText = [Text.Encoding]::UTF8.GetString($originalInspectBytes)
+        $tamperedInspectDocument = ConvertFrom-Json -InputObject $inspectText
+        $tamperedInspectDocument.status = 'tampered'
+        $tamperedInspectText = ($tamperedInspectDocument | ConvertTo-Json -Depth 40) + "`n"
+        Assert-True ($tamperedInspectText -ne $inspectText) 'T011 stale binding mutant 未改變 Inspect result。'
+        [IO.File]::WriteAllText($inspectApiPath, $tamperedInspectText, (New-Object Text.UTF8Encoding($false)))
+        $staleInspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Inspect'
+            '-DispatchResultPath'
+            $real.inspect_result_path
+            '-SourceRoot'
+            $real.source_root
+            '-ExecutionRoot'
+            $real.execution_root
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $real.dispatch_slug
+            '-RequiredIdentifier'
+            'design.md'
+        ) -WorkingDirectory $root -EnvironmentVariables @{}
+        [IO.File]::WriteAllBytes($inspectApiPath, $originalInspectBytes)
+        Assert-True ([int]$staleInspectRun.exit_code -ne 0 -and ([string]$staleInspectRun.stdout + [string]$staleInspectRun.stderr) -match 'DispatchResultBindingInvalid|result_sha256') ('T011 stale Inspect binding 未拒絕：' + [string]$staleInspectRun.stdout + [string]$staleInspectRun.stderr)
+
+        $outsidePromptPath = Join-Path (Split-Path -Parent $real.source_root) ('outside-prompt-' + [guid]::NewGuid().ToString('N') + '.md')
+        Write-Utf8NoBom -Path $outsidePromptPath -Content 'outside prompt'
+        $outsideRejected = $false
+        try {
+            $null = Copy-DispatchPromptToExecutionHistory -PromptPath $outsidePromptPath -SourceRoot $real.source_root -ExecutionRoot $real.execution_root -HistoryRoot (Join-Path $real.execution_root '.local\ai-sessions\history') -Timestamp ('outside-' + [guid]::NewGuid().ToString('N'))
+        }
+        catch {
+            $outsideRejected = $_.Exception.Message -match 'PromptSourceBoundary'
+        }
+        Assert-True $outsideRejected 'T010 sourceRoot 外 Prompt 未拒絕。'
+
+        $collisionTimestamp = 'collision-' + [guid]::NewGuid().ToString('N')
+        $collisionPath = Join-Path (Join-Path $real.execution_root '.local\ai-sessions\history') ('codex-prompt-source-' + $collisionTimestamp + '.md')
+        Write-Utf8NoBom -Path $collisionPath -Content 'collision sentinel'
+        $collisionRejected = $false
+        try {
+            $null = Copy-DispatchPromptToExecutionHistory -PromptPath $real.prompt_source_path -SourceRoot $real.source_root -ExecutionRoot $real.execution_root -HistoryRoot (Join-Path $real.execution_root '.local\ai-sessions\history') -Timestamp $collisionTimestamp
+        }
+        catch {
+            $collisionRejected = $_.Exception.Message -match 'PromptTransferCollision'
+        }
+        Assert-True $collisionRejected 'T010 prompt transfer collision 未拒絕。'
+
+        $hashTimestamp = 'hash-' + [guid]::NewGuid().ToString('N')
+        $originalHashFunction = (Get-Command Get-FileSha256 -CommandType Function -ErrorAction Stop).ScriptBlock
+        try {
+            Set-Item -Path Function:\Get-FileSha256 -Value ([scriptblock]::Create(@'
+param([Parameter(Mandatory)][string]$Path)
+if ([IO.Path]::GetFileName($Path) -like 'codex-prompt-source-*') { return ('0' * 64) }
+return & $script:phase9OriginalGetFileSha256 -Path $Path
+'@))
+            $script:phase9OriginalGetFileSha256 = $originalHashFunction
+            $hashRejected = $false
+            try {
+                $null = Copy-DispatchPromptToExecutionHistory -PromptPath $real.prompt_source_path -SourceRoot $real.source_root -ExecutionRoot $real.execution_root -HistoryRoot (Join-Path $real.execution_root '.local\ai-sessions\history') -Timestamp $hashTimestamp
+            }
+            catch {
+                $hashRejected = $_.Exception.Message -match 'PromptTransferHashMismatch'
+            }
+        }
+        finally {
+            Set-Item -Path Function:\Get-FileSha256 -Value $originalHashFunction
+        }
+        Assert-True $hashRejected 'T010 prompt transfer hash mismatch 未拒絕。'
+
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $inspectWriter = "return Write-DispatchAtomicJsonDocument -Path `$resolvedPath -Document `$document -SourceRoot `$SourceRoot -ExecutionRoot `$ExecutionRoot -TargetPath @() -RequireAbsent -AbsentErrorCode 'DispatchResultBindingCollision'"
+        Assert-True $productionText.Contains($inspectWriter) 'T011 reverse 找不到 Inspect binding writer。'
+        $inspectWriterMutant = 'return [pscustomobject]@{ Path = $resolvedPath; Sha256 = $null; Hash = $null; Document = $document }'
+        $mutantText = $productionText.Replace($inspectWriter, $inspectWriterMutant)
+        Assert-True ($mutantText -ne $productionText) 'T011 reverse mutant 未移除 Inspect binding writer。'
+        $mutantPath = Join-Path $phase9Root 't011-mutant-Invoke-CodexDispatch.ps1'
+        $bomEncoding = New-Object Text.UTF8Encoding($true)
+        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $mutantDispatch = & $invokeSRealDispatchCase -Name 't011-mutant' -ScriptPath $mutantPath -CreateQuotaBeforePath
+        Assert-True ([int]$mutantDispatch.run.exit_code -eq 0 -and -not (Test-Path -LiteralPath $mutantDispatch.inspect_result_path -PathType Leaf)) ('T011 reverse 未暴露缺少 Inspect binding：' + [string]$mutantDispatch.output_text)
+
+        $script:phase9T010T011Evidence = [ordered]@{
+            real_dispatch = $real
+            inspect = $inspectRun
+            stale_binding = $staleInspectRun
+            source_boundary = $outsideRejected
+            collision = $collisionRejected
+            hash_mismatch = $hashRejected
+            mutation = '移除 Write-DispatchInspectResultBinding 的原子 writer；mutant Dispatch 未產生 inspectResultPath 指向的檔案。'
+            mutant_dispatch = $mutantDispatch
+        }
+        Write-Phase9Evidence -Label 'T010_T011_REAL_DISPATCH_PASS' -Value ([ordered]@{ dispatch = $real; inspect = $inspectRun; run_record = $real.run_record_document })
+        Write-Phase9Evidence -Label 'T010_T011_NEGATIVE_AND_MUTANT' -Value $script:phase9T010T011Evidence
+        Write-Phase9Evidence -Label 'PHASE9_REAL_DISPATCH_RELAY_FIX' -Value ([ordered]@{
+                production_wait_timeout_seconds = 5
+                fixture_post_event_hold_seconds = 1
+                production_wait_behavior_changed = $false
+                fixture_real_dispatch_parent = $sRealDispatchParent
+                fixture_worktree_location = 'executionRoot/p9-real/<caseSlug>/.local/ai-sessions/worktrees/<caseSlug>'
+                affected_cases = @('S-1 omitted quota normal/restored', 'S-2 started success', 'T010/T011 real Dispatch')
+                cause = 'Windows cmd.exe could not create the fixture stderr redirection path when the nested executionRoot path reached the MAX_PATH boundary, leaving the event stream empty. The fixture also held the process for five seconds, matching the production relay deadline; the hold is one second after this correction so the fixture observes a completed stream well before the deadline.'
+                real_codex_impact = 'Production Wait-ForThreadRelay remains unchanged; real Codex event streaming is not altered.'
+            })
+    }
+
+    Invoke-Case 'Phase 9 R-1/R-2/R-3 real source-root path shape distinguishes prompt boundary regression' {
+        $invokeR123RealShapeCase = {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory)][string]$Name,
+                [Parameter(Mandatory)][string]$ScriptPath
+            )
+
+            $caseSlug = 'r13-' + [guid]::NewGuid().ToString('N').Substring(0, 6)
+            $testExecutionRoot = [IO.Path]::GetFullPath($root)
+            $sourceRoot = Join-Path $testExecutionRoot ('p-' + $caseSlug)
+            $scratchRoot = Join-Path $sourceRoot ('.local\ai-sessions\scratch\' + $caseSlug)
+            $dispatchRoot = Join-Path $sourceRoot ('.local\ai-sessions\worktrees\' + $caseSlug)
+            $lineSlug = 'r13'
+            $dispatchHistoryLineRoot = Join-Path $dispatchRoot ('.local\ai-sessions\history\' + $lineSlug)
+            $promptSourcePath = Join-Path $scratchRoot 'prompt.md'
+            $requestPath = Join-Path $scratchRoot 'request.json'
+            $failureReceiptPath = Join-Path $scratchRoot 'failure-receipt.json'
+            $resultPath = Join-Path $dispatchHistoryLineRoot 'dispatch-result.json'
+            $quotaBeforePath = Join-Path (Join-Path $sourceRoot '.local\ai-sessions\history') ('quota-before-' + $caseSlug + '.json')
+            $codexHome = Join-Path $scratchRoot 'codex-home'
+            $rolloutRoot = Join-Path $codexHome 'sessions'
+            $fakeCodexPath = Join-Path $scratchRoot 'codex.cmd'
+            $externalStartedPath = Join-Path $scratchRoot 'external-started.txt'
+            $threadId = [guid]::NewGuid().ToString('D')
+            $targetRelativePath = 'scripts\Invoke-CodexDispatch.ps1'
+            $lineManifestSourcePath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\line.json')
+            $requirementSummarySourcePath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\requirement-summary.md')
+            $lineManifestDestinationPath = Join-Path $dispatchRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\line.json')
+            $requirementSummaryDestinationPath = Join-Path $dispatchRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\requirement-summary.md')
+            $sourceRepoWorktreeBefore = Get-Phase9GitWorktreeList -RepositoryRoot $testExecutionRoot
+            $worktreeCleanup = $null
+
+            New-Item -ItemType Directory -Path $sourceRoot, $scratchRoot, $codexHome, $rolloutRoot, (Split-Path -Parent $quotaBeforePath) -Force | Out-Null
+            New-Item -ItemType Directory -Path (Split-Path -Parent $lineManifestSourcePath) -Force | Out-Null
+            $historyRootKeepPath = Join-Path (Split-Path -Parent $quotaBeforePath) '.phase9-history-root'
+            Write-Utf8NoBom -Path $historyRootKeepPath -Content "Phase 9 isolated Git repository history root.`n"
+            $historyLineRoot = Join-Path (Split-Path -Parent $quotaBeforePath) $lineSlug
+            New-Item -ItemType Directory -Path $historyLineRoot -Force | Out-Null
+            $historyLineKeepPath = Join-Path $historyLineRoot '.phase9-history-line'
+            Write-Utf8NoBom -Path $historyLineKeepPath -Content "Phase 9 isolated Git repository history line.`n"
+            Write-Utf8NoBom -Path $lineManifestSourcePath -Content (([ordered]@{
+                        schema = 'ai-sessions.line.v1'
+                        'line-slug' = $lineSlug
+                        'semantic-label' = 'dispatch mechanism batch 2 R-1 R-2 R-3 path shape'
+                        'created-at-utc' = [DateTime]::UtcNow.ToString('o')
+                    } | ConvertTo-Json -Depth 10) + "`n")
+            $requirementSummaryTemplatePath = Join-Path $root '.local\ai-sessions\handoff\dispatch-mechanism-batch2\requirement-summary.md'
+            Write-Utf8NoBom -Path $requirementSummarySourcePath -Content (Get-Content -LiteralPath $requirementSummaryTemplatePath -Raw -Encoding UTF8)
+            Initialize-Phase9IsolatedGitRepository -SourceRoot $sourceRoot -SourceScriptPath $sourcePath -TargetRelativePath $targetRelativePath
+            Write-Utf8NoBom -Path $promptSourcePath -Content ('R-1/R-2/R-3 real source-root prompt: ' + $caseSlug)
+            Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+            $null = New-Phase8QuotaSnapshot -Path $quotaBeforePath -PrimaryRemainingPercent 80
+            $fakeCodexLines = @(
+                '@echo off'
+                ('>"' + $externalStartedPath + '" echo started')
+                ('echo {"type":"thread.started","thread_id":"' + $threadId + '"}')
+                ('echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md ' + $caseSlug + ' dispatch-mechanism-batch2"}}')
+                'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+                'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 5"'
+                'exit /b 0'
+            )
+            Write-Utf8NoBom -Path $fakeCodexPath -Content (($fakeCodexLines -join "`r`n") + "`r`n")
+
+            $request = [ordered]@{
+                schema = 'ai-sessions.dispatch-request.v1'
+                operation = 'Dispatch'
+                source_root = $sourceRoot
+                dispatch_root = $dispatchRoot
+                line_slug = $lineSlug
+                dispatch_slug = $caseSlug
+                profile = 'default'
+                write_mode = 'write'
+                dispatch_kind = 'resource'
+                target_path = @($targetRelativePath)
+                prepare_artifacts = @(
+                    [ordered]@{
+                        source = $lineManifestSourcePath
+                        destination = $lineManifestDestinationPath
+                        sha256 = Get-FileSha256 -Path $lineManifestSourcePath
+                        purpose = 'R-1/R-2/R-3 line manifest'
+                    }
+                    [ordered]@{
+                        source = $requirementSummarySourcePath
+                        destination = $requirementSummaryDestinationPath
+                        sha256 = Get-FileSha256 -Path $requirementSummarySourcePath
+                        purpose = 'R-1/R-2/R-3 requirement summary'
+                    }
+                )
+                prompt_path = $promptSourcePath
+                task_type = 'review'
+                session_mode = 'cold-start'
+                unit_kind = 'resource-target'
+                requested_unit = @($targetRelativePath)
+                failure_receipt_path = $failureReceiptPath
+                result_path = $resultPath
+                quota_before_path = $quotaBeforePath
+            }
+            Write-Utf8NoBom -Path $requestPath -Content (($request | ConvertTo-Json -Depth 30) + "`n")
+
+            $caseResult = $null
+            try {
+                $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+                $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
+                    '-NoProfile'
+                    '-File'
+                    $ScriptPath
+                    '-CodexPath'
+                    $fakeCodexPath
+                    '-CodexHome'
+                    $codexHome
+                    '-Operation'
+                    'Dispatch'
+                    '-RequestPath'
+                    $requestPath
+                ) -WorkingDirectory $root -EnvironmentVariables @{}
+                $outputDocument = $null
+                try {
+                    $outputDocument = ConvertFrom-Json -InputObject ([string]$run.stdout)
+                }
+                catch {
+                    $outputDocument = $null
+                }
+                $resultDocument = $null
+                if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+                    try {
+                        $resultDocument = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    }
+                    catch {
+                        $resultDocument = $null
+                    }
+                }
+                $receiptDocument = $null
+                if (Test-Path -LiteralPath $failureReceiptPath -PathType Leaf) {
+                    try {
+                        $receiptDocument = Get-Content -LiteralPath $failureReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    }
+                    catch {
+                        $receiptDocument = $null
+                    }
+                }
+                $startResultPath = if ($null -eq $outputDocument -or $null -eq $outputDocument.stage_results -or $null -eq $outputDocument.stage_results.start) { $null } else { [string]$outputDocument.stage_results.start.path }
+                $startResultDocument = $null
+                if (-not [string]::IsNullOrWhiteSpace($startResultPath) -and (Test-Path -LiteralPath $startResultPath -PathType Leaf)) {
+                    try {
+                        $startResultDocument = Get-Content -LiteralPath $startResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    }
+                    catch {
+                        $startResultDocument = $null
+                    }
+                }
+                $runRecordPath = if ($null -eq $startResultDocument) { $null } else { [string]$startResultDocument.runRecordPath }
+                $runRecordDocument = $null
+                if (-not [string]::IsNullOrWhiteSpace($runRecordPath) -and (Test-Path -LiteralPath $runRecordPath -PathType Leaf)) {
+                    try {
+                        $runRecordDocument = Get-Content -LiteralPath $runRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                    }
+                    catch {
+                        $runRecordDocument = $null
+                    }
+                }
+                $eventStreamPath = if ($null -eq $startResultDocument) { $null } else { [string]$startResultDocument.eventStreamPath }
+                $turnCompleted = $false
+                if (-not [string]::IsNullOrWhiteSpace($eventStreamPath) -and (Test-Path -LiteralPath $eventStreamPath -PathType Leaf)) {
+                    $turnCompleted = (Get-Content -LiteralPath $eventStreamPath -Raw -Encoding UTF8).Contains('turn.completed')
+                }
+                $composedPromptPaths = @()
+                $dispatchHistoryRoot = Join-Path $dispatchRoot '.local\ai-sessions\history'
+                if (Test-Path -LiteralPath $dispatchHistoryRoot -PathType Container) {
+                    $composedPromptPaths = @(Get-ChildItem -LiteralPath $dispatchHistoryRoot -Filter 'codex-prompt-*.md' -File -Recurse | Select-Object -ExpandProperty FullName)
+                }
+                $promptPathExistsBeforeCleanup = $false
+                if ($null -ne $resultDocument -and -not [string]::IsNullOrWhiteSpace([string]$resultDocument.prompt_path)) {
+                    $promptPathExistsBeforeCleanup = Test-Path -LiteralPath ([string]$resultDocument.prompt_path) -PathType Leaf
+                }
+                $caseResult = [pscustomobject]@{
+                    name = $Name
+                    line_slug = $lineSlug
+                    dispatch_slug = $caseSlug
+                    request_path = $requestPath
+                    request = $request
+                    test_execution_root = $testExecutionRoot
+                    source_root = $sourceRoot
+                    dispatch_root = $dispatchRoot
+                    execution_root = $dispatchRoot
+                    prompt_source_path = $promptSourcePath
+                    composed_prompt_paths = $composedPromptPaths
+                    prompt_path_exists_before_cleanup = $promptPathExistsBeforeCleanup
+                    run = $run
+                    output_text = ([string]$run.stdout + [string]$run.stderr)
+                    output_document = $outputDocument
+                    result_path = $resultPath
+                    result_document = $resultDocument
+                    receipt_path = $failureReceiptPath
+                    receipt_document = $receiptDocument
+                    receipt_exists = Test-Path -LiteralPath $failureReceiptPath -PathType Leaf
+                    external_start_exists = Test-Path -LiteralPath $externalStartedPath -PathType Leaf
+                    start_result_path = $startResultPath
+                    start_result_document = $startResultDocument
+                    run_record_path = $runRecordPath
+                    run_record_document = $runRecordDocument
+                    event_stream_path = $eventStreamPath
+                    turn_completed = $turnCompleted
+                }
+            }
+            finally {
+                $worktreeCleanup = Remove-Phase9GitWorktree -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot
+                $sourceRepoWorktreeAfter = Get-Phase9GitWorktreeList -RepositoryRoot $testExecutionRoot
+            }
+            $caseResult | Add-Member -MemberType NoteProperty -Name source_repo_worktree_before -Value $sourceRepoWorktreeBefore
+            $caseResult | Add-Member -MemberType NoteProperty -Name source_repo_worktree_after -Value $sourceRepoWorktreeAfter
+            $caseResult | Add-Member -MemberType NoteProperty -Name worktree_cleanup -Value $worktreeCleanup
+            return $caseResult
+        }
+
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $prelaunchPromptSync = '    $runRecord.prompt_path = $promptPathValue' + "`r`n" +
+            '    $runRecord.prompt_source_path = $promptSourcePathValue' + "`r`n" +
+            '    $runRecord.prompt_source_sha256 = $promptSourceSha256Value' + "`r`n" +
+            '    $runRecord.prompt_transfer_path = $promptTransferPathValue' + "`r`n" +
+            '    $runRecord.prompt_transfer_sha256 = $promptTransferSha256Value' + "`r`n" +
+            '    $runRecord.inspect_result_path = $inspectResultPathValue' + "`r`n" +
+            '    $null = Write-DispatchRunRecord -Record $runRecord -Update'
+        $mutantPromptSync = $prelaunchPromptSync.Replace('$runRecord.prompt_path = $promptPathValue', '$runRecord.prompt_path = $promptSourcePathValue')
+        Assert-True ($productionText.Contains($prelaunchPromptSync)) 'R-1/R-3 reverse 找不到 pre-launch prompt path sync。'
+        Assert-True (-not $productionText.Contains($prelaunchPromptSync + "`r`n" + $prelaunchPromptSync)) 'R-1/R-3 reverse prompt path sync 區塊重複，無法安全建立 mutant。'
+        $mutantText = $productionText.Replace($prelaunchPromptSync, $mutantPromptSync)
+        Assert-True ($mutantText -ne $productionText) 'R-1/R-3 reverse mutant 未將 pre-launch prompt_path 改回 sourceRoot。'
+        $mutantPath = Join-Path $phase9Root 'r1-r3-real-shape-mutant-Invoke-CodexDispatch.ps1'
+        $bomEncoding = New-Object System.Text.UTF8Encoding($true)
+        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+
+        $preFix = & $invokeR123RealShapeCase -Name 'pre-fix' -ScriptPath $mutantPath
+        $preFixDispatchResult = $preFix.result_document
+        Assert-True ([int]$preFix.run.exit_code -ne 0 -and $null -ne $preFixDispatchResult -and [string]$preFixDispatchResult.status -eq 'failed' -and [string]$preFixDispatchResult.failed_stage -eq 'start' -and [string]$preFixDispatchResult.error -match 'RunRecord 證據超出 executionRoot：prompt_path') ('R-1/R-3 pre-fix 未重現 real path shape 邊界失敗：' + [string]$preFix.output_text)
+        $sourceScratchRoot = Join-Path $preFix.source_root '.local\ai-sessions\scratch'
+        Assert-True (Test-PathWithinRoot -Path $preFix.source_root -Root $preFix.test_execution_root) ('R-3 pre-fix sourceRoot 未位於測試 executionRoot 下的隔離目錄：' + ($preFix.request | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (Test-PathWithinRoot -Path $preFix.dispatch_root -Root $preFix.test_execution_root) ('R-3 pre-fix dispatchRoot 未位於測試 executionRoot 下：' + ($preFix.request | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (Test-PathWithinRoot -Path $preFix.request.prompt_path -Root $sourceScratchRoot) ('R-3 pre-fix prompt_path 未位於 sourceRoot scratch：' + ($preFix.request | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ($preFix.request.dispatch_root -eq (Join-Path $preFix.source_root ('.local\ai-sessions\worktrees\' + $preFix.dispatch_slug))) ('R-3 pre-fix dispatch_root 未符合 sourceRoot worktrees 形態：' + ($preFix.request | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ($preFix.receipt_exists -and $null -ne $preFix.receipt_document -and [bool]$preFixDispatchResult.failure_receipt_saved -and [string]$preFix.receipt_document.failed_stage -eq 'start' -and -not [bool]$preFix.receipt_document.process_started) ('R-2 pre-fix boundary failure 未保存 start failure receipt：' + [string]$preFix.output_text)
+        Assert-True (@($preFix.composed_prompt_paths | Where-Object { Test-PathWithinRoot -Path $_ -Root $preFix.dispatch_root }).Count -gt 0) ('R-1/R-3 pre-fix 未留下 executionRoot 內的組合 Prompt：' + ($preFix | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ([bool]$preFix.worktree_cleanup.removed -and -not [bool]$preFix.worktree_cleanup.registered_after) ('R-3 pre-fix 未清理隔離 git worktree：' + ($preFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ([string]::Equals([string]$preFix.source_repo_worktree_before, [string]$preFix.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 pre-fix 改變來源 repo 的 git worktree list：' + ($preFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
+
+        $postFix = & $invokeR123RealShapeCase -Name 'post-fix' -ScriptPath $sourcePath
+        $postFixDispatchResult = $postFix.result_document
+        Assert-True ([int]$postFix.run.exit_code -eq 0 -and $null -ne $postFixDispatchResult -and [string]$postFixDispatchResult.status -eq 'started' -and $postFix.turn_completed) ('R-1/R-3 post-fix real path shape 未完成 turn.completed：' + [string]$postFix.output_text)
+        Assert-True ($null -ne $postFix.start_result_document -and $null -ne $postFix.run_record_document) 'R-1 post-fix 缺少 Start result 或 RunRecord。'
+        Assert-True (Test-PathWithinRoot -Path $postFix.source_root -Root $postFix.test_execution_root) ('R-3 post-fix sourceRoot 未位於測試 executionRoot 下的隔離目錄：' + ($postFix.request | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (Test-PathWithinRoot -Path $postFix.dispatch_root -Root $postFix.test_execution_root) ('R-3 post-fix dispatchRoot 未位於測試 executionRoot 下：' + ($postFix.request | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ([string]::Equals([string]$postFixDispatchResult.prompt_path, [string]$postFix.start_result_document.promptPath, [StringComparison]::OrdinalIgnoreCase) -and [string]::Equals([string]$postFix.start_result_document.promptPath, [string]$postFix.run_record_document.prompt_path, [StringComparison]::OrdinalIgnoreCase)) ('R-1 三層 prompt_path 未一致：' + ($postFix | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True (((Test-PathWithinRoot -Path $postFixDispatchResult.prompt_path -Root $postFix.execution_root) -and [bool]$postFix.prompt_path_exists_before_cleanup)) ('R-1 post-fix Dispatch prompt_path 不在 executionRoot：' + ($postFixDispatchResult | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True (((Test-PathWithinRoot -Path $postFix.start_result_document.promptSourcePath -Root $postFix.source_root) -and [string]::Equals([string]$postFix.start_result_document.promptSourcePath, [string]$postFix.prompt_source_path, [StringComparison]::OrdinalIgnoreCase))) 'R-1 post-fix promptSourcePath 未保留 sourceRoot scratch prompt。'
+        Assert-True (Test-PathWithinRoot -Path $postFix.start_result_document.promptTransferPath -Root (Join-Path $postFix.execution_root '.local\ai-sessions\history')) 'R-1 post-fix promptTransferPath 未位於 execution history。'
+        Assert-True ([string]::Equals([string]$postFixDispatchResult.prompt_transfer_path, [string]$postFix.start_result_document.promptTransferPath, [StringComparison]::OrdinalIgnoreCase)) 'R-1 Dispatch result 未保存搬運後 prompt transfer path。'
+        Assert-True (-not $postFix.receipt_exists) ('R-2 post-fix success 不應產生 failure receipt：' + ($postFix | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ([bool]$postFix.worktree_cleanup.removed -and -not [bool]$postFix.worktree_cleanup.registered_after) ('R-3 post-fix 未清理隔離 git worktree：' + ($postFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ([string]::Equals([string]$postFix.source_repo_worktree_before, [string]$postFix.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 post-fix 改變來源 repo 的 git worktree list：' + ($postFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
+
+        $script:phase9R123Evidence = [ordered]@{
+            pre_fix = $preFix
+            post_fix = $postFix
+            mutation = '將 pre-launch RunRecord 的 prompt_path 從搬運後 executionRoot 路徑改回 sourceRoot scratch prompt_path。'
+            path_shape = [ordered]@{
+                test_execution_root = $postFix.test_execution_root
+                source_root = $postFix.source_root
+                dispatch_root_pattern = (Join-Path $postFix.source_root '.local\ai-sessions\worktrees\<dispatch-slug>')
+                prompt_path_pattern = (Join-Path $postFix.source_root '.local\ai-sessions\scratch\<dispatch-slug>\prompt.md')
+            }
+            worktree_cleanup = [ordered]@{
+                pre_fix = $preFix.worktree_cleanup
+                post_fix = $postFix.worktree_cleanup
+                source_repo_worktree_list_unchanged = [string]::Equals([string]$postFix.source_repo_worktree_before, [string]$postFix.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)
+                source_repo_worktree_list_before = $postFix.source_repo_worktree_before
+                source_repo_worktree_list_after = $postFix.source_repo_worktree_after
+            }
+        }
+        Write-Phase9Evidence -Label 'R1_R2_R3_REAL_PATH_SHAPE_PRE_FIX_FAILURE' -Value ([ordered]@{ output = $preFix.output_text; result = $preFixDispatchResult; receipt = $preFix.receipt_document; request = $preFix.request; composed_prompt_paths = $preFix.composed_prompt_paths; worktree_cleanup = $preFix.worktree_cleanup; mutation = $script:phase9R123Evidence.mutation })
+        Write-Phase9Evidence -Label 'R1_R2_R3_REAL_PATH_SHAPE_POST_FIX_PASS' -Value ([ordered]@{ output = $postFix.output_text; result = $postFixDispatchResult; start = $postFix.start_result_document; run_record = $postFix.run_record_document; request = $postFix.request; worktree_cleanup = $postFix.worktree_cleanup; source_repo_worktree_list_before = $postFix.source_repo_worktree_before; source_repo_worktree_list_after = $postFix.source_repo_worktree_after; mutation = $script:phase9R123Evidence.mutation })
+        Write-Phase9Evidence -Label 'R1_R2_R3_WORKTREE_CLEANUP' -Value $script:phase9R123Evidence.worktree_cleanup
     }
 
     $invokeS3ResumeCase = {
@@ -8682,7 +9840,7 @@ throw 'RunRecord 事件流為空。'
             dispatch_kind = 'workflow'
             target_path = $realTargetPaths
             prepare_artifacts = @([ordered]@{ source = $realArtifactSourcePath; destination = $realArtifactDestinationPath; sha256 = (Get-FileSha256 -Path $realArtifactSourcePath); purpose = 'real dispatch fixture' })
-            prompt_path = $realExecutionPromptPath
+            prompt_path = $realPromptPath
             task_type = 'script-change'
             session_mode = 'cold-start'
             unit_kind = 'workflow-phase'
@@ -8770,7 +9928,7 @@ throw 'RunRecord 事件流為空。'
             $PreflightResultPath = $realPreflightResultPath
             $PrepareResultPath = $realPrepareResultPath
             $QuotaBeforePath = $realQuotaBeforePath
-            $PromptPath = $realExecutionPromptPath
+            $PromptPath = $realPromptPath
             $realResult = Invoke-Dispatch
             Assert-True ($realResult.status -eq 'started' -and @($realResult.completed_stages).Count -eq 4 -and [string]::IsNullOrWhiteSpace([string]$realResult.failed_stage)) ('real Dispatch 未依序完成四階段：' + ($realResult | ConvertTo-Json -Depth 20 -Compress))
             Assert-True (Test-Path -LiteralPath $realResultPath -PathType Leaf) 'real Dispatch 未寫入 result。'

@@ -1862,18 +1862,193 @@ function New-DispatchPrompt {
         [Parameter(Mandatory)]
         [string]$Timestamp,
 
-        [string[]]$Directive
+        [string[]]$Directive,
+
+        [string]$OutputPath
     )
 
-    if ($null -eq $Directive -or $Directive.Count -eq 0) {
-        return $PromptPath
+    $targetPath = if ([string]::IsNullOrWhiteSpace($OutputPath)) {
+        if ($null -eq $Directive -or $Directive.Count -eq 0) {
+            return $PromptPath
+        }
+        Join-Path -Path $HistoryRoot -ChildPath ('codex-prompt-' + $Timestamp + '.md')
+    }
+    else {
+        Resolve-AbsolutePath -Path $OutputPath
     }
 
-    $promptContent = Get-Content -LiteralPath $PromptPath -Raw -Encoding UTF8
-    $derivedPromptPath = Join-Path -Path $HistoryRoot -ChildPath ('codex-prompt-' + $Timestamp + '.md')
-    $suffix = "`n`n" + ($Directive -join "`n`n") + "`n"
-    Write-Utf8NoBom -Path $derivedPromptPath -Content ($promptContent + $suffix)
-    return $derivedPromptPath
+    $promptContent = Read-DispatchUtf8Text -Path $PromptPath
+    if ($null -ne $Directive -and $Directive.Count -gt 0) {
+        $suffix = "`n`n" + ($Directive -join "`n`n") + "`n"
+        $promptContent = $promptContent + $suffix
+    }
+
+    $parent = Split-Path -Parent $targetPath
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $lock = $null
+    $temporaryPath = $null
+    try {
+        $lock = Open-DispatchResultLock -ResolvedPath $targetPath
+        if (Test-Path -LiteralPath $targetPath) {
+            $collision = New-Object System.InvalidOperationException(('PromptTransferCollision：衍生 prompt 目標已存在，拒絕覆寫：' + $targetPath))
+            $collision.Data['errorCode'] = 'PromptTransferCollision'
+            $collision.Data['path'] = $targetPath
+            throw $collision
+        }
+        $temporaryPath = Join-Path -Path $parent -ChildPath ([guid]::NewGuid().ToString('D') + '.prompt.tmp')
+        Write-Utf8NoBom -Path $temporaryPath -Content $promptContent
+        [System.IO.File]::Move((ConvertTo-FileSystemApiPath -Path $temporaryPath), (ConvertTo-FileSystemApiPath -Path $targetPath))
+    }
+    catch {
+        if ($null -ne $temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+    finally {
+        if ($null -ne $lock -and $null -ne $lock.Stream) {
+            $lock.Stream.Dispose()
+        }
+    }
+
+    return $targetPath
+}
+
+function Copy-DispatchPromptToExecutionHistory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$PromptPath,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$HistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$Timestamp
+    )
+
+    $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
+    $executionRootPath = Resolve-AbsolutePath -Path $ExecutionRoot
+    $sourcePath = Resolve-AbsolutePath -Path $PromptPath
+    if (-not (Test-PathWithinRoot -Path $sourcePath -Root $sourceRootPath) -and -not (Test-PathWithinRoot -Path $sourcePath -Root $executionRootPath)) {
+        $exception = New-Object System.InvalidOperationException(('PromptSourceBoundary：Prompt 必須位於 sourceRoot 或 executionRoot 內；received=' + $sourcePath + '; sourceRoot=' + $sourceRootPath + '; executionRoot=' + $executionRootPath))
+        $exception.Data['errorCode'] = 'PromptSourceBoundary'
+        $exception.Data['receivedPath'] = $sourcePath
+        $exception.Data['sourceRoot'] = $sourceRootPath
+        $exception.Data['executionRoot'] = $executionRootPath
+        throw $exception
+    }
+    if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
+        $exception = New-Object System.InvalidOperationException(('PromptSourceMissing：找不到 sourceRoot 內的 Prompt：' + $sourcePath))
+        $exception.Data['errorCode'] = 'PromptSourceMissing'
+        $exception.Data['path'] = $sourcePath
+        throw $exception
+    }
+
+    $historyPath = Resolve-AbsolutePath -Path $HistoryRoot
+    $destinationPath = Join-Path -Path $historyPath -ChildPath ('codex-prompt-source-' + $Timestamp + '.md')
+    $destinationPath = Resolve-DispatchOutputPath -CandidatePath $destinationPath -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @()
+    $sourceApiPath = ConvertTo-FileSystemApiPath -Path $sourcePath
+    $destinationApiPath = ConvertTo-FileSystemApiPath -Path $destinationPath
+    $sourceBytes = [System.IO.File]::ReadAllBytes($sourceApiPath)
+    $sourceSha256 = Get-DispatchByteArraySha256 -Bytes $sourceBytes
+    $parent = Split-Path -Parent $destinationPath
+    New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $lock = $null
+    $temporaryPath = $null
+    try {
+        $lock = Open-DispatchResultLock -ResolvedPath $destinationPath
+        if (Test-Path -LiteralPath $destinationPath) {
+            $collision = New-Object System.InvalidOperationException(('PromptTransferCollision：Prompt 搬移目標已存在，拒絕覆寫：' + $destinationPath))
+            $collision.Data['errorCode'] = 'PromptTransferCollision'
+            $collision.Data['path'] = $destinationPath
+            throw $collision
+        }
+        $temporaryPath = Join-Path -Path $parent -ChildPath ([guid]::NewGuid().ToString('D') + '.prompt.tmp')
+        [System.IO.File]::WriteAllBytes((ConvertTo-FileSystemApiPath -Path $temporaryPath), $sourceBytes)
+        $temporarySha256 = Get-DispatchByteArraySha256 -Bytes ([System.IO.File]::ReadAllBytes((ConvertTo-FileSystemApiPath -Path $temporaryPath)))
+        if (-not [string]::Equals($temporarySha256, $sourceSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            $exception = New-Object System.InvalidOperationException(('PromptTransferHashMismatch：暫存 Prompt SHA-256 不一致；path=' + $sourcePath))
+            $exception.Data['errorCode'] = 'PromptTransferHashMismatch'
+            throw $exception
+        }
+        $sourceSha256AfterRead = Get-FileSha256 -Path $sourcePath
+        if (-not [string]::Equals($sourceSha256AfterRead, $sourceSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            $exception = New-Object System.InvalidOperationException(('PromptTransferSourceChanged：Prompt 在搬移期間變更；path=' + $sourcePath))
+            $exception.Data['errorCode'] = 'PromptTransferSourceChanged'
+            throw $exception
+        }
+        [System.IO.File]::Move((ConvertTo-FileSystemApiPath -Path $temporaryPath), $destinationApiPath)
+        $destinationSha256 = Get-FileSha256 -Path $destinationPath
+        if (-not [string]::Equals($destinationSha256, $sourceSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            $exception = New-Object System.InvalidOperationException(('PromptTransferHashMismatch：搬移後 Prompt SHA-256 不一致；path=' + $destinationPath))
+            $exception.Data['errorCode'] = 'PromptTransferHashMismatch'
+            throw $exception
+        }
+    }
+    catch {
+        if ($null -ne $temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
+        throw
+    }
+    finally {
+        if ($null -ne $lock -and $null -ne $lock.Stream) {
+            $lock.Stream.Dispose()
+        }
+    }
+
+    return [pscustomobject]@{
+        SourcePath = $sourcePath
+        Path = $destinationPath
+        SourceSha256 = $sourceSha256
+        DestinationSha256 = $destinationSha256
+    }
+}
+
+function Read-DispatchUtf8Text {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $encoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false, $true)
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    $primaryReadError = $null
+    $contentBytes = $null
+    try {
+        $contentBytes = [System.IO.File]::ReadAllBytes((ConvertTo-FileSystemApiPath -Path $resolvedPath))
+    }
+    catch {
+        $primaryReadError = $_.Exception
+        try {
+            $contentBytes = [System.IO.File]::ReadAllBytes($resolvedPath)
+        }
+        catch {
+            try {
+                $content = [string](Get-Content -LiteralPath $resolvedPath -Raw -Encoding UTF8)
+                if ($content.Length -gt 0 -and $content[0] -eq [char]0xFEFF) {
+                    return $content.Substring(1)
+                }
+                return $content
+            }
+            catch {
+                throw $primaryReadError
+            }
+        }
+    }
+    $content = $encoding.GetString($contentBytes)
+    if ($content.Length -gt 0 -and $content[0] -eq [char]0xFEFF) {
+        return $content.Substring(1)
+    }
+    return $content
 }
 
 function Assert-AdvisorContract {
@@ -2313,11 +2488,11 @@ function Read-ScopePlanFile {
         return $null
     }
     $fullPath = Resolve-AbsolutePath -Path $Path
-    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+    if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $fullPath))) {
         throw "找不到 ScopePlan：$fullPath"
     }
     try {
-        $plan = Get-Content -LiteralPath $fullPath -Raw -Encoding UTF8 | ConvertFrom-Json -ErrorAction Stop
+        $plan = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $fullPath)
     }
     catch {
         throw "ScopePlan 格式錯誤：$fullPath；$($_.Exception.Message)"
@@ -4596,7 +4771,15 @@ function Get-ReviewerFindingsForCollect {
         return $null
     }
 
-    return Test-ReviewerFindingReport -Path $Path
+    $result = Test-ReviewerFindingReport -Path $Path
+    if ([int64]$result.current_open_count -gt 0 -and [string]$result.conclusion -ceq 'pass') {
+        $result.valid = $false
+        $result.inconsistencies = @(
+            @($result.inconsistencies)
+            'manifest inconsistency: current_open>0 requires conclusion=fail'
+        )
+    }
+    return $result
 }
 
 function Throw-ReviewerFindingCollectFailure {
@@ -7589,7 +7772,7 @@ function Get-DispatchFileEvidenceSafe {
     if (-not [string]::IsNullOrWhiteSpace($Path)) {
         $resolvedPath = Resolve-AbsolutePath -Path $Path
     }
-    if ($null -eq $resolvedPath -or -not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+    if ($null -eq $resolvedPath -or -not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $resolvedPath))) {
         return [ordered]@{
             name = $Name
             path = $resolvedPath
@@ -7599,12 +7782,12 @@ function Get-DispatchFileEvidenceSafe {
             reason = 'not-produced'
         }
     }
-    $file = Get-Item -LiteralPath $resolvedPath -Force
+    $fileLength = [int64]([System.IO.File]::ReadAllBytes((ConvertTo-FileSystemApiPath -Path $resolvedPath))).Length
     return [ordered]@{
         name = $Name
         path = $resolvedPath
         exists = $true
-        length = [int64]$file.Length
+        length = [int64]$fileLength
         sha256 = Get-FileSha256 -Path $resolvedPath
         reason = $null
     }
@@ -7618,7 +7801,7 @@ function Get-DispatchEventEvidence {
     )
 
     $resolvedPath = Resolve-AbsolutePath -Path $EventPath
-    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+    if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $resolvedPath))) {
         return [ordered]@{
             path = $resolvedPath
             exists = $false
@@ -7630,7 +7813,7 @@ function Get-DispatchEventEvidence {
         }
     }
 
-    $rawLines = @(Get-Content -LiteralPath $resolvedPath -Encoding UTF8 -ErrorAction Stop | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $rawLines = @((Read-DispatchUtf8Text -Path $resolvedPath) -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $events = New-Object 'System.Collections.Generic.List[object]'
     $usageLimitEvidence = New-Object 'System.Collections.Generic.List[object]'
     $usageLimit = $false
@@ -8707,6 +8890,7 @@ function Invoke-RecoveryHandoff {
     $recordPath = Resolve-AbsolutePath -Path $RunRecordPath
     $record = Read-DispatchRunRecord -Path $recordPath -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
     $manifestInfo = Read-LineManifest -SourceRoot $sourceRootPath -LineSlug $LineSlug
+    $sourceReportLineRoot = Join-Path -Path $sourceRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\report' -ChildPath $LineSlug)
     $eventEvidence = Get-DispatchEventEvidence -EventPath $record.event_stream_path
     $rawEventLineList = New-Object 'System.Collections.Generic.List[string]'
     foreach ($rawLine in @($eventEvidence.raw_lines)) {
@@ -8979,6 +9163,7 @@ function Get-PrepareRootInfo {
     if (-not (Test-Path -LiteralPath $sourceRootPath -PathType Container)) {
         throw "sourceRoot 不存在或不是目錄：$sourceRootPath"
     }
+    $sourceReportLineRoot = Join-Path -Path $sourceRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\report' -ChildPath $LineSlug)
 
     $executionRootValue = $ExecutionRoot
     if ([string]::IsNullOrWhiteSpace($executionRootValue)) {
@@ -9014,6 +9199,11 @@ function Get-PrepareRootInfo {
         DispatchSlug     = $DispatchSlug
         ManifestInfo     = $manifestInfo
         SourceLineRoot   = $manifestInfo.SourceLineRoot
+        SourceReportLineRoot = $sourceReportLineRoot
+        SourceLineRoots  = @(
+            [pscustomobject]@{ Name = 'handoff-line-root'; Path = $manifestInfo.SourceLineRoot }
+            [pscustomobject]@{ Name = 'report-line-root'; Path = $sourceReportLineRoot }
+        )
         DispatchLineRoot = $dispatchLineRoot
         ReportLineRoot   = $reportLineRoot
         HistoryLineRoot  = $historyLineRoot
@@ -9045,6 +9235,103 @@ function Resolve-PrepareDestinationRoot {
         }
     }
     return $null
+}
+
+function Resolve-PrepareSourceRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [object[]]$SourceRoots
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    foreach ($root in @($SourceRoots)) {
+        $rootPath = if ($root -is [string]) { [string]$root } else { [string]$root.Path }
+        if ([string]::IsNullOrWhiteSpace($rootPath)) {
+            continue
+        }
+        if (Test-PathWithinRoot -Path $resolvedPath -Root $rootPath) {
+            return [pscustomobject]@{
+                Name = if ($root -is [string]) { 'source-root' } else { [string]$root.Name }
+                Path = Resolve-AbsolutePath -Path $rootPath
+            }
+        }
+    }
+    return $null
+}
+
+function Get-PrepareReceivedFileName {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$Path
+    )
+
+    try {
+        $fileName = [System.IO.Path]::GetFileName($Path)
+        if (-not [string]::IsNullOrWhiteSpace($fileName)) {
+            return $fileName
+        }
+    }
+    catch {
+    }
+    return '<unresolved>'
+}
+
+function Get-PrepareDestinationRootsDescription {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$RootInfo
+    )
+
+    $roots = foreach ($root in @($RootInfo.DestinationRoots)) {
+        $name = [string]$root.Name
+        $path = [string]$root.Path
+        if ([string]::IsNullOrWhiteSpace($name)) {
+            $name = 'destination-root'
+        }
+        if ([string]::IsNullOrWhiteSpace($path)) {
+            $path = '<unresolved>'
+        }
+        '{0}={1}' -f $name, $path
+    }
+    if (@($roots).Count -eq 0) {
+        return '<none>'
+    }
+    return [string]::Join(', ', @($roots))
+}
+
+function New-PrepareResultPathDiagnostic {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$RootInfo,
+
+        [AllowEmptyString()]
+        [string]$ReceivedPath,
+
+        [AllowEmptyString()]
+        [string]$ResolvedPath,
+
+        [Parameter(Mandatory)]
+        [string]$Correction,
+
+        [AllowEmptyString()]
+        [string]$Detail
+    )
+
+    $resolvedValue = if ([string]::IsNullOrWhiteSpace($ResolvedPath)) { '<unresolved>' } else { $ResolvedPath }
+    $detailValue = if ([string]::IsNullOrWhiteSpace($Detail)) { '<none>' } else { $Detail }
+    return 'received_filename={0}; resolved_path={1}; allowed_destination_roots={2}; correction={3}; detail={4}' -f `
+        (Get-PrepareReceivedFileName -Path $ReceivedPath),
+        $resolvedValue,
+        (Get-PrepareDestinationRootsDescription -RootInfo $RootInfo),
+        $Correction,
+        $detailValue
 }
 
 function Get-PrepareDocumentFingerprint {
@@ -9378,7 +9665,7 @@ function Write-DispatchAtomicJsonDocument {
     $resolvedFileApiPath = ConvertTo-FileSystemApiPath -Path $resolvedPath
     try {
         $lock = Open-DispatchResultLock -ResolvedPath $resolvedPath
-        if ($RequireAbsent -and (Test-Path -LiteralPath $resolvedPath)) {
+        if ($RequireAbsent -and [System.IO.File]::Exists($resolvedFileApiPath)) {
             $collision = New-Object System.InvalidOperationException(($AbsentErrorCode + ': 目標檔案已存在，拒絕覆寫：' + $resolvedPath))
             $collision.Data['errorCode'] = $AbsentErrorCode
             $collision.Data['path'] = $resolvedPath
@@ -9387,7 +9674,7 @@ function Write-DispatchAtomicJsonDocument {
         $temporaryPath = Join-Path -Path $parent -ChildPath ([guid]::NewGuid().ToString('D') + '.dispatch.tmp')
         Write-Utf8NoBom -Path $temporaryPath -Content ((ConvertTo-Json -InputObject $Document -Depth 40) + "`n")
         if (-not [string]::IsNullOrWhiteSpace($ExpectedExistingSha256)) {
-            if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+            if (-not [System.IO.File]::Exists($resolvedFileApiPath)) {
                 $conflict = New-Object System.InvalidOperationException("Dispatch result binding target disappeared: $resolvedPath")
                 $conflict.Data['errorCode'] = 'DispatchResultBindingConflict'
                 $conflict.Data['expected_sha256'] = $ExpectedExistingSha256
@@ -9403,7 +9690,7 @@ function Write-DispatchAtomicJsonDocument {
                 throw $conflict
             }
         }
-        if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
+        if ([System.IO.File]::Exists($resolvedFileApiPath)) {
             if ($RequireAbsent) {
                 $collision = New-Object System.InvalidOperationException(($AbsentErrorCode + ': 原子提交前發現目標檔案已存在：' + $resolvedPath))
                 $collision.Data['errorCode'] = $AbsentErrorCode
@@ -9412,7 +9699,7 @@ function Write-DispatchAtomicJsonDocument {
             }
             [System.IO.File]::Replace((ConvertTo-FileSystemApiPath -Path $temporaryPath), $resolvedFileApiPath, [System.Management.Automation.Language.NullString]::Value)
         }
-        elseif ([System.IO.File]::Exists($resolvedFileApiPath)) {
+        elseif ([System.IO.Directory]::Exists($resolvedFileApiPath)) {
             throw "Dispatch result 目的路徑不是檔案：$resolvedPath"
         }
         else {
@@ -9469,6 +9756,11 @@ function Write-DispatchFailureReceipt {
         [AllowEmptyString()]
         [string]$DispatchRoot,
 
+        [ValidateSet('validation', 'preflight', 'before-snapshot', 'prepare', 'start')]
+        [string]$FailedStage = 'preflight',
+
+        [bool]$ProcessStarted = $false,
+
         [string[]]$TargetPath = @()
     )
 
@@ -9477,10 +9769,10 @@ function Write-DispatchFailureReceipt {
     $document = [ordered]@{
         schema = 'ai-sessions.dispatch-failure-receipt.v1'
         status = 'failed'
-        failed_stage = 'preflight'
+        failed_stage = $FailedStage
         error_code = $ErrorCode
         error = $ErrorMessage
-        process_started = $false
+        process_started = $ProcessStarted
         line_slug = $LineSlug
         dispatch_slug = $DispatchSlug
         dispatch_execution_id = $DispatchExecutionId
@@ -9508,7 +9800,9 @@ function Write-PrepareResultDocument {
         [AllowEmptyString()]
         [string]$GuardExecutionRoot,
 
-        [string[]]$GuardTargetPath
+        [string[]]$GuardTargetPath,
+
+        [switch]$RequireAbsent
     )
 
     $guardSourceRootValue = $GuardSourceRoot
@@ -9543,7 +9837,7 @@ function Write-PrepareResultDocument {
         }
     }
 
-    $written = Write-DispatchAtomicJsonDocument -Path $resolvedPath -Document $Document -SourceRoot ([string]$guardSourceRoot) -ExecutionRoot ([string]$guardExecutionRoot) -TargetPath @($guardTargetPathValue)
+    $written = Write-DispatchAtomicJsonDocument -Path $resolvedPath -Document $Document -SourceRoot ([string]$guardSourceRoot) -ExecutionRoot ([string]$guardExecutionRoot) -TargetPath @($guardTargetPathValue) -RequireAbsent:$RequireAbsent -AbsentErrorCode 'PrepareResultCollision'
 
     return [pscustomobject]@{
         Path     = $resolvedPath
@@ -9735,10 +10029,11 @@ function Get-PrepareResultTargetPath {
         $resolvedCandidate = Resolve-AbsolutePath -Path $candidate
     }
     catch {
-        Throw-PrepareValidationFailure -Code 'PrepareResultBoundary' -Message ('Prepare result 路徑無法解析：' + $_.Exception.Message)
+        $diagnostic = New-PrepareResultPathDiagnostic -RootInfo $RootInfo -ReceivedPath $candidate -ResolvedPath $null -Correction '請提供可解析的檔案路徑，並將檔案放在允許的 destination root 內。' -Detail $_.Exception.Message
+        Throw-PrepareValidationFailure -Code 'PrepareResultBoundary' -Message ('Prepare result 路徑無法解析：' + $diagnostic)
     }
     try {
-    $guardTargetPath = if ($null -eq $TargetPathValue) { @() } else { @($TargetPathValue) }
+        $guardTargetPath = if ($null -eq $TargetPathValue) { @() } else { @($TargetPathValue) }
         $null = Resolve-DispatchOutputPath -CandidatePath $resolvedCandidate -SourceRoot $RootInfo.SourceRoot -ExecutionRoot $RootInfo.ExecutionRoot -TargetPath $guardTargetPath
     }
     catch {
@@ -9746,11 +10041,13 @@ function Get-PrepareResultTargetPath {
         if ([string]::IsNullOrWhiteSpace($outputCode)) {
             $outputCode = 'DispatchOutputBoundary'
         }
-        Throw-PrepareValidationFailure -Code $outputCode -Message $_.Exception.Message
+        $diagnostic = New-PrepareResultPathDiagnostic -RootInfo $RootInfo -ReceivedPath $candidate -ResolvedPath $resolvedCandidate -Correction '請改用不在 target path 內且位於允許 destination root 的 result path。' -Detail $_.Exception.Message
+        Throw-PrepareValidationFailure -Code $outputCode -Message ('Prepare result 路徑驗證失敗：' + $diagnostic)
     }
     $destinationRoot = Resolve-PrepareDestinationRoot -Path $resolvedCandidate -DestinationRoots $RootInfo.DestinationRoots
     if ($null -eq $destinationRoot) {
-        Throw-PrepareValidationFailure -Code 'PrepareResultBoundary' -Message "Prepare result 路徑超出允許 root：$resolvedCandidate"
+        $diagnostic = New-PrepareResultPathDiagnostic -RootInfo $RootInfo -ReceivedPath $candidate -ResolvedPath $resolvedCandidate -Correction '請將 result path 移至列出的 dispatch、report 或 history line root。' -Detail 'path is outside every allowed destination root'
+        Throw-PrepareValidationFailure -Code 'PrepareResultBoundary' -Message ('Prepare result 路徑超出允許 root：' + $diagnostic)
     }
     return $resolvedCandidate
 }
@@ -9818,8 +10115,9 @@ function Resolve-PrepareResultBinding {
         $sourcePath = Resolve-AbsolutePath -Path ([string]$artifact.source)
         $destinationPath = Resolve-AbsolutePath -Path ([string]$artifact.destination)
         $destinationRoot = Resolve-PrepareDestinationRoot -Path $destinationPath -DestinationRoots $rootInfo.DestinationRoots
-        if (-not (Test-PathWithinRoot -Path $sourcePath -Root $rootInfo.SourceLineRoot)) {
-            throw "PrepareArtifactMismatch：artifact source 超出 source line root：$sourcePath"
+        $sourceRoot = Resolve-PrepareSourceRoot -Path $sourcePath -SourceRoots @($rootInfo.SourceLineRoots)
+        if ($null -eq $sourceRoot) {
+            throw "PrepareArtifactMismatch：artifact source 超出允許的 handoff/report line roots：$sourcePath"
         }
         if ($null -eq $destinationRoot) {
             throw "PrepareArtifactMismatch：artifact destination 超出允許 root：$destinationPath"
@@ -9934,7 +10232,8 @@ function Invoke-Prepare {
         $requestSha256Value = if ($null -eq $requestContext) { $null } else { [string]$requestContext.sha256 }
         $resultPathValue = Get-PrepareResultTargetPath -RootInfo $rootInfo -PrepareResultPathValue $PrepareResultPath -ResultPathValue $ResultPath -TargetPathValue $guardTargetPathValue
         if (Test-Path -LiteralPath $resultPathValue) {
-            Throw-PrepareValidationFailure -Code 'PrepareResultCollision' -Message "Prepare result 已存在，拒絕覆寫：$resultPathValue"
+            $diagnostic = New-PrepareResultPathDiagnostic -RootInfo $rootInfo -ReceivedPath $resultPathValue -ResolvedPath $resultPathValue -Correction '請改用允許 destination root 內尚不存在的 result filename。' -Detail 'destination file already exists'
+            Throw-PrepareValidationFailure -Code 'PrepareResultCollision' -Message ('Prepare result 已存在，拒絕覆寫：' + $diagnostic)
         }
 
         $requestArtifacts = @($script:RequestPrepareArtifacts)
@@ -9962,8 +10261,9 @@ function Invoke-Prepare {
             catch {
                 Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message ('artifact 路徑無法解析：' + $_.Exception.Message)
             }
-            if (-not (Test-PathWithinRoot -Path $sourcePath -Root $rootInfo.SourceLineRoot)) {
-                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact source 超出 source line root：$sourcePath"
+            $sourceRoot = Resolve-PrepareSourceRoot -Path $sourcePath -SourceRoots @($rootInfo.SourceLineRoots)
+            if ($null -eq $sourceRoot) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact source 超出允許的 handoff/report line roots：$sourcePath"
             }
             $destinationRoot = Resolve-PrepareDestinationRoot -Path $destinationPath -DestinationRoots $rootInfo.DestinationRoots
             if ($null -eq $destinationRoot) {
@@ -10082,7 +10382,7 @@ function Invoke-Prepare {
             $failureDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'PrepareFailed' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts $failureArtifacts -ErrorValue $failureError
             if (-not [string]::IsNullOrWhiteSpace($resultPathValue)) {
                 try {
-                    $writtenFailure = Write-PrepareResultDocument -Path $resultPathValue -Document $failureDocument -GuardSourceRoot $rootInfo.SourceRoot -GuardExecutionRoot $rootInfo.ExecutionRoot -GuardTargetPath $guardTargetPathValue
+                    $writtenFailure = Write-PrepareResultDocument -Path $resultPathValue -Document $failureDocument -GuardSourceRoot $rootInfo.SourceRoot -GuardExecutionRoot $rootInfo.ExecutionRoot -GuardTargetPath $guardTargetPathValue -RequireAbsent
                     $resultDocument = $writtenFailure.Document
                     $resultPathValue = $writtenFailure.Path
                     $resultSha256Value = $writtenFailure.Sha256
@@ -10350,6 +10650,70 @@ function Write-DispatchStageResult {
     }
 }
 
+function Write-DispatchInspectResultBinding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [Parameter(Mandatory)]
+        [bool]$ProcessStarted,
+
+        [Parameter(Mandatory)]
+        [string]$RunRecordPath,
+
+        [Parameter(Mandatory)]
+        [string]$EventStreamPath,
+
+        [Parameter(Mandatory)]
+        [string]$ScopePlanPath,
+
+        [Parameter(Mandatory)]
+        [string]$QuotaBeforePath,
+
+        [Parameter(Mandatory)]
+        [string]$ProcessExitCodeSidecarPath
+    )
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    $document = [ordered]@{
+        schema = 'ai-sessions.dispatch-result.v1'
+        operation = 'Dispatch'
+        status = 'started'
+        line_slug = $LineSlug
+        dispatch_slug = $DispatchSlug
+        completed_stages = @('start')
+        failed_stage = $null
+        error_code = $null
+        error = $null
+        process_started = $ProcessStarted
+        result_path = $resolvedPath
+        inspect_binding = [ordered]@{
+            run_record_path = $RunRecordPath
+            event_stream_path = $EventStreamPath
+            scope_plan_path = $ScopePlanPath
+            quota_before_path = $QuotaBeforePath
+            process_exit_code_sidecar_path = $ProcessExitCodeSidecarPath
+            process_exit_code = $null
+            process_exit_code_source = 'sidecar-pending'
+            sidecar_sha256 = $null
+        }
+    }
+    return Write-DispatchAtomicJsonDocument -Path $resolvedPath -Document $document -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @() -RequireAbsent -AbsentErrorCode 'DispatchResultBindingCollision'
+}
+
 function New-DispatchResultEnvelope {
     [CmdletBinding()]
     param(
@@ -10382,6 +10746,10 @@ function New-DispatchResultEnvelope {
     $eventStreamPath = Get-DispatchResultPropertyValue -Object $startResult -Names @('eventStreamPath', 'event_stream_path')
     $scopePlanPath = Get-DispatchResultPropertyValue -Object $startResult -Names @('scopePlanPath', 'scope_plan_path')
     $startSidecarPath = Get-DispatchResultPropertyValue -Object $startResult -Names @('processExitCodeSidecarPath', 'process_exit_code_sidecar_path')
+    $inspectResultPath = Get-DispatchResultPropertyValue -Object $startResult -Names @('inspectResultPath', 'inspect_result_path')
+    $promptPath = Get-DispatchResultPropertyValue -Object $startResult -Names @('promptPath', 'prompt_path')
+    $promptSourcePath = Get-DispatchResultPropertyValue -Object $startResult -Names @('promptSourcePath', 'prompt_source_path')
+    $promptTransferPath = Get-DispatchResultPropertyValue -Object $startResult -Names @('promptTransferPath', 'prompt_transfer_path')
     if ([string]::IsNullOrWhiteSpace($SidecarPath) -and $null -ne $startSidecarPath) {
         $SidecarPath = [string]$startSidecarPath
     }
@@ -10413,6 +10781,14 @@ function New-DispatchResultEnvelope {
         quota_before_path = if ([string]::IsNullOrWhiteSpace($QuotaBeforePath)) { $null } else { $QuotaBeforePath }
         quota_before_sha256 = if ([string]::IsNullOrWhiteSpace($QuotaBeforeSha256)) { $null } else { $QuotaBeforeSha256 }
         start_result_path = if ([string]::IsNullOrWhiteSpace($StartResultPathValue)) { $null } else { $StartResultPathValue }
+        prompt_path = if ($null -eq $promptPath) { $null } else { [string]$promptPath }
+        promptPath = if ($null -eq $promptPath) { $null } else { [string]$promptPath }
+        prompt_source_path = if ($null -eq $promptSourcePath) { $null } else { [string]$promptSourcePath }
+        promptSourcePath = if ($null -eq $promptSourcePath) { $null } else { [string]$promptSourcePath }
+        prompt_transfer_path = if ($null -eq $promptTransferPath) { $null } else { [string]$promptTransferPath }
+        promptTransferPath = if ($null -eq $promptTransferPath) { $null } else { [string]$promptTransferPath }
+        inspect_result_path = if ($null -eq $inspectResultPath) { $null } else { [string]$inspectResultPath }
+        inspectResultPath = if ($null -eq $inspectResultPath) { $null } else { [string]$inspectResultPath }
         stage_binding = $StageBinding
         inspect_binding = $inspectBinding
         stage_results = [ordered]@{
@@ -10648,12 +11024,12 @@ function Invoke-Dispatch {
         $failureResult.failure_receipt_path = if ([string]::IsNullOrWhiteSpace($failureReceiptPathValue)) { $null } else { $failureReceiptPathValue }
         $failureResult.failure_receipt_saved = $false
         $failureResult.failure_receipt_sha256 = $null
-        if ($failedStage -eq 'preflight' -and -not [string]::IsNullOrWhiteSpace($failureReceiptPathValue)) {
+        if (-not [string]::IsNullOrWhiteSpace($failureReceiptPathValue)) {
             try {
                 $receiptSourceRoot = if ([string]::IsNullOrWhiteSpace($sourceRootPath)) { [string]$SourceRoot } else { $sourceRootPath }
                 $receiptExecutionRoot = if ([string]::IsNullOrWhiteSpace($executionRootPath)) { $receiptSourceRoot } else { $executionRootPath }
                 $receiptDispatchRoot = if ([string]::IsNullOrWhiteSpace($DispatchRoot)) { $null } else { [string]$DispatchRoot }
-                $writtenReceipt = Write-DispatchFailureReceipt -Path $failureReceiptPathValue -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -DispatchExecutionId $dispatchToken -ErrorCode $errorCode -ErrorMessage $failureException.Message -SourceRoot $receiptSourceRoot -ExecutionRoot $receiptExecutionRoot -DispatchRoot $receiptDispatchRoot -TargetPath @($TargetPath)
+                $writtenReceipt = Write-DispatchFailureReceipt -Path $failureReceiptPathValue -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -DispatchExecutionId $dispatchToken -ErrorCode $errorCode -ErrorMessage $failureException.Message -SourceRoot $receiptSourceRoot -ExecutionRoot $receiptExecutionRoot -DispatchRoot $receiptDispatchRoot -FailedStage $failedStage -ProcessStarted $processStarted -TargetPath @($TargetPath)
                 $failureResult.failure_receipt_path = $writtenReceipt.Path
                 $failureResult.failure_receipt_sha256 = $writtenReceipt.Sha256
                 $failureResult.failure_receipt_saved = $true
@@ -12547,9 +12923,9 @@ function Read-DispatchRunRecord {
     if (-not [string]::Equals((Split-Path $pathValue -Parent), $directory, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'RunRecord 路徑不屬於指定 line／dispatch。'
     }
-    $record = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $pathValue -Raw -Encoding UTF8)
+    $record = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $pathValue)
     if ($null -eq $record -or $record -isnot [pscustomobject]) { throw 'RunRecord 必須為 JSON object。' }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'acl_gate', 'sandbox_acl_baseline', 'sandbox_acl_evidence', 'unknown_interruption', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'acl_gate', 'sandbox_acl_baseline', 'sandbox_acl_evidence', 'unknown_interruption', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
         if ($null -eq $record.PSObject.Properties[$name]) {
             $value = $null
             if ($name -eq 'attempt_parent_run_id') {
@@ -12704,7 +13080,7 @@ function Read-DispatchRunRecord {
     elseif ($scopePathValue -isnot [string] -or $scopeHashValue -isnot [string] -or [string]::IsNullOrWhiteSpace($scopeHashValue)) {
         throw 'RunRecord ScopePlan 欄位型別或 SHA-256 異常。'
     }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'recovery_handoff_id', 'recovery_handoff_path', 'recovery_handoff_sha256', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
         $property = $record.PSObject.Properties[$name]
         if ($null -eq $property -or ($null -ne $property.Value -and ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)))) {
             throw "RunRecord nullable 欄位異常：$name"
@@ -12742,7 +13118,7 @@ function Read-DispatchRunRecord {
         $resolved = Resolve-AbsolutePath $record.$name
         if (-not [string]::Equals($resolved, $record.$name, [StringComparison]::OrdinalIgnoreCase)) { throw "RunRecord 路徑未正規化：$name" }
     }
-    foreach ($name in @('thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'evidence_pack_path')) {
+    foreach ($name in @('thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_transfer_path', 'inspect_result_path', 'evidence_pack_path')) {
         if ($null -ne $record.$name) {
             $resolved = Resolve-AbsolutePath $record.$name
             if (-not [string]::Equals($resolved, $record.$name, [StringComparison]::OrdinalIgnoreCase)) { throw "RunRecord 路徑未正規化：$name" }
@@ -12751,9 +13127,10 @@ function Read-DispatchRunRecord {
     if (-not (Test-PathWithinRoot $record.event_stream_path $executionHistory) -or -not (Test-PathWithinRoot $record.last_message_path $ExecutionRoot)) { throw 'RunRecord 證據超出 executionRoot。' }
     if (-not [string]::IsNullOrWhiteSpace([string]$scopePathValue) -and -not (Test-PathWithinRoot $scopePathValue $ExecutionRoot)) { throw 'RunRecord ScopePlan 超出 executionRoot。' }
     if (-not (Test-PathWithinRoot $record.pid_record_path (Join-Path $SourceRoot '.local\ai-sessions\history'))) { throw 'RunRecord PID 路徑超出 history。' }
-    foreach ($name in @('thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path')) {
+    foreach ($name in @('thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_transfer_path', 'inspect_result_path')) {
         if ($null -ne $record.$name -and -not (Test-PathWithinRoot $record.$name $ExecutionRoot)) { throw "RunRecord 證據超出 executionRoot：$name" }
     }
+    if ($null -ne $record.prompt_source_path -and -not (Test-PathWithinRoot $record.prompt_source_path $SourceRoot) -and -not (Test-PathWithinRoot $record.prompt_source_path $ExecutionRoot)) { throw 'RunRecord Prompt source 超出 sourceRoot／executionRoot。' }
     if ($null -ne $record.evidence_pack_path -and -not (Test-PathWithinRoot $record.evidence_pack_path $ExecutionRoot)) { throw 'RunRecord evidence pack 超出 executionRoot。' }
     if ($null -ne $record.process_exit_code_sidecar_path -and -not (Test-PathWithinRoot $record.process_exit_code_sidecar_path $executionHistory)) { throw 'RunRecord exit sidecar 超出 execution history。' }
     if (-not [string]::IsNullOrWhiteSpace([string]$scopePathValue)) {
@@ -12801,7 +13178,7 @@ function Read-DispatchRunRecord {
         if (-not (Test-Path -LiteralPath $handoffPathValue -PathType Leaf) -or $handoffHashValue -notmatch '^[a-fA-F0-9]{64}$' -or (Get-FileSha256 $handoffPathValue) -ine $handoffHashValue) { throw 'RunRecord RecoveryHandoff 雜湊不一致。' }
         if ($handoffIdValue -notmatch '^[a-fA-F0-9]{32}$') { throw 'RunRecord RecoveryHandoff id 異常。' }
     }
-    $preflight = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $record.preflight_result_path -Raw -Encoding UTF8)
+    $preflight = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $record.preflight_result_path)
     foreach ($entry in @(@('sourceRoot', $SourceRoot), @('executionRoot', $ExecutionRoot))) {
         $value = Get-RequiredPreflightProperty $preflight $entry[0]
         if (-not [string]::Equals((Resolve-AbsolutePath $value), (Resolve-AbsolutePath $entry[1]), [StringComparison]::OrdinalIgnoreCase)) { throw 'RunRecord Preflight roots 不一致。' }
@@ -12861,15 +13238,46 @@ function Get-DispatchRunEvents {
     [CmdletBinding()]
     param([Parameter(Mandatory)][psobject]$Record)
 
-    $events = @(
-        foreach ($line in Get-Content -LiteralPath $Record.event_stream_path -Encoding UTF8 -ErrorAction Stop) {
-            if ([string]::IsNullOrWhiteSpace($line)) { continue }
-            $event = $line | ConvertFrom-Json -ErrorAction Stop
-            $typeProperty = if ($null -eq $event) { $null } else { $event.PSObject.Properties['type'] }
-            if ($null -eq $event -or $event -isnot [pscustomobject] -or $null -eq $typeProperty -or -not ($typeProperty.Value -is [string]) -or [string]::IsNullOrWhiteSpace($typeProperty.Value)) { throw 'RunRecord 事件缺少 type。' }
-            $event
+    $retryAttempts = 1
+    $rootPidProperty = $Record.PSObject.Properties['root_pid']
+    $rootPid = 0
+    if ($null -ne $rootPidProperty -and [int]::TryParse([string]$rootPidProperty.Value, [ref]$rootPid) -and $rootPid -gt 0) {
+        try {
+            $rootProcess = Get-Process -Id $rootPid -ErrorAction Stop
+            $retryAttempts = if ($rootProcess.HasExited) { 10 } else { 60 }
         }
-    )
+        catch {
+            $retryAttempts = 10
+        }
+    }
+
+    $events = @()
+    $lastReadError = $null
+    for ($attempt = 1; $attempt -le $retryAttempts; $attempt++) {
+        try {
+            $rawText = Read-DispatchUtf8Text -Path $Record.event_stream_path
+            $events = @(
+                foreach ($line in ($rawText -split '\r?\n')) {
+                    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+                    $event = $line | ConvertFrom-Json -ErrorAction Stop
+                    $typeProperty = if ($null -eq $event) { $null } else { $event.PSObject.Properties['type'] }
+                    if ($null -eq $event -or $event -isnot [pscustomobject] -or $null -eq $typeProperty -or -not ($typeProperty.Value -is [string]) -or [string]::IsNullOrWhiteSpace($typeProperty.Value)) { throw 'RunRecord 事件缺少 type。' }
+                    $event
+                }
+            )
+            $lastReadError = $null
+            if ($events.Count -gt 0) { break }
+        }
+        catch {
+            $lastReadError = $_
+        }
+        if ($attempt -lt $retryAttempts) {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    if ($events.Count -eq 0 -and $null -ne $lastReadError) {
+        throw $lastReadError.Exception
+    }
     if ($events.Count -eq 0) { throw 'RunRecord 事件流為空。' }
     $threads = @($events | Where-Object { $_.type -eq 'thread.started' })
     if ($threads.Count -ne 1) { throw 'RunRecord 事件必須包含唯一 thread.started。' }
@@ -13293,7 +13701,12 @@ function Invoke-Start {
     $lineSlugValue = $null
     $dispatchSlugValue = $null
     $writeModeValue = 'readonly'
+    $promptSourcePathValue = $null
+    $promptSourceSha256Value = $null
+    $promptTransferPathValue = $null
+    $promptTransferSha256Value = $null
     $promptPathValue = $null
+    $inspectResultPathValue = $null
     $codexExecutable = $null
     $historyRoot = $null
     $sourceHistoryRoot = $null
@@ -13444,10 +13857,14 @@ function Invoke-Start {
     if ([string]::IsNullOrWhiteSpace($PromptPath)) {
         throw 'Start 必須提供 PromptPath。'
     }
-    $promptPathValue = Resolve-AbsolutePath -Path $PromptPath
-    if (-not (Test-Path -LiteralPath $promptPathValue -PathType Leaf)) {
-        throw "Prompt 檔案不存在：$promptPathValue"
+    $promptSourcePathValue = Resolve-AbsolutePath -Path $PromptPath
+    if (-not (Test-PathWithinRoot -Path $promptSourcePathValue -Root $sourceRootPath) -and -not (Test-PathWithinRoot -Path $promptSourcePathValue -Root $executionRootPath)) {
+        throw ('PromptSourceBoundary：Prompt 必須位於 sourceRoot 或 executionRoot 內；received=' + $promptSourcePathValue + '; sourceRoot=' + $sourceRootPath + '; executionRoot=' + $executionRootPath)
     }
+    if (-not (Test-Path -LiteralPath $promptSourcePathValue -PathType Leaf)) {
+        throw "Prompt 檔案不存在：$promptSourcePathValue"
+    }
+    $promptPathValue = $promptSourcePathValue
 
     $historyRoot = Join-Path -Path $executionRootPath -ChildPath '.local\ai-sessions\history'
     $sourceHistoryRoot = Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history'
@@ -13577,6 +13994,12 @@ function Invoke-Start {
         $launcherPath = Join-Path -Path $historyRoot -ChildPath ('codex-launch-' + $timestamp + '.sh')
     }
     New-Item -ItemType Directory -Path $historyRoot, $sourceHistoryRoot -Force | Out-Null
+    $promptTransfer = Copy-DispatchPromptToExecutionHistory -PromptPath $promptSourcePathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -HistoryRoot $historyRoot -Timestamp $timestamp
+    $promptTransferPathValue = $promptTransfer.Path
+    $promptSourceSha256Value = $promptTransfer.SourceSha256
+    $promptTransferSha256Value = $promptTransfer.DestinationSha256
+    $promptPathValue = Resolve-DispatchOutputPath -CandidatePath (Join-Path -Path $historyRoot -ChildPath ('codex-prompt-' + $timestamp + '.md')) -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
+    $inspectResultPathValue = Resolve-DispatchOutputPath -CandidatePath (Join-Path -Path $historyRoot -ChildPath ('inspect-result-' + $dispatchSlugValue + '-' + $timestamp + '.json')) -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
     $preflightPathValue = Resolve-AbsolutePath -Path $PreflightResultPath
     $preflightSha256Value = Get-FileSha256 -Path $preflightPathValue
     $createdAtUtcValue = [datetime]::UtcNow.ToString('o')
@@ -13651,6 +14074,11 @@ function Invoke-Start {
         launcher_path = $launcherPath
         process_exit_code_sidecar_path = $exitSidecarPathValue
         prompt_path = $promptPathValue
+        prompt_source_path = $promptSourcePathValue
+        prompt_source_sha256 = $promptSourceSha256Value
+        prompt_transfer_path = $promptTransferPathValue
+        prompt_transfer_sha256 = $promptTransferSha256Value
+        inspect_result_path = $inspectResultPathValue
         profile_config_path = $null
         codex_home = $effectiveCodexHomePath
         effective_codex_home = $effectiveCodexHomePath
@@ -14033,9 +14461,12 @@ function Invoke-Start {
     if ($TaskType -eq 'advisor-consult') {
         $promptDirectives.Add((New-AdvisorInlineEvidenceDirective -EvidencePackInfo $evidencePackInfo))
     }
-    $promptPathValue = New-DispatchPrompt -PromptPath $promptPathValue -HistoryRoot $historyRoot -Timestamp $timestamp -Directive @($promptDirectives.ToArray())
+    $promptPathValue = New-DispatchPrompt -PromptPath $promptTransferPathValue -HistoryRoot $historyRoot -Timestamp $timestamp -Directive @($promptDirectives.ToArray()) -OutputPath $promptPathValue
+    if (-not (Test-PathWithinRoot -Path $promptPathValue -Root $executionRootPath)) {
+        throw ('PromptPath 必須位於 executionRoot 內；received=' + $promptPathValue + '; executionRoot=' + $executionRootPath)
+    }
     if ($TaskType -eq 'advisor-consult') {
-        $promptContentForVerification = Get-Content -LiteralPath $promptPathValue -Raw -Encoding UTF8
+        $promptContentForVerification = Read-DispatchUtf8Text -Path $promptPathValue
         $inlineGate = Test-AdvisorInlineEvidenceDirective -PromptContent $promptContentForVerification -EvidencePackInfo $evidencePackInfo
         if (-not $inlineGate.valid) {
             $phase = 'evidence-pack-inline'
@@ -14249,13 +14680,19 @@ function Invoke-Start {
             $failureReasonCode = 'WorktreeAclReadFailed'
             throw ('WorktreeAclReadFailed：Start spawn 前讀取 sandbox ACL baseline 失敗：' + [string]$sandboxAclBaseline.error)
         }
-        if ($sandboxAclBaseline.status -ne 'known') {
+    if ($sandboxAclBaseline.status -ne 'known') {
             $failureReasonCode = 'WorktreeAclReadFailed'
             throw 'WorktreeAclReadFailed：Start spawn 前 sandbox ACL baseline 狀態無法驗證。'
         }
         $sandboxAclEvidence = New-SandboxAclEvidenceDocument -Entries @() -CaptureStatus 'pending' -NormalCompletion $false -ContinuationAllowed $false
         $runRecord.sandbox_acl_evidence = $sandboxAclEvidence
     }
+    $runRecord.prompt_path = $promptPathValue
+    $runRecord.prompt_source_path = $promptSourcePathValue
+    $runRecord.prompt_source_sha256 = $promptSourceSha256Value
+    $runRecord.prompt_transfer_path = $promptTransferPathValue
+    $runRecord.prompt_transfer_sha256 = $promptTransferSha256Value
+    $runRecord.inspect_result_path = $inspectResultPathValue
     $null = Write-DispatchRunRecord -Record $runRecord -Update
     $null = Read-DispatchRunRecord -Path $runRecordPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
         if (-not $process.Start()) {
@@ -14312,7 +14749,15 @@ function Invoke-Start {
             $null = Get-DispatchRunEvents $runRecord
         }
         $runRecord.launch_state = 'started'
+        $runRecord.prompt_path = $promptPathValue
+        $runRecord.prompt_source_path = $promptSourcePathValue
+        $runRecord.prompt_source_sha256 = $promptSourceSha256Value
+        $runRecord.prompt_transfer_path = $promptTransferPathValue
+        $runRecord.prompt_transfer_sha256 = $promptTransferSha256Value
+        $runRecord.inspect_result_path = $inspectResultPathValue
         $null = Write-DispatchRunRecord -Record $runRecord -Update
+        $inspectResult = Write-DispatchInspectResultBinding -Path $inspectResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ProcessStarted $true -RunRecordPath $runRecordPathValue -EventStreamPath $eventPath -ScopePlanPath $scopePlanPathValue -QuotaBeforePath $beforeSnapshotPathValue -ProcessExitCodeSidecarPath $exitSidecarPathValue
+        $inspectResultPathValue = $inspectResult.Path
         $budgetMonitorStatus.state = 'running'
         if ($TaskType -eq 'advisor-consult') {
             $budgetMonitorStatus = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -CodexHome $CodexHome -PrimaryBudgetPercent ([double]$scopePlan.primary_budget_percent) -AbortGraceSeconds $AbortGraceSeconds
@@ -14375,7 +14820,12 @@ function Invoke-Start {
              errorStreamPath  = $errorPath
              lastMessagePath  = $lastMessagePathValue
              promptPath       = $promptPathValue
-             threadIdPath     = $threadPath
+             promptSourcePath = $promptSourcePathValue
+             promptSourceSha256 = $promptSourceSha256Value
+             promptTransferPath = $promptTransferPathValue
+             promptTransferSha256 = $promptTransferSha256Value
+             inspectResultPath = $inspectResultPathValue
+              threadIdPath     = $threadPath
              threadId         = $runRecord.thread_id
              threadRelay      = $relay
              relayReady       = $relayReady
@@ -14519,6 +14969,11 @@ function Invoke-Start {
                 $runRecord.launcher_path = $launcherPath
                 $runRecord.process_exit_code_sidecar_path = $exitSidecarPathValue
                 $runRecord.prompt_path = $promptPathValue
+                $runRecord.prompt_source_path = $promptSourcePathValue
+                $runRecord.prompt_source_sha256 = $promptSourceSha256Value
+                $runRecord.prompt_transfer_path = $promptTransferPathValue
+                $runRecord.prompt_transfer_sha256 = $promptTransferSha256Value
+                $runRecord.inspect_result_path = $inspectResultPathValue
                 $runRecord.pid_record_path = $pidPath
                 $runRecord.attempt_parent_run_id = $attemptParentRunIdValue
                 $runRecord.resume_anchor_run_id = $resumeAnchorRunIdValue
@@ -14630,6 +15085,12 @@ function Invoke-Start {
             pidRecordPath = $pidPath
             launcherPath = $launcherPath
             processExitCodeSidecarPath = $exitSidecarPathValue
+            promptPath = $promptPathValue
+            promptSourcePath = $promptSourcePathValue
+            promptSourceSha256 = $promptSourceSha256Value
+            promptTransferPath = $promptTransferPathValue
+            promptTransferSha256 = $promptTransferSha256Value
+            inspectResultPath = $inspectResultPathValue
         }
         $operationException = New-Object System.Exception($originalMessage + "`nStart 失敗證據：" + $evidenceMessage)
         $operationException = Write-DispatchOperationFailureResult -Exception $operationException -Result $failureResult
@@ -14823,7 +15284,7 @@ function Read-DispatchExitSidecar {
     if ([IO.Path]::GetFileName($pathValue) -notmatch '^codex-exit-.+\.json$') {
         throw "Dispatch exit sidecar 檔名不符 per-run contract：$pathValue"
     }
-    if (-not (Test-Path -LiteralPath $pathValue -PathType Leaf)) {
+    if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $pathValue))) {
         throw "Dispatch exit sidecar 不存在：$pathValue"
     }
 
@@ -14904,7 +15365,7 @@ function Resolve-DispatchInspectBinding {
     catch {
         Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message ('Dispatch result path 或 root 無法解析：' + $_.Exception.Message) -DispatchResultPath $DispatchResultPathValue
     }
-    if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
+    if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $resultPath))) {
         Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message ('找不到 Dispatch result：' + $resultPath) -DispatchResultPath $resultPath
     }
     $historyRoots = @(
@@ -14922,7 +15383,7 @@ function Resolve-DispatchInspectBinding {
     }
 
     try {
-        $document = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8)
+        $document = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $resultPath)
     }
     catch {
         Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message ('Dispatch result JSON 無法解析：' + $_.Exception.Message) -DispatchResultPath $resultPath
@@ -15203,7 +15664,7 @@ function Invoke-Inspect {
             stderr = $failureStderr
         }
     }
-    if (-not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
+    if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $eventPath))) {
         throw "事件流檔案不存在：$eventPath"
     }
 
@@ -15212,7 +15673,7 @@ function Invoke-Inspect {
     $rawEventLines = New-Object System.Collections.Generic.List[string]
     $threadIds = New-Object System.Collections.Generic.List[string]
     $lineNumber = 0
-    foreach ($line in Get-Content -LiteralPath $eventPath -Encoding UTF8) {
+    foreach ($line in ((Read-DispatchUtf8Text -Path $eventPath) -split '\r?\n')) {
         $lineNumber++
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
@@ -16663,7 +17124,23 @@ function Write-OperationResult {
         $guardExecutionRoot = Get-DispatchScriptVariableValue -Name 'ExecutionRoot'
         $guardTargetPath = @(Get-DispatchScriptVariableValue -Name 'TargetPath')
         $resolvedResultPath = Resolve-DispatchOutputPath -CandidatePath $ResultPath -SourceRoot ([string]$guardSourceRoot) -ExecutionRoot ([string]$guardExecutionRoot) -TargetPath $guardTargetPath
-        Write-Utf8NoBom -Path $resolvedResultPath -Content ($json + "`n")
+        $persistResult = $true
+        $errorCode = [string](Get-DispatchResultPropertyValue -Object $Result -Names @('errorCode', 'error_code'))
+        $prepareResultPath = [string](Get-DispatchResultPropertyValue -Object $Result -Names @('prepareResultPath', 'prepare_result_path'))
+        if ($errorCode -ceq 'PrepareResultCollision' -and -not [string]::IsNullOrWhiteSpace($prepareResultPath)) {
+            try {
+                $resolvedPrepareResultPath = Resolve-AbsolutePath -Path $prepareResultPath
+                if ([string]::Equals($resolvedResultPath, $resolvedPrepareResultPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $persistResult = $false
+                }
+            }
+            catch {
+                $persistResult = $false
+            }
+        }
+        if ($persistResult) {
+            Write-Utf8NoBom -Path $resolvedResultPath -Content ($json + "`n")
+        }
     }
     Write-Output $json
 }
