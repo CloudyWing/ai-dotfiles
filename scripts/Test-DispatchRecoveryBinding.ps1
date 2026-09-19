@@ -395,7 +395,48 @@ function Test-ChildSummary {
     if ([int]$ChildResult.exit_code -ne 0 -or [int]$summaryMatch.Groups['failed'].Value -ne 0) {
         return [pscustomobject]@{ valid = $false; reason = 'child reported failure' }
     }
+    if ($ChildResult.PSObject.Properties.Name -contains 'repository_status_before' -and
+        -not [string]::Equals([string]$ChildResult.repository_status_before, [string]$ChildResult.repository_status_after, [StringComparison]::Ordinal)) {
+        return [pscustomobject]@{ valid = $false; reason = 'repository git status --short changed' }
+    }
+    if ($ChildResult.PSObject.Properties.Name -contains 'repository_worktree_before' -and
+        -not [string]::Equals([string]$ChildResult.repository_worktree_before, [string]$ChildResult.repository_worktree_after, [StringComparison]::Ordinal)) {
+        return [pscustomobject]@{ valid = $false; reason = 'repository git worktree list changed' }
+    }
     return [pscustomobject]@{ valid = $true; reason = 'child passed ' + $summaryMatch.Groups['total'].Value + ' cases' }
+}
+
+function Invoke-Phase9RepositoryGitCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepositoryRoot,
+
+        [Parameter(Mandatory)]
+        [string[]]$Arguments
+    )
+
+    $gitOutput = & git -C $RepositoryRoot @Arguments 2>&1
+    $exitCode = $LASTEXITCODE
+    $outputLines = @($gitOutput | ForEach-Object { [string]$_ })
+    $outputText = $outputLines -join [Environment]::NewLine
+    if ($exitCode -ne 0) {
+        throw ('Phase 9 repository git command failed: git -C "' + $RepositoryRoot + '" ' + ($Arguments -join ' ') + [Environment]::NewLine + $outputText)
+    }
+    return $outputText
+}
+
+function Get-Phase9RepositoryBoundarySnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepositoryRoot
+    )
+
+    return [ordered]@{
+        git_status_short = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $RepositoryRoot -Arguments @('status', '--short')
+        git_worktree_list = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $RepositoryRoot -Arguments @('worktree', 'list')
+    }
 }
 
 if (-not $Child) {
@@ -412,6 +453,10 @@ if (-not $Child) {
     $aggregateFailed = $false
     Write-Output ('AGGREGATE: Phase ' + $Phase)
     foreach ($hostDefinition in $hostDefinitions) {
+        $repositoryBoundaryBefore = $null
+        if ($Phase -eq 9) {
+            $repositoryBoundaryBefore = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $root
+        }
         $command = Get-Command -Name $hostDefinition.Name -ErrorAction SilentlyContinue
         if ($null -eq $command) {
             $missing = [pscustomobject]@{
@@ -426,12 +471,26 @@ if (-not $Child) {
                 stderr = ''
                 launch_error = '找不到執行環境。'
             }
+            if ($Phase -eq 9) {
+                $repositoryBoundaryAfter = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $root
+                $missing | Add-Member -MemberType NoteProperty -Name repository_status_before -Value ([string]$repositoryBoundaryBefore.git_status_short)
+                $missing | Add-Member -MemberType NoteProperty -Name repository_status_after -Value ([string]$repositoryBoundaryAfter.git_status_short)
+                $missing | Add-Member -MemberType NoteProperty -Name repository_worktree_before -Value ([string]$repositoryBoundaryBefore.git_worktree_list)
+                $missing | Add-Member -MemberType NoteProperty -Name repository_worktree_after -Value ([string]$repositoryBoundaryAfter.git_worktree_list)
+            }
             $aggregateResults.Add($missing)
             $aggregateFailed = $true
             continue
         }
         $hostPath = if (-not [string]::IsNullOrWhiteSpace($command.Source)) { $command.Source } else { $command.Path }
         $childResult = Invoke-TestChildProcess -HostPath $hostPath -HostLabel $hostDefinition.Label -PhaseNumber $Phase -ScriptPath $scriptPathValue -DateValue $probeDateValue -EmptyValue $probeEmptyValue -WhitespaceValue $probeWhitespaceValue -TextValue $probeTextValue -FixtureBaseRootPath $FixtureBaseRootPath
+        if ($Phase -eq 9) {
+            $repositoryBoundaryAfter = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $root
+            $childResult | Add-Member -MemberType NoteProperty -Name repository_status_before -Value ([string]$repositoryBoundaryBefore.git_status_short)
+            $childResult | Add-Member -MemberType NoteProperty -Name repository_status_after -Value ([string]$repositoryBoundaryAfter.git_status_short)
+            $childResult | Add-Member -MemberType NoteProperty -Name repository_worktree_before -Value ([string]$repositoryBoundaryBefore.git_worktree_list)
+            $childResult | Add-Member -MemberType NoteProperty -Name repository_worktree_after -Value ([string]$repositoryBoundaryAfter.git_worktree_list)
+        }
         $aggregateResults.Add($childResult)
         $summary = Test-ChildSummary -ChildResult $childResult -ExpectedDate $probeDateValue -ExpectedEmpty $probeEmptyValue -ExpectedWhitespace $probeWhitespaceValue -ExpectedText $probeTextValue
         $childResult | Add-Member NoteProperty summary_valid $summary.valid
@@ -470,6 +529,20 @@ if (-not $Child) {
         Write-Output ('DURATION_MS: ' + $childResult.duration_ms)
         Write-Output ('EXIT_CODE: ' + $childResult.exit_code)
         Write-Output ('SUMMARY: ' + $(if ($childResult.summary_valid) { 'PASS' } else { 'FAIL' }) + ' ' + $childResult.summary_reason)
+        if ($Phase -eq 9 -and $childResult.PSObject.Properties.Name -contains 'repository_status_before') {
+            Write-Output 'REPOSITORY_GIT_STATUS_BEFORE_BEGIN'
+            Write-Output ([string]$childResult.repository_status_before)
+            Write-Output 'REPOSITORY_GIT_STATUS_BEFORE_END'
+            Write-Output 'REPOSITORY_GIT_WORKTREE_BEFORE_BEGIN'
+            Write-Output ([string]$childResult.repository_worktree_before)
+            Write-Output 'REPOSITORY_GIT_WORKTREE_BEFORE_END'
+            Write-Output 'REPOSITORY_GIT_STATUS_AFTER_BEGIN'
+            Write-Output ([string]$childResult.repository_status_after)
+            Write-Output 'REPOSITORY_GIT_STATUS_AFTER_END'
+            Write-Output 'REPOSITORY_GIT_WORKTREE_AFTER_BEGIN'
+            Write-Output ([string]$childResult.repository_worktree_after)
+            Write-Output 'REPOSITORY_GIT_WORKTREE_AFTER_END'
+        }
         Write-Output 'STDOUT_BEGIN'
         Write-Output ([string]$childResult.stdout)
         Write-Output 'STDOUT_END'
@@ -555,6 +628,28 @@ function Write-Phase9Evidence {
     [Console]::WriteLine('EVIDENCE_BEGIN: ' + $Label)
     [Console]::WriteLine((ConvertTo-Json -InputObject $Value -Depth 80))
     [Console]::WriteLine('EVIDENCE_END: ' + $Label)
+}
+
+function Assert-Phase9RepositoryGitStatusUnchanged {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Before,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$After
+    )
+
+    if (-not [string]::Equals($Before, $After, [StringComparison]::Ordinal)) {
+        throw ('Phase 9 git status --short 前後不一致。' + [Environment]::NewLine + 'BEFORE:' + [Environment]::NewLine + $Before + [Environment]::NewLine + 'AFTER:' + [Environment]::NewLine + $After)
+    }
+    return [ordered]@{
+        result = 'PASS'
+        before = $Before
+        after = $After
+    }
 }
 
 function Invoke-Phase9GitCommand {
@@ -5617,9 +5712,16 @@ if ($Phase -ge 8) {
 }
 
 if ($Phase -ge 9) {
+    $phase9RepositoryBoundaryStart = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $root
+    $phase9GitStatusBefore = [string]$phase9RepositoryBoundaryStart.git_status_short
     $phase9Root = Join-Path $fixtureRoot 'phase9'
     New-Item -ItemType Directory -Path $phase9Root -Force | Out-Null
     $sRealDispatchParent = Join-Path $fixtureBaseRoot 'p9-real'
+    $sRealDispatchParentExistedBefore = Test-Path -LiteralPath $sRealDispatchParent -PathType Container
+    $sRealDispatchParentBaselineEntries = @()
+    if ($sRealDispatchParentExistedBefore) {
+        $sRealDispatchParentBaselineEntries = @(Get-ChildItem -LiteralPath $sRealDispatchParent -Force | Select-Object -ExpandProperty Name)
+    }
     New-Item -ItemType Directory -Path $sRealDispatchParent -Force | Out-Null
 
     $invokeDefaultProfileIsolationStart = {
@@ -8996,7 +9098,7 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
                 fixture_post_event_hold_seconds = 1
                 production_wait_behavior_changed = $false
                 fixture_real_dispatch_parent = $sRealDispatchParent
-                fixture_worktree_location = 'executionRoot/p9-real/<caseSlug>/.local/ai-sessions/worktrees/<caseSlug>'
+                fixture_worktree_location = 'repoRoot/p9-real/<caseSlug>/.local/ai-sessions/worktrees/<caseSlug>; new entries are removed before the final git status guard'
                 affected_cases = @('S-1 omitted quota normal/restored', 'S-2 started success', 'T010/T011 real Dispatch')
                 cause = 'Windows cmd.exe could not create the fixture stderr redirection path when the nested executionRoot path reached the MAX_PATH boundary, leaving the event stream empty. The fixture also held the process for five seconds, matching the production relay deadline; the hold is one second after this correction so the fixture observes a completed stream well before the deadline.'
                 real_codex_impact = 'Production Wait-ForThreadRelay remains unchanged; real Codex event streaming is not altered.'
@@ -9008,12 +9110,13 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             [CmdletBinding()]
             param(
                 [Parameter(Mandatory)][string]$Name,
-                [Parameter(Mandatory)][string]$ScriptPath
+                [Parameter(Mandatory)][string]$ScriptPath,
+                [switch]$SkipCleanup
             )
 
             $caseSlug = 'r13-' + [guid]::NewGuid().ToString('N').Substring(0, 6)
             $testExecutionRoot = [IO.Path]::GetFullPath($root)
-            $sourceRoot = Join-Path $testExecutionRoot ('p-' + $caseSlug)
+            $sourceRoot = Join-Path $sRealDispatchParent ('p-' + $caseSlug)
             $scratchRoot = Join-Path $sourceRoot ('.local\ai-sessions\scratch\' + $caseSlug)
             $dispatchRoot = Join-Path $sourceRoot ('.local\ai-sessions\worktrees\' + $caseSlug)
             $lineSlug = 'r13'
@@ -9034,6 +9137,8 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             $lineManifestDestinationPath = Join-Path $dispatchRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\line.json')
             $requirementSummaryDestinationPath = Join-Path $dispatchRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\requirement-summary.md')
             $sourceRepoWorktreeBefore = Get-Phase9GitWorktreeList -RepositoryRoot $testExecutionRoot
+            $isolatedRepoWorktreeBefore = $null
+            $isolatedRepoWorktreeAfter = $null
             $worktreeCleanup = $null
 
             New-Item -ItemType Directory -Path $sourceRoot, $scratchRoot, $codexHome, $rolloutRoot, (Split-Path -Parent $quotaBeforePath) -Force | Out-Null
@@ -9050,9 +9155,26 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
                         'semantic-label' = 'dispatch mechanism batch 2 R-1 R-2 R-3 path shape'
                         'created-at-utc' = [DateTime]::UtcNow.ToString('o')
                     } | ConvertTo-Json -Depth 10) + "`n")
-            $requirementSummaryTemplatePath = Join-Path $root '.local\ai-sessions\handoff\dispatch-mechanism-batch2\requirement-summary.md'
-            Write-Utf8NoBom -Path $requirementSummarySourcePath -Content (Get-Content -LiteralPath $requirementSummaryTemplatePath -Raw -Encoding UTF8)
+            $requirementSummaryContent = @(
+                '# Phase 9 R-1/R-2/R-3 requirement summary'
+                ''
+                '## 程式面項目'
+                ''
+                '| # | 項目 | 內容 |'
+                '| --- | --- | --- |'
+                '| 1 | Prompt 搬運 | Dispatch 啟動前搬運 prompt 至 executionRoot。 |'
+                ''
+                '## 功能面項目'
+                ''
+                '| # | 項目 | 內容 |'
+                '| --- | --- | --- |'
+                '| 2 | 真實 Dispatch | Start、RunRecord 與 Dispatch result 使用搬運後路徑。 |'
+            ) -join "`r`n"
+            Write-Utf8NoBom -Path $requirementSummarySourcePath -Content ($requirementSummaryContent + "`r`n")
+            $requirementSummaryIds = @(Get-RequirementIdsFromSummary -Content $requirementSummaryContent -SummaryPath $requirementSummarySourcePath)
+            Assert-True ($requirementSummaryIds.Count -eq 2 -and $requirementSummaryIds[0] -eq 1 -and $requirementSummaryIds[1] -eq 2) ('R-1/R-2/R-3 最小 requirement summary 無法由 Get-RequirementIdsFromSummary 解析：' + ($requirementSummaryIds -join ','))
             Initialize-Phase9IsolatedGitRepository -SourceRoot $sourceRoot -SourceScriptPath $sourcePath -TargetRelativePath $targetRelativePath
+            $isolatedRepoWorktreeBefore = Get-Phase9GitWorktreeList -RepositoryRoot $sourceRoot
             Write-Utf8NoBom -Path $promptSourcePath -Content ('R-1/R-2/R-3 real source-root prompt: ' + $caseSlug)
             Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
             $null = New-Phase8QuotaSnapshot -Path $quotaBeforePath -PrimaryRemainingPercent 80
@@ -9209,13 +9331,40 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
                 }
             }
             finally {
-                $worktreeCleanup = Remove-Phase9GitWorktree -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot
+                if ($SkipCleanup) {
+                    $isolatedRepoWorktreeAfter = Get-Phase9GitWorktreeList -RepositoryRoot $sourceRoot
+                    $worktreeCleanup = [ordered]@{
+                        source_root = $sourceRoot
+                        dispatch_root = $dispatchRoot
+                        path_existed_before = $false
+                        registered_before = $false
+                        remove_result = $null
+                        registered_after = Test-Phase9GitWorktreeListed -WorktreeList $isolatedRepoWorktreeAfter -WorktreePath $dispatchRoot
+                        path_exists_after = Test-Path -LiteralPath $dispatchRoot -PathType Container
+                        removed = $false
+                        skipped = $true
+                        worktree_list_before = $isolatedRepoWorktreeBefore
+                        worktree_list_after = $isolatedRepoWorktreeAfter
+                    }
+                }
+                else {
+                    $worktreeCleanup = Remove-Phase9GitWorktree -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot
+                    $isolatedRepoWorktreeAfter = Get-Phase9GitWorktreeList -RepositoryRoot $sourceRoot
+                }
                 $sourceRepoWorktreeAfter = Get-Phase9GitWorktreeList -RepositoryRoot $testExecutionRoot
             }
             $caseResult | Add-Member -MemberType NoteProperty -Name source_repo_worktree_before -Value $sourceRepoWorktreeBefore
             $caseResult | Add-Member -MemberType NoteProperty -Name source_repo_worktree_after -Value $sourceRepoWorktreeAfter
+            $caseResult | Add-Member -MemberType NoteProperty -Name isolated_repo_worktree_before -Value $isolatedRepoWorktreeBefore
+            $caseResult | Add-Member -MemberType NoteProperty -Name isolated_repo_worktree_after -Value $isolatedRepoWorktreeAfter
             $caseResult | Add-Member -MemberType NoteProperty -Name worktree_cleanup -Value $worktreeCleanup
             return $caseResult
+        }
+
+        $assertR123WorktreeRegistry = {
+            param([Parameter(Mandatory)][psobject]$CaseResult)
+            Assert-True ([string]::Equals([string]$CaseResult.isolated_repo_worktree_before, [string]$CaseResult.isolated_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 隔離 repo 的 git worktree list 前後不一致：' + ($CaseResult.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
+            Assert-True ([string]::Equals([string]$CaseResult.source_repo_worktree_before, [string]$CaseResult.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 外層 repo 的 git worktree list 前後不一致：' + ($CaseResult.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
         }
 
         $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
@@ -9247,6 +9396,119 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
         Assert-True (@($preFix.composed_prompt_paths | Where-Object { Test-PathWithinRoot -Path $_ -Root $preFix.dispatch_root }).Count -gt 0) ('R-1/R-3 pre-fix 未留下 executionRoot 內的組合 Prompt：' + ($preFix | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([bool]$preFix.worktree_cleanup.removed -and -not [bool]$preFix.worktree_cleanup.registered_after) ('R-3 pre-fix 未清理隔離 git worktree：' + ($preFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([string]::Equals([string]$preFix.source_repo_worktree_before, [string]$preFix.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 pre-fix 改變來源 repo 的 git worktree list：' + ($preFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ([string]::Equals([string]$preFix.isolated_repo_worktree_before, [string]$preFix.isolated_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 pre-fix 改變隔離 repo 的 git worktree list：' + ($preFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
+
+        $mutantA = $null
+        $mutantAFailure = $null
+        $mutantACleanup = $null
+        try {
+            $mutantA = & $invokeR123RealShapeCase -Name 'mutant-skip-cleanup' -ScriptPath $sourcePath -SkipCleanup
+            try {
+                & $assertR123WorktreeRegistry $mutantA
+            }
+            catch {
+                $mutantAFailure = $_.Exception.Message
+            }
+        }
+        finally {
+            if ($null -ne $mutantA) {
+                $mutantACleanup = Remove-Phase9GitWorktree -SourceRoot $mutantA.source_root -DispatchRoot $mutantA.dispatch_root
+            }
+        }
+        Assert-True ($null -ne $mutantA -and [bool]$mutantA.worktree_cleanup.skipped -and [bool]$mutantA.worktree_cleanup.registered_after -and -not [string]::Equals([string]$mutantA.isolated_repo_worktree_before, [string]$mutantA.isolated_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 mutant 甲 未造成隔離 repo worktree list 前後差異：' + ($mutantA | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True (-not [string]::IsNullOrWhiteSpace($mutantAFailure) -and $mutantAFailure -match '隔離 repo 的 git worktree list') ('R-3 mutant 甲 未被隔離 repo 清單斷言捕捉：' + ($mutantA | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ($null -ne $mutantACleanup -and [bool]$mutantACleanup.removed -and -not [bool]$mutantACleanup.registered_after -and [string]::Equals([string]$mutantA.isolated_repo_worktree_before, [string]$mutantACleanup.worktree_list_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 mutant 甲 清理後仍有隔離 worktree 殘留：' + ($mutantACleanup | ConvertTo-Json -Depth 30 -Compress))
+        $mutantAEvidence = [ordered]@{
+            name = 'mutant-skip-cleanup'
+            mutation = '跳過隔離 repo worktree 清理步驟。'
+            result = 'FAIL'
+            output = $mutantA.output_text
+            assertion_failure = $mutantAFailure
+            isolated_repo_worktree_list_before = $mutantA.isolated_repo_worktree_before
+            isolated_repo_worktree_list_after_without_cleanup = $mutantA.isolated_repo_worktree_after
+            outer_repo_worktree_list_before = $mutantA.source_repo_worktree_before
+            outer_repo_worktree_list_after = $mutantA.source_repo_worktree_after
+            cleanup = $mutantACleanup
+        }
+
+        $mutantB = $null
+        $mutantBFailure = $null
+        $mutantBCleanup = $null
+        $mutantBCommonGitDirectoryResult = Invoke-Phase9GitCommand -RepositoryRoot $root -Arguments @('rev-parse', '--git-common-dir')
+        Assert-Phase9GitCommandSucceeded -Result $mutantBCommonGitDirectoryResult
+        $mutantBCommonGitDirectory = $mutantBCommonGitDirectoryResult.output.Trim()
+        $mutantBCommonGitDirectoryPath = if ([IO.Path]::IsPathRooted($mutantBCommonGitDirectory)) {
+            $mutantBCommonGitDirectory
+        }
+        else {
+            Join-Path $root $mutantBCommonGitDirectory
+        }
+        $mutantBOuterRepoRoot = [IO.Directory]::GetParent([IO.Path]::GetFullPath($mutantBCommonGitDirectoryPath)).FullName
+        $mutantBDispatchRoot = Join-Path $mutantBOuterRepoRoot ('.local\ai-sessions\worktrees\r13-mutant-outer-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $mutantBOuterWorktreeBefore = Get-Phase9GitWorktreeList -RepositoryRoot $mutantBOuterRepoRoot
+        $mutantBOuterWorktreeAfter = $null
+        $mutantBOuterWorktreeAfterCleanup = $null
+        try {
+            New-Item -ItemType Directory -Path (Split-Path -Parent $mutantBDispatchRoot) -Force | Out-Null
+            $mutantBBaseShaResult = Invoke-Phase9GitCommand -RepositoryRoot $mutantBOuterRepoRoot -Arguments @('rev-parse', 'HEAD')
+            Assert-Phase9GitCommandSucceeded -Result $mutantBBaseShaResult
+            $mutantBBaseSha = $mutantBBaseShaResult.output.Trim()
+            $mutantBPreviousErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $mutantBAddResult = Invoke-Phase9GitCommand -RepositoryRoot $mutantBOuterRepoRoot -Arguments @('worktree', 'add', '--detach', $mutantBDispatchRoot, $mutantBBaseSha)
+            }
+            finally {
+                $ErrorActionPreference = $mutantBPreviousErrorActionPreference
+            }
+            Assert-Phase9GitCommandSucceeded -Result $mutantBAddResult
+            $mutantBOuterWorktreeAfter = Get-Phase9GitWorktreeList -RepositoryRoot $mutantBOuterRepoRoot
+            $mutantBRequest = $preFix.request | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+            $mutantBRequest.source_root = $mutantBOuterRepoRoot
+            $mutantBRequest.dispatch_root = $mutantBDispatchRoot
+            $mutantB = [pscustomobject]@{
+                name = 'mutant-dispatch-root-in-outer-repo'
+                request = $mutantBRequest
+                test_execution_root = $mutantBOuterRepoRoot
+                source_root = $mutantBOuterRepoRoot
+                dispatch_root = $mutantBDispatchRoot
+                isolated_repo_worktree_before = $preFix.isolated_repo_worktree_before
+                isolated_repo_worktree_after = $preFix.isolated_repo_worktree_after
+                source_repo_worktree_before = $mutantBOuterWorktreeBefore
+                source_repo_worktree_after = $mutantBOuterWorktreeAfter
+                worktree_cleanup = $null
+            }
+            try {
+                & $assertR123WorktreeRegistry $mutantB
+            }
+            catch {
+                $mutantBFailure = $_.Exception.Message
+            }
+        }
+        finally {
+            $mutantBCleanup = Remove-Phase9GitWorktree -SourceRoot $mutantBOuterRepoRoot -DispatchRoot $mutantBDispatchRoot
+            if (Test-Path -LiteralPath $mutantBDispatchRoot -PathType Container) {
+                $mutantBOuterWorktreeRoot = Join-Path $mutantBOuterRepoRoot '.local\ai-sessions\worktrees'
+                Assert-True (Test-PathWithinRoot -Path $mutantBDispatchRoot -Root $mutantBOuterWorktreeRoot) ('R-3 mutant 乙 清理目標超出外層 worktree root：' + $mutantBDispatchRoot)
+                Remove-Item -LiteralPath $mutantBDispatchRoot -Recurse -Force
+            }
+            $mutantBOuterWorktreeAfterCleanup = Get-Phase9GitWorktreeList -RepositoryRoot $mutantBOuterRepoRoot
+        }
+        Assert-True ($null -ne $mutantB -and [string]$mutantB.request.dispatch_root -eq $mutantBDispatchRoot -and -not [string]::Equals([string]$mutantB.source_repo_worktree_before, [string]$mutantB.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 mutant 乙 未造成外層 repo worktree list 前後差異：' + ($mutantB | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True (-not [string]::IsNullOrWhiteSpace($mutantBFailure) -and $mutantBFailure -match '外層 repo 的 git worktree list') ('R-3 mutant 乙 未被外層 repo 清單斷言捕捉：' + ($mutantB | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ($null -ne $mutantBCleanup -and [bool]$mutantBCleanup.removed -and -not [bool]$mutantBCleanup.registered_after -and -not (Test-Path -LiteralPath $mutantBDispatchRoot -PathType Container) -and [string]::Equals([string]$mutantBOuterWorktreeBefore, [string]$mutantBOuterWorktreeAfterCleanup, [StringComparison]::OrdinalIgnoreCase)) ('R-3 mutant 乙 清理後仍有外層 worktree 或 registry 殘留：' + ($mutantBCleanup | ConvertTo-Json -Depth 30 -Compress))
+        $mutantBEvidence = [ordered]@{
+            name = 'mutant-dispatch-root-in-outer-repo'
+            mutation = '將 dispatch_root 改到外層 repo 的 .local\\ai-sessions\\worktrees\\ 下，並在該外層 repo 註冊 worktree。'
+            result = 'FAIL'
+            output = $mutantBAddResult.output
+            assertion_failure = $mutantBFailure
+            request = $mutantB.request
+            outer_repo_worktree_list_before = $mutantBOuterWorktreeBefore
+            outer_repo_worktree_list_after_before_cleanup = $mutantBOuterWorktreeAfter
+            outer_repo_worktree_list_after_cleanup = $mutantBOuterWorktreeAfterCleanup
+            cleanup = $mutantBCleanup
+        }
 
         $postFix = & $invokeR123RealShapeCase -Name 'post-fix' -ScriptPath $sourcePath
         $postFixDispatchResult = $postFix.result_document
@@ -9262,6 +9524,7 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
         Assert-True (-not $postFix.receipt_exists) ('R-2 post-fix success 不應產生 failure receipt：' + ($postFix | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([bool]$postFix.worktree_cleanup.removed -and -not [bool]$postFix.worktree_cleanup.registered_after) ('R-3 post-fix 未清理隔離 git worktree：' + ($postFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([string]::Equals([string]$postFix.source_repo_worktree_before, [string]$postFix.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 post-fix 改變來源 repo 的 git worktree list：' + ($postFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ([string]::Equals([string]$postFix.isolated_repo_worktree_before, [string]$postFix.isolated_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 post-fix 改變隔離 repo 的 git worktree list：' + ($postFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
 
         $script:phase9R123Evidence = [ordered]@{
             pre_fix = $preFix
@@ -9279,10 +9542,26 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
                 source_repo_worktree_list_unchanged = [string]::Equals([string]$postFix.source_repo_worktree_before, [string]$postFix.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)
                 source_repo_worktree_list_before = $postFix.source_repo_worktree_before
                 source_repo_worktree_list_after = $postFix.source_repo_worktree_after
+                isolated_repo_worktree_list_unchanged = [string]::Equals([string]$postFix.isolated_repo_worktree_before, [string]$postFix.isolated_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)
+                isolated_repo_worktree_list_before = $postFix.isolated_repo_worktree_before
+                isolated_repo_worktree_list_after = $postFix.isolated_repo_worktree_after
+            }
+            mutant_a = $mutantAEvidence
+            mutant_b = $mutantBEvidence
+            restored_pass = [ordered]@{
+                result = 'PASS'
+                output = $postFix.output_text
+                source_repo_worktree_list_before = $postFix.source_repo_worktree_before
+                source_repo_worktree_list_after = $postFix.source_repo_worktree_after
+                isolated_repo_worktree_list_before = $postFix.isolated_repo_worktree_before
+                isolated_repo_worktree_list_after = $postFix.isolated_repo_worktree_after
             }
         }
-        Write-Phase9Evidence -Label 'R1_R2_R3_REAL_PATH_SHAPE_PRE_FIX_FAILURE' -Value ([ordered]@{ output = $preFix.output_text; result = $preFixDispatchResult; receipt = $preFix.receipt_document; request = $preFix.request; composed_prompt_paths = $preFix.composed_prompt_paths; worktree_cleanup = $preFix.worktree_cleanup; mutation = $script:phase9R123Evidence.mutation })
-        Write-Phase9Evidence -Label 'R1_R2_R3_REAL_PATH_SHAPE_POST_FIX_PASS' -Value ([ordered]@{ output = $postFix.output_text; result = $postFixDispatchResult; start = $postFix.start_result_document; run_record = $postFix.run_record_document; request = $postFix.request; worktree_cleanup = $postFix.worktree_cleanup; source_repo_worktree_list_before = $postFix.source_repo_worktree_before; source_repo_worktree_list_after = $postFix.source_repo_worktree_after; mutation = $script:phase9R123Evidence.mutation })
+        Write-Phase9Evidence -Label 'R1_R2_R3_REAL_PATH_SHAPE_PRE_FIX_FAILURE' -Value ([ordered]@{ output = $preFix.output_text; result = $preFixDispatchResult; receipt = $preFix.receipt_document; request = $preFix.request; composed_prompt_paths = $preFix.composed_prompt_paths; worktree_cleanup = $preFix.worktree_cleanup; isolated_repo_worktree_list_before = $preFix.isolated_repo_worktree_before; isolated_repo_worktree_list_after = $preFix.isolated_repo_worktree_after; source_repo_worktree_list_before = $preFix.source_repo_worktree_before; source_repo_worktree_list_after = $preFix.source_repo_worktree_after; mutation = $script:phase9R123Evidence.mutation })
+        Write-Phase9Evidence -Label 'R1_R2_R3_REAL_PATH_SHAPE_POST_FIX_PASS' -Value ([ordered]@{ output = $postFix.output_text; result = $postFixDispatchResult; start = $postFix.start_result_document; run_record = $postFix.run_record_document; request = $postFix.request; worktree_cleanup = $postFix.worktree_cleanup; source_repo_worktree_list_before = $postFix.source_repo_worktree_before; source_repo_worktree_list_after = $postFix.source_repo_worktree_after; isolated_repo_worktree_list_before = $postFix.isolated_repo_worktree_before; isolated_repo_worktree_list_after = $postFix.isolated_repo_worktree_after; mutation = $script:phase9R123Evidence.mutation })
+        Write-Phase9Evidence -Label 'R1_R2_R3_WORKTREE_MUTANT_A_FAILURE' -Value $mutantAEvidence
+        Write-Phase9Evidence -Label 'R1_R2_R3_WORKTREE_MUTANT_B_FAILURE' -Value $mutantBEvidence
+        Write-Phase9Evidence -Label 'R1_R2_R3_WORKTREE_RESTORED_PASS' -Value $script:phase9R123Evidence.restored_pass
         Write-Phase9Evidence -Label 'R1_R2_R3_WORKTREE_CLEANUP' -Value $script:phase9R123Evidence.worktree_cleanup
     }
 
@@ -11150,6 +11429,86 @@ finally {
         }
         $operationResult = if ($null -eq $caught) { $null } else { $caught.Data['operationResult'] }
         Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'DispatchExitCodeUnavailable') 'sidecar 缺失或未完成時未回傳 unavailable。'
+    }
+
+    Invoke-Case 'Phase 9 final git status guard detects repo-root fixture residue and restored pass' {
+        $fixtureEntriesBeforeCleanup = @()
+        $removedFixtureEntries = New-Object System.Collections.Generic.List[string]
+        if (Test-Path -LiteralPath $sRealDispatchParent -PathType Container) {
+            $fixtureEntriesBeforeCleanup = @(Get-ChildItem -LiteralPath $sRealDispatchParent -Force | Select-Object -ExpandProperty Name | Sort-Object)
+            foreach ($fixtureEntry in @(Get-ChildItem -LiteralPath $sRealDispatchParent -Force)) {
+                if (@($sRealDispatchParentBaselineEntries) -contains $fixtureEntry.Name) {
+                    continue
+                }
+                Assert-True (Test-PathWithinRoot -Path $fixtureEntry.FullName -Root $sRealDispatchParent) ('Phase 9 fixture cleanup 目標超出 p9-real root：' + $fixtureEntry.FullName)
+                Remove-Item -LiteralPath $fixtureEntry.FullName -Recurse -Force
+                $removedFixtureEntries.Add($fixtureEntry.Name)
+            }
+        }
+        if (-not $sRealDispatchParentExistedBefore -and (Test-Path -LiteralPath $sRealDispatchParent -PathType Container) -and @(Get-ChildItem -LiteralPath $sRealDispatchParent -Force).Count -eq 0) {
+            Remove-Item -LiteralPath $sRealDispatchParent -Force
+        }
+        $fixtureEntriesAfterCleanup = if (Test-Path -LiteralPath $sRealDispatchParent -PathType Container) {
+            @(Get-ChildItem -LiteralPath $sRealDispatchParent -Force | Select-Object -ExpandProperty Name | Sort-Object)
+        }
+        else {
+            @()
+        }
+        $expectedFixtureEntriesText = @($sRealDispatchParentBaselineEntries | Sort-Object) -join "`n"
+        $actualFixtureEntriesText = @($fixtureEntriesAfterCleanup) -join "`n"
+        Assert-True ([string]::Equals($expectedFixtureEntriesText, $actualFixtureEntriesText, [StringComparison]::Ordinal)) ('Phase 9 fixture cleanup 未還原 p9-real baseline：before=' + ($fixtureEntriesBeforeCleanup -join ',') + '; after=' + ($fixtureEntriesAfterCleanup -join ',') + '; expected=' + ($sRealDispatchParentBaselineEntries -join ','))
+        $fixtureCleanup = [ordered]@{
+            result = 'PASS'
+            parent = $sRealDispatchParent
+            parent_existed_before = $sRealDispatchParentExistedBefore
+            baseline_entries = @($sRealDispatchParentBaselineEntries | Sort-Object)
+            entries_before_cleanup = $fixtureEntriesBeforeCleanup
+            removed_entries = @($removedFixtureEntries.ToArray() | Sort-Object)
+            entries_after_cleanup = $fixtureEntriesAfterCleanup
+            parent_exists_after = Test-Path -LiteralPath $sRealDispatchParent -PathType Container
+        }
+        $mutantPath = Join-Path $root ('phase9-status-mutant-' + [guid]::NewGuid().ToString('N') + '.md')
+        $mutantStatusBefore = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $root -Arguments @('status', '--short')
+        Assert-True ([string]::Equals($phase9GitStatusBefore, $mutantStatusBefore, [StringComparison]::Ordinal)) 'Phase 9 git status guard 的 mutant 起點與 Phase 9 baseline 不一致。'
+        $mutantStatusAfter = $null
+        $mutantFailure = $null
+        try {
+            Write-Utf8NoBom -Path $mutantPath -Content 'Phase 9 git status guard mutant residue.'
+            $mutantStatusAfter = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $root -Arguments @('status', '--short')
+            try {
+                $null = Assert-Phase9RepositoryGitStatusUnchanged -Before $phase9GitStatusBefore -After $mutantStatusAfter
+            }
+            catch {
+                $mutantFailure = $_.Exception.Message
+            }
+            Assert-True (-not [string]::IsNullOrWhiteSpace($mutantFailure)) 'Phase 9 git status guard 未捕捉 repo-root fixture residue。'
+        }
+        finally {
+            if (Test-Path -LiteralPath $mutantPath -PathType Leaf) {
+                Remove-Item -LiteralPath $mutantPath -Force
+            }
+        }
+        $phase9GitStatusAfter = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $root -Arguments @('status', '--short')
+        $restoredPass = Assert-Phase9RepositoryGitStatusUnchanged -Before $phase9GitStatusBefore -After $phase9GitStatusAfter
+        Assert-True ([string]::Equals($phase9GitStatusBefore, $phase9GitStatusAfter, [StringComparison]::Ordinal)) 'Phase 9 git status guard 清理 mutant 後仍有 repo status 殘留。'
+        Write-Phase9Evidence -Label 'PHASE9_GIT_STATUS_GUARD_MUTANT_FAILURE' -Value ([ordered]@{
+                result = 'FAIL'
+                mutation = '讓 fixture 暫時在 repo 根目錄建立未追蹤檔案。'
+                mutant_path = $mutantPath
+                status_before = $mutantStatusBefore
+                status_after = $mutantStatusAfter
+                guard_failure_output = $mutantFailure
+                cleanup = 'finally 已刪除 mutant 檔案。'
+                fixture_cleanup = $fixtureCleanup
+            })
+        Write-Phase9Evidence -Label 'PHASE9_GIT_STATUS_GUARD_RESTORED_PASS' -Value ([ordered]@{
+                result = 'PASS'
+                guard_result = $restoredPass
+                status_before = $phase9GitStatusBefore
+                status_after = $phase9GitStatusAfter
+                fixture_cleanup = $fixtureCleanup
+            })
+        Write-Phase9Evidence -Label 'PHASE9_FIXTURE_BOUNDARY_CLEANUP' -Value $fixtureCleanup
     }
 }
 
