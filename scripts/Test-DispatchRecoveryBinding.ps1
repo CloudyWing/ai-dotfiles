@@ -21,6 +21,12 @@ param(
 
     [AllowEmptyString()]
     [string]$FixtureBaseRootPath
+
+    ,
+
+    [ValidateSet('', 'F-003', 'F-006', 'S-3', 'BATCH3G', 'BATCH3H')]
+    [AllowEmptyString()]
+    [string]$FocusedCase
 )
 
 Set-StrictMode -Version Latest
@@ -184,7 +190,7 @@ function Invoke-Phase9Process {
             $startInfo.EnvironmentVariables[[string]$key] = [string]$EnvironmentVariables[$key]
         }
     }
-    $process.StartInfo = $startInfo
+    $null = ($process.StartInfo = $startInfo)
     $start = [DateTimeOffset]::UtcNow
     try {
         if (-not $process.Start()) {
@@ -256,6 +262,11 @@ function Invoke-TestChildProcess {
         [Parameter(Mandatory)]
         [AllowEmptyString()]
         [string]$FixtureBaseRootPath
+
+        ,
+
+        [AllowEmptyString()]
+        [string]$FocusedCase
     )
 
     $arguments = @(
@@ -278,6 +289,12 @@ function Invoke-TestChildProcess {
         $arguments += @(
             '-FixtureBaseRootPath'
             $FixtureBaseRootPath
+        )
+    }
+    if (-not [string]::IsNullOrWhiteSpace($FocusedCase)) {
+        $arguments += @(
+            '-FocusedCase'
+            $FocusedCase
         )
     }
     $argumentText = ($arguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
@@ -377,9 +394,21 @@ function Test-ChildSummary {
     if (-not [string]::IsNullOrWhiteSpace($ChildResult.launch_error)) {
         return [pscustomobject]@{ valid = $false; reason = 'child launch failed: ' + $ChildResult.launch_error }
     }
+    $phase9SummaryMatch = [regex]::Match($ChildResult.stdout, '(?m)^TOTAL:\s+(?<total>\d+);\s+PASSED:\s+(?<passed>\d+);\s+ISOLATED:\s+(?<isolated>\d+);\s+FAILED:\s+(?<phase9Failed>\d+);')
     $summaryMatch = [regex]::Match($ChildResult.stdout, '(?m)^TOTAL:\s+(?<total>\d+);\s+FAILED:\s+(?<failed>\d+);')
-    if (-not $summaryMatch.Success) {
+    if (-not $phase9SummaryMatch.Success -and -not $summaryMatch.Success) {
         return [pscustomobject]@{ valid = $false; reason = 'child summary missing' }
+    }
+    $summaryTotal = if ($phase9SummaryMatch.Success) { $phase9SummaryMatch.Groups['total'].Value } else { $summaryMatch.Groups['total'].Value }
+    $summaryFailed = if ($phase9SummaryMatch.Success) { $phase9SummaryMatch.Groups['phase9Failed'].Value } else { $summaryMatch.Groups['failed'].Value }
+    if ($phase9SummaryMatch.Success) {
+        $totalCount = [int]$phase9SummaryMatch.Groups['total'].Value
+        $passedCount = [int]$phase9SummaryMatch.Groups['passed'].Value
+        $isolatedCount = [int]$phase9SummaryMatch.Groups['isolated'].Value
+        $phase9FailedCount = [int]$phase9SummaryMatch.Groups['phase9Failed'].Value
+        if ($totalCount -ne ($passedCount + $isolatedCount + $phase9FailedCount)) {
+            return [pscustomobject]@{ valid = $false; reason = 'Phase 9 case summary counts do not reconcile' }
+        }
     }
     $expectedProbeLines = @(
         'PROBE_DATE_ECHO: <' + $ExpectedDate + '>'
@@ -392,7 +421,7 @@ function Test-ChildSummary {
             return [pscustomobject]@{ valid = $false; reason = 'probe mismatch: ' + $line }
         }
     }
-    if ([int]$ChildResult.exit_code -ne 0 -or [int]$summaryMatch.Groups['failed'].Value -ne 0) {
+    if ([int]$ChildResult.exit_code -ne 0 -or [int]$summaryFailed -ne 0) {
         return [pscustomobject]@{ valid = $false; reason = 'child reported failure' }
     }
     if ($ChildResult.PSObject.Properties.Name -contains 'repository_status_before' -and
@@ -403,7 +432,13 @@ function Test-ChildSummary {
         -not [string]::Equals([string]$ChildResult.repository_worktree_before, [string]$ChildResult.repository_worktree_after, [StringComparison]::Ordinal)) {
         return [pscustomobject]@{ valid = $false; reason = 'repository git worktree list changed' }
     }
-    return [pscustomobject]@{ valid = $true; reason = 'child passed ' + $summaryMatch.Groups['total'].Value + ' cases' }
+    $summaryReason = if ($phase9SummaryMatch.Success) {
+        'child passed {0} cases; isolated {1}' -f $phase9SummaryMatch.Groups['passed'].Value, $phase9SummaryMatch.Groups['isolated'].Value
+    }
+    else {
+        'child passed ' + $summaryTotal + ' cases'
+    }
+    return [pscustomobject]@{ valid = $true; reason = $summaryReason }
 }
 
 function Invoke-Phase9RepositoryGitCommand {
@@ -416,7 +451,14 @@ function Invoke-Phase9RepositoryGitCommand {
         [string[]]$Arguments
     )
 
-    $gitOutput = & git -C $RepositoryRoot @Arguments 2>&1
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $gitOutput = & git -C $RepositoryRoot @Arguments 2>&1
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $exitCode = $LASTEXITCODE
     $outputLines = @($gitOutput | ForEach-Object { [string]$_ })
     $outputText = $outputLines -join [Environment]::NewLine
@@ -439,6 +481,664 @@ function Get-Phase9RepositoryBoundarySnapshot {
     }
 }
 
+function Get-Phase9ByteArraySha256 {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [byte[]]$Bytes
+    )
+
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try {
+        $hash = $algorithm.ComputeHash($Bytes)
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+    return ([BitConverter]::ToString($hash) -replace '-', '').ToLowerInvariant()
+}
+
+function ConvertTo-Phase9ComparablePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    while ($fullPath.Length -gt 3 -and ($fullPath.EndsWith('\') -or $fullPath.EndsWith('/'))) {
+        $fullPath = $fullPath.Substring(0, $fullPath.Length - 1)
+    }
+    return $fullPath
+}
+
+function Test-Phase9PathWithinRoot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Root,
+
+        [Parameter(Mandatory)]
+        [string]$Candidate
+    )
+
+    $rootPath = ConvertTo-Phase9ComparablePath -Path $Root
+    $candidatePath = ConvertTo-Phase9ComparablePath -Path $Candidate
+    return [string]::Equals($rootPath, $candidatePath, [StringComparison]::OrdinalIgnoreCase) -or
+        $candidatePath.StartsWith($rootPath + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-Phase9RelativePath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Root,
+
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $rootPath = ConvertTo-Phase9ComparablePath -Path $Root
+    $pathValue = ConvertTo-Phase9ComparablePath -Path $Path
+    if (-not (Test-Phase9PathWithinRoot -Root $rootPath -Candidate $pathValue)) {
+        throw ('Phase 9 路徑超出 root：' + $pathValue)
+    }
+    if ([string]::Equals($rootPath, $pathValue, [StringComparison]::OrdinalIgnoreCase)) {
+        return ''
+    }
+    return $pathValue.Substring($rootPath.Length + 1).Replace('\', '/')
+}
+
+function Get-Phase9FileInventory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Root,
+
+        [AllowNull()]
+        [string]$ExcludeRoot
+    )
+
+    $rootPath = ConvertTo-Phase9ComparablePath -Path $Root
+    if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) {
+        return @()
+    }
+    $excludePath = $null
+    if (-not [string]::IsNullOrWhiteSpace($ExcludeRoot)) {
+        $excludePath = ConvertTo-Phase9ComparablePath -Path $ExcludeRoot
+    }
+    $systemHistoryPath = ConvertTo-Phase9ComparablePath -Path (Join-Path $rootPath '.local/ai-sessions/history')
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($file in @(Get-ChildItem -LiteralPath $rootPath -File -Recurse -Force -ErrorAction SilentlyContinue)) {
+        $fullPath = ConvertTo-Phase9ComparablePath -Path $file.FullName
+        if ($fullPath.StartsWith((Join-Path $rootPath '.git') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($fullPath, (Join-Path $rootPath '.git'), [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        if (Test-Phase9PathWithinRoot -Root $systemHistoryPath -Candidate $fullPath) {
+            continue
+        }
+        if ($null -ne $excludePath -and (Test-Phase9PathWithinRoot -Root $excludePath -Candidate $fullPath)) {
+            continue
+        }
+        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw ('Phase 9 inventory 不接受 reparse point：' + $fullPath)
+        }
+        $bytes = $null
+        try {
+            $bytes = [IO.File]::ReadAllBytes($fullPath)
+        }
+        catch {
+            $entries.Add([ordered]@{
+                    path = Get-Phase9RelativePath -Root $rootPath -Path $fullPath
+                    byte_length = -1
+                    sha256 = 'unreadable'
+                })
+            continue
+        }
+        $entries.Add([ordered]@{
+                path = Get-Phase9RelativePath -Root $rootPath -Path $fullPath
+                byte_length = $bytes.Length
+                sha256 = Get-Phase9ByteArraySha256 -Bytes $bytes
+            })
+    }
+    return @($entries.ToArray() | Sort-Object -Property path)
+}
+
+function Get-Phase9ScratchEntryInventory {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Root
+    )
+
+    $rootPath = ConvertTo-Phase9ComparablePath -Path $Root
+    if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) {
+        return @()
+    }
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($entry in @(Get-ChildItem -LiteralPath $rootPath -Force -ErrorAction Stop)) {
+        $kind = if (($entry.Attributes -band [IO.FileAttributes]::Directory) -ne 0) { 'directory' } else { 'file' }
+        $entries.Add([pscustomobject]@{
+                path = Get-Phase9RelativePath -Root $rootPath -Path $entry.FullName
+                kind = $kind
+            })
+    }
+    return @($entries.ToArray() | Sort-Object -Property path)
+}
+
+function ConvertTo-Phase9ExtendedPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+        return $Path
+    }
+    if ($Path.StartsWith('\\?\', [StringComparison]::Ordinal)) {
+        return $Path
+    }
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if ($fullPath.StartsWith('\\', [StringComparison]::Ordinal)) {
+        return '\\?\UNC\' + $fullPath.Substring(2)
+    }
+    return '\\?\' + $fullPath
+}
+
+function Test-Phase9PathRequiresExtendedDelete {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if ($Path.Length -ge 248) {
+        return $true
+    }
+    foreach ($nestedEntry in @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction SilentlyContinue)) {
+        if ($nestedEntry.FullName.Length -ge 260) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-Phase9ApiPathExists {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $apiPath = ConvertTo-Phase9ExtendedPath -Path $Path
+    return [IO.File]::Exists($apiPath) -or [IO.Directory]::Exists($apiPath)
+}
+
+function Clear-Phase9DeleteAttributes {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    foreach ($nestedEntry in @(Get-ChildItem -LiteralPath $Path -Force -Recurse -ErrorAction Stop | Sort-Object -Property @{ Expression = { $_.FullName.Length }; Descending = $true })) {
+        $apiPath = ConvertTo-Phase9ExtendedPath -Path $nestedEntry.FullName
+        if (($nestedEntry.Attributes -band [IO.FileAttributes]::Directory) -ne 0) {
+            $directoryInfo = New-Object IO.DirectoryInfo($apiPath)
+            $directoryInfo.Attributes = [IO.FileAttributes]::Normal
+        }
+        else {
+            [IO.File]::SetAttributes($apiPath, [IO.FileAttributes]::Normal)
+        }
+    }
+    $apiRootPath = ConvertTo-Phase9ExtendedPath -Path $Path
+    if ([IO.Directory]::Exists($apiRootPath)) {
+        $rootInfo = New-Object IO.DirectoryInfo($apiRootPath)
+        $rootInfo.Attributes = [IO.FileAttributes]::Normal
+    }
+}
+
+function Remove-Phase9Entry {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $requiresExtendedDelete = Test-Phase9PathRequiresExtendedDelete -Path $Path
+    $primaryError = $null
+    try {
+        Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction Stop
+    }
+    catch {
+        $primaryError = $_
+    }
+
+    if ($requiresExtendedDelete) {
+        $apiPath = ConvertTo-Phase9ExtendedPath -Path $Path
+        if ([IO.File]::Exists($apiPath)) {
+            [IO.File]::SetAttributes($apiPath, [IO.FileAttributes]::Normal)
+            [IO.File]::Delete($apiPath)
+        }
+        elseif ([IO.Directory]::Exists($apiPath)) {
+            Clear-Phase9DeleteAttributes -Path $Path
+            [IO.Directory]::Delete($apiPath, $true)
+        }
+    }
+
+    if (-not (Test-Phase9ApiPathExists -Path $Path)) {
+        return
+    }
+    if ($null -ne $primaryError) {
+        throw $primaryError
+    }
+}
+
+function Invoke-Phase9RawGitCommand {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepositoryRoot,
+
+        [Parameter(Mandatory)]
+        [string[]]$Arguments
+    )
+
+    $gitCommand = @(Get-Command -Name git -CommandType Application -ErrorAction Stop)[0]
+    $argumentList = @('-C', $RepositoryRoot) + @($Arguments)
+    $argumentText = ($argumentList | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = if (-not [string]::IsNullOrWhiteSpace($gitCommand.Path)) { $gitCommand.Path } else { $gitCommand.Source }
+    $startInfo.Arguments = $argumentText
+    $startInfo.WorkingDirectory = $RepositoryRoot
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $startInfo.StandardOutputEncoding = $utf8
+    $startInfo.StandardErrorEncoding = $utf8
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $start = [DateTimeOffset]::UtcNow
+    $stdoutBuffer = New-Object System.IO.MemoryStream
+    try {
+        if (-not $process.Start()) {
+            throw 'Phase 9 raw Git Process.Start() 回傳 false。'
+        }
+        $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($stdoutBuffer)
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $null = $stdoutTask.GetAwaiter().GetResult()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+        $stdoutBytes = $stdoutBuffer.ToArray()
+        return [pscustomobject]@{
+            command = 'git -C "' + $RepositoryRoot + '" ' + ($Arguments -join ' ')
+            arguments = @($Arguments)
+            start_utc = $start.ToString('o')
+            finish_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            exit_code = $process.ExitCode
+            stdout_bytes = $stdoutBytes
+            stdout_text = $utf8.GetString($stdoutBytes)
+            stderr = $stderr
+        }
+    }
+    finally {
+        $stdoutBuffer.Dispose()
+        $process.Dispose()
+    }
+}
+
+function Get-Phase9UntrackedManifest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$RepositoryRoot
+    )
+
+    $result = Invoke-Phase9RawGitCommand -RepositoryRoot $RepositoryRoot -Arguments @('ls-files', '--others', '--exclude-standard', '-z')
+    if ([int]$result.exit_code -ne 0) {
+        throw ('Phase 9 untracked inventory 失敗：' + [string]$result.stderr)
+    }
+    $rawText = [Text.Encoding]::UTF8.GetString([byte[]]$result.stdout_bytes)
+    $paths = @($rawText -split [char]0 | Where-Object { -not [string]::IsNullOrEmpty($_) })
+    $entries = New-Object System.Collections.Generic.List[object]
+    foreach ($rawPath in $paths) {
+        $relativePath = ([string]$rawPath).Replace('\', '/')
+        if ([IO.Path]::IsPathRooted($relativePath) -or $relativePath -match '(^|/)\.\.(/|$)') {
+            throw ('Phase 9 untracked path 不合法：' + $relativePath)
+        }
+        $fullPath = Join-Path $RepositoryRoot ($relativePath.Replace('/', '\'))
+        if (-not (Test-Phase9PathWithinRoot -Root $RepositoryRoot -Candidate $fullPath)) {
+            throw ('Phase 9 untracked path 超出 execution root：' + $relativePath)
+        }
+        if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+            throw ('Phase 9 untracked path 不存在：' + $relativePath)
+        }
+        $bytes = [IO.File]::ReadAllBytes($fullPath)
+        $entries.Add([ordered]@{
+                path = $relativePath
+                byte_length = $bytes.Length
+                sha256 = Get-Phase9ByteArraySha256 -Bytes $bytes
+            })
+    }
+    return [ordered]@{
+        command = $result.command
+        entries = @($entries.ToArray() | Sort-Object -Property path)
+        stdout_sha256 = Get-Phase9ByteArraySha256 -Bytes ([byte[]]$result.stdout_bytes)
+    }
+}
+
+function Get-Phase9EvidenceSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$DeclaredScratchRoot,
+
+        [ValidateSet('fixture', 'real-dispatch')]
+        [string]$EvidenceKind = 'fixture'
+    )
+
+    $headResult = Invoke-Phase9RawGitCommand -RepositoryRoot $ExecutionRoot -Arguments @('rev-parse', '--verify', 'HEAD')
+    $diffResult = Invoke-Phase9RawGitCommand -RepositoryRoot $ExecutionRoot -Arguments @('diff', '--binary', '--no-ext-diff', 'HEAD', '--')
+    $untracked = Get-Phase9UntrackedManifest -RepositoryRoot $ExecutionRoot
+    if ([int]$headResult.exit_code -ne 0 -or [int]$diffResult.exit_code -ne 0) {
+        throw ('Phase 9 content evidence Git 命令失敗。HEAD=' + [string]$headResult.stderr + '; DIFF=' + [string]$diffResult.stderr)
+    }
+    $head = ([string]$headResult.stdout_text).Trim()
+    if ($head -notmatch '^[0-9a-fA-F]{40}$') {
+        throw ('Phase 9 HEAD 不是完整 SHA-1：' + $head)
+    }
+    $canonical = [ordered]@{
+        serialization_version = 'phase9-content-fingerprint-v1'
+        head = $head.ToLowerInvariant()
+        tracked_diff_sha256 = Get-Phase9ByteArraySha256 -Bytes ([byte[]]$diffResult.stdout_bytes)
+        untracked_files = @($untracked.entries)
+    }
+    $canonicalJson = ConvertTo-Json -InputObject $canonical -Depth 50 -Compress
+    return [ordered]@{
+        evidence_kind = $EvidenceKind
+        execution_root = (ConvertTo-Phase9ComparablePath -Path $ExecutionRoot)
+        head = $head.ToLowerInvariant()
+        tracked_diff_sha256 = $canonical.tracked_diff_sha256
+        untracked_files = @($untracked.entries)
+        uncommitted_content_fingerprint = Get-Phase9ByteArraySha256 -Bytes ([Text.Encoding]::UTF8.GetBytes($canonicalJson))
+        commands = [ordered]@{
+            head = $headResult.command
+            tracked_diff = $diffResult.command
+            untracked = $untracked.command
+        }
+        captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        inventory_outside_declared_scratch = @(Get-Phase9FileInventory -Root $ExecutionRoot -ExcludeRoot $DeclaredScratchRoot)
+        inventory_declared_scratch = @(Get-Phase9FileInventory -Root $DeclaredScratchRoot)
+    }
+}
+
+function Remove-Phase9NewScratchEntries {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$DeclaredScratchRoot,
+
+        [AllowNull()]
+        [object[]]$BeforeInventory
+    )
+
+    $rootPath = ConvertTo-Phase9ComparablePath -Path $DeclaredScratchRoot
+    if (-not (Test-Path -LiteralPath $rootPath -PathType Container)) {
+        return [ordered]@{ removed = @(); remaining = @(); status = 'PASS' }
+    }
+    $beforePaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($BeforeInventory)) {
+        if ($null -ne $entry -and $entry.PSObject.Properties.Name -contains 'path') {
+            $beforePaths.Add([string]$entry.path) | Out-Null
+        }
+    }
+    $removed = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @(Get-ChildItem -LiteralPath $rootPath -Force -ErrorAction Stop)) {
+        $entryPath = ConvertTo-Phase9ComparablePath -Path $entry.FullName
+        $relativePath = Get-Phase9RelativePath -Root $rootPath -Path $entryPath
+        if ($beforePaths.Contains($relativePath)) {
+            continue
+        }
+        if (-not (Test-Phase9PathWithinRoot -Root $rootPath -Candidate $entryPath)) {
+            throw ('Phase 9 declared scratch cleanup 超出 root：' + $entryPath)
+        }
+        $removedEntry = $false
+        for ($attempt = 1; $attempt -le 3; $attempt++) {
+            if (-not (Test-Phase9ApiPathExists -Path $entryPath)) {
+                $removedEntry = $true
+                break
+            }
+            try {
+                Remove-Phase9Entry -Path $entryPath
+            }
+            catch {
+                $missingDescendant = $_.Exception -is [IO.DirectoryNotFoundException] -or $_.FullyQualifiedErrorId -match 'DirectoryNotFoundException'
+                if (-not $missingDescendant) {
+                    throw
+                }
+                if (-not (Test-Phase9ApiPathExists -Path $entryPath)) {
+                    $removedEntry = $true
+                    break
+                }
+                if ($attempt -eq 3) {
+                    break
+                }
+                Start-Sleep -Milliseconds 25
+                continue
+            }
+            if (-not (Test-Phase9ApiPathExists -Path $entryPath)) {
+                $removedEntry = $true
+                break
+            }
+        }
+        if ($removedEntry) {
+            $removed.Add($relativePath)
+        }
+    }
+    $remaining = New-Object System.Collections.Generic.List[string]
+    foreach ($entry in @(Get-ChildItem -LiteralPath $rootPath -Force -ErrorAction Stop)) {
+        $remainingPath = Get-Phase9RelativePath -Root $rootPath -Path $entry.FullName
+        if (-not $beforePaths.Contains($remainingPath)) {
+            $remaining.Add($remainingPath)
+        }
+    }
+    $remaining = @($remaining.ToArray())
+    return [ordered]@{
+        removed = @($removed.ToArray())
+        remaining = $remaining
+        status = if ($remaining.Count -eq 0) { 'PASS' } else { 'FAIL' }
+    }
+}
+
+function Test-Phase9EvidenceBoundary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Before,
+
+        [Parameter(Mandatory)]
+        [psobject]$After,
+
+        [Parameter(Mandatory)]
+        [psobject]$ScratchCleanup
+    )
+
+    $reasons = New-Object System.Collections.Generic.List[string]
+    if ($Before.head -cne $After.head) { $reasons.Add('HEAD changed') }
+    if ($Before.uncommitted_content_fingerprint -cne $After.uncommitted_content_fingerprint) { $reasons.Add('uncommitted content fingerprint changed') }
+    $beforeOutside = ConvertTo-Json -InputObject @($Before.inventory_outside_declared_scratch) -Depth 50 -Compress
+    $afterOutside = ConvertTo-Json -InputObject @($After.inventory_outside_declared_scratch) -Depth 50 -Compress
+    if ($beforeOutside -cne $afterOutside) { $reasons.Add('undeclared artifact inventory changed') }
+    $beforeScratch = ConvertTo-Json -InputObject @($Before.inventory_declared_scratch) -Depth 50 -Compress
+    $afterScratch = ConvertTo-Json -InputObject @($After.inventory_declared_scratch) -Depth 50 -Compress
+    if ($beforeScratch -cne $afterScratch) { $reasons.Add('declared scratch inventory was not restored') }
+    if ([string]$ScratchCleanup.status -ne 'PASS' -or @($ScratchCleanup.remaining).Count -gt 0) { $reasons.Add('declared scratch cleanup failed') }
+    return [ordered]@{
+        status = if ($reasons.Count -eq 0) { 'PASS' } else { 'FAIL' }
+        reasons = @($reasons.ToArray())
+        before = [ordered]@{ head = $Before.head; uncommitted_content_fingerprint = $Before.uncommitted_content_fingerprint }
+        after = [ordered]@{ head = $After.head; uncommitted_content_fingerprint = $After.uncommitted_content_fingerprint }
+        scratch_cleanup = $ScratchCleanup
+    }
+}
+
+function New-Phase9FirstFailureSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$FirstRun
+    )
+
+    $snapshot = [ordered]@{}
+    foreach ($property in $FirstRun.PSObject.Properties) {
+        if ($property.Name -in @('phase9_first_failure_gate', 'phase9_diagnostic_run')) {
+            continue
+        }
+        $snapshot[$property.Name] = $property.Value
+    }
+    return [pscustomobject]$snapshot
+}
+
+function Test-Phase9FirstFailureGate {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [psobject]$FirstRun,
+
+        [AllowNull()]
+        [psobject]$DiagnosticRun
+    )
+
+    if ($null -eq $FirstRun) {
+        return [ordered]@{
+            status = 'PASS'
+            first_failure = $null
+            diagnostic_rerun = $null
+            diagnostic_attempts = 0
+            max_diagnostic_reruns = 1
+            quarantine_status = 'not-applicable'
+        }
+    }
+    $firstFailed = ([int]$FirstRun.exit_code -ne 0)
+    if ($FirstRun.PSObject.Properties.Name -contains 'failed' -and [int]$FirstRun.failed -ne 0) {
+        $firstFailed = $true
+    }
+    if (-not $firstFailed) {
+        return [ordered]@{
+            status = 'PASS'
+            first_failure = $null
+            diagnostic_rerun = $DiagnosticRun
+            diagnostic_attempts = if ($null -eq $DiagnosticRun) { 0 } else { 1 }
+            max_diagnostic_reruns = 1
+            quarantine_status = 'not-applicable'
+        }
+    }
+    return [ordered]@{
+        status = 'FAIL'
+        first_failure = (New-Phase9FirstFailureSnapshot -FirstRun $FirstRun)
+        diagnostic_rerun = $DiagnosticRun
+        diagnostic_attempts = if ($null -eq $DiagnosticRun) { 0 } else { 1 }
+        max_diagnostic_reruns = 1
+        first_failure_preserved = $true
+        quarantine_status = 'never-pass'
+    }
+}
+
+function Invoke-Phase9HostRun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$HostDefinition,
+
+        [Parameter(Mandatory)]
+        [int]$PhaseNumber,
+
+        [Parameter(Mandatory)]
+        [string]$ScriptPath,
+
+        [Parameter(Mandatory)]
+        [string]$RepositoryRoot,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$DateValue,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$EmptyValue,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$WhitespaceValue,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$TextValue,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$FixtureBaseRootPath,
+
+        [AllowEmptyString()]
+        [string]$FocusedCase
+    )
+
+    $repositoryBoundaryBefore = $null
+    $phase9DeclaredScratchRoot = $null
+    $phase9ScratchBefore = @()
+    $phase9EvidenceBefore = $null
+    if ($PhaseNumber -eq 9) {
+        $phase9DeclaredScratchRoot = Join-Path $RepositoryRoot '.local/ai-sessions/scratch/phase9'
+        $repositoryBoundaryBefore = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $RepositoryRoot
+        $phase9ScratchBefore = @(Get-Phase9ScratchEntryInventory -Root $phase9DeclaredScratchRoot)
+        $phase9EvidenceBefore = Get-Phase9EvidenceSnapshot -ExecutionRoot $RepositoryRoot -DeclaredScratchRoot $phase9DeclaredScratchRoot -EvidenceKind 'fixture'
+    }
+
+    $command = Get-Command -Name $HostDefinition.Name -ErrorAction SilentlyContinue
+    if ($null -eq $command) {
+        $finish = [DateTimeOffset]::UtcNow
+        $childResult = [pscustomobject]@{
+            label = $HostDefinition.Label
+            host_path = $HostDefinition.Name
+            command = '<missing host>'
+            start_utc = $finish.ToString('o')
+            finish_utc = $finish.ToString('o')
+            duration_ms = 0
+            exit_code = 1
+            stdout = ''
+            stderr = ''
+            launch_error = '找不到執行環境。'
+        }
+    }
+    else {
+        $hostPath = if (-not [string]::IsNullOrWhiteSpace($command.Source)) { $command.Source } else { $command.Path }
+        $childResult = Invoke-TestChildProcess -HostPath $hostPath -HostLabel $HostDefinition.Label -PhaseNumber $PhaseNumber -ScriptPath $ScriptPath -DateValue $DateValue -EmptyValue $EmptyValue -WhitespaceValue $WhitespaceValue -TextValue $TextValue -FixtureBaseRootPath $FixtureBaseRootPath -FocusedCase $FocusedCase
+    }
+
+    if ($PhaseNumber -eq 9) {
+        $phase9Cleanup = Remove-Phase9NewScratchEntries -DeclaredScratchRoot $phase9DeclaredScratchRoot -BeforeInventory $phase9ScratchBefore
+        $phase9EvidenceAfter = Get-Phase9EvidenceSnapshot -ExecutionRoot $RepositoryRoot -DeclaredScratchRoot $phase9DeclaredScratchRoot -EvidenceKind 'fixture'
+        $repositoryBoundaryAfter = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $RepositoryRoot
+        $phase9Gate = Test-Phase9EvidenceBoundary -Before $phase9EvidenceBefore -After $phase9EvidenceAfter -ScratchCleanup $phase9Cleanup
+        $childResult | Add-Member -MemberType NoteProperty -Name repository_status_before -Value ([string]$repositoryBoundaryBefore.git_status_short)
+        $childResult | Add-Member -MemberType NoteProperty -Name repository_status_after -Value ([string]$repositoryBoundaryAfter.git_status_short)
+        $childResult | Add-Member -MemberType NoteProperty -Name repository_worktree_before -Value ([string]$repositoryBoundaryBefore.git_worktree_list)
+        $childResult | Add-Member -MemberType NoteProperty -Name repository_worktree_after -Value ([string]$repositoryBoundaryAfter.git_worktree_list)
+        $childResult | Add-Member -MemberType NoteProperty -Name phase9_evidence_before -Value $phase9EvidenceBefore
+        $childResult | Add-Member -MemberType NoteProperty -Name phase9_evidence_after -Value $phase9EvidenceAfter
+        $childResult | Add-Member -MemberType NoteProperty -Name phase9_evidence_gate -Value $phase9Gate
+    }
+    return $childResult
+}
+
 if (-not $Child) {
     $probeDateValue = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture)
     $probeEmptyValue = ''
@@ -453,53 +1153,35 @@ if (-not $Child) {
     $aggregateFailed = $false
     Write-Output ('AGGREGATE: Phase ' + $Phase)
     foreach ($hostDefinition in $hostDefinitions) {
-        $repositoryBoundaryBefore = $null
-        if ($Phase -eq 9) {
-            $repositoryBoundaryBefore = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $root
-        }
-        $command = Get-Command -Name $hostDefinition.Name -ErrorAction SilentlyContinue
-        if ($null -eq $command) {
-            $missing = [pscustomobject]@{
-                label = $hostDefinition.Label
-                host_path = $hostDefinition.Name
-                command = '<missing host>'
-                start_utc = [DateTimeOffset]::UtcNow.ToString('o')
-                finish_utc = [DateTimeOffset]::UtcNow.ToString('o')
-                duration_ms = 0
-                exit_code = 1
-                stdout = ''
-                stderr = ''
-                launch_error = '找不到執行環境。'
-            }
-            if ($Phase -eq 9) {
-                $repositoryBoundaryAfter = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $root
-                $missing | Add-Member -MemberType NoteProperty -Name repository_status_before -Value ([string]$repositoryBoundaryBefore.git_status_short)
-                $missing | Add-Member -MemberType NoteProperty -Name repository_status_after -Value ([string]$repositoryBoundaryAfter.git_status_short)
-                $missing | Add-Member -MemberType NoteProperty -Name repository_worktree_before -Value ([string]$repositoryBoundaryBefore.git_worktree_list)
-                $missing | Add-Member -MemberType NoteProperty -Name repository_worktree_after -Value ([string]$repositoryBoundaryAfter.git_worktree_list)
-            }
-            $aggregateResults.Add($missing)
-            $aggregateFailed = $true
-            continue
-        }
-        $hostPath = if (-not [string]::IsNullOrWhiteSpace($command.Source)) { $command.Source } else { $command.Path }
-        $childResult = Invoke-TestChildProcess -HostPath $hostPath -HostLabel $hostDefinition.Label -PhaseNumber $Phase -ScriptPath $scriptPathValue -DateValue $probeDateValue -EmptyValue $probeEmptyValue -WhitespaceValue $probeWhitespaceValue -TextValue $probeTextValue -FixtureBaseRootPath $FixtureBaseRootPath
-        if ($Phase -eq 9) {
-            $repositoryBoundaryAfter = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $root
-            $childResult | Add-Member -MemberType NoteProperty -Name repository_status_before -Value ([string]$repositoryBoundaryBefore.git_status_short)
-            $childResult | Add-Member -MemberType NoteProperty -Name repository_status_after -Value ([string]$repositoryBoundaryAfter.git_status_short)
-            $childResult | Add-Member -MemberType NoteProperty -Name repository_worktree_before -Value ([string]$repositoryBoundaryBefore.git_worktree_list)
-            $childResult | Add-Member -MemberType NoteProperty -Name repository_worktree_after -Value ([string]$repositoryBoundaryAfter.git_worktree_list)
-        }
-        $aggregateResults.Add($childResult)
+        $childResult = Invoke-Phase9HostRun -HostDefinition $hostDefinition -PhaseNumber $Phase -ScriptPath $scriptPathValue -RepositoryRoot $root -DateValue $probeDateValue -EmptyValue $probeEmptyValue -WhitespaceValue $probeWhitespaceValue -TextValue $probeTextValue -FixtureBaseRootPath $FixtureBaseRootPath -FocusedCase $FocusedCase
         $summary = Test-ChildSummary -ChildResult $childResult -ExpectedDate $probeDateValue -ExpectedEmpty $probeEmptyValue -ExpectedWhitespace $probeWhitespaceValue -ExpectedText $probeTextValue
         $childResult | Add-Member NoteProperty summary_valid $summary.valid
         $childResult | Add-Member NoteProperty summary_reason $summary.reason
-        if (-not $summary.valid) { $aggregateFailed = $true }
+        $firstFailure = -not $summary.valid
+        if ($Phase -eq 9 -and [string]$childResult.phase9_evidence_gate.status -ne 'PASS') { $firstFailure = $true }
+        $diagnosticRun = $null
+        if ($Phase -eq 9 -and $firstFailure) {
+            $diagnosticRun = Invoke-Phase9HostRun -HostDefinition $hostDefinition -PhaseNumber $Phase -ScriptPath $scriptPathValue -RepositoryRoot $root -DateValue $probeDateValue -EmptyValue $probeEmptyValue -WhitespaceValue $probeWhitespaceValue -TextValue $probeTextValue -FixtureBaseRootPath $FixtureBaseRootPath -FocusedCase $FocusedCase
+            $diagnosticSummary = Test-ChildSummary -ChildResult $diagnosticRun -ExpectedDate $probeDateValue -ExpectedEmpty $probeEmptyValue -ExpectedWhitespace $probeWhitespaceValue -ExpectedText $probeTextValue
+            $diagnosticRun | Add-Member NoteProperty summary_valid $diagnosticSummary.valid
+            $diagnosticRun | Add-Member NoteProperty summary_reason $diagnosticSummary.reason
+        }
+        if ($Phase -eq 9) {
+            $childResult | Add-Member NoteProperty failed ([int]$(if ($firstFailure) { 1 } else { 0 }))
+            $phase9FirstFailureGate = Test-Phase9FirstFailureGate -FirstRun $childResult -DiagnosticRun $diagnosticRun
+            $childResult | Add-Member NoteProperty phase9_first_failure_gate $phase9FirstFailureGate
+            $childResult | Add-Member NoteProperty phase9_diagnostic_run $diagnosticRun
+            if ([string]$phase9FirstFailureGate.status -ne 'PASS') { $aggregateFailed = $true }
+        }
+        elseif (-not $summary.valid) {
+            $aggregateFailed = $true
+        }
+        if ($Phase -eq 9 -and [string]$childResult.phase9_evidence_gate.status -ne 'PASS') { $aggregateFailed = $true }
+        $aggregateResults.Add($childResult)
     }
     $crossHostAclFingerprintStatus = 'not-applicable'
     $crossHostAclFingerprintDetail = ''
-    if ($Phase -ge 4) {
+    if ($Phase -ge 4 -and [string]::IsNullOrWhiteSpace($FocusedCase)) {
         $fingerprints = New-Object System.Collections.Generic.List[string]
         foreach ($childResult in $aggregateResults) {
             $match = [regex]::Match([string]$childResult.stdout, '(?m)^REAL_ACL_EMPTY_FINGERPRINT:\s+(?<fingerprint>[a-f0-9]{64})\s*$')
@@ -520,6 +1202,10 @@ if (-not $Child) {
             $crossHostAclFingerprintDetail = 'powershell.exe 與 pwsh 的 fingerprint 不一致。'
             $aggregateFailed = $true
         }
+    }
+    elseif ($Phase -ge 4) {
+        $crossHostAclFingerprintStatus = 'not-applicable'
+        $crossHostAclFingerprintDetail = 'focused case 已限制為指定 Phase 9 案例。'
     }
     foreach ($childResult in $aggregateResults) {
         Write-Output ('ENVIRONMENT: ' + $childResult.label)
@@ -542,6 +1228,35 @@ if (-not $Child) {
             Write-Output 'REPOSITORY_GIT_WORKTREE_AFTER_BEGIN'
             Write-Output ([string]$childResult.repository_worktree_after)
             Write-Output 'REPOSITORY_GIT_WORKTREE_AFTER_END'
+            Write-Output 'PHASE9_EVIDENCE_GATE_BEGIN'
+            Write-Output ((ConvertTo-Json -InputObject $childResult.phase9_evidence_gate -Depth 80))
+            Write-Output 'PHASE9_EVIDENCE_GATE_END'
+            Write-Output 'PHASE9_EVIDENCE_BEFORE_BEGIN'
+            Write-Output ((ConvertTo-Json -InputObject $childResult.phase9_evidence_before -Depth 80))
+            Write-Output 'PHASE9_EVIDENCE_BEFORE_END'
+            Write-Output 'PHASE9_EVIDENCE_AFTER_BEGIN'
+            Write-Output ((ConvertTo-Json -InputObject $childResult.phase9_evidence_after -Depth 80))
+            Write-Output 'PHASE9_EVIDENCE_AFTER_END'
+            Write-Output 'PHASE9_FIRST_FAILURE_GATE_BEGIN'
+            Write-Output ((ConvertTo-Json -InputObject $childResult.phase9_first_failure_gate -Depth 80))
+            Write-Output 'PHASE9_FIRST_FAILURE_GATE_END'
+            if ($null -ne $childResult.phase9_diagnostic_run) {
+                $diagnosticRun = $childResult.phase9_diagnostic_run
+                Write-Output 'PHASE9_DIAGNOSTIC_RUN_BEGIN'
+                Write-Output ('COMMAND: ' + $diagnosticRun.command)
+                Write-Output ('START_UTC: ' + $diagnosticRun.start_utc)
+                Write-Output ('FINISH_UTC: ' + $diagnosticRun.finish_utc)
+                Write-Output ('EXIT_CODE: ' + $diagnosticRun.exit_code)
+                Write-Output ('SUMMARY: ' + $(if ($diagnosticRun.summary_valid) { 'PASS' } else { 'FAIL' }) + ' ' + $diagnosticRun.summary_reason)
+                Write-Output 'STDOUT_BEGIN'
+                Write-Output ([string]$diagnosticRun.stdout)
+                Write-Output 'STDOUT_END'
+                Write-Output 'STDERR_BEGIN'
+                Write-Output ([string]$diagnosticRun.stderr)
+                if (-not [string]::IsNullOrWhiteSpace($diagnosticRun.launch_error)) { Write-Output ('LAUNCH_ERROR: ' + $diagnosticRun.launch_error) }
+                Write-Output 'STDERR_END'
+                Write-Output 'PHASE9_DIAGNOSTIC_RUN_END'
+            }
         }
         Write-Output 'STDOUT_BEGIN'
         Write-Output ([string]$childResult.stdout)
@@ -563,32 +1278,112 @@ if (-not [string]::IsNullOrWhiteSpace($FixtureBaseRootPath)) {
     }
     $fixtureBaseRoot = [IO.Path]::GetFullPath($FixtureBaseRootPath)
 }
-$fixtureRoot = Join-Path $fixtureBaseRoot ('.local/ai-sessions/scratch/r-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+if ($Phase -eq 9) {
+    $phase9ScratchRoot = Join-Path $fixtureBaseRoot '.local/ai-sessions/scratch/phase9'
+    $fixtureRoot = Join-Path $phase9ScratchRoot ('r-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+}
+else {
+    $fixtureRoot = Join-Path $fixtureBaseRoot ('.local/ai-sessions/scratch/r-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+}
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 $script:caseCount = 0
+$script:passedCount = 0
+$script:isolatedCount = 0
 $script:failures = 0
+$script:focusedCase = $FocusedCase
 
 function Invoke-Case {
     [CmdletBinding()]
-    param([string]$Name, [scriptblock]$Action, [switch]$Reject, [string]$ErrorPattern)
+    param(
+        [string]$Name,
+
+        [scriptblock]$Action,
+
+        [switch]$Reject,
+
+        [string]$ErrorPattern,
+
+        [switch]$Isolated,
+
+        [string]$IsolationId,
+
+        [string]$IsolationEvidence,
+
+        [string]$IsolationReleaseCondition,
+
+        [string]$IsolationDeadline,
+
+        [string]$IsolationReplacementVerification
+    )
+    if (-not [string]::IsNullOrWhiteSpace($script:focusedCase)) {
+        $cleanupMatch = $Name -ceq 'Phase 9 final git status guard detects repo-root fixture residue and restored pass'
+        $focusedMatch = if ($script:focusedCase -ceq 'F-003') {
+            $Name -match '^Phase 9 F-003' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'F-006') {
+            $Name -match '^Phase 9 F-006' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH3G') {
+            $Name -match '^Phase 9 batch3g' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH3H') {
+            $Name -match '^Phase 9 batch3h' -or $cleanupMatch
+        }
+        else {
+            $Name -match '^Phase 9 S-3' -or $cleanupMatch
+        }
+        if (-not $focusedMatch) {
+            return
+        }
+    }
     $script:caseCount++
-    $expected = if ($Reject) { 'reject' } else { 'pass' }
+    if ($Isolated) {
+        Assert-True (-not [string]::IsNullOrWhiteSpace($IsolationId) -and -not [string]::IsNullOrWhiteSpace($IsolationEvidence) -and -not [string]::IsNullOrWhiteSpace($IsolationReleaseCondition) -and -not [string]::IsNullOrWhiteSpace($IsolationDeadline) -and -not [string]::IsNullOrWhiteSpace($IsolationReplacementVerification)) 'Phase 9 隔離案例缺少固定問題 ID、失敗證據、解除條件、期限或替代阻擋性驗證。'
+    }
+    $expected = if ($Isolated) { 'isolation-evidence' } elseif ($Reject) { 'reject' } else { 'pass' }
     $actual = 'pass'
     $detail = ''
-    try { & $Action | Out-Null } catch { $actual = 'reject'; $detail = $_.Exception.Message }
-    $result = if ($actual -eq $expected) { 'PASS' } else { 'FAIL' }
+    $stack = ''
+    try { & $Action | Out-Null } catch { $actual = 'reject'; $detail = $_.Exception.Message; $stack = $_.ScriptStackTrace }
+    $result = if ($Isolated -and $actual -eq 'pass') { 'ISOLATED' } elseif ($actual -eq $expected) { 'PASS' } else { 'FAIL' }
     if ($Reject -and -not [string]::IsNullOrWhiteSpace($ErrorPattern) -and $detail -notmatch $ErrorPattern) { $result = 'FAIL' }
-    if ($result -eq 'FAIL') { $script:failures++ }
+    if ($result -eq 'ISOLATED') {
+        $script:isolatedCount++
+    }
+    elseif ($result -eq 'PASS') {
+        $script:passedCount++
+    }
+    else {
+        $script:failures++
+    }
     Write-Output "CASE: $Name
 EXPECTED: $expected
 ACTUAL: $actual $detail
-RESULT: $result"
+STACK: $stack
+RESULT: $result$(if ($Isolated) {
+    "`nISOLATION_ID: $IsolationId`nISOLATION_EVIDENCE: $IsolationEvidence`nISOLATION_RELEASE_CONDITION: $IsolationReleaseCondition`nISOLATION_DEADLINE: $IsolationDeadline`nISOLATION_REPLACEMENT_VERIFICATION: $IsolationReplacementVerification"
+})"
 }
 
 function Assert-True {
     [CmdletBinding()]
     param([bool]$Value, [string]$Message)
     if (-not $Value) { throw $Message }
+}
+
+function Get-OptionalPropertyValue {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$InputObject,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+    if ($null -eq $InputObject) { return $null }
+    $property = $InputObject.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
 }
 
 function Test-ByteArrayEqual {
@@ -615,6 +1410,51 @@ function Test-ByteArrayEqual {
     return $true
 }
 
+function ConvertTo-Phase9RedactedValue {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Value,
+
+        [AllowEmptyString()]
+        [string]$PropertyName = ''
+    )
+
+    if ($PropertyName -match '(?i)model') {
+        return '[redacted]'
+    }
+    if ($null -eq $Value) {
+        return $null
+    }
+    if ($Value -is [string]) {
+        return [regex]::Replace([string]$Value, '(?i)\b(?:gpt|o\d|claude|gemini)[a-z0-9._-]*\b', '[redacted]')
+    }
+    if ($Value -is [System.Collections.IDictionary]) {
+        $result = [ordered]@{}
+        foreach ($key in $Value.Keys) {
+            $name = [string]$key
+            $result[$name] = ConvertTo-Phase9RedactedValue -Value $Value[$key] -PropertyName $name
+        }
+        return $result
+    }
+    if ($Value -is [System.Collections.IEnumerable]) {
+        $items = New-Object System.Collections.Generic.List[object]
+        foreach ($item in $Value) {
+            $items.Add((ConvertTo-Phase9RedactedValue -Value $item))
+        }
+        return @($items.ToArray())
+    }
+    if ($Value -is [System.Management.Automation.PSObject] -and @($Value.PSObject.Properties).Count -gt 0) {
+        $result = [ordered]@{}
+        foreach ($property in $Value.PSObject.Properties) {
+            $name = [string]$property.Name
+            $result[$name] = ConvertTo-Phase9RedactedValue -Value $property.Value -PropertyName $name
+        }
+        return $result
+    }
+    return $Value
+}
+
 function Write-Phase9Evidence {
     [CmdletBinding()]
     param(
@@ -626,7 +1466,8 @@ function Write-Phase9Evidence {
     )
 
     [Console]::WriteLine('EVIDENCE_BEGIN: ' + $Label)
-    [Console]::WriteLine((ConvertTo-Json -InputObject $Value -Depth 80))
+    $redactedValue = ConvertTo-Phase9RedactedValue -Value $Value
+    [Console]::WriteLine((ConvertTo-Json -InputObject $redactedValue -Depth 80))
     [Console]::WriteLine('EVIDENCE_END: ' + $Label)
 }
 
@@ -662,7 +1503,14 @@ function Invoke-Phase9GitCommand {
         [string[]]$Arguments
     )
 
-    $gitOutput = & git -C $RepositoryRoot @Arguments 2>&1
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $gitOutput = & git -C $RepositoryRoot @Arguments 2>&1
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
     $exitCode = $LASTEXITCODE
     $outputLines = @($gitOutput | ForEach-Object { [string]$_ })
     return [pscustomobject]@{
@@ -682,20 +1530,6 @@ function Assert-Phase9GitCommandSucceeded {
     if ([int]$Result.exit_code -ne 0) {
         throw ('Git 命令失敗：' + [string]$Result.command + [Environment]::NewLine + [string]$Result.output)
     }
-}
-
-function ConvertTo-Phase9ComparablePath {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path
-    )
-
-    $fullPath = [IO.Path]::GetFullPath($Path)
-    while ($fullPath.Length -gt 3 -and ($fullPath.EndsWith('\') -or $fullPath.EndsWith('/'))) {
-        $fullPath = $fullPath.Substring(0, $fullPath.Length - 1)
-    }
-    return $fullPath
 }
 
 function Test-Phase9GitWorktreeListed {
@@ -887,6 +1721,9 @@ $script:ProfileExplicit = $false
 $script:phase9RealDispatchGitSourceRoot = $null
 $script:phase9RealDispatchGitRoot = $null
 $script:phase9RealDispatchGitInitialized = $false
+$script:cleanupUseRealGit = $false
+$script:cleanupRemoveFailure = $false
+$script:cleanupDriveLetter = $null
 function Get-PidCheckResult { param($SourceRoot, $LineSlug, $WriteMode) return $script:pidResult }
 function Get-WorktreeAclGate {
     param($SourceRoot, $ExecutionRoot, $WriteMode, $ContinuationRecord)
@@ -1035,6 +1872,20 @@ function New-TestProcess {
 }
 function Invoke-GitCommand {
     param($WorkingDirectory, $Arguments, $StandardInput, [switch]$AllowFailure)
+    if ($script:cleanupUseRealGit) {
+        if ($script:cleanupRemoveFailure -and @($Arguments | ForEach-Object { [string]$_ }) -contains 'remove') {
+            return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fixture removal failure' }
+        }
+        $gitOutput = & git -C $WorkingDirectory @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        $outputLines = @($gitOutput | ForEach-Object { [string]$_ })
+        $outputText = $outputLines -join [Environment]::NewLine
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            StdOut = if ($exitCode -eq 0) { $outputText } else { '' }
+            StdErr = if ($exitCode -eq 0) { '' } else { $outputText }
+        }
+    }
     return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fatal: not a git repository' }
 }
 function Get-StartedProcessSnapshot {
@@ -1296,6 +2147,20 @@ Invoke-Case 'Inspect 顯式其他紀錄拒絕' -Reject { Resolve-InspectDispatch
 Invoke-Case 'Inspect 錯 roots 拒絕' -Reject { $bad = $binding.Clone(); $bad.ExecutionRoot = $root; Resolve-InspectDispatchRun @bad -EventStreamPath $a.event_stream_path -ScopePlanPath $a.scope_plan_path }
 Invoke-Case 'Inspect 錯 ScopePlan 拒絕' -Reject { Resolve-InspectDispatchRun @binding -EventStreamPath $a.event_stream_path -ScopePlanPath $c.scope_plan_path }
 
+function New-TestUnicodeString {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [int[]]$CodePoint
+    )
+
+    $builder = New-Object System.Text.StringBuilder
+    foreach ($value in $CodePoint) {
+        $null = $builder.Append([char]$value)
+    }
+    return $builder.ToString()
+}
+
 function Write-ReviewerFixture {
     [CmdletBinding()]
     param(
@@ -1304,16 +2169,32 @@ function Write-ReviewerFixture {
         [string[]]$CurrentIds,
         [ValidateSet('Standards', 'Standards 缺陷審查', '需求對照核對', 'Spec')]
         [string]$CurrentHeading = 'Spec',
-        [string[]]$PreviousProse = @()
+        [string[]]$PreviousProse = @(),
+        [object[]]$CurrentJudgment = @()
     )
 
     $lines = New-Object System.Collections.Generic.List[string]
+    $overviewHeading = New-TestUnicodeString -CodePoint @(0x7E3D, 0x89BD)
+    $previousHeading = (New-TestUnicodeString -CodePoint @(0x524D, 0x8F2A)) + ' finding ' + (New-TestUnicodeString -CodePoint @(0x72C0, 0x614B))
+    $judgmentHeading = (New-TestUnicodeString -CodePoint @(0x672C, 0x8F2A)) + ' finding ' + (New-TestUnicodeString -CodePoint @(0x5224, 0x5B9A))
+    $evidenceLabel = New-TestUnicodeString -CodePoint @(0x8B49, 0x64DA)
+    $closedStatus = New-TestUnicodeString -CodePoint @(0x5DF2, 0x9589, 0x5408)
+    $openStatus = New-TestUnicodeString -CodePoint @(0x672A, 0x9589, 0x5408)
+    $withdrawnStatus = New-TestUnicodeString -CodePoint @(0x64A4, 0x56DE)
+    $standardsDefectHeading = 'Standards ' + (New-TestUnicodeString -CodePoint @(0x7F3A, 0x9677, 0x5BE9, 0x67E5))
+    $requirementsHeading = New-TestUnicodeString -CodePoint @(0x9700, 0x6C42, 0x5C0D, 0x7167, 0x6838, 0x5C0D)
+    $currentHeadings = @(
+        'Standards',
+        $standardsDefectHeading,
+        $requirementsHeading,
+        'Spec'
+    )
     foreach ($line in @(
             '# Reviewer fixture',
             '',
-            '## 總覽',
+            ('## ' + $overviewHeading),
             '',
-            '本報告供 finding manifest validator fixture 使用。',
+            'This report is a finding manifest validator fixture.',
             '',
             '## Finding manifest',
             '',
@@ -1325,14 +2206,29 @@ function Write-ReviewerFixture {
         $lines.Add($line)
     }
     if ($PreviousProse.Count -gt 0) {
-        $lines.Add('## 前輪 finding 狀態')
+        $lines.Add('## ' + $previousHeading)
         $lines.Add('')
         foreach ($line in @($PreviousProse)) {
             $lines.Add($line)
         }
         $lines.Add('')
     }
-    foreach ($heading in @('Standards', 'Standards 缺陷審查', '需求對照核對', 'Spec')) {
+    $lines.Add('## ' + $judgmentHeading)
+    $lines.Add('')
+    foreach ($judgment in @($CurrentJudgment)) {
+        $statusText = switch ([string]$judgment.status) {
+            'closed' { $closedStatus }
+            'open' { $openStatus }
+            'withdrawn' { $withdrawnStatus }
+            default { [string]$judgment.status }
+        }
+        $evidence = @($judgment.evidence)[0]
+        $evidencePath = if ($null -eq $evidence) { $Path } else { [string]$evidence.path }
+        $evidenceLine = if ($null -eq $evidence) { 1 } else { [int]$evidence.line }
+        $lines.Add(('- [{0}] [{1}] {2} {3}：{4}:{5}' -f $judgment.id, $judgment.severity, $statusText, $evidenceLabel, $evidencePath, $evidenceLine))
+    }
+    $lines.Add('')
+    foreach ($heading in $currentHeadings) {
         $lines.Add('## ' + $heading)
         $lines.Add('')
         $lines.Add($heading + ' current findings。')
@@ -1357,11 +2253,20 @@ function New-ReviewerManifest {
         [int]$PreviousOpen = 0,
         [int]$CurrentNew = 0,
         [int]$CurrentOpen = 0,
-        [ValidateSet('pass', 'fail')][string]$Conclusion = 'pass'
+        [ValidateSet('pass', 'fail')][string]$Conclusion = 'pass',
+        [ValidateSet('codex-dispatch.review-findings.v1', 'codex-dispatch.review-findings.v2')]
+        [string]$Schema = 'codex-dispatch.review-findings.v1',
+        [string]$LineSlug = 'line-a',
+        [string]$DispatchSlug = 'reviewer-fixture',
+        [int]$Round = 1,
+        [object[]]$CurrentJudgment = @()
     )
 
-    return [ordered]@{
-        schema = 'codex-dispatch.review-findings.v1'
+    $manifest = [ordered]@{
+        schema = $Schema
+        line_slug = if ($Schema -ceq 'codex-dispatch.review-findings.v2') { $LineSlug } else { $null }
+        dispatch_slug = if ($Schema -ceq 'codex-dispatch.review-findings.v2') { $DispatchSlug } else { $null }
+        round = if ($Schema -ceq 'codex-dispatch.review-findings.v2') { $Round } else { $null }
         current_findings = @($CurrentFindings)
         previous_status = @($PreviousStatus)
         counts = [ordered]@{
@@ -1372,6 +2277,13 @@ function New-ReviewerManifest {
         }
         conclusion = $Conclusion
     }
+    if ($Schema -ceq 'codex-dispatch.review-findings.v2') {
+        $manifest.current_judgment = @($CurrentJudgment)
+        $manifest.counts.previous_withdrawn = @($PreviousStatus | Where-Object { $_.status -ceq 'withdrawn' }).Count
+        $manifest.counts.current_closed = @($CurrentJudgment | Where-Object { $_.status -ceq 'closed' }).Count
+        $manifest.counts.current_withdrawn = @($CurrentJudgment | Where-Object { $_.status -ceq 'withdrawn' }).Count
+    }
+    return $manifest
 }
 
 $reviewerRoot = Join-Path $fixtureRoot 'reviewer'
@@ -1405,6 +2317,160 @@ Invoke-Case 'Reviewer manifest duplicate ID 不增加計數' {
     $result = Test-ReviewerFindingReport -Path $path
     Assert-True ($result.valid -and $result.current_new_count -eq 1 -and $result.current_open_count -eq 1 -and $result.duplicate_ids -contains 'F-001') '重複 ID 計數或診斷異常。'
 }
+Invoke-Case 'Reviewer v2 closure judgment 寫入 Ledger' {
+    $path = Join-Path $reviewerRoot 'v2-closure.md'
+    $previous = @([ordered]@{ id = 'F-020'; status = 'open'; severity = 'Major' })
+    $judgment = @([ordered]@{ id = 'F-020'; status = 'closed'; severity = 'Major'; evidence = @([ordered]@{ path = $path; line = 1 }) })
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'v2-closure' -Round 1 -PreviousStatus $previous -PreviousOpen 1 -CurrentJudgment $judgment -Conclusion pass
+    Write-ReviewerFixture -Path $path -Manifest $manifest -PreviousProse @('- [F-020] [Major] 未閉合 — previous fixture') -CurrentJudgment $judgment
+    $result = Test-ReviewerFindingReport -Path $path
+    Assert-True ($result.valid -and $result.current_closed_count -eq 1 -and $result.current_judgment_explicit) 'v2 closure judgment 驗證異常。'
+    $ledgerResult = Get-ReviewerFindingsForCollect -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'v2-closure'
+    $ledgerPath = Join-Path $fixtureRoot '.local\ai-sessions\history\line-a\review-finding-ledger.json'
+    Assert-True ($ledgerResult.valid -and (Test-Path -LiteralPath $ledgerPath -PathType Leaf) -and @($ledgerResult.ledger.entries_added).Count -eq 1) 'v2 closure judgment 未寫入 Ledger。'
+}
+Invoke-Case 'Reviewer v2 body judgment 矛盾拒絕' {
+    $path = Join-Path $reviewerRoot 'v2-body-conflict.md'
+    $judgment = @([ordered]@{ id = 'F-021'; status = 'closed'; severity = 'Minor'; evidence = @([ordered]@{ path = $path; line = 1 }) })
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'v2-body-conflict' -Round 1 -CurrentJudgment $judgment -Conclusion pass
+    Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentJudgment $judgment
+    $content = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+    Write-Utf8NoBom -Path $path -Content ($content -replace '已閉合', '未閉合')
+    $result = Test-ReviewerFindingReport -Path $path
+    Assert-True (-not $result.valid -and $result.inconsistencies -match 'F-021 current judgment prose status conflicts with manifest') 'v2 body judgment 矛盾未拒絕。'
+}
+Invoke-Case 'Reviewer v2 第二輪保留前輪並新增 Ledger entry' {
+    $path = Join-Path $reviewerRoot 'v2-round-two.md'
+    $previous = @([ordered]@{ id = 'F-020'; status = 'open'; severity = 'Major' })
+    $current = @([ordered]@{ id = 'F-020'; axis = 'Spec'; status = 'open'; severity = 'Major'; disposition = 'carried'; summary = 'reopened fixture' })
+    $judgment = @([ordered]@{ id = 'F-020'; status = 'open'; severity = 'Major'; evidence = @([ordered]@{ path = $path; line = 1 }) })
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'v2-round-two' -Round 2 -PreviousStatus $previous -PreviousOpen 1 -CurrentFindings $current -CurrentOpen 1 -CurrentJudgment $judgment -Conclusion fail
+    Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentIds @('F-020') -PreviousProse @('- [F-020] [Major] 未閉合 — previous round') -CurrentJudgment $judgment
+    $result = Test-ReviewerFindingReport -Path $path
+    Assert-True ($result.valid -and $result.round -eq 2 -and $result.current_open_count -eq 1) 'v2 第二輪 manifest 驗證異常。'
+    $ledgerResult = Get-ReviewerFindingsForCollect -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'v2-round-two'
+    $ledgerEntries = @($ledgerResult.ledger.ledger.entries | Where-Object { $_.finding_id -eq 'F-020' })
+    Assert-True ($ledgerResult.valid -and $ledgerEntries.Count -eq 2 -and @($ledgerEntries | Where-Object { $_.round -eq 1 }).Count -eq 1 -and @($ledgerEntries | Where-Object { $_.round -eq 2 -and $_.current_judgment -eq 'open' }).Count -eq 1) 'v2 第二輪 Ledger 未保留前輪或未新增本輪。'
+}
+Invoke-Case 'Reviewer v1 一致 previous_status 與前輪 finding 狀態 adapter 寫入 Ledger' {
+    $path = Join-Path $reviewerRoot 'v1-adapter.md'
+    $previous = @([ordered]@{ id = 'F-020'; status = 'closed'; severity = 'Major' })
+    $manifest = New-ReviewerManifest -PreviousStatus $previous -PreviousClosed 1 -Conclusion pass
+    Write-ReviewerFixture -Path $path -Manifest $manifest -PreviousProse @('- [F-020] [Major] 已閉合 — previous fixture')
+    $result = Get-ReviewerFindingsForCollect -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'v1-adapter'
+    Assert-True ($result.valid -and $result.current_judgment_source -ceq 'v1-adapter' -and $result.current_closed_count -eq 1 -and @($result.current_judgment | Where-Object { $_.id -eq 'F-020' -and $_.status -eq 'closed' }).Count -eq 1 -and @($result.ledger.entries_added).Count -eq 1) ('v1 adapter 未依一致 previous status 建立 ledger 或閉合數：' + ($result.inconsistencies -join ';'))
+
+    $parserFunction = (Get-Command Test-ReviewerFindingReport -CommandType Function).ScriptBlock
+    $parserText = $parserFunction.ToString()
+    $fixedClosedCountGate = "if (`$manifestSchema -ceq 'codex-dispatch.review-findings.v2' -or `$currentJudgmentExplicit -or `$currentJudgmentAdapter) {"
+    Assert-True $parserText.Contains($fixedClosedCountGate) 'F-009 v1 current_closed_count gate 缺少 adapter 分支。'
+    $mutantParserText = $parserText.Replace($fixedClosedCountGate, "if (`$manifestSchema -ceq 'codex-dispatch.review-findings.v2' -or `$currentJudgmentExplicit) {")
+    Set-Item -Path Function:\Test-ReviewerFindingReport -Value ([scriptblock]::Create($mutantParserText))
+    try {
+        $mutantResult = Get-ReviewerFindingsForCollect -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'v1-adapter-mutant'
+        Assert-True ($null -eq $mutantResult.current_closed_count) 'F-009 v1 current_closed_count mutant 未暴露閉合數遺失。'
+        Write-Phase9Evidence -Label 'F009_V1_CURRENT_CLOSED_COUNT_MUTANT' -Value ([ordered]@{
+                mutation = '移除 v1 adapter 的 current_closed_count 計算條件。'
+                production = [ordered]@{ current_closed_count = $result.current_closed_count; current_judgment_source = $result.current_judgment_source }
+                mutant = [ordered]@{ current_closed_count = $mutantResult.current_closed_count; current_judgment_source = $mutantResult.current_judgment_source }
+            })
+    }
+    finally {
+        Set-Item -Path Function:\Test-ReviewerFindingReport -Value $parserFunction
+    }
+
+    $fixedAdapter = "if (`$manifestSchema -ceq 'codex-dispatch.review-findings.v1' -and -not `$currentJudgmentExplicit) {"
+    Assert-True $parserText.Contains($fixedAdapter) 'F-001 mutant 找不到 v1 adapter marker。'
+    $mutantParserText = $parserText.Replace($fixedAdapter, 'if ($false) {')
+    Set-Item -Path Function:\Test-ReviewerFindingReport -Value ([scriptblock]::Create($mutantParserText))
+    try {
+        $mutantResult = Get-ReviewerFindingsForCollect -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'v1-adapter-mutant'
+        Assert-True (@($mutantResult.current_judgment).Count -eq 0 -and $mutantResult.current_judgment_source -eq $null) ('F-001 v1 adapter mutant 未暴露 Ledger state 遺失：' + ($mutantResult | ConvertTo-Json -Depth 12 -Compress))
+        Write-Phase9Evidence -Label 'F001_V1_ADAPTER_MUTANT' -Value ([ordered]@{
+                mutation = '將 Test-ReviewerFindingReport 的 v1 adapter 條件改為 if ($false)。'
+                production = $result
+                mutant = $mutantResult
+            })
+    }
+    finally {
+        Set-Item -Path Function:\Test-ReviewerFindingReport -Value $parserFunction
+    }
+}
+Invoke-Case 'Reviewer v2 counts 七欄位與 evidence 絕對路徑驗證' {
+    $missingCountsPath = Join-Path $reviewerRoot 'v2-counts-missing.md'
+    $missingCountsManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'v2-counts-missing' -Round 1
+    $missingCountsManifest.counts.Remove('current_closed')
+    Write-ReviewerFixture -Path $missingCountsPath -Manifest $missingCountsManifest
+    $missingCountsResult = Test-ReviewerFindingReport -Path $missingCountsPath
+    Assert-True (-not $missingCountsResult.valid -and ($missingCountsResult.inconsistencies -join ';') -match 'counts\.current_closed missing') 'v2 缺少 current_closed 未拒絕。'
+
+    $relativePath = 'relative-evidence.md'
+    $relativeEvidencePath = Join-Path $reviewerRoot 'v2-relative-evidence.md'
+    $relativeFinding = [ordered]@{ id = 'F-022'; axis = 'Spec'; status = 'open'; severity = 'Minor'; disposition = 'new'; summary = 'relative evidence fixture' }
+    $relativeJudgment = @([ordered]@{ id = 'F-022'; status = 'open'; severity = 'Minor'; evidence = @([ordered]@{ path = $relativePath; line = 1 }) })
+    $relativeManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'v2-relative-evidence' -Round 1 -CurrentFindings @($relativeFinding) -CurrentNew 1 -CurrentOpen 1 -CurrentJudgment $relativeJudgment -Conclusion pass
+    Write-ReviewerFixture -Path $relativeEvidencePath -Manifest $relativeManifest -CurrentIds @('F-022') -CurrentJudgment $relativeJudgment
+    $relativeResult = Test-ReviewerFindingReport -Path $relativeEvidencePath
+    Assert-True (-not $relativeResult.valid -and ($relativeResult.inconsistencies -join ';') -match 'evidence path must be absolute') '相對 evidence path 未拒絕。'
+
+    $absoluteFunction = (Get-Command Test-ReviewerAbsolutePath -CommandType Function).ScriptBlock
+    $mutantAbsoluteText = $absoluteFunction.ToString().Replace('return $false', 'return $true')
+    Set-Item -Path Function:\Test-ReviewerAbsolutePath -Value ([scriptblock]::Create($mutantAbsoluteText))
+    try {
+        $mutantRelativeResult = Test-ReviewerFindingReport -Path $relativeEvidencePath
+        Assert-True ($mutantRelativeResult.valid) 'F-002 absolute path mutant 未暴露 parser 放寬。'
+        Write-Phase9Evidence -Label 'F002_V2_PARSER_MUTANT' -Value ([ordered]@{
+                mutation = '將 Test-ReviewerAbsolutePath 的相對路徑分支改為永遠回傳 true。'
+                missing_counts = $missingCountsResult
+                relative_evidence = $relativeResult
+                mutant_relative_evidence = $mutantRelativeResult
+            })
+    }
+    finally {
+        Set-Item -Path Function:\Test-ReviewerAbsolutePath -Value $absoluteFunction
+    }
+}
+Invoke-Case 'Reviewer current_judgment open 與 current_findings 雙向檢查' {
+    $path = Join-Path $reviewerRoot 'v2-open-bidirectional.md'
+    $previous = @([ordered]@{ id = 'F-030'; status = 'closed'; severity = 'Major' })
+    $judgment = @([ordered]@{ id = 'F-030'; status = 'open'; severity = 'Major'; evidence = @([ordered]@{ path = $path; line = 1 }) })
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'v2-open-bidirectional' -Round 1 -PreviousStatus $previous -PreviousClosed 1 -CurrentJudgment $judgment -Conclusion fail
+    Write-ReviewerFixture -Path $path -Manifest $manifest -PreviousProse @('- [F-030] [Major] 已閉合 — previous fixture') -CurrentJudgment $judgment
+    $result = Test-ReviewerFindingReport -Path $path
+    Assert-True (-not $result.valid -and ($result.inconsistencies -join ';') -match 'current judgment open finding missing from current_findings') 'current_judgment open 與 current_findings 不一致未拒絕。'
+
+    $parserFunction = (Get-Command Test-ReviewerFindingReport -CommandType Function).ScriptBlock
+    $parserText = $parserFunction.ToString()
+    $fixedOpenCheck = 'if ($currentFindingIds -notcontains $id) {'
+    Assert-True $parserText.Contains($fixedOpenCheck) 'F-005 mutant 找不到 open ID 雙向檢查。'
+    $mutantParserText = $parserText.Replace($fixedOpenCheck, 'if ($false) {')
+    Set-Item -Path Function:\Test-ReviewerFindingReport -Value ([scriptblock]::Create($mutantParserText))
+    try {
+        $mutantResult = Test-ReviewerFindingReport -Path $path
+        Assert-True ($mutantResult.valid) 'F-005 雙向檢查 mutant 未暴露 open finding 遺失。'
+        Write-Phase9Evidence -Label 'F005_OPEN_BIDIRECTIONAL_MUTANT' -Value ([ordered]@{
+                mutation = '將 current judgment open ID 未出現在 current_findings 的判斷式改為永不成立。'
+                production = $result
+                mutant = $mutantResult
+            })
+    }
+    finally {
+        Set-Item -Path Function:\Test-ReviewerFindingReport -Value $parserFunction
+    }
+}
+Invoke-Case 'Reviewer Ledger 同 key 不同資料拒絕' -Reject -ErrorPattern 'LedgerConflict' {
+    $path = Join-Path $reviewerRoot 'v2-ledger-conflict.md'
+    $previous = @([ordered]@{ id = 'F-020'; status = 'open'; severity = 'Major' })
+    $judgment = @([ordered]@{ id = 'F-020'; status = 'closed'; severity = 'Minor'; evidence = @([ordered]@{ path = $path; line = 1 }) })
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'v2-ledger-conflict' -Round 1 -PreviousStatus $previous -PreviousOpen 1 -CurrentJudgment $judgment -Conclusion pass
+    Write-ReviewerFixture -Path $path -Manifest $manifest -PreviousProse @('- [F-020] [Major] 未閉合 — conflict previous') -CurrentJudgment $judgment
+    $ledgerPath = Join-Path $fixtureRoot '.local\ai-sessions\history\line-a\review-finding-ledger.json'
+    $ledger = Get-Content -LiteralPath $ledgerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $ledger.entries[0].severity = 'Critical'
+    $ledger.ledger_sha256 = Get-ReviewerLedgerHash -Ledger ([ordered]@{ schema = $ledger.schema; line_slug = $ledger.line_slug; entries = @($ledger.entries) })
+    Write-Utf8NoBom -Path $ledgerPath -Content (($ledger | ConvertTo-Json -Depth 20) + "`n")
+    Get-ReviewerFindingsForCollect -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'v2-ledger-conflict'
+}
 Invoke-Case 'Reviewer 只有 Minor 時 conclusion pass' {
     $path = Join-Path $reviewerRoot 'minor.md'
     $finding = [ordered]@{ id = 'F-003'; axis = 'Standards'; status = 'open'; severity = 'Minor'; disposition = 'new'; summary = 'minor fixture' }
@@ -1419,6 +2485,79 @@ Invoke-Case 'Reviewer current prose 與空 manifest 矛盾' {
     Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentIds @('F-004')
     $result = Test-ReviewerFindingReport -Path $path
     Assert-True (-not $result.valid -and $result.inconsistencies -match 'prose finding missing') 'prose 與 manifest 矛盾未拒絕。'
+}
+Invoke-Case 'Reviewer current judgment evidence position 與 manifest 不一致拒絕' {
+    $path = Join-Path $reviewerRoot 'current-judgment-evidence-mismatch.md'
+    $previous = @([ordered]@{ id = 'F-013'; status = 'open'; severity = 'Minor' })
+    $judgment = @([ordered]@{
+            id = 'F-013'
+            status = 'closed'
+            severity = 'Minor'
+            evidence = @([ordered]@{ path = $path; line = 100 })
+        })
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'evidence-mismatch' -Round 1 -PreviousStatus $previous -PreviousOpen 1 -CurrentJudgment $judgment -Conclusion pass
+    $previousOpenStatus = New-TestUnicodeString -CodePoint @(0x672A, 0x9589, 0x5408)
+    $overviewHeading = New-TestUnicodeString -CodePoint @(0x7E3D, 0x89BD)
+    $previousHeading = New-TestUnicodeString -CodePoint @(0x524D, 0x8F2A, 0x20, 0x0066, 0x0069, 0x006E, 0x0064, 0x0069, 0x006E, 0x0067, 0x20, 0x72C0, 0x614B)
+    $judgmentHeading = New-TestUnicodeString -CodePoint @(0x672C, 0x8F2A, 0x20, 0x0066, 0x0069, 0x006E, 0x0064, 0x0069, 0x006E, 0x0067, 0x20, 0x5224, 0x5B9A)
+    $standardsDefectHeading = 'Standards ' + (New-TestUnicodeString -CodePoint @(0x7F3A, 0x9677, 0x5BE9, 0x67E5))
+    $requirementsHeading = New-TestUnicodeString -CodePoint @(0x9700, 0x6C42, 0x5C0D, 0x7167, 0x6838, 0x5C0D)
+    $evidenceLabel = (New-TestUnicodeString -CodePoint @(0x8B49, 0x64DA)) + (New-TestUnicodeString -CodePoint @(0xFF1A))
+    $closedStatus = New-TestUnicodeString -CodePoint @(0x5DF2, 0x9589, 0x5408)
+    $fixtureLines = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($line in @(
+            '# Reviewer fixture'
+            ''
+            ('## ' + $overviewHeading)
+            'fixture overview'
+            ''
+            '## Finding manifest'
+            '```json'
+            ($manifest | ConvertTo-Json -Depth 10)
+            '```'
+            ''
+            ('## ' + $previousHeading)
+            ('- [F-013] [Minor] ' + $previousOpenStatus + ' - evidence position fixture')
+            ''
+            ('## ' + $judgmentHeading)
+            ('- [F-013] [Minor] ' + $closedStatus + ' ' + $evidenceLabel + $path + ':100')
+            ''
+            '## Standards'
+            ('## ' + $standardsDefectHeading)
+            ('## ' + $requirementsHeading)
+            '## Spec'
+        )) {
+        $fixtureLines.Add($line)
+    }
+    $fixtureEncoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($path, (($fixtureLines.ToArray() -join "`r`n") + "`r`n"), $fixtureEncoding)
+    $validResult = Test-ReviewerFindingReport -Path $path
+    Assert-True $validResult.valid ('evidence position 正向 fixture 未通過：' + (@($validResult.inconsistencies) -join '; '))
+
+    $contentEncoding = New-Object System.Text.UTF8Encoding($false, $true)
+    $content = [System.IO.File]::ReadAllText($path, $contentEncoding)
+    [System.IO.File]::WriteAllText($path, $content.Replace(($evidenceLabel + $path + ':100'), ($evidenceLabel + $path + ':101')), $fixtureEncoding)
+    $result = Test-ReviewerFindingReport -Path $path
+    Assert-True (-not $result.valid -and @($result.inconsistencies) -match 'current judgment prose evidence conflicts with manifest') ('正文與 manifest evidence position 不一致未拒絕：valid=' + [string]$result.valid + '; inconsistencies=' + (@($result.inconsistencies) -join '; '))
+
+    $parserFunction = (Get-Command Test-ReviewerFindingReport -CommandType Function).ScriptBlock
+    $parserText = $parserFunction.ToString()
+    $evidenceCheck = "if (-not `$evidenceMatches) { `$inconsistencies.Add(`$id + ' current judgment prose evidence conflicts with manifest') }"
+    $mutantParserText = $parserText.Replace($evidenceCheck, "if (`$false) { `$inconsistencies.Add(`$id + ' current judgment prose evidence conflicts with manifest') }")
+    Assert-True ($mutantParserText -ne $parserText) 'F-011 reverse mutant 未移除 evidence position 一致性判定。'
+    Set-Item -Path Function:\Test-ReviewerFindingReport -Value ([scriptblock]::Create($mutantParserText))
+    try {
+        $mutantResult = Test-ReviewerFindingReport -Path $path
+        Assert-True $mutantResult.valid 'F-011 reverse mutant 未錯誤接受 evidence position 不一致。'
+        Write-Phase9Evidence -Label 'F011_REVIEWER_EVIDENCE_POSITION_MUTANT' -Value ([ordered]@{
+                mutation = '移除 current judgment 正文與 manifest evidence position 的一致性判定。'
+                production_rejection = $result.inconsistencies
+                mutant_result = $mutantResult
+            })
+    }
+    finally {
+        Set-Item -Path Function:\Test-ReviewerFindingReport -Value $parserFunction
+    }
 }
 Invoke-Case 'Reviewer previous prose 與 previous_status 不一致' -Reject -ErrorPattern 'previous prose finding missing from previous_status' {
     $path = Join-Path $reviewerRoot 'previous-prose-mismatch.md'
@@ -1475,14 +2614,18 @@ Invoke-Case 'Reviewer duplicate 欄位衝突拒絕' -Reject {
     if ($result.valid) { throw 'conflicting duplicate manifest unexpectedly valid' }
     throw ($result.inconsistencies -join '; ')
 }
-Invoke-Case 'Collect direct-write 接入 reviewerFindings' {
+Invoke-Case 'Collect direct-write 僅 Reviewer report 時執行 structural-only 驗證' {
     $outputPath = Join-Path $reviewerRoot 'approved.txt'
     $closurePath = Join-Path $reviewerRoot 'closure.md'
     $reviewerPath = Join-Path $reviewerRoot 'collect.md'
+    $ledgerPath = Join-Path $fixtureRoot '.local\ai-sessions\history\line-a\review-finding-ledger.json'
+    $ledgerExistedBefore = Test-Path -LiteralPath $ledgerPath -PathType Leaf
+    $ledgerShaBefore = if ($ledgerExistedBefore) { Get-FileSha256 -Path $ledgerPath } else { $null }
+    $ledgerBytesBefore = if ($ledgerExistedBefore) { [System.IO.File]::ReadAllBytes($ledgerPath) } else { $null }
     Write-Utf8NoBom -Path $outputPath -Content 'approved output'
     Write-Utf8NoBom -Path $closurePath -Content '# Fixture closure'
     $finding = [ordered]@{ id = 'F-007'; axis = 'Spec'; status = 'open'; severity = 'Minor'; disposition = 'new'; summary = 'collect fixture' }
-    $manifest = New-ReviewerManifest
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'reviewer-collect' -Round 1
     Write-ReviewerFixture -Path $reviewerPath -Manifest $manifest
     $preflightPath = Join-Path $reviewerRoot 'preflight.json'
     $preflight = [ordered]@{
@@ -1505,7 +2648,201 @@ Invoke-Case 'Collect direct-write 接入 reviewerFindings' {
     $ReportPath = @($closurePath)
     $ReviewerReportPath = $reviewerPath
     $result = Invoke-Collect
-    Assert-True ($result.reviewerFindings.valid -and $result.reviewerFindings.conclusion -eq 'pass' -and $result.outputValid) 'Collect reviewerFindings 輸出異常。'
+    $ledgerExistsAfter = Test-Path -LiteralPath $ledgerPath -PathType Leaf
+    $ledgerShaAfter = if ($ledgerExistsAfter) { Get-FileSha256 -Path $ledgerPath } else { $null }
+    $reviewerFindingsHasLedger = $false
+    if ($null -ne $result.reviewerFindings) {
+        if ($result.reviewerFindings -is [System.Collections.IDictionary]) {
+            $reviewerFindingsHasLedger = $result.reviewerFindings.Contains('ledger')
+        }
+        else {
+            $reviewerFindingsHasLedger = $null -ne $result.reviewerFindings.PSObject.Properties['ledger']
+        }
+    }
+    Assert-True ($result.reviewerFindings.valid -and $result.reviewerFindings.conclusion -eq 'pass' -and $result.outputValid -and $result.collect_mode -ceq 'structural-only' -and -not $reviewerFindingsHasLedger) 'structural-only Collect reviewerFindings 輸出異常。'
+    Assert-True ($ledgerExistedBefore -eq $ledgerExistsAfter -and $ledgerShaBefore -ceq $ledgerShaAfter) 'structural-only Collect 不應建立或修改 finding ledger。'
+
+    $directFunction = (Get-Command Invoke-DirectWriteCollect -CommandType Function).ScriptBlock
+    $directFunctionText = $directFunction.ToString()
+    $mutantDirectText = $directFunctionText.Replace('-WriteLedger:$isFullCollection', '-WriteLedger:$true')
+    Assert-True ($mutantDirectText -ne $directFunctionText) 'F-003 structural-only reverse mutant 未改為寫入 ledger。'
+    $mutantFailure = $null
+    $mutantResult = $null
+    Set-Item -Path Function:\Invoke-DirectWriteCollect -Value ([scriptblock]::Create($mutantDirectText))
+    try {
+        $mutantResult = Invoke-Collect
+        $mutantLedgerExists = Test-Path -LiteralPath $ledgerPath -PathType Leaf
+        $mutantLedgerSha = if ($mutantLedgerExists) { Get-FileSha256 -Path $ledgerPath } else { $null }
+        $mutantReviewerFindingsHasLedger = $false
+        if ($null -ne $mutantResult.reviewerFindings) {
+            if ($mutantResult.reviewerFindings -is [System.Collections.IDictionary]) {
+                $mutantReviewerFindingsHasLedger = $mutantResult.reviewerFindings.Contains('ledger')
+            }
+            else {
+                $mutantReviewerFindingsHasLedger = $null -ne $mutantResult.reviewerFindings.PSObject.Properties['ledger']
+            }
+        }
+        Assert-True ($ledgerExistedBefore -eq $mutantLedgerExists -and $ledgerShaBefore -ceq $mutantLedgerSha -and -not $mutantReviewerFindingsHasLedger) 'F-003 structural-only reverse mutant 未暴露 ledger 寫入。'
+    }
+    catch {
+        $mutantFailure = $_.Exception.Message
+    }
+    finally {
+        Set-Item -Path Function:\Invoke-DirectWriteCollect -Value $directFunction
+        if ($ledgerExistedBefore) {
+            [System.IO.File]::WriteAllBytes($ledgerPath, $ledgerBytesBefore)
+        }
+        elseif (Test-Path -LiteralPath $ledgerPath -PathType Leaf) {
+            Remove-Item -LiteralPath $ledgerPath -Force
+        }
+    }
+    Assert-True (-not [string]::IsNullOrWhiteSpace($mutantFailure)) 'F-003 structural-only reverse mutant 未使狀態帳保護案例失敗。'
+    Write-Phase9Evidence -Label 'F003_STRUCTURAL_ONLY_LEDGER_MUTANT' -Value ([ordered]@{
+            mutation = '讓 structural-only Collect 呼叫 Get-ReviewerFindingsForCollect 時寫入 ledger。'
+            production_collect_mode = $result.collect_mode
+            production_ledger_sha256_before = $ledgerShaBefore
+            production_ledger_sha256_after = $ledgerShaAfter
+            mutant_result = $mutantResult
+            mutant_failure = $mutantFailure
+        })
+}
+Invoke-Case 'Collect direct-write 使用共用 identity gate 驗證 final message 與所有 identity' {
+    $directIdentityDispatch = 'direct-identity'
+    $directIdentityRecord = New-TestRun -Dispatch $directIdentityDispatch
+    $directIdentityRunPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $directIdentityDispatch) ($directIdentityRecord.run_id + '.json')
+    $directIdentityRequestPath = Join-Path $reviewerRoot 'direct-identity-request.json'
+    $directIdentityPreflightPath = $directIdentityRecord.preflight_result_path
+    $directIdentityDispatchRoot = Join-Path $fixtureRoot '.local/ai-sessions/worktrees/direct-identity'
+    $directIdentityReportRoot = Join-Path $fixtureRoot '.local/ai-sessions/report/line-a'
+    $directIdentityReviewerPath = Join-Path $directIdentityReportRoot 'direct-identity-review.md'
+    $directIdentityClosurePath = Join-Path $directIdentityReportRoot 'direct-identity-closure.md'
+    $directIdentityPromptPath = Join-Path $reviewerRoot 'direct-identity-prompt.md'
+    $directIdentityRecoveryPath = Join-Path $reviewerRoot 'direct-identity-recovery.json'
+    $directIdentityOutputPath = Join-Path $reviewerRoot 'direct-identity-output.txt'
+    New-Item -ItemType Directory -Path $directIdentityReportRoot -Force | Out-Null
+    Write-Utf8NoBom -Path $directIdentityOutputPath -Content 'direct identity output'
+    Write-Utf8NoBom -Path $directIdentityClosurePath -Content '# Direct identity closure'
+    Write-Utf8NoBom -Path $directIdentityPromptPath -Content 'direct identity prompt'
+    $directIdentityRequest = [ordered]@{
+        schema = 'ai-sessions.dispatch-request.v1'
+        operation = 'Dispatch'
+        source_root = $fixtureRoot
+        dispatch_root = $directIdentityDispatchRoot
+        line_slug = 'line-a'
+        dispatch_slug = $directIdentityDispatch
+        write_mode = 'readonly'
+        dispatch_kind = 'resource'
+        target_path = @('direct-identity-output.txt')
+        prepare_artifacts = @()
+        prompt_path = $directIdentityPromptPath
+        task_type = 'fixture'
+        session_mode = 'cold-start'
+        unit_kind = 'resource-target'
+        requested_unit = @('direct-identity')
+        failure_receipt_path = $directIdentityRecoveryPath
+    }
+    Write-Utf8NoBom -Path $directIdentityRequestPath -Content ($directIdentityRequest | ConvertTo-Json -Depth 10)
+    $directIdentityPreflight = [ordered]@{
+        operation = 'Preflight'
+        sourceRoot = $fixtureRoot
+        dispatchRoot = $directIdentityDispatchRoot
+        executionRoot = $fixtureRoot
+        lineSlug = 'line-a'
+        dispatchSlug = $directIdentityDispatch
+        worktreeCreated = $false
+        baseSha = ''
+        targetStates = @([ordered]@{ FullPath = $directIdentityOutputPath; InputPath = 'direct-identity-output.txt' })
+    }
+    Write-Utf8NoBom -Path $directIdentityPreflightPath -Content ($directIdentityPreflight | ConvertTo-Json -Depth 12)
+    $directIdentityRecord | Add-Member -MemberType NoteProperty -Name request_path -Value $directIdentityRequestPath -Force
+    $directIdentityRecord | Add-Member -MemberType NoteProperty -Name request_sha256 -Value (Get-FileSha256 -Path $directIdentityRequestPath) -Force
+    $directIdentityRecord | Add-Member -MemberType NoteProperty -Name request_operation -Value 'Dispatch' -Force
+    $directIdentityRecord | Add-Member -MemberType NoteProperty -Name review_round -Value 1 -Force
+    $directIdentityPrevious = @([ordered]@{ id = 'F-014'; status = 'open'; severity = 'Minor' })
+    $directIdentityJudgment = @([ordered]@{
+            id = 'F-014'
+            status = 'closed'
+            severity = 'Minor'
+            evidence = @([ordered]@{ path = $directIdentityReviewerPath; line = 1 })
+        })
+    $directIdentityReviewerManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug $directIdentityDispatch -Round 1 -PreviousStatus $directIdentityPrevious -PreviousOpen 1 -CurrentJudgment $directIdentityJudgment
+    Write-ReviewerFixture -Path $directIdentityReviewerPath -Manifest $directIdentityReviewerManifest -PreviousProse @('- [F-014] [Minor] 未閉合 — direct identity fixture') -CurrentJudgment $directIdentityJudgment
+    $directIdentityRecord | Add-Member -MemberType NoteProperty -Name reviewer_report_path -Value $directIdentityReviewerPath -Force
+    $directIdentityRecord | Add-Member -MemberType NoteProperty -Name reviewer_report_sha256 -Value (Get-FileSha256 -Path $directIdentityReviewerPath) -Force
+    $directIdentityRecord.preflight_sha256 = Get-FileSha256 -Path $directIdentityPreflightPath
+    $null = Write-DispatchRunRecord -Record $directIdentityRecord -Update
+    Write-Utf8NoBom -Path $directIdentityRecord.last_message_path -Content ('design.md dispatchSlug=' + $directIdentityDispatch + ' lineSlug=line-a')
+    $directIdentityRecovery = [ordered]@{
+        schema = 'ai-sessions.recovery-handoff.v1'
+        operation = 'RecoveryHandoff'
+        line_slug = 'line-a'
+        dispatch_slug = $directIdentityDispatch
+        run_chain = [ordered]@{ latest_run_record_path = $directIdentityRunPath }
+    }
+    Write-Utf8NoBom -Path $directIdentityRecoveryPath -Content ($directIdentityRecovery | ConvertTo-Json -Depth 12)
+
+    $SourceRoot = $fixtureRoot
+    $ExecutionRoot = $fixtureRoot
+    $DispatchKind = 'resource'
+    $LineSlug = 'line-a'
+    $DispatchSlug = $directIdentityDispatch
+    $PreflightResultPath = $directIdentityPreflightPath
+    $RequestPath = $directIdentityRequestPath
+    $RunRecordPath = $directIdentityRunPath
+    $RecoveryHandoffPath = $directIdentityRecoveryPath
+    $ReportPath = @($directIdentityClosurePath)
+    $ReviewerReportPath = $directIdentityReviewerPath
+    $directIdentityLedgerPath = Join-Path $fixtureRoot '.local\ai-sessions\history\line-a\review-finding-ledger.json'
+    $directIdentityLedgerShaBefore = if (Test-Path -LiteralPath $directIdentityLedgerPath -PathType Leaf) { Get-FileSha256 -Path $directIdentityLedgerPath } else { $null }
+    $result = Invoke-Collect
+    $directIdentityLedgerShaAfter = Get-FileSha256 -Path $directIdentityLedgerPath
+    Assert-True ($result.outputValid -and $result.collect_mode -ceq 'full' -and $result.identity.valid -and @($result.identity.differences).Count -eq 0 -and $result.reviewerFindings.valid -and $null -ne $result.reviewerFindings.ledger -and @($result.reviewerFindings.ledger.entries_added | Where-Object { $_.finding_id -ceq 'F-014' }).Count -eq 1 -and $directIdentityLedgerShaBefore -cne $directIdentityLedgerShaAfter) ('direct-write full Collect identity 或 ledger 寫入驗證失敗：' + ($result.identity.differences | ConvertTo-Json -Depth 12 -Compress))
+
+    $directFunction = (Get-Command Invoke-DirectWriteCollect -CommandType Function).ScriptBlock
+    $directFunctionText = $directFunction.ToString()
+    $identityGatePattern = '(?ms)\r?\n    \$identityValidation = \$null.*?\r?\n    if \(\$identityRequested\) \{.*?\r?\n    \}\r?\n\r?\n    if \(\$TargetStates\.Count -eq 0\)'
+    $mutantDirectText = [regex]::Replace($directFunctionText, $identityGatePattern, "`r`n    `$identityValidation = `$null`r`n    `$collectMode = 'full'`r`n    `$isFullCollection = `$true`r`n`r`n    if (`$TargetStates.Count -eq 0)", 1)
+    Assert-True ($mutantDirectText -ne $directFunctionText) 'F-003 direct-write reverse mutant 未移除共用 identity gate。'
+    Set-Item -Path Function:\Invoke-DirectWriteCollect -Value ([scriptblock]::Create($mutantDirectText))
+    try {
+        Write-Utf8NoBom -Path $directIdentityRecord.last_message_path -Content ('design.md dispatchSlug=wrong-direct-dispatch lineSlug=line-a')
+        $mutantResult = Invoke-Collect
+        Assert-True ($mutantResult.outputValid -and $mutantResult.collect_mode -ceq 'full' -and $null -eq $mutantResult.identity -and $null -ne $mutantResult.reviewerFindings.ledger) 'F-003 direct-write identity mutant 未暴露繞過驗證。'
+        Write-Phase9Evidence -Label 'F003_DIRECT_WRITE_IDENTITY_MUTANT' -Value ([ordered]@{
+                mutation = '移除 Invoke-DirectWriteCollect 呼叫 Test-DispatchCollectIdentity 的區塊。'
+                production_rejection = [ordered]@{ field = 'final_message.dispatchSlug'; expected = $directIdentityDispatch; received = 'wrong-direct-dispatch'; source = $directIdentityRecord.last_message_path }
+                mutant_result = $mutantResult
+                expected_negative_case = '錯誤 final message dispatchSlug 應被拒絕；移除 gate 後案例被錯誤接受。'
+            })
+    }
+    finally {
+        Set-Item -Path Function:\Invoke-DirectWriteCollect -Value $directFunction
+        Write-Utf8NoBom -Path $directIdentityRecord.last_message_path -Content ('design.md dispatchSlug=' + $directIdentityDispatch + ' lineSlug=line-a')
+    }
+
+    $directIdentityLedgerShaBeforeRejected = Get-FileSha256 -Path $directIdentityLedgerPath
+    Invoke-Case 'Collect direct-write 錯誤 final message dispatchSlug 拒絕' -Reject -ErrorPattern 'final_message.dispatchSlug' {
+        Write-Utf8NoBom -Path $directIdentityRecord.last_message_path -Content 'design.md dispatchSlug=wrong-direct-dispatch lineSlug=line-a'
+        try {
+            Invoke-Collect
+        }
+        finally {
+            Write-Utf8NoBom -Path $directIdentityRecord.last_message_path -Content ('design.md dispatchSlug=' + $directIdentityDispatch + ' lineSlug=line-a')
+        }
+    }
+    $directIdentityLedgerShaAfterRejected = Get-FileSha256 -Path $directIdentityLedgerPath
+    Assert-True ($directIdentityLedgerShaBeforeRejected -ceq $directIdentityLedgerShaAfterRejected) 'full Collect 拒絕錯誤 final message 後仍修改 finding ledger。'
+
+    $collectText = (Get-Command Invoke-Collect -CommandType Function).ScriptBlock.ToString()
+    $directGateIndex = $directFunctionText.IndexOf('Test-DispatchCollectIdentity', [StringComparison]::Ordinal)
+    $directFindingsIndex = $directFunctionText.IndexOf('Get-ReviewerFindingsForCollect', [StringComparison]::Ordinal)
+    Assert-True ($directGateIndex -ge 0 -and $directGateIndex -lt $directFindingsIndex) 'F-003 direct-write path 未在 reviewer findings 前執行共用 identity gate。'
+    $directReturnIndex = $collectText.IndexOf('return Invoke-DirectWriteCollect', [StringComparison]::Ordinal)
+    Assert-True ($directReturnIndex -ge 0) 'F-003 Collect direct-write 返回路徑不存在。'
+    $directCallText = $collectText.Substring($directReturnIndex, [Math]::Min(1800, $collectText.Length - $directReturnIndex))
+    foreach ($identityArgument in @('-Preflight $preflight', '-PreflightPath $PreflightResultPath', '-RequestPath $collectRequestPath', '-RunRecordPath $collectRunRecordPath', '-RecoveryHandoffPath $collectRecoveryHandoffPath', '-RequiredIdentifier $collectRequiredIdentifier')) {
+        Assert-True $directCallText.Contains($identityArgument) ('F-003 direct-write 呼叫未傳遞 identity 參數：' + $identityArgument)
+    }
 }
 Invoke-Case 'Collect reviewer report 結構無效以非零結束' -Reject -ErrorPattern 'Reviewer report 結構無效' {
     $SourceRoot = $fixtureRoot
@@ -1592,7 +2929,140 @@ $QuotaAfterPath = Join-Path $fixtureRoot 'after.json'
 Write-Utf8NoBom $a.last_message_path 'design.md dispatch-a line-a'
 function Invoke-GitCommand {
     param($WorkingDirectory, $Arguments, $StandardInput, [switch]$AllowFailure)
+    if ($script:cleanupUseRealGit) {
+        if ($script:cleanupRemoveFailure -and @($Arguments | ForEach-Object { [string]$_ }) -contains 'remove') {
+            return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fixture removal failure' }
+        }
+        $gitOutput = & git -C $WorkingDirectory @Arguments 2>&1
+        $exitCode = $LASTEXITCODE
+        $outputLines = @($gitOutput | ForEach-Object { [string]$_ })
+        $outputText = $outputLines -join [Environment]::NewLine
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            StdOut = if ($exitCode -eq 0) { $outputText } else { '' }
+            StdErr = if ($exitCode -eq 0) { '' } else { $outputText }
+        }
+    }
     return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fatal: not a git repository' }
+}
+
+function New-Phase3CleanupScenario {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ScenarioSlug
+    )
+
+    $fixturePathRoot = $fixtureRoot
+    if ([string]::Equals([string]$PSVersionTable.PSEdition, 'Desktop', [StringComparison]::OrdinalIgnoreCase)) {
+        if ([string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
+            foreach ($candidate in @('Z:', 'Y:', 'X:', 'W:')) {
+                if (Test-Path -LiteralPath ($candidate + '\')) {
+                    continue
+                }
+                $substOutput = & subst $candidate $fixtureRoot 2>&1
+                if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath ($candidate + '\'))) {
+                    $script:cleanupDriveLetter = $candidate
+                    break
+                }
+            }
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
+            throw 'Cleanup fixture 無法建立 Desktop PowerShell 短路徑映射。'
+        }
+        $fixturePathRoot = $script:cleanupDriveLetter + '\'
+    }
+    $scenarioRoot = Join-Path $fixturePathRoot ('c-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+    $sourceRoot = Join-Path $scenarioRoot 'source'
+    New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
+    $initialHistoryPath = Join-Path $sourceRoot '.local/ai-sessions/history/initial.txt'
+    Write-Utf8NoBom -Path $initialHistoryPath -Content 'cleanup history fixture'
+    Initialize-Phase9IsolatedGitRepository -SourceRoot $sourceRoot -SourceScriptPath $sourcePath -TargetRelativePath 'tracked.txt'
+    $longPathResult = Invoke-Phase9GitCommand -RepositoryRoot $sourceRoot -Arguments @('config', 'core.longpaths', 'true')
+    Assert-Phase9GitCommandSucceeded -Result $longPathResult
+    $dispatchRoot = Join-Path $sourceRoot ('.local/ai-sessions/worktrees/' + $ScenarioSlug)
+    $worktreeResult = Invoke-Phase9GitCommand -RepositoryRoot $sourceRoot -Arguments @('worktree', 'add', '--detach', '--', $dispatchRoot, 'HEAD')
+    if ([int]$worktreeResult.exit_code -ne 0) {
+        throw ('Cleanup fixture worktree add failed; drive=' + [string]$script:cleanupDriveLetter + '; result=' + ($worktreeResult | ConvertTo-Json -Depth 10 -Compress))
+    }
+
+    $lineSlug = 'line-a'
+    $historyLineRoot = Join-Path $dispatchRoot ('.local/ai-sessions/history/' + $lineSlug)
+    $runRoot = Join-Path $historyLineRoot ('runs/' + $ScenarioSlug)
+    $reportRoot = Join-Path $dispatchRoot ('.local/ai-sessions/report/' + $lineSlug)
+    New-Item -ItemType Directory -Path $runRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $reportRoot -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $runRoot -PathType Container) -or -not (Test-Path -LiteralPath $reportRoot -PathType Container)) {
+        throw ('Cleanup fixture history/report directory creation failed: ' + $runRoot + '; ' + $reportRoot)
+    }
+    $eventPath = Join-Path $historyLineRoot 'cleanup-event.jsonl'
+    $lastMessagePath = Join-Path $historyLineRoot 'cleanup-last-message.md'
+    $preflightPath = Join-Path $historyLineRoot 'cleanup-preflight.json'
+    $runRecordPath = Join-Path $runRoot ([guid]::NewGuid().ToString('D') + '.json')
+    $reportPath = Join-Path $reportRoot 'closure.md'
+    Write-Utf8NoBom -Path $eventPath -Content '{"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000001"}'
+    Write-Utf8NoBom -Path $lastMessagePath -Content 'cleanup fixture final message'
+    Write-Utf8NoBom -Path $preflightPath -Content (([ordered]@{
+                operation = 'Preflight'
+                sourceRoot = $sourceRoot
+                executionRoot = $dispatchRoot
+                dispatchRoot = $dispatchRoot
+                lineSlug = $lineSlug
+                dispatchSlug = $ScenarioSlug
+            } | ConvertTo-Json -Depth 10) + "`n")
+    Write-Utf8NoBom -Path $reportPath -Content '# Cleanup fixture report'
+    $record = [ordered]@{
+        schema = 'ai-sessions.dispatch-run.v1'
+        line_slug = $lineSlug
+        dispatch_slug = $ScenarioSlug
+        source_root = $sourceRoot
+        execution_root = $dispatchRoot
+        event_stream_path = $eventPath
+        last_message_path = $lastMessagePath
+        preflight_result_path = $preflightPath
+    }
+    Write-Utf8NoBom -Path $runRecordPath -Content (($record | ConvertTo-Json -Depth 10) + "`n")
+    return [pscustomobject]@{
+        scenario_root = $scenarioRoot
+        source_root = $sourceRoot
+        dispatch_root = $dispatchRoot
+        line_slug = $lineSlug
+        dispatch_slug = $ScenarioSlug
+        run_record_path = $runRecordPath
+        event_path = $eventPath
+        preflight_path = $preflightPath
+        report_root = $reportRoot
+        report_path = $reportPath
+        report_sha256 = Get-FileSha256 -Path $reportPath
+    }
+}
+
+function Remove-Phase3CleanupScenario {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$Scenario
+    )
+
+    $fixturePathRoot = if ([string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) { $fixtureRoot } else { $script:cleanupDriveLetter + '\' }
+    if (-not (Test-PathWithinRoot -Path $Scenario.scenario_root -Root $fixturePathRoot) -or [string]::Equals((Resolve-AbsolutePath $Scenario.scenario_root), (Resolve-AbsolutePath $fixturePathRoot), [StringComparison]::OrdinalIgnoreCase)) {
+        throw ('Cleanup fixture cleanup target 超出 fixtureRoot：' + $Scenario.scenario_root)
+    }
+    if (Test-Path -LiteralPath $Scenario.dispatch_root -PathType Container) {
+        $removeResult = Invoke-Phase9GitCommand -RepositoryRoot $Scenario.source_root -Arguments @('worktree', 'remove', '--force', '--', $Scenario.dispatch_root)
+        Assert-Phase9GitCommandSucceeded -Result $removeResult
+    }
+    if (Test-Path -LiteralPath $Scenario.scenario_root) {
+        Remove-Item -LiteralPath $Scenario.scenario_root -Recurse -Force
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
+        $unmountLetter = $script:cleanupDriveLetter
+        $substOutput = & subst $unmountLetter /d 2>&1
+        $script:cleanupDriveLetter = $null
+        if ($LASTEXITCODE -ne 0) {
+            throw ('Cleanup fixture short path mapping removal failed: ' + ($substOutput -join [Environment]::NewLine))
+        }
+    }
 }
 Invoke-Case 'Inspect 最終輸出包含 runId 與 runRecordPath' {
     $result = Invoke-Inspect
@@ -1770,7 +3240,25 @@ supported" -RequiredOutput $required
 
     Invoke-Case 'Inspect 事件權威與一致性成功' {
         $result = Invoke-Inspect
-        Assert-True ($result.success -and $result.outputValid -and $result.lastMessageConsistency -eq 'Match' -and $result.finalMessageSource -eq 'event-stream' -and $script:observedExecution.success) '成功 gate 不一致。'
+        Assert-True ($result.success -and $result.outputValid -and $result.lastMessageConsistency -eq 'Match' -and $result.finalMessageSource -eq 'event-stream' -and $result.finalMessageIdentity.valid -and $script:observedExecution.success) '成功 gate 不一致。'
+    }
+    Invoke-Case 'Inspect 結案訊息錯 dispatch identity 回傳結構化 mismatch' {
+        try {
+            $wrongEvents = @(
+                @{ type = 'thread.started'; thread_id = $script:testThread }
+                @{ type = 'item.completed'; item = @{ type = 'agent_message'; text = 'design.md wrong-dispatch line-a' } }
+                @{ type = 'turn.completed'; usage = @{ input_tokens = 1; output_tokens = 1 } }
+            )
+            Write-Utf8NoBom -Path $a.event_stream_path -Content (($wrongEvents | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 }) -join "`r`n")
+            Write-Utf8NoBom -Path $a.last_message_path 'design.md wrong-dispatch line-a'
+            $result = Invoke-Inspect
+            $dispatchMismatch = @($result.finalMessageIdentity.mismatches | Where-Object { $_.field -eq 'final_message.dispatchSlug' })
+            Assert-True (-not $result.success -and -not $result.outputValid -and $result.finalMessageIdentity.valid -eq $false -and $dispatchMismatch.Count -eq 1 -and $dispatchMismatch[0].expected -ceq 'dispatch-a' -and $dispatchMismatch[0].received -ceq 'wrong-dispatch' -and $result.diagnosis.reason_code -eq 'FinalMessageIdentityMismatch') '錯誤結案身分未形成結構化 mismatch。'
+        }
+        finally {
+            Write-TestEvents $a.event_stream_path $script:testThread
+            Write-Utf8NoBom $a.last_message_path 'design.md dispatch-a line-a'
+        }
     }
     Invoke-Case 'Inspect BOM CRLF CR 與尾端換行可正規化' {
         try {
@@ -1877,6 +3365,281 @@ line-a")) {
             $bad = Add-CalibrationObservation @arguments -ExecutionResult ([pscustomobject]@{ completed = $true; processExitCode = 0; success = $false; outputValid = $false })
             Assert-True (-not $bad.calibrationEligible -and -not $script:calibrationRecord.calibration_eligible) ($state + ' 仍被列入校準。')
         }
+    }
+    $identityRecord = New-TestRun -Dispatch 'identity-case'
+    $identityRunPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'identity-case') ($identityRecord.run_id + '.json')
+    $identityRequestPath = Join-Path $fixtureRoot 'identity-request.json'
+    $identityPreflightPath = $identityRecord.preflight_result_path
+    $identityReportRoot = Join-Path $fixtureRoot '.local/ai-sessions/report/line-a'
+    $identityReportPath = Join-Path $identityReportRoot 'identity-review.md'
+    $identityRecoveryPath = Join-Path $fixtureRoot 'identity-recovery.json'
+    $identityPromptPath = Join-Path $fixtureRoot 'identity-prompt.md'
+    $identityBaseSha = 'base-sha-fixture'
+    Write-Utf8NoBom -Path $identityPromptPath -Content 'identity prompt'
+    $identityRequest = [ordered]@{
+        schema = 'ai-sessions.dispatch-request.v1'
+        operation = 'Dispatch'
+        source_root = $fixtureRoot
+        dispatch_root = $fixtureRoot
+        line_slug = 'line-a'
+        dispatch_slug = 'identity-case'
+        write_mode = 'readonly'
+        dispatch_kind = 'workflow'
+        target_path = @('identity-target.txt')
+        prepare_artifacts = @()
+        prompt_path = $identityPromptPath
+        task_type = 'fixture'
+        session_mode = 'cold-start'
+        unit_kind = 'workflow-phase'
+        requested_unit = @('identity-case')
+        failure_receipt_path = $identityRecoveryPath
+    }
+    $identityPreflight = [ordered]@{
+        operation = 'Preflight'
+        sourceRoot = $fixtureRoot
+        dispatchRoot = $fixtureRoot
+        executionRoot = $fixtureRoot
+        lineSlug = 'line-a'
+        dispatchSlug = 'identity-case'
+        baseSha = $identityBaseSha
+        worktreeCreated = $true
+    }
+    New-Item -ItemType Directory -Path $identityReportRoot -Force | Out-Null
+    Write-Utf8NoBom -Path $identityRequestPath -Content ($identityRequest | ConvertTo-Json -Depth 10)
+    Write-Utf8NoBom -Path $identityPreflightPath -Content ($identityPreflight | ConvertTo-Json -Depth 10)
+    $identityRecord | Add-Member -MemberType NoteProperty -Name request_path -Value $identityRequestPath -Force
+    $identityRecord | Add-Member -MemberType NoteProperty -Name request_sha256 -Value (Get-FileSha256 -Path $identityRequestPath) -Force
+    $identityRecord | Add-Member -MemberType NoteProperty -Name request_operation -Value 'Dispatch' -Force
+    $identityRecord.preflight_sha256 = Get-FileSha256 -Path $identityPreflightPath
+    $null = Write-DispatchRunRecord -Record $identityRecord -Update
+    Write-Utf8NoBom -Path $identityRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
+    $identityReviewerManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'identity-case' -Round 1
+    Write-ReviewerFixture -Path $identityReportPath -Manifest $identityReviewerManifest
+    $identityRecovery = [ordered]@{
+        schema = 'ai-sessions.recovery-handoff.v1'
+        operation = 'RecoveryHandoff'
+        line_slug = 'line-a'
+        dispatch_slug = 'identity-case'
+        run_chain = [ordered]@{ latest_run_record_path = $identityRunPath }
+    }
+    Write-Utf8NoBom -Path $identityRecoveryPath -Content ($identityRecovery | ConvertTo-Json -Depth 10)
+    Invoke-Case 'Identity validator 一致 request／Preflight／RunRecord／report／recovery 通過' {
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+        Assert-True ($identityResult.valid -and @($identityResult.differences).Count -eq 0 -and $identityResult.final_message_identity.valid -and $identityResult.reviewer_report.line_slug -ceq 'line-a' -and $identityResult.reviewer_report.dispatch_slug -ceq 'identity-case') ('一致 identity 未通過：' + ($identityResult.differences | ConvertTo-Json -Depth 10 -Compress))
+    }
+    Invoke-Case 'Collect identity 最終訊息錯 dispatchSlug 回報 expected received source' -Reject -ErrorPattern 'final_message.dispatchSlug' {
+        try {
+            Write-Utf8NoBom -Path $identityRecord.last_message_path -Content 'design.md dispatchSlug=wrong-dispatch lineSlug=line-a'
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $mismatch = @($identityResult.differences | Where-Object { $_.field -eq 'final_message.dispatchSlug' })
+            Assert-True (-not $identityResult.valid -and $mismatch.Count -eq 1 -and $mismatch[0].expected -ceq 'identity-case' -and $mismatch[0].received -ceq 'wrong-dispatch' -and $mismatch[0].source -ceq (Resolve-AbsolutePath -Path $identityRecord.last_message_path)) ('Collect final message mismatch 欄位不完整：' + ($identityResult.differences | ConvertTo-Json -Depth 10 -Compress))
+            throw ('final_message.dispatchSlug expected={0}; received={1}; source={2}' -f $mismatch[0].expected, $mismatch[0].received, $mismatch[0].source)
+        }
+        finally {
+            Write-Utf8NoBom -Path $identityRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
+        }
+    }
+    Invoke-Case 'Collect identity final message gate reverse mutant' {
+        $identityFunction = (Get-Command Test-DispatchCollectIdentity -CommandType Function).ScriptBlock
+        $identityFunctionText = $identityFunction.ToString()
+        $mutantIdentityText = [regex]::Replace($identityFunctionText, '(?ms)\r?\n    \$finalMessageIdentity = \$null\r?\n    if \(\$null -ne \$runRecord\) \{.*?\r?\n    \}\r?\n\r?\n    \$requestContext', "`r`n    `$finalMessageIdentity = `$null`r`n`r`n    `$requestContext", 1)
+        Assert-True ($mutantIdentityText -ne $identityFunctionText) 'F-003 reverse mutant 未移除 final message identity block。'
+        Set-Item -Path Function:\Test-DispatchCollectIdentity -Value ([scriptblock]::Create($mutantIdentityText))
+        try {
+            Write-Utf8NoBom -Path $identityRecord.last_message_path -Content 'design.md dispatchSlug=wrong-dispatch lineSlug=line-a'
+            $mutantResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            Assert-True ($mutantResult.valid) 'F-003 final message identity mutant 未暴露執行端最終訊息未驗證。'
+            Write-Phase9Evidence -Label 'F003_COLLECT_FINAL_MESSAGE_MUTANT' -Value ([ordered]@{
+                    mutation = '移除 Test-DispatchCollectIdentity 讀取 RunRecord.last_message_path 並驗證 dispatchSlug／lineSlug 的區塊。'
+                    production_mismatch = [ordered]@{ field = 'final_message.dispatchSlug'; expected = 'identity-case'; received = 'wrong-dispatch'; source = (Resolve-AbsolutePath -Path $identityRecord.last_message_path) }
+                    mutant = $mutantResult
+                })
+        }
+        finally {
+            Set-Item -Path Function:\Test-DispatchCollectIdentity -Value $identityFunction
+            Write-Utf8NoBom -Path $identityRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
+        }
+    }
+    Invoke-Case 'Identity mutant 移除 request dispatch compare 時必須失敗' {
+        try {
+            $identityRequest.dispatch_slug = 'wrong-dispatch'
+            Write-Utf8NoBom -Path $identityRequestPath -Content ($identityRequest | ConvertTo-Json -Depth 10)
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $dispatchMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'dispatch_slug' -and $_.source -ceq $identityRequestPath })
+            Assert-True (-not $identityResult.valid -and $dispatchMismatch.Count -eq 1 -and $dispatchMismatch[0].expected -ceq 'identity-case' -and $dispatchMismatch[0].received -ceq 'wrong-dispatch') 'request dispatch mismatch 未被 gate 阻擋。'
+        }
+        finally {
+            $identityRequest.dispatch_slug = 'identity-case'
+            Write-Utf8NoBom -Path $identityRequestPath -Content ($identityRequest | ConvertTo-Json -Depth 10)
+            $identityRecord.request_sha256 = Get-FileSha256 -Path $identityRequestPath
+            $null = Write-DispatchRunRecord -Record $identityRecord -Update
+        }
+    }
+    Invoke-Case 'Identity request line_slug 錯誤時拒絕回收' {
+        try {
+            $identityRequest.line_slug = 'line-b'
+            Write-Utf8NoBom -Path $identityRequestPath -Content ($identityRequest | ConvertTo-Json -Depth 20)
+            $identityRecord.request_sha256 = Get-FileSha256 -Path $identityRequestPath
+            $null = Write-DispatchRunRecord -Record $identityRecord -Update
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $lineMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'line_slug' -and $_.source -ceq $identityRequestPath })
+            Assert-True (-not $identityResult.valid -and $lineMismatch.Count -eq 1 -and $lineMismatch[0].expected -ceq 'line-a' -and $lineMismatch[0].received -ceq 'line-b') 'request line_slug mismatch 未被 gate 阻擋。'
+        }
+        finally {
+            $identityRequest.line_slug = 'line-a'
+            Write-Utf8NoBom -Path $identityRequestPath -Content ($identityRequest | ConvertTo-Json -Depth 20)
+            $identityRecord.request_sha256 = Get-FileSha256 -Path $identityRequestPath
+            $null = Write-DispatchRunRecord -Record $identityRecord -Update
+        }
+    }
+    Invoke-Case 'Identity 以另一份 request 取代原始 request 時 request_sha256 交叉驗證拒絕' {
+        $alternateRequestPath = Join-Path $fixtureRoot 'identity-request-alternate.json'
+        try {
+            $alternateRequest = [ordered]@{}
+            foreach ($property in $identityRequest.GetEnumerator()) { $alternateRequest[$property.Key] = $property.Value }
+            $alternateRequest.task_type = 'alternate-request'
+            Write-Utf8NoBom -Path $alternateRequestPath -Content ($alternateRequest | ConvertTo-Json -Depth 20)
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequestPath $alternateRequestPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $requestHashMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'request_sha256' -or $_.field -eq 'run_record.request_sha256' })
+            Assert-True (-not $identityResult.valid -and @($identityResult.differences | Where-Object { $_.field -eq 'request.path' }).Count -eq 1 -and $requestHashMismatch.Count -eq 2) ('alternate request 未被 request_sha256 交叉驗證拒絕：' + ($identityResult.differences | ConvertTo-Json -Depth 12 -Compress))
+        }
+        finally {
+            if (Test-Path -LiteralPath $alternateRequestPath -PathType Leaf) { Remove-Item -LiteralPath $alternateRequestPath -Force }
+        }
+    }
+    Invoke-Case 'Identity report path 移至其他 dispatch directory 拒絕' {
+        $wrongReportRoot = Join-Path $identityReportRoot 'other-dispatch'
+        $wrongReportPath = Join-Path $wrongReportRoot 'identity-review.md'
+        New-Item -ItemType Directory -Path $wrongReportRoot -Force | Out-Null
+        Copy-Item -LiteralPath $identityReportPath -Destination $wrongReportPath -Force
+        try {
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $wrongReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $pathMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'report.path' })
+            Assert-True (-not $identityResult.valid -and $pathMismatch.Count -eq 1 -and $pathMismatch[0].received -ceq $wrongReportPath) '錯誤 report path 未被拒絕。'
+        }
+        finally {
+            Remove-Item -LiteralPath $wrongReportRoot -Recurse -Force
+        }
+    }
+    Invoke-Case 'Identity recovery target 不同 line 拒絕' {
+        $wrongRecoveryPath = Join-Path $fixtureRoot 'identity-recovery-wrong-line.json'
+        $wrongRecovery = [ordered]@{
+            schema = 'ai-sessions.recovery-handoff.v1'
+            operation = 'RecoveryHandoff'
+            line_slug = 'line-b'
+            dispatch_slug = 'identity-case'
+            run_chain = [ordered]@{ latest_run_record_path = $identityRunPath }
+        }
+        Write-Utf8NoBom -Path $wrongRecoveryPath -Content ($wrongRecovery | ConvertTo-Json -Depth 10)
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $wrongRecoveryPath
+        $lineMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'recovery.line_slug' })
+        Assert-True (-not $identityResult.valid -and $lineMismatch.Count -eq 1 -and $lineMismatch[0].expected -ceq 'line-a' -and $lineMismatch[0].received -ceq 'line-b') '錯誤 recovery target 未被拒絕。'
+    }
+    Invoke-Case 'Identity RunRecord path 跨 dispatch 拒絕' {
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $aPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+        Assert-True (-not $identityResult.valid -and @($identityResult.differences | Where-Object { $_.field -eq 'run_record' }).Count -gt 0) '跨 dispatch RunRecord 未被拒絕。'
+    }
+    $identityContinuationRecord = New-TestRun -Dispatch 'identity-case' -Previous $identityRecord
+    $identityContinuationRunPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'identity-case') ($identityContinuationRecord.run_id + '.json')
+    Write-Utf8NoBom -Path $identityContinuationRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
+    $identityContinuationRecoveryPath = Join-Path $fixtureRoot 'identity-continuation-recovery.json'
+    Write-Utf8NoBom -Path $identityContinuationRecoveryPath -Content (([ordered]@{
+                schema = 'ai-sessions.recovery-handoff.v1'
+                operation = 'RecoveryHandoff'
+                line_slug = 'line-a'
+                dispatch_slug = 'identity-case'
+                run_chain = [ordered]@{ latest_run_record_path = $identityContinuationRunPath }
+            } | ConvertTo-Json -Depth 10))
+    Invoke-Case 'Identity continuation 沿祖先 RunRecord 回溯 request 識別並保留最新 final message' {
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityContinuationRecoveryPath
+        $requestSource = $identityResult.request_identity_source
+        Assert-True ($identityResult.valid -and $identityResult.final_message_identity.valid -and [string]$requestSource.status -eq 'found' -and [string]$requestSource.source -eq 'ancestor' -and [string]$requestSource.run_id -ceq [string]$identityRecord.run_id -and [string]$requestSource.path -ceq (Resolve-AbsolutePath -Path $identityRunPath) -and [string]$identityResult.run_record_path -ceq (Resolve-AbsolutePath -Path $identityContinuationRunPath)) ('continuation request identity 回溯未通過：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
+    }
+    Invoke-Case 'Identity continuation latest final message 舊訊息拒絕' -Reject -ErrorPattern 'final_message\.(required_identifier|dispatchSlug|lineSlug)' {
+        try {
+            Write-Utf8NoBom -Path $identityContinuationRecord.last_message_path -Content '補件前舊訊息'
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityContinuationRecoveryPath
+            $mismatch = @($identityResult.differences | Where-Object { $_.field -like 'final_message.*' })
+            Assert-True (-not $identityResult.valid -and $mismatch.Count -eq 1) ('續行 latest final message 舊訊息未拒絕：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
+            throw ('{0} expected={1}; received={2}; source={3}' -f $mismatch[0].field, $mismatch[0].expected, $mismatch[0].received, $mismatch[0].source)
+        }
+        finally {
+            Write-Utf8NoBom -Path $identityContinuationRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
+        }
+    }
+    $identityLaunchFailedRecord = New-TestRun -Dispatch 'identity-case' -Previous $identityContinuationRecord
+    $identityLaunchFailedRecord.launch_state = 'launch-failed'
+    $identityLaunchFailedRecord.failure = [ordered]@{
+        status = 'failed'
+        resumable = $false
+        phase = 'start'
+        reason_code = 'LaunchFailed'
+        message = 'fixture launch-failed attempt'
+        recorded_at_utc = [DateTime]::UtcNow.ToString('o')
+        observation = [ordered]@{}
+        original_output = ''
+    }
+    $null = Write-DispatchRunRecord -Record $identityLaunchFailedRecord -Update
+    $identitySkippedContinuationRecord = New-TestRun -Dispatch 'identity-case' -Previous $identityLaunchFailedRecord
+    $identitySkippedContinuationRunPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'identity-case') ($identitySkippedContinuationRecord.run_id + '.json')
+    Write-Utf8NoBom -Path $identitySkippedContinuationRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
+    $identitySkippedContinuationRecoveryPath = Join-Path $fixtureRoot 'identity-skipped-continuation-recovery.json'
+    Write-Utf8NoBom -Path $identitySkippedContinuationRecoveryPath -Content (([ordered]@{
+                schema = 'ai-sessions.recovery-handoff.v1'
+                operation = 'RecoveryHandoff'
+                line_slug = 'line-a'
+                dispatch_slug = 'identity-case'
+                run_chain = [ordered]@{ latest_run_record_path = $identitySkippedContinuationRunPath }
+            } | ConvertTo-Json -Depth 10))
+    Invoke-Case 'Identity continuation 沿鏈略過 launch-failed 嘗試' {
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identitySkippedContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identitySkippedContinuationRecoveryPath
+        $skipped = @($identityResult.request_identity_source.skipped_attempts | Where-Object { [string]$_.run_id -ceq [string]$identityLaunchFailedRecord.run_id })
+        Assert-True ($identityResult.valid -and [string]$identityResult.request_identity_source.run_id -ceq [string]$identityRecord.run_id -and $skipped.Count -eq 1) ('launch-failed 略過未被驗證：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
+    }
+    $identitySavedAttemptParentRunId = $identityContinuationRecord.attempt_parent_run_id
+    $identitySavedPreviousRunId = $identityContinuationRecord.previous_run_id
+    $identitySavedRequestedThreadId = $identityContinuationRecord.requested_thread_id
+    $identityContinuationRecord | Add-Member -MemberType NoteProperty -Name request_operation -Value 'Dispatch' -Force
+    Invoke-Case 'Identity continuation 無可用祖先仍拒絕 request sha256' -Reject -ErrorPattern 'run_record.request_sha256' {
+        try {
+            $identityContinuationRecord.attempt_parent_run_id = $null
+            $identityContinuationRecord.previous_run_id = $null
+            $identityContinuationRecord.requested_thread_id = $null
+            $null = Write-DispatchRunRecord -Record $identityContinuationRecord -Update
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityContinuationRecoveryPath
+            $mismatch = @($identityResult.differences | Where-Object { $_.field -eq 'run_record.request_sha256' })
+            Assert-True (-not $identityResult.valid -and [string]$identityResult.request_identity_source.status -eq 'missing' -and $mismatch.Count -eq 1) ('無可用祖先仍未拒絕：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
+            throw ('run_record.request_sha256 expected={0}; received={1}; source={2}' -f $mismatch[0].expected, $mismatch[0].received, $mismatch[0].source)
+        }
+        finally {
+            $identityContinuationRecord.attempt_parent_run_id = $identitySavedAttemptParentRunId
+            $identityContinuationRecord.previous_run_id = $identitySavedPreviousRunId
+            $identityContinuationRecord.requested_thread_id = $identitySavedRequestedThreadId
+            $null = Write-DispatchRunRecord -Record $identityContinuationRecord -Update
+        }
+    }
+    $identitySavedContinuationParentRunId = $identityContinuationRecord.attempt_parent_run_id
+    $identitySavedContinuationPreviousRunId = $identityContinuationRecord.previous_run_id
+    Invoke-Case 'Identity continuation 跨 dispatch chain 拒絕' -Reject -ErrorPattern 'run_record.request_chain' {
+        try {
+            $crossDispatchParent = Read-DispatchRunRecord -Path $aPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'dispatch-a'
+            $identityContinuationRecord.attempt_parent_run_id = $crossDispatchParent.run_id
+            $identityContinuationRecord.previous_run_id = $crossDispatchParent.run_id
+            $null = Write-DispatchRunRecord -Record $identityContinuationRecord -Update
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityContinuationRecoveryPath
+            $mismatch = @($identityResult.differences | Where-Object { $_.field -eq 'run_record.request_chain' })
+            Assert-True (-not $identityResult.valid -and $mismatch.Count -eq 1) ('跨 dispatch chain 未拒絕：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
+            throw ('run_record.request_chain expected={0}; received={1}; source={2}' -f $mismatch[0].expected, $mismatch[0].received, $mismatch[0].source)
+        }
+        finally {
+            $identityContinuationRecord.attempt_parent_run_id = $identitySavedContinuationParentRunId
+            $identityContinuationRecord.previous_run_id = $identitySavedContinuationPreviousRunId
+            $null = Write-DispatchRunRecord -Record $identityContinuationRecord -Update
+        }
+    }
+    Invoke-Case 'Collect identity gate 先於 reviewer finding recovery' {
+        $collectText = ($functions | Where-Object { $_.Name -eq 'Invoke-Collect' }).Extent.Text
+        Assert-True ($collectText.IndexOf('Test-DispatchCollectIdentity', [StringComparison]::Ordinal) -ge 0 -and $collectText.IndexOf('Test-DispatchCollectIdentity', [StringComparison]::Ordinal) -lt $collectText.IndexOf('Get-ReviewerFindingsForCollect', [StringComparison]::Ordinal)) 'Collect 未在 reviewer findings 前執行 identity gate。'
     }
 }
 $DispatchSlug = 'start-case'
@@ -2237,6 +4000,34 @@ if ($Phase -ge 3) {
     # Git 替身只提供狀態與路徑清單，baseline 與 Collect 使用真實檔案和 JSON。
     function Invoke-GitCommand {
         param($WorkingDirectory, $Arguments, $StandardInput, [switch]$AllowFailure)
+        if ($script:cleanupUseRealGit) {
+            if ($script:cleanupRemoveFailure -and @($Arguments | ForEach-Object { [string]$_ }) -contains 'remove') {
+                return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fixture removal failure' }
+            }
+            $previousErrorActionPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = 'Continue'
+                $gitOutput = & git -C $WorkingDirectory @Arguments 2>&1
+            }
+            finally {
+                $ErrorActionPreference = $previousErrorActionPreference
+            }
+            $exitCode = $LASTEXITCODE
+            $outputLines = @($gitOutput | ForEach-Object { [string]$_ })
+            if (-not [string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
+                $sourcePrefix = ((Resolve-AbsolutePath -Path $fixtureRoot).TrimEnd('\', '/')).Replace('\', '/') + '/'
+                $mappedPrefix = $script:cleanupDriveLetter.TrimEnd('\', '/') + '/'
+                $outputLines = @($outputLines | ForEach-Object {
+                        [regex]::Replace([string]$_, [regex]::Escape($sourcePrefix), $mappedPrefix, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
+                    })
+            }
+            $outputText = $outputLines -join [Environment]::NewLine
+            return [pscustomobject]@{
+                ExitCode = $exitCode
+                StdOut = if ($exitCode -eq 0) { $outputText } else { '' }
+                StdErr = if ($exitCode -eq 0) { '' } else { $outputText }
+            }
+        }
         $command = $Arguments -join ' '
         $output = ''
         $realGitRoots = @($script:phase9RealDispatchGitSourceRoot, $script:phase9RealDispatchGitRoot) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }
@@ -2362,6 +4153,39 @@ if ($Phase -ge 3) {
 無
 "
         Invoke-Case -Name $Name -Action $Scenario -Reject:$Reject -ErrorPattern $ErrorPattern
+    }
+    Invoke-BaselineCase 'Collect worktree 僅 Reviewer report 時執行 structural-only 驗證' {
+        $worktreeReviewerPath = Join-Path $reviewerRoot ('worktree-structural-only-' + $DispatchSlug + '.md')
+        $worktreeJudgment = @([ordered]@{
+                id = 'F-015'
+                status = 'closed'
+                severity = 'Minor'
+                evidence = @([ordered]@{ path = $worktreeReviewerPath; line = 1 })
+            })
+        $worktreePrevious = @([ordered]@{ id = 'F-015'; status = 'open'; severity = 'Minor' })
+        $worktreeManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Round 1 -PreviousStatus $worktreePrevious -PreviousOpen 1 -CurrentJudgment $worktreeJudgment
+        Write-ReviewerFixture -Path $worktreeReviewerPath -Manifest $worktreeManifest -PreviousProse @('- [F-015] [Minor] 未閉合 - worktree structural-only fixture') -CurrentJudgment $worktreeJudgment
+        $worktreeLedgerPath = Join-Path $fixtureRoot '.local\ai-sessions\history\line-a\review-finding-ledger.json'
+        $worktreeLedgerExistsBefore = Test-Path -LiteralPath $worktreeLedgerPath -PathType Leaf
+        $worktreeLedgerShaBefore = if ($worktreeLedgerExistsBefore) { Get-FileSha256 -Path $worktreeLedgerPath } else { $null }
+        $ReviewerReportPath = $worktreeReviewerPath
+        $RequestPath = ''
+        $RunRecordPath = ''
+        $RecoveryHandoffPath = ''
+        $result = Invoke-Collect
+        $worktreeLedgerExistsAfter = Test-Path -LiteralPath $worktreeLedgerPath -PathType Leaf
+        $worktreeLedgerShaAfter = if ($worktreeLedgerExistsAfter) { Get-FileSha256 -Path $worktreeLedgerPath } else { $null }
+        $worktreeReviewerFindingsHasLedger = $false
+        if ($null -ne $result.reviewerFindings) {
+            if ($result.reviewerFindings -is [System.Collections.IDictionary]) {
+                $worktreeReviewerFindingsHasLedger = $result.reviewerFindings.Contains('ledger')
+            }
+            else {
+                $worktreeReviewerFindingsHasLedger = $null -ne $result.reviewerFindings.PSObject.Properties['ledger']
+            }
+        }
+        Assert-True ($result.outputValid -and $result.collect_mode -ceq 'structural-only' -and $result.reviewerFindings.valid -and -not $worktreeReviewerFindingsHasLedger) 'worktree structural-only Collect 輸出異常。'
+        Assert-True ($worktreeLedgerExistsBefore -eq $worktreeLedgerExistsAfter -and $worktreeLedgerShaBefore -ceq $worktreeLedgerShaAfter) 'worktree structural-only Collect 不應建立或修改 finding ledger。'
     }
     Invoke-BaselineCase 'Baseline JSON 日期往返與 absent 狀態' {
         $record = Read-DispatchBaseline -Path $baseline.Path -Sha256 $baseline.Sha256 -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha $BaseSha
@@ -2598,12 +4422,501 @@ if ($Phase -ge 3) {
         Assert-True (-not $collectText.Contains('$allFiles = @($trackedDiff + $untrackedFiles') -and $collectText.Contains('$allFiles = @($dispatchDiff)') -and $collectText.Contains('Resolve-DispatchBaselineBinding')) '舊歸屬路徑殘留。'
         Assert-True ($preflightText.IndexOf('Apply-SourceCarryIn') -lt $preflightText.IndexOf('New-DispatchBaseline') -and $preflightText -notmatch "'commit'") 'baseline 建立順序或 commit 約束不符。'
     }
+
+    Invoke-Case 'Phase 3 F-004 Cleanup 缺少 Preflight result 一律拒絕並保留 worktree' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug ('cleanup-preflight-required-' + $script:caseCount)
+        $cleanupFunction = (Get-Command Invoke-Cleanup -CommandType Function).ScriptBlock
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $null
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            $caughtResult = $null
+            try { Invoke-Cleanup | Out-Null } catch { $caughtResult = $_.Exception.Data['operationResult'] }
+            Assert-True ($null -ne $caughtResult -and $caughtResult.status -eq 'preflight-rejected' -and $caughtResult.failure_code -eq 'CleanupPreflightResultRequired' -and (Test-Path -LiteralPath $scenario.dispatch_root -PathType Container)) ('Cleanup 缺少 Preflight result 未拒絕或已移除 worktree：' + (ConvertTo-Json -InputObject $caughtResult -Depth 20 -Compress))
+
+            $cleanupText = $cleanupFunction.ToString()
+            $fixedPreflightGuard = "if ([string]::IsNullOrWhiteSpace(`$PreflightResultPath)) {"
+            Assert-True $cleanupText.Contains($fixedPreflightGuard) 'F-004 reverse mutant 找不到 Cleanup preflight guard。'
+            $mutantCleanupText = $cleanupText.Replace($fixedPreflightGuard, 'if ($false) {')
+            Set-Item -Path Function:\Invoke-Cleanup -Value ([scriptblock]::Create($mutantCleanupText))
+            try {
+                $WhatIfPreference = $true
+                $mutantCaughtResult = $null
+                try { Invoke-Cleanup | Out-Null } catch { $mutantCaughtResult = $_.Exception.Data['operationResult'] }
+                Assert-True ($null -ne $mutantCaughtResult -and $mutantCaughtResult.failure_code -ne 'CleanupPreflightResultRequired' -and (Test-Path -LiteralPath $scenario.dispatch_root -PathType Container)) 'F-004 reverse mutant 未暴露缺少 preflight gate。'
+                Write-Phase9Evidence -Label 'F004_CLEANUP_PREFLIGHT_MUTANT' -Value ([ordered]@{
+                        mutation = '將 Cleanup 缺少 PreflightResultPath 的早期拒絕條件改為 if ($false)。'
+                        production = $caughtResult
+                        mutant = $mutantCaughtResult
+                    })
+            }
+            finally {
+                Set-Item -Path Function:\Invoke-Cleanup -Value $cleanupFunction
+            }
+        }
+        finally {
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 T010 Cleanup 成功保存同線報告與 referenced evidence' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug ('cleanup-success-' + $script:caseCount)
+        $script:cleanupUseRealGit = $true
+        $script:cleanupRemoveFailure = $false
+        $script:cleanupPreserveFailureStack = ''
+        $script:cleanupPreserveOriginal = (Get-Command Preserve-CleanupFile -CommandType Function).ScriptBlock
+        Set-Item -Path Function:\Preserve-CleanupFile -Value ([scriptblock]::Create(@'
+param($Item, $SourceRoot, $DispatchRoot)
+try { & $script:cleanupPreserveOriginal -Item $Item -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot }
+catch { $script:cleanupPreserveFailureStack = $_.ScriptStackTrace; throw }
+'@))
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            $result = Invoke-Cleanup
+            Assert-True ($result.schema -eq 'ai-sessions.dispatch-cleanup-result.v1' -and $result.status -eq 'completed' -and $result.worktree_removed -and @($result.files).Count -ge 5) 'Cleanup 成功結果或保存 inventory 不完整。'
+            $destinationReport = Join-Path $scenario.source_root '.local/ai-sessions/report/line-a/closure.md'
+            Assert-True ((Test-Path -LiteralPath $destinationReport -PathType Leaf) -and -not (Test-Path -LiteralPath $scenario.dispatch_root -PathType Container)) 'Cleanup 未保存 report 或未移除 dispatch worktree。'
+            Assert-True ((Get-FileSha256 -Path $destinationReport) -eq $scenario.report_sha256) 'Cleanup report SHA-256 readback 不一致。'
+        }
+        catch {
+            throw ($_.Exception.Message + '; PreserveStack=' + $script:cleanupPreserveFailureStack + '; ErrorStack=' + $_.ScriptStackTrace + '; Position=' + $_.InvocationInfo.PositionMessage)
+        }
+        finally {
+            Set-Item -Path Function:\Preserve-CleanupFile -Value $script:cleanupPreserveOriginal
+            $script:cleanupPreserveOriginal = $null
+            $script:cleanupPreserveFailureStack = ''
+            $script:cleanupUseRealGit = $false
+            $script:cleanupRemoveFailure = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 T010 Cleanup 來源變動首次保存即拒絕' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug ('cleanup-source-change-' + $script:caseCount)
+        $script:cleanupUseRealGit = $true
+        $script:cleanupRemoveFailure = $false
+        $script:cleanupHashMutationTarget = $scenario.event_path
+        $script:cleanupHashMutated = $false
+        $originalHashFunction = (Get-Command Get-FileSha256 -CommandType Function).ScriptBlock
+        Set-Item -Path Function:\Get-FileSha256 -Value ([scriptblock]::Create(@'
+param([string]$Path)
+if (-not $script:cleanupHashMutated -and [string]::Equals((Resolve-AbsolutePath $Path), (Resolve-AbsolutePath $script:cleanupHashMutationTarget), [StringComparison]::OrdinalIgnoreCase)) {
+    Write-Utf8NoBom -Path $Path -Content 'cleanup source changed during preservation'
+    $script:cleanupHashMutated = $true
+}
+$bytes = [IO.File]::ReadAllBytes($Path)
+$sha256 = [Security.Cryptography.SHA256]::Create()
+try { $hash = ([BitConverter]::ToString($sha256.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+finally { $sha256.Dispose() }
+return $hash
+'@))
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            $caughtResult = $null
+            try { Invoke-Cleanup | Out-Null } catch { $caughtResult = $_.Exception.Data['operationResult'] }
+            Assert-True ($script:cleanupHashMutated -and $null -ne $caughtResult -and $caughtResult.status -eq 'preservation-failed' -and $caughtResult.failure_code -eq 'SourceChangedDuringPreservation') ('Cleanup 未在來源內容變動時保留首次失敗與 preservation gate：' + (ConvertTo-Json -InputObject $caughtResult -Depth 20 -Compress))
+        }
+        finally {
+            Set-Item -Path Function:\Get-FileSha256 -Value $originalHashFunction
+            $script:cleanupHashMutationTarget = $null
+            $script:cleanupHashMutated = $false
+            $script:cleanupUseRealGit = $false
+            $script:cleanupRemoveFailure = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 T010 Cleanup destination conflict 拒絕不同 SHA-256' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug ('cleanup-destination-conflict-' + $script:caseCount)
+        $script:cleanupUseRealGit = $true
+        $script:cleanupRemoveFailure = $false
+        try {
+            $destinationReport = Join-Path $scenario.source_root '.local/ai-sessions/report/line-a/closure.md'
+            Write-Utf8NoBom -Path $destinationReport -Content 'conflicting destination'
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            $caughtResult = $null
+            try { Invoke-Cleanup | Out-Null } catch { $caughtResult = $_.Exception.Data['operationResult'] }
+            Assert-True ($null -ne $caughtResult -and $caughtResult.status -eq 'preservation-failed' -and $caughtResult.failure_code -eq 'CleanupDestinationConflict' -and (Test-Path -LiteralPath $scenario.dispatch_root -PathType Container)) ('Cleanup destination conflict 未 fail-closed 或未保留 worktree：' + (ConvertTo-Json -InputObject $caughtResult -Depth 20 -Compress))
+        }
+        finally {
+            $script:cleanupUseRealGit = $false
+            $script:cleanupRemoveFailure = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 T010 Git removal failure 保存 preservation evidence 並保留 worktree' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug ('cleanup-removal-failure-' + $script:caseCount)
+        $script:cleanupUseRealGit = $true
+        $script:cleanupRemoveFailure = $true
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            try { $result = Invoke-Cleanup } catch { throw ($_.Exception.Message + '; ErrorStack=' + $_.ScriptStackTrace + '; Position=' + $_.InvocationInfo.PositionMessage) }
+            Assert-True ($result.status -eq 'removal-failed' -and -not $result.worktree_removed -and (Test-Path -LiteralPath $scenario.dispatch_root -PathType Container) -and (Test-Path -LiteralPath (Join-Path $scenario.source_root '.local/ai-sessions/report/line-a/closure.md') -PathType Leaf)) 'Git removal failure 未保存 report 或錯誤標記。'
+        }
+        finally {
+            $script:cleanupUseRealGit = $false
+            $script:cleanupRemoveFailure = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 T010 Cleanup source protection 與 boundary mutant' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug ('cleanup-boundary-' + $script:caseCount)
+        $script:cleanupUseRealGit = $true
+        $script:cleanupRemoveFailure = $false
+        $originalCleanupFunction = (Get-Command Invoke-Cleanup -CommandType Function).ScriptBlock
+        try {
+            $outsidePath = Join-Path $scenario.scenario_root 'outside-evidence.jsonl'
+            Write-Utf8NoBom -Path $outsidePath -Content 'outside'
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($outsidePath)
+            $ReportPath = @()
+            $ResultPath = $null
+            $boundaryRejected = $false
+            try { Invoke-Cleanup | Out-Null } catch { $boundaryRejected = $_.Exception.Message -match 'CleanupSourceBoundary' }
+            Assert-True $boundaryRejected 'Cleanup 未拒絕 dispatch worktree 外的 evidence。'
+
+            $needle = 'if (-not [string]::Equals($dispatchRootPath, $expectedDispatchRoot, [StringComparison]::OrdinalIgnoreCase)) {'
+            $cleanupText = $originalCleanupFunction.ToString()
+            Assert-True $cleanupText.Contains($needle) 'Cleanup boundary mutant 缺少 production guard marker。'
+            $mutantText = $cleanupText.Replace($needle, 'if ($false) {')
+            Set-Item -Path Function:\Invoke-Cleanup -Value ([scriptblock]::Create($mutantText))
+            $DispatchSlug = 'expected-boundary'
+            $mutantPreflight = ConvertFrom-DispatchJson (Get-Content -LiteralPath $scenario.preflight_path -Raw -Encoding UTF8)
+            $mutantPreflight.dispatchSlug = $DispatchSlug
+            Write-Utf8NoBom -Path $scenario.preflight_path -Content ($mutantPreflight | ConvertTo-Json -Depth 20)
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $null
+            $EvidencePath = @()
+            $mutantResult = Invoke-Cleanup
+            Assert-True ($mutantResult.status -eq 'completed' -and $mutantResult.worktree_removed) 'Cleanup boundary mutant 未被 focused negative case 觸發。'
+            Write-Phase9Evidence -Label 'T010_CLEANUP_BOUNDARY_MUTANT' -Value ([ordered]@{ normal = 'rejected'; mutant = 'completed'; mutant_detected = $true })
+        }
+        finally {
+            Set-Item -Path Function:\Invoke-Cleanup -Value $originalCleanupFunction
+            $script:cleanupUseRealGit = $false
+            $script:cleanupRemoveFailure = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
 }
 if ($Phase -ge 4) {
+    $phase4EvidenceRoot = Join-Path $fixtureRoot ('phase4-evidence-' + $script:caseCount)
+    New-Item -ItemType Directory -Path (Join-Path $phase4EvidenceRoot '.local/ai-sessions/history') -Force | Out-Null
+    Initialize-Phase9IsolatedGitRepository -SourceRoot $phase4EvidenceRoot -SourceScriptPath $sourcePath -TargetRelativePath 'tracked.txt'
+    $phase4EvidenceTrackedPath = Join-Path $phase4EvidenceRoot 'tracked.txt'
+    Write-Utf8NoBom -Path $phase4EvidenceTrackedPath -Content 'phase4 tracked mutation'
+    $phase4EvidenceUntrackedPath = Join-Path $phase4EvidenceRoot 'untracked.txt'
+    Write-Utf8NoBom -Path $phase4EvidenceUntrackedPath -Content 'phase4 untracked content'
+    $phase4EvidenceDeclaredScratchRoot = Join-Path $phase4EvidenceRoot '.local/ai-sessions/scratch/phase9'
+
+    Invoke-Case 'Phase 4 T011 evidence runner 保存 execution root、完整 HEAD 與 content fingerprint' {
+        $binding = New-DispatchEvidenceBinding -ExecutionRoot $phase4EvidenceRoot -EvidencePosition ([ordered]@{ report_path = (Join-Path $phase4EvidenceRoot 'report.md') })
+        $untrackedEntry = @($binding.untracked_files | Where-Object { $_.path -ceq 'untracked.txt' })
+        Assert-True ($binding.evidence_kind -eq 'real-dispatch' -and $binding.execution_root -eq (ConvertTo-Phase9ComparablePath -Path $phase4EvidenceRoot) -and $binding.head -match '^[a-f0-9]{40}$' -and $binding.uncommitted_content_fingerprint -match '^[a-f0-9]{64}$' -and $untrackedEntry.Count -eq 1 -and $untrackedEntry[0].byte_length -eq ([IO.File]::ReadAllBytes($phase4EvidenceUntrackedPath)).Length -and $binding.commands.head -and $binding.commands.tracked_diff -and $binding.commands.untracked) ('T011 evidence binding 欄位不足：' + ($binding | ConvertTo-Json -Depth 30 -Compress))
+
+        $productionFunction = (Get-Command New-DispatchEvidenceBinding -CommandType Function).ScriptBlock.ToString()
+        $fingerprintAssignment = '$binding.uncommitted_content_fingerprint = Get-DispatchByteArraySha256 -Bytes ([Text.Encoding]::UTF8.GetBytes($canonicalJson))'
+        Assert-True $productionFunction.Contains($fingerprintAssignment) 'T011 mutant marker 不存在。'
+        $mutantFunction = $productionFunction.Replace($fingerprintAssignment, '$binding.uncommitted_content_fingerprint = Get-DispatchByteArraySha256 -Bytes ([Text.Encoding]::UTF8.GetBytes(''mutant-content''))')
+        Set-Item -Path Function:\New-DispatchEvidenceBinding_Mutant -Value ([scriptblock]::Create($mutantFunction.Replace('function New-DispatchEvidenceBinding', 'function New-DispatchEvidenceBinding_Mutant')))
+        try {
+            $mutant = New-DispatchEvidenceBinding_Mutant -ExecutionRoot $phase4EvidenceRoot -EvidencePosition ([ordered]@{})
+            Assert-True ($mutant.uncommitted_content_fingerprint -ne $binding.uncommitted_content_fingerprint) 'T011 content fingerprint mutant 未被案例暴露。'
+            Write-Phase9Evidence -Label 'T011_EVIDENCE_BINDING_MUTANT' -Value ([ordered]@{ normal = $binding; mutant = $mutant; mutation = '將 canonical content fingerprint 輸入替換為固定字串。' })
+        }
+        finally {
+            Remove-Item -Path Function:\New-DispatchEvidenceBinding_Mutant -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Invoke-Case 'Phase 4 T012 declared scratch 清理與 undeclared artifact gate' {
+        $before = Get-Phase9EvidenceSnapshot -ExecutionRoot $phase4EvidenceRoot -DeclaredScratchRoot $phase4EvidenceDeclaredScratchRoot -EvidenceKind 'fixture'
+        $declaredFile = Join-Path $phase4EvidenceDeclaredScratchRoot 'declared.txt'
+        Write-Utf8NoBom -Path $declaredFile -Content 'declared phase9 artifact'
+        $cleanup = Remove-Phase9NewScratchEntries -DeclaredScratchRoot $phase4EvidenceDeclaredScratchRoot -BeforeInventory @($before.inventory_declared_scratch)
+        $after = Get-Phase9EvidenceSnapshot -ExecutionRoot $phase4EvidenceRoot -DeclaredScratchRoot $phase4EvidenceDeclaredScratchRoot -EvidenceKind 'fixture'
+        $cleanGate = Test-Phase9EvidenceBoundary -Before $before -After $after -ScratchCleanup $cleanup
+        Assert-True ($cleanGate.status -eq 'PASS' -and @($cleanup.remaining).Count -eq 0) ('T012 declared scratch cleanup 未通過：' + ($cleanGate | ConvertTo-Json -Depth 30 -Compress))
+
+        $raceRoot = Join-Path $phase4EvidenceDeclaredScratchRoot 'race'
+        $raceEntry = Join-Path $raceRoot 'nested\entry.txt'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $raceEntry) -Force | Out-Null
+        Write-Utf8NoBom -Path $raceEntry -Content 'simulated concurrent cleanup'
+        $previousRemoveItemFunction = Get-Item -Path Function:\Remove-Item -ErrorAction SilentlyContinue
+        $removalProbeState = [pscustomobject]@{ attempt = 0 }
+        $removalProbeFunction = {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory)][string]$LiteralPath,
+                [switch]$Recurse,
+                [switch]$Force
+            )
+
+            $removalProbeState.attempt++
+            if ($removalProbeState.attempt -lt 3) {
+                throw [IO.DirectoryNotFoundException]::new('simulated concurrent removal before target disappearance')
+            }
+            Microsoft.PowerShell.Management\Remove-Item -LiteralPath $LiteralPath -Recurse:$Recurse -Force:$Force | Out-Null
+            throw [IO.DirectoryNotFoundException]::new('simulated concurrent removal reported after target disappearance')
+        }.GetNewClosure()
+        Set-Item -Path Function:\Remove-Item -Value $removalProbeFunction
+        try {
+            $raceCleanup = Remove-Phase9NewScratchEntries -DeclaredScratchRoot $raceRoot -BeforeInventory @()
+            Assert-True ($raceCleanup.status -eq 'PASS' -and @($raceCleanup.remaining).Count -eq 0 -and -not (Test-Path -LiteralPath $raceEntry -PathType Leaf) -and $removalProbeState.attempt -eq 3) ('T012 concurrent deletion postcondition 未視為已完成：' + ($raceCleanup | ConvertTo-Json -Depth 30 -Compress))
+        }
+        finally {
+            if ($null -ne $previousRemoveItemFunction) {
+                Set-Item -Path Function:\Remove-Item -Value $previousRemoveItemFunction.ScriptBlock
+            }
+            else {
+                Microsoft.PowerShell.Management\Remove-Item -Path Function:\Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $raceRoot) {
+                Microsoft.PowerShell.Management\Remove-Item -LiteralPath $raceRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        $residualRoot = Join-Path $phase4EvidenceDeclaredScratchRoot 'residual'
+        $residualPath = Join-Path $residualRoot 'residual.txt'
+        New-Item -ItemType Directory -Path $residualRoot -Force | Out-Null
+        Write-Utf8NoBom -Path $residualPath -Content 'deliberate cleanup residue'
+        $previousResidualRemoveItemFunction = Get-Item -Path Function:\Remove-Item -ErrorAction SilentlyContinue
+        $residualRemovalFunction = {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory)][string]$LiteralPath,
+                [switch]$Recurse,
+                [switch]$Force
+            )
+
+            return
+        }.GetNewClosure()
+        Set-Item -Path Function:\Remove-Item -Value $residualRemovalFunction
+        try {
+            $residualBeforeInventory = @()
+            $residualCleanup = Remove-Phase9NewScratchEntries -DeclaredScratchRoot $residualRoot -BeforeInventory $residualBeforeInventory
+            Assert-True ($residualCleanup.status -eq 'FAIL' -and @($residualCleanup.remaining) -contains 'residual.txt' -and (Test-Path -LiteralPath $residualPath -PathType Leaf)) ('T012 residual file 未使 cleanup 失敗：' + ($residualCleanup | ConvertTo-Json -Depth 30 -Compress))
+
+            $cleanupFunction = (Get-Command Remove-Phase9NewScratchEntries -CommandType Function).ScriptBlock.ToString()
+            $cleanupStatusExpression = "status = if (`$remaining.Count -eq 0) { 'PASS' } else { 'FAIL' }"
+            Assert-True $cleanupFunction.Contains($cleanupStatusExpression) 'T012 cleanup postcondition mutant marker 不存在。'
+            $cleanupMutantText = $cleanupFunction.Replace($cleanupStatusExpression, "status = 'PASS'")
+            Set-Item -Path Function:\Remove-Phase9NewScratchEntries_Mutant -Value ([scriptblock]::Create($cleanupMutantText.Replace('function Remove-Phase9NewScratchEntries', 'function Remove-Phase9NewScratchEntries_Mutant')))
+            try {
+                $mutantResidualCleanup = Remove-Phase9NewScratchEntries_Mutant -DeclaredScratchRoot $residualRoot -BeforeInventory $residualBeforeInventory
+                Assert-True ($mutantResidualCleanup.status -eq 'PASS' -and @($mutantResidualCleanup.remaining) -contains 'residual.txt') 'T012 cleanup postcondition mutant 未暴露殘留檔案。'
+                Write-Phase9Evidence -Label 'T012_SCRATCH_POSTCONDITION_MUTANT' -Value ([ordered]@{
+                        normal = $residualCleanup
+                        mutant = $mutantResidualCleanup
+                        mutation = '將 cleanup 最終 remaining.Count 判定固定為 PASS。'
+                        residual_path = $residualPath
+                    })
+            }
+            finally {
+                Microsoft.PowerShell.Management\Remove-Item -Path Function:\Remove-Phase9NewScratchEntries_Mutant -Force -ErrorAction SilentlyContinue
+            }
+        }
+        finally {
+            if ($null -ne $previousResidualRemoveItemFunction) {
+                Set-Item -Path Function:\Remove-Item -Value $previousResidualRemoveItemFunction.ScriptBlock
+            }
+            else {
+                Microsoft.PowerShell.Management\Remove-Item -Path Function:\Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $residualRoot) {
+                Microsoft.PowerShell.Management\Remove-Item -LiteralPath $residualRoot -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        $longCleanupRoot = Join-Path $phase4EvidenceDeclaredScratchRoot 'long-path'
+        $longCleanupDirectory = Join-Path $longCleanupRoot 'segment-xxxxxxxxxxxxxxxxxxxx'
+        while ($longCleanupDirectory.Length -lt 220) {
+            $longCleanupDirectory = Join-Path $longCleanupDirectory ('segment-' + ('x' * 20))
+        }
+        $longCleanupFile = Join-Path $longCleanupDirectory ('payload-' + ('y' * 90) + '.txt')
+        $longCleanupApiRoot = ConvertTo-FileSystemApiPath -Path $longCleanupRoot
+        $longCleanupApiDirectory = ConvertTo-FileSystemApiPath -Path $longCleanupDirectory
+        $longCleanupApiFile = ConvertTo-FileSystemApiPath -Path $longCleanupFile
+        try {
+            [IO.Directory]::CreateDirectory($longCleanupApiDirectory) | Out-Null
+            [IO.File]::WriteAllText($longCleanupApiFile, 'long path cleanup fixture', (New-Object Text.UTF8Encoding($false)))
+            $longCleanupFunction = (Get-Command Remove-Phase9NewScratchEntries -CommandType Function).ScriptBlock.ToString()
+            $longEntryFunction = (Get-Command Remove-Phase9Entry -CommandType Function).ScriptBlock.ToString()
+            $longEntryMutantText = $longEntryFunction.Replace('if ($requiresExtendedDelete)', 'if ($false)').Replace('function Remove-Phase9Entry', 'function Remove-Phase9Entry_LongPathMutant')
+            Set-Item -Path Function:\Remove-Phase9Entry_LongPathMutant -Value ([scriptblock]::Create($longEntryMutantText))
+            $longCleanupMutantText = $longCleanupFunction.Replace('Remove-Phase9Entry -Path $entryPath', 'Remove-Phase9Entry_LongPathMutant -Path $entryPath').Replace('function Remove-Phase9NewScratchEntries', 'function Remove-Phase9NewScratchEntries_LongPathMutant')
+            Set-Item -Path Function:\Remove-Phase9NewScratchEntries_LongPathMutant -Value ([scriptblock]::Create($longCleanupMutantText))
+            $previousLongRemoveItemFunction = Get-Item -Path Function:\Remove-Item -ErrorAction SilentlyContinue
+            $longNoOpRemoveItemFunction = {
+                [CmdletBinding()]
+                param(
+                    [Parameter(Mandatory)][string]$LiteralPath,
+                    [switch]$Recurse,
+                    [switch]$Force
+                )
+
+                return
+            }
+            Set-Item -Path Function:\Remove-Item -Value $longNoOpRemoveItemFunction
+            try {
+                $longCleanupMutant = Remove-Phase9NewScratchEntries_LongPathMutant -DeclaredScratchRoot $longCleanupRoot -BeforeInventory @()
+                Assert-True ($longCleanupMutant.status -eq 'FAIL' -and @($longCleanupMutant.remaining).Count -gt 0 -and [IO.File]::Exists($longCleanupApiFile)) 'T012 long path cleanup fallback mutant 未暴露長路徑殘留。'
+
+            [IO.Directory]::Delete($longCleanupApiRoot, $true)
+            [IO.Directory]::CreateDirectory($longCleanupApiDirectory) | Out-Null
+            [IO.File]::WriteAllText($longCleanupApiFile, 'long path cleanup fixture', (New-Object Text.UTF8Encoding($false)))
+            $longCleanup = Remove-Phase9NewScratchEntries -DeclaredScratchRoot $longCleanupRoot -BeforeInventory @()
+            Assert-True ($longCleanup.status -eq 'PASS' -and @($longCleanup.remaining).Count -eq 0 -and -not [IO.File]::Exists($longCleanupApiFile)) ('T012 long path cleanup postcondition 未通過：' + ($longCleanup | ConvertTo-Json -Depth 30 -Compress))
+            Write-Phase9Evidence -Label 'T012_LONG_PATH_CLEANUP_MUTANT' -Value ([ordered]@{
+                    normal = $longCleanup
+                    mutant = $longCleanupMutant
+                    file_path_length = $longCleanupFile.Length
+                    api_delete = $true
+                    mutation = '移除 Remove-Phase9Entry 的 extended-path API fallback。'
+                })
+            }
+            finally {
+                if ($null -ne $previousLongRemoveItemFunction) {
+                    Set-Item -Path Function:\Remove-Item -Value $previousLongRemoveItemFunction.ScriptBlock
+                }
+                else {
+                    Microsoft.PowerShell.Management\Remove-Item -Path Function:\Remove-Item -Force -ErrorAction SilentlyContinue
+                }
+                Microsoft.PowerShell.Management\Remove-Item -Path Function:\Remove-Phase9NewScratchEntries_LongPathMutant -Force -ErrorAction SilentlyContinue
+                Microsoft.PowerShell.Management\Remove-Item -Path Function:\Remove-Phase9Entry_LongPathMutant -Force -ErrorAction SilentlyContinue
+            }
+        }
+        finally {
+            if (Test-Phase9ApiPathExists -Path $longCleanupRoot) {
+                [IO.Directory]::Delete($longCleanupApiRoot, $true)
+            }
+        }
+
+        $undeclaredPath = Join-Path $phase4EvidenceRoot 'undeclared-artifact.txt'
+        Write-Utf8NoBom -Path $undeclaredPath -Content 'must fail outside declared scratch'
+        try {
+            $undeclaredAfter = Get-Phase9EvidenceSnapshot -ExecutionRoot $phase4EvidenceRoot -DeclaredScratchRoot $phase4EvidenceDeclaredScratchRoot -EvidenceKind 'fixture'
+            $undeclaredGate = Test-Phase9EvidenceBoundary -Before $before -After $undeclaredAfter -ScratchCleanup ([ordered]@{ status = 'PASS'; remaining = @() })
+            Assert-True ($undeclaredGate.status -eq 'FAIL' -and @($undeclaredGate.reasons) -contains 'undeclared artifact inventory changed') ('T012 undeclared artifact 未被拒絕：' + ($undeclaredGate | ConvertTo-Json -Depth 30 -Compress))
+
+            $gateFunction = (Get-Command Test-Phase9EvidenceBoundary -CommandType Function).ScriptBlock.ToString()
+            $gateComparison = 'if ($beforeOutside -cne $afterOutside) { $reasons.Add(''undeclared artifact inventory changed'') }'
+            Assert-True $gateFunction.Contains($gateComparison) 'T012 artifact gate mutant marker 不存在。'
+            $gateMutantText = $gateFunction.Replace($gateComparison, 'if ($false) { $reasons.Add(''undeclared artifact inventory changed'') }')
+            Set-Item -Path Function:\Test-Phase9EvidenceBoundary_Mutant -Value ([scriptblock]::Create($gateMutantText.Replace('function Test-Phase9EvidenceBoundary', 'function Test-Phase9EvidenceBoundary_Mutant')))
+            try {
+                $mutantAfter = [pscustomobject]@{
+                    head = $before.head
+                    uncommitted_content_fingerprint = $before.uncommitted_content_fingerprint
+                    inventory_outside_declared_scratch = $undeclaredAfter.inventory_outside_declared_scratch
+                    inventory_declared_scratch = $before.inventory_declared_scratch
+                }
+                $mutantGate = Test-Phase9EvidenceBoundary_Mutant -Before $before -After $mutantAfter -ScratchCleanup ([ordered]@{ status = 'PASS'; remaining = @() })
+                Assert-True ($mutantGate.status -eq 'PASS') 'T012 artifact gate mutant 未使 undeclared artifact 失敗。'
+                Write-Phase9Evidence -Label 'T012_ARTIFACT_GATE_MUTANT' -Value ([ordered]@{ normal = $undeclaredGate; mutant = $mutantGate; undeclared_path = $undeclaredPath; mutation = '移除 execution root 外產物 inventory 比對。' })
+            }
+            finally {
+                Remove-Item -Path Function:\Test-Phase9EvidenceBoundary_Mutant -Force -ErrorAction SilentlyContinue
+            }
+        }
+        finally {
+            Remove-Item -LiteralPath $undeclaredPath -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Invoke-Case 'Phase 4 T013 首次失敗 gate、單次診斷重跑與 model evidence 遮罩' {
+        $firstFailure = [pscustomobject]@{ exit_code = 1; failed = 1; stdout = 'first failure'; version = 'same'; head = 'head-a'; model = 'runtime-model-secret' }
+        $diagnosticSuccess = [pscustomobject]@{ exit_code = 0; failed = 0; stdout = 'diagnostic success'; version = 'same'; head = 'head-a'; model = 'runtime-model-secret' }
+        $gate = Test-Phase9FirstFailureGate -FirstRun $firstFailure -DiagnosticRun $diagnosticSuccess
+        Assert-True ($gate.status -eq 'FAIL' -and $gate.diagnostic_attempts -eq 1 -and $gate.max_diagnostic_reruns -eq 1 -and $gate.first_failure_preserved -and $gate.quarantine_status -eq 'never-pass' -and $gate.first_failure.stdout -ceq 'first failure') ('T013 首錯 gate 被診斷成功覆寫：' + ($gate | ConvertTo-Json -Depth 20 -Compress))
+
+        $gateFunction = (Get-Command Test-Phase9FirstFailureGate -CommandType Function).ScriptBlock.ToString()
+        $failStatus = "status = 'FAIL'"
+        Assert-True $gateFunction.Contains($failStatus) 'T013 first failure gate mutant marker 不存在。'
+        $gateMutantText = $gateFunction.Replace($failStatus, "status = 'PASS'")
+        Set-Item -Path Function:\Test-Phase9FirstFailureGate_Mutant -Value ([scriptblock]::Create($gateMutantText.Replace('function Test-Phase9FirstFailureGate', 'function Test-Phase9FirstFailureGate_Mutant')))
+        try {
+            $mutantGate = Test-Phase9FirstFailureGate_Mutant -FirstRun $firstFailure -DiagnosticRun $diagnosticSuccess
+            Assert-True ($mutantGate.status -eq 'PASS') 'T013 first failure gate mutant 未暴露。'
+            $redacted = ConvertTo-Phase9RedactedValue -Value ([ordered]@{ model = 'runtime-model-secret'; nested = [ordered]@{ resolved_model = 'runtime-model-secret'; runtime_model = 'runtime-model-secret' } })
+            $redactedText = ConvertTo-Json -InputObject $redacted -Depth 10 -Compress
+            Assert-True ($redacted.model -eq '[redacted]' -and $redacted.nested.resolved_model -eq '[redacted]' -and $redacted.nested.runtime_model -eq '[redacted]' -and $redactedText -notmatch 'runtime-model-secret') 'T013 model evidence 未遮罩。'
+            Write-Phase9Evidence -Label 'T013_FIRST_FAILURE_AND_REDACTION' -Value ([ordered]@{ normal = $gate; mutant = $mutantGate; redacted = $redacted; mutation = '讓首次失敗 gate 直接回報 PASS。' })
+        }
+        finally {
+            Remove-Item -Path Function:\Test-Phase9FirstFailureGate_Mutant -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    Invoke-Case 'Phase 4 T014 production Dispatch result 帶回 evidence position' {
+        $binding = New-DispatchEvidenceBinding -ExecutionRoot $phase4EvidenceRoot -EvidencePosition ([ordered]@{ request_path = (Join-Path $phase4EvidenceRoot 'request.json'); result_path = (Join-Path $phase4EvidenceRoot 'result.json') })
+        $envelope = New-DispatchResultEnvelope -Status 'started' -LineSlug 'line-a' -DispatchSlug 'phase4-evidence' -CompletedStages @('preflight', 'prepare', 'start') -FailedStage '' -ErrorCode '' -ErrorMessage '' -ProcessStarted $true -PreflightStage ([pscustomobject]@{ Path = 'preflight.json'; Sha256 = ('a' * 64); Status = 'completed' }) -PrepareStage ([pscustomobject]@{ Path = 'prepare.json'; Sha256 = ('b' * 64); Status = 'completed' }) -StartStage ([pscustomobject]@{ Path = 'start.json'; Sha256 = ('c' * 64); Status = 'completed'; Document = [pscustomobject]@{} }) -QuotaBeforePath 'quota.json' -QuotaBeforeSha256 ('d' * 64) -ResultPathValue 'result.json' -StartResultPathValue 'start.json' -SidecarPath '' -StageBinding ([ordered]@{}) -EvidenceBinding $binding
+        Assert-True ($envelope.execution_root -eq $binding.execution_root -and $envelope.head -eq $binding.head -and $envelope.uncommitted_content_fingerprint -eq $binding.uncommitted_content_fingerprint -and $envelope.evidence_kind -eq 'real-dispatch' -and $envelope.evidence_position.result_path -eq (Join-Path $phase4EvidenceRoot 'result.json') -and $null -ne $envelope.evidence_binding) ('T014 Dispatch result 缺少 evidence identity：' + ($envelope | ConvertTo-Json -Depth 30 -Compress))
+
+        $envelopeFunction = (Get-Command New-DispatchResultEnvelope -CommandType Function).ScriptBlock.ToString()
+        $positionLine = 'evidence_position = if ($null -eq $EvidenceBinding) { $null } else { Get-DispatchResultPropertyValue -Object $EvidenceBinding -Names @(''evidence_position'') }'
+        Assert-True $envelopeFunction.Contains($positionLine) 'T014 result evidence position mutant marker 不存在。'
+        $envelopeMutantText = $envelopeFunction.Replace($positionLine, 'evidence_position = $null')
+        Set-Item -Path Function:\New-DispatchResultEnvelope_Mutant -Value ([scriptblock]::Create($envelopeMutantText.Replace('function New-DispatchResultEnvelope', 'function New-DispatchResultEnvelope_Mutant')))
+        try {
+            $mutantEnvelope = New-DispatchResultEnvelope_Mutant -Status 'started' -LineSlug 'line-a' -DispatchSlug 'phase4-evidence' -CompletedStages @('start') -FailedStage '' -ErrorCode '' -ErrorMessage '' -ProcessStarted $true -PreflightStage $null -PrepareStage $null -StartStage $null -QuotaBeforePath '' -QuotaBeforeSha256 '' -ResultPathValue 'result.json' -StartResultPathValue 'start.json' -SidecarPath '' -StageBinding ([ordered]@{}) -EvidenceBinding $binding
+            Assert-True ($null -eq $mutantEnvelope.evidence_position) 'T014 evidence position mutant 未被暴露。'
+            Write-Phase9Evidence -Label 'T014_DISPATCH_EVIDENCE_BINDING_MUTANT' -Value ([ordered]@{ normal = $envelope; mutant = $mutantEnvelope; mutation = '移除 Dispatch result 的 evidence_position 回帶。' })
+        }
+        finally {
+            Remove-Item -Path Function:\New-DispatchResultEnvelope_Mutant -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     Invoke-Case 'Phase 4 parent options 保存 fingerprint 與 literal arrays' {
-        $parent = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\work\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--model=gpt-5.6-luna', '--note=中文 $literal,with,comma')
+        $parent = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\work\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--model=fixture-model', '--note=中文 $literal,with,comma')
         $same = Compare-ParentOptions -Current $parent -Anchor $parent
-        $changed = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\work\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--model=gpt-5.6-luna', '--note=changed')
+        $changed = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\work\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--model=fixture-model', '--note=changed')
         $mismatch = Compare-ParentOptions -Current $changed -Anchor $parent
         Assert-True ($parent.fingerprint -match '^[a-f0-9]{64}$' -and $same.matches -and -not $mismatch.matches -and $mismatch.code -eq 'ParentOptionsMismatch' -and ($mismatch.differences -contains 'codex_parent_option')) 'parent_options fingerprint 或逐欄 mismatch 異常。'
     }
@@ -3042,7 +5355,7 @@ if ($Phase -ge 5) {
     $phase5RequestPath = Join-Path $fixtureRoot 'phase5-dispatch-request.json'
     $phase5TargetPath = 'C:\work\comma,name\空白 路徑\$literal'
     $phase5AddDirectories = @('C:\dir,with,comma ; C:\中文 路徑', 'C:\dollar\$value')
-    $phase5ParentOptions = @('--model=gpt-5.6-luna', '--note=中文 $literal,with,comma')
+    $phase5ParentOptions = @('--model=fixture-model', '--note=中文 $literal,with,comma')
     $phase5LiteralValues = @($phase5TargetPath, $phase5AddDirectories[0], $phase5ParentOptions[1])
     $phase5RequestDocument = [ordered]@{
         schema               = 'ai-sessions.dispatch-request.v1'
@@ -3091,6 +5404,42 @@ if ($Phase -ge 5) {
         $script:CodexParentOptionExplicit = $true
         $applied = Apply-DispatchRequest
         Assert-True ($applied.sha256 -eq (Get-FileSha256 -Path $phase5RequestPath) -and $script:RequestLiteralValues.Count -eq 3 -and $script:RequestPrepareArtifacts.Count -eq 0) 'request context 套用或 literal_values 保存異常。'
+    }
+
+    $phase5OperationMismatchPath = Join-Path $fixtureRoot 'phase5-operation-mismatch-request.json'
+    $phase5OperationMismatchDocument = [ordered]@{
+        schema = 'ai-sessions.dispatch-request.v1'
+        operation = 'Prepare'
+        line_slug = 'line-a'
+        dispatch_slug = 'phase5-operation-mismatch'
+    }
+    Write-Utf8NoBom -Path $phase5OperationMismatchPath -Content (($phase5OperationMismatchDocument | ConvertTo-Json -Depth 10) + "`n")
+    Invoke-Case 'Phase 5 request operation 與 Collect 命令列不一致時拒絕' -Reject -ErrorPattern 'DispatchRequestMismatch|operation' {
+        $script:RequestPath = $phase5OperationMismatchPath
+        $script:Operation = 'Collect'
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = 'phase5-operation-mismatch'
+        $script:InvocationBoundParameters = [ordered]@{
+            RequestPath = $phase5OperationMismatchPath
+            Operation = 'Collect'
+            LineSlug = 'line-a'
+            DispatchSlug = 'phase5-operation-mismatch'
+        }
+        Apply-DispatchRequest
+    }
+    $script:RequestPath = $phase5RequestPath
+    $script:Operation = 'Start'
+    $script:LineSlug = 'line-a'
+    $script:DispatchSlug = 'phase5-request'
+    $script:InvocationBoundParameters = [ordered]@{
+        RequestPath = $phase5RequestPath
+        Operation = 'Start'
+        LineSlug = 'line-a'
+        DispatchSlug = 'phase5-request'
+        TargetPath = @($phase5TargetPath)
+        AddDirectory = @($phase5AddDirectories)
+        Search = $true
+        CodexParentOption = @($phase5ParentOptions)
     }
 
     Invoke-Case 'Phase 5 request／CLI mismatch 在 process start 前拒絕' -Reject -ErrorPattern 'DispatchRequestMismatch|add_directory|process_started' {
@@ -3458,7 +5807,7 @@ if ($Phase -ge 6) {
         })
     }
 
-    Invoke-Case 'Phase 4 T017 Collect current_open 與 conclusion pass 不一致時拒絕' {
+    Invoke-Case 'Phase 4 T017 Collect Minor open 與 conclusion pass 通過並暴露舊 gate mutant' {
         $collectSlug = 'phase4-collect-reviewer-gate'
         $collectOutputPath = Join-Path $reviewerRoot 'phase4-collect-output.txt'
         $collectClosurePath = Join-Path $reviewerRoot 'phase4-collect-closure.md'
@@ -3468,8 +5817,9 @@ if ($Phase -ge 6) {
         Write-Utf8NoBom -Path $collectOutputPath -Content 'phase4 collect output'
         Write-Utf8NoBom -Path $collectClosurePath -Content '# Phase 4 collect closure'
         $collectFinding = [ordered]@{ id = 'F-017'; axis = 'Standards'; status = 'open'; severity = 'Minor'; disposition = 'new'; summary = 'phase4 current open pass' }
-        $collectManifest = New-ReviewerManifest -CurrentFindings @($collectFinding) -CurrentNew 1 -CurrentOpen 1 -Conclusion pass
-        Write-ReviewerFixture -Path $collectReviewerPath -Manifest $collectManifest -CurrentIds @('F-017')
+        $collectJudgment = [ordered]@{ id = 'F-017'; status = 'open'; severity = 'Minor'; evidence = @([ordered]@{ path = $collectReviewerPath; line = 1 }) }
+        $collectManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug $collectSlug -Round 1 -CurrentFindings @($collectFinding) -CurrentNew 1 -CurrentOpen 1 -CurrentJudgment @($collectJudgment) -Conclusion pass
+        Write-ReviewerFixture -Path $collectReviewerPath -Manifest $collectManifest -CurrentIds @('F-017') -CurrentJudgment @($collectJudgment)
         $collectPreflight = [ordered]@{
             operation = 'Preflight'
             sourceRoot = $fixtureRoot
@@ -3502,25 +5852,28 @@ if ($Phase -ge 6) {
             '-ResultPath'
             $collectResultPath
         ) -WorkingDirectory $root -EnvironmentVariables @{}
-        Assert-True ([int]$collectRun.exit_code -ne 0) ('T017 production Collect 應拒絕不一致 reviewer manifest：' + [string]$collectRun.stdout + [string]$collectRun.stderr)
+        Assert-True ([int]$collectRun.exit_code -eq 0) ('T017 production Collect 應接受 Minor-only open manifest：' + [string]$collectRun.stdout + [string]$collectRun.stderr)
         $collectResultDocument = Get-Content -LiteralPath $collectResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        Assert-True (-not $collectResultDocument.outputValid -and -not $collectResultDocument.reviewerFindings.valid -and $collectResultDocument.reviewerFindings.current_open_count -eq 1 -and (@($collectResultDocument.reviewerFindings.inconsistencies) -join ';') -match 'current_open>0') 'T017 Collect 未輸出結構化不一致 reviewerFindings。'
+        Assert-True ($collectResultDocument.outputValid -and $collectResultDocument.reviewerFindings.valid -and $collectResultDocument.reviewerFindings.current_open_count -eq 1 -and $collectResultDocument.reviewerFindings.conclusion -ceq 'pass') 'T017 Collect 未接受 Minor-only open reviewerFindings。'
 
         $collectProductionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
-        $fixedReviewerGate = "if ([int64]`$result.current_open_count -gt 0 -and [string]`$result.conclusion -ceq 'pass') {"
-        $mutantReviewerGate = 'if ($false) {'
-        Assert-True $collectProductionText.Contains($fixedReviewerGate) 'T017 reverse 找不到 reviewer current_open gate。'
-        $collectMutantText = $collectProductionText.Replace($fixedReviewerGate, $mutantReviewerGate)
+        $collectFunctionText = (Get-Command Get-ReviewerFindingsForCollect -CommandType Function).ScriptBlock.ToString()
+        $mutantReviewerGate = @'
+    if ([int64]$result.current_open_count -gt 0 -and [string]$result.conclusion -ceq 'pass') {
+        $result.valid = $false
+        $result.error_code = 'MutantLegacyOpenPassGate'
+        $result.inconsistencies = @(@($result.inconsistencies) + 'MutantLegacyOpenPassGate')
+    }
+'@
+        $fixedReviewerGate = '$result = Test-ReviewerFindingReport -Path $Path'
+        Assert-True $collectFunctionText.Contains($fixedReviewerGate) 'T017 reverse 找不到 reviewer parser call。'
+        $collectMutantFunctionText = $collectFunctionText.Replace($fixedReviewerGate, $fixedReviewerGate + [Environment]::NewLine + $mutantReviewerGate)
+        $collectMutantText = $collectProductionText.Replace((Get-Command Get-ReviewerFindingsForCollect -CommandType Function).ScriptBlock.ToString(), $collectMutantFunctionText)
         Assert-True ($collectMutantText -ne $collectProductionText) 'T017 reverse mutant 未移除 current_open gate。'
         $collectMutantSlug = 'phase4-collect-reviewer-mutant'
         $collectMutantPreflightPath = Join-Path $reviewerRoot 'phase4-collect-mutant-preflight.json'
         $collectMutantResultPath = Join-Path $reviewerRoot 'phase4-collect-mutant-result.json'
-        $collectMutantPreflight = [ordered]@{}
-        foreach ($preflightProperty in $collectPreflight.Keys) {
-            $collectMutantPreflight[$preflightProperty] = $collectPreflight[$preflightProperty]
-        }
-        $collectMutantPreflight.dispatchSlug = $collectMutantSlug
-        Write-Utf8NoBom -Path $collectMutantPreflightPath -Content (($collectMutantPreflight | ConvertTo-Json -Depth 10) + "`n")
+        Write-Utf8NoBom -Path $collectMutantPreflightPath -Content (($collectPreflight | ConvertTo-Json -Depth 10) + "`n")
         $collectMutantPath = Join-Path $fixtureRoot 'phase4-collect-reviewer-mutant-Invoke-CodexDispatch.ps1'
         [IO.File]::WriteAllText($collectMutantPath, $collectMutantText, (New-Object Text.UTF8Encoding($true)))
         $collectMutantRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
@@ -3545,11 +5898,11 @@ if ($Phase -ge 6) {
             $collectMutantResultPath
         ) -WorkingDirectory $root -EnvironmentVariables @{}
         $collectMutantResultDocument = Get-Content -LiteralPath $collectMutantResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        Assert-True ([int]$collectMutantRun.exit_code -eq 0 -and $collectMutantResultDocument.outputValid -and $collectMutantResultDocument.reviewerFindings.valid) ('T017 reverse mutant 未暴露 Collect gate 遺失：' + [string]$collectMutantRun.stdout + [string]$collectMutantRun.stderr)
+        Assert-True ([int]$collectMutantRun.exit_code -ne 0 -and -not $collectMutantResultDocument.outputValid -and -not $collectMutantResultDocument.reviewerFindings.valid -and (@($collectMutantResultDocument.reviewerFindings.inconsistencies) -join ';') -match 'MutantLegacyOpenPassGate') ('T017 reverse mutant 未暴露舊 current_open gate：' + [string]$collectMutantRun.stdout + [string]$collectMutantRun.stderr)
         Write-Phase9Evidence -Label 'T017_COLLECT_REVIEWER_GATE_MUTANT' -Value ([ordered]@{
                 production = [ordered]@{ run = $collectRun; result = $collectResultDocument }
                 reverse_mutant = [ordered]@{ run = $collectMutantRun; result = $collectMutantResultDocument }
-                mutation = '將 Collect 專用 current_open>0 且 conclusion=pass gate 改為永不成立。'
+                mutation = '在 Get-ReviewerFindingsForCollect parser call 後插入舊的 current_open>0 且 conclusion=pass gate。'
             })
     }
 
@@ -4334,6 +6687,14 @@ if ($Phase -ge 7) {
     $script:phase7ValidQuotaResult = $null
     $script:phase7ValidDocument = $null
     $script:phase7ValidSnapshot = $null
+    if (-not [string]::IsNullOrWhiteSpace($script:focusedCase) -and -not (Test-Path -LiteralPath $phase7ValidSnapshotPath -PathType Leaf)) {
+        $focusedBootstrap = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $phase7ValidSnapshotPath
+        if ($focusedBootstrap.exit_code -ne 0 -or -not (Test-Path -LiteralPath $phase7ValidSnapshotPath -PathType Leaf)) {
+            throw ('focused case quota prerequisite 建立失敗：' + $focusedBootstrap.output)
+        }
+        $script:phase7ValidDocument = Get-Content -LiteralPath $phase7ValidSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $script:phase7ValidSnapshot = Read-QuotaSnapshot -Path $phase7ValidSnapshotPath
+    }
     Invoke-Case 'Phase 7 Get-CodexQuota 保存 observation 與 freshness' {
         $script:phase7ValidQuotaResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $phase7ValidSnapshotPath
         Assert-True ($script:phase7ValidQuotaResult.exit_code -eq 0 -and (Test-Path -LiteralPath $phase7ValidSnapshotPath -PathType Leaf)) ('quota snapshot 建立失敗：' + $script:phase7ValidQuotaResult.output)
@@ -4548,6 +6909,10 @@ if ($Phase -ge 7) {
         $script:phase7AdvisorPlan = New-ScopePlan -DispatchSlug 'phase7-advisor' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7ValidSnapshot -CalibrationPath $phase7CalibrationPath -Units @('question-001', 'question-002') -UnitKind 'advisor-evidence-question' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
         $script:phase7AdvisorPlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $script:phase7AdvisorPlan
         Assert-True ($script:phase7AdvisorPlan.estimate_source -eq 'p75' -and $script:phase7AdvisorPlan.estimate_percent -eq 14 -and $script:phase7AdvisorPlan.primary_reserve_percent -ge 30 -and $script:phase7AdvisorPlan.advisor_hard_limit_percent -eq 17.5 -and $script:phase7AdvisorPlan.advisor_unit_estimate_percent -eq 7) 'advisor calibration P75、reserve 或 unit estimate 異常。'
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:focusedCase) -and $null -eq $script:phase7AdvisorPlan) {
+        $script:phase7AdvisorPlan = New-ScopePlan -DispatchSlug 'phase7-advisor-focused-bootstrap' -DispatchKind 'resource' -TaskType 'advisor-consult' -RequestedProfile 'advisor' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7ValidSnapshot -CalibrationPath $phase7CalibrationPath -Units @('question-001', 'question-002') -UnitKind 'advisor-evidence-question' -Model 'fixture-model' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence
+        $script:phase7AdvisorPlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $script:phase7AdvisorPlan
     }
 
     $phase7D5CalibrationPath = Join-Path $phase7Root 'quota-calibration.jsonl'
@@ -5716,6 +8081,38 @@ if ($Phase -ge 9) {
     $phase9GitStatusBefore = [string]$phase9RepositoryBoundaryStart.git_status_short
     $phase9Root = Join-Path $fixtureRoot 'phase9'
     New-Item -ItemType Directory -Path $phase9Root -Force | Out-Null
+    Invoke-Case 'Phase 9 F-007 主執行器接上首次失敗 gate 與一次診斷重跑' {
+        $firstRun = [pscustomobject]@{ exit_code = 1; failed = 1; stdout = 'first failure'; stderr = ''; command = 'first' }
+        $diagnosticRun = [pscustomobject]@{ exit_code = 0; failed = 0; stdout = 'diagnostic'; stderr = ''; command = 'diagnostic' }
+        $gate = Test-Phase9FirstFailureGate -FirstRun $firstRun -DiagnosticRun $diagnosticRun
+        Assert-True ($gate.status -eq 'FAIL' -and $gate.first_failure.exit_code -eq 1 -and $gate.diagnostic_attempts -eq 1 -and $gate.max_diagnostic_reruns -eq 1 -and $gate.quarantine_status -eq 'never-pass') 'Phase 9 首次失敗 gate 未保留首次結果或診斷上限。'
+        Assert-True (-not [object]::ReferenceEquals($gate.first_failure, $firstRun)) 'Phase 9 首次失敗 gate 直接引用 FirstRun，可能形成循環參照。'
+
+        $parentText = Get-Content -LiteralPath $PSCommandPath -Raw -Encoding UTF8
+        $fixedGateCall = '$phase9FirstFailureGate = Test-Phase9FirstFailureGate -FirstRun $childResult -DiagnosticRun $diagnosticRun'
+        Assert-True ($parentText.Contains($fixedGateCall) -and $parentText.Contains('$diagnosticRun = Invoke-Phase9HostRun') -and $parentText.Contains('if ($Phase -eq 9 -and $firstFailure)')) 'Phase 9 主執行器未實際接上 gate 或診斷重跑。'
+        $mutantParentText = $parentText.Replace($fixedGateCall, '$phase9FirstFailureGate = $null')
+        Assert-True (-not $mutantParentText.Contains($fixedGateCall)) 'F-007 reverse mutant 未移除主執行器 gate wiring。'
+        $gateFunction = (Get-Command Test-Phase9FirstFailureGate -CommandType Function).ScriptBlock.ToString()
+        $snapshotMutation = '(New-Phase9FirstFailureSnapshot -FirstRun $FirstRun)'
+        Assert-True $gateFunction.Contains($snapshotMutation) 'F-007 首次失敗快照未使用獨立 snapshot。'
+        $cycleMutantText = $gateFunction.Replace($snapshotMutation, '$FirstRun')
+        Set-Item -Path Function:\Test-Phase9FirstFailureGate_CycleMutant -Value ([scriptblock]::Create($cycleMutantText.Replace('Test-Phase9FirstFailureGate {', 'Test-Phase9FirstFailureGate_CycleMutant {')))
+        try {
+            $cycleMutantGate = Test-Phase9FirstFailureGate_CycleMutant -FirstRun $firstRun -DiagnosticRun $diagnosticRun
+            Assert-True ([object]::ReferenceEquals($cycleMutantGate.first_failure, $firstRun)) 'F-007 cycle mutant 未暴露直接引用 FirstRun 的錯誤行為。'
+        }
+        finally {
+            Remove-Item -Path Function:\Test-Phase9FirstFailureGate_CycleMutant -Force -ErrorAction SilentlyContinue
+        }
+        Write-Phase9Evidence -Label 'F007_PHASE9_GATE_MUTANT' -Value ([ordered]@{
+                mutation = '將 Phase 9 主執行器呼叫 Test-Phase9FirstFailureGate 的敘述替換為 $null。'
+                production_gate = $gate
+                mutant_wiring = [ordered]@{ gate_call_present = $mutantParentText.Contains($fixedGateCall); diagnostic_call_present = $mutantParentText.Contains('$diagnosticRun = Invoke-Phase9HostRun') }
+                cycle_mutant = [ordered]@{ mutation = '將 gate 的 first_failure 改為直接引用 FirstRun。'; direct_reference = [object]::ReferenceEquals($cycleMutantGate.first_failure, $firstRun); production_snapshot_independent = -not [object]::ReferenceEquals($gate.first_failure, $firstRun) }
+            })
+    }
+
     $sRealDispatchParent = Join-Path $fixtureBaseRoot 'p9-real'
     $sRealDispatchParentExistedBefore = Test-Path -LiteralPath $sRealDispatchParent -PathType Container
     $sRealDispatchParentBaselineEntries = @()
@@ -8705,7 +11102,7 @@ if ($Phase -ge 9) {
             '@echo off'
             ('>"' + $counterPath + '" echo started')
             ('echo {"type":"thread.started","thread_id":"' + $threadId + '"}')
-            ('echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md ' + $Name + ' ' + $caseSlug + ' a"}}')
+            ('echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md ' + $caseSlug + ' a"}}')
             'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 1"'
             'exit /b 0'
@@ -8861,6 +11258,7 @@ if ($Phase -ge 9) {
             execution_root = $dispatchRoot
             prompt_source_path = $promptSourcePath
             codex_home = $codexHome
+            codex_path = $fakeCodexPath
             start_result_path = $startResultPath
             start_result_document = $startResultDocument
             inspect_result_path = $inspectResultPath
@@ -8870,6 +11268,529 @@ if ($Phase -ge 9) {
             event_stream_path = $eventStreamPath
             turn_completed = $turnCompleted
         }
+    }
+
+    Invoke-Case 'Phase 9 batch3g Collect 沿用 Dispatch request 完成 full identity 與 ledger 寫入' {
+        $real = & $invokeSRealDispatchCase -Name 'batch3g-collect-full' -ScriptPath $sourcePath -CreateQuotaBeforePath
+        Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document) ('batch3g real Dispatch 未建立 RunRecord：' + [string]$real.output_text)
+
+        $executionRoot = $real.execution_root
+        $reportRoot = Join-Path $executionRoot '.local\ai-sessions\report\a'
+        $reviewerPath = Join-Path $reportRoot 'batch3g-review.md'
+        $closurePath = Join-Path $reportRoot 'batch3g-closure.md'
+        $summaryPath = Join-Path $real.case_root '.local\ai-sessions\handoff\a\requirement-summary.md'
+        New-Item -ItemType Directory -Path $reportRoot, (Split-Path -Parent $summaryPath) -Force | Out-Null
+        $continuationLastMessage = @(
+                '## 中斷保全結論'
+                '已確認結論：前輪真實 Dispatch 已建立可續行 RunRecord。'
+                '未完成單位：續行 Start 與 Collect'
+                ('證據位置：' + $real.run_record_path)
+                ('design.md dispatchSlug=' + $real.dispatch_slug + ' lineSlug=a')
+            ) -join [Environment]::NewLine
+        Write-Utf8NoBom -Path $real.run_record_document.last_message_path -Content ($continuationLastMessage + [Environment]::NewLine)
+
+        $currentJudgment = @([ordered]@{
+                id = 'F-900'
+                status = 'closed'
+                severity = 'Minor'
+                evidence = @([ordered]@{ path = $reviewerPath; line = 1 })
+            })
+        $previousStatus = @([ordered]@{ id = 'F-900'; status = 'open'; severity = 'Minor' })
+        $reviewerManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'a' -DispatchSlug $real.dispatch_slug -Round 1 -PreviousStatus $previousStatus -PreviousOpen 1 -CurrentJudgment $currentJudgment
+        Write-ReviewerFixture -Path $reviewerPath -Manifest $reviewerManifest -PreviousProse @('- [F-900] [Minor] 未閉合 — batch3g fixture') -CurrentJudgment $currentJudgment
+        Write-Utf8NoBom -Path $summaryPath -Content @'
+# batch3g requirement summary
+
+## 程式面項目
+
+| # | 項目 | 內容 |
+| --- | --- | --- |
+| 1 | Collect | 沿用原始 Dispatch request 完成 full Collect。 |
+
+## 功能面項目
+
+| # | 項目 | 內容 |
+| --- | --- | --- |
+| 2 | Ledger | 寫入 finding 狀態帳。 |
+'@
+        Write-Utf8NoBom -Path $closurePath -Content @'
+# batch3g closure
+
+## Phase 對照
+
+| Phase | 內容 |
+| --- | --- |
+| Phase 1 | Collect full identity 與 finding ledger。 |
+
+## 需求對照
+
+| 需求 | 驗收方向 | T-code | 實際行為 | 證據 | 狀態 |
+| --- | --- | --- | --- | --- | --- |
+| #1 | Collect full | T001 | 以原始 Dispatch request、Preflight 與 RunRecord 回收。 | scripts/Invoke-CodexDispatch.ps1 | 已交付 |
+| #2 | Ledger | T002 | reviewer finding 寫入狀態帳。 | scripts/Test-DispatchRecoveryBinding.ps1 | 已交付 |
+'@
+
+        $preflight = Get-Content -LiteralPath $real.preflight_result_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $baseSha = [string]$preflight.baseSha
+        $collectArguments = @(
+            '-NoProfile'
+            '-NonInteractive'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Collect'
+            '-RequestPath'
+            $real.request_path
+            '-PreflightResultPath'
+            $real.preflight_result_path
+            '-RunRecordPath'
+            $real.run_record_path
+            '-ReviewerReportPath'
+            $reviewerPath
+            '-ReportPath'
+            $closurePath
+            '-RequirementSummaryPath'
+            $summaryPath
+            '-SourceRoot'
+            $real.source_root
+            '-ExecutionRoot'
+            $executionRoot
+            '-DispatchRoot'
+            $real.dispatch_root
+            '-BaseSha'
+            $baseSha
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $real.dispatch_slug
+            '-DispatchKind'
+            'workflow'
+            '-RequiredIdentifier'
+            'design.md'
+        )
+        $pwshPath = (Get-Command pwsh -ErrorAction Stop).Source
+        $collectRun = Invoke-Phase9Process -HostPath $pwshPath -Arguments $collectArguments -WorkingDirectory $root -EnvironmentVariables @{}
+        $collectDocument = $null
+        try { $collectDocument = ConvertFrom-Json -InputObject ([string]$collectRun.stdout) } catch { $collectDocument = $null }
+        $ledgerPath = Join-Path $real.source_root '.local\ai-sessions\history\a\review-finding-ledger.json'
+        $collectSummary = [ordered]@{
+            exit_code = $collectRun.exit_code
+            stdout_prefix = ([string]$collectRun.stdout).Substring(0, [Math]::Min(1200, ([string]$collectRun.stdout).Length))
+            stderr_prefix = ([string]$collectRun.stderr).Substring(0, [Math]::Min(1200, ([string]$collectRun.stderr).Length))
+            parsed = if ($null -eq $collectDocument) { $null } else { $collectDocument }
+        } | ConvertTo-Json -Depth 12 -Compress
+        Assert-True ([int]$collectRun.exit_code -eq 0 -and $null -ne $collectDocument -and [string]$collectDocument.collect_mode -ceq 'full' -and [bool]$collectDocument.identity.valid -and [bool]$collectDocument.reviewerFindings.valid -and (Test-Path -LiteralPath $ledgerPath -PathType Leaf) -and @($collectDocument.reviewerFindings.ledger.entries_added | Where-Object { $_.finding_id -ceq 'F-900' }).Count -eq 1) ('batch3g real Collect 未完成 full identity 或 ledger 寫入：' + $collectSummary)
+
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedOperationGate = "    `$collectLifecycleRequest = `$operationBound -and [string]`$Operation -ceq 'Collect' -and [string]`$document.operation -ceq 'Dispatch'"
+        Assert-True ($productionText.Contains($fixedOperationGate)) 'batch3g Collect lifecycle gate 不存在於 production。'
+        $mutantPath = Join-Path $real.case_root 'batch3g-collect-mutant.ps1'
+        $mutantText = $productionText.Replace("    `$collectLifecycleRequest = `$operationBound -and [string]`$Operation -ceq 'Collect' -and [string]`$document.operation -ceq 'Dispatch'`r`n", "    `$collectLifecycleRequest = `$false`r`n")
+        Assert-True ($mutantText -ne $productionText -and -not $mutantText.Contains($fixedOperationGate)) 'batch3g Collect operation gate reverse mutant 建立失敗。'
+        $bomEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($true)
+        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $mutantRun = Invoke-Phase9Process -HostPath $pwshPath -Arguments ($collectArguments | ForEach-Object { if ([string]$_ -ceq $sourcePath) { $mutantPath } else { $_ } }) -WorkingDirectory $root -EnvironmentVariables @{}
+        Assert-True ([int]$mutantRun.exit_code -ne 0 -and ([string]$mutantRun.stdout + [string]$mutantRun.stderr) -match 'DispatchRequestMismatch|operation') ('batch3g operation gate reverse mutant 未拒絕 Collect：' + [string]$mutantRun.stdout + [string]$mutantRun.stderr)
+        Write-Phase9Evidence -Label 'BATCH3G_COLLECT_FULL_E2E' -Value ([ordered]@{
+                production = [ordered]@{
+                    dispatch_exit_code = $real.run.exit_code
+                    collect_exit_code = $collectRun.exit_code
+                    collect_mode = $collectDocument.collect_mode
+                    identity_valid = $collectDocument.identity.valid
+                    ledger_path = $ledgerPath
+                    finding_id = 'F-900'
+                }
+                reverse_mutant = [ordered]@{
+                    path = $mutantPath
+                    exit_code = $mutantRun.exit_code
+                    output = ([string]$mutantRun.stdout + [string]$mutantRun.stderr)
+                    expected = 'DispatchRequestMismatch'
+                }
+            })
+    }
+
+    Invoke-Case 'Phase 9 batch3h 真實 Dispatch 後續行 Start 的 Collect 回溯祖先 request identity' -Isolated -IsolationId 'Q-BATCH3H-ACL-NO-MATCH' -IsolationEvidence 'Inspect 回傳 sandboxAclEvidence.capture_status=no_match、entries=[]、normal_completion=true、continuation_allowed=false，且 aclGate.status=clean；production 證據為 scripts/Invoke-CodexDispatch.ps1:8167、:8428。' -IsolationReleaseCondition 'ACL 線完成「無 ACE 時的 continuation_allowed 判定」後重跑本案例並通過。' -IsolationDeadline 'ACL 線交付時' -IsolationReplacementVerification 'Phase 2 既有祖先回溯、最新 final message、略過 launch-failed、無可用祖先與跨 dispatch 拒絕五案例，加上主 Agent 真實派遣 Inspect acl=captured、continuation_allowed=true 且續行成功證據。' {
+        $real = & $invokeSRealDispatchCase -Name 'batch3h-continuation-identity' -ScriptPath $sourcePath -CreateQuotaBeforePath
+        Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document -and -not [string]::IsNullOrWhiteSpace([string]$real.run_record_document.thread_id)) ('batch3h real Dispatch 未建立可續行 RunRecord：' + [string]$real.output_text)
+
+        $inspectQuotaAfterPath = Join-Path $real.source_root '.local\ai-sessions\history\a\batch3h-inspect-quota-after.json'
+        $null = New-Phase8QuotaSnapshot -Path $inspectQuotaAfterPath -PrimaryRemainingPercent 79
+        $inspectHost = (Get-Command pwsh -ErrorAction Stop).Source
+        $inspectArguments = @(
+            '-NoProfile'
+            '-NonInteractive'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Inspect'
+            '-CodexHome'
+            $real.codex_home
+            '-DispatchResultPath'
+            $real.inspect_result_path
+            '-SourceRoot'
+            $real.source_root
+            '-ExecutionRoot'
+            $real.execution_root
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $real.dispatch_slug
+            '-RequiredIdentifier'
+            'design.md'
+            '-ProcessExitCode'
+            '0'
+            '-QuotaAfterPath'
+            $inspectQuotaAfterPath
+            '-TaskType'
+            'script-change'
+            '-SessionMode'
+            'cold-start'
+        )
+        $inspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments $inspectArguments -WorkingDirectory $root -EnvironmentVariables @{}
+        $inspectDocument = $null
+        try { $inspectDocument = ConvertFrom-Json -InputObject ([string]$inspectRun.stdout) } catch { $inspectDocument = $null }
+        $inspectExitCode = Get-OptionalPropertyValue -InputObject $inspectRun -Name 'exit_code'
+        $inspectAclEvidence = Get-OptionalPropertyValue -InputObject $inspectDocument -Name 'sandboxAclEvidence'
+        $inspectAclEntriesValue = Get-OptionalPropertyValue -InputObject $inspectAclEvidence -Name 'entries'
+        $inspectAclEntries = @()
+        if ($null -ne $inspectAclEntriesValue) {
+            $inspectAclEntries = @($inspectAclEntriesValue)
+        }
+        $inspectOutputValid = [bool](Get-OptionalPropertyValue -InputObject $inspectDocument -Name 'outputValid')
+        $inspectCaptureStatus = [string](Get-OptionalPropertyValue -InputObject $inspectAclEvidence -Name 'capture_status')
+        $inspectNormalCompletion = [bool](Get-OptionalPropertyValue -InputObject $inspectAclEvidence -Name 'normal_completion')
+        $inspectContinuationAllowed = [bool](Get-OptionalPropertyValue -InputObject $inspectAclEvidence -Name 'continuation_allowed')
+        $startResultDocument = Get-OptionalPropertyValue -InputObject $real -Name 'start_result_document'
+        $startAclGate = Get-OptionalPropertyValue -InputObject $startResultDocument -Name 'aclGate'
+        $startAclGateStatus = [string](Get-OptionalPropertyValue -InputObject $startAclGate -Name 'status')
+        $batch3hIsolationObserved = $null -ne $inspectExitCode -and [int]$inspectExitCode -eq 0 -and
+            $null -ne $inspectDocument -and
+            $inspectOutputValid -and
+            $null -ne $inspectAclEvidence -and
+            $inspectCaptureStatus -ceq 'no_match' -and
+            $inspectAclEntries.Count -eq 0 -and
+            $inspectNormalCompletion -and
+            -not $inspectContinuationAllowed -and
+            $startAclGateStatus -ceq 'clean'
+        if ($batch3hIsolationObserved) {
+            $isolationRegistration = [ordered]@{
+                problem_id = 'Q-BATCH3H-ACL-NO-MATCH'
+                status = 'isolated'
+                counts_as_pass = $false
+                failure_evidence = [ordered]@{
+                    inspect = [ordered]@{
+                        result_path = $real.inspect_result_path
+                        output_valid = $inspectOutputValid
+                        capture_status = $inspectCaptureStatus
+                        entries = $inspectAclEntries
+                        normal_completion = $inspectNormalCompletion
+                        continuation_allowed = $inspectContinuationAllowed
+                        acl_gate_status = $startAclGateStatus
+                    }
+                    production = @(
+                        'scripts/Invoke-CodexDispatch.ps1:8167',
+                        'scripts/Invoke-CodexDispatch.ps1:8428'
+                    )
+                }
+                release_condition = 'ACL 線完成「無 ACE 時的 continuation_allowed 判定」後重跑本案例並通過。'
+                deadline = 'ACL 線交付時'
+                replacement_blocking_verification = [ordered]@{
+                    phase2_cases = @(
+                        'Identity continuation 沿祖先 RunRecord 回溯 request 識別並保留最新 final message',
+                        'Identity continuation latest final message 舊訊息拒絕',
+                        'Identity continuation 沿鏈略過 launch-failed 嘗試',
+                        'Identity continuation 無可用祖先仍拒絕 request sha256',
+                        'Identity continuation 跨 dispatch chain 拒絕'
+                    )
+                    real_dispatch = [ordered]@{
+                        source = '主 Agent 真實派遣驗證紀錄（本輪判定依據）'
+                        acl = 'captured'
+                        continuation_allowed = $true
+                        continuation_start = 'succeeded'
+                    }
+                }
+            }
+            Write-Phase9Evidence -Label 'BATCH3H_ISOLATION_REGISTER' -Value $isolationRegistration
+            return
+        }
+        Assert-True ($null -ne $inspectExitCode -and [int]$inspectExitCode -eq 0 -and $null -ne $inspectDocument -and $inspectOutputValid -and $null -ne $inspectAclEvidence -and $inspectCaptureStatus -ceq 'captured' -and $inspectContinuationAllowed) ('batch3h real Dispatch 前置 Inspect 未擷取可續行 ACL evidence：' + [string]$inspectRun.stdout + [string]$inspectRun.stderr)
+        Write-Phase9Evidence -Label 'BATCH3H_PRE_CONTINUATION_INSPECT_PASS' -Value ([ordered]@{
+                command = [ordered]@{ host = $inspectHost; arguments = $inspectArguments }
+                exit_code = $inspectRun.exit_code
+                result_path = $real.inspect_result_path
+                quota_after_path = $inspectQuotaAfterPath
+                output_valid = $inspectDocument.outputValid
+                sandbox_acl_evidence = $inspectAclEvidence
+            })
+
+        $continuationLastMessage = @(
+                '## 中斷保全結論'
+                '已確認結論：前輪真實 Dispatch 已建立可續行 RunRecord。'
+                '未完成單位：續行 Start 與 Collect'
+                ('證據位置：' + $real.run_record_path)
+                ('design.md dispatchSlug=' + $real.dispatch_slug + ' lineSlug=a')
+            ) -join [Environment]::NewLine
+        Write-Utf8NoBom -Path $real.run_record_document.last_message_path -Content ($continuationLastMessage + [Environment]::NewLine)
+        Add-Content -LiteralPath $real.run_record_document.event_stream_path -Value '{"type":"error","message":"recorded with model fixture-model"}' -Encoding UTF8
+        Write-Phase9Evidence -Label 'BATCH3H_PRE_CONTINUATION_BINDING' -Value ([ordered]@{ run_record_path = $real.run_record_path; profile_config_path = $real.run_record_document.profile_config_path; codex_home = $real.codex_home; last_message_path = $real.run_record_document.last_message_path; thread_id = $real.run_record_document.thread_id; scope_plan_path = $real.run_record_document.scope_plan_path })
+
+        $startHost = (Get-Command pwsh -ErrorAction Stop).Source
+        $continuationArguments = @(
+            '-NoProfile'
+            '-NonInteractive'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Start'
+            '-CodexPath'
+            $real.codex_path
+            '-CodexHome'
+            $real.codex_home
+            '-PreflightResultPath'
+            $real.preflight_result_path
+            '-PrepareResultPath'
+            $real.start_result_document.prepareResultPath
+            '-PromptPath'
+            $real.prompt_source_path
+            '-ScopePlanPath'
+            $real.run_record_document.scope_plan_path
+            '-QuotaBeforePath'
+            $real.quota_before_path
+            '-SourceRoot'
+            $real.source_root
+            '-ExecutionRoot'
+            $real.execution_root
+            '-DispatchRoot'
+            $real.dispatch_root
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $real.dispatch_slug
+            '-WriteMode'
+            'write'
+            '-DispatchKind'
+            'workflow'
+            '-Profile'
+            'default'
+            '-TaskType'
+            'script-change'
+            '-SessionMode'
+            'continuation'
+            '-UnitKind'
+            'workflow-phase'
+            '-RequestedUnit'
+            'Phase 1'
+            '-ResumeThreadId'
+            $real.run_record_document.thread_id
+            '-LastMessagePath'
+            $real.run_record_document.last_message_path
+            '-ContinueFromScopePlan'
+        )
+        $continuationRun = Invoke-Phase9Process -HostPath $startHost -Arguments $continuationArguments -WorkingDirectory $root -EnvironmentVariables @{}
+        $continuationDocument = $null
+        try { $continuationDocument = ConvertFrom-Json -InputObject ([string]$continuationRun.stdout) } catch { $continuationDocument = $null }
+        $continuationRunRecordPath = if ($null -eq $continuationDocument) { $null } else { [string]$continuationDocument.runRecordPath }
+        $continuationRunRecord = $null
+        if (-not [string]::IsNullOrWhiteSpace($continuationRunRecordPath) -and (Test-Path -LiteralPath $continuationRunRecordPath -PathType Leaf)) {
+            $continuationRunRecord = Get-Content -LiteralPath $continuationRunRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        }
+        Assert-True ([int]$continuationRun.exit_code -eq 0 -and $null -ne $continuationDocument -and [string]$continuationDocument.status -eq 'started' -and $null -ne $continuationRunRecord -and [string]$continuationRunRecord.previous_run_id -ceq [string]$real.run_record_document.run_id -and [string]$continuationRunRecord.attempt_parent_run_id -ceq [string]$real.run_record_document.run_id -and [string]::IsNullOrWhiteSpace([string]$continuationRunRecord.request_path) -and [string]::IsNullOrWhiteSpace([string]$continuationRunRecord.request_sha256)) ('batch3h 真實續行 Start 未產生預期的空 request identity RunRecord：' + [string]$continuationRun.stdout + [string]$continuationRun.stderr)
+
+        $executionRoot = $real.execution_root
+        $reportRoot = Join-Path $executionRoot '.local\ai-sessions\report\a'
+        $reviewerPath = Join-Path $reportRoot 'batch3h-review.md'
+        $closurePath = Join-Path $reportRoot 'batch3h-closure.md'
+        $summaryPath = Join-Path $real.case_root '.local\ai-sessions\handoff\a\requirement-summary.md'
+        $recoveryPath = Join-Path $real.source_root '.local\ai-sessions\history\a\batch3h-recovery.json'
+        New-Item -ItemType Directory -Path $reportRoot, (Split-Path -Parent $summaryPath) | Out-Null
+        Write-Utf8NoBom -Path $continuationRunRecord.last_message_path -Content ('design.md dispatchSlug=' + $real.dispatch_slug + ' lineSlug=a')
+        $currentJudgment = @([ordered]@{
+                id = 'F-901'
+                status = 'closed'
+                severity = 'Minor'
+                evidence = @([ordered]@{ path = $reviewerPath; line = 1 })
+            })
+        $previousStatus = @([ordered]@{ id = 'F-901'; status = 'open'; severity = 'Minor' })
+        $reviewerManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'a' -DispatchSlug $real.dispatch_slug -Round 1 -PreviousStatus $previousStatus -PreviousOpen 1 -CurrentJudgment $currentJudgment
+        Write-ReviewerFixture -Path $reviewerPath -Manifest $reviewerManifest -PreviousProse @('- [F-901] [Minor] 未閉合 — batch3h fixture') -CurrentJudgment $currentJudgment
+        Write-Utf8NoBom -Path $summaryPath -Content @'
+# batch3h requirement summary
+
+## 程式面項目
+
+| # | 項目 | 內容 |
+| --- | --- | --- |
+| 1 | Collect | 續行 RunRecord 沿鏈回溯 request identity。 |
+
+## 功能面項目
+
+| # | 項目 | 內容 |
+| --- | --- | --- |
+| 2 | Ledger | 寫入 finding 狀態帳。 |
+'@
+        Write-Utf8NoBom -Path $closurePath -Content @'
+# batch3h closure
+
+## Phase 對照
+
+| Phase | 內容 |
+| --- | --- |
+| Phase 1 | 續行 Collect full identity 與 finding ledger。 |
+
+## 需求對照
+
+| 需求 | 驗收方向 | T-code | 實際行為 | 證據 | 狀態 |
+| --- | --- | --- | --- | --- | --- |
+| #1 | Continuation Collect full | T005 | 沿祖先 RunRecord 取用 request identity。 | scripts/Invoke-CodexDispatch.ps1 | 已交付 |
+| #2 | Ledger | T006 | reviewer finding 寫入狀態帳。 | scripts/Test-DispatchRecoveryBinding.ps1 | 已交付 |
+'@
+        $recoveryDocument = [ordered]@{
+            schema = 'ai-sessions.recovery-handoff.v1'
+            operation = 'RecoveryHandoff'
+            line_slug = 'a'
+            dispatch_slug = $real.dispatch_slug
+            run_chain = [ordered]@{ latest_run_record_path = $continuationRunRecordPath }
+        }
+        Write-Utf8NoBom -Path $recoveryPath -Content (($recoveryDocument | ConvertTo-Json -Depth 20) + "`n")
+
+        $preflight = Get-Content -LiteralPath $real.preflight_result_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $baseSha = [string]$preflight.baseSha
+        $collectArguments = @(
+            '-NoProfile'
+            '-NonInteractive'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Collect'
+            '-RequestPath'
+            $real.request_path
+            '-PreflightResultPath'
+            $real.preflight_result_path
+            '-RunRecordPath'
+            $continuationRunRecordPath
+            '-ReviewerReportPath'
+            $reviewerPath
+            '-ReportPath'
+            $closurePath
+            '-RequirementSummaryPath'
+            $summaryPath
+            '-RecoveryHandoffPath'
+            $recoveryPath
+            '-SourceRoot'
+            $real.source_root
+            '-ExecutionRoot'
+            $executionRoot
+            '-DispatchRoot'
+            $real.dispatch_root
+            '-BaseSha'
+            $baseSha
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $real.dispatch_slug
+            '-DispatchKind'
+            'workflow'
+            '-RequiredIdentifier'
+            'design.md'
+        )
+        $collectRun = Invoke-Phase9Process -HostPath $startHost -Arguments $collectArguments -WorkingDirectory $root -EnvironmentVariables @{}
+        $collectDocument = $null
+        try { $collectDocument = ConvertFrom-Json -InputObject ([string]$collectRun.stdout) } catch { $collectDocument = $null }
+        $ledgerPath = Join-Path $real.source_root '.local\ai-sessions\history\a\review-finding-ledger.json'
+        $requestSource = if ($null -eq $collectDocument) { $null } else { $collectDocument.identity.request_identity_source }
+        Assert-True ([int]$collectRun.exit_code -eq 0 -and $null -ne $collectDocument -and [string]$collectDocument.collect_mode -ceq 'full' -and [bool]$collectDocument.identity.valid -and [bool]$collectDocument.reviewerFindings.valid -and [bool]$collectDocument.identity.final_message_identity.valid -and [string]$requestSource.status -ceq 'found' -and [string]$requestSource.source -ceq 'ancestor' -and [string]$requestSource.run_id -ceq [string]$real.run_record_document.run_id -and [string]$requestSource.path -ceq (Resolve-AbsolutePath -Path $real.run_record_path) -and (Test-Path -LiteralPath $ledgerPath -PathType Leaf) -and @($collectDocument.reviewerFindings.ledger.entries_added | Where-Object { $_.finding_id -ceq 'F-901' }).Count -eq 1) ('batch3h continuation Collect 未完成 full identity、request provider 輸出或 ledger 寫入：' + [string]$collectRun.stdout + [string]$collectRun.stderr)
+
+        try {
+            Write-Utf8NoBom -Path $continuationRunRecord.last_message_path -Content '補件前舊訊息'
+            $oldMessageRun = Invoke-Phase9Process -HostPath $startHost -Arguments $collectArguments -WorkingDirectory $root -EnvironmentVariables @{}
+            Assert-True ([int]$oldMessageRun.exit_code -ne 0 -and ([string]$oldMessageRun.stdout + [string]$oldMessageRun.stderr) -match 'final_message.required_identifier') ('batch3h 補件前舊 final message 未拒絕：' + [string]$oldMessageRun.stdout + [string]$oldMessageRun.stderr)
+        }
+        finally {
+            Write-Utf8NoBom -Path $continuationRunRecord.last_message_path -Content ('design.md dispatchSlug=' + $real.dispatch_slug + ' lineSlug=a')
+        }
+
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $fixedRequestSourceCall = "            `$requestIdentitySource = Resolve-DispatchCollectIdentityRequestSource -LatestRecord `$runRecord -LatestRunRecordPath `$runRecordInfo.path -SourceRoot `$sourceRootPath -ExecutionRoot `$executionRootPath -LineSlug `$LineSlug -DispatchSlug `$DispatchSlug`r`n"
+        Assert-True $productionText.Contains($fixedRequestSourceCall) 'batch3h reverse 找不到 continuation request identity resolver。'
+        $mutantRequestSourceCall = "            `$requestIdentitySource = [ordered]@{ status = 'missing'; source = 'none'; run_id = `$null; path = `$null; launch_state = `$null; request_path = `$null; request_sha256 = `$null; request_operation = `$null; skipped_attempts = @(); chain_fingerprint = `$null }`r`n"
+        $mutantText = $productionText.Replace($fixedRequestSourceCall, $mutantRequestSourceCall)
+        Assert-True ($mutantText -ne $productionText) 'batch3h request identity reverse mutant 建立失敗。'
+        $mutantPath = Join-Path $real.case_root 'batch3h-collect-mutant.ps1'
+        $bomEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($true)
+        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $mutantRun = Invoke-Phase9Process -HostPath $startHost -Arguments ($collectArguments | ForEach-Object { if ([string]$_ -ceq $sourcePath) { $mutantPath } else { $_ } }) -WorkingDirectory $root -EnvironmentVariables @{}
+        Assert-True ([int]$mutantRun.exit_code -ne 0 -and ([string]$mutantRun.stdout + [string]$mutantRun.stderr) -match 'run_record.request_sha256') ('batch3h request identity reverse mutant 未拒絕續行 Collect：' + [string]$mutantRun.stdout + [string]$mutantRun.stderr)
+        Write-Phase9Evidence -Label 'BATCH3H_CONTINUATION_IDENTITY_E2E' -Value ([ordered]@{
+                dispatch = [ordered]@{ exit_code = $real.run.exit_code; run_record_path = $real.run_record_path; run_id = $real.run_record_document.run_id }
+                continuation_start = [ordered]@{ exit_code = $continuationRun.exit_code; run_record_path = $continuationRunRecordPath; run_id = $continuationRunRecord.run_id; previous_run_id = $continuationRunRecord.previous_run_id; attempt_parent_run_id = $continuationRunRecord.attempt_parent_run_id; request_path = $continuationRunRecord.request_path; request_sha256 = $continuationRunRecord.request_sha256 }
+                collect = [ordered]@{ exit_code = $collectRun.exit_code; collect_mode = $collectDocument.collect_mode; identity_valid = $collectDocument.identity.valid; final_message_valid = $collectDocument.identity.final_message_identity.valid; request_identity_source = $requestSource; ledger_path = $ledgerPath; finding_id = 'F-901' }
+                old_final_message = [ordered]@{ exit_code = $oldMessageRun.exit_code; rejected = $true; expected = 'final_message.required_identifier' }
+                reverse_mutant = [ordered]@{ path = $mutantPath; exit_code = $mutantRun.exit_code; output = ([string]$mutantRun.stdout + [string]$mutantRun.stderr); expected = 'run_record.request_sha256' }
+            })
+    }
+
+    Invoke-Case 'Phase 9 batch3g 缺少 StandardInputEncoding 時仍以 UTF-8 解碼外部 stdout' {
+        $productionFunctionAst = @($functions | Where-Object { $_.Name -eq 'New-ProcessStartInfo' } | Select-Object -First 1)
+        Assert-True ($productionFunctionAst.Count -eq 1) 'batch3g 找不到 production New-ProcessStartInfo AST。'
+        $productionText = $productionFunctionAst[0].Extent.Text
+        Assert-True ($productionText.Contains('        $startInfo.StandardOutputEncoding = $utf8NoBom') -and $productionText.Contains('        $startInfo.StandardErrorEncoding = $utf8NoBom')) 'StandardOutputEncoding 或 StandardErrorEncoding 未無條件設定。'
+        $fakeFunctionDefinition = @'
+function New-Batch3gStartInfoWithoutInputEncoding {
+    return [pscustomobject][ordered]@{
+        FileName = ''
+        WorkingDirectory = ''
+        UseShellExecute = $false
+        CreateNoWindow = $true
+        RedirectStandardInput = $false
+        RedirectStandardOutput = $false
+        RedirectStandardError = $false
+        StandardOutputEncoding = $null
+        StandardErrorEncoding = $null
+    }
+}
+'@
+        $testDefinition = $fakeFunctionDefinition + $productionText.Replace('function New-ProcessStartInfo', 'function New-Batch3gProcessStartInfo').Replace('$startInfo = New-Object System.Diagnostics.ProcessStartInfo', '$startInfo = New-Batch3gStartInfoWithoutInputEncoding').Replace('    Add-ProcessArguments -StartInfo $startInfo -Arguments $Arguments', '    $null = $Arguments')
+        Assert-True ($testDefinition -ne $productionText) 'batch3g encoding test function replacement 建立失敗。'
+        try {
+            . ([scriptblock]::Create($testDefinition))
+            $startInfo = @(New-Batch3gProcessStartInfo -FileName 'fixture' -WorkingDirectory $root -Arguments @('fixture') -RedirectOutput)[-1]
+            $inputProperty = $startInfo.PSObject.Properties['StandardInputEncoding']
+            $payload = '外部命令中文，逗號'
+            $decoded = $startInfo.StandardOutputEncoding.GetString(([Text.Encoding]::UTF8.GetBytes($payload)))
+            Assert-True ($null -eq $inputProperty -and $startInfo.StandardOutputEncoding -is [Text.Encoding] -and $startInfo.StandardErrorEncoding -is [Text.Encoding] -and $decoded -ceq $payload) '缺少 StandardInputEncoding 時輸出／錯誤輸出未保持 UTF-8。'
+
+            $mutantText = $productionText.Replace("        `$startInfo.StandardOutputEncoding = `$utf8NoBom`r`n        `$startInfo.StandardErrorEncoding = `$utf8NoBom", "        if (`$null -ne `$startInfo.PSObject.Properties['StandardInputEncoding']) {`r`n            `$startInfo.StandardOutputEncoding = `$utf8NoBom`r`n            `$startInfo.StandardErrorEncoding = `$utf8NoBom`r`n        }")
+            Assert-True ($mutantText -ne $productionText) 'batch3g encoding reverse mutant 建立失敗。'
+            . ([scriptblock]::Create($fakeFunctionDefinition + $mutantText.Replace('function New-ProcessStartInfo', 'function New-Batch3gProcessStartInfo').Replace('$startInfo = New-Object System.Diagnostics.ProcessStartInfo', '$startInfo = New-Batch3gStartInfoWithoutInputEncoding').Replace('    Add-ProcessArguments -StartInfo $startInfo -Arguments $Arguments', '    $null = $Arguments')))
+            $mutantStartInfo = @(New-Batch3gProcessStartInfo -FileName 'fixture' -WorkingDirectory $root -Arguments @('fixture') -RedirectOutput)[-1]
+            Assert-True ($null -eq $mutantStartInfo.StandardOutputEncoding -and $null -eq $mutantStartInfo.StandardErrorEncoding) 'encoding reverse mutant 未暴露輸出編碼遺失。'
+            Write-Phase9Evidence -Label 'BATCH3G_ENCODING_STANDARD_OUTPUT_MUTANT' -Value ([ordered]@{
+                    mutation = '將 StandardOutputEncoding 與 StandardErrorEncoding 放回 StandardInputEncoding 條件區塊。'
+                    mutant_output_encoding = $null
+                    mutant_error_encoding = $null
+                    expected = '缺少 StandardInputEncoding 時仍設定輸出與錯誤輸出 UTF-8。'
+                })
+        }
+        finally {
+            Remove-Item -Path Function:\New-Batch3gProcessStartInfo -ErrorAction SilentlyContinue
+            Remove-Item -Path Function:\New-Batch3gStartInfoWithoutInputEncoding -ErrorAction SilentlyContinue
+        }
+        $externalHost = (Get-Command pwsh -ErrorAction Stop).Source
+        $externalFunctionAst = @($functions | Where-Object { $_.Name -eq 'Invoke-ExternalCommand' } | Select-Object -First 1)
+        Assert-True ($externalFunctionAst.Count -eq 1) 'batch3g 找不到 production Invoke-ExternalCommand AST。'
+        $payload = '外部命令中文，逗號'
+        $utf8Command = '$payload = -join @([char]0x5916,[char]0x90E8,[char]0x547D,[char]0x4EE4,[char]0x4E2D,[char]0x6587,[char]0xFF0C,[char]0x9017,[char]0x865F); $bytes = [Text.Encoding]::UTF8.GetBytes($payload); [Console]::OpenStandardOutput().Write($bytes, 0, $bytes.Length)'
+        $external = $null
+        $originalStartInfoFunction = (Get-Command New-ProcessStartInfo -CommandType Function -ErrorAction Stop).ScriptBlock
+        try {
+            . ([scriptblock]::Create($productionText))
+            . ([scriptblock]::Create($externalFunctionAst[0].Extent.Text))
+            $external = Invoke-ExternalCommand -FileName $externalHost -WorkingDirectory $root -Arguments @('-NoProfile', '-NonInteractive', '-Command', $utf8Command)
+        }
+        finally {
+            Set-Item -Path Function:\New-ProcessStartInfo -Value $originalStartInfoFunction
+        }
+        Assert-True ([int]$external.ExitCode -eq 0 -and $external.StdOut -ceq $payload) ('外部命令 stdout UTF-8 往返失敗：' + [string]$external.StdOut + [string]$external.StdErr)
     }
 
     Invoke-Case 'Phase 9 S-1 real Dispatch omitted quota path reaches bound before snapshot, Prepare and Start' {
@@ -9905,8 +12826,10 @@ throw 'RunRecord 事件流為空。'
             if (-not $Mutant) {
                 Assert-True ($null -eq $startException -and $null -ne $startResult) ('S-3 normal Start 拋出例外：' + [string]$startException + '; outputCount=' + $startObjects.Count + '; output=' + $startOutputText + '; errors=' + ($startErrors -join ' | '))
                 $threadRelay = Get-DispatchJsonProperty -Object $startResult -Name 'threadRelay'
+                $relayDiagnostics = Get-DispatchJsonProperty -Object $threadRelay -Name 'relay_diagnostics'
                 Assert-True ([bool](Get-DispatchJsonProperty -Object $startResult -Name 'processStarted')) ('S-3 normal processStarted=false：' + ($startResult | ConvertTo-Json -Depth 30 -Compress))
                 Assert-True (-not [bool](Get-DispatchJsonProperty -Object $startResult -Name 'relayReady') -and [string](Get-DispatchJsonProperty -Object $threadRelay -Name 'source') -eq 'not-ready') ('S-3 normal relay 未回報 not-ready：' + ($startResult | ConvertTo-Json -Depth 30 -Compress))
+                Assert-True ($null -ne $relayDiagnostics -and [int]$relayDiagnostics.attempt_count -gt 0 -and [string]$relayDiagnostics.event_path -eq $eventPath -and [bool]$relayDiagnostics.timed_out -and [int64]$relayDiagnostics.event_bytes -eq 0 -and -not [bool]$relayDiagnostics.ready) ('S-3 relay diagnostic marker 不完整：' + ($threadRelay | ConvertTo-Json -Depth 30 -Compress))
                 Assert-True ($initialEventLength -eq 0 -and (Test-Path -LiteralPath $externalStartedPath -PathType Leaf)) ('S-3 normal 啟動視窗內事件流非空或 launcher 未啟動：eventLength=' + $initialEventLength)
                 $rootPid = [int](Get-DispatchJsonProperty -Object $startResult -Name 'rootPid')
                 Assert-True ($null -ne (Get-Process -Id $rootPid -ErrorAction SilentlyContinue)) ('S-3 normal process tree 在啟動視窗內已消失：pid=' + $rootPid)
@@ -9963,6 +12886,7 @@ throw 'RunRecord 事件流為空。'
                     stop_calls = $script:s3StopCalls
                     event_path = $eventPath
                     sidecar_path = $sidecarPath
+                    relay_diagnostics = $relayDiagnostics
                     run_record_path = $runRecordPath
                     runtime_model_evidence = $runtimeModelEvidence
                     runtime_effort_evidence = $runtimeEffortEvidence
@@ -10457,7 +13381,16 @@ throw 'RunRecord 事件流為空。'
     Write-Utf8NoBom -Path $calibrationStaleAfterPath -Content (($staleAfterSnapshot | ConvertTo-Json -Depth 20) + "`n")
 
     Invoke-Case 'Phase 9 F-003 Windows Dispatch CLI sidecar is produced by Start launcher' {
-        $actualRoot = Join-Path $fixtureRoot 'w'
+        $actualRootName = $null
+        foreach ($candidateRootName in @('f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9')) {
+            $candidateRootPath = Join-Path $phase9ScratchRoot $candidateRootName
+            if (-not (Test-Path -LiteralPath $candidateRootPath)) {
+                $actualRootName = $candidateRootName
+                break
+            }
+        }
+        Assert-True (-not [string]::IsNullOrWhiteSpace($actualRootName)) '實際 Windows Dispatch fixture 找不到未使用的單字元 source root。'
+        $actualRoot = Join-Path $phase9ScratchRoot $actualRootName
         $actualDispatchRoot = Join-Path $actualRoot '.local\ai-sessions\worktrees\x'
         $actualLineRoot = Join-Path $actualRoot '.local\ai-sessions\handoff\a'
         $actualHistoryRoot = Join-Path $actualDispatchRoot '.local\ai-sessions\history\a'
@@ -10497,7 +13430,6 @@ throw 'RunRecord 事件流為空。'
             ('echo {"type":"thread.started","thread_id":"' + $actualThreadId + '"}')
             'echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md x a actual sidecar fixture"}}'
             'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
-            'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 3"'
             'exit /b 0'
         ) -join "`r`n"
         Write-Utf8NoBom -Path $actualCodexPath -Content ($fakeCodexContent + "`r`n")
@@ -10611,6 +13543,16 @@ throw 'RunRecord 事件流為空。'
         $mutantPath = Join-Path $phase9Root 'f003-mutant-Invoke-CodexDispatch.ps1'
         $bomEncoding = New-Object System.Text.UTF8Encoding($true)
         [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $reverseCodexPath = Join-Path $actualRoot 'codex-reverse.cmd'
+        $reverseFakeCodexContent = @(
+            '@echo off'
+            'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 250"'
+            ('echo {"type":"thread.started","thread_id":"' + $actualThreadId + '"}')
+            'echo {"type":"item.completed","item":{"type":"agent_message","text":"design.md x a actual sidecar fixture"}}'
+            'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
+            'exit /b 0'
+        ) -join "`r`n"
+        Write-Utf8NoBom -Path $reverseCodexPath -Content ($reverseFakeCodexContent + "`r`n")
         $reverseDispatchSlug = 'y'
         $reverseDispatchRoot = Join-Path $actualRoot '.local\ai-sessions\worktrees\y'
         $reverseHistoryRoot = Join-Path $reverseDispatchRoot '.local\ai-sessions\history\a'
@@ -10636,7 +13578,7 @@ throw 'RunRecord 事件流為空。'
             '-File'
             $mutantPath
             '-CodexPath'
-            $actualCodexPath
+            $reverseCodexPath
             '-CodexHome'
             $actualCodexHome
             '-Operation'
@@ -11344,7 +14286,13 @@ finally {
         $expectedSha256 = Get-FileSha256 -Path $resultPath
         $productionWriter = (Get-Command -Name Invoke-Phase9ProductionAtomicWriter -CommandType Function -ErrorAction Stop).ScriptBlock
         $normalRound = Invoke-Phase9AtomicRaceRound -Writer $productionWriter -SourceRoot $phase9Root -ResultPath $resultPath -FirstDocument $firstDocument -ExpectedSha256 $expectedSha256 -SecondDocumentPath $secondDocumentPath -WorkerPath $workerPath -Label 'normal'
-        Assert-True ($null -eq $normalRound.writer_error -and $normalRound.worker_exit_code -eq 2 -and $normalRound.worker_outcome.status -eq 'conflict') ('cooperative writer 未在 lock 內觀測衝突：' + ($normalRound | ConvertTo-Json -Depth 20 -Compress))
+        $normalMarkers = [ordered]@{
+            ready = Test-Path -LiteralPath $normalRound.ready_path -PathType Leaf
+            acquired = Test-Path -LiteralPath $normalRound.acquired_path -PathType Leaf
+            read = Test-Path -LiteralPath $normalRound.read_path -PathType Leaf
+            cas_status = [string]$normalRound.worker_outcome.status
+        }
+        Assert-True ($null -eq $normalRound.writer_error -and $normalRound.worker_exit_code -eq 2 -and $normalRound.worker_outcome.status -eq 'conflict' -and $normalMarkers.ready -and $normalMarkers.acquired -and $normalMarkers.read) ('cooperative writer marker 或 lock 內衝突證據不足：' + ($normalRound | ConvertTo-Json -Depth 20 -Compress))
         Assert-True ($normalRound.final_document.version -eq 'first' -and $normalRound.final_document.marker -eq 'first-writer') ('cooperative writer 改寫了第一 writer 的結果：' + ($normalRound.final_document | ConvertTo-Json -Depth 20 -Compress))
 
         $null = Invoke-Phase9ProductionAtomicWriter -Path $resultPath -Document $baseDocument -SourceRoot $phase9Root -ExecutionRoot $phase9Root -TargetPath @()
@@ -11364,7 +14312,7 @@ finally {
         $restoredExpectedSha256 = Get-FileSha256 -Path $resultPath
         $restoredRound = Invoke-Phase9AtomicRaceRound -Writer $productionWriter -SourceRoot $phase9Root -ResultPath $resultPath -FirstDocument $firstDocument -ExpectedSha256 $restoredExpectedSha256 -SecondDocumentPath $secondDocumentPath -WorkerPath $workerPath -Label 'restored'
         Assert-True ($null -eq $restoredRound.writer_error -and $restoredRound.worker_exit_code -eq 2 -and $restoredRound.worker_outcome.status -eq 'conflict') ('還原 shared lock 後未恢復衝突拒絕：' + ($restoredRound | ConvertTo-Json -Depth 20 -Compress))
-        $script:phase9F006RaceEvidence = [pscustomobject]@{ normal = $normalRound; reverse = $reverseRound; reverse_validation_failure = $reverseValidationFailure; restored = $restoredRound }
+        $script:phase9F006RaceEvidence = [pscustomobject]@{ normal = $normalRound; normal_markers = $normalMarkers; reverse = $reverseRound; reverse_validation_failure = $reverseValidationFailure; restored = $restoredRound }
         Write-Phase9Evidence -Label 'F006_NORMAL_PASS' -Value $normalRound
         Write-Phase9Evidence -Label 'F006_REVERSE_FAILURE' -Value ([ordered]@{ status = 'failed'; validation_failure = $reverseValidationFailure; round = $reverseRound })
         Write-Phase9Evidence -Label 'F006_RESTORED_PASS' -Value $restoredRound
@@ -11512,6 +14460,11 @@ finally {
     }
 }
 
-Write-Output "TOTAL: $script:caseCount; FAILED: $script:failures; FIXTURES: $fixtureRoot"
+if ($Phase -eq 9) {
+    Write-Output "TOTAL: $script:caseCount; PASSED: $script:passedCount; ISOLATED: $script:isolatedCount; FAILED: $script:failures; FIXTURES: $fixtureRoot"
+}
+else {
+    Write-Output "TOTAL: $script:caseCount; FAILED: $script:failures; FIXTURES: $fixtureRoot"
+}
 if ($script:failures -gt 0) { exit 1 }
 exit 0
