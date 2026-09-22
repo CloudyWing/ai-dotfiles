@@ -1675,7 +1675,7 @@ foreach ($function in $functions) {
 }
 
 $phase9ProductionFunctionDefinitions = @{}
-foreach ($functionName in @('Invoke-Preflight', 'Invoke-Prepare', 'Invoke-Start', 'Add-CalibrationObservation', 'Get-DispatchRunRecordStartClassification', 'Get-WorktreeAclGate', 'New-ContinuationScopePlanSubset', 'New-ScopePlan', 'Test-ContinuationScopePlan', 'Test-ScopePlanHashRecord')) {
+foreach ($functionName in @('Invoke-Preflight', 'Invoke-Prepare', 'Invoke-Start', 'Get-DispatchRunRecordStartClassification', 'Get-WorktreeAclGate', 'New-ContinuationScopePlanSubset', 'New-ScopePlan', 'Test-ContinuationScopePlan', 'Test-ScopePlanHashRecord')) {
     $productionCommand = Get-Command -Name $functionName -CommandType Function -ErrorAction Stop
     $phase9ProductionFunctionDefinitions[$functionName] = $productionCommand.ScriptBlock
 }
@@ -1904,7 +1904,6 @@ function Wait-ForThreadRelay {
 }
 function Stop-VerifiedProcessTree { return [pscustomobject]@{ CleanupStatus = 'fixture'; ErrorMessage = '' } }
 function Get-ProcessExitCodeIfExited { param($Process) return 0 }
-function Add-CalibrationObservation { param($ExecutionResult) $script:observedExecution = $ExecutionResult; return $null }
 
 function Write-TestEvents {
     [CmdletBinding()]
@@ -1968,7 +1967,7 @@ function New-TestRun {
         prompt_path = $null; launcher_path = $null; thread_id_path = $null
         baseline_path = $null; baseline_sha256 = $null; pid_record_path = $pidPath
         parent_options = $fixtureParentOptions; parent_options_sha256 = $fixtureParentOptions.fingerprint; parent_options_status = 'confirmed'
-        effective_codex_home = $null; acl_gate = $null; recovery_handoff_id = $null; recovery_handoff_path = $null; recovery_handoff_sha256 = $null
+        effective_codex_home = $null; acl_gate = $null
         quota_before_path = $null; quota_before_sha256 = $null
     }
     Write-TestEvents $record.event_stream_path $record.thread_id
@@ -2717,7 +2716,7 @@ Invoke-Case 'Collect direct-write 使用共用 identity gate 驗證 final messag
     $directIdentityReviewerPath = Join-Path $directIdentityReportRoot 'direct-identity-review.md'
     $directIdentityClosurePath = Join-Path $directIdentityReportRoot 'direct-identity-closure.md'
     $directIdentityPromptPath = Join-Path $reviewerRoot 'direct-identity-prompt.md'
-    $directIdentityRecoveryPath = Join-Path $reviewerRoot 'direct-identity-recovery.json'
+    $directIdentityFailurePath = Join-Path $reviewerRoot 'direct-identity-failure.json'
     $directIdentityOutputPath = Join-Path $reviewerRoot 'direct-identity-output.txt'
     New-Item -ItemType Directory -Path $directIdentityReportRoot -Force | Out-Null
     Write-Utf8NoBom -Path $directIdentityOutputPath -Content 'direct identity output'
@@ -2739,7 +2738,7 @@ Invoke-Case 'Collect direct-write 使用共用 identity gate 驗證 final messag
         session_mode = 'cold-start'
         unit_kind = 'resource-target'
         requested_unit = @('direct-identity')
-        failure_receipt_path = $directIdentityRecoveryPath
+        failure_receipt_path = $directIdentityFailurePath
     }
     Write-Utf8NoBom -Path $directIdentityRequestPath -Content ($directIdentityRequest | ConvertTo-Json -Depth 10)
     $directIdentityPreflight = [ordered]@{
@@ -2772,15 +2771,6 @@ Invoke-Case 'Collect direct-write 使用共用 identity gate 驗證 final messag
     $directIdentityRecord.preflight_sha256 = Get-FileSha256 -Path $directIdentityPreflightPath
     $null = Write-DispatchRunRecord -Record $directIdentityRecord -Update
     Write-Utf8NoBom -Path $directIdentityRecord.last_message_path -Content ('design.md dispatchSlug=' + $directIdentityDispatch + ' lineSlug=line-a')
-    $directIdentityRecovery = [ordered]@{
-        schema = 'ai-sessions.recovery-handoff.v1'
-        operation = 'RecoveryHandoff'
-        line_slug = 'line-a'
-        dispatch_slug = $directIdentityDispatch
-        run_chain = [ordered]@{ latest_run_record_path = $directIdentityRunPath }
-    }
-    Write-Utf8NoBom -Path $directIdentityRecoveryPath -Content ($directIdentityRecovery | ConvertTo-Json -Depth 12)
-
     $SourceRoot = $fixtureRoot
     $ExecutionRoot = $fixtureRoot
     $DispatchKind = 'resource'
@@ -2789,7 +2779,6 @@ Invoke-Case 'Collect direct-write 使用共用 identity gate 驗證 final messag
     $PreflightResultPath = $directIdentityPreflightPath
     $RequestPath = $directIdentityRequestPath
     $RunRecordPath = $directIdentityRunPath
-    $RecoveryHandoffPath = $directIdentityRecoveryPath
     $ReportPath = @($directIdentityClosurePath)
     $ReviewerReportPath = $directIdentityReviewerPath
     $directIdentityLedgerPath = Join-Path $fixtureRoot '.local\ai-sessions\history\line-a\review-finding-ledger.json'
@@ -2840,7 +2829,7 @@ Invoke-Case 'Collect direct-write 使用共用 identity gate 驗證 final messag
     $directReturnIndex = $collectText.IndexOf('return Invoke-DirectWriteCollect', [StringComparison]::Ordinal)
     Assert-True ($directReturnIndex -ge 0) 'F-003 Collect direct-write 返回路徑不存在。'
     $directCallText = $collectText.Substring($directReturnIndex, [Math]::Min(1800, $collectText.Length - $directReturnIndex))
-    foreach ($identityArgument in @('-Preflight $preflight', '-PreflightPath $PreflightResultPath', '-RequestPath $collectRequestPath', '-RunRecordPath $collectRunRecordPath', '-RecoveryHandoffPath $collectRecoveryHandoffPath', '-RequiredIdentifier $collectRequiredIdentifier')) {
+    foreach ($identityArgument in @('-Preflight $preflight', '-PreflightPath $PreflightResultPath', '-RequestPath $collectRequestPath', '-RunRecordPath $collectRunRecordPath', '-RequiredIdentifier $collectRequiredIdentifier')) {
         Assert-True $directCallText.Contains($identityArgument) ('F-003 direct-write 呼叫未傳遞 identity 參數：' + $identityArgument)
     }
 }
@@ -3151,14 +3140,6 @@ if ($Phase -ge 2) {
         $group = New-ModelEvidence -RequestedModel $requested -ResolvedModel $resolved -RuntimeModel $runtime -RequestedReasoningEffort (New-RequestedDispatchEvidence -Value $null -Field 'ReasoningEffort') -ResolvedReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'profile-config' -Field 'model_reasoning_effort') -RuntimeReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'rollout' -Field 'payload.effort')
         Assert-True ($group.model.requested.status -eq 'unknown' -and (Test-DispatchEvidencePair -EvidenceGroup $group.model).eligible) 'requested unknown 錯誤使 evidence pair 失格。'
     }
-    Invoke-Case 'Calibration unknown 與 resolved runtime mismatch 不收樣' {
-        $unknown = New-ModelEvidence -RequestedModel (New-RequestedDispatchEvidence -Value $null -Field 'Model') -ResolvedModel (New-UnknownDispatchEvidence -Field 'model' -Reason 'fixture unknown') -RuntimeModel (New-UnknownDispatchEvidence -Field 'payload.model' -Reason 'fixture unknown') -RequestedReasoningEffort (New-RequestedDispatchEvidence -Value $null -Field 'ReasoningEffort') -ResolvedReasoningEffort (New-UnknownDispatchEvidence -Field 'model_reasoning_effort' -Reason 'fixture unknown') -RuntimeReasoningEffort (New-UnknownDispatchEvidence -Field 'payload.effort' -Reason 'fixture unknown')
-        $estimate = Get-CalibrationEstimate -Path (Join-Path $fixtureRoot 'missing-calibration.jsonl') -ModelEvidence $unknown.model -ReasoningEffortEvidence $unknown.reasoning_effort -Profile 'default' -SessionMode 'cold-start' -TaskType 'script-change'
-        Assert-True ($null -eq $estimate.estimate -and $estimate.source -eq 'evidence-unknown') 'unknown evidence 被轉成 calibration estimate。'
-        $mismatch = New-ModelEvidence -RequestedModel (New-RequestedDispatchEvidence -Value $null -Field 'Model') -ResolvedModel (New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'profile-config' -Field 'model') -RuntimeModel (New-ConfirmedDispatchEvidence -Value 'other-model' -Source 'rollout' -Field 'payload.model') -RequestedReasoningEffort (New-RequestedDispatchEvidence -Value $null -Field 'ReasoningEffort') -ResolvedReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'profile-config' -Field 'model_reasoning_effort') -RuntimeReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'rollout' -Field 'payload.effort')
-        Assert-True (-not (Test-DispatchEvidencePair -EvidenceGroup $mismatch.model).eligible) 'resolved／runtime mismatch 仍可收樣。'
-    }
-
     $phase2EvidenceRoot = Join-Path $fixtureRoot 'advisor-evidence'
     New-Item -ItemType Directory -Path $phase2EvidenceRoot -Force | Out-Null
     $phase2EvidencePackPath = Join-Path $phase2EvidenceRoot 'pack.md'
@@ -3240,7 +3221,7 @@ supported" -RequiredOutput $required
 
     Invoke-Case 'Inspect 事件權威與一致性成功' {
         $result = Invoke-Inspect
-        Assert-True ($result.success -and $result.outputValid -and $result.lastMessageConsistency -eq 'Match' -and $result.finalMessageSource -eq 'event-stream' -and $result.finalMessageIdentity.valid -and $script:observedExecution.success) '成功 gate 不一致。'
+        Assert-True ($result.success -and $result.outputValid -and $result.lastMessageConsistency -eq 'Match' -and $result.finalMessageSource -eq 'event-stream' -and $result.finalMessageIdentity.valid) '成功 gate 不一致。'
     }
     Invoke-Case 'Inspect 結案訊息錯 dispatch identity 回傳結構化 mismatch' {
         try {
@@ -3286,7 +3267,7 @@ line-a")) {
             try {
                 Write-Utf8NoBom $a.last_message_path $message
                 $result = Invoke-Inspect
-                Assert-True (-not $result.success -and -not $result.outputValid -and $result.lastMessageConsistency -eq 'Mismatch' -and -not $script:observedExecution.success -and $result.finalMessage -ceq 'design.md dispatch-a line-a') '不一致仍成功或改用外部訊息。'
+                Assert-True (-not $result.success -and -not $result.outputValid -and $result.lastMessageConsistency -eq 'Mismatch' -and $result.finalMessage -ceq 'design.md dispatch-a line-a') '不一致仍成功或改用外部訊息。'
             } finally { Write-Utf8NoBom $a.last_message_path 'design.md dispatch-a line-a' }
         }
     }
@@ -3294,7 +3275,7 @@ line-a")) {
         $EventStreamPath = $a2.event_stream_path
         $LastMessagePath = $a.last_message_path
         $result = Invoke-Inspect
-        Assert-True (-not $result.success -and $result.lastMessageConsistency -eq 'BindingMismatch' -and -not $script:observedExecution.success) '前輪路徑未拒絕。'
+        Assert-True (-not $result.success -and $result.lastMessageConsistency -eq 'BindingMismatch') '前輪路徑未拒絕。'
     }
     Invoke-Case 'Inspect 僅移除一個 BOM' {
         try {
@@ -3350,29 +3331,13 @@ line-a")) {
         $inspectText = ($functions | Where-Object { $_.Name -eq 'Invoke-Inspect' }).Extent.Text
         Assert-True ($inspectText -notmatch '\$finalMessage = Get-Content' -and $inspectText.Contains('$finalMessage = $lastAgentMessage') -and $inspectText.Contains('-and $outputValid')) '外部優先或 success 缺漏。'
     }
-    Invoke-Case 'Inspect 不一致校準觀測不得 eligible' {
-        . ([scriptblock]::Create(($functions | Where-Object { $_.Name -eq 'Add-CalibrationObservation' }).Extent.Text))
-        function Test-ScopePlanCompleteness { return $true }
-        function Test-QuotaResetWindowChanged { return $false }
-        function Get-QuotaSnapshotDelta { return 1 }
-        function Test-QuotaSnapshotFresh { return $true }
-        function Add-AtomicJsonLine { param($Path, $Content) $script:calibrationRecord = ConvertFrom-DispatchJson $Content }
-        function Get-CalibrationRecords { return @() }
-        $arguments = @{ SourceRoot = $fixtureRoot; LineSlug = 'line-a'; DispatchSlug = 'dispatch-a'; Profile = 'default'; Model = 'fixture'; ReasoningEffort = 'high'; TaskType = 'fixture'; SessionMode = 'cold-start'; Usage = [pscustomobject]@{ input_tokens = 1; output_tokens = 1 }; ScopePlan = @{ primary_budget_percent = 10 }; BudgetMonitor = @() }
-        $good = Add-CalibrationObservation @arguments -ExecutionResult ([pscustomobject]@{ completed = $true; processExitCode = 0; success = $true; outputValid = $true })
-        Assert-True $good.calibrationEligible ('正向校準 fixture 未通過。' + ($script:calibrationRecord | ConvertTo-Json -Depth 8 -Compress))
-        foreach ($state in @('Mismatch', 'BindingMismatch')) {
-            $bad = Add-CalibrationObservation @arguments -ExecutionResult ([pscustomobject]@{ completed = $true; processExitCode = 0; success = $false; outputValid = $false })
-            Assert-True (-not $bad.calibrationEligible -and -not $script:calibrationRecord.calibration_eligible) ($state + ' 仍被列入校準。')
-        }
-    }
-    $identityRecord = New-TestRun -Dispatch 'identity-case'
+   $identityRecord = New-TestRun -Dispatch 'identity-case'
     $identityRunPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'identity-case') ($identityRecord.run_id + '.json')
     $identityRequestPath = Join-Path $fixtureRoot 'identity-request.json'
     $identityPreflightPath = $identityRecord.preflight_result_path
     $identityReportRoot = Join-Path $fixtureRoot '.local/ai-sessions/report/line-a'
     $identityReportPath = Join-Path $identityReportRoot 'identity-review.md'
-    $identityRecoveryPath = Join-Path $fixtureRoot 'identity-recovery.json'
+    $identityFailurePath = Join-Path $fixtureRoot 'identity-failure.json'
     $identityPromptPath = Join-Path $fixtureRoot 'identity-prompt.md'
     $identityBaseSha = 'base-sha-fixture'
     Write-Utf8NoBom -Path $identityPromptPath -Content 'identity prompt'
@@ -3392,7 +3357,7 @@ line-a")) {
         session_mode = 'cold-start'
         unit_kind = 'workflow-phase'
         requested_unit = @('identity-case')
-        failure_receipt_path = $identityRecoveryPath
+        failure_receipt_path = $identityFailurePath
     }
     $identityPreflight = [ordered]@{
         operation = 'Preflight'
@@ -3415,22 +3380,14 @@ line-a")) {
     Write-Utf8NoBom -Path $identityRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
     $identityReviewerManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'identity-case' -Round 1
     Write-ReviewerFixture -Path $identityReportPath -Manifest $identityReviewerManifest
-    $identityRecovery = [ordered]@{
-        schema = 'ai-sessions.recovery-handoff.v1'
-        operation = 'RecoveryHandoff'
-        line_slug = 'line-a'
-        dispatch_slug = 'identity-case'
-        run_chain = [ordered]@{ latest_run_record_path = $identityRunPath }
-    }
-    Write-Utf8NoBom -Path $identityRecoveryPath -Content ($identityRecovery | ConvertTo-Json -Depth 10)
     Invoke-Case 'Identity validator 一致 request／Preflight／RunRecord／report／recovery 通過' {
-        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath
         Assert-True ($identityResult.valid -and @($identityResult.differences).Count -eq 0 -and $identityResult.final_message_identity.valid -and $identityResult.reviewer_report.line_slug -ceq 'line-a' -and $identityResult.reviewer_report.dispatch_slug -ceq 'identity-case') ('一致 identity 未通過：' + ($identityResult.differences | ConvertTo-Json -Depth 10 -Compress))
     }
     Invoke-Case 'Collect identity 最終訊息錯 dispatchSlug 回報 expected received source' -Reject -ErrorPattern 'final_message.dispatchSlug' {
         try {
             Write-Utf8NoBom -Path $identityRecord.last_message_path -Content 'design.md dispatchSlug=wrong-dispatch lineSlug=line-a'
-            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath
             $mismatch = @($identityResult.differences | Where-Object { $_.field -eq 'final_message.dispatchSlug' })
             Assert-True (-not $identityResult.valid -and $mismatch.Count -eq 1 -and $mismatch[0].expected -ceq 'identity-case' -and $mismatch[0].received -ceq 'wrong-dispatch' -and $mismatch[0].source -ceq (Resolve-AbsolutePath -Path $identityRecord.last_message_path)) ('Collect final message mismatch 欄位不完整：' + ($identityResult.differences | ConvertTo-Json -Depth 10 -Compress))
             throw ('final_message.dispatchSlug expected={0}; received={1}; source={2}' -f $mismatch[0].expected, $mismatch[0].received, $mismatch[0].source)
@@ -3447,7 +3404,7 @@ line-a")) {
         Set-Item -Path Function:\Test-DispatchCollectIdentity -Value ([scriptblock]::Create($mutantIdentityText))
         try {
             Write-Utf8NoBom -Path $identityRecord.last_message_path -Content 'design.md dispatchSlug=wrong-dispatch lineSlug=line-a'
-            $mutantResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $mutantResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath
             Assert-True ($mutantResult.valid) 'F-003 final message identity mutant 未暴露執行端最終訊息未驗證。'
             Write-Phase9Evidence -Label 'F003_COLLECT_FINAL_MESSAGE_MUTANT' -Value ([ordered]@{
                     mutation = '移除 Test-DispatchCollectIdentity 讀取 RunRecord.last_message_path 並驗證 dispatchSlug／lineSlug 的區塊。'
@@ -3464,7 +3421,7 @@ line-a")) {
         try {
             $identityRequest.dispatch_slug = 'wrong-dispatch'
             Write-Utf8NoBom -Path $identityRequestPath -Content ($identityRequest | ConvertTo-Json -Depth 10)
-            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath
             $dispatchMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'dispatch_slug' -and $_.source -ceq $identityRequestPath })
             Assert-True (-not $identityResult.valid -and $dispatchMismatch.Count -eq 1 -and $dispatchMismatch[0].expected -ceq 'identity-case' -and $dispatchMismatch[0].received -ceq 'wrong-dispatch') 'request dispatch mismatch 未被 gate 阻擋。'
         }
@@ -3481,7 +3438,7 @@ line-a")) {
             Write-Utf8NoBom -Path $identityRequestPath -Content ($identityRequest | ConvertTo-Json -Depth 20)
             $identityRecord.request_sha256 = Get-FileSha256 -Path $identityRequestPath
             $null = Write-DispatchRunRecord -Record $identityRecord -Update
-            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath
             $lineMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'line_slug' -and $_.source -ceq $identityRequestPath })
             Assert-True (-not $identityResult.valid -and $lineMismatch.Count -eq 1 -and $lineMismatch[0].expected -ceq 'line-a' -and $lineMismatch[0].received -ceq 'line-b') 'request line_slug mismatch 未被 gate 阻擋。'
         }
@@ -3499,7 +3456,7 @@ line-a")) {
             foreach ($property in $identityRequest.GetEnumerator()) { $alternateRequest[$property.Key] = $property.Value }
             $alternateRequest.task_type = 'alternate-request'
             Write-Utf8NoBom -Path $alternateRequestPath -Content ($alternateRequest | ConvertTo-Json -Depth 20)
-            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequestPath $alternateRequestPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequestPath $alternateRequestPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath
             $requestHashMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'request_sha256' -or $_.field -eq 'run_record.request_sha256' })
             Assert-True (-not $identityResult.valid -and @($identityResult.differences | Where-Object { $_.field -eq 'request.path' }).Count -eq 1 -and $requestHashMismatch.Count -eq 2) ('alternate request 未被 request_sha256 交叉驗證拒絕：' + ($identityResult.differences | ConvertTo-Json -Depth 12 -Compress))
         }
@@ -3513,7 +3470,7 @@ line-a")) {
         New-Item -ItemType Directory -Path $wrongReportRoot -Force | Out-Null
         Copy-Item -LiteralPath $identityReportPath -Destination $wrongReportPath -Force
         try {
-            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $wrongReportPath -RecoveryHandoffPath $identityRecoveryPath
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $wrongReportPath
             $pathMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'report.path' })
             Assert-True (-not $identityResult.valid -and $pathMismatch.Count -eq 1 -and $pathMismatch[0].received -ceq $wrongReportPath) '錯誤 report path 未被拒絕。'
         }
@@ -3521,44 +3478,22 @@ line-a")) {
             Remove-Item -LiteralPath $wrongReportRoot -Recurse -Force
         }
     }
-    Invoke-Case 'Identity recovery target 不同 line 拒絕' {
-        $wrongRecoveryPath = Join-Path $fixtureRoot 'identity-recovery-wrong-line.json'
-        $wrongRecovery = [ordered]@{
-            schema = 'ai-sessions.recovery-handoff.v1'
-            operation = 'RecoveryHandoff'
-            line_slug = 'line-b'
-            dispatch_slug = 'identity-case'
-            run_chain = [ordered]@{ latest_run_record_path = $identityRunPath }
-        }
-        Write-Utf8NoBom -Path $wrongRecoveryPath -Content ($wrongRecovery | ConvertTo-Json -Depth 10)
-        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $identityRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $wrongRecoveryPath
-        $lineMismatch = @($identityResult.differences | Where-Object { $_.field -eq 'recovery.line_slug' })
-        Assert-True (-not $identityResult.valid -and $lineMismatch.Count -eq 1 -and $lineMismatch[0].expected -ceq 'line-a' -and $lineMismatch[0].received -ceq 'line-b') '錯誤 recovery target 未被拒絕。'
-    }
-    Invoke-Case 'Identity RunRecord path 跨 dispatch 拒絕' {
-        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $aPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityRecoveryPath
+   Invoke-Case 'Identity RunRecord path 跨 dispatch 拒絕' {
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -PreflightPath $identityPreflightPath -RunRecordPath $aPath -ReviewerReportPath $identityReportPath
         Assert-True (-not $identityResult.valid -and @($identityResult.differences | Where-Object { $_.field -eq 'run_record' }).Count -gt 0) '跨 dispatch RunRecord 未被拒絕。'
     }
     $identityContinuationRecord = New-TestRun -Dispatch 'identity-case' -Previous $identityRecord
     $identityContinuationRunPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'identity-case') ($identityContinuationRecord.run_id + '.json')
     Write-Utf8NoBom -Path $identityContinuationRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
-    $identityContinuationRecoveryPath = Join-Path $fixtureRoot 'identity-continuation-recovery.json'
-    Write-Utf8NoBom -Path $identityContinuationRecoveryPath -Content (([ordered]@{
-                schema = 'ai-sessions.recovery-handoff.v1'
-                operation = 'RecoveryHandoff'
-                line_slug = 'line-a'
-                dispatch_slug = 'identity-case'
-                run_chain = [ordered]@{ latest_run_record_path = $identityContinuationRunPath }
-            } | ConvertTo-Json -Depth 10))
     Invoke-Case 'Identity continuation 沿祖先 RunRecord 回溯 request 識別並保留最新 final message' {
-        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityContinuationRecoveryPath
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath
         $requestSource = $identityResult.request_identity_source
         Assert-True ($identityResult.valid -and $identityResult.final_message_identity.valid -and [string]$requestSource.status -eq 'found' -and [string]$requestSource.source -eq 'ancestor' -and [string]$requestSource.run_id -ceq [string]$identityRecord.run_id -and [string]$requestSource.path -ceq (Resolve-AbsolutePath -Path $identityRunPath) -and [string]$identityResult.run_record_path -ceq (Resolve-AbsolutePath -Path $identityContinuationRunPath)) ('continuation request identity 回溯未通過：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
     }
     Invoke-Case 'Identity continuation latest final message 舊訊息拒絕' -Reject -ErrorPattern 'final_message\.(required_identifier|dispatchSlug|lineSlug)' {
         try {
             Write-Utf8NoBom -Path $identityContinuationRecord.last_message_path -Content '補件前舊訊息'
-            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityContinuationRecoveryPath
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath
             $mismatch = @($identityResult.differences | Where-Object { $_.field -like 'final_message.*' })
             Assert-True (-not $identityResult.valid -and $mismatch.Count -eq 1) ('續行 latest final message 舊訊息未拒絕：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
             throw ('{0} expected={1}; received={2}; source={3}' -f $mismatch[0].field, $mismatch[0].expected, $mismatch[0].received, $mismatch[0].source)
@@ -3583,16 +3518,8 @@ line-a")) {
     $identitySkippedContinuationRecord = New-TestRun -Dispatch 'identity-case' -Previous $identityLaunchFailedRecord
     $identitySkippedContinuationRunPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'identity-case') ($identitySkippedContinuationRecord.run_id + '.json')
     Write-Utf8NoBom -Path $identitySkippedContinuationRecord.last_message_path -Content 'design.md dispatchSlug=identity-case lineSlug=line-a'
-    $identitySkippedContinuationRecoveryPath = Join-Path $fixtureRoot 'identity-skipped-continuation-recovery.json'
-    Write-Utf8NoBom -Path $identitySkippedContinuationRecoveryPath -Content (([ordered]@{
-                schema = 'ai-sessions.recovery-handoff.v1'
-                operation = 'RecoveryHandoff'
-                line_slug = 'line-a'
-                dispatch_slug = 'identity-case'
-                run_chain = [ordered]@{ latest_run_record_path = $identitySkippedContinuationRunPath }
-            } | ConvertTo-Json -Depth 10))
     Invoke-Case 'Identity continuation 沿鏈略過 launch-failed 嘗試' {
-        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identitySkippedContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identitySkippedContinuationRecoveryPath
+        $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identitySkippedContinuationRunPath -ReviewerReportPath $identityReportPath
         $skipped = @($identityResult.request_identity_source.skipped_attempts | Where-Object { [string]$_.run_id -ceq [string]$identityLaunchFailedRecord.run_id })
         Assert-True ($identityResult.valid -and [string]$identityResult.request_identity_source.run_id -ceq [string]$identityRecord.run_id -and $skipped.Count -eq 1) ('launch-failed 略過未被驗證：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
     }
@@ -3606,7 +3533,7 @@ line-a")) {
             $identityContinuationRecord.previous_run_id = $null
             $identityContinuationRecord.requested_thread_id = $null
             $null = Write-DispatchRunRecord -Record $identityContinuationRecord -Update
-            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityContinuationRecoveryPath
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath
             $mismatch = @($identityResult.differences | Where-Object { $_.field -eq 'run_record.request_sha256' })
             Assert-True (-not $identityResult.valid -and [string]$identityResult.request_identity_source.status -eq 'missing' -and $mismatch.Count -eq 1) ('無可用祖先仍未拒絕：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
             throw ('run_record.request_sha256 expected={0}; received={1}; source={2}' -f $mismatch[0].expected, $mismatch[0].received, $mismatch[0].source)
@@ -3626,7 +3553,7 @@ line-a")) {
             $identityContinuationRecord.attempt_parent_run_id = $crossDispatchParent.run_id
             $identityContinuationRecord.previous_run_id = $crossDispatchParent.run_id
             $null = Write-DispatchRunRecord -Record $identityContinuationRecord -Update
-            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath -RecoveryHandoffPath $identityContinuationRecoveryPath
+            $identityResult = Test-DispatchCollectIdentity -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'identity-case' -BaseSha $identityBaseSha -RequiredIdentifier 'design.md' -RequestPath $identityRequestPath -RunRecordPath $identityContinuationRunPath -ReviewerReportPath $identityReportPath
             $mismatch = @($identityResult.differences | Where-Object { $_.field -eq 'run_record.request_chain' })
             Assert-True (-not $identityResult.valid -and $mismatch.Count -eq 1) ('跨 dispatch chain 未拒絕：' + ($identityResult | ConvertTo-Json -Depth 20 -Compress))
             throw ('run_record.request_chain expected={0}; received={1}; source={2}' -f $mismatch[0].expected, $mismatch[0].received, $mismatch[0].source)
@@ -3959,7 +3886,7 @@ model_reasoning_effort = 'high'
         $RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) ($phase3FailedInspect.run_id + '.json')
         $ProcessExitCode = 1
         $result = Invoke-Inspect
-        Assert-True (-not $result.success -and $result.diagnosis.reason_code -eq $phase3FailedInspect.failure.reason_code -and $result.calibration.calibrationEligible -eq $false -and $result.errorStreamPath -eq $null) 'failed Inspect 未直接輸出 diagnosis。'
+        Assert-True (-not $result.success -and $result.diagnosis.reason_code -eq $phase3FailedInspect.failure.reason_code -and $result.errorStreamPath -eq $null) 'failed Inspect 未直接輸出 diagnosis。'
     }
 
     $phase3UnknownInspect = New-TestRun -Line 'line-a' -Dispatch 'phase3-unknown-inspect'
@@ -4171,7 +4098,6 @@ if ($Phase -ge 3) {
         $ReviewerReportPath = $worktreeReviewerPath
         $RequestPath = ''
         $RunRecordPath = ''
-        $RecoveryHandoffPath = ''
         $result = Invoke-Collect
         $worktreeLedgerExistsAfter = Test-Path -LiteralPath $worktreeLedgerPath -PathType Leaf
         $worktreeLedgerShaAfter = if ($worktreeLedgerExistsAfter) { Get-FileSha256 -Path $worktreeLedgerPath } else { $null }
@@ -5076,62 +5002,6 @@ if ($Phase -ge 4) {
     New-Item -ItemType Directory -Path $phase4LineRoot -Force | Out-Null
     Write-Utf8NoBom -Path (Join-Path $phase4LineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'line-a' } | ConvertTo-Json) + "
 ")
-    $phase4HandoffRecord = New-TestRun -Line 'line-a' -Dispatch 'phase4-handoff'
-    $phase4Scope = [ordered]@{ dispatch_slug = 'phase4-handoff'; selected_units = @('unit-1'); deferred_units = @('unit-2'); scope_plan_fingerprint = 'fixture' }
-    Write-Utf8NoBom -Path $phase4HandoffRecord.scope_plan_path -Content (($phase4Scope | ConvertTo-Json -Depth 8) + "
-")
-    $phase4HandoffRecord.scope_plan_sha256 = Get-FileSha256 $phase4HandoffRecord.scope_plan_path
-    $null = Write-DispatchRunRecord -Record $phase4HandoffRecord -Update
-    Write-Utf8NoBom -Path $phase4HandoffRecord.event_stream_path -Content (([ordered]@{ type = 'error'; message = 'usage-limit reached' } | ConvertTo-Json -Compress) + "
-")
-    Remove-Item -LiteralPath $phase4HandoffRecord.last_message_path -Force -ErrorAction SilentlyContinue
-    Invoke-Case 'Phase 4 usage-limit no last-message 建立 RecoveryReady Handoff' {
-        $SourceRoot = $fixtureRoot
-        $ExecutionRoot = $fixtureRoot
-        $LineSlug = 'line-a'
-        $DispatchSlug = 'phase4-handoff'
-        $RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) ($phase4HandoffRecord.run_id + '.json')
-        $WriteMode = 'write'
-        $ProcessExitCode = 1
-        $RecoveryHandoffPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/recovery-handoff-phase4-handoff-aabbccddeeff00112233445566778899.json'
-        $RebuildReason = 'usage-limit-no-last-message'
-        $result = Invoke-RecoveryHandoff
-        $handoff = Read-RecoveryHandoff -Path $result.recoveryHandoffPath -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
-        Assert-True ($result.recoveryStatus -eq 'ready' -and $result.deliverableAcceptance.status -eq 'pending' -and $handoff.Document.deliverable_acceptance.status -ne 'accepted' -and $handoff.Document.event_evidence.event_state -eq 'quota-rejected') 'RecoveryHandoff 未分離 recovery eligibility 與 acceptance。'
-    }
-    Invoke-Case 'Phase 4 Handoff collision 不覆寫既有 evidence' -Reject -ErrorPattern 'RecoveryHandoffCollision' {
-        $SourceRoot = $fixtureRoot
-        $ExecutionRoot = $fixtureRoot
-        $LineSlug = 'line-a'
-        $DispatchSlug = 'phase4-handoff'
-        $RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) ($phase4HandoffRecord.run_id + '.json')
-        $WriteMode = 'write'
-        $ProcessExitCode = 1
-        $RecoveryHandoffPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/recovery-handoff-phase4-handoff-aabbccddeeff00112233445566778899.json'
-        $RebuildReason = 'usage-limit-no-last-message'
-        Invoke-RecoveryHandoff
-    }
-    Invoke-Case 'Phase 4 Handoff hash changed／cross-line 拒絕' -Reject -ErrorPattern 'RecoveryHandoffHashMismatch|CrossLine' {
-        $handoffPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/recovery-handoff-phase4-handoff-aabbccddeeff00112233445566778899.json'
-        $handoffContent = Get-Content -LiteralPath $handoffPath -Raw -Encoding UTF8
-        Write-Utf8NoBom -Path $handoffPath -Content ($handoffContent + "
-")
-        Read-RecoveryHandoff -Path $handoffPath -SourceRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase4-handoff'
-    }
-    Invoke-Case 'Phase 4 completion claim 不得寫入 accepted' -Reject -ErrorPattern 'RecoveryHandoffUnsupportedCompletion' {
-        $completionRecord = New-TestRun -Line 'line-a' -Dispatch 'phase4-completion-claim'
-        Write-Utf8NoBom -Path $completionRecord.last_message_path -Content 'deliverable_acceptance: accepted'
-        $SourceRoot = $fixtureRoot
-        $ExecutionRoot = $fixtureRoot
-        $LineSlug = 'line-a'
-        $DispatchSlug = 'phase4-completion-claim'
-        $RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) ($completionRecord.run_id + '.json')
-        $ProcessExitCode = 0
-        $RecoveryHandoffPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/recovery-handoff-phase4-completion-claim-00112233445566778899aabbccddeeff.json'
-        $result = Invoke-RecoveryHandoff
-        Assert-True ($result.recoveryStatus -eq 'blocked' -and $result.recoveryEligibility.rejection_codes -contains 'RecoveryHandoffUnsupportedCompletion') 'completion claim 未被標記為 blocked。'
-        throw 'RecoveryHandoffUnsupportedCompletion: fixture rejection assertion'
-    }
     Invoke-Case 'Phase 4 unknown termination 診斷與 cold-start 建議' {
         $unknownRecord = New-TestRun -Line 'line-a' -Dispatch 'phase4-unknown-interruption'
         $unknownEvents = @(
@@ -5245,105 +5115,8 @@ if ($Phase -ge 4) {
         $resumeGate = if ($null -eq $resumeException) { $null } else { $resumeException.Data['recoveryResumeGate'] }
         Assert-True ($null -ne $resumeException -and $resumeException.Message -match 'InterruptedUnknownResumeRejected' -and $null -ne $resumeGate -and $resumeGate.process_started -eq $false -and $resumeGate.cold_start_recommended -eq $true) '較早有效 anchor 被錯誤選用，未拒絕含 InterruptedUnknown 的整條鏈。'
 
-        $WriteMode = 'write'
-        $RebuildReason = 'unknown-interruption'
-        $RecoveryHandoffPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/recovery-handoff-phase4-unknown-chain-44444444444444444444444444444444.json'
-        $handoffResult = Invoke-RecoveryHandoff
-        Assert-True ($handoffResult.recoveryStatus -eq 'blocked' -and $handoffResult.recoveryEligibility.rejection_codes -contains 'InterruptedUnknownResumeRejected' -and $handoffResult.processStarted -eq $false -and $handoffResult.coldStartRecommended -eq $true) 'RecoveryHandoff 未沿用整條鏈的 InterruptedUnknown 拒絕判定。'
-        $handoffDocument = (Read-RecoveryHandoff -Path $handoffResult.recoveryHandoffPath -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug).Document
-        $scopeObject = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $latestRecord.scope_plan_path -Raw -Encoding UTF8)
-        $context = New-TestHandoffValidationContext -Record $latestRecord -ScopePlan $scopeObject
-        $handoffValidationException = $null
-        try {
-            Resolve-RecoveryHandoffBinding -Path $handoffResult.recoveryHandoffPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -ValidationContext $context
-        }
-        catch {
-            $handoffValidationException = $_.Exception
-        }
-        $handoffGate = if ($null -eq $handoffValidationException) { $null } else { $handoffValidationException.Data['recoveryHandoffGate'] }
-        Assert-True ($null -ne $handoffValidationException -and $handoffValidationException.Message -match 'InterruptedUnknownResumeRejected' -and $null -ne $handoffGate -and $handoffGate.process_started -eq $false) 'Start revalidation 未使用相同的 InterruptedUnknown 拒絕判定。'
     }
 
-    Invoke-Case 'Phase 4 F-003 ready 但 RunRecord chain 不自洽時拒絕' -Reject -ErrorPattern 'RecoveryHandoffNoChain' {
-        $chainRecord = New-TestRun -Line 'line-a' -Dispatch 'phase4-chain-mismatch'
-        $chainScope = [ordered]@{
-            dispatch_slug = 'phase4-chain-mismatch'
-            decision = 'full'
-            selected_units = @('unit-1')
-            deferred_units = @()
-            requested_units = @('unit-1')
-            scope_plan_fingerprint = 'fixture'
-        }
-        Write-Utf8NoBom -Path $chainRecord.scope_plan_path -Content (($chainScope | ConvertTo-Json -Depth 8) + [string][char]10)
-        $chainRecord.scope_plan_sha256 = Get-FileSha256 $chainRecord.scope_plan_path
-        $null = Write-DispatchRunRecord -Record $chainRecord -Update
-        Write-Utf8NoBom -Path $chainRecord.event_stream_path -Content (([ordered]@{ type = 'error'; message = 'usage-limit reached' } | ConvertTo-Json -Compress) + [string][char]10)
-        Remove-Item -LiteralPath $chainRecord.last_message_path -Force -ErrorAction SilentlyContinue
-        $SourceRoot = $fixtureRoot
-        $ExecutionRoot = $fixtureRoot
-        $LineSlug = 'line-a'
-        $DispatchSlug = 'phase4-chain-mismatch'
-        $RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) ($chainRecord.run_id + '.json')
-        $WriteMode = 'write'
-        $ProcessExitCode = 1
-        $RebuildReason = 'usage-limit-no-last-message'
-        $RecoveryHandoffPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/recovery-handoff-phase4-chain-mismatch-11111111111111111111111111111111.json'
-        $handoffResult = Invoke-RecoveryHandoff
-        $handoffDocument = (Read-RecoveryHandoff -Path $handoffResult.recoveryHandoffPath -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug).Document
-        $handoffDocument.run_chain.anchor_run_id = [guid]::NewGuid().ToString('D')
-        Set-TestHandoffDocumentHash -Path $handoffResult.recoveryHandoffPath -Document $handoffDocument
-        $context = New-TestHandoffValidationContext -Record $chainRecord -ScopePlan (ConvertFrom-DispatchJson (Get-Content -LiteralPath $chainRecord.scope_plan_path -Raw -Encoding UTF8))
-        Resolve-RecoveryHandoffBinding -Path $handoffResult.recoveryHandoffPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -ValidationContext $context
-    }
-
-    Invoke-Case 'Phase 4 F-003 all launch-failed chain emits RecoveryHandoffNoChain' {
-        $noAnchorRecord = New-TestRun -Line 'line-a' -Dispatch 'phase4-no-anchor'
-        $noAnchorRecord = New-Phase3FailedRecord -Record $noAnchorRecord -Message 'fixture launch-failed' -PreparationWithoutScope
-        $SourceRoot = $fixtureRoot
-        $ExecutionRoot = $fixtureRoot
-        $LineSlug = 'line-a'
-        $DispatchSlug = 'phase4-no-anchor'
-        $RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) ($noAnchorRecord.run_id + '.json')
-        $WriteMode = 'write'
-        $ProcessExitCode = 1
-        $RebuildReason = 'launch-failed'
-        $RecoveryHandoffPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/recovery-handoff-phase4-no-anchor-22222222222222222222222222222222.json'
-        $handoffResult = Invoke-RecoveryHandoff
-        Assert-True ($handoffResult.recoveryStatus -eq 'blocked' -and $handoffResult.recoveryEligibility.rejection_codes -contains 'RecoveryHandoffNoChain') '全 launch-failed chain 未輸出 RecoveryHandoffNoChain。'
-    }
-
-    Invoke-Case 'Phase 4 F-003 Handoff authorization 擴大 units 時拒絕' -Reject -ErrorPattern 'RecoveryHandoffAuthorizationExpansion' {
-        $authorizationRecord = New-TestRun -Line 'line-a' -Dispatch 'phase4-authorization-expansion'
-        $authorizationScope = [ordered]@{
-            dispatch_slug = 'phase4-authorization-expansion'
-            decision = 'full'
-            selected_units = @('unit-1')
-            deferred_units = @()
-            requested_units = @('unit-1')
-            scope_plan_fingerprint = 'fixture'
-        }
-        Write-Utf8NoBom -Path $authorizationRecord.scope_plan_path -Content (($authorizationScope | ConvertTo-Json -Depth 8) + [string][char]10)
-        $authorizationRecord.scope_plan_sha256 = Get-FileSha256 $authorizationRecord.scope_plan_path
-        $null = Write-DispatchRunRecord -Record $authorizationRecord -Update
-        Write-Utf8NoBom -Path $authorizationRecord.event_stream_path -Content (([ordered]@{ type = 'error'; message = 'usage-limit reached' } | ConvertTo-Json -Compress) + [string][char]10)
-        Remove-Item -LiteralPath $authorizationRecord.last_message_path -Force -ErrorAction SilentlyContinue
-        $SourceRoot = $fixtureRoot
-        $ExecutionRoot = $fixtureRoot
-        $LineSlug = 'line-a'
-        $DispatchSlug = 'phase4-authorization-expansion'
-        $RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) ($authorizationRecord.run_id + '.json')
-        $WriteMode = 'write'
-        $ProcessExitCode = 1
-        $RebuildReason = 'usage-limit-no-last-message'
-        $RecoveryHandoffPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/recovery-handoff-phase4-authorization-expansion-33333333333333333333333333333333.json'
-        $handoffResult = Invoke-RecoveryHandoff
-        $handoffDocument = (Read-RecoveryHandoff -Path $handoffResult.recoveryHandoffPath -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug).Document
-        $handoffDocument.authorization.requested_units = @('unit-1', 'unit-2')
-        Set-TestHandoffDocumentHash -Path $handoffResult.recoveryHandoffPath -Document $handoffDocument
-        $scopeObject = ConvertFrom-DispatchJson (Get-Content -LiteralPath $authorizationRecord.scope_plan_path -Raw -Encoding UTF8)
-        $context = New-TestHandoffValidationContext -Record $authorizationRecord -ScopePlan $scopeObject
-        Resolve-RecoveryHandoffBinding -Path $handoffResult.recoveryHandoffPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -ValidationContext $context
-    }
 }
 if ($Phase -ge 5) {
     foreach ($functionName in @('Get-RequirementIdsFromSummary', 'Get-RequirementTableRows', 'Get-RequirementMap')) {
@@ -6606,7 +6379,6 @@ if ($Phase -ge 7) {
             'Test-ScopePlanCompleteness',
             'Get-CalibrationRecords',
             'Add-AtomicJsonLine',
-            'Add-CalibrationObservation',
             'Invoke-QuotaProbe'
         )) {
         $definitionAst = $functions | Where-Object { $_.Name -eq $functionName } | Select-Object -First 1
@@ -7116,17 +6888,6 @@ if ($Phase -ge 7) {
     $phase7ExecutionResult = [pscustomobject]@{ completed = $true; processExitCode = 0; success = $true; outputValid = $true }
     $phase7Usage = [pscustomobject]@{ input_tokens = 1; output_tokens = 1 }
     $phase7InterruptionStatus = [ordered]@{ applied = $true; sessionMode = 'cold-start' }
-    Invoke-Case 'Phase 7 ScopePlan fingerprint 改變時 calibration ineligible' {
-        $calibrationResult = Add-CalibrationObservation -SourceRoot $phase7Root -Path (Join-Path $phase7Root 'fingerprint-mismatch.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase7-fingerprint-mismatch' -Profile 'advisor' -Model 'fixture-model' -ReasoningEffort 'high' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence -TaskType 'advisor-consult' -SessionMode 'cold-start' -Usage $phase7Usage -ExecutionResult $phase7ExecutionResult -QuotaBeforePath $phase7ValidSnapshotPath -QuotaAfterPath $phase7CalibrationAfterPath -ScopePlan $phase7MismatchedPlan -InterruptionStatus $phase7InterruptionStatus -BudgetMonitor @()
-        $record = @(Get-CalibrationRecords -Path (Join-Path $phase7Root 'fingerprint-mismatch.jsonl'))[0]
-        Assert-True (-not $calibrationResult.calibrationEligible -and -not $record.calibration_checks.scope_plan_fingerprint_match) 'ScopePlan fingerprint mismatch 未標記 calibration ineligible。'
-    }
-
-    Invoke-Case 'Phase 7 before／after 同一路徑時 calibration ineligible' {
-        $calibrationResult = Add-CalibrationObservation -SourceRoot $phase7Root -Path (Join-Path $phase7Root 'same-path.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase7-same-snapshot-path' -Profile 'advisor' -Model 'fixture-model' -ReasoningEffort 'high' -ModelEvidence $phase7ModelEvidence -ReasoningEffortEvidence $phase7EffortEvidence -TaskType 'advisor-consult' -SessionMode 'cold-start' -Usage $phase7Usage -ExecutionResult $phase7ExecutionResult -QuotaBeforePath $phase7ValidSnapshotPath -QuotaAfterPath $phase7ValidSnapshotPath -ScopePlan $script:phase7AdvisorPlan -InterruptionStatus $phase7InterruptionStatus -BudgetMonitor @()
-        $record = @(Get-CalibrationRecords -Path (Join-Path $phase7Root 'same-path.jsonl'))[0]
-        Assert-True (-not $calibrationResult.calibrationEligible -and -not $record.calibration_checks.snapshot_paths_stable) 'before／after 相同來源未標記 calibration ineligible。'
-    }
 }
 
 if ($Phase -ge 8) {
@@ -7410,7 +7171,6 @@ if ($Phase -ge 8) {
         $script:ScopePlanPath = $null
         $script:LastMessagePath = $null
         $script:ResumeThreadId = $null
-        $script:RecoveryHandoffPath = $null
         $script:RequestPath = $null
         $script:InitialQuotaState = 'Valid'
         $script:AdvisorRequestSource = $AdvisorRequestSourceValue
@@ -8235,7 +7995,6 @@ if ($Phase -ge 9) {
         $script:AdvisorConsultReportPath = $null
         $script:AdvisorRequestSource = $null
         $script:BudgetMonitorPath = $null
-        $script:RecoveryHandoffPath = $null
         $script:InitialQuotaState = 'Valid'
         $script:PrimaryBudgetPercent = 34
         $script:PrimaryReservePercent = 30
@@ -8296,7 +8055,7 @@ if ($Phase -ge 9) {
             'QuotaBeforePath', 'QuotaAfterPath', 'CalibrationPath', 'ScopePlanPath', 'ResultPath', 'RunRecordPath', 'ThreadIdPath',
             'PidRecordPath', 'Profile', 'Model', 'ReasoningEffort', 'TaskType', 'SessionMode', 'DispatchKind', 'UnitKind',
             'RequestedUnit', 'AddDirectory', 'Search', 'CodexParentOption', 'EvidencePackPath', 'AdvisorConsultReportPath',
-            'AdvisorRequestSource', 'BudgetMonitorPath', 'RecoveryHandoffPath', 'InitialQuotaState', 'PrimaryBudgetPercent',
+            'AdvisorRequestSource', 'BudgetMonitorPath', 'InitialQuotaState', 'PrimaryBudgetPercent',
             'PrimaryReservePercent', 'ProfileExplicit', 'AddDirectoryExplicit', 'SearchExplicit', 'CodexParentOptionExplicit',
             'DispatchStageBinding'
         )
@@ -8898,7 +8657,6 @@ if ($Phase -ge 9) {
         $script:AdvisorConsultReportPath = $null
         $script:AdvisorRequestSource = $null
         $script:BudgetMonitorPath = $null
-        $script:RecoveryHandoffPath = $null
         $script:PrimaryBudgetPercent = 50
         $script:PrimaryReservePercent = 30
         $script:ProcessExitCode = $null
@@ -9379,7 +9137,6 @@ if ($Phase -ge 9) {
         $script:AdvisorConsultReportPath = $null
         $script:AdvisorRequestSource = $null
         $script:BudgetMonitorPath = $null
-        $script:RecoveryHandoffPath = $null
         $script:PrimaryBudgetPercent = 50
         $script:PrimaryReservePercent = 30
         $script:ProcessExitCode = $null
@@ -9676,7 +9433,6 @@ if ($Phase -ge 9) {
             $Search = $false
             $CodexParentOption = @()
             $RequiredIdentifier = $null
-            $RecoveryHandoffPath = $null
             $EventStreamPath = $null
             $ErrorStreamPath = $null
             $ThreadIdPath = $null
@@ -9930,7 +9686,6 @@ if ($Phase -ge 9) {
             $Search = $false
             $CodexParentOption = @()
             $RequiredIdentifier = $null
-            $RecoveryHandoffPath = $null
             $EventStreamPath = $null
             $ErrorStreamPath = $null
             $ThreadIdPath = $null
@@ -10502,7 +10257,6 @@ if ($Phase -ge 9) {
             $Search = $false
             $CodexParentOption = @()
             $RequiredIdentifier = $null
-            $RecoveryHandoffPath = $null
             $EventStreamPath = $null
             $ErrorStreamPath = $null
             $ThreadIdPath = $null
@@ -11601,7 +11355,6 @@ if ($Phase -ge 9) {
         $reviewerPath = Join-Path $reportRoot 'batch3h-review.md'
         $closurePath = Join-Path $reportRoot 'batch3h-closure.md'
         $summaryPath = Join-Path $real.case_root '.local\ai-sessions\handoff\a\requirement-summary.md'
-        $recoveryPath = Join-Path $real.source_root '.local\ai-sessions\history\a\batch3h-recovery.json'
         New-Item -ItemType Directory -Path $reportRoot, (Split-Path -Parent $summaryPath) | Out-Null
         Write-Utf8NoBom -Path $continuationRunRecord.last_message_path -Content ('design.md dispatchSlug=' + $real.dispatch_slug + ' lineSlug=a')
         $currentJudgment = @([ordered]@{
@@ -11644,15 +11397,6 @@ if ($Phase -ge 9) {
 | #1 | Continuation Collect full | T005 | 沿祖先 RunRecord 取用 request identity。 | scripts/Invoke-CodexDispatch.ps1 | 已交付 |
 | #2 | Ledger | T006 | reviewer finding 寫入狀態帳。 | scripts/Test-DispatchRecoveryBinding.ps1 | 已交付 |
 '@
-        $recoveryDocument = [ordered]@{
-            schema = 'ai-sessions.recovery-handoff.v1'
-            operation = 'RecoveryHandoff'
-            line_slug = 'a'
-            dispatch_slug = $real.dispatch_slug
-            run_chain = [ordered]@{ latest_run_record_path = $continuationRunRecordPath }
-        }
-        Write-Utf8NoBom -Path $recoveryPath -Content (($recoveryDocument | ConvertTo-Json -Depth 20) + "`n")
-
         $preflight = Get-Content -LiteralPath $real.preflight_result_path -Raw -Encoding UTF8 | ConvertFrom-Json
         $baseSha = [string]$preflight.baseSha
         $collectArguments = @(
@@ -11674,8 +11418,6 @@ if ($Phase -ge 9) {
             $closurePath
             '-RequirementSummaryPath'
             $summaryPath
-            '-RecoveryHandoffPath'
-            $recoveryPath
             '-SourceRoot'
             $real.source_root
             '-ExecutionRoot'
@@ -12517,7 +12259,6 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             'ErrorStreamPath', 'ThreadIdPath', 'PidRecordPath', 'ProcessExitCode', 'RequiredIdentifier',
             'Profile', 'Model', 'ReasoningEffort', 'TaskType', 'SessionMode', 'DispatchKind',
             'UnitKind', 'RequestedUnit', 'AddDirectory', 'Search', 'CodexParentOption',
-            'RecoveryHandoffPath', 'BudgetMonitorPath', 'EvidencePackPath', 'AdvisorConsultReportPath',
             'AdvisorRequestSource', 'PrimaryBudgetPercent', 'PrimaryReservePercent', 'AbortGraceSeconds',
             'DispatchResultPath', 'InvocationBoundParameters', 'DispatchStageBinding', 'RequestContext',
             'ProfileExplicit', 'AddDirectoryExplicit', 'SearchExplicit', 'CodexParentOptionExplicit',
@@ -12538,7 +12279,7 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             'Wait-ForThreadRelay', 'Set-ThreadIdFromEventStream', 'Get-DispatchRunEvents', 'Get-CodexExecutablePath',
             'Resolve-PreviousDispatchRun', 'Compare-ResumeThreadModel', 'Test-ScopePlanHashRecord',
             'Test-ContinuationScopePlan', 'Get-DispatchUnitList', 'Get-StartedProcessSnapshot',
-            'Stop-VerifiedProcessTree', 'Add-CalibrationObservation', 'Get-RuntimeModelEvidence'
+            'Stop-VerifiedProcessTree', 'Get-RuntimeModelEvidence'
         )
         $savedFunctions = @{}
         foreach ($functionName in $functionNames) {
@@ -12683,7 +12424,6 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             $script:AddDirectory = @()
             $script:Search = $false
             $script:CodexParentOption = @()
-            $script:RecoveryHandoffPath = $null
             $script:BudgetMonitorPath = $null
             $script:EvidencePackPath = $null
             $script:AdvisorConsultReportPath = $null
@@ -12722,32 +12462,6 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
             Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
             Set-Item -Path Function:\Stop-VerifiedProcessTree -Value ([scriptblock]::Create('param($Snapshot) $script:s3StopCalls++; $script:s3StopSnapshots += $Snapshot; return [pscustomobject]@{ CleanupStatus = ''fixture-observed''; ErrorMessage = $null }'))
-            $calibrationDefinition = @'
-param(
-    [string]$SourceRoot,
-    [string]$Path,
-    [string]$LineSlug,
-    [string]$DispatchSlug,
-    [string]$Profile,
-    [string]$Model,
-    [string]$ReasoningEffort,
-    [object]$ModelEvidence,
-    [object]$ReasoningEffortEvidence,
-    [string]$TaskType,
-    [string]$SessionMode,
-    [object]$Usage,
-    [object]$ExecutionResult,
-    [string]$QuotaBeforePath,
-    [string]$QuotaAfterPath,
-    [object]$ScopePlan,
-    [object]$InterruptionStatus,
-    [object]$BudgetMonitor,
-    [Nullable[bool]]$BeforeSnapshotFreshAtStart,
-    [string]$BeforeSnapshotCapturedAtStartUtc
-)
-return [ordered]@{ path = $Path; recordWritten = $true; calibrationEligible = $false; ineligibleReasons = @('S-3 fixture') }
-'@
-            Set-Item -Path Function:\Add-CalibrationObservation -Value ([scriptblock]::Create($calibrationDefinition))
             $startDefinition = $productionDefinitions['Invoke-Start']
             if ($Mutant) {
                 $patchedRelayBlock = @(
@@ -13301,14 +13015,47 @@ throw 'RunRecord 事件流為空。'
         $script:phase9DispatchFailure = $null
     }
 
-    Invoke-Case 'Phase 9 P3 seven legacy operations remain' {
-        foreach ($operationName in @('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'RecoveryHandoff')) {
-            $legacyPath = Join-Path $phase9Root ('legacy-' + $operationName + '.json')
-            $legacyDocument = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = $operationName; line_slug = 'line-a'; dispatch_slug = ('legacy-' + $operationName).ToLowerInvariant() }
-            Write-Utf8NoBom -Path $legacyPath -Content (($legacyDocument | ConvertTo-Json -Depth 12) + "`n")
-            $legacyContext = Read-DispatchRequest -Path $legacyPath
-            Assert-True ([string]$legacyContext.document.operation -ceq $operationName) ('legacy operation parser 失敗：' + $operationName)
+    Invoke-Case 'Phase 9 P3 operation contract table equals script dispatch table' {
+        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
+        $validOperationsMatch = [regex]::Match($productionText, '(?ms)\$validOperations\s*=\s*@\((?<body>.*?)\)')
+        Assert-True $validOperationsMatch.Success '找不到 production validOperations table。'
+        $scriptOperations = @([regex]::Matches($validOperationsMatch.Groups['body'].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+        $dispatchSwitchMatch = [regex]::Match($productionText, '(?ms)\$result\s*=\s*switch\s*\(\$Operation\)\s*\{(?<body>.*?)^\s*default')
+        Assert-True $dispatchSwitchMatch.Success '找不到 production operation dispatch switch。'
+        $dispatchOperations = @([regex]::Matches($dispatchSwitchMatch.Groups['body'].Value, '''([^'']+)''\s*\{\s*(?:\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?Invoke-') | ForEach-Object { $_.Groups[1].Value })
+        $skillText = Get-Content -LiteralPath $activeSourcePaths[4] -Raw -Encoding UTF8
+        $readSkillOperations = {
+            param([Parameter(Mandatory)][string]$Text)
+            $operationNames = New-Object System.Collections.Generic.List[string]
+            $inOperationTable = $false
+            foreach ($skillLine in ($Text -split '\r?\n')) {
+                if ($skillLine -match '^\|\s*Operation\s*\|') {
+                    $inOperationTable = $true
+                    continue
+                }
+                if (-not $inOperationTable) {
+                    continue
+                }
+                if ($skillLine -match '^\|\s*`([^`]+)`\s*\|') {
+                    $operationNames.Add(([regex]::Match($skillLine, '^\|\s*`([^`]+)`\s*\|')).Groups[1].Value)
+                    continue
+                }
+                if ($skillLine -notmatch '^\|') {
+                    break
+                }
+            }
+            return @($operationNames.ToArray())
         }
+        $skillOperations = @(& $readSkillOperations -Text $skillText)
+        Assert-True ($skillOperations.Count -gt 0) '找不到 SKILL operation contract table。'
+        $scriptSet = @($scriptOperations | Sort-Object -Unique)
+        $dispatchSet = @($dispatchOperations | Sort-Object -Unique)
+        $skillSet = @($skillOperations | Sort-Object -Unique)
+        Assert-True ((@($scriptSet) -join '|') -eq (@($dispatchSet) -join '|')) ('validOperations 與 dispatch switch 不一致：' + ($scriptSet -join ',') + ' / ' + ($dispatchSet -join ','))
+        Assert-True ((@($scriptSet) -join '|') -eq (@($skillSet) -join '|')) ('SKILL operation table 與 script 不一致：' + ($skillSet -join ',') + ' / ' + ($scriptSet -join ','))
+        $mutantText = $skillText -replace '(?m)^\|\s*`Cleanup`\s*\|.*\r?\n', ''
+        $mutantOperations = @(& $readSkillOperations -Text $mutantText | Sort-Object -Unique)
+        Assert-True ((@($mutantOperations) -join '|') -ne (@($scriptSet) -join '|')) '移除任一 SKILL operation row 的 mutant 未被辨識。'
     }
 
     $launcherFunctionAst = @($functions | Where-Object { $_.Name -eq 'New-CodexLauncher' } | Select-Object -First 1)
@@ -13362,12 +13109,9 @@ throw 'RunRecord 事件流為空。'
         }
     }
 
-    $calibrationFunctionAst = @($functions | Where-Object { $_.Name -eq 'Add-CalibrationObservation' } | Select-Object -First 1)
-    Assert-True ($calibrationFunctionAst.Count -eq 1) 'Phase 9 找不到 production Add-CalibrationObservation AST。'
     $calibrationBeforePath = Join-Path $phase9Root 'calibration-before.json'
     $calibrationAfterPath = Join-Path $phase9Root 'calibration-after.json'
     $calibrationStaleAfterPath = Join-Path $phase9Root 'calibration-after-stale.json'
-    $calibrationPath = Join-Path $phase9Root '.local\ai-sessions\history\quota-calibration.jsonl'
     $null = New-Phase8QuotaSnapshot -Path $calibrationBeforePath -PrimaryRemainingPercent 80
     $null = New-Phase8QuotaSnapshot -Path $calibrationAfterPath -PrimaryRemainingPercent 79
     $staleAfterSnapshot = Get-Content -LiteralPath $calibrationAfterPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -13536,6 +13280,7 @@ throw 'RunRecord 事件流為空。'
         Assert-True (Test-Path -LiteralPath $actualInspectResultPath -PathType Leaf) '實際 Windows Inspect 結果不存在。'
         $inspectDocument = Get-Content -LiteralPath $actualInspectResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
         Assert-True ($inspectDocument.processExitCode -eq 0 -and $inspectDocument.processExitCodeSource -eq 'sidecar' -and $inspectDocument.processExitCodeSidecarPath -eq $sidecarPath) ('Inspect 未以 sidecar 填入 process exit code：' + ($inspectDocument | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (-not (Test-Path -LiteralPath $actualCalibrationPath -PathType Leaf)) '實際 Windows Inspect 不應產生 quota-calibration.jsonl。'
         $launcherCallText = '-ExitSidecarPath $exitSidecarPathValue'
         $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
         Assert-True ($productionText.Contains($launcherCallText)) 'F-003 reverse fixture 找不到 Invoke-Start sidecar 接線。'
@@ -13730,7 +13475,7 @@ throw 'RunRecord 事件流為空。'
         param([string]$Path)
         return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
     }
-    $calibrationScopePlan = [pscustomobject]@{
+    $inspectScopePlan = [pscustomobject]@{
         dispatch_slug = 'phase9-calibration'
         dispatch_kind = 'workflow'
         task_type = 'script-change'
@@ -13749,84 +13494,8 @@ throw 'RunRecord 事件流為空。'
         decision_reason = 'fixture'
         scope_plan_fingerprint = 'fixture'
     }
-    $calibrationScopePlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $calibrationScopePlan
-    $calibrationExecution = [pscustomobject]@{ completed = $true; processExitCode = 0; outputValid = $true; success = $true }
-    Invoke-Case 'Phase 9 P4 over-30-minute start-fresh calibration' {
-        $calibrationResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path $calibrationPath -LineSlug 'line-a' -DispatchSlug 'phase9-calibration' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTime]::UtcNow.AddMinutes(-31).ToString('o'))
-        Assert-True ($calibrationResult.calibrationEligible -and $calibrationResult.recordWritten) 'Start fresh 的 calibration 未標記 eligible。'
-        foreach ($name in @('snapshots_present', 'snapshots_fresh', 'usage_present', 'execution_completed', 'task_type_present', 'non_negative_delta')) {
-            $calibrationChecks = Get-DispatchJsonProperty -Object $calibrationResult -Name 'calibrationChecks'
-            Assert-True ($null -ne $calibrationChecks -and [bool](Get-DispatchJsonProperty -Object $calibrationChecks -Name $name)) ('缺少 calibration check：' + $name)
-        }
-    }
-
-    Invoke-Case 'Phase 9 P4 calibration checks identify missing usage' {
-        $missingUsageResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path $calibrationPath -LineSlug 'line-a' -DispatchSlug 'phase9-calibration-missing-usage' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage $null -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTime]::UtcNow.AddMinutes(-31).ToString('o'))
-        Assert-True (-not $missingUsageResult.calibrationEligible -and -not $missingUsageResult.calibrationChecks.usage_present -and @($missingUsageResult.ineligibleReasons) -contains 'usage_present') 'usage 缺漏未映射至 calibration check 與 ineligible reason。'
-    }
-
-    Invoke-Case 'Phase 9 P4 stale after and abnormal completion' {
-        $abnormalExecution = [pscustomobject]@{ completed = $false; processExitCode = 9; outputValid = $true; success = $false }
-        $abnormalResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path $calibrationPath -LineSlug 'line-a' -DispatchSlug 'phase9-calibration-abnormal' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $abnormalExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $false -BeforeSnapshotCapturedAtStartUtc ([DateTime]::UtcNow.AddMinutes(-31).ToString('o'))
-        Assert-True (-not $abnormalResult.calibrationEligible -and -not $abnormalResult.calibrationChecks.snapshots_fresh -and -not $abnormalResult.calibrationChecks.execution_completed) 'stale after 或 abnormal completion 未阻止 calibration。'
-    }
-
-    Invoke-Case 'Phase 9 F-008 before freshness reason is independent' {
-        $beforeFreshResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-before-freshness.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-before-freshness' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $false -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o'))
-        $beforeReasons = @($beforeFreshResult.ineligibleReasons)
-        Assert-True (-not $beforeFreshResult.calibrationEligible -and -not $beforeFreshResult.calibrationChecks.before_fresh_at_start -and [bool]$beforeFreshResult.calibrationChecks.after_fresh_at_inspect) 'before freshness negative case 未維持獨立 check。'
-        Assert-True ($beforeReasons -contains 'before_fresh_at_start' -and $beforeReasons -notcontains 'after_fresh_at_inspect') ('before freshness reason 不精確：' + ($beforeReasons -join ', '))
-        $script:phase9F008BeforeEvidence = $beforeFreshResult
-    }
-
-    Invoke-Case 'Phase 9 F-008 after freshness reason is independent' {
-        $afterFreshResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-after-freshness.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-after-freshness' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationStaleAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.ToString('o'))
-        $afterReasons = @($afterFreshResult.ineligibleReasons)
-        Assert-True (-not $afterFreshResult.calibrationEligible -and [bool]$afterFreshResult.calibrationChecks.before_fresh_at_start -and -not $afterFreshResult.calibrationChecks.after_fresh_at_inspect) 'after freshness negative case 未維持獨立 check。'
-        Assert-True ($afterReasons -contains 'after_fresh_at_inspect' -and $afterReasons -notcontains 'before_fresh_at_start') ('after freshness reason 不精確：' + ($afterReasons -join ', '))
-        $script:phase9F008AfterEvidence = $afterFreshResult
-    }
-
-    Invoke-Case 'Phase 9 F-008 reverse removal of each freshness reason fails' {
-        $calibrationDefinition = $calibrationFunctionAst[0].Extent.Text
-        $mutantBeforeDefinition = $calibrationDefinition.Replace('function Add-CalibrationObservation', 'function Invoke-Phase9MutantBeforeCalibration') -replace "'before_fresh_at_start',\s*'after_fresh_at_inspect',", "'after_fresh_at_inspect',"
-        $mutantAfterDefinition = $calibrationDefinition.Replace('function Add-CalibrationObservation', 'function Invoke-Phase9MutantAfterCalibration') -replace "'before_fresh_at_start',\s*'after_fresh_at_inspect',", "'before_fresh_at_start',"
-        Assert-True ($mutantBeforeDefinition -notmatch "'before_fresh_at_start',\s*'after_fresh_at_inspect',") 'F-008 before mutant 未移除 reason。'
-        Assert-True ($mutantAfterDefinition -notmatch "'before_fresh_at_start',\s*'after_fresh_at_inspect',") 'F-008 after mutant 未移除 reason。'
-        Set-Item -Path Function:\Invoke-Phase9MutantBeforeCalibration -Value ([scriptblock]::Create($mutantBeforeDefinition))
-        Set-Item -Path Function:\Invoke-Phase9MutantAfterCalibration -Value ([scriptblock]::Create($mutantAfterDefinition))
-        $beforeReverseFailure = $null
-        try {
-            $mutantBeforeResult = Invoke-Phase9MutantBeforeCalibration -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-before-mutant.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-before-mutant' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $false -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o'))
-            Assert-True (@($mutantBeforeResult.ineligibleReasons) -contains 'before_fresh_at_start') '移除 before_fresh_at_start reason 後仍錯誤通過。'
-        }
-        catch {
-            $beforeReverseFailure = $_.Exception.Message
-        }
-        $afterReverseFailure = $null
-        try {
-            $mutantAfterResult = Invoke-Phase9MutantAfterCalibration -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-after-mutant.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-after-mutant' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationStaleAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.ToString('o'))
-            Assert-True (@($mutantAfterResult.ineligibleReasons) -contains 'after_fresh_at_inspect') '移除 after_fresh_at_inspect reason 後仍錯誤通過。'
-        }
-        catch {
-            $afterReverseFailure = $_.Exception.Message
-        }
-        Assert-True (-not [string]::IsNullOrWhiteSpace($beforeReverseFailure) -and -not [string]::IsNullOrWhiteSpace($afterReverseFailure)) ('F-008 reverse 未暴露 reason 遺漏：before=' + [string]$beforeReverseFailure + '; after=' + [string]$afterReverseFailure)
-        $script:phase9F008ReverseEvidence = [pscustomobject]@{ before_failure = $beforeReverseFailure; after_failure = $afterReverseFailure }
-        $restoredBeforeResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-before-restored.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-before-restored' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $false -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o'))
-        $restoredAfterResult = Add-CalibrationObservation -SourceRoot $phase9Root -Path (Join-Path $phase9Root 'f008-after-restored.jsonl') -LineSlug 'line-a' -DispatchSlug 'phase9-f008-after-restored' -Profile 'default' -Model 'fixture-model' -ReasoningEffort 'high' -TaskType 'script-change' -SessionMode 'cold-start' -Usage ([pscustomobject]@{ input_tokens = 1; output_tokens = 1 }) -ExecutionResult $calibrationExecution -QuotaBeforePath $calibrationBeforePath -QuotaAfterPath $calibrationStaleAfterPath -ScopePlan $calibrationScopePlan -BeforeSnapshotFreshAtStart $true -BeforeSnapshotCapturedAtStartUtc ([DateTimeOffset]::UtcNow.ToString('o'))
-        Assert-True (@($restoredBeforeResult.ineligibleReasons) -contains 'before_fresh_at_start' -and @($restoredBeforeResult.ineligibleReasons) -notcontains 'after_fresh_at_inspect' -and @($restoredAfterResult.ineligibleReasons) -contains 'after_fresh_at_inspect' -and @($restoredAfterResult.ineligibleReasons) -notcontains 'before_fresh_at_start') ('F-008 reverse 後還原 production freshness reasons 不正確：before=' + (($restoredBeforeResult.ineligibleReasons) -join ',') + '; after=' + (($restoredAfterResult.ineligibleReasons) -join ','))
-        Write-Phase9Evidence -Label 'F008_NORMAL_PASS' -Value ([ordered]@{ before = $script:phase9F008BeforeEvidence; after = $script:phase9F008AfterEvidence })
-        Write-Phase9Evidence -Label 'F008_PRE_FIX_FAILURE' -Value ([ordered]@{
-                before = [ordered]@{ expected = 'ineligibleReasons contains before_fresh_at_start'; actual = $mutantBeforeResult; failure = $beforeReverseFailure; result = 'FAIL' }
-                after = [ordered]@{ expected = 'ineligibleReasons contains after_fresh_at_inspect'; actual = $mutantAfterResult; failure = $afterReverseFailure; result = 'FAIL' }
-                mutation = 'Each freshness reason was removed from the Add-CalibrationObservation mutant before the reverse invocation.'
-            })
-        Write-Phase9Evidence -Label 'F008_REVERSE_FAILURE' -Value $script:phase9F008ReverseEvidence
-        Write-Phase9Evidence -Label 'F008_RESTORED_PASS' -Value ([ordered]@{ before = $restoredBeforeResult; after = $restoredAfterResult })
-    }
-
-    function Set-Phase9DispatchInspectFixture {
+    $inspectScopePlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $inspectScopePlan
+   function Set-Phase9DispatchInspectFixture {
         [CmdletBinding()]
         param(
             [Parameter(Mandatory)]
@@ -13847,7 +13516,7 @@ throw 'RunRecord 事件流為空。'
             }
         }
 
-        Write-Utf8NoBom -Path $scopePath -Content (($calibrationScopePlan | ConvertTo-Json -Depth 20) + "`n")
+        Write-Utf8NoBom -Path $scopePath -Content (($inspectScopePlan | ConvertTo-Json -Depth 20) + "`n")
         Write-Utf8NoBom -Path $preparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'completed' } | ConvertTo-Json -Depth 10) + "`n")
         Write-Utf8NoBom -Path $startPath -Content (([ordered]@{ operation = 'Start'; status = 'started'; process_started = $true } | ConvertTo-Json -Depth 10) + "`n")
         Write-TestEvents -Path $a.event_stream_path -Thread $a.thread_id
@@ -14009,35 +13678,6 @@ throw 'RunRecord 事件流為空。'
         $script:phase9AclMode = 'sandbox'
         $gate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write' -ContinuationRecord $afterRecord
         Assert-True ($gate.status -eq 'continuation-denied' -and $gate.rejection_code -eq 'WorktreeAclContinuationDenied' -and @($gate.accepted_sandbox_entries).Count -eq 0) ('pending/no_match evidence 被 ACL gate 當成 whitelist：' + ($gate | ConvertTo-Json -Depth 20 -Compress))
-    }
-
-    Invoke-Case 'Phase 9 F-004 real Inspect forwards Start before freshness to calibration' {
-        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
-        $oldCapturedAt = [DateTimeOffset]::UtcNow.AddMinutes(-31).ToString('o')
-        $beforeSnapshot = ConvertFrom-DispatchJson -Content (Get-Content -LiteralPath $calibrationBeforePath -Raw -Encoding UTF8)
-        $beforeSnapshot.captured_at_utc = $oldCapturedAt
-        foreach ($windowName in @('primary', 'secondary')) {
-            $observation = Get-DispatchJsonProperty -Object $beforeSnapshot.observations -Name $windowName
-            $observation.observed_at_utc = $oldCapturedAt
-        }
-        Write-Utf8NoBom -Path $calibrationBeforePath -Content (($beforeSnapshot | ConvertTo-Json -Depth 20) + "`n")
-        $inspectRecord = Read-DispatchRunRecord -Path $aPath @binding
-        $inspectRecord.quota_before_sha256 = Get-FileSha256 -Path $calibrationBeforePath
-        $inspectRecord.quota_before_captured_at_utc = $oldCapturedAt
-        $inspectRecord.quota_before_freshness = 'fresh'
-        $null = Write-DispatchRunRecord -Record $inspectRecord -Update
-
-        $fixtureCalibrationFunction = (Get-Command -Name Add-CalibrationObservation -CommandType Function -ErrorAction Stop).ScriptBlock
-        Set-Item -Path Function:\Add-CalibrationObservation -Value $phase9ProductionFunctionDefinitions['Add-CalibrationObservation']
-        try {
-            $inspectResult = Invoke-Inspect
-        }
-        finally {
-            Set-Item -Path Function:\Add-CalibrationObservation -Value $fixtureCalibrationFunction
-            $null = New-Phase8QuotaSnapshot -Path $calibrationBeforePath -PrimaryRemainingPercent 80
-        }
-        $calibrationResult = $inspectResult.calibration
-        Assert-True ([bool]$calibrationResult.calibrationEligible -and [bool]$calibrationResult.calibrationChecks.before_fresh_at_start -and [bool]$calibrationResult.calibrationChecks.snapshots_fresh) ('real Inspect 未使用 Start 保存的 before freshness：' + ($calibrationResult | ConvertTo-Json -Depth 30 -Compress))
     }
 
     function Invoke-Phase9AtomicRaceRound {
@@ -14337,7 +13977,23 @@ finally {
         $dispatchDocument = Get-Content -LiteralPath $fixture.ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
         Assert-True ($inspectResult.success -and $inspectResult.processExitCode -eq 0 -and $inspectResult.dispatchResultPath -eq $fixture.ResultPath) 'sidecar 未提供有效的 ProcessExitCode 給 Inspect。'
         Assert-True ($dispatchDocument.inspect_binding.process_exit_code -eq 0 -and $dispatchDocument.inspect_binding.process_exit_code_source -eq 'sidecar' -and $dispatchDocument.inspect_binding.sidecar_sha256 -match '^[a-f0-9]{64}$') 'Inspect 未持久化 sidecar binding。'
-        Assert-True ($inspectResult.calibration.calibrationEligible -and (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf)) ('sidecar 正常結束未產生 eligible calibration observation：' + ($inspectResult.calibration | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (-not (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf) -and $null -eq $inspectResult.PSObject.Properties['calibration']) 'sidecar 正常結束仍產生校準觀測或結果欄位。'
+    }
+
+    Invoke-Case 'Phase 9 model evidence mismatch remains nonblocking' {
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
+        $rolloutPath = Join-Path $fixtureRoot 'sidecar-codex-home\sessions\sidecar\rollout-sidecar.jsonl'
+        $rolloutText = Get-Content -LiteralPath $rolloutPath -Raw -Encoding UTF8
+        $rolloutText = $rolloutText.Replace('fixture-model', 'runtime-other-model')
+        Write-Utf8NoBom -Path $rolloutPath -Content $rolloutText
+        $inspectResult = Invoke-Inspect
+        $modelEvidence = Get-DispatchJsonProperty -Object $inspectResult -Name 'modelEvidence'
+        $modelGroup = Get-DispatchJsonProperty -Object $modelEvidence -Name 'model'
+        $resolvedEvidence = Get-DispatchJsonProperty -Object $modelGroup -Name 'resolved'
+        $runtimeEvidence = Get-DispatchJsonProperty -Object $modelGroup -Name 'runtime_verifiable'
+        Assert-True ([bool](Get-DispatchJsonProperty -Object $inspectResult -Name 'success')) ('runtime model mismatch 不應阻擋 Inspect：' + ($inspectResult | ConvertTo-Json -Depth 40 -Compress))
+        Assert-True ((Get-DispatchEvidenceValue -Evidence $resolvedEvidence) -ceq 'fixture-model' -and (Get-DispatchEvidenceValue -Evidence $runtimeEvidence) -ceq 'runtime-other-model') ('Inspect 未保留 resolved/runtime model evidence：' + ($modelGroup | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ($null -eq $inspectResult.PSObject.Properties['calibration'] -and -not (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf)) 'runtime model mismatch 仍產生校準結果或檔案。'
     }
 
     Invoke-Case 'Phase 9 P3 Dispatch exit sidecar mismatch stops Inspect' {
@@ -14354,7 +14010,7 @@ finally {
         $operationResult = if ($null -eq $caught) { $null } else { $caught.Data['operationResult'] }
         $afterCalibrationCount = if (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf) { @(Get-Content -LiteralPath $fixture.CalibrationPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }).Count } else { 0 }
         Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'DispatchExitCodeMismatch') 'sidecar 與顯式 ProcessExitCode 不一致未回傳結構化錯誤。'
-        Assert-True ((Get-FileSha256 -Path $fixture.ResultPath) -eq $beforeHash -and $afterCalibrationCount -eq $beforeCalibrationCount) 'mismatch 不應更新 Dispatch binding 或 calibration observation。'
+        Assert-True ((Get-FileSha256 -Path $fixture.ResultPath) -eq $beforeHash -and $afterCalibrationCount -eq $beforeCalibrationCount) 'mismatch 不應更新 Dispatch binding 或產生校準觀測。'
     }
 
     Invoke-Case 'Phase 9 P3 Dispatch nonzero exit sidecar is preserved' {
@@ -14362,7 +14018,7 @@ finally {
         $inspectResult = Invoke-Inspect
         $dispatchDocument = Get-Content -LiteralPath $fixture.ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
         Assert-True (-not $inspectResult.success -and $inspectResult.processExitCode -eq 9 -and $dispatchDocument.inspect_binding.process_exit_code -eq 9) '非零 sidecar 結束碼未保留。'
-        Assert-True (-not $inspectResult.calibration.calibrationEligible -and -not $inspectResult.calibration.calibrationChecks.execution_completed) '非零 sidecar 未標記 execution_completed=false。'
+        Assert-True ($null -eq $inspectResult.PSObject.Properties['calibration'] -and -not (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf)) '非零 sidecar 仍產生校準結果或檔案。'
     }
 
     Invoke-Case 'Phase 9 P3 Dispatch exit sidecar unavailable stops Inspect' {
