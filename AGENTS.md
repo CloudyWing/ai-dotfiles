@@ -7,6 +7,7 @@
 - 全域規則的單一來源是 `instructions.md`。
 - 各家 AI 工具的全域指令檔（如 CLAUDE.md、AGENTS.md、GEMINI.md 等）均為 Windows Symbolic Link，最終都指向 `instructions.md`。具體對應關係見 `README.md` §3。
 - 修改全域規則一律改 `instructions.md`，不要去改各工具目錄下的 symlink。
+- 上述全域指令檔位於各工具的使用者設定目錄。本檔是 repo 根目錄的專案層 `AGENTS.md`，只記錄維護本 repo 所需的事實，兩者同名但不是同一份檔案。
 
 ## 2. 新增 / 修改 Skill
 
@@ -29,6 +30,7 @@
 - `scripts/Setup-AIGlobalConfig.ps1` 是建立所有 symlink 的入口。新增需要散佈的目錄或檔案時，需同步更新此腳本。
 - 修改 `.githooks/`、`scripts/hooks/`、`agents/`、`.editorconfig` 等基礎設定時，確認 `Setup-AIGlobalConfig.ps1` 與 `README.md` §3 是否需要對應更新。
 - `docs/agents.md` 與 `docs/skills.md` 為 `.githooks/Update-Docs.ps1` 於 pre-commit 產生的生成檔，請勿手動編輯，手改會在下次 commit 被覆蓋。
+- `instructions.md` §2 的 Skill 指標索引同樣由 `Update-Docs.ps1` 依各 Skill frontmatter 生成，只改寫 `<!-- SKILL-INDEX:BEGIN -->` 與 `<!-- SKILL-INDEX:END -->` 之間的內容；標記缺少時 pre-commit 失敗。新增或修改 Skill 的 description 後，索引於下次 commit 自動更新，不手動編輯標記內的條目。
 - `Update-Docs.ps1` 在 pre-commit 階段對 `docs/agents.md`、`docs/skills.md` 與 `instructions.md` 執行 `git add`。將一批變更拆成多筆 commit 時，`instructions.md` 若仍有未暫存的變更會被掃進當下這一筆，因此含 `instructions.md` 的那一組必須最先 commit。分組規則見 `git-workflow` skill。Agent 的 Persona／sub-agent 分類由該腳本的 `$personaAgents` 清單決定；新增 Persona 時需同步更新此清單。
 
 ## 6. 設定位置權威對照
