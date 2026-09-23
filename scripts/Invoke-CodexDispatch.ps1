@@ -2078,9 +2078,40 @@ function Assert-AdvisorContract {
     }
 }
 
+function New-QuotaSnapshotPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$HistoryRoot,
+
+        [Parameter(Mandatory)]
+        [ValidateSet('before', 'after', 'source-refresh')]
+        [string]$Purpose,
+
+        [AllowEmptyString()]
+        [string]$DispatchSlug
+    )
+
+    $timestamp = [datetime]::UtcNow.ToString('yyyyMMdd_HHmmss_fff')
+    $guidValue = [guid]::NewGuid().ToString('N')
+    if ($Purpose -eq 'source-refresh') {
+        if ([string]::IsNullOrWhiteSpace($DispatchSlug)) {
+            throw 'source-refresh quota snapshot path 必須提供 DispatchSlug。'
+        }
+        $fileName = 'quota-source-refresh-' + $DispatchSlug + '-' + $timestamp + '-' + $guidValue + '.json'
+    }
+    else {
+        $fileName = 'quota-' + $Purpose + '-' + $timestamp + '-' + $guidValue + '.json'
+    }
+
+    return Join-Path -Path $HistoryRoot -ChildPath $fileName
+}
+
 function Get-OrCreateQuotaSnapshot {
     param(
         [string]$Path,
+
+        [string]$SnapshotPath,
 
         [string]$CodexHome,
 
@@ -2096,10 +2127,15 @@ function Get-OrCreateQuotaSnapshot {
     if (-not [string]::IsNullOrWhiteSpace($Path)) {
         $resolvedPath = Resolve-AbsolutePath -Path $Path
         if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
-            throw "找不到 $Purpose quota snapshot：$resolvedPath"
+            throw "QuotaSnapshotValidationRejected：QuotaBeforePath 不存在或不是檔案：$resolvedPath"
         }
-        $null = Read-QuotaSnapshot -Path $resolvedPath
-        return $resolvedPath
+
+        try {
+            $null = Read-QuotaSnapshot -Path $resolvedPath
+        }
+        catch {
+            throw "QuotaSnapshotValidationRejected：QuotaBeforePath 不符合額度快照契約：$resolvedPath；$($_.Exception.Message)"
+        }
     }
 
     $configuredHome = $CodexHome
@@ -2116,19 +2152,16 @@ function Get-OrCreateQuotaSnapshot {
         return $null
     }
 
-    $snapshotPath = Join-Path -Path $HistoryRoot -ChildPath ('quota-' + $Purpose.ToLowerInvariant() + '-' + [datetime]::UtcNow.ToString('yyyyMMdd_HHmmss_fff') + '.json')
-    $quotaScript = Join-Path -Path $PSScriptRoot -ChildPath 'Get-CodexQuota.ps1'
-    if (-not (Test-Path -LiteralPath $quotaScript -PathType Leaf)) {
-        throw "找不到額度快照腳本：$quotaScript"
+    $snapshotPath = if ([string]::IsNullOrWhiteSpace($SnapshotPath)) {
+        New-QuotaSnapshotPath -HistoryRoot $HistoryRoot -Purpose $Purpose
     }
-    $quotaOutput = & $quotaScript -CodexHome $configuredHome -SnapshotPath $snapshotPath 2>&1
-    $quotaExitCode = $LASTEXITCODE
-    if ($quotaExitCode -ne 0 -or -not (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) {
-        $details = ($quotaOutput | Out-String).Trim()
-        throw "$Purpose quota snapshot 失敗，exit code $quotaExitCode。$details"
+    else {
+        Resolve-AbsolutePath -Path $SnapshotPath
     }
-    $null = Read-QuotaSnapshot -Path $snapshotPath
-    return $snapshotPath
+    if (-not [string]::IsNullOrWhiteSpace($Path) -and [string]::Equals((Resolve-AbsolutePath -Path $Path), $snapshotPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'QuotaSnapshotPathReuseRejected：新 quota snapshot 不可沿用呼叫端提供的 QuotaBeforePath。'
+    }
+    return Set-QuotaSnapshotFromCodex -Path $snapshotPath -CodexHome $configuredHome
 }
 
 function Set-QuotaSnapshotFromCodex {
@@ -2167,6 +2200,100 @@ function Set-QuotaSnapshotFromCodex {
     }
     $null = Read-QuotaSnapshot -Path $resolvedPath
     return $resolvedPath
+}
+
+function New-AdvisorAfterSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$CallerPath,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$HistoryRoot,
+
+        [string]$CodexHome
+    )
+
+    $callerPathValue = Resolve-AbsolutePath -Path $CallerPath
+    if (-not (Test-PathWithinRoot -Path $callerPathValue -Root $ExecutionRoot)) {
+        throw "advisor-consult QuotaAfterPath 必須位於 executionRoot 內：$callerPathValue"
+    }
+    if (-not (Test-Path -LiteralPath $callerPathValue -PathType Leaf)) {
+        throw "QuotaAfterSnapshotValidationRejected：呼叫端 QuotaAfterPath 不存在或不是檔案：$callerPathValue"
+    }
+    try {
+        $null = Read-QuotaSnapshot -Path $callerPathValue
+    }
+    catch {
+        throw "QuotaAfterSnapshotValidationRejected：呼叫端 QuotaAfterPath 不符合額度快照契約：$callerPathValue；$($_.Exception.Message)"
+    }
+
+    $snapshotPathValue = New-QuotaSnapshotPath -HistoryRoot $HistoryRoot -Purpose 'after'
+    if (-not (Test-PathWithinRoot -Path $snapshotPathValue -Root $ExecutionRoot)) {
+        throw "QuotaAfterSnapshotPathRejected：新 after snapshot 超出 executionRoot：$snapshotPathValue"
+    }
+    $snapshotPathValue = Set-QuotaSnapshotFromCodex -Path $snapshotPathValue -CodexHome $CodexHome
+    return [pscustomobject]@{
+        Path   = $snapshotPathValue
+        Sha256 = Get-FileSha256 -Path $snapshotPathValue
+    }
+}
+
+function Update-AdvisorAfterSnapshotFromCodex {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$ExpectedSha256,
+
+        [string]$CodexHome
+    )
+
+    if ($ExpectedSha256 -notmatch '^[a-fA-F0-9]{64}$') {
+        throw 'QuotaAfterSnapshotOwnershipInvalid：預期 SHA-256 格式無效。'
+    }
+
+    $pathValue = Resolve-AbsolutePath -Path $Path
+    if (-not (Test-Path -LiteralPath $pathValue -PathType Leaf)) {
+        throw "QuotaAfterSnapshotMissing：本次執行建立的 after snapshot 不存在：$pathValue"
+    }
+    $currentSha256 = Get-FileSha256 -Path $pathValue
+    if (-not [string]::Equals($currentSha256, $ExpectedSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "QuotaAfterSnapshotChanged：after snapshot 已被外部變更；path=$pathValue; expected_sha256=$ExpectedSha256; actual_sha256=$currentSha256"
+    }
+
+    $parentPath = Split-Path -Parent $pathValue
+    $temporaryName = '.' + [System.IO.Path]::GetFileName($pathValue) + '.' + [guid]::NewGuid().ToString('N') + '.tmp'
+    $temporaryPath = Join-Path -Path $parentPath -ChildPath $temporaryName
+    $backupName = '.' + [System.IO.Path]::GetFileName($pathValue) + '.' + [guid]::NewGuid().ToString('N') + '.bak'
+    $backupPath = Join-Path -Path $parentPath -ChildPath $backupName
+    try {
+        $null = Set-QuotaSnapshotFromCodex -Path $temporaryPath -CodexHome $CodexHome
+        $currentSha256 = Get-FileSha256 -Path $pathValue
+        if (-not [string]::Equals($currentSha256, $ExpectedSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "QuotaAfterSnapshotChanged：after snapshot 在更新期間被外部變更；path=$pathValue; expected_sha256=$ExpectedSha256; actual_sha256=$currentSha256"
+        }
+        [System.IO.File]::Replace($temporaryPath, $pathValue, $backupPath)
+        [System.IO.File]::Delete($backupPath)
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath -PathType Leaf) {
+            [System.IO.File]::Delete($temporaryPath)
+        }
+        if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
+            [System.IO.File]::Delete($backupPath)
+        }
+    }
+
+    return [pscustomobject]@{
+        Path   = $pathValue
+        Sha256 = Get-FileSha256 -Path $pathValue
+    }
 }
 
 function Get-AdvisorConsultReportPath {
@@ -10159,6 +10286,10 @@ function Write-DispatchInspectResultBinding {
         [string]$QuotaBeforePath,
 
         [Parameter(Mandatory)]
+        [ValidatePattern('^[a-fA-F0-9]{64}$')]
+        [string]$QuotaBeforeSha256,
+
+        [Parameter(Mandatory)]
         [string]$ProcessExitCodeSidecarPath
     )
 
@@ -10175,11 +10306,14 @@ function Write-DispatchInspectResultBinding {
         error = $null
         process_started = $ProcessStarted
         result_path = $resolvedPath
+        quota_before_path = $QuotaBeforePath
+        quota_before_sha256 = $QuotaBeforeSha256
         inspect_binding = [ordered]@{
             run_record_path = $RunRecordPath
             event_stream_path = $EventStreamPath
             scope_plan_path = $ScopePlanPath
             quota_before_path = $QuotaBeforePath
+            quota_before_sha256 = $QuotaBeforeSha256
             process_exit_code_sidecar_path = $ProcessExitCodeSidecarPath
             process_exit_code = $null
             process_exit_code_source = 'sidecar-pending'
@@ -10234,6 +10368,7 @@ function New-DispatchResultEnvelope {
         event_stream_path = if ($null -eq $eventStreamPath) { $null } else { [string]$eventStreamPath }
         scope_plan_path = if ($null -eq $scopePlanPath) { $null } else { [string]$scopePlanPath }
         quota_before_path = if ([string]::IsNullOrWhiteSpace($QuotaBeforePath)) { $null } else { $QuotaBeforePath }
+        quota_before_sha256 = if ([string]::IsNullOrWhiteSpace($QuotaBeforeSha256)) { $null } else { $QuotaBeforeSha256 }
         process_exit_code_sidecar_path = if ([string]::IsNullOrWhiteSpace($SidecarPath)) { $null } else { $SidecarPath }
         process_exit_code = $null
         process_exit_code_source = 'sidecar-pending'
@@ -10298,6 +10433,7 @@ function Invoke-Dispatch {
     $startResult = $null
     $quotaBeforePathValue = $null
     $quotaBeforeSha256Value = $null
+    $script:DispatchQuotaBeforeSha256 = $null
     $resultPathValue = $null
     $failureReceiptPathValue = $null
     $startResultPathValue = $null
@@ -10379,12 +10515,7 @@ function Invoke-Dispatch {
             Resolve-AbsolutePath -Path $requestedPrepareResultPath
         }
         $historyRoot = Join-Path -Path $executionRootPath -ChildPath '.local\ai-sessions\history'
-        $quotaBeforePathValue = if ([string]::IsNullOrWhiteSpace($requestedQuotaBeforePath)) {
-            Join-Path -Path $historyRoot -ChildPath ('quota-before-' + $DispatchSlug + '-' + $dispatchToken + '.json')
-        }
-        else {
-            Resolve-AbsolutePath -Path $requestedQuotaBeforePath
-        }
+        $quotaBeforePathValue = New-QuotaSnapshotPath -HistoryRoot $historyRoot -Purpose 'before'
         $quotaAfterPathValue = if ([string]::IsNullOrWhiteSpace($requestedQuotaAfterPath)) {
             $null
         }
@@ -10426,19 +10557,13 @@ function Invoke-Dispatch {
         $PrepareResultPath = $dispatchPrepareResultPath
 
         $failedStage = 'before-snapshot'
-        $dispatchFieldPresence = Get-DispatchJsonProperty -Object $script:RequestContext -Name 'dispatch_field_presence'
-        $quotaBeforePathProvided = [bool](Get-DispatchJsonProperty -Object $dispatchFieldPresence -Name 'quota_before_path')
-        if ($quotaBeforePathProvided) {
-            $quotaBeforePathValue = Get-OrCreateQuotaSnapshot -Path $QuotaBeforePath -CodexHome $CodexHome -HistoryRoot $historyRoot -Purpose 'before' -Required
-        }
-        else {
-            $quotaBeforePathValue = Set-QuotaSnapshotFromCodex -Path ([string]$stageBinding.quota_before_path) -CodexHome $CodexHome
-        }
+        $quotaBeforePathValue = Get-OrCreateQuotaSnapshot -Path $requestedQuotaBeforePath -SnapshotPath ([string]$stageBinding.quota_before_path) -CodexHome $CodexHome -HistoryRoot $historyRoot -Purpose 'before' -Required
         $quotaBeforePathValue = Resolve-AbsolutePath -Path $quotaBeforePathValue
         if (-not [string]::Equals($quotaBeforePathValue, [string]$stageBinding.quota_before_path, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'DispatchStageBindingConflict：QuotaBeforePath 未沿用既有 stage binding。'
         }
         $quotaBeforeSha256Value = Get-FileSha256 -Path $quotaBeforePathValue
+        $script:DispatchQuotaBeforeSha256 = $quotaBeforeSha256Value
         $script:QuotaBeforePath = $quotaBeforePathValue
         $completedStages.Add('before-snapshot')
 
@@ -10476,6 +10601,8 @@ function Invoke-Dispatch {
             prepare_result_path = $prepareStage.Path
             start_result_path = $startStage.Path
             result_path = $resultPathValue
+            quota_before_path = $quotaBeforePathValue
+            quota_before_sha256 = $quotaBeforeSha256Value
             run_record_path = Get-DispatchResultPropertyValue -Object $startResult -Names @('runRecordPath', 'run_record_path')
             event_stream_path = Get-DispatchResultPropertyValue -Object $startResult -Names @('eventStreamPath', 'event_stream_path')
             last_message_path = Get-DispatchResultPropertyValue -Object $startResult -Names @('lastMessagePath', 'last_message_path')
@@ -11157,6 +11284,9 @@ function Invoke-AdvisorBudgetMonitor {
         [Parameter(Mandatory)]
         [string]$AfterSnapshotPath,
 
+        [Parameter(Mandatory)]
+        [string]$AfterSnapshotSha256,
+
         [string]$CodexHome,
 
         [Parameter(Mandatory)]
@@ -11174,19 +11304,34 @@ function Invoke-AdvisorBudgetMonitor {
         abortReason = $null
         observedPrimaryDeltaPercent = $null
         terminalSnapshotTaken = $false
+        afterSnapshotPath = $AfterSnapshotPath
+        afterSnapshotSha256 = $AfterSnapshotSha256
+        snapshotUpdateCount = 0
     }
     Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
             event = 'monitor.started'
             recorded_at_utc = [datetime]::UtcNow.ToString('o')
             primary_budget_percent = $PrimaryBudgetPercent
+            after_snapshot_path = $AfterSnapshotPath
+            after_snapshot_sha256 = $AfterSnapshotSha256
         })
 
     while (-not $Process.HasExited) {
         try {
-            $null = Set-QuotaSnapshotFromCodex -Path $AfterSnapshotPath -CodexHome $CodexHome
+            $afterSnapshotUpdate = Update-AdvisorAfterSnapshotFromCodex -Path $AfterSnapshotPath -ExpectedSha256 ([string]$monitor.afterSnapshotSha256) -CodexHome $CodexHome
+            $monitor.afterSnapshotSha256 = [string]$afterSnapshotUpdate.Sha256
+            $monitor.snapshotUpdateCount = [int]$monitor.snapshotUpdateCount + 1
             $afterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
             $delta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $afterSnapshot
             $monitor.observedPrimaryDeltaPercent = $delta
+            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                    event = 'monitor.snapshot-updated'
+                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                    after_snapshot_path = $AfterSnapshotPath
+                    after_snapshot_sha256 = $monitor.afterSnapshotSha256
+                    snapshot_update_count = $monitor.snapshotUpdateCount
+                    observed_primary_delta_percent = $delta
+                })
             if (Test-QuotaResetWindowChanged -BeforeSnapshot $BeforeSnapshot -AfterSnapshot $afterSnapshot) {
                 $monitor.state = 'CrossReset'
                 $monitor.abortReason = 'primary-reset-window-changed'
@@ -11197,6 +11342,8 @@ function Invoke-AdvisorBudgetMonitor {
                         before_primary_resets_at = $BeforeSnapshot.primary.resets_at
                         after_primary_resets_at = $afterSnapshot.primary.resets_at
                         observed_primary_delta_percent = $delta
+                        after_snapshot_path = $AfterSnapshotPath
+                        after_snapshot_sha256 = $monitor.afterSnapshotSha256
                     })
                 return $monitor
             }
@@ -11209,6 +11356,8 @@ function Invoke-AdvisorBudgetMonitor {
                             recorded_at_utc = [datetime]::UtcNow.ToString('o')
                             observed_primary_delta_percent = $delta
                             primary_budget_percent = $PrimaryBudgetPercent
+                            after_snapshot_path = $AfterSnapshotPath
+                            after_snapshot_sha256 = $monitor.afterSnapshotSha256
                         })
                     $safePointMessage = ''
                     $safePointDeadline = [DateTime]::UtcNow.AddSeconds($AbortGraceSeconds)
@@ -11275,6 +11424,9 @@ function Invoke-AdvisorBudgetMonitor {
                     event = 'monitor.snapshot-failed'
                     recorded_at_utc = [datetime]::UtcNow.ToString('o')
                     error = $_.Exception.Message
+                    after_snapshot_path = $AfterSnapshotPath
+                    after_snapshot_sha256 = $monitor.afterSnapshotSha256
+                    snapshot_update_count = $monitor.snapshotUpdateCount
                 })
             return $monitor
         }
@@ -11282,7 +11434,8 @@ function Invoke-AdvisorBudgetMonitor {
     }
 
     try {
-        $null = Set-QuotaSnapshotFromCodex -Path $AfterSnapshotPath -CodexHome $CodexHome
+        $terminalSnapshotUpdate = Update-AdvisorAfterSnapshotFromCodex -Path $AfterSnapshotPath -ExpectedSha256 ([string]$monitor.afterSnapshotSha256) -CodexHome $CodexHome
+        $monitor.afterSnapshotSha256 = [string]$terminalSnapshotUpdate.Sha256
         $terminalAfterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
         $terminalDelta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $terminalAfterSnapshot
         $monitor.observedPrimaryDeltaPercent = $terminalDelta
@@ -11298,6 +11451,8 @@ function Invoke-AdvisorBudgetMonitor {
                     before_primary_resets_at = $BeforeSnapshot.primary.resets_at
                     after_primary_resets_at = $terminalAfterSnapshot.primary.resets_at
                     observed_primary_delta_percent = $terminalDelta
+                    after_snapshot_path = $AfterSnapshotPath
+                    after_snapshot_sha256 = $monitor.afterSnapshotSha256
                 })
             return $monitor
         }
@@ -11310,6 +11465,8 @@ function Invoke-AdvisorBudgetMonitor {
                 before_primary_remaining_percent = $BeforeSnapshot.primary.remaining_percent
                 after_primary_remaining_percent = $terminalAfterSnapshot.primary.remaining_percent
                 over_budget = $terminalBudgetExceeded
+                after_snapshot_path = $AfterSnapshotPath
+                after_snapshot_sha256 = $monitor.afterSnapshotSha256
             })
         if ($terminalBudgetExceeded) {
             $monitor.stopRequested = $true
@@ -11324,13 +11481,17 @@ function Invoke-AdvisorBudgetMonitor {
                     primary_budget_percent = $PrimaryBudgetPercent
                     before_primary_remaining_percent = $BeforeSnapshot.primary.remaining_percent
                     after_primary_remaining_percent = $terminalAfterSnapshot.primary.remaining_percent
+                    after_snapshot_path = $AfterSnapshotPath
+                    after_snapshot_sha256 = $monitor.afterSnapshotSha256
                 })
             Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                    event = 'budget-monitor.completed'
-                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                    state = $monitor.state
-                    terminal_snapshot = $true
-                    abort_reason = $monitor.abortReason
+            event = 'budget-monitor.completed'
+            recorded_at_utc = [datetime]::UtcNow.ToString('o')
+            state = $monitor.state
+            terminal_snapshot = $true
+            abort_reason = $monitor.abortReason
+            after_snapshot_path = $AfterSnapshotPath
+            after_snapshot_sha256 = $monitor.afterSnapshotSha256
                 })
             return $monitor
         }
@@ -11344,6 +11505,9 @@ function Invoke-AdvisorBudgetMonitor {
                 state = $monitor.state
                 terminal_snapshot = $true
                 error = $_.Exception.Message
+                after_snapshot_path = $AfterSnapshotPath
+                after_snapshot_sha256 = $monitor.afterSnapshotSha256
+                snapshot_update_count = $monitor.snapshotUpdateCount
             })
         return $monitor
     }
@@ -11354,6 +11518,8 @@ function Invoke-AdvisorBudgetMonitor {
             recorded_at_utc = [datetime]::UtcNow.ToString('o')
             state = $monitor.state
             terminal_snapshot = $monitor.terminalSnapshotTaken
+            after_snapshot_path = $AfterSnapshotPath
+            after_snapshot_sha256 = $monitor.afterSnapshotSha256
         })
     return $monitor
 }
@@ -11784,6 +11950,74 @@ function Invoke-QuotaProbe {
             retryRequired      = $false
             retryResult        = $noRetryRecord.retryResult
             finalStatus        = $noRetryRecord.finalStatus
+        }
+    }
+
+    if ($InitialQuotaState -in @('PostResetNoSnapshot', 'SnapshotExpired')) {
+        $quotaRefreshPath = New-QuotaSnapshotPath -HistoryRoot $historyRoot -Purpose 'source-refresh' -DispatchSlug $DispatchSlug
+
+        $quotaRefreshPath = Set-QuotaSnapshotFromCodex -Path $quotaRefreshPath -CodexHome $codexHomePath
+        $quotaRefreshSnapshot = Read-QuotaSnapshot -Path $quotaRefreshPath
+        $quotaRefreshState = [string](Get-DispatchJsonProperty -Object $quotaRefreshSnapshot -Name 'state')
+        $quotaRefreshFreshness = Get-QuotaSnapshotFreshness -Snapshot $quotaRefreshSnapshot
+        if ($quotaRefreshState -ne 'Valid' -or
+            $quotaRefreshFreshness -ne 'fresh' -or
+            -not (Test-QuotaSnapshotHasObservations -Snapshot $quotaRefreshSnapshot)) {
+            throw ('即時額度來源未產生有效且新鮮的 quota snapshot；QuotaProbe 未啟動。state={0}; freshness={1}' -f
+                $quotaRefreshState,
+                $quotaRefreshFreshness)
+        }
+
+        $quotaRefreshRecord = [ordered]@{
+            schema             = 'quota-recovery.v1'
+            operation          = 'QuotaProbe'
+            lineSlug           = $LineSlug
+            dispatchSlug       = $DispatchSlug
+            initialQuotaState  = $InitialQuotaState
+            profile            = $effectiveProfileValue
+            requested_profile  = $requestedProfileValue
+            effective_profile  = $effectiveProfileValue
+            triggerWindow      = $TriggerWindow
+            probeAttempt       = $ProbeAttempt
+            probeAttemptLimit  = 1
+            probeEvidence      = [ordered]@{
+                processStarted        = $false
+                quotaSnapshotPath     = $quotaRefreshPath
+                quotaSnapshotSha256   = Get-FileSha256 -Path $quotaRefreshPath
+                quotaSnapshotState    = $quotaRefreshState
+                quotaSnapshotFreshness = $quotaRefreshFreshness
+            }
+            retryResult        = [ordered]@{
+                status        = 'not-required-live-quota-source'
+                attempted     = $false
+                retry_allowed = $false
+                attemptLimit  = 0
+                command       = $null
+                result        = '即時 quota source 已取得有效快照，不需要啟動 QuotaProbe。'
+            }
+            finalStatus        = 'quota-source-refreshed-no-probe'
+            createdAtUtc       = [datetime]::UtcNow.ToString('o')
+        }
+        Write-Utf8NoBom -Path $recoveryPath -Content (($quotaRefreshRecord | ConvertTo-Json -Depth 12) + "`n")
+        return [ordered]@{
+            operation          = 'QuotaProbe'
+            success            = $true
+            lineSlug           = $LineSlug
+            dispatchSlug       = $DispatchSlug
+            initialQuotaState  = $InitialQuotaState
+            profile            = $effectiveProfileValue
+            requested_profile  = $requestedProfileValue
+            effective_profile  = $effectiveProfileValue
+            triggerWindow      = $TriggerWindow
+            probeAttempt       = $ProbeAttempt
+            probeAttemptLimit  = 1
+            processStarted     = $false
+            quotaSnapshotPath  = $quotaRefreshPath
+            quotaSnapshotSha256 = $quotaRefreshRecord.probeEvidence.quotaSnapshotSha256
+            recoveryRecordPath = $recoveryPath
+            retryRequired      = $false
+            retryResult        = $quotaRefreshRecord.retryResult
+            finalStatus        = $quotaRefreshRecord.finalStatus
         }
     }
 
@@ -12391,7 +12625,7 @@ function Read-DispatchRunRecord {
     }
     $record = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $pathValue)
     if ($null -eq $record -or $record -isnot [pscustomobject]) { throw 'RunRecord 必須為 JSON object。' }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'acl_gate', 'sandbox_acl_baseline', 'sandbox_acl_evidence', 'unknown_interruption', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'request_path', 'request_sha256', 'request_operation')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'acl_gate', 'sandbox_acl_baseline', 'sandbox_acl_evidence', 'unknown_interruption', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'quota_after_path', 'quota_after_sha256', 'request_path', 'request_sha256', 'request_operation')) {
         if ($null -eq $record.PSObject.Properties[$name]) {
             $value = $null
             if ($name -eq 'attempt_parent_run_id') {
@@ -12546,7 +12780,7 @@ function Read-DispatchRunRecord {
     elseif ($scopePathValue -isnot [string] -or $scopeHashValue -isnot [string] -or [string]::IsNullOrWhiteSpace($scopeHashValue)) {
         throw 'RunRecord ScopePlan 欄位型別或 SHA-256 異常。'
     }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'quota_after_path', 'quota_after_sha256')) {
         $property = $record.PSObject.Properties[$name]
         if ($null -eq $property -or ($null -ne $property.Value -and ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)))) {
             throw "RunRecord nullable 欄位異常：$name"
@@ -13678,6 +13912,7 @@ function Invoke-Start {
     $beforeSnapshotPathValue = $null
     $beforeSnapshotObject = $null
     $afterSnapshotPathValue = $QuotaAfterPath
+    $afterSnapshotSha256Value = $null
     $scopePlan = $null
     $scopePlanPathValue = $null
     $scopePlanParentPathValue = $null
@@ -14041,6 +14276,8 @@ function Invoke-Start {
          quota_before_freshness = $null
          quota_before_observations = $null
          quota_before_service_rejection = $null
+         quota_after_path = $null
+         quota_after_sha256 = $null
          request_path = if ($null -eq $script:RequestContext) { $null } else { [string]$script:RequestContext.path }
          request_sha256 = if ($null -eq $script:RequestContext) { $null } else { [string]$script:RequestContext.sha256 }
          request_operation = if ($null -eq $script:RequestContext) { $null } else { [string](Get-DispatchJsonProperty -Object $script:RequestContext.document -Name 'operation') }
@@ -14180,9 +14417,24 @@ function Invoke-Start {
         throw 'EvidencePackPath 只適用 TaskType=advisor-consult。'
     }
 
-    $beforeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $QuotaBeforePath -CodexHome $effectiveCodexHomePath -HistoryRoot $historyRoot -Purpose 'before' -Required
-    $beforeSnapshotObject = Read-QuotaSnapshot -Path $beforeSnapshotPathValue
-    $beforeSnapshotSha256Value = Get-FileSha256 -Path $beforeSnapshotPathValue
+    if ($null -ne $dispatchStageBinding) {
+        $beforeSnapshotPathValue = Resolve-AbsolutePath -Path ([string](Get-DispatchJsonProperty -Object $dispatchStageBinding -Name 'quota_before_path'))
+        if (-not [string]::Equals($beforeSnapshotPathValue, (Resolve-AbsolutePath -Path $QuotaBeforePath), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'DispatchStageBindingConflict：Start QuotaBeforePath 與 stage binding 不一致。'
+        }
+        $beforeSnapshotSha256Value = Get-FileSha256 -Path $beforeSnapshotPathValue
+        $expectedBeforeSnapshotSha256 = [string](Get-DispatchScriptVariableValue -Name 'DispatchQuotaBeforeSha256')
+        if ($expectedBeforeSnapshotSha256 -notmatch '^[a-fA-F0-9]{64}$' -or
+            -not [string]::Equals($beforeSnapshotSha256Value, $expectedBeforeSnapshotSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'QuotaBeforeSnapshotHashMismatch：Dispatch 建立的 before quota snapshot SHA-256 與 Start 讀取結果不一致。'
+        }
+        $beforeSnapshotObject = Read-QuotaSnapshot -Path $beforeSnapshotPathValue
+    }
+    else {
+        $beforeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $QuotaBeforePath -CodexHome $effectiveCodexHomePath -HistoryRoot $historyRoot -Purpose 'before' -Required
+        $beforeSnapshotObject = Read-QuotaSnapshot -Path $beforeSnapshotPathValue
+        $beforeSnapshotSha256Value = Get-FileSha256 -Path $beforeSnapshotPathValue
+    }
     $beforeSnapshotCapturedAtUtcValue = [string](Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'captured_at_utc')
     if ([string]::IsNullOrWhiteSpace($beforeSnapshotCapturedAtUtcValue)) {
         $beforeSnapshotCapturedAtUtcValue = $null
@@ -14195,11 +14447,9 @@ function Invoke-Start {
         $calibrationPathValue = Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history\quota-calibration.jsonl'
     }
     if ($TaskType -eq 'advisor-consult') {
-        $afterSnapshotPathValue = Resolve-AbsolutePath -Path $QuotaAfterPath
-        if (-not (Test-PathWithinRoot -Path $afterSnapshotPathValue -Root $executionRootPath)) {
-            throw "advisor-consult QuotaAfterPath 必須位於 executionRoot 內：$afterSnapshotPathValue"
-        }
-        $afterSnapshotPathValue = Set-QuotaSnapshotFromCodex -Path $afterSnapshotPathValue -CodexHome $effectiveCodexHomePath
+        $afterSnapshot = New-AdvisorAfterSnapshot -CallerPath $QuotaAfterPath -ExecutionRoot $executionRootPath -HistoryRoot $historyRoot -CodexHome $effectiveCodexHomePath
+        $afterSnapshotPathValue = [string]$afterSnapshot.Path
+        $afterSnapshotSha256Value = [string]$afterSnapshot.Sha256
     }
     if ($TaskType -eq 'advisor-consult') {
         $advisorCalibration = Get-CalibrationEstimate -Path $calibrationPathValue -ModelEvidence $resolvedModelEvidence -ReasoningEffortEvidence $resolvedReasoningEffortEvidence -Model $resolvedModelValue -Profile $requestedProfileValue -SessionMode $sessionModeValue -TaskType $TaskType
@@ -14492,6 +14742,8 @@ function Invoke-Start {
     $runRecord.quota_before_freshness = $beforeSnapshotFreshnessValue
     $runRecord.quota_before_observations = $beforeSnapshotObservationsValue
     $runRecord.quota_before_service_rejection = $beforeSnapshotServiceRejectionValue
+    $runRecord.quota_after_path = $afterSnapshotPathValue
+    $runRecord.quota_after_sha256 = $afterSnapshotSha256Value
     $runRecord.evidence_pack_path = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.path }
     $runRecord.evidence_pack_sha256 = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sha256 }
     $runRecord.evidence_pack_length = if ($null -eq $evidencePackInfo) { $null } else { [int64]$evidencePackInfo.length }
@@ -14610,11 +14862,15 @@ function Invoke-Start {
         $runRecord.prompt_transfer_sha256 = $promptTransferSha256Value
         $runRecord.inspect_result_path = $inspectResultPathValue
         $null = Write-DispatchRunRecord -Record $runRecord -Update
-        $inspectResult = Write-DispatchInspectResultBinding -Path $inspectResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ProcessStarted $true -RunRecordPath $runRecordPathValue -EventStreamPath $eventPath -ScopePlanPath $scopePlanPathValue -QuotaBeforePath $beforeSnapshotPathValue -ProcessExitCodeSidecarPath $exitSidecarPathValue
+        $inspectResult = Write-DispatchInspectResultBinding -Path $inspectResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ProcessStarted $true -RunRecordPath $runRecordPathValue -EventStreamPath $eventPath -ScopePlanPath $scopePlanPathValue -QuotaBeforePath $beforeSnapshotPathValue -QuotaBeforeSha256 $beforeSnapshotSha256Value -ProcessExitCodeSidecarPath $exitSidecarPathValue
         $inspectResultPathValue = $inspectResult.Path
         $budgetMonitorStatus.state = 'running'
         if ($TaskType -eq 'advisor-consult') {
-            $budgetMonitorStatus = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -CodexHome $CodexHome -PrimaryBudgetPercent ([double]$scopePlan.primary_budget_percent) -AbortGraceSeconds $AbortGraceSeconds
+            $budgetMonitorStatus = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -AfterSnapshotSha256 $afterSnapshotSha256Value -CodexHome $CodexHome -PrimaryBudgetPercent ([double]$scopePlan.primary_budget_percent) -AbortGraceSeconds $AbortGraceSeconds
+            $afterSnapshotSha256Value = [string]$budgetMonitorStatus.afterSnapshotSha256
+            $runRecord.quota_after_path = $afterSnapshotPathValue
+            $runRecord.quota_after_sha256 = $afterSnapshotSha256Value
+            $null = Write-DispatchRunRecord -Record $runRecord -Update
             if ($budgetMonitorStatus.state -eq 'AbortedByBudget') {
                 $phase = 'aborted-by-budget'
                 throw "advisor-consult 已由 BudgetMonitor 中止：$($budgetMonitorStatus.state)"
@@ -14691,6 +14947,7 @@ function Invoke-Start {
              prepareStatus       = $prepareStatusValue
              quotaBeforePath  = $beforeSnapshotPathValue
             quotaAfterPath   = $afterSnapshotPathValue
+            quotaAfterSha256 = $afterSnapshotSha256Value
             evidencePackPath = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.path }
             evidencePackSandboxPath = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sandboxPath }
             evidencePackSha256 = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sha256 }
@@ -15281,6 +15538,27 @@ function Resolve-DispatchInspectBinding {
         }
         $bindingPaths[$name] = $resolvedValue
     }
+    $quotaBeforeSha256 = [string](Get-DispatchJsonProperty -Object $binding -Name 'quota_before_sha256')
+    if ($quotaBeforeSha256 -notmatch '^[a-fA-F0-9]{64}$') {
+        Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message 'inspect_binding 缺少有效 quota_before_sha256。' -DispatchResultPath $resultPath
+    }
+    $resultQuotaBeforePath = [string](Get-DispatchJsonProperty -Object $document -Name 'quota_before_path')
+    $resultQuotaBeforeSha256 = [string](Get-DispatchJsonProperty -Object $document -Name 'quota_before_sha256')
+    if ([string]::IsNullOrWhiteSpace($resultQuotaBeforePath) -or
+        -not [string]::Equals((Resolve-AbsolutePath -Path $resultQuotaBeforePath), $bindingPaths.quota_before_path, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($resultQuotaBeforeSha256, $quotaBeforeSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message 'Dispatch result 與 inspect_binding quota before path／SHA-256 不一致。' -DispatchResultPath $resultPath
+    }
+    $evidencePosition = Get-DispatchJsonProperty -Object $document -Name 'evidence_position'
+    if ($null -ne $evidencePosition) {
+        $evidenceQuotaBeforePath = [string](Get-DispatchJsonProperty -Object $evidencePosition -Name 'quota_before_path')
+        $evidenceQuotaBeforeSha256 = [string](Get-DispatchJsonProperty -Object $evidencePosition -Name 'quota_before_sha256')
+        if ([string]::IsNullOrWhiteSpace($evidenceQuotaBeforePath) -or
+            -not [string]::Equals((Resolve-AbsolutePath -Path $evidenceQuotaBeforePath), $bindingPaths.quota_before_path, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($evidenceQuotaBeforeSha256, $quotaBeforeSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message 'Dispatch evidence quota before path／SHA-256 不一致。' -DispatchResultPath $resultPath
+        }
+    }
     if (-not (Test-PathWithinRoot -Path $bindingPaths.run_record_path -Root (Join-Path $sourceRootPath '.local\ai-sessions\history'))) {
         Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message 'inspect_binding RunRecord 超出 source history。' -DispatchResultPath $resultPath
     }
@@ -15313,6 +15591,20 @@ function Resolve-DispatchInspectBinding {
         if ([string]::IsNullOrWhiteSpace([string]$comparison.Expected) -or -not [string]::Equals((Resolve-AbsolutePath -Path ([string]$comparison.Expected)), $comparison.Actual, [StringComparison]::OrdinalIgnoreCase)) {
             Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message ('Dispatch result 與 RunRecord binding 不一致：' + $comparison.Name) -DispatchResultPath $resultPath -Detail ([ordered]@{ field = $comparison.Name; run_record = $comparison.Expected; dispatch_result = $comparison.Actual })
         }
+    }
+    $recordQuotaBeforeSha256 = [string](Get-DispatchJsonProperty -Object $record -Name 'quota_before_sha256')
+    if ($recordQuotaBeforeSha256 -notmatch '^[a-fA-F0-9]{64}$' -or
+        -not [string]::Equals($recordQuotaBeforeSha256, $quotaBeforeSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message 'Dispatch result 與 RunRecord quota before SHA-256 binding 不一致。' -DispatchResultPath $resultPath
+    }
+    try {
+        $actualQuotaBeforeSha256 = Get-FileSha256 -Path $bindingPaths.quota_before_path
+    }
+    catch {
+        Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message ('quota before snapshot 雜湊無法讀取：' + $_.Exception.Message) -DispatchResultPath $resultPath
+    }
+    if (-not [string]::Equals($actualQuotaBeforeSha256, $quotaBeforeSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        Throw-DispatchInspectBindingFailure -Code 'DispatchResultBindingInvalid' -Message 'quota before snapshot SHA-256 與 Dispatch／RunRecord binding 不一致。' -DispatchResultPath $resultPath -Detail ([ordered]@{ expected = $quotaBeforeSha256; actual = $actualQuotaBeforeSha256 })
     }
 
     $sidecar = $null
@@ -15372,6 +15664,7 @@ function Resolve-DispatchInspectBinding {
         RunRecordPath = $bindingPaths.run_record_path
         ScopePlanPath = $bindingPaths.scope_plan_path
         QuotaBeforePath = $bindingPaths.quota_before_path
+        QuotaBeforeSha256 = $quotaBeforeSha256
         SidecarPath = $sidecar.Path
         SidecarSha256 = $sidecar.Sha256
         ProcessExitCode = $sidecar.ProcessExitCode
@@ -15886,20 +16179,51 @@ function Invoke-Inspect {
         }
     }
     $snapshotFailure = $null
+    $beforeSnapshotSha256Value = $null
     if ([string]::IsNullOrWhiteSpace($QuotaBeforePath)) {
         $snapshotFailure = 'Inspect 缺少 before quota snapshot。'
     }
     try {
+        $resolvedQuotaBeforePath = Resolve-AbsolutePath -Path $QuotaBeforePath
+        $recordQuotaBeforePath = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'quota_before_path')
+        if ([string]::IsNullOrWhiteSpace($recordQuotaBeforePath) -or
+            -not [string]::Equals($resolvedQuotaBeforePath, (Resolve-AbsolutePath -Path $recordQuotaBeforePath), [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Inspect quota before path 與 RunRecord 不一致。'
+        }
         $beforeSnapshot = Read-QuotaSnapshot -Path $QuotaBeforePath
+        $beforeSnapshotSha256Value = Get-FileSha256 -Path $QuotaBeforePath
+        $recordQuotaBeforeSha256 = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'quota_before_sha256')
+        if ($recordQuotaBeforeSha256 -notmatch '^[a-fA-F0-9]{64}$' -or
+            -not [string]::Equals($beforeSnapshotSha256Value, $recordQuotaBeforeSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Inspect quota before SHA-256 與 RunRecord 不一致。'
+        }
+        if ($null -ne $dispatchInspectBinding -and
+            -not [string]::Equals($beforeSnapshotSha256Value, [string]$dispatchInspectBinding.QuotaBeforeSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Inspect quota before SHA-256 與 Dispatch result 不一致。'
+        }
     }
     catch {
         $snapshotFailure = 'Inspect before quota snapshot 無效：' + $_.Exception.Message
     }
-    $afterSnapshotPathValue = $QuotaAfterPath
+    $recordQuotaAfterPath = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'quota_after_path')
+    $recordQuotaAfterSha256 = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'quota_after_sha256')
+    $afterSnapshotPathValue = if ([string]::IsNullOrWhiteSpace($recordQuotaAfterPath)) { $QuotaAfterPath } else { $recordQuotaAfterPath }
+    $afterSnapshotSha256Value = $null
     try {
         if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue) -and (-not [string]::IsNullOrWhiteSpace($CodexHome) -or -not [string]::IsNullOrWhiteSpace($env:CODEX_HOME))) {
             $historyRoot = Join-Path -Path (Resolve-AbsolutePath -Path $ExecutionRoot) -ChildPath '.local\ai-sessions\history'
             $afterSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $null -CodexHome $CodexHome -HistoryRoot $historyRoot -Purpose 'after' -Required
+        }
+        if (-not [string]::IsNullOrWhiteSpace($afterSnapshotPathValue)) {
+            $afterSnapshotPathValue = Resolve-AbsolutePath -Path $afterSnapshotPathValue
+            if (-not (Test-PathWithinRoot -Path $afterSnapshotPathValue -Root $ExecutionRoot) -and -not (Test-PathWithinRoot -Path $afterSnapshotPathValue -Root $SourceRoot)) {
+                throw "Inspect after quota snapshot 超出 source／execution root：$afterSnapshotPathValue"
+            }
+            $afterSnapshotSha256Value = Get-FileSha256 -Path $afterSnapshotPathValue
+            if (-not [string]::IsNullOrWhiteSpace($recordQuotaAfterSha256) -and
+                ($recordQuotaAfterSha256 -notmatch '^[a-fA-F0-9]{64}$' -or -not [string]::Equals($afterSnapshotSha256Value, $recordQuotaAfterSha256, [StringComparison]::OrdinalIgnoreCase))) {
+                throw 'Inspect after quota SHA-256 與 RunRecord 不一致。'
+            }
         }
     }
     catch {
@@ -16016,7 +16340,9 @@ function Invoke-Inspect {
         threadIdPath     = $ThreadIdPath
         threadRelay      = $threadRelay
         quotaBeforePath  = $QuotaBeforePath
+        quotaBeforeSha256 = $beforeSnapshotSha256Value
         quotaAfterPath   = $afterSnapshotPathValue
+        quotaAfterSha256 = $afterSnapshotSha256Value
         dispatchResultPath = $dispatchResultPathValue
         processExitCodeSource = $processExitCodeSource
         processExitCodeSidecarPath = $processExitCodeSidecarPath

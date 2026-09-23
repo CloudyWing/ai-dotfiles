@@ -1694,6 +1694,7 @@ $script:aclFixtureStatus = 'clean'
 $script:scopePlanFixtureDecision = 'full'
 $script:launcherFixtureFailure = $false
 $script:quotaSnapshotPathOverride = $null
+$script:quotaSnapshotCreationCalls = 0
 $script:dispatchUnitListOverride = $null
 $script:advisorStartPromptMode = $false
 $script:phase8CapturedActivation = $null
@@ -1741,6 +1742,7 @@ function Get-WorktreeAclGate {
 function Get-CodexExecutablePath { param($ConfiguredPath) return 'fixture-codex' }
 function Get-OrCreateQuotaSnapshot {
     param($Path, $CodexHome, $HistoryRoot, $Purpose, [switch]$Required)
+    $script:quotaSnapshotCreationCalls++
     if ($script:quotaFixtureFailure) { throw 'quota fixture failure' }
     if (-not [string]::IsNullOrWhiteSpace($script:quotaSnapshotPathOverride)) {
         if (-not (Test-Path -LiteralPath $script:quotaSnapshotPathOverride -PathType Leaf)) {
@@ -6359,14 +6361,48 @@ if ($Phase -ge 6) {
             Assert-True ($startResult.quotaBeforePath -and (Test-Path -LiteralPath $startResult.quotaBeforePath -PathType Leaf) -and $startResult.quotaBeforeSha256 -match '^[a-f0-9]{64}$') 'Start 未建立 quota-before path／hash。'
             Assert-True ($startResult.effectiveCodexHome -eq $fallbackCodexHome -and $record.effective_codex_home -eq $fallbackCodexHome) 'Start 未將 fallback CodexHome 寫入結果與 RunRecord。'
             Assert-True ($record.quota_before_path -eq $startResult.quotaBeforePath -and $record.quota_before_sha256 -eq $startResult.quotaBeforeSha256 -and $record.prepare_status -eq 'not-required') 'RunRecord quota-before 或 Prepare binding 欄位不一致。'
+
+            $boundPath = Join-Path $fixtureRoot 'phase6-bound-quota-before.json'
+            Write-Utf8NoBom -Path $boundPath -Content '{}'
+            $boundHash = Get-FileSha256 -Path $boundPath
+            $boundPreflightPath = Join-Path $fixtureRoot 'phase6-start-bound-preflight.json'
+            $boundTargetPath = Join-Path $fixtureRoot 'phase6-start-bound-target.txt'
+            Write-Utf8NoBom -Path $boundTargetPath -Content 'stage-bound target'
+            $boundPrepareRootInfo = Get-PrepareRootInfo -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase6-start-bound'
+            $boundPreparePath = Join-Path $boundPrepareRootInfo.HistoryLineRoot 'phase6-start-bound-prepare.json'
+            $boundPrepareDocument = New-PrepareDocument -RootInfo $boundPrepareRootInfo -Status 'not-required' -RequestPathValue '' -RequestSha256Value '' -EffectiveCodexHome (Resolve-CodexHomeForEvidence -CodexHomePath $null) -Artifacts @() -ErrorValue $null
+            $boundPrepareWritten = Write-PrepareResultDocument -Path $boundPreparePath -Document $boundPrepareDocument -GuardSourceRoot $fixtureRoot -GuardExecutionRoot $fixtureRoot -RequireAbsent
+            Write-Utf8NoBom -Path $boundPreflightPath -Content (([ordered]@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = 'line-a'; dispatchSlug = 'phase6-start-bound'; writeMode = 'readonly'; prepareResultPath = $boundPrepareWritten.Path; prepareResultSha256 = $boundPrepareWritten.Sha256 } | ConvertTo-Json) + "`n")
+            $boundResultPath = Join-Path $fixtureRoot 'phase6-start-bound-result.json'
+            $snapshotCreationCallsBeforeBindingStart = $script:quotaSnapshotCreationCalls
+            $script:DispatchSlug = 'phase6-start-bound'
+            $script:PreflightResultPath = $boundPreflightPath
+            $script:PrepareResultPath = $boundPreparePath
+            $script:ResultPath = $boundResultPath
+            $script:QuotaBeforePath = $boundPath
+            $script:TargetPath = @($boundTargetPath)
+            $script:DispatchStageBinding = New-DispatchStageBinding -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase6-start-bound' -TargetPath @($boundTargetPath) -ResultPath $boundResultPath -PreflightResultPath $boundPreflightPath -PrepareResultPath $boundPreparePath -QuotaBeforePath $boundPath -QuotaAfterPath $null
+            $script:DispatchQuotaBeforeSha256 = $boundHash
+            $boundStartResult = Invoke-Start
+            $boundRecord = Read-DispatchRunRecord -Path $boundStartResult.runRecordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase6-start-bound'
+            Assert-True ($boundStartResult.quotaBeforePath -eq $boundPath -and $boundStartResult.quotaBeforeSha256 -eq $boundHash) 'stage binding Start 未沿用 before quota path 與 SHA-256。'
+            Assert-True ($boundRecord.quota_before_path -eq $boundPath -and $boundRecord.quota_before_sha256 -eq $boundHash -and $script:quotaSnapshotCreationCalls -eq $snapshotCreationCallsBeforeBindingStart) 'stage binding Start 建立了第二個快照或 RunRecord 路徑／SHA 不一致。'
+            $script:DispatchStageBinding = $null
+            $script:DispatchQuotaBeforeSha256 = $null
+            $script:TargetPath = @()
         }
         finally {
+            $script:DispatchStageBinding = $null
+            $script:DispatchQuotaBeforeSha256 = $null
+            $script:TargetPath = @()
             if ($hadCodexHome) { $env:CODEX_HOME = $oldCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue }
         }
     }
 }
 if ($Phase -ge 7) {
     foreach ($functionName in @(
+            'New-QuotaSnapshotPath',
+            'Get-OrCreateQuotaSnapshot',
             'Read-QuotaSnapshot',
             'Test-QuotaSnapshotFresh',
             'Test-QuotaSnapshotHasObservations',
@@ -6392,6 +6428,15 @@ if ($Phase -ge 7) {
         . ([scriptblock]::Create($definitionText))
     }
 
+    function New-Phase7Junction {
+        param(
+            [Parameter(Mandatory)][string]$JunctionPath,
+            [Parameter(Mandatory)][string]$TargetDirectory
+        )
+
+        New-Item -ItemType Junction -Path $JunctionPath -Target $TargetDirectory -ErrorAction Stop | Out-Null
+    }
+
     function Write-Phase7JsonLines {
         [CmdletBinding()]
         param(
@@ -6407,10 +6452,25 @@ if ($Phase -ge 7) {
         [CmdletBinding()]
         param(
             [Parameter(Mandatory)][string]$CodexHomePath,
-            [Parameter(Mandatory)][string]$SnapshotPath
+            [Parameter(Mandatory)][string]$SnapshotPath,
+            [Parameter(Mandatory)][string]$ApiResponsePath,
+            [switch]$ApiFailure
         )
 
         $quotaScriptPath = Join-Path $PSScriptRoot 'Get-CodexQuota.ps1'
+        $wrapperPath = $SnapshotPath + '.fixture-wrapper.ps1'
+        $requestMarkerPath = $SnapshotPath + '.api-request.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $wrapperPath) -Force | Out-Null
+        $authPath = Join-Path $CodexHomePath 'auth.json'
+        $authDocument = [ordered]@{
+            tokens = [ordered]@{
+                access_token = 'fixture-access-token'
+                account_id = 'fixture-account-id'
+            }
+        }
+        New-Item -ItemType Directory -Path $CodexHomePath -Force | Out-Null
+        Write-Utf8NoBom -Path $authPath -Content (($authDocument | ConvertTo-Json -Depth 4) + "`r`n")
+
         $hostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
             Join-Path $PSHOME 'powershell.exe'
         }
@@ -6418,21 +6478,82 @@ if ($Phase -ge 7) {
             $hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
             if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
         }
+        $wrapperContent = @'
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$QuotaScriptPath,
+    [Parameter(Mandatory)][string]$CodexHomePath,
+    [Parameter(Mandatory)][string]$SnapshotPath,
+    [Parameter(Mandatory)][string]$ApiResponsePath,
+    [Parameter(Mandatory)][string]$RequestMarkerPath,
+    [Parameter(Mandatory)][string]$ApiMode
+)
+
+function global:Invoke-WebRequest {
+    [CmdletBinding()]
+    param(
+        [string]$Uri,
+        [string]$Method,
+        [hashtable]$Headers,
+        [int]$TimeoutSec,
+        [int]$MaximumRedirection,
+        [switch]$UseBasicParsing
+    )
+
+    $marker = [ordered]@{
+        endpoint_matches = ($Uri -ceq 'https://chatgpt.com/backend-api/wham/usage')
+        method_get = ($Method -ceq 'Get')
+        authorization_header_present = ($null -ne $Headers -and $Headers.ContainsKey('Authorization'))
+        account_header_present = ($null -ne $Headers -and $Headers.ContainsKey('ChatGPT-Account-ID'))
+        simulated_response = $true
+    }
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllText($RequestMarkerPath, ($marker | ConvertTo-Json -Compress), $encoding)
+
+    if (-not $marker.endpoint_matches -or -not $marker.method_get) {
+        throw 'Quota fixture rejected an unexpected request.'
+    }
+    if ($ApiMode -eq 'failure') {
+        throw 'Quota fixture simulated API retrieval failure.'
+    }
+
+    $content = Get-Content -LiteralPath $ApiResponsePath -Raw -Encoding UTF8
+    return [pscustomobject]@{ StatusCode = 200; Content = $content }
+}
+
+& $QuotaScriptPath -CodexHome $CodexHomePath -SnapshotPath $SnapshotPath
+'@
+        $wrapperEncoding = New-Object System.Text.UTF8Encoding($true)
+        [System.IO.File]::WriteAllText($wrapperPath, $wrapperContent, $wrapperEncoding)
         $arguments = @(
             '-NoProfile'
+            '-NonInteractive'
             '-File'
+            $wrapperPath
+            '-QuotaScriptPath'
             $quotaScriptPath
-            '-CodexHome'
+            '-CodexHomePath'
             $CodexHomePath
             '-SnapshotPath'
             $SnapshotPath
+            '-ApiResponsePath'
+            $ApiResponsePath
+            '-RequestMarkerPath'
+            $requestMarkerPath
+            '-ApiMode'
+            $(if ($ApiFailure) { 'failure' } else { 'response' })
         )
-        $output = & $hostPath @arguments 2>&1
+        $processResult = Invoke-Phase9Process -HostPath $hostPath -Arguments $arguments -WorkingDirectory $phase7Root -EnvironmentVariables @{}
+        $outputParts = @()
+        if (-not [string]::IsNullOrWhiteSpace([string]$processResult.stdout)) { $outputParts += [string]$processResult.stdout }
+        if (-not [string]::IsNullOrWhiteSpace([string]$processResult.stderr)) { $outputParts += [string]$processResult.stderr }
+        $output = $outputParts -join [Environment]::NewLine
         return [pscustomobject]@{
-            exit_code = $LASTEXITCODE
-            output = @($output | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            exit_code = $processResult.exit_code
+            output = $output
             host_path = $hostPath
             script_path = $quotaScriptPath
+            request_marker_path = $requestMarkerPath
         }
     }
 
@@ -6440,27 +6561,69 @@ if ($Phase -ge 7) {
     $phase7CodexHome = Join-Path $phase7Root 'codex-home'
     $phase7SessionsPath = Join-Path $phase7CodexHome 'sessions'
     New-Item -ItemType Directory -Path $phase7SessionsPath -Force | Out-Null
-    $phase7RolloutPath = Join-Path $phase7SessionsPath 'rollout-phase7.jsonl'
+    $phase7ValidApiResponsePath = Join-Path $phase7Root 'valid-api-response.json'
     $phase7ValidSnapshotPath = Join-Path $phase7Root 'valid-snapshot.json'
     $phase7RejectedSnapshotPath = Join-Path $phase7Root 'rejected-snapshot.json'
     $phase7Now = [DateTimeOffset]::UtcNow
     $phase7PrimaryReset = $phase7Now.AddHours(2).ToUnixTimeSeconds()
     $phase7SecondaryReset = $phase7Now.AddDays(5).ToUnixTimeSeconds()
-    $phase7ValidEvent = [ordered]@{
-        timestamp = $phase7Now.ToString('o')
-        payload = [ordered]@{
-            rate_limits = [ordered]@{
-                primary = [ordered]@{ used_percent = 40; window_minutes = 120; resets_at = $phase7PrimaryReset }
-                secondary = [ordered]@{ used_percent = 50; window_minutes = 10080; resets_at = $phase7SecondaryReset }
-            }
+
+    function New-Phase7QuotaApiResponse {
+        [CmdletBinding()]
+        param(
+            [double]$PrimaryUsedPercent = 40,
+            [double]$SecondaryUsedPercent = 50,
+            [bool]$Allowed = $true,
+            [bool]$LimitReached = $false,
+            [string]$ReachedType,
+            [bool]$SpendControlReached = $false,
+            [switch]$OmitAllowed,
+            [switch]$OmitLimitReached,
+            [switch]$OmitSpendControlReached
+        )
+
+        $observedAt = [DateTimeOffset]::UtcNow
+        $rateLimit = [ordered]@{}
+        if (-not $OmitAllowed) { $rateLimit.allowed = $Allowed }
+        if (-not $OmitLimitReached) { $rateLimit.limit_reached = $LimitReached }
+        if (-not [string]::IsNullOrWhiteSpace($ReachedType)) { $rateLimit.rate_limit_reached_type = $ReachedType }
+        $rateLimit.primary_window = [ordered]@{
+            used_percent = $PrimaryUsedPercent
+            limit_window_seconds = 7200
+            reset_after_seconds = 7200
+            reset_at = $observedAt.AddHours(2).ToUnixTimeSeconds()
         }
+        $rateLimit.secondary_window = [ordered]@{
+            used_percent = $SecondaryUsedPercent
+            limit_window_seconds = 604800
+            reset_after_seconds = 432000
+            reset_at = $observedAt.AddDays(5).ToUnixTimeSeconds()
+        }
+
+        $response = [ordered]@{ rate_limit = $rateLimit }
+        if (-not $OmitSpendControlReached) {
+            $response.spend_control = [ordered]@{ reached = $SpendControlReached }
+        }
+        return $response
     }
-    Write-Phase7JsonLines -Path $phase7RolloutPath -Objects @($phase7ValidEvent)
+
+    function Write-Phase7QuotaApiResponse {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [Parameter(Mandatory)][object]$Response
+        )
+
+        Write-Utf8NoBom -Path $Path -Content (($Response | ConvertTo-Json -Depth 12) + "`r`n")
+    }
+
+    $phase7ValidApiResponse = New-Phase7QuotaApiResponse
+    Write-Phase7QuotaApiResponse -Path $phase7ValidApiResponsePath -Response $phase7ValidApiResponse
     $script:phase7ValidQuotaResult = $null
     $script:phase7ValidDocument = $null
     $script:phase7ValidSnapshot = $null
     if (-not [string]::IsNullOrWhiteSpace($script:focusedCase) -and -not (Test-Path -LiteralPath $phase7ValidSnapshotPath -PathType Leaf)) {
-        $focusedBootstrap = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $phase7ValidSnapshotPath
+        $focusedBootstrap = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $phase7ValidSnapshotPath -ApiResponsePath $phase7ValidApiResponsePath
         if ($focusedBootstrap.exit_code -ne 0 -or -not (Test-Path -LiteralPath $phase7ValidSnapshotPath -PathType Leaf)) {
             throw ('focused case quota prerequisite 建立失敗：' + $focusedBootstrap.output)
         }
@@ -6468,156 +6631,263 @@ if ($Phase -ge 7) {
         $script:phase7ValidSnapshot = Read-QuotaSnapshot -Path $phase7ValidSnapshotPath
     }
     Invoke-Case 'Phase 7 Get-CodexQuota 保存 observation 與 freshness' {
-        $script:phase7ValidQuotaResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $phase7ValidSnapshotPath
+        $script:phase7ValidQuotaResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $phase7ValidSnapshotPath -ApiResponsePath $phase7ValidApiResponsePath
         Assert-True ($script:phase7ValidQuotaResult.exit_code -eq 0 -and (Test-Path -LiteralPath $phase7ValidSnapshotPath -PathType Leaf)) ('quota snapshot 建立失敗：' + $script:phase7ValidQuotaResult.output)
         $script:phase7ValidDocument = Get-Content -LiteralPath $phase7ValidSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $script:phase7ValidSnapshot = Read-QuotaSnapshot -Path $phase7ValidSnapshotPath
         Assert-True ($script:phase7ValidDocument.schema -eq 'ai-sessions.quota-snapshot.v1' -and $script:phase7ValidDocument.state -eq 'Valid') 'quota snapshot schema 或 state 不符。'
         Assert-True ($script:phase7ValidDocument.observations.primary.used_percent -eq 40 -and $script:phase7ValidDocument.observations.primary.remaining_percent -eq 60 -and $script:phase7ValidDocument.observations.secondary.used_percent -eq 50 -and $script:phase7ValidDocument.observations.secondary.remaining_percent -eq 50) 'last observed 百分比未保存。'
         Assert-True ($script:phase7ValidDocument.observations.primary.freshness -eq 'fresh' -and $script:phase7ValidDocument.observations.secondary.freshness -eq 'fresh' -and -not [string]::IsNullOrWhiteSpace([string]$script:phase7ValidDocument.captured_at_utc)) 'freshness 或 captured time 未保存。'
-        Assert-True ($script:phase7ValidDocument.observations.primary.source -match 'Get-CodexQuota\.ps1' -and $script:phase7ValidSnapshot.serviceRejection -eq $null -and (Get-QuotaSnapshotFreshness -Snapshot $script:phase7ValidSnapshot) -eq 'fresh') 'observation source 或 freshness reader 異常。'
+        $requestMarker = Get-Content -LiteralPath $script:phase7ValidQuotaResult.request_marker_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($script:phase7ValidDocument.observations.primary.source -match 'https://chatgpt\.com/backend-api/wham/usage' -and $script:phase7ValidSnapshot.serviceRejection -eq $null -and (Get-QuotaSnapshotFreshness -Snapshot $script:phase7ValidSnapshot) -eq 'fresh') 'observation 未以 /wham/usage 作為唯一來源，或 freshness reader 異常。'
+        Assert-True ($requestMarker.endpoint_matches -and $requestMarker.method_get -and $requestMarker.authorization_header_present -and $requestMarker.account_header_present -and $requestMarker.simulated_response) 'quota fixture 未確認 API endpoint、必要標頭與合成回應。'
     }
 
-    $phase7RejectionEvent = [ordered]@{
-        timestamp = [DateTimeOffset]::UtcNow.ToString('o')
-        type = 'error'
-        message = 'usage-limit'
-        window = 'primary'
-    }
-    Write-Phase7JsonLines -Path $phase7RolloutPath -Objects @($phase7ValidEvent, $phase7RejectionEvent)
-    $script:phase7RejectedQuotaResult = $null
-    $script:phase7RejectedDocument = $null
-    $script:phase7RejectedSnapshot = $null
-    Invoke-Case 'Phase 7 usage-limit 保留 observation 並保存 service rejection' {
-        $script:phase7RejectedQuotaResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $phase7RejectedSnapshotPath
-        Assert-True ($script:phase7RejectedQuotaResult.exit_code -eq 0 -and (Test-Path -LiteralPath $phase7RejectedSnapshotPath -PathType Leaf)) ('service rejection snapshot 建立失敗：' + $script:phase7RejectedQuotaResult.output)
-        $script:phase7RejectedDocument = Get-Content -LiteralPath $phase7RejectedSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $script:phase7RejectedSnapshot = Read-QuotaSnapshot -Path $phase7RejectedSnapshotPath
-        $rejection = $script:phase7RejectedSnapshot.serviceRejection
-        Assert-True ($script:phase7RejectedDocument.state -eq 'Valid' -and $null -ne $rejection -and $rejection.status -eq 'quota-rejected' -and $rejection.reason_code -eq 'usage-limit' -and $rejection.retry_allowed -eq $false) 'service_rejection contract 未保存。'
-        Assert-True ($script:phase7RejectedDocument.primary.used_percent -eq 40 -and $script:phase7RejectedDocument.primary.remaining_percent -eq 60 -and $script:phase7RejectedDocument.observations.primary.used_percent -eq 40 -and $script:phase7RejectedDocument.observations.primary.remaining_percent -eq 60) 'usage-limit 覆寫 last observed quota。'
-        Assert-True ($script:phase7RejectedDocument.observations.primary.observed_at_utc -eq $script:phase7ValidDocument.observations.primary.observed_at_utc -and $script:phase7RejectedDocument.observations.primary.source -eq $script:phase7ValidDocument.observations.primary.source -and $rejection.raw_evidence_path -eq $phase7RolloutPath -and $rejection.raw_evidence_sha256 -match '^[a-f0-9]{64}$') 'observation 時間、來源或 raw evidence hash 未保留。'
+    $quotaSourceRoot = Join-Path $phase7Root 'quota-source'
+    $quotaHistoryRoot = Join-Path (Join-Path $phase7Root 'execution') '.local\ai-sessions\history'
+    $quotaInputRoot = Join-Path $quotaSourceRoot '.local\ai-sessions'
+    New-Item -ItemType Directory -Path $quotaInputRoot, $quotaHistoryRoot -Force | Out-Null
+
+    $quotaSourceOriginalSetter = (Get-Command -Name Set-QuotaSnapshotFromCodex -CommandType Function -ErrorAction Stop).ScriptBlock
+    $script:phase7QuotaSourceSetterCalls = 0
+    $quotaSourceSetter = {
+        param(
+            [string]$Path,
+            [string]$CodexHome
+        )
+
+        $script:phase7QuotaSourceSetterCalls++
+        $document = Get-Content -LiteralPath $phase7ValidSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $document.captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        $document.primary.used_percent = 41
+        $document.primary.remaining_percent = 59
+        $document.observations.primary.used_percent = 41
+        $document.observations.primary.remaining_percent = 59
+        Write-Utf8NoBom -Path $Path -Content (($document | ConvertTo-Json -Depth 30) + "`r`n")
+        return $Path
     }
 
-    function Invoke-Phase7ServiceRejectionRegression {
+    Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $quotaSourceSetter
+    try {
+        Invoke-Case 'Phase 7 provided invalid QuotaBeforePath is rejected without write' {
+            $nonSnapshotCases = @(
+                [pscustomobject]@{ Name = 'invalid-json'; Content = 'preserve-non-json-source' },
+                [pscustomobject]@{ Name = 'unsupported-schema'; Content = (([ordered]@{ schema = 'example.document.v1'; value = 'preserve' } | ConvertTo-Json -Compress) + "`n") }
+            )
+
+            foreach ($case in $nonSnapshotCases) {
+                $path = Join-Path $quotaInputRoot ($case.Name + '.json')
+                Write-Utf8NoBom -Path $path -Content $case.Content
+                $setterCallsBefore = $script:phase7QuotaSourceSetterCalls
+                $caughtException = $null
+                try {
+                    Get-OrCreateQuotaSnapshot -Path $path -CodexHome $phase7CodexHome -HistoryRoot $quotaHistoryRoot -Purpose 'before' -Required
+                }
+                catch {
+                    $caughtException = $_.Exception
+                }
+
+                $preservedContent = Get-Content -LiteralPath $path -Raw -Encoding UTF8
+                Assert-True ($null -ne $caughtException -and $caughtException.Message -match 'QuotaSnapshotValidationRejected') ($case.Name + ' 未拒絕無效的 QuotaBeforePath。')
+                Assert-True ($preservedContent -ceq $case.Content -and $script:phase7QuotaSourceSetterCalls -eq $setterCallsBefore) ($case.Name + ' 驗證失敗後仍寫入來源或呼叫額度來源。')
+            }
+
+            $missingPath = Join-Path $quotaInputRoot 'missing-snapshot.json'
+            $missingException = $null
+            try {
+                Get-OrCreateQuotaSnapshot -Path $missingPath -CodexHome $phase7CodexHome -HistoryRoot $quotaHistoryRoot -Purpose 'before' -Required
+            }
+            catch {
+                $missingException = $_.Exception
+            }
+            Assert-True ($null -ne $missingException -and $missingException.Message -match 'QuotaSnapshotValidationRejected' -and -not (Test-Path -LiteralPath $missingPath)) '不存在的 QuotaBeforePath 未拒絕或被建立。'
+        }
+
+        Invoke-Case 'Phase 7 valid provided QuotaBeforePath is validated readonly and replaced by fresh history snapshot' {
+            $path = Join-Path $quotaInputRoot 'outside-execution-root.json'
+            Copy-Item -LiteralPath $phase7ValidSnapshotPath -Destination $path -Force
+            $originalHash = Get-FileSha256 -Path $path
+            $setterCallsBefore = $script:phase7QuotaSourceSetterCalls
+            $result = Get-OrCreateQuotaSnapshot -Path $path -CodexHome $phase7CodexHome -HistoryRoot $quotaHistoryRoot -Purpose 'before' -Required
+            $document = Get-Content -LiteralPath $result -Raw -Encoding UTF8 | ConvertFrom-Json
+            $null = Read-QuotaSnapshot -Path $result
+
+            Assert-True (-not [string]::Equals($result, $path, [StringComparison]::OrdinalIgnoreCase) -and $result.StartsWith((Resolve-AbsolutePath -Path $quotaHistoryRoot), [StringComparison]::OrdinalIgnoreCase) -and $script:phase7QuotaSourceSetterCalls -eq ($setterCallsBefore + 1)) '有效 QuotaBeforePath 未產生 history 新檔或未即時查詢來源。'
+            Assert-True ((Get-FileSha256 -Path $path) -ceq $originalHash) '唯讀驗證改寫呼叫端提供的 quota 快照。'
+            Assert-True ($document.schema -ceq 'ai-sessions.quota-snapshot.v1' -and $document.state -ceq 'Valid' -and $document.primary.used_percent -eq 41 -and $document.observations.primary.used_percent -eq 41) '新 history 快照未保留有效契約或來源 observation。'
+            Assert-True ([IO.Path]::GetFileName($result) -match '^quota-before-\d{8}_\d{6}_\d{3}-[0-9a-f]{32}\.json$') '新 before 快照檔名未包含 UTC 時戳與 GUID。'
+        }
+
+        Invoke-Case 'Phase 7 valid linked QuotaBeforePath is validated readonly' {
+            $targetRoot = Join-Path $quotaInputRoot 'linked-target-root'
+            $junctionRoot = Join-Path $quotaInputRoot 'linked-input-root'
+            New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
+            $targetPath = Join-Path $targetRoot 'quota-input.json'
+            Copy-Item -LiteralPath $phase7ValidSnapshotPath -Destination $targetPath -Force
+            $originalHash = Get-FileSha256 -Path $targetPath
+            New-Phase7Junction -JunctionPath $junctionRoot -TargetDirectory $targetRoot
+            $linkedPath = Join-Path $junctionRoot 'quota-input.json'
+            $result = Get-OrCreateQuotaSnapshot -Path $linkedPath -CodexHome $phase7CodexHome -HistoryRoot $quotaHistoryRoot -Purpose 'before' -Required
+            $linkAttributes = [IO.File]::GetAttributes($junctionRoot)
+            Assert-True (-not [string]::Equals($result, $linkedPath, [StringComparison]::OrdinalIgnoreCase) -and (Get-FileSha256 -Path $targetPath) -ceq $originalHash -and ($linkAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) 'QuotaBeforePath 經由 junction 驗證時未保持來源唯讀。'
+        }
+    }
+    finally {
+        Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $quotaSourceOriginalSetter
+    }
+
+    Invoke-Case 'Phase 7 before snapshot writer rejects existing target without changing bytes' {
+        $collisionPath = Join-Path $phase7Root 'existing-snapshot-collision.json'
+        Copy-Item -LiteralPath $phase7ValidSnapshotPath -Destination $collisionPath -Force
+        $collisionHash = Get-FileSha256 -Path $collisionPath
+        $collisionResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $collisionPath -ApiResponsePath $phase7ValidApiResponsePath
+        Assert-True ($collisionResult.output -notmatch 'primary_used_percent=' -and (Get-FileSha256 -Path $collisionPath) -ceq $collisionHash) 'FileMode.CreateNew 未拒絕一般既有檔案或改動其內容。'
+    }
+
+    Invoke-Case 'Phase 7 snapshot writer rejects existing target through junction without changing bytes' {
+        $targetRoot = Join-Path $phase7Root 'linked-writer-target'
+        $junctionRoot = Join-Path $phase7Root 'linked-writer-alias'
+        New-Item -ItemType Directory -Path $targetRoot -Force | Out-Null
+        $targetPath = Join-Path $targetRoot 'existing-snapshot.json'
+        Write-Utf8NoBom -Path $targetPath -Content 'preserve-linked-target'
+        $targetHash = Get-FileSha256 -Path $targetPath
+        New-Phase7Junction -JunctionPath $junctionRoot -TargetDirectory $targetRoot
+        $linkedPath = Join-Path $junctionRoot 'existing-snapshot.json'
+        $collisionResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $linkedPath -ApiResponsePath $phase7ValidApiResponsePath
+        $linkAttributes = [IO.File]::GetAttributes($junctionRoot)
+        Assert-True ($collisionResult.output -notmatch 'primary_used_percent=' -and (Get-FileSha256 -Path $targetPath) -ceq $targetHash -and ($linkAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) 'FileMode.CreateNew 未拒絕經由 junction 指向的既有快照，或改動目標內容。'
+    }
+
+    function Invoke-Phase7ApiSnapshotRegression {
         [CmdletBinding()]
         param(
             [Parameter(Mandatory)][string]$CaseName,
-            [Parameter(Mandatory)][object]$AdditionalEvent,
-            [Parameter(Mandatory)][bool]$ExpectRejection,
+            [Parameter(Mandatory)][object]$ApiResponse,
+            [Parameter(Mandatory)][string]$ExpectedState,
             [string]$ExpectedReasonCode,
             [string]$ExpectedWindow
         )
 
-        $root = Join-Path $phase7Root ('a3-' + $CaseName)
-        $caseCodexHome = Join-Path $root 'codex-home'
-        $sessions = Join-Path $caseCodexHome 'sessions'
-        $snapshotPath = Join-Path $root 'snapshot.json'
-        $rolloutPath = Join-Path $sessions ('rollout-' + $CaseName + '.jsonl')
-        New-Item -ItemType Directory -Path $sessions -Force | Out-Null
-        Write-Phase7JsonLines -Path $rolloutPath -Objects @($phase7ValidEvent, $AdditionalEvent)
-        $result = Invoke-Phase7QuotaScript -CodexHomePath $caseCodexHome -SnapshotPath $snapshotPath
-        Assert-True ($result.exit_code -eq 0 -and (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) ($CaseName + ' quota snapshot 建立失敗：' + $result.output)
+        $caseRoot = Join-Path $phase7Root ('api-' + $CaseName)
+        $caseCodexHome = Join-Path $caseRoot 'codex-home'
+        $apiResponsePath = Join-Path $caseRoot 'api-response.json'
+        $snapshotPath = Join-Path $caseRoot 'snapshot.json'
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        Write-Phase7QuotaApiResponse -Path $apiResponsePath -Response $ApiResponse
+        $result = Invoke-Phase7QuotaScript -CodexHomePath $caseCodexHome -SnapshotPath $snapshotPath -ApiResponsePath $apiResponsePath
+        Assert-True (Test-Path -LiteralPath $snapshotPath -PathType Leaf) ($CaseName + ' quota snapshot 未輸出：' + $result.output)
         $document = Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($ExpectRejection) {
-            Assert-True ($null -ne $document.service_rejection -and $document.service_rejection.reason_code -eq $ExpectedReasonCode -and $document.service_rejection.window -eq $ExpectedWindow) ($CaseName + ' 未保存預期 service rejection。')
+        Assert-True ($document.state -eq $ExpectedState) ($CaseName + ' snapshot state 不符，實際為 ' + $document.state + '。')
+        if ($ExpectedState -eq 'ServiceRejected') {
+            Assert-True ($document.error -like 'QuotaApiServiceRejected;*' -and $null -ne $document.service_rejection -and $document.service_rejection.reason_code -eq $ExpectedReasonCode -and $document.service_rejection.window -eq $ExpectedWindow) ($CaseName + ' 未以 fail-closed 方式保存預期拒絕訊號。')
+            Assert-True ($null -eq $document.primary -and $null -eq $document.secondary -and $null -eq $document.observations) ($CaseName + ' service rejection 輸出可用額度 observation。')
         }
         else {
-            Assert-True ($null -eq $document.service_rejection) ($CaseName + ' 將非錯誤紀錄誤判為 service rejection。')
+            Assert-True ($document.error -like 'QuotaApiResponseInvalid;*' -and $null -eq $document.service_rejection -and $null -eq $document.primary -and $null -eq $document.secondary -and $null -eq $document.observations) ($CaseName + ' 無效回應未 fail-closed。')
         }
-        return $document
+        $marker = Get-Content -LiteralPath $result.request_marker_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($marker.endpoint_matches -and $marker.method_get -and $marker.simulated_response) ($CaseName + ' 未經隔離的 API mock 執行。')
+        return [pscustomobject]@{ result = $result; document = $document }
     }
 
-    Invoke-Case 'Phase 7 A3(g) compacted 文字不產生 service rejection' {
-        $compactedEvent = [ordered]@{
-            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
-            type = 'compacted'
-            content = 'usage-limit 事件記為 service_rejection；secondary'
-        }
-        $null = Invoke-Phase7ServiceRejectionRegression -CaseName 'g-compacted' -AdditionalEvent $compactedEvent -ExpectRejection $false
+    $script:phase7RejectedQuotaResult = $null
+    $script:phase7RejectedDocument = $null
+    $script:phase7RejectedSnapshot = $null
+    Invoke-Case 'Phase 7 API allowed=false fail-closed service rejection' {
+        $apiResponsePath = Join-Path $phase7Root 'rejected-api-response.json'
+        Write-Phase7QuotaApiResponse -Path $apiResponsePath -Response (New-Phase7QuotaApiResponse -Allowed $false)
+        $script:phase7RejectedQuotaResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7CodexHome -SnapshotPath $phase7RejectedSnapshotPath -ApiResponsePath $apiResponsePath
+        Assert-True ((Test-Path -LiteralPath $phase7RejectedSnapshotPath -PathType Leaf)) 'service rejection snapshot 未 fail-closed。'
+        $script:phase7RejectedDocument = Get-Content -LiteralPath $phase7RejectedSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $script:phase7RejectedSnapshot = Read-QuotaSnapshot -Path $phase7RejectedSnapshotPath
+        $rejection = $script:phase7RejectedSnapshot.serviceRejection
+        Assert-True ($script:phase7RejectedDocument.state -eq 'ServiceRejected' -and $script:phase7RejectedDocument.error -like 'QuotaApiServiceRejected;*' -and $null -ne $rejection -and $rejection.status -eq 'quota-rejected' -and $rejection.reason_code -eq 'not-allowed' -and $rejection.retry_allowed -eq $false) 'API service rejection 欄位或 retry gate 不符。'
+        Assert-True ($null -eq $script:phase7RejectedDocument.primary -and $null -eq $script:phase7RejectedDocument.secondary -and $null -eq $script:phase7RejectedDocument.observations -and $rejection.raw_evidence_path -eq 'https://chatgpt.com/backend-api/wham/usage' -and $rejection.raw_evidence_sha256 -match '^[a-f0-9]{64}$') 'API 拒絕仍輸出可用額度或 evidence 未連結 API 回應。'
     }
 
-    Invoke-Case 'Phase 7 A3(h) response_item 使用者訊息不產生 service rejection' {
-        $responseItemEvent = [ordered]@{
-            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
-            type = 'response_item'
-            payload = [ordered]@{
-                type = 'message'
-                role = 'user'
-                content = '429 rate limit'
-            }
-        }
-        $null = Invoke-Phase7ServiceRejectionRegression -CaseName 'h-response-item' -AdditionalEvent $responseItemEvent -ExpectRejection $false
+    Invoke-Case 'Phase 7 API rate_limit.limit_reached=true 分類拒絕視窗' {
+        $case = Invoke-Phase7ApiSnapshotRegression -CaseName 'limit-reached' -ApiResponse (New-Phase7QuotaApiResponse -LimitReached $true -ReachedType 'primary') -ExpectedState 'ServiceRejected' -ExpectedReasonCode 'limit-reached' -ExpectedWindow 'primary'
+        Assert-True ($case.document.service_rejection.retry_allowed -eq $false -and $case.document.service_rejection_evidence.limit_reached -eq $true -and $case.document.service_rejection_evidence.rate_limit_reached_type -eq 'primary') 'limit_reached API 拒絕證據或 retry gate 不符。'
     }
 
-    Invoke-Case 'Phase 7 A3(i) structured error usage-limit 仍產生 rejection' {
-        $errorEvent = [ordered]@{
-            timestamp = [DateTimeOffset]::UtcNow.ToString('o')
-            type = 'error'
-            message = 'usage-limit'
-            window = 'primary'
-        }
-        $null = Invoke-Phase7ServiceRejectionRegression -CaseName 'i-error' -AdditionalEvent $errorEvent -ExpectRejection $true -ExpectedReasonCode 'usage-limit' -ExpectedWindow 'primary'
+    Invoke-Case 'Phase 7 API spend_control.reached=true 分類拒絕' {
+        $null = Invoke-Phase7ApiSnapshotRegression -CaseName 'spend-control' -ApiResponse (New-Phase7QuotaApiResponse -SpendControlReached $true) -ExpectedState 'ServiceRejected' -ExpectedReasonCode 'spend-control' -ExpectedWindow 'unknown'
     }
 
-    Invoke-Case 'Phase 7 A3(j) token_count reached type 取 secondary window' {
-        $tokenCountEvent = [ordered]@{
+    Invoke-Case 'Phase 7 API contradictory refusal signal fail-closed' {
+        $null = Invoke-Phase7ApiSnapshotRegression -CaseName 'contradictory-refusal' -ApiResponse (New-Phase7QuotaApiResponse -ReachedType 'primary') -ExpectedState 'SnapshotUnavailable'
+    }
+
+    Invoke-Case 'Phase 7 API missing refusal flag fail-closed' {
+        $null = Invoke-Phase7ApiSnapshotRegression -CaseName 'missing-refusal-flag' -ApiResponse (New-Phase7QuotaApiResponse -OmitAllowed) -ExpectedState 'SnapshotUnavailable'
+    }
+
+    Invoke-Case 'Phase 7 API used_percent 邊界 0 與 100 可接受' {
+        $root = Join-Path $phase7Root 'api-range-boundary'
+        $snapshotPath = Join-Path $root 'snapshot.json'
+        $responsePath = Join-Path $root 'api-response.json'
+        $codexHome = Join-Path $root 'codex-home'
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Write-Phase7QuotaApiResponse -Path $responsePath -Response (New-Phase7QuotaApiResponse -PrimaryUsedPercent 0 -SecondaryUsedPercent 100)
+        $result = Invoke-Phase7QuotaScript -CodexHomePath $codexHome -SnapshotPath $snapshotPath -ApiResponsePath $responsePath
+        $document = Get-Content -LiteralPath $snapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($result.exit_code -eq 0 -and $document.state -eq 'Valid' -and $document.observations.primary.used_percent -eq 0 -and $document.observations.secondary.used_percent -eq 100) 'used_percent 的合法邊界 0 或 100 未接受。'
+    }
+
+    foreach ($invalidUsedPercent in @( -1, 101 )) {
+        $invalidCaseName = if ($invalidUsedPercent -lt 0) { 'negative' } else { 'over-100' }
+        Invoke-Case ('Phase 7 API used_percent {0} 拒絕越界值' -f $invalidCaseName) {
+            $null = Invoke-Phase7ApiSnapshotRegression -CaseName ('range-' + $invalidCaseName) -ApiResponse (New-Phase7QuotaApiResponse -PrimaryUsedPercent $invalidUsedPercent) -ExpectedState 'SnapshotUnavailable'
+        }
+    }
+
+    Invoke-Case 'Phase 7 API 取得失敗不讀 rollout fallback 並停止' {
+        $failureRoot = Join-Path $phase7Root 'api-retrieval-failure'
+        $failureHome = Join-Path $failureRoot 'codex-home'
+        $failureSessions = Join-Path $failureHome 'sessions'
+        $failureSnapshotPath = Join-Path $failureRoot 'snapshot.json'
+        New-Item -ItemType Directory -Path $failureSessions -Force | Out-Null
+        $legacyRollout = Join-Path $failureSessions 'rollout-legacy-valid.jsonl'
+        $legacyEvent = [ordered]@{
             timestamp = [DateTimeOffset]::UtcNow.ToString('o')
-            type = 'token_count'
             payload = [ordered]@{
                 rate_limits = [ordered]@{
-                    rate_limit_reached_type = 'secondary'
-                    secondary = [ordered]@{ resets_at = $phase7SecondaryReset }
+                    primary = [ordered]@{ used_percent = 12; window_minutes = 120; resets_at = $phase7PrimaryReset }
+                    secondary = [ordered]@{ used_percent = 22; window_minutes = 10080; resets_at = $phase7SecondaryReset }
                 }
             }
         }
-        $null = Invoke-Phase7ServiceRejectionRegression -CaseName 'j-token-count' -AdditionalEvent $tokenCountEvent -ExpectRejection $true -ExpectedReasonCode 'rate-limit' -ExpectedWindow 'secondary'
-    }
-
-    Invoke-Case 'Phase 7 F-007 structured error code separator 與 reason code' {
-        foreach ($case in @(
-                [pscustomobject]@{ name = 'k-usage-underscore'; code = 'usage_limit_reached'; reason = 'usage-limit' },
-                [pscustomobject]@{ name = 'l-rate-hyphen'; code = 'rate-limit-exceeded'; reason = 'rate-limit' },
-                [pscustomobject]@{ name = 'm-quota-hyphen'; code = 'quota-exceeded'; reason = 'quota-exceeded' },
-                [pscustomobject]@{ name = 'n-too-many-underscore'; code = 'too_many_requests'; reason = 'too-many-requests' },
-                [pscustomobject]@{ name = 'o-http-429'; code = '429'; reason = 'too-many-requests' }
-            )) {
-            $structuredCodeEvent = [ordered]@{
-                timestamp = [DateTimeOffset]::UtcNow.ToString('o')
-                type = 'turn.failed'
-                error = [ordered]@{
-                    code = $case.code
-                    message = 'structured error fixture'
-                }
-                window = 'primary'
-            }
-            $document = Invoke-Phase7ServiceRejectionRegression -CaseName $case.name -AdditionalEvent $structuredCodeEvent -ExpectRejection $true -ExpectedReasonCode $case.reason -ExpectedWindow 'primary'
-            Assert-True ($document.service_rejection.reason_code -eq $case.reason) ('F-007 ' + $case.code + ' reason code 不符。')
-        }
+        Write-Phase7JsonLines -Path $legacyRollout -Objects @($legacyEvent)
+        $failureResult = Invoke-Phase7QuotaScript -CodexHomePath $failureHome -SnapshotPath $failureSnapshotPath -ApiResponsePath $phase7ValidApiResponsePath -ApiFailure
+        $failureDocument = Get-Content -LiteralPath $failureSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $failureMarker = Get-Content -LiteralPath $failureResult.request_marker_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($failureDocument.state -eq 'SnapshotUnavailable' -and $failureDocument.error -like 'QuotaApiFailure; category=ConnectionFailure*' -and $null -eq $failureDocument.primary -and $null -eq $failureDocument.secondary -and $null -eq $failureDocument.observations) 'API 取得失敗後仍可用舊 rollout quota。'
+        Assert-True ($failureMarker.endpoint_matches -and $failureMarker.simulated_response) 'API retrieval failure 未由隔離 mock 產生或未 fail-closed。'
     }
 
     $phase7StaleRoot = Join-Path $phase7Root 'stale'
-    $phase7StaleHome = Join-Path $phase7StaleRoot 'codex-home'
-    $phase7StaleSessionsPath = Join-Path $phase7StaleHome 'sessions'
-    New-Item -ItemType Directory -Path $phase7StaleSessionsPath -Force | Out-Null
-    $phase7StaleEvent = [ordered]@{
-        timestamp = [DateTimeOffset]::UtcNow.AddMinutes(-45).ToString('o')
-        payload = [ordered]@{
-            rate_limits = [ordered]@{
-                primary = [ordered]@{ used_percent = 70; window_minutes = 120; resets_at = $phase7PrimaryReset }
-                secondary = [ordered]@{ used_percent = 60; window_minutes = 10080; resets_at = $phase7SecondaryReset }
-            }
-        }
-    }
-    $phase7StaleRolloutPath = Join-Path $phase7StaleSessionsPath 'rollout-phase7-stale.jsonl'
     $phase7StaleSnapshotPath = Join-Path $phase7StaleRoot 'stale-snapshot.json'
-    Write-Phase7JsonLines -Path $phase7StaleRolloutPath -Objects @($phase7StaleEvent)
+    $phase7StaleObservedAt = [DateTimeOffset]::UtcNow.AddMinutes(-45).ToString('o')
+    $phase7StaleSource = 'https://chatgpt.com/backend-api/wham/usage requested_at_utc=' + $phase7StaleObservedAt
+    $phase7StaleDocument = [ordered]@{
+        schema = 'ai-sessions.quota-snapshot.v1'
+        state = 'Valid'
+        captured_at_utc = $phase7StaleObservedAt
+        primary = [ordered]@{ used_percent = 70; remaining_percent = 30; window_minutes = 120; resets_at = $phase7PrimaryReset; source_file = $phase7StaleSource }
+        secondary = [ordered]@{ used_percent = 60; remaining_percent = 40; window_minutes = 10080; resets_at = $phase7SecondaryReset; source_file = $phase7StaleSource }
+        observations = [ordered]@{
+            primary = [ordered]@{ used_percent = 70; remaining_percent = 30; observed_at_utc = $phase7StaleObservedAt; source = $phase7StaleSource; freshness = 'stale'; window = 'primary'; resets_at = $phase7PrimaryReset }
+            secondary = [ordered]@{ used_percent = 60; remaining_percent = 40; observed_at_utc = $phase7StaleObservedAt; source = $phase7StaleSource; freshness = 'stale'; window = 'secondary'; resets_at = $phase7SecondaryReset }
+        }
+        service_rejection = $null
+    }
+    New-Item -ItemType Directory -Path $phase7StaleRoot -Force | Out-Null
+    Write-Utf8NoBom -Path $phase7StaleSnapshotPath -Content (($phase7StaleDocument | ConvertTo-Json -Depth 12) + "`r`n")
     $script:phase7StaleSnapshot = $null
     Invoke-Case 'Phase 7 stale observation 不宣稱 realtime' {
-        $staleResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7StaleHome -SnapshotPath $phase7StaleSnapshotPath
-        Assert-True ($staleResult.exit_code -eq 0 -and (Test-Path -LiteralPath $phase7StaleSnapshotPath -PathType Leaf)) ('stale snapshot 建立失敗：' + $staleResult.output)
         $script:phase7StaleSnapshot = Read-QuotaSnapshot -Path $phase7StaleSnapshotPath
         Assert-True ((Get-QuotaSnapshotFreshness -Snapshot $script:phase7StaleSnapshot) -eq 'stale' -and $script:phase7StaleSnapshot.primary.remaining_percent -eq 30 -and $script:phase7StaleSnapshot.observations.primary.freshness -eq 'stale') 'stale observation 被誤標 fresh 或百分比遺失。'
+        Assert-True ($script:phase7StaleSnapshot.observations.primary.source -match 'https://chatgpt\.com/backend-api/wham/usage') 'stale quota observation 未保留 API source。'
     }
 
     $phase7UnknownSnapshotPath = Join-Path $phase7Root 'unknown-snapshot.json'
@@ -6625,8 +6895,8 @@ if ($Phase -ge 7) {
         schema = 'ai-sessions.quota-snapshot.v1'
         state = 'Valid'
         captured_at_utc = $phase7Now.ToString('o')
-        primary = [ordered]@{ used_percent = 40; remaining_percent = 60; window_minutes = 120; resets_at = $phase7PrimaryReset; source_file = 'legacy-rollout.jsonl' }
-        secondary = [ordered]@{ used_percent = 50; remaining_percent = 50; window_minutes = 10080; resets_at = $phase7SecondaryReset; source_file = 'legacy-rollout.jsonl' }
+        primary = [ordered]@{ used_percent = 40; remaining_percent = 60; window_minutes = 120; resets_at = $phase7PrimaryReset; source_file = 'https://chatgpt.com/backend-api/wham/usage' }
+        secondary = [ordered]@{ used_percent = 50; remaining_percent = 50; window_minutes = 10080; resets_at = $phase7SecondaryReset; source_file = 'https://chatgpt.com/backend-api/wham/usage' }
     }
     Write-Utf8NoBom -Path $phase7UnknownSnapshotPath -Content (($phase7UnknownDocument | ConvertTo-Json -Depth 12) + "`n")
     Invoke-Case 'Phase 7 舊 snapshot 缺少 observation 時正規化為 unknown' {
@@ -6640,11 +6910,11 @@ if ($Phase -ge 7) {
         schema = 'ai-sessions.quota-snapshot.v1'
         state = 'Valid'
         captured_at_utc = $phase7LowObservedAt
-        primary = [ordered]@{ used_percent = 80; remaining_percent = 20; window_minutes = 120; resets_at = $phase7PrimaryReset; source_file = 'phase7-low.jsonl' }
-        secondary = [ordered]@{ used_percent = 90; remaining_percent = 10; window_minutes = 10080; resets_at = $phase7SecondaryReset; source_file = 'phase7-low.jsonl' }
+        primary = [ordered]@{ used_percent = 80; remaining_percent = 20; window_minutes = 120; resets_at = $phase7PrimaryReset; source_file = 'https://chatgpt.com/backend-api/wham/usage' }
+        secondary = [ordered]@{ used_percent = 90; remaining_percent = 10; window_minutes = 10080; resets_at = $phase7SecondaryReset; source_file = 'https://chatgpt.com/backend-api/wham/usage' }
         observations = [ordered]@{
-            primary = [ordered]@{ used_percent = 80; remaining_percent = 20; observed_at_utc = $phase7LowObservedAt; source = 'phase7-low.jsonl'; freshness = 'fresh'; window = 'primary'; resets_at = $phase7PrimaryReset }
-            secondary = [ordered]@{ used_percent = 90; remaining_percent = 10; observed_at_utc = $phase7LowObservedAt; source = 'phase7-low.jsonl'; freshness = 'fresh'; window = 'secondary'; resets_at = $phase7SecondaryReset }
+            primary = [ordered]@{ used_percent = 80; remaining_percent = 20; observed_at_utc = $phase7LowObservedAt; source = 'https://chatgpt.com/backend-api/wham/usage'; freshness = 'fresh'; window = 'primary'; resets_at = $phase7PrimaryReset }
+            secondary = [ordered]@{ used_percent = 90; remaining_percent = 10; observed_at_utc = $phase7LowObservedAt; source = 'https://chatgpt.com/backend-api/wham/usage'; freshness = 'fresh'; window = 'secondary'; resets_at = $phase7SecondaryReset }
         }
         service_rejection = $null
     }
@@ -6799,44 +7069,7 @@ if ($Phase -ge 7) {
 
     Invoke-Case 'Phase 7 service rejection ScopePlan 保留觀測且禁止 retry' {
         $rejectedPlan = New-ScopePlan -DispatchSlug 'phase7-rejected-plan' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7RejectedSnapshot -CalibrationPath $null -Units @('unit-1') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
-        Assert-True ($rejectedPlan.quota_state -eq 'ServiceRejected' -and $rejectedPlan.decision -eq 'blocked-no-fresh-quota' -and $rejectedPlan.retry_allowed -eq $false -and $rejectedPlan.primary_remaining_percent -eq 60 -and $rejectedPlan.service_rejection.reason_code -eq 'usage-limit') 'service rejection ScopePlan 狀態或 retry gate 異常。'
-    }
-
-    $phase7SupersededRoot = Join-Path $phase7Root 'superseded'
-    $phase7SupersededHome = Join-Path $phase7SupersededRoot 'codex-home'
-    $phase7SupersededSessionsPath = Join-Path $phase7SupersededHome 'sessions'
-    New-Item -ItemType Directory -Path $phase7SupersededSessionsPath -Force | Out-Null
-    $phase7SupersededRolloutPath = Join-Path $phase7SupersededSessionsPath 'rollout-phase7-superseded.jsonl'
-    $phase7SupersededSnapshotPath = Join-Path $phase7SupersededRoot 'superseded-snapshot.json'
-    $phase7SupersededRejectionAt = [DateTimeOffset]::UtcNow.AddMinutes(-2)
-    $phase7SupersededObservationAt = [DateTimeOffset]::UtcNow.AddMinutes(-1)
-    $phase7SupersededRejectionEvent = [ordered]@{
-        timestamp = $phase7SupersededRejectionAt.ToString('o')
-        type = 'error'
-        message = 'usage-limit'
-        window = 'primary'
-    }
-    $phase7SupersededFreshEvent = [ordered]@{
-        timestamp = $phase7SupersededObservationAt.ToString('o')
-        payload = [ordered]@{
-            rate_limits = [ordered]@{
-                primary = [ordered]@{ used_percent = 41; window_minutes = 120; resets_at = $phase7PrimaryReset }
-                secondary = [ordered]@{ used_percent = 51; window_minutes = 10080; resets_at = $phase7SecondaryReset }
-            }
-        }
-    }
-    Write-Phase7JsonLines -Path $phase7SupersededRolloutPath -Objects @($phase7SupersededRejectionEvent, $phase7SupersededFreshEvent)
-    $script:phase7SupersededSnapshot = $null
-    Invoke-Case 'Phase 7 rejection 後較晚 fresh observation 取代 service rejection' {
-        $supersededResult = Invoke-Phase7QuotaScript -CodexHomePath $phase7SupersededHome -SnapshotPath $phase7SupersededSnapshotPath
-        Assert-True ($supersededResult.exit_code -eq 0 -and (Test-Path -LiteralPath $phase7SupersededSnapshotPath -PathType Leaf)) ('fresh observation 取代 rejection 時 snapshot 建立失敗：' + $supersededResult.output)
-        $supersededDocument = Get-Content -LiteralPath $phase7SupersededSnapshotPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $script:phase7SupersededSnapshot = Read-QuotaSnapshot -Path $phase7SupersededSnapshotPath
-        $supersededEvidence = Get-QuotaSnapshotServiceRejectionEvidence -Snapshot $script:phase7SupersededSnapshot
-        $supersededPlan = New-ScopePlan -DispatchSlug 'phase7-superseded-plan' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -BeforeSnapshot $script:phase7SupersededSnapshot -CalibrationPath $null -Units @('unit-1') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
-        Assert-True ($supersededDocument.state -eq 'Valid' -and $null -eq $supersededDocument.service_rejection -and $null -eq $script:phase7SupersededSnapshot.serviceRejection -and $supersededEvidence.superseded -eq $true) 'fresh observation 後仍保留 active service rejection。'
-        Assert-True ($supersededEvidence.reason_code -eq 'usage-limit' -and $supersededEvidence.raw_evidence_path -eq $phase7SupersededRolloutPath -and $supersededEvidence.raw_evidence_sha256 -match '^[a-f0-9]{64}$' -and $supersededEvidence.superseded_by_observation.source_path -eq $phase7SupersededRolloutPath) '原始 rejection audit evidence 未獨立保存。'
-        Assert-True ($supersededPlan.quota_state -eq 'Valid' -and $supersededPlan.decision -eq 'full' -and $supersededPlan.retry_allowed -eq $null -and $supersededPlan.primary_remaining_percent -eq 59) 'fresh observation 後 ScopePlan 仍阻擋或使用舊額度。'
+        Assert-True ($rejectedPlan.quota_state -eq 'ServiceRejected' -and $rejectedPlan.decision -eq 'blocked-no-fresh-quota' -and $rejectedPlan.retry_allowed -eq $false -and $rejectedPlan.primary_remaining_percent -eq 0 -and $rejectedPlan.service_rejection.reason_code -eq 'not-allowed') 'service rejection ScopePlan 狀態或 retry gate 異常。'
     }
 
     $phase7ProbePromptPath = Join-Path $phase7Root 'probe-prompt.md'
@@ -6847,6 +7080,232 @@ if ($Phase -ge 7) {
         $variable = Get-Variable -Name $name -Scope Script -ErrorAction SilentlyContinue
         $script:phase7SavedVariables[$name] = if ($null -eq $variable) { $null } else { $variable.Value }
     }
+
+    $phase7OriginalSnapshotSetter = Get-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex
+    $script:phase7RefreshApiResponsePath = $phase7ValidApiResponsePath
+    $phase7RefreshSetter = {
+        param([string]$Path, [string]$CodexHome)
+        $refreshResult = Invoke-Phase7QuotaScript -CodexHomePath $CodexHome -SnapshotPath $Path -ApiResponsePath $script:phase7RefreshApiResponsePath
+        if ($refreshResult.exit_code -ne 0 -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            throw ('quota source refresh fixture failed: ' + $refreshResult.output)
+        }
+        return $Path
+    }
+    Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7RefreshSetter
+
+    function New-Phase7MonitorProcess {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [ValidateRange(1, 60000)]
+            [int]$DurationMilliseconds
+        )
+
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $startInfo.Arguments = '-NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds ' + $DurationMilliseconds + '"'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            $process.Dispose()
+            throw 'Phase 7 monitor fixture process did not start.'
+        }
+        return $process
+    }
+
+    function Stop-Phase7MonitorProcess {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [System.Diagnostics.Process]$Process
+        )
+
+        try {
+            if (-not $Process.HasExited) {
+                $Process.Kill()
+                $Process.WaitForExit()
+            }
+        }
+        finally {
+            $Process.Dispose()
+        }
+    }
+
+    $phase7MonitorHistoryRoot = Join-Path $phase7Root '.local\ai-sessions\history'
+    New-Item -ItemType Directory -Path $phase7MonitorHistoryRoot -Force | Out-Null
+    $script:phase7MonitorTemplatePath = $phase7ValidSnapshotPath
+    $script:phase7MonitorWriteCount = 0
+    $script:phase7MonitorMutationTarget = $null
+    $phase7MonitorSetter = {
+        param([string]$Path, [string]$CodexHome)
+        $script:phase7MonitorWriteCount++
+        if ($script:phase7MonitorWriteCount -eq 3 -and -not [string]::IsNullOrWhiteSpace($script:phase7MonitorMutationTarget)) {
+            Write-Utf8NoBom -Path $script:phase7MonitorMutationTarget -Content 'external mutation between after snapshot updates'
+        }
+        $snapshotDocument = Get-Content -LiteralPath $script:phase7MonitorTemplatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $snapshotDocument.captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+        Write-Utf8NoBom -Path $Path -Content (($snapshotDocument | ConvertTo-Json -Depth 20) + "`n")
+        return $Path
+    }
+    Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7MonitorSetter
+
+    Invoke-Case 'Phase 7 advisor after snapshot uses a private path through repeated monitor and terminal updates' {
+        $callerPath = Join-Path $phase7Root 'advisor-monitor-caller-after.json'
+        Copy-Item -LiteralPath $phase7ValidSnapshotPath -Destination $callerPath -Force
+        $callerHash = Get-FileSha256 -Path $callerPath
+        $script:phase7MonitorWriteCount = 0
+        $script:phase7MonitorMutationTarget = $null
+        $process = $null
+        try {
+            $ownedSnapshot = New-AdvisorAfterSnapshot -CallerPath $callerPath -ExecutionRoot $phase7Root -HistoryRoot $phase7MonitorHistoryRoot -CodexHome $phase7CodexHome
+            $ownedPath = [string]$ownedSnapshot.Path
+            $beforeSnapshot = Read-QuotaSnapshot -Path $phase7ValidSnapshotPath
+            $monitorPath = Join-Path $phase7Root 'advisor-monitor-success.jsonl'
+            $process = New-Phase7MonitorProcess -DurationMilliseconds 1000
+            $monitor = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot ([pscustomobject]@{}) -EventPath $phase7ProbePromptPath -MonitorPath $monitorPath -BeforeSnapshot $beforeSnapshot -AfterSnapshotPath $ownedPath -AfterSnapshotSha256 ([string]$ownedSnapshot.Sha256) -CodexHome $phase7CodexHome -PrimaryBudgetPercent 100 -AbortGraceSeconds 0
+            $monitorRecords = @(Get-Content -LiteralPath $monitorPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+            $updateRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.snapshot-updated' })
+            $terminalRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.terminal-snapshot' })
+            $pathRecords = @($monitorRecords | Where-Object { $null -ne $_.PSObject.Properties['after_snapshot_path'] })
+            Assert-True ($monitor.state -eq 'completed' -and $monitor.terminalSnapshotTaken -and [int]$monitor.snapshotUpdateCount -ge 2 -and $updateRecords.Count -ge 2 -and $terminalRecords.Count -eq 1) 'advisor after snapshot 未完成多次 monitor 更新與 terminal snapshot。'
+            Assert-True ([string]::Equals($ownedPath, [string]$monitor.afterSnapshotPath, [StringComparison]::OrdinalIgnoreCase) -and $pathRecords.Count -ge 4 -and @($pathRecords | Where-Object { -not [string]::Equals([string]$_.after_snapshot_path, $ownedPath, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) 'monitor evidence 未持續記錄本次執行的 after snapshot 實際路徑。'
+            Assert-True ((Get-FileSha256 -Path $ownedPath) -ceq [string]$monitor.afterSnapshotSha256 -and $terminalRecords[0].after_snapshot_sha256 -ceq [string]$monitor.afterSnapshotSha256) 'terminal snapshot 的 SHA-256 未與實際 after snapshot 相符。'
+            Assert-True ((Get-FileSha256 -Path $callerPath) -ceq $callerHash -and -not [string]::Equals($ownedPath, $callerPath, [StringComparison]::OrdinalIgnoreCase)) '呼叫端提供的 QuotaAfterPath 被覆寫或沿用。'
+        }
+        finally {
+            if ($null -ne $process) { Stop-Phase7MonitorProcess -Process $process }
+            Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7RefreshSetter
+        }
+    }
+
+    Invoke-Case 'Phase 7 advisor monitor refuses external after snapshot mutation without overwrite' {
+        $callerPath = Join-Path $phase7Root 'advisor-monitor-mutation-caller-after.json'
+        Copy-Item -LiteralPath $phase7ValidSnapshotPath -Destination $callerPath -Force
+        $callerHash = Get-FileSha256 -Path $callerPath
+        $script:phase7MonitorWriteCount = 0
+        $script:phase7MonitorMutationTarget = $null
+        Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7MonitorSetter
+        $process = $null
+        try {
+            $ownedSnapshot = New-AdvisorAfterSnapshot -CallerPath $callerPath -ExecutionRoot $phase7Root -HistoryRoot $phase7MonitorHistoryRoot -CodexHome $phase7CodexHome
+            $ownedPath = [string]$ownedSnapshot.Path
+            $externalContent = 'external mutation between after snapshot updates'
+            $script:phase7MonitorMutationTarget = $ownedPath
+            $monitorPath = Join-Path $phase7Root 'advisor-monitor-external-mutation.jsonl'
+            $process = New-Phase7MonitorProcess -DurationMilliseconds 1500
+            $monitor = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot ([pscustomobject]@{}) -EventPath $phase7ProbePromptPath -MonitorPath $monitorPath -BeforeSnapshot (Read-QuotaSnapshot -Path $phase7ValidSnapshotPath) -AfterSnapshotPath $ownedPath -AfterSnapshotSha256 ([string]$ownedSnapshot.Sha256) -CodexHome $phase7CodexHome -PrimaryBudgetPercent 100 -AbortGraceSeconds 0
+            $monitorRecords = @(Get-Content -LiteralPath $monitorPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+            $failureRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.snapshot-failed' })
+            Assert-True ($monitor.state -eq 'SnapshotFailed' -and [int]$monitor.snapshotUpdateCount -eq 1 -and $failureRecords.Count -eq 1 -and $failureRecords[0].error -match 'QuotaAfterSnapshotChanged') '外部修改後 monitor 未停止並回報 SHA-256 衝突。'
+            Assert-True ((Get-Content -LiteralPath $ownedPath -Raw -Encoding UTF8) -ceq $externalContent -and (Get-FileSha256 -Path $ownedPath) -cne [string]$ownedSnapshot.Sha256) 'monitor 覆寫了外部更新的 after snapshot。'
+            Assert-True ((Get-FileSha256 -Path $callerPath) -ceq $callerHash) '外部修改情境改寫了呼叫端提供的 QuotaAfterPath。'
+            $temporaryPattern = '.' + [IO.Path]::GetFileName($ownedPath) + '.*.tmp'
+            $temporaryFiles = @(Get-ChildItem -LiteralPath (Split-Path -Parent $ownedPath) -Filter $temporaryPattern | Where-Object { -not $_.PSIsContainer })
+            Assert-True ($temporaryFiles.Count -eq 0) 'after snapshot 更新失敗後留下本次建立的同目錄暫存檔。'
+        }
+        finally {
+            if ($null -ne $process) { Stop-Phase7MonitorProcess -Process $process }
+            $script:phase7MonitorMutationTarget = $null
+            Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7RefreshSetter
+        }
+    }
+
+    $quotaProbeSourceRoot = Join-Path $phase7Root 'quota-probe-source'
+    $quotaProbeExecutionRoot = Join-Path $phase7Root 'quota-probe-execution'
+    $quotaProbeHistoryRoot = Join-Path $quotaProbeExecutionRoot '.local\ai-sessions\history'
+    $quotaProbeInputRoot = Join-Path $quotaProbeSourceRoot '.local\ai-sessions'
+    New-Item -ItemType Directory -Path $quotaProbeInputRoot, $quotaProbeHistoryRoot -Force | Out-Null
+
+    foreach ($refreshCase in @(
+            [pscustomobject]@{ name = 'stale'; state = 'SnapshotExpired'; template = $phase7StaleSnapshotPath },
+            [pscustomobject]@{ name = 'post-reset'; state = 'PostResetNoSnapshot'; template = $phase7ValidSnapshotPath }
+        )) {
+        Invoke-Case ('Phase 7 {0} 即時刷新 quota 且不啟動 probe' -f $refreshCase.name) {
+            try {
+                $script:SourceRoot = $phase7Root
+                $script:ExecutionRoot = $quotaProbeExecutionRoot
+                $script:DispatchRoot = $phase7Root
+                $script:LineSlug = 'line-a'
+                $script:DispatchSlug = 'phase7-refresh-' + $refreshCase.name
+                $script:PromptPath = $phase7ProbePromptPath
+                $script:CodexHome = $phase7CodexHome
+                $script:InitialQuotaState = $refreshCase.state
+                $inputPath = Join-Path $quotaProbeInputRoot ($refreshCase.name + '-input.json')
+                Copy-Item -LiteralPath $refreshCase.template -Destination $inputPath -Force
+                $inputHash = Get-FileSha256 -Path $inputPath
+                $script:QuotaBeforePath = $inputPath
+                $script:ProbeAttempt = 1
+                $script:TriggerWindow = 'primary'
+                $script:Profile = 'default'
+                $script:AdvisorRequestSource = $null
+                $script:SecondaryDaysToReset = $null
+                $script:SecondaryRemainingPercent = $null
+                $script:AddDirectory = $null
+                $script:Search = $false
+                $script:CodexParentOption = $null
+                $script:CodexPath = $null
+                $beforeStartCalls = $script:startCalls
+                $probeResult = Invoke-QuotaProbe
+                $recovery = Get-Content -LiteralPath $probeResult.recoveryRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $refreshedSnapshot = Read-QuotaSnapshot -Path $probeResult.quotaSnapshotPath
+                $refreshMarkerPath = $probeResult.quotaSnapshotPath + '.api-request.json'
+                $refreshMarker = Get-Content -LiteralPath $refreshMarkerPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                Assert-True ($probeResult.success -and -not $probeResult.processStarted -and -not $probeResult.retryRequired -and $recovery.finalStatus -eq 'quota-source-refreshed-no-probe' -and $recovery.retryResult.attempted -eq $false -and $script:startCalls -eq $beforeStartCalls) ($refreshCase.name + ' 即時刷新仍啟動 probe 或 retry。')
+                Assert-True ($refreshedSnapshot.state -eq 'Valid' -and (Get-QuotaSnapshotFreshness -Snapshot $refreshedSnapshot) -eq 'fresh' -and $refreshedSnapshot.observations.primary.source -match 'https://chatgpt\.com/backend-api/wham/usage') ($refreshCase.name + ' 未以 API 取得新鮮 quota snapshot。')
+                Assert-True ($refreshMarker.endpoint_matches -and $refreshMarker.simulated_response) ($refreshCase.name + ' 刷新未使用隔離 API mock。')
+                Assert-True (-not [string]::Equals($probeResult.quotaSnapshotPath, $inputPath, [StringComparison]::OrdinalIgnoreCase) -and $probeResult.quotaSnapshotPath.StartsWith((Resolve-AbsolutePath -Path $quotaProbeHistoryRoot), [StringComparison]::OrdinalIgnoreCase)) ($refreshCase.name + ' 未寫入新的 execution history 快照。')
+                Assert-True ((Get-FileSha256 -Path $probeResult.quotaSnapshotPath) -ceq $probeResult.quotaSnapshotSha256 -and $probeResult.quotaSnapshotSha256 -ceq $recovery.probeEvidence.quotaSnapshotSha256 -and (Get-FileSha256 -Path $inputPath) -ceq $inputHash) ($refreshCase.name + ' 快照路徑／SHA-256 不一致，或改寫原始輸入。')
+                Assert-True ([IO.Path]::GetFileName($probeResult.quotaSnapshotPath) -match ('^quota-source-refresh-' + [regex]::Escape($script:DispatchSlug) + '-\d{8}_\d{6}_\d{3}-[0-9a-f]{32}\.json$')) ($refreshCase.name + ' source-refresh 檔名未包含 DispatchSlug、UTC 時戳與 GUID。')
+            }
+            finally {
+                foreach ($name in $phase7ProbeVariableNames) {
+                    Set-Variable -Scope Script -Name $name -Value $script:phase7SavedVariables[$name]
+                }
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 7 source-refresh API failure stops without probe or fallback' {
+        $quotaRefreshFailSetter = { param([string]$Path, [string]$CodexHome) throw 'fixture API failure' }
+        Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $quotaRefreshFailSetter
+        try {
+            $script:SourceRoot = $phase7Root
+            $script:ExecutionRoot = $quotaProbeExecutionRoot
+            $script:DispatchRoot = $phase7Root
+            $script:LineSlug = 'line-a'
+            $script:DispatchSlug = 'phase7-refresh-api-failure'
+            $script:PromptPath = $phase7ProbePromptPath
+            $script:CodexHome = $phase7CodexHome
+            $script:InitialQuotaState = 'SnapshotExpired'
+            $script:QuotaBeforePath = Join-Path $quotaProbeInputRoot 'api-failure-input.json'
+            Copy-Item -LiteralPath $phase7StaleSnapshotPath -Destination $script:QuotaBeforePath -Force
+            $script:ProbeAttempt = 1
+            $script:TriggerWindow = 'primary'
+            $script:Profile = 'default'
+            $script:AdvisorRequestSource = $null
+            $script:SecondaryDaysToReset = $null
+            $script:SecondaryRemainingPercent = $null
+            $script:AddDirectory = $null
+            $script:Search = $false
+            $script:CodexParentOption = $null
+            $script:CodexPath = $null
+            $beforeStartCalls = $script:startCalls
+            $caughtException = $null
+            try { $null = Invoke-QuotaProbe } catch { $caughtException = $_.Exception }
+            Assert-True ($null -ne $caughtException -and $caughtException.Message -match 'fixture API failure' -and $script:startCalls -eq $beforeStartCalls) 'quota source API failure 未停止 QuotaProbe。'
+        }
+        finally {
+            Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7RefreshSetter
+            foreach ($name in $phase7ProbeVariableNames) {
+                Set-Variable -Scope Script -Name $name -Value $script:phase7SavedVariables[$name]
+            }
+        }
+    }
+    Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7OriginalSnapshotSetter.ScriptBlock
+
     Invoke-Case 'Phase 7 explicit service rejection 不自動啟動或 retry' {
         try {
             $script:SourceRoot = $phase7Root
