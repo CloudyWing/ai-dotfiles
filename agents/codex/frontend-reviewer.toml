@@ -51,12 +51,12 @@ developer_instructions = """
 
 ## 產出
 
-覆寫前備份：若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>`（時間戳為備份當下時間）移入 `<work-root>/.local/ai-sessions/history/<lineSlug>/`（目錄不存在時自動建立），再寫入新內容。
+報告寫入前依 `~/.ai-agents/skills/codex-dispatch/SKILL.md` §執行端共用作業／覆寫前備份 備份既有報告；無法讀取該節時停止寫入並回報，不略過備份。
 
 報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/frontend-reviewer-report.md`。
 
 報告格式：
-```
+```markdown
 # 前端審查報告
 
 ## 總覽

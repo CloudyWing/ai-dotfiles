@@ -2733,7 +2733,7 @@ Invoke-Case 'Collect direct-write 使用共用 identity gate 驗證 final messag
         dispatch_slug = $directIdentityDispatch
         write_mode = 'readonly'
         dispatch_kind = 'resource'
-        target_path = @('direct-identity-output.txt')
+        target_path = @($directIdentityOutputPath)
         prepare_artifacts = @()
         prompt_path = $directIdentityPromptPath
         task_type = 'fixture'
@@ -3352,7 +3352,7 @@ line-a")) {
         dispatch_slug = 'identity-case'
         write_mode = 'readonly'
         dispatch_kind = 'workflow'
-        target_path = @('identity-target.txt')
+        target_path = @(Join-Path $fixtureRoot 'identity-target.txt')
         prepare_artifacts = @()
         prompt_path = $identityPromptPath
         task_type = 'fixture'
@@ -4330,7 +4330,7 @@ if ($Phase -ge 3) {
         $DispatchSlug = 'pf' + $script:caseCount
         $DispatchRoot = Join-Path $SourceRoot ('.local/ai-sessions/worktrees/' + $DispatchSlug)
         $WriteMode = 'write'
-        $TargetPath = @('A.txt')
+        $TargetPath = @(Join-Path $SourceRoot 'A.txt')
         $result = Invoke-Preflight
         $record = Read-DispatchBaseline -Path $result.baselinePath -Sha256 $result.baselineSha256 -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha $BaseSha
         Assert-True ($result.baseSha -eq $BaseSha -and ($record.files | Where-Object path -eq 'A.txt').sha256 -eq (Get-FileSha256 (Join-Path $DispatchRoot 'A.txt'))) 'baseline 未捕捉 carry-in。'
@@ -5792,7 +5792,7 @@ if ($Phase -ge 6) {
         $script:ExecutionRoot = $null
         $script:LineSlug = 'line-a'
         $script:DispatchSlug = 'phase6-preflight'
-        $script:TargetPath = @('phase6-preflight-target.txt')
+        $script:TargetPath = @(Join-Path $script:SourceRoot 'phase6-preflight-target.txt')
         $script:WriteMode = 'write'
         $script:PrepareResultPath = $null
         $preflightResult = Invoke-Preflight
@@ -6080,7 +6080,7 @@ if ($Phase -ge 6) {
             '-WriteMode'
             'write'
             '-TargetPath'
-            'tracked.txt'
+            (Join-Path $realSourceRoot 'tracked.txt')
         )
         $realOutput = @(& $hostPath @realArguments 2>&1)
         $realExitCode = $LASTEXITCODE
@@ -6415,7 +6415,8 @@ if ($Phase -ge 7) {
             'Test-ScopePlanCompleteness',
             'Get-CalibrationRecords',
             'Add-AtomicJsonLine',
-            'Invoke-QuotaProbe'
+            'Invoke-QuotaProbe',
+            'Test-DispatchFullyQualifiedPath'
         )) {
         $definitionAst = $functions | Where-Object { $_.Name -eq $functionName } | Select-Object -First 1
         if ($null -eq $definitionAst) {
@@ -7338,6 +7339,358 @@ function global:Invoke-WebRequest {
                 Set-Variable -Scope Script -Name $name -Value $script:phase7SavedVariables[$name]
             }
         }
+    }
+
+    function Get-Phase7RequestFailure {
+        param(
+            [Parameter(Mandatory)]
+            [System.Collections.IDictionary]$Document
+        )
+
+        $path = Join-Path $phase7Root ('request-validation-' + [guid]::NewGuid().ToString('N') + '.json')
+        Write-Utf8NoBom -Path $path -Content ((ConvertTo-Json -InputObject $Document -Depth 20) + "`n")
+        try {
+            $null = Read-DispatchRequest -Path $path
+        }
+        catch {
+            $result = $_.Exception.Data['operationResult']
+            if ($null -ne $result) {
+                return $result
+            }
+            throw
+        }
+        throw '預期 Read-DispatchRequest 拒絕測試資料。'
+    }
+
+    $phase7DispatchTargetPath = Join-Path $phase7Root 'request-target.txt'
+    $phase7AdvisorEvidencePath = Join-Path $phase7Root 'advisor-evidence.md'
+    $phase7AdvisorReportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/advisor-consult-phase7-advisor-request.md'
+    $phase7AdvisorRequestPath = Join-Path $phase7Root 'advisor-dispatch-request.json'
+    $phase7AdvisorRequest = [ordered]@{
+        schema = 'ai-sessions.dispatch-request.v1'
+        operation = 'Dispatch'
+        line_slug = 'line-a'
+        dispatch_slug = 'phase7-advisor-request'
+        source_root = $phase7Root
+        dispatch_root = (Join-Path $phase7Root '.local/ai-sessions/worktrees/phase7-advisor-request')
+        write_mode = 'readonly'
+        dispatch_kind = 'resource'
+        target_path = @($phase7DispatchTargetPath)
+        prepare_artifacts = @()
+        prompt_path = (Join-Path $phase7Root 'advisor-prompt.md')
+        task_type = 'advisor-consult'
+        session_mode = 'cold-start'
+        unit_kind = 'advisor-evidence-question'
+        requested_unit = @('question-001')
+        failure_receipt_path = (Join-Path $phase7Root 'advisor-failure-receipt.json')
+        profile = 'advisor'
+        advisor_request_source = 'user-explicit'
+        evidence_pack_path = $phase7AdvisorEvidencePath
+        advisor_consult_report_path = $phase7AdvisorReportPath
+    }
+
+    Invoke-Case 'Phase 7 advisor Request 支援完整 evidence 與 report 欄位並沿用 DispatchRequestMismatch' {
+        Write-Utf8NoBom -Path $phase7AdvisorRequestPath -Content ((ConvertTo-Json -InputObject $phase7AdvisorRequest -Depth 20) + "`n")
+        $requestContext = Read-DispatchRequest -Path $phase7AdvisorRequestPath
+        Assert-True ($requestContext.dispatch_values.evidence_pack_path -ceq $phase7AdvisorEvidencePath -and $requestContext.dispatch_values.advisor_consult_report_path -ceq $phase7AdvisorReportPath) 'advisor Request 未保留 evidence_pack_path 或 advisor_consult_report_path。'
+
+        $savedNames = @('RequestPath', 'RequestContext', 'Operation', 'LineSlug', 'DispatchSlug', 'SourceRoot', 'DispatchRoot', 'WriteMode', 'DispatchKind', 'TargetPath', 'PromptPath', 'TaskType', 'SessionMode', 'UnitKind', 'RequestedUnit', 'FailureReceiptPath', 'EvidencePackPath', 'AdvisorConsultReportPath', 'Profile', 'ProfileExplicit', 'AdvisorRequestSource', 'InvocationBoundParameters')
+        $savedVariables = @{}
+        foreach ($name in $savedNames) {
+            $variable = Get-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+            $savedVariables[$name] = if ($null -eq $variable) { [pscustomobject]@{ exists = $false; value = $null } } else { [pscustomobject]@{ exists = $true; value = $variable.Value } }
+        }
+        try {
+            $script:RequestPath = $phase7AdvisorRequestPath
+            $script:Operation = 'Dispatch'
+            $script:LineSlug = 'line-a'
+            $script:DispatchSlug = 'phase7-advisor-request'
+            $script:InvocationBoundParameters = [ordered]@{
+                RequestPath = $phase7AdvisorRequestPath
+                Operation = 'Dispatch'
+                LineSlug = 'line-a'
+                DispatchSlug = 'phase7-advisor-request'
+            }
+            $null = Apply-DispatchRequest
+            Assert-True ($script:EvidencePackPath -ceq $phase7AdvisorEvidencePath -and $script:AdvisorConsultReportPath -ceq $phase7AdvisorReportPath) 'Apply-DispatchRequest 未將 advisor 欄位套用至 CLI 參數。'
+
+            foreach ($conflict in @(
+                    [pscustomobject]@{ cli = 'EvidencePackPath'; value = (Join-Path $phase7Root 'different-evidence.md'); field = 'evidence_pack_path' },
+                    [pscustomobject]@{ cli = 'AdvisorConsultReportPath'; value = (Join-Path $phase7Root 'different-advisor-report.md'); field = 'advisor_consult_report_path' })) {
+                $script:InvocationBoundParameters = [ordered]@{
+                    RequestPath = $phase7AdvisorRequestPath
+                    Operation = 'Dispatch'
+                    LineSlug = 'line-a'
+                    DispatchSlug = 'phase7-advisor-request'
+                    ([string]$conflict.cli) = [string]$conflict.value
+                }
+                $caught = $null
+                try { $null = Apply-DispatchRequest } catch { $caught = $_.Exception }
+                $result = if ($null -eq $caught) { $null } else { $caught.Data['operationResult'] }
+                Assert-True ($null -ne $result -and $result.code -ceq 'DispatchRequestMismatch' -and $result.field -ceq $conflict.field) ('Request／CLI 衝突未回報 DispatchRequestMismatch：' + $conflict.field)
+            }
+        }
+        finally {
+            foreach ($name in $savedNames) {
+                if ($savedVariables[$name].exists) {
+                    Set-Variable -Scope Script -Name $name -Value $savedVariables[$name].value
+                }
+                else {
+                    Remove-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
+    $phase7DispatchOrderPath = Join-Path $PSScriptRoot 'New-DispatchOrder.ps1'
+    $phase7DispatchOrderDriverPath = Join-Path $phase7Root 'invoke-dispatch-order-validation.ps1'
+    $phase7DispatchOrderDriver = @'
+    param(
+        [Parameter(Mandatory)][string]$GeneratorPath,
+        [Parameter(Mandatory)][string]$ReportPath,
+        [Parameter(Mandatory)][string]$TargetPath,
+        [Parameter(Mandatory)][string]$CaseName,
+        [Parameter(Mandatory)][string]$DispatchSlug,
+        [AllowEmptyString()][string]$OutputPath
+    )
+$lineSlug = 'line-a'
+$dispatchSlug = $DispatchSlug
+$targetValues = @($TargetPath)
+switch ($CaseName) {
+    'missing-line' { $lineSlug = $null }
+    'field-type-line' { $lineSlug = 42 }
+    'invalid-line' { $lineSlug = 'Invalid_Slug' }
+    'missing-dispatch' { $dispatchSlug = $null }
+    'field-type-target' { $targetValues = @(42) }
+    'empty-target' { $targetValues = @() }
+    'invalid-target' { $targetValues = @('') }
+    'invalid-path' { $targetValues = @('relative-target.txt') }
+    'drive-relative-path' { $targetValues = @('C:relative-target.txt') }
+    'root-relative-path' { $targetValues = @('\root-relative-target.txt') }
+}
+$orderParameters = @{
+    Title = 'Phase 7 generated dispatch order'
+    Role = 'Developer'
+    TargetPath = $targetValues
+    TaskBody = 'Phase 7 dispatch order validation fixture.'
+    Acceptance = @(@{ Category = '新行為'; Condition = '產生派遣單'; Command = 'Get-Item dispatch order' })
+    Boundary = '只寫入派遣單。'
+    ReportPath = $ReportPath
+    DispatchSlug = $dispatchSlug
+    LineSlug = $lineSlug
+}
+if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+    $orderParameters.OutputPath = $OutputPath
+}
+& $GeneratorPath @orderParameters
+'@
+    [System.IO.File]::WriteAllText($phase7DispatchOrderDriverPath, $phase7DispatchOrderDriver + "`r`n", (New-Object System.Text.UTF8Encoding($true)))
+    $phase7DispatchOrderReportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/closure.md'
+    $phase7DispatchOrderHostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
+
+    function Invoke-Phase7DispatchOrder {
+        param(
+            [Parameter(Mandatory)][string]$CaseName,
+            [string]$ReportPath = $phase7DispatchOrderReportPath,
+            [string]$TargetPath = $phase7DispatchTargetPath,
+            [string]$DispatchSlug = 'phase7-generated-order',
+            [AllowEmptyString()][string]$OutputPath
+        )
+
+        $arguments = @(
+            '-NoProfile'
+            '-File'
+            $phase7DispatchOrderDriverPath
+            '-GeneratorPath'
+            $phase7DispatchOrderPath
+            '-ReportPath'
+            $ReportPath
+            '-TargetPath'
+            $phase7DispatchTargetPath
+            '-CaseName'
+            $CaseName
+            '-DispatchSlug'
+            $DispatchSlug
+        )
+        if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
+            $arguments += @('-OutputPath', $OutputPath)
+        }
+        return Invoke-Phase9Process -HostPath $phase7DispatchOrderHostPath -Arguments $arguments -WorkingDirectory $phase7Root -EnvironmentVariables @{}
+    }
+
+    function Invoke-Phase7Preflight {
+        param(
+            [Parameter(Mandatory)][string]$CaseName,
+            [AllowEmptyString()][string]$TargetPath
+        )
+
+        $arguments = @(
+            '-NoProfile'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Preflight'
+            '-SourceRoot'
+            $phase7Root
+            '-DispatchRoot'
+            (Join-Path $phase7Root '.local/ai-sessions/worktrees/phase7-preflight')
+            '-LineSlug'
+            'line-a'
+            '-DispatchSlug'
+            'phase7-preflight'
+        )
+        if ($CaseName -ne 'empty-target') {
+            $arguments += @('-TargetPath', $TargetPath)
+        }
+        return Invoke-Phase9Process -HostPath $phase7DispatchOrderHostPath -Arguments $arguments -WorkingDirectory $phase7Root -EnvironmentVariables @{}
+    }
+
+    Invoke-Case 'Phase 7 Request 與派遣單 common fields 回報相同分類，拒絕空、錯誤型別、空白與相對目標' {
+        $cases = @(
+            [pscustomobject]@{ name = 'missing-line'; field = 'line_slug'; new_field = 'LineSlug'; classification = 'MissingField'; update = { param($document) $null = $document.Remove('line_slug') } }
+            [pscustomobject]@{ name = 'field-type-line'; field = 'line_slug'; new_field = 'LineSlug'; classification = 'FieldType'; update = { param($document) $document.line_slug = 42 } }
+            [pscustomobject]@{ name = 'invalid-line'; field = 'line_slug'; new_field = 'LineSlug'; classification = 'InvalidValue'; update = { param($document) $document.line_slug = 'Invalid_Slug' } }
+            [pscustomobject]@{ name = 'empty-target'; field = 'target_path'; new_field = 'TargetPath'; classification = 'MissingField'; update = { param($document) $document.target_path = @() } }
+            [pscustomobject]@{ name = 'field-type-target'; field = 'target_path'; new_field = 'TargetPath'; classification = 'FieldType'; update = { param($document) $document.target_path = @(42) } }
+            [pscustomobject]@{ name = 'invalid-target'; field = 'target_path'; new_field = 'TargetPath'; classification = 'InvalidValue'; update = { param($document) $document.target_path = @('') } }
+            [pscustomobject]@{ name = 'invalid-path'; field = 'target_path'; new_field = 'TargetPath'; classification = 'InvalidPath'; update = { param($document) $document.target_path = @('relative-target.txt') } }
+            [pscustomobject]@{ name = 'drive-relative-path'; field = 'target_path'; new_field = 'TargetPath'; classification = 'InvalidPath'; update = { param($document) $document.target_path = @('C:relative-target.txt') } }
+            [pscustomobject]@{ name = 'root-relative-path'; field = 'target_path'; new_field = 'TargetPath'; classification = 'InvalidPath'; update = { param($document) $document.target_path = @('\root-relative-target.txt') } }
+        )
+        foreach ($case in $cases) {
+            $request = [ordered]@{}
+            foreach ($property in $phase7AdvisorRequest.GetEnumerator()) { $request[$property.Key] = $property.Value }
+            $null = & $case.update $request
+            $requestError = Get-Phase7RequestFailure -Document $request
+            $generatorRun = Invoke-Phase7DispatchOrder -CaseName $case.name
+            $generatorError = $null
+            try { $generatorError = ConvertFrom-Json -InputObject ([string]$generatorRun.stderr) } catch { }
+            $actualClassification = if ($null -eq $generatorError) { '<no-json>' } else { [string]$generatorError.classification }
+            $actualField = if ($null -eq $generatorError) { '<no-json>' } else { [string]$generatorError.field }
+            $expectedPath = 'fully-qualified path'
+            $pathDetailsValid = $case.classification -ne 'InvalidPath' -or ($null -ne $generatorError -and $requestError.detail.expected -ceq $expectedPath -and $generatorError.detail.expected -ceq $expectedPath)
+            Assert-True ($requestError.classification -ceq $case.classification -and $requestError.field -ceq $case.field -and $null -ne $generatorError -and $generatorError.status -ceq 'failed' -and $generatorError.classification -ceq $case.classification -and $generatorError.field -ceq $case.new_field -and $pathDetailsValid) ('Request／New-DispatchOrder 分類不一致：' + $case.name + '; request=' + [string]$requestError.classification + '/' + [string]$requestError.field + '; generator=' + [string]$generatorRun.exit_code + '/' + $actualClassification + '/' + $actualField + '; stderr=' + [string]$generatorRun.stderr)
+        }
+    }
+
+    Invoke-Case 'Phase 7 Request 與 CLI Preflight 對空集合、相對與非完整 target_path 採相同分類' {
+        $emptyRequest = [ordered]@{}
+        foreach ($property in $phase7AdvisorRequest.GetEnumerator()) { $emptyRequest[$property.Key] = $property.Value }
+        $emptyRequest.target_path = @()
+        $emptyRequestError = Get-Phase7RequestFailure -Document $emptyRequest
+        $emptyPreflightRun = Invoke-Phase7Preflight -CaseName 'empty-target' -TargetPath ''
+        $emptyPreflightError = $null
+        try { $emptyPreflightError = ConvertFrom-Json -InputObject ([string]$emptyPreflightRun.stdout) } catch { }
+        Assert-True ($null -ne $emptyPreflightError -and $emptyPreflightError.code -ceq 'DispatchRequestMissingField' -and $emptyPreflightError.classification -ceq $emptyRequestError.classification -and $emptyPreflightError.field -ceq 'target_path' -and $emptyRequestError.classification -ceq 'MissingField') ('空 target_path 分類不一致：request=' + [string]$emptyRequestError.classification + '; preflight=' + [string]$emptyPreflightRun.stdout + [string]$emptyPreflightRun.stderr)
+
+        foreach ($pathCase in @(
+                [pscustomobject]@{ name = 'relative'; value = 'relative-target.txt'; code = 'DispatchRequestInvalidPath'; classification = 'InvalidPath' },
+                [pscustomobject]@{ name = 'drive-relative'; value = 'C:relative-target.txt'; code = 'DispatchRequestInvalidPath'; classification = 'InvalidPath' },
+                [pscustomobject]@{ name = 'root-relative'; value = '\root-relative-target.txt'; code = 'DispatchRequestInvalidPath'; classification = 'InvalidPath' })) {
+            $request = [ordered]@{}
+            foreach ($property in $phase7AdvisorRequest.GetEnumerator()) { $request[$property.Key] = $property.Value }
+            $request.target_path = @([string]$pathCase.value)
+            $requestError = Get-Phase7RequestFailure -Document $request
+            $preflightRun = Invoke-Phase7Preflight -CaseName $pathCase.name -TargetPath ([string]$pathCase.value)
+            $preflightError = $null
+            try { $preflightError = ConvertFrom-Json -InputObject ([string]$preflightRun.stdout) } catch { }
+            Assert-True ($requestError.code -ceq $pathCase.code -and $requestError.classification -ceq $pathCase.classification -and $null -ne $preflightError -and $preflightError.code -ceq $pathCase.code -and $preflightError.classification -ceq $pathCase.classification -and $preflightError.field -ceq 'target_path') ('Request／CLI Preflight target_path 分類不一致：' + $pathCase.name + '; request=' + [string]$requestError.code + '/' + [string]$requestError.classification + '; preflight=' + [string]$preflightRun.stdout + [string]$preflightRun.stderr)
+        }
+
+        $validPreflightRun = Invoke-Phase7Preflight -CaseName 'valid-target' -TargetPath $phase7DispatchTargetPath
+        $validPreflightError = $null
+        try { $validPreflightError = ConvertFrom-Json -InputObject ([string]$validPreflightRun.stdout) } catch { }
+        Assert-True ($null -eq $validPreflightError -or $validPreflightError.code -notin @('DispatchRequestMissingField', 'DispatchRequestInvalidValue', 'DispatchRequestInvalidPath')) ('完整 target_path 未通過 Preflight 路徑驗證：' + [string]$validPreflightRun.stdout + [string]$validPreflightRun.stderr)
+    }
+
+    Invoke-Case 'Phase 7 Request 的 failure receipt 與 advisor 路徑拒絕 drive-relative 和 root-relative 值' {
+        foreach ($pathCase in @(
+                [pscustomobject]@{ field = 'failure_receipt_path'; value = 'C:failure-receipt.json' },
+                [pscustomobject]@{ field = 'failure_receipt_path'; value = '\failure-receipt.json' },
+                [pscustomobject]@{ field = 'evidence_pack_path'; value = 'C:evidence-pack.md' },
+                [pscustomobject]@{ field = 'evidence_pack_path'; value = '\evidence-pack.md' },
+                [pscustomobject]@{ field = 'advisor_consult_report_path'; value = 'C:advisor-report.md' },
+                [pscustomobject]@{ field = 'advisor_consult_report_path'; value = '\advisor-report.md' })) {
+            $request = [ordered]@{}
+            foreach ($property in $phase7AdvisorRequest.GetEnumerator()) { $request[$property.Key] = $property.Value }
+            $request[[string]$pathCase.field] = [string]$pathCase.value
+            $requestError = Get-Phase7RequestFailure -Document $request
+            Assert-True ($requestError.code -ceq 'DispatchRequestInvalidPath' -and $requestError.classification -ceq 'InvalidPath' -and $requestError.field -ceq $pathCase.field -and $requestError.detail.expected -ceq 'fully-qualified path') ('Request 路徑未拒絕非完整路徑：' + [string]$pathCase.field + '=' + [string]$pathCase.value)
+        }
+    }
+
+    Invoke-Case 'Phase 7 New-DispatchOrder 預設 handoff 落點、Request 對照與通用回報欄位' {
+        $dispatchSlug = 'phase7-generated-order-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $generatorRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -DispatchSlug $dispatchSlug
+        $expectedPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $dispatchSlug + '.md')
+        Assert-True ($generatorRun.exit_code -eq 0 -and [string]$generatorRun.stdout -match [regex]::Escape($expectedPath) -and (Test-Path -LiteralPath $expectedPath -PathType Leaf)) ('派遣單預設路徑錯誤：' + [string]$generatorRun.stdout + [string]$generatorRun.stderr)
+        $generatedContent = Get-Content -LiteralPath $expectedPath -Raw -Encoding UTF8
+        Assert-True ($generatedContent.Contains('### Runtime Request 欄位對照') -and $generatedContent.Contains('`evidence_pack_path`') -and $generatedContent.Contains('`advisor_consult_report_path`')) '派遣單缺少 runtime Request 欄位轉換說明。'
+        Assert-True (-not $generatedContent.Contains('驗收腳本完整內容') -and -not $generatedContent.Contains('新腳本的行數')) '第 8 節仍要求固定腳本內容或行數。'
+    }
+
+    Invoke-Case 'Phase 7 New-DispatchOrder 預設輸出固定落在 ReportPath 的最外層來源根目錄' {
+        $sourceRoot = $fixtureBaseRoot
+        $dispatchReportPath = Join-Path $sourceRoot '.local/ai-sessions/worktrees/dispatch-fixture/.local/ai-sessions/report/line-a/closure.md'
+        $sourceReportPath = Join-Path $sourceRoot '.local/ai-sessions/report/line-a/closure.md'
+        $worktreeDispatchSlug = 'phase7-order-worktree-report-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $sourceDispatchSlug = 'phase7-order-source-report-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $worktreeRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $dispatchReportPath -DispatchSlug $worktreeDispatchSlug
+        $worktreeExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $worktreeDispatchSlug + '.md')
+        Assert-True ($worktreeRun.exit_code -eq 0 -and [string]$worktreeRun.stdout -match [regex]::Escape($worktreeExpectedPath) -and (Test-Path -LiteralPath $worktreeExpectedPath -PathType Leaf)) ('dispatch worktree ReportPath 未回到最外層來源根目錄：' + [string]$worktreeRun.stdout + [string]$worktreeRun.stderr)
+
+        $sourceRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $sourceReportPath -DispatchSlug $sourceDispatchSlug
+        $sourceExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $sourceDispatchSlug + '.md')
+        Assert-True ($sourceRun.exit_code -eq 0 -and [string]$sourceRun.stdout -match [regex]::Escape($sourceExpectedPath) -and (Test-Path -LiteralPath $sourceExpectedPath -PathType Leaf)) ('來源 report ReportPath 預設落點錯誤：' + [string]$sourceRun.stdout + [string]$sourceRun.stderr)
+
+        $reportWithoutAiSessions = Join-Path $env:SystemDrive 'phase7-reports-without-ai-sessions/closure.md'
+        $missingRootRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $reportWithoutAiSessions -DispatchSlug 'phase7-order-no-root'
+        $missingRootError = $null
+        try { $missingRootError = ConvertFrom-Json -InputObject ([string]$missingRootRun.stderr) } catch { }
+        Assert-True ($null -ne $missingRootError -and $missingRootError.code -ceq 'DispatchRequestMissingField' -and $missingRootError.classification -ceq 'MissingField' -and $missingRootError.field -ceq 'OutputPath') ('缺少 .local/ai-sessions 時未要求明確 OutputPath：' + [string]$missingRootRun.stderr)
+
+        $explicitOutputPath = Join-Path $phase7Root 'explicit-order.md'
+        $explicitOutputRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $reportWithoutAiSessions -DispatchSlug 'phase7-order-explicit-output' -OutputPath $explicitOutputPath
+        Assert-True ($explicitOutputRun.exit_code -eq 0 -and (Test-Path -LiteralPath $explicitOutputPath -PathType Leaf)) ('明確 OutputPath 未繞過預設根目錄推導：' + [string]$explicitOutputRun.stdout + [string]$explicitOutputRun.stderr)
+    }
+
+    Invoke-Case 'Phase 7 New-DispatchOrder 的 ReportPath 與 OutputPath 必須 fully qualified' {
+        foreach ($pathCase in @(
+                [pscustomobject]@{ field = 'ReportPath'; value = 'C:relative-report.md' },
+                [pscustomobject]@{ field = 'ReportPath'; value = '\root-relative-report.md' },
+                [pscustomobject]@{ field = 'OutputPath'; value = 'C:relative-output.md' },
+                [pscustomobject]@{ field = 'OutputPath'; value = '\root-relative-output.md' })) {
+            $reportPath = $phase7DispatchOrderReportPath
+            $outputPath = ''
+            if ($pathCase.field -ceq 'ReportPath') { $reportPath = [string]$pathCase.value } else { $outputPath = [string]$pathCase.value }
+            $run = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $reportPath -DispatchSlug ('phase7-order-path-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) -OutputPath $outputPath
+            $errorDocument = $null
+            try { $errorDocument = ConvertFrom-Json -InputObject ([string]$run.stderr) } catch { }
+            Assert-True ($null -ne $errorDocument -and $errorDocument.code -ceq 'DispatchRequestInvalidPath' -and $errorDocument.classification -ceq 'InvalidPath' -and $errorDocument.field -ceq $pathCase.field -and $errorDocument.detail.expected -ceq 'fully-qualified path') ('New-DispatchOrder 未拒絕非完整 ' + [string]$pathCase.field + '：' + [string]$run.stderr)
+        }
+
+        $validOutputPath = Join-Path $phase7Root 'fully-qualified-order.md'
+        $validRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $phase7DispatchOrderReportPath -DispatchSlug 'phase7-order-fully-qualified' -OutputPath $validOutputPath
+        Assert-True ($validRun.exit_code -eq 0 -and (Test-Path -LiteralPath $validOutputPath -PathType Leaf)) ('完整 ReportPath／OutputPath 未被接受：' + [string]$validRun.stdout + [string]$validRun.stderr)
+    }
+
+    Invoke-Case 'Phase 7 Dispatch 狀態與 Inspect 原生 exit code 外傳' {
+        $started = New-DispatchResultEnvelope -Status 'started' -LineSlug 'line-a' -DispatchSlug 'phase7-status' -CompletedStages @('preflight', 'prepare', 'start') -FailedStage '' -ErrorCode '' -ErrorMessage '' -ProcessStarted $true
+        $startedJson = ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $started -Depth 30)
+        $failedDispatch = [ordered]@{ status = 'failed' }
+        $lowercaseStartedDispatch = [ordered]@{ status = 'started' }
+        $inspectResult = [ordered]@{ operation = 'Inspect'; status = 'inspected'; processExitCode = 23; process_exit_code = 23 }
+        $lowercaseInspectResult = [ordered]@{ operation = 'inspect'; status = 'inspected'; processExitCode = 23; process_exit_code = 23 }
+        $lowercaseInspectWithoutExitCode = [ordered]@{ operation = 'inspect'; status = 'inspected' }
+        $collectResult = [ordered]@{ operation = 'Collect'; status = 'collected' }
+        $inspectSource = ($functions | Where-Object { $_.Name -eq 'Invoke-Inspect' } | Select-Object -First 1).Extent.Text
+        $directCollectSource = ($functions | Where-Object { $_.Name -eq 'Invoke-DirectWriteCollect' } | Select-Object -First 1).Extent.Text
+        $collectSource = ($functions | Where-Object { $_.Name -eq 'Invoke-Collect' } | Select-Object -First 1).Extent.Text
+        Assert-True ($startedJson.status -ceq 'started' -and $null -eq $startedJson.PSObject.Properties['completed'] -and (Get-DispatchOperationExitCode -Operation 'Dispatch' -Result $started) -eq 0) 'Dispatch started 被標示為已完成或回傳錯誤 exit code。'
+        Assert-True ((Get-DispatchOperationExitCode -Operation 'dispatch' -Result $failedDispatch) -eq 1 -and (Get-DispatchOperationExitCode -Operation 'dispatch' -Result $lowercaseStartedDispatch) -eq 0) '小寫 dispatch 未依 status 回傳 exit code。'
+        Assert-True ($inspectSource -match "status\s*=\s*'inspected'" -and $inspectSource.Contains('process_exit_code') -and (Get-DispatchOperationExitCode -Operation 'Inspect' -Result $inspectResult) -eq 23) 'Inspect 狀態或原生 exit code 未傳至最外層。'
+        Assert-True ((Get-DispatchOperationExitCode -Operation 'inspect' -Result $lowercaseInspectResult) -eq 23 -and (Get-DispatchOperationExitCode -Operation 'inspect' -Result $lowercaseInspectWithoutExitCode) -eq 0) '小寫 inspect 未沿用原生 exit code 或預設回傳值。'
+        Assert-True ($directCollectSource -match "status\s*=\s*'collected'" -and $collectSource -match "status\s*=\s*'collected'" -and $collectResult.status -ceq 'collected') 'Collect 回傳缺少 collected 狀態。'
     }
 
     $phase7CalibrationAfterPath = Join-Path $phase7Root 'calibration-after.json'
@@ -10955,7 +11308,7 @@ if ($Phase -ge 9) {
         preflight_result_path = (Join-Path $phase9Root '.local\ai-sessions\history\preflight.json')
         prepare_result_path = (Join-Path $phase9Root '.local\ai-sessions\history\prepare.json')
         quota_before_path = (Join-Path $phase9Root '.local\ai-sessions\history\quota-before.json')
-        target_path = @('fixture-target.txt')
+        target_path = @(Join-Path $phase9Root 'fixture-target.txt')
         prepare_artifacts = @()
     }
     $script:phase9CaptureOnly = $false
@@ -11113,7 +11466,7 @@ if ($Phase -ge 9) {
             profile = 'default'
             write_mode = 'readonly'
             dispatch_kind = 'workflow'
-            target_path = @('target.txt')
+            target_path = @(Join-Path $sourceRoot 'target.txt')
             prepare_artifacts = @()
             prompt_path = $promptPath
             task_type = 'script-change'
@@ -11338,7 +11691,7 @@ if ($Phase -ge 9) {
             profile = 'default'
             write_mode = 'write'
             dispatch_kind = 'workflow'
-            target_path = @('target.txt')
+            target_path = @($targetPath)
             prepare_artifacts = @($artifactDocument)
             prompt_path = $promptSourcePath
             task_type = 'script-change'
@@ -12321,7 +12674,7 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
                 profile = 'default'
                 write_mode = 'write'
                 dispatch_kind = 'resource'
-                target_path = @($targetRelativePath)
+                target_path = @(Join-Path $sourceRoot $targetRelativePath)
                 prepare_artifacts = @(
                     [ordered]@{
                         source = $lineManifestSourcePath
@@ -13367,7 +13720,7 @@ throw 'RunRecord 事件流為空。'
             result_path = $caseResultPath
             preflight_result_path = $casePreflightPath
             quota_before_path = $caseQuotaPath
-            target_path = @('fixture-target.txt')
+            target_path = @(Join-Path $caseSourceRoot 'fixture-target.txt')
             prepare_artifacts = @()
         }
         if (-not $OmitPrepareResultPath) {
@@ -13646,7 +13999,7 @@ throw 'RunRecord 事件流為空。'
             profile = 'default'
             write_mode = 'write'
             dispatch_kind = 'workflow'
-            target_path = @('target.txt')
+            target_path = @(Join-Path $actualRoot 'target.txt')
             prepare_artifacts = @([ordered]@{ source = $actualArtifactSourcePath; destination = $actualArtifactDestinationPath; sha256 = $actualArtifactSha256; purpose = 'actual Windows sidecar' })
             prompt_path = $actualPromptPath
             task_type = 'script-change'

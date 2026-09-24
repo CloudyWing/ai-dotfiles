@@ -3674,12 +3674,21 @@ function Throw-DispatchRequestFailure {
     )
 
     $detailValue = if ($null -eq $Detail) { [ordered]@{} } else { $Detail }
+    $classification = switch ($Code) {
+        'DispatchRequestMissingField' { 'MissingField' }
+        'DispatchRequestFieldType' { 'FieldType' }
+        'DispatchRequestNullArrayElement' { 'FieldType' }
+        'DispatchRequestInvalidValue' { 'InvalidValue' }
+        'DispatchRequestInvalidPath' { 'InvalidPath' }
+        default { $null }
+    }
     $result = [ordered]@{
         operation      = 'DispatchRequest'
         schema         = 'ai-sessions.dispatch-request.v1'
         code           = $Code
         error_code     = $Code
         reason_code    = $Code
+        classification = $classification
         message        = $Message
         request_path   = if ([string]::IsNullOrWhiteSpace($RequestPathValue)) { $null } else { $RequestPathValue }
         field          = if ([string]::IsNullOrWhiteSpace($Field)) { $null } else { $Field }
@@ -3690,6 +3699,25 @@ function Throw-DispatchRequestFailure {
     $exception = New-Object System.InvalidOperationException($Message)
     $exception.Data['operationResult'] = $result
     throw $exception
+}
+
+function Test-DispatchFullyQualifiedPath {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Path
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+
+    return [System.Text.RegularExpressions.Regex]::IsMatch(
+        $Path,
+        '^(?:[A-Za-z]:[\\/]|[\\/]{2}[^\\/]+[\\/][^\\/]+(?:[\\/]|$))',
+        [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
 }
 
 function Test-DispatchRequestFieldPresent {
@@ -3916,7 +3944,7 @@ function Read-DispatchRequest {
         Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidJson' -Message 'request file 根節點必須是 JSON object。' -RequestPathValue $requestPathValue
     }
 
-    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'failure_receipt_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path')
+    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'failure_receipt_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path', 'evidence_pack_path', 'advisor_consult_report_path')
     $commonRootFields = @('source_root', 'dispatch_root')
     $cleanupOnlyFields = @('run_record_path', 'reviewer_report_path', 'report_path', 'evidence_path')
     $allowedFields = @('schema', 'operation', 'line_slug', 'dispatch_slug', 'profile', 'advisor_request_source', 'target_path', 'add_directory', 'search', 'codex_parent_option', 'literal_values', 'prepare_artifacts', 'result_path', 'preflight_result_path') + $commonRootFields + $dispatchOnlyFields + $cleanupOnlyFields
@@ -3966,7 +3994,10 @@ function Read-DispatchRequest {
     }
     foreach ($identityField in @('line_slug', 'dispatch_slug')) {
         $identityValue = $document.$identityField
-        if ($identityValue -isnot [string] -or [string]::IsNullOrWhiteSpace([string]$identityValue) -or [regex]::IsMatch([string]$identityValue, '^[a-z0-9]+(?:-[a-z0-9]+)*$') -eq $false) {
+        if ($identityValue -isnot [string]) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message ("request 欄位 {0} 必須是字串。" -f $identityField) -RequestPathValue $requestPathValue -Field $identityField -Detail ([ordered]@{ expected_type = 'string'; actual_type = Get-DispatchRequestTypeName -Value $identityValue })
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$identityValue) -or [regex]::IsMatch([string]$identityValue, '^[a-z0-9]+(?:-[a-z0-9]+)*$') -eq $false) {
             Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 {0} 必須是小寫 slug。" -f $identityField) -RequestPathValue $requestPathValue -Field $identityField -Detail ([ordered]@{ received = [string]$identityValue })
         }
     }
@@ -3979,6 +4010,17 @@ function Read-DispatchRequest {
         if ($present) {
             $arrayProperty = $document.PSObject.Properties[$arrayField]
             $arrayValues[$arrayField] = @(Get-DispatchRequestStringArray -Field $arrayField -Value $arrayProperty.Value -RequestPathValue $requestPathValue)
+            if ($arrayField -ceq 'target_path') {
+                if ($arrayValues[$arrayField].Count -eq 0) {
+                    Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message 'request 欄位 target_path 至少需要一項。' -RequestPathValue $requestPathValue -Field 'target_path' -Detail ([ordered]@{ count = 0 })
+                }
+                for ($targetIndex = 0; $targetIndex -lt $arrayValues[$arrayField].Count; $targetIndex++) {
+                    $targetPathValue = [string]$arrayValues[$arrayField][$targetIndex]
+                    if (-not (Test-DispatchFullyQualifiedPath -Path $targetPathValue)) {
+                        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message ("request 欄位 target_path 的第 {0} 項必須是完整絕對路徑。" -f $targetIndex) -RequestPathValue $requestPathValue -Field 'target_path' -Detail ([ordered]@{ index = $targetIndex; expected = 'fully-qualified path'; received = $targetPathValue })
+                    }
+                }
+            }
         }
         else {
             $arrayValues[$arrayField] = $null
@@ -4025,12 +4067,22 @@ function Read-DispatchRequest {
     $cleanupFieldPresence = [ordered]@{}
     $cleanupValues = [ordered]@{}
     if ([string]$document.operation -ceq 'Dispatch') {
-        foreach ($field in @('source_root', 'dispatch_root', 'prompt_path', 'task_type', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path')) {
+        foreach ($field in @('source_root', 'dispatch_root', 'prompt_path', 'task_type', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path', 'evidence_pack_path', 'advisor_consult_report_path')) {
             $dispatchFieldPresence[$field] = Test-DispatchRequestFieldPresent -Document $document -Name $field
             $dispatchValues[$field] = Get-DispatchRequestOptionalString -Document $document -Field $field -RequestPathValue $requestPathValue
         }
-        if (-not [string]::IsNullOrWhiteSpace([string]$dispatchValues.failure_receipt_path) -and -not [System.IO.Path]::IsPathRooted([string]$dispatchValues.failure_receipt_path)) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message 'request 欄位 failure_receipt_path 必須是絕對路徑。' -RequestPathValue $requestPathValue -Field 'failure_receipt_path' -Detail ([ordered]@{ expected = 'absolute path'; received = [string]$dispatchValues.failure_receipt_path })
+        if (-not [string]::IsNullOrWhiteSpace([string]$dispatchValues.failure_receipt_path) -and -not (Test-DispatchFullyQualifiedPath -Path ([string]$dispatchValues.failure_receipt_path))) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message 'request 欄位 failure_receipt_path 必須是完整絕對路徑。' -RequestPathValue $requestPathValue -Field 'failure_receipt_path' -Detail ([ordered]@{ expected = 'fully-qualified path'; received = [string]$dispatchValues.failure_receipt_path })
+        }
+        if ([string]$dispatchValues.task_type -ceq 'advisor-consult') {
+            foreach ($advisorField in @('evidence_pack_path', 'advisor_consult_report_path')) {
+                if (-not [bool]$dispatchFieldPresence[$advisorField] -or [string]::IsNullOrWhiteSpace([string]$dispatchValues[$advisorField])) {
+                    Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message ("advisor-consult Request 缺少必要欄位：{0}" -f $advisorField) -RequestPathValue $requestPathValue -Field $advisorField
+                }
+                if (-not (Test-DispatchFullyQualifiedPath -Path ([string]$dispatchValues[$advisorField]))) {
+                    Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message ("request 欄位 {0} 必須是完整絕對路徑。" -f $advisorField) -RequestPathValue $requestPathValue -Field $advisorField -Detail ([ordered]@{ expected = 'fully-qualified path'; received = [string]$dispatchValues[$advisorField] })
+                }
+            }
         }
         foreach ($fieldAndValues in @(
                 [pscustomobject]@{ name = 'write_mode'; values = @('readonly', 'write') },
@@ -4343,6 +4395,8 @@ function Apply-DispatchRequest {
                 @('SessionMode', 'session_mode'),
                 @('UnitKind', 'unit_kind'),
                 @('FailureReceiptPath', 'failure_receipt_path'),
+                @('EvidencePackPath', 'evidence_pack_path'),
+                @('AdvisorConsultReportPath', 'advisor_consult_report_path'),
                 @('ResultPath', 'result_path'),
                 @('PreflightResultPath', 'preflight_result_path'),
                 @('PrepareResultPath', 'prepare_result_path'),
@@ -10012,7 +10066,16 @@ function Invoke-Preflight {
         throw 'Preflight 必須提供 SourceRoot、DispatchRoot、LineSlug 與 DispatchSlug。'
     }
     if ($null -eq $TargetPath -or $TargetPath.Count -eq 0) {
-        throw 'Preflight 必須提供至少一個 TargetPath。'
+        Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message 'Preflight 的 target_path 至少需要一項。' -Field 'target_path' -Detail ([ordered]@{ count = 0 })
+    }
+    for ($targetIndex = 0; $targetIndex -lt $TargetPath.Count; $targetIndex++) {
+        $targetPathValue = [string]$TargetPath[$targetIndex]
+        if ([string]::IsNullOrWhiteSpace($targetPathValue)) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("Preflight 的 target_path 第 {0} 項不可為空白。" -f $targetIndex) -Field 'target_path' -Detail ([ordered]@{ index = $targetIndex })
+        }
+        if (-not (Test-DispatchFullyQualifiedPath -Path $targetPathValue)) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message ("Preflight 的 target_path 第 {0} 項必須是完整絕對路徑。" -f $targetIndex) -Field 'target_path' -Detail ([ordered]@{ index = $targetIndex; expected = 'fully-qualified path'; received = $targetPathValue })
+        }
     }
 
     $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
@@ -16314,12 +16377,14 @@ function Invoke-Inspect {
 
     $result = [ordered]@{
         operation        = 'Inspect'
+        status           = 'inspected'
         runId            = $inspectRun.Record.run_id
         runRecordPath    = $inspectRun.Path
         lastMessageConsistency = $lastMessageConsistency
         finalMessageSource = 'event-stream'
         eventStreamPath  = $eventPath
         processExitCode  = [int]$ProcessExitCode
+        process_exit_code = [int]$ProcessExitCode
         eventCount       = $events.Count
         lastEventType    = $lastEventType
         threadId         = $threadId
@@ -17135,6 +17200,7 @@ function Invoke-DirectWriteCollect {
 
     $result = [ordered]@{
         operation          = 'Collect'
+        status             = 'collected'
         collectionMode     = 'direct-write'
         sourceRoot         = $SourceRoot
         executionRoot      = $ExecutionRoot
@@ -17364,6 +17430,7 @@ function Invoke-Collect {
 
     $result = [ordered]@{
         operation          = 'Collect'
+        status             = 'collected'
         dispatchRoot       = $dispatchRootPath
         baseSha            = $BaseSha
         dispatchKind       = $DispatchKind
@@ -17923,6 +17990,30 @@ function Write-OperationResult {
     Write-Output $json
 }
 
+function Get-DispatchOperationExitCode {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Operation,
+
+        [AllowNull()]
+        [object]$Result
+    )
+
+    if ($Operation -ieq 'Dispatch' -and [string](Get-DispatchResultPropertyValue -Object $Result -Names @('status')) -ceq 'failed') {
+        return 1
+    }
+
+    if ($Operation -ieq 'Inspect') {
+        $nativeExitCode = Get-DispatchResultPropertyValue -Object $Result -Names @('processExitCode', 'process_exit_code')
+        if ($null -ne $nativeExitCode) {
+            return [int]$nativeExitCode
+        }
+    }
+
+    return 0
+}
+
 try {
     $null = Apply-DispatchRequest
     Assert-DispatchSessionMode
@@ -17944,10 +18035,7 @@ try {
     if ($null -ne $script:RequestContext -and $result -is [System.Collections.IDictionary]) {
         $result.dispatch_request = Get-DispatchRequestEvidence
     }
-    $dispatchExitCode = 0
-    if ($Operation -eq 'Dispatch' -and $null -ne $result -and [string]$result.status -ceq 'failed') {
-        $dispatchExitCode = 1
-    }
+    $dispatchExitCode = Get-DispatchOperationExitCode -Operation $Operation -Result $result
     Write-OperationResult -Result $result
     exit $dispatchExitCode
 }

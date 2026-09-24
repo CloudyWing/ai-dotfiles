@@ -230,7 +230,7 @@ audience: agent
 
 設計文件完成後，立即執行：
 
-1. 將設計文件存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`（線層目錄由 Analyst 登記或 dispatch preflight 建立）。覆寫前備份：若目標檔案已存在，先將既有檔案改名為 `<原檔名>.<yyyyMMdd_HHmmss>`（時間戳為備份當下時間）移入 `<work-root>/.local/ai-sessions/history/<lineSlug>/`（目錄不存在時自動建立），再寫入新內容。備份不需詢問使用者確認。
+1. 將設計文件存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`（線層目錄由 Analyst 登記或 dispatch preflight 建立）。寫入前依 `~/.ai-agents/skills/codex-dispatch/SKILL.md` §執行端共用作業／覆寫前備份 備份既有 `design.md`；無法讀取該節時停止寫入並回報，不略過備份。
 
 2. 回傳檔案路徑與一段不超過 200 字的產出摘要（涵蓋：總 Phase 數、是否含 [REWRITE] Phase、§9 總任務數、已知盲點數、建議建立 ADR 的選型項目）。
    - 不主動呈現全文，由派生你的上游 Agent 負責驗收與對外呈現。

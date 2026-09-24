@@ -115,7 +115,7 @@ developer_instructions = """
 
 交給 `Support Engineer` 的 fix-plan 或改動計畫必須帶入截至本輪為止整合後的完整精簡契約，至少包含 `confirmedGoal`、`effectiveScope`、`roundDelta`、`priorDecisions`、`exclusions`、`searchScope`、`modificationScope`、`persistentConstraints`、`acceptanceCriteria`、`contractVersion`、`replacesVersion`、`userRequirements` 與 `agentInferences`。契約更正不在舊版本上追加片段；產生新 `contractVersion` 時，填入 `replacesVersion` 並重新交付全部有效欄位。
 
-進入類型為 `task` 且有派遣單時，直接轉交 `Support Engineer`，不產出 fix-plan。
+進入類型為 `task` 且有派遣單時，直接轉交 `Support Engineer`，不產出 fix-plan。派遣單由派遣者依 `~/.ai-agents/skills/codex-dispatch/SKILL.md` §派遣單契約 建立，`Support Engineer` 依其規則檔 §分流 B 執行，你不改寫派遣單內容。
 
 ## 對外回述
 
