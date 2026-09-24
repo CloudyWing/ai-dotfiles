@@ -6408,7 +6408,6 @@ if ($Phase -ge 7) {
             'Test-QuotaSnapshotHasObservations',
             'Get-QuotaSnapshotFreshness',
             'Get-QuotaSnapshotServiceRejection',
-            'Get-QuotaSnapshotServiceRejectionEvidence',
             'Get-AdvisorActivationDecision',
             'New-ScopePlan',
             'Get-ScopePlanFingerprint',
@@ -7153,7 +7152,7 @@ function global:Invoke-WebRequest {
     }
     Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7MonitorSetter
 
-    Invoke-Case 'Phase 7 advisor after snapshot uses a private path through repeated monitor and terminal updates' {
+    Invoke-Case 'Phase 7 advisor after snapshot waits for fixed refresh interval and performs terminal update' {
         $callerPath = Join-Path $phase7Root 'advisor-monitor-caller-after.json'
         Copy-Item -LiteralPath $phase7ValidSnapshotPath -Destination $callerPath -Force
         $callerHash = Get-FileSha256 -Path $callerPath
@@ -7163,22 +7162,125 @@ function global:Invoke-WebRequest {
         try {
             $ownedSnapshot = New-AdvisorAfterSnapshot -CallerPath $callerPath -ExecutionRoot $phase7Root -HistoryRoot $phase7MonitorHistoryRoot -CodexHome $phase7CodexHome
             $ownedPath = [string]$ownedSnapshot.Path
+            $writesBeforeMonitor = $script:phase7MonitorWriteCount
             $beforeSnapshot = Read-QuotaSnapshot -Path $phase7ValidSnapshotPath
             $monitorPath = Join-Path $phase7Root 'advisor-monitor-success.jsonl'
             $process = New-Phase7MonitorProcess -DurationMilliseconds 1000
             $monitor = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot ([pscustomobject]@{}) -EventPath $phase7ProbePromptPath -MonitorPath $monitorPath -BeforeSnapshot $beforeSnapshot -AfterSnapshotPath $ownedPath -AfterSnapshotSha256 ([string]$ownedSnapshot.Sha256) -CodexHome $phase7CodexHome -PrimaryBudgetPercent 100 -AbortGraceSeconds 0
             $monitorRecords = @(Get-Content -LiteralPath $monitorPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+            $startedRecord = $monitorRecords | Where-Object { $_.event -eq 'monitor.started' } | Select-Object -First 1
             $updateRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.snapshot-updated' })
             $terminalRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.terminal-snapshot' })
             $pathRecords = @($monitorRecords | Where-Object { $null -ne $_.PSObject.Properties['after_snapshot_path'] })
-            Assert-True ($monitor.state -eq 'completed' -and $monitor.terminalSnapshotTaken -and [int]$monitor.snapshotUpdateCount -ge 2 -and $updateRecords.Count -ge 2 -and $terminalRecords.Count -eq 1) 'advisor after snapshot 未完成多次 monitor 更新與 terminal snapshot。'
-            Assert-True ([string]::Equals($ownedPath, [string]$monitor.afterSnapshotPath, [StringComparison]::OrdinalIgnoreCase) -and $pathRecords.Count -ge 4 -and @($pathRecords | Where-Object { -not [string]::Equals([string]$_.after_snapshot_path, $ownedPath, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) 'monitor evidence 未持續記錄本次執行的 after snapshot 實際路徑。'
+            Assert-True ($startedRecord.snapshot_refresh_interval_seconds -eq 30 -and $monitor.state -eq 'completed' -and $monitor.terminalSnapshotTaken -and [int]$monitor.snapshotUpdateCount -eq 0 -and $updateRecords.Count -eq 0 -and $terminalRecords.Count -eq 1) '30 秒更新間隔內重複呼叫 API，或 terminal snapshot 未執行。'
+            Assert-True (($script:phase7MonitorWriteCount - $writesBeforeMonitor) -eq 1) '行程存活期間重複呼叫 quota API，或缺少唯一 terminal snapshot API 呼叫。'
+            Assert-True ([string]::Equals($ownedPath, [string]$monitor.afterSnapshotPath, [StringComparison]::OrdinalIgnoreCase) -and $pathRecords.Count -eq 3 -and @($pathRecords | Where-Object { -not [string]::Equals([string]$_.after_snapshot_path, $ownedPath, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) 'monitor evidence 未記錄本次 after snapshot 的正確路徑。'
             Assert-True ((Get-FileSha256 -Path $ownedPath) -ceq [string]$monitor.afterSnapshotSha256 -and $terminalRecords[0].after_snapshot_sha256 -ceq [string]$monitor.afterSnapshotSha256) 'terminal snapshot 的 SHA-256 未與實際 after snapshot 相符。'
             Assert-True ((Get-FileSha256 -Path $callerPath) -ceq $callerHash -and -not [string]::Equals($ownedPath, $callerPath, [StringComparison]::OrdinalIgnoreCase)) '呼叫端提供的 QuotaAfterPath 被覆寫或沿用。'
         }
         finally {
             if ($null -ne $process) { Stop-Phase7MonitorProcess -Process $process }
             Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7RefreshSetter
+        }
+    }
+
+    Invoke-Case 'Phase 7 advisor monitor retries one transient snapshot failure' {
+        $callerPath = Join-Path $phase7Root 'advisor-monitor-retry-caller-after.json'
+        Copy-Item -LiteralPath $phase7ValidSnapshotPath -Destination $callerPath -Force
+        $script:phase7MonitorWriteCount = 0
+        $script:phase7MonitorMutationTarget = $null
+        $script:phase7MonitorRetryCount = 0
+        $retrySetter = {
+            param([string]$Path, [string]$CodexHome)
+            $script:phase7MonitorRetryCount++
+            if ($script:phase7MonitorRetryCount -eq 1) {
+                throw 'fixture transient refresh failure'
+            }
+            $snapshotDocument = Get-Content -LiteralPath $script:phase7MonitorTemplatePath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $snapshotDocument.captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            Write-Utf8NoBom -Path $Path -Content (($snapshotDocument | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+            return $Path
+        }
+        $process = $null
+        try {
+            $ownedSnapshot = New-AdvisorAfterSnapshot -CallerPath $callerPath -ExecutionRoot $phase7Root -HistoryRoot $phase7MonitorHistoryRoot -CodexHome $phase7CodexHome
+            Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $retrySetter
+            $monitorPath = Join-Path $phase7Root 'advisor-monitor-retry.jsonl'
+            $process = New-Phase7MonitorProcess -DurationMilliseconds 1400
+            $monitor = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot ([pscustomobject]@{}) -EventPath $phase7ProbePromptPath -MonitorPath $monitorPath -BeforeSnapshot (Read-QuotaSnapshot -Path $phase7ValidSnapshotPath) -AfterSnapshotPath ([string]$ownedSnapshot.Path) -AfterSnapshotSha256 ([string]$ownedSnapshot.Sha256) -CodexHome $phase7CodexHome -PrimaryBudgetPercent 100 -AbortGraceSeconds 0 -SnapshotRefreshIntervalSeconds 0.2
+            $monitorRecords = @(Get-Content -LiteralPath $monitorPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+            $failureRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.snapshot-failed' })
+            $failureIndex = -1
+            $recoveryIndex = -1
+            for ($index = 0; $index -lt $monitorRecords.Count; $index++) {
+                if ($monitorRecords[$index].event -eq 'monitor.snapshot-failed' -and $failureIndex -lt 0) {
+                    $failureIndex = $index
+                }
+                elseif ($monitorRecords[$index].event -eq 'monitor.snapshot-updated' -and $failureIndex -ge 0 -and $recoveryIndex -lt 0) {
+                    $recoveryIndex = $index
+                }
+            }
+            $terminalRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.terminal-snapshot' })
+            Assert-True ($failureRecords.Count -eq 1 -and $failureRecords[0].state -eq 'retrying' -and $failureRecords[0].consecutive_failures -eq 1 -and $failureRecords[0].retry_scheduled -and $recoveryIndex -gt $failureIndex) '一次刷新失敗後未於下個間隔恢復並記錄更新。'
+            Assert-True ($monitor.state -eq 'completed' -and $monitor.terminalSnapshotTaken -and [int]$monitor.snapshotUpdateCount -ge 1 -and $script:phase7MonitorRetryCount -ge 3 -and $terminalRecords.Count -eq 1) '恢復後 monitor 未完成週期更新與 terminal snapshot。'
+        }
+        finally {
+            if ($null -ne $process) { Stop-Phase7MonitorProcess -Process $process }
+            Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7MonitorSetter
+        }
+    }
+
+    Invoke-Case 'Phase 7 advisor monitor stops after three consecutive snapshot failures' {
+        $callerPath = Join-Path $phase7Root 'advisor-monitor-failures-caller-after.json'
+        Copy-Item -LiteralPath $phase7ValidSnapshotPath -Destination $callerPath -Force
+        $script:phase7MonitorWriteCount = 0
+        $script:phase7MonitorMutationTarget = $null
+        $script:phase7MonitorFailureCount = 0
+        $script:phase7MonitorStopCalls = 0
+        $script:phase7MonitorStopAtFailureCount = 0
+        $script:phase7MonitorStopProcess = $null
+        $failureSetter = {
+            param([string]$Path, [string]$CodexHome)
+            $script:phase7MonitorFailureCount++
+            throw 'fixture persistent refresh failure'
+        }
+        $originalStopFunction = Get-Item -LiteralPath Function:\Stop-VerifiedProcessTree
+        $verifiedStopper = {
+            param([psobject]$Snapshot)
+            $script:phase7MonitorStopCalls++
+            $script:phase7MonitorStopAtFailureCount = $script:phase7MonitorFailureCount
+            if ($Snapshot.IdentityVerified -ne $true) {
+                throw 'fixture refused process without verified identity'
+            }
+            if (-not $script:phase7MonitorStopProcess.HasExited) {
+                $script:phase7MonitorStopProcess.Kill()
+                $script:phase7MonitorStopProcess.WaitForExit()
+            }
+            return [pscustomobject]@{ CleanupStatus = 'verified-tree-terminated'; TerminationExecuted = $true; ErrorMessage = $null }
+        }
+        $process = $null
+        try {
+            $ownedSnapshot = New-AdvisorAfterSnapshot -CallerPath $callerPath -ExecutionRoot $phase7Root -HistoryRoot $phase7MonitorHistoryRoot -CodexHome $phase7CodexHome
+            Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $failureSetter
+            Set-Item -LiteralPath Function:\Stop-VerifiedProcessTree -Value $verifiedStopper
+            $monitorPath = Join-Path $phase7Root 'advisor-monitor-three-failures.jsonl'
+            $process = New-Phase7MonitorProcess -DurationMilliseconds 10000
+            $script:phase7MonitorStopProcess = $process
+            $startedSnapshot = [pscustomobject]@{ IdentityVerified = $true }
+            $monitor = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $phase7ProbePromptPath -MonitorPath $monitorPath -BeforeSnapshot (Read-QuotaSnapshot -Path $phase7ValidSnapshotPath) -AfterSnapshotPath ([string]$ownedSnapshot.Path) -AfterSnapshotSha256 ([string]$ownedSnapshot.Sha256) -CodexHome $phase7CodexHome -PrimaryBudgetPercent 100 -AbortGraceSeconds 0 -SnapshotRefreshIntervalSeconds 0.1
+            $monitorRecords = @(Get-Content -LiteralPath $monitorPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
+            $failureRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.snapshot-failed' })
+            $completedRecords = @($monitorRecords | Where-Object { $_.event -eq 'budget-monitor.completed' })
+            $terminalRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.terminal-snapshot' })
+            Assert-True ($monitor.state -eq 'SnapshotFailed' -and $monitor.stopRequested -and -not $monitor.terminalSnapshotTaken -and [int]$monitor.snapshotUpdateCount -eq 0) '第三次連續刷新失敗未回報 SnapshotFailed 並停止。'
+            Assert-True ($failureRecords.Count -eq 3 -and $failureRecords[0].state -eq 'retrying' -and $failureRecords[0].retry_scheduled -and $failureRecords[1].state -eq 'retrying' -and $failureRecords[1].retry_scheduled -and $failureRecords[2].state -eq 'SnapshotFailed' -and -not $failureRecords[2].retry_scheduled -and $failureRecords[2].consecutive_failures -eq 3) 'monitor 未記錄恰好三次失敗與兩次間隔重試。'
+            Assert-True ($script:phase7MonitorStopCalls -eq 1 -and $script:phase7MonitorStopAtFailureCount -eq 3 -and $process.HasExited -and $terminalRecords.Count -eq 0 -and $completedRecords.Count -eq 1 -and $completedRecords[0].state -eq 'SnapshotFailed') '三次失敗前後的 identity-verified stop 或 terminal snapshot 行為不符。'
+        }
+        finally {
+            if ($null -ne $process) { Stop-Phase7MonitorProcess -Process $process }
+            $script:phase7MonitorStopProcess = $null
+            Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $phase7MonitorSetter
+            Set-Item -LiteralPath Function:\Stop-VerifiedProcessTree -Value $originalStopFunction.ScriptBlock
         }
     }
 
@@ -7194,13 +7296,13 @@ function global:Invoke-WebRequest {
             $ownedSnapshot = New-AdvisorAfterSnapshot -CallerPath $callerPath -ExecutionRoot $phase7Root -HistoryRoot $phase7MonitorHistoryRoot -CodexHome $phase7CodexHome
             $ownedPath = [string]$ownedSnapshot.Path
             $externalContent = 'external mutation between after snapshot updates'
-            $script:phase7MonitorMutationTarget = $ownedPath
+            Write-Utf8NoBom -Path $ownedPath -Content $externalContent
             $monitorPath = Join-Path $phase7Root 'advisor-monitor-external-mutation.jsonl'
-            $process = New-Phase7MonitorProcess -DurationMilliseconds 1500
+            $process = New-Phase7MonitorProcess -DurationMilliseconds 900
             $monitor = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot ([pscustomobject]@{}) -EventPath $phase7ProbePromptPath -MonitorPath $monitorPath -BeforeSnapshot (Read-QuotaSnapshot -Path $phase7ValidSnapshotPath) -AfterSnapshotPath $ownedPath -AfterSnapshotSha256 ([string]$ownedSnapshot.Sha256) -CodexHome $phase7CodexHome -PrimaryBudgetPercent 100 -AbortGraceSeconds 0
             $monitorRecords = @(Get-Content -LiteralPath $monitorPath -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json })
             $failureRecords = @($monitorRecords | Where-Object { $_.event -eq 'monitor.snapshot-failed' })
-            Assert-True ($monitor.state -eq 'SnapshotFailed' -and [int]$monitor.snapshotUpdateCount -eq 1 -and $failureRecords.Count -eq 1 -and $failureRecords[0].error -match 'QuotaAfterSnapshotChanged') '外部修改後 monitor 未停止並回報 SHA-256 衝突。'
+            Assert-True ($monitor.state -eq 'SnapshotFailed' -and [int]$monitor.snapshotUpdateCount -eq 0 -and $failureRecords.Count -eq 1 -and $failureRecords[0].terminal_snapshot -and $failureRecords[0].error -match 'QuotaAfterSnapshotChanged') 'terminal snapshot 未維持外部修改失敗停止行為。'
             Assert-True ((Get-Content -LiteralPath $ownedPath -Raw -Encoding UTF8) -ceq $externalContent -and (Get-FileSha256 -Path $ownedPath) -cne [string]$ownedSnapshot.Sha256) 'monitor 覆寫了外部更新的 after snapshot。'
             Assert-True ((Get-FileSha256 -Path $callerPath) -ceq $callerHash) '外部修改情境改寫了呼叫端提供的 QuotaAfterPath。'
             $temporaryPattern = '.' + [IO.Path]::GetFileName($ownedPath) + '.*.tmp'
@@ -8400,14 +8502,11 @@ if ($Phase -ge 8) {
         Assert-True ((Test-Path -LiteralPath $record.event_stream_path -PathType Leaf) -and (Test-Path -LiteralPath $recordPath -PathType Leaf) -and (Test-Path -LiteralPath $beforePath -PathType Leaf) -and (Test-Path -LiteralPath $afterPath -PathType Leaf)) 'F-015 fixture 未保存事件流、RunRecord 或 quota snapshot。'
     }
 
-    Invoke-Case 'Phase 8 F-017 QuotaProbe advisor requested profile 強制 effective default' {
-        $caseRoot = Join-Path $phase8Root 'f017-quotaprobe-effective-default'
-        $codexHome = Join-Path $caseRoot 'codex-home'
-        $promptPath = Join-Path $caseRoot 'prompt.md'
-        $snapshotPath = Join-Path $caseRoot 'quota-before.json'
-        New-Item -ItemType Directory -Path (Join-Path $codexHome 'sessions') -Force | Out-Null
-        Write-Utf8NoBom -Path $promptPath -Content 'QuotaProbe fixture prompt'
-        $null = New-Phase8QuotaSnapshot -Path $snapshotPath -PrimaryRemainingPercent 60
+    Invoke-Case 'Phase 8 F-017 PostResetNoSnapshot 與 SnapshotExpired 即時刷新後不啟動 Codex' {
+        $cases = @(
+            [pscustomobject]@{ state = 'PostResetNoSnapshot'; template = $phase7ValidSnapshotPath },
+            [pscustomobject]@{ state = 'SnapshotExpired'; template = $phase7StaleSnapshotPath }
+        )
         $previousValues = [ordered]@{
             SourceRoot = $SourceRoot
             DispatchRoot = $DispatchRoot
@@ -8427,60 +8526,68 @@ if ($Phase -ge 8) {
             AdvisorRequestSource = $AdvisorRequestSource
             QuotaBeforePath = $QuotaBeforePath
         }
+        $originalQuotaSetter = Get-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex
+        $refreshSetter = {
+            param([string]$Path, [string]$CodexHome)
+            $script:quotaProbeRefreshCalls++
+            $null = New-Phase8QuotaSnapshot -Path $Path -PrimaryRemainingPercent 58
+            return $Path
+        }
+        Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $refreshSetter
         $script:quotaProbeCaptureArguments = $true
         $script:quotaProbeCapturedArguments = @()
-        $script:quotaProbeCodexHome = $codexHome
+        $script:quotaProbeCodexHome = $null
         $script:quotaProbeStartCalls = 0
+        $script:quotaProbeRefreshCalls = 0
         try {
-            $SourceRoot = $caseRoot
-            $DispatchRoot = $caseRoot
-            $ExecutionRoot = $caseRoot
-            $LineSlug = 'line-a'
-            $DispatchSlug = 'phase8-f017-quotaprobe'
-            $Profile = 'advisor'
-            $InitialQuotaState = 'PostResetNoSnapshot'
-            $TriggerWindow = 'primary'
-            $ProbeAttempt = 1
-            $CodexHome = $codexHome
-            $CodexPath = $null
-            $PromptPath = $promptPath
-            $AddDirectory = $null
-            $Search = $false
-            $CodexParentOption = $null
-            $AdvisorRequestSource = $null
-            $QuotaBeforePath = $snapshotPath
-            $probeResult = Invoke-QuotaProbe
+            foreach ($case in $cases) {
+                $caseRoot = Join-Path $phase8Root ('f017-quotaprobe-' + $case.state)
+                $codexHome = Join-Path $caseRoot 'codex-home'
+                $promptPath = Join-Path $caseRoot 'prompt.md'
+                $snapshotPath = Join-Path $caseRoot 'quota-before.json'
+                New-Item -ItemType Directory -Path (Join-Path $codexHome 'sessions') -Force | Out-Null
+                Write-Utf8NoBom -Path $promptPath -Content 'QuotaProbe fixture prompt'
+                Copy-Item -LiteralPath $case.template -Destination $snapshotPath -Force
+                $inputHash = Get-FileSha256 -Path $snapshotPath
+                $script:quotaProbeCodexHome = $codexHome
+                $script:quotaProbeCapturedArguments = @()
+                $refreshCallsBefore = $script:quotaProbeRefreshCalls
+                $startCallsBefore = $script:quotaProbeStartCalls
+                $script:SourceRoot = $caseRoot
+                $script:DispatchRoot = $caseRoot
+                $script:ExecutionRoot = $caseRoot
+                $script:LineSlug = 'line-a'
+                $script:DispatchSlug = 'phase8-f017-' + $case.state.ToLowerInvariant()
+                $script:Profile = 'advisor'
+                $script:InitialQuotaState = $case.state
+                $script:TriggerWindow = 'primary'
+                $script:ProbeAttempt = 1
+                $script:CodexHome = $codexHome
+                $script:CodexPath = $null
+                $script:PromptPath = $promptPath
+                $script:AddDirectory = $null
+                $script:Search = $false
+                $script:CodexParentOption = $null
+                $script:AdvisorRequestSource = $null
+                $script:QuotaBeforePath = $snapshotPath
+                $probeResult = Invoke-QuotaProbe
+                $recovery = Get-Content -LiteralPath $probeResult.recoveryRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $refreshedSnapshot = Read-QuotaSnapshot -Path $probeResult.quotaSnapshotPath
+                Assert-True ($probeResult.success -and -not $probeResult.processStarted -and -not $probeResult.retryRequired -and $probeResult.finalStatus -eq 'quota-source-refreshed-no-probe') ($case.state + ' 即時刷新結果仍啟動 probe 或要求 retry。')
+                Assert-True ($script:quotaProbeRefreshCalls -eq ($refreshCallsBefore + 1) -and $script:quotaProbeStartCalls -eq $startCallsBefore -and @($script:quotaProbeCapturedArguments).Count -eq 0) ($case.state + ' 未恰好刷新一次，或呼叫了 Codex launcher／Process.Start。')
+                Assert-True ($recovery.initialQuotaState -eq $case.state -and $recovery.finalStatus -eq 'quota-source-refreshed-no-probe' -and $recovery.probeEvidence.processStarted -eq $false -and $recovery.retryResult.attempted -eq $false) ($case.state + ' recovery record 未記錄成功刷新且未啟動 probe。')
+                Assert-True ($refreshedSnapshot.state -eq 'Valid' -and (Get-QuotaSnapshotFreshness -Snapshot $refreshedSnapshot) -eq 'fresh' -and (Test-QuotaSnapshotHasObservations -Snapshot $refreshedSnapshot)) ($case.state + ' 未取得有效且新鮮的 quota snapshot。')
+                Assert-True ((Get-FileSha256 -Path $snapshotPath) -ceq $inputHash -and (Get-FileSha256 -Path $probeResult.quotaSnapshotPath) -ceq $probeResult.quotaSnapshotSha256) ($case.state + ' 改寫了 quota-before 或 source-refresh SHA-256 不一致。')
+            }
         }
         finally {
             $script:quotaProbeCaptureArguments = $false
             $script:quotaProbeCodexHome = $null
-            $SourceRoot = $previousValues.SourceRoot
-            $DispatchRoot = $previousValues.DispatchRoot
-            $ExecutionRoot = $previousValues.ExecutionRoot
-            $LineSlug = $previousValues.LineSlug
-            $DispatchSlug = $previousValues.DispatchSlug
-            $Profile = $previousValues.Profile
-            $InitialQuotaState = $previousValues.InitialQuotaState
-            $TriggerWindow = $previousValues.TriggerWindow
-            $ProbeAttempt = $previousValues.ProbeAttempt
-            $CodexHome = $previousValues.CodexHome
-            $CodexPath = $previousValues.CodexPath
-            $PromptPath = $previousValues.PromptPath
-            $AddDirectory = $previousValues.AddDirectory
-            $Search = $previousValues.Search
-            $CodexParentOption = $previousValues.CodexParentOption
-            $AdvisorRequestSource = $previousValues.AdvisorRequestSource
-            $QuotaBeforePath = $previousValues.QuotaBeforePath
+            Set-Item -LiteralPath Function:\Set-QuotaSnapshotFromCodex -Value $originalQuotaSetter.ScriptBlock
+            foreach ($entry in $previousValues.GetEnumerator()) {
+                Set-Variable -Scope Script -Name ([string]$entry.Key) -Value $entry.Value
+            }
         }
-        $recovery = Get-Content -LiteralPath $probeResult.recoveryRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $probeArguments = @($probeResult.codexArguments | ForEach-Object { [string]$_ })
-        $probeProfileIndex = [Array]::IndexOf([string[]]$probeArguments, '--profile')
-        $probeProfileArgumentValid = $probeProfileIndex -ge 0 -and $probeProfileIndex + 1 -lt $probeArguments.Count -and $probeArguments[$probeProfileIndex + 1] -ceq 'default'
-        Assert-True ($probeResult.success -and $probeResult.processStarted -and $script:quotaProbeStartCalls -eq 1 -and $probeProfileArgumentValid -and $probeResult.requested_profile -eq 'advisor' -and $probeResult.effective_profile -eq 'default') ('F-017 Start result 或 codex arguments 不符：' + ($probeResult | ConvertTo-Json -Depth 16 -Compress))
-        $recoveryArguments = @($recovery.probeEvidence.codexArguments | ForEach-Object { [string]$_ })
-        $recoveryProfileIndex = [Array]::IndexOf([string[]]$recoveryArguments, '--profile')
-        $recoveryProfileArgumentValid = $recoveryProfileIndex -ge 0 -and $recoveryProfileIndex + 1 -lt $recoveryArguments.Count -and $recoveryArguments[$recoveryProfileIndex + 1] -ceq 'default'
-        Assert-True ($recovery.requested_profile -eq 'advisor' -and $recovery.effective_profile -eq 'default' -and $recoveryProfileArgumentValid -and (Test-Path -LiteralPath $script:quotaProbeEventPath -PathType Leaf) -and (Test-Path -LiteralPath $snapshotPath -PathType Leaf)) 'F-017 recovery record、event stream 或 quota snapshot 未保存 requested/effective profile。'
     }
 
     Invoke-Case 'Phase 8 A4 payload.type 結構化錯誤事件仍可判定' {

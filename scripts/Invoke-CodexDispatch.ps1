@@ -236,21 +236,6 @@ function Get-DispatchScriptVariableValue {
     return $variable.Value
 }
 
-function Get-DispatchDynamicVariableValue {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Name
-    )
-
-    for ($scope = 1; $scope -le 8; $scope++) {
-        $variable = Get-Variable -Name $Name -Scope $scope -ErrorAction SilentlyContinue
-        if ($null -ne $variable) {
-            return $variable.Value
-        }
-    }
-
-    return $null
-}
 
 function Throw-DispatchOutputFailure {
     param(
@@ -621,24 +606,6 @@ function Write-Utf8NoBom {
     [System.IO.File]::WriteAllText((ConvertTo-FileSystemApiPath -Path $Path), $Content, $encoding)
 }
 
-function Append-Utf8NoBom {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path,
-
-        [Parameter(Mandatory)]
-        [AllowEmptyString()]
-        [string]$Content
-    )
-
-    $parent = Split-Path -Parent $Path
-    if (-not [string]::IsNullOrWhiteSpace($parent)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
-
-    $encoding = New-Object -TypeName System.Text.UTF8Encoding -ArgumentList @($false)
-    [System.IO.File]::AppendAllText($Path, $Content + [Environment]::NewLine, $encoding)
-}
 
 function ConvertTo-InvariantDouble {
     param(
@@ -1091,14 +1058,6 @@ function Get-QuotaSnapshotServiceRejection {
     return Get-DispatchJsonProperty -Object $Snapshot -Name 'serviceRejection'
 }
 
-function Get-QuotaSnapshotServiceRejectionEvidence {
-    param(
-        [AllowNull()]
-        [object]$Snapshot
-    )
-
-    return Get-DispatchJsonProperty -Object $Snapshot -Name 'serviceRejectionEvidence'
-}
 
 function Test-QuotaSnapshotFresh {
     param(
@@ -2719,45 +2678,6 @@ function Test-StringArrayEqual {
     return $true
 }
 
-function Test-ScopePlanContinuationFields {
-    param(
-        [Parameter(Mandatory)]
-        [psobject]$OriginalScopePlan,
-
-        [Parameter(Mandatory)]
-        [psobject]$ContinuationScopePlan
-    )
-
-    foreach ($propertyName in @('selected_units', 'deferred_units')) {
-        if (-not (Test-StringArrayEqual -Left $OriginalScopePlan.$propertyName -Right $ContinuationScopePlan.$propertyName)) {
-            return $false
-        }
-    }
-    if (-not [string]::Equals([string]$OriginalScopePlan.decision, [string]$ContinuationScopePlan.decision, [System.StringComparison]::Ordinal)) {
-        return $false
-    }
-    if (-not [string]::Equals([string]$OriginalScopePlan.estimate_source, [string]$ContinuationScopePlan.estimate_source, [System.StringComparison]::Ordinal)) {
-        return $false
-    }
-    $originalStopAfter = Get-OptionalObjectProperty -Object $OriginalScopePlan -Name 'stop_after_selected_units'
-    $continuationStopAfter = Get-OptionalObjectProperty -Object $ContinuationScopePlan -Name 'stop_after_selected_units'
-    if ($null -ne $originalStopAfter -or $null -ne $continuationStopAfter) {
-        if ($null -eq $originalStopAfter -or $null -eq $continuationStopAfter -or [bool]$originalStopAfter -ne [bool]$continuationStopAfter) {
-            return $false
-        }
-    }
-    $originalEstimate = Get-OptionalObjectProperty -Object $OriginalScopePlan -Name 'estimate_percent'
-    $continuationEstimate = Get-OptionalObjectProperty -Object $ContinuationScopePlan -Name 'estimate_percent'
-    if ($null -eq $originalEstimate -or $null -eq $continuationEstimate) {
-        return $null -eq $originalEstimate -and $null -eq $continuationEstimate
-    }
-    try {
-        return [math]::Abs([double]$originalEstimate - [double]$continuationEstimate) -le 0.000001
-    }
-    catch {
-        return $false
-    }
-}
 
 function Get-ScopePlanFingerprint {
     param(
@@ -8425,40 +8345,6 @@ function Get-WorktreeAclGate {
     }
 }
 
-function Get-DispatchFileEvidenceSafe {
-    [CmdletBinding()]
-    param(
-        [AllowEmptyString()]
-        [string]$Path,
-
-        [Parameter(Mandatory)]
-        [string]$Name
-    )
-
-    $resolvedPath = $null
-    if (-not [string]::IsNullOrWhiteSpace($Path)) {
-        $resolvedPath = Resolve-AbsolutePath -Path $Path
-    }
-    if ($null -eq $resolvedPath -or -not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $resolvedPath))) {
-        return [ordered]@{
-            name = $Name
-            path = $resolvedPath
-            exists = $false
-            length = 0
-            sha256 = $null
-            reason = 'not-produced'
-        }
-    }
-    $fileLength = [int64]([System.IO.File]::ReadAllBytes((ConvertTo-FileSystemApiPath -Path $resolvedPath))).Length
-    return [ordered]@{
-        name = $Name
-        path = $resolvedPath
-        exists = $true
-        length = [int64]$fileLength
-        sha256 = Get-FileSha256 -Path $resolvedPath
-        reason = $null
-    }
-}
 
 function Get-DispatchEventEvidence {
     [CmdletBinding()]
@@ -10975,43 +10861,6 @@ function Get-ProcessExitCodeIfExited {
     return $null
 }
 
-function Stop-StartedProcessHandle {
-    param(
-        [Parameter(Mandatory)]
-        [System.Diagnostics.Process]$Process,
-
-        [Parameter(Mandatory = $false)]
-        [AllowNull()]
-        [psobject]$StartedSnapshot
-    )
-
-    $exitCode = Get-ProcessExitCodeIfExited -Process $Process
-    if ($null -ne $exitCode) {
-        return
-    }
-
-    if (Test-IsWindowsPlatform) {
-        if ($null -eq $StartedSnapshot -or $StartedSnapshot.IdentityVerified -ne $true) {
-            throw 'PowerShell 5.1 fallback 缺少已驗證的進程身分，拒絕終止並明示未完成收尾。'
-        }
-        $null = Stop-VerifiedProcessTree -Snapshot $StartedSnapshot
-        return
-    }
-
-    $killMethods = @($Process.GetType().GetMethods() | Where-Object {
-            $_.Name -eq 'Kill' -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType -eq [bool]
-        })
-    if ($killMethods.Count -gt 0) {
-        $Process.Kill($true)
-        $Process.WaitForExit()
-        return
-    }
-
-    if ($null -eq $StartedSnapshot -or $StartedSnapshot.IdentityVerified -ne $true) {
-        throw '進程終止 fallback 缺少已驗證的進程身分，拒絕終止並明示未完成收尾。'
-    }
-    $null = Stop-VerifiedProcessTree -Snapshot $StartedSnapshot
-}
 
 function Ensure-StartEvidenceFiles {
     param(
@@ -11356,7 +11205,10 @@ function Invoke-AdvisorBudgetMonitor {
         [double]$PrimaryBudgetPercent,
 
         [Parameter(Mandatory)]
-        [int]$AbortGraceSeconds
+        [int]$AbortGraceSeconds,
+
+        [ValidateRange(0.1, 3600)]
+        [double]$SnapshotRefreshIntervalSeconds = 30
     )
 
     $monitor = [ordered]@{
@@ -11377,89 +11229,190 @@ function Invoke-AdvisorBudgetMonitor {
             primary_budget_percent = $PrimaryBudgetPercent
             after_snapshot_path = $AfterSnapshotPath
             after_snapshot_sha256 = $AfterSnapshotSha256
+            snapshot_refresh_interval_seconds = $SnapshotRefreshIntervalSeconds
         })
 
+    $nextSnapshotRefreshAtUtc = [DateTime]::UtcNow.AddSeconds($SnapshotRefreshIntervalSeconds)
+    $consecutiveSnapshotFailures = 0
     while (-not $Process.HasExited) {
-        try {
-            $afterSnapshotUpdate = Update-AdvisorAfterSnapshotFromCodex -Path $AfterSnapshotPath -ExpectedSha256 ([string]$monitor.afterSnapshotSha256) -CodexHome $CodexHome
-            $monitor.afterSnapshotSha256 = [string]$afterSnapshotUpdate.Sha256
-            $monitor.snapshotUpdateCount = [int]$monitor.snapshotUpdateCount + 1
-            $afterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
-            $delta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $afterSnapshot
-            $monitor.observedPrimaryDeltaPercent = $delta
-            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                    event = 'monitor.snapshot-updated'
-                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                    after_snapshot_path = $AfterSnapshotPath
-                    after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                    snapshot_update_count = $monitor.snapshotUpdateCount
-                    observed_primary_delta_percent = $delta
-                })
-            if (Test-QuotaResetWindowChanged -BeforeSnapshot $BeforeSnapshot -AfterSnapshot $afterSnapshot) {
-                $monitor.state = 'CrossReset'
-                $monitor.abortReason = 'primary-reset-window-changed'
+        if ([DateTime]::UtcNow -ge $nextSnapshotRefreshAtUtc) {
+            $snapshotRefreshSucceeded = $false
+            try {
+                $afterSnapshotUpdate = Update-AdvisorAfterSnapshotFromCodex -Path $AfterSnapshotPath -ExpectedSha256 ([string]$monitor.afterSnapshotSha256) -CodexHome $CodexHome
+                $monitor.afterSnapshotSha256 = [string]$afterSnapshotUpdate.Sha256
+                $monitor.snapshotUpdateCount = [int]$monitor.snapshotUpdateCount + 1
+                $afterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
+                $delta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $afterSnapshot
+                $snapshotRefreshSucceeded = $true
+                $consecutiveSnapshotFailures = 0
+                $nextSnapshotRefreshAtUtc = [DateTime]::UtcNow.AddSeconds($SnapshotRefreshIntervalSeconds)
+                $monitor.observedPrimaryDeltaPercent = $delta
                 Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                        event = 'monitor.cross-reset'
+                        event = 'monitor.snapshot-updated'
                         recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                        state = $monitor.state
-                        before_primary_resets_at = $BeforeSnapshot.primary.resets_at
-                        after_primary_resets_at = $afterSnapshot.primary.resets_at
-                        observed_primary_delta_percent = $delta
                         after_snapshot_path = $AfterSnapshotPath
                         after_snapshot_sha256 = $monitor.afterSnapshotSha256
+                        snapshot_update_count = $monitor.snapshotUpdateCount
+                        observed_primary_delta_percent = $delta
                     })
-                return $monitor
-            }
-            if ($delta -gt $PrimaryBudgetPercent -or [double]$afterSnapshot.primary.remaining_percent -lt ([double]$BeforeSnapshot.primary.remaining_percent - $PrimaryBudgetPercent)) {
-                    $monitor.stopRequested = $true
-                    $monitor.abortReason = 'primary-budget-percent-exceeded'
-                    $monitor.state = 'stop-requested'
+                if (Test-QuotaResetWindowChanged -BeforeSnapshot $BeforeSnapshot -AfterSnapshot $afterSnapshot) {
+                    $monitor.state = 'CrossReset'
+                    $monitor.abortReason = 'primary-reset-window-changed'
                     Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                            event = 'stop-request'
+                            event = 'monitor.cross-reset'
                             recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                            state = $monitor.state
+                            before_primary_resets_at = $BeforeSnapshot.primary.resets_at
+                            after_primary_resets_at = $afterSnapshot.primary.resets_at
                             observed_primary_delta_percent = $delta
-                            primary_budget_percent = $PrimaryBudgetPercent
                             after_snapshot_path = $AfterSnapshotPath
                             after_snapshot_sha256 = $monitor.afterSnapshotSha256
                         })
-                    $safePointMessage = ''
-                    $safePointDeadline = [DateTime]::UtcNow.AddSeconds($AbortGraceSeconds)
-                    do {
-                        $safePointMessage = Get-LatestSafePointMessage -EventPath $EventPath -TaskType 'advisor-consult'
-                        if (-not [string]::IsNullOrWhiteSpace($safePointMessage)) {
-                            $monitor.safePointFound = $true
-                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                    event = 'safe-point-found'
-                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                    message_length = $safePointMessage.Length
-                                })
-                            break
-                        }
-                        if ($Process.HasExited) {
-                            break
-                        }
-                        Start-Sleep -Milliseconds 100
-                    } while ([DateTime]::UtcNow -lt $safePointDeadline)
-                    if (-not $monitor.safePointFound) {
-                        $monitor.safePointMissing = $true
+                    return $monitor
+                }
+                if ($delta -gt $PrimaryBudgetPercent -or [double]$afterSnapshot.primary.remaining_percent -lt ([double]$BeforeSnapshot.primary.remaining_percent - $PrimaryBudgetPercent)) {
+                        $monitor.stopRequested = $true
+                        $monitor.abortReason = 'primary-budget-percent-exceeded'
+                        $monitor.state = 'stop-requested'
                         Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                event = 'safe-point-missing'
+                                event = 'stop-request'
                                 recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                abort_grace_seconds = $AbortGraceSeconds
+                                observed_primary_delta_percent = $delta
+                                primary_budget_percent = $PrimaryBudgetPercent
+                                after_snapshot_path = $AfterSnapshotPath
+                                after_snapshot_sha256 = $monitor.afterSnapshotSha256
                             })
+                        $safePointMessage = ''
+                        $safePointDeadline = [DateTime]::UtcNow.AddSeconds($AbortGraceSeconds)
+                        do {
+                            $safePointMessage = Get-LatestSafePointMessage -EventPath $EventPath -TaskType 'advisor-consult'
+                            if (-not [string]::IsNullOrWhiteSpace($safePointMessage)) {
+                                $monitor.safePointFound = $true
+                                Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                        event = 'safe-point-found'
+                                        recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                        message_length = $safePointMessage.Length
+                                    })
+                                break
+                            }
+                            if ($Process.HasExited) {
+                                break
+                            }
+                            Start-Sleep -Milliseconds 100
+                        } while ([DateTime]::UtcNow -lt $safePointDeadline)
+                        if (-not $monitor.safePointFound) {
+                            $monitor.safePointMissing = $true
+                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                    event = 'safe-point-missing'
+                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                    abort_grace_seconds = $AbortGraceSeconds
+                                })
+                        }
+                        try {
+                            $cleanupResult = Stop-VerifiedProcessTree -Snapshot $StartedSnapshot
+                            $monitor.state = if ($cleanupResult.CleanupStatus -eq 'verified-tree-terminated' -or $cleanupResult.CleanupStatus -eq 'already-terminated') { 'AbortedByBudget' } else { 'IdentityUnverified' }
+                            if ($monitor.state -eq 'IdentityUnverified') {
+                            }
+                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                    event = 'budget-monitor.completed'
+                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                    state = $monitor.state
+                                    cleanup_status = $cleanupResult.CleanupStatus
+                                    cleanup_error = $cleanupResult.ErrorMessage
+                                    safe_point_missing = $monitor.safePointMissing
+                                })
+                            return $monitor
+                        }
+                        catch {
+                            $monitor.state = 'IdentityUnverified'
+                            $monitor.abortReason = $_.Exception.Message
+                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                    event = 'monitor.identity-unverified'
+                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                    state = $monitor.state
+                                    cleanup_status = 'not-terminated'
+                                    termination_executed = $false
+                                    evidence_preserved = $true
+                                    error = $_.Exception.Message
+                                    safe_point_missing = $monitor.safePointMissing
+                                })
+                            return $monitor
+                        }
                     }
+            }
+            catch {
+                $failureMessage = $_.Exception.Message
+                if ($snapshotRefreshSucceeded) {
+                    $monitor.state = 'SnapshotFailed'
+                    $monitor.abortReason = $failureMessage
+                    Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                            event = 'monitor.snapshot-failed'
+                            recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                            state = $monitor.state
+                            terminal_snapshot = $false
+                            snapshot_refresh_succeeded = $true
+                            retry_scheduled = $false
+                            error = $failureMessage
+                            after_snapshot_path = $AfterSnapshotPath
+                            after_snapshot_sha256 = $monitor.afterSnapshotSha256
+                            snapshot_update_count = $monitor.snapshotUpdateCount
+                        })
+                    return $monitor
+                }
+                $consecutiveSnapshotFailures++
+                $processExitedAfterFailure = $Process.HasExited
+                $stopAfterFailures = $consecutiveSnapshotFailures -ge 3 -and -not $processExitedAfterFailure
+                $nextSnapshotRefreshAtUtc = [DateTime]::UtcNow.AddSeconds($SnapshotRefreshIntervalSeconds)
+                if ($stopAfterFailures) {
+                    $monitor.state = 'SnapshotFailed'
+                    $monitor.stopRequested = $true
+                    $monitor.abortReason = 'after-snapshot-refresh-failed-three-times'
+                }
+                Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                        event = 'monitor.snapshot-failed'
+                        recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                        state = if ($stopAfterFailures) { 'SnapshotFailed' } else { 'retrying' }
+                        terminal_snapshot = $false
+                        consecutive_failures = $consecutiveSnapshotFailures
+                        retry_scheduled = -not $stopAfterFailures -and -not $processExitedAfterFailure
+                        stop_requested = $stopAfterFailures
+                        error = $failureMessage
+                        after_snapshot_path = $AfterSnapshotPath
+                        after_snapshot_sha256 = $monitor.afterSnapshotSha256
+                        snapshot_update_count = $monitor.snapshotUpdateCount
+                    })
+                if ($processExitedAfterFailure) {
+                    break
+                }
+                if ($stopAfterFailures) {
                     try {
                         $cleanupResult = Stop-VerifiedProcessTree -Snapshot $StartedSnapshot
-                        $monitor.state = if ($cleanupResult.CleanupStatus -eq 'verified-tree-terminated' -or $cleanupResult.CleanupStatus -eq 'already-terminated') { 'AbortedByBudget' } else { 'IdentityUnverified' }
-                        if ($monitor.state -eq 'IdentityUnverified') {
+                        if ($cleanupResult.CleanupStatus -notin @('verified-tree-terminated', 'already-terminated')) {
+                            $monitor.state = 'IdentityUnverified'
+                            $monitor.abortReason = [string]$cleanupResult.ErrorMessage
+                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
+                                    event = 'monitor.identity-unverified'
+                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
+                                    state = $monitor.state
+                                    cleanup_status = $cleanupResult.CleanupStatus
+                                    termination_executed = [bool]$cleanupResult.TerminationExecuted
+                                    evidence_preserved = $true
+                                    error = $monitor.abortReason
+                                })
+                            return $monitor
+                        }
+                        if (-not $Process.HasExited) {
+                            $Process.WaitForExit()
                         }
                         Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
                                 event = 'budget-monitor.completed'
                                 recorded_at_utc = [datetime]::UtcNow.ToString('o')
                                 state = $monitor.state
+                                termination_reason = 'after-snapshot-refresh-failed-three-times'
                                 cleanup_status = $cleanupResult.CleanupStatus
                                 cleanup_error = $cleanupResult.ErrorMessage
-                                safe_point_missing = $monitor.safePointMissing
+                                after_snapshot_path = $AfterSnapshotPath
+                                after_snapshot_sha256 = $monitor.afterSnapshotSha256
                             })
                         return $monitor
                     }
@@ -11474,24 +11427,11 @@ function Invoke-AdvisorBudgetMonitor {
                                 termination_executed = $false
                                 evidence_preserved = $true
                                 error = $_.Exception.Message
-                                safe_point_missing = $monitor.safePointMissing
                             })
                         return $monitor
                     }
                 }
-        }
-        catch {
-            $monitor.state = 'SnapshotFailed'
-        $monitor.abortReason = $_.Exception.Message
-            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                    event = 'monitor.snapshot-failed'
-                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                    error = $_.Exception.Message
-                    after_snapshot_path = $AfterSnapshotPath
-                    after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                    snapshot_update_count = $monitor.snapshotUpdateCount
-                })
-            return $monitor
+            }
         }
         Start-Sleep -Milliseconds 100
     }
@@ -11671,60 +11611,6 @@ function Get-QuotaProbeRolloutFiles {
     )
 }
 
-function Get-QuotaProbeRolloutSourcePaths {
-    param(
-        [AllowEmptyCollection()]
-        [object[]]$BeforeFiles,
-
-        [AllowEmptyCollection()]
-        [object[]]$AfterFiles
-    )
-
-    $beforeByPath = @{}
-    foreach ($file in @($BeforeFiles)) {
-        $beforeByPath[$file.Path] = $file
-    }
-
-    return @(
-        @($AfterFiles) |
-            Where-Object {
-                $previous = $beforeByPath[$_.Path]
-                $null -eq $previous -or
-                $_.Length -gt $previous.Length -or
-                $_.LastWriteTimeUtc -gt $previous.LastWriteTimeUtc
-            } |
-            Sort-Object -Property LastWriteTimeUtc -Descending |
-            ForEach-Object { $_.Path }
-    )
-}
-
-function Get-QuotaProbeEvidenceFile {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path,
-
-        [Parameter(Mandatory)]
-        [string]$EvidenceName
-    )
-
-    $evidencePath = Resolve-AbsolutePath -Path $Path
-    if (-not (Test-Path -LiteralPath $evidencePath -PathType Leaf)) {
-        throw "QuotaProbe 缺少 $EvidenceName 證據檔案：$evidencePath"
-    }
-
-    $evidenceFile = Get-Item -LiteralPath $evidencePath -Force
-    if ($evidenceFile.Length -le 0) {
-        throw "QuotaProbe 的 $EvidenceName 證據檔案為空：$evidencePath"
-    }
-
-    $evidenceContent = Get-Content -LiteralPath $evidencePath -Raw -Encoding UTF8
-    if ([string]::IsNullOrWhiteSpace($evidenceContent)) {
-        throw "QuotaProbe 的 $EvidenceName 證據內容為空：$evidencePath"
-    }
-
-    return $evidenceFile
-}
-
 function Resolve-QuotaProbeCodexHome {
     param(
         [string]$ConfiguredCodexHome
@@ -11750,109 +11636,6 @@ function Resolve-QuotaProbeCodexHome {
     return $path
 }
 
-function Test-QuotaProbeUsageObject {
-    param(
-        [Parameter(Mandatory)]
-        [AllowNull()]
-        [object]$Value
-    )
-
-    if ($null -eq $Value -or -not ($Value -is [pscustomobject])) {
-        return $false
-    }
-
-    foreach ($requiredName in @('input_tokens', 'output_tokens')) {
-        if ($null -eq $Value.PSObject.Properties[$requiredName]) {
-            return $false
-        }
-    }
-
-    $numericTypes = @(
-        [System.Byte], [System.SByte], [System.Int16], [System.UInt16],
-        [System.Int32], [System.UInt32], [System.Int64], [System.UInt64],
-        [System.Single], [System.Double], [System.Decimal]
-    )
-    foreach ($property in @($Value.PSObject.Properties)) {
-        if ($null -eq $property.Value -or $property.Value -is [bool] -or $property.Value.GetType() -notin $numericTypes -or [double]$property.Value -lt 0) {
-            return $false
-        }
-    }
-
-    return @($Value.PSObject.Properties).Count -gt 0
-}
-
-function Get-QuotaProbeEventSummary {
-    param(
-        [Parameter(Mandatory)]
-        [string]$EventPath
-    )
-
-    if (-not (Test-Path -LiteralPath $EventPath -PathType Leaf)) {
-        throw "QuotaProbe 事件流檔案不存在：$EventPath"
-    }
-
-    $events = New-Object System.Collections.Generic.List[object]
-    $lineNumber = 0
-    foreach ($line in Get-Content -LiteralPath $EventPath -Encoding UTF8) {
-        $lineNumber++
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            continue
-        }
-
-        try {
-            $event = $line | ConvertFrom-Json -ErrorAction Stop
-        }
-        catch {
-            throw "QuotaProbe 事件流第 $lineNumber 行格式錯誤：$($_.Exception.Message)"
-        }
-
-        $typeProperty = if ($null -eq $event) { $null } else { $event.PSObject.Properties['type'] }
-        if ($null -eq $typeProperty -or -not ($typeProperty.Value -is [string]) -or [string]::IsNullOrWhiteSpace($typeProperty.Value)) {
-            throw "QuotaProbe 事件流第 $lineNumber 行缺少 type。"
-        }
-        $events.Add($event)
-    }
-
-    if ($events.Count -eq 0) {
-        throw 'QuotaProbe 事件流沒有可解析的事件。'
-    }
-
-    $threadId = ''
-    $threadIds = New-Object System.Collections.Generic.List[string]
-    foreach ($event in $events) {
-        if ($event.type -eq 'thread.started' -and [string]::IsNullOrWhiteSpace($threadId)) {
-            $threadIdValue = $event.PSObject.Properties['thread_id']
-            if ($null -eq $threadIdValue -or -not ($threadIdValue.Value -is [string]) -or [string]::IsNullOrWhiteSpace($threadIdValue.Value)) {
-                throw 'QuotaProbe 的 thread.started.thread_id 必須為非空字串。'
-            }
-            $threadId = $threadIdValue.Value
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($threadId)) {
-        throw 'QuotaProbe 事件流缺少 thread.started.thread_id。'
-    }
-
-    $lastEvent = $events[$events.Count - 1]
-    $lastEventType = [string]$lastEvent.type
-    if ($lastEventType -ne 'turn.completed') {
-        throw "QuotaProbe 事件流最後事件不是 turn.completed：$lastEventType"
-    }
-
-    $usageProperty = $lastEvent.PSObject.Properties['usage']
-    if ($null -eq $usageProperty -or -not (Test-QuotaProbeUsageObject -Value $usageProperty.Value)) {
-        throw 'QuotaProbe 事件流缺少 turn.completed.usage。'
-    }
-
-    return [ordered]@{
-        eventCount      = $events.Count
-        lastEventType   = $lastEventType
-        threadId        = $threadId
-        usage           = $usageProperty.Value
-        completed       = $true
-    }
-}
-
 function Invoke-QuotaProbe {
     if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
         throw 'QuotaProbe 必須提供 SourceRoot。'
@@ -11866,9 +11649,6 @@ function Invoke-QuotaProbe {
     if ([string]::IsNullOrWhiteSpace($DispatchSlug)) {
         throw 'QuotaProbe 必須提供 DispatchSlug。'
     }
-    # 探針的作用是讓 Codex 寫出一筆新 rollout，新快照的正確性只來自該筆新記錄，與探針前的狀態無關。
-    # 因此可回復的狀態以「解析是否可信」區分：SnapshotExpired 代表解析正常、僅資料過期，屬探針要解決的
-    # 對象；SnapshotUnavailable 代表連一筆結構有效候選都讀不到，前提本身可能已壞，探針成功也讀不回來。
     $recoverableQuotaStates = @('PostResetNoSnapshot', 'SnapshotExpired', 'ServiceRejected')
 
     if ($recoverableQuotaStates -notcontains $InitialQuotaState) {
@@ -12081,314 +11861,6 @@ function Invoke-QuotaProbe {
             retryRequired      = $false
             retryResult        = $quotaRefreshRecord.retryResult
             finalStatus        = $quotaRefreshRecord.finalStatus
-        }
-    }
-
-    $beforeRolloutFiles = @(Get-QuotaProbeRolloutFiles -CodexHomePath $codexHomePath)
-    $codexExecutable = $null
-    $launcher = $null
-    $startInfo = $null
-    $process = $null
-    $startedSnapshot = $null
-    $processStarted = $false
-    $processExitCodeValue = $null
-    $probeSummary = $null
-    $rolloutSourcePaths = @()
-    $phase = 'preparation'
-    $cleanupStatus = 'not-started'
-    $cleanupError = $null
-
-    try {
-        $codexExecutable = Get-CodexExecutablePath -ConfiguredPath $CodexPath
-        $advisorActivationDecision = [ordered]@{
-            activationMode      = 'none'
-            granted              = $false
-            authorizationSource  = $null
-            notice               = ''
-        }
-
-        $promptDirectives = @(
-            '[QuotaProbe]' + [Environment]::NewLine +
-            '本次執行只用於視窗重設後的額度回復探針。請勿修改任何目標物件、規則檔或設定檔；完成後只回報探針結果。'
-        )
-        $probePromptPath = New-DispatchPrompt -PromptPath $promptPathValue -HistoryRoot $historyRoot -Timestamp $timestamp -Directive $promptDirectives
-
-        $codexArguments = New-Object System.Collections.Generic.List[string]
-        $codexArguments.Add('--cd')
-        $codexArguments.Add($executionRootPath)
-        $codexArguments.Add('--sandbox')
-        $codexArguments.Add('workspace-write')
-        $codexArguments.Add('--profile')
-        $codexArguments.Add($effectiveProfileValue)
-        if ($null -ne $AddDirectory) {
-            foreach ($directory in $AddDirectory) {
-                $directoryPath = Resolve-AbsolutePath -Path $directory
-                if (-not (Test-Path -LiteralPath $directoryPath -PathType Container)) {
-                    throw "--add-dir 目錄不存在：$directoryPath"
-                }
-                $codexArguments.Add('--add-dir')
-                $codexArguments.Add($directoryPath)
-            }
-        }
-        if ($Search) {
-            $codexArguments.Add('--search')
-        }
-        if ($null -ne $CodexParentOption) {
-            foreach ($option in $CodexParentOption) {
-                if ([string]::IsNullOrWhiteSpace($option)) {
-                    throw 'CodexParentOption 不可包含空白選項。'
-                }
-                $codexArguments.Add($option)
-            }
-        }
-        $codexArguments.Add('exec')
-        $codexArguments.Add('--json')
-        $codexArguments.Add('--output-last-message')
-        $codexArguments.Add($lastMessagePath)
-        $codexArguments.Add('-')
-
-        $launcher = New-CodexLauncher -CodexExecutable $codexExecutable -CodexArguments @($codexArguments.ToArray()) -PromptPath $probePromptPath -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyRoot -LauncherPath $launcherPath
-        $launcherPath = $launcher.Path
-        $startInfo = New-ProcessStartInfo -FileName $launcher.FileName -WorkingDirectory $executionRootPath -Arguments @($launcher.Arguments)
-        if ($null -ne $codexHomePath) {
-            $startInfo.EnvironmentVariables['CODEX_HOME'] = $codexHomePath
-        }
-
-        $process = New-Object System.Diagnostics.Process
-        $process.StartInfo = $startInfo
-        if (-not $process.Start()) {
-            throw 'QuotaProbe Codex 啟動失敗。'
-        }
-        $processStarted = $true
-        $startedSnapshot = Get-StartedProcessSnapshot -ProcessId $process.Id
-        if ($null -eq $startedSnapshot) {
-            throw "無法取得 QuotaProbe 根程序身分，PID $($process.Id) 未通過驗證。"
-        }
-        if ($startedSnapshot.IdentityStatus -ne 'confirmed' -or $startedSnapshot.IdentityVerified -ne $true) {
-            throw "QuotaProbe 根程序身分無法確認：PID $($process.Id); identity-status=$($startedSnapshot.IdentityStatus)"
-        }
-
-        $processGroupValue = ''
-        if (-not (Test-IsWindowsPlatform)) {
-            if ($null -eq $startedSnapshot.PSObject.Properties['ProcessGroupId'] -or $startedSnapshot.ProcessGroupId -le 0) {
-                throw "無法取得 QuotaProbe process group，PID $($process.Id) 未通過驗證。"
-            }
-            $processGroupValue = [string]$startedSnapshot.ProcessGroupId
-        }
-
-        $pidContent = @(
-            ('pid=' + $process.Id)
-            ('root-pid=' + $process.Id)
-            ('root-process-name=' + $startedSnapshot.ProcessName)
-            ('root-parent-pid=' + $startedSnapshot.ParentProcessId)
-            ('root-started-at-utc=' + $startedSnapshot.CreationUtc.ToString('o'))
-            'identity-verified=true'
-            ('process-tree-scope=' + $(if (Test-IsWindowsPlatform) { 'pid-and-descendants' } else { 'process-group' }))
-            ('process-tree-query=' + $(if (Test-IsWindowsPlatform) { 'Win32_Process.ParentProcessId' } else { 'ps PGID 成員' }))
-            ('process-group-id=' + $processGroupValue)
-            ('work-root=' + $sourceRootPath)
-            ('line-slug=' + $LineSlug)
-            ('dispatch-slug=' + $DispatchSlug)
-            'write-mode=readonly'
-            ('started-at-utc=' + [datetime]::UtcNow.ToString('o'))
-        ) -join "`n"
-        Write-Utf8NoBom -Path $pidPath -Content ($pidContent + "`n")
-        Write-Utf8NoBom -Path $threadPath -Content ''
-        $phase = 'started'
-
-        $process.WaitForExit()
-        $processExitCodeValue = Get-ProcessExitCodeIfExited -Process $process
-        if ($null -eq $processExitCodeValue) {
-            throw 'QuotaProbe 無法取得 Codex process exit code。'
-        }
-        $phase = 'completed'
-        Ensure-StartEvidenceFiles -Path @($eventPath, $errorPath)
-        $probeSummary = Get-QuotaProbeEventSummary -EventPath $eventPath
-        Write-Utf8NoBom -Path $threadPath -Content ($probeSummary.threadId + "`n")
-        if ($processExitCodeValue -ne 0) {
-            throw "QuotaProbe Codex 以非零 exit code 結束：$processExitCodeValue"
-        }
-        $null = Get-QuotaProbeEvidenceFile -Path $lastMessagePath -EvidenceName 'last-message'
-        $rolloutSourcePaths = @(Get-QuotaProbeRolloutSourcePaths -BeforeFiles $beforeRolloutFiles -AfterFiles @(Get-QuotaProbeRolloutFiles -CodexHomePath $codexHomePath))
-        if ($rolloutSourcePaths.Count -eq 0) {
-            throw 'QuotaProbe 未觀測到新增或更新的 rollout 證據，拒絕回報 success=true。'
-        }
-        foreach ($rolloutSourcePath in $rolloutSourcePaths) {
-            $null = Get-QuotaProbeEvidenceFile -Path $rolloutSourcePath -EvidenceName 'rollout'
-        }
-
-        $recoveryRecord = [ordered]@{
-            schema              = 'quota-recovery.v1'
-            operation           = 'QuotaProbe'
-            lineSlug            = $LineSlug
-            dispatchSlug        = $DispatchSlug
-            initialQuotaState   = $InitialQuotaState
-            profile             = $effectiveProfileValue
-            requested_profile   = $requestedProfileValue
-            effective_profile   = $effectiveProfileValue
-            advisorRequestSource       = $AdvisorRequestSource
-            advisorActivationDecision = $advisorActivationDecision.activationMode
-            advisorActivationGranted  = $advisorActivationDecision.granted
-            advisorActivationNotice   = $advisorActivationDecision.notice
-            initialWindowState  = [ordered]@{
-                primary   = if ($TriggerWindow -eq 'primary' -or $TriggerWindow -eq 'both') { $InitialQuotaState } else { 'unknown' }
-                secondary = if ($TriggerWindow -eq 'secondary' -or $TriggerWindow -eq 'both') { $InitialQuotaState } else { 'unknown' }
-            }
-            triggerWindow       = $TriggerWindow
-            probeAttempt        = $ProbeAttempt
-            probeAttemptLimit   = 1
-            probeEvidence       = [ordered]@{
-                eventStreamPath    = $eventPath
-                stderrPath         = $errorPath
-                lastMessagePath    = $lastMessagePath
-                threadIdPath       = $threadPath
-                pidRecordPath      = $pidPath
-                launcherPath       = $launcher.Path
-                codexPath          = $codexExecutable
-                codexArguments     = @($codexArguments.ToArray())
-                requested_profile  = $requestedProfileValue
-                effective_profile  = $effectiveProfileValue
-                processStarted     = $processStarted
-                processExitCode    = $processExitCodeValue
-                eventCount         = $probeSummary.eventCount
-                lastEventType      = $probeSummary.lastEventType
-                threadId           = $probeSummary.threadId
-                rolloutSourcePath  = if ($rolloutSourcePaths.Count -gt 0) { $rolloutSourcePaths[0] } else { $null }
-                rolloutSourcePaths = @($rolloutSourcePaths)
-            }
-            retryResult          = [ordered]@{
-                status       = 'pending'
-                attempted    = $false
-                attemptLimit = 1
-                command      = 'Get-CodexQuota.ps1 -CodexHome <fixture-or-configured-CODEX_HOME>'
-                result       = 'QuotaProbe 完成後由呼叫端重試一次額度讀取。'
-            }
-            finalStatus         = 'probe-completed-awaiting-quota-retry'
-            createdAtUtc        = [datetime]::UtcNow.ToString('o')
-        }
-        Write-Utf8NoBom -Path $recoveryPath -Content (($recoveryRecord | ConvertTo-Json -Depth 12) + "`n")
-
-        return [ordered]@{
-            operation          = 'QuotaProbe'
-            success            = $true
-            lineSlug           = $LineSlug
-            dispatchSlug       = $DispatchSlug
-            initialQuotaState  = $InitialQuotaState
-            initialWindowState = [ordered]@{
-                primary   = if ($TriggerWindow -eq 'primary' -or $TriggerWindow -eq 'both') { $InitialQuotaState } else { 'unknown' }
-                secondary = if ($TriggerWindow -eq 'secondary' -or $TriggerWindow -eq 'both') { $InitialQuotaState } else { 'unknown' }
-            }
-            triggerWindow      = $TriggerWindow
-            probeAttempt       = $ProbeAttempt
-            probeAttemptLimit  = 1
-            profile             = $effectiveProfileValue
-            requested_profile   = $requestedProfileValue
-            effective_profile   = $effectiveProfileValue
-            advisorRequestSource       = $AdvisorRequestSource
-            advisorActivationDecision = $advisorActivationDecision.activationMode
-            advisorActivationGranted  = $advisorActivationDecision.granted
-            advisorActivationNotice   = $advisorActivationDecision.notice
-            eventStreamPath    = $eventPath
-            stderrPath         = $errorPath
-            lastMessagePath    = $lastMessagePath
-            threadIdPath       = $threadPath
-            pidRecordPath      = $pidPath
-            launcherPath       = $launcher.Path
-            codexPath          = $codexExecutable
-            codexArguments     = @($codexArguments.ToArray())
-            processStarted     = $processStarted
-            processExitCode    = $processExitCodeValue
-            threadId           = $probeSummary.threadId
-            rolloutSourcePath  = if ($rolloutSourcePaths.Count -gt 0) { $rolloutSourcePaths[0] } else { $null }
-            rolloutSourcePaths = @($rolloutSourcePaths)
-            recoveryRecordPath = $recoveryPath
-            retryRequired      = $true
-            retryResult        = $recoveryRecord.retryResult
-            finalStatus        = $recoveryRecord.finalStatus
-        }
-    }
-    catch {
-        $originalMessage = $_.Exception.Message
-        $processExitCodeValue = if ($null -ne $process) { Get-ProcessExitCodeIfExited -Process $process } else { $null }
-        if ($null -ne $startedSnapshot -and $startedSnapshot.IdentityVerified -eq $true -and $null -ne $processExitCodeValue) {
-            $cleanupStatus = 'already-terminated'
-        }
-        elseif ($null -ne $startedSnapshot -and $startedSnapshot.IdentityVerified -eq $true) {
-            try {
-                $cleanupResult = Stop-VerifiedProcessTree -Snapshot $startedSnapshot
-                $cleanupStatus = $cleanupResult.CleanupStatus
-                $cleanupError = $cleanupResult.ErrorMessage
-            }
-            catch {
-                $cleanupStatus = 'verified-tree-cleanup-failed'
-                $cleanupError = $_.Exception.Message
-            }
-        }
-        elseif ($processStarted) {
-            $cleanupStatus = 'not-attempted-unconfirmed-identity'
-        }
-        if ($processStarted) {
-            try {
-                Ensure-StartEvidenceFiles -Path @($eventPath, $errorPath)
-            }
-            catch {
-                $cleanupError = if ([string]::IsNullOrWhiteSpace($cleanupError)) { $_.Exception.Message } else { $cleanupError + '；' + $_.Exception.Message }
-            }
-        }
-        $rolloutSourcePaths = @(Get-QuotaProbeRolloutSourcePaths -BeforeFiles $beforeRolloutFiles -AfterFiles @(Get-QuotaProbeRolloutFiles -CodexHomePath $codexHomePath))
-        $failureRecord = [ordered]@{
-            schema             = 'quota-recovery.v1'
-            operation          = 'QuotaProbe'
-            lineSlug           = $LineSlug
-            dispatchSlug       = $DispatchSlug
-            initialQuotaState  = $InitialQuotaState
-            triggerWindow      = $TriggerWindow
-            probeAttempt       = $ProbeAttempt
-            probeAttemptLimit  = 1
-            profile             = $effectiveProfileValue
-            requested_profile   = $requestedProfileValue
-            effective_profile   = $effectiveProfileValue
-            probeEvidence      = [ordered]@{
-                eventStreamPath    = $eventPath
-                stderrPath         = $errorPath
-                lastMessagePath    = $lastMessagePath
-                threadIdPath       = $threadPath
-                pidRecordPath      = $pidPath
-                launcherPath       = $launcherPath
-                codexPath          = $codexExecutable
-                requested_profile  = $requestedProfileValue
-                effective_profile  = $effectiveProfileValue
-                processStarted     = $processStarted
-                processExitCode    = $processExitCodeValue
-                threadId           = if ($null -ne $probeSummary) { $probeSummary.threadId } else { $null }
-                phase              = $phase
-                cleanupStatus      = $cleanupStatus
-                cleanupError       = $cleanupError
-                rolloutSourcePath  = if ($rolloutSourcePaths.Count -gt 0) { $rolloutSourcePaths[0] } else { $null }
-                rolloutSourcePaths = @($rolloutSourcePaths)
-            }
-            retryResult         = [ordered]@{
-                status       = 'not-run'
-                attempted    = $false
-                attemptLimit = 1
-                command      = 'Get-CodexQuota.ps1 -CodexHome <fixture-or-configured-CODEX_HOME>'
-                result       = 'QuotaProbe 失敗，停止額度重試。'
-            }
-            finalStatus        = 'probe-failed'
-            error              = $originalMessage
-            createdAtUtc       = [datetime]::UtcNow.ToString('o')
-        }
-        try {
-            Write-Utf8NoBom -Path $recoveryPath -Content (($failureRecord | ConvertTo-Json -Depth 12) + "`n")
-        }
-        catch {
-            $originalMessage = $originalMessage + '；寫入 QuotaProbe 回復紀錄失敗：' + $_.Exception.Message
-        }
-        throw $originalMessage
-    }
-    finally {
-        if ($null -ne $process) {
-            $process.Dispose()
         }
     }
 }
@@ -16333,10 +15805,12 @@ function Invoke-Inspect {
     foreach ($monitorRecord in @($budgetMonitor)) {
         $monitorState = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'state')
         $monitorEvent = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'event')
-        if ($monitorState -eq 'AbortedByBudget' -or $monitorState -eq 'SnapshotFailed' -or $monitorEvent -eq 'monitor.terminal-budget-exceeded' -or $monitorEvent -eq 'monitor.snapshot-failed') {
+        $terminalSnapshotFailure = $monitorEvent -eq 'monitor.snapshot-failed' -and
+            ($monitorState -ne 'retrying' -or [bool](Get-OptionalObjectProperty -Object $monitorRecord -Name 'terminal_snapshot'))
+        if ($monitorState -eq 'AbortedByBudget' -or $monitorState -eq 'SnapshotFailed' -or $monitorEvent -eq 'monitor.terminal-budget-exceeded' -or $terminalSnapshotFailure) {
             $budgetMonitorRejected = $true
             if ([string]::IsNullOrWhiteSpace($budgetMonitorRejectionReason)) {
-                if ($monitorState -eq 'SnapshotFailed' -or $monitorEvent -eq 'monitor.snapshot-failed') {
+                if ($monitorState -eq 'SnapshotFailed' -or $terminalSnapshotFailure) {
                     $budgetMonitorRejectionReason = 'BudgetMonitor 偵測到 snapshot 失敗。'
                 }
                 else {
@@ -16466,23 +15940,6 @@ function Convert-ComparisonPath {
     return $normalized
 }
 
-function Get-RequirementSection {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Content,
-
-        [Parameter(Mandatory)]
-        [string]$Heading
-    )
-
-    $headingPattern = '(?ms)^##[ \t]+' + [regex]::Escape($Heading) + '[ \t]*\r?\n(?<section>.*?)(?=^##[ \t]|\z)'
-    $match = [regex]::Match($Content, $headingPattern)
-    if (-not $match.Success) {
-        return $null
-    }
-
-    return $match.Groups['section'].Value
-}
 
 function Split-MarkdownTableRow {
     param(
