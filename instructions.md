@@ -326,7 +326,7 @@ Claude 端使用 Agent 工具建立 `Prototyper` 或主 Agent 臨時派生的搜
 
 ##### F1 派工判準
 
-派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依 `codex-dispatch` skill 的額度門檻判定，不改變能力歸屬。
+派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依工作性質選擇，實作與執行用預設檔位，意見評估用 `advisor`，不改變能力歸屬。
 
 本輪工作命中某個 skill 時，先讀該 skill frontmatter 的 `dispatch` 欄位。`dispatchable` 直接派工，`claude-side` 直接由 Claude 端處理，`split` 依該 skill 的「## 派遣分界」章節拆分。欄位有值時不再走下列三層表。
 
@@ -347,36 +347,27 @@ skill 未宣告 `dispatch` 或本輪工作不對應任何 skill 時，主 Agent 
 | 不派 | 對話中的系統設計與方案取捨；bug 根因假設的形成；需求釐清與需求意圖驗收；規則檔與文件的撰寫或改寫；討論脈絡的保管與判斷；帶使用者登入 session 的瀏覽器操作；Artifacts 發布 | 一律由 Claude 端處理，不派工 |
 | 灰帶 | 前兩層皆未命中 | 依下列順序判定，命中一項即停止，不再評估後續分支：1. 工作必須留在 Claude 端時，再看是否會污染主 Agent context；會污染時送 Claude subagent，輸出「灰帶→派工」；不會污染時由主 Agent 自理，輸出「灰帶→自理」。2. 工作不須留在 Claude 端，且輸入、限制、驗收條件與產出落點可完整寫成派遣單時，送 Codex，輸出「灰帶→派工」。3. 前兩項皆不成立且工作可拆分時，拆成判斷與動作兩段，判斷留在 Claude 端，動作派往 Codex，輸出「灰帶→派工」。4. 前三項皆不成立時，視為無法拆分，預設派工，輸出「灰帶→派工」。 |
 
-##### 派工前額度範圍 gate
+##### 派工的額度查詢與範圍
 
-派工先完成能力歸屬，再取得 `QuotaSnapshot` 的 `primary` 與 `secondary` 快照。`state=Valid` 且兩個視窗欄位完整的快照，才可進入 `ScopePlan` 判定。快照失敗、狀態不是 `Valid`、reset 造成差值不可解釋或缺少必要視窗時，派工以非零結束碼停止或進入一次性額度回復探針，不把缺資料轉為估算值。`state=Valid` 但 observation 已過期（`stale`）時，預設檔位進入低額度分支並只選第一個宣告單位，`advisor-consult` 不啟動。
+額度查詢只供顯示與紀錄，不作派工的放行條件。額度是否足夠由使用者判斷。查詢時點為派工前、advisor 諮詢前、長時間派工執行中約每 30 分鐘、結案時，以及主 Agent 按需查詢。查詢失敗、快照過期或視窗重設時記為 unknown，派工照常進行，不推算餘額。
 
-`ScopePlan` 的最小單位固定如下。Workflow 使用 `design.md` 宣告順序的 Phase，資源派遣使用派遣單第 3 欄的目標物件，`advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
+派工範圍由派遣契約明確宣告，額度不改寫範圍。`ScopePlan` 的最小單位固定如下。Workflow 使用 `design.md` 宣告順序的 Phase，資源派遣使用派遣單第 3 欄的目標物件，`advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。`selected_units` 等於宣告的全部單位，執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
 
-先判定目標檔位門檻。預設檔位的門檻為 primary 剩餘 30% 與 secondary 剩餘 15%。兩個視窗都達到門檻時，ScopePlan 使用 `decision=full` 與 `estimate_source=not-required-above-threshold`，不要求校準樣本或保守量級。`advisor-consult` 不適用此放寬，依 activation 規則計算預算。任一視窗低於門檻時，才使用相同 `model`、`profile`、`session_mode` 與 `task_type` 分組的 `calibration_eligible=true` 樣本第 75 百分位或需求摘要核准的保守量級。低於門檻且沒有估算資料的預設檔位派工回傳 `decision=scoped` 與 `estimate_source=bounded-single-unit`，只選第一個宣告單位並在該單位後停止；`advisor-consult` 沒有同分組樣本時使用 task type 保守量級，不跨分組借用。
-
-預設檔位低於門檻時維持預設檔位，不需使用者授權，也不等待 `primary_resets_at`。此分支的 reserve 為 0，以 primary 剩餘計算最長前綴；完整清單可容納時使用 `full`，部分前綴可容納時使用 `scoped`，連第一個最小單位都超出或剩餘為 0 時仍選取第一個單位並在該單位後停止。額度在執行中耗盡時由 Budget monitor、中斷保全與 RecoveryHandoff 承接，允許因額度耗盡而終止，前提是已確認結論與未完成單位都保留在證據中，主 Agent 不手動補寫紀錄。沒有任何 observation 或收到明確 service rejection 時不進入此分支。
-
-每次派工都保存 before／after 快照與 `ScopePlan`。`CalibrationObservation` 必須記錄 `observed_primary_delta_percent`、`calibration_eligible`、`interruption_status` 與 `budget_monitor`。before／after、完成事件、exit code、usage、primary 與 secondary 的 `resets_at`、ScopePlan 單位欄位或 delta 上限任一條件不成立時，觀測保留原始值並標記 `calibration_eligible=false`。
+低額度或 unknown 都不縮小範圍、不停止執行中的派工。服務端明確拒絕（例如 usage-limit）時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不重試，不以未執行的單位補寫結論。每次派工保存 before 與結案快照、`ScopePlan` 與 usage，作為成本紀錄。
 
 ##### advisor consult 的不限階段掛載點
 
 `advisor` 是意見評估角色，不是實作檔位；實作一律使用預設檔位。`advisor-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在 Clarify、Design、Implement、Review、Accept 或 bug 線任一站，於適當的節點作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。`Profile=advisor` 搭配 Workflow、寫入模式或其他 TaskType 時，派工在啟動前拒絕。
 
-預設檔位先建立 evidence pack，內容必須含非空的目標段落原文摘錄與來源位置、已知結論、以 `question-<id>` 逐行列出的待答問題與 required output、可能反證與邊界。advisor 執行端只可讀取 evidence pack，使用 read-only sandbox，不得探索 repository、讀取其他來源、修改檔案或寫入 report。`Start` 前必須建立可在執行期間更新的 after quota snapshot，`Inspect` 缺少 Start SHA-256 紀錄或前後 hash 不一致時以非零結束。報告由主 Agent 的 `Inspect` 或回收步驟寫入同線 `report/<lineSlug>/advisor-consult-<dispatchSlug>.md`，再交由 Claude 端與使用者決定是否採用。
+預設檔位先建立 evidence pack，內容必須含非空的目標段落原文摘錄與來源位置、已知結論、以 `question-<id>` 逐行列出的待答問題與 required output、可能反證與邊界。advisor 執行端只可讀取 evidence pack，使用 read-only sandbox，不得探索 repository、讀取其他來源、修改檔案或寫入 report。`Inspect` 缺少 Start 的 evidence pack SHA-256 紀錄或前後 hash 不一致時以非零結束。報告由主 Agent 的 `Inspect` 或回收步驟寫入同線 `report/<lineSlug>/advisor-consult-<dispatchSlug>.md`，再交由 Claude 端與使用者決定是否採用。
 
-advisor 在下列任一條件成立時啟動。
-
-- 額度充足：快照有效且沒有 service rejection，且 `primary_remaining_percent - 30` 足以容納 `estimate_percent × 1.25`。此時直接啟動，不需要使用者確認。
-- 使用者授權：以 `AdvisorRequestSource=user-explicit` 傳入。使用者授權時不檢查額度剩餘，不套用 30% reserve，範圍依剩餘額度縮小為可容納的問題前綴，至少包含第一個問題，目標是盡可能用完週額度。
-
-兩者皆不成立時不啟動，以 `AdvisorAuthorizationRequired` 回報。額度不足且主 Agent 判斷值得諮詢時，才向使用者提出授權請求。請求原文固定如下，請求本身不構成授權，使用者明確同意後才以 `user-explicit` 派工。
+advisor 只在使用者授權後啟動，以 `AdvisorRequestSource=user-explicit` 傳入。主 Agent 判斷值得諮詢時先向使用者提出請求，請求附上當下查詢到的額度供使用者判斷。請求原文固定如下，請求本身不構成授權。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工；該授權不延續到其他 Session。
 
 ```text
-[advisor 諮詢授權] primary 剩餘 <n>%；完整評估預估 <m>%；本次授權會略過 30% primary reserve，並依可用額度縮小問題前綴；<推理密集點與資料已整理成 evidence pack 的理由>。是否執行 advisor 諮詢？
+[advisor 諮詢授權] primary 剩餘 <n>%、secondary 剩餘 <m>%；<推理密集點與資料已整理成 evidence pack 的理由>。是否執行 advisor 諮詢？
 ```
 
-使用者授權仍須通過快照有效性、service rejection、evidence pack hash、read-only 與 process identity 檢查。
+授權後使用 evidence pack 的完整問題集，不依額度縮小。授權不略過 service rejection、evidence pack hash、read-only 與 process identity 檢查。
 
 對話中的系統設計與方案取捨由 Claude 主 Agent 負責。取捨定案後，`Architect` 依需求摘要展開 `design.md`，此 Codex 文件產出路徑不受不派層的對話規則涵蓋。
 
@@ -437,7 +428,7 @@ Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢
 
 自動推進鏈有兩類停頓處置。
 
-- 授權類停頓：額度不足時的 `advisor` 諮詢授權、安裝套件或下載相依性、commit 與 push，等待使用者當輪回覆。
+- 授權類停頓：`advisor` 諮詢授權（當下 Session 已授權者除外）、安裝套件或下載相依性、commit 與 push，等待使用者當輪回覆。
 - 升級與收斂停止：業務語意缺口、範圍取捨、妥協確認或共同收斂契約的停止訊號，停止相關派遣，保留證據，回報未閉合清單與替代方向，等待使用者選擇方向。
 
 四處循環共用下列收斂契約。下游規則檔只補充自身循環的識別來源與驗收方式。

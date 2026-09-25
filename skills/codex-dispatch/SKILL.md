@@ -44,7 +44,7 @@ request 檔的 `source_root`、`result_path` 與 `preflight_result_path` 只在 
 
 | 失敗形狀 | 恢復方式 | 詳細節 |
 | --- | --- | --- |
-| 額度快照 `state` 不是 `Valid`，或 observation 為 `stale` | 依「額度狀態與回復探針」重新取得即時快照；`ServiceRejected` 不自動重試 | 額度狀態與回復探針 |
+| 額度快照 `state` 不是 `Valid`，或 observation 為 `stale` | 記為 unknown 或 stale，派工照常進行，不改變範圍。`SnapshotUnavailable` 與 `stale` 需要最新數值時可重新查詢一次；`ServiceRejected` 不重新查詢也不重試，等待重設或新的觀測證據 | 額度狀態與回復探針 |
 | Preflight、Prepare 或 Start 在 Codex 啟動前失敗 | 修正輸入後以新的 `dispatchSlug` 重跑。失敗留下的 Prepare 結果、ScopePlan hash 紀錄或 `launch-failed` RunRecord 會使同名重試以 `PrepareResultCollision`、hash 不符或 ACL gate 拒絕 | 續 session 與跨介面接手 |
 | 續行被拒 | 以 `git -C <舊 dispatchRoot> diff HEAD` 與未追蹤檔案清單轉移成果，以新的 `dispatchSlug` 冷啟動 | Codex 進程 PID 與並行檢查 |
 | 事件流以 `turn.failed` 結束或 exit code 非零 | 依 C 出口取失敗原因，再依回收三態判定 | 完成判定與三出口 |
@@ -54,7 +54,7 @@ request 檔的 `source_root`、`result_path` 與 `preflight_result_path` 只在 
 
 ## 額度與範圍契約
 
-`QuotaSnapshot` 是每次派工的額度輸入。`Get-CodexQuota.ps1 -SnapshotPath <path>` 保留既有 key-value stdout，另外寫入 `ai-sessions.quota-snapshot.v1` JSON。有效快照必須包含 `captured_at_utc`、`state=Valid`，以及 `primary` 與 `secondary` 的 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at` 與 `source_file`。任何視窗缺欄位、狀態不是 `Valid` 或 reset 造成差值不可解釋時，派工以非零結束碼停止或依「額度狀態與回復探針」處理，不產生估算值。`state=Valid` 但 observation 的 freshness 為 `stale` 時不在此停止，改由 `ScopePlan` 決定。預設檔位走低額度分支並只選第一個宣告單位，`advisor-consult` 以 `blocked-no-fresh-quota` 拒絕。取得額度失敗時，快照檔仍以失敗的 `state` 與 `error` 寫出，stderr 輸出失敗類別。
+`QuotaSnapshot` 是每次派工的額度紀錄，只供顯示與成本紀錄，不作放行條件。`Get-CodexQuota.ps1 -SnapshotPath <path>` 保留既有 key-value stdout，另外寫入 `ai-sessions.quota-snapshot.v1` JSON。有效快照包含 `captured_at_utc`、`state=Valid`，以及 `primary` 與 `secondary` 的 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at` 與 `source_file`。取得額度失敗時，快照檔仍以失敗的 `state` 與 `error` 寫出，stderr 輸出失敗類別；`Dispatch` 與 `Start` 把 before 快照失敗記為 unknown 後繼續，不在 before-snapshot 階段停止。
 
 `ScopePlan` 是派工前唯一的範圍決策，欄位固定如下。
 
@@ -77,13 +77,11 @@ decision
 decision_reason
 ```
 
-`unit_kind` 只允許 `workflow-phase`、`resource-target` 與 `advisor-evidence-question`。`decision` 只允許 `full`、`scoped`、`blocked-insufficient-budget`、`blocked-no-estimate`、`blocked-no-fresh-quota` 與 `user-decision-required`。Workflow 以 `design.md` 的 Phase 為最小單位，資源派遣以派遣單第 3 欄的目標物件為最小單位，advisor consult 以 evidence pack 內的問題 ID 為最小單位，`requested_units` 依 evidence pack 宣告順序排列。執行端不得自行增加或拆分單位。
+`unit_kind` 只允許 `workflow-phase`、`resource-target` 與 `advisor-evidence-question`。Workflow 以 `design.md` 的 Phase 為最小單位，資源派遣以派遣單第 3 欄的目標物件為最小單位，advisor consult 以 evidence pack 內的問題 ID 為最小單位，`requested_units` 依宣告順序排列。`Start` 的 `RequestedUnit` 必須等於這組單位；只列部分目標時，執行端會以範圍不一致拒絕工作。執行端不得自行增加或拆分單位。
 
-先判定目標檔位門檻，再決定是否需要估算。預設檔位的門檻為 primary 剩餘 30% 與 secondary 剩餘 15%。兩個視窗都達到門檻時，`ScopePlan` 直接使用 `decision=full`、`estimate_source=not-required-above-threshold`，不要求校準樣本或保守量級。`advisor-consult` 不適用高額度放寬，一律依 activation 規則計算預算。任一視窗低於門檻時，才使用相同 `model`、`profile`、`session_mode` 與 `task_type` 分組的 eligible 樣本第 75 百分位或已核准的保守量級。低於門檻且沒有估算資料的預設檔位派工使用 `decision=scoped`、`estimate_source=bounded-single-unit`，只選第一個宣告單位並在該單位後停止，不等待使用者決定。`advisor-consult` 沒有同分組樣本時使用 task type 保守量級 24%，不跨分組借用樣本。
+`ScopePlan` 一律選取宣告的全部單位：`selected_units` 等於 `requested_units`，`decision=full`，`estimate_source=not-used`，額度高低與 unknown 都不改變範圍。欄位中的額度與估算值只作紀錄。ScopePlan hash 紀錄與續行範圍核對照常執行。
 
-預設檔位低於門檻時維持預設檔位，不等待 `primary_resets_at`，也不產生 `user-decision-required`。此分支的 reserve 為 0，以 primary 剩餘作為預算，依宣告順序取可容納的最長前綴；連第一個單位都無法容納或 primary 剩餘為 0 時，仍選取第一個宣告單位並設 `stop_after_selected_units=true`。額度在執行中耗盡時，由 Budget monitor 與 `InterruptionSafeguard` 沿既有執行鏈保存狀態，主 Agent 不手動補寫 last-message 或 report。observation 為 `stale` 時同樣進入此分支，但不計算最長前綴，固定以 `estimate_source=bounded-single-unit` 只選第一個宣告單位。沒有任何 observation 時維持 `blocked-no-fresh-quota`，明確 service rejection 維持不自動重試，兩者不進入此分支。
-
-`advisor-consult` 的 activation 分兩條路徑。額度充足指快照有效且 fresh、沒有 service rejection、已取得估算，且 `primary_remaining_percent - 30 >= estimate_percent × 1.25`；此時 `AdvisorRequestSource` 記為 `automatic-quota`，reserve 為 30%，`advisor_hard_limit_percent = estimate_percent × 1.25`，不需要使用者確認。使用者授權以 `AdvisorRequestSource=user-explicit` 表達，不檢查額度剩餘，reserve 為 0，`primary_budget_percent` 為 primary 剩餘；完整 estimate 除以問題數得到 `advisor_unit_estimate_percent`，依宣告順序取可容納的最長前綴，第一個問題即超出預算時仍選取第一個問題並記錄 `minimum_unit_over_budget=true`，其餘問題列入 `deferred_units`。使用者授權只略過 reserve 與額度門檻，不略過快照有效性、service rejection、evidence hash、read-only sandbox 與 process identity gate。兩條路徑都不成立時，以 `AdvisorAuthorizationRequired` 拒絕並不啟動 Codex。
+`advisor-consult` 只在使用者授權後啟動，呼叫端以 `AdvisorRequestSource=user-explicit` 傳入；缺少授權時以 `AdvisorAuthorizationRequired` 拒絕並不啟動 Codex。授權後使用 evidence pack 的完整問題集。授權不略過 service rejection、evidence hash、read-only sandbox 與 process identity gate。
 
 ## InterruptionSafeguard
 
@@ -127,11 +125,11 @@ request 的 `prepare_artifacts` 必須是 object array。PowerShell 以 `Convert
 
 `Start` 將 evidence pack 全文內嵌 prompt，以 `---BEGIN INLINE EVIDENCE PACK---` 與 `---END INLINE EVIDENCE PACK---` 包夾，並附 `evidence-pack-sha256` 與 `evidence-pack-length`。執行端依內嵌內容作答，不需讀檔；read-only sandbox 下以工具讀檔會被核准政策阻擋，只給路徑的 prompt 會產生沒有技術結論的回覆。Start 產生 prompt 後重讀確認全文、hash 與長度，不符時以 `EvidencePackInlineMismatch` 停止。evidence pack 的 `## 待答問題` 必須有一行 `required-output:`，以分號分隔列出最終訊息必須包含的 Markdown heading。`Inspect` 逐一確認這些 heading 存在且內容非空，任一缺少時 `outputValid=false`、`success=false`，advisor report 另列「Required output gate」小節。
 
-執行端最後訊息在 `## 中斷保全結論` 內列出 `已完成單位：<問題 ID 清單>`。Inspect 只接受 `completed_units` 為 `selected_units` 的子集合，`deferred_units` 不得標記完成；safe point 缺失時報告記為 `completed_units=unknown`，不以 `selected_units` 推論完成，後續由既有執行鏈 anchor 判定續行資格。advisor report 保存 `requested_units`、`selected_units`、`deferred_units`、`completed_units`、activation mode、授權來源、reserve、primary budget 與 unit estimate。
+執行端最後訊息在 `## 中斷保全結論` 內列出 `已完成單位：<問題 ID 清單>`。Inspect 只接受 `completed_units` 為 `selected_units` 的子集合，`deferred_units` 不得標記完成；safe point 缺失時報告記為 `completed_units=unknown`，不以 `selected_units` 推論完成，後續由既有執行鏈 anchor 判定續行資格。advisor report 保存 `requested_units`、`selected_units`、`deferred_units`、`completed_units` 與授權來源。
 
-`Start` 只驗證並保存 evidence pack SHA-256，不建立 advisor report。呼叫端必須以 `Get-CodexQuota.ps1` 在 Start 前建立 `QuotaAfterPath` 指向的快照，Start 只驗證該檔格式，另在 `history` 建立本次的 after 快照並記錄其 SHA-256。Budget monitor 只更新這份自建快照：更新前後比對 SHA-256，一致時以暫存檔取代，不一致時以 `QuotaAfterSnapshotChanged` 停止。缺少 `QuotaAfterPath` 或 Codex home 時以非零結束。after snapshot 預設每 30 秒更新；更新失敗時記錄 `monitor.snapshot-failed`，並於下一個間隔重試，連續三次失敗才停止。Budget monitor 在 Codex 行程結束後仍必須補做一次 terminal quota snapshot 與 budget gate；terminal snapshot 更新失敗或超過 `primary_budget_percent` 時使 `Start` 以非零結束，超限時另寫入 `AbortedByBudget` 事件並保留對應證據，未超限時維持 completed。`Inspect` 或回收步驟依事件流與 last-message 寫入同線 `report/<lineSlug>/advisor-consult-<dispatchSlug>.md`，`AdvisorConsultReportPath` 必須位於同線 `reportLineRoot` 且檔名固定為 `advisor-consult-<dispatchSlug>.md`。報告區分證據支持、推論與未決問題。Start 前後的 SHA-256 不一致、Inspect 缺少 Start hash 紀錄或讀到 `AbortedByBudget` 時拒絕成功判定。
+`Start` 只驗證並保存 evidence pack SHA-256，不建立 advisor report。呼叫端必須以 `Get-CodexQuota.ps1` 在 Start 前建立 `QuotaAfterPath` 指向的快照，Start 只驗證該檔格式，另在 `history` 建立本次的 after 快照並記錄其 SHA-256。缺少 `QuotaAfterPath` 或 Codex home 時以非零結束。`Inspect` 或回收步驟依事件流與 last-message 寫入同線 `report/<lineSlug>/advisor-consult-<dispatchSlug>.md`，`AdvisorConsultReportPath` 必須位於同線 `reportLineRoot` 且檔名固定為 `advisor-consult-<dispatchSlug>.md`。報告區分證據支持、推論與未決問題。Start 前後的 SHA-256 不一致或 Inspect 缺少 Start hash 紀錄時拒絕成功判定。
 
-Budget monitor 每 100 毫秒檢查 Codex 行程是否結束，並預設每 30 秒更新一次 after quota snapshot；兩次更新間不呼叫 quota API。每次成功更新後比較 primary `resets_at`，reset window 改變時寫入跨 reset 紀錄並標記不可校準，停止監看。更新失敗時寫入 `monitor.snapshot-failed`，於下一個間隔重試；連續三次失敗後才呼叫 `Stop-VerifiedProcessTree` 停止行程。超過 `primary-budget-percent` 時先寫入 stop request，等待最新 `agent_message` 的 `## 中斷保全結論` 區段含非空保全結論、已確認結論、證據位置與實際覆蓋範圍，最多等待 `abort-grace-seconds`，再使用已驗證的 `Stop-VerifiedProcessTree`。Codex 行程結束後仍執行一次 terminal snapshot 與 budget gate。中止後確認整棵程序樹已結束，保存 `AbortedByBudget`；等待期間沒有完整保全結論時追加 `safe-point-missing`。根程序身分無法確認時不得終止，保存 `IdentityUnverified`。
+advisor 執行期間的額度觀測只作紀錄。監看迴圈每 250 毫秒檢查 Codex 行程是否結束，預設每 1800 秒更新一次自建的 after 快照，行程結束後再取一次 terminal 快照；兩次更新之間不呼叫 quota API。更新前比對 SHA-256，一致時以暫存檔取代。每次更新在 monitor 紀錄寫入 `quota.snapshot` 事件，含快照狀態、primary／secondary 值與依 ScopePlan 計算的進度。更新失敗、雜湊不一致或 API 錯誤時，狀態記為 unknown 並附 `failure_code` 與 `failure_class`，不停止 Codex 行程。
 
 ## Git 前置探針與 worktree 生命週期
 
@@ -236,7 +234,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | --- | --- | --- | --- |
 | `Preflight` | `SourceRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、`WriteMode`、`TargetPath[]` | `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`、同線目錄、`pidCheck` | manifest、PID、Git、根目錄界線、worktree、patch 或檔案複製驗證失敗時 stderr 並 exit code 1 |
 | `Prepare` | `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`PrepareArtifacts[]`、`TargetPath[]` | 每個交接檔的來源／目的路徑與 SHA-256、`Prepared` 狀態 | 交接檔缺漏、越界、複製失敗或 hash 不符時 stderr 並 exit code 1 |
-| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`TaskType`、before snapshot、`InterruptionSafeguard`（舊參數 alias 為 `DowngradeInstruction`）、ScopePlan、Codex 父層選項；advisor 另需 `AdvisorConsultReportPath`、evidence pack、`QuotaAfterPath` 與 read-only 邊界；`AdvisorRequestSource` 為選用，省略時先進入 activation，額度充足才標記 `automatic-quota` | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id relay、before snapshot、ScopePlan、實際參數、有效 profile、中斷保全狀態與 monitor 證據 | 快照、ScopePlan、evidence pack、執行檔、工作目錄、啟動參數或根程序身分驗證失敗時 stderr 並 exit code 1 |
+| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`TaskType`、before snapshot、`InterruptionSafeguard`（舊參數 alias 為 `DowngradeInstruction`）、ScopePlan、Codex 父層選項；advisor 另需 `AdvisorConsultReportPath`、evidence pack、`QuotaAfterPath` 與 read-only 邊界；`AdvisorRequestSource` 必須為 `user-explicit` | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id relay、before snapshot、ScopePlan、實際參數、有效 profile、中斷保全狀態與 monitor 證據 | 快照、ScopePlan、evidence pack、執行檔、工作目錄、啟動參數或根程序身分驗證失敗時 stderr 並 exit code 1 |
 | `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、ScopePlan、派工前後快照、thread id 路徑 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、after snapshot、三層 model evidence、thread relay、advisor report 與 monitor 證據 | JSONL、thread id、必要輸入或證據包 hash 格式錯誤時 stderr 並 exit code 1 |
 | `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath`；回收 Reviewer 時另提供選用的 `ReviewerReportPath` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果；提供 `ReviewerReportPath` 時另含 `reviewerFindings`（`valid`、`conclusion`、七個 unique 計數 `previous_closed_count`、`previous_open_count`、`previous_withdrawn_count`、`current_new_count`、`current_open_count`、`current_closed_count`、`current_withdrawn_count`，以及 `duplicate_ids`、`inconsistencies`） | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
 | `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `finalStatus`、新快照路徑與 SHA-256、`processStarted=false` 與回復紀錄 | 只允許 `PostResetNoSnapshot`、`SnapshotExpired` 與 `ServiceRejected`；`ProbeAttempt > 1`，或重新取得的快照不是 `Valid` 且 `fresh` 時 stderr 並 exit code 1 |
@@ -247,11 +245,11 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 `Start` 會固定 `--cd`、`--sandbox`、`--profile`、`--add-dir`、`--search` 等父層選項的位置，再執行 `codex exec` 或同一 thread 的 `codex exec resume`。`--json`、`--output-last-message` 與 prompt 選項位於子命令之後。事件流、stderr、last-message、thread id 與 PID 記錄各自保存，啟動結果包含實際參數，供後續複核。
 
-`Start` 每次都加入 `InterruptionSafeguard` prompt。收到 `Profile=advisor` 時先執行 advisor profile 與 TaskType gate，再依 `AdvisorRequestSource` 與額度判定 activation；`TaskType=advisor-consult` 使用 evidence pack、問題單位與 activation 決定的 reserve。預設檔位低於門檻時維持預設檔位，改由 ScopePlan 控制範圍。中斷保全不改變 profile，也不作為換檔出口。
+`Start` 每次都加入 `InterruptionSafeguard` prompt。收到 `Profile=advisor` 時先執行 advisor profile 與 TaskType gate，再確認 `AdvisorRequestSource=user-explicit`；`TaskType=advisor-consult` 使用 evidence pack 與完整問題單位。中斷保全不改變 profile，也不作為換檔出口。
 
 `Inspect` 逐行解析 JSONL。空白行略過；單行解析失敗時保存原文與行號，繼續解析其餘事件，讓完整事件流仍可供診斷，但只要存在壞行，`Inspect` 就以非零結束碼拒絕產出成功狀態。可解析且具備必要欄位的 `turn.failed` 或非零 process exit code 是派工證據中的失敗結果，腳本仍輸出完整結果 JSON，其中 `success=false`、`status=inspected`。`Inspect` 本身的結束碼沿用傳入的 `ProcessExitCode`，Codex 以非零結束時 `Inspect` 也以相同非零值結束；呼叫端以結果 JSON 判定檢查內容，以結束碼判定 Codex 是否正常結束。缺少事件、非空 `type`、必要的 `thread_id`、成功事件的 `usage`、最後一則 `agent_message` 或其他必要欄位時，`Inspect` operation 以非零結束。`outputValid=false` 只表示存在 final message 但該訊息缺少必要識別字。
 
-`Inspect` 保存事件流、usage、三層 model evidence、thread relay、advisor report 與 monitor 證據。額度 before／after snapshot 若存在則保存其實際值；snapshot 缺失或不完整時保留可取得的其他證據，不因校準觀測而改變 `Inspect` 的成功判定。
+`Inspect` 保存事件流、usage、三層 model evidence、thread relay、advisor report 與 monitor 證據。額度 before／after snapshot 若存在則保存其實際值；snapshot 缺失或不完整時保留可取得的其他證據，`Inspect` 的成功判定不受額度快照影響。
 
 Reviewer 回收時，主 Agent 以 `Collect -ReviewerReportPath` 驗證報告的 `## Finding manifest`（schema `codex-dispatch.review-findings.v2`，規則見 `reviewer.toml`）。`reviewerFindings.valid=false` 表示報告自相矛盾或格式無法核對，`outputValid=false` 並以非零結束，依回收三態退回 Reviewer 補正；`valid=true` 且 `conclusion=fail` 表示報告有效但仍有 Critical 或 Major finding，依共同收斂契約退回 Developer 修正。兩種情況分開處理，不以 finding 數量推導結論。
 
@@ -284,7 +282,7 @@ Start、Inspect、RunRecord 的 model 與 reasoning effort 分為三層證據，
 
 跨程序傳入陣列參數（`TargetPath`、`AddDirectory`、`CodexParentOption`）時，以 `-RequestPath` 傳入 `ai-sessions.dispatch-request.v1` JSON 檔，陣列元素的原文與順序即契約，逗號、空白、中文與 `$` 不經 shell 展開或重新切分。`powershell.exe -File` 無法以命令列傳遞字串陣列，逗號串接會被視為單一字串，跨 PowerShell 執行環境呼叫時一律使用 request 檔。request 檔與命令列同一欄位不一致時以 `DispatchRequestMismatch` 停止。
 
-額度快照保存 `observations`（兩個視窗最後一次實際觀測的 used／remaining、觀測時間、來源、freshness 與 resets_at）與 `service_rejection`。usage-limit 事件記為 `service_rejection`（`status=quota-rejected`、`retry_allowed=false`），不改寫最後觀測值；過期快照保留觀測值並標示 freshness，不宣稱為即時額度。預設檔位在低於門檻時依「額度與範圍契約」的低額度分支繼續派工，不進入等待使用者決定；中斷保全沿用既有執行鏈錨點保存狀態。收到明確額度拒絕後不自動重試，等待重設或新的觀測證據。advisor-consult 的 reserve 依 activation 路徑決定，額度充足為 30%，使用者授權為 0。
+額度快照保存 `observations`（兩個視窗最後一次實際觀測的 used／remaining、觀測時間、來源、freshness 與 resets_at）與 `service_rejection`。usage-limit 事件記為 `service_rejection`（`status=quota-rejected`、`retry_allowed=false`），不改寫最後觀測值；過期快照保留觀測值並標示 freshness，不宣稱為即時額度。收到明確額度拒絕時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不自動重試，等待重設或新的觀測證據。
 
 ### 額度狀態與回復探針
 
@@ -292,15 +290,15 @@ Start、Inspect、RunRecord 的 model 與 reasoning effort 分為三層證據，
 
 | 狀態 | 判定條件 | 處置 |
 | --- | --- | --- |
-| `Valid` | 回應含 `primary` 與 `secondary` 兩個視窗且欄位合法，沒有拒絕旗標 | 進入額度門檻判定 |
+| `Valid` | 回應含 `primary` 與 `secondary` 兩個視窗且欄位合法，沒有拒絕旗標 | 記錄額度供顯示與成本紀錄 |
 | `ServiceRejected` | 回應帶有額度拒絕旗標 | 不自動重試，等待重設或新的觀測證據 |
 | `SnapshotUnavailable` | 認證資料缺漏、連線失敗、逾時、HTTP 非 2xx、回應格式或數值範圍不合法 | 以非零結束碼停止，stderr 保留失敗類別，不產生估算值 |
 
-observation 的 `freshness` 在寫入快照時依觀測時間距今判定，30 分鐘內為 `fresh`，超過為 `stale`，派工腳本讀取時沿用寫入值，不重新計算。即時來源寫出的快照一律為 `fresh`；`stale` 只出現在其他來源寫出的舊快照文件，此時依「額度與範圍契約」的低額度分支處理，或重新取得一次快照。
+observation 的 `freshness` 在寫入快照時依觀測時間距今判定，30 分鐘內為 `fresh`，超過為 `stale`，派工腳本讀取時沿用寫入值，不重新計算。即時來源寫出的快照一律為 `fresh`；`stale` 只出現在其他來源寫出的舊快照文件，此時照常派工、不改變範圍，需要最新數值時重新取得一次快照。
 
 `QuotaProbe` 是額度狀態的一次性回復入口，`ProbeAttempt` 上限為 1，`InitialQuotaState` 只接受 `PostResetNoSnapshot`、`SnapshotExpired` 與 `ServiceRejected`。前兩者由呼叫端依既有快照判定，`QuotaProbe` 只以新檔重新取得即時快照；`state=Valid` 且 `freshness=fresh` 時回傳 `finalStatus=quota-source-refreshed-no-probe`，不掃描 rollout、不啟動 Codex。即時刷新失敗時以非零結束碼停止，不使用其他快照來源。`ServiceRejected` 寫入 `finalStatus=service-rejected-no-retry`，不啟動 Codex 也不重試。
 
-回復紀錄寫入 `.local\ai-sessions\history\<lineSlug>\quota-recovery-<dispatchSlug>.json`，保留初始狀態、觸發視窗、嘗試次數、新快照路徑與 SHA-256、重試結果與最終狀態。回復紀錄是派工證據，不是額度快照來源，不得讀回當作額度估算。`QuotaProbe` 成功後，呼叫端以回傳的 `quotaSnapshotPath` 或重新取得的快照進入額度門檻判定；`advisor-consult` 依額度充足或使用者授權重新判定 activation。`advisor` 的使用者授權不略過快照有效性。
+回復紀錄寫入 `.local\ai-sessions\history\<lineSlug>\quota-recovery-<dispatchSlug>.json`，保留初始狀態、觸發視窗、嘗試次數、新快照路徑與 SHA-256、重試結果與最終狀態。回復紀錄是派工證據，不是額度快照來源，不得讀回當作額度估算。`QuotaProbe` 成功後，呼叫端以回傳的 `quotaSnapshotPath` 或重新取得的快照作為額度紀錄。
 
 ### 執行可用性
 
@@ -397,7 +395,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ### advisor 的前置準備
 
-預設檔位的成本與推理特性由 `default.config.toml` 的 model 與 effort 決定。`advisor` 的實測成本基準為一小時即可用完整個 `primary` 5 小時視窗。這項數據只用來估計諮詢規模，不直接取代依分組累積的校準值。
+預設檔位的成本與推理特性由 `default.config.toml` 的 model 與 effort 決定。`advisor` 的實測成本基準為一小時即可用完整個 `primary` 5 小時視窗。這項數據只用來估計諮詢規模。
 
 降低成本的方式是減少執行端自行探索的讀取量，不是縮小任務範圍。檔位本身的成本特性由本機檔位設定決定，設定方式見 README 的 Codex profile 檔位設定章節。
 
@@ -406,11 +404,9 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 - 派遣單第 3 欄逐一列出目標物件的絕對路徑，不使用目錄萬用字元，避免執行端自行決定讀取範圍。
 - prompt 明列已知結論、已讀過的檔案與不需重讀的部分，讓執行端直接進入判斷。
 - 需要限制讀取量時，在 prompt 明文要求單一 agent 執行並說明理由。執行端派生 subagent 時每個 subagent 各自消耗額度，讀取量隨並行數累加。
-- 額度不足以支撐完整任務時，在 prompt 加入中斷保全指示：要求先寫出已確認的結果並註明實際覆蓋範圍，於安全點保存結論與證據，再結束目前派遣。實測該指示可使中斷的派遣仍交付部分成果。
+- 每次派工都注入中斷保全指示，要求先寫出已確認的結果並註明實際覆蓋範圍，於安全點保存結論與證據。服務端因額度拒絕而中止時，已保存的部分成果仍可交付。
 
-本機檔位設定調整後，冷啟動的消耗結構隨之改變，前述門檻應依調整後的實測值重新校準，不沿用調整前的數據。
-
-續行同一 thread 的輸入快取狀態與冷啟動不同，因此續行與冷啟動必須分組校準。續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立。所有續行仍注入中斷保全指示，並沿用同一份 `ScopePlan` 與保全狀態。
+續行必須沿用初始啟動的完整父層選項，包含 `--profile`，跨檔位續行不成立。所有續行仍注入中斷保全指示，並沿用同一份 `ScopePlan` 與保全狀態。
 
 ### 額度快照
 
@@ -418,11 +414,11 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 快照檔一律以新檔寫入。`Get-CodexQuota.ps1 -SnapshotPath` 以排他建立開檔，目標已存在時以 `QuotaSnapshotTargetAlreadyExists` 停止且不覆寫。派工腳本以 `New-QuotaSnapshotPath` 在 `history` 產生 `quota-before-*`、`quota-after-*` 或 `quota-source-refresh-<dispatchSlug>-*` 唯一檔名。呼叫端提供的 `QuotaBeforePath` 與 `QuotaAfterPath` 只驗證格式，不寫入；Start 另建本次的 before 快照並綁定到 RunRecord，advisor 另建本次的 after 快照。`Dispatch` 建立的 before 快照經 stage binding 交給 Start 沿用，不重複取得。
 
-快照只代表取得當下的用量。兩個視窗由所有檔位共用，不依模型分別計量。`advisor` 單次派遣可能在數十分鐘內耗盡整個 `primary` 視窗，使派工當下的剩餘百分比無法代表派遣全程可用的額度，因此執行中的用量由 Budget monitor 以 after 快照追蹤。快照 `state=Valid` 時交由 `ScopePlan` 依「額度與範圍契約」處理；`state` 不是 `Valid` 時停止派工，或依「額度狀態與回復探針」處理。
+快照只代表取得當下的用量。兩個視窗由所有檔位共用，不依模型分別計量。`advisor` 單次派遣可能在數十分鐘內耗盡整個 `primary` 視窗，所以 advisor 執行期間定期取 after 快照作紀錄。快照不論 `state` 為何都不改變派工範圍，也不停止派工。
 
 兩個視窗都是固定視窗，`used_percent` 在視窗內單調累積，跨過 `resets_at` 後歸零並跳至下一格，額度不連續回補。`primary` 為 5 小時視窗，`secondary` 為 7 天視窗，容量相差約 33 倍，因此同一件任務在 `primary` 消耗的百分點約為 `secondary` 的 30 倍。
 
-腳本成功時依序輸出下列兩組 key-value。主 Agent 以同一次讀取的 `primary_remaining_percent` 與 `secondary_remaining_percent` 進行檔位判定。
+腳本成功時依序輸出下列兩組 key-value。主 Agent 以同一次讀取的 `primary_remaining_percent` 與 `secondary_remaining_percent` 向使用者呈現額度，例如附在 advisor 授權請求中。
 
 ```text
 primary_used_percent=
@@ -443,37 +439,30 @@ secondary_resets_at_local=
 secondary_source_file=
 ```
 
-### 額度門檻與檔位選擇
+### 檔位選擇與額度查詢時點
 
-`Inspect` 預設唯讀。`Inspect` 不寫入 `quota-calibration.jsonl`；`ScopePlan` 可讀取既有檔案作為歷史資料。
-
-預設檔位的門檻為 `primary` 30% 與 `secondary` 15%。`advisor` 不使用固定門檻表，依「額度與範圍契約」的 activation 規則判定額度充足或使用者授權。
-
-門檻與估算依既有 `model`、`profile`、冷啟動／續行與 `task_type` 分組資料讀取。設定檔更換模型後，既有資料只能作為歷史觀測，不能直接套用到新的分組。
+`Inspect` 預設唯讀，不寫入額度或成本以外的推薦訊號。
 
 1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。實作與執行類工作一律使用預設檔位。
-2. 屬意見評估且額度充足時，主 Agent 可在適當的節點直接發動 `advisor` 諮詢，不需要使用者確認。
-3. 額度不足時，只有使用者授權才發動 `advisor`，並以 `AdvisorRequestSource=user-explicit` 傳入；授權後不檢查額度剩餘，範圍依剩餘額度縮小問題前綴。
-4. 預設檔位低於門檻、快照 `state=Valid` 時（observation 為 fresh 或 stale 皆同），冷啟動與續行維持預設檔位，依低額度分支繼續派工，不等待使用者決定。所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
-5. 額度腳本失敗、輸出缺少任一視窗欄位，或以 `advisor` 派工而 `advisor.config.toml` 不存在時，停止需要額度判定的派工，不使用估算值或隱式 profile fallback。
+2. 屬意見評估時，主 Agent 先向使用者提出 advisor 授權請求；使用者同意後以 `AdvisorRequestSource=user-explicit` 派工。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工，該授權不延續到其他 Session。
+3. 額度只供顯示與紀錄，查詢時點為派工前、advisor 前、長時間派工執行中約每 30 分鐘、結案時與按需查詢。查詢失敗記為 unknown，派工照常進行。
+4. 所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
+5. 以 `advisor` 派工而 `advisor.config.toml` 不存在時，停止該次派工，不使用隱式 profile fallback。
 6. 預設檔位一律傳入 `--profile default`，檔位名稱只允許預設與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。
-
-`ScopePlan` 仍可讀取既有 `<sourceRoot>\.local\ai-sessions\history\quota-calibration.jsonl` 的歷史資料，用於估算與門檻判定；`Inspect` 不新增或更新該檔案，也不輸出推薦訊號。
 
 ### 決策歸屬
 
-檔位由主 Agent 於派工當下決定。主 Agent 必須保留兩個視窗的剩餘額度與任務難度判定，供回報與後續複核使用。
+檔位由主 Agent 於派工當下決定。主 Agent 保留派工前查詢到的兩個視窗剩餘額度與任務難度判定，供回報與後續複核使用。
 
 ### advisor 授權請求
 
-額度充足時 `advisor` 直接啟動，不輸出授權請求。額度不足且主 Agent 判斷值得諮詢時，才在派工前輸出單行授權請求，格式如下。
+主 Agent 判斷值得諮詢時，在派工前輸出單行授權請求，格式如下。
 
 ```text
-[advisor 諮詢授權] primary 剩餘 <n>%；完整評估預估 <m>%；本次授權會略過 30% primary reserve，並依可用額度縮小問題前綴；<需要 advisor 的具體理由>。是否執行 advisor 諮詢？
+[advisor 諮詢授權] primary 剩餘 <n>%、secondary 剩餘 <m>%；<需要 advisor 的具體理由>。是否執行 advisor 諮詢？
 ```
 
-理由必須指出該評估的推理密集點與 evidence pack 已整理完成的依據。只寫「問題較難」或「需要深入分析」不構成理由。請求文字本身不構成授權證據；使用者明確同意後，以 `AdvisorRequestSource=user-explicit` 重新送出派工。使用者未回覆或未明確同意時不發動 `advisor`，不等待也不重複詢問。
-
+理由必須指出該評估的推理密集點與 evidence pack 已整理完成的依據。只寫「問題較難」或「需要深入分析」不構成理由。請求文字本身不構成授權證據；使用者明確同意後，以 `AdvisorRequestSource=user-explicit` 送出派工。使用者未回覆或未明確同意時不發動 `advisor`，不等待也不重複詢問。
 檔位判定不得只依 exit code 推論 profile 已生效，必須同時確認啟動參數與產出證據。
 
 ## 完成判定與三出口
@@ -514,7 +503,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 | `exitCode` | process 結束碼 |
 | `stderr` | stderr 檔案完整內容 |
 
-事件流與本輪 thread、turn 屬同一份證據，因此是 `finalMessage` 的唯一來源；外部 last-message 檔可能是前輪或其他派遣的輸出，只用來比對。外部檔存在且內容與事件流不同時 `lastMessageConsistency=Mismatch`，路徑與本輪 RunRecord 不符時為 `BindingMismatch`，兩者都使 `outputValid=false`、`success=false`；比對前將 CRLF 與 CR 統一為 LF，只移除開頭一個 BOM 與結尾換行。事件流沒有最後的 `agent_message` 時，`Inspect` 以非零結束碼停止；只有已取得 final message 但識別字不完整時才輸出 `outputValid=false`。若事件流最後為 `turn.completed` 但 monitor 含 `AbortedByBudget` 或 `monitor.terminal-budget-exceeded`，`Inspect` 保留完整事件與 monitor 證據，輸出 `success=false`。
+事件流與本輪 thread、turn 屬同一份證據，因此是 `finalMessage` 的唯一來源；外部 last-message 檔可能是前輪或其他派遣的輸出，只用來比對。外部檔存在且內容與事件流不同時 `lastMessageConsistency=Mismatch`，路徑與本輪 RunRecord 不符時為 `BindingMismatch`，兩者都使 `outputValid=false`、`success=false`；比對前將 CRLF 與 CR 統一為 LF，只移除開頭一個 BOM 與結尾換行。事件流沒有最後的 `agent_message` 時，`Inspect` 以非零結束碼停止；只有已取得 final message 但識別字不完整時才輸出 `outputValid=false`。
 
 `usage` 只作為事後記錄與額度對照，不取代派工前的額度快照判定。
 
@@ -534,7 +523,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 續行在建立 launcher 前比對原 thread 模型與本次 resolved 模型。原 thread 模型依序取自錨點 RunRecord 的 runtime 證據、錨點對應 rollout 的 `turn_context`，以及錨點事件流 error 中唯一可解析的「recorded with model X」。兩邊都確認且不同時以 `ThreadModelMismatch` 停止，任一邊無法確認時以 `ThreadModelUnknown` 停止，兩者都不啟動 Codex 並輸出雙方證據。模型不一致時改以新 dispatchSlug 冷啟動。reasoning effort 不同不阻擋續行，差異保存於證據。
 
-Start 與 Inspect 的失敗結果帶 `reason_code`：`QuotaStop`、`QuotaServiceRejected`、`RequiredParameterMissing`、`AdvisorImplementationProfileRejected`、`AdvisorProfileRequired`、`AdvisorAuthorizationRequired`、`EvidencePackRequiredOutputInvalid`、`EvidencePackMissing`、`EvidencePackInvalid`、`EvidencePackInlineMismatch`、`ProfileEvidenceUnknown`、`CodexLaunchFailed`、`ProcessIdentityUnknown`、`ThreadRelayTimeout`、`BudgetMonitorStopped`、`ThreadModelMismatch`、`ThreadModelUnknown` 或 `Unknown`。`turn.failed` 或非零 exit 沒有可確認原因時使用 `Unknown`，並保留原始事件行與 stderr；stderr 為空不代表沒有錯誤。
+Start 與 Inspect 的失敗結果帶 `reason_code`：`QuotaServiceRejected`、`RequiredParameterMissing`、`AdvisorImplementationProfileRejected`、`AdvisorProfileRequired`、`AdvisorAuthorizationRequired`、`EvidencePackRequiredOutputInvalid`、`EvidencePackMissing`、`EvidencePackInvalid`、`EvidencePackInlineMismatch`、`ProfileEvidenceUnknown`、`CodexLaunchFailed`、`ProcessIdentityUnknown`、`ThreadRelayTimeout`、`ThreadModelMismatch`、`ThreadModelUnknown` 或 `Unknown`。`turn.failed` 或非零 exit 沒有可確認原因時使用 `Unknown`，並保留原始事件行與 stderr；stderr 為空不代表沒有錯誤。
 
 前輪以 usage-limit 中止、沒有 last-message、啟動失敗或終止原因不明時，續行沿既有執行鏈的 `attempt_parent_run_id`／`previous_run_id` 尋找有效 anchor；找不到有效 anchor 時以 `NoValidResumeAnchor` 停止。執行鏈保留失敗嘗試、事件流、ScopePlan、baseline、父層選項、process gate、ACL gate 與 model evidence，成果仍由 Inspect 與 Collect 驗收。沒有 last-message 本身不是拒絕原因。
 

@@ -61,7 +61,7 @@ param(
 
     [string]$SessionMode = 'cold-start',
 
-    [ValidateSet('automatic-quota', 'user-explicit')]
+    [ValidateSet('user-explicit')]
     [string]$AdvisorRequestSource,
 
     [Nullable[double]]$SecondaryDaysToReset,
@@ -1092,267 +1092,25 @@ function Test-QuotaSnapshotFresh {
     return $true
 }
 
-function Get-QuotaSnapshotDelta {
-    param(
-        [Parameter(Mandatory)]
-        [psobject]$Before,
-
-        [Parameter(Mandatory)]
-        [psobject]$After
-    )
-
-    if ($null -eq $Before -or $null -eq $After) {
-        return $null
-    }
-    return [double]$Before.primary.remaining_percent - [double]$After.primary.remaining_percent
-}
-
 function Get-AdvisorActivationDecision {
-    param(
-        [Parameter(Mandatory)]
-        [psobject]$QuotaSnapshot,
-
-        [Parameter(Mandatory = $false)]
-        [Alias('SnapshotState')]
-        [AllowEmptyString()]
-        [string]$State,
-
-        [Parameter(Mandatory)]
-        [double]$EstimatePercent,
-
-        [Parameter(Mandatory)]
-        [ValidateSet('automatic-quota', 'user-explicit')]
-        [string]$RequestSource,
-
-        [Parameter(Mandatory = $false)]
-        [bool]$HasFreshObservations = $true,
-
-        [Parameter(Mandatory = $false)]
-        [bool]$ServiceRejected = $false
-    )
-
-    $primaryRemaining = $null
-    if ($null -ne $QuotaSnapshot -and $null -ne $QuotaSnapshot.primary) {
-        $primaryRemaining = [double]$QuotaSnapshot.primary.remaining_percent
-    }
-
-    $snapshotState = [string](Get-DispatchJsonProperty -Object $QuotaSnapshot -Name 'state')
-    $effectiveState = if ([string]::IsNullOrWhiteSpace($State)) { $snapshotState } else { $State }
-    $snapshotStateValid = [string]::Equals($snapshotState, 'Valid', [System.StringComparison]::OrdinalIgnoreCase) -and
-        [string]::Equals($effectiveState, 'Valid', [System.StringComparison]::OrdinalIgnoreCase)
-    $snapshotSafe = $null -ne $primaryRemaining -and $snapshotStateValid -and $HasFreshObservations -and -not $ServiceRejected
-    $reservePercent = 30.0
-    $hardLimit = [math]::Round($EstimatePercent * 1.25, 2)
-    $automaticEligible = $snapshotSafe -and $primaryRemaining - $reservePercent -ge $hardLimit
-
-    if ($RequestSource -eq 'user-explicit') {
-        if (-not $snapshotSafe) {
-            return [ordered]@{
-                granted                  = $false
-                activationMode           = 'none'
-                authorizationSource      = $null
-                reserveBypassed           = $false
-                minimumUnitOverBudget     = $false
-                reasonCode                = if ($ServiceRejected) { 'QuotaServiceRejected' } else { 'blocked-no-fresh-quota' }
-                notice                    = 'advisor 需要有效且新鮮的 quota snapshot 才能啟動。'
-                requiredAuthorization    = 'user-explicit'
-                hardLimitPercent         = $hardLimit
-                remainingPercent         = $primaryRemaining
-            }
-        }
-
-        return [ordered]@{
-            granted                  = $true
-            activationMode           = 'user-authorized'
-            authorizationSource      = 'user-explicit'
-            reserveBypassed           = $true
-            minimumUnitOverBudget     = $primaryRemaining -lt $hardLimit
-            reasonCode                = $null
-            notice                    = '使用者明示要求 advisor，保留安全 snapshot 並略過 30% reserve。'
-            requiredAuthorization    = $null
-            hardLimitPercent         = $hardLimit
-            remainingPercent         = $primaryRemaining
-        }
-    }
-
-    if (-not $snapshotSafe) {
-        return [ordered]@{
-            granted                  = $false
-            activationMode           = 'none'
-            authorizationSource      = $null
-            reserveBypassed           = $false
-            minimumUnitOverBudget     = $false
-            reasonCode                = if ($ServiceRejected) { 'QuotaServiceRejected' } else { 'blocked-no-fresh-quota' }
-            notice                    = 'advisor 的 automatic-quota 啟動需要有效且新鮮的 quota snapshot。'
-            requiredAuthorization    = 'user-explicit'
-            hardLimitPercent         = $hardLimit
-            remainingPercent         = $primaryRemaining
-        }
-    }
-
-    if (-not $automaticEligible) {
-        return [ordered]@{
-            granted                  = $false
-            activationMode           = 'none'
-            authorizationSource      = $null
-            reserveBypassed           = $false
-            minimumUnitOverBudget     = $false
-            reasonCode                = 'AdvisorAuthorizationRequired'
-            notice                    = 'advisor automatic-quota 估算後無法在 primary 保留 30% reserve，需使用者明示要求。'
-            requiredAuthorization    = 'user-explicit'
-            hardLimitPercent         = $hardLimit
-            remainingPercent         = $primaryRemaining
-        }
-    }
-
+    param([Parameter(Mandatory)][ValidateSet('user-explicit')][string]$RequestSource)
     return [ordered]@{
-        granted                  = $true
-        activationMode           = 'automatic-quota'
-        authorizationSource      = 'automatic-quota'
-        reserveBypassed           = $false
-        minimumUnitOverBudget     = $false
-        reasonCode                = $null
-        notice                    = 'advisor automatic-quota 已通過 30% reserve 與估算上限檢查。'
-        requiredAuthorization    = $null
-        hardLimitPercent         = $hardLimit
-        remainingPercent         = $primaryRemaining
+        granted = $true
+        activationMode = 'user-authorized'
+        authorizationSource = $RequestSource
+        reserveBypassed = $false
+        minimumUnitOverBudget = $false
+        reasonCode = $null
+        notice = 'advisor 已由呼叫端提供使用者明確授權。'
+        requiredAuthorization = $null
+        hardLimitPercent = $null
+        remainingPercent = $null
     }
 }
 
-function Get-ConservativeEstimate {
-    param(
-        [Parameter(Mandatory)]
-        [string]$TaskType
-    )
 
-    switch ($TaskType.ToLowerInvariant()) {
-        'advisor-consult' { return 24.0 }
-        'readonly-review' { return 7.0 }
-        'review' { return 7.0 }
-        'script-change' { return 14.0 }
-        default { return $null }
-    }
-}
 
-function Get-CalibrationEstimate {
-    param(
-        [string]$Path,
 
-        [AllowNull()]
-        [object]$ModelEvidence,
-
-        [AllowNull()]
-        [object]$ReasoningEffortEvidence,
-
-        [string]$Model,
-
-        [string]$ReasoningEffort,
-
-        [Parameter(Mandatory)]
-        [string]$Profile,
-
-        [Parameter(Mandatory)]
-        [string]$SessionMode,
-
-        [Parameter(Mandatory)]
-        [string]$TaskType
-    )
-
-    $normalizedModelEvidence = $null
-    if ($null -ne $ModelEvidence) {
-        $normalizedModelEvidence = ConvertTo-DispatchEvidence -Evidence $ModelEvidence -Field 'model'
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($Model)) {
-        $normalizedModelEvidence = New-ConfirmedDispatchEvidence -Value $Model -Source 'compatibility-parameter' -Field 'model'
-    }
-    else {
-        $normalizedModelEvidence = New-UnknownDispatchEvidence -Field 'model' -Reason '校準缺少 resolved model evidence。' -Source 'evidence-missing'
-    }
-    $normalizedEffortEvidence = $null
-    if ($null -ne $ReasoningEffortEvidence) {
-        $normalizedEffortEvidence = ConvertTo-DispatchEvidence -Evidence $ReasoningEffortEvidence -Field 'model_reasoning_effort'
-    }
-    elseif (-not [string]::IsNullOrWhiteSpace($ReasoningEffort)) {
-        $normalizedEffortEvidence = New-ConfirmedDispatchEvidence -Value $ReasoningEffort -Source 'compatibility-parameter' -Field 'model_reasoning_effort'
-    }
-    else {
-        $normalizedEffortEvidence = New-UnknownDispatchEvidence -Field 'model_reasoning_effort' -Reason '校準缺少 resolved reasoning effort evidence。' -Source 'evidence-missing'
-    }
-    $resolvedModel = Get-DispatchEvidenceValue -Evidence $normalizedModelEvidence
-    $resolvedEffort = Get-DispatchEvidenceValue -Evidence $normalizedEffortEvidence
-    if ($null -eq $resolvedModel -or $null -eq $resolvedEffort) {
-        return [ordered]@{
-            estimate = $null
-            source   = 'evidence-unknown'
-            sampleCount = 0
-            model = $normalizedModelEvidence
-            reasoning_effort = $normalizedEffortEvidence
-        }
-    }
-
-    if ([string]::IsNullOrWhiteSpace($Path) -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return [ordered]@{
-            estimate = $null
-            source   = 'none'
-            sampleCount = 0
-            model = $normalizedModelEvidence
-            reasoning_effort = $normalizedEffortEvidence
-        }
-    }
-
-    $records = @(Get-CalibrationRecords -Path $Path | Where-Object {
-            $groupProperty = $_.PSObject.Properties['group']
-            $group = if ($null -eq $groupProperty) { $null } else { $groupProperty.Value }
-            $groupModel = Get-DispatchJsonProperty -Object $group -Name 'model'
-            $groupEffort = Get-DispatchJsonProperty -Object $group -Name 'reasoning_effort'
-            $evidenceProperty = $_.PSObject.Properties['model_evidence']
-            $effortEvidenceProperty = $_.PSObject.Properties['reasoning_effort_evidence']
-            $recordEvidence = if ($null -eq $evidenceProperty) { $null } else { $evidenceProperty.Value }
-            $recordEffortEvidence = if ($null -eq $effortEvidenceProperty) { $null } else { $effortEvidenceProperty.Value }
-            $recordResolvedModelEvidence = Get-DispatchJsonProperty -Object $recordEvidence -Name 'resolved'
-            $recordRuntimeModelEvidence = Get-DispatchJsonProperty -Object $recordEvidence -Name 'runtime_verifiable'
-            $recordResolvedEffortEvidence = Get-DispatchJsonProperty -Object $recordEffortEvidence -Name 'resolved'
-            $recordRuntimeEffortEvidence = Get-DispatchJsonProperty -Object $recordEffortEvidence -Name 'runtime_verifiable'
-            $recordResolvedModel = Get-DispatchEvidenceValue -Evidence $recordResolvedModelEvidence
-            $recordRuntimeModel = Get-DispatchEvidenceValue -Evidence $recordRuntimeModelEvidence
-            $recordResolvedEffort = Get-DispatchEvidenceValue -Evidence $recordResolvedEffortEvidence
-            $recordRuntimeEffort = Get-DispatchEvidenceValue -Evidence $recordRuntimeEffortEvidence
-            $_.calibration_eligible -eq $true -and
-            $groupModel -eq $resolvedModel -and
-            $groupEffort -eq $resolvedEffort -and
-            $_.profile -eq $Profile -and
-            $_.session_mode -eq $SessionMode -and
-            $_.task_type -eq $TaskType -and
-            $recordResolvedModel -eq $resolvedModel -and
-            $recordRuntimeModel -eq $resolvedModel -and
-            $recordResolvedEffort -eq $resolvedEffort -and
-            $recordRuntimeEffort -eq $resolvedEffort -and
-            $null -ne $_.observed_primary_delta_percent
-        })
-    $deltas = @($records | ForEach-Object { [double]$_.observed_primary_delta_percent } | Where-Object { $_ -ge 0 })
-    if ($deltas.Count -ge 5) {
-        $sorted = @($deltas | Sort-Object)
-        $index = [math]::Ceiling($sorted.Count * 0.75) - 1
-        if ($index -lt 0) {
-            $index = 0
-        }
-        return [ordered]@{
-            estimate = [double]$sorted[$index]
-            source   = 'p75'
-            sampleCount = $sorted.Count
-            model = $normalizedModelEvidence
-            reasoning_effort = $normalizedEffortEvidence
-        }
-    }
-
-    return [ordered]@{
-        estimate = $null
-        source   = 'insufficient-samples'
-        sampleCount = $deltas.Count
-        model = $normalizedModelEvidence
-        reasoning_effort = $normalizedEffortEvidence
-    }
-}
 
 function Get-DispatchUnitList {
     param(
@@ -1447,21 +1205,7 @@ function Get-DispatchUnitList {
     return @($units.ToArray())
 }
 
-function Test-DefaultProfileThreshold {
-    param(
-        [Parameter(Mandatory)]
-        [psobject]$Snapshot
-    )
 
-    if ($null -eq $Snapshot -or $Snapshot.state -ne 'Valid' -or -not (Test-QuotaSnapshotHasObservations -Snapshot $Snapshot) -or (Get-QuotaSnapshotFreshness -Snapshot $Snapshot) -ne 'fresh') {
-        return $false
-    }
-
-    $primaryObservation = Get-QuotaSnapshotObservation -Snapshot $Snapshot -WindowName 'primary'
-    $secondaryObservation = Get-QuotaSnapshotObservation -Snapshot $Snapshot -WindowName 'secondary'
-    return [double](Get-DispatchJsonProperty -Object $primaryObservation -Name 'remaining_percent') -ge 30.0 -and
-        [double](Get-DispatchJsonProperty -Object $secondaryObservation -Name 'remaining_percent') -ge 15.0
-}
 
 function Get-DefaultUnitKind {
     param(
@@ -1486,326 +1230,76 @@ function Get-DefaultUnitKind {
 
 function New-ScopePlan {
     param(
-        [Parameter(Mandatory)]
-        [string]$DispatchSlug,
-
-        [Parameter(Mandatory)]
-        [string]$DispatchKind,
-
-        [Parameter(Mandatory)]
-        [string]$TaskType,
-
-        [Parameter(Mandatory)]
-        [string]$RequestedProfile,
-
-        [Parameter(Mandatory)]
-        [string]$SessionMode,
-
-        [Parameter(Mandatory)]
-        [psobject]$BeforeSnapshot,
-
+        [Parameter(Mandatory)][string]$DispatchSlug,
+        [Parameter(Mandatory)][string]$DispatchKind,
+        [Parameter(Mandatory)][string]$TaskType,
+        [Parameter(Mandatory)][string]$RequestedProfile,
+        [Parameter(Mandatory)][string]$SessionMode,
+        [Parameter(Mandatory)][AllowNull()][psobject]$BeforeSnapshot,
         [string]$CalibrationPath,
-
         [string[]]$Units,
-
-        [Parameter(Mandatory)]
-        [string]$UnitKind,
-
+        [Parameter(Mandatory)][string]$UnitKind,
         [Nullable[double]]$RequestedBudgetPercent,
-
         [Nullable[double]]$RequestedReservePercent,
-
         [string]$Model,
-
-        [AllowNull()]
-        [object]$ModelEvidence,
-
-        [AllowNull()]
-        [object]$ReasoningEffortEvidence,
-
-        [AllowNull()]
-        [object]$ActivationDecision
+        [AllowNull()][object]$ModelEvidence,
+        [AllowNull()][object]$ReasoningEffortEvidence,
+        [AllowNull()][object]$ActivationDecision
     )
+    if ($null -eq $Units -or $Units.Count -eq 0) { throw 'ScopePlan 不可使用空的單位清單。' }
 
-    if ($null -eq $BeforeSnapshot) {
-        throw 'ScopePlan 必須提供 before quota snapshot。'
-    }
-    if ($null -eq $Units -or $Units.Count -eq 0) {
-        throw 'ScopePlan 不可使用空的單位清單。'
-    }
-
-    $primaryWindow = Get-DispatchJsonProperty -Object $BeforeSnapshot -Name 'primary'
-    $primaryObservation = Get-QuotaSnapshotObservation -Snapshot $BeforeSnapshot -WindowName 'primary'
+    $primaryWindow = if ($null -eq $BeforeSnapshot) { $null } else { Get-DispatchJsonProperty -Object $BeforeSnapshot -Name 'primary' }
+    $primaryObservation = if ($null -eq $BeforeSnapshot) { $null } else { Get-QuotaSnapshotObservation -Snapshot $BeforeSnapshot -WindowName 'primary' }
     $remainingValue = Get-DispatchJsonProperty -Object $primaryObservation -Name 'remaining_percent'
-    if ($null -eq $remainingValue) {
-        $remainingValue = Get-DispatchJsonProperty -Object $primaryWindow -Name 'remaining_percent'
-    }
-    $remaining = 0.0
-    if ($null -ne $remainingValue) {
-        try {
-            $remaining = [double]$remainingValue
-        }
-        catch {
-            $remaining = 0.0
-        }
-    }
-    if ($TaskType -eq 'advisor-consult') {
-        if ($null -ne $ActivationDecision -and [bool](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'reserveBypassed')) {
-            $reserve = 0.0
-        }
-        elseif ($null -eq $RequestedReservePercent) {
-            $reserve = 30.0
-        }
-        else {
-            $reserve = [math]::Max(30.0, [double]$RequestedReservePercent)
-        }
-    }
-    else {
-        $reserve = if ($null -eq $RequestedReservePercent) { 30.0 } else { [double]$RequestedReservePercent }
-    }
-    $calibration = Get-CalibrationEstimate -Path $CalibrationPath -ModelEvidence $ModelEvidence -ReasoningEffortEvidence $ReasoningEffortEvidence -Model $Model -Profile $RequestedProfile -SessionMode $SessionMode -TaskType $TaskType
-    $estimate = $null
-    $estimateSource = 'none'
-    if ($null -ne $calibration.estimate) {
-        $estimate = [double]$calibration.estimate
-        $estimateSource = $calibration.source
-    }
-    $quotaFreshness = Get-QuotaSnapshotFreshness -Snapshot $BeforeSnapshot
-    $hasObservations = Test-QuotaSnapshotHasObservations -Snapshot $BeforeSnapshot
-    $serviceRejection = Get-QuotaSnapshotServiceRejection -Snapshot $BeforeSnapshot
-    $quotaState = [string](Get-DispatchJsonProperty -Object $BeforeSnapshot -Name 'state')
-    if ($null -eq $serviceRejection) {
-        if (-not $hasObservations) {
-            $quotaState = 'SnapshotUnavailable'
-        }
-        elseif ([string]::IsNullOrWhiteSpace($quotaState)) {
-            $quotaState = 'Valid'
-        }
-    }
-    else {
-        $quotaState = 'ServiceRejected'
-    }
-    $remainingBudget = [math]::Max(0.0, $remaining - $reserve)
-    if ($RequestedProfile -eq 'default' -and $TaskType -ne 'advisor-consult' -and -not (Test-DefaultProfileThreshold -Snapshot $BeforeSnapshot)) {
-        $reserve = 0.0
-        $remainingBudget = [math]::Max(0.0, $remaining)
-    }
+    if ($null -eq $remainingValue) { $remainingValue = Get-DispatchJsonProperty -Object $primaryWindow -Name 'remaining_percent' }
+    $remaining = $null
+    if ($null -ne $remainingValue) { try { $remaining = [double]$remainingValue } catch { $remaining = $null } }
 
-    $plan = [ordered]@{
-        dispatch_slug              = $DispatchSlug
-        dispatch_kind              = $DispatchKind
-        task_type                  = $TaskType
-        requested_profile          = $RequestedProfile
-        session_mode               = $SessionMode
-        primary_remaining_percent  = $remaining
-        primary_reserve_percent    = $reserve
-        primary_budget_percent     = $null
-        estimate_percent           = $estimate
-        estimate_source            = $estimateSource
-        unit_kind                  = $UnitKind
-        requested_units            = @($Units)
-        selected_units             = @()
-        deferred_units             = @($Units)
-        decision                   = 'blocked-no-estimate'
-        decision_reason            = ''
-        calibration_sample_count   = $calibration.sampleCount
-        resolved_model             = Get-DispatchEvidenceValue -Evidence $ModelEvidence
-        resolved_reasoning_effort  = Get-DispatchEvidenceValue -Evidence $ReasoningEffortEvidence
-        quota_state                 = $quotaState
-        quota_freshness             = $quotaFreshness
+    $quotaFreshness = if ($null -eq $BeforeSnapshot) { 'unknown' } else { Get-QuotaSnapshotFreshness -Snapshot $BeforeSnapshot }
+    $hasObservations = $null -ne $BeforeSnapshot -and (Test-QuotaSnapshotHasObservations -Snapshot $BeforeSnapshot)
+    $quotaState = if ($null -eq $BeforeSnapshot) { 'SnapshotUnavailable' } else { [string](Get-DispatchJsonProperty -Object $BeforeSnapshot -Name 'state') }
+    if ([string]::IsNullOrWhiteSpace($quotaState)) { $quotaState = if ($hasObservations) { 'Valid' } else { 'SnapshotUnavailable' } }
+    $serviceRejection = if ($null -eq $BeforeSnapshot) { $null } else { Get-QuotaSnapshotServiceRejection -Snapshot $BeforeSnapshot }
+    $activationMode = if ($null -eq $ActivationDecision) { 'none' } else { [string](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'activationMode') }
+    $authorizationSource = if ($null -eq $ActivationDecision) { $null } else { Get-OptionalObjectProperty -Object $ActivationDecision -Name 'authorizationSource' }
+    $activationGranted = $null -ne $ActivationDecision -and [bool](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'granted')
+    $activationNotice = if ($null -eq $ActivationDecision) { '' } else { [string](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'notice') }
+
+    return [ordered]@{
+        dispatch_slug = $DispatchSlug
+        dispatch_kind = $DispatchKind
+        task_type = $TaskType
+        requested_profile = $RequestedProfile
+        session_mode = $SessionMode
+        primary_remaining_percent = $remaining
+        primary_reserve_percent = 0.0
+        primary_budget_percent = $null
+        estimate_percent = $null
+        estimate_source = 'not-used'
+        unit_kind = $UnitKind
+        requested_units = @($Units)
+        selected_units = @($Units)
+        deferred_units = @()
+        decision = 'full'
+        decision_reason = 'ScopePlan selects every unit explicitly declared by the Request.'
+        calibration_sample_count = 0
+        resolved_model = Get-DispatchEvidenceValue -Evidence $ModelEvidence
+        resolved_reasoning_effort = Get-DispatchEvidenceValue -Evidence $ReasoningEffortEvidence
+        quota_state = $quotaState
+        quota_freshness = $quotaFreshness
         quota_observation_available = $hasObservations
-        service_rejection           = $serviceRejection
-        retry_allowed               = if ($null -eq $serviceRejection) { $null } else { $false }
-        stop_after_selected_units  = $false
-        authorization_source       = if ($null -eq $ActivationDecision) { $null } else { Get-OptionalObjectProperty -Object $ActivationDecision -Name 'authorizationSource' }
-        activation_mode            = if ($null -eq $ActivationDecision) { 'none' } else { Get-OptionalObjectProperty -Object $ActivationDecision -Name 'activationMode' }
-        activation_granted         = if ($null -eq $ActivationDecision) { $false } else { [bool](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'granted') }
-        activation_notice          = if ($null -eq $ActivationDecision) { '' } else { [string](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'notice') }
-        advisor_hard_limit_percent = if ($null -eq $ActivationDecision) { $null } else { Get-OptionalObjectProperty -Object $ActivationDecision -Name 'hardLimitPercent' }
-        advisor_unit_estimate_percent = $estimate
-        reserve_bypassed            = if ($null -eq $ActivationDecision) { $false } else { [bool](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'reserveBypassed') }
-        minimum_unit_over_budget    = $false
+        service_rejection = $serviceRejection
+        retry_allowed = $null
+        stop_after_selected_units = $false
+        authorization_source = $authorizationSource
+        activation_mode = $activationMode
+        activation_granted = $activationGranted
+        activation_notice = $activationNotice
+        advisor_hard_limit_percent = $null
+        advisor_unit_estimate_percent = $null
+        reserve_bypassed = $false
+        minimum_unit_over_budget = $false
     }
-
-    if ($null -ne $serviceRejection) {
-        $plan.primary_budget_percent = $remainingBudget
-        if ($TaskType -eq 'advisor-consult' -and $null -eq $estimate) {
-            $estimate = Get-ConservativeEstimate -TaskType $TaskType
-            $estimateSource = if ($null -eq $estimate) { 'blocked-no-fresh-quota' } else { 'conservative-default' }
-            $plan.estimate_percent = $estimate
-            $plan.estimate_source = $estimateSource
-            if ($null -ne $estimate) {
-        $plan.advisor_hard_limit_percent = [double]$estimate * 1.25
-            }
-        }
-        $plan.decision = 'blocked-no-fresh-quota'
-        $plan.decision_reason = 'quota service rejection 已保留 last observation；retry_allowed=false，等待 reset 或新 quota evidence。'
-        return $plan
-    }
-
-    if (-not $hasObservations) {
-        $plan.primary_budget_percent = 0.0
-        $plan.estimate_percent = $null
-        $plan.estimate_source = 'blocked-no-fresh-quota'
-        $plan.decision = 'blocked-no-fresh-quota'
-        $plan.decision_reason = 'Quota snapshot 沒有可用 observation，狀態為 SnapshotUnavailable，停止建立可執行 ScopePlan。'
-        return $plan
-    }
-
-    if ($TaskType -ne 'advisor-consult' -and $RequestedProfile -eq 'default' -and $quotaFreshness -eq 'fresh' -and (Test-DefaultProfileThreshold -Snapshot $BeforeSnapshot)) {
-        $plan.primary_budget_percent = $remaining - $reserve
-        if ($plan.primary_budget_percent -lt 0) {
-            $plan.primary_budget_percent = 0.0
-        }
-        $plan.estimate_percent = $null
-        $plan.estimate_source = 'not-required-above-threshold'
-        $plan.selected_units = @($Units)
-        $plan.deferred_units = @()
-        $plan.decision = 'full'
-        $plan.decision_reason = 'primary 剩餘至少 30% 且 secondary 剩餘至少 15%，高於預設檔位門檻，不要求估算並完整派工。'
-        return $plan
-    }
-
-    if ($quotaFreshness -eq 'stale') {
-        if ($TaskType -eq 'advisor-consult') {
-            $plan.primary_budget_percent = $remainingBudget
-            if ($null -eq $estimate) {
-                $plan.estimate_source = 'blocked-no-fresh-quota'
-            }
-            $plan.decision = 'blocked-no-fresh-quota'
-            $plan.decision_reason = 'Quota observation 已過期，advisor 必須取得 fresh evidence；保留至少 30% primary reserve。'
-            if ($TaskType -eq 'advisor-consult' -and $null -ne $estimate) {
-                $plan.advisor_hard_limit_percent = [double]$estimate * 1.25
-            }
-            return $plan
-        }
-        if ($remainingBudget -le 0 -and $RequestedProfile -ne 'default') {
-            $plan.primary_budget_percent = 0.0
-            $plan.decision = 'blocked-insufficient-budget'
-            $plan.decision_reason = 'Quota observation 已過期且保留門檻後沒有可用預算，等待 fresh evidence 或 primary reset。'
-            return $plan
-        }
-        $plan.primary_budget_percent = $remainingBudget
-        $plan.estimate_percent = $null
-        $plan.estimate_source = 'bounded-single-unit'
-        $plan.selected_units = @($Units | Select-Object -First 1)
-        $plan.deferred_units = @($Units | Select-Object -Skip 1)
-        $plan.stop_after_selected_units = $true
-        $plan.decision = if ($plan.deferred_units.Count -eq 0) { 'full' } else { 'scoped' }
-        $plan.decision_reason = 'Quota observation 已過期，保留 last observed 並採單一 declared unit 的保守範圍。'
-        return $plan
-    }
-
-    if ($null -eq $estimate) {
-        if ($TaskType -eq 'advisor-consult') {
-            if ($quotaFreshness -eq 'fresh') {
-                $estimate = Get-ConservativeEstimate -TaskType $TaskType
-                if ($null -ne $estimate) {
-                    $estimate = [double]$estimate
-                    $estimateSource = 'conservative-default'
-                    $plan.estimate_percent = $estimate
-                    $plan.estimate_source = $estimateSource
-                }
-            }
-            if ($null -eq $estimate) {
-                $plan.decision_reason = 'advisor-consult 找不到同分組 eligible 校準樣本，也沒有 task type 保守量級。'
-            }
-        }
-        else {
-            if ($remainingBudget -le 0 -and $RequestedProfile -ne 'default') {
-                $plan.primary_budget_percent = 0.0
-                $plan.decision = 'blocked-insufficient-budget'
-                $plan.decision_reason = '額度低於目標檔位門檻，保留門檻後沒有可用預算，保留阻擋結果。'
-                return $plan
-            }
-            $plan.primary_budget_percent = $remainingBudget
-            $plan.estimate_source = 'bounded-single-unit'
-            $plan.selected_units = @($Units | Select-Object -First 1)
-            $plan.deferred_units = @($Units | Select-Object -Skip 1)
-            $plan.stop_after_selected_units = $true
-            $plan.decision = if ($plan.deferred_units.Count -eq 0) { 'full' } else { 'scoped' }
-            $plan.decision_reason = '額度低於目標檔位門檻且沒有 eligible calibration sample，固定只選第一個 declared unit。'
-        }
-        if ($null -eq $estimate) {
-            return $plan
-        }
-    }
-
-    $unitEstimate = [double]$estimate
-    if ($TaskType -eq 'advisor-consult') {
-        $unitEstimate = [double]$estimate / [double]$Units.Count
-        $plan.advisor_unit_estimate_percent = $unitEstimate
-    }
-    $hardLimit = if ($TaskType -eq 'advisor-consult') { [double]$estimate * 1.25 } else { [double]::PositiveInfinity }
-    $budget = if ($null -eq $RequestedBudgetPercent) { $remainingBudget } else { [double]$RequestedBudgetPercent }
-    if ($TaskType -eq 'advisor-consult') {
-        $activationModeValue = if ($null -eq $ActivationDecision) { 'automatic-quota' } else { [string](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'activationMode') }
-        if ($activationModeValue -eq 'user-authorized') {
-            $budget = $remaining
-        }
-        else {
-            $budget = [math]::Min($hardLimit, $remainingBudget)
-        }
-    }
-    else {
-        $budget = [math]::Min($budget, $remainingBudget)
-    }
-    $plan.primary_budget_percent = $budget
-
-    $allowMinimumUnitOverBudget = ($RequestedProfile -eq 'default') -or
-        ($TaskType -eq 'advisor-consult' -and $null -ne $ActivationDecision -and [bool](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'granted'))
-    if ($budget -le 0 -and -not $allowMinimumUnitOverBudget) {
-        $plan.decision = 'blocked-insufficient-budget'
-        $plan.decision_reason = if ($TaskType -eq 'advisor-consult') {
-            'AdvisorAuthorizationRequired：advisor 未獲得啟用授權，未建立可執行 ScopePlan。'
-        }
-        else {
-            'primary 預估保留門檻後沒有可用預算，保留阻擋結果。'
-        }
-        return $plan
-    }
-
-    $selected = New-Object System.Collections.Generic.List[string]
-    $consumed = 0.0
-    foreach ($unit in $Units) {
-        if ($consumed + $unitEstimate -le $budget -or ($selected.Count -eq 0 -and $allowMinimumUnitOverBudget)) {
-            $selected.Add($unit)
-            $consumed += $unitEstimate
-        }
-        else {
-            break
-        }
-    }
-    $plan.selected_units = @($selected.ToArray())
-    $plan.deferred_units = @($Units | Where-Object { $plan.selected_units -notcontains $_ })
-    if ($plan.selected_units.Count -gt 0 -and $consumed -gt $budget -and $TaskType -eq 'advisor-consult') {
-        $plan.minimum_unit_over_budget = $true
-    }
-    if ($plan.deferred_units.Count -gt 0 -or $plan.minimum_unit_over_budget) {
-        $plan.stop_after_selected_units = $true
-    }
-    if ($plan.selected_units.Count -eq 0) {
-        $plan.decision = 'blocked-insufficient-budget'
-        $plan.decision_reason = if ($TaskType -eq 'advisor-consult') {
-            'AdvisorAuthorizationRequired：advisor 未獲得啟用授權，未選取問題單位。'
-        }
-        else {
-            '第一個最小單位超出可用預算，保留阻擋結果。'
-        }
-    }
-    elseif ($plan.selected_units.Count -eq $Units.Count) {
-        $plan.decision = 'full'
-        $plan.decision_reason = '完整單位清單可容納於保留門檻後的有效預算。'
-    }
-    else {
-        $plan.decision = 'scoped'
-        $plan.decision_reason = '依宣告順序取可容納的最長前綴，延後未選單位。'
-    }
-    if ($TaskType -eq 'advisor-consult') {
-        $plan.advisor_hard_limit_percent = $hardLimit
-        $plan.advisor_unit_estimate_percent = $unitEstimate
-    }
-    return $plan
 }
 
 function New-DispatchPrompt {
@@ -2044,7 +1538,7 @@ function New-QuotaSnapshotPath {
         [string]$HistoryRoot,
 
         [Parameter(Mandatory)]
-        [ValidateSet('before', 'after', 'source-refresh')]
+        [ValidateSet('before', 'after', 'source-refresh', 'advisor-before', 'close')]
         [string]$Purpose,
 
         [AllowEmptyString()]
@@ -2066,64 +1560,64 @@ function New-QuotaSnapshotPath {
     return Join-Path -Path $HistoryRoot -ChildPath $fileName
 }
 
-function Get-OrCreateQuotaSnapshot {
+function Write-QuotaSnapshotUnavailable {
     param(
-        [string]$Path,
-
-        [string]$SnapshotPath,
-
-        [string]$CodexHome,
-
         [Parameter(Mandatory)]
-        [string]$HistoryRoot,
+        [string]$Path,
 
         [Parameter(Mandatory)]
         [string]$Purpose,
 
-        [switch]$Required
+        [string]$FailureClass = 'Unknown'
     )
 
-    if (-not [string]::IsNullOrWhiteSpace($Path)) {
-        $resolvedPath = Resolve-AbsolutePath -Path $Path
-        if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
-            throw "QuotaSnapshotValidationRejected：QuotaBeforePath 不存在或不是檔案：$resolvedPath"
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    $parentPath = Split-Path -Parent $resolvedPath
+    if (-not [string]::IsNullOrWhiteSpace($parentPath)) {
+        New-Item -ItemType Directory -Path $parentPath -Force | Out-Null
+    }
+    $safeFailureClass = if ($FailureClass -match '^[A-Za-z][A-Za-z0-9.]*$') { $FailureClass } else { 'Unknown' }
+    $capturedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+    $source = 'quota-source-unavailable'
+    $document = [ordered]@{
+        schema = 'quota-snapshot.v1'
+        state = 'SnapshotUnavailable'
+        captured_at_utc = $capturedAtUtc
+        source_file = $source
+        purpose = $Purpose
+        failure_code = 'quota-snapshot-unavailable'
+        failure_class = $safeFailureClass
+        primary = $null
+        secondary = $null
+        observations = [ordered]@{
+            primary = [ordered]@{
+                used_percent = $null
+                remaining_percent = $null
+                observed_at_utc = $null
+                source = $source
+                freshness = 'unknown'
+                window = 'primary'
+                resets_at = $null
+            }
+            secondary = [ordered]@{
+                used_percent = $null
+                remaining_percent = $null
+                observed_at_utc = $null
+                source = $source
+                freshness = 'unknown'
+                window = 'secondary'
+                resets_at = $null
+            }
         }
-
-        try {
-            $null = Read-QuotaSnapshot -Path $resolvedPath
-        }
-        catch {
-            throw "QuotaSnapshotValidationRejected：QuotaBeforePath 不符合額度快照契約：$resolvedPath；$($_.Exception.Message)"
-        }
+        service_rejection = $null
+        service_rejection_evidence = $null
     }
-
-    $configuredHome = $CodexHome
-    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
-        $configuredHome = $env:CODEX_HOME
-    }
-    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
-        $configuredHome = Resolve-CodexHomeForEvidence -CodexHomePath $null
-    }
-    if ([string]::IsNullOrWhiteSpace($configuredHome)) {
-        if ($Required) {
-            throw "$Purpose 需要 quota snapshot，無法解析有效 CodexHome。"
-        }
-        return $null
-    }
-
-    $snapshotPath = if ([string]::IsNullOrWhiteSpace($SnapshotPath)) {
-        New-QuotaSnapshotPath -HistoryRoot $HistoryRoot -Purpose $Purpose
-    }
-    else {
-        Resolve-AbsolutePath -Path $SnapshotPath
-    }
-    if (-not [string]::IsNullOrWhiteSpace($Path) -and [string]::Equals((Resolve-AbsolutePath -Path $Path), $snapshotPath, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'QuotaSnapshotPathReuseRejected：新 quota snapshot 不可沿用呼叫端提供的 QuotaBeforePath。'
-    }
-    return Set-QuotaSnapshotFromCodex -Path $snapshotPath -CodexHome $configuredHome
+    Write-Utf8NoBom -Path $resolvedPath -Content (($document | ConvertTo-Json -Depth 12) + [Environment]::NewLine)
+    return $resolvedPath
 }
 
 function Set-QuotaSnapshotFromCodex {
+    [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$Path,
@@ -2143,22 +1637,107 @@ function Set-QuotaSnapshotFromCodex {
         throw 'quota snapshot 更新需要有效的 CodexHome。'
     }
 
-    $parent = Split-Path -Parent $resolvedPath
-    if (-not [string]::IsNullOrWhiteSpace($parent)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
+    $parentPath = Split-Path -Parent $resolvedPath
+    if (-not [string]::IsNullOrWhiteSpace($parentPath)) {
+        New-Item -ItemType Directory -Path $parentPath -Force | Out-Null
     }
-    $quotaScript = Join-Path -Path $PSScriptRoot -ChildPath 'Get-CodexQuota.ps1'
-    if (-not (Test-Path -LiteralPath $quotaScript -PathType Leaf)) {
-        throw "找不到額度快照腳本：$quotaScript"
+
+    $quotaScriptPath = Join-Path -Path $PSScriptRoot -ChildPath 'Get-CodexQuota.ps1'
+    if (-not (Test-Path -LiteralPath $quotaScriptPath -PathType Leaf)) {
+        throw "找不到額度快照腳本：$quotaScriptPath"
     }
-    $quotaOutput = & $quotaScript -CodexHome $configuredHome -SnapshotPath $resolvedPath 2>&1
+
+    $hostPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    if ([string]::IsNullOrWhiteSpace($hostPath) -or -not (Test-Path -LiteralPath $hostPath -PathType Leaf)) {
+        throw 'QuotaSnapshotHostUnavailable'
+    }
+
+    $null = & $hostPath -NoLogo -NoProfile -NonInteractive -File $quotaScriptPath -CodexHome $configuredHome -SnapshotPath $resolvedPath 2>&1
     $quotaExitCode = $LASTEXITCODE
-    if ($quotaExitCode -ne 0 -or -not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
-        $details = ($quotaOutput | Out-String).Trim()
-        throw "quota snapshot 更新失敗，exit code $quotaExitCode。$details"
+    $snapshotExists = Test-Path -LiteralPath $resolvedPath -PathType Leaf
+    if (-not $snapshotExists) {
+        throw ('QuotaSnapshotUpdateFailed: exit_code={0}; output_file_exists={1}' -f $quotaExitCode, $snapshotExists)
     }
+
     $null = Read-QuotaSnapshot -Path $resolvedPath
+
     return $resolvedPath
+}
+
+function Get-OrCreateQuotaSnapshot {
+    param(
+        [string]$Path,
+
+        [string]$SnapshotPath,
+
+        [string]$CodexHome,
+
+        [Parameter(Mandatory)]
+        [string]$HistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$Purpose,
+
+        [switch]$Required
+    )
+
+    $snapshotPathValue = if ([string]::IsNullOrWhiteSpace($SnapshotPath)) {
+        New-QuotaSnapshotPath -HistoryRoot $HistoryRoot -Purpose $Purpose
+    }
+    else {
+        Resolve-AbsolutePath -Path $SnapshotPath
+    }
+    $callerPathValue = $null
+    $callerPathFailure = $null
+    if (-not [string]::IsNullOrWhiteSpace($Path)) {
+        try {
+            $callerPathValue = Resolve-AbsolutePath -Path $Path
+        }
+        catch {
+            $callerPathFailure = $_.Exception
+        }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($callerPathValue) -and
+        [string]::Equals($callerPathValue, $snapshotPathValue, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'QuotaSnapshotPathReuseRejected：新 quota snapshot 不可沿用呼叫端提供的 QuotaBeforePath。'
+    }
+
+    try {
+        if ($null -ne $callerPathFailure) {
+            throw $callerPathFailure
+        }
+        if (-not [string]::IsNullOrWhiteSpace($callerPathValue)) {
+            if (-not (Test-Path -LiteralPath $callerPathValue -PathType Leaf)) {
+                throw 'CallerSnapshotUnavailable'
+            }
+            $null = Read-QuotaSnapshot -Path $callerPathValue
+        }
+
+        $configuredHome = $CodexHome
+        if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+            $configuredHome = $env:CODEX_HOME
+        }
+        if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+            $configuredHome = Resolve-CodexHomeForEvidence -CodexHomePath $null
+        }
+        if ([string]::IsNullOrWhiteSpace($configuredHome)) {
+            throw 'CodexHomeUnavailable'
+        }
+
+        return Set-QuotaSnapshotFromCodex -Path $snapshotPathValue -CodexHome $configuredHome
+    }
+    catch {
+        $snapshotFailure = $_.Exception
+        if (Test-Path -LiteralPath $snapshotPathValue -PathType Leaf) {
+            try {
+                $null = Read-QuotaSnapshot -Path $snapshotPathValue
+                return $snapshotPathValue
+            }
+            catch {
+            }
+        }
+        return Write-QuotaSnapshotUnavailable -Path $snapshotPathValue -Purpose $Purpose -FailureClass $snapshotFailure.GetType().Name
+    }
 }
 
 function New-AdvisorAfterSnapshot {
@@ -2176,31 +1755,24 @@ function New-AdvisorAfterSnapshot {
         [string]$CodexHome
     )
 
+    if ([string]::IsNullOrWhiteSpace($CallerPath)) {
+        throw 'advisor-consult QuotaAfterPath 必須提供路徑。'
+    }
     $callerPathValue = Resolve-AbsolutePath -Path $CallerPath
     if (-not (Test-PathWithinRoot -Path $callerPathValue -Root $ExecutionRoot)) {
         throw "advisor-consult QuotaAfterPath 必須位於 executionRoot 內：$callerPathValue"
     }
-    if (-not (Test-Path -LiteralPath $callerPathValue -PathType Leaf)) {
-        throw "QuotaAfterSnapshotValidationRejected：呼叫端 QuotaAfterPath 不存在或不是檔案：$callerPathValue"
-    }
-    try {
-        $null = Read-QuotaSnapshot -Path $callerPathValue
-    }
-    catch {
-        throw "QuotaAfterSnapshotValidationRejected：呼叫端 QuotaAfterPath 不符合額度快照契約：$callerPathValue；$($_.Exception.Message)"
-    }
 
-    $snapshotPathValue = New-QuotaSnapshotPath -HistoryRoot $HistoryRoot -Purpose 'after'
+    $snapshotPathValue = New-QuotaSnapshotPath -HistoryRoot $HistoryRoot -Purpose 'advisor-before'
     if (-not (Test-PathWithinRoot -Path $snapshotPathValue -Root $ExecutionRoot)) {
-        throw "QuotaAfterSnapshotPathRejected：新 after snapshot 超出 executionRoot：$snapshotPathValue"
+        throw "QuotaAfterSnapshotPathRejected：新 advisor snapshot 超出 executionRoot：$snapshotPathValue"
     }
-    $snapshotPathValue = Set-QuotaSnapshotFromCodex -Path $snapshotPathValue -CodexHome $CodexHome
+    $snapshotPathValue = Get-OrCreateQuotaSnapshot -Path $callerPathValue -SnapshotPath $snapshotPathValue -CodexHome $CodexHome -HistoryRoot $HistoryRoot -Purpose 'advisor-before' -Required
     return [pscustomobject]@{
         Path   = $snapshotPathValue
         Sha256 = Get-FileSha256 -Path $snapshotPathValue
     }
 }
-
 function Update-AdvisorAfterSnapshotFromCodex {
     [CmdletBinding()]
     param(
@@ -3971,8 +3543,8 @@ function Read-DispatchRequest {
             Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 advisor_request_source 必須是 string。' -RequestPathValue $requestPathValue -Field 'advisor_request_source' -Detail ([ordered]@{ expected_type = 'string'; actual_type = Get-DispatchRequestTypeName -Value $document.advisor_request_source })
         }
         $advisorRequestSourceValue = [string]$document.advisor_request_source
-        if (@('automatic-quota', 'user-explicit') -notcontains $advisorRequestSourceValue) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ('request 欄位 advisor_request_source 不支援：' + $advisorRequestSourceValue) -RequestPathValue $requestPathValue -Field 'advisor_request_source' -Detail ([ordered]@{ valid_values = @('automatic-quota', 'user-explicit'); received = $advisorRequestSourceValue })
+        if (@('user-explicit') -notcontains $advisorRequestSourceValue) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ('request 欄位 advisor_request_source 不支援：' + $advisorRequestSourceValue) -RequestPathValue $requestPathValue -Field 'advisor_request_source' -Detail ([ordered]@{ valid_values = @('user-explicit'); received = $advisorRequestSourceValue })
         }
     }
     $fieldPresence.prepare_artifacts = Test-DispatchRequestFieldPresent -Document $document -Name 'prepare_artifacts'
@@ -5884,162 +5456,52 @@ function Test-ScopePlanHashRecord {
 }
 
 function Test-ScopePlanCompleteness {
-    param(
-        [AllowNull()]
-        [object]$ScopePlan
-    )
-
-    if ($null -eq $ScopePlan) {
-        return $false
+    param([AllowNull()][object]$ScopePlan)
+    if ($null -eq $ScopePlan) { return $false }
+    if ($ScopePlan -is [System.Collections.IDictionary]) {
+        $ScopePlan = [pscustomobject]$ScopePlan
     }
-
-    foreach ($requiredName in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'session_mode', 'primary_remaining_percent', 'primary_reserve_percent', 'primary_budget_percent', 'estimate_percent', 'estimate_source', 'unit_kind', 'requested_units', 'selected_units', 'deferred_units', 'decision', 'decision_reason')) {
-        if ($null -eq $ScopePlan.PSObject.Properties[$requiredName]) {
-            return $false
-        }
+    foreach ($name in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'session_mode', 'primary_remaining_percent', 'primary_reserve_percent', 'primary_budget_percent', 'estimate_percent', 'estimate_source', 'unit_kind', 'requested_units', 'selected_units', 'deferred_units', 'decision', 'decision_reason')) {
+        if ($null -eq $ScopePlan.PSObject.Properties[$name]) { return $false }
     }
-
     if ([string]::IsNullOrWhiteSpace([string]$ScopePlan.dispatch_slug) -or
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.dispatch_kind) -or
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.task_type) -or
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.requested_profile) -or
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.session_mode) -or
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.unit_kind) -or
-        [string]::IsNullOrWhiteSpace([string]$ScopePlan.estimate_source)) {
-        return $false
-    }
-
-    if ($null -ne $ScopePlan.estimate_percent) {
-        try {
-            $estimateValue = [double]$ScopePlan.estimate_percent
-        }
-        catch {
-            return $false
-        }
-        if ([double]::IsNaN($estimateValue) -or [double]::IsInfinity($estimateValue) -or $estimateValue -lt 0) {
-            return $false
-        }
-    }
-    if ([string]$ScopePlan.estimate_source -eq 'not-required-above-threshold' -and $null -ne $ScopePlan.estimate_percent) {
-        return $false
-    }
-    if ([string]$ScopePlan.estimate_source -in @('calibration-p75', 'p75', 'conservative-default') -and $null -eq $ScopePlan.estimate_percent) {
-        return $false
-    }
-    if ([string]$ScopePlan.estimate_source -eq 'bounded-single-unit' -and $null -ne $ScopePlan.estimate_percent) {
-        return $false
-    }
-
-    if ($ScopePlan.unit_kind -notin @('workflow-phase', 'resource-target', 'advisor-evidence-question') -or
-        $ScopePlan.decision -notin @('full', 'scoped', 'blocked-insufficient-budget', 'blocked-no-estimate', 'blocked-no-fresh-quota', 'user-decision-required')) {
-        return $false
-    }
+        [string]$ScopePlan.estimate_source -ne 'not-used' -or
+        $null -ne $ScopePlan.estimate_percent -or
+        [string]$ScopePlan.decision -ne 'full' -or
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.decision_reason)) { return $false }
+    if ($ScopePlan.unit_kind -notin @('workflow-phase', 'resource-target', 'advisor-evidence-question')) { return $false }
     if ([string]$ScopePlan.task_type -eq 'advisor-consult') {
-        foreach ($advisorProperty in @('activation_mode', 'authorization_source', 'reserve_bypassed', 'minimum_unit_over_budget', 'stop_after_selected_units', 'advisor_unit_estimate_percent')) {
-            if ($null -eq $ScopePlan.PSObject.Properties[$advisorProperty]) {
-                return $false
-            }
+        foreach ($name in @('activation_mode', 'authorization_source', 'activation_granted', 'reserve_bypassed', 'minimum_unit_over_budget', 'stop_after_selected_units', 'advisor_unit_estimate_percent')) {
+            if ($null -eq $ScopePlan.PSObject.Properties[$name]) { return $false }
         }
-        if ([string]$ScopePlan.activation_mode -notin @('automatic-quota', 'user-authorized', 'none')) {
-            return $false
-        }
-        if ($null -ne $ScopePlan.authorization_source -and [string]$ScopePlan.authorization_source -notin @('automatic-quota', 'user-explicit')) {
-            return $false
-        }
-        if ($ScopePlan.reserve_bypassed -isnot [bool] -or $ScopePlan.minimum_unit_over_budget -isnot [bool]) {
-            return $false
-        }
+        if ([string]$ScopePlan.activation_mode -notin @('user-authorized', 'none') -or
+            ($null -ne $ScopePlan.authorization_source -and [string]$ScopePlan.authorization_source -ne 'user-explicit') -or
+            $ScopePlan.activation_granted -isnot [bool] -or
+            $ScopePlan.reserve_bypassed -isnot [bool] -or
+            $ScopePlan.minimum_unit_over_budget -isnot [bool] -or
+            $ScopePlan.stop_after_selected_units -isnot [bool] -or
+            $null -ne $ScopePlan.advisor_unit_estimate_percent) { return $false }
+        if ($ScopePlan.activation_granted -and ([string]$ScopePlan.activation_mode -ne 'user-authorized' -or [string]$ScopePlan.authorization_source -ne 'user-explicit')) { return $false }
     }
+    $freshness = $ScopePlan.PSObject.Properties['quota_freshness']
+    if ($null -ne $freshness -and [string]$freshness.Value -notin @('fresh', 'stale', 'unknown')) { return $false }
 
-    $stopAfterSelectedProperty = $ScopePlan.PSObject.Properties['stop_after_selected_units']
-    if ($null -ne $stopAfterSelectedProperty -and $stopAfterSelectedProperty.Value -isnot [bool]) {
-        return $false
-    }
-    $quotaFreshnessProperty = $ScopePlan.PSObject.Properties['quota_freshness']
-    if ($null -ne $quotaFreshnessProperty -and [string]$quotaFreshnessProperty.Value -notin @('fresh', 'stale', 'unknown')) {
-        return $false
-    }
-    $quotaStateProperty = $ScopePlan.PSObject.Properties['quota_state']
-    if ($null -ne $quotaStateProperty -and [string]$quotaStateProperty.Value -notin @('Valid', 'SnapshotUnavailable', 'ServiceRejected', 'PostResetNoSnapshot', 'SnapshotExpired', 'Invalid')) {
-        return $false
-    }
-
-    $requestedUnits = @($ScopePlan.requested_units | ForEach-Object { [string]$_ })
-    $selectedUnits = @($ScopePlan.selected_units | ForEach-Object { [string]$_ })
-    $deferredUnits = @($ScopePlan.deferred_units | ForEach-Object { [string]$_ })
-    $hasBlankSelected = @($selectedUnits | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
-    $hasBlankDeferred = @($deferredUnits | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0
-    if ($requestedUnits.Count -eq 0 -or $hasBlankSelected -or $hasBlankDeferred) {
-        return $false
-    }
-
-    $requestedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    $selectedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    $deferredSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($unit in $requestedUnits) {
-        if (-not $requestedSet.Add($unit)) {
-            return $false
-        }
-    }
-    foreach ($unit in $selectedUnits) {
-        if (-not $selectedSet.Add($unit) -or -not $requestedSet.Contains($unit)) {
-            return $false
-        }
-    }
-    foreach ($unit in $deferredUnits) {
-        if (-not $deferredSet.Add($unit) -or -not $requestedSet.Contains($unit) -or $selectedSet.Contains($unit)) {
-            return $false
-        }
-    }
-    if ($selectedUnits.Count + $deferredUnits.Count -ne $requestedUnits.Count) {
-        return $false
-    }
-    foreach ($unit in $requestedUnits) {
-        if (-not $selectedSet.Contains($unit) -and -not $deferredSet.Contains($unit)) {
-            return $false
-        }
-    }
-    if ([string]$ScopePlan.task_type -eq 'advisor-consult') {
-        for ($index = 0; $index -lt $selectedUnits.Count; $index++) {
-            if (-not [string]::Equals($selectedUnits[$index], $requestedUnits[$index], [System.StringComparison]::OrdinalIgnoreCase)) {
-                return $false
-            }
-        }
-        for ($index = 0; $index -lt $deferredUnits.Count; $index++) {
-            $requestedIndex = $selectedUnits.Count + $index
-            if (-not [string]::Equals($deferredUnits[$index], $requestedUnits[$requestedIndex], [System.StringComparison]::OrdinalIgnoreCase)) {
-                return $false
-            }
-        }
-    }
-
-    try {
-        $budget = [double]$ScopePlan.primary_budget_percent
-        $remaining = [double]$ScopePlan.primary_remaining_percent
-        $reserve = [double]$ScopePlan.primary_reserve_percent
-    }
-    catch {
-        return $false
-    }
-    if ([double]::IsNaN($budget) -or [double]::IsInfinity($budget) -or $budget -lt 0 -or
-        [double]::IsNaN($remaining) -or [double]::IsInfinity($remaining) -or $remaining -lt 0 -or
-        [double]::IsNaN($reserve) -or [double]::IsInfinity($reserve) -or $reserve -lt 0) {
-        return $false
-    }
-
-    switch ([string]$ScopePlan.decision) {
-        'full' {
-            return $selectedUnits.Count -eq $requestedUnits.Count -and $deferredUnits.Count -eq 0
-        }
-        'scoped' {
-            return $selectedUnits.Count -gt 0 -and $deferredUnits.Count -gt 0
-        }
-        'blocked-insufficient-budget' { return $selectedUnits.Count -eq 0 }
-        'blocked-no-estimate' { return $selectedUnits.Count -eq 0 }
-        'blocked-no-fresh-quota' { return $selectedUnits.Count -eq 0 }
-        'user-decision-required' { return $selectedUnits.Count -eq 0 }
-    }
-    return $false
+    $requested = @($ScopePlan.requested_units | ForEach-Object { [string]$_ })
+    $selected = @($ScopePlan.selected_units | ForEach-Object { [string]$_ })
+    $deferred = @($ScopePlan.deferred_units | ForEach-Object { [string]$_ })
+    if ($requested.Count -eq 0 -or
+        @($requested | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0 -or
+        @($selected | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0 -or
+        $deferred.Count -ne 0 -or
+        -not (Test-StringArrayEqual -Left $requested -Right $selected)) { return $false }
+    $unitSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($unit in $requested) { if (-not $unitSet.Add($unit)) { return $false } }
+    return $true
 }
 
 function Test-ContinuationScopePlan {
@@ -6237,6 +5699,46 @@ function Write-BudgetMonitorRecord {
     Add-AtomicJsonLine -Path $Path -Content (($Record | ConvertTo-Json -Depth 20 -Compress))
 }
 
+function Invoke-BudgetMonitorRecordWrite {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [object]$Record
+    )
+
+    try {
+        Write-BudgetMonitorRecord -Path $Path -Record $Record
+        return $null
+    }
+    catch {
+        return [ordered]@{
+            event = 'quota-observation.write-failed'
+            recorded_at_utc = [datetime]::UtcNow.ToString('o')
+            attempted_event = [string](Get-DispatchJsonProperty -Object $Record -Name 'event')
+            terminal = Get-DispatchJsonProperty -Object $Record -Name 'terminal'
+            path = $Path
+            failure_class = $_.Exception.GetType().FullName
+            failure_message = $_.Exception.Message
+        }
+    }
+}
+
+function Get-QuotaObservationPath {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$LineHistoryRoot,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug
+    )
+
+    return Join-Path -Path $LineHistoryRoot -ChildPath ('quota-observations-' + $DispatchSlug + '.jsonl')
+}
+
 function Get-AdvisorCompletionPartition {
     param(
         [AllowNull()]
@@ -6403,9 +5905,6 @@ function Write-AdvisorConsultReport {
     $incompleteUnits = @($completionPartition.incomplete_units)
     $activationMode = if ($null -eq $ScopePlan) { 'none' } else { [string]$ScopePlan.activation_mode }
     $authorizationSource = if ($null -eq $ScopePlan) { $null } else { $ScopePlan.authorization_source }
-    $reserveBypassed = if ($null -eq $ScopePlan) { $false } else { [bool]$ScopePlan.reserve_bypassed }
-    $unitEstimate = if ($null -eq $ScopePlan) { $null } else { $ScopePlan.advisor_unit_estimate_percent }
-    $hardLimit = if ($null -eq $ScopePlan) { $null } else { $ScopePlan.advisor_hard_limit_percent }
     $content = @(
         ('# Advisor consult report')
         ''
@@ -6417,9 +5916,6 @@ function Write-AdvisorConsultReport {
         ('- evidence-pack-length: ' + $(if ($null -eq $EvidencePackLength) { '<unknown>' } else { [string]$EvidencePackLength }))
         ('- activation-mode: ' + $activationMode)
         ('- authorization-source: ' + $(if ($null -eq $authorizationSource) { '<null>' } else { [string]$authorizationSource }))
-        ('- reserve-bypassed: ' + [string]$reserveBypassed)
-        ('- advisor-hard-limit-percent: ' + $(if ($null -eq $hardLimit) { '<null>' } else { [string]$hardLimit }))
-        ('- advisor-unit-estimate-percent: ' + $(if ($null -eq $unitEstimate) { '<null>' } else { [string]$unitEstimate }))
         ''
         '## 中斷保全結論'
         ''
@@ -6454,14 +5950,12 @@ function Write-AdvisorConsultReport {
         ('- completed: ' + (($completedUnits | ForEach-Object { [string]$_ }) -join '; '))
         ('- incomplete: ' + (($incompleteUnits | ForEach-Object { [string]$_ }) -join '; '))
         ('- decision: ' + $(if ($null -eq $ScopePlan) { '<null>' } else { [string]$ScopePlan.decision }))
-        ('- primary-budget-percent: ' + $(if ($null -eq $ScopePlan) { '<null>' } else { [string]$ScopePlan.primary_budget_percent }))
-        ('- primary-reserve-percent: ' + $(if ($null -eq $ScopePlan) { '<null>' } else { [string]$ScopePlan.primary_reserve_percent }))
         ''
         '## Interruption status'
         ''
         (($InterruptionStatus | ConvertTo-Json -Depth 20))
         ''
-        '## Budget monitor'
+        '## Quota observations'
         ''
         ('```json')
         (($BudgetMonitor | ConvertTo-Json -Depth 20))
@@ -6470,33 +5964,6 @@ function Write-AdvisorConsultReport {
     ) -join "`r`n"
     Write-Utf8NoBom -Path $fullPath -Content $content
     return $fullPath
-}
-
-function Get-CalibrationRecords {
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path
-    )
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        return @()
-    }
-
-    $records = New-Object System.Collections.Generic.List[object]
-    foreach ($line in Get-Content -LiteralPath $Path -Encoding UTF8) {
-        if ([string]::IsNullOrWhiteSpace($line)) {
-            continue
-        }
-        try {
-            $record = $line | ConvertFrom-Json -ErrorAction Stop
-            $records.Add($record)
-        }
-        catch {
-            throw "額度校準紀錄格式錯誤：$Path；$($_.Exception.Message)"
-        }
-    }
-
-    return @($records.ToArray())
 }
 
 function Add-AtomicJsonLine {
@@ -11085,95 +10552,120 @@ function Stop-VerifiedProcessTree {
     }
 }
 
-function Test-QuotaResetWindowChanged {
+function Get-QuotaObservationProgress {
     param(
         [Parameter(Mandatory)]
-        [psobject]$BeforeSnapshot,
+        [string]$EventPath,
+
+        [AllowNull()]
+        [object]$ScopePlan,
 
         [Parameter(Mandatory)]
-        [psobject]$AfterSnapshot,
-
-        [ValidateSet('primary', 'secondary')]
-        [string]$WindowName = 'primary'
+        [string]$TaskType
     )
 
-    $resetWindowToleranceSeconds = 60
-    $beforeWindow = $null
-    $afterWindow = $null
-    if ($BeforeSnapshot -is [System.Collections.IDictionary]) {
-        if ($BeforeSnapshot.Contains($WindowName)) {
-            $beforeWindow = $BeforeSnapshot[$WindowName]
+    $usage = $null
+    $eventCount = 0
+    if (Test-Path -LiteralPath $EventPath -PathType Leaf) {
+        foreach ($line in Get-Content -LiteralPath $EventPath -Encoding UTF8) {
+            if ([string]::IsNullOrWhiteSpace($line)) {
+                continue
+            }
+            $eventCount++
+            try {
+                $event = $line | ConvertFrom-Json -ErrorAction Stop
+            }
+            catch {
+                continue
+            }
+            if ([string](Get-EventPropertyValue -Object $event -Name 'type') -in @('turn.completed', 'turn.failed')) {
+                $eventUsage = Get-EventPropertyValue -Object $event -Name 'usage'
+                if ($null -ne $eventUsage) {
+                    $usage = $eventUsage
+                }
+            }
         }
-    }
-    else {
-        $beforeWindowProperty = $BeforeSnapshot.PSObject.Properties[$WindowName]
-        if ($null -ne $beforeWindowProperty) {
-            $beforeWindow = $beforeWindowProperty.Value
-        }
-    }
-    if ($AfterSnapshot -is [System.Collections.IDictionary]) {
-        if ($AfterSnapshot.Contains($WindowName)) {
-            $afterWindow = $AfterSnapshot[$WindowName]
-        }
-    }
-    else {
-        $afterWindowProperty = $AfterSnapshot.PSObject.Properties[$WindowName]
-        if ($null -ne $afterWindowProperty) {
-            $afterWindow = $afterWindowProperty.Value
-        }
-    }
-    if ($null -eq $beforeWindow -or $null -eq $afterWindow) {
-        return $true
     }
 
-    $beforeUsedPercent = $null
-    $afterUsedPercent = $null
-    $beforeResetsAt = $null
-    $afterResetsAt = $null
-    if ($beforeWindow -is [System.Collections.IDictionary]) {
-        if ($beforeWindow.Contains('used_percent')) {
-            $beforeUsedPercent = $beforeWindow['used_percent']
-        }
-        if ($beforeWindow.Contains('resets_at')) {
-            $beforeResetsAt = $beforeWindow['resets_at']
-        }
+    $safePointMessage = Get-LatestSafePointMessage -EventPath $EventPath -TaskType $TaskType
+    $selectedUnits = if ($null -eq $ScopePlan) { @() } else { @(Get-DispatchJsonProperty -Object $ScopePlan -Name 'selected_units') }
+    $deferredUnits = if ($null -eq $ScopePlan) { @() } else { @(Get-DispatchJsonProperty -Object $ScopePlan -Name 'deferred_units') }
+    $completion = Get-AdvisorCompletionPartition -Message $safePointMessage -SelectedUnits $selectedUnits -DeferredUnits $deferredUnits
+    return [ordered]@{
+        event_count = $eventCount
+        usage = $usage
+        confirmed_conclusions = if ([string]::IsNullOrWhiteSpace($safePointMessage)) { $null } else { $safePointMessage }
+        completed_units = @($completion.completed_units)
+        unfinished_units = @($completion.incomplete_units)
+        completion_status = [string]$completion.status
     }
-    else {
-        $beforeUsedPercentProperty = $beforeWindow.PSObject.Properties['used_percent']
-        if ($null -ne $beforeUsedPercentProperty) {
-            $beforeUsedPercent = $beforeUsedPercentProperty.Value
-        }
-        $beforeResetsAtProperty = $beforeWindow.PSObject.Properties['resets_at']
-        if ($null -ne $beforeResetsAtProperty) {
-            $beforeResetsAt = $beforeResetsAtProperty.Value
-        }
-    }
-    if ($afterWindow -is [System.Collections.IDictionary]) {
-        if ($afterWindow.Contains('used_percent')) {
-            $afterUsedPercent = $afterWindow['used_percent']
-        }
-        if ($afterWindow.Contains('resets_at')) {
-            $afterResetsAt = $afterWindow['resets_at']
-        }
-    }
-    else {
-        $afterUsedPercentProperty = $afterWindow.PSObject.Properties['used_percent']
-        if ($null -ne $afterUsedPercentProperty) {
-            $afterUsedPercent = $afterUsedPercentProperty.Value
-        }
-        $afterResetsAtProperty = $afterWindow.PSObject.Properties['resets_at']
-        if ($null -ne $afterResetsAtProperty) {
-            $afterResetsAt = $afterResetsAtProperty.Value
-        }
-    }
-    if ($null -eq $beforeUsedPercent -or $null -eq $afterUsedPercent -or $null -eq $beforeResetsAt -or $null -eq $afterResetsAt) {
-        return $true
-    }
+}
 
-    $usedPercentDecreased = [double]$afterUsedPercent -lt [double]$beforeUsedPercent
-    $resetWindowChanged = [math]::Abs([double]$afterResetsAt - [double]$beforeResetsAt) -gt $resetWindowToleranceSeconds
+function Invoke-QuotaObservationSnapshot {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
 
-    return $usedPercentDecreased -or $resetWindowChanged
+        [Parameter(Mandatory)]
+        [string]$ExpectedSha256,
+
+        [string]$CodexHome,
+
+        [Parameter(Mandatory)]
+        [string]$Purpose
+    )
+
+    try {
+        $updatedSnapshot = Update-AdvisorAfterSnapshotFromCodex -Path $Path -ExpectedSha256 $ExpectedSha256 -CodexHome $CodexHome
+        $snapshot = Read-QuotaSnapshot -Path $updatedSnapshot.Path
+        return [pscustomobject]@{
+            state = if ([string]$snapshot.state -eq 'Valid') { 'Valid' } else { 'unknown' }
+            path = [string]$updatedSnapshot.Path
+            sha256 = [string]$updatedSnapshot.Sha256
+            actual_sha256 = [string]$updatedSnapshot.Sha256
+            integrity_conflict = $false
+            snapshot = $snapshot
+            failure_class = $null
+        }
+    }
+    catch {
+        $failureClass = $_.Exception.GetType().Name
+        $currentHash = $null
+        $nextExpectedHash = $ExpectedSha256
+        $integrityConflict = $false
+        try {
+            $currentHash = Get-FileSha256 -Path $Path
+        }
+        catch {
+        }
+        if ($currentHash -and [string]::Equals($currentHash, $ExpectedSha256, [StringComparison]::OrdinalIgnoreCase)) {
+            try {
+                $null = Write-QuotaSnapshotUnavailable -Path $Path -Purpose $Purpose -FailureClass $failureClass
+                $currentHash = Get-FileSha256 -Path $Path
+                $nextExpectedHash = $currentHash
+            }
+            catch {
+            }
+        }
+        elseif ($currentHash) {
+            $integrityConflict = $true
+        }
+        $snapshot = $null
+        try {
+            $snapshot = Read-QuotaSnapshot -Path $Path
+        }
+        catch {
+        }
+        return [pscustomobject]@{
+            state = 'unknown'
+            path = $Path
+            sha256 = $nextExpectedHash
+            actual_sha256 = $currentHash
+            integrity_conflict = $integrityConflict
+            snapshot = $snapshot
+            failure_class = $failureClass
+        }
+    }
 }
 
 function Invoke-AdvisorBudgetMonitor {
@@ -11201,332 +10693,100 @@ function Invoke-AdvisorBudgetMonitor {
 
         [string]$CodexHome,
 
-        [Parameter(Mandatory)]
-        [double]$PrimaryBudgetPercent,
+        [double]$PrimaryBudgetPercent = 0,
 
-        [Parameter(Mandatory)]
-        [int]$AbortGraceSeconds,
+        [int]$AbortGraceSeconds = 0,
 
-        [ValidateRange(0.1, 3600)]
-        [double]$SnapshotRefreshIntervalSeconds = 30
+        [AllowNull()]
+        [object]$ScopePlan,
+
+        [ValidateRange(0.1, 86400)]
+        [double]$SnapshotRefreshIntervalSeconds = 1800
     )
 
     $monitor = [ordered]@{
         state = 'running'
         stopRequested = $false
-        safePointFound = $false
-        safePointMissing = $false
-        abortReason = $null
-        observedPrimaryDeltaPercent = $null
         terminalSnapshotTaken = $false
         afterSnapshotPath = $AfterSnapshotPath
         afterSnapshotSha256 = $AfterSnapshotSha256
         snapshotUpdateCount = 0
+        lastSnapshotState = 'unknown'
+        writeFailures = @()
     }
-    Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-            event = 'monitor.started'
+    $writeFailure = Invoke-BudgetMonitorRecordWrite -Path $MonitorPath -Record ([ordered]@{
+            event = 'quota-observation.started'
             recorded_at_utc = [datetime]::UtcNow.ToString('o')
-            primary_budget_percent = $PrimaryBudgetPercent
+            state = 'running'
             after_snapshot_path = $AfterSnapshotPath
-            after_snapshot_sha256 = $AfterSnapshotSha256
             snapshot_refresh_interval_seconds = $SnapshotRefreshIntervalSeconds
         })
+    if ($null -ne $writeFailure) {
+        $monitor.writeFailures += @($writeFailure)
+    }
 
     $nextSnapshotRefreshAtUtc = [DateTime]::UtcNow.AddSeconds($SnapshotRefreshIntervalSeconds)
-    $consecutiveSnapshotFailures = 0
     while (-not $Process.HasExited) {
         if ([DateTime]::UtcNow -ge $nextSnapshotRefreshAtUtc) {
-            $snapshotRefreshSucceeded = $false
-            try {
-                $afterSnapshotUpdate = Update-AdvisorAfterSnapshotFromCodex -Path $AfterSnapshotPath -ExpectedSha256 ([string]$monitor.afterSnapshotSha256) -CodexHome $CodexHome
-                $monitor.afterSnapshotSha256 = [string]$afterSnapshotUpdate.Sha256
-                $monitor.snapshotUpdateCount = [int]$monitor.snapshotUpdateCount + 1
-                $afterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
-                $delta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $afterSnapshot
-                $snapshotRefreshSucceeded = $true
-                $consecutiveSnapshotFailures = 0
-                $nextSnapshotRefreshAtUtc = [DateTime]::UtcNow.AddSeconds($SnapshotRefreshIntervalSeconds)
-                $monitor.observedPrimaryDeltaPercent = $delta
-                Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                        event = 'monitor.snapshot-updated'
-                        recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                        after_snapshot_path = $AfterSnapshotPath
-                        after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                        snapshot_update_count = $monitor.snapshotUpdateCount
-                        observed_primary_delta_percent = $delta
-                    })
-                if (Test-QuotaResetWindowChanged -BeforeSnapshot $BeforeSnapshot -AfterSnapshot $afterSnapshot) {
-                    $monitor.state = 'CrossReset'
-                    $monitor.abortReason = 'primary-reset-window-changed'
-                    Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                            event = 'monitor.cross-reset'
-                            recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                            state = $monitor.state
-                            before_primary_resets_at = $BeforeSnapshot.primary.resets_at
-                            after_primary_resets_at = $afterSnapshot.primary.resets_at
-                            observed_primary_delta_percent = $delta
-                            after_snapshot_path = $AfterSnapshotPath
-                            after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                        })
-                    return $monitor
-                }
-                if ($delta -gt $PrimaryBudgetPercent -or [double]$afterSnapshot.primary.remaining_percent -lt ([double]$BeforeSnapshot.primary.remaining_percent - $PrimaryBudgetPercent)) {
-                        $monitor.stopRequested = $true
-                        $monitor.abortReason = 'primary-budget-percent-exceeded'
-                        $monitor.state = 'stop-requested'
-                        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                event = 'stop-request'
-                                recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                observed_primary_delta_percent = $delta
-                                primary_budget_percent = $PrimaryBudgetPercent
-                                after_snapshot_path = $AfterSnapshotPath
-                                after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                            })
-                        $safePointMessage = ''
-                        $safePointDeadline = [DateTime]::UtcNow.AddSeconds($AbortGraceSeconds)
-                        do {
-                            $safePointMessage = Get-LatestSafePointMessage -EventPath $EventPath -TaskType 'advisor-consult'
-                            if (-not [string]::IsNullOrWhiteSpace($safePointMessage)) {
-                                $monitor.safePointFound = $true
-                                Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                        event = 'safe-point-found'
-                                        recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                        message_length = $safePointMessage.Length
-                                    })
-                                break
-                            }
-                            if ($Process.HasExited) {
-                                break
-                            }
-                            Start-Sleep -Milliseconds 100
-                        } while ([DateTime]::UtcNow -lt $safePointDeadline)
-                        if (-not $monitor.safePointFound) {
-                            $monitor.safePointMissing = $true
-                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                    event = 'safe-point-missing'
-                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                    abort_grace_seconds = $AbortGraceSeconds
-                                })
-                        }
-                        try {
-                            $cleanupResult = Stop-VerifiedProcessTree -Snapshot $StartedSnapshot
-                            $monitor.state = if ($cleanupResult.CleanupStatus -eq 'verified-tree-terminated' -or $cleanupResult.CleanupStatus -eq 'already-terminated') { 'AbortedByBudget' } else { 'IdentityUnverified' }
-                            if ($monitor.state -eq 'IdentityUnverified') {
-                            }
-                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                    event = 'budget-monitor.completed'
-                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                    state = $monitor.state
-                                    cleanup_status = $cleanupResult.CleanupStatus
-                                    cleanup_error = $cleanupResult.ErrorMessage
-                                    safe_point_missing = $monitor.safePointMissing
-                                })
-                            return $monitor
-                        }
-                        catch {
-                            $monitor.state = 'IdentityUnverified'
-                            $monitor.abortReason = $_.Exception.Message
-                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                    event = 'monitor.identity-unverified'
-                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                    state = $monitor.state
-                                    cleanup_status = 'not-terminated'
-                                    termination_executed = $false
-                                    evidence_preserved = $true
-                                    error = $_.Exception.Message
-                                    safe_point_missing = $monitor.safePointMissing
-                                })
-                            return $monitor
-                        }
-                    }
-            }
-            catch {
-                $failureMessage = $_.Exception.Message
-                if ($snapshotRefreshSucceeded) {
-                    $monitor.state = 'SnapshotFailed'
-                    $monitor.abortReason = $failureMessage
-                    Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                            event = 'monitor.snapshot-failed'
-                            recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                            state = $monitor.state
-                            terminal_snapshot = $false
-                            snapshot_refresh_succeeded = $true
-                            retry_scheduled = $false
-                            error = $failureMessage
-                            after_snapshot_path = $AfterSnapshotPath
-                            after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                            snapshot_update_count = $monitor.snapshotUpdateCount
-                        })
-                    return $monitor
-                }
-                $consecutiveSnapshotFailures++
-                $processExitedAfterFailure = $Process.HasExited
-                $stopAfterFailures = $consecutiveSnapshotFailures -ge 3 -and -not $processExitedAfterFailure
-                $nextSnapshotRefreshAtUtc = [DateTime]::UtcNow.AddSeconds($SnapshotRefreshIntervalSeconds)
-                if ($stopAfterFailures) {
-                    $monitor.state = 'SnapshotFailed'
-                    $monitor.stopRequested = $true
-                    $monitor.abortReason = 'after-snapshot-refresh-failed-three-times'
-                }
-                Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                        event = 'monitor.snapshot-failed'
-                        recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                        state = if ($stopAfterFailures) { 'SnapshotFailed' } else { 'retrying' }
-                        terminal_snapshot = $false
-                        consecutive_failures = $consecutiveSnapshotFailures
-                        retry_scheduled = -not $stopAfterFailures -and -not $processExitedAfterFailure
-                        stop_requested = $stopAfterFailures
-                        error = $failureMessage
-                        after_snapshot_path = $AfterSnapshotPath
-                        after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                        snapshot_update_count = $monitor.snapshotUpdateCount
-                    })
-                if ($processExitedAfterFailure) {
-                    break
-                }
-                if ($stopAfterFailures) {
-                    try {
-                        $cleanupResult = Stop-VerifiedProcessTree -Snapshot $StartedSnapshot
-                        if ($cleanupResult.CleanupStatus -notin @('verified-tree-terminated', 'already-terminated')) {
-                            $monitor.state = 'IdentityUnverified'
-                            $monitor.abortReason = [string]$cleanupResult.ErrorMessage
-                            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                    event = 'monitor.identity-unverified'
-                                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                    state = $monitor.state
-                                    cleanup_status = $cleanupResult.CleanupStatus
-                                    termination_executed = [bool]$cleanupResult.TerminationExecuted
-                                    evidence_preserved = $true
-                                    error = $monitor.abortReason
-                                })
-                            return $monitor
-                        }
-                        if (-not $Process.HasExited) {
-                            $Process.WaitForExit()
-                        }
-                        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                event = 'budget-monitor.completed'
-                                recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                state = $monitor.state
-                                termination_reason = 'after-snapshot-refresh-failed-three-times'
-                                cleanup_status = $cleanupResult.CleanupStatus
-                                cleanup_error = $cleanupResult.ErrorMessage
-                                after_snapshot_path = $AfterSnapshotPath
-                                after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                            })
-                        return $monitor
-                    }
-                    catch {
-                        $monitor.state = 'IdentityUnverified'
-                        $monitor.abortReason = $_.Exception.Message
-                        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                                event = 'monitor.identity-unverified'
-                                recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                                state = $monitor.state
-                                cleanup_status = 'not-terminated'
-                                termination_executed = $false
-                                evidence_preserved = $true
-                                error = $_.Exception.Message
-                            })
-                        return $monitor
-                    }
-                }
-            }
-        }
-        Start-Sleep -Milliseconds 100
-    }
-
-    try {
-        $terminalSnapshotUpdate = Update-AdvisorAfterSnapshotFromCodex -Path $AfterSnapshotPath -ExpectedSha256 ([string]$monitor.afterSnapshotSha256) -CodexHome $CodexHome
-        $monitor.afterSnapshotSha256 = [string]$terminalSnapshotUpdate.Sha256
-        $terminalAfterSnapshot = Read-QuotaSnapshot -Path $AfterSnapshotPath
-        $terminalDelta = Get-QuotaSnapshotDelta -Before $BeforeSnapshot -After $terminalAfterSnapshot
-        $monitor.observedPrimaryDeltaPercent = $terminalDelta
-        $monitor.terminalSnapshotTaken = $true
-        if (Test-QuotaResetWindowChanged -BeforeSnapshot $BeforeSnapshot -AfterSnapshot $terminalAfterSnapshot) {
-            $monitor.state = 'CrossReset'
-            $monitor.abortReason = 'primary-reset-window-changed'
-            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                    event = 'monitor.cross-reset'
+            $observation = Invoke-QuotaObservationSnapshot -Path $AfterSnapshotPath -ExpectedSha256 ([string]$monitor.afterSnapshotSha256) -CodexHome $CodexHome -Purpose 'long-task'
+            $monitor.afterSnapshotSha256 = [string]$observation.sha256
+            $monitor.snapshotUpdateCount = [int]$monitor.snapshotUpdateCount + 1
+            $monitor.lastSnapshotState = [string]$observation.state
+            $progress = Get-QuotaObservationProgress -EventPath $EventPath -ScopePlan $ScopePlan -TaskType 'advisor-consult'
+            $snapshot = $observation.snapshot
+            $writeFailure = Invoke-BudgetMonitorRecordWrite -Path $MonitorPath -Record ([ordered]@{
+                    event = 'quota.snapshot'
                     recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                    state = $monitor.state
-                    terminal_snapshot = $true
-                    before_primary_resets_at = $BeforeSnapshot.primary.resets_at
-                    after_primary_resets_at = $terminalAfterSnapshot.primary.resets_at
-                    observed_primary_delta_percent = $terminalDelta
+                    state = [string]$observation.state
+                    failure_code = if ($observation.state -eq 'unknown') { 'quota-snapshot-unavailable' } else { $null }
+                    failure_class = $observation.failure_class
+                    terminal = $false
+                    snapshot_update_count = $monitor.snapshotUpdateCount
                     after_snapshot_path = $AfterSnapshotPath
                     after_snapshot_sha256 = $monitor.afterSnapshotSha256
+                    observed_after_snapshot_sha256 = Get-DispatchJsonProperty -Object $observation -Name 'actual_sha256'
+                    after_snapshot_integrity_conflict = [bool](Get-DispatchJsonProperty -Object $observation -Name 'integrity_conflict')
+                    primary = if ($null -eq $snapshot) { $null } else { $snapshot.primary }
+                    secondary = if ($null -eq $snapshot) { $null } else { $snapshot.secondary }
+                    progress = $progress
                 })
-            return $monitor
+            if ($null -ne $writeFailure) {
+                $monitor.writeFailures += @($writeFailure)
+            }
+            $nextSnapshotRefreshAtUtc = [DateTime]::UtcNow.AddSeconds($SnapshotRefreshIntervalSeconds)
         }
-        $terminalBudgetExceeded = $terminalDelta -gt $PrimaryBudgetPercent -or [double]$terminalAfterSnapshot.primary.remaining_percent -lt ([double]$BeforeSnapshot.primary.remaining_percent - $PrimaryBudgetPercent)
-        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                event = 'monitor.terminal-snapshot'
-                recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                primary_budget_percent = $PrimaryBudgetPercent
-                observed_primary_delta_percent = $terminalDelta
-                before_primary_remaining_percent = $BeforeSnapshot.primary.remaining_percent
-                after_primary_remaining_percent = $terminalAfterSnapshot.primary.remaining_percent
-                over_budget = $terminalBudgetExceeded
-                after_snapshot_path = $AfterSnapshotPath
-                after_snapshot_sha256 = $monitor.afterSnapshotSha256
-            })
-        if ($terminalBudgetExceeded) {
-            $monitor.stopRequested = $true
-            $monitor.state = 'AbortedByBudget'
-            $monitor.abortReason = 'primary-budget-percent-exceeded-after-process-exit'
-            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                    event = 'monitor.terminal-budget-exceeded'
-                    recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                    state = $monitor.state
-                    terminal_snapshot = $true
-                    observed_primary_delta_percent = $terminalDelta
-                    primary_budget_percent = $PrimaryBudgetPercent
-                    before_primary_remaining_percent = $BeforeSnapshot.primary.remaining_percent
-                    after_primary_remaining_percent = $terminalAfterSnapshot.primary.remaining_percent
-                    after_snapshot_path = $AfterSnapshotPath
-                    after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                })
-            Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-            event = 'budget-monitor.completed'
-            recorded_at_utc = [datetime]::UtcNow.ToString('o')
-            state = $monitor.state
-            terminal_snapshot = $true
-            abort_reason = $monitor.abortReason
-            after_snapshot_path = $AfterSnapshotPath
-            after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                })
-            return $monitor
-        }
-    }
-    catch {
-        $monitor.state = 'SnapshotFailed'
-        $monitor.abortReason = $_.Exception.Message
-        Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-                event = 'monitor.snapshot-failed'
-                recorded_at_utc = [datetime]::UtcNow.ToString('o')
-                state = $monitor.state
-                terminal_snapshot = $true
-                error = $_.Exception.Message
-                after_snapshot_path = $AfterSnapshotPath
-                after_snapshot_sha256 = $monitor.afterSnapshotSha256
-                snapshot_update_count = $monitor.snapshotUpdateCount
-            })
-        return $monitor
+        Start-Sleep -Milliseconds 250
     }
 
+    $observation = Invoke-QuotaObservationSnapshot -Path $AfterSnapshotPath -ExpectedSha256 ([string]$monitor.afterSnapshotSha256) -CodexHome $CodexHome -Purpose 'close'
+    $monitor.afterSnapshotSha256 = [string]$observation.sha256
+    $monitor.snapshotUpdateCount = [int]$monitor.snapshotUpdateCount + 1
+    $monitor.lastSnapshotState = [string]$observation.state
+    $monitor.terminalSnapshotTaken = $true
     $monitor.state = 'completed'
-    Write-BudgetMonitorRecord -Path $MonitorPath -Record ([ordered]@{
-            event = 'monitor.completed'
+    $progress = Get-QuotaObservationProgress -EventPath $EventPath -ScopePlan $ScopePlan -TaskType 'advisor-consult'
+    $snapshot = $observation.snapshot
+    $writeFailure = Invoke-BudgetMonitorRecordWrite -Path $MonitorPath -Record ([ordered]@{
+            event = 'quota.snapshot'
             recorded_at_utc = [datetime]::UtcNow.ToString('o')
-            state = $monitor.state
-            terminal_snapshot = $monitor.terminalSnapshotTaken
+            state = [string]$observation.state
+            failure_code = if ($observation.state -eq 'unknown') { 'quota-snapshot-unavailable' } else { $null }
+            failure_class = $observation.failure_class
+            terminal = $true
+            snapshot_update_count = $monitor.snapshotUpdateCount
             after_snapshot_path = $AfterSnapshotPath
             after_snapshot_sha256 = $monitor.afterSnapshotSha256
+            observed_after_snapshot_sha256 = Get-DispatchJsonProperty -Object $observation -Name 'actual_sha256'
+            after_snapshot_integrity_conflict = [bool](Get-DispatchJsonProperty -Object $observation -Name 'integrity_conflict')
+            primary = if ($null -eq $snapshot) { $null } else { $snapshot.primary }
+            secondary = if ($null -eq $snapshot) { $null } else { $snapshot.secondary }
+            progress = $progress
         })
+    if ($null -ne $writeFailure) {
+        $monitor.writeFailures += @($writeFailure)
+    }
     return $monitor
 }
-
 function Format-StartEvidencePath {
     param(
         [string]$Path
@@ -11945,8 +11205,6 @@ function Get-DispatchFailureReasonCode {
             'ThreadModelUnknown',
             'NoValidResumeAnchor',
             'ProfileEvidenceUnknown',
-            'BudgetMonitorStopped',
-            'QuotaStop',
             'ThreadRelayTimeout',
             'ProcessIdentityUnknown',
             'CodexLaunchFailed',
@@ -11966,22 +11224,17 @@ function Get-DispatchFailureReasonCode {
             'PrepareRequired',
             'PrepareArtifactMismatch',
             'PreparedResultMissing',
+            'ScopePlanInvalid',
             'QuotaServiceRejected')) {
         if ($text.Contains($code)) {
             return $code
         }
-    }
-    if ($text -match 'ScopePlan 阻擋派工') {
-        return 'QuotaStop'
     }
     if ($Phase -eq 'thread-relay-not-ready') {
         return 'ThreadRelayTimeout'
     }
     if ($Phase -eq 'identity-unverified') {
         return 'ProcessIdentityUnknown'
-    }
-    if ($Phase -in @('aborted-by-budget', 'cross-reset')) {
-        return 'BudgetMonitorStopped'
     }
     if ($Phase -eq 'preparation') {
         return 'ProfileEvidenceUnknown'
@@ -13446,7 +12699,7 @@ function Invoke-Start {
     $dispatchKindValue = $DispatchKind
     $beforeSnapshotPathValue = $null
     $beforeSnapshotObject = $null
-    $afterSnapshotPathValue = $QuotaAfterPath
+    $afterSnapshotPathValue = if ([string]::IsNullOrWhiteSpace($QuotaAfterPath)) { $null } else { $QuotaAfterPath }
     $afterSnapshotSha256Value = $null
     $scopePlan = $null
     $scopePlanPathValue = $null
@@ -13536,8 +12789,8 @@ function Invoke-Start {
     if ([string]::IsNullOrWhiteSpace($dispatchKindValue)) {
         $dispatchKindValue = 'resource'
     }
-    if ($TaskType -eq 'advisor-consult' -and [string]::IsNullOrWhiteSpace($AdvisorRequestSource)) {
-        $AdvisorRequestSource = 'automatic-quota'
+    if ($TaskType -eq 'advisor-consult' -and $AdvisorRequestSource -ne 'user-explicit') {
+        throw 'AdvisorAuthorizationRequired：advisor-consult 必須由呼叫端明確提供 user-explicit 授權；process_started=false'
     }
     $sourceRootPath = Resolve-AbsolutePath -Path $sourceRootValue
     $executionRootPath = Resolve-AbsolutePath -Path $executionRootValue
@@ -13813,6 +13066,9 @@ function Invoke-Start {
          quota_before_service_rejection = $null
          quota_after_path = $null
          quota_after_sha256 = $null
+         quota_observation_state = $null
+         quota_observation_path = $null
+         quota_observation_write_failures = @()
          request_path = if ($null -eq $script:RequestContext) { $null } else { [string]$script:RequestContext.path }
          request_sha256 = if ($null -eq $script:RequestContext) { $null } else { [string]$script:RequestContext.sha256 }
          request_operation = if ($null -eq $script:RequestContext) { $null } else { [string](Get-DispatchJsonProperty -Object $script:RequestContext.document -Name 'operation') }
@@ -13977,25 +13233,20 @@ function Invoke-Start {
     $beforeSnapshotFreshnessValue = Get-QuotaSnapshotFreshness -Snapshot $beforeSnapshotObject
     $beforeSnapshotObservationsValue = Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'observations'
     $beforeSnapshotServiceRejectionValue = Get-QuotaSnapshotServiceRejection -Snapshot $beforeSnapshotObject
-    $calibrationPathValue = $CalibrationPath
-    if ([string]::IsNullOrWhiteSpace($calibrationPathValue)) {
-        $calibrationPathValue = Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history\quota-calibration.jsonl'
-    }
+
     if ($TaskType -eq 'advisor-consult') {
         $afterSnapshot = New-AdvisorAfterSnapshot -CallerPath $QuotaAfterPath -ExecutionRoot $executionRootPath -HistoryRoot $historyRoot -CodexHome $effectiveCodexHomePath
         $afterSnapshotPathValue = [string]$afterSnapshot.Path
         $afterSnapshotSha256Value = [string]$afterSnapshot.Sha256
     }
     if ($TaskType -eq 'advisor-consult') {
-        $advisorCalibration = Get-CalibrationEstimate -Path $calibrationPathValue -ModelEvidence $resolvedModelEvidence -ReasoningEffortEvidence $resolvedReasoningEffortEvidence -Model $resolvedModelValue -Profile $requestedProfileValue -SessionMode $sessionModeValue -TaskType $TaskType
-        $advisorEstimate = if ($null -ne $advisorCalibration.estimate) { [double]$advisorCalibration.estimate } else { [double](Get-ConservativeEstimate -TaskType $TaskType) }
-        $advisorActivationDecision = Get-AdvisorActivationDecision -QuotaSnapshot $beforeSnapshotObject -State ([string](Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'state')) -EstimatePercent $advisorEstimate -RequestSource $AdvisorRequestSource -HasFreshObservations ($beforeSnapshotFreshnessValue -eq 'fresh' -and (Test-QuotaSnapshotHasObservations -Snapshot $beforeSnapshotObject)) -ServiceRejected ($null -ne $beforeSnapshotServiceRejectionValue)
+        $advisorActivationDecision = Get-AdvisorActivationDecision -RequestSource $AdvisorRequestSource
         $activationModeValue = [string](Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'activationMode')
         if ([string]::IsNullOrWhiteSpace($activationModeValue)) {
             $activationModeValue = 'none'
         }
         $authorizationSourceValue = Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'authorizationSource'
-        $primaryRemainingPercentValue = Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'remainingPercent'
+        $primaryRemainingPercentValue = Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'primary') -Name 'remaining_percent'
         $requiredSourceValue = Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'requiredAuthorization'
         if (-not [bool]$advisorActivationDecision.granted) {
             $failureReasonCode = [string]$advisorActivationDecision.reasonCode
@@ -14101,7 +13352,11 @@ function Invoke-Start {
         }
     }
     else {
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -SessionMode $sessionModeValue -BeforeSnapshot (Read-QuotaSnapshot -Path $beforeSnapshotPathValue) -CalibrationPath $calibrationPathValue -Units $units -UnitKind $unitKindValue -RequestedBudgetPercent $PrimaryBudgetPercent -RequestedReservePercent $PrimaryReservePercent -Model $resolvedModelValue -ModelEvidence $resolvedModelEvidence -ReasoningEffortEvidence $resolvedReasoningEffortEvidence -ActivationDecision $advisorActivationDecision
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -SessionMode $sessionModeValue -BeforeSnapshot (Read-QuotaSnapshot -Path $beforeSnapshotPathValue) -Units $units -UnitKind $unitKindValue -RequestedBudgetPercent $PrimaryBudgetPercent -RequestedReservePercent $PrimaryReservePercent -ModelEvidence $resolvedModelEvidence -ReasoningEffortEvidence $resolvedReasoningEffortEvidence -ActivationDecision $advisorActivationDecision
+        if (-not (Test-ScopePlanCompleteness -ScopePlan $scopePlan)) {
+            $phase = 'preparation'
+            throw 'ScopePlanInvalid：ScopePlan 必須涵蓋 Request 宣告的完整單位清單。'
+        }
         $scopePlan.scope_plan_fingerprint = Get-ScopePlanFingerprint -ScopePlan $scopePlan
         Write-Utf8NoBom -Path $scopePlanPathValue -Content (($scopePlan | ConvertTo-Json -Depth 20) + "`n")
         $scopePlanRootRunIdValue = $runId
@@ -14119,17 +13374,16 @@ function Invoke-Start {
         $scopePlanSelectionValue = 'root'
         $null = Write-ScopePlanHashRecordIfMissing -SourceHistoryRoot $sourceHistoryRoot -DispatchSlug $dispatchSlugValue -LineSlug $lineSlugValue -ScopePlanPath $scopePlanPathValue -RootRunId $scopePlanRootRunIdValue
     }
-    if ($scopePlan.decision -eq 'blocked-no-estimate' -or $scopePlan.decision -eq 'blocked-insufficient-budget' -or $scopePlan.decision -eq 'blocked-no-fresh-quota' -or $scopePlan.decision -eq 'user-decision-required') {
-        throw "ScopePlan 阻擋派工：decision=$($scopePlan.decision); reason=$($scopePlan.decision_reason)"
-    }
+
     if ($TaskType -eq 'advisor-consult') {
+        $monitorHistoryRoot = Join-Path -Path $historyRoot -ChildPath $lineSlugValue
         if ([string]::IsNullOrWhiteSpace($monitorPathValue)) {
-            $monitorPathValue = Join-Path -Path $historyRoot -ChildPath ('quota-monitor-' + $dispatchSlugValue + '-' + $timestamp + '.jsonl')
+            $monitorPathValue = Get-QuotaObservationPath -LineHistoryRoot $monitorHistoryRoot -DispatchSlug $dispatchSlugValue
         }
         else {
             $monitorPathValue = Resolve-AbsolutePath -Path $monitorPathValue
-            if (-not (Test-PathWithinRoot -Path $monitorPathValue -Root $executionRootPath)) {
-                throw "BudgetMonitorPath 必須位於 executionRoot 內：$monitorPathValue"
+            if (-not (Test-PathWithinRoot -Path $monitorPathValue -Root $monitorHistoryRoot)) {
+                throw "BudgetMonitorPath 必須位於 line history 內：$monitorPathValue"
             }
         }
     }
@@ -14218,6 +13472,9 @@ function Invoke-Start {
     $codexArguments.Add($lastMessagePathValue)
     $codexArguments.Add('-')
 
+    $launcher = New-CodexLauncher -CodexExecutable $codexExecutable -CodexArguments @($codexArguments.ToArray()) -PromptPath $promptPathValue -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyRoot -LauncherPath $launcherPath -ExitSidecarPath $exitSidecarPathValue -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -RunId $runId
+    $launcherPath = $launcher.Path
+    $startInfo = New-ProcessStartInfo -FileName $launcher.FileName -WorkingDirectory $executionRootPath -Arguments @($launcher.Arguments)
     if ($null -ne $previousRun) {
         $profileConfigSha256AfterCompare = $null
         if ([string]::IsNullOrWhiteSpace($profileConfigPathValue) -or -not (Test-Path -LiteralPath $profileConfigPathValue -PathType Leaf)) {
@@ -14236,10 +13493,6 @@ function Invoke-Start {
             throw ('ProfileEvidenceUnknown：Resume compare 後 Profile 設定檔已變更；compare-sha256={0}; current-sha256={1}' -f $profileConfigSha256AtCompare, $profileConfigSha256AfterCompare)
         }
     }
-
-    $launcher = New-CodexLauncher -CodexExecutable $codexExecutable -CodexArguments @($codexArguments.ToArray()) -PromptPath $promptPathValue -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyRoot -LauncherPath $launcherPath -ExitSidecarPath $exitSidecarPathValue -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -RunId $runId
-    $launcherPath = $launcher.Path
-    $startInfo = New-ProcessStartInfo -FileName $launcher.FileName -WorkingDirectory $executionRootPath -Arguments @($launcher.Arguments)
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
     $startedSnapshot = $null
@@ -14401,27 +13654,14 @@ function Invoke-Start {
         $inspectResultPathValue = $inspectResult.Path
         $budgetMonitorStatus.state = 'running'
         if ($TaskType -eq 'advisor-consult') {
-            $budgetMonitorStatus = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -AfterSnapshotSha256 $afterSnapshotSha256Value -CodexHome $CodexHome -PrimaryBudgetPercent ([double]$scopePlan.primary_budget_percent) -AbortGraceSeconds $AbortGraceSeconds
+            $budgetMonitorStatus = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -AfterSnapshotSha256 $afterSnapshotSha256Value -CodexHome $CodexHome -ScopePlan $scopePlan
             $afterSnapshotSha256Value = [string]$budgetMonitorStatus.afterSnapshotSha256
             $runRecord.quota_after_path = $afterSnapshotPathValue
             $runRecord.quota_after_sha256 = $afterSnapshotSha256Value
+            $runRecord.quota_observation_state = [string]$budgetMonitorStatus.lastSnapshotState
+            $runRecord.quota_observation_path = $monitorPathValue
+            $runRecord.quota_observation_write_failures = @($budgetMonitorStatus.writeFailures)
             $null = Write-DispatchRunRecord -Record $runRecord -Update
-            if ($budgetMonitorStatus.state -eq 'AbortedByBudget') {
-                $phase = 'aborted-by-budget'
-                throw "advisor-consult 已由 BudgetMonitor 中止：$($budgetMonitorStatus.state)"
-            }
-            if ($budgetMonitorStatus.state -eq 'IdentityUnverified') {
-                $skipProcessCleanup = $true
-                $phase = 'identity-unverified'
-                throw 'advisor-consult BudgetMonitor 無法確認進程身分，保留未清理證據且不再終止程序。'
-            }
-            if ($budgetMonitorStatus.state -eq 'CrossReset') {
-                $phase = 'cross-reset'
-                throw 'advisor-consult BudgetMonitor 偵測到 primary reset window 變更，停止監看並拒絕校準。'
-            }
-            if ($budgetMonitorStatus.state -eq 'SnapshotFailed') {
-                throw 'advisor-consult BudgetMonitor 無法取得有效 after quota snapshot。'
-            }
         }
         $phase = 'started'
 
@@ -15505,7 +14745,7 @@ function Invoke-Inspect {
                 $lastAgentMessage = $textValue
             }
         }
-        if ($eventType -eq 'turn.completed') {
+        if ($eventType -in @('turn.completed', 'turn.failed')) {
             $usage = Get-EventPropertyValue -Object $event -Name 'usage'
         }
         if ($eventType -eq 'error') {
@@ -15773,59 +15013,78 @@ function Invoke-Inspect {
     catch {
         $snapshotFailure = 'Inspect after quota snapshot 無效：' + $_.Exception.Message
     }
+    $closeSnapshotPathValue = $null
+    $closeSnapshotSha256Value = $null
+    $closeSnapshotStateValue = 'unknown'
+    $closeHistoryRoot = Join-Path -Path (Resolve-AbsolutePath -Path $ExecutionRoot) -ChildPath ('.local\ai-sessions\history\' + $LineSlug)
+    $closeSnapshotPathValue = New-QuotaSnapshotPath -HistoryRoot $closeHistoryRoot -Purpose 'close'
+    $closeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $null -SnapshotPath $closeSnapshotPathValue -CodexHome $CodexHome -HistoryRoot $closeHistoryRoot -Purpose 'close' -Required
+    $closeSnapshot = Read-QuotaSnapshot -Path $closeSnapshotPathValue
+    $closeSnapshotSha256Value = Get-FileSha256 -Path $closeSnapshotPathValue
+    $closeSnapshotSourceStateValue = [string](Get-DispatchJsonProperty -Object $closeSnapshot -Name 'state')
+    $closeSnapshotPrimaryValue = Get-DispatchJsonProperty -Object $closeSnapshot -Name 'primary'
+    $closeSnapshotSecondaryValue = Get-DispatchJsonProperty -Object $closeSnapshot -Name 'secondary'
+    $closeSnapshotStateValue = if ($closeSnapshotSourceStateValue -eq 'Valid') { 'Valid' } elseif ($closeSnapshotSourceStateValue -eq 'SnapshotUnavailable') { 'unknown' } else { $closeSnapshotSourceStateValue }
+    $recordQuotaObservationPath = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'quota_observation_path')
+    $requestedQuotaObservationPath = if ([string]::IsNullOrWhiteSpace($BudgetMonitorPath)) { $recordQuotaObservationPath } else { $BudgetMonitorPath }
+    $quotaObservationPathValue = $null
+    if (-not [string]::IsNullOrWhiteSpace($requestedQuotaObservationPath)) {
+        try {
+            $candidateObservationPath = Resolve-AbsolutePath -Path $requestedQuotaObservationPath
+            if (Test-PathWithinRoot -Path $candidateObservationPath -Root $closeHistoryRoot) {
+                $quotaObservationPathValue = $candidateObservationPath
+            }
+        }
+        catch {
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($quotaObservationPathValue)) {
+        $quotaObservationPathValue = Get-QuotaObservationPath -LineHistoryRoot $closeHistoryRoot -DispatchSlug $DispatchSlug
+    }
+    $closeProgress = if ($TaskType -eq 'advisor-consult') {
+        Get-QuotaObservationProgress -EventPath $eventPath -ScopePlan $scopePlan -TaskType $TaskType
+    }
+    else {
+        [ordered]@{
+            event_count = $events.Count
+            usage = $usage
+            confirmed_conclusions = if ([string]::IsNullOrWhiteSpace($finalMessage)) { $null } else { $finalMessage }
+            completed_units = @()
+            unfinished_units = @()
+            completion_status = 'not-applicable'
+        }
+    }
+    $closeMonitorWriteFailure = Invoke-BudgetMonitorRecordWrite -Path $quotaObservationPathValue -Record ([ordered]@{
+            event = 'quota.snapshot'
+            recorded_at_utc = [datetime]::UtcNow.ToString('o')
+            state = $closeSnapshotStateValue
+            source_state = $closeSnapshotSourceStateValue
+            failure_code = if ($closeSnapshotStateValue -eq 'unknown') { 'quota-snapshot-unavailable' } else { $null }
+            terminal = $true
+            snapshot_path = $closeSnapshotPathValue
+            snapshot_sha256 = $closeSnapshotSha256Value
+            primary = $closeSnapshotPrimaryValue
+            secondary = $closeSnapshotSecondaryValue
+            progress = $closeProgress
+        })
     $interruptionStatus = [ordered]@{
         applied = $true
         safePointPresent = -not [string]::IsNullOrWhiteSpace((Get-LatestSafePointMessage -EventPath $eventPath -TaskType $TaskType))
         sessionMode = $SessionMode
     }
-    $budgetMonitor = $null
-    $budgetMonitorRejected = $false
-    $budgetMonitorRejectionReason = ''
-    if (-not [string]::IsNullOrWhiteSpace($BudgetMonitorPath)) {
-        $budgetMonitorPathValue = Resolve-AbsolutePath -Path $BudgetMonitorPath
-        if (-not (Test-Path -LiteralPath $budgetMonitorPathValue -PathType Leaf)) {
-            $budgetMonitorRejected = $true
-            $budgetMonitorRejectionReason = "BudgetMonitor 檔案不存在或不是檔案：$budgetMonitorPathValue"
+    $budgetMonitor = @()
+    if (-not [string]::IsNullOrWhiteSpace($quotaObservationPathValue)) {
+        try {
+            if (Test-Path -LiteralPath $quotaObservationPathValue -PathType Leaf) {
+                $budgetMonitor = @(Get-Content -LiteralPath $quotaObservationPathValue -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
+            }
         }
-        else {
-            try {
-                $budgetMonitor = @(Get-Content -LiteralPath $budgetMonitorPathValue -Encoding UTF8 | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { $_ | ConvertFrom-Json -ErrorAction Stop })
-                if ($budgetMonitor.Count -eq 0) {
-                    $budgetMonitorRejected = $true
-                    $budgetMonitorRejectionReason = "BudgetMonitor 檔案沒有可解析的 JSON：$budgetMonitorPathValue"
-                }
-            }
-            catch {
-                $budgetMonitorRejected = $true
-                $budgetMonitorRejectionReason = "BudgetMonitor 無法讀取或解析 JSON：$budgetMonitorPathValue；$($_.Exception.Message)"
-                $budgetMonitor = $null
-            }
+        catch {
+            $budgetMonitor = @()
         }
     }
-    foreach ($monitorRecord in @($budgetMonitor)) {
-        $monitorState = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'state')
-        $monitorEvent = [string](Get-OptionalObjectProperty -Object $monitorRecord -Name 'event')
-        $terminalSnapshotFailure = $monitorEvent -eq 'monitor.snapshot-failed' -and
-            ($monitorState -ne 'retrying' -or [bool](Get-OptionalObjectProperty -Object $monitorRecord -Name 'terminal_snapshot'))
-        if ($monitorState -eq 'AbortedByBudget' -or $monitorState -eq 'SnapshotFailed' -or $monitorEvent -eq 'monitor.terminal-budget-exceeded' -or $terminalSnapshotFailure) {
-            $budgetMonitorRejected = $true
-            if ([string]::IsNullOrWhiteSpace($budgetMonitorRejectionReason)) {
-                if ($monitorState -eq 'SnapshotFailed' -or $terminalSnapshotFailure) {
-                    $budgetMonitorRejectionReason = 'BudgetMonitor 偵測到 snapshot 失敗。'
-                }
-                else {
-                    $budgetMonitorRejectionReason = 'BudgetMonitor 偵測到行程結束後超出 primary budget。'
-                }
-            }
-            break
-        }
-    }
-    if ($budgetMonitorRejected) {
-        $executionResult.success = $false
-        $executionResult.budgetMonitorRejected = $true
-        if ([string]::IsNullOrWhiteSpace($executionResult.turnFailedReason)) {
-            $executionResult.turnFailedReason = $budgetMonitorRejectionReason
-        }
+    if ($null -ne $closeMonitorWriteFailure) {
+        $budgetMonitor += @($closeMonitorWriteFailure)
     }
     $existingSandboxEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'sandbox_acl_evidence'
     if ($null -ne $existingSandboxEvidence) {
@@ -15882,6 +15141,11 @@ function Invoke-Inspect {
         quotaBeforeSha256 = $beforeSnapshotSha256Value
         quotaAfterPath   = $afterSnapshotPathValue
         quotaAfterSha256 = $afterSnapshotSha256Value
+        quotaCloseSnapshotPath = $closeSnapshotPathValue
+        quotaCloseSnapshotSha256 = $closeSnapshotSha256Value
+        quotaCloseSnapshotState = $closeSnapshotStateValue
+        quotaObservationPath = $quotaObservationPathValue
+        quotaObservationWriteFailure = $closeMonitorWriteFailure
         dispatchResultPath = $dispatchResultPathValue
         processExitCodeSource = $processExitCodeSource
         processExitCodeSidecarPath = $processExitCodeSidecarPath
@@ -15889,7 +15153,6 @@ function Invoke-Inspect {
         afterSnapshot    = if ($null -eq $afterSnapshot) { $null } else { $afterSnapshot.values }
         snapshotFailure  = if ([string]::IsNullOrWhiteSpace($snapshotFailure)) { $null } else { $snapshotFailure }
         scopePlan        = $scopePlan
-        budgetMonitorRejected = $budgetMonitorRejected
         advisorConsultReportPath = if ($TaskType -eq 'advisor-consult') { $advisorReportWrittenPath } else { $null }
          diagnosis        = $diagnosis
          sandboxAclEvidence = $sandboxAclEvidence
@@ -17095,7 +16358,7 @@ function Get-CleanupRecordReferencedPaths {
         'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path',
         'prompt_source_path', 'prompt_transfer_path', 'inspect_result_path', 'evidence_pack_path',
         'request_path', 'scope_plan_path', 'scope_plan_parent_path', 'baseline_path',
-        'prepare_result_path', 'quota_before_path', 'quota_after_path',
+        'prepare_result_path', 'quota_before_path', 'quota_after_path', 'quota_observation_path',
         'budget_monitor_path'
     )
     $paths = New-Object System.Collections.Generic.List[string]
