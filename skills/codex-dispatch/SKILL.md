@@ -42,9 +42,9 @@ request 檔的 `source_root`、`result_path` 與 `preflight_result_path` 只在 
 
 ### Dispatch 正式入口
 
-- 單位自動產生：Workflow 依 `design.md` 的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。
+- 單位自動產生：Workflow 依 `design.md` 的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。Request 欄位驗證錯誤的 detail 只列欄位名稱、預期格式與輸入長度，不回顯原始輸入值。
 - Prepare 自動帶入：同線 `line.json`、`requirement-summary.md`；Workflow 另帶入 `design.md`，資源派遣在第 4 欄提及 `design.md` 時帶入，並把派遣單複製到 dispatch worktree 的同線 handoff。`prepare_artifacts` 只用於追加其他檔案。
-- 可省略欄位：`profile`（預設 `default`）、`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名）、各階段結果路徑與額度快照路徑。
+- 可省略欄位：`profile`（預設 `default`）、`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）、各階段結果路徑與額度快照路徑。
 - 輸出欄位：`status`（`started`、`completed`、`failed`）、`completed_stages`、`failed_stage`、`error_code`、`error`、`process_started`、`process_exit_code`、`termination_reason`、`inspect_status`、`inspect_success`、`requested_units`、`result_path`、`result_sha256`、`inspect_result_path`。`Collect` 的參數取自這些欄位。
 
 背景派遣的等待命令如下。`-WaitForCompletion` 等待 sidecar 確認 Codex 行程結束，再以事件流 terminal event 決定結果，沒有固定逾時。
@@ -251,7 +251,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `Prepare` | `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`PrepareArtifacts[]`、`TargetPath[]` | 每個交接檔的來源／目的路徑與 SHA-256、`Prepared` 狀態 | 交接檔缺漏、越界、複製失敗或 hash 不符時 stderr 並 exit code 1 |
 | `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`TaskType`、before snapshot、`InterruptionSafeguard`（舊參數 alias 為 `DowngradeInstruction`）、ScopePlan、Codex 父層選項；advisor 另需 `AdvisorConsultReportPath`、evidence pack、`QuotaAfterPath` 與 read-only 邊界；`AdvisorRequestSource` 必須為 `user-explicit` | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id relay、before snapshot、ScopePlan、實際參數、有效 profile、中斷保全狀態與 monitor 證據 | 快照、ScopePlan、evidence pack、執行檔、工作目錄、啟動參數或根程序身分驗證失敗時 stderr 並 exit code 1 |
 | `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、ScopePlan、派工前後快照、thread id 路徑 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、after snapshot、三層 model evidence、thread relay、advisor report 與 monitor 證據 | JSONL、thread id、必要輸入或證據包 hash 格式錯誤時 stderr 並 exit code 1 |
-| `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath`；回收 Reviewer 時另提供選用的 `ReviewerReportPath` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果；提供 `ReviewerReportPath` 時另含 `reviewerFindings`（`valid`、`conclusion`、七個 unique 計數 `previous_closed_count`、`previous_open_count`、`previous_withdrawn_count`、`current_new_count`、`current_open_count`、`current_closed_count`、`current_withdrawn_count`，以及 `duplicate_ids`、`inconsistencies`） | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
+| `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath`，可選 `SelectedRequirement`（例如 `#22`）；回收 Reviewer 時另提供選用的 `ReviewerReportPath` | worktree 的 tracked／staged／未追蹤差異（`allFiles` 不含 carry-in；另列 `carryInFiles`、`newFiles` 與 `rejectedFiles`），或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果；提供 `ReviewerReportPath` 時另含 `reviewerFindings`（`valid`、`conclusion`、九個 unique 計數 `previous_closed_count`、`previous_open_count`、`previous_withdrawn_count`、`previous_accepted_count`、`current_new_count`、`current_open_count`、`current_closed_count`、`current_withdrawn_count`、`current_accepted_count`，以及 `duplicate_ids`、`inconsistencies`） | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
 | `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `finalStatus`、新快照路徑與 SHA-256、`processStarted=false` 與回復紀錄 | 只允許 `PostResetNoSnapshot`、`SnapshotExpired` 與 `ServiceRejected`；`ProbeAttempt > 1`，或重新取得的快照不是 `Valid` 且 `fresh` 時 stderr 並 exit code 1 |
 | `Dispatch` | `-RequestPath` 指向 `operation=Dispatch` 的 request 檔；未提供 request 檔時拒絕 | `Preflight`、`Prepare`、`Start` 與 `Inspect` 的階段結果，以及 `status=completed` 或 `failed` 的 dispatch envelope；`background: true` 時回傳 `status=started`，Inspect 以 `-WaitForCompletion` 另行等待；Collect 另行呼叫 | 單位核對失敗時於任何副作用前拒絕；request、Preflight、Prepare、Start 或 Inspect 任一階段失敗時 stderr 並 exit code 1 |
 | `Cleanup` | `SourceRoot`、`ExecutionRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、RunRecord、報告與 evidence 路徑 | 已完成保存驗證且移除目標 dispatch worktree 的結果 | 保存清單、路徑界線、進程、ACL 或移除驗證失敗時 stderr 並 exit code 1；失敗時保留 dispatch worktree，不得使用其他方式強制移除 |
@@ -268,13 +268,17 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 Reviewer 回收時，主 Agent 以 `Collect -ReviewerReportPath` 驗證報告的 `## Finding manifest`（schema `codex-dispatch.review-findings.v2`，規則見 `reviewer.toml`）。`reviewerFindings.valid=false` 表示報告自相矛盾或格式無法核對，`outputValid=false` 並以非零結束，依回收三態退回 Reviewer 補正；`valid=true` 且 `conclusion=fail` 表示報告有效但仍有 Critical 或 Major finding，依共同收斂契約退回 Developer 修正。兩種情況分開處理，不以 finding 數量推導結論。
 
-v2 manifest 以 `previous_status` 記錄前輪結束時的狀態快照，以 `current_judgment` 記錄本輪對每個 finding 的判定，`counts` 含七個欄位且只供等值驗證，`evidence` 路徑必須是絕對路徑，且同一 ID 在 manifest 與正文「本輪 finding 判定」段落的證據位置必須相同。
+v2 manifest 以 `previous_status` 記錄前輪結束時的狀態快照，以 `current_judgment` 記錄本輪對每個 finding 的判定，`counts` 含九個欄位且只供等值驗證（舊報告缺少兩個 `accepted` 欄位時以 0 驗證），`evidence` 路徑必須是絕對路徑，且同一 ID 在 manifest 與正文「本輪 finding 判定」段落的證據位置必須相同。
+
+`accepted`（已接受殘餘風險）不列入 `current_findings`、不使 `conclusion=fail`，必須附 `acceptance` 物件（`decided_by`、`scope`、`evidence`、`reopen_condition`）；Collect 的同線 finding 狀態帳保存該物件，重新開啟時沿用。裁決來源與標記規則見 `reviewer.toml`。
+
+Workflow Collect 將 Preflight `carryInManifest` 記錄的開工前未追蹤檔列為 `carryInFiles`，不套用也不覆寫來源內容；worktree 改動了 carry-in 檔時列入 `rejectedFiles`（`reason=carry-in-protected`），來源端在派遣期間變更或刪除時同樣拒收（`reason=source-drift`）。派遣期間新增的未追蹤檔列在 `newFiles`。提供 `SelectedRequirement` 時，結案報告的需求對照只列選定需求，表格後緊接 `範圍外（本輪不要求交付）：#…` 一行（沒有範圍外編號時寫 `範圍外（本輪不要求交付）：無`），多份報告時每份各自遵守，Collect 核對兩者聯集等於需求摘要全部編號且不重複，結果見 `requirementMap.selectedRequirement` 與 `requirementMap.outOfScopeRequirementIds`；未提供時維持要求全部編號。
 
 Collect 回收 Reviewer 報告有兩種模式，輸出的 `collect_mode` 標示採用哪一種。
 
 | 模式 | 觸發條件 | 行為 |
 | --- | --- | --- |
-| `structural-only` | 提供 `ReviewerReportPath`，但缺少 request 或 RunRecord | 只驗證報告格式與 manifest 一致性並回傳 `reviewerFindings`，不寫入狀態帳，不視為回收完成。Reviewer 依 `reviewer.toml` 自我檢查報告時落在此模式 |
+| `structural-only` | 只提供 `Collect -ReviewerReportPath <path>`，不帶 `ReportPath` 與 `DispatchKind` 等回收參數 | 只驗證報告格式與 manifest 一致性並回傳 `reviewerFindings`，不寫入狀態帳，不視為回收完成。Reviewer 依 `reviewer.toml` 自我檢查報告時落在此模式 |
 | `full` | request 與 RunRecord 皆提供 | 執行完整身分驗證，涵蓋 request、Preflight、RunRecord、報告路徑、執行鏈 anchor 與執行端最終訊息，全部通過才寫入狀態帳 |
 
 主 Agent 回收 Reviewer 結果時使用 `full` 模式；`structural-only` 的結果不得作為閉合判定的依據。`full` 模式依 `current_judgment` 中 `status=closed` 的 unique ID 計算本輪閉合數，並寫入同線 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\review-finding-ledger.json`，以 `finding_id` 加 `round` 為唯一鍵保存每個 finding 的跨輪狀態。判斷某個 finding 目前是否閉合時，讀狀態帳或最新一輪的 `current_judgment`，不讀 `previous_status`。v1 報告的 `previous_status` 依 v1 條文承載本輪判定，Collect 以 manifest 與正文「前輪 finding 狀態」節一致為前提讀取，兩者不一致時拒絕回收。

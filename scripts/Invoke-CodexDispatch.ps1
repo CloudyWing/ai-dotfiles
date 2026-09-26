@@ -141,6 +141,9 @@ param(
 
     [string]$RequirementSummaryPath,
 
+    [AllowEmptyString()]
+    [string]$SelectedRequirement,
+
     [string[]]$ReportPath,
 
     [string]$ReviewerReportPath,
@@ -3479,6 +3482,113 @@ function Get-DispatchStringArraySha256 {
     return Get-DispatchByteArraySha256 -Bytes ([System.Text.Encoding]::UTF8.GetBytes($json))
 }
 
+function Get-DispatchRequestInputLength {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return 0
+    }
+
+    if ($Value -is [System.Array]) {
+        $length = 0
+        foreach ($item in $Value) {
+            if ($null -ne $item) {
+                $length += ([string]$item).Length
+            }
+        }
+        return $length
+    }
+
+    return ([string]$Value).Length
+}
+
+function Get-DispatchRequestExpectedFormat {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$Field,
+
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Detail
+    )
+
+    switch ($Field) {
+        'schema' { return 'ai-sessions.dispatch-request.v1' }
+        'operation' { return 'Preflight|Prepare|Start|Inspect|Collect|QuotaProbe|Dispatch|Cleanup' }
+        'line_slug' { return '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
+        'dispatch_slug' { return '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
+        'selected_requirement' { return '#<positive integer>' }
+        'failure_receipt_path' { return 'fully-qualified path' }
+        'evidence_pack_path' { return 'fully-qualified path' }
+        'advisor_consult_report_path' { return 'fully-qualified path' }
+        'target_path' { return 'fully-qualified path' }
+        'profile' { return 'default|advisor' }
+        'advisor_request_source' { return 'user-explicit' }
+        'write_mode' { return 'readonly|write' }
+        'dispatch_kind' { return 'workflow|resource' }
+        'session_mode' { return 'cold-start|continuation' }
+        'unit_kind' { return 'workflow-phase|resource-target|advisor-evidence-question' }
+    }
+
+    if ($Detail.Contains('valid_values')) {
+        return (@($Detail['valid_values']) -join '|')
+    }
+    if ($Detail.Contains('expected_type')) {
+        return [string]$Detail['expected_type']
+    }
+    if ($Detail.Contains('expected')) {
+        return [string]$Detail['expected']
+    }
+
+    return '符合 Request 欄位格式'
+}
+
+function Get-DispatchRequestSafeDetail {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$Field,
+
+        [AllowNull()]
+        [object]$Detail
+    )
+
+    if ($null -eq $Detail -or $Detail -isnot [System.Collections.IDictionary]) {
+        return $Detail
+    }
+
+    $containsInputValues = $Detail.Contains('received') -or $Detail.Contains('mismatches')
+    if (-not $containsInputValues) {
+        return $Detail
+    }
+
+    $inputLength = 0
+    if ($Detail.Contains('received')) {
+        $inputLength = [math]::Max($inputLength, (Get-DispatchRequestInputLength -Value $Detail['received']))
+    }
+    if ($Detail.Contains('mismatches')) {
+        foreach ($mismatch in @($Detail['mismatches'])) {
+            if ($null -eq $mismatch -or $mismatch -isnot [System.Collections.IDictionary]) {
+                continue
+            }
+            foreach ($name in @('expected', 'received')) {
+                if ($mismatch.Contains($name)) {
+                    $inputLength = [math]::Max($inputLength, (Get-DispatchRequestInputLength -Value $mismatch[$name]))
+                }
+            }
+        }
+    }
+
+    return [ordered]@{
+        expected_format = Get-DispatchRequestExpectedFormat -Field $Field -Detail $Detail
+        input_length = $inputLength
+    }
+}
+
 function Throw-DispatchRequestFailure {
     [CmdletBinding()]
     param(
@@ -3496,7 +3606,7 @@ function Throw-DispatchRequestFailure {
         [object]$Detail
     )
 
-    $detailValue = if ($null -eq $Detail) { [ordered]@{} } else { $Detail }
+    $detailValue = if ($null -eq $Detail) { [ordered]@{} } else { Get-DispatchRequestSafeDetail -Field $Field -Detail $Detail }
     $classification = switch ($Code) {
         'DispatchRequestMissingField' { 'MissingField' }
         'DispatchRequestFieldType' { 'FieldType' }
@@ -3714,7 +3824,7 @@ function Get-DispatchRequestEnumValue {
 
     $value = Get-DispatchRequestOptionalString -Document $Document -Field $Field -RequestPathValue $RequestPathValue
     if ($null -ne $value -and $AllowedValues -notcontains $value) {
-        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 {0} 不支援：{1}" -f $Field, $value) -RequestPathValue $RequestPathValue -Field $Field -Detail ([ordered]@{ valid_values = @($AllowedValues); received = $value })
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 {0} 格式無效。" -f $Field) -RequestPathValue $RequestPathValue -Field $Field -Detail ([ordered]@{ valid_values = @($AllowedValues); received = $value })
     }
     return $value
 }
@@ -3767,7 +3877,7 @@ function Read-DispatchRequest {
         Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidJson' -Message 'request file 根節點必須是 JSON object。' -RequestPathValue $requestPathValue
     }
 
-    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path', 'evidence_pack_path', 'advisor_consult_report_path')
+    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement')
     $commonRootFields = @('source_root', 'dispatch_root')
     $cleanupOnlyFields = @('run_record_path', 'reviewer_report_path', 'report_path', 'evidence_path')
     $allowedFields = @('schema', 'operation', 'line_slug', 'dispatch_slug', 'profile', 'advisor_request_source', 'target_path', 'add_directory', 'search', 'codex_parent_option', 'literal_values', 'prepare_artifacts', 'result_path', 'preflight_result_path') + $commonRootFields + $dispatchOnlyFields + $cleanupOnlyFields
@@ -3786,7 +3896,7 @@ function Read-DispatchRequest {
     }
     $validOperations = @('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'Dispatch', 'Cleanup')
     if ($document.operation -isnot [string] -or $validOperations -notcontains [string]$document.operation) {
-        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ('request operation 不支援：' + [string]$document.operation) -RequestPathValue $requestPathValue -Field 'operation' -Detail ([ordered]@{ valid_operations = $validOperations; received = [string]$document.operation })
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request operation 格式無效。' -RequestPathValue $requestPathValue -Field 'operation' -Detail ([ordered]@{ valid_values = $validOperations; received = [string]$document.operation })
     }
     if ([string]$document.operation -notin @('Dispatch', 'Cleanup')) {
         foreach ($field in @($commonRootFields) + @('result_path', 'preflight_result_path') + $dispatchOnlyFields + $cleanupOnlyFields) {
@@ -3821,7 +3931,7 @@ function Read-DispatchRequest {
             Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message ("request 欄位 {0} 必須是字串。" -f $identityField) -RequestPathValue $requestPathValue -Field $identityField -Detail ([ordered]@{ expected_type = 'string'; actual_type = Get-DispatchRequestTypeName -Value $identityValue })
         }
         if ([string]::IsNullOrWhiteSpace([string]$identityValue) -or [regex]::IsMatch([string]$identityValue, '^[a-z0-9]+(?:-[a-z0-9]+)*$') -eq $false) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 {0} 必須是小寫 slug。" -f $identityField) -RequestPathValue $requestPathValue -Field $identityField -Detail ([ordered]@{ received = [string]$identityValue })
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ("request 欄位 {0} 必須是小寫 slug。" -f $identityField) -RequestPathValue $requestPathValue -Field $identityField -Detail ([ordered]@{ received = [string]$identityValue })
         }
     }
 
@@ -3863,7 +3973,7 @@ function Read-DispatchRequest {
         }
         $profileValue = [string]$document.profile
         if (@('default', 'advisor') -notcontains $profileValue) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ('request 欄位 profile 不支援：' + $profileValue) -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = @('default', 'advisor'); received = $profileValue })
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 profile 格式無效。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = @('default', 'advisor'); received = $profileValue })
         }
     }
     $advisorRequestSourcePresent = Test-DispatchRequestFieldPresent -Document $document -Name 'advisor_request_source'
@@ -3875,7 +3985,7 @@ function Read-DispatchRequest {
         }
         $advisorRequestSourceValue = [string]$document.advisor_request_source
         if (@('user-explicit') -notcontains $advisorRequestSourceValue) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message ('request 欄位 advisor_request_source 不支援：' + $advisorRequestSourceValue) -RequestPathValue $requestPathValue -Field 'advisor_request_source' -Detail ([ordered]@{ valid_values = @('user-explicit'); received = $advisorRequestSourceValue })
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 advisor_request_source 格式無效。' -RequestPathValue $requestPathValue -Field 'advisor_request_source' -Detail ([ordered]@{ valid_values = @('user-explicit'); received = $advisorRequestSourceValue })
         }
     }
     $fieldPresence.prepare_artifacts = Test-DispatchRequestFieldPresent -Document $document -Name 'prepare_artifacts'
@@ -3890,9 +4000,12 @@ function Read-DispatchRequest {
     $cleanupFieldPresence = [ordered]@{}
     $cleanupValues = [ordered]@{}
     if ([string]$document.operation -ceq 'Dispatch') {
-        foreach ($field in @('source_root', 'dispatch_root', 'prompt_path', 'task_type', 'required_identifier', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path', 'evidence_pack_path', 'advisor_consult_report_path')) {
+        foreach ($field in @('source_root', 'dispatch_root', 'prompt_path', 'task_type', 'required_identifier', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement')) {
             $dispatchFieldPresence[$field] = Test-DispatchRequestFieldPresent -Document $document -Name $field
             $dispatchValues[$field] = Get-DispatchRequestOptionalString -Document $document -Field $field -RequestPathValue $requestPathValue
+        }
+        if ([bool]$dispatchFieldPresence.selected_requirement -and [string]$dispatchValues.selected_requirement -notmatch '^#[1-9][0-9]*$') {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 selected_requirement 必須是 # 加正整數。' -RequestPathValue $requestPathValue -Field 'selected_requirement' -Detail ([ordered]@{ expected = '#<positive integer>'; received = [string]$dispatchValues.selected_requirement })
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$dispatchValues.failure_receipt_path) -and -not (Test-DispatchFullyQualifiedPath -Path ([string]$dispatchValues.failure_receipt_path))) {
             Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message 'request 欄位 failure_receipt_path 必須是完整絕對路徑。' -RequestPathValue $requestPathValue -Field 'failure_receipt_path' -Detail ([ordered]@{ expected = 'fully-qualified path'; received = [string]$dispatchValues.failure_receipt_path })
@@ -4236,7 +4349,8 @@ function Apply-DispatchRequest {
                 @('PreflightResultPath', 'preflight_result_path'),
                 @('PrepareResultPath', 'prepare_result_path'),
                 @('QuotaBeforePath', 'quota_before_path'),
-                @('QuotaAfterPath', 'quota_after_path'))) {
+                @('QuotaAfterPath', 'quota_after_path'),
+                @('SelectedRequirement', 'selected_requirement'))) {
             Apply-DispatchRequestScalarField -Context $context -CliField ([string]$mapping[0]) -RequestField ([string]$mapping[1])
         }
         Apply-DispatchRequestBooleanField -Context $context -CliField 'ContinueFromScopePlan' -RequestField 'continue_from_scope_plan'
@@ -4750,6 +4864,36 @@ function Test-ReviewerJsonArray {
     return $null -ne $value -and $value -is [System.Collections.IEnumerable] -and $value -isnot [string] -and $value -isnot [System.Collections.IDictionary]
 }
 
+function Test-ReviewerJsonPositiveInteger {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) {
+        return $false
+    }
+
+    $typeCode = [System.Type]::GetTypeCode($Value.GetType())
+    if ($typeCode -notin @([System.TypeCode]::SByte, [System.TypeCode]::Byte, [System.TypeCode]::Int16, [System.TypeCode]::UInt16, [System.TypeCode]::Int32, [System.TypeCode]::UInt32, [System.TypeCode]::Int64, [System.TypeCode]::UInt64)) {
+        return $false
+    }
+
+    $numericValue = [decimal]$Value
+    return $numericValue -gt 0 -and $numericValue -le [decimal][int64]::MaxValue
+}
+
+function Test-ReviewerFindingId {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$FindingId
+    )
+
+    return $FindingId -cmatch '^(?:F-[0-9]{3}|T[0-9]{3}[A-Z]?)$'
+}
+
 function Get-ReviewerDeclaredCount {
     param(
         [AllowNull()]
@@ -4783,6 +4927,72 @@ function Get-ReviewerDeclaredCount {
     return $value
 }
 
+function Get-ReviewerAcceptance {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Acceptance,
+
+        [Parameter(Mandatory)]
+        [string]$FindingId,
+
+        [Parameter(Mandatory)]
+        [string]$Label,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$Inconsistencies
+    )
+
+    if ($null -eq $Acceptance -or $Acceptance -isnot [pscustomobject]) {
+        $Inconsistencies.Add($FindingId + ' ' + $Label + ' acceptance must be an object')
+        return $null
+    }
+
+    $decidedBy = [string](Get-ReviewerPropertyValue -Object $Acceptance -Name 'decided_by')
+    $scope = [string](Get-ReviewerPropertyValue -Object $Acceptance -Name 'scope')
+    $reopenCondition = [string](Get-ReviewerPropertyValue -Object $Acceptance -Name 'reopen_condition')
+    if ([string]::IsNullOrWhiteSpace($decidedBy)) { $Inconsistencies.Add($FindingId + ' ' + $Label + ' acceptance.decided_by missing') }
+    if ([string]::IsNullOrWhiteSpace($scope)) { $Inconsistencies.Add($FindingId + ' ' + $Label + ' acceptance.scope missing') }
+    if ([string]::IsNullOrWhiteSpace($reopenCondition)) { $Inconsistencies.Add($FindingId + ' ' + $Label + ' acceptance.reopen_condition missing') }
+
+    $evidenceProperty = $Acceptance.PSObject.Properties['evidence']
+    $evidence = $null
+    if ($null -ne $evidenceProperty) {
+        $evidence = $evidenceProperty.Value
+    }
+    if ($null -eq $evidence -or $evidence -isnot [System.Array]) {
+        $Inconsistencies.Add($FindingId + ' ' + $Label + ' acceptance.evidence must be a non-empty array')
+        $evidence = @()
+    }
+    $normalizedEvidence = New-Object System.Collections.Generic.List[object]
+    foreach ($position in @($evidence)) {
+        $positionPath = [string](Get-ReviewerPropertyValue -Object $position -Name 'path')
+        $positionLine = [int64]0
+        $positionLineValue = Get-ReviewerPropertyValue -Object $position -Name 'line'
+        if ([string]::IsNullOrWhiteSpace($positionPath) -or -not (Test-ReviewerJsonPositiveInteger -Value $positionLineValue)) {
+            $Inconsistencies.Add($FindingId + ' ' + $Label + ' acceptance evidence position invalid')
+            continue
+        }
+        $positionLine = [int64]$positionLineValue
+        if (-not (Test-ReviewerAbsolutePath -Path $positionPath)) {
+            $Inconsistencies.Add($FindingId + ' ' + $Label + ' acceptance evidence path must be absolute')
+            continue
+        }
+        $normalizedEvidence.Add([ordered]@{ path = $positionPath; line = $positionLine })
+    }
+    if ($normalizedEvidence.Count -eq 0) {
+        $Inconsistencies.Add($FindingId + ' ' + $Label + ' acceptance.evidence missing')
+    }
+
+    return [pscustomobject]@{
+        decided_by = $decidedBy
+        scope = $scope
+        evidence = @($normalizedEvidence.ToArray())
+        reopen_condition = $reopenCondition
+    }
+}
+
 function ConvertTo-ReviewerJudgmentStatus {
     [CmdletBinding()]
     param(
@@ -4794,6 +5004,7 @@ function ConvertTo-ReviewerJudgmentStatus {
         '^(closed|已閉合)$' { return 'closed' }
         '^(open|未閉合)$' { return 'open' }
         '^(withdrawn|撤回)$' { return 'withdrawn' }
+        '^(accepted|已接受殘餘風險)$' { return 'accepted' }
         default { return $null }
     }
 }
@@ -4831,14 +5042,15 @@ function Get-ReviewerBodyJudgment {
 
     $seen = @{}
     foreach ($line in [regex]::Split($sectionMatches[0].Groups['section'].Value, '\r?\n')) {
-        $idMatch = [regex]::Match($line, '\[(?<id>F-[0-9]{3})\]')
+        $idMatch = [regex]::Match($line, '\[(?<id>F-[0-9]{3}|T[0-9]{3}[A-Z]?)\]')
         if (-not $idMatch.Success) {
             continue
         }
 
         $id = $idMatch.Groups['id'].Value
-        $statusMatch = [regex]::Match($line, '(?i)(?<![A-Za-z])(?<status>closed|open|withdrawn|已閉合|未閉合|撤回)(?![A-Za-z])')
-        $status = if ($statusMatch.Success) { ConvertTo-ReviewerJudgmentStatus -Value $statusMatch.Groups['status'].Value } else { $null }
+        $statusMatch = [regex]::Match($line, '(?i)(?<![A-Za-z])(?<status>closed|open|withdrawn|accepted|已閉合|未閉合|撤回|已接受殘餘風險)(?![A-Za-z])')
+        $statusNegated = $statusMatch.Success -and [regex]::IsMatch($line.Substring(0, $statusMatch.Index), '(?i)\bnot[ \t]+$|(?:非|未|不)[ \t]*$')
+        $status = if ($statusMatch.Success -and -not $statusNegated) { ConvertTo-ReviewerJudgmentStatus -Value $statusMatch.Groups['status'].Value } else { $null }
         if ($null -eq $status) {
             $errors.Add($id + ' current judgment prose status missing')
         }
@@ -4865,15 +5077,19 @@ function Get-ReviewerBodyJudgment {
             $errors.Add($id + ' current judgment prose evidence path must be absolute')
         }
 
+        $reopenConditionMatch = [regex]::Match($line, '(?i)(?:reopen_condition|重新開啟條件)[ \t]*[:：][ \t]*(?<condition>.+?)(?=[ \t]*(?:\||;|；|(?:evidence|證據)[ \t]*[:：])|$)')
+        $reopenCondition = if ($reopenConditionMatch.Success) { $reopenConditionMatch.Groups['condition'].Value.Trim() } else { $null }
+
         $entry = [pscustomobject]@{
             id = $id
             status = $status
             severity = $severity
             evidence = if ($hasEvidenceLine) { @([ordered]@{ path = $evidencePath; line = $evidenceLine }) } else { @() }
+            reopen_condition = $reopenCondition
         }
         if ($seen.ContainsKey($id)) {
             $previous = $seen[$id]
-            if ($previous.status -cne $entry.status -or $previous.severity -cne $entry.severity -or (ConvertTo-Json -InputObject $previous.evidence -Compress) -cne (ConvertTo-Json -InputObject $entry.evidence -Compress)) {
+            if ($previous.status -cne $entry.status -or $previous.severity -cne $entry.severity -or $previous.reopen_condition -cne $entry.reopen_condition -or (ConvertTo-Json -InputObject $previous.evidence -Compress) -cne (ConvertTo-Json -InputObject $entry.evidence -Compress)) {
                 $errors.Add($id + ' current judgment prose duplicate fields conflict')
             }
         }
@@ -5031,7 +5247,7 @@ function Test-ReviewerFindingReport {
             $severity = [string](Get-ReviewerPropertyValue -Object $entry -Name 'severity')
             $disposition = [string](Get-ReviewerPropertyValue -Object $entry -Name 'disposition')
             $summary = [string](Get-ReviewerPropertyValue -Object $entry -Name 'summary')
-            if ($id -notmatch '^F-[0-9]{3}$') { $inconsistencies.Add('current finding ID invalid: ' + $id); continue }
+            if (-not (Test-ReviewerFindingId -FindingId $id)) { $inconsistencies.Add('current finding ID invalid: ' + $id); continue }
             if ($axis -notin @('Standards', 'Spec')) { $inconsistencies.Add($id + ' axis invalid: ' + $axis) }
             if ($status -cne 'open') { $inconsistencies.Add($id + ' current status must be open') }
             if ($severity -notin @('Critical', 'Major', 'Minor')) { $inconsistencies.Add($id + ' severity invalid: ' + $severity) }
@@ -5058,13 +5274,19 @@ function Test-ReviewerFindingReport {
             $id = [string](Get-ReviewerPropertyValue -Object $entry -Name 'id')
             $status = [string](Get-ReviewerPropertyValue -Object $entry -Name 'status')
             $severity = [string](Get-ReviewerPropertyValue -Object $entry -Name 'severity')
-            if ($id -notmatch '^F-[0-9]{3}$') { $inconsistencies.Add('previous finding ID invalid: ' + $id); continue }
-            if ($status -notin @('closed', 'open', 'withdrawn')) { $inconsistencies.Add($id + ' previous status invalid: ' + $status) }
+            if (-not (Test-ReviewerFindingId -FindingId $id)) { $inconsistencies.Add('previous finding ID invalid: ' + $id); continue }
+            if ($status -notin @('closed', 'open', 'withdrawn', 'accepted')) { $inconsistencies.Add($id + ' previous status invalid: ' + $status) }
             if ($severity -notin @('Critical', 'Major', 'Minor')) { $inconsistencies.Add($id + ' previous severity invalid: ' + $severity) }
-            $normalizedEntry = [pscustomobject]@{ id = $id; status = $status; severity = $severity }
+            $acceptance = if ($status -ceq 'accepted') {
+                Get-ReviewerAcceptance -Acceptance (Get-ReviewerPropertyValue -Object $entry -Name 'acceptance') -FindingId $id -Label 'previous_status' -Inconsistencies $inconsistencies
+            }
+            else {
+                $null
+            }
+            $normalizedEntry = [pscustomobject]@{ id = $id; status = $status; severity = $severity; acceptance = $acceptance }
             if ($previousSeen.ContainsKey($id)) {
                 $previousEntry = $previousSeen[$id]
-                if ($previousEntry.status -cne $status -or $previousEntry.severity -cne $severity) {
+                if ($previousEntry.status -cne $status -or $previousEntry.severity -cne $severity -or (ConvertTo-Json -InputObject $previousEntry.acceptance -Compress) -cne (ConvertTo-Json -InputObject $acceptance -Compress)) {
                     $inconsistencies.Add($id + ' previous duplicate fields conflict')
                 }
             }
@@ -5081,11 +5303,15 @@ function Test-ReviewerFindingReport {
             $id = [string](Get-ReviewerPropertyValue -Object $entry -Name 'id')
             $status = [string](Get-ReviewerPropertyValue -Object $entry -Name 'status')
             $severity = [string](Get-ReviewerPropertyValue -Object $entry -Name 'severity')
-            $evidence = Get-ReviewerPropertyValue -Object $entry -Name 'evidence'
-            if ($id -notmatch '^F-[0-9]{3}$') { $inconsistencies.Add('current judgment ID invalid: ' + $id); continue }
-            if ($status -notin @('closed', 'open', 'withdrawn')) { $inconsistencies.Add($id + ' current judgment status invalid: ' + $status) }
+            $evidenceProperty = $entry.PSObject.Properties['evidence']
+            $evidence = $null
+            if ($null -ne $evidenceProperty) {
+                $evidence = $evidenceProperty.Value
+            }
+            if (-not (Test-ReviewerFindingId -FindingId $id)) { $inconsistencies.Add('current judgment ID invalid: ' + $id); continue }
+            if ($status -notin @('closed', 'open', 'withdrawn', 'accepted')) { $inconsistencies.Add($id + ' current judgment status invalid: ' + $status) }
             if ($severity -notin @('Critical', 'Major', 'Minor')) { $inconsistencies.Add($id + ' current judgment severity invalid: ' + $severity) }
-            if ($null -eq $evidence -or $evidence -is [string] -or $evidence -is [System.Collections.IDictionary]) {
+            if ($null -eq $evidence -or $evidence -isnot [System.Array]) {
                 $inconsistencies.Add($id + ' current judgment evidence must be an array')
                 $evidence = @()
             }
@@ -5094,10 +5320,11 @@ function Test-ReviewerFindingReport {
                 $positionPath = [string](Get-ReviewerPropertyValue -Object $position -Name 'path')
                 $positionLine = [int64]0
                 $positionLineValue = Get-ReviewerPropertyValue -Object $position -Name 'line'
-                if ([string]::IsNullOrWhiteSpace($positionPath) -or $null -eq $positionLineValue -or -not [int64]::TryParse([string]$positionLineValue, [ref]$positionLine) -or $positionLine -lt 1) {
+                if ([string]::IsNullOrWhiteSpace($positionPath) -or -not (Test-ReviewerJsonPositiveInteger -Value $positionLineValue)) {
                     $inconsistencies.Add($id + ' current judgment evidence position invalid')
                     continue
                 }
+                $positionLine = [int64]$positionLineValue
                 if (-not (Test-ReviewerAbsolutePath -Path $positionPath)) {
                     $inconsistencies.Add($id + ' current judgment evidence path must be absolute')
                     continue
@@ -5107,7 +5334,13 @@ function Test-ReviewerFindingReport {
             if ($normalizedEvidence.Count -eq 0) {
                 $inconsistencies.Add($id + ' current judgment evidence missing')
             }
-            $normalizedEntry = [pscustomobject]@{ id = $id; status = $status; severity = $severity; evidence = @($normalizedEvidence.ToArray()) }
+            $acceptance = if ($status -ceq 'accepted') {
+                Get-ReviewerAcceptance -Acceptance (Get-ReviewerPropertyValue -Object $entry -Name 'acceptance') -FindingId $id -Label 'current_judgment' -Inconsistencies $inconsistencies
+            }
+            else {
+                $null
+            }
+            $normalizedEntry = [pscustomobject]@{ id = $id; status = $status; severity = $severity; evidence = @($normalizedEvidence.ToArray()); acceptance = $acceptance }
             if ($currentJudgmentSeen.ContainsKey($id)) {
                 $previousEntry = $currentJudgmentSeen[$id]
                 if ((ConvertTo-Json -InputObject $previousEntry -Compress) -cne (ConvertTo-Json -InputObject $normalizedEntry -Compress)) {
@@ -5123,8 +5356,8 @@ function Test-ReviewerFindingReport {
     foreach ($id in @($currentSeen.Keys)) {
         $current = $currentSeen[$id]
         $previous = if ($previousSeen.ContainsKey($id)) { $previousSeen[$id] } else { $null }
-        if ($current.disposition -ceq 'carried' -and ($null -eq $previous -or $previous.status -cne 'open')) {
-            $inconsistencies.Add($id + ' carried finding must have previous open status')
+        if ($current.disposition -ceq 'carried' -and ($null -eq $previous -or $previous.status -notin @('open', 'accepted'))) {
+            $inconsistencies.Add($id + ' carried finding must have previous open or accepted status')
         }
         if ($current.disposition -ceq 'carried' -and $null -ne $previous -and $current.severity -cne $previous.severity) {
             $inconsistencies.Add($id + ' carried finding severity conflicts with previous_status')
@@ -5174,6 +5407,23 @@ function Test-ReviewerFindingReport {
                 }
             }
             if (-not $evidenceMatches) { $inconsistencies.Add($id + ' current judgment prose evidence conflicts with manifest') }
+
+            $previousEntry = if ($previousSeen.ContainsKey($id)) { $previousSeen[$id] } else { $null }
+            if ($null -ne $previousEntry -and $previousEntry.status -ceq 'accepted') {
+                if ($manifestEntry.status -notin @('accepted', 'closed', 'open')) {
+                    $inconsistencies.Add($id + ' accepted finding transition must remain accepted, close, or reopen')
+                }
+                if ($manifestEntry.status -ceq 'open') {
+                    $currentFinding = if ($currentSeen.ContainsKey($id)) { $currentSeen[$id] } else { $null }
+                    if ($null -eq $currentFinding -or $currentFinding.disposition -cne 'carried') {
+                        $inconsistencies.Add($id + ' reopened accepted finding must be carried')
+                    }
+                    $reopenCondition = [string](Get-ReviewerPropertyValue -Object $previousEntry.acceptance -Name 'reopen_condition')
+                    if ([string]::IsNullOrWhiteSpace($reopenCondition) -or $bodyEntry.reopen_condition -cne $reopenCondition) {
+                        $inconsistencies.Add($id + ' reopening condition trigger missing or conflicts with previous acceptance')
+                    }
+                }
+            }
         }
         foreach ($id in @($bodySeen.Keys)) {
             if (-not $currentJudgmentSeen.ContainsKey($id)) {
@@ -5194,12 +5444,12 @@ function Test-ReviewerFindingReport {
         foreach ($line in [regex]::Split($previousProseMatches[0].Groups['section'].Value, '\r?\n')) {
             $previousEvidenceLine = $previousHeadingLine + $previousSectionLineOffset
             $previousSectionLineOffset++
-            $idMatch = [regex]::Match($line, '\[(?<id>F-[0-9]{3})\]')
+            $idMatch = [regex]::Match($line, '\[(?<id>F-[0-9]{3}|T[0-9]{3}[A-Z]?)\]')
             if (-not $idMatch.Success) {
                 continue
             }
             $id = $idMatch.Groups['id'].Value
-            $statusMatch = [regex]::Match($line, '(?<status>已閉合|未閉合|撤回)')
+            $statusMatch = [regex]::Match($line, '(?<status>已閉合|未閉合|撤回|已接受殘餘風險)')
             $severityMatch = [regex]::Match($line, '(?:\[(?<bracket>Critical|Major|Minor)\]|（(?<full>Critical|Major|Minor)）)')
             $status = $null
             if ($statusMatch.Success) {
@@ -5207,6 +5457,7 @@ function Test-ReviewerFindingReport {
                     '已閉合' { 'closed' }
                     '未閉合' { 'open' }
                     '撤回' { 'withdrawn' }
+                    '已接受殘餘風險' { 'accepted' }
                 }
             }
             $severity = $null
@@ -5304,7 +5555,7 @@ function Test-ReviewerFindingReport {
             }
         }
         foreach ($id in @($currentJudgmentSeen.Keys)) {
-            if (-not $previousSeen.ContainsKey($id) -and -not $currentSeen.ContainsKey($id)) {
+            if (-not $previousSeen.ContainsKey($id) -and -not $currentSeen.ContainsKey($id) -and $currentJudgmentSeen[$id].status -cne 'accepted') {
                 $inconsistencies.Add('current_judgment finding missing from previous_status and current_findings: ' + $id)
             }
         }
@@ -5331,7 +5582,7 @@ function Test-ReviewerFindingReport {
             continue
         }
         foreach ($sectionMatch in $sectionMatches) {
-            foreach ($idMatch in [regex]::Matches($sectionMatch.Groups['section'].Value, '\[F-[0-9]{3}\]')) {
+            foreach ($idMatch in [regex]::Matches($sectionMatch.Groups['section'].Value, '\[(?:F-[0-9]{3}|T[0-9]{3}[A-Z]?)\]')) {
                 $proseIds.Add($idMatch.Value.Substring(1, $idMatch.Value.Length - 2))
             }
         }
@@ -5361,9 +5612,15 @@ function Test-ReviewerFindingReport {
         $expectedCounts.current_closed = @($currentJudgmentSeen.Values | Where-Object { $_.status -ceq 'closed' }).Count
         $expectedCounts.current_withdrawn = @($currentJudgmentSeen.Values | Where-Object { $_.status -ceq 'withdrawn' }).Count
         $expectedCounts.previous_withdrawn = @($previousSeen.Values | Where-Object { $_.status -ceq 'withdrawn' }).Count
+        $expectedCounts.previous_accepted = @($previousSeen.Values | Where-Object { $_.status -ceq 'accepted' }).Count
+        $expectedCounts.current_accepted = @($currentJudgmentSeen.Values | Where-Object { $_.status -ceq 'accepted' }).Count
     }
     foreach ($name in $expectedCounts.Keys) {
         $declared = if ($null -eq $counts) { $null } else { $declaredCounts[$name] }
+        if ($name -in @('previous_accepted', 'current_accepted') -and $null -ne $counts -and $null -eq $counts.PSObject.Properties[$name]) {
+            $declared = [int64]0
+            $declaredCounts[$name] = $declared
+        }
         if ($null -eq $declared -and ($manifestSchema -ceq 'codex-dispatch.review-findings.v2' -or $currentJudgmentExplicit)) {
             $declared = Get-ReviewerDeclaredCount -Counts $counts -Name $name -Inconsistencies $inconsistencies
             $declaredCounts[$name] = $declared
@@ -5402,10 +5659,12 @@ function Test-ReviewerFindingReport {
         previous_closed_count = $expectedCounts.previous_closed
         previous_open_count = $expectedCounts.previous_open
         previous_withdrawn_count = @($previousSeen.Values | Where-Object { $_.status -ceq 'withdrawn' }).Count
+        previous_accepted_count = @($previousSeen.Values | Where-Object { $_.status -ceq 'accepted' }).Count
         current_new_count = $expectedCounts.current_new
         current_open_count = $expectedCounts.current_open
         current_closed_count = if ($expectedCounts.Contains('current_closed')) { $expectedCounts.current_closed } else { $null }
         current_withdrawn_count = if ($expectedCounts.Contains('current_withdrawn')) { $expectedCounts.current_withdrawn } else { $null }
+        current_accepted_count = if ($expectedCounts.Contains('current_accepted')) { $expectedCounts.current_accepted } else { $null }
         error_code = $null
         duplicate_ids = @($duplicateIds | Sort-Object -Unique)
         inconsistencies = $uniqueInconsistencies
@@ -5545,6 +5804,31 @@ function Write-ReviewerFindingLedger {
                     sha256 = Get-FileSha256 -Path $resolvedEvidencePath
                 })
         }
+        $acceptance = Get-ReviewerPropertyValue -Object $judgment -Name 'acceptance'
+        if ($null -eq $acceptance -and $null -ne $previousFinding -and $previousFinding.status -ceq 'accepted') {
+            $acceptance = Get-ReviewerPropertyValue -Object $previousFinding -Name 'acceptance'
+        }
+        $ledgerAcceptance = $null
+        if ($null -ne $acceptance) {
+            $acceptanceEvidence = New-Object System.Collections.Generic.List[object]
+            foreach ($position in @($acceptance.evidence)) {
+                $resolvedEvidencePath = Resolve-ReviewerEvidencePath -EvidencePath ([string]$position.path) -ReportPath ([string]$ReviewerFindings.reviewer_report_path)
+                if (-not (Test-Path -LiteralPath $resolvedEvidencePath -PathType Leaf)) {
+                    throw ('Reviewer acceptance evidence 不存在：' + $resolvedEvidencePath)
+                }
+                $acceptanceEvidence.Add([ordered]@{
+                        path = $resolvedEvidencePath
+                        line = [int64]$position.line
+                        sha256 = Get-FileSha256 -Path $resolvedEvidencePath
+                    })
+            }
+            $ledgerAcceptance = [ordered]@{
+                decided_by = [string]$acceptance.decided_by
+                scope = [string]$acceptance.scope
+                evidence = @($acceptanceEvidence.ToArray())
+                reopen_condition = [string]$acceptance.reopen_condition
+            }
+        }
         $entry = [ordered]@{
             finding_id = $findingId
             round = $round
@@ -5555,6 +5839,7 @@ function Write-ReviewerFindingLedger {
             source_report_path = [string]$ReviewerFindings.reviewer_report_path
             source_report_sha256 = [string]$ReviewerFindings.reviewer_report_sha256
             evidence = @($evidenceList.ToArray())
+            acceptance = $ledgerAcceptance
             recorded_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
         }
         if ($null -ne $existingEntry) {
@@ -5568,6 +5853,7 @@ function Write-ReviewerFindingLedger {
                 source_report_path = [string]$existingEntry.source_report_path
                 source_report_sha256 = [string]$existingEntry.source_report_sha256
                 evidence = @($existingEntry.evidence)
+                acceptance = Get-ReviewerPropertyValue -Object $existingEntry -Name 'acceptance'
             }
             $newComparable = [ordered]@{
                 finding_id = [string]$entry.finding_id
@@ -5579,6 +5865,7 @@ function Write-ReviewerFindingLedger {
                 source_report_path = [string]$entry.source_report_path
                 source_report_sha256 = [string]$entry.source_report_sha256
                 evidence = @($entry.evidence)
+                acceptance = $entry.acceptance
             }
             if ((ConvertTo-Json -InputObject $existingComparable -Depth 20 -Compress) -cne (ConvertTo-Json -InputObject $newComparable -Depth 20 -Compress)) {
                 $exception = New-Object System.InvalidOperationException('LedgerConflict：既有 finding entry 與本輪資料不一致：' + $entryKey)
@@ -12601,8 +12888,26 @@ function Get-DispatchFinalMessageIdentity {
     $tokens = @($messageText -split '\s+' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $requiredIndex = -1
     if (-not [string]::IsNullOrWhiteSpace($RequiredIdentifier)) {
+        $wrapperCharacters = [char[]]@([char]96, [char]34, [char]39, [char]91, [char]93, [char]40, [char]41, [char]0x2018, [char]0x2019, [char]0x201C, [char]0x201D, [char]0x300C, [char]0x300D, [char]0x300E, [char]0x300F)
+        $trailingPunctuationCharacters = [char[]]@(',', '.', ';', ':', '!', '?', '，', '、', '。', '；', '：', '！', '？', '…')
         for ($index = 0; $index -lt $tokens.Count; $index++) {
-            if ([string]::Equals([string]$tokens[$index], $RequiredIdentifier, [System.StringComparison]::Ordinal)) {
+            $normalizedToken = [string]$tokens[$index]
+            do {
+                $previousNormalizedToken = $normalizedToken
+                $normalizedToken = $normalizedToken.Trim($wrapperCharacters)
+                $normalizedToken = $normalizedToken.TrimEnd($trailingPunctuationCharacters)
+            } while ($normalizedToken.Length -lt $previousNormalizedToken.Length)
+
+            $matchesRequiredIdentifier = [string]::Equals($normalizedToken, $RequiredIdentifier, [System.StringComparison]::Ordinal)
+            if (-not $matchesRequiredIdentifier) {
+                $lastPathSeparatorIndex = [Math]::Max($normalizedToken.LastIndexOf([char]92), $normalizedToken.LastIndexOf([char]47))
+                if ($lastPathSeparatorIndex -ge 0) {
+                    $pathFileName = $normalizedToken.Substring($lastPathSeparatorIndex + 1)
+                    $matchesRequiredIdentifier = [string]::Equals($pathFileName, $RequiredIdentifier, [System.StringComparison]::Ordinal)
+                }
+            }
+
+            if ($matchesRequiredIdentifier) {
                 $requiredIndex = $index
                 break
             }
@@ -16109,7 +16414,10 @@ function Get-RequirementTableRows {
         ,
 
         [AllowNull()]
-        [System.Collections.Generic.List[string]]$InvalidStatusFields
+        [System.Collections.Generic.List[string]]$InvalidStatusFields,
+
+        [AllowEmptyString()]
+        [string]$SelectedRequirement
     )
 
     $expectedHeaders = @('需求', '驗收方向', 'T-code', '實際行為', '證據', '狀態')
@@ -16124,7 +16432,7 @@ function Get-RequirementTableRows {
         else {
             Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber 'EOF' -Line '缺少需求對照表格'
         }
-        return @()
+        return [pscustomobject]@{ rows = @(); outOfScopeIds = @(); scopeLineCount = 0 }
     }
 
     $headerLine = $sectionLines[0]
@@ -16160,11 +16468,46 @@ function Get-RequirementTableRows {
     }
 
     $rows = New-Object 'System.Collections.Generic.List[object]'
+    $outOfScopeIds = New-Object 'System.Collections.Generic.List[int]'
+    $scopeLineCount = 0
+    $scopeLineSeen = $false
     $dataRowIndex = 0
     for ($lineIndex = 2; $lineIndex -lt $sectionLines.Count; $lineIndex++) {
         $line = $sectionLines[$lineIndex]
         if ([string]::IsNullOrWhiteSpace($line.Text)) {
             Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line $line.Text
+            continue
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($SelectedRequirement) -and $line.Text.StartsWith('範圍外（本輪不要求交付）：', [System.StringComparison]::Ordinal)) {
+            $scopeLineCount++
+            if ($scopeLineCount -gt 1) {
+                Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line '範圍外需求行重複'
+            }
+            if ($dataRowIndex -eq 0) {
+                Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line '範圍外需求行必須緊接需求對照表格'
+            }
+            $scopeLineSeen = $true
+            $scopeMatch = [regex]::Match($line.Text, '^範圍外（本輪不要求交付）：(?<ids>無|#[1-9][0-9]*(?:、#[1-9][0-9]*)*)$')
+            if (-not $scopeMatch.Success) {
+                Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line $line.Text
+                continue
+            }
+            if ($scopeMatch.Groups['ids'].Value -cne '無') {
+                foreach ($scopeId in $scopeMatch.Groups['ids'].Value.Split('、')) {
+                    $scopeIdValue = [int]$scopeId.Substring(1)
+                    if ($outOfScopeIds.Contains($scopeIdValue)) {
+                        Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line ('範圍外需求編號重複：' + $scopeId)
+                    }
+                    else {
+                        $outOfScopeIds.Add($scopeIdValue)
+                    }
+                }
+            }
+            continue
+        }
+        if ($scopeLineSeen) {
+            Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber ([string]$line.LineNumber) -Line '需求對照表格後只能接一行範圍外需求清單'
             continue
         }
 
@@ -16214,7 +16557,11 @@ function Get-RequirementTableRows {
         Add-InvalidSectionContent -InvalidSectionContent $InvalidSectionContent -Heading $sectionLabel -LineNumber 'EOF' -Line '缺少需求對照資料列'
     }
 
-    return @($rows.ToArray())
+    return [pscustomobject]@{
+        rows = @($rows.ToArray())
+        outOfScopeIds = @($outOfScopeIds.ToArray())
+        scopeLineCount = $scopeLineCount
+    }
 }
 
 function Get-RequirementMap {
@@ -16223,7 +16570,10 @@ function Get-RequirementMap {
         [string]$RequirementSummaryPath,
 
         [Parameter(Mandatory)]
-        [string[]]$ReportPath
+        [string[]]$ReportPath,
+
+        [AllowEmptyString()]
+        [string]$SelectedRequirement
     )
 
     $summaryDisplayPath = if ([string]::IsNullOrWhiteSpace($RequirementSummaryPath)) { '<empty>' } else { $RequirementSummaryPath }
@@ -16243,6 +16593,20 @@ function Get-RequirementMap {
     }
 
     $requirementIds = @(Get-RequirementIdsFromSummary -Content $summaryContent -SummaryPath $summaryFullPath)
+    $selectedRequirementId = $null
+    $expectedReportIds = @($requirementIds)
+    $expectedOutOfScopeIds = @()
+    if (-not [string]::IsNullOrWhiteSpace($SelectedRequirement)) {
+        if ($SelectedRequirement -notmatch '^#[1-9][0-9]*$') {
+            throw 'SelectedRequirement 必須是 # 加正整數。'
+        }
+        $selectedRequirementId = [int]$SelectedRequirement.Substring(1)
+        if ($requirementIds -notcontains $selectedRequirementId) {
+            throw ('SelectedRequirement 不存在於 requirement-summary.md：' + $SelectedRequirement)
+        }
+        $expectedReportIds = @($selectedRequirementId)
+        $expectedOutOfScopeIds = @($requirementIds | Where-Object { $_ -ne $selectedRequirementId } | Sort-Object)
+    }
     $summarySha256After = Get-FileSha256 -Path $summaryFullPath
     if (-not [string]::Equals($summarySha256Before, $summarySha256After, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "需求摘要在 Collect 解析期間變更。contractVersion=$script:WorkflowCollectContractVersion; summaryPath=$summaryFullPath; beforeSha256=$summarySha256Before; afterSha256=$summarySha256After"
@@ -16256,6 +16620,9 @@ function Get-RequirementMap {
     $invalidSectionContent = New-Object 'System.Collections.Generic.List[string]'
     $duplicateRequirementSections = New-Object 'System.Collections.Generic.List[string]'
     $reportEvidence = New-Object 'System.Collections.Generic.List[object]'
+    $perReportMissingRequirementIds = New-Object 'System.Collections.Generic.List[int]'
+    $perReportDuplicateRequirementIds = New-Object 'System.Collections.Generic.List[int]'
+    $perReportUnknownRequirementIds = New-Object 'System.Collections.Generic.List[int]'
     $statusCounts = [ordered]@{
         '已交付'          = 0
         '部分交付'        = 0
@@ -16300,7 +16667,29 @@ function Get-RequirementMap {
             throw "結案報告缺少需求對照節：$reportFullPath"
         }
 
-        $reportRows = @(Get-RequirementTableRows -Section $requirementMatch.Groups['section'].Value -ReportName $reportName -InvalidColumnCountRows $invalidColumnCountRows -EmptyFieldIds $emptyFieldIds -InvalidRequirementCells $invalidRequirementCells -InvalidHeader $invalidHeader -InvalidSectionContent $invalidSectionContent -InvalidStatusFields $invalidStatusFields)
+        $tableResult = Get-RequirementTableRows -Section $requirementMatch.Groups['section'].Value -ReportName $reportName -InvalidColumnCountRows $invalidColumnCountRows -EmptyFieldIds $emptyFieldIds -InvalidRequirementCells $invalidRequirementCells -InvalidHeader $invalidHeader -InvalidSectionContent $invalidSectionContent -InvalidStatusFields $invalidStatusFields -SelectedRequirement $SelectedRequirement
+        $reportRows = @($tableResult.rows)
+        if (-not [string]::IsNullOrWhiteSpace($SelectedRequirement)) {
+            $reportReportedIds = @($reportRows | ForEach-Object { $_.Id } | Sort-Object -Unique)
+            $reportMissingIds = @($expectedReportIds | Where-Object { $reportReportedIds -notcontains $_ } | Sort-Object)
+            $reportDuplicateIds = @($reportRows | Group-Object -Property Id | Where-Object { $_.Count -gt 1 } | ForEach-Object { [int]$_.Name } | Sort-Object -Unique)
+            $reportUnknownIds = @($reportReportedIds | Where-Object { $expectedReportIds -notcontains $_ } | Sort-Object)
+            foreach ($id in $reportMissingIds) { $perReportMissingRequirementIds.Add([int]$id) }
+            foreach ($id in $reportDuplicateIds) { $perReportDuplicateRequirementIds.Add([int]$id) }
+            foreach ($id in $reportUnknownIds) { $perReportUnknownRequirementIds.Add([int]$id) }
+            if ($reportMissingIds.Count -gt 0 -or $reportDuplicateIds.Count -gt 0 -or $reportUnknownIds.Count -gt 0) {
+                Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading ($reportName + ':需求對照') -LineNumber 'table' -Line ('選定需求資料列不符：missing=' + ($reportMissingIds -join ',') + '; duplicate=' + ($reportDuplicateIds -join ',') + '; unknown=' + ($reportUnknownIds -join ','))
+            }
+            if ($tableResult.scopeLineCount -ne 1) {
+                Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading ($reportName + ':需求對照') -LineNumber 'EOF' -Line '必須在表格正下方提供一行範圍外需求清單'
+            }
+            $declaredOutOfScopeIds = @($tableResult.outOfScopeIds | Sort-Object -Unique)
+            $missingScopeIds = @($expectedOutOfScopeIds | Where-Object { $declaredOutOfScopeIds -notcontains $_ })
+            $unexpectedScopeIds = @($declaredOutOfScopeIds | Where-Object { $expectedOutOfScopeIds -notcontains $_ })
+            if ($missingScopeIds.Count -gt 0 -or $unexpectedScopeIds.Count -gt 0) {
+                Add-InvalidSectionContent -InvalidSectionContent $invalidSectionContent -Heading ($reportName + ':需求對照') -LineNumber 'scope' -Line ('範圍外需求清單不符：missing=' + ($missingScopeIds -join ',') + '; unexpected=' + ($unexpectedScopeIds -join ','))
+            }
+        }
         foreach ($row in $reportRows) {
             $status = $row.Status
             if ($validStatuses.Contains($status)) {
@@ -16316,9 +16705,16 @@ function Get-RequirementMap {
     }
 
     $reportedIds = @($rows | ForEach-Object { $_.Id } | Sort-Object -Unique)
-    $missingRequirementIds = @($requirementIds | Where-Object { $reportedIds -notcontains $_ } | Sort-Object)
-    $duplicateRequirementIds = @($rows | Group-Object -Property Id | Where-Object { $_.Count -gt 1 } | ForEach-Object { [int]$_.Name } | Sort-Object)
-    $unknownRequirementIds = @($reportedIds | Where-Object { $requirementIds -notcontains $_ } | Sort-Object)
+    if ([string]::IsNullOrWhiteSpace($SelectedRequirement)) {
+        $missingRequirementIds = @($expectedReportIds | Where-Object { $reportedIds -notcontains $_ } | Sort-Object)
+        $duplicateRequirementIds = @($rows | Group-Object -Property Id | Where-Object { $_.Count -gt 1 } | ForEach-Object { [int]$_.Name } | Sort-Object)
+        $unknownRequirementIds = @($reportedIds | Where-Object { $expectedReportIds -notcontains $_ } | Sort-Object)
+    }
+    else {
+        $missingRequirementIds = @($perReportMissingRequirementIds | Sort-Object -Unique)
+        $duplicateRequirementIds = @($perReportDuplicateRequirementIds | Sort-Object -Unique)
+        $unknownRequirementIds = @($perReportUnknownRequirementIds | Sort-Object -Unique)
+    }
     $invalidStatusIds = @($rows | Where-Object { -not $validStatuses.Contains($_.Status) } | ForEach-Object { $_.Id } | Sort-Object -Unique)
     $duplicateRequirementSections = @($duplicateRequirementSections | Sort-Object -Unique)
     $invalidStatusFields = @($invalidStatusFields | Sort-Object -Unique)
@@ -16343,6 +16739,8 @@ function Get-RequirementMap {
         summaryPath     = $summaryFullPath
         summarySha256   = $summarySha256After
         requirementIds  = @($requirementIds)
+        selectedRequirement = if ($null -eq $selectedRequirementId) { $null } else { '#' + [string]$selectedRequirementId }
+        outOfScopeRequirementIds = @($expectedOutOfScopeIds)
         reportEvidence  = @($reportEvidence.ToArray())
         reportRowCount  = $rows.Count
         statusCounts    = $statusCounts
@@ -16545,6 +16943,9 @@ function Invoke-DirectWriteCollect {
         trackedDiff        = @()
         stagedDiff         = @()
         untrackedFiles     = @()
+        carryInFiles       = @()
+        newFiles           = @()
+        rejectedFiles      = @()
         allFiles           = @()
         reportReferences   = @()
         missingFromReport  = @()
@@ -16569,6 +16970,26 @@ function Invoke-DirectWriteCollect {
 }
 
 function Invoke-Collect {
+    $unrelatedBoundParameters = @($script:InvocationBoundParameters.Keys | Where-Object { $_ -notin @('Operation', 'ReviewerReportPath') })
+    $reviewerStructuralOnly = $script:InvocationBoundParameters.Contains('ReviewerReportPath') -and
+        -not $script:InvocationBoundParameters.Contains('ReportPath') -and
+        -not $script:InvocationBoundParameters.Contains('DispatchKind') -and
+        $unrelatedBoundParameters.Count -eq 0
+    if ($reviewerStructuralOnly) {
+        $reviewerFindings = Get-ReviewerFindingsForCollect -Path $ReviewerReportPath -WriteLedger:$false
+        $result = [ordered]@{
+            operation        = 'Collect'
+            collect_mode     = 'structural-only'
+            reviewerFindings = $reviewerFindings
+            outputValid      = $null -ne $reviewerFindings -and $reviewerFindings.valid -eq $true
+            worktreeRemoved  = $false
+        }
+        if (-not $result.outputValid) {
+            Throw-ReviewerFindingCollectFailure -Result $result
+        }
+        return $result
+    }
+
     if ($null -eq $ReportPath -or $ReportPath.Count -eq 0) {
         throw 'Collect 必須提供至少一個 ReportPath。'
     }
@@ -16595,8 +17016,13 @@ function Invoke-Collect {
     }
 
     $requirementMap = $null
+    $selectedRequirement = ''
+    $selectedRequirementVariable = Get-Variable -Name 'SelectedRequirement' -Scope Script -ErrorAction SilentlyContinue
+    if ($null -ne $selectedRequirementVariable) {
+        $selectedRequirement = [string]$selectedRequirementVariable.Value
+    }
     if ($DispatchKind -eq 'workflow') {
-        $requirementMap = Get-RequirementMap -RequirementSummaryPath $RequirementSummaryPath -ReportPath $ReportPath
+        $requirementMap = Get-RequirementMap -RequirementSummaryPath $RequirementSummaryPath -ReportPath $ReportPath -SelectedRequirement $selectedRequirement
     }
 
     $preflight = $null
@@ -16680,7 +17106,60 @@ function Invoke-Collect {
     }
     $baselineBinding = Resolve-DispatchBaselineBinding -Preflight $preflight -SourceRoot $baselineSourceRoot -DispatchRoot $dispatchRootPath -LineSlug $baselineLineSlug -DispatchSlug $baselineDispatchSlug -BaseSha $BaseSha -Path $BaselinePath -Sha256 $BaselineSha256
     $dispatchDiff = @(Get-DispatchIncrementalChanges -Baseline $baselineBinding.Record -DispatchRoot $dispatchRootPath)
-    $allFiles = @($dispatchDiff)
+    $carryInFiles = @()
+    $newFiles = @()
+    $rejectedFiles = @()
+    $protectedCarryInPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $carryInManifestProperty = if ($null -eq $preflight) { $null } else { $preflight.PSObject.Properties['carryInManifest'] }
+    if ($null -ne $carryInManifestProperty -and $null -ne $carryInManifestProperty.Value) {
+        $carryInUntrackedProperty = $carryInManifestProperty.Value.PSObject.Properties['UntrackedFiles']
+        if ($null -ne $carryInUntrackedProperty) {
+            $carryInFiles = @($carryInUntrackedProperty.Value | ForEach-Object { [string]$_ } | Sort-Object -Unique)
+        }
+    }
+    $carryInSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($carryInPath in $carryInFiles) {
+        if ([string]::IsNullOrWhiteSpace($carryInPath)) { throw 'Preflight carryInManifest 含空白路徑。' }
+        $null = Get-DispatchSnapshotPath -Root $dispatchRootPath -Path $carryInPath
+        $null = Get-DispatchSnapshotPath -Root $baselineSourceRoot -Path $carryInPath
+        $null = $carryInSet.Add($carryInPath)
+    }
+    $newFiles = @($untrackedFiles | Where-Object { -not $carryInSet.Contains([string]$_) } | Sort-Object -Unique)
+    $baselineFileByPath = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($baselineFile in @($baselineBinding.Record.files)) {
+        $baselineFileByPath[[string]$baselineFile.path] = $baselineFile
+    }
+    $rejectedFileList = New-Object System.Collections.Generic.List[object]
+    foreach ($carryInPath in $carryInFiles) {
+        $baselineFile = if ($baselineFileByPath.ContainsKey($carryInPath)) { $baselineFileByPath[$carryInPath] } else { $null }
+        $sourcePath = Get-DispatchSnapshotPath -Root $baselineSourceRoot -Path $carryInPath
+        $sourceExists = Test-Path -LiteralPath $sourcePath -PathType Leaf
+        $sourceSha256 = if ($sourceExists) { Get-FileSha256 -Path $sourcePath } else { $null }
+        $expectedSha256 = if ($null -ne $baselineFile -and $baselineFile.exists) { [string]$baselineFile.sha256 } else { $null }
+        if ([string]::IsNullOrWhiteSpace($expectedSha256) -or -not $sourceExists -or $sourceSha256 -ine $expectedSha256) {
+            $null = $protectedCarryInPaths.Add($carryInPath)
+            $rejectedFileList.Add([ordered]@{
+                    path = $carryInPath
+                    reason = 'source-drift'
+                    expected_sha256 = $expectedSha256
+                    actual_sha256 = $sourceSha256
+                    source_exists = [bool]$sourceExists
+                })
+            continue
+        }
+        if (@($dispatchDiff | Where-Object { [string]::Equals([string]$_, $carryInPath, [System.StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+            $null = $protectedCarryInPaths.Add($carryInPath)
+            $rejectedFileList.Add([ordered]@{
+                    path = $carryInPath
+                    reason = 'carry-in-protected'
+                    expected_sha256 = $expectedSha256
+                    actual_sha256 = $sourceSha256
+                    source_exists = $true
+                })
+        }
+    }
+    $rejectedFiles = @($rejectedFileList.ToArray())
+    $allFiles = @($dispatchDiff | Where-Object { -not $carryInSet.Contains([string]$_) })
     $indexTracked = @(Get-NameOnlyList -Result (Invoke-GitCommand -WorkingDirectory $dispatchRootPath -Arguments @('ls-files', '-z')))
     $reportReferences = @()
     $missingFromReport = @()
@@ -16705,7 +17184,8 @@ function Invoke-Collect {
         }
         $matchesArray = @($matches.ToArray())
         $missingFromReport = @($matchesArray | Where-Object { -not $_.InReport } | ForEach-Object { $_.Path })
-        $unexpectedInReport = @($normalizedReportReferences | Where-Object { $normalizedAllFiles -notcontains $_ })
+        $normalizedRejectedPaths = @($rejectedFiles | ForEach-Object { Convert-ComparisonPath -Path ([string]$_.path) } | Sort-Object -Unique)
+        $unexpectedInReport = @($normalizedReportReferences | Where-Object { $normalizedAllFiles -notcontains $_ -and $normalizedRejectedPaths -notcontains $_ })
         if ($missingFromReport.Count -gt 0 -or $unexpectedInReport.Count -gt 0) {
             throw "差異清單與結案報告不一致。missingFromReport=$($missingFromReport -join ','); unexpectedInReport=$($unexpectedInReport -join ',')"
         }
@@ -16743,6 +17223,9 @@ function Invoke-Collect {
                 missingFromReport  = @($missingFromReport)
                 unexpectedInReport = @($unexpectedInReport)
                 itemChecks         = $matchesArray
+                carryInFiles       = @($carryInFiles)
+                newFiles           = @($newFiles)
+                rejectedFiles      = @($rejectedFiles)
                 reportEvidence     = @($reportEvidence)
                 collect_mode       = $collectMode
                 identityMismatches = @($identityValidation.differences)
@@ -16768,6 +17251,9 @@ function Invoke-Collect {
         trackedDiff        = @($trackedDiff)
         stagedDiff         = @($stagedDiff)
         untrackedFiles     = @($untrackedFiles)
+        carryInFiles       = @($carryInFiles)
+        newFiles           = @($newFiles)
+        rejectedFiles      = @($rejectedFiles)
         allFiles           = @($allFiles)
         dispatchDiff       = @($dispatchDiff)
         baselinePath       = $baselineBinding.Path

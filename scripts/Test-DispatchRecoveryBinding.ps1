@@ -24,7 +24,7 @@ param(
 
     ,
 
-    [ValidateSet('', 'F-003', 'F-003-MONITOR', 'F-006', 'F-006-ADVISOR', 'F-007-ADVISOR', 'F-008-ADVISOR', 'S-3', 'BATCH1A', 'BATCH3G', 'BATCH3H')]
+    [ValidateSet('', 'F-003', 'F-003-MONITOR', 'F-006', 'F-006-ADVISOR', 'F-007-ADVISOR', 'F-008-ADVISOR', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1353,6 +1353,9 @@ function Invoke-Case {
         elseif ($script:focusedCase -ceq 'BATCH1A') {
             $Name -match '^Phase 9 batch1a' -or $cleanupMatch
         }
+        elseif ($script:focusedCase -ceq 'BATCH1B') {
+            $Name -match '^Phase (1|4|5) Batch 1b' -or $cleanupMatch
+        }
         else {
             $Name -match '^Phase 9 S-3' -or $cleanupMatch
         }
@@ -2277,12 +2280,15 @@ function Write-ReviewerFixture {
             'closed' { $closedStatus }
             'open' { $openStatus }
             'withdrawn' { $withdrawnStatus }
+            'accepted' { '已接受殘餘風險' }
             default { [string]$judgment.status }
         }
         $evidence = @($judgment.evidence)[0]
         $evidencePath = if ($null -eq $evidence) { $Path } else { [string]$evidence.path }
         $evidenceLine = if ($null -eq $evidence) { 1 } else { [int]$evidence.line }
-        $lines.Add(('- [{0}] [{1}] {2} {3}：{4}:{5}' -f $judgment.id, $judgment.severity, $statusText, $evidenceLabel, $evidencePath, $evidenceLine))
+        $reopenCondition = [string](Get-ReviewerPropertyValue -Object $judgment -Name 'reopen_condition')
+        $reopenText = if ([string]::IsNullOrWhiteSpace($reopenCondition)) { '' } else { '重新開啟條件：' + $reopenCondition + ' ' }
+        $lines.Add(('- [{0}] [{1}] {2} {3}{4}：{5}:{6}' -f $judgment.id, $judgment.severity, $statusText, $reopenText, $evidenceLabel, $evidencePath, $evidenceLine))
     }
     $lines.Add('')
     foreach ($heading in $currentHeadings) {
@@ -2310,6 +2316,8 @@ function New-ReviewerManifest {
         [int]$PreviousOpen = 0,
         [int]$CurrentNew = 0,
         [int]$CurrentOpen = 0,
+        [int]$PreviousAccepted = 0,
+        [int]$CurrentAccepted = 0,
         [ValidateSet('pass', 'fail')][string]$Conclusion = 'pass',
         [ValidateSet('codex-dispatch.review-findings.v1', 'codex-dispatch.review-findings.v2')]
         [string]$Schema = 'codex-dispatch.review-findings.v1',
@@ -2339,6 +2347,8 @@ function New-ReviewerManifest {
         $manifest.counts.previous_withdrawn = @($PreviousStatus | Where-Object { $_.status -ceq 'withdrawn' }).Count
         $manifest.counts.current_closed = @($CurrentJudgment | Where-Object { $_.status -ceq 'closed' }).Count
         $manifest.counts.current_withdrawn = @($CurrentJudgment | Where-Object { $_.status -ceq 'withdrawn' }).Count
+        $manifest.counts.previous_accepted = $PreviousAccepted
+        $manifest.counts.current_accepted = $CurrentAccepted
     }
     return $manifest
 }
@@ -2351,6 +2361,207 @@ Invoke-Case 'Reviewer manifest 零 finding 通過' {
     Write-ReviewerFixture -Path $path -Manifest $manifest
     $result = Test-ReviewerFindingReport -Path $path
     Assert-True ($result.valid -and $result.conclusion -eq 'pass' -and $result.current_open_count -eq 0 -and $result.previous_closed_count -eq 0 -and $result.previous_open_count -eq 0) '零 finding manifest 驗證異常。'
+}
+Invoke-Case 'Phase 1 Batch 1b accepted 缺欄位無效' {
+    foreach ($missingField in @('decided_by', 'scope', 'evidence', 'reopen_condition')) {
+        $path = Join-Path $reviewerRoot ('accepted-missing-' + $missingField + '.md')
+        $acceptance = [ordered]@{
+            decided_by = 'Analyst'
+            scope = '本次已知殘餘風險'
+            evidence = @([ordered]@{ path = $path; line = 1 })
+            reopen_condition = '外部契約再次失敗'
+        }
+        $acceptance.Remove($missingField)
+        $judgment = @([ordered]@{
+                id = 'F-030'
+                status = 'accepted'
+                severity = 'Critical'
+                evidence = @([ordered]@{ path = $path; line = 1 })
+                acceptance = $acceptance
+            })
+        $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug ('accepted-missing-' + $missingField) -CurrentJudgment $judgment -CurrentAccepted 1 -Conclusion pass
+        Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentJudgment $judgment
+        $result = Test-ReviewerFindingReport -Path $path
+        Assert-True (-not $result.valid -and @($result.inconsistencies) -match ('acceptance\.' + $missingField + ' missing')) ('accepted 缺少 ' + $missingField + ' 仍被接受。')
+    }
+}
+Invoke-Case 'Phase 1 Batch 1b acceptance evidence 拒絕 JSON object 與字串 line' {
+    $invalidEvidenceCases = @(
+        [pscustomobject]@{ name = 'acceptance-object'; invalidShape = 'acceptance-object'; expected = 'acceptance.evidence must be a non-empty array' }
+        [pscustomobject]@{ name = 'acceptance-string-line'; invalidShape = 'acceptance-string-line'; expected = 'acceptance evidence position invalid' }
+        [pscustomobject]@{ name = 'judgment-object'; invalidShape = 'judgment-object'; expected = 'current judgment evidence must be an array' }
+        [pscustomobject]@{ name = 'judgment-string-line'; invalidShape = 'judgment-string-line'; expected = 'current judgment evidence position invalid' }
+    )
+    foreach ($invalidEvidenceCase in $invalidEvidenceCases) {
+        $path = Join-Path $reviewerRoot ('accepted-' + $invalidEvidenceCase.name + '.md')
+        $acceptanceEvidence = @([ordered]@{ path = $path; line = 1 })
+        $judgmentEvidence = @([ordered]@{ path = $path; line = 1 })
+        switch ($invalidEvidenceCase.invalidShape) {
+            'acceptance-object' { $acceptanceEvidence = [ordered]@{ path = $path; line = 1 } }
+            'acceptance-string-line' { $acceptanceEvidence = @([ordered]@{ path = $path; line = '1' }) }
+            'judgment-object' { $judgmentEvidence = [ordered]@{ path = $path; line = 1 } }
+            'judgment-string-line' { $judgmentEvidence = @([ordered]@{ path = $path; line = '1' }) }
+        }
+        $acceptance = [ordered]@{
+            decided_by = 'Analyst'
+            scope = '限定的殘餘風險'
+            evidence = $acceptanceEvidence
+            reopen_condition = '驗收條件再次失敗'
+        }
+        $judgment = @([ordered]@{
+                id = 'F-033'
+                status = 'accepted'
+                severity = 'Major'
+                evidence = $judgmentEvidence
+                acceptance = $acceptance
+            })
+        $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug ('accepted-' + $invalidEvidenceCase.name) -CurrentJudgment $judgment -CurrentAccepted 1 -Conclusion pass
+        Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentJudgment $judgment
+        $result = Test-ReviewerFindingReport -Path $path
+        Assert-True (-not $result.valid -and @($result.inconsistencies) -match [regex]::Escape($invalidEvidenceCase.expected)) ('錯誤 JSON 型別仍通過：' + $invalidEvidenceCase.name)
+    }
+}
+Invoke-Case 'Phase 1 Batch 1b accepted 前置否定詞不解析成 accepted' {
+    foreach ($negativePhrase in @('not accepted', '非 accepted', '未 accepted', '不 accepted')) {
+        $path = Join-Path $reviewerRoot ('accepted-negated-' + [guid]::NewGuid().ToString('N') + '.md')
+        $acceptance = [ordered]@{
+            decided_by = 'Analyst'
+            scope = '限定的殘餘風險'
+            evidence = @([ordered]@{ path = $path; line = 1 })
+            reopen_condition = '驗收條件再次失敗'
+        }
+        $judgment = @([ordered]@{
+                id = 'F-034'
+                status = 'accepted'
+                severity = 'Major'
+                evidence = @([ordered]@{ path = $path; line = 1 })
+                acceptance = $acceptance
+            })
+        $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug ('accepted-negated-' + [guid]::NewGuid().ToString('N').Substring(0, 8)) -CurrentJudgment $judgment -CurrentAccepted 1 -Conclusion pass
+        Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentJudgment $judgment
+        $content = (Get-Content -LiteralPath $path -Raw -Encoding UTF8).Replace('已接受殘餘風險', $negativePhrase)
+        Write-Utf8NoBom -Path $path -Content $content
+        $result = Test-ReviewerFindingReport -Path $path
+        Assert-True (-not $result.valid -and @($result.inconsistencies) -match 'current judgment prose status missing') ('否定狀態 token 仍被接受：' + $negativePhrase)
+    }
+}
+Invoke-Case 'Phase 1 Batch 1b Reviewer finding manifest 接受 T-code 識別字' {
+    $path = Join-Path $reviewerRoot 'tcode-finding-manifest.md'
+    $previous = @([ordered]@{ id = 'T022A'; status = 'open'; severity = 'Major' })
+    $current = @([ordered]@{ id = 'T060'; axis = 'Standards'; status = 'open'; severity = 'Major'; disposition = 'new'; summary = 'T-code finding fixture' })
+    $judgment = @(
+        [ordered]@{ id = 'T060'; status = 'open'; severity = 'Major'; evidence = @([ordered]@{ path = $path; line = 1 }) }
+        [ordered]@{ id = 'T022A'; status = 'closed'; severity = 'Major'; evidence = @([ordered]@{ path = $path; line = 2 }) }
+    )
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'tcode-finding-manifest' -Round 1 -PreviousStatus $previous -PreviousOpen 1 -CurrentFindings $current -CurrentNew 1 -CurrentOpen 1 -CurrentJudgment $judgment -Conclusion fail
+    Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentIds @('T060') -PreviousProse @('- [T022A] [Major] 未閉合 — previous T-code fixture') -CurrentJudgment $judgment
+    $result = Get-ReviewerFindingsForCollect -Path $path -WriteLedger:$false
+    Assert-True ($result.valid -and $result.previous_open_count -eq 1 -and $result.current_new_count -eq 1 -and $result.current_open_count -eq 1 -and @($result.current_judgment).Count -eq 2 -and (@($result.current_judgment | ForEach-Object { $_.id }) -contains 'T060') -and (@($result.current_judgment | ForEach-Object { $_.id }) -contains 'T022A')) ('T-code finding manifest 或正文不一致：' + (@($result.inconsistencies) -join '; '))
+}
+Invoke-Case 'Phase 1 Batch 1b Collect ReviewerReportPath 單參數使用 structural-only' {
+    $path = Join-Path $reviewerRoot 'collect-reviewer-structural-only.md'
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'structural-only' -Round 1
+    Write-ReviewerFixture -Path $path -Manifest $manifest
+    $variableNames = @('InvocationBoundParameters', 'Operation', 'ReportPath', 'DispatchKind', 'ReviewerReportPath')
+    $savedValues = [ordered]@{}
+    $savedPresence = @{}
+    foreach ($name in $variableNames) {
+        $variable = Get-Variable -Name $name -Scope Script -ErrorAction SilentlyContinue
+        $savedPresence[$name] = $null -ne $variable
+        if ($null -ne $variable) { $savedValues[$name] = $variable.Value }
+    }
+    try {
+        $script:Operation = 'Collect'
+        $script:ReportPath = $null
+        $script:DispatchKind = ''
+        $script:ReviewerReportPath = $path
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Collect'; ReviewerReportPath = $path }
+        $result = Invoke-Collect
+        Assert-True ($result.collect_mode -ceq 'structural-only' -and $result.outputValid -and $result.reviewerFindings.valid) 'ReviewerReportPath 單參數未執行結構驗證或未回傳 reviewerFindings。'
+
+        $invalidManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'structural-only-invalid' -Round 1
+        $invalidManifest.conclusion = 'invalid'
+        $invalidPath = Join-Path $reviewerRoot 'collect-reviewer-structural-only-invalid.md'
+        Write-ReviewerFixture -Path $invalidPath -Manifest $invalidManifest
+        $script:ReviewerReportPath = $invalidPath
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Collect'; ReviewerReportPath = $invalidPath }
+        $invalidException = $null
+        try {
+            Invoke-Collect
+        }
+        catch {
+            $invalidException = $_.Exception
+        }
+        $invalidResult = if ($null -eq $invalidException) { $null } else { $invalidException.Data['operationResult'] }
+        Assert-True ($null -ne $invalidResult -and $invalidResult.collect_mode -ceq 'structural-only' -and $invalidResult.reviewerFindings.valid -eq $false) 'Structural-only 未將無效 manifest 的 reviewerFindings 回傳為結構化錯誤。'
+    }
+    finally {
+        foreach ($name in $variableNames) {
+            if ($savedPresence[$name]) {
+                Set-Variable -Name $name -Scope Script -Value $savedValues[$name]
+            }
+            else {
+                Remove-Variable -Name $name -Scope Script -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+Invoke-Case 'Phase 1 Batch 1b accepted 不列 current finding 且不致 fail' {
+    $path = Join-Path $reviewerRoot 'accepted-pass.md'
+    $acceptance = [ordered]@{
+        decided_by = 'Analyst'
+        scope = '限定於本次相容層'
+        evidence = @([ordered]@{ path = $path; line = 1 })
+        reopen_condition = '相容測試再次失敗'
+    }
+    $judgment = @([ordered]@{
+            id = 'F-031'
+            status = 'accepted'
+            severity = 'Critical'
+            evidence = @([ordered]@{ path = $path; line = 1 })
+            acceptance = $acceptance
+        })
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'accepted-pass' -CurrentJudgment $judgment -CurrentAccepted 1 -Conclusion pass
+    Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentJudgment $judgment
+    $result = Test-ReviewerFindingReport -Path $path
+    Assert-True ($result.valid -and $result.conclusion -ceq 'pass' -and $result.current_finding_count -eq 0 -and $result.current_accepted_count -eq 1) 'accepted Critical finding 影響 current_findings 或結論。'
+    $ledgerResult = Get-ReviewerFindingsForCollect -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'accepted-pass'
+    $ledgerAcceptance = $ledgerResult.ledger.ledger.entries[0].acceptance
+    Assert-True ($ledgerResult.valid -and $ledgerAcceptance.decided_by -ceq 'Analyst' -and $ledgerAcceptance.reopen_condition -ceq '相容測試再次失敗' -and @($ledgerAcceptance.evidence).Count -eq 1) 'accepted 裁決內容未寫入同線 Ledger。'
+}
+Invoke-Case 'Phase 1 Batch 1b accepted 依條件重新開啟' {
+    $path = Join-Path $reviewerRoot 'accepted-reopened.md'
+    $acceptance = [ordered]@{
+        decided_by = '使用者'
+        scope = '舊資料轉換路徑'
+        evidence = @([ordered]@{ path = $path; line = 1 })
+        reopen_condition = '回歸案例再次發現資料遺失'
+    }
+    $previous = @([ordered]@{ id = 'F-032'; status = 'accepted'; severity = 'Major'; acceptance = $acceptance })
+    $finding = @([ordered]@{ id = 'F-032'; axis = 'Spec'; status = 'open'; severity = 'Major'; disposition = 'carried'; summary = 'accepted residual risk reopened' })
+    $judgment = @([ordered]@{ id = 'F-032'; status = 'open'; severity = 'Major'; evidence = @([ordered]@{ path = $path; line = 1 }); reopen_condition = '回歸案例再次發現資料遺失' })
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'accepted-reopened' -Round 2 -CurrentFindings $finding -PreviousStatus $previous -PreviousAccepted 1 -CurrentOpen 1 -CurrentJudgment $judgment -Conclusion fail
+    Write-ReviewerFixture -Path $path -Manifest $manifest -CurrentIds @('F-032') -PreviousProse @('- [F-032] [Major] 已接受殘餘風險 — prior accepted decision') -CurrentJudgment $judgment
+    $result = Test-ReviewerFindingReport -Path $path
+    Assert-True ($result.valid -and $result.previous_accepted_count -eq 1 -and $result.current_finding_count -eq 1 -and $result.conclusion -ceq 'fail') '符合 reopen_condition 的 accepted finding 未重新開啟。'
+    $ledgerResult = Get-ReviewerFindingsForCollect -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'accepted-reopened'
+    $reopenedLedgerEntry = @($ledgerResult.ledger.ledger.entries | Where-Object { $_.finding_id -ceq 'F-032' -and $_.round -eq 2 })[0]
+    Assert-True ($ledgerResult.valid -and $reopenedLedgerEntry.acceptance.reopen_condition -ceq $acceptance.reopen_condition) '重新開啟時 Ledger 未保留前輪 acceptance。'
+    $missingTriggerPath = Join-Path $reviewerRoot 'accepted-reopened-missing-trigger.md'
+    $missingTriggerJudgment = @([ordered]@{ id = 'F-032'; status = 'open'; severity = 'Major'; evidence = @([ordered]@{ path = $missingTriggerPath; line = 1 }) })
+    $missingTriggerManifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'accepted-reopened-missing-trigger' -Round 2 -CurrentFindings $finding -PreviousStatus $previous -PreviousAccepted 1 -CurrentOpen 1 -CurrentJudgment $missingTriggerJudgment -Conclusion fail
+    Write-ReviewerFixture -Path $missingTriggerPath -Manifest $missingTriggerManifest -CurrentIds @('F-032') -PreviousProse @('- [F-032] [Major] 已接受殘餘風險 — prior accepted decision') -CurrentJudgment $missingTriggerJudgment
+    $missingTriggerResult = Test-ReviewerFindingReport -Path $missingTriggerPath
+    Assert-True (-not $missingTriggerResult.valid -and @($missingTriggerResult.inconsistencies) -match 'reopening condition trigger missing') '重開正文未說明觸發條件仍被接受。'
+}
+Invoke-Case 'Phase 1 Batch 1b 舊 v2 報告缺 accepted counts 視為零' {
+    $path = Join-Path $reviewerRoot 'accepted-counts-legacy.md'
+    $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'accepted-counts-legacy'
+    $manifest.counts.Remove('previous_accepted')
+    $manifest.counts.Remove('current_accepted')
+    Write-ReviewerFixture -Path $path -Manifest $manifest
+    $result = Test-ReviewerFindingReport -Path $path
+    Assert-True ($result.valid -and $result.previous_accepted_count -eq 0 -and $result.current_accepted_count -eq 0) '舊 v2 報告缺 accepted counts 未相容為零。'
 }
 Invoke-Case 'Reviewer manifest carried 與 current new 分開計數' {
     $path = Join-Path $reviewerRoot 'carried-new.md'
@@ -3277,9 +3488,45 @@ supported" -RequiredOutput $required
         Assert-True ($diagnostic.status -eq 'confirmed' -and $diagnostic.value -ceq 'fixture-model' -and $diagnostic.raw_line.Contains('recorded with model fixture-model')) '原始 model diagnostic 未保留。'
     }
 
+    $finalMessageIdentityCases = @(
+        [pscustomobject]@{ name = '接受獨立識別字'; token = 'design.md'; expectedValid = $true }
+        [pscustomobject]@{ name = '接受反引號包住的絕對路徑'; token = '`C:\fixture\design.md`'; expectedValid = $true }
+        [pscustomobject]@{ name = '接受引號包住的絕對路徑'; token = '"C:\fixture\design.md".'; expectedValid = $true }
+        [pscustomobject]@{ name = '接受 Markdown 連結路徑'; token = '[design](C:/fixture/design.md),'; expectedValid = $true }
+        [pscustomobject]@{ name = '拒絕前綴近似名稱'; token = 'xdesign.md'; expectedValid = $false }
+        [pscustomobject]@{ name = '拒絕備份副檔名'; token = 'design.md.bak'; expectedValid = $false }
+    )
+    foreach ($identityCase in $finalMessageIdentityCases) {
+        Invoke-Case ('Inspect final message identity ' + $identityCase.name) {
+            $message = [string]$identityCase.token + ' dispatchSlug=dispatch-a lineSlug=line-a'
+            $identity = Get-DispatchFinalMessageIdentity -Message $message -RequiredIdentifier 'design.md' -DispatchSlug 'dispatch-a' -LineSlug 'line-a' -Source 'final-message-identity-fixture'
+            Assert-True ([bool]$identity.valid -eq [bool]$identityCase.expectedValid) ('識別字比對結果不符：' + ($identity | ConvertTo-Json -Depth 8 -Compress))
+        }
+    }
+
     Invoke-Case 'Inspect 事件權威與一致性成功' {
         $result = Invoke-Inspect
         Assert-True ($result.success -and $result.outputValid -and $result.lastMessageConsistency -eq 'Match' -and $result.finalMessageSource -eq 'event-stream' -and $result.finalMessageIdentity.valid) '成功 gate 不一致。'
+    }
+    Invoke-Case 'Inspect 批次 1b 最終訊息接受反引號絕對設計路徑' {
+        try {
+            $designPath = Join-Path -Path $fixtureRoot -ChildPath '.local/ai-sessions/handoff/line-a/design.md'
+            $backtick = [string][char]96
+            $message = '設計基準： ' + $backtick + $designPath + $backtick + ' dispatchSlug=dispatch-a lineSlug=line-a'
+            $events = @(
+                @{ type = 'thread.started'; thread_id = $script:testThread }
+                @{ type = 'item.completed'; item = @{ type = 'agent_message'; text = $message } }
+                @{ type = 'turn.completed'; usage = @{ input_tokens = 1; output_tokens = 1 } }
+            )
+            Write-Utf8NoBom -Path $a.event_stream_path -Content (($events | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 5 }) -join "`r`n")
+            Write-Utf8NoBom -Path $a.last_message_path -Content $message
+            $result = Invoke-Inspect
+            Assert-True ($result.success -and $result.outputValid -and $result.lastMessageConsistency -eq 'Match' -and $result.finalMessageIdentity.valid) ('批次 1b 最終訊息形狀的 Inspect 未通過：' + ($result | ConvertTo-Json -Depth 12 -Compress))
+        }
+        finally {
+            Write-TestEvents $a.event_stream_path $script:testThread
+            Write-Utf8NoBom $a.last_message_path 'design.md dispatch-a line-a'
+        }
     }
     Invoke-Case 'Inspect 結案訊息錯 dispatch identity 回傳結構化 mismatch' {
         try {
@@ -3624,7 +3871,11 @@ line-a")) {
     }
     Invoke-Case 'Collect identity gate 先於 reviewer finding recovery' {
         $collectText = ($functions | Where-Object { $_.Name -eq 'Invoke-Collect' }).Extent.Text
-        Assert-True ($collectText.IndexOf('Test-DispatchCollectIdentity', [StringComparison]::Ordinal) -ge 0 -and $collectText.IndexOf('Test-DispatchCollectIdentity', [StringComparison]::Ordinal) -lt $collectText.IndexOf('Get-ReviewerFindingsForCollect', [StringComparison]::Ordinal)) 'Collect 未在 reviewer findings 前執行 identity gate。'
+        $normalCollectStart = $collectText.IndexOf('if ($null -eq $ReportPath', [StringComparison]::Ordinal)
+        $normalCollectText = if ($normalCollectStart -ge 0) { $collectText.Substring($normalCollectStart) } else { '' }
+        $identityGateIndex = $normalCollectText.IndexOf('Test-DispatchCollectIdentity', [StringComparison]::Ordinal)
+        $reviewerFindingsIndex = $normalCollectText.IndexOf('Get-ReviewerFindingsForCollect', [StringComparison]::Ordinal)
+        Assert-True ($collectText.IndexOf('$reviewerStructuralOnly', [StringComparison]::Ordinal) -ge 0 -and $identityGateIndex -ge 0 -and $identityGateIndex -lt $reviewerFindingsIndex) '完整 Collect 路徑未在讀取 reviewer findings 前執行 identity gate，或未保留 structural-only 分支。'
     }
 }
 $DispatchSlug = 'start-case'
@@ -4103,8 +4354,10 @@ if ($Phase -ge 3) {
         $gitStaged = @()
         $aFile = Join-Path $DispatchRoot 'A.txt'
         $uFile = Join-Path $DispatchRoot 'U.txt'
+        $sourceUFile = Join-Path $SourceRoot 'U.txt'
         Write-Utf8NoBom $aFile 'carry-in tracked'
         Write-Utf8NoBom $uFile 'carry-in untracked'
+        Write-Utf8NoBom $sourceUFile 'carry-in untracked'
         $baseline = New-DispatchBaseline -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha $BaseSha
         $prepareRootInfo = Get-PrepareRootInfo -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
         $prepareSourcePath = Join-Path $prepareRootInfo.SourceLineRoot 'line.json'
@@ -4124,7 +4377,7 @@ if ($Phase -ge 3) {
         $prepareDocument = New-PrepareDocument -RootInfo $prepareRootInfo -Status 'Prepared' -RequestPathValue '' -RequestSha256Value '' -EffectiveCodexHome (Resolve-CodexHomeForEvidence -CodexHomePath $null) -Artifacts @($prepareArtifact) -ErrorValue $null
         $fixturePrepareResultPath = Join-Path $prepareRootInfo.HistoryLineRoot ('prepare-' + $DispatchSlug + '.json')
         $prepareWritten = Write-PrepareResultDocument -Path $fixturePrepareResultPath -Document $prepareDocument
-        $preflightObject = [pscustomobject]@{ operation = 'Preflight'; sourceRoot = $SourceRoot; executionRoot = $DispatchRoot; dispatchRoot = $DispatchRoot; lineSlug = $LineSlug; dispatchSlug = $DispatchSlug; worktreeCreated = $true; baseSha = $BaseSha; baselinePath = $baseline.Path; baselineSha256 = $baseline.Sha256; writeMode = 'write'; prepareResultPath = $prepareWritten.Path; prepareResultSha256 = $prepareWritten.Sha256 }
+        $preflightObject = [pscustomobject]@{ operation = 'Preflight'; sourceRoot = $SourceRoot; executionRoot = $DispatchRoot; dispatchRoot = $DispatchRoot; lineSlug = $LineSlug; dispatchSlug = $DispatchSlug; worktreeCreated = $true; baseSha = $BaseSha; baselinePath = $baseline.Path; baselineSha256 = $baseline.Sha256; writeMode = 'write'; prepareResultPath = $prepareWritten.Path; prepareResultSha256 = $prepareWritten.Sha256; carryInManifest = [pscustomobject]@{ UntrackedFiles = @('U.txt') } }
         $PreflightResultPath = Join-Path $DispatchRoot '.local/ai-sessions/history/preflight.json'
         Write-Utf8NoBom $PreflightResultPath ($preflightObject | ConvertTo-Json -Depth 5)
         $BaselinePath = $null
@@ -4192,18 +4445,19 @@ if ($Phase -ge 3) {
             Assert-True ($result.allFiles.Count -eq 1 -and $result.allFiles[0] -ceq 'A.txt' -and $result.itemChecks[0].IsTracked) '同檔差異未納入。'
         }
     }
-    Invoke-BaselineCase 'Collect carry-in untracked 修改後納入' {
+    Invoke-BaselineCase 'Phase 4 Batch 1b Collect carry-in untracked 修改拒絕且不覆寫來源' {
         Write-Utf8NoBom $uFile 'dispatch untracked'
         Write-Utf8NoBom $ReportPath[0] "# Fixture
 
 ## Phase 對照
 
-- Phase 3：``U.txt``
+- Phase 3：本輪沒有可套用檔案
 "
         $result = Invoke-Collect
-        Assert-True ($result.allFiles.Count -eq 1 -and $result.allFiles[0] -eq 'U.txt' -and -not $result.itemChecks[0].IsTracked) '未追蹤同檔差異未納入。'
+        Assert-True ($result.allFiles.Count -eq 0 -and $result.carryInFiles -contains 'U.txt' -and $result.newFiles.Count -eq 0 -and $result.rejectedFiles[0].path -ceq 'U.txt' -and $result.rejectedFiles[0].reason -ceq 'carry-in-protected') 'carry-in 未分類為拒收或仍可套用。'
+        Assert-True ((Get-Content -LiteralPath $sourceUFile -Raw -Encoding UTF8) -ceq 'carry-in untracked') 'Collect 以 dispatch worktree 內容覆寫來源 carry-in。'
     }
-    Invoke-BaselineCase 'Collect 新增未追蹤檔案' {
+    Invoke-BaselineCase 'Phase 4 Batch 1b Collect 區分本輪新增未追蹤檔案' {
         $gitUntracked = @('U.txt', 'new.txt')
         Write-Utf8NoBom (Join-Path $DispatchRoot 'new.txt') 'new'
         Write-Utf8NoBom $ReportPath[0] ((@(
@@ -4213,7 +4467,20 @@ if ($Phase -ge 3) {
             ''
             '- Phase 3：`new.txt`'
         ) -join [Environment]::NewLine) + [Environment]::NewLine)
-        Assert-True ((Invoke-Collect).allFiles[0] -eq 'new.txt') '新增未追蹤未納入。'
+        $result = Invoke-Collect
+        Assert-True ($result.allFiles.Count -eq 1 -and $result.allFiles[0] -eq 'new.txt' -and $result.newFiles -contains 'new.txt' -and $result.carryInFiles -contains 'U.txt') '新增未追蹤與 carry-in 未分開列出。'
+    }
+    Invoke-BaselineCase 'Phase 4 Batch 1b Collect 來源 carry-in 漂移拒絕套用' {
+        Write-Utf8NoBom $sourceUFile 'changed in source during dispatch'
+        Write-Utf8NoBom $ReportPath[0] "# Fixture
+
+## Phase 對照
+
+- Phase 3：本輪沒有可套用檔案
+"
+        $result = Invoke-Collect
+        Assert-True ($result.allFiles.Count -eq 0 -and $result.carryInFiles -contains 'U.txt' -and $result.rejectedFiles[0].path -ceq 'U.txt' -and $result.rejectedFiles[0].reason -ceq 'source-drift' -and -not [string]::IsNullOrWhiteSpace($result.rejectedFiles[0].actual_sha256)) '來源端 carry-in 漂移未標示並拒絕套用。'
+        Assert-True ((Get-Content -LiteralPath $sourceUFile -Raw -Encoding UTF8) -ceq 'changed in source during dispatch') 'Collect 覆寫來源端派遣期間的變更。'
     }
     Invoke-BaselineCase 'Collect 刪除 tracked 與 untracked' {
         Move-Item $aFile (Join-Path $DispatchRoot '.local/A.saved')
@@ -4225,7 +4492,8 @@ if ($Phase -ge 3) {
 
 - Phase 3：``A.txt``、``U.txt``
 "
-        Assert-True (((Invoke-Collect).allFiles -join ',') -ceq 'A.txt,U.txt') '刪檔未納入。'
+        $result = Invoke-Collect
+        Assert-True (($result.allFiles -join ',') -ceq 'A.txt' -and $result.carryInFiles -contains 'U.txt' -and $result.rejectedFiles[0].path -ceq 'U.txt' -and $result.rejectedFiles[0].reason -ceq 'carry-in-protected') 'carry-in 刪除仍可套用或未標示為拒收。'
     }
     Invoke-BaselineCase 'Collect 更名視為刪除加新增' {
         Move-Item $aFile (Join-Path $DispatchRoot 'renamed.txt')
@@ -4403,7 +4671,7 @@ if ($Phase -ge 3) {
     Invoke-Case 'Phase 3 移除 baseSha 歸屬與保留入口綁定' {
         $collectText = ($functions | Where-Object Name -eq 'Invoke-Collect').Extent.Text
         $preflightText = ($functions | Where-Object Name -eq 'Invoke-Preflight').Extent.Text
-        Assert-True (-not $collectText.Contains('$allFiles = @($trackedDiff + $untrackedFiles') -and $collectText.Contains('$allFiles = @($dispatchDiff)') -and $collectText.Contains('Resolve-DispatchBaselineBinding')) '舊歸屬路徑殘留。'
+        Assert-True (-not $collectText.Contains('$allFiles = @($trackedDiff + $untrackedFiles') -and $collectText.Contains('$allFiles = @($dispatchDiff | Where-Object { -not $carryInSet.Contains([string]$_) })') -and $collectText.Contains('Resolve-DispatchBaselineBinding')) 'Collect baseline、carry-in 保護或差異來源不符。'
         Assert-True ($preflightText.IndexOf('Apply-SourceCarryIn') -lt $preflightText.IndexOf('New-DispatchBaseline') -and $preflightText -notmatch "'commit'") 'baseline 建立順序或 commit 約束不符。'
     }
 
@@ -5384,8 +5652,144 @@ if ($Phase -ge 5) {
 
     Invoke-Case 'Phase 5 Collect parser positive contract 與 status 通過' {
         $map = Get-RequirementMap -RequirementSummaryPath $phase5SummaryPath -ReportPath @($phase5ReportPath)
-        Assert-True ($map.contractVersion -ceq 'workflow-collect-v1' -and $map.summarySha256 -eq (Get-FileSha256 -Path $phase5SummaryPath) -and $map.reportEvidence.Count -eq 1 -and $map.reportEvidence[0].row_count -eq 9 -and $map.reportRowCount -eq 9) 'Collect contract version、hash 或 row count 不一致。'
+        Assert-True ($map.contractVersion -ceq 'workflow-collect-v1' -and $map.summarySha256 -eq (Get-FileSha256 -Path $phase5SummaryPath) -and $map.reportEvidence.Count -eq 1 -and $map.reportEvidence[0].row_count -eq 9 -and $map.reportRowCount -eq 9 -and $null -eq $map.selectedRequirement) 'Collect contract version、hash、row count 或未指定需求時的範圍不一致。'
         Assert-True ([int]$map.statusCounts['已交付'] -eq 6 -and [int]$map.statusCounts['部分交付'] -eq 1 -and [int]$map.statusCounts['未交付'] -eq 1 -and [int]$map.statusCounts['排除（design.md §8）'] -eq 1) 'Collect 合法 status 統計不一致。'
+    }
+
+    $phase5SelectedDispatchRoot = Join-Path $fixtureRoot 'phase5-selected-dispatch'
+    $phase5SelectedRequestPath = Join-Path $fixtureRoot 'phase5-selected-dispatch-request.json'
+    $phase5SelectedRequestDocument = [ordered]@{
+        schema = 'ai-sessions.dispatch-request.v1'
+        operation = 'Dispatch'
+        line_slug = 'line-a'
+        dispatch_slug = 'phase5-selected'
+        source_root = $fixtureRoot
+        dispatch_root = $phase5SelectedDispatchRoot
+        write_mode = 'write'
+        dispatch_kind = 'workflow'
+        target_path = @((Join-Path $fixtureRoot 'target.txt'))
+        prompt_path = (Join-Path $fixtureRoot 'prompt.md')
+        task_type = 'implement'
+        session_mode = 'cold-start'
+        unit_kind = 'workflow-phase'
+        failure_receipt_path = (Join-Path $fixtureRoot 'failure.json')
+        selected_requirement = '#22'
+    }
+    Write-Utf8NoBom -Path $phase5SelectedRequestPath -Content (($phase5SelectedRequestDocument | ConvertTo-Json -Depth 10) + "`n")
+    Invoke-Case 'Phase 5 Batch 1b Request selected_requirement 可解析並套用' {
+        $request = Read-DispatchRequest -Path $phase5SelectedRequestPath
+        Assert-True ($request.dispatch_field_presence.selected_requirement -and $request.dispatch_values.selected_requirement -ceq '#22') 'Request 未保留 selected_requirement。'
+        $script:SelectedRequirement = ''
+        $script:InvocationBoundParameters = [ordered]@{}
+        $context = [ordered]@{
+            dispatch_field_presence = [ordered]@{ selected_requirement = $true }
+            dispatch_values = [ordered]@{ selected_requirement = '#22' }
+            path = $phase5SelectedRequestPath
+        }
+        Apply-DispatchRequestScalarField -Context $context -CliField 'SelectedRequirement' -RequestField 'selected_requirement'
+        Assert-True ($script:SelectedRequirement -ceq '#22') 'Request 的 selected_requirement 未套用至 Collect CLI 欄位。'
+    }
+    $phase5SelectedInvalidRequestPath = Join-Path $fixtureRoot 'phase5-selected-invalid-request.json'
+    $phase5SelectedInvalidDocument = [ordered]@{}
+    foreach ($property in $phase5SelectedRequestDocument.GetEnumerator()) { $phase5SelectedInvalidDocument[$property.Key] = $property.Value }
+    $phase5SelectedInvalidDocument.selected_requirement = '22'
+    Write-Utf8NoBom -Path $phase5SelectedInvalidRequestPath -Content (($phase5SelectedInvalidDocument | ConvertTo-Json -Depth 10) + "`n")
+    Invoke-Case 'Phase 5 Batch 1b Request selected_requirement 格式錯誤拒絕' -Reject -ErrorPattern 'selected_requirement' {
+        Read-DispatchRequest -Path $phase5SelectedInvalidRequestPath
+    }
+    Invoke-Case 'Phase 5 Batch 1b Request 驗證錯誤只回報格式與輸入長度' {
+        $requestValidationCases = @(
+            [pscustomobject]@{ name = 'selected-requirement'; field = 'selected_requirement'; value = 'selected-requirement-secret'; expectedFormat = '#<positive integer>' }
+            [pscustomobject]@{ name = 'failure-receipt-path'; field = 'failure_receipt_path'; value = 'failure-receipt-secret'; expectedFormat = 'fully-qualified path' }
+            [pscustomobject]@{ name = 'profile'; field = 'profile'; value = 'profile-secret'; expectedFormat = 'default|advisor' }
+            [pscustomobject]@{ name = 'advisor-request-source'; field = 'advisor_request_source'; value = 'advisor-source-secret'; expectedFormat = 'user-explicit' }
+            [pscustomobject]@{ name = 'line-slug'; field = 'line_slug'; value = 'line_slug_secret'; expectedFormat = '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
+            [pscustomobject]@{ name = 'dispatch-slug'; field = 'dispatch_slug'; value = 'dispatch_slug_secret'; expectedFormat = '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
+            [pscustomobject]@{ name = 'target-path'; field = 'target_path'; value = 'target-path-secret'; expectedFormat = 'fully-qualified path' }
+            [pscustomobject]@{ name = 'write-mode'; field = 'write_mode'; value = 'write-mode-secret'; expectedFormat = 'readonly|write' }
+            [pscustomobject]@{ name = 'dispatch-kind'; field = 'dispatch_kind'; value = 'dispatch-kind-secret'; expectedFormat = 'workflow|resource' }
+            [pscustomobject]@{ name = 'session-mode'; field = 'session_mode'; value = 'session-mode-secret'; expectedFormat = 'cold-start|continuation' }
+            [pscustomobject]@{ name = 'unit-kind'; field = 'unit_kind'; value = 'unit-kind-secret'; expectedFormat = 'workflow-phase|resource-target|advisor-evidence-question' }
+            [pscustomobject]@{ name = 'schema'; field = 'schema'; value = 'schema-secret'; expectedFormat = 'ai-sessions.dispatch-request.v1' }
+            [pscustomobject]@{ name = 'operation'; field = 'operation'; value = 'operation-secret'; expectedFormat = 'Preflight|Prepare|Start|Inspect|Collect|QuotaProbe|Dispatch|Cleanup' }
+            [pscustomobject]@{ name = 'evidence-pack-path'; field = 'evidence_pack_path'; value = 'evidence-pack-secret'; expectedFormat = 'fully-qualified path' }
+            [pscustomobject]@{ name = 'advisor-report-path'; field = 'advisor_consult_report_path'; value = 'advisor-report-secret'; expectedFormat = 'fully-qualified path' }
+        )
+        foreach ($validationCase in $requestValidationCases) {
+            $validationDocument = [ordered]@{}
+            foreach ($property in $phase5SelectedRequestDocument.GetEnumerator()) { $validationDocument[$property.Key] = $property.Value }
+            if ($validationCase.field -ceq 'target_path') {
+                $validationDocument[$validationCase.field] = @([string]$validationCase.value)
+            }
+            elseif ($validationCase.field -in @('evidence_pack_path', 'advisor_consult_report_path')) {
+                $validationDocument.task_type = 'advisor-consult'
+                $validationDocument.evidence_pack_path = 'C:\tmp\safe-evidence-pack.md'
+                $validationDocument.advisor_consult_report_path = 'C:\tmp\safe-advisor-report.md'
+                $validationDocument[$validationCase.field] = [string]$validationCase.value
+            }
+            else {
+                $validationDocument[$validationCase.field] = [string]$validationCase.value
+            }
+            $validationPath = Join-Path $fixtureRoot ('request-validation-' + $validationCase.name + '.json')
+            Write-Utf8NoBom -Path $validationPath -Content (($validationDocument | ConvertTo-Json -Depth 10) + "`n")
+            $requestException = $null
+            try {
+                Read-DispatchRequest -Path $validationPath
+            }
+            catch {
+                $requestException = $_.Exception
+            }
+            $failureResult = if ($null -eq $requestException) { $null } else { $requestException.Data['operationResult'] }
+            $failureJson = if ($null -eq $failureResult) { '' } else { ConvertTo-Json -InputObject $failureResult -Depth 20 -Compress }
+            Assert-True ($null -ne $failureResult -and $failureResult.field -ceq $validationCase.field -and $failureResult.detail.expected_format -ceq $validationCase.expectedFormat -and $failureResult.detail.input_length -eq $validationCase.value.Length -and -not ($failureJson + [string]$requestException.Message).Contains([string]$validationCase.value)) ('Request 錯誤回顯原值或缺少安全診斷：' + $validationCase.name)
+        }
+    }
+
+    $phase5SelectedScopeLine = '範圍外（本輪不要求交付）：#1、#2、#3、#4、#5、#6、#7、#8'
+    function Write-Phase5SelectedReport {
+        param([string]$Path, [string[]]$RequirementRows, [string]$ScopeLine)
+        $lines = @(
+            '# Phase 5 selected report'
+            ''
+            '## 需求對照'
+            ''
+            '| 需求 | 驗收方向 | T-code | 實際行為 | 證據 | 狀態 |'
+            '| --- | --- | --- | --- | --- | --- |'
+        ) + @($RequirementRows) + @($ScopeLine)
+        Write-Utf8NoBom -Path $Path -Content (($lines -join [Environment]::NewLine) + [Environment]::NewLine)
+    }
+    $phase5SelectedReportPath = Join-Path $fixtureRoot 'phase5-selected-report.md'
+    $phase5SelectedRow9 = '| #9 | 驗收 #9 | T007 | 本輪交付 #22 | evidence-9 | 已交付 |'
+    Write-Phase5SelectedReport -Path $phase5SelectedReportPath -RequirementRows @($phase5SelectedRow9) -ScopeLine $phase5SelectedScopeLine
+    Invoke-Case 'Phase 5 Batch 1b selected_requirement 與範圍外完整覆蓋' {
+        $map = Get-RequirementMap -RequirementSummaryPath $phase5SummaryPath -ReportPath @($phase5SelectedReportPath) -SelectedRequirement '#9'
+        Assert-True ($map.reportRowCount -eq 1 -and $map.reportEvidence[0].row_count -eq 1 -and $map.selectedRequirement -ceq '#9' -and @($map.outOfScopeRequirementIds).Count -eq 8 -and ((@($map.outOfScopeRequirementIds) -join ',') -ceq '1,2,3,4,5,6,7,8')) 'selected_requirement 與範圍外需求未完整覆蓋摘要。'
+    }
+    $phase5SelectedSecondReportPath = Join-Path $fixtureRoot 'phase5-selected-second-report.md'
+    Write-Phase5SelectedReport -Path $phase5SelectedSecondReportPath -RequirementRows @($phase5SelectedRow9) -ScopeLine $phase5SelectedScopeLine
+    Invoke-Case 'Phase 5 Batch 1b 多份報告各自驗證選定需求' {
+        $map = Get-RequirementMap -RequirementSummaryPath $phase5SummaryPath -ReportPath @($phase5SelectedReportPath, $phase5SelectedSecondReportPath) -SelectedRequirement '#9'
+        Assert-True ($map.reportRowCount -eq 2 -and $map.reportEvidence.Count -eq 2 -and $map.reportEvidence[0].row_count -eq 1 -and $map.reportEvidence[1].row_count -eq 1 -and $map.selectedRequirement -ceq '#9' -and @($map.outOfScopeRequirementIds).Count -eq 8) '多份報告各自涵蓋選定需求時被跨報告重複判定拒收。'
+    }
+    $phase5SelectedSecondInvalidReportPath = Join-Path $fixtureRoot 'phase5-selected-second-invalid-report.md'
+    Write-Phase5SelectedReport -Path $phase5SelectedSecondInvalidReportPath -RequirementRows @($phase5SelectedRow9, '| #8 | 驗收 #8 | T002 | 範圍外列 | evidence-8 | 已交付 |') -ScopeLine $phase5SelectedScopeLine
+    Invoke-Case 'Phase 5 Batch 1b 多份報告逐份拒絕範圍外資料列' -Reject -ErrorPattern 'invalidSectionContent=.*選定需求資料列不符' {
+        Get-RequirementMap -RequirementSummaryPath $phase5SummaryPath -ReportPath @($phase5SelectedReportPath, $phase5SelectedSecondInvalidReportPath) -SelectedRequirement '#9'
+    }
+    $phase5SelectedMissingPath = Join-Path $fixtureRoot 'phase5-selected-missing.md'
+    Write-Phase5SelectedReport -Path $phase5SelectedMissingPath -RequirementRows @('| #8 | 驗收 #8 | T002 | 額外列 | evidence-8 | 已交付 |') -ScopeLine '範圍外（本輪不要求交付）：#1、#2、#3、#4、#5、#6、#7'
+    Invoke-Case 'Phase 5 Batch 1b selected_requirement 缺列拒絕' -Reject -ErrorPattern 'missingRequirementIds=.*9|unknownRequirementIds=.*8|範圍外需求清單不符' {
+        Get-RequirementMap -RequirementSummaryPath $phase5SummaryPath -ReportPath @($phase5SelectedMissingPath) -SelectedRequirement '#9'
+    }
+    $phase5SelectedMultiplePath = Join-Path $fixtureRoot 'phase5-selected-multiple.md'
+    Write-Phase5SelectedReport -Path $phase5SelectedMultiplePath -RequirementRows @($phase5SelectedRow9, '| #8 | 驗收 #8 | T002 | 範圍外列 | evidence-8 | 已交付 |') -ScopeLine $phase5SelectedScopeLine
+    Invoke-Case 'Phase 5 Batch 1b selected_requirement 多列拒絕' -Reject -ErrorPattern 'unknownRequirementIds=.*8' {
+        Get-RequirementMap -RequirementSummaryPath $phase5SummaryPath -ReportPath @($phase5SelectedMultiplePath) -SelectedRequirement '#9'
+    }
+    $phase5SelectedScopeMismatchPath = Join-Path $fixtureRoot 'phase5-selected-scope-mismatch.md'
+    Write-Phase5SelectedReport -Path $phase5SelectedScopeMismatchPath -RequirementRows @($phase5SelectedRow9) -ScopeLine '範圍外（本輪不要求交付）：#1、#2、#3、#4、#5、#6、#7、#9'
+    Invoke-Case 'Phase 5 Batch 1b selected_requirement 範圍外列不符拒絕' -Reject -ErrorPattern '範圍外需求清單不符' {
+        Get-RequirementMap -RequirementSummaryPath $phase5SummaryPath -ReportPath @($phase5SelectedScopeMismatchPath) -SelectedRequirement '#9'
     }
 
     $phase5SummaryUnknownHeaderPath = Join-Path $fixtureRoot 'phase5-summary-unknown-header.md'
@@ -7835,7 +8239,7 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
             $actualClassification = if ($null -eq $generatorError) { '<no-json>' } else { [string]$generatorError.classification }
             $actualField = if ($null -eq $generatorError) { '<no-json>' } else { [string]$generatorError.field }
             $expectedPath = 'fully-qualified path'
-            $pathDetailsValid = $case.classification -ne 'InvalidPath' -or ($null -ne $generatorError -and $requestError.detail.expected -ceq $expectedPath -and $generatorError.detail.expected -ceq $expectedPath)
+            $pathDetailsValid = $case.classification -ne 'InvalidPath' -or ($null -ne $generatorError -and $requestError.detail.expected_format -ceq $expectedPath -and $generatorError.detail.expected -ceq $expectedPath)
             Assert-True ($requestError.classification -ceq $case.classification -and $requestError.field -ceq $case.field -and $null -ne $generatorError -and $generatorError.status -ceq 'failed' -and $generatorError.classification -ceq $case.classification -and $generatorError.field -ceq $case.new_field -and $pathDetailsValid) ('Request／New-DispatchOrder 分類不一致：' + $case.name + '; request=' + [string]$requestError.classification + '/' + [string]$requestError.field + '; generator=' + [string]$generatorRun.exit_code + '/' + $actualClassification + '/' + $actualField + '; stderr=' + [string]$generatorRun.stderr)
         }
     }
@@ -7882,7 +8286,7 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
             foreach ($property in $phase7AdvisorRequest.GetEnumerator()) { $request[$property.Key] = $property.Value }
             $request[[string]$pathCase.field] = [string]$pathCase.value
             $requestError = Get-Phase7RequestFailure -Document $request
-            Assert-True ($requestError.code -ceq 'DispatchRequestInvalidPath' -and $requestError.classification -ceq 'InvalidPath' -and $requestError.field -ceq $pathCase.field -and $requestError.detail.expected -ceq 'fully-qualified path') ('Request 路徑未拒絕非完整路徑：' + [string]$pathCase.field + '=' + [string]$pathCase.value)
+            Assert-True ($requestError.code -ceq 'DispatchRequestInvalidPath' -and $requestError.classification -ceq 'InvalidPath' -and $requestError.field -ceq $pathCase.field -and $requestError.detail.expected_format -ceq 'fully-qualified path') ('Request 路徑未拒絕非完整路徑：' + [string]$pathCase.field + '=' + [string]$pathCase.value)
         }
     }
 
