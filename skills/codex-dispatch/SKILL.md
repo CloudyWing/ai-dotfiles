@@ -16,7 +16,7 @@ policy.allow_implicit_invocation: true
 | 情境 | 入口 | 必要輸入 | 提供方式 |
 | --- | --- | --- | --- |
 | 建立資源派遣單 | `scripts\New-DispatchOrder.ps1` | `Title`、`Role`、`TargetPath`、`TaskBody`、`Acceptance`、`Boundary`、`ReportPath`、`DispatchSlug`、`LineSlug`；`OutputPath` 選填 | 命令列參數；省略 `OutputPath` 時派遣單寫入來源工作樹同線 `handoff\<lineSlug>\`，八個欄位定義見「派遣單契約」 |
-| 首次啟動一筆派遣 | `scripts\Invoke-CodexDispatch.ps1 -Operation Dispatch` | `source_root`、`dispatch_root`、`line_slug`、`dispatch_slug`、至少一個 `target_path`、`prompt_path` 與 Start 所需欄位 | 只接受 `operation=Dispatch` 的 request 檔，以 `-RequestPath` 傳入 |
+| 首次啟動一筆派遣（正式入口） | `scripts\Invoke-CodexDispatch.ps1 -Operation Dispatch` | `source_root`、`dispatch_root`、`line_slug`、`dispatch_slug`、`write_mode`、`dispatch_kind`、至少一個 `target_path`、`prompt_path`、`task_type`、`session_mode`、`unit_kind`、`failure_receipt_path` | 只接受 `operation=Dispatch` 的 request 檔（UTF-8 無 BOM），以 `-RequestPath` 傳入；欄位表與範例見「Dispatch 正式入口」 |
 | 續行、恢復或需要在階段之間插入檢查 | 逐一呼叫 `Preflight`、`Prepare`、`Start` | 各 operation 的參數見「腳本介面與執行前提」 | 命令列參數；`prepare_artifacts` 沒有命令列參數，只能經 request 檔傳入 |
 | 執行結束後 | `Inspect`，接著 `Collect` | 事件流、stderr、last-message、Preflight 結果與報告路徑 | 命令列參數 |
 | 回收完成且不再續行 | `Cleanup` | 保存清單、RunRecord、報告與 evidence 路徑 | 命令列參數或 request 檔 |
@@ -38,7 +38,22 @@ request 檔的 `source_root`、`result_path` 與 `preflight_result_path` 只在 
 | 7 | `RecoveryPrecheck` 通過後，`Collect` 核對成果與報告，主 Agent 判定回收三態 | Collect 結果與三態判定 | 續行、升級或同步 |
 | 8 | 同步報告與核准交接產物，再執行 `Cleanup` | 保存驗證結果 | 結案報告 |
 
-`Dispatch` 串接步驟 2 至 4，回傳 `status=started` 只代表 Codex 已啟動，不代表已檢查或已回收。步驟 5 至 8 仍由主 Agent 接續執行。
+`Dispatch` 串接步驟 2 至 6。預設同步等待 Codex 結束後執行 Inspect，回傳 `completed` 或 `failed`；Request 設 `background: true` 時先回傳 `status=started`，只代表 Codex 已啟動，再以 `Inspect -WaitForCompletion` 等待。步驟 7 與 8 的回收判定由主 Agent 執行，派遣不再需要在 Session 內另寫 runner。
+
+### Dispatch 正式入口
+
+- 單位自動產生：Workflow 依 `design.md` 的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。
+- Prepare 自動帶入：同線 `line.json`、`requirement-summary.md`；Workflow 另帶入 `design.md`，資源派遣在第 4 欄提及 `design.md` 時帶入，並把派遣單複製到 dispatch worktree 的同線 handoff。`prepare_artifacts` 只用於追加其他檔案。
+- 可省略欄位：`profile`（預設 `default`）、`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名）、各階段結果路徑與額度快照路徑。
+- 輸出欄位：`status`（`started`、`completed`、`failed`）、`completed_stages`、`failed_stage`、`error_code`、`error`、`process_started`、`process_exit_code`、`termination_reason`、`inspect_status`、`inspect_success`、`requested_units`、`result_path`、`result_sha256`、`inspect_result_path`。`Collect` 的參數取自這些欄位。
+
+背景派遣的等待命令如下。`-WaitForCompletion` 等待 sidecar 確認 Codex 行程結束，再以事件流 terminal event 決定結果，沒有固定逾時。
+
+```powershell
+.\scripts\Invoke-CodexDispatch.ps1 -Operation Inspect -DispatchResultPath <result_path> `
+  -SourceRoot <source_root> -ExecutionRoot <execution_root> -LineSlug <line_slug> -DispatchSlug <dispatch_slug> `
+  -TargetPath <target_path> -RequiredIdentifier <required_identifier> -WriteMode <write_mode> -WaitForCompletion
+```
 
 ## 失敗與恢復導引
 
@@ -238,7 +253,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、ScopePlan、派工前後快照、thread id 路徑 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`outputValid`、`success`、after snapshot、三層 model evidence、thread relay、advisor report 與 monitor 證據 | JSONL、thread id、必要輸入或證據包 hash 格式錯誤時 stderr 並 exit code 1 |
 | `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath`；回收 Reviewer 時另提供選用的 `ReviewerReportPath` | worktree 的 tracked／staged／未追蹤差異，或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果；提供 `ReviewerReportPath` 時另含 `reviewerFindings`（`valid`、`conclusion`、七個 unique 計數 `previous_closed_count`、`previous_open_count`、`previous_withdrawn_count`、`current_new_count`、`current_open_count`、`current_closed_count`、`current_withdrawn_count`，以及 `duplicate_ids`、`inconsistencies`） | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
 | `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `finalStatus`、新快照路徑與 SHA-256、`processStarted=false` 與回復紀錄 | 只允許 `PostResetNoSnapshot`、`SnapshotExpired` 與 `ServiceRejected`；`ProbeAttempt > 1`，或重新取得的快照不是 `Valid` 且 `fresh` 時 stderr 並 exit code 1 |
-| `Dispatch` | request file 或等價的 `SourceRoot`、`DispatchRoot`、`WriteMode`、`DispatchKind`、`TargetPath[]`、Prepare 結果、prompt 與 ScopePlan 參數 | `Preflight`、`Prepare`、`Start` 的階段結果與 `status=started` 的 dispatch envelope；Inspect 與 Collect 另行呼叫 | request、Preflight、Prepare 或 Start 任一階段驗證失敗時 stderr 並 exit code 1 |
+| `Dispatch` | `-RequestPath` 指向 `operation=Dispatch` 的 request 檔；未提供 request 檔時拒絕 | `Preflight`、`Prepare`、`Start` 與 `Inspect` 的階段結果，以及 `status=completed` 或 `failed` 的 dispatch envelope；`background: true` 時回傳 `status=started`，Inspect 以 `-WaitForCompletion` 另行等待；Collect 另行呼叫 | 單位核對失敗時於任何副作用前拒絕；request、Preflight、Prepare、Start 或 Inspect 任一階段失敗時 stderr 並 exit code 1 |
 | `Cleanup` | `SourceRoot`、`ExecutionRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、RunRecord、報告與 evidence 路徑 | 已完成保存驗證且移除目標 dispatch worktree 的結果 | 保存清單、路徑界線、進程、ACL 或移除驗證失敗時 stderr 並 exit code 1；失敗時保留 dispatch worktree，不得使用其他方式強制移除 |
 
 `Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot`、`worktreeCreated=false`、空 `baseSha` 與核准輸出清單。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
@@ -487,7 +502,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 ### 主 Agent 的等待方式
 
-主 Agent 優先以背景方式執行 `Start`，由執行環境的完成通知重新接手，再讀取事件流、last-message 與報告檔。若執行環境沒有背景完成通知，改以相同父層選項、子命令、prompt 與證據路徑同步阻塞執行；背景與同步的完成判定完全相同。主 Agent 不以輪詢檔案大小、stdout 閒置或派生 subagent 等待取代事件流取證。
+主 Agent 以執行環境的背景命令呼叫同步模式的 `Dispatch`，由該命令結束的完成通知重新接手，再讀取 Dispatch 結果、事件流、last-message 與報告檔。需要在派遣執行中做其他工作並自行決定等待時點時，改用 `background: true` 與 `Inspect -WaitForCompletion`。兩種方式的完成判定完全相同。主 Agent 不以輪詢檔案大小、stdout 閒置或派生 subagent 等待取代事件流取證。
 
 ## 事件流取證
 
