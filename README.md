@@ -157,10 +157,10 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 #### Codex CLI 前置需求
 
-額度快照由主 Agent 於每次派工前執行 `~/.ai-agents/scripts/Get-CodexQuota.ps1`，從 `$CODEX_HOME/sessions/` 的 rollout 記錄自動讀取。
+額度快照由 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 從 `/wham/usage` 即時取得，只供顯示與紀錄；查詢時點見 `codex-dispatch` Skill。
 
 - 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附 binary 不作為派工執行檔。
-- 派工前執行 `codex --version` 確認 CLI 可用，再以本次派遣的完整父層選項執行一次極短的 `codex exec --json` 啟動探針，確認事件流出現 `turn.completed`。`--help` 在參數驗證前短路輸出，不具驗證力。
+- 安裝或更換環境時執行 `codex --version` 確認 CLI 可用。派工不再執行啟動探針；CLI 缺失或正式啟動失敗時，派遣結果記為未啟動。需要確認實際使用的 model 時，執行 `Invoke-CodexDispatch.ps1 -Operation DiagnoseModelEnvironment`（參數見 `codex-dispatch` Skill）。
 - PowerShell 啟動端使用 `ProcessStartInfo.ArgumentList` 與 UTF-8 stdin／stdout／stderr，prompt 以 `-` 從 stdin 傳入；啟動端需要 PowerShell 7+。
 - 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
 - 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。

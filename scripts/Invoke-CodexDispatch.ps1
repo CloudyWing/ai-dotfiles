@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'Dispatch', 'Cleanup')]
+    [ValidateSet('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'Dispatch', 'Cleanup', 'DiagnoseModelEnvironment')]
     [string]$Operation,
 
     [string]$SourceRoot,
@@ -52,6 +52,10 @@ param(
     [int]$ProbeAttempt = 1,
 
     [string]$CodexHome,
+
+    [string]$ThreadId,
+
+    [string]$StartedAtUtc,
 
     [string]$Model,
 
@@ -3036,12 +3040,12 @@ function New-ModelEvidence {
         model = [ordered]@{
             requested = ConvertTo-DispatchEvidence -Evidence $RequestedModel -Field 'Model'
             resolved = ConvertTo-DispatchEvidence -Evidence $ResolvedModel -Field 'model'
-            runtime_verifiable = ConvertTo-DispatchEvidence -Evidence $RuntimeModel -Field 'payload.model'
+            runtime_verifiable = if ($null -eq $RuntimeModel) { New-UnknownDispatchEvidence -Field 'payload.model' -Reason '沒有公開可驗證的實際 model 證據。' -Source 'public-actual-unavailable' } else { ConvertTo-DispatchEvidence -Evidence $RuntimeModel -Field 'payload.model' }
         }
         reasoning_effort = [ordered]@{
             requested = ConvertTo-DispatchEvidence -Evidence $RequestedReasoningEffort -Field 'ReasoningEffort'
             resolved = ConvertTo-DispatchEvidence -Evidence $ResolvedReasoningEffort -Field 'model_reasoning_effort'
-            runtime_verifiable = ConvertTo-DispatchEvidence -Evidence $RuntimeReasoningEffort -Field 'payload.effort'
+            runtime_verifiable = if ($null -eq $RuntimeReasoningEffort) { New-UnknownDispatchEvidence -Field 'payload.effort' -Reason '沒有公開可驗證的實際 reasoning effort 證據。' -Source 'public-actual-unavailable' } else { ConvertTo-DispatchEvidence -Evidence $RuntimeReasoningEffort -Field 'payload.effort' }
         }
     }
 }
@@ -3271,6 +3275,181 @@ function Read-ProfileModelEvidence {
         config_sha256 = $hash
         model = $modelEvidence
         reasoning_effort = $effortEvidence
+    }
+}
+
+function Get-ModelRolloutDiagnosticFiles {
+    param(
+        [Parameter(Mandatory)]
+        [string]$CodexHomePath
+    )
+
+    if ([string]::IsNullOrWhiteSpace($CodexHomePath)) {
+        throw '模型診斷缺少 CodexHome。'
+    }
+
+    $sessionsPath = Join-Path -Path $CodexHomePath -ChildPath 'sessions'
+    if (-not (Test-Path -LiteralPath $sessionsPath -PathType Container)) {
+        return @()
+    }
+
+    return @(
+        Get-ChildItem -LiteralPath $sessionsPath -Recurse -File -Filter 'rollout-*.jsonl' |
+            ForEach-Object {
+                [pscustomobject]@{
+                    Path             = $_.FullName
+                    Length           = [int64]$_.Length
+                    LastWriteTimeUtc = $_.LastWriteTimeUtc
+                }
+            }
+    )
+}
+
+function Get-ModelRolloutDiagnosticEvidence {
+    param(
+        [Parameter(Mandatory)]
+        [string]$CodexHomePath,
+
+        [Parameter(Mandatory)]
+        [string]$ThreadId,
+
+        [AllowEmptyString()]
+        [string]$StartedAtUtc
+    )
+
+    $modelUnknown = New-UnknownDispatchEvidence -Field 'payload.model' -Reason '尚未找到與此 thread 對應的 rollout turn_context。' -Source 'rollout-not-observed'
+    $effortUnknown = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason '尚未找到與此 thread 對應的 rollout turn_context。' -Source 'rollout-not-observed'
+    if ([string]::IsNullOrWhiteSpace($ThreadId)) {
+        return [ordered]@{ model = $modelUnknown; reasoning_effort = $effortUnknown; rollout_paths = @() }
+    }
+    $started = ConvertTo-DispatchTimestamp -Value $StartedAtUtc
+    if ($null -eq $started) {
+        $reason = 'started_at_utc 缺失或無法解析，無法判定 turn_context 時間範圍。'
+        return [ordered]@{
+            model = New-UnknownDispatchEvidence -Field 'payload.model' -Reason $reason -Source 'rollout-time-unknown'
+            reasoning_effort = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason $reason -Source 'rollout-time-unknown'
+            rollout_paths = @()
+        }
+    }
+
+    $matchedFiles = New-Object System.Collections.Generic.List[object]
+    $modelValues = New-Object System.Collections.Generic.List[object]
+    $effortValues = New-Object System.Collections.Generic.List[object]
+    $modelMissing = $false
+    $effortMissing = $false
+    $turnContextFound = $false
+    $timeUnknown = $false
+    try {
+        $rolloutFiles = @(Get-ModelRolloutDiagnosticFiles -CodexHomePath (Resolve-AbsolutePath -Path $CodexHomePath))
+    }
+    catch {
+        $reason = 'rollout 掃描失敗：' + $_.Exception.Message
+        return [ordered]@{
+            model = New-UnknownDispatchEvidence -Field 'payload.model' -Reason $reason -Source 'rollout-scan-failed'
+            reasoning_effort = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason $reason -Source 'rollout-scan-failed'
+            rollout_paths = @()
+        }
+    }
+
+    foreach ($file in $rolloutFiles) {
+        $sessionMatched = $false
+        $fileEvents = New-Object System.Collections.Generic.List[object]
+        $lineNumber = 0
+        try {
+            foreach ($rawLine in Get-Content -LiteralPath $file.Path -Encoding UTF8 -ErrorAction Stop) {
+                $lineNumber++
+                if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
+                try { $event = ConvertFrom-DispatchJson -Content $rawLine } catch { continue }
+                $fileEvents.Add([pscustomobject]@{ Event = $event; Line = $lineNumber })
+                $type = [string](Get-DispatchJsonProperty -Object $event -Name 'type')
+                if ($type -eq 'session_meta') {
+                    $payload = Get-DispatchJsonProperty -Object $event -Name 'payload'
+                    $sessionId = [string](Get-DispatchJsonProperty -Object $payload -Name 'session_id')
+                    if ([string]::IsNullOrWhiteSpace($sessionId)) {
+                        $sessionId = [string](Get-DispatchJsonProperty -Object $payload -Name 'id')
+                    }
+                    if ($sessionId -ceq $ThreadId) { $sessionMatched = $true }
+                }
+            }
+        }
+        catch {
+            continue
+        }
+        if (-not $sessionMatched) { continue }
+        $matchedFiles.Add($file)
+        foreach ($entry in $fileEvents) {
+            $type = [string](Get-DispatchJsonProperty -Object $entry.Event -Name 'type')
+            if ($type -ne 'turn_context') { continue }
+            $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'timestamp'
+            if ($null -eq $timestampValue) { $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'created_at_utc' }
+            if ($null -eq $timestampValue) { $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'created_at' }
+            $turnTime = ConvertTo-DispatchTimestamp -Value $timestampValue
+            if ($null -eq $turnTime) { $timeUnknown = $true; continue }
+            if ($turnTime -le $started) { continue }
+            $turnContextFound = $true
+            $payload = Get-DispatchJsonProperty -Object $entry.Event -Name 'payload'
+            $modelValue = [string](Get-DispatchJsonProperty -Object $payload -Name 'model')
+            $effortValue = [string](Get-DispatchJsonProperty -Object $payload -Name 'effort')
+            if ([string]::IsNullOrWhiteSpace($modelValue)) { $modelMissing = $true } else { $modelValues.Add([pscustomobject]@{ Value = $modelValue; File = $file.Path; Line = $entry.Line }) }
+            if ([string]::IsNullOrWhiteSpace($effortValue)) { $effortMissing = $true } else { $effortValues.Add([pscustomobject]@{ Value = $effortValue; File = $file.Path; Line = $entry.Line }) }
+        }
+    }
+
+    $rolloutPaths = @($matchedFiles | ForEach-Object { $_.Path } | Sort-Object -Unique)
+    $firstFile = if ($matchedFiles.Count -gt 0) { $matchedFiles[0] } else { $null }
+    $firstHash = if ($null -ne $firstFile) { Get-FileSha256 -Path $firstFile.Path } else { $null }
+    $createValueEvidence = {
+        param($Values, $Missing, $PayloadField)
+        if ($matchedFiles.Count -eq 0) {
+            return New-UnknownDispatchEvidence -Field $PayloadField -Reason '沒有 rollout 的 exact session ID。' -Source 'rollout-session-not-found'
+        }
+        if (-not $turnContextFound -or $timeUnknown) {
+            return New-UnknownDispatchEvidence -Field $PayloadField -Reason 'rollout 缺少可判定時間範圍的 turn_context。' -Source 'rollout-time-unknown' -Path (if ($null -eq $firstFile) { $null } else { $firstFile.Path }) -Sha256 $firstHash
+        }
+        if ($Missing -or $Values.Count -eq 0) {
+            return New-UnknownDispatchEvidence -Field $PayloadField -Reason 'turn_context 欄位缺失。' -Source 'rollout-field-missing' -Path (if ($null -eq $firstFile) { $null } else { $firstFile.Path }) -Sha256 $firstHash
+        }
+        $first = $Values[0]
+        foreach ($valueEntry in $Values) {
+            if ($valueEntry.Value -cne $first.Value) {
+                return New-UnknownDispatchEvidence -Field $PayloadField -Reason '多筆 turn_context 值衝突。' -Source 'rollout-values-conflict' -Path $first.File -Line ([int]$first.Line) -Sha256 (Get-FileSha256 -Path $first.File)
+            }
+        }
+        $evidence = New-ConfirmedDispatchEvidence -Value $first.Value -Source 'rollout' -Field $PayloadField -Path $first.File -Line ([int]$first.Line) -Sha256 (Get-FileSha256 -Path $first.File)
+        $evidence.source_paths = @($rolloutPaths)
+        return $evidence
+    }
+    return [ordered]@{
+        model = & $createValueEvidence $modelValues $modelMissing 'payload.model'
+        reasoning_effort = & $createValueEvidence $effortValues $effortMissing 'payload.effort'
+        rollout_paths = $rolloutPaths
+    }
+}
+
+function Invoke-ModelEnvironmentDiagnostic {
+    if ([string]::IsNullOrWhiteSpace($ThreadId)) {
+        throw 'DiagnoseModelEnvironment 必須提供 ThreadId。'
+    }
+    if ([string]::IsNullOrWhiteSpace($StartedAtUtc)) {
+        throw 'DiagnoseModelEnvironment 必須提供 StartedAtUtc。'
+    }
+    $codexHomePath = Resolve-CodexHomePath -ConfiguredCodexHome $CodexHome
+    $profileConfigPath = Resolve-ProfileConfigPath -CodexHome $codexHomePath -Profile $Profile
+    $profileEvidence = Read-ProfileModelEvidence -ConfigPath $profileConfigPath -Profile $Profile
+    $actualEvidence = Get-ModelRolloutDiagnosticEvidence -CodexHomePath $codexHomePath -ThreadId $ThreadId -StartedAtUtc $StartedAtUtc
+    return [ordered]@{
+        operation = 'DiagnoseModelEnvironment'
+        profile = $Profile
+        codex_home_path = $codexHomePath
+        profile_config_path = $profileEvidence.config_path
+        profile_config_sha256 = $profileEvidence.config_sha256
+        profile_model = $profileEvidence.model
+        profile_reasoning_effort = $profileEvidence.reasoning_effort
+        actual_model = $actualEvidence.model
+        actual_reasoning_effort = $actualEvidence.reasoning_effort
+        rollout_paths = @($actualEvidence.rollout_paths)
+        thread_id = $ThreadId
+        started_at_utc = $StartedAtUtc
     }
 }
 
@@ -4507,221 +4686,6 @@ function ConvertTo-DispatchTimestamp {
         return $null
     }
     return $parsed.ToUniversalTime()
-}
-
-function Get-RuntimeModelEvidence {
-    param(
-        [string]$CodexHome,
-
-        [string]$ThreadId,
-
-        [string]$StartedAtUtc
-    )
-
-    $modelUnknown = New-UnknownDispatchEvidence -Field 'payload.model' -Reason '尚未找到與本 thread 對應的 rollout turn_context。' -Source 'rollout-not-observed'
-    $effortUnknown = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason '尚未找到與本 thread 對應的 rollout turn_context。' -Source 'rollout-not-observed'
-    if ([string]::IsNullOrWhiteSpace($CodexHome) -or [string]::IsNullOrWhiteSpace($ThreadId)) {
-        return [ordered]@{ model = $modelUnknown; reasoning_effort = $effortUnknown; rollout_paths = @() }
-    }
-    $started = ConvertTo-DispatchTimestamp -Value $StartedAtUtc
-    if ($null -eq $started) {
-        $reason = 'started_at_utc 缺失或無法解析，無法判定 turn_context 時間範圍。'
-        return [ordered]@{
-            model = New-UnknownDispatchEvidence -Field 'payload.model' -Reason $reason -Source 'rollout-time-unknown'
-            reasoning_effort = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason $reason -Source 'rollout-time-unknown'
-            rollout_paths = @()
-        }
-    }
-
-    $matchedFiles = New-Object System.Collections.Generic.List[object]
-    $modelValues = New-Object System.Collections.Generic.List[object]
-    $effortValues = New-Object System.Collections.Generic.List[object]
-    $modelMissing = $false
-    $effortMissing = $false
-    $turnContextFound = $false
-    $timeUnknown = $false
-    try {
-        $rolloutFiles = @(Get-QuotaProbeRolloutFiles -CodexHomePath (Resolve-AbsolutePath -Path $CodexHome))
-    }
-    catch {
-        $reason = 'rollout 掃描失敗：' + $_.Exception.Message
-        return [ordered]@{
-            model = New-UnknownDispatchEvidence -Field 'payload.model' -Reason $reason -Source 'rollout-scan-failed'
-            reasoning_effort = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason $reason -Source 'rollout-scan-failed'
-            rollout_paths = @()
-        }
-    }
-
-    foreach ($file in $rolloutFiles) {
-        $sessionMatched = $false
-        $fileEvents = New-Object System.Collections.Generic.List[object]
-        $lineNumber = 0
-        try {
-            foreach ($rawLine in Get-Content -LiteralPath $file.Path -Encoding UTF8 -ErrorAction Stop) {
-                $lineNumber++
-                if ([string]::IsNullOrWhiteSpace($rawLine)) { continue }
-                try { $event = ConvertFrom-DispatchJson -Content $rawLine } catch { continue }
-                $fileEvents.Add([pscustomobject]@{ Event = $event; Line = $lineNumber; Raw = $rawLine })
-                $type = [string](Get-DispatchJsonProperty -Object $event -Name 'type')
-                if ($type -eq 'session_meta') {
-                    $payload = Get-DispatchJsonProperty -Object $event -Name 'payload'
-                    $sessionId = [string](Get-DispatchJsonProperty -Object $payload -Name 'session_id')
-                    if ([string]::IsNullOrWhiteSpace($sessionId)) {
-                        $sessionId = [string](Get-DispatchJsonProperty -Object $payload -Name 'id')
-                    }
-                    if ($sessionId -ceq $ThreadId) { $sessionMatched = $true }
-                }
-            }
-        }
-        catch {
-            continue
-        }
-        if (-not $sessionMatched) { continue }
-        $matchedFiles.Add($file)
-        foreach ($entry in $fileEvents) {
-            $type = [string](Get-DispatchJsonProperty -Object $entry.Event -Name 'type')
-            if ($type -ne 'turn_context') { continue }
-            $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'timestamp'
-            if ($null -eq $timestampValue) { $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'created_at_utc' }
-            if ($null -eq $timestampValue) { $timestampValue = Get-DispatchJsonProperty -Object $entry.Event -Name 'created_at' }
-            $turnTime = ConvertTo-DispatchTimestamp -Value $timestampValue
-            if ($null -eq $turnTime) { $timeUnknown = $true; continue }
-            if ($turnTime -le $started) { continue }
-            $turnContextFound = $true
-            $payload = Get-DispatchJsonProperty -Object $entry.Event -Name 'payload'
-            $modelValue = [string](Get-DispatchJsonProperty -Object $payload -Name 'model')
-            $effortValue = [string](Get-DispatchJsonProperty -Object $payload -Name 'effort')
-            if ([string]::IsNullOrWhiteSpace($modelValue)) { $modelMissing = $true } else { $modelValues.Add([pscustomobject]@{ Value = $modelValue; File = $file.Path; Line = $entry.Line }) }
-            if ([string]::IsNullOrWhiteSpace($effortValue)) { $effortMissing = $true } else { $effortValues.Add([pscustomobject]@{ Value = $effortValue; File = $file.Path; Line = $entry.Line }) }
-        }
-    }
-
-    $rolloutPaths = @($matchedFiles | ForEach-Object { $_.Path } | Sort-Object -Unique)
-    $firstFile = if ($matchedFiles.Count -gt 0) { $matchedFiles[0] } else { $null }
-    $firstHash = if ($null -ne $firstFile) { Get-FileSha256 -Path $firstFile.Path } else { $null }
-    $createValueEvidence = {
-        param($Field, $Values, $Missing, $PayloadField)
-        if ($matchedFiles.Count -eq 0) {
-            return New-UnknownDispatchEvidence -Field $PayloadField -Reason '沒有 rollout 的 exact session ID。' -Source 'rollout-session-not-found'
-        }
-        if (-not $turnContextFound -or $timeUnknown) {
-            return New-UnknownDispatchEvidence -Field $PayloadField -Reason 'rollout 缺少可判定時間範圍的 turn_context。' -Source 'rollout-time-unknown' -Path (if ($null -eq $firstFile) { $null } else { $firstFile.Path }) -Sha256 $firstHash
-        }
-        if ($Missing -or $Values.Count -eq 0) {
-            return New-UnknownDispatchEvidence -Field $PayloadField -Reason 'turn_context 欄位缺失。' -Source 'rollout-field-missing' -Path (if ($null -eq $firstFile) { $null } else { $firstFile.Path }) -Sha256 $firstHash
-        }
-        $first = $Values[0]
-        foreach ($valueEntry in $Values) {
-            if ($valueEntry.Value -cne $first.Value) {
-                return New-UnknownDispatchEvidence -Field $PayloadField -Reason '多筆 turn_context 值衝突。' -Source 'rollout-values-conflict' -Path $first.File -Line ([int]$first.Line) -Sha256 (Get-FileSha256 -Path $first.File)
-            }
-        }
-        $evidence = New-ConfirmedDispatchEvidence -Value $first.Value -Source 'rollout' -Field $PayloadField -Path $first.File -Line ([int]$first.Line) -Sha256 (Get-FileSha256 -Path $first.File)
-        $evidence.source_paths = @($rolloutPaths)
-        return $evidence
-    }
-    return [ordered]@{
-        model = & $createValueEvidence 'model' $modelValues $modelMissing 'payload.model'
-        reasoning_effort = & $createValueEvidence 'reasoning_effort' $effortValues $effortMissing 'payload.effort'
-        rollout_paths = $rolloutPaths
-    }
-}
-
-function Get-OriginalThreadModelEvidence {
-    param(
-        [AllowNull()]
-        [object]$AnchorRecord,
-
-        [string]$AnchorEventStreamPath
-    )
-
-    $eventPath = $AnchorEventStreamPath
-    if ([string]::IsNullOrWhiteSpace($eventPath) -and $null -ne $AnchorRecord) {
-        $eventPath = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'event_stream_path')
-    }
-    if ([string]::IsNullOrWhiteSpace($eventPath)) {
-        return New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'anchor 缺少 event stream 路徑。' -Source 'event-stream-missing'
-    }
-    $fullPath = Resolve-AbsolutePath -Path $eventPath
-    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
-        return New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'anchor event stream 不存在。' -Source 'event-stream-missing' -Path $fullPath
-    }
-    $values = New-Object System.Collections.Generic.List[object]
-    $lineNumber = 0
-    foreach ($rawLine in Get-Content -LiteralPath $fullPath -Encoding UTF8) {
-        $lineNumber++
-        if ($rawLine -match '(?i)recorded\s+with\s+model\s+(?<model>[A-Za-z0-9._-]+)') {
-            $values.Add([pscustomobject]@{ Value = $Matches['model']; Line = $lineNumber; Raw = $rawLine })
-        }
-    }
-    $uniqueValues = @($values | ForEach-Object Value | Sort-Object -Unique)
-    $hash = Get-FileSha256 -Path $fullPath
-    if ($uniqueValues.Count -eq 1) {
-        $first = $values[0]
-        $evidence = New-ConfirmedDispatchEvidence -Value $uniqueValues[0] -Source 'event-stream-diagnostic' -Field 'original_thread_model' -Path $fullPath -Line ([int]$first.Line) -Sha256 $hash
-        $evidence.raw_line = $first.Raw
-        return $evidence
-    }
-    if ($uniqueValues.Count -gt 1) {
-        return New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'event stream diagnostic 包含多個衝突的 recorded model。' -Source 'event-stream-diagnostic-conflict' -Path $fullPath -Sha256 $hash
-    }
-    return New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'event stream 沒有可解析的 recorded with model diagnostic。' -Source 'event-stream-diagnostic-missing' -Path $fullPath -Sha256 $hash
-}
-
-function Compare-ResumeThreadModel {
-    param(
-        [Parameter(Mandatory)]
-        [psobject]$AnchorRecord,
-
-        [Parameter(Mandatory)]
-        [psobject]$CurrentModelEvidence,
-
-        [string]$CodexHome
-    )
-
-    $current = ConvertTo-DispatchEvidence -Evidence $CurrentModelEvidence -Field 'model'
-    $original = New-UnknownDispatchEvidence -Field 'original_thread_model' -Reason 'anchor 沒有可驗證的 runtime model。' -Source 'anchor-evidence-unknown'
-    $recordEvidence = Get-DispatchJsonProperty -Object $AnchorRecord -Name 'model_evidence'
-    if ($null -ne $recordEvidence) {
-        $runtimeEvidence = Get-DispatchJsonProperty -Object $recordEvidence -Name 'runtime_verifiable'
-        if ($null -ne $runtimeEvidence -and (Get-DispatchEvidenceValue -Evidence $runtimeEvidence)) {
-            $original = ConvertTo-DispatchEvidence -Evidence $runtimeEvidence -Field 'payload.model'
-        }
-    }
-    if ($null -eq (Get-DispatchEvidenceValue -Evidence $original)) {
-        $anchorThread = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'thread_id')
-        $anchorStarted = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'started_at_utc')
-        $runtime = Get-RuntimeModelEvidence -CodexHome $CodexHome -ThreadId $anchorThread -StartedAtUtc $anchorStarted
-        if ($null -ne $runtime -and (Get-DispatchEvidenceValue -Evidence $runtime.model)) {
-            $original = $runtime.model
-        }
-    }
-    if ($null -eq (Get-DispatchEvidenceValue -Evidence $original)) {
-        $original = Get-OriginalThreadModelEvidence -AnchorRecord $AnchorRecord
-    }
-    $originalValue = Get-DispatchEvidenceValue -Evidence $original
-    $currentValue = Get-DispatchEvidenceValue -Evidence $current
-    $status = 'unknown'
-    $reasonCode = 'ThreadModelUnknown'
-    if ($null -ne $originalValue -and $null -ne $currentValue) {
-        if ([string]::Equals($originalValue, $currentValue, [StringComparison]::Ordinal)) {
-            $status = 'match'
-            $reasonCode = 'None'
-        }
-        else {
-            $status = 'mismatch'
-            $reasonCode = 'ThreadModelMismatch'
-        }
-    }
-    return [ordered]@{
-        status = $status
-        reason_code = $reasonCode
-        original_thread_model = $originalValue
-        current_resolved_model = $currentValue
-        original_evidence = $original
-        current_evidence = $current
-        process_started = $false
-    }
 }
 
 function Test-RequiredOutputSections {
@@ -11534,33 +11498,7 @@ function New-StartFailureEvidenceMessage {
         $cleanupErrorText)
 }
 
-function Get-QuotaProbeRolloutFiles {
-    param(
-        [string]$CodexHomePath
-    )
-
-    if ([string]::IsNullOrWhiteSpace($CodexHomePath)) {
-        throw 'QuotaProbe 缺少 CodexHome，無法核對 rollout 證據。'
-    }
-
-    $sessionsPath = Join-Path -Path $CodexHomePath -ChildPath 'sessions'
-    if (-not (Test-Path -LiteralPath $sessionsPath -PathType Container)) {
-        return @()
-    }
-
-    return @(
-        Get-ChildItem -LiteralPath $sessionsPath -Recurse -File -Filter 'rollout-*.jsonl' |
-            ForEach-Object {
-                [pscustomobject]@{
-                    Path             = $_.FullName
-                    Length           = [int64]$_.Length
-                    LastWriteTimeUtc = $_.LastWriteTimeUtc
-                }
-            }
-    )
-}
-
-function Resolve-QuotaProbeCodexHome {
+function Resolve-CodexHomePath {
     param(
         [string]$ConfiguredCodexHome
     )
@@ -11639,7 +11577,7 @@ function Invoke-QuotaProbe {
         throw "QuotaProbe 回復紀錄已存在，拒絕再次執行：$recoveryPath"
     }
 
-    $codexHomePath = Resolve-QuotaProbeCodexHome -ConfiguredCodexHome $CodexHome
+    $codexHomePath = Resolve-CodexHomePath -ConfiguredCodexHome $CodexHome
     $timestamp = [datetime]::UtcNow.ToString('yyyyMMdd_HHmmss_fff')
     $eventPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-' + $timestamp + '.jsonl')
     $errorPath = Join-Path -Path $historyRoot -ChildPath ('quota-probe-' + $timestamp + '.stderr.log')
@@ -11890,8 +11828,6 @@ function Get-DispatchFailureReasonCode {
             'EvidencePackInlineMismatch',
             'EvidencePackInvalid',
             'EvidencePackMissing',
-            'ThreadModelMismatch',
-            'ThreadModelUnknown',
             'NoValidResumeAnchor',
             'ProfileEvidenceUnknown',
             'ThreadRelayTimeout',
@@ -13870,6 +13806,7 @@ function Invoke-Start {
     $resolvedReasoningEffortValue = Get-DispatchEvidenceValue -Evidence $resolvedReasoningEffortEvidence
     $requestedModelValue = Get-DispatchEvidenceValue -Evidence $requestedModelEvidence
     $requestedReasoningEffortValue = Get-DispatchEvidenceValue -Evidence $requestedReasoningEffortEvidence
+    $modelEvidence = New-ModelEvidence -RequestedModel $requestedModelEvidence -ResolvedModel $resolvedModelEvidence -RuntimeModel $null -RequestedReasoningEffort $requestedReasoningEffortEvidence -ResolvedReasoningEffort $resolvedReasoningEffortEvidence -RuntimeReasoningEffort $null
     if ($null -ne $requestedModelValue -and $null -ne $resolvedModelValue -and -not [string]::Equals($requestedModelValue, $resolvedModelValue, [StringComparison]::Ordinal)) {
         $phase = 'profile-evidence'
         throw "RequestedResolutionMismatch：requested model=$requestedModelValue；resolved model=$resolvedModelValue。"
@@ -13877,14 +13814,6 @@ function Invoke-Start {
     if ($null -ne $requestedReasoningEffortValue -and $null -ne $resolvedReasoningEffortValue -and -not [string]::Equals($requestedReasoningEffortValue, $resolvedReasoningEffortValue, [StringComparison]::Ordinal)) {
         $phase = 'profile-evidence'
         throw "RequestedResolutionMismatch：requested reasoning effort=$requestedReasoningEffortValue；resolved reasoning effort=$resolvedReasoningEffortValue。"
-    }
-    $modelEvidence = New-ModelEvidence -RequestedModel $requestedModelEvidence -ResolvedModel $resolvedModelEvidence -RuntimeModel $null -RequestedReasoningEffort $requestedReasoningEffortEvidence -ResolvedReasoningEffort $resolvedReasoningEffortEvidence -RuntimeReasoningEffort $null
-    if ($null -ne $previousRun) {
-        $resumeDiagnostics = Compare-ResumeThreadModel -AnchorRecord $previousRun.AnchorRecord -CurrentModelEvidence $resolvedModelEvidence -CodexHome $codexHomeEvidencePath
-        if ($resumeDiagnostics.status -ne 'match') {
-            $phase = 'preparation'
-            throw ($resumeDiagnostics.reason_code + '：Resume model 比對未通過。')
-        }
     }
     if ($TaskType -eq 'advisor-consult') {
         if ($dispatchKindValue -ne 'resource') {
@@ -15315,8 +15244,6 @@ function Invoke-Inspect {
     $sandboxAclEvidence = $null
     $requiredOutputGate = $null
     $evidencePackInfo = $null
-    $runtimeModelEvidence = $null
-    $runtimeReasoningEffortEvidence = $null
     $diagnosis = $null
     $dispatchInspectBinding = $null
     $dispatchResultPathValue = $null
@@ -15400,6 +15327,17 @@ function Invoke-Inspect {
     $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath
     $serviceRejectionEvidence = Convert-EventEvidenceToServiceRejection -EventEvidence $eventEvidence
     $inspectRun = Resolve-InspectDispatchRun -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -EventStreamPath $eventPath -ScopePlanPath $ScopePlanPath -RunRecordPath $RunRecordPath
+    $recordModelEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'model_evidence'
+    $recordReasoningEffortEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'reasoning_effort_evidence'
+    $modelEvidenceGroup = ConvertTo-DispatchEvidenceGroup -Evidence $recordModelEvidence -Field 'model'
+    $effortEvidenceGroup = ConvertTo-DispatchEvidenceGroup -Evidence $recordReasoningEffortEvidence -Field 'model_reasoning_effort'
+    $modelEvidenceGroup.runtime_verifiable = New-UnknownDispatchEvidence -Field 'payload.model' -Reason 'Inspect 不執行環境探針，且沒有公開可驗證的實際 model 證據。' -Source 'public-actual-unavailable'
+    $effortEvidenceGroup.runtime_verifiable = New-UnknownDispatchEvidence -Field 'payload.effort' -Reason 'Inspect 不執行環境探針，且沒有公開可驗證的實際 reasoning effort 證據。' -Source 'public-actual-unavailable'
+    $modelEvidence = [ordered]@{
+        evidence_contract = 'codex-dispatch.model-evidence.v1'
+        model = $modelEvidenceGroup
+        reasoning_effort = $effortEvidenceGroup
+    }
     if ($inspectRun.Record.launch_state -eq 'launch-failed') {
         $failure = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'failure'
         $failureOriginalOutput = Get-DispatchJsonProperty -Object $failure -Name 'original_output'
@@ -15443,8 +15381,9 @@ function Invoke-Inspect {
             eventEvidence = $eventEvidence
             service_rejection = $serviceRejectionEvidence
             retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
-            modelEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'model_evidence'
-            reasoningEffortEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'reasoning_effort_evidence'
+            modelEvidence = $modelEvidence
+            reasoningEffortEvidence = $modelEvidence.reasoning_effort
+            profile = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'parent_options') -Name 'profile')
             stderr = $failureStderr
         }
     }
@@ -15658,39 +15597,6 @@ function Invoke-Inspect {
         throw '事件流缺少 thread.started.thread_id。'
     }
     $threadId = $distinctThreadIds[0]
-
-    $recordModelEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'model_evidence'
-    $recordReasoningEffortEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'reasoning_effort_evidence'
-    $modelEvidenceGroup = ConvertTo-DispatchEvidenceGroup -Evidence $recordModelEvidence -Field 'model'
-    $effortEvidenceGroup = ConvertTo-DispatchEvidenceGroup -Evidence $recordReasoningEffortEvidence -Field 'model_reasoning_effort'
-    $runtimeCodexHome = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'codex_home')
-    if ([string]::IsNullOrWhiteSpace($runtimeCodexHome)) {
-        $runtimeCodexHome = $CodexHome
-    }
-    $runtimeStartedAt = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'started_at_utc')
-    $runtimeEvidence = Get-RuntimeModelEvidence -CodexHome $runtimeCodexHome -ThreadId $threadId -StartedAtUtc $runtimeStartedAt
-    $runtimeModelEvidence = $runtimeEvidence.model
-    $runtimeReasoningEffortEvidence = $runtimeEvidence.reasoning_effort
-    $modelEvidenceGroup.runtime_verifiable = $runtimeModelEvidence
-    $effortEvidenceGroup.runtime_verifiable = $runtimeReasoningEffortEvidence
-    $modelEvidence = [ordered]@{
-        evidence_contract = 'codex-dispatch.model-evidence.v1'
-        model = $modelEvidenceGroup
-        reasoning_effort = $effortEvidenceGroup
-    }
-    if ($null -eq $inspectRun.Record.PSObject.Properties['model_evidence']) {
-        $inspectRun.Record | Add-Member -MemberType NoteProperty -Name 'model_evidence' -Value $modelEvidenceGroup
-    }
-    else {
-        $inspectRun.Record.model_evidence = $modelEvidenceGroup
-    }
-    if ($null -eq $inspectRun.Record.PSObject.Properties['reasoning_effort_evidence']) {
-        $inspectRun.Record | Add-Member -MemberType NoteProperty -Name 'reasoning_effort_evidence' -Value $effortEvidenceGroup
-    }
-    else {
-        $inspectRun.Record.reasoning_effort_evidence = $effortEvidenceGroup
-    }
-    $null = Write-DispatchRunRecord -Record $inspectRun.Record -Update
 
     if ([string]::IsNullOrWhiteSpace($lastAgentMessage)) {
         throw '事件流缺少必要的最後 agent_message。'
@@ -16014,7 +15920,7 @@ function Invoke-Inspect {
         outputValid      = $outputValid
         modelEvidence    = $modelEvidence
         reasoningEffortEvidence = $modelEvidence.reasoning_effort
-        runtimeRolloutPaths = $runtimeEvidence.rollout_paths
+        profile          = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'parent_options') -Name 'profile')
         requiredOutput   = $requiredOutputGate
         usage            = $usage
         eventEvidence   = $eventEvidence
@@ -17847,6 +17753,7 @@ try {
         'Collect'   { Invoke-Collect }
         'Cleanup'   { Invoke-Cleanup }
         'QuotaProbe' { Invoke-QuotaProbe }
+        'DiagnoseModelEnvironment' { Invoke-ModelEnvironmentDiagnostic }
         default     { throw "不支援的 operation：$Operation" }
     }
     if ($null -ne $script:RequestContext -and $result -is [System.Collections.IDictionary]) {

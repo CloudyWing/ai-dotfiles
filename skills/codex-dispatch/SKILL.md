@@ -255,6 +255,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `finalStatus`、新快照路徑與 SHA-256、`processStarted=false` 與回復紀錄 | 只允許 `PostResetNoSnapshot`、`SnapshotExpired` 與 `ServiceRejected`；`ProbeAttempt > 1`，或重新取得的快照不是 `Valid` 且 `fresh` 時 stderr 並 exit code 1 |
 | `Dispatch` | `-RequestPath` 指向 `operation=Dispatch` 的 request 檔；未提供 request 檔時拒絕 | `Preflight`、`Prepare`、`Start` 與 `Inspect` 的階段結果，以及 `status=completed` 或 `failed` 的 dispatch envelope；`background: true` 時回傳 `status=started`，Inspect 以 `-WaitForCompletion` 另行等待；Collect 另行呼叫 | 單位核對失敗時於任何副作用前拒絕；request、Preflight、Prepare、Start 或 Inspect 任一階段失敗時 stderr 並 exit code 1 |
 | `Cleanup` | `SourceRoot`、`ExecutionRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、RunRecord、報告與 evidence 路徑 | 已完成保存驗證且移除目標 dispatch worktree 的結果 | 保存清單、路徑界線、進程、ACL 或移除驗證失敗時 stderr 並 exit code 1；失敗時保留 dispatch worktree，不得使用其他方式強制移除 |
+| `DiagnoseModelEnvironment` | `ThreadId`、`StartedAtUtc`；`Profile`（預設 `default`）、`CodexHome` 選填 | profile 設定值、actual model／reasoning effort 與 rollout 路徑的 JSON；證據不足時 actual 為 `unknown` | 缺少 `ThreadId` 或 `StartedAtUtc` 時 exit code 1。只由使用者或維運者明確呼叫，Dispatch、Start、Inspect 不呼叫 |
 
 `Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot`、`worktreeCreated=false`、空 `baseSha` 與核准輸出清單。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
 
@@ -264,7 +265,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 `Inspect` 逐行解析 JSONL。空白行略過；單行解析失敗時保存原文與行號，繼續解析其餘事件，讓完整事件流仍可供診斷，但只要存在壞行，`Inspect` 就以非零結束碼拒絕產出成功狀態。可解析且具備必要欄位的 `turn.failed` 或非零 process exit code 是派工證據中的失敗結果，腳本仍輸出完整結果 JSON，其中 `success=false`、`status=inspected`。`Inspect` 本身的結束碼沿用傳入的 `ProcessExitCode`，Codex 以非零結束時 `Inspect` 也以相同非零值結束；呼叫端以結果 JSON 判定檢查內容，以結束碼判定 Codex 是否正常結束。缺少事件、非空 `type`、必要的 `thread_id`、成功事件的 `usage`、最後一則 `agent_message` 或其他必要欄位時，`Inspect` operation 以非零結束。`outputValid=false` 只表示存在 final message 但該訊息缺少必要識別字。
 
-`Inspect` 保存事件流、usage、三層 model evidence、thread relay、advisor report 與 monitor 證據。額度 before／after snapshot 若存在則保存其實際值；snapshot 缺失或不完整時保留可取得的其他證據，`Inspect` 的成功判定不受額度快照影響。
+`Inspect` 保存事件流、usage、三層 model evidence（不主動探測 actual）、thread relay、advisor report 與 monitor 證據。額度 before／after snapshot 若存在則保存其實際值；snapshot 缺失或不完整時保留可取得的其他證據，`Inspect` 的成功判定不受額度快照影響。
 
 Reviewer 回收時，主 Agent 以 `Collect -ReviewerReportPath` 驗證報告的 `## Finding manifest`（schema `codex-dispatch.review-findings.v2`，規則見 `reviewer.toml`）。`reviewerFindings.valid=false` 表示報告自相矛盾或格式無法核對，`outputValid=false` 並以非零結束，依回收三態退回 Reviewer 補正；`valid=true` 且 `conclusion=fail` 表示報告有效但仍有 Critical 或 Major finding，依共同收斂契約退回 Developer 修正。兩種情況分開處理，不以 finding 數量推導結論。
 
@@ -289,9 +290,18 @@ Start、Inspect、RunRecord 的 model 與 reasoning effort 分為三層證據，
 | --- | --- | --- |
 | `requested` | 呼叫端明確傳入的 `-Model`、`-ReasoningEffort`，只作為 assertion | 未傳入 |
 | `resolved` | 實際 profile 設定檔的 top-level `model`、`model_reasoning_effort`；預設檔位讀 `<CodexHome>\default.config.toml`，`advisor` 讀 `<CodexHome>\advisor.config.toml` | 檔案不存在、欄位缺少、格式錯誤或重複衝突 |
-| `runtime_verifiable` | 以 `session_meta.payload.session_id` 精確對應事件流 `thread_id` 的 rollout，取本輪 `turn_context.payload.model` 與 `payload.effort` | 找不到對應 rollout、欄位缺少或多筆值衝突 |
+| `runtime_verifiable` | 公開可查的 actual evidence。Dispatch、Start 與 Inspect 不主動探測 rollout | 沒有公開可查證據時為 `status=unknown`、`source=public-actual-unavailable`，不複製 requested 或 resolved 值 |
 
-明確 assertion 與 resolved 值衝突時，Start 在啟動前以 `RequestedResolutionMismatch` 停止。Inspect 保存 resolved 與 runtime 的實際 evidence 值；任一為 unknown 或兩者不一致時，保留差異作為診斷資訊，不使 Inspect 以非零結束。事件流 error 中的「recorded with model X」只作為原 thread 模型的診斷證據，不填入本輪 runtime 值。
+明確 assertion 與 resolved 值衝突時，Start 在啟動前以 `RequestedResolutionMismatch` 停止。Inspect 不修改 RunRecord 的 model evidence，也不回傳 rollout 路徑；actual 為 unknown 不使 Inspect 以非零結束。CLI 缺失或正式啟動失敗時，RunRecord 記 `launch_state=launch-failed`、`started_at_utc=null`，Dispatch 結果為 `status=failed`、`failed_stage=start`、`process_started=false`，`completed_stages` 不含 start。
+
+需要確認實際使用的 model 與 reasoning effort 時，由使用者或維運者明確執行診斷 operation，派工流程不呼叫它：
+
+```powershell
+pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation DiagnoseModelEnvironment `
+  -Profile default -CodexHome <CodexHome> -ThreadId <thread-id> -StartedAtUtc <UTC-ISO-8601>
+```
+
+`ThreadId` 與 `StartedAtUtc` 必填，`CodexHome` 省略時依 `CODEX_HOME` 或使用者的 `.codex` 目錄解析。輸出 JSON 含 `profile_model`、`profile_reasoning_effort`、`actual_model`、`actual_reasoning_effort` 與 `rollout_paths`；找不到精確對應的 session 或時間證據不足時，actual 的 `status` 為 `unknown`，不以 profile 設定值代填。
 
 派工腳本的回歸測試以 `Test-DispatchRecoveryBinding.ps1 -Phase 1|2|3` 單一入口執行，入口會在 Windows PowerShell 5.1 與 pwsh 7 各啟動一次並聚合結果，任一環境失敗即整體 exit 1。回收覆核時執行此入口，不需另外分別呼叫兩個執行環境。
 
@@ -397,16 +407,17 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 `codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位一律傳入 `--profile default`，讀取 `~/.codex/default.config.toml`。
 
-探針分兩種，證明範圍不同，不可互相取代。
+派工不在每次啟動前執行探針。正式啟動本身就是參數與檔位的驗證：啟動參數不合法、檔位設定缺漏或 CLI 缺失時，Start 以未啟動結果回報（`launch_state=launch-failed`、`process_started=false`），不產生已啟動紀錄，修正後以新的 `dispatchSlug` 重派。
 
-| 探針 | 檔位 | 證明範圍 |
+探針只用於下列明確診斷情境，由使用者或維運者主動執行，不掛回 Dispatch 前置流程。
+
+| 探針 | 使用時機 | 證明範圍 |
 | --- | --- | --- |
-| 機制探針 | 成本較低的獨立檔位 | 派工流程本身可運作，例如路徑、prompt 傳遞與事件流解析 |
-| 正式參數探針 | 與本次派遣完全相同的檔位 | 本次啟動參數合法且該檔位可用 |
+| 版本檢查（`codex --version`） | 安裝或更換環境時 | CLI 可執行，不證明啟動參數合法 |
+| 機制探針 | 修改派工腳本或流程後 | 路徑、prompt 傳遞與事件流解析可運作 |
+| `DiagnoseModelEnvironment` | 需要確認實際使用的 model 與 reasoning effort 時 | profile 設定值與 rollout 中的 actual 證據 |
 
-機制探針只在驗證流程改動時使用，不能代替正式參數探針。正式派工前一律執行正式參數探針；以 `advisor` 派工時，該探針同樣使用 `advisor`，其消耗計入本次派遣。低成本檔位的名稱與內容由使用者提供，規則層不預設其存在。
-
-版本探針只證明 CLI 可執行，不證明本次啟動參數合法。`--help` 在參數驗證前短路輸出，也不具正式參數證明力。正式參數探針必須沿用本次派遣完整的父層選項與檔位；腳本的 `Start` 輸出實際參數與證據路徑，供呼叫端執行及核對該探針，不能以機制探針的成功取代正式參數探針。
+`--help` 在參數驗證前短路輸出，不具參數證明力。低成本檔位的名稱與內容由使用者提供，規則層不預設其存在。
 
 `advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描一律使用預設檔位，不以 `advisor` 執行。
 
@@ -540,9 +551,9 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 準備或啟動失敗的嘗試以 `launch_state=launch-failed` 與 `failure` 物件保存，包含 `phase`、`reason_code`、原始例外與事件流、stderr 等原始輸出位置，保留於執行鏈供稽核，不刪除。RunRecord 以 `attempt_parent_run_id` 記錄前一次嘗試，以 `previous_run_id` 與 `resume_anchor_run_id` 記錄可續行的 thread 錨點，兩者分欄。最新嘗試為失敗且 PID 檢查沒有活躍程序時，同一 dispatchSlug 可再冷啟動。續行時沿 `attempt_parent_run_id` 往回略過失敗嘗試，找到有效錨點並把略過的嘗試與理由寫入 `resume_diagnostics.skipped_attempts`；找不到有效錨點時以 `NoValidResumeAnchor` 停止。
 
-續行在建立 launcher 前比對原 thread 模型與本次 resolved 模型。原 thread 模型依序取自錨點 RunRecord 的 runtime 證據、錨點對應 rollout 的 `turn_context`，以及錨點事件流 error 中唯一可解析的「recorded with model X」。兩邊都確認且不同時以 `ThreadModelMismatch` 停止，任一邊無法確認時以 `ThreadModelUnknown` 停止，兩者都不啟動 Codex 並輸出雙方證據。模型不一致時改以新 dispatchSlug 冷啟動。reasoning effort 不同不阻擋續行，差異保存於證據。
+續行沿用初始啟動的 profile，不另外比對原 thread 模型；需要確認時以 `DiagnoseModelEnvironment` 診斷。
 
-Start 與 Inspect 的失敗結果帶 `reason_code`：`QuotaServiceRejected`、`RequiredParameterMissing`、`AdvisorImplementationProfileRejected`、`AdvisorProfileRequired`、`AdvisorAuthorizationRequired`、`EvidencePackRequiredOutputInvalid`、`EvidencePackMissing`、`EvidencePackInvalid`、`EvidencePackInlineMismatch`、`ProfileEvidenceUnknown`、`CodexLaunchFailed`、`ProcessIdentityUnknown`、`ThreadRelayTimeout`、`ThreadModelMismatch`、`ThreadModelUnknown` 或 `Unknown`。`turn.failed` 或非零 exit 沒有可確認原因時使用 `Unknown`，並保留原始事件行與 stderr；stderr 為空不代表沒有錯誤。
+Start 與 Inspect 的失敗結果帶 `reason_code`：`QuotaServiceRejected`、`RequiredParameterMissing`、`AdvisorImplementationProfileRejected`、`AdvisorProfileRequired`、`AdvisorAuthorizationRequired`、`EvidencePackRequiredOutputInvalid`、`EvidencePackMissing`、`EvidencePackInvalid`、`EvidencePackInlineMismatch`、`ProfileEvidenceUnknown`、`CodexLaunchFailed`、`ProcessIdentityUnknown`、`ThreadRelayTimeout` 或 `Unknown`。`turn.failed` 或非零 exit 沒有可確認原因時使用 `Unknown`，並保留原始事件行與 stderr；stderr 為空不代表沒有錯誤。
 
 前輪以 usage-limit 中止、沒有 last-message、啟動失敗或終止原因不明時，續行沿既有執行鏈的 `attempt_parent_run_id`／`previous_run_id` 尋找有效 anchor；找不到有效 anchor 時以 `NoValidResumeAnchor` 停止。執行鏈保留失敗嘗試、事件流、ScopePlan、baseline、父層選項、process gate、ACL gate 與 model evidence，成果仍由 Inspect 與 Collect 驗收。沒有 last-message 本身不是拒絕原因。
 

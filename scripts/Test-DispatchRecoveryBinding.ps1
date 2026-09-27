@@ -2003,7 +2003,7 @@ function New-TestRun {
         $scopePlanRootRunId = $id
     }
     $fixtureParentOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
-    $fixtureModelEvidence = New-ModelEvidence -RequestedModel (New-RequestedDispatchEvidence -Value $null -Field 'Model') -ResolvedModel (New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'profile-config' -Field 'model') -RuntimeModel (New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'rollout' -Field 'payload.model') -RequestedReasoningEffort (New-RequestedDispatchEvidence -Value $null -Field 'ReasoningEffort') -ResolvedReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'profile-config' -Field 'model_reasoning_effort') -RuntimeReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'rollout' -Field 'payload.effort')
+    $fixtureModelEvidence = New-ModelEvidence -RequestedModel (New-RequestedDispatchEvidence -Value $null -Field 'Model') -ResolvedModel (New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'profile-config' -Field 'model') -RuntimeModel $null -RequestedReasoningEffort (New-RequestedDispatchEvidence -Value $null -Field 'ReasoningEffort') -ResolvedReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'profile-config' -Field 'model_reasoning_effort') -RuntimeReasoningEffort $null
     if (-not (Test-Path $preflightPath)) { Write-Utf8NoBom $preflightPath (([ordered]@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = $Line; dispatchSlug = $Dispatch; writeMode = 'readonly' } | ConvertTo-Json)) }
     if (-not (Test-Path $scope)) { Write-Utf8NoBom $scope '{}' }
     $record = [pscustomobject]@{
@@ -3332,8 +3332,7 @@ Invoke-Case 'Phase 1 advisor active source removal' {
 
 if ($Phase -ge 2) {
     $profileFixtureRoot = Join-Path $fixtureRoot 'profile-evidence'
-    $profileSessionsRoot = Join-Path $profileFixtureRoot 'sessions/2026/09/14'
-    New-Item -ItemType Directory -Path $profileSessionsRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $profileFixtureRoot -Force | Out-Null
     $defaultProfilePath = Join-Path $profileFixtureRoot 'default.config.toml'
     Write-Utf8NoBom -Path $defaultProfilePath -Content ((@(
         'model = "fixture-model"'
@@ -3373,41 +3372,99 @@ if ($Phase -ge 2) {
         Assert-True ($null -eq (Resolve-ProfileConfigPath -CodexHome $profileFixtureRoot -Profile 'unsupported')) '不支援 Profile 建立了替代路徑。'
     }
 
+    function Invoke-ModelEnvironmentDiagnosticFixture {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [string]$DiagnosticCodexHome,
+
+            [Parameter(Mandatory)]
+            [string]$DiagnosticThreadId,
+
+            [Parameter(Mandatory)]
+            [string]$DiagnosticStartedAtUtc
+        )
+
+        $hostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+            (Get-Command powershell.exe -ErrorAction Stop).Source
+        }
+        else {
+            (Get-Command pwsh.exe -ErrorAction Stop).Source
+        }
+        $arguments = @(
+            '-NoProfile'
+            '-NonInteractive'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'DiagnoseModelEnvironment'
+            '-Profile'
+            'default'
+            '-CodexHome'
+            $DiagnosticCodexHome
+            '-ThreadId'
+            $DiagnosticThreadId
+            '-StartedAtUtc'
+            $DiagnosticStartedAtUtc
+        )
+        $run = Invoke-Phase9Process -HostPath $hostPath -Arguments $arguments -WorkingDirectory $fixtureRoot -EnvironmentVariables @{}
+        if ([int]$run.exit_code -ne 0) {
+            throw ('明確模型診斷命令失敗：exit={0}; stdout={1}; stderr={2}' -f $run.exit_code, $run.stdout, $run.stderr)
+        }
+        try {
+            return ConvertFrom-Json -InputObject ([string]$run.stdout).Trim() -ErrorAction Stop
+        }
+        catch {
+            throw ('明確模型診斷輸出不是有效 JSON：' + [string]$run.stdout)
+        }
+    }
+
     $rolloutThread = [guid]::NewGuid().ToString('D')
+    $startedAtUtc = '2026-09-14T00:00:00.0000000Z'
+    $profileSessionsRoot = Join-Path $profileFixtureRoot 'sessions/fixture'
+    New-Item -ItemType Directory -Path $profileSessionsRoot -Force | Out-Null
     $rolloutPath = Join-Path $profileSessionsRoot 'rollout-fixture.jsonl'
     $rolloutEvents = @(
         [ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = $rolloutThread } }
         [ordered]@{ type = 'turn_context'; timestamp = '2026-09-14T00:00:01.0000000Z'; payload = [ordered]@{ model = 'fixture-model'; effort = 'high' } }
     )
-    Write-Utf8NoBom -Path $rolloutPath -Content (($rolloutEvents | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 }) -join "
-")
-    Invoke-Case 'Rollout exact session 與 runtime evidence' {
-        $runtime = Get-RuntimeModelEvidence -CodexHome $profileFixtureRoot -ThreadId $rolloutThread -StartedAtUtc '2026-09-14T00:00:00.0000000Z'
-        Assert-True ((Get-DispatchEvidenceValue -Evidence $runtime.model) -ceq 'fixture-model' -and (Get-DispatchEvidenceValue -Evidence $runtime.reasoning_effort) -ceq 'high') 'runtime model／effort evidence 異常。'
-        Assert-True ($runtime.model.source -eq 'rollout' -and @($runtime.rollout_paths).Count -eq 1) 'runtime rollout source 異常。'
+    Write-Utf8NoBom -Path $rolloutPath -Content (($rolloutEvents | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 }) -join "`r`n")
+    $foreignRolloutPath = Join-Path $profileSessionsRoot 'rollout-foreign-session.jsonl'
+    $foreignRolloutEvents = @(
+        [ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = [guid]::NewGuid().ToString('D') } }
+        [ordered]@{ type = 'turn_context'; timestamp = '2026-09-14T00:00:02.0000000Z'; payload = [ordered]@{ model = 'foreign-model'; effort = 'low' } }
+    )
+    Write-Utf8NoBom -Path $foreignRolloutPath -Content (($foreignRolloutEvents | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 }) -join "`r`n")
+    Invoke-Case '明確診斷 operation 只採用 exact session 並輸出 profile 與 actual' {
+        $diagnostic = Invoke-ModelEnvironmentDiagnosticFixture -DiagnosticCodexHome $profileFixtureRoot -DiagnosticThreadId $rolloutThread -DiagnosticStartedAtUtc $startedAtUtc
+        Assert-True ($diagnostic.operation -eq 'DiagnoseModelEnvironment' -and $diagnostic.profile -eq 'default') '明確診斷 operation 或 profile 輸出不符。'
+        Assert-True ((Get-DispatchEvidenceValue -Evidence $diagnostic.profile_model) -ceq 'fixture-model' -and $diagnostic.profile_model.source -eq 'profile-config') '診斷未輸出 profile 設定證據。'
+        Assert-True ((Get-DispatchEvidenceValue -Evidence $diagnostic.actual_model) -ceq 'fixture-model' -and (Get-DispatchEvidenceValue -Evidence $diagnostic.actual_reasoning_effort) -ceq 'high' -and $diagnostic.actual_model.source -eq 'rollout') '診斷未回報指定 thread 的 actual evidence。'
+        Assert-True (@($diagnostic.rollout_paths).Count -eq 1 -and [String]::Equals([string]$diagnostic.rollout_paths[0], $rolloutPath, [StringComparison]::OrdinalIgnoreCase)) '診斷採用了其他 thread 的 rollout。'
     }
-    Invoke-Case 'Rollout 非 exact session 轉 unknown' {
-        $runtime = Get-RuntimeModelEvidence -CodexHome $profileFixtureRoot -ThreadId ([guid]::NewGuid().ToString('D')) -StartedAtUtc '2026-09-14T00:00:00.0000000Z'
-        Assert-True ($runtime.model.status -eq 'unknown' -and $runtime.model.source -eq 'rollout-session-not-found') '非 exact session 被採用。'
+    Invoke-Case '明確診斷 operation 沒有 exact session 時回報 unknown' {
+        $diagnostic = Invoke-ModelEnvironmentDiagnosticFixture -DiagnosticCodexHome $profileFixtureRoot -DiagnosticThreadId ([guid]::NewGuid().ToString('D')) -DiagnosticStartedAtUtc $startedAtUtc
+        Assert-True ($diagnostic.actual_model.status -eq 'unknown' -and $diagnostic.actual_model.source -eq 'rollout-session-not-found') '診斷採用了非 exact session 的 actual evidence。'
     }
-    Invoke-Case 'Rollout 多筆值衝突轉 unknown' {
+    Invoke-Case '明確診斷 operation 多筆值衝突轉 unknown' {
         $conflictRolloutPath = Join-Path $profileSessionsRoot 'rollout-conflict.jsonl'
         $conflictEvents = @(
             [ordered]@{ type = 'session_meta'; payload = [ordered]@{ id = $rolloutThread } }
             [ordered]@{ type = 'turn_context'; timestamp = '2026-09-14T00:00:02.0000000Z'; payload = [ordered]@{ model = 'fixture-model'; effort = 'high' } }
             [ordered]@{ type = 'turn_context'; timestamp = '2026-09-14T00:00:03.0000000Z'; payload = [ordered]@{ model = 'other-model'; effort = 'high' } }
         )
-        Write-Utf8NoBom -Path $conflictRolloutPath -Content (($conflictEvents | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 }) -join "
-")
-        $runtime = Get-RuntimeModelEvidence -CodexHome $profileFixtureRoot -ThreadId $rolloutThread -StartedAtUtc '2026-09-14T00:00:00.0000000Z'
-        Assert-True ($runtime.model.status -eq 'unknown' -and $runtime.model.source -eq 'rollout-values-conflict') 'runtime 衝突未轉 unknown。'
+        Write-Utf8NoBom -Path $conflictRolloutPath -Content (($conflictEvents | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 }) -join "`r`n")
+        $diagnostic = Invoke-ModelEnvironmentDiagnosticFixture -DiagnosticCodexHome $profileFixtureRoot -DiagnosticThreadId $rolloutThread -DiagnosticStartedAtUtc $startedAtUtc
+        Assert-True ($diagnostic.actual_model.status -eq 'unknown' -and $diagnostic.actual_model.source -eq 'rollout-values-conflict') '診斷未將衝突 actual 證據轉為 unknown。'
     }
-    Invoke-Case 'Requested omitted 不影響 evidence pair 判定' {
+
+    Invoke-Case 'Requested、profile config 與 actual unknown 分開記錄' {
         $requested = New-RequestedDispatchEvidence -Value $null -Field 'Model'
         $resolved = New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'profile-config' -Field 'model'
-        $runtime = New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'rollout' -Field 'payload.model'
-        $group = New-ModelEvidence -RequestedModel $requested -ResolvedModel $resolved -RuntimeModel $runtime -RequestedReasoningEffort (New-RequestedDispatchEvidence -Value $null -Field 'ReasoningEffort') -ResolvedReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'profile-config' -Field 'model_reasoning_effort') -RuntimeReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'rollout' -Field 'payload.effort')
-        Assert-True ($group.model.requested.status -eq 'unknown' -and (Test-DispatchEvidencePair -EvidenceGroup $group.model).eligible) 'requested unknown 錯誤使 evidence pair 失格。'
+        $group = New-ModelEvidence -RequestedModel $requested -ResolvedModel $resolved -RuntimeModel $null -RequestedReasoningEffort (New-RequestedDispatchEvidence -Value $null -Field 'ReasoningEffort') -ResolvedReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'profile-config' -Field 'model_reasoning_effort') -RuntimeReasoningEffort $null
+        Assert-True ($group.model.requested.status -eq 'unknown' -and $group.model.resolved.source -eq 'profile-config') 'requested 或 profile config evidence 異常。'
+        Assert-True ($group.model.runtime_verifiable.status -eq 'unknown' -and $group.model.runtime_verifiable.source -eq 'public-actual-unavailable' -and $null -eq (Get-DispatchEvidenceValue -Evidence $group.model.runtime_verifiable)) '沒有公開 actual evidence 時應明確記錄 unknown。'
+        Assert-True ($group.reasoning_effort.runtime_verifiable.status -eq 'unknown' -and $group.reasoning_effort.runtime_verifiable.source -eq 'public-actual-unavailable') '沒有公開 reasoning effort evidence 時應明確記錄 unknown。'
     }
     $phase2EvidenceRoot = Join-Path $fixtureRoot 'advisor-evidence'
     New-Item -ItemType Directory -Path $phase2EvidenceRoot -Force | Out-Null
@@ -3481,13 +3538,6 @@ none" -RequiredOutput $required
 supported" -RequiredOutput $required
         Assert-True ($validGate.valid -and $invalidGate.missing -contains '## 中斷保全結論' -and $invalidGate.missing -contains '## 推論') 'required output body gate 異常。'
     }
-    Invoke-Case 'Event diagnostic model 保留原文' {
-        $diagnosticPath = Join-Path $phase2EvidenceRoot 'diagnostic.jsonl'
-        Write-Utf8NoBom -Path $diagnosticPath -Content '{"type":"turn.failed","error":{"message":"recorded with model fixture-model"}}'
-        $diagnostic = Get-OriginalThreadModelEvidence -AnchorRecord ([pscustomobject]@{ event_stream_path = $diagnosticPath })
-        Assert-True ($diagnostic.status -eq 'confirmed' -and $diagnostic.value -ceq 'fixture-model' -and $diagnostic.raw_line.Contains('recorded with model fixture-model')) '原始 model diagnostic 未保留。'
-    }
-
     $finalMessageIdentityCases = @(
         [pscustomobject]@{ name = '接受獨立識別字'; token = 'design.md'; expectedValid = $true }
         [pscustomobject]@{ name = '接受反引號包住的絕對路徑'; token = '`C:\fixture\design.md`'; expectedValid = $true }
@@ -3887,11 +3937,18 @@ $ScopePlanPath = $null
 $script:startCalls = 0
 $script:failLaunch = $false
 Invoke-Case 'Start prepared → started 與唯一事件路徑' {
-    $script:startedResult = Invoke-Start
+    $originalModelDiagnosticFunction = (Get-Command -Name Get-ModelRolloutDiagnosticEvidence -CommandType Function -ErrorAction Stop).ScriptBlock
+    try {
+        Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value ([scriptblock]::Create("throw 'Start must not call the explicit model diagnostic'"))
+        $script:startedResult = Invoke-Start
+    }
+    finally {
+        Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value $originalModelDiagnosticFunction
+    }
     $record = Read-DispatchRunRecord -Path $script:startedResult.runRecordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
-    $record.model_evidence.runtime_verifiable = New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'rollout' -Field 'payload.model'
-    $null = Write-DispatchRunRecord -Record $record -Update
     Assert-True ($record.launch_state -eq 'started' -and $record.thread_id -eq $script:testThread -and $record.event_stream_path.Contains($record.run_id)) 'Start 紀錄不符。'
+    Assert-True ($script:startedResult.profile -eq 'default' -and $record.parent_options.profile -eq 'default') 'Start 未保留選定 Profile。'
+    Assert-True ($record.model_evidence.runtime_verifiable.status -eq 'unknown' -and $record.model_evidence.runtime_verifiable.source -eq 'public-actual-unavailable') 'Start 把 requested 或 profile config 寫成 actual。'
 }
 Invoke-Case 'Start 啟動失敗保存 launch-failed' {
     $script:failLaunch = $true
@@ -3904,8 +3961,31 @@ Invoke-Case 'Start 啟動失敗保存 launch-failed' {
     Assert-True $caught ('未到達模擬啟動失敗。' + $failureMessage)
     $recordPath = @(Get-ChildItem (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) -Filter '*.json')[0].FullName
     $record = Read-DispatchRunRecord -Path $recordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
-    Assert-True ($record.launch_state -eq 'launch-failed') '未保存失敗紀錄。'
+    Assert-True ($record.launch_state -eq 'launch-failed' -and $null -eq $record.started_at_utc -and -not [bool]$record.failure.observation.process_started) '正式啟動失敗留下已啟動紀錄。'
     $script:failLaunch = $false
+}
+Invoke-Case 'Start CLI 缺失保留未啟動 RunRecord' {
+    $DispatchSlug = 'missing-cli'
+    $PreflightResultPath = Join-Path $fixtureRoot 'missing-cli-preflight.json'
+    Write-Utf8NoBom $PreflightResultPath ((@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = $LineSlug; dispatchSlug = $DispatchSlug } | ConvertTo-Json))
+    $originalGetCodexExecutablePath = (Get-Command -Name Get-CodexExecutablePath -CommandType Function -ErrorAction Stop).ScriptBlock
+    $beforeStartCalls = $script:startCalls
+    try {
+        Set-Item -Path Function:\Get-CodexExecutablePath -Value ([scriptblock]::Create("throw 'Codex CLI missing fixture'"))
+        $caught = $false
+        $operationResult = $null
+        try { Invoke-Start } catch {
+            $caught = $true
+            $operationResult = $_.Exception.Data['operationResult']
+        }
+    }
+    finally {
+        Set-Item -Path Function:\Get-CodexExecutablePath -Value $originalGetCodexExecutablePath
+    }
+    $recordPath = @(Get-ChildItem (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) -Filter '*.json' -File)[0].FullName
+    $record = Read-DispatchRunRecord -Path $recordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    Assert-True ($caught -and $null -ne $operationResult -and -not [bool]$operationResult.processStarted -and $script:startCalls -eq $beforeStartCalls) 'CLI 缺失未以未啟動結果拒絕。'
+    Assert-True ($record.launch_state -eq 'launch-failed' -and $null -eq $record.started_at_utc -and -not [bool]$record.failure.observation.process_started) 'CLI 缺失 RunRecord 不符未啟動契約。'
 }
 Invoke-Case 'Start prepared 落檔失敗不得啟動' {
     $before = $script:startCalls
@@ -4097,7 +4177,7 @@ if ($Phase -ge 3) {
     Write-Utf8NoBom -Path (Join-Path $phase3MismatchHome 'default.config.toml') -Content "model = 'other-model'
 model_reasoning_effort = 'high'
 "
-    Invoke-Case 'Resume model mismatch 在 process.Start 前阻擋' {
+    Invoke-Case 'Resume requested model 與 profile 不符時在 process.Start 前阻擋' {
         $DispatchSlug = 'phase3-model-mismatch'
         $PreflightResultPath = $phase3MismatchAnchor.preflight_result_path
         $PromptPath = Join-Path $fixtureRoot 'phase3-model-mismatch-prompt.md'
@@ -4105,6 +4185,8 @@ model_reasoning_effort = 'high'
         $ResumeThreadId = $phase3MismatchAnchor.thread_id
         $ScopePlanPath = $phase3MismatchAnchor.scope_plan_path
         $LastMessagePath = $phase3MismatchAnchor.last_message_path
+        $Model = 'fixture-model'
+        $ReasoningEffort = 'high'
         Write-Utf8NoBom -Path $PromptPath -Content 'fixture'
         $beforeStartCalls = $script:startCalls
         $caughtException = $null
@@ -4119,7 +4201,7 @@ model_reasoning_effort = 'high'
                 Select-Object -First 1
         )[0].FullName
         $record = Read-DispatchRunRecord -Path $recordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
-        Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'ThreadModelMismatch' -and -not $operationResult.processStarted -and $record.failure.reason_code -eq 'ThreadModelMismatch' -and $record.resume_diagnostics.status -eq 'mismatch' -and $record.attempt_parent_run_id -eq $phase3MismatchAnchor.run_id -and $record.resume_anchor_run_id -eq $phase3MismatchAnchor.run_id -and $script:startCalls -eq $beforeStartCalls) 'ThreadModelMismatch 未在 process.Start 前結構化阻擋。'
+        Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'RequestedResolutionMismatch' -and -not $operationResult.processStarted -and $record.failure.reason_code -eq 'RequestedResolutionMismatch' -and $record.model_evidence.requested.value -eq 'fixture-model' -and $record.model_evidence.runtime_verifiable.status -eq 'unknown' -and $record.attempt_parent_run_id -eq $phase3MismatchAnchor.run_id -and $record.resume_anchor_run_id -eq $phase3MismatchAnchor.run_id -and $script:startCalls -eq $beforeStartCalls) 'RequestedResolutionMismatch 未在 process.Start 前拒絕或錯誤混用為 actual。'
     }
 
     $phase3ProfileAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-profile-change'
@@ -4167,7 +4249,7 @@ model_reasoning_effort = 'high'
     $phase3UnknownRecord = Read-DispatchRunRecord -Path $phase3UnknownRecordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase3-model-unknown'
     $phase3UnknownRecord.model_evidence.runtime_verifiable = New-UnknownDispatchEvidence -Field 'payload.model' -Reason 'phase3 unknown model' -Source 'fixture-unknown'
     $null = Write-DispatchRunRecord -Record $phase3UnknownRecord -Update
-    Invoke-Case 'Resume model unknown 不臆測並阻擋' {
+    Invoke-Case 'Resume actual unknown 不阻擋符合 profile 的續行' {
         $DispatchSlug = 'phase3-model-unknown'
         $PreflightResultPath = $phase3UnknownAnchor.preflight_result_path
         $PromptPath = Join-Path $fixtureRoot 'phase3-model-unknown-prompt.md'
@@ -4175,11 +4257,12 @@ model_reasoning_effort = 'high'
         $ResumeThreadId = $phase3UnknownAnchor.thread_id
         $ScopePlanPath = $phase3UnknownAnchor.scope_plan_path
         $LastMessagePath = $phase3UnknownAnchor.last_message_path
+        $Model = $null
+        $ReasoningEffort = $null
         Write-Utf8NoBom -Path $PromptPath -Content 'fixture'
-        $caughtException = $null
-        try { Invoke-Start } catch { $caughtException = $_.Exception }
-        $operationResult = if ($null -eq $caughtException) { $null } else { $caughtException.Data['operationResult'] }
-        Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'ThreadModelUnknown' -and -not $operationResult.processStarted) 'ThreadModelUnknown 未保留 unknown 狀態。'
+        $result = Invoke-Start
+        $record = Read-DispatchRunRecord -Path $result.runRecordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $DispatchSlug
+        Assert-True ($result.processStarted -and $record.launch_state -eq 'started' -and $record.model_evidence.runtime_verifiable.status -eq 'unknown') 'actual unknown 阻擋了合法續行或被寫成 confirmed。'
     }
 
     $phase3FailedInspect = New-TestRun -Line 'line-a' -Dispatch 'phase3-failed-inspect'
@@ -5373,11 +5456,12 @@ if ($Phase -ge 4) {
         Assert-True (-not $result.success -and $result.diagnosis.reason_code -eq 'InterruptedUnknown' -and $result.cold_start_recommended -eq $true -and $result.lastEventType -eq 'turn.started') 'unknown interruption 未輸出 cold-start 建議。'
     }
 
-    Invoke-Case 'Phase 4 F-001 ACL rejection precedence precedes model comparison' {
+    Invoke-Case 'Phase 4 F-001 ACL rejection precedes profile mismatch check' {
         $startTextForOrder = ($functions | Where-Object { $_.Name -eq 'Invoke-Start' }).Extent.Text
+        $processIndex = $startTextForOrder.IndexOf("if (`$processGate.status -ne 'stopped')")
         $aclIndex = $startTextForOrder.IndexOf('$aclGate = Get-WorktreeAclGate')
-        $modelIndex = $startTextForOrder.IndexOf('$resumeDiagnostics = Compare-ResumeThreadModel')
-        Assert-True ($aclIndex -ge 0 -and $modelIndex -ge 0 -and $aclIndex -lt $modelIndex) 'Start gate 順序未維持 process → ACL → model。'
+        $profileIndex = $startTextForOrder.IndexOf('if ($null -ne $requestedModelValue')
+        Assert-True ($processIndex -ge 0 -and $aclIndex -ge 0 -and $profileIndex -ge 0 -and $processIndex -lt $aclIndex -and $aclIndex -lt $profileIndex) 'Start gate 順序未維持 process → ACL → profile mismatch。'
 
         $script:phase4RealAclRuleStatus = 'not-attempted'
         $phase4F001Gate = Invoke-ProductionWorktreeAclGate -SourceRoot $phase4RealSourceRoot -ExecutionRoot $phase4RealExplicitRoot -WriteMode 'worktree'
@@ -9501,8 +9585,8 @@ if ($Phase -ge 9) {
         $script:ThreadIdPath = $null
         $script:PidRecordPath = $null
         $script:Profile = 'default'
-        $script:Model = $null
-        $script:ReasoningEffort = $null
+        $script:Model = $DefaultModel
+        $script:ReasoningEffort = $DefaultEffort
         $script:TaskType = 'script-change'
         $script:SessionMode = 'cold-start'
         $script:DispatchKind = 'workflow'
@@ -9526,7 +9610,6 @@ if ($Phase -ge 9) {
 
         $startResult = Invoke-Start
         $runRecord = Get-Content -LiteralPath $startResult.runRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $runtimeEvidence = Get-RuntimeModelEvidence -CodexHome $codexHome -ThreadId $startResult.threadId -StartedAtUtc $startResult.startedAtUtc
         $eventStream = Get-Content -LiteralPath $startResult.eventStreamPath -Raw -Encoding UTF8
         $stderr = Get-Content -LiteralPath $startResult.stderrPath -Raw -Encoding UTF8
         return [pscustomobject]@{
@@ -9539,7 +9622,7 @@ if ($Phase -ge 9) {
             application_config_content = Get-Content -LiteralPath $applicationConfigPath -Raw -Encoding UTF8
             start_result = $startResult
             run_record = $runRecord
-            runtime_evidence = $runtimeEvidence
+            model_evidence = $startResult.modelEvidence
             codex_arguments = @($script:profileIsolationCapturedArguments)
             event_stream = $eventStream
             stderr = $stderr
@@ -9554,7 +9637,7 @@ if ($Phase -ge 9) {
         }
     }
 
-    Invoke-Case 'Phase 9 T003 default profile isolation actual Start and reverse probe' {
+    Invoke-Case 'Phase 9 T003 default profile isolation and actual unknown contract' {
         $caseRoot = Join-Path $phase9Root 't3'
         $defaultModelA = 'synthetic-default-model-a'
         $defaultEffortA = 'synthetic-default-effort-a'
@@ -9613,7 +9696,7 @@ if ($Phase -ge 9) {
             Assert-True ($runAProfileValid -and $runAParentOptions -notcontains '--profile') ('T003 run-a profile argument 或 codex_parent_option 不符：' + ($runA.start_result | ConvertTo-Json -Depth 30 -Compress))
             Assert-True ([String]::Equals([string]$runA.start_result.profileConfigPath, [string]$runA.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runA.run_record.profile_config_path, [string]$runA.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 run-a profile path 未指向 default.config.toml。'
             Assert-True ((Get-DispatchEvidenceValue -Evidence $runA.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runA.start_result.resolvedReasoningEffort) -ceq $defaultEffortA) 'T003 run-a profile evidence 未讀取 default sentinel。'
-            Assert-True ((Get-DispatchEvidenceValue -Evidence $runA.runtime_evidence.model) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runA.runtime_evidence.reasoning_effort) -ceq $defaultEffortA -and $runA.runtime_evidence.model.source -eq 'rollout' -and $runA.runtime_evidence.reasoning_effort.source -eq 'rollout') 'T003 run-a runtime evidence 未讀取 default sentinel。'
+            Assert-True ((Get-DispatchEvidenceValue -Evidence $runA.model_evidence.model.requested) -ceq $defaultModelA -and $runA.model_evidence.model.runtime_verifiable.status -eq 'unknown' -and $runA.model_evidence.model.runtime_verifiable.source -eq 'public-actual-unavailable' -and $runA.run_record.model_evidence.runtime_verifiable.status -eq 'unknown') 'T003 run-a requested／actual evidence 語意不符。'
 
             $applicationContentAfterMutation = @(
                 ('model = "' + $applicationModelB + '"')
@@ -9631,33 +9714,31 @@ if ($Phase -ge 9) {
             $runBProfileIndex = [Array]::IndexOf([string[]]$runBArguments, '--profile')
             $runBProfileValid = $runBProfileIndex -ge 0 -and $runBProfileIndex + 1 -lt $runBArguments.Count -and $runBArguments[$runBProfileIndex + 1] -ceq 'default'
             Assert-True ($runBProfileValid -and [String]::Equals([string]$runB.start_result.profileConfigPath, [string]$runB.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runB.run_record.profile_config_path, [string]$runB.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 run-b profile path 或顯式 profile 不符。'
-            Assert-True ((Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedReasoningEffort) -ceq $defaultEffortA -and (Get-DispatchEvidenceValue -Evidence $runB.runtime_evidence.model) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runB.runtime_evidence.reasoning_effort) -ceq $defaultEffortA) 'T003 修改 config.toml 後 default profile 或 runtime evidence 發生變化。'
+            Assert-True ((Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedReasoningEffort) -ceq $defaultEffortA -and (Get-DispatchEvidenceValue -Evidence $runB.model_evidence.model.requested) -ceq $defaultModelA -and $runB.model_evidence.model.runtime_verifiable.status -eq 'unknown') 'T003 修改 config.toml 後 default profile 或 actual unknown evidence 發生變化。'
             Assert-True ((Get-FileSha256 -Path $runB.default_config_path) -eq $defaultHashBefore -and (Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8).Contains($applicationModelB) -and (Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8).Contains('[agents]')) 'T003 run-b 未保留 default.config.toml 或 config.toml 的反向 fixture 狀態。'
 
             Set-Item -Path 'Function:\script:Resolve-ProfileConfigPath' -Value $profileResolverMutant
             $profileResolverMutantApplied = $true
             $mutantFailure = $null
             $mutantRun = $null
+            $mutantOperationResult = $null
+            $mutantStartCallsBefore = $script:startCalls
             try {
                 $mutantRun = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'resolver-mutant' -DefaultModel $defaultModelA -DefaultEffort $defaultEffortA -ApplicationModel $applicationModelB -ApplicationEffort $applicationEffortB
-                Assert-True ([String]::Equals([string]$mutantRun.start_result.profileConfigPath, [string]$mutantRun.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and (Get-DispatchEvidenceValue -Evidence $mutantRun.runtime_evidence.model) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $mutantRun.runtime_evidence.reasoning_effort) -ceq $defaultEffortA) 'T003 resolver mutant 使 runtime evidence 偏離 default 設定檔。'
             }
             catch {
                 $mutantFailure = $_.Exception.Message
+                $mutantOperationResult = $_.Exception.Data['operationResult']
             }
-            Assert-True (-not [string]::IsNullOrWhiteSpace($mutantFailure)) 'T003 resolver mutant 未被 runtime evidence 斷言拒絕。'
-            Assert-True ([String]::Equals([string]$script:profileIsolationSelectedProfile, 'default', [StringComparison]::Ordinal) -and [String]::Equals([string]$script:profileIsolationSelectedConfigPath, [string]$runB.application_config_path, [StringComparison]::OrdinalIgnoreCase) -and [string]$script:profileIsolationSelectedModel -ceq $applicationModelB -and [string]$script:profileIsolationSelectedEffort -ceq $applicationEffortB) 'T003 resolver mutant 未使 rollout 讀取實際 config.toml sentinel。'
+            Assert-True (-not [string]::IsNullOrWhiteSpace($mutantFailure) -and $null -ne $mutantOperationResult -and $mutantOperationResult.errorCode -eq 'RequestedResolutionMismatch' -and -not [bool]$mutantOperationResult.processStarted -and $script:startCalls -eq $mutantStartCallsBefore) 'T003 resolver mutant 未在 process.Start 前由 profile 設定檢查拒絕。'
             $mutantOutput = [ordered]@{
                 resolver_default_branch = 'temporarily changed from default.config.toml to config.toml'
-                actual_launcher_profile = [string]$script:profileIsolationSelectedProfile
-                actual_codex_home = [string]$script:profileIsolationCodexHome
-                actual_resolved_config_path = [string]$script:profileIsolationSelectedConfigPath
-                actual_rollout_model = [string]$script:profileIsolationSelectedModel
-                actual_rollout_effort = [string]$script:profileIsolationSelectedEffort
-                expected = 'runtime evidence assertion rejects config.toml sentinel'
+                selected_profile = 'default'
+                requested_model = $defaultModelA
+                resolved_profile_config = $applicationModelB
+                expected = 'profile setting mismatch rejects before process.Start'
                 observed = 'reject'
                 failure = [string]$mutantFailure
-                rollout_path = [string]$script:profileIsolationRolloutPath
                 exit_code = 1
             }
 
@@ -9665,18 +9746,18 @@ if ($Phase -ge 9) {
             $profileResolverMutantApplied = $false
             $runC = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'restored' -DefaultModel $defaultModelA -DefaultEffort $defaultEffortA -ApplicationModel $applicationModelB -ApplicationEffort $applicationEffortB
             Assert-True ([String]::Equals([string]$runC.start_result.profileConfigPath, [string]$runC.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runC.run_record.profile_config_path, [string]$runC.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 還原 resolver 後 profile path 未回到 default.config.toml。'
-            Assert-True ((Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedReasoningEffort) -ceq $defaultEffortA -and (Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.model) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.reasoning_effort) -ceq $defaultEffortA) 'T003 還原 resolver 後 runtime evidence 未回到 default sentinel。'
+            Assert-True ((Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedReasoningEffort) -ceq $defaultEffortA -and $runC.model_evidence.model.runtime_verifiable.status -eq 'unknown' -and $runC.model_evidence.model.runtime_verifiable.source -eq 'public-actual-unavailable') 'T003 還原 resolver 後 actual evidence 未維持 unknown。'
             $restoredOutput = [ordered]@{
                 resolver_default_branch = 'restored to default.config.toml'
                 actual_launcher_profile = [string]$runC.selected_profile
                 actual_codex_home = [string]$runC.codex_home
                 actual_resolved_config_path = [string]$runC.selected_config_path
-                actual_rollout_model = [string]$runC.selected_model
-                actual_rollout_effort = [string]$runC.selected_effort
+                selected_profile_model = [string]$runC.selected_model
+                selected_profile_effort = [string]$runC.selected_effort
                 expected = 'default sentinel'
                 observed = 'pass'
-                runtime_model = [string](Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.model)
-                runtime_effort = [string](Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.reasoning_effort)
+                actual_model = [ordered]@{ value = Get-DispatchEvidenceValue -Evidence $runC.model_evidence.model.runtime_verifiable; status = $runC.model_evidence.model.runtime_verifiable.status }
+                actual_reasoning_effort = [ordered]@{ value = Get-DispatchEvidenceValue -Evidence $runC.model_evidence.reasoning_effort.runtime_verifiable; status = $runC.model_evidence.reasoning_effort.runtime_verifiable.status }
                 profile_config_path = [string]$runC.start_result.profileConfigPath
                 rollout_path = [string]$runC.rollout_path
                 exit_code = 0
@@ -9716,10 +9797,10 @@ if ($Phase -ge 9) {
                         profile_config_path = [string]$runA.run_record.profile_config_path
                         codex_parent_option = @($runA.run_record.parent_options.codex_parent_option | ForEach-Object { [string]$_ })
                     }
-                    runtime_evidence = [ordered]@{
+                    actual_evidence = [ordered]@{
                         rollout_path = [string]$runA.rollout_path
-                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runA.runtime_evidence.model); source = [string]$runA.runtime_evidence.model.source }
-                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runA.runtime_evidence.reasoning_effort); source = [string]$runA.runtime_evidence.reasoning_effort.source }
+                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runA.model_evidence.model.runtime_verifiable); status = [string]$runA.model_evidence.model.runtime_verifiable.status; source = [string]$runA.model_evidence.model.runtime_verifiable.source }
+                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runA.model_evidence.reasoning_effort.runtime_verifiable); status = [string]$runA.model_evidence.reasoning_effort.runtime_verifiable.status; source = [string]$runA.model_evidence.reasoning_effort.runtime_verifiable.source }
                     }
                     event_stream = [string]$runA.event_stream
                     stderr = [string]$runA.stderr
@@ -9742,10 +9823,10 @@ if ($Phase -ge 9) {
                         profile_config_path = [string]$runB.run_record.profile_config_path
                         codex_parent_option = @($runB.run_record.parent_options.codex_parent_option | ForEach-Object { [string]$_ })
                     }
-                    runtime_evidence = [ordered]@{
+                    actual_evidence = [ordered]@{
                         rollout_path = [string]$runB.rollout_path
-                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runB.runtime_evidence.model); source = [string]$runB.runtime_evidence.model.source }
-                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runB.runtime_evidence.reasoning_effort); source = [string]$runB.runtime_evidence.reasoning_effort.source }
+                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runB.model_evidence.model.runtime_verifiable); status = [string]$runB.model_evidence.model.runtime_verifiable.status; source = [string]$runB.model_evidence.model.runtime_verifiable.source }
+                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runB.model_evidence.reasoning_effort.runtime_verifiable); status = [string]$runB.model_evidence.reasoning_effort.runtime_verifiable.status; source = [string]$runB.model_evidence.reasoning_effort.runtime_verifiable.source }
                     }
                     event_stream = [string]$runB.event_stream
                     stderr = [string]$runB.stderr
@@ -9770,10 +9851,10 @@ if ($Phase -ge 9) {
                         profile_config_path = [string]$runC.run_record.profile_config_path
                         codex_parent_option = @($runC.run_record.parent_options.codex_parent_option | ForEach-Object { [string]$_ })
                     }
-                    runtime_evidence = [ordered]@{
+                    actual_evidence = [ordered]@{
                         rollout_path = [string]$runC.rollout_path
-                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.model); source = [string]$runC.runtime_evidence.model.source }
-                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runC.runtime_evidence.reasoning_effort); source = [string]$runC.runtime_evidence.reasoning_effort.source }
+                        model = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runC.model_evidence.model.runtime_verifiable); status = [string]$runC.model_evidence.model.runtime_verifiable.status; source = [string]$runC.model_evidence.model.runtime_verifiable.source }
+                        reasoning_effort = [ordered]@{ value = [string](Get-DispatchEvidenceValue -Evidence $runC.model_evidence.reasoning_effort.runtime_verifiable); status = [string]$runC.model_evidence.reasoning_effort.runtime_verifiable.status; source = [string]$runC.model_evidence.reasoning_effort.runtime_verifiable.source }
                     }
                     exit_code = 0
                 }
@@ -11014,7 +11095,6 @@ if ($Phase -ge 9) {
             'Test-ScopePlanHashRecord'
             'Get-DispatchUnitList'
             'Test-ContinuationScopePlan'
-            'Get-RuntimeModelEvidence'
             'Write-TestEvents'
         )
         $f001ChainOriginalFunctions = @{}
@@ -11355,15 +11435,6 @@ if ($Phase -ge 9) {
             Set-Item -Path Function:\Get-WorktreeAclGate -Value (Get-Command -Name Invoke-Phase9ProductionAclGate -CommandType Function).ScriptBlock
             Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $f001ChainAclFunction
             Set-Item -Path Function:\Write-TestEvents -Value $f001ChainEventFunction
-            $f001RuntimeEvidenceFunction = {
-                param($CodexHome, $ThreadId, $StartedAtUtc)
-                return [ordered]@{
-                    model = [ordered]@{ value = 'fixture-model'; status = 'confirmed' }
-                    reasoning_effort = [ordered]@{ value = 'high'; status = 'confirmed' }
-                    rollout_paths = @()
-                }
-            }
-            Set-Item -Path Function:\Get-RuntimeModelEvidence -Value $f001RuntimeEvidenceFunction
             Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value ([scriptblock]::Create('param($Preflight, $SourceRoot, $DispatchRoot, $LineSlug, $DispatchSlug, $BaseSha) return [pscustomobject]@{ Path = $script:f001CurrentBaselinePath; Sha256 = $script:f001CurrentBaselineSha256 }'))
             Set-Item -Path Function:\Resolve-PrepareResultBinding -Value ([scriptblock]::Create('param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ExpectedSha256) return [pscustomobject]@{ Path = $script:f001CurrentPreparePath; Sha256 = $script:f001CurrentPrepareSha256; Status = ''Prepared''; Document = [pscustomobject]@{ operation = ''Prepare''; status = ''Prepared'' }; Artifacts = @() }'))
             Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
@@ -11572,7 +11643,6 @@ if ($Phase -ge 9) {
             'Test-ScopePlanHashRecord'
             'Get-DispatchUnitList'
             'Test-ContinuationScopePlan'
-            'Get-RuntimeModelEvidence'
             'Get-SandboxAclMissingEntries'
             'Invoke-Prepare'
         )
@@ -11718,7 +11788,6 @@ if ($Phase -ge 9) {
             Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
             Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
             Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
-            Set-Item -Path Function:\Get-RuntimeModelEvidence -Value ([scriptblock]::Create('param($CodexHome, $ThreadId, $StartedAtUtc) return [ordered]@{ model = [ordered]@{ value = ''fixture-model''; status = ''confirmed'' }; reasoning_effort = [ordered]@{ value = ''high''; status = ''confirmed'' }; rollout_paths = @() }'))
             Set-Item -Path Function:\Invoke-Prepare -Value ([scriptblock]::Create('$script:phase9F011PrepareCalls++; throw ''F-011 fixture must reject before Invoke-Prepare.'''))
             $continuationRecord = [pscustomobject]@{ sandbox_acl_evidence = $f011PreviousAnchor.sandbox_acl_evidence }
             $script:phase9F011DispatchEntries = @($entryA, $entryB)
@@ -14252,9 +14321,9 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
         $functionNames = @(
             'Invoke-Start', 'Invoke-Inspect', 'New-CodexLauncher', 'New-ProcessStartInfo',
             'Wait-ForThreadRelay', 'Set-ThreadIdFromEventStream', 'Get-DispatchRunEvents', 'Get-CodexExecutablePath',
-            'Resolve-PreviousDispatchRun', 'Compare-ResumeThreadModel', 'Test-ScopePlanHashRecord',
+            'Resolve-PreviousDispatchRun', 'Test-ScopePlanHashRecord',
             'Test-ContinuationScopePlan', 'Get-DispatchUnitList', 'Get-StartedProcessSnapshot',
-            'Stop-VerifiedProcessTree', 'Get-RuntimeModelEvidence'
+            'Stop-VerifiedProcessTree'
         )
         $savedFunctions = @{}
         foreach ($functionName in $functionNames) {
@@ -14417,7 +14486,7 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             $script:s3FakeCodexPath = $fakeCodexPath
 
             $productionDefinitions = @{}
-            foreach ($functionName in @('Invoke-Start', 'Invoke-Inspect', 'New-CodexLauncher', 'New-ProcessStartInfo', 'Wait-ForThreadRelay', 'Set-ThreadIdFromEventStream', 'Get-RuntimeModelEvidence')) {
+            foreach ($functionName in @('Invoke-Start', 'Invoke-Inspect', 'New-CodexLauncher', 'New-ProcessStartInfo', 'Wait-ForThreadRelay', 'Set-ThreadIdFromEventStream')) {
                 $functionAst = @($functions | Where-Object { $_.Name -eq $functionName } | Select-Object -First 1)
                 Assert-True ($functionAst.Count -eq 1) ('S-3 找不到 production ' + $functionName + ' AST。')
                 $productionBody = $functionAst[0].Body.Extent.Text
@@ -14428,11 +14497,9 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             Set-Item -Path Function:\New-ProcessStartInfo -Value ([scriptblock]::Create($productionDefinitions['New-ProcessStartInfo']))
             Set-Item -Path Function:\Wait-ForThreadRelay -Value ([scriptblock]::Create($productionDefinitions['Wait-ForThreadRelay']))
             Set-Item -Path Function:\Set-ThreadIdFromEventStream -Value ([scriptblock]::Create($productionDefinitions['Set-ThreadIdFromEventStream']))
-            Set-Item -Path Function:\Get-RuntimeModelEvidence -Value ([scriptblock]::Create($productionDefinitions['Get-RuntimeModelEvidence']))
             Set-Item -Path Function:\Invoke-Inspect -Value ([scriptblock]::Create($productionDefinitions['Invoke-Inspect']))
             Set-Item -Path Function:\Get-CodexExecutablePath -Value ([scriptblock]::Create('param($ConfiguredPath) return $script:s3FakeCodexPath'))
             Set-Item -Path Function:\Resolve-PreviousDispatchRun -Value ([scriptblock]::Create('param($SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ResumeThreadId, $LastMessagePath) return [pscustomobject]@{ Record = $script:s3PreviousRun; AnchorRecord = $script:s3PreviousRun; ChainTailRecord = $script:s3PreviousRun; LatestActualStartRecord = $script:s3PreviousRun; LatestActualStartEvents = $null; ScopePlanRootRecord = $script:s3PreviousRun; SkippedAttempts = @(); Message = $script:s3PreviousMessage; ResumeThreadId = $ResumeThreadId }'))
-            Set-Item -Path Function:\Compare-ResumeThreadModel -Value ([scriptblock]::Create('param($AnchorRecord, $CurrentModelEvidence, $CodexHome) return [ordered]@{ status = ''match''; reason_code = $null; original_thread_model = $AnchorRecord.model_evidence; current_resolved_model = $CurrentModelEvidence }'))
             Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
             Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
             Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
@@ -14557,14 +14624,21 @@ throw 'RunRecord 事件流為空。'
                 $script:Model = 'fixture-model'
                 $script:ReasoningEffort = 'high'
                 $script:CodexHome = $codexHome
-                $inspectResult = Invoke-Inspect
+                $originalModelDiagnosticFunction = (Get-Command -Name Get-ModelRolloutDiagnosticEvidence -CommandType Function -ErrorAction Stop).ScriptBlock
+                try {
+                    Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value ([scriptblock]::Create("throw 'S-3 Inspect must not call the explicit model diagnostic'"))
+                    $inspectResult = Invoke-Inspect
+                }
+                finally {
+                    Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value $originalModelDiagnosticFunction
+                }
                 $inspectModelEvidence = Get-DispatchJsonProperty -Object $inspectResult -Name 'modelEvidence'
-                $runtimeModelEvidence = Get-DispatchJsonProperty -Object $inspectModelEvidence -Name 'model'
-                $runtimeModelEvidence = Get-DispatchJsonProperty -Object $runtimeModelEvidence -Name 'runtime_verifiable'
-                $runtimeEffortEvidence = Get-DispatchJsonProperty -Object $inspectModelEvidence -Name 'reasoning_effort'
-                $runtimeEffortEvidence = Get-DispatchJsonProperty -Object $runtimeEffortEvidence -Name 'runtime_verifiable'
+                $actualModelEvidence = Get-DispatchJsonProperty -Object $inspectModelEvidence -Name 'model'
+                $actualModelEvidence = Get-DispatchJsonProperty -Object $actualModelEvidence -Name 'runtime_verifiable'
+                $actualEffortEvidence = Get-DispatchJsonProperty -Object $inspectModelEvidence -Name 'reasoning_effort'
+                $actualEffortEvidence = Get-DispatchJsonProperty -Object $actualEffortEvidence -Name 'runtime_verifiable'
                 Assert-True ([bool](Get-DispatchJsonProperty -Object $inspectResult -Name 'success') -and [bool](Get-DispatchJsonProperty -Object $inspectResult -Name 'outputValid')) ('S-3 normal 後續 Inspect 未成功：' + ($inspectResult | ConvertTo-Json -Depth 40 -Compress))
-                Assert-True ([string](Get-DispatchJsonProperty -Object $runtimeModelEvidence -Name 'status') -eq 'confirmed' -and [string](Get-DispatchJsonProperty -Object $runtimeEffortEvidence -Name 'status') -eq 'confirmed') ('S-3 normal Inspect 未讀取 runtime model evidence：' + ($inspectResult | ConvertTo-Json -Depth 40 -Compress))
+                Assert-True ([string](Get-DispatchJsonProperty -Object $actualModelEvidence -Name 'status') -eq 'unknown' -and [string](Get-DispatchJsonProperty -Object $actualModelEvidence -Name 'source') -eq 'public-actual-unavailable' -and [string](Get-DispatchJsonProperty -Object $actualEffortEvidence -Name 'status') -eq 'unknown') ('S-3 Inspect 未保留 actual unknown：' + ($inspectResult | ConvertTo-Json -Depth 40 -Compress))
                 return [pscustomobject]@{
                     case_root = $caseRoot
                     dispatch_slug = $caseSlug
@@ -14577,8 +14651,8 @@ throw 'RunRecord 事件流為空。'
                     sidecar_path = $sidecarPath
                     relay_diagnostics = $relayDiagnostics
                     run_record_path = $runRecordPath
-                    runtime_model_evidence = $runtimeModelEvidence
-                    runtime_effort_evidence = $runtimeEffortEvidence
+                    actual_model_evidence = $actualModelEvidence
+                    actual_effort_evidence = $actualEffortEvidence
                 }
             }
 
@@ -14625,10 +14699,10 @@ throw 'RunRecord 事件流為空。'
         }
     }
 
-    Invoke-Case 'Phase 9 S-3 real continuation Start waits for new relay and Inspect reads runtime evidence' {
+    Invoke-Case 'Phase 9 S-3 real continuation Start waits for relay and Inspect skips model probe' {
         $s3Normal = & $invokeS3ResumeCase
         Assert-True ([bool](Get-DispatchJsonProperty -Object $s3Normal.start -Name 'processStarted') -and -not [bool](Get-DispatchJsonProperty -Object $s3Normal.start -Name 'relayReady') -and $s3Normal.initial_event_length -eq 0 -and $s3Normal.stop_calls -eq 0) ('S-3 normal Start contract 不符：' + ($s3Normal | ConvertTo-Json -Depth 40 -Compress))
-        Assert-True ([bool](Get-DispatchJsonProperty -Object $s3Normal.inspect -Name 'success') -and [string](Get-DispatchJsonProperty -Object $s3Normal.runtime_model_evidence -Name 'value') -eq 'fixture-model') ('S-3 後續 Inspect runtime evidence 不符：' + ($s3Normal | ConvertTo-Json -Depth 40 -Compress))
+        Assert-True ([bool](Get-DispatchJsonProperty -Object $s3Normal.inspect -Name 'success') -and [string](Get-DispatchJsonProperty -Object $s3Normal.actual_model_evidence -Name 'status') -eq 'unknown') ('S-3 後續 Inspect 的 actual unknown 契約不符：' + ($s3Normal | ConvertTo-Json -Depth 40 -Compress))
         $s3Reverse = & $invokeS3ResumeCase -Mutant
         Assert-True ($s3Reverse.stop_calls -eq 1 -and $s3Reverse.initial_event_length -eq 0 -and [string]$s3Reverse.start_exception -match 'RunRecord 事件流為空') ('S-3 reverse 未暴露舊版 relay race：' + ($s3Reverse | ConvertTo-Json -Depth 40 -Compress))
         $s3Restored = & $invokeS3ResumeCase
@@ -14662,6 +14736,11 @@ throw 'RunRecord 事件流為空。'
     function Invoke-Start {
         $script:phase9DispatchCalls.Add('start')
         $script:phase9DispatchStartCalls++
+        if ($script:phase9DispatchFailure -eq 'start') {
+            $startFailure = New-Object System.InvalidOperationException('fixture formal Start failure')
+            $startFailure.Data['operationResult'] = [ordered]@{ operation = 'Start'; processStarted = $false; profile = 'default' }
+            throw $startFailure
+        }
         return [ordered]@{ operation = 'Start'; status = 'started'; processStarted = $true; runRecordPath = (Join-Path $script:ExecutionRoot 'run.json'); eventStreamPath = (Join-Path $script:ExecutionRoot 'events.jsonl'); scopePlanPath = (Join-Path $script:ExecutionRoot 'scope.json'); processExitCodeSidecarPath = (Join-Path $script:ExecutionRoot 'exit.json') }
     }
 
@@ -14696,7 +14775,14 @@ throw 'RunRecord 事件流為空。'
         Write-Utf8NoBom -Path $script:QuotaBeforePath -Content '{}'
         $script:quotaSnapshotPathOverride = $script:QuotaBeforePath
         $null = Apply-DispatchRequest
-        $dispatchResult = Invoke-Dispatch
+        $originalModelDiagnosticFunction = (Get-Command -Name Get-ModelRolloutDiagnosticEvidence -CommandType Function -ErrorAction Stop).ScriptBlock
+        try {
+            Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value ([scriptblock]::Create("throw 'Dispatch must not call the explicit model diagnostic'"))
+            $dispatchResult = Invoke-Dispatch
+        }
+        finally {
+            Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value $originalModelDiagnosticFunction
+        }
         Assert-True ($dispatchResult.status -eq 'started' -and [bool]$dispatchResult.background -and (($script:phase9DispatchCalls -join ',') -eq 'preflight,prepare,start')) 'Dispatch stage 順序或背景啟動狀態不符。'
         Assert-True (Test-Path -LiteralPath $dispatchResultPath -PathType Leaf) 'Dispatch result 未寫入。'
     }
@@ -15000,6 +15086,24 @@ throw 'RunRecord 事件流為空。'
         $script:phase9DispatchFailure = $null
     }
 
+    Invoke-Case 'Phase 9 P3 formal Start failure remains not started in Dispatch result' {
+        $script:phase9DispatchCalls.Clear()
+        $script:phase9DispatchStartCalls = 0
+        $script:phase9DispatchFailure = 'start'
+        $originalModelDiagnosticFunction = (Get-Command -Name Get-ModelRolloutDiagnosticEvidence -CommandType Function -ErrorAction Stop).ScriptBlock
+        try {
+            Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value ([scriptblock]::Create("throw 'Dispatch must not call the explicit model diagnostic'"))
+            $failureResult = Invoke-Dispatch
+        }
+        finally {
+            Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value $originalModelDiagnosticFunction
+            $script:phase9DispatchFailure = $null
+        }
+        $startWasCompleted = @($failureResult.completed_stages | Where-Object { $_ -eq 'start' }).Count -gt 0
+        Assert-True ($failureResult.status -eq 'failed' -and $failureResult.failed_stage -eq 'start' -and -not [bool]$failureResult.process_started -and -not $startWasCompleted -and $null -eq $failureResult.start_result_path) ('Start failure Dispatch envelope 不符：' + ($failureResult | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ($script:phase9DispatchStartCalls -eq 1 -and (($script:phase9DispatchCalls -join ',') -eq 'preflight,prepare,start')) 'Start failure stage 呼叫順序不符。'
+    }
+
     Invoke-Case 'Phase 9 P3 operation contract table equals script dispatch table' {
         $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
         $validOperationsMatch = [regex]::Match($productionText, '(?ms)\$validOperations\s*=\s*@\((?<body>.*?)\)')
@@ -15036,11 +15140,20 @@ throw 'RunRecord 事件流為空。'
         $scriptSet = @($scriptOperations | Sort-Object -Unique)
         $dispatchSet = @($dispatchOperations | Sort-Object -Unique)
         $skillSet = @($skillOperations | Sort-Object -Unique)
-        Assert-True ((@($scriptSet) -join '|') -eq (@($dispatchSet) -join '|')) ('validOperations 與 dispatch switch 不一致：' + ($scriptSet -join ',') + ' / ' + ($dispatchSet -join ','))
-        Assert-True ((@($scriptSet) -join '|') -eq (@($skillSet) -join '|')) ('SKILL operation table 與 script 不一致：' + ($skillSet -join ',') + ' / ' + ($scriptSet -join ','))
+        $dispatchLifecycleSet = @($dispatchSet | Where-Object { $_ -ne 'DiagnoseModelEnvironment' })
+        Assert-True ((@($scriptSet) -join '|') -eq (@($dispatchLifecycleSet | Sort-Object -Unique) -join '|')) ('request validOperations 與 lifecycle dispatch switch 不一致：' + ($scriptSet -join ',') + ' / ' + ($dispatchLifecycleSet -join ','))
+        Assert-True ($scriptSet -notcontains 'DiagnoseModelEnvironment' -and $dispatchSet -contains 'DiagnoseModelEnvironment') '診斷 operation 必須只能由直接 CLI 呼叫，不能由 request operation 呼叫。'
+        $operationValidateSetMatch = [regex]::Match($productionText, '(?ms)\[ValidateSet\((?<body>[^)]*)\)\]\s*\[string\]\$Operation')
+        Assert-True $operationValidateSetMatch.Success '找不到 Operation 參數 ValidateSet。'
+        $commandLineOperations = @([regex]::Matches($operationValidateSetMatch.Groups['body'].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
+        Assert-True ($commandLineOperations -contains 'DiagnoseModelEnvironment') '直接 CLI Operation ValidateSet 缺少明確診斷入口。'
+        $scriptLifecycleSet = $scriptSet
+        $skillLifecycleSet = @($skillSet | Where-Object { $_ -ne 'DiagnoseModelEnvironment' })
+        Assert-True ((@($scriptLifecycleSet) -join '|') -eq (@($skillLifecycleSet) -join '|')) ('SKILL lifecycle operation table 與 script 不一致：' + ($skillLifecycleSet -join ',') + ' / ' + ($scriptLifecycleSet -join ','))
         $mutantText = $skillText -replace '(?m)^\|\s*`Cleanup`\s*\|.*\r?\n', ''
         $mutantOperations = @(& $readSkillOperations -Text $mutantText | Sort-Object -Unique)
-        Assert-True ((@($mutantOperations) -join '|') -ne (@($scriptSet) -join '|')) '移除任一 SKILL operation row 的 mutant 未被辨識。'
+        $mutantLifecycleOperations = @($mutantOperations | Where-Object { $_ -ne 'DiagnoseModelEnvironment' })
+        Assert-True ((@($mutantLifecycleOperations) -join '|') -ne (@($scriptLifecycleSet) -join '|')) '移除任一 SKILL operation row 的 mutant 未被辨識。'
     }
 
     $launcherFunctionAst = @($functions | Where-Object { $_.Name -eq 'New-CodexLauncher' } | Select-Object -First 1)
@@ -15965,20 +16078,32 @@ finally {
         Assert-True (-not (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf) -and $null -eq $inspectResult.PSObject.Properties['calibration']) 'sidecar 正常結束仍產生校準觀測或結果欄位。'
     }
 
-    Invoke-Case 'Phase 9 model evidence mismatch remains nonblocking' {
+    Invoke-Case 'Phase 9 Inspect ignores rollout mismatch and leaves actual unknown' {
         $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
+        $dispatchDocument = Get-Content -LiteralPath $fixture.ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $quotaBeforeSha256 = Get-FileSha256 -Path $calibrationBeforePath
+        Assert-True ($dispatchDocument.quota_before_sha256 -ceq $quotaBeforeSha256) 'Inspect fixture 缺少有效的 quota-before evidence。'
+        $dispatchDocument.inspect_binding | Add-Member -MemberType NoteProperty -Name quota_before_sha256 -Value $quotaBeforeSha256
+        $null = Write-DispatchAtomicJsonDocument -Path $fixture.ResultPath -Document $dispatchDocument -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -TargetPath @()
         $rolloutPath = Join-Path $fixtureRoot 'sidecar-codex-home\sessions\sidecar\rollout-sidecar.jsonl'
         $rolloutText = Get-Content -LiteralPath $rolloutPath -Raw -Encoding UTF8
         $rolloutText = $rolloutText.Replace('fixture-model', 'runtime-other-model')
         Write-Utf8NoBom -Path $rolloutPath -Content $rolloutText
-        $inspectResult = Invoke-Inspect
+        $originalModelDiagnosticFunction = (Get-Command -Name Get-ModelRolloutDiagnosticEvidence -CommandType Function -ErrorAction Stop).ScriptBlock
+        try {
+            Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value ([scriptblock]::Create("throw 'Inspect must not call the explicit model diagnostic'"))
+            $inspectResult = Invoke-Inspect
+        }
+        finally {
+            Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value $originalModelDiagnosticFunction
+        }
         $modelEvidence = Get-DispatchJsonProperty -Object $inspectResult -Name 'modelEvidence'
         $modelGroup = Get-DispatchJsonProperty -Object $modelEvidence -Name 'model'
         $resolvedEvidence = Get-DispatchJsonProperty -Object $modelGroup -Name 'resolved'
         $runtimeEvidence = Get-DispatchJsonProperty -Object $modelGroup -Name 'runtime_verifiable'
-        Assert-True ([bool](Get-DispatchJsonProperty -Object $inspectResult -Name 'success')) ('runtime model mismatch 不應阻擋 Inspect：' + ($inspectResult | ConvertTo-Json -Depth 40 -Compress))
-        Assert-True ((Get-DispatchEvidenceValue -Evidence $resolvedEvidence) -ceq 'fixture-model' -and (Get-DispatchEvidenceValue -Evidence $runtimeEvidence) -ceq 'runtime-other-model') ('Inspect 未保留 resolved/runtime model evidence：' + ($modelGroup | ConvertTo-Json -Depth 30 -Compress))
-        Assert-True ($null -eq $inspectResult.PSObject.Properties['calibration'] -and -not (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf)) 'runtime model mismatch 仍產生校準結果或檔案。'
+        Assert-True ([bool](Get-DispatchJsonProperty -Object $inspectResult -Name 'success')) ('rollout model mismatch 不應阻擋 Inspect：' + ($inspectResult | ConvertTo-Json -Depth 40 -Compress))
+        Assert-True ((Get-DispatchEvidenceValue -Evidence $resolvedEvidence) -ceq 'fixture-model' -and $runtimeEvidence.status -eq 'unknown' -and $runtimeEvidence.source -eq 'public-actual-unavailable') ('Inspect 將 rollout 內容當成 actual 或丟失 profile config evidence：' + ($modelGroup | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ($null -eq $inspectResult.PSObject.Properties['runtimeRolloutPaths'] -and $null -eq $inspectResult.PSObject.Properties['calibration'] -and -not (Test-Path -LiteralPath $fixture.CalibrationPath -PathType Leaf)) 'Inspect 仍回傳 rollout 探針路徑或產生校準結果。'
     }
 
     Invoke-Case 'Phase 9 P3 Dispatch exit sidecar mismatch stops Inspect' {
