@@ -7751,664 +7751,33 @@ function Resolve-DispatchBaselineBinding {
     return [pscustomobject]@{ Path = Resolve-AbsolutePath $Path; Sha256 = $Sha256; Record = $record }
 }
 
-function ConvertTo-CanonicalAclFlagList {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]
-        [object]$Value
-    )
 
-    $rawValues = New-Object System.Collections.Generic.List[string]
-    foreach ($item in @($Value)) {
-        if ($null -eq $item) {
-            continue
-        }
-        foreach ($part in ([string]$item -split ',')) {
-            $trimmed = $part.Trim()
-            if (-not [string]::IsNullOrWhiteSpace($trimmed) -and -not $rawValues.Contains($trimmed)) {
-                $rawValues.Add($trimmed)
-            }
-        }
-    }
-    $orderedNames = @('ObjectInherit', 'ContainerInherit', 'InheritOnly', 'NoPropagateInherit')
-    $result = New-Object System.Collections.Generic.List[string]
-    foreach ($name in $orderedNames) {
-        if ($rawValues -contains $name) {
-            $result.Add($name)
-        }
-    }
-    foreach ($valueName in $rawValues) {
-        if ($orderedNames -notcontains $valueName) {
-            $result.Add($valueName)
-        }
-    }
-    return @($result.ToArray())
-}
 
-function ConvertTo-CanonicalAclRights {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]
-        [string]$Value
-    )
 
-    if ([string]::IsNullOrWhiteSpace($Value)) {
-        return 'Unknown'
-    }
-    if ($Value -match 'FullControl') {
-        return 'F'
-    }
-    if ($Value -match 'Modify') {
-        return 'M'
-    }
-    if ($Value -match 'ReadAndExecute') {
-        return 'RX'
-    }
-    if ($Value -match 'Read') {
-        return 'R'
-    }
-    if ($Value -match 'Write') {
-        return 'W'
-    }
-    return (($Value -replace '\s+', '') -replace ',', '+')
-}
 
-function Get-AclIdentityResolution {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Identity
-    )
 
-    if ($Identity -notmatch '^S-\d-\d+(?:-\d+)+$') {
-        return 'resolved'
-    }
-    try {
-        $sid = New-Object System.Security.Principal.SecurityIdentifier($Identity)
-        $null = $sid.Translate([System.Security.Principal.NTAccount])
-        return 'resolved'
-    }
-    catch {
-        return 'unresolved'
-    }
-}
 
-function Get-CanonicalAclEntry {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [object]$Entry
-    )
 
-    $identity = [string](Get-DispatchJsonProperty -Object $Entry -Name 'identity')
-    $accessType = [string](Get-DispatchJsonProperty -Object $Entry -Name 'access_control_type')
-    $rights = [string](Get-DispatchJsonProperty -Object $Entry -Name 'rights')
-    $inheritance = ConvertTo-CanonicalAclFlagList -Value (Get-DispatchJsonProperty -Object $Entry -Name 'inheritance_flags')
-    $propagation = ConvertTo-CanonicalAclFlagList -Value (Get-DispatchJsonProperty -Object $Entry -Name 'propagation_flags')
-    $identityResolution = [string](Get-DispatchJsonProperty -Object $Entry -Name 'identity_resolution')
-    if ([string]::IsNullOrWhiteSpace($identityResolution)) {
-        $identityResolution = Get-AclIdentityResolution -Identity $identity
-    }
-    $canonicalParts = New-Object System.Collections.Generic.List[string]
-    foreach ($flag in @($inheritance)) {
-        switch ($flag) {
-            'ObjectInherit' { $canonicalParts.Add('(OI)') }
-            'ContainerInherit' { $canonicalParts.Add('(CI)') }
-            'InheritOnly' { $canonicalParts.Add('(IO)') }
-            'NoPropagateInherit' { $canonicalParts.Add('(NP)') }
-            default { $canonicalParts.Add('(' + $flag + ')') }
-        }
-    }
-    foreach ($flag in @($propagation)) {
-        if ($flag -notin @('None', '')) {
-            switch ($flag) {
-                'InheritOnly' { $canonicalParts.Add('(IO)') }
-                'NoPropagateInherit' { $canonicalParts.Add('(NP)') }
-                default { $canonicalParts.Add('(' + $flag + ')') }
-            }
-        }
-    }
-    $canonicalParts.Add('(' + (ConvertTo-CanonicalAclRights -Value $rights) + ')')
-    $canonical = ($canonicalParts -join '')
-    return [ordered]@{
-        identity = $identity
-        identity_resolution = $identityResolution
-        access_control_type = $accessType
-        rights = $rights
-        inheritance_flags = $inheritance
-        propagation_flags = $propagation
-        is_inherited = [bool](Get-DispatchJsonProperty -Object $Entry -Name 'is_inherited')
-        canonical = $canonical
-    }
-}
 
-function Get-AclEntryFingerprint {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [object]$Entry
-    )
 
-    $existing = [string](Get-DispatchJsonProperty -Object $Entry -Name 'fingerprint')
-    if ($existing -match '^[a-fA-F0-9]{64}$') {
-        return $existing.ToLowerInvariant()
-    }
-    $canonicalEntry = Get-CanonicalAclEntry -Entry $Entry
-    return Get-JsonSha256 -Value $canonicalEntry
-}
 
-function New-SandboxAclEvidenceDocument {
-    [CmdletBinding()]
-    param(
-        [AllowEmptyCollection()]
-        [object[]]$Entries = @(),
 
-        [Parameter(Mandatory)]
-        [ValidateSet('pending', 'captured', 'no_match', 'unknown', 'failed', 'rejected')]
-        [string]$CaptureStatus,
 
-        [bool]$NormalCompletion = $false,
 
-        [bool]$ContinuationAllowed = $false,
 
-        [AllowEmptyString()]
-        [string]$CapturedAtUtc,
 
-        [AllowEmptyString()]
-        [string]$Error
-    )
 
-    $entryValues = @($Entries | Where-Object { $null -ne $_ })
-    if ($CaptureStatus -eq 'pending' -and $entryValues.Count -gt 0) {
-        throw 'SandboxAclEvidencePendingCannotContainEntries：pending evidence 不得包含 gate accepted entry。'
-    }
-    $terminalStatus = $CaptureStatus -in @('captured', 'no_match', 'unknown', 'failed', 'rejected')
-    $capturedAtValue = if (-not $terminalStatus) {
-        $null
-    }
-    elseif ([string]::IsNullOrWhiteSpace($CapturedAtUtc)) {
-        [DateTime]::UtcNow.ToString('o')
-    }
-    else {
-        $CapturedAtUtc
-    }
-    $evidenceFingerprint = if ($entryValues.Count -eq 0) { $null } else { Get-JsonSha256 -Value @($entryValues) }
-    return [ordered]@{
-        capture_status = $CaptureStatus
-        entries = @($entryValues)
-        captured_at_utc = $capturedAtValue
-        fingerprint = $evidenceFingerprint
-        error = if ([string]::IsNullOrWhiteSpace($Error)) { $null } else { $Error }
-        normal_completion = $NormalCompletion
-        continuation_allowed = $ContinuationAllowed -and $CaptureStatus -eq 'captured'
-    }
-}
 
-function Get-ExplicitAclSnapshot {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$Path
-    )
 
-    $resolvedPath = Resolve-AbsolutePath -Path $Path
-    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Container)) {
-        return [ordered]@{
-            status = 'unknown'
-            path = $resolvedPath
-            fingerprint = $null
-            entries = @()
-            explicit_entries = @()
-            captured_at_utc = [datetime]::UtcNow.ToString('o')
-            error = 'ACL 目標目錄不存在。'
-        }
-    }
-    try {
-        $acl = Get-Acl -LiteralPath $resolvedPath -ErrorAction Stop
-        $entries = @(
-            $acl.Access |
-                Where-Object { -not $_.IsInherited } |
-                ForEach-Object {
-                    $rawEntry = [ordered]@{
-                        identity = [string]$_.IdentityReference.Value
-                        access_control_type = [string]$_.AccessControlType
-                        rights = [string]$_.FileSystemRights
-                        inheritance_flags = [string]$_.InheritanceFlags
-                        propagation_flags = [string]$_.PropagationFlags
-                        is_inherited = [bool]$_.IsInherited
-                    }
-                    $canonicalEntry = Get-CanonicalAclEntry -Entry $rawEntry
-                    $rawEntry.identity_resolution = $canonicalEntry.identity_resolution
-                    $rawEntry.canonical = $canonicalEntry.canonical
-                    $rawEntry.fingerprint = Get-JsonSha256 -Value ([ordered]@{
-                            identity = $canonicalEntry.identity
-                            identity_resolution = $canonicalEntry.identity_resolution
-                            access_control_type = $canonicalEntry.access_control_type
-                            rights = $canonicalEntry.rights
-                            inheritance_flags = @($canonicalEntry.inheritance_flags)
-                            propagation_flags = @($canonicalEntry.propagation_flags)
-                            canonical = $canonicalEntry.canonical
-                        })
-                    $rawEntry
-                } |
-                Sort-Object -Property @{ Expression = { $_.identity } }, @{ Expression = { $_.access_control_type } }, @{ Expression = { $_.rights } }, @{ Expression = { $_.inheritance_flags } }, @{ Expression = { $_.propagation_flags } }
-        )
-        return [ordered]@{
-            status = 'known'
-            path = $resolvedPath
-            fingerprint = Get-JsonSha256 -Value @($entries)
-            entries = @($entries)
-            explicit_entries = @($entries)
-            captured_at_utc = [datetime]::UtcNow.ToString('o')
-            error = $null
-        }
-    }
-    catch {
-        return [ordered]@{
-            status = 'failed'
-            path = $resolvedPath
-            fingerprint = $null
-            entries = @()
-            explicit_entries = @()
-            captured_at_utc = [datetime]::UtcNow.ToString('o')
-            error = $_.Exception.Message
-        }
-    }
-}
 
-function Get-SandboxAclSnapshotEntries {
-    [CmdletBinding()]
-    param(
-        [AllowNull()]
-        [object]$Snapshot
-    )
 
-    if ($null -eq $Snapshot) {
-        return @()
-    }
-    $entries = @((Get-DispatchJsonProperty -Object $Snapshot -Name 'entries') | Where-Object { $null -ne $_ })
-    if ($entries.Count -eq 0) {
-        $entries = @((Get-DispatchJsonProperty -Object $Snapshot -Name 'explicit_entries') | Where-Object { $null -ne $_ })
-    }
-    return @($entries | Where-Object { $null -ne $_ })
-}
 
-function Get-SandboxAclFingerprintArray {
-    [CmdletBinding()]
-    param(
-        [AllowEmptyCollection()]
-        [object[]]$Entries = @()
-    )
 
-    return @($Entries | Where-Object { $null -ne $_ } | ForEach-Object { Get-AclEntryFingerprint -Entry $_ } | Sort-Object)
-}
 
-function Test-SandboxAclFingerprintSetEqual {
-    [CmdletBinding()]
-    param(
-        [AllowEmptyCollection()]
-        [object[]]$Left = @(),
 
-        [AllowEmptyCollection()]
-        [object[]]$Right = @()
-    )
 
-    $leftValues = @(Get-SandboxAclFingerprintArray -Entries $Left)
-    $rightValues = @(Get-SandboxAclFingerprintArray -Entries $Right)
-    if ($leftValues.Count -ne $rightValues.Count) {
-        return $false
-    }
-    for ($index = 0; $index -lt $leftValues.Count; $index++) {
-        if (-not [string]::Equals([string]$leftValues[$index], [string]$rightValues[$index], [StringComparison]::OrdinalIgnoreCase)) {
-            return $false
-        }
-    }
-    return $true
-}
 
-function Get-SandboxAclExtraEntries {
-    [CmdletBinding()]
-    param(
-        [AllowEmptyCollection()]
-        [object[]]$BaselineEntries = @(),
 
-        [AllowEmptyCollection()]
-        [object[]]$SnapshotEntries = @()
-    )
-
-    $remaining = @{}
-    foreach ($entry in @($BaselineEntries)) {
-        $fingerprint = Get-AclEntryFingerprint -Entry $entry
-        if ($remaining.ContainsKey($fingerprint)) {
-            $remaining[$fingerprint] = [int]$remaining[$fingerprint] + 1
-        }
-        else {
-            $remaining[$fingerprint] = 1
-        }
-    }
-    $extraEntries = New-Object 'System.Collections.Generic.List[object]'
-    foreach ($entry in @($SnapshotEntries)) {
-        $fingerprint = Get-AclEntryFingerprint -Entry $entry
-        if ($remaining.ContainsKey($fingerprint) -and [int]$remaining[$fingerprint] -gt 0) {
-            $remaining[$fingerprint] = [int]$remaining[$fingerprint] - 1
-        }
-        else {
-            $extraEntries.Add($entry)
-        }
-    }
-    return @($extraEntries.ToArray())
-}
-
-function Get-SandboxAclMissingEntries {
-    [CmdletBinding()]
-    param(
-        [AllowEmptyCollection()]
-        [object[]]$BaselineEntries = @(),
-
-        [AllowEmptyCollection()]
-        [object[]]$SnapshotEntries = @()
-    )
-
-    $remaining = @{}
-    foreach ($entry in @($SnapshotEntries)) {
-        $fingerprint = Get-AclEntryFingerprint -Entry $entry
-        if ($remaining.ContainsKey($fingerprint)) {
-            $remaining[$fingerprint] = [int]$remaining[$fingerprint] + 1
-        }
-        else {
-            $remaining[$fingerprint] = 1
-        }
-    }
-    $missingEntries = New-Object 'System.Collections.Generic.List[object]'
-    foreach ($entry in @($BaselineEntries)) {
-        $fingerprint = Get-AclEntryFingerprint -Entry $entry
-        if ($remaining.ContainsKey($fingerprint) -and [int]$remaining[$fingerprint] -gt 0) {
-            $remaining[$fingerprint] = [int]$remaining[$fingerprint] - 1
-        }
-        else {
-            $missingEntries.Add($entry)
-        }
-    }
-    return @($missingEntries.ToArray())
-}
-
-function Get-SandboxAclInspectEvidence {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [psobject]$Record,
-
-        [Parameter(Mandatory)]
-        [string]$ExecutionRoot,
-
-        [Parameter(Mandatory)]
-        [bool]$NormalCompletion
-    )
-
-    $existingEvidence = Get-DispatchJsonProperty -Object $Record -Name 'sandbox_acl_evidence'
-    $existingStatus = if ($null -eq $existingEvidence) { '' } else { [string](Get-DispatchJsonProperty -Object $existingEvidence -Name 'capture_status') }
-    if ($existingStatus -in @('captured', 'no_match', 'unknown', 'failed', 'rejected')) {
-        return $existingEvidence
-    }
-    if (-not $NormalCompletion) {
-        return New-SandboxAclEvidenceDocument -Entries @() -CaptureStatus 'pending' -NormalCompletion $false -ContinuationAllowed $false
-    }
-
-    $postSnapshot = Get-ExplicitAclSnapshot -Path $ExecutionRoot
-    $postStatus = [string](Get-DispatchJsonProperty -Object $postSnapshot -Name 'status')
-    if ($postStatus -eq 'unknown') {
-        return New-SandboxAclEvidenceDocument -Entries @() -CaptureStatus 'unknown' -NormalCompletion $true -ContinuationAllowed $false -Error ([string](Get-DispatchJsonProperty -Object $postSnapshot -Name 'error'))
-    }
-    if ($postStatus -eq 'failed') {
-        return New-SandboxAclEvidenceDocument -Entries @() -CaptureStatus 'failed' -NormalCompletion $true -ContinuationAllowed $false -Error ([string](Get-DispatchJsonProperty -Object $postSnapshot -Name 'error'))
-    }
-    if ($postStatus -ne 'known') {
-        return New-SandboxAclEvidenceDocument -Entries @() -CaptureStatus 'failed' -NormalCompletion $true -ContinuationAllowed $false -Error 'ACL post-completion snapshot 狀態無法驗證。'
-    }
-
-    $postEntries = @(Get-SandboxAclSnapshotEntries -Snapshot $postSnapshot)
-    $baseline = Get-DispatchJsonProperty -Object $Record -Name 'sandbox_acl_baseline'
-    $baselineStatus = if ($null -eq $baseline) { '' } else { [string](Get-DispatchJsonProperty -Object $baseline -Name 'status') }
-    if ($null -eq $baseline -or $baselineStatus -ne 'known') {
-        return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus 'rejected' -NormalCompletion $true -ContinuationAllowed $false -Error 'RunRecord 缺少可驗證的 sandbox ACL baseline。'
-    }
-
-    $previousRunId = [string](Get-DispatchJsonProperty -Object $Record -Name 'previous_run_id')
-    if ([string]::IsNullOrWhiteSpace($previousRunId)) {
-        $previousRunId = [string](Get-DispatchJsonProperty -Object $Record -Name 'resume_anchor_run_id')
-    }
-    if (-not [string]::IsNullOrWhiteSpace($previousRunId)) {
-        try {
-            $runDirectory = Get-DispatchRunDirectory -SourceRoot ([string](Get-DispatchJsonProperty -Object $Record -Name 'source_root')) -LineSlug ([string](Get-DispatchJsonProperty -Object $Record -Name 'line_slug')) -DispatchSlug ([string](Get-DispatchJsonProperty -Object $Record -Name 'dispatch_slug'))
-            $previousPath = Join-Path $runDirectory ($previousRunId + '.json')
-            $previousRecord = Read-DispatchRunRecord -Path $previousPath -SourceRoot ([string](Get-DispatchJsonProperty -Object $Record -Name 'source_root')) -ExecutionRoot $ExecutionRoot -LineSlug ([string](Get-DispatchJsonProperty -Object $Record -Name 'line_slug')) -DispatchSlug ([string](Get-DispatchJsonProperty -Object $Record -Name 'dispatch_slug'))
-            $previousEvidence = Get-DispatchJsonProperty -Object $previousRecord -Name 'sandbox_acl_evidence'
-            $previousStatus = if ($null -eq $previousEvidence) { '' } else { [string](Get-DispatchJsonProperty -Object $previousEvidence -Name 'capture_status') }
-            $previousEntries = if ($null -eq $previousEvidence) { @() } else { @((Get-DispatchJsonProperty -Object $previousEvidence -Name 'entries')) }
-            if ($previousStatus -eq 'captured' -and (Test-SandboxAclFingerprintSetEqual -Left $postEntries -Right $previousEntries)) {
-                return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus 'captured' -NormalCompletion $true -ContinuationAllowed $true
-            }
-            return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus 'rejected' -NormalCompletion $true -ContinuationAllowed $false -Error '續行 post-completion ACL 與前輪 captured fingerprint 集合不一致。'
-        }
-        catch {
-            return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus 'rejected' -NormalCompletion $true -ContinuationAllowed $false -Error ('續行 ACL evidence 無法讀取前輪 captured record：' + $_.Exception.Message)
-        }
-    }
-
-    $baselineEntries = @(Get-SandboxAclSnapshotEntries -Snapshot $baseline)
-    $missingBaselineEntries = @(Get-SandboxAclMissingEntries -BaselineEntries $baselineEntries -SnapshotEntries $postEntries)
-    if ($missingBaselineEntries.Count -gt 0) {
-        return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus 'rejected' -NormalCompletion $true -ContinuationAllowed $false -Error 'post-completion ACL 缺少 baseline entry，存在未預期的消失差異。'
-    }
-    if (Test-SandboxAclFingerprintSetEqual -Left $postEntries -Right $baselineEntries) {
-        return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus 'no_match' -NormalCompletion $true -ContinuationAllowed $false -Error $null
-    }
-    $extraEntries = @(Get-SandboxAclExtraEntries -BaselineEntries $baselineEntries -SnapshotEntries $postEntries)
-    if ($extraEntries.Count -eq 1) {
-        $candidate = $extraEntries[0]
-        $candidateCanonical = [string](Get-DispatchJsonProperty -Object $candidate -Name 'canonical')
-        $candidateResolution = [string](Get-DispatchJsonProperty -Object $candidate -Name 'identity_resolution')
-        if ($candidateResolution -eq 'unresolved' -and $candidateCanonical -ceq '(OI)(CI)(M)') {
-            return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus 'captured' -NormalCompletion $true -ContinuationAllowed $true
-        }
-    }
-    return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus 'rejected' -NormalCompletion $true -ContinuationAllowed $false -Error 'post-completion ACL 與 baseline 差異未符合單筆 unresolved (OI)(CI)(M) 契約。'
-}
-
-function Get-WorktreeAclGate {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$SourceRoot,
-
-        [Parameter(Mandatory)]
-        [string]$ExecutionRoot,
-
-        [Parameter(Mandatory)]
-        [string]$WriteMode,
-
-        [AllowNull()]
-        [psobject]$ContinuationRecord
-    )
-
-    $sourcePath = Resolve-AbsolutePath -Path $SourceRoot
-    $executionPath = Resolve-AbsolutePath -Path $ExecutionRoot
-    if ([string]::Equals($sourcePath, $executionPath, [StringComparison]::OrdinalIgnoreCase)) {
-        return [ordered]@{
-            status = 'not-applicable'
-            rejection_code = $null
-            source = [ordered]@{ status = 'not-applicable'; path = $sourcePath; fingerprint = $null; explicit_entries = @() }
-            dispatch = [ordered]@{ status = 'not-applicable'; path = $executionPath; fingerprint = $null; explicit_entries = @() }
-            residue = @()
-            raw_residue = @()
-            accepted_sandbox_entries = @()
-            allowed_sandbox_entries = @()
-            sandbox_evidence_status = 'not-applicable'
-            sandbox_acl_baseline = $null
-            sandbox_acl_evidence = $null
-            write_mode = $WriteMode
-        }
-    }
-
-    $sourceAcl = Get-ExplicitAclSnapshot -Path $sourcePath
-    $dispatchAcl = Get-ExplicitAclSnapshot -Path $executionPath
-    if ($sourceAcl.status -eq 'unknown' -or $dispatchAcl.status -eq 'unknown') {
-        return [ordered]@{
-            status = 'unknown'
-            rejection_code = 'WorktreeAclUnknown'
-            source = $sourceAcl
-            dispatch = $dispatchAcl
-            residue = @()
-            raw_residue = @()
-            accepted_sandbox_entries = @()
-            allowed_sandbox_entries = @()
-            sandbox_evidence_status = 'unknown'
-            sandbox_acl_baseline = if ($null -eq $ContinuationRecord) { $null } else { Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_baseline' }
-            sandbox_acl_evidence = if ($null -eq $ContinuationRecord) { $null } else { Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_evidence' }
-            write_mode = $WriteMode
-        }
-    }
-    if ($sourceAcl.status -eq 'failed' -or $dispatchAcl.status -eq 'failed') {
-        return [ordered]@{
-            status = 'failed'
-            rejection_code = 'WorktreeAclReadFailed'
-            source = $sourceAcl
-            dispatch = $dispatchAcl
-            residue = @()
-            raw_residue = @()
-            accepted_sandbox_entries = @()
-            allowed_sandbox_entries = @()
-            sandbox_evidence_status = 'failed'
-            sandbox_acl_baseline = if ($null -eq $ContinuationRecord) { $null } else { Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_baseline' }
-            sandbox_acl_evidence = if ($null -eq $ContinuationRecord) { $null } else { Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_evidence' }
-            write_mode = $WriteMode
-        }
-    }
-
-    $sourceKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    foreach ($entry in @($sourceAcl.explicit_entries)) {
-        $null = $sourceKeys.Add((Get-AclEntryFingerprint -Entry $entry))
-    }
-    $residue = New-Object 'System.Collections.Generic.List[object]'
-    foreach ($entry in @($dispatchAcl.explicit_entries)) {
-        if (-not $sourceKeys.Contains((Get-AclEntryFingerprint -Entry $entry))) {
-            $residue.Add($entry)
-        }
-    }
-    $rawResidue = @($residue.ToArray())
-    $allowedSandboxEntries = New-Object System.Collections.Generic.List[object]
-    $acceptedSandboxEntries = New-Object System.Collections.Generic.List[object]
-    $allowedFingerprints = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    $evidence = $null
-    if ($null -ne $ContinuationRecord) {
-        $evidence = Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_evidence'
-    }
-    $evidenceCaptureStatus = if ($null -eq $evidence) { '' } else { [string](Get-DispatchJsonProperty -Object $evidence -Name 'capture_status') }
-    $hasUsableEvidence = $null -ne $evidence -and
-        $evidenceCaptureStatus -ceq 'captured' -and
-        [bool](Get-DispatchJsonProperty -Object $evidence -Name 'normal_completion') -and
-        [bool](Get-DispatchJsonProperty -Object $evidence -Name 'continuation_allowed')
-    if ($null -ne $ContinuationRecord -and $evidenceCaptureStatus -eq 'rejected' -and $rawResidue.Count -gt 0) {
-        return [ordered]@{
-            status = 'residue'
-            rejection_code = 'WorktreeAclResidue'
-            source = $sourceAcl
-            dispatch = $dispatchAcl
-            residue = @($rawResidue)
-            raw_residue = @($rawResidue)
-            accepted_sandbox_entries = @()
-            allowed_sandbox_entries = @()
-            sandbox_evidence_status = 'rejected'
-            sandbox_acl_baseline = Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_baseline'
-            sandbox_acl_evidence = $evidence
-            write_mode = $WriteMode
-        }
-    }
-    if ($null -ne $ContinuationRecord -and -not $hasUsableEvidence) {
-        return [ordered]@{
-            status = 'continuation-denied'
-            rejection_code = 'WorktreeAclContinuationDenied'
-            source = $sourceAcl
-            dispatch = $dispatchAcl
-            residue = @($rawResidue)
-            raw_residue = @($rawResidue)
-            accepted_sandbox_entries = @()
-            allowed_sandbox_entries = @()
-            sandbox_evidence_status = if ([string]::IsNullOrWhiteSpace($evidenceCaptureStatus)) { 'none' } else { $evidenceCaptureStatus }
-            sandbox_acl_baseline = Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_baseline'
-            sandbox_acl_evidence = $evidence
-            write_mode = $WriteMode
-        }
-    }
-    if ($hasUsableEvidence) {
-        $allowedEntriesForComparison = @((Get-DispatchJsonProperty -Object $evidence -Name 'entries'))
-        $dispatchEntriesForComparison = @(Get-SandboxAclSnapshotEntries -Snapshot $dispatchAcl)
-        $extraWhitelistEntries = @(Get-SandboxAclExtraEntries -BaselineEntries $allowedEntriesForComparison -SnapshotEntries $dispatchEntriesForComparison)
-        $missingWhitelistEntries = @(Get-SandboxAclMissingEntries -BaselineEntries $allowedEntriesForComparison -SnapshotEntries $dispatchEntriesForComparison)
-        if ($extraWhitelistEntries.Count -gt 0 -or $missingWhitelistEntries.Count -gt 0) {
-            return [ordered]@{
-                status = 'residue'
-                rejection_code = 'WorktreeAclResidue'
-                source = $sourceAcl
-                dispatch = $dispatchAcl
-                residue = @($rawResidue)
-                raw_residue = @($rawResidue)
-                accepted_sandbox_entries = @()
-                allowed_sandbox_entries = @($allowedEntriesForComparison)
-                sandbox_evidence_status = 'rejected'
-                sandbox_acl_baseline = Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_baseline'
-                sandbox_acl_evidence = $evidence
-                write_mode = $WriteMode
-            }
-        }
-    }
-    if ($hasUsableEvidence) {
-        foreach ($entry in @((Get-DispatchJsonProperty -Object $evidence -Name 'entries'))) {
-            if ($null -eq $entry) {
-                continue
-            }
-            $allowedSandboxEntries.Add($entry)
-            $null = $allowedFingerprints.Add((Get-AclEntryFingerprint -Entry $entry))
-        }
-        foreach ($entry in $rawResidue) {
-            if ($allowedFingerprints.Contains((Get-AclEntryFingerprint -Entry $entry))) {
-                $acceptedSandboxEntries.Add($entry)
-            }
-        }
-    }
-    elseif ($null -eq $ContinuationRecord -and $rawResidue.Count -eq 1) {
-        $candidate = $rawResidue[0]
-        $canonical = [string](Get-DispatchJsonProperty -Object $candidate -Name 'canonical')
-        $identityResolution = [string](Get-DispatchJsonProperty -Object $candidate -Name 'identity_resolution')
-        if ($identityResolution -eq 'unresolved' -and $canonical -ceq '(OI)(CI)(M)') {
-            $acceptedSandboxEntries.Add($candidate)
-            $allowedSandboxEntries.Add($candidate)
-        }
-    }
-    $acceptedFingerprintSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
-    foreach ($acceptedEntry in @($acceptedSandboxEntries.ToArray())) {
-        $null = $acceptedFingerprintSet.Add((Get-AclEntryFingerprint -Entry $acceptedEntry))
-    }
-    $unauthorizedResidue = @($rawResidue | Where-Object {
-            -not $acceptedFingerprintSet.Contains((Get-AclEntryFingerprint -Entry $_))
-        })
-    $evidenceStatus = if ($hasUsableEvidence) { 'continuation-allowed' } elseif ($acceptedSandboxEntries.Count -gt 0) { 'pending' } elseif ($rawResidue.Count -eq 0) { 'none' } else { 'rejected' }
-    $status = if ($unauthorizedResidue.Count -eq 0) { 'clean' } else { 'residue' }
-    return [ordered]@{
-        status = $status
-        rejection_code = if ($status -eq 'residue') { 'WorktreeAclResidue' } else { $null }
-        source = $sourceAcl
-        dispatch = $dispatchAcl
-        residue = @($unauthorizedResidue)
-        raw_residue = @($rawResidue)
-        accepted_sandbox_entries = @($acceptedSandboxEntries.ToArray())
-        allowed_sandbox_entries = @($allowedSandboxEntries.ToArray())
-        sandbox_evidence_status = $evidenceStatus
-        sandbox_acl_baseline = if ($null -eq $ContinuationRecord) { $null } else { Get-DispatchJsonProperty -Object $ContinuationRecord -Name 'sandbox_acl_baseline' }
-        sandbox_acl_evidence = $evidence
-        write_mode = $WriteMode
-    }
-}
 
 
 function Get-DispatchEventEvidence {
@@ -9335,6 +8704,248 @@ function Write-DispatchAtomicJsonDocument {
     }
 }
 
+function Get-DispatchContinuationFailureHandoff {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][string]$RequestPath,
+        [AllowNull()][psobject]$RequestDocument,
+        [AllowEmptyString()][string]$ScopePlanPath,
+        [AllowEmptyString()][string]$EventStreamPath,
+        [AllowEmptyString()][string]$RunRecordPath,
+        [AllowEmptyString()][string]$LastMessagePath,
+        [AllowEmptyString()][string]$InspectResultPath,
+        [AllowEmptyString()][string]$SourceRoot,
+        [AllowEmptyString()][string]$ExecutionRoot,
+        [AllowEmptyString()][string]$DispatchRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug,
+        [Parameter(Mandatory)][string]$DispatchExecutionId,
+        [AllowEmptyCollection()][string[]]$FallbackSelectedUnits = @()
+    )
+
+    $selectedUnits = @()
+    $requestedUnits = @()
+    $deferredUnits = @()
+    $scopePlanLoaded = $false
+    $scopePlanPathValue = $null
+    $resolvedExecutionRoot = if ([string]::IsNullOrWhiteSpace($ExecutionRoot)) { $SourceRoot } else { $ExecutionRoot }
+    if (-not [string]::IsNullOrWhiteSpace($ScopePlanPath) -and -not [string]::IsNullOrWhiteSpace($resolvedExecutionRoot)) {
+        try {
+            $scopePlanPathValue = Resolve-AbsolutePath -Path $ScopePlanPath
+            if ((Test-PathWithinRoot -Path $scopePlanPathValue -Root $resolvedExecutionRoot) -and (Test-Path -LiteralPath $scopePlanPathValue -PathType Leaf)) {
+                $scopePlan = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $scopePlanPathValue)
+                $selectedUnits = @((Get-DispatchJsonProperty -Object $scopePlan -Name 'selected_units') | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $requestedUnits = @((Get-DispatchJsonProperty -Object $scopePlan -Name 'requested_units') | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $deferredUnits = @((Get-DispatchJsonProperty -Object $scopePlan -Name 'deferred_units') | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $scopePlanLoaded = $true
+            }
+        }
+        catch {
+            $selectedUnits = @()
+            $requestedUnits = @()
+            $deferredUnits = @()
+            $scopePlanLoaded = $false
+        }
+    }
+    if (-not $scopePlanLoaded -and $selectedUnits.Count -eq 0) {
+        $selectedUnits = @($FallbackSelectedUnits | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    }
+    $scopePlanSelectionSource = if ($scopePlanLoaded) { 'scope_plan' } elseif ($selectedUnits.Count -gt 0) { 'fallback_selected_units' } else { 'unavailable' }
+
+    $safePointMessage = ''
+    $safePointSourcePath = $null
+    if (-not [string]::IsNullOrWhiteSpace($EventStreamPath) -and -not [string]::IsNullOrWhiteSpace($resolvedExecutionRoot)) {
+        try {
+            $eventPathValue = Resolve-AbsolutePath -Path $EventStreamPath
+            if ((Test-PathWithinRoot -Path $eventPathValue -Root $resolvedExecutionRoot) -and (Test-Path -LiteralPath $eventPathValue -PathType Leaf)) {
+                $taskType = if ($null -eq $RequestDocument) { '' } else { [string](Get-DispatchJsonProperty -Object $RequestDocument -Name 'task_type') }
+                $safePointMessage = Get-LatestSafePointMessage -EventPath $eventPathValue -TaskType $taskType
+                if (-not [string]::IsNullOrWhiteSpace($safePointMessage)) {
+                    $safePointSourcePath = $eventPathValue
+                }
+            }
+        }
+        catch {
+            $safePointMessage = ''
+            $safePointSourcePath = $null
+        }
+    }
+
+    $confirmedResults = @()
+    $incompleteUnits = @($selectedUnits)
+    $discardedIncompleteUnits = New-Object 'System.Collections.Generic.List[object]'
+    $confirmedMatch = [regex]::Match($safePointMessage, '(?m)^\s*已確認結論\s*[:：]\s*(?<value>.*?)\s*$')
+    if ($confirmedMatch.Success -and -not [string]::IsNullOrWhiteSpace($confirmedMatch.Groups['value'].Value) -and $confirmedMatch.Groups['value'].Value -cne '無') {
+        $confirmedResults += $confirmedMatch.Groups['value'].Value.Trim()
+    }
+    $coverageMatch = [regex]::Match($safePointMessage, '(?m)^\s*實際覆蓋範圍\s*[:：]\s*(?<value>.*?)\s*$')
+    if ($coverageMatch.Success -and -not [string]::IsNullOrWhiteSpace($coverageMatch.Groups['value'].Value) -and $coverageMatch.Groups['value'].Value -cne '無') {
+        $confirmedResults += ('實際覆蓋範圍：' + $coverageMatch.Groups['value'].Value.Trim())
+    }
+    $incompleteMatch = [regex]::Match($safePointMessage, '(?m)^\s*未完成單位\s*[:：]\s*(?<value>.*?)\s*$')
+    if ($incompleteMatch.Success) {
+        $incompleteText = $incompleteMatch.Groups['value'].Value.Trim()
+        if ([string]::IsNullOrWhiteSpace($incompleteText) -or $incompleteText -ceq '無') {
+            $incompleteUnits = @()
+        }
+        else {
+            $findUnitOccurrences = {
+                param(
+                    [string]$Text,
+                    [string]$Unit
+                )
+
+                $positions = New-Object 'System.Collections.Generic.List[int]'
+                if ([string]::IsNullOrEmpty($Text) -or [string]::IsNullOrEmpty($Unit)) {
+                    return $positions.ToArray()
+                }
+                $searchFrom = 0
+                while ($searchFrom -lt $Text.Length) {
+                    $position = $Text.IndexOf($Unit, $searchFrom, [System.StringComparison]::Ordinal)
+                    if ($position -lt 0) {
+                        break
+                    }
+                    $unitEnd = $position + $Unit.Length
+                    $leftBoundary = $position -eq 0 -or -not [char]::IsLetterOrDigit($Text[$position - 1])
+                    $rightBoundary = $unitEnd -ge $Text.Length -or -not [char]::IsLetterOrDigit($Text[$unitEnd])
+                    if ($leftBoundary -and $rightBoundary) {
+                        $positions.Add($position)
+                        $searchFrom = $unitEnd
+                    }
+                    else {
+                        $searchFrom = $position + $Unit.Length
+                    }
+                }
+                return $positions.ToArray()
+            }
+
+            $candidateUnits = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($candidateUnit in @($requestedUnits) + @($deferredUnits) + @($selectedUnits)) {
+                if ([string]::IsNullOrWhiteSpace([string]$candidateUnit)) {
+                    continue
+                }
+                if (-not (@($candidateUnits.ToArray()) -ccontains [string]$candidateUnit)) {
+                    $candidateUnits.Add([string]$candidateUnit)
+                }
+            }
+            $orderedCandidates = @($candidateUnits.ToArray() | Sort-Object -Property @{ Expression = { $_.Length }; Descending = $true })
+            $remainingIncompleteText = $incompleteText
+            $matchedSelectedUnits = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($candidateUnit in $orderedCandidates) {
+                $positions = @(& $findUnitOccurrences -Text $remainingIncompleteText -Unit ([string]$candidateUnit))
+                if ($positions.Count -eq 0) {
+                    continue
+                }
+                if (@($selectedUnits) -ccontains [string]$candidateUnit) {
+                    if (-not (@($matchedSelectedUnits.ToArray()) -ccontains [string]$candidateUnit)) {
+                        $matchedSelectedUnits.Add([string]$candidateUnit)
+                    }
+                }
+                else {
+                    $reason = if (@($deferredUnits) -ccontains [string]$candidateUnit) {
+                        'ScopePlan deferred_units 不得進入 cold-start 範圍。'
+                    }
+                    else {
+                        'safe point 單位不屬於 ScopePlan selected_units。'
+                    }
+                    $discardedIncompleteUnits.Add([ordered]@{
+                            unit = [string]$candidateUnit
+                            reason = $reason
+                        })
+                }
+                foreach ($position in @($positions | Sort-Object -Descending)) {
+                    $positionValue = [int]$position
+                    $remainingIncompleteText = $remainingIncompleteText.Substring(0, $positionValue) + (' ' * ([string]$candidateUnit).Length) + $remainingIncompleteText.Substring($positionValue + ([string]$candidateUnit).Length)
+                }
+            }
+            $unmatchedText = [regex]::Replace($remainingIncompleteText, '^\s*(?:(?:and|和|及|或)\s*)+', '')
+            $unmatchedText = [regex]::Replace($unmatchedText, '(?:\s*(?:and|和|及|或))*\s*$', '')
+            $unmatchedText = $unmatchedText.Trim([char[]]@(' ', [char]9, [char]10, [char]13, ',', ';', '，', '；', '、', '|'))
+            if (-not [string]::IsNullOrWhiteSpace($unmatchedText) -and $unmatchedText -cne '無') {
+                $discardedIncompleteUnits.Add([ordered]@{
+                        unit = $unmatchedText
+                        reason = 'safe point 文字未對應到任何完整 ScopePlan 單位，未加入 cold-start 範圍。'
+                    })
+            }
+            $incompleteUnits = @($selectedUnits | Where-Object { @($matchedSelectedUnits.ToArray()) -ccontains [string]$_ })
+        }
+    }
+
+    $sourceLocations = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($source in @(
+            [pscustomobject]@{ kind = 'request'; path = $RequestPath },
+            [pscustomobject]@{ kind = 'scope_plan'; path = $ScopePlanPath },
+            [pscustomobject]@{ kind = 'run_record'; path = $RunRecordPath },
+            [pscustomobject]@{ kind = 'event_stream'; path = $EventStreamPath },
+            [pscustomobject]@{ kind = 'last_message'; path = $LastMessagePath },
+            [pscustomobject]@{ kind = 'inspect_result'; path = $InspectResultPath }
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$source.path)) {
+            $sourceLocations.Add([ordered]@{ kind = $source.kind; path = Resolve-AbsolutePath -Path $source.path })
+        }
+    }
+    foreach ($location in @($discardedIncompleteUnits.ToArray())) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$location.unit)) {
+            $sourceLocations.Add([ordered]@{
+                    kind = 'discarded_safe_point_unit'
+                    path = $location.unit
+                    reason = $location.reason
+                })
+        }
+    }
+
+    $requestPathValue = if ([string]::IsNullOrWhiteSpace($RequestPath)) { $null } else { Resolve-AbsolutePath -Path $RequestPath }
+    $requestTarget = if ($null -eq $RequestDocument) { @() } else { @(Get-DispatchJsonProperty -Object $RequestDocument -Name 'target_path') }
+    $requestPrompt = if ($null -eq $RequestDocument) { $null } else { Get-DispatchJsonProperty -Object $RequestDocument -Name 'prompt_path' }
+    $requestUnitKind = if ($null -eq $RequestDocument) { $null } else { Get-DispatchJsonProperty -Object $RequestDocument -Name 'unit_kind' }
+    $requestDispatchKind = if ($null -eq $RequestDocument) { $null } else { Get-DispatchJsonProperty -Object $RequestDocument -Name 'dispatch_kind' }
+    $requestWriteMode = if ($null -eq $RequestDocument) { $null } else { Get-DispatchJsonProperty -Object $RequestDocument -Name 'write_mode' }
+    $requestTaskType = if ($null -eq $RequestDocument) { $null } else { Get-DispatchJsonProperty -Object $RequestDocument -Name 'task_type' }
+    $requestIdentifier = if ($null -eq $RequestDocument) { $null } else { Get-DispatchJsonProperty -Object $RequestDocument -Name 'required_identifier' }
+    $suffix = $DispatchExecutionId.Substring(0, [Math]::Min(8, $DispatchExecutionId.Length))
+    $coldStartEntry = [ordered]@{
+        operation = 'Dispatch'
+        request_reference = $requestPathValue
+        line_slug = $LineSlug
+        dispatch_slug = $DispatchSlug + '-cold-' + $suffix
+        source_root = if ([string]::IsNullOrWhiteSpace($SourceRoot)) { $null } else { Resolve-AbsolutePath -Path $SourceRoot }
+        execution_root = if ([string]::IsNullOrWhiteSpace($ExecutionRoot)) { $null } else { Resolve-AbsolutePath -Path $ExecutionRoot }
+        dispatch_root = if ([string]::IsNullOrWhiteSpace($DispatchRoot)) { $null } else { Resolve-AbsolutePath -Path $DispatchRoot }
+        session_mode = 'cold-start'
+        resume_thread_id = $null
+        requested_unit = @($incompleteUnits)
+        unit_kind = $requestUnitKind
+        dispatch_kind = $requestDispatchKind
+        write_mode = $requestWriteMode
+        task_type = $requestTaskType
+        prompt_path = $requestPrompt
+        target_path = $requestTarget
+        required_identifier = $requestIdentifier
+        new_request_required = $true
+        automatic_retry = $false
+    }
+    return [ordered]@{
+        confirmed_results = @($confirmedResults)
+        confirmed_results_source = [ordered]@{
+            status = if ($confirmedResults.Count -gt 0) { 'available' } else { 'insufficient' }
+            path = $safePointSourcePath
+            reason = if ($confirmedResults.Count -gt 0) { $null } else { '未能從 safe point 取得已確認結論或實際覆蓋範圍；confirmed_results 保持空陣列，未作推論。' }
+        }
+        incomplete_units = @($incompleteUnits)
+        discarded_incomplete_units = @($discardedIncompleteUnits.ToArray())
+        scope_plan_source = [ordered]@{
+            status = if ($scopePlanLoaded) { 'available' } else { 'insufficient' }
+            path = $scopePlanPathValue
+            selection_source = $scopePlanSelectionSource
+            selected_units = @($selectedUnits)
+            deferred_units = @($deferredUnits)
+        }
+        source_locations = @($sourceLocations.ToArray())
+        cold_start_entry = $coldStartEntry
+        automatic_retry = $false
+    }
+}
+
 function Write-DispatchFailureReceipt {
     [CmdletBinding()]
     param(
@@ -9370,7 +8981,10 @@ function Write-DispatchFailureReceipt {
 
         [bool]$ProcessStarted = $false,
 
-        [string[]]$TargetPath = @()
+        [string[]]$TargetPath = @(),
+
+        [AllowNull()]
+        [System.Collections.IDictionary]$ContinuationHandoff
     )
 
     $guardSourceRoot = $SourceRoot
@@ -9390,6 +9004,9 @@ function Write-DispatchFailureReceipt {
         dispatch_root = if ([string]::IsNullOrWhiteSpace($DispatchRoot)) { $null } else { Resolve-AbsolutePath -Path $DispatchRoot }
         failure_receipt_path = Resolve-AbsolutePath -Path $Path
         failure_receipt_saved = $true
+    }
+    if ($null -ne $ContinuationHandoff) {
+        $document.continuation_handoff = $ContinuationHandoff
     }
     return Write-DispatchAtomicJsonDocument -Path $Path -Document $document -SourceRoot $guardSourceRoot -ExecutionRoot $guardExecutionRoot -TargetPath @($TargetPath) -HashProperty ''
 }
@@ -10466,6 +10083,9 @@ function Invoke-Dispatch {
     $requestedQuotaBeforePath = [string]$QuotaBeforePath
     $requestedQuotaAfterPath = [string]$QuotaAfterPath
     $stageBinding = $null
+    $failureReceiptWritten = $false
+    $failureReceiptSha256Value = $null
+    $continuationFailureHandoff = $null
 
     try {
         if ($null -eq $script:RequestContext -or [string]$script:RequestContext.document.operation -cne 'Dispatch') {
@@ -10664,6 +10284,13 @@ function Invoke-Dispatch {
             $script:LastMessagePath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('lastMessagePath', 'last_message_path'))
             $script:ErrorStreamPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('errorStreamPath', 'error_stream_path'))
             $script:ThreadIdPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('threadIdPath', 'thread_id_path'))
+            $inspectScopePlanPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('scopePlanPath', 'scope_plan_path'))
+            if (-not [string]::IsNullOrWhiteSpace($inspectScopePlanPath)) {
+                $script:ScopePlanPath = $inspectScopePlanPath
+                if ($null -ne $script:InvocationBoundParameters -and $script:InvocationBoundParameters.Contains('ScopePlanPath')) {
+                    $script:InvocationBoundParameters['ScopePlanPath'] = $inspectScopePlanPath
+                }
+            }
             $inspectResult = Invoke-Inspect
             $inspectSuccess = [bool](Get-DispatchResultPropertyValue -Object $inspectResult -Names @('success'))
             $inspectLastEventType = [string](Get-DispatchResultPropertyValue -Object $inspectResult -Names @('lastEventType', 'last_event_type'))
@@ -10679,6 +10306,47 @@ function Invoke-Dispatch {
             $result.inspect_status = if ($inspectSuccess) { 'completed' } else { 'failed' }
             $result.inspect_success = $inspectSuccess
             $result.inspect_result_path = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('inspectResultPath', 'inspect_result_path'))
+            $inspectExitCodeValue = 0
+            $hasNonzeroInspectExitCode = $null -ne $inspectProcessExitCode -and [int]::TryParse([string]$inspectProcessExitCode, [ref]$inspectExitCodeValue) -and $inspectExitCodeValue -ne 0
+            $continuationExecutionFailed = [string]$SessionMode -ieq 'continuation' -and -not $inspectSuccess -and ([string]$inspectLastEventType -ceq 'turn.failed' -or $hasNonzeroInspectExitCode)
+            if ($continuationExecutionFailed) {
+                $requestDocument = if ($null -eq $script:RequestContext) { $null } else { $script:RequestContext.document }
+                $continuationFailureHandoff = Get-DispatchContinuationFailureHandoff `
+                    -RequestPath ([string]$RequestPath) `
+                    -RequestDocument $requestDocument `
+                    -ScopePlanPath ([string](Get-DispatchResultPropertyValue -Object $startResult -Names @('scopePlanPath', 'scope_plan_path'))) `
+                    -EventStreamPath $eventStreamPathValue `
+                    -RunRecordPath $runRecordPathValue `
+                    -LastMessagePath ([string](Get-DispatchResultPropertyValue -Object $startResult -Names @('lastMessagePath', 'last_message_path'))) `
+                    -InspectResultPath ([string](Get-DispatchResultPropertyValue -Object $startResult -Names @('inspectResultPath', 'inspect_result_path'))) `
+                    -SourceRoot $sourceRootPath `
+                    -ExecutionRoot $executionRootPath `
+                    -DispatchRoot $dispatchRootPath `
+                    -LineSlug ([string]$LineSlug) `
+                    -DispatchSlug ([string]$DispatchSlug) `
+                    -DispatchExecutionId $dispatchToken `
+                    -FallbackSelectedUnits @($script:ResolvedRequestedUnit)
+                $writtenContinuationReceipt = Write-DispatchFailureReceipt `
+                    -Path $failureReceiptPathValue `
+                    -LineSlug ([string]$LineSlug) `
+                    -DispatchSlug ([string]$DispatchSlug) `
+                    -DispatchExecutionId $dispatchToken `
+                    -ErrorCode ([string]$result.error_code) `
+                    -ErrorMessage ([string]$result.error) `
+                    -SourceRoot $sourceRootPath `
+                    -ExecutionRoot $executionRootPath `
+                    -DispatchRoot $dispatchRootPath `
+                    -FailedStage 'inspect' `
+                    -ProcessStarted $processStarted `
+                    -TargetPath @($TargetPath) `
+                    -ContinuationHandoff $continuationFailureHandoff
+                $failureReceiptWritten = $true
+                $failureReceiptSha256Value = [string]$writtenContinuationReceipt.Sha256
+                $result.failure_receipt_path = $writtenContinuationReceipt.Path
+                $result.failure_receipt_sha256 = $failureReceiptSha256Value
+                $result.failure_receipt_saved = $true
+                $result.continuation_handoff = $continuationFailureHandoff
+            }
             $writtenFinalResult = Write-DispatchAtomicJsonDocument -Path $resultPathValue -Document $result -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
             $result.result_path = $writtenFinalResult.Path
             $result.result_sha256 = $writtenFinalResult.Hash
@@ -10716,13 +10384,58 @@ function Invoke-Dispatch {
         $failureResult.dispatch_execution_id = $dispatchToken
         $failureResult.failure_receipt_path = if ([string]::IsNullOrWhiteSpace($failureReceiptPathValue)) { $null } else { $failureReceiptPathValue }
         $failureResult.failure_receipt_saved = $false
+        if ($processStarted -and [string]$SessionMode -ieq 'continuation') {
+            if ($null -eq $continuationFailureHandoff) {
+                $requestDocument = if ($null -eq $script:RequestContext) { $null } else { $script:RequestContext.document }
+                $handoffScopePlanPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('scopePlanPath', 'scope_plan_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffScopePlanPath)) { $handoffScopePlanPath = [string]$ScopePlanPath }
+                $handoffEventStreamPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('eventStreamPath', 'event_stream_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffEventStreamPath)) { $handoffEventStreamPath = [string]$EventStreamPath }
+                $handoffRunRecordPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('runRecordPath', 'run_record_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffRunRecordPath)) { $handoffRunRecordPath = [string]$RunRecordPath }
+                $handoffLastMessagePath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('lastMessagePath', 'last_message_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffLastMessagePath)) { $handoffLastMessagePath = [string]$LastMessagePath }
+                $handoffInspectResultPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('inspectResultPath', 'inspect_result_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffInspectResultPath)) { $handoffInspectResultPath = [string]$InspectResultPath }
+                $handoffRequestPath = [string]$RequestPath
+                if ([string]::IsNullOrWhiteSpace($handoffRequestPath) -and $null -ne $script:RequestContext) {
+                    $handoffRequestPath = [string]$script:RequestContext.path
+                }
+                $handoffParameters = @{
+                    RequestPath = $handoffRequestPath
+                    RequestDocument = $requestDocument
+                    ScopePlanPath = $handoffScopePlanPath
+                    EventStreamPath = $handoffEventStreamPath
+                    RunRecordPath = $handoffRunRecordPath
+                    LastMessagePath = $handoffLastMessagePath
+                    InspectResultPath = $handoffInspectResultPath
+                    SourceRoot = if ([string]::IsNullOrWhiteSpace($sourceRootPath)) { [string]$SourceRoot } else { $sourceRootPath }
+                    ExecutionRoot = if ([string]::IsNullOrWhiteSpace($executionRootPath)) { [string]$ExecutionRoot } else { $executionRootPath }
+                    DispatchRoot = if ([string]::IsNullOrWhiteSpace($dispatchRootPath)) { [string]$DispatchRoot } else { $dispatchRootPath }
+                    LineSlug = [string]$LineSlug
+                    DispatchSlug = [string]$DispatchSlug
+                    DispatchExecutionId = $dispatchToken
+                    FallbackSelectedUnits = @($script:ResolvedRequestedUnit)
+                }
+                $continuationFailureHandoff = Get-DispatchContinuationFailureHandoff @handoffParameters
+            }
+            if ($null -ne $continuationFailureHandoff) {
+                $failureResult.continuation_handoff = $continuationFailureHandoff
+            }
+        }
         $failureResult.failure_receipt_sha256 = $null
-        if (-not [string]::IsNullOrWhiteSpace($failureReceiptPathValue)) {
+        if ($failureReceiptWritten) {
+            $failureResult.failure_receipt_path = $failureReceiptPathValue
+            $failureResult.failure_receipt_sha256 = $failureReceiptSha256Value
+            $failureResult.failure_receipt_saved = $true
+            $failureResult.continuation_handoff = $continuationFailureHandoff
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($failureReceiptPathValue)) {
             try {
                 $receiptSourceRoot = if ([string]::IsNullOrWhiteSpace($sourceRootPath)) { [string]$SourceRoot } else { $sourceRootPath }
                 $receiptExecutionRoot = if ([string]::IsNullOrWhiteSpace($executionRootPath)) { $receiptSourceRoot } else { $executionRootPath }
                 $receiptDispatchRoot = if ([string]::IsNullOrWhiteSpace($DispatchRoot)) { $null } else { [string]$DispatchRoot }
-                $writtenReceipt = Write-DispatchFailureReceipt -Path $failureReceiptPathValue -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -DispatchExecutionId $dispatchToken -ErrorCode $errorCode -ErrorMessage $failureException.Message -SourceRoot $receiptSourceRoot -ExecutionRoot $receiptExecutionRoot -DispatchRoot $receiptDispatchRoot -FailedStage $failedStage -ProcessStarted $processStarted -TargetPath @($TargetPath)
+                $writtenReceipt = Write-DispatchFailureReceipt -Path $failureReceiptPathValue -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -DispatchExecutionId $dispatchToken -ErrorCode $errorCode -ErrorMessage $failureException.Message -SourceRoot $receiptSourceRoot -ExecutionRoot $receiptExecutionRoot -DispatchRoot $receiptDispatchRoot -FailedStage $failedStage -ProcessStarted $processStarted -TargetPath @($TargetPath) -ContinuationHandoff $continuationFailureHandoff
                 $failureResult.failure_receipt_path = $writtenReceipt.Path
                 $failureResult.failure_receipt_sha256 = $writtenReceipt.Sha256
                 $failureResult.failure_receipt_saved = $true
@@ -10733,6 +10446,45 @@ function Invoke-Dispatch {
                 $failureResult.error = 'DispatchFailureReceiptPersistenceFailed：' + $persistenceMessage
                 $failureResult.failure_receipt_error = $persistenceMessage
                 $failureResult.failure_receipt_saved = $false
+        if ($processStarted -and [string]$SessionMode -ieq 'continuation') {
+            if ($null -eq $continuationFailureHandoff) {
+                $requestDocument = if ($null -eq $script:RequestContext) { $null } else { $script:RequestContext.document }
+                $handoffScopePlanPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('scopePlanPath', 'scope_plan_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffScopePlanPath)) { $handoffScopePlanPath = [string]$ScopePlanPath }
+                $handoffEventStreamPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('eventStreamPath', 'event_stream_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffEventStreamPath)) { $handoffEventStreamPath = [string]$EventStreamPath }
+                $handoffRunRecordPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('runRecordPath', 'run_record_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffRunRecordPath)) { $handoffRunRecordPath = [string]$RunRecordPath }
+                $handoffLastMessagePath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('lastMessagePath', 'last_message_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffLastMessagePath)) { $handoffLastMessagePath = [string]$LastMessagePath }
+                $handoffInspectResultPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('inspectResultPath', 'inspect_result_path'))
+                if ([string]::IsNullOrWhiteSpace($handoffInspectResultPath)) { $handoffInspectResultPath = [string]$InspectResultPath }
+                $handoffRequestPath = [string]$RequestPath
+                if ([string]::IsNullOrWhiteSpace($handoffRequestPath) -and $null -ne $script:RequestContext) {
+                    $handoffRequestPath = [string]$script:RequestContext.path
+                }
+                $handoffParameters = @{
+                    RequestPath = $handoffRequestPath
+                    RequestDocument = $requestDocument
+                    ScopePlanPath = $handoffScopePlanPath
+                    EventStreamPath = $handoffEventStreamPath
+                    RunRecordPath = $handoffRunRecordPath
+                    LastMessagePath = $handoffLastMessagePath
+                    InspectResultPath = $handoffInspectResultPath
+                    SourceRoot = if ([string]::IsNullOrWhiteSpace($sourceRootPath)) { [string]$SourceRoot } else { $sourceRootPath }
+                    ExecutionRoot = if ([string]::IsNullOrWhiteSpace($executionRootPath)) { [string]$ExecutionRoot } else { $executionRootPath }
+                    DispatchRoot = if ([string]::IsNullOrWhiteSpace($dispatchRootPath)) { [string]$DispatchRoot } else { $dispatchRootPath }
+                    LineSlug = [string]$LineSlug
+                    DispatchSlug = [string]$DispatchSlug
+                    DispatchExecutionId = $dispatchToken
+                    FallbackSelectedUnits = @($script:ResolvedRequestedUnit)
+                }
+                $continuationFailureHandoff = Get-DispatchContinuationFailureHandoff @handoffParameters
+            }
+            if ($null -ne $continuationFailureHandoff) {
+                $failureResult.continuation_handoff = $continuationFailureHandoff
+            }
+        }
                 $persistenceException = New-Object System.InvalidOperationException($failureResult.error)
                 $persistenceException.Data['operationResult'] = $failureResult
                 throw $persistenceException
@@ -11835,10 +11587,6 @@ function Get-DispatchFailureReasonCode {
             'CodexLaunchFailed',
             'ParentOptionsMismatch',
             'ParentOptionsUnknown',
-            'WorktreeAclResidue',
-            'WorktreeAclUnknown',
-            'WorktreeAclReadFailed',
-            'WorktreeAclContinuationDenied',
             'InterruptedUnknownResumeRejected',
             'InterruptedUnknown',
             'CrossLine',
@@ -12038,7 +11786,7 @@ function Read-DispatchRunRecord {
     }
     $record = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $pathValue)
     if ($null -eq $record -or $record -isnot [pscustomobject]) { throw 'RunRecord 必須為 JSON object。' }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'acl_gate', 'sandbox_acl_baseline', 'sandbox_acl_evidence', 'unknown_interruption', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'quota_after_path', 'quota_after_sha256', 'request_path', 'request_sha256', 'request_operation')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'unknown_interruption', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'quota_after_path', 'quota_after_sha256', 'request_path', 'request_sha256', 'request_operation')) {
         if ($null -eq $record.PSObject.Properties[$name]) {
             $value = $null
             if ($name -eq 'attempt_parent_run_id') {
@@ -12061,98 +11809,6 @@ function Read-DispatchRunRecord {
     }
     if ($null -eq $record.reasoning_effort_evidence) {
         $record.reasoning_effort_evidence = ConvertTo-DispatchEvidenceGroup -Evidence $null -Field 'model_reasoning_effort'
-    }
-    $sandboxBaseline = Get-DispatchJsonProperty -Object $record -Name 'sandbox_acl_baseline'
-    if ($null -ne $sandboxBaseline) {
-        $baselineStatus = [string](Get-DispatchJsonProperty -Object $sandboxBaseline -Name 'status')
-        if ($baselineStatus -notin @('known', 'unknown', 'failed')) {
-            throw 'RunRecord sandbox_acl_baseline status 異常。'
-        }
-        $baselinePath = [string](Get-DispatchJsonProperty -Object $sandboxBaseline -Name 'path')
-        if ([string]::IsNullOrWhiteSpace($baselinePath) -or -not [string]::Equals((Resolve-AbsolutePath $baselinePath), (Resolve-AbsolutePath $ExecutionRoot), [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'RunRecord sandbox_acl_baseline path 必須指向 executionRoot。'
-        }
-        $baselineEntries = @((Get-DispatchJsonProperty -Object $sandboxBaseline -Name 'entries') | Where-Object { $null -ne $_ })
-        if ($baselineEntries.Count -eq 0) {
-            $baselineEntries = @((Get-DispatchJsonProperty -Object $sandboxBaseline -Name 'explicit_entries') | Where-Object { $null -ne $_ })
-        }
-        foreach ($entry in $baselineEntries) {
-            if ($null -eq $entry) {
-                throw 'RunRecord sandbox_acl_baseline entries 不得包含 null。'
-            }
-            foreach ($name in @('identity', 'identity_resolution', 'rights', 'canonical', 'fingerprint')) {
-                $value = Get-DispatchJsonProperty -Object $entry -Name $name
-                if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
-                    throw ('RunRecord sandbox_acl_baseline entry 缺少欄位：' + $name)
-                }
-            }
-            if ([string](Get-DispatchJsonProperty -Object $entry -Name 'identity_resolution') -notin @('resolved', 'unresolved')) {
-                throw 'RunRecord sandbox_acl_baseline identity_resolution 異常。'
-            }
-            if ([string](Get-DispatchJsonProperty -Object $entry -Name 'fingerprint') -notmatch '^[a-fA-F0-9]{64}$') {
-                throw 'RunRecord sandbox_acl_baseline entry fingerprint 異常。'
-            }
-        }
-        $baselineFingerprint = [string](Get-DispatchJsonProperty -Object $sandboxBaseline -Name 'fingerprint')
-        if ($baselineStatus -eq 'known' -and $baselineFingerprint -notmatch '^[a-fA-F0-9]{64}$') {
-            throw 'RunRecord sandbox_acl_baseline fingerprint 異常。'
-        }
-        if ($baselineStatus -in @('unknown', 'failed') -and [string]::IsNullOrWhiteSpace([string](Get-DispatchJsonProperty -Object $sandboxBaseline -Name 'error'))) {
-            throw 'RunRecord sandbox_acl_baseline 失敗狀態缺少 error。'
-        }
-        $baselineCapturedAt = [string](Get-DispatchJsonProperty -Object $sandboxBaseline -Name 'captured_at_utc')
-        $baselineCapturedAtValue = [DateTimeOffset]::MinValue
-        if ([string]::IsNullOrWhiteSpace($baselineCapturedAt) -or -not [DateTimeOffset]::TryParse($baselineCapturedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$baselineCapturedAtValue)) {
-            throw 'RunRecord sandbox_acl_baseline captured_at_utc 異常。'
-        }
-    }
-    $sandboxEvidence = Get-DispatchJsonProperty -Object $record -Name 'sandbox_acl_evidence'
-    if ($null -ne $sandboxEvidence) {
-        $captureStatus = [string](Get-DispatchJsonProperty -Object $sandboxEvidence -Name 'capture_status')
-        if ($captureStatus -notin @('pending', 'captured', 'no_match', 'unknown', 'failed', 'rejected')) {
-            throw 'RunRecord sandbox_acl_evidence capture_status 異常。'
-        }
-        $normalCompletion = Get-DispatchJsonProperty -Object $sandboxEvidence -Name 'normal_completion'
-        $continuationAllowed = Get-DispatchJsonProperty -Object $sandboxEvidence -Name 'continuation_allowed'
-        if ($normalCompletion -isnot [bool] -or $continuationAllowed -isnot [bool]) {
-            throw 'RunRecord sandbox_acl_evidence completion 欄位必須為 boolean。'
-        }
-        if ($continuationAllowed -and -not $normalCompletion) {
-            throw 'RunRecord sandbox_acl_evidence 不得在未正常完成時允許續行。'
-        }
-        $evidenceEntries = @((Get-DispatchJsonProperty -Object $sandboxEvidence -Name 'entries') | Where-Object { $null -ne $_ })
-        if ($captureStatus -eq 'pending' -and $evidenceEntries.Count -gt 0) {
-            throw 'RunRecord sandbox_acl_evidence pending 不得包含 entries。'
-        }
-        $capturedAt = [string](Get-DispatchJsonProperty -Object $sandboxEvidence -Name 'captured_at_utc')
-        $capturedAtValue = [DateTimeOffset]::MinValue
-        if ($captureStatus -ne 'pending' -and ([string]::IsNullOrWhiteSpace($capturedAt) -or -not [DateTimeOffset]::TryParse($capturedAt, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$capturedAtValue))) {
-            throw 'RunRecord sandbox_acl_evidence captured_at_utc 異常。'
-        }
-        $evidenceFingerprint = [string](Get-DispatchJsonProperty -Object $sandboxEvidence -Name 'fingerprint')
-        if (-not [string]::IsNullOrWhiteSpace($evidenceFingerprint) -and $evidenceFingerprint -notmatch '^[a-fA-F0-9]{64}$') {
-            throw 'RunRecord sandbox_acl_evidence fingerprint 異常。'
-        }
-        if ($captureStatus -eq 'captured' -and (-not $normalCompletion -or -not $continuationAllowed)) {
-            throw 'RunRecord captured sandbox_acl_evidence 必須為正常完成且允許續行。'
-        }
-        foreach ($entry in $evidenceEntries) {
-            if ($null -eq $entry) {
-                throw 'RunRecord sandbox_acl_evidence entries 不得包含 null。'
-            }
-            foreach ($name in @('identity', 'identity_resolution', 'rights', 'canonical', 'fingerprint')) {
-                $value = Get-DispatchJsonProperty -Object $entry -Name $name
-                if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) {
-                    throw ('RunRecord sandbox_acl_evidence entry 缺少欄位：' + $name)
-                }
-            }
-            if ([string](Get-DispatchJsonProperty -Object $entry -Name 'identity_resolution') -notin @('resolved', 'unresolved')) {
-                throw 'RunRecord sandbox_acl_evidence identity_resolution 異常。'
-            }
-            if ([string](Get-DispatchJsonProperty -Object $entry -Name 'fingerprint') -notmatch '^[a-fA-F0-9]{64}$') {
-                throw 'RunRecord sandbox_acl_evidence fingerprint 異常。'
-            }
-        }
     }
     if ($null -ne $record.parent_options) {
         $parentFingerprint = [string](Get-DispatchJsonProperty -Object $record.parent_options -Name 'fingerprint')
@@ -13368,9 +13024,6 @@ function Invoke-Start {
     $parentOptionsModel = $null
     $parentOptionsGate = $null
     $processGate = $null
-    $aclGate = $null
-    $sandboxAclBaseline = $null
-    $sandboxAclEvidence = $null
     $effectiveCodexHomePath = $null
     $prepareBinding = $null
     $prepareResultPathValue = $null
@@ -13703,9 +13356,6 @@ function Invoke-Start {
         parent_options = $null
         parent_options_sha256 = $null
         parent_options_status = 'unknown'
-        acl_gate = $null
-        sandbox_acl_baseline = $null
-        sandbox_acl_evidence = $null
          quota_before_path = $null
          quota_before_sha256 = $null
          quota_before_captured_at_utc = $null
@@ -13773,23 +13423,6 @@ function Invoke-Start {
         $phase = 'preparation'
         throw ('ProcessAlive：Start process gate 未確認 stopped；evidence=' + (ConvertTo-Json -InputObject $processGate -Depth 20 -Compress))
     }
-    $continuationAclRecord = if ($null -eq $previousRun) { $null } else { $previousRun.LatestActualStartRecord }
-    if ($null -ne $previousRun -and $null -eq $continuationAclRecord) {
-        $phase = 'preparation'
-        throw 'WorktreeAclContinuationDenied：續行沒有可作為 ACL 錨點的 actual-start RunRecord。'
-    }
-    $aclGate = Get-WorktreeAclGate -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -WriteMode $writeModeValue -ContinuationRecord $continuationAclRecord
-    if ($aclGate.status -in @('residue', 'unknown', 'failed', 'continuation-denied')) {
-        $phase = 'preparation'
-        throw ($aclGate.rejection_code + '：ACL gate status=' + $aclGate.status)
-    }
-    if ($aclGate.status -eq 'not-applicable') {
-        $sandboxAclEvidence = $null
-    }
-    else {
-        $sandboxAclEvidence = New-SandboxAclEvidenceDocument -Entries @() -CaptureStatus 'pending' -NormalCompletion $false -ContinuationAllowed $false
-    }
-
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
         $sessionModeValue = 'continuation'
     }
@@ -13900,7 +13533,7 @@ function Invoke-Start {
     if ($ContinueFromScopePlan -and [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
         throw 'ContinueFromScopePlan 僅允許在存在有效 AnchorRecord 的續行中使用。'
     }
-    if ($ContinueFromScopePlan -and -not [string]::Equals($SessionMode, 'continuation', [StringComparison]::Ordinal)) {
+    if ($ContinueFromScopePlan -and -not [string]::Equals($SessionMode, 'continuation', [StringComparison]::OrdinalIgnoreCase)) {
         throw 'ContinueFromScopePlan 僅允許在 SessionMode=continuation 時使用。'
     }
     if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId) -and [string]::IsNullOrWhiteSpace($scopePlanPathValue)) {
@@ -13953,7 +13586,7 @@ function Invoke-Start {
         $null = Test-ScopePlanHashRecord @hashRecordParameters
         $existingScopePlan = Read-ScopePlanFile -Path $anchorScopePlanPath
         if ($ContinueFromScopePlan) {
-            if (-not [string]::Equals($SessionMode, 'continuation', [StringComparison]::Ordinal)) {
+            if (-not [string]::Equals($SessionMode, 'continuation', [StringComparison]::OrdinalIgnoreCase)) {
                 throw 'ContinueFromScopePlan 僅允許在 SessionMode=continuation 時使用。'
             }
             if (-not (Test-ContinuationScopePlan -ScopePlan $existingScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -UnitKind $unitKindValue -Units @($existingScopePlan.requested_units))) {
@@ -14162,9 +13795,6 @@ function Invoke-Start {
     $runRecord.parent_options = $parentOptionsModel
     $runRecord.parent_options_sha256 = $parentOptionsModel.fingerprint
     $runRecord.parent_options_status = 'confirmed'
-    $runRecord.acl_gate = $aclGate
-    $runRecord.sandbox_acl_baseline = $sandboxAclBaseline
-    $runRecord.sandbox_acl_evidence = $sandboxAclEvidence
     $runRecord.quota_before_path = $beforeSnapshotPathValue
     $runRecord.quota_before_sha256 = $beforeSnapshotSha256Value
     $runRecord.quota_before_captured_at_utc = $beforeSnapshotCapturedAtUtcValue
@@ -14193,35 +13823,6 @@ function Invoke-Start {
     $runRecord.baseline_path = if ($null -ne $baselineBinding) { $baselineBinding.Path } else { $null }
     $runRecord.baseline_sha256 = if ($null -ne $baselineBinding) { $baselineBinding.Sha256 } else { $null }
     $runRecord.baseline_resolution = $baselineResolution
-    if ($isWorktreeStart) {
-        try {
-            $sandboxAclBaseline = Get-ExplicitAclSnapshot -Path $executionRootPath
-        }
-        catch {
-            $sandboxAclBaseline = [ordered]@{
-                status = 'failed'
-                path = $executionRootPath
-                fingerprint = $null
-                explicit_entries = @()
-                error = $_.Exception.Message
-            }
-        }
-        $runRecord.sandbox_acl_baseline = $sandboxAclBaseline
-        if ($sandboxAclBaseline.status -eq 'unknown') {
-            $failureReasonCode = 'WorktreeAclUnknown'
-            throw ('WorktreeAclUnknown：Start spawn 前無法取得 sandbox ACL baseline：' + [string]$sandboxAclBaseline.error)
-        }
-        if ($sandboxAclBaseline.status -eq 'failed') {
-            $failureReasonCode = 'WorktreeAclReadFailed'
-            throw ('WorktreeAclReadFailed：Start spawn 前讀取 sandbox ACL baseline 失敗：' + [string]$sandboxAclBaseline.error)
-        }
-    if ($sandboxAclBaseline.status -ne 'known') {
-            $failureReasonCode = 'WorktreeAclReadFailed'
-            throw 'WorktreeAclReadFailed：Start spawn 前 sandbox ACL baseline 狀態無法驗證。'
-        }
-        $sandboxAclEvidence = New-SandboxAclEvidenceDocument -Entries @() -CaptureStatus 'pending' -NormalCompletion $false -ContinuationAllowed $false
-        $runRecord.sandbox_acl_evidence = $sandboxAclEvidence
-    }
     $runRecord.prompt_path = $promptPathValue
     $runRecord.prompt_source_path = $promptSourcePathValue
     $runRecord.prompt_source_sha256 = $promptSourceSha256Value
@@ -14379,8 +13980,6 @@ function Invoke-Start {
             effectiveCodexHome = $effectiveCodexHomePath
             parentOptions = $parentOptionsModel
             parentOptionsSha256 = if ($null -eq $parentOptionsModel) { $null } else { $parentOptionsModel.fingerprint }
-            aclGate = $aclGate
-            sandboxAclEvidence = $sandboxAclEvidence
             startedAtUtc = $startedAtUtcValue
             resumeDiagnostics = $resumeDiagnostics
             budgetMonitorPath = $monitorPathValue
@@ -14526,9 +14125,6 @@ function Invoke-Start {
                     $runRecord.parent_options_sha256 = $parentOptionsModel.fingerprint
                     $runRecord.parent_options_status = 'confirmed'
                 }
-                if ($null -ne $aclGate) { $runRecord.acl_gate = $aclGate }
-                if ($null -ne $sandboxAclBaseline) { $runRecord.sandbox_acl_baseline = $sandboxAclBaseline }
-                if ($null -ne $sandboxAclEvidence) { $runRecord.sandbox_acl_evidence = $sandboxAclEvidence }
                 if (-not [string]::IsNullOrWhiteSpace($beforeSnapshotPathValue) -and (Test-Path -LiteralPath $beforeSnapshotPathValue -PathType Leaf)) {
                     $runRecord.quota_before_path = $beforeSnapshotPathValue
                     $runRecord.quota_before_sha256 = Get-FileSha256 -Path $beforeSnapshotPathValue
@@ -15241,7 +14837,6 @@ function Resolve-DispatchInspectBinding {
 
 function Invoke-Inspect {
     $modelEvidence = $null
-    $sandboxAclEvidence = $null
     $requiredOutputGate = $null
     $evidencePackInfo = $null
     $diagnosis = $null
@@ -15489,11 +15084,6 @@ function Invoke-Inspect {
         if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) {
             $unknownStderr = Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8
         }
-        $recordWriteMode = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'write_mode')
-        if ([string]::IsNullOrWhiteSpace($recordWriteMode)) {
-            $recordWriteMode = if ([string]::Equals((Resolve-AbsolutePath -Path $SourceRoot), (Resolve-AbsolutePath -Path $ExecutionRoot), [StringComparison]::OrdinalIgnoreCase)) { 'direct-write' } else { 'worktree' }
-        }
-        $unknownAclGate = Get-WorktreeAclGate -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -WriteMode $recordWriteMode -ContinuationRecord $inspectRun.Record
         $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'InterruptedUnknown' -Observation '事件流在 turn.started 後沒有後續事件，且 process exit code 非零。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $unknownStderr
         $unknownInterruption = [ordered]@{
             status = 'InterruptedUnknown'
@@ -15501,7 +15091,6 @@ function Invoke-Inspect {
             last_event_type = $eventTailType
             process_exit_code = [int]$ProcessExitCode
             event_tail = @($rawEventLines.ToArray() | Select-Object -Last 3)
-            acl_gate = $unknownAclGate
         }
         if ($null -eq $inspectRun.Record.PSObject.Properties['unknown_interruption']) {
             $inspectRun.Record | Add-Member -MemberType NoteProperty -Name 'unknown_interruption' -Value $unknownInterruption
@@ -15877,14 +15466,6 @@ function Invoke-Inspect {
     if ($null -ne $closeMonitorWriteFailure) {
         $budgetMonitor += @($closeMonitorWriteFailure)
     }
-    $existingSandboxEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'sandbox_acl_evidence'
-    if ($null -ne $existingSandboxEvidence) {
-        $normalCompletion = $lastEventType -eq 'turn.completed' -and [int]$ProcessExitCode -eq 0
-        $inspectSandboxEvidence = Get-SandboxAclInspectEvidence -Record $inspectRun.Record -ExecutionRoot $ExecutionRoot -NormalCompletion $normalCompletion
-        $inspectRun.Record.sandbox_acl_evidence = $inspectSandboxEvidence
-        $sandboxAclEvidence = $inspectSandboxEvidence
-        $null = Write-DispatchRunRecord -Record $inspectRun.Record -Update
-    }
     $advisorReportPathValue = $AdvisorConsultReportPath
     if ($TaskType -eq 'advisor-consult') {
         if ($null -eq $scopePlan -or $scopePlan.task_type -ne 'advisor-consult') {
@@ -15946,7 +15527,6 @@ function Invoke-Inspect {
         scopePlan        = $scopePlan
         advisorConsultReportPath = if ($TaskType -eq 'advisor-consult') { $advisorReportWrittenPath } else { $null }
          diagnosis        = $diagnosis
-         sandboxAclEvidence = $sandboxAclEvidence
          stderr           = $inspectStderr
     }
     if ($null -ne $dispatchInspectBinding) {

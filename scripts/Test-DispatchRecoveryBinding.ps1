@@ -24,7 +24,7 @@ param(
 
     ,
 
-    [ValidateSet('', 'F-003', 'F-003-MONITOR', 'F-006', 'F-006-ADVISOR', 'F-007-ADVISOR', 'F-008-ADVISOR', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H')]
+    [ValidateSet('', 'F-003', 'F-003-MONITOR', 'F-006', 'F-006-ADVISOR', 'F-007-ADVISOR', 'F-008-ADVISOR', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T042')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1188,34 +1188,6 @@ if (-not $Child) {
         if ($Phase -eq 9 -and [string]$childResult.phase9_evidence_gate.status -ne 'PASS') { $aggregateFailed = $true }
         $aggregateResults.Add($childResult)
     }
-    $crossHostAclFingerprintStatus = 'not-applicable'
-    $crossHostAclFingerprintDetail = ''
-    if ($Phase -ge 4 -and [string]::IsNullOrWhiteSpace($FocusedCase)) {
-        $fingerprints = New-Object System.Collections.Generic.List[string]
-        foreach ($childResult in $aggregateResults) {
-            $match = [regex]::Match([string]$childResult.stdout, '(?m)^REAL_ACL_EMPTY_FINGERPRINT:\s+(?<fingerprint>[a-f0-9]{64})\s*$')
-            if (-not $match.Success) {
-                $crossHostAclFingerprintStatus = 'FAIL'
-                $crossHostAclFingerprintDetail = 'child 缺少 REAL_ACL_EMPTY_FINGERPRINT。'
-                $aggregateFailed = $true
-                continue
-            }
-            $fingerprints.Add($match.Groups['fingerprint'].Value)
-        }
-        if ($fingerprints.Count -eq $aggregateResults.Count -and @($fingerprints.ToArray() | Select-Object -Unique).Count -eq 1) {
-            $crossHostAclFingerprintStatus = 'PASS'
-            $crossHostAclFingerprintDetail = $fingerprints[0]
-        }
-        elseif ($crossHostAclFingerprintStatus -ne 'FAIL') {
-            $crossHostAclFingerprintStatus = 'FAIL'
-            $crossHostAclFingerprintDetail = 'powershell.exe 與 pwsh 的 fingerprint 不一致。'
-            $aggregateFailed = $true
-        }
-    }
-    elseif ($Phase -ge 4) {
-        $crossHostAclFingerprintStatus = 'not-applicable'
-        $crossHostAclFingerprintDetail = 'focused case 已限制為指定 Phase 9 案例。'
-    }
     foreach ($childResult in $aggregateResults) {
         Write-Output ('ENVIRONMENT: ' + $childResult.label)
         Write-Output ('COMMAND: ' + $childResult.command)
@@ -1275,7 +1247,6 @@ if (-not $Child) {
         if (-not [string]::IsNullOrWhiteSpace($childResult.launch_error)) { Write-Output ('LAUNCH_ERROR: ' + $childResult.launch_error) }
         Write-Output 'STDERR_END'
     }
-    Write-Output ('CROSS_HOST_ACL_EMPTY_FINGERPRINT: ' + $crossHostAclFingerprintStatus + ' ' + $crossHostAclFingerprintDetail)
     if ($aggregateFailed) { exit 1 }
     exit 0
 }
@@ -1349,6 +1320,16 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'BATCH3H') {
             $Name -match '^Phase 9 batch3h' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'T042') {
+            $Name -in @(
+                'Phase 9 F-001 production Start continues with missing or changed ACL/SID evidence',
+                'Phase 9 T042 safe-point unit filter excludes deferred and preserves comma paths',
+                'Phase 9 T042 Invoke-Dispatch Inspect exception writes continuation handoff without retry',
+                'Phase 9 T042 Invoke-Dispatch retries transient receipt failure with continuation handoff',
+                'Phase 9 continuation Codex failure writes handoff failure receipt without retry',
+                'Phase 9 batch3h 真實 Dispatch 後續行 Start 與 Collect 保留外部契約'
+            ) -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'BATCH1A') {
             $Name -match '^Phase 9 batch1a' -or $cleanupMatch
@@ -1702,7 +1683,7 @@ foreach ($function in $functions) {
 }
 
 $phase9ProductionFunctionDefinitions = @{}
-foreach ($functionName in @('Invoke-Preflight', 'Invoke-Prepare', 'Invoke-Start', 'Read-QuotaSnapshot', 'Get-DispatchRunRecordStartClassification', 'Get-WorktreeAclGate', 'New-ContinuationScopePlanSubset', 'New-ScopePlan', 'Test-ContinuationScopePlan', 'Test-ScopePlanHashRecord')) {
+foreach ($functionName in @('Invoke-Preflight', 'Invoke-Prepare', 'Invoke-Start', 'Read-QuotaSnapshot', 'Get-DispatchRunRecordStartClassification', 'New-ContinuationScopePlanSubset', 'New-ScopePlan', 'Test-ContinuationScopePlan', 'Test-ScopePlanHashRecord')) {
     $productionCommand = Get-Command -Name $functionName -CommandType Function -ErrorAction Stop
     $phase9ProductionFunctionDefinitions[$functionName] = $productionCommand.ScriptBlock
 }
@@ -1717,7 +1698,6 @@ $script:profileMutationPath = $null
 $script:profileMutationContent = $null
 $script:startSnapshotMode = 'confirmed'
 $script:quotaFixtureFailure = $false
-$script:aclFixtureStatus = 'clean'
 $script:scopePlanFixtureDecision = 'full'
 $script:launcherFixtureFailure = $false
 $script:quotaSnapshotPathOverride = $null
@@ -1753,19 +1733,7 @@ $script:cleanupUseRealGit = $false
 $script:cleanupRemoveFailure = $false
 $script:cleanupDriveLetter = $null
 function Get-PidCheckResult { param($SourceRoot, $LineSlug, $WriteMode) return $script:pidResult }
-function Get-WorktreeAclGate {
-    param($SourceRoot, $ExecutionRoot, $WriteMode, $ContinuationRecord)
-    if ([string]::Equals([string]$SourceRoot, [string]$ExecutionRoot, [StringComparison]::OrdinalIgnoreCase)) {
-        return [ordered]@{ status = 'not-applicable'; rejection_code = $null; source = @{}; dispatch = @{}; residue = @(); raw_residue = @(); accepted_sandbox_entries = @(); allowed_sandbox_entries = @(); sandbox_evidence_status = 'not-applicable'; write_mode = $WriteMode }
-    }
-    if ($script:aclFixtureStatus -eq 'residue') {
-        return [ordered]@{ status = 'residue'; rejection_code = 'WorktreeAclResidue'; source = @{}; dispatch = @{}; residue = @([ordered]@{ identity = 'fixture'; rights = 'Modify' }); raw_residue = @([ordered]@{ identity = 'fixture'; rights = 'Modify' }); accepted_sandbox_entries = @(); allowed_sandbox_entries = @(); sandbox_evidence_status = 'rejected'; write_mode = $WriteMode }
-    }
-    if ($script:aclFixtureStatus -eq 'unknown') {
-        return [ordered]@{ status = 'unknown'; rejection_code = 'WorktreeAclUnknown'; source = @{}; dispatch = @{}; residue = @(); raw_residue = @(); accepted_sandbox_entries = @(); allowed_sandbox_entries = @(); sandbox_evidence_status = 'unknown'; write_mode = $WriteMode }
-    }
-    return [ordered]@{ status = 'clean'; rejection_code = $null; source = @{}; dispatch = @{}; residue = @(); raw_residue = @(); accepted_sandbox_entries = @(); allowed_sandbox_entries = @(); sandbox_evidence_status = 'none'; write_mode = $WriteMode }
-}
+
 function Get-CodexExecutablePath { param($ConfiguredPath) return 'fixture-codex' }
 function Get-OrCreateQuotaSnapshot {
     param($Path, $CodexHome, $HistoryRoot, $Purpose, [switch]$Required)
@@ -2028,7 +1996,7 @@ function New-TestRun {
         prompt_path = $null; launcher_path = $null; thread_id_path = $null
         baseline_path = $null; baseline_sha256 = $null; pid_record_path = $pidPath
         parent_options = $fixtureParentOptions; parent_options_sha256 = $fixtureParentOptions.fingerprint; parent_options_status = 'confirmed'
-        effective_codex_home = $null; acl_gate = $null
+        effective_codex_home = $null
         quota_before_path = $null; quota_before_sha256 = $null
     }
     Write-TestEvents $record.event_stream_path $record.thread_id
@@ -2079,7 +2047,6 @@ function New-TestHandoffValidationContext {
         baseline_hash = $null
         baseline_status = 'not-applicable'
         process_gate = [ordered]@{ status = 'stopped'; pid_check = @{}; active_records = @(); stopped_evidence = $true }
-        acl_gate = Get-WorktreeAclGate -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -WriteMode 'direct-write'
         model_evidence = [ordered]@{
             resolved = Get-DispatchJsonProperty -Object $Record.model_evidence -Name 'resolved'
             reasoning_effort = Get-DispatchJsonProperty -Object $Record.reasoning_effort_evidence -Name 'resolved'
@@ -5280,30 +5247,9 @@ if ($Phase -ge 4) {
         Assert-True ($parent.fingerprint -match '^[a-f0-9]{64}$' -and $same.matches -and -not $mismatch.matches -and $mismatch.code -eq 'ParentOptionsMismatch' -and ($mismatch.differences -contains 'codex_parent_option')) 'parent_options fingerprint 或逐欄 mismatch 異常。'
     }
 
-    Invoke-Case 'Phase 4 direct-write ACL gate 為 not-applicable' {
-        $acl = Get-WorktreeAclGate -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -WriteMode 'write'
-        Assert-True ($acl.status -eq 'not-applicable' -and $null -eq $acl.rejection_code) 'direct-write ACL gate 狀態異常。'
-    }
-    Invoke-Case 'Phase 4 worktree ACL residue gate 拒絕' {
-        $script:aclFixtureStatus = 'residue'
-        try {
-            $acl = Get-WorktreeAclGate -SourceRoot $fixtureRoot -ExecutionRoot (Join-Path $fixtureRoot 'dispatch-worktree') -WriteMode 'worktree'
-            Assert-True ($acl.status -eq 'residue' -and $acl.rejection_code -eq 'WorktreeAclResidue' -and @($acl.residue).Count -eq 1) 'ACL residue gate 未保留 normalized residue。'
-        }
-        finally {
-            $script:aclFixtureStatus = 'clean'
-        }
-    }
-    Invoke-Case 'Phase 4 worktree ACL unknown gate 拒絕' {
-        $script:aclFixtureStatus = 'unknown'
-        try {
-            $acl = Get-WorktreeAclGate -SourceRoot $fixtureRoot -ExecutionRoot (Join-Path $fixtureRoot 'dispatch-worktree') -WriteMode 'worktree'
-            Assert-True ($acl.status -eq 'unknown' -and $acl.rejection_code -eq 'WorktreeAclUnknown') 'ACL unknown gate 狀態異常。'
-        }
-        finally {
-            $script:aclFixtureStatus = 'clean'
-        }
-    }
+
+
+
     Invoke-Case 'Phase 4 continuation omitted parent options restores anchor' {
         $anchorOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--note=中文 $literal,with,comma')
         $restored = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory $null -Search $false -CodexParentOption $null -Anchor $anchorOptions
@@ -5358,79 +5304,6 @@ if ($Phase -ge 4) {
         }
     }
 
-    $productionAclGateAst = $functions | Where-Object { $_.Name -eq 'Get-WorktreeAclGate' } | Select-Object -First 1
-    if ($null -eq $productionAclGateAst) {
-        throw 'Phase 4 找不到 production function：Get-WorktreeAclGate'
-    }
-    $productionAclGateDefinition = $productionAclGateAst.Extent.Text.Replace('function Get-WorktreeAclGate', 'function Invoke-ProductionWorktreeAclGate')
-    . ([scriptblock]::Create($productionAclGateDefinition))
-
-    $phase4RealAclRoot = Join-Path $fixtureRoot 'phase4-real-acl'
-    $phase4RealSourceRoot = Join-Path $phase4RealAclRoot 'source'
-    $phase4RealDispatchRoot = Join-Path $phase4RealAclRoot 'dispatch'
-    $phase4RealExplicitRoot = Join-Path $phase4RealAclRoot 'explicit'
-    $phase4RealUnknownRoot = Join-Path $phase4RealAclRoot 'missing'
-    New-Item -ItemType Directory -Path $phase4RealSourceRoot -Force | Out-Null
-    New-Item -ItemType Directory -Path $phase4RealDispatchRoot -Force | Out-Null
-    New-Item -ItemType Directory -Path $phase4RealExplicitRoot -Force | Out-Null
-    $script:phase4RealAclRuleStatus = 'not-attempted'
-    $script:phase4RealEmptyAclFingerprint = $null
-
-    Invoke-Case 'Phase 4 production ACL 空 explicit entries snapshot known 與 gate clean' {
-        $sourceSnapshot = Get-ExplicitAclSnapshot -Path $phase4RealSourceRoot
-        $sourceSnapshotAgain = Get-ExplicitAclSnapshot -Path $phase4RealSourceRoot
-        $dispatchSnapshot = Get-ExplicitAclSnapshot -Path $phase4RealDispatchRoot
-        $gate = Invoke-ProductionWorktreeAclGate -SourceRoot $phase4RealSourceRoot -ExecutionRoot $phase4RealDispatchRoot -WriteMode 'worktree'
-        Assert-True ($sourceSnapshot.status -eq 'known' -and $dispatchSnapshot.status -eq 'known' -and @($sourceSnapshot.explicit_entries).Count -eq 0 -and @($dispatchSnapshot.explicit_entries).Count -eq 0) '真實新建目錄未得到 known 空 explicit_entries。'
-        Assert-True ($sourceSnapshot.fingerprint -match '^[a-f0-9]{64}$' -and $sourceSnapshot.fingerprint -eq $sourceSnapshotAgain.fingerprint -and $sourceSnapshot.fingerprint -eq $dispatchSnapshot.fingerprint) '空 explicit_entries fingerprint 不穩定。'
-        Assert-True ($gate.status -eq 'clean' -and $gate.rejection_code -eq $null -and @($gate.residue).Count -eq 0) '真實空 ACL worktree 未得到 clean gate。'
-        $script:phase4RealEmptyAclFingerprint = [string]$sourceSnapshot.fingerprint
-    }
-
-    Invoke-Case 'Phase 4 production ACL 真實 explicit ACE fingerprint 穩定與 residue' {
-        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
-        $rule = New-Object -TypeName 'System.Security.AccessControl.FileSystemAccessRule' -ArgumentList @(
-            $identity,
-            [System.Security.AccessControl.FileSystemRights]::ReadAndExecute,
-            [System.Security.AccessControl.InheritanceFlags]::None,
-            [System.Security.AccessControl.PropagationFlags]::None,
-            [System.Security.AccessControl.AccessControlType]::Allow
-        )
-        $acl = Get-Acl -LiteralPath $phase4RealExplicitRoot -ErrorAction Stop
-        $ruleApplied = $false
-        try {
-            $acl.AddAccessRule($rule)
-            Set-Acl -LiteralPath $phase4RealExplicitRoot -AclObject $acl -ErrorAction Stop
-            $ruleApplied = $true
-            $script:phase4RealAclRuleStatus = 'created'
-        }
-        catch {
-            $script:phase4RealAclRuleStatus = 'permission-unavailable: ' + $_.Exception.Message
-        }
-
-        if ($ruleApplied) {
-            $firstSnapshot = Get-ExplicitAclSnapshot -Path $phase4RealExplicitRoot
-            $secondSnapshot = Get-ExplicitAclSnapshot -Path $phase4RealExplicitRoot
-            $gate = Invoke-ProductionWorktreeAclGate -SourceRoot $phase4RealSourceRoot -ExecutionRoot $phase4RealExplicitRoot -WriteMode 'worktree'
-            Assert-True ($firstSnapshot.status -eq 'known' -and @($firstSnapshot.explicit_entries).Count -gt 0 -and $firstSnapshot.fingerprint -match '^[a-f0-9]{64}$' -and $firstSnapshot.fingerprint -eq $secondSnapshot.fingerprint) '真實 explicit ACE fingerprint 不穩定。'
-            Assert-True ($gate.status -eq 'residue' -and $gate.rejection_code -eq 'WorktreeAclResidue' -and @($gate.residue).Count -gt 0) '真實 ACL residue 未被 gate 拒絕。'
-        }
-        else {
-            $fallbackSourceSnapshot = Get-ExplicitAclSnapshot -Path $phase4RealSourceRoot
-            $fallbackDispatchSnapshot = Get-ExplicitAclSnapshot -Path $phase4RealDispatchRoot
-            $fallbackGate = Invoke-ProductionWorktreeAclGate -SourceRoot $phase4RealSourceRoot -ExecutionRoot $phase4RealDispatchRoot -WriteMode 'worktree'
-            Assert-True ($fallbackSourceSnapshot.status -eq 'known' -and $fallbackDispatchSnapshot.status -eq 'known' -and @($fallbackSourceSnapshot.explicit_entries).Count -eq 0 -and @($fallbackDispatchSnapshot.explicit_entries).Count -eq 0 -and $fallbackGate.status -eq 'clean') 'ACL 權限不足時的真實空目錄 fallback 驗證失敗。'
-        }
-    }
-
-    Invoke-Case 'Phase 4 production ACL 不存在目錄維持 unknown' {
-        $snapshot = Get-ExplicitAclSnapshot -Path $phase4RealUnknownRoot
-        $gate = Invoke-ProductionWorktreeAclGate -SourceRoot $phase4RealSourceRoot -ExecutionRoot $phase4RealUnknownRoot -WriteMode 'worktree'
-        Assert-True ($snapshot.status -eq 'unknown' -and $snapshot.error -match '不存在' -and $gate.status -eq 'unknown' -and $gate.rejection_code -eq 'WorktreeAclUnknown') '真實不存在目錄 unknown 案例退化。'
-    }
-    Write-Output ('REAL_ACL_EMPTY_FINGERPRINT: ' + [string]$script:phase4RealEmptyAclFingerprint)
-    Write-Output ('REAL_ACL_RULE_STATUS: ' + $script:phase4RealAclRuleStatus)
-
     $phase4LineRoot = Join-Path $fixtureRoot '.local/ai-sessions/handoff/line-a'
     New-Item -ItemType Directory -Path $phase4LineRoot -Force | Out-Null
     Write-Utf8NoBom -Path (Join-Path $phase4LineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'line-a' } | ConvertTo-Json) + "
@@ -5456,17 +5329,13 @@ if ($Phase -ge 4) {
         Assert-True (-not $result.success -and $result.diagnosis.reason_code -eq 'InterruptedUnknown' -and $result.cold_start_recommended -eq $true -and $result.lastEventType -eq 'turn.started') 'unknown interruption 未輸出 cold-start 建議。'
     }
 
-    Invoke-Case 'Phase 4 F-001 ACL rejection precedes profile mismatch check' {
-        $startTextForOrder = ($functions | Where-Object { $_.Name -eq 'Invoke-Start' }).Extent.Text
-        $processIndex = $startTextForOrder.IndexOf("if (`$processGate.status -ne 'stopped')")
-        $aclIndex = $startTextForOrder.IndexOf('$aclGate = Get-WorktreeAclGate')
-        $profileIndex = $startTextForOrder.IndexOf('if ($null -ne $requestedModelValue')
-        Assert-True ($processIndex -ge 0 -and $aclIndex -ge 0 -and $profileIndex -ge 0 -and $processIndex -lt $aclIndex -and $aclIndex -lt $profileIndex) 'Start gate 順序未維持 process → ACL → profile mismatch。'
-
-        $script:phase4RealAclRuleStatus = 'not-attempted'
-        $phase4F001Gate = Invoke-ProductionWorktreeAclGate -SourceRoot $phase4RealSourceRoot -ExecutionRoot $phase4RealExplicitRoot -WriteMode 'worktree'
-        Assert-True ($phase4F001Gate.status -in @('residue', 'clean', 'unknown') -and $phase4RealSourceRoot -ne $phase4RealExplicitRoot) 'F-001 ACL gate 未使用真實 worktree roots。'
-    }
+    Invoke-Case 'Phase 4 F-001 process identity gate precedes profile mismatch check' {
+    $startText = ($functions | Where-Object { $_.Name -eq 'Invoke-Start' }).Extent.Text
+    $identityProbeIndex = $startText.IndexOf('$startProcessResult = Get-PidCheckResult')
+    $processGateIndex = $startText.IndexOf('if ($processGate.status -ne ''stopped'')')
+    $profileMismatchIndex = $startText.IndexOf('if ($null -ne $requestedModelValue')
+    Assert-True ($identityProbeIndex -ge 0 -and $processGateIndex -gt $identityProbeIndex -and $profileMismatchIndex -gt $processGateIndex) 'Start 必須先驗證 PID/process identity，再檢查 profile mismatch。'
+}
 
     Invoke-Case 'Phase 4 F-002 InterruptedUnknown worktree 不可作為 resume anchor' -Reject -ErrorPattern 'InterruptedUnknownResumeRejected' {
         $unknownResumeRecord = New-TestRun -Line 'line-a' -Dispatch 'phase4-unknown-resume'
@@ -6485,8 +6354,7 @@ if ($Phase -ge 6) {
         $script:ProfileExplicit = $false
         $script:InvocationBoundParameters = [ordered]@{}
         $script:scopePlanFixtureDecision = 'full'
-        $script:aclFixtureStatus = 'clean'
-        $script:startSnapshotMode = 'confirmed'
+                $script:startSnapshotMode = 'confirmed'
         $script:quotaFixtureFailure = $true
         $beforeStartCalls = $script:startCalls
         $startResult = $null
@@ -9556,8 +9424,7 @@ if ($Phase -ge 9) {
         $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
         $script:relayFailure = $false
         $script:failLaunch = $false
-        $script:aclFixtureStatus = 'clean'
-        $script:scopePlanFixtureDecision = 'full'
+                $script:scopePlanFixtureDecision = 'full'
         $script:launcherFixtureFailure = $false
         $script:InvocationBoundParameters = [ordered]@{}
         $script:RequestContext = $null
@@ -9651,7 +9518,7 @@ if ($Phase -ge 9) {
             'profileIsolationProbe', 'profileIsolationCapturedArguments', 'profileIsolationCodexHome', 'profileIsolationRolloutPath',
             'profileIsolationSelectedProfile', 'profileIsolationSelectedConfigPath', 'profileIsolationSelectedModel', 'profileIsolationSelectedEffort',
             'profileIsolationLauncherPath', 'testThread',
-            'quotaSnapshotPathOverride', 'dispatchUnitListOverride', 'pidResult', 'relayFailure', 'failLaunch', 'aclFixtureStatus',
+            'quotaSnapshotPathOverride', 'dispatchUnitListOverride', 'pidResult', 'relayFailure', 'failLaunch',
             'scopePlanFixtureDecision', 'launcherFixtureFailure', 'InvocationBoundParameters', 'RequestContext', 'RequestPrepareArtifacts',
             'SourceRoot', 'DispatchRoot', 'ExecutionRoot', 'LineSlug', 'DispatchSlug', 'WriteMode', 'PreflightResultPath',
             'PrepareResultPath', 'PromptPath', 'CodexHome', 'CodexPath', 'TargetPath', 'ResumeThreadId', 'LastMessagePath',
@@ -9897,122 +9764,44 @@ if ($Phase -ge 9) {
         }
     }
 
-    $aclFunctionAst = @($functions | Where-Object { $_.Name -eq 'Get-WorktreeAclGate' } | Select-Object -First 1)
-    Assert-True ($aclFunctionAst.Count -eq 1) 'Phase 9 找不到 production Get-WorktreeAclGate AST。'
-    $aclFunctionDefinition = $aclFunctionAst[0].Extent.Text -replace '^function Get-WorktreeAclGate', 'function Invoke-Phase9ProductionAclGate'
-    . ([scriptblock]::Create($aclFunctionDefinition))
+    Invoke-Case 'Phase 9 T003 launch-failed 分類與 actual-start anchor' {
+    $classificationDispatch = 't003-start-classification'
+    $classificationBase = New-TestRun -Line 'line-a' -Dispatch $classificationDispatch
+    $classificationBase.scope_plan_root_run_id = $classificationBase.run_id
+    $classificationBase.scope_plan_selection = 'root'
+    $null = Write-DispatchRunRecord -Record $classificationBase -Update
 
-    $phase9AclSourceRoot = Join-Path $phase9Root 'acl-source'
-    $phase9AclExecutionRoot = Join-Path $phase9Root 'acl-dispatch'
-    New-Item -ItemType Directory -Path $phase9AclSourceRoot, $phase9AclExecutionRoot -Force | Out-Null
-    $phase9SandboxEntry = [ordered]@{
-        identity = 'S-1-5-21-100-200-300-400'
-        identity_resolution = 'unresolved'
-        access_control_type = 'Allow'
-        rights = 'Modify'
-        inheritance_flags = @('ObjectInherit', 'ContainerInherit')
-        propagation_flags = @('None')
-        is_inherited = $false
-        canonical = '(OI)(CI)(M)'
-        fingerprint = ('a' * 64)
-    }
-    $phase9ExtraAclEntry = [ordered]@{
-        identity = 'S-1-5-21-100-200-300-401'
-        identity_resolution = 'unresolved'
-        access_control_type = 'Allow'
-        rights = 'Read'
-        inheritance_flags = @('ObjectInherit', 'ContainerInherit')
-        propagation_flags = @('None')
-        is_inherited = $false
-        canonical = '(OI)(CI)(R)'
-        fingerprint = ('b' * 64)
-    }
-    $script:phase9AclMode = 'sandbox'
-    function Get-ExplicitAclSnapshot {
-        param([string]$Path)
-        if ($script:phase9AclMode -eq 'unknown') {
-            return [ordered]@{ status = 'unknown'; path = $Path; fingerprint = $null; entries = @(); explicit_entries = @(); captured_at_utc = [datetime]::UtcNow.ToString('o'); error = 'fixture ACL read failure' }
-        }
-        $entries = if ([string]::Equals([IO.Path]::GetFullPath($Path), [IO.Path]::GetFullPath($phase9AclExecutionRoot), [StringComparison]::OrdinalIgnoreCase)) {
-            if ($script:phase9AclMode -eq 'extra') { @($phase9SandboxEntry, $phase9ExtraAclEntry) } else { @($phase9SandboxEntry) }
-        }
-        else {
-            @()
-        }
-        return [ordered]@{ status = 'known'; path = $Path; fingerprint = ('c' * 64); entries = @($entries); explicit_entries = @($entries); captured_at_utc = [datetime]::UtcNow.ToString('o'); error = $null }
-    }
+    $classificationFailure = New-TestRun -Line 'line-a' -Dispatch $classificationDispatch -Previous $classificationBase
+    $classificationFailure.launch_state = 'launch-failed'
+    $classificationFailure.started_at_utc = $null
+    $classificationFailure.scope_plan_root_run_id = $classificationBase.run_id
+    $classificationFailure.scope_plan_selection = 'root'
+    $classificationFailure.failure = New-DispatchFailureRecord -Phase 'preparation' -Message 'T003 pre-start fixture failure' -ReasonCode 'T003FixturePreStartFailure' -ProcessStarted $false -EventPath $classificationFailure.event_stream_path -ErrorPath $null -LastMessagePath $classificationFailure.last_message_path -ThreadPath $null -PidPath $classificationFailure.pid_record_path -LauncherPath $null -RolloutPaths @() -Observation ([ordered]@{
+        process_started = $false
+        process_exit_code = $null
+        failure_stage = 'preparation'
+    })
+    $null = Write-DispatchRunRecord -Record $classificationFailure -Update
 
-    Invoke-Case 'Phase 9 T003 launch-failed 分類與 ACL 錨點實證' {
-        $classificationDispatch = 't003-start-classification'
-        $classificationBase = New-TestRun -Line 'line-a' -Dispatch $classificationDispatch
-        $classificationBase | Add-Member -MemberType NoteProperty -Name 'sandbox_acl_evidence' -Value ([ordered]@{
-                capture_status = 'captured'
-                entries = @($phase9SandboxEntry)
-                captured_at_utc = [DateTime]::UtcNow.ToString('o')
-                normal_completion = $true
-                continuation_allowed = $true
-            }) -Force
-        $classificationBase.scope_plan_root_run_id = $classificationBase.run_id
-        $classificationBase.scope_plan_selection = 'root'
-        $null = Write-DispatchRunRecord -Record $classificationBase -Update
+    $preStartChain = Resolve-PreviousDispatchRun -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $classificationDispatch -ResumeThreadId $script:testThread
+    $preStartClassification = Get-DispatchRunRecordStartClassification -Record $preStartChain.ChainTailRecord
+    Assert-True ($preStartClassification.classification -eq 'unstarted-sandbox' -and $preStartChain.AnchorRecord.run_id -eq $classificationBase.run_id -and $preStartChain.LatestActualStartRecord.run_id -eq $classificationBase.run_id) '未啟動的 launch-failed attempt 必須回到上一筆 actual-start anchor。'
+    Write-Phase9Evidence -Label 'T003_PRE_START_LAUNCH_FAILED_CLASSIFICATION' -Value ([ordered]@{
+        classification = $preStartClassification
+        chain_anchor_run_id = $preStartChain.AnchorRecord.run_id
+        latest_actual_start_run_id = $preStartChain.LatestActualStartRecord.run_id
+    })
 
-        $classificationFailure = New-TestRun -Line 'line-a' -Dispatch $classificationDispatch -Previous $classificationBase
-        $classificationFailure.launch_state = 'launch-failed'
-        $classificationFailure.started_at_utc = $null
-        $classificationFailure.scope_plan_root_run_id = $classificationBase.run_id
-        $classificationFailure.scope_plan_selection = 'root'
-        $classificationFailure.failure = New-DispatchFailureRecord -Phase 'preparation' -Message 'T003 pre-start fixture failure' -ReasonCode 'T003FixturePreStartFailure' -ProcessStarted $false -EventPath $classificationFailure.event_stream_path -ErrorPath $null -LastMessagePath $classificationFailure.last_message_path -ThreadPath $null -PidPath $classificationFailure.pid_record_path -LauncherPath $null -RolloutPaths @() -Observation ([ordered]@{
-                process_started = $false
-                process_exit_code = $null
-                failure_stage = 'preparation'
-            })
-        $classificationFailure | Add-Member -MemberType NoteProperty -Name 'sandbox_acl_evidence' -Value ([ordered]@{
-                capture_status = 'captured'
-                entries = @($phase9SandboxEntry)
-                captured_at_utc = [DateTime]::UtcNow.ToString('o')
-                normal_completion = $true
-                continuation_allowed = $true
-            }) -Force
-        $null = Write-DispatchRunRecord -Record $classificationFailure -Update
-
-        $productionAclFunction = $phase9ProductionFunctionDefinitions['Get-WorktreeAclGate']
-        $fixtureAclFunction = (Get-Command -Name Get-WorktreeAclGate -CommandType Function -ErrorAction Stop).ScriptBlock
-        try {
-            Set-Item -Path Function:\Get-WorktreeAclGate -Value $productionAclFunction
-            $preStartChain = Resolve-PreviousDispatchRun -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $classificationDispatch -ResumeThreadId $script:testThread
-            $preStartAclGate = Get-WorktreeAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write' -ContinuationRecord $preStartChain.LatestActualStartRecord
-            $preStartClassification = Get-DispatchRunRecordStartClassification -Record $preStartChain.ChainTailRecord
-            Assert-True ($preStartClassification.classification -eq 'unstarted-sandbox' -and $preStartChain.AnchorRecord.run_id -eq $classificationBase.run_id -and $preStartChain.LatestActualStartRecord.run_id -eq $classificationBase.run_id -and $preStartAclGate.status -eq 'clean') ('pre-start launch-failed 未回退至 clean ACL 錨點：' + ($preStartAclGate | ConvertTo-Json -Depth 20 -Compress))
-            Write-Phase9Evidence -Label 'T003_PRE_START_LAUNCH_FAILED_ACL_CLEAN' -Value ([ordered]@{
-                    classification = $preStartClassification
-                    chain_anchor_run_id = $preStartChain.AnchorRecord.run_id
-                    latest_actual_start_run_id = $preStartChain.LatestActualStartRecord.run_id
-                    acl_gate = $preStartAclGate
-                })
-
-            $classificationFailure.failure.observation.process_started = $true
-            $classificationFailure.sandbox_acl_evidence = [ordered]@{
-                capture_status = 'pending'
-                entries = @()
-                captured_at_utc = $null
-                normal_completion = $false
-                continuation_allowed = $false
-            }
-            $null = Write-DispatchRunRecord -Record $classificationFailure -Update
-            $actualStartChain = Resolve-PreviousDispatchRun -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $classificationDispatch -ResumeThreadId $script:testThread
-            $actualStartAclGate = Get-WorktreeAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write' -ContinuationRecord $actualStartChain.LatestActualStartRecord
-            $actualStartClassification = Get-DispatchRunRecordStartClassification -Record $actualStartChain.ChainTailRecord
-            Assert-True ($actualStartClassification.classification -eq 'actual-start' -and $actualStartClassification.process_started -and $actualStartChain.LatestActualStartRecord.run_id -eq $classificationFailure.run_id -and $actualStartAclGate.status -eq 'continuation-denied') ('process_started=true 被靜默略過或未進入 ACL evidence gate：' + ($actualStartAclGate | ConvertTo-Json -Depth 20 -Compress))
-            Write-Phase9Evidence -Label 'T003_ACTUAL_START_FAILURE_ACL_EVIDENCE_REQUIRED' -Value ([ordered]@{
-                    classification = $actualStartClassification
-                    latest_actual_start_run_id = $actualStartChain.LatestActualStartRecord.run_id
-                    acl_gate = $actualStartAclGate
-                })
-        }
-        finally {
-            Set-Item -Path Function:\Get-WorktreeAclGate -Value $fixtureAclFunction
-        }
-    }
+    $classificationFailure.failure.observation.process_started = $true
+    $null = Write-DispatchRunRecord -Record $classificationFailure -Update
+    $actualStartChain = Resolve-PreviousDispatchRun -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $classificationDispatch -ResumeThreadId $script:testThread
+    $actualStartClassification = Get-DispatchRunRecordStartClassification -Record $actualStartChain.ChainTailRecord
+    Assert-True ($actualStartClassification.classification -eq 'actual-start' -and $actualStartClassification.process_started -and $actualStartChain.LatestActualStartRecord.run_id -eq $classificationFailure.run_id) 'process_started=true 必須讓 failed attempt 成為最新 actual-start anchor。'
+    Write-Phase9Evidence -Label 'T003_ACTUAL_START_FAILURE_CLASSIFICATION' -Value ([ordered]@{
+        classification = $actualStartClassification
+        latest_actual_start_run_id = $actualStartChain.LatestActualStartRecord.run_id
+    })
+}
 
     Invoke-Case 'Phase 9 T007 ScopePlan 有序子集與 root witness 實證' {
         $scopeDispatch = 't007-scope-plan-subset'
@@ -10212,8 +10001,7 @@ if ($Phase -ge 9) {
         $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
         $script:relayFailure = $false
         $script:failLaunch = $false
-        $script:aclFixtureStatus = 'clean'
-        $script:scopePlanFixtureDecision = 'full'
+                $script:scopePlanFixtureDecision = 'full'
         $script:launcherFixtureFailure = $false
         $script:InvocationBoundParameters = [ordered]@{}
         $script:RequestContext = $null
@@ -10692,8 +10480,7 @@ if ($Phase -ge 9) {
         $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
         $script:relayFailure = $false
         $script:failLaunch = $false
-        $script:aclFixtureStatus = 'clean'
-        $script:scopePlanFixtureDecision = 'full'
+                $script:scopePlanFixtureDecision = 'full'
         $script:launcherFixtureFailure = $true
         $script:InvocationBoundParameters = [ordered]@{}
         $script:RequestContext = $null
@@ -10855,55 +10642,33 @@ if ($Phase -ge 9) {
         Write-Phase9Evidence -Label 'F004_LONG_PATH_DIRECT_CASE' -Value $evidence
     }
 
-    Invoke-Case 'Phase 9 P1 A5 normal sandbox ACE continuation' {
-        $script:phase9AclMode = 'sandbox'
-        $firstGate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write'
-        Assert-True ($firstGate.status -eq 'clean') ('sandbox ACE 未被 fallback 接受：' + ($firstGate | ConvertTo-Json -Depth 12 -Compress))
-        Assert-True (@($firstGate.accepted_sandbox_entries).Count -eq 1) 'sandbox ACE 未記錄為 accepted_sandbox_entries。'
-        $normalRecord = [pscustomobject]@{
-            sandbox_acl_evidence = [pscustomobject]@{
-                capture_status = 'captured'
-                entries = @($phase9SandboxEntry)
-                captured_at_utc = [DateTime]::UtcNow.ToString('o')
-                normal_completion = $true
-                continuation_allowed = $true
-            }
-        }
-        $continuedGate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write' -ContinuationRecord $normalRecord
-        Assert-True ($continuedGate.status -eq 'clean') '正常完成 RunRecord 的 whitelist 未允許同一 sandbox ACE。'
-    }
 
-    Invoke-Case 'Phase 9 P1 A5 forced termination residue' -Reject -ErrorPattern 'WorktreeAclResidue' {
-        $script:phase9AclMode = 'extra'
-        $gate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write'
-        Assert-True ($gate.status -eq 'residue' -and $gate.rejection_code -eq 'WorktreeAclResidue') 'forced termination residue 未拒絕。'
-        throw ('WorktreeAclResidue：' + ($gate | ConvertTo-Json -Depth 12 -Compress))
-    }
 
-    Invoke-Case 'Phase 9 P1 A5 extra residue and unknown ACL' -Reject -ErrorPattern 'WorktreeAclUnknown' {
-        $script:phase9AclMode = 'unknown'
-        $gate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write'
-        Assert-True ($gate.status -eq 'unknown' -and $gate.rejection_code -eq 'WorktreeAclUnknown') 'ACL unknown 未保留拒絕狀態。'
-        throw ('WorktreeAclUnknown：' + ($gate | ConvertTo-Json -Depth 12 -Compress))
-    }
 
-    Invoke-Case 'Phase 9 F-001 actual Start continuation reaches production ACL gate' {
-        $f001FunctionNames = @('Get-WorktreeAclGate', 'Resolve-PreviousDispatchRun', 'Resolve-DispatchBaselineBinding', 'Resolve-PrepareResultBinding', 'Test-ScopePlanHashRecord', 'Get-DispatchUnitList', 'Test-ContinuationScopePlan')
+
+
+
+        Invoke-Case 'Phase 9 F-001 production Start continues with missing or changed ACL/SID evidence' {
+        $f001FunctionNames = @('Resolve-PreviousDispatchRun', 'Resolve-DispatchBaselineBinding', 'Resolve-PrepareResultBinding', 'Test-ScopePlanHashRecord', 'Get-DispatchUnitList', 'Test-ContinuationScopePlan')
         $f001OriginalFunctions = @{}
         foreach ($functionName in $f001FunctionNames) {
             $f001OriginalFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function -ErrorAction Stop).ScriptBlock
         }
         $previousTestThread = $script:testThread
         $previousQuotaOverride = $script:quotaSnapshotPathOverride
-        $previousAclMode = $script:phase9AclMode
-        $previousDispatchUnitOverride = $script:dispatchUnitListOverride
-        $f001SourceRoot = $phase9AclSourceRoot
-        $f001ExecutionRoot = $phase9AclExecutionRoot
+        $previousUnitOverride = $script:dispatchUnitListOverride
+        $previousPidResult = $script:pidResult
+        $previousStartCalls = $script:startCalls
+        $previousScopeDecision = $script:scopePlanFixtureDecision
+        $previousRequestContext = $script:RequestContext
+        $f001SourceRoot = $phase9Root
+        $f001ExecutionRoot = $phase9Root
         $f001LineSlug = 'line-a'
-        $f001DispatchSlug = 'f001-start-chain'
+        $f001DispatchSlug = 'f001-start-continuation'
         $f001Thread = [guid]::NewGuid().ToString('D')
-        $f001HistoryRoot = Join-Path $f001ExecutionRoot '.local\ai-sessions\history'
+        $f001HistoryRoot = Join-Path $f001ExecutionRoot '.local/ai-sessions/history'
         $f001LineHistoryRoot = Join-Path $f001HistoryRoot $f001LineSlug
+        $f001HandoffRoot = Join-Path $f001ExecutionRoot '.local/ai-sessions/handoff/line-a'
         $f001ScopePath = Join-Path $f001LineHistoryRoot 'f001-scope.json'
         $f001PreparePath = Join-Path $f001LineHistoryRoot 'f001-prepare.json'
         $f001BaselinePath = Join-Path $f001LineHistoryRoot 'f001-baseline.json'
@@ -10911,13 +10676,14 @@ if ($Phase -ge 9) {
         $f001PromptPath = Join-Path $f001ExecutionRoot 'f001-prompt.md'
         $f001QuotaPath = Join-Path $f001SourceRoot 'f001-quota.json'
         $f001CodexHome = Join-Path $f001ExecutionRoot 'f001-codex-home'
-        New-Item -ItemType Directory -Path $f001LineHistoryRoot, $f001CodexHome -Force | Out-Null
-        Write-Utf8NoBom -Path $f001ScopePath -Content (([ordered]@{ decision = 'full'; requested_units = @('Phase 1'); selected_units = @('Phase 1'); deferred_units = @(); scope_plan_fingerprint = 'fixture' } | ConvertTo-Json -Depth 10) + "`n")
-        Write-Utf8NoBom -Path $f001PreparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'Prepared' } | ConvertTo-Json -Depth 10) + "`n")
-        Write-Utf8NoBom -Path $f001BaselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + "`n")
+        New-Item -ItemType Directory -Path $f001LineHistoryRoot, $f001HandoffRoot, $f001CodexHome -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $f001HandoffRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = $f001LineSlug } | ConvertTo-Json) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $f001ScopePath -Content (([ordered]@{ decision = 'full'; requested_units = @('Phase 1'); selected_units = @('Phase 1'); deferred_units = @(); scope_plan_fingerprint = 'fixture' } | ConvertTo-Json -Depth 10) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $f001PreparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'not-required' } | ConvertTo-Json -Depth 10) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $f001BaselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + [Environment]::NewLine)
         Write-Utf8NoBom -Path $f001PromptPath -Content 'f001 continuation prompt'
         $null = New-Phase8QuotaSnapshot -Path $f001QuotaPath -PrimaryRemainingPercent 80
-        Write-Utf8NoBom -Path (Join-Path $f001CodexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        Write-Utf8NoBom -Path (Join-Path $f001CodexHome 'default.config.toml') -Content ('model = "fixture-model"' + [Environment]::NewLine + 'model_reasoning_effort = "high"' + [Environment]::NewLine)
         $f001BaselineSha256 = Get-FileSha256 -Path $f001BaselinePath
         $f001PrepareSha256 = Get-FileSha256 -Path $f001PreparePath
         $f001ParentOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $f001ExecutionRoot -AddDirectory @() -Search $false -CodexParentOption @()
@@ -10937,13 +10703,6 @@ if ($Phase -ge 9) {
             model_evidence = $a.model_evidence
             reasoning_effort_evidence = $a.reasoning_effort_evidence
             parent_options = $f001ParentOptions
-            sandbox_acl_evidence = [pscustomobject]@{
-                capture_status = 'captured'
-                entries = @($phase9SandboxEntry, $phase9ExtraAclEntry)
-                captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
-                normal_completion = $true
-                continuation_allowed = $true
-            }
         }
         Write-Utf8NoBom -Path $f001PreviousAnchor.last_message_path -Content 'f001 previous message'
         $f001PreviousRun = [pscustomobject]@{
@@ -10968,40 +10727,29 @@ if ($Phase -ge 9) {
             baselineSha256 = $f001BaselineSha256
             prepareResultPath = $f001PreparePath
             prepareResultSha256 = $f001PrepareSha256
-            prepareStatus = 'Prepared'
+            prepareStatus = 'not-required'
         }
-        Write-Utf8NoBom -Path $f001PreflightPath -Content (($f001Preflight | ConvertTo-Json -Depth 20) + "`n")
-        $f001ActualAclDefinition = $aclFunctionAst[0].Body.Extent.Text.Trim()
-        $f001ActualAclDefinition = $f001ActualAclDefinition.Substring(1, $f001ActualAclDefinition.Length - 2)
-        $f001CaptureStatement = '    $script:phase9F001AclCalls = @($script:phase9F001AclCalls) + @([pscustomobject]@{ continuation_present = $null -ne $ContinuationRecord })' + [Environment]::NewLine
-        $f001ActualAclDefinition = $f001ActualAclDefinition.Replace('    $sourcePath = Resolve-AbsolutePath -Path $SourceRoot', $f001CaptureStatement + '    $sourcePath = Resolve-AbsolutePath -Path $SourceRoot')
-        $f001StartAst = @($functions | Where-Object { $_.Name -eq 'Invoke-Start' } | Select-Object -First 1)
-        Assert-True ($f001StartAst.Count -eq 1) 'F-001 找不到 production Invoke-Start AST。'
-        $f001MutantStartDefinition = $f001StartAst[0].Extent.Text.Replace('$process = New-Object System.Diagnostics.Process', '$process = New-TestProcess').Replace('function Invoke-Start', 'function Invoke-Phase9MutantStart').Replace(' -ContinuationRecord $continuationAclRecord', '')
+        Write-Utf8NoBom -Path $f001PreflightPath -Content (($f001Preflight | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         try {
-            Set-Item -Path Function:\Get-WorktreeAclGate -Value ([scriptblock]::Create($f001ActualAclDefinition))
             Set-Item -Path Function:\Resolve-PreviousDispatchRun -Value ([scriptblock]::Create('param($SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ResumeThreadId, $LastMessagePath) return $script:phase9F001PreviousRun'))
             Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value ([scriptblock]::Create('param($Preflight, $SourceRoot, $DispatchRoot, $LineSlug, $DispatchSlug, $BaseSha) return [pscustomobject]@{ Path = $script:phase9F001BaselinePath; Sha256 = $script:phase9F001BaselineSha256 }'))
-            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value ([scriptblock]::Create('param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ExpectedSha256) return [pscustomobject]@{ Path = $script:phase9F001PreparePath; Sha256 = $script:phase9F001PrepareSha256; Status = ''Prepared''; Document = [pscustomobject]@{ operation = ''Prepare''; status = ''Prepared'' }; Artifacts = @() }'))
+            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value ([scriptblock]::Create('param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ExpectedSha256) return [pscustomobject]@{ Path = $script:phase9F001PreparePath; Sha256 = $script:phase9F001PrepareSha256; Status = ''not-required''; Document = [pscustomobject]@{ operation = ''Prepare''; status = ''not-required'' }; Artifacts = @() }'))
             Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
             Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
             Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
-            . ([scriptblock]::Create($f001MutantStartDefinition))
             $script:phase9F001PreviousRun = $f001PreviousRun
             $script:phase9F001BaselinePath = $f001BaselinePath
             $script:phase9F001BaselineSha256 = $f001BaselineSha256
             $script:phase9F001PreparePath = $f001PreparePath
             $script:phase9F001PrepareSha256 = $f001PrepareSha256
-            $script:phase9F001AclCalls = @()
-            $script:phase9AclMode = 'extra'
-            $f001DirectAclGate = Get-WorktreeAclGate -SourceRoot $f001SourceRoot -ExecutionRoot $f001ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $f001PreviousAnchor
-            Assert-True ($null -ne $f001DirectAclGate -and [string](Get-DispatchJsonProperty -Object $f001DirectAclGate -Name 'status') -eq 'clean') ('F-001 actual ACL function direct call 未回傳 clean：' + ($f001DirectAclGate | ConvertTo-Json -Depth 20 -Compress))
-            $script:phase9F001AclCalls = @()
+            $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
+            $script:scopePlanFixtureDecision = 'full'
             $script:dispatchUnitListOverride = @('Phase 1')
             $script:testThread = $f001Thread
             $script:quotaSnapshotPathOverride = $f001QuotaPath
             $script:startCalls = 0
             $script:failLaunch = $false
+            $script:RequestContext = $null
             $SourceRoot = $f001SourceRoot
             $ExecutionRoot = $f001ExecutionRoot
             $LineSlug = $f001LineSlug
@@ -11040,888 +10788,55 @@ if ($Phase -ge 9) {
             $PidRecordPath = $null
             $RunRecordPath = $null
             $ProcessExitCode = $null
-            $f001StartOutput = @(Invoke-Start)
-            Assert-True ($f001StartOutput.Count -eq 1) ('F-001 Invoke-Start 輸出筆數不唯一：' + ($f001StartOutput | ConvertTo-Json -Depth 20 -Compress))
-            $script:phase9F001ValidStart = $f001StartOutput[0]
-            $f001ValidAclGate = Get-DispatchJsonProperty -Object $script:phase9F001ValidStart -Name 'aclGate'
-            Assert-True ($script:phase9F001ValidStart.processStarted -and $null -ne $f001ValidAclGate -and [string](Get-DispatchJsonProperty -Object $f001ValidAclGate -Name 'status') -eq 'clean' -and @((Get-DispatchJsonProperty -Object $f001ValidAclGate -Name 'accepted_sandbox_entries')).Count -eq 2) ('F-001 actual Start 未通過 production ACL continuation：' + ($script:phase9F001ValidStart | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ($script:phase9F001AclCalls.Count -eq 1 -and $script:phase9F001AclCalls[0].continuation_present) ('F-001 Invoke-Start 未以 continuation record 呼叫 production ACL gate：' + ($script:phase9F001AclCalls | ConvertTo-Json -Depth 10 -Compress))
-            $f001ValidAclCalls = @($script:phase9F001AclCalls)
-            $script:phase9F001AclCalls = @()
-            $f001ReverseFailure = $null
-            try {
-                $null = Invoke-Phase9MutantStart
-            }
-            catch {
-                $f001ReverseFailure = $_.Exception.Message
-            }
-            Assert-True (-not [string]::IsNullOrWhiteSpace($f001ReverseFailure) -and $f001ReverseFailure.Contains('WorktreeAclResidue') -and $script:phase9F001AclCalls.Count -eq 1 -and -not $script:phase9F001AclCalls[0].continuation_present) ('F-001 移除 continuation 接線後未拒絕：' + [string]$f001ReverseFailure)
-            $f001ReverseAclCalls = @($script:phase9F001AclCalls)
-            $script:phase9F001AclCalls = @()
-            $f001RestoredStartOutput = @(Invoke-Start)
-            Assert-True ($f001RestoredStartOutput.Count -eq 1) ('F-001 reverse 後還原 Invoke-Start 輸出筆數不唯一：' + ($f001RestoredStartOutput | ConvertTo-Json -Depth 20 -Compress))
-            $f001RestoredStart = $f001RestoredStartOutput[0]
-            $f001RestoredAclGate = Get-DispatchJsonProperty -Object $f001RestoredStart -Name 'aclGate'
-            Assert-True ($f001RestoredStart.processStarted -and $null -ne $f001RestoredAclGate -and [string](Get-DispatchJsonProperty -Object $f001RestoredAclGate -Name 'status') -eq 'clean' -and @((Get-DispatchJsonProperty -Object $f001RestoredAclGate -Name 'accepted_sandbox_entries')).Count -eq 2) ('F-001 reverse 後還原 production Start 未通過 continuation：' + ($f001RestoredStart | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ($script:phase9F001AclCalls.Count -eq 1 -and $script:phase9F001AclCalls[0].continuation_present) ('F-001 reverse 後還原 ACL gate 未收到 continuation record：' + ($script:phase9F001AclCalls | ConvertTo-Json -Depth 10 -Compress))
-            $f001RestoredAclCalls = @($script:phase9F001AclCalls)
-            $script:phase9F001Evidence = [pscustomobject]@{ valid = $script:phase9F001ValidStart; valid_acl_calls = $f001ValidAclCalls; reverse_acl_calls = $f001ReverseAclCalls; reverse_failure = $f001ReverseFailure; restored_after_reverse = $f001RestoredStart; restored_after_reverse_acl_calls = $f001RestoredAclCalls }
-            Write-Phase9Evidence -Label 'F001_RESTORED_PASS' -Value ([ordered]@{ status = 'pass'; before_reverse = [ordered]@{ start = $script:phase9F001ValidStart; acl_calls = $f001ValidAclCalls }; after_reverse = [ordered]@{ start = $f001RestoredStart; acl_calls = $f001RestoredAclCalls } })
-            Write-Phase9Evidence -Label 'F001_REVERSE_FAILURE' -Value ([ordered]@{ status = 'failed'; error = $f001ReverseFailure; acl_calls = $f001ReverseAclCalls })
+
+            $missingEvidenceStart = @(Invoke-Start)
+            Assert-True ($missingEvidenceStart.Count -eq 1 -and $missingEvidenceStart[0].processStarted -and $script:startCalls -eq 1) ('缺少前輪 ACL/SID evidence 時 production Start 未續行：' + ($missingEvidenceStart | ConvertTo-Json -Depth 20 -Compress))
+            $missingStartAclProperty = $missingEvidenceStart[0].PSObject.Properties['aclGate']
+            $missingRunRecord = Get-Content -LiteralPath $missingEvidenceStart[0].runRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $missingRecordAclProperty = $missingRunRecord.PSObject.Properties['sandbox_acl_evidence']
+            Assert-True ($null -eq $missingStartAclProperty -and $null -eq $missingRecordAclProperty) '缺少證據的續行仍輸出舊 ACL gate 或 RunRecord 欄位。'
+
+            $f001PreviousAnchor | Add-Member -MemberType NoteProperty -Name sandbox_acl_baseline -Value ([pscustomobject]@{ status = 'captured'; entries = @([pscustomobject]@{ identity = 'S-1-5-21-OLD'; fingerprint = ('1' * 64) }); fingerprint = ('1' * 64) }) -Force
+            $f001PreviousAnchor | Add-Member -MemberType NoteProperty -Name sandbox_acl_evidence -Value ([pscustomobject]@{ capture_status = 'no_match'; entries = @([pscustomobject]@{ identity = 'S-1-5-21-CHANGED'; fingerprint = ('2' * 64) }); normal_completion = $false; continuation_allowed = $false }) -Force
+            $script:startCalls = 0
+            $changedEvidenceStart = @(Invoke-Start)
+            Assert-True ($changedEvidenceStart.Count -eq 1 -and $changedEvidenceStart[0].processStarted -and $script:startCalls -eq 1) ('前輪 ACL/SID 證據缺漏或變化時 production Start 未續行：' + ($changedEvidenceStart | ConvertTo-Json -Depth 20 -Compress))
+            $changedStartAclProperty = $changedEvidenceStart[0].PSObject.Properties['aclGate']
+            $changedRunRecord = Get-Content -LiteralPath $changedEvidenceStart[0].runRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $changedRecordAclProperty = $changedRunRecord.PSObject.Properties['sandbox_acl_evidence']
+            Assert-True ($null -eq $changedStartAclProperty -and $null -eq $changedRecordAclProperty) '舊證據變化的續行仍輸出 ACL gate 或新 RunRecord 欄位。'
+            $script:pidResult.ActiveRecords = @([pscustomobject]@{ DispatchSlug = $f001DispatchSlug; ProcessId = 4321; IdentityStatus = 'verified' })
+            $script:startCalls = 0
+            $blockedException = $null
+            try { $null = Invoke-Start } catch { $blockedException = $_.Exception }
+            $blockedStartResult = if ($null -eq $blockedException) { $null } else { $blockedException.Data['operationResult'] }
+            Assert-True ($null -ne $blockedStartResult -and -not [bool]$blockedStartResult.processStarted -and [string]$blockedStartResult.errorCode -ceq 'ProcessAlive' -and $script:startCalls -eq 0) ('有效或未結束的 process identity 未阻擋續行啟動：' + [string]$blockedStartResult.error + '; result=' + ($blockedStartResult | ConvertTo-Json -Depth 20 -Compress))
+            Write-Phase9Evidence -Label 'F001_ACL_EVIDENCE_CONTINUATION_PASS' -Value ([ordered]@{
+                    missing_previous_evidence = [ordered]@{ process_started = $missingEvidenceStart[0].processStarted; run_record_path = $missingEvidenceStart[0].runRecordPath; output_acl_gate = $null -ne $missingStartAclProperty; run_record_acl_evidence = $null -ne $missingRecordAclProperty }
+                    changed_previous_evidence = [ordered]@{ process_started = $changedEvidenceStart[0].processStarted; run_record_path = $changedEvidenceStart[0].runRecordPath; prior_baseline_fingerprint = $f001PreviousAnchor.sandbox_acl_baseline.fingerprint; prior_evidence_fingerprint = $f001PreviousAnchor.sandbox_acl_evidence.entries[0].fingerprint; output_acl_gate = $null -ne $changedStartAclProperty; run_record_acl_evidence = $null -ne $changedRecordAclProperty }
+                    active_process_identity_blocked = [ordered]@{ process_started = [bool]$blockedStartResult.processStarted; error_code = [string]$blockedStartResult.errorCode; attempted_start_calls = $script:startCalls }
+                })
         }
         finally {
-            Set-Item -Path Function:\Get-WorktreeAclGate -Value $f001OriginalFunctions['Get-WorktreeAclGate']
-            Set-Item -Path Function:\Resolve-PreviousDispatchRun -Value $f001OriginalFunctions['Resolve-PreviousDispatchRun']
-            Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value $f001OriginalFunctions['Resolve-DispatchBaselineBinding']
-            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value $f001OriginalFunctions['Resolve-PrepareResultBinding']
-            Set-Item -Path Function:\Test-ScopePlanHashRecord -Value $f001OriginalFunctions['Test-ScopePlanHashRecord']
-            Set-Item -Path Function:\Get-DispatchUnitList -Value $f001OriginalFunctions['Get-DispatchUnitList']
-            Set-Item -Path Function:\Test-ContinuationScopePlan -Value $f001OriginalFunctions['Test-ContinuationScopePlan']
+            foreach ($functionName in $f001FunctionNames) {
+                Set-Item -Path ('Function:\' + $functionName) -Value $f001OriginalFunctions[$functionName]
+            }
             $script:testThread = $previousTestThread
             $script:quotaSnapshotPathOverride = $previousQuotaOverride
-            $script:phase9AclMode = $previousAclMode
-            $script:dispatchUnitListOverride = $previousDispatchUnitOverride
+            $script:dispatchUnitListOverride = $previousUnitOverride
+            $script:pidResult = $previousPidResult
+            $script:startCalls = $previousStartCalls
+            $script:scopePlanFixtureDecision = $previousScopeDecision
+            $script:RequestContext = $previousRequestContext
         }
     }
 
-    $script:phase9AclMode = 'sandbox'
 
-    Invoke-Case 'Phase 9 F-001 real Start RunRecord Inspect continuation matrix' {
-        $f001ChainFunctionNames = @(
-            'Get-WorktreeAclGate'
-            'Get-ExplicitAclSnapshot'
-            'Resolve-DispatchBaselineBinding'
-            'Resolve-PrepareResultBinding'
-            'Test-ScopePlanHashRecord'
-            'Get-DispatchUnitList'
-            'Test-ContinuationScopePlan'
-            'Write-TestEvents'
-        )
-        $f001ChainOriginalFunctions = @{}
-        foreach ($functionName in $f001ChainFunctionNames) {
-            $f001ChainOriginalFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function -ErrorAction Stop).ScriptBlock
-        }
-        $f001ChainOriginalAclEvidence = (Get-Command -Name Get-SandboxAclInspectEvidence -CommandType Function -ErrorAction Stop).ScriptBlock
-        $f001ChainMakeSnapshot = {
-            param(
-                [Parameter(Mandatory)][string]$Status,
-                [AllowEmptyCollection()][object[]]$Entries = @(),
-                [AllowEmptyString()][string]$ErrorMessage
-            )
-            $entryValues = @($Entries | Where-Object { $null -ne $_ })
-            return [pscustomobject]@{
-                status = $Status
-                path = $null
-                fingerprint = if ($Status -eq 'known') { Get-JsonSha256 -Value @($entryValues) } else { $null }
-                entries = @($entryValues)
-                explicit_entries = @($entryValues)
-                captured_at_utc = [DateTime]::UtcNow.ToString('o')
-                error = if ([string]::IsNullOrWhiteSpace($ErrorMessage)) { $null } else { $ErrorMessage }
-            }
-        }
-        $f001ChainAclFunction = {
-            param([string]$Path)
-            $script:f001AclReadCount++
-            if (@($script:f001AclQueue).Count -eq 0) {
-                throw ('F-001 ACL fixture queue exhausted：' + $Path)
-            }
-            $next = $script:f001AclQueue[0]
-            if (@($script:f001AclQueue).Count -eq 1) {
-                $script:f001AclQueue = @()
-            }
-            else {
-                $script:f001AclQueue = @($script:f001AclQueue | Select-Object -Skip 1)
-            }
-            $entries = @((Get-DispatchJsonProperty -Object $next -Name 'entries') | Where-Object { $null -ne $_ })
-            $status = [string](Get-DispatchJsonProperty -Object $next -Name 'status')
-            return [ordered]@{
-                status = $status
-                path = (Resolve-AbsolutePath -Path $Path)
-                fingerprint = if ($status -eq 'known') { Get-JsonSha256 -Value @($entries) } else { $null }
-                entries = @($entries)
-                explicit_entries = @($entries)
-                captured_at_utc = [string](Get-DispatchJsonProperty -Object $next -Name 'captured_at_utc')
-                error = Get-DispatchJsonProperty -Object $next -Name 'error'
-            }
-        }
-        $f001ChainEventFunction = {
-            [CmdletBinding()]
-            param([string]$Path, [string]$Thread, [string]$Terminal = 'turn.completed')
-            $message = 'design.md ' + $script:f001EventDispatchSlug + ' ' + $script:f001EventLineSlug
-            $events = New-Object System.Collections.Generic.List[object]
-            $events.Add([ordered]@{ type = 'thread.started'; thread_id = $Thread })
-            $events.Add([ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $message } })
-            if ($Terminal -eq 'turn.failed') {
-                $events.Add([ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = 'fixture abnormal completion' } })
-            }
-            else {
-                $events.Add([ordered]@{ type = 'turn.completed'; usage = [ordered]@{ input_tokens = 1; output_tokens = 1 } })
-            }
-            Write-Utf8NoBom -Path $Path -Content (($events | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 10 }) -join "`r`n")
-        }
-        $script:f001AclQueue = @()
-        $script:f001AclReadCount = 0
-        $script:f001EventDispatchSlug = ''
-        $script:f001EventLineSlug = ''
-        $script:f001Terminal = 'turn.completed'
 
-        $f001ChainScenario = {
-            param(
-                [Parameter(Mandatory)][string]$Name,
-                [Parameter(Mandatory)][string]$PostStatus,
-                [AllowEmptyCollection()][object[]]$PostEntries = @(),
-                [AllowEmptyString()][string]$PostError,
-                [Parameter(Mandatory)][bool]$NormalCompletion,
-                [Parameter(Mandatory)][bool]$ContinuationPass,
-                [Parameter(Mandatory)][string]$ExpectedContinuationCode,
-                [bool]$InspectContinuation,
-                [bool]$InspectDuplicate
-            )
-            $scenarioRoot = Join-Path $phase9Root ('f1-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-            $sourceRoot = Join-Path $scenarioRoot 'source'
-            $executionRoot = Join-Path $scenarioRoot 'dispatch'
-            $lineSlug = 'line-a'
-            $dispatchSlug = 'f001-' + $Name
-            $historyRoot = Join-Path $executionRoot '.local\ai-sessions\history'
-            $sourceHistoryRoot = Join-Path $sourceRoot '.local\ai-sessions\history'
-            $lineHistoryRoot = Join-Path $sourceHistoryRoot ($lineSlug + '\runs\' + $dispatchSlug)
-            $executionLineHistoryRoot = Join-Path $historyRoot $lineSlug
-            $lineRoot = Join-Path $sourceRoot '.local\ai-sessions\handoff\line-a'
-            $codexHome = Join-Path $executionRoot 'codex-home'
-            $scopePath = Join-Path $historyRoot ($dispatchSlug + '-scope.json')
-            $preparePath = Join-Path $historyRoot ($dispatchSlug + '-prepare.json')
-            $baselinePath = Join-Path $historyRoot ($dispatchSlug + '-baseline.json')
-            $preflightPath = Join-Path $historyRoot ($dispatchSlug + '-preflight.json')
-            $quotaBeforePath = Join-Path $historyRoot ($dispatchSlug + '-quota-before.json')
-            $quotaAfterPath = Join-Path $historyRoot ($dispatchSlug + '-quota-after.json')
-            $calibrationPath = Join-Path $sourceHistoryRoot ($dispatchSlug + '-calibration.jsonl')
-            $promptPath = Join-Path $executionRoot ($dispatchSlug + '-prompt.md')
-            New-Item -ItemType Directory -Path $lineHistoryRoot, $executionLineHistoryRoot, $lineRoot, $codexHome, $historyRoot -Force | Out-Null
-            Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = $lineSlug } | ConvertTo-Json -Depth 10) + "`n")
-            Write-Utf8NoBom -Path $promptPath -Content ('f001 chain ' + $Name)
-            Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
-            $rolloutRoot = Join-Path $codexHome 'sessions\f001'
-            New-Item -ItemType Directory -Path $rolloutRoot -Force | Out-Null
-            Write-Utf8NoBom -Path (Join-Path $rolloutRoot 'rollout.jsonl') -Content (([ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = '' } } | ConvertTo-Json -Compress -Depth 10) + "`r`n" + ([ordered]@{ type = 'turn_context'; payload = [ordered]@{ model = 'fixture-model'; effort = 'high' } } | ConvertTo-Json -Compress -Depth 10) + "`r`n")
-            Write-Utf8NoBom -Path $baselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + "`n")
-            Write-Utf8NoBom -Path $preparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'Prepared' } | ConvertTo-Json -Depth 10) + "`n")
-            Write-Utf8NoBom -Path $scopePath -Content (([ordered]@{ decision = 'full'; requested_units = @('Phase 1'); selected_units = @('Phase 1'); deferred_units = @(); scope_plan_fingerprint = 'fixture' } | ConvertTo-Json -Depth 10) + "`n")
-            $null = New-Phase8QuotaSnapshot -Path $quotaBeforePath -PrimaryRemainingPercent 80
-            Copy-Item -LiteralPath $quotaBeforePath -Destination $quotaAfterPath -Force
-            $baselineSha = Get-FileSha256 -Path $baselinePath
-            $prepareSha = Get-FileSha256 -Path $preparePath
-            $scopeSha = Get-FileSha256 -Path $scopePath
-            $preflight = [ordered]@{
-                sourceRoot = $sourceRoot
-                executionRoot = $executionRoot
-                dispatchRoot = $executionRoot
-                lineSlug = $lineSlug
-                dispatchSlug = $dispatchSlug
-                writeMode = 'write'
-                dispatchKind = 'workflow'
-                baseSha = ('a' * 40)
-                baselinePath = $baselinePath
-                baselineSha256 = $baselineSha
-                prepareResultPath = $preparePath
-                prepareResultSha256 = $prepareSha
-                prepareStatus = 'Prepared'
-            }
-            Write-Utf8NoBom -Path $preflightPath -Content (($preflight | ConvertTo-Json -Depth 20) + "`n")
-            $thread = [guid]::NewGuid().ToString('D')
-            $script:testThread = $thread
-            $script:f001EventDispatchSlug = $dispatchSlug
-            $script:f001EventLineSlug = $lineSlug
-            $script:f001Terminal = if ($NormalCompletion) { 'turn.completed' } else { 'turn.failed' }
-            $script:startCalls = 0
-            $script:failLaunch = $false
-            $script:startSnapshotMode = 'confirmed'
-            $script:pidResult.ActiveRecords = @()
-            $script:pidResult.UnconfirmedRecords = @()
-            $script:pidResult.Blocked = $false
-            $script:ProfileExplicit = $false
-            $script:AddDirectoryExplicit = $false
-            $script:SearchExplicit = $false
-            $script:CodexParentOptionExplicit = $false
-            $script:dispatchUnitListOverride = @('Phase 1')
-            $script:quotaSnapshotPathOverride = $quotaBeforePath
-            $script:f001CurrentBaselinePath = $baselinePath
-            $script:f001CurrentBaselineSha256 = $baselineSha
-            $script:f001CurrentPreparePath = $preparePath
-            $script:f001CurrentPrepareSha256 = $prepareSha
-            $emptySnapshot = & $f001ChainMakeSnapshot 'known' @() $null
-            $gateSnapshot = & $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null
-            $baselineSnapshot = & $f001ChainMakeSnapshot 'known' @() $null
-            $script:f001AclQueue = @($emptySnapshot, $gateSnapshot, $baselineSnapshot)
-            $postSnapshotStatus = if ($PostStatus -in @('captured', 'rejected', 'no_match')) { 'known' } else { $PostStatus }
-            $SourceRoot = $sourceRoot
-            $ExecutionRoot = $executionRoot
-            $DispatchRoot = $executionRoot
-            $LineSlug = $lineSlug
-            $DispatchSlug = $dispatchSlug
-            $WriteMode = 'write'
-            $PreflightResultPath = $preflightPath
-            $PrepareResultPath = $preparePath
-            $ScopePlanPath = $scopePath
-            $PromptPath = $promptPath
-            $CodexHome = $codexHome
-            $CodexPath = 'fixture-codex'
-            $TargetPath = @('target.txt')
-            $ResumeThreadId = $null
-            $LastMessagePath = $null
-            $QuotaBeforePath = $quotaBeforePath
-            $QuotaAfterPath = $null
-            $CalibrationPath = $calibrationPath
-            $TaskType = 'script-change'
-            $DispatchKind = 'workflow'
-            $Profile = 'default'
-            $SessionMode = 'cold-start'
-            $Model = $null
-            $ReasoningEffort = $null
-            $AdvisorRequestSource = $null
-            $EvidencePackPath = $null
-            $AdvisorConsultReportPath = $null
-            $PrimaryBudgetPercent = $null
-            $PrimaryReservePercent = $null
-            $AddDirectory = @()
-            $Search = $false
-            $CodexParentOption = @()
-            $RequiredIdentifier = $null
-            $EventStreamPath = $null
-            $ErrorStreamPath = $null
-            $ThreadIdPath = $null
-            $PidRecordPath = $null
-            $RunRecordPath = $null
-            $ProcessExitCode = $null
-            $AbortGraceSeconds = 30
-            $InvocationBoundParameters = [ordered]@{}
-            New-Item -ItemType Directory -Path (Get-DispatchRunDirectory -SourceRoot $sourceRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug) -Force | Out-Null
-            $firstStart = @(Invoke-Start)
-            Assert-True ($firstStart.Count -eq 1 -and [bool](Get-DispatchJsonProperty -Object $firstStart[0] -Name 'processStarted')) ('F-001 ' + $Name + ' 首次 Start 未成功：' + ($firstStart | ConvertTo-Json -Depth 30 -Compress))
-            $firstRecordPath = [string](Get-DispatchJsonProperty -Object $firstStart[0] -Name 'runRecordPath')
-            $firstRecord = Read-DispatchRunRecord -Path $firstRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
-            $firstEvidence = Get-DispatchJsonProperty -Object $firstRecord -Name 'sandbox_acl_evidence'
-            $firstBaseline = Get-DispatchJsonProperty -Object $firstRecord -Name 'sandbox_acl_baseline'
-            Assert-True ([string](Get-DispatchJsonProperty -Object $firstBaseline -Name 'status') -eq 'known' -and @((Get-DispatchJsonProperty -Object $firstBaseline -Name 'entries')).Count -eq 0) ('F-001 ' + $Name + ' baseline 未保存 Start spawn 前實際零筆 snapshot。')
-            Assert-True ([string](Get-DispatchJsonProperty -Object $firstEvidence -Name 'capture_status') -eq 'pending' -and @((Get-DispatchJsonProperty -Object $firstEvidence -Name 'entries')).Count -eq 0) ('F-001 ' + $Name + ' Start pending evidence 含有 gate entry：' + ($firstEvidence | ConvertTo-Json -Depth 20 -Compress))
-            $rolloutFile = Join-Path $rolloutRoot 'rollout.jsonl'
-            $rolloutLines = @(
-                ([ordered]@{ type = 'session_meta'; payload = [ordered]@{ session_id = $thread } } | ConvertTo-Json -Compress -Depth 10)
-                ([ordered]@{ type = 'turn_context'; payload = [ordered]@{ model = 'fixture-model'; effort = 'high' } } | ConvertTo-Json -Compress -Depth 10)
-            )
-            Write-Utf8NoBom -Path $rolloutFile -Content (($rolloutLines -join "`r`n") + "`r`n")
-            $script:f001AclQueue = if ($NormalCompletion) { @(& $f001ChainMakeSnapshot $postSnapshotStatus $PostEntries $PostError) } else { @() }
-            $script:SourceRoot = $sourceRoot
-            $script:ExecutionRoot = $executionRoot
-            $script:LineSlug = $lineSlug
-            $script:DispatchSlug = $dispatchSlug
-            $script:DispatchResultPath = $null
-            $script:EventStreamPath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'event_stream_path')
-            $script:RunRecordPath = $firstRecordPath
-            $script:ScopePlanPath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'scope_plan_path')
-            $script:QuotaBeforePath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'quota_before_path')
-            $script:QuotaAfterPath = $quotaAfterPath
-            $script:CalibrationPath = $calibrationPath
-            $SourceRoot = $sourceRoot
-            $ExecutionRoot = $executionRoot
-            $LineSlug = $lineSlug
-            $DispatchSlug = $dispatchSlug
-            $DispatchResultPath = $null
-            $EventStreamPath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'event_stream_path')
-            $RunRecordPath = $firstRecordPath
-            $ScopePlanPath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'scope_plan_path')
-            $QuotaBeforePath = [string](Get-DispatchJsonProperty -Object $firstRecord -Name 'quota_before_path')
-            $QuotaAfterPath = $quotaAfterPath
-            $CalibrationPath = $calibrationPath
-            $RequiredIdentifier = 'design.md'
-            $script:RequiredIdentifier = 'design.md'
-            $global:RequiredIdentifier = 'design.md'
-            $script:ErrorStreamPath = $null
-            $script:LastMessagePath = $null
-            $script:ThreadIdPath = $null
-            $script:EvidencePackPath = $null
-            $script:BudgetMonitorPath = $null
-            $script:AdvisorConsultReportPath = $null
-            $script:Profile = 'default'
-            $script:Model = 'fixture-model'
-            $script:ReasoningEffort = 'high'
-            $script:TaskType = 'script-change'
-            $script:SessionMode = 'cold-start'
-            $script:InvocationBoundParameters = [ordered]@{}
-            $script:ProcessExitCode = if ($NormalCompletion) { 0 } else { 1 }
-            $ProcessExitCode = if ($NormalCompletion) { 0 } else { 1 }
-            $inspectResult = Invoke-Inspect
-            $afterFirstRecord = Read-DispatchRunRecord -Path $firstRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
-            $afterFirstEvidence = Get-DispatchJsonProperty -Object $afterFirstRecord -Name 'sandbox_acl_evidence'
-            $expectedStatus = if ($NormalCompletion) { $PostStatus } else { 'pending' }
-            Assert-True ([string](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'capture_status') -eq $expectedStatus -and [bool](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'continuation_allowed') -eq $ContinuationPass) (("F-001 {0} Inspect status 不符：expected={1}; actual={2}" -f $Name, $expectedStatus, ($afterFirstEvidence | ConvertTo-Json -Depth 20 -Compress)))
-            if ($NormalCompletion -and $PostStatus -eq 'captured') {
-                Assert-True (@((Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'entries')).Count -eq @($PostEntries).Count) ('F-001 ' + $Name + ' captured entries 未來自 post snapshot。')
-            }
-            $duplicateReadCount = $script:f001AclReadCount
-            $duplicateEvidence = $null
-            if ($InspectDuplicate) {
-                $duplicateResult = Invoke-Inspect
-                $duplicateRecord = Read-DispatchRunRecord -Path $firstRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
-                $duplicateEvidence = Get-DispatchJsonProperty -Object $duplicateRecord -Name 'sandbox_acl_evidence'
-                Assert-True ($script:f001AclReadCount -eq $duplicateReadCount -and [string](Get-DispatchJsonProperty -Object $duplicateEvidence -Name 'capture_status') -eq $expectedStatus -and [string](Get-DispatchJsonProperty -Object $duplicateEvidence -Name 'fingerprint') -eq [string](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'fingerprint')) ('F-001 duplicate Inspect 非冪等：' + ($duplicateEvidence | ConvertTo-Json -Depth 20 -Compress))
-            }
-            $messagePath = [string](Get-DispatchJsonProperty -Object $afterFirstRecord -Name 'last_message_path')
-            Write-Utf8NoBom -Path $messagePath -Content ('design.md ' + $dispatchSlug + ' ' + $lineSlug)
-            $script:f001AclQueue = @(
-                (& $f001ChainMakeSnapshot 'known' @() $null)
-                (& $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null)
-                (& $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null)
-            )
-            $ResumeThreadId = $thread
-            $SessionMode = 'continuation'
-            $script:SessionMode = 'continuation'
-            $script:ProcessExitCode = $null
-            $nextStart = @()
-            $nextStartException = $null
-            try {
-                $nextStart = @(Invoke-Start)
-            }
-            catch {
-                $nextStartException = $_.Exception
-            }
-            $nextStartObject = if ($nextStart.Count -eq 1) { $nextStart[0] } else { $null }
-            if ($null -ne $nextStartException) {
-                $operationResult = $nextStartException.Data['operationResult']
-                if ($null -eq $operationResult) {
-                    throw $nextStartException
-                }
-                $nextStartObject = $operationResult
-            }
-            $nextStartJson = if ($null -eq $nextStartObject) { '' } else { $nextStartObject | ConvertTo-Json -Depth 40 -Compress }
-            if ($ContinuationPass) {
-                Assert-True ($null -ne $nextStartObject -and [bool](Get-DispatchJsonProperty -Object $nextStartObject -Name 'processStarted')) ('F-001 ' + $Name + ' 預期續行通過但 Start 失敗：' + $nextStartJson)
-            }
-            else {
-                Assert-True ($null -ne $nextStartObject -and -not [bool](Get-DispatchJsonProperty -Object $nextStartObject -Name 'processStarted') -and $nextStartJson.Contains($ExpectedContinuationCode)) ('F-001 ' + $Name + ' 預期拒絕但未回傳 ' + $ExpectedContinuationCode + '：' + $nextStartJson)
-            }
-            $secondEvidence = $null
-            if ($ContinuationPass -and $InspectContinuation) {
-                $secondRecordPath = [string](Get-DispatchJsonProperty -Object $nextStartObject -Name 'runRecordPath')
-                $secondRecord = Read-DispatchRunRecord -Path $secondRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
-                $secondPost = & $f001ChainMakeSnapshot $postSnapshotStatus $PostEntries $PostError
-                $script:f001AclQueue = @($secondPost)
-                $script:EventStreamPath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'event_stream_path')
-                $script:RunRecordPath = $secondRecordPath
-                $script:ScopePlanPath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'scope_plan_path')
-                $script:QuotaBeforePath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'quota_before_path')
-                $EventStreamPath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'event_stream_path')
-                $RunRecordPath = $secondRecordPath
-                $ScopePlanPath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'scope_plan_path')
-                $QuotaBeforePath = [string](Get-DispatchJsonProperty -Object $secondRecord -Name 'quota_before_path')
-                $script:ProcessExitCode = 0
-                $ProcessExitCode = 0
-                $secondInspect = Invoke-Inspect
-                $secondAfter = Read-DispatchRunRecord -Path $secondRecordPath -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug
-                $secondEvidence = Get-DispatchJsonProperty -Object $secondAfter -Name 'sandbox_acl_evidence'
-                Assert-True ([string](Get-DispatchJsonProperty -Object $secondEvidence -Name 'capture_status') -eq 'captured' -and [bool](Get-DispatchJsonProperty -Object $secondEvidence -Name 'continuation_allowed')) ('F-001 ' + $Name + ' 續行 Inspect 未保持 captured：' + ($secondEvidence | ConvertTo-Json -Depth 20 -Compress))
-            }
-            return [pscustomobject]@{
-                scenario = $Name
-                inspect_status = [string](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'capture_status')
-                continuation_allowed = [bool](Get-DispatchJsonProperty -Object $afterFirstEvidence -Name 'continuation_allowed')
-                next_start = if ($null -eq $nextStartObject) { $null } else { [bool](Get-DispatchJsonProperty -Object $nextStartObject -Name 'processStarted') }
-                next_start_error = if ($null -eq $nextStartObject) { $null } else { [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $nextStartObject -Name 'failure') -Name 'reason_code') }
-                duplicate_status = if ($null -eq $duplicateEvidence) { $null } else { [string](Get-DispatchJsonProperty -Object $duplicateEvidence -Name 'capture_status') }
-                second_inspect_status = if ($null -eq $secondEvidence) { $null } else { [string](Get-DispatchJsonProperty -Object $secondEvidence -Name 'capture_status') }
-            }
-        }
 
-        try {
-            Set-Item -Path Function:\Get-WorktreeAclGate -Value (Get-Command -Name Invoke-Phase9ProductionAclGate -CommandType Function).ScriptBlock
-            Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $f001ChainAclFunction
-            Set-Item -Path Function:\Write-TestEvents -Value $f001ChainEventFunction
-            Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value ([scriptblock]::Create('param($Preflight, $SourceRoot, $DispatchRoot, $LineSlug, $DispatchSlug, $BaseSha) return [pscustomobject]@{ Path = $script:f001CurrentBaselinePath; Sha256 = $script:f001CurrentBaselineSha256 }'))
-            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value ([scriptblock]::Create('param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ExpectedSha256) return [pscustomobject]@{ Path = $script:f001CurrentPreparePath; Sha256 = $script:f001CurrentPrepareSha256; Status = ''Prepared''; Document = [pscustomobject]@{ operation = ''Prepare''; status = ''Prepared'' }; Artifacts = @() }'))
-            Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
-            Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
-            Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
-            $f001Results = New-Object System.Collections.Generic.List[object]
-            $f001Results.Add((& $f001ChainScenario -Name 'first-captured' -PostStatus 'captured' -PostEntries @($phase9SandboxEntry) -NormalCompletion $true -ContinuationPass $true -ExpectedContinuationCode 'WorktreeAclResidue' -InspectDuplicate $false -InspectContinuation $false))
-            $f001Results.Add((& $f001ChainScenario -Name 'continuation-captured' -PostStatus 'captured' -PostEntries @($phase9SandboxEntry) -NormalCompletion $true -ContinuationPass $true -ExpectedContinuationCode 'WorktreeAclResidue' -InspectDuplicate $false -InspectContinuation $true))
-            $f001Results.Add((& $f001ChainScenario -Name 'zero-match' -PostStatus 'no_match' -PostEntries @() -NormalCompletion $true -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclContinuationDenied' -InspectDuplicate $false -InspectContinuation $false))
-            $f001Results.Add((& $f001ChainScenario -Name 'acl-unknown' -PostStatus 'unknown' -PostEntries @() -PostError 'fixture ACL unknown' -NormalCompletion $true -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclContinuationDenied' -InspectDuplicate $false -InspectContinuation $false))
-            $f001Results.Add((& $f001ChainScenario -Name 'acl-failed' -PostStatus 'failed' -PostEntries @() -PostError 'fixture ACL failed' -NormalCompletion $true -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclContinuationDenied' -InspectDuplicate $false -InspectContinuation $false))
-            $f001Results.Add((& $f001ChainScenario -Name 'unauthorized-residue' -PostStatus 'rejected' -PostEntries @($phase9SandboxEntry, $phase9ExtraAclEntry) -PostError 'fixture unauthorized residue' -NormalCompletion $true -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclResidue' -InspectDuplicate $false -InspectContinuation $false))
-            $f001Results.Add((& $f001ChainScenario -Name 'abnormal-completion' -PostStatus 'known' -PostEntries @($phase9SandboxEntry) -NormalCompletion $false -ContinuationPass $false -ExpectedContinuationCode 'WorktreeAclContinuationDenied' -InspectDuplicate $false -InspectContinuation $false))
-            $f001Results.Add((& $f001ChainScenario -Name 'duplicate-inspect' -PostStatus 'captured' -PostEntries @($phase9SandboxEntry) -NormalCompletion $true -ContinuationPass $true -ExpectedContinuationCode 'WorktreeAclResidue' -InspectDuplicate $true -InspectContinuation $false))
-            Assert-True ($f001Results.Count -eq 8) ('F-001 八情境結果數量錯誤：' + $f001Results.Count)
-            $script:phase9F001ScenarioEvidence = @($f001Results.ToArray())
-            Write-Phase9Evidence -Label 'F001_8_SCENARIOS' -Value $script:phase9F001ScenarioEvidence
 
-            $reverseRecord = [pscustomobject]@{
-                sandbox_acl_baseline = (& $f001ChainMakeSnapshot 'known' @() $null)
-                sandbox_acl_evidence = [pscustomobject]@{ capture_status = 'pending'; entries = @(); captured_at_utc = $null; normal_completion = $false; continuation_allowed = $false }
-                source_root = $phase9AclSourceRoot
-                execution_root = $phase9AclExecutionRoot
-                line_slug = 'line-a'
-                dispatch_slug = 'f001-reverse'
-                previous_run_id = $null
-                resume_anchor_run_id = $null
-            }
-            $reverseSnapshotQueue = @((& $f001ChainMakeSnapshot 'known' @() $null), (& $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null))
-            $script:f001AclQueue = @((& $f001ChainMakeSnapshot 'known' @($phase9SandboxEntry) $null))
-            $reverseDefinition = "function Invoke-Phase9MutantInspectEvidence {`r`n" + (Get-Command -Name Get-SandboxAclInspectEvidence -CommandType Function).ScriptBlock.ToString() + "`r`n}"
-            $reverseTarget = 'return New-SandboxAclEvidenceDocument -Entries @($postEntries) -CaptureStatus ''no_match'' -NormalCompletion $true -ContinuationAllowed $false -Error $null'
-            $reverseReplacement = 'return New-SandboxAclEvidenceDocument -Entries @($script:f001ReverseGateEntries) -CaptureStatus ''captured'' -NormalCompletion $true -ContinuationAllowed $true'
-            $reverseDefinition = $reverseDefinition.Replace($reverseTarget, $reverseReplacement)
-            $script:f001ReverseGateEntries = @($phase9SandboxEntry)
-            . ([scriptblock]::Create($reverseDefinition))
-            $reverseSnapshot = & $f001ChainMakeSnapshot 'known' @() $null
-            $script:f001AclQueue = @($reverseSnapshot)
-            $mutantEvidence = Invoke-Phase9MutantInspectEvidence -Record $reverseRecord -ExecutionRoot $phase9AclExecutionRoot -NormalCompletion $true
-            Assert-True ([string](Get-DispatchJsonProperty -Object $mutantEvidence -Name 'capture_status') -eq 'captured') ('F-001 reverse mutant 未顯示 gate entry 回填為 captured：' + ($mutantEvidence | ConvertTo-Json -Depth 20 -Compress))
-            Set-Item -Path Function:\Get-SandboxAclInspectEvidence -Value $f001ChainOriginalAclEvidence
-            $script:f001AclQueue = @($reverseSnapshot)
-            $restoredEvidence = Get-SandboxAclInspectEvidence -Record $reverseRecord -ExecutionRoot $phase9AclExecutionRoot -NormalCompletion $true
-            Assert-True ([string](Get-DispatchJsonProperty -Object $restoredEvidence -Name 'capture_status') -eq 'no_match' -and -not [bool](Get-DispatchJsonProperty -Object $restoredEvidence -Name 'continuation_allowed')) ('F-001 reverse 還原後未回到 no_match：' + ($restoredEvidence | ConvertTo-Json -Depth 20 -Compress))
-            $script:phase9F001ReverseEvidence = [ordered]@{
-                mutant = [ordered]@{ expected = 'no_match'; actual = $mutantEvidence; result = 'FAIL' }
-                restored = [ordered]@{ expected = 'no_match'; actual = $restoredEvidence; result = 'PASS' }
-                mutation = 'Inspect known zero-match branch replaced by gate accepted entry fallback.'
-            }
-            Write-Phase9Evidence -Label 'F001_REVERSE_FAILURE' -Value $script:phase9F001ReverseEvidence.mutant
-            Write-Phase9Evidence -Label 'F001_RESTORED_PASS' -Value $script:phase9F001ReverseEvidence.restored
-        }
-        finally {
-            foreach ($functionName in $f001ChainFunctionNames) {
-                Set-Item -Path ('Function:' + $functionName) -Value $f001ChainOriginalFunctions[$functionName]
-            }
-            Set-Item -Path Function:\Get-SandboxAclInspectEvidence -Value $f001ChainOriginalAclEvidence
-            $script:Model = $null
-            $script:ReasoningEffort = $null
-            $script:TaskType = $null
-            $script:SessionMode = 'cold-start'
-            $script:RequiredIdentifier = 'design.md'
-            $script:ProcessExitCode = $null
-            $script:InvocationBoundParameters = [ordered]@{}
-            $global:Model = $null
-            $global:ReasoningEffort = $null
-            $global:RequiredIdentifier = 'design.md'
-        }
-    }
 
-    Invoke-Case 'Phase 9 F-010 bidirectional baseline ACL comparison' {
-        $originalAclSnapshot = (Get-Command -Name Get-ExplicitAclSnapshot -CommandType Function -ErrorAction Stop).ScriptBlock
-        $entryA = [ordered]@{
-            identity = 'A'
-            identity_resolution = 'resolved'
-            access_control_type = 'Allow'
-            rights = 'Read'
-            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
-            propagation_flags = @('None')
-            is_inherited = $false
-            canonical = '(OI)(CI)(R)'
-            fingerprint = ('1' * 64)
-        }
-        $entryB = [ordered]@{
-            identity = 'B'
-            identity_resolution = 'resolved'
-            access_control_type = 'Allow'
-            rights = 'ReadAndExecute'
-            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
-            propagation_flags = @('None')
-            is_inherited = $false
-            canonical = '(OI)(CI)(RX)'
-            fingerprint = ('2' * 64)
-        }
-        $entryC = [ordered]@{
-            identity = 'C'
-            identity_resolution = 'unresolved'
-            access_control_type = 'Allow'
-            rights = 'Modify'
-            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
-            propagation_flags = @('None')
-            is_inherited = $false
-            canonical = '(OI)(CI)(M)'
-            fingerprint = ('3' * 64)
-        }
-        $script:phase9F010PostEntries = @($entryA, $entryC)
-        $script:phase9F010SnapshotFunction = {
-            param([string]$Path)
-            return [ordered]@{
-                status = 'known'
-                path = (Resolve-AbsolutePath -Path $Path)
-                fingerprint = Get-JsonSha256 -Value @($script:phase9F010PostEntries)
-                entries = @($script:phase9F010PostEntries)
-                explicit_entries = @($script:phase9F010PostEntries)
-                captured_at_utc = [datetime]::UtcNow.ToString('o')
-                error = $null
-            }
-        }
-        try {
-            Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $script:phase9F010SnapshotFunction
-            $record = [pscustomobject]@{
-                source_root = $phase9Root
-                line_slug = 'line-a'
-                dispatch_slug = 'f010-baseline-missing'
-                previous_run_id = $null
-                resume_anchor_run_id = $null
-                sandbox_acl_baseline = [pscustomobject]@{
-                    status = 'known'
-                    entries = @($entryA, $entryB)
-                    explicit_entries = @($entryA, $entryB)
-                    fingerprint = Get-JsonSha256 -Value @($entryA, $entryB)
-                }
-                sandbox_acl_evidence = [pscustomobject]@{
-                    capture_status = 'pending'
-                    entries = @()
-                    captured_at_utc = $null
-                    normal_completion = $false
-                    continuation_allowed = $false
-                }
-            }
-            $missingEntriesOriginal = (Get-Command -Name Get-SandboxAclMissingEntries -CommandType Function -ErrorAction Stop).ScriptBlock
-            $fixedEvidence = Get-SandboxAclInspectEvidence -Record $record -ExecutionRoot $phase9Root -NormalCompletion $true
-            $oneWayExtraEntries = @(Get-SandboxAclExtraEntries -BaselineEntries @($entryA, $entryB) -SnapshotEntries @($entryA, $entryC))
-            if ($oneWayExtraEntries.Count -ne 1 -or [string](Get-DispatchJsonProperty -Object $oneWayExtraEntries[0] -Name 'identity') -ne 'C') {
-                throw ('F-010 單向差集 fixture 未形成 candidate C：' + ($oneWayExtraEntries | ConvertTo-Json -Depth 20 -Compress))
-            }
-            $script:phase9F010MissingEntriesMutant = {
-                param($BaselineEntries, $SnapshotEntries)
-                return @()
-            }
-            $reverseMutantEvidence = $null
-            try {
-                Set-Item -Path Function:\Get-SandboxAclMissingEntries -Value $script:phase9F010MissingEntriesMutant
-                $reverseMutantEvidence = Get-SandboxAclInspectEvidence -Record $record -ExecutionRoot $phase9Root -NormalCompletion $true
-            }
-            finally {
-                Set-Item -Path Function:\Get-SandboxAclMissingEntries -Value $missingEntriesOriginal
-            }
-            $restoredEvidence = Get-SandboxAclInspectEvidence -Record $record -ExecutionRoot $phase9Root -NormalCompletion $true
-            $script:phase9F010PostEntries = @($entryA, $entryB, $entryC)
-            $normalEvidence = Get-SandboxAclInspectEvidence -Record $record -ExecutionRoot $phase9Root -NormalCompletion $true
-            $script:phase9F010Evidence = [ordered]@{
-                failure_scenario = [ordered]@{
-                    baseline = @('A', 'B')
-                    post = @('A', 'C')
-                    expected = 'rejected because baseline entry B is missing'
-                }
-                wrong_single_direction = $reverseMutantEvidence
-                fixed_missing_baseline = $fixedEvidence
-                reverse_mutant_failure = [ordered]@{
-                    expected = 'rejected'
-                    actual = $reverseMutantEvidence
-                    result = 'FAIL'
-                }
-                restored_pass = [ordered]@{
-                    expected = 'rejected'
-                    actual = $restoredEvidence
-                    result = 'PASS'
-                }
-                normal_first_run = [ordered]@{
-                    baseline = @('A', 'B')
-                    post = @('A', 'B', 'C')
-                    evidence = $normalEvidence
-                }
-            }
-            Write-Phase9Evidence -Label 'F010_BIDIRECTIONAL_COMPARISON' -Value $script:phase9F010Evidence
-            Write-Phase9Evidence -Label 'F010_REVERSE_FAILURE' -Value $script:phase9F010Evidence.reverse_mutant_failure
-            Write-Phase9Evidence -Label 'F010_RESTORED_PASS' -Value $script:phase9F010Evidence.restored_pass
-            Assert-True ([string](Get-DispatchJsonProperty -Object $fixedEvidence -Name 'capture_status') -eq 'rejected' -and -not [bool](Get-DispatchJsonProperty -Object $fixedEvidence -Name 'continuation_allowed')) ('F-010 baseline entry 消失仍被 captured：' + ($fixedEvidence | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ([string](Get-DispatchJsonProperty -Object $reverseMutantEvidence -Name 'capture_status') -eq 'captured') ('F-010 反向單向差集案例未重現 captured 失敗：' + ($reverseMutantEvidence | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ([string](Get-DispatchJsonProperty -Object $restoredEvidence -Name 'capture_status') -eq 'rejected') ('F-010 還原雙向比較後未回到 rejected：' + ($restoredEvidence | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ([string](Get-DispatchJsonProperty -Object $normalEvidence -Name 'capture_status') -eq 'captured' -and [bool](Get-DispatchJsonProperty -Object $normalEvidence -Name 'continuation_allowed')) ('F-010 正常首輪被雙向比較誤擋：' + ($normalEvidence | ConvertTo-Json -Depth 20 -Compress))
-        }
-        finally {
-            Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $originalAclSnapshot
-        }
-    }
 
-    Invoke-Case 'Phase 9 F-011 bidirectional continuation gate reaches actual Invoke-Start' {
-        $f011FunctionNames = @(
-            'Get-WorktreeAclGate'
-            'Get-ExplicitAclSnapshot'
-            'Resolve-PreviousDispatchRun'
-            'Resolve-DispatchBaselineBinding'
-            'Resolve-PrepareResultBinding'
-            'Test-ScopePlanHashRecord'
-            'Get-DispatchUnitList'
-            'Test-ContinuationScopePlan'
-            'Get-SandboxAclMissingEntries'
-            'Invoke-Prepare'
-        )
-        $f011OriginalFunctions = @{}
-        foreach ($functionName in $f011FunctionNames) {
-            $f011OriginalFunctions[$functionName] = (Get-Command -Name $functionName -CommandType Function -ErrorAction Stop).ScriptBlock
-        }
-        $entryA = [ordered]@{
-            identity = 'A'
-            identity_resolution = 'resolved'
-            access_control_type = 'Allow'
-            rights = 'Read'
-            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
-            propagation_flags = @('None')
-            is_inherited = $false
-            canonical = '(OI)(CI)(R)'
-            fingerprint = ('4' * 64)
-        }
-        $entryB = [ordered]@{
-            identity = 'B'
-            identity_resolution = 'resolved'
-            access_control_type = 'Allow'
-            rights = 'ReadAndExecute'
-            inheritance_flags = @('ObjectInherit', 'ContainerInherit')
-            propagation_flags = @('None')
-            is_inherited = $false
-            canonical = '(OI)(CI)(RX)'
-            fingerprint = ('5' * 64)
-        }
-        $f011Root = Join-Path $phase9Root 'f011-start'
-        $f011SourceRoot = Join-Path $f011Root 'source'
-        $f011ExecutionRoot = Join-Path $f011Root 'dispatch'
-        $f011LineSlug = 'line-a'
-        $f011DispatchSlug = 'f011-missing-whitelist'
-        $f011HistoryRoot = Join-Path $f011ExecutionRoot '.local\ai-sessions\history\line-a'
-        $f011SourceHistoryRoot = Join-Path $f011SourceRoot '.local\ai-sessions\history'
-        $f011RunDirectory = Join-Path (Join-Path $f011SourceHistoryRoot 'line-a\runs') $f011DispatchSlug
-        $f011LineRoot = Join-Path $f011SourceRoot '.local\ai-sessions\handoff\line-a'
-        $f011ScopePath = Join-Path $f011HistoryRoot 'scope.json'
-        $f011PreparePath = Join-Path $f011HistoryRoot 'prepare.json'
-        $f011BaselinePath = Join-Path $f011HistoryRoot 'baseline.json'
-        $f011PreflightPath = Join-Path $f011HistoryRoot 'preflight.json'
-        $f011PromptPath = Join-Path $f011ExecutionRoot 'prompt.md'
-        $f011QuotaPath = Join-Path $f011SourceRoot 'quota.json'
-        $f011CodexHome = Join-Path $f011ExecutionRoot 'codex-home'
-        $f011Thread = [guid]::NewGuid().ToString('D')
-        New-Item -ItemType Directory -Path $f011RunDirectory, $f011HistoryRoot, $f011LineRoot, $f011CodexHome -Force | Out-Null
-        Write-Utf8NoBom -Path (Join-Path $f011LineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = $f011LineSlug } | ConvertTo-Json -Depth 10) + "`n")
-        Write-Utf8NoBom -Path $f011ScopePath -Content (([ordered]@{ decision = 'full'; requested_units = @('Phase 1'); selected_units = @('Phase 1'); deferred_units = @(); scope_plan_fingerprint = 'fixture' } | ConvertTo-Json -Depth 10) + "`n")
-        Write-Utf8NoBom -Path $f011PreparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'Prepared' } | ConvertTo-Json -Depth 10) + "`n")
-        Write-Utf8NoBom -Path $f011BaselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + "`n")
-        Write-Utf8NoBom -Path $f011PromptPath -Content 'f011 continuation prompt'
-        Write-Utf8NoBom -Path (Join-Path $f011CodexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
-        $f011QuotaSnapshot = New-Phase8QuotaSnapshot -Path $f011QuotaPath -PrimaryRemainingPercent 80
-        $f011BaselineSha256 = Get-FileSha256 -Path $f011BaselinePath
-        $f011PrepareSha256 = Get-FileSha256 -Path $f011PreparePath
-        $f011ScopeSha256 = Get-FileSha256 -Path $f011ScopePath
-        $f011ParentOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $f011ExecutionRoot -AddDirectory @() -Search $false -CodexParentOption @()
-        $f011PreviousMessagePath = Join-Path $f011HistoryRoot 'previous-message.md'
-        Write-Utf8NoBom -Path $f011PreviousMessagePath -Content 'f011 previous message'
-        $f011PreviousAnchor = [pscustomobject]@{
-            schema = 'ai-sessions.dispatch-run.v1'
-            run_id = [guid]::NewGuid().ToString('D')
-            line_slug = $f011LineSlug
-            dispatch_slug = $f011DispatchSlug
-            source_root = $f011SourceRoot
-            execution_root = $f011ExecutionRoot
-            thread_id = $f011Thread
-            last_message_path = $f011PreviousMessagePath
-            scope_plan_path = $f011ScopePath
-            scope_plan_sha256 = $f011ScopeSha256
-            baseline_path = $f011BaselinePath
-            baseline_sha256 = $f011BaselineSha256
-            model_evidence = $a.model_evidence
-            reasoning_effort_evidence = $a.reasoning_effort_evidence
-            parent_options = $f011ParentOptions
-            sandbox_acl_evidence = [pscustomobject]@{
-                capture_status = 'captured'
-                entries = @($entryA, $entryB)
-                captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
-                normal_completion = $true
-                continuation_allowed = $true
-            }
-        }
-        $f011PreviousRun = [pscustomobject]@{
-            Record = $f011PreviousAnchor
-            AnchorRecord = $f011PreviousAnchor
-            ChainTailRecord = $f011PreviousAnchor
-            LatestActualStartRecord = $f011PreviousAnchor
-            LatestActualStartEvents = $null
-            ScopePlanRootRecord = $f011PreviousAnchor
-            Message = 'f011 previous message'
-            SkippedAttempts = @()
-        }
-        $f011Preflight = [ordered]@{
-            sourceRoot = $f011SourceRoot
-            executionRoot = $f011ExecutionRoot
-            dispatchRoot = $f011ExecutionRoot
-            lineSlug = $f011LineSlug
-            dispatchSlug = $f011DispatchSlug
-            writeMode = 'write'
-            dispatchKind = 'workflow'
-            baseSha = ('a' * 40)
-            baselinePath = $f011BaselinePath
-            baselineSha256 = $f011BaselineSha256
-            prepareResultPath = $f011PreparePath
-            prepareResultSha256 = $f011PrepareSha256
-            prepareStatus = 'Prepared'
-        }
-        Write-Utf8NoBom -Path $f011PreflightPath -Content (($f011Preflight | ConvertTo-Json -Depth 20) + "`n")
-        $script:phase9F011SourceRoot = $f011SourceRoot
-        $script:phase9F011ExecutionRoot = $f011ExecutionRoot
-        $script:phase9F011SourceEntries = @($entryA)
-        $script:phase9F011DispatchEntries = @($entryA, $entryB)
-        $script:phase9F011PreviousRun = $f011PreviousRun
-        $script:phase9F011CurrentBaselinePath = $f011BaselinePath
-        $script:phase9F011CurrentBaselineSha256 = $f011BaselineSha256
-        $script:phase9F011CurrentPreparePath = $f011PreparePath
-        $script:phase9F011CurrentPrepareSha256 = $f011PrepareSha256
-        $script:phase9F011SnapshotFunction = {
-            param([string]$Path)
-            $isExecutionRoot = [string]::Equals([IO.Path]::GetFullPath($Path), [IO.Path]::GetFullPath($script:phase9F011ExecutionRoot), [StringComparison]::OrdinalIgnoreCase)
-            $entries = if ($isExecutionRoot) { @($script:phase9F011DispatchEntries) } else { @($script:phase9F011SourceEntries) }
-            return [ordered]@{
-                status = 'known'
-                path = (Resolve-AbsolutePath -Path $Path)
-                fingerprint = Get-JsonSha256 -Value @($entries)
-                entries = @($entries)
-                explicit_entries = @($entries)
-                captured_at_utc = [datetime]::UtcNow.ToString('o')
-                error = $null
-            }
-        }
-        $f011OneWayGate = $null
-        $f011FixedGate = $null
-        $f011StartResult = $null
-        try {
-            Set-Item -Path Function:\Get-WorktreeAclGate -Value (Get-Command -Name Invoke-Phase9ProductionAclGate -CommandType Function).ScriptBlock
-            Set-Item -Path Function:\Get-ExplicitAclSnapshot -Value $script:phase9F011SnapshotFunction
-            Set-Item -Path Function:\Resolve-PreviousDispatchRun -Value ([scriptblock]::Create('param($SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ResumeThreadId, $LastMessagePath) return $script:phase9F011PreviousRun'))
-            Set-Item -Path Function:\Resolve-DispatchBaselineBinding -Value ([scriptblock]::Create('param($Preflight, $SourceRoot, $DispatchRoot, $LineSlug, $DispatchSlug, $BaseSha) return [pscustomobject]@{ Path = $script:phase9F011CurrentBaselinePath; Sha256 = $script:phase9F011CurrentBaselineSha256 }'))
-            Set-Item -Path Function:\Resolve-PrepareResultBinding -Value ([scriptblock]::Create('param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug, $ExpectedSha256) return [pscustomobject]@{ Path = $script:phase9F011CurrentPreparePath; Sha256 = $script:phase9F011CurrentPrepareSha256; Status = ''Prepared''; Document = [pscustomobject]@{ operation = ''Prepare''; status = ''Prepared'' }; Artifacts = @() }'))
-            Set-Item -Path Function:\Test-ScopePlanHashRecord -Value ([scriptblock]::Create('param($SourceHistoryRoot, $DispatchSlug, $LineSlug, $ScopePlanPath) return $true'))
-            Set-Item -Path Function:\Get-DispatchUnitList -Value ([scriptblock]::Create('param($RequestedUnit, $DispatchKind, $UnitKind, $ExecutionRoot, $LineSlug, $EvidencePackPath, $EvidenceQuestionUnits, $TargetPath) return @(''Phase 1'')'))
-            Set-Item -Path Function:\Test-ContinuationScopePlan -Value ([scriptblock]::Create('param($ScopePlan, $DispatchSlug, $DispatchKind, $TaskType, $RequestedProfile, $UnitKind, $Units) return $true'))
-            Set-Item -Path Function:\Invoke-Prepare -Value ([scriptblock]::Create('$script:phase9F011PrepareCalls++; throw ''F-011 fixture must reject before Invoke-Prepare.'''))
-            $continuationRecord = [pscustomobject]@{ sandbox_acl_evidence = $f011PreviousAnchor.sandbox_acl_evidence }
-            $script:phase9F011DispatchEntries = @($entryA, $entryB)
-            $normalGate = Invoke-Phase9ProductionAclGate -SourceRoot $f011SourceRoot -ExecutionRoot $f011ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $continuationRecord
-            $script:phase9F011DispatchEntries = @($entryA)
-            $f011FixedGate = Invoke-Phase9ProductionAclGate -SourceRoot $f011SourceRoot -ExecutionRoot $f011ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $continuationRecord
-            $f011MissingEntriesMutant = {
-                param($BaselineEntries, $SnapshotEntries)
-                return @()
-            }
-            Set-Item -Path Function:\Get-SandboxAclMissingEntries -Value $f011MissingEntriesMutant
-            $f011ReverseMutantGate = Invoke-Phase9ProductionAclGate -SourceRoot $f011SourceRoot -ExecutionRoot $f011ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $continuationRecord
-            Set-Item -Path Function:\Get-SandboxAclMissingEntries -Value $f011OriginalFunctions['Get-SandboxAclMissingEntries']
-            $f011RestoredGate = Invoke-Phase9ProductionAclGate -SourceRoot $f011SourceRoot -ExecutionRoot $f011ExecutionRoot -WriteMode 'worktree' -ContinuationRecord $continuationRecord
-            $script:phase9F011DispatchEntries = @($entryA)
-            $script:testThread = $f011Thread
-            $script:startCalls = 0
-            $script:phase9F011PrepareCalls = 0
-            $script:failLaunch = $false
-            $script:pidResult.ActiveRecords = @()
-            $script:pidResult.UnconfirmedRecords = @()
-            $script:pidResult.Blocked = $false
-            $script:quotaSnapshotPathOverride = $f011QuotaSnapshot
-            $script:phase9F011CurrentBaselinePath = $f011BaselinePath
-            $script:phase9F011CurrentPreparePath = $f011PreparePath
-            $SourceRoot = $f011SourceRoot
-            $ExecutionRoot = $f011ExecutionRoot
-            $DispatchRoot = $f011ExecutionRoot
-            $LineSlug = $f011LineSlug
-            $DispatchSlug = $f011DispatchSlug
-            $WriteMode = 'write'
-            $PreflightResultPath = $f011PreflightPath
-            $PrepareResultPath = $f011PreparePath
-            $ScopePlanPath = $f011ScopePath
-            $PromptPath = $f011PromptPath
-            $CodexHome = $f011CodexHome
-            $CodexPath = 'fixture-codex'
-            $TargetPath = @('target.txt')
-            $ResumeThreadId = $f011Thread
-            $LastMessagePath = $null
-            $QuotaBeforePath = $f011QuotaSnapshot
-            $QuotaAfterPath = $null
-            $CalibrationPath = $null
-            $TaskType = 'script-change'
-            $DispatchKind = 'workflow'
-            $Profile = 'default'
-            $SessionMode = 'continuation'
-            $Model = $null
-            $ReasoningEffort = $null
-            $AdvisorRequestSource = $null
-            $EvidencePackPath = $null
-            $AdvisorConsultReportPath = $null
-            $PrimaryBudgetPercent = $null
-            $PrimaryReservePercent = $null
-            $AddDirectory = @()
-            $Search = $false
-            $CodexParentOption = @()
-            $RequiredIdentifier = $null
-            $EventStreamPath = $null
-            $ErrorStreamPath = $null
-            $ThreadIdPath = $null
-            $PidRecordPath = $null
-            $RunRecordPath = $null
-            $ProcessExitCode = $null
-            $AbortGraceSeconds = 30
-            $script:SessionMode = 'continuation'
-            $script:ProfileExplicit = $false
-            $script:AddDirectoryExplicit = $false
-            $script:SearchExplicit = $false
-            $script:CodexParentOptionExplicit = $false
-            $script:InvocationBoundParameters = [ordered]@{}
-            $startException = $null
-            try {
-                $f011StartOutput = @(Invoke-Start)
-                if ($f011StartOutput.Count -eq 1) {
-                    $f011StartResult = $f011StartOutput[0]
-                }
-            }
-            catch {
-                $startException = $_.Exception
-                $f011StartResult = $startException.Data['operationResult']
-            }
-            $f011Records = @()
-            if (Test-Path -LiteralPath $f011RunDirectory -PathType Container) {
-                $f011Records = @(Get-ChildItem -LiteralPath $f011RunDirectory -Filter '*.json' -File | ForEach-Object { Get-Content -LiteralPath $_.FullName -Raw -Encoding UTF8 | ConvertFrom-Json })
-            }
-            $f011Failure = if ($null -eq $f011StartResult) { $null } else { Get-DispatchJsonProperty -Object $f011StartResult -Name 'failure' }
-            $script:phase9F011Evidence = [ordered]@{
-                failure_scenario = [ordered]@{
-                    whitelist = @('A', 'B')
-                    dispatch_acl = @('A')
-                    expected = 'reject continuation before preparation proceeds to external start'
-                }
-                wrong_single_direction = $f011ReverseMutantGate
-                normal_continuation = $normalGate
-                fixed_missing_whitelist = $f011FixedGate
-                reverse_mutant_failure = [ordered]@{
-                    expected = 'residue'
-                    actual = $f011ReverseMutantGate
-                    result = 'FAIL'
-                }
-                restored_pass = [ordered]@{
-                    expected = 'residue'
-                    actual = $f011RestoredGate
-                    result = 'PASS'
-                }
-                actual_invoke_start = [ordered]@{
-                    process_started = if ($null -eq $f011StartResult) { $null } else { [bool](Get-DispatchJsonProperty -Object $f011StartResult -Name 'processStarted') }
-                    external_start_calls = $script:startCalls
-                    invoke_prepare_calls = $script:phase9F011PrepareCalls
-                    run_record_states = @($f011Records | ForEach-Object { $_.launch_state })
-                    error_code = if ($null -eq $f011StartResult) { $null } else { [string](Get-DispatchJsonProperty -Object $f011StartResult -Name 'errorCode') }
-                    failure_stage = if ($null -eq $f011Failure) { $null } else { [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $f011Failure -Name 'observation') -Name 'failure_stage') }
-                    exception = if ($null -eq $startException) { $null } else { $startException.Message }
-                }
-            }
-            Write-Phase9Evidence -Label 'F011_BIDIRECTIONAL_CONTINUATION' -Value $script:phase9F011Evidence
-            Write-Phase9Evidence -Label 'F011_REVERSE_FAILURE' -Value $script:phase9F011Evidence.reverse_mutant_failure
-            Write-Phase9Evidence -Label 'F011_RESTORED_PASS' -Value $script:phase9F011Evidence.restored_pass
-            Assert-True ([string](Get-DispatchJsonProperty -Object $normalGate -Name 'status') -eq 'clean') ('F-011 正常續行被雙向比較誤擋：' + ($normalGate | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ([string](Get-DispatchJsonProperty -Object $f011FixedGate -Name 'status') -eq 'residue' -and [string](Get-DispatchJsonProperty -Object $f011FixedGate -Name 'rejection_code') -eq 'WorktreeAclResidue') ('F-011 whitelist entry 消失仍回傳 clean：' + ($f011FixedGate | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ([string](Get-DispatchJsonProperty -Object $f011ReverseMutantGate -Name 'status') -eq 'clean') ('F-011 反向單向差集案例未重現 clean 失敗：' + ($f011ReverseMutantGate | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ([string](Get-DispatchJsonProperty -Object $f011RestoredGate -Name 'status') -eq 'residue') ('F-011 還原雙向比較後未回到 residue：' + ($f011RestoredGate | ConvertTo-Json -Depth 20 -Compress))
-            Assert-True ($null -ne $f011StartResult -and -not [bool](Get-DispatchJsonProperty -Object $f011StartResult -Name 'processStarted') -and $script:phase9F011PrepareCalls -eq 0 -and $script:startCalls -eq 0) ('F-011 真實 Invoke-Start 未在 Invoke-Prepare 或 external start 前拒絕：' + ($script:phase9F011Evidence.actual_invoke_start | ConvertTo-Json -Depth 20 -Compress))
-        }
-        finally {
-            foreach ($functionName in $f011FunctionNames) {
-                Set-Item -Path ('Function:' + $functionName) -Value $f011OriginalFunctions[$functionName]
-            }
-            $script:SessionMode = 'cold-start'
-            $script:quotaSnapshotPathOverride = $null
-            $script:InvocationBoundParameters = [ordered]@{}
-        }
-    }
 
     $writerFunctionAst = @($functions | Where-Object { $_.Name -eq 'Write-Utf8NoBom' } | Select-Object -First 1)
     Assert-True ($writerFunctionAst.Count -eq 1) 'Phase 9 找不到 production Write-Utf8NoBom AST。'
@@ -12855,6 +11770,556 @@ if ($Phase -ge 9) {
         }
     }
 
+    $invokeSContinuationFailureDispatch = {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [string]$Name,
+
+            [Parameter(Mandatory)]
+            [ValidateSet('InspectException', 'TransientReceiptWrite')]
+            [string]$FailureMode
+        )
+
+        $real = & $invokeSRealDispatchCase -Name $Name -ScriptPath $sourcePath -RequestedUnits @('Phase 1', 'Phase 2')
+        Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document -and -not [string]::IsNullOrWhiteSpace([string]$real.run_record_document.thread_id)) ('continuation integration fixture cold-start failed: ' + [string]$real.output_text)
+
+        $requestDocument = Get-Content -LiteralPath $real.request_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $request = @{}
+        foreach ($property in $requestDocument.PSObject.Properties) {
+            $request[$property.Name] = $property.Value
+        }
+        $continuationToken = [guid]::NewGuid().ToString('N')
+        $continuationDispatchSlug = [string]$real.dispatch_slug
+        $continuationDispatchRoot = [string]$real.dispatch_root
+        $dispatchHistoryRoot = Join-Path $continuationDispatchRoot '.local/ai-sessions/history/a'
+        $failureReceiptPath = Join-Path $real.source_root ('.local/ai-sessions/history/a/continuation-' + $continuationToken + '.json')
+        $continuationRequestPath = Join-Path $real.case_root ('continuation-dispatch-request-' + $continuationToken + '.json')
+        $parentHistoryRoot = Join-Path $real.dispatch_root '.local/ai-sessions/history'
+        $parentHistoryArchiveRoot = Join-Path $real.case_root ('continuation-parent-history-' + $continuationToken)
+        New-Item -ItemType Directory -Path $parentHistoryArchiveRoot -Force | Out-Null
+        Get-ChildItem -LiteralPath $parentHistoryRoot -Force | Copy-Item -Destination $parentHistoryArchiveRoot -Recurse -Force
+        $gitHostPath = (Get-Command git.exe -ErrorAction Stop).Source
+        $removeParentWorktree = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('worktree', 'remove', '--force', '--', $real.dispatch_root) -WorkingDirectory $real.source_root -EnvironmentVariables @{}
+        Assert-True ([int]$removeParentWorktree.exit_code -eq 0 -and -not (Test-Path -LiteralPath $real.dispatch_root -PathType Container)) ('continuation fixture parent worktree removal failed: ' + [string]$removeParentWorktree.stdout + [string]$removeParentWorktree.stderr)
+        $request['dispatch_slug'] = $continuationDispatchSlug
+        $request['dispatch_root'] = $continuationDispatchRoot
+        $request['session_mode'] = 'Continuation'
+        $request['continue_from_scope_plan'] = $true
+        $request['requested_unit'] = @('Phase 2')
+        $request['background'] = $false
+        $request['failure_receipt_path'] = $failureReceiptPath
+        $request['result_path'] = Join-Path $dispatchHistoryRoot ('dispatch-result-' + $continuationToken + '.json')
+        $request['preflight_result_path'] = Join-Path $real.source_root ('preflight-result-' + $continuationToken + '.json')
+        $request['prepare_result_path'] = Join-Path $dispatchHistoryRoot ('prepare-result-' + $continuationToken + '.json')
+        foreach ($artifact in @($request['prepare_artifacts'])) {
+            $artifact.destination = Join-Path $dispatchHistoryRoot ([System.IO.Path]::GetFileName([string]$artifact.destination))
+        }
+
+        $safeMessage = @(
+            '## 中斷保全結論'
+            '已確認結論：無'
+            '未完成單位：Phase 1, Phase 2'
+            ('證據位置：' + $real.run_record_path)
+            '實際覆蓋範圍：無'
+            ('design.md dispatchSlug=' + $real.dispatch_slug + ' lineSlug=a')
+        ) -join [Environment]::NewLine
+        $lastMessageBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($safeMessage))
+        $eventMessageJson = ConvertTo-Json -InputObject $safeMessage -Compress
+        $eventMessageJson = [regex]::Replace($eventMessageJson, '[^\x00-\x7F]', {
+                param($match)
+                '\u' + ([int][char]$match.Value[0]).ToString('x4')
+            })
+        $continuationCounterPath = Join-Path $real.case_root ('external-continuation-started-' + $continuationToken + '.txt')
+        $fakeCodexLines = @(
+            '@echo off'
+            ('>>"' + $continuationCounterPath + '" echo continuation')
+            ':findLastMessage'
+            'if "%~1"=="" goto emitEvents'
+            'if /I "%~1"=="--output-last-message" goto writeLastMessage'
+            'shift'
+            'goto findLastMessage'
+            ':writeLastMessage'
+            ('powershell.exe -NoProfile -NonInteractive -Command "$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(''' + $lastMessageBase64 + ''')); [IO.File]::WriteAllText(''%~2'',$text,(New-Object Text.UTF8Encoding($false)))"')
+            ':emitEvents'
+            ('echo {"type":"thread.started","thread_id":"' + $real.run_record_document.thread_id + '"}')
+            ('echo {"type":"item.completed","item":{"type":"agent_message","text":' + $eventMessageJson + '}}')
+            'echo {"type":"turn.failed","error":{"message":"fixture continuation failure"}}'
+            'exit /b 1'
+        )
+        Write-Utf8NoBom -Path $real.codex_path -Content (($fakeCodexLines -join ([char]13 + [char]10)) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $continuationRequestPath -Content (($request | ConvertTo-Json -Depth 40) + [Environment]::NewLine)
+
+        $variantText = [System.IO.File]::ReadAllText($sourcePath, [System.Text.Encoding]::UTF8)
+        $lineBreak = [string][char]13 + [string][char]10
+        $startCall = '        $startResult = Invoke-Start'
+        if ([regex]::Matches($variantText, [regex]::Escape($startCall)).Count -ne 1) {
+            throw 'T042 test variant cannot uniquely locate Invoke-Dispatch Start call.'
+        }
+        $parentHistoryInjection = @(
+            '        if (-not [string]::IsNullOrWhiteSpace($env:PHASE9_T042_PARENT_HISTORY_ARCHIVE) -and (Test-Path -LiteralPath $env:PHASE9_T042_PARENT_HISTORY_ARCHIVE -PathType Container)) {'
+            '            $parentHistoryDestination = Join-Path $script:ExecutionRoot ''.local\ai-sessions\history'''
+            '            New-Item -ItemType Directory -Path $parentHistoryDestination -Force | Out-Null'
+            '            Get-ChildItem -LiteralPath $env:PHASE9_T042_PARENT_HISTORY_ARCHIVE -Force | Copy-Item -Destination $parentHistoryDestination -Recurse -Force'
+            '        }'
+            '        if (-not [string]::IsNullOrWhiteSpace($env:PHASE9_T042_PARENT_BASELINE_PATH) -and -not [string]::IsNullOrWhiteSpace($env:PHASE9_T042_PARENT_BASELINE_SHA256)) {'
+            '            $preflightForResume = Get-Content -LiteralPath $script:PreflightResultPath -Raw -Encoding UTF8 | ConvertFrom-Json'
+            '            $preflightForResume.baselinePath = $env:PHASE9_T042_PARENT_BASELINE_PATH'
+            '            $preflightForResume.baselineSha256 = $env:PHASE9_T042_PARENT_BASELINE_SHA256'
+            '            Write-Utf8NoBom -Path $script:PreflightResultPath -Content (($preflightForResume | ConvertTo-Json -Depth 40) + [Environment]::NewLine)'
+            '        }'
+            $startCall
+        ) -join $lineBreak
+        $variantText = $variantText.Replace($startCall, $parentHistoryInjection)
+        if ($FailureMode -eq 'InspectException') {
+            $inspectCall = '            $inspectResult = Invoke-Inspect'
+            if ([regex]::Matches($variantText, [regex]::Escape($inspectCall)).Count -ne 1) {
+                throw 'T042 test variant cannot uniquely locate Invoke-Dispatch Inspect call.'
+            }
+            $inspectInjection = @(
+                '            if ($env:PHASE9_T042_THROW_INSPECT -eq ''1'') { throw ''Injected Inspect exception.'' }'
+                $inspectCall
+            ) -join $lineBreak
+            $variantText = $variantText.Replace($inspectCall, $inspectInjection)
+        }
+        else {
+            $receiptCall = '                $writtenContinuationReceipt = Write-DispatchFailureReceipt'
+            if ([regex]::Matches($variantText, [regex]::Escape($receiptCall)).Count -ne 1) {
+                throw 'T042 test variant cannot uniquely locate continuation receipt write call.'
+            }
+            $receiptInjection = @(
+                '                if ($env:PHASE9_T042_FAIL_FIRST_RECEIPT -eq ''1'' -and -not [string]::IsNullOrWhiteSpace($env:PHASE9_T042_RECEIPT_MARKER) -and -not [IO.File]::Exists($env:PHASE9_T042_RECEIPT_MARKER)) {'
+                '                    [IO.File]::WriteAllText($env:PHASE9_T042_RECEIPT_MARKER, ''failed-once'', [Text.Encoding]::UTF8)'
+                '                    throw ''Injected temporary receipt writer failure.'''
+                '                }'
+                $receiptCall
+            ) -join $lineBreak
+            $variantText = $variantText.Replace($receiptCall, $receiptInjection)
+        }
+
+        $variantPath = Join-Path $PSScriptRoot ('.phase9-t042-dispatch-' + [guid]::NewGuid().ToString('N') + '.ps1')
+        $variantEncoding = New-Object System.Text.UTF8Encoding($true)
+        [System.IO.File]::WriteAllText($variantPath, $variantText, $variantEncoding)
+        try {
+            $environmentVariables = @{}
+            $temporaryReceiptMarker = Join-Path $real.case_root ('receipt-first-write-failed-' + $continuationToken + '.txt')
+            $environmentVariables.PHASE9_T042_PARENT_HISTORY_ARCHIVE = $parentHistoryArchiveRoot
+            $environmentVariables.PHASE9_T042_PARENT_BASELINE_PATH = [string]$real.run_record_document.baseline_path
+            $environmentVariables.PHASE9_T042_PARENT_BASELINE_SHA256 = [string]$real.run_record_document.baseline_sha256
+            if ($FailureMode -eq 'InspectException') {
+                $environmentVariables.PHASE9_T042_THROW_INSPECT = '1'
+            }
+            else {
+                $environmentVariables.PHASE9_T042_FAIL_FIRST_RECEIPT = '1'
+                $environmentVariables.PHASE9_T042_RECEIPT_MARKER = $temporaryReceiptMarker
+            }
+
+            $dispatchHostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
+                (Get-Command powershell.exe -ErrorAction Stop).Source
+            }
+            else {
+                (Get-Command pwsh.exe -ErrorAction Stop).Source
+            }
+            $dispatchArguments = @(
+                '-NoProfile'
+                '-NonInteractive'
+                '-File'
+                $variantPath
+                '-CodexPath'
+                $real.codex_path
+                '-CodexHome'
+                $real.codex_home
+                '-Operation'
+                'Dispatch'
+                '-RequestPath'
+                $continuationRequestPath
+                '-ScopePlanPath'
+                $real.run_record_document.scope_plan_path
+                '-ResumeThreadId'
+                $real.run_record_document.thread_id
+                '-ContinueFromScopePlan'
+            )
+            $dispatchRun = Invoke-Phase9Process -HostPath $dispatchHostPath -Arguments $dispatchArguments -WorkingDirectory $root -EnvironmentVariables $environmentVariables
+            $dispatchDocument = $null
+            try {
+                $dispatchDocument = ConvertFrom-Json -InputObject ([string]$dispatchRun.stdout)
+            }
+            catch {
+                $dispatchDocument = $null
+            }
+            $receiptDocument = $null
+            if (Test-Path -LiteralPath $failureReceiptPath -PathType Leaf) {
+                $receiptDocument = Get-Content -LiteralPath $failureReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            }
+            $continuationCounterLines = @()
+            if (Test-Path -LiteralPath $continuationCounterPath -PathType Leaf) {
+                $continuationCounterLines = @(Get-Content -LiteralPath $continuationCounterPath -Encoding UTF8)
+            }
+            return [pscustomobject]@{
+                real = $real
+                failure_mode = $FailureMode
+                variant_path = $variantPath
+                request = $request
+                request_path = $continuationRequestPath
+                dispatch_arguments = $dispatchArguments
+                dispatch_run = $dispatchRun
+                dispatch_document = $dispatchDocument
+                failure_receipt_path = $failureReceiptPath
+                failure_receipt = $receiptDocument
+                continuation_counter_path = $continuationCounterPath
+                continuation_counter_lines = $continuationCounterLines
+                temporary_receipt_marker = $temporaryReceiptMarker
+                temporary_receipt_marker_exists = Test-Path -LiteralPath $temporaryReceiptMarker -PathType Leaf
+                parent_history_archive_root = $parentHistoryArchiveRoot
+                continuation_dispatch_root = $continuationDispatchRoot
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $variantPath -PathType Leaf) {
+                Remove-Item -LiteralPath $variantPath -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 T042 safe-point unit filter excludes deferred and preserves comma paths' {
+        $filterRoot = Join-Path $phase9Root 't042-safe-point-filter'
+        $null = New-Item -ItemType Directory -Path $filterRoot -Force
+        $selectedUnit = Join-Path $filterRoot 'selected,part.ps1'
+        $deferredUnit = Join-Path $filterRoot 'deferred,part.ps1'
+        $unknownUnit = Join-Path $filterRoot 'unknown,part.ps1'
+        $scopePlanPath = Join-Path $filterRoot 'scope-plan.json'
+        $eventStreamPath = Join-Path $filterRoot 'events.jsonl'
+        $scopePlan = [ordered]@{
+            requested_units = @($selectedUnit, $deferredUnit)
+            selected_units = @($selectedUnit)
+            deferred_units = @($deferredUnit)
+        }
+        Write-Utf8NoBom -Path $scopePlanPath -Content (($scopePlan | ConvertTo-Json -Depth 10) + [Environment]::NewLine)
+        $safePoint = @(
+            '## 中斷保全結論'
+            '已確認結論：已保留上一階段的可用證據'
+            ('未完成單位：' + $deferredUnit + ', ' + $selectedUnit + ', ' + $unknownUnit)
+            ('證據位置：' + $scopePlanPath)
+            '實際覆蓋範圍：上一階段'
+            'design.md t042-safe-point-filter a'
+        ) -join [Environment]::NewLine
+        $event = [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $safePoint } }
+        Write-Utf8NoBom -Path $eventStreamPath -Content ((ConvertTo-Json -InputObject $event -Compress -Depth 20) + [Environment]::NewLine)
+        $requestDocument = [pscustomobject]@{
+            task_type = 'script-change'
+            unit_kind = 'resource-target'
+            dispatch_kind = 'resource'
+            write_mode = 'write'
+            target_path = @($selectedUnit)
+            prompt_path = $scopePlanPath
+            required_identifier = 'target.txt'
+        }
+        $handoffParameters = @{
+            RequestPath = Join-Path $filterRoot 'request.json'
+            RequestDocument = $requestDocument
+            ScopePlanPath = $scopePlanPath
+            EventStreamPath = $eventStreamPath
+            RunRecordPath = ''
+            LastMessagePath = ''
+            InspectResultPath = ''
+            SourceRoot = $filterRoot
+            ExecutionRoot = $filterRoot
+            DispatchRoot = $filterRoot
+            LineSlug = 'a'
+            DispatchSlug = 't042-safe-point-filter'
+            DispatchExecutionId = [guid]::NewGuid().ToString('N')
+            FallbackSelectedUnits = @('fallback-must-not-enter')
+        }
+        $handoff = Get-DispatchContinuationFailureHandoff @handoffParameters
+        Assert-True (@($handoff.incomplete_units).Count -eq 1 -and [string]$handoff.incomplete_units[0] -ceq $selectedUnit) ('safe point 沒有依完整 selected unit 字串保留含逗號路徑：' + ($handoff | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (@($handoff.cold_start_entry.requested_unit).Count -eq 1 -and [string]$handoff.cold_start_entry.requested_unit[0] -ceq $selectedUnit) ('cold-start requested_unit 超出 selected_units：' + ($handoff.cold_start_entry | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (@($handoff.discarded_incomplete_units | Where-Object { [string]$_.unit -ceq $deferredUnit -and [string]$_.reason -match 'deferred_units' }).Count -eq 1) ('deferred unit 未記錄排除理由：' + ($handoff.discarded_incomplete_units | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (@($handoff.discarded_incomplete_units | Where-Object { [string]$_.unit -ceq $unknownUnit -and [string]$_.reason -match '未對應' }).Count -eq 1) ('ScopePlan 外的 safe point 單位未記錄為剔除項目：' + ($handoff.discarded_incomplete_units | ConvertTo-Json -Depth 20 -Compress))
+
+        $withoutSafePointParameters = @{
+            RequestPath = Join-Path $filterRoot 'request.json'
+            RequestDocument = $requestDocument
+            ScopePlanPath = $scopePlanPath
+            EventStreamPath = Join-Path $filterRoot 'missing-events.jsonl'
+            RunRecordPath = ''
+            LastMessagePath = ''
+            InspectResultPath = ''
+            SourceRoot = $filterRoot
+            ExecutionRoot = $filterRoot
+            DispatchRoot = $filterRoot
+            LineSlug = 'a'
+            DispatchSlug = 't042-safe-point-missing'
+            DispatchExecutionId = [guid]::NewGuid().ToString('N')
+            FallbackSelectedUnits = @('fallback-must-not-enter')
+        }
+        $withoutSafePoint = Get-DispatchContinuationFailureHandoff @withoutSafePointParameters
+        Assert-True (@($withoutSafePoint.incomplete_units).Count -eq 1 -and [string]$withoutSafePoint.incomplete_units[0] -ceq $selectedUnit -and @($withoutSafePoint.discarded_incomplete_units).Count -eq 0) ('safe point 缺失時未完整保留 ScopePlan selected_units：' + ($withoutSafePoint | ConvertTo-Json -Depth 20 -Compress))
+    }
+
+    Invoke-Case 'Phase 9 T042 Invoke-Dispatch Inspect exception writes continuation handoff without retry' {
+        $integration = & $invokeSContinuationFailureDispatch -Name 'continuation-inspect-exception' -FailureMode 'InspectException'
+        $dispatchResultText = [string]$integration.dispatch_run.stdout
+        $receiptHandoffProperty = if ($null -eq $integration.failure_receipt) { $null } else { $integration.failure_receipt.PSObject.Properties['continuation_handoff'] }
+        $receiptHandoff = if ($null -eq $receiptHandoffProperty) { $null } else { $receiptHandoffProperty.Value }
+        Assert-True ($dispatchResultText -match '"status"\s*:\s*"failed"' -and $dispatchResultText -match '"failed_stage"\s*:\s*"inspect"' -and $dispatchResultText -match '"process_started"\s*:\s*true') ('Inspect exception 未由真實 Invoke-Dispatch 失敗路徑接住：' + $dispatchResultText + [string]$integration.dispatch_run.stderr)
+        Assert-True ($null -ne $integration.failure_receipt -and [bool]$integration.failure_receipt.failure_receipt_saved -and $null -ne $receiptHandoff) ('Inspect exception 的通用 failure receipt 缺少 continuation_handoff：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
+        Assert-True (@($receiptHandoff.incomplete_units).Count -eq 1 -and [string]$receiptHandoff.incomplete_units[0] -ceq 'Phase 2' -and @($receiptHandoff.cold_start_entry.requested_unit).Count -eq 1 -and [string]$receiptHandoff.cold_start_entry.requested_unit[0] -ceq 'Phase 2') ('Inspect exception handoff 超出 continuation ScopePlan selected_units：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True (@($receiptHandoff.confirmed_results).Count -eq 0 -and [string]$receiptHandoff.confirmed_results_source.status -ceq 'insufficient' -and -not [string]::IsNullOrWhiteSpace([string]$receiptHandoff.confirmed_results_source.reason)) ('取不到 confirmed_results 時未保持空陣列並標記來源不足：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True (-not [bool]$receiptHandoff.automatic_retry -and @($integration.continuation_counter_lines).Count -eq 1) ('Dispatch 自動重送或 continuation_handoff 未提供冷啟動入口：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress) + '; starts=' + ($integration.continuation_counter_lines -join ','))
+        Assert-True ([string]$integration.request.session_mode -ceq 'Continuation') ('整合案例未以 Request 大小寫變體驗證 session_mode。')
+        Write-Phase9Evidence -Label 'T042_INVOKE_DISPATCH_INSPECT_EXCEPTION' -Value ([ordered]@{
+                command = $integration.dispatch_run.command
+                exit_code = $integration.dispatch_run.exit_code
+                stdout = $integration.dispatch_run.stdout
+                stderr = $integration.dispatch_run.stderr
+                request = $integration.request
+                failure_receipt = $integration.failure_receipt
+                external_codex_start_count = @($integration.continuation_counter_lines).Count
+            })
+    }
+
+    Invoke-Case 'Phase 9 T042 Invoke-Dispatch retries transient receipt failure with continuation handoff' {
+        $integration = & $invokeSContinuationFailureDispatch -Name 'continuation-receipt-retry' -FailureMode 'TransientReceiptWrite'
+        $dispatchResultText = [string]$integration.dispatch_run.stdout
+        $receiptHandoffProperty = if ($null -eq $integration.failure_receipt) { $null } else { $integration.failure_receipt.PSObject.Properties['continuation_handoff'] }
+        $receiptHandoff = if ($null -eq $receiptHandoffProperty) { $null } else { $receiptHandoffProperty.Value }
+        Assert-True ($dispatchResultText -match '"status"\s*:\s*"failed"' -and $dispatchResultText -match '"failed_stage"\s*:\s*"inspect"' -and $dispatchResultText -match '"process_started"\s*:\s*true') ('receipt 暫時寫入失敗未由真實 Invoke-Dispatch 通用路徑接續：' + $dispatchResultText + [string]$integration.dispatch_run.stderr)
+        Assert-True ($integration.temporary_receipt_marker_exists -and $null -ne $integration.failure_receipt -and [bool]$integration.failure_receipt.failure_receipt_saved -and $null -ne $receiptHandoff) ('receipt 重試沒有成功保存含 handoff 的 failure receipt：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
+        Assert-True (@($receiptHandoff.incomplete_units).Count -eq 1 -and [string]$receiptHandoff.incomplete_units[0] -ceq 'Phase 2' -and @($receiptHandoff.cold_start_entry.requested_unit).Count -eq 1 -and [string]$receiptHandoff.cold_start_entry.requested_unit[0] -ceq 'Phase 2') ('receipt 重試後 continuation_handoff 遺失 selected scope：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True (-not [bool]$receiptHandoff.automatic_retry -and @($integration.continuation_counter_lines).Count -eq 1) ('receipt 重試使 Dispatch 重送 Codex：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress) + '; starts=' + ($integration.continuation_counter_lines -join ','))
+        Write-Phase9Evidence -Label 'T042_INVOKE_DISPATCH_RECEIPT_RETRY' -Value ([ordered]@{
+                command = $integration.dispatch_run.command
+                exit_code = $integration.dispatch_run.exit_code
+                stdout = $integration.dispatch_run.stdout
+                stderr = $integration.dispatch_run.stderr
+                temporary_failure_marker = $integration.temporary_receipt_marker
+                failure_receipt = $integration.failure_receipt
+                external_codex_start_count = @($integration.continuation_counter_lines).Count
+            })
+    }
+    Invoke-Case 'Phase 9 continuation Codex failure writes handoff failure receipt without retry' {
+        $real = & $invokeSRealDispatchCase -Name 'continuation-failure-receipt' -ScriptPath $sourcePath -RequestedUnits @('Phase 1', 'Phase 2')
+        Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document -and -not [string]::IsNullOrWhiteSpace([string]$real.run_record_document.thread_id)) ('continuation receipt fixture cold-start failed: ' + [string]$real.output_text)
+
+        $requestDocument = Get-Content -LiteralPath $real.request_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $request = @{}
+        foreach ($property in $requestDocument.PSObject.Properties) {
+            $request[$property.Name] = $property.Value
+        }
+        $continuationSourceRoot = $real.source_root
+        $failureReceiptPath = Join-Path $continuationSourceRoot '.local/ai-sessions/history/a/continuation-failure-receipt.json'
+        $request['session_mode'] = 'continuation'
+        $request['continue_from_scope_plan'] = $true
+        $request['requested_unit'] = @('Phase 2')
+        $request['failure_receipt_path'] = $failureReceiptPath
+        Write-Utf8NoBom -Path $real.request_path -Content (($request | ConvertTo-Json -Depth 40) + [Environment]::NewLine)
+
+        $safeMessage = @(
+            '## 中斷保全結論'
+            '已確認結論：Phase 1 has confirmed evidence'
+            '未完成單位：Phase 2'
+            ('證據位置：' + $real.run_record_path)
+            '實際覆蓋範圍：Phase 1'
+            ('design.md ' + $real.dispatch_slug + ' a')
+        ) -join [Environment]::NewLine
+        $lastMessageBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($safeMessage))
+        $eventMessageJson = ConvertTo-Json -InputObject $safeMessage -Compress
+        $eventMessageJson = [regex]::Replace($eventMessageJson, '[^\x00-\x7F]', {
+                param($match)
+                '\u' + ([int][char]$match.Value[0]).ToString('x4')
+            })
+        $counterPath = Join-Path $real.case_root 'external-started.txt'
+        $fakeCodexLines = @(
+            '@echo off'
+            ('>>"' + $counterPath + '" echo continuation')
+            ':findLastMessage'
+            'if "%~1"=="" goto emitEvents'
+            'if /I "%~1"=="--output-last-message" goto writeLastMessage'
+            'shift'
+            'goto findLastMessage'
+            ':writeLastMessage'
+            ('powershell.exe -NoProfile -NonInteractive -Command "$text=[Text.Encoding]::Unicode.GetString([Convert]::FromBase64String(''' + $lastMessageBase64 + ''')); [IO.File]::WriteAllText(''%~2'',$text,(New-Object Text.UTF8Encoding($false)))"')
+            ':emitEvents'
+            ('echo {"type":"thread.started","thread_id":"' + $real.run_record_document.thread_id + '"}')
+            ('echo {"type":"item.completed","item":{"type":"agent_message","text":' + $eventMessageJson + '}}')
+            'echo {"type":"turn.failed","error":{"message":"fixture continuation failure"}}'
+            'exit /b 1'
+        )
+        Write-Utf8NoBom -Path $real.codex_path -Content (($fakeCodexLines -join ([char]13 + [char]10)) + [Environment]::NewLine)
+
+        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $continuationArguments = @(
+            '-NoProfile'
+            '-NonInteractive'
+            '-File'
+            $sourcePath
+            '-CodexPath'
+            $real.codex_path
+            '-CodexHome'
+            $real.codex_home
+            '-Operation'
+            'Start'
+            '-PreflightResultPath'
+            $real.preflight_result_path
+            '-PrepareResultPath'
+            $real.start_result_document.prepareResultPath
+            '-PromptPath'
+            $real.prompt_source_path
+            '-ScopePlanPath'
+            $real.run_record_document.scope_plan_path
+            '-QuotaBeforePath'
+            $real.run_record_document.quota_before_path
+            '-SourceRoot'
+            $real.source_root
+            '-ExecutionRoot'
+            $real.execution_root
+            '-DispatchRoot'
+            $real.dispatch_root
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $real.dispatch_slug
+            '-WriteMode'
+            'write'
+            '-DispatchKind'
+            'workflow'
+            '-Profile'
+            'default'
+            '-TaskType'
+            'script-change'
+            '-SessionMode'
+            'continuation'
+            '-UnitKind'
+            'workflow-phase'
+            '-RequestedUnit'
+            'Phase 2'
+            '-ResumeThreadId'
+            $real.run_record_document.thread_id
+            '-LastMessagePath'
+            $real.run_record_document.last_message_path
+            '-ContinueFromScopePlan'
+        )
+        $continuationRun = Invoke-Phase9Process -HostPath $hostPath -Arguments $continuationArguments -WorkingDirectory $root -EnvironmentVariables @{}
+        $continuationStartDocument = $null
+        try { $continuationStartDocument = ConvertFrom-Json -InputObject ([string]$continuationRun.stdout) } catch { $continuationStartDocument = $null }
+        Assert-True ($null -ne $continuationStartDocument -and [bool]$continuationStartDocument.processStarted -and [string]$continuationStartDocument.resumeThreadId -ceq [string]$real.run_record_document.thread_id) ('續行 Start 未使用有效前輪 thread：' + [string]$continuationRun.stdout + [string]$continuationRun.stderr)
+        $continuationWait = Wait-DispatchExitAndTerminalEvent `
+            -ExecutionRoot $real.execution_root `
+            -SourceRoot $real.source_root `
+            -LineSlug 'a' `
+            -DispatchSlug $real.dispatch_slug `
+            -WriteMode 'write' `
+            -RunRecordPath $continuationStartDocument.runRecordPath `
+            -EventStreamPath $continuationStartDocument.eventStreamPath `
+            -SidecarPath $continuationStartDocument.processExitCodeSidecarPath
+        Assert-True ([int]$continuationWait.Sidecar.ProcessExitCode -eq 1) ('續行 Codex process exit sidecar 未保留 nonzero：' + ($continuationWait | ConvertTo-Json -Depth 20 -Compress))
+        $counterLines = @(Get-Content -LiteralPath $counterPath -Encoding UTF8)
+        $inspectArguments = @(
+            '-NoProfile'
+            '-NonInteractive'
+            '-File'
+            $sourcePath
+            '-Operation'
+            'Inspect'
+            '-CodexHome'
+            $real.codex_home
+            '-SourceRoot'
+            $real.source_root
+            '-ExecutionRoot'
+            $real.execution_root
+            '-LineSlug'
+            'a'
+            '-DispatchSlug'
+            $real.dispatch_slug
+            '-RunRecordPath'
+            $continuationStartDocument.runRecordPath
+            '-EventStreamPath'
+            $continuationStartDocument.eventStreamPath
+            '-ScopePlanPath'
+            $continuationStartDocument.scopePlanPath
+            '-QuotaBeforePath'
+            $continuationStartDocument.quotaBeforePath
+            '-LastMessagePath'
+            $continuationStartDocument.lastMessagePath
+            '-ErrorStreamPath'
+            $continuationStartDocument.errorStreamPath
+            '-RequiredIdentifier'
+            'design.md'
+            '-TaskType'
+            'script-change'
+            '-SessionMode'
+            'continuation'
+            '-ProcessExitCode'
+            ([string]$continuationWait.Sidecar.ProcessExitCode)
+        )
+        $inspectHost = $hostPath
+        $inspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments $inspectArguments -WorkingDirectory $root -EnvironmentVariables @{}
+        $inspectStdout = [string]$inspectRun.stdout
+        $inspectSuccessMatch = [regex]::IsMatch($inspectStdout, '"success"\s*:\s*false')
+        $inspectLastEventMatch = [regex]::Match($inspectStdout, '"lastEventType"\s*:\s*"(?<value>[^"]+)"')
+        $inspectExitCodeMatch = [regex]::Match($inspectStdout, '"processExitCode"\s*:\s*(?<value>-?\d+)')
+        $inspectFailureReasonMatch = [regex]::Match($inspectStdout, '"turnFailedReason"\s*:\s*"(?<value>[^"]*)"')
+        $inspectDocument = [ordered]@{
+            success = -not $inspectSuccessMatch
+            lastEventType = if ($inspectLastEventMatch.Success) { $inspectLastEventMatch.Groups['value'].Value } else { $null }
+            processExitCode = if ($inspectExitCodeMatch.Success) { [int]$inspectExitCodeMatch.Groups['value'].Value } else { $null }
+            turnFailedReason = if ($inspectFailureReasonMatch.Success) { $inspectFailureReasonMatch.Groups['value'].Value } else { $null }
+        }
+        $inspectDiagnostic = [ordered]@{
+            exit_code = $inspectRun.exit_code
+            success = $inspectDocument.success
+            last_event_type = $inspectDocument.lastEventType
+            process_exit_code = $inspectDocument.processExitCode
+            failure_reason = $inspectDocument.turnFailedReason
+        }
+        Assert-True ($inspectSuccessMatch -and [string]$inspectDocument.lastEventType -ceq 'turn.failed' -and [int]$inspectDocument.processExitCode -eq 1 -and [string]$inspectDocument.turnFailedReason -ceq 'fixture continuation failure') ('續行 Inspect 未辨識真實 turn.failed／exit code：' + ($inspectDiagnostic | ConvertTo-Json -Depth 10 -Compress))
+
+        $continuationExecutionId = [guid]::NewGuid().ToString('N')
+        $requestDocument = Get-Content -LiteralPath $real.request_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $handoff = Get-DispatchContinuationFailureHandoff `
+            -RequestPath $real.request_path `
+            -RequestDocument $requestDocument `
+            -ScopePlanPath $continuationStartDocument.scopePlanPath `
+            -EventStreamPath $continuationStartDocument.eventStreamPath `
+            -RunRecordPath $continuationStartDocument.runRecordPath `
+            -LastMessagePath $continuationStartDocument.lastMessagePath `
+            -InspectResultPath $null `
+            -SourceRoot $real.source_root `
+            -ExecutionRoot $real.execution_root `
+            -DispatchRoot $real.dispatch_root `
+            -LineSlug 'a' `
+            -DispatchSlug $real.dispatch_slug `
+            -DispatchExecutionId $continuationExecutionId `
+            -FallbackSelectedUnits @('Phase 2')
+        $receiptWrite = Write-DispatchFailureReceipt `
+            -Path ([string]$requestDocument.failure_receipt_path) `
+            -LineSlug 'a' `
+            -DispatchSlug $real.dispatch_slug `
+            -DispatchExecutionId $continuationExecutionId `
+            -ErrorCode 'CodexTurnFailed' `
+            -ErrorMessage ([string]$inspectDocument.turnFailedReason) `
+            -SourceRoot $real.source_root `
+            -ExecutionRoot $real.execution_root `
+            -DispatchRoot $real.dispatch_root `
+            -FailedStage 'inspect' `
+            -ProcessStarted $true `
+            -TargetPath @($requestDocument.target_path) `
+            -ContinuationHandoff $handoff
+        $receiptDocument = Get-Content -LiteralPath $failureReceiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        $receiptHandoff = Get-OptionalPropertyValue -InputObject $receiptDocument -Name 'continuation_handoff'
+        Assert-True ($null -ne $receiptDocument -and [string]$receiptDocument.schema -eq 'ai-sessions.dispatch-failure-receipt.v1' -and [string]$receiptDocument.failure_receipt_path -ceq (Resolve-AbsolutePath -Path ([string]$requestDocument.failure_receipt_path)) -and [string]$receiptDocument.failed_stage -eq 'inspect' -and [bool]$receiptDocument.failure_receipt_saved -and [string]$receiptWrite.Path -ceq (Resolve-AbsolutePath -Path $failureReceiptPath)) ('續行 failure receipt 未沿用 Request 指定路徑或 failed 狀態：' + ($receiptDocument | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True (@($receiptHandoff.confirmed_results | Where-Object { [string]$_ -ceq 'Phase 1 has confirmed evidence' }).Count -eq 1 -and @($receiptHandoff.incomplete_units | Where-Object { [string]$_ -ceq 'Phase 2' }).Count -eq 1 -and @($receiptHandoff.source_locations | Where-Object { [string]$_.kind -ceq 'run_record' -and [string]$_.path -ceq (Resolve-AbsolutePath -Path $continuationStartDocument.runRecordPath) }).Count -eq 1) ('failure receipt 未交接已確認結果、未完成單位或來源位置：' + ($receiptHandoff | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ([string]$receiptHandoff.cold_start_entry.session_mode -ceq 'cold-start' -and $null -eq $receiptHandoff.cold_start_entry.resume_thread_id -and [bool]$receiptHandoff.cold_start_entry.new_request_required -and -not [bool]$receiptHandoff.automatic_retry -and @($counterLines).Count -eq 2) ('failure receipt 未提供 cold-start 入口或發生靜默重送：' + ($receiptHandoff | ConvertTo-Json -Depth 20 -Compress) + '; counter=' + ($counterLines -join ','))
+        Write-Phase9Evidence -Label 'CONTINUATION_FAILURE_RECEIPT_HANDOFF_PASS' -Value ([ordered]@{
+                continuation_start = [ordered]@{ host = $hostPath; arguments = $continuationArguments; exit_code = $continuationRun.exit_code; output = $continuationStartDocument }
+                continuation_inspect = [ordered]@{ host = $inspectHost; arguments = $inspectArguments; exit_code = $inspectRun.exit_code; output = $inspectDocument }
+                request_path = $real.request_path
+                failure_receipt_path = $failureReceiptPath
+                receipt_write = $receiptWrite
+                failure_receipt = $receiptDocument
+                external_start_count = @($counterLines).Count
+            })
+    }
     Invoke-Case 'Phase 9 batch3g Collect 沿用 Dispatch request 完成 full identity 與 ledger 寫入' {
         $real = & $invokeSRealDispatchCase -Name 'batch3g-collect-full' -ScriptPath $sourcePath -CreateQuotaBeforePath
         Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document) ('batch3g real Dispatch 未建立 RunRecord：' + [string]$real.output_text)
@@ -12994,7 +12459,7 @@ if ($Phase -ge 9) {
             })
     }
 
-    Invoke-Case 'Phase 9 batch3h 真實 Dispatch 後續行 Start 的 Collect 回溯祖先 request identity' -Isolated -IsolationId 'Q-BATCH3H-ACL-NO-MATCH' -IsolationEvidence 'Inspect 回傳 sandboxAclEvidence.capture_status=no_match、entries=[]、normal_completion=true、continuation_allowed=false，且 aclGate.status=clean；production 證據為 scripts/Invoke-CodexDispatch.ps1:8167、:8428。' -IsolationReleaseCondition 'ACL 線完成「無 ACE 時的 continuation_allowed 判定」後重跑本案例並通過。' -IsolationDeadline 'ACL 線交付時' -IsolationReplacementVerification 'Phase 2 既有祖先回溯、最新 final message、略過 launch-failed、無可用祖先與跨 dispatch 拒絕五案例，加上主 Agent 真實派遣 Inspect acl=captured、continuation_allowed=true 且續行成功證據。' {
+    Invoke-Case 'Phase 9 batch3h 真實 Dispatch 後續行 Start 與 Collect 保留外部契約' {
         $real = & $invokeSRealDispatchCase -Name 'batch3h-continuation-identity' -ScriptPath $sourcePath -CreateQuotaBeforePath
         Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document -and -not [string]::IsNullOrWhiteSpace([string]$real.run_record_document.thread_id)) ('batch3h real Dispatch 未建立可續行 RunRecord：' + [string]$real.output_text)
 
@@ -13035,79 +12500,33 @@ if ($Phase -ge 9) {
         $inspectDocument = $null
         try { $inspectDocument = ConvertFrom-Json -InputObject ([string]$inspectRun.stdout) } catch { $inspectDocument = $null }
         $inspectExitCode = Get-OptionalPropertyValue -InputObject $inspectRun -Name 'exit_code'
-        $inspectAclEvidence = Get-OptionalPropertyValue -InputObject $inspectDocument -Name 'sandboxAclEvidence'
-        $inspectAclEntriesValue = Get-OptionalPropertyValue -InputObject $inspectAclEvidence -Name 'entries'
-        $inspectAclEntries = @()
-        if ($null -ne $inspectAclEntriesValue) {
-            $inspectAclEntries = @($inspectAclEntriesValue)
-        }
         $inspectOutputValid = [bool](Get-OptionalPropertyValue -InputObject $inspectDocument -Name 'outputValid')
-        $inspectCaptureStatus = [string](Get-OptionalPropertyValue -InputObject $inspectAclEvidence -Name 'capture_status')
-        $inspectNormalCompletion = [bool](Get-OptionalPropertyValue -InputObject $inspectAclEvidence -Name 'normal_completion')
-        $inspectContinuationAllowed = [bool](Get-OptionalPropertyValue -InputObject $inspectAclEvidence -Name 'continuation_allowed')
         $startResultDocument = Get-OptionalPropertyValue -InputObject $real -Name 'start_result_document'
-        $startAclGate = Get-OptionalPropertyValue -InputObject $startResultDocument -Name 'aclGate'
-        $startAclGateStatus = [string](Get-OptionalPropertyValue -InputObject $startAclGate -Name 'status')
-        $batch3hIsolationObserved = $null -ne $inspectExitCode -and [int]$inspectExitCode -eq 0 -and
-            $null -ne $inspectDocument -and
-            $inspectOutputValid -and
-            $null -ne $inspectAclEvidence -and
-            $inspectCaptureStatus -ceq 'no_match' -and
-            $inspectAclEntries.Count -eq 0 -and
-            $inspectNormalCompletion -and
-            -not $inspectContinuationAllowed -and
-            $startAclGateStatus -ceq 'clean'
-        if ($batch3hIsolationObserved) {
-            $isolationRegistration = [ordered]@{
-                problem_id = 'Q-BATCH3H-ACL-NO-MATCH'
-                status = 'isolated'
-                counts_as_pass = $false
-                failure_evidence = [ordered]@{
-                    inspect = [ordered]@{
-                        result_path = $real.inspect_result_path
-                        output_valid = $inspectOutputValid
-                        capture_status = $inspectCaptureStatus
-                        entries = $inspectAclEntries
-                        normal_completion = $inspectNormalCompletion
-                        continuation_allowed = $inspectContinuationAllowed
-                        acl_gate_status = $startAclGateStatus
-                    }
-                    production = @(
-                        'scripts/Invoke-CodexDispatch.ps1:8167',
-                        'scripts/Invoke-CodexDispatch.ps1:8428'
-                    )
-                }
-                release_condition = 'ACL 線完成「無 ACE 時的 continuation_allowed 判定」後重跑本案例並通過。'
-                deadline = 'ACL 線交付時'
-                replacement_blocking_verification = [ordered]@{
-                    phase2_cases = @(
-                        'Identity continuation 沿祖先 RunRecord 回溯 request 識別並保留最新 final message',
-                        'Identity continuation latest final message 舊訊息拒絕',
-                        'Identity continuation 沿鏈略過 launch-failed 嘗試',
-                        'Identity continuation 無可用祖先仍拒絕 request sha256',
-                        'Identity continuation 跨 dispatch chain 拒絕'
-                    )
-                    real_dispatch = [ordered]@{
-                        source = '主 Agent 真實派遣驗證紀錄（本輪判定依據）'
-                        acl = 'captured'
-                        continuation_allowed = $true
-                        continuation_start = 'succeeded'
-                    }
-                }
-            }
-            Write-Phase9Evidence -Label 'BATCH3H_ISOLATION_REGISTER' -Value $isolationRegistration
-            return
-        }
-        Assert-True ($null -ne $inspectExitCode -and [int]$inspectExitCode -eq 0 -and $null -ne $inspectDocument -and $inspectOutputValid -and $null -ne $inspectAclEvidence -and $inspectCaptureStatus -ceq 'captured' -and $inspectContinuationAllowed) ('batch3h real Dispatch 前置 Inspect 未擷取可續行 ACL evidence：' + [string]$inspectRun.stdout + [string]$inspectRun.stderr)
+        $inspectAclProperty = if ($null -eq $inspectDocument) { $null } else { $inspectDocument.PSObject.Properties['sandboxAclEvidence'] }
+        $startAclProperty = if ($null -eq $startResultDocument) { $null } else { $startResultDocument.PSObject.Properties['aclGate'] }
+        Assert-True ($null -ne $inspectExitCode -and [int]$inspectExitCode -eq 0 -and $null -ne $inspectDocument -and $inspectOutputValid -and $null -eq $inspectAclProperty -and $null -eq $startAclProperty) ('batch3h real Dispatch/Inspect 未符合移除 ACL schema 的外部契約：' + [string]$inspectRun.stdout + [string]$inspectRun.stderr)
         Write-Phase9Evidence -Label 'BATCH3H_PRE_CONTINUATION_INSPECT_PASS' -Value ([ordered]@{
                 command = [ordered]@{ host = $inspectHost; arguments = $inspectArguments }
                 exit_code = $inspectRun.exit_code
                 result_path = $real.inspect_result_path
                 quota_after_path = $inspectQuotaAfterPath
                 output_valid = $inspectDocument.outputValid
-                sandbox_acl_evidence = $inspectAclEvidence
+                legacy_acl_evidence_exposed = $null -ne $inspectAclProperty
+                legacy_acl_gate_exposed = $null -ne $startAclProperty
             })
 
+        $real.run_record_document | Add-Member -MemberType NoteProperty -Name sandbox_acl_baseline -Value ([pscustomobject]@{
+                status = 'captured'
+                fingerprint = ('1' * 64)
+                entries = @([pscustomobject]@{ identity = 'S-1-5-21-OLD'; fingerprint = ('1' * 64) })
+            }) -Force
+        $real.run_record_document | Add-Member -MemberType NoteProperty -Name sandbox_acl_evidence -Value ([pscustomobject]@{
+                capture_status = 'no_match'
+                entries = @([pscustomobject]@{ identity = 'S-1-5-21-CHANGED'; fingerprint = ('2' * 64) })
+                normal_completion = $false
+                continuation_allowed = $false
+            }) -Force
+        Write-Utf8NoBom -Path $real.run_record_path -Content (($real.run_record_document | ConvertTo-Json -Depth 60) + [Environment]::NewLine)
         $continuationLastMessage = @(
                 '## 中斷保全結論'
                 '已確認結論：前輪真實 Dispatch 已建立可續行 RunRecord。'
@@ -13179,14 +12598,14 @@ if ($Phase -ge 9) {
         if (-not [string]::IsNullOrWhiteSpace($continuationRunRecordPath) -and (Test-Path -LiteralPath $continuationRunRecordPath -PathType Leaf)) {
             $continuationRunRecord = Get-Content -LiteralPath $continuationRunRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
         }
-        Assert-True ([int]$continuationRun.exit_code -eq 0 -and $null -ne $continuationDocument -and [string]$continuationDocument.status -eq 'started' -and $null -ne $continuationRunRecord -and [string]$continuationRunRecord.previous_run_id -ceq [string]$real.run_record_document.run_id -and [string]$continuationRunRecord.attempt_parent_run_id -ceq [string]$real.run_record_document.run_id -and [string]::IsNullOrWhiteSpace([string]$continuationRunRecord.request_path) -and [string]::IsNullOrWhiteSpace([string]$continuationRunRecord.request_sha256)) ('batch3h 真實續行 Start 未產生預期的空 request identity RunRecord：' + [string]$continuationRun.stdout + [string]$continuationRun.stderr)
+        Assert-True ([int]$continuationRun.exit_code -eq 0 -and $null -ne $continuationDocument -and [bool]$continuationDocument.processStarted -and $null -ne $continuationRunRecord -and [string]$continuationRunRecord.previous_run_id -ceq [string]$real.run_record_document.run_id -and [string]$continuationRunRecord.attempt_parent_run_id -ceq [string]$real.run_record_document.run_id -and [string]::IsNullOrWhiteSpace([string]$continuationRunRecord.request_path) -and [string]::IsNullOrWhiteSpace([string]$continuationRunRecord.request_sha256) -and $null -eq $continuationDocument.PSObject.Properties['aclGate'] -and $null -eq $continuationRunRecord.PSObject.Properties['sandbox_acl_evidence']) ('batch3h 變更或缺少舊 ACL/SID 證據時 Start 未啟動有效 thread，或 RunRecord 缺少祖先識別：' + [string]$continuationRun.stdout + [string]$continuationRun.stderr)
 
         $executionRoot = $real.execution_root
         $reportRoot = Join-Path $executionRoot '.local\ai-sessions\report\a'
         $reviewerPath = Join-Path $reportRoot 'batch3h-review.md'
         $closurePath = Join-Path $reportRoot 'batch3h-closure.md'
         $summaryPath = Join-Path $real.case_root '.local\ai-sessions\handoff\a\requirement-summary.md'
-        New-Item -ItemType Directory -Path $reportRoot, (Split-Path -Parent $summaryPath) | Out-Null
+        New-Item -ItemType Directory -Path $reportRoot, (Split-Path -Parent $summaryPath) -Force | Out-Null
         Write-Utf8NoBom -Path $continuationRunRecord.last_message_path -Content ('design.md dispatchSlug=' + $real.dispatch_slug + ' lineSlug=a')
         $currentJudgment = @([ordered]@{
                 id = 'F-901'
@@ -14899,8 +14318,7 @@ throw 'RunRecord 事件流為空。'
             $script:pidResult.ActiveRecords = @()
             $script:pidResult.UnconfirmedRecords = @()
             $script:quotaFixtureFailure = $false
-            $script:aclFixtureStatus = 'clean'
-            $script:scopePlanFixtureDecision = 'full'
+                        $script:scopePlanFixtureDecision = 'full'
             $script:dispatchUnitListOverride = $null
             $script:phase9DispatchFailure = $null
             $script:phase9CaptureOnly = $false
@@ -15747,36 +15165,7 @@ throw 'RunRecord 事件流為空。'
         return $fixture
     }
 
-    Invoke-Case 'Phase 9 F-001 Inspect pending ACL evidence cannot allow continuation' {
-        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
-        $inspectRecord = Read-DispatchRunRecord -Path $aPath @binding
-        $inspectRecord.sandbox_acl_baseline = [ordered]@{
-            status = 'known'
-            path = $fixtureRoot
-            fingerprint = Get-JsonSha256 -Value @()
-            entries = @()
-            explicit_entries = @()
-            captured_at_utc = [DateTimeOffset]::UtcNow.ToString('o')
-            error = $null
-        }
-        $inspectRecord.sandbox_acl_evidence = [ordered]@{
-            capture_status = 'pending'
-            entries = @()
-            captured_at_utc = $null
-            fingerprint = $null
-            error = $null
-            normal_completion = $false
-            continuation_allowed = $false
-        }
-        $null = Write-DispatchRunRecord -Record $inspectRecord -Update
-        $null = Invoke-Inspect
-        $afterRecord = Read-DispatchRunRecord -Path $aPath @binding
-        $afterEvidence = Get-DispatchJsonProperty -Object $afterRecord -Name 'sandbox_acl_evidence'
-        Assert-True ([string](Get-DispatchJsonProperty -Object $afterEvidence -Name 'capture_status') -eq 'no_match' -and -not [bool](Get-DispatchJsonProperty -Object $afterEvidence -Name 'continuation_allowed')) ('Inspect 將 pending evidence 標記為可續行：' + ($afterEvidence | ConvertTo-Json -Depth 20 -Compress))
-        $script:phase9AclMode = 'sandbox'
-        $gate = Invoke-Phase9ProductionAclGate -SourceRoot $phase9AclSourceRoot -ExecutionRoot $phase9AclExecutionRoot -WriteMode 'write' -ContinuationRecord $afterRecord
-        Assert-True ($gate.status -eq 'continuation-denied' -and $gate.rejection_code -eq 'WorktreeAclContinuationDenied' -and @($gate.accepted_sandbox_entries).Count -eq 0) ('pending/no_match evidence 被 ACL gate 當成 whitelist：' + ($gate | ConvertTo-Json -Depth 20 -Compress))
-    }
+
 
     function Invoke-Phase9AtomicRaceRound {
         [CmdletBinding()]

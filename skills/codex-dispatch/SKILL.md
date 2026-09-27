@@ -60,7 +60,7 @@ request 檔的 `source_root`、`result_path` 與 `preflight_result_path` 只在 
 | 失敗形狀 | 恢復方式 | 詳細節 |
 | --- | --- | --- |
 | 額度快照 `state` 不是 `Valid`，或 observation 為 `stale` | 記為 unknown 或 stale，派工照常進行，不改變範圍。`SnapshotUnavailable` 與 `stale` 需要最新數值時可重新查詢一次；`ServiceRejected` 不重新查詢也不重試，等待重設或新的觀測證據 | 額度狀態與回復探針 |
-| Preflight、Prepare 或 Start 在 Codex 啟動前失敗 | 修正輸入後以新的 `dispatchSlug` 重跑。失敗留下的 Prepare 結果、ScopePlan hash 紀錄或 `launch-failed` RunRecord 會使同名重試以 `PrepareResultCollision`、hash 不符或 ACL gate 拒絕 | 續 session 與跨介面接手 |
+| Preflight、Prepare 或 Start 在 Codex 啟動前失敗 | 修正輸入後以新的 `dispatchSlug` 重跑。失敗留下的 Prepare 結果、ScopePlan hash 紀錄或 `launch-failed` RunRecord 會使同名重試以 `PrepareResultCollision` 或 hash 不符拒絕 | 續 session 與跨介面接手 |
 | 續行被拒 | 以 `git -C <舊 dispatchRoot> diff HEAD` 與未追蹤檔案清單轉移成果，以新的 `dispatchSlug` 冷啟動 | Codex 進程 PID 與並行檢查 |
 | 事件流以 `turn.failed` 結束或 exit code 非零 | 依 C 出口取失敗原因，再依回收三態判定 | 完成判定與三出口 |
 | 結案訊息缺少識別字 | 標記 `PromptNotDelivered`，修正啟動方式後重新派遣 | RecoveryPrecheck |
@@ -254,7 +254,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath`，可選 `SelectedRequirement`（例如 `#22`）；回收 Reviewer 時另提供選用的 `ReviewerReportPath` | worktree 的 tracked／staged／未追蹤差異（`allFiles` 不含 carry-in；另列 `carryInFiles`、`newFiles` 與 `rejectedFiles`），或 direct-write 的核准輸出檔案證據與報告證據；兩者都含依 `DispatchKind` 選用的報告核對結果；提供 `ReviewerReportPath` 時另含 `reviewerFindings`（`valid`、`conclusion`、九個 unique 計數 `previous_closed_count`、`previous_open_count`、`previous_withdrawn_count`、`previous_accepted_count`、`current_new_count`、`current_open_count`、`current_closed_count`、`current_withdrawn_count`、`current_accepted_count`，以及 `duplicate_ids`、`inconsistencies`） | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
 | `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `finalStatus`、新快照路徑與 SHA-256、`processStarted=false` 與回復紀錄 | 只允許 `PostResetNoSnapshot`、`SnapshotExpired` 與 `ServiceRejected`；`ProbeAttempt > 1`，或重新取得的快照不是 `Valid` 且 `fresh` 時 stderr 並 exit code 1 |
 | `Dispatch` | `-RequestPath` 指向 `operation=Dispatch` 的 request 檔；未提供 request 檔時拒絕 | `Preflight`、`Prepare`、`Start` 與 `Inspect` 的階段結果，以及 `status=completed` 或 `failed` 的 dispatch envelope；`background: true` 時回傳 `status=started`，Inspect 以 `-WaitForCompletion` 另行等待；Collect 另行呼叫 | 單位核對失敗時於任何副作用前拒絕；request、Preflight、Prepare、Start 或 Inspect 任一階段失敗時 stderr 並 exit code 1 |
-| `Cleanup` | `SourceRoot`、`ExecutionRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、RunRecord、報告與 evidence 路徑 | 已完成保存驗證且移除目標 dispatch worktree 的結果 | 保存清單、路徑界線、進程、ACL 或移除驗證失敗時 stderr 並 exit code 1；失敗時保留 dispatch worktree，不得使用其他方式強制移除 |
+| `Cleanup` | `SourceRoot`、`ExecutionRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、RunRecord、報告與 evidence 路徑 | 已完成保存驗證且移除目標 dispatch worktree 的結果 | 保存清單、路徑界線、進程或移除驗證失敗時 stderr 並 exit code 1；失敗時保留 dispatch worktree，不得使用其他方式強制移除 |
 | `DiagnoseModelEnvironment` | `ThreadId`、`StartedAtUtc`；`Profile`（預設 `default`）、`CodexHome` 選填 | profile 設定值、actual model／reasoning effort 與 rollout 路徑的 JSON；證據不足時 actual 為 `unknown` | 缺少 `ThreadId` 或 `StartedAtUtc` 時 exit code 1。只由使用者或維運者明確呼叫，Dispatch、Start、Inspect 不呼叫 |
 
 `Preflight` 的 `writeMode=readonly` 固定建立隔離 worktree。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot`、`worktreeCreated=false`、空 `baseSha` 與核准輸出清單。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
@@ -555,11 +555,13 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 Start 與 Inspect 的失敗結果帶 `reason_code`：`QuotaServiceRejected`、`RequiredParameterMissing`、`AdvisorImplementationProfileRejected`、`AdvisorProfileRequired`、`AdvisorAuthorizationRequired`、`EvidencePackRequiredOutputInvalid`、`EvidencePackMissing`、`EvidencePackInvalid`、`EvidencePackInlineMismatch`、`ProfileEvidenceUnknown`、`CodexLaunchFailed`、`ProcessIdentityUnknown`、`ThreadRelayTimeout` 或 `Unknown`。`turn.failed` 或非零 exit 沒有可確認原因時使用 `Unknown`，並保留原始事件行與 stderr；stderr 為空不代表沒有錯誤。
 
-前輪以 usage-limit 中止、沒有 last-message、啟動失敗或終止原因不明時，續行沿既有執行鏈的 `attempt_parent_run_id`／`previous_run_id` 尋找有效 anchor；找不到有效 anchor 時以 `NoValidResumeAnchor` 停止。執行鏈保留失敗嘗試、事件流、ScopePlan、baseline、父層選項、process gate、ACL gate 與 model evidence，成果仍由 Inspect 與 Collect 驗收。沒有 last-message 本身不是拒絕原因。
+前輪以 usage-limit 中止、沒有 last-message、啟動失敗或終止原因不明時，續行沿既有執行鏈的 `attempt_parent_run_id`／`previous_run_id` 尋找有效 anchor；找不到有效 anchor 時以 `NoValidResumeAnchor` 停止。執行鏈保留失敗嘗試、事件流、ScopePlan、baseline、父層選項、process gate 與 model evidence，成果仍由 Inspect 與 Collect 驗收。沒有 last-message 本身不是拒絕原因。
 
 初次 Start 將有效父層選項寫入 RunRecord 的 `parent_options`（`profile`、`sandbox`、`add_directory` 保留原文與順序、`search`、`codex_parent_option` 保留原文與順序、`working_directory`）與 `parent_options_sha256`。續行未顯式傳入時從錨點還原，顯式傳入時逐欄比對，任一不同即以 `ParentOptionsMismatch` 拒絕並輸出欄位、數量與首個差異索引，不以當次呼叫值覆蓋錨點值；舊 RunRecord 沒有此欄位時輸出 `ParentOptionsUnknown`，不續行原 thread。
 
-啟動 launcher 前，於 process gate 之後、模型比對之前，比較 dispatch root 相對 source root 多出的非繼承 ACE。多出條目時以 `WorktreeAclResidue` 停止，查詢失敗時以 `WorktreeAclUnknown` 停止；direct-write 且兩者同根時為 `not-applicable`。Codex 在 `turn.started` 後沒有後續事件且非零結束時，Inspect 判定 `InterruptedUnknown`，保存事件尾段、stderr 與 exit code，重新檢查 ACL 並輸出 `cold_start_recommended=true`；該 worktree 不再作為續行目標，冷啟動改用新的 dispatch worktree。
+續行不比對 worktree 的 ACL／SID 證據；ACL 證據缺少或與前輪不同時，有效 thread 仍可續行。Codex 在 `turn.started` 後沒有後續事件且非零結束時，Inspect 判定 `InterruptedUnknown`，保存事件尾段、stderr 與 exit code 並輸出 `cold_start_recommended=true`；該 worktree 不再作為續行目標，冷啟動改用新的 dispatch worktree。
+
+續行實際失敗（`turn.failed` 或非零結束且 Inspect 判定失敗）時，Dispatch 依 Request 的 `failure_receipt_path` 寫入 `ai-sessions.dispatch-failure-receipt.v1`，不自動重送。`continuation_handoff` 含 `confirmed_results`（最新 safe point 的已確認結論與覆蓋範圍；取不到時為空陣列並標示來源不足）、`incomplete_units`（只取前輪 ScopePlan `selected_units` 的子集合，以完整字串逐一比對 safe point，不以標點切分單位名稱；deferred 或其他未選項目剔除並記錄理由；缺 safe point 時保留全部 selected_units）、`source_locations`（Request、ScopePlan、RunRecord、事件流、last-message、Inspect 結果與 safe point 證據位置）、`cold_start_entry`（新的 `dispatch_slug`、`session_mode=cold-start`、未完成單位與 root、prompt、target、識別字，`new_request_required=true`）與 `automatic_retry=false`。Inspect 擲出例外或第一次 receipt 寫入失敗而改走通用失敗路徑時，續行派遣仍帶入 `continuation_handoff`（已建立者沿用，否則依 RunRecord 與 ScopePlan 建立）；`session_mode` 的大小寫變體同樣視為續行。主 Agent 依 `cold_start_entry` 建立新的 Request 冷啟動。
 
 `Start` 以 `ResumeThreadId` 讀取指定 `thread_id` 後建立續行命令，重新產生事件流與 stderr 檔案，不覆寫前一輪記錄。續行的父層選項從初始啟動結果重建，包含 `--profile`、`--add-dir` 與 `--search`。
 
