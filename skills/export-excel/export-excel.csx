@@ -22,7 +22,6 @@ if (Args.Count < 2) {
 string jsonArg = Args[0];
 string outputPath = Args[1];
 string json = "";
-bool isTempFile = false;
 
 try {
     if (jsonArg == "-") {
@@ -34,11 +33,6 @@ try {
             throw new FileNotFoundException($"找不到指定的 JSON 檔案：{jsonArg}");
         }
         json = File.ReadAllText(jsonArg);
-        
-        // 識別是否為臨時檔案，以便後續清理
-        if (jsonArg.Contains(Path.GetTempPath()) || jsonArg.Contains("tmp")) {
-            isTempFile = true;
-        }
     } else {
         json = jsonArg;
     }
@@ -64,14 +58,6 @@ try {
         // 預覽僅供參考，不應中斷主匯出流程
     }
 
-    if (isTempFile && File.Exists(jsonArg)) {
-        try {
-            File.Delete(jsonArg);
-        } catch {
-            // 避免因檔案鎖定導致清理失敗時拋出例外
-        }
-    }
-
 } catch (Exception ex) {
     Console.Error.WriteLine("❌ 發生錯誤：");
     Console.Error.WriteLine(ex.Message);
@@ -81,8 +67,7 @@ try {
 void PrintPreview(string jsonContent) {
     using JsonDocument document = JsonDocument.Parse(jsonContent);
     JsonElement firstSheet = document.RootElement.EnumerateArray().FirstOrDefault();
-    if (firstSheet.ValueKind == JsonValueKind.Undefined)
-    {
+    if (firstSheet.ValueKind == JsonValueKind.Undefined) {
         return;
     }
 
@@ -90,16 +75,14 @@ void PrintPreview(string jsonContent) {
     JsonElement firstRecordSet = templates.EnumerateArray()
         .FirstOrDefault(t => t.GetProperty("Type").GetString() == "RecordSet");
 
-    if (firstRecordSet.ValueKind == JsonValueKind.Undefined)
-    {
+    if (firstRecordSet.ValueKind == JsonValueKind.Undefined) {
         return;
     }
 
     List<JsonElement> columns = firstRecordSet.GetProperty("Columns").EnumerateArray().ToList();
     List<JsonElement> records = firstRecordSet.GetProperty("Records").EnumerateArray().Take(5).ToList();
 
-    if (!columns.Any() || !records.Any())
-    {
+    if (!columns.Any() || !records.Any()) {
         return;
     }
 
@@ -110,13 +93,10 @@ void PrintPreview(string jsonContent) {
     Console.WriteLine(header);
     Console.WriteLine(separator);
 
-    foreach (JsonElement record in records)
-    {
-        IEnumerable<string> rowValues = columns.Select(c =>
-        {
+    foreach (JsonElement record in records) {
+        IEnumerable<string> rowValues = columns.Select(c => {
             string key = c.GetProperty("FieldKey").GetString();
-            if (record.TryGetProperty(key, out JsonElement val))
-            {
+            if (record.TryGetProperty(key, out JsonElement val)) {
                 return val.ToString();
             }
             return "";
@@ -124,8 +104,7 @@ void PrintPreview(string jsonContent) {
         Console.WriteLine("| " + string.Join(" | ", rowValues) + " |");
     }
 
-    if (firstRecordSet.GetProperty("Records").GetArrayLength() > 5)
-    {
+    if (firstRecordSet.GetProperty("Records").GetArrayLength() > 5) {
         Console.WriteLine($"... 還有 {firstRecordSet.GetProperty("Records").GetArrayLength() - 5} 筆資料");
     }
     Console.WriteLine();
