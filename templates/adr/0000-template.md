@@ -1,5 +1,7 @@
 ---
 status: proposed
+date: <yyyy-MM-dd>
+superseded-by: <推翻此決策的 ADR 序號，未被推翻時刪除此欄>
 ---
 
 # ADR-0000：<決策標題>
