@@ -15,7 +15,7 @@ policy.allow_implicit_invocation: true
 | `IHostedService` | 需精確控制啟動 / 停止順序的初始化或清理任務 |
 
 - `BackgroundService` 繼承自 `IHostedService`，提供 `ExecuteAsync` 抽象方法，適合大多數場景。
-- `IHostedService` 適合在 `StartAsync` 中做一次性初始化（如預熱快取、建立連線），不需要持續迴圈。
+- `IHostedService` 適合在 `StartAsync` 中做一次性初始化（如預熱快取、建立連線），不需要持續迴圈；僅限資料量與耗時有界、具取消處置且為 Host 就緒必要條件的工作。一般或無界外部 I/O 預熱應移至可追蹤且可取消的背景路徑。
 
 ## BackgroundService 實作規範
 
@@ -125,12 +125,19 @@ public class CacheWarmupService : IHostedService {
         IProductRepository repository = scope.ServiceProvider
             .GetRequiredService<IProductRepository>();
 
+        using CancellationTokenSource warmupCts =
+            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        warmupCts.CancelAfter(TimeSpan.FromSeconds(5));
+
         IReadOnlyList<Product> products = await repository
-            .GetAllAsync(cancellationToken)
+            .GetPageAsync(
+                pageNumber: 1,
+                pageSize: 100,
+                cancellationToken: warmupCts.Token)
             .ConfigureAwait(false);
 
-        cache.Set("products:all", products, TimeSpan.FromHours(1));
-        logger.LogInformation("快取預熱完成，共 {Count} 筆產品", products.Count);
+        cache.Set("products:page:1", products, TimeSpan.FromHours(1));
+        logger.LogInformation("快取預熱完成，第一頁共 {Count} 筆產品", products.Count);
     }
 
     public Task StopAsync(CancellationToken cancellationToken) {
@@ -139,7 +146,11 @@ public class CacheWarmupService : IHostedService {
 }
 ```
 
-- `StartAsync` 應盡快完成，不阻塞 Host 啟動。若需要長期作業，在 `StartAsync` 中啟動 `Task` 並儲存參考，在 `StopAsync` 中等待完成。
+範例中的 `GetPageAsync` 必須將 `cancellationToken` 傳遞至資料來源。`pageSize: 100` 限制單次預熱資料量，`CancelAfter(TimeSpan.FromSeconds(5))` 限制該次預熱耗時；逾時或 Host 停止時，`StartAsync` 觀察取消例外並讓必要條件未滿足的 Host 維持啟動失敗。
+
+> `StartAsync` 中的預熱範例只適用於資料量與耗時有界、具取消處置且該資料是 Host 就緒必要條件的初始化。一般快取預熱不得以無界外部 I/O 阻塞 Host 啟動。
+
+- `StartAsync` 應快速返回，不在其中執行無界外部 I/O。需要長期或非必要預熱時，移到可追蹤且可取消的背景路徑，並在 `StopAsync` 等待已保存的工作完成。
 - `StopAsync` 有 timeout（預設 30 秒），必須在時限內完成清理。
 
 ## Channel-based Queue 模式
@@ -262,6 +273,8 @@ public class MetricsCollector : BackgroundService {
 
 - `PeriodicTimer` 確保上一次 tick 的工作完成後才開始計時，避免重疊執行。
 - 優於 `Task.Delay`：語意更明確，且不會因工作耗時導致間隔漂移。
+- `System.Threading.Timer`、`System.Timers.Timer` 或其他 callback-based timer 若可能在前一次 callback 完成前再次觸發，必須改用 `PeriodicTimer`，或以該 timer 專用的 lock / semaphore 序列化 callback；不可只依賴 callback 順序。
+- Timer 必須由生命週期擁有者保存強參考，並在停止或 dispose 生命週期結束時釋放。只有短暫區域變數或弱參考時，GC 可能回收 Timer，導致排程停止。
 
 ## 註冊與啟動順序
 
@@ -274,6 +287,7 @@ builder.Services.AddHostedService<MetricsCollector>();
 - Hosted Service 依**註冊順序**依次啟動（`StartAsync` 依序呼叫）。
 - 停止時以**反向順序**依次停止。
 - 若某個服務的啟動依賴另一個服務已完成初始化，應透過共享狀態（如 `TaskCompletionSource`）協調，不依賴註冊順序。
+- 多個 Host instance 會同時執行相同的 hosted schedule；需要單次執行時，使用分散式 lock、leader election 或集中式 queue，並以冪等處理作為重試與 lock 失效的最後保護。process 內 lock 只涵蓋單一 instance。
 
 ## 禁止模式
 

@@ -36,21 +36,24 @@ policy.allow_implicit_invocation: true
 
 ## Collection Type Selection
 
-依語意選擇最窄的集合介面，不預設使用 `List<T>`：
+依語意選擇最窄的集合介面，並同時檢查能力、執行緒安全與列舉順序三軸，不預設使用 `List<T>`：
 
-| 介面 | 能力 | 適用情境 |
-| --- | --- | --- |
-| `IEnumerable<T>` | 迭代 | 方法參數、只需走訪的回傳值 |
-| `IReadOnlyCollection<T>` | 迭代 + Count | 需要數量但無需索引存取 |
-| `IReadOnlyList<T>` | 迭代 + Count + 索引 | DTO 屬性、唯讀回傳值 |
-| `ICollection<T>` | 迭代 + Count + Add/Remove | 可修改但不需索引的集合 |
-| `IList<T>` | 迭代 + Count + 索引 + Add/Remove | 可修改且需索引的集合 |
-| `List<T>` | 具體型別 | 僅限內部實作或明確需要 `List<T>` 方法時 |
+| 介面 | 能力 | 執行緒安全 | 列舉順序 | 適用情境 |
+| --- | --- | --- | --- | --- |
+| `IEnumerable<T>` | 迭代 | 介面不提供同步；來源不可變或由呼叫端保護 | 只反映來源順序，不由介面保證 | 方法參數、只需走訪的回傳值 |
+| `IReadOnlyCollection<T>` | 迭代 + Count | 介面不提供同步；來源不可變或由呼叫端保護 | 只反映來源順序，不由介面保證 | 需要數量但無需索引存取 |
+| `IReadOnlyList<T>` | 迭代 + Count + 索引 | 介面不提供同步；來源不可變或由呼叫端保護 | 只反映來源順序，不由介面保證 | DTO 屬性、唯讀回傳值 |
+| `ICollection<T>` | 迭代 + Count + Add/Remove | 預設非執行緒安全；並行寫入需明確同步 | 只反映實作順序，不由介面保證 | 可修改但不需索引的集合 |
+| `IList<T>` | 迭代 + Count + 索引 + Add/Remove | 預設非執行緒安全；並行寫入需明確同步 | 只反映實作順序，不由介面保證 | 可修改且需索引的集合 |
+| `List<T>` | 具體型別 | 預設非執行緒安全；並行寫入需明確同步 | 目前實例的索引順序可用，但跨來源契約需自行排序 | 僅限內部實作或明確需要 `List<T>` 方法時 |
 
-- DTO / Response 物件的集合屬性使用 `IReadOnlyList<T> { get; init; }`，搭配集合運算式 `[]` 預設值防止 null。
+- Modern .NET 且語言版本支援時，DTO / Response 物件的集合屬性使用 `IReadOnlyList<T> { get; init; }`，搭配集合運算式 `[]` 預設值防止 null。
+- Legacy .NET Framework（C# 7.3）使用 `IReadOnlyList<T> { get; private set; }` 搭配建構函式或 `new List<T>()` 初始化，防止 null；不使用 `init` 與集合運算式 `[]`。
 - 可修改的聚合根 / Builder 物件使用 `{ get; } = new List<T>();` 或 `ICollection<T> { get; } = new List<T>();`，固定屬性參考並允許元素增減。
 - DTO 禁止使用 `List<T> { get; set; }`，避免同時暴露具體型別與可替換屬性。
 - 方法參數偏好 `IEnumerable<T>`，需要索引時使用 `IReadOnlyList<T>`，不要求呼叫端傳入 `List<T>`。
+- `private` 與 `internal` 方法若不需要替換實作或跨 assembly 的抽象契約，可依 CA1859 回傳實際集合型別，讓編譯器保留具體型別資訊；`public`、`protected` 與提供給外部 assembly 的 `internal` 契約仍使用最窄介面。
+- 集合型別只表達能力，不自動提供執行緒安全或 business order；需要共享讀寫時加入明確同步策略，需要穩定順序時以 sequence 或 `OrderBy` 建立契約。
 
 ## Nullable Value Types 與 NRT
 
