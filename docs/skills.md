@@ -17,7 +17,7 @@
 | `generate-readme-zh-tw` | 指令型 | human | 自動分析目前專案結構與功能，產生一份結構清晰、工程導向的 README.md（繁體中文）。 |
 | `generate-unit-test` | 指令型 | human | 針對指定的 C# 類別或方法，自動產生 NUnit 單元測試骨架，包含 Arrange/Act/Assert 結構與 NSubstitute Mock 設定。 |
 | `project-setup` | 指令型 | human | 探索專案的 solo／team 模式與既有規範產物，建立 AGENTS.md、CLAUDE.md、GLOSSARY.md、docs/adr/ 與 AI 宣告區塊。 |
-| `spec-doc` | 指令型 | human | 依 Clarify 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。 |
+| `spec-doc` | 指令型 | human | 依 Analyst 需求摘要、design.md 或使用者口述範圍與程式碼盤點，產生人類可讀的開發需求規格文件，供同事參考討論。 |
 
 ## model-invoked
 
@@ -29,6 +29,7 @@
 | `browser-smoke` | 知識型 | agent | 瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。 |
 | `check-markdown` | 知識型 | human | 當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。 |
 | `codebase-design` | 知識型 | agent | Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。 |
+| `codex-dispatch` | 知識型 | agent | Codex 派工機制：依派工類型建立執行契約、以 codex exec 啟動 Codex、背景等待、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。 |
 | `csharp-aspnetcore` | 知識型 | agent | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
 | `csharp-auth` | 知識型 | agent | ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。 |
 | `csharp-background-service` | 知識型 | agent | Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。 |
@@ -44,6 +45,7 @@
 | `csharp-nrt` | 知識型 | agent | C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。當專案啟用 NRT 且撰寫或修改型別宣告時自動套用。 |
 | `csharp-nunit` | 知識型 | agent | C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。 |
 | `csharp-signalr` | 知識型 | agent | SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。 |
+| `csharp-silent-defects` | 知識型 | agent | Use when 讀取或修改 C# 程式碼，需要檢查合法且不易在開發環境顯現的執行期、時序、文化、數值、集合順序或資源陷阱時。 |
 | `csharp-style` | 知識型 | agent | C# 程式碼風格規範：縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的細則。建立全新 C# 專案，或在無既有慣例的專案新增全新檔案時套用。 |
 | `csharp-validation` | 知識型 | agent | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。 |
 | `desktop-smoke` | 知識型 | agent | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
@@ -70,7 +72,7 @@
 | `uiux` | 知識型 | agent | UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。 |
 | `uiux-baseline` | 知識型 | agent | 掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced. |
 | `vitest` | 知識型 | agent | 前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。 |
-| `vue3` | 知識型 | agent | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
 | `vue-router` | 知識型 | agent | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。 |
+| `vue3` | 知識型 | agent | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
 | `windows-terminal` | 知識型 | agent | Use when 在 Windows 執行終端機命令，需要處理輸出編碼、中文亂碼或輸出截斷時。 |
 | `writing-for-agents` | 知識型 | agent | Use when 撰寫或修改全域 Agent 規範、Skill 文件或交接文件，需要控制資訊密度與驗收條件時。 |

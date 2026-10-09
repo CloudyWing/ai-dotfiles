@@ -26,9 +26,9 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 平台分工
 
-Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執行；執行型 agent 中 Design 與 UI Demo 於 Claude 端派生，Implement、Review、Frontend Review、API Contract、Cleanup、Debug 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Clarify / Design，Design 完成後再切至 Codex 執行 Implement / Review 鏈；bug 由 Codex 的 Debug 線診斷與修正。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
+Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方式執行；執行型 agent 中 Prototyper 於 Claude 端派生，Architect 於 Codex 端以資源派遣執行，Developer、Reviewer、Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer 於 Codex 端執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 背景執行 `codex exec` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Maintainer 線診斷，實作交由 Support Engineer 完成。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
 
-涉及畫面的需求由 Clarify 判定 UI 線別，版面複雜或需對外溝通時派生 UI Demo 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
+涉及畫面的需求由 Analyst 判定 UI 線別，版面複雜或需對外溝通時派生 Prototyper 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
 ### 本地檔案慣例（不 commit）
 
@@ -63,11 +63,11 @@ Persona Agent（Clarify、Implement、Editor、Debug）以語意切換方式執�
     └── ui-demo/
 ```
 
-結案清理會移除 `scratch/` 全部內容與 `handoff/` 中除 `design.md` 與 `requirement-summary.md` 以外的檔案。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 保留供後續查閱。
+結案清理會移除 `scratch/` 全部內容。`handoff/<lineSlug>/` 中的 `line.json`、`requirement-summary.md` 與 `design.md` 均受保護，其他 handoff 項目依清理規則移除。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 保留供後續查閱。
 
 ### `work-root` 與交接檔
 
-`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。需求基準位於 `handoff/requirement-summary.md`，設計基準位於 `handoff/design.md`，人員閱讀的審查報告位於 `report/`。判定流程分兩步：
+`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。Analyst 會從已確認需求摘要推導並登記語意化 `lineSlug`，每一條線以 `handoff/<lineSlug>/line.json` 識別。需求基準位於 `handoff/<lineSlug>/requirement-summary.md`，設計基準位於 `handoff/<lineSlug>/design.md`，固定名稱審查與驗證報告位於 `report/<lineSlug>/`。`dispatchSlug` 只識別單次派遣，與 `lineSlug` 分開使用。判定流程分兩步：
 
 1. **先取得 `task anchor`**（本輪任務真正想處理的範圍，不等於 AI 的 process cwd）。優先序：
    1. 使用者本輪明確指定的目錄、檔案所在目錄、或子系統 / 前端 app / 後端 service / 模組目錄。
@@ -155,6 +155,43 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 | `agents/<name>.toml` | 自訂 Agent（執行型，以 `/agent <name>` 切換） |
 | `~/.agents/skills/<name>/SKILL.md` | 使用者技能（Codex 會掃描） |
 
+#### Codex CLI 前置需求
+
+額度快照由 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 從 `/wham/usage` 即時取得，只供顯示與紀錄；查詢時點見 `codex-dispatch` Skill。
+
+- 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附 binary 不作為派工執行檔。
+- 派工需要隔離 worktree 時，來源目錄必須是 Git repo；非 Git 來源的寫入與唯讀派工直接在來源目錄執行，腳本不會自動 `git init`。需要 worktree 卻不是 Git repo 時回報 `SourceRootNotGitRepository`。
+- 安裝或更換環境時執行 `codex --version` 確認 CLI 可用。派工不再執行啟動探針；CLI 缺失或正式啟動失敗時，派遣結果記為未啟動。需要確認實際使用的 model 時，執行 `Invoke-CodexDispatch.ps1 -Operation DiagnoseModelEnvironment`（參數見 `codex-dispatch` Skill）。
+- `Invoke-CodexDispatch.ps1` 的 JSON 標準輸出固定使用 UTF-8（無 BOM），Windows PowerShell 5.1 與 PowerShell 7 均可解析中文欄位。
+- PowerShell 啟動端使用 `ProcessStartInfo.ArgumentList` 與 UTF-8 stdin／stdout／stderr，prompt 以 `-` 從 stdin 傳入；啟動端需要 PowerShell 7+。
+- 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
+- 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。
+- 更換機器後，第一步執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
+
+#### Codex profile 檔位設定
+
+1. 預設檔位使用 `--profile default`，讀取 `~/.codex/default.config.toml`；`advisor` 檔位使用 `--profile advisor`，讀取 `~/.codex/advisor.config.toml`。只保留預設與 `advisor` 兩個選項。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
+2. 實作一律使用預設檔位。`advisor` 只作意見評估，發動前先向使用者請求，使用者在當下 Session 授權後才派工；授權不延續到其他 Session，也不依剩餘額度縮小評估範圍。預設檔位額度不足時不需授權，照常派工。授權與 evidence pack 契約以 `codex-dispatch` skill 為準，本文件不重複記載。
+3. `default.config.toml` 與 `advisor.config.toml` 是兩個 profile 的本機設定檔，內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
+
+   ```toml
+   model = "<model-id>"
+   model_reasoning_effort = "<effort>"
+
+   [agents]
+   default_subagent_model = "<較低成本的 model-id>"
+   default_subagent_reasoning_effort = "<effort>"
+   ```
+
+   `[agents]` 段用於降低 subagent 的模型成本。Codex 的 subagent 預設繼承父 Agent 的模型與推理強度，未設定時每個 subagent 都以父 Agent 的模型執行，token 隨並行數累加；以高成本模型作為主 Agent 時，建議將 subagent 指定為成本較低的模型，讓讀取類工作不使用高階模型。
+
+   未設定 `max_concurrent_threads_per_session` 時使用 Codex 預設並行數，該並行數直接乘上每個 subagent 的消耗，需要上限時於同一檔案明列。
+
+   `model_reasoning_effort` 只影響推理長度，不影響模型單價。把高成本模型的 effort 調低不會使其變便宜，控制成本須從模型選用與 subagent 配置著手。
+
+4. `config.toml` 是 Codex 應用程式設定，屬可變設定，可能由 CLI 或其他工具變更。default dispatch profile 固定讀取 `default.config.toml`，不以 `config.toml` 作為預設檔位來源。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
+5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段偵測 `default.config.toml` 與 `advisor.config.toml` 缺件，以及舊檔名殘留或新舊檔同時存在的衝突，並印出修復指引。
+
 ---
 
 ## 4. 目錄結構總覽
@@ -175,11 +212,15 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 └── scripts/                            # 安裝、檢查與 hooks 腳本
 ```
 
+`scripts/` 根目錄只放使用者可直接執行的 Verb-Noun 腳本，包括 `.ps1` 與既有 `.csx`。內部責任檔、loader、測試輔助與 C17 私有機制放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`。
+
 ---
 
 ## 5. Scripts 與命名慣例
 
-- `scripts/` 根目錄下可由使用者直接執行的 PowerShell 腳本，使用 `Verb-Noun.ps1` 命名。
+- `scripts/` 根目錄只放使用者可直接執行的 Verb-Noun `.ps1` 與既有 `.csx` 腳本。
+- `scripts/Get-DispatchProgress.ps1` 唯讀查詢派遣進度，可依 `LineSlug` 或 `DispatchSlug` 篩選；預設顯示未結束與最近 24 小時內結束的項目。
+- 內部責任檔、loader、測試輔助與 C17 私有機制放在子目錄；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
 - `scripts/hooks/` 內由工具自動呼叫的 Hook 腳本，使用全小寫 kebab-case 命名。
 - `.githooks/` 內為 Git 原生 Hook，由 `Setup-AIGlobalConfig.ps1` 透過 `core.hooksPath` 啟用。
 
@@ -191,7 +232,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 git config core.hooksPath .githooks
 ```
 
-啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 與 `instructions.md` 的 Skill 指標索引並納入本次 commit。`docs/agents.md` 與 `docs/skills.md` 為生成檔，請勿手動編輯；表格會列出讀者欄，Skill 另依 `user-invoked` 與 `model-invoked` 分組。腳本會先驗證 `disable-model-invocation` 與 `policy.allow_implicit_invocation` 的語意一致性，發現不一致時以非零結束碼阻止 commit。agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 與 `instructions.md` 的 Skill 指標索引並納入本次 commit。`docs/agents.md` 與 `docs/skills.md` 為生成檔，請勿手動編輯；表格會列出讀者欄，Skill 另依 `user-invoked` 與 `model-invoked` 分組。腳本會先驗證 `disable-model-invocation` 與 `policy.allow_implicit_invocation` 的語意一致性，並檢查 `agents/codex/*.toml` 的頂層 bare key 是否超出 `name`／`description`／`developer_instructions` 白名單，任一項不符時以非零結束碼阻止 commit。Codex agent 的 `audience` 以 `# doc-meta: audience = "..."` 註解承載，避免頂層鍵使 Codex 丟棄整份定義。agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
 
 ---
 
@@ -225,49 +266,63 @@ Agent 依執行平台分為兩類：
 
 - **Persona**：以語意切換方式執行。適合需要多輪對話、強依賴上下文的需求分析、實作階段控制與文件編輯。
 - **sub-agent**：由主 Agent 派生。適合有明確輸入與交接檔案的設計、審查、掃描與清理任務。
-- **Cleanup**：Codex 執行型 agent，處理語法現代化、死程式碼、資源管理與既有規範清理；每批修改後驗證測試。
-- **architecture-improvement**：人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出 `.local/ai-sessions/report/architecture-review.md` 再等待範圍決策。
+- **Refactorer**：Codex 執行型 agent，處理語法現代化、死程式碼、資源管理與既有規範清理；每批修改後驗證測試。
+- **architecture-improvement**：人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出 `.local/ai-sessions/report/<lineSlug>/architecture-review.md` 再等待範圍決策。
 
 ### Agent 執行流程
 
 ```mermaid
 flowchart TD
-    Clarify["**Clarify**<br />需求解構＋構想發散"]
-    UIDemo["**UI Demo**<br />Demo 畫面產出"]
-    Design["**Design**<br />系統設計"]
-    Implement["**Implement**<br />實作工程師"]
-    Review["**Review**<br />後端驗收"]
-    FrontendReview["**Frontend Review**<br />前端驗收"]
-    Cleanup["**Cleanup**<br />技術債清理"]
+    Analyst["**Analyst**<br />需求解構＋構想發散"]
+    Prototyper["**Prototyper**<br />Demo 畫面產出"]
+    Architect["**Architect**<br />系統設計"]
+    Developer["**Developer**<br />程式設計師"]
+    Reviewer["**Reviewer**<br />後端驗收"]
+    FrontendReviewer["**Frontend Reviewer**<br />前端驗收"]
+    Refactorer["**Refactorer**<br />技術債清理"]
     ArchitectureImprovement["**architecture-improvement**<br />候選分析"]
-    Debug["**Debug**<br />bug 線協調者"]
-    FixSub["匿名 subagent<br />執行修正"]
+    Maintainer["**Maintainer**<br />bug 線協調者"]
+    SupportEngineer["**Support Engineer**<br />實作修改"]
     Done(["任務完成"])
 
-    Clarify --> Design
-    Clarify -->|C 線| UIDemo
-    UIDemo -->|回填需求摘要| Clarify
-    Design --> Implement
-    Implement -->|Backend Review<br />handoff| Review
-    Implement -->|Frontend Review<br />handoff| FrontendReview
-    Implement -->|技術債清理| Cleanup
-    Review -->|補完實作| Implement
-    Review -->|重新評估範圍| Clarify
-    Review --> Done
-    FrontendReview -->|補完實作| Implement
-    FrontendReview --> Done
-    Cleanup -->|驗證後交付| Done
+    Analyst --> Architect
+    Analyst -->|C 線| Prototyper
+    Prototyper -->|回填需求摘要| Analyst
+    Architect --> Developer
+    Developer -->|後端審查<br />handoff| Reviewer
+    Developer -->|前端審查<br />handoff| FrontendReviewer
+    Developer -->|技術債清理| Refactorer
+    Reviewer -->|補完實作| Developer
+    Reviewer -->|重新評估範圍| Analyst
+    Reviewer --> Done
+    FrontendReviewer -->|補完實作| Developer
+    FrontendReviewer --> Done
+    Refactorer -->|驗證後交付| Done
 
-    ArchitectureImprovement -->|候選報告| Clarify
+    ArchitectureImprovement -->|候選報告| Analyst
 
-    Debug -->|派生＋fix-plan| FixSub
-    FixSub -->|回報| Debug
-    Debug --> Done
+    Maintainer -->|派生＋fix-plan| SupportEngineer
+    SupportEngineer -->|回報| Maintainer
+    Maintainer --> Done
 ```
 
-> 功能線：Clarify 收斂需求後由 Design 設計，切換至 `Implement` Persona 進入實作與審查循環。判定為 C 線時，Clarify 先派生 UI Demo 產出 Demo 畫面，驗收並回填需求摘要後再進入 Design。Cleanup 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Debug 診斷後派生匿名 subagent 修正並驗收。
+> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex exec` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
 
 ---
+
+## 8. 疑難排解
+
+### `model_reasoning_effort` 版本相容性
+
+Codex 0.130 只接受 `model_reasoning_effort` 為 `none`、`minimal`、`low`、`medium`、`high` 或 `xhigh`。設定為 `max` 時，會在讀取 `config.toml` 階段整份載入失敗，任何子命令皆無法執行。Codex 0.147 已接受 `max`。
+
+若對桌面版隨附 binary 執行 `codex update`，會回傳下列訊息：
+
+```text
+Could not detect the Codex installation method
+```
+
+請改用 npm 全域安裝的 Codex CLI，並以 `codex --version` 確認 PATH 解析到正確的執行檔。
 
 ## License
 

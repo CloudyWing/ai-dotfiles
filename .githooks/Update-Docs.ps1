@@ -17,7 +17,7 @@ $claudeAgentsDir = Join-Path $repoRoot "agents\claude"
 $codexAgentsDir = Join-Path $repoRoot "agents\codex"
 $skillsDir = Join-Path $repoRoot "skills"
 $instructionsPath = Join-Path $repoRoot "instructions.md"
-$personaAgents = @("Clarify", "Implement", "Editor", "Debug")
+$personaAgents = @("Analyst", "Developer", "Editor", "Maintainer")
 
 function Get-FrontMatterValue {
     [CmdletBinding()]
@@ -90,6 +90,174 @@ function Get-TomlValue {
     return $null
 }
 
+function Get-TomlMetaValue {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Content,
+
+        [Parameter(Mandatory)]
+        [string]$Key
+    )
+
+    $escapedKey = [regex]::Escape($Key)
+    $pattern = "^\s*#\s*doc-meta:\s*${escapedKey}\s*=\s*`"?(.+?)`"?\s*$"
+    foreach ($line in $Content) {
+        # 多行字串開始後即停止掃描，避免 developer_instructions 內的範例文字被當成中繼資料。
+        if (($line -match '^\s*[A-Za-z0-9_-]+\s*=\s*"""') -and ($line -notmatch '""".*"""')) {
+            break
+        }
+
+        if ($line -match $pattern) {
+            return $matches[1].Trim('"')
+        }
+    }
+
+    return $null
+}
+
+function Assert-CodexTomlTopLevelKey {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Content,
+
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    $allowedKeys = @("name", "description", "developer_instructions")
+    $inMultilineString = $false
+
+    foreach ($line in $Content) {
+        # 多行字串內容不參與頂層鍵判定，避免 developer_instructions 內的文字被誤判。
+        if ($inMultilineString) {
+            if ($line -match '"""') {
+                $inMultilineString = $false
+            }
+
+            continue
+        }
+
+        if ($line -match '^\s*([A-Za-z0-9_-]+)\s*=\s*(.*)$') {
+            $key = $matches[1]
+            $value = $matches[2]
+
+            if ($allowedKeys -notcontains $key) {
+                throw "Codex agent TOML 僅允許頂層鍵 $($allowedKeys -join '、')，發現 '$key'：$Path"
+            }
+
+            if (($value -like '"""*') -and ($value -notmatch '""".*"""')) {
+                $inMultilineString = $true
+            }
+        }
+    }
+}
+
+function Assert-CodexTomlEscapeSequence {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [AllowEmptyString()]
+        [string[]]$Content,
+
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    # TOML 基本字串中，反斜線一律視為跳脫序列的開頭。後接非法字元時整份檔案判定 malformed，
+    # Codex 只在 stderr 印一行警告並丟棄該 agent 定義，執行不中斷，因此必須在 commit 前攔下。
+    # 合法清單取自 Codex 解析器的錯誤訊息，另補上 `t`：該字元未出現在訊息中，但屬 TOML 規格
+    # 明定的合法跳脫，視為訊息未列全，一併放行以免誤擋。
+    $validEscapeChars = @('b', 't', 'e', 'f', 'n', 'r', '\', '"', 'x', 'u', 'U')
+    $inMultilineString = $false
+    $lineNumber = 0
+
+    foreach ($line in $Content) {
+        $lineNumber++
+        $scanText = $null
+        # 行尾反斜線的續行語法只存在於多行基本字串，單行字串沿用時會放過未結束的字串。
+        $allowLineContinuation = $false
+
+        if ($inMultilineString) {
+            $scanText = $line
+            $allowLineContinuation = $true
+
+            if ($line -match '"""') {
+                $inMultilineString = $false
+            }
+        }
+        elseif ($line -match '^\s*[A-Za-z0-9_-]+\s*=\s*(.*)$') {
+            $value = $matches[1]
+
+            if ($value -like '"""*') {
+                $scanText = $line
+                $allowLineContinuation = $true
+
+                if ($value -notmatch '""".*"""') {
+                    $inMultilineString = $true
+                }
+            }
+            elseif ($value -like '"*') {
+                # 單行基本字串的反斜線同樣是跳脫序列開頭，非法跳脫一樣使整份檔案 malformed。
+                # 字面字串（單引號）不解析跳脫序列，不在掃描範圍。
+                # 掃描到未跳脫的結束引號為止，避免把字串後方 inline comment 的反斜線誤判為跳脫序列。
+                # 找不到結束引號時掃描整段，使未結束的字串仍被攔截。
+                $scanText = $value
+                $valueIndex = 1
+
+                while ($valueIndex -lt $value.Length) {
+                    if ($value[$valueIndex] -eq '\') {
+                        $valueIndex += 2
+                        continue
+                    }
+
+                    if ($value[$valueIndex] -eq '"') {
+                        $scanText = $value.Substring(0, $valueIndex + 1)
+                        break
+                    }
+
+                    $valueIndex++
+                }
+            }
+        }
+
+        if ($null -eq $scanText) {
+            continue
+        }
+
+        $trimmed = $scanText.TrimEnd()
+
+        for ($i = 0; $i -lt $trimmed.Length; $i++) {
+            if ($trimmed[$i] -ne '\') {
+                continue
+            }
+
+            if ($i -eq ($trimmed.Length - 1)) {
+                if ($allowLineContinuation) {
+                    continue
+                }
+
+                throw "Codex agent TOML 第 $lineNumber 行以反斜線結尾，但該行不是多行基本字串的續行：$Path"
+            }
+
+            $nextChar = $trimmed[$i + 1]
+
+            if ($validEscapeChars -notcontains [string]$nextChar) {
+                throw "Codex agent TOML 第 $lineNumber 行有非法跳脫序列 '\$nextChar'，合法跳脫字元為 $($validEscapeChars -join '、')：$Path"
+            }
+
+            # 跳過已驗證的跳脫字元，避免 `\\` 的第二個反斜線被當成新的跳脫起點。
+            $i++
+        }
+    }
+}
+
 function ConvertTo-BooleanValue {
     [CmdletBinding()]
     param (
@@ -142,6 +310,17 @@ function Get-AgentType {
     return "sub-agent"
 }
 
+function Get-OrdinalSortKey {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Value
+    )
+
+    return (($Value.ToCharArray() | ForEach-Object { "{0:D6}" -f [int][char]$_ }) -join "")
+}
+
 function Assert-AgentAudience {
     [CmdletBinding()]
     param (
@@ -175,6 +354,7 @@ function Get-SkillMetadata {
     $name = Get-FrontMatterValue -Content $content -Key "name"
     $description = Get-FrontMatterValue -Content $content -Key "description"
     $audience = Get-FrontMatterValue -Content $content -Key "audience"
+    $dispatch = Get-FrontMatterValue -Content $content -Key "dispatch"
     $disableModelInvocationText = Get-FrontMatterValue -Content $content -Key "disable-model-invocation"
     $allowImplicitInvocationText = Get-FrontMatterValue -Content $content -Key "policy.allow_implicit_invocation"
 
@@ -190,10 +370,23 @@ function Get-SkillMetadata {
         throw "Skill audience 必須為 agent 或 human：$skillFile"
     }
 
+    if ($audience -eq "human") {
+        $allowedDispatchValues = @("dispatchable", "claude-side", "split")
+        if ([string]::IsNullOrWhiteSpace($dispatch) -or ($allowedDispatchValues -notcontains $dispatch)) {
+            throw "human-facing Skill 必須設定有效的 dispatch 欄位（dispatchable、claude-side 或 split）：$skillFile"
+        }
+
+        $hasDispatchBoundary = (($content -join "`n") -match "(?m)^## 派遣分界\s*$")
+        if (($dispatch -eq "split") -and (-not $hasDispatchBoundary)) {
+            throw "dispatch: split 的 Skill 必須包含 ## 派遣分界：$skillFile"
+        }
+    }
+
     [pscustomobject]@{
         Name = $name
         Description = $description
         Audience = $audience
+        Dispatch = $dispatch
         DisableModelInvocation = ConvertTo-BooleanValue -Value $disableModelInvocationText -DefaultValue $false
         AllowImplicitInvocation = ConvertTo-BooleanValue -Value $allowImplicitInvocationText -DefaultValue $true
         Path = $skillFile
@@ -229,7 +422,7 @@ function Get-SkillRows {
         [object[]]$Skills
     )
 
-    @($Skills | Sort-Object Name | ForEach-Object {
+    @($Skills | Sort-Object { Get-OrdinalSortKey -Value $_.Name } | ForEach-Object {
         $type = if ($_.DisableModelInvocation) { "指令型" } else { "知識型" }
         "| ``$($_.Name)`` | $type | $($_.Audience) | $($_.Description) |"
     })
@@ -257,7 +450,7 @@ function Update-SkillIndex {
 
     $indexLines = New-Object 'System.Collections.Generic.List[string]'
     [void]$indexLines.Add($beginMarker)
-    foreach ($skill in ($Skills | Sort-Object Name)) {
+    foreach ($skill in ($Skills | Sort-Object { Get-OrdinalSortKey -Value $_.Name })) {
         [void]$indexLines.Add("- ``$($skill.Name)``：$($skill.Description)")
     }
     [void]$indexLines.Add($endMarker)
@@ -274,7 +467,8 @@ try {
     # 1. 讀取並驗證 Skill frontmatter。
     $skillMetadata = @(
         Get-ChildItem -LiteralPath $skillsDir -Directory |
-            Sort-Object Name |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName "SKILL.md") -PathType Leaf } |
+            Sort-Object { Get-OrdinalSortKey -Value $_.Name } |
             ForEach-Object { Get-SkillMetadata -Directory $_ }
     )
     Assert-SkillFrontMatterConsistency -Skills $skillMetadata
@@ -282,7 +476,7 @@ try {
     # 2. 產生 docs/agents.md。
     $claudeRows = @(
         Get-ChildItem -LiteralPath $claudeAgentsDir -File -Filter "*.md" |
-            Sort-Object Name |
+            Sort-Object { Get-OrdinalSortKey -Value $_.Name } |
             ForEach-Object {
                 $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
                 $name = Get-FrontMatterValue -Content $content -Key "name"
@@ -295,12 +489,14 @@ try {
 
     $codexRows = @(
         Get-ChildItem -LiteralPath $codexAgentsDir -File -Filter "*.toml" |
-            Sort-Object Name |
+            Sort-Object { Get-OrdinalSortKey -Value $_.Name } |
             ForEach-Object {
                 $content = Get-Content -LiteralPath $_.FullName -Encoding UTF8
+                Assert-CodexTomlTopLevelKey -Content $content -Path $_.FullName
+                Assert-CodexTomlEscapeSequence -Content $content -Path $_.FullName
                 $name = Get-TomlValue -Content $content -Key "name"
                 $description = Get-TomlValue -Content $content -Key "description"
-                $audience = Assert-AgentAudience -Value (Get-TomlValue -Content $content -Key "audience") -Path $_.FullName
+                $audience = Assert-AgentAudience -Value (Get-TomlMetaValue -Content $content -Key "audience") -Path $_.FullName
                 $agentType = Get-AgentType -Name $name
                 "| ``$name`` | $agentType / Codex | $audience | $description |"
             }

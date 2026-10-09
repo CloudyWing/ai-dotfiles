@@ -1,4 +1,6 @@
-﻿# ----------------------------------------------------------------
+﻿#Requires -Version 5.1
+
+# ----------------------------------------------------------------
 # Setup-AIGlobalConfig.ps1 - AI 全域設定連結自動化（收斂式安裝 / 含斷鍊清除）
 # 支援 -WhatIf 預覽；相容 Windows PowerShell 5.1 與 PowerShell 7+。
 # ----------------------------------------------------------------
@@ -12,8 +14,8 @@ $ErrorActionPreference = 'Stop'
 # 1. 管理員權限檢查
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    Write-Host "ERROR: 此腳本必須以『系統管理員身分』執行！" -ForegroundColor Red
-    return
+    Write-Error "此腳本必須以『系統管理員身分』執行！" -ErrorAction Continue
+    exit 1
 }
 
 # 2. 定義路徑：刻意寫死，與內容層 instructions.md / skill 的 ~/.ai-agents/ 引用共用同一不變量
@@ -24,14 +26,14 @@ $gitGlobalExcludes = Join-Path $configRoot "git-global-excludes"
 
 # 3. 實體檔案與原始目錄檢查
 if (!(Test-Path $mainInstructions)) {
-    Write-Host "ERROR: 找不到 $mainInstructions" -ForegroundColor Red
-    Write-Host "       請確認腳本位於 <configRoot>\scripts\ 之下。" -ForegroundColor Red
-    return
+    Write-Error "找不到 $mainInstructions" -ErrorAction Continue
+    Write-Error "請確認腳本位於 <configRoot>\scripts\ 之下。" -ErrorAction Continue
+    exit 1
 }
 
 if (!(Test-Path $gitGlobalExcludes)) {
-    Write-Host "ERROR: 找不到機器層排除清單 $gitGlobalExcludes" -ForegroundColor Red
-    return
+    Write-Error "找不到機器層排除清單 $gitGlobalExcludes" -ErrorAction Continue
+    exit 1
 }
 
 # 4. 準備工具目錄
@@ -119,6 +121,7 @@ foreach ($entry in $desired) {
 # 8. 清除斷鍊孤兒：只刪「指向 configRoot 但來源已不存在」者；仍能解析的連結保留
 Write-Host "`n>>> 正在清除斷鍊孤兒..." -ForegroundColor Cyan
 $rootPrefix = $configRoot.TrimEnd('\')
+$rootPrefixWithSeparator = $rootPrefix + [System.IO.Path]::DirectorySeparatorChar
 $orphans = foreach ($root in ($sweepRoots | Sort-Object -Unique)) {
     if (!(Test-Path $root)) { continue }
     Get-ChildItem -Path $root -Recurse -Depth 3 -Force -ErrorAction SilentlyContinue |
@@ -126,7 +129,10 @@ $orphans = foreach ($root in ($sweepRoots | Sort-Object -Unique)) {
         if (-not ($_.Attributes -match 'ReparsePoint')) { return $false }
         $t = if ($_.Target) { $_.Target } else { $_.LinkTarget }
         $t = ($t -join '')
-        if (-not $t.StartsWith($rootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) { return $false }
+        # 路徑分隔符邊界可避免 .ai-agents-backup 被誤判為 .ai-agents 的子路徑，防止清除根目錄外的 link。
+        $isWithinConfigRoot = [System.String]::Equals($t, $rootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $t.StartsWith($rootPrefixWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)
+        if (-not $isWithinConfigRoot) { return $false }
         -not (Test-Path -LiteralPath $t)   # 僅保留斷鍊者
     }
 }
@@ -206,3 +212,88 @@ Write-Host "  - Claude Code Hook 腳本位於 $configRootDisplay/scripts/hooks/�
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
 Write-Host "  - Codex agents → $configRootDisplay/agents/codex/"
 Write-Host "  - Codex skills → ~/.agents/skills/"
+
+# 12. Codex 執行環境檢查
+Write-Host "`n>>> 檢查 Codex 執行環境..." -ForegroundColor Cyan
+
+$codexCommand = Get-Command codex -ErrorAction SilentlyContinue
+$codexVersion = $null
+if ($null -eq $codexCommand) {
+    Write-Warning "  ⚠️ 找不到 PATH 上的 codex。"
+    Write-Host "  請執行下列指令安裝 Codex CLI："
+    Write-Host ('  npm' + ' i -g @openai/codex')
+    Write-Host "  參考 README.md §3「Codex CLI 前置需求」。"
+}
+else {
+    $codexVersionOutput = (& codex --version 2>&1 | Out-String).Trim()
+    $codexVersionExitCode = $LASTEXITCODE
+    if ($codexVersionExitCode -ne 0) {
+        Write-Warning "  ⚠️ codex --version 執行失敗，結束碼：$codexVersionExitCode。輸出：$codexVersionOutput"
+    }
+    else {
+        $versionMatch = [regex]::Match($codexVersionOutput, '\d+\.\d+\.\d+')
+        if (-not $versionMatch.Success) {
+            Write-Warning "  ⚠️ 無法從 codex --version 解析版本：$codexVersionOutput"
+        }
+        else {
+            $codexVersion = [version]$versionMatch.Value
+            Write-Host "  ✅ Codex CLI 可用：$codexVersionOutput" -ForegroundColor DarkGreen
+        }
+    }
+}
+
+$codexConfigPath = Join-Path $codexDir "config.toml"
+$defaultProfilePath = Join-Path $codexDir "default.config.toml"
+$advisorProfilePath = Join-Path $codexDir "advisor.config.toml"
+$legacyProfileName = 'deep' + '.config.toml'
+$legacyProfilePath = Join-Path $codexDir $legacyProfileName
+$maxEffortMatches = @()
+if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) {
+    Write-Host "  ✅ Codex 基礎設定檔存在：$codexConfigPath" -ForegroundColor DarkGreen
+}
+else {
+    Write-Warning "  ⚠️ 找不到 Codex 設定檔：$codexConfigPath"
+}
+if (Test-Path -LiteralPath $defaultProfilePath -PathType Leaf) {
+    $maxEffortMatches = @(Select-String -LiteralPath $defaultProfilePath -Pattern '^\s*model_reasoning_effort\s*=\s*["'']max["'']\s*$')
+}
+
+$minimumMaxVersion = [version]'0.147.0'
+if ($maxEffortMatches.Count -eq 0) {
+    Write-Host "  ✅ 未偵測到需要檢查版本相容性的 max effort 設定。" -ForegroundColor DarkGreen
+}
+elseif ($null -eq $codexVersion) {
+    Write-Warning "  ⚠️ 設定檔含 max effort，但目前無法取得 Codex 版本，請參考 README.md §8「疑難排解」。"
+}
+elseif ($codexVersion -lt $minimumMaxVersion) {
+    Write-Warning "  ⚠️ Codex $codexVersion 不支援設定檔中的 max effort。請更新至不低於 $minimumMaxVersion 的版本，並參考 README.md §8「疑難排解」。"
+}
+else {
+    Write-Host "  ✅ Codex $codexVersion 與 max effort 相容。" -ForegroundColor DarkGreen
+}
+
+$missingProfiles = @()
+$profileConflictDetected = $false
+if (-not (Test-Path -LiteralPath $defaultProfilePath -PathType Leaf)) {
+    $missingProfiles += 'default.config.toml'
+}
+if (-not (Test-Path -LiteralPath $advisorProfilePath -PathType Leaf)) {
+    $missingProfiles += 'advisor.config.toml'
+}
+
+if (Test-Path -LiteralPath $legacyProfilePath -PathType Leaf) {
+    if (-not (Test-Path -LiteralPath $advisorProfilePath -PathType Leaf)) {
+        Write-Warning "  ⚠️ 偵測到舊設定檔 $legacyProfileName。請將其重新命名為 advisor.config.toml 後重新執行 Setup。腳本不會自動搬移或刪除檔案。"
+    }
+    else {
+        $profileConflictDetected = $true
+        Write-Warning "  ⚠️ 偵測到 $legacyProfileName 與 advisor.config.toml 同時存在，設定檔發生衝突。請人工處理後再重新執行 Setup。腳本不會自動搬移或刪除檔案。"
+    }
+}
+
+if ($missingProfiles.Count -gt 0) {
+    Write-Warning "  ⚠️ Codex 檔位設定檔缺件：$($missingProfiles -join ', ')。請參考 README.md §3「Codex CLI 前置需求」。"
+}
+elseif (-not $profileConflictDetected) {
+    Write-Host "  ✅ Codex 預設檔位與 advisor.config.toml 均存在。" -ForegroundColor DarkGreen
+}
