@@ -2,6 +2,7 @@
 name: fact-check-note
 description: 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes.
 audience: human
+dispatch: dispatchable
 policy.allow_implicit_invocation: true
 ---
 
@@ -58,18 +59,26 @@ policy.allow_implicit_invocation: true
 
 ## 輸出位置與 Rotation
 
-校閱完成後，將 human-facing 報告寫入 `<work-root>/.local/ai-sessions/report/fact-check-report.md`。
+校閱完成前，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告寫入。
+
+校閱完成後，將 human-facing 報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
 
 ### 寫入前 Rotation（避免覆蓋歷史）
 
-寫入新報告前，若 `fact-check-report.md` 已存在：
+寫入新報告前，若同線的 `fact-check-report.md` 已存在：
 
 1. 讀取舊檔的 `校閱時間` 欄位（格式 `YYYY-MM-DD HH:mm`）。
-2. 將舊檔 rename 為 `fact-check-report-<YYYYMMDD-HHmm>.md`（去除分隔符號）。
+2. 將舊檔 rename 為 `fact-check-report-<YYYYMMDD-HHmm>.md`（去除分隔符號），保留在同一個 `report/<lineSlug>/` 目錄。
 3. 若舊檔缺少有效時間欄位，改以舊檔的最後修改時間（mtime）作為命名依據。
-4. Rotation 完成後，再寫入新報告至 `report/fact-check-report.md`。
+4. Rotation 完成後，再寫入新報告至 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
 
-此 rotation 由校閱端負責，`apply-fact-check` 永遠只讀固定名稱的 `fact-check-report.md`。
+此 rotation 由校閱端負責，rotation 範圍限於同一條線。`apply-fact-check` 永遠只讀同線固定名稱的 `fact-check-report.md`。
+
+## 跨端交接契約
+
+- `fact-check-note` 是交接鏈的 Codex 查證段。Claude 端單一入口在 G1 取得使用者確認後，依派遣契約自動派遣 Codex 執行本 Skill。
+- 校閱完成後，上游只將報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。此固定檔是 `apply-fact-check` 的唯一輸入；下游讀取失敗時停止並回報缺件，不建立替代報告。
+- 回收固定報告後，Claude 端進入 `apply-fact-check`，由其 G2、G3、G4 gate 管理後續使用者裁決。上游不改寫目標文件，也不替下游穿越 gate。
 
 ### 報告格式
 
@@ -117,3 +126,11 @@ policy.allow_implicit_invocation: true
 - **誠實標示不確定性**：若無法以官方依據確認，必須降為 `⚠️`，不得包裝為 `❌`。
 - **不補充「最新資訊」**：若原文說法有時效性疑慮，僅標記並提示使用者查閱，不依訓練資料自行補充最新資訊。
 - **完成後不主動套用修改**：此 skill 職責止於產出報告。後續是否進入改檔流程由使用者決定並另行呼叫 `apply-fact-check`。
+
+## 派遣發動
+
+`fact-check-note` 屬於可派遣段。主 Agent 判定需要 Codex 端查證時，先載入 `codex-dispatch` skill，再建立派遣單並將本文件指定為執行 skill。
+
+派遣單第 6 欄固定寫「唯讀，不得寫入目標文件」。指令契約使用 `--sandbox read-only`，需要官方網路查證時將 `--search` 放在 `exec` 前方。查證結果寫入派遣單第 7 欄指定的報告落點，原始文件維持不變。
+
+派遣回收時依派遣單第 5 欄逐條執行判定方式，再依 `codex-dispatch` 的「收下」、「退回」或「升級」三態處理。回報只提供事實層、官方來源與待使用者裁決的條目，不直接改寫目標文件。

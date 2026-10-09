@@ -2,6 +2,7 @@
 name: glossary
 description: '維護專案專屬業務術語表，處理使用者用詞衝突、程式碼語意矛盾與即時寫入。Use when 專案已宣告詞彙表，且當前對話或程式碼使用了表中既有術語但語意與定義不符時。'
 audience: human
+dispatch: claude-side
 policy.allow_implicit_invocation: true
 ---
 

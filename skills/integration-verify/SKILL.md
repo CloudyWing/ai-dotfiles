@@ -225,7 +225,7 @@ policy.allow_implicit_invocation: true
 
 - 與本次修改直接相關：修正後重跑驗證。
 - 與本次修改無關：列為既有問題或外部阻塞，不擴大修改範圍。
-- 根因不明且需要系統化診斷：停止驗證，改走 Debug 流程。
+- 根因不明且需要系統化診斷：停止驗證，改走 Maintainer 流程。
 
 修正前必須先講出明確假設：「問題在 X，因為 Y，所以改 Z」。講不出假設、只是換個地方碰運氣時，立刻停止並回報，不消耗修正次數硬試。
 
@@ -276,7 +276,9 @@ policy.allow_implicit_invocation: true
 
 驗證**全部通過且無未解項目**時，只在對話回報，不寫檔。
 
-彙整後仍有下列任一類內容時，將其寫入 `<work-root>/.local/ai-sessions/report/verify-unresolved.md`，供後續或跨 Session 接手：
+寫入或刪除固定報告前，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告的寫入或刪除操作，不得改用預設值。
+
+彙整後仍有下列任一類內容時，將其寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/verify-unresolved.md`，供後續或跨 Session 接手：
 
 - 未解問題（已嘗試修正但未解決，或超出修正迴圈上限）。
 - 阻塞條件（缺少測試帳號、服務、資料等）。

@@ -2,6 +2,7 @@
 name: architecture-improvement
 description: '以 Git hotspot 縮小分析範圍，使用 deletion test 篩選改善候選並產出架構改善報告。'
 audience: human
+dispatch: split
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---
@@ -47,8 +48,9 @@ git rev-parse HEAD
 1. 掃描 Git hotspot 與候選程式碼。
 2. 對每個候選執行 deletion test，保留檢查證據。
 3. 先產出候選清單、影響範圍、風險與建議順序。
-4. 將報告寫入 `<work-root>/.local/ai-sessions/report/architecture-review.md`。
-5. 等使用者選定候選與改動範圍後，才進入設計或實作階段。
+4. 先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止報告寫入。
+5. 將報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/architecture-review.md`。
+6. 等使用者選定候選與改動範圍後，才進入設計或實作階段。
 
 報告至少包含以下標題：
 
@@ -64,7 +66,12 @@ git rev-parse HEAD
 
 ## 邊界
 
-- 本 Skill 不取代 `Cleanup`。`Cleanup` 處理語法現代化、死程式碼與既有規範清理。
+- 本 Skill 不取代 `Refactorer`。`Refactorer` 處理語法現代化、死程式碼與既有規範清理。
 - 本 Skill 不直接決定模組拆分、公開 API 變更或資料流改造。
 - 未取得使用者選定範圍前，不修改程式碼與專案設定。
 - 不使用外部網頁產生報告，候選依據限定為目標 repository 的 Git、程式碼與測試。
+
+## 派遣分界
+
+- 可派遣段：Git hotspot 掃描與 deletion test 篩選，產出候選清單與證據。
+- Claude 端段：改善候選的取捨與是否進入設計或實作的決定。

@@ -2,6 +2,7 @@
 name: merge-data
 description: 多份資料檔整合流程。當需要將兩份以上的資料檔（如 JSON、CSV）合併、補齊闕漏欄位或去重成單一檔案時使用。以 dry-run、筆數核對與抽樣比對降低整合錯誤。
 audience: human
+dispatch: dispatchable
 policy.allow_implicit_invocation: true
 ---
 

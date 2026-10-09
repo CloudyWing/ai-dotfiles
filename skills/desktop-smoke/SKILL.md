@@ -3,6 +3,7 @@ name: desktop-smoke
 description: Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。
 audience: agent
 policy.allow_implicit_invocation: true
+dispatch: split
 ---
 
 # Desktop Smoke Verification
@@ -59,6 +60,19 @@ AI 看不到桌面視窗，實際能做到的程度取決於環境提供的工�
 
 提高自動化程度的方向：桌面程式的邏輯與 UI 分離得越好（WPF 採 MVVM、商業邏輯抽離 code-behind），可被單元測試與層級 A / B 涵蓋的比例越高。若要長期提升，可評估在專案導入 FlaUI（.NET 原生、較輕量）或 WinAppDriver + Appium。
 
+## 派遣分界
+
+工作拆成 Codex 端的建置與取證，以及 Claude 端的判定。
+
+| 工作 | 執行端 | 依據 |
+| --- | --- | --- |
+| 建置、以背景方式啟動 GUI 程式、擷取桌面截圖、讀取視窗位置與可見狀態、執行層級 B 的既有 UI 測試 | Codex 派遣（預設檔位、write 模式） | Windows sandbox 實測可用：WPF 建置、Start-Process 啟動、System.Drawing 截圖、user32 GetWindowRect／IsWindowVisible |
+| 判定截圖與視窗狀態是否符合預期、產出手動檢查清單、決定是否進入修正迴圈 | Claude 端 | 需要讀圖比對與需求脈絡 |
+| 需要系統管理員權限的命令（例如 `powercfg /requests`） | 使用者在已提升權限的主控台執行 | 派遣不得提權，Codex 端執行時受阻 |
+| 螢幕錄影、滑鼠與鍵盤輸入注入 | 未驗證，派遣前先做單項探針 | 尚無實測紀錄 |
+
+派遣單第 5 欄依賴桌面能力的條件以 `[需要:desktop]` 標註。取證程序須宣告 DPI-aware，或在報告記錄顯示器縮放比；DPI-unaware 的 PowerShell 程序取得的截圖與視窗座標會依縮放比虛擬化，像素取樣座標必須換算。
+
 ## 共用規範
 
 **以 `integration-verify` 為單一來源的共用規範**（行為基準、結果驗證原則、主動詢問規範、步驟二判定執行環境、步驟六寫入回查 gate、資料異動安全規範、修正迴圈）：由 `integration-verify` 路由進入時已套用；獨立執行本 skill 時，先讀取上述各節並套用。
@@ -97,8 +111,10 @@ AI 看不到桌面視窗，實際能做到的程度取決於環境提供的工�
 
 若沒有問題，`未解決項目` 可省略。採用層級 C 時，必須附上手動檢查清單。若未能執行驗證，必須說明缺少的工具、服務或資料條件。
 
+獨立執行且需要寫入或刪除固定報告時，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告的寫入或刪除操作，不得改用預設值。
+
 有未解項目或阻塞條件時的檔案輸出：
 
 - 本流程由 `integration-verify` 呼叫時，未解項目交回由其統一輸出，不自行寫檔。
-- 本流程為獨立執行時，將未解項目、阻塞條件與手動檢查清單寫入 `<work-root>/.local/ai-sessions/report/verify-unresolved.md`（覆寫模式）。
+- 本流程為獨立執行時，將未解項目、阻塞條件與手動檢查清單寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/verify-unresolved.md`（覆寫模式）。
 - 全部通過時不寫檔；若該檔先前已存在，刪除它。

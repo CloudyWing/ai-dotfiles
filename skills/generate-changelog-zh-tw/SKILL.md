@@ -2,6 +2,7 @@
 name: generate-changelog-zh-tw
 description: 依據 Git 提交紀錄自動產生 CHANGELOG 區段（繁體中文），並支援 MinVer 版本號推進規格。
 audience: human
+dispatch: split
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---
@@ -125,3 +126,8 @@ git log --pretty=format:"%H %s" --no-merges
 ### 6. 完成確認
 
 輸出產生的版本號與條目數量摘要，告知使用者寫入位置。
+
+## 派遣分界
+
+- 可派遣段：彙整 Git log、過濾 Commit 與依 MinVer 規則推進版本號。
+- Claude 端段：以繁體中文撰寫 CHANGELOG 條目與分類措辭。

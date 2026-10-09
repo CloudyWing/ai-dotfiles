@@ -2,6 +2,7 @@
 name: generate-gitignore-by-techstack
 description: 從 github/gitignore 下載對應技術棧的 .gitignore 範本，合併並針對當前專案調整。
 audience: human
+dispatch: dispatchable
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---

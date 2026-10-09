@@ -2,6 +2,7 @@
 name: apply-fact-check
 description: 依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md.
 audience: human
+dispatch: claude-side
 policy.allow_implicit_invocation: true
 ---
 
@@ -11,12 +12,33 @@ policy.allow_implicit_invocation: true
 
 ## 啟動前置條件
 
-啟動前必須確認以下檔案存在：
+啟動前先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時，停止固定報告讀取與寫入。
 
-1. **校閱報告**：`<work-root>/.local/ai-sessions/report/fact-check-report.md`。若不存在，停止並請使用者先執行 `fact-check-note`。
+以下檔案檢查的時點是「進入本 Skill 時」。使用者觸發單一入口時，入口層先完成上游報告產出與回收，再進入本 Skill。
+
+### 直接觸發本 Skill
+
+使用者單獨要求套用既有校閱結果時，視為直接觸發本 Skill。此路徑進入本 Skill 前必須確認以下檔案存在：
+
+1. **校閱報告**：`<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。若不存在，停止於本 Skill 入口並回報缺件，提示可改用「跨端交接入口」。
 2. **目標文件**：報告中 `目標文件` 欄位指向的路徑。若不存在或無法存取，停止並回報。
 
 不得在缺少校閱報告的情況下，憑空對文件做「事實修正」。
+
+### 經單一入口進入本 Skill
+
+使用者經 Claude 端單一入口進入時，入口層先執行 G1，取得確認後自動派遣 Codex 執行 `fact-check-note`，再回收同線固定報告。只有在固定報告已成功回收且可讀取時，才進入本 Skill 並執行上述前置條件檢查。入口層回收不到報告時，於入口層停止並回報缺件，不進入本 Skill。
+
+## 跨端交接入口
+
+本鏈由 Claude 端單一入口管理，固定交接流程如下：
+
+1. 使用者在 Claude 端觸發後，流程於 G1 停止並回報校閱目標與範圍，等待使用者確認。
+2. G1 取得確認後，流程自動派遣 Codex 執行 `fact-check-note`，回收 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
+3. 回收時若無法讀取同線固定報告，流程在入口層停止並回報缺件，不進入本 Skill，也不使用替代輸入。
+4. 進入本 Skill 後，流程於 G2 停止並回報待裁決條目；G3 與 G4 依下表在後續改檔階段逐一執行。
+
+原有 G1 至 G4 是完整的使用者裁決點。串接只負責平台切換與固定檔交接，不省略或自動通過任何 gate。
 
 ## 分層處理原則 (Crucial)
 
@@ -72,4 +94,19 @@ policy.allow_implicit_invocation: true
 - **不重新校閱**：本 skill 不對「校閱結論本身」做事實再判斷。若懷疑校閱有誤，必須以技術理由提出，由使用者裁決，不得自行降級或忽略。
 - **不擴大修改範圍**：僅修改報告中明確列出的條目所在位置。發現報告外的疑似錯誤，須另行回報，不得順手修改。
 - **保留文件編碼與格式**：依全域 Encoding Strategy 維持目標文件原編碼。
-- **校閱報告為審計紀錄**：完成改檔後不刪除 `report/fact-check-report.md`，保留在 `report/`，不納入結案自動清理。
+- **校閱報告為審計紀錄**：完成改檔後不刪除 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`，保留在同線 report 目錄，不納入結案自動清理。
+
+## Claude 端四個 gate
+
+`apply-fact-check` 在 Claude 端保管討論脈絡與表達層責任。使用者介入位置固定為下列四個 gate，任一 gate 未取得使用者回應時停止後續流程。
+
+| Gate | 位置 | 使用者決定的事項 |
+| --- | --- | --- |
+| G1 | 派遣前 | 確認校閱目標文件與範圍 |
+| G2 | 回收後、改檔前 | 逐條裁決 `❌` 與 `⚠️` 條目，選擇套用、保留或跳過 |
+| G3 | `apply-fact-check` 執行中 | 裁決 `⚠️` 條目，以及改檔方提出技術反駁時的處置 |
+| G4 | 改檔後 | 複核對照清單，確認措辭與文件語氣一致 |
+
+## 不派遣
+
+`apply-fact-check` 負責改檔的表達層，依賴 Claude 端保管的討論脈絡與使用者裁決，因此不派遣改檔工作。`fact-check-note` 只產出唯讀校閱報告，事實查證與文件改寫保持責任分界。

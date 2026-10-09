@@ -2,6 +2,7 @@
 name: generate-api-doc
 description: 為 ASP.NET Core Controller 或 Minimal API 自動補齊 XML 文件與 Swagger Attributes，讓 OpenAPI 文件完整呈現。
 audience: human
+dispatch: dispatchable
 disable-model-invocation: true
 policy.allow_implicit_invocation: false
 ---

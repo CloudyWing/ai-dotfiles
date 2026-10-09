@@ -2,6 +2,7 @@
 name: export-excel
 description: '匯出 Excel 試算表的技能，主要支援 Grid 與 RecordSet 兩種模板，可自訂樣式、命名樣式、資料驗證與工作表保護。當要求匯出或產生 Excel 檔案時使用。'
 audience: human
+dispatch: dispatchable
 policy.allow_implicit_invocation: true
 ---
 
