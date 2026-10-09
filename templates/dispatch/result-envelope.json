@@ -1,0 +1,104 @@
+{
+  "schema": "ai-sessions.dispatch-result.v1",
+  "operation": "Dispatch",
+  "status": "completed",
+  "line_slug": "<line-slug>",
+  "dispatch_slug": "<dispatch-slug>",
+  "completed_stages": [
+    "preflight",
+    "before-snapshot",
+    "prepare",
+    "start",
+    "inspect"
+  ],
+  "failed_stage": null,
+  "error_code": null,
+  "error": null,
+  "process_started": true,
+  "preflight_result_path": "<Preflight 結果絕對路徑或 null>",
+  "preflight_result_sha256": "<SHA-256 或 null>",
+  "prepare_result_path": "<Prepare 結果絕對路徑或 null>",
+  "prepare_result_sha256": "<SHA-256 或 null>",
+  "quota_before_path": "<額度快照絕對路徑或 null>",
+  "quota_before_sha256": "<SHA-256 或 null>",
+  "start_result_path": "<Start 結果絕對路徑或 null>",
+  "prompt_path": "<prompt 絕對路徑或 null>",
+  "promptPath": "<同 prompt_path>",
+  "prompt_source_path": "<prompt 來源絕對路徑或 null>",
+  "promptSourcePath": "<同 prompt_source_path>",
+  "prompt_transfer_path": "<prompt 傳遞檔絕對路徑或 null>",
+  "promptTransferPath": "<同 prompt_transfer_path>",
+  "inspect_result_path": "<Inspect 結果絕對路徑或 null>",
+  "inspectResultPath": "<同 inspect_result_path>",
+  "stage_binding": {
+    "schema": "ai-sessions.dispatch-stage-binding.v1",
+    "source_root": "<sourceRoot 絕對路徑>",
+    "execution_root": "<executionRoot 絕對路徑>",
+    "dispatch_root": "<dispatchRoot 絕對路徑>",
+    "line_slug": "<line-slug>",
+    "dispatch_slug": "<dispatch-slug>",
+    "target_path": [
+      "<目標絕對路徑>"
+    ],
+    "result_path": "<Dispatch 結果絕對路徑>",
+    "preflight_result_path": "<Preflight 結果絕對路徑>",
+    "prepare_result_path": "<Prepare 結果絕對路徑>",
+    "quota_before_path": null,
+    "quota_after_path": null,
+    "fingerprint": "<由上列欄位計算的 fingerprint>"
+  },
+  "inspect_binding": {
+    "run_record_path": "<RunRecord 絕對路徑或 null>",
+    "event_stream_path": "<事件流絕對路徑或 null>",
+    "scope_plan_path": "<ScopePlan 絕對路徑或 null>",
+    "quota_before_path": null,
+    "quota_before_sha256": null,
+    "process_exit_code_sidecar_path": "<exit sidecar 絕對路徑或 null>",
+    "process_exit_code": null,
+    "process_exit_code_source": "sidecar-pending",
+    "sidecar_sha256": null
+  },
+  "stage_results": {
+    "preflight": {
+      "path": "<路徑>",
+      "sha256": "<SHA-256>",
+      "status": "<狀態>"
+    },
+    "prepare": null,
+    "start": null
+  },
+  "result_path": "<Dispatch 結果絕對路徑>",
+  "execution_root": "<executionRoot 絕對路徑或 null>",
+  "head": "<Git HEAD 或 null>",
+  "uncommitted_content_fingerprint": "<fingerprint 或 null>",
+  "evidence_kind": "<evidence_kind 或 null>",
+  "evidence_position": null,
+  "evidence_binding": {
+    "schema": "ai-sessions.dispatch-evidence-binding.v1",
+    "evidence_kind": "fixture",
+    "execution_root": "<executionRoot 絕對路徑>",
+    "head": "<Git HEAD 或 null>",
+    "tracked_diff_sha256": "<SHA-256 或 null>",
+    "uncommitted_content_fingerprint": "<fingerprint 或 null>",
+    "untracked_files": [],
+    "serialization_version": "dispatch-content-fingerprint-v1",
+    "commands": {
+      "head": "<實際命令或 null>",
+      "tracked_diff": "<實際命令或 null>",
+      "untracked": "<實際命令或 null>"
+    },
+    "evidence_position": null,
+    "captured_at_utc": "<UTC 時間>",
+    "capture_status": "<擷取狀態>",
+    "capture_error": null
+  },
+  "background": false,
+  "requested_units": [
+    "<要求單位>"
+  ],
+  "result_sha256": "<結果寫入後的 SHA-256>",
+  "process_exit_code": 0,
+  "termination_reason": "<Inspect 判定的結束原因>",
+  "inspect_status": "<Inspect 狀態>",
+  "inspect_success": true
+}

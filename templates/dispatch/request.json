@@ -1,0 +1,27 @@
+{
+  "schema": "ai-sessions.dispatch-request.v1",
+  "operation": "Dispatch",
+  "line_slug": "<line-slug>",
+  "dispatch_slug": "<dispatch-slug>",
+  "source_root": "<sourceRoot 絕對路徑>",
+  "dispatch_root": "<sourceRoot>\\.local\\ai-sessions\\worktrees\\<dispatch-slug>",
+  "target_path": [
+    "<目標絕對路徑；目錄以結尾反斜線標示>"
+  ],
+  "write_mode": "write",
+  "dispatch_kind": "workflow",
+  "prompt_path": "<prompt 檔絕對路徑>",
+  "task_type": "script-change",
+  "session_mode": "cold-start",
+  "unit_kind": "workflow-phase",
+  "requested_unit": [
+    "Phase 2"
+  ],
+  "required_identifier": "design.md",
+  "failure_receipt_path": "<sourceRoot>\\.local\\ai-sessions\\history\\<line-slug>\\failure-receipt-<dispatch-slug>.json",
+  "result_path": "<sourceRoot>\\.local\\ai-sessions\\history\\<line-slug>\\dispatch-result-<dispatch-slug>.json",
+  "selected_requirement": [
+    "#22"
+  ],
+  "background": false
+}

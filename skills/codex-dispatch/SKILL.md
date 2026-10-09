@@ -22,6 +22,8 @@ policy.allow_implicit_invocation: true
 | 回收完成且不再續行 | `Cleanup` | 保存清單、RunRecord、報告與 evidence 路徑 | 命令列參數或 request 檔 |
 | 查詢派遣進度（唯讀） | `scripts\Get-DispatchProgress.ps1` | `WorkRoot`、`LineSlug`、`DispatchSlug` 選填；`-All` 顯示全部紀錄 | 直接執行，預設顯示未結束與最近 24 小時內結束的項目 |
 
+`~/.ai-agents/templates/dispatch/` 提供派遣單、Request、failure receipt、result envelope、Developer 結案報告、`exceptions.md` 與 Reviewer 報告的範本。派遣單以 `New-DispatchOrder.ps1` 產生為正常路徑，範本供手動核對結構；報告範本的必要區段以 Collect 與 Cleanup 的驗證為準。
+
 正常路徑使用的正式 operation 為 `Dispatch`、`Inspect`、`Collect` 與 `Cleanup`；`DiagnoseModelEnvironment` 只供使用者或維運者診斷。`Preflight`、`Prepare` 與 `Start` 是 `Dispatch` 內部的階段轉移，命令列保留這三個 operation 供續行、恢復與測試使用，新的一筆派遣一律從 `Dispatch` 進入。
 
 request 欄位先依 parser 白名單驗證，再依 operation 套用欄位作用域。識別欄位為 `schema`、`operation`、`line_slug`、`dispatch_slug`。其他一般白名單欄位為 `profile`、`advisor_request_source`、`target_path`、`add_directory`、`search`、`codex_parent_option`、`literal_values`、`prepare_artifacts`、`result_path`、`preflight_result_path`。共用根目錄欄位（`commonRootFields`）為 `source_root`、`dispatch_root`、`caller_session_id`。

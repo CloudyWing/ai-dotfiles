@@ -208,7 +208,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 │   ├── claude/                         # Claude 端 Persona 與 sub-agent（.md 格式）
 │   └── codex/                          # Codex 端 Persona 與 sub-agent（.toml 格式）
 ├── skills/                             # 技能模組（Skill）
-├── templates/                          # 新專案初始化範本與 Demo 外框範本
+├── templates/                          # 新專案初始化範本、Demo 外框範本與派工範本
 └── scripts/                            # 安裝、檢查與 hooks 腳本
 ```
 

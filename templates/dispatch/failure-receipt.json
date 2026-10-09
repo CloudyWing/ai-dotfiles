@@ -1,0 +1,64 @@
+{
+  "schema": "ai-sessions.dispatch-failure-receipt.v1",
+  "status": "failed",
+  "failed_stage": "start",
+  "error_code": "<Dispatch 失敗錯誤碼，例如 DispatchStartFailed>",
+  "error": "<失敗訊息>",
+  "process_started": false,
+  "line_slug": "<line-slug>",
+  "dispatch_slug": "<dispatch-slug>",
+  "dispatch_execution_id": "<Dispatch 執行識別碼>",
+  "source_root": "<sourceRoot 絕對路徑或 null>",
+  "execution_root": "<executionRoot 絕對路徑或 null>",
+  "dispatch_root": "<dispatchRoot 絕對路徑或 null>",
+  "failure_receipt_path": "<本收據的絕對路徑>",
+  "failure_receipt_saved": true,
+  "continuation_handoff": {
+    "confirmed_results": [],
+    "confirmed_results_source": {
+      "status": "insufficient",
+      "path": null,
+      "reason": "<未取得已確認結論時的原因；有結果時為 null>"
+    },
+    "incomplete_units": [
+      "<未完成單位>"
+    ],
+    "discarded_incomplete_units": [],
+    "scope_plan_source": {
+      "status": "available",
+      "path": "<ScopePlan 絕對路徑>",
+      "selection_source": "scope_plan",
+      "selected_units": [
+        "<選定單位>"
+      ],
+      "deferred_units": []
+    },
+    "source_locations": [],
+    "cold_start_entry": {
+      "operation": "Dispatch",
+      "request_reference": "<原 Request 絕對路徑>",
+      "line_slug": "<line-slug>",
+      "dispatch_slug": "<dispatch-slug>-cold-<執行識別碼前 8 碼>",
+      "source_root": "<sourceRoot 絕對路徑或 null>",
+      "execution_root": "<executionRoot 絕對路徑或 null>",
+      "dispatch_root": "<dispatchRoot 絕對路徑或 null>",
+      "session_mode": "cold-start",
+      "resume_thread_id": null,
+      "requested_unit": [
+        "<未完成單位>"
+      ],
+      "unit_kind": "<原 Request 的 unit_kind>",
+      "dispatch_kind": "<原 Request 的 dispatch_kind>",
+      "write_mode": "<原 Request 的 write_mode>",
+      "task_type": "<原 Request 的 task_type>",
+      "prompt_path": "<原 Request 的 prompt_path>",
+      "target_path": [
+        "<原 Request 的 target_path>"
+      ],
+      "required_identifier": "<原 Request 的 required_identifier>",
+      "new_request_required": true,
+      "automatic_retry": false
+    },
+    "automatic_retry": false
+  }
+}
