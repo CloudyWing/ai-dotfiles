@@ -28,7 +28,44 @@
   };
 
   function currentScreen() {
-    return data.screens[currentScreenIndex] || null;
+    var screen = data.screens[currentScreenIndex];
+    return isSelectableScreen(screen) ? screen : null;
+  }
+
+  function hasText(value) {
+    return typeof value === 'string' && value.trim().length > 0;
+  }
+
+  function isSelectableScreen(screen) {
+    return !!screen && typeof screen === 'object' && hasText(screen.name) && hasText(screen.file);
+  }
+
+  function screenLabel(screen, index) {
+    var label = '第 ' + (index + 1) + ' 筆畫面';
+
+    if (screen && hasText(screen.name)) {
+      return label + '「' + screen.name + '」';
+    }
+
+    if (screen && screen.id !== undefined && screen.id !== null && String(screen.id).length > 0) {
+      return label + '（ID：' + String(screen.id) + '）';
+    }
+
+    return label;
+  }
+
+  function missingScreenFields(screen) {
+    var missing = [];
+
+    if (!screen || !hasText(screen.name)) {
+      missing.push('名稱（screen.name）');
+    }
+
+    if (!screen || !hasText(screen.file)) {
+      missing.push('檔案（screen.file）');
+    }
+
+    return missing;
   }
 
   function clear(node) {
@@ -41,30 +78,58 @@
   function buildScreenList() {
     clear(el.screenList);
 
-    data.screens.forEach(function (screen, index) {
+    for (var index = 0; index < data.screens.length; index++) {
+      var screen = data.screens[index];
       var item = document.createElement('li');
       item.className = 'shell-nav-item';
-      item.textContent = screen.name || screen.id;
-      item.addEventListener('click', function () {
-        selectScreen(index);
-      });
+
+      if (!isSelectableScreen(screen)) {
+        item.classList.add('shell-nav-item-invalid');
+        item.textContent = screenLabel(screen, index) + '：資料缺漏：' + missingScreenFields(screen).join('、') + '。';
+        el.screenList.appendChild(item);
+        continue;
+      }
+
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'shell-nav-button';
+      button.textContent = screen.name;
+      (function (screenIndex) {
+        button.addEventListener('click', function () {
+          selectScreen(screenIndex);
+        });
+      }(index));
+      item.appendChild(button);
       el.screenList.appendChild(item);
-    });
+    }
   }
 
   function markActiveNavItem() {
     var items = el.screenList.children;
 
     for (var i = 0; i < items.length; i++) {
+      var button = items[i].querySelector('button');
+
+      if (!button) {
+        items[i].classList.remove('shell-nav-item-active');
+        continue;
+      }
+
       if (i === currentScreenIndex) {
         items[i].classList.add('shell-nav-item-active');
+        button.setAttribute('aria-current', 'page');
       } else {
         items[i].classList.remove('shell-nav-item-active');
+        button.removeAttribute('aria-current');
       }
     }
   }
 
   function selectScreen(index) {
+    if (!isSelectableScreen(data.screens[index])) {
+      return;
+    }
+
     currentScreenIndex = index;
 
     var screen = currentScreen();
@@ -167,9 +232,17 @@
     el.annotationToggle.addEventListener('click', toggleAnnotation);
     el.panelToggle.addEventListener('click', togglePanel);
 
-    if (data.screens.length > 0) {
-      selectScreen(0);
-    } else {
+    var initialScreenIndex = -1;
+    for (var i = 0; i < data.screens.length; i++) {
+      if (isSelectableScreen(data.screens[i])) {
+        initialScreenIndex = i;
+        break;
+      }
+    }
+
+    if (initialScreenIndex >= 0) {
+      selectScreen(initialScreenIndex);
+    } else if (data.screens.length === 0) {
       var empty = document.createElement('p');
       empty.className = 'shell-empty';
       empty.textContent = '尚未於 demo-data.js 登記任何畫面。';
