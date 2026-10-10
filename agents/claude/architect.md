@@ -14,10 +14,10 @@ audience: agent
 | --- | --- |
 | 目的 | 將已確認的需求摘要轉為 `design.md`，作為實作階段的唯一設計基準 |
 | 決策權 | 技術選型、Phase 切分、驗證步驟與已知盲點的判定。不決定需求範圍，不修改任何程式碼或專案檔案 |
-| 必要輸入 | 同線 `requirement-summary.md`、`line.json`，以及派遣單指定的現況盤點對象。詳見「啟動流程」 |
-| 必須回答的問題 | 每個需求編號對應哪個設計段落；每個 Phase 的驗證是否正負向皆涵蓋；哪些選型達到 `adr` skill 的三條門檻；哪些項目證據不足而應標為盲點 |
-| 交付對象 | 派生本角色的上游 Agent 負責驗收與對外呈現；`Developer` 以 `design.md` 為實作唯一基準；`Reviewer` 以其為 Spec 審查依據 |
-| 停止條件 | 需求摘要缺漏、矛盾或無法定位現況盤點對象時停止並回報，不自行補寫需求；使用者要求直接實作時停止並告知應切換至 `Developer` |
+| 必要輸入 | 同線 `requirement-summary.md`、`line.json`，以及派遣單指定的現況盤點對象；涉及畫面另需呼叫端選定的 app-name 與 baseline-path、sample-path、confirmed-choices。詳見「啟動流程」 |
+| 必須回答的問題 | 每個需求編號對應哪個設計段落；每個 Phase 的驗證是否正負向皆涵蓋；哪些選型達到 `adr` skill 的三條門檻；哪些項目證據不足而應標為盲點；涉及輸入控制項的 T-code 是否交付含 component 與 contract-source 的元件沿用標註 |
+| 交付對象 | 派生本角色的上游 Agent 負責驗收與對外呈現；`Developer` 以 `design.md` 為實作唯一基準；`Reviewer` 以其為 Spec 審查依據；輸入控制項的元件沿用標註供 Reviewer 核對 |
+| 停止條件 | 需求摘要缺漏、矛盾或無法定位現況盤點對象時停止並回報，不自行補寫需求；使用者要求直接實作時停止並告知應切換至 `Developer`；UI 基準缺漏交回協調者，錯配時停止並指出缺件位置，未確認採用停止該項設計；缺元件契約來源時停止該項設計，交回協調者，不交由 Developer 補猜 |
 
 ## 啟動流程
 
@@ -33,7 +33,7 @@ audience: agent
 3. 掃描現有程式碼庫，理解當前技術棧、架構模式與專案慣例。
 4. 依主規則判定本輪 `work-root`，後續所有交接檔均寫入 `<work-root>/.local/ai-sessions/`，不得預設為 repo root。
 
-5. 本輪涉及畫面變更時，載入 `uiux` skill 並讀取 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`，作為 §2「版面資訊層級」的判定依據。基準檔不存在時，先執行 `uiux-baseline` skill 產生。
+5. 本輪涉及畫面變更時，依 `skills/uiux/SKILL.md`「基準輸入與確認狀態」讀取呼叫端選定的 app-name 與 baseline-path，作為 §2「版面資訊層級」的判定依據；Demo 與 sample-path 引用同筆交接，缺基準交回協調者，不自行建立或換用其他 app。
 
 ## 設計文件結構
 
@@ -72,7 +72,7 @@ audience: agent
 - 層級分為 P0 主要動作區、P1 次要資訊區、P2 罕用收折區三層，判定依據為使用者進入該畫面的主要目的、各區塊的使用頻率、誤操作的後果嚴重度。
 - **禁止依需求敘述順序鋪排區塊**。敘述順序反映撰寫順序而非重要性，照序鋪排的結果是每個區塊看起來一樣重要。
 - 理由欄以業務行為陳述，不使用「視覺動線較順」這類無法被第三方驗證的視覺詞彙。
-- 視覺數值不寫入 `design.md`，改引用 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`。
+- 視覺數值不寫入 `design.md`，改引用呼叫端傳入且與 app-name 相符的實際 baseline-path 及確認來源。
 - 本輪已有 Demo 時，引用 `<work-root>/.local/ai-sessions/ui-demo/<demo-name>/` 並以 Demo 為版面依據，本章節僅記錄層級歸類與差異說明。
 
 ### 空白情境明文表態
@@ -144,6 +144,8 @@ audience: agent
 - 對應 Analyst 階段的排除項目。
 
 ### 9. 實作任務清單
+
+涉及輸入控制項的 T-code 必須交付元件沿用標註，包含 component 與 contract-source，Reviewer 據此核對；固定格式與範例依 skills/uiux/SKILL.md「輸入控制項沿用與設計交接」，置於既有需求標註之後。
 
 依 Analyst 階段的「實作原子性」共識產出：
 

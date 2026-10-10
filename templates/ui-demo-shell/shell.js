@@ -24,7 +24,10 @@
     annotationList: document.getElementById('annotationList'),
     annotationToggle: document.getElementById('annotationToggle'),
     panel: document.getElementById('infoPanel'),
-    panelToggle: document.getElementById('panelToggle')
+    panelToggle: document.getElementById('panelToggle'),
+    resetDemo: document.getElementById('resetDemo'),
+    substituteList: document.getElementById('substituteList'),
+    interactionSummary: document.getElementById('interactionSummary')
   };
 
   function currentScreen() {
@@ -138,14 +141,18 @@
       return;
     }
 
+    annotationOn = false;
+    applyAnnotationInteractionState();
+    el.resetDemo.disabled = false;
     el.frame.setAttribute('src', screen.file);
     markActiveNavItem();
     renderPanel(screen);
-    renderAnnotations();
   }
 
   function renderPanel(screen) {
     el.summary.textContent = screen.summary || '';
+    renderSubstitutes(screen);
+    renderInteractionSummary(screen);
 
     clear(el.layerRows);
 
@@ -160,6 +167,50 @@
 
       el.layerRows.appendChild(row);
     });
+  }
+
+  function renderSubstitutes(screen) {
+    clear(el.substituteList);
+    var substitutes = Array.isArray(screen.substitutes) ? screen.substitutes : [];
+
+    if (substitutes.length === 0) {
+      var empty = document.createElement('li');
+      empty.textContent = '無替身';
+      el.substituteList.appendChild(empty);
+      return;
+    }
+
+    substitutes.forEach(function (substitute) {
+      var item = document.createElement('li');
+      var fields = ['component', 'samplePath', 'contractSource', 'differences'];
+      item.textContent = fields.map(function (field) {
+        var value = substitute && substitute[field];
+        return field + '：' + (hasText(value) ? value : '資料缺漏');
+      }).join('；');
+      el.substituteList.appendChild(item);
+    });
+  }
+
+  function renderInteractionSummary(screen) {
+    clear(el.interactionSummary);
+    var interaction = screen.interaction || {};
+    var operations = Array.isArray(interaction.allowedOperations) ? interaction.allowedOperations : [];
+    var sources = Array.isArray(interaction.patternSources) ? interaction.patternSources : [];
+    var pending = Array.isArray(interaction.pendingItems) ? interaction.pendingItems : [];
+
+    function append(text) {
+      var line = document.createElement('p');
+      line.textContent = text;
+      el.interactionSummary.appendChild(line);
+    }
+
+    append('允許操作：' + (operations.length ? operations.join('、') : '僅供檢視'));
+    append('固定資料：' + JSON.stringify(interaction.fixedData || {}));
+    append('模式來源：' + (sources.length ? sources.map(function (source) {
+      return (source && hasText(source.operation) ? source.operation : '資料缺漏') + '：' +
+        (source && hasText(source.source) ? source.source : '資料缺漏');
+    }).join('；') : '無'));
+    append('待確認項：' + (pending.length ? pending.join('、') : '無'));
   }
 
   // 2. 註解模式：關閉時直接移除疊層 DOM 節點，不使用隱藏樣式
@@ -189,11 +240,32 @@
     });
   }
 
-  function toggleAnnotation() {
-    annotationOn = !annotationOn;
+  function applyAnnotationInteractionState() {
+    el.frame.style.pointerEvents = annotationOn ? 'none' : '';
+    if (annotationOn) {
+      el.frame.setAttribute('tabindex', '-1');
+    } else {
+      el.frame.removeAttribute('tabindex');
+    }
     el.annotationToggle.textContent = '註解模式：' + (annotationOn ? '開' : '關');
     el.annotationToggle.setAttribute('aria-pressed', String(annotationOn));
     renderAnnotations();
+  }
+
+  function toggleAnnotation() {
+    annotationOn = !annotationOn;
+    applyAnnotationInteractionState();
+  }
+
+  function resetCurrentScreen() {
+    annotationOn = false;
+    applyAnnotationInteractionState();
+    var screen = currentScreen();
+    el.resetDemo.disabled = !screen;
+    if (!screen) {
+      return;
+    }
+    el.frame.setAttribute('src', screen.file);
   }
 
   // 3. viewport 切換：改變 iframe 容器寬度
@@ -231,6 +303,9 @@
 
     el.annotationToggle.addEventListener('click', toggleAnnotation);
     el.panelToggle.addEventListener('click', togglePanel);
+    el.resetDemo.addEventListener('click', resetCurrentScreen);
+    el.resetDemo.disabled = !currentScreen();
+    applyAnnotationInteractionState();
 
     var initialScreenIndex = -1;
     for (var i = 0; i < data.screens.length; i++) {

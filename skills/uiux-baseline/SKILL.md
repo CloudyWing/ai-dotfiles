@@ -20,7 +20,16 @@ policy.allow_implicit_invocation: true
 
 - 使用者要求建立或更新專案的樣式基準。
 - 使用者要求盤點專案既有的視覺慣例。
-- `uiux` skill 或 `Prototyper` sub-agent 需要引用基準檔，而目標路徑尚無檔案。
+- 協調者為涉及畫面的工作準備基準，而目標 app 的指定路徑尚無檔案。
+
+## 協調者基準準備
+
+Analyst 在 B／C 線進入設計前、Maintainer 在產出 fix-plan 或改動計畫前準備基準；C 線先準備再交 Prototyper。
+
+1. 先選定目標 `app-name` 與 app 來源根，解析同一 `work-root` 的指定 `baseline-path`。檔案存在時實讀「掃描範圍」及「引用方式」，核對 app 身分與實際 `sample-path`。
+2. 缺少基準時依 `codex-dispatch` 的資源派遣契約交由 Codex 掃描，不需使用者手動觸發。派遣輸入包含選定 app 來源根、基準與樣本輸出位置、同線已驗證的 LineContext、下方既有抽取流程及排除範圍；只產出指定 app 的基準與樣本。
+3. 成功後實讀回報檔及產物，核對 app-name、基準掃描範圍、實際 baseline-path 與 sample-path。將同一筆路徑及待決策清單交付下游，確認狀態以 in-context 的 `confirmed-choices` 傳遞；消費與確認方式依 `uiux`「基準輸入與確認狀態」。
+4. 派工失敗、缺欄、app 錯配或檔案不可讀時，保留原始錯誤、已查範圍與絕對缺件位置，停止下游。缺代表來源時明列未偵測到，需用該項的正式 Demo、設計或計畫保持阻擋，不以其他 app 或通用值補足。
 
 ## 執行流程
 
@@ -110,6 +119,8 @@ policy.allow_implicit_invocation: true
 5. `## 未偵測到的面向`
 6. `## 引用方式`
 
+在 ## 掃描範圍記錄 app-name 與 app 來源根。
+
 「掃描範圍」需記錄產生時間、掃描的目錄與檔案數、排除的目錄，以及 Phase 2 判定出的三層來源各自涵蓋哪些檔案，供後續判斷基準是否已過期。
 
 「已統一慣例」下的二級章節依序為「色彩」「間距與尺寸」「字級與字重」「圓角與陰影」「元件契約」。前四節對應 Phase 3 的四個面向，**只放通過判定的值**。未達門檻的值一律歸入「待決策項」，不得以候選值預覽的形式重複列於本節。元件契約依下方欄位記錄來源證據與判定狀態。
@@ -158,7 +169,7 @@ HTML 骨架與 CSS 規則皆為專案既有程式碼的引用。除縮排外不�
 | 代表位置 | 各候選值的檔案路徑與行號 |
 | 未自動擇一的原因 | 一句話說明未達門檻的方式（如「兩值佔比接近」「樣本不足」） |
 
-「引用方式」需說明引用方為 `uiux` skill 與 `Prototyper` sub-agent，兩者僅讀不寫，「常用模式範例」的骨架可整段複用，以及待決策項在被引用時須先取得使用者確認。
+「引用方式」需說明消費者僅讀不寫，「常用模式範例」的骨架可整段複用；待決策項的內部候選與正式採用依 `uiux`「基準輸入與確認狀態」，確認狀態由協調者管理。
 同節記錄樣本頁完整路徑，並說明元件選用須核對「元件契約」的名稱、啟動資源與值語意。
 
 ### Phase 7：回報
@@ -170,17 +181,18 @@ HTML 骨架與 CSS 規則皆為專案既有程式碼的引用。除縮排外不�
 - 已統一項數、模式數與待決策項數。
 - 待決策清單，供呼叫端決定是否需先請使用者確認。
 
-多個前端 app 時，另外逐一回報下列交接欄位。呼叫端先選定目標 app，再將同一筆 `app-name` 與 `baseline-path` 傳給 `uiux`。
+單一與多 app 都逐一回報下列交接欄位及待決策項。呼叫端選定目標 app，將同一筆實際路徑與 confirmed-choices 交付下游，採用程序依 `uiux`「基準輸入與確認狀態」。
 
 | 欄位 | 內容 |
 | --- | --- |
 | `app-name` | 產生該基準檔的前端 app 識別名稱 |
-| `baseline-path` | 該 app 實際產出的完整基準檔路徑，檔名必須為 `ui-style-baseline.<app-name>.md` |
+| `baseline-path` | 該 app 實際產出的完整基準檔路徑；單一 app 沿用固定檔名，多 app 為 `ui-style-baseline.<app-name>.md` |
+| `sample-path` | 同筆基準「引用方式」記錄的靜態樣本頁完整路徑 |
 
 ## 跨端交接
 
 - `uiux-baseline` 是 Codex 執行段，負責依已固定的前端來源範圍掃描樣式。單一 app 將基準與待決策項寫入 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`；多個 app 則逐一寫入帶 `app-name` 後綴的獨立檔案。
-- 上游完成後，單一 app 的固定基準檔仍是 `uiux` 的唯一輸入。多個 app 時，呼叫端必須從本階段回報中選定一筆 `app-name` 與 `baseline-path`，再交給 `uiux` 定位對應檔案。`baseline-path` 必須位於同一個 `work-root` 的 `style-baselines` 目錄，且檔名與 `app-name` 相符。
+- 上游完成後，單一與多 app 均交付呼叫端選定的 app-name、baseline-path、sample-path 及待決策項；下游的配對核對及 confirmed-choices 消費依 `uiux`「基準輸入與確認狀態」。
 - 下游讀取指定基準檔失敗、交接欄位缺少或兩者不相符時，立即停止並回報缺件。下游只讀取通過驗證的指定檔案，不改用其他 app 的基準檔。
 - `uiux` 是 Claude 決策段，讀取基準檔的已統一慣例、常用模式與待決策項，判定版面重要性及不可自由裁量項；本 Skill 不替下游做 UI 取捨。
 

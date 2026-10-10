@@ -12,6 +12,7 @@
       <h1 class="shell-title" id="shellTitle">UI Demo</h1>
       <div class="shell-tools">
         <button type="button" class="shell-btn" id="annotationToggle" aria-pressed="false">註解模式：關</button>
+        <button type="button" class="shell-btn" id="resetDemo">重設畫面</button>
         <div class="shell-viewport-group" role="group">
           <button type="button" class="shell-btn shell-btn-active" data-width="1280">桌面 1280</button>
           <button type="button" class="shell-btn" data-width="768">平板 768</button>
@@ -47,6 +48,14 @@
             </thead>
             <tbody id="layerRows"></tbody>
           </table>
+        </section>
+        <section class="shell-panel-section">
+          <h2 class="shell-panel-heading">替身清單</h2>
+          <ul class="shell-annotation-list" id="substituteList"></ul>
+        </section>
+        <section class="shell-panel-section">
+          <h2 class="shell-panel-heading">互動宣告</h2>
+          <div class="shell-panel-text" id="interactionSummary"></div>
         </section>
         <section class="shell-panel-section" id="annotationSection">
           <h2 class="shell-panel-heading">註解</h2>
