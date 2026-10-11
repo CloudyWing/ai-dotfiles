@@ -41,3 +41,7 @@ $RECYCLE.BIN/
 # ---- 機敏資訊 ----
 *.env
 *.env.*
+
+# ---- Claude 桌面版同步 skill 產生的目錄 ----
+skills/.trash/
+skills/synced/
