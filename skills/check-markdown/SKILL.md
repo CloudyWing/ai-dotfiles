@@ -2,7 +2,7 @@
 name: check-markdown
 description: '當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。'
 audience: human
-dispatch: claude-side
+dispatch: inline
 policy.allow_implicit_invocation: true
 ---
 

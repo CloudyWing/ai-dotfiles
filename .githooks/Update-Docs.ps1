@@ -371,9 +371,9 @@ function Get-SkillMetadata {
     }
 
     if ($audience -eq "human") {
-        $allowedDispatchValues = @("dispatchable", "claude-side", "split")
+        $allowedDispatchValues = @("delegate", "inline", "split", "either")
         if ([string]::IsNullOrWhiteSpace($dispatch) -or ($allowedDispatchValues -notcontains $dispatch)) {
-            throw "human-facing Skill 必須設定有效的 dispatch 欄位（dispatchable、claude-side 或 split）：$skillFile"
+            throw "human-facing Skill 必須設定有效的 dispatch 欄位（delegate、inline、split 或 either）：$skillFile"
         }
 
         $hasDispatchBoundary = (($content -join "`n") -match "(?m)^## 派遣分界\s*$")

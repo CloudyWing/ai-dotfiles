@@ -2,7 +2,7 @@
 name: uiux-baseline
 description: 掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced.
 audience: agent
-dispatch: dispatchable
+dispatch: delegate
 policy.allow_implicit_invocation: true
 ---
 

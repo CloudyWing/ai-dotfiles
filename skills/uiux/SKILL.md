@@ -2,7 +2,7 @@
 name: uiux
 description: UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。
 audience: agent
-dispatch: claude-side
+dispatch: inline
 policy.allow_implicit_invocation: true
 ---
 

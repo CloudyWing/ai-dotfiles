@@ -312,9 +312,16 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 #### Claude 端 sub-agent 模型指定
 
-Claude 端使用 Agent 工具建立 `Prototyper` 或主 Agent 臨時派生的搜尋型 agent 時，呼叫參數必須包含 `model: sonnet`。Agent 工具的 `model` 參數只接受模型名稱，不得傳入 `effort` 或 `model_reasoning_effort`；`sonnet` 的 `med` effort 由 agent 自身承載。
+Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依表指定 `model`。Agent 工具的 `model` 參數只接受模型名稱，不得傳入 `effort` 或 `model_reasoning_effort`；effort 由 agent 自身承載。
 
-此規則只適用於 `Prototyper` 與臨時搜尋型 agent，不套用於 Claude Persona、Codex 端 Agent、`codex exec` 檔位或其他未列出的 sub-agent。其他 Claude sub-agent 的模型設定由各自呼叫者依既有規則負責。
+| sub-agent | `model` | 依據 |
+| --- | --- | --- |
+| `Prototyper` | `sonnet` | 產出直接交由使用者確認版面 |
+| 主 Agent 臨時派生的搜尋型 agent（定位檔案、列出命中位置） | `haiku` | 只負責取件，判斷留在主 Agent |
+| 回收覆核的覆核取證助手 | `sonnet` | 漏列反證會使主 Agent 依不完整證據收下 |
+| F1 灰帶第 1 分支派生的 Claude subagent | `sonnet` | 工作性質不固定 |
+
+此規則不套用於 Claude Persona、Codex 端 Agent 與 `codex exec` 檔位。
 
 上表的規則來源同時是跨平台執行的依據。任一 Agent 在非其預設平台被叫起時，依此欄的路徑讀取規則檔，不因平台不同而改用簡化規則。
 
@@ -328,15 +335,15 @@ Claude 端使用 Agent 工具建立 `Prototyper` 或主 Agent 臨時派生的搜
 
 派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依工作性質選擇，實作與執行用預設檔位，意見評估用 `advisor`，不改變能力歸屬。
 
-本輪工作命中某個 skill 時，先讀該 skill frontmatter 的 `dispatch` 欄位。`dispatchable` 直接派工，`claude-side` 直接由 Claude 端處理，`split` 依該 skill 的「## 派遣分界」章節拆分。欄位有值時不再走下列三層表。
+本輪工作命中某個 skill 時，先讀該 skill frontmatter 的 `dispatch` 欄位。`delegate` 直接派工，`inline` 直接由 Claude 端處理，`split` 依該 skill 的「## 派遣分界」章節拆分；這三個值不再走下列三層表。`either` 不指定歸屬，依下列三題工作量下限與三層表判定。
 
-skill 未宣告 `dispatch` 或本輪工作不對應任何 skill 時，主 Agent 先依下列三題工作量下限判定是否仍由 Claude 主 Agent 承接：是否需要執行建置、測試或多步驟命令；目標範圍是否無法事前列舉，需由執行端自行探索；是否為跨多檔的重複性機械改動。三題全否時留在 Claude 主 Agent，輸出「下限自理」，且不進入下列 F1 三層表。任一題為是時，才依下表進入唯一的後續判定序列；下表的條件與處置只適用於三題至少一題為是的工作，不改變 `Architect`、`Maintainer` 等既有 Agent 的平台歸屬。
+skill 未宣告 `dispatch`、宣告為 `either`，或本輪工作不對應任何 skill 時，主 Agent 先依下列三題工作量下限判定是否仍由 Claude 主 Agent 承接：是否需要執行建置、測試或多步驟命令；目標範圍是否無法事前列舉，需由執行端自行探索；是否為跨多檔的重複性機械改動。三題全否時留在 Claude 主 Agent，輸出「下限自理」，且不進入下列 F1 三層表。任一題為是時，才依下表進入唯一的後續判定序列；下表的條件與處置只適用於三題至少一題為是的工作，不改變 `Architect`、`Maintainer` 等既有 Agent 的平台歸屬。
 
 三題的判定單位是「同一待解問題」的累計取證，不是單次工具呼叫。理由是逐次判定時，每一次讀檔、搜尋或唯讀命令各自都是三題全否，零碎取證累加後等同一次未派出的探索，卻全部留在 Claude 主 Agent 的長脈絡中。
 - 登記：主 Agent 對同一待解問題（例如同一個 bug 的根因、同一項驗收疑點）首次自行取證前，輸出單行 `[取證登記] <problemId> <一句話問題描述>`。`problemId` 使用小寫英數與連字號，同一 Session 內不重複，也不為同一問題另取新名。
 - 計數：該問題每次自行取證後輸出單行 `[取證計數] <problemId> <n>/3`。讀檔、搜尋與唯讀命令都計入，一次批次中的每個獨立查詢分別計數。換檔案、換工具、換回合或修訂假設都不歸零。
 - 關閉：主 Agent 輸出單行 `[取證結案] <problemId> 結論：<結論> 證據：<來源位置>` 後問題才關閉。沒有結案行的問題視為仍開啟；重新開啟時沿用原 `problemId` 與原計數。跨 Session 時，未結案問題由 `handoff-checkpoint.md` 的「未結案取證紀錄」欄位承接，新 Session 沿用該欄位的 `problemId` 與計數繼續，不重新登記。
-- 門檻：計數達 3 後仍需繼續取證時，第二題「目標範圍是否無法事前列舉」視為成立，後續取證進入下列三層表判定。已明確屬診斷指令或跨檔掃描者，直接依必派層處理，不等待門檻。本門檻只作用於三題入口；skill `dispatch` 欄位有值的工作依該欄位處理，不受本門檻影響。
+- 門檻：計數達 3 後仍需繼續取證時，第二題「目標範圍是否無法事前列舉」視為成立，後續取證進入下列三層表判定。已明確屬診斷指令或跨檔掃描者，直接依必派層處理，不等待門檻。本門檻只作用於三題入口；skill `dispatch` 欄位為 `delegate`、`inline` 或 `split` 的工作依該欄位處理，不受本門檻影響，`either` 適用本門檻。
 - 分工：根因假設的形成與結論維持在 Claude 端。派往 Codex 的取證派遣單第 4 欄列出待答問題、已知證據、待驗假設、可能反證與指定範圍，第 5 欄要求回傳來源位置與支持判定的原始摘錄；證據不足時依回收三態退回，主 Agent 不回頭改以零碎查詢補足。
 
 依表列順序判定，命中任一層即停止，不再套用其他層或其處置。

@@ -2,7 +2,7 @@
 name: apply-fact-check
 description: 依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md.
 audience: human
-dispatch: claude-side
+dispatch: inline
 policy.allow_implicit_invocation: true
 ---
 
@@ -27,14 +27,14 @@ policy.allow_implicit_invocation: true
 
 ### 經單一入口進入本 Skill
 
-使用者經 Claude 端單一入口進入時，入口層先執行 G1，取得確認後自動派遣 Codex 執行 `fact-check-note`，再回收同線固定報告。只有在固定報告已成功回收且可讀取時，才進入本 Skill 並執行上述前置條件檢查。入口層回收不到報告時，於入口層停止並回報缺件，不進入本 Skill。
+使用者經 Claude 端單一入口進入時，入口層先執行 G1，取得確認後依 F1 判準由 Claude 端自理或派遣 Codex 執行 `fact-check-note`，再取得同線固定報告。只有在固定報告已成功產出且可讀取時，才進入本 Skill 並執行上述前置條件檢查。入口層回收不到報告時，於入口層停止並回報缺件，不進入本 Skill。
 
 ## 跨端交接入口
 
 本鏈由 Claude 端單一入口管理，固定交接流程如下：
 
 1. 使用者在 Claude 端觸發後，流程於 G1 停止並回報校閱目標與範圍，等待使用者確認。
-2. G1 取得確認後，流程自動派遣 Codex 執行 `fact-check-note`，回收 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
+2. G1 取得確認後，流程依 F1 判準由 Claude 端自理或派遣 Codex 執行 `fact-check-note`，取得 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
 3. 回收時若無法讀取同線固定報告，流程在入口層停止並回報缺件，不進入本 Skill，也不使用替代輸入。
 4. 進入本 Skill 後，流程於 G2 停止並回報待裁決條目；G3 與 G4 依下表在後續改檔階段逐一執行。
 
@@ -102,8 +102,8 @@ policy.allow_implicit_invocation: true
 
 | Gate | 位置 | 使用者決定的事項 |
 | --- | --- | --- |
-| G1 | 派遣前 | 確認校閱目標文件與範圍 |
-| G2 | 回收後、改檔前 | 逐條裁決 `❌` 與 `⚠️` 條目，選擇套用、保留或跳過 |
+| G1 | 查證前 | 確認校閱目標文件與範圍 |
+| G2 | 取得報告後、改檔前 | 逐條裁決 `❌` 與 `⚠️` 條目，選擇套用、保留或跳過 |
 | G3 | `apply-fact-check` 執行中 | 裁決 `⚠️` 條目，以及改檔方提出技術反駁時的處置 |
 | G4 | 改檔後 | 複核對照清單，確認措辭與文件語氣一致 |
 

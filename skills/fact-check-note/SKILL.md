@@ -2,7 +2,7 @@
 name: fact-check-note
 description: 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes.
 audience: human
-dispatch: dispatchable
+dispatch: either
 policy.allow_implicit_invocation: true
 ---
 
@@ -76,7 +76,7 @@ policy.allow_implicit_invocation: true
 
 ## 跨端交接契約
 
-- `fact-check-note` 是交接鏈的 Codex 查證段。Claude 端單一入口在 G1 取得使用者確認後，依派遣契約自動派遣 Codex 執行本 Skill。
+- `fact-check-note` 是交接鏈的查證段。Claude 端單一入口在 G1 取得使用者確認後，依 F1 判準決定由 Claude 端自理或依派遣契約派遣 Codex 執行本 Skill；兩種方式都產出同一份固定報告。
 - 校閱完成後，上游只將報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。此固定檔是 `apply-fact-check` 的唯一輸入；下游讀取失敗時停止並回報缺件，不建立替代報告。
 - 回收固定報告後，Claude 端進入 `apply-fact-check`，由其 G2、G3、G4 gate 管理後續使用者裁決。上游不改寫目標文件，也不替下游穿越 gate。
 
@@ -129,7 +129,7 @@ policy.allow_implicit_invocation: true
 
 ## 派遣發動
 
-`fact-check-note` 屬於可派遣段。主 Agent 判定需要 Codex 端查證時，先載入 `codex-dispatch` skill，再建立派遣單並將本文件指定為執行 skill。
+`fact-check-note` 的派遣歸屬為 `either`。主 Agent 依 F1 判準判定需要 Codex 端查證時，先載入 `codex-dispatch` skill，再建立派遣單並將本文件指定為執行 skill。
 
 派遣單第 6 欄固定寫「唯讀，不得寫入目標文件」。指令契約使用 `--sandbox read-only`，需要官方網路查證時將 `--search` 放在 `exec` 前方。查證結果寫入派遣單第 7 欄指定的報告落點，原始文件維持不變。
 
