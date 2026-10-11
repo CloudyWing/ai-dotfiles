@@ -102,6 +102,13 @@ function Read-LineManifest {
     if ($manifestLineSlug -ne $LineSlug) {
         throw "line.json line-slug 與輸入不一致：$manifestPath；實際值：$manifestLineSlug；輸入值：$LineSlug"
     }
+    $manifestKindProperty = $manifest.PSObject.Properties['kind']
+    if ($null -ne $manifestKindProperty) {
+        $manifestKind = $manifestKindProperty.Value
+        if (-not ($manifestKind -is [string]) -or -not (@('workflow', 'adhoc') -ccontains $manifestKind)) {
+            throw "line.json kind 不支援：$manifestPath；允許值：workflow、adhoc"
+        }
+    }
 
     return [pscustomobject]@{
         Path           = $manifestPath

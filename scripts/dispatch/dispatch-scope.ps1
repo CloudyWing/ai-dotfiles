@@ -246,6 +246,10 @@ function New-DispatchAutoPrepareArtifacts {
         [ValidateSet('workflow', 'resource')]
         [string]$DispatchKind,
 
+        [Parameter(Mandatory)]
+        [ValidateSet('readonly', 'write')]
+        [string]$WriteMode,
+
         [AllowNull()]
         [object]$ResourceOrder
     )
@@ -259,7 +263,9 @@ function New-DispatchAutoPrepareArtifacts {
     if (-not (Test-Path -LiteralPath $sourceManifestPath -PathType Leaf)) {
         throw "找不到同線 line.json：$sourceManifestPath"
     }
-    if (-not (Test-Path -LiteralPath $sourceSummaryPath -PathType Leaf)) {
+    $requirementSummaryExists = Test-Path -LiteralPath $sourceSummaryPath -PathType Leaf
+    $canSkipMissingRequirementSummary = $DispatchKind -eq 'resource' -and $WriteMode -eq 'readonly'
+    if (-not $requirementSummaryExists -and -not $canSkipMissingRequirementSummary) {
         throw "找不到同線 requirement-summary.md：$sourceSummaryPath"
     }
 
@@ -267,10 +273,19 @@ function New-DispatchAutoPrepareArtifacts {
     if ([string](Get-DispatchJsonProperty -Object $manifest -Name 'line-slug') -cne $LineSlug) {
         throw "line.json line-slug 與 Request 不一致：expected=$LineSlug; received=$([string](Get-DispatchJsonProperty -Object $manifest -Name 'line-slug'))"
     }
+    $manifestKindProperty = $manifest.PSObject.Properties['kind']
+    if ($null -ne $manifestKindProperty) {
+        $manifestKind = $manifestKindProperty.Value
+        if (-not ($manifestKind -is [string]) -or -not (@('workflow', 'adhoc') -ccontains $manifestKind)) {
+            throw "line.json kind 不支援：$sourceManifestPath；允許值：workflow、adhoc"
+        }
+    }
 
     $artifactSources = New-Object 'System.Collections.Generic.List[object]'
     $artifactSources.Add([pscustomobject]@{ Source = $sourceManifestPath; Destination = (Join-Path -Path $destinationLineRoot -ChildPath 'line.json'); Purpose = 'same-line LineContext manifest' })
-    $artifactSources.Add([pscustomobject]@{ Source = $sourceSummaryPath; Destination = (Join-Path -Path $destinationLineRoot -ChildPath 'requirement-summary.md'); Purpose = 'same-line requirement summary' })
+    if ($requirementSummaryExists) {
+        $artifactSources.Add([pscustomobject]@{ Source = $sourceSummaryPath; Destination = (Join-Path -Path $destinationLineRoot -ChildPath 'requirement-summary.md'); Purpose = 'same-line requirement summary' })
+    }
 
     $sourceDesignPath = Join-Path -Path $sourceLineRoot -ChildPath 'design.md'
     $includeDesign = $DispatchKind -eq 'workflow'

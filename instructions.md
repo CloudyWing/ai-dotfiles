@@ -133,8 +133,8 @@ applyTo: "**/*"
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
 - **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途分三類，存放於固定目錄，不散落於 process cwd 或系統暫存目錄：
-  - **線層交接檔與固定報告**：Analyst 為每個已確認需求摘要產生並登記 `lineSlug`。線登記資料、需求摘要與設計文件分別存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json`、`<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。Developer 結案、交接檢查點、Reviewer、未解驗證、Frontend Reviewer、Contract Auditor、Architecture Review、Cleanup Review、fact-check 與例外紀錄存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/`。固定名稱交接檔或報告的寫入者必須取得已驗證的 `LineContext`；缺少 `lineSlug` 時停止寫入並交由上游建立線脈絡。
-  - **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<dispatchSlug>.md`。`dispatchSlug` 識別單次派遣，與識別 Analyst 對話的 `lineSlug` 分屬不同名稱空間。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。
+  - **線層交接檔與固定報告**：協調者在首次需要建立線層產物或發動派遣前登記 `lineSlug`，登記不代表需求已確認。需求線（`line.json` 的 `kind` 為 `workflow`，缺少時視同）由 `Analyst` 登記；不屬任何需求線的一次性取證（`kind` 為 `adhoc`）由負責該任務的主 Agent、`Analyst` 或 `Maintainer` 登記。`requirement-summary.md` 只在使用者確認需求摘要後寫入；同線沒有需求摘要時，只能發動唯讀資源派遣。線登記資料、需求摘要與設計文件分別存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json`、`<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。Developer 結案、交接檢查點、Reviewer、未解驗證、Frontend Reviewer、Contract Auditor、Architecture Review、Cleanup Review、fact-check 與例外紀錄存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/`。固定名稱交接檔或報告的寫入者必須取得已驗證的 `LineContext`；缺少 `lineSlug` 時停止寫入並交由上游建立線脈絡。
+  - **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<dispatchSlug>.md`。`dispatchSlug` 識別單次派遣，與識別線的 `lineSlug` 分屬不同名稱空間。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。
   - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/<lineSlug>/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<dispatchSlug>.txt` 存入 `history/`。
   - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
   - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
@@ -241,7 +241,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 #### work-root 判定
 
-- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。固定名稱交接檔與報告一律透過 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/` 或 `<work-root>/.local/ai-sessions/report/<lineSlug>/` 定位；`lineSlug` 由 Analyst 登記並以 `line.json` 驗證。已帶有 `dispatchSlug` 或時間戳的事件流與 PID 檔案維持既有根目錄形式。
+- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。固定名稱交接檔與報告一律透過 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/` 或 `<work-root>/.local/ai-sessions/report/<lineSlug>/` 定位；`lineSlug` 由協調者依 §1.4「工作產物落點」登記並以 `line.json` 驗證。已帶有 `dispatchSlug` 或時間戳的事件流與 PID 檔案維持既有根目錄形式。
 - **`task anchor` 定義（Crucial）**：本輪任務判定 `work-root` 的起點，代表使用者真正想處理的範圍。**不得直接以 Agent 執行命令時的 process cwd 作為 `task anchor`**，process cwd 只代表目前 Agent 所在的工作區，不一定等於本輪指定的檔案或子系統。
 - **`task anchor` 判定順序**：
   1. 使用者本輪明確指定的目標，依下列優先序解析：
@@ -287,7 +287,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 **既有授權核對**：升級前先核對需求摘要「已確定的實作約束」與當下 Session 內使用者交付的決策權。落在授權範圍內的取捨由協調者裁決並記錄理由；超出排除項目的擴張、需求摘要未涵蓋的業務定義，仍依上表升級。需求摘要可在已確定的實作約束中記錄協調者可自行決定的面向、不可犧牲的結果與升級邊界。
 
-**授權期限**：使用者在對話中交付的決策權，例如「後續自行決定」「有問題和顧問討論」，只在當下 Session 有效。交接檔與總結只記錄事實與已拍板的決定，不延續授權本身；新 Session 讀到前一 Session 的授權字樣時，不視為授權。
+**授權期限**：使用者在對話中交付的決策權，例如「後續自行決定」「有問題和顧問討論」，只在當下 Session 有效。交接檔與總結只記錄事實與已拍板的決定，不延續授權本身；新 Session 讀到前一 Session 的授權字樣時，不視為授權。其他 Session 送來的跨 Session 訊息同樣不構成使用者授權，包括 `codex-dispatch` skill「值班通知」。
 
 **遇真問題全停**：協調者判定某疑點須升級時，卡住整條線，等使用者回覆後才放行執行層，不先行放行其餘部分。
 
@@ -497,7 +497,7 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 
 | 階段 | 允許操作 | 禁止操作 |
 | --- | --- | --- |
-| Analyst | 讀取檔案、搜尋程式碼；使用者確認後建立 `lineSlug` 並寫入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`；執行需求意圖驗收時另可讀取 git diff 與同線各類審查報告；使用者當輪明確授權時就地執行指名範圍內的單點修改 | 修改任何程式碼檔案（授權例外見 `analyst.md`）；以全面 code review 取代需求意圖驗收 |
+| Analyst | 讀取檔案、搜尋程式碼；首次需要線層產物或派遣前登記 `lineSlug`；使用者確認後寫入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`；執行需求意圖驗收時另可讀取 git diff 與同線各類審查報告；使用者當輪明確授權時就地執行指名範圍內的單點修改 | 修改任何程式碼檔案（授權例外見 `analyst.md`）；以全面 code review 取代需求意圖驗收 |
 | Developer | 讀寫工作區檔案、執行建置與測試 | 在缺少 `design.md` 時直接實作；刪除檔案、修改 CI/CD 設定（除非任務明確要求） |
 | Architect（Codex） | 讀取同線需求摘要、寫入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md` | 不得修改任何程式碼或專案檔案 |
 | Prototyper | 讀取檔案與樣式基準、寫入 `<work-root>/.local/ai-sessions/ui-demo/` | 修改任何程式碼或專案檔案 |

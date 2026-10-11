@@ -63,11 +63,13 @@ Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方�
     └── ui-demo/
 ```
 
+`~/.ai-agents/.local/machine.json` 是本機值班設定，記錄值班 Session 名稱與本機是否為 `.ai-agents` 的唯一修改端；欄位見 `codex-dispatch` skill「值班通知」，檔案不存在時不發值班通知。
+
 結案清理會移除 `scratch/` 全部內容。`handoff/<lineSlug>/` 中的 `line.json`、`requirement-summary.md` 與 `design.md` 均受保護，其他 handoff 項目依清理規則移除。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 保留供後續查閱。
 
 ### `work-root` 與交接檔
 
-`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。Analyst 會從已確認需求摘要推導並登記語意化 `lineSlug`，每一條線以 `handoff/<lineSlug>/line.json` 識別。需求基準位於 `handoff/<lineSlug>/requirement-summary.md`，設計基準位於 `handoff/<lineSlug>/design.md`，固定名稱審查與驗證報告位於 `report/<lineSlug>/`。`dispatchSlug` 只識別單次派遣，與 `lineSlug` 分開使用。判定流程分兩步：
+`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。協調者在首次需要線層產物或派遣前登記語意化 `lineSlug`，每一條線以 `handoff/<lineSlug>/line.json` 識別；需求線由 Analyst 登記，一次性取證線以 `kind: adhoc` 標示。需求基準位於 `handoff/<lineSlug>/requirement-summary.md`，設計基準位於 `handoff/<lineSlug>/design.md`，固定名稱審查與驗證報告位於 `report/<lineSlug>/`。`dispatchSlug` 只識別單次派遣，與 `lineSlug` 分開使用。判定流程分兩步：
 
 1. **先取得 `task anchor`**（本輪任務真正想處理的範圍，不等於 AI 的 process cwd）。優先序：
    1. 使用者本輪明確指定的目錄、檔案所在目錄、或子系統 / 前端 app / 後端 service / 模組目錄。

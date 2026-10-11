@@ -129,8 +129,8 @@ function Get-DefaultDispatchOrderPath {
         Throw-DispatchOrderValidationFailure -Code 'DispatchRequestMissingField' -Classification 'MissingField' -Field 'OutputPath' -Message "無法從 ReportPath 找到 .local\ai-sessions 來源根目錄，請明確傳入 OutputPath。" -Detail ([ordered]@{ report_path = $ReportPath })
     }
 
-    $lineHandoffRoot = Join-Path -Path $sourceAiSessionsRoot -ChildPath (Join-Path -Path 'handoff' -ChildPath $LineSlug)
-    return Join-Path -Path $lineHandoffRoot -ChildPath ("dispatch-order-{0}.md" -f $DispatchSlug)
+    $handoffRoot = Join-Path -Path $sourceAiSessionsRoot -ChildPath 'handoff'
+    return Join-Path -Path $handoffRoot -ChildPath ("dispatch-order-{0}.md" -f $DispatchSlug)
 }
 
 function ConvertTo-CrLf {

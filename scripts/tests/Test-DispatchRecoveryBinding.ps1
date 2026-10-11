@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1646,7 +1646,17 @@ function Invoke-Case {
     )
     if (-not [string]::IsNullOrWhiteSpace($script:focusedCase)) {
         $cleanupMatch = $Name -ceq 'Phase 9 final git status guard detects repo-root fixture residue and restored pass'
-        $focusedMatch = if ($script:focusedCase -ceq 'F-003') {
+        $focusedMatch = if ($script:focusedCase -ceq 'BATCH5-S1') {
+            $Name -in @(
+                'Phase 7 New-DispatchOrder 預設 handoff 落點、Request 對照與通用回報欄位',
+                'Phase 7 New-DispatchOrder 預設輸出固定落在 ReportPath 的最外層來源根目錄',
+                'Phase 7 Batch5 S1 generated handoff-root dispatch order is loaded before Preflight unit validation'
+            )
+        }
+        elseif ($script:focusedCase -ceq 'BATCH5-S2') {
+            $Name -ceq 'Phase 7 Batch5 S2 resource readonly summary exemption and optional line kind validation'
+        }
+        elseif ($script:focusedCase -ceq 'F-003') {
             $Name -match '^Phase 9 F-003' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'P0-C') {
@@ -9078,7 +9088,7 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     Invoke-Case 'Phase 7 New-DispatchOrder 預設 handoff 落點、Request 對照與通用回報欄位' {
         $dispatchSlug = 'phase7-generated-order-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $generatorRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -DispatchSlug $dispatchSlug
-        $expectedPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $dispatchSlug + '.md')
+        $expectedPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/dispatch-order-' + $dispatchSlug + '.md')
         Assert-True ($generatorRun.exit_code -eq 0 -and [string]$generatorRun.stdout -match [regex]::Escape($expectedPath) -and (Test-Path -LiteralPath $expectedPath -PathType Leaf)) ('派遣單預設路徑錯誤：' + [string]$generatorRun.stdout + [string]$generatorRun.stderr)
         $generatedContent = Get-Content -LiteralPath $expectedPath -Raw -Encoding UTF8
         Assert-True ($generatedContent.Contains('### Runtime Request 欄位對照') -and $generatedContent.Contains('`evidence_pack_path`') -and $generatedContent.Contains('`advisor_consult_report_path`')) '派遣單缺少 runtime Request 欄位轉換說明。'
@@ -9092,11 +9102,11 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
         $worktreeDispatchSlug = 'phase7-order-worktree-report-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $sourceDispatchSlug = 'phase7-order-source-report-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $worktreeRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $dispatchReportPath -DispatchSlug $worktreeDispatchSlug
-        $worktreeExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $worktreeDispatchSlug + '.md')
+        $worktreeExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/dispatch-order-' + $worktreeDispatchSlug + '.md')
         Assert-True ($worktreeRun.exit_code -eq 0 -and [string]$worktreeRun.stdout -match [regex]::Escape($worktreeExpectedPath) -and (Test-Path -LiteralPath $worktreeExpectedPath -PathType Leaf)) ('dispatch worktree ReportPath 未回到最外層來源根目錄：' + [string]$worktreeRun.stdout + [string]$worktreeRun.stderr)
 
         $sourceRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $sourceReportPath -DispatchSlug $sourceDispatchSlug
-        $sourceExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $sourceDispatchSlug + '.md')
+        $sourceExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/dispatch-order-' + $sourceDispatchSlug + '.md')
         Assert-True ($sourceRun.exit_code -eq 0 -and [string]$sourceRun.stdout -match [regex]::Escape($sourceExpectedPath) -and (Test-Path -LiteralPath $sourceExpectedPath -PathType Leaf)) ('來源 report ReportPath 預設落點錯誤：' + [string]$sourceRun.stdout + [string]$sourceRun.stderr)
 
         $reportWithoutAiSessions = Join-Path $env:SystemDrive 'phase7-reports-without-ai-sessions/closure.md'
@@ -9128,6 +9138,114 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
         $validOutputPath = Join-Path $phase7Root 'fully-qualified-order.md'
         $validRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $phase7DispatchOrderReportPath -DispatchSlug 'phase7-order-fully-qualified' -OutputPath $validOutputPath
         Assert-True ($validRun.exit_code -eq 0 -and (Test-Path -LiteralPath $validOutputPath -PathType Leaf)) ('完整 ReportPath／OutputPath 未被接受：' + [string]$validRun.stdout + [string]$validRun.stderr)
+    }
+
+    Invoke-Case 'Phase 7 Batch5 S1 generated handoff-root dispatch order is loaded before Preflight unit validation' {
+        $dispatchSlug = 'phase7-generated-order-unit-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $generatorRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -DispatchSlug $dispatchSlug
+        $expectedPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/dispatch-order-' + $dispatchSlug + '.md')
+        Assert-True ($generatorRun.exit_code -eq 0 -and (Test-Path -LiteralPath $expectedPath -PathType Leaf)) ('派遣單預設落點未產生可讀取文件：' + [string]$generatorRun.stdout + [string]$generatorRun.stderr)
+
+        $savedNames = @('RequestContext', 'SourceRoot', 'DispatchKind', 'TaskType', 'UnitKind', 'DispatchSlug', 'LineSlug', 'TargetPath', 'RequestedUnit', 'RequestPrepareArtifacts', 'RequestManualPrepareArtifacts', 'RequestAutoPrepareArtifacts', 'RequestResourceOrder', 'ResolvedRequestedUnit')
+        $savedVariables = @{}
+        foreach ($name in $savedNames) {
+            $variable = Get-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+            $savedVariables[$name] = if ($null -eq $variable) { [pscustomobject]@{ exists = $false; value = $null } } else { [pscustomobject]@{ exists = $true; value = $variable.Value } }
+        }
+        try {
+            $script:RequestContext = [pscustomobject]@{
+                document = [pscustomobject]@{ operation = 'Dispatch' }
+                path = (Join-Path $phase7Root 'batch5-s1-request.json')
+            }
+            $script:SourceRoot = $fixtureBaseRoot
+            $script:DispatchKind = 'resource'
+            $script:TaskType = 'resource'
+            $script:UnitKind = ''
+            $script:DispatchSlug = $dispatchSlug
+            $script:LineSlug = 'line-a'
+            $script:TargetPath = @($phase7DispatchTargetPath)
+            $script:RequestedUnit = @($phase7DispatchTargetPath)
+            $script:RequestPrepareArtifacts = @()
+            $script:RequestManualPrepareArtifacts = @()
+            $script:RequestAutoPrepareArtifacts = @()
+            $script:RequestResourceOrder = $null
+            $script:ResolvedRequestedUnit = @()
+
+            Initialize-DispatchRequestDerivedInputs
+
+            Assert-True ([string]$script:RequestResourceOrder.Path -ceq $expectedPath) ('Dispatch 資源派遣單位核對未讀取產生器預設派遣單：' + [string]$script:RequestResourceOrder.Path)
+            Assert-True (@($script:RequestResourceOrder.Targets).Count -eq 1 -and [string]$script:RequestResourceOrder.Targets[0] -ceq $phase7DispatchTargetPath -and [string]$script:ResolvedRequestedUnit[0] -ceq $phase7DispatchTargetPath) 'Dispatch 單位核對未接受派遣單宣告的同一目標。'
+        }
+        finally {
+            foreach ($name in $savedNames) {
+                if ($savedVariables[$name].exists) {
+                    Set-Variable -Scope Script -Name $name -Value $savedVariables[$name].value
+                }
+                else {
+                    Remove-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 7 Batch5 S2 resource readonly summary exemption and optional line kind validation' {
+        $sourceRoot = Join-Path $phase7Root 'batch5-s2-source'
+        $dispatchRoot = Join-Path $phase7Root 'batch5-s2-dispatch'
+        $lineSlug = 'line-a'
+        $sourceLineRoot = Join-Path $sourceRoot '.local/ai-sessions/handoff/line-a'
+        $manifestPath = Join-Path $sourceLineRoot 'line.json'
+        $summaryPath = Join-Path $sourceLineRoot 'requirement-summary.md'
+        $null = New-Item -ItemType Directory -Path $sourceLineRoot -Force
+        $null = New-Item -ItemType Directory -Path $dispatchRoot -Force
+        $writeManifest = {
+            param([bool]$IncludeKind, [AllowEmptyString()][string]$Kind)
+            $manifest = [ordered]@{
+                schema = 'ai-sessions.line.v1'
+                'line-slug' = $lineSlug
+            }
+            if ($IncludeKind) { $manifest['kind'] = $Kind }
+            $json = ConvertTo-Json -InputObject $manifest -Depth 10
+            [System.IO.File]::WriteAllText($manifestPath, $json + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+        }
+        & $writeManifest $false ''
+
+        $readonlyArtifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot -LineSlug $lineSlug -DispatchSlug 'phase7-s2-readonly' -DispatchKind 'resource' -WriteMode 'readonly' -ResourceOrder $null)
+        Assert-True ($readonlyArtifacts.Count -eq 1 -and [string]$readonlyArtifacts[0].source -ceq $manifestPath -and @($readonlyArtifacts | Where-Object { [string]$_.source -ceq $summaryPath }).Count -eq 0) 'readonly 資源派遣缺少摘要時未略過摘要或仍將摘要列入自動帶入。'
+
+        $expectedMissingSummaryMessage = "找不到同線 requirement-summary.md：$summaryPath"
+        foreach ($dispatchCase in @(
+                [pscustomobject]@{ kind = 'resource'; writeMode = 'write' },
+                [pscustomobject]@{ kind = 'workflow'; writeMode = 'readonly' })) {
+            $caughtMessage = ''
+            try {
+                $null = New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot -LineSlug $lineSlug -DispatchSlug 'phase7-s2-summary-required' -DispatchKind $dispatchCase.kind -WriteMode $dispatchCase.writeMode -ResourceOrder $null
+            }
+            catch {
+                $caughtMessage = $_.Exception.Message
+            }
+            Assert-True ($caughtMessage -ceq $expectedMissingSummaryMessage) ('缺少 requirement-summary.md 時未維持既有拒絕訊息：' + [string]$dispatchCase.kind + '/' + [string]$dispatchCase.writeMode + '; ' + $caughtMessage)
+        }
+
+        [System.IO.File]::WriteAllText($summaryPath, '# phase7 summary' + [Environment]::NewLine, (New-Object System.Text.UTF8Encoding($false)))
+        $summaryIncludedArtifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot -LineSlug $lineSlug -DispatchSlug 'phase7-s2-summary-present' -DispatchKind 'resource' -WriteMode 'readonly' -ResourceOrder $null)
+        Assert-True (@($summaryIncludedArtifacts | Where-Object { [string]$_.source -ceq $summaryPath }).Count -eq 1) '同線 requirement-summary.md 存在時未照常列入自動帶入。'
+
+        & $writeManifest $true 'adhoc'
+        $adhocManifest = Read-LineManifest -SourceRoot $sourceRoot -LineSlug $lineSlug
+        $adhocArtifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot -LineSlug $lineSlug -DispatchSlug 'phase7-s2-kind-adhoc' -DispatchKind 'resource' -WriteMode 'readonly' -ResourceOrder $null)
+        Assert-True ($adhocManifest.Manifest.kind -ceq 'adhoc' -and $adhocArtifacts.Count -eq 2) 'line.json kind=adhoc 未通過兩個 manifest 驗證點。'
+
+        & $writeManifest $true 'other'
+        $identityKindError = ''
+        $scopeKindError = ''
+        try { $null = Read-LineManifest -SourceRoot $sourceRoot -LineSlug $lineSlug } catch { $identityKindError = $_.Exception.Message }
+        try { $null = New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot -LineSlug $lineSlug -DispatchSlug 'phase7-s2-kind-other' -DispatchKind 'resource' -WriteMode 'readonly' -ResourceOrder $null } catch { $scopeKindError = $_.Exception.Message }
+        Assert-True ($identityKindError -ceq $scopeKindError -and $identityKindError.Contains('允許值：workflow、adhoc')) ('line.json kind=other 未在兩處一致拒絕並列出允許值：' + $identityKindError + '; ' + $scopeKindError)
+
+        & $writeManifest $false ''
+        $defaultManifest = Read-LineManifest -SourceRoot $sourceRoot -LineSlug $lineSlug
+        $defaultArtifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot -LineSlug $lineSlug -DispatchSlug 'phase7-s2-kind-default' -DispatchKind 'resource' -WriteMode 'readonly' -ResourceOrder $null)
+        Assert-True ($null -eq $defaultManifest.Manifest.PSObject.Properties['kind'] -and $defaultArtifacts.Count -eq 2) '缺少 line.json kind 時未沿用 workflow 預設且通過驗證。'
     }
 
     Invoke-Case 'Phase 7 Dispatch 狀態與 Inspect 原生 exit code 外傳' {

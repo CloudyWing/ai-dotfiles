@@ -782,7 +782,7 @@ function Invoke-Dispatch {
         $failedStage = 'prepare'
         $dispatchUnitKind = Get-DefaultUnitKind -DispatchKind ([string]$DispatchKind) -UnitKind ([string]$UnitKind) -TaskType ([string]$TaskType)
         if (-not [string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase) -and $dispatchUnitKind -ne 'advisor-evidence-question') {
-            $script:RequestAutoPrepareArtifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -DispatchKind ([string]$DispatchKind) -ResourceOrder $script:RequestResourceOrder)
+            $script:RequestAutoPrepareArtifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -DispatchKind ([string]$DispatchKind) -WriteMode ([string]$script:WriteMode) -ResourceOrder $script:RequestResourceOrder)
             $script:RequestPrepareArtifacts = @($script:RequestAutoPrepareArtifacts) + @($script:RequestManualPrepareArtifacts)
         }
         else {

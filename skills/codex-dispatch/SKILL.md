@@ -15,7 +15,7 @@ policy.allow_implicit_invocation: true
 
 | 情境 | 入口 | 必要輸入 | 提供方式 |
 | --- | --- | --- | --- |
-| 建立資源派遣單 | `scripts\New-DispatchOrder.ps1` | `Title`、`Role`、`TargetPath`、`TaskBody`、`Acceptance`、`Boundary`、`ReportPath`、`DispatchSlug`、`LineSlug`；`OutputPath` 選填 | 命令列參數；省略 `OutputPath` 時派遣單寫入來源工作樹同線 `handoff\<lineSlug>\`，八個欄位定義見「派遣單契約」 |
+| 建立資源派遣單 | `scripts\New-DispatchOrder.ps1` | `Title`、`Role`、`TargetPath`、`TaskBody`、`Acceptance`、`Boundary`、`ReportPath`、`DispatchSlug`、`LineSlug`；`OutputPath` 選填 | 命令列參數；省略 `OutputPath` 時派遣單寫入來源工作樹 `handoff\dispatch-order-<dispatchSlug>.md`，即 `Dispatch` 讀取的位置，八個欄位定義見「派遣單契約」 |
 | 首次啟動一筆派遣（正式入口） | `scripts\Invoke-CodexDispatch.ps1 -Operation Dispatch` | `source_root`、`dispatch_root`、`line_slug`、`dispatch_slug`、`write_mode`、`dispatch_kind`、至少一個 `target_path`、`prompt_path`、`task_type`、`session_mode`、`unit_kind`、`failure_receipt_path` | 只接受 `operation=Dispatch` 的 request 檔（UTF-8 無 BOM），以 `-RequestPath` 傳入；欄位表與範例見「Dispatch 正式入口」 |
 | 同一 worktree 續行；換 worktree 續行；恢復或階段間檢查 | 同一 worktree 使用 `Start -ResumeThreadId`；換 worktree 使用 `Dispatch` 的 `session_mode=Continuation`；階段間檢查可分步呼叫 `Preflight`、`Prepare`、`Start` | 同一 worktree 的 Start 使用前輪 Dispatch result 記錄的 Preflight、Prepare 結果路徑及原 ScopePlan；換 worktree 使用新 `dispatchSlug`、重建 worktree 並承接父 ScopePlan | Start 參數來源見「續 session 與跨介面接手」；Dispatch 使用 request 檔；`prepare_artifacts` 只能經 request 檔傳入 |
 | 執行結束或中斷後 | `Inspect`，接著 `Collect` | 事件流、stderr、last-message、Preflight 結果與報告路徑；中斷時另回收逐單位保全檔 | 命令列參數 |
@@ -64,8 +64,9 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 ### Dispatch 正式入口
 
 - 單位自動產生：Workflow 依 `design.md`「實作任務清單」章（`## ` 開頭且含「實作任務清單」的章節）內的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`，找不到該章時才解析全文件；章內同編號連續小節合併為一個單位，非連續重複拒絕；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。Request 欄位驗證錯誤的 detail 只列欄位名稱、預期格式與輸入長度，不回顯原始輸入值。
-- 派遣單目標路徑：第 3 欄若填入含 `dispatchSlug` 的 worktree 絕對路徑，改用新的 `dispatchSlug` 時需同步更新目標路徑並重產派遣單。目標位於 `sourceRoot` 且所選 sandbox 能直接讀取時，建議填穩定的 `sourceRoot` 絕對路徑；`readonly` 目標在 repository 外時，還需確認 Preflight 的 `targetsOutsideRepository` 與唯讀 sandbox 允許直接讀取。此建議不改變 Request `target_path` 必須與第 3 欄完全相符的條件。
-- Prepare 自動帶入：同線 `line.json`、`requirement-summary.md`；Workflow 另帶入 `design.md`，資源派遣在第 4 欄提及 `design.md` 時帶入，並把派遣單複製到 dispatch worktree 的同線 handoff。`prepare_artifacts` 只用於追加其他檔案。
+- 派遣單目標路徑：第 3 欄若填入含 `dispatchSlug` 的 worktree 絕對路徑，改用新的 `dispatchSlug` 時需同步更新目標路徑並重產派遣單。目標位於 `sourceRoot` 且所選 sandbox 能直接讀取時，建議填穩定的 `sourceRoot` 絕對路徑。`targetsOutsideRepository` 只涵蓋 `sourceRoot` 內、位於 repository 外或被 gitignore 排除的路徑；`target_path` 一律必須位於 `sourceRoot` 內，超出時 Preflight 以 `DispatchOutputBoundary` 拒絕。此建議不改變 Request `target_path` 必須與第 3 欄完全相符的條件。
+- 外部資料：唯讀取證需要讀取 `sourceRoot` 以外的路徑時，以 `sourceRoot` 內的題目檔為第 3 欄目標並使用 `readonly`，外部路徑以絕對路徑逐一列在第 4 欄。read-only sandbox 可讀取這些路徑，但它們不進入 `target_path` 與 ScopePlan，派遣報告須逐條列出實際讀取的外部路徑。不以 `write` 或 direct-write 承接唯讀取證。
+- Prepare 自動帶入：同線 `line.json`、`requirement-summary.md`；`dispatch_kind=resource` 且 `write_mode=readonly` 的派遣在同線沒有 `requirement-summary.md` 時略過摘要，其他派遣缺摘要時拒絕。Workflow 另帶入 `design.md`，資源派遣在第 4 欄提及 `design.md` 時帶入，並把派遣單複製到 dispatch worktree 的同線 handoff。`prepare_artifacts` 只用於追加其他檔案。
 - 輸出路徑安全：`result_path` 與 `preflight_result_path` 必須位於 SourceRoot 或 ExecutionRoot，root、既有各層目錄與寫入目標任一層為 reparse point 時拒絕；未指定時輸出到 ExecutionRoot 同線 history。需要 worktree 清除後仍可從來源工作樹取用時，明確指定 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\` 下的路徑。`prepare_result_path` 的目的地限於 ExecutionRoot 的同線 handoff、report 或 history line root，且不得與 target path 重疊；未指定時輸出到 ExecutionRoot 同線 history。目錄建立後、實際寫入前會再次核對路徑。
 - direct-write：Preflight 判定不建 worktree（`worktreeCreated=false`）時，Prepare 使用 Preflight 的 `executionRoot`（即 `sourceRoot`）作為 DispatchRoot，Request 的 `dispatch_root` 只用於路徑驗證；只寫同線 handoff 的資源派遣可直接使用正式入口。
 - 可省略欄位：`profile`（預設 `default`）、`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名；advisor-consult 沒有 target 時預設 evidence pack 檔名，Start 注入與 Inspect 比對使用同一個值）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）、各階段結果路徑與額度快照路徑。
@@ -213,12 +214,12 @@ advisor 執行期間的額度觀測只作紀錄。監看迴圈每 250 毫秒檢�
 
 ## Git 前置探針與 worktree 生命週期
 
-所有派遣先呼叫 `scripts\Invoke-CodexDispatch.ps1 -Operation Preflight`。每次派遣必須取得上游傳入且已驗證的 `LineContext`。`lineSlug` 識別同一條 Analyst 線，`dispatchSlug` 識別單次派遣，兩者分屬不同名稱空間。缺少 `LineContext`、識別字不符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，或 `line.json` 的 `line-slug` 與傳入值不一致時，腳本以非零結束碼停止，且不建立成功狀態。
+所有派遣先呼叫 `scripts\Invoke-CodexDispatch.ps1 -Operation Preflight`。每次派遣必須取得上游傳入且已驗證的 `LineContext`。`lineSlug` 識別同一條線，包含需求線與 `adhoc` 線，`dispatchSlug` 識別單次派遣，兩者分屬不同名稱空間。缺少 `LineContext`、識別字不符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，或 `line.json` 的 `line-slug` 與傳入值不一致時，腳本以非零結束碼停止，且不建立成功狀態。
 
 | 欄位 | 路徑或用途 |
 | --- | --- |
 | `sourceRoot` | 使用者指定且已解析的 work-root 絕對路徑 |
-| `lineSlug` | Analyst 已登記的語意化線識別 |
+| `lineSlug` | 協調者依 `instructions.md` §1.4「工作產物落點」登記的語意化線識別 |
 | `writeMode` | 派遣單第 6 欄標示「唯讀」時為 `readonly`，其餘為 `write` |
 | `sourceLineRoot` | `<sourceRoot>\.local\ai-sessions\handoff\<lineSlug>` |
 | `dispatchRoot` | `<sourceRoot>\.local\ai-sessions\worktrees\<dispatchSlug>` 的隔離 worktree 目標絕對路徑 |
@@ -869,6 +870,48 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 升級 | 原因命中 `instructions.md` §1.5 升級兩道篩的三類拍板判準，或命中共同收斂契約的停止訊號 | 停止派遣，保留 dispatch worktree 與證據，回報未閉合清單與替代方向，等待使用者選擇方向 |
 
 回收判定成立且不需續 session 時，先完成事件流、thread id、last-message、報告與核准交接產物同步，再以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 執行資源派遣 worktree 清理。Workflow Developer dispatch worktree 僅在使用者授權 commit、Phase commit 回收與驗證完成後執行 `Cleanup`。`Cleanup` 依 `SourceRoot\.local\ai-sessions\history\<lineSlug>\runs\<dispatchSlug>` 驗證 RunRecord 路徑與 line／dispatch／source／execution owner，RunRecord 留在 SourceRoot history，不列入 worktree 檔案保存清單。省略 `EvidencePath` 時採用 RunRecord 引用且位於 dispatch worktree 的既存證據；明列未引用檔案時拒絕並列出可接受清單。RunRecord 或 evidence 路徑越界、owner 不符、保存清單驗證失敗或 worktree 移除失敗時保留 worktree 並回報錯誤。不得改用其他方式強制移除。report 根目錄的 `dispatch-report-<dispatchSlug>.md` 一律同步至來源 report 根目錄，不依賴 `ReportPath` 是否列出；其他未列入保存清單的 report 檔案會阻止移除 worktree。
+
+## 值班通知
+
+回收判定為派工機制缺陷時，協調 Session 通知本機值班 Session，讓同一缺陷集中登記與修正。派工機制缺陷指派工腳本、Skill 條文或範本與實際行為不符；額度耗盡、服務端拒絕、使用者環境限制與執行端自身的任務錯誤不發通知。
+
+本機設定位於 `~/.ai-agents/.local/machine.json`，不進版控。檔案不存在時不發通知，回收照常進行。
+
+```json
+{
+  "schema": "ai-agents.machine.v1",
+  "machine_id": "home",
+  "duty_session_name": "duty-home",
+  "maintenance_writer": true,
+  "writer_duty_session_name": "duty-home"
+}
+```
+
+| 欄位 | 內容 |
+| --- | --- |
+| `machine_id` | 本機識別，寫入通知的發生機器欄位 |
+| `duty_session_name` | 本機值班 Session 的名稱，即跨 Session 訊息的收件者 |
+| `maintenance_writer` | 本機是否為唯一修改並 push `.ai-agents` 的修改端；缺少時視為 `false`。兩台機器的設定中只有一台為 `true` |
+| `writer_duty_session_name` | 修改端的值班 Session 名稱，非修改端轉送時使用 |
+
+發送步驟如下：
+
+1. 先完成回收判定並保存證據，再發送通知。
+2. 以 `ListAgents` 確認 `duty_session_name` 存在，再以 `SendMessage` 發送。名稱不存在或發送失敗時不改送其他 Session，在回收報告記錄「值班通知未送達」，由下一個接手的 Session 補發。
+3. 訊息第一行固定為 `[派工問題回報]`，其後逐行列出必備欄位。
+
+| 必備欄位 | 內容 |
+| --- | --- |
+| 發生機器 | `machine_id` |
+| 專案路徑 | `sourceRoot` 絕對路徑 |
+| `lineSlug`、`dispatchSlug` | 發生缺陷的派遣識別 |
+| 錯誤碼 | 腳本錯誤碼；沒有錯誤碼時寫問題的短識別 |
+| 現象 | 一至三句，說明預期與實際行為 |
+| 證據 | 證據檔絕對路徑，另附可獨立閱讀的原文摘錄 |
+| 已做處置 | 繞道方式或「無」 |
+| 未完成事項 | 仍受阻的工作或「無」 |
+
+值班通知不構成使用者授權。值班 Session 的收件、登記與分派依 `agents/codex/maintainer.toml`「值班收件」。
 
 ## 保存契約對照
 
