@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "1.0",
+  "targetFramework": "<TFM>",
+  "reference": {
+    "method": "<ProjectReference or DLL>",
+    "projectOrAssemblyPath": "<path>",
+    "testedCommitSha": "<commit SHA or unknown>",
+    "workingTreeFingerprint": "<fingerprint or unknown>",
+    "changedFileHashes": []
+  },
+  "runner": {
+    "name": "<runner name>",
+    "version": "<fixed version>",
+    "packages": [
+      {
+        "name": "<package name>",
+        "version": "<fixed version>"
+      }
+    ]
+  },
+  "testProject": {
+    "path": "<external test project path>",
+    "version": "<project version>",
+    "replacementTechniques": [
+      {
+        "target": "<dependency or member>",
+        "technique": "<NSubstitute, reflection, Harmony, Microsoft Fakes, or none>",
+        "applicability": "<condition for use>",
+        "limitations": "<limitation or none>",
+        "uncoveredReason": "<reason or none>"
+      }
+    ]
+  },
+  "credentials": {
+    "acquisitionMethod": "<Secret Manager, user secret store, or environment variable>",
+    "environmentVariableNames": []
+  },
+  "execution": {
+    "command": "<complete command>",
+    "exitCode": null,
+    "durationMilliseconds": null,
+    "referencedDllSha256": "<SHA-256 or unknown>",
+    "missingRequiredFields": [],
+    "result": {
+      "passed": 0,
+      "failed": 0,
+      "skipped": 0,
+      "notExecuted": 0,
+      "pendingClarification": 0,
+      "verdict": "<pass, fail, or pending clarification>"
+    }
+  }
+}
