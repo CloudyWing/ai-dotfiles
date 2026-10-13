@@ -471,11 +471,19 @@ function Resolve-ProfileConfigPath {
         [string]$Profile
     )
 
-    if ([string]::IsNullOrWhiteSpace($CodexHome) -or $Profile -notin @('default', 'advisor')) {
+    if ([string]::IsNullOrWhiteSpace($CodexHome) -or $Profile -notin @('default', 'advisor', 'intensive')) {
         return $null
     }
     $homePath = Resolve-AbsolutePath -Path $CodexHome
-    $fileName = if ($Profile -eq 'advisor') { 'advisor.config.toml' } else { 'default.config.toml' }
+    $fileName = if ($Profile -eq 'advisor') {
+        'advisor.config.toml'
+    }
+    elseif ($Profile -eq 'intensive') {
+        'intensive.config.toml'
+    }
+    else {
+        'default.config.toml'
+    }
     $configPath = Join-Path -Path $homePath -ChildPath $fileName
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         return $null

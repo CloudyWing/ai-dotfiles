@@ -1132,6 +1132,12 @@ function Invoke-Start {
     $effectiveCodexHomePath = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
     $codexHomeEvidencePath = $effectiveCodexHomePath
     $profileConfigPathValue = Resolve-ProfileConfigPath -CodexHome $codexHomeEvidencePath -Profile $effectiveProfileValue
+    if ($effectiveProfileValue -eq 'intensive' -and [string]::IsNullOrWhiteSpace($profileConfigPathValue)) {
+        $profileConfigPathValue = Resolve-AbsolutePath -Path (Join-Path -Path $codexHomeEvidencePath -ChildPath 'intensive.config.toml')
+        $phase = 'profile-evidence'
+        $failureReasonCode = 'ProfileEvidenceUnknown'
+        throw ('ProfileEvidenceUnknown：Profile 設定檔不存在，啟動已拒絕；expected-path=' + $profileConfigPathValue)
+    }
     $profileEvidence = Read-ProfileModelEvidence -ConfigPath $profileConfigPathValue -Profile $effectiveProfileValue
     $resolvedModelEvidence = $profileEvidence.model
     $resolvedReasoningEffortEvidence = $profileEvidence.reasoning_effort

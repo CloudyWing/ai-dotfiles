@@ -333,7 +333,7 @@ Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依�
 
 ##### F1 派工判準
 
-派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依工作性質選擇，實作與執行用預設檔位，意見評估用 `advisor`，不改變能力歸屬。
+派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依工作性質選擇，實作與執行用預設檔位（使用者在當下 Session 指定時用 `intensive`），意見評估用 `advisor`，不改變能力歸屬。
 
 本輪工作命中某個 skill 時，先讀該 skill frontmatter 的 `dispatch` 欄位。`delegate` 直接派工，`inline` 直接由 Claude 端處理，`split` 依該 skill 的「## 派遣分界」章節拆分；這三個值不再走下列三層表。`either` 不指定歸屬，依下列三題工作量下限與三層表判定。
 
@@ -364,7 +364,7 @@ skill 未宣告 `dispatch`、宣告為 `either`，或本輪工作不對應任何
 
 ##### advisor consult 的不限階段掛載點
 
-`advisor` 是意見評估角色，不是實作檔位；實作一律使用預設檔位。`advisor-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在 Clarify、Design、Implement、Review、Accept 或 bug 線任一站，於適當的節點作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。`Profile=advisor` 搭配 Workflow、寫入模式或其他 TaskType 時，派工在啟動前拒絕。
+`advisor` 是意見評估角色，不是實作檔位；實作使用預設檔位，使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session。`advisor-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在 Clarify、Design、Implement、Review、Accept 或 bug 線任一站，於適當的節點作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。`Profile=advisor` 搭配 Workflow、寫入模式或其他 TaskType 時，派工在啟動前拒絕。
 
 預設檔位先建立 evidence pack，內容必須含非空的目標段落原文摘錄與來源位置、已知結論、以 `question-<id>` 逐行列出的待答問題與 required output、可能反證與邊界。advisor 執行端只可讀取 evidence pack，使用 read-only sandbox，不得探索 repository、讀取其他來源、修改檔案或寫入 report。`Inspect` 缺少 Start 的 evidence pack SHA-256 紀錄或前後 hash 不一致時以非零結束。報告由主 Agent 的 `Inspect` 或回收步驟寫入同線 `report/<lineSlug>/advisor-consult-<dispatchSlug>.md`，再交由 Claude 端與使用者決定是否採用。
 

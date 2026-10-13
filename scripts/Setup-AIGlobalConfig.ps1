@@ -245,6 +245,7 @@ else {
 $codexConfigPath = Join-Path $codexDir "config.toml"
 $defaultProfilePath = Join-Path $codexDir "default.config.toml"
 $advisorProfilePath = Join-Path $codexDir "advisor.config.toml"
+$intensiveProfilePath = Join-Path $codexDir "intensive.config.toml"
 $legacyProfileName = 'deep' + '.config.toml'
 $legacyProfilePath = Join-Path $codexDir $legacyProfileName
 $maxEffortMatches = @()
@@ -279,6 +280,9 @@ if (-not (Test-Path -LiteralPath $defaultProfilePath -PathType Leaf)) {
 }
 if (-not (Test-Path -LiteralPath $advisorProfilePath -PathType Leaf)) {
     $missingProfiles += 'advisor.config.toml'
+}
+if (Test-Path -LiteralPath $intensiveProfilePath -PathType Leaf) {
+    Write-Host "  ✅ 已偵測到選用 Codex 檔位設定檔：$intensiveProfilePath" -ForegroundColor DarkGreen
 }
 
 if (Test-Path -LiteralPath $legacyProfilePath -PathType Leaf) {

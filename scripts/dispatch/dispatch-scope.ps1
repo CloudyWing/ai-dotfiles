@@ -1339,10 +1339,10 @@ function Read-DispatchRequest {
             Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 profile 必須是 string。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ expected_type = 'string'; actual_type = Get-DispatchRequestTypeName -Value $document.profile })
         }
         $profileValue = [string]$document.profile
-        if (@('default', 'advisor') -notcontains $profileValue) {
-        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 profile 格式無效。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = @('default', 'advisor'); received = $profileValue })
+        if (@('default', 'advisor', 'intensive') -notcontains $profileValue) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 profile 格式無效。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = @('default', 'advisor', 'intensive'); received = $profileValue })
         }
-        foreach ($validProfile in @('default', 'advisor')) {
+        foreach ($validProfile in @('default', 'advisor', 'intensive')) {
             if ([string]::Equals($validProfile, $profileValue, [System.StringComparison]::OrdinalIgnoreCase)) {
                 $profileValue = $validProfile
                 break

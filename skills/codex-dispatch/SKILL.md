@@ -174,7 +174,7 @@ Start 另注入識別字指示：最後訊息的最末三行固定為純文字 `
 
 ## Advisor consult resource dispatch
 
-`advisor` 是意見評估角色，不是實作檔位。實作一律使用預設檔位。`Profile=advisor` 只接受 `TaskType=advisor-consult`、`DispatchKind=resource` 與 `WriteMode=readonly`；Workflow、寫入模式或其他 TaskType 在 Codex 啟動前以 `AdvisorImplementationProfileRejected` 拒絕，`TaskType=advisor-consult` 未搭配 `Profile=advisor` 時以 `AdvisorProfileRequired` 拒絕。
+`advisor` 是意見評估角色，不是實作檔位。實作使用預設檔位；使用者在當下 Session 指定時改用 `intensive`。`Profile=advisor` 只接受 `TaskType=advisor-consult`、`DispatchKind=resource` 與 `WriteMode=readonly`；Workflow、寫入模式或其他 TaskType 在 Codex 啟動前以 `AdvisorImplementationProfileRejected` 拒絕，`TaskType=advisor-consult` 未搭配 `Profile=advisor` 時以 `AdvisorProfileRequired` 拒絕。
 
 `TaskType=advisor-consult` 使用單一 evidence pack，schema 為 `advisor-consult.evidence.v1`，必須包含目標段落原文摘錄與來源位置、已知結論、待答問題、可能反證與邊界。advisor 執行端只可讀取該 evidence pack，不得探索 repository、讀取其他來源、修改檔案或寫入 report。
 
@@ -373,7 +373,7 @@ Start、Inspect、RunRecord 的 model 與 reasoning effort 分為三層證據，
 | 層 | 來源 | unknown 條件 |
 | --- | --- | --- |
 | `requested` | 呼叫端明確傳入的 `-Model`、`-ReasoningEffort`，只作為 assertion | 未傳入 |
-| `resolved` | 實際 profile 設定檔的 top-level `model`、`model_reasoning_effort`；預設檔位讀 `<CodexHome>\default.config.toml`，`advisor` 讀 `<CodexHome>\advisor.config.toml` | 檔案不存在、欄位缺少、格式錯誤或重複衝突 |
+| `resolved` | 實際 profile 設定檔的 top-level `model`、`model_reasoning_effort`；預設檔位讀 `<CodexHome>\default.config.toml`，`intensive` 讀 `<CodexHome>\intensive.config.toml`，`advisor` 讀 `<CodexHome>\advisor.config.toml` | 檔案不存在、欄位缺少、格式錯誤或重複衝突 |
 | `runtime_verifiable` | 公開可查的 actual evidence。Dispatch、Start 與 Inspect 不主動探測 rollout | 沒有公開可查證據時為 `status=unknown`、`source=public-actual-unavailable`，不複製 requested 或 resolved 值 |
 
 明確 assertion 與 resolved 值衝突時，Start 在啟動前以 `RequestedResolutionMismatch` 停止。Inspect 不修改 RunRecord 的 model evidence，也不回傳 rollout 路徑；actual 為 unknown 不使 Inspect 以非零結束。CLI 缺失或正式啟動失敗時，RunRecord 記 `launch_state=launch-failed`、`started_at_utc=null`，Dispatch 結果為 `status=failed`、`failed_stage=start`、`process_started=false`，`completed_stages` 不含 start。
@@ -487,9 +487,9 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ## 模型檔位規則
 
-本 Skill 只使用預設檔位與 `advisor`。實作、審查、掃描與命令執行一律使用預設檔位；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `~/.codex/default.config.toml` 為準，兩份 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
+本 Skill 使用預設檔位、`intensive` 與 `advisor` 三個語意檔位。實作、審查、掃描與命令執行使用預設檔位；使用者在當下 Session 明確指定時，該 Session 的派工改用 `intensive`，指定不延續到其他 Session；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `~/.codex/default.config.toml` 為準，各 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
 
-`codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位一律傳入 `--profile default`，讀取 `~/.codex/default.config.toml`。
+`codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位一律傳入 `--profile default`，讀取 `~/.codex/default.config.toml`；`intensive` 傳入 `--profile intensive`，讀取 `~/.codex/intensive.config.toml`，檔案不存在時在啟動前拒絕，不回退預設檔位。
 
 派工不在每次啟動前執行探針。正式啟動本身就是參數與檔位的驗證：啟動參數不合法、檔位設定缺漏或 CLI 缺失時，Start 以未啟動結果回報（`launch_state=launch-failed`、`process_started=false`），不產生已啟動紀錄，修正後以新的 `dispatchSlug` 重派。
 
@@ -503,7 +503,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 `--help` 在參數驗證前短路輸出，不具參數證明力。低成本檔位的名稱與內容由使用者提供，規則層不預設其存在。
 
-`advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描一律使用預設檔位，不以 `advisor` 執行。
+`advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描使用實作檔位（預設或 `intensive`），不以 `advisor` 執行。
 
 `advisor` 相對預設檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `~/.codex/advisor.config.toml` 與 `~/.codex/default.config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
 
@@ -557,12 +557,12 @@ secondary_source_file=
 
 `Inspect` 預設唯讀，不寫入額度或成本以外的推薦訊號。
 
-1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。實作與執行類工作一律使用預設檔位。
+1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。實作與執行類工作使用預設檔位，使用者在當下 Session 指定時使用 `intensive`。
 2. 屬意見評估時，主 Agent 先向使用者提出 advisor 授權請求；使用者同意後以 `AdvisorRequestSource=user-explicit` 派工。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工，該授權不延續到其他 Session。
 3. 額度只供顯示與紀錄，查詢時點為派工前、advisor 前、長時間派工執行中約每 30 分鐘、結案時與按需查詢。查詢失敗記為 unknown，派工照常進行。
 4. 所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
 5. 以 `advisor` 派工而 `advisor.config.toml` 不存在時，停止該次派工，不使用隱式 profile fallback。
-6. 預設檔位一律傳入 `--profile default`，檔位名稱只允許預設與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。
+6. 預設檔位一律傳入 `--profile default`，檔位名稱只允許預設、`intensive` 與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。`intensive` 只在使用者於當下 Session 指定後使用，腳本不自動選用。
 
 ### 決策歸屬
 

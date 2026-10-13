@@ -172,9 +172,9 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 #### Codex profile 檔位設定
 
-1. 預設檔位使用 `--profile default`，讀取 `~/.codex/default.config.toml`；`advisor` 檔位使用 `--profile advisor`，讀取 `~/.codex/advisor.config.toml`。只保留預設與 `advisor` 兩個選項。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
-2. 實作一律使用預設檔位。`advisor` 只作意見評估，發動前先向使用者請求，使用者在當下 Session 授權後才派工；授權不延續到其他 Session，也不依剩餘額度縮小評估範圍。預設檔位額度不足時不需授權，照常派工。授權與 evidence pack 契約以 `codex-dispatch` skill 為準，本文件不重複記載。
-3. `default.config.toml` 與 `advisor.config.toml` 是兩個 profile 的本機設定檔，內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
+1. 預設檔位使用 `--profile default`，讀取 `~/.codex/default.config.toml`；`advisor` 檔位使用 `--profile advisor`，讀取 `~/.codex/advisor.config.toml`；選用的 `intensive` 檔位使用 `--profile intensive`，讀取 `~/.codex/intensive.config.toml`。檔位只有這三個選項。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
+2. 實作使用預設檔位；使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session，設定檔不存在時派工在啟動前拒絕。`advisor` 只作意見評估，發動前先向使用者請求，使用者在當下 Session 授權後才派工；授權不延續到其他 Session，也不依剩餘額度縮小評估範圍。預設檔位額度不足時不需授權，照常派工。授權與 evidence pack 契約以 `codex-dispatch` skill 為準，本文件不重複記載。
+3. `default.config.toml`、`advisor.config.toml` 與選用的 `intensive.config.toml` 是各 profile 的本機設定檔，內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
 
    ```toml
    model = "<model-id>"
@@ -192,7 +192,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
    `model_reasoning_effort` 只影響推理長度，不影響模型單價。把高成本模型的 effort 調低不會使其變便宜，控制成本須從模型選用與 subagent 配置著手。
 
 4. `config.toml` 是 Codex 應用程式設定，屬可變設定，可能由 CLI 或其他工具變更。default dispatch profile 固定讀取 `default.config.toml`，不以 `config.toml` 作為預設檔位來源。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
-5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段偵測 `default.config.toml` 與 `advisor.config.toml` 缺件，以及舊檔名殘留或新舊檔同時存在的衝突，並印出修復指引。
+5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段偵測 `default.config.toml` 與 `advisor.config.toml` 缺件（`intensive.config.toml` 為選用檔，缺少時不警告），以及舊檔名殘留或新舊檔同時存在的衝突，並印出修復指引。
 
 ---
 

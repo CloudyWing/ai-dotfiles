@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1680,6 +1680,9 @@ function Invoke-Case {
         elseif ($script:focusedCase -ceq 'F-006-ADVISOR') {
             $Name -ceq 'Phase 9 F-006 advisor Start success persists observation fields' -or $cleanupMatch
         }
+        elseif ($script:focusedCase -ceq 'F-011') {
+            $Name -ceq 'Phase 7 API allowed=false fail-closed service rejection' -or $Name -match '^Phase 9 F-011' -or $cleanupMatch
+        }
         elseif ($script:focusedCase -ceq 'F-007-ADVISOR') {
             $Name -ceq 'Phase 9 F-007 advisor Inspect includes periodic observation' -or $cleanupMatch
         }
@@ -1833,6 +1836,12 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'C16-MOVE6') {
             $Name -match '^Phase 3 T010' -or $Name -match '^Phase 4 .*Collect' -or $Name -match '^Phase 5 (Collect|summary |report )' -or $Name -match '^Phase 9 (T010/T011 |batch3g |batch3h )' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'T003') {
+            $Name -ceq 'Phase 9 T003 default profile isolation and actual unknown contract' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'INTENSIVE-PROFILE') {
+            $Name -match '^Phase (4|5|8|9) INTENSIVE-PROFILE' -or $cleanupMatch
         }
         else {
             $Name -match '^Phase 9 S-3' -or $cleanupMatch
@@ -5944,6 +5953,17 @@ if ($Phase -ge 4) {
         Assert-True ($restored.restored -and $null -eq $restored.code -and (Compare-ParentOptions -Current $restored.model -Anchor $anchorOptions).matches) '續行未從 anchor 還原省略的父層選項。'
     }
 
+    Invoke-Case 'Phase 4 INTENSIVE-PROFILE continuation keeps parent options profile-bound' {
+        $options = @('--note=intensive-continuation')
+        $anchor = New-ParentOptionsModel -Profile 'intensive' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $true -CodexParentOption $options
+        $inherited = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $false -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $anchor
+        $sameProfile = Resolve-ParentOptionsForStart -Profile 'intensive' -ProfileProvided $true -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption $options -CodexParentOptionProvided $true -Anchor $anchor
+        $crossProfile = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $true -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption $options -CodexParentOptionProvided $true -Anchor $anchor
+        Assert-True ($inherited.code -eq $null -and $inherited.model.profile -ceq 'intensive' -and (Compare-ParentOptions -Current $inherited.model -Anchor $anchor).matches) '省略 Profile 的 intensive 續行未沿用 parent_options。'
+        Assert-True ($sameProfile.code -eq $null -and $sameProfile.model.profile -ceq 'intensive' -and (Compare-ParentOptions -Current $sameProfile.model -Anchor $anchor).matches) '顯式 intensive 續行未通過 parent_options 比對。'
+        Assert-True ($crossProfile.code -ceq 'ParentOptionsMismatch' -and $crossProfile.differences -contains 'profile') 'intensive 改用 default 續行未拒絕跨檔位 mismatch。'
+    }
+
     Invoke-Case 'Phase 4 T001 anchor=advisor 顯式 Profile default 與 request profile 都拒絕 mismatch' {
         $advisorAnchorRun = New-TestRun -Line 'line-a' -Dispatch 'phase4-profile-anchor'
         $advisorAnchorRun.parent_options = New-ParentOptionsModel -Profile 'advisor' -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
@@ -6482,6 +6502,54 @@ if ($Phase -ge 5) {
         Apply-DispatchRequestScalarField -Context $context -CliField 'SelectedRequirement' -RequestField 'selected_requirement'
         Assert-True ($script:SelectedRequirement -ceq '#22') 'Request 的 selected_requirement 未套用至 Collect CLI 欄位。'
     }
+    Invoke-Case 'Phase 5 INTENSIVE-PROFILE Request accepts intensive and reports all valid values' {
+        $validDocument = [ordered]@{}
+        foreach ($property in $phase5SelectedRequestDocument.GetEnumerator()) { $validDocument[$property.Key] = $property.Value }
+        $validDocument.profile = 'intensive'
+        $validPath = Join-Path $fixtureRoot 'phase5-intensive-profile-request.json'
+        Write-Utf8NoBom -Path $validPath -Content (($validDocument | ConvertTo-Json -Depth 10) + [Environment]::NewLine) -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -TargetPath @('')
+        $validRequest = Read-DispatchRequest -Path $validPath
+        Assert-True ($validRequest.profile -ceq 'intensive' -and $validRequest.field_presence.profile) 'Request 未接受 intensive profile。'
+
+        $invalidDocument = [ordered]@{}
+        foreach ($property in $phase5SelectedRequestDocument.GetEnumerator()) { $invalidDocument[$property.Key] = $property.Value }
+        $invalidDocument.profile = 'unsupported'
+        $invalidPath = Join-Path $fixtureRoot 'phase5-invalid-profile-request.json'
+        Write-Utf8NoBom -Path $invalidPath -Content (($invalidDocument | ConvertTo-Json -Depth 10) + [Environment]::NewLine) -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -TargetPath @('')
+        $originalRequestFailureHandler = (Get-Command -Name Throw-DispatchRequestFailure -CommandType Function -ErrorAction Stop).ScriptBlock
+        $script:capturedProfileRequestFailure = $null
+        $requestFailureInterceptor = {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory)][string]$Code,
+                [Parameter(Mandatory)][string]$Message,
+                [string]$RequestPathValue,
+                [string]$Field,
+                [AllowNull()][object]$Detail
+            )
+            if ($Field -ceq 'profile') {
+                $script:capturedProfileRequestFailure = [pscustomobject]@{
+                    code = $Code
+                    field = $Field
+                    valid_values = @($Detail['valid_values'] | ForEach-Object { [string]$_ })
+                }
+            }
+            throw $Message
+        }
+        Set-Item -Path 'Function:\script:Throw-DispatchRequestFailure' -Value $requestFailureInterceptor
+        $requestException = $null
+        try {
+            Read-DispatchRequest -Path $invalidPath | Out-Null
+        }
+        catch {
+            $requestException = $_.Exception
+        }
+        finally {
+            Set-Item -Path 'Function:\script:Throw-DispatchRequestFailure' -Value $originalRequestFailureHandler
+        }
+        Assert-True ($null -ne $requestException -and $null -ne $script:capturedProfileRequestFailure -and $script:capturedProfileRequestFailure.code -ceq 'DispatchRequestInvalidValue' -and $script:capturedProfileRequestFailure.field -ceq 'profile' -and (Compare-DispatchStringArrays -Left $script:capturedProfileRequestFailure.valid_values -Right @('default', 'advisor', 'intensive'))) '非法 profile 未拒絕或傳給錯誤處理器的 valid_values 未列出三個檔位。'
+    }
+
     Invoke-Case 'Phase 5 Request selected_requirement JSON 陣列可解析' {
         $arrayRequestPath = Join-Path $fixtureRoot 'phase5-selected-array-request.json'
         $arrayDocument = [ordered]@{}
@@ -9709,6 +9777,29 @@ if ($Phase -ge 8) {
         Assert-True (@($complete.missing_profiles).Count -eq 0 -and $completeHostOutput.Contains($successMessage)) ('兩個設定檔都存在時未輸出成功訊息。host=' + $completeHostOutput)
     }
 
+    Invoke-Case 'Phase 8 INTENSIVE-PROFILE optional Setup detection does not warn when missing' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'ipcheck')
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        $defaultContent = @("model = 'fixture-default'", "model_reasoning_effort = 'high'", '') -join [Environment]::NewLine
+        $advisorContent = @("model = 'fixture-advisor'", "model_reasoning_effort = 'high'", '') -join [Environment]::NewLine
+        Write-Utf8NoBom -Path (Join-Path $caseRoot 'default.config.toml') -Content ($defaultContent + [Environment]::NewLine)
+        Write-Utf8NoBom -Path (Join-Path $caseRoot 'advisor.config.toml') -Content ($advisorContent + [Environment]::NewLine)
+        $missing = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $missingWarnings = @($missing.warning_messages) -join [Environment]::NewLine
+        $missingHost = @($missing.host_messages) -join [Environment]::NewLine
+        Assert-True (@($missing.missing_profiles) -notcontains 'intensive.config.toml' -and -not $missingWarnings.Contains('intensive.config.toml') -and -not $missingHost.Contains('intensive.config.toml')) '缺少選用 intensive 檔位時列入缺件、警告或偵測成功訊息。'
+
+        Write-Utf8NoBom -Path (Join-Path $caseRoot 'intensive.config.toml') -Content "model = 'fixture-intensive'"
+        $present = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $presentWarnings = @($present.warning_messages) -join [Environment]::NewLine
+        $presentHost = @($present.host_messages) -join [Environment]::NewLine
+        Assert-True (@($present.missing_profiles) -notcontains 'intensive.config.toml' -and -not $presentWarnings.Contains('intensive.config.toml') -and $presentHost.Contains('intensive.config.toml')) '存在 intensive 檔位時未列出偵測結果或產生警告。'
+    }
+
+    Invoke-Case 'Phase 8 INTENSIVE-PROFILE advisor-consult still requires advisor profile' -Reject -ErrorPattern 'AdvisorProfileRequired' {
+        Assert-AdvisorContract -RequestedProfile 'intensive' -TaskType 'advisor-consult' -DispatchKind 'resource' -WriteMode 'readonly'
+    }
+
     Invoke-Case 'Phase 8 F-010 active source guard 覆蓋完整來源與舊識別字' {
         $requiredPaths = @(
             $sourcePath
@@ -10439,7 +10530,12 @@ if ($Phase -ge 9) {
             [Parameter(Mandatory)][string]$DefaultModel,
             [Parameter(Mandatory)][string]$DefaultEffort,
             [Parameter(Mandatory)][string]$ApplicationModel,
-            [Parameter(Mandatory)][string]$ApplicationEffort
+            [Parameter(Mandatory)][string]$ApplicationEffort,
+            [string]$Profile = 'default',
+            [AllowEmptyString()][string]$ProfileModel,
+            [AllowEmptyString()][string]$ProfileEffort,
+            [switch]$OmitProfileConfig,
+            [switch]$CaptureStartFailure
         )
 
         $codexHome = Join-Path $CaseRoot 'codex-home'
@@ -10451,6 +10547,9 @@ if ($Phase -ge 9) {
         $quotaPath = Join-Path $CaseRoot ($RunName + '-quota-before.json')
         $scopePlanPath = Join-Path $historyRoot ($RunName + '-scope-plan.json')
         $defaultConfigPath = Join-Path $codexHome 'default.config.toml'
+        $profileConfigPath = Join-Path $codexHome ($Profile + '.config.toml')
+        $selectedModel = if ([string]::IsNullOrWhiteSpace($ProfileModel)) { $DefaultModel } else { $ProfileModel }
+        $selectedEffort = if ([string]::IsNullOrWhiteSpace($ProfileEffort)) { $DefaultEffort } else { $ProfileEffort }
         $applicationConfigPath = Join-Path $codexHome 'config.toml'
         $rolloutPath = Join-Path $sessionsRoot ('rollout-' + $RunName + '.jsonl')
         $threadId = [guid]::NewGuid().ToString('D')
@@ -10487,6 +10586,17 @@ if ($Phase -ge 9) {
         Write-Utf8NoBom -Path $applicationConfigPath -Content ($applicationContent + "`r`n")
         $null = New-Phase8QuotaSnapshot -Path $quotaPath -PrimaryRemainingPercent 80 -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot
 
+        if (-not $OmitProfileConfig -and -not [String]::Equals($profileConfigPath, $defaultConfigPath, [StringComparison]::OrdinalIgnoreCase)) {
+            $profileContent = @(
+                ('model = "' + $selectedModel + '"')
+                ('model_reasoning_effort = "' + $selectedEffort + '"')
+                ''
+                '[agents]'
+                'default_subagent_model = "synthetic-subagent"'
+                'default_subagent_reasoning_effort = "low"'
+            ) -join [Environment]::NewLine
+            Write-Utf8NoBom -Path $profileConfigPath -Content ($profileContent + [Environment]::NewLine)
+        }
         $script:profileIsolationProbe = $true
         $script:profileIsolationCapturedArguments = @()
         $script:profileIsolationCodexHome = $codexHome
@@ -10529,9 +10639,9 @@ if ($Phase -ge 9) {
         $script:RunRecordPath = $null
         $script:ThreadIdPath = $null
         $script:PidRecordPath = $null
-        $script:Profile = 'default'
-        $script:Model = $DefaultModel
-        $script:ReasoningEffort = $DefaultEffort
+        $script:Profile = $Profile
+        $script:Model = $selectedModel
+        $script:ReasoningEffort = $selectedEffort
         $script:TaskType = 'script-change'
         $script:SessionMode = 'cold-start'
         $script:DispatchKind = 'workflow'
@@ -10553,7 +10663,34 @@ if ($Phase -ge 9) {
         $script:CodexParentOptionExplicit = $false
         $script:DispatchStageBinding = $null
 
-        $startResult = Invoke-Start
+        $startCallsBefore = $script:startCalls
+        $startResult = $null
+        $startException = $null
+        try {
+            $startResult = Invoke-Start
+        }
+        catch {
+            $startException = $_.Exception
+            if (-not $CaptureStartFailure) {
+                throw
+            }
+        }
+        if ($null -ne $startException) {
+            $operationResult = $startException.Data['operationResult']
+            return [pscustomobject]@{
+                run_name = $RunName
+                case_root = $CaseRoot
+                codex_home = $codexHome
+                profile_config_path = $profileConfigPath
+                selected_profile = $Profile
+                exception = $startException.Message
+                operation_result = $operationResult
+                process_started = if ($null -eq $operationResult) { $null } else { [bool]$operationResult.processStarted }
+                start_calls_before = $startCallsBefore
+                start_calls_after = $script:startCalls
+                exit_code = 1
+            }
+        }
         $runRecord = Get-Content -LiteralPath $startResult.runRecordPath -Raw -Encoding UTF8 | ConvertFrom-Json
         $eventStream = Get-Content -LiteralPath $startResult.eventStreamPath -Raw -Encoding UTF8
         $stderr = Get-Content -LiteralPath $startResult.stderrPath -Raw -Encoding UTF8
@@ -10561,6 +10698,7 @@ if ($Phase -ge 9) {
             run_name = $RunName
             case_root = $CaseRoot
             codex_home = $codexHome
+            profile_config_path = $profileConfigPath
             default_config_path = $defaultConfigPath
             application_config_path = $applicationConfigPath
             default_config_content = Get-Content -LiteralPath $defaultConfigPath -Raw -Encoding UTF8
@@ -10572,6 +10710,8 @@ if ($Phase -ge 9) {
             event_stream = $eventStream
             stderr = $stderr
             exit_code = 0
+            start_calls_before = $startCallsBefore
+            start_calls_after = $script:startCalls
             launcher_path = $script:profileIsolationLauncherPath
             selected_profile = $script:profileIsolationSelectedProfile
             selected_config_path = $script:profileIsolationSelectedConfigPath
@@ -10580,6 +10720,36 @@ if ($Phase -ge 9) {
             rollout_path = $rolloutPath
             thread_id = $threadId
         }
+    }
+
+    Invoke-Case 'Phase 9 INTENSIVE-PROFILE Start uses intensive config and explicit profile' {
+        $caseRoot = Join-Path $phase9Root 'intensive-profile'
+        $model = 'synthetic-intensive-profile-model'
+        $effort = 'synthetic-intensive-profile-effort'
+        try {
+        $run = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'intensive-profile-start' -DefaultModel 'synthetic-default-model' -DefaultEffort 'synthetic-default-effort' -ApplicationModel 'synthetic-application-model' -ApplicationEffort 'synthetic-application-effort' -Profile 'intensive' -ProfileModel $model -ProfileEffort $effort
+        }
+        finally {
+            $script:profileIsolationProbe = $false
+        }
+        $arguments = @($run.start_result.codexArguments | ForEach-Object { [string]$_ })
+        $profileIndex = [Array]::IndexOf([string[]]$arguments, '--profile')
+        $profileArgumentValid = $profileIndex -ge 0 -and $profileIndex + 1 -lt $arguments.Count -and $arguments[$profileIndex + 1] -ceq 'intensive'
+        $expectedPath = Join-Path $run.codex_home 'intensive.config.toml'
+        Assert-True ($profileArgumentValid -and [String]::Equals([string]$run.start_result.profileConfigPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$run.run_record.profile_config_path, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) 'Start 未以 --profile intensive 啟動或 model evidence 路徑錯誤。'
+        Assert-True ((Get-DispatchEvidenceValue -Evidence $run.start_result.resolvedModel) -ceq $model -and (Get-DispatchEvidenceValue -Evidence $run.start_result.resolvedReasoningEffort) -ceq $effort -and (Get-Content -LiteralPath $expectedPath -Raw -Encoding UTF8).Contains($model)) 'intensive model evidence 未讀取 intensive.config.toml sentinel。'
+    }
+
+    Invoke-Case 'Phase 9 INTENSIVE-PROFILE missing config rejects before process start' {
+        $caseRoot = Join-Path $phase9Root 'intensive-profile-missing'
+        try {
+        $run = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'intensive-profile-missing' -DefaultModel 'synthetic-default-model' -DefaultEffort 'synthetic-default-effort' -ApplicationModel 'synthetic-application-model' -ApplicationEffort 'synthetic-application-effort' -Profile 'intensive' -OmitProfileConfig -CaptureStartFailure
+        }
+        finally {
+            $script:profileIsolationProbe = $false
+        }
+        $expectedPath = Join-Path $run.codex_home 'intensive.config.toml'
+        Assert-True ($run.operation_result.errorCode -ceq 'ProfileEvidenceUnknown' -and -not $run.process_started -and $run.start_calls_after -eq $run.start_calls_before -and $run.exception.Contains($expectedPath)) '缺少 intensive.config.toml 未在啟動前以預期路徑拒絕。'
     }
 
     Invoke-Case 'Phase 9 T003 default profile isolation and actual unknown contract' {

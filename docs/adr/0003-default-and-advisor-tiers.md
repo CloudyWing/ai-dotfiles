@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-09
+superseded-by: 0009
 ---
 
 # ADR-0003：檔位集合為預設與 advisor

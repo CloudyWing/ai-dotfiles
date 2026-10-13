@@ -41,7 +41,7 @@ param(
 
     [string]$PromptPath,
 
-    [ValidateSet('default', 'advisor')]
+    [ValidateSet('default', 'advisor', 'intensive')]
     [string]$Profile = 'default',
 
     [ValidateSet('Valid', 'PostResetNoSnapshot', 'SnapshotExpired', 'SnapshotUnavailable', 'ServiceRejected')]
