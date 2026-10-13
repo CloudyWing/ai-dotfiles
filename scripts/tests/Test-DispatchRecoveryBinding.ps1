@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1655,6 +1655,18 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'BATCH5-S2') {
             $Name -ceq 'Phase 7 Batch5 S2 resource readonly summary exemption and optional line kind validation'
+        }
+        elseif ($script:focusedCase -ceq 'FIX3-U2') {
+            $Name -match '^Phase 9 FIX3-U2' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'FIX3-U3') {
+            $Name -match '^Phase 9 FIX3-U3' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'F-099') {
+            $Name -match '^Phase 9 F-099' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'F-101') {
+            $Name -match '^Phase 9 F-101' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'F-003') {
             $Name -match '^Phase 9 F-003' -or $cleanupMatch
@@ -16994,6 +17006,105 @@ throw 'RunRecord 事件流為空。'
         Invoke-Phase9NonGitPreflightScenario -ScenarioId 'nested-env' -GitIgnoreContent $gitIgnoreContent -SensitiveRelativePaths @('config/.env.production')
     }
 
+    function New-Fix3PreflightFixture {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [string]$Name,
+
+            [switch]$Commit
+        )
+
+        $sourceRoot = Join-Path $script:fixtureRoot $Name
+        $lineSlug = $Name
+        $lineRoot = Join-Path $sourceRoot ('.local\ai-sessions\handoff\' + $lineSlug)
+        New-Item -ItemType Directory -Path $lineRoot -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $sourceRoot '.gitignore') -Content ".local/`r`nignored-output.txt`r`n"
+        Write-Utf8NoBom -Path (Join-Path $sourceRoot 'tracked.ps1') -Content 'fixture source'
+        Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = $lineSlug } | ConvertTo-Json -Compress) + "`r`n")
+
+        $gitHostPath = (Get-Command git.exe -ErrorAction Stop).Source
+        foreach ($gitArguments in @(
+                , @('-C', $sourceRoot, 'init', '--quiet')
+                , @('-C', $sourceRoot, 'config', 'user.email', 'fix3@example.invalid')
+                , @('-C', $sourceRoot, 'config', 'user.name', 'Fix3 Fixture')
+                , @('-C', $sourceRoot, 'add', '--', '.gitignore', 'tracked.ps1'))) {
+            $gitRun = Invoke-Phase9Process -HostPath $gitHostPath -Arguments $gitArguments -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
+            if ([int]$gitRun.exit_code -ne 0) { throw ('建立 FIX3 Git fixture 失敗：' + [string]$gitRun.stderr) }
+        }
+        if ($Commit) {
+            $commitRun = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('-C', $sourceRoot, 'commit', '--quiet', '-m', 'fix3 fixture') -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
+            if ([int]$commitRun.exit_code -ne 0) { throw ('建立 FIX3 baseline commit 失敗：' + [string]$commitRun.stderr) }
+        }
+
+        return [pscustomobject]@{
+            SourceRoot = $sourceRoot
+            LineSlug = $lineSlug
+            GitHostPath = $gitHostPath
+            DispatchRoot = Join-Path $sourceRoot ('.local\ai-sessions\worktrees\' + $Name)
+        }
+    }
+
+    function Invoke-Fix3Preflight {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [psobject]$Fixture,
+
+            [Parameter(Mandatory)]
+            [ValidateSet('workflow', 'resource')]
+            [string]$Kind,
+
+            [string]$OperationName = 'Preflight',
+
+            [Parameter(Mandatory)]
+            [string[]]$TargetRelativePath,
+
+            [ValidateSet('write', 'readonly')]
+            [string]$WriteMode = 'write',
+
+            [switch]$UseRequestForTargets
+        )
+
+        $hostPath = if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Command pwsh.exe -ErrorAction Stop).Source } else { (Get-Command powershell.exe -ErrorAction Stop).Source }
+        $arguments = @(
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $sourcePath,
+            '-Operation', $OperationName, '-SourceRoot', $Fixture.SourceRoot,
+            '-DispatchRoot', $Fixture.DispatchRoot, '-LineSlug', $Fixture.LineSlug,
+            '-DispatchSlug', $Fixture.LineSlug, '-WriteMode', $WriteMode
+        )
+
+        $requestPath = $null
+        if ($UseRequestForTargets) {
+            $requestPath = Join-Path $Fixture.SourceRoot 'fix3-preflight-request.json'
+            $request = [ordered]@{
+                schema = 'ai-sessions.dispatch-request.v1'
+                operation = 'Preflight'
+                line_slug = $Fixture.LineSlug
+                dispatch_slug = $Fixture.LineSlug
+                target_path = @($TargetRelativePath | ForEach-Object { Join-Path $Fixture.SourceRoot $_ })
+            }
+            Write-Utf8NoBom -Path $requestPath -Content (($request | ConvertTo-Json -Depth 8 -Compress) + "`r`n") -SourceRoot $Fixture.SourceRoot -ExecutionRoot $Fixture.SourceRoot -TargetPath @()
+            $arguments += @('-RequestPath', $requestPath)
+        }
+        else {
+            $arguments += '-TargetPath'
+            foreach ($relativePath in $TargetRelativePath) {
+                $arguments += Join-Path $Fixture.SourceRoot $relativePath
+            }
+        }
+
+        $arguments += @('-DispatchKind', $Kind, '-TaskType', 'script-change')
+        try {
+            return Invoke-Phase9Process -HostPath $hostPath -Arguments $arguments -WorkingDirectory $Fixture.SourceRoot -EnvironmentVariables @{}
+        }
+        finally {
+            if ($null -ne $requestPath -and (Test-Path -LiteralPath $requestPath -PathType Leaf)) {
+                Remove-Item -LiteralPath $requestPath -Force
+            }
+        }
+    }
+
     Invoke-Case 'Phase 9 C16 existing Git source passes Preflight without legacy marker' {
         $sourceRoot = Join-Path $fixtureRoot 'c16-existing-git-source'
         $lineSlug = 'c16-existing-git'
@@ -17072,6 +17183,184 @@ throw 'RunRecord 事件流為空。'
                     Assert-True (Test-PathWithinRoot -Path $dispatchRoot -Root $sourceRoot) 'Git fixture fallback cleanup 路徑超出 SourceRoot。'
                     Remove-Item -LiteralPath $dispatchRoot -Recurse -Force
                 }
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 FIX3-U2 workflow write rejects untracked targets before creating artifacts' {
+        $fixture = New-Fix3PreflightFixture -Name 'fix3-u2-workflow-new-targets' -Commit
+        try {
+            $statusBefore = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('status', '--porcelain')
+            $worktreesBefore = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+            $run = Invoke-Fix3Preflight -Fixture $fixture -Kind workflow -TargetRelativePath @('new-output.txt', 'ignored-output.txt') -UseRequestForTargets
+            $output = [string]$run.stderr
+            $statusAfter = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('status', '--porcelain')
+            $worktreesAfter = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+
+            Assert-True ([int]$run.exit_code -ne 0) ('Workflow write with only untracked targets was not rejected: ' + [string]$run.stdout)
+            Assert-True ($output.Contains('RelativePath=new-output.txt, Exists=False, IsTracked=False') -and $output.Contains('RelativePath=ignored-output.txt, Exists=False, IsTracked=False')) ('Workflow write rejection omitted target state: ' + $output)
+            Assert-True (-not (Test-Path -LiteralPath $fixture.DispatchRoot) -and -not (Test-Path -LiteralPath (Join-Path $fixture.SourceRoot '.local\ai-sessions\worktrees')) -and [string]::Equals($statusBefore, $statusAfter, [StringComparison]::Ordinal) -and [string]::Equals($worktreesBefore, $worktreesAfter, [StringComparison]::Ordinal)) 'Rejected Workflow Preflight created a worktree, output directory, Git change, or process registration.'
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.SourceRoot) {
+                Assert-True (Test-PathWithinRoot -Path $fixture.SourceRoot -Root $script:fixtureRoot) 'FIX3-U2 cleanup escaped the fixture root.'
+                Remove-Item -LiteralPath $fixture.SourceRoot -Recurse -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 F-099 direct Preflight preserves DispatchPreflightFailed and target states' {
+        $fixture = New-Fix3PreflightFixture -Name 'fix3-f099-direct-preflight' -Commit
+        try {
+            $run = Invoke-Fix3Preflight -Fixture $fixture -Kind workflow -TargetRelativePath @('new-output.txt')
+            $output = [string]::Concat([string]$run.stdout, [Environment]::NewLine, [string]$run.stderr)
+            $result = $null
+            try {
+                $result = ConvertFrom-DispatchJson -Content ([string]$run.stdout)
+            }
+            catch {
+                $result = $null
+            }
+
+            Assert-True ([int]$run.exit_code -eq 1 -and $null -ne $result) ('Direct Preflight did not emit its structured rejection result: ' + $output)
+            Assert-True ([string]$result.operation -ceq 'Preflight' -and [string]$result.status -ceq 'failed' -and [string]$result.error_code -ceq 'DispatchPreflightFailed' -and $result.process_started -eq $false) ('Direct Preflight did not preserve DispatchPreflightFailed: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+            Assert-True ([string]$result.error -match 'RelativePath=new-output\.txt, Exists=False, IsTracked=False') ('Direct Preflight structured error omitted target state: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+            Assert-True (-not (Test-Path -LiteralPath $fixture.DispatchRoot) -and -not (Test-Path -LiteralPath (Join-Path $fixture.SourceRoot '.local\ai-sessions\worktrees'))) 'Direct Preflight rejection created a worktree artifact.'
+            Write-Phase9Evidence -Label 'F099_DIRECT_PREFLIGHT_STRUCTURED_ERROR' -Value ([ordered]@{ command = $run.command; start_utc = $run.start_utc; finish_utc = $run.finish_utc; exit_code = $run.exit_code; stdout = $run.stdout; stderr = $run.stderr; error_code = $result.error_code; target_state = $result.error })
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.SourceRoot) {
+                Assert-True (Test-PathWithinRoot -Path $fixture.SourceRoot -Root $script:fixtureRoot) 'F-099 cleanup escaped the fixture root.'
+                Remove-Item -LiteralPath $fixture.SourceRoot -Recurse -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 F-101 direct Preflight case variant preserves DispatchPreflightFailed' {
+        $fixture = New-Fix3PreflightFixture -Name 'fix3-f101-preflight-case-variant' -Commit
+        try {
+            $run = Invoke-Fix3Preflight -Fixture $fixture -Kind workflow -TargetRelativePath @('new-output.txt') -OperationName 'preflight'
+            $output = [string]::Concat([string]$run.stdout, [Environment]::NewLine, [string]$run.stderr)
+            $result = $null
+            try {
+                $result = ConvertFrom-DispatchJson -Content ([string]$run.stdout)
+            }
+            catch {
+                $result = $null
+            }
+
+            Assert-True ([int]$run.exit_code -eq 1 -and $null -ne $result) ('Case-variant Preflight did not emit its structured rejection result: ' + $output)
+            Assert-True ([string]$result.operation -ceq 'Preflight' -and [string]$result.status -ceq 'failed' -and [string]$result.error_code -ceq 'DispatchPreflightFailed' -and $result.process_started -eq $false) ('Case-variant Preflight did not preserve DispatchPreflightFailed: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+            Assert-True ([string]$result.error -match 'RelativePath=new-output\.txt, Exists=False, IsTracked=False') ('Case-variant Preflight structured error omitted target state: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+            Write-Phase9Evidence -Label 'F101_DIRECT_PREFLIGHT_CASE_VARIANT' -Value ([ordered]@{ command = $run.command; start_utc = $run.start_utc; finish_utc = $run.finish_utc; exit_code = $run.exit_code; stdout = $run.stdout; stderr = $run.stderr; error_code = $result.error_code; target_state = $result.error })
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.SourceRoot) {
+                Assert-True (Test-PathWithinRoot -Path $fixture.SourceRoot -Root $script:fixtureRoot) 'F-101 cleanup escaped the fixture root.'
+                Remove-Item -LiteralPath $fixture.SourceRoot -Recurse -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 FIX3-U2 workflow write with tracked target creates a worktree' {
+        $fixture = New-Fix3PreflightFixture -Name 'fix3-u2-workflow-tracked-target' -Commit
+        try {
+            $run = Invoke-Fix3Preflight -Fixture $fixture -Kind workflow -TargetRelativePath @('tracked.ps1')
+            Assert-True ([int]$run.exit_code -eq 0) ('Workflow write with a tracked target failed: ' + [string]$run.stderr)
+            $result = ConvertFrom-Json -InputObject ([string]$run.stdout)
+            Assert-True ([bool]$result.worktreeCreated -and [string]$result.executionRoot -ceq $fixture.DispatchRoot) ('Workflow write did not create the expected worktree: ' + ($result | ConvertTo-Json -Compress))
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.DispatchRoot) {
+                $removeRun = Invoke-Phase9Process -HostPath $fixture.GitHostPath -Arguments @('-C', $fixture.SourceRoot, 'worktree', 'remove', '--force', $fixture.DispatchRoot) -WorkingDirectory $fixture.SourceRoot -EnvironmentVariables @{}
+                if ([int]$removeRun.exit_code -ne 0 -and (Test-Path -LiteralPath $fixture.DispatchRoot)) { throw ('移除 FIX3-U2 worktree 失敗：' + [string]$removeRun.stderr) }
+            }
+            if (Test-Path -LiteralPath $fixture.SourceRoot) {
+                Assert-True (Test-PathWithinRoot -Path $fixture.SourceRoot -Root $script:fixtureRoot) 'FIX3-U2 cleanup escaped the fixture root.'
+                Remove-Item -LiteralPath $fixture.SourceRoot -Recurse -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 FIX3-U2 resource write keeps ignored and new outputs direct' {
+        $fixture = New-Fix3PreflightFixture -Name 'fix3-u2-resource-direct-output' -Commit
+        try {
+            foreach ($targetRelativePath in @('ignored-output.txt', 'new-output.txt')) {
+                $run = Invoke-Fix3Preflight -Fixture $fixture -Kind resource -TargetRelativePath @($targetRelativePath)
+                Assert-True ([int]$run.exit_code -eq 0) ('Resource write target ' + $targetRelativePath + ' failed: ' + [string]$run.stderr)
+                $result = ConvertFrom-Json -InputObject ([string]$run.stdout)
+                $targetState = @($result.targetStates | Where-Object { [string]$_.RelativePath -ceq $targetRelativePath })[0]
+                $ignoredExpected = $targetRelativePath -ceq 'ignored-output.txt'
+                Assert-True (-not [bool]$result.worktreeCreated -and [string]$result.executionRoot -ceq $fixture.SourceRoot -and [bool]$targetState.IsIgnored -eq $ignoredExpected -and -not [bool]$targetState.IsTracked) ('Resource direct-write behavior changed: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.SourceRoot) {
+                Assert-True (Test-PathWithinRoot -Path $fixture.SourceRoot -Root $script:fixtureRoot) 'FIX3-U2 cleanup escaped the fixture root.'
+                Remove-Item -LiteralPath $fixture.SourceRoot -Recurse -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 FIX3-U3 readonly Git source without HEAD stays direct' {
+        $fixture = New-Fix3PreflightFixture -Name 'fix3-u3-readonly-without-head'
+        try {
+            $worktreesBefore = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+            $run = Invoke-Fix3Preflight -Fixture $fixture -Kind workflow -TargetRelativePath @('tracked.ps1') -WriteMode readonly
+            Assert-True ([int]$run.exit_code -eq 0) ('Readonly Preflight without HEAD failed: ' + [string]$run.stderr)
+            $result = ConvertFrom-Json -InputObject ([string]$run.stdout)
+            $worktreesAfter = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+
+            Assert-True (-not [bool]$result.worktreeCreated -and [string]$result.executionRoot -ceq $fixture.SourceRoot) ('Readonly no-HEAD Preflight did not stay at SourceRoot: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+            Assert-True ([string]$result.gitOrigin -ceq 'existing' -and [string]$result.baseSha -ceq '' -and $null -eq $result.baselinePath -and $null -eq $result.baselineSha256) ('Readonly no-HEAD Preflight returned unexpected Git baseline values: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+            Assert-True (-not (Test-Path -LiteralPath $fixture.DispatchRoot) -and -not (Test-Path -LiteralPath (Join-Path $fixture.SourceRoot '.local\ai-sessions\worktrees')) -and [string]::Equals($worktreesBefore, $worktreesAfter, [StringComparison]::Ordinal)) 'Readonly no-HEAD Preflight created a Git worktree or baseline artifact.'
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.SourceRoot) {
+                Assert-True (Test-PathWithinRoot -Path $fixture.SourceRoot -Root $script:fixtureRoot) 'FIX3-U3 no-HEAD readonly cleanup escaped the fixture root.'
+                Remove-Item -LiteralPath $fixture.SourceRoot -Recurse -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 FIX3-U3 write Git source without HEAD requires baseline commit' {
+        $fixture = New-Fix3PreflightFixture -Name 'fix3-u3-write-without-head'
+        try {
+            $statusBefore = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('status', '--porcelain')
+            $worktreesBefore = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+            $run = Invoke-Fix3Preflight -Fixture $fixture -Kind workflow -TargetRelativePath @('tracked.ps1') -WriteMode write
+            $output = [string]$run.stderr
+            $statusAfter = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('status', '--porcelain')
+            $worktreesAfter = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+
+            Assert-True ([int]$run.exit_code -ne 0 -and $output.Contains('基準 commit') -and $output.Contains('SourceRoot')) ('Write Preflight without HEAD did not require a baseline commit: ' + $output)
+            Assert-True (-not (Test-Path -LiteralPath $fixture.DispatchRoot) -and -not (Test-Path -LiteralPath (Join-Path $fixture.SourceRoot '.local\ai-sessions\worktrees')) -and [string]::Equals($statusBefore, $statusAfter, [StringComparison]::Ordinal) -and [string]::Equals($worktreesBefore, $worktreesAfter, [StringComparison]::Ordinal)) 'Rejected no-HEAD write Preflight created Git artifacts or changed tracked state.'
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.SourceRoot) {
+                Assert-True (Test-PathWithinRoot -Path $fixture.SourceRoot -Root $script:fixtureRoot) 'FIX3-U3 no-HEAD write cleanup escaped the fixture root.'
+                Remove-Item -LiteralPath $fixture.SourceRoot -Recurse -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 FIX3-U3 readonly Git source with HEAD still creates worktree' {
+        $fixture = New-Fix3PreflightFixture -Name 'fix3-u3-readonly-with-head' -Commit
+        try {
+            $run = Invoke-Fix3Preflight -Fixture $fixture -Kind workflow -TargetRelativePath @('tracked.ps1') -WriteMode readonly
+            Assert-True ([int]$run.exit_code -eq 0) ('Readonly Preflight with HEAD failed: ' + [string]$run.stderr)
+            $result = ConvertFrom-Json -InputObject ([string]$run.stdout)
+            Assert-True ([bool]$result.worktreeCreated -and [string]$result.executionRoot -ceq $fixture.DispatchRoot -and [string]$result.gitOrigin -ceq 'existing') ('Readonly Preflight with HEAD did not create the expected worktree: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+            Assert-True (-not [string]::IsNullOrWhiteSpace([string]$result.baseSha) -and -not [string]::IsNullOrWhiteSpace([string]$result.baselinePath) -and (Test-Path -LiteralPath ([string]$result.baselinePath) -PathType Leaf)) ('Readonly Preflight with HEAD omitted its Git baseline: ' + ($result | ConvertTo-Json -Depth 12 -Compress))
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.DispatchRoot) {
+                $removeRun = Invoke-Phase9Process -HostPath $fixture.GitHostPath -Arguments @('-C', $fixture.SourceRoot, 'worktree', 'remove', '--force', $fixture.DispatchRoot) -WorkingDirectory $fixture.SourceRoot -EnvironmentVariables @{}
+                if ([int]$removeRun.exit_code -ne 0 -and (Test-Path -LiteralPath $fixture.DispatchRoot)) { throw ('移除 FIX3-U3 worktree 失敗：' + [string]$removeRun.stderr) }
+            }
+            if (Test-Path -LiteralPath $fixture.SourceRoot) {
+                Assert-True (Test-PathWithinRoot -Path $fixture.SourceRoot -Root $script:fixtureRoot) 'FIX3-U3 with-HEAD readonly cleanup escaped the fixture root.'
+                Remove-Item -LiteralPath $fixture.SourceRoot -Recurse -Force
             }
         }
     }
@@ -17433,7 +17722,7 @@ throw 'RunRecord 事件流為空。'
         primary_reserve_percent = 30
         primary_budget_percent = 10
         estimate_percent = $null
-        estimate_source = 'not-required-above-threshold'
+        estimate_source = 'not-used'
         unit_kind = 'workflow-phase'
         requested_units = @('Phase 1')
         selected_units = @('Phase 1')

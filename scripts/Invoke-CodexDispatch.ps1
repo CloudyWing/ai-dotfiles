@@ -874,7 +874,10 @@ function Get-DispatchOperationExitCode {
 try {
     $null = Apply-DispatchRequest
     Assert-DispatchSessionMode
-    if ($Operation -in @('Preflight', 'Prepare', 'Start', 'Dispatch', 'Cleanup') -or ($Operation -eq 'Collect' -and $ApplyCollectedChanges) -or ($null -ne $script:RequestContext -and [bool]$script:RequestContext.field_presence.caller_session_id)) {
+    $requiresCallerSessionCheck = $Operation -in @('Preflight', 'Prepare', 'Start', 'Dispatch', 'Cleanup') -or
+        ($Operation -eq 'Collect' -and $ApplyCollectedChanges) -or
+        ($null -ne $script:RequestContext -and [bool]$script:RequestContext.field_presence.caller_session_id)
+    if ($requiresCallerSessionCheck) {
         $requestCallerSessionId = $null
         $requestCallerSessionIdProvided = $false
         if ($null -ne $script:RequestContext -and [bool]$script:RequestContext.field_presence.caller_session_id) {
@@ -886,6 +889,17 @@ try {
             -RequestCallerSessionIdProvided $requestCallerSessionIdProvided `
             -CliCallerSessionId ([string]$CallerSessionId) `
             -CliCallerSessionIdProvided $script:InvocationBoundParameters.Contains('CallerSessionId')
+        if ($Operation -notin @('Preflight', 'Dispatch')) {
+            $null = Assert-DispatchAdmission `
+                -SourceRoot $SourceRoot `
+                -CallerIdentity $script:CallerSessionIdentity `
+                -LineSlug $LineSlug `
+                -DispatchSlug $DispatchSlug `
+                -WriteMode $WriteMode `
+                -TargetPath @($TargetPath) `
+                -AddDirectory @($AddDirectory) `
+                -ExecutionRoot $(if (-not [string]::IsNullOrWhiteSpace($ExecutionRoot)) { $ExecutionRoot } else { $DispatchRoot })
+        }
     }
     $result = switch ($Operation) {
         'Preflight' { Invoke-Preflight }
@@ -923,6 +937,16 @@ catch {
         else {
             Write-OperationResult -Result $operationResultProperty
         }
+    }
+    elseif ($Operation -ieq 'Preflight' -and [string]$_.Exception.Data['errorCode'] -ceq 'DispatchPreflightFailed') {
+        $preflightFailureResult = [ordered]@{
+            operation = 'Preflight'
+            status = 'failed'
+            error_code = 'DispatchPreflightFailed'
+            error = [string]$_.Exception.Message
+            process_started = $false
+        }
+        Write-OperationResult -Result $preflightFailureResult
     }
     [Console]::Error.WriteLine(('Invoke-CodexDispatch.ps1 失敗：{0}' -f $_.Exception.Message))
     exit 1

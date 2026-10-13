@@ -279,6 +279,18 @@ function ConvertTo-BooleanValue {
     }
 }
 
+function ConvertTo-CrlfText {
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Content
+    )
+
+    $normalizedContent = $Content.Replace("`r`n", "`n").Replace("`r", "`n")
+    return $normalizedContent.Replace("`n", "`r`n")
+}
+
 function Write-DocFile {
     [CmdletBinding()]
     param (
@@ -291,7 +303,7 @@ function Write-DocFile {
         [string[]]$Lines
     )
 
-    $content = ($Lines -join "`n") + "`n"
+    $content = ConvertTo-CrlfText -Content (($Lines -join "`n") + "`n")
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $content, $encoding)
 }
@@ -459,6 +471,7 @@ function Update-SkillIndex {
     $updatedContent = $instructionsContent.Substring(0, $match.Index) +
         $replacement +
         $instructionsContent.Substring($match.Index + $match.Length)
+    $updatedContent = ConvertTo-CrlfText -Content $updatedContent
     $encoding = New-Object System.Text.UTF8Encoding($false)
     [System.IO.File]::WriteAllText($Path, $updatedContent, $encoding)
 }

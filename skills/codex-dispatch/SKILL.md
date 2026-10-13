@@ -227,9 +227,21 @@ advisor 執行期間的額度觀測只作紀錄。監看迴圈每 250 毫秒檢�
 | `sourceReportLineRoot` | `<sourceRoot>\.local\ai-sessions\report\<lineSlug>` |
 | `reportLineRoot` | `<executionRoot>\.local\ai-sessions\report\<lineSlug>` |
 
-`Preflight` 先驗證 manifest、目錄界線與同線 PID，再依寫入面判定是否需要 worktree。`write` 模式先執行不修改來源的既有 Git 探針，只有確認目標含 tracked 檔案後才進入 Git 狀態、`baseSha` 與 worktree 流程；需要 worktree 時，Git 探針只有 exit code 為 0 且 stdout 為 `true` 時才採用 `gitOrigin=existing`，其他 Git 錯誤以非零結束碼回報。腳本不會在來源目錄執行 `git init`，也不建立 `.gitignore`、commit 或 marker；需要 worktree 而 sourceRoot 不是 Git repo 時，以 `SourceRootNotGitRepository` 在建立任何產物前停止，請使用者先自行在 sourceRoot 執行 `git init`。不需要 Git 基準的 direct-write 記為 `gitOrigin=not-applicable`。
+`Preflight` 先驗證 manifest、目錄界線與同線 PID，再依序判定 Git 探針、HEAD 與 target 狀態，依下表決定 `executionRoot`。Git 探針只有 exit code 為 0 且 stdout 為 `true` 時才視為 Git 來源並採用 `gitOrigin=existing`，其他 Git 錯誤以非零結束碼回報。腳本不會在來源目錄執行 `git init`，也不建立 `.gitignore`、commit 或 marker。非 Git 來源的 direct-write 與唯讀記為 `gitOrigin=not-applicable`。
 
-腳本依寫入面與來源是否為 Git repo 分流 `executionRoot`。`readonly` 在 Git 來源使用隔離 worktree，在非 Git 來源直接以 `sourceRoot` 執行（唯讀 sandbox、不建 worktree、不產生 Git 產物）；`write` 只有在目標路徑包含既有 tracked 檔案時建立 worktree，非 Git 來源一律走 direct-write；只寫 Git ignored 範圍或全新輸出檔案的 `write` 直接使用 `sourceRoot`，輸出 `worktreeCreated=false`。若 `Preflight` 的 `target_path` 指向尚不存在的 dispatch worktree 內路徑，該路徑不會觸發 worktree 建立，`executionRoot` 退回 `sourceRoot`；需要建立 worktree 時，target 必須是 `sourceRoot` 內已存在且可辨識的 tracked 目標。直接寫入路徑仍須通過 sourceRoot 界線驗證。
+| Git 來源 | HEAD | `writeMode` | `dispatchKind` | target 狀態 | 結果 |
+| --- | --- | --- | --- | --- | --- |
+| 否 | 不適用 | `readonly` | 任一 | 任一 | 直接以 `sourceRoot` 執行，唯讀 sandbox，不建 worktree、不產生 Git 產物 |
+| 否 | 不適用 | `write` | `resource` | 任一 | direct-write，`executionRoot=sourceRoot`、`worktreeCreated=false` |
+| 否 | 不適用 | `write` | `workflow` | 任一 | 拒絕（`DispatchPreflightFailed`），Workflow 必須在隔離 worktree 執行 |
+| 是 | 有 | `readonly` | 任一 | 任一 | 建立隔離 worktree |
+| 是 | 有 | `write` | 任一 | 含既存 tracked 檔 | 建立隔離 worktree |
+| 是 | 有 | `write` | `resource` | 不含既存 tracked 檔（未追蹤檔、Git ignored 範圍或全新輸出） | direct-write，`executionRoot=sourceRoot`、`worktreeCreated=false`，`baseSha` 為 HEAD |
+| 是 | 有 | `write` | `workflow` | 不含既存 tracked 檔 | 拒絕（`DispatchPreflightFailed`），列出每個 target 的 `RelativePath`、`Exists` 與 `IsTracked` |
+| 是 | 無 | `readonly` | 任一 | 任一 | 直接以 `sourceRoot` 執行，唯讀 sandbox，不建 worktree 與 baseline |
+| 是 | 無 | `write` | 任一 | 任一 | 拒絕（`DispatchPreflightFailed`），提示先在 `sourceRoot` 建立基準 commit |
+
+上表列出的拒絕分支都在建立任何產物前發生。`SourceRootNotGitRepository` 由 Git 基準建立步驟在 sourceRoot 不是 Git repo 時拋出；依上表分流，Preflight 不會讓非 Git 來源進入該步驟。若 `Preflight` 的 `target_path` 指向尚不存在的 dispatch worktree 內路徑，該路徑不會觸發 worktree 建立；需要建立 worktree 時，target 必須是 `sourceRoot` 內已存在且可辨識的 tracked 目標。直接寫入路徑仍須通過 sourceRoot 界線驗證。
 
 需要 worktree 時，`Preflight` 先固定 `baseSha`，再從來源取得 tracked patch 與未追蹤檔案清單。Carry-in 套用與複製時排除檔名符合 `.env`、`.env.*`、`*.pfx`、`*.pem`、`*.key`、`secrets.*` 的檔案，並將被排除的相對路徑寫入 `carryInManifest.excludedSecrets`。清單只含路徑，不含檔案內容或雜湊。若 `target_path` 本身符合上述樣式，`Preflight` 以 `PreflightSecretTargetRejected` 列出路徑並停止，不建立 worktree。其餘 carry-in 仍依原流程套用或複製，衝突時停止並保留現況，不覆寫來源檔案。
 
@@ -321,7 +333,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 | `Cleanup` | `SourceRoot`、`ExecutionRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、RunRecord、`ReportPath[]`；省略 `EvidencePath[]` 時保存 RunRecord 引用且位於 worktree 的既存證據，明列時只接受該 RunRecord 引用的檔案。`ReportPath[]` 與 `EvidencePath[]` 以 `-RequestPath` 傳入 `operation=Cleanup` 的 JSON 陣列，欄位分別為 `report_path` 與 `evidence_path` | 已完成保存驗證且移除目標 dispatch worktree 的結果，包含 0 位元組證據的長度與 SHA-256；自動保存 report 根目錄的 `dispatch-report-<dispatchSlug>.md` | 保存清單、路徑界線、進程或移除驗證失敗時 stderr 並 exit code 1；首次盤點後於移除前再次核對 report 根目錄；新增且未列入保存清單的檔案以 `preservation-failed` 拒絕並列出路徑，且保留 dispatch worktree；未引用的 EvidencePath 錯誤列出可接受清單；失敗時保留 dispatch worktree，不得使用其他方式強制移除 |
 | `DiagnoseModelEnvironment` | `ThreadId`、`StartedAtUtc`；`Profile`（預設 `default`）、`CodexHome` 選填 | profile 設定值、actual model／reasoning effort 與 rollout 路徑的 JSON；證據不足時 actual 為 `unknown` | 缺少 `ThreadId` 或 `StartedAtUtc` 時 exit code 1。只由使用者或維運者明確呼叫，Dispatch、Start、Inspect 不呼叫 |
 
-`Preflight` 的 `writeMode=readonly` 在 Git 來源建立隔離 worktree，在非 Git 來源直接以 `sourceRoot` 執行。`writeMode=write` 只有 tracked 目標需要 worktree；ignored 或全新輸出直接回傳 `executionRoot=sourceRoot`、`worktreeCreated=false`、空 `baseSha` 與核准輸出清單。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
+`Preflight` 的 `executionRoot` 分流依「Git 前置探針與 worktree 生命週期」的決策表。direct-write 回傳 `executionRoot=sourceRoot`、`worktreeCreated=false` 與核准輸出清單；`baseSha` 在非 Git 來源為空，在有 HEAD 的 Git 來源為 HEAD。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
 
 `readonly` 且建立 worktree 時，`Preflight` 檢查每個 `target_path` 是否位於 dispatch worktree repository 內且未被 gitignore 排除。範圍外路徑列入 `targetsOutsideRepository`；`Start` 將清單寫入 prompt，要求執行端直接讀取這些路徑，不經 Git 狀態盤點。對未被忽略的目錄 target，`Preflight` 逐檔檢查來源目錄中的子檔，個別被 gitignore 排除的檔案也逐一列入清單；遞迴盤點會略過 ReparsePoint。
 
@@ -583,7 +595,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 ### 腳本背景與證據
 
-`Start` 將 Codex 置於背景執行，立即輸出根 PID 與所有證據檔案路徑。主 Agent 由執行環境的完成通知接續，再呼叫 `Inspect` 與 `Collect`；不以檔案大小、stdout 閒置或單一 exit code 判定完成。
+單獨呼叫的 `Start` 將 Codex 置於背景執行，thread relay 最多等待 5 秒後即輸出根 PID 與所有證據檔案路徑。`Dispatch` 同步模式（`background: false`）內部的 Start 會等待 Codex 行程結束才回傳，前景執行時間因此等於整個派遣的執行時間。主 Agent 由執行環境的完成通知接續，再呼叫 `Inspect` 與 `Collect`；不以檔案大小、stdout 閒置或單一 exit code 判定完成。
 
 需要中止時，腳本只對已通過 PID 身分比對的根程序或 process group 執行安全關閉，並再次查詢確認進程樹已結束。無法完成身分驗證時保留進程與證據，不執行終止。
 

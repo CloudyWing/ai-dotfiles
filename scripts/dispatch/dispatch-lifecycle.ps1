@@ -159,6 +159,18 @@ function Get-TargetsOutsideRepository {
 
     return @($targetsOutsideRepository.ToArray())
 }
+function Throw-DispatchPreflightFailure {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Message
+    )
+
+    $exception = New-Object System.InvalidOperationException($Message)
+    $exception.Data['errorCode'] = 'DispatchPreflightFailed'
+    throw $exception
+}
+
 function Invoke-Preflight {
     if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($DispatchRoot) -or [string]::IsNullOrWhiteSpace($LineSlug) -or [string]::IsNullOrWhiteSpace($DispatchSlug)) {
         throw 'Preflight 必須提供 SourceRoot、DispatchRoot、LineSlug 與 DispatchSlug。'
@@ -223,23 +235,23 @@ function Invoke-Preflight {
     if ($dispatchPidBlockers.Count -gt 0) {
         throw (New-DispatchPidIdentityBlockedMessage -DispatchSlug $DispatchSlug -Records $dispatchPidBlockers)
     }
-    if ($null -ne $script:CallerSessionIdentity) {
-        $preflightExecutionRoot = if (-not [string]::IsNullOrWhiteSpace($ExecutionRoot)) { $ExecutionRoot } else { $DispatchRoot }
-        $null = Assert-DispatchAdmission `
-            -SourceRoot $sourceRootPath `
-            -CallerIdentity $script:CallerSessionIdentity `
-            -LineSlug $LineSlug `
-            -DispatchSlug $DispatchSlug `
-            -WriteMode $WriteMode `
-            -TargetPath @($TargetPath) `
-            -AddDirectory @($AddDirectory) `
-            -ExecutionRoot $preflightExecutionRoot
-    }
-
     $gitProbeState = $null
     $targetStates = @()
     $gitProbeState = Get-ExistingGitRepositoryState -SourceRoot $sourceRootPath
+    $baseShaValue = ''
+    $hasBaseCommit = $false
+    if ($gitProbeState.IsRepository) {
+        $headResult = Invoke-GitCommand -WorkingDirectory $sourceRootPath -Arguments @('rev-parse', '--verify', 'HEAD^{commit}') -AllowFailure
+        if ($headResult.ExitCode -eq 0) {
+            $baseShaValue = $headResult.StdOut.Trim()
+            if ($baseShaValue -notmatch '^[0-9a-fA-F]{7,64}$') {
+                throw "無法取得有效 baseSha：$baseShaValue"
+            }
+            $hasBaseCommit = $true
+        }
+    }
     $worktreeCreated = $WriteMode -eq 'readonly' -and $gitProbeState.IsRepository
+    $hasTrackedWriteTarget = $false
     if ($WriteMode -eq 'write') {
         if ($gitProbeState.IsRepository) {
             $targetStates = @(Get-TrackedPathState -SourceRoot $sourceRootPath -TargetPath $TargetPath)
@@ -255,6 +267,38 @@ function Invoke-Preflight {
         $targetStates = @(Get-NonGitTargetState -SourceRoot $sourceRootPath -TargetPath $TargetPath)
     }
 
+    if ($DispatchKind -eq 'workflow' -and $WriteMode -eq 'write' -and -not $hasTrackedWriteTarget) {
+        $targetStateDetails = @(
+            foreach ($targetState in $targetStates) {
+                'RelativePath={0}, Exists={1}, IsTracked={2}' -f [string]$targetState.RelativePath, [bool]$targetState.Exists, [bool]$targetState.IsTracked
+            }
+        ) -join '; '
+        $baselineCommitMessage = if ($gitProbeState.IsRepository -and -not $hasBaseCommit) { ' Git 儲存庫需要先有基準 commit。' } else { '' }
+        Throw-DispatchPreflightFailure -Message ('Workflow write 必須至少包含一個 tracked target；Preflight 未建立產物。targets: ' + $targetStateDetails + $baselineCommitMessage)
+    }
+
+    if ($gitProbeState.IsRepository -and -not $hasBaseCommit) {
+        if ($WriteMode -eq 'readonly') {
+            $worktreeCreated = $false
+        }
+        elseif ($WriteMode -eq 'write') {
+            Throw-DispatchPreflightFailure -Message 'Git write dispatch 需要先有基準 commit；請先在 SourceRoot 建立 commit，再執行 Preflight。'
+        }
+    }
+
+    if ($null -ne $script:CallerSessionIdentity) {
+        $preflightExecutionRoot = if (-not [string]::IsNullOrWhiteSpace($ExecutionRoot)) { $ExecutionRoot } else { $DispatchRoot }
+        $null = Assert-DispatchAdmission `
+            -SourceRoot $sourceRootPath `
+            -CallerIdentity $script:CallerSessionIdentity `
+            -LineSlug $LineSlug `
+            -DispatchSlug $DispatchSlug `
+            -WriteMode $WriteMode `
+            -TargetPath @($TargetPath) `
+            -AddDirectory @($AddDirectory) `
+            -ExecutionRoot $preflightExecutionRoot
+    }
+
     $executionRootPath = $sourceRootPath
     $targetsOutsideRepository = @()
     $carryInManifest = [ordered]@{
@@ -266,9 +310,11 @@ function Invoke-Preflight {
     }
 
     $gitState = $null
-    $baseShaValue = ''
     $baseline = $null
     if ($worktreeCreated) {
+        if (-not $hasBaseCommit) {
+            throw 'Preflight worktree 建立前需要有效的基準 commit。'
+        }
         if ($null -ne $gitProbeState -and $gitProbeState.IsRepository) {
             $gitState = [ordered]@{
                 GitOrigin = 'existing'
@@ -279,11 +325,6 @@ function Invoke-Preflight {
         }
         if ($targetStates.Count -eq 0) {
             $targetStates = @(Get-TrackedPathState -SourceRoot $sourceRootPath -TargetPath $TargetPath)
-        }
-        $baseResult = Invoke-GitCommand -WorkingDirectory $sourceRootPath -Arguments @('rev-parse', 'HEAD')
-        $baseShaValue = $baseResult.StdOut.Trim()
-        if ($baseShaValue -notmatch '^[0-9a-fA-F]{7,64}$') {
-            throw "無法取得有效 baseSha：$baseShaValue"
         }
 
         $dispatchParent = Split-Path -Parent $dispatchRootPath
@@ -299,7 +340,7 @@ function Invoke-Preflight {
             $targetsOutsideRepository = @(Get-TargetsOutsideRepository -SourceRoot $sourceRootPath -DispatchRoot $executionRootPath -TargetPath @($TargetPath))
         }
     }
-    elseif ($WriteMode -eq 'write' -and $null -ne $gitProbeState -and $gitProbeState.IsRepository) {
+    elseif ($null -ne $gitProbeState -and $gitProbeState.IsRepository) {
         $gitState = [ordered]@{
             GitOrigin = 'existing'
         }
