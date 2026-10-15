@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1776,6 +1776,16 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'P0-B') {
             $Name -match '^Phase 9 P0-B' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH6-K1') {
+            $Name -ceq 'Phase 9 BATCH6-K1 Cleanup preserves binary report bytes and rejects destination tampering' -or
+            $Name -match '^Phase 9 P0-B' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH6-K2') {
+            $Name -match '^Phase 9 BATCH6-K2'
+        }
+        elseif ($script:focusedCase -ceq 'BATCH6-K3') {
+            $Name -match '^Phase 9 BATCH6-K3'
         }
         elseif ($script:focusedCase -ceq 'T045') {
             $Name -match '^Phase 5 T045' -or $cleanupMatch
@@ -8908,20 +8918,31 @@ $env:CODEX_HOME = $CodexHomePath
     }
 
     $phase7DispatchTargetPath = Join-Path $phase7Root 'request-target.txt'
-    $phase7AdvisorEvidencePath = Join-Path $phase7Root 'advisor-evidence.md'
+    $phase7AdvisorDispatchRoot = Join-Path $phase7Root '.local/ai-sessions/worktrees/phase7-advisor-request'
+    $phase7AdvisorEvidencePath = Join-Path $phase7AdvisorDispatchRoot 'advisor-evidence.md'
     $phase7AdvisorReportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/advisor-consult-phase7-advisor-request.md'
     $phase7AdvisorRequestPath = Join-Path $phase7Root 'advisor-dispatch-request.json'
+    $phase7AdvisorManualSourcePath = Join-Path $phase7Root '.local/ai-sessions/handoff/line-a/advisor-evidence.md'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $phase7AdvisorManualSourcePath) -Force | Out-Null
+    Write-Utf8NoBom -Path $phase7AdvisorManualSourcePath -Content '# phase7 advisor source evidence fixture' -SourceRoot $phase7Root -ExecutionRoot $phase7Root -TargetPath @()
+    New-Item -ItemType Directory -Path $phase7AdvisorDispatchRoot -Force | Out-Null
+    Write-Utf8NoBom -Path $phase7AdvisorEvidencePath -Content '# phase7 advisor evidence pack fixture' -SourceRoot $phase7Root -ExecutionRoot $phase7AdvisorDispatchRoot -TargetPath @()
     $phase7AdvisorRequest = [ordered]@{
         schema = 'ai-sessions.dispatch-request.v1'
         operation = 'Dispatch'
         line_slug = 'line-a'
         dispatch_slug = 'phase7-advisor-request'
         source_root = $phase7Root
-        dispatch_root = (Join-Path $phase7Root '.local/ai-sessions/worktrees/phase7-advisor-request')
+        dispatch_root = $phase7AdvisorDispatchRoot
         write_mode = 'readonly'
         dispatch_kind = 'resource'
         target_path = @($phase7DispatchTargetPath)
-        prepare_artifacts = @()
+        prepare_artifacts = @([ordered]@{
+                source = $phase7AdvisorManualSourcePath
+                destination = $phase7AdvisorEvidencePath
+                sha256 = Get-FileSha256 -Path $phase7AdvisorManualSourcePath
+                purpose = 'phase7 advisor manual destination fixture'
+            })
         prompt_path = (Join-Path $phase7Root 'advisor-prompt.md')
         task_type = 'advisor-consult'
         session_mode = 'cold-start'
@@ -8940,7 +8961,7 @@ $env:CODEX_HOME = $CodexHomePath
         $requestContext = Read-DispatchRequest -Path $phase7AdvisorRequestPath
         Assert-True ($requestContext.dispatch_values.evidence_pack_path -ceq $phase7AdvisorEvidencePath -and $requestContext.dispatch_values.advisor_consult_report_path -ceq $phase7AdvisorReportPath) 'advisor Request 未保留 evidence_pack_path 或 advisor_consult_report_path。'
 
-        $savedNames = @('RequestPath', 'RequestContext', 'Operation', 'LineSlug', 'DispatchSlug', 'SourceRoot', 'DispatchRoot', 'WriteMode', 'DispatchKind', 'TargetPath', 'PromptPath', 'TaskType', 'SessionMode', 'UnitKind', 'RequestedUnit', 'FailureReceiptPath', 'EvidencePackPath', 'AdvisorConsultReportPath', 'Profile', 'ProfileExplicit', 'AdvisorRequestSource', 'InvocationBoundParameters')
+        $savedNames = @('RequestPath', 'RequestContext', 'Operation', 'LineSlug', 'DispatchSlug', 'SourceRoot', 'DispatchRoot', 'ExecutionRoot', 'WriteMode', 'DispatchKind', 'TargetPath', 'PromptPath', 'TaskType', 'SessionMode', 'UnitKind', 'RequestedUnit', 'FailureReceiptPath', 'EvidencePackPath', 'AdvisorConsultReportPath', 'Profile', 'ProfileExplicit', 'AdvisorRequestSource', 'InvocationBoundParameters')
         $savedVariables = @{}
         foreach ($name in $savedNames) {
             $variable = Get-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
@@ -8951,6 +8972,7 @@ $env:CODEX_HOME = $CodexHomePath
             $script:Operation = 'Dispatch'
             $script:LineSlug = 'line-a'
             $script:DispatchSlug = 'phase7-advisor-request'
+            $script:ExecutionRoot = $phase7AdvisorDispatchRoot
             $script:InvocationBoundParameters = [ordered]@{
                 RequestPath = $phase7AdvisorRequestPath
                 Operation = 'Dispatch'
@@ -12949,7 +12971,14 @@ if ($Phase -ge 9) {
             [switch]$TaskMentionsDesign,
             [switch]$NonGitSource,
             [switch]$MissingSameLineTarget,
-            [switch]$SeedForeignScopeHashRecord
+            [switch]$SeedForeignScopeHashRecord,
+            [switch]$AdvisorDispatch,
+            [switch]$ManualAdvisorArtifacts,
+            [switch]$DuplicateAdvisorEvidenceArtifacts,
+            [switch]$AdvisorDestinationEvidence,
+            [switch]$AdvisorMissingEvidenceArtifact,
+            [switch]$UseCurrentHost,
+            [switch]$EvidencePackOutsideSourceRoot
         )
 
         $caseSlug = New-BindingFixtureName -Code 's'
@@ -12964,9 +12993,15 @@ if ($Phase -ge 9) {
         }
         $promptSourcePath = Join-Path $sourceRoot 'dispatch-prompt.md'
         $promptPath = Join-Path $dispatchRoot 'dispatch-prompt.md'
-        $targetPath = if ($MissingSameLineTarget) { Join-Path $lineRoot 'new-design.md' } else { Join-Path $sourceRoot 'target.txt' }
+        $evidencePackPath = Join-Path $lineRoot 'advisor-evidence.md'
+        if ($EvidencePackOutsideSourceRoot) {
+            $evidencePackPath = Join-Path (Join-Path $sRealDispatchParent ($caseSlug + '-outside')) 'advisor-evidence.md'
+        }
+        $advisorReportPath = Join-Path $dispatchRoot ('.local\ai-sessions\report\a\advisor-consult-' + $caseSlug + '.md')
+        $targetPath = if ($AdvisorDispatch) { $evidencePackPath } elseif ($MissingSameLineTarget) { Join-Path $lineRoot 'new-design.md' } else { Join-Path $sourceRoot 'target.txt' }
         $requestPath = Join-Path $caseRoot 'dispatch-request.json'
         $resultPath = Join-Path $dispatchHistoryRoot 'dispatch-result.json'
+        if ($UseCurrentHost) { $resultPath = Join-Path $sourceHistoryRoot 'dispatch-result.json' }
         $preflightResultPath = Join-Path $sourceRoot 'preflight-result.json'
         $prepareResultPath = Join-Path $dispatchHistoryRoot 'prepare.json'
         $quotaBeforePath = Join-Path $sourceHistoryRoot 'quota-before.json'
@@ -12997,7 +13032,8 @@ if ($Phase -ge 9) {
             $foreignScopeHashRecordSha256 = Get-FileSha256 -Path $foreignScopeHashRecordPath
         }
         Write-Utf8NoBom -Path $promptSourcePath -Content ('S finding dispatch prompt: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
-        if (-not $MissingSameLineTarget) { Write-Utf8NoBom -Path $targetPath -Content ('S finding target: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @() }
+        if (-not $MissingSameLineTarget -and -not $EvidencePackOutsideSourceRoot) { Write-Utf8NoBom -Path $targetPath -Content ('S finding target: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @() }
+        if ($AdvisorDispatch) { Write-Utf8NoBom -Path (Join-Path $sourceRoot 'target.txt') -Content ('S finding git target: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @() }
         Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'a' } | ConvertTo-Json -Depth 10) + "
 ") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
         Write-Utf8NoBom -Path (Join-Path $lineRoot 'requirement-summary.md') -Content "# S finding requirement summary
@@ -13008,6 +13044,46 @@ if ($Phase -ge 9) {
 
 #### Phase 2 fixture
 " -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
+        if ($AdvisorDispatch) {
+            if ($EvidencePackOutsideSourceRoot) {
+                $null = New-Item -ItemType Directory -Path (Split-Path -Parent $evidencePackPath) -Force
+            }
+            $advisorEvidenceContent = @(
+                'schema: advisor-consult.evidence.v1'
+                'line-slug: a'
+                ('dispatch-slug: ' + $caseSlug)
+                ''
+                '## 目標段落'
+                ''
+                'source: design.md:1'
+                'excerpt: fixture advisor evidence pack'
+                ''
+                '## 已知結論'
+                ''
+                'fixture conclusion'
+                ''
+                '## 待答問題'
+                ''
+                'question-001: fixture question'
+                'required-output: ## 中斷保全結論; ## 證據支持; ## 推論; ## 未決問題'
+                'output-rules: answer only from this evidence pack'
+                ''
+                '## 可能反證'
+                ''
+                'fixture counterevidence'
+                ''
+                '## 邊界'
+                ''
+                '- allowed-input: this evidence pack only'
+                '- forbidden-action: source exploration, repository scan, file mutation, external dispatch'
+            ) -join "`r`n"
+            if ($EvidencePackOutsideSourceRoot) {
+                [IO.File]::WriteAllText($evidencePackPath, $advisorEvidenceContent, (New-Object System.Text.UTF8Encoding($false)))
+            }
+            else {
+                Write-Utf8NoBom -Path $evidencePackPath -Content ($advisorEvidenceContent + "`r`n") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
+            }
+        }
         $dispatchOrderPath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\dispatch-order-' + $caseSlug + '.md')
         if ($DispatchKind -eq 'resource') {
             $resourceTaskBody = if ($TaskMentionsDesign) { 'Execute the requested resource and compare design.md context.' } else { 'Execute the requested resource target.' }
@@ -13032,6 +13108,9 @@ if ($Phase -ge 9) {
         }
         Write-Utf8NoBom -Path $artifactSourcePath -Content ('S finding artifact: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
         Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
+        if ($AdvisorDispatch) {
+            Write-Utf8NoBom -Path (Join-Path $codexHome 'advisor.config.toml') -Content ('model = "fixture-advisor-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
+        }
 
         $quotaTimestamp = [DateTimeOffset]::UtcNow.AddMinutes(-1)
         $quotaReset = $quotaTimestamp.AddHours(1).ToUnixTimeSeconds()
@@ -13063,7 +13142,55 @@ if ($Phase -ge 9) {
             $null = New-Phase8QuotaSnapshot -Path $quotaBeforePath -PrimaryRemainingPercent 80 -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot
         }
 
-        $fakeIdentifier = if ($DispatchKind -eq 'workflow') { 'design.md' } elseif ($MissingSameLineTarget) { 'new-design.md' } else { 'target.txt' }
+        $fakeIdentifier = if ($AdvisorDispatch) { 'advisor-evidence.md' } elseif ($DispatchKind -eq 'workflow') { 'design.md' } elseif ($MissingSameLineTarget) { 'new-design.md' } else { 'target.txt' }
+        $fakeFinalMessage = $null
+        $fakeLastMessageCommand = '>"%~2" echo ' + $fakeIdentifier + ' ' + $caseSlug + ' a'
+        $fakeAgentMessageJson = $null
+        if ($AdvisorDispatch) {
+            $fakeFinalMessage = @(
+                '## 中斷保全結論'
+                ''
+                '已確認結論：fixture advisor completed'
+                '證據位置：design.md:1'
+                '實際覆蓋範圍：question-001'
+                '已完成單位：question-001'
+                ''
+                '## 證據支持'
+                ''
+                'fixture evidence supports the answer'
+                ''
+                '## 推論'
+                ''
+                'fixture inference'
+                ''
+                '## 未決問題'
+                ''
+                '無'
+                ''
+                ('advisor-evidence.md ' + $caseSlug + ' a')
+            ) -join "`r`n"
+            $writerScriptPath = Join-Path $caseRoot 'write-advisor-last-message.ps1'
+            $lastMessageBytes = [System.Text.Encoding]::UTF8.GetBytes($fakeFinalMessage)
+            $lastMessageBase64 = [System.Convert]::ToBase64String($lastMessageBytes)
+            $writerScriptContent = @(
+                'param([Parameter(Mandatory)][string]$Path)'
+                ('$contentBytes = [System.Convert]::FromBase64String(''' + $lastMessageBase64 + ''')')
+                '[System.IO.File]::WriteAllBytes($Path, $contentBytes)'
+            ) -join "`r`n"
+            Write-Utf8NoBom -Path $writerScriptPath -Content ($writerScriptContent + "`r`n") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
+            $fakeLastMessageCommand = 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $writerScriptPath + '" "%~2"'
+            $jsonMessage = ConvertTo-Json -InputObject $fakeFinalMessage -Compress
+            $jsonMessageBuilder = New-Object System.Text.StringBuilder
+            foreach ($messageCharacter in $jsonMessage.ToCharArray()) {
+                if ([int]$messageCharacter -gt 127) {
+                    $null = $jsonMessageBuilder.Append(('\u{0:x4}' -f [int]$messageCharacter))
+                }
+                else {
+                    $null = $jsonMessageBuilder.Append($messageCharacter)
+                }
+            }
+            $fakeAgentMessageJson = $jsonMessageBuilder.ToString()
+        }
         $fakeCodexLines = @(
             '@echo off'
             ('>"' + $counterPath + '" echo started')
@@ -13073,10 +13200,10 @@ if ($Phase -ge 9) {
             'shift'
             'goto findLastMessage'
             ':writeLastMessage'
-            ('>"%~2" echo ' + $fakeIdentifier + ' ' + $caseSlug + ' a')
+            $fakeLastMessageCommand
             ':emitEvents'
             ('echo {"type":"thread.started","thread_id":"' + $threadId + '"}')
-            ('echo {"type":"item.completed","item":{"type":"agent_message","text":"' + $fakeIdentifier + ' ' + $caseSlug + ' a"}}')
+            $(if ($AdvisorDispatch) { 'echo {"type":"item.completed","item":{"type":"agent_message","text":' + $fakeAgentMessageJson + '}}' } else { 'echo {"type":"item.completed","item":{"type":"agent_message","text":"' + $fakeIdentifier + ' ' + $caseSlug + ' a"}}' })
             'echo {"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}'
             'powershell.exe -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 1"'
             'exit /b 0'
@@ -13089,6 +13216,7 @@ if ($Phase -ge 9) {
             sha256 = if ($PrepareFailure) { '0' * 64 } else { Get-FileSha256 -Path $artifactSourcePath }
             purpose = 'S finding Prepare fixture'
         }
+        $manualQuotaAfterPath = Join-Path $dispatchHistoryRoot 'quota-after-manual.json'
         $request = [ordered]@{
             schema = 'ai-sessions.dispatch-request.v1'
             operation = 'Dispatch'
@@ -13096,28 +13224,83 @@ if ($Phase -ge 9) {
             dispatch_root = $dispatchRoot
             line_slug = 'a'
             dispatch_slug = $caseSlug
-            profile = 'default'
+            profile = if ($AdvisorDispatch) { 'advisor' } else { 'default' }
             write_mode = $WriteMode
             dispatch_kind = $DispatchKind
             target_path = @($targetPath)
             prompt_path = $promptSourcePath
-            task_type = 'script-change'
+            task_type = if ($AdvisorDispatch) { 'advisor-consult' } else { 'script-change' }
             session_mode = 'cold-start'
-            unit_kind = if ($DispatchKind -eq 'workflow') { 'workflow-phase' } else { 'resource-target' }
+            unit_kind = if ($AdvisorDispatch) { 'advisor-evidence-question' } elseif ($DispatchKind -eq 'workflow') { 'workflow-phase' } else { 'resource-target' }
             failure_receipt_path = $failureReceiptPath
             result_path = $resultPath
             preflight_result_path = $preflightResultPath
             prepare_result_path = $prepareResultPath
         }
+        if ($AdvisorDispatch) {
+            $request.advisor_request_source = 'user-explicit'
+            $request.evidence_pack_path = $evidencePackPath
+            $request.advisor_consult_report_path = $advisorReportPath
+            if ($AdvisorDestinationEvidence -or $AdvisorMissingEvidenceArtifact) {
+                $request.evidence_pack_path = Join-Path $dispatchRoot '.local\ai-sessions\handoff\a\advisor-evidence.md'
+                if ($AdvisorDestinationEvidence) {
+                    $request.prepare_artifacts = @([ordered]@{
+                            source = $evidencePackPath
+                            destination = $request.evidence_pack_path
+                            sha256 = Get-FileSha256 -Path $evidencePackPath
+                            purpose = 'manual advisor evidence destination fixture'
+                        })
+                }
+            }
+        }
         if ($ResourceTargetPathMismatch) {
             $request.target_path = @(Join-Path $sourceRoot 'request-mismatched-target.txt')
         }
-        if (-not $OmitPrepareArtifacts) {
+        if ($AdvisorDispatch -and $DuplicateAdvisorEvidenceArtifacts) {
+            $request.prepare_artifacts = @(
+                [ordered]@{
+                    source = $evidencePackPath
+                    destination = Join-Path $dispatchRoot '.local\ai-sessions\handoff\a\advisor-evidence-copy-1.md'
+                    sha256 = Get-FileSha256 -Path $evidencePackPath
+                    purpose = 'first duplicate advisor evidence pack fixture'
+                }
+                [ordered]@{
+                    source = $evidencePackPath
+                    destination = Join-Path $dispatchRoot '.local\ai-sessions\handoff\a\advisor-evidence-copy-2.md'
+                    sha256 = Get-FileSha256 -Path $evidencePackPath
+                    purpose = 'second duplicate advisor evidence pack fixture'
+                }
+            )
+        }
+        elseif ($AdvisorDispatch -and $ManualAdvisorArtifacts) {
+            $manualQuotaAfterSourcePath = Join-Path $sourceRoot '.local\ai-sessions\report\a\quota-after-manual-source.json'
+            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $manualQuotaAfterSourcePath) -Force
+            Copy-Item -LiteralPath $quotaBeforePath -Destination $manualQuotaAfterSourcePath -Force
+            $request.quota_after_path = $manualQuotaAfterPath
+            $request.prepare_artifacts = @(
+                [ordered]@{
+                    source = $evidencePackPath
+                    destination = Join-Path $dispatchRoot '.local\ai-sessions\handoff\a\advisor-evidence.md'
+                    sha256 = Get-FileSha256 -Path $evidencePackPath
+                    purpose = 'manual advisor evidence pack fixture'
+                }
+                [ordered]@{
+                    source = $manualQuotaAfterSourcePath
+                    destination = $manualQuotaAfterPath
+                    sha256 = Get-FileSha256 -Path $manualQuotaAfterSourcePath
+                    purpose = 'manual advisor after snapshot fixture'
+                }
+            )
+        }
+        elseif (-not $AdvisorDispatch -and -not $OmitPrepareArtifacts) {
             $request.prepare_artifacts = @($artifactDocument)
         }
         if (-not $OmitRequestedUnit) {
             if ($RequestedUnitMismatch) {
                 $request.requested_unit = @('Phase 99')
+            }
+            elseif ($AdvisorDispatch) {
+                $request.requested_unit = @('question-001')
             }
             elseif ($DispatchKind -eq 'workflow') {
                 $request.requested_unit = [string[]]$RequestedUnits
@@ -13132,7 +13315,7 @@ if ($Phase -ge 9) {
         if (-not $OmitQuotaBeforePath) {
             $request.quota_before_path = $quotaBeforePath
         }
-        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $hostPath = if ($UseCurrentHost -and $PSVersionTable.PSEdition -eq 'Core') { (Get-Command pwsh.exe -ErrorAction Stop).Source } else { (Get-Command powershell.exe -ErrorAction Stop).Source }
         $dispatchArguments = @(
             '-NoProfile'
             '-File'
@@ -13144,6 +13327,7 @@ if ($Phase -ge 9) {
             '-Operation'
             'Dispatch'
         )
+        if ($UseCurrentHost) { $dispatchArguments = @('-NonInteractive') + $dispatchArguments }
         if ($CliParameterDispatch) {
             $cliTargetPath = Join-Path $sourceRoot 'cli-mismatched-target.txt'
             $dispatchArguments += @(
@@ -13274,6 +13458,9 @@ if ($Phase -ge 9) {
             request_path = $requestPath
             cli_target_path = if ($CliParameterDispatch) { $cliTargetPath } else { $null }
             request = $request
+            evidence_pack_path = $evidencePackPath
+            advisor_report_path = $advisorReportPath
+            manual_quota_after_path = if ($ManualAdvisorArtifacts) { $manualQuotaAfterPath } else { $null }
             run = $run
             output_text = ([string]$run.stdout + [string]$run.stderr)
             output_document = $outputDocument
@@ -14067,6 +14254,490 @@ if ($Phase -ge 9) {
         catch { $driftRejected = $_.Exception.Message -match 'CleanupDestinationConflict' }
         Assert-True ($driftRejected -and (Get-FileSha256 -Path $otherOrigin) -ceq $otherBefore) 'P0-B 一般檔案漂移未維持拒絕。'
         Write-Phase9Evidence -Label 'P0B_EXCEPTIONS_MERGE' -Value ([ordered]@{ one_side = $oneSide.status; both_sides = $bothSide.status; repeat_sha256 = $beforeRepeat; same_title_appended = $sameTitleAppended; same_title_repeat_stable = $sameTitleRepeatStable; missing_source_block_preserved = $true; other_file_drift_rejected = $driftRejected; origin_path = $originPath })
+    }
+    Invoke-Case 'Phase 9 BATCH6-K1 Cleanup preserves binary report bytes and rejects destination tampering' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug ('batch6-k1-' + $script:caseCount)
+        $script:cleanupUseRealGit = $true
+        $binaryRelative = 'raw-stdout.log'
+        $emptyRelative = 'empty.log'
+        $binarySource = Join-Path $scenario.report_root $binaryRelative
+        $emptySource = Join-Path $scenario.report_root $emptyRelative
+        $binaryBytes = [byte[]]@(0xA5, 0xA7, 0x00, 0xFF)
+        [IO.File]::WriteAllBytes($binarySource, $binaryBytes)
+        [IO.File]::WriteAllBytes($emptySource, [byte[]]@())
+        $tamperRoot = Join-Path $phase9Root (New-BindingFixtureName -Code 'k1')
+        $tamperSourceRoot = Join-Path $tamperRoot 'source'
+        $tamperDispatchRoot = Join-Path $tamperRoot 'dispatch'
+        $tamperRelative = '.local/ai-sessions/report/line-a/tamper.log'
+        $tamperSource = Join-Path $tamperDispatchRoot ($tamperRelative -replace '/', '\')
+        $tamperDestination = Join-Path $tamperSourceRoot ($tamperRelative -replace '/', '\')
+        $tamperOriginalHash = (Get-Command Get-FileSha256 -CommandType Function).ScriptBlock
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            $cleanupResult = Invoke-Cleanup -Confirm:$false
+            $binaryDestination = Join-Path $scenario.source_root '.local\ai-sessions\report\line-a'
+            $binaryDestination = Join-Path $binaryDestination $binaryRelative
+            $emptyDestination = Join-Path (Split-Path -Parent $binaryDestination) $emptyRelative
+            $savedBinaryBytes = [IO.File]::ReadAllBytes($binaryDestination)
+            $binaryFileResult = @($cleanupResult.files | Where-Object { [string]$_.relative_path -ceq ('.local/ai-sessions/report/line-a/' + $binaryRelative) })
+            $emptyFileResult = @($cleanupResult.files | Where-Object { [string]$_.relative_path -ceq ('.local/ai-sessions/report/line-a/' + $emptyRelative) })
+            Assert-True ($cleanupResult.status -eq 'completed' -and $binaryFileResult.Count -eq 1 -and $emptyFileResult.Count -eq 1 -and (Test-ByteArrayEqual -Left $binaryBytes -Right $savedBinaryBytes) -and (Get-Item -LiteralPath $emptyDestination).Length -eq 0) 'K1 Cleanup 未保存非 UTF-8／0 位元組報告。'
+            Assert-True ([string]$binaryFileResult[0].destination_sha256 -ceq (Get-DispatchByteArraySha256 -Bytes $binaryBytes) -and [int64]$emptyFileResult[0].length -eq 0) 'K1 Cleanup 保存結果的 SHA-256 或 0 位元組長度錯誤。'
+
+            New-Item -ItemType Directory -Path (Split-Path -Parent $tamperSource) -Force | Out-Null
+            New-Item -ItemType Directory -Path (Split-Path -Parent $tamperDestination) -Force | Out-Null
+            [IO.File]::WriteAllBytes($tamperSource, [byte[]]@(0x01, 0x02, 0x03))
+            $script:cleanupTamperDestination = Resolve-AbsolutePath -Path $tamperDestination
+            $script:cleanupTamperTriggered = $false
+            $script:cleanupTamperHashOriginal = $tamperOriginalHash
+            Set-Item -Path Function:\Get-FileSha256 -Value ([scriptblock]::Create(@'
+param([string]$Path)
+if (-not $script:cleanupTamperTriggered -and [string]::Equals((Resolve-AbsolutePath -Path $Path), $script:cleanupTamperDestination, [StringComparison]::OrdinalIgnoreCase)) {
+    [IO.File]::WriteAllBytes((ConvertTo-FileSystemApiPath -Path $Path), [byte[]]@(0xA5, 0xA7, 0x00))
+    $script:cleanupTamperTriggered = $true
+}
+return & $script:cleanupTamperHashOriginal -Path $Path
+'@))
+            $tamperRejected = $false
+            try {
+                $null = Preserve-CleanupFile -Item ([pscustomobject]@{ source_path = $tamperSource; relative_path = $tamperRelative }) -SourceRoot $tamperSourceRoot -DispatchRoot $tamperDispatchRoot
+            }
+            catch { $tamperRejected = $_.Exception.Message -match 'CleanupHashMismatch' }
+            Assert-True ($tamperRejected -and $script:cleanupTamperTriggered) 'K1 保存後目的檔遭竄改時未以 SHA-256 拒絕。'
+            Write-Phase9Evidence -Label 'BATCH6_K1_BINARY_CLEANUP' -Value ([ordered]@{ cleanup_status = $cleanupResult.status; binary_sha256 = $binaryFileResult[0].destination_sha256; binary_bytes_equal = (Test-ByteArrayEqual -Left $binaryBytes -Right $savedBinaryBytes); empty_length = [int64]$emptyFileResult[0].length; tamper_rejected = $tamperRejected; binary_destination = $binaryDestination; empty_destination = $emptyDestination })
+        }
+        finally {
+            Set-Item -Path Function:\Get-FileSha256 -Value $tamperOriginalHash
+            $script:cleanupTamperDestination = $null
+            $script:cleanupTamperTriggered = $false
+            $script:cleanupTamperHashOriginal = $null
+            $script:cleanupUseRealGit = $false
+            if (Test-Path -LiteralPath $tamperRoot -PathType Container) { Remove-Item -LiteralPath $tamperRoot -Recurse -Force }
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K2 Inspect binds after snapshot to RunRecord and Cleanup history' {
+        $real = $null
+        try {
+            $real = & $invokeSRealDispatchCase -Name 'batch6-k2-after-snapshot' -ScriptPath $sourcePath -CreateQuotaBeforePath
+            Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document -and [string]$real.output_document.status -ceq 'completed') ('K2 real Dispatch did not complete: ' + [string]$real.output_text)
+            $afterSnapshotPath = [string]$real.run_record_document.quota_after_path
+            $afterSnapshotSha256 = [string]$real.run_record_document.quota_after_sha256
+            Assert-True (-not [string]::IsNullOrWhiteSpace($afterSnapshotPath) -and (Test-Path -LiteralPath $afterSnapshotPath -PathType Leaf) -and $afterSnapshotSha256 -match '^[a-fA-F0-9]{64}$' -and (Get-FileSha256 -Path $afterSnapshotPath) -ceq $afterSnapshotSha256) 'K2 Inspect after snapshot path/hash 未寫入 RunRecord。'
+            $validSnapshot = Read-QuotaSnapshot -Path $afterSnapshotPath
+            Assert-True (-not [string]::IsNullOrWhiteSpace([string]$validSnapshot.state)) 'K2 Inspect after snapshot 沒有記錄 quota state。'
+
+            $null = Write-QuotaSnapshotUnavailable -Path $afterSnapshotPath -SourceRoot $real.source_root -ExecutionRoot $real.execution_root -TargetPath @() -Purpose 'after' -FailureClass 'FixtureUnavailable'
+            $unknownSnapshotHash = Get-FileSha256 -Path $afterSnapshotPath
+            $runRecordDocument = Get-Content -LiteralPath $real.run_record_path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $runRecordDocument.quota_after_path = $afterSnapshotPath
+            $runRecordDocument.quota_after_sha256 = $unknownSnapshotHash
+            Write-Utf8NoBom -Path $real.run_record_path -Content (($runRecordDocument | ConvertTo-Json -Depth 60) + [Environment]::NewLine) -SourceRoot $real.source_root -ExecutionRoot $real.execution_root -TargetPath @()
+            $inspectHost = (Get-Command pwsh -ErrorAction Stop).Source
+            $inspectArguments = @(
+                '-NoProfile'
+                '-NonInteractive'
+                '-File'
+                $sourcePath
+                '-Operation'
+                'Inspect'
+                '-CodexHome'
+                $real.codex_home
+                '-DispatchResultPath'
+                $real.result_path
+                '-SourceRoot'
+                $real.source_root
+                '-ExecutionRoot'
+                $real.execution_root
+                '-LineSlug'
+                'a'
+                '-DispatchSlug'
+                $real.dispatch_slug
+                '-TargetPath'
+                $real.request.target_path[0]
+                '-RequiredIdentifier'
+                'design.md'
+                '-WriteMode'
+                'write'
+                '-ProcessExitCode'
+                '0'
+                '-TaskType'
+                'script-change'
+                '-SessionMode'
+                'cold-start'
+            )
+            $inspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments $inspectArguments -WorkingDirectory $root -EnvironmentVariables @{}
+            $inspectDocument = $null
+            try { $inspectDocument = ConvertFrom-Json -InputObject ([string]$inspectRun.stdout) } catch { $inspectDocument = $null }
+            $updatedRunRecord = Get-Content -LiteralPath $real.run_record_path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $unknownSnapshot = Read-QuotaSnapshot -Path $afterSnapshotPath
+            Assert-True ([int]$inspectRun.exit_code -eq 0 -and $null -ne $inspectDocument -and [bool]$inspectDocument.success -and [string]$unknownSnapshot.state -ceq 'SnapshotUnavailable') ('K2 unavailable after snapshot blocked successful Inspect: ' + [string]$inspectRun.stdout + [string]$inspectRun.stderr)
+            Assert-True ([string]$updatedRunRecord.quota_after_path -ceq $afterSnapshotPath -and [string]$updatedRunRecord.quota_after_sha256 -ceq $unknownSnapshotHash) 'K2 Inspect 未將 unknown snapshot 路徑與 SHA-256 維持在 RunRecord。'
+
+            $script:cleanupUseRealGit = $true
+            $SourceRoot = $real.source_root
+            $DispatchRoot = $real.dispatch_root
+            $LineSlug = 'a'
+            $DispatchSlug = $real.dispatch_slug
+            $PreflightResultPath = $real.preflight_result_path
+            $RunRecordPath = $real.run_record_path
+            $EvidencePath = @($updatedRunRecord.event_stream_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            $cleanupResult = Invoke-Cleanup -Confirm:$false
+            $relativeAfterPath = $afterSnapshotPath.Substring($real.dispatch_root.Length).TrimStart([char[]]@('\', '/'))
+            $sourceHistorySnapshotPath = Join-Path $real.source_root $relativeAfterPath
+            Assert-True ($cleanupResult.status -ceq 'completed' -and $cleanupResult.worktree_removed -and (Test-Path -LiteralPath $sourceHistorySnapshotPath -PathType Leaf) -and (Get-FileSha256 -Path $sourceHistorySnapshotPath) -ceq $unknownSnapshotHash) 'K2 Cleanup 未將 RunRecord 參照的 after snapshot 保存到來源 history。'
+            Write-Phase9Evidence -Label 'BATCH6_K2_AFTER_SNAPSHOT_RUN_RECORD_CLEANUP' -Value ([ordered]@{ dispatch_status = $real.output_document.status; valid_after_snapshot_path = $afterSnapshotPath; valid_after_snapshot_sha256 = $afterSnapshotSha256; unknown_inspect_success = [bool]$inspectDocument.success; unknown_state = $unknownSnapshot.state; unknown_after_snapshot_sha256 = $unknownSnapshotHash; cleanup_status = $cleanupResult.status; source_history_snapshot_path = $sourceHistorySnapshotPath; source_history_sha256 = Get-FileSha256 -Path $sourceHistorySnapshotPath })
+        }
+        finally {
+            $script:cleanupUseRealGit = $false
+            if ($null -ne $real -and (Test-Path -LiteralPath $real.dispatch_root -PathType Container)) {
+                $null = Invoke-Phase9GitCommand -RepositoryRoot $real.source_root -Arguments @('worktree', 'remove', '--force', '--', $real.dispatch_root)
+            }
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K2 missing after snapshot clears RunRecord fields without blocking Inspect' {
+        $real = $null
+        try {
+            $real = & $invokeSRealDispatchCase -Name 'batch6-k2-after-snapshot-missing' -ScriptPath $sourcePath -CreateQuotaBeforePath
+            Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document -and [string]$real.output_document.status -ceq 'completed') ('K2 missing-snapshot fixture Dispatch did not complete: ' + [string]$real.output_text)
+            $afterSnapshotPath = [string]$real.run_record_document.quota_after_path
+            Assert-True (Test-Path -LiteralPath $afterSnapshotPath -PathType Leaf) 'K2 missing-snapshot fixture did not create its after snapshot.'
+            Remove-Item -LiteralPath $afterSnapshotPath -Force
+            $inspectHost = (Get-Command pwsh -ErrorAction Stop).Source
+            $inspectArguments = @(
+                '-NoProfile'
+                '-NonInteractive'
+                '-File'
+                $sourcePath
+                '-Operation'
+                'Inspect'
+                '-CodexHome'
+                $real.codex_home
+                '-DispatchResultPath'
+                $real.result_path
+                '-SourceRoot'
+                $real.source_root
+                '-ExecutionRoot'
+                $real.execution_root
+                '-LineSlug'
+                'a'
+                '-DispatchSlug'
+                $real.dispatch_slug
+                '-TargetPath'
+                $real.request.target_path[0]
+                '-RequiredIdentifier'
+                'design.md'
+                '-WriteMode'
+                'write'
+                '-ProcessExitCode'
+                '0'
+                '-TaskType'
+                'script-change'
+                '-SessionMode'
+                'cold-start'
+            )
+            $inspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments $inspectArguments -WorkingDirectory $root -EnvironmentVariables @{}
+            $inspectDocument = $null
+            try { $inspectDocument = ConvertFrom-Json -InputObject ([string]$inspectRun.stdout) } catch { $inspectDocument = $null }
+            $updatedRunRecord = Get-Content -LiteralPath $real.run_record_path -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-True ([int]$inspectRun.exit_code -eq 0 -and $null -ne $inspectDocument -and [bool]$inspectDocument.success) ('K2 missing after snapshot changed Inspect success: ' + [string]$inspectRun.stdout + [string]$inspectRun.stderr)
+            Assert-True ($null -eq $updatedRunRecord.quota_after_path -and $null -eq $updatedRunRecord.quota_after_sha256) 'K2 missing after snapshot did not clear both RunRecord quota_after fields.'
+            Write-Phase9Evidence -Label 'BATCH6_K2_MISSING_AFTER_SNAPSHOT' -Value ([ordered]@{ inspect_success = [bool]$inspectDocument.success; snapshot_path_missing = -not (Test-Path -LiteralPath $afterSnapshotPath); quota_after_path = $updatedRunRecord.quota_after_path; quota_after_sha256 = $updatedRunRecord.quota_after_sha256 })
+        }
+        finally {
+            if ($null -ne $real -and (Test-Path -LiteralPath $real.dispatch_root -PathType Container)) {
+                $null = Invoke-Phase9GitCommand -RepositoryRoot $real.source_root -Arguments @('worktree', 'remove', '--force', '--', $real.dispatch_root)
+            }
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K2 after snapshot SHA mismatch clears RunRecord fields without blocking Inspect' {
+        $real = $null
+        try {
+            $real = & $invokeSRealDispatchCase -Name 'batch6-k2-after-snapshot-hash-mismatch' -ScriptPath $sourcePath -CreateQuotaBeforePath
+            Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document -and [string]$real.output_document.status -ceq 'completed') ('K2 SHA-mismatch fixture Dispatch did not complete: ' + [string]$real.output_text)
+            $afterSnapshotPath = [string]$real.run_record_document.quota_after_path
+            $actualSnapshotHash = Get-FileSha256 -Path $afterSnapshotPath
+            $mismatchedSnapshotHash = if ($actualSnapshotHash -ceq ('0' * 64)) { '1' * 64 } else { '0' * 64 }
+            $runRecordDocument = Get-Content -LiteralPath $real.run_record_path -Raw -Encoding UTF8 | ConvertFrom-Json
+            $runRecordDocument.quota_after_path = $afterSnapshotPath
+            $runRecordDocument.quota_after_sha256 = $mismatchedSnapshotHash
+            Write-Utf8NoBom -Path $real.run_record_path -Content (($runRecordDocument | ConvertTo-Json -Depth 60) + [Environment]::NewLine) -SourceRoot $real.source_root -ExecutionRoot $real.execution_root -TargetPath @()
+            $inspectHost = (Get-Command pwsh -ErrorAction Stop).Source
+            $inspectArguments = @(
+                '-NoProfile'
+                '-NonInteractive'
+                '-File'
+                $sourcePath
+                '-Operation'
+                'Inspect'
+                '-CodexHome'
+                $real.codex_home
+                '-DispatchResultPath'
+                $real.result_path
+                '-SourceRoot'
+                $real.source_root
+                '-ExecutionRoot'
+                $real.execution_root
+                '-LineSlug'
+                'a'
+                '-DispatchSlug'
+                $real.dispatch_slug
+                '-TargetPath'
+                $real.request.target_path[0]
+                '-RequiredIdentifier'
+                'design.md'
+                '-WriteMode'
+                'write'
+                '-ProcessExitCode'
+                '0'
+                '-TaskType'
+                'script-change'
+                '-SessionMode'
+                'cold-start'
+            )
+            $inspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments $inspectArguments -WorkingDirectory $root -EnvironmentVariables @{}
+            $inspectDocument = $null
+            try { $inspectDocument = ConvertFrom-Json -InputObject ([string]$inspectRun.stdout) } catch { $inspectDocument = $null }
+            $updatedRunRecord = Get-Content -LiteralPath $real.run_record_path -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-True ([int]$inspectRun.exit_code -eq 0 -and $null -ne $inspectDocument -and [bool]$inspectDocument.success) ('K2 mismatched after snapshot changed Inspect success: ' + [string]$inspectRun.stdout + [string]$inspectRun.stderr)
+            Assert-True ($null -eq $updatedRunRecord.quota_after_path -and $null -eq $updatedRunRecord.quota_after_sha256) 'K2 mismatched after snapshot did not clear both RunRecord quota_after fields.'
+            Write-Phase9Evidence -Label 'BATCH6_K2_AFTER_SNAPSHOT_HASH_MISMATCH' -Value ([ordered]@{ inspect_success = [bool]$inspectDocument.success; recorded_sha256_before_inspect = $mismatchedSnapshotHash; actual_sha256 = $actualSnapshotHash; quota_after_path = $updatedRunRecord.quota_after_path; quota_after_sha256 = $updatedRunRecord.quota_after_sha256 })
+        }
+        finally {
+            if ($null -ne $real -and (Test-Path -LiteralPath $real.dispatch_root -PathType Container)) {
+                $null = Invoke-Phase9GitCommand -RepositoryRoot $real.source_root -Arguments @('worktree', 'remove', '--force', '--', $real.dispatch_root)
+            }
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K3 T035 Request rejects unprepared executionRoot evidence before worktree creation' {
+        $rejected = & $invokeSRealDispatchCase -Name 't035-unprepared-destination' -ScriptPath $sourcePath -UseCurrentHost -DispatchKind resource -WriteMode readonly -CreateQuotaBeforePath -AdvisorDispatch -AdvisorMissingEvidenceArtifact
+        $document = $rejected.output_document
+        Assert-True ([int]$rejected.run.exit_code -ne 0 -and $null -ne $document -and [string]$document.operation -ceq 'DispatchRequest' -and [string]$document.code -ceq 'AdvisorEvidencePackPrepareRequired' -and -not [bool]$document.process_started) ('T035 unprepared destination did not fail in Request: ' + $rejected.output_text)
+        Assert-True (-not (Test-Path -LiteralPath $rejected.dispatch_root) -and -not $rejected.preflight_exists -and -not $rejected.external_start_exists) 'T035 rejected Request created a worktree, Preflight result or Codex process.'
+        Assert-True ($rejected.output_text -match 'prepare_artifacts' -and $rejected.output_text -match 'sourceRoot 同線 handoff') 'T035 Request error did not describe both correction paths.'
+        Write-Phase9Evidence -Label 'T035_UNPREPARED_DESTINATION_REJECTED' -Value ([ordered]@{ request = $rejected.request; run = $rejected.run; process_started = [bool]$document.process_started; worktree_exists = Test-Path -LiteralPath $rejected.dispatch_root; external_start_exists = $rejected.external_start_exists })
+    }
+    Invoke-Case 'Phase 9 BATCH6-K3 T035 source handoff auto artifact passes real Prepare and Start' {
+        $real = $null
+        try {
+            $real = & $invokeSRealDispatchCase -Name 't035-auto-source-handoff' -ScriptPath $sourcePath -UseCurrentHost -DispatchKind resource -WriteMode readonly -CreateQuotaBeforePath -AdvisorDispatch
+            $prepared = if (Test-Path -LiteralPath $real.prepare_result_path -PathType Leaf) { Get-Content -LiteralPath $real.prepare_result_path -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+            Assert-True ($null -ne $prepared -and [string]$prepared.status -ceq 'Prepared' -and @($prepared.artifacts).Count -gt 0) ('T035 auto handoff did not produce nonempty Prepared: ' + $real.output_text)
+            Assert-True ([int]$real.run.exit_code -eq 0 -and [string]$real.output_document.status -ceq 'completed' -and @($real.output_document.completed_stages) -contains 'start' -and $real.external_start_exists -and $null -ne $real.start_result_document) ('T035 auto handoff did not pass real Start and launch fake Codex: ' + $real.output_text)
+            Assert-True (-not $real.request.Contains('prepare_artifacts') -and [string]$prepared.artifacts[0].source -ceq $real.evidence_pack_path -and (Get-FileSha256 -Path $prepared.artifacts[0].destination) -ceq (Get-FileSha256 -Path $real.evidence_pack_path)) 'T035 auto handoff source, destination or hash changed.'
+            Write-Phase9Evidence -Label 'T035_AUTO_HANDOFF_REAL_START' -Value ([ordered]@{ request = $real.request; run = $real.run; prepared = $prepared; completed_stages = $real.output_document.completed_stages; external_start_exists = $real.external_start_exists; start_result = $real.start_result_document })
+        }
+        finally {
+            if ($null -ne $real -and (Test-Path -LiteralPath $real.dispatch_root -PathType Container)) {
+                $null = Invoke-Phase9GitCommand -RepositoryRoot $real.source_root -Arguments @('worktree', 'remove', '--force', '--', $real.dispatch_root)
+            }
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K3 T035 manual destination artifact passes real Prepare and Start' {
+        $real = $null
+        try {
+            $real = & $invokeSRealDispatchCase -Name 't035-manual-destination' -ScriptPath $sourcePath -UseCurrentHost -DispatchKind resource -WriteMode readonly -CreateQuotaBeforePath -AdvisorDispatch -AdvisorDestinationEvidence
+            $prepared = if (Test-Path -LiteralPath $real.prepare_result_path -PathType Leaf) { Get-Content -LiteralPath $real.prepare_result_path -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+            Assert-True ($null -ne $prepared -and [string]$prepared.status -ceq 'Prepared' -and @($prepared.artifacts).Count -eq 1) ('T035 manual destination did not produce one Prepared artifact: ' + $real.output_text)
+            Assert-True ([int]$real.run.exit_code -eq 0 -and [string]$real.output_document.status -ceq 'completed' -and @($real.output_document.completed_stages) -contains 'start' -and $real.external_start_exists -and $null -ne $real.start_result_document) ('T035 manual destination did not pass real Start and launch fake Codex: ' + $real.output_text)
+            Assert-True ([string]$real.request.prepare_artifacts[0].source -ceq $real.evidence_pack_path -and [string]$real.request.prepare_artifacts[0].destination -ceq $real.request.evidence_pack_path -and [string]$prepared.artifacts[0].destination -ceq $real.request.evidence_pack_path -and (Get-FileSha256 -Path $real.request.evidence_pack_path) -ceq (Get-FileSha256 -Path $real.evidence_pack_path)) 'T035 manual destination did not retain the HEAD source/destination contract.'
+            Write-Phase9Evidence -Label 'T035_MANUAL_DESTINATION_REAL_START' -Value ([ordered]@{ request = $real.request; run = $real.run; prepared = $prepared; completed_stages = $real.output_document.completed_stages; external_start_exists = $real.external_start_exists; start_result = $real.start_result_document })
+        }
+        finally {
+            if ($null -ne $real -and (Test-Path -LiteralPath $real.dispatch_root -PathType Container)) {
+                $null = Invoke-Phase9GitCommand -RepositoryRoot $real.source_root -Arguments @('worktree', 'remove', '--force', '--', $real.dispatch_root)
+            }
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K3 T035 real binding rejects cross-root Prepared without artifacts before launch' {
+        $caseSlug = New-BindingFixtureName -Code 't035emp'
+        $sourceRoot = Join-Path $fixtureRoot ($caseSlug + '-source')
+        $executionRoot = Join-Path $fixtureRoot ($caseSlug + '-execution')
+        $sourceLineRoot = Join-Path $sourceRoot '.local\ai-sessions\handoff\a'
+        $historyLineRoot = Join-Path $executionRoot '.local\ai-sessions\history\a'
+        $codexHome = Join-Path $fixtureRoot ($caseSlug + '-codex-home')
+        $codexPath = Join-Path $fixtureRoot ($caseSlug + '-codex.cmd')
+        $markerPath = Join-Path $executionRoot 'codex-started.txt'
+        New-Item -ItemType Directory -Path $sourceLineRoot, $historyLineRoot, $codexHome -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $sourceLineRoot 'line.json') -Content '{"schema":"ai-sessions.line.v1","line-slug":"a"}' -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -TargetPath @()
+        Write-Utf8NoBom -Path $codexPath -Content (('@echo off', ('>"' + $markerPath + '" echo started'), 'exit /b 0') -join "`r`n")
+        $rootInfo = Get-PrepareRootInfo -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -DispatchRoot $executionRoot -LineSlug 'a' -DispatchSlug $caseSlug
+        $emptyPrepared = New-PrepareDocument -RootInfo $rootInfo -Status 'Prepared' -RequestPathValue $null -RequestSha256Value $null -EffectiveCodexHome $codexHome -Artifacts @() -ErrorValue $null
+        $written = Write-PrepareResultDocument -Path (Join-Path $historyLineRoot 'empty-prepared.json') -Document $emptyPrepared -GuardSourceRoot $sourceRoot -GuardExecutionRoot $executionRoot -GuardTargetPath @()
+        $caught = $null
+        try {
+            $null = Resolve-PrepareResultBinding -Path $written.Path -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -LineSlug 'a' -DispatchSlug $caseSlug -ExpectedSha256 $written.Sha256
+            & $codexPath
+        }
+        catch { $caught = $_.Exception }
+        Assert-True ($null -ne $caught -and $caught.Message -match 'PrepareArtifactMismatch.*Prepared result 缺少 artifact' -and -not (Test-Path -LiteralPath $markerPath)) ('T035 empty Prepared bypassed real binding guard: ' + [string]$caught)
+        Write-Phase9Evidence -Label 'T035_EMPTY_PREPARED_BINDING_REJECTED' -Value ([ordered]@{ source_root = $sourceRoot; execution_root = $executionRoot; prepared_path = $written.Path; prepared_sha256 = $written.Sha256; prepared = $emptyPrepared; error = $caught.Message; process_started = Test-Path -LiteralPath $markerPath; codex_home = $codexHome })
+    }
+    Invoke-Case 'Phase 9 BATCH6-K3 advisor Dispatch auto-prepares evidence and quota while preserving manual artifacts' {
+        $auto = $null
+        $manual = $null
+        $outside = $null
+        try {
+            $auto = & $invokeSRealDispatchCase -Name 'batch6-k3-advisor-auto' -ScriptPath $sourcePath -DispatchKind resource -WriteMode readonly -CreateQuotaBeforePath -AdvisorDispatch
+            $autoStages = @($auto.output_document.completed_stages | ForEach-Object { [string]$_ })
+            $requiredDispatchStages = @('preflight', 'before-snapshot', 'prepare', 'start', 'inspect')
+            $autoMissingStages = @($requiredDispatchStages | Where-Object { $autoStages -notcontains $_ })
+            $autoPrepareDocument = if (Test-Path -LiteralPath $auto.prepare_result_path -PathType Leaf) { Get-Content -LiteralPath $auto.prepare_result_path -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+            $autoEvidenceArtifacts = @(
+                if ($null -ne $autoPrepareDocument) {
+                    $autoPrepareDocument.artifacts | Where-Object { [string]::Equals([string]$_.source, [string]$auto.evidence_pack_path, [StringComparison]::OrdinalIgnoreCase) }
+                }
+            )
+            $autoEvidenceCopyPath = if ($autoEvidenceArtifacts.Count -eq 1) { [string]$autoEvidenceArtifacts[0].destination } else { $null }
+            $autoAfterPath = if ($null -eq $auto.run_record_document) { $null } else { [string]$auto.run_record_document.quota_after_path }
+            Assert-True ([int]$auto.run.exit_code -eq 0 -and [string]$auto.output_document.status -ceq 'completed' -and $autoMissingStages.Count -eq 0) ('K3 advisor auto Dispatch did not complete all stages: ' + [string]$auto.output_text)
+            Assert-True (-not $auto.request.Contains('quota_after_path') -and -not $auto.request.Contains('prepare_artifacts') -and $autoEvidenceArtifacts.Count -eq 1 -and (Get-FileSha256 -Path $auto.evidence_pack_path) -ceq (Get-FileSha256 -Path $autoEvidenceCopyPath)) 'K3 advisor auto Prepare 未按來源 hash 複製 evidence pack，或改動了 Request 形狀。'
+            Assert-True (-not [string]::IsNullOrWhiteSpace($autoAfterPath) -and (Test-Path -LiteralPath $autoAfterPath -PathType Leaf) -and (Test-PathWithinRoot -Path $autoAfterPath -Root $auto.execution_root)) 'K3 advisor Dispatch 未於 Start 前綁定 executionRoot after snapshot。'
+
+            $manual = & $invokeSRealDispatchCase -Name 'batch6-k3-advisor-manual' -ScriptPath $sourcePath -DispatchKind resource -WriteMode readonly -CreateQuotaBeforePath -AdvisorDispatch -ManualAdvisorArtifacts
+            $manualStages = @($manual.output_document.completed_stages | ForEach-Object { [string]$_ })
+            $manualMissingStages = @($requiredDispatchStages | Where-Object { $manualStages -notcontains $_ })
+            $manualPrepareDocument = if (Test-Path -LiteralPath $manual.prepare_result_path -PathType Leaf) { Get-Content -LiteralPath $manual.prepare_result_path -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null }
+            $manualEvidenceArtifacts = @(
+                if ($null -ne $manualPrepareDocument) {
+                    $manualPrepareDocument.artifacts | Where-Object { [string]::Equals([string]$_.source, [string]$manual.evidence_pack_path, [StringComparison]::OrdinalIgnoreCase) }
+                }
+            )
+            Assert-True ([int]$manual.run.exit_code -eq 0 -and [string]$manual.output_document.status -ceq 'completed' -and $manualMissingStages.Count -eq 0) ('K3 advisor manual prepare_artifacts Dispatch did not complete all stages: ' + [string]$manual.output_text)
+            Assert-True ($manual.request.Contains('quota_after_path') -and $manual.request.Contains('prepare_artifacts') -and @($manualPrepareDocument.artifacts).Count -eq 2 -and $manualEvidenceArtifacts.Count -eq 1 -and [string]$manual.request.quota_after_path -ceq [string]$manual.manual_quota_after_path) 'K3 advisor 手動 prepare_artifacts／quota_after_path 呼叫方式未維持成功且未重複複製。'
+
+            $outside = & $invokeSRealDispatchCase -Name 'batch6-k3-advisor-outside-source' -ScriptPath $sourcePath -DispatchKind resource -WriteMode readonly -AdvisorDispatch -EvidencePackOutsideSourceRoot
+            $outsideErrorOutput = [string]$outside.output_text
+            $outsideErrorCode = if ($outsideErrorOutput -match 'AdvisorEvidencePackSourceBoundary') { 'AdvisorEvidencePackSourceBoundary' } elseif ($outsideErrorOutput -match 'DispatchOutputBoundary') { 'DispatchOutputBoundary' } elseif ($null -ne $outside.output_document) { [string]$outside.output_document.error_code } else { '' }
+            Assert-True ([int]$outside.run.exit_code -ne 0 -and @('AdvisorEvidencePackSourceBoundary', 'DispatchOutputBoundary') -ccontains $outsideErrorCode -and -not $outside.external_start_exists) ('K3 sourceRoot 外 evidence pack 未以明確邊界錯誤拒絕：' + $outsideErrorOutput)
+            Write-Phase9Evidence -Label 'BATCH6_K3_ADVISOR_DISPATCH' -Value ([ordered]@{ auto_dispatch_status = $auto.output_document.status; auto_completed_stages = $autoStages; auto_prepare_artifact = $autoEvidenceArtifacts[0]; auto_copy_sha256_matches = (Get-FileSha256 -Path $auto.evidence_pack_path) -ceq (Get-FileSha256 -Path $autoEvidenceCopyPath); auto_after_path = $autoAfterPath; manual_dispatch_status = $manual.output_document.status; manual_prepare_artifact_count = @($manualPrepareDocument.artifacts).Count; manual_evidence_artifact_count = $manualEvidenceArtifacts.Count; outside_error_code = $outsideErrorCode; outside_process_started = [bool]$outside.external_start_exists })
+        }
+        finally {
+            foreach ($fixture in @($auto, $manual)) {
+                if ($null -ne $fixture -and (Test-Path -LiteralPath $fixture.dispatch_root -PathType Container)) {
+                    $null = Invoke-Phase9GitCommand -RepositoryRoot $fixture.source_root -Arguments @('worktree', 'remove', '--force', '--', $fixture.dispatch_root)
+                }
+            }
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K3 advisor Dispatch rejects multiple evidence pack prepare artifacts' {
+        $ambiguous = $null
+        try {
+            $ambiguous = & $invokeSRealDispatchCase -Name 'batch6-k3-advisor-ambiguous-manual-artifacts' -ScriptPath $sourcePath -DispatchKind resource -WriteMode readonly -AdvisorDispatch -DuplicateAdvisorEvidenceArtifacts
+            $matchingEvidenceArtifacts = @($ambiguous.request.prepare_artifacts | Where-Object { [string]::Equals([string]$_.source, [string]$ambiguous.evidence_pack_path, [StringComparison]::OrdinalIgnoreCase) })
+            Assert-True ($matchingEvidenceArtifacts.Count -eq 2) 'K3 ambiguous fixture did not provide two evidence_pack_path sources.'
+            Assert-True ([int]$ambiguous.run.exit_code -ne 0 -and $null -ne $ambiguous.output_document -and [string]$ambiguous.output_document.status -ceq 'failed' -and [string]$ambiguous.output_document.failed_stage -ceq 'prepare') ('K3 ambiguous evidence pack sources did not stop Dispatch during Prepare: ' + [string]$ambiguous.output_text)
+            Assert-True ([string]$ambiguous.output_document.error_code -ceq 'AdvisorEvidencePackPrepareAmbiguous' -and [string]$ambiguous.output_document.error -match 'AdvisorEvidencePackPrepareAmbiguous' -and -not $ambiguous.external_start_exists) ('K3 ambiguous evidence pack sources did not return the explicit error code before Start: ' + [string]$ambiguous.output_text)
+            Write-Phase9Evidence -Label 'BATCH6_K3_ADVISOR_EVIDENCE_PREPARE_AMBIGUOUS' -Value ([ordered]@{ error_code = [string]$ambiguous.output_document.error_code; failed_stage = [string]$ambiguous.output_document.failed_stage; matching_source_count = $matchingEvidenceArtifacts.Count; external_start_exists = [bool]$ambiguous.external_start_exists })
+        }
+        finally {
+            if ($null -ne $ambiguous -and (Test-Path -LiteralPath $ambiguous.dispatch_root -PathType Container)) {
+                $null = Invoke-Phase9GitCommand -RepositoryRoot $ambiguous.source_root -Arguments @('worktree', 'remove', '--force', '--', $ambiguous.dispatch_root)
+            }
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K3 advisor Request accepts worktree evidence with one manual prepare artifact' {
+        $caseSlug = New-BindingFixtureName -Code 'k3workm'
+        $sourceRoot = Join-Path $fixtureRoot ($caseSlug + '-source')
+        $executionRoot = Join-Path $fixtureRoot ($caseSlug + '-worktree')
+        $evidencePackPath = Join-Path $sourceRoot '.local\ai-sessions\handoff\a\advisor-evidence.md'
+        $artifactDestinationPath = Join-Path $executionRoot '.local\ai-sessions\handoff\a\advisor-evidence-copy.md'
+        New-Item -ItemType Directory -Path $sourceRoot, (Split-Path -Parent $evidencePackPath), (Split-Path -Parent $artifactDestinationPath) -Force | Out-Null
+        Write-Utf8NoBom -Path $evidencePackPath -Content 'fixture evidence pack in executionRoot' -SourceRoot $sourceRoot -ExecutionRoot $executionRoot -TargetPath @()
+        Copy-Item -LiteralPath $evidencePackPath -Destination $artifactDestinationPath -Force
+        $evidencePackHash = Get-FileSha256 -Path $evidencePackPath
+        $prepareArtifact = [ordered]@{
+            source = $evidencePackPath
+            destination = $artifactDestinationPath
+            sha256 = $evidencePackHash
+            purpose = 'manual advisor evidence pack fixture'
+        }
+        $savedNames = @('RequestContext', 'SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'DispatchKind', 'TaskType', 'UnitKind', 'LineSlug', 'DispatchSlug', 'EvidencePackPath', 'RequestPrepareArtifacts', 'RequestManualPrepareArtifacts', 'RequestAutoPrepareArtifacts', 'RequestResourceOrder')
+        $savedVariables = @{}
+        foreach ($name in $savedNames) {
+            $variable = Get-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+            $savedVariables[$name] = if ($null -eq $variable) { [pscustomobject]@{ exists = $false; value = $null } } else { [pscustomobject]@{ exists = $true; value = $variable.Value } }
+        }
+        try {
+            $script:RequestContext = [pscustomobject]@{ document = [pscustomobject]@{ operation = 'Dispatch' }; path = (Join-Path $fixtureRoot ($caseSlug + '-request.json')) }
+            $script:SourceRoot = $sourceRoot
+            $script:ExecutionRoot = $executionRoot
+            $script:DispatchRoot = $executionRoot
+            $script:DispatchKind = 'resource'
+            $script:TaskType = 'advisor-consult'
+            $script:UnitKind = 'advisor-evidence-question'
+            $script:LineSlug = 'a'
+            $script:DispatchSlug = $caseSlug
+            $script:EvidencePackPath = $artifactDestinationPath
+            $script:RequestPrepareArtifacts = @($prepareArtifact)
+            $null = Initialize-DispatchRequestDerivedInputs
+            Assert-True ($script:RequestAutoPrepareArtifacts.Count -eq 0 -and $script:RequestManualPrepareArtifacts.Count -eq 1 -and $script:RequestPrepareArtifacts.Count -eq 1) 'worktree evidence pack 的手動 prepare_artifacts 被丟棄或重複加入自動複製。'
+            Assert-True ([string]$script:RequestPrepareArtifacts[0].source -ceq $evidencePackPath -and [string]$script:RequestPrepareArtifacts[0].sha256 -ceq $evidencePackHash -and (Get-FileSha256 -Path $artifactDestinationPath) -ceq $evidencePackHash) 'worktree evidence pack 的手動 Prepare artifact hash 不一致。'
+            Write-Phase9Evidence -Label 'BATCH6_K3_WORKTREE_MANUAL_EVIDENCE' -Value ([ordered]@{ evidence_pack_path = $evidencePackPath; artifact_count = $script:RequestPrepareArtifacts.Count; auto_artifact_count = $script:RequestAutoPrepareArtifacts.Count; source_sha256 = $evidencePackHash; destination_sha256 = Get-FileSha256 -Path $artifactDestinationPath })
+        }
+        finally {
+            foreach ($name in $savedNames) {
+                if ($savedVariables[$name].exists) {
+                    Set-Variable -Scope Script -Name $name -Value $savedVariables[$name].value
+                }
+                else {
+                    Remove-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+                }
+            }
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH6-K3 advisor Request rejects evidence outside source and execution roots' {
+        $caseSlug = New-BindingFixtureName -Code 'k3out'
+        $sourceRoot = Join-Path $fixtureRoot ($caseSlug + '-source')
+        $executionRoot = Join-Path $fixtureRoot ($caseSlug + '-worktree')
+        $outsideRoot = Join-Path $fixtureRoot ($caseSlug + '-outside')
+        $outsideEvidencePackPath = Join-Path $outsideRoot 'advisor-evidence.md'
+        New-Item -ItemType Directory -Path $sourceRoot, $executionRoot, $outsideRoot -Force | Out-Null
+        [System.IO.File]::WriteAllText($outsideEvidencePackPath, 'fixture evidence pack outside allowed roots', [System.Text.UTF8Encoding]::new($false))
+        $savedNames = @('RequestContext', 'SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'DispatchKind', 'TaskType', 'UnitKind', 'LineSlug', 'DispatchSlug', 'EvidencePackPath', 'RequestPrepareArtifacts', 'RequestManualPrepareArtifacts', 'RequestAutoPrepareArtifacts', 'RequestResourceOrder')
+        $savedVariables = @{}
+        foreach ($name in $savedNames) {
+            $variable = Get-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+            $savedVariables[$name] = if ($null -eq $variable) { [pscustomobject]@{ exists = $false; value = $null } } else { [pscustomobject]@{ exists = $true; value = $variable.Value } }
+        }
+        try {
+            $script:RequestContext = [pscustomobject]@{ document = [pscustomobject]@{ operation = 'Dispatch' }; path = (Join-Path $fixtureRoot ($caseSlug + '-request.json')) }
+            $script:SourceRoot = $sourceRoot
+            $script:ExecutionRoot = $executionRoot
+            $script:DispatchRoot = $executionRoot
+            $script:DispatchKind = 'resource'
+            $script:TaskType = 'advisor-consult'
+            $script:UnitKind = 'advisor-evidence-question'
+            $script:LineSlug = 'a'
+            $script:DispatchSlug = $caseSlug
+            $script:EvidencePackPath = $outsideEvidencePackPath
+            $script:RequestPrepareArtifacts = @()
+            $caught = $null
+            try { $null = Initialize-DispatchRequestDerivedInputs } catch { $caught = $_.Exception }
+            $operationResult = if ($null -eq $caught) { $null } else { $caught.Data['operationResult'] }
+            Assert-True ($null -ne $operationResult -and [string]$operationResult.code -ceq 'AdvisorEvidencePackSourceBoundary') ('sourceRoot 與 executionRoot 外的 evidence pack 未以 AdvisorEvidencePackSourceBoundary 拒絕：' + [string]$caught)
+            Write-Phase9Evidence -Label 'BATCH6_K3_OUTSIDE_ROOTS_REJECTED' -Value ([ordered]@{ error_code = [string]$operationResult.code; evidence_pack_path = $outsideEvidencePackPath; execution_root = $executionRoot })
+        }
+        finally {
+            foreach ($name in $savedNames) {
+                if ($savedVariables[$name].exists) {
+                    Set-Variable -Scope Script -Name $name -Value $savedVariables[$name].value
+                }
+                else {
+                    Remove-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+                }
+            }
+        }
     }
     Invoke-Case 'Phase 9 F-034 continuation interruption with exit zero persists failure receipt and checkpoint handoff' {
         $integration = & $invokeSContinuationFailureDispatch -Name 'continuation-interrupted-exit-zero' -FailureMode 'InterruptedExitZero'

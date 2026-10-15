@@ -251,7 +251,10 @@ function New-DispatchAutoPrepareArtifacts {
         [string]$WriteMode,
 
         [AllowNull()]
-        [object]$ResourceOrder
+        [object]$ResourceOrder,
+
+        [AllowEmptyString()]
+        [string]$AdvisorEvidencePackPath
     )
 
     $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
@@ -279,6 +282,31 @@ function New-DispatchAutoPrepareArtifacts {
         if (-not ($manifestKind -is [string]) -or -not (@('workflow', 'adhoc') -ccontains $manifestKind)) {
             throw "line.json kind 不支援：$sourceManifestPath；允許值：workflow、adhoc"
         }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($AdvisorEvidencePackPath)) {
+        $resolvedEvidencePackPath = Resolve-AbsolutePath -Path $AdvisorEvidencePackPath
+        if (-not (Test-PathWithinRoot -Path $resolvedEvidencePackPath -Root $sourceRootPath)) {
+            $exception = New-Object System.InvalidOperationException('AdvisorEvidencePackSourceBoundary：advisor evidence pack 必須位於 sourceRoot 內。')
+            $exception.Data['errorCode'] = 'AdvisorEvidencePackSourceBoundary'
+            throw $exception
+        }
+        if (-not (Test-PathWithinRoot -Path $resolvedEvidencePackPath -Root $sourceLineRoot) -or
+            -not (Test-Path -LiteralPath $resolvedEvidencePackPath -PathType Leaf)) {
+            $exception = New-Object System.InvalidOperationException('AdvisorEvidencePackSourceLineBoundary：advisor evidence pack 必須是同線 handoff 目錄內的既存檔案。')
+            $exception.Data['errorCode'] = 'AdvisorEvidencePackSourceLineBoundary'
+            throw $exception
+        }
+        Assert-DispatchOutputPathNoReparsePoint -Root $sourceRootPath -Path $resolvedEvidencePackPath
+
+        $relativeEvidencePath = $resolvedEvidencePackPath.Substring($sourceLineRoot.Length).TrimStart([char[]]@('\', '/'))
+        $destinationEvidencePackPath = Resolve-AbsolutePath -Path (Join-Path -Path $destinationLineRoot -ChildPath $relativeEvidencePath)
+        return @([ordered]@{
+                source = $resolvedEvidencePackPath
+                destination = $destinationEvidencePackPath
+                sha256 = Get-FileSha256 -Path $resolvedEvidencePackPath
+                purpose = 'same-line advisor evidence pack'
+            })
     }
 
     $artifactSources = New-Object 'System.Collections.Generic.List[object]'
@@ -336,18 +364,69 @@ function Initialize-DispatchRequestDerivedInputs {
     $sourceRootPath = Resolve-AbsolutePath -Path $script:SourceRoot
     $dispatchKindValue = [string]$script:DispatchKind
     $unitKindValue = Get-DefaultUnitKind -DispatchKind $dispatchKindValue -UnitKind $script:UnitKind -TaskType $script:TaskType
-    if ($unitKindValue -eq 'advisor-evidence-question') {
-        return
-    }
+    $isAdvisorEvidence = $unitKindValue -eq 'advisor-evidence-question'
     $resourceOrder = $null
 
-    if ($dispatchKindValue -eq 'resource') {
+    if ($dispatchKindValue -eq 'resource' -and -not $isAdvisorEvidence) {
         $orderPath = Join-Path -Path $sourceRootPath -ChildPath ('.local\ai-sessions\handoff\dispatch-order-' + $script:DispatchSlug + '.md')
         $resourceOrder = Read-DispatchOrderSections -Path $orderPath
         if (-not (Compare-DispatchStringArrays -Left @($script:TargetPath) -Right @($resourceOrder.Targets))) {
             $differences = New-DispatchRequestArrayMismatchDetail -Field 'target_path' -Expected @($resourceOrder.Targets) -Received @($script:TargetPath)
             $sourceTargetDetails = @($resourceOrder.TargetDetails | ForEach-Object { '{0} (line {1})' -f [string]$_.Path, [int]$_.LineNumber })
             Throw-DispatchRequestFailure -Code 'DispatchRequestedUnitMismatch' -Message ('Dispatch request target_path 與派遣單第 3 欄不一致；source=[' + ($sourceTargetDetails -join ', ') + ']；request=[' + (@($script:TargetPath) -join ', ') + ']；differences=' + (($differences.mismatches | ForEach-Object { 'index ' + $_.index + ': source=' + $_.expected + '; request=' + $_.received }) -join '; ')) -RequestPathValue ([string]$script:RequestContext.path) -Field 'target_path' -Detail ([ordered]@{ source = @($resourceOrder.Targets); request = @($script:TargetPath); differences = @($differences.mismatches); process_started = $false })
+        }
+    }
+
+    if ($isAdvisorEvidence) {
+        $evidencePackPathValue = Resolve-AbsolutePath -Path ([string]$script:EvidencePackPath)
+        $sourceLineRoot = Join-Path -Path $sourceRootPath -ChildPath ('.local\ai-sessions\handoff\' + [string]$script:LineSlug)
+        $isSourceLineEvidencePack =
+            (Test-PathWithinRoot -Path $evidencePackPathValue -Root $sourceRootPath) -and
+            (Test-PathWithinRoot -Path $evidencePackPathValue -Root $sourceLineRoot) -and
+            (Test-Path -LiteralPath $evidencePackPathValue -PathType Leaf)
+        $executionRootCandidates = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($rootName in @('DispatchRoot', 'ExecutionRoot')) {
+            $rootVariable = Get-Variable -Scope Script -Name $rootName -ValueOnly -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace([string]$rootVariable)) { continue }
+            $resolvedRootCandidate = Resolve-AbsolutePath -Path ([string]$rootVariable)
+            if (-not $executionRootCandidates.Contains($resolvedRootCandidate)) {
+                $executionRootCandidates.Add($resolvedRootCandidate)
+            }
+        }
+        $matchingExecutionRoot = $null
+        foreach ($executionRootCandidate in $executionRootCandidates) {
+            if (Test-PathWithinRoot -Path $evidencePackPathValue -Root $executionRootCandidate) {
+                $matchingExecutionRoot = $executionRootCandidate
+                break
+            }
+        }
+        $isExecutionRootEvidencePack = $null -ne $matchingExecutionRoot
+        if (-not $isSourceLineEvidencePack -and -not $isExecutionRootEvidencePack) {
+            if (-not (Test-PathWithinRoot -Path $evidencePackPathValue -Root $sourceRootPath) -and $null -eq $matchingExecutionRoot) {
+                Throw-DispatchRequestFailure -Code 'AdvisorEvidencePackSourceBoundary' -Message 'advisor evidence_pack_path 必須位於 sourceRoot 同線 handoff 或 dispatchRoot／executionRoot 內。' -RequestPathValue ([string]$script:RequestContext.path) -Field 'evidence_pack_path' -Detail ([ordered]@{ expected = 'existing same-line handoff file under sourceRoot or existing file under dispatchRoot/executionRoot'; received = $evidencePackPathValue })
+            }
+            Throw-DispatchRequestFailure -Code 'AdvisorEvidencePackSourceLineBoundary' -Message 'advisor evidence_pack_path 必須是同線 handoff 或 dispatchRoot／executionRoot 內的既存檔案。' -RequestPathValue ([string]$script:RequestContext.path) -Field 'evidence_pack_path' -Detail ([ordered]@{ expected = 'existing same-line handoff file under sourceRoot or existing file under dispatchRoot/executionRoot'; received = $evidencePackPathValue })
+        }
+        if (-not $isSourceLineEvidencePack -and $isExecutionRootEvidencePack) {
+            $matchingDestinationArtifacts = @($script:RequestPrepareArtifacts | Where-Object {
+                    [string]::Equals((Resolve-AbsolutePath -Path ([string]$_.destination)), $evidencePackPathValue, [StringComparison]::OrdinalIgnoreCase)
+                })
+            $manualSourcePath = if ($matchingDestinationArtifacts.Count -eq 1) { Resolve-AbsolutePath -Path ([string]$matchingDestinationArtifacts[0].source) } else { $null }
+            $hasValidManualEvidenceArtifact =
+                $matchingDestinationArtifacts.Count -eq 1 -and
+                (Test-PathWithinRoot -Path $manualSourcePath -Root $sourceLineRoot) -and
+                (Test-Path -LiteralPath $manualSourcePath -PathType Leaf)
+            if (-not $hasValidManualEvidenceArtifact) {
+                Throw-DispatchRequestFailure -Code 'AdvisorEvidencePackPrepareRequired' -Message 'advisor 的 worktree evidence_pack_path 需要手動準備。請補一筆 source 為 sourceRoot 同線 handoff 既存檔、destination 等於 evidence_pack_path 的手動 prepare_artifacts，或將 evidence_pack_path 改放 sourceRoot 同線 handoff 目錄的既存檔。' -RequestPathValue ([string]$script:RequestContext.path) -Field 'evidence_pack_path' -Detail ([ordered]@{ expected = 'exactly one matching destination artifact with an existing source under sourceRoot same-line handoff'; process_started = $false })
+            }
+            Assert-DispatchOutputPathNoReparsePoint -Root $sourceRootPath -Path $manualSourcePath
+        }
+        if ($isSourceLineEvidencePack) {
+            Assert-DispatchOutputPathNoReparsePoint -Root $sourceRootPath -Path $evidencePackPathValue
+        }
+        else {
+            $evidenceReparseRoot = if (Test-PathWithinRoot -Path $evidencePackPathValue -Root $sourceRootPath) { $sourceRootPath } else { $matchingExecutionRoot }
+            Assert-DispatchOutputPathNoReparsePoint -Root $evidenceReparseRoot -Path $evidencePackPathValue
         }
     }
 

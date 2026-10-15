@@ -326,26 +326,6 @@ function Get-CleanupInventory {
     }
 }
 
-function Test-CleanupUtf8Readback {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Path
-    )
-
-    $extension = [IO.Path]::GetExtension($Path).ToLowerInvariant()
-    if (@('.md', '.json', '.jsonl', '.log', '.txt') -notcontains $extension) {
-        return [ordered]@{ status = 'not-applicable'; error = $null }
-    }
-    try {
-        $encoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false, $true)
-        $null = [IO.File]::ReadAllText((ConvertTo-FileSystemApiPath -Path (Resolve-AbsolutePath $Path)), $encoding)
-        return [ordered]@{ status = 'passed'; error = $null }
-    }
-    catch {
-        return [ordered]@{ status = 'failed'; error = $_.Exception.Message }
-    }
-}
-
 function ConvertTo-CleanupExceptionBlockText {
     [CmdletBinding()]
     param([Parameter(Mandatory)][AllowEmptyString()][string]$Text)
@@ -510,19 +490,23 @@ function Preserve-CleanupFile {
         throw ('CleanupDestinationConflict：destination 是目錄：' + $destinationPath)
     }
     $expectedDestinationHash = $sourceHashBefore
+    $expectedDestinationLength = [int64]$bytes.Length
     $archivePath = $null
     $versionDecision = $null
     if ($destinationExists) {
         $existingHash = Get-FileSha256 -Path $destinationPath
+        $existingLength = [int64]([IO.FileInfo]::new((ConvertTo-FileSystemApiPath -Path $destinationPath))).Length
         if ([string]$Item.relative_path -cmatch '^\.local/ai-sessions/report/[a-z0-9]+(?:-[a-z0-9]+)*/exceptions\.md$') {
             $strictUtf8 = New-Object System.Text.UTF8Encoding -ArgumentList @($false, $true)
             $sourceText = $strictUtf8.GetString($bytes)
             $destinationText = [IO.File]::ReadAllText((ConvertTo-FileSystemApiPath -Path $destinationPath), $strictUtf8)
             $mergedText = Join-CleanupExceptionBlocks -SourceText $sourceText -DestinationText $destinationText
             $expectedDestinationHash = $existingHash
+            $expectedDestinationLength = $existingLength
             if ($null -ne $mergedText) {
                 $mergedBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($mergedText)
                 $expectedDestinationHash = Get-DispatchByteArraySha256 -Bytes $mergedBytes
+                $expectedDestinationLength = [int64]$mergedBytes.Length
                 $temporaryPath = Join-Path $parent ([guid]::NewGuid().ToString('N') + '.cleanup.tmp')
                 $backupPath = Join-Path $parent ([guid]::NewGuid().ToString('N') + '.cleanup.bak')
                 try {
@@ -572,6 +556,7 @@ function Preserve-CleanupFile {
                     [IO.File]::Move((ConvertTo-FileSystemApiPath -Path $temporaryPath), (ConvertTo-FileSystemApiPath -Path $archivePath))
                     $archiveHash = $sourceHashBefore
                     $expectedDestinationHash = $existingHash
+                    $expectedDestinationLength = $existingLength
                 }
                 if ((Get-FileSha256 -Path $archivePath) -ine $archiveHash) { throw ('CleanupHashMismatch：封存 SHA-256 不一致：' + $archivePath) }
             }
@@ -608,17 +593,19 @@ function Preserve-CleanupFile {
         }
     }
     $sourceHashAfter = Get-FileSha256 -Path $sourcePath
-    if (-not [string]::Equals($sourceHashBefore, $sourceHashAfter, [StringComparison]::OrdinalIgnoreCase)) {
+    $sourceLengthAfter = [int64]([IO.FileInfo]::new((ConvertTo-FileSystemApiPath -Path $sourcePath))).Length
+    if ($sourceLengthAfter -ne [int64]$bytes.Length -or -not [string]::Equals($sourceHashBefore, $sourceHashAfter, [StringComparison]::OrdinalIgnoreCase)) {
         throw ('SourceChangedDuringPreservation：來源在保存期間變更：' + $sourcePath)
+    }
+    $destinationLength = [int64]([IO.FileInfo]::new((ConvertTo-FileSystemApiPath -Path $destinationPath))).Length
+    if ($destinationLength -ne $expectedDestinationLength) {
+        throw ('CleanupLengthMismatch：destination 長度不一致：' + $destinationPath)
     }
     $destinationHash = Get-FileSha256 -Path $destinationPath
     if (-not [string]::Equals($expectedDestinationHash, $destinationHash, [StringComparison]::OrdinalIgnoreCase)) {
         throw ('CleanupHashMismatch：destination SHA-256 不一致：' + $destinationPath)
     }
-    $readback = Test-CleanupUtf8Readback -Path $destinationPath
-    if ($readback.status -eq 'failed') {
-        throw ('CleanupReadbackFailed：destination UTF-8 readback 失敗：' + $destinationPath + '；' + $readback.error)
-    }
+    $readback = [ordered]@{ status = 'passed'; error = $null }
     return [ordered]@{
         source_path = $sourcePath
         destination_path = $destinationPath

@@ -766,8 +766,10 @@ function Invoke-Dispatch {
         }
         $historyRoot = Join-Path -Path $executionRootPath -ChildPath '.local\ai-sessions\history'
         $quotaBeforePathValue = New-QuotaSnapshotPath -HistoryRoot $historyRoot -Purpose 'before'
+        $dispatchUnitKind = Get-DefaultUnitKind -DispatchKind ([string]$DispatchKind) -UnitKind ([string]$UnitKind) -TaskType ([string]$TaskType)
+        $isAdvisorDispatch = $dispatchUnitKind -eq 'advisor-evidence-question'
         $quotaAfterPathValue = if ([string]::IsNullOrWhiteSpace($requestedQuotaAfterPath)) {
-            $null
+            if ($isAdvisorDispatch) { New-QuotaSnapshotPath -HistoryRoot $historyRoot -Purpose 'after' } else { $null }
         }
         else {
             Resolve-AbsolutePath -Path $requestedQuotaAfterPath
@@ -821,8 +823,43 @@ function Invoke-Dispatch {
         $completedStages.Add('before-snapshot')
 
         $failedStage = 'prepare'
-        $dispatchUnitKind = Get-DefaultUnitKind -DispatchKind ([string]$DispatchKind) -UnitKind ([string]$UnitKind) -TaskType ([string]$TaskType)
-        if (-not [string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase) -and $dispatchUnitKind -ne 'advisor-evidence-question') {
+        if (-not [string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase) -and $isAdvisorDispatch) {
+            $script:RequestAutoPrepareArtifacts = New-Object 'System.Object[]' 0
+            $script:RequestPrepareArtifacts = @($script:RequestManualPrepareArtifacts)
+            if (@($script:RequestManualPrepareArtifacts).Count -eq 0) {
+                $requestedEvidencePackPath = Resolve-AbsolutePath -Path ([string]$script:EvidencePackPath)
+                $sourceLineRoot = Join-Path -Path $sourceRootPath -ChildPath ('.local\ai-sessions\handoff\' + $LineSlug)
+                $isSourceLineEvidencePack = Test-PathWithinRoot -Path $requestedEvidencePackPath -Root $sourceLineRoot
+                if ($isSourceLineEvidencePack) {
+                    $script:RequestAutoPrepareArtifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -DispatchKind ([string]$DispatchKind) -WriteMode ([string]$script:WriteMode) -ResourceOrder $null -AdvisorEvidencePackPath $requestedEvidencePackPath)
+                    $script:RequestPrepareArtifacts = @($script:RequestAutoPrepareArtifacts)
+                    if (@($script:RequestAutoPrepareArtifacts).Count -eq 1) {
+                        $script:EvidencePackPath = [string]$script:RequestAutoPrepareArtifacts[0].destination
+                    }
+                }
+                else {
+                    $evidenceBoundaryException = New-Object System.InvalidOperationException('AdvisorEvidencePackSourceBoundary：advisor evidence pack 必須位於 sourceRoot 同線 handoff 或 dispatchRoot／executionRoot 內。')
+                    $evidenceBoundaryException.Data['errorCode'] = 'AdvisorEvidencePackSourceBoundary'
+                    throw $evidenceBoundaryException
+                }
+            }
+            else {
+                $requestedEvidencePackPath = Resolve-AbsolutePath -Path ([string]$script:EvidencePackPath)
+                $matchingManualEvidenceArtifacts = @($script:RequestManualPrepareArtifacts | Where-Object {
+                        [string]::Equals((Resolve-AbsolutePath -Path ([string]$_.source)), $requestedEvidencePackPath, [StringComparison]::OrdinalIgnoreCase) -or
+                        [string]::Equals((Resolve-AbsolutePath -Path ([string]$_.destination)), $requestedEvidencePackPath, [StringComparison]::OrdinalIgnoreCase)
+                    })
+                if ($matchingManualEvidenceArtifacts.Count -eq 1) {
+                    $script:EvidencePackPath = Resolve-AbsolutePath -Path ([string]$matchingManualEvidenceArtifacts[0].destination)
+                }
+                elseif ($matchingManualEvidenceArtifacts.Count -gt 1) {
+                    $ambiguousEvidenceException = New-Object System.InvalidOperationException('AdvisorEvidencePackPrepareAmbiguous：prepare_artifacts 包含多筆 evidence pack 來源。')
+                    $ambiguousEvidenceException.Data['errorCode'] = 'AdvisorEvidencePackPrepareAmbiguous'
+                    throw $ambiguousEvidenceException
+                }
+            }
+        }
+        elseif (-not [string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase)) {
             $script:RequestAutoPrepareArtifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -DispatchKind ([string]$DispatchKind) -WriteMode ([string]$script:WriteMode) -ResourceOrder $script:RequestResourceOrder)
             $script:RequestPrepareArtifacts = @($script:RequestAutoPrepareArtifacts) + @($script:RequestManualPrepareArtifacts)
         }
@@ -839,6 +876,17 @@ function Invoke-Dispatch {
         $prepareStage = Write-DispatchStageResult -Stage 'prepare' -Path $dispatchPrepareResultPath -Result $prepareDocument -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -LineSlug $LineSlug -DispatchSlug $DispatchSlug
         $completedStages.Add('prepare')
         $script:PrepareResultPath = $prepareStage.Path
+
+        if ($isAdvisorDispatch -and [string]::IsNullOrWhiteSpace($requestedQuotaAfterPath)) {
+            $failedStage = 'after-snapshot'
+            $quotaAfterPathValue = Get-OrCreateQuotaSnapshot -Path $null -SnapshotPath ([string]$stageBinding.quota_after_path) -CodexHome $CodexHome -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -HistoryRoot $historyRoot -Purpose 'after' -Required
+            $quotaAfterPathValue = Resolve-AbsolutePath -Path $quotaAfterPathValue
+            if (-not [string]::Equals($quotaAfterPathValue, [string]$stageBinding.quota_after_path, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'DispatchStageBindingConflict：advisor QuotaAfterPath 未沿用既有 stage binding。'
+            }
+            $script:QuotaAfterPath = $quotaAfterPathValue
+            $QuotaAfterPath = $quotaAfterPathValue
+        }
 
         $failedStage = 'start'
         $script:WaitForStartProcessExit = [bool]$script:DispatchWaitForCompletion
@@ -888,7 +936,11 @@ function Invoke-Dispatch {
 
             $script:DispatchResultPath = $resultPathValue
             $startEvidencePackPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('evidencePackPath', 'evidence_pack_path'))
-            $script:RequiredIdentifier = Get-DispatchRequiredIdentifier -ConfiguredIdentifier ([string]$RequiredIdentifier) -DispatchKind ([string]$DispatchKind) -TaskType ([string]$TaskType) -EvidencePackPath $startEvidencePackPath -TargetPath @($TargetPath)
+            $inspectTargetPath = @($TargetPath)
+            if ($isAdvisorDispatch -and -not [string]::IsNullOrWhiteSpace($startEvidencePackPath)) {
+                $inspectTargetPath = @($startEvidencePackPath)
+            }
+            $script:RequiredIdentifier = Get-DispatchRequiredIdentifier -ConfiguredIdentifier ([string]$RequiredIdentifier) -DispatchKind ([string]$DispatchKind) -TaskType ([string]$TaskType) -EvidencePackPath $startEvidencePackPath -TargetPath $inspectTargetPath
             $script:LastMessagePath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('lastMessagePath', 'last_message_path'))
             $script:ErrorStreamPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('errorStreamPath', 'error_stream_path'))
             $script:ThreadIdPath = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('threadIdPath', 'thread_id_path'))
@@ -899,7 +951,14 @@ function Invoke-Dispatch {
                     $script:InvocationBoundParameters['ScopePlanPath'] = $inspectScopePlanPath
                 }
             }
-            $inspectResult = Invoke-Inspect
+            $priorInspectTargetPath = $script:TargetPath
+            if ($isAdvisorDispatch) { $script:TargetPath = @($inspectTargetPath) }
+            try {
+                $inspectResult = Invoke-Inspect
+            }
+            finally {
+                if ($isAdvisorDispatch) { $script:TargetPath = $priorInspectTargetPath }
+            }
             $inspectSuccess = [bool](Get-DispatchResultPropertyValue -Object $inspectResult -Names @('success'))
             $inspectLastEventType = [string](Get-DispatchResultPropertyValue -Object $inspectResult -Names @('lastEventType', 'last_event_type'))
             $inspectTerminalEventAvailableValue = Get-DispatchResultPropertyValue -Object $inspectResult -Names @('terminalEventAvailable', 'terminal_event_available')

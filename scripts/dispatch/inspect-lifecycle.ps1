@@ -1694,6 +1694,7 @@ function Invoke-Inspect {
     $recordQuotaAfterSha256 = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'quota_after_sha256')
     $afterSnapshotPathValue = if ([string]::IsNullOrWhiteSpace($recordQuotaAfterPath)) { $QuotaAfterPath } else { $recordQuotaAfterPath }
     $afterSnapshotSha256Value = $null
+    $afterSnapshotReadFailed = $false
     try {
         if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue) -and (-not [string]::IsNullOrWhiteSpace($CodexHome) -or -not [string]::IsNullOrWhiteSpace($env:CODEX_HOME))) {
             $historyRoot = Join-Path -Path (Resolve-AbsolutePath -Path $ExecutionRoot) -ChildPath '.local\ai-sessions\history'
@@ -1713,15 +1714,30 @@ function Invoke-Inspect {
     }
     catch {
         $snapshotFailure = 'Inspect after quota snapshot 取得失敗：' + $_.Exception.Message
+        $afterSnapshotReadFailed = $true
     }
     if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue)) {
         $snapshotFailure = 'Inspect 缺少 after quota snapshot。'
+        $afterSnapshotReadFailed = $true
     }
+    $afterSnapshot = $null
     try {
         $afterSnapshot = Read-QuotaSnapshot -Path $afterSnapshotPathValue
     }
     catch {
         $snapshotFailure = 'Inspect after quota snapshot 無效：' + $_.Exception.Message
+        $afterSnapshotReadFailed = $true
+    }
+    if ($TaskType -ne 'advisor-consult') {
+        if ($afterSnapshotReadFailed) {
+            $inspectRun.Record.quota_after_path = $null
+            $inspectRun.Record.quota_after_sha256 = $null
+        }
+        else {
+            $inspectRun.Record.quota_after_path = if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue)) { $null } else { $afterSnapshotPathValue }
+            $inspectRun.Record.quota_after_sha256 = if ([string]::IsNullOrWhiteSpace($afterSnapshotSha256Value)) { $null } else { $afterSnapshotSha256Value }
+        }
+        $null = Write-DispatchRunRecord -Record $inspectRun.Record -Update
     }
     $closeSnapshotPathValue = $null
     $closeSnapshotSha256Value = $null
