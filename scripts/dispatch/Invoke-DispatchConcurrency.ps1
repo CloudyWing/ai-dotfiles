@@ -766,6 +766,23 @@ function Read-DispatchUnstartedRecoveryRecord {
     return $record
 }
 
+function Get-CleanupOriginalOwners {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Ledger, [string]$LineSlug, [string]$DispatchSlug)
+
+    foreach ($entry in @($Ledger.Document.entries)) {
+        if ([string]$entry.line_slug -ceq $LineSlug -and [string]$entry.dispatch_slug -ceq $DispatchSlug) {
+            [ordered]@{
+                source = [string]$Ledger.Path
+                caller_session_fingerprint = Get-DispatchAdmissionProperty -Object $entry -Name 'caller_session_fingerprint'
+                process_id = Get-DispatchAdmissionProperty -Object $entry -Name 'process_id'
+                process_name = Get-DispatchAdmissionProperty -Object $entry -Name 'process_name'
+                process_start_time_utc = Get-DispatchAdmissionProperty -Object $entry -Name 'process_start_time_utc'
+            }
+        }
+    }
+}
+
 function Assert-DispatchRecoveryOwner {
     [CmdletBinding()]
     param(

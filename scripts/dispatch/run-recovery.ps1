@@ -403,6 +403,10 @@ function Get-DispatchFailureReasonCode {
             'EvidencePackMissing',
             'NoValidResumeAnchor',
             'ResumeHandoffUnavailable',
+            'ResumeAccountMismatch',
+            'ResumeAccountUnverifiable',
+            'CodexAccountConfigurationInvalid',
+            'CodexAccountHomeMissing',
             'ProfileEvidenceUnknown',
             'ThreadRelayTimeout',
             'ProcessIdentityUnknown',
@@ -609,7 +613,7 @@ function Read-DispatchRunRecord {
     Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $pathValue
     $record = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $pathValue)
     if ($null -eq $record -or $record -isnot [pscustomobject]) { throw 'RunRecord 必須為 JSON object。' }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'unknown_interruption', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'quota_after_path', 'quota_after_sha256', 'request_path', 'request_sha256', 'request_operation')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'baseline_resolution', 'attempt_parent_run_id', 'resume_anchor_run_id', 'failure', 'resume_diagnostics', 'model_evidence', 'reasoning_effort_evidence', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'codex_account_name', 'evidence_pack_path', 'evidence_pack_sha256', 'evidence_pack_length', 'skipped_attempts', 'parent_options', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'unknown_interruption', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'quota_after_path', 'quota_after_sha256', 'request_path', 'request_sha256', 'request_operation')) {
         if ($null -eq $record.PSObject.Properties[$name]) {
             $value = $null
             if ($name -eq 'attempt_parent_run_id') {
@@ -672,7 +676,7 @@ function Read-DispatchRunRecord {
     elseif ($scopePathValue -isnot [string] -or $scopeHashValue -isnot [string] -or [string]::IsNullOrWhiteSpace($scopeHashValue)) {
         throw 'RunRecord ScopePlan 欄位型別或 SHA-256 異常。'
     }
-    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'quota_after_path', 'quota_after_sha256')) {
+    foreach ($name in @('previous_run_id', 'requested_thread_id', 'thread_id', 'baseline_path', 'baseline_sha256', 'attempt_parent_run_id', 'resume_anchor_run_id', 'started_at_utc', 'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path', 'prompt_source_path', 'prompt_source_sha256', 'prompt_transfer_path', 'prompt_transfer_sha256', 'inspect_result_path', 'profile_config_path', 'codex_home', 'effective_codex_home', 'codex_account_name', 'evidence_pack_path', 'evidence_pack_sha256', 'parent_options_sha256', 'parent_options_status', 'scope_plan_parent_path', 'scope_plan_parent_sha256', 'scope_plan_parent_run_id', 'scope_plan_root_run_id', 'scope_plan_selection', 'prepare_result_path', 'prepare_result_sha256', 'prepare_status', 'quota_before_path', 'quota_before_sha256', 'quota_before_captured_at_utc', 'quota_before_freshness', 'quota_after_path', 'quota_after_sha256')) {
         $property = $record.PSObject.Properties[$name]
         if ($null -eq $property -or ($null -ne $property.Value -and ($property.Value -isnot [string] -or [string]::IsNullOrWhiteSpace($property.Value)))) {
             throw "RunRecord nullable 欄位異常：$name"
@@ -1006,6 +1010,33 @@ function Resolve-LatestColdStartFailure {
         throw (New-DispatchPidIdentityBlockedMessage -DispatchSlug $DispatchSlug -Records $blockingPidRecords)
     }
     return $latestRecord
+}
+
+function Assert-DispatchAccountContinuation {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$AnchorRecord, [Parameter(Mandatory)][string]$CodexHomePath, [AllowNull()][string]$AccountName)
+
+    $effectiveHome = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'effective_codex_home')
+    $legacyHome = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'codex_home')
+    $anchorName = [string](Get-DispatchJsonProperty -Object $AnchorRecord -Name 'codex_account_name')
+    try {
+        if ([string]::IsNullOrWhiteSpace($effectiveHome) -and [string]::IsNullOrWhiteSpace($legacyHome)) { throw 'anchor 缺少 home。' }
+        if (-not [string]::IsNullOrWhiteSpace($effectiveHome) -and -not [string]::IsNullOrWhiteSpace($legacyHome) -and
+            -not [string]::Equals((Normalize-DispatchRootPath $effectiveHome), (Normalize-DispatchRootPath $legacyHome), [StringComparison]::OrdinalIgnoreCase)) { throw 'anchor home 欄位矛盾。' }
+        $anchorHome = if ([string]::IsNullOrWhiteSpace($effectiveHome)) { Normalize-DispatchRootPath $legacyHome } else { Normalize-DispatchRootPath $effectiveHome }
+        if (-not [IO.Directory]::Exists($anchorHome)) { throw ('anchor home 已不存在：' + $anchorHome) }
+        Assert-DispatchOutputPathNoReparsePoint -Root ([IO.Path]::GetPathRoot($anchorHome)) -Path $anchorHome
+    }
+    catch { throw ('ResumeAccountUnverifiable：' + $_.Exception.Message) }
+    if (-not [string]::Equals($anchorHome, (Normalize-DispatchRootPath $CodexHomePath), [StringComparison]::OrdinalIgnoreCase) -or
+        (-not [string]::IsNullOrWhiteSpace($anchorName) -and -not [string]::IsNullOrWhiteSpace($AccountName) -and $anchorName -cne $AccountName)) {
+        throw 'ResumeAccountMismatch：續行須沿用 anchor 的 home 與帳號名稱；跨 home 請以新 dispatchSlug 冷啟動。'
+    }
+    return [pscustomobject]@{
+        CodexHome = $anchorHome
+        AccountName = if (-not [string]::IsNullOrWhiteSpace($anchorName)) { $anchorName } elseif (-not [string]::IsNullOrWhiteSpace($AccountName)) { $AccountName } else { $null }
+        Status = if ([string]::IsNullOrWhiteSpace($anchorName) -or [string]::IsNullOrWhiteSpace($AccountName)) { 'directory-only-compatibility' } else { 'home-and-name-confirmed' }
+    }
 }
 
 function Resolve-PreviousDispatchRun {

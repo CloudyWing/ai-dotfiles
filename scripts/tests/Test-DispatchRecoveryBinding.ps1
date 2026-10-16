@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1646,7 +1646,10 @@ function Invoke-Case {
     )
     if (-not [string]::IsNullOrWhiteSpace($script:focusedCase)) {
         $cleanupMatch = $Name -ceq 'Phase 9 final git status guard detects repo-root fixture residue and restored pass'
-        $focusedMatch = if ($script:focusedCase -ceq 'BATCH5-S1') {
+        $focusedMatch = if ($script:focusedCase -in @('FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')) {
+            $Name.StartsWith(('Phase 9 ' + $script:focusedCase), [StringComparison]::Ordinal) -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH5-S1') {
             $Name -in @(
                 'Phase 7 New-DispatchOrder 預設 handoff 落點、Request 對照與通用回報欄位',
                 'Phase 7 New-DispatchOrder 預設輸出固定落在 ReportPath 的最外層來源根目錄',
@@ -2593,7 +2596,7 @@ function Write-TestEvents {
 
 function New-TestRun {
     [CmdletBinding()]
-    param([string]$Line = 'line-a', [string]$Dispatch = 'dispatch-a', [psobject]$Previous = $null)
+    param([string]$Line = 'line-a', [string]$Dispatch = 'dispatch-a', [psobject]$Previous = $null, [string]$CodexHome)
     $id = [guid]::NewGuid().ToString('D')
     $createdAt = [datetime]::UtcNow.ToString('o')
     $history = Join-Path $fixtureRoot '.local/ai-sessions/history'
@@ -2636,12 +2639,12 @@ function New-TestRun {
         launch_state = 'started'; created_at_utc = $createdAt; started_at_utc = $createdAt
         failure = $null; resume_diagnostics = $null
         model_evidence = $fixtureModelEvidence.model; reasoning_effort_evidence = $fixtureModelEvidence.reasoning_effort
-        profile_config_path = $null; codex_home = $null
+        profile_config_path = $null; codex_home = if ([string]::IsNullOrWhiteSpace($CodexHome)) { $null } else { $CodexHome }
         evidence_pack_path = $null; evidence_pack_sha256 = $null; evidence_pack_length = $null
         prompt_path = $null; launcher_path = $null; thread_id_path = $null
         baseline_path = $null; baseline_sha256 = $null; pid_record_path = $pidPath
         parent_options = $fixtureParentOptions; parent_options_sha256 = $fixtureParentOptions.fingerprint; parent_options_status = 'confirmed'
-        effective_codex_home = $null
+        effective_codex_home = if ([string]::IsNullOrWhiteSpace($CodexHome)) { $null } else { $CodexHome }
         quota_before_path = $null; quota_before_sha256 = $null
     }
     Write-TestEvents $record.event_stream_path $record.thread_id
@@ -4791,7 +4794,7 @@ if ($Phase -ge 3) {
         Assert-True ($chain.AnchorRecord.run_id -eq $phase3ChainAnchor.run_id -and $chain.ChainTailRecord.run_id -eq $phase3FailedTwo.run_id -and @($chain.SkippedAttempts).Count -eq 2 -and $chain.SkippedAttempts[0].run_id -eq $phase3FailedOne.run_id -and $chain.SkippedAttempts[1].reason_code -ceq $phase3FailedTwo.failure.reason_code) 'failed chain skip 或 anchor 回溯異常。'
     }
 
-    $phase3MismatchAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-model-mismatch'
+    $phase3MismatchAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-model-mismatch' -CodexHome (Join-Path $fixtureRoot 'phase3-mismatch-home')
     $phase3MismatchHome = Join-Path $fixtureRoot 'phase3-mismatch-home'
     New-Item -ItemType Directory -Path $phase3MismatchHome -Force | Out-Null
     Write-Utf8NoBom -Path (Join-Path $phase3MismatchHome 'default.config.toml') -Content "model = 'other-model'
@@ -4824,7 +4827,7 @@ model_reasoning_effort = 'high'
         Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'RequestedResolutionMismatch' -and -not $operationResult.processStarted -and $record.failure.reason_code -eq 'RequestedResolutionMismatch' -and $record.model_evidence.requested.value -eq 'fixture-model' -and $record.model_evidence.runtime_verifiable.status -eq 'unknown' -and $record.attempt_parent_run_id -eq $phase3MismatchAnchor.run_id -and $record.resume_anchor_run_id -eq $phase3MismatchAnchor.run_id -and $script:startCalls -eq $beforeStartCalls) 'RequestedResolutionMismatch 未在 process.Start 前拒絕或錯誤混用為 actual。'
     }
 
-    $phase3ProfileAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-profile-change'
+    $phase3ProfileAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-profile-change' -CodexHome (Join-Path $fixtureRoot 'phase3-profile-change-home')
     $phase3ProfileHome = Join-Path $fixtureRoot 'phase3-profile-change-home'
     $phase3ProfileConfigPath = Join-Path $phase3ProfileHome 'default.config.toml'
     New-Item -ItemType Directory -Path $phase3ProfileHome -Force | Out-Null
@@ -4864,7 +4867,7 @@ model_reasoning_effort = 'high'
         Assert-True ($null -ne $operationResult -and $operationResult.errorCode -eq 'ProfileEvidenceUnknown' -and -not $operationResult.processStarted -and $record.failure.reason_code -eq 'ProfileEvidenceUnknown' -and $record.failure.phase -eq 'preparation' -and $script:startCalls -eq $beforeStartCalls) 'Profile config hash recheck 未在 process.Start 前阻擋。'
     }
 
-    $phase3UnknownAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-model-unknown'
+    $phase3UnknownAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-model-unknown' -CodexHome $startCodexHome
     $phase3UnknownRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'phase3-model-unknown') ($phase3UnknownAnchor.run_id + '.json')
     $phase3UnknownRecord = Read-DispatchRunRecord -Path $phase3UnknownRecordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase3-model-unknown'
     $phase3UnknownRecord.model_evidence.runtime_verifiable = New-UnknownDispatchEvidence -Field 'payload.model' -Reason 'phase3 unknown model' -Source 'fixture-unknown'
@@ -12131,6 +12134,8 @@ if ($Phase -ge 9) {
             dispatch_slug = $f001DispatchSlug
             source_root = $f001SourceRoot
             execution_root = $f001ExecutionRoot
+            codex_home = $f001CodexHome
+            effective_codex_home = $f001CodexHome
             thread_id = $f001Thread
             last_message_path = Join-Path $f001LineHistoryRoot 'f001-previous-message.md'
             scope_plan_path = $f001ScopePath
@@ -12978,7 +12983,8 @@ if ($Phase -ge 9) {
             [switch]$AdvisorDestinationEvidence,
             [switch]$AdvisorMissingEvidenceArtifact,
             [switch]$UseCurrentHost,
-            [switch]$EvidencePackOutsideSourceRoot
+            [switch]$EvidencePackOutsideSourceRoot,
+            [switch]$FollowupAccount
         )
 
         $caseSlug = New-BindingFixtureName -Code 's'
@@ -13315,6 +13321,43 @@ if ($Phase -ge 9) {
         if (-not $OmitQuotaBeforePath) {
             $request.quota_before_path = $quotaBeforePath
         }
+        $accountFixtureHomeA = $codexHome
+        $accountAProfileHashBefore = Get-FileSha256 (Join-Path $accountFixtureHomeA 'default.config.toml')
+        $accountFixtureObservedPath = Join-Path $caseRoot 'observed-home.txt'
+        $accountFixtureLockPath = $null
+        if ($FollowupAccount) {
+            $accountFixtureHomeB = Join-Path $phase9Root (New-BindingFixtureName -Code 'homeb')
+            $null = New-Item -ItemType Directory -Path $accountFixtureHomeB -Force
+            Copy-Item -LiteralPath (Join-Path $codexHome 'default.config.toml') -Destination (Join-Path $accountFixtureHomeB 'default.config.toml')
+            $codexHome = $accountFixtureHomeB
+            $fixtureScripts = Join-Path $caseRoot 'scripts'
+            $null = New-Item -ItemType Directory -Path $fixtureScripts -Force
+            $fixtureEntryPath = Join-Path $fixtureScripts 'Invoke-CodexDispatch.ps1'
+            Copy-Item -LiteralPath $ScriptPath -Destination $fixtureEntryPath
+            Copy-DispatchModulesBesideTestEntry -ScriptPath $fixtureEntryPath
+            $ScriptPath = $fixtureEntryPath
+            $machine = [ordered]@{ schema = 'ai-agents.machine.v1'; codex_accounts = @([ordered]@{name='default';codex_home=$accountFixtureHomeA},[ordered]@{name='secondary';codex_home=$codexHome}) }
+            Write-Utf8NoBom -Path (Join-Path $caseRoot '.local\machine.json') -Content ($machine | ConvertTo-Json -Depth 10) -SourceRoot $caseRoot -ExecutionRoot $caseRoot -TargetPath @()
+            $quotaFixture = @'
+#Requires -Version 5.1
+[CmdletBinding()]
+param([string]$CodexHome,[string]$SnapshotPath)
+Set-StrictMode -Version Latest
+$ErrorActionPreference='Stop'
+$snapshot = [IO.File]::ReadAllText('__TEMPLATE__',[Text.Encoding]::UTF8) | ConvertFrom-Json
+$snapshot.captured_at_utc = [DateTime]::UtcNow.ToString('o')
+$snapshot | Add-Member -MemberType NoteProperty -Name fixture_codex_home -Value $CodexHome -Force
+[IO.File]::WriteAllText($SnapshotPath,($snapshot | ConvertTo-Json -Depth 30),(New-Object Text.UTF8Encoding($false)))
+exit 0
+'@
+            $quotaFixture = $quotaFixture.Replace('__TEMPLATE__',$quotaBeforePath.Replace("'","''")) -replace '\r\n|\r|\n', "`r`n"
+            [IO.File]::WriteAllText((Join-Path $fixtureScripts 'Get-CodexQuota.ps1'),$quotaFixture,(New-Object Text.UTF8Encoding($true)))
+            $fakeText = [IO.File]::ReadAllText($fakeCodexPath)
+            $fakeText = $fakeText.Replace('@echo off',('@echo off' + "`r`n" + '>"' + $accountFixtureObservedPath + '" echo %CODEX_HOME%'))
+            [IO.File]::WriteAllText($fakeCodexPath,$fakeText,(New-Object Text.UTF8Encoding($false)))
+            $accountFixtureLockPath = Join-Path $codexHome 'auth.json'
+            [IO.File]::WriteAllBytes($accountFixtureLockPath,[byte[]]@())
+        }
         $hostPath = if ($UseCurrentHost -and $PSVersionTable.PSEdition -eq 'Core') { (Get-Command pwsh.exe -ErrorAction Stop).Source } else { (Get-Command powershell.exe -ErrorAction Stop).Source }
         $dispatchArguments = @(
             '-NoProfile'
@@ -13374,7 +13417,13 @@ if ($Phase -ge 9) {
 ") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
             $dispatchArguments += @('-RequestPath', $requestPath)
         }
-        $run = Invoke-Phase9Process -HostPath $hostPath -Arguments $dispatchArguments -WorkingDirectory $root -EnvironmentVariables @{}
+        $accountLock = $null
+        try {
+            if ($FollowupAccount) { $accountLock = [IO.File]::Open($accountFixtureLockPath,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::None) }
+            $dispatchEnvironment = if ($FollowupAccount) { @{ CODEX_HOME = $accountFixtureHomeA } } else { @{} }
+            $run = Invoke-Phase9Process -HostPath $hostPath -Arguments $dispatchArguments -WorkingDirectory $root -EnvironmentVariables $dispatchEnvironment
+        }
+        finally { if ($null -ne $accountLock) { $accountLock.Dispose() } }
         $outputDocument = $null
         try {
             $outputDocument = ConvertFrom-Json -InputObject ([string]$run.stdout)
@@ -13486,6 +13535,10 @@ if ($Phase -ge 9) {
             prompt_source_path = $promptSourcePath
             codex_home = $codexHome
             codex_path = $fakeCodexPath
+            script_path = $ScriptPath
+            account_home_a = $accountFixtureHomeA
+            account_observed_path = $accountFixtureObservedPath
+            account_a_profile_sha256 = $accountAProfileHashBefore
             start_result_path = $startResultPath
             start_result_document = $startResultDocument
             inspect_result_path = $inspectResultPath
@@ -14254,6 +14307,246 @@ if ($Phase -ge 9) {
         catch { $driftRejected = $_.Exception.Message -match 'CleanupDestinationConflict' }
         Assert-True ($driftRejected -and (Get-FileSha256 -Path $otherOrigin) -ceq $otherBefore) 'P0-B 一般檔案漂移未維持拒絕。'
         Write-Phase9Evidence -Label 'P0B_EXCEPTIONS_MERGE' -Value ([ordered]@{ one_side = $oneSide.status; both_sides = $bothSide.status; repeat_sha256 = $beforeRepeat; same_title_appended = $sameTitleAppended; same_title_repeat_stable = $sameTitleRepeatStable; missing_source_block_preserved = $true; other_file_drift_rejected = $driftRejected; origin_path = $originPath })
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-POLICY synthetic observations distinguish primary weekly rejection and unknown candidates' {
+        $policyText = [IO.File]::ReadAllText((Join-Path $root 'skills\codex-dispatch\SKILL.md'))
+        foreach ($contract in @('primary 將盡','secondary 實際服務端 usage-limit','secondary 偏低或為 0','generic 429','候選 Unknown','觀測時間=','新 dispatchSlug=','續行方式=cold-start','-CodexHome')) {
+            Assert-True $policyText.Contains($contract) ('Skill 缺少決策或告知契約：'+$contract)
+        }
+        $policyRoot = Join-Path $phase9Root (New-BindingFixtureName -Code 'policy')
+        $null = New-Item -ItemType Directory -Path $policyRoot -Force
+        $scenarios = @(
+            [pscustomobject]@{name='primary-near-end';primary_near=$true;secondary=30;message='';window='unknown';candidate='Valid';freshness='fresh';expected=$true},
+            [pscustomobject]@{name='weekly-rejected';primary_near=$false;secondary=0;message='Weekly usage limit reached';window='secondary';candidate='Valid';freshness='fresh';expected=$true},
+            [pscustomobject]@{name='secondary-low';primary_near=$false;secondary=2;message='';window='unknown';candidate='Valid';freshness='fresh';expected=$false},
+            [pscustomobject]@{name='secondary-zero-without-rejection';primary_near=$false;secondary=0;message='';window='unknown';candidate='Valid';freshness='fresh';expected=$false},
+            [pscustomobject]@{name='generic-429';primary_near=$false;secondary=0;message='HTTP 429 Too many requests';window='unknown';candidate='Valid';freshness='fresh';expected=$false},
+            [pscustomobject]@{name='unknown-window';primary_near=$false;secondary=0;message='Usage limit reached';window='unknown';candidate='Valid';freshness='fresh';expected=$false},
+            [pscustomobject]@{name='unknown-candidate';primary_near=$true;secondary=0;message='';window='unknown';candidate='SnapshotUnavailable';freshness='fresh';expected=$false},
+            [pscustomobject]@{name='stale-candidate';primary_near=$true;secondary=40;message='';window='unknown';candidate='Valid';freshness='stale';expected=$false},
+            [pscustomobject]@{name='rejected-candidate';primary_near=$true;secondary=40;message='';window='unknown';candidate='ServiceRejected';freshness='fresh';expected=$false}
+        )
+        foreach ($scenario in $scenarios) {
+            $eventPath = Join-Path $policyRoot ($scenario.name+'.jsonl')
+            $event = if ([string]::IsNullOrWhiteSpace($scenario.message)) { [ordered]@{type='turn.completed'} } else { [ordered]@{type='turn.failed';error=[ordered]@{message=$scenario.message}} }
+            [IO.File]::WriteAllText($eventPath,($event|ConvertTo-Json -Depth 10 -Compress),(New-Object Text.UTF8Encoding($false)))
+            $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath
+            $rejection = Convert-EventEvidenceToServiceRejection -EventEvidence ([pscustomobject]$eventEvidence)
+            $weeklyProof = $null -ne $rejection -and $rejection.reason_code -ceq 'usage-limit' -and
+                ($scenario.window -ceq 'secondary' -or $scenario.message -match '(?i)weekly|week[ -]limit')
+            $candidateReliable = $scenario.candidate -ceq 'Valid' -and $scenario.freshness -ceq 'fresh'
+            $allowSwitch = $candidateReliable -and ($scenario.primary_near -or $weeklyProof)
+            Assert-True ($allowSwitch -eq $scenario.expected) ('合成決策不符：'+$scenario.name)
+            if ($scenario.name -in @('generic-429','unknown-window')) { Assert-True ($eventEvidence.usage_limit -and -not $weeklyProof) '通用 usage_limit 被誤推為週上限。' }
+            Write-Phase9Evidence -Label 'FOLLOWUP_POLICY_DECISION' -Value ([ordered]@{scenario=$scenario;event_evidence=$eventEvidence;service_rejection=$rejection;weekly_proof=$weeklyProof;allow_switch=$allowSwitch})
+        }
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-POLICY cold-start handoff preserves confirmed source and ordered incomplete selected units' {
+        $policyRoot = Join-Path $phase9Root (New-BindingFixtureName -Code 'handoff')
+        $oldSlug = 'old-account'; $newSlug = 'new-account'; $runId = [guid]::NewGuid().ToString('D')
+        $history = Join-Path $policyRoot '.local\ai-sessions\history\line-a'
+        $null = New-Item -ItemType Directory -Path $history -Force
+        $scopePath = Join-Path $history 'original-scope.json'; $recordPath = Join-Path $history 'original-run.json'; $eventPath = Join-Path $history 'original-events.jsonl'; $resultPath = Join-Path $history 'confirmed-result.txt'
+        foreach ($path in @($scopePath,$recordPath,$eventPath,$resultPath)) { [IO.File]::WriteAllText($path,'fixture evidence',(New-Object Text.UTF8Encoding($false))) }
+        $selected = @('Phase 1','Phase 2','Phase 3')
+        $checkpoint = New-DispatchInterruptionCheckpointDocument -LineSlug 'line-a' -DispatchSlug $oldSlug -RunId $runId -SelectedUnits $selected -ScopePlanPath $scopePath -RunRecordPath $recordPath -EventStreamPath $eventPath
+        $checkpoint.confirmed_units = @([ordered]@{unit='Phase 2';confirmed_result='fixture verified result';evidence_locations=@($resultPath)})
+        $checkpoint.incomplete_units = @('Phase 1','Phase 3')
+        $checkpointPath = Get-DispatchInterruptionCheckpointPath -SourceRoot $policyRoot -LineSlug 'line-a' -DispatchSlug $oldSlug -RunId $runId
+        $null = Write-DispatchAtomicJsonDocument -Path $checkpointPath -Document $checkpoint -SourceRoot $policyRoot -ExecutionRoot $policyRoot -TargetPath @()
+        $handoff = Get-DispatchInterruptionCheckpoint -Path $checkpointPath -SourceRoot $policyRoot -ExecutionRoot $policyRoot -LineSlug 'line-a' -DispatchSlug $oldSlug -RunId $runId -SelectedUnits $selected -SourcePath @($scopePath,$recordPath,$eventPath)
+        Assert-True ($handoff.status -ceq 'available' -and ($handoff.incomplete_units -join ',') -ceq 'Phase 1,Phase 3' -and $handoff.confirmed_units[0].unit -ceq 'Phase 2') '中斷資料未保留已確認及有序未完成單位。'
+        $newRoot = Join-Path $policyRoot 'new-worktree'
+        $destination = Join-Path $newRoot '.local\ai-sessions\handoff\line-a\original-checkpoint.json'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force
+        Copy-Item -LiteralPath $checkpointPath -Destination $destination
+        $request = [ordered]@{operation='Dispatch';dispatch_slug=$newSlug;session_mode='cold-start';requested_unit=@($handoff.incomplete_units);prepare_artifacts=@([ordered]@{source=$checkpointPath;destination=$destination;sha256=(Get-FileSha256 $checkpointPath);purpose='original checkpoint'})}
+        Assert-True ($request.dispatch_slug -cne $oldSlug -and $request.session_mode -ceq 'cold-start' -and -not $request.Contains('resume_thread_id') -and -not (@($request.requested_unit) -contains 'Phase 2') -and -not (@($request.requested_unit) -contains 'Phase 9')) '跨 home 未採新 slug／cold-start 或混入已完成、deferred 單位。'
+        Assert-True ((Get-FileSha256 $destination) -ceq $request.prepare_artifacts[0].sha256 -and @($handoff.source_locations).Count -gt 0) '交接來源副本／hash 缺漏。'
+        $checkpoint.incomplete_units += 'Phase 9'
+        $null = Write-DispatchAtomicJsonDocument -Path $checkpointPath -Document $checkpoint -SourceRoot $policyRoot -ExecutionRoot $policyRoot -TargetPath @()
+        $invalid = Get-DispatchInterruptionCheckpoint -Path $checkpointPath -SourceRoot $policyRoot -ExecutionRoot $policyRoot -LineSlug 'line-a' -DispatchSlug $oldSlug -RunId $runId -SelectedUnits $selected
+        Assert-True ($invalid.status -ceq 'invalid') '未選單位被錯誤承接。'
+        $skill = [IO.File]::ReadAllText((Join-Path $root 'skills\codex-dispatch\SKILL.md'))
+        foreach ($term in @('同 home','手動切換預設 home','session_mode=cold-start','prepare_artifacts','ResumeAccountMismatch','ResumeAccountUnverifiable','不複製 sessions 或憑證')) { Assert-True $skill.Contains($term) ('Skill 交接契約缺漏：'+$term) }
+        Write-Phase9Evidence -Label 'FOLLOWUP_POLICY_HANDOFF' -Value ([ordered]@{fixture=$policyRoot;handoff=$handoff;new_request=$request;invalid_unselected_unit_status=$invalid.status})
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-ACCOUNT selection validation and legacy continuation bind directories' {
+        $caseRoot = Join-Path $phase9Root (New-BindingFixtureName -Code 'acct')
+        $homeA = Join-Path $caseRoot 'a'; $homeB = Join-Path $caseRoot 'b'
+        $null = New-Item -ItemType Directory -Path $homeA,$homeB -Force
+        $machinePath = Join-Path $caseRoot 'machine.json'
+        $machine = [ordered]@{schema='ai-agents.machine.v1';codex_accounts=@([ordered]@{name='default';codex_home=$homeA},[ordered]@{name='secondary';codex_home=$homeB})}
+        [IO.File]::WriteAllText($machinePath,($machine | ConvertTo-Json -Depth 10),(New-Object Text.UTF8Encoding($false)))
+        $parentHome = $env:CODEX_HOME
+        $selected = Resolve-CodexAccountSelection -CodexHomePath $homeB -MachineConfigPath $machinePath
+        Assert-True ($selected.AccountName -ceq 'secondary' -and $selected.CodexHome -ieq $homeB -and $env:CODEX_HOME -ceq $parentHome) '帳號選擇或父環境不符。'
+        $emptyPath = Join-Path $caseRoot 'empty.json'
+        [IO.File]::WriteAllText($emptyPath,'{"schema":"ai-agents.machine.v1","codex_accounts":[]}',(New-Object Text.UTF8Encoding($false)))
+        Assert-True ($null -eq (Resolve-CodexAccountSelection -CodexHomePath $homeA -MachineConfigPath $emptyPath).AccountName) '空清單未保留單 home 相容性。'
+        $anchor = [pscustomobject]@{effective_codex_home=$homeB;codex_home=$homeB;codex_account_name='secondary'}
+        $same = Assert-DispatchAccountContinuation -AnchorRecord $anchor -CodexHomePath $homeB -AccountName 'secondary'
+        Assert-True ($same.Status -ceq 'home-and-name-confirmed') '同 home/name 未通過。'
+        $trailing = Assert-DispatchAccountContinuation -AnchorRecord ([pscustomobject]@{effective_codex_home=($homeB+'\');codex_home=$homeB;codex_account_name='secondary'}) -CodexHomePath ($homeB+'\') -AccountName 'secondary'
+        Assert-True ($trailing.CodexHome -ieq $homeB) '尾端分隔符造成相同 home 被誤判。'
+        $anchor.PSObject.Properties.Remove('codex_account_name')
+        $legacy = Assert-DispatchAccountContinuation -AnchorRecord $anchor -CodexHomePath $homeB -AccountName 'secondary'
+        Assert-True ($legacy.Status -ceq 'directory-only-compatibility') '舊 RunRecord 缺名稱未採目錄綁定。'
+        foreach ($fault in @('cross-home','cross-name','missing-home','conflicting-home','absent-directory','missing-profile','duplicate-name','duplicate-path','invalid-list')) {
+            $rejected = $false; $errorText = ''
+            try {
+                switch ($fault) {
+                    'cross-home' { $null = Assert-DispatchAccountContinuation -AnchorRecord $anchor -CodexHomePath $homeA }
+                    'cross-name' { $null = Assert-DispatchAccountContinuation -AnchorRecord ([pscustomobject]@{effective_codex_home=$homeB;codex_home=$homeB;codex_account_name='secondary'}) -CodexHomePath $homeB -AccountName 'default' }
+                    'missing-home' { $null = Assert-DispatchAccountContinuation -AnchorRecord ([pscustomobject]@{}) -CodexHomePath $homeB }
+                    'conflicting-home' { $null = Assert-DispatchAccountContinuation -AnchorRecord ([pscustomobject]@{effective_codex_home=$homeB;codex_home=$homeA}) -CodexHomePath $homeB }
+                    'absent-directory' { $null = Resolve-CodexAccountSelection -CodexHomePath (Join-Path $caseRoot 'absent') -MachineConfigPath $emptyPath }
+                    'missing-profile' { $null = Resolve-CodexAccountSelection -CodexHomePath $homeB -Profile default -MachineConfigPath $machinePath }
+                    default {
+                        $bad = switch ($fault) {
+                            'duplicate-name' { @([ordered]@{name='default';codex_home=$homeA},[ordered]@{name='default';codex_home=$homeB}) }
+                            'duplicate-path' { @([ordered]@{name='default';codex_home=$homeA},[ordered]@{name='secondary';codex_home=($homeA+'\')}) }
+                            default { 'invalid' }
+                        }
+                        $badPath = Join-Path $caseRoot ($fault+'.json')
+                        [IO.File]::WriteAllText($badPath,([ordered]@{schema='ai-agents.machine.v1';codex_accounts=$bad}|ConvertTo-Json -Depth 10),(New-Object Text.UTF8Encoding($false)))
+                        $null = Resolve-CodexAccountSelection -CodexHomePath $homeB -MachineConfigPath $badPath
+                    }
+                }
+            }
+            catch { $rejected = $true; $errorText = $_.Exception.Message }
+            Assert-True ($rejected -and $errorText -match 'ResumeAccountMismatch|ResumeAccountUnverifiable|CodexAccountHomeMissing|ProfileEvidenceUnknown|CodexAccountConfigurationInvalid') ('帳號負向情境未拒絕：'+$fault+'; '+$errorText)
+            Write-Phase9Evidence -Label 'FOLLOWUP_ACCOUNT_REJECT' -Value ([ordered]@{fixture=$caseRoot;fault=$fault;error=$errorText})
+        }
+        $junction = Join-Path $caseRoot 'alias'
+        $null = New-Item -ItemType Junction -Path $junction -Target $homeA -ErrorAction Stop
+        $aliasRejected = $false
+        try { $null = Resolve-CodexAccountSelection -CodexHomePath $junction -MachineConfigPath $emptyPath } catch { $aliasRejected = $_.Exception.Message -match 'DispatchOutputBoundary|CodexAccount' }
+        Assert-True $aliasRejected 'reparse home 未拒絕。'
+        Write-Phase9Evidence -Label 'FOLLOWUP_ACCOUNT_SELECTION' -Value ([ordered]@{fixture=$caseRoot;selection=$selected;same_home=$same;legacy=$legacy;alias_rejected=$aliasRejected;parent_environment_unchanged=($env:CODEX_HOME -ceq $parentHome)})
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-ACCOUNT virtual Codex inherits B with B profile quota and resume' {
+        $parentHome = $env:CODEX_HOME
+        $real = & $invokeSRealDispatchCase -Name 'followup-account' -ScriptPath $sourcePath -CreateQuotaBeforePath -UseCurrentHost -FollowupAccount
+        Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document) ('帳號 fixture 未啟動：'+$real.output_text)
+        $record = $real.run_record_document
+        $observed = [IO.File]::ReadAllText($real.account_observed_path).Trim()
+        $before = [IO.File]::ReadAllText($record.quota_before_path) | ConvertFrom-Json
+        $after = [IO.File]::ReadAllText($record.quota_after_path) | ConvertFrom-Json
+        Assert-True ($observed -ieq $real.codex_home -and $record.codex_home -ieq $real.codex_home -and $record.effective_codex_home -ieq $real.codex_home -and $record.codex_account_name -ceq 'secondary') '子行程／RunRecord 未固定 B。'
+        Assert-True ($record.profile_config_path -ieq (Join-Path $real.codex_home 'default.config.toml') -and $before.fixture_codex_home -ieq $real.codex_home -and $after.fixture_codex_home -ieq $real.codex_home) 'profile 與 before/after home 不一致。'
+        $resumeArguments = @('-NoProfile','-NonInteractive','-File',$real.script_path,'-Operation','Start','-SourceRoot',$real.source_root,'-ExecutionRoot',$real.dispatch_root,'-DispatchRoot',$real.dispatch_root,'-LineSlug','a','-DispatchSlug',$real.dispatch_slug,'-WriteMode','write','-PreflightResultPath',$real.preflight_result_path,'-PrepareResultPath',$record.prepare_result_path,'-CodexPath',$real.codex_path,'-PromptPath',$real.prompt_source_path,'-TaskType','script-change','-DispatchKind','workflow','-UnitKind','workflow-phase','-TargetPath',(Join-Path $real.source_root 'target.txt'),'-RequestedUnit','Phase 1','-ScopePlanPath',$record.scope_plan_path,'-ResumeThreadId',$record.thread_id,'-LastMessagePath',$record.last_message_path,'-CodexHome',$real.codex_home)
+        $hostPath = (Get-Process -Id $PID).Path
+        $resume = Invoke-Phase9Process -HostPath $hostPath -Arguments $resumeArguments -WorkingDirectory $root -EnvironmentVariables @{CODEX_HOME=$real.account_home_a}
+        Assert-True ($resume.exit_code -eq 0) ('同 home resume 未通過：'+$resume.stdout+$resume.stderr)
+        Assert-True ($env:CODEX_HOME -ceq $parentHome -and (Get-FileSha256 (Join-Path $real.account_home_a 'default.config.toml')) -ceq $real.account_a_profile_sha256) '父環境或 A profile 被修改。'
+        Write-Phase9Evidence -Label 'FOLLOWUP_ACCOUNT_RUNTIME' -Value ([ordered]@{fixture=$real.case_root;invocation=$real.run.command;stdout=$real.run.stdout;stderr=$real.run.stderr;exit_code=$real.run.exit_code;observed_home=$observed;run_record=$record;resume=$resume;credential_file_locked_during_dispatch=$true;parent_environment_unchanged=$true})
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-CLEANUP CLI switch stays Cleanup-only' {
+        $hostPath = (Get-Process -Id $PID).Path
+        $invocation = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-File',$sourcePath,'-Operation','Inspect','-TakeoverOwner') -WorkingDirectory $root -EnvironmentVariables @{}
+        Assert-True ($invocation.exit_code -ne 0 -and $invocation.stderr -match 'CleanupTakeoverOperationInvalid') 'TakeoverOwner 未限制於 Cleanup。'
+        Write-Phase9Evidence -Label 'FOLLOWUP_CLEANUP_CLI' -Value $invocation
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-CLEANUP normal owner retains the original cleanup path' {
+        $real = & $invokeSRealDispatchCase -Name 'followup-cleanup-owner' -ScriptPath $sourcePath -CreateQuotaBeforePath -UseCurrentHost
+        Assert-True ([int]$real.run.exit_code -eq 0) ('fixture Dispatch failed: ' + $real.output_text)
+        $savedCaller = $script:CallerSessionIdentity
+        $savedPid = $script:pidResult
+        try {
+            $SourceRoot = $real.source_root; $DispatchRoot = $real.dispatch_root; $LineSlug = 'a'; $DispatchSlug = $real.dispatch_slug
+            $PreflightResultPath = $real.preflight_result_path; $RunRecordPath = $real.run_record_path; $EvidencePath = @(); $ReportPath = @(); $ResultPath = $null
+            $script:cleanupUseRealGit = $true; $script:CallerSessionIdentity = [pscustomobject]@{Fingerprint=$real.run_record_document.caller_session_fingerprint;Source='fixture'}; $script:TakeoverOwner = $true
+            $script:pidResult = [pscustomobject]@{ActiveRecords=@();UnconfirmedRecords=@()}
+            $result = Invoke-Cleanup -Confirm:$false
+            Assert-True ($result.worktree_removed -and -not $result.owner_takeover.used -and $null -eq $result.owner_takeover.audit_path) '原 owner 路徑意外使用接手。'
+            Write-Phase9Evidence -Label 'FOLLOWUP_CLEANUP_NORMAL' -Value $result
+        }
+        finally { $script:cleanupUseRealGit = $false; $script:CallerSessionIdentity = $savedCaller; $script:pidResult = $savedPid; $script:TakeoverOwner = $false }
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-CLEANUP terminal takeover preserves bytes and original owners' {
+        $savedCaller = $script:CallerSessionIdentity
+        $savedPid = $script:pidResult
+        try {
+            foreach ($withoutLedger in @($false, $true)) {
+                $real = & $invokeSRealDispatchCase -Name 'followup-cleanup-complete' -ScriptPath $sourcePath -CreateQuotaBeforePath -UseCurrentHost
+                Assert-True ([int]$real.run.exit_code -eq 0) ('fixture Dispatch failed: ' + $real.output_text)
+                $SourceRoot = $real.source_root; $DispatchRoot = $real.dispatch_root; $LineSlug = 'a'; $DispatchSlug = $real.dispatch_slug
+                $PreflightResultPath = $real.preflight_result_path; $RunRecordPath = $real.run_record_path; $ReportPath = @(); $EvidencePath = @(); $ResultPath = $null
+                $recordHash = Get-FileSha256 $RunRecordPath
+                $script:cleanupUseRealGit = $true
+                $script:CallerSessionIdentity = [pscustomobject]@{ Fingerprint = ('f' * 64); Source = 'fixture' }
+                $script:pidResult = [pscustomobject]@{ ActiveRecords = @(); UnconfirmedRecords = @() }
+                if ($withoutLedger) {
+                    $lock = Open-DispatchAdmissionLock -SourceRoot $SourceRoot
+                    try { $ledger = Read-DispatchAdmissionLedger -Lock $lock; $ledger.Document.entries = @(); $null = Write-DispatchAdmissionLedger -Lock $lock -Ledger $ledger }
+                    finally { Close-DispatchAdmissionLock -Lock $lock }
+                }
+                $script:TakeoverOwner = $false
+                $rejected = $false
+                try { $null = Invoke-Cleanup -Confirm:$false } catch { $rejected = $_.Exception.Message -match 'DispatchAdmissionOwner(Mismatch|Unverifiable)' }
+                Assert-True ($rejected -and (Test-Path -LiteralPath $DispatchRoot)) '未明示接手應保留 owner 拒絕。'
+                $script:TakeoverOwner = $true
+                $result = Invoke-Cleanup -Confirm:$false
+                $audit = Get-Content -LiteralPath $result.owner_takeover.audit_path -Raw -Encoding UTF8 | ConvertFrom-Json
+                Assert-True ($result.worktree_removed -and $result.owner_takeover.used -and $audit.status -ceq 'completed') '接手未完成保存及移除。'
+                Assert-True ($audit.new_owner_fingerprint -ceq ('f' * 64) -and @($audit.original_owners).Count -gt 0 -and @($audit.preserved_files).Count -gt 0 -and @($audit.terminal_evidence).Count -gt 0 -and @($audit.process_evidence).Count -gt 0) '接手稽核證據不完整。'
+                Assert-True ((Get-FileSha256 $RunRecordPath) -ceq $recordHash -and (Get-FileSha256 $result.owner_takeover.audit_path) -ceq $result.owner_takeover.audit_sha256) '接手改寫原 owner 或稽核 hash 不符。'
+                Write-Phase9Evidence -Label 'FOLLOWUP_CLEANUP_SUCCESS' -Value ([ordered]@{ fixture = $real.case_root; invocation = $real.run.command; stdout = $real.run.stdout; stderr = $real.run.stderr; exit_code = $real.run.exit_code; no_ledger = $withoutLedger; cleanup = $result; audit = $audit })
+            }
+        }
+        finally { $script:CallerSessionIdentity = $savedCaller; $script:pidResult = $savedPid; $script:cleanupUseRealGit = $false; $script:TakeoverOwner = $false }
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-CLEANUP rejects nonterminal identity process preservation audit and drift failures' {
+        $real = & $invokeSRealDispatchCase -Name 'followup-cleanup-reject' -ScriptPath $sourcePath -CreateQuotaBeforePath -UseCurrentHost
+        Assert-True ([int]$real.run.exit_code -eq 0) ('fixture Dispatch failed: ' + $real.output_text)
+        $savedCaller = $script:CallerSessionIdentity; $savedPid = $script:pidResult
+        $savedPreserve = (Get-Command Preserve-CleanupFile).ScriptBlock
+        $savedAudit = (Get-Command Write-CleanupTakeoverAudit).ScriptBlock
+        $originalRun = [IO.File]::ReadAllText($real.run_record_path)
+        $originalEvent = [IO.File]::ReadAllText($real.run_record_document.event_stream_path)
+        $originalSidecar = [IO.File]::ReadAllText($real.sidecar_path)
+        try {
+            $SourceRoot = $real.source_root; $DispatchRoot = $real.dispatch_root; $LineSlug = 'a'; $DispatchSlug = $real.dispatch_slug
+            $PreflightResultPath = $real.preflight_result_path; $RunRecordPath = $real.run_record_path; $ReportPath = @(); $EvidencePath = @(); $ResultPath = $null; $script:TakeoverOwner = $true
+            $script:cleanupUseRealGit = $true
+            $script:CallerSessionIdentity = [pscustomobject]@{ Fingerprint = ('e' * 64); Source = 'fixture' }
+            foreach ($fault in @('prepared','unknown-event','sidecar-identity','live-root','live-child','query-denied','run-identity','preservation','audit','drift')) {
+                Write-Utf8NoBom -Path $RunRecordPath -Content $originalRun -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                Write-Utf8NoBom -Path $real.run_record_document.event_stream_path -Content $originalEvent -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                Write-Utf8NoBom -Path $real.sidecar_path -Content $originalSidecar -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                Set-Item Function:\Preserve-CleanupFile $savedPreserve
+                Set-Item Function:\Write-CleanupTakeoverAudit $savedAudit
+                $script:CleanupBeforeRemovalHook = $null
+                $script:pidResult = [pscustomobject]@{ ActiveRecords = @(); UnconfirmedRecords = @() }
+                if ($fault -eq 'prepared') { $r = $originalRun | ConvertFrom-Json; $r.launch_state = 'prepared'; $r.thread_id = $null; Write-Utf8NoBom $RunRecordPath ($r | ConvertTo-Json -Depth 60) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @() }
+                if ($fault -eq 'run-identity') { $r = $originalRun | ConvertFrom-Json; $r.line_slug = 'wrong'; Write-Utf8NoBom $RunRecordPath ($r | ConvertTo-Json -Depth 60) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @() }
+                if ($fault -eq 'unknown-event') { Write-Utf8NoBom $real.run_record_document.event_stream_path '{"type":"turn.started"}' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @() }
+                if ($fault -eq 'sidecar-identity') { $s = $originalSidecar | ConvertFrom-Json; $s.run_id = [guid]::NewGuid().ToString('D'); Write-Utf8NoBom $real.sidecar_path ($s | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @() }
+                if ($fault -in @('live-root','live-child')) { $script:pidResult.ActiveRecords = @([pscustomobject]@{ DispatchSlug = $DispatchSlug; Path = $real.run_record_document.pid_record_path }) }
+                if ($fault -eq 'query-denied') { $script:pidResult.UnconfirmedRecords = @([pscustomobject]@{ DispatchSlug = $DispatchSlug; Path = $real.run_record_document.pid_record_path; IdentityStatus = 'process-query-unavailable'; ParentTreeStatus = 'unconfirmed' }) }
+                if ($fault -eq 'preservation') { Set-Item Function:\Preserve-CleanupFile { throw 'CleanupPreservationFailed：fixture injected failure' } }
+                if ($fault -eq 'audit') { Set-Item Function:\Write-CleanupTakeoverAudit { throw 'CleanupTakeoverAuditWriteFailed：fixture injected failure' } }
+                if ($fault -eq 'drift') { $script:followupDriftPath = $real.run_record_document.event_stream_path; $script:CleanupBeforeRemovalHook = { param($ReportRoot) [IO.File]::AppendAllText($script:followupDriftPath, "`n" + '{"type":"turn.started"}') } }
+                $rejected = $false; $message = ''
+                try { $null = Invoke-Cleanup -Confirm:$false } catch { $rejected = $true; $message = $_.Exception.Message }
+                Assert-True ($rejected -and (Test-Path -LiteralPath $DispatchRoot)) ('接手負向情境未保留 worktree：' + $fault)
+                $expectedError = switch ($fault) {
+                    'run-identity' { 'CleanupTakeoverIdentityInvalid' }
+                    'preservation' { 'CleanupPreservationFailed' }
+                    'audit' { 'CleanupTakeoverAuditWriteFailed' }
+                    { $_ -in @('live-root','live-child','query-denied') } { 'ProcessIdentityBlocked' }
+                    default { 'CleanupTakeoverRunNotTerminal|CleanupTakeoverIdentityInvalid' }
+                }
+                Assert-True ($message -match $expectedError) ('負向案例未命中指定守衛：' + $fault + '; ' + $message)
+                Write-Phase9Evidence -Label 'FOLLOWUP_CLEANUP_REJECT' -Value ([ordered]@{ fixture = $real.case_root; fault = $fault; invocation = 'Invoke-Cleanup -Confirm:$false'; error = $message; worktree_preserved = $true })
+            }
+        }
+        finally {
+            $script:CallerSessionIdentity = $savedCaller; $script:pidResult = $savedPid; $script:cleanupUseRealGit = $false; $script:CleanupBeforeRemovalHook = $null; $script:TakeoverOwner = $false
+            Set-Item Function:\Preserve-CleanupFile $savedPreserve
+            Set-Item Function:\Write-CleanupTakeoverAudit $savedAudit
+        }
     }
     Invoke-Case 'Phase 9 BATCH6-K1 Cleanup preserves binary report bytes and rejects destination tampering' {
         $scenario = New-Phase3CleanupScenario -ScenarioSlug ('batch6-k1-' + $script:caseCount)

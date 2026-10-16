@@ -156,6 +156,8 @@ param(
 
     [switch]$ApplyCollectedChanges,
 
+    [switch]$TakeoverOwner,
+
     [string[]]$EvidencePath
 )
 
@@ -169,6 +171,7 @@ foreach ($boundName in $PSBoundParameters.Keys) {
 $script:RequestContext = $null
 $script:CallerSessionIdentity = $null
 $script:DispatchStageBinding = $null
+$script:DispatchAccountSelection = $null
 $script:RequestLiteralValues = @()
 $script:RequestPrepareArtifacts = @()
 $script:RequestManualPrepareArtifacts = @()
@@ -873,6 +876,9 @@ function Get-DispatchOperationExitCode {
 
 try {
     $null = Apply-DispatchRequest
+    if ($TakeoverOwner -and $Operation -ine 'Cleanup') {
+        throw 'CleanupTakeoverOperationInvalid：TakeoverOwner 只適用於 Cleanup。'
+    }
     Assert-DispatchSessionMode
     $requiresCallerSessionCheck = $Operation -in @('Preflight', 'Prepare', 'Start', 'Dispatch', 'Cleanup') -or
         ($Operation -eq 'Collect' -and $ApplyCollectedChanges) -or

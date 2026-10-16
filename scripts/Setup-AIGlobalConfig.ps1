@@ -242,6 +242,30 @@ else {
     }
 }
 
+# 帳號清單只作存在診斷，設定與登入由使用者維護。
+. (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
+try {
+    $machineAccounts = @(Read-CodexAccountConfiguration -MachineConfigPath (Join-Path $configRoot '.local\machine.json'))
+    foreach ($account in $machineAccounts) {
+        Write-Host ('  Codex 帳號 ' + $account.name + '：' + $account.codex_home)
+        foreach ($fileName in @('config.toml','default.config.toml','advisor.config.toml')) {
+            $accountConfigPath = Join-Path $account.codex_home $fileName
+            if (-not (Test-Path -LiteralPath $accountConfigPath -PathType Leaf)) {
+                Write-Warning ('  帳號 ' + $account.name + ' 缺少 ' + $accountConfigPath + '。請依 README.md §3 人工準備；基礎 config 必要鍵待使用者驗證。')
+            }
+        }
+        $accountIntensivePath = Join-Path $account.codex_home 'intensive.config.toml'
+        if (Test-Path -LiteralPath $accountIntensivePath -PathType Leaf) {
+            Write-Host ('  已偵測到選用設定檔：' + $accountIntensivePath)
+        }
+    }
+}
+catch {
+    Write-Warning ($_.Exception.Message + '。請修正本機帳號清單；保留原預設目錄，未切換帳號。')
+}
+
 $codexConfigPath = Join-Path $codexDir "config.toml"
 $defaultProfilePath = Join-Path $codexDir "default.config.toml"
 $advisorProfilePath = Join-Path $codexDir "advisor.config.toml"

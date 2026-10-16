@@ -717,6 +717,7 @@ function Invoke-Start {
     $parentOptionsGate = $null
     $processGate = $null
     $effectiveCodexHomePath = $null
+    $codexAccountName = $null
     $prepareBinding = $null
     $prepareResultPathValue = $null
     $prepareResultSha256Value = $null
@@ -818,7 +819,10 @@ function Invoke-Start {
 
     $historyRoot = Join-Path -Path $executionRootPath -ChildPath '.local\ai-sessions\history'
     $sourceHistoryRoot = Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history'
-    $effectiveCodexHomePath = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
+    $accountSelection = Get-DispatchScriptVariableValue -Name 'DispatchAccountSelection'
+    if ($null -eq $accountSelection) { $accountSelection = Resolve-CodexAccountSelection -CodexHomePath $CodexHome }
+    $effectiveCodexHomePath = $accountSelection.CodexHome
+    $codexAccountName = $accountSelection.AccountName
     $preflightPreparePathProperty = $preflight.PSObject.Properties['prepareResultPath']
     $preflightPrepareShaProperty = $preflight.PSObject.Properties['prepareResultSha256']
     $preflightPreparePathValue = if ($null -eq $preflightPreparePathProperty -or $null -eq $preflightPreparePathProperty.Value) { $null } else { [string]$preflightPreparePathProperty.Value }
@@ -897,6 +901,10 @@ function Invoke-Start {
         $previousRun = Resolve-PreviousDispatchRun -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ResumeThreadId $ResumeThreadId -LastMessagePath $LastMessagePath
         $attemptParentRunIdValue = $previousRun.ChainTailRecord.run_id
         $resumeAnchorRunIdValue = $previousRun.AnchorRecord.run_id
+        $accountContinuation = Assert-DispatchAccountContinuation -AnchorRecord $previousRun.AnchorRecord -CodexHomePath $effectiveCodexHomePath -AccountName $codexAccountName
+        $effectiveCodexHomePath = $accountContinuation.CodexHome
+        $codexAccountName = $accountContinuation.AccountName
+        $resumeDiagnostics = [ordered]@{ account_continuation = $accountContinuation.Status }
         $skippedAttemptsValue = @($previousRun.SkippedAttempts)
         $continuationContextPath = Get-DispatchJsonProperty -Object $previousRun -Name 'HandoffPath'
         if ($null -eq $continuationContextPath) {
@@ -910,6 +918,12 @@ function Invoke-Start {
     }
     elseif (-not [string]::IsNullOrWhiteSpace($LastMessagePath)) {
         $lastMessagePathValue = Resolve-AbsolutePath $LastMessagePath
+    }
+    $prepareHome = [string](Get-DispatchJsonProperty -Object $prepareBinding -Name 'EffectiveCodexHome')
+    $accountBindingRequired = $null -ne (Get-DispatchScriptVariableValue -Name 'DispatchAccountSelection') -or -not [string]::IsNullOrWhiteSpace($codexAccountName)
+    if ($accountBindingRequired -and -not [string]::IsNullOrWhiteSpace($prepareHome) -and
+        -not [string]::Equals((Normalize-DispatchRootPath $prepareHome), $effectiveCodexHomePath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'PrepareArtifactMismatch：Prepare 的 home 與選定帳號不符。'
     }
     $directReadonly = $writeModeValue -eq 'readonly' -and [string](Get-DispatchJsonProperty -Object $preflight -Name 'gitOrigin') -eq 'not-applicable' -and [string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase)
     $sandboxValue = if ($TaskType -eq 'advisor-consult' -or $directReadonly) { 'read-only' } else { 'workspace-write' }
@@ -1047,6 +1061,7 @@ function Invoke-Start {
         profile_config_path = $null
         codex_home = $effectiveCodexHomePath
         effective_codex_home = $effectiveCodexHomePath
+        codex_account_name = $codexAccountName
         evidence_pack_path = $null
         evidence_pack_sha256 = $null
         evidence_pack_length = $null
@@ -1129,7 +1144,6 @@ function Invoke-Start {
     }
     $requestedModelEvidence = New-RequestedDispatchEvidence -Value $Model -Field 'Model'
     $requestedReasoningEffortEvidence = New-RequestedDispatchEvidence -Value $ReasoningEffort -Field 'ReasoningEffort'
-    $effectiveCodexHomePath = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
     $codexHomeEvidencePath = $effectiveCodexHomePath
     $profileConfigPathValue = Resolve-ProfileConfigPath -CodexHome $codexHomeEvidencePath -Profile $effectiveProfileValue
     if ($effectiveProfileValue -eq 'intensive' -and [string]::IsNullOrWhiteSpace($profileConfigPathValue)) {
@@ -1500,6 +1514,7 @@ function Invoke-Start {
     $launcher = New-CodexLauncher -CodexExecutable $codexExecutable -CodexArguments @($codexArguments.ToArray()) -PromptPath $promptPathValue -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyRoot -LauncherPath $launcherPath -ExitSidecarPath $exitSidecarPathValue -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -RunId $runId -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
     $launcherPath = $launcher.Path
     $startInfo = New-ProcessStartInfo -FileName $launcher.FileName -WorkingDirectory $executionRootPath -Arguments @($launcher.Arguments)
+    $startInfo.EnvironmentVariables['CODEX_HOME'] = $effectiveCodexHomePath
     if ($null -ne $previousRun) {
         $profileConfigSha256AfterCompare = $null
         if ([string]::IsNullOrWhiteSpace($profileConfigPathValue) -or -not (Test-Path -LiteralPath $profileConfigPathValue -PathType Leaf)) {
@@ -1692,7 +1707,7 @@ function Invoke-Start {
         $inspectResultPathValue = $inspectResult.Path
         $budgetMonitorStatus.state = 'running'
         if ($TaskType -eq 'advisor-consult') {
-            $budgetMonitorStatus = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -AfterSnapshotSha256 $afterSnapshotSha256Value -CodexHome $CodexHome -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -ScopePlan $scopePlan
+            $budgetMonitorStatus = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -AfterSnapshotSha256 $afterSnapshotSha256Value -CodexHome $effectiveCodexHomePath -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -ScopePlan $scopePlan
             $afterSnapshotSha256Value = [string]$budgetMonitorStatus.afterSnapshotSha256
             $runRecord.quota_after_path = $afterSnapshotPathValue
             $runRecord.quota_after_sha256 = $afterSnapshotSha256Value

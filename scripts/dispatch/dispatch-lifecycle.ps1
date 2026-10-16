@@ -700,6 +700,7 @@ function Invoke-Dispatch {
     $failureReceiptWritten = $false
     $failureReceiptSha256Value = $null
     $continuationFailureHandoff = $null
+    $previousAccountSelection = Get-DispatchScriptVariableValue -Name 'DispatchAccountSelection'
 
     try {
         if ($null -eq $script:RequestContext -or [string]$script:RequestContext.document.operation -cne 'Dispatch') {
@@ -727,6 +728,8 @@ function Invoke-Dispatch {
         $QuotaAfterPath = $null
 
         $failedStage = 'preflight'
+        $script:DispatchAccountSelection = Resolve-CodexAccountSelection -CodexHomePath $CodexHome -Profile $Profile
+        $CodexHome = $script:DispatchAccountSelection.CodexHome
         if ([string]::IsNullOrWhiteSpace($requestedFailureReceiptPath)) {
             throw 'Dispatch request 必須提供 failure_receipt_path。'
         }
@@ -1175,5 +1178,8 @@ function Invoke-Dispatch {
         }
         $script:DispatchStageBinding = $null
         return $failureResult
+    }
+    finally {
+        $script:DispatchAccountSelection = $previousAccountSelection
     }
 }

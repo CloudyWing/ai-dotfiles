@@ -22,6 +22,7 @@
         status              = 'preflight-rejected'
         failure_code       = $null
         error              = $null
+        owner_takeover     = [ordered]@{ used = $false; audit_path = $null; audit_sha256 = $null }
         inventory          = [ordered]@{
             report_root = $null
             referenced_paths = @()
@@ -777,6 +778,155 @@ function Test-CleanupUnstartedProof {
     return ($started -is [bool] -and -not $started)
 }
 
+function Test-CleanupTakeoverTerminal {
+    [CmdletBinding()]
+    param([string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$RunRecordPath, [object]$Ledger)
+
+    try {
+        $records = @(Get-DispatchRunRecordList -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug | Sort-Object run_id)
+        if ($records.Count -eq 0) { throw '缺少 RunRecord。' }
+        $runRoot = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        $expectedPath = Resolve-AbsolutePath $RunRecordPath
+        if (@($records | Where-Object { [string]::Equals((Join-Path $runRoot ($_.run_id + '.json')), $expectedPath, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) { throw '指定的 RunRecord 不在派遣 run 集合。' }
+        $byId = @{}
+        foreach ($record in $records) { $byId[$record.run_id] = $record }
+        foreach ($record in $records) {
+            $seen = @{}
+            $node = $record
+            while ($null -ne $node) {
+                if ($seen.ContainsKey($node.run_id)) { throw 'RunRecord 續行鏈循環。' }
+                $seen[$node.run_id] = $true
+                $parent = [string]$node.attempt_parent_run_id
+                if ([string]::IsNullOrWhiteSpace($parent)) { break }
+                if (-not $byId.ContainsKey($parent)) { throw 'RunRecord 續行鏈缺少 parent。' }
+                if ([DateTimeOffset]::Parse($byId[$parent].created_at_utc) -gt [DateTimeOffset]::Parse($node.created_at_utc)) { throw 'RunRecord 續行鏈時間矛盾。' }
+                $node = $byId[$parent]
+            }
+        }
+    }
+    catch { throw ('CleanupTakeoverIdentityInvalid：' + $_.Exception.Message) }
+
+    $proofs = New-Object System.Collections.Generic.List[object]
+    $processProofs = New-Object System.Collections.Generic.List[object]
+    $hashes = New-Object System.Collections.Generic.List[object]
+    $originalOwners = New-Object System.Collections.Generic.List[object]
+    foreach ($owner in @(Get-CleanupOriginalOwners -Ledger $Ledger -LineSlug $LineSlug -DispatchSlug $DispatchSlug)) { $originalOwners.Add($owner) }
+    foreach ($record in $records) {
+        $path = Join-Path $runRoot ($record.run_id + '.json')
+        $hashes.Add([ordered]@{ path = $path; sha256 = Get-FileSha256 $path })
+        $originalOwners.Add([ordered]@{ source = $path; caller_session_fingerprint = Get-CleanupPropertyValue $record @('caller_session_fingerprint'); owner_status = if ([string]::IsNullOrWhiteSpace([string](Get-CleanupPropertyValue $record @('caller_session_fingerprint')))) { 'unverifiable' } else { 'recorded' } })
+        $classification = Get-DispatchRunRecordStartClassification -Record $record
+        if ($classification.classification -eq 'unstarted-sandbox') {
+            if (-not (Test-CleanupUnstartedProof -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $path -HasPreflight $true)) { throw 'CleanupTakeoverRunNotTerminal：未啟動證明不成立。' }
+            $proofs.Add([ordered]@{ run_id = $record.run_id; classification = 'unstarted-sandbox' })
+            continue
+        }
+        if ($record.launch_state -cne 'started' -or $null -ne (Get-CleanupPropertyValue $record @('unknown_interruption'))) { throw 'CleanupTakeoverRunNotTerminal：RunRecord 未有可信終態。' }
+        $events = Get-DispatchEventEvidence -EventPath $record.event_stream_path
+        foreach ($line in $events.raw_lines) {
+            try { $event = ConvertFrom-DispatchJson -Content $line; if ([string]::IsNullOrWhiteSpace([string](Get-CleanupPropertyValue $event @('type')))) { throw '缺少事件類型。' } }
+            catch { throw 'CleanupTakeoverRunNotTerminal：事件流格式無法確認。' }
+        }
+        if ($events.last_event_type -cnotin @('turn.completed', 'turn.failed')) { throw 'CleanupTakeoverRunNotTerminal：事件流缺少最後 terminal event。' }
+        $hashes.Add([ordered]@{ path = $record.event_stream_path; sha256 = $events.sha256 })
+        $exitPath = [string]$record.process_exit_code_sidecar_path
+        if (-not [string]::IsNullOrWhiteSpace($exitPath)) {
+            try { $exit = Read-DispatchExitSidecar -Path $exitPath -ExecutionRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunId $record.run_id }
+            catch { throw ('CleanupTakeoverRunNotTerminal：' + $_.Exception.Message) }
+            $hashes.Add([ordered]@{ path = $exitPath; sha256 = $exit.Sha256 })
+            $exitCode = $exit.ProcessExitCode
+        }
+        else {
+            $exitPath = [string]$record.inspect_result_path
+            if ([string]::IsNullOrWhiteSpace($exitPath) -or -not [IO.File]::Exists($exitPath)) { throw 'CleanupTakeoverRunNotTerminal：缺少可信 sidecar 或 Inspect。' }
+            Assert-DispatchOutputPathNoReparsePoint -Root $DispatchRoot -Path $exitPath
+            $inspectHash = Get-FileSha256 $exitPath
+            $inspect = (Read-CleanupJsonDocument -Path $exitPath -Name 'Inspect').Document
+            $eventProof = Get-CleanupPropertyValue $inspect @('eventEvidence')
+            if ([string](Get-CleanupPropertyValue $inspect @('runId')) -cne $record.run_id -or
+                [string](Get-CleanupPropertyValue $inspect @('runRecordPath')) -ine $path -or
+                [string](Get-CleanupPropertyValue $inspect @('eventStreamPath')) -ine $record.event_stream_path -or
+                [string](Get-CleanupPropertyValue $eventProof @('sha256')) -ine $events.sha256 -or
+                [string](Get-CleanupPropertyValue $inspect @('lastEventType')) -cne $events.last_event_type -or
+                [string](Get-CleanupPropertyValue $inspect @('processExitCodeSource')) -cne 'sidecar' -or (Get-FileSha256 $exitPath) -ine $inspectHash) { throw 'CleanupTakeoverRunNotTerminal：Inspect identity/hash 或退出來源無法確認。' }
+            $exitCode = ConvertTo-DispatchInt32Value -Value (Get-CleanupPropertyValue $inspect @('processExitCode')) -Field 'processExitCode'
+            $hashes.Add([ordered]@{ path = $exitPath; sha256 = $inspectHash })
+        }
+        $eventLines = @((Read-DispatchUtf8Text -Path $record.event_stream_path) -split '\r?\n')
+        $terminalLine = $eventLines.Count
+        while ($terminalLine -gt 0 -and [string]::IsNullOrWhiteSpace($eventLines[$terminalLine - 1])) { $terminalLine-- }
+        $proofs.Add([ordered]@{ run_id = $record.run_id; classification = 'started-terminal'; event_path = $record.event_stream_path; event_sha256 = $events.sha256; terminal_event = $events.last_event_type; terminal_event_line = $terminalLine; exit_path = $exitPath; exit_code = $exitCode })
+        $pidPath = [string]$record.pid_record_path
+        if (-not [IO.File]::Exists($pidPath)) { throw 'CleanupTakeoverProcessUnverifiable：缺少 PID 記錄。' }
+        Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $pidPath
+        $pidRecord = Get-KeyValueFile -Path $pidPath
+        foreach ($pair in @(@('work-root',$SourceRoot), @('line-slug',$LineSlug), @('dispatch-slug',$DispatchSlug), @('identity-verified','true'))) {
+            if ([string](Get-CleanupPropertyValue $pidRecord @($pair[0])) -ine [string]$pair[1]) { throw ('CleanupTakeoverProcessUnverifiable：PID identity 不符。' + $pair[0]) }
+        }
+        $pidValue = 0
+        $pidTime = [DateTimeOffset]::MinValue
+        if (-not [int]::TryParse([string](Get-CleanupPropertyValue $pidRecord @('root-pid')), [ref]$pidValue) -or $pidValue -le 0 -or
+            [string]::IsNullOrWhiteSpace([string](Get-CleanupPropertyValue $pidRecord @('root-process-name'))) -or
+            -not [DateTimeOffset]::TryParse([string](Get-CleanupPropertyValue $pidRecord @('root-started-at-utc')), [ref]$pidTime)) { throw 'CleanupTakeoverProcessUnverifiable：PID 三鍵缺漏。' }
+        if ([string](Get-CleanupPropertyValue $pidRecord @('identity-status')) -cne 'confirmed' -or
+            [string](Get-CleanupPropertyValue $pidRecord @('process-tree-scope')) -cnotin @('pid-and-descendants','process-group')) { throw 'CleanupTakeoverProcessUnverifiable：PID 程序樹範圍無法確認。' }
+        foreach ($owner in @($Ledger.Document.entries | Where-Object { [string]$_.line_slug -ceq $LineSlug -and [string]$_.dispatch_slug -ceq $DispatchSlug -and [string](Get-CleanupPropertyValue $_ @('pid_record_path')) -ieq $pidPath })) {
+            $ownerTime = [DateTimeOffset]::MinValue
+            $ownerTimeValue = $owner.process_start_time_utc
+            $ownerTimeKnown = $true
+            if ($ownerTimeValue -is [DateTimeOffset]) { $ownerTime = $ownerTimeValue }
+            elseif ($ownerTimeValue -is [DateTime]) { $ownerTime = [DateTimeOffset]$ownerTimeValue.ToUniversalTime() }
+            else {
+                $dateStyles = [Globalization.DateTimeStyles]::AssumeUniversal -bor [Globalization.DateTimeStyles]::AdjustToUniversal
+                $ownerTimeKnown = [DateTimeOffset]::TryParse([string]$ownerTimeValue, [Globalization.CultureInfo]::InvariantCulture, $dateStyles, [ref]$ownerTime)
+            }
+            if ([string]$owner.process_id -cne [string]$pidValue -or
+                [string]$owner.process_name -ine [string](Get-CleanupPropertyValue $pidRecord @('root-process-name')) -or
+                -not $ownerTimeKnown -or
+                [Math]::Abs(($ownerTime - $pidTime).TotalSeconds) -gt 1) { throw 'CleanupTakeoverProcessUnverifiable：ledger 與 PID 三鍵不符。' }
+        }
+        $hashes.Add([ordered]@{ path = $pidPath; sha256 = Get-FileSha256 $pidPath })
+        $processProofs.Add([ordered]@{ run_id = $record.run_id; pid_record_path = $pidPath; root_pid = $pidValue; root_process_name = Get-CleanupPropertyValue $pidRecord @('root-process-name'); root_started_at_utc = $pidTime.ToString('o'); status = 'ended-or-pid-reused' })
+    }
+    foreach ($owner in @($Ledger.Document.entries | Where-Object { [string]$_.line_slug -ceq $LineSlug -and [string]$_.dispatch_slug -ceq $DispatchSlug })) {
+        Assert-CleanupStopped -SourceRoot $SourceRoot -DispatchSlug $DispatchSlug -LineSlug $LineSlug -Owner $owner
+    }
+    Assert-CleanupStopped -SourceRoot $SourceRoot -DispatchSlug $DispatchSlug -LineSlug $LineSlug -Owner $null
+    return [ordered]@{ terminal_evidence = @($proofs.ToArray()); process_evidence = @($processProofs.ToArray()); evidence_hashes = @($hashes.ToArray()); original_owners = @($originalOwners.ToArray()) }
+}
+
+function Expand-CleanupTakeoverInventory {
+    [CmdletBinding()]
+    param([object]$Inventory, [object[]]$RunRecords, [string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug)
+
+    $items = New-Object System.Collections.Generic.List[object]
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($item in @($Inventory.items)) { $items.Add($item); $null = $seen.Add($item.source_path) }
+    foreach ($run in $RunRecords) {
+        $record = Read-DispatchRunRecord -Path $run.path -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        foreach ($path in @(Get-CleanupRecordReferencedPaths -Record $record)) {
+            if ((Test-PathWithinRoot -Path $path -Root $DispatchRoot) -and [IO.File]::Exists($path)) {
+                Add-CleanupInventoryPath -Inventory $items -Seen $seen -Path $path -DispatchRoot $DispatchRoot -SourceName 'TakeoverRunRecord'
+            }
+        }
+    }
+    $Inventory.items = @($items.ToArray())
+    return $Inventory
+}
+
+function Write-CleanupTakeoverAudit {
+    [CmdletBinding()]
+    param([string]$Path, [System.Collections.IDictionary]$Audit, [string]$SourceRoot, [string]$DispatchRoot)
+
+    try {
+        $null = Write-DispatchAtomicJsonDocument -Path $Path -Document $Audit -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+        $saved = (Read-CleanupJsonDocument -Path $Path -Name 'TakeoverAudit').Document
+        if (($saved | ConvertTo-Json -Depth 60 -Compress) -cne ($Audit | ConvertTo-Json -Depth 60 -Compress)) { throw '接手紀錄回讀不一致。' }
+        return Get-FileSha256 $Path
+    }
+    catch { throw ('CleanupTakeoverAuditWriteFailed：' + $_.Exception.Message) }
+}
+
 function Invoke-Cleanup {
     [CmdletBinding(SupportsShouldProcess)]
     param()
@@ -785,6 +935,8 @@ function Invoke-Cleanup {
     $admissionLock = $null
     $admissionLedger = $null
     $admissionOwner = $null
+    $takeoverAudit = $null
+    $takeoverAuditPath = $null
     try {
         if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($DispatchRoot) -or [string]::IsNullOrWhiteSpace($LineSlug) -or [string]::IsNullOrWhiteSpace($DispatchSlug)) {
             Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupRequiredParameterMissing' -Message 'Cleanup 必須提供 SourceRoot、DispatchRoot、LineSlug 與 DispatchSlug。'
@@ -868,13 +1020,36 @@ function Invoke-Cleanup {
             $admissionLedger = Read-DispatchAdmissionLedger -Lock $admissionLock
             $knownOwners = @($admissionLedger.Document.entries | Where-Object { [string]$_.dispatch_slug -ceq $DispatchSlug })
             if ($knownOwners.Count -gt 0 -or (-not $unstarted -and -not $residualRecovery)) {
-                $admissionOwner = Assert-DispatchRecoveryOwner -Lock $admissionLock -Ledger $admissionLedger -CallerIdentity $script:CallerSessionIdentity -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath
+                try {
+                    $admissionOwner = Assert-DispatchRecoveryOwner -Lock $admissionLock -Ledger $admissionLedger -CallerIdentity $script:CallerSessionIdentity -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath
+                }
+                catch {
+                    $ownerCode = [string]$_.Exception.Data['errorCode']
+                    if (-not [bool](Get-DispatchScriptVariableValue -Name 'TakeoverOwner') -or $ownerCode -notin @('DispatchAdmissionOwnerMismatch', 'DispatchAdmissionOwnerUnverifiable')) { throw }
+                    $proof = Test-CleanupTakeoverTerminal -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -Ledger $admissionLedger
+                    $attemptId = [guid]::NewGuid().ToString('D')
+                    $takeoverAuditPath = Join-Path (Split-Path -Parent $removalReceiptPath) ('cleanup-takeover-' + $DispatchSlug + '-' + $attemptId + '.json')
+                    $takeoverAudit = [ordered]@{
+                        schema = 'ai-sessions.cleanup-takeover.v1'; attempt_id = $attemptId; line_slug = $LineSlug; dispatch_slug = $DispatchSlug
+                        source_root = $sourceRootPath; execution_root = $dispatchRootPath
+                        run_record_paths = @($proof.evidence_hashes | Where-Object { (Split-Path -Parent $_.path) -ieq (Get-DispatchRunDirectory -SourceRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug) })
+                        new_owner_fingerprint = $script:CallerSessionIdentity.Fingerprint; new_owner_source = $script:CallerSessionIdentity.Source
+                        original_owners = $proof.original_owners; trigger_error_code = $ownerCode; explicit_takeover = $true
+                        requested_at_utc = [DateTime]::UtcNow.ToString('o'); preserved_at_utc = $null; completed_at_utc = $null
+                        terminal_evidence = $proof.terminal_evidence; process_evidence = $proof.process_evidence; evidence_hashes = $proof.evidence_hashes
+                        preserved_files = @(); status = 'validated'; failure_code = $null
+                    }
+                    $result.owner_takeover.used = $true
+                    $result.owner_takeover.audit_path = $takeoverAuditPath
+                    $result.owner_takeover.audit_sha256 = Write-CleanupTakeoverAudit -Path $takeoverAuditPath -Audit $takeoverAudit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
+                }
             }
         }
         Assert-CleanupStopped -SourceRoot $sourceRootPath -DispatchSlug $DispatchSlug -LineSlug $LineSlug -Owner $admissionOwner
 
         try {
             $inventory = Get-CleanupInventory -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -EvidencePath $EvidencePath -ReportPath @(Get-DispatchScriptVariableValue -Name 'ReportPath')
+            if ($null -ne $takeoverAudit) { $inventory = Expand-CleanupTakeoverInventory -Inventory $inventory -RunRecords $takeoverAudit.run_record_paths -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug }
         }
         catch {
             if ([string]$_.Exception.Data['errorCode'] -eq 'CleanupReportUnpreserved') {
@@ -901,6 +1076,12 @@ function Invoke-Cleanup {
             }
         }
         $result.files = @($preserved.ToArray())
+        if ($null -ne $takeoverAudit) {
+            $takeoverAudit.preserved_files = $result.files
+            $takeoverAudit.preserved_at_utc = [DateTime]::UtcNow.ToString('o')
+            $takeoverAudit.status = 'preserved'
+            $result.owner_takeover.audit_sha256 = Write-CleanupTakeoverAudit -Path $takeoverAuditPath -Audit $takeoverAudit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
+        }
         if (-not $PSCmdlet.ShouldProcess($dispatchRootPath, '移除 exact dispatch worktree')) {
             Throw-CleanupOperationFailure -Result $result -Status 'removal-failed' -FailureCode 'CleanupWhatIf' -Message 'Cleanup 因 WhatIf 未執行 worktree 移除。'
         }
@@ -915,6 +1096,17 @@ function Invoke-Cleanup {
         }
         if ($unpreservedReports.Count -gt 0) {
             Throw-CleanupOperationFailure -Result $result -Status 'preservation-failed' -FailureCode 'CleanupReportUnpreserved' -Message ('CleanupReportUnpreserved：盤點後新增未列入保存清單的檔案，保留 worktree：' + ($unpreservedReports -join '; ')) -Detail @($unpreservedReports)
+        }
+        if ($null -ne $takeoverAudit) {
+            $recheck = Test-CleanupTakeoverTerminal -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -Ledger $admissionLedger
+            if (($recheck.evidence_hashes | ConvertTo-Json -Depth 30 -Compress) -cne ($takeoverAudit.evidence_hashes | ConvertTo-Json -Depth 30 -Compress)) { throw 'CleanupTakeoverIdentityInvalid：移除前 run 集合或終態證據漂移。' }
+            $reInventory = Get-CleanupInventory -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -EvidencePath $EvidencePath -ReportPath @(Get-DispatchScriptVariableValue -Name 'ReportPath')
+            $reInventory = Expand-CleanupTakeoverInventory -Inventory $reInventory -RunRecords $takeoverAudit.run_record_paths -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+            if ((@($reInventory.items | ForEach-Object { $_.source_path } | Sort-Object) -join "`n") -cne (@($inventory.items | ForEach-Object { $_.source_path } | Sort-Object) -join "`n")) { throw 'CleanupPreservationFailed：移除前保存清單漂移。' }
+            foreach ($file in $result.files) {
+                if ((Get-FileSha256 $file.source_path) -ine $file.source_sha256 -or (Get-FileSha256 $file.destination_path) -ine $file.destination_sha256) { throw 'CleanupPreservationFailed：移除前檔案雜湊漂移。' }
+            }
+            if ((Get-FileSha256 $takeoverAuditPath) -ine $result.owner_takeover.audit_sha256) { throw 'CleanupTakeoverAuditWriteFailed：移除前稽核檔漂移。' }
         }
         $result.status = 'removal-failed'
         $removalFingerprint = if ($null -eq $script:CallerSessionIdentity) { $null } else { [string]$script:CallerSessionIdentity.Fingerprint }
@@ -973,10 +1165,25 @@ function Invoke-Cleanup {
         $result.worktree_removed = $true
         $result.status = 'completed'
         $result.failure_code = $null
+        if ($null -ne $takeoverAudit) {
+            $takeoverAudit.status = 'completed'
+            $takeoverAudit.completed_at_utc = [DateTime]::UtcNow.ToString('o')
+            try { $result.owner_takeover.audit_sha256 = Write-CleanupTakeoverAudit -Path $takeoverAuditPath -Audit $takeoverAudit -SourceRoot $sourceRootPath -DispatchRoot $sourceRootPath }
+            catch {
+                $result.status = 'removal-failed'
+                $result.failure_code = 'CleanupTakeoverAuditFinalizeFailed'
+                $result.error = $_.Exception.Message
+            }
+        }
         $null = Write-DispatchAtomicJsonDocument -Path $removalReceiptPath -Document $result -SourceRoot $sourceRootPath -ExecutionRoot $sourceRootPath -TargetPath @()
         return $result
     }
     catch {
+        if ($null -ne $takeoverAudit -and -not $result.worktree_removed) {
+            $takeoverAudit.status = 'failed'
+            $takeoverAudit.failure_code = if ($null -ne $_.Exception.Data['errorCode']) { [string]$_.Exception.Data['errorCode'] } elseif ($_.Exception.Message -match '^([A-Za-z][A-Za-z0-9]+)：') { $Matches[1] } else { 'CleanupPreflightFailed' }
+            try { $result.owner_takeover.audit_sha256 = Write-CleanupTakeoverAudit -Path $takeoverAuditPath -Audit $takeoverAudit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath } catch { }
+        }
         if ($null -ne $_.Exception.Data['operationResult']) {
             throw
         }
@@ -988,10 +1195,15 @@ function Invoke-Cleanup {
             exception_type = $_.Exception.GetType().FullName
             stack = $_.ScriptStackTrace
         }
-        $failureCode = if ($null -ne $_.Exception.Data['errorCode']) { [string]$_.Exception.Data['errorCode'] } else { 'CleanupPreflightFailed' }
+        $failureCode = if ($null -ne $_.Exception.Data['errorCode']) { [string]$_.Exception.Data['errorCode'] } elseif ($_.Exception.Message -match '^(Cleanup[A-Za-z0-9]+)：') { $Matches[1] } else { 'CleanupPreflightFailed' }
         Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode $failureCode -Message $_.Exception.Message -Detail $detail
     }
     finally {
+        if ($null -ne $takeoverAudit -and -not $result.worktree_removed -and $takeoverAudit.status -cne 'failed') {
+            $takeoverAudit.status = 'failed'
+            $takeoverAudit.failure_code = $result.failure_code
+            try { $result.owner_takeover.audit_sha256 = Write-CleanupTakeoverAudit -Path $takeoverAuditPath -Audit $takeoverAudit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath } catch { }
+        }
         Close-DispatchAdmissionLock -Lock $admissionLock
     }
 }

@@ -42,7 +42,23 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 
 同一 caller Session 可同時持有一個 write admission 與最多兩個 readonly admission。Worktree write 期間可執行同線 readonly 派遣。路徑衝突比對要求至少一方為 direct-write 目標；與其他派遣的 direct-write 目標或 `--add-dir` 權限路徑相同或有父子路徑關係時，新的 admission 以 `DispatchAdmissionPathConflict` 拒絕。各派遣所屬線的 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>` 目錄及其子路徑，只有在該 admission 的路徑為 `--add-dir` 時才排除於衝突比對外；direct-write 即使位於該處，仍與其他派遣的 direct-write 目標或 `--add-dir` 路徑進行父子重疊比對。`--add-dir` 對 `--add-dir` 可並行。第二個 write 以 `DispatchAdmissionWriteLimit` 拒絕，第三個 readonly 以 `DispatchAdmissionReadonlyLimit` 拒絕。Ledger owner 身分無法確認時，新的 admission 與 Cleanup 皆以 `DispatchAdmissionOwnerUnknown` 拒絕。
 
-`Cleanup` 以 ledger 的 caller fingerprint、line 與 dispatch 驗證 owner；提供 RunRecord 時另比對 RunRecord 的 caller fingerprint。Owner 不相符時以 `DispatchAdmissionOwnerMismatch` 拒絕，且保留 worktree。Workflow worktree 的 `Collect` 通過既有驗收後，可額外指定 `-ApplyCollectedChanges` 套用變更；套用前會在 source root 鎖內比對每個目標路徑的 baseline fingerprint，漂移時以 `DispatchSourceDrift` 停止並保留 worktree。Direct-write 已直接修改 source root，指定此參數時以 `DispatchCollectApplyDirectWriteNotApplicable` 拒絕。Quota monitor 更新 after snapshot 時使用相同 source root 鎖，並在鎖內完成 SHA-256 比對與 `File.Replace`。
+`Cleanup` 以 ledger 的 caller fingerprint、line 與 dispatch 驗證 owner；提供 RunRecord 時另比對 RunRecord 的 caller fingerprint。Owner 不相符時預設以 `DispatchAdmissionOwnerMismatch` 拒絕並保留 worktree；歷史已結束派遣可依「已結束歷史派遣的 Cleanup 接手」明示例外。Workflow worktree 的 `Collect` 通過既有驗收後，可額外指定 `-ApplyCollectedChanges` 套用變更；套用前會在 source root 鎖內比對每個目標路徑的 baseline fingerprint，漂移時以 `DispatchSourceDrift` 停止並保留 worktree。Direct-write 已直接修改 source root，指定此參數時以 `DispatchCollectApplyDirectWriteNotApplicable` 拒絕。Quota monitor 更新 after snapshot 時使用相同 source root 鎖，並在鎖內完成 SHA-256 比對與 `File.Replace`。
+
+## 已結束歷史派遣的 Cleanup 接手
+
+嚴格 owner 檢查回報 `DispatchAdmissionOwnerMismatch` 或 `DispatchAdmissionOwnerUnverifiable` 時，主 Agent 可明示接手。
+
+```powershell
+pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup -RequestPath <既有CleanupRequest> -TakeoverOwner
+```
+
+保留真實 `CallerSessionId` 與既有 Request 欄位。`TakeoverOwner` 僅適用於 Cleanup，其他 operation 回報 `CleanupTakeoverOperationInvalid`。相同 owner 仍走原流程，`owner_takeover.used=false`。
+
+接手在來源 admission lock 內驗證全部 RunRecord 的 identity、hash 與續行鏈。已啟動 run 須有最後 `turn.completed` 或 `turn.failed`，以及同 run 的已知退出 sidecar；舊 run 僅接受通過 identity/hash 驗證且退出來源可信的 Inspect。未啟動 run 須通過 `unstarted-sandbox` 與既有未啟動證明。prepared、unknown、缺少可信終態或只有程序不存在時，保留 worktree。
+
+PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重用。程序查詢被拒、仍有 root/child 或身分不明時維持拒絕。報告與全部 evidence 依位元組保存、長度及 SHA-256 回讀後，在 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\cleanup-takeover-<dispatchSlug>-<attemptGuid>.json` 原子保存接手者、原 owner、UTC 時間、終態及程序證據、保存清單與 hash。
+
+稽核依序為 `validated`、`preserved`、`completed`，失敗盡力記 `failed`。移除前重驗 run 集合、證據 hash、PID 與 inventory，漂移或保存／稽核失敗均保留 worktree。移除後稽核更新失敗回報 `CleanupTakeoverAuditFinalizeFailed` 與 `worktree_removed=true`，以 preserved 稽核及 cleanup-result 恢復。`cleanup-result.owner_takeover` 保存是否使用接手、稽核路徑及 SHA-256；歷史 owner fingerprint 維持原值。每次重試重新驗證，舊稽核只作證據。
 
 ## 最短正常路徑
 
@@ -109,6 +125,36 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 ## 額度與範圍契約
 
 `QuotaSnapshot` 是每次派工的額度紀錄，只供顯示與成本紀錄，不作放行條件。`Get-CodexQuota.ps1 -SnapshotPath <path>` 保留既有 key-value stdout，另外寫入 `ai-sessions.quota-snapshot.v1` JSON。有效快照包含 `captured_at_utc`、`state=Valid`，以及 `primary` 與 `secondary` 的 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at` 與 `source_file`。取得額度失敗時，快照檔仍以失敗的 `state` 與 `error` 寫出，stderr 輸出失敗類別；`Dispatch` 與 `Start` 把 before 快照失敗記為 unknown 後繼續，不在 before-snapshot 階段停止。
+
+### 主 Agent 的帳號切換決策
+
+帳號由主 Agent 依當次觀測選擇，選定後以新派遣啟動並告知使用者，切換不另設詢問站點。保留原 ScopePlan 單位、intensive 授權邊界及原派遣的失敗與成果；腳本維持單次選派與原失敗結果，不輪替帳號或自動重送。
+
+| 目前帳號的證據 | 決策 | 候選條件 |
+| --- | --- | --- |
+| primary 將盡 | 可依未執行工作量提前改派，告知實際數值與理由 | Valid、fresh、沒有 ServiceRejected |
+| secondary 實際服務端 usage-limit | 目前派遣已遭拒，且結構化 rejection 的 window=secondary，或原始事件明確表示週上限時可改派 | Valid、fresh、沒有 ServiceRejected |
+| secondary 偏低或為 0，沒有實際拒絕 | 保留剩餘額度，不作週額度切換 | 不推估用盡 |
+| generic 429、網路錯誤或視窗不明 | 保留原因為未確認，不推論週上限 | 不以 usage_limit=true 單獨判定 |
+| 候選 Unknown、stale、目錄缺失或遭拒 | 保留原因及原派遣成果，缺可靠候選時不切換 | 不試跑派遣驗證額度 |
+
+先讀目前 RunRecord、Inspect／failure receipt 與有效快照，核對拒絕原因與原始事件。`Get-DispatchEventEvidence.usage_limit=true` 也可能來自 rate-limit／429；通用拒絕的 window 為 unknown 時，使用原始證據確認，保留無法確認的狀態。
+
+從 `machine.json.codex_accounts` 選不同 home 的候選，逐一以既有工具明傳目錄查詢。每次使用新的快照路徑，保存原始 observation、狀態與 UTC 時間。
+
+```powershell
+pwsh -NoProfile -NonInteractive -File '<本機 .ai-agents 根目錄>\scripts\Get-CodexQuota.ps1' -CodexHome '<候選home>' -SnapshotPath '<work-root>\.local\ai-sessions\history\<lineSlug>\quota-candidate-<timestamp>.json'
+```
+
+此查詢沿用既有工具的行程內認證，不改父程序環境，也不由 Agent 讀取憑證。候選確認後以新 Request、新 dispatchSlug 與 `session_mode=cold-start`，執行 `Dispatch -RequestPath <新Request> -CodexHome <候選home>`。原派遣尚未結束時保留其 admission 與 worktree；新派遣照常接受 caller 名額與路徑衝突檢查。缺可靠候選的處置只影響帳號切換，其他派遣仍遵守額度不作 gate 的契約。
+
+告知格式如下，帳號名稱為本機別名，原觀測不明時填 unknown，證據使用絕對路徑。
+
+```text
+[帳號切換] 原帳號=<name>；新帳號=<name>；原因=<primary將盡|secondary服務端usage-limit>；原 primary=<n%|unknown>；原 secondary=<n%|unknown>；新 primary=<n%>；新 secondary=<n%>；觀測時間=<UTC>；新 dispatchSlug=<slug>；續行方式=cold-start；證據=<絕對路徑>
+```
+
+### ScopePlan 單位
 
 `ScopePlan` 是派工前唯一的範圍決策，欄位固定如下。
 
@@ -518,9 +564,31 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ## 模型檔位規則
 
-本 Skill 使用預設檔位、`intensive` 與 `advisor` 三個語意檔位。實作、審查、掃描與命令執行使用預設檔位；使用者在當下 Session 明確指定時，該 Session 的派工改用 `intensive`，指定不延續到其他 Session；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `~/.codex/default.config.toml` 為準，各 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
+### 本機帳號清單與準備
 
-`codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位一律傳入 `--profile default`，讀取 `~/.codex/default.config.toml`；`intensive` 傳入 `--profile intensive`，讀取 `~/.codex/intensive.config.toml`，檔案不存在時在啟動前拒絕，不回退預設檔位。
+`<本機 .ai-agents 根目錄>\.local\machine.json` 保留 `ai-agents.machine.v1` 與原值班欄位，可加入選用的 `codex_accounts`。
+
+```json
+{
+  "schema": "ai-agents.machine.v1",
+  "codex_accounts": [
+    { "name": "default", "codex_home": "C:\\Users\\<使用者>\\.codex" },
+    { "name": "secondary", "codex_home": "C:\\Users\\<使用者>\\.codex-secondary" }
+  ]
+}
+```
+
+名稱符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，目錄使用已存在的絕對路徑。名稱與正規化路徑以不區分大小寫比較唯一性，reparse point 與同目錄別名拒絕。缺少清單或空陣列時沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 優先序；未登記 home 的 `codex_account_name=null`。格式異常回報 `CodexAccountConfigurationInvalid`，由使用者修正，維持原選擇。
+
+使用者建立第二目錄，人工建立 `config.toml`，只人工複製非憑證的 `default.config.toml`、`advisor.config.toml` 及選用的 `intensive.config.toml`，並核對機器專屬路徑。Setup 只逐帳號檢查目錄與固定設定檔，default/advisor 缺件警示，intensive 在選用時要求。使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。
+
+以 `Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 選帳號。Dispatch 在 Preflight、Prepare 與 quota 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path`、`codex_account_name` 及 Inspect 結束額度採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
+
+本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。第二 home 的基礎 config 必要鍵與共用 profile symlink/include 載入行為待使用者驗證；採每個 home 獨立 profile 檔案，保留既有 profile/model hash gate。
+
+本 Skill 使用預設檔位、`intensive` 與 `advisor` 三個語意檔位。實作、審查、掃描與命令執行使用預設檔位；使用者在當下 Session 明確指定時，該 Session 的派工改用 `intensive`，指定不延續到其他 Session；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `<CodexHome>/default.config.toml` 為準，各 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
+
+`codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位一律傳入 `--profile default`，讀取 `<CodexHome>/default.config.toml`；`intensive` 傳入 `--profile intensive`，讀取 `<CodexHome>/intensive.config.toml`，檔案不存在時在啟動前拒絕，不回退預設檔位。
 
 派工不在每次啟動前執行探針。正式啟動本身就是參數與檔位的驗證：啟動參數不合法、檔位設定缺漏或 CLI 缺失時，Start 以未啟動結果回報（`launch_state=launch-failed`、`process_started=false`），不產生已啟動紀錄，修正後以新的 `dispatchSlug` 重派。
 
@@ -536,7 +604,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 `advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描使用實作檔位（預設或 `intensive`），不以 `advisor` 執行。
 
-`advisor` 相對預設檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `~/.codex/advisor.config.toml` 與 `~/.codex/default.config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
+`advisor` 相對預設檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `<CodexHome>/advisor.config.toml` 與 `<CodexHome>/default.config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
 
 ### advisor 的前置準備
 
@@ -668,7 +736,22 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 ## 續 session 與跨介面接手
 
-同一 worktree 的純技術補件使用 `Start -ResumeThreadId`，沿用原 `dispatchSlug` 與 `ScopePlanPath`。`PreflightResultPath` 與 `PrepareResultPath` 分別取自前輪 Dispatch result 的 `preflight_result_path` 與 `prepare_result_path`，ScopePlan 與 thread id 取自該輪 Start 結果或 RunRecord。換 worktree 時以新的 `dispatchSlug` 呼叫 `Dispatch`，Request 使用 `session_mode=Continuation` 與 `continue_from_scope_plan` 承接父 ScopePlan，由 Dispatch 重建 worktree；原 worktree 不作新 Dispatch 的目的地。
+### 帳號與儲存目錄的兩種交接
+
+| 情況 | 操作 | 保留條件 |
+| --- | --- | --- |
+| 使用者手動切換預設 home 的登入者，home 未變 | 以原 home、明確 thread ID 執行 `Start -ResumeThreadId` | profile/hash、完整父層選項、ScopePlan、last-message／檢查點與 PID 守衛照常驗證 |
+| 切至另一獨立 home | 先 Inspect、Collect 原派遣，使用新 dispatchSlug、新 Request 與 `session_mode=cold-start` | 以檢查點承接已確認結果、未完成 selected units 及其來源，保留已完成成果的引用 |
+
+同一派遣固定使用原 home。Start 比較 anchor 的 `effective_codex_home`，缺少時回退 `codex_home`；兩側名稱都有值時另比對名稱。不符回報 `ResumeAccountMismatch`，缺目錄、缺 home 或兩欄矛盾回報 `ResumeAccountUnverifiable`，保留 worktree 並交由主 Agent 建立新 slug。舊 RunRecord 缺名稱時採目錄綁定並記錄相容判定。腳本只證明儲存目錄與別名，無法確認同目錄內登入者的實際身分；同目錄手動切登入者後原 thread 可續行為需求提供的實測情形。
+
+跨 home 的新 prompt 逐項引用原 ScopePlan、RunRecord、Inspect／Collect 結果、已完成成果與中斷檢查點的絕對路徑。新 `requested_unit` 只列檢查點中尚未完成的 selected units，維持原順序；deferred 與未選單位均不納入。以既有 `prepare_artifacts` 保存原 ScopePlan 與檢查點副本及 SHA-256，讓新執行端可實讀來源；新 cold-start 依明列的未完成單位建立自己的 ScopePlan。
+
+`continue_from_scope_plan` 保留既有同 thread continuation 的限制。跨 home 的 cold-start 以上述來源材料與明列單位交接，不使用原 thread 的 resume，不複製 sessions 或憑證，也不把原派遣的 admission 轉給新派遣。原派遣已啟動且尚未結束時保留其 worktree 與 admission，所有新派遣仍接受既有並行與路徑衝突檢查。
+
+### 同 home 的續行與跨介面接手
+
+同 home、同一 worktree 的純技術補件使用 `Start -ResumeThreadId`，沿用原 `dispatchSlug` 與 `ScopePlanPath`。`PreflightResultPath` 與 `PrepareResultPath` 分別取自前輪 Dispatch result 的 `preflight_result_path` 與 `prepare_result_path`，ScopePlan 與 thread id 取自該輪 Start 結果或 RunRecord。同 home 換 worktree 時以新的 `dispatchSlug` 呼叫 `Dispatch`，Request 使用 `session_mode=Continuation` 與 `continue_from_scope_plan` 承接父 ScopePlan，由 Dispatch 重建 worktree；原 worktree 不作新 Dispatch 的目的地。
 
 中斷檢查點由 Start 建立於 `executionRoot` 的同線 `history`，worktree 派遣由執行端在該 worktree 更新，direct-write 的 `executionRoot` 等於 `sourceRoot`。RunRecord 保存絕對路徑，Inspect 與 Collect 依該路徑讀取；舊 RunRecord 記錄的來源同線路徑仍可讀取。Cleanup 在移除 worktree 前將檢查點與事件流依相同保存流程複製回來源同線 history，並核對保存結果。
 

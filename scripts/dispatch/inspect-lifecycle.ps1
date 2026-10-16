@@ -1691,14 +1691,17 @@ function Invoke-Inspect {
         $snapshotFailure = 'Inspect before quota snapshot 無效：' + $_.Exception.Message
     }
     $recordQuotaAfterPath = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'quota_after_path')
+    $inspectCodexHome = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'effective_codex_home')
+    if ([string]::IsNullOrWhiteSpace($inspectCodexHome)) { $inspectCodexHome = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'codex_home') }
+    if ([string]::IsNullOrWhiteSpace($inspectCodexHome)) { $inspectCodexHome = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome }
     $recordQuotaAfterSha256 = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'quota_after_sha256')
     $afterSnapshotPathValue = if ([string]::IsNullOrWhiteSpace($recordQuotaAfterPath)) { $QuotaAfterPath } else { $recordQuotaAfterPath }
     $afterSnapshotSha256Value = $null
     $afterSnapshotReadFailed = $false
     try {
-        if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue) -and (-not [string]::IsNullOrWhiteSpace($CodexHome) -or -not [string]::IsNullOrWhiteSpace($env:CODEX_HOME))) {
+        if ([string]::IsNullOrWhiteSpace($afterSnapshotPathValue) -and -not [string]::IsNullOrWhiteSpace($inspectCodexHome)) {
             $historyRoot = Join-Path -Path (Resolve-AbsolutePath -Path $ExecutionRoot) -ChildPath '.local\ai-sessions\history'
-            $afterSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $null -CodexHome $CodexHome -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @() -HistoryRoot $historyRoot -Purpose 'after' -Required
+            $afterSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $null -CodexHome $inspectCodexHome -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @() -HistoryRoot $historyRoot -Purpose 'after' -Required
         }
         if (-not [string]::IsNullOrWhiteSpace($afterSnapshotPathValue)) {
             $afterSnapshotPathValue = Resolve-AbsolutePath -Path $afterSnapshotPathValue
@@ -1744,7 +1747,7 @@ function Invoke-Inspect {
     $closeSnapshotStateValue = 'unknown'
     $closeHistoryRoot = Join-Path -Path (Resolve-AbsolutePath -Path $ExecutionRoot) -ChildPath ('.local\ai-sessions\history\' + $LineSlug)
     $closeSnapshotPathValue = New-QuotaSnapshotPath -HistoryRoot $closeHistoryRoot -Purpose 'close'
-    $closeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $null -SnapshotPath $closeSnapshotPathValue -CodexHome $CodexHome -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @() -HistoryRoot $closeHistoryRoot -Purpose 'close' -Required
+    $closeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $null -SnapshotPath $closeSnapshotPathValue -CodexHome $inspectCodexHome -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @() -HistoryRoot $closeHistoryRoot -Purpose 'close' -Required
     $closeSnapshot = Read-QuotaSnapshot -Path $closeSnapshotPathValue
     $closeSnapshotSha256Value = Get-FileSha256 -Path $closeSnapshotPathValue
     $closeSnapshotSourceStateValue = [string](Get-DispatchJsonProperty -Object $closeSnapshot -Name 'state')

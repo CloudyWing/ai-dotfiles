@@ -172,7 +172,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 #### Codex profile 檔位設定
 
-1. 預設檔位使用 `--profile default`，讀取 `~/.codex/default.config.toml`；`advisor` 檔位使用 `--profile advisor`，讀取 `~/.codex/advisor.config.toml`；選用的 `intensive` 檔位使用 `--profile intensive`，讀取 `~/.codex/intensive.config.toml`。檔位只有這三個選項。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
+1. 各檔位使用選定 Codex home 內的設定檔。預設檔位為 `--profile default` 與 `<CodexHome>/default.config.toml`；`advisor` 為 `--profile advisor` 與 `<CodexHome>/advisor.config.toml`；選用的 `intensive` 為 `--profile intensive` 與 `<CodexHome>/intensive.config.toml`。未指定 home 時預設為 `~/.codex`。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
 2. 實作使用預設檔位；使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session，設定檔不存在時派工在啟動前拒絕。`advisor` 只作意見評估，發動前先向使用者請求，使用者在當下 Session 授權後才派工；授權不延續到其他 Session，也不依剩餘額度縮小評估範圍。預設檔位額度不足時不需授權，照常派工。授權與 evidence pack 契約以 `codex-dispatch` skill 為準，本文件不重複記載。
 3. `default.config.toml`、`advisor.config.toml` 與選用的 `intensive.config.toml` 是各 profile 的本機設定檔，內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
 
@@ -193,6 +193,30 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 4. `config.toml` 是 Codex 應用程式設定，屬可變設定，可能由 CLI 或其他工具變更。default dispatch profile 固定讀取 `default.config.toml`，不以 `config.toml` 作為預設檔位來源。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
 5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段偵測 `default.config.toml` 與 `advisor.config.toml` 缺件（`intensive.config.toml` 為選用檔，缺少時不警告），以及舊檔名殘留或新舊檔同時存在的衝突，並印出修復指引。
+
+#### 獨立 Codex 帳號目錄
+
+在 `~/.ai-agents/.local/machine.json` 加入選用的 `codex_accounts`，保留原有值班欄位。此檔維持本機設定。
+
+```json
+{
+  "schema": "ai-agents.machine.v1",
+  "codex_accounts": [
+    { "name": "default", "codex_home": "C:\\Users\\<使用者>\\.codex" },
+    { "name": "secondary", "codex_home": "C:\\Users\\<使用者>\\.codex-secondary" }
+  ]
+}
+```
+
+名稱使用小寫英數與連字號，目錄須為已存在的絕對路徑。名稱與正規化目錄均須唯一，帳號目錄的 reparse point 或別名會被拒絕。省略清單或使用空陣列時，沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 的解析順序。未登記的自訂 home 仍可使用，RunRecord 的帳號名稱為 null。格式異常時回報 `CodexAccountConfigurationInvalid`，保留原選擇並由使用者修正。
+
+由使用者建立第二目錄，在該目錄人工建立 `config.toml`，並只人工複製 `default.config.toml`、`advisor.config.toml` 及需要時的 `intensive.config.toml`。逐一檢查 profile 中的機器專屬路徑。Setup 只檢查目錄與固定檔名，缺件時提供指引。
+
+使用者在獨立登入子行程設定 `CODEX_HOME` 後自行執行 `codex login`。保留使用者／機器環境變數與 Desktop 的預設目錄；登入、憑證及 sessions 由各 home 的 Codex CLI 管理，不複製整個目錄。
+
+派工使用 `Dispatch -RequestPath <Request> -CodexHome <已登記目錄>`。Start 僅在該次 ProcessStartInfo 設定 `CODEX_HOME`，RunRecord 記錄 home、profile 與帳號別名。同一派遣 resume 固定同 home/name；跨 home 改用新 dispatchSlug 冷啟動，完整步驟見 `codex-dispatch` Skill。
+
+本機 `codex-cli 0.159.0` 的 `codex --help` 明列 `--profile` 將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。第二 home 的基礎 `config.toml` 最小必要鍵，以及共用 profile symlink/include 的載入行為，均待使用者驗證。各 home 使用自己的 profile 檔案。
 
 ---
 
