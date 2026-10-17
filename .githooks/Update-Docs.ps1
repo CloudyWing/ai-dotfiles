@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 
 # ----------------------------------------------------------------
-# Update-Docs.ps1 - 自動產生 docs/*.md 索引表格與 instructions.md Skill 索引
+# Update-Docs.ps1 - 自動產生 docs/*.md 索引表格
 # ----------------------------------------------------------------
 
 [CmdletBinding()]
@@ -16,7 +16,6 @@ $docsDir = Join-Path $repoRoot "docs"
 $claudeAgentsDir = Join-Path $repoRoot "agents\claude"
 $codexAgentsDir = Join-Path $repoRoot "agents\codex"
 $skillsDir = Join-Path $repoRoot "skills"
-$instructionsPath = Join-Path $repoRoot "instructions.md"
 $personaAgents = @("Analyst", "Developer", "Editor", "Maintainer")
 
 function Get-FrontMatterValue {
@@ -440,42 +439,6 @@ function Get-SkillRows {
     })
 }
 
-function Update-SkillIndex {
-    [CmdletBinding()]
-    param (
-        [Parameter(Mandatory)]
-        [object[]]$Skills,
-
-        [Parameter(Mandatory)]
-        [string]$Path
-    )
-
-    $beginMarker = '<!-- SKILL-INDEX:BEGIN -->'
-    $endMarker = '<!-- SKILL-INDEX:END -->'
-    $instructionsContent = [System.IO.File]::ReadAllText($Path, (New-Object System.Text.UTF8Encoding($false)))
-    $pattern = "(?s)" + [regex]::Escape($beginMarker) + ".*?" + [regex]::Escape($endMarker)
-    $match = [regex]::Match($instructionsContent, $pattern)
-
-    if (-not $match.Success) {
-        throw "instructions.md 缺少 Skill 索引標記：$Path"
-    }
-
-    $indexLines = New-Object 'System.Collections.Generic.List[string]'
-    [void]$indexLines.Add($beginMarker)
-    foreach ($skill in ($Skills | Sort-Object { Get-OrdinalSortKey -Value $_.Name })) {
-        [void]$indexLines.Add("- ``$($skill.Name)``：$($skill.Description)")
-    }
-    [void]$indexLines.Add($endMarker)
-    $replacement = $indexLines -join "`n"
-
-    $updatedContent = $instructionsContent.Substring(0, $match.Index) +
-        $replacement +
-        $instructionsContent.Substring($match.Index + $match.Length)
-    $updatedContent = ConvertTo-CrlfText -Content $updatedContent
-    $encoding = New-Object System.Text.UTF8Encoding($false)
-    [System.IO.File]::WriteAllText($Path, $updatedContent, $encoding)
-}
-
 try {
     # 1. 讀取並驗證 Skill frontmatter。
     $skillMetadata = @(
@@ -541,16 +504,13 @@ try {
     ) + $skillHeader + (Get-SkillRows -Skills $modelInvokedSkills)
     Write-DocFile -Path (Join-Path $docsDir "skills.md") -Lines $skillLines
 
-    # 4. 更新 instructions.md 的可機械比對 Skill 索引。
-    Update-SkillIndex -Skills $skillMetadata -Path $instructionsPath
-
-    # 5. 納入本次 commit。
-    & git -C $repoRoot add "docs/agents.md" "docs/skills.md" "instructions.md"
+    # 4. 納入本次 commit。
+    & git -C $repoRoot add "docs/agents.md" "docs/skills.md"
     if ($LASTEXITCODE -ne 0) {
         throw "git add 失敗，結束碼：$LASTEXITCODE"
     }
 
-    Write-Host "docs/*.md 與 instructions.md 已更新並暫存。" -ForegroundColor Green
+    Write-Host "docs/*.md 已更新並暫存。" -ForegroundColor Green
     exit 0
 }
 catch {

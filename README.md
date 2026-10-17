@@ -258,7 +258,7 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 git config core.hooksPath .githooks
 ```
 
-啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md`、`docs/skills.md` 與 `instructions.md` 的 Skill 指標索引並納入本次 commit。`docs/agents.md` 與 `docs/skills.md` 為生成檔，請勿手動編輯；表格會列出讀者欄，Skill 另依 `user-invoked` 與 `model-invoked` 分組。腳本會先驗證 `disable-model-invocation` 與 `policy.allow_implicit_invocation` 的語意一致性，並檢查 `agents/codex/*.toml` 的頂層 bare key 是否超出 `name`／`description`／`developer_instructions` 白名單，任一項不符時以非零結束碼阻止 commit。Codex agent 的 `audience` 以 `# doc-meta: audience = "..."` 註解承載，避免頂層鍵使 Codex 丟棄整份定義。agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md` 與 `docs/skills.md` 並納入本次 commit。`docs/agents.md` 與 `docs/skills.md` 為生成檔，請勿手動編輯；表格會列出讀者欄，Skill 另依 `user-invoked` 與 `model-invoked` 分組。腳本會先驗證 `disable-model-invocation` 與 `policy.allow_implicit_invocation` 的語意一致性，並檢查 `agents/codex/*.toml` 的頂層 bare key 是否超出 `name`／`description`／`developer_instructions` 白名單，任一項不符時以非零結束碼阻止 commit。Codex agent 的 `audience` 以 `# doc-meta: audience = "..."` 註解承載，避免頂層鍵使 Codex 丟棄整份定義。agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
 
 ---
 
@@ -273,7 +273,7 @@ Skill 分為兩種類型：
 
 `docs/skills.md` 將 Skill 依 `user-invoked` 與 `model-invoked` 分組，並列出 Skill 的讀者欄。讀者值為 `agent` 或 `human`，用來區分規範載入對象與人員直接使用的任務模組。
 
-`.githooks/Update-Docs.ps1` 會將所有 Skill 名稱與說明同步到 `instructions.md` 的 `SKILL-INDEX` 區塊。腳本只替換 BEGIN／END 標記之間的內容，保留區塊外的主規則。frontmatter 的雙端觸發欄位不一致時，腳本會以非零結束碼停止 commit。
+`.githooks/Update-Docs.ps1` 不再把 Skill 索引寫入 `instructions.md`，Skill 的名稱與描述由 Claude Code 與 Codex 各自載入。frontmatter 的雙端觸發欄位不一致時，腳本會以非零結束碼停止 commit。
 
 Claude Code 與 Codex 對「可呼叫的任務模組」各有不同名稱，且已逐漸整併成指令型 Skill：
 
