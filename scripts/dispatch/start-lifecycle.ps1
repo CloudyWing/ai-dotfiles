@@ -1146,8 +1146,8 @@ function Invoke-Start {
     $requestedReasoningEffortEvidence = New-RequestedDispatchEvidence -Value $ReasoningEffort -Field 'ReasoningEffort'
     $codexHomeEvidencePath = $effectiveCodexHomePath
     $profileConfigPathValue = Resolve-ProfileConfigPath -CodexHome $codexHomeEvidencePath -Profile $effectiveProfileValue
-    if ($effectiveProfileValue -eq 'intensive' -and [string]::IsNullOrWhiteSpace($profileConfigPathValue)) {
-        $profileConfigPathValue = Resolve-AbsolutePath -Path (Join-Path -Path $codexHomeEvidencePath -ChildPath 'intensive.config.toml')
+    if (($effectiveProfileValue -eq 'intensive' -or -not [string]::IsNullOrWhiteSpace($codexAccountName)) -and [string]::IsNullOrWhiteSpace($profileConfigPathValue)) {
+        $profileConfigPathValue = Resolve-AbsolutePath -Path (Join-Path -Path $codexHomeEvidencePath -ChildPath ($effectiveProfileValue + '.config.toml'))
         $phase = 'profile-evidence'
         $failureReasonCode = 'ProfileEvidenceUnknown'
         throw ('ProfileEvidenceUnknown：Profile 設定檔不存在，啟動已拒絕；expected-path=' + $profileConfigPathValue)

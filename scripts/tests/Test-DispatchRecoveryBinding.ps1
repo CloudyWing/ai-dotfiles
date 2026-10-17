@@ -14442,6 +14442,91 @@ exit 0
         Assert-True ($env:CODEX_HOME -ceq $parentHome -and (Get-FileSha256 (Join-Path $real.account_home_a 'default.config.toml')) -ceq $real.account_a_profile_sha256) '父環境或 A profile 被修改。'
         Write-Phase9Evidence -Label 'FOLLOWUP_ACCOUNT_RUNTIME' -Value ([ordered]@{fixture=$real.case_root;invocation=$real.run.command;stdout=$real.run.stdout;stderr=$real.run.stderr;exit_code=$real.run.exit_code;observed_home=$observed;run_record=$record;resume=$resume;credential_file_locked_during_dispatch=$true;parent_environment_unchanged=$true})
     }
+    Invoke-Case 'Phase 9 FOLLOWUP-ACCOUNT Start rejects wrong home or name before process start' {
+        $real = & $invokeSRealDispatchCase -Name 'followup-account-start-mismatch' -ScriptPath $sourcePath -CreateQuotaBeforePath -UseCurrentHost -FollowupAccount
+        Assert-True ([int]$real.run.exit_code -eq 0 -and $null -ne $real.run_record_document) ('帳號續行基準未啟動：' + $real.output_text)
+        $hostPath = (Get-Process -Id $PID).Path
+        $counterPath = Join-Path $real.case_root 'rejected-start-calls.txt'
+        $fakeText = [IO.File]::ReadAllText($real.codex_path).Replace('@echo off', ('@echo off' + "`r`n" + '>>"' + $counterPath + '" echo started'))
+        [IO.File]::WriteAllText($real.codex_path, $fakeText, (New-Object Text.UTF8Encoding($false)))
+        foreach ($fault in @('wrong-home', 'wrong-name')) {
+            $selectedHome = if ($fault -ceq 'wrong-home') { $real.account_home_a } else { $real.codex_home }
+            if ($fault -ceq 'wrong-name') {
+                $machinePath = Join-Path $real.case_root '.local\machine.json'
+                $machine = [IO.File]::ReadAllText($machinePath) | ConvertFrom-Json
+                $machine.codex_accounts[1].name = 'renamed-secondary'
+                [IO.File]::WriteAllText($machinePath, ($machine | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
+            }
+            $resultPath = Join-Path $real.source_root ($fault + '-start-result.json')
+            $record = $real.run_record_document
+            $arguments = @('-NoProfile', '-NonInteractive', '-File', $real.script_path, '-Operation', 'Start', '-SourceRoot', $real.source_root, '-ExecutionRoot', $real.dispatch_root, '-DispatchRoot', $real.dispatch_root, '-LineSlug', 'a', '-DispatchSlug', $real.dispatch_slug, '-WriteMode', 'write', '-PreflightResultPath', $real.preflight_result_path, '-PrepareResultPath', $record.prepare_result_path, '-CodexPath', $real.codex_path, '-PromptPath', $real.prompt_source_path, '-TaskType', 'script-change', '-DispatchKind', 'workflow', '-UnitKind', 'workflow-phase', '-TargetPath', (Join-Path $real.source_root 'target.txt'), '-RequestedUnit', 'Phase 1', '-ScopePlanPath', $record.scope_plan_path, '-ResumeThreadId', $record.thread_id, '-LastMessagePath', $record.last_message_path, '-CodexHome', $selectedHome, '-ResultPath', $resultPath)
+            $run = Invoke-Phase9Process -HostPath $hostPath -Arguments $arguments -WorkingDirectory $root -EnvironmentVariables @{ CODEX_HOME = $real.account_home_a }
+            $result = [IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
+            $startCalls = if (Test-Path -LiteralPath $counterPath -PathType Leaf) { @([IO.File]::ReadAllLines($counterPath)).Count } else { 0 }
+            Write-Phase9Evidence -Label 'FOLLOWUP_ACCOUNT_START_MISMATCH' -Value ([ordered]@{ fixture = $real.case_root; fault = $fault; invocation = $run; result = $result; start_calls = $startCalls })
+            Assert-True ($run.exit_code -ne 0 -and $result.errorCode -ceq 'ResumeAccountMismatch' -and -not [bool]$result.processStarted -and $startCalls -eq 0) ('Start 未在程序啟動前拒絕 ' + $fault + '：' + $run.stdout + $run.stderr)
+        }
+    }
+    Invoke-Case 'Phase 9 FOLLOWUP-ACCOUNT Start rejects missing default or advisor profile before process start' {
+        $hostPath = (Get-Process -Id $PID).Path
+        $results = @()
+        foreach ($selectedProfile in @('default', 'advisor')) {
+            $caseRoot = Join-Path $phase9Root (New-BindingFixtureName -Code 'missprof')
+            $scriptsPath = Join-Path $caseRoot 'scripts'
+            $entryPath = Join-Path $scriptsPath 'Invoke-CodexDispatch.ps1'
+            $codexHome = Join-Path $caseRoot 'selected-home'
+            $lineRoot = Join-Path $caseRoot '.local\ai-sessions\handoff\a'
+            $reportRoot = Join-Path $caseRoot '.local\ai-sessions\report\a'
+            $null = New-Item -ItemType Directory -Path $scriptsPath, $codexHome, $lineRoot, $reportRoot -Force
+            Copy-Item -LiteralPath $sourcePath -Destination $entryPath
+            Copy-DispatchModulesBesideTestEntry -ScriptPath $entryPath
+            $utf8 = New-Object Text.UTF8Encoding($false)
+            $machine = [ordered]@{ schema = 'ai-agents.machine.v1'; codex_accounts = @([ordered]@{ name = 'secondary'; codex_home = $codexHome }) }
+            [IO.File]::WriteAllText((Join-Path $caseRoot '.local\machine.json'), ($machine | ConvertTo-Json -Depth 10), $utf8)
+            [IO.File]::WriteAllText((Join-Path $lineRoot 'line.json'), '{"schema":"ai-sessions.line.v1","line-slug":"a","kind":"adhoc"}', $utf8)
+            $dispatchSlug = 'missing-' + $selectedProfile
+            $promptPath = Join-Path $caseRoot 'prompt.md'
+            $targetPath = Join-Path $caseRoot 'target.txt'
+            [IO.File]::WriteAllText($promptPath, 'fixture cold-start prompt', $utf8)
+            [IO.File]::WriteAllText($targetPath, 'fixture target', $utf8)
+            $preflightPath = Join-Path $caseRoot 'preflight.json'
+            $resultPath = Join-Path $caseRoot 'start-result.json'
+            $quotaPath = Join-Path $caseRoot 'quota-before.json'
+            $quotaAfterPath = Join-Path $caseRoot 'quota-after.json'
+            $null = New-Phase8QuotaSnapshot -Path $quotaPath -PrimaryRemainingPercent 80 -SourceRoot $caseRoot -ExecutionRoot $caseRoot
+            Copy-Item -LiteralPath $quotaPath -Destination $quotaAfterPath
+            $counterPath = Join-Path $caseRoot 'start-calls.txt'
+            $codexPath = Join-Path $caseRoot 'codex.cmd'
+            $threadId = [guid]::NewGuid().ToString('D')
+            $fakeLines = @('@echo off', ('>>"' + $counterPath + '" echo started'), ('echo {"type":"thread.started","thread_id":"' + $threadId + '"}'), 'echo {"type":"turn.completed"}', 'exit /b 0')
+            [IO.File]::WriteAllText($codexPath, (($fakeLines -join "`r`n") + "`r`n"), $utf8)
+            $taskType = if ($selectedProfile -ceq 'advisor') { 'advisor-consult' } else { 'script-change' }
+            $unitKind = if ($selectedProfile -ceq 'advisor') { 'advisor-evidence-question' } else { 'resource-target' }
+            $requestedUnit = if ($selectedProfile -ceq 'advisor') { 'question-001' } else { $targetPath }
+            $dispatchRoot = Join-Path $caseRoot ('.local\ai-sessions\worktrees\' + $dispatchSlug)
+            $commonArguments = @('-SourceRoot', $caseRoot, '-ExecutionRoot', $caseRoot, '-DispatchRoot', $dispatchRoot, '-LineSlug', 'a', '-DispatchSlug', $dispatchSlug, '-WriteMode', 'readonly', '-DispatchKind', 'resource', '-TargetPath', $targetPath, '-RequestedUnit', $requestedUnit, '-UnitKind', $unitKind, '-TaskType', $taskType, '-CodexHome', $codexHome)
+            $advisorArguments = @()
+            if ($selectedProfile -ceq 'advisor') {
+                $evidencePath = Join-Path $lineRoot 'advisor-evidence.md'
+                $evidence = @('schema: advisor-consult.evidence.v1', 'line-slug: a', ('dispatch-slug: ' + $dispatchSlug), '', '## 目標段落', '', 'source: target.txt:1', 'excerpt: fixture target', '', '## 已知結論', '', 'fixture conclusion', '', '## 待答問題', '', 'question-001: fixture question', 'required-output: ## 中斷保全結論; ## 證據支持; ## 推論; ## 未決問題', 'output-rules: answer only from this evidence pack', '', '## 可能反證', '', 'fixture counterevidence', '', '## 邊界', '', '- allowed-input: this evidence pack only', '- forbidden-action: source exploration, repository scan, file mutation, external dispatch') -join "`r`n"
+                [IO.File]::WriteAllText($evidencePath, $evidence, $utf8)
+                $advisorArguments = @('-AdvisorRequestSource', 'user-explicit', '-EvidencePackPath', $evidencePath, '-AdvisorConsultReportPath', (Join-Path $reportRoot ('advisor-consult-' + $dispatchSlug + '.md')))
+            }
+            $preflightArguments = @('-NoProfile', '-NonInteractive', '-File', $entryPath, '-Operation', 'Preflight', '-ResultPath', $preflightPath) + $commonArguments + $advisorArguments
+            $preflight = Invoke-Phase9Process -HostPath $hostPath -Arguments $preflightArguments -WorkingDirectory $root -EnvironmentVariables @{}
+            Assert-True ($preflight.exit_code -eq 0) ('缺 profile 案例 Preflight 失敗：' + $preflight.stdout + $preflight.stderr)
+            $arguments = @('-NoProfile', '-NonInteractive', '-File', $entryPath, '-Operation', 'Start', '-PreflightResultPath', $preflightPath, '-PromptPath', $promptPath, '-CodexPath', $codexPath, '-Profile', $selectedProfile, '-SessionMode', 'cold-start', '-QuotaBeforePath', $quotaPath, '-QuotaAfterPath', $quotaAfterPath, '-ResultPath', $resultPath) + $commonArguments + $advisorArguments
+            $run = Invoke-Phase9Process -HostPath $hostPath -Arguments $arguments -WorkingDirectory $root -EnvironmentVariables @{}
+            $result = [IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
+            $startCalls = if (Test-Path -LiteralPath $counterPath -PathType Leaf) { @([IO.File]::ReadAllLines($counterPath)).Count } else { 0 }
+            $evidence = [ordered]@{ fixture = $caseRoot; profile = $selectedProfile; preflight = $preflight; invocation = $run; result = $result; start_calls = $startCalls; missing_path = (Join-Path $codexHome ($selectedProfile + '.config.toml')) }
+            Write-Phase9Evidence -Label 'FOLLOWUP_ACCOUNT_START_MISSING_PROFILE' -Value $evidence
+            $results += [pscustomobject]$evidence
+        }
+        foreach ($item in $results) {
+            Assert-True ($item.invocation.exit_code -ne 0 -and $item.result.errorCode -ceq 'ProfileEvidenceUnknown' -and -not [bool]$item.result.processStarted -and $item.start_calls -eq 0 -and $item.result.error.Contains($item.missing_path)) ('Start 未在程序啟動前明確拒絕缺少 ' + $item.profile + ' profile：' + $item.invocation.stdout + $item.invocation.stderr)
+        }
+    }
     Invoke-Case 'Phase 9 FOLLOWUP-CLEANUP CLI switch stays Cleanup-only' {
         $hostPath = (Get-Process -Id $PID).Path
         $invocation = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-File',$sourcePath,'-Operation','Inspect','-TakeoverOwner') -WorkingDirectory $root -EnvironmentVariables @{}
