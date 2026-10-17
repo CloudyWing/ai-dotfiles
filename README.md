@@ -216,7 +216,15 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 派工使用 `Dispatch -RequestPath <Request> -CodexHome <已登記目錄>`。Start 僅在該次 ProcessStartInfo 設定 `CODEX_HOME`，RunRecord 記錄 home、profile 與帳號別名。同一派遣 resume 固定同 home/name；跨 home 改用新 dispatchSlug 冷啟動，完整步驟見 `codex-dispatch` Skill。
 
-本機 `codex-cli 0.159.0` 的 `codex --help` 明列 `--profile` 將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。第二 home 的基礎 `config.toml` 最小必要鍵，以及共用 profile symlink/include 的載入行為，均待使用者驗證。各 home 使用自己的 profile 檔案。
+本機 `codex-cli 0.159.0` 的 `codex --help` 明列 `--profile` 將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。第二 home 的基礎 `config.toml` 最小必要設定已實測（2026-10-17，`codex-cli 0.159.0`，`windows.sandbox = "elevated"` 的環境）：缺少 `config.toml` 時，Codex 在該 home 啟動後所有命令都被執行政策拒絕，連派遣單都讀不了；補上下列兩段後可正常讀取與執行。`[windows] sandbox` 的值須與基礎 home 一致；`[projects.'<小寫的專案絕對路徑>']` 的 `trust_level = "trusted"` 依需要派工的專案逐一加入。不要複製 `notify`、`.sandbox*` 目錄、`auth.json` 與 `sessions`。共用 profile symlink/include 的載入行為未驗證，各 home 使用自己的 profile 檔案。
+
+```toml
+[windows]
+sandbox = "elevated"
+
+[projects.'c:\users\<使用者>\.ai-agents']
+trust_level = "trusted"
+```
 
 ---
 
