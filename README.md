@@ -196,27 +196,29 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 
 #### 獨立 Codex 帳號目錄
 
+派工可使用專用的 Codex 帳號目錄，與 Codex Desktop 使用的預設目錄 `~/.codex` 分開。派工只在單次子行程指定 `CODEX_HOME`，不會更換、改寫 Desktop 或預設目錄的登入，因此 Desktop 使用中不會被派工切換帳號。建議的配置是：`~/.codex` 留給 Desktop 且不登記，派工用的每個帳號各用一個專用目錄。Desktop 與某個派工帳號若登入同一個 ChatGPT 帳號，兩邊仍共用該帳號的額度。
+
 在 `~/.ai-agents/.local/machine.json` 加入選用的 `codex_accounts`，保留原有值班欄位。此檔維持本機設定。
 
 ```json
 {
   "schema": "ai-agents.machine.v1",
   "codex_accounts": [
-    { "name": "default", "codex_home": "C:\\Users\\<使用者>\\.codex" },
-    { "name": "secondary", "codex_home": "C:\\Users\\<使用者>\\.codex-secondary" }
+    { "name": "account-a", "codex_home": "C:\\Users\\<使用者>\\.codex-account-a" },
+    { "name": "account-b", "codex_home": "C:\\Users\\<使用者>\\.codex-account-b" }
   ]
 }
 ```
 
 名稱使用小寫英數與連字號，目錄須為已存在的絕對路徑。名稱與正規化目錄均須唯一，帳號目錄的 reparse point 或別名會被拒絕。省略清單或使用空陣列時，沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 的解析順序。未登記的自訂 home 仍可使用，RunRecord 的帳號名稱為 null。格式異常時回報 `CodexAccountConfigurationInvalid`，保留原選擇並由使用者修正。
 
-由使用者建立第二目錄，在該目錄人工建立 `config.toml`，並只人工複製 `default.config.toml`、`advisor.config.toml` 及需要時的 `intensive.config.toml`。逐一檢查 profile 中的機器專屬路徑。Setup 只檢查目錄與固定檔名，缺件時提供指引。
+由使用者為每個派工帳號建立專用目錄，在該目錄人工建立 `config.toml`，並只人工複製 `default.config.toml`、`advisor.config.toml` 及需要時的 `intensive.config.toml`。逐一檢查 profile 中的機器專屬路徑。Setup 只檢查目錄與固定檔名，缺件時提供指引。
 
 使用者在獨立登入子行程設定 `CODEX_HOME` 後自行執行 `codex login`。保留使用者／機器環境變數與 Desktop 的預設目錄；登入、憑證及 sessions 由各 home 的 Codex CLI 管理，不複製整個目錄。
 
-派工使用 `Dispatch -RequestPath <Request> -CodexHome <已登記目錄>`。Start 僅在該次 ProcessStartInfo 設定 `CODEX_HOME`，RunRecord 記錄 home、profile 與帳號別名。同一派遣 resume 固定同 home/name；跨 home 改用新 dispatchSlug 冷啟動，完整步驟見 `codex-dispatch` Skill。
+派工使用 `Dispatch -RequestPath <Request> -CodexHome <已登記目錄>`。程式沒有「預設派工帳號」設定，省略 `-CodexHome` 時依 CLI、程序 `CODEX_HOME`、`~/.codex` 的順序解析，程序 `CODEX_HOME` 也未設定時會落到 Desktop 使用的預設目錄，因此主 Agent 派工一律明確指定 `-CodexHome`，預設使用清單第一個帳號。Start 僅在該次 ProcessStartInfo 設定 `CODEX_HOME`，RunRecord 記錄 home、profile 與帳號別名。同一派遣 resume 固定同 home/name；跨 home 改用新 dispatchSlug 冷啟動，完整步驟見 `codex-dispatch` Skill。
 
-本機 `codex-cli 0.159.0` 的 `codex --help` 明列 `--profile` 將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。第二 home 的基礎 `config.toml` 最小必要設定已實測（2026-10-17，`codex-cli 0.159.0`，`windows.sandbox = "elevated"` 的環境）：缺少 `config.toml` 時，Codex 在該 home 啟動後所有命令都被執行政策拒絕，連派遣單都讀不了；補上下列兩段後可正常讀取與執行。`[windows] sandbox` 的值須與基礎 home 一致；`[projects.'<小寫的專案絕對路徑>']` 的 `trust_level = "trusted"` 依需要派工的專案逐一加入。不要複製 `notify`、`.sandbox*` 目錄、`auth.json` 與 `sessions`。共用 profile symlink/include 的載入行為未驗證，各 home 使用自己的 profile 檔案。
+本機 `codex-cli 0.159.0` 的 `codex --help` 明列 `--profile` 將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 `config.toml` 最小必要設定已實測（2026-10-17，`codex-cli 0.159.0`，`windows.sandbox = "elevated"` 的環境）：缺少 `config.toml` 時，Codex 在該 home 啟動後所有命令都被執行政策拒絕，連派遣單都讀不了；補上下列兩段後可正常讀取與執行。`[windows] sandbox` 的值須與基礎 home 一致；`[projects.'<小寫的專案絕對路徑>']` 的 `trust_level = "trusted"` 依需要派工的專案逐一加入。不要複製 `notify`、`.sandbox*` 目錄、`auth.json` 與 `sessions`。共用 profile symlink/include 的載入行為未驗證，各 home 使用自己的 profile 檔案。
 
 ```toml
 [windows]
