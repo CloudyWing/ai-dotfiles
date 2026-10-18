@@ -25,7 +25,7 @@ trim_trailing_whitespace = true
 trim_trailing_whitespace = false
 
 # 常見前端與設定檔縮排
-[*.{json,yml,yaml,xml,html,css,scss,js,jsx,ts,tsx,cshtml}]
+[*.{json,yml,yaml,xml,html,css,scss,js,jsx,ts,tsx,vue,cshtml}]
 indent_style = space
 indent_size = 2
 
