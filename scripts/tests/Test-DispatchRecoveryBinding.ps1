@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH1-REPLACE', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1843,6 +1843,9 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'BATCH1-SUPPORT') {
             $Name -match '^Phase (7|9) BATCH1-SUPPORT' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH15-EVIDENCE') {
+            $Name -match '^Phase 8 advisor required output gate' -or $Name -ceq 'Phase 8 advisor 最長前綴與 report partition' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'BATCH1-REPLACE') {
             $Name -match '^Phase 9 BATCH1-REPLACE' -or $cleanupMatch
@@ -10661,6 +10664,104 @@ if ($Phase -ge 8) {
         $written = Write-AdvisorConsultReport -Path $reportPath -ExecutionRoot $phase7Root -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-partition' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage $finalMessage -Status 'failed' -BudgetMonitor $quotaObservations -RequiredOutputGate $gate -ScopePlan $plan -InterruptionStatus ([ordered]@{ applied = $true; safePointPresent = $true })
         $report = Get-Content -LiteralPath $written -Raw -Encoding UTF8
         Assert-True ($report.Contains('- status: failed') -and $report.Contains('- activation-mode: user-authorized') -and $report.Contains('- authorization-source: user-explicit') -and $report.Contains('- completed: question-001') -and $report.Contains('- incomplete: question-002') -and $report.Contains('## Interruption status') -and $report.Contains('## Quota observations') -and $report.Contains('quota-snapshot-unavailable') -and $report.Contains('input_tokens')) 'advisor report 未保存失敗狀態、usage、已確認成果、未完成單位或 quota observation。'
+    }
+
+    $assertRequiredOutputGateReportLines = {
+        param(
+            [Parameter(Mandatory)][string]$Report,
+            [Parameter(Mandatory)][string[]]$ExpectedLines
+        )
+
+        $actualLines = @([regex]::Matches($Report, '(?m)^- (declared|present|missing|valid): [^\r\n]*') | ForEach-Object { $_.Value })
+        $linesMatch = $actualLines.Count -eq $ExpectedLines.Count
+        for ($lineIndex = 0; $linesMatch -and $lineIndex -lt $ExpectedLines.Count; $lineIndex++) {
+            if ($actualLines[$lineIndex] -cne $ExpectedLines[$lineIndex]) { $linesMatch = $false }
+        }
+        Assert-True $linesMatch 'advisor report Required output gate 四行與預期不符。'
+    }
+
+    Invoke-Case 'Phase 8 advisor required output gate - OrderedDictionary valid' {
+        $reportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/advisor-consult-phase8-advisor-gate-ordered-valid.md'
+        $gate = [ordered]@{
+            required = @('## Required alpha', '## Required beta')
+            present = @('## Required alpha', '## Required beta')
+            missing = @()
+            valid = $true
+        }
+        $written = Write-AdvisorConsultReport -Path $reportPath -ExecutionRoot $phase7Root -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-gate-ordered-valid' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage 'fixture' -Status 'completed' -BudgetMonitor @() -RequiredOutputGate $gate -ScopePlan $null -InterruptionStatus $null
+        $report = Get-Content -LiteralPath $written -Raw -Encoding UTF8
+        & $assertRequiredOutputGateReportLines -Report $report -ExpectedLines @(
+            '- declared: ## Required alpha; ## Required beta'
+            '- present: ## Required alpha; ## Required beta'
+            '- missing: '
+            '- valid: True'
+        )
+    }
+
+    Invoke-Case 'Phase 8 advisor required output gate - OrderedDictionary missing and invalid' {
+        $reportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/advisor-consult-phase8-advisor-gate-ordered-missing.md'
+        $gate = [ordered]@{
+            required = @('## Required alpha', '## Required beta')
+            present = @('## Required alpha')
+            missing = @('## Required beta')
+            valid = $false
+        }
+        $written = Write-AdvisorConsultReport -Path $reportPath -ExecutionRoot $phase7Root -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-gate-ordered-missing' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage 'fixture' -Status 'completed' -BudgetMonitor @() -RequiredOutputGate $gate -ScopePlan $null -InterruptionStatus $null
+        $report = Get-Content -LiteralPath $written -Raw -Encoding UTF8
+        & $assertRequiredOutputGateReportLines -Report $report -ExpectedLines @(
+            '- declared: ## Required alpha; ## Required beta'
+            '- present: ## Required alpha'
+            '- missing: ## Required beta'
+            '- valid: False'
+        )
+    }
+
+    Invoke-Case 'Phase 8 advisor required output gate - Hashtable' {
+        $reportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/advisor-consult-phase8-advisor-gate-hashtable.md'
+        $gate = @{
+            required = @('## Hashtable required')
+            present = @('## Hashtable required')
+            missing = @()
+            valid = $true
+        }
+        $written = Write-AdvisorConsultReport -Path $reportPath -ExecutionRoot $phase7Root -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-gate-hashtable' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage 'fixture' -Status 'completed' -BudgetMonitor @() -RequiredOutputGate $gate -ScopePlan $null -InterruptionStatus $null
+        $report = Get-Content -LiteralPath $written -Raw -Encoding UTF8
+        & $assertRequiredOutputGateReportLines -Report $report -ExpectedLines @(
+            '- declared: ## Hashtable required'
+            '- present: ## Hashtable required'
+            '- missing: '
+            '- valid: True'
+        )
+    }
+
+    Invoke-Case 'Phase 8 advisor required output gate - pscustomobject compatibility' {
+        $reportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/advisor-consult-phase8-advisor-gate-pscustomobject.md'
+        $gate = [pscustomobject]@{
+            required = @('## PSCustomObject required')
+            present = @('## PSCustomObject required')
+            missing = @()
+            valid = $true
+        }
+        $written = Write-AdvisorConsultReport -Path $reportPath -ExecutionRoot $phase7Root -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-gate-pscustomobject' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage 'fixture' -Status 'completed' -BudgetMonitor @() -RequiredOutputGate $gate -ScopePlan $null -InterruptionStatus $null
+        $report = Get-Content -LiteralPath $written -Raw -Encoding UTF8
+        & $assertRequiredOutputGateReportLines -Report $report -ExpectedLines @(
+            '- declared: ## PSCustomObject required'
+            '- present: ## PSCustomObject required'
+            '- missing: '
+            '- valid: True'
+        )
+    }
+
+    Invoke-Case 'Phase 8 advisor required output gate - null defaults' {
+        $reportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/advisor-consult-phase8-advisor-gate-null.md'
+        $written = Write-AdvisorConsultReport -Path $reportPath -ExecutionRoot $phase7Root -LineSlug 'line-a' -DispatchSlug 'phase8-advisor-gate-null' -EvidencePackPath $phase2EvidencePackPath -EvidencePackSha256 'fixture-sha256' -EvidencePackLength 1 -FinalMessage 'fixture' -Status 'completed' -BudgetMonitor @() -RequiredOutputGate $null -ScopePlan $null -InterruptionStatus $null
+        $report = Get-Content -LiteralPath $written -Raw -Encoding UTF8
+        & $assertRequiredOutputGateReportLines -Report $report -ExpectedLines @(
+            '- declared: '
+            '- present: '
+            '- missing: '
+            '- valid: False'
+        )
     }
 }
 

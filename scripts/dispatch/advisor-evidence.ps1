@@ -935,14 +935,23 @@ function Write-AdvisorConsultReport {
     $missingOutput = @()
     $gateValid = $false
     if ($null -ne $RequiredOutputGate) {
-        $declaredProperty = $RequiredOutputGate.PSObject.Properties['required']
-        $presentProperty = $RequiredOutputGate.PSObject.Properties['present']
-        $missingProperty = $RequiredOutputGate.PSObject.Properties['missing']
-        $validProperty = $RequiredOutputGate.PSObject.Properties['valid']
-        if ($null -ne $declaredProperty) { $declaredOutput = @($declaredProperty.Value) }
-        if ($null -ne $presentProperty) { $presentOutput = @($presentProperty.Value) }
-        if ($null -ne $missingProperty) { $missingOutput = @($missingProperty.Value) }
-        if ($null -ne $validProperty) { $gateValid = [bool]$validProperty.Value }
+        if ($RequiredOutputGate -is [System.Collections.IDictionary]) {
+            if ($RequiredOutputGate.Contains('required')) { $declaredOutput = @($RequiredOutputGate['required']) }
+            if ($RequiredOutputGate.Contains('present')) { $presentOutput = @($RequiredOutputGate['present']) }
+            if ($RequiredOutputGate.Contains('missing')) { $missingOutput = @($RequiredOutputGate['missing']) }
+            if ($RequiredOutputGate.Contains('valid')) { $gateValid = [bool]$RequiredOutputGate['valid'] }
+        }
+        else {
+            $requiredOutputGateObject = $RequiredOutputGate
+            $declaredProperty = $requiredOutputGateObject.PSObject.Properties['required']
+            $presentProperty = $requiredOutputGateObject.PSObject.Properties['present']
+            $missingProperty = $requiredOutputGateObject.PSObject.Properties['missing']
+            $validProperty = $requiredOutputGateObject.PSObject.Properties['valid']
+            if ($null -ne $declaredProperty) { $declaredOutput = @($declaredProperty.Value) }
+            if ($null -ne $presentProperty) { $presentOutput = @($presentProperty.Value) }
+            if ($null -ne $missingProperty) { $missingOutput = @($missingProperty.Value) }
+            if ($null -ne $validProperty) { $gateValid = [bool]$validProperty.Value }
+        }
     }
     $gateObject = [ordered]@{
         declared = $declaredOutput
