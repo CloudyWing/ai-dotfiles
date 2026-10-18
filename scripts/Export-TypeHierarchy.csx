@@ -16,8 +16,8 @@ using Microsoft.CodeAnalysis.CSharp.Syntax;
 
 Console.OutputEncoding = Encoding.UTF8;
 
-if (Args.Count != 1) {
-    Console.Error.WriteLine("用法：dotnet script Export-TypeHierarchy.csx -- <solution.sln-or-slnx>");
+if (Args.Count is < 1 or > 2) {
+    Console.Error.WriteLine("用法：dotnet script Export-TypeHierarchy.csx -- <solution.sln-or-slnx> [outputPath]");
     Environment.Exit(1);
 }
 
@@ -63,7 +63,9 @@ try {
     }
 
     string solutionDirectory = Path.GetDirectoryName(solutionPath) ?? Directory.GetCurrentDirectory();
-    string outputPath = Path.Combine(solutionDirectory, ".local", "ai-context", "type-hierarchy.md");
+    string outputPath = Args.Count == 2
+        ? Path.GetFullPath(Args[1])
+        : Path.Combine(solutionDirectory, ".local", "ai-context", "type-hierarchy.md");
     WriteReport(outputPath, solutionPath, hierarchy);
     Console.WriteLine($"已輸出型別繼承關係：{outputPath}");
 } catch (Exception exception) {
@@ -124,20 +126,43 @@ static List<string> LoadProjectPaths(string solutionPath) {
 }
 
 static IEnumerable<string> EnumerateSourceFiles(string projectDirectory) {
-    return Directory.EnumerateFiles(projectDirectory, "*.cs", SearchOption.AllDirectories)
-        .Where(path => path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            .All(segment => !segment.Equals("bin", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals("obj", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals(".git", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals("dist", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals("out", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals("build", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals("target", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals("node_modules", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals("__pycache__", StringComparison.OrdinalIgnoreCase)
-                            && !segment.Equals(".local", StringComparison.OrdinalIgnoreCase)
-            )
-        ).OrderBy(path => path, StringComparer.OrdinalIgnoreCase);
+    HashSet<string> excludedDirectoryNames = new(StringComparer.OrdinalIgnoreCase) {
+        "bin",
+        "obj",
+        ".git",
+        "dist",
+        "out",
+        "build",
+        "target",
+        "node_modules",
+        "__pycache__",
+        ".local"
+    };
+    Stack<string> pendingDirectories = new();
+    pendingDirectories.Push(projectDirectory);
+
+    while (pendingDirectories.Count > 0) {
+        string currentDirectory = pendingDirectories.Pop();
+        foreach (string path in Directory.EnumerateFiles(currentDirectory, "*.cs", SearchOption.TopDirectoryOnly)) {
+            string relativePath = Path.GetRelativePath(projectDirectory, path);
+            bool containsExcludedDirectory = relativePath
+                .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+                .Any(excludedDirectoryNames.Contains);
+            if (!containsExcludedDirectory) {
+                yield return path;
+            }
+        }
+
+        foreach (string directoryPath in Directory.EnumerateDirectories(currentDirectory)) {
+            DirectoryInfo directory = new(directoryPath);
+            if (excludedDirectoryNames.Contains(directory.Name)
+                || (directory.Attributes & FileAttributes.ReparsePoint) != 0) {
+                continue;
+            }
+
+            pendingDirectories.Push(directoryPath);
+        }
+    }
 }
 
 static string GetQualifiedName(BaseTypeDeclarationSyntax declaration) {
@@ -167,7 +192,9 @@ static string GetQualifiedName(BaseTypeDeclarationSyntax declaration) {
 static string GetTypeIdentifier(BaseTypeDeclarationSyntax declaration) {
     return declaration switch {
         EnumDeclarationSyntax enumDeclaration => enumDeclaration.Identifier.ValueText,
-        _ => ((TypeDeclarationSyntax)declaration).Identifier.ValueText
+        TypeDeclarationSyntax typeDeclaration =>
+            $"{typeDeclaration.Identifier.ValueText}{typeDeclaration.TypeParameterList}",
+        _ => throw new InvalidOperationException($"不支援的型別宣告：{declaration.Kind()}")
     };
 }
 
@@ -186,6 +213,11 @@ static string GetTypeKind(BaseTypeDeclarationSyntax declaration) {
 static string GetAccessibility(BaseTypeDeclarationSyntax declaration) {
     if (declaration.Modifiers.Any(SyntaxKind.PublicKeyword)) {
         return "public";
+    }
+
+    if (declaration.Modifiers.Any(SyntaxKind.PrivateKeyword)
+        && declaration.Modifiers.Any(SyntaxKind.ProtectedKeyword)) {
+        return "private protected";
     }
 
     if (declaration.Modifiers.Any(SyntaxKind.ProtectedKeyword)) {

@@ -15,8 +15,8 @@ using Microsoft.CodeAnalysis.CSharp;
 
 Console.OutputEncoding = Encoding.UTF8;
 
-if (Args.Count != 1) {
-    Console.Error.WriteLine("用法：dotnet script Export-ProjectGraph.csx -- <solution.sln-or-slnx>");
+if (Args.Count is < 1 or > 2) {
+    Console.Error.WriteLine("用法：dotnet script Export-ProjectGraph.csx -- <solution.sln-or-slnx> [outputPath]");
     Environment.Exit(1);
 }
 
@@ -30,10 +30,13 @@ try {
     );
 
     using AdhocWorkspace workspace = new();
-    Solution solution = CreateSolution(workspace, projectPaths, projectIds);
+    List<(string ProjectName, string Include)> unresolvedReferences = new();
+    Solution solution = CreateSolution(workspace, projectPaths, projectIds, unresolvedReferences);
     string solutionDirectory = Path.GetDirectoryName(solutionPath) ?? Directory.GetCurrentDirectory();
-    string outputPath = Path.Combine(solutionDirectory, ".local", "ai-context", "project-graph.md");
-    WriteReport(outputPath, solutionPath, solution);
+    string outputPath = Args.Count == 2
+        ? Path.GetFullPath(Args[1])
+        : Path.Combine(solutionDirectory, ".local", "ai-context", "project-graph.md");
+    WriteReport(outputPath, solutionPath, solution, unresolvedReferences);
     Console.WriteLine($"已輸出專案相依圖：{outputPath}");
 } catch (Exception exception) {
     Console.Error.WriteLine($"輸出專案相依圖失敗：{exception.Message}");
@@ -95,7 +98,8 @@ static List<string> LoadProjectPaths(string solutionPath) {
 static Solution CreateSolution(
     AdhocWorkspace workspace,
     IEnumerable<string> projectPaths,
-    IReadOnlyDictionary<string, ProjectId> projectIds
+    IReadOnlyDictionary<string, ProjectId> projectIds,
+    List<(string ProjectName, string Include)> unresolvedReferences
 ) {
     Solution solution = workspace.CurrentSolution;
 
@@ -116,7 +120,7 @@ static Solution CreateSolution(
     }
 
     foreach (string projectPath in projectPaths) {
-        List<ProjectReference> references = LoadProjectReferences(projectPath, projectIds);
+        List<ProjectReference> references = LoadProjectReferences(projectPath, projectIds, unresolvedReferences);
         if (references.Count > 0) {
             solution = solution.AddProjectReferences(projectIds[projectPath], references);
         }
@@ -127,10 +131,12 @@ static Solution CreateSolution(
 
 static List<ProjectReference> LoadProjectReferences(
     string projectPath,
-    IReadOnlyDictionary<string, ProjectId> projectIds
+    IReadOnlyDictionary<string, ProjectId> projectIds,
+    List<(string ProjectName, string Include)> unresolvedReferences
 ) {
     string projectDirectory = Path.GetDirectoryName(projectPath) ?? Directory.GetCurrentDirectory();
     XDocument projectDocument = XDocument.Load(projectPath, LoadOptions.PreserveWhitespace);
+    Dictionary<string, string> properties = LoadSimpleProperties(projectDocument);
     List<ProjectReference> references = new();
 
     foreach (XElement referenceElement in projectDocument.Descendants()
@@ -141,23 +147,115 @@ static List<ProjectReference> LoadProjectReferences(
             continue;
         }
 
-        string referencePath = Path.GetFullPath(Path.Combine(
-            projectDirectory,
-            includeAttribute.Value.Replace('\\', Path.DirectorySeparatorChar)
-        ));
+        string originalInclude = includeAttribute.Value;
+        string[] includeItems = originalInclude.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+        foreach (string includeItem in includeItems) {
+            if (!TryExpandProjectReference(includeItem, projectDirectory, properties, out string expandedInclude)) {
+                unresolvedReferences.Add((Path.GetFileNameWithoutExtension(projectPath), includeItem));
+                continue;
+            }
 
-        if (projectIds.TryGetValue(referencePath, out ProjectId? referenceId) && referenceId is not null) {
-            references.Add(new ProjectReference(referenceId));
+            string normalizedInclude = expandedInclude.Replace('\\', '/');
+            if (normalizedInclude.IndexOfAny(new[] { '*', '?' }) >= 0) {
+                string wildcardPattern = Path.IsPathRooted(expandedInclude)
+                    ? normalizedInclude
+                    : Path.GetFullPath(Path.Combine(projectDirectory, expandedInclude)).Replace('\\', '/');
+                string escapedPattern = Regex.Escape(wildcardPattern)
+                    .Replace("\\*\\*/", "(?:.*/)?", StringComparison.Ordinal)
+                    .Replace("\\*\\*", ".*", StringComparison.Ordinal)
+                    .Replace("\\*", "[^/]*", StringComparison.Ordinal)
+                    .Replace("\\?", "[^/]", StringComparison.Ordinal);
+                Regex wildcardRegex = new(
+                    "^" + escapedPattern + "$",
+                    RegexOptions.IgnoreCase | RegexOptions.CultureInvariant
+                );
+                string[] matchedProjects = projectIds.Keys
+                    .Where(path => wildcardRegex.IsMatch(path.Replace('\\', '/')))
+                    .OrderBy(path => path, StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+                if (matchedProjects.Length == 0) {
+                    unresolvedReferences.Add((Path.GetFileNameWithoutExtension(projectPath), includeItem));
+                    continue;
+                }
+
+                foreach (string matchedProject in matchedProjects) {
+                    references.Add(new ProjectReference(projectIds[matchedProject]));
+                }
+            } else {
+                string referencePath = Path.GetFullPath(Path.Combine(
+                    projectDirectory,
+                    expandedInclude.Replace('\\', Path.DirectorySeparatorChar)
+                ));
+
+                if (projectIds.TryGetValue(referencePath, out ProjectId? referenceId) && referenceId is not null) {
+                    references.Add(new ProjectReference(referenceId));
+                } else {
+                    unresolvedReferences.Add((Path.GetFileNameWithoutExtension(projectPath), includeItem));
+                }
+            }
         }
     }
 
     return references;
 }
 
+static Dictionary<string, string> LoadSimpleProperties(XDocument projectDocument) {
+    Dictionary<string, string> properties = new(StringComparer.OrdinalIgnoreCase);
+    foreach (XElement propertyElement in projectDocument.Descendants()
+                 .Where(element => element.Parent?.Name.LocalName.Equals("PropertyGroup", StringComparison.OrdinalIgnoreCase) == true)) {
+        string value = propertyElement.Value.Trim();
+        if (value.Length > 0 && !value.Contains("$(", StringComparison.Ordinal)) {
+            properties[propertyElement.Name.LocalName] = value;
+        }
+    }
+
+    return properties;
+}
+
+static bool TryExpandProjectReference(
+    string include,
+    string projectDirectory,
+    IReadOnlyDictionary<string, string> properties,
+    out string expandedInclude
+) {
+    expandedInclude = include;
+    string projectDirectoryWithSeparator = projectDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        + Path.DirectorySeparatorChar;
+    Dictionary<string, string> builtInProperties = new(StringComparer.OrdinalIgnoreCase) {
+        ["MSBuildThisFileDirectory"] = projectDirectoryWithSeparator,
+        ["MSBuildProjectDirectory"] = projectDirectory
+    };
+
+    for (int iteration = 0; iteration < 32; iteration++) {
+        bool changed = false;
+        expandedInclude = Regex.Replace(expandedInclude, @"\$\(([^)]+)\)", match => {
+            string propertyName = match.Groups[1].Value;
+            if (builtInProperties.TryGetValue(propertyName, out string? builtInValue)) {
+                changed = true;
+                return builtInValue;
+            }
+
+            if (properties.TryGetValue(propertyName, out string? propertyValue)) {
+                changed = true;
+                return propertyValue;
+            }
+
+            return match.Value;
+        }, RegexOptions.CultureInvariant);
+
+        if (!changed) {
+            break;
+        }
+    }
+
+    return !Regex.IsMatch(expandedInclude, @"\$\([^)]+\)", RegexOptions.CultureInvariant);
+}
+
 static void WriteReport(
     string outputPath,
     string solutionPath,
-    Solution solution
+    Solution solution,
+    IReadOnlyCollection<(string ProjectName, string Include)> unresolvedReferences
 ) {
     string? outputDirectory = Path.GetDirectoryName(outputPath);
     if (!string.IsNullOrEmpty(outputDirectory)) {
@@ -213,6 +311,17 @@ static void WriteReport(
             ? "（無）"
             : string.Join(", ", referencedNames.Select(name => $"`{EscapeMarkdown(name)}`"));
         report.AppendLine($"| `{EscapeMarkdown(project.Name)}` | {referencesText} |");
+    }
+
+    if (unresolvedReferences.Count > 0) {
+        report.AppendLine();
+        report.AppendLine("## 未解析的 ProjectReference");
+        report.AppendLine();
+        foreach ((string projectName, string include) in unresolvedReferences
+                     .OrderBy(reference => reference.ProjectName, StringComparer.OrdinalIgnoreCase)
+                     .ThenBy(reference => reference.Include, StringComparer.Ordinal)) {
+            report.AppendLine($"- `{EscapeMarkdown(projectName)}`：`{EscapeMarkdown(include)}`");
+        }
     }
 
     File.WriteAllText(outputPath, report.ToString(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
