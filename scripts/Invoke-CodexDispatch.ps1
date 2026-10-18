@@ -895,7 +895,7 @@ try {
             -RequestCallerSessionIdProvided $requestCallerSessionIdProvided `
             -CliCallerSessionId ([string]$CallerSessionId) `
             -CliCallerSessionIdProvided $script:InvocationBoundParameters.Contains('CallerSessionId')
-        if ($Operation -notin @('Preflight', 'Dispatch')) {
+        if ($Operation -notin @('Preflight', 'Dispatch', 'Inspect')) {
             $null = Assert-DispatchAdmission `
                 -SourceRoot $SourceRoot `
                 -CallerIdentity $script:CallerSessionIdentity `

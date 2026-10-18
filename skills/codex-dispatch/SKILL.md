@@ -40,7 +40,7 @@ Start 將 Request 檔路徑、SHA-256 與 operation 綁定至 RunRecord。adviso
 
 RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session fingerprint 及來源名稱，不複製原始 ID。Ledger 位於 source root 的 history 目錄，所有讀取、比較與原子替換都在同一個短暫獨占鎖內執行。Start 在鎖內重做 PID identity check，啟動 Codex、寫入 PID 記錄並登記 owner，避免兩個入口同時通過檢查後重複取得名額。
 
-同一 caller Session 可同時持有一個 write admission 與最多兩個 readonly admission。Worktree write 期間可執行同線 readonly 派遣。路徑衝突比對要求至少一方為 direct-write 目標；與其他派遣的 direct-write 目標或 `--add-dir` 權限路徑相同或有父子路徑關係時，新的 admission 以 `DispatchAdmissionPathConflict` 拒絕。各派遣所屬線的 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>` 目錄及其子路徑，只有在該 admission 的路徑為 `--add-dir` 時才排除於衝突比對外；direct-write 即使位於該處，仍與其他派遣的 direct-write 目標或 `--add-dir` 路徑進行父子重疊比對。`--add-dir` 對 `--add-dir` 可並行。第二個 write 以 `DispatchAdmissionWriteLimit` 拒絕，第三個 readonly 以 `DispatchAdmissionReadonlyLimit` 拒絕。Ledger owner 身分無法確認時，新的 admission 與 Cleanup 皆以 `DispatchAdmissionOwnerUnknown` 拒絕。
+同一 caller Session 可同時持有一個 write admission 與最多兩個 readonly admission。Worktree write 期間可執行同線 readonly 派遣。路徑衝突比對要求至少一方為 direct-write 目標；與其他派遣的 direct-write 目標或 `--add-dir` 權限路徑相同或有父子路徑關係時，新的 admission 以 `DispatchAdmissionPathConflict` 拒絕。各派遣所屬線的 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>` 目錄及其子路徑，只有在該 admission 的路徑為 `--add-dir` 時才排除於衝突比對外；direct-write 即使位於該處，仍與其他派遣的 direct-write 目標或 `--add-dir` 路徑進行父子重疊比對。`--add-dir` 對 `--add-dir` 可並行。第二個 write 以 `DispatchAdmissionWriteLimit` 拒絕，第三個 readonly 以 `DispatchAdmissionReadonlyLimit` 拒絕。`Inspect`（含 `-WaitForCompletion`）屬回收操作，不申請新的 admission，因此不受上述名額與路徑衝突限制。`Prepare`、`Start`、`Collect -ApplyCollectedChanges` 與 `Cleanup` 照常檢查。Ledger owner 身分無法確認時，新的 admission 與 Cleanup 皆以 `DispatchAdmissionOwnerUnknown` 拒絕。
 
 `Cleanup` 以 ledger 的 caller fingerprint、line 與 dispatch 驗證 owner；提供 RunRecord 時另比對 RunRecord 的 caller fingerprint。Owner 不相符時預設以 `DispatchAdmissionOwnerMismatch` 拒絕並保留 worktree；歷史已結束派遣可依「已結束歷史派遣的 Cleanup 接手」明示例外。Workflow worktree 的 `Collect` 通過既有驗收後，可額外指定 `-ApplyCollectedChanges` 套用變更；套用前會在 source root 鎖內比對每個目標路徑的 baseline fingerprint，漂移時以 `DispatchSourceDrift` 停止並保留 worktree。Direct-write 已直接修改 source root，指定此參數時以 `DispatchCollectApplyDirectWriteNotApplicable` 拒絕。Quota monitor 更新 after snapshot 時使用相同 source root 鎖，並在鎖內完成 SHA-256 比對與 `File.Replace`。
 
@@ -877,7 +877,7 @@ Start 與 Inspect 的失敗結果帶 `reason_code`：`QuotaServiceRejected`、`R
 | 4 | 任務內容 | 含動詞與具體對象，不使用「處理 X」或「改善 Y」等無法驗收的描述 |
 | 5 | 驗收條件與 Codex 命令 | 以表格逐列提供驗收條件與第三方可執行命令；Codex 必須回報命令原文與原始輸出，包含完整 stdout、完整 stderr、exit code 與執行時間 |
 | 6 | 執行邊界 | 描述工作類型、目標物件、允許的報告與交接寫入，以及不得修改目標物件等行為限制。第 6 欄不描述 repository 排除檔案清單，隔離由 dispatch worktree 與 `--cd` 提供。「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；非唯讀派遣同樣不建立 commit，commit 由主 Agent 回收後處理。所有派遣共用三項明文寫入例外：派遣單第 7 欄的報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。角色固定報告的檔名由該角色的規則檔定義，派遣單不逐一列舉；第 6 欄不得以未列舉為由否定該寫入，否則角色規則與派遣單邊界會互相否定。需要完全不寫入任何檔案時，明文寫出「不產生任何檔案寫入」。 |
-| 7 | 產出落點 | 報告或產物的絕對路徑 |
+| 7 | 產出落點 | 報告或產物的絕對路徑。建立 dispatch worktree 的資源派遣，此欄必須是 executionRoot（dispatch worktree）內的路徑，因為執行端 sandbox 無法寫入來源樹；指向來源樹的路徑在 `Preflight` 以 `DispatchReportPathOutsideExecutionRoot` 拒絕，回收後由 `Cleanup` 同步至來源。direct-write 派遣的 executionRoot 等於 sourceRoot，不受此限 |
 | 8 | 回報必備欄位 | Codex 端回報必須逐條列出第 5 欄命令原文、完整 stdout、完整 stderr、exit code、執行時間、執行狀態與判定結果。執行狀態為已執行、受阻、未執行或已補驗四選一，執行端只可使用前三者；受阻須說明缺少的環境能力與原始錯誤。已補驗只由主 Agent 於回收補驗後填寫 |
 
 派遣單第 3 欄接受 `text` 程式碼區塊與 Markdown 條列。條列項比對前剝除 `- ` 前綴與單層成對反引號。格式錯誤時，錯誤訊息列出剝除後的路徑與原始行號。

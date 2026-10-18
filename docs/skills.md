@@ -23,7 +23,8 @@
 
 | Skill | 類型 | 讀者 | 用途 |
 | --- | --- | --- | --- |
-| `ai-context-index` | 知識型 | agent | 依 AGENTS.md 宣告探索技術棧與既有產物，呼叫宣告工具產生 AI 脈絡索引並寫入 .local/ai-context/。 |
+| `ai-context-index` | 知識型 | agent | Use when an agent needs to create or update a project AI context index from the tools declared in AGENTS.md. |
+| `ai-tool-discovery` | 知識型 | agent | Use when the agent is about to explore a project or generate AI support artifacts and needs the local tool inventory or the state and rebuild path of existing .local/ai-context artifacts. |
 | `api-smoke` | 知識型 | agent | Web API 煙霧驗證流程。當需要在修改或開發 Web API 端點後驗證 API 行為，或使用者要求呼叫 Swagger、寫腳本測試 API、進行多情境 API 測試時使用。 |
 | `apply-fact-check` | 知識型 | human | 依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md. |
 | `browser-smoke` | 知識型 | agent | 瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。 |
@@ -48,6 +49,8 @@
 | `csharp-silent-defects` | 知識型 | agent | Use when 讀取或修改 C# 程式碼，需要檢查合法且不易在開發環境顯現的執行期、時序、文化、數值、集合順序或資源陷阱時。 |
 | `csharp-style` | 知識型 | agent | C# 程式碼風格規範：縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的細則。建立全新 C# 專案，或在無既有慣例的專案新增全新檔案時套用。 |
 | `csharp-validation` | 知識型 | agent | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。 |
+| `database-comment-generator` | 知識型 | agent | Use when the user asks to build or update a source-backed database comment vocabulary, or to generate reviewable table and column comment SQL from approved terms and a SchemaExporter snapshot. |
+| `database-schema-context` | 知識型 | agent | Use when the user asks to export or inspect database schema context, use an existing offline schema snapshot, or check database schema changes with SchemaExporter. |
 | `desktop-smoke` | 知識型 | agent | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
 | `doc-editing` | 知識型 | agent | Use when 修改技術筆記、規格文件或 Markdown 文件，需要保留內容、查閱事實與維持文件結構時。 |
 | `docker` | 知識型 | agent | Dockerfile 與 Docker Compose 專案慣例：.NET 多階段建置的快取層寫法、非 root 執行、Compose Specification 檔名與相依寫法。當撰寫或檢視 Dockerfile 與 Compose 設定時自動套用。 |

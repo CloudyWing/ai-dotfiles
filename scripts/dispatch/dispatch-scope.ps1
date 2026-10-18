@@ -122,8 +122,24 @@ function Read-DispatchOrderSections {
     $content = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
     $targetMatch = [regex]::Match($content, '(?ms)^##\s+3\.\s+目標物件\s*\r?\n(?<section>.*?)(?=^##\s+4\.)')
     $taskMatch = [regex]::Match($content, '(?ms)^##\s+4\.\s+任務內容\s*\r?\n(?<section>.*?)(?=^##\s+5\.)')
+    $reportMatch = [regex]::Match($content, '(?ms)^##\s+7\.\s+產出落點\s*\r?\n(?<section>.*?)(?=^##\s+8\.|\z)')
     if (-not $targetMatch.Success -or -not $taskMatch.Success) {
         throw "派遣單缺少可解析的第 3 或第 4 欄：$Path"
+    }
+
+    $reportPath = $null
+    if ($reportMatch.Success) {
+        $reportSection = [string]$reportMatch.Groups['section'].Value
+        $reportBlockMatch = [regex]::Match($reportSection, '(?ms)^\s*```(?:text)?\s*\r?\n(?<value>[^\r\n]+)\r?\n\s*```')
+        if ($reportBlockMatch.Success) {
+            $reportPath = ([string]$reportBlockMatch.Groups['value'].Value).Trim()
+        }
+        else {
+            $reportLines = @($reportSection -split '\r?\n' | ForEach-Object { ([string]$_).Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and $_ -notmatch '^```' })
+            if ($reportLines.Count -eq 1) {
+                $reportPath = [string]$reportLines[0]
+            }
+        }
     }
 
     $targets = New-Object System.Collections.Generic.List[string]
@@ -191,6 +207,7 @@ function Read-DispatchOrderSections {
         Targets = @($targets.ToArray())
         TargetDetails = @($targetDetails.ToArray())
         TaskBody = [string]$taskMatch.Groups['section'].Value
+        ReportPath = $reportPath
     }
 }
 function Get-DispatchUnitMismatchDetails {

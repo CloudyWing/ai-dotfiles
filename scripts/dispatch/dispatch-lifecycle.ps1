@@ -286,6 +286,18 @@ function Invoke-Preflight {
         }
     }
 
+    if ($DispatchKind -eq 'resource' -and $worktreeCreated -and $null -ne $script:RequestResourceOrder) {
+        $reportPathValue = [string]$script:RequestResourceOrder.ReportPath
+        if (-not [string]::IsNullOrWhiteSpace($reportPathValue)) {
+            $resolvedReportPath = Resolve-AbsolutePath -Path $reportPathValue
+            if (-not (Test-PathWithinRoot -Path $resolvedReportPath -Root $dispatchRootPath)) {
+                $reportPathFailure = New-Object System.InvalidOperationException(('DispatchReportPathOutsideExecutionRoot：派遣單第 7 欄原始路徑={0}；executionRoot={1}。請將第 7 欄改為 executionRoot 內的路徑；完成回收後由 Cleanup 同步至來源。' -f $reportPathValue, $dispatchRootPath))
+                $reportPathFailure.Data['errorCode'] = 'DispatchReportPathOutsideExecutionRoot'
+                throw $reportPathFailure
+            }
+        }
+    }
+
     if ($null -ne $script:CallerSessionIdentity) {
         $preflightExecutionRoot = if (-not [string]::IsNullOrWhiteSpace($ExecutionRoot)) { $ExecutionRoot } else { $DispatchRoot }
         $null = Assert-DispatchAdmission `

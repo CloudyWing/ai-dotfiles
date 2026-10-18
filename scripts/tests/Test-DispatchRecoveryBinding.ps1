@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -189,7 +189,7 @@ function Copy-DispatchModulesBesideTestEntry {
         $fullScriptPath.StartsWith($scriptsRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         return
     }
-    $scriptText = [IO.File]::ReadAllText($fullScriptPath)
+    $scriptText = [IO.File]::ReadAllText($fullScriptPath, [Text.Encoding]::UTF8)
     if (-not $scriptText.Contains('dispatch\common-runtime.ps1')) {
         return
     }
@@ -226,7 +226,7 @@ function Get-ProductionFunctionText {
 
     $definitions = New-Object System.Collections.Generic.List[object]
     foreach ($productionSourcePath in $productionSourcePaths) {
-        $sourceText = [IO.File]::ReadAllText($productionSourcePath)
+        $sourceText = [IO.File]::ReadAllText($productionSourcePath, [Text.Encoding]::UTF8)
         $tokens = $null
         $parseErrors = $null
         $sourceAst = [System.Management.Automation.Language.Parser]::ParseInput($sourceText, [ref]$tokens, [ref]$parseErrors)
@@ -1843,6 +1843,9 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'BATCH1-SUPPORT') {
             $Name -match '^Phase (7|9) BATCH1-SUPPORT' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH2-INSPECT-REPORTPATH') {
+            $Name -match '^Phase 9 BATCH2 ' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'BATCH15-EVIDENCE') {
             $Name -match '^Phase 8 advisor required output gate' -or $Name -ceq 'Phase 8 advisor 最長前綴與 report partition' -or $cleanupMatch
@@ -22191,6 +22194,319 @@ if ($Phase -eq 9) {
 }
 
 if ($Phase -eq 9) {
+    function Invoke-Batch2DispatchScenario {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$CaseRoot,
+            [Parameter(Mandatory)][string]$DispatchSlug,
+            [ValidateSet('source', 'execution')][string]$ReportLocation = 'source',
+            [ValidateSet('readonly', 'write')][string]$WriteMode = 'readonly',
+            [bool]$TrackedTarget = $true
+        )
+
+        $lineRoot = Join-Path $CaseRoot '.local\ai-sessions\handoff\line-a'
+        $historyLineRoot = Join-Path $CaseRoot '.local\ai-sessions\history\line-a'
+        New-Item -ItemType Directory -Path $lineRoot, $historyLineRoot -Force | Out-Null
+        $null = [IO.File]::WriteAllText((Join-Path $lineRoot 'line.json'), '{"schema":"ai-sessions.line.v1","line-slug":"line-a"}', [Text.UTF8Encoding]::new($false))
+
+        $targetPath = Join-Path $CaseRoot 'tracked-target.txt'
+        $promptPath = Join-Path $CaseRoot 'prompt.md'
+        $requestPath = Join-Path $CaseRoot 'request.json'
+        $dispatchRoot = Join-Path $CaseRoot ('.local\ai-sessions\worktrees\' + $DispatchSlug)
+        $reportPath = if ($ReportLocation -eq 'execution') { Join-Path $dispatchRoot '.local\ai-sessions\report\dispatch-report.md' } else { Join-Path $CaseRoot 'dispatch-report.md' }
+        $receiptPath = Join-Path $historyLineRoot 'failure-receipt.json'
+        $markerPath = Join-Path $CaseRoot 'worktree-add-attempted.txt'
+        $fence = [string][char]96 + [string][char]96 + [string][char]96
+        $null = [IO.File]::WriteAllText($targetPath, 'fixture target', [Text.UTF8Encoding]::new($false))
+        $null = [IO.File]::WriteAllText($promptPath, 'fixture prompt', [Text.UTF8Encoding]::new($false))
+
+        $orderPath = Join-Path (Split-Path $lineRoot -Parent) ('dispatch-order-' + $DispatchSlug + '.md')
+        $orderLines = @('## 3. 目標物件', ($fence + 'text'), $targetPath, $fence, '## 4. 任務內容', 'Fixture dispatch.', '## 5. 驗收條件與 Codex 命令', 'Fixture acceptance.', '## 6. 執行邊界', 'Fixture boundary.', '## 7. 產出落點', '', ($fence + 'text'), $reportPath, $fence, '## 8. 回報必備欄位', 'Fixture report.')
+        $null = [IO.File]::WriteAllText($orderPath, ($orderLines -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+
+        $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'line-a'; dispatch_slug = $DispatchSlug; source_root = $CaseRoot; dispatch_root = $dispatchRoot; caller_session_id = 'batch2-caller'; write_mode = $WriteMode; dispatch_kind = 'resource'; target_path = @($targetPath); prompt_path = $promptPath; task_type = 'implement'; session_mode = 'cold-start'; unit_kind = 'resource-target'; failure_receipt_path = $receiptPath }
+        $null = [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+
+        $entryRoot = Join-Path $CaseRoot 'entry'
+        New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
+        $entryPath = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+        $entryText = [IO.File]::ReadAllText($sourcePath, [Text.Encoding]::UTF8)
+        $gitOverrides = @'
+function Resolve-CodexAccountSelection { [CmdletBinding()] param([string]$CodexHomePath,[string]$Profile) return [pscustomobject]@{ CodexHome=$CodexHomePath; Profile=$Profile } }
+function Get-ExistingGitRepositoryState { [CmdletBinding()] param([string]$SourceRoot) return [pscustomobject]@{ IsRepository=$true; TopLevel=$SourceRoot } }
+function Get-PidCheckResult { [CmdletBinding()] param([string]$SourceRoot,[string]$LineSlug,[string]$WriteMode) return [pscustomobject]@{ ActiveRecords=@(); UnconfirmedRecords=@(); Blocked=$false } }
+function Get-BlockingDispatchPidRecords { [CmdletBinding()] param([object]$PidCheckResult,[string]$DispatchSlug) return @() }
+function Assert-DispatchAdmission { [CmdletBinding()] param([string]$SourceRoot,[object]$CallerIdentity,[string]$LineSlug,[string]$DispatchSlug,[string]$WriteMode,[string[]]$TargetPath,[string[]]$AddDirectory,[string]$ExecutionRoot) return [pscustomobject]@{ allowed=$true } }
+function Get-TrackedPathState {
+    [CmdletBinding()]
+    param([string]$SourceRoot,[string[]]$TargetPath)
+    $isTracked = $false
+    if (__TRACKED_TARGET__ -and $TargetPath.Count -gt 0) {
+        $expectedPath = [IO.Path]::GetFullPath((Join-Path $SourceRoot 'tracked-target.txt'))
+        $actualPath = [IO.Path]::GetFullPath([string]$TargetPath[0])
+        $isTracked = [string]::Equals($actualPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)
+    }
+    return @([pscustomobject]@{ InputPath=$TargetPath[0]; FullPath=$TargetPath[0]; RelativePath='tracked-target.txt'; Exists=$true; TargetKind='file'; IsTracked=$isTracked; IsIgnored=$false; IsNewOutput=$false })
+}
+function Invoke-GitCommand {
+    [CmdletBinding()]
+    param([string]$WorkingDirectory,[string[]]$Arguments,[AllowNull()][string]$StandardInput,[switch]$AllowFailure)
+    if ($Arguments.Count -gt 0 -and $Arguments[0] -ceq 'rev-parse') { return [pscustomobject]@{ ExitCode=0; StdOut='0123456789abcdef0123456789abcdef01234567'; StdErr='' } }
+    if ($Arguments.Count -gt 1 -and $Arguments[0] -ceq 'worktree' -and $Arguments[1] -ceq 'add') {
+        [IO.File]::WriteAllText('__MARKER_PATH__', 'worktree add attempted', [Text.UTF8Encoding]::new($false))
+        return [pscustomobject]@{ ExitCode=1; StdOut=''; StdErr='fixture stopped before creating worktree' }
+    }
+    return [pscustomobject]@{ ExitCode=1; StdOut=''; StdErr='fixture rejected unexpected git command' }
+}
+function Invoke-Prepare { throw 'BATCH2_PREPARE_REACHED' }
+'@
+        $gitOverrides = $gitOverrides.Replace('__TRACKED_TARGET__', ([string]$TrackedTarget).ToLowerInvariant()).Replace('__MARKER_PATH__', $markerPath)
+        $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $gitOverrides
+        [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
+        $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+        $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Dispatch','-RequestPath',$requestPath) -WorkingDirectory $CaseRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
+        $result = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$run.stdout)) { try { $result = ConvertFrom-Json -InputObject ([string]$run.stdout) } catch { $result = $null } }
+        $receipt = $null
+        if (Test-Path -LiteralPath $receiptPath -PathType Leaf) { $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+        return [pscustomobject]@{ Run=$run; Result=$result; Receipt=$receipt; ReportPath=$reportPath; DispatchRoot=$dispatchRoot; MarkerPath=$markerPath; OrderPath=$orderPath }
+    }
+
+    function Invoke-Batch2PreflightScenario {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$CaseRoot,
+            [Parameter(Mandatory)][string]$DispatchSlug,
+            [Parameter(Mandatory)][ValidateSet('workflow', 'resource')][string]$DispatchKind,
+            [Parameter(Mandatory)][string]$TaskType,
+            [Parameter(Mandatory)][string]$UnitKind
+        )
+
+        $lineRoot = Join-Path $CaseRoot '.local\ai-sessions\handoff\line-a'
+        New-Item -ItemType Directory -Path $lineRoot -Force | Out-Null
+        $null = [IO.File]::WriteAllText((Join-Path $lineRoot 'line.json'), '{"schema":"ai-sessions.line.v1","line-slug":"line-a"}', [Text.UTF8Encoding]::new($false))
+        $targetPath = Join-Path $CaseRoot 'tracked-target.txt'
+        $dispatchRoot = Join-Path $CaseRoot ('.local\ai-sessions\worktrees\' + $DispatchSlug)
+        $markerPath = Join-Path $CaseRoot 'worktree-add-attempted.txt'
+        $null = [IO.File]::WriteAllText($targetPath, 'fixture target', [Text.UTF8Encoding]::new($false))
+
+        $entryRoot = Join-Path $CaseRoot 'entry'
+        New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
+        $entryPath = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+        $entryText = [IO.File]::ReadAllText($sourcePath, [Text.Encoding]::UTF8)
+        $overrides = @'
+function Apply-DispatchRequest {
+    $script:RequestContext = [pscustomobject]@{ path=$null; document=[pscustomobject]@{ operation='Dispatch' }; field_presence=[ordered]@{ caller_session_id=$true }; caller_session_id='batch2-caller' }
+    $script:RequestResourceOrder = $null
+}
+function Get-DispatchRequestEvidence { return [ordered]@{ operation=[string]$Operation; fixture=$true } }
+function Get-ExistingGitRepositoryState { [CmdletBinding()] param([string]$SourceRoot) return [pscustomobject]@{ IsRepository=$true; TopLevel=$SourceRoot } }
+function Get-PidCheckResult { [CmdletBinding()] param([string]$SourceRoot,[string]$LineSlug,[string]$WriteMode) return [pscustomobject]@{ ActiveRecords=@(); UnconfirmedRecords=@(); Blocked=$false } }
+function Get-BlockingDispatchPidRecords { [CmdletBinding()] param([object]$PidCheckResult,[string]$DispatchSlug) return @() }
+function Assert-DispatchAdmission { [CmdletBinding()] param([string]$SourceRoot,[object]$CallerIdentity,[string]$LineSlug,[string]$DispatchSlug,[string]$WriteMode,[string[]]$TargetPath,[string[]]$AddDirectory,[string]$ExecutionRoot) return [pscustomobject]@{ allowed=$true } }
+function Get-TrackedPathState { [CmdletBinding()] param([string]$SourceRoot,[string[]]$TargetPath) return @([pscustomobject]@{ InputPath=$TargetPath[0]; FullPath=$TargetPath[0]; RelativePath='tracked-target.txt'; Exists=$true; TargetKind='file'; IsTracked=$false; IsIgnored=$false; IsNewOutput=$false }) }
+function Invoke-GitCommand {
+    [CmdletBinding()]
+    param([string]$WorkingDirectory,[string[]]$Arguments,[AllowNull()][string]$StandardInput,[switch]$AllowFailure)
+    if ($Arguments.Count -gt 0 -and $Arguments[0] -ceq 'rev-parse') { return [pscustomobject]@{ ExitCode=0; StdOut='0123456789abcdef0123456789abcdef01234567'; StdErr='' } }
+    if ($Arguments.Count -gt 1 -and $Arguments[0] -ceq 'worktree' -and $Arguments[1] -ceq 'add') {
+        [IO.File]::WriteAllText('__MARKER_PATH__', 'worktree add attempted', [Text.UTF8Encoding]::new($false))
+        return [pscustomobject]@{ ExitCode=1; StdOut=''; StdErr='fixture stopped before creating worktree' }
+    }
+    return [pscustomobject]@{ ExitCode=1; StdOut=''; StdErr='fixture rejected unexpected git command' }
+}
+'@
+        $overrides = $overrides.Replace('__MARKER_PATH__', $markerPath)
+        $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $overrides
+        [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
+        $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+        $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Preflight','-SourceRoot',$CaseRoot,'-DispatchRoot',$dispatchRoot,'-LineSlug','line-a','-DispatchSlug',$DispatchSlug,'-CallerSessionId','batch2-caller','-WriteMode','readonly','-TargetPath',$targetPath,'-DispatchKind',$DispatchKind,'-TaskType',$TaskType,'-UnitKind',$UnitKind) -WorkingDirectory $CaseRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
+        $orderPath = Join-Path $CaseRoot ('.local\ai-sessions\handoff\dispatch-order-' + $DispatchSlug + '.md')
+        return [pscustomobject]@{ Run=$run; MarkerPath=$markerPath; OrderPath=$orderPath }
+    }
+
+    Invoke-Case 'Phase 9 BATCH2 Inspect bypasses two readonly admissions and keeps caller fingerprint' {
+        $entryRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'b2')
+        New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
+        try {
+            $entryPath = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+            $entryText = [IO.File]::ReadAllText($sourcePath, [Text.Encoding]::UTF8)
+            $override = @'
+function Apply-DispatchRequest {
+    $script:RequestContext = [pscustomobject]@{ path = $null; document = [pscustomobject]@{ operation = [string]$Operation }; field_presence = [ordered]@{ caller_session_id = $true }; caller_session_id = 'batch2-caller' }
+}
+function Get-DispatchRequestEvidence { return [ordered]@{ operation = [string]$Operation; fixture = $true } }
+function Assert-DispatchAdmission {
+    [CmdletBinding()]
+    param([string]$SourceRoot,[object]$CallerIdentity,[string]$LineSlug,[string]$DispatchSlug,[string]$WriteMode,[string[]]$TargetPath,[string[]]$AddDirectory,[string]$ExecutionRoot)
+    $entries = @(
+        [pscustomobject]@{ state='active'; caller_session_fingerprint=[string]$CallerIdentity.Fingerprint; write_mode='readonly'; dispatch_slug='held-one'; line_slug=$LineSlug; write_paths=@() },
+        [pscustomobject]@{ state='active'; caller_session_fingerprint=[string]$CallerIdentity.Fingerprint; write_mode='readonly'; dispatch_slug='held-two'; line_slug=$LineSlug; write_paths=@() }
+    )
+    $ledger = [pscustomobject]@{ Path=(Join-Path $SourceRoot '.local\ai-sessions\history\dispatch-admission-ledger.json'); Document=[pscustomobject]@{ entries=$entries } }
+    Assert-DispatchAdmissionAllowed -Ledger $ledger -CallerSessionFingerprint ([string]$CallerIdentity.Fingerprint) -LineSlug $LineSlug -DispatchSlug $DispatchSlug -WriteMode $WriteMode -WritePaths @()
+}
+function Invoke-Inspect { return [ordered]@{ operation='Inspect'; status='inspected'; success=$true; fixture_invoked=$true } }
+'@
+            $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $override
+            [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
+            $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+            $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Inspect','-SourceRoot',$entryRoot,'-LineSlug','line-a','-DispatchSlug','batch2-inspect') -WorkingDirectory $entryRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
+            Write-Phase9Evidence -Label 'BATCH2_INSPECT_ADMISSION_PRE_FIXTURE' -Value ([ordered]@{ command=$run.command; exit_code=$run.exit_code; stdout=$run.stdout; stderr=$run.stderr })
+            Assert-True ($run.exit_code -eq 0) ('Inspect 在兩筆 readonly admission 下未通過：' + [string]$run.stdout + [string]$run.stderr)
+            $result = ConvertFrom-Json -InputObject ([string]$run.stdout)
+            Assert-True ([bool]$result.fixture_invoked -and -not [string]::IsNullOrWhiteSpace([string]$result.caller_session_fingerprint)) ('Inspect 未呼叫 fixture 或未輸出 caller_session_fingerprint：' + [string]$run.stdout + [string]$run.stderr)
+        }
+        finally {
+            if (Test-PathWithinRoot -Path $entryRoot -Root $fixtureRoot) { Remove-Item -LiteralPath $entryRoot -Recurse -Force }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH2 Prepare still hits readonly admission cap' {
+        $entryRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'b2')
+        New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
+        try {
+            $entryPath = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+            $entryText = [IO.File]::ReadAllText($sourcePath, [Text.Encoding]::UTF8)
+            $override = @'
+function Apply-DispatchRequest {
+    $script:RequestContext = [pscustomobject]@{ path = $null; document = [pscustomobject]@{ operation = [string]$Operation }; field_presence = [ordered]@{ caller_session_id = $true }; caller_session_id = 'batch2-caller' }
+}
+function Get-DispatchRequestEvidence { return [ordered]@{ operation = [string]$Operation; fixture = $true } }
+function Assert-DispatchAdmission {
+    [CmdletBinding()]
+    param([string]$SourceRoot,[object]$CallerIdentity,[string]$LineSlug,[string]$DispatchSlug,[string]$WriteMode,[string[]]$TargetPath,[string[]]$AddDirectory,[string]$ExecutionRoot)
+    $entries = @(
+        [pscustomobject]@{ state='active'; caller_session_fingerprint=[string]$CallerIdentity.Fingerprint; write_mode='readonly'; dispatch_slug='held-one'; line_slug=$LineSlug; write_paths=@() },
+        [pscustomobject]@{ state='active'; caller_session_fingerprint=[string]$CallerIdentity.Fingerprint; write_mode='readonly'; dispatch_slug='held-two'; line_slug=$LineSlug; write_paths=@() }
+    )
+    $ledger = [pscustomobject]@{ Path=(Join-Path $SourceRoot '.local\ai-sessions\history\dispatch-admission-ledger.json'); Document=[pscustomobject]@{ entries=$entries } }
+    Assert-DispatchAdmissionAllowed -Ledger $ledger -CallerSessionFingerprint ([string]$CallerIdentity.Fingerprint) -LineSlug $LineSlug -DispatchSlug $DispatchSlug -WriteMode $WriteMode -WritePaths @()
+}
+function Invoke-Prepare { return [ordered]@{ status='prepared'; fixture_invoked=$true } }
+'@
+            $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $override
+            [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
+            $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+            $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Prepare','-SourceRoot',$entryRoot,'-LineSlug','line-a','-DispatchSlug','batch2-prepare') -WorkingDirectory $entryRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
+            Write-Phase9Evidence -Label 'BATCH2_PREPARE_READONLY_ADMISSION_CAP' -Value ([ordered]@{ command=$run.command; exit_code=$run.exit_code; stdout=$run.stdout; stderr=$run.stderr })
+            Assert-True ($run.exit_code -eq 1 -and [string]$run.stderr -match 'DispatchAdmissionReadonlyLimit') ('Prepare 未在兩筆 readonly admission 下維持既有上限：' + [string]$run.stdout + [string]$run.stderr)
+        }
+        finally {
+            if (Test-PathWithinRoot -Path $entryRoot -Root $fixtureRoot) { Remove-Item -LiteralPath $entryRoot -Recurse -Force }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH2 outside report path fails Dispatch before worktree creation with failure receipt' {
+        $caseRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'b2')
+        try {
+            $lineRoot = Join-Path $caseRoot '.local\ai-sessions\handoff\line-a'
+            $historyLineRoot = Join-Path $caseRoot '.local\ai-sessions\history\line-a'
+            New-Item -ItemType Directory -Path $lineRoot,$historyLineRoot -Force | Out-Null
+            $null = [IO.File]::WriteAllText((Join-Path $lineRoot 'line.json'), '{"schema":"ai-sessions.line.v1","line-slug":"line-a"}', [Text.UTF8Encoding]::new($false))
+            $dispatchSlug = 'batch2-report-outside'
+            $targetPath = Join-Path $caseRoot 'tracked-target.txt'
+            $promptPath = Join-Path $caseRoot 'prompt.md'
+            $requestPath = Join-Path $caseRoot 'request.json'
+            $dispatchRoot = Join-Path $caseRoot ('.local\ai-sessions\worktrees\' + $dispatchSlug)
+            $reportPath = Join-Path $caseRoot 'dispatch-report.md'
+            $receiptPath = Join-Path $historyLineRoot 'failure-receipt.json'
+            $markerPath = Join-Path $caseRoot 'worktree-add-attempted.txt'
+            $fence = [string][char]96 + [string][char]96 + [string][char]96
+            $null = [IO.File]::WriteAllText($targetPath, 'fixture target', [Text.UTF8Encoding]::new($false))
+            $null = [IO.File]::WriteAllText($promptPath, 'fixture prompt', [Text.UTF8Encoding]::new($false))
+            $orderPath = Join-Path (Split-Path $lineRoot -Parent) ('dispatch-order-' + $dispatchSlug + '.md')
+            $orderLines = @('## 3. 目標物件',($fence + 'text'),$targetPath,$fence,'## 4. 任務內容','Fixture dispatch.','## 5. 驗收條件與 Codex 命令','Fixture acceptance.','## 6. 執行邊界','Fixture boundary.','## 7. 產出落點','',($fence + 'text'),$reportPath,$fence,'## 8. 回報必備欄位','Fixture report.')
+            $null = [IO.File]::WriteAllText($orderPath, ($orderLines -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
+            $request = [ordered]@{ schema='ai-sessions.dispatch-request.v1'; operation='Dispatch'; line_slug='line-a'; dispatch_slug=$dispatchSlug; source_root=$caseRoot; dispatch_root=$dispatchRoot; caller_session_id='batch2-caller'; write_mode='readonly'; dispatch_kind='resource'; target_path=@($targetPath); prompt_path=$promptPath; task_type='implement'; session_mode='cold-start'; unit_kind='resource-target'; failure_receipt_path=$receiptPath }
+            $null = [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
+            $entryRoot = Join-Path $caseRoot 'entry'
+            New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
+            $entryPath = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+            $entryText = [IO.File]::ReadAllText($sourcePath, [Text.Encoding]::UTF8)
+            $gitOverrides = @'
+function Resolve-CodexAccountSelection { [CmdletBinding()] param([string]$CodexHomePath,[string]$Profile) return [pscustomobject]@{ CodexHome=$CodexHomePath; Profile=$Profile } }
+function Get-ExistingGitRepositoryState { [CmdletBinding()] param([string]$SourceRoot) return [pscustomobject]@{ IsRepository=$true; TopLevel=$SourceRoot } }
+function Get-PidCheckResult { [CmdletBinding()] param([string]$SourceRoot,[string]$LineSlug,[string]$WriteMode) return [pscustomobject]@{ ActiveRecords=@(); UnconfirmedRecords=@(); Blocked=$false } }
+function Get-BlockingDispatchPidRecords { [CmdletBinding()] param([object]$PidCheckResult,[string]$DispatchSlug) return @() }
+function Assert-DispatchAdmission { [CmdletBinding()] param([string]$SourceRoot,[object]$CallerIdentity,[string]$LineSlug,[string]$DispatchSlug,[string]$WriteMode,[string[]]$TargetPath,[string[]]$AddDirectory,[string]$ExecutionRoot) return [pscustomobject]@{ allowed=$true } }
+function Get-TrackedPathState { [CmdletBinding()] param([string]$SourceRoot,[string[]]$TargetPath); $expectedPath=[IO.Path]::GetFullPath((Join-Path $SourceRoot 'tracked-target.txt')); $actualPath=[IO.Path]::GetFullPath([string]$TargetPath[0]); $isTracked=[string]::Equals($actualPath,$expectedPath,[StringComparison]::OrdinalIgnoreCase); return @([pscustomobject]@{ InputPath=$TargetPath[0]; FullPath=$TargetPath[0]; RelativePath='tracked-target.txt'; Exists=$true; TargetKind='file'; IsTracked=$isTracked; IsIgnored=$false; IsNewOutput=$false }) }
+function Invoke-GitCommand {
+    [CmdletBinding()]
+    param([string]$WorkingDirectory,[string[]]$Arguments,[AllowNull()][string]$StandardInput,[switch]$AllowFailure)
+    if ($Arguments.Count -gt 0 -and $Arguments[0] -ceq 'rev-parse') { return [pscustomobject]@{ ExitCode=0; StdOut='0123456789abcdef0123456789abcdef01234567'; StdErr='' } }
+    if ($Arguments.Count -gt 1 -and $Arguments[0] -ceq 'worktree' -and $Arguments[1] -ceq 'add') {
+        [IO.File]::WriteAllText('__MARKER_PATH__','worktree add attempted',[Text.UTF8Encoding]::new($false))
+        return [pscustomobject]@{ ExitCode=1; StdOut=''; StdErr='fixture stopped before creating worktree' }
+    }
+    return [pscustomobject]@{ ExitCode=1; StdOut=''; StdErr='fixture rejected unexpected git command' }
+}
+'@
+            $gitOverrides = $gitOverrides.Replace('__MARKER_PATH__', $markerPath)
+            $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $gitOverrides
+            [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
+            $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+            $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Dispatch','-RequestPath',$requestPath) -WorkingDirectory $caseRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
+            $result = $null
+            if (-not [string]::IsNullOrWhiteSpace([string]$run.stdout)) { try { $result = ConvertFrom-Json -InputObject ([string]$run.stdout) } catch { $result = $null } }
+            $receipt = $null
+            if (Test-Path -LiteralPath $receiptPath -PathType Leaf) { $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json }
+            Write-Phase9Evidence -Label 'BATCH2_REPORTPATH_DISPATCH_OUTSIDE' -Value ([ordered]@{ command=$run.command; exit_code=$run.exit_code; stdout=$run.stdout; stderr=$run.stderr; result=$result; receipt=$receipt; report_path=$reportPath; expected_execution_root=$dispatchRoot; worktree_add_attempted=(Test-Path -LiteralPath $markerPath -PathType Leaf) })
+            Assert-True ($null -ne $result -and [string]$result.error_code -ceq 'DispatchReportPathOutsideExecutionRoot' -and -not [bool]$result.process_started -and [bool]$result.failure_receipt_saved) ('來源樹 report path 未依預期在 Dispatch failure path 拒絕：' + [string]$run.stdout + [string]$run.stderr)
+            Assert-True ($null -ne $receipt -and [string]$receipt.error_code -ceq 'DispatchReportPathOutsideExecutionRoot' -and -not [bool]$receipt.process_started) ('Dispatch failure receipt 未保存 report path 錯誤與未啟動狀態：' + [string]$run.stdout + [string]$run.stderr)
+            Assert-True ([string]$result.error -like ('*' + $reportPath + '*' + $dispatchRoot + '*') -and [string]$result.error -match 'Cleanup' -and -not (Test-Path -LiteralPath $markerPath -PathType Leaf)) ('錯誤未包含原始第 7 欄路徑、executionRoot、Cleanup 修正方式，或 worktree 建立已開始：' + [string]$run.stdout + [string]$run.stderr)
+        }
+        finally {
+            if (Test-PathWithinRoot -Path $caseRoot -Root $fixtureRoot) { Remove-Item -LiteralPath $caseRoot -Recurse -Force }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH2 worktree Dispatch accepts report path inside executionRoot' {
+        $caseRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'b2')
+        try {
+            $scenario = Invoke-Batch2DispatchScenario -CaseRoot $caseRoot -DispatchSlug 'batch2-report-inside' -ReportLocation execution -WriteMode readonly -TrackedTarget $true
+            Write-Phase9Evidence -Label 'BATCH2_REPORTPATH_INSIDE_EXECUTIONROOT' -Value ([ordered]@{ command=$scenario.Run.command; exit_code=$scenario.Run.exit_code; stdout=$scenario.Run.stdout; stderr=$scenario.Run.stderr; result=$scenario.Result; receipt=$scenario.Receipt; report_path=$scenario.ReportPath; execution_root=$scenario.DispatchRoot; worktree_add_attempted=(Test-Path -LiteralPath $scenario.MarkerPath -PathType Leaf) })
+            Assert-True ($null -ne $scenario.Result -and [string]$scenario.Result.error_code -cne 'DispatchReportPathOutsideExecutionRoot' -and (Test-Path -LiteralPath $scenario.MarkerPath -PathType Leaf)) ('executionRoot 內的第 7 欄 report path 未通過邊界檢查並到達 worktree 建立：' + [string]$scenario.Run.stdout + [string]$scenario.Run.stderr)
+            Assert-True ($null -ne $scenario.Receipt -and [string]$scenario.Receipt.error_code -cne 'DispatchReportPathOutsideExecutionRoot' -and -not [bool]$scenario.Result.process_started) 'executionRoot 內的 report path 被錯誤拒絕或 fixture 未維持未啟動狀態。'
+        }
+        finally {
+            if (Test-PathWithinRoot -Path $caseRoot -Root $fixtureRoot) { Remove-Item -LiteralPath $caseRoot -Recurse -Force }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH2 direct-write resource Dispatch accepts source-root report path' {
+        $caseRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'b2')
+        try {
+            $scenario = Invoke-Batch2DispatchScenario -CaseRoot $caseRoot -DispatchSlug 'batch2-direct-write-report' -ReportLocation source -WriteMode write -TrackedTarget $false
+            Write-Phase9Evidence -Label 'BATCH2_REPORTPATH_DIRECT_WRITE_SOURCE' -Value ([ordered]@{ command=$scenario.Run.command; exit_code=$scenario.Run.exit_code; stdout=$scenario.Run.stdout; stderr=$scenario.Run.stderr; result=$scenario.Result; receipt=$scenario.Receipt; report_path=$scenario.ReportPath; worktree_add_attempted=(Test-Path -LiteralPath $scenario.MarkerPath -PathType Leaf) })
+            $failureText = [string]$scenario.Run.stdout + [string]$scenario.Run.stderr
+            Assert-True ($null -ne $scenario.Result -and [string]$scenario.Result.error_code -cne 'DispatchReportPathOutsideExecutionRoot' -and $failureText -match 'BATCH2_PREPARE_REACHED') ('direct-write source report path 未通過 Preflight 至 Prepare：' + $failureText)
+            Assert-True (-not (Test-Path -LiteralPath $scenario.MarkerPath -PathType Leaf) -and $null -ne $scenario.Receipt) 'direct-write source report path 意外建立 worktree，或沒有留下 fixture failure receipt。'
+        }
+        finally {
+            if (Test-PathWithinRoot -Path $caseRoot -Root $fixtureRoot) { Remove-Item -LiteralPath $caseRoot -Recurse -Force }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH2 workflow and advisor preflight without standard dispatch order skips report guard' {
+        $scenarioDefinitions = @(
+            [pscustomobject]@{ Name='workflow'; DispatchKind='workflow'; TaskType='script-change'; UnitKind='workflow-phase' },
+            [pscustomobject]@{ Name='advisor-consult'; DispatchKind='resource'; TaskType='advisor-consult'; UnitKind='advisor-evidence-question' }
+        )
+        foreach ($scenarioDefinition in $scenarioDefinitions) {
+            $caseRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'b2')
+            try {
+                $scenario = Invoke-Batch2PreflightScenario -CaseRoot $caseRoot -DispatchSlug ('batch2-no-order-' + $scenarioDefinition.Name) -DispatchKind $scenarioDefinition.DispatchKind -TaskType $scenarioDefinition.TaskType -UnitKind $scenarioDefinition.UnitKind
+                $combinedOutput = [string]$scenario.Run.stdout + [string]$scenario.Run.stderr
+                Write-Phase9Evidence -Label ('BATCH2_NO_ORDER_' + $scenarioDefinition.Name.ToUpperInvariant()) -Value ([ordered]@{ command=$scenario.Run.command; exit_code=$scenario.Run.exit_code; stdout=$scenario.Run.stdout; stderr=$scenario.Run.stderr; standard_dispatch_order_exists=(Test-Path -LiteralPath $scenario.OrderPath); worktree_add_attempted=(Test-Path -LiteralPath $scenario.MarkerPath -PathType Leaf) })
+                Assert-True ($combinedOutput -notmatch 'DispatchReportPathOutsideExecutionRoot' -and -not (Test-Path -LiteralPath $scenario.OrderPath) -and (Test-Path -LiteralPath $scenario.MarkerPath -PathType Leaf)) ($scenarioDefinition.Name + ' 沒有標準派遣單時受到 report path guard 影響：' + $combinedOutput)
+            }
+            finally {
+                if (Test-PathWithinRoot -Path $caseRoot -Root $fixtureRoot) { Remove-Item -LiteralPath $caseRoot -Recurse -Force }
+            }
+        }
+    }
+
     Write-Output "TOTAL: $script:caseCount; PASS: $script:passedCount; FAIL: $script:failures; ENV-LIMITED: $script:environmentLimitedCount; BASELINE-FAILED: $script:baselineFailedCount; ISOLATED: $script:isolatedCount; FIXTURES: $fixtureRoot"
 }
 else {

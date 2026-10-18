@@ -157,7 +157,7 @@ manifest 必須與正文一致：`## Standards`、`## Standards 缺陷審查`、
 
 報告寫入前不得備份或改名任何目標物件，也不得把備份寫入 `history/`。第 7 欄報告檔若已存在，直接依派遣單覆寫該檔案；另將同一份報告內容寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md`，供同線後續 Session 的 Analyst 進行設計歧義裁決。寫入範圍限於派遣單第 7 欄報告檔、同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md` 與同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。
 
-報告寫入派遣單第 7 欄指定的絕對路徑，並將同一份報告內容寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md`。未經派遣單指定時，不建立固定報告落點，先回報契約缺少第 7 欄。兩份報告都必須含可解析的 v2 manifest，`current_judgment` 的 `evidence` 路徑使用絕對路徑，讓 Collect 能據以建立同線的 finding 狀態帳。
+報告寫入派遣單第 7 欄指定的絕對路徑，並將同一份報告內容寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md`。未經派遣單指定時，不建立固定報告落點，先回報契約缺少第 7 欄。在 dispatch worktree 執行時，第 7 欄與 `<work-root>` 都指 executionRoot（dispatch worktree）內的路徑，來源樹不可寫，回收後由 `Cleanup` 同步至來源。兩份報告都必須含可解析的 v2 manifest，`current_judgment` 的 `evidence` 路徑使用絕對路徑，讓 Collect 能據以建立同線的 finding 狀態帳。
 
 報告格式：
 ```
