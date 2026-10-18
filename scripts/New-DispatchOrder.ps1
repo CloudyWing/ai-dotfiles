@@ -37,6 +37,116 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+function Test-UnsafeSearchLineEndAnchor {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$CommandText
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $scriptAst = [System.Management.Automation.Language.Parser]::ParseInput($CommandText, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) {
+        return $false
+    }
+
+    $commandAsts = $scriptAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true)
+    foreach ($commandAst in $commandAsts) {
+        $commandName = $commandAst.GetCommandName()
+        if ([string]::IsNullOrWhiteSpace($commandName)) {
+            continue
+        }
+        $commandLeaf = [System.IO.Path]::GetFileNameWithoutExtension($commandName)
+        $isRipgrep = [string]::Equals($commandLeaf, 'rg', [System.StringComparison]::OrdinalIgnoreCase)
+        $isSelectString = [string]::Equals($commandName, 'Select-String', [System.StringComparison]::OrdinalIgnoreCase)
+        if (-not $isRipgrep -and -not $isSelectString) {
+            continue
+        }
+
+        $elements = @($commandAst.CommandElements)
+        $hasSimpleMatch = $false
+        $patterns = New-Object 'System.Collections.Generic.List[string]'
+        $positionals = New-Object 'System.Collections.Generic.List[string]'
+        for ($index = 1; $index -lt $elements.Count; $index++) {
+            $element = $elements[$index]
+            if ($element -is [System.Management.Automation.Language.CommandParameterAst]) {
+                $parameterName = [string]$element.ParameterName
+                if ($isSelectString -and [string]::Equals($parameterName, 'SimpleMatch', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $hasSimpleMatch = $true
+                    continue
+                }
+
+                $patternParameterNames = if ($isRipgrep) { @('e', 'regexp') } else { @('Pattern') }
+                if ($patternParameterNames -contains $parameterName) {
+                    $patternArgument = $null
+                    $argumentProperty = $element.PSObject.Properties['Argument']
+                    if ($null -ne $argumentProperty -and $null -ne $element.Argument) {
+                        $patternArgument = $element.Argument
+                    }
+                    elseif ($index + 1 -lt $elements.Count) {
+                        $index++
+                        $patternArgument = $elements[$index]
+                    }
+                    if ($patternArgument -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                        $patterns.Add([string]$patternArgument.Value)
+                    }
+                    elseif ($patternArgument -is [System.Management.Automation.Language.ExpandableStringExpressionAst] -and $patternArgument.NestedExpressions.Count -eq 0) {
+                        $patterns.Add([string]$patternArgument.Value)
+                    }
+                    continue
+                }
+
+                $valueParameterNames = if ($isRipgrep) {
+                    @('g', 'glob', 't', 'type', 'T', 'type-not', 'f', 'file', 'A', 'B', 'C', 'after-context', 'before-context', 'context', 'threads', 'sort', 'sortr', 'max-count', 'encoding', 'engine', 'max-depth', 'max-filesize', 'type-add')
+                }
+                else {
+                    @('Path', 'LiteralPath', 'Encoding', 'Context', 'Culture', 'Include', 'Exclude')
+                }
+                if ($valueParameterNames -contains $parameterName -and $index + 1 -lt $elements.Count -and $elements[$index + 1] -isnot [System.Management.Automation.Language.CommandParameterAst]) {
+                    $index++
+                }
+                continue
+            }
+
+            if ($element -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                $positionals.Add([string]$element.Value)
+            }
+            elseif ($element -is [System.Management.Automation.Language.ExpandableStringExpressionAst] -and $element.NestedExpressions.Count -eq 0) {
+                $positionals.Add([string]$element.Value)
+            }
+        }
+
+        if ($hasSimpleMatch) {
+            continue
+        }
+        if ($patterns.Count -eq 0 -and $positionals.Count -gt 0) {
+            $patterns.Add([string]$positionals[0])
+        }
+
+        foreach ($pattern in $patterns) {
+            if ($pattern.Length -eq 0 -or $pattern[$pattern.Length - 1] -ne '$') {
+                continue
+            }
+            $crlfSafeSuffix = [string][char]92 + 'r?$'
+            if ($pattern.EndsWith($crlfSafeSuffix, [System.StringComparison]::Ordinal)) {
+                continue
+            }
+
+            $backslashCount = 0
+            for ($patternIndex = $pattern.Length - 2; $patternIndex -ge 0 -and $pattern[$patternIndex] -eq '\'; $patternIndex--) {
+                $backslashCount++
+            }
+            if (($backslashCount % 2) -eq 0) {
+                return $true
+            }
+        }
+    }
+
+    return $false
+}
+
 function Test-NonBlank {
     [CmdletBinding()]
     param(
@@ -452,6 +562,10 @@ try {
 
         if ([string]::IsNullOrWhiteSpace($command)) {
             throw "Acceptance 第 $rowNumber 列 Command 不得為空白。"
+        }
+
+        if (Test-UnsafeSearchLineEndAnchor -CommandText $command) {
+            Throw-DispatchOrderValidationFailure -Code 'DispatchRequestInvalidValue' -Classification 'InvalidValue' -Field 'Acceptance.Command' -Message ('Acceptance 第 {0} 列命令含 CRLF 不適用的行尾 $ 錨點；請去掉 $ 或改為 \r?$。' -f $rowNumber) -Detail ([ordered]@{ index = $rowNumber - 1; remediation = '移除 $ 或改為 \r?$' })
         }
 
         if ($item.ContainsKey('Capability') -and $null -ne $item['Capability']) {

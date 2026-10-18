@@ -941,7 +941,6 @@ function Get-DispatchRequestExpectedFormat {
         'evidence_pack_path' { return 'fully-qualified path' }
         'advisor_consult_report_path' { return 'fully-qualified path' }
         'target_path' { return 'fully-qualified path' }
-        'profile' { return 'default|advisor' }
         'advisor_request_source' { return 'user-explicit' }
         'write_mode' { return 'readonly|write' }
         'dispatch_kind' { return 'workflow|resource' }

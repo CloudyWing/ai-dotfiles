@@ -22,6 +22,72 @@ function ConvertTo-FileSystemApiPath {
     return '\\?\' + $fullPath
 }
 
+function Invoke-FileReplaceWithRetry {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [object]$Source,
+
+        [AllowNull()]
+        [AllowEmptyString()]
+        [object]$Destination,
+
+        [AllowNull()]
+        [AllowEmptyString()]
+        [object]$BackupPath,
+
+        [ValidateRange(1, 6)]
+        [int]$MaxAttempts = 6
+    )
+
+    $retryDelaysMilliseconds = @(50, 100, 200, 400, 800)
+    $attempt = 0
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            $sourceApiPath = if ($null -eq $Source) { [System.Management.Automation.Language.NullString]::Value } elseif ([string]::IsNullOrEmpty([string]$Source)) { [string]$Source } else { ConvertTo-FileSystemApiPath -Path ([string]$Source) }
+            $destinationApiPath = if ($null -eq $Destination) { [System.Management.Automation.Language.NullString]::Value } elseif ([string]::IsNullOrEmpty([string]$Destination)) { [string]$Destination } else { ConvertTo-FileSystemApiPath -Path ([string]$Destination) }
+            $backupApiPath = if ($null -eq $BackupPath) { [System.Management.Automation.Language.NullString]::Value } elseif ([string]::IsNullOrEmpty([string]$BackupPath)) { [string]$BackupPath } else { ConvertTo-FileSystemApiPath -Path ([string]$BackupPath) }
+            if ($null -eq $BackupPath) {
+                [System.IO.File]::Replace($sourceApiPath, $destinationApiPath, [System.Management.Automation.Language.NullString]::Value)
+            }
+            else {
+                [System.IO.File]::Replace($sourceApiPath, $destinationApiPath, $backupApiPath)
+            }
+            return [pscustomobject]@{
+                source      = $Source
+                destination = $Destination
+                backup_path = $BackupPath
+                attempts    = $attempt
+            }
+        }
+        catch {
+            $originalException = $_.Exception
+            $replaceException = $originalException.GetBaseException()
+            $hresultHex = ([int]$replaceException.HResult).ToString('X8')
+            $isRetryableType = $replaceException -is [System.IO.IOException] -or $replaceException -is [System.UnauthorizedAccessException]
+            $isRetryableHResult = $hresultHex -in @('80070497', '80070020', '80070005')
+            if ($isRetryableType -and $isRetryableHResult -and $attempt -lt $MaxAttempts) {
+                Start-Sleep -Milliseconds $retryDelaysMilliseconds[$attempt - 1]
+                continue
+            }
+
+            $destinationForMessage = if ($null -eq $Destination) { '<null>' } elseif ([string]::IsNullOrEmpty([string]$Destination)) { '<empty>' } else { [string]$Destination }
+            $failureMessage = '{0}; destination={1}; attempts={2}' -f $replaceException.Message, $destinationForMessage, $attempt
+            if ($replaceException -is [System.IO.IOException]) {
+                $wrappedException = New-Object System.IO.IOException($failureMessage, $originalException)
+            }
+            elseif ($replaceException -is [System.UnauthorizedAccessException]) {
+                $wrappedException = New-Object System.UnauthorizedAccessException($failureMessage, $originalException)
+            }
+            else {
+                $wrappedException = New-Object System.InvalidOperationException($failureMessage, $originalException)
+            }
+            throw $wrappedException
+        }
+    }
+}
+
 function Resolve-AbsolutePath {
     param(
         [Parameter(Mandatory)]

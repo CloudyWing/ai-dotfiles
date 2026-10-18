@@ -519,7 +519,7 @@ function Preserve-CleanupFile {
                         throw ('CleanupDestinationConflict：exceptions.md 在合併期間變更：' + $destinationPath)
                     }
                     Assert-DispatchOutputPathNoReparsePoint -Root $sourceRootPath -Path $destinationPath
-                    [IO.File]::Replace((ConvertTo-FileSystemApiPath -Path $temporaryPath), (ConvertTo-FileSystemApiPath -Path $destinationPath), (ConvertTo-FileSystemApiPath -Path $backupPath))
+                    $null = Invoke-FileReplaceWithRetry -Source $temporaryPath -Destination $destinationPath -BackupPath $backupPath
                 }
                 finally {
                     if ([IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $temporaryPath))) {
@@ -550,7 +550,7 @@ function Preserve-CleanupFile {
                     throw ('CleanupDestinationConflict：固定報告在封存期間變更：' + $destinationPath)
                 }
                 if ($versionDecision.incoming_newer) {
-                    [IO.File]::Replace((ConvertTo-FileSystemApiPath -Path $temporaryPath), (ConvertTo-FileSystemApiPath -Path $destinationPath), (ConvertTo-FileSystemApiPath -Path $archivePath))
+                    $null = Invoke-FileReplaceWithRetry -Source $temporaryPath -Destination $destinationPath -BackupPath $archivePath
                     $archiveHash = $existingHash
                 }
                 else {

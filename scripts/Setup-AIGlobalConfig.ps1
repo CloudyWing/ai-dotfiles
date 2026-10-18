@@ -6,7 +6,9 @@
 # ----------------------------------------------------------------
 
 [CmdletBinding(SupportsShouldProcess)]
-param()
+param(
+    [switch]$Force
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -68,7 +70,8 @@ function Set-SymbolicLink {
     param (
         [string]$LinkPath,
         [string]$TargetPath,
-        [string]$ItemType = "SymbolicLink"
+        [string]$ItemType = "SymbolicLink",
+        [switch]$Force
     )
 
     # 來源不存在則略過，不動既有連結
@@ -89,6 +92,43 @@ function Set-SymbolicLink {
 
     if ($existing) {
         if ($existing.Attributes -match "ReparsePoint") {
+            $existingTargetValue = $null
+            if ($null -ne $existing.PSObject.Properties['Target']) {
+                $existingTargetValue = $existing.Target
+            }
+            if ($null -eq $existingTargetValue -and $null -ne $existing.PSObject.Properties['LinkTarget']) {
+                $existingTargetValue = $existing.LinkTarget
+            }
+            $existingTargetText = @($existingTargetValue) -join ''
+            $resolvedExistingTarget = $null
+            if (-not [string]::IsNullOrWhiteSpace($existingTargetText)) {
+                if ([System.IO.Path]::IsPathRooted($existingTargetText)) {
+                    $resolvedExistingTarget = [System.IO.Path]::GetFullPath($existingTargetText)
+                }
+                else {
+                    $resolvedExistingTarget = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $LinkPath) $existingTargetText))
+                }
+                $existingTargetRoot = [System.IO.Path]::GetPathRoot($resolvedExistingTarget)
+                if (-not [System.String]::Equals($resolvedExistingTarget, $existingTargetRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    $resolvedExistingTarget = $resolvedExistingTarget.TrimEnd([char[]]@([char]92, [char]47))
+                }
+            }
+            $resolvedTargetPath = [System.IO.Path]::GetFullPath($TargetPath)
+            $targetRoot = [System.IO.Path]::GetPathRoot($resolvedTargetPath)
+            if (-not [System.String]::Equals($resolvedTargetPath, $targetRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $resolvedTargetPath = $resolvedTargetPath.TrimEnd([char[]]@([char]92, [char]47))
+            }
+            if ($null -ne $resolvedExistingTarget -and [System.String]::Equals($resolvedExistingTarget, $resolvedTargetPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                Write-Host "  ✅  already-correct：$LinkPath → $resolvedTargetPath" -ForegroundColor DarkGreen
+                return
+            }
+            if (-not $Force) {
+                $displayExistingTarget = if ([string]::IsNullOrWhiteSpace($existingTargetText)) { '(無法讀取目標)' } else { $existingTargetText }
+                Write-Warning ("既有連結指向 '{0}'，預期來源為 '{1}'；略過。加上 -Force 才會取代。" -f $displayExistingTarget, $resolvedTargetPath)
+                return
+            }
+            $displayExistingTarget = if ([string]::IsNullOrWhiteSpace($existingTargetText)) { '(無法讀取目標)' } else { $existingTargetText }
+            Write-Host ("  ⚠️  變更前連結目標：{0} → {1}" -f $LinkPath, $displayExistingTarget) -ForegroundColor Yellow
             Remove-Item -LiteralPath $existing.FullName -Force
         }
         else {
@@ -111,11 +151,67 @@ function Set-SymbolicLink {
     }
 }
 
+function Set-GitGlobalExcludesFile {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)]
+        [string]$TargetPath,
+
+        [switch]$Force
+    )
+
+    $existingValue = (& git config --global --get core.excludesFile 2>$null | Out-String).TrimEnd()
+    $readExitCode = $LASTEXITCODE
+    if ($readExitCode -gt 1) {
+        throw "讀取 core.excludesFile 失敗，結束碼：$readExitCode"
+    }
+    if ($readExitCode -eq 1) {
+        $existingValue = ''
+    }
+
+    $resolvedTargetPath = [System.IO.Path]::GetFullPath($TargetPath)
+    $sameTarget = [string]::IsNullOrWhiteSpace($existingValue)
+    if (-not $sameTarget) {
+        try {
+            $resolvedExistingValue = [System.IO.Path]::GetFullPath($existingValue)
+            $sameTarget = [System.String]::Equals($resolvedExistingValue, $resolvedTargetPath, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        catch {
+            $sameTarget = $false
+        }
+    }
+
+    if (-not $sameTarget -and -not $Force) {
+        Write-Warning ("core.excludesFile 已設定為 '{0}'；略過設定。加上 -Force 才會覆寫。" -f $existingValue)
+        return
+    }
+    if (-not $sameTarget) {
+        Write-Host ("core.excludesFile 變更前值：{0}" -f $existingValue) -ForegroundColor Yellow
+    }
+
+    if (-not $PSCmdlet.ShouldProcess($resolvedTargetPath, '設定 core.excludesFile')) {
+        return
+    }
+    & git config --global core.excludesFile $resolvedTargetPath
+    if ($LASTEXITCODE -ne 0) {
+        throw "設定 core.excludesFile 失敗，結束碼：$LASTEXITCODE"
+    }
+
+    $configuredValue = (& git config --global --get core.excludesFile 2>$null | Out-String).TrimEnd()
+    if ($LASTEXITCODE -ne 0) {
+        throw "讀取 core.excludesFile 失敗，結束碼：$LASTEXITCODE"
+    }
+    if (-not [System.String]::Equals([System.IO.Path]::GetFullPath($configuredValue), $resolvedTargetPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "core.excludesFile 設定值不符，實際值：$configuredValue"
+    }
+    Write-Host "  ✅  core.excludesFile → $configuredValue" -ForegroundColor DarkGreen
+}
+
 # 7. 建立現役連結（逐條收斂）
 Write-Host "`n>>> 正在建立符號連結..." -ForegroundColor Cyan
 foreach ($entry in $desired) {
     $target = Join-Path $configRoot $entry.Source
-    Set-SymbolicLink -LinkPath $entry.Link -TargetPath $target
+    Set-SymbolicLink -LinkPath $entry.Link -TargetPath $target -Force:$Force
 }
 
 # 8. 清除斷鍊孤兒：只刪「指向 configRoot 但來源已不存在」者；仍能解析的連結保留
@@ -160,25 +256,10 @@ if ($PSCmdlet.ShouldProcess("$configRoot", "設定 core.hooksPath → .githooks"
 
 # 10. 設定機器層 Git 排除清單
 Write-Host "`n>>> 正在設定 Git 機器層排除清單..." -ForegroundColor Cyan
-if ($PSCmdlet.ShouldProcess("$gitGlobalExcludes", "設定 core.excludesFile")) {
-    git config --global core.excludesFile $gitGlobalExcludes
-    if ($LASTEXITCODE -ne 0) {
-        throw "設定 core.excludesFile 失敗，結束碼：$LASTEXITCODE"
-    }
-    Write-Host "  ✅  core.excludesFile → $gitGlobalExcludes" -ForegroundColor DarkGreen
-}
+Set-GitGlobalExcludesFile -TargetPath $gitGlobalExcludes -Force:$Force
 
 # 11. 驗證回饋
 if ($WhatIfPreference) { return }
-
-$configuredExcludes = git config --global --get core.excludesFile
-if ($LASTEXITCODE -ne 0) {
-    throw "讀取 core.excludesFile 失敗，結束碼：$LASTEXITCODE"
-}
-if (-not [System.String]::Equals($configuredExcludes, $gitGlobalExcludes, [System.StringComparison]::OrdinalIgnoreCase)) {
-    throw "core.excludesFile 設定值不符，實際值：$configuredExcludes"
-}
-Write-Host "  ✅  已驗證 core.excludesFile → $configuredExcludes" -ForegroundColor DarkGreen
 
 Write-Host "`n>>> 設定完成！詳細連結路徑如下：" -ForegroundColor Green
 Write-Host "----------------------------------------------------------------"

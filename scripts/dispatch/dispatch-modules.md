@@ -4,7 +4,7 @@
 
 | 載入順序 | 模組 | 責任 | 主要函式 |
 | ---: | --- | --- | --- |
-| 1 | `common-runtime.ps1` | OS 判定、路徑正規化、外部程序與 Git 命令包裝、文字輸出 | `Test-IsWindowsPlatform`、`Resolve-AbsolutePath`、`Test-PathWithinRoot`、`Invoke-ExternalCommand`、`Invoke-GitCommand`、`Write-Utf8NoBom` |
+| 1 | `common-runtime.ps1` | OS 判定、路徑正規化、外部程序與 Git 命令包裝、文字輸出、File.Replace 暫時性錯誤重試 | `Test-IsWindowsPlatform`、`Invoke-FileReplaceWithRetry`、`Resolve-AbsolutePath`、`Test-PathWithinRoot`、`Invoke-ExternalCommand`、`Invoke-GitCommand`、`Write-Utf8NoBom` |
 | 2 | `git-baseline.ps1` | Git repository 狀態、carry-in、working tree snapshot、baseline 與輸出路徑守衛 | `Apply-SourceCarryIn`、`Get-DispatchFileSnapshot`、`New-DispatchBaseline`、`Read-DispatchBaseline`、`Get-DispatchIncrementalChanges`、`Resolve-DispatchBaselineBinding` |
 | 3 | `dispatch-scope.ps1` | Request 欄位驗證、單位解析、ScopePlan 與 continuation 範圍 | `Apply-DispatchRequest`、`Assert-DispatchRequestRequiredField`、`Get-DispatchDeclaredUnitList`、`New-ScopePlan`、`Get-ScopePlanFingerprint`、`Test-ContinuationScopePlan` |
 | 4 | `dispatch-evidence.ps1` | Parent options、模型證據、Profile 診斷與 evidence binding | `New-ParentOptionsModel`、`New-DispatchEvidenceBinding`、`Resolve-CodexHomeForEvidence`、`Read-ProfileModelEvidence`、`Invoke-ModelEnvironmentDiagnostic` |

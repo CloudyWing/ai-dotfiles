@@ -220,7 +220,7 @@ function Write-DispatchAdmissionLedger {
             [System.IO.File]::Move($temporaryPath, [string]$Ledger.Path)
         }
         else {
-            [System.IO.File]::Replace($temporaryPath, [string]$Ledger.Path, $backupPath)
+            $null = Invoke-FileReplaceWithRetry -Source $temporaryPath -Destination ([string]$Ledger.Path) -BackupPath $backupPath
             if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
                 [System.IO.File]::Delete($backupPath)
             }
@@ -1020,7 +1020,7 @@ function Invoke-DispatchSourceIntegration {
                 }
                 [System.IO.File]::WriteAllBytes($temporaryPath, [System.IO.File]::ReadAllBytes([string]$operation.dispatch_path))
                 if ($operation.expected_exists) {
-                    [System.IO.File]::Replace($temporaryPath, [string]$operation.source_path, $backupPath)
+                    $null = Invoke-FileReplaceWithRetry -Source $temporaryPath -Destination ([string]$operation.source_path) -BackupPath $backupPath
                     $applied.Add([pscustomobject]@{ operation = $operation; backup_path = $backupPath; kind = 'replace' })
                 }
                 else {
@@ -1064,7 +1064,7 @@ function Invoke-DispatchSourceIntegration {
                     }
                     'replace' {
                         if (Test-Path -LiteralPath ([string]$item.backup_path) -PathType Leaf) {
-                            [System.IO.File]::Replace([string]$item.backup_path, $sourcePath, $null)
+                            $null = Invoke-FileReplaceWithRetry -Source ([string]$item.backup_path) -Destination $sourcePath -BackupPath $null
                         }
                     }
                     'delete' {

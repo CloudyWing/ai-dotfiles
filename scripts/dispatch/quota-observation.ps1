@@ -851,7 +851,7 @@ function Update-AdvisorAfterSnapshotFromCodex {
             $temporaryPath = Resolve-DispatchOutputPath -CandidatePath $temporaryPath -SourceRoot $context.SourceRoot -ExecutionRoot $context.ExecutionRoot -TargetPath $context.TargetPath
             $pathValue = Resolve-DispatchOutputPath -CandidatePath $pathValue -SourceRoot $context.SourceRoot -ExecutionRoot $context.ExecutionRoot -TargetPath $context.TargetPath
             $backupPath = Resolve-DispatchOutputPath -CandidatePath $backupPath -SourceRoot $context.SourceRoot -ExecutionRoot $context.ExecutionRoot -TargetPath $context.TargetPath
-            [System.IO.File]::Replace((ConvertTo-FileSystemApiPath -Path $temporaryPath), (ConvertTo-FileSystemApiPath -Path $pathValue), (ConvertTo-FileSystemApiPath -Path $backupPath))
+            $null = Invoke-FileReplaceWithRetry -Source $temporaryPath -Destination $pathValue -BackupPath $backupPath
         }
         finally {
             Close-DispatchAdmissionLock -Lock $admissionLock

@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH1-REPLACE', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1840,6 +1840,12 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'BATCH1B') {
             $Name -match '^Phase (1|4|5) Batch 1b' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH1-SUPPORT') {
+            $Name -match '^Phase (7|9) BATCH1-SUPPORT' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH1-REPLACE') {
+            $Name -match '^Phase 9 BATCH1-REPLACE' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'C16-MOVE4') {
             $Name -match '^Phase 1 Batch 1b' -or $Name -match '^Phase 4 T01[567] ' -or $Name -match '^Phase 5 (Collect parser|summary |report |T021 |F-002 )' -or $Name -match '^Phase 6 .*Prepare' -or $Name -match '^Phase 9 (F-007 (stage binding|reverse wrong-root binding)|F-009 |T042 |batch3g )' -or $cleanupMatch
@@ -6586,7 +6592,7 @@ if ($Phase -ge 5) {
         $requestValidationCases = @(
             [pscustomobject]@{ name = 'selected-requirement'; field = 'selected_requirement'; value = 'selected-requirement-secret'; expectedFormat = '#<positive integer>[,#<positive integer>...]' }
             [pscustomobject]@{ name = 'failure-receipt-path'; field = 'failure_receipt_path'; value = 'failure-receipt-secret'; expectedFormat = 'fully-qualified path' }
-            [pscustomobject]@{ name = 'profile'; field = 'profile'; value = 'profile-secret'; expectedFormat = 'default|advisor' }
+            [pscustomobject]@{ name = 'profile'; field = 'profile'; value = 'profile-secret'; expectedFormat = 'default|advisor|intensive' }
             [pscustomobject]@{ name = 'advisor-request-source'; field = 'advisor_request_source'; value = 'advisor-source-secret'; expectedFormat = 'user-explicit' }
             [pscustomobject]@{ name = 'line-slug'; field = 'line_slug'; value = 'line_slug_secret'; expectedFormat = '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
             [pscustomobject]@{ name = 'dispatch-slug'; field = 'dispatch_slug'; value = 'dispatch_slug_secret'; expectedFormat = '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
@@ -9050,6 +9056,15 @@ $orderParameters = @{
     DispatchSlug = $dispatchSlug
     LineSlug = $lineSlug
 }
+$acceptanceCommand = switch ($CaseName) {
+    'unsafe-select-string' { "Select-String -LiteralPath 'fixture.md' -Pattern '^## 標題$'" }
+    'unsafe-rg' { "rg -n '^## 標題$' fixture.md" }
+    'safe-crlf' { "Select-String -LiteralPath 'fixture.md' -Pattern '^## 標題\r?$'" }
+    'safe-simple-match' { "Select-String -SimpleMatch -Pattern '^## 標題$' -LiteralPath 'fixture.md'" }
+    'safe-escaped-dollar' { "Select-String -Pattern '^## 標題\$' -LiteralPath 'fixture.md'" }
+    default { 'Get-Item dispatch order' }
+}
+$orderParameters.Acceptance = @(@{ Category = '新行為'; Condition = 'CRLF regex fixture'; Command = [string]$acceptanceCommand })
 if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     $orderParameters.OutputPath = $OutputPath
 }
@@ -9198,6 +9213,153 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
         $generatedContent = Get-Content -LiteralPath $expectedPath -Raw -Encoding UTF8
         Assert-True ($generatedContent.Contains('### Runtime Request 欄位對照') -and $generatedContent.Contains('`evidence_pack_path`') -and $generatedContent.Contains('`advisor_consult_report_path`')) '派遣單缺少 runtime Request 欄位轉換說明。'
         Assert-True (-not $generatedContent.Contains('驗收腳本完整內容') -and -not $generatedContent.Contains('新腳本的行數')) '第 8 節仍要求固定腳本內容或行數。'
+    }
+
+    Invoke-Case 'Phase 7 BATCH1-SUPPORT New-DispatchOrder rejects CRLF-unsafe regex anchors and accepts repairs' {
+        $crlfPath = Join-Path $phase7Root 'batch1-crlf-title.md'
+        $crlfContent = '## 標題' + [char]13 + [char]10
+        [System.IO.File]::WriteAllText($crlfPath, $crlfContent, (New-Object System.Text.UTF8Encoding($false)))
+        $crlfLine = [System.IO.File]::ReadAllText($crlfPath).TrimEnd([char]10)
+        Assert-True (-not [regex]::IsMatch($crlfLine, '^## 標題$') -and [regex]::IsMatch($crlfLine, '^## 標題\r?$')) 'CRLF fixture did not demonstrate why the optional carriage return is needed.'
+
+        foreach ($unsafeCase in @('unsafe-select-string', 'unsafe-rg')) {
+            $dispatchSlug = 'phase7-batch1-unsafe-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $run = Invoke-Phase7DispatchOrder -CaseName $unsafeCase -DispatchSlug $dispatchSlug
+            $rawError = [string]$run.stderr
+            Assert-True ($rawError.Contains('"status":"failed"') -and $rawError.Contains('"code":"DispatchRequestInvalidValue"') -and $rawError.Contains('"field":"Acceptance.Command"') -and $rawError.Contains('$') -and $rawError.Contains('\\r?$')) ('New-DispatchOrder did not reject the CRLF-unsafe regex pattern: ' + $unsafeCase + '; ' + $rawError)
+        }
+
+        foreach ($safeCase in @('safe-crlf', 'safe-simple-match', 'safe-escaped-dollar')) {
+            $dispatchSlug = 'phase7-batch1-safe-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+            $run = Invoke-Phase7DispatchOrder -CaseName $safeCase -DispatchSlug $dispatchSlug
+            Assert-True ($run.exit_code -eq 0) ('New-DispatchOrder rejected a safe pattern: ' + $safeCase + '; ' + [string]$run.stderr)
+        }
+    }
+
+    Invoke-Case 'Phase 7 BATCH1-SUPPORT Setup protects links and core.excludesFile in temporary user config' {
+        $setupFixtureRoot = Join-Path $fixtureBaseRoot ('batch1-setup-' + [guid]::NewGuid().ToString('N'))
+        Assert-True (Test-PathWithinRoot $setupFixtureRoot $fixtureBaseRoot) 'Setup fixture escaped FixtureBaseRootPath.'
+        $null = New-Item -ItemType Directory -Path $setupFixtureRoot -Force
+        $setupPath = Join-Path $scriptsRoot 'Setup-AIGlobalConfig.ps1'
+        $setupTokens = $null
+        $setupParseErrors = $null
+        $setupAst = [System.Management.Automation.Language.Parser]::ParseFile($setupPath, [ref]$setupTokens, [ref]$setupParseErrors)
+        Assert-True (@($setupParseErrors).Count -eq 0) ('Setup-AIGlobalConfig parse failed: ' + [string]$setupParseErrors)
+        $setupFunctionAsts = @($setupAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true))
+        foreach ($functionName in @('Set-SymbolicLink', 'Set-GitGlobalExcludesFile')) {
+            $definition = @($setupFunctionAsts | Where-Object { $_.Name -ceq $functionName })
+            Assert-True ($definition.Count -eq 1) ('Setup fixture did not find exactly one function: ' + $functionName)
+            . ([scriptblock]::Create($definition[0].Extent.Text))
+        }
+
+        function Get-Batch1SetupLinkTarget {
+            param([Parameter(Mandatory)][string]$Path)
+            $item = Get-Item -LiteralPath $Path -Force
+            $targetValue = $null
+            if ($null -ne $item.PSObject.Properties['Target']) { $targetValue = $item.Target }
+            if ($null -eq $targetValue -and $null -ne $item.PSObject.Properties['LinkTarget']) { $targetValue = $item.LinkTarget }
+            $targetText = @($targetValue) -join ''
+            if ([System.IO.Path]::IsPathRooted($targetText)) {
+                $targetPath = [System.IO.Path]::GetFullPath($targetText)
+            }
+            else {
+                $targetPath = [System.IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $Path) $targetText))
+            }
+            $targetRoot = [System.IO.Path]::GetPathRoot($targetPath)
+            if (-not [System.String]::Equals($targetPath, $targetRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $targetPath = $targetPath.TrimEnd([char[]]@([char]92, [char]47))
+            }
+            return $targetPath
+        }
+
+        $previousEnvironment = @{
+            HOME = $env:HOME
+            USERPROFILE = $env:USERPROFILE
+            GIT_CONFIG_GLOBAL = $env:GIT_CONFIG_GLOBAL
+            GIT_CONFIG_NOSYSTEM = $env:GIT_CONFIG_NOSYSTEM
+        }
+        $homePath = Join-Path $setupFixtureRoot 'home'
+        $configRoot = Join-Path $homePath '.ai-agents'
+        $gitConfigPath = Join-Path $setupFixtureRoot 'gitconfig'
+        $targetOne = Join-Path $setupFixtureRoot 'source-one'
+        $targetTwo = Join-Path $setupFixtureRoot 'source-two'
+        $linksRoot = Join-Path $setupFixtureRoot 'links'
+        $createdLinkPaths = New-Object 'System.Collections.Generic.List[string]'
+        try {
+            $null = New-Item -ItemType Directory -Path $configRoot, $targetOne, $targetTwo, $linksRoot -Force
+            $env:HOME = $homePath
+            $env:USERPROFILE = $homePath
+            $env:GIT_CONFIG_GLOBAL = $gitConfigPath
+            $env:GIT_CONFIG_NOSYSTEM = '1'
+
+            $correctLink = Join-Path $linksRoot 'correct'
+            New-Phase7Junction -JunctionPath $correctLink -TargetDirectory $targetOne
+            $createdLinkPaths.Add($correctLink)
+            $correctOutput = @(& { Set-SymbolicLink -LinkPath $correctLink -TargetPath $targetOne -ItemType 'Junction' } 3>&1 6>&1)
+            $correctOutputText = ($correctOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            Assert-True ((Get-Batch1SetupLinkTarget -Path $correctLink) -ceq [System.IO.Path]::GetFullPath($targetOne) -and $correctOutputText.Contains('already-correct')) ('Correct link was not preserved and reported: ' + $correctOutputText)
+
+            $skippedLink = Join-Path $linksRoot 'skipped'
+            New-Phase7Junction -JunctionPath $skippedLink -TargetDirectory $targetOne
+            $createdLinkPaths.Add($skippedLink)
+            $skippedOutput = @(& { Set-SymbolicLink -LinkPath $skippedLink -TargetPath $targetTwo -ItemType 'Junction' } 3>&1 6>&1)
+            $skippedOutputText = ($skippedOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            Assert-True ((Get-Batch1SetupLinkTarget -Path $skippedLink) -ceq [System.IO.Path]::GetFullPath($targetOne) -and $skippedOutputText.Contains('略過')) ('Mismatched link changed without -Force: ' + $skippedOutputText)
+
+            $forcedLink = Join-Path $linksRoot 'forced'
+            New-Phase7Junction -JunctionPath $forcedLink -TargetDirectory $targetOne
+            $createdLinkPaths.Add($forcedLink)
+            $forcedOutput = @(& { Set-SymbolicLink -LinkPath $forcedLink -TargetPath $targetTwo -ItemType 'Junction' -Force } 3>&1 6>&1)
+            $forcedOutputText = ($forcedOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            Assert-True ((Get-Batch1SetupLinkTarget -Path $forcedLink) -ceq [System.IO.Path]::GetFullPath($targetTwo) -and $forcedOutputText.Contains('變更前連結目標') -and $forcedOutputText.Contains($targetOne)) ('Forced link replacement did not report its previous target: ' + $forcedOutputText)
+
+            $nonLinkPath = Join-Path $linksRoot 'existing-file'
+            [System.IO.File]::WriteAllText($nonLinkPath, 'preserve-existing-file', [System.Text.UTF8Encoding]::new($false))
+            $null = @(& { Set-SymbolicLink -LinkPath $nonLinkPath -TargetPath $targetTwo -ItemType 'Junction' -Force } 3>&1 6>&1)
+            Assert-True ([System.IO.File]::ReadAllText($nonLinkPath) -ceq 'preserve-existing-file') 'Force replaced a non-link file.'
+
+            $emptyDirectoryPath = Join-Path $linksRoot 'empty-directory'
+            $null = New-Item -ItemType Directory -Path $emptyDirectoryPath -Force
+            $null = Set-SymbolicLink -LinkPath $emptyDirectoryPath -TargetPath $targetTwo -ItemType 'Junction'
+            $createdLinkPaths.Add($emptyDirectoryPath)
+            Assert-True ((Get-Item -LiteralPath $emptyDirectoryPath -Force).Attributes -match 'ReparsePoint') 'The prior empty-directory replacement behavior changed.'
+
+            $excludesPath = Join-Path $configRoot 'git-global-excludes'
+            [System.IO.File]::WriteAllText($excludesPath, '', [System.Text.UTF8Encoding]::new($false))
+            $otherExcludesPath = Join-Path $setupFixtureRoot 'other-excludes'
+            [System.IO.File]::WriteAllText($otherExcludesPath, '', [System.Text.UTF8Encoding]::new($false))
+            $initialExcludesOutput = @(& { Set-GitGlobalExcludesFile -TargetPath $excludesPath } 3>&1 6>&1)
+            $initialExcludes = (& git config --global --get core.excludesFile | Out-String).TrimEnd()
+            Assert-True ($LASTEXITCODE -eq 0 -and [System.String]::Equals([System.IO.Path]::GetFullPath($initialExcludes), [System.IO.Path]::GetFullPath($excludesPath), [System.StringComparison]::OrdinalIgnoreCase)) ('Empty core.excludesFile was not set: ' + [string]$initialExcludes)
+
+            & git config --global core.excludesFile $otherExcludesPath
+            Assert-True ($LASTEXITCODE -eq 0) 'Temporary git config could not seed the competing core.excludesFile.'
+            $skippedExcludesOutput = @(& { Set-GitGlobalExcludesFile -TargetPath $excludesPath } 3>&1 6>&1)
+            $skippedExcludesOutputText = ($skippedExcludesOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            $skippedExcludes = (& git config --global --get core.excludesFile | Out-String).TrimEnd()
+            Assert-True ([System.String]::Equals([System.IO.Path]::GetFullPath($skippedExcludes), [System.IO.Path]::GetFullPath($otherExcludesPath), [System.StringComparison]::OrdinalIgnoreCase) -and $skippedExcludesOutputText.Contains($otherExcludesPath) -and $skippedExcludesOutputText.Contains('略過')) ('Other core.excludesFile was not preserved and reported: ' + $skippedExcludesOutputText)
+
+            $forcedExcludesOutput = @(& { Set-GitGlobalExcludesFile -TargetPath $excludesPath -Force } 3>&1 6>&1)
+            $forcedExcludesOutputText = ($forcedExcludesOutput | ForEach-Object { [string]$_ }) -join [Environment]::NewLine
+            $forcedExcludes = (& git config --global --get core.excludesFile | Out-String).TrimEnd()
+            Assert-True ([System.String]::Equals([System.IO.Path]::GetFullPath($forcedExcludes), [System.IO.Path]::GetFullPath($excludesPath), [System.StringComparison]::OrdinalIgnoreCase) -and $forcedExcludesOutputText.Contains('變更前值') -and $forcedExcludesOutputText.Contains($otherExcludesPath)) ('Forced core.excludesFile replacement did not report the old value: ' + $forcedExcludesOutputText)
+
+            $alreadySetOutput = @(& { Set-GitGlobalExcludesFile -TargetPath $excludesPath } 3>&1 6>&1)
+            Assert-True ($LASTEXITCODE -eq 0) 'An already-correct core.excludesFile setting was not accepted.'
+        }
+        finally {
+            $env:HOME = $previousEnvironment.HOME
+            $env:USERPROFILE = $previousEnvironment.USERPROFILE
+            $env:GIT_CONFIG_GLOBAL = $previousEnvironment.GIT_CONFIG_GLOBAL
+            $env:GIT_CONFIG_NOSYSTEM = $previousEnvironment.GIT_CONFIG_NOSYSTEM
+            foreach ($linkPath in @($createdLinkPaths.ToArray())) {
+                if (Test-Path -LiteralPath $linkPath) { Remove-Item -LiteralPath $linkPath -Force }
+            }
+            if ([System.IO.Directory]::Exists($setupFixtureRoot)) {
+                Assert-True (Test-PathWithinRoot ([System.IO.Path]::GetFullPath($setupFixtureRoot)) ([System.IO.Path]::GetFullPath($fixtureBaseRoot))) 'Setup fixture removal escaped FixtureBaseRootPath.'
+                Remove-Item -LiteralPath $setupFixtureRoot -Recurse -Force
+            }
+        }
     }
 
     Invoke-Case 'Phase 7 New-DispatchOrder 預設輸出固定落在 ReportPath 的最外層來源根目錄' {
@@ -15917,6 +16079,202 @@ function New-Batch3gStartInfoWithoutInputEncoding {
         Write-Phase9Evidence -Label 'S002_RESTORED_PASS' -Value $s2Restored
     }
 
+    Invoke-Case 'Phase 9 BATCH1-SUPPORT PrepareFailed writer failure preserves sanitized cause and result path' {
+        $fixtureRoot = Join-Path $fixtureBaseRoot ('batch1-prepare-' + [guid]::NewGuid().ToString('N'))
+        Assert-True (Test-PathWithinRoot $fixtureRoot $fixtureBaseRoot) 'Prepare writer fixture escaped FixtureBaseRootPath.'
+        $null = New-Item -ItemType Directory -Path $fixtureRoot -Force
+        $savedWriter = (Get-Command Write-PrepareResultDocument -CommandType Function).ScriptBlock
+        $scriptStateNames = @('SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'LineSlug', 'DispatchSlug', 'CodexHome', 'RequestContext', 'RequestPath', 'RequestPrepareArtifacts', 'CallerSessionIdentity', 'DispatchStageBinding', 'PrepareResultPath', 'ResultPath', 'PreflightResultPath', 'QuotaBeforePath', 'QuotaAfterPath', 'WriteMode', 'AddDirectory', 'TargetPath', 'batch1PrepareWriterCalls')
+        $savedScriptState = @{}
+        foreach ($name in $scriptStateNames) {
+            $variable = Get-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+            $savedScriptState[$name] = if ($null -eq $variable) { [pscustomobject]@{ exists = $false; value = $null } } else { [pscustomobject]@{ exists = $true; value = $variable.Value } }
+        }
+        try {
+            $lineManifestPath = Join-Path $fixtureRoot '.local\ai-sessions\handoff\a\line.json'
+            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $lineManifestPath) -Force
+            [IO.File]::WriteAllText($lineManifestPath, '{"schema":"ai-sessions.line.v1","line-slug":"a"}', (New-Object System.Text.UTF8Encoding($false)))
+            $script:SourceRoot = $fixtureRoot
+            $script:ExecutionRoot = $fixtureRoot
+            $script:DispatchRoot = $fixtureRoot
+            $script:LineSlug = 'a'
+            $script:DispatchSlug = 'batch1-prepare-writer'
+            $script:CodexHome = Join-Path $fixtureRoot 'codex-home'
+            $script:RequestContext = $null
+            $script:RequestPath = ''
+            $script:RequestPrepareArtifacts = @()
+            $script:CallerSessionIdentity = $null
+            $script:DispatchStageBinding = $null
+            $script:PrepareResultPath = Join-Path $fixtureRoot '.local\ai-sessions\history\a\prepare.json'
+            $script:ResultPath = ''
+            $script:PreflightResultPath = ''
+            $script:QuotaBeforePath = ''
+            $script:QuotaAfterPath = ''
+            $script:WriteMode = 'write'
+            $script:AddDirectory = @()
+            $script:TargetPath = @()
+            $script:batch1PrepareWriterCalls = 0
+            Set-Item -Path Function:Write-PrepareResultDocument -Value {
+                param([string]$Path, [object]$Document, [string]$GuardSourceRoot, [string]$GuardExecutionRoot, [string[]]$GuardTargetPath, [switch]$RequireAbsent)
+                $script:batch1PrepareWriterCalls++
+                if ($script:batch1PrepareWriterCalls -eq 1) { throw [IO.IOException]::new('Initial writer failure fixture.') }
+                $failureMessage = 'Access denied: read-only destination ' + $Path + [Environment]::NewLine + 'TOKEN=FAKE_SECRET_VALUE'
+                throw [IO.IOException]::new($failureMessage)
+            }
+            $caught = $null
+            try { $null = Invoke-Prepare } catch { $caught = $_.Exception }
+            $operationResult = if ($null -eq $caught) { $null } else { $caught.Data['operationResult'] }
+            $writerFailureMessage = if ($null -eq $operationResult) { '' } else { [string]$operationResult.prepareResultWriteFailure.message }
+            $resultJson = if ($null -eq $operationResult) { '' } else { ConvertTo-Json -InputObject $operationResult -Depth 30 -Compress }
+            Assert-True ($script:batch1PrepareWriterCalls -eq 2 -and $null -ne $operationResult) 'Prepare writer fixture did not reach the failed PrepareFailed writer.'
+            Assert-True ($operationResult.prepareResultWriteFailure.code -ceq 'PrepareResultWriteFailed' -and $operationResult.prepareResultWriteFailure.path -ceq $script:PrepareResultPath) 'PrepareFailed writer result omitted its failure code or destination path.'
+            Assert-True ($writerFailureMessage.Contains('Access denied') -and $writerFailureMessage.Contains($script:PrepareResultPath) -and -not $writerFailureMessage.Contains('FAKE_SECRET_VALUE')) ('PrepareFailed writer result omitted the cause/path or leaked a secret: ' + $writerFailureMessage)
+            Assert-True ($null -eq $operationResult.prepareResultSha256) 'PrepareFailed writer result retained a SHA-256.'
+            Assert-True (-not $resultJson.Contains('FAKE_SECRET_VALUE')) 'PrepareFailed writer result exposed the secret sentinel.'
+        }
+        finally {
+            Set-Item -Path Function:Write-PrepareResultDocument -Value $savedWriter
+            foreach ($name in $scriptStateNames) {
+                if ($savedScriptState[$name].exists) {
+                    Set-Variable -Scope Script -Name $name -Value $savedScriptState[$name].value
+                }
+                else {
+                    Remove-Variable -Scope Script -Name $name -ErrorAction SilentlyContinue
+                }
+            }
+            if ([System.IO.Directory]::Exists($fixtureRoot)) {
+                Assert-True (Test-PathWithinRoot ([System.IO.Path]::GetFullPath($fixtureRoot)) ([System.IO.Path]::GetFullPath($fixtureBaseRoot))) 'Prepare writer fixture removal escaped FixtureBaseRootPath.'
+                Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH1-REPLACE File.Replace retries transient locks and stops on other errors' {
+        $fixtureRoot = Join-Path $fixtureBaseRoot ('batch1-replace-' + [guid]::NewGuid().ToString('N'))
+        Assert-True (Test-PathWithinRoot $fixtureRoot $fixtureBaseRoot) 'File.Replace fixture escaped FixtureBaseRootPath.'
+        $null = New-Item -ItemType Directory -Path $fixtureRoot -Force
+        $lockTypeSource = @'
+using System;
+using System.IO;
+using System.Threading;
+
+public sealed class CodexBatch1FileReplaceLock : IDisposable
+{
+    private readonly string _path;
+    private readonly int _holdMilliseconds;
+    private readonly ManualResetEvent _ready = new ManualResetEvent(false);
+    private readonly Thread _thread;
+    private Exception _error;
+
+    public Exception Error
+    {
+        get { return _error; }
+    }
+
+    public CodexBatch1FileReplaceLock(string path, int holdMilliseconds)
+    {
+        _path = path;
+        _holdMilliseconds = holdMilliseconds;
+        _thread = new Thread(new ThreadStart(HoldFile));
+        _thread.IsBackground = true;
+        _thread.Start();
+        if (!_ready.WaitOne(5000))
+        {
+            throw new TimeoutException("File lock thread did not become ready.");
+        }
+        if (_error != null)
+        {
+            throw _error;
+        }
+    }
+
+    private void HoldFile()
+    {
+        try
+        {
+            using (FileStream stream = new FileStream(_path, FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                _ready.Set();
+                Thread.Sleep(_holdMilliseconds);
+            }
+        }
+        catch (Exception error)
+        {
+            _error = error;
+            _ready.Set();
+        }
+    }
+
+    public void Dispose()
+    {
+        if (_thread != null)
+        {
+            _thread.Join();
+        }
+        _ready.Dispose();
+    }
+}
+'@
+        if ($null -eq ([System.Management.Automation.PSTypeName]'CodexBatch1FileReplaceLock').Type) {
+            Add-Type -TypeDefinition $lockTypeSource -Language CSharp -ErrorAction Stop
+        }
+
+        try {
+            $successSource = Join-Path $fixtureRoot 'success-source.txt'
+            $successDestination = Join-Path $fixtureRoot 'success-destination.txt'
+            [System.IO.File]::WriteAllText($successSource, 'new content', [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllText($successDestination, 'old content', [System.Text.UTF8Encoding]::new($false))
+            $successLock = New-Object CodexBatch1FileReplaceLock($successDestination, 260)
+            try {
+                $successResult = Invoke-FileReplaceWithRetry -Source $successSource -Destination $successDestination -BackupPath $null
+                Assert-True ($successResult.attempts -gt 1 -and [System.IO.File]::ReadAllText($successDestination) -ceq 'new content') ('File.Replace did not succeed after the lock released: ' + (ConvertTo-Json $successResult -Compress))
+            }
+            finally {
+                $successLock.Dispose()
+            }
+
+            $lockedSource = Join-Path $fixtureRoot 'locked-source.txt'
+            $lockedDestination = Join-Path $fixtureRoot 'locked-destination.txt'
+            [System.IO.File]::WriteAllText($lockedSource, 'new locked content', [System.Text.UTF8Encoding]::new($false))
+            [System.IO.File]::WriteAllText($lockedDestination, 'old locked content', [System.Text.UTF8Encoding]::new($false))
+            $persistentLock = New-Object CodexBatch1FileReplaceLock($lockedDestination, 3000)
+            $lockedException = $null
+            try {
+                $null = Invoke-FileReplaceWithRetry -Source $lockedSource -Destination $lockedDestination -BackupPath $null
+            }
+            catch {
+                $lockedException = $_.Exception
+            }
+            finally {
+                $persistentLock.Dispose()
+            }
+            Assert-True ($null -ne $lockedException -and $lockedException.Message.Contains($lockedDestination) -and $lockedException.Message.Contains('attempts=6')) ('Persistent lock failure omitted destination or attempt count: ' + [string]$lockedException)
+
+            $missingSource = Join-Path $fixtureRoot 'missing-source.txt'
+            $nonRetryDestination = Join-Path $fixtureRoot 'non-retry-destination.txt'
+            [System.IO.File]::WriteAllText($nonRetryDestination, 'unchanged', [System.Text.UTF8Encoding]::new($false))
+            $nonRetryStopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $nonRetryException = $null
+            try {
+                $null = Invoke-FileReplaceWithRetry -Source $missingSource -Destination $nonRetryDestination -BackupPath $null
+            }
+            catch {
+                $nonRetryException = $_.Exception
+            }
+            finally {
+                $nonRetryStopwatch.Stop()
+            }
+            Assert-True ($null -ne $nonRetryException -and $nonRetryException.Message.Contains($nonRetryDestination) -and $nonRetryException.Message.Contains('attempts=1') -and $nonRetryStopwatch.ElapsedMilliseconds -lt 500) ('Non-temporary failure did not stop at one immediate attempt: ' + [string]$nonRetryException)
+            Assert-True ([System.IO.File]::ReadAllText($nonRetryDestination) -ceq 'unchanged') 'Non-temporary File.Replace failure changed the destination.'
+        }
+        finally {
+            if ([System.IO.Directory]::Exists($fixtureRoot)) {
+                Assert-True (Test-PathWithinRoot ([System.IO.Path]::GetFullPath($fixtureRoot)) ([System.IO.Path]::GetFullPath($fixtureBaseRoot))) 'File.Replace fixture removal escaped FixtureBaseRootPath.'
+                Remove-Item -LiteralPath $fixtureRoot -Recurse -Force
+            }
+        }
+    }
+
     Invoke-Case 'Phase 9 batch1a readonly resource derives units and prepares same-line handoff files' {
         $readonly = & $invokeSRealDispatchCase -Name 'batch1a-readonly-resource' -ScriptPath $sourcePath -DispatchKind resource -WriteMode readonly -OmitRequestedUnit -OmitPrepareArtifacts -TaskMentionsDesign -CreateQuotaBeforePath
         $script:batch1aReadonly = $readonly
@@ -19180,6 +19538,8 @@ throw 'RunRecord 事件流為空。'
                 $script:phase9AtomicContinuePath
                 '-OutcomePath'
                 $script:phase9AtomicOutcomePath
+                '-RuntimePath'
+                (Join-Path $scriptsRoot 'dispatch\common-runtime.ps1')
             )
             $workerArgumentText = ($workerArguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
             $secondProcess = New-Object System.Diagnostics.Process
@@ -19277,10 +19637,12 @@ param(
     [Parameter(Mandatory)][string]$AcquiredPath,
     [Parameter(Mandatory)][string]$ReadPath,
     [Parameter(Mandatory)][string]$ContinuePath,
-    [Parameter(Mandatory)][string]$OutcomePath
+    [Parameter(Mandatory)][string]$OutcomePath,
+    [Parameter(Mandatory)][string]$RuntimePath
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. $RuntimePath
 $utf8 = New-Object System.Text.UTF8Encoding($false)
 $normalizedResultPath = [IO.Path]::GetFullPath($ResultPath)
 if ([IO.Path]::DirectorySeparatorChar -eq '\') {
@@ -19343,7 +19705,7 @@ try {
     [IO.File]::WriteAllText($temporaryPath, (($document | ConvertTo-Json -Depth 40) + "
 "), $utf8)
     if ([IO.File]::Exists($ResultPath)) {
-        [IO.File]::Replace($temporaryPath, $ResultPath, [Management.Automation.Language.NullString]::Value)
+        $null = Invoke-FileReplaceWithRetry -Source $temporaryPath -Destination $ResultPath -BackupPath $null
     }
     else {
         [IO.File]::Move($temporaryPath, $ResultPath)

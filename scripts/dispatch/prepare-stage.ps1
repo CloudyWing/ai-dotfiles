@@ -572,7 +572,7 @@ function Write-DispatchAtomicJsonDocument {
             }
             $resolvedPath = Resolve-DispatchOutputPathFromContext -CandidatePath $resolvedPath -SourceRoot $context.SourceRoot -ExecutionRoot $context.ExecutionRoot -TargetPath $context.TargetPath
             $resolvedFileApiPath = ConvertTo-FileSystemApiPath -Path $resolvedPath
-            [System.IO.File]::Replace((ConvertTo-FileSystemApiPath -Path $temporaryPath), $resolvedFileApiPath, [System.Management.Automation.Language.NullString]::Value)
+            $null = Invoke-FileReplaceWithRetry -Source (ConvertTo-FileSystemApiPath -Path $temporaryPath) -Destination $resolvedFileApiPath -BackupPath $null
         }
         elseif ([System.IO.Directory]::Exists($resolvedFileApiPath)) {
             throw "Dispatch result 目的路徑不是檔案：$resolvedPath"
@@ -1957,9 +1957,18 @@ function Invoke-Prepare {
                 catch {
                     $resultDocument = $failureDocument
                     $resultSha256Value = $null
+                    $writerFailureMessage = [string]$_.Exception.Message
+                    $messageProtector = Get-Command -Name Protect-DispatchInspectText -CommandType Function -ErrorAction SilentlyContinue
+                    if ($null -ne $messageProtector) {
+                        $writerFailureMessage = Protect-DispatchInspectText -Text $writerFailureMessage
+                    }
+                    if ($writerFailureMessage.Trim() -match '^(?i:[A-Z0-9_]*(?:SECRET|PASSWORD|TOKEN|API_KEY|CREDENTIAL)[A-Z0-9_]*)$') {
+                        $writerFailureMessage = '[REDACTED: possible secret value]'
+                    }
                     $resultWriteFailure = [ordered]@{
-                        code = 'PrepareResultWriteFailed'
-                        path = $resultPathValue
+                        code    = 'PrepareResultWriteFailed'
+                        path    = $resultPathValue
+                        message = $writerFailureMessage
                     }
                 }
             }
