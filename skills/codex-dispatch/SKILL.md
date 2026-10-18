@@ -320,6 +320,11 @@ advisor 執行期間的額度觀測只作紀錄。監看迴圈每 250 毫秒檢�
 
 上表列出的拒絕分支都在建立任何產物前發生。`SourceRootNotGitRepository` 由 Git 基準建立步驟在 sourceRoot 不是 Git repo 時拋出；依上表分流，Preflight 不會讓非 Git 來源進入該步驟。若 `Preflight` 的 `target_path` 指向尚不存在的 dispatch worktree 內路徑，該路徑不會觸發 worktree 建立；需要建立 worktree 時，target 必須是 `sourceRoot` 內已存在且可辨識的 tracked 目標。直接寫入路徑仍須通過 sourceRoot 界線驗證。
 
+目前不支援跨 Git root 的同線交接。寫入目標在原 work-root 之外時，拆成各自 sourceRoot 的工作線，交接時引用另一線的權威文件位置；不以複製 `line.json`、`requirement-summary.md` 與設計文件的方式延續同一條線，也不另設同步或雜湊比對流程。確有無法拆線且必須共用同一線狀態的需求時，再評估是否支援。
+
+全新目錄的 Workflow 產出沒有任何 tracked target，Preflight 會拒絕。空目錄無法成為 tracked target，也不以無關檔案（例如 `.gitignore`）湊數。做法是主 Agent 先建立該工作本來就需要的最小基準檔案並 commit，Workflow 宣告的 target 實際涵蓋其中至少一個 tracked 檔案，再依現有規則建立 worktree 派工；沒有合理的基準檔案時，主 Agent 先完成必要的首版再交由 Workflow 接續。無 HEAD 的來源仍須先建立基準 commit。
+
+
 需要 worktree 時，`Preflight` 先固定 `baseSha`，再從來源取得 tracked patch 與未追蹤檔案清單。Carry-in 套用與複製時排除檔名符合 `.env`、`.env.*`、`*.pfx`、`*.pem`、`*.key`、`secrets.*` 的檔案，並將被排除的相對路徑寫入 `carryInManifest.excludedSecrets`。清單只含路徑，不含檔案內容或雜湊。若 `target_path` 本身符合上述樣式，`Preflight` 以 `PreflightSecretTargetRejected` 列出路徑並停止，不建立 worktree。其餘 carry-in 仍依原流程套用或複製，衝突時停止並保留現況，不覆寫來源檔案。
 
 `dispatchSlug` 限用小寫英數與連字號，同一個 `sourceRoot` 內不得重複。腳本以固定的 `sourceRoot\.local\ai-sessions\worktrees\<dispatchSlug>` 驗證 `dispatchRoot`，目標已存在時視為已被占用並停止，不以其他目錄代替隔離邊界。

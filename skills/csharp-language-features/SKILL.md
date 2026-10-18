@@ -13,6 +13,7 @@ policy.allow_implicit_invocation: true
 
 - **Legacy .NET Framework**：若為 .NET Framework，例如 v4.7.2，語法上限為 C# 7.3，不使用 C# 8.0 以上特性，例如 `using var`、`switch` 運算式、Records 與 Nullable Reference Types。
 - **Modern .NET**：Core、5+ 或更新版本可使用相容的現代 C# 特性。依賴注入使用傳統建構函式，不使用 Primary Constructors。
+- **明示 LangVersion**：`.csproj` 或 `Directory.Build.props` 明示 `<LangVersion>` 時，語言版本以其為準，優先於由 `<TargetFramework>` 推論的預設版本；兩者不一致時依 `<LangVersion>` 判斷可用特性。
 
 ## Async / Await
 

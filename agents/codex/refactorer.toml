@@ -35,6 +35,7 @@ developer_instructions = """
 掃描所有 `.csproj` 的 `<TargetFramework>`：
 - Legacy .NET Framework（如 `net472`）：語法上限 C# 7.3，不套用 C# 8.0+ 特性。
 - Modern .NET（`net5.0` 以上）：可用現代 C# 特性，但不使用 Primary Constructors。
+- 明示 `<LangVersion>`（`.csproj` 或 `Directory.Build.props`）時，語言版本以其為準，優先於由 `<TargetFramework>` 推論的預設版本。
 - 多專案方案：逐一判斷，不以最低版本統一套用。
 - 無法判斷時：採 Legacy 規則並告知使用者。
 
