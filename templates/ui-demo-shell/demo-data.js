@@ -29,6 +29,7 @@ window.DemoData = {
 
       // 替身每筆必填非空字串：component: 名稱、samplePath: 絕對樣本位置、
       // contractSource: 指定基準契約定位、differences: 真實元件差異。
+      // 供驗收與交接使用，外框不顯示。
       substitutes: [],
 
       interaction: {
@@ -36,9 +37,10 @@ window.DemoData = {
         allowedOperations: [],
         // 已確認的離線固定假資料，畫面複製後操作，重載重新初始化。
         fixedData: {},
-        // 每筆包含 operation 與 source，定位基準模式或使用者確認來源。
+        // 每筆包含 operation 與 source，定位基準模式或使用者確認來源。供驗收與交接使用，外框不顯示。
         patternSources: [],
-        // 尚未確認的操作或能力，只顯示，不封鎖已確認操作。
+        // 需使用者決定的事項，顯示於外框「待你確認」，不封鎖已確認操作。
+        // 每筆以一句話寫出要決定什麼，以及影響哪個畫面行為；技術驗證待辦不寫在此處。
         pendingItems: []
       },
 

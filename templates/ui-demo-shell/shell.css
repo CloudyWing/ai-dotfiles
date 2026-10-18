@@ -36,10 +36,22 @@ body {
   background: var(--shell-surface);
 }
 
+.shell-heading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .shell-title {
   margin: 0;
   font-size: 15px;
   font-weight: 600;
+}
+
+.shell-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--shell-text-muted);
 }
 
 .shell-tools {

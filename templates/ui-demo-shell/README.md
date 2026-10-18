@@ -28,14 +28,27 @@
 
 完整版將設計註記放入外框說明面板與可關閉的座標註解；精簡版放入交接資料。進入操作時關閉座標註解，關閉時移除疊層與註解清單 DOM；開啟註解時 iframe 唯讀。
 
+### 外框說明面板內容
+
+外框的讀者是需求訪談對象。說明面板固定四區：畫面用途、版面層級、待你確認、註解，不自行增設區塊。其餘資料屬驗收與交接用途，只放 `demo-data.js` 與 Prototyper 回報，外框一律不顯示。
+
+| 內容 | 去處 |
+| --- | --- |
+| 替身、樣本路徑、契約來源、模式來源、固定資料、允許操作 | `demo-data.js` 與 Prototyper 回報 |
+| 模擬限制（固定資料、不連線、不寫入） | 頁首固定一句，不逐條寫成註解 |
+| 色彩與樣式來源 | 視覺數值對照，只放 Prototyper 回報 |
+| 需使用者決定的事項 | 外框「待你確認」 |
+
+註解只寫該區塊的業務規則或使用者會看到的行為。
+
 ## 替身與有限互動
 
 先以呼叫端的 sample-path 與 baseline-path 對照元件，替身外觀取自樣本頁，操作方式與能力依元件契約。樣本無 JS 而無法重現的外觀列入差異及待確認，正式交付前由協調者釐清，不宣稱已相符。
 
-1. 逐畫面填 substitutes。每筆 component、samplePath、contractSource、differences 皆為非空字串，分別記錄替身名稱、絕對樣本路徑、指定基準的契約定位及真實元件差異。無替身填空陣列，完整版外框顯示「無替身」；精簡版交接資料明記相同結論。
-2. 填 interaction.allowedOperations，僅宣告切頁、頁籤、展開、彈窗、驗證回饋五種操作的子集。每項須有基準記錄或使用者確認來源，記於 patternSources 的 operation 與 source。未記錄能力或流程填入 pendingItems，交回協調者並停止該正式流程，不自行設計。pendingItems 只顯示，不封鎖已確認操作。
-3. 填 interaction.fixedData，使用已確認的離線固定假資料物件，以本機原生 JS 模擬必要操作；範本預設為空物件，不虛構日曆、業務紀錄或能力。allowedOperations、patternSources、pendingItems 預設空陣列。allowedOperations 為空時外框顯示「僅供檢視」，重設仍可用。
-4. 完整版外框呈現替身清單、差異、固定資料摘要、模式來源及待確認項。精簡版僅產 screens，將同一份宣告與限制放入協調者交接資料；版面層級另交 Architect，維持產品畫面與設計註記分離。
+1. 逐畫面填 substitutes。每筆 component、samplePath、contractSource、differences 皆為非空字串，分別記錄替身名稱、絕對樣本路徑、指定基準的契約定位及真實元件差異。無替身填空陣列，並在 Prototyper 回報與精簡版交接資料明記「無替身」。替身清單不顯示於外框。
+2. 填 interaction.allowedOperations，僅宣告切頁、頁籤、展開、彈窗、驗證回饋五種操作的子集。每項須有基準記錄或使用者確認來源，記於 patternSources 的 operation 與 source。未記錄的能力或流程若需使用者決定，填入 pendingItems 並交回協調者，停止該正式流程，不自行設計。pendingItems 每筆以一句話寫出要決定什麼，以及影響哪個畫面行為，並顯示於外框「待你確認」，不封鎖已確認操作。需技術驗證才能確認的事項只列入 Prototyper 回報的待確認項。
+3. 填 interaction.fixedData，使用已確認的離線固定假資料物件，以本機原生 JS 模擬必要操作；範本預設為空物件，不虛構日曆、業務紀錄或能力。allowedOperations、patternSources、pendingItems 預設空陣列。allowedOperations 為空時畫面僅供檢視，重設仍可用。
+4. 完整版外框只呈現「待你確認」，替身清單、差異、固定資料、允許操作與模式來源依「外框說明面板內容」留在 `demo-data.js` 與回報。精簡版僅產 screens，將同一份宣告與限制放入協調者交接資料；版面層級另交 Architect，維持產品畫面與設計註記分離。
 
 ### 固定資料初始化與重設
 

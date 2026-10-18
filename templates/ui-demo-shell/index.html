@@ -9,7 +9,10 @@
 <body>
   <div class="shell-root">
     <header class="shell-topbar">
-      <h1 class="shell-title" id="shellTitle">UI Demo</h1>
+      <div class="shell-heading">
+        <h1 class="shell-title" id="shellTitle">UI Demo</h1>
+        <p class="shell-note">畫面資料皆為示意用固定資料，操作僅供預覽。</p>
+      </div>
       <div class="shell-tools">
         <button type="button" class="shell-btn" id="annotationToggle" aria-pressed="false">註解模式：關</button>
         <button type="button" class="shell-btn" id="resetDemo">重設畫面</button>
@@ -50,12 +53,8 @@
           </table>
         </section>
         <section class="shell-panel-section">
-          <h2 class="shell-panel-heading">替身清單</h2>
-          <ul class="shell-annotation-list" id="substituteList"></ul>
-        </section>
-        <section class="shell-panel-section">
-          <h2 class="shell-panel-heading">互動宣告</h2>
-          <div class="shell-panel-text" id="interactionSummary"></div>
+          <h2 class="shell-panel-heading">待你確認</h2>
+          <ul class="shell-annotation-list" id="pendingList"></ul>
         </section>
         <section class="shell-panel-section" id="annotationSection">
           <h2 class="shell-panel-heading">註解</h2>

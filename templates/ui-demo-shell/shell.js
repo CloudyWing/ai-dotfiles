@@ -26,8 +26,7 @@
     panel: document.getElementById('infoPanel'),
     panelToggle: document.getElementById('panelToggle'),
     resetDemo: document.getElementById('resetDemo'),
-    substituteList: document.getElementById('substituteList'),
-    interactionSummary: document.getElementById('interactionSummary')
+    pendingList: document.getElementById('pendingList')
   };
 
   function currentScreen() {
@@ -151,8 +150,7 @@
 
   function renderPanel(screen) {
     el.summary.textContent = screen.summary || '';
-    renderSubstitutes(screen);
-    renderInteractionSummary(screen);
+    renderPendingItems(screen);
 
     clear(el.layerRows);
 
@@ -169,48 +167,24 @@
     });
   }
 
-  function renderSubstitutes(screen) {
-    clear(el.substituteList);
-    var substitutes = Array.isArray(screen.substitutes) ? screen.substitutes : [];
+  // 外框只顯示需使用者決定的待確認項；替身、樣本路徑、契約來源、模式來源與固定資料留在 demo-data.js
+  function renderPendingItems(screen) {
+    clear(el.pendingList);
+    var interaction = screen.interaction || {};
+    var pending = Array.isArray(interaction.pendingItems) ? interaction.pendingItems : [];
 
-    if (substitutes.length === 0) {
+    if (pending.length === 0) {
       var empty = document.createElement('li');
-      empty.textContent = '無替身';
-      el.substituteList.appendChild(empty);
+      empty.textContent = '無';
+      el.pendingList.appendChild(empty);
       return;
     }
 
-    substitutes.forEach(function (substitute) {
+    pending.forEach(function (text) {
       var item = document.createElement('li');
-      var fields = ['component', 'samplePath', 'contractSource', 'differences'];
-      item.textContent = fields.map(function (field) {
-        var value = substitute && substitute[field];
-        return field + '：' + (hasText(value) ? value : '資料缺漏');
-      }).join('；');
-      el.substituteList.appendChild(item);
+      item.textContent = text;
+      el.pendingList.appendChild(item);
     });
-  }
-
-  function renderInteractionSummary(screen) {
-    clear(el.interactionSummary);
-    var interaction = screen.interaction || {};
-    var operations = Array.isArray(interaction.allowedOperations) ? interaction.allowedOperations : [];
-    var sources = Array.isArray(interaction.patternSources) ? interaction.patternSources : [];
-    var pending = Array.isArray(interaction.pendingItems) ? interaction.pendingItems : [];
-
-    function append(text) {
-      var line = document.createElement('p');
-      line.textContent = text;
-      el.interactionSummary.appendChild(line);
-    }
-
-    append('允許操作：' + (operations.length ? operations.join('、') : '僅供檢視'));
-    append('固定資料：' + JSON.stringify(interaction.fixedData || {}));
-    append('模式來源：' + (sources.length ? sources.map(function (source) {
-      return (source && hasText(source.operation) ? source.operation : '資料缺漏') + '：' +
-        (source && hasText(source.source) ? source.source : '資料缺漏');
-    }).join('；') : '無'));
-    append('待確認項：' + (pending.length ? pending.join('、') : '無'));
   }
 
   // 2. 註解模式：關閉時直接移除疊層 DOM 節點，不使用隱藏樣式
