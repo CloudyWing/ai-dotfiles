@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # Database Comment Generator
 
-本 Skill 分為語彙候選整理與 SQL 產生兩階段。候選只記錄程式碼證據，不等於已核准的業務定義；只有使用者明確核准的詞條可進入 SQL 階段。
+本 Skill 分為語彙候選整理與 SQL 產生兩階段。候選只記錄程式碼證據，不等於已核准的業務定義；只有使用者明確核准的詞條可進入 SQL 階段。SQL 階段的 Agent 只負責產生註解清單，SQL 內容由 SchemaExporter 的 `comment-sql` 子命令確定性產生。
 
 ## 語彙候選與增量維護
 
@@ -50,47 +50,67 @@ EF fluent mapping 與 SQL 欄位對應須以 `rg` 找到來源後人工追蹤，
 
 ## 從核准詞條產生 SQL
 
-只有使用者明確要求產生或更新註解 SQL 時才執行此階段。SQL 是供人工覆核的檔案；產生流程不連線資料庫、不查詢 metadata、不執行 SQL，也不呼叫會執行 SQL 的工具。
+只有使用者明確要求產生或更新註解 SQL 時才執行此階段。SQL 檔是供人工覆核的檔案，由 `schemaexporter comment-sql` 離線產生。該子命令只讀取 Snapshot 與註解清單，不連線資料庫、不查詢 metadata、不執行 SQL。Agent 不自行撰寫或修改 SQL 語句，使用者檢視 SQL 檔之後自行執行。
 
-輸入必須包括指定 connection 的 Approved 詞條、`schema-context.json` 中該 connection 的資料庫類型，以及同一 connection 的完整 SchemaExporter Snapshot／Summary artifact set。只使用 Snapshot 的 `objectDescription`、`columnDescription` 與物件名稱；Snapshot 缺少本次必要欄位時才從 Summary 補足，兩者都不足就停止該筆並回報。必須以 Schema、Table、Column 精確對應，不從欄名、SQL Server default 或 Oracle default 推導物件或語意。未知或歧義的 mapping 不產生該筆 SQL。
+### 前置檢查
 
-只處理 Table 與 Column。明確略過 Draft、PendingUserConfirmation、View、Routine 與其他物件。若沒有任何 Approved 詞條，不建立或覆寫 SQL 檔；回報原因及待核准詞條數量。對每筆 Approved 詞條，先將 CRLF、CR 與 LF 統一成 LF，再使用 ordinal 比較，不 Trim 空白：
+1. 確認使用者指定的 connection 名稱。名稱的列出方式、安全名稱規則與執行檔解析順序沿用 `database-schema-context` Skill，連線字串不出現在任何命令、檔案或回報中。
+2. 以 `<exe> --help` 檢查能力。輸出不含 `comment-sql` 時停止，請使用者將 SchemaExporter 更新至 0.4.0 以上，不改以 Agent 或腳本拼 SQL。不以實際呼叫 `comment-sql` 試探版本，舊版會把未知參數交給桌面視窗，命令不會結束。
+3. 依 `database-schema-context` Skill 的「僅檢視既有文件」流程定位該 connection 的 Snapshot，路徑取自 `<ProjectRoot>/.local/ai-context/index.md` 的 Snapshot 列。Snapshot 不存在或不完整時，請使用者先以 `database-schema-context` 匯出，本階段不自行匯出。Snapshot 已過期時回報「已過期 N 天」，由使用者決定是否先刷新，因為新增段與差異段以 Snapshot 當下的註解為準。
+4. 讀取語彙表。沒有任何 Approved 詞條時，不建立或覆寫任何檔案，回報原因及待核准詞條數量。
 
-| Snapshot 現況 | 處理方式 |
-| --- | --- |
-| description 為 null 或長度為 0 | 放入 `-- New Comments`，建立註解。 |
-| description 長度大於 0，且正規化換行後只含空白字元 | 一律放入 `-- Differences`，不論它是否等於 Approved 定義；以 `-- DB existing value (whitespace-only): "<JSON-escaped value>"` 顯示完整現況。 |
-| description 非空且與 Approved 定義完全相同 | 不輸出該物件。 |
-| description 非空且與 Approved 定義不同 | 放入 `-- Differences`，並在 SQL 註解逐行列出完整 DB 既有值。 |
+### 註解清單
 
-空白字元判定不 Trim description。whitespace-only 的既有值以雙引號包住 JSON-escaped 字串，並使用 `whitespace-only` 標籤，讓空格、tab 與正規化後的換行可辨識；它不能列入 New Comments。
+Agent 依 Approved 詞條與 Snapshot 寫出註解清單 `<ProjectRoot>/.local/ai-context/database-comment-generator/<connection>/comments.json`，格式為 UTF-8 JSON 陣列，每個元素有 `schema`、`object`、`column`、`comment` 四個欄位。
 
-輸出固定為 `<ProjectRoot>/.local/ai-context/database-comment-generator/<connection>/comment-script.sql`，每次產生都包含 `-- New Comments` 與 `-- Differences` 兩段標題，即使其中一段沒有語句。依 Schema、Table、Column 的 ordinal 順序輸出，使用 UTF-8、CRLF。若所有 Approved 詞條都相同，輸出只有兩個空段標題的 no-op 檔；每筆相同值本身不產生語句。
-
-### SQL Server
-
-每個 Table／Column 以條件式 `sp_addextendedproperty` 或 `sp_updateextendedproperty` 寫入 `MS_Description`。產生 SQL 時只讀 Snapshot；下列 catalog lookup 是 SQL 檔內容，留給使用者在覆核後自行執行：
-
-- Table 以 `sys.extended_properties` 的 `class = 1`、`major_id = OBJECT_ID(...)`、`minor_id = 0` 及 `name = N'MS_Description'` 判斷既有 property。
-- Column 以 `sys.extended_properties` 和 `sys.columns` 連接 `object_id` 與實際 `column_id` 判斷；不得假設欄位序號或以 0 代表 Column。
-- 存在時呼叫 `sys.sp_updateextendedproperty`，不存在時呼叫 `sys.sp_addextendedproperty`。使用 `@level0type=N'SCHEMA'`、`@level1type=N'TABLE'`；Column 再加 `@level2type=N'COLUMN'` 與實際物件名稱。
-- SQL identifier 使用方括號並將 `]` 寫成 `]]`；`OBJECT_ID` 中的 Unicode 字串同時逸出單引號。description 使用 `N'...'` Unicode literal，單引號加倍。
-
-### Oracle
-
-使用 Oracle `COMMENT ON`，Table 與 Column 分開輸出：
-
-```sql
-COMMENT ON TABLE "<schema>"."<table>" IS '<description>';
-COMMENT ON COLUMN "<schema>"."<table>"."<column>" IS '<description>';
+```json
+[
+  { "schema": "dbo", "object": "Users", "column": "", "comment": "使用者資料表" },
+  { "schema": "dbo", "object": "Users", "column": "Name", "comment": "顯示名稱" }
+]
 ```
 
-識別字以雙引號包住並將內部 `"` 加倍；字串 literal 的單引號加倍。Oracle description 只從 Snapshot／Summary 取得；Snapshot 沒有提供的 column default 或 routine description 不作推論。本流程不輸出 View、Routine 或預設值註解。
+- `schema` 為 SQL Server 的 schema 或 Oracle 的 owner。表層註解的 `column` 填空字串。
+- 名稱使用 Snapshot 內的寫法，依 Schema、Table、Column 精確對應詞條，不從欄名推導。Schema、Table 或 Column 為「未確認」、Snapshot 找不到或有歧義的詞條不列入，並在回報列為略過。
+- 只列入 Approved 詞條，且只處理 Snapshot 中的資料表與其欄位。Draft、PendingUserConfirmation、View 與 Routine 不列入。
+- `comment` 逐字使用詞條的定義，不修剪、不改寫，也不自行縮短。`comment` 為空字串的項目會被子命令略過，不會清除資料庫現有註解。
+- 同一目標在清單中只出現一次。
 
-### 差異註解與寫檔
+### 產生與覆核
 
-`-- Differences` 中每個物件先列 Schema、Table 與 Column，再標出完整既有 description。一般差異值的每一行都加 SQL line comment prefix，避免舊值被當成可執行 SQL；不得截斷或改寫舊值。whitespace-only 現況使用單行 `-- DB existing value (whitespace-only): "<JSON-escaped value>"`，雙引號內的 JSON string 必須代表正規化換行後的完整現況。New Comments 不附不存在的既有值。新增／更新的 description 以 SQL literal 規則逸出，不能透過字串拼接把 description 當成 SQL 程式碼。
+執行下列命令。三個選項都必要，資料庫類型取自 Snapshot。
 
-先在同一 connection 目錄 nonce 暫存檔完整產生 SQL，檢查兩段標題、所有輸出物件名稱、引用規則及 Draft／PendingUserConfirmation 排除結果，再替換 `comment-script.sql`。渲染、Snapshot 解析或驗證失敗時移除暫存，保留原 SQL 檔並回報錯誤。產生後回報資料庫類型、Snapshot 路徑、核准／略過／待確認筆數、New Comments 與 Differences 語句數及 SQL 檔路徑；不得連線或執行輸出檔。
+```bash
+schemaexporter comment-sql --snapshot "<snapshot>" --comments "<comments.json>" --output "<ProjectRoot>/.local/ai-context/database-comment-generator/<connection>/comment-script.sql"
+```
 
-語法依據：[SQL Server sp_addextendedproperty](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-addextendedproperty-transact-sql?view=sql-server-2017)、[sp_updateextendedproperty](https://learn.microsoft.com/en-us/sql/relational-databases/system-stored-procedures/sp-updateextendedproperty-transact-sql?view=sql-server-ver16)、[sys.extended_properties](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/extended-properties-catalog-views-sys-extended-properties?view=sql-server-ver17)；[Oracle COMMENT](https://docs.oracle.com/en/database/oracle/oracle-database/26/sqlrf/COMMENT.html)。
+| 結束代碼 | 處理方式 |
+| --- | --- |
+| 0 | 成功。進入索引登記與回報。 |
+| 1 | 參數錯誤。依 stderr 訊息修正命令後重跑。 |
+| 2 | 輸入檔錯誤或清單有問題，stderr 為 `Comment SQL failed: ...` 並逐項列出全部問題，輸出檔不會被建立或修改。依訊息修正 `comments.json` 後重跑。名稱對不上 Snapshot 時以 Snapshot 的寫法修正。註解超過長度上限或含不允許的字元時，修正會改變已核准的定義，停止並請使用者決定。同一項目修正一次後仍失敗時停止並回報。 |
+| 3 | 未預期的錯誤。保留 stderr 並回報，不重試。 |
+
+內容有誤時修正 `comments.json` 或回到語彙表，再重新執行子命令，不手動編輯 `comment-script.sql`。
+
+輸出的 SQL 檔分成新增段與差異段。
+
+- 新增段列出 Snapshot 現有註解為空的目標。
+- 差異段列出現有註解不同的目標，每筆語句上方以 `-- existing: "..."` 附上資料庫既有值。只含空白的既有值也列入差異段，標示為 `-- existing (whitespace-only): "..."`。
+- 現有註解與清單逐字相同的目標不輸出語句，只計入檔頭的 `Unchanged` 筆數。
+- SQL Server 以 `MS_Description` 擴充屬性寫入，每筆語句在執行時檢查屬性是否存在，存在就更新，不存在就新增。Oracle 使用 `COMMENT ON`。
+- 相同的 Snapshot 與清單產生逐位元組相同的檔案。SQL Server 檔為 UTF-8 含 BOM，Oracle 檔為 UTF-8 不含 BOM，換行固定為 LF。
+
+### 索引登記與回報
+
+命令成功後，更新 `<ProjectRoot>/.local/ai-context/index.md`，依 `ai-context-index` Skill 的五欄格式為 `comment-script.sql` 登記一列。工具填 `database-comment-generator`，產物路徑相對於 ProjectRoot，重產命令填入本次實際使用的 `comment-sql` 命令，來源指紋填「不適用」，產生時間使用 UTC ISO 8601。同一產物路徑已有索引列時更新該列，不新增重複列。`index.md` 不存在時依 `ai-context-index` 的格式建立。命令失敗時不更新索引。
+
+回報下列項目。
+
+- connection 名稱、資料庫類型與 Snapshot 路徑。
+- Approved 詞條數、列入清單數、略過數（附原因）與待確認數。
+- 子命令輸出的 `Add`、`Update`、`Unchanged (skipped)` 與 `Empty comment (skipped)` 筆數。
+- `comments.json` 與 `comment-script.sql` 的路徑。
+- 子命令輸出 `Warning:` 行時轉述該警告，並提醒使用者 Snapshot 套用過遮罩，其中的現有註解可能已被取代，新增段與差異段的判定可能不準確，執行前請對照資料庫現況。
+
+回報同時提醒使用者執行方式。SQL Server 檔以 `sqlcmd -i <file>` 或 SSMS 執行。Oracle 檔以 SQL*Plus 執行，並先設定 `NLS_LANG=AMERICAN_AMERICA.AL32UTF8`，中文與 emoji 才會正確寫入。本 Skill 不執行這些命令。
