@@ -11,7 +11,7 @@ policy.allow_implicit_invocation: true
 
 ## 本機工具 Inventory
 
-工具 inventory 固定檢查 graphify、dotnet-script、SchemaExporter、rg、ast-grep、jq 與 yq。Windows 環境以 Get-Command 定位命令。命中後才執行該工具的版本探測；不要執行會產生專案產物、連線資料庫、呼叫模型或下載資料的功能命令。
+工具 inventory 固定檢查 graphify、dotnet-script、SchemaExporter、rg、ast-grep、jq 與 yq。Windows 環境以 Get-Command 定位命令。命中後依下表指定方式探測版本；SchemaExporter 只讀 executable 版本中繼資料，不執行匯出或其他功能命令。不要執行會產生專案產物、連線資料庫、呼叫模型或下載資料的命令。
 
 版本探測方式如下：
 
@@ -57,15 +57,15 @@ Inventory 回報使用固定欄位：
 
 | 工具 | 用途 | 適用時機 | 產物路徑 | 重產命令 |
 | --- | --- | --- | --- | --- |
-| graphify | 建立程式碼關聯圖。 | 需要跨檔案結構脈絡時。 | .local/ai-context/graphify/graphify-out/ | pwsh -NoProfile -File "<AiAgentsRoot>/scripts/Ensure-AiContextArtifacts.ps1" -ProjectRoot "<ProjectRoot>" -ToolName graphify |
+| graphify | 建立程式碼關聯圖；ensure 路徑不需要 LLM 金鑰。doc／paper／image 的語意抽取需另行以 `graphify extract` 搭配使用者提供的金鑰執行，不在本線範圍。 | 需要跨檔案結構脈絡時。 | .local/ai-context/graphify/graphify-out/ | pwsh -NoProfile -File '<AiAgentsRoot>/scripts/Ensure-AiContextArtifacts.ps1' -ProjectRoot '<ProjectRoot>' -ToolName graphify |
 | dotnet-script | 執行 repo 內既有 Roslyn C# Script 分析。 | 需要公開 API、型別繼承或專案參考圖時。 | .local/ai-context/api-surface.md、type-hierarchy.md、project-graph.md | Ensure-AiContextArtifacts.ps1，分別指定 Export-ApiSurface、Export-TypeHierarchy 或 Export-ProjectGraph。 |
-| SchemaExporter | 匯出資料庫 Schema Summary 與 Snapshot。 | 需要查詢 Schema、資料庫註解或離線比對時。 | .local/ai-context/schemaexporter/<connection>/ | Direct export 命令只可使用 --connection-string-env <ENV_NAME> 或 --connection-string-stdin；列出安全命令範本，不填任何連線字串值。 |
+| SchemaExporter | 以已設定的 named connection 匯出資料庫 Schema Summary 與 Snapshot。 | 需要查詢 Schema、資料庫註解或離線比對時。 | .local/ai-context/schemaexporter/<connection>/ | `schemaexporter export --connection <name> --output <temporary-directory> --schema-summary --snapshot --no-timestamp --no-open-output-folder` |
 | rg | 以文字與 regular expression 搜尋來源。 | 定位名稱、設定與 SQL／EF mapping 時。 | 不適用 | 不適用 |
 | ast-grep | 以 AST pattern 搜尋程式結構。 | 語法形狀穩定且需要避免文字誤比對時。 | 不適用 | 不適用 |
 | jq | 查詢與轉換 JSON。 | 檢查 Snapshot 欄位或篩選 JSON 時。 | 不適用 | 不適用 |
 | yq | 查詢與轉換 YAML，也可處理 JSON。 | 檢查專案 YAML 設定或資料時。 | 不適用 | 不適用 |
 
-Inventory 實際輸出需合併以上用途與探測結果。沒有產物的工具，產物路徑與重產命令填「不適用」。SchemaExporter 的重產命令只列環境變數名稱或 stdin 模式；不得讀取 .env、命令列環境或連線字串值。
+Inventory 實際輸出需合併以上用途與探測結果。沒有產物的工具，產物路徑與重產命令填「不適用」。SchemaExporter 的重產命令只顯示使用者指定的 named connection 名稱與必要的安全選項，不輸出連線字串、密碼或其他認證資訊；執行前遵循 database-schema-context 的能力檢查與產物更新流程。
 
 ## 專案產物狀態
 
@@ -90,4 +90,4 @@ Ensure 產物依 ai-context-index 的來源集合計算方式讀取並重算指�
 | 工具 | 產物路徑 | 狀態 | 判定依據 | 重產命令 |
 | --- | --- | --- | --- | --- |
 
-重產命令只作為文字回報，使用索引列或所屬 Skill 定義的安全命令。命令中的連線資訊僅能是環境變數名稱或 stdin 模式，不得包含連線字串值。過期或缺漏都不會觸發重產。
+重產命令只作為文字回報，使用索引列或所屬 Skill 定義的安全命令。SchemaExporter 命令中的連線資訊只使用使用者指定的 named connection 名稱，不輸出連線字串或認證資訊。過期或缺漏都不會觸發重產。
