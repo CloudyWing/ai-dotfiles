@@ -56,7 +56,9 @@ try {
                     GetTypeKind(declaration),
                     GetAccessibility(declaration),
                     baseTypes,
-                    GetRelativePath(projectDirectory, sourcePath)
+                    GetRelativePath(projectDirectory, sourcePath),
+                    declaration.SpanStart,
+                    declaration.Kind().ToString()
                 ));
             }
         }
@@ -94,7 +96,7 @@ static List<string> LoadProjectPaths(string solutionPath) {
                 solutionDirectory,
                 pathAttribute.Value.Replace('\\', Path.DirectorySeparatorChar)
             ));
-            if (File.Exists(projectPath)) {
+            if (File.Exists(projectPath) && !IsExcludedProjectPath(solutionDirectory, projectPath)) {
                 projectPaths.Add(projectPath);
             }
         }
@@ -110,6 +112,7 @@ static List<string> LoadProjectPaths(string solutionPath) {
             .Select(match => match.Groups[1].Value.Replace('\\', Path.DirectorySeparatorChar))
             .Select(relativePath => Path.GetFullPath(Path.Combine(solutionDirectory, relativePath)))
             .Where(File.Exists)
+            .Where(projectPath => !IsExcludedProjectPath(solutionDirectory, projectPath))
         );
     }
 
@@ -125,6 +128,33 @@ static List<string> LoadProjectPaths(string solutionPath) {
     return projectPaths;
 }
 
+static bool IsExcludedProjectPath(string solutionDirectory, string projectPath) {
+    HashSet<string> excludedDirectoryNames = new(StringComparer.OrdinalIgnoreCase) {
+        ".git",
+        ".local",
+        "bin",
+        "obj",
+        "dist",
+        "out",
+        "build",
+        "target",
+        "node_modules",
+        "__pycache__",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".turbo",
+        ".parcel-cache",
+        ".output",
+        ".vite",
+        ".angular"
+    };
+    string relativePath = Path.GetRelativePath(solutionDirectory, projectPath);
+    return relativePath
+        .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        .Any(excludedDirectoryNames.Contains);
+}
+
 static IEnumerable<string> EnumerateSourceFiles(string projectDirectory) {
     HashSet<string> excludedDirectoryNames = new(StringComparer.OrdinalIgnoreCase) {
         "bin",
@@ -136,7 +166,15 @@ static IEnumerable<string> EnumerateSourceFiles(string projectDirectory) {
         "target",
         "node_modules",
         "__pycache__",
-        ".local"
+        ".local",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".turbo",
+        ".parcel-cache",
+        ".output",
+        ".vite",
+        ".angular"
     };
     Stack<string> pendingDirectories = new();
     pendingDirectories.Push(projectDirectory);
@@ -230,7 +268,13 @@ static string GetAccessibility(BaseTypeDeclarationSyntax declaration) {
         return "private";
     }
 
-    return "internal";
+    if (declaration.Modifiers.Any(SyntaxKind.InternalKeyword)) {
+        return "internal";
+    }
+
+    return declaration.Ancestors().OfType<BaseTypeDeclarationSyntax>().Any()
+        ? "private"
+        : "internal";
 }
 
 static string GetRelativePath(string baseDirectory, string sourcePath) {
@@ -252,15 +296,19 @@ static void WriteReport(string outputPath, string solutionPath, IEnumerable<Type
     report.AppendLine("| --- | --- | --- | --- | --- | --- |");
 
     List<TypeHierarchyEntry> orderedEntries = entries
-        .OrderBy(entry => entry.Project, StringComparer.OrdinalIgnoreCase)
-        .ThenBy(entry => entry.QualifiedName, StringComparer.OrdinalIgnoreCase)
+        .OrderBy(entry => entry.Project, StringComparer.Ordinal)
+        .ThenBy(entry => entry.QualifiedName, StringComparer.Ordinal)
+        .ThenBy(entry => entry.SourcePath, StringComparer.Ordinal)
+        .ThenBy(entry => entry.SpanStart)
+        .ThenBy(entry => entry.SyntaxKind, StringComparer.Ordinal)
+        .ThenBy(SerializeTypeHierarchyEntry, StringComparer.Ordinal)
         .ToList();
 
     if (orderedEntries.Count == 0) {
         report.AppendLine("| （無） | 尚未找到型別宣告 |  |  |  |  |");
     } else {
         foreach (TypeHierarchyEntry entry in orderedEntries) {
-            report.AppendLine($"| {EscapeMarkdown(entry.Project)} | `{EscapeMarkdown(entry.QualifiedName)}` | {entry.Kind} | {entry.Accessibility} | `{EscapeMarkdown(entry.BaseTypes)}` | `{EscapeMarkdown(entry.SourcePath)}` |");
+            report.AppendLine(SerializeTypeHierarchyEntry(entry));
         }
     }
 
@@ -271,11 +319,17 @@ static string EscapeMarkdown(string value) {
     return value.Replace("|", "\\|");
 }
 
+static string SerializeTypeHierarchyEntry(TypeHierarchyEntry entry) {
+    return $"| {EscapeMarkdown(entry.Project)} | `{EscapeMarkdown(entry.QualifiedName)}` | {entry.Kind} | {entry.Accessibility} | `{EscapeMarkdown(entry.BaseTypes)}` | `{EscapeMarkdown(entry.SourcePath)}` |";
+}
+
 internal sealed record TypeHierarchyEntry(
     string Project,
     string QualifiedName,
     string Kind,
     string Accessibility,
     string BaseTypes,
-    string SourcePath
+    string SourcePath,
+    int SpanStart,
+    string SyntaxKind
 );

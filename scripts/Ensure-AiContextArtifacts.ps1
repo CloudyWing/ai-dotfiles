@@ -97,7 +97,8 @@ function Get-SolutionProjectPaths {
             $projectPath = [System.IO.Path]::GetFullPath(
                 [System.IO.Path]::Combine($solutionDirectory, $relativePath)
             )
-            if ([System.IO.File]::Exists($projectPath)) {
+            if ([System.IO.File]::Exists($projectPath) -and
+                -not (Test-ExcludedSourceDirectoryPath -ProjectRootPath $solutionDirectory -Path $projectPath)) {
                 $projectPaths.Add($projectPath)
             }
         }
@@ -118,7 +119,8 @@ function Get-SolutionProjectPaths {
             $projectPath = [System.IO.Path]::GetFullPath(
                 [System.IO.Path]::Combine($solutionDirectory, $relativePath)
             )
-            if ([System.IO.File]::Exists($projectPath)) {
+            if ([System.IO.File]::Exists($projectPath) -and
+                -not (Test-ExcludedSourceDirectoryPath -ProjectRootPath $solutionDirectory -Path $projectPath)) {
                 $projectPaths.Add($projectPath)
             }
         }
@@ -153,6 +155,33 @@ function Get-SolutionProjectPaths {
     return $sortedProjectPaths.ToArray()
 }
 
+function Test-ExcludedSourceDirectoryPath {
+    param(
+        [Parameter(Mandatory)][string]$ProjectRootPath,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $excludedNames = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($name in @(
+        '.git', '.local', 'bin', 'obj', 'dist', 'out', 'build', 'target',
+        'node_modules', '__pycache__', '.next', '.nuxt', '.svelte-kit', '.turbo',
+        '.parcel-cache', '.output', '.vite', '.angular'
+    )) {
+        $null = $excludedNames.Add($name)
+    }
+
+    $relativePath = Get-RelativeSlashPath -Root $ProjectRootPath -Path $Path
+    foreach ($segment in $relativePath.Split('/')) {
+        if ($excludedNames.Contains($segment)) {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Get-SourceRelativePaths {
     param(
         [Parameter(Mandatory)][string]$ProjectRootPath,
@@ -165,7 +194,8 @@ function Get-SourceRelativePaths {
     )
     foreach ($name in @(
         '.git', '.local', 'bin', 'obj', 'dist', 'out', 'build', 'target',
-        'node_modules', '__pycache__'
+        'node_modules', '__pycache__', '.next', '.nuxt', '.svelte-kit', '.turbo',
+        '.parcel-cache', '.output', '.vite', '.angular'
     )) {
         $null = $excludedNames.Add($name)
     }
@@ -206,11 +236,28 @@ function Get-SourceRelativePaths {
 function Get-NativeCommandResult {
     param(
         [Parameter(Mandatory)][string]$ExecutablePath,
-        [Parameter(Mandatory)][string[]]$Arguments
+        [Parameter(Mandatory)][string[]]$Arguments,
+        [string]$WorkingDirectory
     )
 
-    $outputLines = @(& $ExecutablePath @Arguments 2>&1)
-    $exitCode = $LASTEXITCODE
+    $outputLines = @()
+    $exitCode = 0
+    $locationPushed = $false
+    try {
+        if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) {
+            Push-Location -LiteralPath $WorkingDirectory
+            $locationPushed = $true
+        }
+
+        $outputLines = @(& $ExecutablePath @Arguments 2>&1)
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        if ($locationPushed) {
+            Pop-Location
+        }
+    }
+
     $outputText = ($outputLines | ForEach-Object { $_.ToString() }) -join [System.Environment]::NewLine
     return [pscustomobject]@{
         ExitCode = $exitCode
@@ -289,6 +336,12 @@ function Escape-IndexCell {
     }
 
     return $escaped.ToString()
+}
+
+function ConvertTo-PowerShellSingleQuotedLiteral {
+    param([Parameter(Mandatory)][string]$Value)
+
+    return "'" + $Value.Replace("'", "''") + "'"
 }
 
 function Get-IndexRows {
@@ -521,6 +574,17 @@ try {
         throw "ProjectRoot 不存在：$projectRootPath"
     }
 
+    $graphifyProjectOutputPath = ''
+    $graphifyOutputInitiallyAbsent = $false
+    $graphifyGenerationAttempted = $false
+    if ($ToolName -eq 'graphify') {
+        $graphifyProjectOutputPath = Join-Path -Path $projectRootPath -ChildPath 'graphify-out'
+        if ([System.IO.Directory]::Exists($graphifyProjectOutputPath)) {
+            throw "graphify 輸出目錄已存在，Ensure 不會修改或刪除其中任何檔案：$graphifyProjectOutputPath。請先自行處理該目錄後重試。"
+        }
+        $graphifyOutputInitiallyAbsent = $true
+    }
+
     $aiContextRoot = [System.IO.Path]::Combine($projectRootPath, '.local', 'ai-context')
     $indexPath = [System.IO.Path]::Combine($aiContextRoot, 'index.md')
     $ensureScriptPath = [System.IO.Path]::GetFullPath($MyInvocation.MyCommand.Path)
@@ -553,7 +617,7 @@ try {
         'graphify' {
             $artifactRelativePath = '.local/ai-context/graphify/graphify-out/'
             $isDirectoryArtifact = $true
-            $normalizedCommand = 'graphify extract <ProjectRoot> --out .local/ai-context/graphify/<temporary-output-directory>'
+            $normalizedCommand = 'graphify update <ProjectRoot>'
             $commandName = 'graphify'
         }
     }
@@ -563,9 +627,11 @@ try {
         $artifactRelativePath.Replace('/', [System.IO.Path]::DirectorySeparatorChar).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
     )
     $aiAgentsRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($PSScriptRoot, '..'))
-    $rebuildCommand = 'pwsh -NoProfile -File "{0}" -ProjectRoot "{1}" -ToolName {2}' -f
-        [System.IO.Path]::GetFullPath([System.IO.Path]::Combine($aiAgentsRoot, 'scripts', 'Ensure-AiContextArtifacts.ps1')),
-        $projectRootPath,
+    $rebuildCommand = 'pwsh -NoProfile -File {0} -ProjectRoot {1} -ToolName {2}' -f
+        (ConvertTo-PowerShellSingleQuotedLiteral -Value ([System.IO.Path]::GetFullPath(
+            [System.IO.Path]::Combine($aiAgentsRoot, 'scripts', 'Ensure-AiContextArtifacts.ps1')
+        ))),
+        (ConvertTo-PowerShellSingleQuotedLiteral -Value $projectRootPath),
         $ToolName
     $generatorPath = if ([string]::IsNullOrWhiteSpace($generatorRelativePath)) {
         ''
@@ -631,15 +697,22 @@ try {
     $promotionComplete = $false
     try {
         if ($ToolName -eq 'graphify') {
-            $arguments = @('extract', $projectRootPath, '--out', $temporaryArtifactRoot)
+            $arguments = @('update', $projectRootPath)
+            $graphifyGenerationAttempted = $true
+            $generationResult = Get-NativeCommandResult -ExecutablePath $tool.Path -Arguments $arguments -WorkingDirectory $projectRootPath
         }
         else {
             $arguments = @($generatorPath, '--', $solutionPath, $temporaryArtifactPath)
+            $generationResult = Get-NativeCommandResult -ExecutablePath $tool.Path -Arguments $arguments
         }
-
-        $generationResult = Get-NativeCommandResult -ExecutablePath $tool.Path -Arguments $arguments
         if ($generationResult.ExitCode -ne 0) {
             throw "$ToolName 產生失敗，exit code=$($generationResult.ExitCode)：$($generationResult.Output)"
+        }
+        if ($ToolName -eq 'graphify') {
+            if (-not (Test-ArtifactComplete -ArtifactPath $graphifyProjectOutputPath -IsDirectory $true)) {
+                throw "graphify 輸出不完整，graph.json 不存在或為空：$graphifyProjectOutputPath"
+            }
+            Move-ArtifactPath -Source $graphifyProjectOutputPath -Destination $temporaryArtifactPath -IsDirectory $true
         }
         if (-not (Test-ArtifactComplete -ArtifactPath $temporaryArtifactPath -IsDirectory $isDirectoryArtifact)) {
             throw "$ToolName 輸出不完整，暫存產物不存在或為空。"
@@ -702,41 +775,110 @@ try {
             Write-Warning '產物與索引已提升；清理錯誤不觸發回滾。'
         }
         else {
-            if ($indexReplaced -and [System.IO.File]::Exists($indexBackupPath)) {
-                if ([System.IO.File]::Exists($indexPath)) {
-                    [System.IO.File]::Replace($indexBackupPath, $indexPath, $null)
+            $operationError = $_.Exception.Message
+            $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+            if ($indexReplaced) {
+                try {
+                    if (-not [System.IO.File]::Exists($indexBackupPath)) {
+                        throw "索引備份不存在：$indexBackupPath"
+                    }
+                    if ([System.IO.File]::Exists($indexPath)) {
+                        [System.IO.File]::Replace($indexBackupPath, $indexPath, [NullString]::Value)
+                    }
+                    else {
+                        [System.IO.File]::Move($indexBackupPath, $indexPath)
+                    }
                 }
-                else {
-                    [System.IO.File]::Move($indexBackupPath, $indexPath)
+                catch {
+                    $rollbackErrors.Add("索引還原失敗：$($_.Exception.Message)")
                 }
             }
             elseif ($indexCreated -and [System.IO.File]::Exists($indexPath)) {
-                [System.IO.File]::Delete($indexPath)
+                try {
+                    [System.IO.File]::Delete($indexPath)
+                }
+                catch {
+                    $rollbackErrors.Add("移除新索引失敗：$($_.Exception.Message)")
+                }
             }
 
             if ($artifactPromoted) {
-                Remove-ArtifactPath -Path $artifactPath -IsDirectory $isDirectoryArtifact
+                try {
+                    Remove-ArtifactPath -Path $artifactPath -IsDirectory $isDirectoryArtifact
+                }
+                catch {
+                    $rollbackErrors.Add("移除新產物失敗：$($_.Exception.Message)")
+                }
             }
             if ($artifactBackedUp) {
-                Move-ArtifactPath -Source $artifactBackupPath -Destination $artifactPath -IsDirectory $isDirectoryArtifact
+                try {
+                    $artifactBackupExists = if ($isDirectoryArtifact) {
+                        [System.IO.Directory]::Exists($artifactBackupPath)
+                    }
+                    else {
+                        [System.IO.File]::Exists($artifactBackupPath)
+                    }
+                    if (-not $artifactBackupExists) {
+                        throw "產物備份不存在：$artifactBackupPath"
+                    }
+                    Move-ArtifactPath -Source $artifactBackupPath -Destination $artifactPath -IsDirectory $isDirectoryArtifact
+                }
+                catch {
+                    $rollbackErrors.Add("舊產物還原失敗：$($_.Exception.Message)")
+                }
+            }
+            if ($rollbackErrors.Count -gt 0) {
+                throw "產物與索引更新失敗：$operationError；rollback 失敗：$($rollbackErrors -join '；')"
             }
         }
         throw
     }
     finally {
-        try {
-            if ([System.IO.File]::Exists($temporaryArtifactPath)) {
-                [System.IO.File]::Delete($temporaryArtifactPath)
+        if ($ToolName -eq 'graphify' -and
+            $graphifyOutputInitiallyAbsent -and
+            $graphifyGenerationAttempted -and
+            [System.IO.Directory]::Exists($graphifyProjectOutputPath)) {
+            try {
+                [System.IO.Directory]::Delete($graphifyProjectOutputPath, $true)
             }
-            if ([System.IO.Directory]::Exists($temporaryArtifactRoot)) {
-                [System.IO.Directory]::Delete($temporaryArtifactRoot, $true)
-            }
-            if ([System.IO.File]::Exists($temporaryIndexPath)) {
-                [System.IO.File]::Delete($temporaryIndexPath)
+            catch {
+                Write-Warning "ProjectRoot graphify-out 清理失敗：$graphifyProjectOutputPath；$($_.Exception.Message)"
             }
         }
-        catch {
-            Write-Warning "暫存清理失敗：$($_.Exception.Message)"
+
+        if ($isDirectoryArtifact) {
+            if ([System.IO.Directory]::Exists($temporaryArtifactPath)) {
+                try {
+                    [System.IO.Directory]::Delete($temporaryArtifactPath, $true)
+                }
+                catch {
+                    Write-Warning "暫存產物清理失敗：$($_.Exception.Message)"
+                }
+            }
+        }
+        elseif ([System.IO.File]::Exists($temporaryArtifactPath)) {
+            try {
+                [System.IO.File]::Delete($temporaryArtifactPath)
+            }
+            catch {
+                Write-Warning "暫存產物清理失敗：$($_.Exception.Message)"
+            }
+        }
+        if ([System.IO.Directory]::Exists($temporaryArtifactRoot)) {
+            try {
+                [System.IO.Directory]::Delete($temporaryArtifactRoot, $true)
+            }
+            catch {
+                Write-Warning "暫存根目錄清理失敗：$($_.Exception.Message)"
+            }
+        }
+        if ([System.IO.File]::Exists($temporaryIndexPath)) {
+            try {
+                [System.IO.File]::Delete($temporaryIndexPath)
+            }
+            catch {
+                Write-Warning "暫存索引清理失敗：$($_.Exception.Message)"
+            }
         }
     }
 

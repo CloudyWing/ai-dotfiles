@@ -47,7 +47,25 @@ try {
                     GetQualifiedName(declaration),
                     GetTypeKind(declaration),
                     GetAccessibility(declaration),
-                    GetRelativePath(projectDirectory, sourcePath)
+                    GetRelativePath(projectDirectory, sourcePath),
+                    declaration.SpanStart,
+                    declaration.Kind().ToString()
+                ));
+            }
+
+            foreach (DelegateDeclarationSyntax declaration in syntaxTree.GetRoot()
+                         .DescendantNodes()
+                         .OfType<DelegateDeclarationSyntax>()
+                         .Where(IsPublicSurface)
+            ) {
+                apiTypes.Add(new ApiType(
+                    projectName,
+                    GetQualifiedName(declaration),
+                    "delegate",
+                    GetAccessibility(declaration),
+                    GetRelativePath(projectDirectory, sourcePath),
+                    declaration.SpanStart,
+                    declaration.Kind().ToString()
                 ));
             }
         }
@@ -85,7 +103,7 @@ static List<string> LoadProjectPaths(string solutionPath) {
                 solutionDirectory,
                 pathAttribute.Value.Replace('\\', Path.DirectorySeparatorChar)
             ));
-            if (File.Exists(projectPath)) {
+            if (File.Exists(projectPath) && !IsExcludedProjectPath(solutionDirectory, projectPath)) {
                 projectPaths.Add(projectPath);
             }
         }
@@ -101,6 +119,7 @@ static List<string> LoadProjectPaths(string solutionPath) {
             .Select(match => match.Groups[1].Value.Replace('\\', Path.DirectorySeparatorChar))
             .Select(relativePath => Path.GetFullPath(Path.Combine(solutionDirectory, relativePath)))
             .Where(File.Exists)
+            .Where(projectPath => !IsExcludedProjectPath(solutionDirectory, projectPath))
         );
     }
 
@@ -116,6 +135,33 @@ static List<string> LoadProjectPaths(string solutionPath) {
     return projectPaths;
 }
 
+static bool IsExcludedProjectPath(string solutionDirectory, string projectPath) {
+    HashSet<string> excludedDirectoryNames = new(StringComparer.OrdinalIgnoreCase) {
+        ".git",
+        ".local",
+        "bin",
+        "obj",
+        "dist",
+        "out",
+        "build",
+        "target",
+        "node_modules",
+        "__pycache__",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".turbo",
+        ".parcel-cache",
+        ".output",
+        ".vite",
+        ".angular"
+    };
+    string relativePath = Path.GetRelativePath(solutionDirectory, projectPath);
+    return relativePath
+        .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        .Any(excludedDirectoryNames.Contains);
+}
+
 static IEnumerable<string> EnumerateSourceFiles(string projectDirectory) {
     HashSet<string> excludedDirectoryNames = new(StringComparer.OrdinalIgnoreCase) {
         "bin",
@@ -127,7 +173,15 @@ static IEnumerable<string> EnumerateSourceFiles(string projectDirectory) {
         "target",
         "node_modules",
         "__pycache__",
-        ".local"
+        ".local",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".turbo",
+        ".parcel-cache",
+        ".output",
+        ".vite",
+        ".angular"
     };
     Stack<string> pendingDirectories = new();
     pendingDirectories.Push(projectDirectory);
@@ -163,8 +217,18 @@ static bool IsPublicSurface(BaseTypeDeclarationSyntax declaration) {
             .All(HasPublicApiAccessibility);
 }
 
+static bool IsPublicSurface(DelegateDeclarationSyntax declaration) {
+    return HasPublicApiAccessibility(declaration.Modifiers)
+        && declaration.Ancestors()
+            .OfType<BaseTypeDeclarationSyntax>()
+            .All(HasPublicApiAccessibility);
+}
+
 static bool HasPublicApiAccessibility(BaseTypeDeclarationSyntax declaration) {
-    SyntaxTokenList modifiers = declaration.Modifiers;
+    return HasPublicApiAccessibility(declaration.Modifiers);
+}
+
+static bool HasPublicApiAccessibility(SyntaxTokenList modifiers) {
     return !modifiers.Any(SyntaxKind.PrivateKeyword)
         && (modifiers.Any(SyntaxKind.PublicKeyword) || modifiers.Any(SyntaxKind.ProtectedKeyword));
 }
@@ -185,6 +249,29 @@ static string GetQualifiedName(BaseTypeDeclarationSyntax declaration) {
             .Reverse()
             .Select(namespaceDeclaration => namespaceDeclaration.Name.ToString())
         );
+
+    if (!string.IsNullOrWhiteSpace(namespaceName)) {
+        names.Insert(0, namespaceName);
+    }
+
+    return string.Join(".", names);
+}
+
+static string GetQualifiedName(DelegateDeclarationSyntax declaration) {
+    List<string> names = declaration.Ancestors()
+        .OfType<BaseTypeDeclarationSyntax>()
+        .Reverse()
+        .Select(GetTypeIdentifier)
+        .ToList();
+    names.Add(declaration.Identifier.ValueText);
+
+    string namespaceName = string.Join(
+        ".",
+        declaration.Ancestors()
+            .OfType<BaseNamespaceDeclarationSyntax>()
+            .Reverse()
+            .Select(namespaceDeclaration => namespaceDeclaration.Name.ToString())
+    );
 
     if (!string.IsNullOrWhiteSpace(namespaceName)) {
         names.Insert(0, namespaceName);
@@ -215,12 +302,20 @@ static string GetTypeKind(BaseTypeDeclarationSyntax declaration) {
 }
 
 static string GetAccessibility(BaseTypeDeclarationSyntax declaration) {
-    if (declaration.Modifiers.Any(SyntaxKind.PublicKeyword)) {
+    return GetAccessibility(declaration.Modifiers);
+}
+
+static string GetAccessibility(DelegateDeclarationSyntax declaration) {
+    return GetAccessibility(declaration.Modifiers);
+}
+
+static string GetAccessibility(SyntaxTokenList modifiers) {
+    if (modifiers.Any(SyntaxKind.PublicKeyword)) {
         return "public";
     }
 
-    if (declaration.Modifiers.Any(SyntaxKind.ProtectedKeyword)) {
-        return declaration.Modifiers.Any(SyntaxKind.InternalKeyword)
+    if (modifiers.Any(SyntaxKind.ProtectedKeyword)) {
+        return modifiers.Any(SyntaxKind.InternalKeyword)
             ? "protected internal"
             : "protected";
     }
@@ -247,15 +342,19 @@ static void WriteReport(string outputPath, string solutionPath, IEnumerable<ApiT
     report.AppendLine("| --- | --- | --- | --- | --- |");
 
     List<ApiType> orderedTypes = apiTypes
-        .OrderBy(apiType => apiType.Project, StringComparer.OrdinalIgnoreCase)
-        .ThenBy(apiType => apiType.QualifiedName, StringComparer.OrdinalIgnoreCase)
+        .OrderBy(apiType => apiType.Project, StringComparer.Ordinal)
+        .ThenBy(apiType => apiType.QualifiedName, StringComparer.Ordinal)
+        .ThenBy(apiType => apiType.SourcePath, StringComparer.Ordinal)
+        .ThenBy(apiType => apiType.SpanStart)
+        .ThenBy(apiType => apiType.SyntaxKind, StringComparer.Ordinal)
+        .ThenBy(SerializeApiType, StringComparer.Ordinal)
         .ToList();
 
     if (orderedTypes.Count == 0) {
         report.AppendLine("| （無） | 尚未找到 public 或 protected 型別 |  |  |  |");
     } else {
         foreach (ApiType apiType in orderedTypes) {
-            report.AppendLine($"| {EscapeMarkdown(apiType.Project)} | `{EscapeMarkdown(apiType.QualifiedName)}` | {apiType.Kind} | {apiType.Accessibility} | `{EscapeMarkdown(apiType.SourcePath)}` |");
+            report.AppendLine(SerializeApiType(apiType));
         }
     }
 
@@ -266,10 +365,16 @@ static string EscapeMarkdown(string value) {
     return value.Replace("|", "\\|");
 }
 
+static string SerializeApiType(ApiType apiType) {
+    return $"| {EscapeMarkdown(apiType.Project)} | `{EscapeMarkdown(apiType.QualifiedName)}` | {apiType.Kind} | {apiType.Accessibility} | `{EscapeMarkdown(apiType.SourcePath)}` |";
+}
+
 internal sealed record ApiType(
     string Project,
     string QualifiedName,
     string Kind,
     string Accessibility,
-    string SourcePath
+    string SourcePath,
+    int SpanStart,
+    string SyntaxKind
 );

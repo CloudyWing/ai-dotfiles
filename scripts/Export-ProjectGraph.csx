@@ -64,7 +64,7 @@ static List<string> LoadProjectPaths(string solutionPath) {
                 solutionDirectory,
                 pathAttribute.Value.Replace('\\', Path.DirectorySeparatorChar)
             ));
-            if (File.Exists(projectPath)) {
+            if (File.Exists(projectPath) && !IsExcludedProjectPath(solutionDirectory, projectPath)) {
                 projectPaths.Add(projectPath);
             }
         }
@@ -80,6 +80,7 @@ static List<string> LoadProjectPaths(string solutionPath) {
             .Select(match => match.Groups[1].Value.Replace('\\', Path.DirectorySeparatorChar))
             .Select(relativePath => Path.GetFullPath(Path.Combine(solutionDirectory, relativePath)))
             .Where(File.Exists)
+            .Where(projectPath => !IsExcludedProjectPath(solutionDirectory, projectPath))
         );
     }
 
@@ -93,6 +94,33 @@ static List<string> LoadProjectPaths(string solutionPath) {
     }
 
     return projectPaths;
+}
+
+static bool IsExcludedProjectPath(string solutionDirectory, string projectPath) {
+    HashSet<string> excludedDirectoryNames = new(StringComparer.OrdinalIgnoreCase) {
+        ".git",
+        ".local",
+        "bin",
+        "obj",
+        "dist",
+        "out",
+        "build",
+        "target",
+        "node_modules",
+        "__pycache__",
+        ".next",
+        ".nuxt",
+        ".svelte-kit",
+        ".turbo",
+        ".parcel-cache",
+        ".output",
+        ".vite",
+        ".angular"
+    };
+    string relativePath = Path.GetRelativePath(solutionDirectory, projectPath);
+    return relativePath
+        .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        .Any(excludedDirectoryNames.Contains);
 }
 
 static Solution CreateSolution(
