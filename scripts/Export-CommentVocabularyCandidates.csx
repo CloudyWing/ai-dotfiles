@@ -54,14 +54,22 @@ try {
         parsedSources.Add((sourcePath, syntaxTree, syntaxRoot));
     }
 
-    CSharpCompilation? compilation = TryCreateCandidateCompilation(parsedSources.Select(source => source.SyntaxTree));
+    CSharpCompilation? compilation = TryCreateCandidateCompilation(
+        parsedSources.Select(source => source.SyntaxTree),
+        out string? compilationFailureReason
+    );
     foreach ((string sourcePath, SyntaxTree syntaxTree, CompilationUnitSyntax syntaxRoot) in parsedSources) {
         string sourceFile = GetRelativePath(projectRoot, sourcePath);
         SemanticModel? semanticModel = null;
+        string? semanticModelFailureReason = compilationFailureReason;
         try {
             semanticModel = compilation?.GetSemanticModel(syntaxTree);
-        } catch {
+            if (semanticModel is null) {
+                semanticModelFailureReason ??= "semantic-model-unavailable";
+            }
+        } catch (Exception exception) {
             semanticModel = null;
+            semanticModelFailureReason = $"semantic-model-unavailable:{exception.GetType().Name}";
         }
 
         foreach (MemberDeclarationSyntax member in syntaxRoot.DescendantNodes()
@@ -144,7 +152,15 @@ try {
             }
 
             if (declaration is EnumDeclarationSyntax enumDeclaration) {
-                AddEnumFacts(facts, enumDeclaration, projectRoot, sourcePath, containingType, semanticModel);
+                AddEnumFacts(
+                    facts,
+                    enumDeclaration,
+                    projectRoot,
+                    sourcePath,
+                    containingType,
+                    semanticModel,
+                    semanticModelFailureReason
+                );
             }
         }
     }
@@ -178,16 +194,45 @@ try {
     Environment.ExitCode = 1;
 }
 
-static CSharpCompilation? TryCreateCandidateCompilation(IEnumerable<SyntaxTree> syntaxTrees) {
+static CSharpCompilation? TryCreateCandidateCompilation(
+    IEnumerable<SyntaxTree> syntaxTrees,
+    out string? failureReason
+) {
+    failureReason = null;
     try {
-        MetadataReference runtimeReference = MetadataReference.CreateFromFile(typeof(object).Assembly.Location);
+        string? trustedPlatformAssemblies = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string;
+        if (string.IsNullOrWhiteSpace(trustedPlatformAssemblies)) {
+            failureReason = "trusted-platform-assemblies-unavailable";
+            return null;
+        }
+
+        List<MetadataReference> references = new();
+        HashSet<string> referencePaths = new(StringComparer.OrdinalIgnoreCase);
+        foreach (string referencePath in trustedPlatformAssemblies.Split(Path.PathSeparator)) {
+            if (!File.Exists(referencePath) || !referencePaths.Add(referencePath)) {
+                continue;
+            }
+
+            try {
+                references.Add(MetadataReference.CreateFromFile(referencePath));
+            } catch {
+                continue;
+            }
+        }
+
+        if (references.Count == 0) {
+            failureReason = "no-usable-trusted-platform-assemblies";
+            return null;
+        }
+
         return CSharpCompilation.Create(
             "AiCommentVocabularyCandidates",
             syntaxTrees,
-            new[] { runtimeReference },
+            references,
             new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
         );
-    } catch {
+    } catch (Exception exception) {
+        failureReason = $"compilation-creation-failed:{exception.GetType().Name}";
         return null;
     }
 }
@@ -269,20 +314,39 @@ static void AddEnumFacts(
     string projectRoot,
     string sourcePath,
     string containingType,
-    SemanticModel? semanticModel
+    SemanticModel? semanticModel,
+    string? semanticModelFailureReason
 ) {
     foreach (EnumMemberDeclarationSyntax member in declaration.Members) {
         string? expression = member.EqualsValue is null
             ? null
             : SanitizeSensitiveLiterals(member.EqualsValue.Value);
         string? numericValue = null;
+        string numericValueStatus = "unresolved";
+        string? numericValueReason = semanticModelFailureReason ?? "semantic-model-unavailable";
         try {
-            IFieldSymbol? fieldSymbol = semanticModel?.GetDeclaredSymbol(member) as IFieldSymbol;
-            if (fieldSymbol?.ConstantValue is object constantValue) {
-                numericValue = Convert.ToString(constantValue, CultureInfo.InvariantCulture);
+            if (semanticModel is not null) {
+                ISymbol? declaredSymbol = semanticModel.GetDeclaredSymbol(member);
+                if (declaredSymbol is IFieldSymbol fieldSymbol) {
+                    if (fieldSymbol.HasConstantValue && fieldSymbol.ConstantValue is object constantValue) {
+                        numericValue = Convert.ToString(constantValue, CultureInfo.InvariantCulture);
+                        if (numericValue is not null) {
+                            numericValueStatus = "resolved";
+                            numericValueReason = "IFieldSymbol.ConstantValue";
+                        } else {
+                            numericValueReason = "constant-value-conversion-returned-null";
+                        }
+                    } else {
+                        numericValueReason = "constant-value-unavailable";
+                    }
+                } else {
+                    numericValueReason = "declared-symbol-is-not-an-enum-field";
+                }
             }
-        } catch {
+        } catch (Exception exception) {
             numericValue = null;
+            numericValueStatus = "unresolved";
+            numericValueReason = $"constant-value-read-failed:{exception.GetType().Name}";
         }
 
         facts.Add(new CandidateFact(
@@ -296,7 +360,9 @@ static void AddEnumFacts(
             GetAttributes(member.AttributeLists, semanticModel),
             null,
             expression,
-            numericValue
+            numericValue,
+            numericValueStatus,
+            numericValueReason
         ));
     }
 }
@@ -563,7 +629,9 @@ internal sealed record CandidateFact(
     string[] Attributes,
     bool? IsEntityModelCandidate,
     string? ValueExpression,
-    string? NumericValueCandidate
+    string? NumericValueCandidate,
+    string? NumericValueStatus = null,
+    string? NumericValueReason = null
 );
 
 internal sealed record ParseIssue(
