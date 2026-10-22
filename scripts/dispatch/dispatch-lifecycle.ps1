@@ -347,6 +347,7 @@ function Invoke-Preflight {
         }
         $executionRootPath = $dispatchRootPath
         $carryInManifest = Apply-SourceCarryIn -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
+        $null = Sync-DispatchTrackedRawBytesFromSource -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
         $baseline = New-DispatchBaseline -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha $baseShaValue -TargetPath @($TargetPath)
         if ($WriteMode -eq 'readonly') {
             $targetsOutsideRepository = @(Get-TargetsOutsideRepository -SourceRoot $sourceRootPath -DispatchRoot $executionRootPath -TargetPath @($TargetPath))

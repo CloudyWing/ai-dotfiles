@@ -30,7 +30,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-006-ADVISOR', 'F-007', 'F-007-ADVISOR', 'F-008-ADVISOR', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-QUOTA-PATH', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1846,6 +1846,9 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'BATCH2-INSPECT-REPORTPATH') {
             $Name -match '^Phase 9 BATCH2 ' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'BATCH3-EOL') {
+            $Name -match '^Phase 9 BATCH3 ' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'BATCH15-EVIDENCE') {
             $Name -match '^Phase 8 advisor required output gate' -or $Name -ceq 'Phase 8 advisor 最長前綴與 report partition' -or $cleanupMatch
@@ -5038,6 +5041,8 @@ if ($Phase -ge 3) {
             elseif ($Arguments[0] -eq 'rev-parse') {
                 $output = 'c' * 40
             }
+            elseif ($command -eq 'ls-files -z --') { $output = '' }
+            elseif ($command -eq 'ls-files -z --others --exclude-standard' -or $command -eq 'ls-files -z --others --exclude-standard --') { $output = '' }
             elseif ($Arguments[0] -eq 'ls-files' -and $Arguments -contains '--error-unmatch') {
                 return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'error: pathspec did not match any file' }
             }
@@ -5086,6 +5091,18 @@ if ($Phase -ge 3) {
         elseif ($command -eq 'diff-files --raw -z --') {
             $output = (@($gitWorkingTree.Keys | Sort-Object | ForEach-Object { ':' + $gitIndex[$_] + ' ' + $gitWorkingTree[$_] + ' ' + ('a' * 40) + ' ' + ('0' * 40) + ' M' + [char]0 + $_ }) -join [char]0)
             if ($gitWorkingTree.Count -gt 0) { $output += [char]0 }
+        }
+        elseif ($command -eq 'ls-files -z --') {
+            # git ls-files reports the fixture index; missing worktree files remain listed and are skipped by the sync helper.
+            $trackedPaths = @($gitIndex.Keys | Sort-Object)
+            if ($trackedPaths.Count -gt 0) { $output = ($trackedPaths -join [char]0) + [char]0 }
+        }
+        elseif ($command -eq 'ls-files -z --others --exclude-standard' -or $command -eq 'ls-files -z --others --exclude-standard --') {
+            $untrackedPaths = @($gitUntracked | Where-Object {
+                    -not [string]::IsNullOrWhiteSpace([string]$_) -and
+                    (Test-Path -LiteralPath (Join-Path $WorkingDirectory ([string]$_)) -PathType Leaf)
+                } | Sort-Object)
+            if ($untrackedPaths.Count -gt 0) { $output = ($untrackedPaths -join [char]0) + [char]0 }
         }
         elseif ($command -eq 'ls-files --others --exclude-standard -z') { $output = (@($gitUntracked) -join [char]0) + [char]0 }
         elseif ($command -eq 'ls-files -z') { $output = (@($gitIndex.Keys) -join [char]0) + [char]0 }
@@ -13250,7 +13267,17 @@ if ($Phase -ge 9) {
             [switch]$AdvisorMissingEvidenceArtifact,
             [switch]$UseCurrentHost,
             [switch]$EvidencePackOutsideSourceRoot,
-            [switch]$FollowupAccount
+            [switch]$FollowupAccount,
+            [AllowNull()][string]$TargetContent,
+            [AllowNull()][byte[]]$TargetBytes,
+            [AllowNull()][string]$CarryInContent,
+            [switch]$ForceCrlfTarget,
+            [switch]$StagedAddedTarget,
+            [AllowEmptyCollection()][string[]]$AdditionalGitAttributes = @(),
+            [AllowEmptyCollection()][object[]]$AdditionalTrackedFiles = @(),
+            [string[]]$RemoveSourcePathsBeforePreflight = @(),
+            [ValidateSet('', 'dispatch-only-output', 'same-length-dispatch', 'source-b-a', 'readonly-target')][string]$Batch3SyncHook = '',
+            [AllowEmptyString()][string]$CallerSessionId
         )
 
         $caseSlug = New-BindingFixtureName -Code 's'
@@ -13304,8 +13331,37 @@ if ($Phase -ge 9) {
             $foreignScopeHashRecordSha256 = Get-FileSha256 -Path $foreignScopeHashRecordPath
         }
         Write-Utf8NoBom -Path $promptSourcePath -Content ('S finding dispatch prompt: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
-        if (-not $MissingSameLineTarget -and -not $EvidencePackOutsideSourceRoot) { Write-Utf8NoBom -Path $targetPath -Content ('S finding target: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @() }
+        if (-not $MissingSameLineTarget -and -not $EvidencePackOutsideSourceRoot -and -not $StagedAddedTarget) {
+            if ($PSBoundParameters.ContainsKey('TargetBytes')) {
+                if ($PSBoundParameters.ContainsKey('TargetContent')) { throw 'TargetContent 與 TargetBytes 不可同時指定。' }
+                [IO.File]::WriteAllBytes($targetPath, [byte[]]$TargetBytes)
+            }
+            elseif ($PSBoundParameters.ContainsKey('TargetContent')) {
+                [IO.File]::WriteAllText($targetPath, $TargetContent, (New-Object System.Text.UTF8Encoding($false)))
+            }
+            else {
+                Write-Utf8NoBom -Path $targetPath -Content ('S finding target: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
+            }
+        }
         if ($AdvisorDispatch) { Write-Utf8NoBom -Path (Join-Path $sourceRoot 'target.txt') -Content ('S finding git target: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @() }
+        foreach ($batch3TrackedFile in @($AdditionalTrackedFiles)) {
+            $batch3TrackedPath = Join-Path $sourceRoot ([string]$batch3TrackedFile.Path)
+            $batch3TrackedParent = Split-Path -Parent $batch3TrackedPath
+            if (-not (Test-Path -LiteralPath $batch3TrackedParent -PathType Container)) { $null = New-Item -ItemType Directory -Path $batch3TrackedParent -Force }
+            [IO.File]::WriteAllBytes($batch3TrackedPath, [byte[]]$batch3TrackedFile.Bytes)
+        }
+        $batch3AttributeLines = New-Object 'System.Collections.Generic.List[string]'
+        if ($ForceCrlfTarget) {
+            $batch3AttributeLines.Add('target.txt text eol=crlf')
+            $batch3AttributeLines.Add('dispatch-prompt.md text eol=crlf')
+        }
+        foreach ($batch3AttributeRule in @($AdditionalGitAttributes)) {
+            if (-not [string]::IsNullOrWhiteSpace([string]$batch3AttributeRule)) { $batch3AttributeLines.Add([string]$batch3AttributeRule) }
+        }
+        if ($batch3AttributeLines.Count -gt 0) {
+            $batch3AttributeContent = ($batch3AttributeLines.ToArray() -join ([string][char]13 + [char]10)) + [string][char]13 + [char]10
+            [IO.File]::WriteAllText((Join-Path $sourceRoot '.gitattributes'), $batch3AttributeContent, (New-Object System.Text.UTF8Encoding($false)))
+        }
         Write-Utf8NoBom -Path (Join-Path $lineRoot 'line.json') -Content (([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = 'a' } | ConvertTo-Json -Depth 10) + "
 ") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
         Write-Utf8NoBom -Path (Join-Path $lineRoot 'requirement-summary.md') -Content "# S finding requirement summary
@@ -13404,10 +13460,64 @@ if ($Phase -ge 9) {
             $gitHostPath = (Get-Command git.exe -ErrorAction Stop).Source
             $gitInit = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('init') -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
             Assert-True ([int]$gitInit.exit_code -eq 0) ('S finding fixture git init 失敗：' + [string]$gitInit.stdout + [string]$gitInit.stderr)
-            $gitAdd = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('add', '--', 'target.txt', 'dispatch-prompt.md') -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
+            $gitAddPathList = New-Object 'System.Collections.Generic.List[string]'
+            $expectedGitAddPathCount = if ($StagedAddedTarget) { 1 } else { 2 }
+            if ($StagedAddedTarget) {
+                $gitAddPathList.Add('dispatch-prompt.md')
+            }
+            else {
+                $gitAddPathList.Add('target.txt')
+                $gitAddPathList.Add('dispatch-prompt.md')
+            }
+            if ($batch3AttributeLines.Count -gt 0) {
+                $gitAddPathList.Add('.gitattributes')
+                $expectedGitAddPathCount++
+            }
+            if ($gitAddPathList.Count -ne $expectedGitAddPathCount) { throw 'S finding fixture git add 路徑數量不符。' }
+
+            $gitAddArgumentList = New-Object 'System.Collections.Generic.List[string]'
+            $gitAddArgumentList.Add('add')
+            $gitAddArgumentList.Add('--')
+            foreach ($gitAddPath in $gitAddPathList) { $gitAddArgumentList.Add($gitAddPath) }
+            if ($gitAddArgumentList.Count -ne ($gitAddPathList.Count + 2)) { throw 'S finding fixture git add 引數數量不符。' }
+            $gitAdd = Invoke-Phase9Process -HostPath $gitHostPath -Arguments $gitAddArgumentList.ToArray() -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
             Assert-True ([int]$gitAdd.exit_code -eq 0) ('S finding fixture git add 失敗：' + [string]$gitAdd.stdout + [string]$gitAdd.stderr)
+
+            $forceAddPathList = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($additionalTrackedFile in @($AdditionalTrackedFiles)) { $forceAddPathList.Add([string]$additionalTrackedFile.Path) }
+            if ($forceAddPathList.Count -gt 0) {
+                $forceAddArgumentList = New-Object 'System.Collections.Generic.List[string]'
+                $forceAddArgumentList.Add('add')
+                $forceAddArgumentList.Add('--force')
+                $forceAddArgumentList.Add('--')
+                foreach ($forceAddPath in $forceAddPathList) { $forceAddArgumentList.Add($forceAddPath) }
+                if ($forceAddArgumentList.Count -ne ($forceAddPathList.Count + 3)) { throw 'BATCH3 fixture git add -f 引數數量不符。' }
+                $gitAddForced = Invoke-Phase9Process -HostPath $gitHostPath -Arguments $forceAddArgumentList.ToArray() -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
+                Assert-True ([int]$gitAddForced.exit_code -eq 0) ('BATCH3 fixture git add -f 失敗：' + [string]$gitAddForced.stdout + [string]$gitAddForced.stderr)
+            }
             $gitCommit = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('-c', 'user.name=phase9-s-finding', '-c', 'user.email=phase9-s-finding@example.invalid', 'commit', '--no-verify', '-m', 'phase9 S finding fixture') -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
             Assert-True ([int]$gitCommit.exit_code -eq 0) ('S finding fixture git commit 失敗：' + [string]$gitCommit.stdout + [string]$gitCommit.stderr)
+            if ($StagedAddedTarget) {
+                if ($PSBoundParameters.ContainsKey('TargetBytes')) {
+                    [IO.File]::WriteAllBytes($targetPath, [byte[]]$TargetBytes)
+                }
+                elseif ($PSBoundParameters.ContainsKey('TargetContent')) {
+                    [IO.File]::WriteAllText($targetPath, $TargetContent, (New-Object System.Text.UTF8Encoding($false)))
+                }
+                else {
+                    throw 'StagedAddedTarget fixture 必須提供 TargetContent 或 TargetBytes。'
+                }
+                $gitAddStagedTarget = Invoke-Phase9Process -HostPath $gitHostPath -Arguments @('add', '--', 'target.txt') -WorkingDirectory $sourceRoot -EnvironmentVariables @{}
+                Assert-True ([int]$gitAddStagedTarget.exit_code -eq 0) ('BATCH3 staged-added target git add 失敗：' + [string]$gitAddStagedTarget.stdout + [string]$gitAddStagedTarget.stderr)
+            }
+        }
+
+        foreach ($batch3RemovedRelativePath in @($RemoveSourcePathsBeforePreflight)) {
+            $batch3RemovedPath = Join-Path $sourceRoot $batch3RemovedRelativePath
+            if ([IO.File]::Exists($batch3RemovedPath)) { [IO.File]::Delete($batch3RemovedPath) }
+        }
+        if ($PSBoundParameters.ContainsKey('CarryInContent')) {
+            [IO.File]::WriteAllText((Join-Path $sourceRoot 'carry-in.txt'), $CarryInContent, (New-Object System.Text.UTF8Encoding($false)))
         }
 
         if ($CreateQuotaBeforePath) {
@@ -13509,6 +13619,7 @@ if ($Phase -ge 9) {
             preflight_result_path = $preflightResultPath
             prepare_result_path = $prepareResultPath
         }
+        if (-not [string]::IsNullOrWhiteSpace($CallerSessionId)) { $request.caller_session_id = $CallerSessionId }
         if ($AdvisorDispatch) {
             $request.advisor_request_source = 'user-explicit'
             $request.evidence_pack_path = $evidencePackPath
@@ -13684,12 +13795,83 @@ exit 0
             $dispatchArguments += @('-RequestPath', $requestPath)
         }
         $accountLock = $null
+        $batch3HookEntryPath = $null
+        $batch3HookScriptPath = $null
         try {
+            if (-not [string]::IsNullOrWhiteSpace($Batch3SyncHook)) {
+                $batch3HookEntryPath = Join-Path $scriptsRoot ($caseSlug + '-batch3-hook-Invoke-CodexDispatch.ps1')
+                $batch3HookScriptName = $caseSlug + '-batch3-sync-hook.ps1'
+                $batch3HookScriptPath = Join-Path $scriptsRoot $batch3HookScriptName
+                Copy-Item -LiteralPath $ScriptPath -Destination $batch3HookEntryPath
+
+                $batch3HookEntryText = [IO.File]::ReadAllText($batch3HookEntryPath, [Text.Encoding]::UTF8)
+                $batch3ModuleLoadAnchor = '. (Join-Path $PSScriptRoot ''dispatch\Invoke-DispatchConcurrency.ps1'')'
+                if ($batch3HookEntryText.IndexOf($batch3ModuleLoadAnchor, [StringComparison]::Ordinal) -lt 0) {
+                    throw ('BATCH3 Preflight hook 找不到 production 模組載入錨點：' + $Batch3SyncHook)
+                }
+                $batch3HookLoadLine = ". (Join-Path `$PSScriptRoot '$batch3HookScriptName')"
+                $batch3HookEntryText = $batch3HookEntryText.Replace($batch3ModuleLoadAnchor, $batch3ModuleLoadAnchor + "`r`n" + $batch3HookLoadLine)
+                [IO.File]::WriteAllText($batch3HookEntryPath, $batch3HookEntryText, (New-Object System.Text.UTF8Encoding($true)))
+
+                $batch3HookScriptText = @'
+$script:Batch3SyncHookMode = '__HOOK_MODE__'
+$script:Batch3SyncOriginal = (Get-Item -LiteralPath Function:\Sync-DispatchTrackedRawBytesFromSource).ScriptBlock
+function Sync-DispatchTrackedRawBytesFromSource {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$DispatchRoot
+    )
+
+    switch ($script:Batch3SyncHookMode) {
+        'dispatch-only-output' {
+            [IO.File]::WriteAllText((Join-Path $DispatchRoot 'new-output.txt'), 'dispatch-only-output', (New-Object System.Text.UTF8Encoding($false)))
+        }
+        'same-length-dispatch' {
+            [IO.File]::WriteAllText((Join-Path $DispatchRoot 'target.txt'), 'XYZ', (New-Object System.Text.UTF8Encoding($false)))
+        }
+        'source-b-a' {
+            $null = & $script:Batch3SyncOriginal -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot
+            $batch3StartSourceBytes = [IO.File]::ReadAllBytes((Join-Path $SourceRoot 'target.txt'))
+            $batch3StartDispatchBytes = [IO.File]::ReadAllBytes((Join-Path $DispatchRoot 'target.txt'))
+            if ($batch3StartSourceBytes.Length -ne $batch3StartDispatchBytes.Length -or
+                [Convert]::ToBase64String($batch3StartSourceBytes) -cne [Convert]::ToBase64String($batch3StartDispatchBytes)) {
+                throw 'BATCH3 (h) pre-injection control did not align source A and dispatch bytes.'
+            }
+            $batch3StartControlPath = Join-Path (Join-Path $SourceRoot '.local\ai-sessions\history\a') 'batch3-h-start-control.txt'
+            [IO.File]::WriteAllText($batch3StartControlPath, 'source A and dispatch raw bytes matched before source B injection', (New-Object System.Text.UTF8Encoding($false)))
+            [IO.File]::WriteAllBytes((Join-Path $SourceRoot 'target.txt'), [Text.Encoding]::UTF8.GetBytes('source B longer' + [char]10))
+        }
+        'readonly-target' {
+            $batch3ReadonlyTargetPath = Join-Path $DispatchRoot 'target.txt'
+            [IO.File]::SetAttributes($batch3ReadonlyTargetPath, [IO.FileAttributes]::ReadOnly)
+        }
+    }
+
+    $null = & $script:Batch3SyncOriginal -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot
+    if ($script:Batch3SyncHookMode -ceq 'source-b-a') {
+        [IO.File]::WriteAllBytes((Join-Path $SourceRoot 'target.txt'), [Text.Encoding]::UTF8.GetBytes('source A' + [char]10))
+    }
+}
+'@
+                $batch3HookScriptText = $batch3HookScriptText.Replace('__HOOK_MODE__', $Batch3SyncHook)
+                [IO.File]::WriteAllText($batch3HookScriptPath, $batch3HookScriptText, (New-Object System.Text.UTF8Encoding($true)))
+
+                # The temporary entry stays under scriptsRoot, so the copy guard uses production dispatch modules.
+                Copy-DispatchModulesBesideTestEntry -ScriptPath $batch3HookEntryPath
+                $ScriptPath = $batch3HookEntryPath
+                $batch3ScriptArgumentIndex = if ($UseCurrentHost) { 3 } else { 2 }
+                $dispatchArguments[$batch3ScriptArgumentIndex] = $ScriptPath
+            }
             if ($FollowupAccount) { $accountLock = [IO.File]::Open($accountFixtureLockPath,[IO.FileMode]::Open,[IO.FileAccess]::Write,[IO.FileShare]::None) }
             $dispatchEnvironment = if ($FollowupAccount) { @{ CODEX_HOME = $accountFixtureHomeA } } else { @{} }
             $run = Invoke-Phase9Process -HostPath $hostPath -Arguments $dispatchArguments -WorkingDirectory $root -EnvironmentVariables $dispatchEnvironment
         }
-        finally { if ($null -ne $accountLock) { $accountLock.Dispose() } }
+        finally {
+            if ($null -ne $accountLock) { $accountLock.Dispose() }
+            if ($null -ne $batch3HookScriptPath -and [IO.File]::Exists($batch3HookScriptPath)) { [IO.File]::Delete($batch3HookScriptPath) }
+            if ($null -ne $batch3HookEntryPath -and [IO.File]::Exists($batch3HookEntryPath)) { [IO.File]::Delete($batch3HookEntryPath) }
+        }
         $outputDocument = $null
         try {
             $outputDocument = ConvertFrom-Json -InputObject ([string]$run.stdout)
@@ -22325,6 +22507,694 @@ function Invoke-GitCommand {
         return [pscustomobject]@{ Run=$run; MarkerPath=$markerPath; OrderPath=$orderPath }
     }
 
+    function Get-Batch3Sha256FromBytes {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [AllowEmptyCollection()]
+            [byte[]]$Bytes
+        )
+
+        $batch3Sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            return ([System.BitConverter]::ToString($batch3Sha256.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant()
+        }
+        finally {
+            $batch3Sha256.Dispose()
+        }
+    }
+
+    function New-Batch3EolFixture {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$Name,
+            [AllowNull()][string]$TargetContent,
+            [AllowNull()][byte[]]$TargetBytes,
+            [AllowNull()][string]$CarryInContent,
+            [switch]$ForceCrlfTarget,
+            [switch]$StagedAddedTarget,
+            [AllowEmptyCollection()][string[]]$AdditionalGitAttributes = @(),
+            [AllowEmptyCollection()][object[]]$AdditionalTrackedFiles = @(),
+            [string[]]$RemoveSourcePathsBeforePreflight = @(),
+            [ValidateSet('', 'dispatch-only-output', 'same-length-dispatch', 'source-b-a', 'readonly-target')][string]$Batch3SyncHook = ''
+        )
+
+        $batch3HelperParameters = @{
+            Name = $Name
+            ScriptPath = $script:sourcePath
+            CreateQuotaBeforePath = $true
+            DispatchKind = 'resource'
+            CallerSessionId = 'phase9-' + $Name
+            UseCurrentHost = $true
+        }
+        if ($PSBoundParameters.ContainsKey('TargetContent')) { $batch3HelperParameters.TargetContent = $TargetContent }
+        if ($PSBoundParameters.ContainsKey('TargetBytes')) { $batch3HelperParameters.TargetBytes = $TargetBytes }
+        if ($PSBoundParameters.ContainsKey('CarryInContent')) { $batch3HelperParameters.CarryInContent = $CarryInContent }
+        if ($ForceCrlfTarget) { $batch3HelperParameters.ForceCrlfTarget = $true }
+        if ($StagedAddedTarget) { $batch3HelperParameters.StagedAddedTarget = $true }
+        if ($PSBoundParameters.ContainsKey('AdditionalGitAttributes')) { $batch3HelperParameters.AdditionalGitAttributes = @($AdditionalGitAttributes) }
+        if ($PSBoundParameters.ContainsKey('AdditionalTrackedFiles')) { $batch3HelperParameters.AdditionalTrackedFiles = @($AdditionalTrackedFiles) }
+        if ($PSBoundParameters.ContainsKey('RemoveSourcePathsBeforePreflight')) { $batch3HelperParameters.RemoveSourcePathsBeforePreflight = @($RemoveSourcePathsBeforePreflight) }
+        if (-not [string]::IsNullOrWhiteSpace($Batch3SyncHook)) { $batch3HelperParameters.Batch3SyncHook = $Batch3SyncHook }
+
+        $batch3RealFixture = & $invokeSRealDispatchCase @batch3HelperParameters
+        Assert-True ([int]$batch3RealFixture.run.exit_code -eq 0 -and (Test-Path -LiteralPath $batch3RealFixture.preflight_result_path -PathType Leaf) -and $null -ne $batch3RealFixture.run_record_document) ('BATCH3 真實 Preflight fixture 失敗：' + [string]$batch3RealFixture.output_text)
+        $batch3ExpectedHostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
+        Assert-True ([string]::Equals([string]$batch3RealFixture.run.host_path, $batch3ExpectedHostPath, [StringComparison]::OrdinalIgnoreCase)) ('BATCH3 Preflight 未使用目前 PowerShell 宿主：expected=' + $batch3ExpectedHostPath + '; actual=' + [string]$batch3RealFixture.run.host_path)
+        $batch3Preflight = Get-Content -LiteralPath $batch3RealFixture.preflight_result_path -Raw -Encoding UTF8 | ConvertFrom-Json
+        $batch3Baseline = Read-DispatchBaseline -Path $batch3Preflight.baselinePath -Sha256 $batch3Preflight.baselineSha256 -SourceRoot $batch3RealFixture.source_root -DispatchRoot $batch3RealFixture.dispatch_root -LineSlug 'a' -DispatchSlug $batch3RealFixture.dispatch_slug -BaseSha $batch3Preflight.baseSha
+        return [pscustomobject]@{ Real = $batch3RealFixture; Preflight = $batch3Preflight; Baseline = $batch3Baseline }
+    }
+
+    function Invoke-Batch3Collect {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [object]$Fixture
+        )
+
+        $batch3ReportPath = Join-Path $Fixture.Real.dispatch_root '.local\ai-sessions\report\a\batch3-eol-report.md'
+        $batch3ReportParent = Split-Path -Parent $batch3ReportPath
+        $null = New-Item -ItemType Directory -Path $batch3ReportParent -Force
+        [IO.File]::WriteAllText($batch3ReportPath, "BATCH3-EOL fixture report`r`n", (New-Object System.Text.UTF8Encoding($false)))
+
+        $batch3HostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
+        $batch3Arguments = @(
+            '-NoLogo'
+            '-NoProfile'
+            '-NonInteractive'
+            '-File'
+            $Fixture.Real.script_path
+            '-RequestPath'
+            $Fixture.Real.request_path
+            '-Operation'
+            'Collect'
+            '-ApplyCollectedChanges'
+            '-ExecutionRoot'
+            $Fixture.Real.dispatch_root
+            '-RunRecordPath'
+            $Fixture.Real.run_record_path
+            '-RequiredIdentifier'
+            'target.txt'
+            '-PreflightResultPath'
+            $Fixture.Real.preflight_result_path
+            '-BaseSha'
+            [string]$Fixture.Preflight.baseSha
+            '-BaselinePath'
+            [string]$Fixture.Preflight.baselinePath
+            '-BaselineSha256'
+            [string]$Fixture.Preflight.baselineSha256
+            '-ReportPath'
+            $batch3ReportPath
+        )
+        $batch3Run = Invoke-Phase9Process -HostPath $batch3HostPath -Arguments $batch3Arguments -WorkingDirectory $Fixture.Real.case_root -EnvironmentVariables @{}
+        $batch3Document = $null
+        if (-not [string]::IsNullOrWhiteSpace([string]$batch3Run.stdout)) {
+            try { $batch3Document = ConvertFrom-Json -InputObject ([string]$batch3Run.stdout) } catch { $batch3Document = $null }
+        }
+        return [pscustomobject]@{ Run = $batch3Run; Document = $batch3Document; OutputText = ([string]$batch3Run.stdout + [string]$batch3Run.stderr); ReportPath = $batch3ReportPath }
+    }
+
+    function Remove-Batch3EolFixture {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [object]$Fixture
+        )
+
+        foreach ($batch3CleanupPath in @([string]$Fixture.Real.case_root)) {
+            if (-not [string]::IsNullOrWhiteSpace($batch3CleanupPath) -and
+                (Test-Path -LiteralPath $batch3CleanupPath) -and
+                (Test-PathWithinRoot -Path $batch3CleanupPath -Root $sRealDispatchParent)) {
+                Remove-Item -LiteralPath $batch3CleanupPath -Recurse -Force
+            }
+        }
+    }
+
+    function Invoke-Batch3BoundFileCopyProbe {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)]
+            [ValidateSet('i', 'j', 'k', 'l', 'm', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w')]
+            [string]$Scenario
+        )
+
+        $batch3ProbeScriptPath = Join-Path $fixtureRoot 'batch3-bound-file-copy-probe.ps1'
+        $batch3ProbeScriptText = @'
+#Requires -Version 5.1
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory)][string]$ModulesRoot,
+    [Parameter(Mandatory)][string]$WorkRoot,
+[Parameter(Mandatory)][ValidateSet('i', 'j', 'k', 'l', 'm', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w')][string]$Scenario
+)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+. (Join-Path $ModulesRoot 'common-runtime.ps1')
+. (Join-Path $ModulesRoot 'git-baseline.ps1')
+if (-not (Initialize-DispatchBoundFileCopy)) { throw 'Bound handle copy is unavailable on this platform.' }
+Add-Type -Language CSharp -TypeDefinition @"
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class Batch3FailOnceWriteStream : Stream
+{
+    private readonly Stream _inner;
+    private bool _hasFailed;
+
+    public Batch3FailOnceWriteStream(Stream inner) { _inner = inner; }
+    public static Func<Stream, Stream> CreateDecorator() { return delegate(Stream innerStream) { return new Batch3FailOnceWriteStream(innerStream); }; }
+    public override bool CanRead { get { return _inner.CanRead; } }
+    public override bool CanSeek { get { return _inner.CanSeek; } }
+    public override bool CanWrite { get { return _inner.CanWrite; } }
+    public override long Length { get { return _inner.Length; } }
+    public override long Position { get { return _inner.Position; } set { _inner.Position = value; } }
+    public override void Flush() { _inner.Flush(); }
+    public override int Read(byte[] buffer, int offset, int count) { return _inner.Read(buffer, offset, count); }
+    public override long Seek(long offset, SeekOrigin origin) { return _inner.Seek(offset, origin); }
+    public override void SetLength(long value) { _inner.SetLength(value); }
+    public override void Write(byte[] buffer, int offset, int count)
+    {
+        if (!_hasFailed)
+        {
+            _hasFailed = true;
+            int partialCount = Math.Min(3, count);
+            if (partialCount > 0) _inner.Write(buffer, offset, partialCount);
+            throw new IOException("Injected destination write failure after a partial write.");
+        }
+        _inner.Write(buffer, offset, count);
+    }
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _inner.Dispose();
+        base.Dispose(disposing);
+    }
+}
+
+public static class Batch3AttributeRestoreFailure
+{
+    public static readonly IOException Failure = new IOException("Injected attribute restoration failure.");
+    public static Action CreateProbe() { return delegate { throw Failure; }; }
+}
+
+public static class Batch3HardLinkInfo
+{
+    private const uint FileReadAttributes = 0x00000080;
+    private const uint FileShareRead = 0x00000001;
+    private const uint FileShareWrite = 0x00000002;
+    private const uint FileShareDelete = 0x00000004;
+    private const uint OpenExisting = 3;
+    private const uint FileFlagOpenReparsePoint = 0x00200000;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTimeValue { public uint Low; public uint High; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public FileTimeValue CreationTime;
+        public FileTimeValue LastAccessTime;
+        public FileTimeValue LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateFileW")]
+    private static extern SafeFileHandle CreateFileW(string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ByHandleFileInformation information);
+
+    public static uint GetLinkCount(string path)
+    {
+        using (SafeFileHandle handle = CreateFileW(path, FileReadAttributes,
+            FileShareRead | FileShareWrite | FileShareDelete, IntPtr.Zero, OpenExisting,
+            FileFlagOpenReparsePoint, IntPtr.Zero))
+        {
+            if (handle == null || handle.IsInvalid) throw new IOException("Could not open file to inspect hard link count.");
+            ByHandleFileInformation information;
+            if (!GetFileInformationByHandle(handle, out information)) throw new IOException("Could not inspect hard link count.");
+            return information.NumberOfLinks;
+        }
+    }
+}
+"@
+$script:batch3ProbeOwnedLinks = New-Object 'System.Collections.Generic.List[string]'
+$batch3ProbeRoot = Join-Path $WorkRoot ('batch3-bound-copy-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $batch3ProbeRoot -Force | Out-Null
+
+function Assert-Batch3Probe([bool]$Condition, [string]$Message) {
+    if (-not $Condition) { throw $Message }
+}
+function Get-Batch3ProbeHash([byte[]]$Bytes) {
+    $batch3ProbeSha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($batch3ProbeSha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $batch3ProbeSha.Dispose() }
+}
+function New-Batch3ProbeRoots([string]$Name) {
+    $batch3ProbeCaseRoot = Join-Path $batch3ProbeRoot $Name
+    $batch3ProbeSourceRoot = Join-Path $batch3ProbeCaseRoot 'source'
+    $batch3ProbeDispatchRoot = Join-Path $batch3ProbeCaseRoot 'dispatch'
+    New-Item -ItemType Directory -Path $batch3ProbeSourceRoot, $batch3ProbeDispatchRoot -Force | Out-Null
+    return [pscustomobject]@{ CaseRoot = $batch3ProbeCaseRoot; SourceRoot = $batch3ProbeSourceRoot; DispatchRoot = $batch3ProbeDispatchRoot }
+}
+function New-Batch3ProbeJunction([string]$LinkPath, [string]$TargetPath) {
+    $null = New-Item -ItemType Junction -Path $LinkPath -Target $TargetPath -ErrorAction Stop
+    $script:batch3ProbeOwnedLinks.Add($LinkPath)
+}
+
+try {
+    switch ($Scenario) {
+        'i' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'i'
+            $batch3ProbeByteCases = @(
+                [pscustomobject]@{ Name = 'crlf'; Bytes = [byte[]]@(65, 13, 10, 66, 13, 10) },
+                [pscustomobject]@{ Name = 'lf'; Bytes = [byte[]]@(65, 10, 66, 10) },
+                [pscustomobject]@{ Name = 'cr'; Bytes = [byte[]]@(65, 13, 66) },
+                [pscustomobject]@{ Name = 'nul'; Bytes = [byte[]]@(0, 65, 13, 10, 66, 0) },
+                [pscustomobject]@{ Name = 'nonutf8'; Bytes = [byte[]]@(255, 128, 239, 187, 191, 13, 10, 0) }
+            )
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            try {
+                foreach ($batch3ProbeByteCase in $batch3ProbeByteCases) {
+                    $batch3ProbeSourcePath = Join-Path $batch3ProbeFixture.SourceRoot ($batch3ProbeByteCase.Name + '.bin')
+                    $batch3ProbeDestinationPath = Join-Path $batch3ProbeFixture.DispatchRoot ($batch3ProbeByteCase.Name + '.bin')
+                    [IO.File]::WriteAllBytes($batch3ProbeSourcePath, [byte[]]$batch3ProbeByteCase.Bytes)
+                    [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, [byte[]]@(9, 8, 7))
+                    $batch3ProbeHash = $batch3ProbeSession.CopyBound($batch3ProbeSourcePath, $batch3ProbeDestinationPath, ($batch3ProbeByteCase.Name + '.bin'))
+                    $batch3ProbeActualBytes = [IO.File]::ReadAllBytes($batch3ProbeDestinationPath)
+                    Assert-Batch3Probe ([Convert]::ToBase64String($batch3ProbeActualBytes) -ceq [Convert]::ToBase64String([byte[]]$batch3ProbeByteCase.Bytes)) ('byte transparency failed: ' + $batch3ProbeByteCase.Name)
+                    Assert-Batch3Probe ($batch3ProbeHash -ceq (Get-Batch3ProbeHash -Bytes ([byte[]]$batch3ProbeByteCase.Bytes))) ('hash mismatch: ' + $batch3ProbeByteCase.Name)
+                }
+            }
+            finally { $batch3ProbeSession.Dispose() }
+            Write-Output 'PASS scenario=i byte_transparency=5 hash_verified=5'
+        }
+        'j' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'j'
+            $batch3ProbeOutsideSource = Join-Path $batch3ProbeFixture.CaseRoot 'outside-source'
+            $batch3ProbeSourceLink = Join-Path $batch3ProbeFixture.SourceRoot 'escape'
+            $batch3ProbeDestinationFolder = Join-Path $batch3ProbeFixture.DispatchRoot 'escape'
+            New-Item -ItemType Directory -Path $batch3ProbeOutsideSource, $batch3ProbeDestinationFolder -Force | Out-Null
+            $batch3ProbeOutsideSourcePath = Join-Path $batch3ProbeOutsideSource 'target.bin'
+            $batch3ProbeDestinationPath = Join-Path $batch3ProbeDestinationFolder 'target.bin'
+            $batch3ProbeOutsideBytes = [byte[]]@(79, 85, 84, 83, 73, 68, 69)
+            $batch3ProbeDestinationBefore = [byte[]]@(68, 69, 83, 84)
+            [IO.File]::WriteAllBytes($batch3ProbeOutsideSourcePath, $batch3ProbeOutsideBytes)
+            [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, $batch3ProbeDestinationBefore)
+            New-Batch3ProbeJunction -LinkPath $batch3ProbeSourceLink -TargetPath $batch3ProbeOutsideSource
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeRejected = $false
+            $batch3ProbeError = ''
+            try { $null = $batch3ProbeSession.CopyBound((Join-Path $batch3ProbeSourceLink 'target.bin'), $batch3ProbeDestinationPath, 'escape/target.bin') }
+            catch { $batch3ProbeRejected = $true; $batch3ProbeError = $_.Exception.Message }
+            finally { $batch3ProbeSession.Dispose() }
+            Assert-Batch3Probe $batch3ProbeRejected 'source junction was accepted'
+            Assert-Batch3Probe ($batch3ProbeError -match '最終路徑') ('source junction rejected for an unexpected reason: ' + $batch3ProbeError)
+            Assert-Batch3Probe ([Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeDestinationPath)) -ceq [Convert]::ToBase64String($batch3ProbeDestinationBefore)) 'destination changed on source junction rejection'
+            Assert-Batch3Probe ([Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeOutsideSourcePath)) -ceq [Convert]::ToBase64String($batch3ProbeOutsideBytes)) 'outside source changed'
+            Write-Output 'PASS scenario=j source_intermediate_junction_rejected_before_copy destination_unchanged=true'
+        }
+        'k' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'k'
+            $batch3ProbeSourceFolder = Join-Path $batch3ProbeFixture.SourceRoot 'pivot'
+            $batch3ProbeDispatchFolder = Join-Path $batch3ProbeFixture.DispatchRoot 'pivot'
+            $batch3ProbeOutsideSource = Join-Path $batch3ProbeFixture.CaseRoot 'outside-source'
+            New-Item -ItemType Directory -Path $batch3ProbeSourceFolder, $batch3ProbeDispatchFolder, $batch3ProbeOutsideSource -Force | Out-Null
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeSourceFolder 'target.bin'
+            $batch3ProbeOutsideSourcePath = Join-Path $batch3ProbeOutsideSource 'target.bin'
+            $batch3ProbeDestinationPath = Join-Path $batch3ProbeDispatchFolder 'target.bin'
+            $batch3ProbeDestinationBefore = [byte[]]@(68, 75, 84)
+            [IO.File]::WriteAllBytes($batch3ProbeSourcePath, [byte[]]@(83, 79, 85, 82, 67, 69))
+            [IO.File]::WriteAllBytes($batch3ProbeOutsideSourcePath, [byte[]]@(69, 88, 84))
+            [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, $batch3ProbeDestinationBefore)
+            $batch3ProbeSourceCache = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            $batch3ProbeDispatchCache = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            $null = Get-DispatchSnapshotPath -Root (Resolve-AbsolutePath -Path $batch3ProbeFixture.SourceRoot) -Path 'pivot/target.bin' -VerifiedDirectories $batch3ProbeSourceCache -SkipLeafCheck -RootIsResolved
+            $null = Get-DispatchSnapshotPath -Root (Resolve-AbsolutePath -Path $batch3ProbeFixture.DispatchRoot) -Path 'pivot/target.bin' -VerifiedDirectories $batch3ProbeDispatchCache -SkipLeafCheck -RootIsResolved
+            Remove-Item -LiteralPath $batch3ProbeSourceFolder -Recurse -Force
+            New-Batch3ProbeJunction -LinkPath $batch3ProbeSourceFolder -TargetPath $batch3ProbeOutsideSource
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeRejected = $false
+            $batch3ProbeError = ''
+            try { $null = $batch3ProbeSession.CopyBound((Join-Path $batch3ProbeSourceFolder 'target.bin'), $batch3ProbeDestinationPath, 'pivot/target.bin') }
+            catch { $batch3ProbeRejected = $true; $batch3ProbeError = $_.Exception.Message }
+            finally { $batch3ProbeSession.Dispose() }
+            Assert-Batch3Probe $batch3ProbeRejected 'post-precheck source junction replacement was accepted'
+            Assert-Batch3Probe ($batch3ProbeError -match '最終路徑') ('post-precheck swap rejected for an unexpected reason: ' + $batch3ProbeError)
+            Assert-Batch3Probe ([Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeDestinationPath)) -ceq [Convert]::ToBase64String($batch3ProbeDestinationBefore)) 'destination changed after source swap rejection'
+            Write-Output 'PASS scenario=k checked_directory_replaced_by_junction rejected=true destination_unchanged=true'
+        }
+        'l' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'l'
+            $batch3ProbeSourceFolder = Join-Path $batch3ProbeFixture.SourceRoot 'pivot'
+            $batch3ProbeDispatchLink = Join-Path $batch3ProbeFixture.DispatchRoot 'pivot'
+            $batch3ProbeOutsideDispatch = Join-Path $batch3ProbeFixture.CaseRoot 'outside-dispatch'
+            New-Item -ItemType Directory -Path $batch3ProbeSourceFolder, $batch3ProbeOutsideDispatch -Force | Out-Null
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeSourceFolder 'target.bin'
+            $batch3ProbeOutsideDispatchPath = Join-Path $batch3ProbeOutsideDispatch 'target.bin'
+            $batch3ProbeSourceBytes = [byte[]]@(83, 79, 85, 82, 67, 69)
+            $batch3ProbeOutsideBefore = [byte[]]@(79, 85, 84, 83, 73, 68, 69)
+            [IO.File]::WriteAllBytes($batch3ProbeSourcePath, $batch3ProbeSourceBytes)
+            [IO.File]::WriteAllBytes($batch3ProbeOutsideDispatchPath, $batch3ProbeOutsideBefore)
+            New-Batch3ProbeJunction -LinkPath $batch3ProbeDispatchLink -TargetPath $batch3ProbeOutsideDispatch
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeRejected = $false
+            $batch3ProbeError = ''
+            try { $null = $batch3ProbeSession.CopyBound($batch3ProbeSourcePath, (Join-Path $batch3ProbeDispatchLink 'target.bin'), 'pivot/target.bin') }
+            catch { $batch3ProbeRejected = $true; $batch3ProbeError = $_.Exception.Message }
+            finally { $batch3ProbeSession.Dispose() }
+            Assert-Batch3Probe $batch3ProbeRejected 'destination junction was accepted'
+            Assert-Batch3Probe ($batch3ProbeError -match '最終路徑') ('destination junction rejected for an unexpected reason: ' + $batch3ProbeError)
+            Assert-Batch3Probe ([Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeOutsideDispatchPath)) -ceq [Convert]::ToBase64String($batch3ProbeOutsideBefore)) 'outside destination changed'
+            Write-Output 'PASS scenario=l destination_intermediate_junction_rejected_before_write outside_bytes_unchanged=true'
+        }
+        'm' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'm'
+            $batch3ProbeOutsidePath = Join-Path $batch3ProbeFixture.CaseRoot 'outside.bin'
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeFixture.SourceRoot 'target.bin'
+            $batch3ProbeDestinationPath = Join-Path $batch3ProbeFixture.DispatchRoot 'target.bin'
+            $batch3ProbeDestinationBefore = [byte[]]@(68, 69, 83, 84)
+            [IO.File]::WriteAllBytes($batch3ProbeOutsidePath, [byte[]]@(79, 85, 84))
+            [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, $batch3ProbeDestinationBefore)
+            try { $null = New-Item -ItemType SymbolicLink -Path $batch3ProbeSourcePath -Target $batch3ProbeOutsidePath -ErrorAction Stop }
+            catch { Write-Output ('SKIPPED scenario=m symbolic_link_permission_unavailable=' + $_.Exception.Message); return }
+            $script:batch3ProbeOwnedLinks.Add($batch3ProbeSourcePath)
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeRejected = $false
+            $batch3ProbeError = ''
+            try { $null = $batch3ProbeSession.CopyBound($batch3ProbeSourcePath, $batch3ProbeDestinationPath, 'target.bin') }
+            catch { $batch3ProbeRejected = $true; $batch3ProbeError = $_.Exception.Message }
+            finally { $batch3ProbeSession.Dispose() }
+            Assert-Batch3Probe $batch3ProbeRejected 'file symbolic link leaf was accepted'
+            Assert-Batch3Probe ($batch3ProbeError -match 'reparse point') ('symlink rejected for an unexpected reason: ' + $batch3ProbeError)
+            Assert-Batch3Probe ([Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeDestinationPath)) -ceq [Convert]::ToBase64String($batch3ProbeDestinationBefore)) 'destination changed on symlink rejection'
+            Write-Output 'PASS scenario=m file_symlink_leaf_rejected destination_unchanged=true'
+        }
+        'p' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'p'
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeFixture.SourceRoot 'target.bin'
+            $batch3ProbeDestinationPath = Join-Path $batch3ProbeFixture.DispatchRoot 'target.bin'
+            $batch3ProbeSourceBytes = [byte[]]@(83, 79, 85, 82, 67, 69, 45, 76, 79, 78, 71)
+            $batch3ProbeDestinationBefore = [byte[]]@(68, 69, 83, 84)
+            [IO.File]::WriteAllBytes($batch3ProbeSourcePath, $batch3ProbeSourceBytes)
+            [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, $batch3ProbeDestinationBefore)
+            [IO.File]::SetAttributes($batch3ProbeDestinationPath, [IO.FileAttributes]::ReadOnly)
+            try {
+                $batch3ProbeAcl = Get-Acl -LiteralPath $batch3ProbeDestinationPath
+                $batch3ProbeUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+                $batch3ProbeDenyWriteRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+                    $batch3ProbeUserSid,
+                    [Security.AccessControl.FileSystemRights]::WriteData,
+                    [Security.AccessControl.AccessControlType]::Deny)
+                $batch3ProbeAcl.AddAccessRule($batch3ProbeDenyWriteRule)
+                Set-Acl -LiteralPath $batch3ProbeDestinationPath -AclObject $batch3ProbeAcl -ErrorAction Stop
+            }
+            catch {
+                [IO.File]::SetAttributes($batch3ProbeDestinationPath, [IO.FileAttributes]::Normal)
+                Write-Output ('SKIPPED scenario=p destination_write_acl_unavailable=' + $_.Exception.Message)
+                return
+            }
+
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeRejected = $false
+            $batch3ProbeError = ''
+            try { $null = $batch3ProbeSession.CopyBound($batch3ProbeSourcePath, $batch3ProbeDestinationPath, 'target.bin') }
+            catch { $batch3ProbeRejected = $true; $batch3ProbeError = $_.Exception.Message }
+            finally { $batch3ProbeSession.Dispose() }
+            $batch3ProbeAttributesAfterFailure = [IO.File]::GetAttributes($batch3ProbeDestinationPath)
+            $batch3ProbeReadonlyRestored = ($batch3ProbeAttributesAfterFailure -band [IO.FileAttributes]::ReadOnly) -ne 0
+            $batch3ProbeDestinationUnchanged = [Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeDestinationPath)) -ceq [Convert]::ToBase64String($batch3ProbeDestinationBefore)
+            [IO.File]::SetAttributes($batch3ProbeDestinationPath, [IO.FileAttributes]::Normal)
+            Assert-Batch3Probe $batch3ProbeRejected 'write access denial did not fail CopyBound'
+            Assert-Batch3Probe ($batch3ProbeError -match 'ReOpenFile') ('copy failed outside ReOpenFile: ' + $batch3ProbeError)
+            Assert-Batch3Probe $batch3ProbeReadonlyRestored 'read-only attribute was not restored after the ReOpenFile failure'
+            Assert-Batch3Probe $batch3ProbeDestinationUnchanged 'destination bytes changed after the ReOpenFile failure'
+            Write-Output 'PASS scenario=p reopen_failed=true readonly_restored=true destination_unchanged=true'
+        }
+        'q' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'q'
+            $batch3ProbeSourceFolder = Join-Path $batch3ProbeFixture.SourceRoot 'pivot'
+            $batch3ProbeDispatchFolder = Join-Path $batch3ProbeFixture.DispatchRoot 'pivot'
+            $batch3ProbeOutsideDispatch = Join-Path $batch3ProbeFixture.CaseRoot 'outside-dispatch'
+            New-Item -ItemType Directory -Path $batch3ProbeSourceFolder, $batch3ProbeDispatchFolder, $batch3ProbeOutsideDispatch -Force | Out-Null
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeSourceFolder 'target.bin'
+            $batch3ProbeDestinationPath = Join-Path $batch3ProbeDispatchFolder 'target.bin'
+            $batch3ProbeOutsidePath = Join-Path $batch3ProbeOutsideDispatch 'target.bin'
+            [IO.File]::WriteAllBytes($batch3ProbeSourcePath, [byte[]]@(83, 79, 85, 82, 67, 69, 45, 76, 79, 78, 71))
+            [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, [byte[]]@(68, 69, 83, 84))
+            [IO.File]::WriteAllBytes($batch3ProbeOutsidePath, [byte[]]@(79, 85, 84, 83, 73, 68, 69))
+            $batch3ProbeDispatchCache = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            $null = Get-DispatchSnapshotPath -Root (Resolve-AbsolutePath -Path $batch3ProbeFixture.DispatchRoot) -Path 'pivot/target.bin' -VerifiedDirectories $batch3ProbeDispatchCache -SkipLeafCheck -RootIsResolved
+            Remove-Item -LiteralPath $batch3ProbeDispatchFolder -Recurse -Force
+            try { New-Batch3ProbeJunction -LinkPath $batch3ProbeDispatchFolder -TargetPath $batch3ProbeOutsideDispatch }
+            catch { Write-Output ('SKIPPED scenario=q junction_creation_unavailable=' + $_.Exception.Message); return }
+
+            [IO.File]::SetAttributes($batch3ProbeOutsidePath, [IO.FileAttributes]::ReadOnly)
+            $batch3ProbeOutsideAttributesBefore = [IO.File]::GetAttributes($batch3ProbeOutsidePath)
+            $batch3ProbeOutsideBytesBefore = [IO.File]::ReadAllBytes($batch3ProbeOutsidePath)
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeRejected = $false
+            $batch3ProbeError = ''
+            try { $null = $batch3ProbeSession.CopyBound($batch3ProbeSourcePath, (Join-Path $batch3ProbeDispatchFolder 'target.bin'), 'pivot/target.bin') }
+            catch { $batch3ProbeRejected = $true; $batch3ProbeError = $_.Exception.Message }
+            finally { $batch3ProbeSession.Dispose() }
+            $batch3ProbeOutsideAttributesAfter = [IO.File]::GetAttributes($batch3ProbeOutsidePath)
+            $batch3ProbeOutsideBytesAfter = [IO.File]::ReadAllBytes($batch3ProbeOutsidePath)
+            $batch3ProbeOutsideAttributesUnchanged = $batch3ProbeOutsideAttributesAfter -eq $batch3ProbeOutsideAttributesBefore
+            $batch3ProbeOutsideBytesUnchanged = [Convert]::ToBase64String($batch3ProbeOutsideBytesAfter) -ceq [Convert]::ToBase64String($batch3ProbeOutsideBytesBefore)
+            [IO.File]::SetAttributes($batch3ProbeOutsidePath, [IO.FileAttributes]::Normal)
+            Assert-Batch3Probe $batch3ProbeRejected 'destination directory replacement by junction was accepted'
+            Assert-Batch3Probe ($batch3ProbeError -match '最終路徑') ('destination junction rejected for an unexpected reason: ' + $batch3ProbeError)
+            Assert-Batch3Probe ($batch3ProbeOutsideAttributesUnchanged -and $batch3ProbeOutsideBytesUnchanged) 'outside file attributes or bytes changed after destination junction replacement'
+            Write-Output 'PASS scenario=q destination_junction_rejected=true outside_attributes_unchanged=true outside_bytes_unchanged=true'
+        }
+        'r' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'r'
+            $batch3ProbeDispatchPath = Join-Path $batch3ProbeFixture.DispatchRoot 'target.txt'
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeFixture.SourceRoot 'target.txt'
+            [IO.File]::WriteAllText($batch3ProbeSourcePath, 'source content is longer', (New-Object System.Text.UTF8Encoding($false)))
+            [IO.File]::WriteAllText($batch3ProbeDispatchPath, 'x', (New-Object System.Text.UTF8Encoding($false)))
+            $null = & git -C $batch3ProbeFixture.DispatchRoot init -q
+            if ($LASTEXITCODE -ne 0) { throw 'git init failed for non-Windows branch probe.' }
+            $null = & git -C $batch3ProbeFixture.DispatchRoot add -- target.txt
+            if ($LASTEXITCODE -ne 0) { throw 'git add failed for non-Windows branch probe.' }
+            $batch3ProbeDispatchBefore = [IO.File]::ReadAllBytes($batch3ProbeDispatchPath)
+            $batch3ProbePlatformFunction = (Get-Item Function:\Test-IsWindowsPlatform).ScriptBlock
+            Set-Item -Path Function:\Test-IsWindowsPlatform -Value { return $false }
+            $batch3ProbeRejected = $false
+            $batch3ProbeError = ''
+            try { $null = Sync-DispatchTrackedRawBytesFromSource -SourceRoot $batch3ProbeFixture.SourceRoot -DispatchRoot $batch3ProbeFixture.DispatchRoot }
+            catch { $batch3ProbeRejected = $true; $batch3ProbeError = $_.Exception.Message }
+            finally { Set-Item -Path Function:\Test-IsWindowsPlatform -Value $batch3ProbePlatformFunction }
+            $batch3ProbeDispatchUnchanged = [Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeDispatchPath)) -ceq [Convert]::ToBase64String($batch3ProbeDispatchBefore)
+            $batch3ProbeSourceUnchanged = [IO.File]::ReadAllText($batch3ProbeSourcePath) -ceq 'source content is longer'
+            Assert-Batch3Probe $batch3ProbeRejected 'non-Windows length-different synchronization was accepted'
+            Assert-Batch3Probe ($batch3ProbeError -match '僅支援 Windows') ('non-Windows synchronization rejected with an unexpected message: ' + $batch3ProbeError)
+            Assert-Batch3Probe ($batch3ProbeDispatchUnchanged -and $batch3ProbeSourceUnchanged) 'non-Windows rejection changed source or dispatch bytes'
+            Write-Output 'PASS scenario=r non_windows_overwrite_rejected=true source_and_dispatch_unchanged=true'
+        }
+        's' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 's'
+            $batch3ProbeSingleSourcePath = Join-Path $batch3ProbeFixture.SourceRoot 'single.txt'
+            $batch3ProbeSingleDestinationPath = Join-Path $batch3ProbeFixture.DispatchRoot 'single.txt'
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeFixture.SourceRoot 'target.txt'
+            $batch3ProbeDestinationPath = Join-Path $batch3ProbeFixture.DispatchRoot 'target.txt'
+            $batch3ProbeOutsidePath = Join-Path $batch3ProbeFixture.CaseRoot 'outside-target.txt'
+            [IO.File]::WriteAllBytes($batch3ProbeSingleSourcePath, [byte[]]@(83, 73, 78, 71, 76, 69, 45, 83, 79, 85, 82, 67, 69))
+            [IO.File]::WriteAllBytes($batch3ProbeSingleDestinationPath, [byte[]]@(120))
+            [IO.File]::WriteAllBytes($batch3ProbeSourcePath, [byte[]]@(83, 79, 85, 82, 67, 69, 45, 65, 76, 73, 71, 78, 69, 68))
+            $batch3ProbeOutsideBefore = [byte[]]@(79, 85, 84, 83, 73, 68, 69, 45, 66, 89, 84, 69, 83)
+            [IO.File]::WriteAllBytes($batch3ProbeOutsidePath, $batch3ProbeOutsideBefore)
+
+            $null = & git -C $batch3ProbeFixture.DispatchRoot init -q
+            if ($LASTEXITCODE -ne 0) { throw 'git init failed for hard-link probe.' }
+            $null = & git -C $batch3ProbeFixture.DispatchRoot add -- single.txt
+            if ($LASTEXITCODE -ne 0) { throw 'git add failed for single-link control.' }
+            $batch3ProbeSingleLinkCount = [Batch3HardLinkInfo]::GetLinkCount($batch3ProbeSingleDestinationPath)
+            Assert-Batch3Probe ($batch3ProbeSingleLinkCount -eq 1) ('single-file control link count was not 1: ' + $batch3ProbeSingleLinkCount)
+            $null = Sync-DispatchTrackedRawBytesFromSource -SourceRoot $batch3ProbeFixture.SourceRoot -DispatchRoot $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeSingleAligned = [Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeSingleDestinationPath)) -ceq [Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeSingleSourcePath))
+            Assert-Batch3Probe $batch3ProbeSingleAligned 'single-link regular file did not align'
+
+            $null = New-Item -ItemType HardLink -Path $batch3ProbeDestinationPath -Target $batch3ProbeOutsidePath -ErrorAction Stop
+            $script:batch3ProbeOwnedLinks.Add($batch3ProbeDestinationPath)
+            [IO.File]::SetAttributes($batch3ProbeOutsidePath, [IO.FileAttributes]::ReadOnly)
+            try {
+                $batch3ProbeOutsideAttributesBefore = [IO.File]::GetAttributes($batch3ProbeOutsidePath)
+                $batch3ProbeHardLinkCount = [Batch3HardLinkInfo]::GetLinkCount($batch3ProbeDestinationPath)
+                Assert-Batch3Probe ($batch3ProbeHardLinkCount -gt 1) ('destination hard link count was not greater than 1: ' + $batch3ProbeHardLinkCount)
+                $null = & git -C $batch3ProbeFixture.DispatchRoot add -- target.txt
+                if ($LASTEXITCODE -ne 0) { throw 'git add failed for hard-link destination.' }
+
+                $batch3ProbeRejected = $false
+                $batch3ProbeError = ''
+                try { $null = Sync-DispatchTrackedRawBytesFromSource -SourceRoot $batch3ProbeFixture.SourceRoot -DispatchRoot $batch3ProbeFixture.DispatchRoot }
+                catch { $batch3ProbeRejected = $true; $batch3ProbeError = $_.Exception.Message }
+                $batch3ProbeOutsideAttributesAfter = [IO.File]::GetAttributes($batch3ProbeOutsidePath)
+                $batch3ProbeOutsideBytesAfter = [IO.File]::ReadAllBytes($batch3ProbeOutsidePath)
+                Assert-Batch3Probe $batch3ProbeRejected 'destination hard link was accepted for alignment'
+                Assert-Batch3Probe ($batch3ProbeError -match 'hard link 別名') ('hard link rejected for an unexpected reason: ' + $batch3ProbeError)
+                Assert-Batch3Probe ($batch3ProbeOutsideAttributesAfter -eq $batch3ProbeOutsideAttributesBefore) 'outside hard-link attributes changed after rejection'
+                Assert-Batch3Probe ([Convert]::ToBase64String($batch3ProbeOutsideBytesAfter) -ceq [Convert]::ToBase64String($batch3ProbeOutsideBefore)) 'outside hard-link bytes changed after rejection'
+                Write-Output ('PASS scenario=s hardlink_rejected=true outside_bytes_unchanged=true outside_attributes_unchanged=true single_link_count=' + $batch3ProbeSingleLinkCount + ' single_file_aligned=true hard_link_count=' + $batch3ProbeHardLinkCount)
+            }
+            finally {
+                if ([IO.File]::Exists($batch3ProbeOutsidePath)) { [IO.File]::SetAttributes($batch3ProbeOutsidePath, [IO.FileAttributes]::Normal) }
+            }
+        }
+        't' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 't'
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeFixture.SourceRoot 'target.bin'
+            $batch3ProbeDestinationPath = Join-Path $batch3ProbeFixture.DispatchRoot 'target.bin'
+            $batch3ProbeSourceBefore = [byte[]]@(83, 79, 85, 82, 67, 69, 45, 78, 69, 87, 45, 66, 89, 84, 69, 83)
+            $batch3ProbeDestinationBefore = [byte[]]@(79, 76, 68, 45, 68, 69, 83, 84, 73, 78, 65, 84, 73, 79, 78)
+            [IO.File]::WriteAllBytes($batch3ProbeSourcePath, $batch3ProbeSourceBefore)
+            [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, $batch3ProbeDestinationBefore)
+            [IO.File]::SetAttributes($batch3ProbeDestinationPath, [IO.FileAttributes]::ReadOnly)
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeFailure = $false
+            $batch3ProbeError = ''
+            try {
+                $batch3ProbeCopyCore = [DispatchBoundFileCopy].GetMethod('CopyBoundCore', ([Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic))
+                if ($null -eq $batch3ProbeCopyCore) { throw 'CopyBoundCore failure-injection seam is missing.' }
+                $batch3ProbeDecorator = [Batch3FailOnceWriteStream]::CreateDecorator()
+                $batch3ProbeArguments = [object[]]@([string]$batch3ProbeSourcePath, [string]$batch3ProbeDestinationPath, [string]'target.bin', $batch3ProbeDecorator, $null)
+                $null = $batch3ProbeCopyCore.Invoke($batch3ProbeSession, $batch3ProbeArguments)
+            }
+            catch {
+                $batch3ProbeFailure = $true
+                $batch3ProbeFailureException = $_.Exception
+                while (($batch3ProbeFailureException -is [System.Management.Automation.RuntimeException] -or
+                        $batch3ProbeFailureException -is [System.Reflection.TargetInvocationException]) -and
+                    $null -ne $batch3ProbeFailureException.InnerException) {
+                    $batch3ProbeFailureException = $batch3ProbeFailureException.InnerException
+                }
+                $batch3ProbeError = $batch3ProbeFailureException.Message
+            }
+            finally {
+                $batch3ProbeSession.Dispose()
+            }
+            $batch3ProbeDestinationAfter = [IO.File]::ReadAllBytes($batch3ProbeDestinationPath)
+            $batch3ProbeAttributesAfter = [IO.File]::GetAttributes($batch3ProbeDestinationPath)
+            $batch3ProbeBytesRestored = [Convert]::ToBase64String($batch3ProbeDestinationAfter) -ceq [Convert]::ToBase64String($batch3ProbeDestinationBefore)
+            $batch3ProbeReadonlyRestored = ($batch3ProbeAttributesAfter -band [IO.FileAttributes]::ReadOnly) -ne 0
+            $batch3ProbeSourceUnchanged = [Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeSourcePath)) -ceq [Convert]::ToBase64String($batch3ProbeSourceBefore)
+            [IO.File]::SetAttributes($batch3ProbeDestinationPath, [IO.FileAttributes]::Normal)
+            Assert-Batch3Probe $batch3ProbeFailure 'injected partial destination write did not fail'
+            Assert-Batch3Probe ($batch3ProbeError -match '原始位元組已回復') ('write failure returned an unexpected error: ' + $batch3ProbeError)
+            Assert-Batch3Probe ($batch3ProbeBytesRestored -and $batch3ProbeReadonlyRestored -and $batch3ProbeSourceUnchanged) 'destination bytes, read-only attribute, or source bytes were not restored after write failure'
+            Write-Output 'PASS scenario=t partial_write_failed=true destination_bytes_restored=true readonly_restored=true source_unchanged=true'
+        }
+        'u' {
+            $batch3ProbeFixture = New-Batch3ProbeRoots 'u'
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            try {
+                foreach ($batch3ProbeOriginalAttribute in @([IO.FileAttributes]::Normal, [IO.FileAttributes]::Archive)) {
+                    $batch3ProbeAttributeLeaf = $batch3ProbeOriginalAttribute.ToString() + '.bin'
+                    $batch3ProbeSourcePath = Join-Path $batch3ProbeFixture.SourceRoot $batch3ProbeAttributeLeaf
+                    $batch3ProbeDestinationPath = Join-Path $batch3ProbeFixture.DispatchRoot $batch3ProbeAttributeLeaf
+                    $batch3ProbeAttributeSourceBytes = [byte[]]@(83, 79, 85, 82, 67, 69, 13, 10)
+                    [IO.File]::WriteAllBytes($batch3ProbeSourcePath, $batch3ProbeAttributeSourceBytes)
+                    [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, [byte[]]@(120))
+                    [IO.File]::SetAttributes($batch3ProbeDestinationPath, $batch3ProbeOriginalAttribute)
+                    $batch3ProbeAttributesBefore = [IO.File]::GetAttributes($batch3ProbeDestinationPath)
+                    Assert-Batch3Probe ($batch3ProbeAttributesBefore -eq $batch3ProbeOriginalAttribute) ('attribute fixture did not retain requested attributes: ' + $batch3ProbeAttributeLeaf)
+                    Assert-Batch3Probe (([IO.FileInfo]$batch3ProbeDestinationPath).Length -ne $batch3ProbeAttributeSourceBytes.Length) 'attribute fixture lengths must differ before copy'
+                    $null = $batch3ProbeSession.CopyBound($batch3ProbeSourcePath, $batch3ProbeDestinationPath, $batch3ProbeAttributeLeaf)
+                    $batch3ProbeAttributesAfter = [IO.File]::GetAttributes($batch3ProbeDestinationPath)
+                    Assert-Batch3Probe ($batch3ProbeAttributesAfter -eq $batch3ProbeAttributesBefore) ('writable destination attributes changed: ' + $batch3ProbeAttributeLeaf)
+                    Assert-Batch3Probe ([Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeDestinationPath)) -ceq [Convert]::ToBase64String($batch3ProbeAttributeSourceBytes)) ('writable destination bytes did not align: ' + $batch3ProbeAttributeLeaf)
+                }
+            }
+            finally { $batch3ProbeSession.Dispose() }
+            Write-Output 'PASS scenario=u normal_without_archive_restored=true archive_preserved=true destination_bytes_aligned=true'
+        }
+        { $Scenario -in @('v', 'w') } {
+            $batch3ProbeFixture = New-Batch3ProbeRoots $Scenario
+            $batch3ProbeSourcePath = Join-Path $batch3ProbeFixture.SourceRoot 'target.bin'
+            $batch3ProbeDestinationPath = Join-Path $batch3ProbeFixture.DispatchRoot 'target.bin'
+            $batch3ProbeSourceBefore = [byte[]]@(83, 79, 85, 82, 67, 69, 45, 78, 69, 87, 45, 66, 89, 84, 69, 83)
+            $batch3ProbeDestinationBefore = [byte[]]@(79, 76, 68, 45, 68, 69, 83, 84, 73, 78, 65, 84, 73, 79, 78)
+            [IO.File]::WriteAllBytes($batch3ProbeSourcePath, $batch3ProbeSourceBefore)
+            [IO.File]::WriteAllBytes($batch3ProbeDestinationPath, $batch3ProbeDestinationBefore)
+            [IO.File]::SetAttributes($batch3ProbeDestinationPath, [IO.FileAttributes]::ReadOnly)
+            $batch3ProbeSession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $batch3ProbeFixture.SourceRoot, $batch3ProbeFixture.DispatchRoot
+            $batch3ProbeFailureException = $null
+            try {
+                $batch3ProbeCopyCore = [DispatchBoundFileCopy].GetMethod('CopyBoundCore', ([Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic))
+                if ($null -eq $batch3ProbeCopyCore) { throw 'CopyBoundCore failure-injection seam is missing.' }
+                $batch3ProbeDecorator = $null
+                if ($Scenario -ceq 'v') { $batch3ProbeDecorator = [Batch3FailOnceWriteStream]::CreateDecorator() }
+                $batch3ProbeRestoreProbe = [Batch3AttributeRestoreFailure]::CreateProbe()
+                $batch3ProbeArguments = [object[]]@([string]$batch3ProbeSourcePath, [string]$batch3ProbeDestinationPath, [string]'target.bin', $batch3ProbeDecorator, $batch3ProbeRestoreProbe)
+                $null = $batch3ProbeCopyCore.Invoke($batch3ProbeSession, $batch3ProbeArguments)
+            }
+            catch {
+                $batch3ProbeFailureException = $_.Exception
+                while (($batch3ProbeFailureException -is [System.Management.Automation.RuntimeException] -or
+                        $batch3ProbeFailureException -is [System.Reflection.TargetInvocationException]) -and
+                    $null -ne $batch3ProbeFailureException.InnerException) {
+                    $batch3ProbeFailureException = $batch3ProbeFailureException.InnerException
+                }
+            }
+            finally { $batch3ProbeSession.Dispose() }
+            $batch3ProbeDestinationAfter = [IO.File]::ReadAllBytes($batch3ProbeDestinationPath)
+            Assert-Batch3Probe ($null -ne $batch3ProbeFailureException) 'attribute restoration failure was not propagated'
+            Assert-Batch3Probe ([Convert]::ToBase64String([IO.File]::ReadAllBytes($batch3ProbeSourcePath)) -ceq [Convert]::ToBase64String($batch3ProbeSourceBefore)) 'source bytes changed during attribute failure'
+            if ($Scenario -ceq 'v') {
+                Assert-Batch3Probe ($batch3ProbeFailureException -is [IO.IOException]) 'dual failure did not return IOException'
+                Assert-Batch3Probe ($batch3ProbeFailureException.Message -match '原寫入失敗，且屬性還原也失敗' -and
+                    $batch3ProbeFailureException.Message -match '原始位元組已回復' -and
+                    $batch3ProbeFailureException.Message -match 'Injected attribute restoration failure') 'dual-failure message lost write or attribute restoration information'
+                Assert-Batch3Probe ($batch3ProbeFailureException.InnerException -is [AggregateException]) 'dual failure did not preserve AggregateException'
+                $batch3ProbeAggregate = $batch3ProbeFailureException.InnerException
+                Assert-Batch3Probe ($batch3ProbeAggregate.InnerExceptions.Count -eq 2) 'dual failure did not preserve both exceptions'
+                Assert-Batch3Probe ($batch3ProbeAggregate.InnerExceptions[0].InnerException.Message -ceq 'Injected destination write failure after a partial write.') 'original write failure was not preserved'
+                Assert-Batch3Probe ([object]::ReferenceEquals($batch3ProbeAggregate.InnerExceptions[1], [Batch3AttributeRestoreFailure]::Failure)) 'attribute restoration exception was not preserved'
+                Assert-Batch3Probe ([Convert]::ToBase64String($batch3ProbeDestinationAfter) -ceq [Convert]::ToBase64String($batch3ProbeDestinationBefore)) 'dual failure did not restore original destination bytes'
+                Write-Output 'PASS scenario=v dual_failure_context_preserved=true aggregate_count=2 destination_bytes_restored=true'
+            }
+            else {
+                Assert-Batch3Probe ([object]::ReferenceEquals($batch3ProbeFailureException, [Batch3AttributeRestoreFailure]::Failure)) 'attribute-only failure was wrapped or lost'
+                Assert-Batch3Probe ([Convert]::ToBase64String($batch3ProbeDestinationAfter) -ceq [Convert]::ToBase64String($batch3ProbeSourceBefore)) 'successful write bytes changed on attribute restoration failure'
+                Write-Output 'PASS scenario=w attribute_failure_propagated=true exception_identity_preserved=true destination_bytes_aligned=true'
+            }
+        }
+    }
+}
+finally {
+    for ($batch3ProbeLinkIndex = $script:batch3ProbeOwnedLinks.Count - 1; $batch3ProbeLinkIndex -ge 0; $batch3ProbeLinkIndex--) {
+        $batch3ProbeLinkPath = $script:batch3ProbeOwnedLinks[$batch3ProbeLinkIndex]
+        if ([IO.Directory]::Exists($batch3ProbeLinkPath)) { [IO.Directory]::Delete($batch3ProbeLinkPath, $false) }
+        elseif ([IO.File]::Exists($batch3ProbeLinkPath)) { [IO.File]::Delete($batch3ProbeLinkPath) }
+    }
+    if (Test-PathWithinRoot -Path $batch3ProbeRoot -Root $WorkRoot) { Remove-Item -LiteralPath $batch3ProbeRoot -Recurse -Force }
+}
+'@
+        $batch3ProbeScriptText = $batch3ProbeScriptText -replace '\r?\n', "`r`n"
+        [IO.File]::WriteAllText($batch3ProbeScriptPath, $batch3ProbeScriptText, (New-Object System.Text.UTF8Encoding($true)))
+        try {
+            $batch3ProbeHostPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+            $batch3ProbeRun = Invoke-Phase9Process -HostPath $batch3ProbeHostPath -Arguments @(
+                '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $batch3ProbeScriptPath,
+                '-ModulesRoot', (Join-Path $scriptsRoot 'dispatch'), '-WorkRoot', $fixtureRoot, '-Scenario', $Scenario
+            ) -WorkingDirectory $fixtureRoot -EnvironmentVariables @{ TEMP = 'C:\tmp'; TMP = 'C:\tmp'; PSExecutionPolicyPreference = 'Bypass' }
+            return $batch3ProbeRun
+        }
+        finally {
+            if ([IO.File]::Exists($batch3ProbeScriptPath)) { [IO.File]::Delete($batch3ProbeScriptPath) }
+        }
+    }
+
     Invoke-Case 'Phase 9 BATCH2 Inspect bypasses two readonly admissions and keeps caller fingerprint' {
         $entryRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'b2')
         New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
@@ -22507,6 +23377,797 @@ function Invoke-GitCommand {
         }
     }
 
+    Invoke-Case 'Phase 9 BATCH3 (a) LF source and CRLF checkout align before raw baseline and Collect applies' {
+        $batch3FixtureA = $null
+        $batch3FixtureAStagedAdded = $null
+        try {
+            $batch3FixtureA = New-Batch3EolFixture -Name 'batch3-eol-a' -TargetContent "baseline content`n" -ForceCrlfTarget
+            $batch3SourceAPath = Join-Path $batch3FixtureA.Real.source_root 'target.txt'
+            $batch3DispatchAPath = Join-Path $batch3FixtureA.Real.dispatch_root 'target.txt'
+            $batch3SourceABytes = [Text.Encoding]::UTF8.GetBytes("baseline content`n")
+            $batch3DispatchAtPreflight = [IO.File]::ReadAllBytes($batch3DispatchAPath)
+            $batch3BaselineAFile = @($batch3FixtureA.Baseline.files | Where-Object { [string]$_.path -ceq 'target.txt' })[0]
+            Assert-True ((Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3SourceAPath)) -Right $batch3SourceABytes) -and
+                (Test-ByteArrayEqual -Left $batch3DispatchAtPreflight -Right $batch3SourceABytes) -and
+                [string]$batch3BaselineAFile.sha256 -ceq (Get-Batch3Sha256FromBytes -Bytes $batch3SourceABytes)) '原始 EOL 缺陷：Preflight 後 dispatch 位元組或 raw SHA-256 未與 LF 來源對齊。'
+
+            $batch3DispatchAUpdate = [Text.Encoding]::UTF8.GetBytes("dispatch version`n")
+            [IO.File]::WriteAllBytes($batch3DispatchAPath, $batch3DispatchAUpdate)
+            $batch3CollectA = Invoke-Batch3Collect -Fixture $batch3FixtureA
+            Assert-True ([int]$batch3CollectA.Run.exit_code -eq 0 -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3SourceAPath)) -Right $batch3DispatchAUpdate)) ('原始 EOL 缺陷回歸：Collect 未成功套回 dispatch 位元組。' + $batch3CollectA.OutputText)
+            Write-Phase9Evidence -Label 'BATCH3_EOL_A_ORIGINAL_REGRESSION' -Value ([ordered]@{ defect_mapping = '若原始 LF/CRLF false-positive 仍存在，Collect 會以 DispatchSourceDrift 錯誤拒絕'; aligned_before_collect = $true; baseline_sha256 = [string]$batch3BaselineAFile.sha256; collect_exit_code = [int]$batch3CollectA.Run.exit_code; source_matches_dispatch = $true })
+
+            $batch3FixtureAStagedAdded = New-Batch3EolFixture -Name 'batch3-eol-a-staged-added' -TargetContent "staged target content`n" -ForceCrlfTarget -StagedAddedTarget
+            $batch3StagedAddedSourcePath = Join-Path $batch3FixtureAStagedAdded.Real.source_root 'target.txt'
+            $batch3StagedAddedDispatchPath = Join-Path $batch3FixtureAStagedAdded.Real.dispatch_root 'target.txt'
+            $batch3StagedAddedSourceBytes = [Text.Encoding]::UTF8.GetBytes("staged target content`n")
+            $batch3StagedAddedBaselineFile = @($batch3FixtureAStagedAdded.Baseline.files | Where-Object { [string]$_.path -ceq 'target.txt' })[0]
+            Assert-True ((Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3StagedAddedSourcePath)) -Right $batch3StagedAddedSourceBytes) -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3StagedAddedDispatchPath)) -Right $batch3StagedAddedSourceBytes) -and
+                [string]$batch3StagedAddedBaselineFile.sha256 -ceq (Get-Batch3Sha256FromBytes -Bytes $batch3StagedAddedSourceBytes)) 'staged-added LF target was not byte-aligned and recorded in the raw baseline after Preflight.'
+            $batch3StagedAddedDispatchUpdate = [Text.Encoding]::UTF8.GetBytes("staged target dispatch update`n")
+            [IO.File]::WriteAllBytes($batch3StagedAddedDispatchPath, $batch3StagedAddedDispatchUpdate)
+            $batch3StagedAddedCollect = Invoke-Batch3Collect -Fixture $batch3FixtureAStagedAdded
+            Assert-True ([int]$batch3StagedAddedCollect.Run.exit_code -eq 0 -and
+                $batch3StagedAddedCollect.OutputText -notmatch 'DispatchSourceDrift' -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3StagedAddedSourcePath)) -Right $batch3StagedAddedDispatchUpdate)) ('staged-added target Collect falsely reported source drift or did not apply the dispatch bytes.' + $batch3StagedAddedCollect.OutputText)
+            Write-Phase9Evidence -Label 'BATCH3_EOL_A_STAGED_ADDED_TARGET' -Value ([ordered]@{ source_file_was_staged_added = $true; source_eol = 'LF'; dispatch_bytes_equal_source_after_preflight = $true; baseline_sha256_matches_source = $true; collect_exit_code = [int]$batch3StagedAddedCollect.Run.exit_code; collect_source_drift = $false; source_matches_dispatch_update = $true })
+        }
+        finally {
+            if ($null -ne $batch3FixtureA) { Remove-Batch3EolFixture -Fixture $batch3FixtureA }
+            if ($null -ne $batch3FixtureAStagedAdded) { Remove-Batch3EolFixture -Fixture $batch3FixtureAStagedAdded }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (b) source content change after Preflight is rejected and preserved' {
+        $batch3FixtureB = $null
+        try {
+            $batch3FixtureB = New-Batch3EolFixture -Name 'batch3-eol-b' -TargetContent "baseline A`n" -ForceCrlfTarget
+            $batch3SourceBPath = Join-Path $batch3FixtureB.Real.source_root 'target.txt'
+            $batch3DispatchBPath = Join-Path $batch3FixtureB.Real.dispatch_root 'target.txt'
+            $batch3SourceBStartBytes = [IO.File]::ReadAllBytes($batch3SourceBPath)
+            $batch3DispatchBStartBytes = [IO.File]::ReadAllBytes($batch3DispatchBPath)
+            $batch3BaselineBFile = @($batch3FixtureB.Baseline.files | Where-Object { [string]$_.path -ceq 'target.txt' })[0]
+            Assert-True ((Test-ByteArrayEqual -Left $batch3SourceBStartBytes -Right $batch3DispatchBStartBytes) -and
+                [string]$batch3BaselineBFile.sha256 -ceq (Get-Batch3Sha256FromBytes -Bytes $batch3SourceBStartBytes)) 'B control before source mutation failed: source, dispatch, and raw baseline did not share the same Preflight starting bytes.'
+            $batch3SourceBBytes = [Text.Encoding]::UTF8.GetBytes("source B`n")
+            [IO.File]::WriteAllBytes($batch3SourceBPath, $batch3SourceBBytes)
+            [IO.File]::WriteAllBytes($batch3DispatchBPath, [Text.Encoding]::UTF8.GetBytes("dispatch B`n"))
+            $batch3CollectB = Invoke-Batch3Collect -Fixture $batch3FixtureB
+            Assert-True ([int]$batch3CollectB.Run.exit_code -ne 0 -and $batch3CollectB.OutputText -match 'DispatchSourceDrift' -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3SourceBPath)) -Right $batch3SourceBBytes)) ('Preflight 後來源實質修改未被拒絕或來源位元組被覆寫。' + $batch3CollectB.OutputText)
+            Write-Phase9Evidence -Label 'BATCH3_EOL_B_SOURCE_CONTENT_DRIFT' -Value ([ordered]@{ changed_after_preflight = $true; rejected = $true; error = 'DispatchSourceDrift'; source_preserved = $true })
+        }
+        finally {
+            if ($null -ne $batch3FixtureB) { Remove-Batch3EolFixture -Fixture $batch3FixtureB }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (c) EOL-only source change after Preflight is conservatively rejected' {
+        $batch3FixtureC = $null
+        try {
+            $batch3FixtureC = New-Batch3EolFixture -Name 'batch3-eol-c' -TargetContent "baseline content`n" -ForceCrlfTarget
+            $batch3SourceCPath = Join-Path $batch3FixtureC.Real.source_root 'target.txt'
+            $batch3DispatchCPath = Join-Path $batch3FixtureC.Real.dispatch_root 'target.txt'
+            $batch3SourceCStartBytes = [IO.File]::ReadAllBytes($batch3SourceCPath)
+            $batch3DispatchCStartBytes = [IO.File]::ReadAllBytes($batch3DispatchCPath)
+            $batch3BaselineCFile = @($batch3FixtureC.Baseline.files | Where-Object { [string]$_.path -ceq 'target.txt' })[0]
+            Assert-True ((Test-ByteArrayEqual -Left $batch3SourceCStartBytes -Right $batch3DispatchCStartBytes) -and
+                [string]$batch3BaselineCFile.sha256 -ceq (Get-Batch3Sha256FromBytes -Bytes $batch3SourceCStartBytes)) 'C control before source mutation failed: source, dispatch, and raw baseline did not share the same Preflight starting bytes.'
+            $batch3SourceCBytes = [Text.Encoding]::UTF8.GetBytes("baseline content`r`n")
+            [IO.File]::WriteAllBytes($batch3SourceCPath, $batch3SourceCBytes)
+            [IO.File]::WriteAllBytes($batch3DispatchCPath, [Text.Encoding]::UTF8.GetBytes("dispatch content`n"))
+            $batch3CollectC = Invoke-Batch3Collect -Fixture $batch3FixtureC
+            Assert-True ([int]$batch3CollectC.Run.exit_code -ne 0 -and $batch3CollectC.OutputText -match 'DispatchSourceDrift' -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3SourceCPath)) -Right $batch3SourceCBytes)) ('Preflight 後僅行尾變化未以 raw SHA-256 保守拒絕或來源位元組被覆寫。' + $batch3CollectC.OutputText)
+            Write-Phase9Evidence -Label 'BATCH3_EOL_C_EOL_ONLY_DRIFT' -Value ([ordered]@{ eol_only_change_after_preflight = $true; rejected = $true; error = 'DispatchSourceDrift'; source_preserved = $true })
+        }
+        finally {
+            if ($null -ne $batch3FixtureC) { Remove-Batch3EolFixture -Fixture $batch3FixtureC }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (d) raw alignment is limited to tracked non-secret regular files' {
+        $batch3FixtureD = $null
+        try {
+            $batch3MarkerLfBytes = [Text.Encoding]::UTF8.GetBytes("synthetic fixture marker`n")
+            $batch3NonTargetBytes = [Text.Encoding]::UTF8.GetBytes("non-target content`n")
+            $batch3FixtureD = New-Batch3EolFixture -Name 'batch3-eol-d' -TargetContent "target content`n" -ForceCrlfTarget `
+                -AdditionalGitAttributes @('.env text eol=crlf', '.env.fixture text eol=crlf', 'private.pfx text eol=crlf', 'private.pem text eol=crlf', 'private.key text eol=crlf', 'secrets.fixture text eol=crlf', 'non-target.txt text eol=crlf', 'absent.txt text eol=crlf') `
+                -AdditionalTrackedFiles @(
+                    [pscustomobject]@{ Path = '.env'; Bytes = $batch3MarkerLfBytes },
+                    [pscustomobject]@{ Path = '.env.fixture'; Bytes = $batch3MarkerLfBytes },
+                    [pscustomobject]@{ Path = 'private.pfx'; Bytes = $batch3MarkerLfBytes },
+                    [pscustomobject]@{ Path = 'private.pem'; Bytes = $batch3MarkerLfBytes },
+                    [pscustomobject]@{ Path = 'private.key'; Bytes = $batch3MarkerLfBytes },
+                    [pscustomobject]@{ Path = 'secrets.fixture'; Bytes = $batch3MarkerLfBytes },
+                    [pscustomobject]@{ Path = 'non-target.txt'; Bytes = $batch3NonTargetBytes },
+                    [pscustomobject]@{ Path = 'absent.txt'; Bytes = [Text.Encoding]::UTF8.GetBytes('remove before preflight') }
+                ) -RemoveSourcePathsBeforePreflight @('absent.txt') -Batch3SyncHook 'dispatch-only-output'
+
+            $batch3DSourceRoot = $batch3FixtureD.Real.source_root
+            $batch3DDispatchRoot = $batch3FixtureD.Real.dispatch_root
+            $batch3NonTargetAligned = Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes((Join-Path $batch3DSourceRoot 'non-target.txt'))) -Right ([IO.File]::ReadAllBytes((Join-Path $batch3DDispatchRoot 'non-target.txt')))
+            $batch3UntrackedSourcePath = Join-Path $batch3DSourceRoot 'new-output.txt'
+            $batch3UntrackedDispatchPath = Join-Path $batch3DDispatchRoot 'new-output.txt'
+            $batch3UntrackedUntouched = (Test-Path -LiteralPath $batch3UntrackedDispatchPath -PathType Leaf) -and -not (Test-Path -LiteralPath $batch3UntrackedSourcePath)
+            $batch3AbsentUntouched = -not (Test-Path -LiteralPath (Join-Path $batch3DSourceRoot 'absent.txt')) -and -not (Test-Path -LiteralPath (Join-Path $batch3DDispatchRoot 'absent.txt'))
+            $batch3SecretPaths = @('.env', '.env.fixture', 'private.pfx', 'private.pem', 'private.key', 'secrets.fixture')
+            $batch3SecretsSkipped = $true
+            foreach ($batch3SecretPath in $batch3SecretPaths) {
+                $batch3SecretSource = [IO.File]::ReadAllBytes((Join-Path $batch3DSourceRoot $batch3SecretPath))
+                $batch3SecretDispatch = [IO.File]::ReadAllBytes((Join-Path $batch3DDispatchRoot $batch3SecretPath))
+                if (-not (Test-ByteArrayEqual -Left $batch3SecretSource -Right $batch3MarkerLfBytes) -or
+                    -not (Test-ByteArrayEqual -Left $batch3SecretDispatch -Right ([Text.Encoding]::UTF8.GetBytes("synthetic fixture marker`r`n")))) {
+                    $batch3SecretsSkipped = $false
+                }
+            }
+            Assert-True ($batch3NonTargetAligned -and $batch3UntrackedUntouched -and $batch3AbsentUntouched -and $batch3SecretsSkipped) '起點同步範圍未涵蓋非 target tracked 檔、或碰觸 untracked／機密檔名／來源不存在檔案。'
+            Write-Phase9Evidence -Label 'BATCH3_EOL_D_SCOPE' -Value ([ordered]@{ non_target_tracked_aligned = $batch3NonTargetAligned; dispatch_only_untracked_preserved = $batch3UntrackedUntouched; source_absent_tracked_skipped = $batch3AbsentUntouched; secret_name_paths_skipped = $batch3SecretPaths })
+        }
+        finally {
+            if ($null -ne $batch3FixtureD) { Remove-Batch3EolFixture -Fixture $batch3FixtureD }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (e) binary target bytes remain transparent through Preflight' {
+        $batch3FixtureE = $null
+        try {
+            $batch3BinaryTargetBytes = [byte[]]@(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x0A, 0x0D, 0x00, 0xFF, 0x41)
+            $batch3FixtureE = New-Batch3EolFixture -Name 'batch3-eol-e' -TargetBytes $batch3BinaryTargetBytes -ForceCrlfTarget
+            $batch3SourceEBytes = [IO.File]::ReadAllBytes((Join-Path $batch3FixtureE.Real.source_root 'target.txt'))
+            $batch3DispatchEBytes = [IO.File]::ReadAllBytes((Join-Path $batch3FixtureE.Real.dispatch_root 'target.txt'))
+            $batch3BaselineEFile = @($batch3FixtureE.Baseline.files | Where-Object { [string]$_.path -ceq 'target.txt' })[0]
+            Assert-True ((Test-ByteArrayEqual -Left $batch3SourceEBytes -Right $batch3BinaryTargetBytes) -and
+                (Test-ByteArrayEqual -Left $batch3DispatchEBytes -Right $batch3BinaryTargetBytes) -and
+                [string]$batch3BaselineEFile.sha256 -ceq (Get-Batch3Sha256FromBytes -Bytes $batch3BinaryTargetBytes)) 'Preflight 改變含 CRLF、LF、單獨 CR、NUL 或非 UTF-8 位元組的 binary target。'
+            Write-Phase9Evidence -Label 'BATCH3_EOL_E_BINARY_TRANSPARENCY' -Value ([ordered]@{ source_and_dispatch_bytes_equal = $true; byte_length = $batch3BinaryTargetBytes.Length; baseline_sha256 = [string]$batch3BaselineEFile.sha256 })
+        }
+        finally {
+            if ($null -ne $batch3FixtureE) { Remove-Batch3EolFixture -Fixture $batch3FixtureE }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (f) equal-length tracked target is not copied during alignment' {
+        $batch3FixtureF = $null
+        try {
+            $batch3FixtureF = New-Batch3EolFixture -Name 'batch3-eol-f' -TargetContent 'abc' -ForceCrlfTarget -Batch3SyncHook 'same-length-dispatch'
+            $batch3SourceFBytes = [IO.File]::ReadAllBytes((Join-Path $batch3FixtureF.Real.source_root 'target.txt'))
+            $batch3DispatchFBytes = [IO.File]::ReadAllBytes((Join-Path $batch3FixtureF.Real.dispatch_root 'target.txt'))
+            $batch3BaselineFFile = @($batch3FixtureF.Baseline.files | Where-Object { [string]$_.path -ceq 'target.txt' })[0]
+            Assert-True ((Test-ByteArrayEqual -Left $batch3SourceFBytes -Right ([Text.Encoding]::UTF8.GetBytes('abc'))) -and
+                (Test-ByteArrayEqual -Left $batch3DispatchFBytes -Right ([Text.Encoding]::UTF8.GetBytes('XYZ'))) -and
+                [string]$batch3BaselineFFile.sha256 -ceq (Get-Batch3Sha256FromBytes -Bytes $batch3DispatchFBytes)) '長度相同的 dispatch target 被來源位元組覆寫或 baseline 不代表未複製的起點。'
+            Write-Phase9Evidence -Label 'BATCH3_EOL_F_EQUAL_LENGTH' -Value ([ordered]@{ source_byte_length = $batch3SourceFBytes.Length; dispatch_byte_length = $batch3DispatchFBytes.Length; dispatch_preserved = $true })
+        }
+        finally {
+            if ($null -ne $batch3FixtureF) { Remove-Batch3EolFixture -Fixture $batch3FixtureF }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (g) carry-in untracked files remain protected from Collect apply' {
+        $batch3FixtureG = $null
+        try {
+            $batch3FixtureG = New-Batch3EolFixture -Name 'batch3-eol-g' -TargetContent "baseline target`n" -CarryInContent 'carry-in baseline' -ForceCrlfTarget
+            $batch3SourceGTarget = Join-Path $batch3FixtureG.Real.source_root 'target.txt'
+            $batch3DispatchGTarget = Join-Path $batch3FixtureG.Real.dispatch_root 'target.txt'
+            $batch3SourceGCarryIn = Join-Path $batch3FixtureG.Real.source_root 'carry-in.txt'
+            $batch3DispatchGCarryIn = Join-Path $batch3FixtureG.Real.dispatch_root 'carry-in.txt'
+            $batch3CarryInBaseline = [Text.Encoding]::UTF8.GetBytes('carry-in baseline')
+            $batch3DispatchCarryIn = [Text.Encoding]::UTF8.GetBytes('dispatch carry-in change')
+            [IO.File]::WriteAllBytes($batch3DispatchGTarget, [Text.Encoding]::UTF8.GetBytes("dispatch target`n"))
+            [IO.File]::WriteAllBytes($batch3DispatchGCarryIn, $batch3DispatchCarryIn)
+            $batch3CollectG = Invoke-Batch3Collect -Fixture $batch3FixtureG
+            $batch3CarryInProtected = $false
+            if ($null -ne $batch3CollectG.Document -and $null -ne $batch3CollectG.Document.PSObject.Properties['rejectedFiles']) {
+                $batch3CarryInProtected = @($batch3CollectG.Document.rejectedFiles | Where-Object { [string]$_.path -ceq 'carry-in.txt' -and [string]$_.reason -ceq 'carry-in-protected' }).Count -gt 0
+            }
+            Assert-True ([int]$batch3CollectG.Run.exit_code -eq 0 -and $batch3CarryInProtected -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3SourceGCarryIn)) -Right $batch3CarryInBaseline) -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3DispatchGCarryIn)) -Right $batch3DispatchCarryIn) -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3SourceGTarget)) -Right ([IO.File]::ReadAllBytes($batch3DispatchGTarget)))) ('Collect 未沿用 carry-in 保護或目標套回行為不符。' + $batch3CollectG.OutputText)
+            Write-Phase9Evidence -Label 'BATCH3_EOL_G_CARRY_IN_PROTECTION' -Value ([ordered]@{ collect_exit_code = [int]$batch3CollectG.Run.exit_code; carry_in_rejected = $batch3CarryInProtected; source_carry_in_preserved = $true; target_applied = $true })
+        }
+        finally {
+            if ($null -ne $batch3FixtureG) { Remove-Batch3EolFixture -Fixture $batch3FixtureG }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (h) source B is aligned before baseline then source A is rejected' {
+        $batch3FixtureH = $null
+        try {
+            $batch3FixtureH = New-Batch3EolFixture -Name 'batch3-eol-h' -TargetContent ('source A' + [char]10) -ForceCrlfTarget -Batch3SyncHook 'source-b-a'
+            $batch3StartControlPathH = Join-Path (Join-Path $batch3FixtureH.Real.source_root '.local\ai-sessions\history\a') 'batch3-h-start-control.txt'
+            Assert-True ((Test-Path -LiteralPath $batch3StartControlPathH -PathType Leaf) -and
+                [IO.File]::ReadAllText($batch3StartControlPathH) -ceq 'source A and dispatch raw bytes matched before source B injection') 'No-injection start control was not completed in the same (h) fixture before source B was injected.'
+            $batch3TemporaryHookEntryPath = [string]$batch3FixtureH.Real.script_path
+            Assert-True (-not (Test-Path -LiteralPath $batch3TemporaryHookEntryPath -PathType Leaf)) 'Preflight hook entry should have been removed after the child process completed.'
+            $batch3FixtureH.Real.script_path = $script:sourcePath
+            Assert-True (Test-Path -LiteralPath $batch3FixtureH.Real.script_path -PathType Leaf) 'Collect must use the stable production Invoke-CodexDispatch.ps1 entry after the temporary Preflight hook is removed.'
+
+            $batch3SourceHPath = Join-Path $batch3FixtureH.Real.source_root 'target.txt'
+            $batch3DispatchHPath = Join-Path $batch3FixtureH.Real.dispatch_root 'target.txt'
+            $batch3SourceHBytes = [Text.Encoding]::UTF8.GetBytes('source A' + [char]10)
+            $batch3AlignedHBytes = [Text.Encoding]::UTF8.GetBytes('source B longer' + [char]10)
+            $batch3BaselineHFile = @($batch3FixtureH.Baseline.files | Where-Object { [string]$_.path -ceq 'target.txt' })[0]
+            Assert-True ((Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3SourceHPath)) -Right $batch3SourceHBytes) -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3DispatchHPath)) -Right $batch3AlignedHBytes) -and
+                [string]$batch3BaselineHFile.sha256 -ceq (Get-Batch3Sha256FromBytes -Bytes $batch3AlignedHBytes)) 'Preflight timing defect: baseline did not record the starting bytes copied from transient source B.'
+
+            [IO.File]::WriteAllBytes($batch3DispatchHPath, [Text.Encoding]::UTF8.GetBytes('dispatch H update' + [char]10))
+            $batch3CollectH = Invoke-Batch3Collect -Fixture $batch3FixtureH
+            Assert-True ([int]$batch3CollectH.Run.exit_code -ne 0 -and $batch3CollectH.OutputText -match 'DispatchSourceDrift' -and
+                (Test-ByteArrayEqual -Left ([IO.File]::ReadAllBytes($batch3SourceHPath)) -Right $batch3SourceHBytes)) ('A-to-B-to-A timing source was not rejected against the B raw-SHA baseline or source bytes were overwritten.' + $batch3CollectH.OutputText)
+            Write-Phase9Evidence -Label 'BATCH3_EOL_H_SOURCE_B_A_TIMING_REGRESSION' -Value ([ordered]@{ defect_mapping = 'If alignment timing is wrong, baseline is not B; after source returns to A, Collect must reject with DispatchSourceDrift'; baseline_represents_b = $true; source_restored_to_a = $true; collect_rejected = $true; same_fixture_pre_injection_bytes_equal = $true; collect_entry_path_reset_to_production = $true })
+        }
+        finally {
+            if ($null -ne $batch3FixtureH) { Remove-Batch3EolFixture -Fixture $batch3FixtureH }
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (i) handle-bound copy preserves arbitrary bytes and returns their SHA-256' {
+        $batch3BoundProbeI = Invoke-Batch3BoundFileCopyProbe -Scenario 'i'
+        Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_I_BYTE_TRANSPARENCY' -Value ([ordered]@{ command = $batch3BoundProbeI.command; exit_code = $batch3BoundProbeI.exit_code; stdout = $batch3BoundProbeI.stdout; stderr = $batch3BoundProbeI.stderr })
+        Assert-True ($batch3BoundProbeI.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3BoundProbeI.stderr) -and [string]$batch3BoundProbeI.stdout -match 'PASS scenario=i byte_transparency=5 hash_verified=5') ('handle-bound helper changed bytes or returned an incorrect SHA-256: ' + [string]$batch3BoundProbeI.stdout + [string]$batch3BoundProbeI.stderr)
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (j) source intermediate junction outside root is rejected before copy' {
+        $batch3BoundProbeJ = Invoke-Batch3BoundFileCopyProbe -Scenario 'j'
+        Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_J_SOURCE_JUNCTION' -Value ([ordered]@{ command = $batch3BoundProbeJ.command; exit_code = $batch3BoundProbeJ.exit_code; stdout = $batch3BoundProbeJ.stdout; stderr = $batch3BoundProbeJ.stderr })
+        Assert-True ($batch3BoundProbeJ.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3BoundProbeJ.stderr) -and [string]$batch3BoundProbeJ.stdout -match 'PASS scenario=j source_intermediate_junction_rejected_before_copy destination_unchanged=true') ('source junction escaped the root check or destination changed: ' + [string]$batch3BoundProbeJ.stdout + [string]$batch3BoundProbeJ.stderr)
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (k) source directory replaced by junction after path precheck is rejected' {
+        $batch3BoundProbeK = Invoke-Batch3BoundFileCopyProbe -Scenario 'k'
+        Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_K_POST_PRECHECK_SWAP' -Value ([ordered]@{ command = $batch3BoundProbeK.command; exit_code = $batch3BoundProbeK.exit_code; stdout = $batch3BoundProbeK.stdout; stderr = $batch3BoundProbeK.stderr })
+        Assert-True ($batch3BoundProbeK.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3BoundProbeK.stderr) -and [string]$batch3BoundProbeK.stdout -match 'PASS scenario=k checked_directory_replaced_by_junction rejected=true destination_unchanged=true') ('post-precheck junction replacement was accepted or destination changed: ' + [string]$batch3BoundProbeK.stdout + [string]$batch3BoundProbeK.stderr)
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (l) destination intermediate junction outside root is rejected before write' {
+        $batch3BoundProbeL = Invoke-Batch3BoundFileCopyProbe -Scenario 'l'
+        Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_L_DESTINATION_JUNCTION' -Value ([ordered]@{ command = $batch3BoundProbeL.command; exit_code = $batch3BoundProbeL.exit_code; stdout = $batch3BoundProbeL.stdout; stderr = $batch3BoundProbeL.stderr })
+        Assert-True ($batch3BoundProbeL.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3BoundProbeL.stderr) -and [string]$batch3BoundProbeL.stdout -match 'PASS scenario=l destination_intermediate_junction_rejected_before_write outside_bytes_unchanged=true') ('destination junction escaped the root check or outside bytes changed: ' + [string]$batch3BoundProbeL.stdout + [string]$batch3BoundProbeL.stderr)
+    }
+
+    $batch3SymlinkCapabilityRoot = Join-Path $fixtureRoot ('batch3-symlink-capability-' + [guid]::NewGuid().ToString('N'))
+    $batch3SymlinkCapabilityTarget = Join-Path $batch3SymlinkCapabilityRoot 'target.bin'
+    $batch3SymlinkCapabilityLink = Join-Path $batch3SymlinkCapabilityRoot 'link.bin'
+    $batch3SymlinkCapabilityAvailable = $false
+    $batch3SymlinkCapabilityReason = ''
+    New-Item -ItemType Directory -Path $batch3SymlinkCapabilityRoot -Force | Out-Null
+    [IO.File]::WriteAllBytes($batch3SymlinkCapabilityTarget, [byte[]]@(1, 2, 3))
+    try {
+        $null = New-Item -ItemType SymbolicLink -Path $batch3SymlinkCapabilityLink -Target $batch3SymlinkCapabilityTarget -ErrorAction Stop
+        $batch3SymlinkCapabilityAvailable = ((Get-Item -LiteralPath $batch3SymlinkCapabilityLink -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+        if (-not $batch3SymlinkCapabilityAvailable) { $batch3SymlinkCapabilityReason = 'created link did not report ReparsePoint' }
+    }
+    catch { $batch3SymlinkCapabilityReason = $_.Exception.Message }
+    finally {
+        if ([IO.File]::Exists($batch3SymlinkCapabilityLink)) { [IO.File]::Delete($batch3SymlinkCapabilityLink) }
+        if (Test-Path -LiteralPath $batch3SymlinkCapabilityRoot) { Remove-Item -LiteralPath $batch3SymlinkCapabilityRoot -Recurse -Force }
+    }
+    if ($batch3SymlinkCapabilityAvailable) {
+        Invoke-Case 'Phase 9 BATCH3 (m) file symbolic link leaf is rejected without changing destination' {
+            $batch3BoundProbeM = Invoke-Batch3BoundFileCopyProbe -Scenario 'm'
+            Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_M_SYMLINK_LEAF' -Value ([ordered]@{ command = $batch3BoundProbeM.command; exit_code = $batch3BoundProbeM.exit_code; stdout = $batch3BoundProbeM.stdout; stderr = $batch3BoundProbeM.stderr })
+            Assert-True ($batch3BoundProbeM.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3BoundProbeM.stderr) -and [string]$batch3BoundProbeM.stdout -match 'PASS scenario=m file_symlink_leaf_rejected destination_unchanged=true') ('file symbolic link was accepted or destination changed: ' + [string]$batch3BoundProbeM.stdout + [string]$batch3BoundProbeM.stderr)
+        }
+    }
+    else {
+        Invoke-Case -Name 'Phase 9 BATCH3 (m) file symbolic link leaf is rejected without changing destination' -Isolated -IsolationId 'BATCH3-EOL-SYMLINK-PRIVILEGE' -IsolationEvidence ('The host could not create a file symbolic link: ' + $batch3SymlinkCapabilityReason) -IsolationReleaseCondition 'Run the same focused case in a Windows host with file-symlink creation enabled.' -IsolationDeadline 'Before accepting full BATCH3-EOL host coverage.' -IsolationReplacementVerification 'On the capable host, the test must show a ReparsePoint leaf and prove the helper rejects it without changing destination bytes.' -Action {
+            Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_M_SYMLINK_LEAF_SKIPPED' -Value ([ordered]@{ status = 'skipped'; reason = $batch3SymlinkCapabilityReason; symlink_creation_attempted = $true; helper_acceptance_claimed = $false })
+        }
+    }
+
+    # Static guard covers direct assignments, Set/New/Remove/Clear-Variable and aliases, Variable: provider only via Set-Item/New-Item and their aliases si/ni, call operators and module-qualified names, direct PSVariable/SessionState/ExecutionContext method chains, and Get-Variable .Value assignments.
+    # It does not cover other cmdlets that write to the Variable: provider (Clear-Item, Remove-Item, Rename-Item, Copy-Item, Move-Item, etc.), method calls through sensitive objects stored in ordinary variables, Invoke-Expression, or dynamic ScriptBlock code.
+    Invoke-Case 'Phase 9 BATCH3 (n) AST rejects assignments to read-only automatic variables' {
+        $batch3AutomaticVariableNames = @(
+            'IsWindows', 'IsLinux', 'IsMacOS', 'IsCoreCLR', 'PSVersionTable', 'PSScriptRoot', 'PSCommandPath', 'Host',
+            'Error', 'Matches', 'args', 'input', 'null', 'true', 'false', 'PID', 'HOME', 'PWD', 'PSItem', '_',
+            'MyInvocation', 'ExecutionContext', 'ShellId', 'StackTrace', 'foreach', 'switch'
+        )
+        $batch3ProductionScriptPaths = @(
+            (Join-Path $root 'scripts\dispatch\git-baseline.ps1'),
+            (Join-Path $root 'scripts\dispatch\dispatch-lifecycle.ps1')
+        )
+        # The production inventory is emitted with the guard result; expected matches are empty.
+        $batch3CommandWhitelist = @()
+
+        # Static guard covers direct assignments, Set/New/Remove/Clear-Variable and aliases, Variable: provider only via Set-Item/New-Item and their aliases si/ni, call operators and module-qualified names, direct PSVariable/SessionState/ExecutionContext method chains, and Get-Variable .Value assignments.
+        # It does not cover other cmdlets that write to the Variable: provider (Clear-Item, Remove-Item, Rename-Item, Copy-Item, Move-Item, etc.), method calls through sensitive objects stored in ordinary variables, Invoke-Expression, or dynamic ScriptBlock code.
+        function Get-Batch3AutomaticVariableAssignmentsFromText {
+            [CmdletBinding()]
+            param(
+                [Parameter(Mandatory)][AllowEmptyString()][string]$SourceText,
+                [Parameter(Mandatory)][string]$SourceName,
+                [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$ProhibitedNames,
+                [AllowEmptyCollection()][string[]]$CommandWhitelist = @()
+            )
+
+            $batch3Tokens = $null
+            $batch3ParseErrors = $null
+            $batch3SourceAst = [System.Management.Automation.Language.Parser]::ParseInput($SourceText, $SourceName, [ref]$batch3Tokens, [ref]$batch3ParseErrors)
+            if (@($batch3ParseErrors).Count -gt 0) {
+                throw ('BATCH3 自動變數 AST 掃描遇到語法錯誤：' + $SourceName + '; errors=' + (@($batch3ParseErrors | ForEach-Object { $_.Message }) -join '; '))
+            }
+
+            $batch3Assignments = New-Object 'System.Collections.Generic.List[string]'
+            $batch3AssignmentStatements = @($batch3SourceAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))
+            foreach ($batch3AssignmentStatement in $batch3AssignmentStatements) {
+                $batch3LeftVariables = @($batch3AssignmentStatement.Left.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] }, $true))
+                foreach ($batch3LeftVariable in $batch3LeftVariables) {
+                    $batch3VariablePath = [string]$batch3LeftVariable.VariablePath.UserPath
+                    # The env: provider writes an environment variable, not the PowerShell automatic variable.
+                    if ($batch3VariablePath -match '^env:') { continue }
+                    $batch3VariableName = $batch3VariablePath.Split(':')[-1]
+                    # $null = command discards pipeline output; it does not reassign the automatic variable.
+                    if ($batch3VariableName -ieq 'null') { continue }
+                    if ($ProhibitedNames -icontains $batch3VariableName) {
+                        $batch3Assignments.Add($SourceName + ':' + $batch3LeftVariable.Extent.StartLineNumber + ': $' + $batch3VariableName + ' <- ' + $batch3AssignmentStatement.Left.Extent.Text)
+                    }
+                }
+            }
+
+            $batch3ForeachStatements = @($batch3SourceAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.ForEachStatementAst] }, $true))
+            foreach ($batch3ForeachStatement in $batch3ForeachStatements) {
+                $batch3ForeachVariableName = ([string]$batch3ForeachStatement.Variable.VariablePath.UserPath).Split(':')[-1]
+                if ($ProhibitedNames -icontains $batch3ForeachVariableName) {
+                    $batch3Assignments.Add($SourceName + ':' + $batch3ForeachStatement.Variable.Extent.StartLineNumber + ': foreach $' + $batch3ForeachVariableName)
+                }
+            }
+
+            $batch3IncrementStatements = @($batch3SourceAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.UnaryExpressionAst] -and [string]$node.TokenKind -match 'PlusPlus|MinusMinus'
+            }, $true))
+            foreach ($batch3IncrementStatement in $batch3IncrementStatements) {
+                $batch3IncrementVariables = @($batch3IncrementStatement.Child.FindAll({ param($node) $node -is [System.Management.Automation.Language.VariableExpressionAst] }, $true))
+                foreach ($batch3IncrementVariable in $batch3IncrementVariables) {
+                    $batch3VariablePath = [string]$batch3IncrementVariable.VariablePath.UserPath
+                    if ($batch3VariablePath -match '^env:') { continue }
+                    $batch3VariableName = $batch3VariablePath.Split(':')[-1]
+                    if ($ProhibitedNames -icontains $batch3VariableName) {
+                        $batch3Assignments.Add($SourceName + ':' + $batch3IncrementVariable.Extent.StartLineNumber + ': ' + $batch3IncrementStatement.Extent.Text)
+                    }
+                }
+            }
+
+            $batch3Parameters = @($batch3SourceAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.ParameterAst] }, $true))
+            foreach ($batch3Parameter in $batch3Parameters) {
+                $batch3ParameterName = ([string]$batch3Parameter.Name.VariablePath.UserPath).Split(':')[-1]
+                if ($ProhibitedNames -icontains $batch3ParameterName) {
+                    $batch3Assignments.Add($SourceName + ':' + $batch3Parameter.Extent.StartLineNumber + ': parameter $' + $batch3ParameterName)
+                }
+            }
+
+            $batch3VariableCommandNames = @(
+                'set-variable', 'sv', 'set',
+                'new-variable', 'nv',
+                'remove-variable', 'rv',
+                'clear-variable', 'clv'
+            )
+            $batch3VariableProviderCommandNames = @('set-item', 'si', 'new-item', 'ni')
+            $batch3CommandAsts = @($batch3SourceAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+            foreach ($batch3CommandAst in $batch3CommandAsts) {
+                $batch3CommandName = [string]$batch3CommandAst.GetCommandName()
+                if ([string]::IsNullOrWhiteSpace($batch3CommandName)) {
+                    $batch3Assignments.Add($SourceName + ':' + $batch3CommandAst.Extent.StartLineNumber + ': command name cannot be resolved statically; ' + $batch3CommandAst.Extent.Text)
+                    continue
+                }
+                $batch3CommandName = $batch3CommandName.Split([char]92)[-1]
+                if ($batch3CommandName -ieq 'new-object' -and
+                    $batch3CommandAst.Extent.Text -match '(?i)(?:System\.Management\.Automation\.)?PSVariable') {
+                    $batch3Assignments.Add($SourceName + ':' + $batch3CommandAst.Extent.StartLineNumber + ': New-Object creates PSVariable; ' + $batch3CommandAst.Extent.Text)
+                    continue
+                }
+                if (-not ($batch3VariableCommandNames -icontains $batch3CommandName) -and
+                    -not ($batch3VariableProviderCommandNames -icontains $batch3CommandName)) { continue }
+                if ($CommandWhitelist -icontains [string]$batch3CommandAst.Extent.Text) { continue }
+
+                $batch3IsVariableCommand = $batch3VariableCommandNames -icontains $batch3CommandName
+                $batch3CommandElements = @($batch3CommandAst.CommandElements)
+                $batch3NameArgument = $null
+                $batch3NameArgumentResolved = $false
+                $batch3ProviderPathArgument = $null
+                $batch3ProviderPathResolved = $false
+                $batch3ItemNameArgument = $null
+                $batch3ItemNameResolved = $false
+                $batch3HasDynamicSplat = $false
+
+                for ($batch3ElementIndex = 1; $batch3ElementIndex -lt $batch3CommandElements.Count; $batch3ElementIndex++) {
+                    $batch3CommandElement = $batch3CommandElements[$batch3ElementIndex]
+                    if ($batch3CommandElement -is [System.Management.Automation.Language.CommandParameterAst]) {
+                        $batch3ParameterName = [string]$batch3CommandElement.ParameterName
+                        $batch3ParameterKind = ''
+                        if ($batch3IsVariableCommand) {
+                            foreach ($batch3CandidateParameter in @('Name', 'Value', 'Description', 'Option', 'Scope', 'Visibility', 'Include', 'Exclude')) {
+                                if ($batch3CandidateParameter.StartsWith($batch3ParameterName, [StringComparison]::OrdinalIgnoreCase)) {
+                                    $batch3ParameterKind = $batch3CandidateParameter
+                                    break
+                                }
+                            }
+                        }
+                        else {
+                            foreach ($batch3CandidateParameter in @('LiteralPath', 'Path', 'Name', 'Value', 'ItemType', 'Force', 'PassThru', 'WhatIf', 'Confirm')) {
+                                if ($batch3CandidateParameter.StartsWith($batch3ParameterName, [StringComparison]::OrdinalIgnoreCase)) {
+                                    $batch3ParameterKind = $batch3CandidateParameter
+                                    break
+                                }
+                            }
+                        }
+
+                        $batch3IsTargetParameter = $batch3IsVariableCommand -and $batch3ParameterKind -ceq 'Name'
+                        $batch3IsPathParameter = -not $batch3IsVariableCommand -and $batch3ParameterKind -in @('Path', 'LiteralPath')
+                        $batch3IsItemNameParameter = -not $batch3IsVariableCommand -and $batch3CommandName -iin @('new-item', 'ni') -and $batch3ParameterKind -ceq 'Name'
+                        if ($null -ne $batch3CommandElement.Argument) {
+                            if ($batch3IsTargetParameter) {
+                                $batch3NameArgument = $batch3CommandElement.Argument
+                                $batch3NameArgumentResolved = $true
+                            }
+                            elseif ($batch3IsPathParameter) {
+                                $batch3ProviderPathArgument = $batch3CommandElement.Argument
+                                $batch3ProviderPathResolved = $true
+                            }
+                            elseif ($batch3IsItemNameParameter) {
+                                $batch3ItemNameArgument = $batch3CommandElement.Argument
+                                $batch3ItemNameResolved = $true
+                            }
+                            continue
+                        }
+
+                        $batch3ParameterTakesValue = $batch3ParameterKind -in @('Name', 'Value', 'Description', 'Option', 'Scope', 'Visibility', 'Include', 'Exclude', 'LiteralPath', 'Path', 'ItemType')
+                        if ($batch3ParameterTakesValue) {
+                            if (($batch3ElementIndex + 1) -lt $batch3CommandElements.Count -and
+                                $batch3CommandElements[$batch3ElementIndex + 1] -isnot [System.Management.Automation.Language.CommandParameterAst]) {
+                                $batch3NextArgument = $batch3CommandElements[$batch3ElementIndex + 1]
+                                if ($batch3IsTargetParameter) {
+                                    $batch3NameArgument = $batch3NextArgument
+                                    $batch3NameArgumentResolved = $true
+                                }
+                                elseif ($batch3IsPathParameter) {
+                                    $batch3ProviderPathArgument = $batch3NextArgument
+                                    $batch3ProviderPathResolved = $true
+                                }
+                                elseif ($batch3IsItemNameParameter) {
+                                    $batch3ItemNameArgument = $batch3NextArgument
+                                    $batch3ItemNameResolved = $true
+                                }
+                                $batch3ElementIndex++
+                            }
+                            elseif ($batch3IsTargetParameter -or $batch3IsPathParameter -or $batch3IsItemNameParameter) {
+                                if ($batch3IsTargetParameter) { $batch3NameArgumentResolved = $true }
+                                elseif ($batch3IsPathParameter) { $batch3ProviderPathResolved = $true }
+                                else { $batch3ItemNameResolved = $true }
+                            }
+                        }
+                        continue
+                    }
+
+                    if ($batch3CommandElement -is [System.Management.Automation.Language.VariableExpressionAst] -and $batch3CommandElement.Splatted) {
+                        $batch3HasDynamicSplat = $true
+                        continue
+                    }
+                    if ($batch3IsVariableCommand -and -not $batch3NameArgumentResolved) {
+                        $batch3NameArgument = $batch3CommandElement
+                        $batch3NameArgumentResolved = $true
+                    }
+                    elseif (-not $batch3IsVariableCommand -and -not $batch3ProviderPathResolved) {
+                        $batch3ProviderPathArgument = $batch3CommandElement
+                        $batch3ProviderPathResolved = $true
+                    }
+                }
+
+                $batch3StaticVariableNames = @()
+                $batch3HasUnresolvedVariableTarget = $batch3HasDynamicSplat
+                if ($batch3IsVariableCommand) {
+                    if (-not $batch3NameArgumentResolved -or $null -eq $batch3NameArgument -or
+                        $batch3NameArgument -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                        $batch3HasUnresolvedVariableTarget = $true
+                    }
+                    else {
+                        $batch3StaticVariableNames += [string]$batch3NameArgument.Value
+                    }
+                }
+                elseif (-not $batch3ProviderPathResolved -or $null -eq $batch3ProviderPathArgument -or
+                    $batch3ProviderPathArgument -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                    $batch3HasUnresolvedVariableTarget = $true
+                }
+                else {
+                    $batch3ProviderPathText = [string]$batch3ProviderPathArgument.Value
+                    if ($batch3ProviderPathText -match '^(?i:Variable):') {
+                        $batch3VariableProviderSuffix = $batch3ProviderPathText.Substring($batch3ProviderPathText.IndexOf(':') + 1).TrimStart([char]92, [char]47)
+                        if ([string]::IsNullOrWhiteSpace($batch3VariableProviderSuffix)) {
+                            if ($batch3ItemNameResolved -and $null -ne $batch3ItemNameArgument -and
+                                $batch3ItemNameArgument -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+                                $batch3StaticVariableNames += [string]$batch3ItemNameArgument.Value
+                            }
+                            else {
+                                $batch3HasUnresolvedVariableTarget = $true
+                            }
+                        }
+                        else {
+                            $batch3StaticVariableNames += ($batch3VariableProviderSuffix -split '[\\/]', 2)[0]
+                        }
+                    }
+                }
+
+                $batch3ProhibitedVariableMatched = $false
+                foreach ($batch3StaticVariableName in $batch3StaticVariableNames) {
+                    $batch3NormalizedVariableName = ([string]$batch3StaticVariableName).Split(':')[-1]
+                    foreach ($batch3ProhibitedName in $ProhibitedNames) {
+                        if ($batch3NormalizedVariableName -ieq [string]$batch3ProhibitedName -or
+                            $batch3ProhibitedName -like $batch3NormalizedVariableName) {
+                            $batch3ProhibitedVariableMatched = $true
+                            break
+                        }
+                    }
+                    if ($batch3ProhibitedVariableMatched) { break }
+                }
+
+                if ($batch3ProhibitedVariableMatched -or $batch3HasUnresolvedVariableTarget) {
+                    $batch3Assignments.Add($SourceName + ':' + $batch3CommandAst.Extent.StartLineNumber + ': command writes prohibited automatic variable; ' + $batch3CommandAst.Extent.Text)
+                }
+            }
+
+            $batch3InvokeMemberAsts = @($batch3SourceAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true))
+            foreach ($batch3InvokeMemberAst in $batch3InvokeMemberAsts) {
+                $batch3MemberPathText = [string]$batch3InvokeMemberAst.Expression.Extent.Text
+                $batch3MemberAst = $batch3InvokeMemberAst.Member
+                $batch3MemberNameResolved = $batch3MemberAst -is [System.Management.Automation.Language.StringConstantExpressionAst]
+                $batch3MemberName = if ($batch3MemberNameResolved) { [string]$batch3MemberAst.Value } else { '' }
+                $batch3HasSensitiveMemberPath = $batch3MemberPathText -match '(?i)(?:PSVariable|SessionState|ExecutionContext)'
+                $batch3HasVariableIntrinsicsPath = $batch3MemberPathText -match '(?i)(?:PSVariable|SessionState)'
+                $batch3IsPSVariableConstruction = $batch3MemberPathText -match '(?i)\[\s*(?:System\.Management\.Automation\.)?PSVariable\s*\]' -and
+                    $batch3MemberNameResolved -and $batch3MemberName -ieq 'new'
+
+                if ($batch3IsPSVariableConstruction -or
+                    ($batch3HasSensitiveMemberPath -and $batch3MemberNameResolved -and $batch3MemberName -iin @('Set', 'Remove', 'SetValue')) -or
+                    ($batch3HasVariableIntrinsicsPath -and -not $batch3MemberNameResolved)) {
+                    $batch3Assignments.Add($SourceName + ':' + $batch3InvokeMemberAst.Extent.StartLineNumber + ': member call may write a prohibited automatic variable; ' + $batch3InvokeMemberAst.Extent.Text)
+                }
+            }
+
+            $batch3AssignmentStatements = @($batch3SourceAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true))
+            foreach ($batch3AssignmentStatement in $batch3AssignmentStatements) {
+                $batch3ValueMemberAsts = @()
+                if ($batch3AssignmentStatement.Left -is [System.Management.Automation.Language.MemberExpressionAst]) {
+                    $batch3ValueMemberAsts += $batch3AssignmentStatement.Left
+                }
+                $batch3ValueMemberAsts += @($batch3AssignmentStatement.Left.FindAll({ param($node) $node -is [System.Management.Automation.Language.MemberExpressionAst] }, $true))
+                foreach ($batch3ValueMemberAst in $batch3ValueMemberAsts) {
+                    if ($batch3ValueMemberAst.Member -isnot [System.Management.Automation.Language.StringConstantExpressionAst] -or
+                        [string]$batch3ValueMemberAst.Member.Value -ine 'Value') { continue }
+                    $batch3GetVariableCommands = @($batch3ValueMemberAst.Expression.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true) | Where-Object {
+                        $batch3MemberSourceCommandName = [string]$_.GetCommandName()
+                        if ([string]::IsNullOrWhiteSpace($batch3MemberSourceCommandName)) { return $false }
+                        $batch3MemberSourceCommandName = $batch3MemberSourceCommandName.Split([char]92)[-1]
+                        $batch3MemberSourceCommandName -iin @('Get-Variable', 'gv')
+                    })
+                    if ($batch3GetVariableCommands.Count -gt 0) {
+                        $batch3Assignments.Add($SourceName + ':' + $batch3AssignmentStatement.Extent.StartLineNumber + ': Get-Variable result Value assignment; ' + $batch3AssignmentStatement.Left.Extent.Text)
+                    }
+                }
+            }
+
+            return @($batch3Assignments.ToArray())
+        }
+
+        $batch3AutomaticVariableAssignments = @()
+        foreach ($batch3ProductionScriptPath in $batch3ProductionScriptPaths) {
+            $batch3ProductionScriptText = [IO.File]::ReadAllText($batch3ProductionScriptPath, [Text.Encoding]::UTF8)
+            $batch3ScanParameters = @{
+                SourceText = $batch3ProductionScriptText
+                SourceName = $batch3ProductionScriptPath
+                ProhibitedNames = $batch3AutomaticVariableNames
+                CommandWhitelist = $batch3CommandWhitelist
+            }
+            $batch3AutomaticVariableAssignments += @(Get-Batch3AutomaticVariableAssignmentsFromText @batch3ScanParameters)
+        }
+
+        $batch3MutationCases = @(
+            [pscustomobject]@{ Name = 'Set-Variable literal'; Source = 'Set-Variable -Name IsWindows -Value $true'; Expected = $true },
+            [pscustomobject]@{ Name = 'Set-Variable dynamic name'; Source = 'Set-Variable -Name $targetName -Value $true'; Expected = $true },
+            [pscustomobject]@{ Name = 'Set-Variable splat'; Source = 'Set-Variable @arguments'; Expected = $true },
+            [pscustomobject]@{ Name = 'Set-Variable alias sv'; Source = 'sv -Name IsWindows'; Expected = $true },
+            [pscustomobject]@{ Name = 'Set-Variable alias set'; Source = 'set IsWindows'; Expected = $true },
+            [pscustomobject]@{ Name = 'New-Variable alias nv'; Source = 'nv -Name IsWindows -Value $true'; Expected = $true },
+            [pscustomobject]@{ Name = 'Remove-Variable alias rv'; Source = 'rv IsWindows'; Expected = $true },
+            [pscustomobject]@{ Name = 'Clear-Variable alias clv'; Source = 'clv IsWindows'; Expected = $true },
+            [pscustomobject]@{ Name = 'Set-Item alias si'; Source = "si -Path 'Variable:IsWindows' -Value $true"; Expected = $true },
+            [pscustomobject]@{ Name = 'New-Item alias ni'; Source = "ni 'Variable:IsWindows' -Value $true"; Expected = $true },
+            [pscustomobject]@{ Name = 'module-qualified Set-Variable'; Source = 'Microsoft.PowerShell.Utility\Set-Variable -Name IsWindows -Value $true'; Expected = $true },
+            [pscustomobject]@{ Name = 'dynamic call operator expression'; Source = '& (Get-Command Set-Variable) -Name IsWindows -Value $true'; Expected = $true },
+            [pscustomobject]@{ Name = 'dynamic call operator variable'; Source = '& $command'; Expected = $true },
+            [pscustomobject]@{ Name = 'ExecutionContext PSVariable Set'; Source = '$ExecutionContext.SessionState.PSVariable.Set("IsWindows", $true)'; Expected = $true },
+            [pscustomobject]@{ Name = 'SessionState Remove'; Source = '$sessionState.PSVariable.Remove("IsWindows")'; Expected = $true },
+            [pscustomobject]@{ Name = 'PSVariable SetValue'; Source = '$target.PSVariable.SetValue("IsWindows", $true)'; Expected = $true },
+            [pscustomobject]@{ Name = 'PSVariable unresolved member'; Source = '$target.PSVariable.$method("IsWindows")'; Expected = $true },
+            [pscustomobject]@{ Name = 'SessionState unresolved member'; Source = '$sessionState.$method("IsWindows")'; Expected = $true },
+            [pscustomobject]@{ Name = 'New-Object PSVariable'; Source = 'New-Object -TypeName System.Management.Automation.PSVariable -ArgumentList "IsWindows", $true'; Expected = $true },
+            [pscustomobject]@{ Name = 'PSVariable static construction'; Source = '[System.Management.Automation.PSVariable]::new("IsWindows", $true)'; Expected = $true },
+            [pscustomobject]@{ Name = 'Get-Variable Value assignment'; Source = '(Get-Variable IsWindows).Value = $true'; Expected = $true },
+            [pscustomobject]@{ Name = 'module-qualified Get-Variable Value assignment'; Source = '(Microsoft.PowerShell.Utility\Get-Variable IsWindows).Value = $true'; Expected = $true },
+            [pscustomobject]@{ Name = 'unrelated variable'; Source = 'Set-Variable -Name ordinaryName -Value $true'; Expected = $false },
+            [pscustomobject]@{ Name = 'unrelated provider'; Source = "Set-Item -Path 'Env:ordinaryName' -Value $true"; Expected = $false },
+            [pscustomobject]@{ Name = 'unrelated object method'; Source = '$ordinaryObject.Set("ordinaryName", $true)'; Expected = $false }
+        )
+        $batch3MutationFailures = @()
+        $batch3MutationResults = @()
+        foreach ($batch3MutationCase in $batch3MutationCases) {
+            $batch3ScanParameters = @{
+                SourceText = [string]$batch3MutationCase.Source
+                SourceName = 'mutation:' + [string]$batch3MutationCase.Name
+                ProhibitedNames = $batch3AutomaticVariableNames
+                CommandWhitelist = $batch3CommandWhitelist
+            }
+            $batch3MutationAssignments = @(Get-Batch3AutomaticVariableAssignmentsFromText @batch3ScanParameters)
+            $batch3MutationDetected = $batch3MutationAssignments.Count -gt 0
+            $batch3MutationResults += [pscustomobject]@{
+                name = $batch3MutationCase.Name
+                expected = [bool]$batch3MutationCase.Expected
+                detected = [bool]$batch3MutationDetected
+            }
+            if ($batch3MutationDetected -ne [bool]$batch3MutationCase.Expected) {
+                $batch3MutationFailures += ($batch3MutationCase.Name + ': ' + ($batch3MutationAssignments -join '; '))
+            }
+        }
+        Write-Phase9Evidence -Label 'BATCH3_AUTOMATIC_VARIABLE_ASSIGNMENTS' -Value ([ordered]@{
+            files = @($batch3ProductionScriptPaths)
+            prohibited_assignments = @($batch3AutomaticVariableAssignments)
+            null_output_sinks_excluded = $true
+        })
+        Assert-True (@($batch3AutomaticVariableAssignments).Count -eq 0) ('production scripts 對唯讀／自動變數有賦值：' + (@($batch3AutomaticVariableAssignments) -join '; '))
+        Write-Phase9Evidence -Label 'BATCH3_AUTOMATIC_VARIABLE_COMMAND_MUTATIONS' -Value ([ordered]@{
+            command_write_whitelist = @($batch3CommandWhitelist)
+            mutation_results = @($batch3MutationResults)
+            failures = @($batch3MutationFailures)
+        })
+        Assert-True (@($batch3MutationFailures).Count -eq 0) ('自動變數 AST 命令掃描器變異案例失敗：' + (@($batch3MutationFailures) -join '; '))
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (o) read-only destination is aligned and remains read-only' {
+        $batch3FixtureO = $null
+        try {
+            $batch3FixtureO = New-Batch3EolFixture -Name 'batch3-eol-o' -TargetContent ('read-only source baseline' + [char]10) -ForceCrlfTarget -Batch3SyncHook 'readonly-target'
+            $batch3SourceOPath = Join-Path $batch3FixtureO.Real.source_root 'target.txt'
+            $batch3DispatchOPath = Join-Path $batch3FixtureO.Real.dispatch_root 'target.txt'
+            $batch3ExpectedOBytes = [Text.Encoding]::UTF8.GetBytes('read-only source baseline' + [char]10)
+            $batch3SourceOBytes = [IO.File]::ReadAllBytes($batch3SourceOPath)
+            $batch3DispatchOBytes = [IO.File]::ReadAllBytes($batch3DispatchOPath)
+            $batch3DispatchOAttributes = [IO.File]::GetAttributes($batch3DispatchOPath)
+            $batch3BaselineOFile = @($batch3FixtureO.Baseline.files | Where-Object { [string]$_.path -ceq 'target.txt' })[0]
+            $batch3ReadonlyPreservedO = ($batch3DispatchOAttributes -band [IO.FileAttributes]::ReadOnly) -ne 0
+            Assert-True ((Test-ByteArrayEqual -Left $batch3SourceOBytes -Right $batch3ExpectedOBytes) -and
+                (Test-ByteArrayEqual -Left $batch3DispatchOBytes -Right $batch3ExpectedOBytes) -and
+                $batch3ReadonlyPreservedO -and
+                [string]$batch3BaselineOFile.sha256 -ceq (Get-Batch3Sha256FromBytes -Bytes $batch3ExpectedOBytes)) '唯讀目的檔案未完成起點對齊、屬性未保留或 baseline 未記錄對齊位元組。'
+            Write-Phase9Evidence -Label 'BATCH3_EOL_O_READONLY_DESTINATION' -Value ([ordered]@{ source_and_dispatch_bytes_equal = $true; readonly_preserved = $batch3ReadonlyPreservedO; baseline_sha256 = [string]$batch3BaselineOFile.sha256 })
+        }
+        finally {
+            if ($null -ne $batch3FixtureO) { Remove-Batch3EolFixture -Fixture $batch3FixtureO }
+        }
+    }
+
+    $batch3ProbePAclRoot = Join-Path $fixtureRoot ('batch3-write-acl-capability-' + [guid]::NewGuid().ToString('N'))
+    $batch3ProbePAclPath = Join-Path $batch3ProbePAclRoot 'target.bin'
+    $batch3ProbePAclAvailable = $false
+    $batch3ProbePAclReason = ''
+    New-Item -ItemType Directory -Path $batch3ProbePAclRoot -Force | Out-Null
+    [IO.File]::WriteAllBytes($batch3ProbePAclPath, [byte[]]@(1, 2, 3))
+    try {
+        $batch3ProbePAcl = Get-Acl -LiteralPath $batch3ProbePAclPath
+        $batch3ProbePUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+        $batch3ProbePDenyRule = [System.Security.AccessControl.FileSystemAccessRule]::new(
+            $batch3ProbePUserSid,
+            [Security.AccessControl.FileSystemRights]::WriteData,
+            [Security.AccessControl.AccessControlType]::Deny)
+        $batch3ProbePAcl.AddAccessRule($batch3ProbePDenyRule)
+        Set-Acl -LiteralPath $batch3ProbePAclPath -AclObject $batch3ProbePAcl -ErrorAction Stop
+        $batch3ProbePAclAvailable = $true
+    }
+    catch { $batch3ProbePAclReason = $_.Exception.Message }
+    finally {
+        if (Test-Path -LiteralPath $batch3ProbePAclRoot) { Remove-Item -LiteralPath $batch3ProbePAclRoot -Recurse -Force }
+    }
+    if ($batch3ProbePAclAvailable) {
+        Invoke-Case 'Phase 9 BATCH3 (p) read-only attributes are restored after write-handle failure' {
+            $batch3ProbeP = Invoke-Batch3BoundFileCopyProbe -Scenario 'p'
+            Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_P_ATTRIBUTE_RESTORATION' -Value ([ordered]@{ command = $batch3ProbeP.command; exit_code = $batch3ProbeP.exit_code; stdout = $batch3ProbeP.stdout; stderr = $batch3ProbeP.stderr })
+            Assert-True ($batch3ProbeP.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeP.stderr) -and [string]$batch3ProbeP.stdout -match 'PASS scenario=p reopen_failed=true readonly_restored=true destination_unchanged=true') ('failed write handle did not restore the read-only destination attribute: ' + [string]$batch3ProbeP.stdout + [string]$batch3ProbeP.stderr)
+        }
+    }
+    else {
+        Invoke-Case -Name 'Phase 9 BATCH3 (p) read-only attributes are restored after write-handle failure' -Isolated -IsolationId 'BATCH3-EOL-WRITE-ACL' -IsolationEvidence ('The host could not set a file DACL denying WriteData: ' + $batch3ProbePAclReason) -IsolationReleaseCondition 'Run the same focused case in a Windows host that permits setting a file DACL denying WriteData while allowing attribute access.' -IsolationDeadline 'Before accepting full BATCH3-EOL host coverage.' -IsolationReplacementVerification 'The helper must clear ReadOnly on the verified attribute handle, fail opening the write handle, restore ReadOnly in finally, and preserve destination bytes.' -Action {
+            Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_P_FAILURE_ISOLATED' -Value ([ordered]@{ status = 'isolated'; reason = $batch3ProbePAclReason; helper_failure_claimed = $false })
+        }
+    }
+
+    $batch3ProbeQJunctionRoot = Join-Path $fixtureRoot ('batch3-junction-capability-' + [guid]::NewGuid().ToString('N'))
+    $batch3ProbeQJunctionTarget = Join-Path $batch3ProbeQJunctionRoot 'target'
+    $batch3ProbeQJunctionPath = Join-Path $batch3ProbeQJunctionRoot 'link'
+    $batch3ProbeQJunctionAvailable = $false
+    $batch3ProbeQJunctionReason = ''
+    New-Item -ItemType Directory -Path $batch3ProbeQJunctionTarget -Force | Out-Null
+    try {
+        $null = New-Item -ItemType Junction -Path $batch3ProbeQJunctionPath -Target $batch3ProbeQJunctionTarget -ErrorAction Stop
+        $batch3ProbeQJunctionAvailable = ((Get-Item -LiteralPath $batch3ProbeQJunctionPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+        if (-not $batch3ProbeQJunctionAvailable) { $batch3ProbeQJunctionReason = 'created junction did not report ReparsePoint' }
+    }
+    catch { $batch3ProbeQJunctionReason = $_.Exception.Message }
+    finally {
+        if ([IO.Directory]::Exists($batch3ProbeQJunctionPath)) { [IO.Directory]::Delete($batch3ProbeQJunctionPath, $false) }
+        if (Test-Path -LiteralPath $batch3ProbeQJunctionRoot) { Remove-Item -LiteralPath $batch3ProbeQJunctionRoot -Recurse -Force }
+    }
+    if ($batch3ProbeQJunctionAvailable) {
+        Invoke-Case 'Phase 9 BATCH3 (q) destination junction swap does not change outside attributes' {
+            $batch3ProbeQ = Invoke-Batch3BoundFileCopyProbe -Scenario 'q'
+            Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_Q_DESTINATION_JUNCTION_ATTRIBUTES' -Value ([ordered]@{ command = $batch3ProbeQ.command; exit_code = $batch3ProbeQ.exit_code; stdout = $batch3ProbeQ.stdout; stderr = $batch3ProbeQ.stderr })
+            Assert-True ($batch3ProbeQ.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeQ.stderr) -and [string]$batch3ProbeQ.stdout -match 'PASS scenario=q destination_junction_rejected=true outside_attributes_unchanged=true outside_bytes_unchanged=true') ('destination junction replacement changed outside-file state or was accepted: ' + [string]$batch3ProbeQ.stdout + [string]$batch3ProbeQ.stderr)
+        }
+    }
+    else {
+        Invoke-Case -Name 'Phase 9 BATCH3 (q) destination junction swap does not change outside attributes' -Isolated -IsolationId 'BATCH3-EOL-JUNCTION' -IsolationEvidence ('The host could not create a directory junction: ' + $batch3ProbeQJunctionReason) -IsolationReleaseCondition 'Run the same focused case on a Windows filesystem that supports directory junction creation.' -IsolationDeadline 'Before accepting full BATCH3-EOL host coverage.' -IsolationReplacementVerification 'After replacing the checked destination directory with a junction, the helper must reject the outside final path and leave outside attributes and bytes unchanged.' -Action {
+            Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_Q_JUNCTION_ISOLATED' -Value ([ordered]@{ status = 'isolated'; reason = $batch3ProbeQJunctionReason; outside_change_claimed = $false })
+        }
+    }
+    Invoke-Case 'Phase 9 BATCH3 (r) non-Windows synchronization rejects a length-different overwrite before writing' {
+        $batch3ProbeR = Invoke-Batch3BoundFileCopyProbe -Scenario 'r'
+        Write-Phase9Evidence -Label 'BATCH3_NON_WINDOWS_OVERWRITE_REJECTED' -Value ([ordered]@{ command = $batch3ProbeR.command; exit_code = $batch3ProbeR.exit_code; stdout = $batch3ProbeR.stdout; stderr = $batch3ProbeR.stderr })
+        Assert-True ($batch3ProbeR.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeR.stderr) -and [string]$batch3ProbeR.stdout -match 'PASS scenario=r non_windows_overwrite_rejected=true source_and_dispatch_unchanged=true') ('non-Windows synchronization wrote to a length-different target or did not reject clearly: ' + [string]$batch3ProbeR.stdout + [string]$batch3ProbeR.stderr)
+    }
+
+    $batch3HardLinkCapabilityRoot = Join-Path $fixtureRoot ('batch3-hardlink-capability-' + [guid]::NewGuid().ToString('N'))
+    $batch3HardLinkCapabilityTarget = Join-Path $batch3HardLinkCapabilityRoot 'target.bin'
+    $batch3HardLinkCapabilityLink = Join-Path $batch3HardLinkCapabilityRoot 'link.bin'
+    $batch3HardLinkCapabilityAvailable = $false
+    $batch3HardLinkCapabilityReason = ''
+    New-Item -ItemType Directory -Path $batch3HardLinkCapabilityRoot -Force | Out-Null
+    [IO.File]::WriteAllBytes($batch3HardLinkCapabilityTarget, [byte[]]@(1, 2, 3))
+    try {
+        $null = New-Item -ItemType HardLink -Path $batch3HardLinkCapabilityLink -Target $batch3HardLinkCapabilityTarget -ErrorAction Stop
+        $batch3HardLinkCapabilityAvailable = [IO.File]::Exists($batch3HardLinkCapabilityLink)
+        if (-not $batch3HardLinkCapabilityAvailable) { $batch3HardLinkCapabilityReason = 'created hard link was not visible as a file' }
+    }
+    catch { $batch3HardLinkCapabilityReason = $_.Exception.Message }
+    finally {
+        if ([IO.File]::Exists($batch3HardLinkCapabilityLink)) { [IO.File]::Delete($batch3HardLinkCapabilityLink) }
+        if (Test-Path -LiteralPath $batch3HardLinkCapabilityRoot) { Remove-Item -LiteralPath $batch3HardLinkCapabilityRoot -Recurse -Force }
+    }
+    if ($batch3HardLinkCapabilityAvailable) {
+        Invoke-Case 'Phase 9 BATCH3 (s) dispatch hard link aliases are rejected and single-link files align' {
+            $batch3ProbeS = Invoke-Batch3BoundFileCopyProbe -Scenario 's'
+            Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_S_HARDLINK_REJECTION' -Value ([ordered]@{ command = $batch3ProbeS.command; exit_code = $batch3ProbeS.exit_code; stdout = $batch3ProbeS.stdout; stderr = $batch3ProbeS.stderr })
+            Assert-True ($batch3ProbeS.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeS.stderr) -and $batch3ProbeS.stdout -match 'PASS scenario=s hardlink_rejected=true outside_bytes_unchanged=true outside_attributes_unchanged=true single_link_count=1 single_file_aligned=true hard_link_count=[2-9]\d*') ('hard-link rejection or single-link alignment failed: ' + [string]$batch3ProbeS.stdout + [string]$batch3ProbeS.stderr)
+        }
+    }
+    else {
+        Invoke-Case -Name 'Phase 9 BATCH3 (s) dispatch hard link aliases are rejected and single-link files align' -Isolated -IsolationId 'BATCH3-EOL-HARDLINK' -IsolationEvidence ('The host could not create a hard link on the work volume: ' + $batch3HardLinkCapabilityReason) -IsolationReleaseCondition 'Run the same focused case on a Windows work volume that supports same-volume hard links.' -IsolationDeadline 'Before accepting full BATCH3-EOL host coverage.' -IsolationReplacementVerification 'Create an outside file and a dispatch-root hard-link alias, prove the destination has more than one link, reject alignment, and preserve outside bytes and attributes; verify an ordinary one-link file still aligns.' -Action {
+            Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_S_HARDLINK_ISOLATED' -Value ([ordered]@{ status = 'isolated'; reason = $batch3HardLinkCapabilityReason; outside_change_claimed = $false; release_condition = 'Run on a Windows work volume that supports same-volume hard links.' })
+        }
+    }
+
+    Invoke-Case 'Phase 9 BATCH3 (t) partial write failure restores destination bytes and attributes' {
+        $batch3ProbeT = Invoke-Batch3BoundFileCopyProbe -Scenario 't'
+        Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_T_FAILURE_ROLLBACK' -Value ([ordered]@{ command = $batch3ProbeT.command; exit_code = $batch3ProbeT.exit_code; stdout = $batch3ProbeT.stdout; stderr = $batch3ProbeT.stderr })
+        Assert-True ($batch3ProbeT.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeT.stderr) -and $batch3ProbeT.stdout -match 'PASS scenario=t partial_write_failed=true destination_bytes_restored=true readonly_restored=true source_unchanged=true') ('partial-write failure did not restore destination bytes and attributes: ' + [string]$batch3ProbeT.stdout + [string]$batch3ProbeT.stderr)
+    }
+    Invoke-Case 'Phase 9 BATCH3 (u) writable destination preserves cleared and set Archive attributes' {
+        $batch3ProbeU = Invoke-Batch3BoundFileCopyProbe -Scenario 'u'
+        Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_U_WRITABLE_ATTRIBUTES' -Value ([ordered]@{ command = $batch3ProbeU.command; exit_code = $batch3ProbeU.exit_code; stdout = $batch3ProbeU.stdout; stderr = $batch3ProbeU.stderr })
+        Assert-True ($batch3ProbeU.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeU.stderr) -and $batch3ProbeU.stdout -match 'PASS scenario=u normal_without_archive_restored=true archive_preserved=true destination_bytes_aligned=true') ('writable destination attributes or bytes were not preserved: ' + [string]$batch3ProbeU.stdout + [string]$batch3ProbeU.stderr)
+    }
+    Invoke-Case 'Phase 9 BATCH3 (v) write and attribute restoration failures retain both exceptions and original bytes' {
+        $batch3ProbeV = Invoke-Batch3BoundFileCopyProbe -Scenario 'v'
+        Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_V_DUAL_FAILURE' -Value ([ordered]@{ command = $batch3ProbeV.command; exit_code = $batch3ProbeV.exit_code; stdout = $batch3ProbeV.stdout; stderr = $batch3ProbeV.stderr })
+        Assert-True ($batch3ProbeV.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeV.stderr) -and $batch3ProbeV.stdout -match 'PASS scenario=v dual_failure_context_preserved=true aggregate_count=2 destination_bytes_restored=true') ('write and attribute restoration failures lost context or destination bytes: ' + [string]$batch3ProbeV.stdout + [string]$batch3ProbeV.stderr)
+    }
+    Invoke-Case 'Phase 9 BATCH3 (w) attribute restoration failure after a successful write propagates unchanged' {
+        $batch3ProbeW = Invoke-Batch3BoundFileCopyProbe -Scenario 'w'
+        Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_W_ATTRIBUTE_ONLY_FAILURE' -Value ([ordered]@{ command = $batch3ProbeW.command; exit_code = $batch3ProbeW.exit_code; stdout = $batch3ProbeW.stdout; stderr = $batch3ProbeW.stderr })
+        Assert-True ($batch3ProbeW.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeW.stderr) -and $batch3ProbeW.stdout -match 'PASS scenario=w attribute_failure_propagated=true exception_identity_preserved=true destination_bytes_aligned=true') ('attribute restoration failure after successful write did not propagate unchanged: ' + [string]$batch3ProbeW.stdout + [string]$batch3ProbeW.stderr)
+    }
     Write-Output "TOTAL: $script:caseCount; PASS: $script:passedCount; FAIL: $script:failures; ENV-LIMITED: $script:environmentLimitedCount; BASELINE-FAILED: $script:baselineFailedCount; ISOLATED: $script:isolatedCount; FIXTURES: $fixtureRoot"
 }
 else {

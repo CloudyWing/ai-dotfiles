@@ -1,4 +1,420 @@
-﻿function Resolve-DispatchOutputPath {
+﻿function Initialize-DispatchBoundFileCopy {
+    [CmdletBinding()]
+    param()
+
+    if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) { return $false }
+    if ($null -eq ('DispatchBoundFileCopy' -as [type])) {
+    Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
+
+public sealed class DispatchBoundFileCopy : IDisposable
+{
+    private const uint GenericRead = 0x80000000;
+    private const uint GenericWrite = 0x40000000;
+    private const uint FileReadAttributes = 0x00000080;
+    private const uint FileWriteAttributes = 0x00000100;
+    private const uint FileShareRead = 0x00000001;
+    private const uint FileShareWrite = 0x00000002;
+    private const uint FileShareDelete = 0x00000004;
+    private const uint OpenExisting = 3;
+    private const uint FileFlagOpenReparsePoint = 0x00200000;
+    private const uint FileFlagSequentialScan = 0x08000000;
+    private const uint FileFlagBackupSemantics = 0x02000000;
+    private const uint FileAttributeDirectory = 0x00000010;
+    private const uint FileAttributeReadOnly = 0x00000001;
+    private const uint FileAttributeNormal = 0x00000080;
+    private const uint FileAttributeReparsePoint = 0x00000400;
+    private const int PathBufferInitialSize = 512;
+    private const int PathBufferMaximumSize = 32768;
+    private const int CopyBufferSize = 1024 * 1024;
+    private const long RollbackBufferLimit = 16L * 1024L * 1024L;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileTimeValue { public uint Low; public uint High; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct FileBasicInformation
+    {
+        public long CreationTime;
+        public long LastAccessTime;
+        public long LastWriteTime;
+        public long ChangeTime;
+        public uint FileAttributes;
+        public uint Reserved;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation
+    {
+        public uint FileAttributes;
+        public FileTimeValue CreationTime;
+        public FileTimeValue LastAccessTime;
+        public FileTimeValue LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "CreateFileW")]
+    private static extern SafeFileHandle CreateFileW(string fileName, uint desiredAccess, uint shareMode, IntPtr securityAttributes, uint creationDisposition, uint flagsAndAttributes, IntPtr templateFile);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ByHandleFileInformation information);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int fileInformationClass, ref FileBasicInformation information, uint bufferSize);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern SafeFileHandle ReOpenFile(SafeFileHandle originalFile, uint desiredAccess, uint shareMode, uint flagsAndAttributes);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true, EntryPoint = "GetFinalPathNameByHandleW")]
+    private static extern uint GetFinalPathNameByHandleW(SafeFileHandle handle, StringBuilder path, uint pathLength, uint flags);
+
+    private readonly SafeFileHandle _sourceRootHandle;
+    private readonly SafeFileHandle _dispatchRootHandle;
+    private readonly string _sourceRootFinalPath;
+    private readonly string _dispatchRootFinalPath;
+    private bool _disposed;
+
+    public DispatchBoundFileCopy(string sourceRoot, string dispatchRoot)
+    {
+        SafeFileHandle sourceHandle = null;
+        SafeFileHandle dispatchHandle = null;
+        try
+        {
+            sourceHandle = OpenRoot(sourceRoot, "來源");
+            dispatchHandle = OpenRoot(dispatchRoot, "dispatch");
+            _sourceRootFinalPath = GetFinalPath(sourceHandle, "來源 root");
+            _dispatchRootFinalPath = GetFinalPath(dispatchHandle, "dispatch root");
+            _sourceRootHandle = sourceHandle;
+            _dispatchRootHandle = dispatchHandle;
+            sourceHandle = null;
+            dispatchHandle = null;
+        }
+        finally
+        {
+            if (sourceHandle != null) sourceHandle.Dispose();
+            if (dispatchHandle != null) dispatchHandle.Dispose();
+        }
+    }
+
+    public string CopyBound(string sourcePath, string destinationPath, string relativePath)
+    {
+        return CopyBoundCore(sourcePath, destinationPath, relativePath, null, null);
+    }
+
+    private string CopyBoundCore(string sourcePath, string destinationPath, string relativePath, Func<Stream, Stream> destinationStreamDecorator, Action destinationAttributesRestoreProbe)
+    {
+        ThrowIfDisposed();
+        ValidateRelativePath(relativePath);
+        SafeFileHandle sourceHandle = null;
+        SafeFileHandle destinationAttributesHandle = null;
+        SafeFileHandle destinationHandle = null;
+        FileStream sourceStream = null;
+        FileStream destinationFileStream = null;
+        Stream destinationStream = null;
+        uint originalDestinationAttributes = 0;
+        bool destinationAttributesCaptured = false;
+        Exception pendingException = null;
+        try
+        {
+            sourceHandle = OpenFile(sourcePath, GenericRead, FileShareRead, "來源");
+            ValidateFileHandle(sourceHandle, _sourceRootFinalPath, relativePath, "來源", false);
+
+            destinationAttributesHandle = OpenFile(destinationPath, FileReadAttributes | FileWriteAttributes,
+                FileShareRead | FileShareWrite | FileShareDelete, "dispatch 屬性");
+            ValidateFileHandle(destinationAttributesHandle, _dispatchRootFinalPath, relativePath, "dispatch", true);
+            ByHandleFileInformation destinationInformation = GetInformation(destinationAttributesHandle, "dispatch file");
+            originalDestinationAttributes = destinationInformation.FileAttributes;
+            destinationAttributesCaptured = true;
+
+            if ((originalDestinationAttributes & FileAttributeReadOnly) != 0)
+            {
+                uint writableAttributes = originalDestinationAttributes & ~FileAttributeReadOnly;
+                if (writableAttributes == 0) writableAttributes = FileAttributeNormal;
+                SetFileAttributesByHandle(destinationAttributesHandle, writableAttributes, relativePath);
+            }
+
+            destinationHandle = ReOpenWritableFile(destinationAttributesHandle, destinationPath);
+            ValidateFileHandle(destinationHandle, _dispatchRootFinalPath, relativePath, "dispatch", true);
+            sourceStream = new FileStream(sourceHandle, FileAccess.Read, CopyBufferSize, false);
+            sourceHandle = null;
+            destinationFileStream = new FileStream(destinationHandle, FileAccess.ReadWrite, CopyBufferSize, false);
+            destinationHandle = null;
+            destinationStream = destinationFileStream;
+            if (destinationStreamDecorator != null)
+            {
+                destinationStream = destinationStreamDecorator(destinationStream);
+                if (destinationStream == null) throw new IOException("目的檔串流包裝器回傳 null：" + relativePath);
+            }
+            return CopyWithRollback(sourceStream, destinationStream, destinationFileStream, relativePath);
+        }
+        catch (Exception exception)
+        {
+            pendingException = exception;
+            throw;
+        }
+        finally
+        {
+            try
+            {
+                if (destinationStream != null) destinationStream.Dispose();
+                else if (destinationFileStream != null) destinationFileStream.Dispose();
+                else if (destinationHandle != null) destinationHandle.Dispose();
+            }
+            finally
+            {
+                try
+                {
+                    if (sourceStream != null) sourceStream.Dispose();
+                    else if (sourceHandle != null) sourceHandle.Dispose();
+                }
+                finally
+                {
+                    try
+                    {
+                        if (destinationAttributesCaptured && destinationAttributesHandle != null &&
+                            !destinationAttributesHandle.IsInvalid && !destinationAttributesHandle.IsClosed)
+                        {
+                            if (destinationAttributesRestoreProbe != null) destinationAttributesRestoreProbe();
+                            uint currentDestinationAttributes = GetInformation(destinationAttributesHandle, "dispatch file").FileAttributes;
+                            if (currentDestinationAttributes != originalDestinationAttributes)
+                                SetFileAttributesByHandle(destinationAttributesHandle, originalDestinationAttributes, relativePath);
+                        }
+                    }
+                    catch (Exception attributesRestoreException)
+                    {
+                        if (pendingException != null)
+                            throw new IOException("原寫入失敗，且屬性還原也失敗：" + relativePath +
+                                "；原失敗：" + pendingException.Message + "；屬性還原失敗：" + attributesRestoreException.Message,
+                                new AggregateException(pendingException, attributesRestoreException));
+                        throw;
+                    }
+                    finally
+                    {
+                        if (destinationAttributesHandle != null) destinationAttributesHandle.Dispose();
+                    }
+                }
+            }
+        }
+    }
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+        _sourceRootHandle.Dispose();
+        _dispatchRootHandle.Dispose();
+    }
+
+    private static SafeFileHandle OpenRoot(string path, string label)
+    {
+        SafeFileHandle handle = CreateFileW(ToExtendedPath(path), FileReadAttributes,
+            FileShareRead | FileShareWrite | FileShareDelete, IntPtr.Zero, OpenExisting,
+            FileFlagBackupSemantics | FileFlagOpenReparsePoint, IntPtr.Zero);
+        if (handle == null || handle.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (handle != null) handle.Dispose();
+            throw new IOException("無法以 handle 開啟" + label + "目錄：" + path, new Win32Exception(error));
+        }
+        try
+        {
+            ByHandleFileInformation information = GetInformation(handle, label + " root");
+            if ((information.FileAttributes & FileAttributeDirectory) == 0) throw new IOException(label + " root 不是目錄：" + path);
+            if ((information.FileAttributes & FileAttributeReparsePoint) != 0) throw new IOException(label + " root 是 reparse point：" + path);
+            return handle;
+        }
+        catch { handle.Dispose(); throw; }
+    }
+
+    private static SafeFileHandle OpenFile(string path, uint access, uint share, string label)
+    {
+        SafeFileHandle handle = CreateFileW(ToExtendedPath(path), access, share, IntPtr.Zero, OpenExisting,
+            FileFlagOpenReparsePoint | FileFlagSequentialScan, IntPtr.Zero);
+        if (handle == null || handle.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (handle != null) handle.Dispose();
+            throw new IOException("無法以 handle 開啟" + label + "檔案：" + path, new Win32Exception(error));
+        }
+        return handle;
+    }
+
+    private static SafeFileHandle ReOpenWritableFile(SafeFileHandle attributesHandle, string path)
+    {
+        SafeFileHandle handle = ReOpenFile(attributesHandle, GenericRead | GenericWrite, 0,
+            FileFlagOpenReparsePoint | FileFlagSequentialScan);
+        if (handle == null || handle.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (handle != null) handle.Dispose();
+            throw new IOException("無法以 ReOpenFile 開啟 dispatch 寫入 handle：" + path, new Win32Exception(error));
+        }
+        return handle;
+    }
+
+    private static void SetFileAttributesByHandle(SafeFileHandle handle, uint fileAttributes, string relativePath)
+    {
+        FileBasicInformation information = new FileBasicInformation();
+        information.FileAttributes = fileAttributes == 0 ? FileAttributeNormal : fileAttributes;
+        uint informationSize = (uint)Marshal.SizeOf(typeof(FileBasicInformation));
+        if (!SetFileInformationByHandle(handle, 0, ref information, informationSize))
+            throw new IOException("無法以已驗證的 dispatch handle 設定檔案屬性：" + relativePath,
+                new Win32Exception(Marshal.GetLastWin32Error()));
+    }
+    private static void ValidateFileHandle(SafeFileHandle handle, string rootFinalPath, string relativePath, string label, bool rejectHardLinks)
+    {
+        ByHandleFileInformation information = GetInformation(handle, label + " file");
+        if ((information.FileAttributes & FileAttributeDirectory) != 0) throw new IOException(label + "路徑不是一般檔案：" + relativePath);
+        if ((information.FileAttributes & FileAttributeReparsePoint) != 0) throw new IOException(label + "檔案是 reparse point：" + relativePath);
+        if (rejectHardLinks && information.NumberOfLinks > 1)
+            throw new IOException("dispatch 檔案是 hard link 別名（NumberOfLinks 大於 1）：" + relativePath);
+        string actualFinalPath = GetFinalPath(handle, label + " file");
+        string expectedFinalPath = AppendRelativePath(rootFinalPath, relativePath);
+        if (!String.Equals(actualFinalPath, expectedFinalPath, StringComparison.OrdinalIgnoreCase))
+            throw new IOException(label + "檔案 handle 最終路徑不符合 root 與相對路徑：" + relativePath);
+    }
+
+    private static ByHandleFileInformation GetInformation(SafeFileHandle handle, string label)
+    {
+        ByHandleFileInformation information;
+        if (!GetFileInformationByHandle(handle, out information))
+            throw new IOException("無法取得" + label + "的 handle 資訊。", new Win32Exception(Marshal.GetLastWin32Error()));
+        return information;
+    }
+
+    private static string CopyWithRollback(Stream sourceStream, Stream destinationStream, FileStream destinationFileStream, string relativePath)
+    {
+        long originalLength = destinationStream.Length;
+        byte[] originalBytes = null;
+        if (originalLength <= RollbackBufferLimit)
+        {
+            originalBytes = new byte[(int)originalLength];
+            destinationStream.Position = 0;
+            int bytesSaved = 0;
+            while (bytesSaved < originalBytes.Length)
+            {
+                int bytesRead = destinationStream.Read(originalBytes, bytesSaved, originalBytes.Length - bytesSaved);
+                if (bytesRead == 0) throw new IOException("讀取原始 dispatch 目的檔時遇到非預期 EOF：" + relativePath);
+                bytesSaved += bytesRead;
+            }
+        }
+
+        try
+        {
+            if (originalBytes != null) destinationStream.SetLength(0);
+            destinationStream.Position = 0;
+            byte[] buffer = new byte[CopyBufferSize];
+            long totalBytes = 0;
+            using (SHA256 sha256 = SHA256.Create())
+            {
+                int bytesRead;
+                while ((bytesRead = sourceStream.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    sha256.TransformBlock(buffer, 0, bytesRead, buffer, 0);
+                    destinationStream.Write(buffer, 0, bytesRead);
+                    totalBytes += bytesRead;
+                }
+                sha256.TransformFinalBlock(new byte[0], 0, 0);
+                destinationStream.SetLength(totalBytes);
+                destinationStream.Flush();
+                destinationFileStream.Flush(true);
+                return ToLowerHex(sha256.Hash);
+            }
+        }
+        catch (Exception copyException)
+        {
+            if (originalBytes == null) throw;
+            try
+            {
+                destinationStream.Position = 0;
+                destinationStream.SetLength(0);
+                destinationStream.Write(originalBytes, 0, originalBytes.Length);
+                destinationStream.SetLength(originalLength);
+                destinationStream.Flush();
+                destinationFileStream.Flush(true);
+            }
+            catch (Exception restoreException)
+            {
+                throw new IOException("dispatch 目的檔寫入失敗，且原始位元組回復也失敗：" + relativePath,
+                    new AggregateException(copyException, restoreException));
+            }
+            throw new IOException("dispatch 目的檔寫入失敗，原始位元組已回復：" + relativePath, copyException);
+        }
+    }
+
+    private static string GetFinalPath(SafeFileHandle handle, string label)
+    {
+        int size = PathBufferInitialSize;
+        while (size <= PathBufferMaximumSize)
+        {
+            StringBuilder buffer = new StringBuilder(size);
+            uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Capacity, 0);
+            if (length == 0) throw new IOException("無法取得" + label + "的 final path。", new Win32Exception(Marshal.GetLastWin32Error()));
+            if (length < buffer.Capacity) return TrimFinalPath(buffer.ToString());
+            size = checked((int)length + 1);
+        }
+        throw new IOException(label + " final path 超過 Windows 路徑長度限制。");
+    }
+
+    private static string ToExtendedPath(string path)
+    {
+        string fullPath = Path.GetFullPath(path);
+        if (fullPath.StartsWith("\\\\?\\", StringComparison.Ordinal)) return fullPath;
+        if (fullPath.StartsWith("\\\\", StringComparison.Ordinal)) return "\\\\?\\UNC\\" + fullPath.Substring(2);
+        return "\\\\?\\" + fullPath;
+    }
+
+    private static string TrimFinalPath(string path)
+    {
+        if (path.Length == 7 && path.StartsWith("\\\\?\\", StringComparison.Ordinal) && path[5] == ':') return path;
+        return path.TrimEnd('\\', '/');
+    }
+
+    private static string AppendRelativePath(string rootPath, string relativePath)
+    {
+        string normalizedRelativePath = relativePath.Replace('/', '\\');
+        if (rootPath.EndsWith("\\", StringComparison.Ordinal) || rootPath.EndsWith("/", StringComparison.Ordinal)) return rootPath + normalizedRelativePath;
+        return rootPath + "\\" + normalizedRelativePath;
+    }
+
+    private static void ValidateRelativePath(string path)
+    {
+        if (String.IsNullOrEmpty(path) || path.IndexOf('\\') >= 0 || path.IndexOf(':') >= 0 || Path.IsPathRooted(path) || path.IndexOf('\0') >= 0)
+            throw new IOException("Baseline 相對路徑異常：" + path);
+        string[] parts = path.Split('/');
+        for (int index = 0; index < parts.Length; index++)
+            if (parts[index].Length == 0 || parts[index] == "." || parts[index] == ".." || parts[index] == ".git")
+                throw new IOException("Baseline 相對路徑異常：" + path);
+    }
+
+    private static string ToLowerHex(byte[] bytes)
+    {
+        StringBuilder builder = new StringBuilder(bytes.Length * 2);
+        for (int index = 0; index < bytes.Length; index++) builder.Append(bytes[index].ToString("x2"));
+        return builder.ToString();
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposed) throw new ObjectDisposedException("DispatchBoundFileCopy");
+    }
+}
+'@
+}
+    return $true
+}
+
+function Resolve-DispatchOutputPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -444,24 +860,175 @@ function Apply-SourceCarryIn {
 
 function Get-DispatchSnapshotPath {
     [CmdletBinding()]
-    param([string]$Root, [string]$Path)
+    param(
+        [string]$Root,
+        [string]$Path,
+        [System.Collections.Generic.HashSet[string]]$VerifiedDirectories,
+        [switch]$SkipLeafCheck,
+        [switch]$RootIsResolved
+    )
 
-    if ([string]::IsNullOrEmpty($Path) -or $Path.Contains('\') -or $Path.Contains(':') -or [IO.Path]::IsPathRooted($Path) -or @($Path.Split('/') | Where-Object { $_ -in @('', '.', '..', '.git') }).Count -gt 0) {
-        throw "Baseline 相對路徑異常：$Path"
-    }
-    $rootPath = Resolve-AbsolutePath $Root
-    $current = $rootPath
-    foreach ($part in @('') + $Path.Split('/')) {
-        if ($part.Length -gt 0) { $current = Join-Path $current $part }
-        if (Test-Path -LiteralPath $current) {
-            $item = Get-Item -LiteralPath $current -Force
-            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Baseline 不支援重解析點：$Path" }
+    $invalidPath = [string]::IsNullOrEmpty($Path) -or $Path.Contains('\') -or $Path.Contains(':') -or [IO.Path]::IsPathRooted($Path)
+    if (-not $invalidPath) {
+        foreach ($pathPart in $Path.Split('/')) {
+            if ($pathPart.Length -eq 0 -or $pathPart -in @('.', '..', '.git')) {
+                $invalidPath = $true
+                break
+            }
         }
     }
-    if (-not (Test-PathWithinRoot $current $rootPath)) { throw "Baseline 路徑超出工作樹：$Path" }
+    if ($invalidPath) {
+        throw "Baseline 相對路徑異常：$Path"
+    }
+    if ($RootIsResolved) {
+        if (-not [IO.Path]::IsPathRooted($Root)) { throw "Baseline root 必須是絕對路徑：$Root" }
+        $rootPath = $Root
+    }
+    else {
+        $rootPath = Resolve-AbsolutePath $Root
+    }
+    $current = $rootPath
+    $parts = @('') + $Path.Split('/')
+    for ($partIndex = 0; $partIndex -lt $parts.Count; $partIndex++) {
+        $part = $parts[$partIndex]
+        if ($part.Length -gt 0) { $current = Join-Path $current $part }
+        $isLeaf = $partIndex -eq ($parts.Count - 1)
+        if ($isLeaf -and $SkipLeafCheck) {
+            continue
+        }
+        if (-not $isLeaf -and $null -ne $VerifiedDirectories -and $VerifiedDirectories.Contains($current)) {
+            continue
+        }
+        if (Test-Path -LiteralPath $current) {
+            $item = Get-Item -LiteralPath $current -Force
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Baseline 不支援重解析點：$Path"
+            }
+            if (-not $isLeaf -and $null -ne $VerifiedDirectories -and $item.PSIsContainer) {
+                $null = $VerifiedDirectories.Add($current)
+            }
+        }
+    }
+    if ($RootIsResolved) {
+        $rootBoundary = $rootPath
+        if (-not $rootBoundary.EndsWith([string][char]92, [StringComparison]::Ordinal) -and
+            -not $rootBoundary.EndsWith([string][char]47, [StringComparison]::Ordinal)) {
+            $rootBoundary += [IO.Path]::DirectorySeparatorChar
+        }
+        if (-not [string]::Equals($current, $rootPath, [StringComparison]::OrdinalIgnoreCase) -and
+            -not $current.StartsWith($rootBoundary, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Baseline 路徑超出工作樹：$Path"
+        }
+    }
+    elseif (-not (Test-PathWithinRoot $current $rootPath)) {
+        throw "Baseline 路徑超出工作樹：$Path"
+    }
     return $current
 }
+function Sync-DispatchTrackedRawBytesFromSource {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
 
+        [Parameter(Mandatory)]
+        [string]$DispatchRoot
+    )
+
+    $trackedFilesResult = Invoke-GitCommand -WorkingDirectory $DispatchRoot -Arguments @('ls-files', '-z', '--')
+    if ($trackedFilesResult.ExitCode -ne 0) {
+        throw ('Preflight 無法列出 dispatch tracked 檔案：' + [string]$trackedFilesResult.StdErr.Trim())
+    }
+    $untrackedFilesResult = Invoke-GitCommand -WorkingDirectory $DispatchRoot -Arguments @('ls-files', '-z', '--others', '--exclude-standard', '--')
+    if ($untrackedFilesResult.ExitCode -ne 0) {
+        throw ('Preflight 無法列出 dispatch untracked 檔案：' + [string]$untrackedFilesResult.StdErr.Trim())
+    }
+
+    $trackedFileOutput = [string]$trackedFilesResult.StdOut
+    $untrackedFileOutput = [string]$untrackedFilesResult.StdOut
+    foreach ($fileOutput in @($trackedFileOutput, $untrackedFileOutput)) {
+        if ($fileOutput.Length -gt 0 -and $fileOutput[$fileOutput.Length - 1] -ne [char]0) {
+            throw 'Preflight dispatch 檔案清單格式異常。'
+        }
+    }
+
+    $syncPaths = New-Object 'System.Collections.Generic.List[string]'
+    $syncPathSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    foreach ($fileOutput in @($trackedFileOutput, $untrackedFileOutput)) {
+        foreach ($relativePath in $fileOutput.Split([char]0)) {
+            if ($relativePath.Length -gt 0 -and $syncPathSet.Add($relativePath)) {
+                $syncPaths.Add($relativePath)
+            }
+        }
+    }
+
+    $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
+    $dispatchRootPath = Resolve-AbsolutePath -Path $DispatchRoot
+    $sourceFastDirectoryCache = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $dispatchFastDirectoryCache = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+    $platformIsWindows = Test-IsWindowsPlatform
+    $boundCopySession = $null
+    $currentRelativePath = ''
+
+    try {
+        foreach ($relativePath in $syncPaths) {
+            $currentRelativePath = $relativePath
+            if (Test-DispatchSecretPathName -Path $relativePath) {
+                continue
+            }
+
+            $sourceFilePath = Get-DispatchSnapshotPath -Root $sourceRootPath -Path $relativePath -VerifiedDirectories $sourceFastDirectoryCache -SkipLeafCheck -RootIsResolved
+            $dispatchFilePath = Get-DispatchSnapshotPath -Root $dispatchRootPath -Path $relativePath -VerifiedDirectories $dispatchFastDirectoryCache -SkipLeafCheck -RootIsResolved
+
+            $sourceFileInfo = New-Object -TypeName System.IO.FileInfo -ArgumentList $sourceFilePath
+            $dispatchFileInfo = New-Object -TypeName System.IO.FileInfo -ArgumentList $dispatchFilePath
+            $sourceFileInfo.Refresh()
+            $dispatchFileInfo.Refresh()
+            $sourcePathExists = $sourceFileInfo.Exists
+            $dispatchPathExists = $dispatchFileInfo.Exists
+            if (-not $sourcePathExists) { $sourcePathExists = [IO.Directory]::Exists((ConvertTo-FileSystemApiPath -Path $sourceFilePath)) }
+            if (-not $dispatchPathExists) { $dispatchPathExists = [IO.Directory]::Exists((ConvertTo-FileSystemApiPath -Path $dispatchFilePath)) }
+            if (-not $sourcePathExists -or -not $dispatchPathExists) {
+                continue
+            }
+            if (-not $sourceFileInfo.Exists -or -not $dispatchFileInfo.Exists) {
+                throw '來源或 dispatch 路徑不是一般檔案。'
+            }
+
+            $sourceAttributes = $sourceFileInfo.Attributes
+            $dispatchAttributes = $dispatchFileInfo.Attributes
+            if ((($sourceAttributes -band [IO.FileAttributes]::Directory) -ne 0) -or
+                (($dispatchAttributes -band [IO.FileAttributes]::Directory) -ne 0)) {
+                throw '來源或 dispatch 路徑不是一般檔案。'
+            }
+            if ((($sourceAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+                (($dispatchAttributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+                throw '來源或 dispatch 路徑包含重解析點。'
+            }
+            if ($sourceFileInfo.Length -eq $dispatchFileInfo.Length) {
+                continue
+            }
+
+            if (-not $platformIsWindows) {
+                throw 'Preflight 起點原始位元組同步僅支援 Windows；非 Windows 平台拒絕覆寫長度不同的檔案。'
+            }
+
+            try {
+                if ($null -eq $boundCopySession) {
+                    $null = Initialize-DispatchBoundFileCopy
+                    $boundCopySession = New-Object -TypeName DispatchBoundFileCopy -ArgumentList $sourceRootPath, $dispatchRootPath
+                }
+                $null = $boundCopySession.CopyBound($sourceFilePath, $dispatchFilePath, $relativePath)
+            }
+            catch {
+                throw ('Preflight 起點原始位元組同步失敗：' + $currentRelativePath + '；' + $_.Exception.Message)
+            }
+        }
+    }
+    finally {
+        if ($null -ne $boundCopySession) { $boundCopySession.Dispose() }
+    }
+}
 function Get-DispatchWorkingTreeModes {
     [CmdletBinding()]
     param([string]$DispatchRoot)
