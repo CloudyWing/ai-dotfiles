@@ -913,9 +913,6 @@ function Write-AdvisorConsultReport {
         [string]$Status,
 
         [AllowNull()]
-        [object]$BudgetMonitor,
-
-        [AllowNull()]
         [object]$RequiredOutputGate,
 
         [AllowNull()]
@@ -1016,12 +1013,6 @@ function Write-AdvisorConsultReport {
         '## Interruption status'
         ''
         (($InterruptionStatus | ConvertTo-Json -Depth 20))
-        ''
-        '## Quota observations'
-        ''
-        ('```json')
-        (($BudgetMonitor | ConvertTo-Json -Depth 20))
-        '```'
         ''
     ) -join "`r`n"
     $fullPath = Get-AdvisorConsultReportPath -Path $fullPath -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug

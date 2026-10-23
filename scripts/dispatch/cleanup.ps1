@@ -173,8 +173,7 @@ function Get-CleanupRecordReferencedPaths {
         'thread_id_path', 'launcher_path', 'process_exit_code_sidecar_path', 'prompt_path',
         'prompt_source_path', 'prompt_transfer_path', 'inspect_result_path', 'evidence_pack_path',
         'request_path', 'scope_plan_path', 'scope_plan_parent_path', 'baseline_path',
-        'prepare_result_path', 'quota_before_path', 'quota_after_path', 'quota_observation_path',
-        'budget_monitor_path', 'interruption_checkpoint_path'
+        'prepare_result_path', 'interruption_checkpoint_path'
     )
     $paths = New-Object System.Collections.Generic.List[string]
     foreach ($name in $pathNames) {

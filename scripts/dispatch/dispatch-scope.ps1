@@ -675,12 +675,9 @@ function New-ScopePlan {
         [Parameter(Mandatory)][string]$TaskType,
         [Parameter(Mandatory)][string]$RequestedProfile,
         [Parameter(Mandatory)][string]$SessionMode,
-        [Parameter(Mandatory)][AllowNull()][psobject]$BeforeSnapshot,
         [string]$CalibrationPath,
         [string[]]$Units,
         [Parameter(Mandatory)][string]$UnitKind,
-        [Nullable[double]]$RequestedBudgetPercent,
-        [Nullable[double]]$RequestedReservePercent,
         [string]$Model,
         [AllowNull()][object]$ModelEvidence,
         [AllowNull()][object]$ReasoningEffortEvidence,
@@ -688,18 +685,6 @@ function New-ScopePlan {
     )
     if ($null -eq $Units -or $Units.Count -eq 0) { throw 'ScopePlan 不可使用空的單位清單。' }
 
-    $primaryWindow = if ($null -eq $BeforeSnapshot) { $null } else { Get-DispatchJsonProperty -Object $BeforeSnapshot -Name 'primary' }
-    $primaryObservation = if ($null -eq $BeforeSnapshot) { $null } else { Get-QuotaSnapshotObservation -Snapshot $BeforeSnapshot -WindowName 'primary' }
-    $remainingValue = Get-DispatchJsonProperty -Object $primaryObservation -Name 'remaining_percent'
-    if ($null -eq $remainingValue) { $remainingValue = Get-DispatchJsonProperty -Object $primaryWindow -Name 'remaining_percent' }
-    $remaining = $null
-    if ($null -ne $remainingValue) { try { $remaining = [double]$remainingValue } catch { $remaining = $null } }
-
-    $quotaFreshness = if ($null -eq $BeforeSnapshot) { 'unknown' } else { Get-QuotaSnapshotFreshness -Snapshot $BeforeSnapshot }
-    $hasObservations = $null -ne $BeforeSnapshot -and (Test-QuotaSnapshotHasObservations -Snapshot $BeforeSnapshot)
-    $quotaState = if ($null -eq $BeforeSnapshot) { 'SnapshotUnavailable' } else { [string](Get-DispatchJsonProperty -Object $BeforeSnapshot -Name 'state') }
-    if ([string]::IsNullOrWhiteSpace($quotaState)) { $quotaState = if ($hasObservations) { 'Valid' } else { 'SnapshotUnavailable' } }
-    $serviceRejection = if ($null -eq $BeforeSnapshot) { $null } else { Get-QuotaSnapshotServiceRejection -Snapshot $BeforeSnapshot }
     $activationMode = if ($null -eq $ActivationDecision) { 'none' } else { [string](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'activationMode') }
     $authorizationSource = if ($null -eq $ActivationDecision) { $null } else { Get-OptionalObjectProperty -Object $ActivationDecision -Name 'authorizationSource' }
     $activationGranted = $null -ne $ActivationDecision -and [bool](Get-OptionalObjectProperty -Object $ActivationDecision -Name 'granted')
@@ -711,11 +696,6 @@ function New-ScopePlan {
         task_type = $TaskType
         requested_profile = $RequestedProfile
         session_mode = $SessionMode
-        primary_remaining_percent = $remaining
-        primary_reserve_percent = 0.0
-        primary_budget_percent = $null
-        estimate_percent = $null
-        estimate_source = 'not-used'
         unit_kind = $UnitKind
         requested_units = @($Units)
         selected_units = @($Units)
@@ -725,20 +705,10 @@ function New-ScopePlan {
         calibration_sample_count = 0
         resolved_model = Get-DispatchEvidenceValue -Evidence $ModelEvidence
         resolved_reasoning_effort = Get-DispatchEvidenceValue -Evidence $ReasoningEffortEvidence
-        quota_state = $quotaState
-        quota_freshness = $quotaFreshness
-        quota_observation_available = $hasObservations
-        service_rejection = $serviceRejection
-        retry_allowed = $null
-        stop_after_selected_units = $false
         authorization_source = $authorizationSource
         activation_mode = $activationMode
         activation_granted = $activationGranted
         activation_notice = $activationNotice
-        advisor_hard_limit_percent = $null
-        advisor_unit_estimate_percent = $null
-        reserve_bypassed = $false
-        minimum_unit_over_budget = $false
     }
 }
 
@@ -760,7 +730,7 @@ function Read-ScopePlanFile {
     catch {
         throw "ScopePlan 格式錯誤：$fullPath；$($_.Exception.Message)"
     }
-    foreach ($requiredName in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'session_mode', 'primary_remaining_percent', 'primary_reserve_percent', 'primary_budget_percent', 'estimate_percent', 'estimate_source', 'unit_kind', 'requested_units', 'selected_units', 'deferred_units', 'decision', 'decision_reason')) {
+    foreach ($requiredName in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'session_mode', 'unit_kind', 'requested_units', 'selected_units', 'deferred_units', 'decision', 'decision_reason')) {
         if ($null -eq $plan.PSObject.Properties[$requiredName]) {
             throw "ScopePlan 缺少欄位：$fullPath；$requiredName"
         }
@@ -950,7 +920,7 @@ function Get-DispatchRequestExpectedFormat {
 
     switch ($Field) {
         'schema' { return 'ai-sessions.dispatch-request.v1' }
-        'operation' { return 'Preflight|Prepare|Start|Inspect|Collect|QuotaProbe|Dispatch|Cleanup' }
+        'operation' { return 'Preflight|Prepare|Start|Inspect|Collect|Dispatch|Cleanup' }
         'line_slug' { return '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
         'dispatch_slug' { return '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
         'selected_requirement' { return '#<positive integer>[,#<positive integer>...]' }
@@ -1315,11 +1285,15 @@ function Read-DispatchRequest {
         Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidJson' -Message 'request file 根節點必須是 JSON object。' -RequestPathValue $requestPathValue
     }
 
-    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement')
+    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement')
+    $removedQuotaFields = @('quota_before_path', 'quota_after_path')
     $commonRootFields = @('source_root', 'dispatch_root', 'caller_session_id')
     $cleanupOnlyFields = @('run_record_path', 'reviewer_report_path', 'report_path', 'evidence_path')
     $allowedFields = @('schema', 'operation', 'line_slug', 'dispatch_slug', 'profile', 'advisor_request_source', 'target_path', 'add_directory', 'search', 'codex_parent_option', 'literal_values', 'prepare_artifacts', 'result_path', 'preflight_result_path') + $commonRootFields + $dispatchOnlyFields + $cleanupOnlyFields
     foreach ($property in $document.PSObject.Properties) {
+        if ($removedQuotaFields -contains $property.Name) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestFieldNotAllowed' -Message ("request 欄位 {0} 不允許使用。" -f $property.Name) -RequestPathValue $requestPathValue -Field $property.Name -Detail ([ordered]@{ name = $property.Name })
+        }
         if ($allowedFields -notcontains $property.Name) {
             Throw-DispatchRequestFailure -Code 'DispatchRequestUnknownField' -Message ("request file 含未知欄位：{0}" -f $property.Name) -RequestPathValue $requestPathValue -Field $property.Name -Detail ([ordered]@{ name = $property.Name })
         }
@@ -1332,7 +1306,7 @@ function Read-DispatchRequest {
     if ($document.schema -isnot [string] -or [string]$document.schema -cne 'ai-sessions.dispatch-request.v1') {
         Throw-DispatchRequestFailure -Code 'DispatchRequestSchemaMismatch' -Message 'request file schema 不符。' -RequestPathValue $requestPathValue -Field 'schema' -Detail ([ordered]@{ expected = 'ai-sessions.dispatch-request.v1'; received = [string]$document.schema })
     }
-    $validOperations = @('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'Dispatch', 'Cleanup')
+    $validOperations = @('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'Dispatch', 'Cleanup')
     $canonicalOperation = $null
     if ($document.operation -is [string]) {
         foreach ($validOperation in $validOperations) {
@@ -1469,7 +1443,7 @@ function Read-DispatchRequest {
     $cleanupFieldPresence = [ordered]@{}
     $cleanupValues = [ordered]@{}
     if ([string]$document.operation -ceq 'Dispatch') {
-        foreach ($field in @('source_root', 'dispatch_root', 'prompt_path', 'task_type', 'required_identifier', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path', 'evidence_pack_path', 'advisor_consult_report_path')) {
+        foreach ($field in @('source_root', 'dispatch_root', 'prompt_path', 'task_type', 'required_identifier', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'evidence_pack_path', 'advisor_consult_report_path')) {
             $dispatchFieldPresence[$field] = Test-DispatchRequestFieldPresent -Document $document -Name $field
             $dispatchValues[$field] = Get-DispatchRequestOptionalString -Document $document -Field $field -RequestPathValue $requestPathValue
         }
@@ -1831,8 +1805,6 @@ function Apply-DispatchRequest {
                 @('ResultPath', 'result_path'),
                 @('PreflightResultPath', 'preflight_result_path'),
                 @('PrepareResultPath', 'prepare_result_path'),
-                @('QuotaBeforePath', 'quota_before_path'),
-                @('QuotaAfterPath', 'quota_after_path'),
                 @('SelectedRequirement', 'selected_requirement'))) {
             Apply-DispatchRequestScalarField -Context $context -CliField ([string]$mapping[0]) -RequestField ([string]$mapping[1])
         }
@@ -2178,7 +2150,7 @@ function Test-ScopePlanCompleteness {
     if ($ScopePlan -is [System.Collections.IDictionary]) {
         $ScopePlan = [pscustomobject]$ScopePlan
     }
-    foreach ($name in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'session_mode', 'primary_remaining_percent', 'primary_reserve_percent', 'primary_budget_percent', 'estimate_percent', 'estimate_source', 'unit_kind', 'requested_units', 'selected_units', 'deferred_units', 'decision', 'decision_reason')) {
+    foreach ($name in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'session_mode', 'unit_kind', 'requested_units', 'selected_units', 'deferred_units', 'decision', 'decision_reason')) {
         if ($null -eq $ScopePlan.PSObject.Properties[$name]) { return $false }
     }
     if ([string]::IsNullOrWhiteSpace([string]$ScopePlan.dispatch_slug) -or
@@ -2187,27 +2159,18 @@ function Test-ScopePlanCompleteness {
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.requested_profile) -or
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.session_mode) -or
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.unit_kind) -or
-        [string]$ScopePlan.estimate_source -ne 'not-used' -or
-        $null -ne $ScopePlan.estimate_percent -or
         [string]$ScopePlan.decision -ne 'full' -or
         [string]::IsNullOrWhiteSpace([string]$ScopePlan.decision_reason)) { return $false }
     if ($ScopePlan.unit_kind -notin @('workflow-phase', 'resource-target', 'advisor-evidence-question')) { return $false }
     if ([string]$ScopePlan.task_type -eq 'advisor-consult') {
-        foreach ($name in @('activation_mode', 'authorization_source', 'activation_granted', 'reserve_bypassed', 'minimum_unit_over_budget', 'stop_after_selected_units', 'advisor_unit_estimate_percent')) {
+        foreach ($name in @('activation_mode', 'authorization_source', 'activation_granted')) {
             if ($null -eq $ScopePlan.PSObject.Properties[$name]) { return $false }
         }
         if ([string]$ScopePlan.activation_mode -notin @('user-authorized', 'none') -or
             ($null -ne $ScopePlan.authorization_source -and [string]$ScopePlan.authorization_source -ne 'user-explicit') -or
-            $ScopePlan.activation_granted -isnot [bool] -or
-            $ScopePlan.reserve_bypassed -isnot [bool] -or
-            $ScopePlan.minimum_unit_over_budget -isnot [bool] -or
-            $ScopePlan.stop_after_selected_units -isnot [bool] -or
-            $null -ne $ScopePlan.advisor_unit_estimate_percent) { return $false }
+            $ScopePlan.activation_granted -isnot [bool]) { return $false }
         if ($ScopePlan.activation_granted -and ([string]$ScopePlan.activation_mode -ne 'user-authorized' -or [string]$ScopePlan.authorization_source -ne 'user-explicit')) { return $false }
     }
-    $freshness = $ScopePlan.PSObject.Properties['quota_freshness']
-    if ($null -ne $freshness -and [string]$freshness.Value -notin @('fresh', 'stale', 'unknown')) { return $false }
-
     $requested = @($ScopePlan.requested_units | ForEach-Object { [string]$_ })
     $selected = @($ScopePlan.selected_units | ForEach-Object { [string]$_ })
     $deferred = @($ScopePlan.deferred_units | ForEach-Object { [string]$_ })
@@ -2252,8 +2215,7 @@ function Test-ContinuationScopePlan {
     $deferredUnits = @($ScopePlan.deferred_units | ForEach-Object { [string]$_ })
     $continuationUnits = @($selectedUnits + $deferredUnits)
     if (-not (Test-StringArrayEqual -Left $continuationUnits -Right $ScopePlan.requested_units) -or
-        [string]::IsNullOrWhiteSpace([string]$ScopePlan.decision) -or
-        [string]::IsNullOrWhiteSpace([string]$ScopePlan.estimate_source)) {
+        [string]::IsNullOrWhiteSpace([string]$ScopePlan.decision)) {
         return $false
     }
     if (-not [string]::Equals([string]$ScopePlan.dispatch_slug, $DispatchSlug, [System.StringComparison]::OrdinalIgnoreCase) -or
@@ -2321,13 +2283,15 @@ function New-ContinuationScopePlanSubset {
     }
 
     $child = $ParentScopePlan | ConvertTo-Json -Depth 30 | ConvertFrom-Json
+    foreach ($name in @('primary_remaining_percent', 'primary_reserve_percent', 'primary_budget_percent', 'estimate_percent', 'estimate_source', 'quota_state', 'quota_freshness', 'quota_observation_available', 'service_rejection', 'retry_allowed', 'stop_after_selected_units', 'advisor_hard_limit_percent', 'advisor_unit_estimate_percent', 'reserve_bypassed', 'minimum_unit_over_budget')) {
+        $null = $child.PSObject.Properties.Remove($name)
+    }
     $child.requested_units = @($RequestedUnits | ForEach-Object { [string]$_ })
     $child.selected_units = @($RequestedUnits | ForEach-Object { [string]$_ })
     $child.deferred_units = @()
     $child.decision = 'full'
     $child.decision_reason = 'continuation subset 已依父 ScopePlan 宣告順序建立。'
     $child.session_mode = 'continuation'
-    $child.stop_after_selected_units = $false
     $child | Add-Member -MemberType NoteProperty -Name 'parent_scope_plan_path' -Value (Resolve-AbsolutePath -Path $ParentScopePlanPath) -Force
     $child | Add-Member -MemberType NoteProperty -Name 'parent_scope_plan_sha256' -Value $ParentScopePlanSha256 -Force
     $child | Add-Member -MemberType NoteProperty -Name 'parent_run_id' -Value $ParentRunId -Force

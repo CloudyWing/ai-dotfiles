@@ -240,7 +240,7 @@ function New-P1BInspectFixture {
     $eventPath = Join-Path $dispatchHistory ($fixture.Slug + '.jsonl')
     $lastMessagePath = Join-Path $dispatchHistory ($fixture.Slug + '-last.md')
     $scopePlanPath = Join-Path $dispatchHistory ($fixture.Slug + '-scope.json')
-    $scopePlan = New-ScopePlan -DispatchSlug $fixture.Slug -DispatchKind 'resource' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -BeforeSnapshot $null -Units @('d2-inspect') -UnitKind 'resource-target' -RequestedBudgetPercent $null -RequestedReservePercent $null -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $null
+    $scopePlan = New-ScopePlan -DispatchSlug $fixture.Slug -DispatchKind 'resource' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath $null -Units @('d2-inspect') -UnitKind 'resource-target' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $null
     Write-P1BText $scopePlanPath ($scopePlan | ConvertTo-Json -Depth 30)
     $now = [DateTime]::UtcNow.ToString('o')
     $events = @(
@@ -288,8 +288,6 @@ function New-P1BInspectFixture {
         parent_options = $null
         parent_options_sha256 = $null
         parent_options_status = 'unknown'
-        quota_before_path = $null
-        quota_before_sha256 = $null
     }
     $null = Write-DispatchRunRecord -Record $record
     $script:SourceRoot = $fixture.Source
@@ -311,9 +309,6 @@ function New-P1BInspectFixture {
     $script:LastMessagePath = Resolve-AbsolutePath $lastMessagePath
     $script:ErrorStreamPath = ''
     $script:ThreadIdPath = ''
-    $script:QuotaBeforePath = ''
-    $script:QuotaAfterPath = ''
-    $script:BudgetMonitorPath = ''
     $script:CodexHome = ''
     $script:AdvisorConsultReportPath = ''
     $script:EvidencePackPath = ''

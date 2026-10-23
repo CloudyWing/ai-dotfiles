@@ -28,7 +28,7 @@ policy.allow_implicit_invocation: true
 
 request 欄位先依 parser 白名單驗證，再依 operation 套用欄位作用域。識別欄位為 `schema`、`operation`、`line_slug`、`dispatch_slug`。其他一般白名單欄位為 `profile`、`advisor_request_source`、`target_path`、`add_directory`、`search`、`codex_parent_option`、`literal_values`、`prepare_artifacts`、`result_path`、`preflight_result_path`。共用根目錄欄位（`commonRootFields`）為 `source_root`、`dispatch_root`、`caller_session_id`。
 
-`Dispatch` 專用欄位（`dispatchOnlyFields`）完整清單為 `write_mode`、`dispatch_kind`、`prompt_path`、`task_type`、`session_mode`、`unit_kind`、`requested_unit`、`continue_from_scope_plan`、`background`、`required_identifier`、`failure_receipt_path`、`prepare_result_path`、`quota_before_path`、`quota_after_path`、`evidence_pack_path`、`advisor_consult_report_path`、`selected_requirement`。`Cleanup` 專用欄位（`cleanupOnlyFields`）為 `run_record_path`、`reviewer_report_path`、`report_path`、`evidence_path`。`Dispatch` 不接受 Cleanup 專用欄位，`Cleanup` 不接受 Dispatch 專用欄位；其他 operation 不接受共用根目錄、`result_path`、`preflight_result_path` 或兩組 operation 專用欄位。`source_root`、`result_path` 與 `preflight_result_path` 只在 `Dispatch` 與 `Cleanup` 合法。同一欄位在 request 檔與命令列不一致時以 `DispatchRequestMismatch` 停止。
+`Dispatch` 專用欄位（`dispatchOnlyFields`）完整清單為 `write_mode`、`dispatch_kind`、`prompt_path`、`task_type`、`session_mode`、`unit_kind`、`requested_unit`、`continue_from_scope_plan`、`background`、`required_identifier`、`failure_receipt_path`、`prepare_result_path`、`evidence_pack_path`、`advisor_consult_report_path`、`selected_requirement`。`Cleanup` 專用欄位（`cleanupOnlyFields`）為 `run_record_path`、`reviewer_report_path`、`report_path`、`evidence_path`。`Dispatch` 不接受 Cleanup 專用欄位，`Cleanup` 不接受 Dispatch 專用欄位；其他 operation 不接受共用根目錄、`result_path`、`preflight_result_path` 或兩組 operation 專用欄位。`source_root`、`result_path` 與 `preflight_result_path` 只在 `Dispatch` 與 `Cleanup` 合法。同一欄位在 request 檔與命令列不一致時以 `DispatchRequestMismatch` 停止。
 
 Request 的 `operation` 以不區分大小寫的方式驗證，解析後使用正式 operation 名稱；命令列與 Request 的 operation 比對也不區分大小寫。結果的 `dispatch_request` 會保存 Request 檔路徑、SHA-256、位元組長度、正規化 operation、line／dispatch identity、欄位 presence，以及共用、Dispatch 與 Cleanup 欄位的正規化值。陣列欄位另保存筆數、SHA-256 與值；`literal_values` 另有獨立 SHA-256。
 
@@ -42,7 +42,7 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 
 同一 caller Session 可同時持有一個 write admission 與最多兩個 readonly admission。Worktree write 期間可執行同線 readonly 派遣。路徑衝突比對要求至少一方為 direct-write 目標；與其他派遣的 direct-write 目標或 `--add-dir` 權限路徑相同或有父子路徑關係時，新的 admission 以 `DispatchAdmissionPathConflict` 拒絕。各派遣所屬線的 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>` 目錄及其子路徑，只有在該 admission 的路徑為 `--add-dir` 時才排除於衝突比對外；direct-write 即使位於該處，仍與其他派遣的 direct-write 目標或 `--add-dir` 路徑進行父子重疊比對。`--add-dir` 對 `--add-dir` 可並行。第二個 write 以 `DispatchAdmissionWriteLimit` 拒絕，第三個 readonly 以 `DispatchAdmissionReadonlyLimit` 拒絕。`Inspect`（含 `-WaitForCompletion`）屬回收操作，不申請新的 admission，因此不受上述名額與路徑衝突限制。`Prepare`、`Start`、`Collect -ApplyCollectedChanges` 與 `Cleanup` 照常檢查。Ledger owner 身分無法確認時，新的 admission 與 Cleanup 皆以 `DispatchAdmissionOwnerUnknown` 拒絕。
 
-`Cleanup` 以 ledger 的 caller fingerprint、line 與 dispatch 驗證 owner；提供 RunRecord 時另比對 RunRecord 的 caller fingerprint。Owner 不相符時預設以 `DispatchAdmissionOwnerMismatch` 拒絕並保留 worktree；歷史已結束派遣可依「已結束歷史派遣的 Cleanup 接手」明示例外。Workflow worktree 的 `Collect` 通過既有驗收後，可額外指定 `-ApplyCollectedChanges` 套用變更；套用前會在 source root 鎖內比對每個目標路徑的 baseline fingerprint，漂移時以 `DispatchSourceDrift` 停止並保留 worktree。為避免 dispatch worktree 依 `.gitattributes` 檢出的行尾與來源工作樹不同而誤報漂移，`Preflight` 在 `Apply-SourceCarryIn` 之後、建立 baseline 之前，對 dispatch worktree 內 Git 追蹤清單及尚未加入 index 的未追蹤清單所列項目，若來源工作樹同一路徑存在一般檔案且位元組長度不同，以來源的原始位元組覆寫目的檔。Windows 流程以不跟隨 reparse point 的方式開啟來源與目的檔案，確認 handle 類型與最終路徑分別符合正規化根目錄加相對路徑；目的檔為唯讀時，通過驗證後以 `FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | FILE_FLAG_OPEN_REPARSE_POINT` 開啟目的屬性 handle，透過 `SetFileInformationByHandle(FileBasicInfo)` 只改動屬性欄位清除 `ReadOnly`，並以 `ReOpenFile` 取得寫入 handle。目的檔 handle 的 `NumberOfLinks` 大於 1 時一律以 hard link 別名拒絕；串流寫入失敗時，16 MiB 以內的目的檔會在同一 handle 回復原始位元組與長度，較大目的檔不先截斷，失敗可能留下部分覆寫內容；若失敗發生於最後的長度設定或 flush 後，檔案長度可能已是來源長度。流程在 `finally` 透過同一個已驗證的屬性 handle 還原原始屬性，目錄被 junction 置換時拒絕操作。非 Windows 遇到長度不同且需要覆寫的檔案時，會在寫入前以明確指出僅支援 Windows 的錯誤拒絕；長度相同時略過同步並保留原始 SHA-256 比對，位元組不同會判定漂移。機密檔名樣式及來源不存在的路徑會略過，處理清單包含 `git ls-files` 追蹤檔案與尚未加入 dispatch index 的未追蹤檔案。同步後 baseline 記錄與來源一致的起點，`Preflight` 後來源任何位元組變化（包含只有行尾變化）都由原始 SHA-256 比對判定為漂移。Direct-write 已直接修改 source root，使用 `-ApplyCollectedChanges` 時以 `DispatchCollectApplyDirectWriteNotApplicable` 拒絕。Quota monitor 更新 after snapshot 時使用相同 source root 鎖，並在鎖內完成 SHA-256 比對與 `File.Replace`。
+`Cleanup` 以 ledger 的 caller fingerprint、line 與 dispatch 驗證 owner；提供 RunRecord 時另比對 RunRecord 的 caller fingerprint。Owner 不相符時預設以 `DispatchAdmissionOwnerMismatch` 拒絕並保留 worktree；歷史已結束派遣可依「已結束歷史派遣的 Cleanup 接手」明示例外。Workflow worktree 的 `Collect` 通過既有驗收後，可額外指定 `-ApplyCollectedChanges` 套用變更；套用前會在 source root 鎖內比對每個目標路徑的 baseline fingerprint，漂移時以 `DispatchSourceDrift` 停止並保留 worktree。為避免 dispatch worktree 依 `.gitattributes` 檢出的行尾與來源工作樹不同而誤報漂移，`Preflight` 在 `Apply-SourceCarryIn` 之後、建立 baseline 之前，對 dispatch worktree 內 Git 追蹤清單及尚未加入 index 的未追蹤清單所列項目，若來源工作樹同一路徑存在一般檔案且位元組長度不同，以來源的原始位元組覆寫目的檔。Windows 流程以不跟隨 reparse point 的方式開啟來源與目的檔案，確認 handle 類型與最終路徑分別符合正規化根目錄加相對路徑；目的檔為唯讀時，通過驗證後以 `FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | FILE_FLAG_OPEN_REPARSE_POINT` 開啟目的屬性 handle，透過 `SetFileInformationByHandle(FileBasicInfo)` 只改動屬性欄位清除 `ReadOnly`，並以 `ReOpenFile` 取得寫入 handle。目的檔 handle 的 `NumberOfLinks` 大於 1 時一律以 hard link 別名拒絕；串流寫入失敗時，16 MiB 以內的目的檔會在同一 handle 回復原始位元組與長度，較大目的檔不先截斷，失敗可能留下部分覆寫內容；若失敗發生於最後的長度設定或 flush 後，檔案長度可能已是來源長度。流程在 `finally` 透過同一個已驗證的屬性 handle 還原原始屬性，目錄被 junction 置換時拒絕操作。非 Windows 遇到長度不同且需要覆寫的檔案時，會在寫入前以明確指出僅支援 Windows 的錯誤拒絕；長度相同時略過同步並保留原始 SHA-256 比對，位元組不同會判定漂移。機密檔名樣式及來源不存在的路徑會略過，處理清單包含 `git ls-files` 追蹤檔案與尚未加入 dispatch index 的未追蹤檔案。同步後 baseline 記錄與來源一致的起點，`Preflight` 後來源任何位元組變化（包含只有行尾變化）都由原始 SHA-256 比對判定為漂移。Direct-write 已直接修改 source root，使用 `-ApplyCollectedChanges` 時以 `DispatchCollectApplyDirectWriteNotApplicable` 拒絕。
 
 ## 已結束歷史派遣的 Cleanup 接手
 
@@ -69,7 +69,7 @@ PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重
 | 1 | 產生派遣單（資源派遣），或確認 `design.md` 已通過 Design 驗收（Workflow） | 派遣單或 `design.md` | Prompt 與 Codex 執行端 |
 | 2 | `Preflight` 驗證 LineContext、PID 與寫入面，決定 `executionRoot` | Preflight 結果 JSON | Prepare、Start、Collect |
 | 3 | `Prepare` 將交接檔複製到 `executionRoot` 並比對 SHA-256 | `-PrepareResultPath` 寫出的 `ai-sessions.prepare.v1` 文件；`-ResultPath` 只寫 CLI envelope | Start 只接受 `ai-sessions.prepare.v1` 文件 |
-| 4 | `Start` 建立 before 額度快照與 ScopePlan，背景啟動 Codex | Start 結果、事件流、stderr、last-message、thread id、PID 記錄 | 主 Agent 的等待與 Inspect |
+| 4 | `Start` 建立 ScopePlan，背景啟動 Codex | Start 結果、事件流、stderr、last-message、thread id、PID 記錄 | 主 Agent 的等待與 Inspect |
 | 5 | 等待完成通知，依「完成判定與三出口」判定出口 | 出口判定 | Inspect |
 | 6 | `Inspect` 解析事件流與 last-message | `success`、`outputValid`、usage、model evidence | RecoveryPrecheck 與回收三態 |
 | 7 | `RecoveryPrecheck` 通過後，`Collect` 核對成果與報告，主 Agent 判定回收三態 | Collect 結果與三態判定 | 續行、升級或同步 |
@@ -85,7 +85,7 @@ PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重
 - Prepare 自動帶入：同線 `line.json`、`requirement-summary.md`；`dispatch_kind=resource` 且 `write_mode=readonly` 的派遣在同線沒有 `requirement-summary.md` 時略過摘要，其他派遣缺摘要時拒絕。Workflow 另帶入 `design.md`，資源派遣在第 4 欄提及 `design.md` 時帶入，並把派遣單複製到 dispatch worktree 的同線 handoff。`prepare_artifacts` 只用於追加其他檔案。
 - 輸出路徑安全：`result_path` 與 `preflight_result_path` 必須位於 SourceRoot 或 ExecutionRoot，root、既有各層目錄與寫入目標任一層為 reparse point 時拒絕；未指定時輸出到 ExecutionRoot 同線 history。需要 worktree 清除後仍可從來源工作樹取用時，明確指定 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\` 下的路徑。`prepare_result_path` 的目的地限於 ExecutionRoot 的同線 handoff、report 或 history line root，且不得與 target path 重疊；未指定時輸出到 ExecutionRoot 同線 history。目錄建立後、實際寫入前會再次核對路徑。
 - direct-write：Preflight 判定不建 worktree（`worktreeCreated=false`）時，Prepare 使用 Preflight 的 `executionRoot`（即 `sourceRoot`）作為 DispatchRoot，Request 的 `dispatch_root` 只用於路徑驗證；只寫同線 handoff 的資源派遣可直接使用正式入口。
-- 可省略欄位：`profile`（預設 `default`）、`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名；advisor-consult 沒有 target 時預設 evidence pack 檔名，Start 注入與 Inspect 比對使用同一個值）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）、各階段結果路徑與額度快照路徑。
+- 可省略欄位：`profile`（預設 `default`）、`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名；advisor-consult 沒有 target 時預設 evidence pack 檔名，Start 注入與 Inspect 比對使用同一個值）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）與各階段結果路徑。Request 帶 `quota_before_path` 或 `quota_after_path` 時以欄位不允許拒絕。
 - 輸出欄位：`status`（`started`、`completed`、`failed`）、`completed_stages`、`failed_stage`、`error_code`、`error`、`process_started`、`process_exit_code`、`termination_reason`、`inspect_status`、`inspect_success`、`requested_units`、`result_path`、`result_sha256`、`inspect_result_path`。`Collect` 的參數取自這些欄位。所有 operation 的 JSON stdout 固定使用 UTF-8（無 BOM），不依 PowerShell host 的預設主控台編碼。
 
 背景派遣的等待命令如下。`-WaitForCompletion` 等待 sidecar 確認 Codex 行程結束，再以事件流 terminal event 決定結果，沒有固定逾時。`-WaitForCompletion` 只接受 `Dispatch` 產生的 result（需含 `result_sha256`）；逐一呼叫 Preflight、Prepare、Start 的分步入口不能用它等待，改由執行環境的背景完成通知接手後呼叫 `Inspect`。
@@ -100,7 +100,7 @@ PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重
 
 | 失敗形狀 | 恢復方式 | 詳細節 |
 | --- | --- | --- |
-| 額度快照 `state` 不是 `Valid`，或 observation 為 `stale` | 記為 unknown 或 stale，派工照常進行，不改變範圍。`SnapshotUnavailable` 與 `stale` 需要最新數值時可重新查詢一次；`ServiceRejected` 不重新查詢也不重試，等待重設或新的觀測證據 | 額度狀態與回復探針 |
+| 事件流以 usage-limit 結束（服務端拒絕） | 不重試同一派遣；等待重設，或依「主 Agent 的帳號切換決策」以手動查詢的額度選另一帳號冷啟動 | 額度與範圍契約 |
 | admission 或 Start 準備階段失敗、Codex 程序未啟動 | 修正輸入後可用同一個 `dispatchSlug` 重新冷啟動。腳本會清除該次失敗嘗試建立的 ScopePlan hash 紀錄，`failure receipt` 與 `launch-failed` RunRecord 保留供稽核；已啟動成功者的 hash、ledger 與 owner 不受影響。若 `Cleanup` 缺少 Preflight，未啟動證明還要求 dispatch worktree 的 `.local\ai-sessions\history` 下不存在 `codex-exec-*.jsonl` 與 `codex-thread-<dispatchSlug>.txt`；任一檔案存在時以 `CleanupPreflightResultRequired` 拒絕並保留 worktree。該次嘗試已建立 dispatch worktree 時，Preflight 會因 dispatchRoot 已被占用而拒絕，此時改用新的 `dispatchSlug`；Prepare 結果檔已存在而發生 `PrepareResultCollision` 時，改用新的結果路徑或新的 `dispatchSlug` | 續 session 與跨介面接手 |
 | 續行被拒 | 以 `git -C <舊 dispatchRoot> diff HEAD` 與未追蹤檔案清單轉移成果，以新的 `dispatchSlug` 冷啟動 | Codex 進程 PID 與並行檢查 |
 | 事件流在最後訊息前中斷，沒有 `turn.completed` 或 `turn.failed` | 先執行 `Inspect` 與 `Collect` 取回中斷保全檔；只交付已確認單位與其證據，其餘 selected units 保持未完成 | InterruptionSafeguard |
@@ -117,14 +117,16 @@ PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重
 | --- | --- | --- | --- |
 | 入口不對稱 | `Dispatch` 是新派遣的唯一正式入口；Request 檔與命令列的同名欄位語意與驗證相同，兩邊不一致時以 `DispatchRequestMismatch` 拒絕 | 新的一筆派遣一律從 `Dispatch` 進入；`Preflight`、`Prepare`、`Start` 的分步入口只用於續行、恢復與測試 | 使用時機與入口選擇、Dispatch 正式入口 |
 | 失敗重試污染 | 程序未啟動的失敗嘗試留下 `failure receipt` 與 `launch-failed` RunRecord 供稽核，該次建立的 ScopePlan hash 會被清除 | 程序未啟動且未留下 dispatch worktree 時以同一個 `dispatchSlug` 重試，已留下 worktree 時改用新的 `dispatchSlug`；程序已啟動的派遣改走續行，或以新 `dispatchSlug` 冷啟動並轉移成果 | 失敗與恢復導引、續 session 與跨介面接手 |
-| 外部狀態恢復 | 額度快照以新檔寫入 before 與 after，附 `state` 與 freshness；`ServiceRejected` 不重試；中斷時以中斷保全檔記錄已確認單位與證據位置 | 主 Agent 依快照呈現資訊，advisor 啟動由使用者授權；中斷後先 `Inspect`、`Collect` 取回中斷保全檔，只交付已確認單位 | 額度與範圍契約、InterruptionSafeguard、advisor 授權請求 |
+| 外部狀態恢復 | 服務端以 usage-limit 拒絕時不重試；中斷時以中斷保全檔記錄已確認單位與證據位置 | 主 Agent 需要額度數值時以 `Get-CodexQuota.ps1` 手動查詢，advisor 啟動由使用者授權；中斷後先 `Inspect`、`Collect` 取回中斷保全檔，只交付已確認單位 | 額度與範圍契約、InterruptionSafeguard、advisor 授權請求 |
 | 同名參數語意 | `-ResultPath` 只寫 CLI envelope；`-PrepareResultPath` 寫 `ai-sessions.prepare.v1` 文件；每個產物只有一個寫入者 | `Start` 只接受 `ai-sessions.prepare.v1` 文件；`Collect` 的參數取自 `Dispatch` 輸出欄位，不自行拼湊路徑 | 最短正常路徑、Dispatch 正式入口 |
 
 `ScopePlan` hash 紀錄寫入 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\scope-plan-hash-<dispatchSlug>.json`，不同線可使用相同 `dispatchSlug`。讀取時若同線路徑不存在，才檢查舊版 history 根目錄的 `scope-plan-hash-<dispatchSlug>.json`；只有舊紀錄的 `line_slug`，或其 `root_run_id` 對應 RunRecord 的所屬線，與目前 `lineSlug` 相同時才沿用。其他線的舊紀錄不阻擋目前派遣，也不會被改寫或刪除。同一線內仍須使用不同 `dispatchSlug` 識別不同派遣。
 
 ## 額度與範圍契約
 
-`QuotaSnapshot` 是每次派工的額度紀錄，只供顯示與成本紀錄，不作放行條件。`Get-CodexQuota.ps1 -SnapshotPath <path>` 保留既有 key-value stdout，另外寫入 `ai-sessions.quota-snapshot.v1` JSON。有效快照包含 `captured_at_utc`、`state=Valid`，以及 `primary` 與 `secondary` 的 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at` 與 `source_file`。取得額度失敗時，快照檔仍以失敗的 `state` 與 `error` 寫出，stderr 輸出失敗類別；`Dispatch` 與 `Start` 把 before 快照失敗記為 unknown 後繼續，不在 before-snapshot 階段停止。
+派工路徑不取得也不保存額度。`Dispatch`、`Start` 與 `Inspect` 不建立額度快照，RunRecord 與 ScopePlan 不含額度欄位，advisor 執行期間也不監看額度。需要額度數值時，由主 Agent 或使用者以 `Get-CodexQuota.ps1` 手動查詢，例如派工前呈現額度、advisor 授權請求與帳號切換。
+
+`Get-CodexQuota.ps1 -SnapshotPath <path>` 保留既有 key-value stdout，另外寫入 `ai-sessions.quota-snapshot.v1` JSON。有效快照包含 `captured_at_utc`、`state=Valid`，以及 `primary` 與 `secondary` 的 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at` 與 `source_file`。取得額度失敗時，快照檔仍以失敗的 `state` 與 `error` 寫出，stderr 輸出失敗類別。
 
 ### 主 Agent 的帳號切換決策
 
@@ -138,7 +140,7 @@ PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重
 | generic 429、網路錯誤或視窗不明 | 保留原因為未確認，不推論週上限 | 不以 usage_limit=true 單獨判定 |
 | 候選 Unknown、stale、目錄缺失或遭拒 | 保留原因及原派遣成果，缺可靠候選時不切換 | 不試跑派遣驗證額度 |
 
-先讀目前 RunRecord、Inspect／failure receipt 與有效快照，核對拒絕原因與原始事件。`Get-DispatchEventEvidence.usage_limit=true` 也可能來自 rate-limit／429；通用拒絕的 window 為 unknown 時，使用原始證據確認，保留無法確認的狀態。
+先讀目前 RunRecord、Inspect／failure receipt 與手動查詢的有效快照，核對拒絕原因與原始事件。`Get-DispatchEventEvidence.usage_limit=true` 也可能來自 rate-limit／429；通用拒絕的 window 為 unknown 時，使用原始證據確認，保留無法確認的狀態。
 
 從 `machine.json.codex_accounts` 選不同 home 的候選，逐一以既有工具明傳目錄查詢。每次使用新的快照路徑，保存原始 observation、狀態與 UTC 時間。
 
@@ -164,11 +166,6 @@ dispatch_kind
 task_type
 requested_profile
 session_mode
-primary_remaining_percent
-primary_reserve_percent
-primary_budget_percent
-estimate_percent
-estimate_source
 unit_kind
 requested_units[]
 selected_units[]
@@ -179,17 +176,17 @@ decision_reason
 
 `unit_kind` 只允許 `workflow-phase`、`resource-target` 與 `advisor-evidence-question`。Workflow 以 `design.md` 的 Phase 為最小單位，資源派遣以派遣單第 3 欄的目標物件為最小單位，advisor consult 以 evidence pack 內的問題 ID 為最小單位，`requested_units` 依宣告順序排列。`Start` 的 `RequestedUnit` 必須等於這組單位；只列部分目標時，執行端會以範圍不一致拒絕工作。執行端不得自行增加或拆分單位。
 
-`ScopePlan` 一律選取宣告的全部單位：`selected_units` 等於 `requested_units`，`decision=full`，`estimate_source=not-used`，額度高低與 unknown 都不改變範圍。欄位中的額度與估算值只作紀錄。ScopePlan hash 紀錄與續行範圍核對照常執行。
+`ScopePlan` 一律選取宣告的全部單位：`selected_units` 等於 `requested_units`，`decision=full`。ScopePlan hash 紀錄與續行範圍核對照常執行。續行時讀到舊格式 ScopePlan（仍含 `primary_remaining_percent`、`estimate_source` 等額度欄位）照常接受，額度欄位忽略，不帶入新的 ScopePlan。
 
 `advisor-consult` 只在使用者授權後啟動，呼叫端以 `AdvisorRequestSource=user-explicit` 傳入；缺少授權時以 `AdvisorAuthorizationRequired` 拒絕並不啟動 Codex。授權後使用 evidence pack 的完整問題集。授權不略過 service rejection、evidence hash、read-only sandbox 與 process identity gate。
 
 ### 需求級成本累計
 
-同一成本目標以 `lineSlug` 加需求編號識別，例如 `rule-architecture-rebuild #22`。`dispatchSlug` 與階段只作追溯資訊，換新 `dispatchSlug`、續行或換階段都不讓同一目標的累計值歸零。累計不新增監控服務，只彙整既有的 RunRecord、事件流、failure receipt、額度快照與回收紀錄。
+同一成本目標以 `lineSlug` 加需求編號識別，例如 `rule-architecture-rebuild #22`。`dispatchSlug` 與階段只作追溯資訊，換新 `dispatchSlug`、續行或換階段都不讓同一目標的累計值歸零。累計不新增監控服務，只彙整既有的 RunRecord、事件流、failure receipt、協調者手動查詢的額度與回收紀錄。
 
 成本紀錄的唯一落點是 `<sourceRoot>\.local\ai-sessions\report\<lineSlug>\cost-ledger.md`，唯一寫入者是該線協調者（功能線為 `Analyst`，bug 線為 `Maintainer`），只追加不改寫。執行端不寫入此檔。
 
-1. 開始：任務開始時追加一列預算，寫明成本目標、預算形式（牆鐘時間或額度百分點）、預算值與到界處置。預算形式為額度百分點時，同列寫明計算視窗（`primary` 或 `secondary`），累計值只計該視窗的 before 與 after 差額；另一視窗的數值照常記錄但不參與到界判定。未寫明視窗的額度預算列視為不完整，協調者補齊後才開始派遣。
+1. 開始：任務開始時追加一列預算，寫明成本目標、預算形式（牆鐘時間或額度百分點）、預算值與到界處置。預算形式為額度百分點時，同列寫明計算視窗（`primary` 或 `secondary`），協調者於每筆派遣前後以 `Get-CodexQuota.ps1` 手動查詢，累計值只計該視窗的前後差額；另一視窗的數值照常記錄但不參與到界判定。未寫明視窗的額度預算列視為不完整，協調者補齊後才開始派遣。
 2. 累計：每筆派遣結束後追加一列，欄位為時間、成本目標、`dispatchSlug`、階段、事件類型、耗時、before 與 after 額度（取得不到時寫 unknown）與累計值。事件類型取值為啟動失敗、格式補件、續行、回收、跨階段返回。
 3. 輪數與成本分開計：`PromptNotDelivered` 等啟動失敗與純格式補件不增加回收輪數（見「回收收斂判定」），但一律計入成本累計值。
 4. 重派前比較：協調者在同一成本目標的下一次派遣前，於紀錄寫明本輪閉合了什麼、還差什麼、下一步值得的理由。Reviewer 或顧問額外提出、不屬既有驗收條件的改善只記為候選，不自動列入下一輪必做項。
@@ -233,7 +230,7 @@ evidence pack 的內容契約如下，由建立 pack 的主 Agent 負責。
 
 同一問題需要追問或補充證據時，沿用原 `dispatchSlug` 的 thread 續談，問題 ID 不變。新增目標、新增來源、新增問題單位或需要不同權限時，建立新的 evidence pack 與新的 `dispatchSlug`；新問題使用新的問題 ID，不併入原派遣的問題集合。advisor 啟動的授權依 `instructions.md` §1.5 advisor consult 掛載點：先向使用者請求，使用者在當下 Session 授權後才派工，授權不延續到其他 Session，也不依額度縮小問題範圍。
 
-advisor 的 worktree `Start` 仍必須提供 `PrepareResultPath`，且該檔案的狀態必須是 `Prepared`。`advisor-consult` 必須提供 `AdvisorConsultReportPath` 與 `QuotaAfterPath`。前者固定位於 `executionRoot\.local\ai-sessions\report\<lineSlug>`，檔名為 `advisor-consult-<dispatchSlug>.md`；後者必須位於 `executionRoot` 內。這兩項路徑都不能改指 `sourceRoot` 的同線 report 或其他來源落點。
+advisor 的 worktree `Start` 仍必須提供 `PrepareResultPath`，且該檔案的狀態必須是 `Prepared`。`advisor-consult` 必須提供 `AdvisorConsultReportPath`，固定位於 `executionRoot\.local\ai-sessions\report\<lineSlug>`，檔名為 `advisor-consult-<dispatchSlug>.md`，不能改指 `sourceRoot` 的同線 report 或其他來源落點。
 
 evidence pack 必須位於 `executionRoot` 內，並以 `schema: advisor-consult.evidence.v1`、相同的 `line-slug` 與 `dispatch-slug` 開頭。正文固定包含 `目標段落`、`已知結論`、`待答問題`、`可能反證` 與 `邊界` 五個區段。`目標段落` 內必須有非空的 `source:` 與 `excerpt:`；`待答問題` 至少列出一個 `question-<id>:`，並恰好列出一次非空的 `required-output:`；文件另以非空 `output-rules:` 說明回傳規則。`邊界` 內必須各有一行 `- allowed-input:` 與 `- forbidden-action:`，限制 advisor 只讀取該 evidence pack，禁止探索來源、掃描 repository、修改檔案與發動其他派遣。
 
@@ -246,7 +243,7 @@ required-output: ## 中斷保全結論; ## 證據支持; ## 推論; ## 未決問
 output-rules: 每一個問題以 question-<id> 回報完成狀態
 ```
 
-`required-output` 缺漏、重複、分行、含非 heading 值或混入說明文字時，Start 以 `EvidencePackRequiredOutputInvalid` 停止。Start 的 advisor 必要參數為 `AdvisorConsultReportPath`、`EvidencePackPath`、`QuotaAfterPath` 與 read-only 邊界；缺少必要參數時以 `RequiredParameterMissing` 停止並列出欄位名稱。`ProfileEvidenceUnknown` 只用於 profile 設定檔的 model 或 reasoning effort 證據不可證明，不承接參數缺漏或 evidence 格式錯誤。
+`required-output` 缺漏、重複、分行、含非 heading 值或混入說明文字時，Start 以 `EvidencePackRequiredOutputInvalid` 停止。Start 的 advisor 必要參數為 `AdvisorConsultReportPath`、`EvidencePackPath` 與 read-only 邊界；缺少必要參數時以 `RequiredParameterMissing` 停止並列出欄位名稱。`ProfileEvidenceUnknown` 只用於 profile 設定檔的 model 或 reasoning effort 證據不可證明，不承接參數缺漏或 evidence 格式錯誤。
 
 request 的 `prepare_artifacts` 必須是 object array。PowerShell 以 `ConvertTo-Json` 序列化單一元素時可能把陣列塌縮成 object，該形狀會被拒絕；即使只有一個 artifact，也要保留陣列形狀。
 
@@ -254,15 +251,14 @@ request 的 `prepare_artifacts` 必須是 object array。PowerShell 以 `Convert
 
 執行端最後訊息在 `## 中斷保全結論` 內列出 `已完成單位：<問題 ID 清單>`。Inspect 只接受 `completed_units` 為 `selected_units` 的子集合，`deferred_units` 不得標記完成；safe point 缺失時報告記為 `completed_units=unknown`，不以 `selected_units` 推論完成，後續由既有執行鏈 anchor 判定續行資格。advisor report 保存 `requested_units`、`selected_units`、`deferred_units`、`completed_units` 與授權來源。
 
-`Start` 只驗證並保存 evidence pack SHA-256，不建立 advisor report。獨立呼叫 `Start` 時，呼叫端必須以 `Get-CodexQuota.ps1` 在 Start 前建立 `QuotaAfterPath` 指向的快照，Start 只驗證該檔格式，另在 `history` 建立本次的 after 快照並記錄其 SHA-256；缺少 `QuotaAfterPath` 或 Codex home 時以非零結束。從 `Dispatch` 進入時，Request 省略 `quota_after_path` 由 `Dispatch` 自動在 `executionRoot` 的 `history\` 建立，詳見下節。`Inspect` 或回收步驟依事件流與 last-message 寫入同線 `report/<lineSlug>/advisor-consult-<dispatchSlug>.md`，`AdvisorConsultReportPath` 必須位於同線 `reportLineRoot` 且檔名固定為 `advisor-consult-<dispatchSlug>.md`。報告區分證據支持、推論與未決問題。Start 前後的 SHA-256 不一致或 Inspect 缺少 Start hash 紀錄時拒絕成功判定。
+`Start` 只驗證並保存 evidence pack SHA-256，不建立 advisor report。`Inspect` 或回收步驟依事件流與 last-message 寫入同線 `report/<lineSlug>/advisor-consult-<dispatchSlug>.md`，`AdvisorConsultReportPath` 必須位於同線 `reportLineRoot` 且檔名固定為 `advisor-consult-<dispatchSlug>.md`。報告區分證據支持、推論與未決問題。Start 前後的 SHA-256 不一致或 Inspect 缺少 Start hash 紀錄時拒絕成功判定。
 
 ### 由 Dispatch 派遣 advisor
 
-`Dispatch` 承接 advisor 的準備步驟，呼叫端不必先手動建立 evidence pack 副本與 after 快照。
+`Dispatch` 承接 advisor 的準備步驟，呼叫端不必先手動建立 evidence pack 副本。
 
 - evidence pack 來源有兩種合法形式。(1) `evidence_pack_path` 指向 `sourceRoot` 同線 handoff 目錄內的既存檔且未提供 `prepare_artifacts`：`Dispatch` 自動複製到 worktree 的同線 handoff 並改綁副本，副本與來源的 SHA-256 一致。(2) `evidence_pack_path` 指向 `dispatchRoot` 或 `executionRoot` 內的目的路徑，且 `prepare_artifacts` 恰有一筆 `destination` 等於該路徑、`source` 為 `sourceRoot` 同線 handoff 的既存檔：Request 階段不要求目的路徑已存在，因為 worktree 在 Preflight 才建立，呼叫端無法預先放入檔案。位於 `dispatchRoot` 或 `executionRoot` 內卻沒有這一筆 `prepare_artifacts` 時，Request 驗證以 `AdvisorEvidencePackPrepareRequired` 拒絕，訊息列出兩條修正路徑。兩種形式都會檢查 reparse point；位於其他位置時以 `AdvisorEvidencePackSourceBoundary` 或 `AdvisorEvidencePackSourceLineBoundary` 拒絕。所有拒絕都發生在 worktree 建立前，不留下產物。
 - 手動 `prepare_artifacts`：Request 提供 `prepare_artifacts` 時視為手動分支，`Dispatch` 不自動複製。`source` 或 `destination` 解析後等於 `evidence_pack_path` 的項目視為相符，唯一一筆相符時其 `destination` 成為 Start 使用的 evidence pack。`evidence_pack_path` 位於 `dispatchRoot` 或 `executionRoot` 內時，Request 驗證要求 `destination` 相符的項目恰有一筆，筆數不符一律在 worktree 建立前以 `AdvisorEvidencePackPrepareRequired` 拒絕；通過 Request 後，以 `source` 相符的項目多於一筆時，`Dispatch` 以 `AdvisorEvidencePackPrepareAmbiguous` 停止。
-- 額度快照：`quota_before_path` 與 `quota_after_path` 省略時，`Dispatch` 各自以 `Get-CodexQuota.ps1` 在 `executionRoot` 的 `history\` 建立新檔並綁定到 stage binding。after 快照以必要模式取得，取得失敗時 `Dispatch` 以 `after-snapshot` 階段失敗停止。
 - Inspect 目標：advisor 的 Inspect 以 Start 回報的 evidence pack 副本路徑作為目標與識別字來源，不使用 Request 的 `target_path`。
 - `target_path`：Request 仍必須提供，advisor 沒有其他目標物件時填 evidence pack 本身的來源路徑，缺少時以 `DispatchRequestMissingField` 拒絕。
 
@@ -286,8 +282,6 @@ Request 範例如下，欄位值為示意。
   "advisor_consult_report_path": "<executionRoot>\\.local\\ai-sessions\\report\\<lineSlug>\\advisor-consult-<dispatchSlug>.md"
 }
 ```
-
-advisor 執行期間的額度觀測只作紀錄。監看迴圈每 250 毫秒檢查 Codex 行程是否結束，預設每 1800 秒更新一次自建的 after 快照，行程結束後再取一次 terminal 快照；兩次更新之間不呼叫 quota API。更新前比對 SHA-256，一致時以暫存檔取代。每次更新在 monitor 紀錄寫入 `quota.snapshot` 事件，含快照狀態、primary／secondary 值與依 ScopePlan 計算的進度。更新失敗、雜湊不一致或 API 錯誤時，狀態記為 unknown 並附 `failure_code` 與 `failure_class`，不停止 Codex 行程。
 
 ## Git 前置探針與 worktree 生命週期
 
@@ -401,16 +395,15 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 ## 腳本介面與執行前提
 
-本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責 F1 路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定；腳本驗證額度快照、ScopePlan、advisor evidence-only 邊界、thread relay 與安全中止。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
+本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責 F1 路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定；腳本驗證 ScopePlan、advisor evidence-only 邊界、thread relay 與安全中止。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
 
 | Operation | 主要參數 | 成功輸出 | 致命失敗 |
 | --- | --- | --- | --- |
 | `Preflight` | `SourceRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、`WriteMode`、`TargetPath[]` | `executionRoot`、`gitOrigin`、`baseSha`、`worktreeCreated`、`carryInManifest`（含 `excludedSecrets`）、`targetStates`、`targetsOutsideRepository`、同線目錄、`pidCheck` | manifest、PID、Git、根目錄界線、worktree、patch 或檔案複製驗證失敗時 stderr 並 exit code 1 |
 | `Prepare` | `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`PrepareArtifacts[]`、`TargetPath[]` | 每個交接檔的來源／目的路徑與 SHA-256、`Prepared` 狀態 | 交接檔缺漏、越界、複製失敗或 hash 不符時 stderr 並 exit code 1 |
-| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`TaskType`、before snapshot、`InterruptionSafeguard`（舊參數 alias 為 `DowngradeInstruction`）、ScopePlan、Codex 父層選項；advisor 另需 `AdvisorConsultReportPath`、evidence pack、`QuotaAfterPath` 與 read-only 邊界；`AdvisorRequestSource` 必須為 `user-explicit` | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id relay、before snapshot、ScopePlan、實際參數、有效 profile、中斷保全狀態與 monitor 證據 | 快照、ScopePlan、evidence pack、執行檔、工作目錄、啟動參數或根程序身分驗證失敗時 stderr 並 exit code 1 |
-| `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、ScopePlan、派工前後快照、thread id 路徑 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`secret_exposure_suspected`、`secret_exposure_findings`、`recoverable_artifacts_present`、`recoverable_artifact_files`、`outputValid`、`success`、after snapshot、三層 model evidence、thread relay、advisor report 與 monitor 證據 | JSONL、thread id、必要輸入或證據包 hash 格式錯誤時 stderr 並 exit code 1 |
+| `Start` | Preflight JSON 或 `ExecutionRoot`、`PromptPath`、`Profile`、`TaskType`、`InterruptionSafeguard`（舊參數 alias 為 `DowngradeInstruction`）、ScopePlan、Codex 父層選項；advisor 另需 `AdvisorConsultReportPath`、evidence pack 與 read-only 邊界；`AdvisorRequestSource` 必須為 `user-explicit` | `rootPid`、PID 記錄、事件流、stderr、last-message、thread id relay、ScopePlan、實際參數、有效 profile 與中斷保全狀態 | ScopePlan、evidence pack、執行檔、工作目錄、啟動參數或根程序身分驗證失敗時 stderr 並 exit code 1 |
+| `Inspect` | `EventStreamPath`、`ProcessExitCode`、stderr、last-message、識別字、`Model`、`TaskType`、ScopePlan、thread id 路徑 | `completed`、`turn.failed` 原因、最後一則 `agent_message`、`usage`、`secret_exposure_suspected`、`secret_exposure_findings`、`recoverable_artifacts_present`、`recoverable_artifact_files`、`outputValid`、`success`、三層 model evidence、thread relay 與 advisor report | JSONL、thread id、必要輸入或證據包 hash 格式錯誤時 stderr 並 exit code 1 |
 | `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`，`-ApplyCollectedChanges` 套回核准 target；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath`，可選 `SelectedRequirement`（例如 `#22`）；回收 Reviewer 時另提供選用的 `ReviewerReportPath` | worktree 的 tracked／staged／未追蹤差異（`allFiles` 不含 carry-in；另列 `carryInFiles`、`newFiles`、`rejectedFiles` 與 `unappliedNewFiles`），或 direct-write 的核准輸出檔案證據與報告證據；目錄型 target 至少一個非空檔，逐檔記錄長度、最後寫入時間與 SHA-256；兩者都含依 `DispatchKind` 選用的報告核對結果；提供 `ReviewerReportPath` 時另含 `reviewerFindings`（`valid`、`conclusion`、九個 unique 計數 `previous_closed_count`、`previous_open_count`、`previous_withdrawn_count`、`previous_accepted_count`、`current_new_count`、`current_open_count`、`current_closed_count`、`current_withdrawn_count`、`current_accepted_count`，以及 `duplicate_ids`、`inconsistencies`） | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；Start 時不存在的核准 target 檔沿用 baseline `exists=false` 做來源 drift 檢查，包含被 gitignore 排除的核准新檔；核准目錄新增且未被 gitignore 排除的子檔（包含 Start 時不存在的核准目錄）以 add 套回並檢查來源 drift；target 外新增檔列入 `unappliedNewFiles` 且不套回；來源路徑出現同名檔或內容 drift 時以 `DispatchSourceDrift` 拒絕套回；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
-| `QuotaProbe` | 已驗證的 `SourceRoot`、`ExecutionRoot`、`LineSlug`、`DispatchSlug`、`Profile`、短提示、`InitialQuotaState` 與 `ProbeAttempt` | `finalStatus`、新快照路徑與 SHA-256、`processStarted=false` 與回復紀錄 | 只允許 `PostResetNoSnapshot`、`SnapshotExpired` 與 `ServiceRejected`；`ProbeAttempt > 1`，或重新取得的快照不是 `Valid` 且 `fresh` 時 stderr 並 exit code 1 |
 | `Dispatch` | `-RequestPath` 指向 `operation=Dispatch` 的 request 檔；未提供 request 檔時拒絕 | `Preflight`、`Prepare`、`Start` 與 `Inspect` 的階段結果，以及 `status=completed` 或 `failed` 的 dispatch envelope；`background: true` 時回傳 `status=started`，Inspect 以 `-WaitForCompletion` 另行等待；Collect 另行呼叫 | 單位核對失敗時於任何副作用前拒絕；request、Preflight、Prepare、Start 或 Inspect 任一階段失敗時 stderr 並 exit code 1 |
 | `Cleanup` | `SourceRoot`、`ExecutionRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、RunRecord、`ReportPath[]`；省略 `EvidencePath[]` 時保存 RunRecord 引用且位於 worktree 的既存證據，明列時只接受該 RunRecord 引用的檔案。`ReportPath[]` 與 `EvidencePath[]` 以 `-RequestPath` 傳入 `operation=Cleanup` 的 JSON 陣列，欄位分別為 `report_path` 與 `evidence_path` | 已完成保存驗證且移除目標 dispatch worktree 的結果，包含 0 位元組證據的長度與 SHA-256；自動保存 report 根目錄的 `dispatch-report-<dispatchSlug>.md` | 保存清單、路徑界線、進程或移除驗證失敗時 stderr 並 exit code 1；首次盤點後於移除前再次核對 report 根目錄；新增且未列入保存清單的檔案以 `preservation-failed` 拒絕並列出路徑，且保留 dispatch worktree；未引用的 EvidencePath 錯誤列出可接受清單；失敗時保留 dispatch worktree，不得使用其他方式強制移除 |
 | `DiagnoseModelEnvironment` | `ThreadId`、`StartedAtUtc`；`Profile`（預設 `default`）、`CodexHome` 選填 | profile 設定值、actual model／reasoning effort 與 rollout 路徑的 JSON；證據不足時 actual 為 `unknown` | 缺少 `ThreadId` 或 `StartedAtUtc` 時 exit code 1。只由使用者或維運者明確呼叫，Dispatch、Start、Inspect 不呼叫 |
@@ -427,7 +420,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執
 
 `Inspect` 逐行解析 JSONL。空白行略過。非空行若無法解析為 JSON，或缺少有效的非空字串 type，Inspect 以非零結束碼拒絕成功結果；原始事件流保留在原始事件流來源檔，壞行只留在原始事件流，不複製到 stdout、stderr、結果 JSON、診斷物件或報告。結果的 error 與 failure 只含固定錯誤碼、事件流絕對路徑與行號；不輸出解析器訊息、來源片段或原始例外，也不以壞行後的事件繼續計算成功結果。
 
-`Inspect` 保存事件流、usage、三層 model evidence（不主動探測 actual）、thread relay、advisor report 與 monitor 證據。額度 before／after snapshot 若存在則保存其實際值；snapshot 缺失或不完整時保留可取得的其他證據，`Inspect` 的成功判定不受額度快照影響。
+`Inspect` 保存事件流、usage、三層 model evidence（不主動探測 actual）、thread relay 與 advisor report。
 
 事件流以 `turn.failed` 結束且結案報告不存在時，`Inspect` 與 `Collect` 另回報 `recoverable_artifacts_present` 與 `recoverable_artifact_files`。檔案清單列出 worktree 相對 `baseSha` 的變更檔。這些欄位供主 Agent 判斷是否以新 `dispatchSlug` 冷啟動接續，不改變原有成功判定；`turn.failed` 仍是失敗結果。
 
@@ -473,27 +466,23 @@ pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation DiagnoseMode
 
 `Collect` 在 worktree 路徑合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單。報告核對方式依 `DispatchKind` 分流：`workflow` 以結案報告「Phase 對照」節逐項比對檔案清單，並以「需求對照」節比對 `RequirementSummaryPath` 的需求項目編號，`resource` 只確認報告存在且非空並回傳其長度與 SHA-256。「需求對照」核對要求需求摘要同時具備 `## 程式面項目` 與 `## 功能面項目` 兩節，兩節表格的 `#` 編號合併後不得重複，且每個編號在結案報告「需求對照」表格恰有一列 `#<n>`；表格固定 6 欄（需求、驗收方向、T-code、實際行為、證據、狀態），以未跳脫的 `|` 切欄，每欄非空，狀態為四個合法值之一。缺節、摘要編號重複、缺列、重複列、多出摘要沒有的編號、欄數不符或欄位為空時，以非零結束碼停止並列出不符的編號。此核對只驗結構完整，不判定內容是否正確，內容一致性由 Reviewer 的需求對照核對負責。resource 的結案要求是逐條驗收，不逐 Phase 列出檔案清單，對它要求「Phase 對照」節會使每次資源派遣都無法回收。direct-write 路徑則讀取 Preflight 的 `targetStates`，確認每個核准輸出都存在、為非空檔案，並回傳檔案長度、最後寫入時間與 SHA-256。任一數量、路徑、檔案證據或報告不一致都停止回收，且在成果尚未完成回收前不得移除 worktree。
 
-交接物同步由獨立的 `Prepare` operation 執行（`ai-sessions.prepare.v1`）：只複製請求中明確列出、位於同線來源與允許目的根目錄內的檔案，逐一比對來源與目的 SHA-256，全部一致才標記 `Prepared`，任一缺件、越界或 hash 不符時標記 `PrepareFailed`。`Preflight` 不複製交接物，交接物只經由 Prepare 進入 worktree；建立 worktree 時的 tracked patch 與未追蹤檔案 carry-in 是工作區內容的同步，仍由 Preflight 執行，不屬於交接物複製。worktree 模式的 Start 必須收到 `Prepared` 結果，缺少或不一致時以 `PrepareRequired`／`PrepareArtifactMismatch` 停止；direct-write 使用 `status=not-required`。Start 一律建立本次 before snapshot 並綁定到 RunRecord，呼叫端提供的 `QuotaBeforePath` 只驗證格式；CodexHome 依序取顯式參數、`CODEX_HOME`、使用者目錄下的 `.codex`，實際值寫入 Prepare 結果、Start 輸出與 RunRecord。
+交接物同步由獨立的 `Prepare` operation 執行（`ai-sessions.prepare.v1`）：只複製請求中明確列出、位於同線來源與允許目的根目錄內的檔案，逐一比對來源與目的 SHA-256，全部一致才標記 `Prepared`，任一缺件、越界或 hash 不符時標記 `PrepareFailed`。`Preflight` 不複製交接物，交接物只經由 Prepare 進入 worktree；建立 worktree 時的 tracked patch 與未追蹤檔案 carry-in 是工作區內容的同步，仍由 Preflight 執行，不屬於交接物複製。worktree 模式的 Start 必須收到 `Prepared` 結果，缺少或不一致時以 `PrepareRequired`／`PrepareArtifactMismatch` 停止；direct-write 使用 `status=not-required`。CodexHome 依序取顯式參數、`CODEX_HOME`、使用者目錄下的 `.codex`，實際值寫入 Prepare 結果、Start 輸出與 RunRecord。
 
 跨程序傳入陣列參數（`TargetPath`、`AddDirectory`、`CodexParentOption`）時，以 `-RequestPath` 傳入 `ai-sessions.dispatch-request.v1` JSON 檔，陣列元素的原文與順序即契約，逗號、空白、中文與 `$` 不經 shell 展開或重新切分。Start 續行需要提供這些陣列時，也將 `target_path`、`add_directory` 與 `codex_parent_option` 寫成 JSON array，透過 `-RequestPath` 傳入 `operation=Start` 的 request；不得以逗號字串替代。`Cleanup` 的 `report_path` 與 `evidence_path` 同樣是陣列，須放在 `operation=Cleanup` 的 request 檔中。`powershell.exe -File` 無法以命令列傳遞字串陣列，逗號串接會被視為單一字串，跨 PowerShell 執行環境呼叫時一律使用 request 檔。request 檔與命令列同一欄位不一致時以 `DispatchRequestMismatch` 停止。
 
-額度快照保存 `observations`（兩個視窗最後一次實際觀測的 used／remaining、觀測時間、來源、freshness 與 resets_at）與 `service_rejection`。usage-limit 事件記為 `service_rejection`（`status=quota-rejected`、`retry_allowed=false`），不改寫最後觀測值；過期快照保留觀測值並標示 freshness，不宣稱為即時額度。收到明確額度拒絕時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不自動重試，等待重設或新的觀測證據。
+服務端以 usage-limit 拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件判定 service rejection 分類。執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不自動重試，等待重設，或由主 Agent 依「主 Agent 的帳號切換決策」改派。
 
-### 額度狀態與回復探針
+### 額度狀態
 
 `Get-CodexQuota.ps1` 每次呼叫都向即時額度來源取得一份新觀測，快照 `state` 只會是下列三種之一。
 
 | 狀態 | 判定條件 | 處置 |
 | --- | --- | --- |
-| `Valid` | 回應含 `primary` 與 `secondary` 兩個視窗且欄位合法，沒有拒絕旗標 | 記錄額度供顯示與成本紀錄 |
-| `ServiceRejected` | 回應帶有額度拒絕旗標，或顯示已達上限但缺少 `rate_limit_reached_type`（此時 reached type 記為 unknown） | 不自動重試，等待重設或新的觀測證據 |
+| `Valid` | 回應含 `primary` 與 `secondary` 兩個視窗且欄位合法，沒有拒絕旗標 | 呈現給使用者或作為帳號切換的依據 |
+| `ServiceRejected` | 回應帶有額度拒絕旗標，或顯示已達上限但缺少 `rate_limit_reached_type`（此時 reached type 記為 unknown） | 該帳號不作為切換候選，等待重設 |
 | `SnapshotUnavailable` | 認證資料缺漏、連線失敗、逾時、HTTP 非 2xx、回應格式或數值範圍不合法 | 以非零結束碼停止，stderr 保留失敗類別，不產生估算值 |
 
-observation 的 `freshness` 在寫入快照時依觀測時間距今判定，30 分鐘內為 `fresh`，超過為 `stale`，派工腳本讀取時沿用寫入值，不重新計算。即時來源寫出的快照一律為 `fresh`；`stale` 只出現在其他來源寫出的舊快照文件，此時照常派工、不改變範圍，需要最新數值時重新取得一次快照。
-
-`QuotaProbe` 是額度狀態的一次性回復入口，`ProbeAttempt` 上限為 1，`InitialQuotaState` 只接受 `PostResetNoSnapshot`、`SnapshotExpired` 與 `ServiceRejected`。前兩者由呼叫端依既有快照判定，`QuotaProbe` 只以新檔重新取得即時快照；`state=Valid` 且 `freshness=fresh` 時回傳 `finalStatus=quota-source-refreshed-no-probe`，不掃描 rollout、不啟動 Codex。即時刷新失敗時以非零結束碼停止，不使用其他快照來源。`ServiceRejected` 寫入 `finalStatus=service-rejected-no-retry`，不啟動 Codex 也不重試。
-
-回復紀錄寫入 `.local\ai-sessions\history\<lineSlug>\quota-recovery-<dispatchSlug>.json`，保留初始狀態、觸發視窗、嘗試次數、新快照路徑與 SHA-256、重試結果與最終狀態。回復紀錄是派工證據，不是額度快照來源，不得讀回當作額度估算。`QuotaProbe` 成功後，呼叫端以回傳的 `quotaSnapshotPath` 或重新取得的快照作為額度紀錄。
+observation 的 `freshness` 在寫入快照時依觀測時間距今判定，30 分鐘內為 `fresh`，超過為 `stale`。需要最新數值時重新執行一次查詢。
 
 ### 執行可用性
 
@@ -587,7 +576,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 使用者為每個派工帳號建立專用目錄，人工建立 `config.toml`，只人工複製非憑證的 `default.config.toml`、`advisor.config.toml` 及選用的 `intensive.config.toml`，並核對機器專屬路徑。Setup 只逐帳號檢查目錄與固定設定檔，default/advisor 缺件警示，intensive 在選用時要求。使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。
 
-以 `Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 選帳號。主 Agent 派工一律明確指定 `-CodexHome`，預設用清單第一個帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。Dispatch 在 Preflight、Prepare 與 quota 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path`、`codex_account_name` 及 Inspect 結束額度採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
+以 `Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 選帳號。主 Agent 派工一律明確指定 `-CodexHome`，預設用清單第一個帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。Dispatch 在 Preflight 與 Prepare 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path` 與 `codex_account_name` 採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
 
 本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定已實測（缺少 config.toml 時命令全被執行政策拒絕，補上 windows.sandbox 與專案信任後可執行，內容見 README），共用 profile symlink/include 載入行為待使用者驗證；採每個 home 獨立 profile 檔案，保留既有 profile/model hash gate。
 
@@ -630,9 +619,9 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 以 Codex home 的 `auth.json` 取得認證標頭，向 `https://chatgpt.com/backend-api/wham/usage` 取得即時額度，這是額度快照的唯一來源。回應必須同時含 `primary` 與 `secondary` 視窗，每個視窗換算為 `used_percent`、`remaining_percent`（`100 - used_percent`）、`window_minutes`、`window_days`（`window_minutes / 1440`）與 `resets_at`（Unix timestamp，秒）。`source_file` 記錄端點與請求時間，不是本機檔案路徑。不得讀取或輸出 `auth.json` 的任何欄位值；認證資料缺漏或格式錯誤時，腳本只回報欄位名稱與檔案路徑。
 
-快照檔一律以新檔寫入。`Get-CodexQuota.ps1 -SnapshotPath` 以排他建立開檔，目標已存在時以 `QuotaSnapshotTargetAlreadyExists` 停止且不覆寫。派工腳本以 `New-QuotaSnapshotPath` 在 `history` 產生 `quota-before-*`、`quota-after-*` 或 `quota-source-refresh-<dispatchSlug>-*` 唯一檔名。呼叫端提供的 `QuotaBeforePath` 與 `QuotaAfterPath` 只驗證格式，不寫入；Start 另建本次的 before 快照並綁定到 RunRecord，advisor 另建本次的 after 快照。非 advisor 派遣的 `Inspect` 取得結束快照後，路徑與 SHA-256 寫入 RunRecord 的 `quota_after_path` 與 `quota_after_sha256`，取得失敗時兩欄為 `null`。`Dispatch` 建立的 before 快照經 stage binding 交給 Start 沿用，不重複取得。
+快照檔一律以新檔寫入。`Get-CodexQuota.ps1 -SnapshotPath` 以排他建立開檔，目標已存在時以 `QuotaSnapshotTargetAlreadyExists` 停止且不覆寫，呼叫端每次查詢使用新的檔名。
 
-快照只代表取得當下的用量。兩個視窗由所有檔位共用，不依模型分別計量。`advisor` 單次派遣可能在數十分鐘內耗盡整個 `primary` 視窗，所以 advisor 執行期間定期取 after 快照作紀錄。快照不論 `state` 為何都不改變派工範圍，也不停止派工。
+快照只代表取得當下的用量。兩個視窗由所有檔位共用，不依模型分別計量。`advisor` 單次派遣可能在數十分鐘內耗盡整個 `primary` 視窗，需要掌握時由主 Agent 在派工前後手動查詢。快照不論 `state` 為何都不改變派工範圍，也不停止派工。
 
 兩個視窗都是固定視窗，`used_percent` 在視窗內單調累積，跨過 `resets_at` 後歸零並跳至下一格，額度不連續回補。`primary` 為 5 小時視窗，`secondary` 為 7 天視窗，容量相差約 33 倍，因此同一件任務在 `primary` 消耗的百分點約為 `secondary` 的 30 倍。
 
@@ -659,11 +648,11 @@ secondary_source_file=
 
 ### 檔位選擇與額度查詢時點
 
-`Inspect` 預設唯讀，不寫入額度或成本以外的推薦訊號。
+`Inspect` 預設唯讀，不寫入額度或推薦訊號。
 
 1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。實作與執行類工作使用預設檔位，使用者在當下 Session 指定時使用 `intensive`。
 2. 屬意見評估時，主 Agent 先向使用者提出 advisor 授權請求；使用者同意後以 `AdvisorRequestSource=user-explicit` 派工。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工，該授權不延續到其他 Session。
-3. 額度只供顯示與紀錄，查詢時點為派工前、advisor 前、長時間派工執行中約每 30 分鐘、結案時與按需查詢。查詢失敗記為 unknown，派工照常進行。
+3. 額度只供顯示與紀錄，由主 Agent 手動查詢，時點為派工前、advisor 前、結案時與按需查詢；派工腳本不自動查詢。查詢失敗記為 unknown，派工照常進行。
 4. 所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
 5. 以 `advisor` 派工而 `advisor.config.toml` 不存在時，停止該次派工，不使用隱式 profile fallback。
 6. 預設檔位一律傳入 `--profile default`，檔位名稱只允許預設、`intensive` 與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。`intensive` 只在使用者於當下 Session 指定後使用，腳本不自動選用。
@@ -731,7 +720,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 - 已取得 final message，但識別字不完整、外部 last-message 為 `Mismatch` 或 `BindingMismatch`。
 - advisor 的 `required-output` heading 缺少或內容為空，或 completion partition 判定為 `invalid`。
 
-`usage` 只作為事後記錄與額度對照，不取代派工前的額度快照判定。
+`usage` 只作為事後記錄。
 
 `finalMessage` 一律保留在 `history` 的 last-message 檔，不寫入報告落點。`Wait-ForThreadRelay` 逾時後若未取得非空 `threadId`，`Start` 必須輸出 `source=not-ready` 與事件流、stderr、PID 等證據並以非零結束，不得以空字串表示成功；收到有效 `thread.started` 時才以非空 thread id 繼續。
 
@@ -1055,7 +1044,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 事件流、stderr | `executionRoot` 的 `history\`，worktree 派遣為 dispatch worktree，direct-write 為來源工作樹；RunRecord 以 `event_stream_path` 與選填 `error_stream_path` 引用事件流及 stderr 的絕對路徑 | `Start` 在啟動前建立空檔；啟動失敗且檔案缺失時補建空檔 | `Start` 產生的 launcher 把 Codex 的標準輸出與標準錯誤重導寫入 | `Inspect` 以 FileStream 與 `FileShare.ReadWrite`、`FileShare.Delete` 共享讀取事件流及 last-message，維持讀取前後雜湊核對；worktree 派遣由 `Cleanup` 依 RunRecord 保存事件流與 stderr 回來源。舊 RunRecord 未記錄 `error_stream_path` 時仍可讀取與清理 | 事件流取證、完成判定與三出口 |
 | last-message | 同事件流 | `Start` 啟動的 Codex 程序（`--output-last-message`） | 同建立者 | `Inspect` 只用於與事件流 finalMessage 比對；worktree 派遣由 `Cleanup` 保存回來源 | 事件流取證、完成判定與三出口 |
 | thread id | 同事件流 | `Start` 在事件流出現 `thread.started` 且檔案空白時寫入 | 無；續行只讀取比對 | worktree 派遣由 `Cleanup` 保存回來源 | 續 session 與跨介面接手 |
-| RunRecord | 來源 `history\<lineSlug>\runs\<dispatchSlug>\` | `Start`，目的已存在時拒絕 | `Start` 在 prompt 傳遞、啟動完成、額度觀測與啟動失敗時更新；`Inspect` 在事件流中斷時更新 `unknown_interruption`。皆為原子寫入 | 只讀；`Cleanup` 依其驗證路徑與 owner，不列入 worktree 保存清單 | 回收三態判定 |
+| RunRecord | 來源 `history\<lineSlug>\runs\<dispatchSlug>\` | `Start`，目的已存在時拒絕 | `Start` 在 prompt 傳遞、啟動完成與啟動失敗時更新；`Inspect` 在事件流中斷時更新 `unknown_interruption`。皆為原子寫入 | 只讀；`Cleanup` 依其驗證路徑與 owner，不列入 worktree 保存清單 | 回收三態判定 |
 | failure receipt | Request 的 `failure_receipt_path`，可位於來源同線 `history\` 或 dispatch worktree 的同線 `history\` | `Dispatch`，在續行的 `Inspect` 判定失敗，或外層例外且尚未寫入時 | 同建立者；同一路徑的後一次寫入取代前一次 | `Start` 驗證未啟動證明時讀取；位於來源時原地保留，位於 dispatch worktree 時不在 `Cleanup` 保存清單，需保留時由主 Agent 在 `Cleanup` 前讀取 | 回收三態判定 |
 | 中斷保全紀錄 | `executionRoot` 的 `history\<lineSlug>\interruption-checkpoint-<dispatchSlug>-<runId>.json`，worktree 派遣為 dispatch worktree，direct-write 為來源工作樹；RunRecord 的 `interruption_checkpoint_path` 為路徑權威。不可寫時以結案訊息中的中斷保全三行交付，位置在識別字三行之前 | `Start` 建立全數未完成的初始檔，並把絕對路徑寫入 prompt | 執行端每完成一個單位以原子寫入更新 | `Inspect`、`Collect` 讀取並回傳已確認單位、未完成單位與證據位置，不回寫該檔，仍接受舊派遣記錄的來源路徑；worktree 派遣由 `Cleanup` 保存回來源同線 `history`。未執行單位不產生結論 | InterruptionSafeguard |
 | Developer 結案報告 | dispatch worktree 的 `report\<lineSlug>\` | 執行端（Workflow 為 Developer）；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者 | `Collect` 與 Reviewer 只讀；`Cleanup` 在來源 `report\<lineSlug>\` 建立副本，來源已有不同內容時以目的衝突停止 | 結案報告與 Git 來源紀錄 |
@@ -1064,10 +1053,10 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 派遣報告與角色固定報告 | 派遣單第 7 欄落點、角色規則檔指定的同線固定報告 | 執行端；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者；Reviewer 直接覆寫，Frontend Reviewer 與 Contract Auditor 先把前版移入 `history\` 再寫新版 | `Cleanup` 自動保存 report 根目錄的派遣報告；固定名稱最新報告以兩派遣 RunRecord 的啟動時間或 manifest round 判斷新舊，worktree 較新時封存來源並取代，較舊時封存 worktree 版本並維持來源；無法判斷時保留 worktree，結果列出判斷依據 | 派遣單契約 |
 | 同線 `exceptions.md` | `report\<lineSlug>\exceptions.md` | 第一個需要記錄的執行端或主 Agent；Request 的 `prepare_artifacts` 列入來源既有檔時，`Prepare` 建立執行端副本 | 執行端與主 Agent 只追加；`Cleanup` 把 worktree 新增的區塊合入來源後以原子取代寫回 | 保留來源既有區塊；worktree 區塊與來源區塊全文相同時不附加，worktree 內重複區塊只附加一次。同標題但內文不同視為不同條目；兩邊標題前內容只含 H1 與空白時相容，來源前文維持不變，其他不一致時停止 | 回收三態判定 |
 | 成果檔案 | dispatch worktree 或 direct-write 目標 | 執行端；Preflight 把來源既有的核准 target 檔帶入 worktree，不覆寫既有檔 | 執行端；`Collect -ApplyCollectedChanges` 套回來源；Workflow 由主 Agent 在使用者授權後 commit | Start 時不存在的核准 target 檔案以 baseline `exists=false` 記錄，回收清單保留該路徑，包含被 gitignore 排除的核准新檔；`Collect -ApplyCollectedChanges` 依來源 drift 檢查套回，新檔搬入、既有檔原子取代、刪除先備份，失敗時倒序回復。核准目錄新增且未被 gitignore 排除的子檔（包含 Start 時不存在的核准目錄）以 add 套回並檢查來源 drift；target 外新增檔列於 `unappliedNewFiles` 並留在 worktree。資源派遣同步核准的交接產物。direct-write 目錄 target 逐檔回傳證據且至少一檔非空 | Phase commit 回收與驗證 |
-| RunRecord 引用的執行證據：ScopePlan、launcher、prompt 傳遞副本與加上指示的 prompt、退出 sidecar、PrepareResult、Dispatch 階段結果、Inspect 結果綁定、額度觀測與預算監看紀錄，以及 advisor evidence pack 的 SHA-256 與 length sidecar | `executionRoot` 的 `history\` | 產生該證據的 operation：PrepareResult 由 `Prepare`、階段結果由 `Dispatch`、其餘由 `Start` 與其 launcher | PrepareResult 由 `Prepare` 依狀態更新；Inspect 結果綁定由 `Inspect`；額度觀測與預算監看紀錄由額度監看追加；其餘無 | worktree 派遣由 `Cleanup` 依 RunRecord 保存回來源。advisor evidence pack 的 `.sha256` 與 `.length` sidecar 由既有 `evidence_pack_path`、`execution_root` 與 `dispatch_slug` 推導 Start 寫入的 `history\evidence-pack-<dispatchSlug>.sha256`、`.length` 路徑，沿用路徑邊界驗證後保存；未新增 RunRecord 欄位 | 事件流取證、完成判定與三出口 |
+| RunRecord 引用的執行證據：ScopePlan、launcher、prompt 傳遞副本與加上指示的 prompt、退出 sidecar、PrepareResult、Dispatch 階段結果、Inspect 結果綁定，以及 advisor evidence pack 的 SHA-256 與 length sidecar | `executionRoot` 的 `history\` | 產生該證據的 operation：PrepareResult 由 `Prepare`、階段結果由 `Dispatch`、其餘由 `Start` 與其 launcher | PrepareResult 由 `Prepare` 依狀態更新；Inspect 結果綁定由 `Inspect`；其餘無 | worktree 派遣由 `Cleanup` 依 RunRecord 保存回來源。advisor evidence pack 的 `.sha256` 與 `.length` sidecar 由既有 `evidence_pack_path`、`execution_root` 與 `dispatch_slug` 推導 Start 寫入的 `history\evidence-pack-<dispatchSlug>.sha256`、`.length` 路徑，沿用路徑邊界驗證後保存；未新增 RunRecord 欄位 | 事件流取證、完成判定與三出口 |
 | prompt 原始來源 | 呼叫端指定的 `PromptPath`，可位於來源工作樹或 `executionRoot` | 呼叫端（主 Agent 或撰寫 Request 者） | 無；`Start` 只讀取並建立傳遞副本 | RunRecord 記錄原始路徑；位於 dispatch worktree 時由 `Cleanup` 保存回來源，位於來源時原地保留 | Prompt 必備元素 |
-| 額度快照 | `executionRoot` 的 `history\` | before 快照由 `Dispatch` 建立，獨立呼叫 `Start` 時由 `Start` 建立；advisor after 快照由 `Start` 建立；非 advisor 的結束快照由 `Inspect` 建立並把路徑與 SHA-256 寫入 RunRecord | advisor after 快照由額度監看更新；其餘無 | worktree 派遣由 `Cleanup` 依 RunRecord 引用的 `quota_before_path` 與 `quota_after_path` 保存回來源 | 額度快照 |
-| Dispatch result | Request 的 `result_path`；省略時為 `executionRoot` 的 `history\<lineSlug>\dispatch-result-<dispatchSlug>-<token>.json` | `Dispatch` | `Dispatch` 在提前回傳、Inspect 結束與例外三條路徑寫入同一路徑 | 主 Agent 讀取 Preflight、Prepare 結果路徑與階段結果；預設落點不在 `Cleanup` 保存清單，需保留時由主 Agent 在 `Cleanup` 前讀取 | Dispatch 正式入口 || 來源控制紀錄：ScopePlan hash、admission ledger、PID 記錄、baseline、review finding ledger、cleanup result、quota recovery | 來源 `history\` 或 `history\<lineSlug>\` | ScopePlan hash、PID 記錄由 `Start`；baseline 由 Preflight；admission ledger 由第一次 admission 檢查；finding ledger 由 `Collect`；cleanup result 由 `Cleanup`；quota recovery 由額度探測 | ScopePlan hash、PID 記錄與 baseline 無；admission ledger 由 Preflight、`Start` 與 `Cleanup` 的 admission 檢查；其餘由各自建立者 | 留在來源，不經 worktree 保存 | Caller Session 身分與併行准入 |
+| Dispatch result | Request 的 `result_path`；省略時為 `executionRoot` 的 `history\<lineSlug>\dispatch-result-<dispatchSlug>-<token>.json` | `Dispatch` | `Dispatch` 在提前回傳、Inspect 結束與例外三條路徑寫入同一路徑 | 主 Agent 讀取 Preflight、Prepare 結果路徑與階段結果；預設落點不在 `Cleanup` 保存清單，需保留時由主 Agent 在 `Cleanup` 前讀取 | Dispatch 正式入口 |
+| 來源控制紀錄：ScopePlan hash、admission ledger、PID 記錄、baseline、review finding ledger、cleanup result | 來源 `history\` 或 `history\<lineSlug>\` | ScopePlan hash、PID 記錄由 `Start`；baseline 由 Preflight；admission ledger 由第一次 admission 檢查；finding ledger 由 `Collect`；cleanup result 由 `Cleanup` | ScopePlan hash、PID 記錄與 baseline 無；admission ledger 由 Preflight、`Start` 與 `Cleanup` 的 admission 檢查；其餘由各自建立者 | 留在來源，不經 worktree 保存 | Caller Session 身分與併行准入 |
 
 ## 結案報告與 Git 來源紀錄
 

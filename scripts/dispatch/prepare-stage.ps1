@@ -334,13 +334,7 @@ function New-DispatchStageBinding {
         [string]$PreflightResultPath,
 
         [Parameter(Mandatory)]
-        [string]$PrepareResultPath,
-
-        [AllowEmptyString()]
-        [string]$QuotaBeforePath,
-
-        [AllowEmptyString()]
-        [string]$QuotaAfterPath
+        [string]$PrepareResultPath
     )
 
     $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
@@ -368,8 +362,6 @@ function New-DispatchStageBinding {
     $resultPathValue = & $resolveOutputPath $ResultPath 'result_path' $false
     $preflightResultPathValue = & $resolveOutputPath $PreflightResultPath 'preflight_result_path' $false
     $prepareResultPathValue = & $resolveOutputPath $PrepareResultPath 'prepare_result_path' $false
-    $quotaBeforePathValue = & $resolveOutputPath $QuotaBeforePath 'quota_before_path' $true
-    $quotaAfterPathValue = & $resolveOutputPath $QuotaAfterPath 'quota_after_path' $true
 
     $binding = [ordered]@{
         schema                 = 'ai-sessions.dispatch-stage-binding.v1'
@@ -382,8 +374,6 @@ function New-DispatchStageBinding {
         result_path            = $resultPathValue
         preflight_result_path  = $preflightResultPathValue
         prepare_result_path    = $prepareResultPathValue
-        quota_before_path      = $quotaBeforePathValue
-        quota_after_path       = $quotaAfterPathValue
     }
     $binding.fingerprint = Get-DispatchStageBindingFingerprint -Binding $binding
     return $binding
@@ -426,23 +416,17 @@ function Assert-DispatchStageBinding {
         [string]$PreflightResultPath,
 
         [Parameter(Mandatory)]
-        [string]$PrepareResultPath,
-
-        [AllowEmptyString()]
-        [string]$QuotaBeforePath,
-
-        [AllowEmptyString()]
-        [string]$QuotaAfterPath
+        [string]$PrepareResultPath
     )
 
-    $expected = New-DispatchStageBinding -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath @($TargetPath) -ResultPath $ResultPath -PreflightResultPath $PreflightResultPath -PrepareResultPath $PrepareResultPath -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath
+    $expected = New-DispatchStageBinding -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath @($TargetPath) -ResultPath $ResultPath -PreflightResultPath $PreflightResultPath -PrepareResultPath $PrepareResultPath
     $actualFingerprint = Get-DispatchStageBindingFingerprint -Binding $Binding
     $receivedFingerprint = [string](Get-DispatchJsonProperty -Object $Binding -Name 'fingerprint')
     if ([string]::IsNullOrWhiteSpace($receivedFingerprint) -or $receivedFingerprint -ine $actualFingerprint -or $receivedFingerprint -ine [string]$expected.fingerprint) {
         throw "DispatchStageBindingConflict：$Stage 的 stage binding fingerprint 不一致。"
     }
 
-    foreach ($name in @('source_root', 'execution_root', 'dispatch_root', 'result_path', 'preflight_result_path', 'prepare_result_path', 'quota_before_path', 'quota_after_path')) {
+    foreach ($name in @('source_root', 'execution_root', 'dispatch_root', 'result_path', 'preflight_result_path', 'prepare_result_path')) {
         $expectedValue = [string](Get-DispatchJsonProperty -Object $expected -Name $name)
         $receivedValue = [string](Get-DispatchJsonProperty -Object $Binding -Name $name)
         if (-not [string]::Equals($expectedValue, $receivedValue, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -1776,7 +1760,7 @@ function Invoke-Prepare {
         $dispatchStageBinding = Get-DispatchScriptVariableValue -Name 'DispatchStageBinding'
         if ($null -ne $dispatchStageBinding) {
             $bindingDispatchRoot = if ([string]::Equals($rootInfo.SourceRoot, $rootInfo.ExecutionRoot, [StringComparison]::OrdinalIgnoreCase)) { [string]$dispatchStageBinding.dispatch_root } else { $rootInfo.DispatchRoot }
-            $null = Assert-DispatchStageBinding -Binding $dispatchStageBinding -Stage 'prepare' -SourceRoot $rootInfo.SourceRoot -ExecutionRoot $rootInfo.ExecutionRoot -DispatchRoot $bindingDispatchRoot -LineSlug $rootInfo.LineSlug -DispatchSlug $rootInfo.DispatchSlug -TargetPath @($guardTargetPathValue) -ResultPath $ResultPath -PreflightResultPath $PreflightResultPath -PrepareResultPath $PrepareResultPath -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath
+            $null = Assert-DispatchStageBinding -Binding $dispatchStageBinding -Stage 'prepare' -SourceRoot $rootInfo.SourceRoot -ExecutionRoot $rootInfo.ExecutionRoot -DispatchRoot $bindingDispatchRoot -LineSlug $rootInfo.LineSlug -DispatchSlug $rootInfo.DispatchSlug -TargetPath @($guardTargetPathValue) -ResultPath $ResultPath -PreflightResultPath $PreflightResultPath -PrepareResultPath $PrepareResultPath
         }
         $effectiveCodexHome = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
         $requestPathValue = if ($null -eq $requestContext) { $null } else { [string]$requestContext.path }

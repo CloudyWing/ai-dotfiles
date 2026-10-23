@@ -286,8 +286,9 @@ function Invoke-Preflight {
         }
     }
 
-    if ($DispatchKind -eq 'resource' -and $worktreeCreated -and $null -ne $script:RequestResourceOrder) {
-        $reportPathValue = [string]$script:RequestResourceOrder.ReportPath
+    $requestResourceOrder = Get-Variable -Scope Script -Name 'RequestResourceOrder' -ValueOnly -ErrorAction SilentlyContinue
+    if ($DispatchKind -eq 'resource' -and $worktreeCreated -and $null -ne $requestResourceOrder) {
+        $reportPathValue = [string]$requestResourceOrder.ReportPath
         if (-not [string]::IsNullOrWhiteSpace($reportPathValue)) {
             $resolvedReportPath = Resolve-AbsolutePath -Path $reportPathValue
             if (-not (Test-PathWithinRoot -Path $resolvedReportPath -Root $dispatchRootPath)) {
@@ -543,13 +544,6 @@ function Write-DispatchInspectResultBinding {
         [string]$ScopePlanPath,
 
         [Parameter(Mandatory)]
-        [string]$QuotaBeforePath,
-
-        [Parameter(Mandatory)]
-        [ValidatePattern('^[a-fA-F0-9]{64}$')]
-        [string]$QuotaBeforeSha256,
-
-        [Parameter(Mandatory)]
         [string]$ProcessExitCodeSidecarPath
     )
 
@@ -566,14 +560,10 @@ function Write-DispatchInspectResultBinding {
         error = $null
         process_started = $ProcessStarted
         result_path = $resolvedPath
-        quota_before_path = $QuotaBeforePath
-        quota_before_sha256 = $QuotaBeforeSha256
         inspect_binding = [ordered]@{
             run_record_path = $RunRecordPath
             event_stream_path = $EventStreamPath
             scope_plan_path = $ScopePlanPath
-            quota_before_path = $QuotaBeforePath
-            quota_before_sha256 = $QuotaBeforeSha256
             process_exit_code_sidecar_path = $ProcessExitCodeSidecarPath
             process_exit_code = $null
             process_exit_code_source = 'sidecar-pending'
@@ -598,8 +588,6 @@ function New-DispatchResultEnvelope {
         [AllowNull()][object]$PreflightStage,
         [AllowNull()][object]$PrepareStage,
         [AllowNull()][object]$StartStage,
-        [AllowEmptyString()][string]$QuotaBeforePath,
-        [AllowEmptyString()][string]$QuotaBeforeSha256,
         [AllowEmptyString()][string]$ResultPathValue,
         [AllowEmptyString()][string]$StartResultPathValue,
         [AllowEmptyString()][string]$SidecarPath,
@@ -627,8 +615,6 @@ function New-DispatchResultEnvelope {
         run_record_path = if ($null -eq $runRecordPath) { $null } else { [string]$runRecordPath }
         event_stream_path = if ($null -eq $eventStreamPath) { $null } else { [string]$eventStreamPath }
         scope_plan_path = if ($null -eq $scopePlanPath) { $null } else { [string]$scopePlanPath }
-        quota_before_path = if ([string]::IsNullOrWhiteSpace($QuotaBeforePath)) { $null } else { $QuotaBeforePath }
-        quota_before_sha256 = if ([string]::IsNullOrWhiteSpace($QuotaBeforeSha256)) { $null } else { $QuotaBeforeSha256 }
         process_exit_code_sidecar_path = if ([string]::IsNullOrWhiteSpace($SidecarPath)) { $null } else { $SidecarPath }
         process_exit_code = $null
         process_exit_code_source = 'sidecar-pending'
@@ -649,8 +635,6 @@ function New-DispatchResultEnvelope {
         preflight_result_sha256 = if ($null -eq $PreflightStage) { $null } else { [string](Get-DispatchResultPropertyValue -Object $PreflightStage -Names @('Sha256', 'sha256')) }
         prepare_result_path = if ($null -eq $PrepareStage) { $null } else { [string](Get-DispatchResultPropertyValue -Object $PrepareStage -Names @('Path', 'path', 'prepareResultPath', 'prepare_result_path')) }
         prepare_result_sha256 = if ($null -eq $PrepareStage) { $null } else { [string](Get-DispatchResultPropertyValue -Object $PrepareStage -Names @('Sha256', 'sha256', 'prepareResultSha256', 'prepare_result_sha256')) }
-        quota_before_path = if ([string]::IsNullOrWhiteSpace($QuotaBeforePath)) { $null } else { $QuotaBeforePath }
-        quota_before_sha256 = if ([string]::IsNullOrWhiteSpace($QuotaBeforeSha256)) { $null } else { $QuotaBeforeSha256 }
         start_result_path = if ([string]::IsNullOrWhiteSpace($StartResultPathValue)) { $null } else { $StartResultPathValue }
         prompt_path = if ($null -eq $promptPath) { $null } else { [string]$promptPath }
         promptPath = if ($null -eq $promptPath) { $null } else { [string]$promptPath }
@@ -691,9 +675,6 @@ function Invoke-Dispatch {
     $preflightResult = $null
     $prepareResult = $null
     $startResult = $null
-    $quotaBeforePathValue = $null
-    $quotaBeforeSha256Value = $null
-    $script:DispatchQuotaBeforeSha256 = $null
     $resultPathValue = $null
     $failureReceiptPathValue = $null
     $startResultPathValue = $null
@@ -707,8 +688,6 @@ function Invoke-Dispatch {
     $requestedFailureReceiptPath = [string]$FailureReceiptPath
     $requestedPreflightResultPath = [string]$PreflightResultPath
     $requestedPrepareResultPath = [string]$PrepareResultPath
-    $requestedQuotaBeforePath = [string]$QuotaBeforePath
-    $requestedQuotaAfterPath = [string]$QuotaAfterPath
     $stageBinding = $null
     $failureReceiptWritten = $false
     $failureReceiptSha256Value = $null
@@ -732,13 +711,9 @@ function Invoke-Dispatch {
         $script:ResultPath = $null
         $script:PreflightResultPath = $null
         $script:PrepareResultPath = $null
-        $script:QuotaBeforePath = $null
-        $script:QuotaAfterPath = $null
         $ResultPath = $null
         $PreflightResultPath = $null
         $PrepareResultPath = $null
-        $QuotaBeforePath = $null
-        $QuotaAfterPath = $null
 
         $failedStage = 'preflight'
         $script:DispatchAccountSelection = Resolve-CodexAccountSelection -CodexHomePath $CodexHome -Profile $Profile
@@ -780,33 +755,19 @@ function Invoke-Dispatch {
         else {
             Resolve-AbsolutePath -Path $requestedPrepareResultPath
         }
-        $historyRoot = Join-Path -Path $executionRootPath -ChildPath '.local\ai-sessions\history'
-        $quotaBeforePathValue = New-QuotaSnapshotPath -HistoryRoot $historyRoot -Purpose 'before'
         $dispatchUnitKind = Get-DefaultUnitKind -DispatchKind ([string]$DispatchKind) -UnitKind ([string]$UnitKind) -TaskType ([string]$TaskType)
         $isAdvisorDispatch = $dispatchUnitKind -eq 'advisor-evidence-question'
-        $quotaAfterPathValue = if ([string]::IsNullOrWhiteSpace($requestedQuotaAfterPath)) {
-            if ($isAdvisorDispatch) { New-QuotaSnapshotPath -HistoryRoot $historyRoot -Purpose 'after' } else { $null }
-        }
-        else {
-            Resolve-AbsolutePath -Path $requestedQuotaAfterPath
-        }
-        $stageBinding = New-DispatchStageBinding -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath @($TargetPath) -ResultPath $resultPathValue -PreflightResultPath $preflightResultPathValue -PrepareResultPath $dispatchPrepareResultPath -QuotaBeforePath $quotaBeforePathValue -QuotaAfterPath $quotaAfterPathValue
+        $stageBinding = New-DispatchStageBinding -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath @($TargetPath) -ResultPath $resultPathValue -PreflightResultPath $preflightResultPathValue -PrepareResultPath $dispatchPrepareResultPath
         $script:DispatchStageBinding = $stageBinding
         $resultPathValue = [string]$stageBinding.result_path
         $PreflightResultPath = [string]$stageBinding.preflight_result_path
         $dispatchPrepareResultPath = [string]$stageBinding.prepare_result_path
-        $QuotaBeforePath = [string]$stageBinding.quota_before_path
-        $QuotaAfterPath = [string]$stageBinding.quota_after_path
         $script:ResultPath = $resultPathValue
         $script:PreflightResultPath = $PreflightResultPath
         $script:PrepareResultPath = $dispatchPrepareResultPath
-        $script:QuotaBeforePath = $QuotaBeforePath
-        $script:QuotaAfterPath = $QuotaAfterPath
         $ResultPath = $resultPathValue
         $PreflightResultPath = $PreflightResultPath
         $PrepareResultPath = $dispatchPrepareResultPath
-        $QuotaBeforePath = $QuotaBeforePath
-        $QuotaAfterPath = $QuotaAfterPath
         $script:SourceRoot = $sourceRootPath
         $script:ExecutionRoot = $executionRootPath
         $script:DispatchRoot = $executionRootPath
@@ -826,17 +787,6 @@ function Invoke-Dispatch {
         $script:PreflightResultPath = $preflightStage.Path
         $script:PrepareResultPath = $dispatchPrepareResultPath
         $PrepareResultPath = $dispatchPrepareResultPath
-
-        $failedStage = 'before-snapshot'
-        $quotaBeforePathValue = Get-OrCreateQuotaSnapshot -Path $requestedQuotaBeforePath -SnapshotPath ([string]$stageBinding.quota_before_path) -CodexHome $CodexHome -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -HistoryRoot $historyRoot -Purpose 'before' -Required
-        $quotaBeforePathValue = Resolve-AbsolutePath -Path $quotaBeforePathValue
-        if (-not [string]::Equals($quotaBeforePathValue, [string]$stageBinding.quota_before_path, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'DispatchStageBindingConflict：QuotaBeforePath 未沿用既有 stage binding。'
-        }
-        $quotaBeforeSha256Value = Get-FileSha256 -Path $quotaBeforePathValue
-        $script:DispatchQuotaBeforeSha256 = $quotaBeforeSha256Value
-        $script:QuotaBeforePath = $quotaBeforePathValue
-        $completedStages.Add('before-snapshot')
 
         $failedStage = 'prepare'
         if (-not [string]::Equals($sourceRootPath, $executionRootPath, [StringComparison]::OrdinalIgnoreCase) -and $isAdvisorDispatch) {
@@ -893,17 +843,6 @@ function Invoke-Dispatch {
         $completedStages.Add('prepare')
         $script:PrepareResultPath = $prepareStage.Path
 
-        if ($isAdvisorDispatch -and [string]::IsNullOrWhiteSpace($requestedQuotaAfterPath)) {
-            $failedStage = 'after-snapshot'
-            $quotaAfterPathValue = Get-OrCreateQuotaSnapshot -Path $null -SnapshotPath ([string]$stageBinding.quota_after_path) -CodexHome $CodexHome -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -HistoryRoot $historyRoot -Purpose 'after' -Required
-            $quotaAfterPathValue = Resolve-AbsolutePath -Path $quotaAfterPathValue
-            if (-not [string]::Equals($quotaAfterPathValue, [string]$stageBinding.quota_after_path, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'DispatchStageBindingConflict：advisor QuotaAfterPath 未沿用既有 stage binding。'
-            }
-            $script:QuotaAfterPath = $quotaAfterPathValue
-            $QuotaAfterPath = $quotaAfterPathValue
-        }
-
         $failedStage = 'start'
         $script:WaitForStartProcessExit = [bool]$script:DispatchWaitForCompletion
         $startResult = Invoke-Start
@@ -928,8 +867,6 @@ function Invoke-Dispatch {
             prepare_result_path = $prepareStage.Path
             start_result_path = $startStage.Path
             result_path = $resultPathValue
-            quota_before_path = $quotaBeforePathValue
-            quota_before_sha256 = $quotaBeforeSha256Value
             run_record_path = Get-DispatchResultPropertyValue -Object $startResult -Names @('runRecordPath', 'run_record_path')
             event_stream_path = Get-DispatchResultPropertyValue -Object $startResult -Names @('eventStreamPath', 'event_stream_path')
             last_message_path = Get-DispatchResultPropertyValue -Object $startResult -Names @('lastMessagePath', 'last_message_path')
@@ -937,7 +874,7 @@ function Invoke-Dispatch {
             evidence_paths = @($EvidencePath)
         }
         $evidenceBinding = New-DispatchEvidenceBinding -ExecutionRoot $executionRootPath -EvidencePosition $evidencePosition
-        $result = New-DispatchResultEnvelope -Status 'started' -LineSlug $LineSlug -DispatchSlug $DispatchSlug -CompletedStages @($completedStages.ToArray()) -FailedStage '' -ErrorCode '' -ErrorMessage '' -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -QuotaBeforePath $quotaBeforePathValue -QuotaBeforeSha256 $quotaBeforeSha256Value -ResultPathValue $resultPathValue -StartResultPathValue $startStage.Path -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
+        $result = New-DispatchResultEnvelope -Status 'started' -LineSlug $LineSlug -DispatchSlug $DispatchSlug -CompletedStages @($completedStages.ToArray()) -FailedStage '' -ErrorCode '' -ErrorMessage '' -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startStage.Path -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
         $result.background = -not [bool]$script:DispatchWaitForCompletion
         $result.requested_units = @($script:ResolvedRequestedUnit)
         $writtenResult = Write-DispatchAtomicJsonDocument -Path $resultPathValue -Document $result -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
@@ -1058,7 +995,6 @@ function Invoke-Dispatch {
             $errorCode = switch ($failedStage) {
                 'validation' { 'DispatchRequestInvalidValue' }
                 'preflight' { 'DispatchPreflightFailed' }
-                'before-snapshot' { 'DispatchQuotaBeforeFailed' }
                 'prepare' { 'DispatchPrepareFailed' }
                 'inspect' { 'DispatchInspectFailed' }
                 default { 'DispatchStartFailed' }
@@ -1071,7 +1007,7 @@ function Invoke-Dispatch {
             }
             catch { $resultPathValue = $null }
         }
-        $failureResult = New-DispatchResultEnvelope -Status 'failed' -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -CompletedStages @($completedStages.ToArray()) -FailedStage $failedStage -ErrorCode $errorCode -ErrorMessage $failureException.Message -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -QuotaBeforePath $quotaBeforePathValue -QuotaBeforeSha256 $quotaBeforeSha256Value -ResultPathValue $resultPathValue -StartResultPathValue $startResultPathValue -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
+        $failureResult = New-DispatchResultEnvelope -Status 'failed' -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -CompletedStages @($completedStages.ToArray()) -FailedStage $failedStage -ErrorCode $errorCode -ErrorMessage $failureException.Message -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startResultPathValue -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
         $failureResult.dispatch_execution_id = $dispatchToken
         $failureResult.failure_receipt_path = if ([string]::IsNullOrWhiteSpace($failureReceiptPathValue)) { $null } else { $failureReceiptPathValue }
         $failureResult.failure_receipt_saved = $false

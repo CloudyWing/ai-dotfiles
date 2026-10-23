@@ -3,7 +3,7 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]
-    [ValidateSet('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'QuotaProbe', 'Dispatch', 'Cleanup', 'DiagnoseModelEnvironment')]
+    [ValidateSet('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'Dispatch', 'Cleanup', 'DiagnoseModelEnvironment')]
     [string]$Operation,
 
     [string]$SourceRoot,
@@ -44,15 +44,6 @@ param(
     [ValidateSet('default', 'advisor', 'intensive')]
     [string]$Profile = 'default',
 
-    [ValidateSet('Valid', 'PostResetNoSnapshot', 'SnapshotExpired', 'SnapshotUnavailable', 'ServiceRejected')]
-    [string]$InitialQuotaState = 'PostResetNoSnapshot',
-
-    [ValidateSet('primary', 'secondary', 'both', 'unknown')]
-    [string]$TriggerWindow = 'unknown',
-
-    [ValidateRange(1, 2)]
-    [int]$ProbeAttempt = 1,
-
     [string]$CodexHome,
 
     [string]$ThreadId,
@@ -70,16 +61,8 @@ param(
     [ValidateSet('user-explicit')]
     [string]$AdvisorRequestSource,
 
-    [Nullable[double]]$SecondaryDaysToReset,
-
-    [Nullable[double]]$SecondaryRemainingPercent,
-
     [Alias('DowngradeInstruction')]
     [switch]$InterruptionSafeguard,
-
-    [string]$QuotaBeforePath,
-
-    [string]$QuotaAfterPath,
 
     [string]$CalibrationPath,
 
@@ -92,20 +75,12 @@ param(
     [ValidateSet('workflow-phase', 'resource-target', 'advisor-evidence-question')]
     [string]$UnitKind,
 
-    [ValidateRange(0, 100)]
-    [Nullable[double]]$PrimaryBudgetPercent,
-
-    [ValidateRange(0, 100)]
-    [Nullable[double]]$PrimaryReservePercent,
-
     [string]$EvidencePackPath,
 
     [string]$AdvisorConsultReportPath,
 
     [ValidateRange(5, 60)]
     [int]$AbortGraceSeconds = 30,
-
-    [string]$BudgetMonitorPath,
 
     [string[]]$AddDirectory,
 
@@ -919,7 +894,6 @@ try {
         }
         'Collect'   { Invoke-Collect -ApplyCollectedChanges:$ApplyCollectedChanges }
         'Cleanup'   { Invoke-Cleanup }
-        'QuotaProbe' { Invoke-QuotaProbe }
         'DiagnoseModelEnvironment' { Invoke-ModelEnvironmentDiagnostic }
         default     { throw "不支援的 operation：$Operation" }
     }

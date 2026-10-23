@@ -686,13 +686,8 @@ function Invoke-Start {
     $advisorActivationDecision = $null
     $activationModeValue = 'none'
     $authorizationSourceValue = $null
-    $primaryRemainingPercentValue = $null
     $requiredSourceValue = $null
     $dispatchKindValue = $DispatchKind
-    $beforeSnapshotPathValue = $null
-    $beforeSnapshotObject = $null
-    $afterSnapshotPathValue = if ([string]::IsNullOrWhiteSpace($QuotaAfterPath)) { $null } else { $QuotaAfterPath }
-    $afterSnapshotSha256Value = $null
     $scopePlan = $null
     $scopePlanPathValue = $null
     $scopePlanParentPathValue = $null
@@ -722,8 +717,6 @@ function Invoke-Start {
     $prepareResultPathValue = $null
     $prepareResultSha256Value = $null
     $prepareStatusValue = $null
-    $beforeSnapshotSha256Value = $null
-    $beforeSnapshotCapturedAtUtcValue = $null
     $baselineBinding = $null
     $baselineResolution = $null
     $baselineQueryPathValue = $null
@@ -748,15 +741,6 @@ function Invoke-Start {
     $createdAtUtcValue = $null
     $failureReasonCode = $null
     $interruptionSafeguardApplied = $true
-    $budgetMonitorStatus = [ordered]@{
-        state = 'not-started'
-        stopRequested = $false
-        safePointFound = $false
-        safePointMissing = $false
-        abortReason = $null
-    }
-    $monitorPathValue = $BudgetMonitorPath
-
     try {
     $preflight = Get-PreflightData
     if ([string]::IsNullOrWhiteSpace($PreflightResultPath)) {
@@ -797,7 +781,7 @@ function Invoke-Start {
         if ([string]::IsNullOrWhiteSpace($dispatchRootForBinding)) {
             $dispatchRootForBinding = $DispatchRoot
         }
-        $null = Assert-DispatchStageBinding -Binding $dispatchStageBinding -Stage 'start' -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -DispatchRoot $dispatchRootForBinding -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -TargetPath @($TargetPath) -ResultPath $ResultPath -PreflightResultPath $PreflightResultPath -PrepareResultPath $PrepareResultPath -QuotaBeforePath $QuotaBeforePath -QuotaAfterPath $QuotaAfterPath
+        $null = Assert-DispatchStageBinding -Binding $dispatchStageBinding -Stage 'start' -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -DispatchRoot $dispatchRootForBinding -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -TargetPath @($TargetPath) -ResultPath $ResultPath -PreflightResultPath $PreflightResultPath -PrepareResultPath $PrepareResultPath
     }
     if (-not (Test-PathWithinRoot -Path $executionRootPath -Root $sourceRootPath) -and $executionRootPath -ne $sourceRootPath) {
         $dispatchRootValue = $preflight.PSObject.Properties['dispatchRoot']
@@ -1069,26 +1053,12 @@ function Invoke-Start {
         advisor_activation_decision = $null
         advisor_activation_granted = $false
         advisor_activation_notice = $null
-        advisor_hard_limit_percent = $null
-        advisor_unit_estimate_percent = $null
         activationMode = $activationModeValue
         authorizationSource = $authorizationSourceValue
-        primaryRemainingPercent = $primaryRemainingPercentValue
         requiredSource = $requiredSourceValue
         parent_options = $null
         parent_options_sha256 = $null
         parent_options_status = 'unknown'
-         quota_before_path = $null
-         quota_before_sha256 = $null
-         quota_before_captured_at_utc = $null
-         quota_before_freshness = $null
-         quota_before_observations = $null
-         quota_before_service_rejection = $null
-         quota_after_path = $null
-         quota_after_sha256 = $null
-         quota_observation_state = $null
-         quota_observation_path = $null
-         quota_observation_write_failures = @()
         request_path = if ($null -eq $script:RequestContext) { $null } else { [string]$script:RequestContext.path }
         request_sha256 = if ($null -eq $script:RequestContext) { $null } else { [string]$script:RequestContext.sha256 }
         request_operation = if ($null -eq $script:RequestContext) { $null } else { [string](Get-DispatchJsonProperty -Object $script:RequestContext.document -Name 'operation') }
@@ -1183,9 +1153,6 @@ function Invoke-Start {
             throw 'RequiredParameterMissing：advisor-consult 必須提供 AdvisorConsultReportPath。'
         }
         $AdvisorConsultReportPath = Get-AdvisorConsultReportPath -Path $AdvisorConsultReportPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
-        if ([string]::IsNullOrWhiteSpace($QuotaAfterPath)) {
-            throw 'RequiredParameterMissing：advisor-consult 必須提供可在執行期間更新的 QuotaAfterPath。'
-        }
         $effectiveAddDirectory = @((Get-DispatchJsonProperty -Object $parentOptionsModel -Name 'add_directory'))
         if ($effectiveAddDirectory.Count -gt 0) {
             throw 'AdvisorImplementationProfileRejected：advisor-consult 不允許額外 --add-dir，執行端只可讀取 evidence pack。'
@@ -1201,37 +1168,6 @@ function Invoke-Start {
         throw 'EvidencePackPath 只適用 TaskType=advisor-consult。'
     }
 
-    if ($null -ne $dispatchStageBinding) {
-        $beforeSnapshotPathValue = Resolve-AbsolutePath -Path ([string](Get-DispatchJsonProperty -Object $dispatchStageBinding -Name 'quota_before_path'))
-        if (-not [string]::Equals($beforeSnapshotPathValue, (Resolve-AbsolutePath -Path $QuotaBeforePath), [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'DispatchStageBindingConflict：Start QuotaBeforePath 與 stage binding 不一致。'
-        }
-        $beforeSnapshotSha256Value = Get-FileSha256 -Path $beforeSnapshotPathValue
-        $expectedBeforeSnapshotSha256 = [string](Get-DispatchScriptVariableValue -Name 'DispatchQuotaBeforeSha256')
-        if ($expectedBeforeSnapshotSha256 -notmatch '^[a-fA-F0-9]{64}$' -or
-            -not [string]::Equals($beforeSnapshotSha256Value, $expectedBeforeSnapshotSha256, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'QuotaBeforeSnapshotHashMismatch：Dispatch 建立的 before quota snapshot SHA-256 與 Start 讀取結果不一致。'
-        }
-        $beforeSnapshotObject = Read-QuotaSnapshot -Path $beforeSnapshotPathValue
-    }
-    else {
-        $beforeSnapshotPathValue = Get-OrCreateQuotaSnapshot -Path $QuotaBeforePath -CodexHome $effectiveCodexHomePath -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -HistoryRoot $historyRoot -Purpose 'before' -Required
-        $beforeSnapshotObject = Read-QuotaSnapshot -Path $beforeSnapshotPathValue
-        $beforeSnapshotSha256Value = Get-FileSha256 -Path $beforeSnapshotPathValue
-    }
-    $beforeSnapshotCapturedAtUtcValue = [string](Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'captured_at_utc')
-    if ([string]::IsNullOrWhiteSpace($beforeSnapshotCapturedAtUtcValue)) {
-        $beforeSnapshotCapturedAtUtcValue = $null
-    }
-    $beforeSnapshotFreshnessValue = Get-QuotaSnapshotFreshness -Snapshot $beforeSnapshotObject
-    $beforeSnapshotObservationsValue = Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'observations'
-    $beforeSnapshotServiceRejectionValue = Get-QuotaSnapshotServiceRejection -Snapshot $beforeSnapshotObject
-
-    if ($TaskType -eq 'advisor-consult') {
-        $afterSnapshot = New-AdvisorAfterSnapshot -CallerPath $QuotaAfterPath -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -HistoryRoot $historyRoot -CodexHome $effectiveCodexHomePath
-        $afterSnapshotPathValue = [string]$afterSnapshot.Path
-        $afterSnapshotSha256Value = [string]$afterSnapshot.Sha256
-    }
     if ($TaskType -eq 'advisor-consult') {
         $advisorActivationDecision = Get-AdvisorActivationDecision -RequestSource $AdvisorRequestSource
         $activationModeValue = [string](Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'activationMode')
@@ -1239,7 +1175,6 @@ function Invoke-Start {
             $activationModeValue = 'none'
         }
         $authorizationSourceValue = Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'authorizationSource'
-        $primaryRemainingPercentValue = Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $beforeSnapshotObject -Name 'primary') -Name 'remaining_percent'
         $requiredSourceValue = Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'requiredAuthorization'
         if (-not [bool]$advisorActivationDecision.granted) {
             $failureReasonCode = [string]$advisorActivationDecision.reasonCode
@@ -1350,7 +1285,7 @@ function Invoke-Start {
         }
     }
     else {
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -SessionMode $sessionModeValue -BeforeSnapshot (Read-QuotaSnapshot -Path $beforeSnapshotPathValue) -Units $units -UnitKind $unitKindValue -RequestedBudgetPercent $PrimaryBudgetPercent -RequestedReservePercent $PrimaryReservePercent -ModelEvidence $resolvedModelEvidence -ReasoningEffortEvidence $resolvedReasoningEffortEvidence -ActivationDecision $advisorActivationDecision
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlugValue -DispatchKind $dispatchKindValue -TaskType $TaskType -RequestedProfile $requestedProfileValue -SessionMode $sessionModeValue -Units $units -UnitKind $unitKindValue -ModelEvidence $resolvedModelEvidence -ReasoningEffortEvidence $resolvedReasoningEffortEvidence -ActivationDecision $advisorActivationDecision
         if (-not (Test-ScopePlanCompleteness -ScopePlan $scopePlan)) {
             $phase = 'preparation'
             throw 'ScopePlanInvalid：ScopePlan 必須涵蓋 Request 宣告的完整單位清單。'
@@ -1391,23 +1326,6 @@ function Invoke-Start {
         $interruptionCheckpointPathValue = Get-DispatchInterruptionCheckpointPath -SourceRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -RunId $runId
         $initialInterruptionCheckpoint = New-DispatchInterruptionCheckpointDocument -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -RunId $runId -SelectedUnits $interruptionSelectedUnits -ScopePlanPath $scopePlanPathValue -RunRecordPath $runRecordPathValue -EventStreamPath $eventPath
         $null = Write-DispatchAtomicJsonDocument -Path $interruptionCheckpointPathValue -Document $initialInterruptionCheckpoint -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
-    }
-
-    if ($TaskType -eq 'advisor-consult') {
-        $monitorHistoryRoot = Join-Path -Path $historyRoot -ChildPath $lineSlugValue
-        if ([string]::IsNullOrWhiteSpace($monitorPathValue)) {
-            $monitorPathValue = Get-QuotaObservationPath -LineHistoryRoot $monitorHistoryRoot -DispatchSlug $dispatchSlugValue
-        }
-        else {
-            $monitorPathValue = Resolve-AbsolutePath -Path $monitorPathValue
-            if (-not (Test-PathWithinRoot -Path $monitorPathValue -Root $monitorHistoryRoot)) {
-                throw "BudgetMonitorPath 必須位於 line history 內：$monitorPathValue"
-            }
-        }
-        $monitorPathValue = Resolve-DispatchOutputPath -CandidatePath $monitorPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
-        if (-not (Test-PathWithinRoot -Path $monitorPathValue -Root $monitorHistoryRoot)) {
-            throw "BudgetMonitorPath 必須位於 line history 內：$monitorPathValue"
-        }
     }
 
     if ($null -eq $advisorActivationDecision) {
@@ -1562,14 +1480,6 @@ function Invoke-Start {
     $runRecord.parent_options = $parentOptionsModel
     $runRecord.parent_options_sha256 = $parentOptionsModel.fingerprint
     $runRecord.parent_options_status = 'confirmed'
-    $runRecord.quota_before_path = $beforeSnapshotPathValue
-    $runRecord.quota_before_sha256 = $beforeSnapshotSha256Value
-    $runRecord.quota_before_captured_at_utc = $beforeSnapshotCapturedAtUtcValue
-    $runRecord.quota_before_freshness = $beforeSnapshotFreshnessValue
-    $runRecord.quota_before_observations = $beforeSnapshotObservationsValue
-    $runRecord.quota_before_service_rejection = $beforeSnapshotServiceRejectionValue
-    $runRecord.quota_after_path = $afterSnapshotPathValue
-    $runRecord.quota_after_sha256 = $afterSnapshotSha256Value
     $runRecord.evidence_pack_path = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.path }
     $runRecord.evidence_pack_sha256 = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sha256 }
     $runRecord.evidence_pack_length = if ($null -eq $evidencePackInfo) { $null } else { [int64]$evidencePackInfo.length }
@@ -1577,11 +1487,8 @@ function Invoke-Start {
     $runRecord.advisor_activation_decision = if ($null -eq $advisorActivationDecision) { $null } else { Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'activationMode' }
     $runRecord.advisor_activation_granted = if ($null -eq $advisorActivationDecision) { $false } else { [bool](Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'granted') }
     $runRecord.advisor_activation_notice = if ($null -eq $advisorActivationDecision) { $null } else { Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'notice' }
-    $runRecord.advisor_hard_limit_percent = if ($null -eq $advisorActivationDecision) { $null } else { Get-OptionalObjectProperty -Object $advisorActivationDecision -Name 'hardLimitPercent' }
-    $runRecord.advisor_unit_estimate_percent = if ($null -eq $scopePlan) { $null } else { Get-OptionalObjectProperty -Object $scopePlan -Name 'advisor_unit_estimate_percent' }
     $runRecord.activationMode = $activationModeValue
     $runRecord.authorizationSource = $authorizationSourceValue
-    $runRecord.primaryRemainingPercent = $primaryRemainingPercentValue
     $runRecord.requiredSource = $requiredSourceValue
     $runRecord.resume_diagnostics = $resumeDiagnostics
     $runRecord.attempt_parent_run_id = $attemptParentRunIdValue
@@ -1703,20 +1610,9 @@ function Invoke-Start {
         $runRecord.prompt_transfer_sha256 = $promptTransferSha256Value
         $runRecord.inspect_result_path = $inspectResultPathValue
         $null = Write-DispatchRunRecord -Record $runRecord -Update
-        $inspectResult = Write-DispatchInspectResultBinding -Path $inspectResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ProcessStarted $true -RunRecordPath $runRecordPathValue -EventStreamPath $eventPath -ScopePlanPath $scopePlanPathValue -QuotaBeforePath $beforeSnapshotPathValue -QuotaBeforeSha256 $beforeSnapshotSha256Value -ProcessExitCodeSidecarPath $exitSidecarPathValue
+        $inspectResult = Write-DispatchInspectResultBinding -Path $inspectResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ProcessStarted $true -RunRecordPath $runRecordPathValue -EventStreamPath $eventPath -ScopePlanPath $scopePlanPathValue -ProcessExitCodeSidecarPath $exitSidecarPathValue
         $inspectResultPathValue = $inspectResult.Path
-        $budgetMonitorStatus.state = 'running'
-        if ($TaskType -eq 'advisor-consult') {
-            $budgetMonitorStatus = Invoke-AdvisorBudgetMonitor -Process $process -StartedSnapshot $startedSnapshot -EventPath $eventPath -MonitorPath $monitorPathValue -BeforeSnapshot $beforeSnapshotObject -AfterSnapshotPath (Resolve-AbsolutePath -Path $afterSnapshotPathValue) -AfterSnapshotSha256 $afterSnapshotSha256Value -CodexHome $effectiveCodexHomePath -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -ScopePlan $scopePlan
-            $afterSnapshotSha256Value = [string]$budgetMonitorStatus.afterSnapshotSha256
-            $runRecord.quota_after_path = $afterSnapshotPathValue
-            $runRecord.quota_after_sha256 = $afterSnapshotSha256Value
-            $runRecord.quota_observation_state = [string]$budgetMonitorStatus.lastSnapshotState
-            $runRecord.quota_observation_path = $monitorPathValue
-            $runRecord.quota_observation_write_failures = @($budgetMonitorStatus.writeFailures)
-            $null = Write-DispatchRunRecord -Record $runRecord -Update
-        }
-        if ($waitForProcessExit -and -not $process.HasExited) {
+        if (($waitForProcessExit -or $TaskType -eq 'advisor-consult') -and -not $process.HasExited) {
             $process.WaitForExit()
             $process.Refresh()
         }
@@ -1755,7 +1651,6 @@ function Invoke-Start {
             advisorActivationNotice   = $advisorActivationDecision.notice
             activationMode    = $activationModeValue
             authorizationSource = $authorizationSourceValue
-            primaryRemainingPercent = $primaryRemainingPercentValue
             requiredSource    = $requiredSourceValue
             resumeThreadId   = $ResumeThreadId
             rootPid          = $process.Id
@@ -1780,9 +1675,6 @@ function Invoke-Start {
              prepareResultPath  = $prepareResultPathValue
              prepareResultSha256 = $prepareResultSha256Value
              prepareStatus       = $prepareStatusValue
-             quotaBeforePath  = $beforeSnapshotPathValue
-            quotaAfterPath   = $afterSnapshotPathValue
-            quotaAfterSha256 = $afterSnapshotSha256Value
             evidencePackPath = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.path }
             evidencePackSandboxPath = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sandboxPath }
             evidencePackSha256 = if ($null -eq $evidencePackInfo) { $null } else { $evidencePackInfo.sha256 }
@@ -1794,13 +1686,6 @@ function Invoke-Start {
             parentOptionsSha256 = if ($null -eq $parentOptionsModel) { $null } else { $parentOptionsModel.fingerprint }
             startedAtUtc = $startedAtUtcValue
             resumeDiagnostics = $resumeDiagnostics
-            budgetMonitorPath = $monitorPathValue
-             budgetMonitor     = $budgetMonitorStatus
-             quotaBeforeSha256 = $beforeSnapshotSha256Value
-             quotaBeforeCapturedAtUtc = $beforeSnapshotCapturedAtUtcValue
-             quotaBeforeFreshness = $beforeSnapshotFreshnessValue
-             quotaBeforeObservations = $beforeSnapshotObservationsValue
-             quotaBeforeServiceRejection = $beforeSnapshotServiceRejectionValue
             launcherPath     = $launcher.Path
             processExitCodeSidecarPath = $exitSidecarPathValue
             codexPath        = $codexExecutable
@@ -1927,13 +1812,11 @@ function Invoke-Start {
             relay_source = $relaySourceValue
             relay_timed_out = $relayTimedOutValue
             relay_timeout_seconds = $relayTimeoutSecondsValue
-            budget_monitor = $budgetMonitorStatus
             failure_stage = $phase
         }
         $failure = New-DispatchFailureRecord -Phase $failurePhase -Message $originalMessage -ReasonCode $failureReasonCode -ProcessStarted $processStarted -ProcessExitCode $processExitCodeValue -EventPath $eventPath -ErrorPath $errorPath -LastMessagePath $lastMessagePathValue -ThreadPath $threadPath -PidPath $pidPath -LauncherPath $launcherPath -RolloutPaths @() -Observation $failureObservation
         $failure.activationMode = $activationModeValue
         $failure.authorizationSource = $authorizationSourceValue
-        $failure.primaryRemainingPercent = $primaryRemainingPercentValue
         $failure.requiredSource = $requiredSourceValue
         $recordWriteError = $null
         if ($null -ne $runRecord -and -not [string]::IsNullOrWhiteSpace($runRecordPathValue)) {
@@ -1970,11 +1853,6 @@ function Invoke-Start {
                     $runRecord.parent_options_sha256 = $parentOptionsModel.fingerprint
                     $runRecord.parent_options_status = 'confirmed'
                 }
-                if (-not [string]::IsNullOrWhiteSpace($beforeSnapshotPathValue) -and (Test-Path -LiteralPath $beforeSnapshotPathValue -PathType Leaf)) {
-                    $runRecord.quota_before_path = $beforeSnapshotPathValue
-                    $runRecord.quota_before_sha256 = Get-FileSha256 -Path $beforeSnapshotPathValue
-                    $runRecord.quota_before_captured_at_utc = $beforeSnapshotCapturedAtUtcValue
-                }
                 if ($null -ne $evidencePackInfo) {
                     $runRecord.evidence_pack_path = $evidencePackInfo.path
                     $runRecord.evidence_pack_sha256 = $evidencePackInfo.sha256
@@ -2007,7 +1885,6 @@ function Invoke-Start {
                 }
                 $runRecord.activationMode = $activationModeValue
                 $runRecord.authorizationSource = $authorizationSourceValue
-                $runRecord.primaryRemainingPercent = $primaryRemainingPercentValue
                 $runRecord.requiredSource = $requiredSourceValue
                 $runRecord.failure = $failure
                 $runRecord.launch_state = 'launch-failed'
@@ -2038,7 +1915,6 @@ function Invoke-Start {
             error = $originalMessage
             activationMode = $activationModeValue
             authorizationSource = $authorizationSourceValue
-            primaryRemainingPercent = $primaryRemainingPercentValue
             requiredSource = $requiredSourceValue
             failure = $failure
             modelEvidence = if ($null -eq $modelEvidence) { $null } else { $modelEvidence }
