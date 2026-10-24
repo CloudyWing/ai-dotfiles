@@ -639,6 +639,138 @@ function New-DispatchStartHashClaim {
     finally { Close-DispatchAdmissionLock -Lock $lock }
 }
 
+function Add-DispatchCodexExecArguments {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [System.Collections.Generic.List[string]]$CodexArguments,
+
+        [AllowEmptyString()]
+        [string]$GitOrigin,
+
+        [AllowEmptyString()]
+        [string]$ResumeThreadId,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$LastMessagePath
+    )
+
+    $CodexArguments.Add('exec')
+    if ([string]::Equals($GitOrigin, 'not-applicable', [StringComparison]::OrdinalIgnoreCase)) {
+        $CodexArguments.Add('--skip-git-repo-check')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
+        $CodexArguments.Add('resume')
+        $CodexArguments.Add($ResumeThreadId)
+    }
+    $CodexArguments.Add('--json')
+    $CodexArguments.Add('--output-last-message')
+    $CodexArguments.Add($LastMessagePath)
+    $CodexArguments.Add('-')
+}
+
+function Get-DispatchStartStderrSummary {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$ErrorPath)
+
+    if ([string]::IsNullOrWhiteSpace($ErrorPath) -or -not (Test-Path -LiteralPath $ErrorPath -PathType Leaf)) {
+        return '<stderr unavailable>'
+    }
+    $stderrStream = $null
+    $fileLength = -1L
+    try {
+        $tailByteLimit = 65536
+        $stderrStream = [System.IO.File]::Open($ErrorPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        $fileLength = [long]$stderrStream.Length
+        $startOffset = [Math]::Max([long]0, ($fileLength - [long]$tailByteLimit))
+        $stderrStream.Seek($startOffset, [System.IO.SeekOrigin]::Begin) | Out-Null
+        $byteCount = [int]($fileLength - $startOffset)
+        $stderrBytes = New-Object byte[] $byteCount
+        $bytesRead = 0
+        while ($bytesRead -lt $byteCount) {
+            $currentRead = $stderrStream.Read($stderrBytes, $bytesRead, ($byteCount - $bytesRead))
+            if ($currentRead -le 0) {
+                break
+            }
+            $bytesRead += $currentRead
+        }
+        $stderrText = [System.Text.Encoding]::UTF8.GetString($stderrBytes, 0, $bytesRead)
+    }
+    catch {
+        $safeReadError = '讀取錯誤細節已省略'
+        try {
+            $safeReadError = Protect-DispatchInspectText -Text $_.Exception.Message
+        }
+        catch {
+        }
+        return ('<stderr unreadable: ' + $safeReadError + '>')
+    }
+    finally {
+        if ($null -ne $stderrStream) {
+            $stderrStream.Dispose()
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($stderrText)) {
+        if ($fileLength -eq 0 -or $startOffset -eq 0) {
+            return '<stderr empty>'
+        }
+        $whitespaceStream = $null
+        $whitespaceReader = $null
+        $stderrHasNonWhitespace = $false
+        try {
+            $whitespaceStream = [System.IO.File]::Open($ErrorPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+            $whitespaceReader = [System.IO.StreamReader]::new($whitespaceStream, [System.Text.Encoding]::UTF8, $true, 4096, $true)
+            while (($characterCode = $whitespaceReader.Read()) -ge 0) {
+                if (-not [char]::IsWhiteSpace([char]$characterCode)) {
+                    $stderrHasNonWhitespace = $true
+                    break
+                }
+            }
+        }
+        catch {
+            $safeReadError = '讀取錯誤細節已省略'
+            try {
+                $safeReadError = Protect-DispatchInspectText -Text $_.Exception.Message
+            }
+            catch {
+            }
+            return ('<stderr unreadable: ' + $safeReadError + '>')
+        }
+        finally {
+            if ($null -ne $whitespaceReader) {
+                $whitespaceReader.Dispose()
+            }
+            if ($null -ne $whitespaceStream) {
+                $whitespaceStream.Dispose()
+            }
+        }
+        if (-not $stderrHasNonWhitespace) {
+            return '<stderr empty>'
+        }
+        return ('<stderr tail contains only whitespace; earlier output omitted; file_size={0}; path={1}>' -f $fileLength, $ErrorPath)
+    }
+    if ($startOffset -gt 0) {
+        return ('stderr 超過安全摘要讀取範圍，已省略原文；file_size={0}; path={1}' -f $fileLength, $ErrorPath)
+    }
+    try {
+        $protectedText = Protect-DispatchInspectText -Text $stderrText
+        $protectedText = [regex]::Replace(
+            $protectedText,
+            '(?i)(?<prefix>\b[A-Za-z0-9_]*?(?:SECRET|PASSWORD|TOKEN|API[_-]?KEY)[A-Za-z0-9_]*\s*=\s*)(?:"[^"]*"|''[^'']*''|[^;,\s}]+)',
+            '${prefix}[REDACTED]')
+        $summaryLines = @($protectedText -split '\r\n|\n|\r' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Last 20)
+        $summary = $summaryLines -join [Environment]::NewLine
+        if ($summary.Length -gt 1200) {
+            $summary = '…' + $summary.Substring($summary.Length - 1199)
+        }
+        return $summary
+    }
+    catch {
+        return ('stderr 摘要遮蔽失敗，已省略原文；file_size={0}; path={1}' -f $fileLength, $ErrorPath)
+    }
+}
 function Invoke-Start {
     $script:DispatchAdmissionStartedPid = 0
     $script:DispatchAdmissionSnapshotError = $null
@@ -1417,15 +1549,9 @@ function Invoke-Start {
             }
             $codexArguments.Add($option)
     }
-    $codexArguments.Add('exec')
-    if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId)) {
-        $codexArguments.Add('resume')
-        $codexArguments.Add($ResumeThreadId)
-    }
-    $codexArguments.Add('--json')
-    $codexArguments.Add('--output-last-message')
-    $codexArguments.Add($lastMessagePathValue)
-    $codexArguments.Add('-')
+
+    Add-DispatchCodexExecArguments -CodexArguments $codexArguments -GitOrigin ([string](Get-DispatchJsonProperty -Object $preflight -Name 'gitOrigin')) -ResumeThreadId $ResumeThreadId -LastMessagePath $lastMessagePathValue
+
 
     $eventPath = Initialize-DispatchOutputFile -Path $eventPath -HistoryRoot $historyRoot -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
     $errorPath = Initialize-DispatchOutputFile -Path $errorPath -HistoryRoot $historyRoot -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
@@ -1587,14 +1713,16 @@ function Invoke-Start {
         if (-not $relayReady) {
             if ([string]::IsNullOrWhiteSpace($ResumeThreadId)) {
                 $phase = 'thread-relay-not-ready'
-                throw ('thread relay not-ready：逾時 {0} 秒仍未取得本次 launch 的 thread.started；保留事件流與 relay 證據。' -f $relay.timeoutSeconds)
+                $relayStderrSummary = Get-DispatchStartStderrSummary -ErrorPath $errorPath
+                throw ('thread relay not-ready：逾時 {0} 秒仍未取得本次 launch 的 thread.started；保留事件流與 relay 證據。stderr 摘要：{1}' -f $relay.timeoutSeconds, $relayStderrSummary)
             }
             $runRecord.thread_id = $ResumeThreadId
         }
         else {
             if ([string]::IsNullOrWhiteSpace($relay.threadId)) {
                 $phase = 'thread-relay-not-ready'
-                throw 'thread relay not-ready：本次 launch relay 標記 ready 但未提供 threadId。'
+                $relayStderrSummary = Get-DispatchStartStderrSummary -ErrorPath $errorPath
+                throw ('thread relay not-ready：本次 launch relay 標記 ready 但未提供 threadId。stderr 摘要：' + $relayStderrSummary)
             }
             if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId) -and $relay.threadId -cne $ResumeThreadId) {
                 throw 'thread relay 與 ResumeThreadId 不一致。'
@@ -1699,6 +1827,14 @@ function Invoke-Start {
             $processStarted = $true
         }
         $originalMessage = $_.Exception.Message
+        if ($phase -eq 'thread-relay-not-ready') {
+            try {
+                $originalMessage = Protect-DispatchInspectText -Text $originalMessage
+            }
+            catch {
+                $originalMessage = 'thread relay not-ready：stderr 摘要無法安全遮蔽，已省略原文。'
+            }
+        }
         if (-not $processStarted -and -not [string]::IsNullOrWhiteSpace($createdScopePlanHashPath)) {
             $hashAdmissionLock = $null
             try {

@@ -46,7 +46,7 @@ function Test-DispatchSecretJsonPropertyName {
     param([AllowEmptyString()][string]$Name)
 
     $normalizedName = ($Name -replace '[-_.\s]', '').ToLowerInvariant()
-    foreach ($secretTerm in @('secret', 'password', 'passwd', 'credential', 'connectionstring', 'privatekey', 'apikey')) {
+    foreach ($secretTerm in @('secret', 'password', 'passwd', 'credential', 'connectionstring', 'privatekey', 'apikey', 'authorization')) {
         if ($normalizedName.IndexOf($secretTerm, [System.StringComparison]::Ordinal) -ge 0) {
             return $true
         }
@@ -343,6 +343,9 @@ function Protect-DispatchInspectText {
     $protected = [regex]::Replace($protected, '(?i)(?<prefix>\b(?:Password|Pwd)\s*=\s*)(?:"[^"]*"|''[^'']*''|[^;,\s}]+)', '${prefix}[REDACTED]')
     $protected = [regex]::Replace($protected, '(?i)\bAKIA[A-Z0-9]{16}\b', '[REDACTED: possible AWS access key]')
     $protected = [regex]::Replace($protected, '(?i)\bsk-[A-Z0-9_-]{17,}\b', '[REDACTED: possible token]')
+    $protected = [regex]::Replace($protected, '(?i)(?<prefix>\b(?:proxy[ \t]*[-_][ \t]*)?authorization[ \t]*:[ \t]*)(?<value>[^\r\n]*)', '${prefix}[REDACTED]')
+    $protected = [regex]::Replace($protected, '(?i)(?<prefix>"(?:proxy[ \t]*[-_][ \t]*)?authorization"\s*:\s*")(?<value>(?:\\.|[^"\\])*)"', '${prefix}[REDACTED]"')
+    $protected = [regex]::Replace($protected, '(?i)(?<prefix>\b(?:proxy[ \t]*[-_][ \t]*)?authorization[ \t]*=[ \t]*)(?<value>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*''|[^,;\r\n]+)', '${prefix}[REDACTED]')
     $parts = [regex]::Split($protected, '(\r\n|\n|\r)')
     for ($index = 0; $index -lt $parts.Length; $index += 2) {
         $assignment = [regex]::Match($parts[$index], '^(?<prefix>\s*(?<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*)(?<value>.*)$')
@@ -406,6 +409,11 @@ function Protect-DispatchInspectResult {
     try {
         $hasStructuredSecret = @($findings | Where-Object { [string]$_.pattern -eq 'json-secret-property' }).Count -gt 0
         $protected = Protect-DispatchInspectOutputValue -Value $Result -RedactEventLines ([bool]$SecretExposure.secret_exposure_suspected) -StructuredSecretRedaction $hasStructuredSecret
+        foreach ($booleanField in @('retry_allowed', 'resumable')) {
+            if ($Result.Contains($booleanField) -and $Result[$booleanField] -is [bool]) {
+                $protected[$booleanField] = $Result[$booleanField]
+            }
+        }
         $protected.secret_exposure_suspected = [bool]$SecretExposure.secret_exposure_suspected
         $protected.secret_exposure_findings = $findings
         return $protected
@@ -972,9 +980,87 @@ function Invoke-Inspect {
     $dispatchInspectBinding = $null
     $dispatchResultPathValue = $null
     $waitResult = $null
+    $inspectRun = $null
+    $inspectRunResolutionError = $null
     $processExitCodeSource = 'explicit'
     $processExitCodeSidecarPath = $null
     $processExitCodeSidecarSha256 = $null
+    $missingParameters = New-Object 'System.Collections.Generic.List[object]'
+    if ([string]::IsNullOrWhiteSpace($RequiredIdentifier)) {
+        $missingParameters.Add([ordered]@{ name = 'RequiredIdentifier'; available_sources = 'Request.required_identifier；依 DispatchKind、TaskType、EvidencePackPath 或 TargetPath 推導' })
+    }
+    if ([string]::IsNullOrWhiteSpace($SourceRoot)) {
+        $missingParameters.Add([ordered]@{ name = 'SourceRoot'; available_sources = '明確的 -SourceRoot；Request.source_root' })
+    }
+    if ([string]::IsNullOrWhiteSpace($ExecutionRoot)) {
+        $missingParameters.Add([ordered]@{ name = 'ExecutionRoot'; available_sources = '明確的 -ExecutionRoot；Request.execution_root 或 Request.dispatch_root' })
+    }
+    if ([string]::IsNullOrWhiteSpace($LineSlug)) {
+        $missingParameters.Add([ordered]@{ name = 'LineSlug'; available_sources = '明確的 -LineSlug；Request.line_slug' })
+    }
+    if ([string]::IsNullOrWhiteSpace($DispatchSlug)) {
+        $missingParameters.Add([ordered]@{ name = 'DispatchSlug'; available_sources = '明確的 -DispatchSlug；Request.dispatch_slug' })
+    }
+    $hasDispatchResultBinding = -not [string]::IsNullOrWhiteSpace($DispatchResultPath)
+    if (-not $hasDispatchResultBinding) {
+        if ([string]::IsNullOrWhiteSpace($EventStreamPath)) {
+            $missingParameters.Add([ordered]@{ name = 'EventStreamPath'; available_sources = '明確的 -EventStreamPath；RunRecord.event_stream_path；DispatchResultPath binding' })
+        }
+        if ($null -eq $ProcessExitCode) {
+            $missingParameters.Add([ordered]@{ name = 'ProcessExitCode'; available_sources = '明確的 -ProcessExitCode；DispatchResultPath exit sidecar' })
+        }
+    }
+    if ($WaitForCompletion -and -not $hasDispatchResultBinding) {
+        $missingParameters.Add([ordered]@{ name = 'DispatchResultPath'; available_sources = '明確的 -DispatchResultPath binding' })
+    }
+    $scopePlanRequired = -not $hasDispatchResultBinding -and [string]::IsNullOrWhiteSpace($ScopePlanPath)
+    $scopePlanRequirementIndeterminate = $false
+    if ($scopePlanRequired) {
+        if (-not [string]::IsNullOrWhiteSpace($SourceRoot) -and -not [string]::IsNullOrWhiteSpace($ExecutionRoot) -and
+            -not [string]::IsNullOrWhiteSpace($LineSlug) -and -not [string]::IsNullOrWhiteSpace($DispatchSlug)) {
+            if (-not [string]::IsNullOrWhiteSpace($EventStreamPath)) {
+                try {
+                    $inspectRun = Resolve-InspectDispatchRun -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -EventStreamPath $EventStreamPath -ScopePlanPath $ScopePlanPath -RunRecordPath $RunRecordPath -AllowMissingScopePlanPath
+                }
+                catch {
+                    $inspectRunResolutionError = $_
+                }
+                if ($null -ne $inspectRun) {
+                    $scopePlanMissingProperty = $inspectRun.PSObject.Properties['ScopePlanPathMissing']
+                    $scopePlanRequired = $null -ne $scopePlanMissingProperty -and [bool]$scopePlanMissingProperty.Value
+                }
+                elseif ($null -ne $inspectRunResolutionError) {
+                    $scopePlanRequirementIndeterminate = $true
+                }
+            }
+            elseif (-not [string]::IsNullOrWhiteSpace($RunRecordPath)) {
+                try {
+                    $failedRunRecord = Read-DispatchRunRecord -Path $RunRecordPath -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+                    if ([string]$failedRunRecord.launch_state -ceq 'launch-failed') {
+                        $scopePlanRequired = $false
+                    }
+                }
+                catch {
+                    $inspectRunResolutionError = $_
+                    $scopePlanRequirementIndeterminate = $true
+                }
+            }
+        }
+        if ($scopePlanRequired -and -not $scopePlanRequirementIndeterminate) {
+            $missingParameters.Add([ordered]@{
+                name = 'ScopePlanPath'
+                available_sources = '明確的 -ScopePlanPath；RunRecord.scope_plan_path；Start 結果.scopePlanPath；DispatchResultPath binding'
+            })
+        }
+    }
+    if ($missingParameters.Count -gt 0) {
+        $missingLines = @($missingParameters.ToArray() | ForEach-Object { ' - {0}；可取得來源：{1}' -f $_.name, $_.available_sources })
+        $missingMessage = "RequiredParameterMissing：Inspect 必須提供下列必要參數：`n" + ($missingLines -join "`n")
+        Throw-DispatchInspectBindingFailure -Code 'RequiredParameterMissing' -Message $missingMessage -DispatchResultPath $DispatchResultPath -Detail ([ordered]@{ missing_parameters = @($missingParameters.ToArray()) })
+    }
+    if ($null -ne $inspectRunResolutionError) {
+        throw $inspectRunResolutionError
+    }
     if ([string]::IsNullOrWhiteSpace($RequiredIdentifier)) {
         throw 'Inspect 必須提供 RequiredIdentifier。'
     }
@@ -1056,15 +1142,18 @@ function Invoke-Inspect {
     }
     $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath
     $serviceRejectionEvidence = Convert-EventEvidenceToServiceRejection -EventEvidence $eventEvidence
-    try {
-        $inspectRun = Resolve-InspectDispatchRun -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -EventStreamPath $eventPath -ScopePlanPath $ScopePlanPath -RunRecordPath $RunRecordPath
-    }
-    catch {
-        $malformedJsonLine = Get-DispatchInspectMalformedJsonLine -EventStreamPath $eventPath
-        if ($malformedJsonLine -gt 0) {
-            Throw-DispatchInspectSanitizedFailure -Code 'InspectJsonParseFailed' -FilePath $eventPath -LineNumber $malformedJsonLine
+    $serverStreamDisconnect = (Get-DispatchJsonProperty -Object $eventEvidence -Name 'server_stream_disconnect') -eq $true -and ([string](Get-DispatchJsonProperty -Object $eventEvidence -Name 'last_event_type') -cne 'turn.completed')
+    if ($null -eq $inspectRun) {
+        try {
+            $inspectRun = Resolve-InspectDispatchRun -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -EventStreamPath $eventPath -ScopePlanPath $ScopePlanPath -RunRecordPath $RunRecordPath
         }
-        throw
+        catch {
+            $malformedJsonLine = Get-DispatchInspectMalformedJsonLine -EventStreamPath $eventPath
+            if ($malformedJsonLine -gt 0) {
+                Throw-DispatchInspectSanitizedFailure -Code 'InspectJsonParseFailed' -FilePath $eventPath -LineNumber $malformedJsonLine
+            }
+            throw
+        }
     }
     $secretExposure = Get-DispatchInspectSecretExposure -EventStreamPath $eventPath -LastMessagePath ([string]$inspectRun.Record.last_message_path)
     $recordModelEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'model_evidence'
@@ -1379,6 +1468,9 @@ function Invoke-Inspect {
     if ($null -ne $waitResult) {
         $terminalEventAvailable = [bool]$waitResult.TerminalEventAvailable
     }
+    $isErrorEventTerminal = Test-DispatchErrorEventType -EventType ([string]$lastEventType)
+    $isRetryableErrorTerminal = $isErrorEventTerminal -and $serverStreamDisconnect -and $null -eq $serviceRejectionEvidence
+    $isQuotaRejectedErrorTerminal = $isErrorEventTerminal -and $null -ne $serviceRejectionEvidence
 
     $distinctThreadIds = @($threadIds.ToArray() | Sort-Object -Unique)
     if ($distinctThreadIds.Count -gt 1) {
@@ -1389,7 +1481,7 @@ function Invoke-Inspect {
     }
     $threadId = $distinctThreadIds[0]
 
-    if ($lastEventType -notin @('turn.completed', 'turn.failed')) {
+    if ($lastEventType -notin @('turn.completed', 'turn.failed') -and -not $isRetryableErrorTerminal -and -not $isQuotaRejectedErrorTerminal) {
         $inspectStderr = ''
         if (-not [string]::IsNullOrWhiteSpace($ErrorStreamPath) -and (Test-Path -LiteralPath $ErrorStreamPath -PathType Leaf)) {
             $inspectStderr = Get-Content -LiteralPath $ErrorStreamPath -Raw -Encoding UTF8
@@ -1458,7 +1550,7 @@ function Invoke-Inspect {
         return Protect-DispatchInspectResult -Result $unknownTerminalResult -SecretExposure $secretExposure
     }
 
-    if ([string]::IsNullOrWhiteSpace($lastAgentMessage) -and $lastEventType -ne 'turn.failed') {
+    if ([string]::IsNullOrWhiteSpace($lastAgentMessage) -and $lastEventType -ne 'turn.failed' -and -not $isRetryableErrorTerminal -and -not $isQuotaRejectedErrorTerminal) {
         Throw-DispatchInspectSanitizedFailure -Code 'InspectMissingAgentMessage' -FilePath $eventPath -LineNumber ([int]$eventLineNumbers[$eventLineNumbers.Count - 1])
     }
 
@@ -1501,6 +1593,9 @@ function Invoke-Inspect {
         }
         $diagnosis = New-DispatchInspectDiagnosis -ReasonCode $diagnosisReasonCode -Observation $diagnosisObservation -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
     }
+    if ($null -eq $serviceRejectionEvidence -and $serverStreamDisconnect) {
+        $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'ServiceStreamDisconnected' -Observation 'Codex 事件流回報 stream disconnected before completion；可用新的 dispatchSlug 以 cold-start 續行。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
+    }
 
     $finalMessage = $lastAgentMessage
     $finalMessageIdentity = Get-DispatchFinalMessageIdentity -Message $finalMessage -RequiredIdentifier $RequiredIdentifier -DispatchSlug $DispatchSlug -LineSlug $LineSlug -Source $eventPath
@@ -1517,7 +1612,7 @@ function Invoke-Inspect {
             $externalMessage = $utf8.GetString((Read-DispatchSharedBytes -Path $messagePath))
         }
         if ([string]::IsNullOrWhiteSpace($externalMessage)) {
-            if ($explicitMessagePath -and $lastEventType -ne 'turn.failed') {
+            if ($explicitMessagePath -and $lastEventType -ne 'turn.failed' -and -not $isRetryableErrorTerminal -and -not $isQuotaRejectedErrorTerminal) {
                 Throw-DispatchInspectSanitizedFailure -Code 'InspectLastMessageUnavailable' -FilePath $messagePath -LineNumber 1
             }
         }
@@ -1595,6 +1690,10 @@ function Invoke-Inspect {
             $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'QuotaServiceRejected' -Observation '事件流包含 quota service rejection，禁止自動 retry。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
         }
     }
+    if ($serverStreamDisconnect -and $null -eq $serviceRejectionEvidence) {
+        $executionResult.retry_allowed = $true
+        $executionResult.success = $false
+    }
     if ($lastEventType -eq 'turn.failed' -and $null -ne $turnFailedError -and $null -ne $diagnosis) {
         $diagnosis.error = $turnFailedError
     }
@@ -1624,6 +1723,21 @@ function Invoke-Inspect {
         applied = $true
         safePointPresent = -not [string]::IsNullOrWhiteSpace((Get-LatestSafePointMessage -EventPath $eventPath -TaskType $TaskType))
         sessionMode = $SessionMode
+    }
+    $interruptionIncompleteUnitsValue = Get-DispatchJsonProperty -Object $interruptionCheckpoint -Name 'incomplete_units'
+    $interruptionIncompleteUnits = @($interruptionIncompleteUnitsValue | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
+    if ($null -ne $serviceRejectionEvidence) {
+        $executionResult.resumable = $false
+        $executionResult.recommended_next_step = 'usage-limit 額度拒絕：等待額度恢復後由使用者決定；不要自動重試。'
+    }
+    elseif ($serverStreamDisconnect) {
+        $executionResult.resumable = [bool]($interruptionStatus.safePointPresent -and $interruptionIncompleteUnits.Count -gt 0)
+        if ($executionResult.resumable) {
+            $executionResult.recommended_next_step = '可重試且可續行：使用 new dispatchSlug 以 cold-start 重新派遣，requested_unit 限於 safe point 對應的 incomplete_units。'
+        }
+        else {
+            $executionResult.recommended_next_step = '可重試：使用 new dispatchSlug 以 cold-start 重新派遣，依 ScopePlan.selected_units 重新執行。'
+        }
     }
     $advisorReportPathValue = $AdvisorConsultReportPath
     if ($TaskType -eq 'advisor-consult') {
@@ -1675,7 +1789,9 @@ function Invoke-Inspect {
         usage            = $usage
         eventEvidence   = $eventEvidence
         service_rejection = $serviceRejectionEvidence
-        retry_allowed   = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
+        retry_allowed   = if ($null -ne $serviceRejectionEvidence) { $false } elseif ($serverStreamDisconnect) { $true } else { $null }
+        recommended_next_step = Get-DispatchJsonProperty -Object $executionResult -Name 'recommended_next_step'
+        resumable = Get-DispatchJsonProperty -Object $executionResult -Name 'resumable'
         threadIdPath     = $ThreadIdPath
         threadRelay      = $threadRelay
         dispatchResultPath = $dispatchResultPathValue
@@ -1719,6 +1835,11 @@ function Invoke-Inspect {
         Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'process_exit_code' -Value ([int]$ProcessExitCode)
         Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'inspect_status' -Value $dispatchStatus
         Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'inspect_success' -Value ([bool]$executionResult.success)
+        if ($serverStreamDisconnect -or $null -ne $serviceRejectionEvidence) {
+            Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'retry_allowed' -Value $result.retry_allowed
+            Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'recommended_next_step' -Value $result.recommended_next_step
+            Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'resumable' -Value $result.resumable
+        }
         $null = Write-DispatchAtomicJsonDocument -Path $dispatchInspectBinding.Path -Document $dispatchDocument -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @($TargetPath)
     }
     return Protect-DispatchInspectResult -Result $result -SecretExposure $secretExposure

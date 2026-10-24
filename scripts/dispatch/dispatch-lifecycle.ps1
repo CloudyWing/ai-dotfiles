@@ -973,6 +973,8 @@ function Invoke-Dispatch {
                 $result.failure_receipt_sha256 = $failureReceiptSha256Value
                 $result.failure_receipt_saved = $true
                 $result.continuation_handoff = $continuationFailureHandoff
+                $result.retry_allowed = Get-DispatchResultPropertyValue -Object $continuationFailureHandoff -Names @('retry_allowed')
+                $result.recommended_next_step = Get-DispatchResultPropertyValue -Object $continuationFailureHandoff -Names @('recommended_next_step')
             }
             $writtenFinalResult = Write-DispatchAtomicJsonDocument -Path $resultPathValue -Document $result -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
             $result.result_path = $writtenFinalResult.Path

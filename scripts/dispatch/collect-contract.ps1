@@ -80,7 +80,9 @@ function Get-TrimmedSectionLines {
     param(
         [Parameter(Mandatory)]
         [AllowEmptyString()]
-        [string]$Section
+        [string]$Section,
+
+        [int]$FirstLineNumber = 1
     )
 
     $rawLines = [regex]::Split($Section, '\r?\n')
@@ -98,7 +100,7 @@ function Get-TrimmedSectionLines {
     for ($index = $firstIndex; $index -le $lastIndex; $index++) {
         $lines.Add([pscustomobject]@{
                 Text       = [string]$rawLines[$index]
-                LineNumber = $index + 1
+                LineNumber = $FirstLineNumber + $index
             })
     }
 
@@ -169,7 +171,8 @@ function Get-RequirementIdsFromSummary {
         $sectionMatches = [regex]::Matches($Content, $sectionPattern)
         foreach ($sectionMatch in $sectionMatches) {
             $sectionLabel = '{0}:{1}' -f [System.IO.Path]::GetFileName($SummaryPath), $heading
-            $sectionLines = @(Get-TrimmedSectionLines -Section $sectionMatch.Groups['section'].Value)
+            $sectionStartLine = 1 + [regex]::Matches($Content.Substring(0, $sectionMatch.Groups['section'].Index), '\r?\n').Count
+            $sectionLines = @(Get-TrimmedSectionLines -Section $sectionMatch.Groups['section'].Value -FirstLineNumber $sectionStartLine)
             if ($sectionLines.Count -eq 1 -and [string]::Equals($sectionLines[0].Text.Trim(), '無', [System.StringComparison]::Ordinal)) {
                 $emptySectionCount++
                 continue
@@ -306,6 +309,8 @@ function Get-RequirementTableRows {
         [AllowEmptyString()]
         [string]$Section,
 
+        [int]$SectionStartLine = 1,
+
         [Parameter(Mandatory)]
         [string]$ReportName,
 
@@ -343,7 +348,7 @@ function Get-RequirementTableRows {
     $expectedHeaders = @('需求', '驗收方向', 'T-code', '實際行為', '證據', '狀態')
     $fieldNames = @('需求', '驗收方向', 'T-code', '實際行為', '證據', '狀態')
     $sectionLabel = '{0}:需求對照' -f $ReportName
-    $sectionLines = @(Get-TrimmedSectionLines -Section $Section)
+    $sectionLines = @(Get-TrimmedSectionLines -Section $Section -FirstLineNumber $SectionStartLine)
     if ($sectionLines.Count -lt 2) {
         $InvalidHeader.Add($ReportName + ':header-or-separator')
         if ($sectionLines.Count -eq 1) {
@@ -592,7 +597,8 @@ function Get-RequirementMap {
             throw "結案報告缺少需求對照節：$reportFullPath"
         }
 
-        $tableResult = Get-RequirementTableRows -Section $requirementMatch.Groups['section'].Value -ReportName $reportName -InvalidColumnCountRows $invalidColumnCountRows -EmptyFieldIds $emptyFieldIds -InvalidRequirementCells $invalidRequirementCells -InvalidHeader $invalidHeader -InvalidSectionContent $invalidSectionContent -InvalidStatusFields $invalidStatusFields -SelectedRequirement $SelectedRequirement
+        $sectionStartLine = 1 + [regex]::Matches($reportContent.Substring(0, $requirementMatch.Groups['section'].Index), '\r?\n').Count
+        $tableResult = Get-RequirementTableRows -Section $requirementMatch.Groups['section'].Value -SectionStartLine $sectionStartLine -ReportName $reportName -InvalidColumnCountRows $invalidColumnCountRows -EmptyFieldIds $emptyFieldIds -InvalidRequirementCells $invalidRequirementCells -InvalidHeader $invalidHeader -InvalidSectionContent $invalidSectionContent -InvalidStatusFields $invalidStatusFields -SelectedRequirement $SelectedRequirement
         $reportRows = @($tableResult.rows)
         if (-not [string]::IsNullOrWhiteSpace($SelectedRequirement)) {
             $reportReportedIds = @($reportRows | ForEach-Object { $_.Id } | Sort-Object -Unique)
@@ -1114,6 +1120,56 @@ function Invoke-Collect {
         -not $script:InvocationBoundParameters.Contains('ReportPath') -and
         -not $script:InvocationBoundParameters.Contains('DispatchKind') -and
         $unrelatedBoundParameters.Count -eq 0
+    $collectParameterIssues = New-Object 'System.Collections.Generic.List[object]'
+    if (-not $reviewerStructuralOnly) {
+        if ([string]::IsNullOrWhiteSpace($DispatchKind)) {
+            $collectParameterIssues.Add([ordered]@{ name = 'DispatchKind'; issue = 'required'; received = if ([string]::IsNullOrWhiteSpace($DispatchKind)) { '<empty>' } else { $DispatchKind } })
+        }
+        if ($ApplyCollectedChanges -and [string]::IsNullOrWhiteSpace($SourceRoot)) {
+            $collectParameterIssues.Add([ordered]@{ name = 'SourceRoot'; issue = 'required'; received = '<empty>' })
+        }
+        if ($null -eq $ReportPath -or $ReportPath.Count -eq 0 -or @($ReportPath | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) }).Count -eq 0) {
+            $collectParameterIssues.Add([ordered]@{ name = 'ReportPath'; issue = 'required'; received = '<empty>' })
+        }
+    }
+    $collectPathEntries = New-Object System.Collections.Generic.List[object]
+    foreach ($pathName in @('SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'RequestPath', 'RunRecordPath', 'ReviewerReportPath', 'ReportPath', 'RequirementSummaryPath', 'PreflightResultPath', 'BaselinePath')) {
+        $pathVariable = Get-Variable -Name $pathName -ErrorAction SilentlyContinue
+        $pathValues = if ($null -eq $pathVariable) { @() } else { @($pathVariable.Value) }
+        $collectPathEntries.Add([pscustomobject]@{ name = $pathName; values = $pathValues })
+    }
+    foreach ($pathEntry in $collectPathEntries) {
+        foreach ($pathValue in @($pathEntry.values)) {
+            if ($null -eq $pathValue -or [string]::IsNullOrWhiteSpace([string]$pathValue)) {
+                continue
+            }
+            if (-not (Test-DispatchFullyQualifiedPath -Path ([string]$pathValue))) {
+                $collectParameterIssues.Add([ordered]@{ name = [string]$pathEntry.name; issue = 'absolute-path-required'; received = [string]$pathValue })
+            }
+        }
+    }
+    if ($collectParameterIssues.Count -gt 0) {
+        $hasMissingParameter = @($collectParameterIssues.ToArray() | Where-Object { $_.issue -eq 'required' }).Count -gt 0
+        $collectErrorCode = if ($hasMissingParameter) { 'RequiredParameterMissing' } else { 'CollectParameterInvalidPath' }
+        $issueLines = @($collectParameterIssues.ToArray() | ForEach-Object {
+                $issueText = if ($_.issue -eq 'required') { '必須提供' } else { '必須是絕對路徑' }
+                ' - {0}：{1}；收到值：{2}' -f $_.name, $issueText, $_.received
+            })
+        $collectErrorMessage = "Collect 參數檢核失敗（$collectErrorCode）：`n" + ($issueLines -join "`n")
+        $collectErrorResult = [ordered]@{
+            operation = 'Collect'
+            status = 'failed'
+            success = $false
+            outputValid = $false
+            errorCode = $collectErrorCode
+            error = $collectErrorMessage
+            parameter_issues = @($collectParameterIssues.ToArray())
+        }
+        $collectErrorException = New-Object System.InvalidOperationException($collectErrorMessage)
+        $collectErrorException.Data['errorCode'] = $collectErrorCode
+        $collectErrorException.Data['operationResult'] = $collectErrorResult
+        throw $collectErrorException
+    }
     if ($reviewerStructuralOnly) {
         $reviewerFindings = Get-ReviewerFindingsForCollect -Path $ReviewerReportPath -WriteLedger:$false
         $result = [ordered]@{
@@ -1128,7 +1184,6 @@ function Invoke-Collect {
         }
         return $result
     }
-
     if ([string]::IsNullOrWhiteSpace($DispatchKind)) {
         throw 'Collect 必須提供 DispatchKind。'
     }

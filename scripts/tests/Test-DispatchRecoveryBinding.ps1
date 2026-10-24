@@ -28,7 +28,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1651,6 +1651,9 @@ function Invoke-Case {
         elseif ($script:focusedCase -ceq 'BATCH4-QUOTA') {
             $Name.StartsWith('BATCH4 ', [StringComparison]::Ordinal)
         }
+        elseif ($script:focusedCase -ceq 'BATCH5-PARAMS') {
+            $Name.StartsWith('BATCH5 ', [StringComparison]::Ordinal)
+        }
         elseif ($script:focusedCase -ceq 'BATCH5-S1') {
             $Name -in @(
                 'Phase 7 New-DispatchOrder 預設 handoff 落點、Request 對照與通用回報欄位',
@@ -2415,7 +2418,8 @@ function New-CodexLauncher {
         $probe.event_length_before_launcher = if ($probe.event_exists_before_launcher) { (Get-Item -LiteralPath $EventPath).Length } else { -1 }
         $probe.error_length_before_launcher = if ($probe.error_exists_before_launcher) { (Get-Item -LiteralPath $ErrorPath).Length } else { -1 }
         Write-TestEvents -Path $EventPath -Thread $script:testThread
-        Write-Utf8NoBom -Path $ErrorPath -Content 'fixture stderr output'
+        $stderrContent = if ($probe.PSObject.Properties['stderr_content']) { [string]$probe.stderr_content } else { 'fixture stderr output' }
+        Write-Utf8NoBom -Path $ErrorPath -Content $stderrContent
     }
     if ($script:profileIsolationProbe) {
         $script:profileIsolationCapturedArguments = @($CodexArguments)
@@ -4483,7 +4487,7 @@ line-a")) {
     }
     Invoke-Case 'Collect identity gate 先於 reviewer finding recovery' {
         $collectText = ($functions | Where-Object { $_.Name -eq 'Invoke-Collect' }).Extent.Text
-        $normalCollectStart = $collectText.IndexOf('if ($null -eq $ReportPath', [StringComparison]::Ordinal)
+        $normalCollectStart = $collectText.IndexOf('if ($null -eq $ReportPath -or $ReportPath.Count -eq 0) {', [StringComparison]::Ordinal)
         $normalCollectText = if ($normalCollectStart -ge 0) { $collectText.Substring($normalCollectStart) } else { '' }
         $identityGateIndex = $normalCollectText.IndexOf('Test-DispatchCollectIdentity', [StringComparison]::Ordinal)
         $reviewerFindingsIndex = $normalCollectText.IndexOf('Get-ReviewerFindingsForCollect', [StringComparison]::Ordinal)
@@ -4577,6 +4581,45 @@ Invoke-Case 'Start Resume 建立新輪並保留前輪訊息' {
     $record = Read-DispatchRunRecord -Path $result.runRecordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
     Assert-True ($record.previous_run_id -eq $script:startedResult.runId -and $record.last_message_path -ne $LastMessagePath -and (Get-Content $LastMessagePath -Raw -Encoding UTF8) -eq '前輪成果') '續行覆寫或未綁定前輪。'
 }
+function Get-ScriptVariableSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Name
+    )
+
+    $snapshot = [ordered]@{}
+    foreach ($variableName in $Name) {
+        $variable = Get-Variable -Name $variableName -Scope Script -ErrorAction SilentlyContinue
+        $exists = $null -ne $variable
+        $value = if ($exists) { $variable.Value } else { $null }
+        $snapshot[$variableName] = [pscustomobject]@{
+            Exists = $exists
+            Value  = $value
+        }
+    }
+
+    return $snapshot
+}
+
+function Restore-ScriptVariableSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [System.Collections.IDictionary]$Snapshot
+    )
+
+    foreach ($variableName in $Snapshot.Keys) {
+        $variableSnapshot = $Snapshot[$variableName]
+        if ([bool]$variableSnapshot.Exists) {
+            Set-Variable -Name $variableName -Scope Script -Value $variableSnapshot.Value -Force
+        }
+        else {
+            Remove-Variable -Name $variableName -Scope Script -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 Invoke-Case 'Start relay 失敗保留 launch-failed 與事件' {
     $DispatchSlug = 'relay-failure'
     $PreflightResultPath = Join-Path $fixtureRoot 'relay-preflight.json'
@@ -4588,6 +4631,50 @@ Invoke-Case 'Start relay 失敗保留 launch-failed 與事件' {
     $path = @(Get-ChildItem (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) -Filter '*.json')[0].FullName
     $record = Read-DispatchRunRecord -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
     Assert-True ($record.launch_state -eq 'launch-failed' -and (Test-Path $record.event_stream_path)) 'relay 失敗未保存紀錄或事件。'
+}
+Invoke-Case 'BATCH5 Start relay failure masks Authorization in exception record and Inspect [BATCH5-PARAMS]' {
+    $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'eventErrorPathProbe', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'relayFailure', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+    try {
+    $DispatchSlug = 'relay-failure-batch5'
+    $PreflightResultPath = Join-Path $fixtureRoot ($DispatchSlug + '-preflight.json')
+    Write-Utf8NoBom $PreflightResultPath ((@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = $LineSlug; dispatchSlug = $DispatchSlug } | ConvertTo-Json))
+    $fakeAuthorization = 'FAKE_RELAY_AUTHORIZATION_VALUE'
+    $script:eventErrorPathProbe = [pscustomobject]@{ launcher_call_count = 0; event_path = ''; error_path = ''; event_exists_before_launcher = $false; error_exists_before_launcher = $false; event_length_before_launcher = -1; error_length_before_launcher = -1; stderr_content = ('Authorization: Bearer ' + $fakeAuthorization) }
+    $script:relayFailure = $true
+    $caught = $false
+    $caughtMessage = ''
+    try { Invoke-Start } catch { $caughtMessage = $_.Exception.Message; $caught = $caughtMessage.Contains('thread relay not-ready') } finally { $script:relayFailure = $false; $script:eventErrorPathProbe = $null }
+    Assert-True ($caught -and -not $caughtMessage.Contains($fakeAuthorization)) ('relay 例外未保留安全摘要或洩漏假 Authorization：' + $caughtMessage)
+    $path = @(Get-ChildItem (Get-DispatchRunDirectory $fixtureRoot $LineSlug $DispatchSlug) -Filter '*.json')[0].FullName
+    $record = Read-DispatchRunRecord -Path $path -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $failureText = @([string]$record.failure.message, [string]$record.failure.original_output.raw_message) -join [Environment]::NewLine
+    Assert-True ($record.launch_state -eq 'launch-failed' -and (Test-Path $record.event_stream_path) -and -not $failureText.Contains($fakeAuthorization)) ('relay 失敗未保存紀錄／事件或 failure record 洩漏假 Authorization：' + $failureText)
+    $script:SourceRoot = $fixtureRoot
+    $script:ExecutionRoot = $fixtureRoot
+    $script:LineSlug = $LineSlug
+    $script:DispatchSlug = $DispatchSlug
+    $script:EventStreamPath = $record.event_stream_path
+    $script:ScopePlanPath = ''
+    $script:RunRecordPath = $path
+    $script:ProcessExitCode = [Nullable[int]]1
+    $script:RequiredIdentifier = 'design.md'
+    $script:DispatchResultPath = ''
+    $script:WaitForCompletion = $false
+    $script:LastMessagePath = $record.last_message_path
+    $script:ErrorStreamPath = $record.error_stream_path
+    $script:ThreadIdPath = ''
+    $script:TargetPath = @()
+    $script:TaskType = 'implement'
+    $script:SessionMode = 'cold-start'
+    $script:Profile = 'default'
+    $script:WriteMode = 'readonly'
+    $script:InvocationBoundParameters = [ordered]@{}
+    $inspectResult = Invoke-Inspect
+    $inspectText = ConvertTo-Json -InputObject $inspectResult -Depth 30 -Compress
+    Assert-True (-not $inspectText.Contains($fakeAuthorization) -and [string]$inspectResult.turnFailedReason -notmatch 'FAKE_RELAY_AUTHORIZATION_VALUE') ('relay launch-failed Inspect diagnosis 洩漏假 Authorization：' + $inspectText)
+    } finally {
+        Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+    }
 }
 $startText = ($functions | Where-Object { $_.Name -eq 'Invoke-Start' }).Extent.Text
 Invoke-Case '移除修改時間排序與檔名反推' {
@@ -16438,14 +16525,16 @@ $script:TargetPath = @()
                     '        if (-not $relayReady) {'
                     '            if ([string]::IsNullOrWhiteSpace($ResumeThreadId)) {'
                     '                $phase = ''thread-relay-not-ready'''
-                    '                throw (''thread relay not-ready：逾時 {0} 秒仍未取得本次 launch 的 thread.started；保留事件流與 relay 證據。'' -f $relay.timeoutSeconds)'
+                    '                $relayStderrSummary = Get-DispatchStartStderrSummary -ErrorPath $errorPath'
+                    '                throw (''thread relay not-ready：逾時 {0} 秒仍未取得本次 launch 的 thread.started；保留事件流與 relay 證據。stderr 摘要：{1}'' -f $relay.timeoutSeconds, $relayStderrSummary)'
                     '            }'
                     '            $runRecord.thread_id = $ResumeThreadId'
                     '        }'
                     '        else {'
                     '            if ([string]::IsNullOrWhiteSpace($relay.threadId)) {'
                     '                $phase = ''thread-relay-not-ready'''
-                    '                throw ''thread relay not-ready：本次 launch relay 標記 ready 但未提供 threadId。'''
+                    '                $relayStderrSummary = Get-DispatchStartStderrSummary -ErrorPath $errorPath'
+                    '                throw (''thread relay not-ready：本次 launch relay 標記 ready 但未提供 threadId。stderr 摘要：'' + $relayStderrSummary)'
                     '            }'
                     '            if (-not [string]::IsNullOrWhiteSpace($ResumeThreadId) -and $relay.threadId -cne $ResumeThreadId) {'
                     '                throw ''thread relay 與 ResumeThreadId 不一致。'''
@@ -17972,12 +18061,24 @@ throw 'RunRecord 事件流為空。'
         $inspectDocument = Get-Content -LiteralPath $actualInspectResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
         Assert-True ($inspectDocument.processExitCode -eq 0 -and $inspectDocument.processExitCodeSource -eq 'sidecar' -and $inspectDocument.processExitCodeSidecarPath -eq $sidecarPath) ('Inspect 未以 sidecar 填入 process exit code：' + ($inspectDocument | ConvertTo-Json -Depth 20 -Compress))
         $launcherCallText = '-ExitSidecarPath $exitSidecarPathValue'
-        $productionText = Get-Content -LiteralPath $sourcePath -Raw -Encoding UTF8
-        Assert-True ($productionText.Contains($launcherCallText)) 'F-003 reverse fixture 找不到 Invoke-Start sidecar 接線。'
+        $startLifecyclePath = Join-Path $scriptsRoot 'dispatch\start-lifecycle.ps1'
+        $productionText = Get-Content -LiteralPath $startLifecyclePath -Raw -Encoding UTF8
+        Assert-True ($productionText.Contains($launcherCallText)) 'F-003 reverse fixture 找不到 New-CodexLauncher sidecar 接線。'
         $mutantText = $productionText.Replace($launcherCallText, '')
         $mutantPath = Join-Path $phase9Root 'f003-mutant-Invoke-CodexDispatch.ps1'
         $bomEncoding = New-Object System.Text.UTF8Encoding($true)
-        [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
+        $mutantModuleDirectory = Join-Path $phase9Root 'dispatch'
+        New-Item -ItemType Directory -Path $mutantModuleDirectory -Force | Out-Null
+        $mutantModulePath = Join-Path $mutantModuleDirectory 'start-lifecycle-f003-mutant.ps1'
+        Assert-True ($mutantText -ne $productionText -and -not $mutantText.Contains($launcherCallText)) 'F-003 reverse fixture 未實際移除 Start sidecar 接線。'
+        [IO.File]::WriteAllText($mutantModulePath, $mutantText, $bomEncoding)
+        $entrySourceText = [IO.File]::ReadAllText($sourcePath, [Text.Encoding]::UTF8)
+        $productionStartImport = '. (Join-Path $PSScriptRoot ''dispatch\start-lifecycle.ps1'')'
+        $mutantStartImport = '. (Join-Path $PSScriptRoot ''dispatch\start-lifecycle-f003-mutant.ps1'')'
+        Assert-True ($entrySourceText.Contains($productionStartImport)) 'F-003 reverse fixture 找不到 production Start module import。'
+        $mutantEntryText = $entrySourceText.Replace($productionStartImport, $mutantStartImport)
+        Assert-True ($mutantEntryText -ne $entrySourceText -and $mutantEntryText.Contains($mutantStartImport)) 'F-003 reverse fixture 未讓 mutant entry 載入修改後的 Start module。'
+        [IO.File]::WriteAllText($mutantPath, $mutantEntryText, $bomEncoding)
         $reverseCodexPath = Join-Path $actualRoot 'codex-reverse.cmd'
         $reverseFakeCodexContent = @(
             '@echo off'
@@ -22268,6 +22369,944 @@ function Invoke-GitCommand {
         Write-Phase9Evidence -Label 'BATCH3_BOUND_COPY_W_ATTRIBUTE_ONLY_FAILURE' -Value ([ordered]@{ command = $batch3ProbeW.command; exit_code = $batch3ProbeW.exit_code; stdout = $batch3ProbeW.stdout; stderr = $batch3ProbeW.stderr })
         Assert-True ($batch3ProbeW.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$batch3ProbeW.stderr) -and $batch3ProbeW.stdout -match 'PASS scenario=w attribute_failure_propagated=true exception_identity_preserved=true destination_bytes_aligned=true') ('attribute restoration failure after successful write did not propagate unchanged: ' + [string]$batch3ProbeW.stdout + [string]$batch3ProbeW.stderr)
     }
+    Invoke-Case -Name 'BATCH5 Inspect aggregates missing required parameters and preserves complete-input behavior' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        $script:SourceRoot = ''
+        $script:ExecutionRoot = ''
+        $script:LineSlug = ''
+        $script:DispatchSlug = ''
+        $script:EventStreamPath = ''
+        $script:ScopePlanPath = ''
+        $script:RunRecordPath = ''
+        $script:ProcessExitCode = $null
+        $script:RequiredIdentifier = ''
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Inspect' }
+        $missingMessage = ''
+        try { Invoke-Inspect } catch { $missingMessage = $_.Exception.Message }
+        $missingNames = @('RequiredIdentifier', 'SourceRoot', 'ExecutionRoot', 'LineSlug', 'DispatchSlug', 'EventStreamPath', 'ScopePlanPath', 'ProcessExitCode')
+        $reportedNames = @($missingNames | Where-Object { $missingMessage.Contains($_) })
+        Assert-True ($missingMessage.Contains('RequiredParameterMissing') -and $reportedNames.Count -eq $missingNames.Count -and $missingMessage.Contains('來源')) ('Inspect 未一次列出 HEAD 必要參數及來源：' + $missingMessage)
+
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $failedDispatchSlug = 'batch5-inspect-failed-record-no-scope'
+        $failedRecord = New-TestRun -Line 'line-a' -Dispatch $failedDispatchSlug
+        $failedRecord = New-Phase3FailedRecord -Record $failedRecord -Message 'batch5 failed inspect without scope' -PreparationWithoutScope
+        Remove-Item -LiteralPath $failedRecord.event_stream_path -Force
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $failedDispatchSlug
+        $script:EventStreamPath = $failedRecord.event_stream_path
+        $script:ScopePlanPath = $null
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $failedDispatchSlug) ($failedRecord.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]1
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Inspect' }
+        $failedInspectResult = Invoke-Inspect
+        Assert-True (-not $failedInspectResult.success -and $failedInspectResult.diagnosis.reason_code -ceq $failedRecord.failure.reason_code) ('failed Record 在 ScopePlanPath 未提供時未保留 HEAD diagnosis：' + ($failedInspectResult | ConvertTo-Json -Depth 12 -Compress))
+
+        $dispatchSlug = 'batch5-inspect-positive'
+        $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $finalMessage = 'design.md ' + $dispatchSlug + ' line-a'
+        $events = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'turn.completed'; usage = [ordered]@{ input_tokens = 1; output_tokens = 1 } }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $record.last_message_path -Content $finalMessage
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatchSlug
+        $script:EventStreamPath = $record.event_stream_path
+        $script:ScopePlanPath = $record.scope_plan_path
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ($record.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]0
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:LastMessagePath = $record.last_message_path
+        $script:ErrorStreamPath = ''
+        $script:ThreadIdPath = ''
+        $script:TargetPath = @()
+        $script:TaskType = 'implement'
+        $script:SessionMode = 'cold-start'
+        $script:Profile = 'default'
+        $script:WriteMode = 'readonly'
+        $script:InvocationBoundParameters = [ordered]@{}
+        $result = Invoke-Inspect
+        Assert-True ([bool]$result.success) ('Complete Inspect parameters no longer pass: ' + ($result | ConvertTo-Json -Depth 20 -Compress))
+
+        $script:ScopePlanPath = ''
+        $script:ProcessExitCode = $null
+        $scopePlanMissingMessage = ''
+        try { Invoke-Inspect | Out-Null } catch { $scopePlanMissingMessage = $_.Exception.Message }
+        Assert-True ($scopePlanMissingMessage.Contains('RequiredParameterMissing') -and $scopePlanMissingMessage.Contains('ScopePlanPath') -and $scopePlanMissingMessage.Contains('ProcessExitCode') -and $scopePlanMissingMessage.Contains('RunRecord.scope_plan_path') -and $scopePlanMissingMessage.Contains('Start 結果.scopePlanPath')) ('Inspect 未將缺少的 ScopePlanPath 與其他必要參數一次列出並標示來源：' + $scopePlanMissingMessage)
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 Collect validates required source and absolute paths before work' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('BaseSha', 'DispatchKind', 'DispatchRoot', 'ExecutionRoot', 'InvocationBoundParameters', 'PreflightResultPath', 'ReportPath', 'RequestPath', 'RequirementSummaryPath', 'ReviewerReportPath', 'RunRecordPath', 'SourceRoot')
+        try {
+        $script:DispatchKind = 'workflow'
+        $script:SourceRoot = ''
+        $script:ExecutionRoot = ''
+        $script:DispatchRoot = ''
+        $script:RequirementSummaryPath = 'relative-summary.md'
+        $script:ReportPath = @()
+        $script:ReviewerReportPath = ''
+        $script:PreflightResultPath = ''
+        $script:RequestPath = ''
+        $script:RunRecordPath = ''
+        $script:BaseSha = ''
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Collect'; ApplyCollectedChanges = $true }
+        $invalidMessage = ''
+        try { Invoke-Collect -ApplyCollectedChanges } catch { $invalidMessage = $_.Exception.Message }
+        Assert-True ($invalidMessage.Contains('SourceRoot') -and $invalidMessage.Contains('RequirementSummaryPath') -and $invalidMessage.Contains('relative-summary.md') -and $invalidMessage.Contains('RequiredParameterMissing')) ('Collect 未指出缺漏參數與收到的相對路徑：' + $invalidMessage)
+
+        $script:DispatchKind = 'resource'
+        $script:SourceRoot = $fixtureRoot
+        $script:RequirementSummaryPath = Join-Path $fixtureRoot 'absolute-summary.md'
+        $script:ReportPath = @(Join-Path $fixtureRoot 'absolute-report.md')
+        $script:DispatchRoot = ''
+        $script:PreflightResultPath = ''
+        $positiveMessage = ''
+        try { Invoke-Collect -ApplyCollectedChanges } catch { $positiveMessage = $_.Exception.Message }
+        Assert-True (-not $positiveMessage.Contains('CollectParameterValidationFailed') -and -not $positiveMessage.Contains('必須提供絕對路徑')) ('Collect 拒絕有效的絕對路徑：' + $positiveMessage)
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 Collect rejects drive-relative paths [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('BaseSha', 'DispatchKind', 'DispatchRoot', 'ExecutionRoot', 'InvocationBoundParameters', 'PreflightResultPath', 'ReportPath', 'RequestPath', 'RequirementSummaryPath', 'ReviewerReportPath', 'RunRecordPath', 'SourceRoot')
+        try {
+        $script:DispatchKind = 'resource'
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = ''
+        $script:DispatchRoot = ''
+        $script:RequirementSummaryPath = 'C:relative-summary.md'
+        $script:ReportPath = @(Join-Path $fixtureRoot 'absolute-report.md')
+        $script:ReviewerReportPath = ''
+        $script:PreflightResultPath = ''
+        $script:RequestPath = ''
+        $script:RunRecordPath = ''
+        $script:BaseSha = ''
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Collect'; ApplyCollectedChanges = $true }
+        $driveRelativeMessage = ''
+        try { Invoke-Collect -ApplyCollectedChanges | Out-Null } catch { $driveRelativeMessage = $_.Exception.Message }
+        Assert-True ($driveRelativeMessage.Contains('CollectParameterInvalidPath') -and $driveRelativeMessage.Contains('RequirementSummaryPath') -and $driveRelativeMessage.Contains('C:relative-summary.md')) ('Collect 接受 drive-relative 路徑或未列出參數與收到值：' + $driveRelativeMessage)
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 Collect rejects relative BaselinePath [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('BaselinePath', 'BaseSha', 'DispatchKind', 'DispatchRoot', 'ExecutionRoot', 'InvocationBoundParameters', 'PreflightResultPath', 'ReportPath', 'RequestPath', 'RequirementSummaryPath', 'ReviewerReportPath', 'RunRecordPath', 'SourceRoot')
+        try {
+        $script:DispatchKind = 'resource'
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = ''
+        $script:DispatchRoot = ''
+        $script:RequestPath = ''
+        $script:RunRecordPath = ''
+        $script:ReviewerReportPath = ''
+        $script:ReportPath = @(Join-Path $fixtureRoot 'batch5-baseline-path-report.md')
+        $script:RequirementSummaryPath = ''
+        $script:PreflightResultPath = ''
+        $script:BaselinePath = 'relative-baseline.json'
+        $script:BaseSha = ''
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Collect'; ApplyCollectedChanges = $true }
+        $baselinePathMessage = ''
+        try { Invoke-Collect -ApplyCollectedChanges | Out-Null } catch { $baselinePathMessage = $_.Exception.Message } finally { $script:BaselinePath = '' }
+        Assert-True ($baselinePathMessage.Contains('CollectParameterInvalidPath') -and $baselinePathMessage.Contains('BaselinePath') -and $baselinePathMessage.Contains('relative-baseline.json')) ('Collect 未以參數名、收到值與 CollectParameterInvalidPath 拒絕相對 BaselinePath：' + $baselinePathMessage)
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    function New-Batch5FailureEvidenceFixture {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][string]$DispatchSlug,
+            [ValidateSet('implement', 'advisor-consult')][string]$TaskType = 'implement',
+            [ValidateSet('disconnect', 'quota', 'completed', 'none')][string]$EventMode = 'disconnect',
+            [AllowEmptyString()][string]$SafePointIncomplete = ''
+        )
+        $record = New-TestRun -Line 'line-a' -Dispatch $DispatchSlug
+        $scopePlan = New-ScopePlan -DispatchSlug $DispatchSlug -DispatchKind 'resource' -TaskType $TaskType -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $record.scope_plan_path = Join-Path (Split-Path -Parent $record.event_stream_path) ($record.run_id + '-scope.json')
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $finalMessage = 'design.md ' + $DispatchSlug + ' line-a'
+        if (-not [string]::IsNullOrWhiteSpace($SafePointIncomplete)) {
+            $finalMessage = @(
+                $finalMessage
+                '## 中斷保全結論'
+                '已確認結論：前輪已核對安全點。'
+                '證據位置：C:\tmp\batch5-continuation-evidence.md'
+                '實際覆蓋範圍：前輪已檢視範圍。'
+                ('未完成單位：' + $SafePointIncomplete)
+            ) -join [Environment]::NewLine
+        }
+        $events = New-Object 'System.Collections.Generic.List[object]'
+        $events.Add([ordered]@{ type = 'thread.started'; thread_id = $script:testThread })
+        $events.Add([ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } })
+        switch ($EventMode) {
+            'disconnect' { $events.Add([ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'server_error'; message = 'stream disconnected before completion' } }) }
+            'quota' { $events.Add([ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'usage_limit_reached'; message = 'usage limit reached' } }) }
+            'completed' { $events.Add([ordered]@{ type = 'turn.completed'; usage = [ordered]@{ input_tokens = 1; output_tokens = 1 } }) }
+            'none' { $events.Add([ordered]@{ type = 'turn.started' }) }
+        }
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($events.ToArray() | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $record.last_message_path -Content $finalMessage
+        $recordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $DispatchSlug) ($record.run_id + '.json')
+        return [pscustomobject]@{ record = $record; record_path = $recordPath; scope_plan = $scopePlan; final_message = $finalMessage }
+    }
+
+    Invoke-Case -Name 'BATCH5 server stream disconnect is retryable in Inspect and failure receipt' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        $dispatchSlug = 'batch5-stream-disconnect'
+        $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $finalMessage = 'design.md ' + $dispatchSlug + ' line-a'
+        $events = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'server_error'; message = 'stream disconnected before completion' } }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $record.last_message_path -Content $finalMessage
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatchSlug
+        $script:EventStreamPath = $record.event_stream_path
+        $script:ScopePlanPath = $record.scope_plan_path
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ($record.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]1
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:LastMessagePath = $record.last_message_path
+        $script:ErrorStreamPath = ''
+        $script:ThreadIdPath = ''
+        $script:TargetPath = @()
+        $script:TaskType = 'implement'
+        $script:SessionMode = 'continuation'
+        $script:Profile = 'default'
+        $script:WriteMode = 'readonly'
+        $script:InvocationBoundParameters = [ordered]@{}
+        $inspectResult = Invoke-Inspect
+        $eventEvidence = Get-DispatchEventEvidence -EventPath $record.event_stream_path
+        $requestDocument = [pscustomobject]@{ task_type = 'implement'; unit_kind = 'resource-target'; dispatch_kind = 'resource'; write_mode = 'readonly'; target_path = @('target.ps1'); prompt_path = $null; required_identifier = 'design.md' }
+        $dispatchExecutionId = [guid]::NewGuid().ToString('N')
+        $handoff = Get-DispatchContinuationFailureHandoff -RequestPath '' -RequestDocument $requestDocument -ScopePlanPath $record.scope_plan_path -EventStreamPath $record.event_stream_path -RunRecordPath $script:RunRecordPath -LastMessagePath $record.last_message_path -InspectResultPath '' -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $dispatchSlug -DispatchExecutionId $dispatchExecutionId -FallbackSelectedUnits @('target.ps1')
+        $receiptPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) 'failure-receipt.json'
+        $null = Write-DispatchFailureReceipt -Path $receiptPath -LineSlug 'line-a' -DispatchSlug $dispatchSlug -DispatchExecutionId $dispatchExecutionId -ErrorCode 'CodexTurnFailed' -ErrorMessage 'stream disconnected before completion' -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -FailedStage 'inspect' -ProcessStarted $true -TargetPath @() -ContinuationHandoff $handoff
+        $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($eventEvidence.server_stream_disconnect -and -not $eventEvidence.usage_limit -and -not $inspectResult.success -and $inspectResult.retry_allowed -eq $true -and $inspectResult.diagnosis.reason_code -eq 'ServiceStreamDisconnected' -and $inspectResult.recommended_next_step.Contains('new dispatchSlug') -and $handoff.retry_allowed -eq $true -and $receipt.retry_allowed -eq $true -and $receipt.recommended_next_step.Contains('new dispatchSlug')) ('服務端中斷未標示可重試與冷啟動建議：inspect=' + ($inspectResult | ConvertTo-Json -Depth 20 -Compress) + '; receipt=' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
+
+        $errorEvents = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'error'; code = 'server_error'; message = 'stream disconnected before completion' }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($errorEvents | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        $errorInspectResult = Invoke-Inspect
+        $errorEventEvidence = Get-DispatchEventEvidence -EventPath $record.event_stream_path
+        $turnFailedResumable = Get-DispatchJsonProperty -Object $inspectResult -Name 'resumable'
+        $errorResumable = Get-DispatchJsonProperty -Object $errorInspectResult -Name 'resumable'
+        Assert-True ($errorEventEvidence.server_stream_disconnect -and -not $errorEventEvidence.usage_limit -and -not $errorInspectResult.success -and $errorInspectResult.retry_allowed -eq $true -and $errorInspectResult.diagnosis.reason_code -eq 'ServiceStreamDisconnected' -and $null -ne $errorResumable -and $errorResumable -eq $turnFailedResumable -and $errorInspectResult.recommended_next_step -eq $inspectResult.recommended_next_step -and $errorInspectResult.recommended_next_step.Contains('new dispatchSlug')) ('頂層 error 斷線未沿用 turn.failed 的重試、resumable 與建議：' + ($errorInspectResult | ConvertTo-Json -Depth 20 -Compress))
+
+        $quotaEvents = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'usage_limit_reached'; message = 'usage limit reached' } }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($quotaEvents | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        $quotaResult = Invoke-Inspect
+        Assert-True ($quotaResult.service_rejection.reason_code -eq 'usage-limit' -and $quotaResult.retry_allowed -eq $false -and -not $quotaResult.recommended_next_step.Contains('new dispatchSlug')) ('usage-limit 被錯誤建議重試：' + ($quotaResult | ConvertTo-Json -Depth 20 -Compress))
+
+        $unknownEvents = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'turn.started' }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($unknownEvents | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        $unknownResult = Invoke-Inspect
+        Assert-True ($unknownResult.recoveryState -eq 'InterruptedUnknown' -and $unknownResult.retry_allowed -ne $true -and $null -eq (Get-DispatchJsonProperty -Object $unknownResult -Name 'recommended_next_step')) ('一般 InterruptedUnknown 被錯誤標為可重試：' + ($unknownResult | ConvertTo-Json -Depth 20 -Compress))
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 Start adds git check bypass only outside Git and masks relay stderr' -Action {
+        $nonGitArguments = New-Object 'System.Collections.Generic.List[string]'
+        Add-DispatchCodexExecArguments -CodexArguments $nonGitArguments -GitOrigin 'not-applicable' -ResumeThreadId 'fixture-thread' -LastMessagePath (Join-Path $fixtureRoot 'batch5-last-message.md')
+        $nonGitValues = @($nonGitArguments.ToArray())
+        $execIndex = [Array]::IndexOf([string[]]$nonGitValues, 'exec')
+        $skipIndex = [Array]::IndexOf([string[]]$nonGitValues, '--skip-git-repo-check')
+        Assert-True ($execIndex -ge 0 -and $skipIndex -eq ($execIndex + 1)) ('非 Git Start 未把 flag 放在 exec 子命令下：' + ($nonGitValues -join ' '))
+
+        $gitArguments = New-Object 'System.Collections.Generic.List[string]'
+        Add-DispatchCodexExecArguments -CodexArguments $gitArguments -GitOrigin 'existing' -ResumeThreadId '' -LastMessagePath (Join-Path $fixtureRoot 'batch5-last-message.md')
+        Assert-True (@($gitArguments.ToArray()) -notcontains '--skip-git-repo-check') ('Git Start 不應加入 exec flag：' + (@($gitArguments.ToArray()) -join ' '))
+
+        $stderrPath = Join-Path $fixtureRoot 'batch5-relay-stderr.log'
+        Write-Utf8NoBom -Path $stderrPath -Content "api_key=FAKE_SECRET_VALUE`r`nserver stream failed"
+        $stderrSummary = Get-DispatchStartStderrSummary -ErrorPath $stderrPath
+        Assert-True ($stderrSummary.Contains('[REDACTED]') -and -not $stderrSummary.Contains('FAKE_SECRET_VALUE') -and $stderrSummary.Contains('server stream failed')) ('relay stderr 未沿用 Inspect 遮蔽：' + $stderrSummary)
+    }
+
+    Invoke-Case -Name 'BATCH5 section diagnostics use full-document line numbers [BATCH5-PARAMS]' -Action {
+        $invalidSummary = @(
+            'prefix one'
+            'prefix two'
+            '## 程式面項目'
+            '| # | 項目 | wrong |'
+            '| --- | --- | --- |'
+            '| 1 | item | detail |'
+            '## 功能面項目'
+            '無'
+        ) -join [Environment]::NewLine
+        $summaryDiagnostic = ''
+        try {
+            $null = Get-RequirementIdsFromSummary -Content $invalidSummary -SummaryPath 'batch5-offset-summary.md'
+        }
+        catch {
+            $summaryDiagnostic = $_.Exception.Message
+        }
+        Assert-True ($summaryDiagnostic.Contains('batch5-offset-summary.md:程式面項目#4=')) ('summary diagnostic did not retain the source line number: ' + $summaryDiagnostic)
+
+        $validSummaryPath = Join-Path $fixtureRoot 'batch5-offset-valid-summary.md'
+        $invalidReportPath = Join-Path $fixtureRoot 'batch5-offset-invalid-report.md'
+        $validSummary = @(
+            'prefix one'
+            'prefix two'
+            '## 程式面項目'
+            '| # | 項目 | 內容 |'
+            '| --- | --- | --- |'
+            '| 1 | item | detail |'
+            '## 功能面項目'
+            '無'
+        ) -join [Environment]::NewLine
+        $invalidReport = @(
+            'prefix one'
+            'prefix two'
+            'prefix three'
+            '## 需求對照'
+            '| wrong header |'
+            '| --- |'
+            '| 1 | item | direction | code | behavior | evidence | 已交付 |'
+        ) -join [Environment]::NewLine
+        Write-Utf8NoBom -Path $validSummaryPath -Content $validSummary
+        Write-Utf8NoBom -Path $invalidReportPath -Content $invalidReport
+        $reportDiagnostic = ''
+        try {
+            $null = Get-RequirementMap -RequirementSummaryPath $validSummaryPath -ReportPath @($invalidReportPath)
+        }
+        catch {
+            $reportDiagnostic = $_.Exception.Message
+        }
+        Assert-True ($reportDiagnostic.Contains('batch5-offset-invalid-report.md:需求對照#5=')) ('report diagnostic did not retain the source line number: ' + $reportDiagnostic)
+    }
+
+    Invoke-Case -Name 'BATCH5 completed turn remains successful after an earlier disconnect error [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        $dispatchSlug = 'batch5-disconnect-then-complete'
+        $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $finalMessage = 'design.md ' + $dispatchSlug + ' line-a'
+        $events = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'error'; code = 'server_error'; message = 'stream disconnected before completion' }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'turn.completed'; usage = [ordered]@{ input_tokens = 1; output_tokens = 1 } }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $record.last_message_path -Content $finalMessage
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatchSlug
+        $script:EventStreamPath = $record.event_stream_path
+        $script:ScopePlanPath = $record.scope_plan_path
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ($record.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]0
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:LastMessagePath = $record.last_message_path
+        $script:ErrorStreamPath = ''
+        $script:ThreadIdPath = ''
+        $script:TargetPath = @()
+        $script:TaskType = 'implement'
+        $script:SessionMode = 'cold-start'
+        $script:Profile = 'default'
+        $script:WriteMode = 'readonly'
+        $script:InvocationBoundParameters = [ordered]@{}
+        $result = Invoke-Inspect
+        $eventEvidence = Get-DispatchEventEvidence -EventPath $record.event_stream_path
+        Assert-True ($eventEvidence.event_state -ceq 'completed' -and -not $eventEvidence.server_stream_disconnect -and @($eventEvidence.server_stream_disconnect_evidence).Count -eq 1 -and $result.success -and $result.retry_allowed -ne $true) ('successful terminal event was changed to retryable failure: ' + ($result | ConvertTo-Json -Depth 20 -Compress))
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 truncated stderr summary omits original bounded tail [BATCH5-PARAMS]' -Action {
+        $stderrPath = Join-Path $fixtureRoot 'batch5-large-stderr.log'
+        $stderrBytes = New-Object byte[] 65556
+        for ($index = 0; $index -lt $stderrBytes.Length; $index++) {
+            $stderrBytes[$index] = [byte][char]'x'
+        }
+        $stderrBytes[19] = 0xE6
+        $stderrBytes[20] = 0xBC
+        $stderrBytes[21] = 0xA2
+        $stderrBytes[22] = 0x0A
+        $tailBytes = [Text.Encoding]::UTF8.GetBytes(('api_key=FAKE_SECRET_VALUE' + [Environment]::NewLine + 'summary tail marker' + [Environment]::NewLine))
+        $tailStart = $stderrBytes.Length - $tailBytes.Length
+        $stderrBytes[$tailStart - 1] = 0x0A
+        [Array]::Copy($tailBytes, 0, $stderrBytes, $tailStart, $tailBytes.Length)
+        [IO.File]::WriteAllBytes($stderrPath, $stderrBytes)
+        $stderrWriter = [IO.File]::Open($stderrPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::ReadWrite)
+        try {
+            $stderrSummary = Get-DispatchStartStderrSummary -ErrorPath $stderrPath
+        }
+        finally {
+            $stderrWriter.Dispose()
+        }
+        Assert-True ($stderrSummary.Contains('stderr 超過安全摘要讀取範圍，已省略原文') -and $stderrSummary.Contains('file_size=65556') -and $stderrSummary.Contains($stderrPath) -and -not $stderrSummary.Contains('FAKE_SECRET_VALUE') -and -not $stderrSummary.Contains('summary tail marker') -and -not $stderrSummary.Contains([char]0xFFFD) -and $stderrSummary.Length -le 1200) ('truncated stderr did not return only the fixed note and file metadata: ' + $stderrSummary)
+    }
+
+    Invoke-Case -Name 'BATCH5 top-level usage-limit error keeps quota classification ahead of disconnect [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        $dispatchSlug = 'batch5-error-usage-limit'
+        $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $finalMessage = 'design.md ' + $dispatchSlug + ' line-a'
+        $events = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'error'; code = 'usage_limit_reached'; message = 'usage limit reached; stream disconnected before completion' }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $record.last_message_path -Content $finalMessage
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatchSlug
+        $script:EventStreamPath = $record.event_stream_path
+        $script:ScopePlanPath = $record.scope_plan_path
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ($record.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]1
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:LastMessagePath = $record.last_message_path
+        $script:ErrorStreamPath = ''
+        $script:ThreadIdPath = ''
+        $script:TargetPath = @()
+        $script:TaskType = 'implement'
+        $script:SessionMode = 'cold-start'
+        $script:Profile = 'default'
+        $script:WriteMode = 'readonly'
+        $script:InvocationBoundParameters = [ordered]@{}
+        $result = Invoke-Inspect
+        $eventEvidence = Get-DispatchEventEvidence -EventPath $record.event_stream_path
+        Assert-True ($eventEvidence.usage_limit -and $eventEvidence.server_stream_disconnect -and $result.service_rejection.reason_code -ceq 'usage-limit' -and $result.diagnosis.reason_code -ceq 'QuotaServiceRejected' -and $result.retry_allowed -eq $false -and $result.resumable -eq $false -and $result.recommended_next_step.Contains('usage-limit')) ('top-level usage-limit error was not classified before disconnect: ' + ($result | ConvertTo-Json -Depth 20 -Compress))
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 Prepare classifies only the current run and labels fallback progress [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        $evaluateScenario = {
+            param([psobject]$CurrentRun, [string]$CurrentEventPath, [Nullable[int]]$ExitCode)
+            $dispatchSlug = [string]$CurrentRun.record.dispatch_slug
+            $script:SourceRoot = $fixtureRoot
+            $script:ExecutionRoot = $fixtureRoot
+            $script:LineSlug = 'line-a'
+            $script:DispatchSlug = $dispatchSlug
+            $script:EventStreamPath = $CurrentEventPath
+            $script:ScopePlanPath = [string]$CurrentRun.record.scope_plan_path
+            $script:RunRecordPath = [string]$CurrentRun.record_path
+            $script:ProcessExitCode = $ExitCode
+            $script:RequiredIdentifier = 'design.md'
+            $script:DispatchResultPath = ''
+            $script:WaitForCompletion = $false
+            $script:LastMessagePath = [string]$CurrentRun.record.last_message_path
+            $script:ErrorStreamPath = ''
+            $script:ThreadIdPath = ''
+            $script:TargetPath = @('target.ps1')
+            $script:TaskType = 'implement'
+            $script:SessionMode = 'continuation'
+            $script:Profile = 'default'
+            $script:WriteMode = 'readonly'
+            $script:InvocationBoundParameters = [ordered]@{}
+            $inspectResult = $null
+            $inspectException = $null
+            try { $inspectResult = Invoke-Inspect } catch { $inspectException = $_.Exception }
+            $requestDocument = [pscustomobject]@{ task_type = 'implement'; unit_kind = 'resource-target'; dispatch_kind = 'resource'; write_mode = 'readonly'; target_path = @('target.ps1'); prompt_path = $null; required_identifier = 'design.md' }
+            $handoff = Get-DispatchContinuationFailureHandoff -RequestPath '' -RequestDocument $requestDocument -ScopePlanPath ([string]$CurrentRun.record.scope_plan_path) -EventStreamPath $CurrentEventPath -RunRecordPath ([string]$CurrentRun.record_path) -LastMessagePath ([string]$CurrentRun.record.last_message_path) -InspectResultPath '' -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $dispatchSlug -DispatchExecutionId ([guid]::NewGuid().ToString('N')) -FallbackSelectedUnits @('target.ps1')
+            $receiptPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ('batch5-receipt-' + [guid]::NewGuid().ToString('N') + '.json')
+            $null = Write-DispatchFailureReceipt -Path $receiptPath -LineSlug 'line-a' -DispatchSlug $dispatchSlug -DispatchExecutionId ([guid]::NewGuid().ToString('N')) -ErrorCode 'CodexTurnFailed' -ErrorMessage 'synthetic dispatch failure' -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -FailedStage 'inspect' -ProcessStarted $true -TargetPath @('target.ps1') -ContinuationHandoff $handoff
+            $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            return [pscustomobject]@{ inspect = $inspectResult; inspect_exception = $inspectException; handoff = $handoff; receipt = $receipt }
+        }
+
+        $dispatchSlug = 'batch5-current-disconnect-old-progress'
+        $compatibleOlder = New-Batch5FailureEvidenceFixture -DispatchSlug $dispatchSlug -EventMode 'completed' -SafePointIncomplete 'target.ps1'
+        $incompatibleCandidate = New-Batch5FailureEvidenceFixture -DispatchSlug $dispatchSlug -TaskType 'advisor-consult' -EventMode 'completed' -SafePointIncomplete 'target.ps1'
+        $currentDisconnect = New-Batch5FailureEvidenceFixture -DispatchSlug $dispatchSlug -EventMode 'disconnect'
+        $disconnectScenario = & $evaluateScenario $currentDisconnect $currentDisconnect.record.event_stream_path ([Nullable[int]]1)
+        $disconnectReceiptHandoff = $disconnectScenario.receipt.continuation_handoff
+        Assert-True ($disconnectScenario.handoff.failure_classification -ceq 'ServiceStreamDisconnected' -and $disconnectScenario.handoff.retry_allowed -eq $true -and $disconnectScenario.handoff.resumable -eq $true -and $disconnectScenario.handoff.failure_classification_source.path -ceq $currentDisconnect.record.event_stream_path -and $disconnectScenario.handoff.continuation_progress_source.path -ceq $compatibleOlder.record.event_stream_path -and $disconnectScenario.handoff.continuation_progress_source.path -cne $incompatibleCandidate.record.event_stream_path) ('current disconnect classification or compatible fallback progress source was wrong: ' + ($disconnectScenario.handoff | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ($disconnectScenario.inspect.diagnosis.reason_code -ceq $disconnectScenario.handoff.failure_classification -and $disconnectScenario.inspect.retry_allowed -eq $disconnectScenario.handoff.retry_allowed -and $disconnectReceiptHandoff.failure_classification -ceq $disconnectScenario.inspect.diagnosis.reason_code -and $disconnectReceiptHandoff.failure_classification_source.path -ceq $currentDisconnect.record.event_stream_path -and $disconnectReceiptHandoff.continuation_progress_source.path -ceq $compatibleOlder.record.event_stream_path) ('Inspect and failure receipt did not agree on current-run classification and fallback progress roles: inspect=' + ($disconnectScenario.inspect | ConvertTo-Json -Depth 20 -Compress) + '; receipt=' + ($disconnectScenario.receipt | ConvertTo-Json -Depth 20 -Compress))
+
+        $quotaDispatchSlug = 'batch5-current-quota-old-disconnect'
+        $quotaOlder = New-Batch5FailureEvidenceFixture -DispatchSlug $quotaDispatchSlug -EventMode 'disconnect' -SafePointIncomplete 'target.ps1'
+        $currentQuota = New-Batch5FailureEvidenceFixture -DispatchSlug $quotaDispatchSlug -EventMode 'quota'
+        $quotaScenario = & $evaluateScenario $currentQuota $currentQuota.record.event_stream_path ([Nullable[int]]1)
+        Assert-True ($quotaScenario.handoff.failure_classification -ceq 'QuotaServiceRejected' -and $quotaScenario.handoff.retry_allowed -eq $false -and $quotaScenario.handoff.resumable -eq $false -and $quotaScenario.handoff.failure_classification_source.path -ceq $currentQuota.record.event_stream_path -and $quotaScenario.handoff.continuation_progress_source.path -ceq $quotaOlder.record.event_stream_path) ('older disconnect overrode the current quota rejection: ' + ($quotaScenario.handoff | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ($quotaScenario.inspect.diagnosis.reason_code -ceq 'QuotaServiceRejected' -and $quotaScenario.inspect.retry_allowed -eq $quotaScenario.handoff.retry_allowed -and $quotaScenario.receipt.failure_classification -ceq $quotaScenario.inspect.diagnosis.reason_code -and $quotaScenario.receipt.retry_allowed -eq $false) ('Inspect and failure receipt disagreed on quota priority: inspect=' + ($quotaScenario.inspect | ConvertTo-Json -Depth 20 -Compress) + '; receipt=' + ($quotaScenario.receipt | ConvertTo-Json -Depth 20 -Compress))
+
+        $completedDispatchSlug = 'batch5-current-completed-old-disconnect'
+        $completedOlder = New-Batch5FailureEvidenceFixture -DispatchSlug $completedDispatchSlug -EventMode 'disconnect' -SafePointIncomplete 'target.ps1'
+        $currentCompleted = New-Batch5FailureEvidenceFixture -DispatchSlug $completedDispatchSlug -EventMode 'completed'
+        $completedScenario = & $evaluateScenario $currentCompleted $currentCompleted.record.event_stream_path ([Nullable[int]]0)
+        $completedDiagnosis = Get-DispatchJsonProperty -Object $completedScenario.inspect -Name 'diagnosis'
+        $completedDiagnosisReason = Get-DispatchJsonProperty -Object $completedDiagnosis -Name 'reason_code'
+        Assert-True ($null -eq $completedScenario.handoff.failure_classification -and $null -eq $completedScenario.handoff.retry_allowed -and $null -eq (Get-DispatchJsonProperty -Object $completedScenario.receipt -Name 'failure_classification') -and $null -eq (Get-DispatchJsonProperty -Object $completedScenario.receipt -Name 'retry_allowed') -and $completedScenario.handoff.continuation_progress_source.path -ceq $completedOlder.record.event_stream_path -and ($null -eq $completedScenario.inspect_exception) -and $completedScenario.inspect.retry_allowed -ne $true -and $completedDiagnosisReason -cne 'ServiceStreamDisconnected') ('older disconnect classification leaked into a current completed run: ' + ($completedScenario.handoff | ConvertTo-Json -Depth 20 -Compress))
+
+        $missingDispatchSlug = 'batch5-current-event-missing-old-disconnect'
+        $missingOlder = New-Batch5FailureEvidenceFixture -DispatchSlug $missingDispatchSlug -EventMode 'disconnect' -SafePointIncomplete 'target.ps1'
+        $missingCurrent = New-Batch5FailureEvidenceFixture -DispatchSlug $missingDispatchSlug -EventMode 'disconnect'
+        Remove-Item -LiteralPath $missingCurrent.record.event_stream_path -Force
+        $missingScenario = & $evaluateScenario $missingCurrent $missingCurrent.record.event_stream_path ([Nullable[int]]1)
+        Assert-True ($missingScenario.handoff.failure_classification_source.status -in @('unavailable', 'unreadable') -and $null -eq $missingScenario.handoff.failure_classification -and $null -eq $missingScenario.handoff.retry_allowed -and $null -eq (Get-DispatchJsonProperty -Object $missingScenario.receipt -Name 'failure_classification') -and $null -eq (Get-DispatchJsonProperty -Object $missingScenario.receipt -Name 'retry_allowed') -and $missingScenario.handoff.continuation_progress_source.path -ceq $missingOlder.record.event_stream_path) ('missing current event stream inherited a fallback failure classification: ' + ($missingScenario.handoff | ConvertTo-Json -Depth 20 -Compress))
+
+        $mismatchDispatchSlug = 'batch5-current-event-identity-mismatch'
+        $mismatchOlder = New-Batch5FailureEvidenceFixture -DispatchSlug $mismatchDispatchSlug -EventMode 'disconnect' -SafePointIncomplete 'target.ps1'
+        $mismatchCurrent = New-Batch5FailureEvidenceFixture -DispatchSlug $mismatchDispatchSlug -EventMode 'disconnect'
+        $mismatchScenario = & $evaluateScenario $mismatchCurrent $mismatchOlder.record.event_stream_path ([Nullable[int]]1)
+        Assert-True ($mismatchScenario.handoff.failure_classification_source.status -ceq 'identity-mismatch' -and $null -eq $mismatchScenario.handoff.failure_classification -and $null -eq $mismatchScenario.handoff.retry_allowed -and $null -eq (Get-DispatchJsonProperty -Object $mismatchScenario.receipt -Name 'failure_classification') -and $null -eq (Get-DispatchJsonProperty -Object $mismatchScenario.receipt -Name 'retry_allowed')) ('EventStreamPath and RunRecord identity mismatch used a fallback classification: ' + ($mismatchScenario.handoff | ConvertTo-Json -Depth 20 -Compress))
+
+        $incompatibleDispatchSlug = 'batch5-incompatible-old-progress'
+        $incompatibleOlder = New-Batch5FailureEvidenceFixture -DispatchSlug $incompatibleDispatchSlug -TaskType 'advisor-consult' -EventMode 'completed' -SafePointIncomplete 'target.ps1'
+        $incompatibleCurrent = New-Batch5FailureEvidenceFixture -DispatchSlug $incompatibleDispatchSlug -EventMode 'disconnect'
+        $incompatibleScenario = & $evaluateScenario $incompatibleCurrent $incompatibleCurrent.record.event_stream_path ([Nullable[int]]1)
+        Assert-True ($incompatibleScenario.handoff.failure_classification -ceq 'ServiceStreamDisconnected' -and $incompatibleScenario.handoff.retry_allowed -eq $true -and $incompatibleScenario.handoff.resumable -eq $false -and $incompatibleScenario.handoff.continuation_progress_source.path -cne $incompatibleOlder.record.event_stream_path -and @($incompatibleScenario.handoff.incomplete_units).Count -eq 1) ('incompatible fallback safe point incorrectly made the current run resumable: ' + ($incompatibleScenario.handoff | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True ($incompatibleScenario.inspect.diagnosis.reason_code -ceq 'ServiceStreamDisconnected' -and $incompatibleScenario.receipt.failure_classification -ceq $incompatibleScenario.inspect.diagnosis.reason_code -and $incompatibleScenario.receipt.retry_allowed -eq $true) ('Inspect and failure receipt disagreed for incompatible fallback progress: ' + ($incompatibleScenario.receipt | ConvertTo-Json -Depth 20 -Compress))
+
+        $completeProgressDispatchSlug = 'batch5-fallback-progress-no-incomplete-units'
+        $completeProgressOlder = New-Batch5FailureEvidenceFixture -DispatchSlug $completeProgressDispatchSlug -EventMode 'completed' -SafePointIncomplete '無'
+        $completeProgressCurrent = New-Batch5FailureEvidenceFixture -DispatchSlug $completeProgressDispatchSlug -EventMode 'disconnect'
+        $completeProgressScenario = & $evaluateScenario $completeProgressCurrent $completeProgressCurrent.record.event_stream_path ([Nullable[int]]1)
+        Assert-True ($completeProgressScenario.handoff.failure_classification -ceq 'ServiceStreamDisconnected' -and $completeProgressScenario.handoff.retry_allowed -eq $true -and $completeProgressScenario.handoff.resumable -eq $false -and @($completeProgressScenario.handoff.incomplete_units).Count -eq 0 -and $completeProgressScenario.handoff.continuation_progress_source.path -ceq $completeProgressOlder.record.event_stream_path) ('fallback safe point without incomplete units was marked resumable: ' + ($completeProgressScenario.handoff | ConvertTo-Json -Depth 20 -Compress))
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 safe point with incomplete unit is resumable [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        $dispatchSlug = 'batch5-resumable-positive'
+        $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $finalMessage = @(
+            ('design.md ' + $dispatchSlug + ' line-a')
+            '## 中斷保全結論'
+            '已確認結論：已檢視事件與目前安全點。'
+            '未完成單位：target.ps1'
+            '證據位置：C:\tmp\batch5-safe-point-evidence.md'
+            '實際覆蓋範圍：已檢視事件流與中斷檢查點。'
+        ) -join [Environment]::NewLine
+        $events = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'server_error'; message = 'stream disconnected before completion' } }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $record.last_message_path -Content $finalMessage
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatchSlug
+        $script:EventStreamPath = $record.event_stream_path
+        $script:ScopePlanPath = $record.scope_plan_path
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ($record.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]1
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:LastMessagePath = $record.last_message_path
+        $script:ErrorStreamPath = ''
+        $script:ThreadIdPath = ''
+        $script:TargetPath = @()
+        $script:TaskType = 'implement'
+        $script:SessionMode = 'continuation'
+        $script:Profile = 'default'
+        $script:WriteMode = 'readonly'
+        $script:InvocationBoundParameters = [ordered]@{}
+        $result = Invoke-Inspect
+        Assert-True ($result.resumable -eq $true -and $result.recommended_next_step.Contains('可重試且可續行') -and $result.recommended_next_step.Contains('incomplete_units') -and @($result.interruptionCheckpoint.incomplete_units).Count -eq 1 -and [string]$result.interruptionCheckpoint.incomplete_units[0] -ceq 'target.ps1') ('safe point with an incomplete selected unit was not resumable: ' + ($result | ConvertTo-Json -Depth 20 -Compress))
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 safe point without incomplete units is not resumable [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        $dispatchSlug = 'batch5-resumable-negative'
+        $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $finalMessage = @(
+            ('design.md ' + $dispatchSlug + ' line-a')
+            '## 中斷保全結論'
+            '已確認結論：已檢視事件與目前安全點。'
+            '未完成單位：無'
+            '證據位置：C:\tmp\batch5-safe-point-evidence.md'
+            '實際覆蓋範圍：已檢視事件流與中斷檢查點。'
+        ) -join [Environment]::NewLine
+        $events = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'server_error'; message = 'stream disconnected before completion' } }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $record.last_message_path -Content $finalMessage
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatchSlug
+        $script:EventStreamPath = $record.event_stream_path
+        $script:ScopePlanPath = $record.scope_plan_path
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ($record.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]1
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:LastMessagePath = $record.last_message_path
+        $script:ErrorStreamPath = ''
+        $script:ThreadIdPath = ''
+        $script:TargetPath = @()
+        $script:TaskType = 'implement'
+        $script:SessionMode = 'continuation'
+        $script:Profile = 'default'
+        $script:WriteMode = 'readonly'
+        $script:InvocationBoundParameters = [ordered]@{}
+        $result = Invoke-Inspect
+        Assert-True ($result.resumable -eq $false -and $result.recommended_next_step.Contains('依 ScopePlan.selected_units') -and @($result.interruptionCheckpoint.incomplete_units).Count -eq 0) ('safe point without incomplete selected units was marked resumable: ' + ($result | ConvertTo-Json -Depth 20 -Compress))
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+    Invoke-Case -Name 'BATCH5 safe point without concrete conclusion coverage and absolute evidence is not resumable [BATCH5-PARAMS]' -Action {
+        $dispatchSlug = 'batch5-invalid-safe-point-fields'
+        $fixture = New-Batch5FailureEvidenceFixture -DispatchSlug $dispatchSlug -SafePointIncomplete 'target.ps1'
+        $invalidSafePoint = @(
+            ('design.md ' + $dispatchSlug + ' line-a')
+            '## 中斷保全結論'
+            '已確認結論：無'
+            '實際覆蓋範圍：無'
+            '未完成單位：target.ps1'
+        ) -join [Environment]::NewLine
+        $events = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $invalidSafePoint } }
+            [ordered]@{ type = 'turn.failed'; error = [ordered]@{ code = 'server_error'; message = 'stream disconnected before completion' } }
+        )
+        Write-Utf8NoBom -Path $fixture.record.event_stream_path -Content ((@($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        Write-Utf8NoBom -Path $fixture.record.last_message_path -Content $invalidSafePoint
+        $requestDocument = [pscustomobject]@{ task_type = 'implement'; unit_kind = 'resource-target'; dispatch_kind = 'resource'; write_mode = 'readonly'; target_path = @('target.ps1'); prompt_path = $null; required_identifier = 'design.md' }
+        $handoff = Get-DispatchContinuationFailureHandoff -RequestPath '' -RequestDocument $requestDocument -ScopePlanPath $fixture.record.scope_plan_path -EventStreamPath $fixture.record.event_stream_path -RunRecordPath $fixture.record_path -LastMessagePath $fixture.record.last_message_path -InspectResultPath '' -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $dispatchSlug -DispatchExecutionId ([guid]::NewGuid().ToString('N')) -FallbackSelectedUnits @('target.ps1')
+        Assert-True ($handoff.failure_classification -ceq 'ServiceStreamDisconnected' -and $handoff.retry_allowed -eq $true -and $handoff.resumable -eq $false -and @($handoff.confirmed_results).Count -eq 0 -and @($handoff.incomplete_units).Count -eq 1 -and [string]$handoff.incomplete_units[0] -ceq 'target.ps1' -and $handoff.confirmed_results_source.status -ceq 'insufficient') ('invalid safe point fields were used as continuation progress: ' + ($handoff | ConvertTo-Json -Depth 20 -Compress))
+    }
+    Invoke-Case -Name 'BATCH5 Collect structural-only validates ReviewerReportPath without adding requirements [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchKind', 'DispatchRoot', 'ExecutionRoot', 'InvocationBoundParameters', 'PreflightResultPath', 'ReportPath', 'RequestPath', 'RequirementSummaryPath', 'ReviewerReportPath', 'RunRecordPath', 'SourceRoot')
+        try {
+        $validPath = Join-Path $fixtureRoot 'batch5-reviewer-structural-valid.md'
+        $manifest = New-ReviewerManifest -Schema 'codex-dispatch.review-findings.v2' -LineSlug 'line-a' -DispatchSlug 'batch5-structural-valid' -Round 1
+        Write-ReviewerFixture -Path $validPath -Manifest $manifest
+        $script:DispatchKind = ''
+        $script:SourceRoot = ''
+        $script:ExecutionRoot = ''
+        $script:DispatchRoot = ''
+        $script:RequestPath = ''
+        $script:RunRecordPath = ''
+        $script:ReviewerReportPath = $validPath
+        $script:ReportPath = @()
+        $script:RequirementSummaryPath = ''
+        $script:PreflightResultPath = ''
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Collect'; ReviewerReportPath = $validPath }
+        $validResult = Invoke-Collect
+        Assert-True ($validResult.collect_mode -ceq 'structural-only' -and $validResult.outputValid -and $validResult.reviewerFindings.valid) ('Reviewer structural-only 在原有參數下未通過：' + ($validResult | ConvertTo-Json -Depth 12 -Compress))
+
+        $script:ReviewerReportPath = 'relative.md'
+        $script:InvocationBoundParameters = [ordered]@{ Operation = 'Collect'; ReviewerReportPath = 'relative.md' }
+        $invalidMessage = ''
+        try { Invoke-Collect | Out-Null } catch { $invalidMessage = $_.Exception.Message }
+        Assert-True ($invalidMessage.Contains('CollectParameterInvalidPath') -and $invalidMessage.Contains('ReviewerReportPath') -and $invalidMessage.Contains('relative.md')) ('structural-only 相對路徑錯誤未列出參數名、收到值與錯誤碼：' + $invalidMessage)
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 Inspect exempts disconnected error from empty and missing last-message but keeps completed guard [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        $dispatchSlug = 'batch5-disconnect-empty-last-message'
+        $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+        $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $errorEvents = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'error'; code = 'server_error'; message = 'stream disconnected before completion' }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($errorEvents | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        [IO.File]::Delete($record.last_message_path)
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatchSlug
+        $script:EventStreamPath = $record.event_stream_path
+        $script:ScopePlanPath = $record.scope_plan_path
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ($record.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]1
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:LastMessagePath = $record.last_message_path
+        $script:ErrorStreamPath = ''
+        $script:ThreadIdPath = ''
+        $script:TargetPath = @()
+        $script:TaskType = 'implement'
+        $script:SessionMode = 'continuation'
+        $script:Profile = 'default'
+        $script:WriteMode = 'readonly'
+        $script:InvocationBoundParameters = [ordered]@{}
+        $missingResult = $null
+        $missingMessage = ''
+        try { $missingResult = Invoke-Inspect } catch { $missingMessage = $_.Exception.Message }
+        Assert-True ($null -ne $missingResult -and $missingResult.diagnosis.reason_code -ceq 'ServiceStreamDisconnected' -and $missingResult.retry_allowed -eq $true -and $missingResult.recommended_next_step.Contains('new dispatchSlug')) ('missing last-message prevented disconnected stream classification: ' + $missingMessage)
+
+        Write-Utf8NoBom -Path $record.last_message_path -Content ''
+        $emptyResult = $null
+        $emptyMessage = ''
+        try { $emptyResult = Invoke-Inspect } catch { $emptyMessage = $_.Exception.Message }
+        Assert-True ($null -ne $emptyResult -and $emptyResult.diagnosis.reason_code -ceq 'ServiceStreamDisconnected' -and $emptyResult.retry_allowed -eq $true -and $emptyResult.recommended_next_step.Contains('new dispatchSlug')) ('empty last-message prevented disconnected stream classification: ' + $emptyMessage)
+
+        $finalMessage = 'design.md ' + $dispatchSlug + ' line-a'
+        $completedEvents = @(
+            [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+            [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+            [ordered]@{ type = 'turn.completed'; usage = [ordered]@{ input_tokens = 1; output_tokens = 1 } }
+        )
+        Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($completedEvents | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+        $script:ProcessExitCode = [Nullable[int]]0
+        $completedMessage = ''
+        try { $null = Invoke-Inspect } catch { $completedMessage = $_.Exception.Message }
+        Assert-True ($completedMessage.Contains('InspectLastMessageUnavailable')) ('turn.completed 對空 last-message 的既有拒絕被放寬：' + $completedMessage)
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 Inspect classifies stream_error and turn_aborted like continuation handoff [BATCH5-PARAMS]' -Action {
+        $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+        try {
+        foreach ($terminalType in @('stream_error', 'turn_aborted')) {
+            $dispatchSlug = 'batch5-' + $terminalType.Replace('_', '-')
+            $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
+            $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+            Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
+            $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
+            $null = Write-DispatchRunRecord -Record $record -Update
+            $finalMessage = 'design.md ' + $dispatchSlug + ' line-a'
+            $events = @(
+                [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+                [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $finalMessage } }
+                [ordered]@{ type = $terminalType; code = 'server_error'; message = 'stream disconnected before completion' }
+            )
+            Write-Utf8NoBom -Path $record.event_stream_path -Content ((@($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 20 -Compress }) -join [Environment]::NewLine) + [Environment]::NewLine)
+            Write-Utf8NoBom -Path $record.last_message_path -Content $finalMessage
+            $script:SourceRoot = $fixtureRoot
+            $script:ExecutionRoot = $fixtureRoot
+            $script:LineSlug = 'line-a'
+            $script:DispatchSlug = $dispatchSlug
+            $script:EventStreamPath = $record.event_stream_path
+            $script:ScopePlanPath = $record.scope_plan_path
+            $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $dispatchSlug) ($record.run_id + '.json')
+            $script:ProcessExitCode = [Nullable[int]]1
+            $script:RequiredIdentifier = 'design.md'
+            $script:DispatchResultPath = ''
+            $script:WaitForCompletion = $false
+            $script:LastMessagePath = $record.last_message_path
+            $script:ErrorStreamPath = ''
+            $script:ThreadIdPath = ''
+            $script:TargetPath = @()
+            $script:TaskType = 'implement'
+            $script:SessionMode = 'continuation'
+            $script:Profile = 'default'
+            $script:WriteMode = 'readonly'
+            $script:InvocationBoundParameters = [ordered]@{}
+            $inspectResult = Invoke-Inspect
+            $eventEvidence = Get-DispatchEventEvidence -EventPath $record.event_stream_path
+            $requestDocument = [pscustomobject]@{ task_type = 'implement'; unit_kind = 'resource-target'; dispatch_kind = 'resource'; write_mode = 'readonly'; target_path = @('target.ps1'); prompt_path = $null; required_identifier = 'design.md' }
+            $handoff = Get-DispatchContinuationFailureHandoff -RequestPath '' -RequestDocument $requestDocument -ScopePlanPath $record.scope_plan_path -EventStreamPath $record.event_stream_path -RunRecordPath $script:RunRecordPath -LastMessagePath $record.last_message_path -InspectResultPath '' -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $dispatchSlug -DispatchExecutionId ([guid]::NewGuid().ToString('N')) -FallbackSelectedUnits @('target.ps1')
+            Assert-True ($eventEvidence.server_stream_disconnect -and $eventEvidence.last_event_type -ceq $terminalType -and $inspectResult.diagnosis.reason_code -ceq 'ServiceStreamDisconnected' -and $inspectResult.retry_allowed -eq $true -and $handoff.failure_classification -ceq 'ServiceStreamDisconnected' -and $handoff.retry_allowed -eq $inspectResult.retry_allowed -and $handoff.resumable -eq $inspectResult.resumable -and $handoff.recommended_next_step.Contains('new dispatchSlug')) ($terminalType + ' 未與 Prepare handoff 使用相同的可重試中斷分類：inspect=' + ($inspectResult | ConvertTo-Json -Depth 20 -Compress) + '; handoff=' + ($handoff | ConvertTo-Json -Depth 20 -Compress))
+        }
+        } finally {
+            Restore-ScriptVariableSnapshot -Snapshot $scriptVariableSnapshot
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 Start truncation note omits oversized single-line stderr [BATCH5-PARAMS]' -Action {
+        $stderrPath = Join-Path $fixtureRoot 'batch5-single-line-stderr.log'
+        $stderrText = ('x' * 65500) + ' api_key=FAKE_SECRET_VALUE server stream failed single-line tail marker'
+        [IO.File]::WriteAllText($stderrPath, $stderrText, [Text.UTF8Encoding]::new($false))
+        $stderrSummary = Get-DispatchStartStderrSummary -ErrorPath $stderrPath
+        $expectedByteLength = [Text.Encoding]::UTF8.GetByteCount($stderrText)
+        Assert-True (-not [string]::IsNullOrWhiteSpace($stderrSummary) -and $stderrSummary.Contains('stderr 超過安全摘要讀取範圍，已省略原文') -and $stderrSummary.Contains(('file_size=' + $expectedByteLength)) -and $stderrSummary.Contains($stderrPath) -and -not $stderrSummary.Contains('FAKE_SECRET_VALUE') -and -not $stderrSummary.Contains('single-line tail marker') -and -not $stderrSummary.Contains('server stream failed') -and $stderrSummary.Length -le 1200) ('oversized single-line stderr did not return only the fixed note and file metadata: ' + $stderrSummary)
+    }
+
+    Invoke-Case -Name 'BATCH5 Authorization header and JSON variants are masked by Inspect and Start [BATCH5-PARAMS]' -Action {
+        $fakeValues = @(
+            'FAKE_AUTH_BEARER_VALUE'
+            'FAKE_AUTH_BASIC_VALUE'
+            'FAKE_AUTH_SCHEME_VALUE'
+            'FAKE_PROXY_AUTH_VALUE'
+            'FAKE_JSON_AUTH_VALUE'
+        )
+        $authorizationText = @(
+            ('Authorization: Bearer ' + $fakeValues[0])
+            ('aUtHoRiZaTiOn   :   Basic ' + $fakeValues[1])
+            ('Authorization=' + $fakeValues[2])
+            ('Proxy - Authorization : Negotiate ' + $fakeValues[3])
+            ('{"Authorization":"' + $fakeValues[4] + '"}')
+        ) -join [Environment]::NewLine
+        $protectedText = Protect-DispatchInspectText -Text $authorizationText
+        Assert-True ($protectedText.Contains('[REDACTED]') -and @($fakeValues | Where-Object { $protectedText.Contains($_) }).Count -eq 0) ('Inspect text protection left a synthetic Authorization value: ' + $protectedText)
+
+        $stderrPath = Join-Path $fixtureRoot 'batch5-authorization-stderr.log'
+        Write-Utf8NoBom -Path $stderrPath -Content $authorizationText
+        $startSummary = Get-DispatchStartStderrSummary -ErrorPath $stderrPath
+        Assert-True ($startSummary.Contains('[REDACTED]') -and @($fakeValues | Where-Object { $startSummary.Contains($_) }).Count -eq 0) ('Start stderr summary left a synthetic Authorization value: ' + $startSummary)
+    }
+
+    Invoke-Case -Name 'BATCH5 truncated stderr boundaries omit assignment header PEM and UTF-8 source [BATCH5-PARAMS]' -Action {
+        $headerBoundaryText = 'Authorization: Bearer FAKE_BOUNDARY_HEADER_VALUE' + "`r`n"
+        $pemBoundaryText = '-----BEGIN PRIVATE KEY-----' + "`r`n" + 'FAKE_BOUNDARY_PEM_VALUE' + "`r`n-----END PRIVATE KEY-----"
+        $boundaryCases = @(
+            [ordered]@{ name = 'assignment-key'; content = 'API_KEY=FAKE_BOUNDARY_ASSIGNMENT_VALUE' + "`r`n"; cut_offset = 4 }
+            [ordered]@{ name = 'header-value'; content = $headerBoundaryText; cut_offset = ([Text.Encoding]::UTF8.GetByteCount('Authorization: Bearer ') + 4) }
+            [ordered]@{ name = 'pem-body'; content = $pemBoundaryText; cut_offset = ([Text.Encoding]::UTF8.GetByteCount('-----BEGIN PRIVATE KEY-----' + "`r`n") + 5) }
+            [ordered]@{ name = 'utf8-multibyte'; content = '界' + "`r`n" + 'Authorization: Bearer FAKE_BOUNDARY_UTF8_VALUE'; cut_offset = 1 }
+            [ordered]@{ name = 'crlf-boundary'; content = "`r`n" + 'Authorization: Bearer FAKE_BOUNDARY_CRLF_VALUE'; cut_offset = 1 }
+        )
+        foreach ($boundaryCase in $boundaryCases) {
+            $contentBytes = [Text.Encoding]::UTF8.GetBytes([string]$boundaryCase.content)
+            $cutOffset = [int]$boundaryCase.cut_offset
+            $fileLength = 65536 + $cutOffset
+            Assert-True ($cutOffset -ge 0 -and $contentBytes.Length -le $fileLength) ('invalid fixture boundary length for ' + $boundaryCase.name)
+            $bytes = New-Object byte[] $fileLength
+            for ($index = 0; $index -lt $bytes.Length; $index++) { $bytes[$index] = 0x78 }
+            [Array]::Copy($contentBytes, 0, $bytes, 0, $contentBytes.Length)
+            Assert-True (($bytes.Length - 65536) -eq $cutOffset) ('read-window cut did not land at the requested ' + $boundaryCase.name + ' offset.')
+            $stderrPath = Join-Path $fixtureRoot ('batch5-truncated-' + [string]$boundaryCase.name + '.log')
+            [IO.File]::WriteAllBytes($stderrPath, $bytes)
+            $stderrSummary = Get-DispatchStartStderrSummary -ErrorPath $stderrPath
+            Assert-True ($stderrSummary.Contains('stderr 超過安全摘要讀取範圍，已省略原文') -and $stderrSummary.Contains(('file_size=' + $bytes.Length)) -and $stderrSummary.Contains($stderrPath) -and -not $stderrSummary.Contains('FAKE_BOUNDARY_') -and -not $stderrSummary.Contains([char]0xFFFD)) ('truncated ' + $boundaryCase.name + ' boundary exposed source bytes or omitted metadata: ' + $stderrSummary)
+        }
+    }
+
+    Invoke-Case -Name 'BATCH5 stderr protects before the 20-line and 1200-character limits [BATCH5-PARAMS]' -Action {
+        $stderrPath = Join-Path $fixtureRoot 'batch5-bounded-stderr.log'
+        $lines = New-Object 'System.Collections.Generic.List[string]'
+        for ($index = 0; $index -lt 19; $index++) { $lines.Add(('line-{0:D2} ' -f $index) + ('x' * 100)) }
+        $lines.Add('api_key=FAKE_BOUNDED_STDERR_SECRET')
+        Write-Utf8NoBom -Path $stderrPath -Content ($lines -join [Environment]::NewLine)
+        $stderrSummary = Get-DispatchStartStderrSummary -ErrorPath $stderrPath
+        $summaryLines = @($stderrSummary -split '\r\n|\n|\r')
+        Assert-True ($summaryLines.Count -le 20 -and $stderrSummary.Length -le 1200 -and $stderrSummary.Contains('[REDACTED]') -and -not $stderrSummary.Contains('FAKE_BOUNDED_STDERR_SECRET')) ('stderr was limited before masking or exceeded summary limits: ' + $stderrSummary)
+    }
+
+    Invoke-Case -Name 'BATCH5 stderr preserves missing empty whitespace unreadable and masking failure fallbacks [BATCH5-PARAMS]' -Action {
+        $missingPath = Join-Path $fixtureRoot 'batch5-missing-stderr.log'
+        $emptyPath = Join-Path $fixtureRoot 'batch5-empty-stderr.log'
+        $whitespacePath = Join-Path $fixtureRoot 'batch5-whitespace-stderr.log'
+        $unreadablePath = Join-Path $fixtureRoot 'batch5-unreadable-stderr.log'
+        $maskFailurePath = Join-Path $fixtureRoot 'batch5-mask-failure-stderr.log'
+        foreach ($path in @($missingPath, $emptyPath, $whitespacePath, $unreadablePath, $maskFailurePath)) {
+            if (Test-Path -LiteralPath $path) { [IO.File]::Delete($path) }
+        }
+        Write-Utf8NoBom -Path $emptyPath -Content ''
+        Write-Utf8NoBom -Path $whitespacePath -Content (" `r`n`t")
+        Write-Utf8NoBom -Path $unreadablePath -Content 'api_key=FAKE_UNREADABLE_STDERR_VALUE'
+        Write-Utf8NoBom -Path $maskFailurePath -Content 'Authorization: Bearer FAKE_MASK_FAILURE_SOURCE_VALUE'
+
+        Assert-True ((Get-DispatchStartStderrSummary -ErrorPath $missingPath) -ceq '<stderr unavailable>') 'missing stderr did not preserve the existing unavailable fallback.'
+        Assert-True ((Get-DispatchStartStderrSummary -ErrorPath $emptyPath) -ceq '<stderr empty>') 'empty stderr did not preserve the existing empty fallback.'
+        Assert-True ((Get-DispatchStartStderrSummary -ErrorPath $whitespacePath) -ceq '<stderr empty>') 'whitespace stderr did not preserve the existing empty fallback.'
+
+        $lockedStream = [IO.File]::Open($unreadablePath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            $unreadableSummary = Get-DispatchStartStderrSummary -ErrorPath $unreadablePath
+            Assert-True ($unreadableSummary.StartsWith('<stderr unreadable: ') -and -not $unreadableSummary.Contains('FAKE_UNREADABLE_STDERR_VALUE')) ('unreadable stderr leaked source content or lost its fallback: ' + $unreadableSummary)
+
+            $originalProtector = (Get-Command -Name Protect-DispatchInspectText -CommandType Function).ScriptBlock
+            Set-Item -Path Function:\Protect-DispatchInspectText -Value { param([string]$Text) throw 'Authorization: Bearer FAKE_MASKER_EXCEPTION_VALUE' }
+            try {
+                $maskFailureSummary = Get-DispatchStartStderrSummary -ErrorPath $maskFailurePath
+                $unreadableMaskFailureSummary = Get-DispatchStartStderrSummary -ErrorPath $unreadablePath
+                Assert-True ($maskFailureSummary.Contains('stderr 摘要遮蔽失敗，已省略原文') -and $maskFailureSummary.Contains($maskFailurePath) -and -not $maskFailureSummary.Contains('FAKE_MASK_FAILURE_SOURCE_VALUE') -and -not $maskFailureSummary.Contains('FAKE_MASKER_EXCEPTION_VALUE')) ('mask failure fallback leaked source or exception content: ' + $maskFailureSummary)
+                Assert-True ($unreadableMaskFailureSummary -ceq '<stderr unreadable: 讀取錯誤細節已省略>') ('unreadable fallback exposed masker exception details: ' + $unreadableMaskFailureSummary)
+            }
+            finally {
+                Set-Item -Path Function:\Protect-DispatchInspectText -Value $originalProtector
+            }
+        }
+        finally {
+            $lockedStream.Dispose()
+        }
+    }
+
     Write-Output "TOTAL: $script:caseCount; PASS: $script:passedCount; FAIL: $script:failures; ENV-LIMITED: $script:environmentLimitedCount; BASELINE-FAILED: $script:baselineFailedCount; ISOLATED: $script:isolatedCount; FIXTURES: $fixtureRoot"
 }
 else {

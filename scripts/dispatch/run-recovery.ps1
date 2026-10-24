@@ -14,19 +14,24 @@
             event_state = 'not-started'
             last_event_type = $null
             raw_lines = [string[]]@()
+            usage_limit_evidence = @()
             usage_limit = $false
+            server_stream_disconnect_evidence = @()
+            server_stream_disconnect = $false
         }
     }
 
     $rawLines = @((Read-DispatchUtf8Text -Path $resolvedPath) -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     $events = New-Object 'System.Collections.Generic.List[object]'
     $usageLimitEvidence = New-Object 'System.Collections.Generic.List[object]'
+    $serverStreamDisconnectEvidence = New-Object 'System.Collections.Generic.List[object]'
     $usageLimit = $false
-    $errorTypes = @('error', 'turn.failed', 'turn_failed', 'stream_error', 'turn_aborted')
+    $serverStreamDisconnect = $false
     $usageLimitPattern = '(?i)usage[\s_-]*limit(?:ed|[\s_-]*(?:reached|exceeded)|\b)'
     $rateLimitPattern = '(?i)rate[\s_-]*limit(?:ed|[\s_-]*(?:reached|exceeded)|\b)'
     $quotaExceededPattern = '(?i)quota[\s_-]+exceeded'
     $tooManyRequestsPattern = '(?i)too[\s_-]+many[\s_-]+requests|\b429\b'
+    $serverStreamDisconnectPattern = '(?i)\bstream[\s_-]+disconnected[\s_-]+before[\s_-]+completion\b'
     foreach ($rawLine in $rawLines) {
         try {
             $event = ConvertFrom-DispatchJson -Content $rawLine
@@ -42,7 +47,7 @@
         }
         $recordType = [string](Get-DispatchJsonProperty -Object $event -Name 'type')
         $payloadType = [string](Get-DispatchJsonProperty -Object $payload -Name 'type')
-        $isErrorEvent = $errorTypes -contains $recordType -or $errorTypes -contains $payloadType
+        $isErrorEvent = (Test-DispatchErrorEventType -EventType $recordType) -or (Test-DispatchErrorEventType -EventType $payloadType)
         $rateLimits = Get-DispatchJsonProperty -Object $payload -Name 'rate_limits'
         if ($null -eq $rateLimits) {
             $rateLimits = Get-DispatchJsonProperty -Object $payload -Name 'rateLimits'
@@ -112,14 +117,30 @@
                     raw_line = $rawLine
                 })
         }
+        if ($isErrorEvent -and $messageText -match $serverStreamDisconnectPattern) {
+            $timestampValue = Get-DispatchJsonProperty -Object $event -Name 'timestamp'
+            if ($null -eq $timestampValue) {
+                $timestampValue = Get-DispatchJsonProperty -Object $event -Name 'created_at'
+            }
+            $serverStreamDisconnect = $true
+            $null = $serverStreamDisconnectEvidence.Add([ordered]@{
+                    reason_code = 'server-stream-disconnected'
+                    observed_at = if ($null -eq $timestampValue) { $null } else { [string]$timestampValue }
+                    event_type = $recordType
+                })
+        }
     }
     $lastType = $null
     if ($events.Count -gt 0) {
         $lastType = [string](Get-DispatchJsonProperty -Object $events[$events.Count - 1] -Name 'type')
     }
+    $serverStreamDisconnect = $serverStreamDisconnect -and $lastType -cne 'turn.completed'
     $state = 'unknown'
     if ($usageLimit) {
         $state = 'quota-rejected'
+    }
+    elseif ($serverStreamDisconnect) {
+        $state = 'service-disconnected'
     }
     elseif ($lastType -eq 'turn.completed') {
         $state = 'completed'
@@ -139,7 +160,16 @@
         raw_lines = [string[]]$rawLines
         usage_limit_evidence = @($usageLimitEvidence.ToArray())
         usage_limit = $usageLimit
+        server_stream_disconnect_evidence = @($serverStreamDisconnectEvidence.ToArray())
+        server_stream_disconnect = $serverStreamDisconnect
     }
+}
+
+function Test-DispatchErrorEventType {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$EventType)
+
+    return @('error', 'turn.failed', 'turn_failed', 'stream_error', 'turn_aborted') -contains $EventType
 }
 
 function Convert-EventEvidenceToServiceRejection {
@@ -1354,7 +1384,8 @@ function Resolve-InspectDispatchRun {
         [Parameter(Mandatory)][string]$DispatchSlug,
         [Parameter(Mandatory)][string]$EventStreamPath,
         [AllowEmptyString()][string]$ScopePlanPath,
-        [string]$RunRecordPath
+        [string]$RunRecordPath,
+        [switch]$AllowMissingScopePlanPath
     )
 
     $directory = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
@@ -1374,7 +1405,22 @@ function Resolve-InspectDispatchRun {
         }
         return $match
     }
-    if ([string]::IsNullOrWhiteSpace($ScopePlanPath)) { throw 'Inspect 必須提供 ScopePlanPath。' }
+    if ([string]::IsNullOrWhiteSpace($ScopePlanPath)) {
+        if ($AllowMissingScopePlanPath) {
+            $match | Add-Member -MemberType NoteProperty -Name 'ScopePlanPathMissing' -Value $true
+            return $match
+        }
+
+        $missingParameter = [ordered]@{
+            name = 'ScopePlanPath'
+            available_sources = '明確的 -ScopePlanPath；RunRecord.scope_plan_path；Start 結果.scopePlanPath；DispatchResultPath binding'
+        }
+        $missingMessage = "RequiredParameterMissing：Inspect 必須提供下列必要參數：`n - {0}；可取得來源：{1}" -f $missingParameter.name, $missingParameter.available_sources
+        $missingException = New-Object System.InvalidOperationException($missingMessage)
+        $missingException.Data['errorCode'] = 'RequiredParameterMissing'
+        $missingException.Data['missing_parameters'] = @($missingParameter)
+        throw $missingException
+    }
     if (-not [string]::Equals($match.Record.scope_plan_path, (Resolve-AbsolutePath $ScopePlanPath), [StringComparison]::OrdinalIgnoreCase)) { throw 'Inspect ScopePlan 與 RunRecord 不一致。' }
     $null = Get-DispatchRunEvents $match.Record
     return $match

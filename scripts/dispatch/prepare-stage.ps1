@@ -923,6 +923,154 @@ function Get-DispatchInterruptionCheckpointWithMessageFallback {
     return $checkpoint
 }
 
+function Resolve-DispatchContinuationClassificationSource {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][string]$EventStreamPath,
+        [AllowEmptyString()][string]$RunRecordPath,
+        [AllowEmptyString()][string]$SourceRoot,
+        [AllowEmptyString()][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug
+    )
+
+    $source = [ordered]@{
+        status = 'unavailable'
+        reason = '本次事件流尚未核實。'
+        path = $null
+        run_record_path = $null
+        run_id = $null
+        record = $null
+        event_evidence = $null
+    }
+    if ([string]::IsNullOrWhiteSpace($EventStreamPath) -or [string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($ExecutionRoot)) {
+        $source.reason = '本次 EventStreamPath 或其核對根目錄缺失。'
+        return [pscustomobject]$source
+    }
+
+    try {
+        $eventPath = Resolve-AbsolutePath -Path $EventStreamPath
+        if (-not (Test-PathWithinRoot -Path $eventPath -Root $ExecutionRoot) -or -not (Test-Path -LiteralPath $eventPath -PathType Leaf)) {
+            $source.reason = '本次事件流缺失或不在 executionRoot 內。'
+            return [pscustomobject]$source
+        }
+
+        $matchedRecord = $null
+        $matchedRecordPath = $null
+        if (-not [string]::IsNullOrWhiteSpace($RunRecordPath)) {
+            $matchedRecordPath = Resolve-AbsolutePath -Path $RunRecordPath
+            $matchedRecord = Read-DispatchRunRecord -Path $matchedRecordPath -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+            $recordEventPath = Resolve-AbsolutePath -Path ([string]$matchedRecord.event_stream_path)
+            if (-not [string]::Equals($recordEventPath, $eventPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+                $source.status = 'identity-mismatch'
+                $source.reason = '本次 EventStreamPath 與指定 RunRecord.event_stream_path 不一致。'
+                $source.path = $eventPath
+                $source.run_record_path = $matchedRecordPath
+                $source.run_id = [string]$matchedRecord.run_id
+                return [pscustomobject]$source
+            }
+        }
+        else {
+            $matchingRecords = @(
+                Get-DispatchRunRecordList -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug |
+                    Where-Object { [string]::Equals((Resolve-AbsolutePath -Path ([string]$_.event_stream_path)), $eventPath, [System.StringComparison]::OrdinalIgnoreCase) }
+            )
+            if ($matchingRecords.Count -ne 1) {
+                $source.status = 'identity-mismatch'
+                $source.reason = '本次事件流未能唯一對應同一派遣的 RunRecord。'
+                $source.path = $eventPath
+                return [pscustomobject]$source
+            }
+            $matchedRecord = $matchingRecords[0]
+            $matchedRecordPath = Join-Path -Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug) -ChildPath ([string]$matchedRecord.run_id + '.json')
+        }
+
+        $null = Get-DispatchRunEvents -Record $matchedRecord
+        $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath
+        if (-not [bool](Get-DispatchJsonProperty -Object $eventEvidence -Name 'exists')) {
+            $source.reason = '本次事件流在核對期間已不可用。'
+            $source.path = $eventPath
+            $source.run_record_path = $matchedRecordPath
+            $source.run_id = [string]$matchedRecord.run_id
+            return [pscustomobject]$source
+        }
+        $source.status = 'available'
+        $source.reason = $null
+        $source.path = $eventPath
+        $source.run_record_path = $matchedRecordPath
+        $source.run_id = [string]$matchedRecord.run_id
+        $source.record = $matchedRecord
+        $source.event_evidence = $eventEvidence
+        return [pscustomobject]$source
+    }
+    catch {
+        $source.status = 'unreadable'
+        $source.reason = '本次事件流缺失、不可讀或無法核對 RunRecord 身分。'
+        return [pscustomobject]$source
+    }
+}
+
+function Test-DispatchContinuationProgressScopeCompatible {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][psobject]$SourceRunRecord,
+        [AllowNull()][psobject]$CurrentScopePlan,
+        [AllowEmptyCollection()][string[]]$CurrentSelectedUnits
+    )
+
+    if ($null -eq $SourceRunRecord -or $null -eq $CurrentScopePlan -or $CurrentSelectedUnits.Count -eq 0) {
+        return $false
+    }
+    $sourceScopePath = [string](Get-DispatchJsonProperty -Object $SourceRunRecord -Name 'scope_plan_path')
+    if ([string]::IsNullOrWhiteSpace($sourceScopePath)) {
+        return $false
+    }
+    try {
+        $sourceScopePlan = Read-ScopePlanFile -Path $sourceScopePath
+    }
+    catch {
+        return $false
+    }
+    foreach ($fieldName in @('dispatch_slug', 'dispatch_kind', 'task_type', 'requested_profile', 'unit_kind')) {
+        $sourceValue = [string](Get-DispatchJsonProperty -Object $sourceScopePlan -Name $fieldName)
+        $currentValue = [string](Get-DispatchJsonProperty -Object $CurrentScopePlan -Name $fieldName)
+        if ([string]::IsNullOrWhiteSpace($sourceValue) -or [string]::IsNullOrWhiteSpace($currentValue) -or
+            -not [string]::Equals($sourceValue, $currentValue, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $false
+        }
+    }
+    $sourceSelectedUnits = @((Get-DispatchJsonProperty -Object $sourceScopePlan -Name 'selected_units') | ForEach-Object { [string]$_ })
+    foreach ($selectedUnit in $CurrentSelectedUnits) {
+        if ($sourceSelectedUnits -cnotcontains [string]$selectedUnit) {
+            return $false
+        }
+    }
+    return $true
+}
+
+function Test-DispatchContinuationSafePointFields {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Message)
+
+    $fieldValues = [ordered]@{}
+    foreach ($field in @(
+            [pscustomobject]@{ name = 'confirmed_result'; label = '已確認結論' }
+            [pscustomobject]@{ name = 'actual_coverage'; label = '實際覆蓋範圍' }
+            [pscustomobject]@{ name = 'incomplete_units'; label = '未完成單位' }
+            [pscustomobject]@{ name = 'evidence_location'; label = '證據位置' }
+        )) {
+        $matches = [regex]::Matches($Message, '(?m)^\s*' + [regex]::Escape([string]$field.label) + '\s*[:：]\s*(?<value>.*?)\s*$')
+        if ($matches.Count -ne 1 -or [string]::IsNullOrWhiteSpace($matches[0].Groups['value'].Value)) {
+            return $false
+        }
+        $fieldValues[[string]$field.name] = $matches[0].Groups['value'].Value.Trim()
+    }
+    if ($fieldValues.confirmed_result -ceq '無' -or $fieldValues.actual_coverage -ceq '無') {
+        return $false
+    }
+    return Test-DispatchFullyQualifiedPath -Path ([string]$fieldValues.evidence_location)
+}
+
 function Get-DispatchContinuationFailureHandoff {
     [CmdletBinding()]
     param(
@@ -970,25 +1118,36 @@ function Get-DispatchContinuationFailureHandoff {
         $selectedUnits = @($FallbackSelectedUnits | ForEach-Object { [string]$_ } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     }
     $scopePlanSelectionSource = if ($scopePlanLoaded) { 'scope_plan' } elseif ($selectedUnits.Count -gt 0) { 'fallback_selected_units' } else { 'unavailable' }
+    $currentScopePlan = if ($scopePlanLoaded) { $scopePlan } else { $null }
+    $classificationSource = Resolve-DispatchContinuationClassificationSource -EventStreamPath $EventStreamPath -RunRecordPath $RunRecordPath -SourceRoot $SourceRoot -ExecutionRoot $resolvedExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
 
     $safePointMessage = ''
     $safePointSourcePath = $null
+    $safePointSourceRunRecordPath = $null
+    $safePointSourceRunRecord = $null
+    $safePointScopeCompatible = $false
+    $safePointFieldsPresent = $false
     $handoffEventStreamPathValue = $EventStreamPath
     $handoffRunRecordPathValue = $RunRecordPath
-    if (-not [string]::IsNullOrWhiteSpace($EventStreamPath) -and -not [string]::IsNullOrWhiteSpace($resolvedExecutionRoot)) {
+    if ([string]$classificationSource.status -ceq 'available') {
+        $handoffRunRecordPathValue = [string]$classificationSource.run_record_path
+        $handoffEventStreamPathValue = [string]$classificationSource.path
+        $currentRunRecord = $classificationSource.record
+        $taskType = if ($null -eq $RequestDocument) { '' } else { [string](Get-DispatchJsonProperty -Object $RequestDocument -Name 'task_type') }
         try {
-            $eventPathValue = Resolve-AbsolutePath -Path $EventStreamPath
-            if ((Test-PathWithinRoot -Path $eventPathValue -Root $resolvedExecutionRoot) -and (Test-Path -LiteralPath $eventPathValue -PathType Leaf)) {
-                $taskType = if ($null -eq $RequestDocument) { '' } else { [string](Get-DispatchJsonProperty -Object $RequestDocument -Name 'task_type') }
-                $safePointMessage = Get-LatestSafePointMessage -EventPath $eventPathValue -TaskType $taskType
-                if (-not [string]::IsNullOrWhiteSpace($safePointMessage)) {
-                    $safePointSourcePath = $eventPathValue
-                }
+            $currentSafePointMessage = Get-LatestSafePointMessage -EventPath ([string]$classificationSource.path) -TaskType $taskType
+            if (-not [string]::IsNullOrWhiteSpace($currentSafePointMessage) -and
+                (Test-DispatchContinuationSafePointFields -Message $currentSafePointMessage) -and
+                (Test-DispatchContinuationProgressScopeCompatible -SourceRunRecord $currentRunRecord -CurrentScopePlan $currentScopePlan -CurrentSelectedUnits $selectedUnits)) {
+                $safePointMessage = $currentSafePointMessage
+                $safePointSourcePath = [string]$classificationSource.path
+                $safePointSourceRunRecordPath = [string]$classificationSource.run_record_path
+                $safePointSourceRunRecord = $currentRunRecord
+                $safePointScopeCompatible = $true
+                $safePointFieldsPresent = $true
             }
         }
         catch {
-            $safePointMessage = ''
-            $safePointSourcePath = $null
         }
     }
 
@@ -1027,12 +1186,24 @@ function Get-DispatchContinuationFailureHandoff {
                     $fallbackEventPath = $candidateEventPath
                 }
                 $candidateTaskType = if ($null -eq $RequestDocument) { '' } else { [string](Get-DispatchJsonProperty -Object $RequestDocument -Name 'task_type') }
-                $candidateSafePointMessage = Get-LatestSafePointMessage -EventPath $candidateEventPath -TaskType $candidateTaskType
-                if ([string]::IsNullOrWhiteSpace($candidateSafePointMessage)) {
+                try {
+                    $null = Get-DispatchRunEvents -Record $candidateRecord
+                    $candidateSafePointMessage = Get-LatestSafePointMessage -EventPath $candidateEventPath -TaskType $candidateTaskType
+                }
+                catch {
+                    continue
+                }
+                if ([string]::IsNullOrWhiteSpace($candidateSafePointMessage) -or
+                    -not (Test-DispatchContinuationSafePointFields -Message $candidateSafePointMessage) -or
+                    -not (Test-DispatchContinuationProgressScopeCompatible -SourceRunRecord $candidateRecord -CurrentScopePlan $currentScopePlan -CurrentSelectedUnits $selectedUnits)) {
                     continue
                 }
                 $safePointMessage = $candidateSafePointMessage
                 $safePointSourcePath = $candidateEventPath
+                $safePointSourceRunRecordPath = $candidateRecordPath
+                $safePointSourceRunRecord = $candidateRecord
+                $safePointScopeCompatible = $true
+                $safePointFieldsPresent = $true
                 $handoffRunRecordPathValue = $candidateRecordPath
                 $handoffEventStreamPathValue = $candidateEventPath
                 break
@@ -1048,6 +1219,26 @@ function Get-DispatchContinuationFailureHandoff {
         }
     }
 
+    $safePointUnitFilterMessage = $safePointMessage
+    if ([string]::IsNullOrWhiteSpace($safePointUnitFilterMessage) -and
+        -not [string]::IsNullOrWhiteSpace($EventStreamPath) -and
+        -not [string]::IsNullOrWhiteSpace($resolvedExecutionRoot)) {
+        try {
+            $diagnosticEventPath = Resolve-AbsolutePath -Path $EventStreamPath
+            if ((Test-PathWithinRoot -Path $diagnosticEventPath -Root $resolvedExecutionRoot) -and
+                (Test-Path -LiteralPath $diagnosticEventPath -PathType Leaf)) {
+                $diagnosticTaskType = if ($null -eq $RequestDocument) { '' } else { [string](Get-DispatchJsonProperty -Object $RequestDocument -Name 'task_type') }
+                $diagnosticSafePointMessage = Get-LatestSafePointMessage -EventPath $diagnosticEventPath -TaskType $diagnosticTaskType
+                if (-not [string]::IsNullOrWhiteSpace($diagnosticSafePointMessage) -and
+                    (Test-DispatchContinuationSafePointFields -Message $diagnosticSafePointMessage)) {
+                    # Keep discarded-unit diagnostics without treating an unverified event stream as continuation progress.
+                    $safePointUnitFilterMessage = $diagnosticSafePointMessage
+                }
+            }
+        }
+        catch {
+        }
+    }
     $confirmedResults = @()
     $incompleteUnits = @($selectedUnits)
     $discardedIncompleteUnits = New-Object 'System.Collections.Generic.List[object]'
@@ -1059,7 +1250,7 @@ function Get-DispatchContinuationFailureHandoff {
     if ($coverageMatch.Success -and -not [string]::IsNullOrWhiteSpace($coverageMatch.Groups['value'].Value) -and $coverageMatch.Groups['value'].Value -cne '無') {
         $confirmedResults += ('實際覆蓋範圍：' + $coverageMatch.Groups['value'].Value.Trim())
     }
-    $incompleteMatch = [regex]::Match($safePointMessage, '(?m)^\s*未完成單位\s*[:：]\s*(?<value>.*?)\s*$')
+    $incompleteMatch = [regex]::Match($safePointUnitFilterMessage, '(?m)^\s*未完成單位\s*[:：]\s*(?<value>.*?)\s*$')
     if ($incompleteMatch.Success) {
         $incompleteText = $incompleteMatch.Groups['value'].Value.Trim()
         if ([string]::IsNullOrWhiteSpace($incompleteText) -or $incompleteText -ceq '無') {
@@ -1147,6 +1338,12 @@ function Get-DispatchContinuationFailureHandoff {
             $incompleteUnits = @($selectedUnits | Where-Object { @($matchedSelectedUnits.ToArray()) -ccontains [string]$_ })
         }
     }
+    $safePointProgressValid = $safePointScopeCompatible -and $safePointFieldsPresent -and
+        -not [string]::IsNullOrWhiteSpace($safePointSourcePath) -and $discardedIncompleteUnits.Count -eq 0
+    if (-not $safePointProgressValid) {
+        $confirmedResults = @()
+        $incompleteUnits = @($selectedUnits)
+    }
 
     $handoffRunIdValue = ''
     $interruptionCheckpointPathValue = $null
@@ -1178,6 +1375,21 @@ function Get-DispatchContinuationFailureHandoff {
         if (-not [string]::IsNullOrWhiteSpace([string]$source.path)) {
             $sourceLocations.Add([ordered]@{ kind = $source.kind; path = Resolve-AbsolutePath -Path $source.path; run_id = $handoffRunIdValue })
         }
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$classificationSource.path)) {
+        $sourceLocations.Add([ordered]@{
+                kind = 'failure_classification_event_stream'
+                path = [string]$classificationSource.path
+                run_id = [string]$classificationSource.run_id
+            })
+    }
+    if (-not [string]::IsNullOrWhiteSpace($safePointSourcePath)) {
+        $progressRunId = if ($null -eq $safePointSourceRunRecord) { $handoffRunIdValue } else { [string]$safePointSourceRunRecord.run_id }
+        $sourceLocations.Add([ordered]@{
+                kind = 'continuation_progress_event_stream'
+                path = [string]$safePointSourcePath
+                run_id = $progressRunId
+            })
     }
     foreach ($location in @($discardedIncompleteUnits.ToArray())) {
         if (-not [string]::IsNullOrWhiteSpace([string]$location.unit)) {
@@ -1220,7 +1432,57 @@ function Get-DispatchContinuationFailureHandoff {
         new_request_required = $true
         automatic_retry = $false
     }
+    $failureClassification = $null
+    $retryAllowed = $null
+    $resumable = $null
+    $recommendedNextStep = $null
+    $classificationEventEvidence = if ([string]$classificationSource.status -ceq 'available') { $classificationSource.event_evidence } else { $null }
+    $serviceRejectionEvidence = if ($null -eq $classificationEventEvidence) { $null } else { Convert-EventEvidenceToServiceRejection -EventEvidence $classificationEventEvidence }
+    $serverStreamDisconnect = $null -ne $classificationEventEvidence -and
+        (Get-DispatchJsonProperty -Object $classificationEventEvidence -Name 'server_stream_disconnect') -eq $true -and
+        [string](Get-DispatchJsonProperty -Object $classificationEventEvidence -Name 'last_event_type') -cne 'turn.completed'
+    if ($null -ne $serviceRejectionEvidence) {
+        $failureClassification = 'QuotaServiceRejected'
+        $retryAllowed = $false
+        $resumable = $false
+        $recommendedNextStep = 'usage-limit 額度拒絕：等待額度恢復後由使用者決定；不要自動重試。'
+    }
+    elseif ($serverStreamDisconnect) {
+        $failureClassification = 'ServiceStreamDisconnected'
+        $retryAllowed = $true
+        $resumable = $safePointProgressValid -and $incompleteUnits.Count -gt 0
+        if ($resumable) {
+            $recommendedNextStep = '可重試且可續行：使用 new dispatchSlug（見 cold_start_entry.dispatch_slug）以 cold-start 重新派遣，requested_unit 僅限 safe point 對應的 incomplete_units。'
+        }
+        else {
+            $recommendedNextStep = '可重試：使用 new dispatchSlug（見 cold_start_entry.dispatch_slug）以 cold-start 重新派遣，依 ScopePlan.selected_units 重新執行。'
+        }
+    }
+    $coldStartEntry.recommended_next_step = $recommendedNextStep
+    $coldStartEntry.retry_allowed = $retryAllowed
+    $coldStartEntry.resumable = $resumable
+    $progressSourceStatus = if ($safePointProgressValid) { 'available' } elseif ([string]::IsNullOrWhiteSpace($handoffEventStreamPathValue)) { 'unavailable' } else { 'unverified' }
+    $progressSourceReason = if ($safePointProgressValid) { $null } elseif ($progressSourceStatus -eq 'unavailable') { '沒有可核對的 safe point 事件流。' } else { 'safe point 欄位、來源 RunRecord 或 ScopePlan 相容性不足；未採用其進度。' }
+    $progressSourceRunId = if ($null -eq $safePointSourceRunRecord) { $handoffRunIdValue } else { [string]$safePointSourceRunRecord.run_id }
     return [ordered]@{
+        failure_classification = $failureClassification
+        retry_allowed = $retryAllowed
+        resumable = $resumable
+        recommended_next_step = $recommendedNextStep
+        failure_classification_source = [ordered]@{
+            status = [string]$classificationSource.status
+            path = $classificationSource.path
+            run_record_path = $classificationSource.run_record_path
+            run_id = $classificationSource.run_id
+            reason = $classificationSource.reason
+        }
+        continuation_progress_source = [ordered]@{
+            status = $progressSourceStatus
+            path = if (-not [string]::IsNullOrWhiteSpace($safePointSourcePath)) { $safePointSourcePath } else { $handoffEventStreamPathValue }
+            run_record_path = if (-not [string]::IsNullOrWhiteSpace($safePointSourceRunRecordPath)) { $safePointSourceRunRecordPath } else { $handoffRunRecordPathValue }
+            run_id = $progressSourceRunId
+            reason = $progressSourceReason
+        }
         confirmed_results = @($confirmedResults)
         confirmed_results_source = [ordered]@{
             status = if ($confirmedResults.Count -gt 0) { 'available' } else { 'insufficient' }
@@ -1303,6 +1565,12 @@ function Write-DispatchFailureReceipt {
     }
     if ($null -ne $ContinuationHandoff) {
         $document.continuation_handoff = $ContinuationHandoff
+        foreach ($fieldName in @('failure_classification', 'retry_allowed', 'resumable', 'recommended_next_step')) {
+            $fieldValue = Get-DispatchJsonProperty -Object $ContinuationHandoff -Name $fieldName
+            if ($null -ne $fieldValue) {
+                Set-DispatchJsonPropertyValue -Object $document -Name $fieldName -Value $fieldValue
+            }
+        }
     }
     return Write-DispatchAtomicJsonDocument -Path $Path -Document $document -SourceRoot $guardSourceRoot -ExecutionRoot $guardExecutionRoot -TargetPath @($TargetPath) -HashProperty ''
 }
