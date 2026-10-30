@@ -10,7 +10,6 @@
 | `fix-file-encoding` | 指令型 | human | 偵測並修正檔案亂碼問題，依副檔名轉換至正確目標編碼（Big5/ANSI → UTF-8 系列）。 |
 | `generate-api-doc` | 指令型 | human | 為 ASP.NET Core Controller 或 Minimal API 自動補齊 XML 文件與 Swagger Attributes，讓 OpenAPI 文件完整呈現。 |
 | `generate-changelog-zh-tw` | 指令型 | human | 依據 Git 提交紀錄自動產生 CHANGELOG 區段（繁體中文），並支援 MinVer 版本號推進規格。 |
-| `generate-editorconfig-by-techstack` | 指令型 | human | 依專案技術棧與 .NET 框架版本，從範本過濾出對應的 .editorconfig 段落並補齊，保留既有自訂偏好。 |
 | `generate-frontend-lint-config` | 指令型 | human | 產生或補齊前端 Lint 設定（Prettier + ESLint Flat Config），統一格式化與程式碼品質規則，保留既有自訂偏好。 |
 | `generate-gitattributes` | 指令型 | human | 產生或補齊 .gitattributes，統一行尾處理、二進位識別與 lock files 標記，保留既有自訂偏好。 |
 | `generate-gitignore-by-techstack` | 指令型 | human | 從 github/gitignore 下載對應技術棧的 .gitignore 範本，合併並針對當前專案調整。 |
@@ -31,6 +30,7 @@
 | `check-markdown` | 知識型 | human | 當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。 |
 | `codebase-design` | 知識型 | agent | Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。 |
 | `codex-dispatch` | 知識型 | agent | Codex 派工機制：依派工類型建立執行契約、以 codex exec 啟動 Codex、背景等待、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。 |
+| `create-dotnet-project` | 知識型 | agent | 建立新的 .NET 方案：詢問 C# 風格並寫入註記，以 slnx 格式建立方案、src 與 tests 實體資料夾及 Solution Folder，再依序產生 .editorconfig、.gitignore、.gitattributes 與專案層設定。Use when 使用者要求建立新的 .NET 方案或專案骨架時；既有專案不適用。 |
 | `csharp-aspnetcore` | 知識型 | agent | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
 | `csharp-auth` | 知識型 | agent | ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。 |
 | `csharp-background-service` | 知識型 | agent | Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。 |
@@ -47,7 +47,7 @@
 | `csharp-nunit` | 知識型 | agent | C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。 |
 | `csharp-signalr` | 知識型 | agent | SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。 |
 | `csharp-silent-defects` | 知識型 | agent | Use when 讀取或修改 C# 程式碼，需要檢查合法且不易在開發環境顯現的執行期、時序、文化、數值、集合順序或資源陷阱時。 |
-| `csharp-style` | 知識型 | agent | C# 程式碼風格規範：縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的細則。建立全新 C# 專案，或在無既有慣例的專案新增全新檔案時套用。 |
+| `csharp-style` | 知識型 | agent | C# 程式碼風格規範：依專案 AGENTS.local.md 的 code-style.csharp 註記載入 personal、standard 或 project 風格，並收錄縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的共用細則。撰寫或修改 C# 程式碼時套用。 |
 | `csharp-validation` | 知識型 | agent | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。 |
 | `database-comment-generator` | 知識型 | agent | Use when the user asks to build or update a source-backed database comment vocabulary, or to generate reviewable table and column comment SQL from approved terms and a SchemaExporter snapshot. |
 | `database-schema-context` | 知識型 | agent | Use when the user asks to export or inspect database schema context, use an existing offline schema snapshot, or check database schema changes with SchemaExporter. |
@@ -58,6 +58,7 @@
 | `export-excel` | 知識型 | human | 匯出 Excel 試算表的技能，主要支援 Grid 與 RecordSet 兩種模板，可自訂樣式、命名樣式、資料驗證與工作表保護。當要求匯出或產生 Excel 檔案時使用。 |
 | `fact-check-note` | 知識型 | human | 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes. |
 | `generate-commit` | 知識型 | human | 依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔案過濾與拆分建議。當使用者要求提交變更或產生 commit 訊息時使用。 |
+| `generate-editorconfig-by-techstack` | 知識型 | human | 依 C# 風格註記選擇 personal 或 standard 範本，再依專案技術棧與 .NET 框架版本過濾出對應的 .editorconfig 段落並補齊，保留既有自訂偏好。Use when 使用者要求產生或補齊 .editorconfig，或 create-dotnet-project 建立新 .NET 方案時；日常 C# 開發不觸發。 |
 | `git-workflow` | 知識型 | agent | Git 分支策略與協作規範：分支命名、PR 模板、Merge 策略選用與 Git Hooks 慣例。當討論分支管理、PR 流程或版本發布時自動套用。 |
 | `glossary` | 知識型 | human | 維護專案專屬業務術語表，處理使用者用詞衝突、程式碼語意矛盾與即時寫入。Use when 專案已宣告詞彙表，且當前對話或程式碼使用了表中既有術語但語意與定義不符時。 |
 | `integration-verify` | 知識型 | agent | 開發完成後的整合驗證入口。當使用者要求在功能開發完成後自行驗證、做整合測試，或說「幫我驗證」「驗證一下功能」但未指定驗證方式時使用。判斷專案類型後先執行既有單元測試，再路由到對應的煙霧驗證流程。 |

@@ -184,16 +184,15 @@ dotnet_naming_symbols.public_or_protected_field.applicable_kinds = field
 dotnet_naming_symbols.public_or_protected_field.applicable_accessibilities = public, protected, protected_internal, private_protected
 dotnet_naming_symbols.public_or_protected_field.required_modifiers =
 
-#### 欄位命名規則 (Private/Internal instance fields: camelCase, 無底線前綴)
-# 注意：EditorConfig 是由上而下判定優先權限，越上面的判定越容易被下方的複寫。
-# 但因為上述 static/const 的 symbols 明確指定 required_modifiers，因此不會跟這裡單純依賴 accessibilities 的判定衝突。
+#### 欄位命名規則 (Private/Internal fields: camelCase, 無底線前綴)
+# 命名規則依符號種類、可見性與修飾詞的具體程度判定。
+# 一般欄位包含非 readonly 的 static 欄位；const 與 static readonly 由更具體的規則處理。
 dotnet_naming_rule.private_or_internal_field_should_be_camel_case.severity = suggestion
 dotnet_naming_rule.private_or_internal_field_should_be_camel_case.symbols = private_or_internal_field
 dotnet_naming_rule.private_or_internal_field_should_be_camel_case.style = camel_case
 
 dotnet_naming_symbols.private_or_internal_field.applicable_kinds = field
 dotnet_naming_symbols.private_or_internal_field.applicable_accessibilities = internal, private
-## 排除 const (常數) 和 static
 dotnet_naming_symbols.private_or_internal_field.required_modifiers =
 
 #### 泛型型別參數命名規則 (Type parameters: T 前綴 + PascalCase)
@@ -314,6 +313,9 @@ csharp_preserve_single_line_statements = false
 # @profile: csharp-modern
 
 [*.cs]
+# Lock 型別喜好設定（C# 13 / .NET 9+）
+csharp_prefer_system_threading_lock = true:suggestion
+
 # 模式比對喜好設定（C# 9+）
 csharp_style_prefer_extended_property_pattern = true:suggestion
 csharp_style_prefer_not_pattern = true:suggestion

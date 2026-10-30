@@ -17,7 +17,7 @@ policy.allow_implicit_invocation: false
 
 | 偵測依據 | 對應 gitignore 範本 |
 | --- | --- |
-| `*.csproj`、`*.sln` | `VisualStudio.gitignore` |
+| `*.csproj`、`*.sln`、`*.slnx` | `VisualStudio.gitignore` |
 | `package.json` | `Node.gitignore` |
 | `*.vue` | （已含於 Node） |
 | `*.py`、`pyproject.toml` | `Python.gitignore` |

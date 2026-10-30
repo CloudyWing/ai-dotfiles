@@ -214,7 +214,7 @@ audience: agent
 - **DI Lifetime**：`DbContext` 必須 Scoped；Scoped 服務不得注入至 Singleton
 - **HttpClient**：禁止直接 `new HttpClient()`，一律透過 `IHttpClientFactory`
 - **非同步**：Library 層非同步呼叫加 `.ConfigureAwait(false)`；禁止 `.Result`、`.Wait()`
-- **命名**：`private field` 無前綴（非 `_xxx`）；常數 PascalCase
+- **命名**：`private field` 前綴依專案 `.editorconfig` 的 `dotnet_naming_*` 規則判定；專案沒有 `.editorconfig` 或未設定欄位命名時，依專案根目錄 `AGENTS.local.md` 的 `code-style.csharp` 註記判定（`personal` 不加前綴、`standard` 為 `_camelCase` 與 private static 的 `s_camelCase`、`project` 依 `.local/ai-context/csharp-style-project.md`）；兩者皆無時在 §7 列為待確認；常數 PascalCase
 
 ## 互動規範
 

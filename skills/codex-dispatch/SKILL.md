@@ -77,6 +77,16 @@ PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重
 
 `Dispatch` 串接步驟 2 至 6。預設同步等待 Codex 結束後執行 Inspect，回傳 `completed` 或 `failed`；Request 設 `background: true` 時先回傳 `status=started`，只代表 Codex 已啟動，再以 `Inspect -WaitForCompletion` 等待。步驟 7 與 8 的回收判定由主 Agent 執行，派遣不再需要在 Session 內另寫 runner。
 
+### C# 風格註記前置檢查
+
+派遣內容涉及撰寫或修改 `*.cs`、`*.csx` 時，主 Agent 在建立派遣單或 Request 前，依 `csharp-style` skill「風格註記與載入」解析目標專案根目錄 `AGENTS.local.md` 的 `code-style.csharp` 註記。
+
+- 註記有效時照常派工。
+- 缺少註記時，先依該節「第一次詢問」詢問使用者並寫入註記，再建立派遣。
+- 註記格式錯誤時，依該節的錯誤處置停止並回報，不派工。
+
+執行端仍以缺少註記或格式錯誤停止時，主 Agent 先補齊或修正註記，再以新的派遣重新執行；此停止不屬純技術補件，不以續行帶過。
+
 ### Dispatch 正式入口
 
 - 單位自動產生：Workflow 依 `design.md`「實作任務清單」章（`## ` 開頭且含「實作任務清單」的章節）內的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`，找不到該章時才解析全文件；章內同編號連續小節合併為一個單位，非連續重複拒絕；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。Request 欄位驗證錯誤的 detail 只列欄位名稱、預期格式與輸入長度，不回顯原始輸入值。

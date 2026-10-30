@@ -211,14 +211,14 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 | 觸發條件 | 必載 skill |
 | --- | --- |
-| 編輯 `*.cs` | `csharp-style`、`csharp-language-features`、`csharp-comments`、`csharp-silent-defects` |
+| 編輯 `*.cs` | `csharp-style`（依專案 `AGENTS.local.md` 的 `code-style.csharp` 註記追加參考檔：`personal` 載入 `references/personal.md`，`standard` 僅本體，`project` 載入 `.local/ai-context/csharp-style-project.md`；無註記時先詢問）、`csharp-language-features`、`csharp-comments`、`csharp-silent-defects` |
 | 編輯 `*.cs` 且成員為 `public`（套件／Library 專案全體） | 追加 `csharp-docs` |
 | 編輯 `*Tests/**/*.cs` 或含 `[Test]`／`[TestCase]` 的 `*.cs` | 追加 `csharp-nunit` |
 | 讀取或修改 `*.csproj`、`*.sln`、`*.slnx` | `csharp-language-features` |
 | 編輯 `*.md` | `check-markdown`、`doc-editing` |
 | 編輯 `*.ps1`、`*.psm1` | `powershell`、`scripting-conventions` |
 | 編輯 `*.sh` | `scripting-conventions` |
-| 編輯 `*.csx` | `scripting-conventions`、`csharp-style` |
+| 編輯 `*.csx` | `scripting-conventions`、`csharp-style`（依註記追加參考檔，同 `*.cs`） |
 | 在 Windows 執行終端機命令 | `windows-terminal` |
 | 編輯 `*.vue` | `vue3`、`typescript-frontend` |
 | 編輯前端 `*.ts`、`*.tsx` | `typescript-frontend` |
@@ -558,7 +558,7 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 
 C# 程式碼的框架判定、語言特性、命名、成員排序、XML 註解、註解風格、資源管理與效能檢查依下列 Skill 載入：
 
-- `csharp-style`：既有慣例、命名、成員排序、排版、資源管理與效能檢查。
+- `csharp-style`：風格註記與載入、命名、成員排序、排版、資源管理與效能檢查。
 - `csharp-language-features`：TargetFramework、非同步、型別與集合選型、Nullable、日誌與 `nameof()`。
 - `csharp-docs`：XML Documentation 與 public 成員文件分級。
 - `csharp-comments`：單行 `//` 註解風格與使用時機。

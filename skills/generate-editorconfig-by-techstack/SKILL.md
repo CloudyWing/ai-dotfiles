@@ -1,19 +1,30 @@
 ---
 name: generate-editorconfig-by-techstack
-description: 依專案技術棧與 .NET 框架版本，從範本過濾出對應的 .editorconfig 段落並補齊，保留既有自訂偏好。
+description: 依 C# 風格註記選擇 personal 或 standard 範本，再依專案技術棧與 .NET 框架版本過濾出對應的 .editorconfig 段落並補齊，保留既有自訂偏好。Use when 使用者要求產生或補齊 .editorconfig，或 create-dotnet-project 建立新 .NET 方案時；日常 C# 開發不觸發。
 audience: human
 dispatch: either
-disable-model-invocation: true
-policy.allow_implicit_invocation: false
+policy.allow_implicit_invocation: true
 ---
 
 # 產生或補齊 .editorconfig
 
+## 觸發邊界
+
+- 由使用者明確要求產生或補齊 `.editorconfig` 時執行，或由 `create-dotnet-project` 在新方案流程中呼叫。
+- 既有專案的一般開發不主動產生或改寫 `.editorconfig`。使用者另外明確要求時，依本 Skill 的預覽與 Merge 流程處理。
+
 ## 範本來源
 
-本 Skill 的規則內容以 `~/.ai-agents/templates/.editorconfig` 為單一來源。修改建議規則時，**只改範本檔，不改 SKILL.md**。SKILL.md 僅描述執行流程與過濾邏輯。
+本 Skill 的規則內容以下列兩份範本為來源。修改建議規則時，**只改範本檔，不改 SKILL.md**。SKILL.md 僅描述執行流程與過濾邏輯。
 
-範本檔位於使用者家目錄下的 `.ai-agents/` 專案。執行時若找不到範本檔，告知使用者後流程終止，不自行重建內容。
+| 風格 | 範本路徑 |
+| --- | --- |
+| `personal` | `~/.ai-agents/templates/.editorconfig` |
+| `standard` | `~/.ai-agents/templates/.editorconfig.standard` |
+
+兩份範本使用相同的 `# @profile` 標記與過濾方式。選擇範本屬風格維度，`csharp-modern`／`dotnet-framework` 屬技術棧維度，先選範本再依技術棧過濾。
+
+範本檔位於使用者家目錄下的 `.ai-agents/` 專案。執行時若找不到選定的範本檔，告知使用者後流程終止，不自行重建內容，也不改用另一份範本。
 
 ### 範本的 Profile 機制
 
@@ -42,7 +53,7 @@ policy.allow_implicit_invocation: false
 | `Dockerfile` | Docker |
 | `*.ps1` | PowerShell |
 
-偵測到 .NET 專案時，**必須**進一步讀取 `*.csproj` 的 `<TargetFramework>` 或 `<TargetFrameworks>` 欄位，判定屬於：
+偵測到 .NET 專案時，**必須**進一步讀取 `*.csproj` 的 `<TargetFramework>` 或 `<TargetFrameworks>` 欄位。方案內尚無 `*.csproj` 時（例如 `create-dotnet-project` 剛建立 `.slnx`），改用呼叫端明確傳入的目標框架；未傳入時詢問使用者，不從 `.sln`／`.slnx` 推斷。判定屬於：
 
 - **.NET Framework**（`net4x`，如 `net472`、`net48`）→ 套用 `dotnet-framework` profile
 - **Modern .NET**（`net5.0` 以上、`netcoreapp*`、`net8.0-windows` 等）→ 套用 `csharp-modern` profile
@@ -50,15 +61,29 @@ policy.allow_implicit_invocation: false
 
 若 solution 內多個專案目標框架不一致，以**最舊**的為準（最保守，避免新設定漏給舊專案）。
 
-### 2. 讀取範本
+### 2. 選擇範本
 
-讀取 `~/.ai-agents/templates/.editorconfig`，解析三類段落：
+偵測到 .NET 專案時，依 `csharp-style` skill「風格註記與載入」的格式與解析規則讀取專案根目錄 `AGENTS.local.md` 的 `code-style.csharp` 註記：
+
+| 註記狀態 | 處置 |
+| --- | --- |
+| `personal` | 使用 personal 範本 |
+| `standard` | 使用 standard 範本 |
+| `project` | 此值沒有對應範本。停止並請使用者指定本次採用 personal 或 standard，不改寫註記 |
+| 無註記 | 依 `csharp-style` skill「第一次詢問」詢問並寫入註記後，使用對應範本；由 `create-dotnet-project` 呼叫時，使用其已寫入的註記 |
+| 註記格式錯誤 | 依 `csharp-style` skill 的錯誤處置停止，不猜測範本 |
+
+呼叫端傳入的註記值與 `AGENTS.local.md` 內容不一致時停止並回報，不自行擇一。非 .NET 技術棧不讀註記，使用 personal 範本的通用段落。
+
+### 3. 讀取範本
+
+讀取步驟 2 選定的範本，解析三類段落：
 
 - **通用段落**：未標記的 `[*]`、`[*.md]`、`[*.{json,...}]`、`[*.py]`、`[*.ps1]`、`[*.{csv,bat,cmd}]`、`[*.{cs,vb}]`、`[*.cs]`（不含 `# @profile` 標記）
 - **`csharp-modern` 段落**：標記 `# @profile: csharp-modern` 之後到下一個 `# @profile` 或檔尾之間的所有段落
 - **`dotnet-framework` 段落**：標記 `# @profile: dotnet-framework` 之後到下一個 `# @profile` 或檔尾之間的所有段落
 
-### 3. 依技術棧過濾段落
+### 4. 依技術棧過濾段落
 
 依步驟 1 的偵測結果，組合最終輸出：
 
@@ -72,7 +97,7 @@ policy.allow_implicit_invocation: false
 
 非 .NET 通用段落（`[*.py]`、`[*.ps1]` 等）即使該專案無此檔案類型也保留，因為 glob filter 不會誤套用，且未來新增該類型檔案時可直接生效。
 
-### 4. 讀取既有 .editorconfig
+### 5. 讀取既有 .editorconfig
 
 若 `.editorconfig` 已存在：
 
@@ -80,15 +105,15 @@ policy.allow_implicit_invocation: false
 2. 識別使用者已自訂的 pattern 與設定鍵（如刻意設定的 `indent_size`、`end_of_line` 等）。
 3. 後續步驟僅**補齊缺少的段落或設定鍵**，不覆蓋已有設定。
 
-若不存在，後續步驟以步驟 3 的過濾結果建立全新檔案。
+若不存在，後續步驟以步驟 4 的過濾結果建立全新檔案。
 
-### 5. 衝突偵測
+### 6. 衝突偵測
 
 若已存在 `.editorconfig`，比對現有設定鍵與本次過濾後內容的差異：
 
 1. 列出**衝突點**：同一個 pattern 與設定鍵但值不同（如現有 `indent_size = 2`，範本為 `4`）。
 2. 對每個衝突點，提供**最小變更方案**：優先保留使用者已設定的值，僅補齊完全缺少的設定鍵。
-3. 若衝突點超過 3 個，在進入步驟 6 前先列出衝突清單，讓使用者決定哪些保留、哪些覆蓋。
+3. 若衝突點超過 3 個，在進入步驟 7 前先列出衝突清單，讓使用者決定哪些保留、哪些覆蓋。
 
 特別注意以下既有設定不可靜默覆蓋：
 
@@ -96,14 +121,15 @@ policy.allow_implicit_invocation: false
 - 已存在的 `dotnet_diagnostic.*.severity`（影響建置警告等級）。
 - 已存在的命名規則（`dotnet_naming_*`）。
 
-若無衝突，直接進入步驟 6。
+若無衝突，直接進入步驟 7。
 
-### 6. 套用前確認
+### 7. 套用前確認
 
 顯示完整的 `.editorconfig` 預覽內容（或僅顯示新增/修改的段落），**停止等待使用者確認**後再執行寫入。確認格式：
 
 ```
 偵測技術棧：[結果]
+選用範本：[personal 或 standard]
 套用 Profile：[結果]
 
 以下是將要寫入的 .editorconfig 內容（新增段落）：
@@ -117,13 +143,13 @@ charset = utf-8
 
 若使用者要求調整，修改後重新顯示確認。
 
-### 7. 寫入結果
+### 8. 寫入結果
 
 **已存在 .editorconfig**：使用 Merge 模式，將缺少的段落或設定鍵插入對應位置，不移動或覆蓋已有內容。**寫入時必須移除所有 `# @profile: ...` 標記行**（標記僅供範本與 skill 過濾使用，不應出現在最終專案檔案中）。
 
-**不存在 .editorconfig**：依步驟 3 的過濾結果建立新檔，同樣移除 `# @profile` 標記。
+**不存在 .editorconfig**：依步驟 4 的過濾結果建立新檔，同樣移除 `# @profile` 標記。
 
-### 8. 完成確認
+### 9. 完成確認
 
 輸出：
 
@@ -132,4 +158,4 @@ charset = utf-8
 - 新增的段落或設定鍵清單。
 - 略過（已存在）的段落清單。
 - 衝突清單與處理結果。
-- 範本來源路徑。
+- 選用的範本、對應的 `code-style.csharp` 註記值與範本來源路徑。
