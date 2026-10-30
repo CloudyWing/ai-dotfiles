@@ -1,0 +1,56 @@
+# Codex 派工機制：失敗與恢復
+
+本檔收錄 派遣失敗或中斷時的恢復導引與回收前的 RecoveryPrecheck。入口與其他階段的檔案見 `../SKILL.md`「階段路由」。
+
+## 失敗與恢復導引
+
+| 失敗形狀 | 恢復方式 | 詳細節 |
+| --- | --- | --- |
+| 事件流以 usage-limit 結束（服務端拒絕） | 不重試同一派遣；等待重設，或依「主 Agent 的帳號切換決策」以手動查詢的額度選另一帳號冷啟動 | 額度與範圍契約 |
+| admission 或 Start 準備階段失敗、Codex 程序未啟動 | 修正輸入後可用同一個 `dispatchSlug` 重新冷啟動。腳本會清除該次失敗嘗試建立的 ScopePlan hash 紀錄，`failure receipt` 與 `launch-failed` RunRecord 保留供稽核；已啟動成功者的 hash、ledger 與 owner 不受影響。若 `Cleanup` 缺少 Preflight，未啟動證明還要求 dispatch worktree 的 `.local\ai-sessions\history` 下不存在 `codex-exec-*.jsonl` 與 `codex-thread-<dispatchSlug>.txt`；任一檔案存在時以 `CleanupPreflightResultRequired` 拒絕並保留 worktree。該次嘗試已建立 dispatch worktree 時，Preflight 會因 dispatchRoot 已被占用而拒絕，此時改用新的 `dispatchSlug`；Prepare 結果檔已存在而發生 `PrepareResultCollision` 時，改用新的結果路徑或新的 `dispatchSlug` | 續 session 與跨介面接手 |
+| 續行被拒 | 以 `git -C <舊 dispatchRoot> diff HEAD` 與未追蹤檔案清單轉移成果，以新的 `dispatchSlug` 冷啟動 | Codex 進程 PID 與並行檢查 |
+| 事件流在最後訊息前中斷，沒有 `turn.completed` 或 `turn.failed` | 先執行 `Inspect` 與 `Collect` 取回中斷保全檔；只交付已確認單位與其證據，其餘 selected units 保持未完成 | InterruptionSafeguard |
+| 事件流以 `turn.failed` 結束或 exit code 非零 | 依 C 出口取失敗原因。若事件流以 `turn.failed` 結束且結案報告不存在，`Inspect` 與 `Collect` 回報 `recoverable_artifacts_present` 及 `recoverable_artifact_files`，供主 Agent 檢視相對 `baseSha` 的 worktree 變更並決定是否以新 `dispatchSlug` 冷啟動；欄位不改變失敗判定 | 完成判定與三出口 |
+| 派遣 target_path 符合機密檔名樣式 | `Preflight` 以 `PreflightSecretTargetRejected` 列出路徑並在建立 worktree 前停止 | Git 前置探針與 worktree 生命週期 |
+| Prepare 失敗且 `PrepareFailed` 文件再次寫入失敗 | 由 operation result 的 `prepareResultWriteFailure.code=PrepareResultWriteFailed` 與 `prepareResultWriteFailure.path` 取得錯誤碼與目標路徑；`prepareResultSha256=null`，不將該路徑視為已成功保存的 Prepare 文件，修正寫入條件後重新 Prepare | 腳本介面與執行前提 |
+| 結案訊息缺少識別字 | 標記 `PromptNotDelivered`，修正啟動方式後重新派遣 | RecoveryPrecheck |
+
+### 四種阻塞形狀的產物與交接
+
+派工受阻時，先判定屬於下列哪一種形狀，再依對應的產物語意與交接方式處理。腳本已承擔的部分不改由人工步驟補做。
+
+| 阻塞形狀 | 產物語意 | 操作交接 | 詳細節 |
+| --- | --- | --- | --- |
+| 入口不對稱 | `Dispatch` 是新派遣的唯一正式入口；Request 檔與命令列的同名欄位語意與驗證相同，兩邊不一致時以 `DispatchRequestMismatch` 拒絕 | 新的一筆派遣一律從 `Dispatch` 進入；`Preflight`、`Prepare`、`Start` 的分步入口只用於續行、恢復與測試 | 使用時機與入口選擇、Dispatch 正式入口 |
+| 失敗重試污染 | 程序未啟動的失敗嘗試留下 `failure receipt` 與 `launch-failed` RunRecord 供稽核，該次建立的 ScopePlan hash 會被清除 | 程序未啟動且未留下 dispatch worktree 時以同一個 `dispatchSlug` 重試，已留下 worktree 時改用新的 `dispatchSlug`；程序已啟動的派遣改走續行，或以新 `dispatchSlug` 冷啟動並轉移成果 | 失敗與恢復導引、續 session 與跨介面接手 |
+| 外部狀態恢復 | 服務端以 usage-limit 拒絕時不重試；中斷時以中斷保全檔記錄已確認單位與證據位置 | 主 Agent 需要額度數值時以 `Get-CodexQuota.ps1` 手動查詢，advisor 啟動由使用者授權；中斷後先 `Inspect`、`Collect` 取回中斷保全檔，只交付已確認單位 | 額度與範圍契約、InterruptionSafeguard、advisor 授權請求 |
+| 同名參數語意 | `-ResultPath` 只寫 CLI envelope；`-PrepareResultPath` 寫 `ai-sessions.prepare.v1` 文件；每個產物只有一個寫入者 | `Start` 只接受 `ai-sessions.prepare.v1` 文件；`Collect` 的參數取自 `Dispatch` 輸出欄位，不自行拼湊路徑 | 最短正常路徑、Dispatch 正式入口 |
+
+`ScopePlan` hash 紀錄寫入 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\scope-plan-hash-<dispatchSlug>.json`，不同線可使用相同 `dispatchSlug`。讀取時若同線路徑不存在，才檢查舊版 history 根目錄的 `scope-plan-hash-<dispatchSlug>.json`；只有舊紀錄的 `line_slug`，或其 `root_run_id` 對應 RunRecord 的所屬線，與目前 `lineSlug` 相同時才沿用。其他線的舊紀錄不阻擋目前派遣，也不會被改寫或刪除。同一線內仍須使用不同 `dispatchSlug` 識別不同派遣。
+
+## RecoveryPrecheck
+
+事件流取證後，先從符合目前派工類型的 `agent_message` 取最後一則結案訊息。識別字依派工類型判定，兩種類型都必須包含 `dispatchSlug` 與 `lineSlug`，第三項識別字如下。
+
+| 派工類型 | 第三項識別字 |
+| --- | --- |
+| Workflow 派工 | `dispatchLineRoot\design.md` 的絕對路徑 |
+| 資源派遣 | 派遣單的絕對路徑 |
+
+Workflow 派工沒有派遣單，以派遣單絕對路徑作為共同條件會使正常結案一律被判為 `PromptNotDelivered` 並重派。缺少任一識別字時，狀態設為 `PromptNotDelivered`，修正啟動方式後重新派遣；此狀態不計入退回次數，也不進入第 5 欄驗收缺漏的退回計數。只有 `RecoveryPrecheck` 通過後，才可進入回收三態判定。
+
+### 回收收斂判定
+
+回收三態套用 `instructions.md` §1.5 的共同收斂契約。一次修正連同其驗收或回歸判定為一輪，初次執行為第 1 輪。對派遣回收而言，`recovery-round` 記錄每次純技術續行增加的輪次。派遣回收的 `problem-key` 使用 `dispatchSlug` 加派遣單第 5 欄的驗收列序號，驗收列序號在同一派遣的各輪保持不變。
+
+派遣回收的 `area-key` 為派遣單第 5 欄驗收條件所屬的目標物件檔案與節名。嚴重度映射如下。
+
+| 循環 | `Critical` | `Major` | `Minor` |
+| --- | --- | --- | --- |
+| 派遣回收 | 產出遺失、證據不可追溯或錯誤同步 | 必要驗收條件不成立或回報與產出矛盾 | 單一欄位、格式或命令輸出缺漏且可直接補件 |
+
+- 每輪逐條保存第 5 欄驗收結果、命令輸出、報告與事件證據。前輪未成立的驗收列在本輪相同 key 成立且沒有反證時標記 `closed`；本輪 key 不在前輪未成立集合且沒有同一 key 的改寫或重新命名時標記 `new-problem`。
+- `dispatch-return-count` 只記錄該派遣的退回稽核資料，不作一般停止條件。`PromptNotDelivered` 是啟動契約錯誤，不增加此計數。
+- 全部驗收列成立時進入下一站。前輪問題連續兩輪未閉合、同一 `area-key` 連續兩輪出現新的 `Major` 以上問題、修正需要改變需求或已確認設計，或 `recovery-round` 達到 6 輪時停止，保留證據並提出替代方向。
+- 所有問題均屬純技術可解、未命中上述停止訊號，且前輪問題已閉合或本輪新問題只有 `Minor` 時自動續行。新出現的 `Major` 在尚未形成停止訊號前依純技術路徑續行。
+

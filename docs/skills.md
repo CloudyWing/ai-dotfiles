@@ -71,6 +71,7 @@
 | `redis-caching` | 知識型 | agent | Redis 快取開發規範：Key 命名階層、TTL 策略、Cache-Aside 模式與 StackExchange.Redis 連線管理。當撰寫或修改快取邏輯時自動套用。 |
 | `requirement-context` | 知識型 | agent | 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。 |
 | `scripting-conventions` | 知識型 | agent | Use when 選擇或撰寫 PowerShell、Shell 或 C# Script，需判斷執行平台、編碼與相依工具時。 |
+| `session-artifacts` | 知識型 | agent | Use when 建立、讀取、回收、保存或清理 .local/ai-sessions/ 下的交接檔、派遣單、報告或其他工作產物，需要確定分類與落點時。 |
 | `sql-query` | 知識型 | agent | SQL 撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求，涵蓋 SQL Server（T-SQL）與 Oracle 雙資料庫的語法差異與語意陷阱。當撰寫或審查原生 SQL 時自動套用。 |
 | `survey` | 知識型 | human | 掃描專案結構並產出供團隊成員閱讀的技術文件索引。當要求掃描專案、建立文件索引、補齊技術文件或盤點專案結構時使用。 |
 | `typescript-frontend` | 知識型 | agent | 前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。 |
@@ -80,4 +81,5 @@
 | `vue-router` | 知識型 | agent | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。 |
 | `vue3` | 知識型 | agent | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
 | `windows-terminal` | 知識型 | agent | Use when 在 Windows 執行終端機命令，需要處理輸出編碼、中文亂碼或輸出截斷時。 |
+| `workflow-orchestration` | 知識型 | agent | Use when 執行或回收 Clarify => Design => Implement => Review => Accept Workflow、判定其共同收斂循環，或規劃 Workflow 驗證與交付時。 |
 | `writing-for-agents` | 知識型 | agent | Use when 撰寫或修改全域 Agent 規範、Skill 文件或交接文件，需要控制資訊密度與驗收條件時。 |

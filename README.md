@@ -113,6 +113,18 @@ Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方�
 | `agents/*.md` | 全域自訂 Persona 與 Claude 端 sub-agent |
 | `settings.json` | Hook 設定（工具呼叫前後的自動化行為） |
 
+#### 自訂 frontmatter 欄位
+
+Skill 與 agent 定義的 frontmatter 另含 `dispatch`、`audience` 與 `policy.allow_implicit_invocation` 三個欄位。這三個欄位是本專案自訂的中繼資料，供主 Agent 判定派工歸屬與產生文件使用，不是 Claude Code 原生的權限控制；Claude Code 不依這三個欄位限制工具呼叫、檔案寫入或命令執行。
+
+| 欄位 | 用途 | 讀取者 |
+| --- | --- | --- |
+| `dispatch` | Skill 的派工歸屬，值為 `delegate`、`inline`、`split` 或 `either` | 主 Agent 依 `instructions.md` §1.5「F1 派工判準」判定；`Update-Docs.ps1` 檢查 human-facing Skill 的值 |
+| `audience` | 文件讀者，值為 `agent` 或 `human` | `Update-Docs.ps1` 產生 `docs/agents.md`、`docs/skills.md` 的讀者欄 |
+| `policy.allow_implicit_invocation` | Skill 是否允許模型自行觸發 | `Update-Docs.ps1` 與 `disable-model-invocation` 比對一致性並分組 |
+
+Claude Code 的工具權限由 `settings.json` 的 `permissions`（allow／ask／deny）與 Hook 控制。
+
 #### Claude Code Hook 設定
 
 Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行 Shell 命令，輸出文字會被注入回 Claude 的上下文。

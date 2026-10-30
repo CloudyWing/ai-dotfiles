@@ -132,14 +132,9 @@ applyTo: "**/*"
 - **狀態儲存（State Handoff）**：`CONTEXT.local.md` 為**可選**的本機交接檔，僅用於保存**耐久且跨 Session 仍有價值**的資訊，例如環境前置作業、本機路徑差異、已知陷阱、易踩雷設定。**不預設承載當前進度、短期 TODO 或本輪實作清單**。寫入時採用 `~/.ai-agents/templates/CONTEXT.local.md.template` 的標準化結構。
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **自動摘要（Auto-Summary）**：當單次 Session 的對話輪次超過 20 輪，或累積處理超過 10 個檔案時，若任務仍會跨 Session 延續，僅將本輪新發現的耐久資訊摘要寫入 `CONTEXT.local.md`，避免重複踩坑。
-- **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途分三類，存放於固定目錄，不散落於 process cwd 或系統暫存目錄：
-  - **線層交接檔與固定報告**：協調者在首次需要建立線層產物或發動派遣前登記 `lineSlug`，登記不代表需求已確認。需求線（`line.json` 的 `kind` 為 `workflow`，缺少時視同）由 `Analyst` 登記；不屬任何需求線的一次性取證（`kind` 為 `adhoc`）由負責該任務的主 Agent、`Analyst` 或 `Maintainer` 登記。`requirement-summary.md` 只在使用者確認需求摘要後寫入；同線沒有需求摘要時，只能發動唯讀資源派遣。線登記資料、需求摘要與設計文件分別存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json`、`<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。Developer 結案、交接檢查點、Reviewer、未解驗證、Frontend Reviewer、Contract Auditor、Architecture Review、Cleanup Review、fact-check 與例外紀錄存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/`。固定名稱交接檔或報告的寫入者必須取得已驗證的 `LineContext`；缺少 `lineSlug` 時停止寫入並交由上游建立線脈絡。
-  - **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<dispatchSlug>.md`。`dispatchSlug` 識別單次派遣，與識別線的 `lineSlug` 分屬不同名稱空間。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。
-  - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/<lineSlug>/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<dispatchSlug>.txt` 存入 `history/`。
-  - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
-  - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
-  - **需保留非交付**：整合任務素材、截圖、樣式基準與 Demo 畫面分別存入 `<work-root>/.local/ai-sessions/inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/`。
-  - **交付產物**：使用者預期交付的資料檔、程式碼與文件存放於專案原本的位置，不放入 `.local/ai-sessions/`。
+- **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途存放於固定目錄，不散落於 process cwd 或系統暫存目錄。各類產物的分類、路徑與命名依 `session-artifacts` skill「產物分類與落點」。下列線層門檻常駐於本節：
+  - **線層登記**：協調者在首次需要建立線層產物或發動派遣前登記 `lineSlug`，登記不代表需求已確認。需求線（`line.json` 的 `kind` 為 `workflow`，缺少時視同）由 `Analyst` 登記；不屬任何需求線的一次性取證（`kind` 為 `adhoc`）由負責該任務的主 Agent、`Analyst` 或 `Maintainer` 登記。`requirement-summary.md` 只在使用者確認需求摘要後寫入；同線沒有需求摘要時，只能發動唯讀資源派遣。
+  - **線脈絡驗證**：固定名稱交接檔或報告的寫入者必須取得已驗證的 `LineContext`；缺少 `lineSlug` 時停止寫入並交由上游建立線脈絡。
 - **腳本改寫安全（Script Rewrite Safety）**：用腳本或批次指令大量改寫檔案時，優先採「讀來源、寫新檔」，不原地覆寫輸入檔，使來源檔本身即為還原依據。當下列條件同時成立時，改寫前必須先將受影響的既有檔案複製到 `<work-root>/.local/ai-sessions/backups/<時間戳>/`（保留原始相對路徑），並附一行 `manifest.txt` 記錄該次操作：
   - 透過腳本或批次指令改檔，而非單次 `Edit` / `Write` 工具操作。
   - 對既有檔案做原地覆寫或刪除，而非輸出至新檔。
@@ -230,6 +225,9 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | 修改跨模組介面、分層或依賴方向 | `codebase-design` |
 | 撰寫或修改 `instructions.md` 與任何 `SKILL.md` | `writing-for-agents` |
 | 發動 `codex exec`、撰寫派遣單或執行派遣回收判定 | `codex-dispatch` |
+| 發動 advisor consult 或回收其結果 | `codex-dispatch` |
+| 執行或回收 `Clarify => Design => Implement => Review => Accept` Workflow、判定其共同收斂循環，或規劃 Workflow 驗證與交付 | `workflow-orchestration` |
+| 建立、讀取、回收、保存或清理 `.local/ai-sessions/` 交接物與報告 | `session-artifacts` |
 
 - 專案根目錄存在 `AGENTS.md` 的 `AI-DECLARATIONS` 宣告區塊時，先依宣告的 `context-index-query` 查詢索引，再定位 glossary、ADR 與其他專案脈絡；只有宣告不存在或格式無效時才使用 raw grep 作為 fallback。`ai-context-index` skill 只維護宣告格式與索引產物，不內建工具清單。
 
@@ -354,31 +352,9 @@ skill 未宣告 `dispatch`、宣告為 `either`，或本輪工作不對應任何
 | 不派 | 對話中的系統設計與方案取捨；bug 根因假設的形成；需求釐清與需求意圖驗收；規則檔與文件的撰寫或改寫；討論脈絡的保管與判斷；帶使用者登入 session 的瀏覽器操作；Artifacts 發布 | 一律由 Claude 端處理，不派工 |
 | 灰帶 | 前兩層皆未命中 | 依下列順序判定，命中一項即停止，不再評估後續分支：1. 工作必須留在 Claude 端時，再看是否會污染主 Agent context；會污染時送 Claude subagent，輸出「灰帶→派工」；不會污染時由主 Agent 自理，輸出「灰帶→自理」。2. 工作不須留在 Claude 端，且輸入、限制、驗收條件與產出落點可完整寫成派遣單時，送 Codex，輸出「灰帶→派工」。3. 前兩項皆不成立且工作可拆分時，拆成判斷與動作兩段，判斷留在 Claude 端，動作派往 Codex，輸出「灰帶→派工」。4. 前三項皆不成立時，視為無法拆分，預設派工，輸出「灰帶→派工」。 |
 
-##### 派工的額度查詢與範圍
-
-額度查詢只供顯示與紀錄，不作派工的放行條件。額度是否足夠由使用者判斷。派工腳本不自動查詢額度，由主 Agent 以 `Get-CodexQuota.ps1` 手動查詢，時點為派工前、advisor 諮詢前、結案時，以及按需查詢。查詢失敗、快照過期或視窗重設時記為 unknown，派工照常進行，不推算餘額。
-
-派工範圍由派遣契約明確宣告，額度不改寫範圍。`ScopePlan` 的最小單位固定如下。Workflow 使用 `design.md` 宣告順序的 Phase，資源派遣使用派遣單第 3 欄的目標物件，`advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。`selected_units` 等於宣告的全部單位，執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
-
-低額度或 unknown 都不縮小範圍、不停止執行中的派工。服務端明確拒絕（例如 usage-limit）時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不重試，不以未執行的單位補寫結論。每次派工保存 `ScopePlan` 與 usage，作為成本紀錄。
-
-##### advisor consult 的不限階段掛載點
-
-`advisor` 是意見評估角色，不是實作檔位；實作使用預設檔位，使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session。`advisor-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在 Clarify、Design、Implement、Review、Accept 或 bug 線任一站，於適當的節點作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。`Profile=advisor` 搭配 Workflow、寫入模式或其他 TaskType 時，派工在啟動前拒絕。
-
-預設檔位先建立 evidence pack，內容必須含非空的目標段落原文摘錄與來源位置、已知結論、以 `question-<id>` 逐行列出的待答問題與 required output、可能反證與邊界。advisor 執行端只可讀取 evidence pack，使用 read-only sandbox，不得探索 repository、讀取其他來源、修改檔案或寫入 report。`Inspect` 缺少 Start 的 evidence pack SHA-256 紀錄或前後 hash 不一致時以非零結束。報告由主 Agent 的 `Inspect` 或回收步驟寫入同線 `report/<lineSlug>/advisor-consult-<dispatchSlug>.md`，再交由 Claude 端與使用者決定是否採用。
-
-advisor 只在使用者授權後啟動，以 `AdvisorRequestSource=user-explicit` 傳入。主 Agent 判斷值得諮詢時先向使用者提出請求，請求附上當下查詢到的額度供使用者判斷。請求原文固定如下，請求本身不構成授權。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工；該授權不延續到其他 Session。
-
-```text
-[advisor 諮詢授權] primary 剩餘 <n>%、secondary 剩餘 <m>%；<推理密集點與資料已整理成 evidence pack 的理由>。是否執行 advisor 諮詢？
-```
-
-授權後使用 evidence pack 的完整問題集，不依額度縮小。授權不略過 service rejection、evidence pack hash、read-only 與 process identity 檢查。
-
 對話中的系統設計與方案取捨由 Claude 主 Agent 負責。取捨定案後，`Architect` 依需求摘要展開 `design.md`，此 Codex 文件產出路徑不受不派層的對話規則涵蓋。
 
-灰帶處置依表列順序判定。工作必須留在 Claude 端時，先依 context 污染判定，該分支完成後不再評估完整派遣單判準。完整派遣單判準只適用於不須留在 Claude 端的灰帶工作。規則檔與文件的撰寫或改寫仍由 Claude 端處理，不因輸入、限制、驗收條件與產出落點可寫成派遣單而改派 Codex。Claude subagent 只處理已進入灰帶、必須留在 Claude 端且會污染主 Agent context 的工作，以及下述回收覆核的覆核取證助手。
+規則檔與文件的撰寫或改寫仍由 Claude 端處理，不因輸入、限制、驗收條件與產出落點可寫成派遣單而改派 Codex。Claude subagent 只處理已進入灰帶、必須留在 Claude 端且會污染主 Agent context 的工作，以及下述回收覆核的覆核取證助手。
 
 能力判定完成後，稀缺端優先承接其不可替代的用途。額度只能在兩端皆可完成且差異屬執行程度時改派另一端。對話、需求釐清、脈絡保管與回收覆核屬 Claude 的唯一可行性，額度不得將這些工作轉送 Codex；讀寫、掃描與命令執行屬 Codex 的唯一可行性或程度優勢，需依上述三題與唯一判定序列處理。
 
@@ -403,9 +379,29 @@ advisor 只在使用者授權後啟動，以 `AdvisorRequestSource=user-explicit
 - 回傳：逐條列出條件、來源位置、支持或反駁結論的原始摘錄與缺漏項目。只回判定而無摘錄的回傳視為未完成。
 - 判定：收下、退回與升級仍由主 Agent 依摘錄逐條決定，摘錄不足或矛盾時主 Agent 針對該條實讀來源。助手不取代 Reviewer 的獨立審查與 Analyst 的需求意圖裁決。
 
+##### 派工的額度查詢與範圍
+
+額度查詢只供顯示與紀錄，不作派工的放行條件。額度是否足夠由使用者判斷。派工腳本不自動查詢額度，由主 Agent 以 `Get-CodexQuota.ps1` 手動查詢，時點為派工前、advisor 諮詢前、結案時，以及按需查詢。查詢失敗、快照過期或視窗重設時記為 unknown，派工照常進行，不推算餘額。
+
+派工範圍由派遣契約明確宣告，額度不改寫範圍。`ScopePlan` 的最小單位固定如下。Workflow 使用 `design.md` 宣告順序的 Phase，資源派遣使用派遣單第 3 欄的目標物件，`advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。`selected_units` 等於宣告的全部單位，執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
+
+低額度或 unknown 都不縮小範圍、不停止執行中的派工。服務端明確拒絕（例如 usage-limit）時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不重試，不以未執行的單位補寫結論。每次派工保存 `ScopePlan` 與 usage，作為成本紀錄。
+
+##### advisor consult 的不限階段掛載點
+
+`advisor` 是意見評估角色，不是實作檔位；實作使用預設檔位，使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session。`advisor-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在 Clarify、Design、Implement、Review、Accept 或 bug 線任一站，於適當的節點作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。evidence pack 的內容、執行端讀取邊界、profile 拒絕條件、hash 檢查與報告落點依 `codex-dispatch` skill「Advisor consult resource dispatch」。
+
+advisor 只在使用者授權後啟動，以 `AdvisorRequestSource=user-explicit` 傳入。主 Agent 判斷值得諮詢時先向使用者提出請求，請求附上當下查詢到的額度供使用者判斷。請求原文固定如下，請求本身不構成授權。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工；該授權不延續到其他 Session。
+
+```text
+[advisor 諮詢授權] primary 剩餘 <n>%、secondary 剩餘 <m>%；<推理密集點與資料已整理成 evidence pack 的理由>。是否執行 advisor 諮詢？
+```
+
+授權後使用 evidence pack 的完整問題集，不依額度縮小。授權不略過 service rejection、evidence pack hash、read-only 與 process identity 檢查。
+
 ##### Reviewer 派遣發動判準
 
-Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，接著進入需求意圖驗收。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
+Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，不得默默略過，接著進入需求意圖驗收。不發理由的紀錄用於補償「該做的事沒做且無人察覺」的失效模式。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 **必發清單（命中任一即發）**：
 
@@ -421,36 +417,26 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 
 **可不發**：本輪僅改動文件敘述、排版或用詞，未觸及任何機制條款，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
 
+規則檔的機制條款改寫必發，且審查者不得是改寫者。改寫者對自己剛產出的條款存在盲點，需由外部 Agent 稽核。
+
+改寫者必須在派遣單附上變更盤點，逐筆列出本輪改動、其中的撤回與更正，以及反覆修改次數最多的區域。盤點讓審查者能針對機制層改動做一致性檢查；缺少盤點的全庫掃描容易漏掉機制層問題。
+
+改寫者另行自檢一次，與審查結果交互比對。兩者可見範圍不同：改寫者知道改動歷史，能看出規範描述的是某個檔案的舊行為；審查者只讀當前內容，不受「這是我寫的」影響。兩份結果各自可能包含對方沒有的項目，因此合併後才是完整清單，不以任一份取代另一份。
+
+`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，同線並行上限為 2。並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行。
+
+Reviewer 回收後，設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。Reviewer Agent 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告（若有），依第 5 欄逐條回報驗收結果，不自行修改程式碼、執行建置或測試。審查 Workflow 實作時，主 Agent 在第 4 欄同時列出這三份檔案的絕對路徑，供 Reviewer 執行需求對照核對。`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 對同一條線的第二輪以後審查，第 4 欄另列同一角色前輪報告的絕對路徑，審查者依其 `F-<三位數>` finding ID 判定閉合狀態。
+
 ##### Workflow 自動推進鏈與共同收斂契約
 
-Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢查點的建檔與建檔內容仍依 §1.4 執行，建議接手指令輸出後原 Session 直接繼續。
-
-1. 寫入 `design-accepted` 交接檢查點，輸出建議接手指令後直接派工進入 Developer。
-2. 派遣 Developer 並回收結果。Workflow Developer 收下時，先將成果套回來源工作樹，不建立 Phase commit，並保留 dispatch worktree 供後續 Reviewer 退回續行。
-3. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點。
-4. 命中 Reviewer 必發清單時，命中必發清單即直接派出 Reviewer，不詢問使用者。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
-5. Reviewer 以純技術原因退回時，使用保留的同一 dispatch worktree 與 thread 自動續行 Developer 修正；修正完成後回到 Developer 回收與 Reviewer 判定。
-6. Reviewer 收下時進入 Analyst 需求意圖驗收。需求意圖驗收完成後輸出 Workflow 結案報告。
-7. 結案報告完成後等待使用者當輪授權 commit；取得授權後才執行 Phase commit 回收，完成驗證與報告同步後移除 dispatch worktree。
-
-第 1 步是 Design 階段的收尾，第 2、3 步屬 Implement，第 4、5 步屬 Review，第 6、7 步屬 Accept。Accept 階段涵蓋 Analyst 需求意圖驗收、Workflow 結案報告，以及使用者授權後的 Phase commit 回收。
+Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動推進鏈」逐站推進 Developer 派工與回收、Reviewer 判定、Analyst 需求意圖驗收、Workflow 結案報告與 Phase commit 回收。各站的階段歸屬、交接檢查點時點與 dispatch worktree 保留方式見該節；Phase commit 回收只在使用者當輪授權 commit 後執行。
 
 自動推進鏈有兩類停頓處置。
 
 - 授權類停頓：`advisor` 諮詢授權（當下 Session 已授權者除外）、安裝套件或下載相依性、commit 與 push，等待使用者當輪回覆。
 - 升級與收斂停止：業務語意缺口、範圍取捨、妥協確認或共同收斂契約的停止訊號，停止相關派遣，保留證據，回報未閉合清單與替代方向，等待使用者選擇方向。
 
-四處循環共用下列收斂契約。下游規則檔只補充自身循環的識別來源與驗收方式。
-
-| 名稱 | 機械定義 | 來源 |
-| --- | --- | --- |
-| `round` | 一次修正連同其驗收或回歸判定為一輪，初次執行為第 1 輪。後續續行各增加 1 輪 | 交接 prompt、回報或回歸紀錄 |
-| `area-key` | 同一函式或同一節規則的穩定識別。規則文件使用檔案絕對路徑加最近的 Markdown 標題；檢查清單使用所屬循環與檢查項目區段 | 原始檔案標題、函式位置或驗收清單區段 |
-| `problem-key` | 同一問題跨輪次不變的識別。Review 使用 `F-<三位數>`；Design 與 Demo 使用驗收檢查項目 key；派遣回收使用 `dispatchSlug` 加第 5 欄驗收列序號；Git 使用既有 finding ID 或建立時指定的固定 key | Reviewer 報告、驗收清單、派遣單第 5 欄或 Git 修正紀錄 |
-| `closed` | 前輪仍未解決的問題，在本輪相同 key 的驗收結果通過，且本輪沒有該 key 的反證 | 本輪完整驗收輸出與證據 |
-| `new-problem` | 本輪問題 key 不在前輪未解決問題集合，且沒有同一 key 的改寫或重新命名 | 前後輪問題集合比對 |
-| `severity` | `Critical`、`Major`、`Minor`。Review 沿用 `reviewer.toml`；其他循環依檢查項目影響映射 | Reviewer 規則或各循環的嚴重度映射 |
-| `max-rounds` | 6 輪。只防止失控，不取代問題閉合與方向變更判定 | 需求摘要與設計文件 |
+收斂術語 `round`、`area-key`、`problem-key`、`closed`、`new-problem`、`severity` 與 `max-rounds` 的機械定義，以及派遣回收與 Git 計數分開判定的規則，見 `workflow-orchestration` skill「共同收斂契約」。四處循環共用該契約與下列判定順序。
 
 收斂判定依下列順序執行。
 
@@ -461,31 +447,9 @@ Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢
 5. 修正需要改變 `requirement-summary.md` 的需求、範圍或 `design.md` 的已確認設計時停止，依升級兩道篩交由使用者拍板。
 6. `round` 達到 6 輪時停止，不以「仍有進展」覆寫安全上限；回報未閉合問題、證據與替代方向。
 
-`RecoveryPrecheck` 未通過的 `PromptNotDelivered` 屬啟動契約錯誤。先修正啟動條件，再重新派遣；此狀態不計入派遣回收計數。純技術的報告欄位缺漏、驗收輸出缺漏與格式錯誤直接進入自動補件路徑，不形成使用者詢問站點。`dispatch-return-count` 與 Git 的 `return-count` 分開保存、分開增加、分開判定，任一循環的成功或續行都不重設另一循環的計數。
-
-規則檔的機制條款改寫必發，且審查者不得是改寫者。改寫者對自己剛產出的條款存在盲點，需由外部 Agent 稽核。
-
-改寫者必須在派遣單附上變更盤點，逐筆列出本輪改動、其中的撤回與更正，以及反覆修改次數最多的區域。盤點讓審查者能針對機制層改動做一致性檢查；缺少盤點的全庫掃描容易漏掉機制層問題。
-
-改寫者另行自檢一次，與審查結果交互比對。兩者可見範圍不同：改寫者知道改動歷史，能看出規範描述的是某個檔案的舊行為；審查者只讀當前內容，不受「這是我寫的」影響。兩份結果各自可能包含對方沒有的項目，因此合併後才是完整清單，不以任一份取代另一份。
-
-`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，同線並行上限為 2。並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行。
-
-主 Agent 判定不發時，必須以一句話說明理由，不得默默略過。此條與 `F1 派工判準` 的「主 Agent 判斷某工作雖屬執行類但仍應自行處理時，必須在動手前以一句話說明理由」同源，都是補償「該做的事沒做且無人察覺」失效模式的規則。
-
-Reviewer 回收後，設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。Reviewer Agent 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告（若有），依第 5 欄逐條回報驗收結果，不自行修改程式碼、執行建置或測試。審查 Workflow 實作時，主 Agent 在第 4 欄同時列出這三份檔案的絕對路徑，供 Reviewer 執行需求對照核對。`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 對同一條線的第二輪以後審查，第 4 欄另列同一角色前輪報告的絕對路徑，審查者依其 `F-<三位數>` finding ID 判定閉合狀態。
-
-
 #### 驗證分層與 integration-verify 掛載點
 
-Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗證：
-
-| 層 | 執行者 | 深度 | 時機 |
-| --- | --- | --- | --- |
-| 淺層探針 | Developer | 對改動的端點或畫面單發確認路徑通 | 每階段完成後，依 `design.md` §6 |
-| 建置與測試 gate | Developer | 建置與既有測試各執行一次 | 結案時一次 |
-| 缺陷審查 | Reviewer | diff-scoped 靜態審查，不執行測試 | 主 Agent 依 Reviewer 派遣判準以派遣單發動 |
-| 完整煙霧 | `integration-verify` skill | 多情境、寫入回查、持久化往返 | 交付節點 |
+Workflow 的驗證職責按深度分為淺層探針、建置與測試 gate、缺陷審查與完整煙霧四層，各層不重複執行他層的驗證。各層的執行者、深度與時機見 `workflow-orchestration` skill「驗證分層」。
 
 - `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Developer 結案自動流程。
 - Reviewer 不執行測試與動態驗證，正常路徑是讀取 Developer 結案報告附帶的原始輸出並做靜態核對。只有在證據與判定矛盾、證據缺漏，或證據產生後目標已變更而不再代表目前版本時，Reviewer 才重跑派遣單已載明且無寫入副作用的唯讀命令；建置、測試與有副作用的命令改標注未複核並指明補證者。條件細節見 `agents/codex/reviewer.toml`「動態證據複核」。

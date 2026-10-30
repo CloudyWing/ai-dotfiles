@@ -2,6 +2,7 @@
 name: Prototyper
 description: 依需求摘要與專案樣式基準產出可在瀏覽器開啟的 Demo 畫面，供需求訪談與版面確認使用。
 audience: human
+model: sonnet
 ---
 
 # Prototyper — Demo 畫面產出者

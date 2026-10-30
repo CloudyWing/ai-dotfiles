@@ -68,6 +68,10 @@ $activeSourcePaths = @($productionSourcePaths) + @(
     (Join-Path $scriptsRoot 'Get-CodexQuota.ps1'),
     (Join-Path $root 'instructions.md'),
     (Join-Path $root 'skills\codex-dispatch\SKILL.md'),
+    (Join-Path $root 'skills\codex-dispatch\references\start.md'),
+    (Join-Path $root 'skills\codex-dispatch\references\execution.md'),
+    (Join-Path $root 'skills\codex-dispatch\references\collect.md'),
+    (Join-Path $root 'skills\codex-dispatch\references\recovery.md'),
     (Join-Path $root 'README.md'),
     $PSCommandPath
 )
@@ -114,6 +118,12 @@ $phase2RemovalTerms = @(
     ('[' + 'deep' + ' 諮詢確認]'),
     ('[' + 'deep' + ' 週期位置告知]')
 )
+
+function Get-DispatchSkillText {
+    $skillRoot = Join-Path $root 'skills\codex-dispatch'
+    $paths = @((Join-Path $skillRoot 'SKILL.md')) + @(Get-ChildItem -LiteralPath (Join-Path $skillRoot 'references') -Filter '*.md' -File | Sort-Object Name | ForEach-Object { $_.FullName })
+    return ((@($paths | ForEach-Object { [IO.File]::ReadAllText($_, [Text.Encoding]::UTF8) })) -join [Environment]::NewLine)
+}
 
 function Assert-ActiveSourceNotFound {
     [CmdletBinding()]
@@ -13672,7 +13682,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
         Write-Phase9Evidence -Label 'P0B_EXCEPTIONS_MERGE' -Value ([ordered]@{ one_side = $oneSide.status; both_sides = $bothSide.status; repeat_sha256 = $beforeRepeat; same_title_appended = $sameTitleAppended; same_title_repeat_stable = $sameTitleRepeatStable; missing_source_block_preserved = $true; other_file_drift_rejected = $driftRejected; origin_path = $originPath })
     }
     Invoke-Case 'Phase 9 FOLLOWUP-POLICY synthetic observations distinguish primary weekly rejection and unknown candidates' {
-        $policyText = [IO.File]::ReadAllText((Join-Path $root 'skills\codex-dispatch\SKILL.md'))
+        $policyText = Get-DispatchSkillText
         foreach ($contract in @('primary 將盡','secondary 實際服務端 usage-limit','secondary 偏低或為 0','generic 429','候選 Unknown','觀測時間=','新 dispatchSlug=','續行方式=cold-start','-CodexHome')) {
             Assert-True $policyText.Contains($contract) ('Skill 缺少決策或告知契約：'+$contract)
         }
@@ -13730,7 +13740,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
         $null = Write-DispatchAtomicJsonDocument -Path $checkpointPath -Document $checkpoint -SourceRoot $policyRoot -ExecutionRoot $policyRoot -TargetPath @()
         $invalid = Get-DispatchInterruptionCheckpoint -Path $checkpointPath -SourceRoot $policyRoot -ExecutionRoot $policyRoot -LineSlug 'line-a' -DispatchSlug $oldSlug -RunId $runId -SelectedUnits $selected
         Assert-True ($invalid.status -ceq 'invalid') '未選單位被錯誤承接。'
-        $skill = [IO.File]::ReadAllText((Join-Path $root 'skills\codex-dispatch\SKILL.md'))
+        $skill = Get-DispatchSkillText
         foreach ($term in @('同 home','手動切換預設 home','session_mode=cold-start','prepare_artifacts','ResumeAccountMismatch','ResumeAccountUnverifiable','不複製 sessions 或憑證')) { Assert-True $skill.Contains($term) ('Skill 交接契約缺漏：'+$term) }
         Write-Phase9Evidence -Label 'FOLLOWUP_POLICY_HANDOFF' -Value ([ordered]@{fixture=$policyRoot;handoff=$handoff;new_request=$request;invalid_unselected_unit_status=$invalid.status})
     }
@@ -17202,8 +17212,7 @@ throw 'RunRecord 事件流為空。'
         $dispatchSwitchMatch = [regex]::Match($productionText, '(?ms)\$result\s*=\s*switch\s*\(\$Operation\)\s*\{(?<body>.*?)^\s*default')
         Assert-True $dispatchSwitchMatch.Success '找不到 production operation dispatch switch。'
         $dispatchOperations = @([regex]::Matches($dispatchSwitchMatch.Groups['body'].Value, '''([^'']+)''\s*\{\s*(?:\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?Invoke-') | ForEach-Object { $_.Groups[1].Value })
-        $skillPath = Join-Path $root 'skills\codex-dispatch\SKILL.md'
-        $skillText = Get-Content -LiteralPath $skillPath -Raw -Encoding UTF8
+        $skillText = Get-DispatchSkillText
         $readSkillOperations = {
             param([Parameter(Mandatory)][string]$Text)
             $operationNames = New-Object System.Collections.Generic.List[string]

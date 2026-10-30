@@ -1316,7 +1316,8 @@ for ($script:Round = 1; $script:Round -le $Repeat; $script:Round++) {
     if ($Unit -in @('D7','All')) {
         Invoke-P1BCase 'Dispatch skill documents D1-D6 contracts' {
             $skillPath = Join-Path (Split-Path $scriptsRoot -Parent) 'skills\codex-dispatch\SKILL.md'
-            $skillText = [IO.File]::ReadAllText($skillPath, [Text.Encoding]::UTF8)
+            $skillPaths = @($skillPath) + @(Get-ChildItem -LiteralPath (Join-Path (Split-Path -Parent $skillPath) 'references') -Filter '*.md' -File | Sort-Object Name | ForEach-Object { $_.FullName })
+            $skillText = (@($skillPaths | ForEach-Object { [IO.File]::ReadAllText($_, [Text.Encoding]::UTF8) }) -join [Environment]::NewLine)
             $requiredTerms = @(
                 'excludedSecrets', '.env.*', '*.pfx', '*.pem', '*.key', 'secrets.*', 'PreflightSecretTargetRejected',
                 'secret_exposure_suspected', 'secret_exposure_findings', '壞行只留在原始事件流，不複製到 stdout、stderr、結果 JSON、診斷物件或報告', '移除連字號、底線、句點與空白', 'connectionstring', 'privatekey', 'PRIVATE KEY', 'Password=', 'Pwd=', 'AKIA', 'sk-',

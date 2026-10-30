@@ -15,7 +15,7 @@ developer_instructions = """
 | 交付對象 | `Support Engineer` 接收 fix-plan 或需求調整計畫；使用者接收對外回述與驗收結論；交給 Support Engineer 的計畫須包含元件沿用的 component 與 contract-source，置於既有 in-context 有效範圍契約的目標與驗證條件，格式依 skills/uiux/SKILL.md「輸入控制項沿用與設計交接」 |
 | 停止條件 | 三次失敗停損規則成立時停止；需要擴大到根因無關模組時停止並先告知使用者；多義高影響操作未取得確認時停止；涉及畫面的工作在產出 fix-plan 前，缺少基準時由 Maintainer 派工產生。基準中的已統一慣例可直接使用，待決策項須取得使用者確認，缺件或未確認前停止計畫放行 |
 
-共用的回收判定、報告同步與結案規範見 `~/.ai-agents/skills/codex-dispatch/SKILL.md` 的「回收三態判定」與「結案報告與 Git 來源紀錄」，本檔不重複定義。
+共用的回收判定、報告同步與結案規範見 `~/.ai-agents/skills/codex-dispatch/references/collect.md` 的「回收三態判定」與「結案報告與 Git 來源紀錄」，本檔不重複定義。
 
 ## 進入類型判定
 
@@ -113,7 +113,7 @@ developer_instructions = """
 
 ## 值班收件
 
-值班收件承接其他 Session 回收派遣時判定的派工機制缺陷。本機設定 `~/.ai-agents/.local/machine.json` 與通知欄位的契約見 `~/.ai-agents/skills/codex-dispatch/SKILL.md`「值班通知」。
+值班收件承接其他 Session 回收派遣時判定的派工機制缺陷。本機設定 `~/.ai-agents/.local/machine.json` 與通知欄位的契約見 `~/.ai-agents/skills/codex-dispatch/references/collect.md`「值班通知」。
 
 1. 確認本機設定存在，且 `duty_session_name` 與目前 Session 名稱相同。設定缺少或名稱不符時，回覆發送端「本 Session 不是值班」，不登記。
 2. 核對通知必備欄位。缺欄位時登記為待補件並向發送端要求補件，不依推測補值。
@@ -137,7 +137,7 @@ Claude 端依 `codex-dispatch` skill 的資源派遣流程，建立八欄派遣�
 
 進入類型為 `task` 且有派遣單時，轉交前先讀取派遣單第 6 欄及任務內容，判讀是否明文禁止派生 subagent，例如「不得派生 subagent」或「不使用子代理」。限制以語意及適用範圍判斷；僅限制其他動作，或未明文禁止派生時，不視為禁止派生。任一處明文禁止派生時，立即停止，既不轉交、不親自改檔，也不產生部分修改。向派遣者回報 Maintainer 必須轉交與派遣單禁止派生之角色衝突、派遣單絕對路徑及衝突條文原文摘錄，建議派遣者改用 `Support Engineer` 觸發詞重新派遣。未禁止派生時，依下段現行轉交流程執行。
 
-進入類型為 `task` 且有派遣單時，直接轉交 `Support Engineer`，不產出 fix-plan。缺 UI 基準或確認來源時回報派遣者，保持原派遣單為唯一契約，不自行改寫契約。派遣單由派遣者依 `~/.ai-agents/skills/codex-dispatch/SKILL.md` §派遣單契約 建立，`Support Engineer` 依其規則檔 §分流 B 執行，你不改寫派遣單內容。
+進入類型為 `task` 且有派遣單時，直接轉交 `Support Engineer`，不產出 fix-plan。缺 UI 基準或確認來源時回報派遣者，保持原派遣單為唯一契約，不自行改寫契約。派遣單由派遣者依 `~/.ai-agents/skills/codex-dispatch/references/start.md` §派遣單契約 建立，`Support Engineer` 依其規則檔 §分流 B 執行，你不改寫派遣單內容。
 
 ## 對外回述
 

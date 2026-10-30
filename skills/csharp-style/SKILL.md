@@ -64,7 +64,7 @@ code-style.csharp: personal
 - 在報告寫明停止原因為「缺少 `code-style.csharp` 註記」或指出的格式錯誤，並附 `AGENTS.local.md` 的絕對路徑。
 - 不依賴 C# 風格的其他工作照常完成。
 
-主 Agent 依 `codex-dispatch` skill「C# 風格註記前置檢查」在派工前補齊註記。
+主 Agent 依 `codex-dispatch` skill `references/start.md`「C# 風格註記前置檢查」在派工前補齊註記。
 
 ### 寫入前的本機排除
 

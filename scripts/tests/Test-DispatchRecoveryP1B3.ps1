@@ -16,6 +16,12 @@ foreach ($module in @('common-runtime', 'git-baseline', 'dispatch-scope', 'dispa
     . (Join-Path $scriptsRoot ('dispatch\' + $module + '.ps1'))
 }
 
+function Get-DispatchSkillText {
+    $skillRoot = Join-Path (Split-Path -Parent $scriptsRoot) 'skills\codex-dispatch'
+    $paths = @((Join-Path $skillRoot 'SKILL.md')) + @(Get-ChildItem -LiteralPath (Join-Path $skillRoot 'references') -Filter '*.md' -File | Sort-Object Name | ForEach-Object { $_.FullName })
+    return ((@($paths | ForEach-Object { Read-DispatchUtf8Text -Path $_ })) -join [Environment]::NewLine)
+}
+
 function Assert-P1B3 {
     [CmdletBinding()]
     param(
@@ -972,8 +978,7 @@ function Invoke-Q4 {
 
 
 function Invoke-Q5 {
-    $skillPath = Join-Path (Split-Path -Parent $scriptsRoot) 'skills\codex-dispatch\SKILL.md'
-    $skill = [IO.File]::ReadAllText($skillPath)
+    $skill = Get-DispatchSkillText
     $continuation = ($skill -split '## 續 session 與跨介面接手', 2)[1] -split '### 中止與安全關閉', 2
     Assert-P1B3 ($continuation[0].Contains('Start -ResumeThreadId') -and $continuation[0].Contains('preflight_result_path') -and $continuation[0].Contains('prepare_result_path') -and $continuation[0].Contains('session_mode=Continuation') -and $continuation[0].Contains('continue_from_scope_plan')) 'Q5 does not document both continuation routes and their stage result parameter sources.'
     Assert-P1B3 ($continuation[0].Contains('executionRoot') -and $continuation[0].Contains('direct-write') -and $continuation[0].Contains('Inspect') -and $continuation[0].Contains('Collect') -and $continuation[0].Contains('Cleanup')) 'Q5 checkpoint location and lifecycle readers/writer are not documented.'
@@ -1218,8 +1223,7 @@ function Invoke-R5 {
 }
 
 function Invoke-R6 {
-    $skillPath = Join-Path (Split-Path -Parent $scriptsRoot) 'skills\codex-dispatch\SKILL.md'
-    $skill = Read-DispatchUtf8Text -Path $skillPath
+    $skill = Get-DispatchSkillText
     Assert-P1B3 ($skill.Contains('FileShare.ReadWrite') -and $skill.Contains('FileShare.Delete') -and $skill.Contains('維持讀取前後雜湊核對')) 'R6 shared-reading contract is missing.'
     Assert-P1B3 ($skill.Contains('舊 RunRecord 未記錄 `error_stream_path` 時仍可讀取與清理') -and -not $skill.Contains('stderr 不在保存清單')) 'R6 stderr preservation contract is stale.'
     Assert-P1B3 ($skill.Contains('history\evidence-pack-<dispatchSlug>.sha256') -and -not $skill.Contains('sidecar 不在保存清單')) 'R6 advisor sidecar preservation contract is stale.'

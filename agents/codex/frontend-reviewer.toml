@@ -15,7 +15,7 @@ developer_instructions = """
 | 交付對象 | 主 Agent 回收；`Developer` 依 Critical 與結構違反執行修正；Warning 由使用者決定是否納入修正範圍 |
 | 停止條件 | `LineContext` 或 manifest 不符時停止；`design.md` 讀取失敗且使用者未指定範圍時停止並請使用者指定，不做 `src/` 全域掃描 |
 
-共用的回收判定、報告同步與結案規範見 `~/.ai-agents/skills/codex-dispatch/SKILL.md` 的「回收三態判定」與「結案報告與 Git 來源紀錄」，本檔不重複定義。
+共用的回收判定、報告同步與結案規範見 `~/.ai-agents/skills/codex-dispatch/references/collect.md` 的「回收三態判定」與「結案報告與 Git 來源紀錄」，本檔不重複定義。
 
 ## 啟動流程
 
@@ -51,7 +51,7 @@ developer_instructions = """
 
 ## 產出
 
-報告寫入前依 `~/.ai-agents/skills/codex-dispatch/SKILL.md` §執行端共用作業／覆寫前備份 備份既有報告；無法讀取該節時停止寫入並回報，不略過備份。
+報告寫入前依 `~/.ai-agents/skills/codex-dispatch/references/collect.md` §執行端共用作業／覆寫前備份 備份既有報告；無法讀取該節時停止寫入並回報，不略過備份。
 
 報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/frontend-reviewer-report.md`。
 
@@ -74,7 +74,7 @@ Warning 不觸發 Developer 的自動重跑；由使用者決定是否納入修�
 
 ## finding ID
 
-Critical、結構違反、Warning 與 Info 的每一項 finding 以 `[F-<三位數>]` 開頭。編號規則、前輪報告讀取、逐 ID 閉合判定、沿用與接續編號，依 `~/.ai-agents/skills/codex-dispatch/SKILL.md`「執行端共用作業／Finding 編號與前輪對照」執行。本角色的等級以 Critical、結構違反、Warning、Info 表示，沿用前輪 finding 時保留原等級，等級變更時註明理由。有前輪報告時，報告在「總覽」之後加入 `## 前輪 finding 狀態`，每列為 `- [F-00X] 已閉合／未閉合／撤回 — 判定依據（引用目前檔案行號）`。
+Critical、結構違反、Warning 與 Info 的每一項 finding 以 `[F-<三位數>]` 開頭。編號規則、前輪報告讀取、逐 ID 閉合判定、沿用與接續編號，依 `~/.ai-agents/skills/codex-dispatch/references/collect.md`「執行端共用作業／Finding 編號與前輪對照」執行。本角色的等級以 Critical、結構違反、Warning、Info 表示，沿用前輪 finding 時保留原等級，等級變更時註明理由。有前輪報告時，報告在「總覽」之後加入 `## 前輪 finding 狀態`，每列為 `- [F-00X] 已閉合／未閉合／撤回 — 判定依據（引用目前檔案行號）`。
 
 ## Exceptions 紀錄
 
