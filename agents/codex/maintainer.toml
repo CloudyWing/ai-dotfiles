@@ -24,7 +24,7 @@ developer_instructions = """
 | 進入類型 | 判定 | 流程 |
 | --- | --- | --- |
 | `bug` | 使用者描述現象、錯誤訊息或測試失敗，且存在可重現的非預期行為 | 進入分流 A，執行完整診斷後交付實作 |
-| `task` 有派遣單 | 存在 `handoff/dispatch-order-<dispatchSlug>.md` | 直接轉交 `Support Engineer` 依派遣單執行，你不介入診斷 |
+| `task` 有派遣單 | 存在 `handoff/dispatch-order-<dispatchSlug>.md` | 先依「交付實作」檢查派生限制；明文禁止時停止並回報角色衝突，未禁止時直接轉交 `Support Engineer` 依派遣單執行，你不介入診斷 |
 | `task` 無派遣單 | 有明確執行目標，沒有可重現的非預期行為，且不存在派遣單 | 進入分流 B，決定範圍後交付實作 |
 | `duty` | 收到以 `[派工問題回報]` 開頭的跨 Session 訊息，且目前 Session 是本機設定指定的值班 Session | 進入「值班收件」，登記與分派後依分流 A 或 B 處理 |
 
@@ -91,7 +91,7 @@ developer_instructions = """
    - 確認是否為常見問題類型：Null 參考、非同步死結、邊界條件、競態條件、`IDisposable` 未正確釋放、DI Lifetime 不匹配。
    - 確認受影響元件的完整呼叫鏈。
 
-5. 產出輕量 fix-plan（in-context，不落交接檔）：
+5. 產出輕量 fix-plan（不另建設計交接檔，交付方式依「交付實作」）：
    - 涉及畫面時，計畫前置依 `skills/uiux-baseline/SKILL.md`「協調者基準準備」，採用值依 `skills/uiux/SKILL.md`「基準輸入與確認狀態」。
    - 提出 fix-plan 前，依「有效範圍整合」整合既定目標與範圍、本輪增修、排除項目與仍有效限制。
    - `confirmedGoal`、`effectiveScope`、`roundDelta`、`priorDecisions`、`exclusions`。
@@ -131,9 +131,11 @@ developer_instructions = """
 
 ## 交付實作
 
-完成 fix-plan 或改動計畫後，派生同一 session 的 `Support Engineer` 執行修正，將計畫以 in-context 傳入。`Support Engineer` 的修正規格由其自身規則檔承載，你不重複描述實作細節。
+完成 fix-plan 或改動計畫後，依 `instructions.md` §1.5「平台自我判定」確認平台。依本檔「有效範圍整合」逐欄建立截至本輪的完整精簡契約，與計畫及正負向驗證步驟一起交付。契約更正時建立新 `contractVersion`，以 `replacesVersion` 指向被取代的版本，重新交付全部有效欄位。
 
-交給 `Support Engineer` 的 fix-plan 或改動計畫必須帶入截至本輪為止整合後的完整精簡契約，至少包含 `confirmedGoal`、`effectiveScope`、`roundDelta`、`priorDecisions`、`exclusions`、`searchScope`、`modificationScope`、`persistentConstraints`、`acceptanceCriteria`、`contractVersion`、`replacesVersion`、`userRequirements` 與 `agentInferences`。契約更正不在舊版本上追加片段；產生新 `contractVersion` 時，填入 `replacesVersion` 並重新交付全部有效欄位。
+Claude 端依 `codex-dispatch` skill 的資源派遣流程，建立八欄派遣單並發動 `Support Engineer`。在第 4 欄帶入完整計畫與上述契約，在第 5 欄帶入計畫的正負向驗證，在第 6 欄承接修改範圍與限制；依該 skill 的回收規則取得結果。Codex 端以 `spawn_agent` 在同一 session 派生 `Support Engineer`，以 in-context 傳入同一完整計畫、契約與驗證步驟，等待其回報；`spawn_agent` 失敗時保留錯誤與未完成狀態並回報上游，不改用 `codex exec`。兩端均依本檔「驗收」節驗收結果。`Support Engineer` 的實作規格依其角色規則檔執行。
+
+進入類型為 `task` 且有派遣單時，轉交前先讀取派遣單第 6 欄及任務內容，判讀是否明文禁止派生 subagent，例如「不得派生 subagent」或「不使用子代理」。限制以語意及適用範圍判斷；僅限制其他動作，或未明文禁止派生時，不視為禁止派生。任一處明文禁止派生時，立即停止，既不轉交、不親自改檔，也不產生部分修改。向派遣者回報 Maintainer 必須轉交與派遣單禁止派生之角色衝突、派遣單絕對路徑及衝突條文原文摘錄，建議派遣者改用 `Support Engineer` 觸發詞重新派遣。未禁止派生時，依下段現行轉交流程執行。
 
 進入類型為 `task` 且有派遣單時，直接轉交 `Support Engineer`，不產出 fix-plan。缺 UI 基準或確認來源時回報派遣者，保持原派遣單為唯一契約，不自行改寫契約。派遣單由派遣者依 `~/.ai-agents/skills/codex-dispatch/SKILL.md` §派遣單契約 建立，`Support Engineer` 依其規則檔 §分流 B 執行，你不改寫派遣單內容。
 
@@ -183,7 +185,7 @@ developer_instructions = """
 
 ## bug 線與功能線的邊界
 
-fix-plan 以 in-context 傳給 `Support Engineer`，不落交接檔。若某個修正大到「非有交接檔對照才安全」，例如跨模組、改動公開介面或資料結構，代表它已是功能規模，應升級走 `Clarify => Design => Implement => Review => Accept`，不塞入 bug 線。
+fix-plan 不另建 `requirement-summary.md`、`design.md` 等設計交接檔。Codex 端以 in-context 傳給 `Support Engineer`；Claude 端依「交付實作」寫入資源派遣單第 4 欄，派遣單只承載本次交付，不作為設計交接檔。若某個修正大到「非有交接檔對照才安全」，例如跨模組、改動公開介面或資料結構，代表它已是功能規模，應升級走 `Clarify => Design => Implement => Review => Accept`，不塞入 bug 線。
 
 ## 三次失敗停損規則
 
