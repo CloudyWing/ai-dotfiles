@@ -34,9 +34,11 @@ Collect 在開始處檢核參數。`DispatchKind`、`ReportPath`，以及 `-Appl
 
 單一檔案橫跨兩個以上 Phase 時，該檔的差異歸入其最早出現的 Phase，並在回收回報中列出該檔與涉及的全部 Phase。
 
+Claude Haiku subagent 承接的 Phase 不經本檔的 Collect 與 dispatch worktree。其檔案清單取自 Haiku 結案報告「Phase 對照」節，主 Agent 逐 Phase 暫存指名路徑並建立 commit，與 Codex Phase 依 `design.md` 的 Phase 宣告順序交錯回收。全 Haiku 時沒有 dispatch worktree，不呼叫 `Cleanup`。核對與回收步驟見 `workflow-orchestration` skill「Haiku 實作路徑」。
+
 Phase 回收步驟維持一個 Phase 一個 commit，不以 merge commit 取代 Phase commit，也不在此步驟把全部 Phase squash 成單一 commit。Phase commit 回收完成後，若需要依成果整理歷史，可在 `rewrite-branch` 執行 squash。每筆整理後的 commit 必須通過可用性驗證，並通過 `git-workflow` 第一層零差異 gate。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
 
-Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執行重整後驗證，再同步報告與核准交接產物，最後才以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 移除 Workflow Developer dispatch worktree。Architect、Reviewer 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物後即可呼叫相同的 `Cleanup` operation。`Cleanup` 失敗時保留 dispatch worktree，不得改用其他方式強制移除。使用者授權 commit 前不得執行 Workflow Developer dispatch worktree 的 `Cleanup`。
+Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執行重整後驗證，再同步報告與核准交接產物，最後才以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 移除 Workflow Developer dispatch worktree。Reviewer 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物後即可呼叫相同的 `Cleanup` operation。`Cleanup` 失敗時保留 dispatch worktree，不得改用其他方式強制移除。使用者授權 commit 前不得執行 Workflow Developer dispatch worktree 的 `Cleanup`。
 
 ## 執行端共用作業
 
@@ -90,7 +92,29 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏或未執行第 5 欄命令 | 一般純技術補件依續 session 契約使用同一個 dispatch worktree resume，帶入未達成條件清單與下一個 `recovery-round`，自動續行且不詢問使用者。完成後回到 Developer 或 Reviewer 站點。額度不足時依 `ScopePlan` 的中止保全流程保存已取得的結論與證據，再由回收端判定是否重新建立 cold-start。 |
 | 升級 | 原因命中 `instructions.md` §1.5 升級兩道篩的三類拍板判準，或命中共同收斂契約的停止訊號 | 停止派遣，保留 dispatch worktree 與證據，回報未閉合清單與替代方向，等待使用者選擇方向 |
 
+收下後仍有殘餘工作時，依 `instructions.md` 的「派工後的殘餘工作」判定處置，紀錄與環境成因的處理見本節末「派工後的殘餘工作」。
+
 回收判定成立且不需續 session 時，先完成事件流、thread id、last-message、報告與核准交接產物同步，再以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 執行資源派遣 worktree 清理。Workflow Developer dispatch worktree 僅在使用者授權 commit、Phase commit 回收與驗證完成後執行 `Cleanup`。`Cleanup` 依 `SourceRoot\.local\ai-sessions\history\<lineSlug>\runs\<dispatchSlug>` 驗證 RunRecord 路徑與 line／dispatch／source／execution owner，RunRecord 留在 SourceRoot history，不列入 worktree 檔案保存清單。省略 `EvidencePath` 時採用 RunRecord 引用且位於 dispatch worktree 的既存證據；明列未引用檔案時拒絕並列出可接受清單。RunRecord 或 evidence 路徑越界、owner 不符、保存清單驗證失敗或 worktree 移除失敗時保留 worktree 並回報錯誤。不得改用其他方式強制移除。report 根目錄的 `dispatch-report-<dispatchSlug>.md` 一律同步至來源 report 根目錄，不依賴 `ReportPath` 是否列出；其他未列入保存清單的 report 檔案會阻止移除 worktree。
+
+### 派工後的殘餘工作
+
+判定順序與使用者拍板條文見 `instructions.md`「派工後的殘餘工作」，本節補充紀錄與處置細節。
+
+- 環境成因例示：sandbox 無法還原套件、缺外部前置條件、權限不足。
+- 改派對象：其他 Codex 帳號，或帳號全數不可用時依 `instructions.md`「派工帳號全數不可用時的承接」改由 Claude Sonnet subagent 承接。改派不屬補做，改派承接記為 exceptions「替代方案」。
+- 補做紀錄：完成補做的主 Agent 追加 exceptions「派工後補做」，固定四欄填寫如下。
+  - 內容：補做範圍（檔案、行數、驗證命令）與來源 `dispatchSlug`。
+  - 依據：派工端無法完成的原因，以及小型修改例外四項的實測值（檔案數、行數、命令數）。
+  - 位置：檔案與行號或 T-code。
+- 重跑不計：回收覆核重跑既載命令、對照輸出與結論，不計入補做、不記錄。任何寫入改動即屬殘餘工作收尾，依 `instructions.md` 的判定順序判定並記錄；只讀重跑不算補做。
+
+### 覆核取證助手
+
+需實讀的來源量大到會持續留在主 Agent context 時，主 Agent 可派生冷啟動的 Claude subagent 作為覆核取證助手（`model` 見 `instructions.md`「Claude 端 sub-agent 模型指定」）。
+
+- 輸入：同線 `lineSlug`、待核對的驗收條件原文、相關的已確定實作約束原文、證據與來源的絕對路徑。未落檔的語意不交給助手推斷，缺件時由主 Agent 補齊後再派生。
+- 回傳：逐條列出條件、來源位置、支持或反駁結論的原始摘錄與缺漏項目。只回判定而無摘錄的回傳視為未完成。
+- 判定：收下、退回與升級仍由主 Agent 依摘錄逐條決定，摘錄不足或矛盾時主 Agent 針對該條實讀來源。助手不取代 Reviewer 的獨立審查與 Analyst 的需求意圖裁決。
 
 ## 值班通知
 

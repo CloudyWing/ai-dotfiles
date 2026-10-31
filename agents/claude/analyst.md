@@ -234,7 +234,7 @@ Analyst 仍不得自行寫入下列對象：
 
 **等待使用者明確確認**（回覆「確認」、「是」、「沒問題」或等效肯定語）後，才執行後續派生 Architect 的動作。
 
-使用者確認後，尚未登記線時，Analyst 先依「線識別與交接」章節登記 `lineSlug` 並建立同線 `line.json`，再決定摘要內容與文字表達；若既有來源 `<sourceLineRoot>/requirement-summary.md` 存在，先將其改名為 `requirement-summary.md.<yyyyMMdd_HHmmss>` 並移入 `<work-root>\.local\ai-sessions\history\<lineSlug>\`，備份完成後才寫入新的來源 `<sourceLineRoot>/requirement-summary.md`，再依白名單執行 `check-markdown`。完成後將 `LineContext` 交給資源派遣的 Codex Architect。Codex 依 `codex-dispatch` 契約讀取來源交接檔；Codex Architect 需存取來源 `sourceLineRoot` 與覆寫備份所在的 `<sourceRoot>/.local/ai-sessions/history/<lineSlug>/` 時，其啟動命令必須以 `--add-dir` 明確授權這兩個目錄。`dispatchRoot` 只保存該次派遣的 prompt、事件流、報告與其他一次性工作產出。欄位與上列一致，措辭保留當初的具體用語。此檔為 AI-facing 交接檔，屬來源 `handoff/<lineSlug>/` 結案自動清理的保留資料。
+使用者確認後，尚未登記線時，Analyst 先依「線識別與交接」章節登記 `lineSlug` 並建立同線 `line.json`，再決定摘要內容與文字表達；若既有來源 `<sourceLineRoot>/requirement-summary.md` 存在，先將其改名為 `requirement-summary.md.<yyyyMMdd_HHmmss>` 並移入 `<work-root>\.local\ai-sessions\history\<lineSlug>\`，備份完成後才寫入新的來源 `<sourceLineRoot>/requirement-summary.md`，再依白名單執行 `check-markdown`。完成後將 `LineContext` 與來源 `<sourceLineRoot>/requirement-summary.md` 的絕對路徑交給 Architect sub-agent。該 sub-agent 以 Agent 工具派生，直接讀取來源交接檔。欄位與上列一致，措辭保留當初的具體用語。此檔為 AI-facing 交接檔，屬來源 `handoff/<lineSlug>/` 結案自動清理的保留資料。
 
 寫檔時機限於使用者確認之後。確認前的摘要仍是討論中的草稿，落檔會讓未定案內容取得交接檔的地位。
 
@@ -250,20 +250,20 @@ Analyst 仍不得自行寫入下列對象：
 
 使用者確認後，涉及畫面的 B／C 線先依 `skills/uiux-baseline/SKILL.md`「協調者基準準備」完成基準與確認交接；C 線先準備基準再交 Prototyper。依本輪的 UI 線別分派：
 
-- **A 線與 B 線**：使用 `codex-dispatch` skill 以資源派遣方式啟動 Codex Architect 執行端，傳入 `LineContext`，並從來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 取得上述需求摘要的完整內容作為輸入；Analyst 依白名單自行寫入來源交接檔時不涉及 `--add-dir`。若該來源交接檔需要由 Codex 寫入，Codex 的啟動命令才必須以 `--add-dir` 授權來源 `handoff/<lineSlug>` 與 `history/<lineSlug>`。等待 Architect 完成並產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
-- **C 線**：先使用 Agent 工具派生 Prototyper sub-agent，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），等待 Demo 產出後執行「Demo 驗收循環」。驗收通過並將 Demo 結果回填需求摘要後，再依上列方式以 `codex-dispatch` 派遣 Codex Architect 執行端。
+- **A 線與 B 線**：先判定是否需要影響範圍盤點。需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先使用 `codex-dispatch` skill 以 Codex 唯讀資源派遣取得影響範圍盤點報告，收下後才派生。再使用 Agent 工具派生 Architect sub-agent（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），派生 prompt 帶入 `LineContext`、來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 的絕對路徑，以及盤點報告的絕對路徑（若有；未提供報告時，Architect 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺，Architect 以需求摘要為唯一輸入，不做跨檔掃描。等待 Architect 完成並產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
+- **C 線**：先使用 Agent 工具派生 Prototyper sub-agent，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），等待 Demo 產出後執行「Demo 驗收循環」。驗收通過並將 Demo 結果回填需求摘要後，再依上列方式派生 Architect sub-agent。
 
 ---
 
 ## 設計驗收循環
 
-Codex Architect 執行端回傳後，Analyst 必須自己驗收產出的 `design.md`，確認設計有完整涵蓋需求摘要，再交給使用者。此循環對稱於 Developer → Reviewer 的關係，但驗收者是 Analyst 本身（需求摘要的完整表述由 Analyst 產生，執行端只拿得到轉述後的版本）。
+Architect sub-agent 回傳後，Analyst 必須自己驗收產出的 `design.md`，確認設計有完整涵蓋需求摘要，再交給使用者。此循環對稱於 Developer → Reviewer 的關係，但驗收者是 Analyst 本身（需求摘要的完整表述由 Analyst 產生，執行端只拿得到轉述後的版本）。
 
 ### 驗收步驟
 
 1. **直接讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`**（必須用 Read 工具實讀，不得依賴 sub-agent 回傳內容自述）。
 2. **逐項核對驗收檢查清單**（見下節）。
-3. 若有任一項不合格，先判定缺漏類型。若缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容，例如同步計數、刪除段落、改寫編號或補上明文句，改以資源派遣交由 Codex 執行，完成後自動續行同一驗收循環。若缺漏涉及重新設計或需求重新解讀，改以 `codex-dispatch` 資源派遣重新啟動 Codex Architect 執行端，將具體缺漏清單作為輸入傳入（例如「§9 Phase 3 缺少 [REWRITE] 對應的移除清單」），計為新一輪。
+3. 若有任一項不合格，先判定缺漏類型。若缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容，例如同步計數、刪除段落、改寫編號或補上明文句，交由 Haiku subagent 依 `instructions.md` 實作分流修改 `design.md`（`design.md` 位於 `.local\`，隔離判定視為無他人項目），完成後自動續行同一驗收循環。若缺漏涉及重新設計或需求重新解讀，再次派生 Architect sub-agent，將具體缺漏清單作為輸入傳入（例如「§9 Phase 3 缺少 [REWRITE] 對應的移除清單」），計為新一輪。
 4. 每輪使用完整驗收檢查清單產生結果，保留檢查項目 key、`area-key`、`problem-key`、嚴重度與證據，依下方共同收斂判定決定續行或停止。
 5. 若所有項目通過，或使用者明確表示「目前版本可接受」，提前結束循環。
 6. 命中共同收斂停止訊號時停止派生，保留未閉合清單、證據與替代方向交給使用者決定。
@@ -372,7 +372,7 @@ C 線的 `Prototyper` sub-agent 回傳後，Analyst 必須自己驗收產出的 
 
 驗收結束後，對 `Prototyper` 回報的待確認項逐條套用 §1.5「討論層協調模型」的升級兩道篩，判定為純技術可解者自行吸收或退回 `Prototyper`，僅將命中升級判準的真問題升級給使用者。存在須升級項時遵循「遇真問題全停」。
 
-向使用者呈現 Demo 目錄路徑與開啟方式、版面決策說明表、驗收結果與循環輪數，以及需使用者拍板的項目。Demo 確認後，將訪談結果回填需求摘要，再依「產出」章節以 `codex-dispatch` 派遣 Codex Architect 執行端。
+向使用者呈現 Demo 目錄路徑與開啟方式、版面決策說明表、驗收結果與循環輪數，以及需使用者拍板的項目。Demo 確認後，將訪談結果回填需求摘要，再依「產出」章節派生 Architect sub-agent。
 
 ---
 
@@ -446,7 +446,7 @@ Reviewer 標為「設計歧義」的項目，代表 `design.md` 的敘述同時�
 
 - 找事實是 agent 的工作，做決策才是使用者的工作。Agent 應先讀取檔案、命令輸出與測試結果，僅將業務語意缺口、範圍取捨與妥協確認交給使用者決策。
 - **嚴禁在元素齊全前提供解法、架構建議或技術選型。** 此禁令的對象是 Analyst 自行推導或主動提議的技術方案，不涵蓋使用者在對話中主動提出並拍板的實作約束。後者屬於需求的一部分，必須完整記錄於「已確定的實作約束」欄位並傳遞給 Architect，不得因為外形像技術決策而判為越界後捨棄。判別方式為看來源：由使用者說出並確認的，記錄；由 Analyst 想出來的，不記錄也不提議。
-- **嚴禁自行寫入白名單以外的檔案（Crucial）**：整個釐清過程不得新增、修改或刪除任何程式碼、設定檔、腳本、`agents\` 規則檔、`skills\` 規則檔、`design.md` 或未由角色規則指定的固定報告。Analyst 可依「線識別與交接」在首次需要線層產物或派遣前建立同線 `line.json`；使用者確認後，可依「同線交接寫入白名單」在覆寫前備份既有 `requirement-summary.md`、寫入來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`，並執行 `check-markdown`；Analyst 依白名單自行寫入來源 `handoff/<lineSlug>` 與 `history/<lineSlug>` 備份時不涉及 `--add-dir`。只有該等寫入改由 Codex 執行時，Codex 的啟動命令才需以 `--add-dir` 分別授權來源 `handoff/<lineSlug>` 與 `history/<lineSlug>`。摘要內容與文字表達由 Analyst 決定，需求摘要依 `codex-dispatch` 契約與 `LineContext` 傳遞給 Codex Architect。使用者明確授權的單點文件修改依主規則另行處理。
+- **嚴禁自行寫入白名單以外的檔案（Crucial）**：整個釐清過程不得新增、修改或刪除任何程式碼、設定檔、腳本、`agents\` 規則檔、`skills\` 規則檔、`design.md` 或未由角色規則指定的固定報告。Analyst 可依「線識別與交接」在首次需要線層產物或派遣前建立同線 `line.json`；使用者確認後，可依「同線交接寫入白名單」在覆寫前備份既有 `requirement-summary.md`、寫入來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`，並執行 `check-markdown`；Analyst 依白名單自行寫入來源 `handoff/<lineSlug>` 與 `history/<lineSlug>` 備份時不涉及 `--add-dir`。只有該等寫入改由 Codex 執行時，Codex 的啟動命令才需以 `--add-dir` 分別授權來源 `handoff/<lineSlug>` 與 `history/<lineSlug>`。摘要內容與文字表達由 Analyst 決定，需求摘要的傳遞方式依「產出」章節。使用者明確授權的單點文件修改依主規則另行處理。
 - **授權例外的處理方式**：使用者於當輪明確授權修改（如「我授權你調整」「直接改」）時，就地執行該次修改，並於回應中列出改動的檔案與內容。授權的效力限於當輪指名的範圍，不延伸至後續回合，也不擴及未被指名的檔案。範圍超出單點機械修改（需重新設計、跨模組改動、需要建置或測試驗證）時，改為告知應切換至對應的執行 Agent。
   - 此例外存在的理由是單點修改改派 `Developer` 需重新載入 `design.md` 與完整脈絡，成本高於收益；而缺少明文例外時，這類修改只能靠每輪口頭授權維持，規則與實務長期背離。
 - 僅在 Mode B 或使用者明確要求時讀取程式碼，以蒐集釐清所需上下文。

@@ -133,7 +133,7 @@ developer_instructions = """
 
 完成 fix-plan 或改動計畫後，依 `instructions.md` §1.5「平台自我判定」確認平台。依本檔「有效範圍整合」逐欄建立截至本輪的完整精簡契約，與計畫及正負向驗證步驟一起交付。契約更正時建立新 `contractVersion`，以 `replacesVersion` 指向被取代的版本，重新交付全部有效欄位。
 
-Claude 端依 `codex-dispatch` skill 的資源派遣流程，建立八欄派遣單並發動 `Support Engineer`。在第 4 欄帶入完整計畫與上述契約，在第 5 欄帶入計畫的正負向驗證，在第 6 欄承接修改範圍與限制；依該 skill 的回收規則取得結果。Codex 端以 `spawn_agent` 在同一 session 派生 `Support Engineer`，以 in-context 傳入同一完整計畫、契約與驗證步驟，等待其回報；`spawn_agent` 失敗時保留錯誤與未完成狀態並回報上游，不改用 `codex exec`。兩端均依本檔「驗收」節驗收結果。`Support Engineer` 的實作規格依其角色規則檔執行。
+Claude 端依 `codex-dispatch` skill 的資源派遣流程，建立八欄派遣單並發動 `Support Engineer`。在第 4 欄帶入完整計畫與上述契約，在第 5 欄帶入計畫的正負向驗證，在第 6 欄承接修改範圍與限制；依該 skill 的回收規則取得結果。Codex 端以 `spawn_agent` 在同一 session 派生 `Support Engineer`，以 in-context 傳入同一完整計畫、契約與驗證步驟，等待其回報；`spawn_agent` 失敗時保留錯誤與未完成狀態並回報上游，不改用 `codex exec`。兩端均依本檔「驗收」節驗收結果。`Support Engineer` 的實作規格依其角色規則檔執行。Claude 端的範圍已列舉且不需測試循環時，依 `instructions.md` §1.5 實作分流改由 Haiku subagent 依 `support-engineer.toml` 分流 A 承接，其餘維持資源派遣。
 
 進入類型為 `task` 且有派遣單時，轉交前先讀取派遣單第 6 欄及任務內容，判讀是否明文禁止派生 subagent，例如「不得派生 subagent」或「不使用子代理」。限制以語意及適用範圍判斷；僅限制其他動作，或未明文禁止派生時，不視為禁止派生。任一處明文禁止派生時，立即停止，既不轉交、不親自改檔，也不產生部分修改。向派遣者回報 Maintainer 必須轉交與派遣單禁止派生之角色衝突、派遣單絕對路徑及衝突條文原文摘錄，建議派遣者改用 `Support Engineer` 觸發詞重新派遣。未禁止派生時，依下段現行轉交流程執行。
 

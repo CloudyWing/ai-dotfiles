@@ -135,7 +135,7 @@ decision
 decision_reason
 ```
 
-`unit_kind` 只允許 `workflow-phase`、`resource-target` 與 `advisor-evidence-question`。Workflow 以 `design.md` 的 Phase 為最小單位，資源派遣以派遣單第 3 欄的目標物件為最小單位，advisor consult 以 evidence pack 內的問題 ID 為最小單位，`requested_units` 依宣告順序排列。`Start` 的 `RequestedUnit` 必須等於這組單位；只列部分目標時，執行端會以範圍不一致拒絕工作。執行端不得自行增加或拆分單位。
+`unit_kind` 只允許 `workflow-phase`、`resource-target` 與 `advisor-evidence-question`。Workflow 以 `design.md` 的 Phase 為最小單位，資源派遣以派遣單第 3 欄的目標物件為最小單位，advisor consult 以 evidence pack 內的問題 ID 為最小單位，`requested_units` 依宣告順序排列。`Start` 的 `RequestedUnit` 依 `unit_kind` 核對。`workflow-phase` 與 `resource-target` 須為宣告單位依宣告順序的有序子集，不符以 `DispatchRequestedUnitMismatch` 拒絕工作。`advisor-evidence-question` 須與 evidence pack 宣告的問題 ID 清單完整且依序相等，不接受子集，不符以 `EvidencePackUnitOrderMismatch` 拒絕工作。混合 Workflow（Phase 由 Claude Haiku subagent 與 Codex 分別承接）的 Codex 派工以 Codex Phase 為宣告單位。執行端不得自行增加或拆分單位。
 
 `ScopePlan` 一律選取宣告的全部單位：`selected_units` 等於 `requested_units`，`decision=full`。ScopePlan hash 紀錄與續行範圍核對照常執行。續行時讀到舊格式 ScopePlan（仍含 `primary_remaining_percent`、`estimate_source` 等額度欄位）照常接受，額度欄位忽略，不帶入新的 ScopePlan。
 
@@ -607,7 +607,7 @@ secondary_source_file=
 
 共用本 Skill 的機制。Workflow 派工與資源派遣只以輸入、產出與結案要求區分；兩者都先使用 `Preflight` 依寫入面選擇 dispatch worktree 或 `sourceRoot`。
 
-| 面向 | Workflow 派工（`Developer`） | 資源派遣（`Architect`、`Reviewer`、`Support Engineer`、其餘一切） |
+| 面向 | Workflow 派工（`Developer`；Phase 可由 Claude Haiku 承接者不經本 Skill） | 資源派遣（`Reviewer`、`Support Engineer`、其餘一切） |
 | --- | --- | --- |
 | 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `executionRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
 | 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `executionRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |
