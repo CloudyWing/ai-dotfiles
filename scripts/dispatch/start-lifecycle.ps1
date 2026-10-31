@@ -27,24 +27,34 @@ function Resolve-DispatchNetworkParentOptions {
     param(
         [string]$Sandbox,
         [string]$WriteMode,
+        [string]$ExecutionRoot,
         [AllowEmptyCollection()][string[]]$Options,
         [bool]$OptionsProvided,
         [AllowNull()][object]$Anchor
     )
 
-    $keyPattern = '^\s*sandbox_workspace_write\.network_access\s*='
+    $keyPattern = '^\s*(sandbox_workspace_write\.network_access|windows\.sandbox|shell_environment_policy\.set\.(NUGET_HTTP_CACHE_PATH|NUGET_PACKAGES))\s*='
     $values = @($Options | Where-Object { $null -ne $_ })
     for ($index = 0; $index -lt $values.Count; $index++) {
         $value = [string]$values[$index]
         if (($value -match '^--config=(.*)$' -and $Matches[1] -match $keyPattern) -or
             (($value -ceq '-c' -or $value -ceq '--config') -and $index + 1 -lt $values.Count -and $values[$index + 1] -match $keyPattern)) {
-            throw 'NetworkAccessOverrideConflict：CodexParentOption 不可覆寫 sandbox_workspace_write.network_access。'
+            throw 'NetworkAccessOverrideConflict：CodexParentOption 不可覆寫自動網路與 sandbox 設定。'
         }
     }
 
     $enabled = $Sandbox -eq 'workspace-write' -and $WriteMode -eq 'write'
+    $automatic = @('-c', 'sandbox_workspace_write.network_access=true')
+    if ((Test-IsWindowsPlatform) -and $enabled -and $null -eq $Anchor) {
+        if ([string]::IsNullOrWhiteSpace($ExecutionRoot) -or $ExecutionRoot.Contains("'")) {
+            throw 'ExecutionRoot 無法表示為 TOML literal string。'
+        }
+        $httpCache = Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\http-cache'
+        $packages = Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\packages'
+        $automatic += @('-c', 'windows.sandbox="mxc"', '-c', "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$httpCache'", '-c', "shell_environment_policy.set.NUGET_PACKAGES='$packages'")
+    }
     if ($null -eq $Anchor) {
-        if ($enabled) { $values += @('-c', 'sandbox_workspace_write.network_access=true') }
+        if ($enabled) { $values += $automatic }
     }
     else {
         $anchorValues = @((Get-DispatchJsonProperty -Object $Anchor -Name 'codex_parent_option'))
@@ -55,12 +65,31 @@ function Resolve-DispatchNetworkParentOptions {
                 $automaticIndex = $index
             }
         }
+        $managedCount = 0
+        for ($index = 0; $index -lt $anchorValues.Count; $index++) {
+            if (($anchorValues[$index] -match '^--config=(.*)$' -and $Matches[1] -match $keyPattern) -or
+                (($anchorValues[$index] -ceq '-c' -or $anchorValues[$index] -ceq '--config') -and $index + 1 -lt $anchorValues.Count -and $anchorValues[$index + 1] -match $keyPattern)) { $managedCount++ }
+        }
+        $automaticLength = 0
+        if ($automaticIndex -ge 0) {
+            $automaticLength = 2
+            if ($managedCount -gt 1) {
+                if ($automaticIndex + 7 -ge $anchorValues.Count -or $managedCount -ne 4 -or
+                    $anchorValues[$automaticIndex + 2] -cne '-c' -or $anchorValues[$automaticIndex + 3] -cne 'windows.sandbox="mxc"' -or
+                    $anchorValues[$automaticIndex + 4] -cne '-c' -or $anchorValues[$automaticIndex + 6] -cne '-c' -or
+                    $anchorValues[$automaticIndex + 5] -cne "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\http-cache')'" -or
+                    $anchorValues[$automaticIndex + 7] -cne "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\packages')'") {
+                    throw 'ParentOptionsMismatch：anchor 自動選項組不完整或與原始派遣語意不符。'
+                }
+                $automaticLength = 8
+            }
+        }
+        elseif ($managedCount -gt 0) { throw 'ParentOptionsMismatch：anchor 自動選項組與原始派遣語意不符。' }
         if ($OptionsProvided -and $automaticIndex -ge 0) {
             $combined = New-Object 'System.Collections.Generic.List[string]'
             foreach ($value in $values) { $combined.Add($value) }
             if ($automaticIndex -gt $combined.Count) { throw 'ParentOptionsMismatch：父層選項數量不符。' }
-            $combined.Insert($automaticIndex, '-c')
-            $combined.Insert($automaticIndex + 1, 'sandbox_workspace_write.network_access=true')
+            for ($offset = 0; $offset -lt $automaticLength; $offset++) { $combined.Insert($automaticIndex + $offset, [string]$anchorValues[$automaticIndex + $offset]) }
             $values = @($combined.ToArray())
         }
     }
@@ -1108,7 +1137,7 @@ function Invoke-Start {
             }
         }
     }
-    $networkParentOptions = Resolve-DispatchNetworkParentOptions -Sandbox $sandboxValue -WriteMode $writeModeValue -Options $CodexParentOption -OptionsProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
+    $networkParentOptions = Resolve-DispatchNetworkParentOptions -Sandbox $sandboxValue -WriteMode $writeModeValue -ExecutionRoot $executionRootPath -Options $CodexParentOption -OptionsProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
     $parentOptionsResolution = Resolve-ParentOptionsForStart -Profile $effectiveProfileValue -ProfileProvided ([bool]$script:ProfileExplicit) -Sandbox $sandboxValue -WorkingDirectory $executionRootPath -AddDirectory $AddDirectory -Search ([bool]$Search) -AddDirectoryProvided ([bool]$script:AddDirectoryExplicit) -SearchProvided ([bool]$script:SearchExplicit) -CodexParentOption $networkParentOptions -CodexParentOptionProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
     if (-not [string]::IsNullOrWhiteSpace([string]$parentOptionsResolution.code)) {
         $phase = 'preparation'

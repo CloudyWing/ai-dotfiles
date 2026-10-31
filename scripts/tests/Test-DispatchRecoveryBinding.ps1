@@ -1875,7 +1875,7 @@ function Invoke-Case {
             $Name -match '^Phase (4|5|8|9) INTENSIVE-PROFILE' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'NETWORK-READONLY') {
-            $Name -match '^Phase 4 network readonly Start ' -or $cleanupMatch
+            $Name -match '^Phase 4 network (readonly Start |parent options)' -or $Name -ceq 'Start 與 Resume 沿用同一 baseline' -or $cleanupMatch
         }
         else {
             $Name -match '^Phase 9 S-3' -or $cleanupMatch
@@ -5422,13 +5422,35 @@ if ($Phase -ge 3) {
         $networkIndex = [Array]::IndexOf($startArguments, 'sandbox_workspace_write.network_access=true')
         $execIndex = [Array]::IndexOf($startArguments, 'exec')
         Assert-True ($networkIndex -gt 0 -and $startArguments[$networkIndex - 1] -ceq '-c' -and $execIndex -gt $networkIndex -and @($startArguments | Where-Object { $_ -ceq 'sandbox_workspace_write.network_access=true' }).Count -eq 1 -and $startArguments -notcontains '--search') 'write launcher 引數的網路覆寫、位置或 search 不符。'
-        Assert-True ($run.parent_options_sha256 -ceq $run.parent_options.fingerprint -and (Compare-DispatchStringArrays -Left @($run.parent_options.codex_parent_option) -Right @('-c', 'sandbox_workspace_write.network_access=true'))) 'write RunRecord 的 parent options 或 hash 不符。'
+        $expectedOptions = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $ExecutionRoot -Options @() -Anchor $null
+        Assert-True ($run.parent_options_sha256 -ceq $run.parent_options.fingerprint -and (Compare-DispatchStringArrays -Left @($run.parent_options.codex_parent_option) -Right $expectedOptions)) 'write RunRecord 的 parent options 或 hash 不符。'
         $launcherDefinition = ($functions | Where-Object { $_.Name -eq 'New-CodexLauncher' } | Select-Object -First 1).Extent.Text -replace '^function New-CodexLauncher', 'function New-NetworkTestLauncher'
         . ([scriptblock]::Create($launcherDefinition))
         $launcherPath = Join-Path $DispatchRoot '.local/network-test-launcher.cmd'
         $null = New-NetworkTestLauncher -CodexExecutable 'codex.exe' -CodexArguments $startArguments -PromptPath $PromptPath -EventPath $started.eventStreamPath -ErrorPath $started.stderrPath -HistoryRoot (Split-Path -Parent $launcherPath) -LauncherPath $launcherPath
         $launcherText = Get-Content -LiteralPath $launcherPath -Raw -Encoding UTF8
-        Assert-True ($launcherText -match '-c sandbox_workspace_write\.network_access=true\s+exec\b') '實際 launcher 未在 exec 前寫入網路覆寫。'
+        Assert-True ($launcherText -match '-c sandbox_workspace_write\.network_access=true' -and $launcherText.IndexOf('sandbox_workspace_write.network_access=true') -lt $launcherText.IndexOf(' exec ')) '實際 launcher 未在 exec 前寫入網路覆寫。'
+        if (Test-IsWindowsPlatform) {
+            $expectedValues = @(
+                'sandbox_workspace_write.network_access=true'
+                'windows.sandbox="mxc"'
+                "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\http-cache')'"
+                "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\packages')'"
+            )
+            $previousArgumentIndex = -1
+            $previousLauncherIndex = -1
+            foreach ($value in $expectedValues) {
+                $argumentIndex = [Array]::IndexOf($startArguments, $value)
+                Assert-True ($argumentIndex -gt $previousArgumentIndex -and $argumentIndex -gt 0 -and $argumentIndex -lt $execIndex -and $startArguments[$argumentIndex - 1] -ceq '-c' -and @($startArguments | Where-Object { $_ -ceq $value }).Count -eq 1) ('write Start 父層參數缺漏、重複或順序錯誤：' + $value)
+                $launcherArgument = ConvertTo-CmdArgument -Value $value
+                $launcherToken = '-c ' + $launcherArgument
+                $launcherIndex = $launcherText.IndexOf($launcherToken, [StringComparison]::Ordinal)
+                Assert-True ($launcherIndex -gt $previousLauncherIndex -and $launcherIndex -lt $launcherText.IndexOf(' exec ', [StringComparison]::Ordinal) -and [regex]::Matches($launcherText, [regex]::Escape($launcherToken)).Count -eq 1) ('write launcher 父層參數缺漏、重複或順序錯誤：' + $value)
+                $previousArgumentIndex = $argumentIndex
+                $previousLauncherIndex = $launcherIndex
+            }
+            Assert-True ($launcherText.Contains('-c "windows.sandbox=\"mxc\""')) 'mxc 覆寫未成為 launcher 的單一引數。'
+        }
         $run.model_evidence.runtime_verifiable = New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'rollout' -Field 'payload.model'
         $null = Write-DispatchRunRecord -Record $run -Update
         Assert-True ($run.baseline_path -eq $baseline.Path -and $run.baseline_sha256 -eq $baseline.Sha256) 'Start 未綁定 baseline。'
@@ -6057,14 +6079,27 @@ if ($Phase -ge 4) {
 
     Invoke-Case 'Phase 4 network parent options matrix and continuation' {
         $network = @('-c', 'sandbox_workspace_write.network_access=true')
-        $options = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options @('--note=test') -Anchor $null
-        Assert-True (Compare-DispatchStringArrays -Left $options -Right @('--note=test', $network[0], $network[1])) 'write cold-start 網路選項不符。'
+        $spaceRoot = Join-Path $fixtureRoot 'space root'
+        $expected = @('--note=test') + $network
+        if (Test-IsWindowsPlatform) { $expected += @('-c', 'windows.sandbox="mxc"', '-c', "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $spaceRoot '.local\ai-sessions\scratch\nuget\http-cache')'", '-c', "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $spaceRoot '.local\ai-sessions\scratch\nuget\packages')'") }
+        $options = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=test') -Anchor $null
+        Assert-True (Compare-DispatchStringArrays -Left $options -Right $expected) 'write cold-start 自動選項不符。'
+        $nonWindows = & { function Test-IsWindowsPlatform { return $false }; Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @() -Anchor $null }
+        Assert-True (Compare-DispatchStringArrays -Left $nonWindows -Right $network) '非 Windows 僅能加入網路選項。'
+        if (Test-IsWindowsPlatform) {
+            $launcherDefinition = ($functions | Where-Object { $_.Name -eq 'New-CodexLauncher' } | Select-Object -First 1).Extent.Text -replace '^function New-CodexLauncher', 'function New-NetworkSpaceLauncher'
+            . ([scriptblock]::Create($launcherDefinition))
+            $launcherPath = Join-Path $fixtureRoot 'network-space-launcher.cmd'
+            $null = New-NetworkSpaceLauncher -CodexExecutable 'codex.exe' -CodexArguments (@($options) + @('exec')) -PromptPath (Join-Path $fixtureRoot 'prompt.txt') -EventPath (Join-Path $fixtureRoot 'event.txt') -ErrorPath (Join-Path $fixtureRoot 'error.txt') -HistoryRoot $fixtureRoot -LauncherPath $launcherPath
+            $launcherText = Get-Content -LiteralPath $launcherPath -Raw -Encoding UTF8
+            Assert-True ($launcherText.Contains('"' + $expected[6] + '"') -and $launcherText.Contains('"' + $expected[8] + '"')) '含空白的 NuGet 路徑未各自成為 launcher 的單一引數。'
+        }
         foreach ($case in @(@('workspace-write', 'readonly'), @('read-only', 'readonly'))) {
             $readonly = Resolve-DispatchNetworkParentOptions -Sandbox $case[0] -WriteMode $case[1] -Options @() -Anchor $null
             Assert-True ($readonly.Count -eq 0) 'readonly 不可加入網路選項。'
         }
         $anchor = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $options
-        $explicit = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options @('--note=test') -OptionsProvided $true -Anchor $anchor
+        $explicit = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=test') -OptionsProvided $true -Anchor $anchor
         $resumed = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $explicit -CodexParentOptionProvided $true -Anchor $anchor
         $omitted = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $anchor
         Assert-True ($null -eq $resumed.code -and $null -eq $omitted.code -and $resumed.model.fingerprint -ceq $anchor.fingerprint -and $omitted.model.fingerprint -ceq $anchor.fingerprint) '新 anchor 續行或 fingerprint 不符。'
@@ -6072,6 +6107,21 @@ if ($Phase -ge 4) {
         $oldOptions = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options @('--note=old') -OptionsProvided $true -Anchor $old
         $oldResume = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $oldOptions -CodexParentOptionProvided $true -Anchor $old
         Assert-True ($null -eq $oldResume.code -and $oldResume.model.fingerprint -ceq $old.fingerprint) '舊 anchor 續行已改變。'
+        $oldNetwork = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption (@('--note=old') + $network)
+        $oldNetworkOptions = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=old') -OptionsProvided $true -Anchor $oldNetwork
+        Assert-True (Compare-DispatchStringArrays -Left $oldNetworkOptions -Right @($oldNetwork.codex_parent_option)) '舊網路 anchor 不可補加選項。'
+        $partial = [pscustomobject]@{ codex_parent_option = @($network) + @('-c', 'windows.sandbox="mxc"') }
+        $rejected = $false
+        try { $null = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @() -Anchor $partial } catch { $rejected = $_.Exception.Message -match 'ParentOptionsMismatch' }
+        Assert-True $rejected '不完整的 anchor 自動選項組未拒絕。'
+        foreach ($key in @('windows.sandbox', 'shell_environment_policy.set.NUGET_HTTP_CACHE_PATH', 'shell_environment_policy.set.NUGET_PACKAGES')) {
+            foreach ($form in @('-c', '--config', '--config=')) {
+                $conflict = if ($form -eq '--config=') { @($form + $key + '=value') } else { @($form, ($key + '=value')) }
+                $rejected = $false
+                try { $null = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options $conflict -Anchor $null } catch { $rejected = $_.Exception.Message -match 'NetworkAccessOverrideConflict' }
+                Assert-True $rejected ('呼叫者覆寫未拒絕：' + $form + ' ' + $key)
+            }
+        }
         foreach ($conflict in @(@('-c', 'sandbox_workspace_write.network_access=true'), @('--config', 'sandbox_workspace_write.network_access=false'), @('--config=sandbox_workspace_write.network_access=true'), @('--config=sandbox_workspace_write.network_access=false'))) {
             $rejected = $false
             try { $null = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options $conflict -Anchor $null } catch { $rejected = $_.Exception.Message -match 'NetworkAccessOverrideConflict' }

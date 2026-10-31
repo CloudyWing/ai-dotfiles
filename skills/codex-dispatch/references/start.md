@@ -422,7 +422,16 @@ observation 的 `freshness` 在寫入快照時依觀測時間距今判定，30 �
 
 `--cd`、`--sandbox`、`--add-dir`、`--search` 與 `--profile` 是 `codex` 的父層選項，必須放在 `exec` 或 `exec resume` 之前。`--json`、`--output-last-message` 與 `--output-schema` 是子命令選項，必須放在子命令之後。`--search` 只有在需求明確需要網路查證時才加入；`--add-dir` 只有在需求明確需要 worktree 外寫入時才加入，並列出絕對路徑。
 
-`write_mode=write` 且 sandbox 為 `workspace-write` 的新 cold-start，Start 自動在父層加入 `-c` 與 `sandbox_workspace_write.network_access=true` 兩個 token，位置在 `exec` 前，並記入 RunRecord 的 `parent_options.codex_parent_option`。readonly、advisor 與 direct-readonly 不加入。Request 的 `codex_parent_option` 以 `-c`、`--config` 或 `--config=` 形式自帶 `sandbox_workspace_write.network_access` 時，Start 在啟動前拒絕。續行與網路能力邊界見 `references/execution.md` 的「續 session 與跨介面接手」及「網路能力硬邊界」。
+`write_mode=write` 且 sandbox 為 `workspace-write` 的新 cold-start，Start 自動在父層 `exec` 前依序加入下列 token，並記入 RunRecord 的 `parent_options.codex_parent_option`。非 Windows 平台只加入第一組。readonly、advisor 與 direct-readonly 不加入任何一組。
+
+```text
+-c sandbox_workspace_write.network_access=true
+-c windows.sandbox="mxc"
+-c shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='<executionRoot>\.local\ai-sessions\scratch\nuget\http-cache'
+-c shell_environment_policy.set.NUGET_PACKAGES='<executionRoot>\.local\ai-sessions\scratch\nuget\packages'
+```
+
+`mxc` 以 AppContainer 執行命令。elevated sandbox 內 Windows TLS 取不到憑證（openai/codex#31073），HTTPS 還原必須改用 `mxc`；`mxc` 內使用者目錄下的 NuGet http-cache 與全域套件目錄不可寫，因此改到 executionRoot 內的 scratch。`executionRoot` 含單引號時 Start 拒絕啟動。Request 的 `codex_parent_option` 以 `-c`、`--config` 或 `--config=` 形式自帶上述任一鍵時，Start 在啟動前拒絕。續行與網路能力邊界見 `references/execution.md` 的「續 session 與跨介面接手」及「網路能力硬邊界」。
 
 ### 事件流形狀
 
