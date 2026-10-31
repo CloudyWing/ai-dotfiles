@@ -28,7 +28,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1873,6 +1873,9 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'INTENSIVE-PROFILE') {
             $Name -match '^Phase (4|5|8|9) INTENSIVE-PROFILE' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'NETWORK-READONLY') {
+            $Name -match '^Phase 4 network readonly Start ' -or $cleanupMatch
         }
         else {
             $Name -match '^Phase 9 S-3' -or $cleanupMatch
@@ -5415,6 +5418,17 @@ if ($Phase -ge 3) {
         Write-Utf8NoBom $PromptPath 'fixture'
         $started = Invoke-Start
         $run = Read-DispatchRunRecord -Path $started.runRecordPath -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        $startArguments = [string[]]@($started.codexArguments)
+        $networkIndex = [Array]::IndexOf($startArguments, 'sandbox_workspace_write.network_access=true')
+        $execIndex = [Array]::IndexOf($startArguments, 'exec')
+        Assert-True ($networkIndex -gt 0 -and $startArguments[$networkIndex - 1] -ceq '-c' -and $execIndex -gt $networkIndex -and @($startArguments | Where-Object { $_ -ceq 'sandbox_workspace_write.network_access=true' }).Count -eq 1 -and $startArguments -notcontains '--search') 'write launcher 引數的網路覆寫、位置或 search 不符。'
+        Assert-True ($run.parent_options_sha256 -ceq $run.parent_options.fingerprint -and (Compare-DispatchStringArrays -Left @($run.parent_options.codex_parent_option) -Right @('-c', 'sandbox_workspace_write.network_access=true'))) 'write RunRecord 的 parent options 或 hash 不符。'
+        $launcherDefinition = ($functions | Where-Object { $_.Name -eq 'New-CodexLauncher' } | Select-Object -First 1).Extent.Text -replace '^function New-CodexLauncher', 'function New-NetworkTestLauncher'
+        . ([scriptblock]::Create($launcherDefinition))
+        $launcherPath = Join-Path $DispatchRoot '.local/network-test-launcher.cmd'
+        $null = New-NetworkTestLauncher -CodexExecutable 'codex.exe' -CodexArguments $startArguments -PromptPath $PromptPath -EventPath $started.eventStreamPath -ErrorPath $started.stderrPath -HistoryRoot (Split-Path -Parent $launcherPath) -LauncherPath $launcherPath
+        $launcherText = Get-Content -LiteralPath $launcherPath -Raw -Encoding UTF8
+        Assert-True ($launcherText -match '-c sandbox_workspace_write\.network_access=true\s+exec\b') '實際 launcher 未在 exec 前寫入網路覆寫。'
         $run.model_evidence.runtime_verifiable = New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'rollout' -Field 'payload.model'
         $null = Write-DispatchRunRecord -Record $run -Update
         Assert-True ($run.baseline_path -eq $baseline.Path -and $run.baseline_sha256 -eq $baseline.Sha256) 'Start 未綁定 baseline。'
@@ -5424,6 +5438,7 @@ if ($Phase -ge 3) {
         $ScopePlanPath = $started.scopePlanPath
         $resumed = Invoke-Start
         $next = Read-DispatchRunRecord -Path $resumed.runRecordPath -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        Assert-True ($next.parent_options_sha256 -ceq $run.parent_options_sha256 -and (Compare-DispatchStringArrays -Left @($next.parent_options.codex_parent_option) -Right @($run.parent_options.codex_parent_option))) '續行未保留網路父層參數及 hash。'
         Assert-True ($next.baseline_path -eq $run.baseline_path -and $next.baseline_sha256 -eq $run.baseline_sha256 -and $next.previous_run_id -eq $run.run_id) 'Resume 重建 baseline。'
     }
     Invoke-BaselineCase 'Start worktree 缺 baseline 不得啟動' {
@@ -5973,6 +5988,94 @@ if ($Phase -ge 4) {
         }
         finally {
             Remove-Item -Path Function:\New-DispatchResultEnvelope_Mutant -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    function Assert-Phase4ReadonlyStartOptions {
+        param([Parameter(Mandatory)][object]$StartResult)
+        $arguments = [string[]]@($StartResult.codexArguments)
+        $sandboxIndex = [Array]::IndexOf($arguments, '--sandbox')
+        $parentOptions = @($StartResult.parentOptions.codex_parent_option)
+        Assert-True ($sandboxIndex -ge 0 -and $arguments[$sandboxIndex + 1] -ceq 'read-only' -and $StartResult.parentOptions.sandbox -ceq 'read-only') 'Start 未使用 read-only sandbox。'
+        Assert-True ($arguments -cnotcontains '-c' -and $arguments -cnotcontains 'sandbox_workspace_write.network_access=true' -and $parentOptions -cnotcontains '-c' -and $parentOptions -cnotcontains 'sandbox_workspace_write.network_access=true') 'readonly Start 的 launcher 或 parentOptions 含網路 token。'
+    }
+
+    Invoke-Case 'Phase 4 network readonly Start advisor' {
+        $snapshot = Get-ScriptVariableSnapshot -Name @('SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'DispatchEntryScriptRoot', 'PidRecordPath', 'TargetPath', 'LineSlug', 'DispatchSlug', 'DispatchKind', 'TaskType', 'WriteMode', 'SessionMode', 'Profile', 'ProfileExplicit', 'Model', 'ReasoningEffort', 'CodexHome', 'CodexPath', 'CodexParentOption', 'AddDirectory', 'Search', 'RequestedUnit', 'UnitKind', 'PreflightResultPath', 'PromptPath', 'EvidencePackPath', 'AdvisorConsultReportPath', 'ResultPath', 'PrepareResultPath', 'ScopePlanPath', 'LastMessagePath', 'ThreadIdPath', 'ResumeThreadId', 'RequestPath', 'AdvisorRequestSource', 'InvocationBoundParameters', 'RequestContext', 'RequestPrepareArtifacts', 'pidResult', 'dispatchUnitListOverride', 'advisorStartPromptMode', 'launcherFixtureFailure', 'phase8CapturedActivation', 'phase8CapturedScopePlan')
+        try {
+            $tokens = $null
+            $parseErrors = $null
+            $testAst = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$tokens, [ref]$parseErrors)
+            $fixtureAst = $testAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-Phase8StartPreparation' }, $true)
+            Assert-True ($null -ne $fixtureAst) '找不到既有 advisor Start fixture。'
+            . ([scriptblock]::Create($fixtureAst.Extent.Text))
+            $fixture = Invoke-Phase8StartPreparation -CaseName 'phase4-advisor-network' -AdvisorRequestSourceValue 'user-explicit' -CompleteNormally
+            Assert-True ($null -eq $fixture.exception -and $null -ne $fixture.operation_result) ('advisor Start 未完成：' + [string]$fixture.exception)
+            Assert-Phase4ReadonlyStartOptions -StartResult $fixture.operation_result
+        }
+        finally { Restore-ScriptVariableSnapshot -Snapshot $snapshot }
+    }
+
+    Invoke-Case 'Phase 4 network readonly Start direct-readonly' {
+        $snapshot = Get-ScriptVariableSnapshot -Name @('SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'TargetPath', 'LineSlug', 'DispatchSlug', 'DispatchKind', 'TaskType', 'WriteMode', 'SessionMode', 'Profile', 'ProfileExplicit', 'CodexParentOption', 'CodexParentOptionExplicit', 'AddDirectory', 'AddDirectoryExplicit', 'Search', 'SearchExplicit', 'PreflightResultPath', 'PromptPath', 'ScopePlanPath', 'LastMessagePath', 'ThreadIdPath', 'ResumeThreadId', 'RequestPath', 'InvocationBoundParameters', 'RequestContext', 'pidResult')
+        try {
+            $script:SourceRoot = $fixtureRoot
+            $script:ExecutionRoot = $fixtureRoot
+            $script:DispatchRoot = $fixtureRoot
+            $script:TargetPath = @()
+            $script:LineSlug = 'line-a'
+            $script:DispatchSlug = 'phase4-direct-readonly-network'
+            $script:DispatchKind = 'resource'
+            $script:TaskType = 'implement'
+            $script:WriteMode = 'readonly'
+            $script:SessionMode = 'cold-start'
+            $script:Profile = 'default'
+            $script:ProfileExplicit = $true
+            $script:CodexParentOption = @()
+            $script:CodexParentOptionExplicit = $false
+            $script:AddDirectory = @()
+            $script:AddDirectoryExplicit = $false
+            $script:Search = $false
+            $script:SearchExplicit = $false
+            $script:ScopePlanPath = $null
+            $script:LastMessagePath = $null
+            $script:ThreadIdPath = $null
+            $script:ResumeThreadId = $null
+            $script:RequestPath = $null
+            $script:RequestContext = $null
+            $script:InvocationBoundParameters = [ordered]@{}
+            $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
+            $script:PromptPath = Join-Path $fixtureRoot 'phase4-direct-prompt.md'
+            $script:PreflightResultPath = Join-Path $fixtureRoot 'phase4-direct-preflight.json'
+            Write-Utf8NoBom -Path $script:PromptPath -Content 'fixture direct readonly prompt'
+            Write-Utf8NoBom -Path $script:PreflightResultPath -Content ((@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = 'line-a'; dispatchSlug = $script:DispatchSlug; writeMode = 'readonly'; gitOrigin = 'not-applicable' } | ConvertTo-Json) + "`r`n")
+            $result = Invoke-Start
+            Assert-Phase4ReadonlyStartOptions -StartResult $result
+        }
+        finally { Restore-ScriptVariableSnapshot -Snapshot $snapshot }
+    }
+
+    Invoke-Case 'Phase 4 network parent options matrix and continuation' {
+        $network = @('-c', 'sandbox_workspace_write.network_access=true')
+        $options = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options @('--note=test') -Anchor $null
+        Assert-True (Compare-DispatchStringArrays -Left $options -Right @('--note=test', $network[0], $network[1])) 'write cold-start 網路選項不符。'
+        foreach ($case in @(@('workspace-write', 'readonly'), @('read-only', 'readonly'))) {
+            $readonly = Resolve-DispatchNetworkParentOptions -Sandbox $case[0] -WriteMode $case[1] -Options @() -Anchor $null
+            Assert-True ($readonly.Count -eq 0) 'readonly 不可加入網路選項。'
+        }
+        $anchor = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $options
+        $explicit = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options @('--note=test') -OptionsProvided $true -Anchor $anchor
+        $resumed = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $explicit -CodexParentOptionProvided $true -Anchor $anchor
+        $omitted = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $anchor
+        Assert-True ($null -eq $resumed.code -and $null -eq $omitted.code -and $resumed.model.fingerprint -ceq $anchor.fingerprint -and $omitted.model.fingerprint -ceq $anchor.fingerprint) '新 anchor 續行或 fingerprint 不符。'
+        $old = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @('--note=old')
+        $oldOptions = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options @('--note=old') -OptionsProvided $true -Anchor $old
+        $oldResume = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $oldOptions -CodexParentOptionProvided $true -Anchor $old
+        Assert-True ($null -eq $oldResume.code -and $oldResume.model.fingerprint -ceq $old.fingerprint) '舊 anchor 續行已改變。'
+        foreach ($conflict in @(@('-c', 'sandbox_workspace_write.network_access=true'), @('--config', 'sandbox_workspace_write.network_access=false'), @('--config=sandbox_workspace_write.network_access=true'), @('--config=sandbox_workspace_write.network_access=false'))) {
+            $rejected = $false
+            try { $null = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options $conflict -Anchor $null } catch { $rejected = $_.Exception.Message -match 'NetworkAccessOverrideConflict' }
+            Assert-True $rejected '呼叫者網路覆寫未拒絕。'
         }
     }
 

@@ -22,6 +22,51 @@
     return Get-CommandPath -Name 'codex'
 }
 
+function Resolve-DispatchNetworkParentOptions {
+    [CmdletBinding()]
+    param(
+        [string]$Sandbox,
+        [string]$WriteMode,
+        [AllowEmptyCollection()][string[]]$Options,
+        [bool]$OptionsProvided,
+        [AllowNull()][object]$Anchor
+    )
+
+    $keyPattern = '^\s*sandbox_workspace_write\.network_access\s*='
+    $values = @($Options | Where-Object { $null -ne $_ })
+    for ($index = 0; $index -lt $values.Count; $index++) {
+        $value = [string]$values[$index]
+        if (($value -match '^--config=(.*)$' -and $Matches[1] -match $keyPattern) -or
+            (($value -ceq '-c' -or $value -ceq '--config') -and $index + 1 -lt $values.Count -and $values[$index + 1] -match $keyPattern)) {
+            throw 'NetworkAccessOverrideConflict：CodexParentOption 不可覆寫 sandbox_workspace_write.network_access。'
+        }
+    }
+
+    $enabled = $Sandbox -eq 'workspace-write' -and $WriteMode -eq 'write'
+    if ($null -eq $Anchor) {
+        if ($enabled) { $values += @('-c', 'sandbox_workspace_write.network_access=true') }
+    }
+    else {
+        $anchorValues = @((Get-DispatchJsonProperty -Object $Anchor -Name 'codex_parent_option'))
+        $automaticIndex = -1
+        for ($index = 0; $index + 1 -lt $anchorValues.Count; $index++) {
+            if ($anchorValues[$index] -ceq '-c' -and $anchorValues[$index + 1] -ceq 'sandbox_workspace_write.network_access=true') {
+                if (-not $enabled -or $automaticIndex -ge 0) { throw 'ParentOptionsMismatch：anchor 網路選項與原始派遣語意不符。' }
+                $automaticIndex = $index
+            }
+        }
+        if ($OptionsProvided -and $automaticIndex -ge 0) {
+            $combined = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($value in $values) { $combined.Add($value) }
+            if ($automaticIndex -gt $combined.Count) { throw 'ParentOptionsMismatch：父層選項數量不符。' }
+            $combined.Insert($automaticIndex, '-c')
+            $combined.Insert($automaticIndex + 1, 'sandbox_workspace_write.network_access=true')
+            $values = @($combined.ToArray())
+        }
+    }
+    return ,$values
+}
+
 function Get-PreflightData {
     if (-not [string]::IsNullOrWhiteSpace($PreflightResultPath)) {
         $path = Resolve-AbsolutePath -Path $PreflightResultPath
@@ -1050,8 +1095,21 @@ function Invoke-Start {
             $phase = 'preparation'
             throw 'ParentOptionsUnknown：anchor RunRecord 缺少 parent_options，拒絕以當次呼叫重建續行選項。'
         }
+        $anchorOptionValues = @((Get-DispatchJsonProperty -Object $anchorParentOptions -Name 'codex_parent_option'))
+        for ($index = 0; $index + 1 -lt $anchorOptionValues.Count; $index++) {
+            if ($anchorOptionValues[$index] -ceq '-c' -and $anchorOptionValues[$index + 1] -ceq 'sandbox_workspace_write.network_access=true') {
+                $anchorPreflightPath = [string](Get-DispatchJsonProperty -Object $previousRun.AnchorRecord -Name 'preflight_result_path')
+                $anchorPreflight = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $anchorPreflightPath)
+                $anchorWriteMode = [string](Get-DispatchJsonProperty -Object $anchorPreflight -Name 'writeMode')
+                $anchorSandbox = [string](Get-DispatchJsonProperty -Object $anchorParentOptions -Name 'sandbox')
+                if ($anchorWriteMode -ne 'write' -or $anchorSandbox -ne 'workspace-write') {
+                    throw 'ParentOptionsMismatch：anchor 網路選項與原始派遣語意不符。'
+                }
+            }
+        }
     }
-    $parentOptionsResolution = Resolve-ParentOptionsForStart -Profile $effectiveProfileValue -ProfileProvided ([bool]$script:ProfileExplicit) -Sandbox $sandboxValue -WorkingDirectory $executionRootPath -AddDirectory $AddDirectory -Search ([bool]$Search) -AddDirectoryProvided ([bool]$script:AddDirectoryExplicit) -SearchProvided ([bool]$script:SearchExplicit) -CodexParentOption $CodexParentOption -CodexParentOptionProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
+    $networkParentOptions = Resolve-DispatchNetworkParentOptions -Sandbox $sandboxValue -WriteMode $writeModeValue -Options $CodexParentOption -OptionsProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
+    $parentOptionsResolution = Resolve-ParentOptionsForStart -Profile $effectiveProfileValue -ProfileProvided ([bool]$script:ProfileExplicit) -Sandbox $sandboxValue -WorkingDirectory $executionRootPath -AddDirectory $AddDirectory -Search ([bool]$Search) -AddDirectoryProvided ([bool]$script:AddDirectoryExplicit) -SearchProvided ([bool]$script:SearchExplicit) -CodexParentOption $networkParentOptions -CodexParentOptionProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
     if (-not [string]::IsNullOrWhiteSpace([string]$parentOptionsResolution.code)) {
         $phase = 'preparation'
         throw ($parentOptionsResolution.code + '：父層選項差異欄位=' + (($parentOptionsResolution.differences) -join ','))

@@ -120,6 +120,8 @@ Inspect 在開始處一次檢查同一次呼叫會因缺少而拒絕的參數，
 
 初次 Start 將有效父層選項寫入 RunRecord 的 `parent_options`（`profile`、`sandbox`、`add_directory` 保留原文與順序、`search`、`codex_parent_option` 保留原文與順序、`working_directory`）與 `parent_options_sha256`。續行未顯式傳入時從錨點還原，顯式傳入時逐欄比對，任一不同即以 `ParentOptionsMismatch` 拒絕並輸出欄位、數量與首個差異索引，不以當次呼叫值覆蓋錨點值；舊 RunRecord 沒有此欄位時輸出 `ParentOptionsUnknown`，不續行原 thread。
 
+shell 網路覆寫只在新 cold-start 合成，記錄於 `parent_options.codex_parent_option`。續行一律沿用錨點記錄的完整陣列：錨點含該對 token 時續行保有 shell 網路，錨點不含時（例如加入預設前建立的舊 RunRecord）續行維持原狀，不補加。需要 shell 網路但錨點不含時，以新的 `dispatchSlug` 冷啟動。
+
 續行不比對 worktree 的 ACL／SID 證據；ACL 證據缺少或與前輪不同時，有效 thread 仍可續行。Codex 在 `turn.started` 後沒有後續事件且非零結束時，Inspect 判定 `InterruptedUnknown`，保存事件尾段、stderr 與 exit code 並輸出 `cold_start_recommended=true`；該 worktree 不再作為續行目標，冷啟動改用新的 dispatch worktree。
 
 續行實際失敗（`turn.failed` 或非零結束且 Inspect 判定失敗）時，Dispatch 依 Request 的 `failure_receipt_path` 寫入 `ai-sessions.dispatch-failure-receipt.v1`，不自動重送。`continuation_handoff` 含 `confirmed_results`（最新 safe point 的已確認結論與覆蓋範圍；取不到時為空陣列並標示來源不足）、`incomplete_units`（只取前輪 ScopePlan `selected_units` 的子集合，以完整字串逐一比對 safe point，不以標點切分單位名稱；deferred 或其他未選項目剔除並記錄理由；缺 safe point 時保留全部 selected_units）、`source_locations`（Request、ScopePlan、RunRecord、事件流、last-message、Inspect 結果與 safe point 證據位置）、`cold_start_entry`（新的 `dispatch_slug`、`session_mode=cold-start`、未完成單位與 root、prompt、target、識別字，`new_request_required=true`）與 `automatic_retry=false`。服務端串流中斷或 usage-limit 拒絕時，receipt 另含 `failure_classification`、`retry_allowed`、`resumable` 與 `recommended_next_step`，值與 Inspect 的分類一致。Inspect 擲出例外或第一次 receipt 寫入失敗而改走通用失敗路徑時，續行派遣仍帶入 `continuation_handoff`（已建立者沿用，否則依 RunRecord 與 ScopePlan 建立）；`session_mode` 的大小寫變體同樣視為續行。主 Agent 依 `cold_start_entry` 建立新的 Request 冷啟動。
@@ -145,19 +147,23 @@ Inspect 在開始處一次檢查同一次呼叫會因缺少而拒絕的參數，
 
 ## sandbox 外環境動作
 
-需要網路或 work-root 外環境變更的工作，由主 Agent 在派工前代執行。代執行前必須取得使用者當輪明確同意。非互動情境無法取得當輪同意時停止並回報缺件。
+work-root 外的環境變更，例如安裝全域工具、修改系統設定或寫入 work-root 以外的目錄，由主 Agent 在派工前代執行。代執行前必須取得使用者當輪明確同意。非互動情境無法取得當輪同意時停止並回報缺件。
 
-代執行後追加 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，觸發類型使用「偏離設計」，並記錄外環境動作、同意依據與位置。寫入前確認 `LineContext.lineSlug` 與同線 manifest 一致。不得以開放 sandbox 網路取代 `--search`，也不得把 shell 出網工作直接派給 Codex。
+代執行後追加 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，觸發類型使用「偏離設計」，並記錄外環境動作、同意依據與位置。寫入前確認 `LineContext.lineSlug` 與同線 manifest 一致。
+
+work-root 內需要 shell 網路的建置與還原，依「網路能力硬邊界」判定派給 Codex 或由主 Agent 處理。下載套件或相依性仍須先取得使用者當輪明確同意，同意後才派工。
 
 ## 網路能力硬邊界
 
-`--search` 是 Codex 的唯一上網路徑，且屬 `codex` 的父層選項，必須放在 `exec` 或 `exec resume` 之前。Codex shell 無法以 `curl` 或其他一般 shell 工具出網；開啟 sandbox network access 也不代表 shell 查證可用。
+Codex 有兩個彼此獨立的網路開關。
 
-下列工作需要 shell 出網，應由 Claude 端依外環境動作規則處理，或先取得使用者當輪同意後由主 Agent 代執行。
+| 開關 | 啟用條件 | 用途 |
+| --- | --- | --- |
+| `-c sandbox_workspace_write.network_access=true` | Start 在 `write_mode=write` 且 sandbox 為 `workspace-write` 的新 cold-start 自動加入，置於 `exec` 前；Request 不提供開關，`codex_parent_option` 自帶同名覆寫時於啟動前拒絕 | shell 出網，例如 `dotnet restore`、`npm install`、`git fetch` 與下載套件 |
+| `--search` | 依派遣需要指定，屬 `codex` 的父層選項，置於 `exec` 或 `exec resume` 前 | Codex 的官方查證工具，不提供 shell 網路 |
 
-- `npm install`。
-- `git fetch`。
-- 下載檔案或套件。
-
-事實查核類派遣必須啟用 `--search`。未啟用時，Codex 可能無法取得資料而改以記憶作答。
+- 派遣 write 工作時，shell 可嘗試網路還原與建置。實際連線仍受本機網路、防火牆、帳號目錄與組織政策影響；連線失敗時保存命令原文、stderr 與退出碼並回報受阻，不改用 sandbox 外執行、`danger-full-access` 或 `unelevated` 補足。
+- readonly 派遣（含 worktree readonly、advisor 與 direct-readonly）不帶 shell 網路覆寫，shell 出網預期失敗。唯讀 Reviewer 不執行建置或測試。
+- 需要 shell 網路的工作派 write；工作必須唯讀時，網路動作改由主 Agent 依「sandbox 外環境動作」處理。
+- 事實查核類派遣必須啟用 `--search`。未啟用時，Codex 可能無法取得資料而改以記憶作答。shell 網路覆寫不取代 `--search`。
 

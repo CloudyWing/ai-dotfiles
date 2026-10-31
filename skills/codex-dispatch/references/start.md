@@ -422,6 +422,8 @@ observation 的 `freshness` 在寫入快照時依觀測時間距今判定，30 �
 
 `--cd`、`--sandbox`、`--add-dir`、`--search` 與 `--profile` 是 `codex` 的父層選項，必須放在 `exec` 或 `exec resume` 之前。`--json`、`--output-last-message` 與 `--output-schema` 是子命令選項，必須放在子命令之後。`--search` 只有在需求明確需要網路查證時才加入；`--add-dir` 只有在需求明確需要 worktree 外寫入時才加入，並列出絕對路徑。
 
+`write_mode=write` 且 sandbox 為 `workspace-write` 的新 cold-start，Start 自動在父層加入 `-c` 與 `sandbox_workspace_write.network_access=true` 兩個 token，位置在 `exec` 前，並記入 RunRecord 的 `parent_options.codex_parent_option`。readonly、advisor 與 direct-readonly 不加入。Request 的 `codex_parent_option` 以 `-c`、`--config` 或 `--config=` 形式自帶 `sandbox_workspace_write.network_access` 時，Start 在啟動前拒絕。續行與網路能力邊界見 `references/execution.md` 的「續 session 與跨介面接手」及「網路能力硬邊界」。
+
 ### 事件流形狀
 
 `--json` 將 JSONL 事件輸出至 stdout。每則事件是扁平 JSON 物件，以 `type` 欄位分類，不使用 JSON-RPC 封裝，也沒有 request id 與 response 關聯。實測 codex-cli 0.153.4 的最小事件序列如下。
@@ -681,7 +683,7 @@ secondary_source_file=
 
 主 Agent 無法補驗時，該條維持未成立並依回收三態處理。以退回續行處理受阻條件前，必須先改變執行環境的能力集合或改寫該條為不依賴該能力的檢查；能力集合未改變時的續行會產生同一受阻結果，不得作為退回的唯一動作。
 
-派遣單第 5 欄列入建置或測試命令時，該條的執行與輸出責任仍屬主 Agent，執行端回報「未執行」即為正確行為，由主 Agent 補驗後填入結果。
+派遣單第 5 欄列入建置或測試命令時，依派遣的寫入模式決定執行者。write 派遣由執行端執行並回報原始輸出；需要還原套件時，依「網路能力硬邊界」使用 shell 網路，連線失敗時回報受阻。readonly 派遣不執行建置或測試，該條由執行端回報「未執行」，由主 Agent 依補驗規則處理。
 
 自我測試涵蓋三類失效，這三類的共同特徵是命令正常結束、exit code 符合預期，只有輸出是空的或結論是錯的。
 
@@ -693,7 +695,7 @@ secondary_source_file=
 
 透過 PowerShell 取得 `git show` 輸出時，以位元組讀取後自行以 UTF-8 解碼。PowerShell 會以 console 編碼解碼子行程輸出，非 ASCII 內容會變成替代字元，使逐字比對產生假性不一致。改在 Bash 以管線處理位元組同樣可行。
 
-資源派遣的建置與測試由主 Agent 自行執行，不列為 Codex 第 5 欄的命令輸出責任。Workflow 派工沒有派遣單第 5 欄，建置與測試依 `developer.toml` 的結案 gate 由 Developer 執行。
+資源派遣的建置與測試依寫入模式與第 6 欄邊界區分。write 派遣在第 6 欄允許的範圍內由執行端執行；readonly 派遣與唯讀 Reviewer 不執行建置或測試，需要時由主 Agent 補驗。Workflow 派工沒有派遣單第 5 欄，建置與測試依 `developer.toml` 的結案 gate 由 Developer 執行。
 
 複核政策唯一：主 Agent 逐條核對 Codex 回報的命令原文與輸出是否支持其判定結論，這是核對而非重新執行。只有在輸出與結論不一致、輸出缺漏、回報只寫「已完成」而無命令輸出，或該條執行狀態為受阻或未執行時，才實際重跑該條命令。不整套重跑全部條件。
 
