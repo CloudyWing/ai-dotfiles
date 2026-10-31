@@ -182,6 +182,20 @@ Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行
 - 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。
 - 更換機器後，第一步執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
 
+#### Windows 長路徑
+
+派工 worktree 內的 NuGet 套件路徑可能超過 260 字元。執行 `Setup-AIGlobalConfig.ps1` 時會檢查 Windows 的 `LongPathsEnabled`，也可在 PowerShell 中查詢：
+
+```powershell
+Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled
+```
+
+以系統管理員身分執行下列命令可啟用長路徑；加上 `-WhatIf` 可預覽設定。設定後需重新登入或重開機才生效。
+
+```powershell
+.\scripts\Setup-AIGlobalConfig.ps1 -EnableLongPaths
+```
+
 #### Codex profile 檔位設定
 
 1. 各檔位使用選定 Codex home 內的設定檔。預設檔位為 `--profile default` 與 `<CodexHome>/default.config.toml`；`advisor` 為 `--profile advisor` 與 `<CodexHome>/advisor.config.toml`；選用的 `intensive` 為 `--profile intensive` 與 `<CodexHome>/intensive.config.toml`。未指定 home 時預設為 `~/.codex`。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。

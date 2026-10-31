@@ -49,8 +49,8 @@ function Resolve-DispatchNetworkParentOptions {
         if ([string]::IsNullOrWhiteSpace($ExecutionRoot) -or $ExecutionRoot.Contains("'")) {
             throw 'ExecutionRoot 無法表示為 TOML literal string。'
         }
-        $httpCache = Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\http-cache'
-        $packages = Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\packages'
+        $httpCache = Join-Path $ExecutionRoot '.local\nuget\http'
+        $packages = Join-Path $ExecutionRoot '.local\nuget\pkg'
         $automatic += @('-c', 'windows.sandbox="mxc"', '-c', "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$httpCache'", '-c', "shell_environment_policy.set.NUGET_PACKAGES='$packages'")
     }
     if ($null -eq $Anchor) {
@@ -74,11 +74,16 @@ function Resolve-DispatchNetworkParentOptions {
         if ($automaticIndex -ge 0) {
             $automaticLength = 2
             if ($managedCount -gt 1) {
+                $currentPaths = $automaticIndex + 7 -lt $anchorValues.Count -and
+                    $anchorValues[$automaticIndex + 5] -ceq "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $ExecutionRoot '.local\nuget\http')'" -and
+                    $anchorValues[$automaticIndex + 7] -ceq "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $ExecutionRoot '.local\nuget\pkg')'"
+                $legacyPaths = $automaticIndex + 7 -lt $anchorValues.Count -and
+                    $anchorValues[$automaticIndex + 5] -ceq "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\http-cache')'" -and
+                    $anchorValues[$automaticIndex + 7] -ceq "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\packages')'"
                 if ($automaticIndex + 7 -ge $anchorValues.Count -or $managedCount -ne 4 -or
                     $anchorValues[$automaticIndex + 2] -cne '-c' -or $anchorValues[$automaticIndex + 3] -cne 'windows.sandbox="mxc"' -or
                     $anchorValues[$automaticIndex + 4] -cne '-c' -or $anchorValues[$automaticIndex + 6] -cne '-c' -or
-                    $anchorValues[$automaticIndex + 5] -cne "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\http-cache')'" -or
-                    $anchorValues[$automaticIndex + 7] -cne "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\packages')'") {
+                    (-not $currentPaths -and -not $legacyPaths)) {
                     throw 'ParentOptionsMismatch：anchor 自動選項組不完整或與原始派遣語意不符。'
                 }
                 $automaticLength = 8

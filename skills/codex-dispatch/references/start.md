@@ -427,11 +427,11 @@ observation 的 `freshness` 在寫入快照時依觀測時間距今判定，30 �
 ```text
 -c sandbox_workspace_write.network_access=true
 -c windows.sandbox="mxc"
--c shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='<executionRoot>\.local\ai-sessions\scratch\nuget\http-cache'
--c shell_environment_policy.set.NUGET_PACKAGES='<executionRoot>\.local\ai-sessions\scratch\nuget\packages'
+-c shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='<executionRoot>\.local\nuget\http'
+-c shell_environment_policy.set.NUGET_PACKAGES='<executionRoot>\.local\nuget\pkg'
 ```
 
-`mxc` 以 AppContainer 執行命令。elevated sandbox 內 Windows TLS 取不到憑證（openai/codex#31073），HTTPS 還原必須改用 `mxc`；`mxc` 內使用者目錄下的 NuGet http-cache 與全域套件目錄不可寫，因此改到 executionRoot 內的 scratch。`executionRoot` 含單引號時 Start 拒絕啟動。Request 的 `codex_parent_option` 以 `-c`、`--config` 或 `--config=` 形式自帶上述任一鍵時，Start 在啟動前拒絕。續行與網路能力邊界見 `references/execution.md` 的「續 session 與跨介面接手」及「網路能力硬邊界」。
+`mxc` 以 AppContainer 執行命令。elevated sandbox 內 Windows TLS 取不到憑證（openai/codex#31073），HTTPS 還原必須改用 `mxc`；`mxc` 內使用者目錄下的 NuGet http-cache 與全域套件目錄不可寫，因此改到 executionRoot 內較短的 `.local\nuget\`，避免套件路徑超過 260 字元；Windows 另需開啟 `LongPathsEnabled`（`Setup-AIGlobalConfig.ps1` 檢查）。`executionRoot` 含單引號時 Start 拒絕啟動。Request 的 `codex_parent_option` 以 `-c`、`--config` 或 `--config=` 形式自帶上述任一鍵時，Start 在啟動前拒絕。續行與網路能力邊界見 `references/execution.md` 的「續 session 與跨介面接手」及「網路能力硬邊界」。
 
 ### 事件流形狀
 

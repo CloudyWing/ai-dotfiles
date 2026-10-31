@@ -5434,8 +5434,8 @@ if ($Phase -ge 3) {
             $expectedValues = @(
                 'sandbox_workspace_write.network_access=true'
                 'windows.sandbox="mxc"'
-                "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\http-cache')'"
-                "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $ExecutionRoot '.local\ai-sessions\scratch\nuget\packages')'"
+                "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $ExecutionRoot '.local\nuget\http')'"
+                "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $ExecutionRoot '.local\nuget\pkg')'"
             )
             $previousArgumentIndex = -1
             $previousLauncherIndex = -1
@@ -6081,7 +6081,7 @@ if ($Phase -ge 4) {
         $network = @('-c', 'sandbox_workspace_write.network_access=true')
         $spaceRoot = Join-Path $fixtureRoot 'space root'
         $expected = @('--note=test') + $network
-        if (Test-IsWindowsPlatform) { $expected += @('-c', 'windows.sandbox="mxc"', '-c', "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $spaceRoot '.local\ai-sessions\scratch\nuget\http-cache')'", '-c', "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $spaceRoot '.local\ai-sessions\scratch\nuget\packages')'") }
+        if (Test-IsWindowsPlatform) { $expected += @('-c', 'windows.sandbox="mxc"', '-c', "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $spaceRoot '.local\nuget\http')'", '-c', "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $spaceRoot '.local\nuget\pkg')'") }
         $options = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=test') -Anchor $null
         Assert-True (Compare-DispatchStringArrays -Left $options -Right $expected) 'write cold-start 自動選項不符。'
         $nonWindows = & { function Test-IsWindowsPlatform { return $false }; Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @() -Anchor $null }
@@ -6110,6 +6110,19 @@ if ($Phase -ge 4) {
         $oldNetwork = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption (@('--note=old') + $network)
         $oldNetworkOptions = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=old') -OptionsProvided $true -Anchor $oldNetwork
         Assert-True (Compare-DispatchStringArrays -Left $oldNetworkOptions -Right @($oldNetwork.codex_parent_option)) '舊網路 anchor 不可補加選項。'
+        if (Test-IsWindowsPlatform) {
+            $legacyOptions = @('--note=old') + $network + @('-c', 'windows.sandbox="mxc"', '-c', "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $spaceRoot '.local\ai-sessions\scratch\nuget\http-cache')'", '-c', "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $spaceRoot '.local\ai-sessions\scratch\nuget\packages')'")
+            $legacyAnchor = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $legacyOptions
+            $legacyExplicit = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=old') -OptionsProvided $true -Anchor $legacyAnchor
+            $legacyResume = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $legacyExplicit -CodexParentOptionProvided $true -Anchor $legacyAnchor
+            $legacyOmitted = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $legacyAnchor
+            Assert-True ((Compare-DispatchStringArrays -Left $legacyExplicit -Right $legacyOptions) -and $null -eq $legacyResume.code -and $null -eq $legacyOmitted.code -and $legacyResume.model.fingerprint -ceq $legacyAnchor.fingerprint -and $legacyOmitted.model.fingerprint -ceq $legacyAnchor.fingerprint) '舊 NuGet 路徑 anchor 續行或 fingerprint 已改變。'
+            $mixed = [pscustomobject]@{ codex_parent_option = @($legacyOptions) }
+            $mixed.codex_parent_option[8] = $expected[8]
+            $rejected = $false
+            try { $null = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @() -Anchor $mixed } catch { $rejected = $_.Exception.Message -match 'ParentOptionsMismatch' }
+            Assert-True $rejected '混合新舊 NuGet 路徑的 anchor 未拒絕。'
+        }
         $partial = [pscustomobject]@{ codex_parent_option = @($network) + @('-c', 'windows.sandbox="mxc"') }
         $rejected = $false
         try { $null = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @() -Anchor $partial } catch { $rejected = $_.Exception.Message -match 'ParentOptionsMismatch' }

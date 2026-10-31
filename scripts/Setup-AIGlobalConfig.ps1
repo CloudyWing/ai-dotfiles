@@ -7,12 +7,46 @@
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
-    [switch]$Force
+    [switch]$Force,
+    [switch]$EnableLongPaths
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+# Windows 長路徑檢查
+function Set-WindowsLongPaths {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [switch]$Enable,
+        [bool]$IsAdministrator
+    )
+
+    $registryPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem'
+    $enableCommand = "New-ItemProperty -Path '$registryPath' -Name LongPathsEnabled -PropertyType DWord -Value 1 -Force"
+    if ($Enable -and -not $IsAdministrator) {
+        throw "啟用長路徑需要系統管理員權限。請以系統管理員身分執行：$enableCommand"
+    }
+
+    $properties = Get-ItemProperty -LiteralPath $registryPath -ErrorAction Stop
+    $property = $properties.PSObject.Properties['LongPathsEnabled']
+    if ($null -ne $property -and $property.Value -eq 1) {
+        Write-Host '  ✅ Windows 長路徑已啟用。' -ForegroundColor DarkGreen
+        return
+    }
+
+    Write-Warning "Windows 長路徑未啟用；派工 worktree 內的 NuGet 套件路徑可能超過 260 字元。啟用命令：$enableCommand。需重新登入或重開機才生效。"
+    if ($Enable -and $PSCmdlet.ShouldProcess("$registryPath\LongPathsEnabled", '啟用 Windows 長路徑')) {
+        New-ItemProperty -LiteralPath $registryPath -Name LongPathsEnabled -PropertyType DWord -Value 1 -Force | Out-Null
+        Write-Host '  ✅ 已設定 Windows 長路徑；需重新登入或重開機才生效。' -ForegroundColor DarkGreen
+    }
+}
+
+if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+    $longPathPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
+    $isAdministrator = $longPathPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    Set-WindowsLongPaths -Enable:$EnableLongPaths -IsAdministrator $isAdministrator
+}
 # 1. 管理員權限檢查
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
