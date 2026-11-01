@@ -511,7 +511,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定已實測（缺少 config.toml 時命令全被執行政策拒絕，補上 windows.sandbox 與專案信任後可執行，內容見 README），共用 profile symlink/include 載入行為待使用者驗證；採每個 home 獨立 profile 檔案，保留既有 profile/model hash gate。
 
-本 Skill 使用預設檔位、`intensive` 與 `advisor` 三個語意檔位。實作、審查、掃描與命令執行使用預設檔位；使用者在當下 Session 明確指定時，該 Session 的派工改用 `intensive`，指定不延續到其他 Session；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `<CodexHome>/default.config.toml` 為準，各 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
+本 Skill 使用預設檔位、`intensive` 與 `advisor` 三個語意檔位。實作、審查、掃描與命令執行使用預設檔位；使用者在當下 Session 明確指定時，該 Session 的派工改用 `intensive`，指定不延續到其他 Session；Codex `Reviewer` 的大範圍審查依 `instructions.md`「審查配對」固定使用 `intensive`，不需使用者指定；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `<CodexHome>/default.config.toml` 為準，各 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
 
 `codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位一律傳入 `--profile default`，讀取 `<CodexHome>/default.config.toml`；`intensive` 傳入 `--profile intensive`，讀取 `<CodexHome>/intensive.config.toml`，檔案不存在時在啟動前拒絕，不回退預設檔位。
 
@@ -581,12 +581,12 @@ secondary_source_file=
 
 `Inspect` 預設唯讀，不寫入額度或推薦訊號。
 
-1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。實作與執行類工作使用預設檔位，使用者在當下 Session 指定時使用 `intensive`。
+1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。實作與執行類工作使用預設檔位，使用者在當下 Session 指定時使用 `intensive`；Codex `Reviewer` 的大範圍審查依「審查配對」使用 `intensive`。
 2. 屬意見評估時，主 Agent 先向使用者提出 advisor 授權請求；使用者同意後以 `AdvisorRequestSource=user-explicit` 派工。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工，該授權不延續到其他 Session。
 3. 額度只供顯示與紀錄，由主 Agent 手動查詢，時點為派工前、advisor 前、結案時與按需查詢；派工腳本不自動查詢。查詢失敗記為 unknown，派工照常進行。
 4. 所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
 5. 以 `advisor` 派工而 `advisor.config.toml` 不存在時，停止該次派工，不使用隱式 profile fallback。
-6. 預設檔位一律傳入 `--profile default`，檔位名稱只允許預設、`intensive` 與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。`intensive` 只在使用者於當下 Session 指定後使用，腳本不自動選用。
+6. 預設檔位一律傳入 `--profile default`，檔位名稱只允許預設、`intensive` 與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。`intensive` 在使用者於當下 Session 指定後，或 Codex `Reviewer` 的審查符合 `instructions.md`「審查配對」的大範圍條件時使用，由主 Agent 在 Request 傳入，腳本不自動選用。
 
 ### 決策歸屬
 

@@ -199,7 +199,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 #### Codex profile 檔位設定
 
 1. 各檔位使用選定 Codex home 內的設定檔。預設檔位為 `--profile default` 與 `<CodexHome>/default.config.toml`；`advisor` 為 `--profile advisor` 與 `<CodexHome>/advisor.config.toml`；選用的 `intensive` 為 `--profile intensive` 與 `<CodexHome>/intensive.config.toml`。未指定 home 時預設為 `~/.codex`。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
-2. 實作使用預設檔位；使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session，設定檔不存在時派工在啟動前拒絕。`advisor` 只作意見評估，發動前先向使用者請求，使用者在當下 Session 授權後才派工；授權不延續到其他 Session，也不依剩餘額度縮小評估範圍。預設檔位額度不足時不需授權，照常派工。授權與 evidence pack 契約以 `codex-dispatch` skill 為準，本文件不重複記載。
+2. 實作使用預設檔位；使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session。Codex `Reviewer` 的大範圍審查（規則檔機制條款，或審查範圍達 3 個檔案以上）固定使用 `intensive`，條件以 `instructions.md`「審查配對」為準。`intensive` 設定檔不存在時派工在啟動前拒絕。`advisor` 只作意見評估，發動前先向使用者請求，使用者在當下 Session 授權後才派工；授權不延續到其他 Session，也不依剩餘額度縮小評估範圍。預設檔位額度不足時不需授權，照常派工。授權與 evidence pack 契約以 `codex-dispatch` skill 為準，本文件不重複記載。
 3. `default.config.toml`、`advisor.config.toml` 與選用的 `intensive.config.toml` 是各 profile 的本機設定檔，內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
 
    ```toml

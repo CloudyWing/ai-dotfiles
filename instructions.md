@@ -336,7 +336,7 @@ Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依�
 
 ##### F1 派工判準
 
-派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依工作性質選擇，實作與執行用預設檔位（使用者在當下 Session 指定時用 `intensive`），意見評估用 `advisor`，不改變能力歸屬。
+派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依工作性質選擇，實作與執行用預設檔位（使用者在當下 Session 指定時用 `intensive`；Codex `Reviewer` 的大範圍審查固定用 `intensive`，條件見「審查配對」），意見評估用 `advisor`，不改變能力歸屬。
 
 本輪工作命中某個 skill 時，先讀該 skill frontmatter 的 `dispatch` 欄位。`delegate` 直接派工，`inline` 直接由 Claude 端處理，`split` 依該 skill 的「## 派遣分界」章節拆分；這三個值不再走下列三層表。`either` 不指定歸屬，依下列三題工作量下限與三層表判定。
 
@@ -488,6 +488,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 - 審查範圍含兩個家族的貢獻時，以新增與刪除行數合計較多者為實作者，相等時以 Claude 家族計。Workflow 混合改按 Phase 切分：Haiku Phase 涉及的檔案由 Codex `Reviewer` 審查，Codex Phase 涉及的檔案由 Sonnet subagent 審查，各一份派遣單，同線同時只發一位審查者。
 - 「審查者不得是改寫者」與本表並存。順序 1 已使 Claude 改寫的規則檔由 Codex 審查。
 - `Frontend Reviewer` 與 `Contract Auditor` 維持 Codex。
+- Codex `Reviewer` 的檔位依審查範圍判定。順序 1 的規則檔機制條款審查，以及審查範圍達 3 個檔案以上的審查，使用 `intensive`；其餘使用預設檔位。此判定屬規則決定，不需使用者在當下 Session 指定。
 - Sonnet subagent 審查的派生契約與鏡像報告 `review-report-claude.md` 見 `workflow-orchestration` skill「Sonnet 審查路徑」。
 
 `Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，同線並行上限為 2。並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行。
