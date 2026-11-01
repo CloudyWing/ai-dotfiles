@@ -59,7 +59,7 @@
 | `fact-check-note` | 知識型 | human | 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes. |
 | `generate-commit` | 知識型 | human | 依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔案過濾與拆分建議。當使用者要求提交變更或產生 commit 訊息時使用。 |
 | `generate-editorconfig-by-techstack` | 知識型 | human | 依 C# 風格註記選擇 personal 或 standard 範本，再依專案技術棧與 .NET 框架版本過濾出對應的 .editorconfig 段落並補齊，保留既有自訂偏好。Use when 使用者要求產生或補齊 .editorconfig，或 create-dotnet-project 建立新 .NET 方案時；日常 C# 開發不觸發。 |
-| `git-workflow` | 知識型 | agent | Git 分支策略與協作規範：分支命名、PR 模板、Merge 策略選用與 Git Hooks 慣例。當討論分支管理、PR 流程或版本發布時自動套用。 |
+| `git-workflow` | 知識型 | agent | Git 分支策略與協作規範：依專案 AGENTS.local.md 的 git-workflow 註記載入 trunk 或 release-flow 模式，涵蓋分支命名、線分支 worktree、commit 整理、合併與標籤、改寫與 force push 邊界、PR 模板與 Git Hooks 慣例。討論或執行分支管理、commit 整理、合併、push 與版本發布時套用。 |
 | `glossary` | 知識型 | human | 維護專案專屬業務術語表，處理使用者用詞衝突、程式碼語意矛盾與即時寫入。Use when 專案已宣告詞彙表，且當前對話或程式碼使用了表中既有術語但語意與定義不符時。 |
 | `integration-verify` | 知識型 | agent | 開發完成後的整合驗證入口。當使用者要求在功能開發完成後自行驗證、做整合測試，或說「幫我驗證」「驗證一下功能」但未指定驗證方式時使用。判斷專案類型後先執行既有單元測試，再路由到對應的煙霧驗證流程。 |
 | `legacy-test-harness` | 知識型 | human | Use when 建立原專案外部測試專案，評估舊 .NET 專案的單元或元件測試，或判讀測試結果與版本追溯資料。 |

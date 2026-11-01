@@ -224,7 +224,23 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 派工可使用專用的 Codex 帳號目錄，與 Codex Desktop 使用的預設目錄 `~/.codex` 分開。派工只在單次子行程指定 `CODEX_HOME`，不會更換、改寫 Desktop 或預設目錄的登入，因此 Desktop 使用中不會被派工切換帳號。建議的配置是：`~/.codex` 留給 Desktop 且不登記，派工用的每個帳號各用一個專用目錄。Desktop 與某個派工帳號若登入同一個 ChatGPT 帳號，兩邊仍共用該帳號的額度。
 
-在 `~/.ai-agents/.local/machine.json` 加入選用的 `codex_accounts`，保留原有值班欄位。此檔維持本機設定。
+派工帳號以 `scripts\New-CodexDispatchAccount.ps1` 建立。腳本依帳號名稱完成下列項目，並逐項回報 `created`、`exists`、`repaired` 或 `skipped`：
+
+- 建立 `~/.codex-<名稱>` 專用目錄。
+- 寫入最小 `config.toml`，並為 `-ProjectPath` 指定的每個專案加入小寫路徑的信任段落。
+- `.sandbox`、`.sandbox-bin`、`.sandbox-secrets` 建立指向 `~/.codex` 同名目錄的 Junction，`.sandbox_migration` 建立指向同名檔案的 Symbolic Link；既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再建立連結。
+- `default.config.toml`、`advisor.config.toml` 建立指向 `~/.codex` 同名檔案的 Symbolic Link，指定 `-IncludeIntensive` 時另建 `intensive.config.toml`；`~/.codex` 的 profile 修改因此同時作用到所有派工帳號。既有一般檔案先改名為 `<名稱>.bak-<時間戳>` 再建立連結，指向其他目標的連結或目錄則報錯停止。
+- 在 `~/.ai-agents/.local/machine.json` 的 `codex_accounts` 登記名稱與目錄，保留原有值班欄位與既有帳號。
+
+```powershell
+.\scripts\New-CodexDispatchAccount.ps1 -Name account-a -ProjectPath 'C:\Users\<使用者>\.ai-agents', 'D:\Projects\<專案>'
+```
+
+在 PowerShell 提示字元直接執行。`-ProjectPath` 接受陣列，以 `powershell.exe -File` 或 `pwsh -File` 呼叫時逗號串接會被視為單一字串，每次只能傳一個路徑。
+
+帳號已存在時重跑只補缺少的部分，不覆寫既有設定；新增專案時以相同名稱加上新的 `-ProjectPath` 重跑即可。加上 `-WhatIf` 可預覽而不寫入。省略 `-ProjectPath` 時信任項目標為 `skipped`，派工前須以 `-ProjectPath` 補上目標專案。腳本不讀取或複製 `auth.json` 與 `sessions`，不提供 `sandbox = "unelevated"`，也不登記 `~/.codex`。建立 Symbolic Link 權限不足時，該項以原始錯誤中止，改以具備建立 Symbolic Link 權限的 PowerShell 重新執行。
+
+`machine.json` 的 `codex_accounts` 格式如下，此檔維持本機設定。
 
 ```json
 {
@@ -238,13 +254,19 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 名稱使用小寫英數與連字號，目錄須為已存在的絕對路徑。名稱與正規化目錄均須唯一，帳號目錄的 reparse point 或別名會被拒絕。省略清單或使用空陣列時，沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 的解析順序。未登記的自訂 home 仍可使用，RunRecord 的帳號名稱為 null。格式異常時回報 `CodexAccountConfigurationInvalid`，保留原選擇並由使用者修正。
 
-由使用者為每個派工帳號建立專用目錄，在該目錄人工建立 `config.toml`，並只人工複製 `default.config.toml`、`advisor.config.toml` 及需要時的 `intensive.config.toml`。逐一檢查 profile 中的機器專屬路徑。Setup 只檢查目錄與固定檔名，缺件時提供指引。
+profile 與 `~/.codex` 共用，機器專屬路徑在 `~/.codex` 的 profile 檢查一次即可。Setup 只檢查目錄與固定檔名，缺件時提供指引。
 
-使用者在獨立登入子行程設定 `CODEX_HOME` 後自行執行 `codex login`。保留使用者／機器環境變數與 Desktop 的預設目錄；登入、憑證及 sessions 由各 home 的 Codex CLI 管理，不複製整個目錄。
+腳本不執行登入，最後輸出已設定 `CODEX_HOME` 的登入命令，由使用者自行執行。命令只在該子行程設定 `CODEX_HOME`，保留使用者／機器環境變數與 Desktop 的預設目錄；登入、憑證及 sessions 由各 home 的 Codex CLI 管理。
+
+```powershell
+powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.codex-account-a''; codex login'
+```
+
+帳號閒置過久時 token 會失效，`Get-CodexQuota.ps1` 或派工會回報 401。此時以同一個登入命令重新登入；腳本在登入命令後也會輸出這段提示。
 
 派工使用 `Dispatch -RequestPath <Request> -CodexHome <已登記目錄>`。程式沒有「預設派工帳號」設定，省略 `-CodexHome` 時依 CLI、程序 `CODEX_HOME`、`~/.codex` 的順序解析，程序 `CODEX_HOME` 也未設定時會落到 Desktop 使用的預設目錄，因此主 Agent 派工一律明確指定 `-CodexHome`，預設使用清單第一個帳號。Start 僅在該次 ProcessStartInfo 設定 `CODEX_HOME`，RunRecord 記錄 home、profile 與帳號別名。同一派遣 resume 固定同 home/name；跨 home 改用新 dispatchSlug 冷啟動，完整步驟見 `codex-dispatch` Skill。
 
-本機 `codex-cli 0.159.0` 的 `codex --help` 明列 `--profile` 將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 `config.toml` 最小必要設定已實測（2026-10-17，`codex-cli 0.159.0`，`windows.sandbox = "elevated"` 的環境）：缺少 `config.toml` 時，Codex 在該 home 啟動後所有命令都被執行政策拒絕，連派遣單都讀不了；補上下列兩段後可正常讀取與執行。`[windows] sandbox` 的值須與基礎 home 一致；`[projects.'<小寫的專案絕對路徑>']` 的 `trust_level = "trusted"` 依需要派工的專案逐一加入。不要複製 `notify`、`.sandbox*` 目錄、`auth.json` 與 `sessions`。共用 profile symlink/include 的載入行為未驗證，各 home 使用自己的 profile 檔案。
+本機 `codex-cli 0.159.0` 的 `codex --help` 明列 `--profile` 將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 `config.toml` 最小必要設定已實測（2026-10-17，`codex-cli 0.159.0`，`windows.sandbox = "elevated"` 的環境）：缺少 `config.toml` 時，Codex 在該 home 啟動後所有命令都被執行政策拒絕，連派遣單都讀不了；補上下列兩段後可正常讀取與執行。腳本產生的 `config.toml` 即為下列內容，`[windows] sandbox` 固定為 `elevated`，`[projects.'<小寫的專案絕對路徑>']` 依 `-ProjectPath` 逐一加入。既有 `config.toml` 的 `[windows]` 段缺少 `sandbox`、值不是 `elevated`，或信任段落無法安全辨識時，腳本報錯停止，不覆寫該檔。`.sandbox*` 以連結共用 `~/.codex` 的狀態，缺少時每個命令都會重跑 elevated setup 並跳出 UAC 視窗。profile 以 Symbolic Link 指向 `~/.codex` 的同名檔案，`--profile` 經由連結讀取設定。
 
 ```toml
 [windows]

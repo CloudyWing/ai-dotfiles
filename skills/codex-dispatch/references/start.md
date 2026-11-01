@@ -505,11 +505,11 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 名稱符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，目錄使用已存在的絕對路徑。名稱與正規化路徑以不區分大小寫比較唯一性，reparse point 與同目錄別名拒絕。缺少清單或空陣列時沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 優先序；未登記 home 的 `codex_account_name=null`。格式異常回報 `CodexAccountConfigurationInvalid`，由使用者修正，維持原選擇。
 
-使用者為每個派工帳號建立專用目錄，人工建立 `config.toml`，只人工複製非憑證的 `default.config.toml`、`advisor.config.toml` 及選用的 `intensive.config.toml`，並核對機器專屬路徑。Setup 只逐帳號檢查目錄與固定設定檔，default/advisor 缺件警示，intensive 在選用時要求。使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。
+派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱> -ProjectPath <專案路徑>` 建立，執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>`、最小 `config.toml` 與專案信任段落，將 `.sandbox*` 與 `default.config.toml`、`advisor.config.toml`（`-IncludeIntensive` 時含 `intensive.config.toml`）連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 只逐帳號檢查目錄與固定設定檔，default/advisor 缺件警示，intensive 在選用時要求。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。帳號閒置過久導致 `Get-CodexQuota.ps1` 或派工回報 401 時，請使用者以同一登入命令重新登入。
 
 以 `Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 選帳號。主 Agent 派工一律明確指定 `-CodexHome`，預設用清單第一個帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。Dispatch 在 Preflight 與 Prepare 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path` 與 `codex_account_name` 採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
 
-本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定已實測（缺少 config.toml 時命令全被執行政策拒絕，補上 windows.sandbox 與專案信任後可執行，內容見 README），共用 profile symlink/include 載入行為待使用者驗證；採每個 home 獨立 profile 檔案，保留既有 profile/model hash gate。
+本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定已實測（缺少 config.toml 時命令全被執行政策拒絕，補上 windows.sandbox 與專案信任後可執行，內容見 README），各 home 的 profile 為指向 `~/.codex` 同名檔案的 Symbolic Link，`--profile` 經由連結讀取，保留既有 profile/model hash gate。
 
 本 Skill 使用預設檔位、`intensive` 與 `advisor` 三個語意檔位。實作、審查、掃描與命令執行使用預設檔位；使用者在當下 Session 明確指定時，該 Session 的派工改用 `intensive`，指定不延續到其他 Session；Codex `Reviewer` 的大範圍審查依 `instructions.md`「審查配對」固定使用 `intensive`，不需使用者指定；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `<CodexHome>/default.config.toml` 為準，各 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
 
