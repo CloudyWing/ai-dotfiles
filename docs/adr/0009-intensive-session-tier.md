@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-13
+superseded-by: 0016
 ---
 
 # ADR-0009：新增 Session 層級指定的 intensive 實作檔位
