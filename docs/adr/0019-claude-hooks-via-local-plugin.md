@@ -1,5 +1,5 @@
 ---
-status: proposed
+status: accepted
 date: 2026-11-02
 ---
 
@@ -15,4 +15,8 @@ hook 改由 `.ai-agents` 內的本機 marketplace `ai-agents-local` 與 plugin `
 
 ## Consequences
 
-修改 hook 腳本後下一個 session 生效而不需重裝，新機執行 Setup 即得到相同 hook。桌面 app Code 分頁是否觸發 plugin hook 尚待實測，未通過時須重新評估本決策；實作位於線分支 `feature/token-economizer-eval`，合併前維持 proposed。
+修改 hook 腳本後下一個 session 生效而不需重裝，新機執行 Setup 即得到相同 hook。實測確認桌面 app Code 分頁與 CLI 都會觸發 plugin hook，`${CLAUDE_PLUGIN_ROOT}` 指向 marketplace 原始目錄；Claude Code 另在 `~/.claude/plugins/cache/` 保留一份副本，但不作為執行來源。
+
+marketplace 根隨執行 Setup 的 checkout 而定，從線分支 worktree 執行時會指向該 worktree。合併回 main 後須在 main 以 `-Force` 重跑 Setup 改指 marketplace，確認 hook 仍觸發後才移除 worktree，否則 worktree 移除後 hook 失效。
+
+PostToolUse 的純文字 stdout 不進入模型 context，`post-edit-write-hook` 的提示只在背景輸出，與改用 plugin 前的行為相同。
