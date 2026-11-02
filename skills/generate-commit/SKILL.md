@@ -16,6 +16,13 @@ policy.allow_implicit_invocation: true
 
 ## 執行步驟
 
+### 0. 檢查 git-workflow 註記與 commit 落點
+
+1. 非 Git 專案跳過步驟 0 與步驟 4，其餘流程不變。
+2. 依 `git-workflow` skill「git-workflow 註記與模式載入」確認專案的 `git-workflow` 註記存在且有效。缺少或無效時停止，不 commit。
+3. 依已載入模式檔的「commit 落點」檢查目前分支，不允許時停止回報。`HEAD` 為 detached 時停止。
+4. 全部通過後進入步驟 1。
+
 ### 1. 取得全量變更（強制）
 
 在產生 commit 訊息前，**必須**先看過真實的變更內容，不得僅憑對話記憶：
@@ -60,7 +67,31 @@ Commit 2：<commit message>
   - file_c.cs
 ```
 
-### 4. 執行 Commit
+### 4. 判定 fixup 目標
+
+對每一組要 commit 的檔案，判定修正對象是否為尚未推送的 commit。與步驟 3 的拆分並用時，每組各自判定。
+
+- 取 `rangeBase`：依 `git-workflow` skill「整理流程」的 `rangeBase` 表，由目前分支決定。無法解析時視為無候選。
+- 取候選範圍 U：`git rev-list <rangeBase>..HEAD --not --remotes --no-merges`。
+- 取每個已追蹤檔案 f 的最近修改者 `T(f)`：`git log -1 --format=%H --no-merges <rangeBase>..HEAD --not --remotes -- <f>`。未追蹤的新檔 `T(f)` 為空。
+
+| 條件 | 處置 |
+| --- | --- |
+| U 為空，或所有 `T(f)` 為空 | 一般 commit，並說明原因（沒有未推送的修正對象，或無法判定是否已推送） |
+| 所有檔案的 `T(f)` 都是同一個 SHA X | 自動以 `git commit --fixup=X` 建立 `fixup!` commit，不詢問 |
+| 有多筆候選，即 `T(f)` 指向不同 SHA，或部分檔案有 `T(f)`、部分為空 | 詢問使用者：依目標拆成多筆 `fixup!` commit、選定單一目標，或全部改為一般 commit |
+| 修正對象已推送，即最近修改該檔的 commit 不在 U | 一般 commit，type 依「分類判定基準」 |
+
+- 建立前以 `git cat-file -e X^{commit}` 確認目標存在，失敗時重新判定。
+- `fixup!` commit 的訊息由 git 產生，格式為 `fixup! <目標主題>`，不套用 Type Whitelist、Subject Rules 與 Body Rules。
+- hook 拒絕時回報 hook 輸出並停止，禁止以 `--no-verify` 略過 hook。
+- 完成後輸出目標 SHA 與主題，並說明該 commit 會在 `git-workflow`「整理流程」收進目標。
+
+判定完成後進入步驟 5。
+
+### 5. 執行 Commit
+
+步驟 4 判定為 `fixup!` 的組別以 `git commit --fixup=<SHA>` 取代訊息產生，staging 規則不變。
 
 確定範圍後，**先 stage 範圍內的檔案**（`git add <files>`），再依下方規範產生訊息並 commit，不需另外詢問確認：
 
@@ -82,6 +113,15 @@ Commit 執行完畢後，輸出最終的 commit 訊息內容（含本次自動�
 ### Header Format
 
 **Pattern**: `<type>([scope]): <subject>`
+
+#### 非 type 訊息
+
+下列兩種訊息使用固定格式，不屬 Type Whitelist。其他訊息一律依 Pattern。
+
+- `fixup!` commit：由 `git commit --fixup=<SHA>` 產生，見步驟 4。
+- merge commit：固定為 `Merge branch '<分支>'`，只用於 `git-workflow` 的 `release-flow` 合併前流程，以 `git merge --no-ff -m` 傳入。
+
+Type Whitelist 維持下列九項。
 
 #### Type Whitelist
 

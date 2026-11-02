@@ -13,15 +13,16 @@ policy.allow_implicit_invocation: true
 
 Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢查點的建檔與建檔內容仍依 §1.4 執行，建議接手指令輸出後原 Session 直接繼續。
 
-1. 依 `instructions.md` Workflow Phase 的實作分流逐 Phase 判定執行者，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：P<n>=<執行者>`），輸出建議接手指令後依各 Phase 的執行者派工進入 Developer 實作。Codex Phase 走 Workflow 派工契約，Haiku Phase 走本 Skill「Haiku 實作路徑」。
-2. 派遣 Developer 並回收結果。Codex Phase 收下時，先將成果套回來源工作樹，不建立 Phase commit，並保留 dispatch worktree 供後續 Reviewer 退回續行。Haiku Phase 的回收依「Haiku 實作路徑」。混合時依前段 Haiku、Codex 單一派工、後段 Haiku 的順序執行。
-3. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的改派結果。回收後仍有殘餘工作時，依 `instructions.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
-4. 命中 Reviewer 必發清單時，依 `instructions.md` 審查配對決定審查者並直接派出，不詢問使用者。Codex `Reviewer` 走資源派遣，Claude Sonnet subagent 走本 Skill「Sonnet 審查路徑」，Workflow 混合時按 Phase 切分兩位審查者，依序各發一份派遣單。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
-5. 審查者以純技術原因退回時，Codex Phase 使用保留的同一 dispatch worktree 與 thread 自動續行 Developer 修正；Haiku Phase 依「Haiku 實作路徑」的審查與修正處理。修正完成後回到 Developer 回收與審查判定。
-6. 審查者收下時進入 Analyst 需求意圖驗收。Analyst 讀取 `implement-closure-report.md`、`implement-closure-report-haiku-pre.md`、`implement-closure-report-haiku-post.md`（若有）與兩位審查者的報告（`review-report.md`、`review-report-claude.md`，若有）。需求意圖驗收完成後輸出 Workflow 結案報告。
-7. 結案報告完成後等待使用者當輪授權 commit；取得授權後才執行 Phase commit 回收，完成驗證與報告同步後移除 dispatch worktree（全 Haiku 時沒有 dispatch worktree）。
+1. 分支前置。啟動 Workflow 屬 `git-workflow` 註記的阻擋範圍，先依 `git-workflow` skill「git-workflow 註記與模式載入」確認註記有效。再依該 skill「線分支與獨立 worktree」的適用判定決定直接在整合分支或開線分支；`release-flow` 目前在 `main` 時停止並詢問版號（見 `references/release-flow.md`）。開線分支時執行該節的建立程序並切換 work-root，之後的 `design-accepted` 交接檢查點、派工與回收都使用新 work-root。
+2. 依 `instructions.md` Workflow Phase 的實作分流逐 Phase 判定執行者，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：P<n>=<執行者>`），輸出建議接手指令後依各 Phase 的執行者派工進入 Developer 實作。Codex Phase 走 Workflow 派工契約，Haiku Phase 走本 Skill「Haiku 實作路徑」。
+3. 派遣 Developer 並回收結果。Codex Phase 收下時，先將成果套回來源工作樹，不建立 Phase commit，並保留 dispatch worktree 供後續 Reviewer 退回續行。Haiku Phase 的回收依「Haiku 實作路徑」。混合時依前段 Haiku、Codex 單一派工、後段 Haiku 的順序執行。
+4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的改派結果。回收後仍有殘餘工作時，依 `instructions.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
+5. 命中 Reviewer 必發清單時，依 `instructions.md` 審查配對決定審查者並直接派出，不詢問使用者。Codex `Reviewer` 走資源派遣，Claude Sonnet subagent 走本 Skill「Sonnet 審查路徑」，Workflow 混合時按 Phase 切分兩位審查者，依序各發一份派遣單。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
+6. 審查者以純技術原因退回時，Codex Phase 使用保留的同一 dispatch worktree 與 thread 自動續行 Developer 修正；Haiku Phase 依「Haiku 實作路徑」的審查與修正處理。修正完成後回到 Developer 回收與審查判定。
+7. 審查者收下時進入 Analyst 需求意圖驗收。Analyst 讀取 `implement-closure-report.md`、`implement-closure-report-haiku-pre.md`、`implement-closure-report-haiku-post.md`（若有）與兩位審查者的報告（`review-report.md`、`review-report-claude.md`，若有）。需求意圖驗收完成後輸出 Workflow 結案報告。
+8. 結案報告完成後等待使用者當輪授權 commit；取得授權後才執行 Phase commit 回收，完成驗證與報告同步後移除 dispatch worktree（全 Haiku 時沒有 dispatch worktree）。之後依 `git-workflow` 註記模式進入整理與落地，`trunk` 於 push 前整理，`release-flow` 執行合併前流程；整理、落地、push 與合併都待使用者當輪授權。Accept 之後對尚未推送的 Phase commit 的修正，由 `generate-commit` 步驟 4 建立 `fixup!` commit。
 
-第 1 步是 Design 階段的收尾，第 2、3 步屬 Implement，第 4、5 步屬 Review，第 6、7 步屬 Accept。Accept 階段涵蓋 Analyst 需求意圖驗收、Workflow 結案報告，以及使用者授權後的 Phase commit 回收。
+第 1、2 步是 Design 階段的收尾，第 3、4 步屬 Implement，第 5、6 步屬 Review，第 7、8 步屬 Accept。Accept 階段涵蓋 Analyst 需求意圖驗收、Workflow 結案報告、使用者授權後的 Phase commit 回收，以及依註記模式的整理與落地。
 
 ## 實作分流程序
 
@@ -84,7 +85,7 @@ Workflow 的 Phase 由 Claude Haiku subagent 承接時（判定條件見 `instru
 
 ### Phase commit 回收
 
-- 使用者授權 commit 後，Haiku Phase 依其報告「Phase 對照」節逐 Phase 暫存指名路徑並建立 commit，commit 訊息依 `generate-commit` skill；與 Codex Phase 依 `design.md` 的 Phase 宣告順序交錯回收；同檔橫跨多個 Phase 時沿用「歸入最早 Phase」。
+- 使用者授權 commit 後，Haiku Phase 依其報告「Phase 對照」節逐 Phase 暫存指名路徑並建立 commit，commit 落在符合 `git-workflow` 註記模式的來源分支，commit 訊息依 `generate-commit` skill；與 Codex Phase 依 `design.md` 的 Phase 宣告順序交錯回收；同檔橫跨多個 Phase 時沿用「歸入最早 Phase」。
 - 全 Haiku 時沒有 dispatch worktree，不呼叫 `Cleanup`；混合時僅 Codex 派工的 worktree 依既有流程 `Cleanup`。
 
 ## light 路徑

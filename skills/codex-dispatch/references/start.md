@@ -65,6 +65,28 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 
 執行端仍以缺少鍵或格式錯誤停止時，主 Agent 先補齊或修正，再以新的派遣重新執行；此停止不屬純技術補件，不以續行帶過。
 
+### git-workflow 分支符合性檢查
+
+`dispatch_kind=workflow` 且 `sourceRoot` 為 Git 來源時，主 Agent 在建立派遣單或 Request 前，確認目前分支符合 `git-workflow` 註記的模式。資源派遣與非 Git 來源不適用本節。本節只使用唯讀命令。
+
+| 步驟 | 動作 | 不符時 |
+| --- | --- | --- |
+| 1 | 依「AI-PROFILE 前置檢查」確認 `git-workflow` 鍵有效 | 依該節處置，補齊後才繼續 |
+| 2 | 執行 `git -C <sourceRoot> branch --show-current`，輸出為空即 detached HEAD | 停止 |
+| 3 | 以同線 `design.md`「實作任務清單」的 Phase 數判定線類型（與本次派遣選定幾個 Phase 無關），Phase 數 >= 2 為線分支，其餘為直接在整合分支 | 無法取得 Phase 數時停止 |
+| 4 | 對照下表 | 停止 |
+
+| 模式 | 線類型 | 期望 |
+| --- | --- | --- |
+| `trunk` | 直接 | 目前分支為 `main` |
+| `trunk` | 線分支 | 目前分支為 `feature/<lineSlug>`；`sourceRoot` 是 linked worktree，即 `git rev-parse --git-dir` 與 `git rev-parse --git-common-dir` 的結果不同；upstream 為 `main` |
+| `release-flow` | 直接 | 目前分支符合 `^(release\|hotfix)/v[0-9]+\.[0-9]+\.[0-9]+$` |
+| `release-flow` | 線分支 | 目前分支為 `feature/<lineSlug>`；`sourceRoot` 是 linked worktree；upstream 符合上列 `release` 或 `hotfix` 命名 |
+
+upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取。
+
+不符時停止並回報目前分支、期望分支、模式與 `sourceRoot`，不建立派遣單與 Request，不執行任何建立或切換分支的命令。分支的建立依 `workflow-orchestration`「自動推進鏈」第 1 步「分支前置」，或由使用者決定。全部通過時照常派工。
+
 ### Dispatch 正式入口
 
 - 單位自動產生：Workflow 依 `design.md`「實作任務清單」章（`## ` 開頭且含「實作任務清單」的章節）內的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`，找不到該章時才解析全文件；章內同編號連續小節合併為一個單位，非連續重複拒絕；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。Request 欄位驗證錯誤的 detail 只列欄位名稱、預期格式與輸入長度，不回顯原始輸入值。

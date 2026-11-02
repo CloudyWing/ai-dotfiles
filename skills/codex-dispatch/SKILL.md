@@ -15,7 +15,7 @@ policy.allow_implicit_invocation: true
 
 | 階段 | 讀取 | 涵蓋 |
 | --- | --- | --- |
-| 首次派遣：撰寫派遣單、Preflight、Prepare、Start | `references/start.md` | 入口選擇、Dispatch 正式入口、Caller Session 併行准入、派工前的 C# 風格註記檢查、額度與範圍、advisor consult、腳本介面、派遣單、Git 前置探針與 worktree、PID 與並行檢查、模型檔位 |
+| 首次派遣：撰寫派遣單、Preflight、Prepare、Start | `references/start.md` | 入口選擇、Dispatch 正式入口、Caller Session 併行准入、派工前的 AI-PROFILE 前置檢查、派工前的 git-workflow 分支符合性檢查、額度與範圍、advisor consult、腳本介面、派遣單、Git 前置探針與 worktree、PID 與並行檢查、模型檔位 |
 | 等待與續行：等待完成、判定出口、事件流取證、續 session | `references/execution.md`；續行時另讀 `references/recovery.md`「失敗與恢復導引」末段的 ScopePlan hash 紀錄說明 | 中斷保全、三出口、事件流取證、續行與跨介面接手、sandbox 外環境動作、網路能力邊界 |
 | 回收與清理：Collect、回收三態、Phase commit、Cleanup、結案報告 | `references/collect.md`，回收前另讀 `references/recovery.md`「RecoveryPrecheck」與 `references/start.md`「派遣單契約」的「補驗」小節（複核政策） | 歷史派遣 Cleanup 接手、Phase commit、執行端共用作業、回收三態、值班通知、保存契約、結案報告 |
 | 失敗與恢復 | `references/recovery.md`，再讀失敗所在階段的檔案 | 失敗形狀與恢復方式、四種阻塞形狀、RecoveryPrecheck |

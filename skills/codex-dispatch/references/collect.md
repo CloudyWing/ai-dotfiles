@@ -28,7 +28,7 @@ Workflow Developer 的回收收下與 Phase commit 回收是兩個時點。Devel
 
 Collect 在開始處檢核參數。`DispatchKind`、`ReportPath`，以及 `-ApplyCollectedChanges` 模式下的 `SourceRoot` 缺少時，錯誤碼為 `RequiredParameterMissing`。路徑參數必須是完整路徑，`C:relative.md` 這類磁碟機相對路徑也會被拒；只有路徑問題時錯誤碼為 `CollectParameterInvalidPath`。錯誤訊息逐列寫出參數名、問題與收到的值，結果的 `parameter_issues` 保存同一份清單。
 
-差異取得後依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。
+差異取得後依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit；`phaseCommits` 依 Phase 順序排列，commit 訊息依 `generate-commit` skill 產生。主 Agent 將各 Phase 的差異依序套用至來源分支並建立對應 commit，保留 Phase 的獨立語意。來源分支是符合 `git-workflow` 註記模式的線分支或整合分支。
 
 「Phase 對照」節缺失時停止回收並依續 session 契約要求補齊。缺少該節時，主 Agent 只能看到一份混合全部 Phase 的差異，無從還原 Phase 邊界。
 
@@ -36,9 +36,9 @@ Collect 在開始處檢核參數。`DispatchKind`、`ReportPath`，以及 `-Appl
 
 Claude Haiku subagent 承接的 Phase 不經本檔的 Collect 與 dispatch worktree。其檔案清單取自 Haiku 結案報告「Phase 對照」節，主 Agent 逐 Phase 暫存指名路徑並建立 commit，與 Codex Phase 依 `design.md` 的 Phase 宣告順序交錯回收。全 Haiku 時沒有 dispatch worktree，不呼叫 `Cleanup`。核對與回收步驟見 `workflow-orchestration` skill「Haiku 實作路徑」。
 
-Phase 回收步驟維持一個 Phase 一個 commit，不以 merge commit 取代 Phase commit，也不在此步驟把全部 Phase squash 成單一 commit。Phase commit 回收完成後，若需要依成果整理歷史，可在 `rewrite-branch` 執行 squash。每筆整理後的 commit 必須通過可用性驗證，並通過 `git-workflow` 第一層零差異 gate。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
+Phase 回收步驟維持一個 Phase 一個 commit，不以 merge commit 取代 Phase commit，也不在此步驟把全部 Phase squash 成單一 commit。Phase commit 回收完成並通過驗證後，依 `git-workflow` 註記模式規定的整理時機執行該 skill 的「整理流程」。每筆整理後的 commit 必須通過可用性驗證，並通過 `git-workflow` 第一層零差異 gate。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
 
-Phase commit 回收完成後，依 `git-workflow` skill 的 `validationMode` 執行重整後驗證，再同步報告與核准交接產物，最後才以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 移除 Workflow Developer dispatch worktree。Reviewer 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物後即可呼叫相同的 `Cleanup` operation。`Cleanup` 失敗時保留 dispatch worktree，不得改用其他方式強制移除。使用者授權 commit 前不得執行 Workflow Developer dispatch worktree 的 `Cleanup`。
+Phase commit 回收完成後，依 `git-workflow` skill 的「重整後驗證」節執行驗證，再同步報告與核准交接產物，最後才以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 移除 Workflow Developer dispatch worktree。Reviewer 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物後即可呼叫相同的 `Cleanup` operation。`Cleanup` 失敗時保留 dispatch worktree，不得改用其他方式強制移除。使用者授權 commit 前不得執行 Workflow Developer dispatch worktree 的 `Cleanup`。
 
 ## 執行端共用作業
 
