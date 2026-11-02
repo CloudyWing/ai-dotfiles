@@ -310,6 +310,68 @@ function Get-AdvisorEvidenceQuestionUnits {
     return @($questionUnits.ToArray())
 }
 
+$script:AdvisorEvidencePackRules = @(
+    @{ Id = 'schema'; Pattern = '(?m)^schema:\s*advisor-consult\.evidence\.v1\s*$'; Display = 'schema: advisor-consult.evidence.v1' }
+    @{ Id = 'line'; Pattern = '(?m)^line-slug:\s*{line}\s*$'; Display = 'line-slug: {line}' }
+    @{ Id = 'dispatch'; Pattern = '(?m)^dispatch-slug:\s*{dispatch}\s*$'; Display = 'dispatch-slug: {dispatch}' }
+    @{ Id = 'target'; Pattern = '(?m)^##\s+目標段落\s*$'; Display = '## 目標段落' }
+    @{ Id = 'conclusions'; Pattern = '(?m)^##\s+已知結論\s*$'; Display = '## 已知結論' }
+    @{ Id = 'questions'; Pattern = '(?m)^##\s+待答問題\s*$'; Display = '## 待答問題' }
+    @{ Id = 'counter'; Pattern = '(?m)^##\s+可能反證\s*$'; Display = '## 可能反證' }
+    @{ Id = 'boundary'; Pattern = '(?m)^##\s+邊界\s*$'; Display = '## 邊界' }
+    @{ Id = 'allowed'; Pattern = '(?m)^-\s+allowed-input:\s*this evidence pack only'; Display = '- allowed-input: this evidence pack only' }
+    @{ Id = 'forbidden'; Pattern = '(?m)^-\s+forbidden-action:\s*source exploration, repository scan, file mutation, external dispatch'; Display = '- forbidden-action: source exploration, repository scan, file mutation, external dispatch' }
+)
+
+function Test-AdvisorEvidencePackContent {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Content, [string]$LineSlug, [string]$DispatchSlug)
+    foreach ($rule in $script:AdvisorEvidencePackRules) {
+        $pattern = $rule.Pattern.Replace('{line}', [regex]::Escape($LineSlug)).Replace('{dispatch}', [regex]::Escape($DispatchSlug))
+        if (-not [regex]::IsMatch($Content, $pattern)) {
+            [pscustomobject]@{ Id = $rule.Id; Display = $rule.Display.Replace('{line}', $LineSlug).Replace('{dispatch}', $DispatchSlug) }
+        }
+    }
+    $sections = @{}
+    foreach ($sectionName in @('目標段落', '已知結論', '待答問題', '可能反證', '邊界')) {
+        $match = [regex]::Match($Content, '(?ms)^##\s+' + [regex]::Escape($sectionName) + '\s*\r?\n(?<body>.*?)(?=^##\s|\z)')
+        if ($match.Success) {
+            $sections[$sectionName] = $match.Groups['body'].Value
+            if ([string]::IsNullOrWhiteSpace($sections[$sectionName])) { [pscustomobject]@{ Id = 'section'; Display = ('## ' + $sectionName + ' 區段不可為空') } }
+        }
+    }
+    if ($sections.ContainsKey('目標段落') -and ($sections['目標段落'] -notmatch '(?m)^\s*source:\s*\S+' -or $sections['目標段落'] -notmatch '(?m)^\s*excerpt:\s*\S+')) {
+        [pscustomobject]@{ Id = 'target-content'; Display = '目標段落包含非空 source 與 excerpt' }
+    }
+    if ($sections.ContainsKey('待答問題')) {
+        try { $null = @(Get-AdvisorEvidenceQuestionUnits -QuestionSection $sections['待答問題']) }
+        catch { [pscustomobject]@{ Id = 'questions-content'; Display = $_.Exception.Message } }
+        $outputMatches = [regex]::Matches($sections['待答問題'], '(?m)^[ \t]*required-output:[ \t]*(?<value>[^\r\n]*?)[ \t]*\r?$')
+        if ($outputMatches.Count -ne 1 -or $outputMatches[0].Groups['value'].Value -notmatch '^\s*#{1,6}\s+\S') {
+            [pscustomobject]@{ Id = 'required-output'; Display = 'C25 EvidencePackRequiredOutputInvalid：required-output: <以分號分隔的 Markdown 標題>' }
+        }
+        elseif ($outputMatches.Count -eq 1) {
+            $headings = @($outputMatches[0].Groups['value'].Value.Split(';') | ForEach-Object { $_.Trim() })
+            $headingSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
+            foreach ($heading in $headings) {
+                if ($heading -notmatch '^#{1,6}[ \t]+\S' -or -not $headingSet.Add($heading)) {
+                    [pscustomobject]@{ Id = 'required-output'; Display = 'C25 EvidencePackRequiredOutputInvalid：required-output 包含互不重複的非空 Markdown 標題' }
+                    break
+                }
+            }
+            $lines = @($sections['待答問題'] -split '\r?\n')
+            for ($index = 0; $index -lt $lines.Count - 1; $index++) {
+                if ($lines[$index] -notmatch '^\s*required-output:\s*') { continue }
+                $next = $lines[$index + 1]
+                if (-not [string]::IsNullOrWhiteSpace($next) -and $next -notmatch '^\s*(question-[A-Za-z0-9][A-Za-z0-9_-]*:|output-rules:|##\s+)') {
+                    [pscustomobject]@{ Id = 'required-output'; Display = 'C25 EvidencePackRequiredOutputInvalid：required-output 宣告後不可出現未標記續行' }
+                }
+            }
+        }
+        if ($sections['待答問題'] -notmatch '(?m)^\s*output-rules:\s*\S+') { [pscustomobject]@{ Id = 'output-rules'; Display = 'C25 EvidencePackRequiredOutputInvalid：output-rules: <非空規則>' } }
+    }
+}
+
 function Test-AdvisorEvidencePack {
     param(
         [Parameter(Mandatory)]
@@ -336,72 +398,19 @@ function Test-AdvisorEvidencePack {
     if ([string]::IsNullOrWhiteSpace($content)) {
         throw "evidence pack 不可為空：$fullPath"
     }
-    foreach ($requiredPattern in @(
-            '(?m)^schema:\s*advisor-consult\.evidence\.v1\s*$',
-            '(?m)^line-slug:\s*' + [regex]::Escape($LineSlug) + '\s*$',
-            '(?m)^dispatch-slug:\s*' + [regex]::Escape($DispatchSlug) + '\s*$',
-            '(?m)^##\s+目標段落\s*$',
-            '(?m)^##\s+已知結論\s*$',
-            '(?m)^##\s+待答問題\s*$',
-            '(?m)^##\s+可能反證\s*$',
-            '(?m)^##\s+邊界\s*$',
-            '(?m)^-\s+allowed-input:\s*this evidence pack only',
-            '(?m)^-\s+forbidden-action:\s*source exploration, repository scan, file mutation, external dispatch'
-        )) {
-        if (-not [regex]::IsMatch($content, $requiredPattern)) {
-            throw "evidence pack 缺少必要內容：$requiredPattern"
-        }
-    }
+    $missingRules = @(Test-AdvisorEvidencePackContent -Content $content -LineSlug $LineSlug -DispatchSlug $DispatchSlug)
+    if ($missingRules.Count -gt 0) { throw ('evidence pack 缺少必要內容；要求的完整內容：' + (($missingRules | ForEach-Object { $_.Display }) -join '；')) }
 
     $sectionBodies = [ordered]@{}
     foreach ($sectionName in @('目標段落', '已知結論', '待答問題', '可能反證', '邊界')) {
         $sectionMatch = [regex]::Match($content, '(?ms)^##\s+' + [regex]::Escape($sectionName) + '\s*\r?\n(?<body>.*?)(?=^##\s|\z)')
-        if (-not $sectionMatch.Success -or [string]::IsNullOrWhiteSpace($sectionMatch.Groups['body'].Value)) {
-            throw "evidence pack 必要區段不可為空：$sectionName"
-        }
         $sectionBodies[$sectionName] = $sectionMatch.Groups['body'].Value.Trim()
-    }
-    if ($sectionBodies['目標段落'] -notmatch '(?m)^\s*source:\s*\S+' -or
-        $sectionBodies['目標段落'] -notmatch '(?m)^\s*excerpt:\s*\S+') {
-        throw 'evidence pack 目標段落必須包含非空 source 與 excerpt。'
     }
     $questionUnits = @(Get-AdvisorEvidenceQuestionUnits -QuestionSection $sectionBodies['待答問題'])
 
     $requiredOutputMatches = [regex]::Matches($sectionBodies['待答問題'], '(?m)^[ \t]*required-output:[ \t]*(?<value>[^\r\n]*?)[ \t]*\r?$')
-    if ($requiredOutputMatches.Count -ne 1) {
-        throw 'C25 EvidencePackRequiredOutputInvalid：required-output 必須恰好宣告一次。'
-    }
-    $questionSectionLines = @($sectionBodies['待答問題'] -split '\r?\n')
-    for ($lineIndex = 0; $lineIndex -lt $questionSectionLines.Count; $lineIndex++) {
-        if ($questionSectionLines[$lineIndex] -notmatch '^\s*required-output:\s*') {
-            continue
-        }
-        if ($lineIndex + 1 -ge $questionSectionLines.Count) {
-            continue
-        }
-        $nextLine = $questionSectionLines[$lineIndex + 1]
-        if ([string]::IsNullOrWhiteSpace($nextLine) -or
-            $nextLine -match '^\s*question-[A-Za-z0-9][A-Za-z0-9_-]*:\s*' -or
-            $nextLine -match '^\s*output-rules:\s*' -or
-            $nextLine -match '^\s*##\s+') {
-            continue
-        }
-        throw 'C25 EvidencePackRequiredOutputInvalid：required-output 宣告後不可出現未標記的續行。'
-    }
     $requiredOutputValue = $requiredOutputMatches[0].Groups['value'].Value.Trim()
     $requiredOutput = @($requiredOutputValue.Split(';') | ForEach-Object { $_.Trim() })
-    if ([string]::IsNullOrWhiteSpace($requiredOutputValue) -or $requiredOutput.Count -eq 0 -or @($requiredOutput | Where-Object { $_ -notmatch '^#{1,6}[ \t]+\S' }).Count -gt 0) {
-        throw 'C25 EvidencePackRequiredOutputInvalid：required-output 必須由半形分號分隔的非空 Markdown heading 組成。'
-    }
-    $requiredOutputSet = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
-    foreach ($heading in $requiredOutput) {
-        if (-not $requiredOutputSet.Add($heading)) {
-            throw "C25 EvidencePackRequiredOutputInvalid：required-output 不可重複：$heading"
-        }
-    }
-    if ($sectionBodies['待答問題'] -notmatch '(?m)^\s*output-rules:\s*\S+') {
-        throw 'C25 EvidencePackRequiredOutputInvalid：待答問題必須包含非空 output-rules。'
-    }
 
     $hash = Get-FileSha256 -Path $fullPath
     $sandboxRoot = Join-Path -Path $ExecutionRoot -ChildPath ('.local\ai-sessions\scratch\advisor-consult\' + $DispatchSlug)

@@ -58,6 +58,8 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 
 主 Agent 在建立派遣單或 Request 前，依 `ai-profile` skill 解析目標專案根目錄 `AGENTS.local.md`，並以該 skill「鍵登錄表」的「阻擋範圍」欄對照派遣內容，得出本次派遣所需的鍵。例如撰寫或修改 `*.cs`、`*.csx` 需要 `code-style.csharp`。
 
+`Dispatch` 在 Preflight 前以 Stage A 檢查 C# 寫入目標的 `code-style.csharp`；缺少或無效時回報 `DispatchInputProfileKeyMissing`，區塊結構錯誤時回報 `AiProfileStructureInvalid`。
+
 - 所需鍵有效時照常派工。
 - 所需鍵缺少時，依 `ai-profile`「一次問完」詢問使用者（同一輪列出其他適用且缺少的鍵），寫入後再建立派遣。
 - 區塊結構錯誤時，依 `ai-profile`「錯誤處置」停止並回報，不派工。
@@ -478,6 +480,8 @@ stdout 只包含事件流 JSONL，診斷訊息一律走 stderr，兩者分別重
 Codex 已啟動但在根程序快照完成前早夭，或身分查詢拋出例外時，失敗路徑必須先保存已收集的 stderr，再回報 `eventStreamPath`、`errorStreamPath`、process exit code 與其他證據路徑，最後使用已持有的 process handle 或已驗證的 process group 收尾。不能以「查不到根 PID」取代原始啟動錯誤，也不能在身分無法確認時終止現有記錄所指向的程序。
 
 ### Prompt 必備元素
+
+Stage A 在 Preflight 前檢查必要欄位與來源資訊，缺件時回報 `DispatchInputLineContextMissing`；派遣單的角色衝突及 Reviewer 需求摘要缺列分別回報 `DispatchInputRoleConflict` 與 `DispatchInputReviewerSummaryUnlisted`。
 
 Prompt 必須明列已驗證的 `LineContext`，格式如下：
 

@@ -2295,6 +2295,7 @@ foreach ($path in (@($productionSourcePaths) + @($PSCommandPath))) {
     }
 }
 if ($productionParseErrors.Count -gt 0) { exit 1 }
+. (Join-Path $scriptsRoot 'dispatch\advisor-evidence.ps1')
 foreach ($function in $functions) {
     $definition = $function.Extent.Text
     if ($function.Name -eq 'Invoke-Start') {
@@ -6618,7 +6619,17 @@ if ($Phase -ge 5) {
         $null = New-Item -ItemType Directory -Path $lineRoot -Force
         [IO.File]::WriteAllText((Join-Path $lineRoot 'line.json'), '{"schema":"ai-sessions.line.v1","line-slug":"dd-line","kind":"workflow"}')
         [IO.File]::WriteAllText((Join-Path $lineRoot 'requirement-summary.md'), '# Summary')
-        [IO.File]::WriteAllText((Join-Path $Root 'prompt.md'), 'LineContext')
+        $dispatchRoot = Join-Path $Root '.local\ai-sessions\worktrees\dd-test'
+        $prompt = @(
+            'LineContext:'
+            'lineSlug=dd-line'
+            ('sourceRoot=' + $Root)
+            ('sourceLineRoot=' + $lineRoot)
+            ('dispatchRoot=' + $dispatchRoot)
+            ('dispatchLineRoot=' + (Join-Path $dispatchRoot '.local\ai-sessions\handoff\dd-line'))
+            ('reportLineRoot=' + (Join-Path $dispatchRoot '.local\ai-sessions\report\dd-line'))
+        ) -join "`n"
+        [IO.File]::WriteAllText((Join-Path $Root 'prompt.md'), $prompt)
         $orderPath = Join-Path $Root '.local\ai-sessions\handoff\dispatch-order-dd-test.md'
         $target = if ($DirectoryTarget) { (Join-Path $Root 'target') + '\' } else { Join-Path $Root 'target.txt' }
         $order = "## 2. 角色`nSupport Engineer`n## 3. 目標物件`n- ``$target```n## 4. 任務內容`n$TaskBody`n## 5. 驗收`n驗證`n## 6. 邊界`n唯讀`n## 7. 產出落點`nreport.md`n## 8. 回報`n完成"
@@ -6627,37 +6638,167 @@ if ($Phase -ge 5) {
     }
     function Invoke-DdValidateRequest {
         [CmdletBinding()]
-        param([object]$Fixture, [string]$Identifier)
+        param([object]$Fixture, [string]$Identifier, [switch]$ActualDispatch, [string]$WriteMode = 'readonly')
         $dispatchRoot = Join-Path $Fixture.Root '.local\ai-sessions\worktrees\dd-test'
         $request = [ordered]@{
             schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'dd-line'; dispatch_slug = 'dd-test'
-            source_root = $Fixture.Root; dispatch_root = $dispatchRoot; target_path = @($Fixture.Target); write_mode = 'readonly'; dispatch_kind = 'resource'
+            source_root = $Fixture.Root; dispatch_root = $dispatchRoot; target_path = @($Fixture.Target); write_mode = $WriteMode; dispatch_kind = 'resource'
             prompt_path = (Join-Path $Fixture.Root 'prompt.md'); task_type = 'resource-task'; session_mode = 'cold-start'; unit_kind = 'resource-target'
             failure_receipt_path = (Join-Path $Fixture.Root '.local\ai-sessions\history\dd-line\failure.json')
         }
         if (-not [string]::IsNullOrWhiteSpace($Identifier)) { $request.required_identifier = $Identifier }
         $requestPath = Join-Path $Fixture.Root 'request.json'
         [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
+        $entryRoot = Join-Path $Fixture.Root 'scripts'
+        $null = New-Item -ItemType Directory -Path $entryRoot -Force
+        $entryPath = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+        Copy-Item -LiteralPath $sourcePath -Destination $entryPath -Force
+        Copy-DispatchModulesBesideTestEntry -ScriptPath $entryPath
         $hostPath = (Get-Process -Id $PID).Path
         $previousPreference = $ErrorActionPreference
+        $previousCodexHome = $env:CODEX_HOME
+        $counterPath = Join-Path $Fixture.Root 'fake-codex-started.txt'
+        $fakeCodexPath = Join-Path $Fixture.Root 'codex.cmd'
+        [IO.File]::WriteAllText($fakeCodexPath, ('@echo off' + "`r`n" + ('>"' + $counterPath + '" echo started') + "`r`nexit /b 0`r`n"))
         try {
             $ErrorActionPreference = 'Continue'
-            $output = @(& $hostPath -NoProfile -File $sourcePath -Operation Dispatch -RequestPath $requestPath -ValidateOnly 2>&1)
+            $env:CODEX_HOME = ''
+            if ($ActualDispatch) {
+                $output = @(& $hostPath -NoProfile -File $entryPath -Operation Dispatch -RequestPath $requestPath -CodexPath $fakeCodexPath 2>&1)
+            }
+            else {
+                $output = @(& $hostPath -NoProfile -File $entryPath -Operation Dispatch -RequestPath $requestPath -ValidateOnly 2>&1)
+            }
             $exitCode = $LASTEXITCODE
         }
-        finally { $ErrorActionPreference = $previousPreference }
-        [pscustomobject]@{ ExitCode = $exitCode; Output = ($output -join "`n"); DispatchRoot = $dispatchRoot; RunRoot = (Join-Path $Fixture.Root '.local\ai-sessions\history\dd-line\runs\dd-test') }
+        finally { $ErrorActionPreference = $previousPreference; $env:CODEX_HOME = $previousCodexHome }
+        [pscustomobject]@{ ExitCode = $exitCode; Output = ($output -join "`n"); DispatchRoot = $dispatchRoot; RunRoot = (Join-Path $Fixture.Root '.local\ai-sessions\history\dd-line\runs\dd-test'); CounterPath = $counterPath }
     }
     Invoke-Case 'Phase 5 DD-IDENT required identifier 正負向' {
         $directory = (Join-Path $fixtureRoot 'directory') + '\'
         Assert-True (Test-DispatchRequiredIdentifierResolvable -ConfiguredIdentifier 'result.md' -DispatchKind resource -TaskType resource-task -TargetPath @($directory)) '指定識別字應放行。'
         Assert-True (Test-DispatchRequiredIdentifierResolvable -ConfiguredIdentifier '' -DispatchKind resource -TaskType resource-task -TargetPath @((Join-Path $fixtureRoot 'file.txt'))) '檔案目標應放行。'
-        $ctx = [pscustomobject]@{ RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($directory); ResourceOrder = $null }
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-ident-unit') -TaskBody '檢查目標'
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($directory); ResourceOrder = $null }
         $findings = @(Invoke-DispatchInputChecks -Stage Request -Context $ctx)
         Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchRequestMissingField' -and $findings[0].field -eq 'required_identifier') '目錄目標缺少識別字時應拒絕。'
         $failure = $null
         try { Assert-DispatchInputFindings -Findings $findings -RequestPathValue 'fixture' } catch { $failure = $_.Exception.Data['operationResult'] }
         Assert-True ($null -ne $failure -and $failure.process_started -eq $false -and $failure.detail.findings[0].check_id -eq 'DI-IDENT') '拒絕信封不符。'
+    }
+    Invoke-Case 'Phase 5 DD-ROLE 衝突與相容角色' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-role') -TaskBody '檢查目標'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $order.Role = 'Maintainer'
+        $order.Boundary = '不派生 subagent'
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'write'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $order }
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-ROLE' }).Count -eq 1) '衝突時應回報 DI-ROLE。'
+        $order.Role = 'Support Engineer'
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-ROLE' }).Count -eq 0) 'Support Engineer 應通過。'
+        $text = [IO.File]::ReadAllText($f.OrderPath).Replace('Support Engineer', 'Maintainer').Replace('唯讀', '不派生 subagent')
+        [IO.File]::WriteAllText($f.OrderPath, $text, (New-Object Text.UTF8Encoding($false)))
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier '' -ActualDispatch -WriteMode write
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DI-ROLE' -and $rejected.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path $rejected.DispatchRoot) -and -not (Test-Path $rejected.RunRoot) -and -not (Test-Path $rejected.CounterPath)) '角色衝突應在建立 worktree 或啟動替身前拒絕。'
+    }
+    Invoke-Case 'Phase 5 DD-STYLE CSharp 目標與 AI-PROFILE' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-style') -TaskBody '檢查目標'
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'write'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @((Join-Path $f.Root 'target.cs')); ResourceOrder = $null }
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-STYLE' }).Count -eq 1) '缺少設定時應回報 DI-STYLE。'
+        [IO.File]::WriteAllText((Join-Path $f.Root 'AGENTS.local.md'), '')
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-STYLE' -and $_.code -eq 'DispatchInputProfileKeyMissing' }).Count -eq 1) '空白設定檔應視為缺少風格鍵。'
+        [IO.File]::WriteAllText((Join-Path $f.Root 'AGENTS.local.md'), "<!-- AI-PROFILE:BEGIN -->`ncode-style.csharp: personal`n<!-- AI-PROFILE:END -->")
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-STYLE' }).Count -eq 0) 'personal 設定應通過。'
+        $directory = Join-Path $f.Root 'directory'
+        $null = New-Item -ItemType Directory -Path (Join-Path $directory 'obj') -Force
+        [IO.File]::WriteAllText((Join-Path $directory 'obj\generated.cs'), 'fixture')
+        Remove-Item -LiteralPath (Join-Path $f.Root 'AGENTS.local.md')
+        $ctx.TargetPath = @($directory + '\')
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-STYLE' }).Count -eq 0) '僅有 obj 檔案時不要求設定。'
+        [IO.File]::WriteAllText((Join-Path $directory 'target.csx'), 'fixture')
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-STYLE' }).Count -eq 1) '目錄含 C# 檔案時要求設定。'
+        $newTarget = Join-Path $f.Root 'target.cs'
+        $orderText = [IO.File]::ReadAllText($f.OrderPath).Replace($f.Target, $newTarget)
+        [IO.File]::WriteAllText($f.OrderPath, $orderText, (New-Object Text.UTF8Encoding($false)))
+        $f.Target = $newTarget
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier '' -ActualDispatch -WriteMode write
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DI-STYLE' -and $rejected.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path $rejected.DispatchRoot) -and -not (Test-Path $rejected.RunRoot) -and -not (Test-Path $rejected.CounterPath)) '缺少風格鍵應在建立 worktree 或啟動替身前拒絕。'
+    }
+    Invoke-Case 'Phase 5 DD-LINE LineContext 與 line.json' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-line-check') -TaskBody '檢查目標'
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $null; ExecutionRoot = $f.Root }
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -in @('DI-LINECTX-A', 'DI-LINEJSON') }).Count -eq 0) '完整來源資訊應通過。'
+        $directLines = @('LineContext:', 'lineSlug=dd-line', ('sourceRoot=' + $f.Root), ('sourceLineRoot=' + $f.LineRoot), ('dispatchRoot=' + $f.Root), ('dispatchLineRoot=' + $f.LineRoot), ('reportLineRoot=' + (Join-Path $f.Root '.local\ai-sessions\report\dd-line')))
+        [IO.File]::WriteAllText($ctx.PromptPath, ($directLines -join "`n"))
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx | Where-Object { $_.check_id -eq 'DI-LINECTX-B' }).Count -eq 0) 'direct-write 的執行根目錄應通過。'
+        [IO.File]::WriteAllText($ctx.PromptPath, 'LineContext')
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-LINECTX-A' }).Count -gt 0) '缺少欄位應拒絕。'
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx | Where-Object { $_.check_id -eq 'DI-LINECTX-B' }).Count -gt 0) '執行根目錄不符應拒絕。'
+        [IO.File]::WriteAllText((Join-Path $f.LineRoot 'line.json'), '{}')
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-LINEJSON' }).Count -eq 1) '無效 line.json 應拒絕。'
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier '' -ActualDispatch
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DI-LINEJSON' -and $rejected.Output -match 'DI-LINECTX-A' -and $rejected.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path $rejected.DispatchRoot) -and -not (Test-Path $rejected.RunRoot) -and -not (Test-Path $rejected.CounterPath)) '缺少線脈絡應在建立 worktree 或啟動替身前拒絕。'
+    }
+    Invoke-Case 'Phase 5 DD-LINE 讀取失敗回報 Finding' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-read-failure') -TaskBody '檢查目標'
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $null }
+        function Get-Content {
+            [CmdletBinding()]
+            param([string]$LiteralPath, [switch]$Raw, [string]$Encoding)
+            throw 'fixture read denied'
+        }
+        $findings = @(Invoke-DispatchInputChecks -Stage Request -Context $ctx)
+        Assert-True (@($findings | Where-Object { $_.check_id -eq 'DI-LINECTX-A' -and $_.message -match 'fixture read denied' }).Count -gt 0 -and @($findings | Where-Object { $_.check_id -eq 'DI-LINEJSON' -and $_.message -match 'fixture read denied' }).Count -eq 1) '讀取失敗應以 Finding 保留錯誤並繼續檢查。'
+    }
+    Invoke-Case 'Phase 5 DD-REV4 Reviewer 需求摘要' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-review') -TaskBody '審查程式'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $order.Role = 'Reviewer'
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $order }
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-REV4' }).Count -eq 1) '缺少需求摘要時應拒絕。'
+        $order.TaskBody = '讀取 requirement-summary.md'
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-REV4' }).Count -eq 0) '列出需求摘要應通過。'
+        $text = [IO.File]::ReadAllText($f.OrderPath).Replace('Support Engineer', 'Reviewer')
+        [IO.File]::WriteAllText($f.OrderPath, $text, (New-Object Text.UTF8Encoding($false)))
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier '' -ActualDispatch
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DI-REV4' -and $rejected.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path $rejected.DispatchRoot) -and -not (Test-Path $rejected.RunRoot) -and -not (Test-Path $rejected.CounterPath)) '需求摘要缺列應在建立 worktree 或啟動替身前拒絕。'
+    }
+    Invoke-Case 'Phase 5 DD-REF 與 DD-ORDERLOC 路徑檢查' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-ref') -TaskBody '檢查目標'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $missing = Join-Path $f.Root 'missing.txt'
+        $order.TaskBody = '讀取 ' + $missing
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'error' }).Count -eq 1) '必讀路徑不存在時應拒絕。'
+        $order.TaskBody = '建立 ' + $missing
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'warning' }).Count -eq 1) '新增路徑不存在時應警告。'
+        [IO.File]::WriteAllText($missing, 'fixture')
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree')).Count -eq 0) '路徑存在時應通過。'
+        $execution = Join-Path $f.Root 'worktree'
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); DispatchKind = 'resource'; TaskType = 'resource-task'; ResourceOrder = $order; ExecutionRoot = $execution }
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx | Where-Object { $_.check_id -eq 'DI-ORDERLOC' }).Count -eq 1) '缺少執行端派遣單時應拒絕。'
+        $lines = @('LineContext:', 'lineSlug=dd-line', ('sourceRoot=' + $f.Root), ('sourceLineRoot=' + $f.LineRoot), ('dispatchRoot=' + $execution), ('dispatchLineRoot=' + (Join-Path $execution '.local\ai-sessions\handoff\dd-line')), ('reportLineRoot=' + (Join-Path $execution '.local\ai-sessions\report\dd-line')))
+        [IO.File]::WriteAllText($ctx.PromptPath, ($lines -join "`n"))
+        $locations = Get-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $locations.worktree) -Force
+        Copy-Item -LiteralPath $locations.source -Destination $locations.worktree
+        $worktreeReference = Join-Path $execution 'reference.txt'
+        $order.TaskBody = '讀取 `' + $worktreeReference + '`'
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx | Where-Object { $_.check_id -eq 'DI-REF-B' }).Count -eq 1) 'worktree 缺少參照應拒絕。'
+        [IO.File]::WriteAllText($worktreeReference, 'fixture')
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx).Count -eq 0) 'worktree 的 LineContext、派遣單與參照齊備時應通過。'
+        $ctx.ExecutionRoot = $f.Root
+        $directLines = @('LineContext:', 'lineSlug=dd-line', ('sourceRoot=' + $f.Root), ('sourceLineRoot=' + $f.LineRoot), ('dispatchRoot=' + $f.Root), ('dispatchLineRoot=' + $f.LineRoot), ('reportLineRoot=' + (Join-Path $f.Root '.local\ai-sessions\report\dd-line')))
+        [IO.File]::WriteAllText($ctx.PromptPath, ($directLines -join "`n"))
+        $order.TaskBody = '建立 `' + (Join-Path $f.Root 'new-output.txt') + '`'
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.severity -eq 'warning' }).Count -eq 1) '來源端預定新增路徑應只產生 warning。'
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx | Where-Object { $_.check_id -eq 'DI-REF-B' }).Count -eq 0) 'direct-write 不應重複檢查來源端參照。'
+        $requiredPath = Join-Path $f.Root 'required-missing.txt'
+        $sourceOrderText = [IO.File]::ReadAllText($f.OrderPath).Replace('檢查目標', ('讀取 `' + $requiredPath + '`'))
+        [IO.File]::WriteAllText($f.OrderPath, $sourceOrderText, (New-Object Text.UTF8Encoding($false)))
+        $plannedRoot = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
+        $sourceLines = @('LineContext:', 'lineSlug=dd-line', ('sourceRoot=' + $f.Root), ('sourceLineRoot=' + $f.LineRoot), ('dispatchRoot=' + $plannedRoot), ('dispatchLineRoot=' + (Join-Path $plannedRoot '.local\ai-sessions\handoff\dd-line')), ('reportLineRoot=' + (Join-Path $plannedRoot '.local\ai-sessions\report\dd-line')))
+        [IO.File]::WriteAllText($ctx.PromptPath, ($sourceLines -join "`n"))
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier '' -ActualDispatch
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DI-REF-A' -and $rejected.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path $rejected.DispatchRoot) -and -not (Test-Path $rejected.RunRoot) -and -not (Test-Path $rejected.CounterPath)) '來源參照缺失應在建立 worktree 或啟動替身前拒絕。'
     }
     Invoke-Case 'Phase 5 DD-DESIGN 同線路徑與描述字樣正負向' {
         $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-design') -TaskBody '供 Architect 撰寫 design.md'
@@ -6665,7 +6806,7 @@ if ($Phase -ge 5) {
         $artifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $f.Root -DispatchRoot (Join-Path $f.Root 'worktree') -LineSlug 'dd-line' -DispatchSlug 'dd-test' -DispatchKind resource -WriteMode readonly -ResourceOrder $order)
         Assert-True (@($artifacts | Where-Object { $_.source -match 'design\.md$' }).Count -eq 0) '描述字樣不應帶入 design。'
         $order.TaskBody = '讀取 handoff\dd-line\design.md'
-        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $order }
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $order }
         $findings = @(Invoke-DispatchInputChecks -Stage Request -Context $ctx)
         Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputDesignMissing' -and $findings[0].message.Contains((Join-Path $f.LineRoot 'design.md'))) '缺少設計文件時應指出路徑。'
         [IO.File]::WriteAllText((Join-Path $f.LineRoot 'design.md'), '# Design')
@@ -7325,6 +7466,37 @@ if ($Phase -ge 5) {
     $script:TargetPath = @()
 }
 if ($Phase -ge 6) {
+    Invoke-Case 'Phase 6 DD-REF 來源與執行端參照' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-ref-phase6') -TaskBody '檢查目標'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $execution = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
+        $reference = Join-Path $execution 'required.txt'
+        $order.TaskBody = '讀取 `' + $reference + '`'
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution).Count -eq 0) '執行端參照應留待 Stage B。'
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Worktree -DispatchRoot $execution | Where-Object { $_.check_id -eq 'DI-REF-B' }).Count -eq 1) '缺失的執行端參照應拒絕。'
+        $null = New-Item -ItemType Directory -Path $execution -Force
+        [IO.File]::WriteAllText($reference, 'fixture')
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Worktree -DispatchRoot $execution).Count -eq 0) '存在的執行端參照應通過。'
+    }
+    Invoke-Case 'Phase 6 DD-REF UNC 絕對參照' {
+        function Test-PathWithinRoot { param([string]$Path, [string]$Root) return $false }
+        function Test-Path { [CmdletBinding()] param([string]$LiteralPath) return $false }
+        $order = [pscustomobject]@{ TaskBody = '讀取 `\\server\share\file.txt`'; Content = ''; Path = 'C:\fixture\order.md' }
+        $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot 'C:\fixture\worktree')
+        Assert-True ($findings.Count -eq 1 -and $findings[0].severity -eq 'error' -and $findings[0].expected -eq '\\server\share\file.txt') 'UNC 參照應納入必讀路徑檢查。'
+    }
+    Invoke-Case 'Phase 6 DD-PREFLIGHT-MSG Workflow tracked target 限制' {
+        $preflight = ($functions | Where-Object { $_.Name -eq 'Invoke-Preflight' } | Select-Object -First 1).Extent.Text
+        Assert-True ($preflight.Contains('Workflow write 必須至少包含一個 tracked target') -and $preflight.Contains('資源派遣 direct-write') -and $preflight.Contains("-not `$hasTrackedWriteTarget")) '限制與替代路徑說明應同時存在。'
+    }
+    Invoke-Case 'Phase 6 DD-ORDERLOC 來源與 worktree 路徑' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-orderloc') -TaskBody '檢查目標'
+        $paths = Get-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot (Join-Path $f.Root 'worktree') -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+        Assert-True ((Test-Path -LiteralPath $paths.source -PathType Leaf) -and -not (Test-Path -LiteralPath $paths.worktree)) '來源派遣單存在而 worktree 尚未準備。'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $paths.worktree) -Force
+        Copy-Item -LiteralPath $paths.source -Destination $paths.worktree
+        Assert-True (Test-Path -LiteralPath $paths.worktree -PathType Leaf) '準備後 worktree 派遣單應存在。'
+    }
     function Set-Phase6PrepareRequest {
         param(
             [Parameter(Mandatory)][string]$Dispatch,
@@ -9354,6 +9526,59 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
 }
 
 if ($Phase -ge 8) {
+    Invoke-Case 'Phase 8 DD-EVID 必要內容與完整訊息' {
+        . (Join-Path $scriptsRoot 'dispatch\advisor-evidence.ps1')
+        $content = @'
+schema: advisor-consult.evidence.v1
+line-slug: dd-line
+dispatch-slug: dd-test
+## 目標段落
+source: fixture
+excerpt: fixture
+## 已知結論
+fixture
+## 待答問題
+question-1: fixture
+required-output: ## Result
+output-rules: fixture
+## 可能反證
+fixture
+## 邊界
+- allowed-input: this evidence pack only
+- forbidden-action: source exploration, repository scan, file mutation, external dispatch
+'@
+        Assert-True (@(Test-AdvisorEvidencePackContent -Content $content -LineSlug 'dd-line' -DispatchSlug 'dd-test').Count -eq 0) '完整 evidence pack 應通過。'
+        $missing = $content.Replace('- allowed-input: this evidence pack only', '').Replace('## 已知結論', '')
+        $failures = @(Test-AdvisorEvidencePackContent -Content $missing -LineSlug 'dd-line' -DispatchSlug 'dd-test')
+        Assert-True ($failures.Count -ge 2 -and @($failures | Where-Object { $_.Display -eq '- allowed-input: this evidence pack only' }).Count -eq 1) '缺少多項時應列出完整要求內容。'
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-evidence-request') -TaskBody '檢查目標'
+        $packPath = Join-Path $f.LineRoot 'evidence.md'
+        [IO.File]::WriteAllText($packPath, $missing, (New-Object Text.UTF8Encoding($false)))
+        $dispatchRoot = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
+        $requestPath = Join-Path $f.Root 'advisor-request.json'
+        $request = [ordered]@{ schema='ai-sessions.dispatch-request.v1'; operation='Dispatch'; source_root=$f.Root; dispatch_root=$dispatchRoot; line_slug='dd-line'; dispatch_slug='dd-test'; profile='advisor'; write_mode='readonly'; dispatch_kind='resource'; task_type='advisor-consult'; advisor_request_source='user-explicit'; unit_kind='advisor-evidence-question'; session_mode='cold-start'; target_path=@($packPath); evidence_pack_path=$packPath; advisor_consult_report_path=(Join-Path $dispatchRoot '.local\ai-sessions\report\dd-line\advisor-consult-dd-test.md'); prompt_path=(Join-Path $f.Root 'prompt.md'); failure_receipt_path=(Join-Path $f.Root '.local\ai-sessions\history\dd-line\failure.json') }
+        [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
+        $entryRoot = Join-Path $f.Root 'scripts'
+        $null = New-Item -ItemType Directory -Path $entryRoot -Force
+        $entryPath = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+        Copy-Item -LiteralPath $sourcePath -Destination $entryPath
+        Copy-DispatchModulesBesideTestEntry -ScriptPath $entryPath
+        $counterPath = Join-Path $f.Root 'fake-codex-started.txt'
+        $fakeCodex = Join-Path $f.Root 'codex.cmd'
+        [IO.File]::WriteAllText($fakeCodex, ('@echo off' + "`r`n" + ('>"' + $counterPath + '" echo started') + "`r`nexit /b 0`r`n"))
+        $previousHome = $env:CODEX_HOME
+        $previousPreference = $ErrorActionPreference
+        try {
+            $env:CODEX_HOME = ''
+            $ErrorActionPreference = 'Continue'
+            $output = @(& (Get-Process -Id $PID).Path -NoProfile -File $entryPath -Operation Dispatch -RequestPath $requestPath -CodexPath $fakeCodex 2>&1)
+            $exitCode = $LASTEXITCODE
+        }
+        finally { $env:CODEX_HOME = $previousHome; $ErrorActionPreference = $previousPreference }
+        $outputText = $output -join "`n"
+        $runRoot = Join-Path $f.Root '.local\ai-sessions\history\dd-line\runs\dd-test'
+        Assert-True ($exitCode -ne 0 -and $outputText -match 'DI-EVID' -and $outputText.Contains('- allowed-input: this evidence pack only') -and $outputText -match '"process_started"\s*:\s*false' -and -not (Test-Path $dispatchRoot) -and -not (Test-Path $runRoot) -and -not (Test-Path $counterPath)) '缺少 evidence 內容應於建立 worktree 與啟動替身前拒絕。'
+    }
         foreach ($functionName in @(
             'Get-DispatchUnitList',
             'Get-AdvisorActivationDecision',
@@ -13031,6 +13256,7 @@ if ($Phase -ge 9) {
             [switch]$UseCurrentHost,
             [switch]$EvidencePackOutsideSourceRoot,
             [switch]$FollowupAccount,
+            [ValidateSet('', 'line', 'order', 'ref')][string]$DdStageBScenario = '',
             [AllowNull()][string]$TargetContent,
             [AllowNull()][byte[]]$TargetBytes,
             [AllowNull()][string]$CarryInContent,
@@ -13092,7 +13318,20 @@ if ($Phase -ge 9) {
             Write-Utf8NoBom -Path $foreignScopeHashRecordPath -Content (($foreignScopeHashRecord | ConvertTo-Json -Depth 12) + [Environment]::NewLine) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
             $foreignScopeHashRecordSha256 = Get-FileSha256 -Path $foreignScopeHashRecordPath
         }
-        Write-Utf8NoBom -Path $promptSourcePath -Content ('S finding dispatch prompt: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
+        $promptContent = 'S finding dispatch prompt: ' + $Name
+        if ($DdStageBScenario -ne '') {
+            $contextRoot = if ($DdStageBScenario -eq 'line') { $sourceRoot } else { $dispatchRoot }
+            $promptContent = @(
+                'LineContext:'
+                'lineSlug=a'
+                ('sourceRoot=' + $sourceRoot)
+                ('sourceLineRoot=' + $lineRoot)
+                ('dispatchRoot=' + $contextRoot)
+                ('dispatchLineRoot=' + (Join-Path $contextRoot '.local\ai-sessions\handoff\a'))
+                ('reportLineRoot=' + (Join-Path $contextRoot '.local\ai-sessions\report\a'))
+            ) -join "`r`n"
+        }
+        Write-Utf8NoBom -Path $promptSourcePath -Content $promptContent -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
         if (-not $MissingSameLineTarget -and -not $EvidencePackOutsideSourceRoot -and -not $StagedAddedTarget) {
             if ($PSBoundParameters.ContainsKey('TargetBytes')) {
                 if ($PSBoundParameters.ContainsKey('TargetContent')) { throw 'TargetContent 與 TargetBytes 不可同時指定。' }
@@ -13177,6 +13416,7 @@ if ($Phase -ge 9) {
         $dispatchOrderPath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\dispatch-order-' + $caseSlug + '.md')
         if ($DispatchKind -eq 'resource') {
             $resourceTaskBody = if ($TaskMentionsDesign) { 'Execute the requested resource and compare design.md context.' } else { 'Execute the requested resource target.' }
+            if ($DdStageBScenario -eq 'ref') { $resourceTaskBody = '讀取 `' + (Join-Path $dispatchRoot 'missing-reference.txt') + '`' }
             $dispatchOrderContent = @(
                 ('# 派遣單：' + $caseSlug)
                 ''
@@ -13454,6 +13694,30 @@ if ($Phase -ge 9) {
             $fakeText = $fakeText.Replace('@echo off',('@echo off' + "`r`n" + '>"' + $accountFixtureObservedPath + '" echo %CODEX_HOME%'))
             [IO.File]::WriteAllText($fakeCodexPath,$fakeText,(New-Object Text.UTF8Encoding($false)))
         }
+        if ($DdStageBScenario -ne '') {
+            $entryDirectory = Join-Path $caseRoot 'entry-scripts'
+            $null = New-Item -ItemType Directory -Path $entryDirectory -Force
+            $entryPath = Join-Path $entryDirectory 'Invoke-CodexDispatch.ps1'
+            $entryText = [IO.File]::ReadAllText($ScriptPath, [Text.Encoding]::UTF8)
+            if ($DdStageBScenario -eq 'order') {
+                $orderDestination = Join-Path $dispatchRoot ('.local\ai-sessions\handoff\a\dispatch-order-' + $caseSlug + '.md')
+                $hook = @'
+$script:DdOriginalPrepare = (Get-Item -LiteralPath Function:\Invoke-Prepare).ScriptBlock
+function Invoke-Prepare {
+    [CmdletBinding()]
+    param([string[]]$GuardTargetPath)
+    $result = & $script:DdOriginalPrepare -GuardTargetPath $GuardTargetPath
+    Remove-Item -LiteralPath '__ORDER_PATH__' -Force
+    return $result
+}
+'@
+                $hook = $hook.Replace('__ORDER_PATH__', $orderDestination.Replace("'", "''"))
+                $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $hook
+            }
+            [IO.File]::WriteAllText($entryPath, $entryText, (New-Object Text.UTF8Encoding($true)))
+            Copy-DispatchModulesBesideTestEntry -ScriptPath $entryPath
+            $ScriptPath = $entryPath
+        }
         $hostPath = if ($UseCurrentHost -and $PSVersionTable.PSEdition -eq 'Core') { (Get-Command pwsh.exe -ErrorAction Stop).Source } else { (Get-Command powershell.exe -ErrorAction Stop).Source }
         $dispatchArguments = @(
             '-NoProfile'
@@ -13706,6 +13970,24 @@ function Sync-DispatchTrackedRawBytesFromSource {
             run_record_document = $runRecordDocument
             event_stream_path = $eventStreamPath
             turn_completed = $turnCompleted
+        }
+    }
+
+    Invoke-Case 'Phase 9 DD-STAGEB 未啟動前拒絕執行端缺件' {
+        foreach ($scenario in @('line', 'order', 'ref')) {
+            $case = $null
+            try {
+                $case = & $invokeSRealDispatchCase -Name ('dd-stageb-' + $scenario) -ScriptPath $sourcePath -DispatchKind resource -WriteMode readonly -UseCurrentHost -DdStageBScenario $scenario
+                $checkId = switch ($scenario) { 'line' { 'DI-LINECTX-B' } 'order' { 'DI-ORDERLOC' } 'ref' { 'DI-REF-B' } }
+                $runRoot = Join-Path $case.dispatch_root ('.local\ai-sessions\history\a\runs\' + $case.dispatch_slug)
+                $pidFiles = @(Get-ChildItem -LiteralPath $case.dispatch_root -Filter 'codex-pid-*.txt' -File -Recurse -ErrorAction SilentlyContinue)
+                Assert-True ([int]$case.run.exit_code -ne 0 -and $case.output_text -match $checkId -and (Test-Path -LiteralPath $case.dispatch_root -PathType Container) -and -not $case.external_start_exists -and -not (Test-Path -LiteralPath $runRoot) -and $pidFiles.Count -eq 0) ('Stage B 未依預期拒絕 ' + $scenario + '：' + $case.output_text)
+            }
+            finally {
+                if ($null -ne $case -and (Test-Path -LiteralPath $case.dispatch_root -PathType Container)) {
+                    $null = Invoke-Phase9GitCommand -RepositoryRoot $case.source_root -Arguments @('worktree', 'remove', '--force', '--', $case.dispatch_root)
+                }
+            }
         }
     }
 
@@ -18610,6 +18892,20 @@ throw 'RunRecord 事件流為空。'
                     Assert-True (Test-PathWithinRoot -Path $dispatchRoot -Root $sourceRoot) 'Git fixture fallback cleanup 路徑超出 SourceRoot。'
                     Remove-Item -LiteralPath $dispatchRoot -Recurse -Force
                 }
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 DD-PREFLIGHT-MSG 未追蹤目標仍拒絕' {
+        $fixture = New-Fix3PreflightFixture -Name 'dd-preflight-message' -Commit
+        try {
+            $run = Invoke-Fix3Preflight -Fixture $fixture -Kind workflow -TargetRelativePath @('new-output.txt') -OperationName 'preflight'
+            $output = [string]::Concat([string]$run.stdout, [Environment]::NewLine, [string]$run.stderr)
+            Assert-True ([int]$run.exit_code -ne 0 -and $output.Contains('資源派遣 direct-write') -and $output.Contains('tracked target') -and -not (Test-Path -LiteralPath $fixture.DispatchRoot)) '未追蹤 Workflow 目標應拒絕並指出 direct-write。'
+        }
+        finally {
+            if (Test-Path -LiteralPath $fixture.DispatchRoot -PathType Container) {
+                $null = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'remove', '--force', '--', $fixture.DispatchRoot)
             }
         }
     }

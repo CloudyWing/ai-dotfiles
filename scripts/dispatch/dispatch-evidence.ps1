@@ -464,12 +464,18 @@ function Resolve-CodexHomeForEvidence {
     return Resolve-AbsolutePath -Path $configured
 }
 
+function Get-DispatchMachineConfigPath {
+    [CmdletBinding()]
+    param()
+    return Join-Path (Split-Path -Parent $script:DispatchEntryScriptRoot) '.local\machine.json'
+}
+
 function Read-CodexAccountConfiguration {
     [CmdletBinding()]
     param([string]$MachineConfigPath)
 
     if ([string]::IsNullOrWhiteSpace($MachineConfigPath)) {
-        $MachineConfigPath = Join-Path (Split-Path -Parent $script:DispatchEntryScriptRoot) '.local\machine.json'
+        $MachineConfigPath = Get-DispatchMachineConfigPath
     }
     if (-not [IO.File]::Exists($MachineConfigPath)) { return @() }
     try {

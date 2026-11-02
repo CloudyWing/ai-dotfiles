@@ -274,7 +274,7 @@ function Invoke-Preflight {
             }
         ) -join '; '
         $baselineCommitMessage = if ($gitProbeState.IsRepository -and -not $hasBaseCommit) { ' Git 儲存庫需要先有基準 commit。' } else { '' }
-        Throw-DispatchPreflightFailure -Message ('Workflow write 必須至少包含一個 tracked target；Preflight 未建立產物。targets: ' + $targetStateDetails + $baselineCommitMessage)
+        Throw-DispatchPreflightFailure -Message ('Workflow write 必須至少包含一個 tracked target；Preflight 未建立產物。目標皆未追蹤時請改走資源派遣 direct-write（dispatch_kind=resource、write_mode=write，Prepare 為 not-required）；Workflow 的 worktree 隔離與 Collect 驗收依賴 git baseline，不放寬此限制。targets: ' + $targetStateDetails + $baselineCommitMessage)
     }
 
     if ($gitProbeState.IsRepository -and -not $hasBaseCommit) {
@@ -404,6 +404,7 @@ function Invoke-Preflight {
         baseSha         = $baseShaValue
         worktreeCreated = $worktreeCreated
         carryInManifest = $carryInManifest
+        inputWarnings   = @(@(Get-DispatchScriptVariableValue -Name 'DispatchInputFindings') | Where-Object { $null -ne $_ -and $_.severity -eq 'warning' })
         targetsOutsideRepository = @($targetsOutsideRepository)
         baselinePath    = if ($null -ne $baseline) { $baseline.Path } else { $null }
         baselineSha256  = if ($null -ne $baseline) { $baseline.Sha256 } else { $null }
@@ -858,6 +859,11 @@ function Invoke-Dispatch {
         $prepareStage = Write-DispatchStageResult -Stage 'prepare' -Path $dispatchPrepareResultPath -Result $prepareDocument -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -LineSlug $LineSlug -DispatchSlug $DispatchSlug
         $completedStages.Add('prepare')
         $script:PrepareResultPath = $prepareStage.Path
+        if ($null -ne $script:RequestContext) {
+            $script:DispatchInputContext.ExecutionRoot = $executionRootPath
+            $worktreeFindings = @(Invoke-DispatchInputChecks -Stage Worktree -Context $script:DispatchInputContext)
+            Assert-DispatchInputFindings -Findings $worktreeFindings -RequestPathValue ([string]$script:RequestContext.path)
+        }
 
         $failedStage = 'start'
         $script:WaitForStartProcessExit = [bool]$script:DispatchWaitForCompletion
@@ -1012,6 +1018,8 @@ function Invoke-Dispatch {
         $errorCode = [string]$failureException.Data['outputCode']
         if ([string]::IsNullOrWhiteSpace($errorCode)) { $errorCode = [string]$failureException.Data['errorCode'] }
         if ([string]::IsNullOrWhiteSpace($errorCode)) { $errorCode = [string]$failureException.Data['prepareCode'] }
+        $inputFailure = $failureException.Data['operationResult']
+        if ([string]::IsNullOrWhiteSpace($errorCode) -and $null -ne $inputFailure -and [string](Get-DispatchResultPropertyValue -Object $inputFailure -Names @('operation')) -eq 'DispatchRequest') { $errorCode = [string](Get-DispatchResultPropertyValue -Object $inputFailure -Names @('code', 'error_code')) }
         if ([string]::IsNullOrWhiteSpace($errorCode)) {
             $errorCode = switch ($failedStage) {
                 'validation' { 'DispatchRequestInvalidValue' }
@@ -1029,6 +1037,9 @@ function Invoke-Dispatch {
             catch { $resultPathValue = $null }
         }
         $failureResult = New-DispatchResultEnvelope -Status 'failed' -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -CompletedStages @($completedStages.ToArray()) -FailedStage $failedStage -ErrorCode $errorCode -ErrorMessage $failureException.Message -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startResultPathValue -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
+        if ($null -ne $inputFailure -and [string](Get-DispatchResultPropertyValue -Object $inputFailure -Names @('operation')) -eq 'DispatchRequest') {
+            $failureResult.detail = Get-DispatchResultPropertyValue -Object $inputFailure -Names @('detail')
+        }
         $failureResult.dispatch_execution_id = $dispatchToken
         $failureResult.project_trust = $projectTrust
         $failureOperationAccountFailover = Get-DispatchResultPropertyValue -Object $failureException.Data['operationResult'] -Names @('account_failover')

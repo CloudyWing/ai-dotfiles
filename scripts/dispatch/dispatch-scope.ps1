@@ -388,6 +388,7 @@ function Initialize-DispatchRequestDerivedInputs {
     $unitKindValue = Get-DefaultUnitKind -DispatchKind $dispatchKindValue -UnitKind $script:UnitKind -TaskType $script:TaskType
     $isAdvisorEvidence = $unitKindValue -eq 'advisor-evidence-question'
     $resourceOrder = $null
+    $evidenceCheckPath = [string]$script:EvidencePackPath
 
     if ($dispatchKindValue -eq 'resource' -and -not $isAdvisorEvidence) {
         $orderPath = Join-Path -Path $sourceRootPath -ChildPath ('.local\ai-sessions\handoff\dispatch-order-' + $script:DispatchSlug + '.md')
@@ -442,6 +443,7 @@ function Initialize-DispatchRequestDerivedInputs {
                 Throw-DispatchRequestFailure -Code 'AdvisorEvidencePackPrepareRequired' -Message 'advisor 的 worktree evidence_pack_path 需要手動準備。請補一筆 source 為 sourceRoot 同線 handoff 既存檔、destination 等於 evidence_pack_path 的手動 prepare_artifacts，或將 evidence_pack_path 改放 sourceRoot 同線 handoff 目錄的既存檔。' -RequestPathValue ([string]$script:RequestContext.path) -Field 'evidence_pack_path' -Detail ([ordered]@{ expected = 'exactly one matching destination artifact with an existing source under sourceRoot same-line handoff'; process_started = $false })
             }
             Assert-DispatchOutputPathNoReparsePoint -Root $sourceRootPath -Path $manualSourcePath
+            $evidenceCheckPath = $manualSourcePath
         }
         if ($isSourceLineEvidencePack) {
             Assert-DispatchOutputPathNoReparsePoint -Root $sourceRootPath -Path $evidencePackPathValue
@@ -469,8 +471,11 @@ function Initialize-DispatchRequestDerivedInputs {
         $script:ResolvedRequestedUnit = [string[]]$requestedUnits
     }
 
-    $script:DispatchInputFindings = @(Invoke-DispatchInputChecks -Stage Request -Context ([pscustomobject]@{ SourceRoot = $sourceRootPath; LineSlug = $script:LineSlug; DispatchSlug = $script:DispatchSlug; DispatchKind = $dispatchKindValue; TaskType = $script:TaskType; RequiredIdentifier = $script:RequiredIdentifier; EvidencePackPath = $script:EvidencePackPath; TargetPath = @($script:TargetPath); ResourceOrder = $resourceOrder }))
-    Assert-DispatchInputFindings -Findings $script:DispatchInputFindings -RequestPathValue ([string]$script:RequestContext.path)
+    if ($script:Operation -eq 'Dispatch') {
+        $script:DispatchInputContext = [pscustomobject]@{ SourceRoot = $sourceRootPath; LineSlug = $script:LineSlug; DispatchSlug = $script:DispatchSlug; DispatchKind = $dispatchKindValue; TaskType = $script:TaskType; WriteMode = $script:WriteMode; PromptPath = $script:PromptPath; RequiredIdentifier = $script:RequiredIdentifier; EvidencePackPath = $script:EvidencePackPath; EvidenceCheckPath = $evidenceCheckPath; TargetPath = @($script:TargetPath); ResourceOrder = $resourceOrder; CodexHome = (Get-DispatchScriptVariableValue -Name 'CodexHome'); ExecutionRoot = $null }
+        $script:DispatchInputFindings = @(Invoke-DispatchInputChecks -Stage Request -Context $script:DispatchInputContext)
+        Assert-DispatchInputFindings -Findings $script:DispatchInputFindings -RequestPathValue ([string]$script:RequestContext.path)
+    }
     $script:RequestResourceOrder = $resourceOrder
     $script:RequestManualPrepareArtifacts = @($script:RequestPrepareArtifacts)
     $script:RequestAutoPrepareArtifacts = New-Object 'System.Object[]' 0
