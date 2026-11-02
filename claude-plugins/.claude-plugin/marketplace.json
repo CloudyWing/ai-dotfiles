@@ -1,0 +1,7 @@
+{
+  "name": "ai-agents-local",
+  "owner": { "name": "CloudyWing" },
+  "plugins": [
+    { "name": "ai-agents-hooks", "source": "./ai-agents-hooks" }
+  ]
+}
