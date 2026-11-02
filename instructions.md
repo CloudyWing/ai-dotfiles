@@ -229,6 +229,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | 執行或回收 `Clarify => Design => Implement => Review => Accept` Workflow、判定其共同收斂循環，或規劃 Workflow 驗證與交付 | `workflow-orchestration` |
 | 建立、讀取、回收、保存或清理 `.local/ai-sessions/` 交接物與報告 | `session-artifacts` |
 | 讀取、詢問或寫入專案 `AGENTS.local.md` 的 `AI-PROFILE` 鍵，或建立派遣前檢查該區塊 | `ai-profile` |
+| 在 Git repo 執行 commit、建立分支、啟動 Workflow、整理或合併歷史、push | `git-workflow`（依專案 `AGENTS.local.md` 的 `git-workflow` 註記載入模式檔）；commit 時追加 `generate-commit` |
 
 - 專案根目錄存在 `AGENTS.md` 的 `AI-DECLARATIONS` 宣告區塊時，先依宣告的 `context-index-query` 查詢索引，再定位 glossary、ADR 與其他專案脈絡；只有宣告不存在或格式無效時才使用 raw grep 作為 fallback。`ai-context-index` skill 只維護宣告格式與索引產物，不內建工具清單。
 
@@ -543,11 +544,11 @@ Reviewer 回收後，設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/req
 
 ##### Workflow 自動推進鏈與共同收斂契約
 
-Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動推進鏈」逐站推進 Developer 派工與回收、Reviewer 判定、Analyst 需求意圖驗收、Workflow 結案報告與 Phase commit 回收。各站的階段歸屬、交接檢查點時點與 dispatch worktree 保留方式見該節；Phase commit 回收只在使用者當輪授權 commit 後執行。
+Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動推進鏈」逐站推進 Developer 派工與回收、Reviewer 判定、Analyst 需求意圖驗收、Workflow 結案報告與 Phase commit 回收。各站的階段歸屬、交接檢查點時點與 dispatch worktree 保留方式見該節；Phase commit 回收只在使用者當輪授權 commit 後執行，回收之後的整理與落地依 `git-workflow` 註記模式。
 
 自動推進鏈有兩類停頓處置。
 
-- 授權類停頓：`advisor` 諮詢授權（當下 Session 已授權者除外）、安裝套件或下載相依性、commit 與 push，等待使用者當輪回覆。
+- 授權類停頓：`advisor` 諮詢授權（當下 Session 已授權者除外）、安裝套件或下載相依性、commit 與 push，等待使用者當輪回覆。整合分支落地、合併與打標籤屬 commit 類。force push 與任何已推送分支的歷史改寫，每次單獨取得當輪授權，一般 push 的授權不涵蓋。
 - 升級與收斂停止：業務語意缺口、範圍取捨、妥協確認或共同收斂契約的停止訊號，停止相關派遣，保留證據，回報未閉合清單與替代方向，等待使用者選擇方向。
 
 收斂術語 `round`、`area-key`、`problem-key`、`closed`、`new-problem`、`severity` 與 `max-rounds` 的機械定義，以及派遣回收與 Git 計數分開判定的規則，見 `workflow-orchestration` skill「共同收斂契約」。四處循環共用該契約與下列判定順序。
