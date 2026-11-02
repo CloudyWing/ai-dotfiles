@@ -28,7 +28,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'DD-DEFECTS')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -49,6 +49,7 @@ $productionSourcePaths = @(
     (Join-Path $scriptsRoot 'dispatch\common-runtime.ps1'),
     (Join-Path $scriptsRoot 'dispatch\git-baseline.ps1'),
     (Join-Path $scriptsRoot 'dispatch\dispatch-scope.ps1'),
+    (Join-Path $scriptsRoot 'dispatch\dispatch-input-checks.ps1'),
     (Join-Path $scriptsRoot 'dispatch\dispatch-evidence.ps1'),
     (Join-Path $scriptsRoot 'dispatch\quota-observation.ps1'),
     (Join-Path $scriptsRoot 'dispatch\advisor-evidence.ps1'),
@@ -1662,7 +1663,10 @@ function Invoke-Case {
     )
     if (-not [string]::IsNullOrWhiteSpace($script:focusedCase)) {
         $cleanupMatch = $Name -ceq 'Phase 9 final git status guard detects repo-root fixture residue and restored pass'
-        $focusedMatch = if ($script:focusedCase -in @('FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')) {
+        $focusedMatch = if ($script:focusedCase -ceq 'DD-DEFECTS') {
+            $Name -match '^Phase \d+ DD-'
+        }
+        elseif ($script:focusedCase -in @('FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')) {
             $Name.StartsWith(('Phase 9 ' + $script:focusedCase), [StringComparison]::Ordinal) -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'BATCH4-QUOTA') {
@@ -6393,6 +6397,85 @@ if ($Phase -ge 4) {
 
 }
 if ($Phase -ge 5) {
+    function New-DdInputFixture {
+        [CmdletBinding()]
+        param([string]$Root, [string]$TaskBody, [switch]$DirectoryTarget)
+        $lineRoot = Join-Path $Root '.local\ai-sessions\handoff\dd-line'
+        $null = New-Item -ItemType Directory -Path $lineRoot -Force
+        [IO.File]::WriteAllText((Join-Path $lineRoot 'line.json'), '{"schema":"ai-sessions.line.v1","line-slug":"dd-line","kind":"workflow"}')
+        [IO.File]::WriteAllText((Join-Path $lineRoot 'requirement-summary.md'), '# Summary')
+        [IO.File]::WriteAllText((Join-Path $Root 'prompt.md'), 'LineContext')
+        $orderPath = Join-Path $Root '.local\ai-sessions\handoff\dispatch-order-dd-test.md'
+        $target = if ($DirectoryTarget) { (Join-Path $Root 'target') + '\' } else { Join-Path $Root 'target.txt' }
+        $order = "## 2. 角色`nSupport Engineer`n## 3. 目標物件`n- ``$target```n## 4. 任務內容`n$TaskBody`n## 5. 驗收`n驗證`n## 6. 邊界`n唯讀`n## 7. 產出落點`nreport.md`n## 8. 回報`n完成"
+        [IO.File]::WriteAllText($orderPath, $order, (New-Object Text.UTF8Encoding($false)))
+        [pscustomobject]@{ Root = $Root; LineRoot = $lineRoot; OrderPath = $orderPath; Target = $target }
+    }
+    function Invoke-DdValidateRequest {
+        [CmdletBinding()]
+        param([object]$Fixture, [string]$Identifier)
+        $dispatchRoot = Join-Path $Fixture.Root '.local\ai-sessions\worktrees\dd-test'
+        $request = [ordered]@{
+            schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'dd-line'; dispatch_slug = 'dd-test'
+            source_root = $Fixture.Root; dispatch_root = $dispatchRoot; target_path = @($Fixture.Target); write_mode = 'readonly'; dispatch_kind = 'resource'
+            prompt_path = (Join-Path $Fixture.Root 'prompt.md'); task_type = 'resource-task'; session_mode = 'cold-start'; unit_kind = 'resource-target'
+            failure_receipt_path = (Join-Path $Fixture.Root '.local\ai-sessions\history\dd-line\failure.json')
+        }
+        if (-not [string]::IsNullOrWhiteSpace($Identifier)) { $request.required_identifier = $Identifier }
+        $requestPath = Join-Path $Fixture.Root 'request.json'
+        [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
+        $hostPath = (Get-Process -Id $PID).Path
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $output = @(& $hostPath -NoProfile -File $sourcePath -Operation Dispatch -RequestPath $requestPath -ValidateOnly 2>&1)
+            $exitCode = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $previousPreference }
+        [pscustomobject]@{ ExitCode = $exitCode; Output = ($output -join "`n"); DispatchRoot = $dispatchRoot; RunRoot = (Join-Path $Fixture.Root '.local\ai-sessions\history\dd-line\runs\dd-test') }
+    }
+    Invoke-Case 'Phase 5 DD-IDENT required identifier 正負向' {
+        $directory = (Join-Path $fixtureRoot 'directory') + '\'
+        Assert-True (Test-DispatchRequiredIdentifierResolvable -ConfiguredIdentifier 'result.md' -DispatchKind resource -TaskType resource-task -TargetPath @($directory)) '指定識別字應放行。'
+        Assert-True (Test-DispatchRequiredIdentifierResolvable -ConfiguredIdentifier '' -DispatchKind resource -TaskType resource-task -TargetPath @((Join-Path $fixtureRoot 'file.txt'))) '檔案目標應放行。'
+        $ctx = [pscustomobject]@{ RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($directory); ResourceOrder = $null }
+        $findings = @(Invoke-DispatchInputChecks -Stage Request -Context $ctx)
+        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchRequestMissingField' -and $findings[0].field -eq 'required_identifier') '目錄目標缺少識別字時應拒絕。'
+        $failure = $null
+        try { Assert-DispatchInputFindings -Findings $findings -RequestPathValue 'fixture' } catch { $failure = $_.Exception.Data['operationResult'] }
+        Assert-True ($null -ne $failure -and $failure.process_started -eq $false -and $failure.detail.findings[0].check_id -eq 'DI-IDENT') '拒絕信封不符。'
+    }
+    Invoke-Case 'Phase 5 DD-DESIGN 同線路徑與描述字樣正負向' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-design') -TaskBody '供 Architect 撰寫 design.md'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $artifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $f.Root -DispatchRoot (Join-Path $f.Root 'worktree') -LineSlug 'dd-line' -DispatchSlug 'dd-test' -DispatchKind resource -WriteMode readonly -ResourceOrder $order)
+        Assert-True (@($artifacts | Where-Object { $_.source -match 'design\.md$' }).Count -eq 0) '描述字樣不應帶入 design。'
+        $order.TaskBody = '讀取 handoff\dd-line\design.md'
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $order }
+        $findings = @(Invoke-DispatchInputChecks -Stage Request -Context $ctx)
+        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputDesignMissing' -and $findings[0].message.Contains((Join-Path $f.LineRoot 'design.md'))) '缺少設計文件時應指出路徑。'
+        [IO.File]::WriteAllText((Join-Path $f.LineRoot 'design.md'), '# Design')
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx).Count -eq 0) '設計文件存在時應放行。'
+        $artifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $f.Root -DispatchRoot (Join-Path $f.Root 'worktree') -LineSlug 'dd-line' -DispatchSlug 'dd-test' -DispatchKind resource -WriteMode readonly -ResourceOrder $order)
+        Assert-True (@($artifacts | Where-Object { $_.source -match 'design\.md$' }).Count -eq 1) '同線設計文件應帶入。'
+    }
+    Invoke-Case 'Phase 5 DD-IDENT Request 入口阻擋且不啟動' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-ident-request') -TaskBody '檢查目標' -DirectoryTarget
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier ''
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DispatchRequestMissingField' -and $rejected.Output -match 'required_identifier' -and $rejected.Output -match '"process_started"\s*:\s*false') '缺識別字時應於 Request 階段拒絕。'
+        Assert-True (-not (Test-Path -LiteralPath $rejected.DispatchRoot) -and -not (Test-Path -LiteralPath $rejected.RunRoot)) '拒絕後不得建立 worktree 或 RunRecord。'
+        $accepted = Invoke-DdValidateRequest -Fixture $f -Identifier 'target.md'
+        Assert-True ($accepted.ExitCode -eq 0) ('提供識別字應放行：' + $accepted.Output)
+    }
+    Invoke-Case 'Phase 5 DD-DESIGN Request 入口阻擋且不啟動' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-design-request') -TaskBody '讀取 handoff\dd-line\design.md'
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier ''
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DispatchInputDesignMissing' -and $rejected.Output -match '"process_started"\s*:\s*false') '缺少設計文件時應於 Request 階段拒絕。'
+        Assert-True (-not (Test-Path -LiteralPath $rejected.DispatchRoot) -and -not (Test-Path -LiteralPath $rejected.RunRoot)) '拒絕後不得建立 worktree 或 RunRecord。'
+        [IO.File]::WriteAllText((Join-Path $f.LineRoot 'design.md'), '# Design')
+        $accepted = Invoke-DdValidateRequest -Fixture $f -Identifier ''
+        Assert-True ($accepted.ExitCode -eq 0) ('設計文件存在應放行：' + $accepted.Output)
+    }
     foreach ($functionName in @('Get-RequirementIdsFromSummary', 'Get-RequirementTableRows', 'Get-RequirementMap')) {
         $definitionAst = $functions | Where-Object { $_.Name -eq $functionName } | Select-Object -First 1
         . ([scriptblock]::Create($definitionAst.Extent.Text))

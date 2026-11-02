@@ -120,6 +120,8 @@ function Read-DispatchOrderSections {
     }
 
     $content = Get-Content -LiteralPath $Path -Raw -Encoding UTF8
+    $roleMatch = [regex]::Match($content, '(?ms)^##\s+2\.[^\r\n]*\r?\n(?<section>.*?)(?=^##\s+3\.)')
+    $boundaryMatch = [regex]::Match($content, '(?ms)^##\s+6\.[^\r\n]*\r?\n(?<section>.*?)(?=^##\s+7\.)')
     $targetMatch = [regex]::Match($content, '(?ms)^##\s+3\.\s+目標物件\s*\r?\n(?<section>.*?)(?=^##\s+4\.)')
     $taskMatch = [regex]::Match($content, '(?ms)^##\s+4\.\s+任務內容\s*\r?\n(?<section>.*?)(?=^##\s+5\.)')
     $reportMatch = [regex]::Match($content, '(?ms)^##\s+7\.\s+產出落點\s*\r?\n(?<section>.*?)(?=^##\s+8\.|\z)')
@@ -207,6 +209,9 @@ function Read-DispatchOrderSections {
         Targets = @($targets.ToArray())
         TargetDetails = @($targetDetails.ToArray())
         TaskBody = [string]$taskMatch.Groups['section'].Value
+        Role = [string]$roleMatch.Groups['section'].Value
+        Boundary = [string]$boundaryMatch.Groups['section'].Value
+        Content = $content
         ReportPath = $reportPath
     }
 }
@@ -334,7 +339,7 @@ function New-DispatchAutoPrepareArtifacts {
 
     $sourceDesignPath = Join-Path -Path $sourceLineRoot -ChildPath 'design.md'
     $includeDesign = $DispatchKind -eq 'workflow'
-    if ($DispatchKind -eq 'resource' -and $null -ne $ResourceOrder -and ([string]$ResourceOrder.TaskBody -match '(?i)\bdesign\.md\b')) {
+    if ($DispatchKind -eq 'resource' -and $null -ne $ResourceOrder -and (Test-DispatchOrderRequiresDesign -TaskBody ([string]$ResourceOrder.TaskBody) -LineSlug $LineSlug)) {
         $includeDesign = $true
     }
     if ($includeDesign) {
@@ -464,6 +469,8 @@ function Initialize-DispatchRequestDerivedInputs {
         $script:ResolvedRequestedUnit = [string[]]$requestedUnits
     }
 
+    $script:DispatchInputFindings = @(Invoke-DispatchInputChecks -Stage Request -Context ([pscustomobject]@{ SourceRoot = $sourceRootPath; LineSlug = $script:LineSlug; DispatchSlug = $script:DispatchSlug; DispatchKind = $dispatchKindValue; TaskType = $script:TaskType; RequiredIdentifier = $script:RequiredIdentifier; EvidencePackPath = $script:EvidencePackPath; TargetPath = @($script:TargetPath); ResourceOrder = $resourceOrder }))
+    Assert-DispatchInputFindings -Findings $script:DispatchInputFindings -RequestPathValue ([string]$script:RequestContext.path)
     $script:RequestResourceOrder = $resourceOrder
     $script:RequestManualPrepareArtifacts = @($script:RequestPrepareArtifacts)
     $script:RequestAutoPrepareArtifacts = New-Object 'System.Object[]' 0
@@ -1285,7 +1292,7 @@ function Read-DispatchRequest {
         Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidJson' -Message 'request file 根節點必須是 JSON object。' -RequestPathValue $requestPathValue
     }
 
-    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement')
+    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement', 'prepare_mode')
     $removedQuotaFields = @('quota_before_path', 'quota_after_path')
     $commonRootFields = @('source_root', 'dispatch_root', 'caller_session_id')
     $cleanupOnlyFields = @('run_record_path', 'reviewer_report_path', 'report_path', 'evidence_path')

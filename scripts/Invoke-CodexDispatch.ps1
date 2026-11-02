@@ -6,6 +6,8 @@ param(
     [ValidateSet('Preflight', 'Prepare', 'Start', 'Inspect', 'Collect', 'Dispatch', 'Cleanup', 'DiagnoseModelEnvironment')]
     [string]$Operation,
 
+    [switch]$ValidateOnly,
+
     [string]$SourceRoot,
 
     [string]$DispatchRoot,
@@ -166,6 +168,7 @@ $script:DispatchEntryScriptRoot = $PSScriptRoot
 . (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
 . (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
 . (Join-Path $PSScriptRoot 'dispatch\dispatch-scope.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\dispatch-input-checks.ps1')
 . (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
 . (Join-Path $PSScriptRoot 'dispatch\quota-observation.ps1')
 . (Join-Path $PSScriptRoot 'dispatch\advisor-evidence.ps1')
@@ -853,6 +856,11 @@ function Get-DispatchOperationExitCode {
 
 try {
     $null = Apply-DispatchRequest
+    if ($ValidateOnly) {
+        if ($Operation -ine 'Dispatch' -or $null -eq $script:RequestContext) { throw 'ValidateOnly 需要 Dispatch Request。' }
+        [ordered]@{ operation = 'DispatchRequest'; process_started = $false; findings = @($script:DispatchInputFindings) } | ConvertTo-Json -Depth 30
+        exit 0
+    }
     if ($TakeoverOwner -and $Operation -ine 'Cleanup') {
         throw 'CleanupTakeoverOperationInvalid：TakeoverOwner 只適用於 Cleanup。'
     }
