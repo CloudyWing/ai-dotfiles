@@ -4,6 +4,7 @@
       { "hooks": [{ "type": "command", "command": "powershell.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/turn-guard-hook.ps1"], "timeout": 10 }] }
     ],
     "PostToolUse": [
+      { "matcher": "Edit|Write", "hooks": [{ "type": "command", "command": "powershell.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit-write-hook.ps1"] }] },
       { "hooks": [{ "type": "command", "command": "powershell.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/turn-guard-hook.ps1"], "timeout": 10 }] }
     ],
     "PostToolUseFailure": [

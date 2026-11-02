@@ -367,6 +367,64 @@ try {
     if ($claudePluginEnabled) { Write-Host 'plugin: ai-agents-hooks@ai-agents-local enabled' } else { Write-Warning 'plugin: ai-agents-hooks@ai-agents-local 尚未啟用。' }
 } catch { Write-Warning $_.Exception.Message }
 
+# 8c. 移除舊 hook 註冊
+function Remove-ClaudeLegacyHook {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([string]$SettingsPath, [string]$BackupRoot)
+
+    if (-not (Test-Path -LiteralPath $SettingsPath -PathType Leaf)) {
+        Write-Host 'legacy-hook: none'
+        return
+    }
+    try {
+        $originalHash = (Get-FileHash -LiteralPath $SettingsPath -Algorithm SHA256).Hash
+        $settings = [IO.File]::ReadAllText($SettingsPath) | ConvertFrom-Json -ErrorAction Stop
+        $hooksProperty = $settings.PSObject.Properties['hooks']
+        if ($null -eq $hooksProperty -or $null -eq $hooksProperty.Value) { Write-Host 'legacy-hook: none'; return }
+        $postProperty = $hooksProperty.Value.PSObject.Properties['PostToolUse']
+        if ($null -eq $postProperty) { Write-Host 'legacy-hook: none'; return }
+        $removed = 0
+        $groups = @()
+        foreach ($group in @($postProperty.Value)) {
+            $itemsProperty = $group.PSObject.Properties['hooks']
+            if ($null -eq $itemsProperty) { $groups += $group; continue }
+            $items = @()
+            $groupRemoved = 0
+            foreach ($item in @($itemsProperty.Value)) {
+                $command = Get-ClaudeProperty $item 'command'
+                $arguments = Get-ClaudeProperty $item 'args'
+                $text = ((@($command) + @($arguments)) -join ' ').Replace('\', '/')
+                # 此路徑用來辨識舊 hook 項目。
+                if ($text -like '*scripts/hooks/post-edit-write-hook.ps1*') { $removed++; $groupRemoved++ } else { $items += $item }
+            }
+            if ($items.Count -gt 0 -or $groupRemoved -eq 0) { $itemsProperty.Value = $items; $groups += $group }
+        }
+        if ($removed -eq 0) { Write-Host 'legacy-hook: none'; return }
+        if (-not $PSCmdlet.ShouldProcess($SettingsPath, '移除舊 Claude hook')) { return }
+        $backupDirectory = Join-Path $BackupRoot (Get-Date -Format 'yyyyMMdd_HHmmss')
+        New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+        $backup = Join-Path $backupDirectory 'settings.json'
+        Copy-Item -LiteralPath $SettingsPath -Destination $backup
+        [IO.File]::WriteAllText((Join-Path $backupDirectory 'manifest.txt'), ((Get-Date -Format o) + " | $SettingsPath | 移除舊 hook`n"), (New-Object Text.UTF8Encoding($false)))
+        if ($groups.Count -gt 0) { $postProperty.Value = $groups } else { $hooksProperty.Value.PSObject.Properties.Remove('PostToolUse') }
+        if (@($hooksProperty.Value.PSObject.Properties).Count -eq 0) { $settings.PSObject.Properties.Remove('hooks') }
+        if ((Get-FileHash -LiteralPath $SettingsPath -Algorithm SHA256).Hash -ne $originalHash) { Write-Warning 'settings.json 已變更，略過舊 hook 清理。'; return }
+        $expected = $settings | ConvertTo-Json -Depth 32 -Compress
+        try {
+            [IO.File]::WriteAllText($SettingsPath, ($settings | ConvertTo-Json -Depth 32), (New-Object Text.UTF8Encoding($false)))
+            $actual = ([IO.File]::ReadAllText($SettingsPath) | ConvertFrom-Json -ErrorAction Stop) | ConvertTo-Json -Depth 32 -Compress
+            if ($actual -cne $expected) { throw 'settings.json 語意驗證失敗。' }
+        } catch {
+            Copy-Item -LiteralPath $backup -Destination $SettingsPath -Force
+            throw
+        }
+        Write-Host "legacy-hook: removed $removed entry"
+    } catch { Write-Warning ("舊 hook 清理失敗：" + $_.Exception.Message) }
+}
+if ($claudePluginEnabled) {
+    Remove-ClaudeLegacyHook -SettingsPath (Join-Path $claudeDir 'settings.json') -BackupRoot (Join-Path $configRoot '.local\ai-sessions\backups') -WhatIf:$WhatIfPreference
+}
+
 # 9. 設定 Git Hooks 路徑
 Write-Host "`n>>> 正在設定 Git Hooks..." -ForegroundColor Cyan
 if ($PSCmdlet.ShouldProcess("$configRoot", "設定 core.hooksPath → .githooks")) {
@@ -412,7 +470,7 @@ Write-Host "  - 機器層 Git 排除清單位於 $configRootDisplay/git-global-e
 Write-Host "  - Claude Code 透過 ~/.claude/CLAUDE.md 符號連結讀取"
 Write-Host "  - Claude Code skills → $configRootDisplay/skills/"
 Write-Host "  - Claude Code agents → $configRootDisplay/agents/claude/"
-Write-Host "  - Claude Code Hook 腳本位於 $configRootDisplay/scripts/hooks/，由 ~/.claude/settings.json 直接引用"
+Write-Host "  - Claude Code hook 由本機 plugin ai-agents-hooks@ai-agents-local 提供，原始碼位於 $($claudeMarketplaceRoot.Replace($env:USERPROFILE, '~'))"
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
 Write-Host "  - Codex agents → $configRootDisplay/agents/codex/"
 Write-Host "  - Codex skills → ~/.agents/skills/"

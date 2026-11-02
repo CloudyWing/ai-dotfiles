@@ -28,7 +28,8 @@
 ## 5. 設定散佈與 Hook
 
 - `scripts/Setup-AIGlobalConfig.ps1` 是建立所有 symlink 的入口。新增需要散佈的目錄或檔案時，需同步更新此腳本。
-- 修改 `.githooks/`、`scripts/hooks/`、`agents/`、`.editorconfig` 等基礎設定時，確認 `Setup-AIGlobalConfig.ps1` 與 `README.md` §3 是否需要對應更新。
+- 修改 `.githooks/`、`claude-plugins/`、`agents/`、`.editorconfig` 等基礎設定時，確認 `Setup-AIGlobalConfig.ps1` 與 `README.md` §3 是否需要對應更新。
+- 新增或調整 plugin 內容時，同步確認 Setup 的 8b、8c 與 `README.md` §3。
 - `docs/agents.md` 與 `docs/skills.md` 為 `.githooks/Update-Docs.ps1` 於 pre-commit 產生的生成檔，請勿手動編輯，手改會在下次 commit 被覆蓋。
 - `Update-Docs.ps1` 在 pre-commit 階段只對 `docs/agents.md` 與 `docs/skills.md` 執行 `git add`，不再處理 `instructions.md`。這兩個生成檔不手動編輯，通常不會有未暫存的變更；拆成多筆 commit 時，仍依 `git-workflow` skill 先確認 hook 的暫存目標再安排分組。Agent 的 Persona／sub-agent 分類由該腳本的 `$personaAgents` 清單決定；新增 Persona 時需同步更新此清單。
 
