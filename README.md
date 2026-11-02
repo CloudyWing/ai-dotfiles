@@ -111,7 +111,7 @@ Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方�
 | `CLAUDE.md` | 全域記憶與指令（Claude Code 會自動讀取） |
 | `skills/<name>/SKILL.md` | Skills（知識型自動載入；指令型以 `/skill-name` 呼叫） |
 | `agents/*.md` | 全域自訂 Persona 與 Claude 端 sub-agent |
-| `settings.json` | Hook 設定（工具呼叫前後的自動化行為） |
+| `settings.json` | 工具權限與其他使用者設定 |
 
 #### 自訂 frontmatter 欄位
 
@@ -127,35 +127,12 @@ Claude Code 的工具權限由 `settings.json` 的 `permissions`（allow／ask�
 
 #### Claude Code Hook 設定
 
-Hook 透過 `~/.claude/settings.json` 設定，於工具呼叫前後自動執行 Shell 命令，輸出文字會被注入回 Claude 的上下文。
-
-本專案啟用一個 PostToolUse Hook，腳本放置於 `~/.ai-agents/scripts/hooks/`：
+本專案的 hook 由本機 marketplace `ai-agents-local` 的 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `claude-plugins/`。`Setup-AIGlobalConfig.ps1` 的 8b 依腳本所在的 repo 推導 marketplace 根目錄並註冊 plugin；8c 在 plugin 啟用後備份 `settings.json`，再移除舊 hook 項目。修改 plugin 內的 hook 腳本後，新 session 不需重新安裝即可採用新內容。
 
 | Hook 腳本 | 觸發條件 | 用途 |
 | --- | --- | --- |
 | `post-edit-write-hook.ps1` | Edit 或 Write 工具寫入檔案後 | 提示執行 check-markdown skill（`.md`）；驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
-
-`~/.claude/settings.json` 範例（路徑請改為實際使用者名稱）：
-
-```json
-{
-  "hooks": {
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "powershell -NonInteractive -File C:/Users/<帳號>/.ai-agents/scripts/hooks/post-edit-write-hook.ps1"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-> `settings.json` 不由 `Setup-AIGlobalConfig.ps1` 自動建立，需手動建立並填入實際路徑。
+| `turn-guard-hook.ps1` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | shadow 紀錄寫入 `${CLAUDE_PLUGIN_DATA}\turn-guard\<session_id>.jsonl`，不注入 context、不阻擋且 fail-open。欄位包含版本、時間、session、事件、turn、工作目錄、agent、prompt 字元數、工具與分類、累計計數、失敗指紋、中斷標記、turn 結束標記及執行耗時；部分欄位依事件出現。 |
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）
 
@@ -291,6 +268,7 @@ trust_level = "trusted"
 ├── agents/
 │   ├── claude/                         # Claude 端 Persona 與 sub-agent（.md 格式）
 │   └── codex/                          # Codex 端 Persona 與 sub-agent（.toml 格式）
+├── claude-plugins/                     # 本機 marketplace 與 hook plugin
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本、Demo 外框範本與派工範本
 └── scripts/                            # 安裝、檢查與 hooks 腳本
@@ -304,8 +282,9 @@ trust_level = "trusted"
 
 - `scripts/` 根目錄只放使用者可直接執行的 Verb-Noun `.ps1` 與既有 `.csx` 腳本。
 - `scripts/Get-DispatchProgress.ps1` 唯讀查詢派遣進度，可依 `LineSlug` 或 `DispatchSlug` 篩選；預設顯示未結束與最近 24 小時內結束的項目。
+- `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
 - 內部責任檔、loader、測試輔助與 C17 私有機制放在子目錄；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
-- `scripts/hooks/` 內由工具自動呼叫的 Hook 腳本，使用全小寫 kebab-case 命名。
+- `claude-plugins/` 內由工具自動呼叫的 hook 腳本，使用全小寫 kebab-case 命名。
 - `.githooks/` 內為 Git 原生 Hook，由 `Setup-AIGlobalConfig.ps1` 透過 `core.hooksPath` 啟用。
 
 ### Git Hook 設定

@@ -166,15 +166,7 @@ decision_reason
 
 ### 需求級成本累計
 
-同一成本目標以 `lineSlug` 加需求編號識別，例如 `rule-architecture-rebuild #22`。`dispatchSlug` 與階段只作追溯資訊，換新 `dispatchSlug`、續行或換階段都不讓同一目標的累計值歸零。累計不新增監控服務，只彙整既有的 RunRecord、事件流、failure receipt、協調者手動查詢的額度與回收紀錄。
-
-成本紀錄的唯一落點是 `<sourceRoot>\.local\ai-sessions\report\<lineSlug>\cost-ledger.md`，唯一寫入者是該線協調者（功能線為 `Analyst`，bug 線為 `Maintainer`），只追加不改寫。執行端不寫入此檔。
-
-1. 開始：任務開始時追加一列預算，寫明成本目標、預算形式（牆鐘時間或額度百分點）、預算值與到界處置。預算形式為額度百分點時，同列寫明計算視窗（`primary` 或 `secondary`），協調者於每筆派遣前後以 `Get-CodexQuota.ps1` 手動查詢，累計值只計該視窗的前後差額；另一視窗的數值照常記錄但不參與到界判定。未寫明視窗的額度預算列視為不完整，協調者補齊後才開始派遣。
-2. 累計：每筆派遣結束後追加一列，欄位為時間、成本目標、`dispatchSlug`、階段、事件類型、耗時、before 與 after 額度（取得不到時寫 unknown）與累計值。事件類型取值為啟動失敗、格式補件、續行、回收、跨階段返回。
-3. 輪數與成本分開計：`PromptNotDelivered` 等啟動失敗與純格式補件不增加回收輪數（見「回收收斂判定」），但一律計入成本累計值。
-4. 重派前比較：協調者在同一成本目標的下一次派遣前，於紀錄寫明本輪閉合了什麼、還差什麼、下一步值得的理由。Reviewer 或顧問額外提出、不屬既有驗收條件的改善只記為候選，不自動列入下一輪必做項。
-5. 到界：累計值達到預算時，協調者停止再派，交付已確認結果、未完成單位與建議選項，由使用者決定追加預算或結束。
+需求級成本累計依 [session-artifacts skill「需求級成本累計」](../../session-artifacts/SKILL.md#需求級成本累計) 辦理，派遣結束後的追加動作依該節第 2 項。
 
 ## Advisor consult resource dispatch
 
