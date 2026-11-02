@@ -1,6 +1,6 @@
 ---
 name: csharp-language-features
-description: 'Use when 讀取或修改 C# 專案設定、TargetFramework 或 C# 程式碼，需判斷語言特性、非同步與型別選用時。'
+description: 'Use when 讀取或修改 C# 專案設定、TargetFramework 或 C# 程式碼，需判斷語言特性、非同步、型別選用，或依 project-kind 判斷 ConfigureAwait 與公開 API 相容性時。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
@@ -18,10 +18,19 @@ policy.allow_implicit_invocation: true
 ## Async / Await
 
 - 非同步方法回傳 `Task` 或 `Task<T>`，`async void` 僅用於事件處理函式。
-- Library 專案的非同步呼叫加上 `.ConfigureAwait(false)`。
+- 依 `ai-profile` skill 的 `project-kind` 與「專案層解析」決定是否加上 `.ConfigureAwait(false)`。`library` 的非同步呼叫加上；`application` 與 `sample` 不加；未設定時不強制，沿用同專案既有寫法。
 - 避免 Sync-over-Async。同步介面必須呼叫非同步邏輯時，視情況使用 `.GetAwaiter().GetResult()`，不使用 `.Result` 或 `.Wait()`。
 - 方法只轉發另一個 Task 結果時，直接回傳該 Task，例如 `return DoSomethingAsync();`，不增加多餘的 `async` / `await` 狀態機。
 - 回傳 Task 且未宣告 `async` 的方法，以 `Task.FromException()` 傳遞例外，不使用 `throw`。
+
+## 公開 API 相容性
+
+- **範圍**：`ai-profile` skill「專案層解析」為 `library` 的專案，且本次修改新增、移除或改變 `public` 或 `protected` 成員的簽章或可見性時適用。`application`、`sample` 與 `project-kind` 未設定時不檢查。
+- **啟用判定**：專案檔或 `Directory.Build.props` 設定 `EnablePackageValidation` 為 `true`，或有 `Microsoft.CodeAnalysis.PublicApiAnalyzers` 的 `PackageReference` 且存在 `PublicAPI.Shipped.txt` 與 `PublicAPI.Unshipped.txt`，即視為已啟用。
+- **已啟用**：修改後必須通過檢查。PackageValidation 在 `dotnet pack` 的 Pack 之後執行驗證（診斷如 `CP0002`）；PublicApiAnalyzers 在 `dotnet build` 產生 RS 系列診斷。失敗時修正或回報，不以抑制診斷或更新 `PublicAPI.Shipped.txt` 規避；公開 API 簽章變更需經使用者同意的規則維持不變。
+- **未啟用**：在報告提醒「未啟用 PackageValidation 與 PublicAPI 分析器，未檢查公開 API 相容性」，不列為阻擋條件。
+- **專案檔**：保留既有 `*.csproj` 與 `Directory.Build.props`，不為啟用檢查而修改。
+- **回報位置**：在 Developer 結案報告、資源派遣報告或主 Agent 的完成回覆中，擇所使用者寫明檢查結果、未檢查原因或提醒。
 
 ## Object Creation 與 Var
 

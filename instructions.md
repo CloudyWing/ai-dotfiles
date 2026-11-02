@@ -123,7 +123,7 @@ applyTo: "**/*"
   3. `handoff`：下一階段需要另一個 Agent、設計文件或報告才能執行時，寫入規定的交接檔並交接。
   4. `subagent`：工作可由獨立 Agent 依完整輸入執行且不需要共享未保存的決策時，派生 sub-agent。
   5. `compact`：只有 primary source 已讀取、當前 Session 無法維持必要 context，且前四項都不可行時才壓縮；摘要後無法恢復未保存的 primary source 細節，因此不可把 `compact` 當成一般進度工具。
-- **Workflow 交接檢查點**：`Clarify => Design => Implement => Review => Accept` 流程在「Design 驗收通過」與「每次 Developer 回收完成」兩個節點，先執行交接完整性檢查，再進入上列決策樹。理由是 Claude 端每次呼叫都重送整段 Session，脈絡長度乘上呼叫次數才是主要成本，跨階段延續同一 Session 會讓後續每次呼叫都攜帶前一階段的全部過程。
+- **Workflow 交接檢查點**：`Clarify => Design => Implement => Review => Accept` 流程在「Design 驗收通過」與「每次 Developer 回收完成」兩個節點，先執行交接完整性檢查，再進入上列決策樹。理由是 Claude 端每次呼叫都重送整段 Session，脈絡長度乘上呼叫次數才是主要成本，跨階段延續同一 Session 會讓後續每次呼叫都攜帶前一階段的全部過程。有效深度為 `light` 的線沒有 Design 與 Developer 回收，不適用本檢查點，見 §1.5「Workflow 深度」。
   1. 確認同線 `requirement-summary.md` 已含全部使用者拍板的需求與實作約束，並保留具體措辭。摘要確認後才在對話中出現的補充約束，須向使用者逐條呈現並取得當輪明確確認，才依 Analyst 的覆寫前備份流程追加落檔；未取得確認者列入未決事項，此時本項不成立。
   2. 寫入同線 `report/<lineSlug>/handoff-checkpoint.md`（覆寫同名舊檔），必要欄位如下，全部路徑使用絕對路徑：`lineSlug`、`work-root`、檢查點類型（`design-accepted` 或 `developer-collected`）、`requirement-summary.md` 路徑、`design.md` 路徑與 Design 驗收結果、已回收的派遣報告與結案報告路徑及各自的回收三態、下一站（尚未執行的 Developer 派工、Reviewer 或需求意圖驗收；Developer 派工逐 Phase 記錄執行者（格式見 `workflow-orchestration` skill「自動推進鏈」））、未決事項清單、未結案取證紀錄（每筆含 `problemId`、問題描述、目前計數與已取得證據的來源位置，無未結案問題時填「無」）。任一必要欄位無值時本項不成立。此檔不寫入 `CONTEXT.local.md`。
   3. 確認沒有待當前 Session 裁決的設計歧義或升級問題；有則先裁決或升級，完成後再檢查。
@@ -206,14 +206,14 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 | 觸發條件 | 必載 skill |
 | --- | --- |
-| 編輯 `*.cs` | `csharp-style`（依專案 `AGENTS.local.md` 的 `code-style.csharp` 註記追加參考檔：`personal` 載入 `references/personal.md`，`standard` 僅本體，`project` 載入 `.local/ai-context/csharp-style-project.md`；無註記時先詢問）、`csharp-language-features`、`csharp-comments`、`csharp-silent-defects` |
-| 編輯 `*.cs` 且成員為 `public`（套件／Library 專案全體） | 追加 `csharp-docs` |
+| 編輯 `*.cs` | `ai-profile`、`csharp-style`（依專案 `AGENTS.local.md` 的 `code-style.csharp` 註記追加參考檔：`personal` 載入 `references/personal.md`，`standard` 僅本體，`project` 載入 `.local/ai-context/csharp-style-project.md`）、`csharp-language-features`、`csharp-comments`、`csharp-silent-defects` |
+| 編輯 `*.cs` 且新增或修改 `public` 成員，且 `project-kind` 不是 `sample`（未設定時亦載入） | 追加 `csharp-docs` |
 | 編輯 `*Tests/**/*.cs` 或含 `[Test]`／`[TestCase]` 的 `*.cs` | 追加 `csharp-nunit` |
 | 讀取或修改 `*.csproj`、`*.sln`、`*.slnx` | `csharp-language-features` |
 | 編輯 `*.md` | `check-markdown`、`doc-editing` |
 | 編輯 `*.ps1`、`*.psm1` | `powershell`、`scripting-conventions` |
 | 編輯 `*.sh` | `scripting-conventions` |
-| 編輯 `*.csx` | `scripting-conventions`、`csharp-style`（依註記追加參考檔，同 `*.cs`） |
+| 編輯 `*.csx` | `scripting-conventions`、`ai-profile`、`csharp-style`（依註記追加參考檔，同 `*.cs`） |
 | 在 Windows 執行終端機命令 | `windows-terminal` |
 | 編輯 `*.vue` | `vue3`、`typescript-frontend` |
 | 編輯前端 `*.ts`、`*.tsx` | `typescript-frontend` |
@@ -228,14 +228,42 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | 發動 advisor consult 或回收其結果 | `codex-dispatch` |
 | 執行或回收 `Clarify => Design => Implement => Review => Accept` Workflow、判定其共同收斂循環，或規劃 Workflow 驗證與交付 | `workflow-orchestration` |
 | 建立、讀取、回收、保存或清理 `.local/ai-sessions/` 交接物與報告 | `session-artifacts` |
+| 讀取、詢問或寫入專案 `AGENTS.local.md` 的 `AI-PROFILE` 鍵，或建立派遣前檢查該區塊 | `ai-profile` |
 
 - 專案根目錄存在 `AGENTS.md` 的 `AI-DECLARATIONS` 宣告區塊時，先依宣告的 `context-index-query` 查詢索引，再定位 glossary、ADR 與其他專案脈絡；只有宣告不存在或格式無效時才使用 raw grep 作為 fallback。`ai-context-index` skill 只維護宣告格式與索引產物，不內建工具清單。
 
 #### Workflow 階段保護
 
 - **`Developer` 不是通用實作入口**：僅適用於 `Clarify => Design => Implement => Review => Accept` 流程中的實作階段。不走此流程的實作，不使用 `Developer` Persona。
-- **命中 Workflow 後主 Agent 不得代做**：當使用者訊息已明確指向既有 Workflow 階段時，主 Agent 只能做路由與 preflight，不得以主 Agent 身份直接執行該階段工作。
+- **命中 Workflow 後主 Agent 不得代做**：當使用者訊息已明確指向既有 Workflow 階段時，主 Agent 只能做路由與 preflight，不得以主 Agent 身份直接執行該階段工作。有效深度為 `light` 的線沒有 Implement 階段的 Workflow 派工，實作依「Workflow 深度」。
 - **`Developer` 啟動前置條件**：至少需有可讀取的 `design.md` 作為設計基準，且 `Analyst` 已確認 Design 驗收通過與檢查清單全部通過。`CONTEXT.local.md` 若存在可作為補充交接，但不是 `Developer` 的必要前置。缺少 `design.md` 或設計驗收未通過時，主 Agent 必須停止並回報原因，不得建立 `Developer` 派遣；驗收結果須在建立派遣前完成。
+
+#### Workflow 深度
+
+每條需求線有一個有效深度，取值為 `full` 或 `light`。`full` 為完整的 `Clarify => Design => Implement => Review => Accept` 流程；`light` 在需求確認後不進入 Design 與 Implement 階段的 Workflow 派工，改走現有的資源派遣與自理路徑。
+
+- **解析與記錄**：`Analyst` 在使用者確認需求摘要前解析有效深度，寫入同線 `requirement-summary.md` 的 `## Workflow 深度` 節（格式見 `agents/claude/analyst.md`「產出」）。後續站點只讀該節，不重新解析；該節不存在時視為 `full`。
+- **優先序**：依下列順序判定，命中即停止。
+  1. 升級判定命中時為 `full`，不受後列各項覆寫。
+  2. `Analyst` 於本線逐線指定的深度，來源欄附理由。
+  3. 專案 `AGENTS.local.md` 的 `workflow-depth` 鍵（讀取依 `ai-profile` skill）。
+  4. 由 `project-kind` 推導：`sample` 為 `light`，`library` 與 `application` 為 `full`。
+  5. 以上皆缺少時為 `full`。
+- **升級判定**：變更命中 Reviewer 必發清單第 2 項（跨模組介面、分層或依賴方向）、改動 `library` 公開 API（範圍見 `csharp-language-features` skill「公開 API 相容性」），或本線 UI 線別為 B、C 線時，有效深度為 `full`。`light` 實作期間，執行端報告或 diff 顯示命中時，主 Agent 停止後續實作站點，交 `Analyst` 把該節改為 `full`（覆寫前備份沿用需求摘要既有規則）並通知使用者，隨後自 Design 起算；已落地的變更視為現況，由 `Architect` 以現況為盤點對象。
+
+`light` 與 `full` 的差異如下，逐站步驟見 `workflow-orchestration` skill「light 路徑」。
+
+| 項目 | `full` | `light` |
+| --- | --- | --- |
+| `requirement-summary.md`、Clarify | 必要 | 必要 |
+| `Architect`、`design.md` 與設計驗收循環 | 必要 | 跳過，不派生 `Architect` |
+| 影響範圍盤點派遣 | 依現有條件 | 跳過；派遣單第 3 欄列出目標檔案絕對路徑 |
+| 交接檢查點（`design-accepted`、`developer-collected`） | 執行 | 不適用 |
+| 實作 | `Developer` Workflow 派工或 Haiku Phase | 不派出 `Developer`；依 F1 判準與實作分流處理，以 `requirement-summary.md` 為規格，實作驗收契約（派遣單第 5 欄、Haiku `acceptanceCriteria` 或主 Agent 自理的驗收列）逐列標註〔需求 #n〕 |
+| Reviewer 必發清單 | 現行 | 見「Reviewer 派遣發動判準」的 `light` 調整 |
+| 需求意圖驗收 | 執行 | 執行 |
+
+`light` 只減少流程站數。F1 必派層、安裝套件同意、commit 與 push 授權、advisor 授權、共同收斂契約、審查配對順序 1、Reviewer 必發清單第 2、5 項與 `Developer` 啟動前置條件在兩種深度下相同。
 
 #### work-root 判定
 
@@ -298,7 +326,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 | Agent | 平台 | 觸發方式 | 規則來源 | 說明 |
 | --- | --- | --- | --- | --- |
-| **Architect** | Claude 派生 | Analyst 完成且使用者確認需求摘要；或使用者明確要求產出設計文件 | `~/.ai-agents/agents/claude/architect.md` | 協調者以 Agent 工具派生，`subagent_type` 為 `Architect`，`model` 為 `sonnet`，不經 `codex-dispatch`，依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準。需求涉及既有程式碼且摘要未列舉影響範圍時，先依 F1 必派層以 Codex 唯讀資源派遣取得盤點報告，收下後才派生；全新檔案或摘要已列舉檔案清單時直接派生；派生 prompt 見 `agents/claude/analyst.md` |
+| **Architect** | Claude 派生 | Analyst 完成且使用者確認需求摘要；或使用者明確要求產出設計文件。需求摘要 `## Workflow 深度` 為 `light` 時不派生 | `~/.ai-agents/agents/claude/architect.md` | 協調者以 Agent 工具派生，`subagent_type` 為 `Architect`，`model` 為 `sonnet`，不經 `codex-dispatch`，依需求摘要產出 `design.md`，作為後續 Implement 階段的唯一設計基準。需求涉及既有程式碼且摘要未列舉影響範圍時，先依 F1 必派層以 Codex 唯讀資源派遣取得盤點報告，收下後才派生；全新檔案或摘要已列舉檔案清單時直接派生；派生 prompt 見 `agents/claude/analyst.md` |
 | **Prototyper** | Claude 派生 | `Analyst` 判定為 C 線時派生；或使用者明確要求產出 Demo 畫面 | `~/.ai-agents/agents/claude/prototyper.md` | 依需求摘要與樣式基準產出 Demo 畫面，供需求訪談與版面確認 |
 | **Developer** | Codex（Phase 依實作分流可由 Claude Haiku subagent 承接） | Design 驗收通過後由主 Agent 依 Workflow 派工發動；使用者亦可直接在 Codex 端進入實作，此時由 `Developer` 自行驗證 `design.md` 存在且可讀，缺件時停止並回報，不自行補寫設計 | `~/.ai-agents/agents/codex/developer.toml` | 依 `design.md` 逐項實作功能 |
 | **Reviewer** | Codex（依審查配對，Codex 實作的變更由 Claude Sonnet subagent 承接） | 主 Agent 依 Reviewer 派遣判準以派遣單發動，或由使用者要求 | `~/.ai-agents/agents/codex/reviewer.toml` | 依派遣單執行 Spec 與 Standards 審查，逐條回報驗收條件；設計歧義由同線 `Analyst` 依需求摘要原文裁決 |
@@ -474,6 +502,24 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 主 Agent 依下限自理完成的改動不屬派遣產出，不套用上列必發清單，只對自己的 diff 做核對。Haiku subagent 承接的實作屬派工產出，適用上列必發清單。
 
 **可不發**：本輪僅改動文件敘述、排版或用詞，未觸及任何機制條款，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
+
+**`light` 深度的調整**：有效深度為 `light` 的線（見「Workflow 深度」），必發清單五列的文字不變，判定方式依下表調整。
+
+| 必發清單項目 | `light` 處置 |
+| --- | --- |
+| 第 1 項 | 可不發。前提是主 Agent 已核對執行端回報的建置與測試命令原文與完整原始輸出（stdout、stderr、exit code），結果成功且與回報一致，且變更不含 `library` 公開 API 改動。任一前提不成立時恢復必發 |
+| 第 2 項 | 必發 |
+| 第 3、4 項 | 判定來源改為資源派遣報告（含 Haiku subagent 回報與主 Agent 自理時寫入 `exceptions.md` 的條目）中的「偏離設計」「替代方案」條目與「未解決項目」，命中即發 |
+| 第 5 項 | 必發；審查配對順序 1、審查者不得是改寫者與變更盤點前置維持不變 |
+
+`light` 的 Reviewer 派遣單第 4 欄列出 `requirement-summary.md`、實作驗收契約（原實作派遣單，或 Haiku subagent 與主 Agent 自理時另存的驗收列）、資源派遣報告與前輪報告（若有），Spec 基準為需求摘要與實作驗收契約的驗收列（見 `workflow-orchestration` skill `references/review-procedures.md`「light 線的 Reviewer 派遣單與回收」）。未命中必發清單時，不發理由須含已核對的建置與測試命令。
+
+| 放寬 | 風險 | 補償控制 |
+| --- | --- | --- |
+| 第 1 項可不發 | `light` 線的程式碼 diff 可能未經跨家族審查 | 僅限有效深度為 `light` 的線；建置與測試原始輸出核對失敗或缺漏時恢復必發；`library` 公開 API 改動升級為 `full`；第 2、5 項必發 |
+| 跳過 `design.md` | 沒有設計基準可供審查與裁決 | 實作驗收契約逐列標註〔需求 #n〕；需求意圖驗收與 Reviewer 設計歧義依需求摘要原文與實作驗收契約裁決 |
+| 跳過交接檢查點 | 跨 Session 接手缺少檢查點檔 | 需求摘要與派遣報告照常落檔，接手時由 `Analyst` 實讀 |
+| 由 `project-kind` 推導 | `sample` 誤判為 `light` | 升級判定優先於所有來源；使用者可用 `workflow-depth: full` 或逐線指定覆寫 |
 
 規則檔的機制條款改寫必發，且審查者不得是改寫者。改寫者須在派遣單附變更盤點，並另行自檢一次，與審查結果交互比對後合併，不以任一份取代另一份（程序見 `workflow-orchestration` skill `references/review-procedures.md`「規則檔改寫的審查前置」）。
 

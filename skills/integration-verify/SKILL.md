@@ -22,7 +22,7 @@ policy.allow_implicit_invocation: true
 - 未列出至少 3 種判定依據，就以「環境不確定」為由停止驗證。
 - 偵測到整合測試（Docker、Testcontainers、實體服務依賴）存在，未詢問使用者就略過。
 - 寫入動作完成、收到 2xx 或無例外，就直接在報告標記通過，沒有任何回查資料來源的步驟。
-- 只跑一條正常路徑就回報「驗證完成」，未涵蓋邊界與錯誤情境。
+- 只跑一條正常路徑就回報「驗證完成」，未涵蓋邊界與錯誤情境（`project-kind` 為 `sample` 時依步驟五的縮小規則除外）。
 - 看到單元測試全綠就跳過煙霧驗證，未確認本次變更涉及的端點或畫面實際可用。
 
 ## 啟動條件
@@ -55,7 +55,7 @@ policy.allow_implicit_invocation: true
 - **驗證結果而非動作**：每個情境都要確認實際產出與預期一致（回應內容、畫面顯示的資料、狀態變化），不以「動作有被觸發」當作通過。
 - **寫入操作須回查資料來源**：本原則為總則，實際執行規範見 §步驟六：寫入回查 gate，是必經步驟而非可選建議。
 - **持久化往返**：寫入後重新載入（重新整理頁面、重新呼叫查詢端點、重啟程式或重開視窗），確認資料正確持久化並能正常載回。
-- **覆蓋多情境**：對本次修改相關功能，至少涵蓋正常、邊界與錯誤情境，不以單一正常路徑通過即視為完成。
+- **覆蓋多情境**：對本次修改相關功能，至少涵蓋正常、邊界與錯誤情境，不以單一正常路徑通過即視為完成。`project-kind` 為 `sample` 時依步驟五的縮小規則。
 
 各分支 skill 依此原則，在自身驗證流程中落實對應的具體做法。
 
@@ -83,7 +83,11 @@ policy.allow_implicit_invocation: true
 | 桌面應用 | `*.csproj` 的 `OutputType` 為 `WinExe`，且 `UseWindowsForms` 或 `UseWPF` 為 `true`。 |
 | CLI / 主控台 | `*.csproj` 的 `OutputType` 為 `Exe` 且非 GUI（無 `UseWindowsForms` / `UseWPF`）；或 `package.json` 有 `bin` 指向可執行 CLI，無前端畫面。 |
 | 背景服務 | `*.csproj` 的 SDK 為 `Microsoft.NET.Sdk.Worker`；或以 Generic Host 註冊 `AddHostedService` / `BackgroundService`，持續執行且無 Web 端點與畫面。 |
-| 套件 (Library) | `*.csproj` 的 `OutputType` 為 `Library` 並產生 NuGet 套件；或 `package.json` 為發佈用 npm 套件，無 app 進入點。 |
+| 套件 (Library) | `ai-profile` skill「專案層解析」為 `library`。 |
+| 類別庫（非套件） | 專案為類別庫（`*.csproj` 的 `OutputType` 為 `Library` 或未設定，且不符合上列執行形態；或 `package.json` 無 app 進入點），且「專案層解析」不是 `library`，或 `project-kind` 未設定。 |
+
+- 依 `ai-profile` skill 讀取 `project-kind`。缺少時依「一次問完」詢問；使用者略過時套件列不可判定，類別庫歸入「類別庫（非套件）」，其餘列仍依上表判定。
+- 執行形態偵測（Web UI、Web API、桌面應用、CLI、背景服務）與 `project-kind` 為不同維度，前者繼續依上表判定。
 
 若無法判斷類型，回報無法判定並請使用者指明。
 
@@ -150,6 +154,8 @@ policy.allow_implicit_invocation: true
 
 ## 步驟五：依類型路由
 
+`project-kind` 為 `sample` 時，步驟四照常執行；步驟五對本次變更涉及的代表性路徑執行一個正常情境的煙霧驗證，不要求邊界與錯誤情境。步驟二、三、六與「資料異動安全規範」照常適用，報告「驗證範圍」註明「sample 縮小範圍」。
+
 | 類型 | 處理方式 |
 | --- | --- |
 | Web UI | **必須使用 Skill 工具呼叫 `browser-smoke`**，由其完成瀏覽器煙霧驗證。 |
@@ -158,6 +164,7 @@ policy.allow_implicit_invocation: true
 | CLI / 主控台 | 依本檔「CLI 驗證」小節處理。 |
 | 背景服務 | 依本檔「背景服務驗證」小節處理。 |
 | 套件 (Library) | 依本檔「套件驗證」小節處理。 |
+| 類別庫（非套件） | 依本檔「套件驗證」小節第 1、2 步處理，略過第 3 步的打包確認。 |
 
 ### 套件驗證
 
@@ -260,7 +267,7 @@ policy.allow_implicit_invocation: true
 
 ```text
 整合驗證：
-- 專案類型：
+- 專案類型：（含 project-kind）
 - 執行環境：（本機；列出採用的判定依據與子情境，如本機 lab、本機 dev mode）
 - 驗證範圍：
 - 單元測試：通過 / 失敗 / 無（整合測試：通過 / 失敗 / 已略過（使用者指示）/ 無）

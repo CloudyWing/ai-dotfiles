@@ -19,3 +19,11 @@ Workflow 混合時，Haiku Phase 涉及的檔案與 Codex Phase 涉及的檔案�
 - 審查 Workflow 實作時，主 Agent 在第 4 欄同時列出 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告三份檔案的絕對路徑，供 Reviewer 執行需求對照核對。
 - 第二輪以後的審查：`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 對同一條線的第二輪以後審查，第 4 欄另列同一角色前輪報告的絕對路徑，審查者依其 `F-<三位數>` finding ID 判定閉合狀態。
 - 回收後：設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。
+
+## light 線的 Reviewer 派遣單與回收
+
+有效深度為 `light` 的線發動審查時，派遣單依下列規格撰寫。
+
+- 第 4 欄列出同線 `requirement-summary.md`、實作驗收契約、資源派遣報告與前輪報告（若有）的絕對路徑，不列 `design.md` 與 Developer 結案報告。實作驗收契約依執行者而定：Codex 資源派遣為原實作派遣單；Haiku subagent 為派生 prompt 中的 `acceptanceCriteria`，主 Agent 將其原文另存為檔案後列入；主 Agent 自理為完成回覆中逐列標註〔需求 #n〕的驗收列，同樣另存為檔案後列入。
+- Spec 基準為需求摘要與實作驗收契約的驗收列。`agents/codex/reviewer.toml` 已規定未指定設計文件時依派遣單第 4 欄與第 5 欄執行。
+- 回收後的設計歧義由同線 `Analyst` 依需求摘要原文與實作驗收契約的驗收列裁決。

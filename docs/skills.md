@@ -23,6 +23,7 @@
 | Skill | 類型 | 讀者 | 用途 |
 | --- | --- | --- | --- |
 | `ai-context-index` | 知識型 | agent | Use when an agent needs to create or update a project AI context index from the tools declared in AGENTS.md. |
+| `ai-profile` | 知識型 | agent | Use when 需要讀取、詢問或寫入專案 AGENTS.local.md 的 AI-PROFILE 區塊鍵（code-style.csharp、project-kind、workflow-depth、git-workflow），或需判定哪些鍵缺少而須一次詢問時。 |
 | `ai-tool-discovery` | 知識型 | agent | Use when the agent is about to explore a project or generate AI support artifacts and needs the local tool inventory or the state and rebuild path of existing .local/ai-context artifacts. |
 | `api-smoke` | 知識型 | agent | Web API 煙霧驗證流程。當需要在修改或開發 Web API 端點後驗證 API 行為，或使用者要求呼叫 Swagger、寫腳本測試 API、進行多情境 API 測試時使用。 |
 | `apply-fact-check` | 知識型 | human | 依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md. |
@@ -30,7 +31,7 @@
 | `check-markdown` | 知識型 | human | 當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。 |
 | `codebase-design` | 知識型 | agent | Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。 |
 | `codex-dispatch` | 知識型 | agent | Codex 派工機制：依派工類型建立執行契約、以 codex exec 啟動 Codex、背景等待、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。 |
-| `create-dotnet-project` | 知識型 | agent | 建立新的 .NET 方案：詢問 C# 風格並寫入註記，以 slnx 格式建立方案、src 與 tests 實體資料夾及 Solution Folder，再依序產生 .editorconfig、.gitignore、.gitattributes 與專案層設定。Use when 使用者要求建立新的 .NET 方案或專案骨架時；既有專案不適用。 |
+| `create-dotnet-project` | 知識型 | agent | 建立新的 .NET 方案：詢問 AI-PROFILE 鍵並寫入，以 slnx 格式建立方案、src 與 tests 實體資料夾及 Solution Folder，再依序產生 .editorconfig、.gitignore、.gitattributes 與專案層設定。Use when 使用者要求建立新的 .NET 方案或專案骨架時；既有專案不適用。 |
 | `csharp-aspnetcore` | 知識型 | agent | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
 | `csharp-auth` | 知識型 | agent | ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。 |
 | `csharp-background-service` | 知識型 | agent | Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。 |
@@ -40,7 +41,7 @@
 | `csharp-error-handling` | 知識型 | agent | C# 例外處理規範：例外設計原則、Guard Clause、全域錯誤處理與 ProblemDetails 回應標準化。當設計例外、撰寫 try-catch 或全域錯誤處理時自動套用。 |
 | `csharp-grpc` | 知識型 | agent | gRPC 服務開發規範：Proto 檔案管理、服務實作、攔截器、錯誤處理與用戶端工廠模式。當偵測到 gRPC 專案或撰寫 .proto、gRPC 服務與用戶端時自動套用。 |
 | `csharp-integration-test` | 知識型 | agent | C# 整合測試規範：WebApplicationFactory、Testcontainers、資料隔離與認證繞道。當撰寫或修改整合測試（跨資料庫、HTTP 管線、外部相依）時自動套用。 |
-| `csharp-language-features` | 知識型 | agent | Use when 讀取或修改 C# 專案設定、TargetFramework 或 C# 程式碼，需判斷語言特性、非同步與型別選用時。 |
+| `csharp-language-features` | 知識型 | agent | Use when 讀取或修改 C# 專案設定、TargetFramework 或 C# 程式碼，需判斷語言特性、非同步、型別選用，或依 project-kind 判斷 ConfigureAwait 與公開 API 相容性時。 |
 | `csharp-linq` | 知識型 | agent | LINQ 查詢規範：物化時機、回傳型別、語法選用與鏈式排版的專案慣例。當撰寫 In-Memory 集合操作或 LINQ to Objects 時自動套用。 |
 | `csharp-mcp-server` | 知識型 | agent | 產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最佳實踐與專案結構規劃。 |
 | `csharp-nrt` | 知識型 | agent | C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告。當專案啟用 NRT 且撰寫或修改型別宣告時自動套用。 |
@@ -81,5 +82,5 @@
 | `vue-router` | 知識型 | agent | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。 |
 | `vue3` | 知識型 | agent | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
 | `windows-terminal` | 知識型 | agent | Use when 在 Windows 執行終端機命令，需要處理輸出編碼、中文亂碼或輸出截斷時。 |
-| `workflow-orchestration` | 知識型 | agent | Use when 執行或回收 Clarify => Design => Implement => Review => Accept Workflow、判定其共同收斂循環，或規劃 Workflow 驗證與交付時。 |
+| `workflow-orchestration` | 知識型 | agent | Use when 執行或回收 Clarify => Design => Implement => Review => Accept Workflow（含 workflow-depth 為 light 的線）、判定其共同收斂循環，或規劃 Workflow 驗證與交付時。 |
 | `writing-for-agents` | 知識型 | agent | Use when 撰寫或修改全域 Agent 規範、Skill 文件或交接文件，需要控制資訊密度與驗收條件時。 |

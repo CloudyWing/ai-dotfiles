@@ -11,15 +11,21 @@ policy.allow_implicit_invocation: true
 
 ### XML 註解分級
 
+專案類型依 `ai-profile` skill 的 `project-kind` 與「專案層解析」判定，Web 與否以專案檔 SDK 判定。
+
 | 專案類型 | 對象 | 規則 |
 | --- | --- | --- |
-| 套件 / Library | 所有 `public` 成員 | 必須加入 XML 註解 |
-| Web 專案 | Web API Controller Action | 加入 `<summary>`、`<param>` 與 `<returns>` |
-| Web 專案 | 共用 Interface 方法 | 描述跨模組契約，實作類別使用 `<inheritdoc/>` |
-| Web 專案 | 公開 Enum 值 | 補充命名無法表達的語意邊界 |
-| Web 專案 | DTO / ViewModel / Entity 屬性 | 補充業務含義、格式約束與單位 |
-| Web 專案 | 其他 public 成員 | 名稱不足以表達行為或存在非直覺行為時加入 |
-| Web 專案 | private / internal | 不要求 XML 註解，使用 `//` 註解處理 |
+| `library` | 所有 `public` 成員 | 必須加入 XML 註解 |
+| `application`（Web） | Web API Controller Action | 加入 `<summary>`、`<param>` 與 `<returns>` |
+| `application`（Web） | 共用 Interface 方法 | 描述跨模組契約，實作類別使用 `<inheritdoc/>` |
+| `application`（Web） | 公開 Enum 值 | 補充命名無法表達的語意邊界 |
+| `application`（Web） | DTO / ViewModel / Entity 屬性 | 補充業務含義、格式約束與單位 |
+| `application`（Web） | 其他 public 成員 | 名稱不足以表達行為或存在非直覺行為時加入 |
+| `application`（非 Web） | 所有 public 成員 | 比照 Web 的「其他 public 成員」列，名稱不足以表達行為或存在非直覺行為時加入 |
+| `application` | private / internal | 不要求 XML 註解，使用 `//` 註解處理 |
+| `sample` | 所有成員 | 不要求 XML 註解 |
+
+`project-kind` 未設定時比照 `application`（非 Web）。鍵為 `library` 時，測試專案與 `IsPackable=false` 的專案依專案層解析視為 `application`。
 
 - `<summary>` 以第三人稱現在式動詞開頭，例如 `Gets...` 或 `Initializes...`，說明 Why 與 What。
 - `<summary>` 提供一句話的簡短描述。中文直接描述動作，例如取得、設定或初始化。

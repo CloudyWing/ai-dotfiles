@@ -17,33 +17,11 @@ policy.allow_implicit_invocation: true
 
 ## 風格註記與載入
 
-### 註記格式
+區塊格式、解析、錯誤處置、一次問完、非互動執行端、本機排除與寫入依 `ai-profile` skill。本節只保留 `code-style.csharp` 專屬的詢問選項、載入對照與 `project` 範例檔。
 
-專案根目錄的 `AGENTS.local.md`（Git 專案為 `git rev-parse --show-toplevel` 的目錄，非 Git 專案為 work-root）以成對的完整獨立行標記保存註記，檔案編碼為 UTF-8 無 BOM：
+### code-style.csharp 的詢問選項
 
-```text
-<!-- AI-PROFILE:BEGIN -->
-code-style.csharp: personal
-<!-- AI-PROFILE:END -->
-```
-
-解析規則如下：
-
-- 逐行讀取兩個標記之間的 `key: value`，鍵與值各自去除前後空白。
-- 鍵只能由小寫英數、`.`、`-` 組成；值為非空的單行文字。
-- 略過空行。未知鍵視為其他控制項，讀取時忽略，寫入時原樣保留。
-- `code-style.csharp` 只接受 `personal`、`standard`、`project`，大小寫須完全一致。
-
-下列任一情形停止相依工作並向使用者指出錯誤位置，不猜測選擇，不修改檔案：
-
-- 只有單邊標記，或標記不是完整獨立行。
-- 檔案內有兩個以上 `AI-PROFILE` 區塊。
-- 區塊內有重複鍵、無法解析成 `key: value` 的非空行，或不合法的鍵。
-- `code-style.csharp` 的值不在上列三者之內。
-
-### 第一次詢問
-
-`AGENTS.local.md` 不存在、沒有 `AI-PROFILE` 區塊，或區塊內沒有 `code-style.csharp` 鍵時，詢問使用者一次，收到答案前停止相依的 C# 撰寫工作。
+缺少 `code-style.csharp` 時，撰寫或修改 C# 的工作在收到答案前停止。
 
 | 專案狀態 | 判定方式 | 提供的選項 |
 | --- | --- | --- |
@@ -55,32 +33,6 @@ code-style.csharp: personal
 - `personal`：使用者習慣風格，對應 `~/.ai-agents/templates/.editorconfig`。
 - `standard`：Microsoft 官方慣例為主的標準風格，對應 `~/.ai-agents/templates/.editorconfig.standard`。
 - `project`：沿用既有專案自己的寫法，首次取樣後記錄於專案範例檔，不對應任何 `.editorconfig` 範本。
-
-### 非互動執行端
-
-無法向使用者提問的執行端（例如 Codex 派遣）遇到缺少註記或註記格式錯誤時，依下列方式處理：
-
-- 停止相依的 C# 撰寫工作，不寫入註記，不猜測風格，也不改用其他註記值。
-- 在報告寫明停止原因為「缺少 `code-style.csharp` 註記」或指出的格式錯誤，並附 `AGENTS.local.md` 的絕對路徑。
-- 不依賴 C# 風格的其他工作照常完成。
-
-主 Agent 依 `codex-dispatch` skill `references/start.md`「C# 風格註記前置檢查」在派工前補齊註記。
-
-### 寫入前的本機排除
-
-註記與 `project` 範例檔屬個人本機資料，寫入前先確認不會被團隊看到。Git 專案對 `AGENTS.local.md`，以及選 `project` 時的 `.local/ai-context/csharp-style-project.md`，逐項執行下列檢查：
-
-1. 執行 `git ls-files --error-unmatch <path>`。命令成功代表檔案已被追蹤，停止寫入並提示使用者先處理追蹤狀態，不宣稱已隱藏。
-2. 執行 `git check-ignore -q <path>`。命令成功代表已被排除，直接寫入。
-3. 未追蹤且未排除時，將路徑追加至 `git rev-parse --git-common-dir` 所指目錄下的 `info/exclude`，再以 `git check-ignore -q <path>` 確認生效後寫入。此做法同時適用於 worktree。
-
-非 Git 專案照常寫入本機路徑，並在回應中說明此專案沒有 Git 排除機制。本機排除只防止檔案進入版控，不提供存取權限控制。
-
-### 寫入註記
-
-1. `AGENTS.local.md` 不存在時，以 `~/.ai-agents/templates/AGENTS.local.md.template` 建立。
-2. 寫入前重新讀取檔案，與解析時的內容比對；內容已變動時停止，重新讀取後再處理，不覆寫其他工作的修改。
-3. 已有區塊時只插入或修改 `code-style.csharp` 一行；沒有區塊時，在檔尾追加完整區塊。區塊外內容與其他鍵全部保留。
 
 ### 依註記載入
 
@@ -94,7 +46,7 @@ code-style.csharp: personal
 
 ### project 範例檔
 
-選定 `project` 的那一次詢問，取樣既有專案中具代表性的 C# 檔案（涵蓋不同層級或專案的 3 至 5 個檔案；專案的 C# 檔不足 3 個時取樣全部檔案），寫入 `.local/ai-context/csharp-style-project.md`。之後的開發只讀本體與此範例檔，不再取樣。
+使用者選定 `project`，並依 `ai-profile`「寫入」完成寫入後，取樣既有專案中具代表性的 C# 檔案（涵蓋不同層級或專案的 3 至 5 個檔案；專案的 C# 檔不足 3 個時取樣全部檔案），寫入 `.local/ai-context/csharp-style-project.md`，寫入前依 `ai-profile`「本機排除」檢查。之後的開發只讀本體與此範例檔，不再取樣。
 
 - 逐項記錄已觀察到的寫法，每項附一段範例與來源檔案路徑。
 - 涵蓋本體與 `references/personal.md` 列出的風格面向，例如大括號、欄位前綴、右括弧、Attribute 與初始設定式排版；未觀察到的面向標示「未判定」，不推測補值。

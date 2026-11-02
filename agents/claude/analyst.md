@@ -111,9 +111,9 @@ audience: agent
 
 | 線 | 判準 | 產出 |
 | --- | --- | --- |
-| A | 本次變更不涉及畫面 | 依一般流程派生 `Architect` |
-| B | 涉及畫面，但版面決策以文字即可描述清楚 | 派生 `Architect`，需求摘要附區塊清單與初步層級判斷 |
-| C | 需要對外溝通，或版面複雜到文字講不清 | 先派生 `Prototyper`，驗收後回填需求摘要再派生 `Architect` |
+| A | 本次變更不涉及畫面 | 依一般流程派生 `Architect`；有效深度為 `light` 時不派生，見「產出」的分派段 |
+| B | 涉及畫面，但版面決策以文字即可描述清楚 | 派生 `Architect`，需求摘要附區塊清單與初步層級判斷；有效深度一律為 `full`（升級判定） |
+| C | 需要對外溝通，或版面複雜到文字講不清 | 先派生 `Prototyper`，驗收後回填需求摘要再派生 `Architect`；有效深度一律為 `full`（升級判定） |
 
 ### C 線的兩個觸發條件
 
@@ -227,6 +227,17 @@ Analyst 仍不得自行寫入下列對象：
 - **已確定的實作約束**（若有）：對話過程中已由使用者拍板的實作面限制，例如指定沿用某既有機制、指定使用某既有元件而非自行實作、指定不得改動某模組。每條註明來源為使用者拍板，並保留當初的具體措辭，不改寫成抽象敘述。此欄位存在的理由是這類共識既非需求項目也非驗收方向，缺少對應欄位時會在整理摘要的過程中流失，導致 Architect 未寫入 `design.md`、Developer 事後誤解。
 - **假設清單**（若有）：若需補充資訊時的合理假設。
 - **驗收方向**：各項目的完成判斷依據。
+- **Workflow 深度**：本線的有效深度。Analyst 依 `ai-profile` skill 讀取 `workflow-depth` 與 `project-kind`，依 `instructions.md` §1.5「Workflow 深度」的優先序解析，升級判定在使用者確認需求摘要前完成。寫入需求摘要檔時使用 `## Workflow 深度` 二級標題，節內固定為下列三行，深度值只能是 `full` 或 `light`：
+
+  ```markdown
+  ## Workflow 深度
+
+  - 深度：light
+  - 來源：由 project-kind=sample 推導
+  - 升級判定：未命中（必發清單第 2 項：否；library 公開 API：否；UI 線 B 或 C：否）
+  ```
+
+  來源欄寫出命中的優先序層級；Analyst 逐線指定時寫「Analyst 逐線指定」並附理由。
 
 整理完成後，向使用者呈現完整需求摘要，並詢問：
 
@@ -250,7 +261,7 @@ Analyst 仍不得自行寫入下列對象：
 
 使用者確認後，涉及畫面的 B／C 線先依 `skills/uiux-baseline/SKILL.md`「協調者基準準備」完成基準與確認交接；C 線先準備基準再交 Prototyper。依本輪的 UI 線別分派：
 
-- **A 線與 B 線**：先判定是否需要影響範圍盤點。需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先使用 `codex-dispatch` skill 以 Codex 唯讀資源派遣取得影響範圍盤點報告，收下後才派生。再使用 Agent 工具派生 Architect sub-agent（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），派生 prompt 帶入 `LineContext`、來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 的絕對路徑，以及盤點報告的絕對路徑（若有；未提供報告時，Architect 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺，Architect 以需求摘要為唯一輸入，不做跨檔掃描。等待 Architect 完成並產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
+- **A 線與 B 線**：有效深度為 `light` 時（B 線依升級判定一律為 `full`，因此只會是 A 線），不派生 `Architect`、不做影響範圍盤點，改依 `workflow-orchestration` skill「light 路徑」推進。有效深度為 `full` 時，先判定是否需要影響範圍盤點。需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先使用 `codex-dispatch` skill 以 Codex 唯讀資源派遣取得影響範圍盤點報告，收下後才派生。再使用 Agent 工具派生 Architect sub-agent（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），派生 prompt 帶入 `LineContext`、來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 的絕對路徑，以及盤點報告的絕對路徑（若有；未提供報告時，Architect 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺，Architect 以需求摘要為唯一輸入，不做跨檔掃描。等待 Architect 完成並產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
 - **C 線**：先使用 Agent 工具派生 Prototyper sub-agent，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），等待 Demo 產出後執行「Demo 驗收循環」。驗收通過並將 Demo 結果回填需求摘要後，再依上列方式派生 Architect sub-agent。
 
 ---
@@ -396,6 +407,8 @@ Developer 與 Reviewer 完成後，Analyst 回頭確認交付結果是否仍是�
 主要輸入為 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`、`<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`，以及同線的 Developer 結案報告。**僅在需要確認特定爭議點時抽查對應的程式碼位置或 diff 片段，不做全面 code review。**
 
 逐項比對以 Developer 結案報告的「需求對照」節為主要輸入，每個需求項目都要判定，判定依據為該列的實際行為與需求摘要原文是否一致。下列任一情形構成爭議點，才抽查該列證據指向的程式碼或 diff：該列狀態不是「已交付」；證據欄無法定位；Reviewer 報告的需求對照核對或 T-code 判定涉及該列；該列關聯需求摘要的「已確定的實作約束」；實際行為的敘述不足以判斷原意是否達成。「需求對照」節缺失或缺列時，不改以全面讀取實作補足，依回收三態退回 Developer 補齊。
+
+有效深度為 `light` 的線沒有 `design.md` 與 Developer 結案報告。主要輸入改為同線 `requirement-summary.md`、資源派遣報告（含 Haiku subagent 回報與主 Agent 自理時的完成回覆）、實作驗收契約（見 `workflow-orchestration` skill「light 路徑」第 4 步）的逐列驗收結果，以及審查報告（若有）。逐項比對以實作驗收契約各列為主，爭議點的認定條件同上；缺列或缺失時依回收三態退回執行端補齊。
 
 保持輕量有兩個理由。一是全面讀取程式碼會使這一站在行為上與 Reviewer 重疊，重新觸發 Persona 路由衝突。二是大量讀取程式碼會推高 context 壓縮的機率；需求摘要檔不存在時，壓縮會摧毀這一站唯一的依據，檔案存在時也會讓對話中尚未落檔的補充約束流失。
 

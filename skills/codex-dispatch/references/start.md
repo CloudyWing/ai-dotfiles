@@ -54,15 +54,16 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 
 `Dispatch` 串接步驟 2 至 6。預設同步等待 Codex 結束後執行 Inspect，回傳 `completed` 或 `failed`；Request 設 `background: true` 時先回傳 `status=started`，只代表 Codex 已啟動，再以 `Inspect -WaitForCompletion` 等待。步驟 7 與 8 的回收判定由主 Agent 執行，派遣不再需要在 Session 內另寫 runner。
 
-### C# 風格註記前置檢查
+### AI-PROFILE 前置檢查
 
-派遣內容涉及撰寫或修改 `*.cs`、`*.csx` 時，主 Agent 在建立派遣單或 Request 前，依 `csharp-style` skill「風格註記與載入」解析目標專案根目錄 `AGENTS.local.md` 的 `code-style.csharp` 註記。
+主 Agent 在建立派遣單或 Request 前，依 `ai-profile` skill 解析目標專案根目錄 `AGENTS.local.md`，並以該 skill「鍵登錄表」的「阻擋範圍」欄對照派遣內容，得出本次派遣所需的鍵。例如撰寫或修改 `*.cs`、`*.csx` 需要 `code-style.csharp`。
 
-- 註記有效時照常派工。
-- 缺少註記時，先依該節「第一次詢問」詢問使用者並寫入註記，再建立派遣。
-- 註記格式錯誤時，依該節的錯誤處置停止並回報，不派工。
+- 所需鍵有效時照常派工。
+- 所需鍵缺少時，依 `ai-profile`「一次問完」詢問使用者（同一輪列出其他適用且缺少的鍵），寫入後再建立派遣。
+- 區塊結構錯誤時，依 `ai-profile`「錯誤處置」停止並回報，不派工。
+- 鍵的值錯誤時，只停止阻擋範圍涵蓋該鍵或依該鍵分流的派遣並回報；不依賴該鍵的派遣照常進行。
 
-執行端仍以缺少註記或格式錯誤停止時，主 Agent 先補齊或修正註記，再以新的派遣重新執行；此停止不屬純技術補件，不以續行帶過。
+執行端仍以缺少鍵或格式錯誤停止時，主 Agent 先補齊或修正，再以新的派遣重新執行；此停止不屬純技術補件，不以續行帶過。
 
 ### Dispatch 正式入口
 

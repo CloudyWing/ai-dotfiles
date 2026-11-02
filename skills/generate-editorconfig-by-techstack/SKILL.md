@@ -63,15 +63,15 @@ policy.allow_implicit_invocation: true
 
 ### 2. 選擇範本
 
-偵測到 .NET 專案時，依 `csharp-style` skill「風格註記與載入」的格式與解析規則讀取專案根目錄 `AGENTS.local.md` 的 `code-style.csharp` 註記：
+偵測到 .NET 專案時，依 `ai-profile` skill「區塊格式」「解析規則」「錯誤處置」讀取專案根目錄 `AGENTS.local.md` 的 `code-style.csharp` 註記：
 
 | 註記狀態 | 處置 |
 | --- | --- |
 | `personal` | 使用 personal 範本 |
 | `standard` | 使用 standard 範本 |
 | `project` | 此值沒有對應範本。停止並請使用者指定本次採用 personal 或 standard，不改寫註記 |
-| 無註記 | 依 `csharp-style` skill「第一次詢問」詢問並寫入註記後，使用對應範本；由 `create-dotnet-project` 呼叫時，使用其已寫入的註記 |
-| 註記格式錯誤 | 依 `csharp-style` skill 的錯誤處置停止，不猜測範本 |
+| 無註記 | 依 `ai-profile` skill「一次問完」詢問並寫入後，使用對應範本；由 `create-dotnet-project` 呼叫時，使用其已寫入的註記 |
+| 註記格式錯誤 | 依 `ai-profile` skill「錯誤處置」停止，不猜測範本 |
 
 呼叫端傳入的註記值與 `AGENTS.local.md` 內容不一致時停止並回報，不自行擇一。非 .NET 技術棧不讀註記，使用 personal 範本的通用段落。
 

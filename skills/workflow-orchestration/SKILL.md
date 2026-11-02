@@ -1,13 +1,13 @@
 ---
 name: workflow-orchestration
-description: 'Use when 執行或回收 Clarify => Design => Implement => Review => Accept Workflow、判定其共同收斂循環，或規劃 Workflow 驗證與交付時。'
+description: 'Use when 執行或回收 Clarify => Design => Implement => Review => Accept Workflow（含 workflow-depth 為 light 的線）、判定其共同收斂循環，或規劃 Workflow 驗證與交付時。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
 
 # Workflow 推進與收斂
 
-本 Skill 提供 `Clarify => Design => Implement => Review => Accept` Workflow 的逐站推進步驟、實作分流程序與審查程序（含 Sonnet 審查路徑）、Haiku 實作路徑、共同收斂契約的術語定義與驗證分層。角色權責、授權類停頓、升級與收斂停止的判定順序由 `instructions.md` §1.5「Workflow 自動推進鏈與共同收斂契約」規定；交接檢查點的建檔內容依 `instructions.md` §1.4「Workflow 交接檢查點」。
+本 Skill 提供 `Clarify => Design => Implement => Review => Accept` Workflow 的逐站推進步驟、實作分流程序與審查程序（含 Sonnet 審查路徑）、Haiku 實作路徑、`light` 路徑、共同收斂契約的術語定義與驗證分層。有效深度為 `light` 的線依「light 路徑」執行，深度的解析優先序與放寬範圍由 `instructions.md` §1.5「Workflow 深度」規定。角色權責、授權類停頓、升級與收斂停止的判定順序由 `instructions.md` §1.5「Workflow 自動推進鏈與共同收斂契約」規定；交接檢查點的建檔內容依 `instructions.md` §1.4「Workflow 交接檢查點」。
 
 ## 自動推進鏈
 
@@ -86,6 +86,19 @@ Workflow 的 Phase 由 Claude Haiku subagent 承接時（判定條件見 `instru
 
 - 使用者授權 commit 後，Haiku Phase 依其報告「Phase 對照」節逐 Phase 暫存指名路徑並建立 commit，commit 訊息依 `generate-commit` skill；與 Codex Phase 依 `design.md` 的 Phase 宣告順序交錯回收；同檔橫跨多個 Phase 時沿用「歸入最早 Phase」。
 - 全 Haiku 時沒有 dispatch worktree，不呼叫 `Cleanup`；混合時僅 Codex 派工的 worktree 依既有流程 `Cleanup`。
+
+## light 路徑
+
+有效深度為 `light` 的線，在使用者確認需求摘要後依下列步驟推進。有效深度、升級判定與 Reviewer 放寬的權責條款由 `instructions.md` §1.5「Workflow 深度」與「Reviewer 派遣發動判準」規定。
+
+1. 讀取同線 `requirement-summary.md` 的 `## Workflow 深度` 節取得有效深度，不重新解析。該節不存在時視為 `full`，改依「自動推進鏈」。
+2. 確認不派生 `Architect`、不做影響範圍盤點、不寫入 `design-accepted` 與 `developer-collected` 交接檢查點，也不派出 `Developer`。
+3. 依 `instructions.md` F1 判準與實作分流判定實作工作的執行者，照常輸出 `[派工判定]` 行。執行者為主 Agent 小型修改例外、Haiku subagent（`references/implement-routing.md`「light 線的實作工作」）或 Codex 資源派遣。
+4. 撰寫實作驗收契約。Codex 資源派遣時，派遣單第 3 欄列出目標檔案絕對路徑；第 4 欄列出 `requirement-summary.md` 絕對路徑與相關「已確定的實作約束」所在位置；第 5 欄每列標註〔需求 #n〕，每個需求編號至少被一列涵蓋（或列於需求摘要的排除項目），並含至少一個建置或測試命令與至少一項負向靜態檢查。Haiku subagent 的 `acceptanceCriteria` 與主 Agent 自理的驗收列採相同欄位要求，主 Agent 動手前把驗收列原文寫入同線 `report/<lineSlug>/` 下的檔案，作為回收、審查與需求意圖驗收的比對來源。
+5. 回收時檢查執行端報告與 diff。變更命中 Reviewer 必發清單第 2 項、改動 `library` 公開 API，或本線 UI 線別為 B、C 線時，停止後續實作站點，交 `Analyst` 依 `instructions.md`「Workflow 深度」改為 `full`，自 Design 起算。
+6. 依 `instructions.md`「Reviewer 派遣發動判準」的 `light` 調整判定是否發動審查；發動時派遣單依 `references/review-procedures.md`「light 線的 Reviewer 派遣單與回收」。
+7. 交由 `Analyst` 執行需求意圖驗收，逐項比對來源為第 4 步實作驗收契約各列的驗收結果與資源派遣報告（含 Haiku subagent 回報、主 Agent 自理時的完成回覆）。缺列或缺失時依回收三態退回執行端補齊。
+8. 建立 commit 前取得使用者當輪授權，與 `full` 相同。
 
 ## 共同收斂契約
 

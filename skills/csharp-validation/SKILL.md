@@ -215,10 +215,17 @@ builder.Services.Configure<ApiBehaviorOptions>(options => {
 - **驗證在系統邊界執行**：API 入口、訊息消費者、檔案匯入等外部資料進入點。
 - **內部方法之間不重複驗證**：Service 呼叫 Repository 時，不需要再驗證一次參數格式（已在入口處驗證）。
 - **信任 DI 注入的服務**：不對注入的服務做 null check（DI Container 保證）。
-- **禁止過度防禦**：不在每個方法都加滿 Guard Clause，只在公開 API 方法與建構函式中驗證。
+- **禁止過度防禦**：不在每個方法都加滿 Guard Clause，範圍依 `ai-profile` skill 的 `project-kind` 與「專案層解析」決定：
+
+| `project-kind` | Guard Clause 範圍 |
+| --- | --- |
+| `library` | `public` 成員（公開 API 方法與建構函式） |
+| `application` | 系統邊界入口與 Domain Model 建構函式的不變式保護 |
+| `sample` | 不強制 |
+| 未設定 | 比照 `application` |
 
 ```csharp
-// ✅ 正確：公開方法驗證參數
+// ✅ 正確（`library`）：公開方法驗證參數
 public class OrderService {
     private readonly IOrderRepository repository;
 

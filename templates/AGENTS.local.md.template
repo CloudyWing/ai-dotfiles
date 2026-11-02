@@ -4,7 +4,7 @@
 
 ## AI 載入控制
 
-成對標記之間每行一個 `key: value`，Agent 依鍵決定動態載入的規範；未知鍵會被忽略並原樣保留。`code-style.csharp` 的值為 `personal`、`standard` 或 `project`，由 `csharp-style` skill 第一次詢問後寫入，例如區塊內的一行 `code-style.csharp: personal`。
+成對標記之間每行一個 `key: value`，Agent 依鍵決定動態載入的規範；未知鍵會被忽略並原樣保留。可用的鍵、合法值與寫入時機見 `ai-profile` skill 的鍵登錄表。
 
 <!-- AI-PROFILE:BEGIN -->
 <!-- AI-PROFILE:END -->

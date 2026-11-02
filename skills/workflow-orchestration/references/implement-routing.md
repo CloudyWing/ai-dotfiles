@@ -13,6 +13,14 @@
 - 派生前依 `../SKILL.md`「主 Agent 核對」第 3 項步驟 1 記錄路徑雜湊基準。回收時依該項步驟 2 至 4 取得實際改動路徑集合，核對其落在 `modificationScope` 內。行數以 `git diff HEAD --numstat` 核對已追蹤檔，未追蹤新檔以檔案行數計。並核對驗證命令輸出。超出範圍時退回。
 - Haiku subagent 產出的 diff 視為派工產出，適用 Reviewer 必發清單（`instructions.md` 必發清單之後的補充句承擔）。
 
+## light 線的實作工作
+
+有效深度為 `light` 的線沒有 `design.md` 與 Phase，實作工作依單一工作處理。
+
+- 執行者依 `instructions.md` F1 判準與實作分流判定。E=是且 T=否時使用上節「單一工作的 Haiku 承接契約」，其餘走 Codex 資源派遣（`Support Engineer`）。
+- 派遣單或 Haiku 契約的規格來源為同線 `requirement-summary.md`。第 4 欄列出其絕對路徑與相關「已確定的實作約束」所在位置；第 5 欄每列標註〔需求 #n〕，格式見 `../SKILL.md`「light 路徑」第 4 步。
+- 隔離判定與回收核對沿用本檔「Haiku 隔離操作」與上節契約。
+
 ## Haiku 隔離操作
 
 派生前主 Agent 執行 `git status --porcelain`，將輸出項目分為「本 Session 已知改動」與「他人項目」。處置條件見 `instructions.md`「Haiku 隔離」，各條件的操作如下。
