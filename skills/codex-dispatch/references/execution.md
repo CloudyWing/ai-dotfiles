@@ -49,6 +49,8 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 每次派遣只發一次背景等待，由完成通知接手。同步模式以執行環境的背景命令呼叫 `Dispatch`；`background: true` 時以一次 `Inspect -WaitForCompletion` 等待。二擇一，完成通知到達後再讀取 Dispatch 結果、事件流、last-message 與報告檔。兩種方式的完成判定完全相同，等待期間做其他工作不改變等待次數。
 
+分步 `Start` 或 `Start -ResumeThreadId` 回傳 RunRecord 後，可用 `Inspect -WaitForCompletion -RunRecordPath <run_record_path>` 等待該輪，並提供來源、執行根目錄、line、dispatch、目標與識別字。
+
 主 Agent 不輪詢。不以查詢行程（如 `Get-Process`）、讀取事件流尾端、`sleep` 或檔案大小反覆查狀態，也不以派生 subagent 等待取代事件流取證。
 
 執行環境的背景命令有時限，到時限被停止時，已啟動的 Codex 程序不受影響並照常完成。預期執行超過背景命令時限的派遣，一開始就以獨立程序啟動 `Dispatch`，使一次等待涵蓋全程。背景命令因時限意外中止時，補發一次等待，仍不輪詢。派遣內需要長時間執行的建置或測試，執行端以獨立於 Codex 的監督程序啟動，stdout 與 stderr 直接寫入檔案，Codex 因額度或服務端容量中斷時，測試結果仍可由檔案取得。

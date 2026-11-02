@@ -105,13 +105,15 @@ upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取�
 Request 驗證階段無法從目標推導 `required_identifier` 時拒絕，目錄型目標可明確提供該欄位。`-ValidateOnly` 在 Request 驗證後輸出 Finding，不進入 Preflight。
 - 輸出欄位：`status`（`started`、`completed`、`failed`）、`completed_stages`、`failed_stage`、`error_code`、`error`、`process_started`、`process_exit_code`、`termination_reason`、`inspect_status`、`inspect_success`、`requested_units`、`result_path`、`result_sha256`、`inspect_result_path`。`Collect` 的參數取自這些欄位。所有 operation 的 JSON stdout 固定使用 UTF-8（無 BOM），不依 PowerShell host 的預設主控台編碼。
 
-背景派遣的等待命令如下。`-WaitForCompletion` 等待 sidecar 確認 Codex 行程結束，再以事件流 terminal event 決定結果，沒有固定逾時。`-WaitForCompletion` 只接受 `Dispatch` 產生的 result（需含 `result_sha256`）；逐一呼叫 Preflight、Prepare、Start 的分步入口不能用它等待，改由執行環境的背景完成通知接手後呼叫 `Inspect`。
+背景派遣的等待命令如下。`-WaitForCompletion` 等待 sidecar 確認 Codex 行程結束，再以事件流 terminal event 決定結果，沒有固定逾時。可使用含 `result_sha256` 的 Dispatch result，或使用 Start 回傳的 RunRecord 路徑。兩者同時提供時必須指向同一輪。
 
 ```powershell
 .\scripts\Invoke-CodexDispatch.ps1 -Operation Inspect -DispatchResultPath <result_path> `
   -SourceRoot <source_root> -ExecutionRoot <execution_root> -LineSlug <line_slug> -DispatchSlug <dispatch_slug> `
   -TargetPath <target_path> -RequiredIdentifier <required_identifier> -WriteMode <write_mode> -WaitForCompletion
 ```
+
+分步 Start 或續行後可將上述 `-DispatchResultPath <result_path>` 換成 `-RunRecordPath <run_record_path>`，其餘身分與目標參數照常提供。
 
 ## 額度與範圍契約
 

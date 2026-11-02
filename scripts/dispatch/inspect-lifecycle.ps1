@@ -702,9 +702,6 @@ function Wait-DispatchExitAndTerminalEvent {
                     $pendingStatus = $false
                 }
             }
-            if (-not $pendingStatus) {
-                throw ('Dispatch exit sidecar 無效，無法等待：' + $sidecarFailure)
-            }
         }
 
         if ($null -ne $sidecar) {
@@ -720,16 +717,23 @@ function Wait-DispatchExitAndTerminalEvent {
 
         $processCheck = Get-PidCheckResult -SourceRoot $sourceRootPath -LineSlug $LineSlug -WriteMode $WriteMode
         $activeForDispatch = @($processCheck.ActiveRecords | Where-Object { [string]$_.DispatchSlug -ceq $DispatchSlug })
-        $unconfirmedForDispatch = @($processCheck.UnconfirmedRecords | Where-Object { [string]$_.DispatchSlug -ceq $DispatchSlug })
+        $unconfirmedForDispatch = @($processCheck.UnconfirmedRecords | Where-Object { [string]$_.DispatchSlug -ceq $DispatchSlug -and [string]$_.IdentityStatus -cne 'root-process-absent' })
         if ($unconfirmedForDispatch.Count -gt 0) {
             throw ('Codex process 身分無法確認，不能判定派遣終止：' + [string]$unconfirmedForDispatch[0].StatusMessage)
         }
+        if ($activeForDispatch.Count -gt 0 -and -not $pendingStatus) {
+            throw ('Dispatch exit sidecar 無效，無法等待：' + $sidecarFailure)
+        }
         if ($activeForDispatch.Count -eq 0) {
-            try {
-                $sidecar = Read-DispatchExitSidecar -Path $sidecarPathValue -ExecutionRoot $executionRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunId ([string]$runRecord.run_id)
-            }
-            catch {
-                throw ('Codex process 已結束，但 exit sidecar 尚未記錄完成；' + $_.Exception.Message)
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+                try {
+                    $sidecar = Read-DispatchExitSidecar -Path $sidecarPathValue -ExecutionRoot $executionRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunId ([string]$runRecord.run_id)
+                    break
+                }
+                catch {
+                    if ($attempt -eq 5) { throw ('Codex process 已結束，但 exit sidecar 尚未記錄完成；' + $_.Exception.Message) }
+                    Wait-DispatchPollInterval
+                }
             }
             $eventEvidence = Get-DispatchEventEvidence -EventPath $EventStreamPath
             $lastEventType = [string](Get-DispatchJsonProperty -Object $eventEvidence -Name 'last_event_type')
@@ -995,6 +999,23 @@ function Get-DispatchRejectionObservation {
     }
 }
 
+function Resolve-InspectRunWaitBinding {
+    [CmdletBinding()]
+    param([string]$RunRecordPath, [string]$SourceRoot, [string]$ExecutionRoot, [string]$LineSlug, [string]$DispatchSlug)
+
+    $record = Read-DispatchRunRecord -Path $RunRecordPath -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $paths = @{}
+    foreach ($name in @('event_stream_path', 'scope_plan_path', 'process_exit_code_sidecar_path')) {
+        $value = [string](Get-DispatchJsonProperty -Object $record -Name $name)
+        if ([string]::IsNullOrWhiteSpace($value)) { throw ('RunRecord 缺少路徑：' + $name) }
+        $path = Resolve-AbsolutePath -Path $value
+        $root = if ($name -eq 'scope_plan_path') { $ExecutionRoot } else { Join-Path $ExecutionRoot '.local\ai-sessions\history' }
+        if (-not (Test-PathWithinRoot -Path $path -Root $root)) { throw ('RunRecord 路徑超出 execution root：' + $name) }
+        $paths[$name] = $path
+    }
+    return [pscustomobject]@{ Record = $record; EventStreamPath = $paths.event_stream_path; ScopePlanPath = $paths.scope_plan_path; SidecarPath = $paths.process_exit_code_sidecar_path }
+}
+
 function Invoke-Inspect {
     $modelEvidence = $null
     $requiredOutputGate = $null
@@ -1026,7 +1047,8 @@ function Invoke-Inspect {
         $missingParameters.Add([ordered]@{ name = 'DispatchSlug'; available_sources = '明確的 -DispatchSlug；Request.dispatch_slug' })
     }
     $hasDispatchResultBinding = -not [string]::IsNullOrWhiteSpace($DispatchResultPath)
-    if (-not $hasDispatchResultBinding) {
+    $hasRunWaitBinding = $WaitForCompletion -and -not $hasDispatchResultBinding -and -not [string]::IsNullOrWhiteSpace($RunRecordPath)
+    if (-not $hasDispatchResultBinding -and -not $hasRunWaitBinding) {
         if ([string]::IsNullOrWhiteSpace($EventStreamPath)) {
             $missingParameters.Add([ordered]@{ name = 'EventStreamPath'; available_sources = '明確的 -EventStreamPath；RunRecord.event_stream_path；DispatchResultPath binding' })
         }
@@ -1034,10 +1056,10 @@ function Invoke-Inspect {
             $missingParameters.Add([ordered]@{ name = 'ProcessExitCode'; available_sources = '明確的 -ProcessExitCode；DispatchResultPath exit sidecar' })
         }
     }
-    if ($WaitForCompletion -and -not $hasDispatchResultBinding) {
-        $missingParameters.Add([ordered]@{ name = 'DispatchResultPath'; available_sources = '明確的 -DispatchResultPath binding' })
+    if ($WaitForCompletion -and -not $hasDispatchResultBinding -and -not $hasRunWaitBinding) {
+        $missingParameters.Add([ordered]@{ name = 'DispatchResultPath 或 RunRecordPath'; available_sources = '明確的 -DispatchResultPath 或 -RunRecordPath' })
     }
-    $scopePlanRequired = -not $hasDispatchResultBinding -and [string]::IsNullOrWhiteSpace($ScopePlanPath)
+    $scopePlanRequired = -not $hasDispatchResultBinding -and -not $hasRunWaitBinding -and [string]::IsNullOrWhiteSpace($ScopePlanPath)
     $scopePlanRequirementIndeterminate = $false
     if ($scopePlanRequired) {
         if (-not [string]::IsNullOrWhiteSpace($SourceRoot) -and -not [string]::IsNullOrWhiteSpace($ExecutionRoot) -and
@@ -1088,8 +1110,19 @@ function Invoke-Inspect {
     if ([string]::IsNullOrWhiteSpace($RequiredIdentifier)) {
         throw 'Inspect 必須提供 RequiredIdentifier。'
     }
-    if ($WaitForCompletion -and [string]::IsNullOrWhiteSpace($DispatchResultPath)) {
-        throw 'WaitForCompletion 必須搭配 DispatchResultPath。'
+    if ($hasRunWaitBinding) {
+        $runBinding = Resolve-InspectRunWaitBinding -RunRecordPath $RunRecordPath -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        foreach ($pair in @(@('EventStreamPath', $runBinding.EventStreamPath), @('ScopePlanPath', $runBinding.ScopePlanPath))) {
+            $provided = Get-Variable -Name $pair[0] -ValueOnly
+            if (-not [string]::IsNullOrWhiteSpace([string]$provided) -and -not [string]::Equals((Resolve-AbsolutePath $provided), [string]$pair[1], [StringComparison]::OrdinalIgnoreCase)) { throw ($pair[0] + ' 與 RunRecord 不一致。') }
+            Set-Variable -Name $pair[0] -Value $pair[1]
+        }
+        $waitResult = Wait-DispatchExitAndTerminalEvent -ExecutionRoot $ExecutionRoot -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -WriteMode $WriteMode -RunRecordPath $RunRecordPath -EventStreamPath $EventStreamPath -SidecarPath $runBinding.SidecarPath
+        if ($null -ne $ProcessExitCode -and $ProcessExitCode -ne $waitResult.Sidecar.ProcessExitCode) { throw 'ProcessExitCode 與 exit sidecar 不一致。' }
+        $ProcessExitCode = $waitResult.Sidecar.ProcessExitCode
+        $processExitCodeSource = 'sidecar'
+        $processExitCodeSidecarPath = $waitResult.Sidecar.Path
+        $processExitCodeSidecarSha256 = $waitResult.Sidecar.Sha256
     }
     if (-not [string]::IsNullOrWhiteSpace($DispatchResultPath)) {
         if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($ExecutionRoot) -or

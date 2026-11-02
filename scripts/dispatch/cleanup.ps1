@@ -73,6 +73,21 @@ function Throw-CleanupOperationFailure {
     throw $exception
 }
 
+function New-CleanupPreflightRequiredFailure {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$PreflightPath, [AllowEmptyString()][string]$RunPath)
+
+    $missing = @()
+    if ([string]::IsNullOrWhiteSpace($PreflightPath)) { $missing += 'preflight_result_path' }
+    if ([string]::IsNullOrWhiteSpace($RunPath)) { $missing += 'run_record_path' }
+    $preflightDisplay = if ([string]::IsNullOrWhiteSpace($PreflightPath)) { '未提供' } else { $PreflightPath }
+    $runDisplay = if ([string]::IsNullOrWhiteSpace($RunPath)) { '未提供' } else { $RunPath }
+    return [pscustomobject]@{
+        Message = "Cleanup 缺少啟動前或未啟動證據。請在 Cleanup Request 補上 preflight_result_path（來源：Dispatch result 的 preflight_result_path）；Start 已失敗並寫入 launch-failed RunRecord 時改補 run_record_path（來源：Dispatch result 的 run_record_path 或 history\<lineSlug>\runs\<dispatchSlug>\）。目前 preflight_result_path=$preflightDisplay，run_record_path=$runDisplay"
+        Detail = [ordered]@{ missing_request_fields = $missing }
+    }
+}
+
 function Get-CleanupPropertyValue {
     [CmdletBinding()]
     param(
@@ -217,6 +232,29 @@ function Get-CleanupUnpreservedReportFiles {
     } | ForEach-Object { $_.FullName })
 }
 
+function Get-CleanupSiblingRunRecordPaths {
+    [CmdletBinding()]
+    param([string]$SourceRoot, [string]$LineSlug, [string]$DispatchSlug)
+
+    $directory = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    if (Test-Path -LiteralPath $directory -PathType Container) {
+        Get-ChildItem -LiteralPath $directory -Filter '*.json' -File | ForEach-Object { $_.FullName }
+    }
+}
+
+function Test-CleanupAlreadyPreservedFile {
+    [CmdletBinding()]
+    param([string]$Path, [string]$SourceRoot, [object[]]$AlreadyPreservedFiles)
+
+    $resolved = Resolve-AbsolutePath -Path $Path
+    $saved = @($AlreadyPreservedFiles | Where-Object { [string]::Equals([string]$_.source_path, $resolved, [StringComparison]::OrdinalIgnoreCase) })
+    if ($saved.Count -ne 1 -or [string]$saved[0].source_sha256 -notmatch '^[a-fA-F0-9]{64}$' -or [string]$saved[0].destination_sha256 -notmatch '^[a-fA-F0-9]{64}$') { return $false }
+    $destination = Resolve-AbsolutePath -Path ([string]$saved[0].destination_path)
+    if (-not (Test-PathWithinRoot -Path $destination -Root $SourceRoot)) { return $false }
+    Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $destination
+    return (Test-Path -LiteralPath $destination -PathType Leaf) -and (Get-FileSha256 -Path $destination) -ieq [string]$saved[0].destination_sha256
+}
+
 function Get-CleanupInventory {
     [CmdletBinding()]
     param(
@@ -226,7 +264,8 @@ function Get-CleanupInventory {
         [Parameter(Mandatory)][string]$DispatchSlug,
         [AllowEmptyString()][string]$RunRecordPath,
         [AllowEmptyCollection()][string[]]$EvidencePath,
-        [AllowEmptyCollection()][string[]]$ReportPath = @()
+        [AllowEmptyCollection()][string[]]$ReportPath = @(),
+        [AllowEmptyCollection()][object[]]$AlreadyPreservedFiles = @()
     )
 
     $inventory = New-Object System.Collections.Generic.List[object]
@@ -247,6 +286,7 @@ function Get-CleanupInventory {
     }
     foreach ($report in @($ReportPath | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
         Assert-DispatchOutputPathNoReparsePoint -Root $DispatchRoot -Path $report
+        if (-not (Test-Path -LiteralPath $report) -and (Test-CleanupAlreadyPreservedFile -Path $report -SourceRoot $SourceRoot -AlreadyPreservedFiles $AlreadyPreservedFiles)) { continue }
         if (Test-Path -LiteralPath $report -PathType Container) {
             foreach ($file in @(Get-CleanupRemovalEntries -Root $report | Where-Object { -not $_.PSIsContainer })) {
                 Add-CleanupInventoryPath -Inventory $inventory -Seen $seen -Path $file.FullName -DispatchRoot $DispatchRoot -SourceName 'ReportPath'
@@ -292,6 +332,20 @@ function Get-CleanupInventory {
                 }
             }
         }
+        foreach ($siblingPath in @(Get-CleanupSiblingRunRecordPaths -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug)) {
+            if ([string]::Equals($siblingPath, $recordPathValue, [StringComparison]::OrdinalIgnoreCase)) { continue }
+            try { $sibling = Read-DispatchRunRecord -Path $siblingPath -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug }
+            catch { throw ('CleanupIdentityMismatch：sibling RunRecord 身分無效：' + $siblingPath + '；' + $_.Exception.Message) }
+            foreach ($path in @(Get-CleanupRecordReferencedPaths -Record $sibling)) {
+                $resolvedPath = Resolve-AbsolutePath -Path $path
+                if (Test-PathWithinRoot -Path $resolvedPath -Root $DispatchRoot) {
+                    $recordReferencedPaths.Add($resolvedPath)
+                    if (Test-Path -LiteralPath $resolvedPath -PathType Leaf) {
+                        Add-CleanupInventoryPath -Inventory $inventory -Seen $seen -Path $resolvedPath -DispatchRoot $DispatchRoot -SourceName 'SiblingRunRecord'
+                    }
+                }
+            }
+        }
     }
 
     $requestedEvidence = if ($null -eq $EvidencePath -or $EvidencePath.Count -eq 0) { @($recordReferencedPaths.ToArray() | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf }) } else { @($EvidencePath) }
@@ -307,6 +361,7 @@ function Get-CleanupInventory {
         if (-not $referenced) {
             throw ('CleanupEvidenceUnreferenced：EvidencePath 未被目前 RunRecord 引用：' + $resolvedEvidence + '；可接受的檔案：' + ($recordReferencedPaths.ToArray() -join '; '))
         }
+        if (-not (Test-Path -LiteralPath $resolvedEvidence -PathType Leaf) -and (Test-CleanupAlreadyPreservedFile -Path $resolvedEvidence -SourceRoot $SourceRoot -AlreadyPreservedFiles $AlreadyPreservedFiles)) { continue }
         Add-CleanupInventoryPath -Inventory $inventory -Seen $seen -Path $resolvedEvidence -DispatchRoot $DispatchRoot -SourceName 'EvidencePath'
     }
 
@@ -444,8 +499,16 @@ function Compare-CleanupReportVersion {
     [CmdletBinding()]
     param([string]$IncomingPath, [string]$DestinationPath, [string]$SourceRoot, [string]$LineSlug, [string]$DispatchSlug)
 
-    $incoming = Get-CleanupReportVersion -Path $IncomingPath -SourceRoot $SourceRoot -LineSlug $LineSlug -KnownDispatchSlug $DispatchSlug
-    $destination = Get-CleanupReportVersion -Path $DestinationPath -SourceRoot $SourceRoot -LineSlug $LineSlug -KnownDispatchSlug ''
+    try {
+        $incoming = Get-CleanupReportVersion -Path $IncomingPath -SourceRoot $SourceRoot -LineSlug $LineSlug -KnownDispatchSlug $DispatchSlug
+        $destination = Get-CleanupReportVersion -Path $DestinationPath -SourceRoot $SourceRoot -LineSlug $LineSlug -KnownDispatchSlug ''
+    }
+    catch {
+        if ([IO.Path]::GetFileName($IncomingPath) -ceq 'implement-closure-report.md' -and $_.Exception.Message -like 'CleanupReportVersionUnknown*') {
+            return [ordered]@{ basis = 'closure-version-unknown'; incoming = $null; destination = $null; incoming_newer = $false }
+        }
+        throw
+    }
     $kind = ''; $comparison = 0
     if ($null -ne $incoming.started_at -and $null -ne $destination.started_at -and $incoming.dispatch_slug -cne $destination.dispatch_slug) {
         $kind = 'run-record-started-at-utc'; $comparison = [DateTimeOffset]::Compare($incoming.started_at, $destination.started_at)
@@ -453,7 +516,12 @@ function Compare-CleanupReportVersion {
     elseif ($incoming.round -gt 0 -and $destination.round -gt 0) {
         $kind = 'report-manifest-round'; $comparison = $incoming.round.CompareTo($destination.round)
     }
-    if ($comparison -eq 0) { throw ('CleanupReportVersionUnknown：無法判斷固定報告新舊，保留 worktree。incoming=' + $IncomingPath + '; destination=' + $DestinationPath) }
+    if ($comparison -eq 0) {
+        if ([IO.Path]::GetFileName($IncomingPath) -ceq 'implement-closure-report.md') {
+            return [ordered]@{ basis = 'closure-version-unknown'; incoming = $incoming; destination = $destination; incoming_newer = $false }
+        }
+        throw ('CleanupReportVersionUnknown：無法判斷固定報告新舊，保留 worktree。incoming=' + $IncomingPath + '; destination=' + $DestinationPath)
+    }
     return [ordered]@{ basis = $kind; incoming = $incoming; destination = $destination; incoming_newer = $comparison -gt 0 }
 }
 
@@ -531,7 +599,7 @@ function Preserve-CleanupFile {
             }
         }
         elseif ($existingHash -ine $sourceHashBefore -and
-            [string]$Item.relative_path -cmatch '^\.local/ai-sessions/report/(?:[a-z0-9]+(?:-[a-z0-9]+)*/(?:review-report|frontend-reviewer-report|contract-auditor-report)|dispatch-report-[a-z0-9]+(?:-[a-z0-9]+)*)\.md$') {
+            [string]$Item.relative_path -cmatch '^\.local/ai-sessions/report/(?:[a-z0-9]+(?:-[a-z0-9]+)*/(?:review-report|frontend-reviewer-report|contract-auditor-report|implement-closure-report)|dispatch-report-[a-z0-9]+(?:-[a-z0-9]+)*)\.md$') {
             $lineMatch = [regex]::Match([string]$Item.relative_path, '^\.local/ai-sessions/report/([a-z0-9]+(?:-[a-z0-9]+)*)/')
             $reportLineSlug = if ($lineMatch.Success) { $lineMatch.Groups[1].Value } else { [string](Get-DispatchScriptVariableValue -Name 'LineSlug') }
             $versionDecision = Compare-CleanupReportVersion -IncomingPath $sourcePath -DestinationPath $destinationPath -SourceRoot $SourceRoot -LineSlug $reportLineSlug -DispatchSlug $DispatchSlug
@@ -973,7 +1041,17 @@ function Invoke-Cleanup {
                 break
             }
         }
-        $residualRecovery = -not $registered -and (Test-CleanupRemovalReceipt -Path $removalReceiptPath -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug)
+        $validRemovalReceipt = Test-CleanupRemovalReceipt -Path $removalReceiptPath -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        $residualRecovery = -not $registered -and $validRemovalReceipt
+        $hasRemovalRetryProof = $false
+        $alreadyPreservedFiles = @()
+        if ($validRemovalReceipt) {
+            $priorReceipt = (Read-CleanupJsonDocument -Path $removalReceiptPath -Name 'RemovalResult').Document
+            if ([string](Get-CleanupPropertyValue -Object $priorReceipt -Names @('failure_code')) -ceq 'CleanupWorktreeRemovalFailed') {
+                $hasRemovalRetryProof = $true
+                $alreadyPreservedFiles = @(Get-CleanupPropertyValue -Object $priorReceipt -Names @('files'))
+            }
+        }
         if (-not $registered -and -not $residualRecovery) {
             Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupWorktreeNotRegistered' -Message ('dispatchRoot 未在 Git worktree registration 中：' + $dispatchRootPath)
         }
@@ -1001,17 +1079,20 @@ function Invoke-Cleanup {
 
         $failureReceiptValue = [string](Get-DispatchScriptVariableValue -Name 'FailureReceiptPath')
         $hasRunRecord = -not [string]::IsNullOrWhiteSpace([string]$RunRecordPath)
-        $unstarted = Test-CleanupUnstartedProof -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath ([string]$RunRecordPath) -FailureReceiptPath $failureReceiptValue -HasPreflight $hasPreflight
-        if (-not $hasPreflight -and $hasRunRecord -and (Test-CleanupUnstartedRunRecordEventStreamPresent -Path ([string]$RunRecordPath) -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug)) {
-            Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message 'Cleanup 缺少有效的 Preflight 或未啟動證據；無 RunRecord 的 Preflight-only 清理要求 worktree history 不含 event stream 與 thread 檔。'
+        $preflightFailure = New-CleanupPreflightRequiredFailure -PreflightPath ([string]$PreflightResultPath) -RunPath ([string]$RunRecordPath)
+        $unstarted = if ($hasRemovalRetryProof) { $false } else { Test-CleanupUnstartedProof -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath ([string]$RunRecordPath) -FailureReceiptPath $failureReceiptValue -HasPreflight $hasPreflight }
+        if (-not $hasRemovalRetryProof -and -not $hasPreflight -and $hasRunRecord -and (Test-CleanupUnstartedRunRecordEventStreamPresent -Path ([string]$RunRecordPath) -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug)) {
+            Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message $preflightFailure.Message -Detail $preflightFailure.Detail
         }
-        if (-not $hasPreflight -and -not $unstarted -and -not $residualRecovery) {
-            Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message 'Cleanup 缺少有效的 Preflight 或未啟動證據；無 RunRecord 的 Preflight-only 清理要求 worktree history 不含 event stream 與 thread 檔。'
-        }
+        if (-not $hasRemovalRetryProof) {
+            if (-not $hasPreflight -and -not $unstarted -and -not $residualRecovery) {
+                Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message $preflightFailure.Message -Detail $preflightFailure.Detail
+            }
 
-        $preflightOnlyMissingProof = -not $hasRunRecord -and (-not $hasPreflight -or -not $unstarted)
-        if (-not $residualRecovery -and $preflightOnlyMissingProof) {
-            Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message 'Cleanup 缺少有效的 Preflight 或未啟動證據；無 RunRecord 的 Preflight-only 清理要求 worktree history 不含 event stream 與 thread 檔。'
+            $preflightOnlyMissingProof = -not $hasRunRecord -and (-not $hasPreflight -or -not $unstarted)
+            if (-not $residualRecovery -and $preflightOnlyMissingProof) {
+                Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message $preflightFailure.Message -Detail $preflightFailure.Detail
+            }
         }
 
         if ($null -ne $script:CallerSessionIdentity) {
@@ -1047,7 +1128,7 @@ function Invoke-Cleanup {
         Assert-CleanupStopped -SourceRoot $sourceRootPath -DispatchSlug $DispatchSlug -LineSlug $LineSlug -Owner $admissionOwner
 
         try {
-            $inventory = Get-CleanupInventory -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -EvidencePath $EvidencePath -ReportPath @(Get-DispatchScriptVariableValue -Name 'ReportPath')
+            $inventory = Get-CleanupInventory -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -EvidencePath $EvidencePath -ReportPath @(Get-DispatchScriptVariableValue -Name 'ReportPath') -AlreadyPreservedFiles $alreadyPreservedFiles
             if ($null -ne $takeoverAudit) { $inventory = Expand-CleanupTakeoverInventory -Inventory $inventory -RunRecords $takeoverAudit.run_record_paths -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug }
         }
         catch {
@@ -1099,7 +1180,7 @@ function Invoke-Cleanup {
         if ($null -ne $takeoverAudit) {
             $recheck = Test-CleanupTakeoverTerminal -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -Ledger $admissionLedger
             if (($recheck.evidence_hashes | ConvertTo-Json -Depth 30 -Compress) -cne ($takeoverAudit.evidence_hashes | ConvertTo-Json -Depth 30 -Compress)) { throw 'CleanupTakeoverIdentityInvalid：移除前 run 集合或終態證據漂移。' }
-            $reInventory = Get-CleanupInventory -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -EvidencePath $EvidencePath -ReportPath @(Get-DispatchScriptVariableValue -Name 'ReportPath')
+            $reInventory = Get-CleanupInventory -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -EvidencePath $EvidencePath -ReportPath @(Get-DispatchScriptVariableValue -Name 'ReportPath') -AlreadyPreservedFiles $alreadyPreservedFiles
             $reInventory = Expand-CleanupTakeoverInventory -Inventory $reInventory -RunRecords $takeoverAudit.run_record_paths -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
             if ((@($reInventory.items | ForEach-Object { $_.source_path } | Sort-Object) -join "`n") -cne (@($inventory.items | ForEach-Object { $_.source_path } | Sort-Object) -join "`n")) { throw 'CleanupPreservationFailed：移除前保存清單漂移。' }
             foreach ($file in $result.files) {

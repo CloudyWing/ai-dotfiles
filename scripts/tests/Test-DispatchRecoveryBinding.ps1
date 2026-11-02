@@ -3802,7 +3802,15 @@ function New-Phase3CleanupScenario {
     )
 
     $fixturePathRoot = $fixtureRoot
+    $requiresShortDrive = $false
     if ([string]::Equals([string]$PSVersionTable.PSEdition, 'Desktop', [StringComparison]::OrdinalIgnoreCase)) {
+        try {
+            $candidateRoot = Join-Path $fixtureRoot 'c-12345678\source'
+            $null = Get-BindingFixturePathPlan -FixtureRoot $candidateRoot -DispatchSlug 'q-12345678' -LineSlug 'line-a'
+        }
+        catch { $requiresShortDrive = $true }
+    }
+    if ($requiresShortDrive) {
         if ([string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
             foreach ($candidate in @('Z:', 'Y:', 'X:', 'W:')) {
                 if (Test-Path -LiteralPath ($candidate + '\')) {
@@ -5177,6 +5185,7 @@ if ($Phase -ge 3) {
     function Get-RequirementMap { return [ordered]@{ fixture = $true } }
     function Invoke-BaselineCase {
         param([string]$Name, [scriptblock]$Scenario, [switch]$Reject, [string]$ErrorPattern)
+        if ($script:focusedCase -ceq 'DD-DEFECTS' -and $Name -notmatch '^Phase \d+ DD-') { return }
         $SourceRoot = $fixtureRoot
         $LineSlug = 'line-a'
         $DispatchSlug = 'd' + $script:caseCount
@@ -5553,6 +5562,211 @@ if ($Phase -ge 3) {
         $preflightText = ($functions | Where-Object Name -eq 'Invoke-Preflight').Extent.Text
         Assert-True (-not $collectText.Contains('$allFiles = @($trackedDiff + $untrackedFiles') -and $collectText.Contains('$allFiles = @($dispatchDiff | Where-Object { -not $carryInSet.Contains([string]$_) })') -and $collectText.Contains('Resolve-DispatchBaselineBinding')) 'Collect baseline、carry-in 保護或差異來源不符。'
         Assert-True ($preflightText.IndexOf('Apply-SourceCarryIn') -lt $preflightText.IndexOf('New-DispatchBaseline') -and $preflightText -notmatch "'commit'") 'baseline 建立順序或 commit 約束不符。'
+    }
+
+    Invoke-Case 'Phase 3 DD-CLEANUP 缺少證據訊息' {
+        $missing = New-CleanupPreflightRequiredFailure -PreflightPath '' -RunPath ''
+        Assert-True ($missing.Message.Contains('preflight_result_path') -and $missing.Message.Contains('run_record_path') -and $missing.Message.Contains('Dispatch result')) 'Cleanup 訊息缺少補件來源。'
+        Assert-True (@($missing.Detail.missing_request_fields).Count -eq 2) 'Cleanup 缺少欄位清單不完整。'
+        $withRecord = New-CleanupPreflightRequiredFailure -PreflightPath '' -RunPath 'C:\example\run.json'
+        Assert-True (@($withRecord.Detail.missing_request_fields).Count -eq 1 -and $withRecord.Detail.missing_request_fields[0] -ceq 'preflight_result_path') 'Cleanup 欄位清單未反映 RunRecord。'
+    }
+
+    Invoke-Case 'Phase 3 DD-INSPECT RunRecord 路徑綁定與跨 dispatch 拒絕' {
+        $record = New-TestRun -Line 'line-a' -Dispatch 'dd-run-binding'
+        $runPath = Join-Path (Get-DispatchRunDirectory -SourceRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'dd-run-binding') ($record.run_id + '.json')
+        $sidecarPath = Join-Path $fixtureRoot ('.local/ai-sessions/history/' + $record.run_id + '-exit.json')
+        $record | Add-Member -MemberType NoteProperty -Name process_exit_code_sidecar_path -Value $sidecarPath -Force
+        $null = Write-DispatchRunRecord -Record $record -Update
+        $binding = Resolve-InspectRunWaitBinding -RunRecordPath $runPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'dd-run-binding'
+        Assert-True ($binding.EventStreamPath -eq $record.event_stream_path -and $binding.ScopePlanPath -eq $record.scope_plan_path -and $binding.SidecarPath -eq $sidecarPath) 'RunRecord 等待綁定路徑不一致。'
+        $rejected = $false
+        try { Resolve-InspectRunWaitBinding -RunRecordPath $runPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'other-dispatch' | Out-Null } catch { $rejected = $true }
+        Assert-True $rejected '其他 dispatch 的 RunRecord 未被拒絕。'
+    }
+
+    Invoke-Case 'Phase 3 DD-INSPECT 終止程序等待 sidecar 與未知身分拒絕' {
+        $names = @('Read-DispatchRunRecord', 'Read-DispatchExitSidecar', 'Get-PidCheckResult', 'Wait-DispatchPollInterval', 'Get-DispatchEventEvidence')
+        $originals = @{}
+        foreach ($name in $names) { $originals[$name] = (Get-Command $name -CommandType Function).ScriptBlock }
+        try {
+            Set-Item Function:\Read-DispatchRunRecord { param($Path, $SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug) [pscustomobject]@{ run_id = 'fixture' } }
+            Set-Item Function:\Read-DispatchExitSidecar { param($Path, $ExecutionRoot, $LineSlug, $DispatchSlug, $RunId) $script:ddSidecarReads++; if ($script:ddSidecarReads -lt $script:ddSidecarSuccessAt) { throw 'pending' }; [pscustomobject]@{ ProcessExitCode = 0 } }
+            Set-Item Function:\Get-PidCheckResult { param($SourceRoot, $LineSlug, $WriteMode) [pscustomobject]@{ ActiveRecords = @(); UnconfirmedRecords = @([pscustomobject]@{ DispatchSlug = 'dd-inspect'; IdentityStatus = $script:ddIdentity; StatusMessage = 'unknown' }) } }
+            Set-Item Function:\Wait-DispatchPollInterval { $script:ddPolls++ }
+            Set-Item Function:\Get-DispatchEventEvidence { param($EventPath) [pscustomobject]@{ last_event_type = 'turn.completed' } }
+            $arguments = @{ ExecutionRoot = $fixtureRoot; SourceRoot = $fixtureRoot; LineSlug = 'line-a'; DispatchSlug = 'dd-inspect'; WriteMode = 'write'; RunRecordPath = (Join-Path $fixtureRoot 'run.json'); EventStreamPath = (Join-Path $fixtureRoot 'event.jsonl'); SidecarPath = (Join-Path $fixtureRoot 'missing-sidecar.json') }
+            $script:ddIdentity = 'root-process-absent'; $script:ddSidecarReads = 0; $script:ddSidecarSuccessAt = 2; $script:ddPolls = 0
+            $result = Wait-DispatchExitAndTerminalEvent @arguments
+            Assert-True ($result.TerminalEventAvailable -and $result.Sidecar.ProcessExitCode -eq 0 -and $script:ddSidecarReads -eq 2) '程序消失後未讀取完成的 sidecar。'
+            foreach ($identity in @('process-query-unavailable', 'record-identity-mismatch')) {
+                $script:ddIdentity = $identity; $script:ddSidecarReads = 0; $script:ddSidecarSuccessAt = 99
+                $rejected = $false
+                try { Wait-DispatchExitAndTerminalEvent @arguments | Out-Null } catch { $rejected = $_.Exception.Message -match '身分無法確認' }
+                Assert-True $rejected ('未知身分未拒絕：' + $identity)
+            }
+            $script:ddIdentity = 'root-process-absent'; $script:ddSidecarReads = 0; $script:ddSidecarSuccessAt = 99; $script:ddPolls = 0
+            $rejected = $false
+            try { Wait-DispatchExitAndTerminalEvent @arguments | Out-Null } catch { $rejected = $_.Exception.Message -match 'exit sidecar 尚未記錄完成' }
+            Assert-True ($rejected -and $script:ddSidecarReads -eq 6 -and $script:ddPolls -eq 4) 'sidecar 限次重試未依預期拒絕。'
+        }
+        finally {
+            foreach ($name in $names) { Set-Item -Path ('Function:\' + $name) -Value $originals[$name] }
+        }
+    }
+
+    Invoke-Case 'Phase 3 DD-CLEANUP 同 slug 多輪引用與身分竄改' {
+        $first = New-TestRun -Line 'line-a' -Dispatch 'dd-siblings'
+        $second = New-TestRun -Line 'line-a' -Dispatch 'dd-siblings' -Previous $first
+        $firstInspect = Join-Path $fixtureRoot ('.local/ai-sessions/history/' + $first.run_id + '-inspect.json')
+        $secondInspect = Join-Path $fixtureRoot ('.local/ai-sessions/history/' + $second.run_id + '-inspect.json')
+        Write-Utf8NoBom -Path $firstInspect -Content 'inspect first' -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -TargetPath @()
+        Write-Utf8NoBom -Path $secondInspect -Content 'inspect second' -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -TargetPath @()
+        $first | Add-Member NoteProperty inspect_result_path $firstInspect -Force
+        $second | Add-Member NoteProperty inspect_result_path $secondInspect -Force
+        $null = Write-DispatchRunRecord -Record $first -Update
+        $null = Write-DispatchRunRecord -Record $second -Update
+        $runDirectory = Get-DispatchRunDirectory -SourceRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'dd-siblings'
+        $firstPath = Join-Path $runDirectory ($first.run_id + '.json')
+        $secondPath = Join-Path $runDirectory ($second.run_id + '.json')
+        $inventory = Get-CleanupInventory -SourceRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'dd-siblings' -RunRecordPath $firstPath -EvidencePath @($second.event_stream_path, $secondInspect)
+        $paths = @($inventory.items | ForEach-Object { $_.source_path })
+        $destinationRoot = Join-Path $fixtureRoot 'dd-sibling-destination'
+        New-Item -ItemType Directory -Path $destinationRoot -Force | Out-Null
+        foreach ($path in @($first.event_stream_path, $firstInspect, $second.event_stream_path, $secondInspect)) {
+            Assert-True ($paths -contains $path) ('Cleanup 未列入輪次證據：' + $path)
+            $item = @($inventory.items | Where-Object { $_.source_path -eq $path })[0]
+            $saved = Preserve-CleanupFile -Item $item -SourceRoot $destinationRoot -DispatchRoot $fixtureRoot -DispatchSlug 'dd-siblings'
+            Assert-True ($saved.source_sha256 -eq $saved.destination_sha256 -and (Get-Item -LiteralPath $saved.destination_path).Length -eq (Get-Item -LiteralPath $path).Length) ('Cleanup 保存證據的雜湊或長度不符：' + $path)
+        }
+        $second.dispatch_slug = 'other-dispatch'
+        Write-Utf8NoBom -Path $secondPath -Content ($second | ConvertTo-Json -Depth 60) -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -TargetPath @()
+        $rejected = $false
+        try { Get-CleanupInventory -SourceRoot $fixtureRoot -DispatchRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'dd-siblings' -RunRecordPath $firstPath -EvidencePath @() | Out-Null } catch { $rejected = $_.Exception.Message -match 'CleanupIdentityMismatch' }
+        Assert-True $rejected 'sibling RunRecord 身分竄改未拒絕。'
+    }
+
+    Invoke-Case 'Phase 3 DD-CLEANUP 結案報告封存與一般報告衝突' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug 'dd-closure'
+        $script:cleanupUseRealGit = $true
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            $incoming = Join-Path $scenario.report_root 'implement-closure-report.md'
+            $destination = Join-Path $SourceRoot '.local/ai-sessions/report/line-a/implement-closure-report.md'
+            Write-Utf8NoBom -Path $incoming -Content 'incoming closure' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+            Write-Utf8NoBom -Path $destination -Content 'existing closure' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+            $result = Invoke-Cleanup
+            $archives = @(Get-ChildItem -LiteralPath (Split-Path -Parent $destination) -Filter 'implement-closure-report.*.md')
+            Assert-True ($result.status -eq 'completed' -and (Get-Content -LiteralPath $destination -Raw) -eq 'existing closure' -and $archives.Count -eq 1 -and (Get-Content -LiteralPath $archives[0].FullName -Raw) -eq 'incoming closure') 'Cleanup 未保留兩份結案報告。'
+        }
+        finally {
+            $script:cleanupUseRealGit = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 DD-CLEANUP 缺少 receipt 及一般報告目的衝突' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug 'dd-negative'
+        $script:cleanupUseRealGit = $true
+        $previousReportPath = Get-DispatchScriptVariableValue -Name 'ReportPath'
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $ReportPath = @()
+            $ResultPath = $null
+            $destination = Join-Path $SourceRoot '.local/ai-sessions/report/line-a/closure.md'
+            Write-Utf8NoBom -Path $destination -Content 'different' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+            $failure = $null
+            try { Invoke-Cleanup | Out-Null } catch { $failure = $_.Exception.Data['operationResult'] }
+            Assert-True ($null -ne $failure -and $failure.failure_code -eq 'CleanupDestinationConflict') '一般報告衝突未拒絕。'
+            Remove-Item -LiteralPath $scenario.report_path
+            $script:ReportPath = @($scenario.report_path)
+            $rejected = $false
+            try { Invoke-Cleanup | Out-Null } catch { $rejected = $_.Exception.Message -match 'CleanupSourceMissing' }
+            Assert-True $rejected '沒有 receipt 的缺失來源未拒絕。'
+        }
+        finally {
+            $script:ReportPath = $previousReportPath
+            $script:cleanupUseRealGit = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 DD-CLEANUP 移除失敗後憑 receipt 重試' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug 'dd-retry'
+        $script:cleanupUseRealGit = $true
+        $script:cleanupRemoveFailure = $true
+        $previousReportPath = Get-DispatchScriptVariableValue -Name 'ReportPath'
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $script:ReportPath = @($scenario.report_path)
+            $ResultPath = $null
+            $first = Invoke-Cleanup
+            Assert-True ($first.status -eq 'removal-failed') '未產生移除失敗 receipt。'
+            Assert-True (-not (Test-Path -LiteralPath $scenario.report_path)) '移除失敗 fixture 應已移除來源報告。'
+            $script:cleanupRemoveFailure = $false
+            $second = Invoke-Cleanup
+            Assert-True ($second.status -eq 'completed') '已保存報告缺失時未能重試完成。'
+        }
+        finally {
+            $script:ReportPath = $previousReportPath
+            $script:cleanupUseRealGit = $false
+            $script:cleanupRemoveFailure = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 DD-CLEANUP history 檔案占用後憑 receipt 重試' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug 'dd-locked-history'
+        $script:cleanupUseRealGit = $true
+        $previousReportPath = Get-DispatchScriptVariableValue -Name 'ReportPath'
+        $lockHandle = $null
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $scenario.preflight_path
+            $RunRecordPath = $scenario.run_record_path
+            $EvidencePath = @($scenario.event_path)
+            $script:ReportPath = @($scenario.report_path)
+            $ResultPath = $null
+            $lockedPath = Join-Path (Split-Path -Parent $scenario.event_path) 'locked-fixture.txt'
+            Write-Utf8NoBom -Path $lockedPath -Content 'locked fixture' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+            $lockHandle = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            $first = Invoke-Cleanup
+            Assert-True ($first.status -eq 'removal-failed' -and $first.failure_code -eq 'CleanupWorktreeRemovalFailed') 'history 檔案占用未產生移除失敗 receipt。'
+            $lockHandle.Dispose()
+            $lockHandle = $null
+            Remove-Item -LiteralPath $scenario.report_path
+            $second = Invoke-Cleanup
+            Assert-True ($second.status -eq 'completed') '解除占用且已保存報告缺失時未能重試完成。'
+        }
+        finally {
+            if ($null -ne $lockHandle) { $lockHandle.Dispose() }
+            $script:ReportPath = $previousReportPath
+            $script:cleanupUseRealGit = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
     }
 
     Invoke-Case 'Phase 3 F-004 Cleanup 缺少 Preflight result 與未啟動證據時拒絕並保留 worktree' {
@@ -16954,7 +17168,7 @@ $script:TargetPath = @()
 
     $invokeS3ResumeCase = {
         [CmdletBinding()]
-        param([switch]$Mutant)
+        param([switch]$Mutant, [switch]$WaitOnly)
 
         $caseSlug = New-BindingFixtureName -Code 's3'
         $caseRoot = Join-Path $sRealDispatchParent $caseSlug
@@ -16982,7 +17196,7 @@ $script:TargetPath = @()
             'Profile', 'Model', 'ReasoningEffort', 'TaskType', 'SessionMode', 'DispatchKind',
             'UnitKind', 'RequestedUnit', 'AddDirectory', 'Search', 'CodexParentOption',
             'AdvisorRequestSource', 'AbortGraceSeconds',
-            'DispatchResultPath', 'InvocationBoundParameters', 'DispatchStageBinding', 'RequestContext',
+            'DispatchResultPath', 'WaitForCompletion', 'InvocationBoundParameters', 'DispatchStageBinding', 'RequestContext',
             'ProfileExplicit', 'AddDirectoryExplicit', 'SearchExplicit', 'CodexParentOptionExplicit',
             's3PreviousRun', 's3PreviousMessage', 's3FakeCodexPath', 's3StopCalls', 's3StopSnapshots'
         )
@@ -17252,11 +17466,13 @@ throw 'RunRecord 事件流為空。'
                 $threadRelay = Get-DispatchJsonProperty -Object $startResult -Name 'threadRelay'
                 $relayDiagnostics = Get-DispatchJsonProperty -Object $threadRelay -Name 'relay_diagnostics'
                 Assert-True ([bool](Get-DispatchJsonProperty -Object $startResult -Name 'processStarted')) ('S-3 normal processStarted=false：' + ($startResult | ConvertTo-Json -Depth 30 -Compress))
-                Assert-True (-not [bool](Get-DispatchJsonProperty -Object $startResult -Name 'relayReady') -and [string](Get-DispatchJsonProperty -Object $threadRelay -Name 'source') -eq 'not-ready') ('S-3 normal relay 未回報 not-ready：' + ($startResult | ConvertTo-Json -Depth 30 -Compress))
-                Assert-True ($null -ne $relayDiagnostics -and [int]$relayDiagnostics.attempt_count -gt 0 -and [string]$relayDiagnostics.event_path -eq $eventPath -and [bool]$relayDiagnostics.timed_out -and [int64]$relayDiagnostics.event_bytes -eq 0 -and -not [bool]$relayDiagnostics.ready) ('S-3 relay diagnostic marker 不完整：' + ($threadRelay | ConvertTo-Json -Depth 30 -Compress))
-                Assert-True ($initialEventLength -eq 0 -and (Test-Path -LiteralPath $externalStartedPath -PathType Leaf)) ('S-3 normal 啟動視窗內事件流非空或 launcher 未啟動：eventLength=' + $initialEventLength)
+                if (-not $WaitOnly) {
+                    Assert-True (-not [bool](Get-DispatchJsonProperty -Object $startResult -Name 'relayReady') -and [string](Get-DispatchJsonProperty -Object $threadRelay -Name 'source') -eq 'not-ready') ('S-3 normal relay 未回報 not-ready：' + ($startResult | ConvertTo-Json -Depth 30 -Compress))
+                    Assert-True ($null -ne $relayDiagnostics -and [int]$relayDiagnostics.attempt_count -gt 0 -and [string]$relayDiagnostics.event_path -eq $eventPath -and [bool]$relayDiagnostics.timed_out -and [int64]$relayDiagnostics.event_bytes -eq 0 -and -not [bool]$relayDiagnostics.ready) ('S-3 relay diagnostic marker 不完整：' + ($threadRelay | ConvertTo-Json -Depth 30 -Compress))
+                    Assert-True ($initialEventLength -eq 0 -and (Test-Path -LiteralPath $externalStartedPath -PathType Leaf)) ('S-3 normal 啟動視窗內事件流非空或 launcher 未啟動：eventLength=' + $initialEventLength)
+                }
                 $rootPid = [int](Get-DispatchJsonProperty -Object $startResult -Name 'rootPid')
-                Assert-True ($null -ne (Get-Process -Id $rootPid -ErrorAction SilentlyContinue)) ('S-3 normal process tree 在啟動視窗內已消失：pid=' + $rootPid)
+                if (-not $WaitOnly) { Assert-True ($null -ne (Get-Process -Id $rootPid -ErrorAction SilentlyContinue)) ('S-3 normal process tree 在啟動視窗內已消失：pid=' + $rootPid) }
                 $completed = $false
                 for ($attempt = 1; $attempt -le 120; $attempt++) {
                     $eventReady = (Test-Path -LiteralPath $eventPath -PathType Leaf) -and ((Get-Item -LiteralPath $eventPath).Length -gt 0)
@@ -17294,6 +17510,12 @@ throw 'RunRecord 事件流為空。'
                 try {
                     Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value ([scriptblock]::Create("throw 'S-3 Inspect must not call the explicit model diagnostic'"))
                     $inspectResult = Invoke-Inspect
+                    $script:WaitForCompletion = $true
+                    $script:EventStreamPath = $null
+                    $script:ScopePlanPath = $null
+                    $script:ProcessExitCode = $null
+                    $waitInspectResult = Invoke-Inspect
+                    Assert-True ($waitInspectResult.success -and $waitInspectResult.processExitCode -eq $inspectResult.processExitCode -and $waitInspectResult.lastEventType -eq $inspectResult.lastEventType) 'Start 回傳的 RunRecord 等待結果與原 Inspect 不一致。'
                 }
                 finally {
                     Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value $originalModelDiagnosticFunction
@@ -17363,6 +17585,11 @@ throw 'RunRecord 事件流為空。'
                 }
             }
         }
+    }
+
+    Invoke-Case 'Phase 9 DD-INSPECT 續行 Start 回傳 RunRecord 可等待' {
+        $result = & $invokeS3ResumeCase -WaitOnly
+        Assert-True ([bool]$result.inspect.success -and -not [string]::IsNullOrWhiteSpace([string]$result.run_record_path)) '續行 Start 與 RunRecord 等待未完成。'
     }
 
     Invoke-Case 'Phase 9 S-3 real continuation Start waits for relay and Inspect keeps actual model unknown' {
@@ -19374,6 +19601,24 @@ finally {
         Write-Phase9Evidence -Label 'F006_NORMAL_PASS' -Value $normalRound
         Write-Phase9Evidence -Label 'F006_REVERSE_FAILURE' -Value ([ordered]@{ status = 'failed'; validation_failure = $reverseValidationFailure; round = $reverseRound })
         Write-Phase9Evidence -Label 'F006_RESTORED_PASS' -Value $restoredRound
+    }
+
+    Invoke-Case 'Phase 9 DD-INSPECT RunRecord 與 DispatchResult 等待結果一致' {
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 0
+        $script:WaitForCompletion = $true
+        $script:WriteMode = 'readonly'
+        try {
+            $bound = Invoke-Inspect
+            $script:DispatchResultPath = ''
+            $script:RunRecordPath = $aPath
+            $script:EventStreamPath = ''
+            $script:ScopePlanPath = ''
+            $script:ProcessExitCode = $null
+            $script:InvocationBoundParameters = [ordered]@{}
+            $byRun = Invoke-Inspect
+            Assert-True ($bound.success -and $byRun.success -and $byRun.processExitCode -eq 0 -and $byRun.processExitCode -eq $bound.processExitCode -and $byRun.lastEventType -eq 'turn.completed' -and $byRun.lastEventType -eq $bound.lastEventType) 'RunRecord 等待與 Dispatch result 綁定的結果不一致。'
+        }
+        finally { $script:WaitForCompletion = $false }
     }
 
     Invoke-Case 'Phase 9 P3 Dispatch exit sidecar supplies ProcessExitCode' {
