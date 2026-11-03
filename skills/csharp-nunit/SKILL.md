@@ -26,7 +26,7 @@ policy.allow_implicit_invocation: true
 ## 斷言 (Assertions)
 
 - 基本判斷：使用 `Assert.That(actual, Is.EqualTo(expected))` 驗證值相等。
-- 例外測試：驗證方法拋出例外時，必須使用 `Assert.Throws<T>()` 或非同步的 `Assert.ThrowsAsync<T>()`。
+- 例外測試：驗證方法拋出例外時，必須使用 `Assert.Throws<T>()` 或非同步的 `Assert.ThrowsAsync<T>()`。使用 `Assert.ThrowsAsync<T>()` 的測試方法宣告方式依「非同步測試」的非同步例外驗證。
 - 集合測試：優先使用 `CollectionAssert`；字串特定比對優先使用 `StringAssert`。
 - 多重斷言：當單一測試包含多個 Assert 驗證時，優先使用 `using (Assert.EnterMultipleScope())`。
 - 若專案有引進並偏好使用 FluentAssertions 或 Shouldly，則全面改用 Fluent API (例如 `result.Should().BeTrue()`)。
@@ -39,7 +39,7 @@ policy.allow_implicit_invocation: true
 
 ## 非同步測試
 
-- 非同步測試方法回傳 `Task`（不回傳 `void`）：
+- 方法本體含 `await` 的非同步測試宣告為 `async Task`，不使用 `async void`：
 
 ```csharp
 [Test]
@@ -56,11 +56,11 @@ public async Task SaveOrderAsync_ValidOrder_PersistsToDatabaseAsync() {
 }
 ```
 
-- **非同步例外驗證**：使用 `Assert.ThrowsAsync<T>()`：
+- **非同步例外驗證**：使用 `Assert.ThrowsAsync<T>()`。它是同步呼叫，會等待 lambda 執行完畢並回傳攔截到的例外。測試方法本體沒有其他 `await` 時，宣告為 `public void` 並去掉方法名結尾的 `Async` 後綴。本體沒有 `await` 的 `async Task` 方法屬 C# 編譯器警告 CS1998 的情境，只會多產生一個不需要的狀態機。範例如下：
 
 ```csharp
 [Test]
-public async Task GetOrderAsync_NotFound_ThrowsKeyNotFoundExceptionAsync() {
+public void GetOrderAsync_NotFound_ThrowsKeyNotFoundException() {
     IOrderRepository repo = Substitute.For<IOrderRepository>();
     repo.GetByIdAsync(Arg.Any<int>()).Returns((Order?)null);
     OrderService sut = new(repo);
