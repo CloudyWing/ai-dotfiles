@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0032
 ---
 
 # ADR-0016：Codex Reviewer 的大範圍審查由規則指定 intensive 檔位
