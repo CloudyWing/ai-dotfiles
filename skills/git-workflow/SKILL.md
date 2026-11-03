@@ -59,12 +59,13 @@ Workflow 派工前，`codex-dispatch` 另行核對註記與分支符合性，該
 
 本文件與模式檔中的 `main` 一律指 repo 的主分支，`origin/main` 指主分支的遠端追蹤分支。主分支依下列順序判定，命中即停止：
 
-1. 讀取 `git symbolic-ref --short refs/remotes/origin/HEAD`。命令成功時，去掉 `origin/` 前綴的分支名稱即為主分支。
-2. 本機存在 `main` 分支時，主分支為 `main`。
-3. 本機存在 `master` 分支時，主分支為 `master`。
-4. 以上皆未命中時，停止 commit、啟動 Workflow 與建立分支，回報分支清單並請使用者指定。
+1. `git rev-parse --verify -q HEAD` 沒有輸出時，repo 還沒有任何 commit，主分支為 `git symbolic-ref --short HEAD` 的輸出。
+2. 讀取 `git symbolic-ref --short refs/remotes/origin/HEAD`。命令成功時，去掉 `origin/` 前綴的分支名稱即為主分支。
+3. 本機存在 `main` 分支時，主分支為 `main`。
+4. 本機存在 `master` 分支時，主分支為 `master`。
+5. 以上皆未命中時，停止 commit、啟動 Workflow 與建立分支，回報分支清單並請使用者指定。
 
-第 1 步判定出的分支在本機不存在時，同樣停止上述動作，回報判定結果與 `git branch --list` 的輸出，請使用者決定是否建立對應的本機追蹤分支。
+第 2 步判定出的分支在本機不存在時，同樣停止上述動作，回報判定結果與 `git branch --list` 的輸出，請使用者決定是否建立對應的本機追蹤分支。
 
 判定結果只用於當次操作，不寫入 `AGENTS.local.md`。執行命令時，以判定出的分支名稱取代命令範例中的 `main`。
 
@@ -74,7 +75,7 @@ Workflow 派工前，`codex-dispatch` 另行核對註記與分支符合性，該
 
 | 類別 | 命名 | 說明 |
 | --- | --- | --- |
-| 整合分支 | `trunk` 為主分支（見「主分支判定」）；`release-flow` 為 `release/vX.Y.Z` 或 `hotfix/vX.Y.Z` | 版號符合 `^v[0-9]+\.[0-9]+\.[0-9]+$` |
+| 整合分支 | `trunk` 為主分支（見「主分支判定」）；`release-flow` 為 `release/vX.Y.Z` 或 `hotfix/vX.Y.Z`，尚無版本標籤時為主分支（見 `references/release-flow.md`「初次發佈前」） | 版號符合 `^v[0-9]+\.[0-9]+\.[0-9]+$` |
 | 線分支 | `feature/<lineSlug>` | 規則見「線分支與獨立 worktree」 |
 | 整理分支 | `refactor/tidy-<來源分支名，斜線改為連字號>` | 即第一層的拋棄式 `<rewrite-branch>` |
 | 備份分支 | `backup/<來源分支名，斜線改為連字號>-before-tidy-<beforeSha 前 7 碼>` | 規則見「整理流程」 |
@@ -147,7 +148,7 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 在 Accept 之後、取得使用者當輪授權後執行。落地授權屬 commit 類。
 
 1. 依「整理流程」整理 `<整合分支>..feature/<lineSlug>`。
-2. 從整理後的線分支建立整理分支，在整理分支執行 `git -c rebase.updateRefs=false rebase <整合分支>`，以第一層「整合上游變更」路徑驗證，通過後才更新線分支指標。
+2. 從整理後的線分支建立整理分支，在整理分支執行 `git -c rebase.updateRefs=false rebase <整合分支>`，以第一層「整合上游變更」路徑驗證，通過後才更新線分支指標。發生衝突時依第一層「解衝突路徑」處理。
 3. 在主 checkout 的整合分支執行 `git merge --ff-only feature/<lineSlug>`。整合分支已前進而被拒時，重做第 2 步一次；仍被拒時停止回報。主 checkout 含其他線未 commit 的改動時不 stash、不還原，git 因檔案重疊拒絕時停止回報。
 4. 歸還本機資料：將 worktree 的 `.local\ai-sessions\handoff\<lineSlug>\` 與 `.local\ai-sessions\report\<lineSlug>\` 複製回主 checkout 同路徑。覆蓋前先將主 checkout 的原目錄移到 `.local\ai-sessions\backups\<時間戳>\` 並附一行 `manifest.txt`，複製後逐檔比對 SHA-256。另比對兩邊的 `AGENTS.local.md`，有差異時列出差異，由使用者決定是否帶回。
 5. 執行 `git worktree remove "<路徑>"`（不加 `--force`，有未提交內容時 git 會拒絕，此時停止回報），再執行 `git branch -d feature/<lineSlug>`。
@@ -215,6 +216,7 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 | S | `rangeBase` |
 | --- | --- |
 | `trunk` 的 `main` | `origin/main`；不存在時範圍為空，跳過整理 |
+| 尚無版本標籤時 `release-flow` 的 `main` | `origin/main`；不存在時範圍為空，跳過整理。初次發佈的壓縮另依 `references/release-flow.md`「壓縮成初始 commit」 |
 | `release/*`、`hotfix/*` | `main` |
 | `feature/<lineSlug>` | 該分支的 upstream，即整合分支 |
 
@@ -225,7 +227,7 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
     - 只收合 `fixup!` 時執行 `git -c sequence.editor=true -c rebase.updateRefs=false rebase -i --autosquash <rangeBase>`。
     - 需要刪除、重排或改訊息時，先寫出 todo 檔（只用 `pick`、`fixup`、`drop`，改訊息以 `exec git commit --amend -F <訊息檔>` 表示），再執行 `git -c "sequence.editor=cp '<todo 檔絕對路徑>'" -c rebase.updateRefs=false rebase -i <rangeBase>` 套用該檔。各 commit 的去向寫入回報。
     - 以 `-c sequence.editor=...` 指定 todo 編輯器，不使用 `GIT_SEQUENCE_EDITOR` 環境變數前綴。`sequence.editor` 的值由 git 交給其內建 shell 執行，同一行命令在 PowerShell 與 Git Bash 都可直接使用。
-    - 衝突時執行 `git rebase --abort`，保留備份分支與整理分支，停止回報。
+    - 衝突時執行 `git rebase --abort`，保留備份分支與整理分支，停止回報。整合上游變更的 rebase 可依第一層「解衝突路徑」續行。
 5. 執行第一層零差異 gate。`rangeBase` 未前進時屬純歷史重排，`afterSha` 與 `beforeSha` 的完整 tree 必須相同。
 6. 執行「重整後驗證」。
 7. 更新來源分支：切回 S，執行 `git reset --hard <afterSha>`。第 5 步已證明 tree 相同且工作樹乾淨，工作樹檔案不會改變。
@@ -242,6 +244,7 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 | 未合併的 `release/*`、`hotfix/*` | 可 | `--force-with-lease`，每次取得當輪授權 |
 | `trunk` 的 `main` | 需使用者當輪授權 | 授權涵蓋該次改寫與 force push，每次單獨取得 |
 | `release-flow` 的 `main` | 不改寫 | 修正已發佈內容以新 commit 處理 |
+| 尚無版本標籤且未推送的 `release-flow` 的 `main` | 不適用（未推送） | 初次發佈時依 `references/release-flow.md`「壓縮成初始 commit」整理為單一 commit，需使用者當輪授權，屬 commit 類，不涉及 force push |
 | 已合併的 `release/*`、`hotfix/*` | 不改寫 | 版本由標籤保存 |
 | 線分支、整理分支、備份分支 | 不推送 | 已被推送時停止並詢問使用者 |
 | 缺少或無效註記時的 `main` | 不改寫 | 視同 `release-flow` |
@@ -289,6 +292,28 @@ git -C "$gitRoot" diff --binary --no-ext-diff --exit-code <beforeSha> <afterSha>
 
 Git 只會回報 patch 套用成功或衝突，不會回報內容遺失。Squash 遺漏某個 commit 的修正時，工作樹仍可能看起來正常，建置也可能未涵蓋遺失內容。因此重整成功不等於內容正確，第一層的 `git diff` 內容不變量驗證不可由既有「重整後驗證」的建置結果取代。
 
+#### 解衝突路徑
+
+只適用於整合上游變更的 rebase。純歷史重排發生衝突時，維持停止回報。
+
+1. 第一次 rebase 衝突時執行 `git rebase --abort`，回報衝突的 commit SHA、主題與檔案清單，取得使用者當輪授權後才續行。授權屬 commit 類，只涵蓋這次解衝突。`git rev-list --merges --count <upstreamBeforeSha>..<beforeSha>` 大於 `0` 時，範圍含 merge commit，`range-diff` 與一般 rebase 都會略過它，本路徑不適用，停止回報。
+2. 在整理分支重新執行同一個 rebase，逐一解衝突後以 `git rebase --continue` 完成。備份分支保留不動。
+3. 記錄 `afterSha` 後，執行下列命令，比對 rebase 前後每一筆本地 commit。
+
+    ```powershell
+    git -C "$gitRoot" range-diff <upstreamBeforeSha>..<beforeSha> <upstreamAfterSha>..<afterSha>
+    ```
+
+4. 判定 `range-diff` 的輸出。
+    - 標為 `=` 的 commit 內容未變。所有未衝突的 commit 都必須是 `=`。
+    - 標為 `!` 的 commit 內容有變。只允許出現在第 1 步回報的衝突 commit，其餘 commit 出現 `!` 時判定失敗。
+    - 出現 `<` 或 `>`，表示 commit 遺失或新增，判定失敗。
+5. 把每一筆 `!` commit 的 range-diff 片段原文呈現給使用者確認，確認內容只是解衝突。使用者確認前不進入下一步。
+6. 確認 `git rev-list --count <upstreamAfterSha>..<afterSha>` 等於 `git rev-list --count <upstreamBeforeSha>..<beforeSha>`。
+7. 執行「重整後驗證」，並確認未追蹤檔案清單仍為空。
+
+第 4 至 7 步全部通過後，才算通過第一層。任一步失敗時，依本層的失敗處置保留證據。本路徑以第 4、5 步取代「整合上游變更」的 patch identity 比對，本地 commit 數量由第 6 步檢查。
+
 ### 第二層：修正回歸驗證
 
 適用時機是每一輪修正開始前，以及該輪修正準備回收前。每輪修正都必須先保存一份完整回歸矩陣，並於修正後逐列執行同一份矩陣。矩陣至少包含下列欄位。
@@ -320,7 +345,7 @@ Git 修正的嚴重度映射如下。
 
 - 使用 Semantic Versioning：`vMAJOR.MINOR.PATCH`（如 `v1.2.3`）。
 - 若專案使用 MinVer 或其他自動版本工具，遵循該工具的標籤格式。
-- `trunk` 不打標籤。`release-flow` 使用 annotated tag，打在 `main` 的 merge commit，細節見 `references/release-flow.md`。
+- `trunk` 不打標籤。`release-flow` 使用 annotated tag，打在 `main` 的 merge commit；第一個版本標籤打在初次發佈的 commit，細節見 `references/release-flow.md`「初次發佈前」與「合併前流程」。
 
 ## Git Hooks 慣例
 

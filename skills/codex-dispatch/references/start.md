@@ -80,8 +80,12 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 | --- | --- | --- |
 | `trunk` | 直接 | 目前分支為 `main` |
 | `trunk` | 線分支 | 目前分支為 `feature/<lineSlug>`；`sourceRoot` 是 linked worktree，即 `git rev-parse --git-dir` 與 `git rev-parse --git-common-dir` 的結果不同；upstream 為 `main` |
-| `release-flow` | 直接 | 目前分支符合 `^(release\|hotfix)/v[0-9]+\.[0-9]+\.[0-9]+$` |
-| `release-flow` | 線分支 | 目前分支為 `feature/<lineSlug>`；`sourceRoot` 是 linked worktree；upstream 符合上列 `release` 或 `hotfix` 命名 |
+| `release-flow`，已有版本標籤 | 直接 | 目前分支符合 `^(release\|hotfix)/v[0-9]+\.[0-9]+\.[0-9]+$` |
+| `release-flow`，已有版本標籤 | 線分支 | 目前分支為 `feature/<lineSlug>`；`sourceRoot` 是 linked worktree；upstream 符合上列 `release` 或 `hotfix` 命名 |
+| `release-flow`，尚無版本標籤 | 直接 | 目前分支為 `main` |
+| `release-flow`，尚無版本標籤 | 線分支 | 目前分支為 `feature/<lineSlug>`；`sourceRoot` 是 linked worktree；upstream 為 `main` |
+
+版本標籤的判定依 `git-workflow` skill `references/release-flow.md`「版本標籤判定」。
 
 upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取。
 

@@ -13,7 +13,7 @@ policy.allow_implicit_invocation: true
 
 Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢查點的建檔與建檔內容仍依 §1.4 執行，建議接手指令輸出後原 Session 直接繼續。
 
-1. 分支前置。啟動 Workflow 屬 `git-workflow` 註記的阻擋範圍，先依 `git-workflow` skill「git-workflow 註記與模式載入」確認註記有效。再依該 skill「線分支與獨立 worktree」的適用判定決定直接在整合分支或開線分支；`release-flow` 目前位於主分支（`git-workflow` skill「主分支判定」的結果）時停止並詢問版號（見 `references/release-flow.md`）。開線分支時執行該節的建立程序並切換 work-root，之後的 `design-accepted` 交接檢查點、派工與回收都使用新 work-root。
+1. 分支前置。啟動 Workflow 屬 `git-workflow` 註記的阻擋範圍，先依 `git-workflow` skill「git-workflow 註記與模式載入」確認註記有效。再依該 skill「線分支與獨立 worktree」的適用判定決定直接在整合分支或開線分支；`release-flow` 已有版本標籤且目前位於主分支（`git-workflow` skill「主分支判定」的結果）時停止並詢問版號，尚無版本標籤時主分支即整合分支（見 `references/release-flow.md`「初次發佈前」）。開線分支時執行該節的建立程序並切換 work-root，之後的 `design-accepted` 交接檢查點、派工與回收都使用新 work-root。
 2. 依 `instructions.md` Workflow Phase 的實作分流逐 Phase 判定執行者，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：P<n>=<執行者>`），輸出建議接手指令後依各 Phase 的執行者派工進入 Developer 實作。Codex Phase 走 Workflow 派工契約，Haiku Phase 走本 Skill「Haiku 實作路徑」。
 3. 派遣 Developer 並回收結果。Codex Phase 收下時，先將成果套回來源工作樹，不建立 Phase commit，並保留 dispatch worktree 供後續 Reviewer 退回續行。Haiku Phase 的回收依「Haiku 實作路徑」。混合時依前段 Haiku、Codex 單一派工、後段 Haiku 的順序執行。
 4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的改派結果。回收後仍有殘餘工作時，依 `instructions.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。

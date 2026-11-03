@@ -28,7 +28,7 @@ policy.allow_implicit_invocation: true
 在產生 commit 訊息前，**必須**先看過真實的變更內容，不得僅憑對話記憶：
 
 1. 執行 `git status --short` 一次掌握所有變更（staged、unstaged、untracked 一併呈現）。
-2. 對**所有**有變更的檔案逐一取得實際差異（追蹤中的檔案用 `git diff HEAD -- <file>`，untracked 檔直接讀內容），不得因「檔名已能說明意圖」而略過。不分檔案是否已 staged，全部都要看。
+2. 對**所有**有變更的檔案逐一取得實際差異（追蹤中的檔案用 `git diff HEAD -- <file>`，untracked 檔直接讀內容），不得因「檔名已能說明意圖」而略過。不分檔案是否已 staged，全部都要看。repo 還沒有任何 commit（`git rev-parse --verify -q HEAD` 沒有輸出）時，`HEAD` 不存在，已 staged 的檔案改用 `git diff --cached -- <file>`，未 staged 的改動用 `git diff -- <file>`。
 3. **若無任何變更**，告知使用者目前沒有可 commit 的內容，流程終止，不產生 commit 訊息。
 
 🚨 **此規則只約束「訊息措辭」，不約束「commit 範圍」。** Subject 與 Body 中對「改了什麼」的描述必須 100% 來自 `git diff` 的實際輸出，**絕對禁止**根據對話或記憶推斷、編造 diff 以外的變更。對話上下文僅可用於補充 Body 的動機說明（為什麼改），且須與當次 diff 直接關聯；若無把握，略去動機即可。
@@ -172,6 +172,20 @@ Type Whitelist 維持下列九項。
   - 每一點條列**必須**以句號 `。` 結尾。
   - 描述應保持客觀簡潔，不解釋實作細節，僅說明「變更內容」與「必要原因」。
   - 動機說明可參考對話上下文補充「為什麼改」，但必須與當次 diff 直接相關；若無把握，略去動機說明。
+
+### 初始 commit
+
+初始 commit 指 repo 的第一筆 commit（`git rev-parse --verify -q HEAD` 沒有輸出），以及 `git-workflow` 的 `release-flow`「壓縮成初始 commit」產生的無父 commit。初始 commit 一律使用下列固定格式，不套用 Body Rules 的 Trigger 條件。
+
+```text
+feat: 建立 <專案名稱>
+
+- <一句話說明這個 Repo 的用途>。
+```
+
+- `<專案名稱>` 使用 repo 根目錄名稱，或專案已宣告的產品名稱。
+- 用途說明寫這個 Repo 解決的問題或提供的能力，資訊不足時詢問使用者，不自行推測。
+- 主題不寫版號，版號由標籤記錄。
 
 ### Forbidden Footer
 
