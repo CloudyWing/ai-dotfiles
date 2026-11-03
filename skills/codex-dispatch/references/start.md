@@ -125,6 +125,8 @@ Request 驗證階段無法從目標推導 `required_identifier` 時拒絕，目�
 
 ### 主 Agent 的帳號切換決策
 
+Preflight 會唯讀檢查有效 `CodexHome` 的 `rules` 目錄。允許 `pwsh` 或 `powershell` 單一前綴，或允許其後接 `-Command` 前綴的規則會以 `CodexRulesSandboxBypass` 拒絕；請刪除或收窄該規則，或使用沒有 `rules` 的專用帳號 home。無法讀取或解析的規則會記錄 `CodexRulesUnparsed` warning。
+
 帳號由腳本選擇與更換，主 Agent 派工時不指定 `-CodexHome`。本節的判定不因 `codex_accounts` 登記的帳號數不同而不同，額度數值不參與帳號選擇。
 
 - 選帳號：未指定 `-CodexHome` 且登記清單非空時，Dispatch 依登記順序取第一個已登入的帳號。登入判定只看帳號目錄登入檔的路徑、大小與修改時間，不讀內容；缺少該檔位設定檔的帳號同樣略過。帳號是否支援檔位的 model 以服務端回應為準，不在啟動前預判。

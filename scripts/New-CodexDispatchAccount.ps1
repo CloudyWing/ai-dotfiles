@@ -95,6 +95,7 @@ function Test-AccountLinkPlan {
 function Set-AccountLink {
     [CmdletBinding(SupportsShouldProcess)]
     param([string]$Path, [string]$Target, [string]$Type, [string]$StatusName = $Type)
+    if ([IO.Path]::GetFileName($Path) -ieq 'rules' -or [IO.Path]::GetFileName($Target) -ieq 'rules') { throw '禁止連結 rules 目錄。' }
     $item = Get-AccountItem $Path; $status = 'created'; $backup = $null
     if ($null -ne $item) {
         if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {

@@ -1933,6 +1933,10 @@ function Invoke-Case {
         $category = [string]$classification.category
         $environmentNote = [string]$classification.environment_note
     }
+    elseif ($assertionResult -eq 'FAIL' -and $Name -in @('Phase 6 DD-RULES-PREFLIGHT Junction 規則', 'Phase 6 DD-RULES-ACCOUNT 實際建立帳號') -and $detail -match '(?i)access.{0,12}denied|privilege.{0,40}(held|required)|拒絕存取|存取被拒|權限不足|所需的權限|需要系統管理員權限') {
+        $category = 'ENV-LIMITED'
+        $environmentNote = $detail
+    }
     elseif ($assertionResult -eq 'FAIL' -and (Test-Phase9BaselineFailureName -Name $Name)) {
         $category = 'BASELINE-FAILED'
     }
@@ -6639,7 +6643,7 @@ if ($Phase -ge 5) {
     }
     function Invoke-DdValidateRequest {
         [CmdletBinding()]
-        param([object]$Fixture, [string]$Identifier, [switch]$ActualDispatch, [string]$WriteMode = 'readonly')
+        param([object]$Fixture, [string]$Identifier, [switch]$ActualDispatch, [string]$WriteMode = 'readonly', [switch]$ClearCodexHome)
         $dispatchRoot = Join-Path $Fixture.Root '.local\ai-sessions\worktrees\dd-test'
         $request = [ordered]@{
             schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'dd-line'; dispatch_slug = 'dd-test'
@@ -6663,7 +6667,9 @@ if ($Phase -ge 5) {
         [IO.File]::WriteAllText($fakeCodexPath, ('@echo off' + "`r`n" + ('>"' + $counterPath + '" echo started') + "`r`nexit /b 0`r`n"))
         try {
             $ErrorActionPreference = 'Continue'
-            $env:CODEX_HOME = ''
+            $env:CODEX_HOME = Join-Path $Fixture.Root 'codex-home'
+            New-Item -ItemType Directory -Path $env:CODEX_HOME -Force | Out-Null
+            if ($ClearCodexHome) { $env:CODEX_HOME = '' }
             if ($ActualDispatch) {
                 $output = @(& $hostPath -NoProfile -File $entryPath -Operation Dispatch -RequestPath $requestPath -CodexPath $fakeCodexPath 2>&1)
             }
@@ -7467,6 +7473,93 @@ if ($Phase -ge 5) {
     $script:TargetPath = @()
 }
 if ($Phase -ge 6) {
+    Invoke-Case 'Phase 6 DD-RULES-PREFLIGHT 規則解析與拒絕' {
+        $testCodexHome = Join-Path $fixtureRoot 'rules-check-home'
+        $testRules = Join-Path $testCodexHome 'rules'
+        New-Item -ItemType Directory -Path $testCodexHome -Force | Out-Null
+        Assert-True ((Assert-CodexRulesSandboxIntegrity -CodexHome $testCodexHome).status -eq 'no-rules-directory') '不存在 rules 時應放行。'
+        New-Item -ItemType Directory -Path $testRules -Force | Out-Null
+        $rulePath = Join-Path $testRules 'test.rules'
+        foreach ($safeRule in @('prefix_rule(["git","status"], decision="allow")', 'prefix_rule(["pwsh.exe","-Command"], decision="forbidden")', 'prefix_rule(["pwsh.exe","-File"], decision="allow")')) {
+            Write-Utf8NoBom $rulePath $safeRule
+            Assert-True ((Assert-CodexRulesSandboxIntegrity -CodexHome $testCodexHome).status -eq 'clean') ('安全規則被拒絕：' + $safeRule)
+        }
+        Write-Utf8NoBom $rulePath 'prefix_rule(['
+        $malformed = Assert-CodexRulesSandboxIntegrity -CodexHome $testCodexHome
+        Assert-True ($malformed.status -eq 'clean' -and @($malformed.warnings).Count -eq 1 -and $malformed.warnings[0].code -eq 'CodexRulesUnparsed') '無法解析規則應產生 warning。'
+        Write-Utf8NoBom $rulePath "prefix_rule([`n prefix_rule([`"pwsh`"], decision=`"allow`")"
+        $mixedRules = Assert-CodexRulesSandboxIntegrity -CodexHome $testCodexHome
+        Assert-True ($mixedRules.status -eq 'rejected' -and @($mixedRules.warnings).Count -gt 0) '無法解析的規則不得遮蔽後續危險規則。'
+        foreach ($unsafeRule in @('prefix_rule(["C:\\Program Files\\PowerShell\\7\\pwsh.exe","-Command"], decision="allow")', 'prefix_rule(["powershell.exe","-Command"], decision="allow")', 'prefix_rule(["pwsh"], decision="allow")', 'prefix_rule(pattern=[["git", "pwsh"], ["-File", "-Command"]], decision="allow")')) {
+            Write-Utf8NoBom $rulePath ("# comment`n" + $unsafeRule)
+            $ruleResult = Assert-CodexRulesSandboxIntegrity -CodexHome $testCodexHome
+            Assert-True ($ruleResult.status -eq 'rejected' -and $ruleResult.findings[0].path -eq $rulePath -and $ruleResult.findings[0].line -eq 2) ('危險規則未拒絕：' + $unsafeRule)
+        }
+    }
+    Invoke-Case 'Phase 6 DD-RULES-PREFLIGHT Preflight 拒絕且不建立 worktree' {
+        $SourceRoot = Join-Path $fixtureRoot 'rule-preflight'
+        $DispatchSlug = 'rule-test'
+        $LineSlug = 'line-a'
+        $DispatchRoot = Join-Path $SourceRoot '.local\ai-sessions\worktrees\rule-test'
+        $TargetPath = @(Join-Path $SourceRoot 'target.txt')
+        $CodexHome = Join-Path $SourceRoot 'codex-home'
+        $ruleDirectory = Join-Path $CodexHome 'rules'
+        New-Item -ItemType Directory -Path $ruleDirectory -Force | Out-Null
+        $rulePath = Join-Path $ruleDirectory 'unsafe.rules'
+        Write-Utf8NoBom $rulePath 'prefix_rule(["pwsh", "-Command"], decision="allow")'
+        function Read-LineManifest { return [pscustomobject]@{ SourceLineRoot = $SourceRoot } }
+        $message = ''
+        try { $null = Invoke-Preflight } catch { $message = $_.Exception.Message }
+        Assert-True ($message.Contains('CodexRulesSandboxBypass') -and $message.Contains($rulePath) -and $message.Contains(':1') -and -not (Test-Path -LiteralPath $DispatchRoot)) ('Preflight 未於建立 worktree 前拒絕：' + $message)
+    }
+    Invoke-Case 'Phase 6 DD-RULES-PREFLIGHT Junction 規則' {
+        $junctionRoot = Join-Path $fixtureRoot 'rule-junction'
+        $junctionHome = Join-Path $junctionRoot 'home'
+        $junctionTarget = Join-Path $junctionRoot 'target'
+        New-Item -ItemType Directory -Path $junctionHome,$junctionTarget -Force | Out-Null
+        Write-Utf8NoBom (Join-Path $junctionTarget 'unsafe.rules') 'prefix_rule(["powershell.exe", "-Command"], decision="allow")'
+        New-Item -ItemType Junction -Path (Join-Path $junctionHome 'rules') -Target $junctionTarget -ErrorAction Stop | Out-Null
+        $junctionResult = Assert-CodexRulesSandboxIntegrity -CodexHome $junctionHome
+        Assert-True ($junctionResult.status -eq 'rejected' -and $junctionResult.findings[0].line -eq 1) 'Junction 目標規則未拒絕。'
+    }
+    Invoke-Case 'Phase 6 DD-RULES-ACCOUNT 帳號不連結 rules' {
+        . (Join-Path $scriptsRoot 'New-CodexDispatchAccount.ps1')
+        $accountRoot = Join-Path $fixtureRoot 'account-rules'
+        $sourceCodex = Join-Path $accountRoot 'source'
+        $machineDir = Join-Path $accountRoot 'machine'
+        New-Item -ItemType Directory -Path $sourceCodex,$machineDir -Force | Out-Null
+        foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets', 'rules')) { New-Item -ItemType Directory -Path (Join-Path $sourceCodex $namePart) -Force | Out-Null }
+        foreach ($namePart in @('.sandbox_migration', 'default.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
+        function Set-AccountLink { param($Path, $Target, $Type, $StatusName, $WhatIf) if ([IO.Path]::GetFileName($Path) -ieq 'rules') { throw 'rules 不可連結。' } }
+        New-CodexAccount -Name 'fixture' -HomeRoot $accountRoot -SourceCodex $sourceCodex -MachinePath (Join-Path $machineDir 'machine.json')
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountRoot '.codex-fixture\rules'))) '帳號 home 不應含 rules。'
+        $sourceWithoutRules = Join-Path $accountRoot 'source-clean'
+        New-Item -ItemType Directory -Path $sourceWithoutRules -Force | Out-Null
+        foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets')) { New-Item -ItemType Directory -Path (Join-Path $sourceWithoutRules $namePart) -Force | Out-Null }
+        foreach ($namePart in @('.sandbox_migration', 'default.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceWithoutRules $namePart) 'fixture' }
+        New-CodexAccount -Name 'fixture-clean' -HomeRoot $accountRoot -SourceCodex $sourceWithoutRules -MachinePath (Join-Path $machineDir 'machine.json')
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountRoot '.codex-fixture-clean\rules'))) '來源沒有 rules 時帳號 home 不應含 rules。'
+        $accountScript = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'New-CodexDispatchAccount.ps1'))
+        $mutantText = $accountScript.Replace("`$sourceNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets')", "`$sourceNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets', 'RuLeS')")
+        Assert-True ($mutantText -cne $accountScript) '未建立 rules 名單測試。'
+        $mutantPath = Join-Path $accountRoot 'account-mutant.ps1'
+        [IO.File]::WriteAllText($mutantPath, $mutantText, (New-Object Text.UTF8Encoding($true)))
+        . $mutantPath
+        $guardMessage = ''
+        try { New-CodexAccount -Name 'mutant' -HomeRoot $accountRoot -SourceCodex $sourceCodex -MachinePath (Join-Path $machineDir 'machine.json') } catch { $guardMessage = $_.Exception.Message }
+        Assert-True ($guardMessage.Contains('禁止連結 rules')) ('連結名單防護未拒絕：' + $guardMessage)
+    }
+    Invoke-Case 'Phase 6 DD-RULES-ACCOUNT 實際建立帳號' {
+        . (Join-Path $scriptsRoot 'New-CodexDispatchAccount.ps1')
+        $accountRoot = Join-Path $fixtureRoot 'account-rules-real'
+        $sourceCodex = Join-Path $accountRoot 'source'
+        $machineDir = Join-Path $accountRoot 'machine'
+        New-Item -ItemType Directory -Path $sourceCodex,$machineDir -Force | Out-Null
+        foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets', 'rules')) { New-Item -ItemType Directory -Path (Join-Path $sourceCodex $namePart) -Force | Out-Null }
+        foreach ($namePart in @('.sandbox_migration', 'default.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
+        New-CodexAccount -Name 'fixture' -HomeRoot $accountRoot -SourceCodex $sourceCodex -MachinePath (Join-Path $machineDir 'machine.json')
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountRoot '.codex-fixture\rules'))) '實際建立的帳號 home 不應含 rules。'
+    }
     Invoke-Case 'Phase 6 DD-REF 來源與執行端參照' {
         $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-ref-phase6') -TaskBody '檢查目標'
         $order = Read-DispatchOrderSections -Path $f.OrderPath

@@ -443,6 +443,119 @@ function New-RequestedDispatchEvidence {
     return New-ConfirmedDispatchEvidence -Value $Value -Source 'parameter' -Field $Field
 }
 
+function Read-CodexRuleList {
+    param([object[]]$Tokens, [ref]$Index)
+    if ($Index.Value -ge $Tokens.Count -or $Tokens[$Index.Value].Value -ne '[') { throw '預期清單。' }
+    $Index.Value++
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    while ($Index.Value -lt $Tokens.Count -and $Tokens[$Index.Value].Value -ne ']') {
+        $token = $Tokens[$Index.Value]
+        if ($token.Value -eq '[') { $item = Read-CodexRuleList -Tokens $Tokens -Index $Index; $items.Add($item) }
+        elseif ($token.Kind -eq 'string') { $items.Add([string]$token.Text); $Index.Value++ }
+        else { throw '清單項目無法解析。' }
+        if ($Index.Value -lt $Tokens.Count -and $Tokens[$Index.Value].Value -eq ',') { $Index.Value++ }
+        elseif ($Index.Value -lt $Tokens.Count -and $Tokens[$Index.Value].Value -ne ']') { throw '清單分隔符無效。' }
+    }
+    if ($Index.Value -ge $Tokens.Count) { throw '清單未結束。' }
+    $Index.Value++
+    return ,$items.ToArray()
+}
+
+function Assert-CodexRulesSandboxIntegrity {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$CodexHome)
+    $rulesPath = Join-Path $CodexHome 'rules'
+    $scanned = New-Object 'System.Collections.Generic.List[string]'
+    $findings = New-Object 'System.Collections.Generic.List[object]'
+    $warnings = New-Object 'System.Collections.Generic.List[object]'
+    try {
+        $rulesItem = Get-Item -LiteralPath $rulesPath -Force -ErrorAction Stop
+    } catch [System.Management.Automation.ItemNotFoundException] {
+        return [pscustomobject]@{ status = 'no-rules-directory'; scanned_files = @(); findings = @(); warnings = @() }
+    } catch {
+        $warnings.Add([pscustomobject]@{ code = 'CodexRulesUnparsed'; path = [IO.Path]::GetFullPath($rulesPath); message = $_.Exception.Message })
+        return [pscustomobject]@{ status = 'clean'; scanned_files = @(); findings = @(); warnings = @($warnings.ToArray()) }
+    }
+    try {
+        $visitedPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+        while (($rulesItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            if (-not $visitedPaths.Add($rulesItem.FullName)) { throw 'rules 連結存在循環。' }
+            $linkTargets = @($rulesItem.Target)
+            if ($linkTargets.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$linkTargets[0])) { throw '無法解析 rules 連結目標。' }
+            $linkTarget = [string]$linkTargets[0]
+            if (-not [IO.Path]::IsPathRooted($linkTarget)) { $linkTarget = Join-Path (Split-Path -Parent $rulesItem.FullName) $linkTarget }
+            $rulesItem = Get-Item -LiteralPath ([IO.Path]::GetFullPath($linkTarget)) -Force -ErrorAction Stop
+        }
+        $rulesPath = $rulesItem.FullName
+    } catch {
+        $warnings.Add([pscustomobject]@{ code = 'CodexRulesUnparsed'; path = [IO.Path]::GetFullPath($rulesPath); message = $_.Exception.Message })
+        return [pscustomobject]@{ status = 'clean'; scanned_files = @(); findings = @(); warnings = @($warnings.ToArray()) }
+    }
+    try { $ruleFiles = @(Get-ChildItem -LiteralPath $rulesPath -Filter '*.rules' -File -ErrorAction Stop) }
+    catch {
+        $warnings.Add([pscustomobject]@{ code = 'CodexRulesUnparsed'; path = [IO.Path]::GetFullPath($rulesPath); message = $_.Exception.Message })
+        $ruleFiles = @()
+    }
+    foreach ($ruleFile in $ruleFiles) {
+        $filePath = $ruleFile.FullName
+        $scanned.Add($filePath)
+        try {
+            $content = [IO.File]::ReadAllText($filePath)
+            $lexPattern = '(?<space>\s+)|(?<comment>\#[^\r\n]*)|(?<string>"(?:\\.|[^"\\])*"|''(?:\\.|[^''\\])*'')|(?<identifier>[A-Za-z_][A-Za-z_0-9]*)|(?<punct>[\[\](),=])|(?<invalid>.)'
+            $tokens = New-Object 'System.Collections.Generic.List[object]'
+            foreach ($lexeme in [regex]::Matches($content, $lexPattern)) {
+                if ($lexeme.Groups['space'].Success -or $lexeme.Groups['comment'].Success) { continue }
+                $kind = if ($lexeme.Groups['string'].Success) { 'string' } elseif ($lexeme.Groups['identifier'].Success) { 'identifier' } elseif ($lexeme.Groups['punct'].Success) { 'punct' } else { 'invalid' }
+                $decoded = if ($kind -eq 'string') { [regex]::Replace($lexeme.Value.Substring(1, $lexeme.Length - 2), '\\([\\"''])', '$1') } else { $lexeme.Value }
+                $tokens.Add([pscustomobject]@{ Kind = $kind; Value = $lexeme.Value; Text = $decoded; Offset = $lexeme.Index })
+            }
+            $tokenArray = $tokens.ToArray()
+            for ($cursor = 0; $cursor -lt $tokenArray.Count; $cursor++) {
+                if ($tokenArray[$cursor].Value -cne 'prefix_rule') { continue }
+                $ruleIndex = $cursor
+                try {
+                $ruleOffset = $tokenArray[$cursor].Offset
+                $cursor++
+                if ($cursor -ge $tokenArray.Count -or $tokenArray[$cursor].Value -ne '(') { throw 'prefix_rule 缺少括號。' }
+                $cursor++
+                $pattern = $null; $decision = $null
+                while ($cursor -lt $tokenArray.Count -and $tokenArray[$cursor].Value -ne ')') {
+                    if ($tokenArray[$cursor].Value -eq ',') { $cursor++; continue }
+                    $key = ''
+                    if (($cursor + 1) -lt $tokenArray.Count -and $tokenArray[$cursor + 1].Value -eq '=') { $key = $tokenArray[$cursor].Value; $cursor += 2 }
+                    if ($cursor -ge $tokenArray.Count) { throw '規則參數未結束。' }
+                    if ($tokenArray[$cursor].Value -eq '[') {
+                        $parsedList = Read-CodexRuleList -Tokens $tokenArray -Index ([ref]$cursor)
+                        if ($key -eq 'pattern' -or ($key -eq '' -and $null -eq $pattern)) { $pattern = $parsedList }
+                    } elseif ($tokenArray[$cursor].Kind -eq 'string') {
+                        if ($key -eq 'decision') { $decision = $tokenArray[$cursor].Text }
+                        $cursor++
+                    } else { throw '規則參數無法解析。' }
+                }
+                if ($cursor -ge $tokenArray.Count -or $null -eq $pattern -or $null -eq $decision) { throw '規則缺少 pattern 或 decision。' }
+                $positions = @($pattern)
+                if ($decision -ine 'allow' -or $positions.Count -lt 1 -or $positions.Count -gt 2) { continue }
+                $shellFound = $false
+                foreach ($candidate in @($positions[0])) {
+                    $leaf = ([string]$candidate -split '[\\/]')[-1] -replace '(?i)\.exe$', ''
+                    if ($leaf -in @('pwsh', 'powershell')) { $shellFound = $true }
+                }
+                $commandFound = $positions.Count -eq 1 -or @($positions[1] | Where-Object { $_ -ieq '-Command' }).Count -gt 0
+                if ($shellFound -and $commandFound) {
+                    $lineNumber = ([regex]::Matches($content.Substring(0, $ruleOffset), "`n")).Count + 1
+                    $findings.Add([pscustomobject]@{ path = $filePath; line = $lineNumber; prefix = (($positions | ForEach-Object { @($_) -join '/' }) -join ' ') })
+                }
+                } catch {
+                    $warnings.Add([pscustomobject]@{ code = 'CodexRulesUnparsed'; path = $filePath; message = $_.Exception.Message })
+                    $cursor = $ruleIndex
+                }
+            }
+        } catch { $warnings.Add([pscustomobject]@{ code = 'CodexRulesUnparsed'; path = $filePath; message = $_.Exception.Message }) }
+    }
+    $status = if ($findings.Count -gt 0) { 'rejected' } else { 'clean' }
+    return [pscustomobject]@{ status = $status; scanned_files = @($scanned.ToArray()); findings = @($findings.ToArray()); warnings = @($warnings.ToArray()) }
+}
+
 function Resolve-CodexHomeForEvidence {
     param(
         [string]$CodexHomePath

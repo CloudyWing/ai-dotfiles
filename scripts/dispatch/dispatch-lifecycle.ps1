@@ -163,11 +163,12 @@ function Throw-DispatchPreflightFailure {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$Message
+        [string]$Message,
+        [string]$Code = 'DispatchPreflightFailed'
     )
 
     $exception = New-Object System.InvalidOperationException($Message)
-    $exception.Data['errorCode'] = 'DispatchPreflightFailed'
+    $exception.Data['errorCode'] = $Code
     throw $exception
 }
 
@@ -230,6 +231,12 @@ function Invoke-Preflight {
     }
 
     $manifestInfo = Read-LineManifest -SourceRoot $sourceRootPath -LineSlug $LineSlug
+    $effectiveCodexHomeValue = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
+    $codexRulesCheck = Assert-CodexRulesSandboxIntegrity -CodexHome $effectiveCodexHomeValue
+    if ($codexRulesCheck.status -eq 'rejected') {
+        $ruleDetails = @($codexRulesCheck.findings | ForEach-Object { '{0}:{1} {2}' -f $_.path, $_.line, $_.prefix }) -join '; '
+        Throw-DispatchPreflightFailure -Code 'CodexRulesSandboxBypass' -Message ('CodexRulesSandboxBypass：' + $ruleDetails + '。請刪除或收窄規則，或改用無 rules 的專用帳號 home。')
+    }
     $pidCheck = Get-PidCheckResult -SourceRoot $sourceRootPath -LineSlug $LineSlug -WriteMode $WriteMode
     $dispatchPidBlockers = @(Get-BlockingDispatchPidRecords -PidCheckResult $pidCheck -DispatchSlug $DispatchSlug)
     if ($dispatchPidBlockers.Count -gt 0) {
@@ -409,7 +416,6 @@ function Invoke-Preflight {
     elseif ([string]::Equals($sourceRootPath, $executionRootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
         $prepareStatusValue = 'not-required'
     }
-    $effectiveCodexHomeValue = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHome
 
     $result = [ordered]@{
         operation       = 'Preflight'
@@ -438,6 +444,7 @@ function Invoke-Preflight {
         prepareResultSha256 = $prepareResultSha256Value
         prepareStatus = $prepareStatusValue
         effectiveCodexHome = $effectiveCodexHomeValue
+        codexRulesCheck = $codexRulesCheck
     }
 
     return $result
