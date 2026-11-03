@@ -850,6 +850,20 @@ function Get-DispatchStartStderrSummary {
         return ('stderr 摘要遮蔽失敗，已省略原文；file_size={0}; path={1}' -f $fileLength, $ErrorPath)
     }
 }
+function New-DispatchOrderPromptDirective {
+    [CmdletBinding()]
+    param([string]$DispatchKind, [string]$TaskType, [string]$SourceRoot, [string]$ExecutionRoot, [string]$LineSlug, [string]$DispatchSlug)
+
+    if ($DispatchKind -ne 'resource' -or $TaskType -eq 'advisor-consult') { return '' }
+    $locations = Get-DispatchOrderLocation -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $path = if ([string]::Equals($SourceRoot, $ExecutionRoot, [StringComparison]::OrdinalIgnoreCase)) { $locations.source } else { $locations.worktree }
+    $path = Resolve-AbsolutePath -Path $path
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw ('DispatchInputOrderMissing：派遣單不存在：' + $path)
+    }
+    return ('[派遣單] 本次派遣單的唯一位置為 ' + $path + '。主 prompt 若寫了其他位置，一律以此路徑為準。')
+}
+
 function Invoke-Start {
     $script:DispatchAdmissionStartedPid = 0
     $script:DispatchAdmissionSnapshotError = $null
@@ -1217,6 +1231,7 @@ function Invoke-Start {
             error = $null
         }
     }
+    $orderDirective = New-DispatchOrderPromptDirective -DispatchKind $dispatchKindValue -TaskType $TaskType -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
     $runRecord = [pscustomobject]@{
         schema = 'ai-sessions.dispatch-run.v1'
         run_id = $runId
@@ -1563,6 +1578,9 @@ function Invoke-Start {
     }
 
     $promptDirectives = New-Object System.Collections.Generic.List[string]
+    if (-not [string]::IsNullOrWhiteSpace($orderDirective)) {
+        $promptDirectives.Add($orderDirective)
+    }
     $promptRequiredIdentifier = Get-DispatchRequiredIdentifier -ConfiguredIdentifier ([string]$RequiredIdentifier) -DispatchKind ([string]$DispatchKind) -TaskType ([string]$TaskType) -EvidencePackPath ([string]$EvidencePackPath) -TargetPath @($TargetPath)
     $outsideRepositoryDirective = New-TargetsOutsideRepositoryPromptDirective -Preflight $preflight
     if (-not [string]::IsNullOrWhiteSpace($outsideRepositoryDirective)) {

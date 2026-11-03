@@ -483,6 +483,8 @@ Codex 已啟動但在根程序快照完成前早夭，或身分查詢拋出例�
 
 Stage A 在 Preflight 前檢查必要欄位與來源資訊，缺件時回報 `DispatchInputLineContextMissing`；派遣單的角色衝突及 Reviewer 需求摘要缺列分別回報 `DispatchInputRoleConflict` 與 `DispatchInputReviewerSummaryUnlisted`。
 
+非 advisor 的資源派遣由 Start 自動注入執行位置的派遣單絕對路徑，缺少派遣單時以 `DispatchInputOrderMissing` 拒絕。advisor 結案訊息的證據位置須填絕對路徑或絕對路徑加行號；引用 inline evidence pack 時填 sandbox 內 evidence pack 的絕對路徑及行號，例如 `<sandboxPath>:12`。
+
 Prompt 必須明列已驗證的 `LineContext`，格式如下：
 
 ```text

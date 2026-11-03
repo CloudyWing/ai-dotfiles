@@ -7497,6 +7497,25 @@ if ($Phase -ge 6) {
         Copy-Item -LiteralPath $paths.source -Destination $paths.worktree
         Assert-True (Test-Path -LiteralPath $paths.worktree -PathType Leaf) '準備後 worktree 派遣單應存在。'
     }
+    Invoke-Case 'Phase 6 DD-PROMPT-ORDER 派遣單路徑與缺件' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-prompt-order') -TaskBody '檢查目標'
+        $execution = Join-Path $f.Root 'worktree'
+        $paths = Get-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+        $direct = New-DispatchOrderPromptDirective -DispatchKind 'resource' -TaskType 'resource-task' -SourceRoot $f.Root -ExecutionRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+        Assert-True ($direct.Contains('[派遣單]') -and $direct.Contains($paths.source)) 'direct-write 必須使用來源派遣單。'
+        $missing = $false
+        try { $null = New-DispatchOrderPromptDirective -DispatchKind 'resource' -TaskType 'resource-task' -SourceRoot $f.Root -ExecutionRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test' } catch { $missing = $_.ToString().Contains('DispatchInputOrderMissing') }
+        Assert-True $missing '缺少 worktree 派遣單時必須拒絕。'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $paths.worktree) -Force
+        Copy-Item -LiteralPath $paths.source -Destination $paths.worktree
+        $directive = New-DispatchOrderPromptDirective -DispatchKind 'resource' -TaskType 'resource-task' -SourceRoot $f.Root -ExecutionRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+        $prompt = New-DispatchPrompt -PromptPath (Join-Path $f.Root 'prompt.md') -HistoryRoot $f.Root -Timestamp 'dd' -Directive @($directive) -OutputPath (Join-Path $execution 'prompt.md')
+        Assert-True ((Get-Content -Raw -LiteralPath $prompt).Contains($paths.worktree)) '產生的 prompt 必須包含 worktree 派遣單路徑。'
+        Assert-True ([string]::IsNullOrEmpty((New-DispatchOrderPromptDirective -DispatchKind 'workflow' -TaskType 'workflow-implement' -SourceRoot $f.Root -ExecutionRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test'))) 'workflow 不注入派遣單。'
+        Assert-True ([string]::IsNullOrEmpty((New-DispatchOrderPromptDirective -DispatchKind 'resource' -TaskType 'advisor-consult' -SourceRoot $f.Root -ExecutionRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test'))) 'advisor 不注入派遣單。'
+        $startText = ($functions | Where-Object { $_.Name -eq 'Invoke-Start' } | Select-Object -First 1).Extent.Text
+        Assert-True ($startText.IndexOf('New-DispatchOrderPromptDirective') -lt $startText.IndexOf('Write-DispatchRunRecord') -and $startText.Contains('$promptDirectives.Add($orderDirective)')) 'Start 必須先檢查派遣單，再寫入 RunRecord 並注入 prompt。'
+    }
     function Set-Phase6PrepareRequest {
         param(
             [Parameter(Mandatory)][string]$Dispatch,
@@ -8467,6 +8486,34 @@ if ($Phase -ge 6) {
     $phase6StartSuccessPreflightPath = Join-Path $fixtureRoot 'phase6-start-success-preflight.json'
     Write-Utf8NoBom -Path $phase6StartSuccessPreflightPath -Content (([ordered]@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = 'line-a'; dispatchSlug = 'phase6-start-success'; writeMode = 'readonly' } | ConvertTo-Json) + "
 ")
+    Invoke-Case 'Phase 6 DD-PROMPT-ORDER Start 缺檔不建立 RunRecord' {
+        $dispatch = 'dd-order-start-missing'
+        $preflightPath = Join-Path $fixtureRoot 'dd-order-start-preflight.json'
+        Write-Utf8NoBom -Path $preflightPath -Content (([ordered]@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = 'line-a'; dispatchSlug = $dispatch; writeMode = 'write'; dispatchKind = 'resource' } | ConvertTo-Json) + "`r`n")
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:DispatchRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $dispatch
+        $script:PreflightResultPath = $preflightPath
+        $script:PromptPath = $phase6PromptPath
+        $script:PrepareResultPath = $null
+        $script:ResumeThreadId = $null
+        $script:LastMessagePath = $null
+        $script:ThreadIdPath = $null
+        $script:PidRecordPath = $null
+        $script:ScopePlanPath = $null
+        $script:DispatchKind = 'resource'
+        $script:TaskType = 'resource-task'
+        $script:SessionMode = 'cold-start'
+        $script:InvocationBoundParameters = [ordered]@{}
+        $beforeStartCalls = $script:startCalls
+        $rejected = $false
+        try { $null = Invoke-Start } catch { $rejected = $_.Exception.Message.Contains('DispatchInputOrderMissing') }
+        $runDirectory = Get-DispatchRunDirectory -SourceRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $dispatch
+        $runRecords = @(if (Test-Path -LiteralPath $runDirectory) { Get-ChildItem -LiteralPath $runDirectory -Filter '*.json' })
+        Assert-True ($rejected -and $script:startCalls -eq $beforeStartCalls -and $runRecords.Count -eq 0) 'Start 缺少派遣單時必須拒絕，且不啟動程序或建立 RunRecord。'
+    }
     Invoke-Case 'Phase 6 Start preserves fallback CodexHome and RunRecord launch state' {
     $hadCodexHome = Test-Path Env:CODEX_HOME
     $oldCodexHome = $env:CODEX_HOME
@@ -9526,6 +9573,23 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
 }
 
 if ($Phase -ge 8) {
+    Invoke-Case 'Phase 8 DD-ADVISOR-EVIDENCE-LOC 結案證據位置' {
+        $sandboxPath = Join-Path $fixtureRoot 'evidence-pack.md'
+        $pack = [pscustomobject]@{ content = 'evidence'; sha256 = ('a' * 64); length = 8; sandboxPath = $sandboxPath }
+        $directive = New-AdvisorInlineEvidenceDirective -EvidencePackInfo $pack
+        $gate = Test-AdvisorInlineEvidenceDirective -PromptContent $directive -EvidencePackInfo $pack
+        Assert-True ($gate.valid -and $directive.Contains(($sandboxPath + ':12'))) '指示必須含絕對路徑與行號範例。'
+        $withoutLocation = $directive.Replace((Get-AdvisorEvidenceLocationDirective -EvidencePackInfo $pack), '')
+        Assert-True (-not (Test-AdvisorInlineEvidenceDirective -PromptContent $withoutLocation -EvidencePackInfo $pack).valid) '移除證據位置指示必須拒絕。'
+        $runId = [guid]::NewGuid().ToString('D')
+        $checkpointPath = Get-DispatchInterruptionCheckpointPath -SourceRoot $fixtureRoot -LineSlug 'dd-line' -DispatchSlug 'dd-test' -RunId $runId
+        $message = "已確認結論：問題已回答。`n未完成單位：無`n證據位置：$($sandboxPath):12"
+        $args = @{ Path = $checkpointPath; SourceRoot = $fixtureRoot; ExecutionRoot = $fixtureRoot; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; RunId = $runId; SelectedUnits = @('question-1') }
+        $valid = Get-DispatchInterruptionCheckpointWithMessageFallback @args -Message $message
+        Assert-True (@($valid.confirmed_units).Count -eq 1) '絕對路徑加行號必須認列已完成單位。'
+        $invalid = Get-DispatchInterruptionCheckpointWithMessageFallback @args -Message ($message.Replace(($sandboxPath + ':12'), '內嵌 evidence pack'))
+        Assert-True (@($invalid.confirmed_units).Count -eq 0 -and $invalid.message_fallback_error.Contains('C:\path\evidence-pack.md:12')) '描述文字必須拒絕並提供範例。'
+    }
     Invoke-Case 'Phase 8 DD-EVID 必要內容與完整訊息' {
         . (Join-Path $scriptsRoot 'dispatch\advisor-evidence.ps1')
         $content = @'

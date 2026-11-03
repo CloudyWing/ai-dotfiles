@@ -816,7 +816,7 @@ function Get-DispatchMessageInterruptionCheckpoint {
     }
 
     if (-not (Test-DispatchFullyQualifiedPath -Path $values.evidence_location)) {
-        $emptyResult.validation_error = '結案訊息的證據位置必須是絕對路徑或絕對路徑加行號。'
+        $emptyResult.validation_error = '結案訊息的證據位置必須是絕對路徑或絕對路徑加行號，例如 C:\path\evidence-pack.md:12。'
         return $emptyResult
     }
 

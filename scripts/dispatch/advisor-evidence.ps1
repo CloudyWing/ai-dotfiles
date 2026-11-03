@@ -763,7 +763,14 @@ function New-AdvisorInlineEvidenceDirective {
         '---BEGIN INLINE EVIDENCE PACK---' + "`r`n" +
         $contentWithLineBreak +
         '---END INLINE EVIDENCE PACK---' + "`r`n" +
-        '執行端只能依上述 inline evidence pack 回答。禁止 repository 探索、檔案掃描、檔案變更與外部派遣。')
+        '執行端只能依上述 inline evidence pack 回答。禁止 repository 探索、檔案掃描、檔案變更與外部派遣。' + "`r`n" +
+        (Get-AdvisorEvidenceLocationDirective -EvidencePackInfo $EvidencePackInfo))
+}
+
+function Get-AdvisorEvidenceLocationDirective {
+    param([Parameter(Mandatory)][psobject]$EvidencePackInfo)
+    $sandboxPath = [string]$EvidencePackInfo.sandboxPath
+    return ('結案訊息「證據位置」一律填絕對路徑或絕對路徑加行號。證據僅內嵌於 evidence pack 時，填 evidence pack 的絕對路徑 ' + $sandboxPath + ' 加行號，例如 ' + $sandboxPath + ':12，不得填「內嵌 evidence pack」等敘述。')
 }
 
 function Test-AdvisorInlineEvidenceDirective {
@@ -787,13 +794,15 @@ function Test-AdvisorInlineEvidenceDirective {
         $PromptContent.Contains($beginMarker) -and
         $PromptContent.Contains($endMarker)
     $hasFullContent = $PromptContent.Contains($content)
+    $hasEvidenceLocationDirective = $PromptContent.Contains((Get-AdvisorEvidenceLocationDirective -EvidencePackInfo $EvidencePackInfo))
     return [ordered]@{
-        valid = $hasMarkers -and $hasFullContent
+        valid = $hasMarkers -and $hasFullContent -and $hasEvidenceLocationDirective
         has_markers = $hasMarkers
         has_full_content = $hasFullContent
+        has_evidence_location_directive = $hasEvidenceLocationDirective
         expected_sha256 = [string]$EvidencePackInfo.sha256
         expected_length = [int64]$EvidencePackInfo.length
-        reason = if ($hasMarkers -and $hasFullContent) { $null } else { 'prompt 缺少完整 evidence pack、hash、length 或 inline marker。' }
+        reason = if ($hasMarkers -and $hasFullContent -and $hasEvidenceLocationDirective) { $null } else { 'prompt 缺少完整 evidence pack、hash、length、inline marker 或證據位置格式要求。' }
     }
 }
 
