@@ -496,6 +496,70 @@ function Read-CodexAccountConfiguration {
     catch { throw ('CodexAccountConfigurationInvalid：' + $_.Exception.Message) }
 }
 
+function Get-CodexAccountProfileLinkStatus {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccountHome,
+
+        [Parameter(Mandatory)]
+        [string]$CodexDirectory,
+
+        [Parameter(Mandatory)]
+        [string[]]$ProfileName
+    )
+
+    foreach ($name in $ProfileName) {
+        $fileName = $name + '.config.toml'
+        $linkPath = Join-Path -Path $AccountHome -ChildPath $fileName
+        $expectedTarget = Join-Path -Path $CodexDirectory -ChildPath $fileName
+        $state = 'missing'
+        $item = $null
+        try { $item = Get-Item -LiteralPath $linkPath -Force -ErrorAction Stop }
+        catch { $item = $null }
+        if ($null -ne $item) {
+            $linkTypeProperty = $item.PSObject.Properties['LinkType']
+            $targetProperty = $item.PSObject.Properties['Target']
+            $linkType = if ($null -eq $linkTypeProperty) { '' } else { [string]$linkTypeProperty.Value }
+            $actualTarget = if ($null -eq $targetProperty) { '' } else { [string](@($targetProperty.Value) | Select-Object -First 1) }
+            if ($linkType -ceq 'SymbolicLink' -and -not [string]::IsNullOrWhiteSpace($actualTarget)) {
+                if (-not [IO.Path]::IsPathRooted($actualTarget)) {
+                    $actualTarget = Join-Path -Path (Split-Path -Parent $linkPath) -ChildPath $actualTarget
+                }
+                $actualFullPath = [IO.Path]::GetFullPath($actualTarget).TrimEnd('\', '/')
+                $expectedFullPath = [IO.Path]::GetFullPath($expectedTarget).TrimEnd('\', '/')
+                $state = if ([string]::Equals($actualFullPath, $expectedFullPath, [StringComparison]::OrdinalIgnoreCase)) { 'ok' } else { 'wrong-target' }
+            }
+            else {
+                $state = 'not-link'
+            }
+        }
+        [pscustomobject]@{
+            name = $name
+            path = $linkPath
+            expected_target = $expectedTarget
+            state = $state
+        }
+    }
+}
+
+function Test-CodexLegacyDefaultProfile {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Directory
+    )
+
+    $legacyPath = Join-Path -Path $Directory -ChildPath ('default' + '.config.toml')
+    try {
+        $null = Get-Item -LiteralPath $legacyPath -Force -ErrorAction Stop
+        return $true
+    }
+    catch {
+        return $false
+    }
+}
+
 function Resolve-CodexAccountSelection {
     [CmdletBinding()]
     param([string]$CodexHomePath, [string]$Profile, [string]$MachineConfigPath)
@@ -513,6 +577,10 @@ function Resolve-CodexAccountSelection {
     return [pscustomobject]@{ CodexHome = $homePath; AccountName = $name }
 }
 
+function Get-CodexDispatchProfileNames {
+    return [string[]]@('implement', 'review', 'deep-review', 'scan', 'advisor', 'intensive')
+}
+
 function Resolve-ProfileConfigPath {
     param(
         [string]$CodexHome,
@@ -520,19 +588,18 @@ function Resolve-ProfileConfigPath {
         [string]$Profile
     )
 
-    if ([string]::IsNullOrWhiteSpace($CodexHome) -or $Profile -notin @('default', 'advisor', 'intensive')) {
+    $canonicalProfile = $null
+    foreach ($name in (Get-CodexDispatchProfileNames)) {
+        if ([string]::Equals($name, $Profile, [StringComparison]::OrdinalIgnoreCase)) {
+            $canonicalProfile = $name
+            break
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace($CodexHome) -or $null -eq $canonicalProfile) {
         return $null
     }
     $homePath = Resolve-AbsolutePath -Path $CodexHome
-    $fileName = if ($Profile -eq 'advisor') {
-        'advisor.config.toml'
-    }
-    elseif ($Profile -eq 'intensive') {
-        'intensive.config.toml'
-    }
-    else {
-        'default.config.toml'
-    }
+    $fileName = $canonicalProfile + '.config.toml'
     $configPath = Join-Path -Path $homePath -ChildPath $fileName
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         return $null
@@ -788,6 +855,7 @@ function Get-ModelRolloutDiagnosticEvidence {
 }
 
 function Invoke-ModelEnvironmentDiagnostic {
+    Assert-DispatchProfileSelected -Operation 'DiagnoseModelEnvironment'
     if ([string]::IsNullOrWhiteSpace($ThreadId)) {
         throw 'DiagnoseModelEnvironment 必須提供 ThreadId。'
     }

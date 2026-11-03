@@ -28,7 +28,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1494,6 +1494,13 @@ while (-not [string]::IsNullOrWhiteSpace($fixturePathComponent)) {
     $fixturePathComponent = $fixtureParent
 }
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
+# 所有檔位的設定檔皆為必備。以 fixture 內的 CODEX_HOME 取代真實的 ~/.codex，使未指定 CodexHome 的案例不讀取使用者環境。
+$testCodexHome = Join-Path $fixtureRoot 'test-codex-home'
+New-Item -ItemType Directory -Path $testCodexHome -Force | Out-Null
+foreach ($testProfileFileName in @('config.toml', 'implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml', 'intensive.config.toml')) {
+    [IO.File]::WriteAllText((Join-Path $testCodexHome $testProfileFileName), ("model = `"fixture-model`"`r`nmodel_reasoning_effort = `"high`"`r`n"), (New-Object System.Text.UTF8Encoding($false)))
+}
+$env:CODEX_HOME = $testCodexHome
 $script:SourceRoot = $fixtureRoot
 $script:ExecutionRoot = $fixtureRoot
 $script:TargetPath = @()
@@ -1873,6 +1880,9 @@ function Invoke-Case {
         }
         elseif ($script:focusedCase -ceq 'INTENSIVE-PROFILE') {
             $Name -match '^Phase (4|5|8|9) INTENSIVE-PROFILE' -or $cleanupMatch
+        }
+        elseif ($script:focusedCase -ceq 'PROFILE-SPLIT') {
+            $Name -match '^Phase (2|4|5|8|9) PROFILE-SPLIT' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'NETWORK-READONLY') {
             $Name -match '^Phase 4 network (readonly Start |parent options)' -or $Name -ceq 'Start 與 Resume 沿用同一 baseline' -or $cleanupMatch
@@ -2577,7 +2587,7 @@ function New-TestRun {
     if ([string]::IsNullOrWhiteSpace($scopePlanRootRunId)) {
         $scopePlanRootRunId = $id
     }
-    $fixtureParentOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
+    $fixtureParentOptions = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
     $fixtureModelEvidence = New-ModelEvidence -RequestedModel (New-RequestedDispatchEvidence -Value $null -Field 'Model') -ResolvedModel (New-ConfirmedDispatchEvidence -Value 'fixture-model' -Source 'profile-config' -Field 'model') -RuntimeModel $null -RequestedReasoningEffort (New-RequestedDispatchEvidence -Value $null -Field 'ReasoningEffort') -ResolvedReasoningEffort (New-ConfirmedDispatchEvidence -Value 'high' -Source 'profile-config' -Field 'model_reasoning_effort') -RuntimeReasoningEffort $null
     if (-not (Test-Path $preflightPath)) { Write-Utf8NoBom $preflightPath (([ordered]@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = $Line; dispatchSlug = $Dispatch; writeMode = 'readonly' } | ConvertTo-Json)) }
     if (-not (Test-Path $scope)) { Write-Utf8NoBom $scope '{}' }
@@ -3744,13 +3754,15 @@ foreach ($parameter in $ast.ParamBlock.Parameters) {
     if ($null -ne $parameter.DefaultValue) { Set-Variable -Name $name -Value (& ([scriptblock]::Create($parameter.DefaultValue.Extent.Text))) }
     else { Set-Variable -Name $name -Value $null }
 }
+# 入口 -Profile 無預設值，測試的 Start 案例固定指定實作檔位。
+$Profile = 'implement'
 $SourceRoot = $fixtureRoot
 $ExecutionRoot = $fixtureRoot
 $LineSlug = 'line-a'
 $DispatchSlug = 'dispatch-a'
 $startCodexHome = Join-Path $fixtureRoot 'start-codex-home'
 New-Item -ItemType Directory -Path $startCodexHome -Force | Out-Null
-Write-Utf8NoBom (Join-Path $startCodexHome 'default.config.toml') "model = 'fixture-model'
+Write-Utf8NoBom (Join-Path $startCodexHome 'implement.config.toml') "model = 'fixture-model'
 model_reasoning_effort = 'high'
 "
 $CodexHome = $startCodexHome
@@ -3912,7 +3924,7 @@ Invoke-Case 'Phase 1 advisor active source removal' {
 if ($Phase -ge 2) {
     $profileFixtureRoot = Join-Path $fixtureRoot 'profile-evidence'
     New-Item -ItemType Directory -Path $profileFixtureRoot -Force | Out-Null
-    $defaultProfilePath = Join-Path $profileFixtureRoot 'default.config.toml'
+    $defaultProfilePath = Join-Path $profileFixtureRoot 'implement.config.toml'
     Write-Utf8NoBom -Path $defaultProfilePath -Content ((@(
         'model = "fixture-model"'
         'model_reasoning_effort = "high"'
@@ -3923,17 +3935,17 @@ if ($Phase -ge 2) {
     )) -join "
 ")
     Invoke-Case 'Profile top-level model／effort evidence' {
-        $profileEvidence = Read-ProfileModelEvidence -ConfigPath $defaultProfilePath -Profile 'default'
+        $profileEvidence = Read-ProfileModelEvidence -ConfigPath $defaultProfilePath -Profile 'implement'
         Assert-True ((Get-DispatchEvidenceValue -Evidence $profileEvidence.model) -ceq 'fixture-model' -and $profileEvidence.model.line -eq 1) 'Profile model evidence 異常。'
         Assert-True ((Get-DispatchEvidenceValue -Evidence $profileEvidence.reasoning_effort) -ceq 'high' -and $profileEvidence.reasoning_effort.line -eq 2) 'Profile effort evidence 異常。'
         Assert-True ($profileEvidence.model.source -eq 'profile-config' -and $profileEvidence.reasoning_effort.source -eq 'profile-config') 'Profile evidence source 異常。'
     }
     Invoke-Case 'Profile agents 欄位不冒充主派工值' {
-        $profileEvidence = Read-ProfileModelEvidence -ConfigPath $defaultProfilePath -Profile 'default'
+        $profileEvidence = Read-ProfileModelEvidence -ConfigPath $defaultProfilePath -Profile 'implement'
         Assert-True ((Get-DispatchEvidenceValue -Evidence $profileEvidence.model) -cne 'subagent-model' -and (Get-DispatchEvidenceValue -Evidence $profileEvidence.reasoning_effort) -cne 'low') '讀取了 agents table 的 subagent 值。'
     }
     Invoke-Case 'Profile 缺檔與 top-level 衝突轉 unknown' {
-        $missing = Read-ProfileModelEvidence -ConfigPath (Join-Path $profileFixtureRoot 'missing.toml') -Profile 'default'
+        $missing = Read-ProfileModelEvidence -ConfigPath (Join-Path $profileFixtureRoot 'missing.toml') -Profile 'implement'
         Assert-True ($missing.model.status -eq 'unknown' -and $missing.reasoning_effort.status -eq 'unknown') '缺檔未轉 unknown。'
         $conflictPath = Join-Path $profileFixtureRoot 'conflict.toml'
         $conflictContent = @(
@@ -3944,7 +3956,7 @@ if ($Phase -ge 2) {
 "
         Write-Utf8NoBom -Path $conflictPath -Content ($conflictContent + "
 ")
-        $conflict = Read-ProfileModelEvidence -ConfigPath $conflictPath -Profile 'default'
+        $conflict = Read-ProfileModelEvidence -ConfigPath $conflictPath -Profile 'implement'
         Assert-True ($conflict.model.status -eq 'unknown' -and $conflict.model.source -eq 'profile-config-conflict') '衝突 assignment 未轉 unknown。'
     }
     Invoke-Case 'Profile 不支援名稱回傳 unknown path' {
@@ -3978,7 +3990,7 @@ if ($Phase -ge 2) {
             '-Operation'
             'DiagnoseModelEnvironment'
             '-Profile'
-            'default'
+            'implement'
             '-CodexHome'
             $DiagnosticCodexHome
             '-ThreadId'
@@ -4016,10 +4028,30 @@ if ($Phase -ge 2) {
     Write-Utf8NoBom -Path $foreignRolloutPath -Content (($foreignRolloutEvents | ForEach-Object { $_ | ConvertTo-Json -Compress -Depth 8 }) -join "`r`n")
     Invoke-Case '明確診斷 operation 只採用 exact session 並輸出 profile 與 actual' {
         $diagnostic = Invoke-ModelEnvironmentDiagnosticFixture -DiagnosticCodexHome $profileFixtureRoot -DiagnosticThreadId $rolloutThread -DiagnosticStartedAtUtc $startedAtUtc
-        Assert-True ($diagnostic.operation -eq 'DiagnoseModelEnvironment' -and $diagnostic.profile -eq 'default') '明確診斷 operation 或 profile 輸出不符。'
+        Assert-True ($diagnostic.operation -eq 'DiagnoseModelEnvironment' -and $diagnostic.profile -eq 'implement') '明確診斷 operation 或 profile 輸出不符。'
         Assert-True ((Get-DispatchEvidenceValue -Evidence $diagnostic.profile_model) -ceq 'fixture-model' -and $diagnostic.profile_model.source -eq 'profile-config') '診斷未輸出 profile 設定證據。'
         Assert-True ((Get-DispatchEvidenceValue -Evidence $diagnostic.actual_model) -ceq 'fixture-model' -and (Get-DispatchEvidenceValue -Evidence $diagnostic.actual_reasoning_effort) -ceq 'high' -and $diagnostic.actual_model.source -eq 'rollout') '診斷未回報指定 thread 的 actual evidence。'
         Assert-True (@($diagnostic.rollout_paths).Count -eq 1 -and [String]::Equals([string]$diagnostic.rollout_paths[0], $rolloutPath, [StringComparison]::OrdinalIgnoreCase)) '診斷採用了其他 thread 的 rollout。'
+    }
+    Invoke-Case 'Phase 2 PROFILE-SPLIT diagnostic requires profile and reads scan evidence' {
+        $savedProfile = $script:Profile
+        $savedHome = $script:CodexHome
+        $savedThread = $script:ThreadId
+        $savedStarted = $script:StartedAtUtc
+        try {
+            $script:Profile = ''
+            $missing = $null
+            try { Invoke-ModelEnvironmentDiagnostic | Out-Null } catch { $missing = $_.Exception.Message }
+            Assert-True ($missing -match 'ProfileRequired') '診斷缺少 profile 時未拒絕。'
+            Write-Utf8NoBom -Path (Join-Path $profileFixtureRoot 'scan.config.toml') -Content "model = 'scan-model'`nmodel_reasoning_effort = 'medium'`n"
+            $script:Profile = 'scan'
+            $script:CodexHome = $profileFixtureRoot
+            $script:ThreadId = $rolloutThread
+            $script:StartedAtUtc = $startedAtUtc
+            $result = Invoke-ModelEnvironmentDiagnostic
+            Assert-True ((Get-DispatchEvidenceValue -Evidence $result.profile_model) -ceq 'scan-model' -and (Get-DispatchEvidenceValue -Evidence $result.profile_reasoning_effort) -ceq 'medium') 'scan 設定證據不符。'
+        }
+        finally { $script:Profile = $savedProfile; $script:CodexHome = $savedHome; $script:ThreadId = $savedThread; $script:StartedAtUtc = $savedStarted }
     }
     Invoke-Case '明確診斷 operation 沒有 exact session 時回報 unknown' {
         $diagnostic = Invoke-ModelEnvironmentDiagnosticFixture -DiagnosticCodexHome $profileFixtureRoot -DiagnosticThreadId ([guid]::NewGuid().ToString('D')) -DiagnosticStartedAtUtc $startedAtUtc
@@ -4526,7 +4558,7 @@ Invoke-Case 'Start prepared → started 與唯一事件路徑' {
     }
     $record = Read-DispatchRunRecord -Path $script:startedResult.runRecordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
     Assert-True ($record.launch_state -eq 'started' -and $record.thread_id -eq $script:testThread -and $record.event_stream_path.Contains($record.run_id)) 'Start 紀錄不符。'
-    Assert-True ($script:startedResult.profile -eq 'default' -and $record.parent_options.profile -eq 'default') 'Start 未保留選定 Profile。'
+    Assert-True ($script:startedResult.profile -eq 'implement' -and $record.parent_options.profile -eq 'implement') 'Start 未保留選定 Profile。'
     Assert-True ($record.model_evidence.runtime_verifiable.status -eq 'unknown' -and $record.model_evidence.runtime_verifiable.source -eq 'public-actual-unavailable') 'Start 把 requested 或 profile config 寫成 actual。'
 }
 Invoke-Case 'Start 啟動失敗保存 launch-failed' {
@@ -4679,7 +4711,7 @@ Invoke-Case 'BATCH5 Start relay failure masks Authorization in exception record 
     $script:TargetPath = @()
     $script:TaskType = 'implement'
     $script:SessionMode = 'cold-start'
-    $script:Profile = 'default'
+    $script:Profile = 'implement'
     $script:WriteMode = 'readonly'
     $script:InvocationBoundParameters = [ordered]@{}
     $inspectResult = Invoke-Inspect
@@ -4836,7 +4868,7 @@ if ($Phase -ge 3) {
     $phase3MismatchAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-model-mismatch' -CodexHome (Join-Path $fixtureRoot 'phase3-mismatch-home')
     $phase3MismatchHome = Join-Path $fixtureRoot 'phase3-mismatch-home'
     New-Item -ItemType Directory -Path $phase3MismatchHome -Force | Out-Null
-    Write-Utf8NoBom -Path (Join-Path $phase3MismatchHome 'default.config.toml') -Content "model = 'other-model'
+    Write-Utf8NoBom -Path (Join-Path $phase3MismatchHome 'implement.config.toml') -Content "model = 'other-model'
 model_reasoning_effort = 'high'
 "
     Invoke-Case 'Resume requested model 與 profile 不符時在 process.Start 前阻擋' {
@@ -4868,7 +4900,7 @@ model_reasoning_effort = 'high'
 
     $phase3ProfileAnchor = New-TestRun -Line 'line-a' -Dispatch 'phase3-profile-change' -CodexHome (Join-Path $fixtureRoot 'phase3-profile-change-home')
     $phase3ProfileHome = Join-Path $fixtureRoot 'phase3-profile-change-home'
-    $phase3ProfileConfigPath = Join-Path $phase3ProfileHome 'default.config.toml'
+    $phase3ProfileConfigPath = Join-Path $phase3ProfileHome 'implement.config.toml'
     New-Item -ItemType Directory -Path $phase3ProfileHome -Force | Out-Null
     $phase3ProfileConfigContent = "model = 'fixture-model'
 model_reasoning_effort = 'high'
@@ -6051,7 +6083,7 @@ if ($Phase -ge 4) {
             $script:TaskType = 'implement'
             $script:WriteMode = 'readonly'
             $script:SessionMode = 'cold-start'
-            $script:Profile = 'default'
+            $script:Profile = 'implement'
             $script:ProfileExplicit = $true
             $script:CodexParentOption = @()
             $script:CodexParentOptionExplicit = $false
@@ -6098,24 +6130,24 @@ if ($Phase -ge 4) {
             $readonly = Resolve-DispatchNetworkParentOptions -Sandbox $case[0] -WriteMode $case[1] -Options @() -Anchor $null
             Assert-True ($readonly.Count -eq 0) 'readonly 不可加入網路選項。'
         }
-        $anchor = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $options
+        $anchor = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $options
         $explicit = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=test') -OptionsProvided $true -Anchor $anchor
-        $resumed = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $explicit -CodexParentOptionProvided $true -Anchor $anchor
-        $omitted = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $anchor
+        $resumed = Resolve-ParentOptionsForStart -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $explicit -CodexParentOptionProvided $true -Anchor $anchor
+        $omitted = Resolve-ParentOptionsForStart -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $anchor
         Assert-True ($null -eq $resumed.code -and $null -eq $omitted.code -and $resumed.model.fingerprint -ceq $anchor.fingerprint -and $omitted.model.fingerprint -ceq $anchor.fingerprint) '新 anchor 續行或 fingerprint 不符。'
-        $old = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @('--note=old')
+        $old = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @('--note=old')
         $oldOptions = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options @('--note=old') -OptionsProvided $true -Anchor $old
-        $oldResume = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $oldOptions -CodexParentOptionProvided $true -Anchor $old
+        $oldResume = Resolve-ParentOptionsForStart -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $oldOptions -CodexParentOptionProvided $true -Anchor $old
         Assert-True ($null -eq $oldResume.code -and $oldResume.model.fingerprint -ceq $old.fingerprint) '舊 anchor 續行已改變。'
-        $oldNetwork = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption (@('--note=old') + $network)
+        $oldNetwork = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption (@('--note=old') + $network)
         $oldNetworkOptions = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=old') -OptionsProvided $true -Anchor $oldNetwork
         Assert-True (Compare-DispatchStringArrays -Left $oldNetworkOptions -Right @($oldNetwork.codex_parent_option)) '舊網路 anchor 不可補加選項。'
         if (Test-IsWindowsPlatform) {
             $legacyOptions = @('--note=old') + $network + @('-c', 'windows.sandbox="mxc"', '-c', "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='$(Join-Path $spaceRoot '.local\ai-sessions\scratch\nuget\http-cache')'", '-c', "shell_environment_policy.set.NUGET_PACKAGES='$(Join-Path $spaceRoot '.local\ai-sessions\scratch\nuget\packages')'")
-            $legacyAnchor = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $legacyOptions
+            $legacyAnchor = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $legacyOptions
             $legacyExplicit = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=old') -OptionsProvided $true -Anchor $legacyAnchor
-            $legacyResume = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $legacyExplicit -CodexParentOptionProvided $true -Anchor $legacyAnchor
-            $legacyOmitted = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $legacyAnchor
+            $legacyResume = Resolve-ParentOptionsForStart -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $legacyExplicit -CodexParentOptionProvided $true -Anchor $legacyAnchor
+            $legacyOmitted = Resolve-ParentOptionsForStart -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $legacyAnchor
             Assert-True ((Compare-DispatchStringArrays -Left $legacyExplicit -Right $legacyOptions) -and $null -eq $legacyResume.code -and $null -eq $legacyOmitted.code -and $legacyResume.model.fingerprint -ceq $legacyAnchor.fingerprint -and $legacyOmitted.model.fingerprint -ceq $legacyAnchor.fingerprint) '舊 NuGet 路徑 anchor 續行或 fingerprint 已改變。'
             $mixed = [pscustomobject]@{ codex_parent_option = @($legacyOptions) }
             $mixed.codex_parent_option[8] = $expected[8]
@@ -6143,9 +6175,9 @@ if ($Phase -ge 4) {
     }
 
     Invoke-Case 'Phase 4 parent options 保存 fingerprint 與 literal arrays' {
-        $parent = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\work\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--model=fixture-model', '--note=中文 $literal,with,comma')
+        $parent = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\work\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--model=fixture-model', '--note=中文 $literal,with,comma')
         $same = Compare-ParentOptions -Current $parent -Anchor $parent
-        $changed = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\work\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--model=fixture-model', '--note=changed')
+        $changed = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\work\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--model=fixture-model', '--note=changed')
         $mismatch = Compare-ParentOptions -Current $changed -Anchor $parent
         Assert-True ($parent.fingerprint -match '^[a-f0-9]{64}$' -and $same.matches -and -not $mismatch.matches -and $mismatch.code -eq 'ParentOptionsMismatch' -and ($mismatch.differences -contains 'codex_parent_option')) 'parent_options fingerprint 或逐欄 mismatch 異常。'
     }
@@ -6154,17 +6186,23 @@ if ($Phase -ge 4) {
 
 
     Invoke-Case 'Phase 4 continuation omitted parent options restores anchor' {
-        $anchorOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--note=中文 $literal,with,comma')
-        $restored = Resolve-ParentOptionsForStart -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory $null -Search $false -CodexParentOption $null -Anchor $anchorOptions
+        $anchorOptions = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @('C:\comma,name\空白 路徑\$literal', 'C:\中文 路徑') -Search $true -CodexParentOption @('--note=中文 $literal,with,comma')
+        $restored = Resolve-ParentOptionsForStart -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory $null -Search $false -CodexParentOption $null -Anchor $anchorOptions
         Assert-True ($restored.restored -and $null -eq $restored.code -and (Compare-ParentOptions -Current $restored.model -Anchor $anchorOptions).matches) '續行未從 anchor 還原省略的父層選項。'
+    }
+
+    Invoke-Case 'Phase 4 PROFILE-SPLIT legacy anchor rejects continuation with implement' {
+        $anchor = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
+        $result = Resolve-ParentOptionsForStart -Profile 'implement' -ProfileProvided $true -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -Anchor $anchor
+        Assert-True ($result.code -ceq 'ParentOptionsMismatch' -and $result.differences -contains 'profile') '舊 anchor 未拒絕跨檔位續行。'
     }
 
     Invoke-Case 'Phase 4 INTENSIVE-PROFILE continuation keeps parent options profile-bound' {
         $options = @('--note=intensive-continuation')
         $anchor = New-ParentOptionsModel -Profile 'intensive' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $true -CodexParentOption $options
-        $inherited = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $false -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $anchor
+        $inherited = Resolve-ParentOptionsForStart -Profile 'implement' -ProfileProvided $false -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $anchor
         $sameProfile = Resolve-ParentOptionsForStart -Profile 'intensive' -ProfileProvided $true -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption $options -CodexParentOptionProvided $true -Anchor $anchor
-        $crossProfile = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $true -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption $options -CodexParentOptionProvided $true -Anchor $anchor
+        $crossProfile = Resolve-ParentOptionsForStart -Profile 'implement' -ProfileProvided $true -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption $options -CodexParentOptionProvided $true -Anchor $anchor
         Assert-True ($inherited.code -eq $null -and $inherited.model.profile -ceq 'intensive' -and (Compare-ParentOptions -Current $inherited.model -Anchor $anchor).matches) '省略 Profile 的 intensive 續行未沿用 parent_options。'
         Assert-True ($sameProfile.code -eq $null -and $sameProfile.model.profile -ceq 'intensive' -and (Compare-ParentOptions -Current $sameProfile.model -Anchor $anchor).matches) '顯式 intensive 續行未通過 parent_options 比對。'
         Assert-True ($crossProfile.code -ceq 'ParentOptionsMismatch' -and $crossProfile.differences -contains 'profile') 'intensive 改用 default 續行未拒絕跨檔位 mismatch。'
@@ -6178,9 +6216,9 @@ if ($Phase -ge 4) {
         $advisorAnchorRunPath = Write-DispatchRunRecord -Record $advisorAnchorRun -Update
         $advisorAnchorRecord = Read-DispatchRunRecord -Path $advisorAnchorRunPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase4-profile-anchor'
         $advisorAnchor = $advisorAnchorRecord.parent_options
-        $explicitMismatch = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $true -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $advisorAnchor
+        $explicitMismatch = Resolve-ParentOptionsForStart -Profile 'implement' -ProfileProvided $true -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $advisorAnchor
         Assert-True ($explicitMismatch.code -eq 'ParentOptionsMismatch' -and $explicitMismatch.differences -contains 'profile') 'anchor=advisor 且顯式 Profile default 未拒絕。'
-        $omittedRestore = Resolve-ParentOptionsForStart -Profile 'default' -ProfileProvided $false -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $advisorAnchor
+        $omittedRestore = Resolve-ParentOptionsForStart -Profile 'implement' -ProfileProvided $false -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -AddDirectoryProvided $false -SearchProvided $false -CodexParentOption @() -CodexParentOptionProvided $false -Anchor $advisorAnchor
         Assert-True ($omittedRestore.code -eq $null -and $omittedRestore.model.profile -eq 'advisor') '省略 Profile 未從 advisor anchor 還原。'
 
         $profileRequestPath = Join-Path $fixtureRoot 'phase4-profile-request.json'
@@ -6189,7 +6227,7 @@ if ($Phase -ge 4) {
             operation = 'Start'
             line_slug = 'line-a'
             dispatch_slug = 'phase4-profile-request'
-            profile = 'default'
+            profile = 'implement'
         }
         Write-Utf8NoBom -Path $profileRequestPath -Content (($profileRequest | ConvertTo-Json -Depth 10) + "
 ")
@@ -6198,7 +6236,7 @@ if ($Phase -ge 4) {
             $script:Operation = 'Start'
             $script:LineSlug = 'line-a'
             $script:DispatchSlug = 'phase4-profile-request'
-            $script:Profile = 'default'
+            $script:Profile = 'implement'
             $script:ProfileExplicit = $false
             $script:InvocationBoundParameters = [ordered]@{
                 RequestPath = $profileRequestPath
@@ -6213,7 +6251,7 @@ if ($Phase -ge 4) {
         finally {
             $script:RequestPath = $null
             $script:RequestContext = $null
-            $script:Profile = 'default'
+            $script:Profile = 'implement'
             $script:ProfileExplicit = $false
             $script:InvocationBoundParameters = [ordered]@{}
         }
@@ -6226,7 +6264,7 @@ if ($Phase -ge 4) {
     Invoke-Case 'Phase 4 unknown termination 診斷與 cold-start 建議' {
         $unknownRecord = New-TestRun -Line 'line-a' -Dispatch 'phase4-unknown-interruption'
         $unknownSelectedUnits = @('Phase 2', 'Phase 3')
-        $unknownScopePlan = New-ScopePlan -DispatchSlug $unknownRecord.dispatch_slug -DispatchKind 'workflow' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -Units $unknownSelectedUnits -UnitKind 'workflow-phase' -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $null
+        $unknownScopePlan = New-ScopePlan -DispatchSlug $unknownRecord.dispatch_slug -DispatchKind 'workflow' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -Units $unknownSelectedUnits -UnitKind 'workflow-phase' -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $null
         Write-Utf8NoBom -Path $unknownRecord.scope_plan_path -Content (($unknownScopePlan | ConvertTo-Json -Depth 10) + [Environment]::NewLine)
         $unknownRecord.scope_plan_sha256 = Get-FileSha256 -Path $unknownRecord.scope_plan_path
         $unknownRecord | Add-Member -MemberType NoteProperty -Name 'write_mode' -Value 'readonly' -Force
@@ -6429,7 +6467,7 @@ if ($Phase -ge 5) {
         operation = 'cleanup'
         line_slug = 'line-a'
         dispatch_slug = 'phase5-cleanup-canonical'
-        profile = 'default'
+        profile = 'implement'
         advisor_request_source = 'user-explicit'
         search = $true
         source_root = $phase5CleanupSourceRoot
@@ -6469,14 +6507,14 @@ if ($Phase -ge 5) {
             $applied = Apply-DispatchRequest
             $evidence = Get-DispatchRequestEvidence
             Assert-True ($applied.document.operation -ceq 'Cleanup' -and $evidence.operation -ceq 'Cleanup' -and $script:Operation -ceq 'cLeAnUp') 'Request operation 未正規化，或 CLI operation 大小寫不一致被錯誤拒絕。'
-            Assert-True ($script:Profile -ceq 'default' -and $script:ProfileExplicit -and $script:AdvisorRequestSource -ceq 'user-explicit' -and $script:Search -and $script:SearchExplicit) '共用 Request 欄位未套用至 Cleanup operation。'
+            Assert-True ($script:Profile -ceq 'implement' -and $script:ProfileExplicit -and $script:AdvisorRequestSource -ceq 'user-explicit' -and $script:Search -and $script:SearchExplicit) '共用 Request 欄位未套用至 Cleanup operation。'
             Assert-True ($script:SourceRoot -ceq $phase5CleanupSourceRoot -and $script:DispatchRoot -ceq $phase5CleanupDispatchRoot -and $script:ResultPath -ceq $phase5CleanupResultPath -and $script:PreflightResultPath -ceq $phase5CleanupPreflightPath -and $script:RunRecordPath -ceq $phase5CleanupRunRecordPath -and $script:ReviewerReportPath -ceq $phase5CleanupReviewerReportPath) 'Cleanup Request 純量欄位未套用至 CLI 狀態。'
             Assert-True ((Compare-DispatchStringArrays -Left @($script:ReportPath) -Right $phase5CleanupReportPaths) -and (Compare-DispatchStringArrays -Left @($script:EvidencePath) -Right $phase5CleanupEvidencePaths)) 'Cleanup Request 陣列欄位未套用至 CLI 狀態。'
             Assert-True ($evidence.line_slug -ceq 'line-a' -and $evidence.dispatch_slug -ceq 'phase5-cleanup-canonical' -and $evidence.path -ceq $phase5CleanupRequestPath -and $evidence.length -gt 0 -and $evidence.sha256 -match '^[a-f0-9]{64}$') 'Request evidence 缺少 operation、identity 或來源檔案 hash。'
-            Assert-True ($evidence.field_presence.profile -and $evidence.profile.provided -and $evidence.profile.value -ceq 'default' -and $evidence.field_presence.advisor_request_source -and $evidence.advisor_request_source.provided -and $evidence.advisor_request_source.value -ceq 'user-explicit' -and $evidence.field_presence.search -and $evidence.search.provided -and $evidence.search.value) 'Request evidence 缺少共用欄位 presence 或正規化值。'
+            Assert-True ($evidence.field_presence.profile -and $evidence.profile.provided -and $evidence.profile.value -ceq 'implement' -and $evidence.field_presence.advisor_request_source -and $evidence.advisor_request_source.provided -and $evidence.advisor_request_source.value -ceq 'user-explicit' -and $evidence.field_presence.search -and $evidence.search.provided -and $evidence.search.value) 'Request evidence 缺少共用欄位 presence 或正規化值。'
             Assert-True ($evidence.cleanup.field_presence.run_record_path -and $evidence.cleanup.values.run_record_path -ceq $phase5CleanupRunRecordPath -and $evidence.cleanup.field_presence.report_path -and (Compare-DispatchStringArrays -Left @($evidence.cleanup.values.report_path) -Right $phase5CleanupReportPaths) -and $evidence.cleanup.field_presence.evidence_path -and (Compare-DispatchStringArrays -Left @($evidence.cleanup.values.evidence_path) -Right $phase5CleanupEvidencePaths)) 'Request evidence 缺少 Cleanup 專屬欄位 presence 或正規化值。'
 
-            $script:Profile = 'DEFAULT'
+            $script:Profile = 'IMPLEMENT'
             $script:AdvisorRequestSource = 'USER-EXPLICIT'
             $script:InvocationBoundParameters = [ordered]@{
                 RequestPath = $phase5CleanupRequestPath
@@ -6488,7 +6526,7 @@ if ($Phase -ge 5) {
             }
             $null = Apply-DispatchRequest
             $evidence = Get-DispatchRequestEvidence
-            Assert-True ($script:Profile -ceq 'DEFAULT' -and $script:AdvisorRequestSource -ceq 'USER-EXPLICIT' -and $evidence.profile.value -ceq 'default' -and $evidence.advisor_request_source.value -ceq 'user-explicit') 'CLI 與 Request 的 enum casing 未共享同一語意，或 evidence 未輸出 canonical 值。'
+            Assert-True ($script:Profile -ceq 'IMPLEMENT' -and $script:AdvisorRequestSource -ceq 'USER-EXPLICIT' -and $evidence.profile.value -ceq 'implement' -and $evidence.advisor_request_source.value -ceq 'user-explicit') 'CLI 與 Request 的 enum casing 未共享同一語意，或 evidence 未輸出 canonical 值。'
         }
         finally {
             foreach ($variableName in $variableNames) {
@@ -6708,6 +6746,63 @@ if ($Phase -ge 5) {
         Apply-DispatchRequestScalarField -Context $context -CliField 'SelectedRequirement' -RequestField 'selected_requirement'
         Assert-True ($script:SelectedRequirement -ceq '#22') 'Request 的 selected_requirement 未套用至 Collect CLI 欄位。'
     }
+    Invoke-Case 'Phase 5 PROFILE-SPLIT six profile names normalize and default is rejected' {
+        foreach ($name in (Get-CodexDispatchProfileNames)) {
+            $document = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Start'; line_slug = 'line-a'; dispatch_slug = 'profile-split'; profile = $name.ToUpperInvariant() }
+            $path = Join-Path $fixtureRoot ('profile-split-' + $name + '.json')
+            Write-Utf8NoBom -Path $path -Content ($document | ConvertTo-Json -Compress)
+            $request = Read-DispatchRequest -Path $path
+            Assert-True ($request.profile -ceq $name) ('檔位未正規化：' + $name)
+        }
+        $path = Join-Path $fixtureRoot 'profile-split-removed.json'
+        Write-Utf8NoBom -Path $path -Content '{"schema":"ai-sessions.dispatch-request.v1","operation":"Start","line_slug":"line-a","dispatch_slug":"profile-split","profile":"default"}'
+        $failure = $null
+        try { Read-DispatchRequest -Path $path | Out-Null } catch { $failure = $_.Exception }
+        Assert-True ($null -ne $failure -and $failure.Message -match 'default 已移除') '舊檔位未以移除訊息拒絕。'
+    }
+
+    Invoke-Case 'Phase 5 PROFILE-SPLIT profile is required only for dispatch start and diagnose' {
+        $savedProfile = $script:Profile
+        try {
+            $script:Profile = ''
+            foreach ($operation in @('Dispatch', 'Start', 'DiagnoseModelEnvironment')) {
+                $failure = $null
+                try { Assert-DispatchProfileSelected -Operation $operation } catch { $failure = $_.Exception.Message }
+                Assert-True ($failure -match 'ProfileRequired') ('缺少 profile 未拒絕：' + $operation)
+            }
+            foreach ($operation in @('Preflight', 'Prepare', 'Inspect', 'Collect', 'Cleanup')) { Assert-DispatchProfileSelected -Operation $operation }
+        }
+        finally { $script:Profile = $savedProfile }
+    }
+
+    Invoke-Case 'Phase 5 PROFILE-SPLIT missing request profile returns structured failure' {
+        $hostPath = (Get-Process -Id $PID).Path
+        foreach ($operation in @('Dispatch', 'Start', 'Preflight', 'Prepare', 'Inspect', 'Collect', 'Cleanup')) {
+            $path = Join-Path $fixtureRoot ('missing-profile-' + $operation + '.json')
+            $document = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = $operation; line_slug = 'line-a'; dispatch_slug = 'missing-profile' }
+            if ($operation -ceq 'Dispatch') {
+                $document.source_root = $fixtureRoot
+                $document.dispatch_root = $fixtureRoot
+                $document.caller_session_id = 'profile-split-fixture'
+                $document.write_mode = 'readonly'
+                $document.dispatch_kind = 'resource'
+                $document.target_path = @($path)
+                $document.prompt_path = $path
+                $document.task_type = 'scan'
+                $document.session_mode = 'cold-start'
+                $document.unit_kind = 'resource-target'
+                $document.failure_receipt_path = Join-Path $fixtureRoot 'missing-profile-failure-receipt.json'
+            }
+            Write-Utf8NoBom -Path $path -Content ($document | ConvertTo-Json -Compress)
+            $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile', '-File', $sourcePath, '-Operation', $operation, '-RequestPath', $path) -WorkingDirectory $fixtureRoot -EnvironmentVariables @{}
+            if ($operation -in @('Dispatch', 'Start')) {
+                $result = ConvertFrom-Json -InputObject ([string]$run.stdout).Trim()
+                Assert-True ($run.exit_code -ne 0 -and $result.code -ceq 'DispatchRequestMissingField' -and $result.field -ceq 'profile' -and -not $result.process_started) ('缺少 profile 的 Request 未回傳預期失敗：' + $operation)
+            }
+            else { Assert-True (([string]$run.stdout + [string]$run.stderr) -notmatch 'ProfileRequired|DispatchRequestMissingField.*profile') ('此 operation 不應要求 profile：' + $operation) }
+        }
+    }
+
     Invoke-Case 'Phase 5 INTENSIVE-PROFILE Request accepts intensive and reports all valid values' {
         $validDocument = [ordered]@{}
         foreach ($property in $phase5SelectedRequestDocument.GetEnumerator()) { $validDocument[$property.Key] = $property.Value }
@@ -6753,7 +6848,7 @@ if ($Phase -ge 5) {
         finally {
             Set-Item -Path 'Function:\script:Throw-DispatchRequestFailure' -Value $originalRequestFailureHandler
         }
-        Assert-True ($null -ne $requestException -and $null -ne $script:capturedProfileRequestFailure -and $script:capturedProfileRequestFailure.code -ceq 'DispatchRequestInvalidValue' -and $script:capturedProfileRequestFailure.field -ceq 'profile' -and (Compare-DispatchStringArrays -Left $script:capturedProfileRequestFailure.valid_values -Right @('default', 'advisor', 'intensive'))) '非法 profile 未拒絕或傳給錯誤處理器的 valid_values 未列出三個檔位。'
+        Assert-True ($null -ne $requestException -and $null -ne $script:capturedProfileRequestFailure -and $script:capturedProfileRequestFailure.code -ceq 'DispatchRequestInvalidValue' -and $script:capturedProfileRequestFailure.field -ceq 'profile' -and (Compare-DispatchStringArrays -Left $script:capturedProfileRequestFailure.valid_values -Right @('implement', 'review', 'deep-review', 'scan', 'advisor', 'intensive'))) '非法 profile 未拒絕或傳給錯誤處理器的 valid_values 未列出三個檔位。'
     }
 
     Invoke-Case 'Phase 5 Request selected_requirement JSON 陣列可解析' {
@@ -6779,7 +6874,7 @@ if ($Phase -ge 5) {
         $requestValidationCases = @(
             [pscustomobject]@{ name = 'selected-requirement'; field = 'selected_requirement'; value = 'selected-requirement-secret'; expectedFormat = '#<positive integer>[,#<positive integer>...]' }
             [pscustomobject]@{ name = 'failure-receipt-path'; field = 'failure_receipt_path'; value = 'failure-receipt-secret'; expectedFormat = 'fully-qualified path' }
-            [pscustomobject]@{ name = 'profile'; field = 'profile'; value = 'profile-secret'; expectedFormat = 'default|advisor|intensive' }
+            [pscustomobject]@{ name = 'profile'; field = 'profile'; value = 'profile-secret'; expectedFormat = 'implement|review|deep-review|scan|advisor|intensive' }
             [pscustomobject]@{ name = 'advisor-request-source'; field = 'advisor_request_source'; value = 'advisor-source-secret'; expectedFormat = 'user-explicit' }
             [pscustomobject]@{ name = 'line-slug'; field = 'line_slug'; value = 'line_slug_secret'; expectedFormat = '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
             [pscustomobject]@{ name = 'dispatch-slug'; field = 'dispatch_slug'; value = 'dispatch_slug_secret'; expectedFormat = '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
@@ -7348,7 +7443,9 @@ if ($Phase -ge 6) {
             $expectedCodexHome = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.codex'
             $actualCodexHome = Resolve-CodexHomeForEvidence -CodexHomePath $null
             Assert-True ($actualCodexHome -eq (Resolve-AbsolutePath -Path $expectedCodexHome)) 'CodexHome fallback 順序或有效值異常。'
-            Assert-True ($script:phase6DirectResult.effectiveCodexHome -eq $actualCodexHome) 'direct-write result 未保存 fallback CodexHome。'
+            # direct-write result 在測試程序的 CODEX_HOME（fixture 內的 codex home）下產生，fallback 值即該環境變數。
+            $expectedDirectCodexHome = if ($hadCodexHome) { Resolve-AbsolutePath -Path $oldCodexHome } else { $actualCodexHome }
+            Assert-True ($script:phase6DirectResult.effectiveCodexHome -eq $expectedDirectCodexHome) 'direct-write result 未保存 fallback CodexHome。'
         }
         finally {
             if ($hadCodexHome) { $env:CODEX_HOME = $oldCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue }
@@ -7479,7 +7576,7 @@ if ($Phase -ge 6) {
         $script:CodexHome = $startCodexHome
         $script:Model = $null
         $script:ReasoningEffort = $null
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:TaskType = 'unspecified'
         $script:DispatchKind = 'workflow'
         $script:SessionMode = 'cold-start'
@@ -7537,7 +7634,7 @@ if ($Phase -ge 6) {
         $script:CodexHome = $null
         $script:Model = $null
         $script:ReasoningEffort = $null
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:ProfileExplicit = $false
         $script:TaskType = 'unspecified'
         $script:DispatchKind = 'workflow'
@@ -7891,7 +7988,10 @@ if ($Phase -ge 6) {
     $hadCodexHome = Test-Path Env:CODEX_HOME
     $oldCodexHome = $env:CODEX_HOME
     try {
-        Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue
+        $phase6FallbackCodexHome = Join-Path $fixtureRoot 'phase6-fallback-codex-home'
+        New-Item -ItemType Directory -Path $phase6FallbackCodexHome -Force | Out-Null
+        Write-Utf8NoBom -Path (Join-Path $phase6FallbackCodexHome 'implement.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        $env:CODEX_HOME = $phase6FallbackCodexHome
         $script:SourceRoot = $fixtureRoot
         $script:ExecutionRoot = $fixtureRoot
         $script:DispatchRoot = $fixtureRoot
@@ -7908,7 +8008,7 @@ if ($Phase -ge 6) {
         $script:ScopePlanPath = $null
         $script:DispatchKind = 'workflow'
         $script:TaskType = 'unspecified'
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:SessionMode = 'cold-start'
         $script:AddDirectory = $null
         $script:Search = $false
@@ -8287,11 +8387,11 @@ $env:CODEX_HOME = $CodexHomePath
     }
     $script:phase7AdvisorPlan = $null
     Invoke-Case 'Phase 7 default ScopePlan selects all requested units' {
-        $plan = New-ScopePlan -DispatchSlug 'phase7-default-units' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath $null -Units @('unit-1', 'unit-2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
+        $plan = New-ScopePlan -DispatchSlug 'phase7-default-units' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath $null -Units @('unit-1', 'unit-2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
         Assert-True ($plan.decision -eq 'full' -and (Test-StringArrayEqual -Left $plan.requested_units -Right $plan.selected_units) -and @($plan.deferred_units).Count -eq 0 -and (Test-ScopePlanCompleteness -ScopePlan $plan)) 'ScopePlan 未保留 Request 明確宣告的完整工作單位。'
     }
     Invoke-Case 'Phase 7 workflow-phase ScopePlan covers the explicitly requested Phase' {
-        $plan = New-ScopePlan -DispatchSlug 'phase7-workflow-phase-scope-plan' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath $null -Units @('Phase 2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
+        $plan = New-ScopePlan -DispatchSlug 'phase7-workflow-phase-scope-plan' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath $null -Units @('Phase 2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
         Assert-True ($plan.unit_kind -eq 'workflow-phase' -and @($plan.requested_units).Count -eq 1 -and $plan.requested_units[0] -eq 'Phase 2' -and (Test-StringArrayEqual -Left $plan.requested_units -Right $plan.selected_units) -and @($plan.deferred_units).Count -eq 0 -and (Test-ScopePlanCompleteness -ScopePlan $plan)) 'workflow-phase ScopePlan 未涵蓋 Request 宣告的完整單位，或未通過完整性檢查。'
     }
     Invoke-Case 'Phase 7 advisor ScopePlan keeps the complete user-authorized question list' {
@@ -9071,12 +9171,13 @@ if ($Phase -ge 8) {
             '$profileCheckResult = [pscustomobject]@{' +
             ' profile_check_result = $true;' +
             ' missing_profiles = @($missingProfiles);' +
+            ' created_profiles = @($createdProfiles);' +
             ' profile_conflict_detected = $profileConflictDetected;' +
             ' legacy_profile_name = $legacyProfileName;' +
             ' legacy_profile_path = $legacyProfilePath;' +
+            ' legacy_default_detected = $legacyDefaultDetected;' +
             ' codex_config_path = $codexConfigPath;' +
-            ' default_profile_path = $defaultProfilePath;' +
-            ' advisor_profile_path = $advisorProfilePath' +
+            ' profile_defaults = $codexProfileDefaults' +
             '};' +
             '$profileCheckResult'
         $sectionResult = @(& ([scriptblock]::Create($section + $resultMarker)))
@@ -9088,12 +9189,13 @@ if ($Phase -ge 8) {
         }
         return [pscustomobject]@{
             missing_profiles = @($profileResult[0].missing_profiles)
+            created_profiles = @($profileResult[0].created_profiles)
             profile_conflict_detected = [bool]$profileResult[0].profile_conflict_detected
             legacy_profile_name = [string]$profileResult[0].legacy_profile_name
             legacy_profile_path = [string]$profileResult[0].legacy_profile_path
+            legacy_default_detected = [bool]$profileResult[0].legacy_default_detected
             codex_config_path = [string]$profileResult[0].codex_config_path
-            default_profile_path = [string]$profileResult[0].default_profile_path
-            advisor_profile_path = [string]$profileResult[0].advisor_profile_path
+            profile_defaults = $profileResult[0].profile_defaults
             host_messages = @($hostMessages.ToArray())
             warning_messages = @($warningMessages.ToArray())
         }
@@ -9106,6 +9208,7 @@ if ($Phase -ge 8) {
             [AllowNull()][string]$AdvisorRequestSourceValue,
             [switch]$OmitAdvisorConsultReportPath,
             [switch]$CompleteNormally,
+            [switch]$OmitAdvisorConfig,
             [AllowEmptyString()][string]$SourceRoot,
             [AllowEmptyString()][string]$ExecutionRoot,
             [AllowEmptyString()][string]$PidRecordPath
@@ -9143,7 +9246,9 @@ if ($Phase -ge 8) {
                 }
             })
         $packContent = ($packLines -join [Environment]::NewLine) + [Environment]::NewLine
-        Write-Utf8NoBom -Path $configPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n" -SourceRoot $sourceRootPath -ExecutionRoot $startRoot -TargetPath @()
+        if (-not $OmitAdvisorConfig) {
+            Write-Utf8NoBom -Path $configPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n" -SourceRoot $sourceRootPath -ExecutionRoot $startRoot -TargetPath @()
+        }
         Write-Utf8NoBom -Path $promptPath -Content 'fixture advisor prompt' -SourceRoot $sourceRootPath -ExecutionRoot $startRoot -TargetPath @()
         Write-Utf8NoBom -Path $packPath -Content $packContent -SourceRoot $sourceRootPath -ExecutionRoot $startRoot -TargetPath @()
         if (-not [string]::Equals($sourceRootPath, $startRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -9264,7 +9369,7 @@ if ($Phase -ge 8) {
                 [ordered]@{ profile = 'advisor'; task = 'script-change'; kind = 'resource'; mode = 'readonly'; code = 'AdvisorImplementationProfileRejected' }
                 [ordered]@{ profile = 'advisor'; task = 'advisor-consult'; kind = 'workflow'; mode = 'readonly'; code = 'AdvisorImplementationProfileRejected' }
                 [ordered]@{ profile = 'advisor'; task = 'advisor-consult'; kind = 'resource'; mode = 'write'; code = 'AdvisorImplementationProfileRejected' }
-                [ordered]@{ profile = 'default'; task = 'advisor-consult'; kind = 'resource'; mode = 'readonly'; code = 'AdvisorProfileRequired' })) {
+                [ordered]@{ profile = 'implement'; task = 'advisor-consult'; kind = 'resource'; mode = 'readonly'; code = 'AdvisorProfileRequired' })) {
             $caught = $null
             try {
                 Assert-AdvisorContract -RequestedProfile $case.profile -TaskType $case.task -DispatchKind $case.kind -WriteMode $case.mode
@@ -9276,32 +9381,35 @@ if ($Phase -ge 8) {
         }
     }
 
-    Invoke-Case 'Phase 8 F-009 Setup 缺少 default 設定檔不宣稱雙檔完整' {
+    Invoke-Case 'Phase 8 F-009 Setup 必備檔位設定檔無法建立時不宣稱檔位完整' {
         $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'f')
-        $artifacts = New-Phase8RegressionArtifacts -CaseRoot $caseRoot -DispatchSlug 'phase8-f009-missing-default'
+        $artifacts = New-Phase8RegressionArtifacts -CaseRoot $caseRoot -DispatchSlug 'phase8-f009-missing-implement'
         $advisorPath = Join-Path $caseRoot 'advisor.config.toml'
         Write-Utf8NoBom -Path $advisorPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        # 同名目錄使 implement.config.toml 無法建立為檔案，模擬建立失敗。
+        $implementBlockerPath = Join-Path $caseRoot 'implement.config.toml'
+        New-Item -ItemType Directory -Path $implementBlockerPath -Force | Out-Null
         $missing = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
-        $successMessage = '  ✅ Codex 預設檔位與 advisor.config.toml 均存在。'
+        $successMessage = '  ✅ Codex 檔位設定檔（' + ((Get-CodexDispatchProfileNames | Where-Object { $_ -cne 'intensive' }) -join '、') + '）均存在。'
         $warningOutput = @($missing.warning_messages) -join [Environment]::NewLine
         $hostOutput = @($missing.host_messages) -join [Environment]::NewLine
         Assert-True ((Test-Path -LiteralPath $artifacts.evidence_pack_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.final_message_path -PathType Leaf)) 'F-009 fixture 未實際寫入 evidence pack 或 final message。'
-        Assert-True (@($missing.missing_profiles) -contains 'default.config.toml' -and $warningOutput.Contains('default.config.toml')) ('缺少 default.config.toml 未列入 missingProfiles。warnings=' + $warningOutput)
-        Assert-True (-not $hostOutput.Contains($successMessage)) ('缺少 default.config.toml 仍輸出雙檔成功訊息。host=' + $hostOutput)
+        Assert-True (@($missing.missing_profiles) -contains 'implement.config.toml' -and $warningOutput.Contains('implement.config.toml')) ('無法建立 implement.config.toml 未列入 missingProfiles。warnings=' + $warningOutput)
+        Assert-True (-not $hostOutput.Contains($successMessage)) ('缺少必備檔位設定檔仍輸出完整成功訊息。host=' + $hostOutput)
+        Assert-True (@($missing.created_profiles) -contains 'review.config.toml' -and @($missing.created_profiles) -notcontains 'implement.config.toml') ('無法建立的檔位被列為已建立，或其餘缺件未建立。created=' + (@($missing.created_profiles) -join ', '))
 
-        $defaultPath = Join-Path $caseRoot 'default.config.toml'
-        Write-Utf8NoBom -Path $defaultPath -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        Remove-Item -LiteralPath $implementBlockerPath -Force
         $complete = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
         $completeHostOutput = @($complete.host_messages) -join [Environment]::NewLine
-        Assert-True (@($complete.missing_profiles).Count -eq 0 -and $completeHostOutput.Contains($successMessage)) ('兩個設定檔都存在時未輸出成功訊息。host=' + $completeHostOutput)
+        Assert-True (@($complete.missing_profiles).Count -eq 0 -and @($complete.created_profiles) -contains 'implement.config.toml' -and $completeHostOutput.Contains($successMessage)) ('必備檔位設定檔都存在時未輸出成功訊息。host=' + $completeHostOutput)
     }
 
     Invoke-Case 'Phase 8 INTENSIVE-PROFILE optional Setup detection does not warn when missing' {
         $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'ipcheck')
         New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
-        $defaultContent = @("model = 'fixture-default'", "model_reasoning_effort = 'high'", '') -join [Environment]::NewLine
+        $implementContent = @("model = 'fixture-implement'", "model_reasoning_effort = 'high'", '') -join [Environment]::NewLine
         $advisorContent = @("model = 'fixture-advisor'", "model_reasoning_effort = 'high'", '') -join [Environment]::NewLine
-        Write-Utf8NoBom -Path (Join-Path $caseRoot 'default.config.toml') -Content ($defaultContent + [Environment]::NewLine)
+        Write-Utf8NoBom -Path (Join-Path $caseRoot 'implement.config.toml') -Content ($implementContent + [Environment]::NewLine)
         Write-Utf8NoBom -Path (Join-Path $caseRoot 'advisor.config.toml') -Content ($advisorContent + [Environment]::NewLine)
         $missing = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
         $missingWarnings = @($missing.warning_messages) -join [Environment]::NewLine
@@ -9387,18 +9495,18 @@ if ($Phase -ge 8) {
         $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'f')
         $artifacts = New-Phase8RegressionArtifacts -CaseRoot $caseRoot -DispatchSlug 'phase8-f013-legacy-profile'
         $configPath = Join-Path $caseRoot 'config.toml'
-        $defaultPath = Join-Path $caseRoot 'default.config.toml'
+        $implementPath = Join-Path $caseRoot 'implement.config.toml'
         $advisorPath = Join-Path $caseRoot 'advisor.config.toml'
         $legacyName = 'deep' + '.config.toml'
         $legacyPath = Join-Path $caseRoot $legacyName
         $profileContent = "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
         Write-Utf8NoBom -Path $configPath -Content $profileContent
-        Write-Utf8NoBom -Path $defaultPath -Content $profileContent
+        Write-Utf8NoBom -Path $implementPath -Content $profileContent
         Write-Utf8NoBom -Path $legacyPath -Content $profileContent
 
         $renameGuidance = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
         $renameOutput = (@($renameGuidance.warning_messages) + @($renameGuidance.host_messages)) -join [Environment]::NewLine
-        $successMessage = '  ✅ Codex 預設檔位與 advisor.config.toml 均存在。'
+        $successMessage = '  ✅ Codex 檔位設定檔（' + ((Get-CodexDispatchProfileNames | Where-Object { $_ -cne 'intensive' }) -join '、') + '）均存在。'
         Assert-True ($renameOutput.Contains($legacyName) -and $renameOutput.Contains('重新命名') -and -not $renameOutput.Contains($successMessage)) ('舊設定檔殘留未提供重新命名指引。output=' + $renameOutput)
         Assert-True ((Test-Path -LiteralPath $legacyPath -PathType Leaf) -and -not (Test-Path -LiteralPath $advisorPath -PathType Leaf)) '舊設定檔殘留案例被自動搬移或刪除。'
 
@@ -9408,6 +9516,204 @@ if ($Phase -ge 8) {
         Assert-True ($conflict.profile_conflict_detected -and $conflictOutput.Contains($legacyName) -and $conflictOutput.Contains('衝突') -and $conflictOutput.Contains('人工處理') -and -not $conflictOutput.Contains($successMessage)) ('新舊設定檔並存未停止成功訊息或提供人工處理指引。output=' + $conflictOutput)
         Assert-True ((Test-Path -LiteralPath $legacyPath -PathType Leaf) -and (Test-Path -LiteralPath $advisorPath -PathType Leaf)) '設定檔衝突案例自動搬移或刪除了檔案。'
         Assert-True ((Test-Path -LiteralPath $artifacts.evidence_pack_path -PathType Leaf) -and (Test-Path -LiteralPath $artifacts.final_message_path -PathType Leaf)) 'F-013 fixture 未實際寫入 evidence pack 或 final message。'
+    }
+
+    $phase8ExpectedProfileDefaults = [ordered]@{
+        'implement'   = @('gpt-6.1-terra', 'high')
+        'review'      = @('gpt-6.1-terra', 'high')
+        'deep-review' = @('gpt-6.1-sol', 'high')
+        'scan'        = @('gpt-6.1-terra', 'medium')
+        'advisor'     = @('gpt-6.1-sol', 'high')
+    }
+    $phase8RealCodexPrefix = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.codex'
+    function Assert-Phase8SetupFixturePath {
+        param([Parameter(Mandatory)][string[]]$Path)
+        foreach ($candidate in $Path) {
+            $fullPath = [IO.Path]::GetFullPath($candidate)
+            Assert-True (Test-PathWithinRoot $fullPath $fixtureBaseRoot) ('Setup fixture 路徑不在 fixtureRoot 之下：' + $fullPath)
+            Assert-True (-not $fullPath.StartsWith($phase8RealCodexPrefix, [StringComparison]::OrdinalIgnoreCase)) ('Setup fixture 路徑落在真實 Codex 目錄：' + $fullPath)
+        }
+    }
+
+    Invoke-Case 'Phase 8 PROFILE-SPLIT Setup creates missing profile files from the usage table' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'psc')
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        Assert-Phase8SetupFixturePath -Path $caseRoot
+        $result = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $warningOutput = @($result.warning_messages) -join [Environment]::NewLine
+        $hostOutput = @($result.host_messages) -join [Environment]::NewLine
+        Assert-True (@($result.created_profiles).Count -eq 5 -and @($result.missing_profiles).Count -eq 0) ('五個必備檔位未全部建立。created=' + (@($result.created_profiles) -join ', ') + '; missing=' + (@($result.missing_profiles) -join ', '))
+        foreach ($name in $phase8ExpectedProfileDefaults.Keys) {
+            $profilePath = Join-Path $caseRoot ($name + '.config.toml')
+            Assert-Phase8SetupFixturePath -Path $profilePath
+            Assert-True (Test-Path -LiteralPath $profilePath -PathType Leaf) ($name + ' 設定檔未建立。')
+            $bytes = [IO.File]::ReadAllBytes($profilePath)
+            Assert-True (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191)) ($name + ' 設定檔不應含 BOM。')
+            $lines = @([Text.Encoding]::UTF8.GetString($bytes) -split '\r?\n')
+            $expected = $phase8ExpectedProfileDefaults[$name]
+            Assert-True ($lines -contains ('model = "' + $expected[0] + '"') -and $lines -contains ('model_reasoning_effort = "' + $expected[1] + '"')) ($name + ' 的 model 或 effort 與用途對照不符。')
+            Assert-True ($lines -contains '[agents]' -and $lines -contains 'enabled = true' -and $lines -contains 'default_subagent_model = "gpt-6-luna"' -and $lines -contains 'default_subagent_reasoning_effort = "max"') ($name + ' 缺少 [agents] 預設值。')
+        }
+        $intensivePath = Join-Path $caseRoot 'intensive.config.toml'
+        Assert-True (-not (Test-Path -LiteralPath $intensivePath)) 'intensive 為選用檔，不應由 Setup 建立。'
+        Assert-True (-not $warningOutput.Contains('intensive.config.toml') -and -not $hostOutput.Contains('intensive.config.toml')) 'intensive 缺少時不應警示或輸出偵測訊息。'
+        $successMessage = '  ✅ Codex 檔位設定檔（' + ($phase8ExpectedProfileDefaults.Keys -join '、') + '）均存在。'
+        Assert-True ($hostOutput.Contains($successMessage)) ('建立後未輸出完整成功訊息。host=' + $hostOutput)
+    }
+
+    Invoke-Case 'Phase 8 PROFILE-SPLIT Setup keeps existing profile files and rebuilds only deleted ones' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'psk')
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        Assert-Phase8SetupFixturePath -Path $caseRoot
+        $first = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        Assert-True (@($first.created_profiles).Count -eq 5) '第一次執行未建立五個必備檔位。'
+        $customPath = Join-Path $caseRoot 'review.config.toml'
+        [IO.File]::WriteAllText($customPath, "model = `"custom-model`"`r`nmodel_reasoning_effort = `"low`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
+        $hashes = @{}
+        foreach ($name in $phase8ExpectedProfileDefaults.Keys) {
+            $hashes[$name] = Get-FileSha256 -Path (Join-Path $caseRoot ($name + '.config.toml'))
+        }
+        $scanPath = Join-Path $caseRoot 'scan.config.toml'
+        $scanText = [IO.File]::ReadAllText($scanPath)
+        Remove-Item -LiteralPath $scanPath -Force
+        $second = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        Assert-True (@($second.created_profiles).Count -eq 1 -and @($second.created_profiles)[0] -ceq 'scan.config.toml') ('只應重建被刪除的 scan 檔位。created=' + (@($second.created_profiles) -join ', '))
+        foreach ($name in @('implement', 'review', 'deep-review', 'advisor')) {
+            Assert-True ((Get-FileSha256 -Path (Join-Path $caseRoot ($name + '.config.toml'))) -ceq $hashes[$name]) ($name + ' 既有檔案內容被改寫。')
+        }
+        Assert-True ([IO.File]::ReadAllText($scanPath) -ceq $scanText) '重建的 scan 設定檔內容與用途對照不一致。'
+    }
+
+    Invoke-Case 'Phase 8 PROFILE-SPLIT Setup does not create advisor while the renamed legacy file exists' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'psl')
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        Assert-Phase8SetupFixturePath -Path $caseRoot
+        $legacyPath = Join-Path $caseRoot ('deep' + '.config.toml')
+        [IO.File]::WriteAllText($legacyPath, "model = `"legacy`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
+        $result = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $caseRoot 'advisor.config.toml'))) '舊檔名存在時不應建立 advisor.config.toml。'
+        Assert-True (@($result.missing_profiles) -contains 'advisor.config.toml' -and @($result.created_profiles) -notcontains 'advisor.config.toml' -and @($result.created_profiles).Count -eq 4) ('舊檔名與 advisor 缺失互動不符。created=' + (@($result.created_profiles) -join ', '))
+        Assert-True ((Test-Path -LiteralPath $legacyPath -PathType Leaf)) '舊檔名被自動搬移或刪除。'
+    }
+
+    Invoke-Case 'Phase 8 PROFILE-SPLIT Setup warns about leftover default profile file without removing it' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'psd')
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        Assert-Phase8SetupFixturePath -Path $caseRoot
+        $legacyDefaultPath = Join-Path $caseRoot ('default' + '.config.toml')
+        $clean = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        Assert-True (-not $clean.legacy_default_detected -and -not (@($clean.warning_messages) -join '').Contains($legacyDefaultPath)) '沒有殘留時不應警示。'
+        [IO.File]::WriteAllText($legacyDefaultPath, "model = `"legacy`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
+        $residue = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $residueWarnings = @($residue.warning_messages) -join [Environment]::NewLine
+        Assert-True ($residue.legacy_default_detected -and $residueWarnings.Contains($legacyDefaultPath)) ('殘留的 default 設定檔未警示。warnings=' + $residueWarnings)
+        Assert-True (Test-Path -LiteralPath $legacyDefaultPath -PathType Leaf) '殘留的 default 設定檔被刪除或搬移。'
+        Remove-Item -LiteralPath $legacyDefaultPath -Force
+        $linkCreated = $false
+        try {
+            New-Item -ItemType SymbolicLink -Path $legacyDefaultPath -Target (Join-Path $caseRoot 'missing-link-target.toml') -ErrorAction Stop | Out-Null
+            $linkCreated = $true
+        }
+        catch { Write-Host ('PROFILE-SPLIT-SKIP: 無法建立 SymbolicLink，略過斷鏈殘留案例。原因：' + $_.Exception.Message) }
+        if ($linkCreated) {
+            $dangling = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+            Assert-True ($dangling.legacy_default_detected -and $null -ne (Get-Item -LiteralPath $legacyDefaultPath -Force -ErrorAction SilentlyContinue)) '斷鏈的 default 連結未警示或被移除。'
+            Remove-Item -LiteralPath $legacyDefaultPath -Force
+        }
+    }
+
+    Invoke-Case 'Phase 8 PROFILE-SPLIT Setup profile defaults keys match the profile name set' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'psn')
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        Assert-Phase8SetupFixturePath -Path $caseRoot
+        $result = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
+        $requiredNames = @(Get-CodexDispatchProfileNames | Where-Object { $_ -cne 'intensive' })
+        $defaultKeys = @($result.profile_defaults.Keys)
+        Assert-True ($defaultKeys.Count -eq $requiredNames.Count -and @($defaultKeys | Where-Object { $requiredNames -ccontains $_ }).Count -eq $requiredNames.Count) ('Setup 初始值表的鍵集合與檔位名稱集合不一致：' + ($defaultKeys -join ', '))
+        Assert-True ((@(Get-CodexDispatchProfileNames) -join ',') -ceq 'implement,review,deep-review,scan,advisor,intensive') '檔位名稱集合或順序不符。'
+    }
+
+    Invoke-Case 'Phase 8 PROFILE-SPLIT account profile link status reports missing and not-link' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'psa')
+        $codexRoot = Join-Path $caseRoot 'codex'
+        $accountRoot = Join-Path $caseRoot 'account'
+        New-Item -ItemType Directory -Path $codexRoot, $accountRoot -Force | Out-Null
+        Assert-Phase8SetupFixturePath -Path @($codexRoot, $accountRoot)
+        foreach ($name in @('implement', 'review', 'scan')) {
+            [IO.File]::WriteAllText((Join-Path $codexRoot ($name + '.config.toml')), "model = `"m`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
+        }
+        [IO.File]::WriteAllText((Join-Path $accountRoot 'review.config.toml'), "model = `"copy`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
+        $hardLinkCreated = $false
+        try {
+            New-Item -ItemType HardLink -Path (Join-Path $accountRoot 'scan.config.toml') -Target (Join-Path $codexRoot 'scan.config.toml') -ErrorAction Stop | Out-Null
+            $hardLinkCreated = $true
+        }
+        catch { Write-Host ('PROFILE-SPLIT-SKIP: 無法建立 HardLink，略過 HardLink 判定。原因：' + $_.Exception.Message) }
+        $status = @(Get-CodexAccountProfileLinkStatus -AccountHome $accountRoot -CodexDirectory $codexRoot -ProfileName @('implement', 'review', 'scan'))
+        Assert-True ($status.Count -eq 3 -and $status[0].name -ceq 'implement' -and $status[0].state -ceq 'missing' -and $status[0].path -ieq (Join-Path $accountRoot 'implement.config.toml') -and $status[0].expected_target -ieq (Join-Path $codexRoot 'implement.config.toml')) ('missing 判定不符：' + ($status | ConvertTo-Json -Compress))
+        Assert-True ($status[1].state -ceq 'not-link') ('一般檔案副本未判為 not-link：' + $status[1].state)
+        if ($hardLinkCreated) { Assert-True ($status[2].state -ceq 'not-link') ('HardLink 未判為 not-link：' + $status[2].state) }
+        Assert-True ((Test-CodexLegacyDefaultProfile -Directory $accountRoot) -eq $false) '沒有 default 設定檔時不應判為殘留。'
+        [IO.File]::WriteAllText((Join-Path $accountRoot ('default' + '.config.toml')), "model = `"legacy`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
+        Assert-True ((Test-CodexLegacyDefaultProfile -Directory $accountRoot) -eq $true) '存在 default 設定檔時未判為殘留。'
+    }
+
+    Invoke-Case 'Phase 8 PROFILE-SPLIT account profile link status reports ok and wrong-target for symbolic links' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'psb')
+        $codexRoot = Join-Path $caseRoot 'codex'
+        $accountRoot = Join-Path $caseRoot 'account'
+        $otherRoot = Join-Path $caseRoot 'other'
+        New-Item -ItemType Directory -Path $codexRoot, $accountRoot, $otherRoot -Force | Out-Null
+        Assert-Phase8SetupFixturePath -Path @($codexRoot, $accountRoot, $otherRoot)
+        foreach ($root in @($codexRoot, $otherRoot)) {
+            foreach ($name in @('implement', 'review')) {
+                [IO.File]::WriteAllText((Join-Path $root ($name + '.config.toml')), "model = `"m`"`r`n", (New-Object System.Text.UTF8Encoding($false)))
+            }
+        }
+        $linkCreated = $false
+        try {
+            New-Item -ItemType SymbolicLink -Path (Join-Path $accountRoot 'implement.config.toml') -Target (Join-Path $codexRoot 'implement.config.toml') -ErrorAction Stop | Out-Null
+            New-Item -ItemType SymbolicLink -Path (Join-Path $accountRoot 'review.config.toml') -Target (Join-Path $otherRoot 'review.config.toml') -ErrorAction Stop | Out-Null
+            $linkCreated = $true
+        }
+        catch { Write-Host ('PROFILE-SPLIT-SKIP: 無法建立 SymbolicLink（需要系統管理員權限或開發人員模式），略過實體連結的 ok 與 wrong-target 判定，改由下一個以 Get-Item 替身驗證判定邏輯的案例覆蓋。原因：' + $_.Exception.Message) }
+        if ($linkCreated) {
+            $status = @(Get-CodexAccountProfileLinkStatus -AccountHome $accountRoot -CodexDirectory $codexRoot -ProfileName @('implement', 'review'))
+            Assert-True ($status[0].state -ceq 'ok' -and $status[1].state -ceq 'wrong-target') ('實體連結判定不符：' + ($status | ConvertTo-Json -Compress))
+        }
+    }
+
+    Invoke-Case 'Phase 8 PROFILE-SPLIT account profile link status link target comparison with Get-Item stand-in' {
+        $caseRoot = Join-Path $phase8Root (New-BindingFixtureName -Code 'psm')
+        $codexRoot = Join-Path $caseRoot 'codex'
+        $accountRoot = Join-Path $caseRoot 'account'
+        New-Item -ItemType Directory -Path $codexRoot, $accountRoot -Force | Out-Null
+        Assert-Phase8SetupFixturePath -Path @($codexRoot, $accountRoot)
+        $script:profileSplitLinkTargets = @{
+            ((Join-Path $accountRoot 'implement.config.toml')) = (Join-Path $codexRoot 'IMPLEMENT.config.toml')
+            ((Join-Path $accountRoot 'review.config.toml')) = (Join-Path $caseRoot 'other\review.config.toml')
+            ((Join-Path $accountRoot 'scan.config.toml')) = ((Join-Path $codexRoot 'scan.config.toml') + '\')
+            ((Join-Path $accountRoot 'deep-review.config.toml')) = '..\codex\deep-review.config.toml'
+        }
+        function Get-Item {
+            [CmdletBinding()]
+            param([Parameter(Mandatory)][string]$LiteralPath, [switch]$Force)
+            if ($script:profileSplitLinkTargets.ContainsKey($LiteralPath)) {
+                return [pscustomobject]@{ LinkType = 'SymbolicLink'; Target = @($script:profileSplitLinkTargets[$LiteralPath]) }
+            }
+            Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force:$Force
+        }
+        try {
+            $status = @(Get-CodexAccountProfileLinkStatus -AccountHome $accountRoot -CodexDirectory $codexRoot -ProfileName @('implement', 'review', 'scan', 'deep-review', 'advisor'))
+        }
+        finally { $script:profileSplitLinkTargets = $null }
+        $byName = @{}
+        foreach ($item in $status) { $byName[$item.name] = $item.state }
+        Assert-True ($byName['implement'] -ceq 'ok') ('大小寫不同的目標路徑應視為相同：' + $byName['implement'])
+        Assert-True ($byName['review'] -ceq 'wrong-target') ('指向他處的連結應為 wrong-target：' + $byName['review'])
+        Assert-True ($byName['scan'] -ceq 'ok') ('結尾分隔符號不應影響比對：' + $byName['scan'])
+        Assert-True ($byName['deep-review'] -ceq 'ok') ('相對目標應以連結所在目錄解析：' + $byName['deep-review'])
+        Assert-True ($byName['advisor'] -ceq 'missing') ('不存在的檔位應為 missing：' + $byName['advisor'])
     }
 
     Invoke-Case 'Phase 8 advisor activation accepts only user-explicit source' {
@@ -9472,10 +9778,10 @@ if ($Phase -ge 8) {
     }
 
     Invoke-Case 'Phase 8 default ScopePlan preserves full request and advisor gate' {
-        $defaultZeroPlan = New-ScopePlan -DispatchSlug 'phase8-default-zero' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath (Join-Path $phase7Root 'missing-phase8-default-calibration.jsonl') -Units @('unit-1', 'unit-2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
+        $defaultZeroPlan = New-ScopePlan -DispatchSlug 'phase8-default-zero' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath (Join-Path $phase7Root 'missing-phase8-default-calibration.jsonl') -Units @('unit-1', 'unit-2') -UnitKind 'workflow-phase' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null
         Assert-True ($defaultZeroPlan.decision -eq 'full' -and (Test-StringArrayEqual -Left $defaultZeroPlan.requested_units -Right $defaultZeroPlan.selected_units) -and @($defaultZeroPlan.deferred_units).Count -eq 0) 'default ScopePlan 未保留 Request 選定的完整範圍。'
         $advisorGateCaught = $null
-        try { Assert-AdvisorContract -RequestedProfile 'default' -TaskType 'advisor-consult' -DispatchKind 'resource' -WriteMode 'readonly' }
+        try { Assert-AdvisorContract -RequestedProfile 'implement' -TaskType 'advisor-consult' -DispatchKind 'resource' -WriteMode 'readonly' }
         catch { $advisorGateCaught = $_.Exception.Message }
         Assert-True ($null -ne $advisorGateCaught -and $advisorGateCaught.Contains('AdvisorProfileRequired')) 'default profile 路徑繞過 advisor profile gate。'
     }
@@ -9520,7 +9826,7 @@ if ($Phase -ge 8) {
         New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
         $record = New-TestRun -Line 'line-a' -Dispatch 'phase8-f015-inspect'
         $recordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' 'phase8-f015-inspect') ($record.run_id + '.json')
-        $scopePlan = New-ScopePlan -DispatchSlug 'phase8-f015-inspect' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath (Join-Path $caseRoot 'calibration.jsonl') -Units @('Phase 3') -UnitKind 'workflow-phase' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug 'phase8-f015-inspect' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath (Join-Path $caseRoot 'calibration.jsonl') -Units @('Phase 3') -UnitKind 'workflow-phase' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + "`r`n")
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
         $null = Write-DispatchRunRecord -Record $record -Update
@@ -9563,7 +9869,7 @@ if ($Phase -ge 8) {
             $CalibrationPath = Join-Path $caseRoot 'calibration.jsonl'
             $ErrorStreamPath = $errorPath
             $RunRecordPath = $recordPath
-            $Profile = 'default'
+            $Profile = 'implement'
             $TaskType = 'script-change'
             $SessionMode = 'cold-start'
             $result = Invoke-Inspect
@@ -9985,7 +10291,7 @@ if ($Phase -ge 9) {
             [Parameter(Mandatory)][string]$DefaultEffort,
             [Parameter(Mandatory)][string]$ApplicationModel,
             [Parameter(Mandatory)][string]$ApplicationEffort,
-            [string]$Profile = 'default',
+            [AllowEmptyString()][string]$Profile = 'implement',
             [AllowEmptyString()][string]$ProfileModel,
             [AllowEmptyString()][string]$ProfileEffort,
             [switch]$OmitProfileConfig,
@@ -9999,7 +10305,7 @@ if ($Phase -ge 9) {
         $promptPath = Join-Path $CaseRoot ($RunName + '-prompt.md')
         $preflightPath = Join-Path $CaseRoot ($RunName + '-preflight.json')
         $scopePlanPath = Join-Path $historyRoot ($RunName + '-scope-plan.json')
-        $defaultConfigPath = Join-Path $codexHome 'default.config.toml'
+        $defaultConfigPath = Join-Path $codexHome 'implement.config.toml'
         $profileConfigPath = Join-Path $codexHome ($Profile + '.config.toml')
         $selectedModel = if ([string]::IsNullOrWhiteSpace($ProfileModel)) { $DefaultModel } else { $ProfileModel }
         $selectedEffort = if ([string]::IsNullOrWhiteSpace($ProfileEffort)) { $DefaultEffort } else { $ProfileEffort }
@@ -10035,7 +10341,9 @@ if ($Phase -ge 9) {
             'default_subagent_model = "synthetic-subagent"'
             'default_subagent_reasoning_effort = "low"'
         ) -join "`r`n"
-        Write-Utf8NoBom -Path $defaultConfigPath -Content ($defaultContent + "`r`n")
+        if (-not ($OmitProfileConfig -and [String]::Equals($profileConfigPath, $defaultConfigPath, [StringComparison]::OrdinalIgnoreCase))) {
+            Write-Utf8NoBom -Path $defaultConfigPath -Content ($defaultContent + "`r`n")
+        }
         Write-Utf8NoBom -Path $applicationConfigPath -Content ($applicationContent + "`r`n")
         if (-not $OmitProfileConfig -and -not [String]::Equals($profileConfigPath, $defaultConfigPath, [StringComparison]::OrdinalIgnoreCase)) {
             $profileContent = @(
@@ -10165,6 +10473,53 @@ if ($Phase -ge 9) {
         }
     }
 
+    foreach ($profileSplitName in (Get-CodexDispatchProfileNames)) {
+        Invoke-Case ('Phase 9 PROFILE-SPLIT Start records ' + $profileSplitName + ' profile config evidence') {
+            $name = $profileSplitName
+            if ($name -ceq 'advisor') {
+                # advisor 受 advisor gate 限制（TaskType、evidence pack、授權），沿用 Phase 8 的 advisor Start 前置。
+                $advisorRun = Invoke-Phase8StartPreparation -CaseName 'profile-split-advisor' -AdvisorRequestSourceValue 'user-explicit' -CompleteNormally
+                $advisorExpected = Join-Path $advisorRun.codex_home 'advisor.config.toml'
+                Assert-True ($null -eq $advisorRun.exception -and $advisorRun.run_record.profile_config_path -ieq $advisorExpected -and [string]$advisorRun.operation_result.profile -ceq 'advisor') ('advisor Start evidence 不符：' + [string]$advisorRun.exception)
+                return
+            }
+            $caseRoot = Join-Path $phase9Root ('profile-split-' + $name)
+            $model = 'sentinel-' + $name
+            try {
+                $run = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName ('profile-' + $name) -DefaultModel $model -DefaultEffort 'high' -ApplicationModel 'application' -ApplicationEffort 'low' -Profile $name -ProfileModel $model -ProfileEffort 'high'
+            }
+            finally { $script:profileIsolationProbe = $false }
+            $argsList = [string[]]@($run.start_result.codexArguments)
+            $index = [Array]::IndexOf($argsList, '--profile')
+            $expected = Join-Path $run.codex_home ($name + '.config.toml')
+            Assert-True ($index -ge 0 -and $argsList[$index + 1] -ceq $name -and $run.start_result.profileConfigPath -ieq $expected -and $run.run_record.profile_config_path -ieq $expected -and (Get-DispatchEvidenceValue -Evidence $run.start_result.resolvedModel) -ceq $model -and (Get-DispatchEvidenceValue -Evidence $run.start_result.resolvedReasoningEffort) -ceq 'high') ('Start evidence 不符：' + $name)
+        }
+        Invoke-Case ('Phase 9 PROFILE-SPLIT Start rejects missing ' + $profileSplitName + ' profile config before process start') {
+            $name = $profileSplitName
+            if ($name -ceq 'advisor') {
+                $advisorMissing = Invoke-Phase8StartPreparation -CaseName 'profile-split-advisor-missing' -AdvisorRequestSourceValue 'user-explicit' -OmitAdvisorConfig
+                $advisorMissingPath = Join-Path $advisorMissing.codex_home 'advisor.config.toml'
+                Assert-True ($null -ne $advisorMissing.operation_result -and $advisorMissing.operation_result.errorCode -ceq 'ProfileEvidenceUnknown' -and -not $advisorMissing.operation_result.processStarted -and $advisorMissing.exception.Message.Contains($advisorMissingPath)) 'advisor 缺檔未於啟動前以預期路徑拒絕。'
+                return
+            }
+            $model = 'sentinel-' + $name
+            try {
+                $missing = & $invokeDefaultProfileIsolationStart -CaseRoot (Join-Path $phase9Root ('missing-' + $name)) -RunName ('missing-' + $name) -DefaultModel $model -DefaultEffort 'high' -ApplicationModel 'application' -ApplicationEffort 'low' -Profile $name -OmitProfileConfig -CaptureStartFailure
+            }
+            finally { $script:profileIsolationProbe = $false }
+            $missingPath = Join-Path $missing.codex_home ($name + '.config.toml')
+            Assert-True ($missing.operation_result.errorCode -ceq 'ProfileEvidenceUnknown' -and -not $missing.process_started -and $missing.start_calls_before -eq $missing.start_calls_after -and $missing.exception.Contains($missingPath)) ('缺檔未拒絕：' + $name)
+        }
+    }
+
+    Invoke-Case 'Phase 9 PROFILE-SPLIT Start requires profile before process start' {
+        try {
+            $run = & $invokeDefaultProfileIsolationStart -CaseRoot (Join-Path $phase9Root 'profile-split-empty') -RunName 'profile-empty' -DefaultModel 'model' -DefaultEffort 'high' -ApplicationModel 'application' -ApplicationEffort 'low' -Profile '' -CaptureStartFailure
+            Assert-True ($run.operation_result.errorCode -ceq 'ProfileRequired' -and -not $run.process_started -and $run.start_calls_before -eq $run.start_calls_after) '缺少 profile 未於啟動前拒絕。'
+        }
+        finally { $script:profileIsolationProbe = $false }
+    }
+
     Invoke-Case 'Phase 9 INTENSIVE-PROFILE Start uses intensive config and explicit profile' {
         $caseRoot = Join-Path $phase9Root 'intensive-profile'
         $model = 'synthetic-intensive-profile-model'
@@ -10233,7 +10588,7 @@ if ($Phase -ge 9) {
         $profileResolverCommand = Get-Command -Name Resolve-ProfileConfigPath -CommandType Function -ErrorAction Stop
         $profileResolverOriginal = $profileResolverCommand.ScriptBlock
         $profileResolverDefinition = $profileResolverOriginal.ToString()
-        $profileResolverMutantDefinition = $profileResolverDefinition.Replace("'default.config.toml'", "'config.toml'")
+        $profileResolverMutantDefinition = $profileResolverDefinition.Replace("`$canonicalProfile + '.config.toml'", "'config.toml'")
         Assert-True ($profileResolverMutantDefinition -ne $profileResolverDefinition) 'T003 無法建立 default resolver 的 config.toml mutant。'
         $profileResolverMutant = [scriptblock]::Create($profileResolverMutantDefinition)
         $profileResolverMutantApplied = $false
@@ -10248,10 +10603,10 @@ if ($Phase -ge 9) {
 
             $runAArguments = @($runA.start_result.codexArguments | ForEach-Object { [string]$_ })
             $runAProfileIndex = [Array]::IndexOf([string[]]$runAArguments, '--profile')
-            $runAProfileValid = $runAProfileIndex -ge 0 -and $runAProfileIndex + 1 -lt $runAArguments.Count -and $runAArguments[$runAProfileIndex + 1] -ceq 'default'
+            $runAProfileValid = $runAProfileIndex -ge 0 -and $runAProfileIndex + 1 -lt $runAArguments.Count -and $runAArguments[$runAProfileIndex + 1] -ceq 'implement'
             $runAParentOptions = @($runA.start_result.parentOptions.codex_parent_option | ForEach-Object { [string]$_ })
             Assert-True ($runAProfileValid -and $runAParentOptions -notcontains '--profile') ('T003 run-a profile argument 或 codex_parent_option 不符：' + ($runA.start_result | ConvertTo-Json -Depth 30 -Compress))
-            Assert-True ([String]::Equals([string]$runA.start_result.profileConfigPath, [string]$runA.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runA.run_record.profile_config_path, [string]$runA.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 run-a profile path 未指向 default.config.toml。'
+            Assert-True ([String]::Equals([string]$runA.start_result.profileConfigPath, [string]$runA.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runA.run_record.profile_config_path, [string]$runA.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 run-a profile path 未指向 implement.config.toml。'
             Assert-True ((Get-DispatchEvidenceValue -Evidence $runA.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runA.start_result.resolvedReasoningEffort) -ceq $defaultEffortA) 'T003 run-a profile evidence 未讀取 default sentinel。'
             Assert-True ((Get-DispatchEvidenceValue -Evidence $runA.model_evidence.model.requested) -ceq $defaultModelA -and $runA.model_evidence.model.runtime_verifiable.status -eq 'unknown' -and $runA.model_evidence.model.runtime_verifiable.source -eq 'public-actual-unavailable' -and $runA.run_record.model_evidence.runtime_verifiable.status -eq 'unknown') 'T003 run-a requested／actual evidence 語意不符。'
 
@@ -10269,10 +10624,10 @@ if ($Phase -ge 9) {
             $runB = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'run-b' -DefaultModel $defaultModelA -DefaultEffort $defaultEffortA -ApplicationModel $applicationModelB -ApplicationEffort $applicationEffortB
             $runBArguments = @($runB.start_result.codexArguments | ForEach-Object { [string]$_ })
             $runBProfileIndex = [Array]::IndexOf([string[]]$runBArguments, '--profile')
-            $runBProfileValid = $runBProfileIndex -ge 0 -and $runBProfileIndex + 1 -lt $runBArguments.Count -and $runBArguments[$runBProfileIndex + 1] -ceq 'default'
+            $runBProfileValid = $runBProfileIndex -ge 0 -and $runBProfileIndex + 1 -lt $runBArguments.Count -and $runBArguments[$runBProfileIndex + 1] -ceq 'implement'
             Assert-True ($runBProfileValid -and [String]::Equals([string]$runB.start_result.profileConfigPath, [string]$runB.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runB.run_record.profile_config_path, [string]$runB.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 run-b profile path 或顯式 profile 不符。'
             Assert-True ((Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runB.start_result.resolvedReasoningEffort) -ceq $defaultEffortA -and (Get-DispatchEvidenceValue -Evidence $runB.model_evidence.model.requested) -ceq $defaultModelA -and $runB.model_evidence.model.runtime_verifiable.status -eq 'unknown') 'T003 修改 config.toml 後 default profile 或 actual unknown evidence 發生變化。'
-            Assert-True ((Get-FileSha256 -Path $runB.default_config_path) -eq $defaultHashBefore -and (Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8).Contains($applicationModelB) -and (Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8).Contains('[agents]')) 'T003 run-b 未保留 default.config.toml 或 config.toml 的反向 fixture 狀態。'
+            Assert-True ((Get-FileSha256 -Path $runB.default_config_path) -eq $defaultHashBefore -and (Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8).Contains($applicationModelB) -and (Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8).Contains('[agents]')) 'T003 run-b 未保留 implement.config.toml 或 config.toml 的反向 fixture 狀態。'
 
             Set-Item -Path 'Function:\script:Resolve-ProfileConfigPath' -Value $profileResolverMutant
             $profileResolverMutantApplied = $true
@@ -10289,8 +10644,8 @@ if ($Phase -ge 9) {
             }
             Assert-True (-not [string]::IsNullOrWhiteSpace($mutantFailure) -and $null -ne $mutantOperationResult -and $mutantOperationResult.errorCode -eq 'RequestedResolutionMismatch' -and -not [bool]$mutantOperationResult.processStarted -and $script:startCalls -eq $mutantStartCallsBefore) 'T003 resolver mutant 未在 process.Start 前由 profile 設定檢查拒絕。'
             $mutantOutput = [ordered]@{
-                resolver_default_branch = 'temporarily changed from default.config.toml to config.toml'
-                selected_profile = 'default'
+                resolver_default_branch = 'temporarily changed from implement.config.toml to config.toml'
+                selected_profile = 'implement'
                 requested_model = $defaultModelA
                 resolved_profile_config = $applicationModelB
                 expected = 'profile setting mismatch rejects before process.Start'
@@ -10302,10 +10657,10 @@ if ($Phase -ge 9) {
             Set-Item -Path 'Function:\script:Resolve-ProfileConfigPath' -Value $profileResolverOriginal
             $profileResolverMutantApplied = $false
             $runC = & $invokeDefaultProfileIsolationStart -CaseRoot $caseRoot -RunName 'restored' -DefaultModel $defaultModelA -DefaultEffort $defaultEffortA -ApplicationModel $applicationModelB -ApplicationEffort $applicationEffortB
-            Assert-True ([String]::Equals([string]$runC.start_result.profileConfigPath, [string]$runC.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runC.run_record.profile_config_path, [string]$runC.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 還原 resolver 後 profile path 未回到 default.config.toml。'
+            Assert-True ([String]::Equals([string]$runC.start_result.profileConfigPath, [string]$runC.default_config_path, [StringComparison]::OrdinalIgnoreCase) -and [String]::Equals([string]$runC.run_record.profile_config_path, [string]$runC.default_config_path, [StringComparison]::OrdinalIgnoreCase)) 'T003 還原 resolver 後 profile path 未回到 implement.config.toml。'
             Assert-True ((Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedModel) -ceq $defaultModelA -and (Get-DispatchEvidenceValue -Evidence $runC.start_result.resolvedReasoningEffort) -ceq $defaultEffortA -and $runC.model_evidence.model.runtime_verifiable.status -eq 'unknown' -and $runC.model_evidence.model.runtime_verifiable.source -eq 'public-actual-unavailable') 'T003 還原 resolver 後 actual evidence 未維持 unknown。'
             $restoredOutput = [ordered]@{
-                resolver_default_branch = 'restored to default.config.toml'
+                resolver_default_branch = 'restored to implement.config.toml'
                 actual_launcher_profile = [string]$runC.selected_profile
                 actual_codex_home = [string]$runC.codex_home
                 actual_resolved_config_path = [string]$runC.selected_config_path
@@ -10325,8 +10680,8 @@ if ($Phase -ge 9) {
             New-Item -ItemType Directory -Path $reverseHome -Force | Out-Null
             $reverseConfigPath = Join-Path $reverseHome 'config.toml'
             Write-Utf8NoBom -Path $reverseConfigPath -Content "model = 'synthetic-legacy-default'`r`nmodel_reasoning_effort = 'synthetic-legacy-effort'`r`n`r`n[agents]`r`ndefault_subagent_model = 'synthetic-subagent'`r`n"
-            $reverseResolvedPath = Resolve-ProfileConfigPath -CodexHome $reverseHome -Profile 'default'
-            $reverseLegacyEvidence = Read-ProfileModelEvidence -ConfigPath $reverseConfigPath -Profile 'default'
+            $reverseResolvedPath = Resolve-ProfileConfigPath -CodexHome $reverseHome -Profile 'implement'
+            $reverseLegacyEvidence = Read-ProfileModelEvidence -ConfigPath $reverseConfigPath -Profile 'implement'
             Assert-True ($null -eq $reverseResolvedPath -and (Get-DispatchEvidenceValue -Evidence $reverseLegacyEvidence.model) -ceq 'synthetic-legacy-default') 'T003 只保留 config.toml 的舊 fixture 未被 fixed resolver 拒絕。'
             $reverseOutput = [ordered]@{
                 fixed_resolver_path = $reverseResolvedPath
@@ -10419,7 +10774,7 @@ if ($Phase -ge 9) {
                 default_config_hash_after_application_mutation = [string](Get-FileSha256 -Path $runB.default_config_path)
                 application_config_content_before = [string]$applicationContentBefore
                 application_config_content_after = [string](Get-Content -LiteralPath $runB.application_config_path -Raw -Encoding UTF8)
-                explicit_profile = '--profile default'
+                explicit_profile = '--profile implement'
                 parent_option_profile = 'absent from codex_parent_option'
                 exit_code = 0
             }
@@ -10507,7 +10862,7 @@ if ($Phase -ge 9) {
             dispatch_slug = $scopeDispatch
             dispatch_kind = 'workflow'
             task_type = 'script-change'
-            requested_profile = 'default'
+            requested_profile = 'implement'
             session_mode = 'cold-start'
             unit_kind = 'workflow-phase'
             requested_units = @('Phase 1', 'Phase 2', 'Phase 3', 'Phase 4', 'Phase 5')
@@ -10664,7 +11019,7 @@ if ($Phase -ge 9) {
                 } | ConvertTo-Json -Depth 12) + "
 ")
         Write-Utf8NoBom -Path $promptPath -Content ('Phase 9 ScopePlan continuation fixture: ' + $ScenarioSlug)
-        Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        Write-Utf8NoBom -Path (Join-Path $codexHome 'implement.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
         $script:testThread = [guid]::NewGuid().ToString('D')
         $script:dispatchUnitListOverride = @($RootUnits)
         $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
@@ -10697,7 +11052,7 @@ if ($Phase -ge 9) {
         $script:ErrorStreamPath = $null
         $script:ThreadIdPath = $null
         $script:PidRecordPath = $null
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:Model = $null
         $script:ReasoningEffort = $null
         $script:TaskType = 'script-change'
@@ -10962,6 +11317,7 @@ if ($Phase -ge 9) {
             target_path = @()
             prepare_artifacts = @()
             prompt_path = $t002PromptPath
+            profile = 'implement'
             task_type = 'script-change'
             session_mode = 'continuation'
             unit_kind = 'workflow-phase'
@@ -11085,7 +11441,7 @@ if ($Phase -ge 9) {
     }
 
     Invoke-Case 'Phase 9 F-002 T007 duplicate mutant 鑑別' {
-        $parent = New-Phase9CompleteScopePlan -DispatchSlug 'phase9-t007-mutant' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'default' -SessionMode 'cold-start' -Units @('Phase 1', 'Phase 2', 'Phase 3', 'Phase 4', 'Phase 5') -UnitKind 'workflow-phase'
+        $parent = New-Phase9CompleteScopePlan -DispatchSlug 'phase9-t007-mutant' -DispatchKind 'workflow' -TaskType 'script-change' -RequestedProfile 'implement' -SessionMode 'cold-start' -Units @('Phase 1', 'Phase 2', 'Phase 3', 'Phase 4', 'Phase 5') -UnitKind 'workflow-phase'
         $parentPath = Join-Path $phase9Root 't007-mutant-parent.json'
         Write-Utf8NoBom -Path $parentPath -Content (($parent | ConvertTo-Json -Depth 30) + "
 ")
@@ -11139,7 +11495,7 @@ if ($Phase -ge 9) {
 ")
         Write-Utf8NoBom -Path $promptPath -Content 'Phase 9 cold-start retry fixture.'
         New-Item -ItemType Directory -Path $codexHome -Force | Out-Null
-        Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
+        Write-Utf8NoBom -Path (Join-Path $codexHome 'implement.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
         $script:testThread = [guid]::NewGuid().ToString('D')
         $script:dispatchUnitListOverride = @('Phase 1')
         $script:pidResult = @{ ActiveRecords = @(); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
@@ -11172,7 +11528,7 @@ if ($Phase -ge 9) {
         $script:ErrorStreamPath = $null
         $script:ThreadIdPath = $null
         $script:PidRecordPath = $null
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:Model = $null
         $script:ReasoningEffort = $null
         $script:TaskType = 'script-change'
@@ -11495,10 +11851,10 @@ if ($Phase -ge 9) {
         Write-Utf8NoBom -Path $f001PreparePath -Content (([ordered]@{ operation = 'Prepare'; status = 'not-required' } | ConvertTo-Json -Depth 10) + [Environment]::NewLine)
         Write-Utf8NoBom -Path $f001BaselinePath -Content (([ordered]@{ schema = 'fixture.baseline.v1'; base_sha = ('a' * 40) } | ConvertTo-Json -Depth 10) + [Environment]::NewLine)
         Write-Utf8NoBom -Path $f001PromptPath -Content 'f001 continuation prompt'
-        Write-Utf8NoBom -Path (Join-Path $f001CodexHome 'default.config.toml') -Content ('model = "fixture-model"' + [Environment]::NewLine + 'model_reasoning_effort = "high"' + [Environment]::NewLine)
+        Write-Utf8NoBom -Path (Join-Path $f001CodexHome 'implement.config.toml') -Content ('model = "fixture-model"' + [Environment]::NewLine + 'model_reasoning_effort = "high"' + [Environment]::NewLine)
         $f001BaselineSha256 = Get-FileSha256 -Path $f001BaselinePath
         $f001PrepareSha256 = Get-FileSha256 -Path $f001PreparePath
-        $f001ParentOptions = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $f001ExecutionRoot -AddDirectory @() -Search $false -CodexParentOption @()
+        $f001ParentOptions = New-ParentOptionsModel -Profile 'implement' -Sandbox 'workspace-write' -WorkingDirectory $f001ExecutionRoot -AddDirectory @() -Search $false -CodexParentOption @()
         $f001PreviousAnchor = [pscustomobject]@{
             schema = 'ai-sessions.dispatch-run.v1'
             run_id = [guid]::NewGuid().ToString('D')
@@ -11580,7 +11936,7 @@ if ($Phase -ge 9) {
             $CalibrationPath = $null
             $TaskType = 'script-change'
             $DispatchKind = 'workflow'
-            $Profile = 'default'
+            $Profile = 'implement'
             $SessionMode = 'continuation'
             $Model = $null
             $ReasoningEffort = $null
@@ -11858,6 +12214,7 @@ if ($Phase -ge 9) {
         write_mode = 'readonly'
         dispatch_kind = 'workflow'
         prompt_path = (Join-Path $phase9Root 'dispatch-prompt.md')
+        profile = 'implement'
         task_type = 'script-change'
         session_mode = 'cold-start'
         unit_kind = 'workflow-phase'
@@ -12184,7 +12541,7 @@ if ($Phase -ge 9) {
             dispatch_root = $dispatchRoot
             line_slug = 'line-a'
             dispatch_slug = 'f009-' + $Name
-            profile = 'default'
+            profile = 'implement'
             write_mode = 'readonly'
             dispatch_kind = 'workflow'
             target_path = @(Join-Path $sourceRoot 'target.txt')
@@ -12514,7 +12871,7 @@ if ($Phase -ge 9) {
 ") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
         }
         Write-Utf8NoBom -Path $artifactSourcePath -Content ('S finding artifact: ' + $Name) -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
-        Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
+        Write-Utf8NoBom -Path (Join-Path $codexHome 'implement.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
         if ($AdvisorDispatch) {
             Write-Utf8NoBom -Path (Join-Path $codexHome 'advisor.config.toml') -Content ('model = "fixture-advisor-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
         }
@@ -12664,7 +13021,7 @@ if ($Phase -ge 9) {
             dispatch_root = $dispatchRoot
             line_slug = 'a'
             dispatch_slug = $caseSlug
-            profile = if ($AdvisorDispatch) { 'advisor' } else { 'default' }
+            profile = if ($AdvisorDispatch) { 'advisor' } else { 'implement' }
             write_mode = $WriteMode
             dispatch_kind = $DispatchKind
             target_path = @($targetPath)
@@ -12746,13 +13103,13 @@ if ($Phase -ge 9) {
         if ($RequestQuotaBeforePath) { $request.quota_before_path = (Join-Path $sourceHistoryRoot 'quota-before.json') }
         if ($RequestQuotaAfterPath) { $request.quota_after_path = (Join-Path $sourceHistoryRoot 'quota-after.json') }
         $accountFixtureHomeA = $codexHome
-        $accountAProfileHashBefore = Get-FileSha256 (Join-Path $accountFixtureHomeA 'default.config.toml')
+        $accountAProfileHashBefore = Get-FileSha256 (Join-Path $accountFixtureHomeA 'implement.config.toml')
         $accountFixtureObservedPath = Join-Path $caseRoot 'observed-home.txt'
         $accountFixtureLockPath = $null
         if ($FollowupAccount) {
             $accountFixtureHomeB = Join-Path $phase9Root (New-BindingFixtureName -Code 'homeb')
             $null = New-Item -ItemType Directory -Path $accountFixtureHomeB -Force
-            Copy-Item -LiteralPath (Join-Path $codexHome 'default.config.toml') -Destination (Join-Path $accountFixtureHomeB 'default.config.toml')
+            Copy-Item -LiteralPath (Join-Path $codexHome 'implement.config.toml') -Destination (Join-Path $accountFixtureHomeB 'implement.config.toml')
             $codexHome = $accountFixtureHomeB
             $fixtureScripts = Join-Path $caseRoot 'scripts'
             $null = New-Item -ItemType Directory -Path $fixtureScripts -Force
@@ -13971,12 +14328,12 @@ function Sync-DispatchTrackedRawBytesFromSource {
         $record = $real.run_record_document
         $observed = [IO.File]::ReadAllText($real.account_observed_path).Trim()
         Assert-True ($observed -ieq $real.codex_home -and $record.codex_home -ieq $real.codex_home -and $record.effective_codex_home -ieq $real.codex_home -and $record.codex_account_name -ceq 'secondary') '子行程／RunRecord 未固定 B。'
-        Assert-True ($record.profile_config_path -ieq (Join-Path $real.codex_home 'default.config.toml')) 'profile 與 effective CodexHome 不一致。'
-        $resumeArguments = @('-NoProfile','-NonInteractive','-File',$real.script_path,'-Operation','Start','-SourceRoot',$real.source_root,'-ExecutionRoot',$real.dispatch_root,'-DispatchRoot',$real.dispatch_root,'-LineSlug','a','-DispatchSlug',$real.dispatch_slug,'-WriteMode','write','-PreflightResultPath',$real.preflight_result_path,'-PrepareResultPath',$record.prepare_result_path,'-CodexPath',$real.codex_path,'-PromptPath',$real.prompt_source_path,'-TaskType','script-change','-DispatchKind','workflow','-UnitKind','workflow-phase','-TargetPath',(Join-Path $real.source_root 'target.txt'),'-RequestedUnit','Phase 1','-ScopePlanPath',$record.scope_plan_path,'-ResumeThreadId',$record.thread_id,'-LastMessagePath',$record.last_message_path,'-CodexHome',$real.codex_home)
+        Assert-True ($record.profile_config_path -ieq (Join-Path $real.codex_home 'implement.config.toml')) 'profile 與 effective CodexHome 不一致。'
+        $resumeArguments = @('-NoProfile','-NonInteractive','-File',$real.script_path,'-Operation','Start','-SourceRoot',$real.source_root,'-ExecutionRoot',$real.dispatch_root,'-DispatchRoot',$real.dispatch_root,'-LineSlug','a','-DispatchSlug',$real.dispatch_slug,'-WriteMode','write','-PreflightResultPath',$real.preflight_result_path,'-PrepareResultPath',$record.prepare_result_path,'-CodexPath',$real.codex_path,'-PromptPath',$real.prompt_source_path,'-Profile','implement','-TaskType','script-change','-DispatchKind','workflow','-UnitKind','workflow-phase','-TargetPath',(Join-Path $real.source_root 'target.txt'),'-RequestedUnit','Phase 1','-ScopePlanPath',$record.scope_plan_path,'-ResumeThreadId',$record.thread_id,'-LastMessagePath',$record.last_message_path,'-CodexHome',$real.codex_home)
         $hostPath = (Get-Process -Id $PID).Path
         $resume = Invoke-Phase9Process -HostPath $hostPath -Arguments $resumeArguments -WorkingDirectory $root -EnvironmentVariables @{CODEX_HOME=$real.account_home_a}
         Assert-True ($resume.exit_code -eq 0) ('同 home resume 未通過：'+$resume.stdout+$resume.stderr)
-        Assert-True ($env:CODEX_HOME -ceq $parentHome -and (Get-FileSha256 (Join-Path $real.account_home_a 'default.config.toml')) -ceq $real.account_a_profile_sha256) '父環境或 A profile 被修改。'
+        Assert-True ($env:CODEX_HOME -ceq $parentHome -and (Get-FileSha256 (Join-Path $real.account_home_a 'implement.config.toml')) -ceq $real.account_a_profile_sha256) '父環境或 A profile 被修改。'
         Write-Phase9Evidence -Label 'FOLLOWUP_ACCOUNT_RUNTIME' -Value ([ordered]@{fixture=$real.case_root;invocation=$real.run.command;stdout=$real.run.stdout;stderr=$real.run.stderr;exit_code=$real.run.exit_code;observed_home=$observed;run_record=$record;resume=$resume;parent_environment_unchanged=$true})
     }
     Invoke-Case 'Phase 9 FOLLOWUP-ACCOUNT Start rejects wrong home or name before process start' {
@@ -13996,7 +14353,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
             }
             $resultPath = Join-Path $real.source_root ($fault + '-start-result.json')
             $record = $real.run_record_document
-            $arguments = @('-NoProfile', '-NonInteractive', '-File', $real.script_path, '-Operation', 'Start', '-SourceRoot', $real.source_root, '-ExecutionRoot', $real.dispatch_root, '-DispatchRoot', $real.dispatch_root, '-LineSlug', 'a', '-DispatchSlug', $real.dispatch_slug, '-WriteMode', 'write', '-PreflightResultPath', $real.preflight_result_path, '-PrepareResultPath', $record.prepare_result_path, '-CodexPath', $real.codex_path, '-PromptPath', $real.prompt_source_path, '-TaskType', 'script-change', '-DispatchKind', 'workflow', '-UnitKind', 'workflow-phase', '-TargetPath', (Join-Path $real.source_root 'target.txt'), '-RequestedUnit', 'Phase 1', '-ScopePlanPath', $record.scope_plan_path, '-ResumeThreadId', $record.thread_id, '-LastMessagePath', $record.last_message_path, '-CodexHome', $selectedHome, '-ResultPath', $resultPath)
+            $arguments = @('-NoProfile', '-NonInteractive', '-File', $real.script_path, '-Operation', 'Start', '-SourceRoot', $real.source_root, '-ExecutionRoot', $real.dispatch_root, '-DispatchRoot', $real.dispatch_root, '-LineSlug', 'a', '-DispatchSlug', $real.dispatch_slug, '-WriteMode', 'write', '-PreflightResultPath', $real.preflight_result_path, '-PrepareResultPath', $record.prepare_result_path, '-CodexPath', $real.codex_path, '-PromptPath', $real.prompt_source_path, '-Profile', 'implement', '-TaskType', 'script-change', '-DispatchKind', 'workflow', '-UnitKind', 'workflow-phase', '-TargetPath', (Join-Path $real.source_root 'target.txt'), '-RequestedUnit', 'Phase 1', '-ScopePlanPath', $record.scope_plan_path, '-ResumeThreadId', $record.thread_id, '-LastMessagePath', $record.last_message_path, '-CodexHome', $selectedHome, '-ResultPath', $resultPath)
             $run = Invoke-Phase9Process -HostPath $hostPath -Arguments $arguments -WorkingDirectory $root -EnvironmentVariables @{ CODEX_HOME = $real.account_home_a }
             $result = [IO.File]::ReadAllText($resultPath) | ConvertFrom-Json
             $startCalls = if (Test-Path -LiteralPath $counterPath -PathType Leaf) { @([IO.File]::ReadAllLines($counterPath)).Count } else { 0 }
@@ -14007,7 +14364,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
     Invoke-Case 'Phase 9 FOLLOWUP-ACCOUNT Start rejects missing default or advisor profile before process start' {
         $hostPath = (Get-Process -Id $PID).Path
         $results = @()
-        foreach ($selectedProfile in @('default', 'advisor')) {
+        foreach ($selectedProfile in @('implement', 'advisor')) {
             $caseRoot = Join-Path $phase9Root (New-BindingFixtureName -Code 'missprof')
             $scriptsPath = Join-Path $caseRoot 'scripts'
             $entryPath = Join-Path $scriptsPath 'Invoke-CodexDispatch.ps1'
@@ -14554,7 +14911,7 @@ return & $script:cleanupTamperHashOriginal -Path $Path
             '-DispatchKind'
             'workflow'
             '-Profile'
-            'default'
+            'implement'
             '-TaskType'
             'script-change'
             '-SessionMode'
@@ -14938,7 +15295,7 @@ $script:TargetPath = @()
             '-DispatchKind'
             'workflow'
             '-Profile'
-            'default'
+            'implement'
             '-TaskType'
             'script-change'
             '-SessionMode'
@@ -16072,7 +16429,7 @@ $script:TargetPath = @()
 ")
             $isolatedRepoWorktreeBefore = Get-Phase9GitWorktreeList -RepositoryRoot $sourceRoot
             Write-Utf8NoBom -Path $promptSourcePath -Content ('R-1/R-2/R-3 real source-root prompt: ' + $caseSlug)
-            Write-Utf8NoBom -Path (Join-Path $codexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+            Write-Utf8NoBom -Path (Join-Path $codexHome 'implement.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
             $fakeCodexLines = @(
                 '@echo off'
                 ('>"' + $externalStartedPath + '" echo started')
@@ -16099,7 +16456,7 @@ $script:TargetPath = @()
                 dispatch_root = $dispatchRoot
                 line_slug = $lineSlug
                 dispatch_slug = $caseSlug
-                profile = 'default'
+                profile = 'implement'
                 write_mode = 'write'
                 dispatch_kind = 'resource'
                 target_path = @(Join-Path $sourceRoot $targetRelativePath)
@@ -16484,7 +16841,7 @@ $script:TargetPath = @()
         $historyRoot = Join-Path $caseRoot '.local\ai-sessions\history'
         $codexHome = Join-Path $caseRoot 'codex-home'
         $rolloutRoot = Join-Path $codexHome 'sessions'
-        $configPath = Join-Path $codexHome 'default.config.toml'
+        $configPath = Join-Path $codexHome 'implement.config.toml'
         $preflightPath = Join-Path $historyRoot 's3-preflight.json'
         $scopePlanPath = Join-Path $historyRoot 's3-scope.json'
         $calibrationPath = Join-Path $historyRoot 's3-calibration.jsonl'
@@ -16585,7 +16942,7 @@ $script:TargetPath = @()
                 dispatch_slug = $caseSlug
                 dispatch_kind = 'workflow'
                 task_type = 'script-change'
-                requested_profile = 'default'
+                requested_profile = 'implement'
                 session_mode = 'continuation'
                 unit_kind = 'workflow-phase'
                 requested_units = @('Phase 1')
@@ -16649,7 +17006,7 @@ $script:TargetPath = @()
             $script:PidRecordPath = $null
             $script:ProcessExitCode = $null
             $script:RequiredIdentifier = 'design.md'
-            $script:Profile = 'default'
+            $script:Profile = 'implement'
             $script:Model = $null
             $script:ReasoningEffort = $null
             $script:TaskType = 'script-change'
@@ -16809,7 +17166,7 @@ throw 'RunRecord 事件流為空。'
                 $script:SessionMode = 'continuation'
                 $script:CalibrationPath = $calibrationPath
                 $script:RequiredIdentifier = 'design.md'
-                $script:Profile = 'default'
+                $script:Profile = 'implement'
                 $script:Model = 'fixture-model'
                 $script:ReasoningEffort = 'high'
                 $script:CodexHome = $codexHome
@@ -16927,7 +17284,7 @@ throw 'RunRecord 事件流為空。'
         $script:phase9DispatchStartCalls++
         if ($script:phase9DispatchFailure -eq 'start') {
             $startFailure = New-Object System.InvalidOperationException('fixture formal Start failure')
-            $startFailure.Data['operationResult'] = [ordered]@{ operation = 'Start'; processStarted = $false; profile = 'default' }
+            $startFailure.Data['operationResult'] = [ordered]@{ operation = 'Start'; processStarted = $false; profile = 'implement' }
             throw $startFailure
         }
         return [ordered]@{ operation = 'Start'; status = 'started'; processStarted = $true; runRecordPath = (Join-Path $script:ExecutionRoot 'run.json'); eventStreamPath = (Join-Path $script:ExecutionRoot 'events.jsonl'); scopePlanPath = (Join-Path $script:ExecutionRoot 'scope.json'); processExitCodeSidecarPath = (Join-Path $script:ExecutionRoot 'exit.json') }
@@ -16961,6 +17318,7 @@ throw 'RunRecord 事件流為空。'
         $script:PrepareResultPath = Join-Path $phase9Root '.local\ai-sessions\history\prepare.json'
         $script:ResultPath = $dispatchResultPath
         $script:RequestPath = $dispatchRequestPath
+        $script:CodexHome = $null
         $script:InvocationBoundParameters = [ordered]@{}
         $script:RequestContext = $null
         $script:phase9DispatchCalls.Clear()
@@ -16974,7 +17332,7 @@ throw 'RunRecord 事件流為空。'
         finally {
             Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value $originalModelDiagnosticFunction
         }
-        Assert-True ($dispatchResult.status -eq 'started' -and [bool]$dispatchResult.background -and (($script:phase9DispatchCalls -join ',') -eq 'preflight,prepare,start')) 'Dispatch stage 順序或背景啟動狀態不符。'
+        Assert-True ($dispatchResult.status -eq 'started' -and [bool]$dispatchResult.background -and (($script:phase9DispatchCalls -join ',') -eq 'preflight,prepare,start')) ('Dispatch stage 順序或背景啟動狀態不符。calls=' + ($script:phase9DispatchCalls -join ',') + '; result=' + ($dispatchResult | ConvertTo-Json -Depth 8 -Compress))
         Assert-True (Test-Path -LiteralPath $dispatchResultPath -PathType Leaf) 'Dispatch result 未寫入。'
     }
 
@@ -17039,7 +17397,7 @@ throw 'RunRecord 事件流為空。'
             dispatch_root = $realDispatchRoot
             line_slug = 'l'
             dispatch_slug = $realDispatchSlug
-            profile = 'default'
+            profile = 'implement'
             write_mode = 'readonly'
             dispatch_kind = 'workflow'
             background = $true
@@ -17240,6 +17598,7 @@ throw 'RunRecord 事件流為空。'
             write_mode = 'write'
             dispatch_kind = 'workflow'
             prompt_path = $dispatchRequest.prompt_path
+            profile = 'implement'
             task_type = 'script-change'
             session_mode = 'cold-start'
             unit_kind = 'workflow-phase'
@@ -18127,7 +18486,7 @@ throw 'RunRecord 事件流為空。'
 ")
         Write-Utf8NoBom -Path $actualArtifactSourcePath -Content 'actual Windows sidecar artifact'
         $actualArtifactSha256 = Get-FileSha256 -Path $actualArtifactSourcePath
-        Write-Utf8NoBom -Path (Join-Path $actualCodexHome 'default.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+        Write-Utf8NoBom -Path (Join-Path $actualCodexHome 'implement.config.toml') -Content ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
         $actualThreadId = '00000000-0000-0000-0000-000000000009'
         $fakeCodexContent = @(
             '@echo off'
@@ -18144,7 +18503,7 @@ throw 'RunRecord 事件流為空。'
             dispatch_root = $actualDispatchRoot
             line_slug = 'a'
             dispatch_slug = 'x'
-            profile = 'default'
+            profile = 'implement'
             write_mode = 'write'
             dispatch_kind = 'workflow'
             target_path = @(Join-Path $actualRoot 'target.txt')
@@ -18435,7 +18794,7 @@ throw 'RunRecord 事件流為空。'
         dispatch_slug = 'phase9-calibration'
         dispatch_kind = 'workflow'
         task_type = 'script-change'
-        requested_profile = 'default'
+        requested_profile = 'implement'
         session_mode = 'cold-start'
         unit_kind = 'workflow-phase'
         requested_units = @('Phase 1')
@@ -18577,7 +18936,7 @@ throw 'RunRecord 事件流為空。'
         $script:ThreadIdPath = $null
         $script:EvidencePackPath = $null
         $script:AdvisorConsultReportPath = $null
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:Model = 'fixture-model'
         $script:ReasoningEffort = 'high'
         $script:TaskType = 'script-change'
@@ -18903,6 +19262,19 @@ finally {
         $dispatchDocument = Get-Content -LiteralPath $fixture.ResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
         Assert-True ($inspectResult.success -and $inspectResult.processExitCode -eq 0 -and $inspectResult.dispatchResultPath -eq $fixture.ResultPath) 'sidecar 未提供有效的 ProcessExitCode 給 Inspect。'
         Assert-True ($dispatchDocument.inspect_binding.process_exit_code -eq 0 -and $dispatchDocument.inspect_binding.process_exit_code_source -eq 'sidecar' -and $dispatchDocument.inspect_binding.sidecar_sha256 -match '^[a-f0-9]{64}$') 'Inspect 未持久化 sidecar binding。'
+    }
+
+    Invoke-Case 'Phase 9 PROFILE-SPLIT Inspect accepts legacy default run record' {
+        $savedOptions = $a.parent_options
+        $savedHash = $a.parent_options_sha256
+        try {
+            $a.parent_options = New-ParentOptionsModel -Profile 'default' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
+            $a.parent_options_sha256 = $a.parent_options.fingerprint
+            $null = Set-Phase9DispatchInspectContext -SidecarExitCode 0
+            $result = Invoke-Inspect
+            Assert-True ($result.success -and $result.operation -ceq 'Inspect') 'Inspect 無法讀取舊 default RunRecord。'
+        }
+        finally { $a.parent_options = $savedOptions; $a.parent_options_sha256 = $savedHash }
     }
 
     Invoke-Case 'Phase 9 T046 Inspect result binds thread, exit, usage, units, source, version and acceptance' {
@@ -20783,7 +21155,7 @@ if ($Phase -eq 9) {
         $orderLines = @('## 3. 目標物件', ($fence + 'text'), $targetPath, $fence, '## 4. 任務內容', 'Fixture dispatch.', '## 5. 驗收條件與 Codex 命令', 'Fixture acceptance.', '## 6. 執行邊界', 'Fixture boundary.', '## 7. 產出落點', '', ($fence + 'text'), $reportPath, $fence, '## 8. 回報必備欄位', 'Fixture report.')
         $null = [IO.File]::WriteAllText($orderPath, ($orderLines -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 
-        $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'line-a'; dispatch_slug = $DispatchSlug; source_root = $CaseRoot; dispatch_root = $dispatchRoot; caller_session_id = 'batch2-caller'; write_mode = $WriteMode; dispatch_kind = 'resource'; target_path = @($targetPath); prompt_path = $promptPath; task_type = 'implement'; session_mode = 'cold-start'; unit_kind = 'resource-target'; failure_receipt_path = $receiptPath }
+        $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'line-a'; dispatch_slug = $DispatchSlug; source_root = $CaseRoot; dispatch_root = $dispatchRoot; caller_session_id = 'batch2-caller'; write_mode = $WriteMode; dispatch_kind = 'resource'; target_path = @($targetPath); prompt_path = $promptPath; profile = 'implement'; task_type = 'implement'; session_mode = 'cold-start'; unit_kind = 'resource-target'; failure_receipt_path = $receiptPath }
         $null = [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
 
         $entryRoot = Join-Path $CaseRoot 'entry'
@@ -21664,7 +22036,7 @@ function Invoke-Prepare { return [ordered]@{ status='prepared'; fixture_invoked=
             $orderPath = Join-Path (Split-Path $lineRoot -Parent) ('dispatch-order-' + $dispatchSlug + '.md')
             $orderLines = @('## 3. 目標物件',($fence + 'text'),$targetPath,$fence,'## 4. 任務內容','Fixture dispatch.','## 5. 驗收條件與 Codex 命令','Fixture acceptance.','## 6. 執行邊界','Fixture boundary.','## 7. 產出落點','',($fence + 'text'),$reportPath,$fence,'## 8. 回報必備欄位','Fixture report.')
             $null = [IO.File]::WriteAllText($orderPath, ($orderLines -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
-            $request = [ordered]@{ schema='ai-sessions.dispatch-request.v1'; operation='Dispatch'; line_slug='line-a'; dispatch_slug=$dispatchSlug; source_root=$caseRoot; dispatch_root=$dispatchRoot; caller_session_id='batch2-caller'; write_mode='readonly'; dispatch_kind='resource'; target_path=@($targetPath); prompt_path=$promptPath; task_type='implement'; session_mode='cold-start'; unit_kind='resource-target'; failure_receipt_path=$receiptPath }
+            $request = [ordered]@{ schema='ai-sessions.dispatch-request.v1'; operation='Dispatch'; line_slug='line-a'; dispatch_slug=$dispatchSlug; source_root=$caseRoot; dispatch_root=$dispatchRoot; caller_session_id='batch2-caller'; write_mode='readonly'; dispatch_kind='resource'; target_path=@($targetPath); prompt_path=$promptPath; profile='implement'; task_type='implement'; session_mode='cold-start'; unit_kind='resource-target'; failure_receipt_path=$receiptPath }
             $null = [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
             $entryRoot = Join-Path $caseRoot 'entry'
             New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
@@ -22586,7 +22958,7 @@ function Invoke-GitCommand {
 
         $dispatchSlug = 'batch5-inspect-positive'
         $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
         $null = Write-DispatchRunRecord -Record $record -Update
@@ -22615,7 +22987,7 @@ function Invoke-GitCommand {
         $script:TargetPath = @()
         $script:TaskType = 'implement'
         $script:SessionMode = 'cold-start'
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:WriteMode = 'readonly'
         $script:InvocationBoundParameters = [ordered]@{}
         $result = Invoke-Inspect
@@ -22720,7 +23092,7 @@ function Invoke-GitCommand {
             [AllowEmptyString()][string]$SafePointIncomplete = ''
         )
         $record = New-TestRun -Line 'line-a' -Dispatch $DispatchSlug
-        $scopePlan = New-ScopePlan -DispatchSlug $DispatchSlug -DispatchKind 'resource' -TaskType $TaskType -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug $DispatchSlug -DispatchKind 'resource' -TaskType $TaskType -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         $record.scope_plan_path = Join-Path (Split-Path -Parent $record.event_stream_path) ($record.run_id + '-scope.json')
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
@@ -22756,7 +23128,7 @@ function Invoke-GitCommand {
         try {
         $dispatchSlug = 'batch5-stream-disconnect'
         $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
         $null = Write-DispatchRunRecord -Record $record -Update
@@ -22785,7 +23157,7 @@ function Invoke-GitCommand {
         $script:TargetPath = @()
         $script:TaskType = 'implement'
         $script:SessionMode = 'continuation'
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:WriteMode = 'readonly'
         $script:InvocationBoundParameters = [ordered]@{}
         $inspectResult = Invoke-Inspect
@@ -22907,7 +23279,7 @@ function Invoke-GitCommand {
         try {
         $dispatchSlug = 'batch5-disconnect-then-complete'
         $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
         $null = Write-DispatchRunRecord -Record $record -Update
@@ -22937,7 +23309,7 @@ function Invoke-GitCommand {
         $script:TargetPath = @()
         $script:TaskType = 'implement'
         $script:SessionMode = 'cold-start'
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:WriteMode = 'readonly'
         $script:InvocationBoundParameters = [ordered]@{}
         $result = Invoke-Inspect
@@ -22978,7 +23350,7 @@ function Invoke-GitCommand {
         try {
         $dispatchSlug = 'batch5-error-usage-limit'
         $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
         $null = Write-DispatchRunRecord -Record $record -Update
@@ -23007,7 +23379,7 @@ function Invoke-GitCommand {
         $script:TargetPath = @()
         $script:TaskType = 'implement'
         $script:SessionMode = 'cold-start'
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:WriteMode = 'readonly'
         $script:InvocationBoundParameters = [ordered]@{}
         $result = Invoke-Inspect
@@ -23041,7 +23413,7 @@ function Invoke-GitCommand {
             $script:TargetPath = @('target.ps1')
             $script:TaskType = 'implement'
             $script:SessionMode = 'continuation'
-            $script:Profile = 'default'
+            $script:Profile = 'implement'
             $script:WriteMode = 'readonly'
             $script:InvocationBoundParameters = [ordered]@{}
             $inspectResult = $null
@@ -23114,7 +23486,7 @@ function Invoke-GitCommand {
         try {
         $dispatchSlug = 'batch5-resumable-positive'
         $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
         $null = Write-DispatchRunRecord -Record $record -Update
@@ -23150,7 +23522,7 @@ function Invoke-GitCommand {
         $script:TargetPath = @()
         $script:TaskType = 'implement'
         $script:SessionMode = 'continuation'
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:WriteMode = 'readonly'
         $script:InvocationBoundParameters = [ordered]@{}
         $result = Invoke-Inspect
@@ -23165,7 +23537,7 @@ function Invoke-GitCommand {
         try {
         $dispatchSlug = 'batch5-resumable-negative'
         $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
         $null = Write-DispatchRunRecord -Record $record -Update
@@ -23201,7 +23573,7 @@ function Invoke-GitCommand {
         $script:TargetPath = @()
         $script:TaskType = 'implement'
         $script:SessionMode = 'continuation'
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:WriteMode = 'readonly'
         $script:InvocationBoundParameters = [ordered]@{}
         $result = Invoke-Inspect
@@ -23266,7 +23638,7 @@ function Invoke-GitCommand {
         try {
         $dispatchSlug = 'batch5-disconnect-empty-last-message'
         $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
-        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+        $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
         Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
         $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
         $null = Write-DispatchRunRecord -Record $record -Update
@@ -23293,7 +23665,7 @@ function Invoke-GitCommand {
         $script:TargetPath = @()
         $script:TaskType = 'implement'
         $script:SessionMode = 'continuation'
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:WriteMode = 'readonly'
         $script:InvocationBoundParameters = [ordered]@{}
         $missingResult = $null
@@ -23329,7 +23701,7 @@ function Invoke-GitCommand {
         foreach ($terminalType in @('stream_error', 'turn_aborted')) {
             $dispatchSlug = 'batch5-' + $terminalType.Replace('_', '-')
             $record = New-TestRun -Line 'line-a' -Dispatch $dispatchSlug
-            $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'default' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
+            $scopePlan = New-ScopePlan -DispatchSlug $dispatchSlug -DispatchKind 'resource' -TaskType 'implement' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath '' -Units @('target.ps1') -UnitKind 'resource-target' -Model 'fixture-model' -ModelEvidence $null -ReasoningEffortEvidence $null
             Write-Utf8NoBom -Path $record.scope_plan_path -Content (($scopePlan | ConvertTo-Json -Depth 20) + [Environment]::NewLine)
             $record.scope_plan_sha256 = Get-FileSha256 -Path $record.scope_plan_path
             $null = Write-DispatchRunRecord -Record $record -Update
@@ -23358,7 +23730,7 @@ function Invoke-GitCommand {
             $script:TargetPath = @()
             $script:TaskType = 'implement'
             $script:SessionMode = 'continuation'
-            $script:Profile = 'default'
+            $script:Profile = 'implement'
             $script:WriteMode = 'readonly'
             $script:InvocationBoundParameters = [ordered]@{}
             $inspectResult = Invoke-Inspect

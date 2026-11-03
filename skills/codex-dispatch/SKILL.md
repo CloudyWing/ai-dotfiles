@@ -40,6 +40,7 @@ references 內的「上節」「本 Skill 開頭」等位置描述沿用拆分�
 | 腳本介面與執行前提 | `references/start.md` |
 | 指令契約 | `references/start.md` |
 | 模型檔位規則 | `references/start.md` |
+| 檔位用途與新舊對照 | `references/start.md` |
 | 完成判定與三出口 | `references/execution.md` |
 | 事件流取證 | `references/execution.md` |
 | 續 session 與跨介面接手 | `references/execution.md` |

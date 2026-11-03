@@ -20,8 +20,8 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
    - 建立各工具指向本 repo 的 Symbolic Link，對應位置見 §3。
    - 註冊本機 marketplace `ai-agents-local`，安裝並啟用其中的 plugin（hook 與狀態看板）。
    - 設定本 repo 的 `core.hooksPath` 與機器層 Git 排除清單。
-   - 檢查 Windows 長路徑、Codex CLI 與 Codex 檔位設定檔，缺件時印出修復指引。
-3. 需要跨平台派工時，依 §3「Codex CLI 前置需求」安裝 Codex CLI，並依「Codex profile 檔位設定」建立檔位設定檔。派工帳號目錄為選用，見「獨立 Codex 帳號目錄」。
+   - 檢查 Windows 長路徑與 Codex CLI；Codex 檔位設定檔缺少時依初始值建立，其餘缺件印出修復指引。
+3. 需要跨平台派工時，依 §3「Codex CLI 前置需求」安裝 Codex CLI，並依「Codex profile 檔位設定」確認檔位設定檔。派工帳號目錄為選用，見「獨立 Codex 帳號目錄」。
 
 ---
 
@@ -171,8 +171,8 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 各檔位使用選定 Codex home 內的設定檔。預設檔位為 `--profile default` 與 `<CodexHome>/default.config.toml`；`advisor` 為 `--profile advisor` 與 `<CodexHome>/advisor.config.toml`；選用的 `intensive` 為 `--profile intensive` 與 `<CodexHome>/intensive.config.toml`。未指定 home 時預設為 `~/.codex`。何時使用哪個檔位見 `instructions.md` §1.5。
-2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
+1. 派工使用 `implement`、`review`、`deep-review`、`scan`、`advisor` 與選用的 `intensive` 六個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時預設為 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。何時使用哪個檔位見 `instructions.md` §1.5。
+2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。Setup 提供初始值，檔案建立後屬本機設定。
 
    ```toml
    model = "<model-id>"
@@ -183,8 +183,8 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
    default_subagent_reasoning_effort = "<effort>"
    ```
 
-3. 預設檔位固定讀取 `default.config.toml`，不讀取 `config.toml`。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
-4. 檔位檔屬本機設定，不進版控，換機器需重新建立。Setup 會檢查 `default.config.toml` 與 `advisor.config.toml` 是否缺件，以及舊檔名殘留，並印出修復指引。
+3. 每個檔位固定讀取各自的 `<檔位>.config.toml`，不讀取 `config.toml`。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
+4. 檔位檔屬本機設定，不進版控。Setup 在 `~/.codex` 缺少前五個檔位的設定檔時建立，不覆寫既有檔，`intensive` 不建立；另檢查各派工帳號的檔位連結，殘留的 `default.config.toml` 只警示不刪除。
 
 #### 獨立 Codex 帳號目錄
 

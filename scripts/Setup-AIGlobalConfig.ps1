@@ -536,15 +536,24 @@ try {
     $machineAccounts = @(Read-CodexAccountConfiguration -MachineConfigPath (Join-Path $configRoot '.local\machine.json'))
     foreach ($account in $machineAccounts) {
         Write-Host ('  Codex 帳號 ' + $account.name + '：' + $account.codex_home)
-        foreach ($fileName in @('config.toml','default.config.toml','advisor.config.toml')) {
-            $accountConfigPath = Join-Path $account.codex_home $fileName
-            if (-not (Test-Path -LiteralPath $accountConfigPath -PathType Leaf)) {
-                Write-Warning ('  帳號 ' + $account.name + ' 缺少 ' + $accountConfigPath + '。請依 README.md §3 人工準備；基礎 config 必要鍵待使用者驗證。')
+        $accountConfigPath = Join-Path $account.codex_home 'config.toml'
+        if (-not (Test-Path -LiteralPath $accountConfigPath -PathType Leaf)) {
+            Write-Warning ('  帳號 ' + $account.name + ' 缺少 ' + $accountConfigPath + '。請依 README.md §3 人工準備；基礎 config 必要鍵待使用者驗證。')
+        }
+        $accountProfileNames = @(Get-CodexDispatchProfileNames | Where-Object { $_ -cne 'intensive' })
+        $accountIntensivePath = Join-Path $account.codex_home 'intensive.config.toml'
+        if ($null -ne (Get-Item -LiteralPath $accountIntensivePath -Force -ErrorAction SilentlyContinue)) {
+            Write-Host ('  已偵測到選用設定檔：' + $accountIntensivePath)
+            $accountProfileNames += 'intensive'
+        }
+        foreach ($linkStatus in @(Get-CodexAccountProfileLinkStatus -AccountHome $account.codex_home -CodexDirectory $codexDir -ProfileName $accountProfileNames)) {
+            if ($linkStatus.state -cne 'ok') {
+                Write-Warning ('  帳號 ' + $account.name + ' 的檔位設定檔 ' + $linkStatus.name + ' 狀態為 ' + $linkStatus.state + '：' + $linkStatus.path + '，預期為指向 ' + $linkStatus.expected_target + ' 的 Symbolic Link。請依 README.md §3 人工建立連結；腳本不會修改帳號目錄。')
             }
         }
-        $accountIntensivePath = Join-Path $account.codex_home 'intensive.config.toml'
-        if (Test-Path -LiteralPath $accountIntensivePath -PathType Leaf) {
-            Write-Host ('  已偵測到選用設定檔：' + $accountIntensivePath)
+        if (Test-CodexLegacyDefaultProfile -Directory $account.codex_home) {
+            $accountLegacyDefaultPath = Join-Path $account.codex_home ('default' + '.config.toml')
+            Write-Warning ('  帳號 ' + $account.name + ' 殘留已停用的檔位設定檔：' + $accountLegacyDefaultPath + '。派工不再讀取，腳本不會刪除；請以 Remove-Item -LiteralPath 只移除該連結本身。')
         }
     }
 }
@@ -553,20 +562,102 @@ catch {
 }
 
 $codexConfigPath = Join-Path $codexDir "config.toml"
-$defaultProfilePath = Join-Path $codexDir "default.config.toml"
-$advisorProfilePath = Join-Path $codexDir "advisor.config.toml"
 $intensiveProfilePath = Join-Path $codexDir "intensive.config.toml"
 $legacyProfileName = 'deep' + '.config.toml'
 $legacyProfilePath = Join-Path $codexDir $legacyProfileName
+$legacyDefaultName = 'default' + '.config.toml'
+$legacyDefaultPath = Join-Path $codexDir $legacyDefaultName
+$legacyDefaultDetected = $false
 $maxEffortMatches = @()
+
+# 缺少的檔位設定檔依下表建立初始內容。檔案建立後屬本機設定，Setup 不再改寫。
+$codexProfileDefaults = [ordered]@{
+    'implement'   = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'high' }
+    'review'      = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'high' }
+    'deep-review' = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'high' }
+    'scan'        = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'medium' }
+    'advisor'     = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'high' }
+}
+$codexProfileAgentsLines = @(
+    '[agents]'
+    'enabled = true'
+    'default_subagent_model = "gpt-6-luna"'
+    'default_subagent_reasoning_effort = "max"'
+)
+$requiredProfileNames = @(Get-CodexDispatchProfileNames | Where-Object { $_ -cne 'intensive' })
+$missingProfiles = @()
+$createdProfiles = @()
+$profileConflictDetected = $false
+
 if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) {
     Write-Host "  ✅ Codex 基礎設定檔存在：$codexConfigPath" -ForegroundColor DarkGreen
 }
 else {
     Write-Warning "  ⚠️ 找不到 Codex 設定檔：$codexConfigPath"
 }
-if (Test-Path -LiteralPath $defaultProfilePath -PathType Leaf) {
-    $maxEffortMatches = @(Select-String -LiteralPath $defaultProfilePath -Pattern '^\s*model_reasoning_effort\s*=\s*["'']max["'']\s*$')
+
+$legacyProfilePresent = Test-Path -LiteralPath $legacyProfilePath -PathType Leaf
+foreach ($profileName in $requiredProfileNames) {
+    $profileFileName = $profileName + '.config.toml'
+    $profilePath = Join-Path $codexDir $profileFileName
+    if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+        continue
+    }
+    if ($null -ne (Get-Item -LiteralPath $profilePath -Force -ErrorAction SilentlyContinue)) {
+        Write-Warning "  ⚠️ $profilePath 已存在但不是可讀取的檔案（例如斷鏈或目錄）。腳本不會修改，請人工處理。"
+        $missingProfiles += $profileFileName
+        continue
+    }
+    if ($profileName -ceq 'advisor' -and $legacyProfilePresent) {
+        # 舊檔名存在時由下方的重新命名指引處理，不另建 advisor.config.toml。
+        $missingProfiles += $profileFileName
+        continue
+    }
+    if (-not $codexProfileDefaults.Contains($profileName)) {
+        Write-Warning "  ⚠️ Setup 沒有 $profileName 檔位的初始值，未建立 $profilePath。"
+        $missingProfiles += $profileFileName
+        continue
+    }
+    $profileDefault = $codexProfileDefaults[$profileName]
+    $profileLines = @(
+        "# Codex 檔位 $profileName。Setup 提供初始值，檔案建立後屬本機設定，可人工調整。"
+        ('model = "' + $profileDefault.model + '"')
+        ('model_reasoning_effort = "' + $profileDefault.effort + '"')
+        ''
+    ) + $codexProfileAgentsLines
+    $profileBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(($profileLines -join [Environment]::NewLine) + [Environment]::NewLine)
+    $profileCreatedByThisRun = $false
+    try {
+        $profileStream = [System.IO.File]::Open($profilePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $profileCreatedByThisRun = $true
+        try {
+            $profileStream.Write($profileBytes, 0, $profileBytes.Length)
+        }
+        finally {
+            $profileStream.Dispose()
+        }
+        $createdProfiles += $profileFileName
+        Write-Host "  ✅ 已建立 Codex 檔位設定檔：$profilePath" -ForegroundColor DarkGreen
+    }
+    catch {
+        if ($profileCreatedByThisRun) {
+            # 本次建立後寫入失敗，移除不完整的檔案，避免被當成已存在的設定檔。
+            Remove-Item -LiteralPath $profilePath -Force -ErrorAction SilentlyContinue
+        }
+        elseif (Test-Path -LiteralPath $profilePath -PathType Leaf) {
+            # 另一個 Setup 同時建立了同名檔案，視為已存在。
+            continue
+        }
+        Write-Warning "  ⚠️ 無法建立 Codex 檔位設定檔 $profilePath：$($_.Exception.Message)"
+        $missingProfiles += $profileFileName
+    }
+}
+
+foreach ($profileName in (Get-CodexDispatchProfileNames)) {
+    $scanProfilePath = Join-Path $codexDir ($profileName + '.config.toml')
+    if (Test-Path -LiteralPath $scanProfilePath -PathType Leaf) {
+        $maxEffortMatches += @(Select-String -LiteralPath $scanProfilePath -Pattern '^\s*model_reasoning_effort\s*=\s*["'']max["'']\s*$')
+    }
 }
 
 $minimumMaxVersion = [version]'0.147.0'
@@ -583,20 +674,20 @@ else {
     Write-Host "  ✅ Codex $codexVersion 與 max effort 相容。" -ForegroundColor DarkGreen
 }
 
-$missingProfiles = @()
-$profileConflictDetected = $false
-if (-not (Test-Path -LiteralPath $defaultProfilePath -PathType Leaf)) {
-    $missingProfiles += 'default.config.toml'
-}
-if (-not (Test-Path -LiteralPath $advisorProfilePath -PathType Leaf)) {
-    $missingProfiles += 'advisor.config.toml'
+if ($createdProfiles.Count -gt 0) {
+    Write-Host "  ✅ 已依初始值建立缺少的 Codex 檔位設定檔：$($createdProfiles -join ', ')。建立後可人工調整，Setup 不會覆寫。" -ForegroundColor DarkGreen
 }
 if (Test-Path -LiteralPath $intensiveProfilePath -PathType Leaf) {
     Write-Host "  ✅ 已偵測到選用 Codex 檔位設定檔：$intensiveProfilePath" -ForegroundColor DarkGreen
 }
 
-if (Test-Path -LiteralPath $legacyProfilePath -PathType Leaf) {
-    if (-not (Test-Path -LiteralPath $advisorProfilePath -PathType Leaf)) {
+$legacyDefaultDetected = Test-CodexLegacyDefaultProfile -Directory $codexDir
+if ($legacyDefaultDetected) {
+    Write-Warning "  ⚠️ 偵測到已停用的檔位設定檔 $legacyDefaultPath（default 檔位已移除，派工不再讀取）。腳本不會自動搬移或刪除；請先以 Remove-Item -LiteralPath 移除各帳號目錄內指向它的連結（只移除連結本身），再自行決定是否刪除此檔。對照規則見 skills/codex-dispatch/references/start.md 的「檔位用途與新舊對照」。"
+}
+
+if ($legacyProfilePresent) {
+    if (-not (Test-Path -LiteralPath (Join-Path $codexDir 'advisor.config.toml') -PathType Leaf)) {
         Write-Warning "  ⚠️ 偵測到舊設定檔 $legacyProfileName。請將其重新命名為 advisor.config.toml 後重新執行 Setup。腳本不會自動搬移或刪除檔案。"
     }
     else {
@@ -609,5 +700,5 @@ if ($missingProfiles.Count -gt 0) {
     Write-Warning "  ⚠️ Codex 檔位設定檔缺件：$($missingProfiles -join ', ')。請參考 README.md §3「Codex CLI 前置需求」。"
 }
 elseif (-not $profileConflictDetected) {
-    Write-Host "  ✅ Codex 預設檔位與 advisor.config.toml 均存在。" -ForegroundColor DarkGreen
+    Write-Host "  ✅ Codex 檔位設定檔（$($requiredProfileNames -join '、')）均存在。" -ForegroundColor DarkGreen
 }

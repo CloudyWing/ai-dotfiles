@@ -727,7 +727,7 @@ function New-P2BFixture {
     Write-P2BText (Join-Path $source 'prompt.md') "Fixture only.`r`n"
     Write-P2BText (Join-Path $source 'target.txt') "Fixture target.`r`n"
     Write-P2BText (Join-Path $source '.gitignore') ".local/`r`nch/`r`ncodex.cmd`r`nrequest.json`r`n"
-    Write-P2BText (Join-Path $codexHome 'default.config.toml') "model = `"fixture-model`"`r`nmodel_reasoning_effort = `"high`"`r`n"
+    Write-P2BText (Join-Path $codexHome 'implement.config.toml') "model = `"fixture-model`"`r`nmodel_reasoning_effort = `"high`"`r`n"
     if ($Advisor) {
         Write-P2BText (Join-Path $codexHome 'advisor.config.toml') "model = `"fixture-model`"`r`nmodel_reasoning_effort = `"high`"`r`n"
         $pack = @('schema: advisor-consult.evidence.v1', 'line-slug: a', 'dispatch-slug: q', '## 目標段落', 'source: target.txt:1', 'excerpt: Fixture target.', '## 已知結論', 'conclusion: fixture conclusion', '## 待答問題', 'question-001: fixture question', 'required-output: ## 中斷保全結論; ## 證據支持; ## 推論; ## 未決問題', 'output-rules: Answer question-001.', '## 可能反證', 'counterexample: fixture counterexample', '## 邊界', 'boundary: fixture boundary', '- allowed-input: this evidence pack only', '- forbidden-action: source exploration, repository scan, file mutation, external dispatch') -join "`r`n"
@@ -769,7 +769,7 @@ function New-P2BFixture {
         & git -C $source -c user.name=fixture -c user.email=fixture@example.invalid commit --no-verify --quiet -m fixture
         Assert-P1B3 ($LASTEXITCODE -eq 0) 'P2-B fixture git commit failed.'
     }
-    $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; source_root = $source; dispatch_root = $dispatch; line_slug = $line; dispatch_slug = $slug; caller_session_id = 'p2b-fixture'; write_mode = 'write'; dispatch_kind = 'workflow'; target_path = @((Join-Path $source 'target.txt')); prompt_path = (Join-Path $source 'prompt.md'); task_type = 'implement'; session_mode = 'cold-start'; unit_kind = 'workflow-phase'; failure_receipt_path = (Join-Path $history 'failure.json'); quota_before_path = $quotaPath }
+    $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; source_root = $source; dispatch_root = $dispatch; line_slug = $line; dispatch_slug = $slug; caller_session_id = 'p2b-fixture'; write_mode = 'write'; dispatch_kind = 'workflow'; target_path = @((Join-Path $source 'target.txt')); prompt_path = (Join-Path $source 'prompt.md'); task_type = 'implement'; profile = 'implement'; session_mode = 'cold-start'; unit_kind = 'workflow-phase'; failure_receipt_path = (Join-Path $history 'failure.json'); quota_before_path = $quotaPath }
     if ($Advisor) {
         $request.write_mode = 'readonly'
         $request.dispatch_kind = 'resource'

@@ -1408,14 +1408,18 @@ function Read-DispatchRequest {
             Throw-DispatchRequestFailure -Code 'DispatchRequestFieldType' -Message 'request 欄位 profile 必須是 string。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ expected_type = 'string'; actual_type = Get-DispatchRequestTypeName -Value $document.profile })
         }
         $profileValue = [string]$document.profile
-        if (@('default', 'advisor', 'intensive') -notcontains $profileValue) {
-            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 profile 格式無效。' -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = @('default', 'advisor', 'intensive'); received = $profileValue })
-        }
-        foreach ($validProfile in @('default', 'advisor', 'intensive')) {
+        $validProfiles = @(Get-CodexDispatchProfileNames)
+        $matchedProfile = $false
+        foreach ($validProfile in $validProfiles) {
             if ([string]::Equals($validProfile, $profileValue, [System.StringComparison]::OrdinalIgnoreCase)) {
                 $profileValue = $validProfile
+                $matchedProfile = $true
                 break
             }
+        }
+        if (-not $matchedProfile) {
+            $message = if ([string]::Equals($profileValue, 'default', [StringComparison]::OrdinalIgnoreCase)) { '檔位 default 已移除。' } else { 'request 欄位 profile 格式無效。' }
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message $message -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = $validProfiles; received = $profileValue })
         }
     }
     $advisorRequestSourcePresent = Test-DispatchRequestFieldPresent -Document $document -Name 'advisor_request_source'
@@ -1657,6 +1661,19 @@ function Apply-DispatchRequestBooleanField {
     }
 }
 
+function Assert-DispatchProfileSelected {
+    param([string]$Operation, [string]$RequestPathValue)
+
+    if ($Operation -notin @('Dispatch', 'Start', 'DiagnoseModelEnvironment') -or -not [string]::IsNullOrWhiteSpace($Profile)) {
+        return
+    }
+    $validProfiles = @(Get-CodexDispatchProfileNames)
+    if (-not [string]::IsNullOrWhiteSpace($RequestPathValue)) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message 'request 缺少 profile，不套用預設檔位。' -RequestPathValue $RequestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = $validProfiles; process_started = $false })
+    }
+    throw ('ProfileRequired：必須指定 profile，不套用預設檔位。可用值：' + ($validProfiles -join ', '))
+}
+
 function Apply-DispatchRequest {
     [CmdletBinding()]
     param()
@@ -1697,6 +1714,8 @@ function Apply-DispatchRequest {
             $script:ProfileExplicit = $true
         }
     }
+
+    Assert-DispatchProfileSelected -Operation $Operation -RequestPathValue $requestPathValue
 
     if ([bool]$context.field_presence.advisor_request_source) {
         $requestAdvisorSource = [string]$context.advisor_request_source

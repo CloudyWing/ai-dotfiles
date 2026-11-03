@@ -99,7 +99,8 @@ upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取�
 - Prepare 自動帶入：同線 `line.json`、`requirement-summary.md`；`dispatch_kind=resource` 且 `write_mode=readonly` 的派遣在同線沒有 `requirement-summary.md` 時略過摘要，其他派遣缺摘要時拒絕。Workflow 另帶入 `design.md`，資源派遣在第 4 欄提及 `design.md` 時帶入，並把派遣單複製到 dispatch worktree 的同線 handoff。`prepare_artifacts` 只用於追加其他檔案。
 - 輸出路徑安全：`result_path` 與 `preflight_result_path` 必須位於 SourceRoot 或 ExecutionRoot，root、既有各層目錄與寫入目標任一層為 reparse point 時拒絕；未指定時輸出到 ExecutionRoot 同線 history。需要 worktree 清除後仍可從來源工作樹取用時，明確指定 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\` 下的路徑。`prepare_result_path` 的目的地限於 ExecutionRoot 的同線 handoff、report 或 history line root，且不得與 target path 重疊；未指定時輸出到 ExecutionRoot 同線 history。目錄建立後、實際寫入前會再次核對路徑。
 - direct-write：Preflight 判定不建 worktree（`worktreeCreated=false`）時，Prepare 使用 Preflight 的 `executionRoot`（即 `sourceRoot`）作為 DispatchRoot，Request 的 `dispatch_root` 只用於路徑驗證；只寫同線 handoff 的資源派遣可直接使用正式入口。
-- 可省略欄位：`profile`（預設 `default`）、`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名；advisor-consult 沒有 target 時預設 evidence pack 檔名，Start 注入與 Inspect 比對使用同一個值）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）與各階段結果路徑。Request 帶 `quota_before_path` 或 `quota_after_path` 時以欄位不允許拒絕。
+- 必填檔位：`profile` 為必填，值限「檔位用途與新舊對照」列出的六個檔位。缺少時以 `DispatchRequestMissingField` 拒絕，指定 `default` 或其他名稱時以 `DispatchRequestInvalidValue` 拒絕，兩者皆在 Preflight 前停止且 `process_started=false`。
+- 可省略欄位：`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名；advisor-consult 沒有 target 時預設 evidence pack 檔名，Start 注入與 Inspect 比對使用同一個值）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）與各階段結果路徑。Request 帶 `quota_before_path` 或 `quota_after_path` 時以欄位不允許拒絕。
 - 輸出欄位：`status`（`started`、`completed`、`failed`）、`completed_stages`、`failed_stage`、`error_code`、`error`、`process_started`、`process_exit_code`、`termination_reason`、`inspect_status`、`inspect_success`、`requested_units`、`result_path`、`result_sha256`、`inspect_result_path`。`Collect` 的參數取自這些欄位。所有 operation 的 JSON stdout 固定使用 UTF-8（無 BOM），不依 PowerShell host 的預設主控台編碼。
 
 背景派遣的等待命令如下。`-WaitForCompletion` 等待 sidecar 確認 Codex 行程結束，再以事件流 terminal event 決定結果，沒有固定逾時。`-WaitForCompletion` 只接受 `Dispatch` 產生的 result（需含 `result_sha256`）；逐一呼叫 Preflight、Prepare、Start 的分步入口不能用它等待，改由執行環境的背景完成通知接手後呼叫 `Inspect`。
@@ -174,7 +175,7 @@ decision_reason
 
 ## Advisor consult resource dispatch
 
-`advisor` 是意見評估角色，不是實作檔位。實作使用預設檔位；使用者在當下 Session 指定時改用 `intensive`。`Profile=advisor` 只接受 `TaskType=advisor-consult`、`DispatchKind=resource` 與 `WriteMode=readonly`；Workflow、寫入模式或其他 TaskType 在 Codex 啟動前以 `AdvisorImplementationProfileRejected` 拒絕，`TaskType=advisor-consult` 未搭配 `Profile=advisor` 時以 `AdvisorProfileRequired` 拒絕。
+`advisor` 是意見評估角色，不是實作檔位。實作使用 `implement`；使用者在當下 Session 指定時改用 `intensive`。`Profile=advisor` 只接受 `TaskType=advisor-consult`、`DispatchKind=resource` 與 `WriteMode=readonly`；Workflow、寫入模式或其他 TaskType 在 Codex 啟動前以 `AdvisorImplementationProfileRejected` 拒絕，`TaskType=advisor-consult` 未搭配 `Profile=advisor` 時以 `AdvisorProfileRequired` 拒絕。
 
 `TaskType=advisor-consult` 使用單一 evidence pack，schema 為 `advisor-consult.evidence.v1`，必須包含目標段落原文摘錄與來源位置、已知結論、待答問題、可能反證與邊界。advisor 執行端只可讀取該 evidence pack，不得探索 repository、讀取其他來源、修改檔案或寫入 report。
 
@@ -345,7 +346,7 @@ PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移�
 | `Collect` | `DispatchKind`；worktree 回收使用 `DispatchRoot`、`BaseSha`、`ReportPath[]`，`-ApplyCollectedChanges` 套回核准 target；direct-write 使用 `PreflightResultPath`、`ReportPath[]`；`DispatchKind=workflow` 另必須提供 `RequirementSummaryPath`，可選 `SelectedRequirement`（例如 `#22`）；回收 Reviewer 時另提供選用的 `ReviewerReportPath` | worktree 的 tracked／staged／未追蹤差異（`allFiles` 不含 carry-in；另列 `carryInFiles`、`newFiles`、`rejectedFiles` 與 `unappliedNewFiles`），或 direct-write 的核准輸出檔案證據與報告證據；目錄型 target 至少一個非空檔，逐檔記錄長度、最後寫入時間與 SHA-256；兩者都含依 `DispatchKind` 選用的報告核對結果；提供 `ReviewerReportPath` 時另含 `reviewerFindings`（`valid`、`conclusion`、九個 unique 計數 `previous_closed_count`、`previous_open_count`、`previous_withdrawn_count`、`previous_accepted_count`、`current_new_count`、`current_open_count`、`current_closed_count`、`current_withdrawn_count`、`current_accepted_count`，以及 `duplicate_ids`、`inconsistencies`） | worktree 的差異清單或 direct-write 的核准輸出、檔案證據、報告不一致時 stderr 並 exit code 1；Start 時不存在的核准 target 檔沿用 baseline `exists=false` 做來源 drift 檢查，包含被 gitignore 排除的核准新檔；核准目錄新增且未被 gitignore 排除的子檔（包含 Start 時不存在的核准目錄）以 add 套回並檢查來源 drift；target 外新增檔列入 `unappliedNewFiles` 且不套回；來源路徑出現同名檔或內容 drift 時以 `DispatchSourceDrift` 拒絕套回；缺少 `DispatchKind` 或空 `baseSha` 被當成 Git 基準時同樣停止 |
 | `Dispatch` | `-RequestPath` 指向 `operation=Dispatch` 的 request 檔；未提供 request 檔時拒絕 | `Preflight`、`Prepare`、`Start` 與 `Inspect` 的階段結果，以及 `status=completed` 或 `failed` 的 dispatch envelope；`background: true` 時回傳 `status=started`，Inspect 以 `-WaitForCompletion` 另行等待；Collect 另行呼叫 | 單位核對失敗時於任何副作用前拒絕；request、Preflight、Prepare、Start 或 Inspect 任一階段失敗時 stderr 並 exit code 1 |
 | `Cleanup` | `SourceRoot`、`ExecutionRoot`、`DispatchRoot`、`LineSlug`、`DispatchSlug`、RunRecord、`ReportPath[]`；省略 `EvidencePath[]` 時保存 RunRecord 引用且位於 worktree 的既存證據，明列時只接受該 RunRecord 引用的檔案。`ReportPath[]` 與 `EvidencePath[]` 以 `-RequestPath` 傳入 `operation=Cleanup` 的 JSON 陣列，欄位分別為 `report_path` 與 `evidence_path` | 已完成保存驗證且移除目標 dispatch worktree 的結果，包含 0 位元組證據的長度與 SHA-256；自動保存 report 根目錄的 `dispatch-report-<dispatchSlug>.md` | 保存清單、路徑界線、進程或移除驗證失敗時 stderr 並 exit code 1；首次盤點後於移除前再次核對 report 根目錄；新增且未列入保存清單的檔案以 `preservation-failed` 拒絕並列出路徑，且保留 dispatch worktree；未引用的 EvidencePath 錯誤列出可接受清單；失敗時保留 dispatch worktree，不得使用其他方式強制移除 |
-| `DiagnoseModelEnvironment` | `ThreadId`、`StartedAtUtc`；`Profile`（預設 `default`）、`CodexHome` 選填 | profile 設定值、actual model／reasoning effort 與 rollout 路徑的 JSON；證據不足時 actual 為 `unknown` | 缺少 `ThreadId` 或 `StartedAtUtc` 時 exit code 1。只由使用者或維運者明確呼叫，Dispatch、Start、Inspect 不呼叫 |
+| `DiagnoseModelEnvironment` | `ThreadId`、`StartedAtUtc`、`Profile`；`CodexHome` 選填 | profile 設定值、actual model／reasoning effort 與 rollout 路徑的 JSON；證據不足時 actual 為 `unknown` | 缺少 `ThreadId` 或 `StartedAtUtc` 時 exit code 1。只由使用者或維運者明確呼叫，Dispatch、Start、Inspect 不呼叫 |
 
 `Preflight` 的 `executionRoot` 分流依「Git 前置探針與 worktree 生命週期」的決策表。direct-write 回傳 `executionRoot=sourceRoot`、`worktreeCreated=false` 與核准輸出清單；`baseSha` 在非 Git 來源為空，在有 HEAD 的 Git 來源為 HEAD。建立 worktree 時先固定 `baseSha`，再套用 tracked patch 與複製未追蹤檔案。腳本遇到衝突會停止，不以空清單或來源覆寫表示成功。`Collect` 必須消費同一份 Preflight 輸出，依 `worktreeCreated` 選擇 Git 差異或 direct-write 檔案證據路徑。
 
@@ -387,7 +388,7 @@ Start、Inspect、RunRecord 的 model 與 reasoning effort 分為三層證據，
 | 層 | 來源 | unknown 條件 |
 | --- | --- | --- |
 | `requested` | 呼叫端明確傳入的 `-Model`、`-ReasoningEffort`，只作為 assertion | 未傳入 |
-| `resolved` | 實際 profile 設定檔的 top-level `model`、`model_reasoning_effort`；預設檔位讀 `<CodexHome>\default.config.toml`，`intensive` 讀 `<CodexHome>\intensive.config.toml`，`advisor` 讀 `<CodexHome>\advisor.config.toml` | 檔案不存在、欄位缺少、格式錯誤或重複衝突 |
+| `resolved` | 實際 profile 設定檔的 top-level `model`、`model_reasoning_effort`；各檔位讀 `<CodexHome>\<檔位>.config.toml` | 檔案不存在、欄位缺少、格式錯誤或重複衝突 |
 | `runtime_verifiable` | 公開可查的 actual evidence。Dispatch、Start 與 Inspect 不主動探測 rollout | 沒有公開可查證據時為 `status=unknown`、`source=public-actual-unavailable`，不複製 requested 或 resolved 值 |
 
 明確 assertion 與 resolved 值衝突時，Start 在啟動前以 `RequestedResolutionMismatch` 停止。Inspect 不修改 RunRecord 的 model evidence，也不回傳 rollout 路徑；actual 為 unknown 不使 Inspect 以非零結束。CLI 缺失或正式啟動失敗時，RunRecord 記 `launch_state=launch-failed`、`started_at_utc=null`，Dispatch 結果為 `status=failed`、`failed_stage=start`、`process_started=false`，`completed_stages` 不含 start。
@@ -396,7 +397,7 @@ Start、Inspect、RunRecord 的 model 與 reasoning effort 分為三層證據，
 
 ```powershell
 pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation DiagnoseModelEnvironment `
-  -Profile default -CodexHome <CodexHome> -ThreadId <thread-id> -StartedAtUtc <UTC-ISO-8601>
+  -Profile <檔位> -CodexHome <CodexHome> -ThreadId <thread-id> -StartedAtUtc <UTC-ISO-8601>
 ```
 
 `ThreadId` 與 `StartedAtUtc` 必填，`CodexHome` 省略時依 `CODEX_HOME` 或使用者的 `.codex` 目錄解析。輸出 JSON 含 `profile_model`、`profile_reasoning_effort`、`actual_model`、`actual_reasoning_effort` 與 `rollout_paths`；找不到精確對應的 session 或時間證據不足時，actual 的 `status` 為 `unknown`，不以 profile 設定值代填。
@@ -524,15 +525,30 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 名稱符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，目錄使用已存在的絕對路徑。名稱與正規化路徑以不區分大小寫比較唯一性，reparse point 與同目錄別名拒絕。缺少清單或空陣列時沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 優先序；未登記 home 的 `codex_account_name=null`。格式異常回報 `CodexAccountConfigurationInvalid`，由使用者修正，維持原選擇。
 
-派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱> -ProjectPath <專案路徑>` 建立，執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>`、最小 `config.toml` 與專案信任段落，將 `.sandbox*` 與 `default.config.toml`、`advisor.config.toml`（`-IncludeIntensive` 時含 `intensive.config.toml`）連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 只逐帳號檢查目錄與固定設定檔，default/advisor 缺件警示，intensive 在選用時要求。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。帳號閒置過久導致 `Get-CodexQuota.ps1` 或派工回報 401 時，請使用者以同一登入命令重新登入。
+派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱> -ProjectPath <專案路徑>` 建立，執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>`、最小 `config.toml` 與專案信任段落，將 `.sandbox*` 與 `implement`、`review`、`deep-review`、`scan`、`advisor` 的 `<檔位>.config.toml`（`-IncludeIntensive` 時含 `intensive.config.toml`）連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml` 與各檔位連結，五個必備檔位缺少、不是連結或指向他處時警示，`intensive` 只在存在時檢查，殘留的 `default.config.toml` 只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。帳號閒置過久導致 `Get-CodexQuota.ps1` 或派工回報 401 時，請使用者以同一登入命令重新登入。
 
 以 `Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 選帳號。主 Agent 派工一律明確指定 `-CodexHome`，預設用清單第一個帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。Dispatch 在 Preflight 與 Prepare 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path` 與 `codex_account_name` 採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
 
 本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定已實測（缺少 config.toml 時命令全被執行政策拒絕，補上 windows.sandbox 與專案信任後可執行，內容見 README），各 home 的 profile 為指向 `~/.codex` 同名檔案的 Symbolic Link，`--profile` 經由連結讀取，保留既有 profile/model hash gate。
 
-本 Skill 使用預設檔位、`intensive` 與 `advisor` 三個語意檔位。實作、審查、掃描與命令執行使用預設檔位；使用者在當下 Session 明確指定時，該 Session 的派工改用 `intensive`，指定不延續到其他 Session；Codex `Reviewer` 的大範圍審查依 `instructions.md`「審查配對」固定使用 `intensive`，不需使用者指定；`advisor` 只作意見評估。預設檔位的實際 model、effort 與其餘設定以 `<CodexHome>/default.config.toml` 為準，各 profile 設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
+### 檔位用途與新舊對照
 
-`codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前。預設檔位一律傳入 `--profile default`，讀取 `<CodexHome>/default.config.toml`；`intensive` 傳入 `--profile intensive`，讀取 `<CodexHome>/intensive.config.toml`，檔案不存在時在啟動前拒絕，不回退預設檔位。
+本 Skill 使用六個語意檔位，由主 Agent 依用途在 Request 的 `profile` 明確指定，腳本不依任務類型自動選用。各檔位的實際 model、effort 與其餘設定以 `<CodexHome>/<檔位>.config.toml` 為準，各設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
+
+| 檔位 | 用途 |
+| --- | --- |
+| `implement` | Developer、Support Engineer、Refactorer 的實作與測試循環 |
+| `review` | 未達大範圍條件的 Codex `Reviewer` 審查 |
+| `deep-review` | 規則檔機制條款的審查（不論檔數），或審查範圍達 3 個檔案以上，判定以 `instructions.md`「審查配對」為準 |
+| `scan` | 盤點、取證、驗證、診斷等讀取為主的工作 |
+| `advisor` | 意見評估，授權與 gate 見「Advisor consult resource dispatch」 |
+| `intensive` | 使用者在當下 Session 指定時取代 `implement`，指定不延續到其他 Session，不覆寫其他檔位 |
+
+舊檔位 `default` 已移除。以 `default` 啟動的舊派遣不能續行，續行呼叫必須帶新檔位名稱，與錨點不同而以 `ParentOptionsMismatch` 拒絕，需要繼續時以新 `dispatchSlug` 冷啟動；`Inspect` 與 `Collect` 不經檔位白名單，照常讀取舊 RunRecord。統計舊 RunRecord 時依派工角色換算新檔位：developer、support 對應 `implement`，reviewer 對應 `review`，scan、verify、probe 對應 `scan`。
+
+殘留的 `~/.codex\default.config.toml` 與各派工帳號目錄內指向它的連結不再被讀取，Setup 只偵測並警示。手動清理時先以 `Remove-Item -LiteralPath <帳號目錄>\default.config.toml` 刪除各帳號內的連結，只移除連結本身，再由使用者決定是否刪除 `~/.codex\default.config.toml`。
+
+`codex exec` 與 `codex exec resume` 屬 runtime command，接受 `--profile`。檔位以 `--profile <檔位名稱>` 傳遞，放在 `exec` 子命令之前，讀取 `<CodexHome>/<檔位名稱>.config.toml`。任一檔位的設定檔不存在時以 `ProfileEvidenceUnknown` 在啟動前拒絕，不回退其他檔位。`Dispatch`、`Start` 與 `DiagnoseModelEnvironment` 未指定檔位時，Request 路徑以 `DispatchRequestMissingField`、程序內與 CLI 路徑以 `ProfileRequired` 拒絕。
 
 派工不在每次啟動前執行探針。正式啟動本身就是參數與檔位的驗證：啟動參數不合法、檔位設定缺漏或 CLI 缺失時，Start 以未啟動結果回報（`launch_state=launch-failed`、`process_started=false`），不產生已啟動紀錄，修正後以新的 `dispatchSlug` 重派。
 
@@ -544,15 +560,15 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 | 機制探針 | 修改派工腳本或流程後 | 路徑、prompt 傳遞與事件流解析可運作 |
 | `DiagnoseModelEnvironment` | 需要確認實際使用的 model 與 reasoning effort 時 | profile 設定值與 rollout 中的 actual 證據 |
 
-`--help` 在參數驗證前短路輸出，不具參數證明力。低成本檔位的名稱與內容由使用者提供，規則層不預設其存在。
+`--help` 在參數驗證前短路輸出，不具參數證明力。六個語意檔位以外的臨時驗證檔位，名稱與內容由使用者提供，規則層不預設其存在，也不用於派工。
 
-`advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描使用實作檔位（預設或 `intensive`），不以 `advisor` 執行。
+`advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描依「檔位用途與新舊對照」使用 `implement` 或 `scan`（使用者在當下 Session 指定時實作改用 `intensive`），不以 `advisor` 執行。
 
-`advisor` 相對預設檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `<CodexHome>/advisor.config.toml` 與 `<CodexHome>/default.config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
+`advisor` 相對實作檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `<CodexHome>/advisor.config.toml` 與 `<CodexHome>/implement.config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
 
 ### advisor 的前置準備
 
-預設檔位的成本與推理特性由 `default.config.toml` 的 model 與 effort 決定。`advisor` 的實測成本基準為一小時即可用完整個 `primary` 5 小時視窗。這項數據只用來估計諮詢規模。
+各檔位的成本與推理特性由該檔位設定檔的 model 與 effort 決定。`advisor` 的實測成本基準為一小時即可用完整個 `primary` 5 小時視窗。這項數據只用來估計諮詢規模。
 
 降低成本的方式是減少執行端自行探索的讀取量，不是縮小任務範圍。檔位本身的成本特性由本機檔位設定決定，設定方式見 README 的 Codex profile 檔位設定章節。
 
@@ -600,12 +616,12 @@ secondary_source_file=
 
 `Inspect` 預設唯讀，不寫入額度或推薦訊號。
 
-1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。實作與執行類工作使用預設檔位，使用者在當下 Session 指定時使用 `intensive`；Codex `Reviewer` 的大範圍審查依「審查配對」使用 `intensive`。
+1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。其餘工作依「檔位用途與新舊對照」選檔位。實作用 `implement`（使用者在當下 Session 指定時用 `intensive`），審查依 `instructions.md`「審查配對」用 `review` 或 `deep-review`，盤點、取證、驗證與診斷用 `scan`。
 2. 屬意見評估時，主 Agent 先向使用者提出 advisor 授權請求；使用者同意後以 `AdvisorRequestSource=user-explicit` 派工。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工，該授權不延續到其他 Session。
 3. 額度只供顯示與紀錄，由主 Agent 手動查詢，時點為派工前、advisor 前、結案時與按需查詢；派工腳本不自動查詢。查詢失敗記為 unknown，派工照常進行。
 4. 所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
 5. 以 `advisor` 派工而 `advisor.config.toml` 不存在時，停止該次派工，不使用隱式 profile fallback。
-6. 預設檔位一律傳入 `--profile default`，檔位名稱只允許預設、`intensive` 與 `advisor` 的語意集合，臨時驗證檔位不進入派工判定。`intensive` 在使用者於當下 Session 指定後，或 Codex `Reviewer` 的審查符合 `instructions.md`「審查配對」的大範圍條件時使用，由主 Agent 在 Request 傳入，腳本不自動選用。
+6. 每次派工都在 Request 明確指定檔位，名稱限「檔位用途與新舊對照」的六個語意檔位，臨時驗證檔位不進入派工判定。`intensive` 只在使用者於當下 Session 指定後取代 `implement`，由主 Agent 在 Request 傳入，腳本不自動選用。
 
 ### 決策歸屬
 

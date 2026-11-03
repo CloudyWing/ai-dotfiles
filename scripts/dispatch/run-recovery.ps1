@@ -426,6 +426,7 @@ function Get-DispatchFailureReasonCode {
             'EvidencePackRequiredOutputInvalid',
             'AdvisorImplementationProfileRejected',
             'AdvisorProfileRequired',
+            'ProfileRequired',
             'AdvisorAuthorizationRequired',
             'RequestedResolutionMismatch',
             'EvidencePackInlineMismatch',

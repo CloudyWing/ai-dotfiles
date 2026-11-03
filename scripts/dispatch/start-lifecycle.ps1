@@ -953,6 +953,7 @@ function Invoke-Start {
     $failureReasonCode = $null
     $interruptionSafeguardApplied = $true
     try {
+    Assert-DispatchProfileSelected -Operation 'Start'
     $preflight = Get-PreflightData
     if ([string]::IsNullOrWhiteSpace($PreflightResultPath)) {
         throw 'Start 必須提供 PreflightResultPath，供 RunRecord 綁定原始證據。續行請由 Dispatch result 的 preflightResultPath（preflight_result_path）取得。'
@@ -1340,7 +1341,7 @@ function Invoke-Start {
     $requestedReasoningEffortEvidence = New-RequestedDispatchEvidence -Value $ReasoningEffort -Field 'ReasoningEffort'
     $codexHomeEvidencePath = $effectiveCodexHomePath
     $profileConfigPathValue = Resolve-ProfileConfigPath -CodexHome $codexHomeEvidencePath -Profile $effectiveProfileValue
-    if (($effectiveProfileValue -eq 'intensive' -or -not [string]::IsNullOrWhiteSpace($codexAccountName)) -and [string]::IsNullOrWhiteSpace($profileConfigPathValue)) {
+    if ([string]::IsNullOrWhiteSpace($profileConfigPathValue)) {
         $profileConfigPathValue = Resolve-AbsolutePath -Path (Join-Path -Path $codexHomeEvidencePath -ChildPath ($effectiveProfileValue + '.config.toml'))
         $phase = 'profile-evidence'
         $failureReasonCode = 'ProfileEvidenceUnknown'

@@ -365,7 +365,7 @@ Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依�
 
 ##### F1 派工判準
 
-派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依工作性質選擇，實作與執行用預設檔位（使用者在當下 Session 指定時用 `intensive`；Codex `Reviewer` 的大範圍審查固定用 `intensive`，條件見「審查配對」），意見評估用 `advisor`，不改變能力歸屬。
+派工歸屬與執行檔位是兩層決策。先判定能力落點，再判定檔位。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，Codex 端在讀寫、掃描與指令執行上具唯一可行性或程度優勢。稀缺端優先保留給不可替代的用途。額度只能推翻能力程度差異，不能推翻唯一可行性差異。檔位依用途選擇。實作與測試循環用 `implement`（使用者在當下 Session 指定時改用 `intensive`），一般審查用 `review`，大範圍審查用 `deep-review`（條件見「審查配對」），盤點、取證、驗證與診斷用 `scan`，意見評估用 `advisor`。檔位不改變能力歸屬，用途對照與設定檔見 `codex-dispatch` skill「檔位用途與新舊對照」。
 
 本輪工作命中某個 skill 時，先讀該 skill frontmatter 的 `dispatch` 欄位。`delegate` 直接派工，`inline` 直接由 Claude 端處理，`split` 依該 skill 的「## 派遣分界」章節拆分；這三個值不再走下列三層表。`either` 不指定歸屬，依下列三題工作量下限與三層表判定。
 
@@ -414,7 +414,7 @@ skill 未宣告 `dispatch`、宣告為 `either`，或本輪工作不對應任何
 | E（範圍已列舉） | 全部目標檔案與修改位置可於派工前以絕對路徑與符號逐一列出 |
 | T（需要測試循環） | 符合任一項即為是。修改行為邏輯或修 bug；新增或調整測試；預期驗證命令需執行超過 1 次。純機械展開（重新命名、搬移、格式、樣板、對映表套用、註解補齊）且驗證至多 1 次者為否 |
 
-E=是且 T=否時執行者為 Claude Haiku subagent，其餘為 Codex default 檔位（使用者在當下 Session 指定 `intensive` 時用 `intensive`）。`[派工判定]` 行的理由格式見路由優先序第 3 點。派生 Haiku subagent 前先載入 `workflow-orchestration` skill，派生契約、驗證失敗處置與回收核對見其 `references/implement-routing.md`。
+E=是且 T=否時執行者為 Claude Haiku subagent，其餘為 Codex `implement` 檔位（使用者在當下 Session 指定 `intensive` 時用 `intensive`）。`[派工判定]` 行的理由格式見路由優先序第 3 點。派生 Haiku subagent 前先載入 `workflow-orchestration` skill，派生契約、驗證失敗處置與回收核對見其 `references/implement-routing.md`。
 
 **Haiku 隔離**：派生前以 `git status --porcelain` 區分本 Session 已知改動與他人項目。沒有他人項目時 Haiku 直接修改來源工作樹；有他人項目且目標檔案與其無交集時，目標檔案含本 Session 未 commit 的改動則直接修改來源工作樹（隔離工作樹缺少該改動），否則使用隔離工作樹並套回成果（操作見 `references/implement-routing.md`）；目標檔案與他人項目有交集時不使用 Haiku，符合小型修改例外四項者由主 Agent 自理，否則走 Codex 派工。Workflow Phase 不使用隔離工作樹。
 
@@ -468,7 +468,7 @@ E=是且 T=否時執行者為 Claude Haiku subagent，其餘為 Codex default �
 
 ##### advisor consult 的不限階段掛載點
 
-`advisor` 是意見評估角色，不是實作檔位；實作使用預設檔位，使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session。`advisor-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在 Clarify、Design、Implement、Review、Accept 或 bug 線任一站，於適當的節點作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。evidence pack 的內容、執行端讀取邊界、profile 拒絕條件、hash 檢查與報告落點依 `codex-dispatch` skill「Advisor consult resource dispatch」。
+`advisor` 是意見評估角色，不是實作檔位；實作使用 `implement`，使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session。`advisor-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在 Clarify、Design、Implement、Review、Accept 或 bug 線任一站，於適當的節點作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。evidence pack 的內容、執行端讀取邊界、profile 拒絕條件、hash 檢查與報告落點依 `codex-dispatch` skill「Advisor consult resource dispatch」。
 
 **諮詢分級**：諮詢依適用條件分為下列三類，執行者與授權要求不同。
 
@@ -535,7 +535,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 - 審查範圍含兩個家族的貢獻時，以新增與刪除行數合計較多者為實作者，相等時以 Claude 家族計。Workflow 混合改按 Phase 切分：Haiku Phase 涉及的檔案由 Codex `Reviewer` 審查，Codex Phase 涉及的檔案由 Sonnet subagent 審查，各一份派遣單，同線同時只發一位審查者。
 - 「審查者不得是改寫者」與本表並存。順序 1 已使 Claude 改寫的規則檔由 Codex 審查。
 - `Frontend Reviewer` 與 `Contract Auditor` 維持 Codex。
-- Codex `Reviewer` 的檔位依審查範圍判定。順序 1 的規則檔機制條款審查，以及審查範圍達 3 個檔案以上的審查，使用 `intensive`；其餘使用預設檔位。此判定屬規則決定，不需使用者在當下 Session 指定。
+- Codex `Reviewer` 的檔位依審查範圍判定。順序 1 的規則檔機制條款審查，以及審查範圍達 3 個檔案以上的審查，使用 `deep-review`；其餘使用 `review`。此判定屬規則決定，不需使用者在當下 Session 指定，使用者指定的 `intensive` 不覆寫審查檔位。
 - Sonnet subagent 審查的派生契約與鏡像報告 `review-report-claude.md` 見 `workflow-orchestration` skill「Sonnet 審查路徑」。
 
 `Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，同線並行上限為 2。並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行。
