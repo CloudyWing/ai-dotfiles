@@ -344,6 +344,16 @@ function Get-QuotaApiFailureClassification {
     }
 }
 
+function Format-QuotaApiHttpFailure {
+    param([Parameter(Mandatory)][int]$StatusCode)
+
+    $message = 'QuotaApiFailure; category=HttpFailure; status={0}' -f $StatusCode
+    if ($StatusCode -eq 401) {
+        $message += '; hint=請先以該 CODEX_HOME 執行一次 codex（例如簡短的 codex exec）更新 token 後重新查詢'
+    }
+    return $message
+}
+
 function Get-QuotaApiResponse {
     param(
         [Parameter(Mandatory)]
@@ -360,7 +370,7 @@ function Get-QuotaApiResponse {
     catch {
         $failure = Get-QuotaApiFailureClassification -Exception $_.Exception
         if ($failure.Category -eq 'HttpFailure') {
-            throw ('QuotaApiFailure; category=HttpFailure; status={0}' -f $failure.StatusCode)
+            throw (Format-QuotaApiHttpFailure -StatusCode $failure.StatusCode)
         }
         if ($failure.Category -eq 'DnsFailure') {
             throw ('QuotaApiFailure; category=DnsFailure; host=chatgpt.com')
@@ -376,7 +386,7 @@ function Get-QuotaApiResponse {
         try {
             $statusCode = [int]$statusField.Value
             if ($statusCode -lt 200 -or $statusCode -ge 300) {
-                throw ('QuotaApiFailure; category=HttpFailure; status={0}' -f $statusCode)
+                throw (Format-QuotaApiHttpFailure -StatusCode $statusCode)
             }
         }
         catch {

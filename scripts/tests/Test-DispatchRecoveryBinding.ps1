@@ -9919,6 +9919,39 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
         Assert-True ($directCollectSource -match "status\s*=\s*'collected'" -and $collectSource -match "status\s*=\s*'collected'" -and $collectResult.status -ceq 'collected') 'Collect 回傳缺少 collected 狀態。'
     }
 
+    Invoke-Case 'Phase 7 DD-QUOTA-401 HTTP 狀態提示' {
+        $quotaPath = Join-Path $scriptsRoot 'Get-CodexQuota.ps1'
+        $quotaTokens = $null
+        $quotaErrors = $null
+        $quotaAst = [System.Management.Automation.Language.Parser]::ParseFile($quotaPath, [ref]$quotaTokens, [ref]$quotaErrors)
+        Assert-True (@($quotaErrors).Count -eq 0) 'Quota 腳本語法錯誤。'
+        foreach ($name in @('Get-QuotaApiField', 'Get-QuotaApiFailureClassification', 'Format-QuotaApiHttpFailure', 'Get-QuotaApiResponse')) {
+            $definition = $quotaAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | Where-Object { $_.Name -eq $name } | Select-Object -First 1
+            Assert-True ($null -ne $definition) ('找不到函式：' + $name)
+            . ([scriptblock]::Create($definition.Extent.Text))
+        }
+        function Invoke-WebRequest {
+            param($Uri, $Method, $Headers, $TimeoutSec, $MaximumRedirection, [switch]$UseBasicParsing)
+            if ($script:quotaFailureMode -eq 'exception') {
+                $failure = New-Object System.Exception('fixture HTTP failure')
+                $failure | Add-Member -NotePropertyName Response -NotePropertyValue ([pscustomobject]@{ StatusCode = $script:quotaStatus })
+                throw $failure
+            }
+            return [pscustomobject]@{ StatusCode = $script:quotaStatus; Content = '{}' }
+        }
+        foreach ($mode in @('response', 'exception')) {
+            foreach ($status in @(401, 500)) {
+                $script:quotaFailureMode = $mode
+                $script:quotaStatus = $status
+                $message = ''
+                try { $null = Get-QuotaApiResponse -Headers @{} -TimeoutSeconds 1 } catch { $message = $_.Exception.Message }
+                $prefix = 'QuotaApiFailure; category=HttpFailure; status={0}' -f $status
+                Assert-True ($message.StartsWith($prefix)) ('HTTP 前綴不符：' + $message)
+                Assert-True (($message.Contains('; hint=請先以該 CODEX_HOME 執行一次 codex')) -eq ($status -eq 401)) ('HTTP hint 不符：' + $message)
+            }
+        }
+    }
+
     $phase7MismatchedPlan = $script:phase7AdvisorPlan | ConvertTo-Json -Depth 20 | ConvertFrom-Json
     $phase7MismatchedPlan.scope_plan_fingerprint = '0000000000000000000000000000000000000000000000000000000000000000'
 }
