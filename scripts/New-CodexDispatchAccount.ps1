@@ -239,7 +239,7 @@ function New-CodexAccount {
     if ($null -eq $machineDirItem) {
         $preflightNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets')
         foreach ($namePart in $preflightNames) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Container)) { throw "來源目錄不存在：$namePart" } }
-        $preflightProfiles = @('.sandbox_migration', 'default.config.toml', 'advisor.config.toml')
+        $preflightProfiles = @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')
         if ($IncludeIntensive) { $preflightProfiles += 'intensive.config.toml' }
         foreach ($namePart in $preflightProfiles) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Leaf)) { throw "來源檔案不存在：$namePart" } }
         $preflightKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -272,7 +272,7 @@ function New-CodexAccount {
         }
         $sourceNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets')
         foreach ($namePart in $sourceNames) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Container)) { throw "來源目錄不存在：$namePart" } }
-        $profiles = @('default.config.toml', 'advisor.config.toml')
+        $profiles = @('implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')
         if ($IncludeIntensive) { $profiles += 'intensive.config.toml' }
         foreach ($namePart in @('.sandbox_migration') + $profiles) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Leaf)) { throw "來源檔案不存在：$namePart" } }
         $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
@@ -303,7 +303,7 @@ function New-CodexAccount {
         foreach ($namePart in $sourceNames) { Set-AccountLink -Path (Join-Path $accountHomePath $namePart) -Target (Join-Path $source $namePart) -Type Junction -WhatIf:$WhatIfPreference }
         Set-AccountLink -Path (Join-Path $accountHomePath '.sandbox_migration') -Target (Join-Path $source '.sandbox_migration') -Type SymbolicLink -WhatIf:$WhatIfPreference
         $step = 'profiles'
-        foreach ($profile in @('default.config.toml', 'advisor.config.toml', 'intensive.config.toml')) {
+        foreach ($profile in @('implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml', 'intensive.config.toml')) {
             $dest = Join-Path $accountHomePath $profile
             if ($profile -eq 'intensive.config.toml' -and -not $IncludeIntensive) { Write-AccountStatus 'profile' $dest 'skipped'; continue }
             $item = Get-AccountItem $dest
