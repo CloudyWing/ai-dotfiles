@@ -55,13 +55,26 @@ Workflow 派工前，`codex-dispatch` 另行核對註記與分支符合性，該
 
 3. 存在 `release/*` 或 `hotfix/*` 分支，或合併記錄含 `Merge branch 'release/` 或 `Merge branch 'hotfix/` 時推薦 `release-flow`，其餘推薦 `trunk`。
 
+### 主分支判定
+
+本文件與模式檔中的 `main` 一律指 repo 的主分支，`origin/main` 指主分支的遠端追蹤分支。主分支依下列順序判定，命中即停止：
+
+1. 讀取 `git symbolic-ref --short refs/remotes/origin/HEAD`。命令成功時，去掉 `origin/` 前綴的分支名稱即為主分支。
+2. 本機存在 `main` 分支時，主分支為 `main`。
+3. 本機存在 `master` 分支時，主分支為 `master`。
+4. 以上皆未命中時，停止 commit、啟動 Workflow 與建立分支，回報分支清單並請使用者指定。
+
+第 1 步判定出的分支在本機不存在時，同樣停止上述動作，回報判定結果與 `git branch --list` 的輸出，請使用者決定是否建立對應的本機追蹤分支。
+
+判定結果只用於當次操作，不寫入 `AGENTS.local.md`。執行命令時，以判定出的分支名稱取代命令範例中的 `main`。
+
 ## 分支策略
 
 分支決策依 `git-workflow` 註記與已載入的模式檔。分支分類如下。
 
 | 類別 | 命名 | 說明 |
 | --- | --- | --- |
-| 整合分支 | `trunk` 為 `main`；`release-flow` 為 `release/vX.Y.Z` 或 `hotfix/vX.Y.Z` | 版號符合 `^v[0-9]+\.[0-9]+\.[0-9]+$` |
+| 整合分支 | `trunk` 為主分支（見「主分支判定」）；`release-flow` 為 `release/vX.Y.Z` 或 `hotfix/vX.Y.Z` | 版號符合 `^v[0-9]+\.[0-9]+\.[0-9]+$` |
 | 線分支 | `feature/<lineSlug>` | 規則見「線分支與獨立 worktree」 |
 | 整理分支 | `refactor/tidy-<來源分支名，斜線改為連字號>` | 即第一層的拋棄式 `<rewrite-branch>` |
 | 備份分支 | `backup/<來源分支名，斜線改為連字號>-before-tidy-<beforeSha 前 7 碼>` | 規則見「整理流程」 |

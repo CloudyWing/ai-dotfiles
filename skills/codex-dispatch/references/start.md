@@ -74,7 +74,7 @@ RunRecord、PID 記錄、結果與 admission ledger 保存 caller Session finger
 | 1 | 依「AI-PROFILE 前置檢查」確認 `git-workflow` 鍵有效 | 依該節處置，補齊後才繼續 |
 | 2 | 執行 `git -C <sourceRoot> branch --show-current`，輸出為空即 detached HEAD | 停止 |
 | 3 | 以同線 `design.md`「實作任務清單」的 Phase 數判定線類型（與本次派遣選定幾個 Phase 無關），Phase 數 >= 2 為線分支，其餘為直接在整合分支 | 無法取得 Phase 數時停止 |
-| 4 | 對照下表 | 停止 |
+| 4 | 對照下表。表中的 `main` 指 `git-workflow` skill「主分支判定」的結果 | 停止 |
 
 | 模式 | 線類型 | 期望 |
 | --- | --- | --- |

@@ -4,7 +4,7 @@
 
 ## 整合分支
 
-整合分支為 `main`。
+整合分支為主分支，判定方式見本體「主分支判定」。本檔的 `main` 與 `origin/main` 皆指判定結果，例如主分支為 `master` 時，`origin/main..main` 即為 `origin/master..master`。
 
 ## commit 落點
 
