@@ -864,6 +864,39 @@ function New-DispatchOrderPromptDirective {
     return ('[派遣單] 本次派遣單的唯一位置為 ' + $path + '。主 prompt 若寫了其他位置，一律以此路徑為準。')
 }
 
+function Remove-DispatchSecretEnvironmentVariables {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][System.Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory)][string]$ListPath
+    )
+
+    try {
+        $list = Import-PowerShellDataFile -LiteralPath $ListPath -ErrorAction Stop
+        foreach ($key in @('DenyPatterns', 'KeepNames', 'KeepPatterns')) {
+            if (-not $list.ContainsKey($key) -or $null -eq $list[$key] -or
+                @($list[$key] | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+                throw 'Invalid denylist.'
+            }
+        }
+        if (@($list.DenyPatterns).Count -eq 0) { throw 'Empty denylist.' }
+    }
+    catch {
+        throw 'SandboxEnvDenylistMissing：機密環境變數名單不存在或格式異常。'
+    }
+
+    $removed = @()
+    foreach ($name in @($StartInfo.EnvironmentVariables.Keys)) {
+        $keep = @($list.KeepNames | Where-Object { $name -ieq $_ }).Count -gt 0 -or
+            @($list.KeepPatterns | Where-Object { $name -like $_ }).Count -gt 0
+        if (-not $keep -and @($list.DenyPatterns | Where-Object { $name -like $_ }).Count -gt 0) {
+            $StartInfo.EnvironmentVariables.Remove($name)
+            $removed += $name
+        }
+    }
+    return $removed
+}
+
 function Invoke-Start {
     $script:DispatchAdmissionStartedPid = 0
     $script:DispatchAdmissionSnapshotError = $null
@@ -1274,6 +1307,7 @@ function Invoke-Start {
         created_at_utc = $createdAtUtcValue
         started_at_utc = $null
         launch_state = 'prepared'
+        removed_environment_names = @()
         failure = $null
         resume_diagnostics = $null
         model_evidence = ConvertTo-DispatchEvidenceGroup -Evidence $null -Field 'model'
@@ -1678,6 +1712,14 @@ function Invoke-Start {
     $launcher = New-CodexLauncher -CodexExecutable $codexExecutable -CodexArguments @($codexArguments.ToArray()) -PromptPath $promptPathValue -EventPath $eventPath -ErrorPath $errorPath -HistoryRoot $historyRoot -LauncherPath $launcherPath -ExitSidecarPath $exitSidecarPathValue -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -RunId $runId -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
     $launcherPath = $launcher.Path
     $startInfo = New-ProcessStartInfo -FileName $launcher.FileName -WorkingDirectory $executionRootPath -Arguments @($launcher.Arguments)
+    try {
+        $removedEnvironmentNames = @(Remove-DispatchSecretEnvironmentVariables -StartInfo $startInfo -ListPath (Join-Path $script:DispatchEntryScriptRoot 'dispatch\sandbox-env-denylist.psd1'))
+    }
+    catch {
+        $failureReasonCode = 'SandboxEnvDenylistMissing'
+        throw
+    }
+    $runRecord.removed_environment_names = $removedEnvironmentNames
     $startInfo.EnvironmentVariables['CODEX_HOME'] = $effectiveCodexHomePath
     if ($null -ne $previousRun) {
         $profileConfigSha256AfterCompare = $null
@@ -1868,6 +1910,7 @@ function Invoke-Start {
 
         return [ordered]@{
             operation        = 'Start'
+            removed_environment_names = $removedEnvironmentNames
             processStarted   = $true
             processEnded     = $process.HasExited
             processExitCode  = if ($process.HasExited) { [int]$process.ExitCode } else { $null }

@@ -225,6 +225,7 @@ function Copy-DispatchModulesBesideTestEntry {
         }
         Copy-Item -LiteralPath $moduleSourcePath -Destination $moduleDestinationPath
     }
+    Copy-Item -LiteralPath (Join-Path $scriptsRoot 'dispatch\sandbox-env-denylist.psd1') -Destination (Join-Path $moduleDirectory 'sandbox-env-denylist.psd1') -Force
 }
 
 function Get-ProductionFunctionText {
@@ -8865,6 +8866,49 @@ if ($Phase -ge 6) {
         $runRecords = @(if (Test-Path -LiteralPath $runDirectory) { Get-ChildItem -LiteralPath $runDirectory -Filter '*.json' })
         Assert-True ($rejected -and $script:startCalls -eq $beforeStartCalls -and $runRecords.Count -eq 0) 'Start 缺少派遣單時必須拒絕，且不啟動程序或建立 RunRecord。'
     }
+    Invoke-Case 'Phase 6 DD-ENV-DENYLIST Start 名單缺失不啟動' {
+        $dispatch = 'dd-env-missing'
+        $preflightPath = Join-Path $fixtureRoot 'dd-env-preflight.json'
+        Write-Utf8NoBom -Path $preflightPath -Content (([ordered]@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = 'line-a'; dispatchSlug = $dispatch; writeMode = 'readonly' } | ConvertTo-Json) + "`r`n")
+        $oldEntryRoot = $script:DispatchEntryScriptRoot
+        try {
+            $script:DispatchEntryScriptRoot = Join-Path $fixtureRoot 'missing-env-entry'
+            $script:SourceRoot = $fixtureRoot
+            $script:ExecutionRoot = $fixtureRoot
+            $script:DispatchRoot = $fixtureRoot
+            $script:LineSlug = 'line-a'
+            $script:DispatchSlug = $dispatch
+            $script:PreflightResultPath = $preflightPath
+            $script:PromptPath = $phase6PromptPath
+            $script:PrepareResultPath = $null
+            $script:CodexHome = $null
+            $script:ResumeThreadId = $null
+            $script:LastMessagePath = $null
+            $script:ThreadIdPath = $null
+            $script:PidRecordPath = $null
+            $script:ScopePlanPath = $null
+            $script:DispatchKind = 'workflow'
+            $script:TaskType = 'unspecified'
+            $script:Profile = 'default'
+            $script:SessionMode = 'cold-start'
+            $script:AddDirectory = $null
+            $script:Search = $false
+            $script:CodexParentOption = $null
+            $script:InvocationBoundParameters = [ordered]@{}
+            $script:AddDirectoryExplicit = $false
+            $script:SearchExplicit = $false
+            $script:CodexParentOptionExplicit = $false
+            $beforeStartCalls = $script:startCalls
+            $failure = $null
+            try { $null = Invoke-Start } catch { $failure = $_.Exception.Data['operationResult'] }
+            Assert-True ($null -ne $failure -and $failure.errorCode -eq 'SandboxEnvDenylistMissing' -and -not $failure.processStarted -and $script:startCalls -eq $beforeStartCalls) '名單缺失時 Start 應拒絕且不啟動。'
+            if (-not [string]::IsNullOrWhiteSpace([string]$failure.runRecordPath)) {
+                $record = Read-DispatchRunRecord -Path $failure.runRecordPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $dispatch
+                Assert-True ($record.launch_state -eq 'launch-failed') 'RunRecord 必須標示啟動失敗。'
+            }
+        }
+        finally { $script:DispatchEntryScriptRoot = $oldEntryRoot }
+    }
     Invoke-Case 'Phase 6 Start preserves fallback CodexHome and RunRecord launch state' {
     $hadCodexHome = Test-Path Env:CODEX_HOME
     $oldCodexHome = $env:CODEX_HOME
@@ -9957,6 +10001,37 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
 }
 
 if ($Phase -ge 8) {
+    Invoke-Case 'Phase 8 DD-ENV-DENYLIST 移除機密名稱' {
+        $definition = $functions | Where-Object { $_.Name -eq 'Remove-DispatchSecretEnvironmentVariables' } | Select-Object -First 1
+        . ([scriptblock]::Create($definition.Extent.Text))
+        $info = New-Object System.Diagnostics.ProcessStartInfo
+        $info.UseShellExecute = $false
+        $removedNames = @('FOO_PASSWORD', 'BAR_SECRET', 'X_TOKEN', 'A_CREDENTIALS', 'NUGET_API_KEY', 'YunXin_Api_1', 'MONEYBOOK_X', 'CLAUDE_CODE_MESSAGING_TOKEN')
+        $keptNames = @('GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0', 'PATH', 'CLAUDE_CODE_SESSION_ID', 'CODEX_HOME', 'DOTNET_CLI_TELEMETRY_OPTOUT')
+        foreach ($name in @($removedNames + $keptNames)) { $info.EnvironmentVariables[$name] = 'fixture' }
+        $listPath = Join-Path $scriptsRoot 'dispatch\sandbox-env-denylist.psd1'
+        $actual = @(Remove-DispatchSecretEnvironmentVariables -StartInfo $info -ListPath $listPath)
+        foreach ($name in $removedNames) { Assert-True (-not $info.EnvironmentVariables.ContainsKey($name) -and $name -in $actual) "應移除名稱 $name。" }
+        foreach ($name in $keptNames) { Assert-True ($info.EnvironmentVariables.ContainsKey($name) -and $name -notin $actual) "應保留名稱 $name。" }
+        $missingRejected = $false
+        try { Remove-DispatchSecretEnvironmentVariables -StartInfo $info -ListPath (Join-Path $fixtureRoot 'missing.psd1') }
+        catch { $missingRejected = $_.Exception.Message -match 'SandboxEnvDenylistMissing' }
+        Assert-True $missingRejected '缺少名單應拒絕。'
+        $invalidPath = Join-Path $fixtureRoot 'invalid-denylist.psd1'
+        [IO.File]::WriteAllText($invalidPath, '@{ invalid', (New-Object Text.UTF8Encoding($false)))
+        $invalidRejected = $false
+        try { Remove-DispatchSecretEnvironmentVariables -StartInfo $info -ListPath $invalidPath }
+        catch { $invalidRejected = $_.Exception.Message -match 'SandboxEnvDenylistMissing' }
+        Assert-True $invalidRejected '語法錯誤的名單應拒絕。'
+        $startText = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'dispatch\start-lifecycle.ps1'))
+        $call = $startText.IndexOf('$removedEnvironmentNames = @(Remove-DispatchSecretEnvironmentVariables')
+        $codexHomeIndex = $startText.IndexOf("`$startInfo.EnvironmentVariables['CODEX_HOME'] =", $call)
+        $start = $startText.IndexOf('$process.Start()', $call)
+        Assert-True ($call -ge 0 -and $codexHomeIndex -gt $call -and $start -gt $codexHomeIndex) '移除呼叫應位於設定 home 與啟動之前。'
+        $dispatchFiles = Get-ChildItem -LiteralPath (Join-Path $scriptsRoot 'dispatch') -Filter '*.ps1'
+        $excludeHits = @($dispatchFiles | Select-String -Pattern 'ignore_default_excludes')
+        Assert-True ($excludeHits.Count -eq 0) '派遣模組不得使用 ignore_default_excludes。'
+    }
     Invoke-Case 'Phase 8 DD-ADVISOR-EVIDENCE-LOC 結案證據位置' {
         $sandboxPath = Join-Path $fixtureRoot 'evidence-pack.md'
         $pack = [pscustomobject]@{ content = 'evidence'; sha256 = ('a' * 64); length = 8; sandboxPath = $sandboxPath }
