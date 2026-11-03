@@ -1761,7 +1761,13 @@ function New-PrepareDocument {
         [object[]]$Artifacts,
 
         [AllowNull()]
-        [object]$ErrorValue
+        [object]$ErrorValue,
+
+        [ValidateSet('initial', 'refresh')]
+        [string]$PrepareMode = 'initial',
+
+        [AllowNull()]
+        [object]$RefreshOf = $null
     )
 
     $artifactList = New-Object 'System.Collections.Generic.List[object]'
@@ -1786,6 +1792,8 @@ function New-PrepareDocument {
         request_path           = if ([string]::IsNullOrWhiteSpace($RequestPathValue)) { $null } else { $RequestPathValue }
         request_sha256         = if ([string]::IsNullOrWhiteSpace($RequestSha256Value)) { $null } else { $RequestSha256Value }
         effective_codex_home   = if ($null -eq $EffectiveCodexHome) { $null } else { [string]$EffectiveCodexHome }
+        prepare_mode           = $PrepareMode
+        refresh_of             = $RefreshOf
         artifacts              = $artifactList.ToArray()
         error                   = $ErrorValue
         created_at_utc          = $now
@@ -1864,7 +1872,9 @@ function Resolve-PrepareResultBinding {
         [string]$DispatchSlug,
 
         [AllowEmptyString()]
-        [string]$ExpectedSha256
+        [string]$ExpectedSha256,
+
+        [switch]$Historical
     )
 
     $rootInfo = Get-PrepareRootInfo -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -DispatchRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
@@ -1913,6 +1923,14 @@ function Resolve-PrepareResultBinding {
         if ($null -eq $destinationRoot) {
             throw "PrepareArtifactMismatch：artifact destination 超出允許 root：$destinationPath"
         }
+        if ($Historical) {
+            $expectedHash = [string]$artifact.expected_sha256
+            if ($expectedHash -notmatch '^[a-fA-F0-9]{64}$' -or [string]$artifact.source_sha256 -ine $expectedHash -or [string]$artifact.destination_sha256 -ine $expectedHash) {
+                throw "PrepareArtifactMismatch：歷史 artifact 雜湊紀錄不一致：$destinationPath"
+            }
+            $verifiedArtifacts.Add($artifact)
+            continue
+        }
         if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
             throw "PrepareArtifactMismatch：artifact source 不存在：$sourcePath"
         }
@@ -1947,6 +1965,298 @@ function Resolve-PrepareResultBinding {
         Artifacts          = @($verifiedArtifacts.ToArray())
         EffectiveCodexHome = [string]$document.effective_codex_home
     }
+}
+
+function Get-PrepareRequestedMode {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$RequestContext
+    )
+
+    # Dispatch 內部的 Prepare 一律是初次 Prepare，只有獨立的 Prepare 操作才採用 refresh。
+    $mode = $null
+    if ($null -ne $RequestContext) {
+        $requestOperation = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $RequestContext -Name 'document') -Name 'operation')
+        if ($requestOperation -cne 'Prepare') {
+            return 'initial'
+        }
+        $mode = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $RequestContext -Name 'dispatch_values') -Name 'prepare_mode')
+    }
+    if ([string]::IsNullOrWhiteSpace($mode)) {
+        $mode = [string](Get-DispatchScriptVariableValue -Name 'PrepareMode')
+    }
+    if ([string]::IsNullOrWhiteSpace($mode)) {
+        return 'initial'
+    }
+    if ($mode -cnotin @('initial', 'refresh')) {
+        Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message ('PrepareArtifactMismatch：prepare_mode 只允許 initial 或 refresh：' + $mode)
+    }
+    return $mode
+}
+
+function Get-PrepareRefreshChainWalk {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [AllowEmptyString()]
+        [string]$ExpectedSha256,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug,
+
+        [AllowEmptyString()]
+        [string]$AnchorPath,
+
+        [switch]$Historical
+    )
+
+    $anchorResolved = if ([string]::IsNullOrWhiteSpace($AnchorPath)) { $null } else { Resolve-AbsolutePath -Path $AnchorPath }
+    $rootInfo = Get-PrepareRootInfo -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -DispatchRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $layers = New-Object 'System.Collections.Generic.List[object]'
+    $chainArtifacts = New-Object 'System.Collections.Generic.List[object]'
+    $currentPath = Resolve-AbsolutePath -Path $Path
+    $currentSha256 = $ExpectedSha256
+    for ($depth = 0; $depth -le 8; $depth++) {
+        if (-not $seen.Add($currentPath)) {
+            throw 'PrepareArtifactMismatch：refresh 鏈含循環。'
+        }
+        try {
+            $null = Get-PrepareResultTargetPath -RootInfo $rootInfo -PrepareResultPathValue $currentPath -ResultPathValue $null
+            $binding = Resolve-PrepareResultBinding -Path $currentPath -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -ExpectedSha256 $currentSha256 -Historical:($Historical -or $depth -gt 0)
+        }
+        catch {
+            $layerMessage = $_.Exception.Message
+            if ($layerMessage.StartsWith('PrepareArtifactMismatch', [StringComparison]::Ordinal)) {
+                throw
+            }
+            throw ('PrepareArtifactMismatch：refresh 鏈第 {0} 層無法驗證：{1}' -f $depth, $layerMessage)
+        }
+        if ($binding.Status -cne 'Prepared') {
+            throw ('PrepareArtifactMismatch：refresh 鏈第 {0} 層的 Prepare result status 必須是 Prepared：{1}' -f $depth, $binding.Path)
+        }
+        $layers.Add($binding)
+        foreach ($artifact in @($binding.Artifacts)) {
+            $chainArtifacts.Add([pscustomobject]@{
+                    destination        = Resolve-AbsolutePath -Path ([string]$artifact.destination)
+                    destination_sha256 = [string]$artifact.destination_sha256
+                    result_path        = $binding.Path
+                    layer              = $depth
+                })
+        }
+        $reachedAnchor = $null -ne $anchorResolved -and [string]::Equals($currentPath, $anchorResolved, [StringComparison]::OrdinalIgnoreCase)
+        $parentProperty = $binding.Document.PSObject.Properties['refresh_of']
+        $hasParent = $null -ne $parentProperty -and $null -ne $parentProperty.Value
+        if ($reachedAnchor -or (-not $hasParent -and $null -eq $anchorResolved)) {
+            return [pscustomobject]@{
+                Layers         = @($layers.ToArray())
+                Terminal       = $binding
+                ChainArtifacts = @($chainArtifacts.ToArray())
+                ReachedAnchor  = $reachedAnchor
+            }
+        }
+        if (-not $hasParent) {
+            throw 'PrepareArtifactMismatch：refresh 鏈未到達 Preflight 綁定。'
+        }
+        $parentPathProperty = $parentProperty.Value.PSObject.Properties['path']
+        $parentShaProperty = $parentProperty.Value.PSObject.Properties['sha256']
+        if ($null -eq $parentPathProperty -or [string]::IsNullOrWhiteSpace([string]$parentPathProperty.Value) -or $null -eq $parentShaProperty -or [string]$parentShaProperty.Value -notmatch '^[a-fA-F0-9]{64}$') {
+            throw ('PrepareArtifactMismatch：refresh 鏈第 {0} 層的 refresh_of 格式無效。' -f $depth)
+        }
+        try {
+            $currentPath = Resolve-AbsolutePath -Path ([string]$parentPathProperty.Value)
+        }
+        catch {
+            throw ('PrepareArtifactMismatch：refresh 鏈第 {0} 層的 refresh_of 路徑無法解析：{1}' -f $depth, $_.Exception.Message)
+        }
+        $currentSha256 = [string]$parentShaProperty.Value
+    }
+    throw 'PrepareArtifactMismatch：refresh 鏈超過深度上限。'
+}
+
+function Resolve-PrepareRefreshChain {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [string]$PreflightPreparePath,
+
+        [AllowEmptyString()]
+        [string]$PreflightPrepareSha256,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug
+    )
+
+    if ($PreflightPrepareSha256 -notmatch '^[a-fA-F0-9]{64}$') {
+        throw 'PrepareArtifactMismatch：refresh 鏈缺少可比對的 Preflight Prepare result 雜湊。'
+    }
+    $walk = Get-PrepareRefreshChainWalk -Path $Path -ExpectedSha256 '' -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -AnchorPath $PreflightPreparePath
+    if ($walk.Terminal.Sha256 -ine $PreflightPrepareSha256) {
+        throw 'PrepareArtifactMismatch：refresh 鏈終點雜湊與 Preflight 不一致。'
+    }
+    $latest = $walk.Layers[0]
+    $latest | Add-Member -NotePropertyName ChainArtifacts -NotePropertyValue @($walk.ChainArtifacts) -Force
+    return $latest
+}
+
+function Resolve-PrepareRefreshAnchor {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()]
+        [string]$PreflightPreparePath,
+
+        [AllowEmptyString()]
+        [string]$PreflightPrepareSha256,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$LineSlug,
+
+        [Parameter(Mandatory)]
+        [string]$DispatchSlug
+    )
+
+    $anchorPath = if ([string]::IsNullOrWhiteSpace($PreflightPreparePath)) { '' } else { Resolve-AbsolutePath -Path $PreflightPreparePath }
+    if (-not [string]::IsNullOrWhiteSpace($anchorPath) -and $PreflightPrepareSha256 -match '^[a-fA-F0-9]{64}$') {
+        return [pscustomobject]@{ Path = $anchorPath; Sha256 = $PreflightPrepareSha256; Source = 'preflight' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PreflightPrepareSha256)) {
+        throw 'PrepareArtifactMismatch：Preflight 的 prepareResultSha256 格式無效。'
+    }
+    # Dispatch 的 Preflight 在 Prepare 之前寫出，不含雜湊；改用初次 Start 的 RunRecord 所記錄的 Prepare result。
+    try {
+        $records = @(Get-DispatchRunRecordList -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug)
+    }
+    catch {
+        throw ('PrepareArtifactMismatch：無法讀取 RunRecord 以取得 refresh 鏈終點：' + $_.Exception.Message)
+    }
+    $matching = @($records | Where-Object {
+            $recordPath = [string](Get-DispatchJsonProperty -Object $_ -Name 'prepare_result_path')
+            $recordSha256 = [string](Get-DispatchJsonProperty -Object $_ -Name 'prepare_result_sha256')
+            -not [string]::IsNullOrWhiteSpace($recordPath) -and $recordSha256 -match '^[a-fA-F0-9]{64}$' -and ([string]::IsNullOrWhiteSpace($anchorPath) -or [string]::Equals((Resolve-AbsolutePath -Path $recordPath), $anchorPath, [StringComparison]::OrdinalIgnoreCase))
+        })
+    if ($matching.Count -eq 0) {
+        throw 'PrepareArtifactMismatch：Preflight 未記錄 Prepare result 雜湊，且沒有 RunRecord 記錄該 Prepare result，無法確認 refresh 鏈終點。'
+    }
+    $oldest = @(
+        $matching | Sort-Object -Property @(
+            @{ Expression = { ConvertTo-DispatchTimestamp -Value $_.created_at_utc }; Descending = $false }
+            @{ Expression = { $_.run_id }; Descending = $false }
+        )
+    )[0]
+    if ([string]::IsNullOrWhiteSpace($anchorPath)) {
+        try {
+            $candidateAnchor = Read-PrepareResult -Path ([string]$oldest.prepare_result_path) -ExpectedSha256 ([string]$oldest.prepare_result_sha256) -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        }
+        catch { throw ('PrepareArtifactMismatch：無法驗證初始錨點：' + $_.Exception.Message) }
+        if ([string](Get-DispatchJsonProperty -Object $candidateAnchor.Document -Name 'prepare_mode') -ceq 'refresh') {
+            throw 'PrepareArtifactMismatch：最早的 RunRecord 指向 refresh result，缺少可信初始錨點。'
+        }
+    }
+    return [pscustomobject]@{ Path = (Resolve-AbsolutePath -Path ([string]$oldest.prepare_result_path)); Sha256 = [string]$oldest.prepare_result_sha256; Source = 'run-record' }
+}
+
+function Find-PrepareRefreshBase {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [psobject]$RootInfo,
+
+        [AllowEmptyString()]
+        [string]$NewResultPath,
+
+        [AllowEmptyString()]
+        [string]$PreflightResultPath
+    )
+
+    $candidatePaths = New-Object 'System.Collections.Generic.List[string]'
+    $diagnostics = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::IsNullOrWhiteSpace($PreflightResultPath)) {
+        try {
+            $preflightFile = Resolve-AbsolutePath -Path $PreflightResultPath
+            if (Test-Path -LiteralPath $preflightFile -PathType Leaf) {
+                $preflightDocument = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $preflightFile)
+                $pointer = [string](Get-DispatchJsonProperty -Object $preflightDocument -Name 'prepareResultPath')
+                if (-not [string]::IsNullOrWhiteSpace($pointer)) {
+                    $candidatePaths.Add((Resolve-AbsolutePath -Path $pointer))
+                }
+            }
+        }
+        catch {
+            $diagnostics.Add('Preflight result 無法讀取：' + $_.Exception.Message)
+        }
+    }
+    $historyDirectories = @(
+        $RootInfo.HistoryLineRoot
+        (Join-Path -Path $RootInfo.SourceRoot -ChildPath (Join-Path -Path '.local\ai-sessions\history' -ChildPath $RootInfo.LineSlug))
+        ($RootInfo.DestinationRoots | ForEach-Object { $_.Path })
+    )
+    foreach ($historyDirectory in @($historyDirectories | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $historyDirectory -PathType Container) {
+            foreach ($file in @(Get-ChildItem -LiteralPath $historyDirectory -Filter '*.json' -File -Recurse -ErrorAction Stop)) {
+                $candidatePaths.Add($file.FullName)
+            }
+        }
+    }
+
+    $newResultResolved = if ([string]::IsNullOrWhiteSpace($NewResultPath)) { $null } else { Resolve-AbsolutePath -Path $NewResultPath }
+    $best = $null
+    $evaluated = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidatePath in @($candidatePaths.ToArray())) {
+        if (-not $evaluated.Add($candidatePath) -or ($null -ne $newResultResolved -and [string]::Equals($candidatePath, $newResultResolved, [StringComparison]::OrdinalIgnoreCase))) {
+            continue
+        }
+        try {
+            if (Test-PathWithinRoot -Path $candidatePath -Root $RootInfo.ExecutionRoot) {
+                $null = Get-PrepareResultTargetPath -RootInfo $RootInfo -PrepareResultPathValue $candidatePath -ResultPathValue $null
+            }
+            $candidate = Read-PrepareResult -Path $candidatePath -SourceRoot $RootInfo.SourceRoot -ExecutionRoot $RootInfo.ExecutionRoot -LineSlug $RootInfo.LineSlug -DispatchSlug $RootInfo.DispatchSlug -ExpectedSha256 ''
+        }
+        catch {
+            $diagnostics.Add($candidatePath + '：' + $_.Exception.Message)
+            continue
+        }
+        if ($candidate.Status -cne 'Prepared') {
+            continue
+        }
+        $createdAt = ConvertTo-DispatchTimestamp -Value (Get-DispatchJsonProperty -Object $candidate.Document -Name 'created_at_utc')
+        if ($null -eq $createdAt) {
+            continue
+        }
+        if ($null -eq $best -or $createdAt -gt $best.CreatedAt) {
+            $best = [pscustomobject]@{ Path = $candidate.Path; Sha256 = $candidate.Sha256; CreatedAt = $createdAt }
+        }
+    }
+    return [pscustomobject]@{ Best = $best; Diagnostics = @($diagnostics.ToArray()) }
 }
 
 function New-PrepareOperationResult {
@@ -2006,6 +2316,13 @@ function Invoke-Prepare {
     $temporaryPaths = New-Object 'System.Collections.Generic.List[string]'
     $temporaryByDestination = @{}
     $committedPaths = New-Object 'System.Collections.Generic.List[string]'
+    $staleMoves = New-Object 'System.Collections.Generic.List[object]'
+    $staleRootPath = $null
+    $staleRootCreated = $false
+    $prepareModeValue = 'initial'
+    $refreshOfValue = $null
+    $refreshKnownArtifacts = @()
+    $refreshExistingHashByDestination = @{}
     $guardTargetPathValue = if ($null -eq $GuardTargetPath) { @() } else { @($GuardTargetPath) }
     $requestContext = $script:RequestContext
     try {
@@ -2054,6 +2371,30 @@ function Invoke-Prepare {
             Throw-PrepareValidationFailure -Code 'PrepareRequired' -Message 'worktree Prepare 必須提供非空 prepare_artifacts 清單。'
         }
 
+        $prepareModeValue = Get-PrepareRequestedMode -RequestContext $requestContext
+        if ($prepareModeValue -ceq 'refresh') {
+            $refreshPidCheck = Get-PidCheckResult -SourceRoot $rootInfo.SourceRoot -LineSlug $rootInfo.LineSlug -WriteMode 'write'
+            $refreshPidBlockers = @(Get-BlockingDispatchPidRecords -PidCheckResult $refreshPidCheck -DispatchSlug $rootInfo.DispatchSlug)
+            if ($refreshPidBlockers.Count -gt 0) {
+                Throw-PrepareValidationFailure -Code 'PrepareRefreshProcessActive' -Message ('PrepareRefreshProcessActive：同一 dispatchSlug 仍有存活程序，拒絕 refresh。' + (New-DispatchPidIdentityBlockedMessage -DispatchSlug $rootInfo.DispatchSlug -Records $refreshPidBlockers))
+            }
+            $refreshBase = Find-PrepareRefreshBase -RootInfo $rootInfo -NewResultPath $resultPathValue -PreflightResultPath ([string](Get-DispatchScriptVariableValue -Name 'PreflightResultPath'))
+            if ($null -eq $refreshBase.Best) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message ('PrepareArtifactMismatch：refresh 找不到同 dispatchSlug 已完成的 Prepare result。' + (@($refreshBase.Diagnostics) -join '；'))
+            }
+            try {
+                $refreshWalk = Get-PrepareRefreshChainWalk -Path $refreshBase.Best.Path -ExpectedSha256 $refreshBase.Best.Sha256 -SourceRoot $rootInfo.SourceRoot -ExecutionRoot $rootInfo.ExecutionRoot -LineSlug $rootInfo.LineSlug -DispatchSlug $rootInfo.DispatchSlug -AnchorPath '' -Historical
+            }
+            catch {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message $_.Exception.Message
+            }
+            if (@($refreshWalk.Layers).Count -gt 8) {
+                Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message 'PrepareArtifactMismatch：refresh 鏈已達深度上限 8，請改用新的 dispatchSlug 重新派遣。'
+            }
+            $refreshOfValue = [ordered]@{ path = $refreshBase.Best.Path; sha256 = $refreshBase.Best.Sha256 }
+            $refreshKnownArtifacts = @($refreshWalk.ChainArtifacts)
+        }
+
         $artifactPlans = New-Object 'System.Collections.Generic.List[object]'
         foreach ($artifact in $requestArtifacts) {
             $sourcePath = $null
@@ -2077,21 +2418,47 @@ function Invoke-Prepare {
             if (-not (Test-Path -LiteralPath $sourcePath -PathType Leaf)) {
                 Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact source 不存在：$sourcePath"
             }
-            if ([System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath)) -or [System.IO.Directory]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath))) {
+            $destinationIsFile = [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath))
+            $destinationIsDirectory = [System.IO.Directory]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath))
+            if ($destinationIsDirectory -or ($destinationIsFile -and $prepareModeValue -cne 'refresh')) {
                 Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact destination 已被占用：$destinationPath"
             }
-            $artifactPlans.Add([ordered]@{
-                    source             = $sourcePath
-                    destination        = $destinationPath
-                    purpose            = [string]$artifact.purpose
-                    destination_root   = $destinationRoot.Name
-                    expected_sha256    = ([string]$artifact.sha256).ToLowerInvariant()
-                    source_sha256      = $null
-                    destination_sha256 = $null
-                })
+            $refreshAction = $null
+            if ($prepareModeValue -ceq 'refresh') {
+                if (-not $destinationIsFile) {
+                    $refreshAction = 'added'
+                }
+                else {
+                    $existingHash = Get-FileSha256 -Path $destinationPath
+                    $knownHashes = @($refreshKnownArtifacts | Where-Object { [string]::Equals([string]$_.destination, $destinationPath, [System.StringComparison]::OrdinalIgnoreCase) } | ForEach-Object { [string]$_.destination_sha256 })
+                    if ($existingHash -ieq ([string]$artifact.sha256)) {
+                        $refreshAction = 'unchanged'
+                    }
+                    elseif ($knownHashes -contains $existingHash) {
+                        $refreshAction = 'replaced'
+                        $refreshExistingHashByDestination[$destinationPath] = $existingHash
+                    }
+                    else {
+                        Throw-PrepareValidationFailure -Code 'PrepareRefreshDestinationModified' -Message "PrepareRefreshDestinationModified：artifact destination 的內容不屬於任何已知 Prepare 輸出，疑似已被執行端修改，拒絕覆寫：$destinationPath"
+                    }
+                }
+            }
+            $plan = [ordered]@{
+                source             = $sourcePath
+                destination        = $destinationPath
+                purpose            = [string]$artifact.purpose
+                destination_root   = $destinationRoot.Name
+                expected_sha256    = ([string]$artifact.sha256).ToLowerInvariant()
+                source_sha256      = $null
+                destination_sha256 = $null
+            }
+            if ($prepareModeValue -ceq 'refresh') {
+                $plan['refresh_action'] = $refreshAction
+            }
+            $artifactPlans.Add($plan)
         }
 
-        $resultDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'Preparing' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts @($artifactPlans.ToArray()) -ErrorValue $null
+        $resultDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'Preparing' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts @($artifactPlans.ToArray()) -ErrorValue $null -PrepareMode $prepareModeValue -RefreshOf $refreshOfValue
         $null = Write-PrepareResultDocument -Path $resultPathValue -Document $resultDocument -GuardSourceRoot $rootInfo.SourceRoot -GuardExecutionRoot $rootInfo.ExecutionRoot -GuardTargetPath $guardTargetPathValue
 
         $verifiedPlans = New-Object 'System.Collections.Generic.List[object]'
@@ -2108,6 +2475,24 @@ function Invoke-Prepare {
             if ($sourceHashBefore -ine $sourceHashRead -or $sourceHashBefore -ine $sourceHashAfter) {
                 Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact source 在複製期間變更：$sourcePath"
             }
+            $planRefreshAction = if ($plan.Contains('refresh_action')) { [string]$plan['refresh_action'] } else { $null }
+            if ($planRefreshAction -ceq 'unchanged') {
+                $unchangedHash = Get-FileSha256 -Path $destinationPath
+                if ($unchangedHash -ine $sourceHashBefore) {
+                    Throw-PrepareValidationFailure -Code 'PrepareRefreshDestinationModified' -Message "PrepareRefreshDestinationModified：artifact destination 在 refresh 期間被改動：$destinationPath"
+                }
+                $verifiedPlans.Add([ordered]@{
+                        source             = $sourcePath
+                        destination        = $destinationPath
+                        purpose            = [string]$plan.purpose
+                        destination_root   = [string]$plan.destination_root
+                        expected_sha256    = [string]$plan.expected_sha256
+                        source_sha256      = $sourceHashBefore
+                        destination_sha256 = $unchangedHash
+                        refresh_action     = $planRefreshAction
+                    })
+                continue
+            }
             $destinationParent = Split-Path -Parent $destinationPath
             $null = New-DispatchOutputDirectory -Path $destinationParent -SourceRoot $rootInfo.SourceRoot -ExecutionRoot $rootInfo.ExecutionRoot -TargetPath @($guardTargetPathValue)
             $destinationPath = Resolve-DispatchOutputPath -CandidatePath $destinationPath -SourceRoot $rootInfo.SourceRoot -ExecutionRoot $rootInfo.ExecutionRoot -TargetPath @($guardTargetPathValue)
@@ -2121,20 +2506,53 @@ function Invoke-Prepare {
             if ($destinationHash -ine $sourceHashBefore -or $destinationHash -ine [string]$plan.expected_sha256) {
                 Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact temporary destination hash 不符：$destinationPath; expected=$($plan.expected_sha256); actual=$destinationHash"
             }
-            $verifiedPlans.Add([ordered]@{
-                    source             = $sourcePath
-                    destination        = $destinationPath
-                    purpose            = [string]$plan.purpose
-                    destination_root   = [string]$plan.destination_root
-                    expected_sha256    = [string]$plan.expected_sha256
-                    source_sha256      = $sourceHashBefore
-                    destination_sha256 = $destinationHash
-                })
+            $verifiedPlan = [ordered]@{
+                source             = $sourcePath
+                destination        = $destinationPath
+                purpose            = [string]$plan.purpose
+                destination_root   = [string]$plan.destination_root
+                expected_sha256    = [string]$plan.expected_sha256
+                source_sha256      = $sourceHashBefore
+                destination_sha256 = $destinationHash
+            }
+            if ($null -ne $planRefreshAction) {
+                $verifiedPlan['refresh_action'] = $planRefreshAction
+            }
+            $verifiedPlans.Add($verifiedPlan)
         }
 
+        $staleStamp = [datetime]::UtcNow.ToString('yyyyMMddTHHmmssfff')
         foreach ($plan in @($verifiedPlans.ToArray())) {
             $destinationPath = [string]$plan.destination
-            if ([System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath)) -or [System.IO.Directory]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath))) {
+            $planRefreshAction = if ($plan.Contains('refresh_action')) { [string]$plan['refresh_action'] } else { $null }
+            if ($planRefreshAction -ceq 'unchanged') {
+                if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath)) -or (Get-FileSha256 -Path $destinationPath) -ine [string]$plan.destination_sha256) {
+                    Throw-PrepareValidationFailure -Code 'PrepareRefreshDestinationModified' -Message "PrepareRefreshDestinationModified：artifact destination 在提交前被改動：$destinationPath"
+                }
+                continue
+            }
+            if ($planRefreshAction -ceq 'replaced') {
+                $expectedExistingHash = [string]$refreshExistingHashByDestination[$destinationPath]
+                if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath)) -or [string]::IsNullOrWhiteSpace($expectedExistingHash) -or (Get-FileSha256 -Path $destinationPath) -ine $expectedExistingHash) {
+                    Throw-PrepareValidationFailure -Code 'PrepareRefreshDestinationModified' -Message "PrepareRefreshDestinationModified：artifact destination 在提交前被改動：$destinationPath"
+                }
+                if ($null -eq $staleRootPath) {
+                    $staleRootPath = Join-Path -Path $rootInfo.HistoryLineRoot -ChildPath 'stale-handoff'
+                    $staleRootCreated = -not [System.IO.Directory]::Exists((ConvertTo-FileSystemApiPath -Path $staleRootPath))
+                    $null = New-DispatchOutputDirectory -Path $staleRootPath -SourceRoot $rootInfo.SourceRoot -ExecutionRoot $rootInfo.ExecutionRoot -TargetPath @($guardTargetPathValue)
+                }
+                $staleBaseName = [System.IO.Path]::GetFileName($destinationPath) + '.' + $staleStamp
+                $stalePath = Join-Path -Path $staleRootPath -ChildPath $staleBaseName
+                $staleSuffix = 1
+                while ([System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $stalePath))) {
+                    $stalePath = Join-Path -Path $staleRootPath -ChildPath ($staleBaseName + '-' + $staleSuffix)
+                    $staleSuffix++
+                }
+                $stalePath = Resolve-DispatchOutputPath -CandidatePath $stalePath -SourceRoot $rootInfo.SourceRoot -ExecutionRoot $rootInfo.ExecutionRoot -TargetPath @($guardTargetPathValue)
+                [System.IO.File]::Move((ConvertTo-FileSystemApiPath -Path $destinationPath), (ConvertTo-FileSystemApiPath -Path $stalePath))
+                $staleMoves.Add([pscustomobject]@{ Original = $destinationPath; Stale = $stalePath })
+            }
+            elseif ([System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath)) -or [System.IO.Directory]::Exists((ConvertTo-FileSystemApiPath -Path $destinationPath))) {
                 Throw-PrepareValidationFailure -Code 'PrepareArtifactMismatch' -Message "artifact destination 在提交前被占用：$destinationPath"
             }
             $temporaryPath = [string]$temporaryByDestination[$destinationPath]
@@ -2152,7 +2570,7 @@ function Invoke-Prepare {
             }
         }
 
-        $resultDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'Prepared' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts @($verifiedPlans.ToArray()) -ErrorValue $null
+        $resultDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'Prepared' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts @($verifiedPlans.ToArray()) -ErrorValue $null -PrepareMode $prepareModeValue -RefreshOf $refreshOfValue
         $writtenResult = Write-PrepareResultDocument -Path $resultPathValue -Document $resultDocument -GuardSourceRoot $rootInfo.SourceRoot -GuardExecutionRoot $rootInfo.ExecutionRoot -GuardTargetPath $guardTargetPathValue
         return New-PrepareOperationResult -Document $writtenResult.Document -ResultPathValue $writtenResult.Path -ResultSha256Value $writtenResult.Sha256
     }
@@ -2182,6 +2600,33 @@ function Invoke-Prepare {
             catch {
             }
         }
+        $rollbackFailures = New-Object 'System.Collections.Generic.List[string]'
+        for ($staleIndex = $staleMoves.Count - 1; $staleIndex -ge 0; $staleIndex--) {
+            $staleMove = $staleMoves[$staleIndex]
+            try {
+                if ([System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path ([string]$staleMove.Stale))) -and -not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path ([string]$staleMove.Original)))) {
+                    [System.IO.File]::Move((ConvertTo-FileSystemApiPath -Path ([string]$staleMove.Stale)), (ConvertTo-FileSystemApiPath -Path ([string]$staleMove.Original)))
+                }
+                else {
+                    $rollbackFailures.Add([string]$staleMove.Original)
+                }
+            }
+            catch {
+                $rollbackFailures.Add(([string]$staleMove.Original + '：' + $_.Exception.Message))
+            }
+        }
+        if ($rollbackFailures.Count -eq 0 -and $staleRootCreated -and $null -ne $staleRootPath) {
+            try {
+                if ([System.IO.Directory]::Exists((ConvertTo-FileSystemApiPath -Path $staleRootPath)) -and @(Get-ChildItem -LiteralPath $staleRootPath -Force).Count -eq 0) {
+                    Remove-Item -LiteralPath $staleRootPath -Force -ErrorAction SilentlyContinue
+                }
+            }
+            catch {
+            }
+        }
+        if ($rollbackFailures.Count -gt 0) {
+            $originalMessage = $originalMessage + '；refresh 回復失敗的 artifact：' + ($rollbackFailures -join '；')
+        }
         if ($null -ne $rootInfo -and [string]::IsNullOrWhiteSpace($resultPathValue)) {
             try {
                 $resultPathValue = Get-PrepareResultTargetPath -RootInfo $rootInfo -PrepareResultPathValue $PrepareResultPath -ResultPathValue $ResultPath -TargetPathValue $guardTargetPathValue
@@ -2199,7 +2644,7 @@ function Invoke-Prepare {
                 code    = $failureCode
                 message = $originalMessage
             }
-            $failureDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'PrepareFailed' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts $failureArtifacts -ErrorValue $failureError
+            $failureDocument = New-PrepareDocument -RootInfo $rootInfo -Status 'PrepareFailed' -RequestPathValue $requestPathValue -RequestSha256Value $requestSha256Value -EffectiveCodexHome $effectiveCodexHome -Artifacts $failureArtifacts -ErrorValue $failureError -PrepareMode $prepareModeValue -RefreshOf $refreshOfValue
             if (-not [string]::IsNullOrWhiteSpace($resultPathValue)) {
                 try {
                     $writtenFailure = Write-PrepareResultDocument -Path $resultPathValue -Document $failureDocument -GuardSourceRoot $rootInfo.SourceRoot -GuardExecutionRoot $rootInfo.ExecutionRoot -GuardTargetPath $guardTargetPathValue -RequireAbsent

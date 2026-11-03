@@ -37,6 +37,9 @@ param(
 
     [string]$PrepareResultPath,
 
+    [ValidateSet('initial', 'refresh')]
+    [string]$PrepareMode = 'initial',
+
     [string]$PreflightResultPath,
 
     [string]$CodexPath,

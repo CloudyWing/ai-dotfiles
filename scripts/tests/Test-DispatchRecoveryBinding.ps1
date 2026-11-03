@@ -8042,6 +8042,357 @@ if ($Phase -ge 6) {
         }
     }
 
+    # DD-PREPARE-REFRESH BEGIN
+    $ddRefreshStateNames = @('SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'LineSlug', 'DispatchSlug', 'ResultPath', 'PrepareResultPath', 'PreflightResultPath', 'CodexHome', 'WriteMode', 'RequestPath', 'RequestContext', 'RequestPrepareArtifacts', 'PrepareMode', 'pidResult', 'ResumeThreadId', 'PromptPath')
+    function Set-DdRefreshText {
+        param(
+            [Parameter(Mandatory)][string]$Path,
+            [Parameter(Mandatory)][AllowEmptyString()][string]$Content
+        )
+        $parent = Split-Path -Parent $Path
+        if (-not (Test-Path -LiteralPath $parent)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+        [IO.File]::WriteAllText($Path, $Content, (New-Object System.Text.UTF8Encoding($false)))
+    }
+    function Read-DdRefreshJson {
+        param([Parameter(Mandatory)][string]$Path)
+        return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json)
+    }
+    function New-DdRefreshFixture {
+        param(
+            [Parameter(Mandatory)][string]$Name,
+            [Parameter(Mandatory)][string[]]$ArtifactNames
+        )
+
+        $dispatchSlug = 'dd-refresh-' + $Name
+        $executionRoot = Join-Path $fixtureRoot ('.local/ai-sessions/worktrees/' + $dispatchSlug)
+        New-Item -ItemType Directory -Path $executionRoot -Force | Out-Null
+        $artifacts = New-Object System.Collections.Generic.List[object]
+        foreach ($artifactName in $ArtifactNames) {
+            $sourcePath = Join-Path $phase4LineRoot ($dispatchSlug + '-' + $artifactName)
+            Set-DdRefreshText -Path $sourcePath -Content ('v1 ' + $artifactName)
+            $artifacts.Add([pscustomobject]@{
+                    name        = $artifactName
+                    source      = $sourcePath
+                    destination = Join-Path $executionRoot ('.local/ai-sessions/handoff/line-a/' + $dispatchSlug + '-' + $artifactName)
+                })
+        }
+        return [pscustomobject]@{
+            DispatchSlug  = $dispatchSlug
+            ExecutionRoot = $executionRoot
+            HistoryRoot   = Join-Path $executionRoot '.local/ai-sessions/history/line-a'
+            StaleRoot     = Join-Path $executionRoot '.local/ai-sessions/history/line-a/stale-handoff'
+            Artifacts     = @($artifacts.ToArray())
+        }
+    }
+    function Invoke-DdRefreshPrepare {
+        param(
+            [Parameter(Mandatory)][psobject]$Fixture,
+            [Parameter(Mandatory)][ValidateSet('initial', 'refresh')][string]$Mode,
+            [Parameter(Mandatory)][string]$ResultName,
+            [string[]]$ArtifactNames
+        )
+
+        $selected = @($Fixture.Artifacts | Where-Object { $null -eq $ArtifactNames -or $ArtifactNames -contains $_.name })
+        $requestArtifacts = @(foreach ($artifact in $selected) {
+                [ordered]@{
+                    source      = $artifact.source
+                    destination = $artifact.destination
+                    sha256      = (Get-FileSha256 -Path $artifact.source)
+                    purpose     = 'dd refresh artifact'
+                }
+            })
+        $requestPath = Join-Path $fixtureRoot ('dd-refresh-request-' + $Fixture.DispatchSlug + '-' + $ResultName + '.json')
+        $requestDocument = [ordered]@{
+            schema            = 'ai-sessions.dispatch-request.v1'
+            operation         = 'Prepare'
+            line_slug         = 'line-a'
+            dispatch_slug     = $Fixture.DispatchSlug
+            prepare_mode      = $Mode
+            prepare_artifacts = $requestArtifacts
+        }
+        Set-DdRefreshText -Path $requestPath -Content ((ConvertTo-Json -InputObject $requestDocument -Depth 10) + "`r`n")
+        $resultPath = Join-Path $Fixture.HistoryRoot ('prepare-result-' + $Fixture.DispatchSlug + '-' + $ResultName + '.json')
+        $script:RequestPath = $requestPath
+        $script:RequestContext = Read-DispatchRequest -Path $requestPath
+        $script:RequestPrepareArtifacts = @($script:RequestContext.prepare_artifacts)
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $Fixture.ExecutionRoot
+        $script:DispatchRoot = $Fixture.ExecutionRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $Fixture.DispatchSlug
+        $script:ResultPath = $resultPath
+        $script:PrepareResultPath = $null
+        $script:PreflightResultPath = $null
+        $script:PrepareMode = $null
+        $script:CodexHome = $null
+        $script:WriteMode = 'write'
+        $outcome = [ordered]@{ Ok = $false; ResultPath = $resultPath; ErrorCode = ''; Message = ''; Result = $null }
+        try {
+            $output = @(Invoke-Prepare)
+            $outcome.Ok = $true
+            $outcome.Result = $output[$output.Count - 1]
+        }
+        catch {
+            $outcome.Message = $_.Exception.Message
+            $operation = $_.Exception.Data['operationResult']
+            if ($null -ne $operation) {
+                $outcome.ErrorCode = [string]$operation.errorCode
+                $outcome.Result = $operation
+            }
+        }
+        return [pscustomobject]$outcome
+    }
+    function Get-DdRefreshActions {
+        param([Parameter(Mandatory)][string]$ResultPath)
+        $actions = @{}
+        foreach ($artifact in @((Read-DdRefreshJson -Path $ResultPath).artifacts)) {
+            $actions[[IO.Path]::GetFileName([string]$artifact.destination)] = [string]$artifact.refresh_action
+        }
+        return $actions
+    }
+    function Invoke-DdRefreshStart {
+        param(
+            [Parameter(Mandatory)][psobject]$Fixture,
+            [Parameter(Mandatory)][AllowEmptyString()][string]$PreflightPreparePath,
+            [Parameter(Mandatory)][AllowEmptyString()][string]$PreflightPrepareSha256,
+            [Parameter(Mandatory)][string]$StartPrepareResultPath,
+            [Parameter(Mandatory)][string]$Label
+        )
+
+        $preflightPath = Join-Path $fixtureRoot ('dd-refresh-preflight-' + $Fixture.DispatchSlug + '-' + $Label + '.json')
+        $preflightDocument = [ordered]@{
+            sourceRoot          = $fixtureRoot
+            executionRoot       = $Fixture.ExecutionRoot
+            dispatchRoot        = $Fixture.ExecutionRoot
+            lineSlug            = 'line-a'
+            dispatchSlug        = $Fixture.DispatchSlug
+            writeMode           = 'write'
+            prepareResultPath   = $PreflightPreparePath
+            prepareResultSha256 = if ([string]::IsNullOrEmpty($PreflightPrepareSha256)) { $null } else { $PreflightPrepareSha256 }
+        }
+        Set-DdRefreshText -Path $preflightPath -Content ((ConvertTo-Json -InputObject $preflightDocument -Depth 10) + "`r`n")
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $Fixture.ExecutionRoot
+        $script:DispatchRoot = $Fixture.ExecutionRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $Fixture.DispatchSlug
+        $script:PreflightResultPath = $preflightPath
+        $script:PrepareResultPath = $StartPrepareResultPath
+        $script:PromptPath = $phase6PromptPath
+        $script:ResumeThreadId = 'dd-refresh-thread'
+        $script:RequestPath = $null
+        $script:RequestContext = $null
+        $script:RequestPrepareArtifacts = @()
+        $script:CodexHome = $null
+        $beforeStartCalls = $script:startCalls
+        $message = ''
+        try { $null = Invoke-Start } catch { $message = $_.Exception.Message }
+        Assert-True ($script:startCalls -eq $beforeStartCalls) 'refresh 綁定檢查階段不應建立 Codex process。'
+        return $message
+    }
+
+    Invoke-Case 'Phase 6 DD-PREPARE-REFRESH added、unchanged、replaced 與 stale-handoff' {
+        $snapshot = Get-ScriptVariableSnapshot -Name $ddRefreshStateNames
+        try {
+            $fixture = New-DdRefreshFixture -Name 'actions' -ArtifactNames @('a.txt', 'b.txt', 'c.txt')
+            $destinationA = $fixture.Artifacts[0].destination
+            $destinationB = $fixture.Artifacts[1].destination
+            $destinationC = $fixture.Artifacts[2].destination
+            $initial = Invoke-DdRefreshPrepare -Fixture $fixture -Mode initial -ResultName 'initial' -ArtifactNames @('a.txt', 'b.txt')
+            Assert-True $initial.Ok ('初次 Prepare 失敗：' + $initial.Message)
+            $initialDocument = Read-DdRefreshJson -Path $initial.ResultPath
+            Assert-True ($initialDocument.prepare_mode -ceq 'initial' -and $null -eq $initialDocument.refresh_of) '初次 Prepare result 的 prepare_mode 或 refresh_of 異常。'
+            $initialSha256 = Get-FileSha256 -Path $initial.ResultPath
+            $unchangedStamp = (Get-Item -LiteralPath $destinationB).LastWriteTimeUtc
+
+            Set-DdRefreshText -Path $fixture.Artifacts[0].source -Content 'v2 a.txt'
+            $refresh1 = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName 'refresh1'
+            Assert-True $refresh1.Ok ('refresh 失敗：' + $refresh1.ErrorCode + ' ' + $refresh1.Message)
+            $refresh1Document = Read-DdRefreshJson -Path $refresh1.ResultPath
+            $actions = Get-DdRefreshActions -ResultPath $refresh1.ResultPath
+            Assert-True ($refresh1Document.status -ceq 'Prepared' -and $refresh1Document.prepare_mode -ceq 'refresh') 'refresh result 的 status 或 prepare_mode 異常。'
+            Assert-True ($actions['dd-refresh-actions-a.txt'] -ceq 'replaced' -and $actions['dd-refresh-actions-b.txt'] -ceq 'unchanged' -and $actions['dd-refresh-actions-c.txt'] -ceq 'added') ('refresh_action 異常：' + (($actions.GetEnumerator() | ForEach-Object { $_.Key + '=' + $_.Value }) -join ', '))
+            Assert-True ($refresh1Document.refresh_of.path -ieq (Resolve-AbsolutePath -Path $initial.ResultPath) -and $refresh1Document.refresh_of.sha256 -ieq $initialSha256) 'refresh_of 未指向初次 Prepare result 與其雜湊。'
+            Assert-True ([IO.File]::ReadAllText($destinationA) -ceq 'v2 a.txt' -and [IO.File]::ReadAllText($destinationC) -ceq 'v1 c.txt') 'replaced 或 added 的目的檔內容不符。'
+            Assert-True ((Get-Item -LiteralPath $destinationB).LastWriteTimeUtc -eq $unchangedStamp -and [IO.File]::ReadAllText($destinationB) -ceq 'v1 b.txt') 'unchanged 的目的檔被覆寫。'
+            $staleFiles = @(Get-ChildItem -LiteralPath $fixture.StaleRoot -File)
+            Assert-True ($staleFiles.Count -eq 1 -and $staleFiles[0].Name -match '^dd-refresh-actions-a\.txt\.\d{8}T\d{9}$' -and [IO.File]::ReadAllText($staleFiles[0].FullName) -ceq 'v1 a.txt') ('stale-handoff 副本不符：' + (($staleFiles | ForEach-Object { $_.Name }) -join ', '))
+            $binding = Resolve-PrepareResultBinding -Path $refresh1.ResultPath -SourceRoot $fixtureRoot -ExecutionRoot $fixture.ExecutionRoot -LineSlug 'line-a' -DispatchSlug $fixture.DispatchSlug -ExpectedSha256 $refresh1.Result.prepareResultSha256
+            Assert-True ($binding.Status -ceq 'Prepared' -and $binding.Artifacts.Count -eq 3) 'refresh result 無法通過一般 Prepare 綁定。'
+
+            # 第二次 refresh：a 的目的檔還原為初次 Prepare 的內容，仍屬鏈上已知紀錄。
+            Set-DdRefreshText -Path $destinationA -Content 'v1 a.txt'
+            Set-DdRefreshText -Path $fixture.Artifacts[0].source -Content 'v3 a.txt'
+            Set-DdRefreshText -Path $fixture.Artifacts[2].source -Content 'v2 c.txt'
+            $refresh2 = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName 'refresh2'
+            Assert-True $refresh2.Ok ('第二次 refresh 失敗：' + $refresh2.ErrorCode + ' ' + $refresh2.Message)
+            $refresh2Document = Read-DdRefreshJson -Path $refresh2.ResultPath
+            $actions2 = Get-DdRefreshActions -ResultPath $refresh2.ResultPath
+            Assert-True ($actions2['dd-refresh-actions-a.txt'] -ceq 'replaced' -and $actions2['dd-refresh-actions-b.txt'] -ceq 'unchanged' -and $actions2['dd-refresh-actions-c.txt'] -ceq 'replaced') '第二次 refresh_action 異常。'
+            Assert-True ($refresh2Document.refresh_of.path -ieq (Resolve-AbsolutePath -Path $refresh1.ResultPath)) '第二次 refresh_of 未指向前一次 refresh result。'
+            $chain = Resolve-PrepareRefreshChain -Path $refresh2.ResultPath -PreflightPreparePath $initial.ResultPath -PreflightPrepareSha256 $initialSha256 -SourceRoot $fixtureRoot -ExecutionRoot $fixture.ExecutionRoot -LineSlug 'line-a' -DispatchSlug $fixture.DispatchSlug
+            Assert-True ($chain.Path -ieq (Resolve-AbsolutePath -Path $refresh2.ResultPath) -and $chain.Status -ceq 'Prepared' -and @($chain.ChainArtifacts).Count -eq 8) ('refresh 鏈回溯結果不符：' + @($chain.ChainArtifacts).Count)
+            Assert-True (@(Get-ChildItem -LiteralPath $fixture.StaleRoot -File).Count -eq 3) '兩次 refresh 後 stale-handoff 副本數量不符。'
+        }
+        finally { Restore-ScriptVariableSnapshot -Snapshot $snapshot }
+    }
+
+    Invoke-Case 'Phase 6 DD-PREPARE-REFRESH 執行端改動拒絕與 initial 遇既有副本' {
+        $snapshot = Get-ScriptVariableSnapshot -Name $ddRefreshStateNames
+        try {
+            $fixture = New-DdRefreshFixture -Name 'modified' -ArtifactNames @('a.txt')
+            $destination = $fixture.Artifacts[0].destination
+            $initial = Invoke-DdRefreshPrepare -Fixture $fixture -Mode initial -ResultName 'initial'
+            Assert-True $initial.Ok ('初次 Prepare 失敗：' + $initial.Message)
+            Set-DdRefreshText -Path $destination -Content 'executor edit'
+            Set-DdRefreshText -Path $fixture.Artifacts[0].source -Content 'v2 a.txt'
+            $refresh = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName 'refresh1'
+            Assert-True (-not $refresh.Ok -and $refresh.ErrorCode -ceq 'PrepareRefreshDestinationModified') ('執行端改動未被拒絕：' + $refresh.ErrorCode + ' ' + $refresh.Message)
+            Assert-True ([IO.File]::ReadAllText($destination) -ceq 'executor edit') '被拒絕的 refresh 改動了目的檔。'
+            Assert-True (-not (Test-Path -LiteralPath $fixture.StaleRoot)) '被拒絕的 refresh 留下 stale-handoff 目錄。'
+            Assert-True ((Read-DdRefreshJson -Path $refresh.ResultPath).status -ceq 'PrepareFailed') '被拒絕的 refresh 未寫出 PrepareFailed result。'
+
+            Set-DdRefreshText -Path $destination -Content 'v1 a.txt'
+            $occupied = Invoke-DdRefreshPrepare -Fixture $fixture -Mode initial -ResultName 'initial2'
+            Assert-True (-not $occupied.Ok -and $occupied.ErrorCode -ceq 'PrepareArtifactMismatch' -and $occupied.Message -match '已被占用') ('initial 遇既有副本的行為改變：' + $occupied.ErrorCode + ' ' + $occupied.Message)
+            Assert-True ([IO.File]::ReadAllText($destination) -ceq 'v1 a.txt') 'initial 被拒絕後目的檔被改動。'
+        }
+        finally { Restore-ScriptVariableSnapshot -Snapshot $snapshot }
+    }
+
+    Invoke-Case 'Phase 6 DD-PREPARE-REFRESH 程序存活時拒絕' {
+        $snapshot = Get-ScriptVariableSnapshot -Name $ddRefreshStateNames
+        try {
+            $fixture = New-DdRefreshFixture -Name 'pid' -ArtifactNames @('a.txt')
+            $destination = $fixture.Artifacts[0].destination
+            $initial = Invoke-DdRefreshPrepare -Fixture $fixture -Mode initial -ResultName 'initial'
+            Assert-True $initial.Ok ('初次 Prepare 失敗：' + $initial.Message)
+            Set-DdRefreshText -Path $fixture.Artifacts[0].source -Content 'v2 a.txt'
+            $script:pidResult = @{ ActiveRecords = @(@{ DispatchSlug = $fixture.DispatchSlug; Path = 'dd-refresh-pid-record' }); UnconfirmedRecords = @(); Blocked = $true; Reason = '' }
+            $blocked = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName 'refresh-blocked'
+            Assert-True (-not $blocked.Ok -and $blocked.ErrorCode -ceq 'PrepareRefreshProcessActive') ('程序存活未被拒絕：' + $blocked.ErrorCode + ' ' + $blocked.Message)
+            Assert-True ([IO.File]::ReadAllText($destination) -ceq 'v1 a.txt' -and -not (Test-Path -LiteralPath $fixture.StaleRoot)) '程序存活被拒絕後仍改動了目的檔。'
+            $script:pidResult = @{ ActiveRecords = @(@{ DispatchSlug = 'dd-refresh-other'; Path = 'dd-refresh-other-record' }); UnconfirmedRecords = @(); Blocked = $false; Reason = '' }
+            $allowed = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName 'refresh-allowed'
+            Assert-True ($allowed.Ok -and [IO.File]::ReadAllText($destination) -ceq 'v2 a.txt') ('其他 dispatchSlug 的程序不應阻擋 refresh：' + $allowed.ErrorCode + ' ' + $allowed.Message)
+        }
+        finally { Restore-ScriptVariableSnapshot -Snapshot $snapshot }
+    }
+
+    Invoke-Case 'Phase 6 DD-PREPARE-REFRESH 中途失敗回復到開始前狀態' {
+        $snapshot = Get-ScriptVariableSnapshot -Name $ddRefreshStateNames
+        $originalGetFileSha256 = (Get-Command -Name Get-FileSha256 -CommandType Function).ScriptBlock
+        try {
+            $fixture = New-DdRefreshFixture -Name 'rollback' -ArtifactNames @('a.txt', 'b.txt')
+            $destinationA = $fixture.Artifacts[0].destination
+            $destinationB = $fixture.Artifacts[1].destination
+            $initial = Invoke-DdRefreshPrepare -Fixture $fixture -Mode initial -ResultName 'initial' -ArtifactNames @('a.txt')
+            Assert-True $initial.Ok ('初次 Prepare 失敗：' + $initial.Message)
+            Set-DdRefreshText -Path $fixture.Artifacts[0].source -Content 'v2 a.txt'
+            $script:ddRefreshFailHashPath = Resolve-AbsolutePath -Path $destinationB
+            $script:ddRefreshOriginalGetFileSha256 = $originalGetFileSha256
+            Set-Item -Path Function:\Get-FileSha256 -Value {
+                param([Parameter(Mandatory)][string]$Path)
+                if ([string]::Equals((Resolve-AbsolutePath -Path $Path), $script:ddRefreshFailHashPath, [StringComparison]::OrdinalIgnoreCase)) {
+                    return ('0' * 64)
+                }
+                return (& $script:ddRefreshOriginalGetFileSha256 -Path $Path)
+            }
+            $failed = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName 'refresh-fail'
+            Set-Item -Path Function:\Get-FileSha256 -Value $originalGetFileSha256
+            Assert-True (-not $failed.Ok -and $failed.ErrorCode -ceq 'PrepareArtifactMismatch') ('commit 失敗未回報：' + $failed.ErrorCode + ' ' + $failed.Message)
+            Assert-True ([IO.File]::ReadAllText($destinationA) -ceq 'v1 a.txt') '中途失敗後已替換的目的檔未還原。'
+            Assert-True (-not (Test-Path -LiteralPath $destinationB)) '中途失敗後已放入的新副本未移除。'
+            Assert-True (-not (Test-Path -LiteralPath $fixture.StaleRoot)) '中途失敗後 stale-handoff 目錄未清除。'
+            $leftovers = @(Get-ChildItem -LiteralPath (Split-Path -Parent $destinationA) -File -Filter '*.prepare.tmp')
+            Assert-True ($leftovers.Count -eq 0) '中途失敗後留下暫存檔。'
+            $retry = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName 'refresh-retry'
+            Assert-True ($retry.Ok -and [IO.File]::ReadAllText($destinationA) -ceq 'v2 a.txt' -and [IO.File]::ReadAllText($destinationB) -ceq 'v1 b.txt') ('回復後重新 refresh 失敗：' + $retry.ErrorCode + ' ' + $retry.Message)
+        }
+        finally {
+            Set-Item -Path Function:\Get-FileSha256 -Value $originalGetFileSha256
+            Restore-ScriptVariableSnapshot -Snapshot $snapshot
+        }
+    }
+
+    Invoke-Case 'Phase 6 DD-PREPARE-REFRESH 鏈深度上限' {
+        $snapshot = Get-ScriptVariableSnapshot -Name $ddRefreshStateNames
+        try {
+            $fixture = New-DdRefreshFixture -Name 'depth' -ArtifactNames @('a.txt')
+            $initial = Invoke-DdRefreshPrepare -Fixture $fixture -Mode initial -ResultName 'initial'
+            Assert-True $initial.Ok ('初次 Prepare 失敗：' + $initial.Message)
+            $succeeded = 0
+            $lastFailure = $null
+            for ($index = 1; $index -le 9; $index++) {
+                Set-DdRefreshText -Path $fixture.Artifacts[0].source -Content ('depth v' + ($index + 1))
+                $step = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName ('refresh' + $index)
+                if ($step.Ok) { $succeeded++ } else { $lastFailure = $step; break }
+            }
+            Assert-True ($succeeded -eq 8 -and $null -ne $lastFailure -and $lastFailure.ErrorCode -ceq 'PrepareArtifactMismatch' -and $lastFailure.Message -match '深度上限') ('鏈深度上限不符：succeeded=' + $succeeded + '; ' + $(if ($null -eq $lastFailure) { '' } else { $lastFailure.ErrorCode + ' ' + $lastFailure.Message }))
+            Set-DdRefreshText -Path $fixture.Artifacts[0].source -Content 'depth v9'
+            $top = Resolve-PrepareRefreshChain -Path (Join-Path $fixture.HistoryRoot ('prepare-result-' + $fixture.DispatchSlug + '-refresh8.json')) -PreflightPreparePath $initial.ResultPath -PreflightPrepareSha256 (Get-FileSha256 -Path $initial.ResultPath) -SourceRoot $fixtureRoot -ExecutionRoot $fixture.ExecutionRoot -LineSlug 'line-a' -DispatchSlug $fixture.DispatchSlug
+            Assert-True (@($top.ChainArtifacts).Count -eq 9) '深度 8 的 refresh 鏈應可由 Start 端回溯。'
+        }
+        finally { Restore-ScriptVariableSnapshot -Snapshot $snapshot }
+    }
+
+    Invoke-Case 'Phase 6 DD-PREPARE-REFRESH Start 綁定 refresh 鏈、鏈斷裂與終點不符' {
+        $snapshot = Get-ScriptVariableSnapshot -Name $ddRefreshStateNames
+        $originalGetRunRecordList = (Get-Command -Name Get-DispatchRunRecordList -CommandType Function).ScriptBlock
+        try {
+            $fixture = New-DdRefreshFixture -Name 'start' -ArtifactNames @('a.txt')
+            $initial = Invoke-DdRefreshPrepare -Fixture $fixture -Mode initial -ResultName 'initial'
+            Assert-True $initial.Ok ('初次 Prepare 失敗：' + $initial.Message)
+            $initialSha256 = Get-FileSha256 -Path $initial.ResultPath
+            Set-DdRefreshText -Path $fixture.Artifacts[0].source -Content 'v2 a.txt'
+            $refresh = Invoke-DdRefreshPrepare -Fixture $fixture -Mode refresh -ResultName 'refresh1'
+            Assert-True $refresh.Ok ('refresh 失敗：' + $refresh.ErrorCode + ' ' + $refresh.Message)
+
+            $positive = Invoke-DdRefreshStart -Fixture $fixture -PreflightPreparePath $initial.ResultPath -PreflightPrepareSha256 $initialSha256 -StartPrepareResultPath $refresh.ResultPath -Label 'positive'
+            Assert-True ($positive -notmatch 'PrepareArtifactMismatch' -and $positive -match '續行缺少 RunRecord') ('refresh 鏈未通過 Start 綁定：' + $positive)
+
+            $wrongSha = Invoke-DdRefreshStart -Fixture $fixture -PreflightPreparePath $initial.ResultPath -PreflightPrepareSha256 ('a' * 64) -StartPrepareResultPath $refresh.ResultPath -Label 'wrong-sha'
+            Assert-True ($wrongSha -match 'PrepareArtifactMismatch') ('終點雜湊不符未被拒絕：' + $wrongSha)
+
+            $bogusAnchor = Join-Path $fixture.HistoryRoot ('prepare-result-' + $fixture.DispatchSlug + '-bogus.json')
+            $unreachedAnchor = Invoke-DdRefreshStart -Fixture $fixture -PreflightPreparePath $bogusAnchor -PreflightPrepareSha256 $initialSha256 -StartPrepareResultPath $refresh.ResultPath -Label 'unreached'
+            Assert-True ($unreachedAnchor -match 'PrepareArtifactMismatch') ('鏈未到達 Preflight 綁定未被拒絕：' + $unreachedAnchor)
+
+            $samePath = Invoke-DdRefreshStart -Fixture $fixture -PreflightPreparePath $initial.ResultPath -PreflightPrepareSha256 $initialSha256 -StartPrepareResultPath $initial.ResultPath -Label 'same-path'
+            Assert-True ($samePath -match 'PrepareArtifactMismatch') ('路徑相同時應維持原邏輯並因目的檔已被替換而拒絕：' + $samePath)
+
+            # Preflight 不含雜湊時，終點雜湊取自初次 Start 的 RunRecord。
+            $script:ddRefreshRecordList = @(
+                [pscustomobject]@{ run_id = 'dd-run-2'; created_at_utc = '2026-01-02T00:00:00.0000000Z'; prepare_result_path = $refresh.ResultPath; prepare_result_sha256 = (Get-FileSha256 -Path $refresh.ResultPath) }
+                [pscustomobject]@{ run_id = 'dd-run-1'; created_at_utc = '2026-01-01T00:00:00.0000000Z'; prepare_result_path = $initial.ResultPath; prepare_result_sha256 = $initialSha256 }
+            )
+            Set-Item -Path Function:\Get-DispatchRunRecordList -Value { param($SourceRoot, $ExecutionRoot, $LineSlug, $DispatchSlug) return @($script:ddRefreshRecordList) }
+            $anchor = Resolve-PrepareRefreshAnchor -PreflightPreparePath $initial.ResultPath -PreflightPrepareSha256 '' -SourceRoot $fixtureRoot -ExecutionRoot $fixture.ExecutionRoot -LineSlug 'line-a' -DispatchSlug $fixture.DispatchSlug
+            Assert-True ($anchor.Source -ceq 'run-record' -and $anchor.Sha256 -ieq $initialSha256) 'RunRecord 終點錨點雜湊不符。'
+            $viaRecord = Resolve-PrepareRefreshChain -Path $refresh.ResultPath -PreflightPreparePath $anchor.Path -PreflightPrepareSha256 $anchor.Sha256 -SourceRoot $fixtureRoot -ExecutionRoot $fixture.ExecutionRoot -LineSlug 'line-a' -DispatchSlug $fixture.DispatchSlug
+            Assert-True ($viaRecord.Path -ieq (Resolve-AbsolutePath -Path $refresh.ResultPath)) '以 RunRecord 錨點回溯 refresh 鏈失敗。'
+            $script:ddRefreshRecordList = @([pscustomobject]@{ run_id = 'dd-run-3'; created_at_utc = '2026-01-03T00:00:00.0000000Z'; prepare_result_path = $refresh.ResultPath; prepare_result_sha256 = (Get-FileSha256 -Path $refresh.ResultPath) })
+            $missingAnchor = ''
+            try { $null = Resolve-PrepareRefreshAnchor -PreflightPreparePath $initial.ResultPath -PreflightPrepareSha256 '' -SourceRoot $fixtureRoot -ExecutionRoot $fixture.ExecutionRoot -LineSlug 'line-a' -DispatchSlug $fixture.DispatchSlug } catch { $missingAnchor = $_.Exception.Message }
+            Assert-True ($missingAnchor -match 'PrepareArtifactMismatch') 'RunRecord 沒有記錄初次 Prepare result 時應拒絕。'
+            Set-Item -Path Function:\Get-DispatchRunRecordList -Value $originalGetRunRecordList
+
+            # 鏈斷裂：初次 Prepare result 消失。
+            $backupPath = Join-Path $fixtureRoot ('dd-refresh-initial-backup-' + $fixture.DispatchSlug + '.json')
+            Move-Item -LiteralPath $initial.ResultPath -Destination $backupPath
+            try {
+                $broken = Invoke-DdRefreshStart -Fixture $fixture -PreflightPreparePath $initial.ResultPath -PreflightPrepareSha256 $initialSha256 -StartPrepareResultPath $refresh.ResultPath -Label 'broken'
+                Assert-True ($broken -match 'PrepareArtifactMismatch') ('鏈斷裂未被拒絕：' + $broken)
+            }
+            finally { Move-Item -LiteralPath $backupPath -Destination $initial.ResultPath }
+        }
+        finally {
+            Set-Item -Path Function:\Get-DispatchRunRecordList -Value $originalGetRunRecordList
+            Restore-ScriptVariableSnapshot -Snapshot $snapshot
+        }
+    }
+    # DD-PREPARE-REFRESH END
+
     $phase6StartDispatchRoot = Join-Path $fixtureRoot '.local/ai-sessions/worktrees/phase6-start-missing'
     New-Item -ItemType Directory -Path $phase6StartDispatchRoot -Force | Out-Null
     $phase6StartPreflightPath = Join-Path $fixtureRoot 'phase6-start-missing-preflight.json'
@@ -10853,6 +11204,38 @@ fixture
 }
 
 if ($Phase -ge 9) {
+    Invoke-Case 'Phase 9 DD-PREPARE-REQUEST 欄位白名單' {
+        $requestPath = Join-Path $fixtureRoot 'dd-prepare-request.json'
+        $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Prepare'; line_slug = 'a'; dispatch_slug = 'q'; prepare_mode = 'refresh'; prepare_artifacts = @() }
+        [IO.File]::WriteAllText($requestPath, (ConvertTo-Json -InputObject $request -Depth 10), (New-Object Text.UTF8Encoding($false)))
+        $context = Read-DispatchRequest -Path $requestPath
+        Assert-True ([string]$context.dispatch_values.prepare_mode -eq 'refresh') 'Prepare Request 未接受 refresh。'
+        $request['write_mode'] = 'write'
+        [IO.File]::WriteAllText($requestPath, (ConvertTo-Json -InputObject $request -Depth 10), (New-Object Text.UTF8Encoding($false)))
+        $rejected = $false
+        try { $null = Read-DispatchRequest -Path $requestPath } catch { $rejected = $_.Exception.Message -match 'write_mode' }
+        Assert-True $rejected 'Prepare Request 未拒絕 Dispatch 專用欄位。'
+    }
+    Invoke-Case 'Phase 9 DD-COLLECT-LEDGER 帳冊狀態與損毀防護' {
+        $ledgerRoot = Join-Path $fixtureRoot 'dd-ledger'
+        $null = [IO.Directory]::CreateDirectory($ledgerRoot)
+        $hashA = 'a' * 64
+        $hashB = 'b' * 64
+        $baseline = [pscustomobject]@{ exists = $true; sha256 = $hashA }
+        $source = [pscustomobject]@{ exists = $true; sha256 = $hashB }
+        $entry = [ordered]@{ dispatch_slug = 'q'; relative_path = 'target.txt'; state = 'present'; applied_sha256 = $hashB; baseline_sha256 = $hashA; applied_at_utc = [DateTime]::UtcNow.ToString('o'); run_record_path = $null }
+        Add-DispatchApplyLedgerEntry -SourceRoot $ledgerRoot -LineSlug 'a' -Entry @($entry)
+        $effective = Get-DispatchEffectiveExpectedState -SourceRoot $ledgerRoot -LineSlug 'a' -DispatchSlug 'q' -RelativePath 'target.txt' -BaselineFile $baseline -SourceState $source
+        Assert-True ($null -ne $effective -and $effective.sha256 -eq $hashB) '同派遣已套回狀態未被接受。'
+        $source.sha256 = 'c' * 64
+        $effective = Get-DispatchEffectiveExpectedState -SourceRoot $ledgerRoot -LineSlug 'a' -DispatchSlug 'q' -RelativePath 'target.txt' -BaselineFile $baseline -SourceState $source
+        Assert-True ($null -eq $effective) '外部修改未被判定為 drift。'
+        $ledgerPath = Join-Path $ledgerRoot '.local\ai-sessions\history\a\collect-apply-ledger.json'
+        [IO.File]::WriteAllText($ledgerPath, '{invalid')
+        $rejected = $false
+        try { $null = Get-DispatchApplyLedgerState -SourceRoot $ledgerRoot -LineSlug 'a' -RelativePath 'target.txt' } catch { $rejected = $_.Exception.Message -match 'CollectApplyLedgerInvalid' }
+        Assert-True $rejected '損毀帳冊未被拒絕。'
+    }
     $phase9RepositoryBoundaryStart = Get-Phase9RepositoryBoundarySnapshot -RepositoryRoot $root
     $phase9GitStatusBefore = [string]$phase9RepositoryBoundaryStart.git_status_short
     $phase9Root = Join-Path $fixtureRoot 'phase9'
@@ -13321,9 +13704,11 @@ if ($Phase -ge 9) {
             [switch]$EvidencePackOutsideSourceRoot,
             [switch]$FollowupAccount,
             [ValidateSet('', 'line', 'order', 'ref')][string]$DdStageBScenario = '',
+            [switch]$IncludeLineContext,
             [AllowNull()][string]$TargetContent,
             [AllowNull()][byte[]]$TargetBytes,
             [AllowNull()][string]$CarryInContent,
+            [ValidateSet('', 'match', 'mismatch')][string]$CarryInLedger = '',
             [switch]$ForceCrlfTarget,
             [switch]$StagedAddedTarget,
             [AllowEmptyCollection()][string[]]$AdditionalGitAttributes = @(),
@@ -13383,7 +13768,7 @@ if ($Phase -ge 9) {
             $foreignScopeHashRecordSha256 = Get-FileSha256 -Path $foreignScopeHashRecordPath
         }
         $promptContent = 'S finding dispatch prompt: ' + $Name
-        if ($DdStageBScenario -ne '') {
+        if ($DdStageBScenario -ne '' -or $IncludeLineContext) {
             $contextRoot = if ($DdStageBScenario -eq 'line') { $sourceRoot } else { $dispatchRoot }
             $promptContent = @(
                 'LineContext:'
@@ -13568,6 +13953,11 @@ if ($Phase -ge 9) {
         }
         if ($PSBoundParameters.ContainsKey('CarryInContent')) {
             [IO.File]::WriteAllText((Join-Path $sourceRoot 'carry-in.txt'), $CarryInContent, (New-Object System.Text.UTF8Encoding($false)))
+            if ($CarryInLedger -ne '') {
+                $carryHash = if ($CarryInLedger -eq 'match') { Get-FileSha256 -Path (Join-Path $sourceRoot 'carry-in.txt') } else { 'a' * 64 }
+                $carryEntry = [ordered]@{ dispatch_slug = 'previous'; relative_path = 'carry-in.txt'; state = 'present'; applied_sha256 = $carryHash; baseline_sha256 = $null; applied_at_utc = [DateTime]::UtcNow.ToString('o'); run_record_path = $null }
+                Add-DispatchApplyLedgerEntry -SourceRoot $sourceRoot -LineSlug 'a' -Entry @($carryEntry)
+            }
         }
 
         $fakeIdentifier = if ($AdvisorDispatch) { 'advisor-evidence.md' } elseif ($DispatchKind -eq 'workflow') { 'design.md' } elseif ($MissingSameLineTarget) { 'new-design.md' } else { 'target.txt' }
@@ -22005,6 +22395,8 @@ function Invoke-GitCommand {
             [AllowNull()][string]$TargetContent,
             [AllowNull()][byte[]]$TargetBytes,
             [AllowNull()][string]$CarryInContent,
+            [ValidateSet('', 'match', 'mismatch')][string]$CarryInLedger = '',
+            [switch]$IncludeLineContext,
             [switch]$ForceCrlfTarget,
             [switch]$StagedAddedTarget,
             [AllowEmptyCollection()][string[]]$AdditionalGitAttributes = @(),
@@ -22023,6 +22415,8 @@ function Invoke-GitCommand {
         if ($PSBoundParameters.ContainsKey('TargetContent')) { $batch3HelperParameters.TargetContent = $TargetContent }
         if ($PSBoundParameters.ContainsKey('TargetBytes')) { $batch3HelperParameters.TargetBytes = $TargetBytes }
         if ($PSBoundParameters.ContainsKey('CarryInContent')) { $batch3HelperParameters.CarryInContent = $CarryInContent }
+        if ($CarryInLedger -ne '') { $batch3HelperParameters.CarryInLedger = $CarryInLedger }
+        if ($IncludeLineContext) { $batch3HelperParameters.IncludeLineContext = $true }
         if ($ForceCrlfTarget) { $batch3HelperParameters.ForceCrlfTarget = $true }
         if ($StagedAddedTarget) { $batch3HelperParameters.StagedAddedTarget = $true }
         if ($PSBoundParameters.ContainsKey('AdditionalGitAttributes')) { $batch3HelperParameters.AdditionalGitAttributes = @($AdditionalGitAttributes) }
@@ -23016,6 +23410,55 @@ function Invoke-GitCommand {
         }
         finally {
             if ($null -ne $batch3FixtureF) { Remove-Batch3EolFixture -Fixture $batch3FixtureF }
+        }
+    }
+
+    Invoke-Case 'Phase 9 DD-COLLECT-LEDGER Collect 續行、漂移與損毀帳冊' {
+        $fixture = $null
+        try {
+            $fixture = New-Batch3EolFixture -Name 'dd-ledger-collect' -TargetContent 'baseline' -IncludeLineContext
+            $source = Join-Path $fixture.Real.source_root 'target.txt'
+            $dispatch = Join-Path $fixture.Real.dispatch_root 'target.txt'
+            [IO.File]::WriteAllText($dispatch, 'first')
+            $first = Invoke-Batch3Collect -Fixture $fixture
+            Assert-True ([int]$first.Run.exit_code -eq 0 -and [IO.File]::ReadAllText($source) -ceq 'first') ('第一輪套回失敗：' + $first.OutputText)
+            [IO.File]::WriteAllText($dispatch, 'second')
+            $second = Invoke-Batch3Collect -Fixture $fixture
+            Assert-True ([int]$second.Run.exit_code -eq 0 -and [IO.File]::ReadAllText($source) -ceq 'second') ('第二輪套回失敗：' + $second.OutputText)
+            [IO.File]::WriteAllText($source, 'external')
+            [IO.File]::WriteAllText($dispatch, 'third')
+            $drift = Invoke-Batch3Collect -Fixture $fixture
+            Assert-True ([int]$drift.Run.exit_code -ne 0 -and $drift.OutputText -match 'DispatchSourceDrift' -and [IO.File]::ReadAllText($source) -ceq 'external') ('外部變更未拒絕：' + $drift.OutputText)
+            $ledgerPath = Join-Path $fixture.Real.source_root '.local\ai-sessions\history\a\collect-apply-ledger.json'
+            [IO.File]::WriteAllText($ledgerPath, '{invalid')
+            $invalid = Invoke-Batch3Collect -Fixture $fixture
+            Assert-True ([int]$invalid.Run.exit_code -ne 0 -and $invalid.OutputText -match 'CollectApplyLedgerInvalid' -and [IO.File]::ReadAllText($source) -ceq 'external') ('損毀帳冊未拒絕：' + $invalid.OutputText)
+        }
+        finally { if ($null -ne $fixture) { Remove-Batch3EolFixture -Fixture $fixture } }
+    }
+
+    Invoke-Case 'Phase 9 DD-CARRYIN-LINE 本線產出與未追蹤檔保護' {
+        foreach ($scenario in @('match', 'mismatch', 'none')) {
+            $fixture = $null
+            try {
+                $parameters = @{ Name = ('dd-carry-' + $scenario); TargetContent = 'baseline'; CarryInContent = 'carry baseline'; IncludeLineContext = $true }
+                if ($scenario -ne 'none') { $parameters.CarryInLedger = $scenario }
+                $fixture = New-Batch3EolFixture @parameters
+                $produced = @($fixture.Preflight.carryInManifest.LineProducedFiles)
+                Assert-True (($produced -contains 'carry-in.txt') -eq ($scenario -eq 'match')) ('LineProducedFiles 判定錯誤：' + $scenario)
+                $source = Join-Path $fixture.Real.source_root 'carry-in.txt'
+                $dispatch = Join-Path $fixture.Real.dispatch_root 'carry-in.txt'
+                [IO.File]::WriteAllText($dispatch, 'carry changed')
+                $collect = Invoke-Batch3Collect -Fixture $fixture
+                $protected = @($collect.Document.rejectedFiles | Where-Object { $_.path -ceq 'carry-in.txt' -and $_.reason -ceq 'carry-in-protected' }).Count -gt 0
+                if ($scenario -eq 'match') {
+                    Assert-True ([int]$collect.Run.exit_code -eq 0 -and [IO.File]::ReadAllText($source) -ceq 'carry changed' -and -not $protected) ('本線產出未套回：' + $collect.OutputText)
+                }
+                else {
+                    Assert-True ([int]$collect.Run.exit_code -eq 0 -and $protected -and [IO.File]::ReadAllText($source) -ceq 'carry baseline') ('非本線產出未受保護：' + $collect.OutputText)
+                }
+            }
+            finally { if ($null -ne $fixture) { Remove-Batch3EolFixture -Fixture $fixture } }
         }
     }
 

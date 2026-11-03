@@ -1332,7 +1332,15 @@ function Read-DispatchRequest {
         Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request operation 格式無效。' -RequestPathValue $requestPathValue -Field 'operation' -Detail ([ordered]@{ valid_values = $validOperations; received = [string]$document.operation })
     }
     $document.operation = $canonicalOperation
-    if ([string]$document.operation -notin @('Dispatch', 'Cleanup')) {
+    if ([string]$document.operation -eq 'Prepare') {
+        $prepareAllowedFields = @('source_root', 'dispatch_root', 'result_path', 'preflight_result_path', 'prepare_result_path', 'prepare_mode')
+        foreach ($field in @($commonRootFields) + @('result_path', 'preflight_result_path') + $dispatchOnlyFields + $cleanupOnlyFields) {
+            if ($prepareAllowedFields -notcontains $field -and (Test-DispatchRequestFieldPresent -Document $document -Name $field)) {
+                Throw-DispatchRequestFailure -Code 'DispatchRequestFieldNotAllowed' -Message ("Prepare request 不允許欄位：{0}" -f $field) -RequestPathValue $requestPathValue -Field $field
+            }
+        }
+    }
+    elseif ([string]$document.operation -notin @('Dispatch', 'Cleanup')) {
         foreach ($field in @($commonRootFields) + @('result_path', 'preflight_result_path') + $dispatchOnlyFields + $cleanupOnlyFields) {
             if (Test-DispatchRequestFieldPresent -Document $document -Name $field) {
                 Throw-DispatchRequestFailure -Code 'DispatchRequestFieldNotAllowed' -Message ("request 欄位 {0} 僅可用於 operation=Dispatch 或 Cleanup。" -f $field) -RequestPathValue $requestPathValue -Field $field -Detail ([ordered]@{ operation = [string]$document.operation })
@@ -1459,6 +1467,16 @@ function Read-DispatchRequest {
     $dispatchValues = [ordered]@{}
     $cleanupFieldPresence = [ordered]@{}
     $cleanupValues = [ordered]@{}
+    if ([string]$document.operation -in @('Dispatch', 'Prepare')) {
+        $dispatchFieldPresence.prepare_mode = Test-DispatchRequestFieldPresent -Document $document -Name 'prepare_mode'
+        $dispatchValues.prepare_mode = Get-DispatchRequestEnumValue -Document $document -Field 'prepare_mode' -AllowedValues @('initial', 'refresh') -RequestPathValue $requestPathValue
+    }
+    if ([string]$document.operation -eq 'Prepare') {
+        foreach ($field in @('source_root', 'dispatch_root', 'result_path', 'preflight_result_path', 'prepare_result_path')) {
+            $dispatchFieldPresence[$field] = Test-DispatchRequestFieldPresent -Document $document -Name $field
+            $dispatchValues[$field] = Get-DispatchRequestOptionalString -Document $document -Field $field -RequestPathValue $requestPathValue
+        }
+    }
     if ([string]$document.operation -ceq 'Dispatch') {
         foreach ($field in @('source_root', 'dispatch_root', 'prompt_path', 'task_type', 'required_identifier', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path', 'evidence_pack_path', 'advisor_consult_report_path')) {
             $dispatchFieldPresence[$field] = Test-DispatchRequestFieldPresent -Document $document -Name $field
@@ -1837,7 +1855,8 @@ function Apply-DispatchRequest {
                 @('ResultPath', 'result_path'),
                 @('PreflightResultPath', 'preflight_result_path'),
                 @('PrepareResultPath', 'prepare_result_path'),
-                @('SelectedRequirement', 'selected_requirement'))) {
+                @('SelectedRequirement', 'selected_requirement'),
+                @('PrepareMode', 'prepare_mode'))) {
             Apply-DispatchRequestScalarField -Context $context -CliField ([string]$mapping[0]) -RequestField ([string]$mapping[1])
         }
         Apply-DispatchRequestBooleanField -Context $context -CliField 'ContinueFromScopePlan' -RequestField 'continue_from_scope_plan'
@@ -1854,6 +1873,11 @@ function Apply-DispatchRequest {
             else {
                 $script:RequestedUnit = if ($requestValues.Count -eq 0) { New-Object 'System.String[]' 0 } else { [string[]]$requestValues }
             }
+        }
+    }
+    elseif ([string]$document.operation -ceq 'Prepare') {
+        foreach ($mapping in @(@('SourceRoot', 'source_root'), @('DispatchRoot', 'dispatch_root'), @('ResultPath', 'result_path'), @('PreflightResultPath', 'preflight_result_path'), @('PrepareResultPath', 'prepare_result_path'), @('PrepareMode', 'prepare_mode'))) {
+            Apply-DispatchRequestScalarField -Context $context -CliField ([string]$mapping[0]) -RequestField ([string]$mapping[1])
         }
     }
     elseif ([string]$document.operation -ceq 'Cleanup') {

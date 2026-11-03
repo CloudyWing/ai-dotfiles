@@ -1037,10 +1037,7 @@ function Invoke-Start {
     $preflightPrepareShaProperty = $preflight.PSObject.Properties['prepareResultSha256']
     $preflightPreparePathValue = if ($null -eq $preflightPreparePathProperty -or $null -eq $preflightPreparePathProperty.Value) { $null } else { [string]$preflightPreparePathProperty.Value }
     $preflightPrepareShaValue = if ($null -eq $preflightPrepareShaProperty -or $null -eq $preflightPrepareShaProperty.Value) { $null } else { [string]$preflightPrepareShaProperty.Value }
-    if (-not [string]::IsNullOrWhiteSpace($PrepareResultPath) -and -not [string]::IsNullOrWhiteSpace($preflightPreparePathValue) -and -not [string]::Equals((Resolve-AbsolutePath -Path $PrepareResultPath), (Resolve-AbsolutePath -Path $preflightPreparePathValue), [System.StringComparison]::OrdinalIgnoreCase)) {
-        $phase = 'preparation'
-        throw 'PrepareArtifactMismatch：Start 的 PrepareResultPath 與 Preflight result 不一致。'
-    }
+    $hasRefreshPath = -not [string]::IsNullOrWhiteSpace($PrepareResultPath) -and -not [string]::IsNullOrWhiteSpace($preflightPreparePathValue) -and -not [string]::Equals((Resolve-AbsolutePath -Path $PrepareResultPath), (Resolve-AbsolutePath -Path $preflightPreparePathValue), [System.StringComparison]::OrdinalIgnoreCase)
     if (-not [string]::IsNullOrWhiteSpace($PrepareResultPath)) {
         $prepareResultPathValue = Resolve-AbsolutePath -Path $PrepareResultPath
     }
@@ -1048,6 +1045,7 @@ function Invoke-Start {
         $prepareResultPathValue = Resolve-AbsolutePath -Path $preflightPreparePathValue
     }
     if ([string]::Equals($sourceRootPath, $executionRootPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if ($hasRefreshPath) { throw 'PrepareArtifactMismatch：direct-write 的 PrepareResultPath 與 Preflight result 不一致。' }
         if (-not [string]::IsNullOrWhiteSpace($prepareResultPathValue)) {
             $prepareBinding = Resolve-PrepareResultBinding -Path $prepareResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ExpectedSha256 $preflightPrepareShaValue
             if ($prepareBinding.Status -ne 'not-required') {
@@ -1085,7 +1083,18 @@ function Invoke-Start {
             $phase = 'preparation'
             throw 'PrepareRequired：worktree Start 必須提供 status=Prepared 的 PrepareResultPath。續行請由 Dispatch result 的 prepareResultPath（prepare_result_path）取得。'
         }
-        $prepareBinding = Resolve-PrepareResultBinding -Path $prepareResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ExpectedSha256 $preflightPrepareShaValue
+        if (-not $hasRefreshPath -and [string]::IsNullOrWhiteSpace($preflightPreparePathValue)) {
+            $selectedPrepare = Read-PrepareResult -Path $prepareResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ExpectedSha256 ''
+            $hasRefreshPath = [string](Get-DispatchJsonProperty -Object $selectedPrepare.Document -Name 'prepare_mode') -ceq 'refresh'
+        }
+        if ($hasRefreshPath) {
+            $phase = 'preparation'
+            $refreshAnchor = Resolve-PrepareRefreshAnchor -PreflightPreparePath $preflightPreparePathValue -PreflightPrepareSha256 $preflightPrepareShaValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+            $prepareBinding = Resolve-PrepareRefreshChain -Path $prepareResultPathValue -PreflightPreparePath $refreshAnchor.Path -PreflightPrepareSha256 $refreshAnchor.Sha256 -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+        }
+        else {
+            $prepareBinding = Resolve-PrepareResultBinding -Path $prepareResultPathValue -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue -ExpectedSha256 $preflightPrepareShaValue
+        }
         if ($prepareBinding.Status -ne 'Prepared') {
             $phase = 'preparation'
             throw 'PrepareArtifactMismatch：worktree Start 的 Prepare result status 必須是 Prepared。'

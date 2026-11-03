@@ -318,6 +318,7 @@ function Invoke-Preflight {
         TrackedPatchApplied = $false
         TrackedPatchLength  = 0
         UntrackedFiles      = @()
+        LineProducedFiles   = @()
         CopiedFiles         = @()
         excludedSecrets     = @()
     }
@@ -340,6 +341,19 @@ function Invoke-Preflight {
             $targetStates = @(Get-TrackedPathState -SourceRoot $sourceRootPath -TargetPath $TargetPath)
         }
 
+        $lineLedger = @{}
+        $lineLedgerPath = Join-Path $sourceRootPath ('.local/ai-sessions/history/' + $LineSlug + '/collect-apply-ledger.json')
+        if (Test-Path -LiteralPath $lineLedgerPath -PathType Leaf) {
+            try {
+                $lineLedgerDocument = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($lineLedgerPath)) -ErrorAction Stop
+                if ([string]$lineLedgerDocument.schema -cne 'ai-sessions.collect-apply-ledger.v1' -or [string]$lineLedgerDocument.line_slug -cne $LineSlug -or $null -eq $lineLedgerDocument.PSObject.Properties['entries'] -or $lineLedgerDocument.entries -isnot [array]) { throw 'invalid schema or identity' }
+                foreach ($entry in $lineLedgerDocument.entries) {
+                    if ($null -eq $entry -or [string]$entry.state -notin @('present', 'deleted') -or [string]::IsNullOrWhiteSpace([string]$entry.relative_path) -or [string]::IsNullOrWhiteSpace([string]$entry.dispatch_slug) -or ([string]$entry.state -eq 'present' -and [string]$entry.applied_sha256 -notmatch '^[0-9a-fA-F]{64}$')) { throw 'invalid entry' }
+                    $lineLedger[[string]$entry.relative_path] = $entry
+                }
+            }
+            catch { throw ('CollectApplyLedgerInvalid：帳冊無法讀取或格式無效：' + $lineLedgerPath + '; ' + $_.Exception.Message) }
+        }
         $dispatchParent = Split-Path -Parent $dispatchRootPath
         $null = New-DispatchOutputDirectory -Path $dispatchParent -SourceRoot $sourceRootPath -ExecutionRoot $sourceRootPath -TargetPath @($TargetPath)
         $worktreeResult = Invoke-GitCommand -WorkingDirectory $sourceRootPath -Arguments @('worktree', 'add', '--detach', $dispatchRootPath, $baseShaValue) -AllowFailure
@@ -348,6 +362,13 @@ function Invoke-Preflight {
         }
         $executionRootPath = $dispatchRootPath
         $carryInManifest = Apply-SourceCarryIn -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
+        $lineProducedFiles = @($carryInManifest.UntrackedFiles | Where-Object {
+                $relativePath = [string]$_
+                $entry = $lineLedger[$relativePath]
+                $filePath = Get-DispatchAdmissionContainedPath -Root $sourceRootPath -RelativePath $relativePath
+                $null -ne $entry -and [string]$entry.state -eq 'present' -and (Test-Path -LiteralPath $filePath -PathType Leaf) -and (Get-DispatchAdmissionFileSha256 -Path $filePath) -ieq [string]$entry.applied_sha256
+            })
+        $carryInManifest['LineProducedFiles'] = $lineProducedFiles
         $null = Sync-DispatchTrackedRawBytesFromSource -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
         $baseline = New-DispatchBaseline -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha $baseShaValue -TargetPath @($TargetPath)
         if ($WriteMode -eq 'readonly') {

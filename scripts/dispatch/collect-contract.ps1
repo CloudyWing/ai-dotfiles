@@ -1364,6 +1364,7 @@ function Invoke-Collect {
         }
     }    $dispatchDiff = @(Get-DispatchIncrementalChanges -Baseline $baselineBinding.Record -DispatchRoot $dispatchRootPath)
     $carryInFiles = @()
+    $lineProducedFiles = @()
     $newFiles = @()
     $rejectedFiles = @()
     $protectedCarryInPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
@@ -1373,13 +1374,20 @@ function Invoke-Collect {
         if ($null -ne $carryInUntrackedProperty) {
             $carryInFiles = @($carryInUntrackedProperty.Value | ForEach-Object { [string]$_ } | Sort-Object -Unique)
         }
+        $lineProducedProperty = $carryInManifestProperty.Value.PSObject.Properties['LineProducedFiles']
+        if ($null -ne $lineProducedProperty) { $lineProducedFiles = @($lineProducedProperty.Value | ForEach-Object { [string]$_ }) }
+    }
+    $lineProducedSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($lineProducedPath in $lineProducedFiles) {
+        if ($carryInFiles -notcontains $lineProducedPath) { throw 'Preflight LineProducedFiles 必須屬於 UntrackedFiles。' }
+        $null = $lineProducedSet.Add($lineProducedPath)
     }
     $carryInSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($carryInPath in $carryInFiles) {
         if ([string]::IsNullOrWhiteSpace($carryInPath)) { throw 'Preflight carryInManifest 含空白路徑。' }
         $null = Get-DispatchSnapshotPath -Root $dispatchRootPath -Path $carryInPath
         $null = Get-DispatchSnapshotPath -Root $baselineSourceRoot -Path $carryInPath
-        $null = $carryInSet.Add($carryInPath)
+        if (-not $lineProducedSet.Contains($carryInPath)) { $null = $carryInSet.Add($carryInPath) }
     }
     $baselineFileByPath = New-Object 'System.Collections.Generic.Dictionary[string,object]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($baselineFile in @($baselineBinding.Record.files)) {
@@ -1387,7 +1395,7 @@ function Invoke-Collect {
     }
     $newFileSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach ($untrackedFile in $untrackedFiles) {
-        if (-not $carryInSet.Contains([string]$untrackedFile)) {
+        if (-not $carryInSet.Contains([string]$untrackedFile) -and -not $lineProducedSet.Contains([string]$untrackedFile)) {
             $null = $newFileSet.Add([string]$untrackedFile)
         }
     }
@@ -1403,12 +1411,17 @@ function Invoke-Collect {
     $newFiles = @($newFileSet | Sort-Object -Unique)
     $rejectedFileList = New-Object System.Collections.Generic.List[object]
     foreach ($carryInPath in $carryInFiles) {
+        if ($lineProducedSet.Contains($carryInPath)) { continue }
         $baselineFile = if ($baselineFileByPath.ContainsKey($carryInPath)) { $baselineFileByPath[$carryInPath] } else { $null }
         $sourcePath = Get-DispatchSnapshotPath -Root $baselineSourceRoot -Path $carryInPath
         $sourceExists = Test-Path -LiteralPath $sourcePath -PathType Leaf
         $sourceSha256 = if ($sourceExists) { Get-FileSha256 -Path $sourcePath } else { $null }
         $expectedSha256 = if ($null -ne $baselineFile -and $baselineFile.exists) { [string]$baselineFile.sha256 } else { $null }
-        if ([string]::IsNullOrWhiteSpace($expectedSha256) -or -not $sourceExists -or $sourceSha256 -ine $expectedSha256) {
+        $effectiveBaseline = if ($null -ne $baselineFile) { $baselineFile } else { [pscustomobject]@{ exists = $false; sha256 = $null } }
+        $sourceState = [pscustomobject]@{ exists = [bool]$sourceExists; sha256 = $sourceSha256 }
+        $effectiveState = Get-DispatchEffectiveExpectedState -SourceRoot $baselineSourceRoot -LineSlug $baselineLineSlug -DispatchSlug $baselineDispatchSlug -RelativePath $carryInPath -BaselineFile $effectiveBaseline -SourceState $sourceState
+        if ($null -ne $effectiveState) { $expectedSha256 = if ($effectiveState.exists) { [string]$effectiveState.sha256 } else { $null } }
+        if ($null -eq $effectiveState -or -not $effectiveState.exists) {
             $null = $protectedCarryInPaths.Add($carryInPath)
             $rejectedFileList.Add([ordered]@{
                     path = $carryInPath

@@ -948,6 +948,53 @@ function Get-DispatchAdmissionTargetState {
     return [pscustomobject]@{ exists = $true; sha256 = Get-DispatchAdmissionFileSha256 -Path $Path }
 }
 
+function Get-DispatchApplyLedgerState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$SourceRoot, [Parameter(Mandatory)][string]$LineSlug, [Parameter(Mandatory)][string]$RelativePath, [string]$DispatchSlug)
+
+    $path = Join-Path $SourceRoot ('.local/ai-sessions/history/' + $LineSlug + '/collect-apply-ledger.json')
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
+    try {
+        $document = ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path)) -ErrorAction Stop
+        if ([string]$document.schema -cne 'ai-sessions.collect-apply-ledger.v1' -or [string]$document.line_slug -cne $LineSlug -or $null -eq $document.PSObject.Properties['entries'] -or $document.entries -isnot [array]) { throw 'invalid schema or identity' }
+        $found = $null
+        foreach ($entry in $document.entries) {
+            if ($null -eq $entry -or [string]$entry.state -notin @('present', 'deleted') -or [string]::IsNullOrWhiteSpace([string]$entry.relative_path) -or [string]::IsNullOrWhiteSpace([string]$entry.dispatch_slug) -or ([string]$entry.state -eq 'present' -and [string]$entry.applied_sha256 -notmatch '^[0-9a-fA-F]{64}$')) { throw 'invalid entry' }
+            if ([string]::Equals([string]$entry.relative_path, $RelativePath, [StringComparison]::OrdinalIgnoreCase) -and ([string]::IsNullOrWhiteSpace($DispatchSlug) -or [string]$entry.dispatch_slug -ceq $DispatchSlug)) { $found = $entry }
+        }
+        return $found
+    }
+    catch { throw ('CollectApplyLedgerInvalid：帳冊無法讀取或格式無效：' + $path + '; ' + $_.Exception.Message) }
+}
+
+function Add-DispatchApplyLedgerEntry {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$SourceRoot, [Parameter(Mandatory)][string]$LineSlug, [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Entry)
+
+    $path = Join-Path $SourceRoot ('.local/ai-sessions/history/' + $LineSlug + '/collect-apply-ledger.json')
+    $existing = @()
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $null = Get-DispatchApplyLedgerState -SourceRoot $SourceRoot -LineSlug $LineSlug -RelativePath '__validation__'
+        $existing = @((ConvertFrom-Json -InputObject ([System.IO.File]::ReadAllText($path))).entries)
+    }
+    $document = [ordered]@{ schema = 'ai-sessions.collect-apply-ledger.v1'; line_slug = $LineSlug; entries = @($existing) + @($Entry) }
+    $null = Write-DispatchAtomicJsonDocument -Path $path -Document $document -SourceRoot $SourceRoot -ExecutionRoot $SourceRoot -TargetPath @() -HashProperty ''
+}
+
+function Get-DispatchEffectiveExpectedState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$SourceRoot, [Parameter(Mandatory)][string]$LineSlug, [Parameter(Mandatory)][string]$DispatchSlug, [Parameter(Mandatory)][string]$RelativePath, [Parameter(Mandatory)][object]$BaselineFile, [Parameter(Mandatory)][object]$SourceState)
+
+    $entry = Get-DispatchApplyLedgerState -SourceRoot $SourceRoot -LineSlug $LineSlug -RelativePath $RelativePath -DispatchSlug $DispatchSlug
+    $expected = [pscustomobject]@{ exists = [bool]$BaselineFile.exists; sha256 = [string]$BaselineFile.sha256 }
+    if ([bool]$SourceState.exists -eq $expected.exists -and (-not $expected.exists -or [string]$SourceState.sha256 -ieq $expected.sha256)) { return $expected }
+    if ($null -ne $entry) {
+        $expected = [pscustomobject]@{ exists = ([string]$entry.state -eq 'present'); sha256 = [string]$entry.applied_sha256 }
+        if ([bool]$SourceState.exists -eq $expected.exists -and (-not $expected.exists -or [string]$SourceState.sha256 -ieq $expected.sha256)) { return $expected }
+    }
+    return $null
+}
+
 function Invoke-DispatchSourceIntegration {
     [CmdletBinding()]
     param(
@@ -971,6 +1018,7 @@ function Invoke-DispatchSourceIntegration {
     try {
         $ledger = Read-DispatchAdmissionLedger -Lock $lock
         $owner = Assert-DispatchRecoveryOwner -Lock $lock -Ledger $ledger -CallerIdentity $CallerIdentity -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath
+        $null = Get-DispatchApplyLedgerState -SourceRoot $sourceRootPath -LineSlug $LineSlug -RelativePath '__validation__'
         $relativePaths = @($Path | ForEach-Object { ([string]$_).Replace('\', '/') } | Sort-Object -Unique)
         foreach ($relativePath in $relativePaths) {
             $baselineFile = Get-DispatchAdmissionBaselineFile -Baseline $Baseline -RelativePath $relativePath
@@ -979,12 +1027,13 @@ function Invoke-DispatchSourceIntegration {
             }
             $sourcePath = Get-DispatchAdmissionContainedPath -Root $sourceRootPath -RelativePath $relativePath
             $dispatchPath = Get-DispatchAdmissionContainedPath -Root $dispatchRootPath -RelativePath $relativePath
-            $expectedExists = [bool]$baselineFile.exists
-            $expectedSha256 = if ($expectedExists) { [string]$baselineFile.sha256 } else { $null }
             $sourceState = Get-DispatchAdmissionTargetState -Path $sourcePath
-            if ([bool]$sourceState.exists -ne $expectedExists -or ($expectedExists -and [string]$sourceState.sha256 -ine $expectedSha256)) {
+            $expectedState = Get-DispatchEffectiveExpectedState -SourceRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RelativePath $relativePath -BaselineFile $baselineFile -SourceState $sourceState
+            if ($null -eq $expectedState) {
                 New-DispatchAdmissionFailure -Code 'DispatchSourceDrift' -Message ('DispatchSourceDrift：來源路徑自 baseline 後已變更，保留 dispatch worktree。path=' + $relativePath)
             }
+            $expectedExists = [bool]$expectedState.exists
+            $expectedSha256 = [string]$expectedState.sha256
             $dispatchState = Get-DispatchAdmissionTargetState -Path $dispatchPath
             if (-not $expectedExists -and -not $dispatchState.exists) { continue }
             if ($expectedExists -and $dispatchState.exists -and [string]$dispatchState.sha256 -ieq $expectedSha256) { continue }
@@ -1030,6 +1079,12 @@ function Invoke-DispatchSourceIntegration {
             }
         }
 
+        $ledgerEntries = @($operations | ForEach-Object {
+            $state = Get-DispatchAdmissionTargetState -Path ([string]$_.source_path)
+            $baselineFile = Get-DispatchAdmissionBaselineFile -Baseline $Baseline -RelativePath ([string]$_.relative_path)
+            [ordered]@{ dispatch_slug = $DispatchSlug; relative_path = [string]$_.relative_path; state = $(if ($state.exists) { 'present' } else { 'deleted' }); applied_sha256 = $state.sha256; baseline_sha256 = $baselineFile.sha256; applied_at_utc = [DateTime]::UtcNow.ToString('o'); run_record_path = $RunRecordPath }
+        })
+        if ($ledgerEntries.Count -gt 0) { Add-DispatchApplyLedgerEntry -SourceRoot $sourceRootPath -LineSlug $LineSlug -Entry $ledgerEntries }
         $integrationCommitted = $true
         foreach ($item in $applied) {
             if (-not [string]::IsNullOrWhiteSpace([string]$item.backup_path) -and (Test-Path -LiteralPath ([string]$item.backup_path) -PathType Leaf)) {
