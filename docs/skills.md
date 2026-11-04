@@ -23,7 +23,7 @@
 | Skill | 類型 | 讀者 | 用途 |
 | --- | --- | --- | --- |
 | `ai-context-index` | 知識型 | agent | Use when an agent needs to create or update a project AI context index from the tools declared in AGENTS.md. |
-| `ai-profile` | 知識型 | agent | Use when 需要讀取、詢問或寫入專案 AGENTS.local.md 的 AI-PROFILE 區塊鍵（code-style.csharp、project-kind、workflow-depth、git-workflow），或需判定哪些鍵缺少而須一次詢問時。 |
+| `ai-profile` | 知識型 | agent | Use when 需要讀取、詢問或寫入專案 AGENTS.local.md 的 AI-PROFILE 區塊鍵（code-style.csharp、project-kind、workflow-depth、git-workflow、target.sqlserver、target.sqlserver.compat、target.oracle），或需判定哪些鍵缺少而須一次詢問時。 |
 | `ai-tool-discovery` | 知識型 | agent | Use when the agent is about to explore a project or generate AI support artifacts and needs the local tool inventory or the state and rebuild path of existing .local/ai-context artifacts. |
 | `api-smoke` | 知識型 | agent | Web API 煙霧驗證流程。當需要在修改或開發 Web API 端點後驗證 API 行為，或使用者要求呼叫 Swagger、寫腳本測試 API、進行多情境 API 測試時使用。 |
 | `apply-fact-check` | 知識型 | human | 依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md. |
@@ -55,7 +55,7 @@
 | `desktop-smoke` | 知識型 | agent | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
 | `doc-editing` | 知識型 | agent | Use when 修改技術筆記、規格文件或 Markdown 文件，需要保留內容、查閱事實與維持文件結構時。 |
 | `docker` | 知識型 | agent | Dockerfile 與 Docker Compose 專案慣例：.NET 多階段建置的快取層寫法、非 root 執行、Compose Specification 檔名與相依寫法。當撰寫或檢視 Dockerfile 與 Compose 設定時自動套用。 |
-| `ef-core` | 知識型 | agent | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理與變更追蹤最佳實踐。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。 |
+| `ef-core` | 知識型 | agent | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理、變更追蹤最佳實踐，以及依 AI-PROFILE 目標版本鍵設定 provider 相容性。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。 |
 | `export-excel` | 知識型 | human | 匯出 Excel 試算表的技能，主要支援 Grid 與 RecordSet 兩種模板，可自訂樣式、命名樣式、資料驗證與工作表保護。當要求匯出或產生 Excel 檔案時使用。 |
 | `fact-check-note` | 知識型 | human | 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes. |
 | `generate-commit` | 知識型 | human | 依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔案過濾與拆分建議。當使用者要求提交變更或產生 commit 訊息時使用。 |
@@ -73,7 +73,7 @@
 | `requirement-context` | 知識型 | agent | 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。 |
 | `scripting-conventions` | 知識型 | agent | Use when 選擇或撰寫 PowerShell、Shell 或 C# Script，需判斷執行平台、編碼與相依工具時。 |
 | `session-artifacts` | 知識型 | agent | Use when 建立、讀取、回收、保存或清理 .local/ai-sessions/ 下的交接檔、派遣單、報告或其他工作產物，需要確定分類與落點時。 |
-| `sql-query` | 知識型 | agent | SQL 撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求，涵蓋 SQL Server（T-SQL）與 Oracle 雙資料庫的語法差異與語意陷阱。當撰寫或審查原生 SQL 時自動套用。 |
+| `sql-query` | 知識型 | agent | SQL 撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求，涵蓋 SQL Server（T-SQL）與 Oracle 雙資料庫的語法差異與語意陷阱，並依 AI-PROFILE 目標版本鍵避開不支援語法。當撰寫或審查原生 SQL 時自動套用。 |
 | `survey` | 知識型 | human | 掃描專案結構並產出供團隊成員閱讀的技術文件索引。當要求掃描專案、建立文件索引、補齊技術文件或盤點專案結構時使用。 |
 | `typescript-frontend` | 知識型 | agent | 前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。 |
 | `uiux` | 知識型 | agent | UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。 |
