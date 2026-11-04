@@ -43,9 +43,9 @@ project-kind: library
 | `project-kind` | `library`、`application`、`sample` | `ai-profile` | 專案含 `instructions.md` §1.5 work-root 判定所列的技術棧根標記 | `generate-readme-zh-tw` 的專案分類；`integration-verify` 步驟一的套件判定與 `sample` 深度 | 詢問並附「推薦答案偵測」的推薦答案；未回答時各消費端採其未設定處置 |
 | `workflow-depth` | `full`、`light` | `workflow-orchestration` | 進入 Workflow 時 | 不阻擋 | 不詢問；依 `instructions.md`「Workflow 深度」由 `project-kind` 推導 |
 | `git-workflow` | `trunk`、`release-flow` | `git-workflow` | 專案位於 Git repo | commit、啟動 Workflow、建立分支 | 詢問並附 `git-workflow` skill「推薦值推導」的推薦答案；各值的語意由該 skill 定義 |
-| `target.sqlserver` | `2012`、`2014`、`2016`、`2017`、`2019`、`2022`、`2025` | `sql-query` | 專案相依 SQL Server 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 SQL Server 專用 SQL | 撰寫、修改或產生涉及 SQL Server 的原生 SQL、`FromSql*`、EF Core 對 SQL Server 的查詢與 provider 設定 | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |
+| `target.sqlserver` | `2012`、`2014`、`2016`、`2017`、`2019`、`2022`、`2025` | `sql-query` | 專案相依 SQL Server 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 SQL Server 專用 SQL | 撰寫、修改或產生涉及 SQL Server 的原生 SQL、`FromSql*`、EF Core 對 SQL Server 的查詢與 provider 設定，以及整合測試的資料庫容器映像與相容性設定（SQL Server） | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |
 | `target.sqlserver.compat` | `90`、`100`、`110`、`120`、`130`、`140`、`150`、`160`、`170` | `sql-query` | `target.sqlserver` 已設定 | 不阻擋 | 不獨立詢問；視為 `target.sqlserver` 對應的預設相容性層級（對照見 `sql-query` 的 `references/sqlserver.md`） |
-| `target.oracle` | `11g`、`12cR1`、`12cR2`、`18c`、`19c`、`21c`、`23ai`、`26ai` | `sql-query` | 專案相依 Oracle 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 Oracle 專用 SQL | 撰寫、修改或產生涉及 Oracle 的原生 SQL、`FromSql*`、EF Core 對 Oracle 的查詢與 provider 設定 | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |
+| `target.oracle` | `11g`、`12cR1`、`12cR2`、`18c`、`19c`、`21c`、`23ai`、`26ai` | `sql-query` | 專案相依 Oracle 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 Oracle 專用 SQL | 撰寫、修改或產生涉及 Oracle 的原生 SQL、`FromSql*`、EF Core 對 Oracle 的查詢與 provider 設定，以及整合測試的資料庫容器映像與相容性設定（Oracle） | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |
 
 鍵缺少的判定為 `AGENTS.local.md` 不存在、沒有 `AI-PROFILE` 區塊，或區塊內沒有該鍵。
 
