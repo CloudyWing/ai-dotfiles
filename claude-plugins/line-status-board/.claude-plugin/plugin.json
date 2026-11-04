@@ -1,13 +1,13 @@
 {
   "name": "line-status-board",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "在 Desktop 顯示線、Session、工作樹與額度狀態。",
   "types": "./types/index.d.ts",
   "userConfig": {
     "workRoots": {
       "type": "string",
       "title": "掃描位置",
-      "description": "以分號分隔 work-root；空白時使用腳本預設值。",
+      "description": "以分號分隔 work-root；空白時使用與腳本相同的預設掃描位置。兩種情況都會再加入目前 Session 所在的 repo。",
       "default": ""
     },
     "scriptPath": {

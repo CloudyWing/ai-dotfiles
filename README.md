@@ -140,6 +140,10 @@ Claude Code 的工具權限由 `settings.json` 的 `permissions`（allow／ask�
 
 四個區塊標題可點擊收合或展開，箭頭 `▸` 表示收合，`▾` 表示展開。預設全部展開，收合狀態跨 Session 保留。線區塊中相同的 lineSlug 只顯示檢查點時間最新的一筆。
 
+掃描範圍包含 `workRoots` 設定的位置，空白時使用與腳本相同的預設清單，並加入目前 Session 所在 repo 的主工作樹與全部 worktree。非 Git 目錄只加入該目錄。目前 repo 的主工作樹與 Session 所在 worktree 即使沒有 `.local\ai-sessions\handoff` 目錄，也會透過腳本的 `-ForceWorkRoot` 列出 Git 狀態，該列不含線資料；其他沒有 handoff 目錄的 worktree 不列出。
+
+work-root 區塊將目前 repo 的列排在最前，面板頂部顯示 `目前：<repo 名稱>`，cwd 變更時立即重新整理。plugin 0.3.0 需搭配同一 repo 的新版腳本，plugin 的內建預設清單須與腳本預設值同步。
+
 Setup 的 8b 安裝此 plugin。`workRoots` 可設定以分號分隔的掃描位置，空白時使用腳本預設值；`scriptPath` 可指定腳本路徑，空白時自動尋找。修改設定後執行 `/reload-plugins`。
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）
