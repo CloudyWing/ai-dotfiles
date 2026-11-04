@@ -127,12 +127,18 @@ Claude Code 的工具權限由 `settings.json` 的 `permissions`（allow／ask�
 
 #### Claude Code Hook 設定
 
-本專案的 hook 由本機 marketplace `ai-agents-local` 的 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `claude-plugins/`。`Setup-AIGlobalConfig.ps1` 的 8b 依腳本所在的 repo 推導 marketplace 根目錄並註冊 plugin；8c 在 plugin 啟用後備份 `settings.json`，再移除舊 hook 項目。修改 plugin 內的 hook 腳本後，新 session 不需重新安裝即可採用新內容。
+本專案的 hook 由本機 marketplace `ai-agents-local` 的 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `claude-plugins/`。`Setup-AIGlobalConfig.ps1` 的 8b 依腳本所在的 repo 推導 marketplace 根目錄，註冊並啟用清單中的全部 plugin；8c 在 hook plugin 啟用後備份 `settings.json`，再移除舊 hook 項目。修改 plugin 內的 hook 腳本後，新 session 不需重新安裝即可採用新內容。
 
 | Hook 腳本 | 觸發條件 | 用途 |
 | --- | --- | --- |
 | `post-edit-write-hook.ps1` | Edit 或 Write 工具寫入檔案後 | 提示執行 check-markdown skill（`.md`）；驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
 | `turn-guard-hook.ps1` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | shadow 紀錄寫入 `${CLAUDE_PLUGIN_DATA}\turn-guard\<session_id>.jsonl`，不注入 context、不阻擋且 fail-open。欄位包含版本、時間、session、事件、turn、工作目錄、agent、prompt 字元數、工具與分類、累計計數、失敗指紋、中斷標記、turn 結束標記及執行耗時；部分欄位依事件出現。 |
+
+#### 狀態看板 plugin
+
+`line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示 Session、線、work-root 與額度。資料來自 `scripts/Get-LineStatus.ps1 -AsJson` 與 `ccd_session_mgmt.list_sessions`，每 60 秒更新一次，也可按「重新整理」，更新過程不耗用模型 token。
+
+Setup 的 8b 安裝此 plugin。`workRoots` 可設定以分號分隔的掃描位置，空白時使用腳本預設值；`scriptPath` 可指定腳本路徑，空白時自動尋找。修改設定後執行 `/reload-plugins`。
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）
 
@@ -268,7 +274,7 @@ trust_level = "trusted"
 ├── agents/
 │   ├── claude/                         # Claude 端 Persona 與 sub-agent（.md 格式）
 │   └── codex/                          # Codex 端 Persona 與 sub-agent（.toml 格式）
-├── claude-plugins/                     # 本機 marketplace 與 hook plugin
+├── claude-plugins/                     # 本機 marketplace、hook 與狀態看板 plugin
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本、Demo 外框範本與派工範本
 └── scripts/                            # 安裝、檢查與 hooks 腳本
@@ -282,6 +288,7 @@ trust_level = "trusted"
 
 - `scripts/` 根目錄只放使用者可直接執行的 Verb-Noun `.ps1` 與既有 `.csx` 腳本。
 - `scripts/Get-DispatchProgress.ps1` 唯讀查詢派遣進度，可依 `LineSlug` 或 `DispatchSlug` 篩選；預設顯示未結束與最近 24 小時內結束的項目。
+- `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態與額度。
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
 - 內部責任檔、loader、測試輔助與 C17 私有機制放在子目錄；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
 - `claude-plugins/` 內由工具自動呼叫的 hook 腳本，使用全小寫 kebab-case 命名。

@@ -312,9 +312,24 @@ $claudeMarketplaceRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-pl
 $claudePluginEnabled = $false
 try {
     if ($null -eq (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue) -or -not (Test-Path -LiteralPath (Join-Path $claudeMarketplaceRoot '.claude-plugin\marketplace.json') -PathType Leaf)) { throw '找不到 claude CLI 或 marketplace 清單，略過 plugin 註冊。' }
-    foreach ($target in @($claudeMarketplaceRoot, (Join-Path $claudeMarketplaceRoot 'ai-agents-hooks'))) {
-        $result = Invoke-ClaudeCli @('plugin', 'validate', $target)
-        if ($null -eq $result -or $result.ExitCode -ne 0) { throw "plugin 驗證失敗：$($result.Output)" }
+    $manifest = Get-Content -LiteralPath (Join-Path $claudeMarketplaceRoot '.claude-plugin\marketplace.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $specs = @()
+    foreach ($entry in @($manifest.plugins)) {
+        if ($entry.source -isnot [string] -or -not $entry.source.StartsWith('./') -or [string]::IsNullOrWhiteSpace([string]$entry.name)) { throw 'marketplace plugin 的 name 或 source 不正確。' }
+        $specs += [pscustomobject]@{ Name = [string]$entry.name; Id = ([string]$entry.name + '@ai-agents-local'); Directory = (Join-Path $claudeMarketplaceRoot $entry.source.Substring(2)) }
+    }
+    if ($specs.Count -eq 0 -or @($specs | Where-Object { $_.Name -eq 'ai-agents-hooks' }).Count -ne 1) { throw 'marketplace plugin 清單為空或缺少 ai-agents-hooks。' }
+    $result = Invoke-ClaudeCli @('plugin', 'validate', $claudeMarketplaceRoot)
+    if ($null -eq $result -or $result.ExitCode -ne 0) { throw "marketplace 驗證失敗：$($result.Output)" }
+    $claudePluginSpecs = @()
+    foreach ($spec in $specs) {
+        $result = Invoke-ClaudeCli @('plugin', 'validate', $spec.Directory)
+        if ($null -eq $result -or $result.ExitCode -ne 0) {
+            if ($spec.Name -eq 'ai-agents-hooks') { throw "plugin 驗證失敗：$($result.Output)" }
+            Write-Warning ("plugin {0} 驗證失敗：{1}" -f $spec.Id, $result.Output)
+            continue
+        }
+        $claudePluginSpecs += $spec
     }
     $marketplaces = Get-ClaudeList @('plugin', 'marketplace', 'list', '--json')
     $existing = @($marketplaces | Where-Object { (Get-ClaudeProperty $_ 'name') -eq 'ai-agents-local' -or (Get-ClaudeProperty $_ 'id') -eq 'ai-agents-local' })
@@ -348,23 +363,32 @@ try {
     }
     if ($needsAdd -and $WhatIfPreference) { throw 'WhatIf：略過 plugin 安裝。' }
     $plugins = Get-ClaudeList @('plugin', 'list', '--json')
-    $installed = @($plugins | Where-Object { (Get-ClaudeProperty $_ 'id') -eq 'ai-agents-hooks@ai-agents-local' -or (Get-ClaudeProperty $_ 'name') -eq 'ai-agents-hooks@ai-agents-local' })
-    if ($installed.Count -gt 1) { throw 'plugin 清單含重複識別。' }
-    if ($installed.Count -eq 0) {
-        if ($PSCmdlet.ShouldProcess('ai-agents-hooks@ai-agents-local', '安裝 plugin')) {
-            $result = Invoke-ClaudeCli @('plugin', 'install', 'ai-agents-hooks@ai-agents-local', '--scope', 'user')
-            if ($result.ExitCode -ne 0) { throw "plugin install 失敗：$($result.Output)" }
+    foreach ($spec in $claudePluginSpecs) {
+        try {
+            $installed = @($plugins | Where-Object { (Get-ClaudeProperty $_ 'id') -eq $spec.Id -or (Get-ClaudeProperty $_ 'name') -eq $spec.Id })
+            if ($installed.Count -gt 1) { throw 'plugin 清單含重複識別。' }
+            if ($installed.Count -eq 0) {
+                if ($PSCmdlet.ShouldProcess($spec.Id, '安裝 plugin')) {
+                    $result = Invoke-ClaudeCli @('plugin', 'install', $spec.Id, '--scope', 'user')
+                    if ($result.ExitCode -ne 0) { throw "plugin install 失敗：$($result.Output)" }
+                }
+            } elseif ((Get-ClaudeProperty $installed[0] 'enabled') -eq $false) {
+                if ($PSCmdlet.ShouldProcess($spec.Id, '啟用 plugin')) {
+                    $result = Invoke-ClaudeCli @('plugin', 'enable', $spec.Id)
+                    if ($result.ExitCode -ne 0) { throw "plugin enable 失敗：$($result.Output)" }
+                }
+            } elseif ((Get-ClaudeProperty $installed[0] 'enabled') -ne $true) { throw '無法判定 plugin 啟用狀態。' }
+        } catch {
+            if ($spec.Name -eq 'ai-agents-hooks') { throw }
+            Write-Warning ("plugin {0} 處理失敗：{1}" -f $spec.Id, $_.Exception.Message)
         }
-    } elseif ((Get-ClaudeProperty $installed[0] 'enabled') -eq $false) {
-        if ($PSCmdlet.ShouldProcess('ai-agents-hooks@ai-agents-local', '啟用 plugin')) {
-            $result = Invoke-ClaudeCli @('plugin', 'enable', 'ai-agents-hooks@ai-agents-local')
-            if ($result.ExitCode -ne 0) { throw "plugin enable 失敗：$($result.Output)" }
-        }
-    } elseif ((Get-ClaudeProperty $installed[0] 'enabled') -ne $true) { throw '無法判定 plugin 啟用狀態。' }
+    }
     $plugins = Get-ClaudeList @('plugin', 'list', '--json')
-    $enabled = @($plugins | Where-Object { ((Get-ClaudeProperty $_ 'id') -eq 'ai-agents-hooks@ai-agents-local' -or (Get-ClaudeProperty $_ 'name') -eq 'ai-agents-hooks@ai-agents-local') -and (Get-ClaudeProperty $_ 'enabled') -eq $true })
-    $claudePluginEnabled = $enabled.Count -eq 1
-    if ($claudePluginEnabled) { Write-Host 'plugin: ai-agents-hooks@ai-agents-local enabled' } else { Write-Warning 'plugin: ai-agents-hooks@ai-agents-local 尚未啟用。' }
+    foreach ($spec in $claudePluginSpecs) {
+        $enabled = @($plugins | Where-Object { ((Get-ClaudeProperty $_ 'id') -eq $spec.Id -or (Get-ClaudeProperty $_ 'name') -eq $spec.Id) -and (Get-ClaudeProperty $_ 'enabled') -eq $true })
+        if ($spec.Name -eq 'ai-agents-hooks') { $claudePluginEnabled = $enabled.Count -eq 1 }
+        if ($enabled.Count -eq 1) { Write-Host ("plugin: {0} enabled" -f $spec.Id) } else { Write-Warning ("plugin: {0} 尚未啟用。" -f $spec.Id) }
+    }
 } catch { Write-Warning $_.Exception.Message }
 
 # 8c. 移除舊 hook 註冊
@@ -470,7 +494,7 @@ Write-Host "  - 機器層 Git 排除清單位於 $configRootDisplay/git-global-e
 Write-Host "  - Claude Code 透過 ~/.claude/CLAUDE.md 符號連結讀取"
 Write-Host "  - Claude Code skills → $configRootDisplay/skills/"
 Write-Host "  - Claude Code agents → $configRootDisplay/agents/claude/"
-Write-Host "  - Claude Code hook 由本機 plugin ai-agents-hooks@ai-agents-local 提供，原始碼位於 $($claudeMarketplaceRoot.Replace($env:USERPROFILE, '~'))"
+Write-Host "  - Claude Code plugin 由本機 marketplace 提供，包含 ai-agents-hooks@ai-agents-local 與 line-status-board@ai-agents-local，原始碼位於 $($claudeMarketplaceRoot.Replace($env:USERPROFILE, '~'))"
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
 Write-Host "  - Codex agents → $configRootDisplay/agents/codex/"
 Write-Host "  - Codex skills → ~/.agents/skills/"

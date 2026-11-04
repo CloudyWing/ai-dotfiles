@@ -2,6 +2,7 @@
   "name": "ai-agents-local",
   "owner": { "name": "CloudyWing" },
   "plugins": [
-    { "name": "ai-agents-hooks", "source": "./ai-agents-hooks" }
+    { "name": "ai-agents-hooks", "source": "./ai-agents-hooks" },
+    { "name": "line-status-board", "source": "./line-status-board" }
   ]
 }
