@@ -1,6 +1,9 @@
 import type { BlockId, BoardBlock, BoardRow, BoardSnapshot, DotTone } from '../types'
 
 export const REFRESH_MS = 60000
+export const GIT_TIMEOUT_MS = 3000
+export const SCRIPT_BUDGET_MS = 40000
+export const MAX_EXTRA_ROOTS = 64
 export const BLOCK_IDS: BlockId[] = ['sessions', 'lines', 'workRoots', 'quota']
 export const STORE_KEY = 'collapsed-blocks'
 export const BAR_WIDTH = 96
@@ -49,6 +52,9 @@ export type Line = { LineSlug: string; WorkRoot: string; CheckpointType?: string
 export type Root = { Path: string; IsLinkedWorktree?: boolean | null; Branch?: string | null; DirtyCount?: number | null; MainAhead?: number | null; MainBehind?: number | null; Upstream?: string | null; UpstreamAhead?: number | null; Error?: string | null }
 export type Quota = { Name: string; State: string; Error?: string | null; PrimaryRemaining?: number | null; SecondaryRemaining?: number | null; PrimaryResetsAtLocal?: string | null; SecondaryResetsAtLocal?: string | null }
 export type Document = { scannedRoots: string[]; lines: Line[]; workRoots: Root[]; quota: Quota[]; warnings: string[] }
+export type WorktreeEntry = { path: string; isBare: boolean }
+export type GitProbe = { kind: 'failed' } | { kind: 'notRepo' } | { kind: 'repo'; topLevel: string; worktrees: WorktreeEntry[] | null }
+export type CurrentRepo = { name: string; isGit: boolean; roots: string[]; forced: string[] }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -80,6 +86,105 @@ export function isUnder(path: string, root: string): boolean {
   const p = normalizePath(path)
   const r = normalizePath(root)
   return p === r || p.startsWith(r.endsWith('\\') ? r : r + '\\')
+}
+
+export function toWindowsPath(path: string): string {
+  const value = path.trim().replace(/\//g, '\\')
+  return /^[a-zA-Z]:\\+$/.test(value) ? value.slice(0, 3) : value.replace(/\\+$/, '')
+}
+export function isAbsoluteWindowsPath(path: string): boolean {
+  return /^[a-zA-Z]:\\/.test(path) || path.startsWith('\\\\')
+}
+export function leafName(path: string): string {
+  if (/^[a-zA-Z]:[\\/]+$/.test(path)) return path
+  return path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || path
+}
+export function parseWorktreeList(stdout: string): WorktreeEntry[] {
+  const entries: WorktreeEntry[] = []
+  let current: WorktreeEntry | null = null
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      const path = toWindowsPath(line.slice(9))
+      current = isAbsoluteWindowsPath(path) ? { path, isBare: false } : null
+      if (current) entries.push(current)
+    } else if (line === 'bare' && current) current.isBare = true
+  }
+  return entries
+}
+export function splitRoots(value?: string): string[] {
+  return (value || '').split(';').map(item => item.trim()).filter(Boolean)
+}
+// 與 scripts/Get-LineStatus.ps1 的預設 work-root 清單保持同步。
+export function defaultWorkRoots(profile: string | null): string[] {
+  if (!profile) return []
+  const base = toWindowsPath(profile)
+  return [`${base}\\.ai-agents`, `${base}\\.ai-agents.wt\\*`, `${base}\\.ai-agents\\.claude\\worktrees\\*`, 'D:\\Programming\\Projects\\.claude-worktrees\\.ai-agents\\*']
+}
+export function coversPath(entry: string, path: string): boolean {
+  const e = normalizePath(entry)
+  const p = normalizePath(path)
+  if (e === p) return true
+  if (!e.endsWith('\\*')) return false
+  let prefix = e.slice(0, -2)
+  if (/[*?\[\]]/.test(prefix)) return false
+  if (/^[a-z]:$/.test(prefix)) prefix += '\\'
+  let parent = p.slice(0, p.lastIndexOf('\\'))
+  if (/^[a-z]:$/.test(parent)) parent += '\\'
+  return parent === prefix
+}
+export function buildWorkRootArgument(configured: string | undefined, profile: string | null, current: CurrentRepo | null): string | null {
+  const config = splitRoots(configured)
+  const original = config.length ? configured!.trim() : null
+  if (!current || !current.roots.length) return original
+  if (!config.length && !profile) return null
+  const base = config.length ? config : defaultWorkRoots(profile)
+  const added: string[] = []
+  const seen = new Set<string>()
+  for (const path of current.roots) {
+    const key = normalizePath(path)
+    if (path.includes(';') || seen.has(key) || base.some(entry => coversPath(entry, path))) continue
+    seen.add(key)
+    added.push(path)
+    if (added.length === MAX_EXTRA_ROOTS) break
+  }
+  if (!added.length) return original
+  return [...base, ...added.map(path => path.replace(/[\[\]]/g, match => '`' + match))].join(';')
+}
+export function buildForceWorkRootArgument(current: CurrentRepo | null): string | null {
+  const seen = new Set<string>()
+  const paths = (current?.forced || []).filter(path => {
+    const key = normalizePath(path)
+    if (path.includes(';') || seen.has(key)) return false
+    seen.add(key)
+    return true
+  })
+  return paths.length ? paths.join(';') : null
+}
+export function resolveCurrentRepo(cwd: string | null, probe: GitProbe): CurrentRepo | null {
+  if (!cwd || !isAbsoluteWindowsPath(toWindowsPath(cwd)) || probe.kind === 'failed') return null
+  const path = toWindowsPath(cwd)
+  if (probe.kind === 'notRepo') return { name: leafName(path), isGit: false, roots: [path], forced: [path] }
+  const top = toWindowsPath(probe.topLevel)
+  if (!isAbsoluteWindowsPath(top)) return null
+  const entries = probe.worktrees || []
+  const unique = (paths: string[]) => paths.filter((item, index) => paths.findIndex(other => normalizePath(other) === normalizePath(item)) === index)
+  const roots = unique([...entries.filter(entry => !entry.isBare).map(entry => toWindowsPath(entry.path)), top])
+  const forced = unique([...(entries[0] && !entries[0].isBare ? [toWindowsPath(entries[0].path)] : []), top])
+  return { name: leafName(entries[0]?.path || top), isGit: true, roots, forced }
+}
+export function orderWorkRoots(roots: Root[], current: CurrentRepo | null): Root[] {
+  if (!current) return [...roots]
+  const rank = (root: Root) => current.roots.findIndex(path => normalizePath(path) === normalizePath(root.Path))
+  return [...roots].sort((a, b) => {
+    const left = rank(a), right = rank(b)
+    return (left < 0 ? Infinity : left) - (right < 0 ? Infinity : right) || 0
+  })
+}
+export function currentLabel(current: CurrentRepo | null): string | null {
+  return current ? `目前：${current.name}${current.isGit ? '' : '（非 Git）'}` : null
+}
+export function remainingBudgetMs(totalMs: number, elapsedMs: number): number {
+  return Math.max(1000, totalMs - Math.max(0, elapsedMs))
 }
 
 export function parseScriptOutput(stdout: string): Result<Document> {
@@ -130,7 +235,7 @@ const row = (name: string, fields: Partial<Omit<BoardRow, 'name'>> = {}): BoardR
 const block = (rows: BoardRow[], limit = rows.length): BoardBlock => ({ rows: rows.slice(0, limit), hiddenCount: Math.max(0, rows.length - limit), errorMessage: null })
 const errorBlock = (message: string): BoardBlock => ({ rows: [], hiddenCount: 0, errorMessage: message })
 export function errorSnapshot(message: string): BoardSnapshot {
-  return { sessions: errorBlock(message), lines: errorBlock(message), workRoots: errorBlock(message), quota: errorBlock(message) }
+  return { sessions: errorBlock(message), lines: errorBlock(message), workRoots: errorBlock(message), quota: errorBlock(message), currentLabel: null }
 }
 const clip = (value: string, limit: number): string => Array.from(value).length > limit ? Array.from(value).slice(0, limit).join('') + '…' : value
 const time = (value?: string | null): string => {
@@ -142,8 +247,8 @@ const time = (value?: string | null): string => {
 }
 const number = (value?: number | null): string => value == null ? '-' : String(value)
 
-export function buildSnapshot(script: Result<Document>, sessions: Result<Session[]>, _now: Date): BoardSnapshot {
-  if (!script.ok) return { sessions: errorBlock('無法判定掃描範圍'), lines: errorBlock(script.error), workRoots: errorBlock(script.error), quota: errorBlock(script.error) }
+export function buildSnapshot(script: Result<Document>, sessions: Result<Session[]>, _now: Date, current: CurrentRepo | null = null): BoardSnapshot {
+  if (!script.ok) return { sessions: errorBlock('無法判定掃描範圍'), lines: errorBlock(script.error), workRoots: errorBlock(script.error), quota: errorBlock(script.error), currentLabel: currentLabel(current) }
   const data = script.value
   const sessionBlock = !sessions.ok ? errorBlock(sessions.error) : block(filterSessions(sessions.value, data.scannedRoots).map(session => {
     const title = session.title || session.name || session.sessionId || '-'
@@ -158,8 +263,8 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
       const type = line.CheckpointType === 'design-accepted' ? '設計驗收' : line.CheckpointType === 'developer-collected' ? 'Dev 回收' : (line.CheckpointType || '-').slice(0, 12)
       return row(line.LineSlug, { note: time(line.CheckpointUpdatedUtc), detail: `${type} ▸ ${line.NextStepSummary ? clip(line.NextStepSummary, 60) : '（未載明下一步）'}` })
     })
-  const roots = data.workRoots.map(root => {
-    const name = root.Path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || root.Path
+  const roots = orderWorkRoots(data.workRoots, current).map(root => {
+    const name = leafName(root.Path)
     if (root.Error) return row(`${name} · ${root.Error}`, { tone: 'error', dot: 'error' })
     return row(name, { dot: root.DirtyCount == null ? 'inactive' : root.DirtyCount === 0 ? 'success' : 'warning', note: root.Branch || '-', detail: `未 commit ${number(root.DirtyCount)} · 主分支 +${number(root.MainAhead)}/-${number(root.MainBehind)} · ${root.Upstream ? '未 push ' + number(root.UpstreamAhead) : '無 upstream'}` })
   })
@@ -174,5 +279,5 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
   })
   const quotaBlock = block(quota)
   if (data.warnings.length) quotaBlock.warning = data.warnings.join(' / ')
-  return { sessions: sessionBlock, lines: block(lines, 12), workRoots: block(roots), quota: quotaBlock }
+  return { sessions: sessionBlock, lines: block(lines, 12), workRoots: block(roots), quota: quotaBlock, currentLabel: currentLabel(current) }
 }

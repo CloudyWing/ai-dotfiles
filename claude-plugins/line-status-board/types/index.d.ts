@@ -8,6 +8,7 @@ export type BoardSnapshot = {
   lines: BoardBlock
   workRoots: BoardBlock
   quota: BoardBlock
+  currentLabel: string | null
 }
 
 declare module 'claude-code' {
