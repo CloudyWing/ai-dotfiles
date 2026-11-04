@@ -138,6 +138,8 @@ Claude Code 的工具權限由 `settings.json` 的 `permissions`（allow／ask�
 
 `line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示 Session、線、work-root 與額度。資料來自 `scripts/Get-LineStatus.ps1 -AsJson` 與 `ccd_session_mgmt.list_sessions`，每 60 秒更新一次，也可按「重新整理」，更新過程不耗用模型 token。
 
+四個區塊標題可點擊收合或展開，箭頭 `▸` 表示收合，`▾` 表示展開。預設全部展開，收合狀態跨 Session 保留。線區塊中相同的 lineSlug 只顯示檢查點時間最新的一筆。
+
 Setup 的 8b 安裝此 plugin。`workRoots` 可設定以分號分隔的掃描位置，空白時使用腳本預設值；`scriptPath` 可指定腳本路徑，空白時自動尋找。修改設定後執行 `/reload-plugins`。
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）

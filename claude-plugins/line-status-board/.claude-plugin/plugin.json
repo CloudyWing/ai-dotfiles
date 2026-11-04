@@ -1,6 +1,6 @@
 {
   "name": "line-status-board",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "在 Desktop 顯示線、Session、工作樹與額度狀態。",
   "types": "./types/index.d.ts",
   "userConfig": {
