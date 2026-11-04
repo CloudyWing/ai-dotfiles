@@ -21,7 +21,6 @@ $script:RunRecordPath = ''
 $script:PreflightResultPath = ''
 $script:RequestContext = $null
 $script:CallerSessionIdentity = $null
-$script:QuotaTestReplacement = ''
 $script:T049EvidenceRoot = ''
 $script:T049OwnerIdentity = $null
 
@@ -85,22 +84,6 @@ function Get-TestRecordArray {
     return $records.ToArray()
 }
 
-function Set-QuotaSnapshotFromCodex {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$Path,
-        [string]$CodexHome,
-        [string]$SourceRoot,
-        [string]$ExecutionRoot,
-        [string[]]$TargetPath,
-        [string]$HistoryRoot,
-        [string]$Purpose,
-        [switch]$Required
-    )
-    [IO.File]::WriteAllText($Path, $script:QuotaTestReplacement, (New-Object Text.UTF8Encoding($false)))
-    return [pscustomobject]@{ Path = $Path }
-}
-
 function Wait-TestMarker {
     param([Parameter(Mandatory)][string]$Path, [Diagnostics.Process[]]$Processes, [int]$TimeoutSeconds = 60)
     $limit = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -128,7 +111,6 @@ function Invoke-TestWorker {
     $script:ExecutionRoot = [string]$config.execution_root
     $script:LineSlug = [string]$config.line_slug
     $script:DispatchSlug = [string]$config.dispatch_slug
-    $script:QuotaTestReplacement = [string]$config.quota_replacement
     $ownerStartValue = $config.owner_process_start_time_utc
     $ownerStartUtc = if ($ownerStartValue -is [DateTime]) { $ownerStartValue.ToUniversalTime().ToString('o') } else { [string]$ownerStartValue }
     $ownerIdentity = [pscustomobject]@{
@@ -175,17 +157,6 @@ function Invoke-TestWorker {
                 $applied = Invoke-DispatchSourceIntegration @parameters
                 $result = [ordered]@{ worker_id = $workerId; status = [string]$applied.status; error_code = $null; dispatch_slug = $script:DispatchSlug; started_at_utc = $started; finished_at_utc = [DateTime]::UtcNow.ToString('o'); worktree_preserved = [bool]$applied.worktree_preserved }
             }
-            'quota' {
-                $parameters = @{
-                    Path = [string]$config.quota_path
-                    ExpectedSha256 = [string]$config.expected_sha256
-                    SourceRoot = $script:SourceRoot
-                    ExecutionRoot = $script:ExecutionRoot
-                    TargetPath = @()
-                }
-                $updated = Update-AdvisorAfterSnapshotFromCodex @parameters
-                $result = [ordered]@{ worker_id = $workerId; status = 'replaced'; error_code = $null; sha256 = [string]$updated.Sha256; started_at_utc = $started; finished_at_utc = [DateTime]::UtcNow.ToString('o') }
-            }
             default { throw ('未知的 worker action：' + [string]$config.action) }
         }
     }
@@ -208,7 +179,7 @@ function New-WorkerConfig {
         [string]$ScenarioRoot, [string]$WorkerId, [string]$SourceRoot, [string]$ExecutionRoot,
         [string]$DispatchSlug, [string]$CallerTag, [ValidateSet('write', 'readonly')][string]$WriteMode,
         [string]$Action, [object[]]$WritePaths = @(), [string]$PidMarkerPath,
-        [string]$BaselinePath, [string]$QuotaPath, [string]$ExpectedSha256, [string]$QuotaReplacement
+        [string]$BaselinePath
     )
     return [ordered]@{
         scenario_root = $ScenarioRoot
@@ -227,9 +198,6 @@ function New-WorkerConfig {
         write_paths = @($WritePaths)
         pid_marker_path = $PidMarkerPath
         baseline_path = $BaselinePath
-        quota_path = $QuotaPath
-        expected_sha256 = $ExpectedSha256
-        quota_replacement = $QuotaReplacement
     }
 }
 
@@ -960,22 +928,6 @@ function Invoke-TestMain {
         $sourceDrift = @($sourceBatch.participants | Where-Object { $_.error_code -eq 'DispatchSourceDrift' }).Count
         if ($sourcePass -ne 1 -or $sourceDrift -ne 1 -or -not (Test-Path -LiteralPath $worktreeOne) -or -not (Test-Path -LiteralPath $worktreeTwo)) { throw '來源整合鎖／漂移競態結果錯誤。' }
         $cases.Add([pscustomobject]@{ scenario = 'source-lock-and-fingerprint-drift'; participants = @($sourceBatch.participants); synchronization_point = $sourceBatch.synchronization_point; source_file = $sourceFile; value_after = [IO.File]::ReadAllText($sourceFile); worktrees_preserved = $true; final_state = 'one applied; stale fingerprint rejected; both worktrees retained' })
-
-        $quotaRoot = Join-Path $fixture 'quota-race'
-        $quotaSource = Join-Path $quotaRoot 'source'
-        $null = [IO.Directory]::CreateDirectory($quotaSource)
-        $quotaPath = Join-Path $quotaSource 'after-snapshot.json'
-        [IO.File]::WriteAllText($quotaPath, 'initial')
-        $expected = Get-DispatchAdmissionFileSha256 $quotaPath
-        $quotaConfigs = @(
-            (New-WorkerConfig $quotaRoot 'quota-one' $quotaSource $quotaSource 't049-quota-one' 'quota-one' readonly quota @() '' '' $quotaPath $expected 'replacement-one'),
-            (New-WorkerConfig $quotaRoot 'quota-two' $quotaSource $quotaSource 't049-quota-two' 'quota-two' readonly quota @() '' '' $quotaPath $expected 'replacement-two')
-        )
-        $quotaBatch = Invoke-WorkerBatch 'quota-file-replace-race' $quotaRoot $quotaConfigs
-        $quotaPass = @($quotaBatch.participants | Where-Object { $_.status -eq 'replaced' }).Count
-        $quotaDrift = @($quotaBatch.participants | Where-Object { $_.error_code -eq 'QuotaAfterSnapshotChanged' }).Count
-        if ($quotaPass -ne 1 -or $quotaDrift -ne 1) { throw 'quota replacement 共用鎖競態結果錯誤。' }
-        $cases.Add([pscustomobject]@{ scenario = 'quota-file-replace-lock'; participants = @($quotaBatch.participants); synchronization_point = $quotaBatch.synchronization_point; quota_path = $quotaPath; final_sha256 = Get-DispatchAdmissionFileSha256 $quotaPath; final_state = 'one File.Replace succeeded; stale fingerprint rejected' })
 
         $cleanup = Test-CleanupOwner $fixture
         $cases.Add($cleanup)

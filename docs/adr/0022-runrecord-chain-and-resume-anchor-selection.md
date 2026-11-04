@@ -3,7 +3,7 @@ status: accepted
 date: 2026-11-02
 ---
 
-# ADR-0022：RunRecord 執行鏈保留失敗嘗試，續行錨點只取實際啟動的紀錄
+# ADR-0022：RunRecord 執行鏈保留失敗嘗試，續行錨點略過所有 launch-failed 紀錄
 
 ## Context
 
@@ -11,7 +11,7 @@ date: 2026-11-02
 
 ## Decision
 
-所有失敗嘗試留在執行鏈中不搬移不刪除，以 `attempt_parent_run_id` 記錄前一次嘗試，並以 `previous_run_id` 與 `resume_anchor_run_id` 另記可續行的 thread 錨點。選取器把 `launch-failed` 且 `process_started` 明確為 `false` 並落在 pre-start 階段的紀錄分類為 `unstarted-sandbox` 並略過，已啟動後才失敗的紀錄視為實際啟動，啟動觀測缺漏或矛盾者拒絕續行。同 dispatchSlug 只在最新紀錄為 `unstarted-sandbox` 且 PID 檢查沒有活躍程序時允許再冷啟動，排除時間推測、人工搬檔與只看最新紀錄。
+所有失敗嘗試留在執行鏈中不搬移不刪除，以 `attempt_parent_run_id` 記錄前一次嘗試，並以 `previous_run_id` 與 `resume_anchor_run_id` 另記可續行的 thread 錨點。選取器依啟動觀測分類 `launch-failed` 紀錄。`process_started` 明確為 `false` 並落在 pre-start 階段者分類為 `unstarted-sandbox`，`process_started` 為 `true` 者分類為實際啟動，啟動觀測缺漏或矛盾者拒絕續行。分類決定能否再冷啟動，續行錨點另依失敗狀態判定。所有 `launch-failed` 紀錄都不作續行錨點，選取器略過並沿鏈回到上一筆有效錨點。同 dispatchSlug 只在最新紀錄為 `unstarted-sandbox` 且 PID 檢查沒有活躍程序時允許再冷啟動，因此最新紀錄為已啟動的 `launch-failed` 時不得再冷啟動。排除時間推測、人工搬檔與只看最新紀錄。
 
 ## Consequences
 
