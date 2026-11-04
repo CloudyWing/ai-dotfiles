@@ -1,6 +1,6 @@
 ---
 name: ef-core
-description: 'Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理與變更追蹤最佳實踐。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。'
+description: 'Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理、變更追蹤最佳實踐，以及依 AI-PROFILE 目標版本鍵設定 provider 相容性。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
@@ -139,6 +139,20 @@ try {
 
 - EF Core **預設停用** Lazy Loading。若安裝 `Microsoft.EntityFrameworkCore.Proxies` 並呼叫 `.UseLazyLoadingProxies()`，Navigation Property 將在存取時觸發額外查詢，容易引發隱性 N+1。
 - 正式環境建議維持停用（預設值），改用明確的 `Include()`、`ThenInclude()` 或投影。
+
+## 目標版本與相容性設定
+
+- 讀鍵：provider 為 SQL Server 時讀取 `target.sqlserver` 與 `target.sqlserver.compat`，為 Oracle 時讀取 `target.oracle`。provider 依 `sql-query` SKILL.md「目標版本」的「適用偵測」判定。鍵的語意、詢問、缺少與略過處置依該節，先載入 `sql-query` 再執行本節。
+- 設定：建立或修改 provider 選項時，依 `references/provider-compatibility.md` 的設定寫法與對映表設定 `UseCompatibilityLevel`（SQL Server）或 `UseOracleSQLCompatibility`（Oracle）。有效相容性層級依 `sql-query` 的 `references/sqlserver.md`「版本與相容性層級對照」取得。
+- 未確認目標版本：使用者略過詢問時不設定相容性選項，沿用 provider 預設，並在回覆註明「未確認目標版本」。
+- 既有設定：既有設定值與鍵推導的值不同時，在回覆列出差異，不改寫既有設定。只有本輪本來就要新增或修改 provider 選項時，才採用推導的值。
+- 多個 provider：同一專案有多個 provider 時，各自依其鍵設定。
+- 找不到設定處：專案中找不到 provider 選項的設定位置時，回報缺口位置，不新增設定檔。
+
+| Provider | 載入的檔案 |
+| --- | --- |
+| SQL Server 或 Oracle | 本文件，加上 `references/provider-compatibility.md` |
+| 其他 provider | 本文件，不讀目標版本鍵 |
 
 ## 原生 SQL 與 FromSql
 
