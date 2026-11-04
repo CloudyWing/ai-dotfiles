@@ -19,6 +19,9 @@ codex_accounts 各帳號的額度摘要。
 .PARAMETER MachineConfigPath
 machine.json 路徑，讀取其中的 codex_accounts。
 
+.PARAMETER ForceWorkRoot
+以分號分隔的路徑清單，不展開萬用字元。即使沒有 handoff 目錄仍列出 work-root 並納入 scannedRoots；不存在或非資料夾者略過。
+
 .PARAMETER WithCheckpointOnly
 只列出有 handoff-checkpoint.md 的線。
 
@@ -39,6 +42,8 @@ param(
 
     [string]$MachineConfigPath = (Join-Path -Path $env:USERPROFILE -ChildPath '.ai-agents\.local\machine.json'),
 
+    [string[]]$ForceWorkRoot = @(),
+
     [switch]$WithCheckpointOnly,
 
     [switch]$SkipQuota,
@@ -49,6 +54,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $WorkRoot = @($WorkRoot | ForEach-Object { $_ -split ';' } | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 })
+$ForceWorkRoot = @($ForceWorkRoot | ForEach-Object { $_ -split ';' } | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 })
 if ($WorkRoot.Count -eq 0) {
     $WorkRoot = @(
         (Join-Path -Path $env:USERPROFILE -ChildPath '.ai-agents'),
@@ -155,6 +161,19 @@ function Resolve-WorkRootList {
     }
 
     return , $resolved.ToArray()
+}
+
+function Resolve-ForceRootList {
+    param([string[]]$Paths)
+
+    $list = New-Object -TypeName System.Collections.Generic.List[string]
+    foreach ($path in $Paths) {
+        $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
+        if ($null -eq $item -or -not $item.PSIsContainer) { continue }
+        $fullName = $item.FullName.TrimEnd('\')
+        if ($list -notcontains $fullName) { $list.Add($fullName) }
+    }
+    return , $list.ToArray()
 }
 
 function Get-MainBranchName {
@@ -536,17 +555,26 @@ function ConvertTo-AsciiJson {
 if ($MyInvocation.InvocationName -ne '.') {
     try {
         $roots = Resolve-WorkRootList -Patterns $WorkRoot
+        $forcedRoots = Resolve-ForceRootList -Paths $ForceWorkRoot
+        foreach ($forcedRoot in $forcedRoots) {
+            if (@($roots) -notcontains $forcedRoot) { $roots = @($roots) + $forcedRoot }
+        }
         $gitStatuses = @()
         $lineRecords = New-Object -TypeName System.Collections.Generic.List[object]
 
         foreach ($root in $roots) {
             $handoffRoot = Join-Path -Path $root -ChildPath '.local\ai-sessions\handoff'
-            if (-not (Test-Path -LiteralPath $handoffRoot -PathType Container)) {
+            $hasHandoff = Test-Path -LiteralPath $handoffRoot -PathType Container
+            if (-not $hasHandoff -and $forcedRoots -notcontains $root) {
                 Write-Verbose ('略過（沒有 handoff 目錄）：{0}' -f $root)
                 continue
             }
 
             $gitStatuses += Get-WorkRootGitStatus -Root $root
+            if (-not $hasHandoff) {
+                Write-Verbose ('略過線資料（沒有 handoff 目錄）：{0}' -f $root)
+                continue
+            }
             $lineFiles = @(Get-ChildItem -LiteralPath $handoffRoot -Directory | ForEach-Object {
                     $candidate = Join-Path -Path $_.FullName -ChildPath 'line.json'
                     if (Test-Path -LiteralPath $candidate -PathType Leaf) {

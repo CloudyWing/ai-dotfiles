@@ -106,6 +106,76 @@ try {
     $code = $LASTEXITCODE
     $fallback = ($raw -join "`n") | ConvertFrom-Json
     Test-Case C13 { $code -eq 0 -and (($fallback.scannedRoots -join ';') -eq ($actual.scannedRoots -join ';')) }
+
+    $noHandoff = $null
+    foreach ($name in @('claude-plugins', 'scripts', 'skills', 'docs')) {
+        $candidate = Join-Path $repo $name
+        if ((Test-Path -LiteralPath $candidate -PathType Container) -and -not (Test-Path -LiteralPath (Join-Path $candidate '.local\ai-sessions\handoff') -PathType Container)) {
+            $noHandoff = (Get-Item -LiteralPath $candidate).FullName.TrimEnd('\')
+            break
+        }
+    }
+    $literal = Join-Path $tempRoot 'repo[1]'
+    $plain = Join-Path $tempRoot 'plain'
+    New-Item -ItemType Directory -Path $literal, $plain | Out-Null
+    if ($null -eq $noHandoff) { Write-Output 'SKIP C14 C14g C15 C16 無可用夾具' }
+    else {
+        $probe = Invoke-Git -Root $noHandoff -Arguments @('rev-parse', '--is-inside-work-tree')
+        $indexPath = $null
+        $beforeHash = $null
+        if ($probe.ExitCode -eq 0 -and $probe.StdErr -notmatch 'Permission denied') {
+            $dir = Invoke-Git -Root $noHandoff -Arguments @('rev-parse', '--git-dir')
+            $commonDir = Invoke-Git -Root $noHandoff -Arguments @('rev-parse', '--git-common-dir')
+            $gitPath = [IO.Path]::GetFullPath([IO.Path]::Combine($noHandoff, $dir.StdOut.Trim()))
+            $commonPath = [IO.Path]::GetFullPath([IO.Path]::Combine($noHandoff, $commonDir.StdOut.Trim()))
+            $indexPath = Join-Path $gitPath 'index'
+            if (Test-Path -LiteralPath $indexPath) { $beforeHash = (Get-FileHash -LiteralPath $indexPath -Algorithm SHA256).Hash }
+        }
+        $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot $tempRoot -ForceWorkRoot $noHandoff -SkipQuota -AsJson
+        $code = $LASTEXITCODE
+        $forced = ($raw -join "`n") | ConvertFrom-Json
+        $row = @($forced.workRoots | Where-Object { $_.Path -eq $noHandoff })
+        Test-Case C14 { $code -eq 0 -and $row.Count -eq 1 -and @($forced.scannedRoots | Where-Object { $_ -eq $noHandoff }).Count -eq 1 -and @($forced.lines | Where-Object { $_.WorkRoot -eq $noHandoff }).Count -eq 0 }
+        if ($null -eq $indexPath) { Write-Output 'SKIP C14g Git 資料無法讀取' }
+        else {
+            $afterHash = $null
+            if (Test-Path -LiteralPath $indexPath) { $afterHash = (Get-FileHash -LiteralPath $indexPath -Algorithm SHA256).Hash }
+            Test-Case C14g { $dir.ExitCode -eq 0 -and $commonDir.ExitCode -eq 0 -and $null -eq $row[0].Error -and -not [string]::IsNullOrEmpty($row[0].Branch) -and $row[0].IsLinkedWorktree -eq (-not [string]::Equals($gitPath, $commonPath, [StringComparison]::OrdinalIgnoreCase)) -and $beforeHash -eq $afterHash }
+        }
+        $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot "$tempRoot;$noHandoff" -SkipQuota -AsJson
+        $unforced = ($raw -join "`n") | ConvertFrom-Json
+        Test-Case C15 { $LASTEXITCODE -eq 0 -and @($unforced.workRoots | Where-Object { $_.Path -eq $noHandoff }).Count -eq 0 -and @($unforced.scannedRoots | Where-Object { $_ -eq $noHandoff }).Count -eq 1 }
+        $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot $noHandoff -ForceWorkRoot "$noHandoff;$($noHandoff.ToUpperInvariant())" -SkipQuota -AsJson
+        $dedup = ($raw -join "`n") | ConvertFrom-Json
+        $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot $tempRoot -ForceWorkRoot $tempRoot -SkipQuota -AsJson
+        $dedupLines = ($raw -join "`n") | ConvertFrom-Json
+        Test-Case C16 { @($dedup.scannedRoots | Where-Object { $_ -eq $noHandoff }).Count -eq 1 -and @($dedup.workRoots | Where-Object { $_.Path -eq $noHandoff }).Count -eq 1 -and @($dedupLines.lines | Where-Object { $_.LineSlug -eq 'fixture-line' }).Count -eq 1 }
+    }
+    $none = Join-Path $tempRoot 'nope'
+    $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot $none -ForceWorkRoot (Join-Path $tempRoot '*') -SkipQuota -AsJson
+    $wild = ($raw -join "`n") | ConvertFrom-Json
+    $wildCode = $LASTEXITCODE
+    $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot $none -ForceWorkRoot (Join-Path $tempRoot 'missing') -SkipQuota -AsJson
+    $missing = ($raw -join "`n") | ConvertFrom-Json
+    Test-Case C17 { $wildCode -eq 0 -and $LASTEXITCODE -eq 0 -and @($wild.scannedRoots).Count -eq 0 -and @($wild.workRoots).Count -eq 0 -and @($wild.warnings).Count -eq 0 -and @($missing.scannedRoots).Count -eq 0 -and @($missing.workRoots).Count -eq 0 -and @($missing.warnings).Count -eq 0 }
+    $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot $none -ForceWorkRoot $literal -SkipQuota -AsJson
+    $literalResult = ($raw -join "`n") | ConvertFrom-Json
+    Test-Case C18 { $LASTEXITCODE -eq 0 -and @($literalResult.scannedRoots | Where-Object { $_ -eq $literal }).Count -eq 1 -and @($literalResult.workRoots | Where-Object { $_.Path -eq $literal }).Count -eq 1 }
+    $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot $none -ForceWorkRoot $plain -SkipQuota -AsJson
+    $plainResult = ($raw -join "`n") | ConvertFrom-Json
+    Test-Case C19 { $LASTEXITCODE -eq 0 -and @($plainResult.workRoots).Count -eq 1 -and $plainResult.workRoots[0].Path -eq $plain -and $null -ne $plainResult.workRoots[0].Error -and $null -eq $plainResult.workRoots[0].DirtyCount }
+    $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot $tempRoot -SkipQuota -AsJson
+    $original = ($raw -join "`n") | ConvertFrom-Json
+    $encodedCommand = "& '" + $scriptPath.Replace("'", "''") + "' -WorkRoot '" + $tempRoot.Replace("'", "''") + "' -ForceWorkRoot '' -SkipQuota -AsJson"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($encodedCommand))
+    $emptyResult = Invoke-ExternalCommand -FilePath $hostPath -ArgumentList @('-NoProfile', '-EncodedCommand', $encodedCommand)
+    $emptyForce = $emptyResult.StdOut | ConvertFrom-Json
+    Test-Case C20 { $emptyResult.ExitCode -eq 0 -and (($original.PSObject.Properties.Name -join ',') -eq 'schema,generatedAtUtc,scannedRoots,warnings,workRoots,lines,quota') -and $original.schema -eq 'ai-agents.line-status.v1' -and (($original | Select-Object * -ExcludeProperty generatedAtUtc | ConvertTo-Json -Depth 6) -eq ($emptyForce | Select-Object * -ExcludeProperty generatedAtUtc | ConvertTo-Json -Depth 6)) }
+    Test-Case C21 {
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $scriptPath).Path, [ref]$tokens, [ref]$errors)
+        (($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) -join ',') -eq 'WorkRoot,MachineConfigPath,ForceWorkRoot,WithCheckpointOnly,SkipQuota,AsJson' -and $ast.ParamBlock.Parameters[2].StaticType -eq [string[]]
+    }
 }
 catch {
     $failed++
