@@ -1,14 +1,16 @@
 import { atom, read, update } from 'claude-code'
 import type { Engine, Register } from 'claude-code'
-import type { BlockId, BoardBlock, BoardRow, BoardSnapshot } from '../types'
-import { buildSnapshot, errorSnapshot, parseScriptOutput, parseSessions, REFRESH_MS, STORE_KEY, HOVER_BG, BAR_WIDTH, BAR_HEIGHT, normalizeCollapsed, toggleBlock, quotaBarSvg, quotaBarText } from './lib'
+import type { BlockId, BoardBlock, BoardRow, BoardSnapshot, ExpandId } from '../types'
+import { buildSnapshot, errorSnapshot, parseScriptOutput, parseSessions, REFRESH_MS, STORE_KEY, HOVER_BG, BAR_WIDTH, BAR_HEIGHT, normalizeCollapsed, toggleBlock, quotaBarSvg, quotaBarText, BLOCK_ORDER, blockTitleText, iconSvg, ICON_ALT, ICON_SIZE, DIVIDER_SVG, DIVIDER_MODE, dividerText, NAME_SHRINK, NOTE_SHRINK, CURRENT_BG } from './lib'
 import type { Document, Result, Session } from './lib'
 import { GIT_TIMEOUT_MS, SCRIPT_BUDGET_MS, parseWorktreeList, resolveCurrentRepo, buildWorkRootArgument, buildForceWorkRootArgument, remainingBudgetMs } from './lib'
 import type { CurrentRepo, GitProbe } from './lib'
+import { EXPAND_KEY, normalizeExpanded, toggleExpanded, stalledToggleText } from './lib'
 
 const PANE = 'line-status-board'
-const snapshot = atom({ plugin: 'line-status-board', key: 'snapshot' } as const, null as BoardSnapshot | null, { shape: 'snapshot-3' })
+const snapshot = atom({ plugin: 'line-status-board', key: 'snapshot' } as const, null as BoardSnapshot | null, { shape: 'snapshot-4' })
 const collapsed = atom({ plugin: 'line-status-board', key: 'collapsed' } as const, null as BlockId[] | null, { shape: 'collapsed-1' })
+const expanded = atom({ plugin: 'line-status-board', key: 'expanded' } as const, null as ExpandId[] | null, { shape: 'expanded-1' })
 const refreshedAt = atom({ plugin: 'line-status-board', key: 'refreshedAt' } as const, null as string | null)
 const isRefreshing = atom({ plugin: 'line-status-board', key: 'isRefreshing' } as const, false)
 let isBusy = false
@@ -24,6 +26,16 @@ async function toggle($: Engine, id: BlockId): Promise<void> {
   try {
     const next = await update($, collapsed, previous => toggleBlock(previous ?? stored, id))
     await $.store.set(STORE_KEY, next)
+  } catch { /* 狀態更新或儲存失敗時保留原有狀態 */ }
+}
+async function loadStoredExpanded($: Engine): Promise<ExpandId[]> {
+  try { return normalizeExpanded(await $.store.get(EXPAND_KEY)) } catch { return [] }
+}
+async function toggleStalled($: Engine): Promise<void> {
+  const stored = await loadStoredExpanded($)
+  try {
+    const next = await update($, expanded, previous => toggleExpanded(previous ?? stored, 'stalledLines'))
+    await $.store.set(EXPAND_KEY, next)
   } catch { /* 狀態更新或儲存失敗時保留原有狀態 */ }
 }
 
@@ -100,7 +112,7 @@ async function refresh($: Engine, options: { workRoots?: string; scriptPath?: st
       sessionResult($)
     ])
     let next: BoardSnapshot
-    try { next = buildSnapshot(script, sessions, now, located.current) }
+    try { next = buildSnapshot(script, sessions, new Date(), located.current) }
     catch (error) { next = errorSnapshot(message(error)) }
     await update($, snapshot, () => next)
   } finally {
@@ -145,46 +157,54 @@ export const register: Register = (on, options = {}) => {
     const updated = await read($, refreshedAt)
     const busy = await read($, isRefreshing)
     const closed = await read($, collapsed) ?? await loadStored($)
-    const renderRow = (blockId: BlockId, item: BoardRow, index: number) => (
-      <Box key={`row-${blockId}-${index}`} flexDirection="column" paddingX="xs" hover={{ backgroundColor: HOVER_BG }}>
-        <Box flexDirection="row" gap="xs">
-          <Box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0} gap="xs">
-            {item.dot && <Text color={item.dot}>●</Text>}
-            <Text wrap="truncate-end" color={item.tone === 'error' ? 'error' : undefined}>{item.name}</Text>
-          </Box>
-          {item.note && <Box flexShrink={0}><Text size="footnote" dimColor>{item.note}</Text></Box>}
+    const openStalled = (await read($, expanded) ?? await loadStoredExpanded($)).includes('stalledLines')
+    const renderRow = (keyPrefix: string, iconId: BlockId, item: BoardRow, index: number) => (
+      <Box key={`row-${keyPrefix}-${index}`} flexDirection="row" gap="xs" paddingX="xs" backgroundColor={item.isCurrent ? CURRENT_BG : undefined} hover={{ backgroundColor: HOVER_BG }}>
+        <Box flexDirection="row" flexShrink={0} height={1} alignSelf="flex-start" alignItems="center" gap="xs">
+          {Svg && <Svg source={iconSvg(iconId)} alt={ICON_ALT[iconId]} width={ICON_SIZE} height={ICON_SIZE} />}
+          <Text color={item.dot}>●</Text>
         </Box>
-        {item.detail && <Box paddingLeft={item.dot ? 2 : 0}><Text size="caption" dimColor wrap="truncate-end">{item.detail}</Text></Box>}
-        {item.bars.map(bar => <Box key={`bar-${blockId}-${index}-${bar.label}`} flexDirection="row" gap="sm" alignItems="center" paddingLeft={item.dot ? 2 : 0}>
-          <Box width={6}><Text size="caption" dimColor>{bar.label}</Text></Box>
-          {Svg ? <Svg source={quotaBarSvg(bar.percent, bar.tone)} alt={bar.percent === null ? `${bar.label}剩餘量未知` : `${bar.label}剩餘 ${bar.percent}%`} width={BAR_WIDTH} height={BAR_HEIGHT} /> : <Text color={bar.tone}>{quotaBarText(bar.percent)}</Text>}
-          <Text size="caption" dimColor>{bar.text}</Text>
-        </Box>)}
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
+          <Box flexDirection="row" gap="xs">
+            <Box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0} gap="xs">
+              <Box flexShrink={NAME_SHRINK} minWidth={0}><Text wrap="truncate-end" color={item.tone === 'error' ? 'error' : undefined}>{item.name}</Text></Box>
+              {item.tag && <Box flexShrink={NOTE_SHRINK} minWidth={0}><Text size="footnote" dimColor wrap="truncate-end">{item.tag}</Text></Box>}
+            </Box>
+            {(item.right || item.bar) && <Box flexDirection="row" alignItems="center" gap="xs" minWidth={0} flexShrink={item.rightShrink ? NOTE_SHRINK : 0}>
+              <Text size="footnote" dimColor wrap="truncate-end">{item.right}</Text>
+              {item.bar && (Svg ? <Svg source={quotaBarSvg(item.bar.percent, item.bar.tone)} alt={item.bar.percent === null ? '5 小時剩餘量未知' : `5 小時剩餘 ${item.bar.percent}%`} width={BAR_WIDTH} height={BAR_HEIGHT} /> : <Text color={item.bar.tone}>{quotaBarText(item.bar.percent)}</Text>)}
+            </Box>}
+          </Box>
+          {item.detail && <Text size="caption" wrap="truncate-end">{item.detail.map((segment, i) => <Text key={String(i)} color={segment.tone === 'attention' ? 'warning' : undefined} dimColor={segment.tone === 'normal'}>{segment.text}</Text>)}</Text>}
+        </Box>
       </Box>
     )
-    const renderBlock = (id: BlockId, title: string, value: BoardBlock | undefined, empty: string) => (
-      <Box flexDirection="column">
-        <Box flexDirection="row" justifyContent="space-between">
-          <Button key={`toggle-${id}`} label={title} plain dimColor onPress={() => void toggle($, id)}><Text size="footnote" weight="medium" dimColor>{closed.includes(id) ? '▸' : '▾'} {title}</Text></Button>
-          <Text size="footnote" dimColor={value?.errorMessage == null} color={value?.errorMessage != null ? 'error' : undefined}>{value ? value.rows.length + value.hiddenCount : 0}</Text>
-        </Box>
-        {!closed.includes(id) && <>
+    const empty: Record<BlockId, string> = { sessions: '（沒有符合的 Session）', quota: '（沒有帳號資料）', lines: '（沒有線）', workRoots: '（沒有 work-root）' }
+    const renderBlock = (id: BlockId, value: BoardBlock | undefined) => {
+      const title = blockTitleText(id, value, closed.includes(id), id === 'lines' && openStalled)
+      return <Box flexDirection="column" paddingY="xs">
+        <Button key={`toggle-${id}`} label={title} plain dimColor onPress={() => void toggle($, id)}><Text size="footnote" weight="medium" dimColor>{title}</Text></Button>
+        {!closed.includes(id) && <Box flexDirection="column" paddingLeft={2}>
           {value?.errorMessage && <Text color="error">{value.errorMessage}</Text>}
-          {value && !value.errorMessage && value.rows.length === 0 && <Text dimColor>{empty}{value.warning ? ' ' + value.warning : ''}</Text>}
-          {value?.rows.map((item, index) => renderRow(id, item, index))}
+          {value && !value.errorMessage && value.rows.length === 0 && value.stalledRows.length === 0 && <Text dimColor>{empty[id]}{value.warning ? ' ' + value.warning : ''}</Text>}
+          {value?.rows.map((item, index) => renderRow(id, id, item, index))}
+          {id === 'lines' && value && value.stalledRows.length > 0 && <>
+            <Button key="toggle-stalledLines" label={stalledToggleText(value.stalledRows.length, openStalled)} plain dimColor onPress={() => void toggleStalled($)}><Text size="footnote" dimColor>{stalledToggleText(value.stalledRows.length, openStalled)}</Text></Button>
+            {openStalled && value.stalledRows.map((item, index) => renderRow('stalledLines', 'lines', item, index))}
+          </>}
           {value && value.rows.length > 0 && value.warning && <Text dimColor>{value.warning}</Text>}
           {value && value.hiddenCount > 0 && <Text dimColor>另 {value.hiddenCount} 項未顯示</Text>}
-        </>}
+        </Box>}
       </Box>
-    )
+    }
     return (
-      <Box flexDirection="column" gap="sm">
+      <Box flexDirection="column">
         {current?.currentLabel && <Text size="footnote" dimColor wrap="truncate-end">{current.currentLabel}</Text>}
-        {renderBlock('sessions', 'Session', current?.sessions, '（沒有符合的 Session）')}
-        {renderBlock('lines', '線', current?.lines, '（沒有線）')}
-        {renderBlock('workRoots', 'work-root', current?.workRoots, '（沒有 work-root）')}
-        {renderBlock('quota', '額度', current?.quota, '（沒有帳號資料）')}
-        <Box flexDirection="row">
+        {BLOCK_ORDER.map((id, index) => <Box key={id} flexDirection="column">
+          {index > 0 && (Svg && DIVIDER_MODE === 'svg' ? <Svg source={DIVIDER_SVG} alt="分隔線" height={1} /> : <Text dimColor wrap="truncate-end">{dividerText(e.props.bodyColumns)}</Text>)}
+          {renderBlock(id, current?.[id])}
+        </Box>)}
+        <Box flexDirection="row" justifyContent="space-between" paddingTop="xs">
           <Text dimColor>最後更新 {updated ? new Date(updated).toLocaleTimeString('zh-TW', { hour12: false }) : '-'}{busy ? ' 更新中…' : ''}</Text>
           <Button key="refresh" label={busy ? '更新中…' : '重新整理'} onPress={() => void refresh($, options)} />
         </Box>

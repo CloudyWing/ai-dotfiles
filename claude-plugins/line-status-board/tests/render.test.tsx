@@ -7,14 +7,16 @@ const PANE = {
   plugin: 'line-status-board', component: 'Pane', requestId: 'line-status-board',
   props: { title: '線狀態', isFocused: false, bodyColumns: 40, placement: 'dock', scroll: { offset: 0, bodyRows: 20 }, view: {} }
 } as const
-const row = { name: 'item', note: 'note', dot: 'success', detail: null, bars: [], tone: 'normal' } as const
-const block = { rows: [{ ...row }], hiddenCount: 0, errorMessage: null }
+const row = { name: 'item', tag: '', right: '', rightShrink: false, dot: 'inactive', detail: null, bar: null, tone: 'normal', isCurrent: false } as const
+const block = { rows: [{ ...row }], stalledRows: [], hiddenCount: 0, errorMessage: null }
 const snapshot: BoardSnapshot = {
-  sessions: block, lines: block, workRoots: block,
-  quota: { ...block, rows: [{ ...row, bars: [{ label: '5 小時', percent: 50, tone: 'success', text: '50%' }] }] },
+  sessions: { ...block, rows: [{ ...row, dot: 'success', tag: 'line-one', right: '剛剛' }] },
+  quota: { ...block, rows: [{ ...row, dot: 'warning', right: '40%', bar: { percent: 40, tone: 'warning' }, detail: [{ text: '週 ', tone: 'normal' }, { text: '28%', tone: 'attention' }] }] },
+  lines: { ...block, rows: [{ ...row, detail: [{ text: 'Dev 回收', tone: 'normal' }] }] },
+  workRoots: { ...block, rows: [{ ...row, dot: 'warning', right: 'main', rightShrink: true, isCurrent: true, detail: [{ text: '3', tone: 'attention' }, { text: ' 未 commit', tone: 'normal' }] }] },
   currentLabel: null
 }
-const snapshotAnswer = (value: BoardSnapshot) => ({ value: { value: { shape: 'snapshot-3', value }, version: 1 } })
+const snapshotAnswer = (value: BoardSnapshot) => ({ value: { value: { shape: 'snapshot-4', value }, version: 1 } })
 
 test('R1 desktop components and refresh', async ($, on) => {
   mock.store(on)
@@ -24,7 +26,7 @@ test('R1 desktop components and refresh', async ($, on) => {
     expect(await ui.find({ type: 'Button', key: `toggle-${id}` })).not.toBe(undefined)
     expect(await ui.find({ type: 'Box', key: `row-${id}-0` })).not.toBe(undefined)
   }
-  expect(await ui.find({ type: 'Svg', alt: /剩餘/ })).not.toBe(undefined)
+  expect((await ui.findAll({ type: 'Svg' })).some(item => /剩餘/.test(String(item.props.alt)))).toBe(true)
   expect(await ui.find({ type: 'Button', key: 'refresh' })).not.toBe(undefined)
   await ui.unmount()
 })
@@ -36,11 +38,11 @@ test('R2 toggle persists and restores', async ($, on) => {
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   await ui.press({ key: 'toggle-lines' })
   expect(await ui.find({ type: 'Box', key: 'row-lines-0' })).toBe(undefined)
-  expect(await ui.find({ type: 'Text', text: /▸ 線/ })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: /^線 .*▸$/ })).not.toBe(undefined)
   expect(stored).toEqual(['lines'])
   await ui.press({ key: 'toggle-lines' })
   expect(await ui.find({ type: 'Box', key: 'row-lines-0' })).not.toBe(undefined)
-  expect(await ui.find({ type: 'Text', text: /▾ 線/ })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: /^線 .*▾$/ })).not.toBe(undefined)
   expect(stored).toEqual([])
   await ui.unmount()
 })
@@ -68,6 +70,7 @@ test('R5 non desktop uses text bars', async ($, on) => {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Svg' })).toBe(undefined)
     expect(await ui.find({ type: 'Text', text: /[█░]/ })).not.toBe(undefined)
+    expect((await ui.findAll({ type: 'Text', text: /^─+$/ })).length).toBe(3)
     await ui.unmount()
   }
 })
@@ -81,9 +84,100 @@ test('R6 no old header or extra buttons', async ($, on) => {
     await ui.unmount()
   }
 })
+test('R10 R11 block order and titles', async ($, on) => {
+  mock.store(on)
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(snapshot) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.findAll({ type: 'Button' })).map(x => x.key)).toEqual(['toggle-sessions', 'toggle-quota', 'toggle-lines', 'toggle-workRoots', 'refresh'])
+  for (const title of ['Session 1／1 ▾', '額度 1／1 ▾', '線 1／1 ▾', 'work-root 1／1 ▾']) expect(await ui.find({ type: 'Text', text: title })).not.toBe(undefined)
+  for (const id of ['sessions', 'quota', 'lines', 'workRoots']) expect(await ui.find({ type: 'Box', key: `row-${id}-0` })).not.toBe(undefined)
+  await ui.unmount()
+})
+test('R12 R13 dot and number colours', async ($, on) => {
+  mock.store(on)
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(snapshot) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.findAll({ type: 'Text', text: '●' })).map(x => x.props.color)).toEqual(['success', 'warning', 'inactive', 'warning'])
+  expect((await ui.findAll({ type: 'Text' })).some(x => x.text === '3' && x.props.color === 'warning')).toBe(true)
+  expect((await ui.findAll({ type: 'Text' })).some(x => x.text === '28%' && x.props.color === 'warning')).toBe(true)
+  expect((await ui.findAll({ type: 'Text' })).some(x => x.text === ' 未 commit' && x.props.dimColor === true)).toBe(true)
+  expect((await ui.findAll({ type: 'Text' })).filter(x => x.text !== '●' && (x.props.color === 'success' || x.props.color === 'error')).length).toBe(0)
+  await ui.unmount()
+})
+test('R14 R15 dividers and icons', async ($, on) => {
+  mock.store(on)
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(snapshot) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const svg = await ui.findAll({ type: 'Svg' })
+  expect(svg[0].props.alt).toBe('Session 圖示')
+  const dividers = svg.filter(x => x.props.alt === '分隔線')
+  expect(dividers.length).toBe(3)
+  expect(dividers.every(x => x.props.height === 1 && x.props.width === undefined)).toBe(true)
+  for (const alt of ['Session 圖示', '額度圖示', '線圖示', 'work-root 圖示']) {
+    const icons = svg.filter(x => x.props.alt === alt)
+    expect(icons.length).toBe(1)
+    expect(icons[0].props.width).toBe(14)
+    expect(icons[0].props.height).toBe(14)
+  }
+  await ui.unmount()
+  for (const surface of ['terminal', 'mobile'] as const) {
+    const other = await $.ui.mount({ ...PANE, surface })
+    expect((await other.findAll({ type: 'Svg' })).length).toBe(0)
+    expect((await other.findAll({ type: 'Text', text: /^─+$/ })).map(x => x.text?.length)).toEqual([40, 40, 40])
+    await other.unmount()
+  }
+})
+test('R16 layout shrink and current background', async ($, on) => {
+  mock.store(on)
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(snapshot) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const boxes = await ui.findAll({ type: 'Box' })
+  expect(boxes.find(x => x.text === '剛剛')?.props.flexShrink).toBe(0)
+  expect(boxes.filter(x => x.props.flexShrink === 8).length).toBe(2)
+  expect(boxes.some(x => x.props.flexShrink === 1)).toBe(true)
+  expect(boxes.filter(x => x.props.paddingLeft === 2).length).toBe(4)
+  expect((await ui.find({ type: 'Box', key: 'row-workRoots-0' }))?.props.backgroundColor).toBe('#80808014')
+  expect((await ui.find({ type: 'Box', key: 'row-sessions-0' }))?.props.backgroundColor).toBe(undefined)
+  await ui.unmount()
+})
+const withStalled: BoardSnapshot = { ...snapshot, lines: { ...snapshot.lines, stalledRows: [{ ...row, name: 'old-a' }, { ...row, name: 'old-b' }] } }
+test('R17 stalled toggle persists independently', async ($, on) => {
+  let expandedValue: unknown
+  let collapsedValue: unknown = ['quota']
+  on('store.get', (_, e) => ({ value: e.key === 'expanded-sections' ? expandedValue : collapsedValue }))
+  on('store.set', (_, e) => { if (e.key === 'expanded-sections') expandedValue = e.value; else collapsedValue = e.value; return { value: undefined } })
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(withStalled) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: '線 1／3 ▾' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: '停擺 2 條 ▸' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Box', key: 'row-stalledLines-0' })).toBe(undefined)
+  await ui.press({ key: 'toggle-stalledLines' })
+  expect(await ui.find({ type: 'Box', key: 'row-stalledLines-0' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Box', key: 'row-stalledLines-1' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: '線 3／3 ▾' })).not.toBe(undefined)
+  expect(expandedValue).toEqual(['stalledLines'])
+  expect(collapsedValue).toEqual(['quota'])
+  await ui.press({ key: 'toggle-stalledLines' })
+  expect(expandedValue).toEqual([])
+  await ui.unmount()
+})
+test('R18 stored expanded state and invalid values', async ($, on) => {
+  let value: unknown = ['stalledLines']
+  on('store.get', (_, e) => ({ value: e.key === 'expanded-sections' ? value : ['quota'] }))
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(withStalled) : next(e))
+  let ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Box', key: 'row-stalledLines-0' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Box', key: 'row-quota-0' })).toBe(undefined)
+  await ui.unmount()
+  for (value of [undefined, 'x', {}, ['bogus']]) {
+    ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+    expect(await ui.find({ type: 'Box', key: 'row-stalledLines-0' })).toBe(undefined)
+    await ui.unmount()
+  }
+})
 
 type Call = { argv: readonly string[]; cwd?: string; timeoutMs?: number }
-type Fixture = { calls: Call[]; placed: boolean; cwd: string; failure: string; release?: () => void; active: number; peak: number; writes: number; sessions: object[]; document: object }
+type Fixture = { calls: Call[]; placed: boolean; cwd: string; failure: string; release?: () => void; active: number; peak: number; writes: number; sessions: object[]; document: object; porcelain?: string }
 const options = { options: { workRoots: '', scriptPath: 'C:\\x\\Get-LineStatus.ps1' } }
 const result = (stdout: string, exitCode = 0, stderr = '') => ({ exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false })
 async function waitFor(predicate: () => boolean, calls: Call[]): Promise<void> {
@@ -116,7 +210,7 @@ function setup(on: On, profile = true): Fixture {
     if (e.argv.includes('worktree')) {
       if (state.failure === 'worktree') throw new Error('timeout')
       const top = e.init?.cwd?.includes('Second') ? 'E:\\Second' : 'D:\\Work\\Other.wt\\feat'
-      return { value: result(top === 'E:\\Second' ? 'worktree E:/Second\n' : 'worktree D:/Work/Other\n\nworktree D:/Work/Other.wt/feat\n\nworktree D:/Work/Other.wt/two\n') }
+      return { value: result(state.porcelain ?? (top === 'E:\\Second' ? 'worktree E:/Second\n' : 'worktree D:/Work/Other\n\nworktree D:/Work/Other.wt/feat\n\nworktree D:/Work/Other.wt/two\n')) }
     }
     state.active++
     state.peak = Math.max(state.peak, state.active)
@@ -143,6 +237,15 @@ test('H1 repo arguments', options, async ($, on) => {
   expect(state.calls[1].cwd).toBe(state.cwd)
   expect(argument(scripts(state)[0], '-WorkRoot')).toBe(defaultWorkRoots('C:\\Users\\X').join(';') + ';D:\\Work\\Other;D:\\Work\\Other.wt\\feat;D:\\Work\\Other.wt\\two')
   expect(argument(scripts(state)[0], '-ForceWorkRoot')).toBe('D:\\Work\\Other;D:\\Work\\Other.wt\\feat')
+})
+test('H10 excludes dispatch worktrees from script arguments', options, async ($, on) => {
+  const state = setup(on)
+  state.porcelain = 'worktree D:/Work/Other\n\nworktree D:/Work/Other.wt/feat\n\nworktree D:/Work/Other/.local/ai-sessions/worktrees/dev-dd-1\n\nworktree D:/Work/Other/.local/ai-sessions/worktrees/rev-2\n'
+  await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
+  await finish(state)
+  expect(argument(scripts(state)[0], '-WorkRoot').includes('D:\\Work\\Other.wt\\feat')).toBe(true)
+  expect(argument(scripts(state)[0], '-WorkRoot').includes('ai-sessions\\worktrees')).toBe(false)
+  expect(argument(scripts(state)[0], '-ForceWorkRoot').includes('ai-sessions\\worktrees')).toBe(false)
 })
 test('H2 cwd event', options, async ($, on) => {
   const state = setup(on)
