@@ -3,13 +3,16 @@ import type { Engine, Register } from 'claude-code'
 import type { BlockId, BoardBlock, BoardRow, BoardSnapshot } from '../types'
 import { buildSnapshot, errorSnapshot, parseScriptOutput, parseSessions, REFRESH_MS, STORE_KEY, HOVER_BG, BAR_WIDTH, BAR_HEIGHT, normalizeCollapsed, toggleBlock, quotaBarSvg, quotaBarText } from './lib'
 import type { Document, Result, Session } from './lib'
+import { GIT_TIMEOUT_MS, SCRIPT_BUDGET_MS, parseWorktreeList, resolveCurrentRepo, buildWorkRootArgument, buildForceWorkRootArgument, remainingBudgetMs } from './lib'
+import type { CurrentRepo, GitProbe } from './lib'
 
 const PANE = 'line-status-board'
-const snapshot = atom({ plugin: 'line-status-board', key: 'snapshot' } as const, null as BoardSnapshot | null, { shape: 'snapshot-2' })
+const snapshot = atom({ plugin: 'line-status-board', key: 'snapshot' } as const, null as BoardSnapshot | null, { shape: 'snapshot-3' })
 const collapsed = atom({ plugin: 'line-status-board', key: 'collapsed' } as const, null as BlockId[] | null, { shape: 'collapsed-1' })
 const refreshedAt = atom({ plugin: 'line-status-board', key: 'refreshedAt' } as const, null as string | null)
 const isRefreshing = atom({ plugin: 'line-status-board', key: 'isRefreshing' } as const, false)
 let isBusy = false
+let pendingCwd: string | null = null
 
 const message = (error: unknown): string => String(error instanceof Error ? error.message : error).split(/\r?\n/)[0].slice(0, 120)
 
@@ -21,10 +24,34 @@ async function toggle($: Engine, id: BlockId): Promise<void> {
   try {
     const next = await update($, collapsed, previous => toggleBlock(previous ?? stored, id))
     await $.store.set(STORE_KEY, next)
-  } catch { /* 狀態更新或儲存失敗時保留目前狀態 */ }
+  } catch { /* 狀態更新或儲存失敗時保留原有狀態 */ }
 }
 
-async function scriptResult($: Engine, options: { workRoots?: string; scriptPath?: string }): Promise<Result<Document>> {
+async function runGit($: Engine, cwd: string, args: string[]) {
+  return $.process.run(['git', '--no-optional-locks', ...args], { cwd, timeoutMs: GIT_TIMEOUT_MS })
+}
+async function probeGit($: Engine, cwd: string): Promise<GitProbe> {
+  let top
+  try { top = await runGit($, cwd, ['rev-parse', '--show-toplevel']) }
+  catch { return { kind: 'failed' } }
+  const topLevel = top.stdout.split(/\r?\n/)[0].trim()
+  if (top.exitCode !== 0 || !topLevel) return { kind: 'notRepo' }
+  let worktrees = null
+  try {
+    const result = await runGit($, cwd, ['worktree', 'list', '--porcelain'])
+    if (result.exitCode === 0) worktrees = parseWorktreeList(result.stdout)
+  } catch { /* 使用 topLevel */ }
+  return { kind: 'repo', topLevel, worktrees }
+}
+async function locateCurrent($: Engine, cwdHint?: string): Promise<CurrentRepo | null> {
+  try {
+    const cwd = cwdHint?.trim() ? cwdHint : await $.session.cwd()
+    if (!cwd?.trim()) return null
+    return resolveCurrentRepo(cwd, await probeGit($, cwd))
+  } catch { return null }
+}
+
+async function scriptResult($: Engine, options: { workRoots?: string; scriptPath?: string }, current: CurrentRepo | null, startedAt: number): Promise<Result<Document>> {
   try {
     let path = options.scriptPath?.trim()
     if (!path) {
@@ -39,8 +66,13 @@ async function scriptResult($: Engine, options: { workRoots?: string; scriptPath
     }
     if (!path) throw new Error('找不到 Get-LineStatus.ps1')
     const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path, '-AsJson']
-    if (options.workRoots?.trim()) argv.push('-WorkRoot', options.workRoots.trim())
-    const result = await $.process.run(argv, { timeoutMs: 40000 })
+    let profile: string | null = null
+    try { profile = await $.env.get('USERPROFILE') ?? null } catch { /* 使用腳本預設值 */ }
+    const roots = buildWorkRootArgument(options.workRoots, profile, current)
+    if (roots !== null) argv.push('-WorkRoot', roots)
+    const forced = buildForceWorkRootArgument(current)
+    if (forced !== null) argv.push('-ForceWorkRoot', forced)
+    const result = await $.process.run(argv, { timeoutMs: remainingBudgetMs(SCRIPT_BUDGET_MS, Date.now() - startedAt) })
     if (result.exitCode !== 0) throw new Error(result.stderr || `exit ${result.exitCode}`)
     return parseScriptOutput(result.stdout)
   } catch (error) { return { ok: false, error: message(error) } }
@@ -51,21 +83,40 @@ async function sessionResult($: Engine): Promise<Result<Session[]>> {
   catch (error) { return { ok: false, error: message(error) } }
 }
 
-async function refresh($: Engine, options: { workRoots?: string; scriptPath?: string }): Promise<void> {
-  if (isBusy) return
+async function refresh($: Engine, options: { workRoots?: string; scriptPath?: string }, cwd?: string, isCwdChange = false): Promise<void> {
+  if (isBusy) {
+    if (isCwdChange && cwd) pendingCwd = cwd
+    return
+  }
   isBusy = true
   try {
     const now = new Date()
     await update($, refreshedAt, () => now.toISOString())
     await update($, isRefreshing, () => true)
-    const [script, sessions] = await Promise.all([scriptResult($, options), sessionResult($)])
+    const startedAt = Date.now()
+    const located: { current: CurrentRepo | null } = { current: null }
+    const [script, sessions] = await Promise.all([
+      (async () => { located.current = await locateCurrent($, cwd); return scriptResult($, options, located.current, startedAt) })(),
+      sessionResult($)
+    ])
     let next: BoardSnapshot
-    try { next = buildSnapshot(script, sessions, now) }
+    try { next = buildSnapshot(script, sessions, now, located.current) }
     catch (error) { next = errorSnapshot(message(error)) }
     await update($, snapshot, () => next)
   } finally {
-    try { await update($, isRefreshing, () => false) } finally { isBusy = false }
+    try { await update($, isRefreshing, () => false) } finally {
+      isBusy = false
+      const nextCwd = pendingCwd
+      pendingCwd = null
+      if (nextCwd) void refresh($, options, nextCwd, true)
+    }
   }
+}
+async function refreshIfPlaced($: Engine, options: { workRoots?: string; scriptPath?: string }, cwd?: string, isCwdChange = false): Promise<void> {
+  try {
+    const panes = await $.ui.panes()
+    if (panes.some(pane => pane.id === PANE && pane.isPlaced)) void refresh($, options, cwd, isCwdChange)
+  } catch { /* 取不到 Pane 狀態時不更新 */ }
 }
 
 export const register: Register = (on, options = {}) => {
@@ -74,14 +125,18 @@ export const register: Register = (on, options = {}) => {
     const opened = await $.ui.open({ id: PANE, title: '線狀態' })
     if (opened.isPlaced) void refresh($, options)
     $.clock.every(REFRESH_MS, async () => {
-      const panes = await $.ui.panes()
-      if (panes.some(pane => pane.id === PANE && pane.isPlaced)) void refresh($, options)
+      void refreshIfPlaced($, options)
     })
     return result
   })
   on('session.attach', async ($, e, next) => {
     if (e.surface === 'desktop') void refresh($, options)
     return next(e)
+  })
+  on('classic.CwdChanged', async ($, e, next) => {
+    const result = await next(e)
+    void refreshIfPlaced($, options, e.new_cwd, true)
+    return result
   })
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
@@ -124,6 +179,7 @@ export const register: Register = (on, options = {}) => {
     )
     return (
       <Box flexDirection="column" gap="sm">
+        {current?.currentLabel && <Text size="footnote" dimColor wrap="truncate-end">{current.currentLabel}</Text>}
         {renderBlock('sessions', 'Session', current?.sessions, '（沒有符合的 Session）')}
         {renderBlock('lines', '線', current?.lines, '（沒有線）')}
         {renderBlock('workRoots', 'work-root', current?.workRoots, '（沒有 work-root）')}
