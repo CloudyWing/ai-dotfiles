@@ -1,6 +1,48 @@
-import type { BoardBlock, BoardRow, BoardSnapshot } from '../types'
+import type { BlockId, BoardBlock, BoardRow, BoardSnapshot, DotTone } from '../types'
 
 export const REFRESH_MS = 60000
+export const BLOCK_IDS: BlockId[] = ['sessions', 'lines', 'workRoots', 'quota']
+export const STORE_KEY = 'collapsed-blocks'
+export const BAR_WIDTH = 96
+export const BAR_HEIGHT = 6
+export const HOVER_BG = '#80808026'
+export function normalizeCollapsed(value: unknown): BlockId[] {
+  return Array.isArray(value) ? BLOCK_IDS.filter(id => value.includes(id)) : []
+}
+export function toggleBlock(collapsed: BlockId[], id: BlockId): BlockId[] {
+  return BLOCK_IDS.filter(item => item === id ? !collapsed.includes(item) : collapsed.includes(item))
+}
+export function dedupeLines(lines: Line[]): Line[] {
+  const selected = new Map<string, Line>()
+  for (const line of lines) {
+    const previous = selected.get(line.LineSlug)
+    if (!previous) { selected.set(line.LineSlug, line); continue }
+    const timestamp = (value?: string | null) => { const parsed = Date.parse(value || ''); return Number.isNaN(parsed) ? -Infinity : parsed }
+    const nextTime = timestamp(line.CheckpointUpdatedUtc)
+    const previousTime = timestamp(previous.CheckpointUpdatedUtc)
+    if (nextTime > previousTime || (nextTime === previousTime && !!previous.Error && !line.Error)) selected.set(line.LineSlug, line)
+  }
+  return [...selected.values()]
+}
+export function roundPercent(value: number | null | undefined): number | null {
+  return value == null || !Number.isFinite(value) ? null : Math.min(100, Math.max(0, Math.round(value)))
+}
+export function quotaTone(percent: number | null): DotTone {
+  return percent === null ? 'inactive' : percent >= 50 ? 'success' : percent >= 20 ? 'warning' : 'error'
+}
+export function quotaDotTone(primary: number | null, secondary: number | null): DotTone {
+  const values = [primary, secondary].filter((value): value is number => value !== null)
+  return quotaTone(values.length ? Math.min(...values) : null)
+}
+export function quotaBarSvg(percent: number | null, tone: DotTone): string {
+  const colors: Record<DotTone, string> = { success: '#3fb950', warning: '#d29922', error: '#f85149', inactive: '#808080' }
+  const width = Math.round(BAR_WIDTH * (roundPercent(percent) ?? 0) / 100)
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="96" height="6" viewBox="0 0 96 6"><rect width="96" height="6" rx="3" fill="#80808040"/>${width > 0 ? `<rect width="${width}" height="6" rx="3" fill="${colors[tone]}"/>` : ''}</svg>`
+}
+export function quotaBarText(percent: number | null): string {
+  const filled = Math.round((roundPercent(percent) ?? 0) / 10)
+  return '█'.repeat(filled) + '░'.repeat(10 - filled)
+}
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 export type Session = { cwd?: unknown; isArchived?: boolean; isRunning?: boolean; name?: string; title?: string; sessionId?: string }
 export type Line = { LineSlug: string; WorkRoot: string; CheckpointType?: string | null; CheckpointUpdatedUtc?: string | null; NextStepSummary?: string | null; Error?: string | null }
@@ -84,7 +126,7 @@ export function mapSessionToLine(session: Session, document: Document): string |
   return lines.length === 1 ? lines[0].LineSlug : null
 }
 
-const row = (text: string, tone: BoardRow['tone'] = 'normal'): BoardRow => ({ text, tone })
+const row = (name: string, fields: Partial<Omit<BoardRow, 'name'>> = {}): BoardRow => ({ name, note: '', dot: null, detail: null, bars: [], tone: 'normal', ...fields })
 const block = (rows: BoardRow[], limit = rows.length): BoardBlock => ({ rows: rows.slice(0, limit), hiddenCount: Math.max(0, rows.length - limit), errorMessage: null })
 const errorBlock = (message: string): BoardBlock => ({ rows: [], hiddenCount: 0, errorMessage: message })
 export function errorSnapshot(message: string): BoardSnapshot {
@@ -104,26 +146,32 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
   if (!script.ok) return { sessions: errorBlock('無法判定掃描範圍'), lines: errorBlock(script.error), workRoots: errorBlock(script.error), quota: errorBlock(script.error) }
   const data = script.value
   const sessionBlock = !sessions.ok ? errorBlock(sessions.error) : block(filterSessions(sessions.value, data.scannedRoots).map(session => {
-    const title = clip(session.title || session.name || session.sessionId || '-', 24)
+    const title = session.title || session.name || session.sessionId || '-'
     const line = mapSessionToLine(session, data)
-    return row(`${session.isRunning ? '● 執行中' : '○ 閒置'} ${title}${line ? ' → ' + line : ''}`)
+    return row(title, { dot: session.isRunning ? 'success' : 'inactive', note: line || '' })
   }), 15)
-  const lines = data.lines.filter(line => line.CheckpointType || line.CheckpointUpdatedUtc || line.Error || data.workRoots.some(root => root.IsLinkedWorktree && normalizePath(root.Path) === normalizePath(line.WorkRoot)))
+  const lines = dedupeLines(data.lines.filter(line => line.CheckpointType || line.CheckpointUpdatedUtc || line.Error || data.workRoots.some(root => root.IsLinkedWorktree && normalizePath(root.Path) === normalizePath(line.WorkRoot))))
     .sort((a, b) => (b.CheckpointUpdatedUtc || '').localeCompare(a.CheckpointUpdatedUtc || '') || a.LineSlug.localeCompare(b.LineSlug))
     .map(line => {
-      if (line.Error) return row(`${line.LineSlug} · ${line.Error}`, 'error')
-      if (!line.CheckpointType && !line.CheckpointUpdatedUtc) return row(`${line.LineSlug} · 無檢查點`)
+      if (line.Error) return row(`${line.LineSlug} · ${line.Error}`, { tone: 'error' })
+      if (!line.CheckpointType && !line.CheckpointUpdatedUtc) return row(line.LineSlug, { note: '無檢查點' })
       const type = line.CheckpointType === 'design-accepted' ? '設計驗收' : line.CheckpointType === 'developer-collected' ? 'Dev 回收' : (line.CheckpointType || '-').slice(0, 12)
-      return row(`${line.LineSlug} · ${type} · ${time(line.CheckpointUpdatedUtc)} ▸ ${line.NextStepSummary ? clip(line.NextStepSummary, 40) : '（未載明下一步）'}`)
+      return row(line.LineSlug, { note: time(line.CheckpointUpdatedUtc), detail: `${type} ▸ ${line.NextStepSummary ? clip(line.NextStepSummary, 60) : '（未載明下一步）'}` })
     })
   const roots = data.workRoots.map(root => {
     const name = root.Path.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || root.Path
-    if (root.Error) return row(`${name} · ${root.Error}`, 'error')
-    return row(`${name} · ${root.Branch || '-'} · 未 commit ${number(root.DirtyCount)} · 主分支 +${number(root.MainAhead)}/-${number(root.MainBehind)} · ${root.Upstream ? '未 push ' + number(root.UpstreamAhead) : '無 upstream'}`)
+    if (root.Error) return row(`${name} · ${root.Error}`, { tone: 'error', dot: 'error' })
+    return row(name, { dot: root.DirtyCount == null ? 'inactive' : root.DirtyCount === 0 ? 'success' : 'warning', note: root.Branch || '-', detail: `未 commit ${number(root.DirtyCount)} · 主分支 +${number(root.MainAhead)}/-${number(root.MainBehind)} · ${root.Upstream ? '未 push ' + number(root.UpstreamAhead) : '無 upstream'}` })
   })
-  const quota = data.quota.map(account => account.State === 'unknown'
-    ? row(`${account.Name} · 無法取得：${clip(account.Error || '-', 40)}`, 'error')
-    : row(`${account.Name} · 5 小時 剩 ${account.PrimaryRemaining == null ? '-' : Math.round(account.PrimaryRemaining)}%（${time(account.PrimaryResetsAtLocal)} 重置） · 週 剩 ${account.SecondaryRemaining == null ? '-' : Math.round(account.SecondaryRemaining)}%（${time(account.SecondaryResetsAtLocal)} 重置）`))
+  const quota = data.quota.map(account => {
+    if (account.State === 'unknown') return row(`${account.Name} · 無法取得：${clip(account.Error || '-', 40)}`, { tone: 'error', dot: 'error' })
+    const primary = roundPercent(account.PrimaryRemaining)
+    const secondary = roundPercent(account.SecondaryRemaining)
+    return row(account.Name, { dot: quotaDotTone(primary, secondary), note: account.PrimaryResetsAtLocal ? `${time(account.PrimaryResetsAtLocal)} 重置` : '', bars: [
+      { label: '5 小時', percent: primary, tone: quotaTone(primary), text: primary === null ? '-' : `${primary}%` },
+      { label: '週', percent: secondary, tone: quotaTone(secondary), text: `${secondary === null ? '-' : `${secondary}%`}${account.SecondaryResetsAtLocal ? ` · ${time(account.SecondaryResetsAtLocal)} 重置` : ''}` }
+    ] })
+  })
   const quotaBlock = block(quota)
   if (data.warnings.length) quotaBlock.warning = data.warnings.join(' / ')
   return { sessions: sessionBlock, lines: block(lines, 12), workRoots: block(roots), quota: quotaBlock }
