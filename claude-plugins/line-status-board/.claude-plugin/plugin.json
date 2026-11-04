@@ -1,0 +1,20 @@
+{
+  "name": "line-status-board",
+  "version": "0.1.0",
+  "description": "在 Desktop 顯示線、Session、工作樹與額度狀態。",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "workRoots": {
+      "type": "string",
+      "title": "掃描位置",
+      "description": "以分號分隔 work-root；空白時使用腳本預設值。",
+      "default": ""
+    },
+    "scriptPath": {
+      "type": "string",
+      "title": "狀態腳本路徑",
+      "description": "空白時自動尋找狀態腳本。",
+      "default": ""
+    }
+  }
+}
