@@ -8,6 +8,21 @@
 git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 ```
 
+## 安裝
+
+1. 以系統管理員身分開啟 PowerShell，執行 Setup。腳本不是以系統管理員身分執行時會直接結束；加上 `-WhatIf` 可預覽。
+
+   ```powershell
+   ~\.ai-agents\scripts\Setup-AIGlobalConfig.ps1
+   ```
+
+2. Setup 依序完成下列項目，重跑只補缺少的部分。
+   - 建立各工具指向本 repo 的 Symbolic Link，對應位置見 §3。
+   - 註冊本機 marketplace `ai-agents-local`，安裝並啟用其中的 plugin（hook 與狀態看板）。
+   - 設定本 repo 的 `core.hooksPath` 與機器層 Git 排除清單。
+   - 檢查 Windows 長路徑、Codex CLI 與 Codex 檔位設定檔，缺件時印出修復指引。
+3. 需要跨平台派工時，依 §3「Codex CLI 前置需求」安裝 Codex CLI，並依「Codex profile 檔位設定」建立檔位設定檔。派工帳號目錄為選用，見「獨立 Codex 帳號目錄」。
+
 ---
 
 ## 1. 核心概念對照
@@ -21,12 +36,19 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 ### 本專案策略
 
 - 以 `instructions.md` 作為唯一主規則檔（Single Rule）。
-- Commit 訊息生成以 `skills/generate-commit/` Skill 形式獨立管理，不再列為頂層 Rule。
-- 暫不拆分更多獨立 rule 檔案，避免維護成本升高。
+- Commit 訊息生成以 `skills/generate-commit/` Skill 形式獨立管理。
 
 ### 平台分工
 
-Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方式執行；執行型 agent 中 Prototyper 於 Claude 端派生，Architect 於 Claude 端派生，Developer、Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer 於 Codex 端執行（Developer 的 Phase 依實作分流可由 Claude Haiku subagent 承接），Reviewer 依審查配對由 Codex 或 Claude Sonnet subagent 執行。`survey` 改以 Skill 形式提供文件掃描與索引產生流程。建議功能線在 Claude Code 處理 Analyst / Architect，Design 驗收通過後由 Claude 端主 Agent 背景執行 `codex exec` 發動 Developer / Reviewer 鏈，不需手動切換平台；bug 由 Codex 的 Maintainer 線診斷，實作交由 Support Engineer 完成。架構改善由獨立的 `architecture-improvement` Skill 先產出候選報告，再決定是否進入設計與實作。
+| 角色 | 執行端 | 觸發方式 |
+| --- | --- | --- |
+| Analyst、Developer、Editor、Maintainer | 依所在平台 | Persona，以語意切換 |
+| Architect、Prototyper | Claude | 由主 Agent 派生 |
+| Developer | Codex（Phase 可由 Claude Haiku subagent 承接） | Design 驗收通過後由主 Agent 以 `codex exec` 發動 |
+| Reviewer | Codex 或 Claude Sonnet subagent，依審查配對 | 由主 Agent 依派遣判準發動 |
+| Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer | Codex | 由主 Agent 派遣，或 Maintainer 派生 Support Engineer |
+
+功能線建議在 Claude Code 處理 Analyst 與 Architect，之後的 Developer 與 Reviewer 鏈由主 Agent 在背景發動，不需手動切換平台。bug 由 Maintainer 診斷，實作交由 Support Engineer 完成。
 
 涉及畫面的需求由 Analyst 判定 UI 線別，版面複雜或需對外溝通時派生 Prototyper 產出 Demo 畫面。畫面相關工作另受 `uiux` skill 約束，該 skill 平常依觸發語自動載入；判斷本輪工作涉及畫面而它未被載入時，可直接以 `/uiux` 手動強制載入。
 
@@ -42,9 +64,7 @@ Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方�
 | `GLOSSARY.md` | 專案專屬業務術語 | 由 `glossary` skill 依使用者確認維護 |
 | `docs/adr/` | Architecture Decision Record | 由 `adr` skill 依決策門檻追加 |
 
-`.local/` 與 `*.local.md` 由機器層 `git-global-excludes` 排除。專案既有 `.gitignore` 保留專案自己的排除規則。`team` 模式另外將 `AGENTS.md`、`GLOSSARY.md` 與 `docs/adr/` 追加至目前 clone 的 `.git/info/exclude`；`solo` 模式不自動修改這三項路徑的版控狀態。
-
-排除規則分三層。機器層負責所有 clone 共用的 `.local/` 與 `*.local.md`，repository-local 層的 `.git/info/exclude` 負責 team 模式的三項專案層檔案，專案層 `.gitignore` 只保留專案自身規則。Setup 不把機器層規則複製到 `.gitignore` 或 `.git/info/exclude`。
+`.local/` 與 `*.local.md` 由 Setup 設定的機器層 Git 排除清單排除，不需寫進專案的 `.gitignore`。
 
 `.local/` 目錄結構如下：
 
@@ -63,27 +83,7 @@ Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方�
     └── ui-demo/
 ```
 
-`~/.ai-agents/.local/machine.json` 是本機值班設定，記錄值班 Session 名稱與本機是否為 `.ai-agents` 的唯一修改端；欄位見 `codex-dispatch` skill「值班通知」，檔案不存在時不發值班通知。
-
-結案清理會移除 `scratch/` 全部內容。`handoff/<lineSlug>/` 中的 `line.json`、`requirement-summary.md` 與 `design.md` 均受保護，其他 handoff 項目依清理規則移除。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 保留供後續查閱。
-
-### `work-root` 與交接檔
-
-`.local/ai-sessions/handoff/`、`.local/ai-sessions/report/`、各類交接與審查文件，以及 `CONTEXT.local.md`，都應綁定在本輪任務的 `work-root`。協調者在首次需要線層產物或派遣前登記語意化 `lineSlug`，每一條線以 `handoff/<lineSlug>/line.json` 識別；需求線由 Analyst 登記，一次性取證線以 `kind: adhoc` 標示。需求基準位於 `handoff/<lineSlug>/requirement-summary.md`，設計基準位於 `handoff/<lineSlug>/design.md`，固定名稱審查與驗證報告位於 `report/<lineSlug>/`。`dispatchSlug` 只識別單次派遣，與 `lineSlug` 分開使用。判定流程分兩步：
-
-1. **先取得 `task anchor`**（本輪任務真正想處理的範圍，不等於 AI 的 process cwd）。優先序：
-   1. 使用者本輪明確指定的目錄、檔案所在目錄、或子系統 / 前端 app / 後端 service / 模組目錄。
-   2. 對話上下文明確延續的已討論檔案或目錄。
-   3. 以上皆無時，才退到目前工作區目錄。
-2. **再從 `task anchor` 往外推導 `work-root`**：最近的技術棧根標記 → `git root` → `task anchor` 本身。
-
-技術棧根標記：
-
-- .NET：`*.sln`、`*.slnx`、`*.csproj`
-- Node / 前端：`package.json`
-- Python：`pyproject.toml`、`requirements.txt`
-- Java：`pom.xml`、`build.gradle`、`settings.gradle`
-- Go：`go.mod`
+交接檔與報告綁定在本輪任務的 `work-root`，判定方式見 `instructions.md` §1.5「work-root 判定」。
 
 ---
 
@@ -113,44 +113,27 @@ Persona Agent（Analyst、Developer、Editor、Maintainer）以語意切換方�
 | `agents/*.md` | 全域自訂 Persona 與 Claude 端 sub-agent |
 | `settings.json` | 工具權限與其他使用者設定 |
 
-#### 自訂 frontmatter 欄位
-
-Skill 與 agent 定義的 frontmatter 另含 `dispatch`、`audience` 與 `policy.allow_implicit_invocation` 三個欄位。這三個欄位是本專案自訂的中繼資料，供主 Agent 判定派工歸屬與產生文件使用，不是 Claude Code 原生的權限控制；Claude Code 不依這三個欄位限制工具呼叫、檔案寫入或命令執行。
-
-| 欄位 | 用途 | 讀取者 |
-| --- | --- | --- |
-| `dispatch` | Skill 的派工歸屬，值為 `delegate`、`inline`、`split` 或 `either` | 主 Agent 依 `instructions.md` §1.5「F1 派工判準」判定；`Update-Docs.ps1` 檢查 human-facing Skill 的值 |
-| `audience` | 文件讀者，值為 `agent` 或 `human` | `Update-Docs.ps1` 產生 `docs/agents.md`、`docs/skills.md` 的讀者欄 |
-| `policy.allow_implicit_invocation` | Skill 是否允許模型自行觸發 | `Update-Docs.ps1` 與 `disable-model-invocation` 比對一致性並分組 |
-
-Claude Code 的工具權限由 `settings.json` 的 `permissions`（allow／ask／deny）與 Hook 控制。
-
 #### Claude Code Hook 設定
 
-本專案的 hook 由本機 marketplace `ai-agents-local` 的 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `claude-plugins/`。`Setup-AIGlobalConfig.ps1` 的 8b 依腳本所在的 repo 推導 marketplace 根目錄，註冊並啟用清單中的全部 plugin；8c 在 hook plugin 啟用後備份 `settings.json`，再移除舊 hook 項目。修改 plugin 內的 hook 腳本後，新 session 不需重新安裝即可採用新內容。
+本專案的 hook 由本機 marketplace `ai-agents-local` 的 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `claude-plugins/`，由 Setup 的 8b 註冊並啟用。修改 plugin 內的 hook 腳本後，新 session 不需重新安裝即可採用新內容。
 
 | Hook 腳本 | 觸發條件 | 用途 |
 | --- | --- | --- |
 | `post-edit-write-hook.ps1` | Edit 或 Write 工具寫入檔案後 | 提示執行 check-markdown skill（`.md`）；驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
-| `turn-guard-hook.ps1` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | shadow 紀錄寫入 `${CLAUDE_PLUGIN_DATA}\turn-guard\<session_id>.jsonl`，不注入 context、不阻擋且 fail-open。欄位包含版本、時間、session、事件、turn、工作目錄、agent、prompt 字元數、工具與分類、累計計數、失敗指紋、中斷標記、turn 結束標記及執行耗時；部分欄位依事件出現。 |
+| `turn-guard-hook.ps1` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | 將每個 turn 的工具使用與失敗紀錄寫入 `${CLAUDE_PLUGIN_DATA}\turn-guard\<session_id>.jsonl`，只記錄，不注入 context、不阻擋 |
 
 #### 狀態看板 plugin
 
-`line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示 Session、線、work-root 與額度。資料來自 `scripts/Get-LineStatus.ps1 -AsJson` 與 `ccd_session_mgmt.list_sessions`，每 60 秒更新一次，也可按「重新整理」，更新過程不耗用模型 token。
+`line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示 Session、線、work-root 與額度。資料來自 `scripts/Get-LineStatus.ps1 -AsJson` 與 `ccd_session_mgmt.list_sessions`，每 60 秒更新一次，也可按「重新整理」，更新過程不耗用模型 token。掃描範圍為預設清單加上目前 Session 所在的 repo。
 
-四個區塊依序為 Session、額度、線、work-root，標題可點擊收合或展開，名稱與筆數後的箭頭 `▸` 表示收合，`▾` 表示展開。四個區塊預設展開，收合狀態跨 Session 保留。線區塊中相同的 lineSlug 只顯示檢查點時間最新的一筆。
+Setup 的 8b 會安裝並啟用此 plugin，Desktop 開新 Session 時自動開啟 Pane。不執行 Setup 時，可手動安裝：
 
-線的圓點以綠色表示執行中、紅色表示錯誤、灰色表示其餘狀態，超過 24 小時未更新的線名稱以淡色顯示。其他區塊以黃色表示需要注意。列首圖示與區塊分隔線協助辨識資料類型。work-root 預設不列出派遣暫存 worktree，第二行顯示未 commit、未 push 與相對主分支的狀態，數值為零的項目省略。線的右欄顯示檢查點標籤與相對時間，Dev 回收標籤省略。
+```powershell
+claude plugin marketplace add ~/.ai-agents/claude-plugins
+claude plugin install line-status-board@ai-agents-local --scope user
+```
 
-Session 依最近活動時間排序，並與線的檢查點時間一同以相對時間顯示。Session 的線名附註放不下時整個隱藏。額度右欄以「剩 N%」顯示剩餘量。
-
-超過 3 天未更新且沒有執行中 Session 的線，以及已落地且沒有執行中 Session 的線，摺疊為「已結束／停擺 N 條」，展開狀態跨 Session 保留。已落地的判定條件為 Dev 回收、主 checkout 有同名線，且 `feature/<lineSlug>` 分支不存在。mod 對目前 repo 執行一次唯讀的 `git branch --list` 取得分支清單；Git 失敗時不判定為已落地。
-
-掃描範圍包含 `workRoots` 設定的位置，空白時使用與腳本相同的預設清單，並加入目前 Session 所在 repo 的主工作樹與非派遣暫存 worktree。非 Git 目錄只加入該目錄。目前 repo 的主工作樹與 Session 所在 worktree 即使沒有 `.local\ai-sessions\handoff` 目錄，也會透過腳本的 `-ForceWorkRoot` 列出 Git 狀態，該列不含線資料；其他沒有 handoff 目錄的 worktree 不列出。
-
-work-root 區塊將目前 repo 的列排在最前，面板頂部顯示 `目前：<repo 名稱>`，cwd 變更時立即重新整理。plugin 0.5.0 需搭配同一 repo 的新版腳本，plugin 的內建預設清單須與腳本預設值同步。
-
-Setup 的 8b 安裝此 plugin。`workRoots` 可設定以分號分隔的掃描位置，空白時使用腳本預設值；`scriptPath` 可指定腳本路徑，空白時自動尋找。修改設定後執行 `/reload-plugins`。
+`workRoots` 可設定以分號分隔的掃描位置，空白時使用腳本預設值；`scriptPath` 可指定腳本路徑，空白時自動尋找。修改設定後執行 `/reload-plugins`。plugin 需搭配同一 repo 的新版腳本。
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）
 
@@ -166,16 +149,11 @@ Setup 的 8b 安裝此 plugin。`workRoots` 可設定以分號分隔的掃描位
 
 #### Codex CLI 前置需求
 
-額度快照由 `~/.ai-agents/scripts/Get-CodexQuota.ps1` 從 `/wham/usage` 即時取得，只供顯示與紀錄；查詢時點見 `codex-dispatch` Skill。
-
-- 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附 binary 不作為派工執行檔。
-- 派工需要隔離 worktree 時，來源目錄必須是 Git repo；非 Git 來源的寫入與唯讀派工直接在來源目錄執行，腳本不會自動 `git init`。需要 worktree 卻不是 Git repo 時回報 `SourceRootNotGitRepository`。
-- 安裝或更換環境時執行 `codex --version` 確認 CLI 可用。派工不再執行啟動探針；CLI 缺失或正式啟動失敗時，派遣結果記為未啟動。需要確認實際使用的 model 時，執行 `Invoke-CodexDispatch.ps1 -Operation DiagnoseModelEnvironment`（參數見 `codex-dispatch` Skill）。
-- `Invoke-CodexDispatch.ps1` 的 JSON 標準輸出固定使用 UTF-8（無 BOM），Windows PowerShell 5.1 與 PowerShell 7 均可解析中文欄位。
-- PowerShell 啟動端使用 `ProcessStartInfo.ArgumentList` 與 UTF-8 stdin／stdout／stderr，prompt 以 `-` 從 stdin 傳入；啟動端需要 PowerShell 7+。
 - 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
-- 桌面版 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於跨平台派工。
-- 更換機器後，第一步執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
+- 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附的 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於派工。
+- 安裝或更換環境時執行 `codex --version` 確認 CLI 可用；更換機器後先執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
+- 派工的啟動端需要 PowerShell 7+。
+- 派工需要隔離 worktree 時，來源目錄必須是 Git repo；腳本不會自動 `git init`。
 
 #### Windows 長路徑
 
@@ -193,9 +171,8 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 各檔位使用選定 Codex home 內的設定檔。預設檔位為 `--profile default` 與 `<CodexHome>/default.config.toml`；`advisor` 為 `--profile advisor` 與 `<CodexHome>/advisor.config.toml`；選用的 `intensive` 為 `--profile intensive` 與 `<CodexHome>/intensive.config.toml`。未指定 home 時預設為 `~/.codex`。`--profile` 是 `codex` 的父層選項，放在 `exec` 子命令之前。
-2. 實作使用預設檔位；使用者在當下 Session 指定時改用 `intensive`，指定不延續到其他 Session。Codex `Reviewer` 的大範圍審查（規則檔機制條款，或審查範圍達 3 個檔案以上）固定使用 `intensive`，條件以 `instructions.md`「審查配對」為準。`intensive` 設定檔不存在時派工在啟動前拒絕。`advisor` 只作意見評估，發動前先向使用者請求，使用者在當下 Session 授權後才派工；授權不延續到其他 Session，也不依剩餘額度縮小評估範圍。預設檔位額度不足時不需授權，照常派工。授權與 evidence pack 契約以 `codex-dispatch` skill 為準，本文件不重複記載。
-3. `default.config.toml`、`advisor.config.toml` 與選用的 `intensive.config.toml` 是各 profile 的本機設定檔，內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
+1. 各檔位使用選定 Codex home 內的設定檔。預設檔位為 `--profile default` 與 `<CodexHome>/default.config.toml`；`advisor` 為 `--profile advisor` 與 `<CodexHome>/advisor.config.toml`；選用的 `intensive` 為 `--profile intensive` 與 `<CodexHome>/intensive.config.toml`。未指定 home 時預設為 `~/.codex`。何時使用哪個檔位見 `instructions.md` §1.5。
+2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。實際 model id 屬本機設定，不記載於版控文件。
 
    ```toml
    model = "<model-id>"
@@ -206,26 +183,14 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
    default_subagent_reasoning_effort = "<effort>"
    ```
 
-   `[agents]` 段用於降低 subagent 的模型成本。Codex 的 subagent 預設繼承父 Agent 的模型與推理強度，未設定時每個 subagent 都以父 Agent 的模型執行，token 隨並行數累加；以高成本模型作為主 Agent 時，建議將 subagent 指定為成本較低的模型，讓讀取類工作不使用高階模型。
-
-   未設定 `max_concurrent_threads_per_session` 時使用 Codex 預設並行數，該並行數直接乘上每個 subagent 的消耗，需要上限時於同一檔案明列。
-
-   `model_reasoning_effort` 只影響推理長度，不影響模型單價。把高成本模型的 effort 調低不會使其變便宜，控制成本須從模型選用與 subagent 配置著手。
-
-4. `config.toml` 是 Codex 應用程式設定，屬可變設定，可能由 CLI 或其他工具變更。default dispatch profile 固定讀取 `default.config.toml`，不以 `config.toml` 作為預設檔位來源。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
-5. 檔位檔屬本機設定，不進版控，換機器需重新建立。`Setup-AIGlobalConfig.ps1` 的環境檢查段偵測 `default.config.toml` 與 `advisor.config.toml` 缺件（`intensive.config.toml` 為選用檔，缺少時不警告），以及舊檔名殘留或新舊檔同時存在的衝突，並印出修復指引。
+3. 預設檔位固定讀取 `default.config.toml`，不讀取 `config.toml`。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
+4. 檔位檔屬本機設定，不進版控，換機器需重新建立。Setup 會檢查 `default.config.toml` 與 `advisor.config.toml` 是否缺件，以及舊檔名殘留，並印出修復指引。
 
 #### 獨立 Codex 帳號目錄
 
 派工可使用專用的 Codex 帳號目錄，與 Codex Desktop 使用的預設目錄 `~/.codex` 分開。派工只在單次子行程指定 `CODEX_HOME`，不會更換、改寫 Desktop 或預設目錄的登入，因此 Desktop 使用中不會被派工切換帳號。建議的配置是：`~/.codex` 留給 Desktop 且不登記，派工用的每個帳號各用一個專用目錄。Desktop 與某個派工帳號若登入同一個 ChatGPT 帳號，兩邊仍共用該帳號的額度。
 
-派工帳號以 `scripts\New-CodexDispatchAccount.ps1` 建立。腳本依帳號名稱完成下列項目，並逐項回報 `created`、`exists`、`repaired` 或 `skipped`：
-
-- 建立 `~/.codex-<名稱>` 專用目錄。
-- 寫入最小 `config.toml`，並為 `-ProjectPath` 指定的每個專案加入小寫路徑的信任段落。
-- `.sandbox`、`.sandbox-bin`、`.sandbox-secrets` 建立指向 `~/.codex` 同名目錄的 Junction，`.sandbox_migration` 建立指向同名檔案的 Symbolic Link；既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再建立連結。
-- `default.config.toml`、`advisor.config.toml` 建立指向 `~/.codex` 同名檔案的 Symbolic Link，指定 `-IncludeIntensive` 時另建 `intensive.config.toml`；`~/.codex` 的 profile 修改因此同時作用到所有派工帳號。既有一般檔案先改名為 `<名稱>.bak-<時間戳>` 再建立連結，指向其他目標的連結或目錄則報錯停止。
-- 在 `~/.ai-agents/.local/machine.json` 的 `codex_accounts` 登記名稱與目錄，保留原有值班欄位與既有帳號。
+派工帳號以 `scripts\New-CodexDispatchAccount.ps1` 建立。腳本建立 `~/.codex-<名稱>` 目錄與最小 `config.toml`，以連結共用 `~/.codex` 的沙盒狀態與檔位設定檔，並登記到 `~/.ai-agents/.local/machine.json`。
 
 ```powershell
 .\scripts\New-CodexDispatchAccount.ps1 -Name account-a -ProjectPath 'C:\Users\<使用者>\.ai-agents', 'D:\Projects\<專案>'
@@ -233,35 +198,9 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 在 PowerShell 提示字元直接執行。`-ProjectPath` 接受陣列，以 `powershell.exe -File` 或 `pwsh -File` 呼叫時逗號串接會被視為單一字串，每次只能傳一個路徑。
 
-帳號已存在時重跑只補缺少的部分，不覆寫既有設定；新增專案時以相同名稱加上新的 `-ProjectPath` 重跑即可。加上 `-WhatIf` 可預覽而不寫入。省略 `-ProjectPath` 時信任項目標為 `skipped`，派工前須以 `-ProjectPath` 補上目標專案。腳本不讀取或複製 `auth.json` 與 `sessions`，不提供 `sandbox = "unelevated"`，也不登記 `~/.codex`。建立 Symbolic Link 權限不足時，該項以原始錯誤中止，改以具備建立 Symbolic Link 權限的 PowerShell 重新執行。
+帳號已存在時重跑只補缺少的部分，不覆寫既有設定；新增專案時以相同名稱加上新的 `-ProjectPath` 重跑即可。加上 `-WhatIf` 可預覽而不寫入。建立 Symbolic Link 權限不足時，改以具備建立 Symbolic Link 權限的 PowerShell 重新執行。
 
-`machine.json` 的 `codex_accounts` 格式如下，此檔維持本機設定。
-
-```json
-{
-  "schema": "ai-agents.machine.v1",
-  "codex_accounts": [
-    { "name": "account-a", "codex_home": "C:\\Users\\<使用者>\\.codex-account-a" },
-    { "name": "account-b", "codex_home": "C:\\Users\\<使用者>\\.codex-account-b" }
-  ]
-}
-```
-
-名稱使用小寫英數與連字號，目錄須為已存在的絕對路徑。名稱與正規化目錄均須唯一，帳號目錄的 reparse point 或別名會被拒絕。省略清單或使用空陣列時，沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 的解析順序。未登記的自訂 home 仍可使用，RunRecord 的帳號名稱為 null。格式異常時回報 `CodexAccountConfigurationInvalid`，保留原選擇並由使用者修正。
-
-profile 與 `~/.codex` 共用，機器專屬路徑在 `~/.codex` 的 profile 檢查一次即可。Setup 只檢查目錄與固定檔名，缺件時提供指引。
-
-腳本不執行登入，最後輸出已設定 `CODEX_HOME` 的登入命令，由使用者自行執行。命令只在該子行程設定 `CODEX_HOME`，保留使用者／機器環境變數與 Desktop 的預設目錄；登入、憑證及 sessions 由各 home 的 Codex CLI 管理。
-
-```powershell
-powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.codex-account-a''; codex login'
-```
-
-帳號閒置過久時 token 會失效，`Get-CodexQuota.ps1` 或派工會回報 401。此時以同一個登入命令重新登入；腳本在登入命令後也會輸出這段提示。
-
-派工使用 `Dispatch -RequestPath <Request> -CodexHome <已登記目錄>`。程式沒有「預設派工帳號」設定，省略 `-CodexHome` 時依 CLI、程序 `CODEX_HOME`、`~/.codex` 的順序解析，程序 `CODEX_HOME` 也未設定時會落到 Desktop 使用的預設目錄，因此主 Agent 派工一律明確指定 `-CodexHome`，預設使用清單第一個帳號。Start 僅在該次 ProcessStartInfo 設定 `CODEX_HOME`，RunRecord 記錄 home、profile 與帳號別名。同一派遣 resume 固定同 home/name；跨 home 改用新 dispatchSlug 冷啟動，完整步驟見 `codex-dispatch` Skill。
-
-本機 `codex-cli 0.159.0` 的 `codex --help` 明列 `--profile` 將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 `config.toml` 最小必要設定已實測（2026-10-17，`codex-cli 0.159.0`，`windows.sandbox = "elevated"` 的環境）：缺少 `config.toml` 時，Codex 在該 home 啟動後所有命令都被執行政策拒絕，連派遣單都讀不了；補上下列兩段後可正常讀取與執行。腳本產生的 `config.toml` 即為下列內容，`[windows] sandbox` 固定為 `elevated`，`[projects.'<小寫的專案絕對路徑>']` 依 `-ProjectPath` 逐一加入。既有 `config.toml` 的 `[windows]` 段缺少 `sandbox`、值不是 `elevated`，或信任段落無法安全辨識時，腳本報錯停止，不覆寫該檔。`.sandbox*` 以連結共用 `~/.codex` 的狀態，缺少時每個命令都會重跑 elevated setup 並跳出 UAC 視窗。profile 以 Symbolic Link 指向 `~/.codex` 的同名檔案，`--profile` 經由連結讀取設定。
+腳本產生的 `config.toml` 內容如下，`[projects.'<小寫的專案絕對路徑>']` 依 `-ProjectPath` 逐一加入。缺少這個檔案時，Codex 在該 home 的所有命令都會被執行政策拒絕。
 
 ```toml
 [windows]
@@ -270,6 +209,14 @@ sandbox = "elevated"
 [projects.'c:\users\<使用者>\.ai-agents']
 trust_level = "trusted"
 ```
+
+腳本不執行登入，最後輸出已設定 `CODEX_HOME` 的登入命令，由使用者自行執行。
+
+```powershell
+powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.codex-account-a''; codex login'
+```
+
+帳號閒置過久時 token 會失效，`Get-CodexQuota.ps1` 或派工會回報 401。此時以同一個登入命令重新登入。
 
 ---
 
@@ -292,8 +239,6 @@ trust_level = "trusted"
 └── scripts/                            # 安裝、檢查與 hooks 腳本
 ```
 
-`scripts/` 根目錄只放使用者可直接執行的 Verb-Noun 腳本，包括 `.ps1` 與既有 `.csx`。內部責任檔、loader、測試輔助與 C17 私有機制放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`。
-
 ---
 
 ## 5. Scripts 與命名慣例
@@ -301,8 +246,9 @@ trust_level = "trusted"
 - `scripts/` 根目錄只放使用者可直接執行的 Verb-Noun `.ps1` 與既有 `.csx` 腳本。
 - `scripts/Get-DispatchProgress.ps1` 唯讀查詢派遣進度，可依 `LineSlug` 或 `DispatchSlug` 篩選；預設顯示未結束與最近 24 小時內結束的項目。
 - `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態與額度。
+- `scripts/Get-CodexQuota.ps1` 查詢 Codex 額度，只供顯示與紀錄。
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
-- 內部責任檔、loader、測試輔助與 C17 私有機制放在子目錄；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
+- 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
 - `claude-plugins/` 內由工具自動呼叫的 hook 腳本，使用全小寫 kebab-case 命名。
 - `.githooks/` 內為 Git 原生 Hook，由 `Setup-AIGlobalConfig.ps1` 透過 `core.hooksPath` 啟用。
 
@@ -314,7 +260,7 @@ trust_level = "trusted"
 git config core.hooksPath .githooks
 ```
 
-啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md` 與 `docs/skills.md` 並納入本次 commit。`docs/agents.md` 與 `docs/skills.md` 為生成檔，請勿手動編輯；表格會列出讀者欄，Skill 另依 `user-invoked` 與 `model-invoked` 分組。腳本會先驗證 `disable-model-invocation` 與 `policy.allow_implicit_invocation` 的語意一致性，並檢查 `agents/codex/*.toml` 的頂層 bare key 是否超出 `name`／`description`／`developer_instructions` 白名單，任一項不符時以非零結束碼阻止 commit。Codex agent 的 `audience` 以 `# doc-meta: audience = "..."` 註解承載，避免頂層鍵使 Codex 丟棄整份定義。agent 的 Persona／sub-agent 分類由 `Update-Docs.ps1` 的 `$personaAgents` 清單決定。
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md` 與 `docs/skills.md` 並納入本次 commit。這兩個檔案為生成檔，請勿手動編輯；frontmatter 不一致時，腳本以非零結束碼阻止 commit。
 
 ---
 
@@ -327,17 +273,6 @@ Skill 分為兩種類型：
 - **知識型**：Claude 依上下文自動載入並套用（如編碼規範、LINQ 查詢規則）。
 - **指令型**：須使用者以 `/skill-name` 明確觸發（如 `/generate-changelog-zh-tw`、`/generate-unit-test`）。
 
-`docs/skills.md` 將 Skill 依 `user-invoked` 與 `model-invoked` 分組，並列出 Skill 的讀者欄。讀者值為 `agent` 或 `human`，用來區分規範載入對象與人員直接使用的任務模組。
-
-`.githooks/Update-Docs.ps1` 不再把 Skill 索引寫入 `instructions.md`，Skill 的名稱與描述由 Claude Code 與 Codex 各自載入。frontmatter 的雙端觸發欄位不一致時，腳本會以非零結束碼停止 commit。
-
-Claude Code 與 Codex 對「可呼叫的任務模組」各有不同名稱，且已逐漸整併成指令型 Skill：
-
-| 工具 | 原始術語 |
-| --- | --- |
-| Claude Code | Command（`commands/*.md`） |
-| Codex | Skill（`skills/*/SKILL.md`） |
-
 ---
 
 ## 7. 內建 Agent 清單
@@ -348,8 +283,6 @@ Agent 依執行平台分為兩類：
 
 - **Persona**：以語意切換方式執行。適合需要多輪對話、強依賴上下文的需求分析、實作階段控制與文件編輯。
 - **sub-agent**：由主 Agent 派生。適合有明確輸入與交接檔案的設計、審查、掃描與清理任務。
-- **Refactorer**：Codex 執行型 agent，處理語法現代化、死程式碼、資源管理與既有規範清理；每批修改後驗證測試。
-- **architecture-improvement**：人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出 `.local/ai-sessions/report/<lineSlug>/architecture-review.md` 再等待範圍決策。
 
 ### Agent 執行流程
 
@@ -388,7 +321,7 @@ flowchart TD
     Maintainer --> Done
 ```
 
-> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex exec` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 只處理程式碼技術債與語法現代化。`architecture-improvement` 先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
+> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex exec` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 是 Codex 執行型 agent，處理程式碼技術債與語法現代化，每批修改後驗證測試。`architecture-improvement` 是人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
 
 ---
 
