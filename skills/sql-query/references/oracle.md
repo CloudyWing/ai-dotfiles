@@ -1,40 +1,40 @@
 # Oracle 版本資料
 
-本輪工作涉及 Oracle 時載入本檔，判讀方式依 `sql-query` SKILL.md「目標版本」的「判讀方式」。「語意陷阱」節與版本無關，撰寫或審查 Oracle SQL 前必讀。最後查證日：2026-11-04。
+本輪工作涉及 Oracle 時載入本檔，判讀方式依 `sql-query` SKILL.md「目標版本」的「判讀方式」。「語意陷阱」節與版本無關，撰寫或審查 Oracle SQL 前必讀。
 
 ## 版本對照
 
 列由舊到新，「標示」欄即 `target.oracle` 的合法值。
 
-| 標示 | 版本號與 banner 對映 | 來源 |
-| --- | --- | --- |
-| `11g` | 11.1、11.2 | [Releases that support direct upgrade](https://docs.oracle.com/en/database/oracle/oracle-database/18/upgrd/oracle-database-releases-that-support-direct-upgrade.html) |
-| `12cR1` | 12.1 | [Upgrading Oracle Database](https://docs.oracle.com/en/database/oracle/oracle-database/19/fppad/upgrading-oracle-database-software.html) |
-| `12cR2` | 12.2 | [Upgrading Oracle Database](https://docs.oracle.com/en/database/oracle/oracle-database/19/fppad/upgrading-oracle-database-software.html) |
-| `18c` | 18.x，例如 18.1.0.0.0 | [Checking your current release number](https://docs.oracle.com/en/database/oracle/oracle-database/18/admin/getting-started-with-database-administration.html) |
-| `19c` | 19.x | [Enterprise Manager new features](https://docs.oracle.com/en/enterprise-manager/cloud-control/enterprise-manager-cloud-control/24.1/emcon/new-features-focus-area.html) |
-| `21c` | 21.x | [Enterprise Manager new features](https://docs.oracle.com/en/enterprise-manager/cloud-control/enterprise-manager-cloud-control/24.1/emcon/new-features-focus-area.html) |
-| `23ai` | 23.x，23.26 之前 | [Enterprise Manager new features](https://docs.oracle.com/en/enterprise-manager/cloud-control/enterprise-manager-cloud-control/24.1/emcon/new-features-focus-area.html) |
-| `26ai` | 23.26 起，例如 23.26.0.0.0；仍以 23 為基礎版本 | [Oracle AI Database 26ai administration](https://docs.oracle.com/en/database/oracle/oracle-database/26/admin/getting-started-with-database-administration.html) |
+| 標示 | 版本號與 banner 對映 |
+| --- | --- |
+| `11g` | 11.1、11.2 |
+| `12cR1` | 12.1 |
+| `12cR2` | 12.2 |
+| `18c` | 18.x，例如 18.1.0.0.0 |
+| `19c` | 19.x |
+| `21c` | 21.x |
+| `23ai` | 23.x，23.26 之前 |
+| `26ai` | 23.26 起，例如 23.26.0.0.0；仍以 23 為基礎版本 |
 
 ## 功能版本門檻
 
-| 用法 | 支援條件 | 有支援時的寫法 | 不支援時的替代寫法 | 來源 |
-| --- | --- | --- | --- | --- |
-| `OFFSET ... FETCH NEXT` 分頁 | `12cR1` | `sql-query` 共通規範「分頁查詢」的寫法，Bind Variables 寫法見 SKILL.md Oracle 專屬節「分頁查詢」 | `ROWNUM` 雙層分頁，見「替代寫法」 | [12.1 new features](https://docs.oracle.com/database/121/NEWFT/chapter12101.htm) |
-| `FETCH FIRST n ROWS ONLY` 限制筆數 | `12cR1` | `... ORDER BY ... FETCH FIRST n ROWS ONLY` | 子查詢排序後於外層套 `ROWNUM <= n`，見「替代寫法」 | [12.1 new features](https://docs.oracle.com/database/121/NEWFT/chapter12101.htm) |
-| `GENERATED AS IDENTITY` 欄位 | `12cR1` | 欄位宣告 `GENERATED AS IDENTITY`，範例見「替代寫法」的「`SEQUENCE` 取代 `IDENTITY`」 | `SEQUENCE` 搭配 `NEXTVAL`，寫法見 SKILL.md Oracle 專屬節「自動編號（SEQUENCE）」 | [12.1 new features](https://docs.oracle.com/database/121/NEWFT/chapter12101.htm) |
-| 識別字最長 128 bytes | `12cR2`，且資料庫 `COMPATIBLE` 參數為 12.2 以上 | 識別字長度可超過 30 bytes | 識別字控制在 30 bytes 以內；無法確認 `COMPATIBLE` 時同樣以 30 bytes 為限 | [Database object names and qualifiers](https://docs.oracle.com/cd/G11854_01/sqlrf/sql-language-reference.pdf) |
-| DDL 的 `IF [NOT] EXISTS` | `23ai` | `DROP TABLE IF EXISTS ...`、`CREATE TABLE IF NOT EXISTS ...`；支援範圍依 DDL 物件種類 | 本檔未收錄替代寫法，回覆註明 | [Oracle Database 23ai SQL features](https://docs.oracle.com/en/learn/db23ai-sql-features/index.html) |
-| SQL `BOOLEAN` 資料型別 | `23ai` | 欄位宣告為 `BOOLEAN` | 本檔未收錄已查證的替代寫法，回覆註明；與舊版 PL/SQL 的 `BOOLEAN` 不同 | [Oracle Database 23ai SQL features](https://docs.oracle.com/en/learn/db23ai-sql-features/index.html) |
+| 用法 | 支援條件 | 有支援時的寫法 | 不支援時的替代寫法 |
+| --- | --- | --- | --- |
+| `OFFSET ... FETCH NEXT` 分頁 | `12cR1` | `sql-query` 共通規範「分頁查詢」的寫法，Bind Variables 寫法見 SKILL.md Oracle 專屬節「分頁查詢」 | `ROWNUM` 雙層分頁，見「替代寫法」 |
+| `FETCH FIRST n ROWS ONLY` 限制筆數 | `12cR1` | `... ORDER BY ... FETCH FIRST n ROWS ONLY` | 子查詢排序後於外層套 `ROWNUM <= n`，見「替代寫法」 |
+| `GENERATED AS IDENTITY` 欄位 | `12cR1` | 欄位宣告 `GENERATED AS IDENTITY`，範例見「替代寫法」的「`SEQUENCE` 取代 `IDENTITY`」 | `SEQUENCE` 搭配 `NEXTVAL`，寫法見 SKILL.md Oracle 專屬節「自動編號（SEQUENCE）」 |
+| 識別字最長 128 bytes | `12cR2`，且資料庫 `COMPATIBLE` 參數為 12.2 以上 | 識別字長度可超過 30 bytes | 識別字控制在 30 bytes 以內；無法確認 `COMPATIBLE` 時同樣以 30 bytes 為限 |
+| DDL 的 `IF [NOT] EXISTS` | `23ai` | `DROP TABLE IF EXISTS ...`、`CREATE TABLE IF NOT EXISTS ...`；支援範圍依 DDL 物件種類 | 本檔沒有替代寫法，回覆註明 |
+| 省略 `FROM` 的純運算式查詢 | `23ai` | `SELECT SYSDATE;` | `SELECT SYSDATE FROM DUAL;` |
+| SQL `BOOLEAN` 資料型別 | `23ai` | 欄位宣告為 `BOOLEAN` | 本檔沒有替代寫法，回覆註明；與舊版 PL/SQL 的 `BOOLEAN` 不同 |
 
-每一列描述一種完整用法，「支援條件」列出的條件全部成立才算有支援。識別字長度的例外依物件類型而異，以來源文件為準。
+- 每一列描述一種完整用法，「支援條件」列出的條件全部成立才算有支援。
+- 部分物件類型的名稱長度上限與一般識別字不同，例如資料庫名稱上限為 8 bytes。其他無法確認上限的物件類型，以 30 bytes 為限。
 
 ## 替代寫法
 
 ### `ROWNUM` 雙層分頁
-
-依賴的寫法見 [11.1 文件](https://docs.oracle.com/cd/E15817_01/appdev.111/e05696.pdf)的巢狀查詢分頁範例。
 
 內層查詢必須先以唯一且穩定的 `ORDER BY` 排序，再由外層套用 `ROWNUM` 範圍。唯一排序鍵規則見 `SKILL.md` 共通規範「分頁查詢」。
 
@@ -56,7 +56,7 @@ WHERE rn > :start_row;
 
 ### `SEQUENCE` 取代 `IDENTITY`
 
-`SEQUENCE` 搭配 `NEXTVAL` 直接用於 `INSERT` 的寫法見 [11.2 文件](https://docs.oracle.com/cd/E18283_01/server.112/e17120/views002.htm)，範例見 SKILL.md Oracle 專屬節「自動編號（SEQUENCE）」。
+`SEQUENCE` 搭配 `NEXTVAL` 直接用於 `INSERT`，範例見 SKILL.md Oracle 專屬節「自動編號（SEQUENCE）」。
 
 目標版本支援 `IDENTITY` 時可改用：
 
@@ -66,20 +66,40 @@ ProductId NUMBER GENERATED BY DEFAULT AS IDENTITY
 
 ## 語意陷阱
 
-以下語法在 Oracle 看似正確卻行為不同，是 T-SQL 經驗者最常踩的坑。
+以下語法在 Oracle 與 T-SQL 的行為不同。
 
-- **空字串等於 NULL**：Oracle 中 `''` 即 NULL，`col = ''` 永遠不成立，判斷空值一律用 `IS NULL`。像 `NVL(col, '') = ''` 這種寫法恆為 false（`''` 是 NULL，`NVL` 的預設值也成 NULL），達不到預期效果。
-- **DML 不自動提交**：Oracle 的 `INSERT` / `UPDATE` / `DELETE` 執行後需顯式 `COMMIT` 才生效，不像 SQL Server 預設 autocommit。忘記 `COMMIT` 會讓變更在連線結束時回滾。
-- **`ROWNUM` 在 `ORDER BY` 之前套用**：`SELECT * FROM Orders WHERE ROWNUM <= 10 ORDER BY OrderDate` 會先取任意 10 筆再排序，不是排序後的前 10 筆。要取排序後的前 N 筆，須先在子查詢排序再於外層套 `ROWNUM`，或改用 `FETCH FIRST n ROWS ONLY`。
-- **日期字串隱式轉換依賴 NLS**：直接 `WHERE OrderDate >= '2024-01-01'` 依賴會談的 `NLS_DATE_FORMAT`，不同環境結果可能不同。明確使用 `TO_DATE('2024-01-01', 'YYYY-MM-DD')` 或 `DATE '2024-01-01'` 字面值。
+- **空字串等於 NULL**：Oracle 中 `''` 即 NULL，`col = ''` 的結果為 UNKNOWN，`WHERE` 條件永遠不成立，套上 `NOT` 仍為 UNKNOWN。判斷空值一律用 `IS NULL`。`NVL(col, '') = ''` 同樣為 UNKNOWN（`''` 是 NULL，`NVL` 的預設值也成 NULL）。
+- **DML 不自動提交**：Oracle 的 `INSERT` / `UPDATE` / `DELETE` 執行後需顯式 `COMMIT` 才生效，SQL Server 預設為 autocommit。缺少 `COMMIT` 時，連線結束後變更是否保留由用戶端決定。SQL*Plus 正常結束時預設提交，程序異常中止或用戶端未提交就關閉連線時回滾。程式碼一律明確 `COMMIT` 或 `ROLLBACK`，不依賴連線結束的行為。
+- **`ROWNUM` 在 `ORDER BY` 之前套用**：`SELECT * FROM Orders WHERE ROWNUM <= 10 ORDER BY OrderDate` 先取任意 10 筆再排序，不是排序後的前 10 筆。要取排序後的前 N 筆，先在子查詢排序再於外層套 `ROWNUM`，或改用 `FETCH FIRST n ROWS ONLY`。
+- **日期字串隱式轉換依賴 NLS**：`WHERE OrderDate >= '2024-01-01'` 依賴工作階段（session）的 `NLS_DATE_FORMAT`，不同環境結果不同。明確使用 `TO_DATE('2024-01-01', 'YYYY-MM-DD')` 或 `DATE '2024-01-01'` 字面值。
 
 ## 開發機版本查詢
 
-| 用途 | 查詢 | 來源 |
-| --- | --- | --- |
-| 版本字串 | `SELECT BANNER_FULL FROM V$VERSION;` | [Oracle AI Database 26ai administration](https://docs.oracle.com/en/database/oracle/oracle-database/26/admin/getting-started-with-database-administration.html) |
-| 元件版本 | `SELECT * FROM PRODUCT_COMPONENT_VERSION;` | [Oracle AI Database 26ai administration](https://docs.oracle.com/en/database/oracle/oracle-database/26/admin/getting-started-with-database-administration.html) |
+| 用途 | 查詢 |
+| --- | --- |
+| 版本字串 | `SELECT BANNER_FULL FROM V$VERSION;` |
+| 元件版本 | `SELECT * FROM PRODUCT_COMPONENT_VERSION;` |
 
 - 查詢語句照官方文件原樣使用，屬診斷查詢，不受共通規範「禁止 `SELECT *`」約束。
-- `BANNER_FULL` 欄位在舊版本可能不存在，查詢失敗時改用元件版本查詢。
+- `BANNER_FULL` 欄位自 `18c` 起提供。查詢失敗時改用元件版本查詢，`18c` 起讀 `VERSION_FULL` 欄，`18c` 之前讀 `VERSION` 欄。`VERSION` 在 23 系列只顯示 23.0，無法區分 `23ai` 與 `26ai`，不用於 `18c` 以後的版本。
 - 對映合法值：取版本號的前兩段對照「版本對照」表。23 開頭時，第二段為 26 以上對映 `26ai`，其餘對映 `23ai`。對不上任何列時視為無法對映，不附推薦值。
+
+## 來源
+
+最後查證日：2026-11-05。每一列版本、門檻與替代寫法對應的官方文件如下。
+
+| 對象 | 來源 |
+| --- | --- |
+| 版本對照：`11g` | [Releases that support direct upgrade](https://docs.oracle.com/en/database/oracle/oracle-database/18/upgrd/oracle-database-releases-that-support-direct-upgrade.html) |
+| 版本對照：`12cR1`、`12cR2` | [Upgrading Oracle Database](https://docs.oracle.com/en/database/oracle/oracle-database/19/fppad/upgrading-oracle-database-software.html) |
+| 版本對照：`18c` | [Checking your current release number](https://docs.oracle.com/en/database/oracle/oracle-database/18/admin/getting-started-with-database-administration.html) |
+| 版本對照：`19c`、`21c`、`23ai` | [Enterprise Manager new features](https://docs.oracle.com/en/enterprise-manager/cloud-control/enterprise-manager-cloud-control/24.1/emcon/new-features-focus-area.html) |
+| 版本對照：`26ai` | [Oracle AI Database 26ai administration](https://docs.oracle.com/en/database/oracle/oracle-database/26/admin/getting-started-with-database-administration.html) |
+| `OFFSET ... FETCH NEXT`、`FETCH FIRST n ROWS ONLY`、`GENERATED AS IDENTITY` | [12.1 new features](https://docs.oracle.com/database/121/NEWFT/chapter12101.htm) |
+| 識別字最長 128 bytes、物件名稱長度上限 | [Database object names and qualifiers](https://docs.oracle.com/cd/G11854_01/sqlrf/sql-language-reference.pdf) |
+| 省略 `FROM` 的純運算式查詢 | [Selecting from the DUAL Table](https://docs.oracle.com/en/database/oracle/oracle-database/26/sqlrf/Selecting-from-the-DUAL-Table.html) |
+| DDL 的 `IF [NOT] EXISTS`、SQL `BOOLEAN` | [Oracle Database 23ai SQL features](https://docs.oracle.com/en/learn/db23ai-sql-features/index.html) |
+| 替代寫法：`ROWNUM` 雙層分頁 | [11.1 巢狀查詢分頁範例](https://docs.oracle.com/cd/E15817_01/appdev.111/e05696.pdf) |
+| 替代寫法：`SEQUENCE` 取代 `IDENTITY` | [11.2 SEQUENCE 用於 INSERT](https://docs.oracle.com/cd/E18283_01/server.112/e17120/views002.htm) |
+| 開發機查詢：版本字串、`BANNER_FULL` 起始版本 | [Oracle AI Database 26ai administration](https://docs.oracle.com/en/database/oracle/oracle-database/26/admin/getting-started-with-database-administration.html)、[V$VERSION](https://docs.oracle.com/en/database/oracle/oracle-database/18/refrn/V-VERSION.html) |
+| 開發機查詢：元件版本 | [Oracle AI Database 26ai administration](https://docs.oracle.com/en/database/oracle/oracle-database/26/admin/getting-started-with-database-administration.html) |

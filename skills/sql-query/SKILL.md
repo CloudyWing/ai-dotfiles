@@ -79,12 +79,12 @@ policy.allow_implicit_invocation: true
 
 ## 共通規範
 
-以下規範對 SQL Server 與 Oracle 皆適用。
+以下規範對 SQL Server 與 Oracle 皆適用。範例的參數以 SQL Server 的 `@name` 表示，Oracle 改用 `:name` bind 變數。
 
 ### 查詢格式與可讀性
 
 - **關鍵字大寫**：`SELECT`、`FROM`、`WHERE`、`JOIN`、`ON`、`GROUP BY`、`ORDER BY`、`INSERT`、`UPDATE`、`DELETE` 等 SQL 關鍵字一律大寫。
-- **內建函式名大寫**：`COUNT`、`SUM`、`SYSDATE`、`NVL`、`SUBSTR` 等內建函式名一律大寫，與關鍵字風格一致。
+- **內建函式名大寫**：`COUNT`、`SUM` 等內建函式名一律大寫，與關鍵字風格一致。資料庫專屬函式同樣適用，例如 SQL Server 的 `GETDATE`、`ISNULL`，Oracle 的 `SYSDATE`、`NVL`。
 - **縮排**：使用 4 個空格，不使用 Tab。
 - **每個子句獨立一行**：`SELECT`、`FROM`、`WHERE`、`JOIN`、`GROUP BY`、`ORDER BY`、`HAVING` 各佔一行。
 - **逗號前置**：多欄位 `SELECT` 時，逗號置於行首以利增刪欄位時的 diff 乾淨度。
@@ -133,7 +133,7 @@ FROM Orders;
 -- ✅ 欄位別名加 AS，同樣漏逗號會語法錯誤，立即暴露問題
 SELECT
     OrderId
-    ,OrderDate AS d
+    OrderDate AS d
 FROM Orders;
 ```
 
@@ -149,13 +149,22 @@ FROM Orders;
 - **禁止對欄位套用函式**後再比較，會導致索引失效：
 
 ```sql
--- ❌ 索引失效
+-- ❌ 索引失效（T-SQL）
 WHERE YEAR(OrderDate) = 2024
 WHERE CONVERT(VARCHAR, OrderDate, 112) = '20240101'
 WHERE ISNULL(Status, 0) = 1
 
--- ✅ 索引友善
+-- ❌ 索引失效（Oracle）
+WHERE EXTRACT(YEAR FROM OrderDate) = 2024
+WHERE TO_CHAR(OrderDate, 'YYYYMMDD') = '20240101'
+WHERE NVL(Status, 0) = 1
+
+-- ✅ 索引友善（T-SQL）
 WHERE OrderDate >= '2024-01-01' AND OrderDate < '2025-01-01'
+WHERE Status = 1
+
+-- ✅ 索引友善（Oracle）
+WHERE OrderDate >= DATE '2024-01-01' AND OrderDate < DATE '2025-01-01'
 WHERE Status = 1
 ```
 
@@ -243,7 +252,7 @@ EXEC('SELECT * FROM Products WHERE CategoryId = ' + @inputCategoryId);
 
 ## Oracle 專屬語法（Oracle SQL / PL/SQL）
 
-以下規則**僅適用於 Oracle 資料庫**，與共通規範及 SQL Server 節不重疊。Oracle 的語法錯誤多來自「把 SQL Server（T-SQL）習慣反射套用到 Oracle」，本節先以對照表列出高頻直譯錯誤，語意陷阱見 references/oracle.md。
+以下規則**僅適用於 Oracle 資料庫**，與共通規範及 SQL Server 節不重疊。Oracle 的語法錯誤多來自「把 SQL Server（T-SQL）習慣反射套用到 Oracle」，本節先以對照表列出高頻直譯錯誤。語意陷阱（空字串與 NULL、提交行為、`ROWNUM` 與排序、日期隱式轉換）見 references/oracle.md「語意陷阱」，撰寫或審查 Oracle SQL 前必讀。
 
 ### T-SQL 習慣 → Oracle 正解對照
 
@@ -253,22 +262,18 @@ EXEC('SELECT * FROM Products WHERE CategoryId = ' + @inputCategoryId);
 | --- | --- | --- |
 | `ISNULL(x, y)` | `NVL(x, y)` / `COALESCE(x, y)` | NULL 取代；Oracle 不支援 `ISNULL` |
 | `GETDATE()` | `SYSDATE` / `SYSTIMESTAMP` | 目前時間 |
-| `LEN(x)` | `LENGTH(x)` | 字串長度 |
+| `LEN(x)` | `LENGTH(x)` | 字串長度；`LEN` 不計尾端空白，`LENGTH` 會計入，需要相同結果時用 `CASE WHEN x IS NULL THEN NULL ELSE NVL(LENGTH(RTRIM(x)), 0) END`（全空白字串經 `RTRIM` 後為 NULL；Oracle 的 `''` 即 NULL，原值為 `''` 時結果為 NULL） |
 | `CHARINDEX(sub, x)` | `INSTR(x, sub)` | 子字串位置，注意參數順序相反 |
 | `SUBSTRING(x, s, l)` | `SUBSTR(x, s, l)` | 擷取子字串 |
-| `a + b`（字串） | `a || b` | 字串串接；Oracle 的 `+` 僅為數值運算 |
+| `a + b`（字串） | `a || b` | 字串串接；Oracle 的 `+` 用於數值與日期算術，不能串接字串 |
 | `SELECT TOP n ...` | `... FETCH FIRST n ROWS ONLY` | 限制筆數（版本門檻見 references/oracle.md） |
-| `VARCHAR` / `INT` | `VARCHAR2` / `NUMBER` | 常用型別 |
+| `VARCHAR` / `INT` | `VARCHAR2` / `NUMBER(p, 0)` | 常用型別；Oracle 也接受 `VARCHAR`、`INT`，字串一律寫 `VARCHAR2`，整數寫 `NUMBER(p, 0)` |
 
 - NULL 合併優先使用標準 SQL 的 `COALESCE`，`NVL` 為 Oracle 專屬。
 
 ```sql
 SELECT FirstName || ' ' || LastName AS FullName FROM Employees;
 ```
-
-### 語意陷阱（最易忽略）
-
-Oracle 語意陷阱（空字串與 NULL、提交行為、`ROWNUM` 與排序、日期隱式轉換）見 references/oracle.md「語意陷阱」，撰寫或審查 Oracle SQL 前必讀。
 
 ### 識別字大小寫折疊
 
@@ -282,11 +287,13 @@ Oracle 語意陷阱（空字串與 NULL、提交行為、`ROWNUM` 與排序、�
 
 ```sql
 -- ✅ 正確
-EXECUTE IMMEDIATE 'SELECT ProductId, ProductName FROM Products WHERE CategoryId = :cid'
-    USING v_category_id;
+EXECUTE IMMEDIATE 'SELECT ProductName FROM Products WHERE ProductId = :pid'
+    INTO v_product_name
+    USING v_product_id;
 
 -- ❌ 錯誤
-EXECUTE IMMEDIATE 'SELECT * FROM Products WHERE CategoryId = ' || v_category_id;
+EXECUTE IMMEDIATE 'SELECT ProductName FROM Products WHERE ProductId = ' || v_product_id
+    INTO v_product_name;
 ```
 
 ### 分頁查詢
@@ -327,7 +334,7 @@ FROM Orders;
 
 ### DUAL 虛擬資料表
 
-- Oracle 無法在 `SELECT` 中省略 `FROM`，計算純運算式時使用 `DUAL`：
+- 計算純運算式時使用 `FROM DUAL`，各版本皆可用。省略 `FROM` 的寫法有版本門檻，見 references/oracle.md：
 
 ```sql
 SELECT SYSDATE FROM DUAL;
