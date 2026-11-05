@@ -140,13 +140,15 @@ Claude Code 的工具權限由 `settings.json` 的 `permissions`（allow／ask�
 
 四個區塊依序為 Session、額度、線、work-root，標題可點擊收合或展開，名稱與筆數後的箭頭 `▸` 表示收合，`▾` 表示展開。四個區塊預設展開，收合狀態跨 Session 保留。線區塊中相同的 lineSlug 只顯示檢查點時間最新的一筆。
 
-各列圓點以綠色表示執行中、黃色表示需要注意、紅色表示錯誤、灰色表示閒置或無須處理。列首圖示與區塊分隔線協助辨識資料類型。work-root 預設不列出派遣暫存 worktree，第二行顯示未 commit、未 push 與相對主分支的狀態，數值為零的項目省略；線的第二行顯示檢查點標籤。
+線的圓點以綠色表示執行中、紅色表示錯誤、灰色表示其餘狀態，超過 24 小時未更新的線名稱以淡色顯示。其他區塊以黃色表示需要注意。列首圖示與區塊分隔線協助辨識資料類型。work-root 預設不列出派遣暫存 worktree，第二行顯示未 commit、未 push 與相對主分支的狀態，數值為零的項目省略。線的右欄顯示檢查點標籤與相對時間，Dev 回收標籤省略。
 
-Session 依最近活動時間排序，並與線的檢查點時間一同以相對時間顯示。超過 3 天未更新且沒有執行中 Session 的線摺疊為「停擺 N 條」，展開狀態跨 Session 保留。
+Session 依最近活動時間排序，並與線的檢查點時間一同以相對時間顯示。Session 的線名附註放不下時整個隱藏。額度右欄以「剩 N%」顯示剩餘量。
+
+超過 3 天未更新且沒有執行中 Session 的線，以及已落地且沒有執行中 Session 的線，摺疊為「已結束／停擺 N 條」，展開狀態跨 Session 保留。已落地的判定條件為 Dev 回收、主 checkout 有同名線，且 `feature/<lineSlug>` 分支不存在。mod 對目前 repo 執行一次唯讀的 `git branch --list` 取得分支清單；Git 失敗時不判定為已落地。
 
 掃描範圍包含 `workRoots` 設定的位置，空白時使用與腳本相同的預設清單，並加入目前 Session 所在 repo 的主工作樹與非派遣暫存 worktree。非 Git 目錄只加入該目錄。目前 repo 的主工作樹與 Session 所在 worktree 即使沒有 `.local\ai-sessions\handoff` 目錄，也會透過腳本的 `-ForceWorkRoot` 列出 Git 狀態，該列不含線資料；其他沒有 handoff 目錄的 worktree 不列出。
 
-work-root 區塊將目前 repo 的列排在最前，面板頂部顯示 `目前：<repo 名稱>`，cwd 變更時立即重新整理。plugin 0.4.0 需搭配同一 repo 的新版腳本，plugin 的內建預設清單須與腳本預設值同步。
+work-root 區塊將目前 repo 的列排在最前，面板頂部顯示 `目前：<repo 名稱>`，cwd 變更時立即重新整理。plugin 0.5.0 需搭配同一 repo 的新版腳本，plugin 的內建預設清單須與腳本預設值同步。
 
 Setup 的 8b 安裝此 plugin。`workRoots` 可設定以分號分隔的掃描位置，空白時使用腳本預設值；`scriptPath` 可指定腳本路徑，空白時自動尋找。修改設定後執行 `/reload-plugins`。
 
