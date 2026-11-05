@@ -73,8 +73,9 @@ function Get-DispatchReferenceFindings {
     [CmdletBinding()]
     param([object]$Order, [string]$Stage, [string]$DispatchRoot)
     if ($null -eq $Order) { return }
+    $pathPattern = '(?i)(?<![a-z0-9_.\-\\/])(?:`(?<quoted>(?:[a-z]:[\\/]|(?<!\[)\\\\)[^`\r\n]+)`|"(?<quoted>(?:[a-z]:[\\/]|(?<!\[)\\\\)[^"\r\n]+)"|(?<bare>(?:[a-z]:[\\/]|(?<!\[)\\\\)[^\s`"''<>|、（，；：\]]+))'
     foreach ($line in ([string]$Order.TaskBody -split '\r?\n')) {
-        foreach ($pathMatch in [regex]::Matches($line, '(?i)`(?<quoted>(?:[a-z]:[\\/]|\\\\)[^`\r\n]+)`|"(?<quoted>(?:[a-z]:[\\/]|\\\\)[^"\r\n]+)"|(?<bare>(?:[a-z]:[\\/]|\\\\)[^\s`"''<>|]+)')) {
+        foreach ($pathMatch in [regex]::Matches($line, $pathPattern)) {
             $path = if ($pathMatch.Groups['quoted'].Success) { $pathMatch.Groups['quoted'].Value } else { $pathMatch.Groups['bare'].Value.TrimEnd('.', ',', '，', '。', '）', ')') }
             $path = $path -replace ':\d+(?::\d+)?$', ''
             $underDispatch = Test-PathWithinRoot -Path $path -Root $DispatchRoot
@@ -95,7 +96,7 @@ function Get-DispatchReferenceFindings {
     }
     if ($Stage -eq 'Request') {
         $acceptance = [regex]::Match([string]$Order.Content, '(?ms)^##\s*5\..*?\r?\n(?<body>.*?)(?=^##\s*6\.|\z)')
-        foreach ($pathMatch in [regex]::Matches($acceptance.Groups['body'].Value, '(?i)`(?<quoted>(?:[a-z]:[\\/]|\\\\)[^`\r\n]+)`|"(?<quoted>(?:[a-z]:[\\/]|\\\\)[^"\r\n]+)"|(?<bare>(?:[a-z]:[\\/]|\\\\)[^\s`"''<>|]+)')) {
+        foreach ($pathMatch in [regex]::Matches($acceptance.Groups['body'].Value, $pathPattern)) {
             $path = if ($pathMatch.Groups['quoted'].Success) { $pathMatch.Groups['quoted'].Value } else { $pathMatch.Groups['bare'].Value.TrimEnd('.', ',', '，', '。', '）', ')') }
             $path = $path -replace ':\d+(?::\d+)?$', ''
             try {
@@ -241,7 +242,12 @@ function Invoke-DispatchInputChecks {
             }
             catch {
                 $targetScanError = $_.Exception.Message
-                New-DispatchInputFinding -CheckId 'DI-STYLE' -Severity 'error' -Code 'DispatchInputProfileKeyMissing' -Field 'target_path' -Message ('無法檢查目標目錄：' + $target + '；' + $targetScanError) -Expected '可讀取的目標目錄' -Received '' -Source ([string]$target)
+                if ($targetScanError.StartsWith('DispatchInputDirectoryScanLimit', [StringComparison]::Ordinal)) {
+                    New-DispatchInputFinding -CheckId 'DI-STYLE' -Severity 'error' -Code 'DispatchInputDirectoryScanLimit' -Field 'target_path' -Message '目錄項目超過 10000 個，無法確認是否含 C# 檔；請將 target_path 縮小到實際要修改的子目錄或檔案。' -Expected '不超過 10000 個項目的目標目錄' -Received '' -Source ([string]$target)
+                }
+                else {
+                    New-DispatchInputFinding -CheckId 'DI-STYLE' -Severity 'error' -Code 'DispatchInputProfileKeyMissing' -Field 'target_path' -Message ('無法檢查目標目錄：' + $target + '；' + $targetScanError) -Expected '可讀取的目標目錄' -Received '' -Source ([string]$target)
+                }
             }
         }
     }

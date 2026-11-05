@@ -2274,7 +2274,9 @@ function Get-Phase9GitWorktreeListScoped {
         [string]$RepositoryRoot,
 
         [Parameter(Mandatory)]
-        [string[]]$ScopeRoot
+        [string[]]$ScopeRoot,
+
+        [string]$DispatchSlug = ''
     )
 
     $list = Get-Phase9GitWorktreeList -RepositoryRoot $RepositoryRoot
@@ -2285,6 +2287,10 @@ function Get-Phase9GitWorktreeListScoped {
             continue
         }
         $worktreePath = ([string]$worktreeLine).Substring('worktree '.Length).Trim()
+        if (-not [string]::IsNullOrWhiteSpace($DispatchSlug) -and [string]::Equals([IO.Path]::GetFileName($worktreePath.TrimEnd('\', '/')), $DispatchSlug, [StringComparison]::OrdinalIgnoreCase)) {
+            $keptBlocks.Add($block.Trim())
+            continue
+        }
         foreach ($scope in $ScopeRoot) {
             if (Test-Phase9PathWithinRoot -Root $scope -Candidate $worktreePath) {
                 $keptBlocks.Add($block.Trim())
@@ -7704,6 +7710,51 @@ if ($Phase -ge 6) {
         [IO.File]::WriteAllText($reference, 'fixture')
         Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Worktree -DispatchRoot $execution).Count -eq 0) '存在的執行端參照應通過。'
     }
+    Invoke-Case 'Phase 6 DD-REF-TOKEN 路徑分隔與非路徑文字' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-ref-token') -TaskBody '檢查目標'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $first = Join-Path $f.Root 'first.txt'
+        $second = Join-Path $f.Root 'second.txt'
+        [IO.File]::WriteAllText($first, 'first')
+        [IO.File]::WriteAllText($second, 'second')
+        $execution = Join-Path $f.Root 'worktree'
+        foreach ($body in @(
+                ('讀取 ' + $first + '、' + $second),
+                ('讀取 ' + $first + '（註記）'),
+                'rg handoff[\\/]+dispatch-order-',
+                ('網址 ' + 'https' + '://' + 'example.com' + '/a/b'),
+                ('讀取 `' + $first + ':12`')
+            )) {
+            $order.TaskBody = $body
+            Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution).Count -eq 0) ('合法文字不應回報參照缺失：' + $body)
+        }
+        $order.TaskBody = '讀取 ' + (Join-Path $f.Root 'absent.txt')
+        $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
+        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputReferenceMissing' -and $findings[0].severity -eq 'error') '不存在的必讀路徑應以 error 回報。'
+        $order.TaskBody = '建立 ' + (Join-Path $f.Root 'absent.txt')
+        $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
+        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputReferenceMissing' -and $findings[0].severity -eq 'warning') '不存在的輸出路徑應以 warning 回報。'
+        foreach ($body in @(('讀取' + (Join-Path $f.Root 'absent.txt')), ('讀取路徑=' + (Join-Path $f.Root 'absent.txt')))) {
+            $order.TaskBody = $body
+            $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
+            Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputReferenceMissing' -and $findings[0].severity -eq 'error') '中文字或等號後的不存在路徑應以 error 回報。'
+        }
+        $order.TaskBody = '讀取 [' + (Join-Path $f.Root 'absent.txt') + ']'
+        $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
+        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputReferenceMissing' -and $findings[0].severity -eq 'error') '方括號內不存在的路徑應以 error 回報。'
+        $order.TaskBody = '讀取 [' + $first + ']'
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution).Count -eq 0) '方括號內存在的路徑不應回報參照缺失。'
+    }
+    Invoke-Case 'Phase 6 DD-PROFILE DispatchInputDirectoryScanLimit 對外錯誤碼' {
+        $script:ddScanLimitCallCount = 0
+        function Test-DispatchDirectoryContainsCsharp { param([string]$Path) $script:ddScanLimitCallCount++; throw 'DispatchInputDirectoryScanLimit: fixture' }
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-scan-limit-code') -TaskBody '檢查目標' -DirectoryTarget
+        $null = New-Item -ItemType Directory -Path (Join-Path $f.Root 'target') -Force
+        $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'write'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $null }
+        $findings = @(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-STYLE' })
+        Assert-True ($script:ddScanLimitCallCount -eq 1) '目錄掃描替身應呼叫一次。'
+        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputDirectoryScanLimit' -and $findings[0].severity -eq 'error') '超過上限應以專用錯誤碼拒絕。'
+    }
     Invoke-Case 'Phase 6 DD-REF UNC 絕對參照' {
         function Test-PathWithinRoot { param([string]$Path, [string]$Root) return $false }
         function Test-Path { [CmdletBinding()] param([string]$LiteralPath) return $false }
@@ -10807,6 +10858,13 @@ fixture
                     prepareResultPath = $prepareResultPath
                     prepareResultSha256 = $prepareResultSha256
                 } | ConvertTo-Json -Depth 12) + "`r`n") -SourceRoot $sourceRootPath -ExecutionRoot $startRoot -TargetPath @()
+        $savedScriptVariables = @{}
+        $scriptVariableNames = @('SourceRoot', 'ExecutionRoot', 'DispatchRoot', 'DispatchEntryScriptRoot', 'PidRecordPath', 'TargetPath', 'LineSlug', 'DispatchSlug', 'DispatchKind', 'TaskType', 'WriteMode', 'SessionMode', 'Profile', 'ProfileExplicit', 'Model', 'ReasoningEffort', 'CodexHome', 'CodexPath', 'CodexParentOption', 'AddDirectory', 'Search', 'RequestedUnit', 'UnitKind', 'PreflightResultPath', 'PromptPath', 'EvidencePackPath', 'AdvisorConsultReportPath', 'ResultPath', 'PrepareResultPath', 'ScopePlanPath', 'LastMessagePath', 'ThreadIdPath', 'ResumeThreadId', 'RequestPath', 'AdvisorRequestSource', 'InvocationBoundParameters', 'RequestContext', 'RequestPrepareArtifacts', 'pidResult', 'dispatchUnitListOverride', 'advisorStartPromptMode', 'launcherFixtureFailure', 'phase8CapturedActivation', 'phase8CapturedScopePlan')
+        foreach ($name in $scriptVariableNames) {
+            $variable = Get-Variable -Name $name -Scope Script -ErrorAction SilentlyContinue
+            $savedScriptVariables[$name] = if ($null -eq $variable) { $null } else { @{ Value = $variable.Value } }
+        }
+        try {
         $script:SourceRoot = $sourceRootPath
         $script:ExecutionRoot = $startRoot
         $script:DispatchRoot = $startRoot
@@ -10879,10 +10937,14 @@ fixture
             scope_plan = $script:phase8CapturedScopePlan
             run_record = $runRecord
         }
-        $script:advisorStartPromptMode = $false
-        $script:launcherFixtureFailure = $false
-        $script:dispatchUnitListOverride = $null
         return $result
+        }
+        finally {
+            foreach ($name in $scriptVariableNames) {
+                if ($null -eq $savedScriptVariables[$name]) { Remove-Variable -Name $name -Scope Script -ErrorAction SilentlyContinue }
+                else { Set-Variable -Name $name -Scope Script -Value $savedScriptVariables[$name].Value }
+            }
+        }
     }
 
     Invoke-Case 'Phase 8 advisor 契約矩陣與拒絕碼' {
@@ -18059,7 +18121,7 @@ return & $script:phase9OriginalGetFileSha256 -Path $Path
             $targetRelativePath = 'scripts\Invoke-CodexDispatch.ps1'
             $lineManifestSourcePath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\line.json')
             $requirementSummarySourcePath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\requirement-summary.md')
-            $sourceRepoWorktreeBefore = Get-Phase9GitWorktreeListScoped -RepositoryRoot $sourceRepositoryRoot -ScopeRoot @($testExecutionRoot)
+            $sourceRepoWorktreeBefore = Get-Phase9GitWorktreeListScoped -RepositoryRoot $sourceRepositoryRoot -ScopeRoot @($testExecutionRoot) -DispatchSlug $caseSlug
             $isolatedRepoWorktreeBefore = $null
             $isolatedRepoWorktreeAfter = $null
             $worktreeCleanup = $null
@@ -18309,7 +18371,7 @@ $script:TargetPath = @()
                     $worktreeCleanup = Remove-Phase9GitWorktree -SourceRoot $sourceRoot -DispatchRoot $dispatchRoot
                     $isolatedRepoWorktreeAfter = Get-Phase9GitWorktreeList -RepositoryRoot $sourceRoot
                 }
-                $sourceRepoWorktreeAfter = Get-Phase9GitWorktreeListScoped -RepositoryRoot $sourceRepositoryRoot -ScopeRoot @($testExecutionRoot)
+                $sourceRepoWorktreeAfter = Get-Phase9GitWorktreeListScoped -RepositoryRoot $sourceRepositoryRoot -ScopeRoot @($testExecutionRoot) -DispatchSlug $caseSlug
             }
             $caseResult | Add-Member -MemberType NoteProperty -Name source_repo_worktree_before -Value $sourceRepoWorktreeBefore
             $caseResult | Add-Member -MemberType NoteProperty -Name source_repo_worktree_after -Value $sourceRepoWorktreeAfter
@@ -18407,8 +18469,9 @@ $script:TargetPath = @()
         }
         $mutantBOuterRepoRoot = [IO.Directory]::GetParent([IO.Path]::GetFullPath($mutantBCommonGitDirectoryPath)).FullName
         $mutantBDispatchRoot = Join-Path $mutantBOuterRepoRoot ('.local\ai-sessions\worktrees\r13-mutant-outer-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
-        $mutantBScopeRoot = @([IO.Path]::GetFullPath($fixtureBaseRoot), $mutantBDispatchRoot)
-        $mutantBOuterWorktreeBefore = Get-Phase9GitWorktreeListScoped -RepositoryRoot $mutantBOuterRepoRoot -ScopeRoot $mutantBScopeRoot
+        $mutantBScopeRoot = @([IO.Path]::GetFullPath($fixtureBaseRoot))
+        $mutantBSlug = [IO.Path]::GetFileName($mutantBDispatchRoot)
+        $mutantBOuterWorktreeBefore = Get-Phase9GitWorktreeListScoped -RepositoryRoot $mutantBOuterRepoRoot -ScopeRoot $mutantBScopeRoot -DispatchSlug $mutantBSlug
         $mutantBOuterWorktreeAfter = $null
         $mutantBOuterWorktreeAfterCleanup = $null
         try {
@@ -18425,7 +18488,7 @@ $script:TargetPath = @()
                 $ErrorActionPreference = $mutantBPreviousErrorActionPreference
             }
             Assert-Phase9GitCommandSucceeded -Result $mutantBAddResult
-            $mutantBOuterWorktreeAfter = Get-Phase9GitWorktreeListScoped -RepositoryRoot $mutantBOuterRepoRoot -ScopeRoot $mutantBScopeRoot
+            $mutantBOuterWorktreeAfter = Get-Phase9GitWorktreeListScoped -RepositoryRoot $mutantBOuterRepoRoot -ScopeRoot $mutantBScopeRoot -DispatchSlug $mutantBSlug
             $mutantBRequest = $preFix.request | ConvertTo-Json -Depth 30 | ConvertFrom-Json
             $mutantBRequest.source_root = $mutantBOuterRepoRoot
             $mutantBRequest.dispatch_root = $mutantBDispatchRoot
@@ -18455,7 +18518,7 @@ $script:TargetPath = @()
                 Assert-True (Test-PathWithinRoot -Path $mutantBDispatchRoot -Root $mutantBOuterWorktreeRoot) ('R-3 mutant 乙 清理目標超出外層 worktree root：' + $mutantBDispatchRoot)
                 Remove-Item -LiteralPath $mutantBDispatchRoot -Recurse -Force
             }
-            $mutantBOuterWorktreeAfterCleanup = Get-Phase9GitWorktreeListScoped -RepositoryRoot $mutantBOuterRepoRoot -ScopeRoot $mutantBScopeRoot
+            $mutantBOuterWorktreeAfterCleanup = Get-Phase9GitWorktreeListScoped -RepositoryRoot $mutantBOuterRepoRoot -ScopeRoot $mutantBScopeRoot -DispatchSlug $mutantBSlug
         }
         Assert-True ($null -ne $mutantB -and [string]$mutantB.request.dispatch_root -eq $mutantBDispatchRoot -and -not [string]::Equals([string]$mutantB.source_repo_worktree_before, [string]$mutantB.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 mutant 乙 未造成外層 repo worktree list 前後差異：' + ($mutantB | ConvertTo-Json -Depth 30 -Compress))
         Assert-True (-not [string]::IsNullOrWhiteSpace($mutantBFailure) -and $mutantBFailure -match '外層 repo 的 git worktree list') ('R-3 mutant 乙 未被外層 repo 清單斷言捕捉：' + ($mutantB | ConvertTo-Json -Depth 30 -Compress))

@@ -14,6 +14,7 @@
 | 事件流以 `turn.failed` 結束或 exit code 非零 | 依 C 出口取失敗原因。若事件流以 `turn.failed` 結束且結案報告不存在，`Inspect` 與 `Collect` 回報 `recoverable_artifacts_present` 及 `recoverable_artifact_files`，供主 Agent 檢視相對 `baseSha` 的 worktree 變更並決定是否以新 `dispatchSlug` 冷啟動；欄位不改變失敗判定 | 完成判定與三出口 |
 | `DispatchInputOrderLocationInvalid` | 派遣單存在於 `handoff` 根目錄時，移至訊息列出的線目錄並移除根目錄檔案後重送；prompt 引用 Start 注入的路徑 | 派遣單契約 |
 | `DispatchInputOrderMissing` | 依訊息中的線目錄路徑建立派遣單後重送 | 派遣單契約 |
+| `DispatchInputDirectoryScanLimit`，目標目錄掃描超過 10000 個項目，無法確認是否含 C# 檔 | 將 `target_path` 縮小至實際要修改的子目錄或檔案後重送 | AI-PROFILE 前置檢查 |
 | 派遣 target_path 符合機密檔名樣式 | `Preflight` 以 `PreflightSecretTargetRejected` 列出路徑並在建立 worktree 前停止 | Git 前置探針與 worktree 生命週期 |
 | Prepare 失敗且 `PrepareFailed` 文件再次寫入失敗 | 由 operation result 的 `prepareResultWriteFailure.code=PrepareResultWriteFailed` 與 `prepareResultWriteFailure.path` 取得錯誤碼與目標路徑；`prepareResultSha256=null`，不將該路徑視為已成功保存的 Prepare 文件，修正寫入條件後重新 Prepare | 腳本介面與執行前提 |
 | 結案訊息缺少識別字 | 標記 `PromptNotDelivered`，修正啟動方式後重新派遣 | RecoveryPrecheck |
