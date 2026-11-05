@@ -10,7 +10,7 @@ export const BAR_WIDTH = 48
 export const BAR_HEIGHT = 4
 export const HOVER_BG = '#80808026'
 export const STALE_MS = 3 * 24 * 60 * 60 * 1000
-export const RECENT_MS = 24 * 60 * 60 * 1000
+export const DIM_AFTER_MS = 24 * 60 * 60 * 1000
 export const SESSION_LIMIT = 15
 export const LINE_LIMIT = 12
 export const QUOTA_OK_FROM = 50
@@ -86,8 +86,11 @@ export function quotaDotTone(primary: number | null, secondary: number | null): 
 }
 export type NumberTone = 'normal' | 'attention'
 export function sessionTone(isRunning: boolean | undefined): DotTone { return isRunning === true ? 'success' : 'inactive' }
-export function lineTone(state: { hasError: boolean; isRunning: boolean; updatedMs: number | null }, nowMs: number): DotTone {
-  return state.hasError ? 'error' : state.isRunning ? 'success' : state.updatedMs !== null && nowMs - state.updatedMs < RECENT_MS ? 'warning' : 'inactive'
+export function lineTone(state: { hasError: boolean; isRunning: boolean }): DotTone {
+  return state.hasError ? 'error' : state.isRunning ? 'success' : 'inactive'
+}
+export function lineNameTone(state: { hasError: boolean; updatedMs: number | null }, nowMs: number): 'normal' | 'error' | 'dim' {
+  return state.hasError ? 'error' : state.updatedMs !== null && state.updatedMs < nowMs - DIM_AFTER_MS ? 'dim' : 'normal'
 }
 export function rootTone(root: Root): DotTone {
   return root.Error ? 'error' : (root.DirtyCount ?? 0) > 0 || (root.UpstreamAhead ?? 0) > 0 ? 'warning' : 'inactive'
@@ -143,7 +146,7 @@ export function blockTitleText(id: BlockId, value: BoardBlock | undefined, isCol
   const counts = value && !value.errorMessage ? blockCounts(value, stalledExpanded) : null
   return `${BLOCK_TITLES[id]}${counts ? ' ' + countText(counts.shown, counts.total) : ''} ${isCollapsed ? '▸' : '▾'}`
 }
-export function stalledToggleText(count: number, expanded: boolean): string { return `停擺 ${count} 條 ${expanded ? '▾' : '▸'}` }
+export function stalledToggleText(count: number, expanded: boolean): string { return `已結束／停擺 ${count} 條 ${expanded ? '▾' : '▸'}` }
 export const ICON_ALT: Record<BlockId, string> = { sessions: 'Session 圖示', quota: '額度圖示', lines: '線圖示', workRoots: 'work-root 圖示' }
 export function iconSvg(id: BlockId): string {
   const paths: Record<BlockId, string> = {
@@ -156,6 +159,20 @@ export function iconSvg(id: BlockId): string {
 }
 export const DIVIDER_SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="1" viewBox="0 0 1000 1" preserveAspectRatio="none"><rect width="1000" height="1" fill="#80808059"/></svg>'
 export function dividerText(columns: number | undefined): string { return '─'.repeat(Math.min(200, Math.max(10, Math.floor(columns ?? 40)))) }
+export const DEFAULT_BODY_COLUMNS = 40
+export const ROW_RESERVED_COLUMNS = 12
+const WIDE_RANGES = [[0x1100, 0x115f], [0x2e80, 0x303e], [0x3041, 0x33ff], [0x3400, 0x4dbf], [0x4e00, 0x9fff], [0xa000, 0xa4cf], [0xac00, 0xd7a3], [0xf900, 0xfaff], [0xfe30, 0xfe4f], [0xff00, 0xff60], [0xffe0, 0xffe6], [0x20000, 0x2fffd], [0x30000, 0x3fffd]]
+export function displayWidth(text: string): number {
+  return Array.from(text).reduce((width, char) => {
+    const code = char.codePointAt(0)!
+    return width + (WIDE_RANGES.some(([start, end]) => code >= start && code <= end) ? 2 : 1)
+  }, 0)
+}
+export function canShowNote(columns: number | undefined, name: string, note: string, right: string): boolean {
+  if (!note) return false
+  const available = columns !== undefined && Number.isFinite(columns) && columns > 0 ? Math.floor(columns) : DEFAULT_BODY_COLUMNS
+  return ROW_RESERVED_COLUMNS + displayWidth(name) + displayWidth(note) + displayWidth(right) <= available
+}
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 export type Session = { cwd?: unknown; isArchived?: boolean; isRunning?: boolean; name?: string; title?: string; sessionId?: string; lastActivityAt?: unknown }
 export type Line = { LineSlug: string; WorkRoot: string; CheckpointType?: string | null; CheckpointUpdatedUtc?: string | null; NextStepSummary?: string | null; Error?: string | null }
@@ -358,7 +375,22 @@ const time = (value?: string | null): string => {
   const pad = (v: number) => String(v).padStart(2, '0')
   return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
-export function buildSnapshot(script: Result<Document>, sessions: Result<Session[]>, now: Date, current: CurrentRepo | null = null): BoardSnapshot {
+export type LandedContext = { rawLines: Line[]; workRoots: Root[]; currentRoots: string[]; branches: ReadonlySet<string> | null }
+export function parseFeatureBranches(stdout: string): Set<string> {
+  return new Set(stdout.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').split(/\r?\n/).map(line => line.replace(/^\s*[*+]?\s*/, '').trim()).filter(line => line.startsWith('feature/')))
+}
+export function isLanded(line: Line, context: LandedContext): boolean {
+  if (line.Error || context.branches === null || checkpointLabel(line.CheckpointType) !== 'Dev 回收') return false
+  const roots = new Set(context.currentRoots.map(normalizePath))
+  if (!roots.has(normalizePath(line.WorkRoot))) return false
+  const matches = new Set(context.rawLines.filter(item => item.LineSlug === line.LineSlug && roots.has(normalizePath(item.WorkRoot))).map(item => normalizePath(item.WorkRoot)))
+  return matches.size >= 2 && context.workRoots.some(root => root.IsLinkedWorktree === false && matches.has(normalizePath(root.Path))) && !context.branches.has('feature/' + line.LineSlug)
+}
+export function lineRightText(type: string | null | undefined, timeText: string): string {
+  const label = checkpointLabel(type)
+  return [label === 'Dev 回收' || label === '-' ? '' : label, timeText].filter(Boolean).join(' · ')
+}
+export function buildSnapshot(script: Result<Document>, sessions: Result<Session[]>, now: Date, current: CurrentRepo | null = null, branches: ReadonlySet<string> | null = null): BoardSnapshot {
   if (!script.ok) return { sessions: errorBlock('無法判定掃描範圍'), lines: errorBlock(script.error), workRoots: errorBlock(script.error), quota: errorBlock(script.error), currentLabel: currentLabel(current) }
   const data = script.value
   const filtered = sessions.ok ? filterSessions(sessions.value, data.scannedRoots) : []
@@ -370,15 +402,18 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
   }), SESSION_LIMIT)
   const normalLines: BoardRow[] = []
   const stalledLines: BoardRow[] = []
+  const landedContext: LandedContext = { rawLines: data.lines, workRoots: data.workRoots, currentRoots: current?.roots ?? [], branches }
   dedupeLines(data.lines.filter(line => line.CheckpointType || line.CheckpointUpdatedUtc || line.Error || data.workRoots.some(root => root.IsLinkedWorktree && normalizePath(root.Path) === normalizePath(line.WorkRoot))))
     .sort((a, b) => (b.CheckpointUpdatedUtc || '').localeCompare(a.CheckpointUpdatedUtc || '') || a.LineSlug.localeCompare(b.LineSlug))
     .forEach(line => {
       if (line.Error) { normalLines.push(row(`${line.LineSlug} · ${line.Error}`, { tone: 'error', dot: 'error' })); return }
-      const dot = lineTone({ hasError: false, isRunning: running.has(line.LineSlug), updatedMs: toEpochMs(line.CheckpointUpdatedUtc) }, now.getTime())
+      const updatedMs = toEpochMs(line.CheckpointUpdatedUtc)
+      const dot = lineTone({ hasError: false, isRunning: running.has(line.LineSlug) })
+      const tone = lineNameTone({ hasError: false, updatedMs }, now.getTime())
       const item = !line.CheckpointType && !line.CheckpointUpdatedUtc
-        ? row(line.LineSlug, { dot, detail: [{ text: '無檢查點', tone: 'normal' }] })
-        : row(line.LineSlug, { dot, right: relativeTime(line.CheckpointUpdatedUtc, now), detail: [{ text: checkpointLabel(line.CheckpointType), tone: 'normal' }] })
-      const target = !running.has(line.LineSlug) && isStalled(toEpochMs(line.CheckpointUpdatedUtc), now.getTime()) ? stalledLines : normalLines
+        ? row(line.LineSlug, { dot, tone, right: '無檢查點' })
+        : row(line.LineSlug, { dot, tone, right: lineRightText(line.CheckpointType, relativeTime(line.CheckpointUpdatedUtc, now)) })
+      const target = !running.has(line.LineSlug) && (isStalled(updatedMs, now.getTime()) || isLanded(line, landedContext)) ? stalledLines : normalLines
       target.push(item)
     })
   const roots = orderWorkRoots(data.workRoots.filter(root => !isDispatchWorktree(root.Path)), current).map(root => {
@@ -390,7 +425,7 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
     if (account.State === 'unknown') return row(`${account.Name} · 無法取得：${clip(account.Error || '-', 40)}`, { tone: 'error', dot: 'error' })
     const primary = roundPercent(account.PrimaryRemaining)
     const secondary = roundPercent(account.SecondaryRemaining)
-    return row(account.Name, { dot: quotaDotTone(primary, secondary), right: primary === null ? '-' : `${primary}%`, bar: { percent: primary, tone: quotaTone(primary) }, detail: quotaDetail(secondary, account.SecondaryResetsAtLocal ? time(account.SecondaryResetsAtLocal) : null) })
+    return row(account.Name, { dot: quotaDotTone(primary, secondary), right: primary === null ? '-' : `剩 ${primary}%`, bar: { percent: primary, tone: quotaTone(primary) }, detail: quotaDetail(secondary, account.SecondaryResetsAtLocal ? time(account.SecondaryResetsAtLocal) : null) })
   })
   const quotaBlock = block(quota)
   if (data.warnings.length) quotaBlock.warning = data.warnings.join(' / ')

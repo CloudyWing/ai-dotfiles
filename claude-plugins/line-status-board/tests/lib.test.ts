@@ -5,6 +5,7 @@ import { toWindowsPath, parseWorktreeList, splitRoots, defaultWorkRoots, coversP
 import type { CurrentRepo } from '../hooks/lib'
 import { isDispatchWorktree, toEpochMs, relativeTime, isStalled, sortSessionsByActivity, checkpointLabel, sessionTone, lineTone, rootTone, numberTone, rootDetail, quotaDetail, segmentsText, normalizeExpanded, toggleExpanded, iconSvg, ICON_ALT, DIVIDER_SVG, dividerText, QUOTA_OK_FROM, QUOTA_WARN_FROM, STALE_MS } from '../hooks/lib'
 import { BLOCK_IDS, BLOCK_ORDER, BLOCK_TITLES, countText, blockCounts, blockTitleText, stalledToggleText } from '../hooks/lib'
+import { DIM_AFTER_MS, lineNameTone, isLanded, parseFeatureBranches, lineRightText, displayWidth, canShowNote } from '../hooks/lib'
 
 test('P5-a1 dispatch worktree boundaries', () => {
   for (const path of ['C:/Users/X/.ai-agents/.local/ai-sessions/worktrees/dev-dd-1', 'c:/users/x/.ai-agents/.local/AI-Sessions/Worktrees/rev-2/', 'C:/x/.local/ai-sessions/worktrees']) expect(isDispatchWorktree(path)).toBe(true)
@@ -34,8 +35,8 @@ test('P5-c1 c2 checkpoint labels', () => {
 })
 test('P5-d1 d2 tone rules', () => {
   expect([sessionTone(true), sessionTone(false), sessionTone(undefined)]).toEqual(['success', 'inactive', 'inactive'])
-  expect(lineTone({ hasError: true, isRunning: true, updatedMs: null }, 0)).toBe('error')
-  expect(lineTone({ hasError: false, isRunning: true, updatedMs: null }, 0)).toBe('success')
+  expect(lineTone({ hasError: true, isRunning: true })).toBe('error')
+  expect(lineTone({ hasError: false, isRunning: true })).toBe('success')
   expect(rootTone({ Path: 'x', DirtyCount: 1 })).toBe('warning')
   expect(rootTone({ Path: 'x', MainBehind: 25 })).toBe('inactive')
   expect([QUOTA_OK_FROM, QUOTA_WARN_FROM]).toEqual([50, 20])
@@ -104,10 +105,7 @@ test('P5 phase 1 remaining time boundaries and stable sorting', () => {
   expect(sortSessionsByActivity(items).map(item => item.title)).toEqual(['now', 'middle', 'old', 'missing', 'bad'])
 })
 test('P5 phase 1 remaining tone and detail boundaries', () => {
-  const day = 86400000
-  expect(lineTone({ hasError: false, isRunning: false, updatedMs: 1 }, day)).toBe('warning')
-  expect(lineTone({ hasError: false, isRunning: false, updatedMs: 0 }, day)).toBe('inactive')
-  expect(lineTone({ hasError: false, isRunning: false, updatedMs: null }, day)).toBe('inactive')
+  expect(lineTone({ hasError: false, isRunning: false })).toBe('inactive')
   expect(rootTone({ Path: 'x', Error: 'x' })).toBe('error')
   expect(rootTone({ Path: 'x', UpstreamAhead: 2 })).toBe('warning')
   for (const kind of ['dirty', 'unpushed', 'behind'] as const) expect([numberTone(kind, 0), numberTone(kind, 1)]).toEqual(['normal', 'attention'])
@@ -144,9 +142,9 @@ test('P5-g2 line tone and failed sessions', () => {
   const board = buildSnapshot({ ok: true, value: data }, { ok: true, value: [{ cwd: root, name: 'running', isRunning: true }] }, now)
   const find = (name: string) => [...board.lines.rows, ...board.lines.stalledRows].find(x => x.name === name)!
   expect(find('running').dot).toBe('success')
-  expect(find('recent').dot).toBe('warning')
+  expect(find('recent').dot).toBe('inactive')
   expect(find('old').dot).toBe('inactive')
-  expect(segmentsText(find('empty').detail)).toBe('無檢查點')
+  expect(find('empty').right).toBe('無檢查點')
   expect(find('bad · x').dot).toBe('error')
   expect(buildSnapshot({ ok: true, value: data }, { ok: false, error: 'mcp' }, now).lines.stalledRows.find(x => x.name === 'running')?.dot).toBe('inactive')
 })
@@ -164,7 +162,7 @@ test('P5-g4 quota row and warning', () => {
   const quota = [{ Name: 'a', State: 'ok', PrimaryRemaining: 40, SecondaryRemaining: 28, SecondaryResetsAtLocal: '2026-11-10 13:16' }, { Name: 'b', State: 'ok', PrimaryRemaining: 100, SecondaryRemaining: 100 }, { Name: 'bad', State: 'unknown', Error: 'x' }]
   const result = buildSnapshot({ ok: true, value: { ...doc, quota, warnings: ['w'] } }, { ok: true, value: [] }, new Date('2026-11-05T01:23:10Z')).quota
   expect(result.rows[0].bar).toEqual({ percent: 40, tone: 'warning' })
-  expect(result.rows[0].right).toBe('40%')
+  expect(result.rows[0].right).toBe('剩 40%')
   expect(segmentsText(result.rows[0].detail)).toBe('週 28% · 11-10 13:16 重置')
   expect(result.rows[1].dot).toBe('inactive')
   expect(result.rows[2].dot).toBe('error')
@@ -207,8 +205,8 @@ test('P5-i4 i5 active limit and title counts', () => {
   const result = buildSnapshot({ ok: true, value: { ...doc, lines } }, { ok: true, value: [] }, now).lines
   expect([result.rows.length, result.hiddenCount, result.stalledRows.length]).toEqual([12, 3, 20])
   expect(blockCounts(result, true).total).toBe(35)
-  expect(stalledToggleText(22, false)).toBe('停擺 22 條 ▸')
-  expect(stalledToggleText(22, true)).toBe('停擺 22 條 ▾')
+  expect(stalledToggleText(22, false)).toBe('已結束／停擺 22 條 ▸')
+  expect(stalledToggleText(22, true)).toBe('已結束／停擺 22 條 ▾')
   const titleBlock = { ...result, rows: result.rows.slice(0, 8), stalledRows: Array.from({ length: 22 }, () => result.stalledRows[0]), hiddenCount: 0 }
   expect(blockTitleText('lines', titleBlock, false, false)).toBe('線 8／30 ▾')
   expect(blockTitleText('lines', titleBlock, false, true)).toBe('線 30／30 ▾')
@@ -219,6 +217,101 @@ test('P5-i6 error blocks and MCP failure grouping', () => {
   for (const id of ['sessions', 'quota', 'lines', 'workRoots'] as const) expect(error[id].stalledRows).toEqual([])
   const data = { ...doc, lines: [{ LineSlug: 'old', WorkRoot: root, CheckpointUpdatedUtc: '2026-10-01T00:00:00Z' }] }
   expect(buildSnapshot({ ok: true, value: data }, { ok: false, error: 'mcp' }, now).lines.stalledRows[0].name).toBe('old')
+})
+
+test('P6-a line tones and name age', () => {
+  expect(lineTone({ hasError: true, isRunning: true })).toBe('error')
+  expect(lineTone({ hasError: false, isRunning: true })).toBe('success')
+  expect(lineTone({ hasError: false, isRunning: false })).toBe('inactive')
+  const now = DIM_AFTER_MS + 10
+  for (const updatedMs of [null, 10, now + 1]) expect(lineNameTone({ hasError: false, updatedMs }, now)).toBe('normal')
+  expect(lineNameTone({ hasError: false, updatedMs: 9 }, now)).toBe('dim')
+  expect(lineNameTone({ hasError: true, updatedMs: 9 }, now)).toBe('error')
+})
+test('P6-b parse branches', () => {
+  expect([...parseFeatureBranches('  feature/a\r\n* feature/b\n+ feature/c\n  main\n* (HEAD detached at x)\n')]).toEqual(['feature/a', 'feature/b', 'feature/c'])
+  expect([...parseFeatureBranches('')]).toEqual([])
+})
+test('P6-b2 branch ANSI sequences', () => {
+  expect([...parseFeatureBranches('\u001b[32m* feature/x\u001b[m')]).toEqual(['feature/x'])
+})
+test('P6-c landed conditions', () => {
+  const line = { LineSlug: 'a', WorkRoot: linked, CheckpointType: '`developer-collected`（階段）' }
+  const context = { rawLines: [line, { ...line, WorkRoot: root }], workRoots: doc.workRoots, currentRoots: [root, linked], branches: new Set<string>() }
+  expect(isLanded(line, context)).toBe(true)
+  expect(isLanded({ ...line, CheckpointType: 'design-accepted' }, context)).toBe(false)
+  expect(isLanded(line, { ...context, rawLines: [line] })).toBe(false)
+  expect(isLanded(line, { ...context, workRoots: [{ Path: root, IsLinkedWorktree: true }, { Path: linked, IsLinkedWorktree: true }] })).toBe(false)
+  expect(isLanded(line, { ...context, workRoots: [{ Path: root, IsLinkedWorktree: null }] })).toBe(false)
+  expect(isLanded(line, { ...context, branches: new Set(['feature/a']) })).toBe(false)
+  expect(isLanded(line, { ...context, branches: null })).toBe(false)
+  expect(isLanded({ ...line, Error: 'x' }, context)).toBe(false)
+  expect(isLanded({ ...line, WorkRoot: 'D:\\other' }, context)).toBe(false)
+})
+test('P6-d landed grouping and running exception', () => {
+  const now = new Date('2026-11-05T00:00:00Z')
+  const line = { LineSlug: 'a', WorkRoot: linked, CheckpointType: 'developer-collected', CheckpointUpdatedUtc: now.toISOString() }
+  const data = { ...doc, lines: [line, { ...line, WorkRoot: root, CheckpointUpdatedUtc: null }] }
+  const current: CurrentRepo = { name: 'x', isGit: true, roots: [root, linked], forced: [root] }
+  const snapshot = (running: boolean, branches: Set<string> | null) => buildSnapshot({ ok: true, value: data }, { ok: true, value: running ? [{ cwd: root, name: 'a', isRunning: true }] : [] }, now, current, branches).lines
+  expect(snapshot(false, new Set()).stalledRows.length).toBe(1)
+  expect(snapshot(false, new Set()).rows.length).toBe(0)
+  expect(blockCounts(snapshot(false, new Set()), false).total).toBe(1)
+  expect(snapshot(true, new Set()).rows.length).toBe(1)
+  expect(snapshot(false, null).rows.length).toBe(1)
+  expect(buildSnapshot({ ok: true, value: data }, { ok: true, value: [] }, now, current).lines.rows.length).toBe(1)
+  const old = { ...line, CheckpointUpdatedUtc: '2026-10-01T00:00:00Z' }
+  const oldData = { ...data, lines: [old, { ...old, WorkRoot: root }] }
+  expect(buildSnapshot({ ok: true, value: oldData }, { ok: true, value: [] }, now, current, new Set()).lines.stalledRows.length).toBe(1)
+  expect(stalledToggleText(3, false)).toBe('已結束／停擺 3 條 ▸')
+  expect(stalledToggleText(3, true)).toBe('已結束／停擺 3 條 ▾')
+})
+test('P6-e checkpoint labels', () => {
+  expect(lineRightText('developer-collected', '1 天前')).toBe('1 天前')
+  expect(lineRightText('`design-accepted`', '1 天前')).toBe('設計驗收 · 1 天前')
+  expect(lineRightText('結案', '3 天前')).toBe('結案 · 3 天前')
+  expect(lineRightText(null, '5 分鐘前')).toBe('5 分鐘前')
+  expect(lineRightText('design-accepted', '')).toBe('設計驗收')
+  const now = new Date('2026-11-05T00:00:00Z')
+  const lines = [
+    { LineSlug: 'dev', WorkRoot: root, CheckpointType: 'developer-collected', CheckpointUpdatedUtc: '2026-11-04T00:00:00Z' },
+    { LineSlug: 'design', WorkRoot: root, CheckpointType: 'design-accepted', CheckpointUpdatedUtc: '2026-11-04T00:00:00Z' },
+    { LineSlug: 'end', WorkRoot: root, CheckpointType: '結案', CheckpointUpdatedUtc: '2026-11-02T00:00:00Z' },
+    { LineSlug: 'invalid', WorkRoot: root, CheckpointType: 'design-accepted', CheckpointUpdatedUtc: 'bad' },
+    { LineSlug: 'empty', WorkRoot: linked }, { LineSlug: 'bad', WorkRoot: root, Error: 'x' }
+  ]
+  const rows = buildSnapshot({ ok: true, value: { ...doc, lines } }, { ok: true, value: [] }, now).lines.rows
+  const get = (name: string) => rows.find(row => row.name === name)!
+  expect(get('dev').right).toBe('1 天前')
+  expect(get('design').right).toBe('設計驗收 · 1 天前')
+  expect(get('end').right).toBe('結案 · 3 天前')
+  expect(get('invalid').right).toBe('設計驗收')
+  expect(get('empty').right).toBe('無檢查點')
+  expect(get('bad · x').right).toBe('')
+  expect(rows.every(row => row.detail === null)).toBe(true)
+  expect(get('design').dot).toBe('inactive')
+  expect(get('design').tone).toBe('normal')
+  expect(get('end').tone).toBe('dim')
+})
+test('P6-f display width', () => {
+  expect(['abc', '線', '한', 'カ', '／', 'ａ', 'ｱ', 'a線', '', '甲'.repeat(25), '·', '▸'].map(displayWidth)).toEqual([3, 2, 2, 2, 2, 2, 1, 3, 0, 50, 1, 1])
+})
+test('P6-g note width boundaries', () => {
+  expect(canShowNote(28, 'item', 'line-one', '剛剛')).toBe(true)
+  expect(canShowNote(27, 'item', 'line-one', '剛剛')).toBe(false)
+  expect(canShowNote(40, 'item', '', '剛剛')).toBe(false)
+  for (const columns of [undefined, NaN, 0, -1]) {
+    expect(canShowNote(columns, 'item', 'line-one', '剛剛')).toBe(true)
+    expect(canShowNote(columns, '甲'.repeat(15), 'line-one', '剛剛')).toBe(false)
+  }
+  expect(canShowNote(28, '甲甲甲甲', 'line-one', '剛剛')).toBe(false)
+})
+test('P6-h quota remaining', () => {
+  const quota = [{ Name: 'a', State: 'ok', PrimaryRemaining: 24, SecondaryRemaining: 42 }, { Name: 'b', State: 'ok', PrimaryRemaining: null }]
+  const rows = buildSnapshot({ ok: true, value: { ...doc, quota } }, { ok: true, value: [] }, new Date()).quota.rows
+  expect(rows.map(item => item.right)).toEqual(['剩 24%', '-'])
+  expect(rows[0].bar?.percent).toBe(24)
+  expect(segmentsText(rows[0].detail)).toBe('週 42%')
 })
 
 test('P2-a normalizePath', () => {
@@ -298,20 +391,20 @@ test('P3-c1 to c9 deduplication and filtering', () => {
   expect(dedupeLines(filterOrderCase)[0].WorkRoot).toBe(root)
   const filteredFirst = snapshot(filterOrderCase).lines.rows
   expect(filteredFirst.length).toBe(1)
-  expect(segmentsText(filteredFirst[0].detail)).toBe('設計驗收')
+  expect(filteredFirst[0].right).toBe('設計驗收')
 })
 test('P3-d e line fields and errors', () => {
   const lines = [{ ...doc.lines[0], CheckpointUpdatedUtc: '2025-01-02T03:04:00', NextStepSummary: '審查。' }, { LineSlug: 'empty', WorkRoot: linked }, { LineSlug: 'bad', WorkRoot: root, Error: '錯誤' }]
   const rows = buildSnapshot({ ok: true, value: { ...doc, lines } }, { ok: true, value: [] }, new Date('2025-01-02T04:04:00')).lines.rows
   expect(rows[0].name).toBe('line-one')
-  expect(rows[0].right).toBe('1 小時前')
-  expect(segmentsText(rows[0].detail)).toBe('設計驗收')
-  expect(rows.find(x => x.name === 'empty')?.right).toBe('')
-  expect(segmentsText(rows.find(x => x.name === 'empty')?.detail ?? null)).toBe('無檢查點')
+  expect(rows[0].right).toBe('設計驗收 · 1 小時前')
+  expect(rows[0].detail).toBe(null)
+  expect(rows.find(x => x.name === 'empty')?.right).toBe('無檢查點')
+  expect(rows.find(x => x.name === 'empty')?.detail).toBe(null)
   expect(rows.find(x => x.name === 'bad · 錯誤')?.tone).toBe('error')
   expect(rows.find(x => x.name === 'bad · 錯誤')?.dot).toBe('error')
   const absent = buildSnapshot({ ok: true, value: { ...doc, lines: [{ ...lines[0], NextStepSummary: null }] } }, { ok: true, value: [] }, new Date('2025-01-02T04:04:00'))
-  expect(segmentsText(absent.lines.rows[0].detail)).toBe('設計驗收')
+  expect(absent.lines.rows[0].right).toBe('設計驗收 · 1 小時前')
 })
 test('P3-f g sessions and work roots', () => {
   const workRoots = [{ Path: root, DirtyCount: 0 }, { Path: linked, DirtyCount: 3, Branch: 'main', MainAhead: 1, MainBehind: 0, Upstream: 'origin', UpstreamAhead: 2 }, { Path: root + '\\null' }, { Path: root + '\\bad', Error: 'error' }]
@@ -334,7 +427,7 @@ test('P3-h i quota thresholds', () => {
 test('P3-j quota row', () => {
   const quota = [{ Name: 'a', State: 'ok', PrimaryRemaining: 78, SecondaryRemaining: 42, PrimaryResetsAtLocal: '2025-01-02T03:04:00', SecondaryResetsAtLocal: '2025-01-03T03:04:00' }, { Name: 'b', State: 'ok' }]
   const rows = buildSnapshot({ ok: true, value: { ...doc, quota } }, { ok: true, value: [] }, new Date('2026-11-05T01:23:10Z')).quota.rows
-  expect(rows[0].right).toBe('78%')
+  expect(rows[0].right).toBe('剩 78%')
   expect(rows[0].bar).toEqual({ percent: 78, tone: 'inactive' })
   expect(segmentsText(rows[0].detail)).toBe('週 42% · 01-03 03:04 重置')
   expect(rows[0].detail?.filter(x => x.tone === 'attention').map(x => x.text)).toEqual(['42%'])
