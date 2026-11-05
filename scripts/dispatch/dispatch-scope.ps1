@@ -209,6 +209,7 @@ function Read-DispatchOrderSections {
         Targets = @($targets.ToArray())
         TargetDetails = @($targetDetails.ToArray())
         TaskBody = [string]$taskMatch.Groups['section'].Value
+        TaskBodyStartLine = ([regex]::Matches($content.Substring(0, $taskMatch.Groups['section'].Index), '\r?\n')).Count + 1
         Role = [string]$roleMatch.Groups['section'].Value
         Boundary = [string]$boundaryMatch.Groups['section'].Value
         Content = $content
@@ -339,7 +340,7 @@ function New-DispatchAutoPrepareArtifacts {
 
     $sourceDesignPath = Join-Path -Path $sourceLineRoot -ChildPath 'design.md'
     $includeDesign = $DispatchKind -eq 'workflow'
-    if ($DispatchKind -eq 'resource' -and $null -ne $ResourceOrder -and (Test-DispatchOrderRequiresDesign -TaskBody ([string]$ResourceOrder.TaskBody) -LineSlug $LineSlug)) {
+    if ($DispatchKind -eq 'resource' -and $null -ne $ResourceOrder -and (Test-DispatchOrderRequiresDesign -Order $ResourceOrder -SourceRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug)) {
         $includeDesign = $true
     }
     if ($includeDesign) {

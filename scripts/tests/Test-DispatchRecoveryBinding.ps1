@@ -237,12 +237,31 @@ function Copy-DispatchModulesBesideTestEntry {
     Copy-Item -LiteralPath (Join-Path $scriptsRoot 'dispatch\sandbox-env-denylist.psd1') -Destination (Join-Path $moduleDirectory 'sandbox-env-denylist.psd1') -Force
 }
 
+function Get-DdFixtureRequiredReadBody {
+    [CmdletBinding()]
+    param([string]$Body, [string[]]$RequiredRead, [string[]]$RequiredReadRawLines)
+    $lines = @()
+    if ($null -ne $RequiredRead) { $lines += @($RequiredRead | ForEach-Object { '- `' + $_ + '`' }) }
+    if ($null -ne $RequiredReadRawLines) { $lines += @($RequiredReadRawLines) }
+    if ($lines.Count -gt 0) { $Body += "`n`n必讀檔案：`n" + ($lines -join "`n") }
+    return $Body
+}
+
+function Get-DdOrderLineNumber {
+    [CmdletBinding()]
+    param([string]$Path, [string]$Text)
+    $lines = @(Get-Content -LiteralPath $Path -Encoding UTF8)
+    for ($index = 0; $index -lt $lines.Count; $index++) { if ($lines[$index].Contains($Text)) { return $index + 1 } }
+    throw ('派遣單找不到指定文字：' + $Text)
+}
+
 function Write-Phase9DispatchOrderFixture {
     [CmdletBinding()]
-    param([string]$SourceRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$TargetPath, [string]$ReportPath = 'report.md', [string]$Body = 'fixture')
+    param([string]$SourceRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$TargetPath, [string]$ReportPath = 'report.md', [string]$Body = 'fixture', [string[]]$RequiredRead, [string[]]$RequiredReadRawLines)
     $lineRoot = Join-Path $SourceRoot ('.local\ai-sessions\handoff\' + $LineSlug)
     $null = New-Item -ItemType Directory -Path $lineRoot -Force
     $path = Join-Path $lineRoot ('dispatch-order-' + $DispatchSlug + '.md')
+    $Body = Get-DdFixtureRequiredReadBody -Body $Body -RequiredRead $RequiredRead -RequiredReadRawLines $RequiredReadRawLines
     $order = "## 1. 標題`nFixture`n## 2. 角色`nSupport Engineer`n## 3. 目標物件`n- ``$TargetPath```n## 4. 任務內容`n$Body`n## 5. 驗收`n驗證`n## 6. 邊界`n唯讀`n## 7. 產出落點`n$ReportPath`n## 8. 回報`n完成"
     [IO.File]::WriteAllText($path, $order, (New-Object Text.UTF8Encoding($false)))
     return $path
@@ -6748,7 +6767,7 @@ if ($Phase -ge 4) {
 if ($Phase -ge 5) {
     function New-DdInputFixture {
         [CmdletBinding()]
-        param([string]$Root, [string]$TaskBody, [switch]$DirectoryTarget)
+        param([string]$Root, [string]$TaskBody, [switch]$DirectoryTarget, [string[]]$RequiredRead, [string[]]$RequiredReadRawLines)
         $lineRoot = Join-Path $Root '.local\ai-sessions\handoff\dd-line'
         $null = New-Item -ItemType Directory -Path $lineRoot -Force
         [IO.File]::WriteAllText((Join-Path $lineRoot 'line.json'), '{"schema":"ai-sessions.line.v1","line-slug":"dd-line","kind":"workflow"}')
@@ -6757,7 +6776,7 @@ if ($Phase -ge 5) {
         $prompt = New-DdLineContextBlock -SourceRoot $Root -DispatchRoot $dispatchRoot -LineSlug 'dd-line'
         [IO.File]::WriteAllText((Join-Path $Root 'prompt.md'), $prompt)
         $target = if ($DirectoryTarget) { (Join-Path $Root 'target') + '\' } else { Join-Path $Root 'target.txt' }
-        $orderPath = Write-Phase9DispatchOrderFixture -SourceRoot $Root -LineSlug 'dd-line' -DispatchSlug 'dd-test' -TargetPath $target -Body $TaskBody
+        $orderPath = Write-Phase9DispatchOrderFixture -SourceRoot $Root -LineSlug 'dd-line' -DispatchSlug 'dd-test' -TargetPath $target -Body $TaskBody -RequiredRead $RequiredRead -RequiredReadRawLines $RequiredReadRawLines
         [pscustomobject]@{ Root = $Root; LineRoot = $lineRoot; OrderPath = $orderPath; Target = $target }
     }
     function Invoke-DdValidateRequest {
@@ -6885,7 +6904,7 @@ if ($Phase -ge 5) {
         $order.Role = 'Reviewer'
         $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $order }
         Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-REV4' }).Count -eq 1) '缺少需求摘要時應拒絕。'
-        $order.TaskBody = '讀取 requirement-summary.md'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '審查程式' -RequiredRead @((Join-Path $f.LineRoot 'requirement-summary.md'))
         Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $ctx | Where-Object { $_.check_id -eq 'DI-REV4' }).Count -eq 0) '列出需求摘要應通過。'
         $text = [IO.File]::ReadAllText($f.OrderPath).Replace('Support Engineer', 'Reviewer')
         [IO.File]::WriteAllText($f.OrderPath, $text, (New-Object Text.UTF8Encoding($false)))
@@ -6896,17 +6915,18 @@ if ($Phase -ge 5) {
         $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-ref') -TaskBody '檢查目標'
         $order = Read-DispatchOrderSections -Path $f.OrderPath
         $missing = Join-Path $f.Root 'missing.txt'
-        $order.TaskBody = '讀取 ' + $missing
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查目標' -RequiredRead @($missing)
         Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'error' }).Count -eq 1) '必讀路徑不存在時應拒絕。'
         $order.TaskBody = '建立 ' + $missing
-        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'warning' }).Count -eq 1) '新增路徑不存在時應警告。'
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.code -eq 'DispatchInputOutsideBlockPath' }).Count -eq 0) '預定輸出路徑不應提示。'
         [IO.File]::WriteAllText($missing, 'fixture')
-        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree')).Count -eq 0) '路徑存在時應通過。'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查目標' -RequiredRead @($missing)
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '路徑存在時應通過。'
         $order.TaskBody = '讀取 `' + $missing + ':12` 並建立 `' + (Join-Path $f.Root 'new-file.txt') + '`'
         $references = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree'))
-        Assert-True ($references.Count -eq 1 -and $references[0].severity -eq 'warning') '行號應剝除，且各路徑依其動詞判定。'
+        Assert-True (@($references | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '區塊外的路徑不應拒絕。'
         $order.TaskBody = '讀取 `' + (Join-Path $f.Root 'absent.txt') + ':12` 並建立 `' + $missing + '`'
-        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'error' }).Count -eq 1) '缺少的輸入應拒絕。'
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '區塊外缺少路徑不應拒絕。'
         $execution = Join-Path $f.Root 'worktree'
         $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); DispatchKind = 'resource'; TaskType = 'resource-task'; ResourceOrder = $order; ExecutionRoot = $execution }
         Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx | Where-Object { $_.check_id -eq 'DI-ORDERLOC' }).Count -eq 1) '缺少執行端派遣單時應拒絕。'
@@ -6916,7 +6936,7 @@ if ($Phase -ge 5) {
         $null = New-Item -ItemType Directory -Path (Split-Path -Parent $locations.worktree) -Force
         Copy-Item -LiteralPath $locations.source -Destination $locations.worktree
         $worktreeReference = Join-Path $execution 'reference.txt'
-        $order.TaskBody = '讀取 `' + $worktreeReference + '`'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查目標' -RequiredRead @($worktreeReference)
         Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx | Where-Object { $_.check_id -eq 'DI-REF-B' }).Count -eq 1) 'worktree 缺少參照應拒絕。'
         [IO.File]::WriteAllText($worktreeReference, 'fixture')
         Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx).Count -eq 0) 'worktree 的 LineContext、派遣單與參照齊備時應通過。'
@@ -6927,7 +6947,7 @@ if ($Phase -ge 5) {
         Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.severity -eq 'warning' }).Count -eq 1) '來源端預定新增路徑應只產生 warning。'
         Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $ctx | Where-Object { $_.check_id -eq 'DI-REF-B' }).Count -eq 0) 'direct-write 不應重複檢查來源端參照。'
         $requiredPath = Join-Path $f.Root 'required-missing.txt'
-        $sourceOrderText = [IO.File]::ReadAllText($f.OrderPath).Replace('檢查目標', ('讀取 `' + $requiredPath + '`'))
+        $sourceOrderText = [IO.File]::ReadAllText($f.OrderPath).Replace('檢查目標', (Get-DdFixtureRequiredReadBody -Body '檢查目標' -RequiredRead @($requiredPath)))
         [IO.File]::WriteAllText($f.OrderPath, $sourceOrderText, (New-Object Text.UTF8Encoding($false)))
         $plannedRoot = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
         $sourceLines = @('LineContext:', 'lineSlug=dd-line', ('sourceRoot=' + $f.Root), ('sourceLineRoot=' + $f.LineRoot), ('dispatchRoot=' + $plannedRoot), ('dispatchLineRoot=' + (Join-Path $plannedRoot '.local\ai-sessions\handoff\dd-line')), ('reportLineRoot=' + (Join-Path $plannedRoot '.local\ai-sessions\report\dd-line')))
@@ -6956,7 +6976,7 @@ if ($Phase -ge 5) {
         $order = Read-DispatchOrderSections -Path $f.OrderPath
         $artifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $f.Root -DispatchRoot (Join-Path $f.Root 'worktree') -LineSlug 'dd-line' -DispatchSlug 'dd-test' -DispatchKind resource -WriteMode readonly -ResourceOrder $order)
         Assert-True (@($artifacts | Where-Object { $_.source -match 'design\.md$' }).Count -eq 0) '描述字樣不應帶入 design。'
-        $order.TaskBody = '讀取 handoff\dd-line\design.md'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '審查設計' -RequiredRead @((Join-Path $f.LineRoot 'design.md'))
         $ctx = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = ''; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $order }
         $findings = @(Invoke-DispatchInputChecks -Stage Request -Context $ctx)
         Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputDesignMissing' -and $findings[0].message.Contains((Join-Path $f.LineRoot 'design.md'))) '缺少設計文件時應指出路徑。'
@@ -6974,7 +6994,8 @@ if ($Phase -ge 5) {
         Assert-True ($accepted.ExitCode -eq 0) ('提供識別字應放行：' + $accepted.Output)
     }
     Invoke-Case 'Phase 5 DD-DESIGN Request 入口阻擋且不啟動' {
-        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-design-request') -TaskBody '讀取 handoff\dd-line\design.md'
+        $root = Join-Path $fixtureRoot 'dd-design-request'
+        $f = New-DdInputFixture -Root $root -TaskBody '審查設計' -RequiredRead @((Join-Path $root '.local\ai-sessions\handoff\dd-line\design.md'))
         $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier ''
         Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DispatchInputDesignMissing' -and $rejected.Output -match '"process_started"\s*:\s*false') '缺少設計文件時應於 Request 階段拒絕。'
         Assert-True (-not (Test-Path -LiteralPath $rejected.DispatchRoot) -and -not (Test-Path -LiteralPath $rejected.RunRoot)) '拒絕後不得建立 worktree 或 RunRecord。'
@@ -7703,7 +7724,7 @@ if ($Phase -ge 6) {
         $order = Read-DispatchOrderSections -Path $f.OrderPath
         $execution = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
         $reference = Join-Path $execution 'required.txt'
-        $order.TaskBody = '讀取 `' + $reference + '`'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查目標' -RequiredRead @($reference)
         Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution).Count -eq 0) '執行端參照應留待 Stage B。'
         Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Worktree -DispatchRoot $execution | Where-Object { $_.check_id -eq 'DI-REF-B' }).Count -eq 1) '缺失的執行端參照應拒絕。'
         $null = New-Item -ItemType Directory -Path $execution -Force
@@ -7713,37 +7734,290 @@ if ($Phase -ge 6) {
     Invoke-Case 'Phase 6 DD-REF-TOKEN 路徑分隔與非路徑文字' {
         $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-ref-token') -TaskBody '檢查目標'
         $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $execution = Join-Path $f.Root 'worktree'
         $first = Join-Path $f.Root 'first.txt'
         $second = Join-Path $f.Root 'second.txt'
-        [IO.File]::WriteAllText($first, 'first')
-        [IO.File]::WriteAllText($second, 'second')
-        $execution = Join-Path $f.Root 'worktree'
         foreach ($body in @(
                 ('讀取 ' + $first + '、' + $second),
                 ('讀取 ' + $first + '（註記）'),
                 'rg handoff[\\/]+dispatch-order-',
-                ('網址 ' + 'https' + '://' + 'example.com' + '/a/b'),
-                ('讀取 `' + $first + ':12`')
+                '網址 https://example.com/a/b',
+                ('讀取' + $first),
+                ('讀取路徑=' + $first),
+                ('讀取 [' + $first + ']'),
+                ('建立 ' + $first)
             )) {
             $order.TaskBody = $body
-            Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution).Count -eq 0) ('合法文字不應回報參照缺失：' + $body)
-        }
-        $order.TaskBody = '讀取 ' + (Join-Path $f.Root 'absent.txt')
-        $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
-        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputReferenceMissing' -and $findings[0].severity -eq 'error') '不存在的必讀路徑應以 error 回報。'
-        $order.TaskBody = '建立 ' + (Join-Path $f.Root 'absent.txt')
-        $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
-        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputReferenceMissing' -and $findings[0].severity -eq 'warning') '不存在的輸出路徑應以 warning 回報。'
-        foreach ($body in @(('讀取' + (Join-Path $f.Root 'absent.txt')), ('讀取路徑=' + (Join-Path $f.Root 'absent.txt')))) {
-            $order.TaskBody = $body
             $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
-            Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputReferenceMissing' -and $findings[0].severity -eq 'error') '中文字或等號後的不存在路徑應以 error 回報。'
+            Assert-True (@($findings | Where-Object { $_.severity -eq 'error' }).Count -eq 0) ('區塊外文字不得拒絕：' + $body)
         }
-        $order.TaskBody = '讀取 [' + (Join-Path $f.Root 'absent.txt') + ']'
+        $order.TaskBody = '讀取 ' + $first
         $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
-        Assert-True ($findings.Count -eq 1 -and $findings[0].code -eq 'DispatchInputReferenceMissing' -and $findings[0].severity -eq 'error') '方括號內不存在的路徑應以 error 回報。'
-        $order.TaskBody = '讀取 [' + $first + ']'
-        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution).Count -eq 0) '方括號內存在的路徑不應回報參照缺失。'
+        Assert-True (@($findings | Where-Object { $_.code -eq 'DispatchInputOutsideBlockPath' -and $_.severity -eq 'warning' }).Count -eq 1) '區塊外路徑應提示。'
+    }
+    function Get-DdExpectedExamplePath {
+        param([object]$Finding)
+        $example = Read-DispatchRequiredReadBlock -Order ([pscustomobject]@{ TaskBody = [string]$Finding.expected })
+        Assert-True ($example.present -and $example.entries.Count -eq 1) '範例區塊必須恰有一筆清單行。'
+        return [string]$example.entries[0].path
+    }
+    function Assert-DdRequiredReadFinding {
+        param([object]$Finding, [object]$Order, [int]$Line, [string]$Raw, [string]$Code, [string]$CheckId)
+        Assert-True ($Finding.code -eq $Code -and $Finding.check_id -eq $CheckId -and $Finding.line -eq $Line -and $Finding.order_field -eq 4) 'Finding 的代碼、檢查或行號不符。'
+        foreach ($part in @($Order.Path, '第 4 欄', [string]$Line, ('收到：「' + $Raw + '」'), '必讀檔案：', '- `')) { Assert-True ($Finding.message.Contains($part)) ('Finding 缺少：' + $part) }
+        $example = Read-DispatchRequiredReadBlock -Order ([pscustomobject]@{ TaskBody = $Finding.expected })
+        Assert-True ($example.present -and $example.block_errors.Count -eq 0 -and @($example.entries | Where-Object { $_.state -ne 'ok' }).Count -eq 0) '範例必須通過解析。'
+    }
+    Invoke-Case 'Phase 6 DD-REQREAD-PARSE' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-reqread-parse') -TaskBody '檢查' -RequiredRead @('C:\Program Files\x\a.md', 'C:\x\[id]\page.tsx')
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $block = Read-DispatchRequiredReadBlock -Order $order
+        Assert-True ($block.present -and $block.entries.Count -eq 2 -and $block.block_errors.Count -eq 0 -and @($block.entries | Where-Object { $_.state -ne 'ok' }).Count -eq 0) '標準區塊應正確解析。'
+        Assert-True ($block.heading_line -eq (Get-DdOrderLineNumber -Path $f.OrderPath -Text '必讀檔案：') -and $block.entries[0].line -eq (Get-DdOrderLineNumber -Path $f.OrderPath -Text 'Program Files') -and $block.entries[1].line -eq (Get-DdOrderLineNumber -Path $f.OrderPath -Text '[id]')) '實際行號不符。'
+        $order.TaskBody = "必讀檔案：`n`n- ``C:\a.md```n<!-- 註解 -->`n`n- ``C:\b.md```n說明`n- 其他條列"
+        $block = Read-DispatchRequiredReadBlock -Order $order
+        Assert-True ($block.entries.Count -eq 2 -and $block.block_errors.Count -eq 0 -and @($block.outside_lines | Where-Object { $_.text -eq '- 其他條列' }).Count -eq 1) '空行、註解與終止敘述應正確處理。'
+        foreach ($body in @((@('<!--', '必讀檔案：', '- `C:\x.md`', '-->') -join "`n"), (@('```text', '必讀檔案：', '- `C:\x.md`', '```') -join "`n"))) {
+            $block = Read-DispatchRequiredReadBlock -Order ([pscustomobject]@{ TaskBody = $body })
+            Assert-True (-not $block.present) '註解或 fenced code 不應形成區塊。'
+        }
+        $paths = @('C:\Program Files\x\a.md', 'C:\x\[id]\page.tsx', 'C:\x\a[b.md', 'C:\x\[[...slug]]\page.tsx', 'C:\x\(name)\a.md', '\\server\share\file.txt', 'C:/x/a.md')
+        $block = Read-DispatchRequiredReadBlock -Order ([pscustomobject]@{ TaskBody = (Format-DispatchRequiredReadBlock -Path $paths) })
+        Assert-True ($block.entries.Count -eq $paths.Count -and $block.block_errors.Count -eq 0) '格式輸出應通過解析。'
+        for ($i = 0; $i -lt $paths.Count; $i++) { Assert-True ($block.entries[$i].state -eq 'ok' -and $block.entries[$i].path -ceq $paths[$i]) '路徑內容應完整保留。' }
+        $duplicates = Read-DispatchRequiredReadBlock -Order ([pscustomobject]@{ TaskBody = (Format-DispatchRequiredReadBlock -Path @('C:\x\a.md', 'c:/X/A.md')) })
+        Assert-True (@(Get-DispatchRequiredReadListedPath -Block $duplicates).Count -eq 1) '同一路徑應去重。'
+        $template = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $scriptsRoot) 'templates\dispatch\dispatch-order.md') -Raw -Encoding UTF8
+        $task = [regex]::Match($template, '(?ms)^## 4\.[^\r\n]*\r?\n(?<body>.*?)(?=^## 5\.)').Groups['body'].Value
+        $parsedTemplate = Read-DispatchRequiredReadBlock -Order ([pscustomobject]@{ TaskBody = $task })
+        Assert-True (@($parsedTemplate.entries | Where-Object { $_.code -eq 'DispatchInputRequiredReadNotAbsolute' }).Count -eq 1) '範本佔位路徑應拒絕。'
+    }
+    Invoke-Case 'Phase 6 DD-REQREAD-REJECT' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-reqread-reject') -TaskBody '檢查'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $cases = @(
+            @{ Body='必讀檔案:'; Code='DispatchInputRequiredReadHeadingInvalid'; Reason='標題' },
+            @{ Body='**必讀檔案：**'; Code='DispatchInputRequiredReadHeadingInvalid'; Reason='標題' },
+            @{ Body='### 必讀檔案'; Code='DispatchInputRequiredReadHeadingInvalid'; Reason='標題' },
+            @{ Body='- 必讀檔案：'; Code='DispatchInputRequiredReadHeadingInvalid'; Reason='標題' },
+            @{ Body='必讀檔案：C:\x.md'; Code='DispatchInputRequiredReadHeadingInvalid'; Reason='標題' },
+            @{ Body='必讀檔案：'; Code='DispatchInputRequiredReadEmpty'; Reason='沒有清單' },
+            @{ Body="必讀檔案：`n說明"; Code='DispatchInputRequiredReadEmpty'; Reason='沒有清單' },
+            @{ Body="必讀檔案：`n`n說明"; Code='DispatchInputRequiredReadEmpty'; Reason='沒有清單' }
+        )
+        foreach ($line in @(' - `C:\x.md`', '* `C:\x.md`', '1. `C:\x.md`', '-`C:\x.md`')) { $cases += @{ Body="必讀檔案：`n$line"; Code='DispatchInputRequiredReadLineInvalid'; Reason='- ' } }
+        foreach ($line in @('- `C:\a` `C:\b`', '- `C:\a`、`C:\b`', '- C:\a、C:\b', '- `C:\a;C:\b`')) { $cases += @{ Body="必讀檔案：`n$line"; Code='DispatchInputRequiredReadMultiplePaths'; Reason='一行只能' } }
+        foreach ($item in @(@('- C:\x.md','反引號'), @('- `C:\x.md','未成對'), @('- `C:\x.md` 說明','其他文字'), @('- ` `','空白'), @('- `C:\x.md:12`','行號'), @('- `C:\x.md:12:3`','行號'), @('- 修改 X','反引號'))) { $cases += @{ Body="必讀檔案：`n$($item[0])"; Code='DispatchInputRequiredReadLineInvalid'; Reason=$item[1] } }
+        foreach ($path in @('scripts\a.ps1', '.\a.md', '~\a.md', '%USERPROFILE%\a.md', '/etc/a.md', 'C:a.md', '<絕對路徑>')) { $cases += @{ Body=("必讀檔案：`n- ``" + $path + '`'); Code='DispatchInputRequiredReadNotAbsolute'; Reason='絕對路徑' } }
+        $cases += @{ Body = ("必讀檔案：`n- ``" + $f.OrderPath + "```n`n- 修改 X"); Code = 'DispatchInputRequiredReadLineInvalid'; Reason = '反引號' }
+        $orderTemplate = [IO.File]::ReadAllText($f.OrderPath)
+        foreach ($case in $cases) {
+            $orderText = $orderTemplate.Replace('檢查', $case.Body)
+            [IO.File]::WriteAllText($f.OrderPath, $orderText, (New-Object Text.UTF8Encoding($false)))
+            $order = Read-DispatchOrderSections -Path $f.OrderPath
+            $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'error' })
+            Assert-True ($findings.Count -eq 1 -and $findings[0].message.Contains($case.Reason)) ('錯誤分類不符：' + $case.Body)
+            $finding = $findings[0]
+            $expectedLine = if ($finding.received -eq '（第 4 欄結束）') { Get-DdOrderLineNumber -Path $f.OrderPath -Text '必讀檔案：' } else { Get-DdOrderLineNumber -Path $f.OrderPath -Text $finding.received }
+            Assert-DdRequiredReadFinding -Finding $finding -Order $order -Line $expectedLine -Raw $finding.received -Code $case.Code -CheckId 'DI-REQREAD'
+        }
+        $order.TaskBody = "必讀檔案：`n- C:\a`n* ``C:\b```n- ``relative```n"
+        $errors = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.severity -eq 'error' })
+        Assert-True ($errors.Count -eq 3 -and @($errors.line | Select-Object -Unique).Count -eq 3) '所有錯誤應一次回報且各有行號。'
+        $order.TaskBody = "必讀檔案：`n- ``C:\a```n必讀檔案：`n- ``C:\b``"
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot (Join-Path $f.Root 'worktree') | Where-Object { $_.code -eq 'DispatchInputRequiredReadHeadingInvalid' }).Count -eq 1) '重複標題應拒絕。'
+    }
+    function New-DdRequiredReadContext {
+        param([object]$Fixture, [object]$Order)
+        [pscustomobject]@{ SourceRoot = $Fixture.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $Fixture.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = 'result.md'; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($Fixture.Target); ResourceOrder = $Order }
+    }
+    Invoke-Case 'Phase 6 DD-REQREAD-BOUNDARY' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-reqread-boundary') -TaskBody '檢查'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $execution = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
+        foreach ($relative in @('[id]\page.tsx', 'a[b.md', '[[...slug]]\page.tsx')) {
+            $path = Join-Path $f.Root $relative
+            $null = New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force
+            [IO.File]::WriteAllText($path, 'fixture')
+            $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($path)
+            Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '特殊字元的既存路徑應通過。'
+            Remove-Item -LiteralPath $path
+            $missing = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.code -eq 'DispatchInputReferenceMissing' })
+            Assert-True ($missing.Count -eq 1 -and $missing[0].check_id -eq 'DI-REF-A' -and $missing[0].message.Contains($path) -and $missing[0].received -ceq ('- `' + $path + '`') -and (Get-DdExpectedExamplePath -Finding $missing[0]) -ceq $path) '缺件的範例區塊路徑應等於完整路徑，received 應為完整清單行。'
+            $order.TaskBody = '讀取 ' + $path
+            Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '區塊外特殊路徑不得拒絕。'
+        }
+        foreach ($body in @('rg handoff[\\/]+dispatch-order-', '讀取 C:\x\first.txt、C:\x\second.txt', '讀取 C:\x\first.txt（註記）', '讀取C:\x\absent.txt', '讀取路徑=C:\x\absent.txt', '讀取 [C:\x\absent.txt]', 'https://example.com/a/b')) {
+            $order.TaskBody = $body
+            Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '區塊外邊界案例不得拒絕。'
+        }
+        foreach ($item in @(@('- `C:\x\first.txt:12`','DispatchInputRequiredReadLineInvalid'), @('- `C:\x\a`、`C:\x\b`','DispatchInputRequiredReadMultiplePaths'))) {
+            $order.TaskBody = "必讀檔案：`n" + $item[0]
+            Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.code -eq $item[1] }).Count -eq 1) '區塊內非法路徑應拒絕。'
+        }
+        function Test-PathWithinRoot { param([string]$Path, [string]$Root) return $false }
+        function Test-Path { [CmdletBinding()] param([string]$LiteralPath) return $false }
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @('\\server\share\file.txt')
+        $unc = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.code -eq 'DispatchInputReferenceMissing' })
+        Assert-True ($unc.Count -eq 1 -and (Get-DdExpectedExamplePath -Finding $unc[0]) -ceq '\\server\share\file.txt') 'UNC 缺件的範例區塊路徑應等於完整路徑。'
+        function Test-Path { [CmdletBinding()] param([string]$LiteralPath) return $true }
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.severity -eq 'error' }).Count -eq 0) 'UNC 存在時應通過。'
+    }
+    Invoke-Case 'Phase 6 DD-REQREAD-STAGES' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-reqread-stages') -TaskBody '檢查'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $execution = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
+        $source = Join-Path $f.Root 'existing.txt'; [IO.File]::WriteAllText($source, 'fixture')
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($source, $f.LineRoot)
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '來源檔案與目錄存在時應通過。'
+        $worktreeFile = Join-Path $execution 'required.txt'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($worktreeFile)
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution).Count -eq 0) '執行端路徑應留給 Stage B。'
+        $missing = @(Get-DispatchReferenceFindings -Order $order -Stage Worktree -DispatchRoot $execution)
+        Assert-True ($missing.Count -eq 1 -and $missing[0].check_id -eq 'DI-REF-B' -and $missing[0].code -eq 'DispatchInputReferenceMissing') 'Stage B 缺件應拒絕。'
+        $null = New-Item -ItemType Directory -Path $execution -Force; [IO.File]::WriteAllText($worktreeFile, 'fixture')
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Worktree -DispatchRoot $execution).Count -eq 0) '執行端路徑存在時應通過。'
+        $savedTaskBody = $order.TaskBody
+        $sourceDesign = Join-Path $f.LineRoot 'design.md'; [IO.File]::WriteAllText($sourceDesign, '# Design')
+        $worktreeDesign = Join-Path $execution '.local\ai-sessions\handoff\dd-line\design.md'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($worktreeDesign)
+        $designMissing = @(Get-DispatchReferenceFindings -Order $order -Stage Worktree -DispatchRoot $execution -SourceRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test')
+        Assert-True ($designMissing.Count -eq 1 -and $designMissing[0].check_id -eq 'DI-REF-B' -and $designMissing[0].code -eq 'DispatchInputReferenceMissing' -and $designMissing[0].severity -eq 'error') 'Stage B 應檢查 dispatchRoot 內同線 design.md 的存在性。'
+        Assert-DdRequiredReadFinding -Finding $designMissing[0] -Order $order -Line $designMissing[0].line -Raw $designMissing[0].received -Code 'DispatchInputReferenceMissing' -CheckId 'DI-REF-B'
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution -SourceRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test').Count -eq 0) 'Stage A 不檢查 dispatchRoot 內的同線 design.md，來源檢查交給 DI-DESIGN。'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $worktreeDesign) -Force; [IO.File]::WriteAllText($worktreeDesign, '# Design')
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Worktree -DispatchRoot $execution -SourceRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test').Count -eq 0) '執行端副本存在時應通過。'
+        Remove-Item -LiteralPath $worktreeDesign
+        $designContext = New-DdRequiredReadContext -Fixture $f -Order $order
+        $designContext | Add-Member -NotePropertyName ExecutionRoot -NotePropertyValue $execution
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $designContext | Where-Object { $_.check_id -eq 'DI-REF-B' }).Count -eq 1) '經正式入口的 Worktree 階段也應回報同線 design.md 副本缺件。'
+        Remove-Item -LiteralPath $sourceDesign
+        $order.TaskBody = $savedTaskBody
+        $context = New-DdRequiredReadContext -Fixture $f -Order $order
+        $context | Add-Member -NotePropertyName ExecutionRoot -NotePropertyValue $f.Root
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Worktree -Context $context | Where-Object { $_.check_id -eq 'DI-REF-B' }).Count -eq 0) 'direct-write 不重複檢查。'
+        $missingPath = Join-Path $f.Root 'missing.txt'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($missingPath)
+        $missing = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.code -eq 'DispatchInputReferenceMissing' })
+        Assert-True ($missing.Count -eq 1) 'Stage A 缺件應回報一次。'
+        Assert-DdRequiredReadFinding -Finding $missing[0] -Order $order -Line $missing[0].line -Raw $missing[0].received -Code 'DispatchInputReferenceMissing' -CheckId 'DI-REF-A'
+        $design = Join-Path $f.LineRoot 'design.md'; $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($design)
+        $result = @(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.severity -eq 'error' })
+        Assert-True ($result.Count -eq 1 -and $result[0].code -eq 'DispatchInputDesignMissing') '同線 design 缺件不得重複回報。'
+        function Test-Path { [CmdletBinding()] param([string]$LiteralPath) throw 'fixture access failure' }
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($missingPath)
+        $errorFinding = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.code -eq 'DispatchInputReferenceMissing' })
+        Assert-True ($errorFinding.Count -eq 1 -and $errorFinding[0].message -match '無法檢查.*fixture access failure') '檢查例外應回 error 與原訊息。'
+    }
+    Invoke-Case 'Phase 6 DD-REQREAD-HINT' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-reqread-hint') -TaskBody '檢查'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $execution = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
+        $existing = Join-Path $f.Root 'exists.txt'; [IO.File]::WriteAllText($existing, 'fixture')
+        foreach ($path in @($existing, (Join-Path $f.Root 'missing.txt'))) {
+            $order.TaskBody = '讀取 ' + $path
+            $hints = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
+            $hint = @($hints | Where-Object { $_.code -eq 'DispatchInputOutsideBlockPath' })
+            Assert-True ($hint.Count -eq 1 -and $hint[0].severity -eq 'warning' -and @($hints | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '區塊外路徑應只提示。'
+            Assert-DdRequiredReadFinding -Finding $hint[0] -Order $order -Line $hint[0].line -Raw $order.TaskBody -Code 'DispatchInputOutsideBlockPath' -CheckId 'DI-REF-A'
+        }
+        $order.TaskBody = '建立 ' + $existing
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.code -eq 'DispatchInputOutsideBlockPath' }).Count -eq 0) '寫入動詞不提示。'
+        $order.TaskBody = (@(1..23 | ForEach-Object { '讀取 C:\x\f' + $_ + '.txt' }) -join "`n")
+        $hints = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.code -eq 'DispatchInputOutsideBlockPath' })
+        Assert-True ($hints.Count -eq 21 -and $hints[-1].message.Contains('其餘 3 行略')) '提示上限及略過筆數不符。'
+        $order.TaskBody = '檢查'
+        $absent = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
+        Assert-True ($absent.Count -eq 1 -and $absent[0].code -eq 'DispatchInputRequiredReadAbsent' -and $absent[0].severity -eq 'warning') '無區塊應回提示。'
+        Assert-DdRequiredReadFinding -Finding $absent[0] -Order $order -Line $order.TaskBodyStartLine -Raw '（第 4 欄沒有「必讀檔案：」標題）' -Code 'DispatchInputRequiredReadAbsent' -CheckId 'DI-REQREAD'
+        $context = New-DdRequiredReadContext -Fixture $f -Order $order
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '提示不得拒絕 Request。'
+        $accepted = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md'
+        Assert-True ($accepted.ExitCode -eq 0) '無區塊過渡規則應放行。'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($existing)
+        Assert-True (@(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution | Where-Object { $_.code -eq 'DispatchInputRequiredReadAbsent' }).Count -eq 0) '有區塊時不提示缺少區塊。'
+        function Test-Path { [CmdletBinding()] param([string]$LiteralPath) throw 'fixture failure' }
+        $order.TaskBody = '讀取 C:\x\missing.txt'
+        $hints = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot $execution)
+        Assert-True (@($hints | Where-Object { $_.severity -eq 'error' }).Count -eq 0 -and @($hints | Where-Object { $_.code -eq 'DispatchInputOutsideBlockPath' -and $_.message -match '無法檢查' }).Count -eq 1) '區塊外檢查例外只提示。'
+    }
+    Invoke-Case 'Phase 6 DD-REQREAD-REV4' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-reqread-rev4') -TaskBody '檢查'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath; $order.Role = 'Reviewer'
+        $context = New-DdRequiredReadContext -Fixture $f -Order $order
+        $summary = Join-Path $f.LineRoot 'requirement-summary.md'
+        $workSummary = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test\.local\ai-sessions\handoff\dd-line\requirement-summary.md'
+        foreach ($path in @($summary, $workSummary)) {
+            $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '審查' -RequiredRead @($path)
+            Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.check_id -eq 'DI-REV4' }).Count -eq 0) '列出同線摘要應通過。'
+        }
+        $order.TaskBody = "必讀檔案：`n- " + $summary
+        $result = @(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.severity -eq 'error' })
+        Assert-True (@($result | Where-Object { $_.code -eq 'DispatchInputRequiredReadLineInvalid' }).Count -eq 1 -and @($result | Where-Object { $_.check_id -eq 'DI-REV4' }).Count -eq 0) '格式錯誤但可辨識的摘要不得重複誤報。'
+        foreach ($body in @((Get-DdFixtureRequiredReadBody -Body '審查' -RequiredRead @($f.OrderPath)), '讀取 requirement-summary.md', ('讀取 ' + $summary), '審查')) {
+            $order.TaskBody = $body
+            $result = @(Invoke-DispatchInputChecks -Stage Request -Context $context)
+            $rev = @($result | Where-Object { $_.check_id -eq 'DI-REV4' })
+            Assert-True ($rev.Count -eq 1 -and $rev[0].message.Contains($summary) -and $rev[0].message.Contains('區塊現況')) '摘要未列出應拒絕並說明現況。'
+            Assert-DdRequiredReadFinding -Finding $rev[0] -Order $order -Line $rev[0].line -Raw $rev[0].received -Code 'DispatchInputReviewerSummaryUnlisted' -CheckId 'DI-REV4'
+            Assert-True (@($result | Where-Object { $_.code -eq 'DispatchInputRequiredReadAbsent' }).Count -eq 0) 'DI-REV4 應抑制缺少區塊提示。'
+        }
+        $order.Role = 'Support Engineer'
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.check_id -eq 'DI-REV4' }).Count -eq 0) '非 Reviewer 不檢查。'
+        $order.Role = 'Reviewer'; Remove-Item -LiteralPath $summary
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.check_id -eq 'DI-REV4' }).Count -eq 0) '摘要不存在時不檢查。'
+        [IO.File]::WriteAllText($summary, '# Summary')
+        $text = [IO.File]::ReadAllText($f.OrderPath).Replace('Support Engineer', 'Reviewer'); [IO.File]::WriteAllText($f.OrderPath, $text, (New-Object Text.UTF8Encoding($false)))
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md' -ActualDispatch
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DispatchInputReviewerSummaryUnlisted' -and $rejected.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path -LiteralPath $rejected.DispatchRoot) -and -not (Test-Path -LiteralPath $rejected.RunRoot) -and -not (Test-Path -LiteralPath $rejected.CounterPath)) 'Reviewer 未列摘要時不得啟動。'
+    }
+    Invoke-Case 'Phase 6 DD-REQREAD-DESIGN' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-reqread-design') -TaskBody '供 Architect 撰寫 design.md'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $context = New-DdRequiredReadContext -Fixture $f -Order $order
+        $execution = Join-Path $f.Root '.local\ai-sessions\worktrees\dd-test'
+        foreach ($body in @('供 Architect 撰寫 design.md', '讀取 handoff\dd-line\design.md')) {
+            $order.TaskBody = $body
+            Assert-True (-not (Test-DispatchOrderRequiresDesign -Order $order -SourceRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test')) '區塊外文字不帶入設計。'
+            Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.severity -eq 'error' }).Count -eq 0) '區塊外文字不得拒絕。'
+            $artifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $f.Root -DispatchRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test' -DispatchKind resource -WriteMode readonly -ResourceOrder $order)
+            Assert-True (@($artifacts | Where-Object { $_.source -match 'design\.md$' }).Count -eq 0) '未列出時不帶入設計。'
+        }
+        $other = Join-Path $f.Root '.local\ai-sessions\handoff\other-line\design.md'
+        $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($other)
+        Assert-True (-not (Test-DispatchOrderRequiresDesign -Order $order -SourceRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test')) '其他線的 design 不帶入。'
+        $design = Join-Path $f.LineRoot 'design.md'; $order.TaskBody = Get-DdFixtureRequiredReadBody -Body '檢查' -RequiredRead @($design)
+        $errors = @(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.severity -eq 'error' })
+        Assert-True ($errors.Count -eq 1 -and $errors[0].code -eq 'DispatchInputDesignMissing' -and $errors[0].message.Contains($design)) '同線設計缺件應單獨拒絕。'
+        Assert-DdRequiredReadFinding -Finding $errors[0] -Order $order -Line $errors[0].line -Raw $errors[0].received -Code 'DispatchInputDesignMissing' -CheckId 'DI-DESIGN'
+        $text = [IO.File]::ReadAllText($f.OrderPath).Replace('供 Architect 撰寫 design.md', $order.TaskBody); [IO.File]::WriteAllText($f.OrderPath, $text, (New-Object Text.UTF8Encoding($false)))
+        $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md' -ActualDispatch
+        Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output -match 'DispatchInputDesignMissing' -and -not (Test-Path -LiteralPath $rejected.CounterPath)) '設計缺件不得啟動。'
+        [IO.File]::WriteAllText($design, '# Design')
+        Assert-True (Test-DispatchOrderRequiresDesign -Order $order -SourceRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test') '區塊列出同線設計時應帶入。'
+        $artifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $f.Root -DispatchRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test' -DispatchKind resource -WriteMode readonly -ResourceOrder $order)
+        Assert-True (@($artifacts | Where-Object { $_.source -eq $design -and $_.destination -eq (Join-Path $execution '.local\ai-sessions\handoff\dd-line\design.md') }).Count -eq 1) '設計應複製至執行端同線目錄。'
+    }
+    Invoke-Case 'Phase 6 DD-REQREAD-ENTRY' {
+        $root = Join-Path $fixtureRoot 'dd-reqread-entry'
+        $cases = @(
+            @{ Body='必讀檔案:'; Code='DispatchInputRequiredReadHeadingInvalid' },
+            @{ Body='必讀檔案：'; Code='DispatchInputRequiredReadEmpty' },
+            @{ Body="必讀檔案：`n- C:\x.md"; Code='DispatchInputRequiredReadLineInvalid' },
+            @{ Body="必讀檔案：`n- ``C:\a`` ``C:\b``"; Code='DispatchInputRequiredReadMultiplePaths' },
+            @{ Body="必讀檔案：`n- ``relative``"; Code='DispatchInputRequiredReadNotAbsolute' },
+            @{ Body="必讀檔案：`n- ``C:\missing-entry-file.txt``"; Code='DispatchInputReferenceMissing' }
+        )
+        for ($i = 0; $i -lt $cases.Count; $i++) {
+            $f = New-DdInputFixture -Root (Join-Path $root ([string]$i)) -TaskBody $cases[$i].Body
+            $rejected = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md' -ActualDispatch
+            Assert-True ($rejected.ExitCode -ne 0 -and $rejected.Output.Contains($cases[$i].Code) -and $rejected.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path -LiteralPath $rejected.DispatchRoot) -and -not (Test-Path -LiteralPath $rejected.RunRoot) -and -not (Test-Path -LiteralPath $rejected.CounterPath)) ('入口未正確拒絕：' + $cases[$i].Code)
+        }
+        $positiveRoot = Join-Path $root 'valid'; $f = New-DdInputFixture -Root $positiveRoot -TaskBody '檢查' -RequiredRead @((Join-Path $positiveRoot '.local\ai-sessions\handoff\dd-line\requirement-summary.md'))
+        $validated = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md'
+        Assert-True ($validated.ExitCode -eq 0) ('合法區塊應通過 Request 檢查：' + $validated.Output)
+        $accepted = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md' -ActualDispatch
+        Assert-True ($accepted.Output -notmatch '"error_code"\s*:\s*"DispatchInput' -and $accepted.Output -match '"failed_stage"\s*:\s*"preflight"') ('合法區塊應通過 Stage A 並進入 Preflight：' + $accepted.Output)
     }
     Invoke-Case 'Phase 6 DD-PROFILE DispatchInputDirectoryScanLimit 對外錯誤碼' {
         $script:ddScanLimitCallCount = 0
@@ -7758,9 +8032,9 @@ if ($Phase -ge 6) {
     Invoke-Case 'Phase 6 DD-REF UNC 絕對參照' {
         function Test-PathWithinRoot { param([string]$Path, [string]$Root) return $false }
         function Test-Path { [CmdletBinding()] param([string]$LiteralPath) return $false }
-        $order = [pscustomobject]@{ TaskBody = '讀取 `\\server\share\file.txt`'; Content = ''; Path = 'C:\fixture\order.md' }
+        $order = [pscustomobject]@{ TaskBody = (Get-DdFixtureRequiredReadBody -Body '檢查目標' -RequiredRead @('\\server\share\file.txt')); Content = ''; Path = 'C:\fixture\order.md' }
         $findings = @(Get-DispatchReferenceFindings -Order $order -Stage Request -DispatchRoot 'C:\fixture\worktree')
-        Assert-True ($findings.Count -eq 1 -and $findings[0].severity -eq 'error' -and $findings[0].expected -eq '\\server\share\file.txt') 'UNC 參照應納入必讀路徑檢查。'
+        Assert-True ($findings.Count -eq 1 -and $findings[0].severity -eq 'error' -and $findings[0].code -eq 'DispatchInputReferenceMissing') 'UNC 參照應納入必讀路徑檢查。'
     }
     Invoke-Case 'Phase 6 DD-PREFLIGHT-MSG Workflow tracked target 限制' {
         $preflight = ($functions | Where-Object { $_.Name -eq 'Invoke-Preflight' } | Select-Object -First 1).Extent.Text
@@ -10040,6 +10314,63 @@ exit $LASTEXITCODE
         Assert-True (-not $generatedContent.Contains('驗收腳本完整內容') -and -not $generatedContent.Contains('新腳本的行數')) '第 8 節仍要求固定腳本內容或行數。'
     }
 
+    Invoke-Case 'Phase 7 DD-REQREAD-GENERATOR' {
+        $caseRoot = Join-Path $phase7Root 'dd-reqread-generator'
+        $null = New-Item -ItemType Directory -Path $caseRoot -Force
+        $driver = Join-Path $caseRoot 'driver.ps1'
+        $driverText = @'
+param([string]$Generator, [string]$InputPath, [string]$OutputPath, [string]$ReportPath, [string]$TargetPath)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+$inputData = Get-Content -LiteralPath $InputPath -Raw -Encoding UTF8 | ConvertFrom-Json
+$argsMap = @{ Title='Fixture'; Role='Support Engineer'; TargetPath=@($TargetPath); TaskBody=[string]$inputData.body; Acceptance=@(@{ Category='新行為'; Condition='fixture'; Command='Get-Item fixture' }); Boundary='唯讀'; ReportPath=$ReportPath; DispatchSlug='dd-generator'; LineSlug='line-a'; OutputPath=$OutputPath }
+if ($inputData.include) { $argsMap.RequiredRead = [string[]]@($inputData.paths) }
+& $Generator @argsMap
+exit $LASTEXITCODE
+'@
+        [IO.File]::WriteAllText($driver, $driverText, (New-Object Text.UTF8Encoding($true)))
+        $inputPath = Join-Path $caseRoot 'input.json'; $report = Join-Path $caseRoot 'report.md'; $target = Join-Path $caseRoot 'target.txt'
+        $paths = @((Join-Path $caseRoot 'first.md'), (Join-Path $caseRoot 'second.md'))
+        $cases = @(
+            @{ Name='valid'; Include=$true; Paths=$paths; Body='Fixture'; Code='' },
+            @{ Name='omitted'; Include=$false; Paths=@(); Body='Fixture'; Code='' },
+            @{ Name='relative'; Include=$true; Paths=@('relative.md'); Body='Fixture'; Code='DispatchInputRequiredReadNotAbsolute'; Field='RequiredRead'; Raw='- `relative.md`'; LineOffset=1 },
+            @{ Name='backtick'; Include=$true; Paths=@('C:\x\a`b.md'); Body='Fixture'; Code='DispatchInputRequiredReadLineInvalid'; Field='RequiredRead'; Raw='- `C:\x\a`b.md`'; LineOffset=1 },
+            @{ Name='newline'; Include=$true; Paths=@("C:\x\a`nb.md"); Body='Fixture'; Code='DispatchInputRequiredReadLineInvalid'; Field='RequiredRead'; Raw='- `C:\x\a b.md`'; LineOffset=1 },
+            @{ Name='line'; Include=$true; Paths=@('C:\x\a.md:12'); Body='Fixture'; Code='DispatchInputRequiredReadLineInvalid'; Field='RequiredRead'; Raw='- `C:\x\a.md:12`'; LineOffset=1 },
+            @{ Name='empty'; Include=$true; Paths=@(''); Body='Fixture'; Code='DispatchInputRequiredReadLineInvalid'; Field='RequiredRead'; Raw='- ``'; LineOffset=1 },
+            @{ Name='heading'; Include=$true; Paths=$paths; Body="Fixture`n必讀檔案："; Code='DispatchInputRequiredReadHeadingInvalid'; Field='TaskBody'; Raw='必讀檔案：'; LineOffset=-1 },
+            @{ Name='heading-empty-array'; Include=$true; Paths=@(); Body="Fixture`n必讀檔案："; Code='DispatchInputRequiredReadHeadingInvalid'; Field='TaskBody'; Raw='必讀檔案：'; LineOffset=-1 },
+            @{ Name='heading-empty-string'; Include=$true; Paths=@(''); Body="Fixture`n必讀檔案："; Code='DispatchInputRequiredReadHeadingInvalid'; Field='TaskBody'; Raw='必讀檔案：'; LineOffset=-1 },
+            @{ Name='heading-whitespace'; Include=$true; Paths=@('  '); Body="Fixture`n必讀檔案："; Code='DispatchInputRequiredReadHeadingInvalid'; Field='TaskBody'; Raw='必讀檔案：'; LineOffset=-1 },
+            @{ Name='fence'; Include=$true; Paths=$paths; Body="``````text`nFixture"; Code='DispatchInputRequiredReadHeadingInvalid'; Field='TaskBody'; Raw='必讀檔案：'; LineOffset=1 },
+            @{ Name='comment'; Include=$true; Paths=$paths; Body="<!-- open`nFixture"; Code='DispatchInputRequiredReadHeadingInvalid'; Field='TaskBody'; Raw='必讀檔案：'; LineOffset=1 }
+        )
+        $validHeadingLine = 0
+        foreach ($case in $cases) {
+            $output = Join-Path $caseRoot ($case.Name + '.md')
+            [IO.File]::WriteAllText($inputPath, ((@{ body=$case.Body; include=$case.Include; paths=$case.Paths } | ConvertTo-Json -Depth 5)), (New-Object Text.UTF8Encoding($false)))
+            $run = Invoke-Phase9Process -HostPath $phase7DispatchOrderHostPath -Arguments @('-NoProfile','-File',$driver,'-Generator',$phase7DispatchOrderPath,'-InputPath',$inputPath,'-OutputPath',$output,'-ReportPath',$report,'-TargetPath',$target) -WorkingDirectory $caseRoot -EnvironmentVariables @{}
+            if ($case.Code -ne '') {
+                Assert-True ($run.exit_code -ne 0 -and ([string]$run.stderr).Contains($case.Code) -and -not (Test-Path -LiteralPath $output)) ('非法輸入應拒絕：' + $case.Name)
+                $failure = ([string]$run.stderr).Trim() | ConvertFrom-Json
+                $expectedLine = $validHeadingLine + $case.LineOffset
+                $failureMessage = [string]$failure.message
+                foreach ($part in @($output, '第 4 欄', ('檔案第 ' + $expectedLine + ' 行'), ('收到：「' + $case.Raw + '」'), "必讀檔案：`n- ``")) { Assert-True ($failureMessage.Contains($part)) ('產生器拒絕訊息缺少 ' + $part + '：' + $case.Name + ' ' + $failureMessage) }
+                Assert-True ($failure.code -eq $case.Code -and $failure.field -eq $case.Field -and [int]$failure.detail.line -eq $expectedLine -and [int]$failure.detail.order_field -eq 4 -and $failure.detail.source -ceq $output -and $failure.detail.received -ceq $case.Raw) ('產生器拒絕 detail 不符：' + $case.Name)
+                $exampleBlock = Read-DispatchRequiredReadBlock -Order ([pscustomobject]@{ TaskBody = [string]$failure.detail.expected })
+                Assert-True ($exampleBlock.present -and $exampleBlock.block_errors.Count -eq 0 -and $exampleBlock.entries.Count -eq 1 -and $exampleBlock.entries[0].state -eq 'ok') ('產生器的正確寫法範例必須通過解析：' + $case.Name)
+                continue
+            }
+            Assert-True ($run.exit_code -eq 0 -and (Test-Path -LiteralPath $output)) ('產生器失敗：' + $case.Name + ' ' + $run.stderr)
+            $order = Read-DispatchOrderSections -Path $output
+            if ($case.Include) {
+                $block = Read-DispatchRequiredReadBlock -Order $order
+                if ($case.Name -eq 'valid') { $validHeadingLine = $block.heading_line }
+                Assert-True ($block.entries.Count -eq 2 -and $block.entries[0].path -eq $paths[0] -and $block.entries[1].path -eq $paths[1] -and $block.block_errors.Count -eq 0 -and $order.TaskBody -match "Fixture\r?\n\r?\n必讀檔案：") '產生的區塊與順序不符。'
+            }
+            else { Assert-True ($order.TaskBody.Trim() -eq 'Fixture') '未提供 RequiredRead 時任務內容應不變。' }
+        }
+    }
     Invoke-Case 'Phase 7 DD-ORDERLOC 產生器拒絕 handoff 根目錄' {
         $slug = 'phase7-order-root-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $rootPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/dispatch-order-' + $slug + '.md')
@@ -14530,8 +14861,8 @@ if ($Phase -ge 9) {
         }
         $dispatchOrderPath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\a\dispatch-order-' + $caseSlug + '.md')
         if ($DispatchKind -eq 'resource') {
-            $resourceTaskBody = if ($TaskMentionsDesign) { 'Execute the requested resource and read ' + (Join-Path $dispatchRoot '.local\ai-sessions\handoff\a\design.md') } else { 'Execute the requested resource target.' }
-            if ($DdStageBScenario -eq 'ref') { $resourceTaskBody = '讀取 `' + (Join-Path $dispatchRoot 'missing-reference.txt') + '`' }
+            $resourceTaskBody = if ($TaskMentionsDesign) { Get-DdFixtureRequiredReadBody -Body 'Execute the requested resource.' -RequiredRead @((Join-Path $dispatchRoot '.local\ai-sessions\handoff\a\design.md')) } else { 'Execute the requested resource target.' }
+            if ($DdStageBScenario -eq 'ref') { $resourceTaskBody = Get-DdFixtureRequiredReadBody -Body 'Execute the requested resource.' -RequiredRead @((Join-Path $dispatchRoot 'missing-reference.txt')) }
             $dispatchOrderContent = @(
                 ('# 派遣單：' + $caseSlug)
                 ''
@@ -15108,6 +15439,24 @@ function Sync-DispatchTrackedRawBytesFromSource {
                 if ($null -ne $case -and (Test-Path -LiteralPath $case.dispatch_root -PathType Container)) {
                     $null = Invoke-Phase9GitCommand -RepositoryRoot $case.source_root -Arguments @('worktree', 'remove', '--force', '--', $case.dispatch_root)
                 }
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 9 DD-REQREAD-HINT Preflight inputWarnings 保存沒有區塊的提示' {
+        $real = & $invokeSRealDispatchCase -Name 'dd-reqread-hint-preflight' -ScriptPath $sourcePath -DispatchKind resource -WriteMode readonly -UseCurrentHost
+        try {
+            Assert-True ([int]$real.run.exit_code -eq 0 -and [string]$real.output_document.status -eq 'completed') ('沒有區塊的資源派遣應放行：' + [string]$real.output_text)
+            $preflightPath = [string]$real.output_document.preflight_result_path
+            Assert-True (-not [string]::IsNullOrWhiteSpace($preflightPath) -and (Test-Path -LiteralPath $preflightPath -PathType Leaf)) 'Dispatch 應產生 Preflight result。'
+            $preflight = Get-Content -LiteralPath $preflightPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            $absent = @($preflight.inputWarnings | Where-Object { $_.code -eq 'DispatchInputRequiredReadAbsent' })
+            Assert-True ($absent.Count -eq 1 -and $absent[0].check_id -eq 'DI-REQREAD' -and $absent[0].severity -eq 'warning' -and $absent[0].message.Contains('第 4 欄') -and $absent[0].message.Contains("必讀檔案：`n- ``") -and [int]$absent[0].order_field -eq 4) 'Preflight result 的 inputWarnings 應含恰 1 筆沒有區塊的提示。'
+            Assert-True (@($preflight.inputWarnings | Where-Object { $_.severity -ne 'warning' }).Count -eq 0) 'inputWarnings 只應含 warning。'
+        }
+        finally {
+            if ($null -ne $real -and (Test-Path -LiteralPath $real.dispatch_root -PathType Container)) {
+                $null = Invoke-Phase9GitCommand -RepositoryRoot $real.source_root -Arguments @('worktree', 'remove', '--force', '--', $real.dispatch_root)
             }
         }
     }

@@ -15,6 +15,11 @@ param(
     [Parameter(Mandatory)]
     [string]$TaskBody,
 
+    [AllowEmptyCollection()]
+    [AllowEmptyString()]
+    [AllowNull()]
+    [string[]]$RequiredRead,
+
     [Parameter(Mandatory)]
     [hashtable[]]$Acceptance,
 
@@ -36,6 +41,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'dispatch\dispatch-input-checks.ps1')
 
 function Test-UnsafeSearchLineEndAnchor {
     [CmdletBinding()]
@@ -593,6 +599,67 @@ try {
         (Split-Path -Leaf $localParent) -ieq '.local') {
         $correctPath = Join-Path (Join-Path $outputParent $LineSlug) (Split-Path -Leaf $absoluteOutputPath)
         Throw-DispatchOrderValidationFailure -Code 'DispatchInputOrderLocationInvalid' -Classification 'InvalidPath' -Field 'OutputPath' -Message ('請使用線目錄路徑：' + $correctPath) -Detail ([ordered]@{ expected = $correctPath; received = $absoluteOutputPath })
+    }
+    if ($PSBoundParameters.ContainsKey('RequiredRead')) {
+        $buildCandidate = {
+            param([string]$Body)
+            New-DispatchOrderContent -Title $Title -Role $Role -TargetPath $TargetPath -TaskBody $Body -Acceptance $Acceptance -Boundary $Boundary -ReportPath ([System.IO.Path]::GetFullPath($ReportPath)) -DispatchSlug $DispatchSlug -LineSlug $LineSlug -OutputPath $absoluteOutputPath
+        }
+        $readCandidateOrder = {
+            param([string]$Body)
+            $candidate = & $buildCandidate $Body
+            $sectionMatch = [regex]::Match($candidate, '(?ms)^##\s+4\.\s+任務內容\s*\r?\n(?<section>.*?)(?=^##\s+5\.)')
+            $sectionText = [string]$sectionMatch.Groups['section'].Value
+            $startLine = if ($sectionMatch.Success) { ([regex]::Matches($candidate.Substring(0, $sectionMatch.Groups['section'].Index), '\r?\n')).Count + 1 } else { 1 }
+            [pscustomobject]@{ Path = $absoluteOutputPath; TaskBody = $sectionText; TaskBodyStartLine = $startLine }
+        }
+        $existingOrder = & $readCandidateOrder $TaskBody
+        $existingBlock = Read-DispatchRequiredReadBlock -Order $existingOrder
+        $headingErrors = @($existingBlock.block_errors | Where-Object { $_.code -eq 'DispatchInputRequiredReadHeadingInvalid' })
+        if ($existingBlock.present -or $headingErrors.Count -gt 0) {
+            $headingLine = if ($existingBlock.present) { $existingBlock.heading_line } else { $headingErrors[0].line }
+            $headingRaw = if ($existingBlock.present) { $existingBlock.heading_raw } else { $headingErrors[0].raw }
+            $exampleCandidates = @($RequiredRead | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+            $examplePath = if ($exampleCandidates.Count -gt 0) { [string]$exampleCandidates[0] } else { '' }
+            $finding = New-DispatchRequiredReadFinding -CheckId 'DI-REQREAD' -Severity 'error' -Code 'DispatchInputRequiredReadHeadingInvalid' -Reason 'TaskBody 已含「必讀檔案」標題，使用 -RequiredRead 時請移除 TaskBody 內的標題與清單，必讀檔案只由 -RequiredRead 提供' -Order $existingOrder -Line $headingLine -Raw $headingRaw -Path ([string]$examplePath)
+            Throw-DispatchOrderValidationFailure -Code 'DispatchInputRequiredReadHeadingInvalid' -Classification 'InvalidValue' -Field 'TaskBody' -Message $finding.message -Detail ([ordered]@{ expected = $finding.expected; received = $finding.received; source = $finding.source; line = $finding.line; order_field = 4 })
+        }
+        $requiredItems = @($RequiredRead)
+        $bodyTrimmed = $TaskBody.TrimEnd("`r", "`n")
+        if ($requiredItems.Count -eq 0) {
+            $emptyFinding = New-DispatchRequiredReadFinding -CheckId 'DI-REQREAD' -Severity 'error' -Code 'DispatchInputRequiredReadEmpty' -Reason '-RequiredRead 沒有任何路徑，沒有必讀檔案時請不要提供 -RequiredRead' -Order $existingOrder -Line $existingOrder.TaskBodyStartLine -Raw '（-RequiredRead 為空）' -Path ''
+            Throw-DispatchOrderValidationFailure -Code 'DispatchInputRequiredReadEmpty' -Classification 'InvalidValue' -Field 'RequiredRead' -Message $emptyFinding.message -Detail ([ordered]@{ expected = $emptyFinding.expected; received = $emptyFinding.received; source = $emptyFinding.source; line = $emptyFinding.line; order_field = 4 })
+        }
+        for ($itemIndex = 0; $itemIndex -lt $requiredItems.Count; $itemIndex++) {
+            $item = [string]$requiredItems[$itemIndex]
+            try { $null = Format-DispatchRequiredReadBlock -Path @($item) }
+            catch {
+                $code = ([string]$_.Exception.Message -split '：', 2)[0]
+                $reason = ([string]$_.Exception.Message -split '：', 2)[1]
+                $rawLines = @($requiredItems | ForEach-Object { '- `' + (([string]$_) -replace '\r?\n', ' ') + '`' })
+                $failedOrder = & $readCandidateOrder ($bodyTrimmed + "`r`n`r`n必讀檔案：`r`n" + ($rawLines -join "`r`n"))
+                $failedBlock = Read-DispatchRequiredReadBlock -Order $failedOrder
+                $failedLine = if ($failedBlock.present) { $failedBlock.heading_line + 1 + $itemIndex } else { $failedOrder.TaskBodyStartLine }
+                $failedFinding = New-DispatchRequiredReadFinding -CheckId 'DI-REQREAD' -Severity 'error' -Code $code -Reason $reason -Order $failedOrder -Line $failedLine -Raw $rawLines[$itemIndex] -Path $item
+                Throw-DispatchOrderValidationFailure -Code $code -Classification 'InvalidValue' -Field 'RequiredRead' -Message $failedFinding.message -Detail ([ordered]@{ index = $itemIndex; expected = $failedFinding.expected; received = $failedFinding.received; source = $failedFinding.source; line = $failedFinding.line; order_field = 4 })
+            }
+        }
+        $requiredBlock = Format-DispatchRequiredReadBlock -Path $requiredItems
+        $combinedBody = $bodyTrimmed + "`r`n`r`n" + $requiredBlock
+        $combinedOrder = & $readCandidateOrder $combinedBody
+        $combinedParsed = Read-DispatchRequiredReadBlock -Order $combinedOrder
+        $combinedOk = $combinedParsed.present -and $combinedParsed.block_errors.Count -eq 0 -and $combinedParsed.entries.Count -eq $requiredItems.Count
+        if ($combinedOk) {
+            for ($itemIndex = 0; $itemIndex -lt $requiredItems.Count; $itemIndex++) {
+                if ($combinedParsed.entries[$itemIndex].state -ne 'ok' -or -not [string]::Equals([string]$combinedParsed.entries[$itemIndex].path, [string]$requiredItems[$itemIndex], [StringComparison]::Ordinal)) { $combinedOk = $false; break }
+            }
+        }
+        if (-not $combinedOk) {
+            $tailStart = $combinedOrder.TaskBodyStartLine + @($bodyTrimmed -split '\r?\n').Count + 1
+            $tailFinding = New-DispatchRequiredReadFinding -CheckId 'DI-REQREAD' -Severity 'error' -Code 'DispatchInputRequiredReadHeadingInvalid' -Reason 'TaskBody 含未閉合的 ``` 程式碼區塊或 <!-- 註解，追加的「必讀檔案：」區塊無法被辨識為區塊，請先閉合 TaskBody 內的 ``` 與 <!-- --> 後再提供 -RequiredRead' -Order $combinedOrder -Line $tailStart -Raw '必讀檔案：' -Path ([string]$requiredItems[0])
+            Throw-DispatchOrderValidationFailure -Code 'DispatchInputRequiredReadHeadingInvalid' -Classification 'InvalidValue' -Field 'TaskBody' -Message $tailFinding.message -Detail ([ordered]@{ expected = $tailFinding.expected; received = $tailFinding.received; source = $tailFinding.source; line = $tailFinding.line; order_field = 4 })
+        }
+        $TaskBody = $combinedBody
     }
     $content = New-DispatchOrderContent `
         -Title $Title `
