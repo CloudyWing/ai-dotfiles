@@ -868,19 +868,24 @@ function Remove-DispatchSecretEnvironmentVariables {
         [Parameter(Mandatory)][string]$ListPath
     )
 
+    if (-not (Test-Path -LiteralPath $ListPath -PathType Leaf)) {
+        throw ('SandboxEnvDenylistMissing：機密環境變數名單不存在：' + $ListPath)
+    }
     try {
         $list = Import-PowerShellDataFile -LiteralPath $ListPath -ErrorAction Stop
-        foreach ($key in @('DenyPatterns', 'KeepNames', 'KeepPatterns')) {
-            if (-not $list.ContainsKey($key) -or $null -eq $list[$key] -or
-                @($list[$key] | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
-                throw 'Invalid denylist.'
-            }
-        }
-        if (@($list.DenyPatterns).Count -eq 0) { throw 'Empty denylist.' }
     }
     catch {
-        throw 'SandboxEnvDenylistMissing：機密環境變數名單不存在或格式異常。'
+        $message = $_.Exception.Message
+        if ($message.Length -gt 300) { $message = $message.Substring(0, 300) }
+        throw ('SandboxEnvDenylistUnreadable：機密環境變數名單無法匯入：' + $_.Exception.GetType().FullName + '：' + $message)
     }
+    foreach ($key in @('DenyPatterns', 'KeepNames', 'KeepPatterns')) {
+        if (-not $list.ContainsKey($key) -or $null -eq $list[$key] -or
+            @($list[$key] | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+            throw ('SandboxEnvDenylistInvalid：機密環境變數名單結構異常：無效欄位 ' + $key)
+        }
+    }
+    if (@($list.DenyPatterns).Count -eq 0) { throw 'SandboxEnvDenylistInvalid：機密環境變數名單結構異常：DenyPatterns 為空。' }
 
     $removed = @()
     foreach ($name in @($StartInfo.EnvironmentVariables.Keys)) {
@@ -1713,7 +1718,9 @@ function Invoke-Start {
         $removedEnvironmentNames = @(Remove-DispatchSecretEnvironmentVariables -StartInfo $startInfo -ListPath (Join-Path $script:DispatchEntryScriptRoot 'dispatch\sandbox-env-denylist.psd1'))
     }
     catch {
-        $failureReasonCode = 'SandboxEnvDenylistMissing'
+        if ($_.Exception.Message -match '^(SandboxEnvDenylistMissing|SandboxEnvDenylistUnreadable|SandboxEnvDenylistInvalid)') {
+            $failureReasonCode = $Matches[1]
+        }
         throw
     }
     $runRecord.removed_environment_names = $removedEnvironmentNames

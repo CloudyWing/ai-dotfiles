@@ -531,7 +531,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 派工時，Dispatch 在選定帳號後、Preflight 前確認該帳號的 `config.toml` 已信任派遣來源專案，缺少時在 `<machine.json 所在目錄>\codex-account.lock` 鎖內補上信任段落，並在派遣結果的 `project_trust` 記錄帳號、設定檔路徑與信任鍵。信任鍵為來源專案的 git 主工作樹根，以小寫寫入；來源是 linked worktree 時取其主工作樹根，來源不是 git 目錄時取來源目錄本身。此步驟只處理 `machine.json` 登記的帳號，使用者預設的 `~/.codex` 與未登記的 home 維持原樣，且只信任專案根目錄。
 
-Start 啟動前依 `scripts/dispatch/sandbox-env-denylist.psd1` 移除子程序的機密環境變數，並於結果與 RunRecord 記錄移除的名稱。名單支援保留名稱與樣式；缺少名單或格式異常時以 `SandboxEnvDenylistMissing` 拒絕啟動。Git 設定環境變數依名單保留。
+Start 啟動前依 `scripts/dispatch/sandbox-env-denylist.psd1` 移除子程序的機密環境變數，並於結果與 RunRecord 記錄移除的名稱。名單支援保留名稱與樣式。檔案不存在時以 `SandboxEnvDenylistMissing` 拒絕；存在但無法匯入時以 `SandboxEnvDenylistUnreadable` 拒絕，先確認 PowerShell 版本與模組載入；結構異常時以 `SandboxEnvDenylistInvalid` 拒絕。保留名單檢查，不以空名單繼續。Git 設定環境變數依名單保留。
 
 自動選帳號時，`config.toml` 不存在、是連結或格式不支援的帳號在候選階段略過並改試下一個帳號，原因碼為 `TrustConfigMissing`、`TrustConfigLinked`、`TrustConfigUnsupported`，寫入換帳號摘要檔的 `skipped` 與派遣結果 `account_failover_summary.skipped`。已登記但只手動建立 home、缺少 `config.toml` 的帳號同樣略過，由使用者以建立腳本補齊。所有帳號都被略過或拒絕時以 `CodexAccountsAllUnavailable` 拒絕派遣，訊息附各帳號的略過原因。嘗試階段的拒絕碼為 `CodexAccountConfigMissing`、`CodexAccountConfigLinked`、`CodexAccountConfigUnsupported`、`CodexAccountConfigChanged`、`CodexAccountConfigWriteFailed`、`CodexAccountTrustLockTimeout` 與 `CodexProjectPathUnsupported`。指定 `-CodexHome` 時設定異常直接拒絕，不改選其他帳號；`CodexAccountConfigChanged`、`CodexAccountConfigWriteFailed`、`CodexAccountTrustLockTimeout` 與 `CodexProjectPathUnsupported` 屬暫時性或全域性問題，該次嘗試失敗且不換帳號。主 Agent 回報使用者以建立腳本或只刪連結的修法處理，不自行編輯 `config.toml`；各碼的處置見 `recovery.md`「失敗與恢復導引」。
 
