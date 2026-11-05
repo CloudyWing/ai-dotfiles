@@ -5,10 +5,10 @@ import { buildSnapshot, errorSnapshot, parseScriptOutput, parseSessions, REFRESH
 import type { Document, Result, Session } from './lib'
 import { GIT_TIMEOUT_MS, SCRIPT_BUDGET_MS, parseWorktreeList, resolveCurrentRepo, buildWorkRootArgument, buildForceWorkRootArgument, remainingBudgetMs } from './lib'
 import type { CurrentRepo, GitProbe } from './lib'
-import { EXPAND_KEY, normalizeExpanded, toggleExpanded, stalledToggleText } from './lib'
+import { EXPAND_KEY, normalizeExpanded, toggleExpanded, stalledToggleText, canShowNote, parseFeatureBranches } from './lib'
 
 const PANE = 'line-status-board'
-const snapshot = atom({ plugin: 'line-status-board', key: 'snapshot' } as const, null as BoardSnapshot | null, { shape: 'snapshot-4' })
+const snapshot = atom({ plugin: 'line-status-board', key: 'snapshot' } as const, null as BoardSnapshot | null, { shape: 'snapshot-5' })
 const collapsed = atom({ plugin: 'line-status-board', key: 'collapsed' } as const, null as BlockId[] | null, { shape: 'collapsed-1' })
 const expanded = atom({ plugin: 'line-status-board', key: 'expanded' } as const, null as ExpandId[] | null, { shape: 'expanded-1' })
 const refreshedAt = atom({ plugin: 'line-status-board', key: 'refreshedAt' } as const, null as string | null)
@@ -62,6 +62,15 @@ async function locateCurrent($: Engine, cwdHint?: string): Promise<CurrentRepo |
     return resolveCurrentRepo(cwd, await probeGit($, cwd))
   } catch { return null }
 }
+async function listFeatureBranches($: Engine, current: CurrentRepo | null): Promise<Set<string> | null> {
+  if (!current?.isGit) return null
+  const cwd = current.forced[0] ?? current.roots[0]
+  if (!cwd) return null
+  try {
+    const result = await runGit($, cwd, ['branch', '--no-color', '--list', 'feature/*'])
+    return result.exitCode === 0 ? parseFeatureBranches(result.stdout) : null
+  } catch { return null }
+}
 
 async function scriptResult($: Engine, options: { workRoots?: string; scriptPath?: string }, current: CurrentRepo | null, startedAt: number): Promise<Result<Document>> {
   try {
@@ -106,13 +115,18 @@ async function refresh($: Engine, options: { workRoots?: string; scriptPath?: st
     await update($, refreshedAt, () => now.toISOString())
     await update($, isRefreshing, () => true)
     const startedAt = Date.now()
-    const located: { current: CurrentRepo | null } = { current: null }
+    const located: { current: CurrentRepo | null; branches: Set<string> | null } = { current: null, branches: null }
     const [script, sessions] = await Promise.all([
-      (async () => { located.current = await locateCurrent($, cwd); return scriptResult($, options, located.current, startedAt) })(),
+      (async () => {
+        located.current = await locateCurrent($, cwd)
+        const [script, branches] = await Promise.all([scriptResult($, options, located.current, startedAt), listFeatureBranches($, located.current)])
+        located.branches = branches
+        return script
+      })(),
       sessionResult($)
     ])
     let next: BoardSnapshot
-    try { next = buildSnapshot(script, sessions, new Date(), located.current) }
+    try { next = buildSnapshot(script, sessions, new Date(), located.current, located.branches) }
     catch (error) { next = errorSnapshot(message(error)) }
     await update($, snapshot, () => next)
   } finally {
@@ -158,6 +172,7 @@ export const register: Register = (on, options = {}) => {
     const busy = await read($, isRefreshing)
     const closed = await read($, collapsed) ?? await loadStored($)
     const openStalled = (await read($, expanded) ?? await loadStoredExpanded($)).includes('stalledLines')
+    const columns = e.props.bodyColumns
     const renderRow = (keyPrefix: string, iconId: BlockId, item: BoardRow, index: number) => (
       <Box key={`row-${keyPrefix}-${index}`} flexDirection="row" gap="xs" paddingX="xs" backgroundColor={item.isCurrent ? CURRENT_BG : undefined} hover={{ backgroundColor: HOVER_BG }}>
         <Box flexDirection="row" flexShrink={0} height={1} alignSelf="flex-start" alignItems="center" gap="xs">
@@ -167,8 +182,8 @@ export const register: Register = (on, options = {}) => {
         <Box flexDirection="column" flexGrow={1} flexShrink={1} minWidth={0}>
           <Box flexDirection="row" gap="xs">
             <Box flexDirection="row" flexGrow={1} flexShrink={1} minWidth={0} gap="xs">
-              <Box flexShrink={NAME_SHRINK} minWidth={0}><Text wrap="truncate-end" color={item.tone === 'error' ? 'error' : undefined}>{item.name}</Text></Box>
-              {item.tag && <Box flexShrink={NOTE_SHRINK} minWidth={0}><Text size="footnote" dimColor wrap="truncate-end">{item.tag}</Text></Box>}
+              <Box flexShrink={NAME_SHRINK} minWidth={0}><Text wrap="truncate-end" color={item.tone === 'error' ? 'error' : undefined} dimColor={item.tone === 'dim'}>{item.name}</Text></Box>
+              {canShowNote(columns, item.name, item.tag, item.right) && <Box flexShrink={NOTE_SHRINK} minWidth={0}><Text size="footnote" dimColor wrap="truncate-end">{item.tag}</Text></Box>}
             </Box>
             {(item.right || item.bar) && <Box flexDirection="row" alignItems="center" gap="xs" minWidth={0} flexShrink={item.rightShrink ? NOTE_SHRINK : 0}>
               <Text size="footnote" dimColor wrap="truncate-end">{item.right}</Text>

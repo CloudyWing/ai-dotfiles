@@ -11,12 +11,12 @@ const row = { name: 'item', tag: '', right: '', rightShrink: false, dot: 'inacti
 const block = { rows: [{ ...row }], stalledRows: [], hiddenCount: 0, errorMessage: null }
 const snapshot: BoardSnapshot = {
   sessions: { ...block, rows: [{ ...row, dot: 'success', tag: 'line-one', right: '剛剛' }] },
-  quota: { ...block, rows: [{ ...row, dot: 'warning', right: '40%', bar: { percent: 40, tone: 'warning' }, detail: [{ text: '週 ', tone: 'normal' }, { text: '28%', tone: 'attention' }] }] },
-  lines: { ...block, rows: [{ ...row, detail: [{ text: 'Dev 回收', tone: 'normal' }] }] },
+  quota: { ...block, rows: [{ ...row, dot: 'warning', right: '剩 40%', bar: { percent: 40, tone: 'warning' }, detail: [{ text: '週 ', tone: 'normal' }, { text: '28%', tone: 'attention' }] }] },
+  lines: { ...block, rows: [{ ...row }] },
   workRoots: { ...block, rows: [{ ...row, dot: 'warning', right: 'main', rightShrink: true, isCurrent: true, detail: [{ text: '3', tone: 'attention' }, { text: ' 未 commit', tone: 'normal' }] }] },
   currentLabel: null
 }
-const snapshotAnswer = (value: BoardSnapshot) => ({ value: { value: { shape: 'snapshot-4', value }, version: 1 } })
+const snapshotAnswer = (value: BoardSnapshot) => ({ value: { value: { shape: 'snapshot-5', value }, version: 1 } })
 
 test('R1 desktop components and refresh', async ($, on) => {
   mock.store(on)
@@ -149,7 +149,7 @@ test('R17 stalled toggle persists independently', async ($, on) => {
   on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(withStalled) : next(e))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
   expect(await ui.find({ type: 'Text', text: '線 1／3 ▾' })).not.toBe(undefined)
-  expect(await ui.find({ type: 'Text', text: '停擺 2 條 ▸' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: '已結束／停擺 2 條 ▸' })).not.toBe(undefined)
   expect(await ui.find({ type: 'Box', key: 'row-stalledLines-0' })).toBe(undefined)
   await ui.press({ key: 'toggle-stalledLines' })
   expect(await ui.find({ type: 'Box', key: 'row-stalledLines-0' })).not.toBe(undefined)
@@ -175,9 +175,50 @@ test('R18 stored expanded state and invalid values', async ($, on) => {
     await ui.unmount()
   }
 })
+test('R19 line name dim tone', async ($, on) => {
+  mock.store(on)
+  const value: BoardSnapshot = { ...snapshot, lines: { ...snapshot.lines, rows: [{ ...row, name: 'dim-line', tone: 'dim' }, { ...row, name: 'normal-line' }] } }
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(value) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect((await ui.find({ type: 'Text', text: 'dim-line' }))?.props.dimColor).toBe(true)
+  expect((await ui.find({ type: 'Text', text: 'normal-line' }))?.props.dimColor).toBe(false)
+  await ui.unmount()
+})
+test('R20 note responds to body columns', async ($, on) => {
+  mock.store(on)
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(snapshot) : next(e))
+  for (const columns of [28, 27, undefined]) {
+    const props = { ...PANE.props, bodyColumns: columns }
+    const ui = await $.ui.mount({ ...PANE, props, surface: 'desktop' })
+    expect(!!(await ui.find({ type: 'Text', text: 'line-one' }))).toBe(columns !== 27)
+    expect(await ui.find({ type: 'Text', text: 'item' })).not.toBe(undefined)
+    expect(await ui.find({ type: 'Text', text: '剛剛' })).not.toBe(undefined)
+    await ui.unmount()
+  }
+})
+test('R21 line label in right column without detail', async ($, on) => {
+  mock.store(on)
+  const value: BoardSnapshot = { ...snapshot, quota: { ...snapshot.quota, rows: [] }, workRoots: { ...snapshot.workRoots, rows: [] }, lines: { ...snapshot.lines, rows: [{ ...row, name: 'line', right: '設計驗收 · 1 天前' }] } }
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(value) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: '設計驗收 · 1 天前' })).not.toBe(undefined)
+  expect((await ui.findAll({ type: 'Text', text: '設計驗收 · 1 天前' }))[0].props.size).toBe('footnote')
+  expect((await ui.findAll({ type: 'Text' })).some(item => item.props.size === 'caption')).toBe(false)
+  await ui.unmount()
+})
+test('R22 quota and folded label', async ($, on) => {
+  mock.store(on)
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(withStalled) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: '剩 40%' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: '已結束／停擺 2 條 ▸' })).not.toBe(undefined)
+  await ui.press({ key: 'toggle-stalledLines' })
+  expect(await ui.find({ type: 'Text', text: '已結束／停擺 2 條 ▾' })).not.toBe(undefined)
+  await ui.unmount()
+})
 
 type Call = { argv: readonly string[]; cwd?: string; timeoutMs?: number }
-type Fixture = { calls: Call[]; placed: boolean; cwd: string; failure: string; release?: () => void; active: number; peak: number; writes: number; sessions: object[]; document: object; porcelain?: string }
+type Fixture = { calls: Call[]; placed: boolean; cwd: string; failure: string; release?: () => void; active: number; peak: number; writes: number; sessions: object[]; document: object; porcelain?: string; branches: string; branchFailure?: 'exit' | 'reject' }
 const options = { options: { workRoots: '', scriptPath: 'C:\\x\\Get-LineStatus.ps1' } }
 const result = (stdout: string, exitCode = 0, stderr = '') => ({ exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false })
 async function waitFor(predicate: () => boolean, calls: Call[]): Promise<void> {
@@ -188,7 +229,7 @@ async function waitFor(predicate: () => boolean, calls: Call[]): Promise<void> {
   throw new Error('等待逾時：' + JSON.stringify(calls))
 }
 function setup(on: On, profile = true): Fixture {
-  const state: Fixture = { calls: [], placed: true, cwd: 'D:\\Work\\Other.wt\\feat', failure: '', active: 0, peak: 0, writes: 0, sessions: [], document: { scannedRoots: [], lines: [], workRoots: [], quota: [], warnings: [] } }
+  const state: Fixture = { calls: [], placed: true, cwd: 'D:\\Work\\Other.wt\\feat', failure: '', active: 0, peak: 0, writes: 0, sessions: [], branches: '', document: { scannedRoots: [], lines: [], workRoots: [], quota: [], warnings: [] } }
   mock.store(on)
   mock.clock(on)
   mock.env(on, profile ? { USERPROFILE: 'C:\\Users\\X' } : {})
@@ -211,6 +252,10 @@ function setup(on: On, profile = true): Fixture {
       if (state.failure === 'worktree') throw new Error('timeout')
       const top = e.init?.cwd?.includes('Second') ? 'E:\\Second' : 'D:\\Work\\Other.wt\\feat'
       return { value: result(state.porcelain ?? (top === 'E:\\Second' ? 'worktree E:/Second\n' : 'worktree D:/Work/Other\n\nworktree D:/Work/Other.wt/feat\n\nworktree D:/Work/Other.wt/two\n')) }
+    }
+    if (e.argv.includes('branch')) {
+      if (state.branchFailure === 'reject') throw new Error('timeout')
+      return { value: result(state.branches, state.branchFailure === 'exit' ? 1 : 0) }
     }
     state.active++
     state.peak = Math.max(state.peak, state.active)
@@ -331,7 +376,7 @@ test('H8 readonly git', options, async ($, on) => {
   const state = setup(on)
   await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
   await finish(state)
-  expect(state.calls.filter(call => call.argv[0] === 'git').every(call => ['rev-parse', 'worktree'].includes(call.argv[2]))).toBe(true)
+  expect(state.calls.filter(call => call.argv[0] === 'git').every(call => ['rev-parse', 'worktree', 'branch'].includes(call.argv[2]))).toBe(true)
   expect(state.writes).toBe(0)
 })
 test('H9 old script error', options, async ($, on) => {
@@ -343,6 +388,58 @@ test('H9 old script error', options, async ($, on) => {
   expect((await ui.findAll({ type: 'Text', text: /ForceWorkRoot/ })).length).toBe(3)
   expect(scripts(state).length).toBe(1)
   await ui.unmount()
+})
+test('H11 branch command once', options, async ($, on) => {
+  const state = setup(on)
+  await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
+  await finish(state)
+  const calls = state.calls.filter(call => call.argv.includes('branch'))
+  expect(calls.length).toBe(1)
+  expect(calls[0]).toEqual({ argv: ['git', '--no-optional-locks', 'branch', '--no-color', '--list', 'feature/*'], cwd: 'D:\\Work\\Other', timeoutMs: 3000 })
+})
+const landedDocument = {
+  scannedRoots: ['D:\\Work\\Other', 'D:\\Work\\Other.wt\\feat'],
+  lines: [{ LineSlug: 'landed', WorkRoot: 'D:\\Work\\Other.wt\\feat', CheckpointType: 'developer-collected', CheckpointUpdatedUtc: new Date().toISOString() }, { LineSlug: 'landed', WorkRoot: 'D:\\Work\\Other' }],
+  workRoots: [{ Path: 'D:\\Work\\Other', IsLinkedWorktree: false }, { Path: 'D:\\Work\\Other.wt\\feat', IsLinkedWorktree: true }], quota: [], warnings: []
+}
+test('H12 landed line is folded', options, async ($, on) => {
+  const state = setup(on)
+  state.document = landedDocument
+  await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
+  await finish(state)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Box', key: 'row-lines-0' })).toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: '已結束／停擺 1 條 ▸' })).not.toBe(undefined)
+  await ui.unmount()
+})
+for (const failure of ['exit', 'reject'] as const) test(`H13 branch ${failure}`, options, async ($, on) => {
+  const state = setup(on)
+  state.document = landedDocument
+  state.branchFailure = failure
+  await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
+  await finish(state)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Box', key: 'row-lines-0' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Button', key: 'toggle-stalledLines' })).toBe(undefined)
+  expect(scripts(state).length).toBe(1)
+  await ui.unmount()
+})
+test('H14 existing branch and unavailable repository', options, async ($, on) => {
+  const state = setup(on)
+  state.document = landedDocument
+  state.branches = '* feature/landed\n'
+  await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
+  await finish(state)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Box', key: 'row-lines-0' })).not.toBe(undefined)
+  await ui.unmount()
+  for (const failure of ['reject', 'notRepo']) {
+    state.failure = failure
+    const before = state.calls.filter(call => call.argv.includes('branch')).length
+    await $.classic.CwdChanged({ old_cwd: state.cwd, new_cwd: 'E:\\Second' })
+    await finish(state, failure === 'reject' ? 2 : 3)
+    expect(state.calls.filter(call => call.argv.includes('branch')).length).toBe(before)
+  }
 })
 
 test('R7 current label on all surfaces', async ($, on) => {
