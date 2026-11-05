@@ -855,12 +855,9 @@ function New-DispatchOrderPromptDirective {
     param([string]$DispatchKind, [string]$TaskType, [string]$SourceRoot, [string]$ExecutionRoot, [string]$LineSlug, [string]$DispatchSlug)
 
     if ($DispatchKind -ne 'resource' -or $TaskType -eq 'advisor-consult') { return '' }
-    $locations = Get-DispatchOrderLocation -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
-    $path = if ([string]::Equals($SourceRoot, $ExecutionRoot, [StringComparison]::OrdinalIgnoreCase)) { $locations.source } else { $locations.worktree }
-    $path = Resolve-AbsolutePath -Path $path
-    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-        throw ('DispatchInputOrderMissing：派遣單不存在：' + $path)
-    }
+    $result = Resolve-DispatchOrderLocation -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Side Execution
+    if ($result.state -ne 'ok') { throw ($result.code + '：' + $result.message) }
+    $path = $result.path
     return ('[派遣單] 本次派遣單的唯一位置為 ' + $path + '。主 prompt 若寫了其他位置，一律以此路徑為準。')
 }
 

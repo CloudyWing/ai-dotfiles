@@ -240,7 +240,7 @@ function Get-DefaultDispatchOrderPath {
     }
 
     $handoffRoot = Join-Path -Path $sourceAiSessionsRoot -ChildPath 'handoff'
-    return Join-Path -Path $handoffRoot -ChildPath ("dispatch-order-{0}.md" -f $DispatchSlug)
+    return Join-Path -Path (Join-Path -Path $handoffRoot -ChildPath $LineSlug) -ChildPath ("dispatch-order-{0}.md" -f $DispatchSlug)
 }
 
 function ConvertTo-CrLf {
@@ -584,6 +584,16 @@ try {
     }
 
     $absoluteOutputPath = [System.IO.Path]::GetFullPath($OutputPath)
+    $outputParent = Split-Path -Parent $absoluteOutputPath
+    $sessionsParent = Split-Path -Parent $outputParent
+    $localParent = Split-Path -Parent $sessionsParent
+    if ((Split-Path -Leaf $absoluteOutputPath) -ieq ('dispatch-order-' + $DispatchSlug + '.md') -and
+        (Split-Path -Leaf $outputParent) -ieq 'handoff' -and
+        (Split-Path -Leaf $sessionsParent) -ieq 'ai-sessions' -and
+        (Split-Path -Leaf $localParent) -ieq '.local') {
+        $correctPath = Join-Path (Join-Path $outputParent $LineSlug) (Split-Path -Leaf $absoluteOutputPath)
+        Throw-DispatchOrderValidationFailure -Code 'DispatchInputOrderLocationInvalid' -Classification 'InvalidPath' -Field 'OutputPath' -Message ('請使用線目錄路徑：' + $correctPath) -Detail ([ordered]@{ expected = $correctPath; received = $absoluteOutputPath })
+    }
     $content = New-DispatchOrderContent `
         -Title $Title `
         -Role $Role `

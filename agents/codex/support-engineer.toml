@@ -24,7 +24,7 @@ developer_instructions = """
 | 輸入 | 判定 | 流程 |
 | --- | --- | --- |
 | fix-plan 或改動計畫（in-context） | 由 `Maintainer` 或 Claude 端上游傳入，內容包含完整交付契約欄位與驗證條件 | 進入分流 A |
-| 派遣單 | 存在 `handoff/dispatch-order-<dispatchSlug>.md` | 進入分流 B |
+| 派遣單 | 存在 `handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md` | 進入分流 B |
 
 收到 fix-plan 或改動計畫時，在進入分流 A 前逐一確認下列完整契約欄位：
 
@@ -57,7 +57,7 @@ developer_instructions = """
 
 ## 分流 B：派遣單任務
 
-1. 讀取 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，確認八個欄位都存在。
+1. 讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，確認八個欄位都存在。
 2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
 3. 依派遣單第 4 欄的任務內容執行，遵守第 6 欄的邊界，不擴大目標檔案、目錄或端點範圍。
 4. 逐條執行第 5 欄的驗收條件與判定方式，回報每一條的實際命令、輸出摘要與結果。

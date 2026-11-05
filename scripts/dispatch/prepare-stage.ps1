@@ -52,7 +52,7 @@
     $dispatchLineRoot = Join-Path -Path $executionRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\handoff' -ChildPath $LineSlug)
     $reportLineRoot = Join-Path -Path $executionRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\report' -ChildPath $LineSlug)
     $historyLineRoot = Join-Path -Path $executionRootPath -ChildPath (Join-Path -Path '.local\ai-sessions\history' -ChildPath $LineSlug)
-    $sourceDispatchOrderPath = Join-Path -Path $sourceRootPath -ChildPath ('.local\ai-sessions\handoff\dispatch-order-' + $DispatchSlug + '.md')
+    $sourceDispatchOrderPath = (Get-DispatchOrderLocation -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug).source
 
     return [pscustomobject]@{
         SourceRoot       = $sourceRootPath

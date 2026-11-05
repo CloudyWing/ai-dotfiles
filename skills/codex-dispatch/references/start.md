@@ -8,7 +8,7 @@
 
 | 情境 | 入口 | 必要輸入 | 提供方式 |
 | --- | --- | --- | --- |
-| 建立資源派遣單 | `scripts\New-DispatchOrder.ps1` | `Title`、`Role`、`TargetPath`、`TaskBody`、`Acceptance`、`Boundary`、`ReportPath`、`DispatchSlug`、`LineSlug`；`OutputPath` 選填 | 命令列參數；省略 `OutputPath` 時派遣單寫入來源工作樹 `handoff\dispatch-order-<dispatchSlug>.md`，即 `Dispatch` 讀取的位置，八個欄位定義見「派遣單契約」 |
+| 建立資源派遣單 | `scripts\New-DispatchOrder.ps1` | `Title`、`Role`、`TargetPath`、`TaskBody`、`Acceptance`、`Boundary`、`ReportPath`、`DispatchSlug`、`LineSlug`；`OutputPath` 選填 | 命令列參數；省略 `OutputPath` 時派遣單寫入來源工作樹 `handoff\<lineSlug>\dispatch-order-<dispatchSlug>.md`，即 `Dispatch` 讀取的位置，八個欄位定義見「派遣單契約」 |
 | 首次啟動一筆派遣（正式入口） | `scripts\Invoke-CodexDispatch.ps1 -Operation Dispatch` | `source_root`、`dispatch_root`、`line_slug`、`dispatch_slug`、`write_mode`、`dispatch_kind`、至少一個 `target_path`、`prompt_path`、`task_type`、`session_mode`、`unit_kind`、`failure_receipt_path` | 只接受 `operation=Dispatch` 的 request 檔（UTF-8 無 BOM），以 `-RequestPath` 傳入；欄位表與範例見「Dispatch 正式入口」 |
 | 同一 worktree 續行；換 worktree 續行；恢復或階段間檢查 | 同一 worktree 使用 `Start -ResumeThreadId`；換 worktree 使用 `Dispatch` 的 `session_mode=Continuation`；階段間檢查可分步呼叫 `Preflight`、`Prepare`、`Start` | 同一 worktree 的 Start 使用前輪 Dispatch result 記錄的 Preflight、Prepare 結果路徑及原 ScopePlan；換 worktree 使用新 `dispatchSlug`、重建 worktree 並承接父 ScopePlan | Start 參數來源見「續 session 與跨介面接手」；Dispatch 使用 request 檔；`prepare_artifacts` 只能經 request 檔傳入 |
 | 執行結束或中斷後 | `Inspect`，接著 `Collect` | 事件流、stderr、last-message、Preflight 結果與報告路徑；中斷時另回收逐單位保全檔 | 命令列參數 |
@@ -95,7 +95,7 @@ upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取�
 
 ### Dispatch 正式入口
 
-- 單位自動產生：Workflow 依 `design.md`「實作任務清單」章（`## ` 開頭且含「實作任務清單」的章節）內的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`，找不到該章時才解析全文件；章內同編號連續小節合併為一個單位，非連續重複拒絕；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。Request 欄位驗證錯誤的 detail 只列欄位名稱、預期格式與輸入長度，不回顯原始輸入值。
+- 單位自動產生：Workflow 依 `design.md`「實作任務清單」章（`## ` 開頭且含「實作任務清單」的章節）內的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`，找不到該章時才解析全文件；章內同編號連續小節合併為一個單位，非連續重複拒絕；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\<lineSlug>\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。Request 欄位驗證錯誤的 detail 只列欄位名稱、預期格式與輸入長度，不回顯原始輸入值。
 - 派遣單目標路徑：第 3 欄若填入含 `dispatchSlug` 的 worktree 絕對路徑，改用新的 `dispatchSlug` 時需同步更新目標路徑並重產派遣單。目標位於 `sourceRoot` 且所選 sandbox 能直接讀取時，建議填穩定的 `sourceRoot` 絕對路徑。`targetsOutsideRepository` 只涵蓋 `sourceRoot` 內、位於 repository 外或被 gitignore 排除的路徑；`target_path` 一律必須位於 `sourceRoot` 內，超出時 Preflight 以 `DispatchOutputBoundary` 拒絕。此建議不改變 Request `target_path` 必須與第 3 欄完全相符的條件。
 - 外部資料：唯讀取證需要讀取 `sourceRoot` 以外的路徑時，以 `sourceRoot` 內的題目檔為第 3 欄目標並使用 `readonly`，外部路徑以絕對路徑逐一列在第 4 欄。read-only sandbox 可讀取這些路徑，但它們不進入 `target_path` 與 ScopePlan，派遣報告須逐條列出實際讀取的外部路徑。不以 `write` 或 direct-write 承接唯讀取證。
 - Prepare 自動帶入：同線 `line.json`、`requirement-summary.md`；`dispatch_kind=resource` 且 `write_mode=readonly` 的派遣在同線沒有 `requirement-summary.md` 時略過摘要，其他派遣缺摘要時拒絕。Workflow 另帶入 `design.md`；資源派遣第 4 欄引用 `handoff/<lineSlug>/design.md` 路徑時帶入，來源缺檔於 Request 驗證時拒絕，並把派遣單複製到 dispatch worktree 的同線 handoff。`prepare_artifacts` 只用於追加其他檔案。
@@ -487,6 +487,8 @@ Stage A 在 Preflight 前檢查必要欄位與來源資訊，缺件時回報 `Di
 
 非 advisor 的資源派遣由 Start 自動注入執行位置的派遣單絕對路徑，缺少派遣單時以 `DispatchInputOrderMissing` 拒絕。advisor 結案訊息的證據位置須填絕對路徑或絕對路徑加行號；引用 inline evidence pack 時填 sandbox 內 evidence pack 的絕對路徑及行號，例如 `<sandboxPath>:12`。
 
+資源派遣的 prompt 需要提及派遣單時，引用 Start 注入的 `[派遣單]` 指示或產生器輸出的 `order_path`。契約變更前已完成 Prepare 的進行中派遣，續行前以 Prepare `refresh` 或冷啟動重派。
+
 Prompt 必須明列已驗證的 `LineContext`，格式如下：
 
 ```text
@@ -649,7 +651,7 @@ secondary_source_file=
 
 | 面向 | Workflow 派工（`DispatchKind=workflow`，規則層目前沒有呼叫端；Workflow Phase 由 Claude 執行者承接，不經本 Skill） | 資源派遣（Codex 的測試、審查、顧問、事實校閱、影像產生） |
 | --- | --- | --- |
-| 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `executionRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
+| 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `executionRoot\.local\ai-sessions\handoff\<lineSlug>\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
 | 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `executionRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |
 | 結案要求 | 「驗證證據」節的輪起點 SHA 與開工基準線皆有值，「Phase 對照」節逐 Phase 列出修改的檔案清單，且「需求對照」節涵蓋需求摘要的全部項目編號 | 先通過 `RecoveryPrecheck`，再逐條執行派遣單第 5 欄的命令並得出「收下」、「退回」或「升級」之一 |
 
@@ -657,7 +659,7 @@ secondary_source_file=
 
 ## 派遣單契約
 
-資源派遣使用 Markdown 派遣單，來源路徑為 `sourceRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md`，複製至 `dispatchRoot` 後供 Codex 讀取。派遣單屬該次派遣輸入；它與跨派遣的 `requirement-summary.md` 使用不同落點，後者固定於 `sourceLineRoot`。`dispatchSlug` 限用小寫英數與連字號，同一個 `sourceRoot` 內不得重複。八個欄位全部必填，缺少任一欄即視為契約未滿足。
+資源派遣使用 Markdown 派遣單，來源路徑為 `sourceRoot\.local\ai-sessions\handoff\<lineSlug>\dispatch-order-<dispatchSlug>.md`，複製至 `dispatchRoot` 後供 Codex 讀取。派遣單放在 `handoff` 根目錄時以 `DispatchInputOrderLocationInvalid` 拒絕，不設後備讀取。派遣單屬該次派遣輸入；`requirement-summary.md` 固定於 `sourceLineRoot`。`dispatchSlug` 限用小寫英數與連字號，同一個 `sourceRoot` 內不得重複。八個欄位全部必填，缺少任一欄即視為契約未滿足。
 
 | # | 欄位 | 內容要求 |
 | --- | --- | --- |

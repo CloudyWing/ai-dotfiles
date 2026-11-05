@@ -11,8 +11,45 @@ function Get-DispatchOrderLocation {
     param([string]$SourceRoot, [string]$ExecutionRoot, [string]$LineSlug, [string]$DispatchSlug)
     $name = 'dispatch-order-' + $DispatchSlug + '.md'
     [pscustomobject]@{
-        source = Join-Path $SourceRoot ('.local\ai-sessions\handoff\' + $name)
+        source = Join-Path $SourceRoot ('.local\ai-sessions\handoff\' + $LineSlug + '\' + $name)
         worktree = Join-Path $ExecutionRoot ('.local\ai-sessions\handoff\' + $LineSlug + '\' + $name)
+        legacy_root_path = Join-Path $SourceRoot (Join-Path '.local\ai-sessions\handoff' $name)
+    }
+}
+
+function Resolve-DispatchOrderLocation {
+    [CmdletBinding()]
+    param([string]$SourceRoot, [string]$ExecutionRoot, [string]$LineSlug, [string]$DispatchSlug, [ValidateSet('Source', 'Execution')][string]$Side)
+    $root = if ($Side -eq 'Source') { $SourceRoot } else { $ExecutionRoot }
+    $locations = Get-DispatchOrderLocation -SourceRoot $root -ExecutionRoot $root -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $path = [IO.Path]::GetFullPath($locations.source)
+    $legacy = [IO.Path]::GetFullPath($locations.legacy_root_path)
+    $state = 'missing'
+    $code = 'DispatchInputOrderMissing'
+    $message = '派遣單不存在：' + $path
+    try {
+        if (Test-Path -LiteralPath $legacy -PathType Leaf -ErrorAction Stop) {
+            $state = 'legacy-root'
+            $code = 'DispatchInputOrderLocationInvalid'
+            $message = '派遣單位於根目錄：' + $legacy + '；請移至正確路徑並移除根目錄檔案：' + $path
+        }
+        elseif (Test-Path -LiteralPath $path -PathType Leaf -ErrorAction Stop) {
+            $state = 'ok'
+            $code = ''
+            $message = '派遣單位置：' + $path
+        }
+    }
+    catch { $message += '；' + $_.Exception.Message }
+    [pscustomobject]@{ side = $Side; path = $path; legacy_root_path = $legacy; state = $state; code = $code; message = $message }
+}
+
+function Get-DispatchOrderLocationFinding {
+    [CmdletBinding()]
+    param([string]$SourceRoot, [string]$ExecutionRoot, [string]$LineSlug, [string]$DispatchSlug, [ValidateSet('Source', 'Execution')][string]$Side)
+    $result = Resolve-DispatchOrderLocation -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Side $Side
+    if ($result.state -ne 'ok') {
+        $id = if ($Side -eq 'Source') { 'DI-ORDERLOC-A' } else { 'DI-ORDERLOC' }
+        New-DispatchInputFinding -CheckId $id -Severity 'error' -Code $result.code -Field 'order' -Message $result.message -Expected $result.path -Received '' -Source $result.path
     }
 }
 
@@ -130,19 +167,15 @@ function Invoke-DispatchInputChecks {
             }
         }
         if ($Context.DispatchKind -eq 'resource' -and $Context.TaskType -ne 'advisor-consult') {
-            $locations = Get-DispatchOrderLocation -SourceRoot $Context.SourceRoot -ExecutionRoot $executionRoot -LineSlug $Context.LineSlug -DispatchSlug $Context.DispatchSlug
-            $orderPath = if ([string]::Equals($executionRoot, $Context.SourceRoot, [StringComparison]::OrdinalIgnoreCase)) { $locations.source } else { $locations.worktree }
-            try {
-                if (-not (Test-Path -LiteralPath $orderPath -PathType Leaf -ErrorAction Stop)) { throw '找不到執行端派遣單。' }
-            }
-            catch {
-                New-DispatchInputFinding -CheckId 'DI-ORDERLOC' -Severity 'error' -Code 'DispatchInputOrderMissing' -Field 'order' -Message ('無法檢查執行端派遣單：' + $orderPath + '；' + $_.Exception.Message) -Expected $orderPath -Received '' -Source $orderPath
-            }
+            Get-DispatchOrderLocationFinding -SourceRoot $Context.SourceRoot -ExecutionRoot $executionRoot -LineSlug $Context.LineSlug -DispatchSlug $Context.DispatchSlug -Side Execution
         }
         if (-not [string]::Equals($executionRoot, $Context.SourceRoot, [StringComparison]::OrdinalIgnoreCase)) {
             Get-DispatchReferenceFindings -Order $Context.ResourceOrder -Stage $Stage -DispatchRoot $executionRoot
         }
         return
+    }
+    if ($Context.DispatchKind -eq 'resource' -and $Context.TaskType -ne 'advisor-consult') {
+        Get-DispatchOrderLocationFinding -SourceRoot $Context.SourceRoot -ExecutionRoot $Context.SourceRoot -LineSlug $Context.LineSlug -DispatchSlug $Context.DispatchSlug -Side Source
     }
     $sourceLineRoot = Join-Path $Context.SourceRoot ('.local\ai-sessions\handoff\' + $Context.LineSlug)
     if (-not $promptExists -or $promptText -notmatch '(?i)LineContext') {

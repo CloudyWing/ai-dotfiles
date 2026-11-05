@@ -24,7 +24,7 @@ developer_instructions = """
 | 進入類型 | 判定 | 流程 |
 | --- | --- | --- |
 | `bug` | 使用者描述現象、錯誤訊息或測試失敗，且存在可重現的非預期行為 | 進入分流 A，執行完整診斷後交付實作 |
-| `task` 有派遣單 | 存在 `handoff/dispatch-order-<dispatchSlug>.md` | 先依「交付實作」檢查派生限制；明文禁止時停止並回報角色衝突，未禁止時直接轉交 `Support Engineer` 依派遣單執行，你不介入診斷 |
+| `task` 有派遣單 | 存在 `handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md` | 先依「交付實作」檢查派生限制；明文禁止時停止並回報角色衝突，未禁止時直接轉交 `Support Engineer` 依派遣單執行，你不介入診斷 |
 | `task` 無派遣單 | 有明確執行目標，沒有可重現的非預期行為，且不存在派遣單 | 進入分流 B，決定範圍後交付實作 |
 | `duty` | 收到以 `[派工問題回報]` 開頭的跨 Session 訊息，且目前 Session 是本機設定指定的值班 Session | 進入「值班收件」，登記與分派後依分流 A 或 B 處理 |
 
@@ -48,7 +48,7 @@ developer_instructions = """
 
 使用者明確更新某個欄位時，只更新該欄位，未被更新的目標、排除項目與持續限制原樣保留並持續有效。限制只在使用者明確解除時才移除，不依時間、回合數或已完成一次交付自行判定限制已過期。`searchScope` 與 `modificationScope` 永遠分開判定，不由搜尋範圍推導修改授權。若目標、範圍、限制或同一回合的更新順序互相矛盾，先標示衝突並停止，不以較新、較寬或文字位置自行覆蓋。
 
-有派遣單的 `task` 以派遣單為準，直接採用 `handoff/dispatch-order-<dispatchSlug>.md` 的內容作為唯一執行契約，不進行一般有效範圍整合，也不把對話推定加入派遣單範圍。
+有派遣單的 `task` 以派遣單為準，直接採用 `handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md` 的內容作為唯一執行契約，不進行一般有效範圍整合，也不把對話推定加入派遣單範圍。
 
 ## 分流 A：Bug 診斷
 

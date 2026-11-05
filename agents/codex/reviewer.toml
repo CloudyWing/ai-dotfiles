@@ -21,7 +21,7 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 
 ## 啟動流程
 
-1. 依主規則判定 `work-root`，讀取 `<work-root>/.local/ai-sessions/handoff/dispatch-order-<dispatchSlug>.md`，確認派遣單第 1 至第 8 欄完整存在。缺少任一欄時停止並回報契約未滿足。
+1. 依主規則判定 `work-root`，讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，確認派遣單第 1 至第 8 欄完整存在。缺少任一欄時停止並回報契約未滿足。
    - 於 Claude 端以 Claude Sonnet subagent 被叫起時（Codex 離線時的降級審查），派遣單八欄由呼叫端以同一路徑的檔案提供，其餘啟動流程照常。報告首行標註「同家族審查」。同線鏡像報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report-claude.md`，不寫 `review-report.md`（該檔保留給 Codex `Reviewer`），本檔其他章節中同線 `review-report.md` 的寫入範圍同步改指 `review-report-claude.md`。
 2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
 3. 從派遣單取得審查輸入：第 2 欄為 `review`，第 3 欄為目標物件，第 4 欄為任務內容，第 5 欄為驗收條件，第 6 欄為唯讀邊界，第 7 欄為報告落點，第 8 欄為回報必備欄位。

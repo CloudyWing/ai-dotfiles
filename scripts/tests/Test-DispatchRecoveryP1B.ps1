@@ -1075,7 +1075,7 @@ for ($script:Round = 1; $script:Round -le $Repeat; $script:Round++) {
             $fixture = New-P1BFixture -DeferPreflight
             $targetPath = Join-Path $fixture.Source 'requested-target.md'
             $mark = [char]96
-            $orderPath = Join-Path $fixture.Source ('.local\ai-sessions\handoff\dispatch-order-' + $fixture.Slug + '.md')
+            $orderPath = Join-Path $fixture.Source ('.local\ai-sessions\handoff\p1b\dispatch-order-' + $fixture.Slug + '.md')
             $orderContent = @(
                 '## 3. 目標物件'
                 ''
@@ -1093,7 +1093,7 @@ for ($script:Round = 1; $script:Round -le $Repeat; $script:Round++) {
         Invoke-P1BCase 'Dispatch order text code block remains accepted' {
             $fixture = New-P1BFixture -DeferPreflight
             $targetPath = Join-Path $fixture.Source 'text-target.md'
-            $orderPath = Join-Path $fixture.Source ('.local\ai-sessions\handoff\dispatch-order-' + $fixture.Slug + '.md')
+            $orderPath = Join-Path $fixture.Source ('.local\ai-sessions\handoff\p1b\dispatch-order-' + $fixture.Slug + '.md')
             $orderContent = @(
                 '## 3. 目標物件'
                 ''
@@ -1113,7 +1113,7 @@ for ($script:Round = 1; $script:Round -le $Repeat; $script:Round++) {
             $fixture = New-P1BFixture -DeferPreflight
             $targetPath = Join-Path $fixture.Source 'invalid-target.md'
             $mark = [char]96
-            $orderPath = Join-Path $fixture.Source ('.local\ai-sessions\handoff\dispatch-order-' + $fixture.Slug + '.md')
+            $orderPath = Join-Path $fixture.Source ('.local\ai-sessions\handoff\p1b\dispatch-order-' + $fixture.Slug + '.md')
             $orderContent = @(
                 '## 3. 目標物件'
                 ''

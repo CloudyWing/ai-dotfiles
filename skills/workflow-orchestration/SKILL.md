@@ -37,7 +37,7 @@ Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢
 
 Codex 離線、選派入口以 `degraded` 回傳 Sonnet subagent 時，依下列步驟執行。
 
-1. 建立派遣單八欄，寫入 `handoff/dispatch-order-<dispatchSlug>.md`，第 7 欄報告落點依 `reviewer.toml`。
+1. 建立派遣單八欄，寫入 `handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，第 7 欄報告落點依 `reviewer.toml`。
 2. 以 Agent 工具派生冷啟動 subagent，`subagent_type` 為 `general-purpose`，`model` 為 `sonnet`，規則來源為 `~/.ai-agents/agents/codex/reviewer.toml`，prompt 帶 `LineContext` 與派遣單路徑。
 3. 審查者將同線鏡像報告寫入 `report/<lineSlug>/review-report-claude.md`，報告首行標註「同家族審查」，不寫 `review-report.md`。主 Agent 追加 exceptions「替代方案」。
 4. 報告完成後以 `Invoke-CodexDispatch.ps1 -Operation Collect -ReviewerReportPath <報告路徑>` 自驗 manifest，主 Agent 依回收三態判定。此路徑不經 Preflight、Prepare、Start、Inspect，沒有 RunRecord 與 PID 三鍵檢查，Collect 僅做結構核對。

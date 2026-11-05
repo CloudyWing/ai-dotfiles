@@ -228,6 +228,17 @@ function Copy-DispatchModulesBesideTestEntry {
     Copy-Item -LiteralPath (Join-Path $scriptsRoot 'dispatch\sandbox-env-denylist.psd1') -Destination (Join-Path $moduleDirectory 'sandbox-env-denylist.psd1') -Force
 }
 
+function Write-Phase9DispatchOrderFixture {
+    [CmdletBinding()]
+    param([string]$SourceRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$TargetPath, [string]$ReportPath = 'report.md', [string]$Body = 'fixture')
+    $lineRoot = Join-Path $SourceRoot ('.local\ai-sessions\handoff\' + $LineSlug)
+    $null = New-Item -ItemType Directory -Path $lineRoot -Force
+    $path = Join-Path $lineRoot ('dispatch-order-' + $DispatchSlug + '.md')
+    $order = "## 1. 標題`nFixture`n## 2. 角色`nSupport Engineer`n## 3. 目標物件`n- ``$TargetPath```n## 4. 任務內容`n$Body`n## 5. 驗收`n驗證`n## 6. 邊界`n唯讀`n## 7. 產出落點`n$ReportPath`n## 8. 回報`n完成"
+    [IO.File]::WriteAllText($path, $order, (New-Object Text.UTF8Encoding($false)))
+    return $path
+}
+
 function Get-ProductionFunctionText {
     [CmdletBinding()]
     param(
@@ -4554,6 +4565,7 @@ $ScopePlanPath = $null
 $script:startCalls = 0
 $script:failLaunch = $false
 Invoke-Case 'Start prepared → started 與唯一事件路徑' {
+    $null = Write-Phase9DispatchOrderFixture -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath (Join-Path $fixtureRoot 'target.txt')
     $originalModelDiagnosticFunction = (Get-Command -Name Get-ModelRolloutDiagnosticEvidence -CommandType Function -ErrorAction Stop).ScriptBlock
     try {
         Set-Item -Path Function:\Get-ModelRolloutDiagnosticEvidence -Value ([scriptblock]::Create("throw 'Start must not call the explicit model diagnostic'"))
@@ -4570,6 +4582,7 @@ Invoke-Case 'Start prepared → started 與唯一事件路徑' {
 Invoke-Case 'Start 啟動失敗保存 launch-failed' {
     $script:failLaunch = $true
     $DispatchSlug = 'failure-case'
+    $null = Write-Phase9DispatchOrderFixture -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath (Join-Path $fixtureRoot 'target.txt')
     $PreflightResultPath = Join-Path $fixtureRoot 'failure-preflight.json'
     Write-Utf8NoBom $PreflightResultPath ((@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = $LineSlug; dispatchSlug = $DispatchSlug } | ConvertTo-Json))
     $caught = $false
@@ -4615,7 +4628,7 @@ Invoke-Case 'Start prepared 落檔失敗不得啟動' {
     try { Invoke-Start } catch { $caught = $true }
     Assert-True ($caught -and $script:startCalls -eq $before) '落檔失敗仍啟動。'
 }
-Invoke-Case 'Start 已有紀錄拒絕另建首輪' -Reject -ErrorPattern '同派遣最新 RunRecord|同派遣已有 RunRecord' { Invoke-Start }
+Invoke-Case 'Start 已有紀錄拒絕另建首輪' -Reject -ErrorPattern '同派遣最新 RunRecord|同派遣已有 RunRecord' { $null = Write-Phase9DispatchOrderFixture -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath (Join-Path $fixtureRoot 'target.txt'); Invoke-Start }
 Invoke-Case 'Start 自訂既有 last-message 拒絕覆寫' -Reject -ErrorPattern 'LastMessagePath 已存在' {
     $DispatchSlug = 'existing-output'
     $PreflightResultPath = Join-Path $fixtureRoot 'existing-preflight.json'
@@ -4687,6 +4700,7 @@ Invoke-Case 'BATCH5 Start relay failure masks Authorization in exception record 
     $scriptVariableSnapshot = Get-ScriptVariableSnapshot -Name @('DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'eventErrorPathProbe', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'relayFailure', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
     try {
     $DispatchSlug = 'relay-failure-batch5'
+    $null = Write-Phase9DispatchOrderFixture -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath (Join-Path $fixtureRoot 'target.txt')
     $PreflightResultPath = Join-Path $fixtureRoot ($DispatchSlug + '-preflight.json')
     Write-Utf8NoBom $PreflightResultPath ((@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = $LineSlug; dispatchSlug = $DispatchSlug } | ConvertTo-Json))
     $fakeAuthorization = 'FAKE_RELAY_AUTHORIZATION_VALUE'
@@ -4785,6 +4799,7 @@ if ($Phase -ge 3) {
     $phase3ColdSeed = New-Phase3FailedRecord -Record $phase3ColdSeed -Message 'phase3 cold-start seed failure' -PreparationWithoutScope
     Invoke-Case 'latest failed 允許新的 cold-start 並保留舊紀錄' {
         $DispatchSlug = 'phase3-cold-start'
+        $null = Write-Phase9DispatchOrderFixture -SourceRoot $fixtureRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -TargetPath (Join-Path $fixtureRoot 'target.txt')
         $PreflightResultPath = $phase3ColdSeed.preflight_result_path
         $PromptPath = Join-Path $fixtureRoot 'phase3-cold-prompt.md'
         $ScopePlanPath = $null
@@ -4951,6 +4966,7 @@ model_reasoning_effort = 'high'
     $null = Write-DispatchRunRecord -Record $phase3UnknownRecord -Update
     Invoke-Case 'Resume actual unknown 不阻擋符合 profile 的續行' {
         $DispatchSlug = 'phase3-model-unknown'
+        $null = Write-Phase9DispatchOrderFixture -SourceRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $DispatchSlug -TargetPath (Join-Path $fixtureRoot 'target.txt')
         $PreflightResultPath = $phase3UnknownAnchor.preflight_result_path
         $PromptPath = Join-Path $fixtureRoot 'phase3-model-unknown-prompt.md'
         $CodexHome = $startCodexHome
@@ -6291,6 +6307,7 @@ if ($Phase -ge 4) {
             $script:TargetPath = @()
             $script:LineSlug = 'line-a'
             $script:DispatchSlug = 'phase4-direct-readonly-network'
+            $null = Write-Phase9DispatchOrderFixture -SourceRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $script:DispatchSlug -TargetPath (Join-Path $fixtureRoot 'target.txt')
             $script:DispatchKind = 'resource'
             $script:TaskType = 'implement'
             $script:WriteMode = 'readonly'
@@ -6631,10 +6648,8 @@ if ($Phase -ge 5) {
         $dispatchRoot = Join-Path $Root '.local\ai-sessions\worktrees\dd-test'
         $prompt = New-DdLineContextBlock -SourceRoot $Root -DispatchRoot $dispatchRoot -LineSlug 'dd-line'
         [IO.File]::WriteAllText((Join-Path $Root 'prompt.md'), $prompt)
-        $orderPath = Join-Path $Root '.local\ai-sessions\handoff\dispatch-order-dd-test.md'
         $target = if ($DirectoryTarget) { (Join-Path $Root 'target') + '\' } else { Join-Path $Root 'target.txt' }
-        $order = "## 2. 角色`nSupport Engineer`n## 3. 目標物件`n- ``$target```n## 4. 任務內容`n$TaskBody`n## 5. 驗收`n驗證`n## 6. 邊界`n唯讀`n## 7. 產出落點`nreport.md`n## 8. 回報`n完成"
-        [IO.File]::WriteAllText($orderPath, $order, (New-Object Text.UTF8Encoding($false)))
+        $orderPath = Write-Phase9DispatchOrderFixture -SourceRoot $Root -LineSlug 'dd-line' -DispatchSlug 'dd-test' -TargetPath $target -Body $TaskBody
         [pscustomobject]@{ Root = $Root; LineRoot = $lineRoot; OrderPath = $orderPath; Target = $target }
     }
     function Invoke-DdValidateRequest {
@@ -7597,6 +7612,100 @@ if ($Phase -ge 6) {
     Invoke-Case 'Phase 6 DD-PREFLIGHT-MSG Workflow tracked target 限制' {
         $preflight = ($functions | Where-Object { $_.Name -eq 'Invoke-Preflight' } | Select-Object -First 1).Extent.Text
         Assert-True ($preflight.Contains('Workflow write 必須至少包含一個 tracked target') -and $preflight.Contains('資源派遣 direct-write') -and $preflight.Contains("-not `$hasTrackedWriteTarget")) '限制與替代路徑說明應同時存在。'
+    }
+    function Invoke-DdOrderGenerator {
+        param([string]$Root, [string]$Slug, [string]$OutputPath = '')
+        $driver = Join-Path $Root 'order-generator-driver.ps1'
+        $body = @'
+param([string]$Generator, [string]$Root, [string]$Slug, [string]$OutputPath)
+$argsMap = @{ Title='Fixture'; Role='Support Engineer'; TargetPath=@((Join-Path $Root 'target.txt')); TaskBody='Fixture'; Acceptance=@(@{ Category='新行為'; Condition='fixture'; Command='Get-Item fixture' }); Boundary='唯讀'; ReportPath=(Join-Path $Root '.local/ai-sessions/report/dd-line/report.md'); DispatchSlug=$Slug; LineSlug='dd-line' }
+if ($OutputPath) { $argsMap.OutputPath = $OutputPath }
+& $Generator @argsMap
+exit $LASTEXITCODE
+'@
+        [IO.File]::WriteAllText($driver, $body, (New-Object Text.UTF8Encoding($true)))
+        $hostPath = (Get-Process -Id $PID).Path
+        $arguments = @('-NoProfile', '-File', $driver, '-Generator', (Join-Path $scriptsRoot 'New-DispatchOrder.ps1'), '-Root', $Root, '-Slug', $Slug)
+        if ($OutputPath) { $arguments += @('-OutputPath', $OutputPath) }
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            $output = @(& $hostPath @arguments 2>&1)
+            $exitCode = $LASTEXITCODE
+        }
+        finally { $ErrorActionPreference = $previousPreference }
+        [pscustomobject]@{ ExitCode = $exitCode; Output = ($output -join "`n") }
+    }
+    Invoke-Case 'Phase 6 DD-ORDERLOC-CONTRACT 來源執行端與 direct-write' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-order-contract') -TaskBody '檢查目標'
+        $execution = Join-Path $f.Root 'worktree'
+        $paths = Get-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+        $null = New-Item -ItemType Directory -Path (Split-Path -Parent $paths.worktree) -Force
+        Copy-Item -LiteralPath $paths.source -Destination $paths.worktree
+        foreach ($case in @(@{ Side = 'Source'; Root = $execution; Path = $paths.source }, @{ Side = 'Execution'; Root = $execution; Path = $paths.worktree }, @{ Side = 'Execution'; Root = $f.Root; Path = $paths.source })) {
+            $result = Resolve-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot $case.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test' -Side $case.Side
+            Assert-True ($result.state -eq 'ok' -and $result.path -eq $case.Path) '來源、執行端與 direct-write 均應使用線目錄。'
+        }
+        Assert-True (@(Get-DispatchOrderLocationFinding -SourceRoot $f.Root -ExecutionRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test' -Side Source).Count -eq 0) '來源線目錄存在時不得產生 Finding。'
+        $order = Read-DispatchOrderSections -Path $f.OrderPath
+        $context = [pscustomobject]@{ SourceRoot = $f.Root; LineSlug = 'dd-line'; DispatchSlug = 'dd-test'; PromptPath = (Join-Path $f.Root 'prompt.md'); WriteMode = 'readonly'; CodexHome = 'fixture'; RequiredIdentifier = 'result.md'; DispatchKind = 'resource'; TaskType = 'resource-task'; EvidencePackPath = ''; TargetPath = @($f.Target); ResourceOrder = $order }
+        Assert-True (@(Invoke-DispatchInputChecks -Stage Request -Context $context | Where-Object { $_.check_id -eq 'DI-ORDERLOC-A' }).Count -eq 0) 'Stage A 不應回報派遣單位置錯誤。'
+        $artifacts = @(New-DispatchAutoPrepareArtifacts -SourceRoot $f.Root -DispatchRoot $execution -LineSlug 'dd-line' -DispatchSlug 'dd-test' -DispatchKind resource -WriteMode readonly -ResourceOrder $order)
+        $orderArtifact = @($artifacts | Where-Object { $_.source -eq $paths.source -and $_.destination -eq $paths.worktree })
+        Assert-True ($orderArtifact.Count -eq 1 -and $orderArtifact[0].sha256 -eq (Get-FileSha256 -Path $paths.source)) 'Prepare 應選擇線目錄派遣單與一致雜湊。'
+        foreach ($root in @($f.Root, $execution)) {
+            $directive = New-DispatchOrderPromptDirective -DispatchKind resource -TaskType resource-task -SourceRoot $f.Root -ExecutionRoot $root -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+            $expected = (Resolve-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot $root -LineSlug 'dd-line' -DispatchSlug 'dd-test' -Side Execution).path
+            Assert-True ($directive.Contains('[派遣單]') -and $directive.Contains($expected)) 'Start 指示應包含執行端線目錄路徑。'
+        }
+        Assert-True ((Get-FileSha256 -Path $paths.source) -eq (Get-FileSha256 -Path $paths.worktree)) '來源與執行端派遣單內容應一致。'
+        # 預設落點由 ReportPath 往上找最外層 .local\ai-sessions，fixture 需放在任何 .local\ai-sessions 之外才不會落到外層根目錄。
+        $generatorRoot = Join-Path ([IO.Path]::GetTempPath()) ('ddog-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $null = New-Item -ItemType Directory -Path $generatorRoot -Force
+        [IO.File]::WriteAllText((Join-Path $generatorRoot 'target.txt'), 'fixture')
+        $generatedPath = Join-Path $generatorRoot '.local\ai-sessions\handoff\dd-line\dispatch-order-dd-generated.md'
+        $generated = Invoke-DdOrderGenerator -Root $generatorRoot -Slug 'dd-generated'
+        Assert-True ($generated.ExitCode -eq 0 -and $generated.Output.Contains($generatedPath) -and (Test-Path -LiteralPath $generatedPath -PathType Leaf)) '產生器應預設寫入線目錄。'
+        Remove-Item -LiteralPath $generatorRoot -Recurse -Force
+        $inputText = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'dispatch\start-lifecycle.ps1'))
+        $scopeText = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'dispatch\dispatch-scope.ps1'))
+        $prepareText = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'dispatch\prepare-stage.ps1'))
+        $directiveText = ($functions | Where-Object { $_.Name -eq 'New-DispatchOrderPromptDirective' } | Select-Object -First 1).Extent.Text
+        Assert-True (-not $directiveText.Contains('Equals($SourceRoot, $ExecutionRoot') -and $inputText.Contains('Resolve-DispatchOrderLocation')) 'Start 不得選擇舊路徑。'
+        $legacyLiteral = 'handoff' + '\' + 'dispatch-order-'
+        Assert-True (-not $scopeText.Contains($legacyLiteral) -and -not $prepareText.Contains($legacyLiteral)) '路徑決定點不得保留根目錄組字。'
+    }
+    Invoke-Case 'Phase 6 DD-ORDERLOC-ROOT 根目錄及並存拒絕' {
+        $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-order-root') -TaskBody '檢查目標'
+        $locations = Get-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+        $legacy = $locations.legacy_root_path
+        [IO.File]::WriteAllText($legacy, 'ORDER_ROOT_SECRET_MARKER')
+        $beforeLine = (Get-FileSha256 -Path $locations.source)
+        $beforeRoot = (Get-FileSha256 -Path $legacy)
+        $both = Resolve-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test' -Side Source
+        Assert-True ($both.state -eq 'legacy-root' -and $both.code -eq 'DispatchInputOrderLocationInvalid' -and $both.message.Contains($legacy) -and $both.message.Contains($locations.source)) '兩處並存應拒絕並列出兩個路徑。'
+        $bothDispatch = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md' -ActualDispatch
+        Assert-True ($bothDispatch.ExitCode -ne 0 -and $bothDispatch.Output -match 'DispatchInputOrderLocationInvalid' -and $bothDispatch.Output -match 'DI-ORDERLOC-A' -and $bothDispatch.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path $bothDispatch.DispatchRoot) -and -not (Test-Path $bothDispatch.RunRoot) -and -not $bothDispatch.Output.Contains('ORDER_ROOT_SECRET_MARKER')) '兩處並存應在建立 worktree 或啟動前拒絕。'
+        Assert-True ((Get-FileSha256 -Path $locations.source) -eq $beforeLine -and (Get-FileSha256 -Path $legacy) -eq $beforeRoot) '位置檢查不得改動派遣單。'
+        Remove-Item -LiteralPath $locations.source
+        $finding = @(Get-DispatchOrderLocationFinding -SourceRoot $f.Root -ExecutionRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test' -Side Source)
+        Assert-True ($finding.Count -eq 1 -and $finding[0].check_id -eq 'DI-ORDERLOC-A' -and $finding[0].code -eq 'DispatchInputOrderLocationInvalid' -and -not $finding[0].message.Contains('ORDER_ROOT_SECRET_MARKER')) '根目錄案例應拒絕且不得讀取內容。'
+        $rootDispatch = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md' -ActualDispatch
+        Assert-True ($rootDispatch.ExitCode -ne 0 -and $rootDispatch.Output -match 'DispatchInputOrderLocationInvalid' -and $rootDispatch.Output -match 'DI-ORDERLOC-A' -and $rootDispatch.Output -match '"process_started"\s*:\s*false' -and -not (Test-Path $rootDispatch.DispatchRoot) -and -not (Test-Path $rootDispatch.RunRoot) -and -not (Test-Path $rootDispatch.CounterPath) -and -not $rootDispatch.Output.Contains('ORDER_ROOT_SECRET_MARKER')) '僅根目錄存在時應在建立 worktree 或啟動前拒絕且不讀取內容。'
+        $thrown = ''
+        try { $null = New-DispatchOrderPromptDirective -DispatchKind resource -TaskType resource-task -SourceRoot $f.Root -ExecutionRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test' } catch { $thrown = $_.Exception.Message }
+        Assert-True ($thrown.StartsWith('DispatchInputOrderLocationInvalid') -and -not $thrown.Contains('ORDER_ROOT_SECRET_MARKER')) 'Start 應拒絕根目錄派遣單。'
+        Remove-Item -LiteralPath $legacy
+        $missing = Resolve-DispatchOrderLocation -SourceRoot $f.Root -ExecutionRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test' -Side Source
+        Assert-True ($missing.code -eq 'DispatchInputOrderMissing' -and $missing.message.Contains($locations.source)) '兩處皆無時應回報線目錄缺件。'
+        $rootInfo = Get-PrepareRootInfo -SourceRoot $f.Root -ExecutionRoot $f.Root -DispatchRoot $f.Root -LineSlug 'dd-line' -DispatchSlug 'dd-test'
+        Assert-True (@($rootInfo.SourceLineRoots | Where-Object { $_.Name -eq 'dispatch-order' -and $_.Path -eq $locations.source }).Count -eq 1) 'Prepare 允許根必須使用線目錄。'
+        $generatorRootPath = Join-Path (Split-Path -Parent $f.LineRoot) 'dispatch-order-dd-generated-root.md'
+        $generatorRejected = Invoke-DdOrderGenerator -Root $f.Root -Slug 'dd-generated-root' -OutputPath $generatorRootPath
+        Assert-True ($generatorRejected.ExitCode -ne 0 -and $generatorRejected.Output.Contains('DispatchInputOrderLocationInvalid') -and -not (Test-Path -LiteralPath $generatorRootPath)) '產生器不得輸出至 handoff 根目錄。'
+        $customPath = Join-Path $f.Root 'custom-order.md'
+        $generatorAccepted = Invoke-DdOrderGenerator -Root $f.Root -Slug 'dd-generated-custom' -OutputPath $customPath
+        Assert-True ($generatorAccepted.ExitCode -eq 0 -and (Test-Path -LiteralPath $customPath -PathType Leaf)) '產生器應允許其他目錄的顯式輸出。'
     }
     Invoke-Case 'Phase 6 DD-ORDERLOC 來源與 worktree 路徑' {
         $f = New-DdInputFixture -Root (Join-Path $fixtureRoot 'dd-orderloc') -TaskBody '檢查目標'
@@ -9628,6 +9737,7 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     $orderParameters.OutputPath = $OutputPath
 }
 & $GeneratorPath @orderParameters
+exit $LASTEXITCODE
 '@
     [System.IO.File]::WriteAllText($phase7DispatchOrderDriverPath, $phase7DispatchOrderDriver + "`r`n", (New-Object System.Text.UTF8Encoding($true)))
     $phase7DispatchOrderReportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/closure.md'
@@ -9767,11 +9877,21 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     Invoke-Case 'Phase 7 New-DispatchOrder 預設 handoff 落點、Request 對照與通用回報欄位' {
         $dispatchSlug = 'phase7-generated-order-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $generatorRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -DispatchSlug $dispatchSlug
-        $expectedPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/dispatch-order-' + $dispatchSlug + '.md')
+        $expectedPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $dispatchSlug + '.md')
         Assert-True ($generatorRun.exit_code -eq 0 -and [string]$generatorRun.stdout -match [regex]::Escape($expectedPath) -and (Test-Path -LiteralPath $expectedPath -PathType Leaf)) ('派遣單預設路徑錯誤：' + [string]$generatorRun.stdout + [string]$generatorRun.stderr)
         $generatedContent = Get-Content -LiteralPath $expectedPath -Raw -Encoding UTF8
         Assert-True ($generatedContent.Contains('### Runtime Request 欄位對照') -and $generatedContent.Contains('`evidence_pack_path`') -and $generatedContent.Contains('`advisor_consult_report_path`')) '派遣單缺少 runtime Request 欄位轉換說明。'
         Assert-True (-not $generatedContent.Contains('驗收腳本完整內容') -and -not $generatedContent.Contains('新腳本的行數')) '第 8 節仍要求固定腳本內容或行數。'
+    }
+
+    Invoke-Case 'Phase 7 DD-ORDERLOC 產生器拒絕 handoff 根目錄' {
+        $slug = 'phase7-order-root-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
+        $rootPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/dispatch-order-' + $slug + '.md')
+        $run = Invoke-Phase7DispatchOrder -CaseName 'valid' -DispatchSlug $slug -OutputPath $rootPath
+        Assert-True ($run.exit_code -ne 0 -and ([string]$run.stderr).Contains('DispatchInputOrderLocationInvalid') -and -not (Test-Path -LiteralPath $rootPath)) 'handoff 根目錄輸出應被拒絕。'
+        $customPath = Join-Path $phase7Root 'custom-dispatch-order.md'
+        $custom = Invoke-Phase7DispatchOrder -CaseName 'valid' -DispatchSlug $slug -OutputPath $customPath
+        Assert-True ($custom.exit_code -eq 0 -and (Test-Path -LiteralPath $customPath -PathType Leaf)) '其他位置的顯式輸出應維持可用。'
     }
 
     Invoke-Case 'Phase 7 BATCH1-SUPPORT New-DispatchOrder rejects CRLF-unsafe regex anchors and accepts repairs' {
@@ -9928,11 +10048,11 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
         $worktreeDispatchSlug = 'phase7-order-worktree-report-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $sourceDispatchSlug = 'phase7-order-source-report-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $worktreeRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $dispatchReportPath -DispatchSlug $worktreeDispatchSlug
-        $worktreeExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/dispatch-order-' + $worktreeDispatchSlug + '.md')
+        $worktreeExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $worktreeDispatchSlug + '.md')
         Assert-True ($worktreeRun.exit_code -eq 0 -and [string]$worktreeRun.stdout -match [regex]::Escape($worktreeExpectedPath) -and (Test-Path -LiteralPath $worktreeExpectedPath -PathType Leaf)) ('dispatch worktree ReportPath 未回到最外層來源根目錄：' + [string]$worktreeRun.stdout + [string]$worktreeRun.stderr)
 
         $sourceRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -ReportPath $sourceReportPath -DispatchSlug $sourceDispatchSlug
-        $sourceExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/dispatch-order-' + $sourceDispatchSlug + '.md')
+        $sourceExpectedPath = Join-Path $sourceRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $sourceDispatchSlug + '.md')
         Assert-True ($sourceRun.exit_code -eq 0 -and [string]$sourceRun.stdout -match [regex]::Escape($sourceExpectedPath) -and (Test-Path -LiteralPath $sourceExpectedPath -PathType Leaf)) ('來源 report ReportPath 預設落點錯誤：' + [string]$sourceRun.stdout + [string]$sourceRun.stderr)
 
         $reportWithoutAiSessions = Join-Path $env:SystemDrive 'phase7-reports-without-ai-sessions/closure.md'
@@ -9969,7 +10089,7 @@ if (-not [string]::IsNullOrWhiteSpace($OutputPath)) {
     Invoke-Case 'Phase 7 Batch5 S1 generated handoff-root dispatch order is loaded before Preflight unit validation' {
         $dispatchSlug = 'phase7-generated-order-unit-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $generatorRun = Invoke-Phase7DispatchOrder -CaseName 'valid' -DispatchSlug $dispatchSlug
-        $expectedPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/dispatch-order-' + $dispatchSlug + '.md')
+        $expectedPath = Join-Path $fixtureBaseRoot ('.local/ai-sessions/handoff/line-a/dispatch-order-' + $dispatchSlug + '.md')
         Assert-True ($generatorRun.exit_code -eq 0 -and (Test-Path -LiteralPath $expectedPath -PathType Leaf)) ('派遣單預設落點未產生可讀取文件：' + [string]$generatorRun.stdout + [string]$generatorRun.stderr)
 
         $savedNames = @('RequestContext', 'SourceRoot', 'DispatchKind', 'TaskType', 'UnitKind', 'DispatchSlug', 'LineSlug', 'TargetPath', 'RequestedUnit', 'RequestPrepareArtifacts', 'RequestManualPrepareArtifacts', 'RequestAutoPrepareArtifacts', 'RequestResourceOrder', 'ResolvedRequestedUnit')
@@ -14141,7 +14261,7 @@ if ($Phase -ge 9) {
                 Write-Utf8NoBom -Path $evidencePackPath -Content ($advisorEvidenceContent + "`r`n") -SourceRoot $sourceRoot -ExecutionRoot $sourceRoot -TargetPath @()
             }
         }
-        $dispatchOrderPath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\dispatch-order-' + $caseSlug + '.md')
+        $dispatchOrderPath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\a\dispatch-order-' + $caseSlug + '.md')
         if ($DispatchKind -eq 'resource') {
             $resourceTaskBody = if ($TaskMentionsDesign) { 'Execute the requested resource and read ' + (Join-Path $dispatchRoot '.local\ai-sessions\handoff\a\design.md') } else { 'Execute the requested resource target.' }
             if ($DdStageBScenario -eq 'ref') { $resourceTaskBody = '讀取 `' + (Join-Path $dispatchRoot 'missing-reference.txt') + '`' }
@@ -15731,6 +15851,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
             $dispatchSlug = 'missing-' + $selectedProfile
             $promptPath = Join-Path $caseRoot 'prompt.md'
             $targetPath = Join-Path $caseRoot 'target.txt'
+            if ($selectedProfile -ceq 'default') { $null = Write-Phase9DispatchOrderFixture -SourceRoot $caseRoot -LineSlug 'a' -DispatchSlug $dispatchSlug -TargetPath $targetPath }
             [IO.File]::WriteAllText($promptPath, 'fixture cold-start prompt', $utf8)
             [IO.File]::WriteAllText($targetPath, 'fixture target', $utf8)
             $preflightPath = Join-Path $caseRoot 'preflight.json'
@@ -17770,7 +17891,7 @@ $script:TargetPath = @()
             Write-Utf8NoBom -Path $requirementSummarySourcePath -Content ($requirementSummaryContent + "`r`n")
             $requirementSummaryIds = @(Get-RequirementIdsFromSummary -Content $requirementSummaryContent -SummaryPath $requirementSummarySourcePath)
             Assert-True ($requirementSummaryIds.Count -eq 2 -and $requirementSummaryIds[0] -eq 1 -and $requirementSummaryIds[1] -eq 2) ('R-1/R-2/R-3 最小 requirement summary 無法由 Get-RequirementIdsFromSummary 解析：' + ($requirementSummaryIds -join ','))
-            $dispatchOrderPath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\dispatch-order-' + $caseSlug + '.md')
+            $dispatchOrderPath = Join-Path $sourceRoot ('.local\ai-sessions\handoff\' + $lineSlug + '\dispatch-order-' + $caseSlug + '.md')
             $dispatchOrderContent = @(
                 ('# 派遣單：' + $caseSlug)
                 ''
@@ -22616,7 +22737,7 @@ if ($Phase -eq 9) {
         $null = [IO.File]::WriteAllText($targetPath, 'fixture target', [Text.UTF8Encoding]::new($false))
         $null = [IO.File]::WriteAllText($promptPath, 'fixture prompt', [Text.UTF8Encoding]::new($false))
 
-        $orderPath = Join-Path (Split-Path $lineRoot -Parent) ('dispatch-order-' + $DispatchSlug + '.md')
+        $orderPath = Join-Path $lineRoot ('dispatch-order-' + $DispatchSlug + '.md')
         $orderLines = @('## 3. 目標物件', ($fence + 'text'), $targetPath, $fence, '## 4. 任務內容', 'Fixture dispatch.', '## 5. 驗收條件與 Codex 命令', 'Fixture acceptance.', '## 6. 執行邊界', 'Fixture boundary.', '## 7. 產出落點', '', ($fence + 'text'), $reportPath, $fence, '## 8. 回報必備欄位', 'Fixture report.')
         $null = [IO.File]::WriteAllText($orderPath, ($orderLines -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
 
@@ -22717,7 +22838,7 @@ function Invoke-GitCommand {
         [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
         $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
         $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Preflight','-SourceRoot',$CaseRoot,'-DispatchRoot',$dispatchRoot,'-LineSlug','line-a','-DispatchSlug',$DispatchSlug,'-CallerSessionId','batch2-caller','-WriteMode','readonly','-TargetPath',$targetPath,'-DispatchKind',$DispatchKind,'-TaskType',$TaskType,'-UnitKind',$UnitKind) -WorkingDirectory $CaseRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
-        $orderPath = Join-Path $CaseRoot ('.local\ai-sessions\handoff\dispatch-order-' + $DispatchSlug + '.md')
+        $orderPath = Join-Path $CaseRoot ('.local\ai-sessions\handoff\line-a\dispatch-order-' + $DispatchSlug + '.md')
         return [pscustomobject]@{ Run=$run; MarkerPath=$markerPath; OrderPath=$orderPath }
     }
 
@@ -23502,7 +23623,7 @@ function Invoke-Prepare { return [ordered]@{ status='prepared'; fixture_invoked=
             $fence = [string][char]96 + [string][char]96 + [string][char]96
             $null = [IO.File]::WriteAllText($targetPath, 'fixture target', [Text.UTF8Encoding]::new($false))
             $null = [IO.File]::WriteAllText($promptPath, 'fixture prompt', [Text.UTF8Encoding]::new($false))
-            $orderPath = Join-Path (Split-Path $lineRoot -Parent) ('dispatch-order-' + $dispatchSlug + '.md')
+            $orderPath = Join-Path $lineRoot ('dispatch-order-' + $dispatchSlug + '.md')
             $orderLines = @('## 3. 目標物件',($fence + 'text'),$targetPath,$fence,'## 4. 任務內容','Fixture dispatch.','## 5. 驗收條件與 Codex 命令','Fixture acceptance.','## 6. 執行邊界','Fixture boundary.','## 7. 產出落點','',($fence + 'text'),$reportPath,$fence,'## 8. 回報必備欄位','Fixture report.')
             $null = [IO.File]::WriteAllText($orderPath, ($orderLines -join [Environment]::NewLine), [Text.UTF8Encoding]::new($false))
             $request = [ordered]@{ schema='ai-sessions.dispatch-request.v1'; operation='Dispatch'; line_slug='line-a'; dispatch_slug=$dispatchSlug; source_root=$caseRoot; dispatch_root=$dispatchRoot; caller_session_id='batch2-caller'; write_mode='readonly'; dispatch_kind='resource'; target_path=@($targetPath); prompt_path=$promptPath; profile='scan'; task_type='implement'; session_mode='cold-start'; unit_kind='resource-target'; failure_receipt_path=$receiptPath }

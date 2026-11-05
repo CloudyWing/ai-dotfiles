@@ -350,7 +350,9 @@ function New-DispatchAutoPrepareArtifacts {
     }
 
     if ($DispatchKind -eq 'resource' -and $null -ne $ResourceOrder) {
-        $sourceOrderPath = Join-Path -Path $sourceRootPath -ChildPath ('.local\ai-sessions\handoff\dispatch-order-' + $DispatchSlug + '.md')
+        $location = Resolve-DispatchOrderLocation -SourceRoot $sourceRootPath -ExecutionRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Side Source
+        Assert-DispatchInputFindings -Findings @(Get-DispatchOrderLocationFinding -SourceRoot $sourceRootPath -ExecutionRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Side Source) -RequestPathValue ([string](Get-DispatchJsonProperty -Object $script:RequestContext -Name 'path'))
+        $sourceOrderPath = $location.path
         $destinationOrderPath = Join-Path -Path $destinationLineRoot -ChildPath ('dispatch-order-' + $DispatchSlug + '.md')
         $artifactSources.Add([pscustomobject]@{ Source = $sourceOrderPath; Destination = $destinationOrderPath; Purpose = 'resource dispatch order' })
     }
@@ -391,7 +393,9 @@ function Initialize-DispatchRequestDerivedInputs {
     $evidenceCheckPath = [string]$script:EvidencePackPath
 
     if ($dispatchKindValue -eq 'resource' -and -not $isAdvisorEvidence) {
-        $orderPath = Join-Path -Path $sourceRootPath -ChildPath ('.local\ai-sessions\handoff\dispatch-order-' + $script:DispatchSlug + '.md')
+        $location = Resolve-DispatchOrderLocation -SourceRoot $sourceRootPath -ExecutionRoot $sourceRootPath -LineSlug $script:LineSlug -DispatchSlug $script:DispatchSlug -Side Source
+        Assert-DispatchInputFindings -Findings @(Get-DispatchOrderLocationFinding -SourceRoot $sourceRootPath -ExecutionRoot $sourceRootPath -LineSlug $script:LineSlug -DispatchSlug $script:DispatchSlug -Side Source) -RequestPathValue ([string]$script:RequestContext.path)
+        $orderPath = $location.path
         $resourceOrder = Read-DispatchOrderSections -Path $orderPath
         if (-not (Compare-DispatchStringArrays -Left @($script:TargetPath) -Right @($resourceOrder.Targets))) {
             $differences = New-DispatchRequestArrayMismatchDetail -Field 'target_path' -Expected @($resourceOrder.Targets) -Received @($script:TargetPath)
@@ -546,7 +550,9 @@ function Get-DispatchDeclaredUnitList {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($DispatchSlug)) {
-        $orderPath = Join-Path -Path $sourceRootValue -ChildPath ('.local\ai-sessions\handoff\dispatch-order-' + $DispatchSlug + '.md')
+        $location = Resolve-DispatchOrderLocation -SourceRoot $sourceRootValue -ExecutionRoot $sourceRootValue -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Side Source
+        Assert-DispatchInputFindings -Findings @(Get-DispatchOrderLocationFinding -SourceRoot $sourceRootValue -ExecutionRoot $sourceRootValue -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Side Source) -RequestPathValue ([string](Get-DispatchJsonProperty -Object $script:RequestContext -Name 'path'))
+        $orderPath = $location.path
         $order = Read-DispatchOrderSections -Path $orderPath
         return @($order.Targets)
     }
