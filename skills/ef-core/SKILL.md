@@ -28,10 +28,20 @@ public class MyBackgroundService : BackgroundService {
         // ...
     }
 }
+```
 
-// ❌ 錯誤：直接注入 DbContext 至 Singleton
+```csharp
+// ❌ 錯誤：背景服務以 Singleton 存活，直接注入 DbContext
 public class MyBackgroundService : BackgroundService {
-    public MyBackgroundService(AppDbContext db) { /* ... */ }
+    private readonly AppDbContext db;
+
+    public MyBackgroundService(AppDbContext db) {
+        this.db = db;
+    }
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
+        await db.SaveChangesAsync(stoppingToken).ConfigureAwait(false);
+    }
 }
 ```
 
@@ -68,7 +78,7 @@ List<Order> orders = await db.Orders
 ### 投影優先
 
 - 若只需 Entity 的部分欄位，優先使用 `Select()` 投影至 DTO，避免載入整個 Entity。
-- 投影可同時解決 AsNoTracking 的需求（投影查詢本身不追蹤）。
+- 投影至 DTO、匿名型別或純量時，結果不受變更追蹤。投影結果中包含 Entity 實例時，該 Entity 仍會被追蹤，唯讀查詢仍需加上 `.AsNoTracking()`。
 
 ### 分頁查詢
 
@@ -114,7 +124,7 @@ try {
 
 ## 樂觀並發控制（Optimistic Concurrency）
 
-- 需要防止更新衝突的實體，使用 `[Timestamp]` Attribute（SQL Server `rowversion`）或 `[ConcurrencyToken]`（任意欄位）。
+- 需要防止更新衝突的實體，使用 `[Timestamp]` Attribute（SQL Server `rowversion`）或 `[ConcurrencyCheck]`（任意欄位；Fluent API 為 `IsConcurrencyToken()`）。
 - EF Core 偵測到並發衝突時拋出 `DbUpdateConcurrencyException`，必須明確處理（重試或提示使用者）。
 
 ```csharp
@@ -137,13 +147,13 @@ try {
 
 ## Lazy Loading 警告
 
-- EF Core **預設停用** Lazy Loading。若安裝 `Microsoft.EntityFrameworkCore.Proxies` 並呼叫 `.UseLazyLoadingProxies()`，Navigation Property 將在存取時觸發額外查詢，容易引發隱性 N+1。
+- EF Core **預設停用** Lazy Loading。若安裝 `Microsoft.EntityFrameworkCore.Proxies` 並呼叫 `.UseLazyLoadingProxies()`，Navigation Property 將在存取時觸發額外查詢，容易引發隱性 N+1。EF Core 8 起，`AsNoTracking()` 查詢回傳的 Entity 也會觸發 Lazy Loading。
 - 正式環境建議維持停用（預設值），改用明確的 `Include()`、`ThenInclude()` 或投影。
 
 ## 目標版本與相容性設定
 
 - 讀鍵：provider 為 SQL Server 時讀取 `target.sqlserver` 與 `target.sqlserver.compat`，為 Oracle 時讀取 `target.oracle`。provider 依 `sql-query` SKILL.md「目標版本」的「適用偵測」判定。鍵的語意、詢問、缺少與略過處置依該節，先載入 `sql-query` 再執行本節。
-- 設定：建立或修改 provider 選項時，依 `references/provider-compatibility.md` 的設定寫法與對映表設定 `UseCompatibilityLevel`（SQL Server）或 `UseOracleSQLCompatibility`（Oracle）。有效相容性層級依 `sql-query` 的 `references/sqlserver.md`「版本與相容性層級對照」取得。
+- 設定：建立或修改 provider 選項時，依 `references/provider-compatibility.md` 對應 provider 的節設定 `UseCompatibilityLevel`（SQL Server）或 `UseOracleSQLCompatibility`（Oracle）。有效相容性層級依 `sql-query` 的 `references/sqlserver.md`「版本與相容性層級對照」取得。
 - 未確認目標版本：使用者略過詢問時不設定相容性選項，沿用 provider 預設，並在回覆註明「未確認目標版本」。
 - 既有設定：既有設定值與鍵推導的值不同時，在回覆列出差異，不改寫既有設定。只有本輪本來就要新增或修改 provider 選項時，才採用推導的值。
 - 多個 provider：同一專案有多個 provider 時，各自依其鍵設定。
