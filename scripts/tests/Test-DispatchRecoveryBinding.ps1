@@ -6784,7 +6784,7 @@ if ($Phase -ge 5) {
         param([object]$Fixture, [string]$Identifier, [switch]$ActualDispatch, [string]$WriteMode = 'readonly', [switch]$ClearCodexHome, [switch]$Collect, [switch]$OmitLineSlug)
         $dispatchRoot = Join-Path $Fixture.Root '.local\ai-sessions\worktrees\dd-test'
         $request = [ordered]@{
-            schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'dd-line'; dispatch_slug = 'dd-test'
+            schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'dd-line'; dispatch_slug = 'dd-test'; profile = $(if ($WriteMode -eq 'readonly') { 'scan' } else { 'implement' })
             source_root = $Fixture.Root; dispatch_root = $dispatchRoot; target_path = @($Fixture.Target); write_mode = $WriteMode; dispatch_kind = 'resource'
             prompt_path = (Join-Path $Fixture.Root 'prompt.md'); task_type = 'resource-task'; session_mode = 'cold-start'; unit_kind = 'resource-target'
             failure_receipt_path = (Join-Path $Fixture.Root '.local\ai-sessions\history\dd-line\failure.json')
@@ -6808,6 +6808,7 @@ if ($Phase -ge 5) {
             $ErrorActionPreference = 'Continue'
             $env:CODEX_HOME = Join-Path $Fixture.Root 'codex-home'
             New-Item -ItemType Directory -Path $env:CODEX_HOME -Force | Out-Null
+            foreach ($ddProfileName in @('implement', 'scan')) { [IO.File]::WriteAllText((Join-Path $env:CODEX_HOME ($ddProfileName + '.config.toml')), ('model = "fixture-model"' + "`r`n"), (New-Object Text.UTF8Encoding($false))) }
             if ($ClearCodexHome) { $env:CODEX_HOME = '' }
             if ($Collect) {
                 $output = @(& $hostPath -NoProfile -File $entryPath -Operation Collect -RequestPath $requestPath 2>&1)
@@ -7694,7 +7695,7 @@ if ($Phase -ge 6) {
         $machineDir = Join-Path $accountRoot 'machine'
         New-Item -ItemType Directory -Path $sourceCodex,$machineDir -Force | Out-Null
         foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets', 'rules')) { New-Item -ItemType Directory -Path (Join-Path $sourceCodex $namePart) -Force | Out-Null }
-        foreach ($namePart in @('.sandbox_migration', 'default.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
+        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
         $guardMessage = ''
         try { Set-AccountLink -Path (Join-Path $accountRoot 'rules') -Target (Join-Path $sourceCodex 'rules') -Type Junction } catch { $guardMessage = $_.Exception.Message }
         Assert-True ($guardMessage.Contains('禁止連結 rules')) '直接連結 rules 應被拒絕。'
@@ -7704,7 +7705,7 @@ if ($Phase -ge 6) {
         $sourceWithoutRules = Join-Path $accountRoot 'source-clean'
         New-Item -ItemType Directory -Path $sourceWithoutRules -Force | Out-Null
         foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets')) { New-Item -ItemType Directory -Path (Join-Path $sourceWithoutRules $namePart) -Force | Out-Null }
-        foreach ($namePart in @('.sandbox_migration', 'default.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceWithoutRules $namePart) 'fixture' }
+        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceWithoutRules $namePart) 'fixture' }
         New-CodexAccount -Name 'fixture-clean' -HomeRoot $accountRoot -SourceCodex $sourceWithoutRules -MachinePath (Join-Path $machineDir 'machine.json')
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountRoot '.codex-fixture-clean\rules'))) '來源沒有 rules 時帳號 home 不應含 rules。'
     }
@@ -7715,7 +7716,7 @@ if ($Phase -ge 6) {
         $machineDir = Join-Path $accountRoot 'machine'
         New-Item -ItemType Directory -Path $sourceCodex,$machineDir -Force | Out-Null
         foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets', 'rules')) { New-Item -ItemType Directory -Path (Join-Path $sourceCodex $namePart) -Force | Out-Null }
-        foreach ($namePart in @('.sandbox_migration', 'default.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
+        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
         New-CodexAccount -Name 'fixture' -HomeRoot $accountRoot -SourceCodex $sourceCodex -MachinePath (Join-Path $machineDir 'machine.json')
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountRoot '.codex-fixture\rules'))) '實際建立的帳號 home 不應含 rules。'
     }
@@ -8017,7 +8018,7 @@ if ($Phase -ge 6) {
         $validated = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md'
         Assert-True ($validated.ExitCode -eq 0) ('合法區塊應通過 Request 檢查：' + $validated.Output)
         $accepted = Invoke-DdValidateRequest -Fixture $f -Identifier 'result.md' -ActualDispatch
-        Assert-True ($accepted.Output -notmatch '"error_code"\s*:\s*"DispatchInput' -and $accepted.Output -match '"failed_stage"\s*:\s*"preflight"') ('合法區塊應通過 Stage A 並進入 Preflight：' + $accepted.Output)
+        Assert-True ($accepted.Output -notmatch '"error_code"\s*:\s*"DispatchInput(RequiredRead|Reference)' -and $accepted.Output -match '"completed_stages"\s*:\s*\[\s*"preflight"' -and $accepted.Output -match '"process_started"\s*:\s*false') ('合法區塊應通過 Stage A 並完成 Preflight：' + $accepted.Output)
     }
     Invoke-Case 'Phase 6 DD-PROFILE DispatchInputDirectoryScanLimit 對外錯誤碼' {
         $script:ddScanLimitCallCount = 0
@@ -8595,6 +8596,46 @@ exit $LASTEXITCODE
             Assert-True ($script:phase6DirectResult.effectiveCodexHome -eq $expectedDirectCodexHome) 'direct-write result 未保存 fallback CodexHome。'
         }
         finally {
+            if ($hadCodexHome) { $env:CODEX_HOME = $oldCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue }
+        }
+    }
+
+    Invoke-Case 'Phase 6 DD-CODEXHOME-FALLBACK 無 CODEX_HOME 時 Prepare result 保存 resolver fallback' {
+        # [Environment]::GetFolderPath(UserProfile) 不隨 USERPROFILE 環境變數改變，無法用環境隔離使用者目錄，
+        # 因此以固定 fixture 路徑的 resolver 替身承接 fallback，不讀寫真實的 ~/.codex。
+        $hadCodexHome = Test-Path Env:CODEX_HOME
+        $oldCodexHome = $env:CODEX_HOME
+        $oldScriptCodexHome = $script:CodexHome
+        $script:ddFallbackHome = Resolve-AbsolutePath -Path (Join-Path $fixtureRoot 'dd-fallback-user\.codex')
+        $script:ddFallbackResolverCalls = New-Object System.Collections.Generic.List[string]
+        function Resolve-CodexHomeForEvidence {
+            param([string]$CodexHomePath)
+            $script:ddFallbackResolverCalls.Add('arg=' + $CodexHomePath + ';env=' + $env:CODEX_HOME)
+            if (-not [string]::IsNullOrWhiteSpace($CodexHomePath)) { return Resolve-AbsolutePath -Path $CodexHomePath }
+            if (-not [string]::IsNullOrWhiteSpace($env:CODEX_HOME)) { return Resolve-AbsolutePath -Path $env:CODEX_HOME }
+            return $script:ddFallbackHome
+        }
+        try {
+            Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue
+            $script:RequestContext = $null
+            $script:RequestPrepareArtifacts = @()
+            $script:RequestPath = $null
+            $script:SourceRoot = $fixtureRoot
+            $script:ExecutionRoot = $fixtureRoot
+            $script:DispatchRoot = $fixtureRoot
+            $script:LineSlug = 'line-a'
+            $script:DispatchSlug = 'phase6-direct-fallback'
+            $script:ResultPath = Join-Path $fixtureRoot '.local/ai-sessions/history/line-a/phase6-direct-fallback-result.json'
+            $script:PrepareResultPath = $null
+            $script:CodexHome = $null
+            $fallbackResult = Invoke-Prepare
+            Assert-True ($script:ddFallbackResolverCalls.Count -ge 1 -and $script:ddFallbackResolverCalls[0] -ceq 'arg=;env=') ('Prepare 未在 CodexHome 與 CODEX_HOME 皆空時呼叫 resolver：' + ($script:ddFallbackResolverCalls -join '|'))
+            Assert-True ($fallbackResult.status -eq 'not-required' -and $fallbackResult.effectiveCodexHome -ceq $script:ddFallbackHome) ('Prepare 回傳結果未保存 resolver fallback：' + [string]$fallbackResult.effectiveCodexHome)
+            $persisted = Get-Content -LiteralPath $fallbackResult.prepareResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-True ([string]$persisted.effective_codex_home -ceq $script:ddFallbackHome) ('Prepare result 檔案未持久化 resolver fallback：' + [string]$persisted.effective_codex_home)
+        }
+        finally {
+            $script:CodexHome = $oldScriptCodexHome
             if ($hadCodexHome) { $env:CODEX_HOME = $oldCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue }
         }
     }
@@ -9555,7 +9596,7 @@ exit $LASTEXITCODE
             $script:ScopePlanPath = $null
             $script:DispatchKind = 'workflow'
             $script:TaskType = 'unspecified'
-            $script:Profile = 'default'
+            $script:Profile = 'implement'
             $script:SessionMode = 'cold-start'
             $script:AddDirectory = $null
             $script:Search = $false
@@ -10811,7 +10852,7 @@ if ($Phase -ge 8) {
                 $script:ScopePlanPath = $null
                 $script:DispatchKind = 'workflow'
                 $script:TaskType = 'unspecified'
-                $script:Profile = 'default'
+                $script:Profile = 'implement'
                 $script:SessionMode = 'cold-start'
                 $script:AddDirectory = $null
                 $script:Search = $false
@@ -16383,7 +16424,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
                     'missing-home' { $null = Assert-DispatchAccountContinuation -AnchorRecord ([pscustomobject]@{}) -CodexHomePath $homeB }
                     'conflicting-home' { $null = Assert-DispatchAccountContinuation -AnchorRecord ([pscustomobject]@{effective_codex_home=$homeB;codex_home=$homeA}) -CodexHomePath $homeB }
                     'absent-directory' { $null = Resolve-CodexAccountSelection -CodexHomePath (Join-Path $caseRoot 'absent') -MachineConfigPath $emptyPath }
-                    'missing-profile' { $null = Resolve-CodexAccountSelection -CodexHomePath $homeB -Profile default -MachineConfigPath $machinePath }
+                    'missing-profile' { $null = Resolve-CodexAccountSelection -CodexHomePath $homeB -Profile implement -MachineConfigPath $machinePath }
                     default {
                         $bad = switch ($fault) {
                             'duplicate-name' { @([ordered]@{name='default';codex_home=$homeA},[ordered]@{name='default';codex_home=$homeB}) }
@@ -16398,6 +16439,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
             }
             catch { $rejected = $true; $errorText = $_.Exception.Message }
             Assert-True ($rejected -and $errorText -match 'ResumeAccountMismatch|ResumeAccountUnverifiable|CodexAccountHomeMissing|ProfileEvidenceUnknown|CodexAccountConfigurationInvalid') ('帳號負向情境未拒絕：'+$fault+'; '+$errorText)
+            if ($fault -ceq 'missing-profile') { Assert-True ($errorText -match 'ProfileEvidenceUnknown' -and $errorText.Contains('implement.config.toml')) ('有效檔位缺檔未以檔案存在性檢查拒絕：'+$errorText) }
             Write-Phase9Evidence -Label 'FOLLOWUP_ACCOUNT_REJECT' -Value ([ordered]@{fixture=$caseRoot;fault=$fault;error=$errorText})
         }
         $junction = Join-Path $caseRoot 'alias'
@@ -16468,7 +16510,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
             $dispatchSlug = 'missing-' + $selectedProfile
             $promptPath = Join-Path $caseRoot 'prompt.md'
             $targetPath = Join-Path $caseRoot 'target.txt'
-            if ($selectedProfile -ceq 'default') { $null = Write-Phase9DispatchOrderFixture -SourceRoot $caseRoot -LineSlug 'a' -DispatchSlug $dispatchSlug -TargetPath $targetPath }
+            if ($selectedProfile -ceq 'implement') { $null = Write-Phase9DispatchOrderFixture -SourceRoot $caseRoot -LineSlug 'a' -DispatchSlug $dispatchSlug -TargetPath $targetPath }
             [IO.File]::WriteAllText($promptPath, 'fixture cold-start prompt', $utf8)
             [IO.File]::WriteAllText($targetPath, 'fixture target', $utf8)
             $preflightPath = Join-Path $caseRoot 'preflight.json'
@@ -19392,7 +19434,7 @@ throw 'RunRecord 事件流為空。'
     $script:phase9P3RewriteContext = $false
     $phase9DispatchCodexHome = Join-Path $phase9Root 'codex-home'
     $null = New-Item -ItemType Directory -Path $phase9DispatchCodexHome -Force
-    Write-Utf8NoBom -Path (Join-Path $phase9DispatchCodexHome 'default.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n" -SourceRoot $phase9Root -ExecutionRoot $phase9Root -TargetPath @()
+    Write-Utf8NoBom -Path (Join-Path $phase9DispatchCodexHome 'implement.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n" -SourceRoot $phase9Root -ExecutionRoot $phase9Root -TargetPath @()
     $script:CodexHome = $phase9DispatchCodexHome
     $CodexHome = $phase9DispatchCodexHome
     function Invoke-Preflight {
@@ -19453,7 +19495,7 @@ throw 'RunRecord 事件流為空。'
         $script:CodexHome = $null
         $script:InvocationBoundParameters = [ordered]@{}
         $script:RequestContext = $null
-        $script:Profile = 'default'
+        $script:Profile = 'implement'
         $script:ProfileExplicit = $false
         $script:Model = $null
         $script:ReasoningEffort = $null
