@@ -31,6 +31,15 @@
     }
 }
 
+$script:CleanupFixedReportNames = @(
+    @{ Name = 'review-report'; VersionUnknownFallback = $false }
+    @{ Name = 'frontend-reviewer-report'; VersionUnknownFallback = $false }
+    @{ Name = 'contract-auditor-report'; VersionUnknownFallback = $false }
+    @{ Name = 'implement-closure-report'; VersionUnknownFallback = $true }
+    @{ Name = 'support-engineer-report'; VersionUnknownFallback = $true }
+    @{ Name = 'cleanup-review'; VersionUnknownFallback = $true }
+)
+
 function New-CleanupIdentityMismatch {
     [CmdletBinding()]
     param(
@@ -55,7 +64,8 @@ function Throw-CleanupOperationFailure {
         [Parameter(Mandatory)][ValidateSet('preflight-rejected', 'preservation-failed', 'removal-failed')][string]$Status,
         [Parameter(Mandatory)][string]$FailureCode,
         [Parameter(Mandatory)][string]$Message,
-        [AllowNull()][object]$Detail
+        [AllowNull()][object]$Detail,
+        [AllowNull()][object]$TakeoverRejection
     )
 
     $Result.status = $Status
@@ -70,6 +80,7 @@ function Throw-CleanupOperationFailure {
     $exception = New-Object System.InvalidOperationException($Message)
     $exception.Data['errorCode'] = $FailureCode
     $exception.Data['operationResult'] = $Result
+    if ($null -ne $TakeoverRejection) { $exception.Data['takeoverRejection'] = $TakeoverRejection }
     throw $exception
 }
 
@@ -495,6 +506,13 @@ function Get-CleanupReportVersion {
     return [pscustomobject]@{ path = $Path; dispatch_slug = $slug; round = $round; started_at = $started; run_record_paths = $recordPaths }
 }
 
+function Test-CleanupReportVersionUnknownFallback {
+    [CmdletBinding()]
+    param([string]$FileName)
+
+    return @($script:CleanupFixedReportNames | Where-Object { ($_.Name + '.md') -ceq $FileName -and $_.VersionUnknownFallback }).Count -gt 0
+}
+
 function Compare-CleanupReportVersion {
     [CmdletBinding()]
     param([string]$IncomingPath, [string]$DestinationPath, [string]$SourceRoot, [string]$LineSlug, [string]$DispatchSlug)
@@ -504,7 +522,7 @@ function Compare-CleanupReportVersion {
         $destination = Get-CleanupReportVersion -Path $DestinationPath -SourceRoot $SourceRoot -LineSlug $LineSlug -KnownDispatchSlug ''
     }
     catch {
-        if ([IO.Path]::GetFileName($IncomingPath) -ceq 'implement-closure-report.md' -and $_.Exception.Message -like 'CleanupReportVersionUnknown*') {
+        if ((Test-CleanupReportVersionUnknownFallback -FileName ([IO.Path]::GetFileName($IncomingPath))) -and $_.Exception.Message -like 'CleanupReportVersionUnknown*') {
             return [ordered]@{ basis = 'closure-version-unknown'; incoming = $null; destination = $null; incoming_newer = $false }
         }
         throw
@@ -517,7 +535,7 @@ function Compare-CleanupReportVersion {
         $kind = 'report-manifest-round'; $comparison = $incoming.round.CompareTo($destination.round)
     }
     if ($comparison -eq 0) {
-        if ([IO.Path]::GetFileName($IncomingPath) -ceq 'implement-closure-report.md') {
+        if (Test-CleanupReportVersionUnknownFallback -FileName ([IO.Path]::GetFileName($IncomingPath))) {
             return [ordered]@{ basis = 'closure-version-unknown'; incoming = $incoming; destination = $destination; incoming_newer = $false }
         }
         throw ('CleanupReportVersionUnknown：無法判斷固定報告新舊，保留 worktree。incoming=' + $IncomingPath + '; destination=' + $DestinationPath)
@@ -599,7 +617,7 @@ function Preserve-CleanupFile {
             }
         }
         elseif ($existingHash -ine $sourceHashBefore -and
-            [string]$Item.relative_path -cmatch '^\.local/ai-sessions/report/(?:[a-z0-9]+(?:-[a-z0-9]+)*/(?:review-report|frontend-reviewer-report|contract-auditor-report|implement-closure-report)|dispatch-report-[a-z0-9]+(?:-[a-z0-9]+)*)\.md$') {
+            [string]$Item.relative_path -cmatch ('^\.local/ai-sessions/report/(?:[a-z0-9]+(?:-[a-z0-9]+)*/(?:' + (($script:CleanupFixedReportNames | ForEach-Object { [regex]::Escape($_.Name) }) -join '|') + ')|dispatch-report-[a-z0-9]+(?:-[a-z0-9]+)*)\.md$')) {
             $lineMatch = [regex]::Match([string]$Item.relative_path, '^\.local/ai-sessions/report/([a-z0-9]+(?:-[a-z0-9]+)*)/')
             $reportLineSlug = if ($lineMatch.Success) { $lineMatch.Groups[1].Value } else { [string](Get-DispatchScriptVariableValue -Name 'LineSlug') }
             $versionDecision = Compare-CleanupReportVersion -IncomingPath $sourcePath -DestinationPath $destinationPath -SourceRoot $SourceRoot -LineSlug $reportLineSlug -DispatchSlug $DispatchSlug
@@ -1100,13 +1118,22 @@ function Invoke-Cleanup {
             $admissionLedger = Read-DispatchAdmissionLedger -Lock $admissionLock
             $knownOwners = @($admissionLedger.Document.entries | Where-Object { [string]$_.dispatch_slug -ceq $DispatchSlug })
             if ($knownOwners.Count -gt 0 -or (-not $unstarted -and -not $residualRecovery)) {
+                $proof = $null
+                $terminalProof = if ([bool](Get-DispatchScriptVariableValue -Name 'TakeoverOwner')) { $null } else {
+                    { param($code) Test-CleanupTakeoverTerminal -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -Ledger $admissionLedger }
+                }
                 try {
-                    $admissionOwner = Assert-DispatchRecoveryOwner -Lock $admissionLock -Ledger $admissionLedger -CallerIdentity $script:CallerSessionIdentity -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath
+                    $admissionOwner = Assert-DispatchRecoveryOwner -Lock $admissionLock -Ledger $admissionLedger -CallerIdentity $script:CallerSessionIdentity -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -TerminalTakeoverProof $terminalProof
+                    $automaticTakeover = $null -ne $admissionOwner -and $null -ne $admissionOwner.PSObject.Properties['OwnerTakeover']
+                    if ($automaticTakeover) { $proof = $admissionOwner.OwnerTakeover.proof; $ownerCode = $admissionOwner.OwnerTakeover.trigger_error_code }
                 }
                 catch {
                     $ownerCode = [string]$_.Exception.Data['errorCode']
                     if (-not [bool](Get-DispatchScriptVariableValue -Name 'TakeoverOwner') -or $ownerCode -notin @('DispatchAdmissionOwnerMismatch', 'DispatchAdmissionOwnerUnverifiable')) { throw }
                     $proof = Test-CleanupTakeoverTerminal -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -Ledger $admissionLedger
+                    $automaticTakeover = $false
+                }
+                if ($null -ne $proof) {
                     $attemptId = [guid]::NewGuid().ToString('D')
                     $takeoverAuditPath = Join-Path (Split-Path -Parent $removalReceiptPath) ('cleanup-takeover-' + $DispatchSlug + '-' + $attemptId + '.json')
                     $takeoverAudit = [ordered]@{
@@ -1114,7 +1141,7 @@ function Invoke-Cleanup {
                         source_root = $sourceRootPath; execution_root = $dispatchRootPath
                         run_record_paths = @($proof.evidence_hashes | Where-Object { (Split-Path -Parent $_.path) -ieq (Get-DispatchRunDirectory -SourceRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug) })
                         new_owner_fingerprint = $script:CallerSessionIdentity.Fingerprint; new_owner_source = $script:CallerSessionIdentity.Source
-                        original_owners = $proof.original_owners; trigger_error_code = $ownerCode; explicit_takeover = $true
+                        original_owners = $proof.original_owners; trigger_error_code = $ownerCode; explicit_takeover = -not $automaticTakeover; automatic_takeover = $automaticTakeover
                         requested_at_utc = [DateTime]::UtcNow.ToString('o'); preserved_at_utc = $null; completed_at_utc = $null
                         terminal_evidence = $proof.terminal_evidence; process_evidence = $proof.process_evidence; evidence_hashes = $proof.evidence_hashes
                         preserved_files = @(); status = 'validated'; failure_code = $null
@@ -1238,8 +1265,9 @@ function Invoke-Cleanup {
         }
         $result.removal = [ordered]@{ exit_code = 0; registered_after = $false; path_exists_after = $false }
         if ($null -ne $admissionOwner) {
-            $admissionOwner.state = 'cleaned'
-            $admissionOwner | Add-Member -MemberType NoteProperty -Name 'cleaned_at_utc' -Value ([DateTime]::UtcNow.ToString('o')) -Force
+            $ledgerOwner = @($admissionLedger.Document.entries | Where-Object { [string]$_.line_slug -ceq $LineSlug -and [string]$_.dispatch_slug -ceq $DispatchSlug })[-1]
+            $ledgerOwner.state = 'cleaned'
+            $ledgerOwner | Add-Member -MemberType NoteProperty -Name 'cleaned_at_utc' -Value ([DateTime]::UtcNow.ToString('o')) -Force
             $null = Write-DispatchAdmissionLedger -Lock $admissionLock -Ledger $admissionLedger
         }
         $result.worktree_removed = $true
@@ -1275,8 +1303,10 @@ function Invoke-Cleanup {
             exception_type = $_.Exception.GetType().FullName
             stack = $_.ScriptStackTrace
         }
+        $takeoverRejection = $_.Exception.Data['takeoverRejection']
+        if ($null -ne $takeoverRejection) { $detail.takeover_rejection = $takeoverRejection }
         $failureCode = if ($null -ne $_.Exception.Data['errorCode']) { [string]$_.Exception.Data['errorCode'] } elseif ($_.Exception.Message -match '^(Cleanup[A-Za-z0-9]+)：') { $Matches[1] } else { 'CleanupPreflightFailed' }
-        Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode $failureCode -Message $_.Exception.Message -Detail $detail
+        Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode $failureCode -Message $_.Exception.Message -Detail $detail -TakeoverRejection $takeoverRejection
     }
     finally {
         if ($null -ne $takeoverAudit -and -not $result.worktree_removed -and $takeoverAudit.status -cne 'failed') {

@@ -4,7 +4,7 @@
 
 ## 已結束歷史派遣的 Cleanup 接手
 
-嚴格 owner 檢查回報 `DispatchAdmissionOwnerMismatch` 或 `DispatchAdmissionOwnerUnverifiable` 時，主 Agent 可明示接手。
+不同 Session 對已確定結束的派遣執行 Cleanup 或 Collect 時，owner 不符會自動驗證終態並記錄接手。證明須同時具備最後一筆 terminal 事件、可信退出 sidecar 與 PID 三鍵確認程序已結束。驗證未通過時維持 `DispatchAdmissionOwnerMismatch`；Cleanup 另可使用明示接手，`DispatchAdmissionOwnerUnverifiable` 維持既有處理。
 
 ```powershell
 pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup -RequestPath <既有CleanupRequest> -TakeoverOwner
@@ -17,6 +17,8 @@ pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup -Req
 PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重用。程序查詢被拒、仍有 root/child 或身分不明時維持拒絕。報告與全部 evidence 依位元組保存、長度及 SHA-256 回讀後，在 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\cleanup-takeover-<dispatchSlug>-<attemptGuid>.json` 原子保存接手者、原 owner、UTC 時間、終態及程序證據、保存清單與 hash。
 
 稽核依序為 `validated`、`preserved`、`completed`，失敗盡力記 `failed`。移除前重驗 run 集合、證據 hash、PID 與 inventory，漂移或保存／稽核失敗均保留 worktree。移除後稽核更新失敗回報 `CleanupTakeoverAuditFinalizeFailed` 與 `worktree_removed=true`，以 preserved 稽核及 cleanup-result 恢復。`cleanup-result.owner_takeover` 保存是否使用接手、稽核路徑及 SHA-256；歷史 owner fingerprint 維持原值。每次重試重新驗證，舊稽核只作證據。
+
+Collect 自動接手在套回前寫入 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\collect-takeover-<dispatchSlug>-<attemptGuid>.json`。稽核寫入失敗時停止套回；`sourceIntegration.owner_takeover` 記錄稽核路徑與 SHA-256。
 
 ## Phase commit 回收與驗證
 
@@ -177,7 +179,7 @@ Cleanup 驗證同一 dispatchSlug 的所有 RunRecord，保存各輪位於 workt
 | Developer 結案報告 | dispatch worktree 的 `report\<lineSlug>\` | 執行端（Workflow 為 Developer）；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者 | `Collect` 與 Reviewer 只讀；`Cleanup` 依固定報告版本規則保存，無法判定新舊時封存 worktree 版本並保留來源版本 | 結案報告與 Git 來源紀錄 |
 | 協調者結案報告（需要你決定、已自行處理、僅供知悉三區） | 來源 `report\<lineSlug>\` | 主 Agent 判定內容並寫入 | 同建立者 | 不經派工回收；執行端不寫入此檔 | `instructions.md` §1.4 結案報告 |
 | advisor 諮詢報告 | `executionRoot` 的 `report\<lineSlug>\advisor-consult-<dispatchSlug>.md` | `advisor-consult` 的 `Inspect`，依事件流與 last-message 產生 | 同建立者；每次 `Inspect` 覆寫 | 主 Agent 讀取後決定是否採用；`Cleanup` 保存回來源，來源已有不同內容時以目的衝突停止。advisor 執行端不寫入 | Advisor consult resource dispatch |
-| 派遣報告與角色固定報告 | 派遣單第 7 欄落點、角色規則檔指定的同線固定報告 | 執行端；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者；Reviewer 直接覆寫，Frontend Reviewer 與 Contract Auditor 先把前版移入 `history\` 再寫新版 | `Cleanup` 自動保存 report 根目錄的派遣報告；固定名稱最新報告以兩派遣 RunRecord 的啟動時間或 manifest round 判斷新舊，worktree 較新時封存來源並取代，較舊時封存 worktree 版本並維持來源；無法判斷時保留 worktree，結果列出判斷依據。Developer 結案報告依上列專屬規則保存 | 派遣單契約 |
+| 派遣報告與角色固定報告 | 派遣單第 7 欄落點、角色規則檔指定的同線固定報告 | 執行端；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者；Reviewer 直接覆寫，Frontend Reviewer 與 Contract Auditor 先把前版移入 `history\` 再寫新版 | `Cleanup` 保存 report 根目錄的派遣報告及 `review-report`、`frontend-reviewer-report`、`contract-auditor-report`、`implement-closure-report`、`support-engineer-report`、`cleanup-review` 固定報告。以 RunRecord 啟動時間或 manifest round 判斷新舊並封存另一份；版本不明時後三者封存 worktree 版本並保留來源，前三者保留 worktree 並回報錯誤 | 派遣單契約 |
 | 同線 `exceptions.md` | `report\<lineSlug>\exceptions.md` | 第一個需要記錄的執行端或主 Agent；Request 的 `prepare_artifacts` 列入來源既有檔時，`Prepare` 建立執行端副本 | 執行端與主 Agent 只追加；`Cleanup` 把 worktree 新增的區塊合入來源後以原子取代寫回 | 保留來源既有區塊；worktree 區塊與來源區塊全文相同時不附加，worktree 內重複區塊只附加一次。同標題但內文不同視為不同條目；兩邊標題前內容只含 H1 與空白時相容，來源前文維持不變，其他不一致時停止 | 回收三態判定 |
 | 成果檔案 | dispatch worktree 或 direct-write 目標 | 執行端；Preflight 把來源既有的核准 target 檔帶入 worktree，不覆寫既有檔 | 執行端；`Collect -ApplyCollectedChanges` 套回來源；Workflow 由主 Agent 在使用者授權後 commit | Start 時不存在的核准 target 檔案以 baseline `exists=false` 記錄，回收清單保留該路徑，包含被 gitignore 排除的核准新檔；`Collect -ApplyCollectedChanges` 依來源 drift 檢查套回，新檔搬入、既有檔原子取代、刪除先備份，失敗時倒序回復。核准目錄新增且未被 gitignore 排除的子檔（包含 Start 時不存在的核准目錄）以 add 套回並檢查來源 drift；target 外新增檔列於 `unappliedNewFiles` 並留在 worktree。資源派遣同步核准的交接產物。direct-write 目錄 target 逐檔回傳證據且至少一檔非空 | Phase commit 回收與驗證 |
 | 套回帳冊 | 來源 `history\<lineSlug>\collect-apply-ledger.json` | `Collect -ApplyCollectedChanges` 在 admission lock 內建立 | 同建立者只追加每次套回的路徑狀態與雜湊 | Preflight 依同線帳冊與來源雜湊辨識 `LineProducedFiles`；Collect 依同 dispatchSlug 的最新套回狀態檢查來源 drift。帳冊無效時停止套回，寫入失敗時回復已套用的檔案 | Phase commit 回收與驗證 |

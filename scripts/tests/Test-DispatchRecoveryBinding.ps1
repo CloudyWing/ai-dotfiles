@@ -1609,6 +1609,9 @@ $script:baselineFailedCount = 0
 $script:focusedCase = $FocusedCase
 $script:DispatchCheckIgnoreTimeoutSeconds = 120
 $script:DispatchGitDefaultTimeoutSeconds = 600
+$cleanupFixedReportNamesAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptsRoot 'dispatch\cleanup.ps1'), [ref]$null, [ref]$null).Find({ param($node) $node -is [Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$script:CleanupFixedReportNames' }, $false)
+if ($null -eq $cleanupFixedReportNamesAst) { throw 'cleanup.ps1 缺少 $script:CleanupFixedReportNames。' }
+. ([scriptblock]::Create($cleanupFixedReportNamesAst.Extent.Text))
 
 function Get-Phase9CaseClassification {
     [CmdletBinding()]
@@ -6150,6 +6153,22 @@ return $hash
             $script:cleanupRemoveFailure = $false
             Remove-Phase3CleanupScenario -Scenario $scenario
         }
+    }
+    Invoke-Case 'Phase 3 DD-CLEANUP-GUARDS' {
+        $guardScriptPath = Join-Path $scriptsRoot 'tests\Test-DispatchCleanupGuards.ps1'
+        Assert-True (Test-Path -LiteralPath $guardScriptPath -PathType Leaf) 'Test-DispatchCleanupGuards.ps1 不存在。'
+        $guardHostPath = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $guardEvidencePath = Join-Path $fixtureRoot 'cleanup-guards-evidence'
+        $guardRun = Invoke-Phase9Process `
+            -HostPath $guardHostPath `
+            -Arguments @('-NoLogo', '-NoProfile', '-NonInteractive', '-File', $guardScriptPath, '-FixtureBaseRootPath', $fixtureBaseRoot, '-EvidencePath', $guardEvidencePath) `
+            -WorkingDirectory $root `
+            -EnvironmentVariables $null
+        Assert-True ([int]$guardRun.exit_code -eq 0 -and [string]::IsNullOrWhiteSpace([string]$guardRun.stderr)) ('Cleanup guards 失敗：' + [string]$guardRun.stdout + [string]$guardRun.stderr)
+        try { $guardSummary = [string]$guardRun.stdout | ConvertFrom-Json -ErrorAction Stop }
+        catch { throw ('Cleanup guards 摘要不是有效 JSON：' + [string]$guardRun.stdout) }
+        Assert-True ([string]$guardSummary.result -ceq 'PASS') ('Cleanup guards 摘要未通過：' + [string]$guardRun.stdout)
+        Write-Phase9Evidence -Label 'DD_CLEANUP_GUARDS' -Value ([ordered]@{ command = $guardRun.command; exit_code = $guardRun.exit_code; stdout = $guardRun.stdout; stderr = $guardRun.stderr; summary_path = $guardSummary.summary_path })
     }
 }
 if ($Phase -ge 4) {
@@ -16909,12 +16928,15 @@ function Sync-DispatchTrackedRawBytesFromSource {
                     finally { Close-DispatchAdmissionLock -Lock $lock }
                 }
                 $script:TakeoverOwner = $false
-                $rejected = $false
-                try { $null = Invoke-Cleanup -Confirm:$false } catch { $rejected = $_.Exception.Message -match 'DispatchAdmissionOwner(Mismatch|Unverifiable)' }
-                Assert-True ($rejected -and (Test-Path -LiteralPath $DispatchRoot)) '未明示接手應保留 owner 拒絕。'
-                $script:TakeoverOwner = $true
+                if ($withoutLedger) {
+                    $rejected = $false
+                    try { $null = Invoke-Cleanup -Confirm:$false } catch { $rejected = $_.Exception.Message -match 'DispatchAdmissionOwnerUnverifiable' }
+                    Assert-True ($rejected -and (Test-Path -LiteralPath $DispatchRoot)) '缺少 ledger owner 應保留拒絕。'
+                    $script:TakeoverOwner = $true
+                }
                 $result = Invoke-Cleanup -Confirm:$false
                 $audit = Get-Content -LiteralPath $result.owner_takeover.audit_path -Raw -Encoding UTF8 | ConvertFrom-Json
+                Assert-True ($result.owner_takeover.used -and $audit.automatic_takeover -eq (-not $withoutLedger) -and $audit.explicit_takeover -eq $withoutLedger) '接手模式不符。'
                 Assert-True ($result.worktree_removed -and $result.owner_takeover.used -and $audit.status -ceq 'completed') '接手未完成保存及移除。'
                 Assert-True ($audit.new_owner_fingerprint -ceq ('f' * 64) -and @($audit.original_owners).Count -gt 0 -and @($audit.preserved_files).Count -gt 0 -and @($audit.terminal_evidence).Count -gt 0 -and @($audit.process_evidence).Count -gt 0) '接手稽核證據不完整。'
                 Assert-True ((Get-FileSha256 $RunRecordPath) -ceq $recordHash -and (Get-FileSha256 $result.owner_takeover.audit_path) -ceq $result.owner_takeover.audit_sha256) '接手改寫原 owner 或稽核 hash 不符。'

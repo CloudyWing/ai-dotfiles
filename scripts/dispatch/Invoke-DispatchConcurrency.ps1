@@ -793,12 +793,13 @@ function Assert-DispatchRecoveryOwner {
         [Parameter(Mandatory)][string]$ExecutionRoot,
         [Parameter(Mandatory)][string]$LineSlug,
         [Parameter(Mandatory)][string]$DispatchSlug,
-        [AllowNull()][string]$RunRecordPath
+        [AllowNull()][string]$RunRecordPath,
+        [AllowNull()][scriptblock]$TerminalTakeoverProof
     )
 
     $knownDispatch = @($Ledger.Document.entries | Where-Object { [string]$_.dispatch_slug -ceq $DispatchSlug })
     if ($knownDispatch.Count -gt 0) {
-        return Assert-DispatchAdmissionOwner -Lock $Lock -Ledger $Ledger -CallerIdentity $CallerIdentity -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath
+        return Assert-DispatchAdmissionOwner -Lock $Lock -Ledger $Ledger -CallerIdentity $CallerIdentity -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -TerminalTakeoverProof $TerminalTakeoverProof
     }
     if ([string]::IsNullOrWhiteSpace($RunRecordPath)) {
         New-DispatchAdmissionFailure -Code 'DispatchAdmissionOwnerUnverifiable' -Message ('DispatchAdmissionOwnerUnverifiable：舊派工缺少 RunRecord。dispatch_slug=' + $DispatchSlug)
@@ -863,7 +864,8 @@ function Assert-DispatchAdmissionOwner {
         [Parameter(Mandatory)][object]$CallerIdentity,
         [Parameter(Mandatory)][string]$LineSlug,
         [Parameter(Mandatory)][string]$DispatchSlug,
-        [AllowNull()][string]$RunRecordPath
+        [AllowNull()][string]$RunRecordPath,
+        [AllowNull()][scriptblock]$TerminalTakeoverProof
     )
 
     $null = Update-DispatchAdmissionOwnerStates -Ledger $Ledger
@@ -872,8 +874,23 @@ function Assert-DispatchAdmissionOwner {
         New-DispatchAdmissionFailure -Code 'DispatchAdmissionOwnerUnverifiable' -Message ('DispatchAdmissionOwnerUnverifiable：找不到對應的 caller owner 記錄。dispatch_slug=' + $DispatchSlug)
     }
     $entry = $matches[-1]
-    if ([string]$entry.caller_session_fingerprint -cne [string]$CallerIdentity.Fingerprint) {
-        New-DispatchAdmissionFailure -Code 'DispatchAdmissionOwnerMismatch' -Message ('DispatchAdmissionOwnerMismatch：Cleanup／Collect caller owner 不符。dispatch_slug=' + $DispatchSlug)
+    $entryFingerprint = if ($null -ne $TerminalTakeoverProof) { [string](Get-DispatchAdmissionProperty -Object $entry -Name 'caller_session_fingerprint') } else { [string]$entry.caller_session_fingerprint }
+    $takeoverRejection = $null
+    if ($null -ne $TerminalTakeoverProof -and $entryFingerprint -cne [string]$CallerIdentity.Fingerprint) {
+        if ([string]::IsNullOrWhiteSpace($entryFingerprint) -or
+            [string]::IsNullOrWhiteSpace($RunRecordPath) -or -not (Test-Path -LiteralPath $RunRecordPath -PathType Leaf)) {
+            $takeoverRejection = 'caller owner 或 RunRecord 不完整。'
+        }
+        else {
+            try { $takeoverRecord = [System.IO.File]::ReadAllText($RunRecordPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json }
+            catch { $takeoverRejection = 'RunRecord 無法解析。' }
+            if ($null -eq $takeoverRejection -and [string]::IsNullOrWhiteSpace([string](Get-DispatchAdmissionProperty -Object $takeoverRecord -Name 'caller_session_fingerprint'))) {
+                $takeoverRejection = 'RunRecord 缺少 caller owner。'
+            }
+        }
+    }
+    if ($entryFingerprint -cne [string]$CallerIdentity.Fingerprint) {
+        return Resolve-DispatchOwnerMismatch -Entry $entry -TerminalTakeoverProof $TerminalTakeoverProof -PreconditionRejection $takeoverRejection -Message ('DispatchAdmissionOwnerMismatch：Cleanup／Collect caller owner 不符。dispatch_slug=' + $DispatchSlug)
     }
     if (-not [string]::IsNullOrWhiteSpace($RunRecordPath)) {
         if (-not (Test-Path -LiteralPath $RunRecordPath -PathType Leaf)) {
@@ -885,11 +902,36 @@ function Assert-DispatchAdmissionOwner {
         catch {
             New-DispatchAdmissionFailure -Code 'DispatchAdmissionOwnerUnverifiable' -Message ('DispatchAdmissionOwnerUnverifiable：RunRecord 無法解析。dispatch_slug=' + $DispatchSlug)
         }
-        if ([string]$runRecord.caller_session_fingerprint -cne [string]$CallerIdentity.Fingerprint) {
-            New-DispatchAdmissionFailure -Code 'DispatchAdmissionOwnerMismatch' -Message ('DispatchAdmissionOwnerMismatch：RunRecord owner 不符。dispatch_slug=' + $DispatchSlug)
+        $recordFingerprint = if ($null -ne $TerminalTakeoverProof) { [string](Get-DispatchAdmissionProperty -Object $runRecord -Name 'caller_session_fingerprint') } else { [string]$runRecord.caller_session_fingerprint }
+        if ($recordFingerprint -cne [string]$CallerIdentity.Fingerprint) {
+            $recordPrecondition = if ($null -ne $TerminalTakeoverProof -and [string]::IsNullOrWhiteSpace($recordFingerprint)) { 'RunRecord 缺少 caller owner。' } else { $null }
+            return Resolve-DispatchOwnerMismatch -Entry $entry -TerminalTakeoverProof $TerminalTakeoverProof -PreconditionRejection $recordPrecondition -Message ('DispatchAdmissionOwnerMismatch：RunRecord owner 不符。dispatch_slug=' + $DispatchSlug)
         }
     }
     return $entry
+}
+
+function Resolve-DispatchOwnerMismatch {
+    param([object]$Entry, [AllowNull()][scriptblock]$TerminalTakeoverProof, [AllowNull()][string]$PreconditionRejection, [string]$Message)
+
+    $rejection = $null
+    if (-not [string]::IsNullOrWhiteSpace($PreconditionRejection)) {
+        $rejection = [ordered]@{ code = 'CleanupTakeoverOwnerUnverifiable'; message = $PreconditionRejection }
+    }
+    elseif ($null -ne $TerminalTakeoverProof) {
+        try {
+            $proof = & $TerminalTakeoverProof 'DispatchAdmissionOwnerMismatch'
+            if ($null -eq $proof) { throw 'CleanupTakeoverRunNotTerminal：終態證明為空。' }
+            $result = $Entry | Select-Object *
+            $result | Add-Member -NotePropertyName OwnerTakeover -NotePropertyValue ([ordered]@{ trigger_error_code = 'DispatchAdmissionOwnerMismatch'; proof = $proof })
+            return $result
+        }
+        catch {
+            $rejection = [ordered]@{ code = if ($_.Exception.Data['errorCode']) { [string]$_.Exception.Data['errorCode'] } elseif ($_.Exception.Message -match '^([A-Za-z][A-Za-z0-9]+)：') { $Matches[1] } else { 'CleanupTakeoverRunNotTerminal' }; message = $_.Exception.Message }
+        }
+    }
+    try { New-DispatchAdmissionFailure -Code 'DispatchAdmissionOwnerMismatch' -Message $Message }
+    catch { if ($null -ne $rejection) { $_.Exception.Data['takeoverRejection'] = $rejection }; throw }
 }
 
 function Get-DispatchAdmissionContainedPath {
@@ -1015,9 +1057,31 @@ function Invoke-DispatchSourceIntegration {
     $applied = New-Object 'System.Collections.Generic.List[object]'
     $integrationCommitted = $false
     $cleanupWarnings = New-Object 'System.Collections.Generic.List[string]'
+    $ownerTakeover = [ordered]@{ used = $false; audit_path = $null; audit_sha256 = $null }
     try {
         $ledger = Read-DispatchAdmissionLedger -Lock $lock
-        $owner = Assert-DispatchRecoveryOwner -Lock $lock -Ledger $ledger -CallerIdentity $CallerIdentity -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath
+        $owner = Assert-DispatchRecoveryOwner -Lock $lock -Ledger $ledger -CallerIdentity $CallerIdentity -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -TerminalTakeoverProof {
+            param($code)
+            Test-CleanupTakeoverTerminal -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -Ledger $ledger
+        }
+        if ($null -ne $owner -and $null -ne $owner.PSObject.Properties['OwnerTakeover']) {
+            $proof = $owner.OwnerTakeover.proof
+            $attemptId = [guid]::NewGuid().ToString('D')
+            $auditPath = Join-Path $sourceRootPath ('.local\ai-sessions\history\' + $LineSlug + '\collect-takeover-' + $DispatchSlug + '-' + $attemptId + '.json')
+            $audit = [ordered]@{
+                schema = 'ai-sessions.collect-takeover.v1'; operation = 'Collect'; attempt_id = $attemptId; line_slug = $LineSlug; dispatch_slug = $DispatchSlug
+                source_root = $sourceRootPath; execution_root = $dispatchRootPath
+                run_record_paths = @($proof.evidence_hashes | Where-Object { (Split-Path -Parent $_.path) -ieq (Get-DispatchRunDirectory -SourceRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug) })
+                new_owner_fingerprint = $CallerIdentity.Fingerprint; new_owner_source = $CallerIdentity.Source
+                original_owners = $proof.original_owners; trigger_error_code = $owner.OwnerTakeover.trigger_error_code; explicit_takeover = $false; automatic_takeover = $true
+                requested_at_utc = [DateTime]::UtcNow.ToString('o'); preserved_at_utc = $null; completed_at_utc = $null
+                terminal_evidence = $proof.terminal_evidence; process_evidence = $proof.process_evidence; evidence_hashes = $proof.evidence_hashes
+                preserved_files = @(); status = 'validated'; failure_code = $null
+            }
+            try { $auditHash = Write-CleanupTakeoverAudit -Path $auditPath -Audit $audit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath }
+            catch { New-DispatchAdmissionFailure -Code 'CollectTakeoverAuditWriteFailed' -Message ('CollectTakeoverAuditWriteFailed：無法寫入接手稽核。' + $_.Exception.Message) }
+            $ownerTakeover = [ordered]@{ used = $true; audit_path = $auditPath; audit_sha256 = $auditHash }
+        }
         $null = Get-DispatchApplyLedgerState -SourceRoot $sourceRootPath -LineSlug $LineSlug -RelativePath '__validation__'
         $relativePaths = @($Path | ForEach-Object { ([string]$_).Replace('\', '/') } | Sort-Object -Unique)
         foreach ($relativePath in $relativePaths) {
@@ -1105,6 +1169,7 @@ function Invoke-DispatchSourceIntegration {
             source_root = $sourceRootPath
             applied_paths = @($operations | ForEach-Object { [string]$_.relative_path })
             cleanup_warnings = @($cleanupWarnings.ToArray())
+            owner_takeover = $ownerTakeover
             worktree_preserved = $true
         }
     }
