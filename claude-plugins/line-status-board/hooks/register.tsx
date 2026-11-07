@@ -86,7 +86,7 @@ async function scriptResult($: Engine, options: { workRoots?: string; scriptPath
       }
     }
     if (!path) throw new Error('找不到 Get-LineStatus.ps1')
-    const argv = ['powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path, '-AsJson']
+    const argv = ['pwsh', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', path, '-AsJson']
     let profile: string | null = null
     try { profile = await $.env.get('USERPROFILE') ?? null } catch { /* 使用腳本預設值 */ }
     const roots = buildWorkRootArgument(options.workRoots, profile, current)

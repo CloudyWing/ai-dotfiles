@@ -266,7 +266,7 @@ function setup(on: On, profile = true): Fixture {
   })
   return state
 }
-const scripts = (state: Fixture) => state.calls.filter(call => call.argv[0] === 'powershell.exe')
+const scripts = (state: Fixture) => state.calls.filter(call => call.argv[0] === 'pwsh')
 const argument = (call: Call, name: string) => call.argv[call.argv.indexOf(name) + 1]
 async function finish(state: Fixture, count = 1): Promise<void> {
   await waitFor(() => scripts(state).length >= count && state.active === 0, state.calls)
