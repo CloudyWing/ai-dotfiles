@@ -28,7 +28,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-ONE', 'UPTO-P3', 'R123', 'F003-SIDECAR', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'DD-DEFECTS')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-ONE', 'UPTO-P3', 'R123', 'F003-SIDECAR', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'DD-DEFECTS', 'DD-HANG')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1607,6 +1607,8 @@ $script:failures = 0
 $script:environmentLimitedCount = 0
 $script:baselineFailedCount = 0
 $script:focusedCase = $FocusedCase
+$script:DispatchCheckIgnoreTimeoutSeconds = 120
+$script:DispatchGitDefaultTimeoutSeconds = 600
 
 function Get-Phase9CaseClassification {
     [CmdletBinding()]
@@ -1748,6 +1750,9 @@ function Invoke-Case {
         $cleanupMatch = $Name -ceq 'Phase 9 final git status guard detects repo-root fixture residue and restored pass'
         $focusedMatch = if ($script:focusedCase -ceq 'DD-DEFECTS') {
             $Name -match '^Phase \d+ DD-'
+        }
+        elseif ($script:focusedCase -ceq 'DD-HANG') {
+            $Name.Contains('DD-HANG')
         }
         elseif ($script:focusedCase -in @('FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')) {
             $Name.StartsWith(('Phase 9 ' + $script:focusedCase), [StringComparison]::Ordinal) -or $cleanupMatch
@@ -5219,7 +5224,7 @@ model_reasoning_effort = 'high'
 if ($Phase -ge 3) {
     # Git 替身只提供狀態與路徑清單，baseline 與 Collect 使用真實檔案和 JSON。
     function Invoke-GitCommand {
-        param($WorkingDirectory, $Arguments, $StandardInput, [switch]$AllowFailure)
+        param($WorkingDirectory, $Arguments, $StandardInput, [switch]$AllowFailure, [int]$TimeoutSeconds)
         if ($script:cleanupUseRealGit) {
             if ($script:cleanupRemoveFailure -and @($Arguments | ForEach-Object { [string]$_ }) -contains 'remove') {
                 return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = 'fixture removal failure' }
@@ -7639,6 +7644,322 @@ if ($Phase -ge 5) {
     $script:TargetPath = @()
 }
 if ($Phase -ge 6) {
+    function Invoke-DdHangChild {
+        param([string[]]$Arguments, [string]$WorkingDirectory)
+        $process = New-Object System.Diagnostics.Process
+        $info = New-Object System.Diagnostics.ProcessStartInfo
+        $info.FileName = (Get-Process -Id $PID).Path
+        $info.Arguments = (@('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass') + $Arguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
+        $info.WorkingDirectory = $WorkingDirectory
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $info.RedirectStandardOutput = $true
+        $info.RedirectStandardError = $true
+        $process.StartInfo = $info
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        try {
+            if (-not $process.Start()) { throw '子程序啟動失敗。' }
+            $stdout = $process.StandardOutput.ReadToEndAsync()
+            $stderr = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(90000)) {
+                & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F 2>&1 | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw ('guard 90 秒逾時，終止程序樹失敗，taskkill exit code ' + $LASTEXITCODE) }
+                if (-not $process.WaitForExit(5000)) { throw 'guard 90 秒逾時，無法終止子程序樹。' }
+                throw 'guard 90 秒逾時，已終止子程序樹。'
+            }
+            $watch.Stop()
+            return [pscustomobject]@{ ExitCode = $process.ExitCode; StdOut = $stdout.Result; StdErr = $stderr.Result; ElapsedMs = $watch.ElapsedMilliseconds }
+        }
+        finally { $process.Dispose() }
+    }
+
+    Invoke-Case 'Phase 6 DD-HANG-EXTCMD' {
+        $caseRoot = Join-Path $fixtureRoot 'dd-hang-extcmd'
+        $null = New-Item -ItemType Directory -Path $caseRoot -Force
+        & git -C $caseRoot init --quiet
+        if ($LASTEXITCODE -ne 0) { throw 'git init 失敗。' }
+        [IO.File]::WriteAllText((Join-Path $caseRoot '.gitignore'), "ignored/`n")
+        $childPath = Join-Path $caseRoot 'probe.ps1'
+        $modulePath = Join-Path (Split-Path -Parent $sourcePath) 'dispatch\common-runtime.ps1'
+        $child = @'
+param([string]$ModulePath, [string]$Repo)
+$ErrorActionPreference = 'Stop'
+. $ModulePath
+$paths = @(0..4999 | ForEach-Object { 'ignored/sub{0:D2}/generated-file-name-{1:D6}.dll' -f ($_ % 50), $_ })
+$inputText = ($paths -join "`0") + "`0"
+if ([Text.Encoding]::UTF8.GetByteCount($inputText) -lt 200000 -or @($paths | Where-Object { $_.Length -lt 40 }).Count -ne 0) { throw 'fixture 輸入長度不足。' }
+$watch = [Diagnostics.Stopwatch]::StartNew()
+$result = Invoke-GitCommand -WorkingDirectory $Repo -Arguments @('check-ignore', '--stdin', '-z', '--no-index') -StandardInput $inputText
+$watch.Stop()
+$actual = @($result.StdOut.Split([char]0) | Where-Object { $_ -ne '' })
+$difference = @(Compare-Object -ReferenceObject $paths -DifferenceObject $actual)
+[ordered]@{ exitCode = $result.ExitCode; count = $actual.Count; differenceCount = $difference.Count; elapsedMs = $watch.ElapsedMilliseconds } | ConvertTo-Json -Compress
+'@
+        [IO.File]::WriteAllText($childPath, $child, (New-Object Text.UTF8Encoding($true)))
+        $run = Invoke-DdHangChild -Arguments @('-File', $childPath, $modulePath, $caseRoot) -WorkingDirectory $caseRoot
+        Assert-True ($run.ExitCode -eq 0) ('EXTCMD 子程序失敗：' + $run.StdErr)
+        $result = $run.StdOut | ConvertFrom-Json
+        Assert-True ($result.exitCode -eq 0 -and $result.count -eq 5000 -and $result.differenceCount -eq 0 -and $result.elapsedMs -lt 30000) ('EXTCMD 結果不符：' + $run.StdOut)
+    }
+
+    Invoke-Case 'Phase 6 DD-HANG-PREFLIGHT' {
+        $caseRoot = Join-Path $fixtureRoot 'dd-hang-preflight'
+        $fixture = New-DdInputFixture -Root $caseRoot -TaskBody '檢查目錄' -RequiredRead @((Join-Path $caseRoot '.local\ai-sessions\handoff\dd-line\requirement-summary.md'))
+        $target = Join-Path $caseRoot 'pkg'
+        $null = New-Item -ItemType Directory -Path $target -Force
+        [IO.File]::WriteAllText((Join-Path $caseRoot '.gitignore'), ".local/`nbin/`n")
+        [IO.File]::WriteAllText((Join-Path $target 'tracked.txt'), 'tracked')
+        foreach ($gitArgs in @(@('init', '--quiet'), @('config', 'user.email', 'fixture@example.invalid'), @('config', 'user.name', 'Fixture'), @('add', '--', '.gitignore', 'pkg/tracked.txt'), @('commit', '--quiet', '-m', 'fixture'))) {
+            & git -C $caseRoot @gitArgs
+            if ($LASTEXITCODE -ne 0) { throw ('git fixture 失敗：' + ($gitArgs -join ' ')) }
+        }
+        for ($i = 0; $i -lt 5000; $i++) {
+            $directory = Join-Path $target ('bin\g{0:D2}' -f ($i % 50))
+            if (-not (Test-Path -LiteralPath $directory)) { $null = New-Item -ItemType Directory -Path $directory -Force }
+            [IO.File]::WriteAllText((Join-Path $directory ('generated-file-name-{0:D6}.dll' -f $i)), 'fixture')
+        }
+        $dispatchRoot = Join-Path $caseRoot '.local\ai-sessions\worktrees\dd-test'
+        $reportPath = Join-Path $dispatchRoot '.local\ai-sessions\report\dd-line\report.md'
+        $null = Write-Phase9DispatchOrderFixture -SourceRoot $caseRoot -LineSlug 'dd-line' -DispatchSlug 'dd-test' -TargetPath $target -ReportPath $reportPath -RequiredRead @((Join-Path $fixture.LineRoot 'requirement-summary.md'))
+        $entryRoot = Join-Path $caseRoot '.local\entry'
+        $null = New-Item -ItemType Directory -Path $entryRoot -Force
+        $entry = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+        Copy-Item -LiteralPath $sourcePath -Destination $entry
+        Copy-DispatchModulesBesideTestEntry -ScriptPath $entry
+        $codexHome = Join-Path $caseRoot '.local\codex-home'
+        $null = New-Item -ItemType Directory -Path $codexHome -Force
+        [IO.File]::WriteAllText((Join-Path $codexHome 'review.config.toml'), "model = 'fixture-model'`n")
+        $arguments = @('-File', $entry, '-Operation', 'Preflight', '-SourceRoot', $caseRoot, '-DispatchRoot', $dispatchRoot, '-LineSlug', 'dd-line', '-DispatchSlug', 'dd-test', '-CallerSessionId', 'dd-hang-fixture', '-WriteMode', 'readonly', '-TargetPath', $target, '-DispatchKind', 'resource', '-TaskType', 'resource-task', '-UnitKind', 'resource-target', '-PromptPath', (Join-Path $caseRoot 'prompt.md'), '-RequiredIdentifier', 'result.md', '-CodexHome', $codexHome, '-Profile', 'review')
+        $run = Invoke-DdHangChild -Arguments $arguments -WorkingDirectory $caseRoot
+        Assert-True ($run.ExitCode -eq 0 -and $run.ElapsedMs -lt 60000) ('PREFLIGHT 子程序失敗或超過 60 秒：' + $run.StdErr)
+        $result = $run.StdOut | ConvertFrom-Json
+        $outside = @($result.targetsOutsideRepository)
+        Assert-True ($result.worktreeCreated -and $outside.Count -eq 5000 -and @($outside | Where-Object { $_ -notmatch '[\\/]pkg[\\/]bin[\\/]' }).Count -eq 0) ('PREFLIGHT 結果不符：' + $run.StdOut)
+    }
+    function New-DdHangSmallFixture {
+        param([string]$Name)
+        $caseRoot = Join-Path $fixtureRoot $Name
+        $fixture = New-DdInputFixture -Root $caseRoot -TaskBody '檢查目錄' -RequiredRead @((Join-Path $caseRoot '.local\ai-sessions\handoff\dd-line\requirement-summary.md'))
+        $target = Join-Path $caseRoot 'pkg'
+        $null = New-Item -ItemType Directory -Path (Join-Path $target 'bin') -Force
+        [IO.File]::WriteAllText((Join-Path $caseRoot '.gitignore'), ".local/`nbin/`n")
+        [IO.File]::WriteAllText((Join-Path $target 'tracked.txt'), 'tracked')
+        [IO.File]::WriteAllText((Join-Path $target 'bin\ignored.dll'), 'ignored')
+        foreach ($gitArgs in @(@('init', '--quiet'), @('config', 'user.email', 'fixture@example.invalid'), @('config', 'user.name', 'Fixture'), @('add', '--', '.gitignore', 'pkg/tracked.txt'), @('commit', '--quiet', '-m', 'fixture'))) {
+            & git -C $caseRoot @gitArgs
+            if ($LASTEXITCODE -ne 0) { throw ('git fixture 失敗：' + ($gitArgs -join ' ')) }
+        }
+        $dispatchRoot = Join-Path $caseRoot '.local\ai-sessions\worktrees\dd-test'
+        $reportPath = Join-Path $dispatchRoot '.local\ai-sessions\report\dd-line\report.md'
+        $null = Write-Phase9DispatchOrderFixture -SourceRoot $caseRoot -LineSlug 'dd-line' -DispatchSlug 'dd-test' -TargetPath $target -ReportPath $reportPath -RequiredRead @((Join-Path $fixture.LineRoot 'requirement-summary.md'))
+        $entryRoot = Join-Path $caseRoot '.local\entry'
+        $codexHome = Join-Path $caseRoot '.local\codex-home'
+        $null = New-Item -ItemType Directory -Path $entryRoot, $codexHome -Force
+        foreach ($name in @('config.toml', 'review.config.toml')) { [IO.File]::WriteAllText((Join-Path $codexHome $name), "model = 'fixture-model'`n") }
+        $entry = Join-Path $entryRoot 'Invoke-CodexDispatch.ps1'
+        Copy-Item -LiteralPath $sourcePath -Destination $entry
+        Copy-DispatchModulesBesideTestEntry -ScriptPath $entry
+        return [pscustomobject]@{ Root = $caseRoot; Target = $target; Entry = $entry; DispatchRoot = $dispatchRoot; CodexHome = $codexHome }
+    }
+
+    Invoke-Case 'Phase 6 DD-HANG-TIMEOUT' {
+        $caseRoot = Join-Path $fixtureRoot 'dd-hang-timeout'
+        $null = New-Item -ItemType Directory -Path $caseRoot -Force
+        $sleeper = Join-Path $caseRoot 'sleep.ps1'
+        [IO.File]::WriteAllText($sleeper, 'param([string]$PidPath) [IO.File]::WriteAllText($PidPath, [string]$PID); Start-Sleep -Seconds 60', (New-Object Text.UTF8Encoding($true)))
+        $probe = Join-Path $caseRoot 'timeout.ps1'
+        $body = @'
+param([string]$Runtime, [string]$GitBaseline, [string]$Lifecycle, [string]$Root, [string]$Sleeper)
+$ErrorActionPreference = 'Stop'
+. $Runtime
+. $GitBaseline
+. $Lifecycle
+$script:SourceRoot = $Root; $script:LineSlug = 'dd-line'; $script:DispatchSlug = 'timeout'
+$hostPath = (Get-Process -Id $PID).Path
+Write-DispatchProgress -Stage 'timeout-probe' -Event 'begin'
+foreach ($size in @(0, 1048576)) {
+    $pidPath = Join-Path $Root ("pid-" + $size + '.txt')
+    $watch = [Diagnostics.Stopwatch]::StartNew(); $failure = $null
+    try { $null = Invoke-ExternalCommand -FileName $hostPath -WorkingDirectory $Root -Arguments @('-NoProfile', '-File', $Sleeper, '-PidPath', $pidPath) -StandardInput ('x' * $size) -TimeoutSeconds 8 } catch { $failure = $_.Exception }
+    $watch.Stop()
+    if ($null -eq $failure -or $failure.Data['errorCode'] -ne 'DispatchExternalCommandTimeout' -or $failure.Data['timeoutSeconds'] -ne 8 -or $failure.Message -notmatch '8 秒' -or -not $failure.Message.Contains([IO.Path]::GetFileName($hostPath)) -or $watch.ElapsedMilliseconds -lt 8000 -or $watch.ElapsedMilliseconds -ge 20000) { throw ('timeout assertion failed: ' + $failure) }
+    if (-not (Test-Path -LiteralPath $pidPath)) { throw 'sleep PID missing' }
+    $childPid = [int][IO.File]::ReadAllText($pidPath)
+    if ($null -ne (Get-Process -Id $childPid -ErrorAction SilentlyContinue)) { throw 'sleep process remains' }
+}
+$git = Get-GitPath
+$version = Invoke-ExternalCommand -FileName $git -WorkingDirectory $Root -Arguments @('--version') -TimeoutSeconds 30
+if ($version.ExitCode -ne 0) { throw 'git --version failed' }
+$lines = @(Get-Content -LiteralPath $script:DispatchProgressPath)
+if ($lines.Count -ne 1 -or $lines[0] -notmatch "`ttimeout-probe`tbegin`t") { throw 'begin without end missing' }
+'timeout assertions passed'
+'@
+        [IO.File]::WriteAllText($probe, $body, (New-Object Text.UTF8Encoding($true)))
+        $runtime = Join-Path $scriptsRoot 'dispatch\common-runtime.ps1'
+        $gitBaseline = Join-Path $scriptsRoot 'dispatch\git-baseline.ps1'
+        $lifecycle = Join-Path $scriptsRoot 'dispatch\dispatch-lifecycle.ps1'
+        $run = Invoke-DdHangChild -Arguments @('-File', $probe, $runtime, $gitBaseline, $lifecycle, $caseRoot, $sleeper) -WorkingDirectory $caseRoot
+        Assert-True ($run.ExitCode -eq 0 -and $run.StdOut -match 'timeout assertions passed') ('TIMEOUT 斷言失敗：' + $run.StdErr)
+    }
+
+    Invoke-Case 'Phase 6 DD-HANG-TIMEOUT-PARAMETERS' {
+        $caseRoot = Join-Path $fixtureRoot 'dd-hang-parameters'
+        $null = New-Item -ItemType Directory -Path $caseRoot -Force
+        $probe = Join-Path $caseRoot 'parameters.ps1'
+        $body = @'
+param([string]$Runtime, [string]$Lifecycle, [string]$Root)
+$ErrorActionPreference = 'Stop'
+. $Runtime
+. $Lifecycle
+$script:observedTimeouts = New-Object 'System.Collections.Generic.List[object]'
+function Get-GitPath { return 'fixture-git' }
+function Invoke-ExternalCommand {
+    param([string]$FileName, [string]$WorkingDirectory, [string[]]$Arguments, [string]$StandardInput, [switch]$AllowFailure, [int]$TimeoutSeconds)
+    $script:observedTimeouts.Add([pscustomobject]@{ value = $TimeoutSeconds; supplied = $PSBoundParameters.ContainsKey('TimeoutSeconds') })
+    return [pscustomobject]@{ ExitCode = 1; StdOut = ''; StdErr = '' }
+}
+$null = Get-DispatchIgnoredPathLookup -DispatchRoot $Root -GitRelativePath @('file.txt') -SourcePath @((Join-Path $Root 'file.txt'))
+$null = Invoke-GitCommand -WorkingDirectory $Root -Arguments @('version') -AllowFailure
+$null = Invoke-GitCommand -WorkingDirectory $Root -Arguments @('version') -AllowFailure -TimeoutSeconds 0
+if ($script:observedTimeouts.Count -ne 3 -or $script:observedTimeouts[0].value -ne 120 -or $script:observedTimeouts[1].value -ne 600 -or $script:observedTimeouts[2].value -ne 0 -or @($script:observedTimeouts | Where-Object { -not $_.supplied }).Count -ne 0) { throw 'timeout forwarding assertion failed' }
+'timeout forwarding assertions passed'
+'@
+        [IO.File]::WriteAllText($probe, $body, (New-Object Text.UTF8Encoding($true)))
+        $run = Invoke-DdHangChild -Arguments @('-File', $probe, (Join-Path $scriptsRoot 'dispatch\common-runtime.ps1'), (Join-Path $scriptsRoot 'dispatch\dispatch-lifecycle.ps1'), $caseRoot) -WorkingDirectory $caseRoot
+        Assert-True ($run.ExitCode -eq 0 -and $run.StdOut -match 'timeout forwarding assertions passed') ('參數轉傳斷言失敗：' + $run.StdErr)
+    }
+
+    Invoke-Case 'Phase 6 DD-HANG-PIPE-TIMEOUT' {
+        $caseRoot = Join-Path $fixtureRoot 'dd-hang-pipe'
+        $null = New-Item -ItemType Directory -Path $caseRoot -Force
+        $linger = Join-Path $caseRoot 'linger.ps1'
+        [IO.File]::WriteAllText($linger, 'param([string]$Ready) [IO.File]::WriteAllText($Ready, [string]$PID); Start-Sleep -Seconds 60', (New-Object Text.UTF8Encoding($true)))
+        $spawner = Join-Path $caseRoot 'spawner.ps1'
+        $spawnerBody = @'
+param([string]$Linger, [string]$Ready, [string]$PidPath)
+$ErrorActionPreference = 'Stop'
+$info = New-Object Diagnostics.ProcessStartInfo
+$info.FileName = (Get-Process -Id $PID).Path
+$info.Arguments = '-NoProfile -NonInteractive -File "' + $Linger + '" "' + $Ready + '"'
+$info.UseShellExecute = $false
+$info.RedirectStandardInput = $true
+$child = [Diagnostics.Process]::Start($info)
+$child.StandardInput.Close()
+[IO.File]::WriteAllText($PidPath, [string]$child.Id)
+$deadline = [DateTime]::UtcNow.AddSeconds(10)
+while (-not (Test-Path -LiteralPath $Ready) -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+if (-not (Test-Path -LiteralPath $Ready)) { throw 'grandchild startup failed' }
+'@
+        [IO.File]::WriteAllText($spawner, $spawnerBody, (New-Object Text.UTF8Encoding($true)))
+        $probe = Join-Path $caseRoot 'pipe-probe.ps1'
+        $body = @'
+param([string]$Runtime, [string]$Root, [string]$Spawner, [string]$Linger)
+$ErrorActionPreference = 'Stop'
+. $Runtime
+$hostPath = (Get-Process -Id $PID).Path
+$ready = Join-Path $Root 'ready.txt'; $pidPath = Join-Path $Root 'grandchild.pid'
+try {
+    $failure = $null; $watch = [Diagnostics.Stopwatch]::StartNew()
+    try { $null = Invoke-ExternalCommand -FileName $hostPath -WorkingDirectory $Root -Arguments @('-NoProfile', '-File', $Spawner, $Linger, $ready, $pidPath) -TimeoutSeconds 15 } catch { $failure = $_.Exception }
+    $watch.Stop()
+    if (-not (Test-Path -LiteralPath $ready) -or -not (Test-Path -LiteralPath $pidPath)) { throw 'grandchild was not started' }
+    $grandchildId = [int][IO.File]::ReadAllText($pidPath)
+    if ($null -eq (Get-Process -Id $grandchildId -ErrorAction SilentlyContinue)) { throw 'grandchild exited before pipe timeout' }
+    if ($null -eq $failure -or $failure.Data['errorCode'] -ne 'DispatchExternalCommandTimeout' -or $failure.Data['timeoutSeconds'] -ne 15 -or $failure.Message -notmatch '程序已結束，但輸出管線尚未關閉' -or $watch.ElapsedMilliseconds -lt 15000 -or $watch.ElapsedMilliseconds -ge 25000) { throw ('pipe timeout assertion failed: ' + $failure) }
+    'pipe timeout assertions passed'
+}
+finally {
+    if (Test-Path -LiteralPath $pidPath) {
+        $grandchildId = [int][IO.File]::ReadAllText($pidPath)
+        $grandchild = Get-Process -Id $grandchildId -ErrorAction SilentlyContinue
+        if ($null -ne $grandchild) { $grandchild.Kill(); if (-not $grandchild.WaitForExit(5000)) { throw 'grandchild cleanup failed' } }
+    }
+}
+'@
+        [IO.File]::WriteAllText($probe, $body, (New-Object Text.UTF8Encoding($true)))
+        $run = Invoke-DdHangChild -Arguments @('-File', $probe, (Join-Path $scriptsRoot 'dispatch\common-runtime.ps1'), $caseRoot, $spawner, $linger) -WorkingDirectory $caseRoot
+        Assert-True ($run.ExitCode -eq 0 -and $run.StdOut -match 'pipe timeout assertions passed') ('管線逾時斷言失敗：' + $run.StdErr)
+    }
+
+    Invoke-Case 'Phase 6 DD-HANG-PROGRESS' {
+        $f = New-DdHangSmallFixture -Name 'dd-hang-progress'
+        $args = @('-File', $f.Entry, '-Operation', 'Preflight', '-SourceRoot', $f.Root, '-DispatchRoot', $f.DispatchRoot, '-LineSlug', 'dd-line', '-DispatchSlug', 'dd-test', '-CallerSessionId', 'dd-hang-progress', '-WriteMode', 'readonly', '-TargetPath', $f.Target, '-DispatchKind', 'resource', '-TaskType', 'resource-task', '-CodexHome', $f.CodexHome, '-Profile', 'review')
+        $run = Invoke-DdHangChild -Arguments $args -WorkingDirectory $f.Root
+        Assert-True ($run.ExitCode -eq 0 -and [string]::IsNullOrEmpty($run.StdErr)) ('PROGRESS Preflight 失敗：' + $run.StdErr)
+        $logPath = Join-Path $f.Root '.local\ai-sessions\history\dd-line\dispatch-progress-dd-test.log'
+        Assert-True (Test-Path -LiteralPath $logPath) '缺少進度檔。'
+        $rows = @(Get-Content -LiteralPath $logPath | ForEach-Object { ,($_ -split "`t", 6) })
+        $previous = [DateTimeOffset]::MinValue
+        foreach ($row in $rows) { Assert-True ($row.Count -eq 6) '進度欄位數不符。'; $timestamp = [DateTimeOffset]::Parse($row[0], [Globalization.CultureInfo]::InvariantCulture); Assert-True ($timestamp -ge $previous) '進度時間未遞增。'; $previous = $timestamp }
+        foreach ($stage in @('worktree-add', 'carry-in', 'sync-raw-bytes', 'baseline', 'target-ignore-scan', 'output-directories')) {
+            Assert-True (@($rows | Where-Object { $_[2] -eq $stage -and $_[3] -eq 'begin' }).Count -eq 1 -and @($rows | Where-Object { $_[2] -eq $stage -and $_[3] -eq 'end' }).Count -eq 1) ('進度事件不成對：' + $stage)
+        }
+        $scanEnd = @($rows | Where-Object { $_[2] -eq 'target-ignore-scan' -and $_[3] -eq 'end' })[0]
+        Assert-True ($scanEnd[5] -match 'files=\d+' -and $scanEnd[5] -match 'ignored=\d+') '掃描數量缺失。'
+    }
+
+    Invoke-Case 'Phase 6 DD-HANG-RECEIPT' {
+        $f = New-DdHangSmallFixture -Name 'dd-hang-receipt'
+        $override = @'
+$script:ddOriginalGit = ${function:Invoke-GitCommand}
+function Invoke-GitCommand {
+    param([string]$WorkingDirectory, [string[]]$Arguments, [string]$StandardInput, [switch]$AllowFailure, [int]$TimeoutSeconds)
+    if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'check-ignore' -and $Arguments -contains '--stdin') {
+        $hostPath = (Get-Process -Id $PID).Path
+        return Invoke-ExternalCommand -FileName $hostPath -WorkingDirectory $WorkingDirectory -Arguments @('-NoProfile', '-Command', 'Start-Sleep 60') -TimeoutSeconds 2
+    }
+    return & $script:ddOriginalGit -WorkingDirectory $WorkingDirectory -Arguments $Arguments -StandardInput $StandardInput -AllowFailure:$AllowFailure
+}
+'@
+        $entryText = [IO.File]::ReadAllText($f.Entry, [Text.Encoding]::UTF8)
+        $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $override
+        [IO.File]::WriteAllText($f.Entry, $entryText, (New-Object Text.UTF8Encoding($true)))
+        $receipt = Join-Path $f.Root '.local\ai-sessions\history\dd-line\failure.json'
+        $request = [ordered]@{ schema='ai-sessions.dispatch-request.v1'; operation='Dispatch'; source_root=$f.Root; dispatch_root=$f.DispatchRoot; line_slug='dd-line'; dispatch_slug='dd-test'; profile='review'; write_mode='readonly'; dispatch_kind='resource'; task_type='resource-task'; unit_kind='resource-target'; session_mode='cold-start'; target_path=@($f.Target); prompt_path=(Join-Path $f.Root 'prompt.md'); required_identifier='result.md'; failure_receipt_path=$receipt }
+        $requestPath = Join-Path $f.Root '.local\request.json'
+        [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+        $run = Invoke-DdHangChild -Arguments @('-File', $f.Entry, '-Operation', 'Dispatch', '-RequestPath', $requestPath, '-CodexHome', $f.CodexHome, '-CallerSessionId', 'dd-hang-receipt') -WorkingDirectory $f.Root
+        $result = $run.StdOut | ConvertFrom-Json
+        Assert-True ($result.status -eq 'failed' -and $result.error_code -eq 'DispatchExternalCommandTimeout' -and $result.failed_stage -eq 'preflight' -and -not $result.process_started) ('RECEIPT envelope 不符：' + $run.StdOut + $run.StdErr)
+        Assert-True (Test-Path -LiteralPath $receipt) 'failure receipt 不存在。'
+        $document = [IO.File]::ReadAllText($receipt) | ConvertFrom-Json
+        Assert-True ($document.schema -eq 'ai-sessions.dispatch-failure-receipt.v1' -and $document.error_code -eq 'DispatchExternalCommandTimeout') 'failure receipt 不符。'
+        $history = Join-Path $f.Root '.local\ai-sessions\history'
+        $dispatchHistory = Join-Path $f.DispatchRoot '.local\ai-sessions\history'
+        foreach ($historyRoot in @($history, $dispatchHistory)) {
+            if (Test-Path -LiteralPath $historyRoot) {
+                Assert-True (@(Get-ChildItem -LiteralPath $historyRoot -Recurse -File -Filter 'codex-pid-*.txt').Count -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $historyRoot 'dd-line\runs\dd-test'))) '不應建立 RunRecord 或 PID。'
+            }
+        }
+        $log = Join-Path $history 'dd-line\dispatch-progress-dd-test.log'
+        $last = @(Get-Content -LiteralPath $log)[-1]
+        Assert-True ($last -match "`ttarget-ignore-scan`tfailed`t") '最後進度事件應為 target-ignore-scan failed。'
+    }
+
+    Invoke-Case 'Phase 6 DD-HANG-APPLY' {
+        $caseRoot = Join-Path $fixtureRoot 'dd-hang-apply'
+        $null = New-Item -ItemType Directory -Path $caseRoot -Force
+        & git -C $caseRoot init --quiet
+        if ($LASTEXITCODE -ne 0) { throw 'git init 失敗。' }
+        [IO.File]::WriteAllText((Join-Path $caseRoot 'data.txt'), "old`n")
+        $probe = Join-Path $caseRoot 'apply.ps1'
+        $body = @'
+param([string]$Runtime, [string]$Root)
+$ErrorActionPreference = 'Stop'
+. $Runtime
+$expected = 'x' * (3 * 1024 * 1024)
+$patch = "diff --git a/data.txt b/data.txt`n--- a/data.txt`n+++ b/data.txt`n@@ -1 +1 @@`n-old`n+" + $expected + "`n"
+$watch = [Diagnostics.Stopwatch]::StartNew()
+$result = Invoke-GitCommand -WorkingDirectory $Root -Arguments @('apply', '--whitespace=nowarn', '--recount', '-') -StandardInput $patch
+$watch.Stop()
+if ($result.ExitCode -ne 0 -or $watch.ElapsedMilliseconds -ge 30000 -or [IO.File]::ReadAllText((Join-Path $Root 'data.txt')) -cne ($expected + "`n")) { throw 'large patch assertion failed' }
+'apply assertions passed'
+'@
+        [IO.File]::WriteAllText($probe, $body, (New-Object Text.UTF8Encoding($true)))
+        $run = Invoke-DdHangChild -Arguments @('-File', $probe, (Join-Path $scriptsRoot 'dispatch\common-runtime.ps1'), $caseRoot) -WorkingDirectory $caseRoot
+        Assert-True ($run.ExitCode -eq 0 -and $run.StdOut -match 'apply assertions passed') ('APPLY 斷言失敗：' + $run.StdErr)
+    }
+
     Invoke-Case 'Phase 6 DD-RULES-PREFLIGHT 規則解析與拒絕' {
         $testCodexHome = Join-Path $fixtureRoot 'rules-check-home'
         $testRules = Join-Path $testCodexHome 'rules'

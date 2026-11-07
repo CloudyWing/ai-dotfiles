@@ -22,7 +22,7 @@
         $null = $standardInputBuilder.Append($pathValue)
         $null = $standardInputBuilder.Append([char]0)
     }
-    $ignoreResult = Invoke-GitCommand -WorkingDirectory $DispatchRoot -Arguments @('check-ignore', '--stdin', '-z', '--no-index') -StandardInput $standardInputBuilder.ToString() -AllowFailure
+    $ignoreResult = Invoke-GitCommand -WorkingDirectory $DispatchRoot -Arguments @('check-ignore', '--stdin', '-z', '--no-index') -StandardInput $standardInputBuilder.ToString() -AllowFailure -TimeoutSeconds $script:DispatchCheckIgnoreTimeoutSeconds
     if (($ignoreResult.ExitCode -notin @(0, 1)) -or -not [string]::IsNullOrWhiteSpace($ignoreResult.StdErr)) {
         throw "git check-ignore 批次探針失敗，無法判定 target_path：$($SourcePath -join ', ')；exit code $($ignoreResult.ExitCode)；$($ignoreResult.StdErr.Trim())"
     }
@@ -55,6 +55,8 @@
 
     return $ignoredPathLookup
 }
+
+$script:DispatchCheckIgnoreTimeoutSeconds = 120
 
 function Get-TargetsOutsideRepository {
     [CmdletBinding()]
@@ -157,8 +159,37 @@ function Get-TargetsOutsideRepository {
         }
     }
 
+    $script:DispatchIgnoreScanFileCount = $gitRelativePaths.Count
     return @($targetsOutsideRepository.ToArray())
 }
+
+function Write-DispatchProgress {
+    [CmdletBinding()]
+    param([string]$Stage, [ValidateSet('begin', 'end', 'failed')][string]$Event, [string]$Detail = '')
+
+    try {
+        if ($null -eq (Get-Variable -Name 'DispatchProgressTimers' -Scope Script -ErrorAction SilentlyContinue)) { $script:DispatchProgressTimers = @{} }
+        if ($null -eq (Get-Variable -Name 'DispatchProgressStack' -Scope Script -ErrorAction SilentlyContinue)) { $script:DispatchProgressStack = New-Object 'System.Collections.Generic.List[string]' }
+        $elapsed = '-'
+        if ($Event -eq 'begin') {
+            $script:DispatchProgressTimers[$Stage] = [Diagnostics.Stopwatch]::StartNew()
+            $script:DispatchProgressStack.Add($Stage)
+            $script:DispatchProgressOpenStage = $Stage
+        }
+        else {
+            if ($script:DispatchProgressTimers.ContainsKey($Stage)) { $elapsed = [string]$script:DispatchProgressTimers[$Stage].ElapsedMilliseconds; $script:DispatchProgressTimers.Remove($Stage) }
+            $null = $script:DispatchProgressStack.Remove($Stage)
+            $script:DispatchProgressOpenStage = if ($script:DispatchProgressStack.Count -gt 0) { $script:DispatchProgressStack[$script:DispatchProgressStack.Count - 1] } else { $null }
+        }
+        $directory = Join-Path (Join-Path $SourceRoot '.local\ai-sessions\history') $LineSlug
+        $null = New-DispatchOutputDirectory -Path $directory -SourceRoot $SourceRoot -ExecutionRoot $SourceRoot -TargetPath @()
+        $script:DispatchProgressPath = Join-Path $directory ('dispatch-progress-' + $DispatchSlug + '.log')
+        $line = @([DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [Globalization.CultureInfo]::InvariantCulture), [string]$PID, $Stage, $Event, $elapsed, ($Detail -replace '[\r\n\t]', ' ')) -join "`t"
+        [IO.File]::AppendAllText($script:DispatchProgressPath, ($line + [Environment]::NewLine), (New-Object Text.UTF8Encoding($false)))
+    }
+    catch { }
+}
+
 function Throw-DispatchPreflightFailure {
     [CmdletBinding()]
     param(
@@ -308,6 +339,7 @@ function Invoke-Preflight {
 
     if ($null -ne $script:CallerSessionIdentity) {
         $preflightExecutionRoot = if (-not [string]::IsNullOrWhiteSpace($ExecutionRoot)) { $ExecutionRoot } else { $DispatchRoot }
+        Write-DispatchProgress -Stage 'admission' -Event 'begin'
         $null = Assert-DispatchAdmission `
             -SourceRoot $sourceRootPath `
             -CallerIdentity $script:CallerSessionIdentity `
@@ -317,6 +349,7 @@ function Invoke-Preflight {
             -TargetPath @($TargetPath) `
             -AddDirectory @($AddDirectory) `
             -ExecutionRoot $preflightExecutionRoot
+        Write-DispatchProgress -Stage 'admission' -Event 'end'
     }
 
     $executionRootPath = $sourceRootPath
@@ -363,11 +396,14 @@ function Invoke-Preflight {
         }
         $dispatchParent = Split-Path -Parent $dispatchRootPath
         $null = New-DispatchOutputDirectory -Path $dispatchParent -SourceRoot $sourceRootPath -ExecutionRoot $sourceRootPath -TargetPath @($TargetPath)
+        Write-DispatchProgress -Stage 'worktree-add' -Event 'begin' -Detail $baseShaValue
         $worktreeResult = Invoke-GitCommand -WorkingDirectory $sourceRootPath -Arguments @('worktree', 'add', '--detach', $dispatchRootPath, $baseShaValue) -AllowFailure
         if ($worktreeResult.ExitCode -ne 0) {
             throw "建立 dispatch worktree 失敗：$($worktreeResult.StdErr.Trim())"
         }
         $executionRootPath = $dispatchRootPath
+        Write-DispatchProgress -Stage 'worktree-add' -Event 'end' -Detail $baseShaValue
+        Write-DispatchProgress -Stage 'carry-in' -Event 'begin'
         $carryInManifest = Apply-SourceCarryIn -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
         $lineProducedFiles = @($carryInManifest.UntrackedFiles | Where-Object {
                 $relativePath = [string]$_
@@ -376,10 +412,17 @@ function Invoke-Preflight {
                 $null -ne $entry -and [string]$entry.state -eq 'present' -and (Test-Path -LiteralPath $filePath -PathType Leaf) -and (Get-DispatchAdmissionFileSha256 -Path $filePath) -ieq [string]$entry.applied_sha256
             })
         $carryInManifest['LineProducedFiles'] = $lineProducedFiles
+        Write-DispatchProgress -Stage 'carry-in' -Event 'end' -Detail ('untracked=' + @($carryInManifest.UntrackedFiles).Count)
+        Write-DispatchProgress -Stage 'sync-raw-bytes' -Event 'begin'
         $null = Sync-DispatchTrackedRawBytesFromSource -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
+        Write-DispatchProgress -Stage 'sync-raw-bytes' -Event 'end'
+        Write-DispatchProgress -Stage 'baseline' -Event 'begin'
         $baseline = New-DispatchBaseline -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -BaseSha $baseShaValue -TargetPath @($TargetPath)
+        Write-DispatchProgress -Stage 'baseline' -Event 'end'
         if ($WriteMode -eq 'readonly') {
+            Write-DispatchProgress -Stage 'target-ignore-scan' -Event 'begin' -Detail ('targets=' + @($TargetPath).Count)
             $targetsOutsideRepository = @(Get-TargetsOutsideRepository -SourceRoot $sourceRootPath -DispatchRoot $executionRootPath -TargetPath @($TargetPath))
+            Write-DispatchProgress -Stage 'target-ignore-scan' -Event 'end' -Detail ('files={0} ignored={1}' -f $script:DispatchIgnoreScanFileCount, $targetsOutsideRepository.Count)
         }
     }
     elseif ($null -ne $gitProbeState -and $gitProbeState.IsRepository) {
@@ -399,9 +442,11 @@ function Invoke-Preflight {
     $executionScratchRoot = Join-Path -Path $executionRootPath -ChildPath '.local\ai-sessions\scratch'
     $dispatchLineRoot = Join-Path -Path $executionHandoffRoot -ChildPath $LineSlug
     $reportLineRoot = Join-Path -Path $executionReportRoot -ChildPath $LineSlug
+    Write-DispatchProgress -Stage 'output-directories' -Event 'begin'
     foreach ($directoryPath in @($executionHandoffRoot, $executionReportRoot, $executionHistoryRoot, $executionScratchRoot, $dispatchLineRoot, $reportLineRoot)) {
         $null = New-DispatchOutputDirectory -Path $directoryPath -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
     }
+    Write-DispatchProgress -Stage 'output-directories' -Event 'end'
 
     $prepareBinding = $null
     $prepareStatusValue = 'not-provided'
@@ -694,6 +739,11 @@ function Invoke-Dispatch {
     [CmdletBinding()]
     param()
 
+    $script:DispatchProgressOpenStage = $null
+    $script:DispatchProgressTimers = @{}
+    $script:DispatchProgressStack = New-Object 'System.Collections.Generic.List[string]'
+    $script:DispatchProgressPath = $null
+
     $completedStages = New-Object 'System.Collections.Generic.List[string]'
     $failedStage = 'validation'
     $failureException = $null
@@ -767,7 +817,9 @@ function Invoke-Dispatch {
             $projectTrust = New-CodexProjectTrustRejection -AccountSelection $script:DispatchAccountSelection -Exception $_.Exception
             throw
         }
+        Write-DispatchProgress -Stage 'dispatch-preflight' -Event 'begin'
         $preflightResult = Invoke-Preflight
+        Write-DispatchProgress -Stage 'dispatch-preflight' -Event 'end'
         if ($null -eq $preflightResult) {
             throw 'Preflight 未回傳結果。'
         }
@@ -878,7 +930,9 @@ function Invoke-Dispatch {
             $script:RequestAutoPrepareArtifacts = New-Object 'System.Object[]' 0
             $script:RequestPrepareArtifacts = @($script:RequestManualPrepareArtifacts)
         }
+        Write-DispatchProgress -Stage 'dispatch-prepare' -Event 'begin'
         $prepareResult = Invoke-Prepare -GuardTargetPath @($TargetPath)
+        Write-DispatchProgress -Stage 'dispatch-prepare' -Event 'end'
         if ($null -eq $prepareResult) {
             throw 'Prepare 未回傳結果。'
         }
@@ -895,7 +949,9 @@ function Invoke-Dispatch {
 
         $failedStage = 'start'
         $script:WaitForStartProcessExit = [bool]$script:DispatchWaitForCompletion
+        Write-DispatchProgress -Stage 'dispatch-start' -Event 'begin'
         $startResult = Invoke-Start
+        Write-DispatchProgress -Stage 'dispatch-start' -Event 'end'
         if ($null -eq $startResult) {
             throw 'Start 未回傳結果。'
         }
@@ -1057,6 +1113,13 @@ function Invoke-Dispatch {
                 default { 'DispatchStartFailed' }
             }
         }
+        if (-not [string]::IsNullOrWhiteSpace([string]$script:DispatchProgressOpenStage)) {
+            Write-DispatchProgress -Stage $script:DispatchProgressOpenStage -Event 'failed'
+        }
+        $failureMessage = $failureException.Message
+        if ($errorCode -eq 'DispatchExternalCommandTimeout' -and -not [string]::IsNullOrWhiteSpace([string]$script:DispatchProgressPath)) {
+            $failureMessage += '；進度檔：' + $script:DispatchProgressPath
+        }
         if ($failedStage -ne 'preflight' -and [string]::IsNullOrWhiteSpace($resultPathValue) -and -not [string]::IsNullOrWhiteSpace($SourceRoot) -and -not [string]::IsNullOrWhiteSpace($LineSlug) -and -not [string]::IsNullOrWhiteSpace($DispatchSlug)) {
             try {
                 $sourceRootPath = Resolve-AbsolutePath -Path $SourceRoot
@@ -1064,7 +1127,7 @@ function Invoke-Dispatch {
             }
             catch { $resultPathValue = $null }
         }
-        $failureResult = New-DispatchResultEnvelope -Status 'failed' -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -CompletedStages @($completedStages.ToArray()) -FailedStage $failedStage -ErrorCode $errorCode -ErrorMessage $failureException.Message -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startResultPathValue -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
+        $failureResult = New-DispatchResultEnvelope -Status 'failed' -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -CompletedStages @($completedStages.ToArray()) -FailedStage $failedStage -ErrorCode $errorCode -ErrorMessage $failureMessage -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startResultPathValue -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
         if ($null -ne $inputFailure -and [string](Get-DispatchResultPropertyValue -Object $inputFailure -Names @('operation')) -eq 'DispatchRequest') {
             $failureResult.detail = Get-DispatchResultPropertyValue -Object $inputFailure -Names @('detail')
         }
@@ -1124,7 +1187,7 @@ function Invoke-Dispatch {
                 $receiptSourceRoot = if ([string]::IsNullOrWhiteSpace($sourceRootPath)) { [string]$SourceRoot } else { $sourceRootPath }
                 $receiptExecutionRoot = if ([string]::IsNullOrWhiteSpace($executionRootPath)) { $receiptSourceRoot } else { $executionRootPath }
                 $receiptDispatchRoot = if ([string]::IsNullOrWhiteSpace($DispatchRoot)) { $null } else { [string]$DispatchRoot }
-                $writtenReceipt = Write-DispatchFailureReceipt -Path $failureReceiptPathValue -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -DispatchExecutionId $dispatchToken -ErrorCode $errorCode -ErrorMessage $failureException.Message -SourceRoot $receiptSourceRoot -ExecutionRoot $receiptExecutionRoot -DispatchRoot $receiptDispatchRoot -FailedStage $failedStage -ProcessStarted $processStarted -TargetPath @($TargetPath) -ContinuationHandoff $continuationFailureHandoff
+                $writtenReceipt = Write-DispatchFailureReceipt -Path $failureReceiptPathValue -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -DispatchExecutionId $dispatchToken -ErrorCode $errorCode -ErrorMessage $failureMessage -SourceRoot $receiptSourceRoot -ExecutionRoot $receiptExecutionRoot -DispatchRoot $receiptDispatchRoot -FailedStage $failedStage -ProcessStarted $processStarted -TargetPath @($TargetPath) -ContinuationHandoff $continuationFailureHandoff
                 $failureResult.failure_receipt_path = $writtenReceipt.Path
                 $failureResult.failure_receipt_sha256 = $writtenReceipt.Sha256
                 $failureResult.failure_receipt_saved = $true
@@ -1192,6 +1255,9 @@ function Invoke-Dispatch {
         return $failureResult
     }
     finally {
+        $script:DispatchProgressOpenStage = $null
+        $script:DispatchProgressTimers = @{}
+        $script:DispatchProgressStack = New-Object 'System.Collections.Generic.List[string]'
         $script:DispatchAccountSelection = $previousAccountSelection
     }
 }

@@ -2,6 +2,8 @@
     return [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 }
 
+$script:DispatchGitDefaultTimeoutSeconds = 600
+
 function ConvertTo-FileSystemApiPath {
     [CmdletBinding()]
     param(
@@ -471,27 +473,79 @@ function Invoke-ExternalCommand {
         [AllowEmptyString()]
         [string]$StandardInput,
 
-        [switch]$AllowFailure
+        [switch]$AllowFailure,
+
+        [ValidateRange(0, 2147483)]
+        [int]$TimeoutSeconds = 0
     )
 
     $startInfo = New-ProcessStartInfo -FileName $FileName -WorkingDirectory $WorkingDirectory -Arguments $Arguments -RedirectOutput
     $process = New-Object System.Diagnostics.Process
     $null = ($process.StartInfo = $startInfo)
     try {
+        $watch = [Diagnostics.Stopwatch]::StartNew()
         if (-not $process.Start()) {
             throw "無法啟動外部命令：$FileName"
         }
-
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
+        [byte[]]$inputBytes = @()
+        $timedOut = $false
+        $processExited = $false
+        $pipeTimedOut = $false
         if ($null -ne $StandardInput) {
             $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
             $inputBytes = $utf8NoBom.GetBytes($StandardInput)
-            $process.StandardInput.BaseStream.Write($inputBytes, 0, $inputBytes.Length)
-            $process.StandardInput.BaseStream.Flush()
+            try {
+                $writeTask = $process.StandardInput.BaseStream.WriteAsync($inputBytes, 0, $inputBytes.Length)
+                $remaining = if ($TimeoutSeconds -eq 0) { -1 } else { [int][Math]::Max(0, ($TimeoutSeconds * 1000) - $watch.ElapsedMilliseconds) }
+                if (-not $writeTask.Wait($remaining)) { $timedOut = $true }
+                if (-not $timedOut) { $process.StandardInput.BaseStream.Flush() }
+            }
+            catch {
+                $writeException = $_.Exception
+                while (($writeException -is [System.Management.Automation.MethodInvocationException] -or $writeException -is [System.AggregateException]) -and $null -ne $writeException.InnerException) { $writeException = $writeException.InnerException }
+                if ($writeException -isnot [System.IO.IOException]) { throw }
+            }
         }
-        $process.StandardInput.Close()
-        $process.WaitForExit()
+        if (-not $timedOut) {
+            try { $process.StandardInput.Close() } catch [System.IO.IOException] { }
+            $remaining = if ($TimeoutSeconds -eq 0) { -1 } else { [int][Math]::Max(0, ($TimeoutSeconds * 1000) - $watch.ElapsedMilliseconds) }
+            if (-not $process.WaitForExit($remaining)) { $timedOut = $true } else { $processExited = $true }
+        }
+        if (-not $timedOut -and $TimeoutSeconds -gt 0) {
+            $remaining = [int][Math]::Max(0, ($TimeoutSeconds * 1000) - $watch.ElapsedMilliseconds)
+            if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), $remaining)) {
+                $timedOut = $true
+                $pipeTimedOut = $true
+            }
+        }
+        if ($timedOut) {
+            try {
+                if (-not $processExited -and -not $process.HasExited) {
+                    $killTree = $process.GetType().GetMethod('Kill', [type[]]@([bool]))
+                    if ($null -ne $killTree) { $process.Kill($true) } else { $process.Kill() }
+                }
+            }
+            catch [System.InvalidOperationException] { }
+            if (-not $processExited) { $null = $process.WaitForExit(5000) }
+            $stdout = ''
+            $stderr = ''
+            try { $null = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdoutTask, $stderrTask), 2000) } catch { }
+            if ($stdoutTask.Status -eq [Threading.Tasks.TaskStatus]::RanToCompletion) { $stdout = [string]$stdoutTask.Result }
+            if ($stderrTask.Status -eq [Threading.Tasks.TaskStatus]::RanToCompletion) { $stderr = [string]$stderrTask.Result }
+            $tail = if ($stderr.Length -gt 512) { $stderr.Substring($stderr.Length - 512) } else { $stderr }
+            $command = (@([IO.Path]::GetFileName($FileName)) + @($Arguments | Select-Object -First 3)) -join ' '
+            $timeoutDescription = if ($pipeTimedOut) { '程序已結束，但輸出管線尚未關閉' } else { '已終止該程序' }
+            $message = 'DispatchExternalCommandTimeout：外部命令 {0} 於 {1} 秒內未完成，{2}；stdin {3} 位元組、已讀 stdout {4} 字元、stderr {5} 字元；stderr 末段：{6}' -f $command, $TimeoutSeconds, $timeoutDescription, $inputBytes.Length, $stdout.Length, $stderr.Length, $tail
+            $timeoutException = New-Object System.TimeoutException($message)
+            $timeoutException.Data['errorCode'] = 'DispatchExternalCommandTimeout'
+            $timeoutException.Data['timeoutSeconds'] = $TimeoutSeconds
+            $timeoutException.Data['elapsedMs'] = $watch.ElapsedMilliseconds
+            $timeoutException.Data['command'] = $command
+            $timeoutException.Data['stdinBytes'] = $inputBytes.Length
+            throw $timeoutException
+        }
         $stdout = $stdoutTask.Result
         $stderr = $stderrTask.Result
         $result = [pscustomobject]@{
@@ -531,11 +585,14 @@ function Invoke-GitCommand {
         [AllowEmptyString()]
         [string]$StandardInput,
 
-        [switch]$AllowFailure
+        [switch]$AllowFailure,
+
+        [int]$TimeoutSeconds
     )
 
     $gitPath = Get-GitPath
-    return Invoke-ExternalCommand -FileName $gitPath -WorkingDirectory $WorkingDirectory -Arguments $Arguments -StandardInput $StandardInput -AllowFailure:$AllowFailure
+    if (-not $PSBoundParameters.ContainsKey('TimeoutSeconds')) { $TimeoutSeconds = $script:DispatchGitDefaultTimeoutSeconds }
+    return Invoke-ExternalCommand -FileName $gitPath -WorkingDirectory $WorkingDirectory -Arguments $Arguments -StandardInput $StandardInput -AllowFailure:$AllowFailure -TimeoutSeconds $TimeoutSeconds
 }
 
 function Write-Utf8NoBom {

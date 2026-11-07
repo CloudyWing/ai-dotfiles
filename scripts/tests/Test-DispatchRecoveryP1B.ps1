@@ -1275,12 +1275,14 @@ for ($script:Round = 1; $script:Round -le $Repeat; $script:Round++) {
                     [Parameter(Mandatory)][string]$WorkingDirectory,
                     [Parameter(Mandatory)][string[]]$Arguments,
                     [AllowEmptyString()][string]$StandardInput,
-                    [switch]$AllowFailure
+                    [switch]$AllowFailure,
+                    [int]$TimeoutSeconds
                 )
                 if ($Arguments.Count -gt 0 -and $Arguments[0] -eq 'check-ignore') { $checkIgnoreCalls.Add(($Arguments -join ' ')) }
                 $forwardParameters = @{ WorkingDirectory = $WorkingDirectory; Arguments = $Arguments }
                 if ($null -ne $StandardInput) { $forwardParameters.StandardInput = $StandardInput }
                 if ($AllowFailure) { $forwardParameters.AllowFailure = $true }
+                if ($PSBoundParameters.ContainsKey('TimeoutSeconds')) { $forwardParameters.TimeoutSeconds = $TimeoutSeconds }
                 return & $script:G5OriginalInvokeGitCommand @forwardParameters
             }
             Set-Item -Path Function:\script:Invoke-GitCommand -Value $instrumentedGitCommand

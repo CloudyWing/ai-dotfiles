@@ -20,6 +20,10 @@
 | Prepare 失敗且 `PrepareFailed` 文件再次寫入失敗 | 由 operation result 的 `prepareResultWriteFailure.code=PrepareResultWriteFailed` 與 `prepareResultWriteFailure.path` 取得錯誤碼與目標路徑；`prepareResultSha256=null`，不將該路徑視為已成功保存的 Prepare 文件，修正寫入條件後重新 Prepare | 腳本介面與執行前提 |
 | 結案訊息缺少識別字 | 標記 `PromptNotDelivered`，修正啟動方式後重新派遣 | RecoveryPrecheck |
 
+### 外部程序逾時
+
+遇到 `DispatchExternalCommandTimeout` 時，讀取進度檔最後一行確認停留的 stage。Preflight 已建立 worktree 時，以 failure receipt 依 Cleanup 的未啟動流程處理。系統不自動重試；重試前確認目錄 target 的被忽略子檔規模。
+
 ### 離線改派的執行細節
 
 成立條件與政策見 `instructions.md`「離線改派」，各狀態的處置見 `executor-selection` skill「狀態處置」，本節補充執行細節。
