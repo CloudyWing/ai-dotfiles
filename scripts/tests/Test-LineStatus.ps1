@@ -4,6 +4,7 @@ param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+Import-Module -Name Microsoft.PowerShell.Utility
 $scriptPath = Join-Path $PSScriptRoot '..\Get-LineStatus.ps1'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('line-status-' + [guid]::NewGuid().ToString('N'))
 $hostPath = (Get-Process -Id $PID).Path
@@ -19,6 +20,17 @@ function Test-Case {
         $script:failed++
         Write-Output "FAIL $Id $($_.Exception.Message)"
     }
+}
+
+function New-FakeQuotaScript {
+    param(
+        [string]$Path,
+        [string]$Body
+    )
+
+    $content = "param([string]`$CodexHome)`r`n" + $Body + "`r`n"
+    [IO.File]::WriteAllText($Path, $content, (New-Object Text.UTF8Encoding($true)))
+    return $Path
 }
 
 try {
@@ -176,6 +188,88 @@ try {
         $ast = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $scriptPath).Path, [ref]$tokens, [ref]$errors)
         (($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath }) -join ',') -eq 'WorkRoot,MachineConfigPath,ForceWorkRoot,WithCheckpointOnly,SkipQuota,AsJson' -and $ast.ParamBlock.Parameters[2].StaticType -eq [string[]]
     }
+
+    $fakeQuotaPath = Join-Path $tempRoot 'Fake-Quota.ps1'
+    $fakeCodexHome = Join-Path $tempRoot 'fake-codex-home'
+    Test-Case C22 {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Error.WriteLine('Get-CodexQuota.ps1 失敗：QuotaApiFailure; category=HttpFailure; status=401'); exit 1"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'unknown' -and $summary.ErrorKind -eq 'auth-expired' -and $summary.ErrorReason -eq '登入失效' -and $summary.Error.Contains('失敗：') -and -not $summary.Error.Contains([string][char]0xfffd)
+    }
+    Test-Case C23 {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Error.WriteLine('QuotaApiServiceRejected; refusal flags are present.'); exit 1"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'unknown' -and $summary.ErrorKind -eq 'limit-reached' -and $summary.ErrorReason -eq '已達上限'
+    }
+    Test-Case C24 {
+        $cases = @(
+            @{ Text = 'category=DnsFailure'; Reason = '無法解析 chatgpt.com' },
+            @{ Text = 'category=Timeout'; Reason = '查詢逾時' },
+            @{ Text = 'category=ConnectionFailure'; Reason = '無法連線 chatgpt.com' },
+            @{ Text = 'category=HttpFailure; status=500'; Reason = '服務回應 HTTP 500' },
+            @{ Text = 'AuthenticationDataUnavailable'; Reason = '找不到登入資料' }
+        )
+        $valid = $true
+        foreach ($case in $cases) {
+            $failure = Get-QuotaFailureInfo -StdErr $case.Text -ExitCode 1
+            if ($failure.Kind -ne 'other' -or $failure.Reason -ne $case.Reason) { $valid = $false }
+        }
+        $timeout = Get-QuotaFailureInfo -Message '子行程逾時（10 秒）'
+        $fallback = Get-QuotaFailureInfo -StdErr "exit 1：Get-CodexQuota.ps1 失敗：自訂原因`r`n第二行" -ExitCode 1
+        $long = Get-QuotaFailureInfo -StdErr ('x' * 81) -ExitCode 1
+        $priority = Get-QuotaFailureInfo -StdErr 'QuotaApiServiceRejected; HttpFailure; status=401' -ExitCode 1
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Out.WriteLine('primary_remaining_percent=invalid'); exit 0"
+        $parseFailure = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $valid -and $timeout.Kind -eq 'other' -and $timeout.Reason -eq '查詢逾時（10 秒）' -and $fallback.Reason -eq '自訂原因' -and $long.Reason.Length -eq 80 -and $priority.Kind -eq 'auth-expired' -and $parseFailure.State -eq 'unknown' -and $parseFailure.ErrorKind -eq 'other' -and -not [string]::IsNullOrWhiteSpace($parseFailure.ErrorReason)
+    }
+    Test-Case C25 {
+        $failure = Get-QuotaFailureInfo -StdErr 'category=HttpFailure; status=4011' -ExitCode 1
+        $failure.Kind -eq 'other' -and $failure.Reason -eq '服務回應 HTTP 4011'
+    }
+    Test-Case C26 {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body 'exit 1'
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'unknown' -and $summary.ErrorKind -eq 'other' -and $summary.ErrorReason -eq '未取得錯誤訊息（exit 1）'
+    }
+    Test-Case C27 {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "throw 'fixture failure'"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'unknown' -and $summary.ErrorKind -eq 'other' -and $summary.Error -match '^exit 1：'
+    }
+    Test-Case C28 {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Out.WriteLine('primary_remaining_percent=12.5'); [Console]::Out.WriteLine('primary_resets_at_local=2026-01-01 12:00'); exit 0"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'ok' -and $summary.PrimaryRemaining -eq 12.5 -and $summary.PrimaryResetsAtLocal -eq '2026-01-01 12:00' -and $null -eq $summary.Error -and $null -eq $summary.ErrorKind -and $null -eq $summary.ErrorReason
+    }
+    Test-Case C29 {
+        $quotedPath = Join-Path $tempRoot "it's quota.ps1"
+        $quotedHome = Join-Path $tempRoot "it's-home"
+        $body = @'
+if ($CodexHome -notmatch "it's-home$") { [Console]::Error.WriteLine('CodexHome mismatch'); exit 1 }
+[Console]::Out.WriteLine('primary_remaining_percent=33')
+exit 0
+'@
+        $null = New-FakeQuotaScript -Path $quotedPath -Body $body
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $quotedHome -QuotaScriptPath $quotedPath
+        $summary.State -eq 'ok' -and $summary.PrimaryRemaining -eq 33 -and $summary.CodexHome -eq $quotedHome
+    }
+    Test-Case C30 {
+        $bundle = Join-Path $tempRoot 'bundle'
+        $emptyRoot = Join-Path $tempRoot 'empty-root'
+        New-Item -ItemType Directory -Path $bundle, $emptyRoot | Out-Null
+        $copiedScript = Join-Path $bundle 'Get-LineStatus.ps1'
+        Copy-Item -LiteralPath $scriptPath -Destination $copiedScript
+        $null = New-FakeQuotaScript -Path (Join-Path $bundle 'Get-CodexQuota.ps1') -Body "[Console]::Error.WriteLine('Get-CodexQuota.ps1 失敗：QuotaApiFailure; category=HttpFailure; status=401'); exit 1"
+        $machinePath = Join-Path $bundle 'machine.json'
+        $machine = @{ codex_accounts = @(@{ name = 'a'; codex_home = $fakeCodexHome }, @{ name = 'b'; codex_home = $fakeCodexHome }) } | ConvertTo-Json -Depth 4
+        [IO.File]::WriteAllText($machinePath, $machine, (New-Object Text.UTF8Encoding($false)))
+        $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $copiedScript -WorkRoot $emptyRoot -MachineConfigPath $machinePath -AsJson
+        $code = $LASTEXITCODE
+        $quotaJson = ($raw -join "`n") | ConvertFrom-Json
+        $keys = 'Name,CodexHome,State,PrimaryRemaining,PrimaryResetsAtLocal,SecondaryRemaining,SecondaryResetsAtLocal,Error,ErrorKind,ErrorReason'
+        $code -eq 0 -and @($quotaJson.quota).Count -eq 2 -and ($raw -join '') -notmatch '[^\u0000-\u007f]' -and @($quotaJson.quota | Where-Object { ($_.PSObject.Properties.Name -join ',') -eq $keys -and $_.ErrorKind -eq 'auth-expired' -and $_.Error -match '失敗：' }).Count -eq 2
+    }
+    Test-Case C31 { $script:failed -eq 0 }
 }
 catch {
     $failed++

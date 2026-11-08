@@ -448,6 +448,64 @@ function Get-LineRecord {
     return [pscustomobject]$record
 }
 
+function Get-QuotaFailureInfo {
+    param(
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$StdErr,
+
+        [Nullable[int]]$ExitCode,
+
+        [AllowNull()]
+        [AllowEmptyString()]
+        [string]$Message
+    )
+
+    $kind = 'other'
+    $reason = $null
+    if ($StdErr -match 'HttpFailure; status=401(?!\d)') {
+        $kind = 'auth-expired'
+        $reason = '登入失效'
+    }
+    elseif ($StdErr -match 'QuotaApiServiceRejected') {
+        $kind = 'limit-reached'
+        $reason = '已達上限'
+    }
+    elseif ($StdErr -match 'category=DnsFailure') {
+        $reason = '無法解析 chatgpt.com'
+    }
+    elseif ($StdErr -match 'category=Timeout') {
+        $reason = '查詢逾時'
+    }
+    elseif ($StdErr -match 'category=ConnectionFailure') {
+        $reason = '無法連線 chatgpt.com'
+    }
+    elseif ($StdErr -match 'HttpFailure; status=(\d+)') {
+        $reason = '服務回應 HTTP {0}' -f $Matches[1]
+    }
+    elseif ($StdErr -match 'AuthenticationDataUnavailable') {
+        $reason = '找不到登入資料'
+    }
+    elseif ($Message -match '逾時（') {
+        $reason = '查詢逾時（10 秒）'
+    }
+    else {
+        $detail = if ([string]::IsNullOrWhiteSpace($StdErr)) { $Message } else { $StdErr }
+        if (-not [string]::IsNullOrWhiteSpace($detail)) {
+            $reason = ($detail -split "`r?`n", 2)[0].Trim()
+            $reason = $reason -replace '^exit \d+[：:]\s*', ''
+            $reason = $reason -replace '^Get-CodexQuota\.ps1 \S+[：:]\s*', ''
+            $reason = $reason.Trim()
+            if ($reason.Length -gt 80) { $reason = $reason.Substring(0, 80) }
+        }
+        if ([string]::IsNullOrWhiteSpace($reason)) {
+            $reason = '未取得錯誤訊息（exit {0}）' -f $ExitCode
+        }
+    }
+
+    return [pscustomobject]@{ Kind = $kind; Reason = $reason }
+}
+
 function Get-QuotaSummary {
     param(
         [Parameter(Mandatory)]
@@ -469,16 +527,26 @@ function Get-QuotaSummary {
         SecondaryRemaining     = $null
         SecondaryResetsAtLocal = $null
         Error                  = $null
+        ErrorKind              = $null
+        ErrorReason            = $null
     }
 
     try {
         $hostPath = (Get-Process -Id $PID).Path
+        $quotedScriptPath = $QuotaScriptPath.Replace("'", "''")
+        $quotedCodexHome = $CodexHome.Replace("'", "''")
+        $command = '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $LASTEXITCODE = $null; & ''{0}'' -CodexHome ''{1}''; if ($null -eq $LASTEXITCODE) {{ exit 1 }}; exit $LASTEXITCODE' -f $quotedScriptPath, $quotedCodexHome
+        $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
         $result = Invoke-ExternalCommand -FilePath $hostPath -ArgumentList @(
             '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-            '-File', $QuotaScriptPath, '-CodexHome', $CodexHome
+            '-EncodedCommand', $encodedCommand
         ) -TimeoutSeconds 10
         if ($result.ExitCode -ne 0) {
-            throw ('exit {0}：{1}' -f $result.ExitCode, $result.StdErr.Trim())
+            $failure = Get-QuotaFailureInfo -StdErr $result.StdErr -ExitCode $result.ExitCode
+            $summary.Error = 'exit {0}：{1}' -f $result.ExitCode, $result.StdErr.Trim()
+            $summary.ErrorKind = $failure.Kind
+            $summary.ErrorReason = $failure.Reason
+            return [pscustomobject]$summary
         }
 
         $values = @{}
@@ -500,8 +568,11 @@ function Get-QuotaSummary {
         }
     }
     catch {
+        $failure = Get-QuotaFailureInfo -Message $_.Exception.Message
         $summary.State = 'unknown'
         $summary.Error = $_.Exception.Message
+        $summary.ErrorKind = $failure.Kind
+        $summary.ErrorReason = $failure.Reason
     }
 
     return [pscustomobject]$summary

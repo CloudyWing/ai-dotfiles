@@ -1,13 +1,13 @@
 {
   "name": "line-status-board",
-  "version": "0.5.0",
-  "description": "在 Desktop 顯示線、Session、工作樹與額度狀態。",
+  "version": "0.6.0",
+  "description": "在 Desktop 顯示工作線、Session、工作目錄與 Codex 額度狀態。",
   "types": "./types/index.d.ts",
   "userConfig": {
     "workRoots": {
       "type": "string",
       "title": "掃描位置",
-      "description": "以分號分隔 work-root；空白時使用與腳本相同的預設掃描位置。兩種情況都會再加入目前 Session 所在的 repo。",
+      "description": "以分號分隔工作目錄；空白時使用與腳本相同的預設掃描位置。兩種情況都會再加入目前 Session 所在的 repo。",
       "default": ""
     },
     "scriptPath": {
@@ -15,6 +15,12 @@
       "title": "狀態腳本路徑",
       "description": "空白時自動尋找狀態腳本。",
       "default": ""
+    },
+    "notifySessionDone": {
+      "type": "boolean",
+      "title": "Session 跑完提醒",
+      "description": "Session 由執行中轉為閒置時顯示提醒。",
+      "default": true
     }
   }
 }

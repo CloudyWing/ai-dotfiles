@@ -6,6 +6,162 @@ import type { CurrentRepo } from '../hooks/lib'
 import { isDispatchWorktree, toEpochMs, relativeTime, isStalled, sortSessionsByActivity, checkpointLabel, sessionTone, lineTone, rootTone, numberTone, rootDetail, quotaDetail, segmentsText, normalizeExpanded, toggleExpanded, iconSvg, ICON_ALT, DIVIDER_SVG, dividerText, QUOTA_OK_FROM, QUOTA_WARN_FROM, STALE_MS } from '../hooks/lib'
 import { BLOCK_IDS, BLOCK_ORDER, BLOCK_TITLES, countText, blockCounts, blockTitleText, stalledToggleText } from '../hooks/lib'
 import { DIM_AFTER_MS, lineNameTone, isLanded, parseFeatureBranches, lineRightText, displayWidth, canShowNote } from '../hooks/lib'
+import { loginCommand, loginDisplayMode, quotaErrorRow, scopedSessions, lowestPrimary, statusText } from '../hooks/lib'
+import { finishedSessions, finishedToastText, normalizeAlertSignature, quotaAlert, QUOTA_ALERT_BELOW, QUOTA_ALERT_KEY } from '../hooks/lib'
+import { SESSION_OPEN_MODE, sessionLink, sessionOpenTarget } from '../hooks/lib'
+import type { Quota } from '../hooks/lib'
+import { CLEANUP_DELETE_TIMEOUT_MS, CLEANUP_LIST_LIMIT, CLEANUP_LIST_TIMEOUT_MS, CLEANUP_REVIEW_LIMIT, cleanupItemDetail, cleanupItemName, formatBytes, groupCleanupItems, parseCleanupOutput } from '../hooks/lib'
+import { CLEANUP_LINE_LIMIT, closableCleanupLines, closedLineArgument, normalizeClosedLines, toggleClosedLine } from '../hooks/lib'
+import type { CleanupItem } from '../types'
+
+const cleanupItem: CleanupItem = { id: 'one', kind: 'dispatchWorktree', root: 'C:\\root', path: 'C:\\root\\one', name: 'one', lineSlug: 'line-a', category: null, status: 'cleanable', reasons: [], sizeBytes: 1536, fileCount: 3, protectedFileCount: 0, trackedChangeCount: 2, untrackedCount: 4 }
+const cleanupDocument = { schema: 'ai-agents.work-overview-cleanup.v1', mode: 'list', generatedAtUtc: '2026-11-08T00:00:00Z', planId: 'plan-id', sessionsKnown: true, items: [cleanupItem], totals: { cleanableCount: 1, cleanableBytes: 1536, needsReviewCount: 0, protectedCount: 0 }, warnings: [], result: null }
+
+test('P7 phase 6 parses cleanup plans and rejects invalid envelopes', () => {
+  const parsed = parseCleanupOutput(JSON.stringify({ ...cleanupDocument, items: [cleanupItem, { id: 'invalid' }] }))
+  expect(parsed.ok).toBe(true)
+  if (parsed.ok) {
+    expect(parsed.value.items).toEqual([cleanupItem])
+    expect([parsed.value.items[0].trackedChangeCount, parsed.value.items[0].untrackedCount]).toEqual([2, 4])
+  }
+  for (const invalid of [
+    { ...cleanupDocument, schema: 'wrong' }, { ...cleanupDocument, items: {} },
+    { ...cleanupDocument, planId: '' }, { ...cleanupDocument, planId: undefined },
+    { ...cleanupDocument, totals: null }, { ...cleanupDocument, mode: 'delete' }
+  ]) expect(parseCleanupOutput(JSON.stringify(invalid)).ok).toBe(false)
+  expect(parseCleanupOutput('not json').ok).toBe(false)
+  const done = { ...cleanupDocument, mode: 'delete', result: { deleted: [{ id: 'one', bytes: 1536 }], failed: [], freedBytes: 1536 } }
+  expect(parseCleanupOutput(JSON.stringify(done)).ok).toBe(true)
+})
+
+test('P7 phase 6 parses the cleanup script ASCII-escaped JSON as emitted', () => {
+  const emitted = String.raw`{"schema":"ai-agents.work-overview-cleanup.v1","mode":"list","generatedAtUtc":"2026-11-08T08:03:02Z","planId":"10740312","sessionsKnown":false,"items":[{"id":"worktree:c:\\x\\repo-wt","kind":"worktree","root":"C:\\x\\repo-wt","path":"C:\\x\\repo-wt","name":"repo-wt","lineSlug":"","category":"","status":"needs-review","reasons":["\u672a\u53d6\u5f97 Session \u6e05\u55ae"],"sizeBytes":98,"fileCount":1,"protectedFileCount":0,"trackedChangeCount":0,"untrackedCount":0},{"id":"backup:c:\\x\\b","kind":"backup","root":"C:\\x","path":"C:\\x\\b","name":"20200101_000000","lineSlug":"","category":"","status":"cleanable","reasons":[],"sizeBytes":3,"fileCount":1,"protectedFileCount":0,"trackedChangeCount":null,"untrackedCount":null}],"totals":{"cleanableCount":1,"cleanableBytes":3,"needsReviewCount":1,"protectedCount":0},"warnings":[],"result":null}`
+  const parsed = parseCleanupOutput(emitted)
+  expect(parsed.ok).toBe(true)
+  if (parsed.ok) {
+    expect(parsed.value.items.length).toBe(2)
+    expect(parsed.value.items[0].reasons).toEqual(['未取得 Session 清單'])
+    expect(cleanupItemName(parsed.value.items[1])).toBe('備份 20200101_000000')
+    expect(cleanupItemDetail(parsed.value.items[0])).toBe('未 commit 改動 0 個、未追蹤 0 個；未取得 Session 清單')
+    expect(groupCleanupItems(parsed.value.items).cleanable.length).toBe(1)
+  }
+})
+test('P7 review round 2 closed line helpers validate, dedupe, and build one argument', () => {
+  expect(normalizeClosedLines(['b-line', 'a-line', 'a-line', 'Bad Slug', '', '-x', 'c;d', 7, null])).toEqual(['a-line', 'b-line'])
+  expect(normalizeClosedLines('a-line')).toEqual([])
+  expect(closedLineArgument([])).toBe(null)
+  expect(closedLineArgument(['b-line', 'a-line'])).toBe('a-line,b-line')
+  expect(closedLineArgument(['not valid'])).toBe(null)
+  expect(toggleClosedLine([], 'a-line')).toEqual(['a-line'])
+  expect(toggleClosedLine(['a-line'], 'b-line')).toEqual(['a-line', 'b-line'])
+  expect(toggleClosedLine(['a-line', 'b-line'], 'a-line')).toEqual(['b-line'])
+  expect(toggleClosedLine(['a-line'], 'bad slug')).toEqual(['a-line'])
+})
+
+test('P7 review round 2 only offers unclosed lines that a designation can release', () => {
+  const open = (slug: string, reasons = ['缺少結案檢查點']): CleanupItem => ({ ...cleanupItem, id: `line:${slug}`, kind: 'lineArtifacts', name: slug, lineSlug: slug, category: 'all', status: 'protected', reasons })
+  const items: CleanupItem[] = [
+    open('beta'), open('alpha'), open('alpha'), open('busy', ['同名 Session 使用中']), open('unknown', ['未取得 Session 清單']),
+    open('chosen'), open('Bad Slug'), { ...open('history-only'), category: 'history' }, { ...open('review-only'), status: 'needs-review' }, { ...cleanupItem, lineSlug: null }
+  ]
+  const result = closableCleanupLines(items, ['chosen'])
+  expect(result.shown).toEqual([{ slug: 'alpha', reason: '缺少結案檢查點' }, { slug: 'beta', reason: '缺少結案檢查點' }])
+  expect(result.hidden).toBe(0)
+  const many = Array.from({ length: CLEANUP_LINE_LIMIT + 5 }, (_, index) => open(`line-${String(index).padStart(3, '0')}`))
+  const limited = closableCleanupLines(many, [])
+  expect(limited.shown.length).toBe(CLEANUP_LINE_LIMIT)
+  expect(limited.hidden).toBe(5)
+})
+
+test('P7 phase 6 cleanup formats sizes, names, and change counts', () => {
+  expect([0, 1536, 1024 ** 2, 1024 ** 3].map(formatBytes)).toEqual(['0 B', '2 KB', '1 MB', '1.0 GB'])
+  expect([1023, 1024, 1048575, 1048576, 1073741823, 1073741824].map(formatBytes)).toEqual(['1023 B', '1 KB', '1 MB', '1 MB', '1.0 GB', '1.0 GB'])
+  expect(cleanupItemName(cleanupItem)).toBe('派工 one（line-a）')
+  expect(cleanupItemDetail(cleanupItem)).toBe('未 commit 改動 2 個、未追蹤 4 個；3 個檔案')
+  expect(cleanupItemDetail({ ...cleanupItem, trackedChangeCount: null })).toContain('改動數無法取得')
+  expect(cleanupItemDetail({ ...cleanupItem, untrackedCount: undefined })).toContain('改動數無法取得')
+  expect(cleanupItemName({ ...cleanupItem, name: 'one（line-a）' })).toBe('派工 one（line-a）')
+  expect(cleanupItemName({ ...cleanupItem, lineSlug: '' })).toBe('派工 one')
+  expect(cleanupItemName({ ...cleanupItem, kind: 'lineArtifacts', category: 'history', lineSlug: '', name: 'x' })).toBe('x · 歷史')
+  expect(cleanupItemName({ ...cleanupItem, kind: 'worktree' })).toBe('工作目錄 one')
+  expect(cleanupItemName({ ...cleanupItem, kind: 'backup' })).toBe('備份 one')
+  expect(cleanupItemName({ ...cleanupItem, kind: 'lineArtifacts', category: 'handoff-extras' })).toBe('line-a · 交接暫存')
+  expect([CLEANUP_LIST_TIMEOUT_MS, CLEANUP_DELETE_TIMEOUT_MS]).toEqual([300000, 600000])
+})
+
+test('P7 phase 6 groups and limits cleanup lists', () => {
+  const cleanable = Array.from({ length: 33 }, (_, index) => ({ ...cleanupItem, id: `c${index}`, sizeBytes: index }))
+  const review: CleanupItem[] = Array.from({ length: 17 }, (_, index) => ({ ...cleanupItem, id: `r${index}`, status: 'needs-review', reasons: ['使用中'] }))
+  const protectedItems: CleanupItem[] = [
+    { ...cleanupItem, id: 'p1', status: 'protected', reasons: ['未結案'] },
+    { ...cleanupItem, id: 'p2', status: 'protected', reasons: ['未結案', '被引用'] },
+    { ...cleanupItem, id: 'p3', status: 'protected', reasons: ['被引用'] }
+  ]
+  const groups = groupCleanupItems([...cleanable, ...review, ...protectedItems])
+  expect([groups.cleanable.length, groups.cleanableHidden, groups.review.length, groups.reviewHidden]).toEqual([CLEANUP_LIST_LIMIT, 3, CLEANUP_REVIEW_LIMIT, 2])
+  expect(groups.cleanable.map(item => item.sizeBytes)).toEqual(Array.from({ length: 30 }, (_, index) => 32 - index))
+  expect(groups.protected).toEqual([{ reason: '未結案', count: 2 }, { reason: '被引用', count: 1 }])
+})
+
+test('P7 phase 3 session transitions and baseline', () => {
+  const first = finishedSessions(null, [{ sessionId: 'a', title: 'Alpha', isRunning: true }, { sessionId: 'b', isRunning: false }, { isRunning: true }])
+  expect([...first.next]).toEqual([['a', true], ['b', false]])
+  expect(first.finished).toEqual([])
+  const transitions = finishedSessions(new Map([['a', true], ['b', true], ['c', false], ['d', false], ['missing', true]]), [
+    { sessionId: 'a', title: 'Alpha', isRunning: false }, { sessionId: 'b', name: 'Beta' },
+    { sessionId: 'c', isRunning: true }, { sessionId: 'd', isRunning: false },
+    { sessionId: 'new', isRunning: false }, { isRunning: false }
+  ])
+  expect(transitions.finished).toEqual(['Alpha', 'Beta'])
+  expect([...transitions.next]).toEqual([['a', false], ['b', false], ['c', true], ['d', false], ['new', false]])
+  expect(finishedSessions(new Map([['a', true]]), [{ sessionId: 'a', isRunning: true }]).finished).toEqual([])
+  expect(finishedSessions(new Map([['a', true]]), [{ sessionId: 'a' }]).finished).toEqual(['a'])
+  expect(finishedSessions(transitions.next, [{ sessionId: 'a', isRunning: false }]).finished).toEqual([])
+})
+test('P7 phase 3 finished toast text limits titles and count', () => {
+  expect(finishedToastText(['Alpha'])).toBe('「Alpha」已跑完')
+  expect(finishedToastText(['a', 'b', 'c'])).toBe('3 個 Session 已跑完：a、b、c')
+  expect(finishedToastText(['a', 'b', 'c', 'd'])).toBe('4 個 Session 已跑完：a、b、c…')
+  expect(finishedToastText(['😀'.repeat(31)])).toBe(`「${'😀'.repeat(30)}…」已跑完`)
+})
+test('P7 phase 3 quota alert thresholds and invalid store values', () => {
+  const low = (name: string, value: number, reset = 'T'): Quota => ({ Name: name, State: 'ok', PrimaryRemaining: value, PrimaryResetsAtLocal: reset })
+  expect([QUOTA_ALERT_BELOW, QUOTA_ALERT_KEY]).toEqual([20, 'quota-alert'])
+  expect(quotaAlert([low('b', 5), low('a', 19.4)], null)).toEqual({ alert: true, signature: 'a@T|b@T', text: 'Codex 5 小時額度：a 剩 19%、b 剩 5%' })
+  expect(quotaAlert([low('a', 19.6), low('b', 5)], 'a@T|b@T')).toEqual({ alert: false, signature: null, text: null })
+  expect(quotaAlert([low('a', 19.4)], null)).toEqual({ alert: true, signature: 'a@T', text: 'Codex 5 小時額度：a 剩 19%' })
+  expect(quotaAlert([], 'a@T')).toEqual({ alert: false, signature: null, text: null })
+  for (const value of [null, undefined, 7, {}, '', 'invalid', 'a@T|a@T']) expect(normalizeAlertSignature(value)).toBe(null)
+  expect(normalizeAlertSignature('a@|b@*')).toBe('a@|b@*')
+})
+test('P7 phase 3 quota alert failure classes and uncertain data', () => {
+  const low: Quota = { Name: 'a', State: 'ok', PrimaryRemaining: 10, PrimaryResetsAtLocal: 'T' }
+  const limit: Quota = { Name: 'b', State: 'unknown', ErrorKind: 'limit-reached' }
+  const login: Quota = { Name: 'b', State: 'unknown', ErrorKind: 'auth-expired' }
+  const unknown: Quota = { Name: 'b', State: 'unknown', ErrorKind: 'other' }
+  expect(quotaAlert([low, limit], null)).toEqual({ alert: true, signature: 'a@T|b@*', text: 'Codex 5 小時額度：a 剩 10%、b 已達上限' })
+  expect(quotaAlert([low, login], null)).toEqual({ alert: true, signature: 'a@T|b@*', text: 'Codex 5 小時額度：a 剩 10%、b 登入失效' })
+  const allUnavailable = quotaAlert([{ ...limit, Name: 'a' }, login], null)
+  expect(allUnavailable).toEqual({ alert: true, signature: 'a@*|b@*', text: 'Codex 5 小時額度：a 已達上限、b 登入失效' })
+  expect(/停止|暫停|建議/.test(allUnavailable.text || '')).toBe(false)
+  expect(quotaAlert([limit, { ...low, PrimaryRemaining: 20 }], 'old@T')).toEqual({ alert: false, signature: null, text: null })
+  for (const item of [unknown, { Name: 'b', State: 'unknown' }, { Name: 'b', State: 'ok', PrimaryRemaining: null }]) {
+    expect(quotaAlert([low, item], 'a@T|b@T')).toEqual({ alert: false, signature: 'a@T|b@T', text: null })
+  }
+  expect(quotaAlert([limit, { ...unknown, Name: 'a' }], 'a@T|b@T')).toEqual({ alert: false, signature: 'a@T|b@T', text: null })
+})
+test('P7 phase 3 quota alert deduplicates windows and rearms', () => {
+  const low = (name: string, reset: string): Quota => ({ Name: name, State: 'ok', PrimaryRemaining: 10, PrimaryResetsAtLocal: reset })
+  const limit: Quota = { Name: 'a', State: 'unknown', ErrorKind: 'limit-reached' }
+  const previous = 'a@T|b@T'
+  expect(quotaAlert([low('b', 'T'), low('a', 'T')], previous)).toEqual({ alert: false, signature: previous, text: null })
+  expect(quotaAlert([limit, low('b', 'T')], previous)).toEqual({ alert: false, signature: previous, text: null })
+  expect(quotaAlert([limit, low('b', 'T2')], previous)).toEqual({ alert: true, signature: 'a@*|b@T2', text: 'Codex 5 小時額度：a 已達上限、b 剩 10%' })
+  expect(quotaAlert([low('a', 'T2'), low('b', 'T')], previous)).toEqual({ alert: true, signature: 'a@T2|b@T', text: 'Codex 5 小時額度：a 剩 10%、b 剩 10%' })
+  expect(quotaAlert([limit, low('c', 'T')], previous)).toEqual({ alert: true, signature: 'a@*|c@T', text: 'Codex 5 小時額度：a 已達上限、c 剩 10%' })
+  expect(quotaAlert([limit, low('b', 'T')], 'a@*|b@T')).toEqual({ alert: false, signature: 'a@*|b@T', text: null })
+  expect(quotaAlert([low('a', 'T')], null).alert).toBe(true)
+})
 
 test('P5-a1 dispatch worktree boundaries', () => {
   for (const path of ['C:/Users/X/.ai-agents/.local/ai-sessions/worktrees/dev-dd-1', 'c:/users/x/.ai-agents/.local/AI-Sessions/Worktrees/rev-2/', 'C:/x/.local/ai-sessions/worktrees']) expect(isDispatchWorktree(path)).toBe(true)
@@ -60,7 +216,7 @@ test('P5-f1 f2 icons and divider', () => {
   const icons = (['sessions', 'quota', 'lines', 'workRoots'] as const).map(iconSvg)
   expect(new Set(icons).size).toBe(4)
   for (const icon of icons) { expect(icon.startsWith('<svg')).toBe(true); expect(icon.includes('stroke="#808080"')).toBe(true) }
-  expect(ICON_ALT.lines).toBe('線圖示')
+  expect(ICON_ALT.lines).toBe('工作線圖示')
   expect(DIVIDER_SVG.includes('height="1"')).toBe(true)
   expect([dividerText(40).length, dividerText(undefined).length, dividerText(3).length, dividerText(999).length]).toEqual([40, 40, 10, 200])
 })
@@ -74,6 +230,81 @@ const doc: Document = {
   quota: [{ Name: 'account', State: 'unknown', Error: 'unavailable' }],
   warnings: []
 }
+
+test('P7 phase 4 session links accept only the specified Claude URI', () => {
+  const link = 'claude://claude.ai/epitaxy/local_12345678-1234-1234-1234-123456789abc'
+  expect(sessionLink({ link })).toBe(link)
+  expect(sessionLink({ link: 'claude://claude.ai/epitaxy/A_z-09' })).toBe('claude://claude.ai/epitaxy/A_z-09')
+  expect(sessionLink({ sessionId: 'local_123' })).toBe(null)
+  for (const invalid of [null, undefined, 1, {}, '', 'https://claude.ai/epitaxy/local_123', `${link} x`, `${link};x`, `${link}&x`, `${link}\n`, `${link}/extra`, `${link}?x=1`]) {
+    expect(sessionLink({ link: invalid })).toBe(null)
+  }
+})
+test('P7 phase 4 open target selects link, process or no action', () => {
+  const link = 'claude://claude.ai/epitaxy/local_123'
+  expect(SESSION_OPEN_MODE).toBe('process')
+  expect(sessionOpenTarget('link', link)).toEqual({ kind: 'link', href: link })
+  expect(sessionOpenTarget('process', link)).toEqual({ kind: 'process', argv: ['explorer.exe', link] })
+  expect(sessionOpenTarget('off', link)).toBe(null)
+  for (const mode of ['link', 'process', 'off'] as const) expect(sessionOpenTarget(mode, null)).toBe(null)
+})
+test('P7 phase 4 snapshot includes only validated Session links', () => {
+  const link = 'claude://claude.ai/epitaxy/local_123'
+  const sessions = [{ cwd: root, title: 'linked', link }, { cwd: root, title: 'invalid', link: `${link};bad` }, { cwd: root, title: 'missing', sessionId: 'local_123' }]
+  const board = buildSnapshot({ ok: true, value: doc }, { ok: true, value: sessions }, new Date())
+  expect(board.sessions.rows.map(item => [item.name, item.link])).toEqual([['linked', link], ['invalid', null], ['missing', null]])
+  for (const item of [...board.quota.rows, ...board.lines.rows, ...board.lines.stalledRows, ...board.workRoots.rows]) expect(item.link).toBe(null)
+})
+
+test('P7 phase 2 quota failures produce distinct rows', () => {
+  const home = 'C:\\Users\\X\\.codex-a'
+  const command = '$env:CODEX_HOME = "C:\\Users\\X\\.codex-a"; codex login; Remove-Item Env:CODEX_HOME'
+  const expired = quotaErrorRow({ Name: 'a', State: 'unknown', ErrorKind: 'auth-expired', CodexHome: home })
+  const limited = quotaErrorRow({ Name: 'b', State: 'unknown', ErrorKind: 'limit-reached' })
+  const other = quotaErrorRow({ Name: 'c', State: 'unknown', ErrorKind: 'other', ErrorReason: '查詢逾時' })
+  expect([expired.name, limited.name, other.name]).toEqual(['a · 登入失效', 'b · 已達上限', 'c · 無法取得：查詢逾時'])
+  expect(expired.login).toEqual({ account: 'a', command })
+  expect([expired.dot, expired.tone, limited.dot, other.tone]).toEqual(['error', 'error', 'error', 'error'])
+  expect([limited.login, other.login]).toEqual([null, null])
+  expect(quotaErrorRow({ Name: 'd', State: 'unknown', Error: 'exit 1：' }).name).toBe('d · 無法取得：原因不明')
+  expect(quotaErrorRow({ Name: 'd', State: 'unknown', Error: 'exit 1' }).name).toBe('d · 無法取得：原因不明')
+  expect(quotaErrorRow({ Name: 'e', State: 'unknown', Error: 'exit 1：Get-CodexQuota.ps1 失敗：可讀原因\n另一行' }).name).toBe('e · 無法取得：可讀原因')
+  expect(quotaErrorRow({ Name: 'f', State: 'unknown', ErrorReason: '字'.repeat(41) }).name).toBe('f · 無法取得：' + '字'.repeat(40) + '…')
+  const board = buildSnapshot({ ok: true, value: { ...doc, quota: [{ Name: 'd', State: 'unknown', Error: 'exit 1：' }] } }, { ok: true, value: [] }, new Date())
+  expect(new RegExp('無法取得：' + 'exit \\d+$').test(board.quota.rows[0].name)).toBe(false)
+})
+test('P7 phase 2 login command validates paths and display mode', () => {
+  expect(loginCommand('C:\\Users\\X\\.codex-a')).toBe('$env:CODEX_HOME = "C:\\Users\\X\\.codex-a"; codex login; Remove-Item Env:CODEX_HOME')
+  for (const path of ['relative', 'C:\\', 'C:\\bad"x', 'C:\\bad`x', 'C:\\bad$x', 'C:\\bad;x', 'C:\\bad\nx', 'C:\\bad\rx', null]) expect(loginCommand(path)).toBe(null)
+  expect([loginDisplayMode('copy', 'cmd', false), loginDisplayMode('copy', 'cmd', true), loginDisplayMode('text', 'cmd', false), loginDisplayMode('copy', null, false)]).toEqual(['copy', 'copy-and-text', 'text', 'invalid'])
+})
+test('P7 phase 2 status, scoped sessions and snapshot roots', () => {
+  const sessions = [{ cwd: root, isRunning: true }, { cwd: linked, isRunning: false }, { cwd: 'D:\\outside', isRunning: true }, { cwd: root, isArchived: true }]
+  const script = { ok: true, value: doc } as const
+  const found = { ok: true, value: sessions } as const
+  const failed = { ok: false, error: 'failure' } as const
+  expect(scopedSessions(script, found)).toEqual(sessions.slice(0, 2))
+  expect([scopedSessions(failed, found), scopedSessions(script, failed)]).toEqual([null, null])
+  expect(lowestPrimary([{ Name: 'a', State: 'ok', PrimaryRemaining: 3.4 }, { Name: 'b', State: 'ok', PrimaryRemaining: 8 }, { Name: 'c', State: 'unknown', PrimaryRemaining: 0 }])).toBe(3)
+  expect(lowestPrimary([{ Name: 'a', State: 'unknown', PrimaryRemaining: 0 }, { Name: 'b', State: 'ok' }])).toBe(null)
+  expect([statusText(1, 3), statusText(0, null), statusText(null, 3), statusText(null, null)]).toEqual(['1 執行中 · 額度 3%', '0 執行中', '額度 3%', undefined])
+  expect(buildSnapshot(script, found, new Date()).scannedRoots).toEqual(doc.scannedRoots)
+  expect(buildSnapshot(failed, found, new Date()).scannedRoots).toEqual([])
+  expect(errorSnapshot('bad').scannedRoots).toEqual([])
+  expect(buildSnapshot(script, found, new Date()).sessions.rows.every(item => item.link === null && item.login === null)).toBe(true)
+})
+test('P7 phase 2 quota optional strings are validated independently', () => {
+  const value = { ...doc, quota: [
+    { Name: 'old', State: 'unknown' },
+    { Name: 'new', State: 'unknown', CodexHome: null, ErrorKind: 'auth-expired', ErrorReason: '登入失效' },
+    { Name: 'bad-home', State: 'unknown', CodexHome: 1 },
+    { Name: 'bad-kind', State: 'unknown', ErrorKind: false },
+    { Name: 'bad-reason', State: 'unknown', ErrorReason: {} }
+  ] }
+  const parsed = parseScriptOutput(JSON.stringify(value))
+  expect(parsed.ok).toBe(true)
+  if (parsed.ok) expect(parsed.value.quota.map(item => item.Name)).toEqual(['old', 'new'])
+})
 
 test('P5-a2 a3 current repo and arguments exclude dispatch worktrees', () => {
   const temporary = root + '\\.local\\ai-sessions\\worktrees\\dev-dd-1'
@@ -122,7 +353,7 @@ test('P5 phase 1 remaining labels and icon contract', () => {
     const svg = iconSvg(id)
     for (const fragment of ['xmlns=', 'width="14"', 'height="14"', 'viewBox="0 0 14 14"', 'fill="none"', '</svg>']) expect(svg.includes(fragment)).toBe(true)
   }
-  expect(Object.values(ICON_ALT)).toEqual(['Session 圖示', '額度圖示', '線圖示', 'work-root 圖示'])
+  expect(Object.values(ICON_ALT)).toEqual(['Session 圖示', 'Codex 額度圖示', '工作線圖示', '工作目錄圖示'])
   expect(DIVIDER_SVG.includes('preserveAspectRatio="none"')).toBe(true)
   expect((DIVIDER_SVG.match(/<rect/g) || []).length).toBe(1)
 })
@@ -170,14 +401,19 @@ test('P5-g4 quota row and warning', () => {
 })
 test('P5-h1 h2 block counts and ordering', () => {
   const block = { rows: [{ name: 'a' }, { name: 'b' }], stalledRows: [], hiddenCount: 1, errorMessage: null } as unknown as import('../types').BoardBlock
-  expect(countText(8, 30)).toBe('8／30')
+  expect(countText('sessions', 4, 32)).toBe('顯示 4 個，共 32 個')
+  expect(countText('quota', 4, 32)).toBe('顯示 4 個帳號，共 32 個帳號')
+  expect(countText('lines', 4, 32)).toBe('顯示 4 條，共 32 條')
+  expect(countText('workRoots', 4, 32)).toBe('顯示 4 個，共 32 個')
   expect(blockCounts(block, false)).toEqual({ shown: 2, total: 3 })
-  expect(blockTitleText('lines', block, false, false)).toBe('線 2／3 ▾')
-  expect(blockTitleText('lines', block, true, false)).toBe('線 2／3 ▸')
-  expect(blockTitleText('lines', undefined, false, false)).toBe('線 ▾')
+  expect(blockTitleText('lines', block, false, false)).toBe('工作線 顯示 2 條，共 3 條 ▾')
+  expect(blockTitleText('lines', block, true, false)).toBe('工作線 顯示 2 條，共 3 條 ▸')
+  expect(blockTitleText('lines', undefined, false, false)).toBe('工作線 ▾')
   expect(BLOCK_ORDER).toEqual(['sessions', 'quota', 'lines', 'workRoots'])
   expect(BLOCK_IDS).toEqual(['sessions', 'lines', 'workRoots', 'quota'])
-  expect(BLOCK_TITLES.quota).toBe('額度')
+  expect(BLOCK_TITLES.quota).toBe('Codex 額度')
+  expect(BLOCK_TITLES.lines).toBe('工作線')
+  expect(BLOCK_TITLES.workRoots).toBe('工作目錄')
 })
 test('P5-i1 i2 stalled grouping and boundary', () => {
   const now = new Date('2026-11-05T01:23:10Z'), ms = now.getTime()
@@ -208,8 +444,8 @@ test('P5-i4 i5 active limit and title counts', () => {
   expect(stalledToggleText(22, false)).toBe('已結束／停擺 22 條 ▸')
   expect(stalledToggleText(22, true)).toBe('已結束／停擺 22 條 ▾')
   const titleBlock = { ...result, rows: result.rows.slice(0, 8), stalledRows: Array.from({ length: 22 }, () => result.stalledRows[0]), hiddenCount: 0 }
-  expect(blockTitleText('lines', titleBlock, false, false)).toBe('線 8／30 ▾')
-  expect(blockTitleText('lines', titleBlock, false, true)).toBe('線 30／30 ▾')
+  expect(blockTitleText('lines', titleBlock, false, false)).toBe('工作線 顯示 8 條，共 30 條 ▾')
+  expect(blockTitleText('lines', titleBlock, false, true)).toBe('工作線 顯示 30 條，共 30 條 ▾')
 })
 test('P5-i6 error blocks and MCP failure grouping', () => {
   const now = new Date('2026-11-05T01:23:10Z')

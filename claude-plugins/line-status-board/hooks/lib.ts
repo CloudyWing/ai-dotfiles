@@ -1,8 +1,14 @@
-import type { BlockId, BoardBlock, BoardRow, BoardSnapshot, DetailSegment, DotTone, ExpandId } from '../types'
+import type { BlockId, BoardBlock, BoardRow, BoardSnapshot, CleanupItem, CleanupPlan, DetailSegment, DotTone, ExpandId } from '../types'
+import type { Engine } from 'claude-code'
 
 export const REFRESH_MS = 60000
 export const GIT_TIMEOUT_MS = 3000
 export const SCRIPT_BUDGET_MS = 40000
+export const CLEANUP_LIST_TIMEOUT_MS = 300000
+export const CLEANUP_DELETE_TIMEOUT_MS = 600000
+export const CLEANUP_LIST_LIMIT = 30
+export const CLEANUP_REVIEW_LIMIT = 15
+export const CLEANUP_LINE_LIMIT = 30
 export const MAX_EXTRA_ROOTS = 64
 export const BLOCK_IDS: BlockId[] = ['sessions', 'lines', 'workRoots', 'quota']
 export const STORE_KEY = 'collapsed-blocks'
@@ -15,16 +21,21 @@ export const SESSION_LIMIT = 15
 export const LINE_LIMIT = 12
 export const QUOTA_OK_FROM = 50
 export const QUOTA_WARN_FROM = 20
+export const QUOTA_ALERT_BELOW = QUOTA_WARN_FROM
+export const QUOTA_ALERT_KEY = 'quota-alert'
 export const EXPAND_KEY = 'expanded-sections'
 export const EXPAND_IDS: ExpandId[] = ['stalledLines']
 export const BLOCK_ORDER: BlockId[] = ['sessions', 'quota', 'lines', 'workRoots']
-export const BLOCK_TITLES: Record<BlockId, string> = { sessions: 'Session', quota: '額度', lines: '線', workRoots: 'work-root' }
+export const BLOCK_TITLES: Record<BlockId, string> = { sessions: 'Session', quota: 'Codex 額度', lines: '工作線', workRoots: '工作目錄' }
 export const TONE_HEX: Record<DotTone, string> = { success: '#3fb950', warning: '#d29922', error: '#f85149', inactive: '#808080' }
 export const NAME_SHRINK = 1
 export const NOTE_SHRINK = 8
 export const CURRENT_BG = '#80808014'
 export const ICON_SIZE = 14
 export const DIVIDER_MODE: 'svg' | 'text' = 'svg'
+export const LOGIN_COMMAND_MODE: 'copy' | 'text' = 'copy'
+export const SESSION_LINK_PATTERN = /^claude:\/\/claude\.ai\/epitaxy\/[A-Za-z0-9_-]+$/
+export const SESSION_OPEN_MODE: 'link' | 'process' | 'off' = 'process'
 export function normalizeCollapsed(value: unknown): BlockId[] {
   return Array.isArray(value) ? BLOCK_IDS.filter(id => value.includes(id)) : []
 }
@@ -137,17 +148,21 @@ export function quotaBarText(percent: number | null): string {
   const filled = Math.round((roundPercent(percent) ?? 0) / 20)
   return '█'.repeat(filled) + '░'.repeat(5 - filled)
 }
-export function countText(shown: number, total: number): string { return `${shown}／${total}` }
+export function countText(id: BlockId, shown: number, total: number): string {
+  const units: Record<BlockId, string> = { sessions: '個', quota: '個帳號', lines: '條', workRoots: '個' }
+  const unit = units[id]
+  return `顯示 ${shown} ${unit}，共 ${total} ${unit}`
+}
 export function blockCounts(value: BoardBlock, stalledExpanded: boolean): { shown: number; total: number } {
   const stalled = value.stalledRows.length
   return { shown: value.rows.length + (stalledExpanded ? stalled : 0), total: value.rows.length + value.hiddenCount + stalled }
 }
 export function blockTitleText(id: BlockId, value: BoardBlock | undefined, isCollapsed: boolean, stalledExpanded: boolean): string {
   const counts = value && !value.errorMessage ? blockCounts(value, stalledExpanded) : null
-  return `${BLOCK_TITLES[id]}${counts ? ' ' + countText(counts.shown, counts.total) : ''} ${isCollapsed ? '▸' : '▾'}`
+  return `${BLOCK_TITLES[id]}${counts ? ' ' + countText(id, counts.shown, counts.total) : ''} ${isCollapsed ? '▸' : '▾'}`
 }
 export function stalledToggleText(count: number, expanded: boolean): string { return `已結束／停擺 ${count} 條 ${expanded ? '▾' : '▸'}` }
-export const ICON_ALT: Record<BlockId, string> = { sessions: 'Session 圖示', quota: '額度圖示', lines: '線圖示', workRoots: 'work-root 圖示' }
+export const ICON_ALT: Record<BlockId, string> = { sessions: 'Session 圖示', quota: 'Codex 額度圖示', lines: '工作線圖示', workRoots: '工作目錄圖示' }
 export function iconSvg(id: BlockId): string {
   const paths: Record<BlockId, string> = {
     sessions: '<path d="M3 2h8a1.5 1.5 0 0 1 1.5 1.5V8A1.5 1.5 0 0 1 11 9.5H7L4.5 12V9.5H3A1.5 1.5 0 0 1 1.5 8V3.5A1.5 1.5 0 0 1 3 2z"/>',
@@ -174,10 +189,10 @@ export function canShowNote(columns: number | undefined, name: string, note: str
   return ROW_RESERVED_COLUMNS + displayWidth(name) + displayWidth(note) + displayWidth(right) <= available
 }
 export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
-export type Session = { cwd?: unknown; isArchived?: boolean; isRunning?: boolean; name?: string; title?: string; sessionId?: string; lastActivityAt?: unknown }
+export type Session = { cwd?: unknown; isArchived?: boolean; isRunning?: boolean; name?: string; title?: string; sessionId?: string; lastActivityAt?: unknown; link?: unknown }
 export type Line = { LineSlug: string; WorkRoot: string; CheckpointType?: string | null; CheckpointUpdatedUtc?: string | null; NextStepSummary?: string | null; Error?: string | null }
 export type Root = { Path: string; IsLinkedWorktree?: boolean | null; Branch?: string | null; DirtyCount?: number | null; MainAhead?: number | null; MainBehind?: number | null; Upstream?: string | null; UpstreamAhead?: number | null; Error?: string | null }
-export type Quota = { Name: string; State: string; Error?: string | null; PrimaryRemaining?: number | null; SecondaryRemaining?: number | null; PrimaryResetsAtLocal?: string | null; SecondaryResetsAtLocal?: string | null }
+export type Quota = { Name: string; State: string; CodexHome?: string | null; Error?: string | null; ErrorKind?: string | null; ErrorReason?: string | null; PrimaryRemaining?: number | null; SecondaryRemaining?: number | null; PrimaryResetsAtLocal?: string | null; SecondaryResetsAtLocal?: string | null }
 export type Document = { scannedRoots: string[]; lines: Line[]; workRoots: Root[]; quota: Quota[]; warnings: string[] }
 export type WorktreeEntry = { path: string; isBare: boolean }
 export type GitProbe = { kind: 'failed' } | { kind: 'notRepo' } | { kind: 'repo'; topLevel: string; worktrees: WorktreeEntry[] | null }
@@ -188,6 +203,32 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 function optional(value: unknown, kind: 'string' | 'number' | 'boolean'): boolean {
   return value == null || (typeof value === kind && (kind !== 'number' || (typeof value === 'number' && Number.isFinite(value))))
+}
+function isCount(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
+}
+export async function scriptFileExists($: Engine, path: string): Promise<boolean> {
+  try { await $.fs.stat(path); return true } catch { return false }
+}
+function isCleanupItem(value: unknown): value is CleanupItem {
+  if (!isRecord(value)) return false
+  return typeof value.id === 'string' && ['worktree', 'dispatchWorktree', 'lineArtifacts', 'backup'].includes(String(value.kind))
+    && typeof value.root === 'string' && typeof value.path === 'string' && typeof value.name === 'string'
+    && (value.lineSlug === null || typeof value.lineSlug === 'string') && (value.category === null || typeof value.category === 'string')
+    && ['cleanable', 'needs-review', 'protected'].includes(String(value.status))
+    && Array.isArray(value.reasons) && value.reasons.every(reason => typeof reason === 'string')
+    && isCount(value.sizeBytes) && isCount(value.fileCount) && isCount(value.protectedFileCount)
+    && (value.trackedChangeCount == null || isCount(value.trackedChangeCount))
+    && (value.untrackedCount == null || isCount(value.untrackedCount))
+}
+function isCleanupTotals(value: unknown): value is CleanupPlan['totals'] {
+  return isRecord(value) && isCount(value.cleanableCount) && isCount(value.cleanableBytes)
+    && isCount(value.needsReviewCount) && isCount(value.protectedCount)
+}
+function isCleanupResult(value: unknown): value is NonNullable<CleanupPlan['result']> {
+  return isRecord(value) && isCount(value.freedBytes)
+    && Array.isArray(value.deleted) && value.deleted.every(item => isRecord(item) && typeof item.id === 'string' && isCount(item.bytes))
+    && Array.isArray(value.failed) && value.failed.every(item => isRecord(item) && typeof item.id === 'string' && typeof item.reason === 'string')
 }
 function isLine(value: unknown): value is Line {
   return isRecord(value) && typeof value.LineSlug === 'string' && typeof value.WorkRoot === 'string'
@@ -200,7 +241,7 @@ function isRoot(value: unknown): value is Root {
 }
 function isQuota(value: unknown): value is Quota {
   return isRecord(value) && typeof value.Name === 'string' && typeof value.State === 'string'
-    && ['Error', 'PrimaryResetsAtLocal', 'SecondaryResetsAtLocal'].every(key => optional(value[key], 'string'))
+    && ['CodexHome', 'Error', 'ErrorKind', 'ErrorReason', 'PrimaryResetsAtLocal', 'SecondaryResetsAtLocal'].every(key => optional(value[key], 'string'))
     && ['PrimaryRemaining', 'SecondaryRemaining'].every(key => optional(value[key], 'number'))
 }
 
@@ -331,6 +372,103 @@ export function parseScriptOutput(stdout: string): Result<Document> {
   }
 }
 
+export function parseCleanupOutput(stdout: string): Result<CleanupPlan> {
+  try {
+    const value: unknown = JSON.parse(stdout)
+    if (!isRecord(value) || value.schema !== 'ai-agents.work-overview-cleanup.v1' || !Array.isArray(value.items)
+      || typeof value.planId !== 'string' || !value.planId || (value.mode !== 'list' && value.mode !== 'delete')
+      || typeof value.generatedAtUtc !== 'string' || typeof value.sessionsKnown !== 'boolean' || !isCleanupTotals(value.totals)
+      || !Array.isArray(value.warnings) || !value.warnings.every(item => typeof item === 'string')
+      || (value.result !== null && !isCleanupResult(value.result)) || (value.mode === 'delete' && value.result === null)) {
+      throw new Error('清理腳本資料格式錯誤')
+    }
+    return { ok: true, value: { schema: value.schema, mode: value.mode, generatedAtUtc: value.generatedAtUtc, planId: value.planId,
+      sessionsKnown: value.sessionsKnown, items: value.items.filter(isCleanupItem), totals: value.totals, warnings: value.warnings, result: value.result } }
+  } catch (error) {
+    return { ok: false, error: String(error instanceof Error ? error.message : error).split(/\r?\n/)[0].slice(0, 120) }
+  }
+}
+
+export function formatBytes(value: number): string {
+  let size = value
+  for (const unit of ['B', 'KB', 'MB']) {
+    const rounded = Math.round(size)
+    if (rounded < 1024) return `${rounded} ${unit}`
+    size /= 1024
+  }
+  return `${size.toFixed(1)} GB`
+}
+
+export function groupCleanupItems(items: CleanupItem[]): { cleanable: CleanupItem[]; cleanableHidden: number; review: CleanupItem[]; reviewHidden: number; protected: { reason: string; count: number }[] } {
+  const cleanable = items.filter(item => item.status === 'cleanable').sort((a, b) => b.sizeBytes - a.sizeBytes)
+  const review = items.filter(item => item.status === 'needs-review')
+  const reasons = new Map<string, number>()
+  for (const item of items) {
+    if (item.status === 'protected') {
+      const reason = item.reasons[0] || '未提供原因'
+      reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+    }
+  }
+  return { cleanable: cleanable.slice(0, CLEANUP_LIST_LIMIT), cleanableHidden: Math.max(0, cleanable.length - CLEANUP_LIST_LIMIT),
+    review: review.slice(0, CLEANUP_REVIEW_LIMIT), reviewHidden: Math.max(0, review.length - CLEANUP_REVIEW_LIMIT),
+    protected: [...reasons].map(([reason, count]) => ({ reason, count })) }
+}
+
+const LINE_SLUG = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+export function normalizeClosedLines(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return [...new Set(value.filter((item): item is string => typeof item === 'string' && LINE_SLUG.test(item)))].sort()
+}
+
+export function toggleClosedLine(lines: string[], slug: string): string[] {
+  const current = normalizeClosedLines(lines)
+  if (!LINE_SLUG.test(slug)) return current
+  return current.includes(slug) ? current.filter(item => item !== slug) : normalizeClosedLines([...current, slug])
+}
+
+export function closedLineArgument(lines: string[]): string | null {
+  const normalized = normalizeClosedLines(lines)
+  return normalized.length ? normalized.join(',') : null
+}
+
+export function closableCleanupLines(items: CleanupItem[], designated: string[]): { shown: { slug: string; reason: string }[]; hidden: number } {
+  const chosen = new Set(designated)
+  const seen = new Set<string>()
+  const lines: { slug: string; reason: string }[] = []
+  for (const item of items) {
+    if (item.kind !== 'lineArtifacts' || item.category !== 'all' || item.status !== 'protected' || !item.lineSlug) continue
+    if (!LINE_SLUG.test(item.lineSlug) || chosen.has(item.lineSlug) || seen.has(item.lineSlug)) continue
+    if (item.reasons.some(reason => reason.includes('Session'))) continue
+    seen.add(item.lineSlug)
+    lines.push({ slug: item.lineSlug, reason: item.reasons[0] || '未提供原因' })
+  }
+  lines.sort((a, b) => a.slug.localeCompare(b.slug))
+  return { shown: lines.slice(0, CLEANUP_LINE_LIMIT), hidden: Math.max(0, lines.length - CLEANUP_LINE_LIMIT) }
+}
+
+export function cleanupItemName(item: CleanupItem): string {
+  if (item.kind === 'worktree') return `工作目錄 ${item.name}`
+  if (item.kind === 'dispatchWorktree') {
+    const slug = item.lineSlug
+    if (!slug) return `派工 ${item.name}`
+    const suffix = `（${slug}）`
+    return `派工 ${item.name.endsWith(suffix) ? item.name.slice(0, -suffix.length) : item.name}${suffix}`
+  }
+  if (item.kind === 'backup') return `備份 ${item.name}`
+  const label = item.category === 'history' ? '歷史' : item.category === 'handoff-extras' ? '交接暫存' : item.category === 'report-logs' ? '報告大檔' : '工作線'
+  return `${item.lineSlug || item.name} · ${label}`
+}
+
+export function cleanupItemDetail(item: CleanupItem): string {
+  const parts: string[] = []
+  if (item.kind === 'worktree' || item.kind === 'dispatchWorktree') {
+    parts.push(item.trackedChangeCount == null || item.untrackedCount == null ? '改動數無法取得' : `未 commit 改動 ${item.trackedChangeCount} 個、未追蹤 ${item.untrackedCount} 個`)
+  }
+  parts.push(item.reasons.length ? item.reasons.join('；') : `${item.fileCount} 個檔案`)
+  return parts.join('；')
+}
+
 export function parseSessions(result: unknown): Result<Session[]> {
   try {
     if (!result || typeof result !== 'object') throw new Error('MCP 回應格式錯誤')
@@ -349,6 +487,84 @@ export function parseSessions(result: unknown): Result<Session[]> {
 export function filterSessions(sessions: Session[], roots: string[]): Session[] {
   return sessions.filter(session => typeof session.cwd === 'string' && session.isArchived !== true && roots.some(root => isUnder(session.cwd as string, root)))
 }
+export function sessionLink(session: Session): string | null {
+  return typeof session.link === 'string' && SESSION_LINK_PATTERN.exec(session.link)?.[0] === session.link ? session.link : null
+}
+export function sessionOpenTarget(mode: 'link' | 'process' | 'off', link: string | null): { kind: 'link'; href: string } | { kind: 'process'; argv: string[] } | null {
+  if (mode === 'off' || link === null) return null
+  return mode === 'link' ? { kind: 'link', href: link } : { kind: 'process', argv: ['explorer.exe', link] }
+}
+export function scopedSessions(script: Result<Document>, sessions: Result<Session[]>): Session[] | null {
+  return script.ok && sessions.ok ? filterSessions(sessions.value, script.value.scannedRoots) : null
+}
+export function lowestPrimary(quota: Quota[]): number | null {
+  const values = quota.filter(account => account.State === 'ok').map(account => roundPercent(account.PrimaryRemaining)).filter((value): value is number => value !== null)
+  return values.length ? Math.min(...values) : null
+}
+export function statusText(running: number | null, lowest: number | null): string | undefined {
+  const parts = [running === null ? '' : `${running} 執行中`, lowest === null ? '' : `額度 ${lowest}%`].filter(Boolean)
+  return parts.length ? parts.join(' · ') : undefined
+}
+
+export function finishedSessions(previous: ReadonlyMap<string, boolean> | null, current: Session[]): { next: Map<string, boolean>; finished: string[] } {
+  const next = new Map<string, boolean>()
+  const finished: string[] = []
+  for (const session of current) {
+    const id = session.sessionId
+    if (!id) continue
+    const running = session.isRunning === true
+    next.set(id, running)
+    if (previous?.get(id) === true && !running) finished.push(session.title || session.name || id)
+  }
+  return { next, finished }
+}
+export function finishedToastText(titles: string[]): string {
+  const displayed = titles.slice(0, 3).map(title => clip(title, 30))
+  return titles.length === 1 ? `「${displayed[0]}」已跑完` : `${titles.length} 個 Session 已跑完：${displayed.join('、')}${titles.length > 3 ? '…' : ''}`
+}
+
+type QuotaAlertAccount = { name: string; kind: 'high' | 'low' | 'limit' | 'login' | 'unknown'; percent: number | null; token: string }
+function quotaAlertAccount(account: Quota): QuotaAlertAccount {
+  const percent = account.State === 'ok' ? roundPercent(account.PrimaryRemaining) : null
+  if (percent !== null) return { name: account.Name, kind: percent >= QUOTA_ALERT_BELOW ? 'high' : 'low', percent, token: account.PrimaryResetsAtLocal ?? '' }
+  if (account.ErrorKind === 'limit-reached') return { name: account.Name, kind: 'limit', percent: null, token: '*' }
+  if (account.ErrorKind === 'auth-expired') return { name: account.Name, kind: 'login', percent: null, token: '*' }
+  return { name: account.Name, kind: 'unknown', percent: null, token: '' }
+}
+function parseAlertSignature(value: string): Map<string, string> | null {
+  const accounts = new Map<string, string>()
+  for (const part of value.split('|')) {
+    const separator = part.lastIndexOf('@')
+    if (separator < 1) return null
+    const name = part.slice(0, separator)
+    if (accounts.has(name)) return null
+    accounts.set(name, part.slice(separator + 1))
+  }
+  return accounts.size ? accounts : null
+}
+export function normalizeAlertSignature(value: unknown): string | null {
+  return typeof value === 'string' && parseAlertSignature(value) !== null ? value : null
+}
+function sameWindow(previous: string, current: string): boolean {
+  const before = parseAlertSignature(previous)
+  const after = parseAlertSignature(current)
+  if (!before || !after || before.size !== after.size) return false
+  for (const [name, token] of before) {
+    const next = after.get(name)
+    if (next === undefined || (token !== next && token !== '*' && next !== '*')) return false
+  }
+  return true
+}
+export function quotaAlert(quota: Quota[], previous: string | null): { alert: boolean; signature: string | null; text: string | null } {
+  if (!quota.length) return { alert: false, signature: null, text: null }
+  const accounts = quota.map(quotaAlertAccount).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)
+  if (accounts.some(account => account.kind === 'high')) return { alert: false, signature: null, text: null }
+  if (accounts.some(account => account.kind === 'unknown')) return { alert: false, signature: previous, text: null }
+  const current = accounts.map(account => `${account.name}@${account.token}`).join('|')
+  if (previous !== null && sameWindow(previous, current)) return { alert: false, signature: previous, text: null }
+  const details = accounts.map(account => account.kind === 'low' ? `${account.name} 剩 ${account.percent}%` : account.kind === 'limit' ? `${account.name} 已達上限` : `${account.name} 登入失效`)
+  return { alert: true, signature: current, text: `Codex 5 小時額度：${details.join('、')}` }
+}
 
 export function mapSessionToLine(session: Session, document: Document): string | null {
   const named = document.lines.find(line => session.name && line.LineSlug === session.name)
@@ -361,13 +577,29 @@ export function mapSessionToLine(session: Session, document: Document): string |
   return lines.length === 1 ? lines[0].LineSlug : null
 }
 
-const row = (name: string, fields: Partial<Omit<BoardRow, 'name'>> = {}): BoardRow => ({ name, tag: '', right: '', rightShrink: false, dot: 'inactive', detail: null, bar: null, tone: 'normal', isCurrent: false, ...fields })
+const row = (name: string, fields: Partial<Omit<BoardRow, 'name'>> = {}): BoardRow => ({ name, tag: '', right: '', rightShrink: false, dot: 'inactive', detail: null, bar: null, tone: 'normal', isCurrent: false, link: null, login: null, ...fields })
 const block = (rows: BoardRow[], limit = rows.length, stalledRows: BoardRow[] = []): BoardBlock => ({ rows: rows.slice(0, limit), stalledRows, hiddenCount: Math.max(0, rows.length - limit), errorMessage: null })
 const errorBlock = (message: string): BoardBlock => ({ rows: [], stalledRows: [], hiddenCount: 0, errorMessage: message })
 export function errorSnapshot(message: string): BoardSnapshot {
-  return { sessions: errorBlock(message), lines: errorBlock(message), workRoots: errorBlock(message), quota: errorBlock(message), currentLabel: null }
+  return { sessions: errorBlock(message), lines: errorBlock(message), workRoots: errorBlock(message), quota: errorBlock(message), currentLabel: null, scannedRoots: [] }
 }
 const clip = (value: string, limit: number): string => Array.from(value).length > limit ? Array.from(value).slice(0, limit).join('') + '…' : value
+export function loginCommand(codexHome: unknown): string | null {
+  return typeof codexHome === 'string' && /^[A-Za-z]:\\[^"`$;\r\n]+$/.test(codexHome)
+    ? `$env:CODEX_HOME = "${codexHome}"; codex login; Remove-Item Env:CODEX_HOME`
+    : null
+}
+export function loginDisplayMode(mode: 'copy' | 'text', command: string | null, shown: boolean): 'invalid' | 'copy' | 'text' | 'copy-and-text' {
+  return command === null ? 'invalid' : mode === 'text' ? 'text' : shown ? 'copy-and-text' : 'copy'
+}
+export function quotaErrorRow(account: Quota): BoardRow {
+  if (account.ErrorKind === 'auth-expired') return row(`${account.Name} · 登入失效`, { tone: 'error', dot: 'error', login: { account: account.Name, command: loginCommand(account.CodexHome) } })
+  if (account.ErrorKind === 'limit-reached') return row(`${account.Name} · 已達上限`, { tone: 'error', dot: 'error' })
+  const fallback = (account.Error || '').replace(/^exit \d+[：:]\s*/i, '').replace(/^Get-CodexQuota\.ps1 \S+[：:]\s*/i, '').split(/\r?\n/)[0].trim()
+  const candidate = account.ErrorReason?.trim() || fallback
+  const reason = !candidate || /^exit\s+\d+$/i.test(candidate) ? '原因不明' : candidate
+  return row(`${account.Name} · 無法取得：${clip(reason, 40)}`, { tone: 'error', dot: 'error' })
+}
 const time = (value?: string | null): string => {
   if (!value) return '-'
   const date = new Date(value)
@@ -391,14 +623,14 @@ export function lineRightText(type: string | null | undefined, timeText: string)
   return [label === 'Dev 回收' || label === '-' ? '' : label, timeText].filter(Boolean).join(' · ')
 }
 export function buildSnapshot(script: Result<Document>, sessions: Result<Session[]>, now: Date, current: CurrentRepo | null = null, branches: ReadonlySet<string> | null = null): BoardSnapshot {
-  if (!script.ok) return { sessions: errorBlock('無法判定掃描範圍'), lines: errorBlock(script.error), workRoots: errorBlock(script.error), quota: errorBlock(script.error), currentLabel: currentLabel(current) }
+  if (!script.ok) return { sessions: errorBlock('無法判定掃描範圍'), lines: errorBlock(script.error), workRoots: errorBlock(script.error), quota: errorBlock(script.error), currentLabel: currentLabel(current), scannedRoots: [] }
   const data = script.value
-  const filtered = sessions.ok ? filterSessions(sessions.value, data.scannedRoots) : []
+  const filtered = scopedSessions(script, sessions) ?? []
   const running = new Set(filtered.filter(session => session.isRunning === true).map(session => mapSessionToLine(session, data)).filter((slug): slug is string => slug !== null))
   const sessionBlock = !sessions.ok ? errorBlock(sessions.error) : block(sortSessionsByActivity(filtered).map(session => {
     const title = session.title || session.name || session.sessionId || '-'
     const line = mapSessionToLine(session, data)
-    return row(title, { dot: sessionTone(session.isRunning), tag: line || '', right: relativeTime(session.lastActivityAt, now) })
+    return row(title, { dot: sessionTone(session.isRunning), tag: line || '', right: relativeTime(session.lastActivityAt, now), link: sessionLink(session) })
   }), SESSION_LIMIT)
   const normalLines: BoardRow[] = []
   const stalledLines: BoardRow[] = []
@@ -422,12 +654,12 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
     return row(name, { dot: rootTone(root), right: root.Branch || '-', rightShrink: true, detail: rootDetail(root), isCurrent: current !== null && current.roots.some(path => normalizePath(path) === normalizePath(root.Path)) })
   })
   const quota = data.quota.map(account => {
-    if (account.State === 'unknown') return row(`${account.Name} · 無法取得：${clip(account.Error || '-', 40)}`, { tone: 'error', dot: 'error' })
+    if (account.State === 'unknown') return quotaErrorRow(account)
     const primary = roundPercent(account.PrimaryRemaining)
     const secondary = roundPercent(account.SecondaryRemaining)
     return row(account.Name, { dot: quotaDotTone(primary, secondary), right: primary === null ? '-' : `剩 ${primary}%`, bar: { percent: primary, tone: quotaTone(primary) }, detail: quotaDetail(secondary, account.SecondaryResetsAtLocal ? time(account.SecondaryResetsAtLocal) : null) })
   })
   const quotaBlock = block(quota)
   if (data.warnings.length) quotaBlock.warning = data.warnings.join(' / ')
-  return { sessions: sessionBlock, lines: block(normalLines, LINE_LIMIT, stalledLines), workRoots: block(roots), quota: quotaBlock, currentLabel: currentLabel(current) }
+  return { sessions: sessionBlock, lines: block(normalLines, LINE_LIMIT, stalledLines), workRoots: block(roots), quota: quotaBlock, currentLabel: currentLabel(current), scannedRoots: data.scannedRoots }
 }
