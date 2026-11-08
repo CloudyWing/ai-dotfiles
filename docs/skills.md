@@ -32,7 +32,7 @@
 | `codebase-design` | 知識型 | agent | Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。 |
 | `codex-dispatch` | 知識型 | agent | Codex 派工機制：依派工類型建立執行契約、以 codex exec 啟動 Codex、背景等待、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。 |
 | `create-dotnet-project` | 知識型 | agent | 建立新的 .NET 方案：詢問 AI-PROFILE 鍵並寫入，以 slnx 格式建立方案、src 與 tests 實體資料夾及 Solution Folder，再依序產生 .editorconfig、.gitignore、.gitattributes 與專案層設定。Use when 使用者要求建立新的 .NET 方案或專案骨架時；既有專案不適用。 |
-| `csharp-aspnetcore` | 知識型 | agent | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式與 API 版本控制。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
+| `csharp-aspnetcore` | 知識型 | agent | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式、API 版本控制、SameSite Cookie 與 Server-Sent Events。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
 | `csharp-auth` | 知識型 | agent | ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。 |
 | `csharp-background-service` | 知識型 | agent | Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。 |
 | `csharp-comments` | 知識型 | agent | C# 註解風格：單行註解格式、註解用途原則，以及 TODO / UNDONE / HACK 工作清單關鍵字的分類與使用時機。撰寫或檢視 C# 程式碼註解時套用。 |
@@ -49,13 +49,14 @@
 | `csharp-signalr` | 知識型 | agent | SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。 |
 | `csharp-silent-defects` | 知識型 | agent | Use when 讀取或修改 C# 程式碼，需要檢查合法且不易在開發環境顯現的執行期、時序、文化、數值、集合順序或資源陷阱時。 |
 | `csharp-style` | 知識型 | agent | C# 程式碼風格規範：依專案 AGENTS.local.md 的 code-style.csharp 註記載入 personal、standard 或 project 風格，並收錄縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的共用細則。撰寫或修改 C# 程式碼時套用。 |
-| `csharp-validation` | 知識型 | agent | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。 |
+| `csharp-validation` | 知識型 | agent | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分、必填欄位與繫結來源，以及 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。 |
 | `database-comment-generator` | 知識型 | agent | Use when the user asks to build or update a source-backed database comment vocabulary, or to generate reviewable table and column comment SQL from approved terms and a SchemaExporter snapshot. |
 | `database-schema-context` | 知識型 | agent | Use when the user asks to export or inspect database schema context, use an existing offline schema snapshot, or check database schema changes with SchemaExporter. |
 | `desktop-smoke` | 知識型 | agent | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
 | `doc-editing` | 知識型 | agent | Use when 修改技術筆記、規格文件或 Markdown 文件，需要保留內容、查閱事實與維持文件結構時。 |
-| `docker` | 知識型 | agent | Dockerfile 與 Docker Compose 專案慣例：.NET 多階段建置的快取層寫法、非 root 執行、Compose Specification 檔名與相依寫法。當撰寫或檢視 Dockerfile 與 Compose 設定時自動套用。 |
-| `ef-core` | 知識型 | agent | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理、變更追蹤最佳實踐，以及依 AI-PROFILE 目標版本鍵設定 provider 相容性。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。 |
+| `docker` | 知識型 | agent | Dockerfile 與 Docker Compose 專案慣例：.NET 多階段建置的快取層寫法、非 root 執行、.NET 映像缺少字型與 Nginx 官方映像的設定陷阱、Compose Specification 檔名與相依寫法。當撰寫或檢視 Dockerfile、Compose 設定或 Nginx 容器設定時自動套用。 |
+| `ef-core` | 知識型 | agent | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理、變更追蹤最佳實踐、模型設定（DateTime Kind、精度、資料庫預設值）、SaveChanges 失敗後的狀態與導覽屬性同步，以及依 AI-PROFILE 目標版本鍵設定 provider 相容性。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。 |
+| `elasticsearch` | 知識型 | agent | Elasticsearch 開發規範：明確 mapping 與 dynamic 設定、Query DSL 與 Query String 查詢的語意陷阱（term 與分詞、minimum_should_match、日期範圍、exists、wildcard 與 regexp、nested）。當設計 index mapping、撰寫或審查 Elasticsearch 查詢時自動套用。 |
 | `export-excel` | 知識型 | human | 匯出 Excel 試算表的技能，主要支援 Grid 與 RecordSet 兩種模板，可自訂樣式、命名樣式、資料驗證與工作表保護。當要求匯出或產生 Excel 檔案時使用。 |
 | `fact-check-note` | 知識型 | human | 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes. |
 | `generate-commit` | 知識型 | human | 依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔案過濾與拆分建議。當使用者要求提交變更或產生 commit 訊息時使用。 |
@@ -65,7 +66,7 @@
 | `integration-verify` | 知識型 | agent | 開發完成後的整合驗證入口。當使用者要求在功能開發完成後自行驗證、做整合測試，或說「幫我驗證」「驗證一下功能」但未指定驗證方式時使用。判斷專案類型後先執行既有單元測試，再路由到對應的煙霧驗證流程。 |
 | `legacy-test-harness` | 知識型 | human | Use when 建立原專案外部測試專案，評估舊 .NET 專案的單元或元件測試，或判讀測試結果與版本追溯資料。 |
 | `merge-data` | 知識型 | human | 多份資料檔整合流程。當需要將兩份以上的資料檔（如 JSON、CSV）合併、補齊闕漏欄位或去重成單一檔案時使用。以 dry-run、筆數核對與抽樣比對降低整合錯誤。 |
-| `messaging` | 知識型 | agent | 訊息佇列開發規範：RabbitMQ 與 MQTT 的命名慣例、冪等消費、重試與 DLQ 策略、訊息版本演進。當撰寫或修改訊息發佈與消費邏輯時自動套用。 |
+| `messaging` | 知識型 | agent | 訊息佇列開發規範：RabbitMQ 與 MQTT 的命名慣例、冪等消費、重試與 DLQ 策略、MQTT 遺囑與持久 Session、Mosquitto 容器設定、訊息版本演進。當撰寫或修改訊息發佈與消費邏輯時自動套用。 |
 | `openapi-client` | 知識型 | agent | 前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。當撰寫前端 API 呼叫層或同步前後端型別時自動套用。 |
 | `pinia` | 知識型 | agent | Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。當撰寫或修改 Pinia Store 及其元件整合時自動套用。 |
 | `powershell` | 知識型 | agent | PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。 |

@@ -1,6 +1,6 @@
 ---
 name: csharp-validation
-description: 'C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分與 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。'
+description: 'C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分、必填欄位與繫結來源，以及 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
@@ -199,6 +199,12 @@ public IActionResult Create(CreateOrderRequest request) {
     // ...
 }
 ```
+
+### 必填欄位與繫結來源
+
+- 實值型別繫結不到值時會得到預設值（例如 `bool` 為 `false`），無法分辨對方是漏傳還是傳了預設值。
+- `[BindRequired]` 只對表單資料等模型繫結生效，對 `[FromBody]` 的 JSON 或 XML 不生效，因為 `[FromBody]` 的請求本文由 input formatter 反序列化，不經過模型繫結。`[FromBody]` 的實值型別必填欄位改用 `Nullable<T>` 搭配 `[Required]`，或使用 `required` 屬性（見 `csharp-nrt` skill）。
+- 專案啟用 NRT 時，MVC 對非 nullable 的參考型別屬性隱含套用 `[Required(AllowEmptyStrings = true)]`，即使沒加 `[Required]` 也會擋下 `null`。空字串是否被擋依繫結來源而定。`[FromBody]` JSON 的空字串保留為空字串而通過；表單等模型繫結預設把空字串轉成 `null`，因此驗證失敗。
 
 ### 停用自動驗證的情境
 

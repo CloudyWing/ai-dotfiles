@@ -56,6 +56,13 @@ policy.allow_implicit_invocation: true
 
 載入哪個參考檔由涉及的資料庫決定，鍵值只決定檔內各列的判讀結果。同一輪涉及兩種資料庫時兩檔都載入。參考檔讀取失敗時，停止該資料庫的版本相關工作並回報路徑，不憑記憶補足。
 
+排查查詢變慢、查詢被阻塞或找出高成本 SQL 時，依資料庫另載入排查參考檔。這兩份與目標版本鍵無關，撰寫一般 SQL 時不載入。
+
+| 資料庫 | 排查參考檔 |
+| --- | --- |
+| SQL Server | `references/sqlserver-troubleshooting.md` |
+| Oracle | `references/oracle-troubleshooting.md` |
+
 ### 判讀方式
 
 1. 取得有效版本：有效版本為鍵值。SQL Server 另有有效相容性層級，為 `target.sqlserver.compat` 的值；缺少時取參考檔「版本與相容性層級對照」表中該引擎版本的預設相容性層級。
@@ -66,6 +73,14 @@ policy.allow_implicit_invocation: true
 6. 處理更新層級：條件帶更新層級（例如 Service Pack）時，鍵值只能表達產品版本，因此在該產品版本判定為不成立。
 7. 處理未收錄用法：參考檔沒有對應的列時，不憑記憶斷言版本，改用標準 SQL 寫法，或在回覆註明該語法未收錄版本資訊。條件中的版本標示不在版本對照表時，視該列無效並回報。
 8. 註明依據：選定與版本相關的寫法後，回覆以一句話註明所依的目標版本。
+
+### 已移除或棄用的用法
+
+參考檔「已移除或棄用的用法」節列出在較新版本被移除，或已棄用、將於未來版本移除的用法。目標版本鍵記的是正式環境的最低版本，只依它判定，會讓程式在升級後失效，因此這張表不套用「判讀方式」。
+
+- 撰寫新 SQL：表中用法一律不用，與目標版本無關，改用該列的替代寫法。
+- 審查既有 SQL：命中表中用法時依有效版本標示。失效條件在有效版本已成立時標示「目標版本已不支援」；尚未成立時標示「升級至 <失效版本> 後失效」；狀態為棄用時標示「棄用，未來版本移除」。三者都附該列的替代寫法。
+- 新增識別字：避開參考檔「保留字」節指向的官方保留字與未來保留字清單。既有識別字與保留字衝突時，SQL Server 以 `[]`、Oracle 以雙引號包住，不改名。
 
 ### 未確認目標版本
 
@@ -242,11 +257,74 @@ EXEC sp_executesql
 EXEC('SELECT * FROM Products WHERE CategoryId = ' + @inputCategoryId);
 ```
 
+### 日期時間型別與區間查詢
+
+| 型別 | 範圍 | 精度 |
+| --- | --- | --- |
+| `datetime` | 1753-01-01 ~ 9999-12-31 | 3.33 毫秒，毫秒尾數只有 `0`、`3`、`7`，會進位 |
+| `smalldatetime` | 1900-01-01 ~ 2079-06-06 | 1 分鐘，秒數四捨五入進位到分 |
+| `datetime2` | 0001-01-01 ~ 9999-12-31 | 100 奈秒，可自訂 0~7 位小數，預設 `7` |
+| `datetimeoffset` | 0001-01-01 ~ 9999-12-31 | 同 `datetime2`，另含時區偏移 |
+
+- 新欄位使用 `datetime2`，有時區需求用 `datetimeoffset`。Oracle 遷移的資料常有早於 1753 年的日期，寫入 `datetime` 會失敗。
+- `datetime` 會進位，`'2026-02-10 07:59:59.999'` 會被進位成 `'2026-02-10 08:00:00.000'`，拿它查整點資料會查到。
+- ADO.NET 未指定 `Parameter` 型別時，`DateTime` 預設對應 `datetime`。Dapper 底層走 ADO.NET，行為相同。以這種參數查 `datetime2(7)` 欄位，欄位值不在 `datetime` 的 1/300 秒刻度上時，參數端被進位而欄位是原值，同一個值會查不到；明確指定參數型別為 `DbType.DateTime2`。
+- 以 `datetime2` 參數查 `datetime` 欄位，`=` 的執行計畫不受影響，`<=` 與 `<` 等範圍比較的計畫會明顯變差。參數型別與欄位型別保持一致。
+- `datetime` 與 `datetime2` 混合比較的結果會隨相容性層級改變，差異見 `references/sqlserver.md`「相容性層級的語意差異」。無法避免混合比較時，明確以 `CAST(... AS datetime2)` 轉型。
+- 時間區間一律寫 `>= 起始 AND < 結束`，不寫 `<= 結束.AddTicks(-1)`。`AddTicks(-1)` 操作的是 100 奈秒，欄位精度低於 `(7)` 時會進位到結束時間本身，誤含下一秒的資料。半開區間同時適用 `date`、`time` 與 `datetime2`。
+
+```csharp
+// ❌ 欄位精度不是 (7) 時，endTime 會被進位，誤含結束時間的資料
+DateTime endTime = input.EndTime.AddTicks(-1);
+db.Table.Where(x => x.Time >= input.StartTime && x.Time <= endTime);
+
+// ✅ 半開區間
+db.Table.Where(x => x.Time >= input.StartTime && x.Time < input.EndTime);
+```
+
 ### 交易與鎖定
 
-- 長時間執行的查詢應評估是否需要 `WITH (NOLOCK)` 或 `READ UNCOMMITTED` 隔離等級（僅限可容忍 Dirty Read 的報表查詢）。
+- 讀取被寫入阻塞時，優先評估在資料庫開啟 RCSI（`ALTER DATABASE ... SET READ_COMMITTED_SNAPSHOT ON`），而非在查詢逐一加 hint。RCSI 讓 READ COMMITTED 的讀取改讀寫入前最後一個已提交版本，一般 DML 寫入不再擋住讀取；堆積上的最佳化大量載入與結構描述鎖（例如 DDL）仍可能阻塞查詢。
+  - RCSI 是資料庫層級設定，開啟後所有以 READ COMMITTED 執行的查詢都改為快照讀取（連線未變更隔離等級時即為 READ COMMITTED），無法只套用部分資料表；個別資料表需要鎖定讀取時加 `WITH (READCOMMITTEDLOCK)`。需要選擇性使用快照時改用 Snapshot Isolation，資料庫先開啟 `ALLOW_SNAPSHOT_ISOLATION`，再在交易顯式指定 `IsolationLevel.Snapshot`。
+  - RCSI 需要存放資料列版本。未啟用 Accelerated Database Recovery（ADR）時版本存放在 TempDB，開啟前確認 TempDB 空間與 I/O 能負擔；啟用 ADR 的資料庫改存放在該使用者資料庫的 persistent version store，ADR 的版本門檻見 `references/sqlserver.md`。Azure SQL Database 預設開啟 RCSI。
+  - RCSI 只解決讀取被阻塞，不處理兩人同時修改同一筆的更新衝突，該情境仍以 RowVersion 樂觀並發控制處理。
+- 無法開啟 RCSI 時，依需求選用 table hint。三者都只改變自己這一側遇到鎖定時的行為（`NOLOCK`、`READPAST` 繞過，`NOWAIT` 立即失敗），阻塞的根因在持有鎖定的交易，仍需另行處理。
+
+| Hint | 行為 | 適用情境 |
+| --- | --- | --- |
+| `WITH (NOLOCK)` | 讀取未提交的資料（Dirty Read），可能讀到交易做到一半的中間狀態 | 僅限可容忍髒讀的報表查詢；取出資料準備異動時禁用 |
+| `WITH (READPAST)` | 跳過被鎖住的資料列，結果會少資料 | Queue 取件；不適合報表。只跳過資料列層級鎖定，頁面或資料表鎖定仍會擋住；只能在 `READ COMMITTED` 或 `REPEATABLE READ` 隔離等級使用 |
+| `WITH (NOWAIT)` | 遇到鎖定立即回傳錯誤，不等待 | 寧可失敗也不要長時間阻塞的查詢，呼叫端需處理錯誤；與 `TABLOCK` 併用時不生效，該情境改用 `SET LOCK_TIMEOUT 0` |
+
 - 更新操作若涉及先讀後寫，考慮使用 `UPDLOCK` 或適當的隔離等級防止競爭條件。
 - Oracle 採 MVCC 多版本讀一致性，讀取不阻塞寫入，無 `NOLOCK` 對應語法，本節不套用於 Oracle。
+
+### Parameter Sniffing
+
+SQL Server 第一次編譯參數化查詢時，依當下傳入的參數值估算筆數並快取計畫，在重新編譯或計畫被清除前，後續不同參數值重用同一份計畫。參數值對應的資料量落差極大時，重用的計畫會讓其中一方效能崩潰，例如 `@Status = 0` 對到 10 筆、`@Status = 1` 對到 500 萬筆。判定依據是參數值對應的資料量落差，與參數值本身的數值大小無關。
+
+- 只有預存程序、透過 `sp_executesql` 送出的查詢與 prepared 查詢會被嗅探。.NET 的參數化查詢（`SqlCommand` 搭配 `SqlParameter`、Dapper、EF Core）在伺服器端以 `sp_executesql` 執行，呼叫 `SqlCommand.Prepare()` 時則以 `sp_prepexec` 等 prepared 方式執行，兩者都屬於會被嗅探的範圍。
+- 重現或比較時，以 `sp_executesql` 作為參數化的一側，不用 `DECLARE` 區域變數。區域變數在編譯期看不到值（加了 `OPTION (RECOMPILE)` 時例外），最佳化器改用統計資料的平均密度估算，沒有統計資料時改用啟發式估算，行為接近 `OPTIMIZE FOR UNKNOWN`，比出來的差異與 Parameter Sniffing 無關。
+- 處理方式依查詢性質選擇：
+
+| 方式 | 作法 | 代價 |
+| --- | --- | --- |
+| `OPTION (OPTIMIZE FOR (@p = value))` | 針對大宗值產生計畫 | 小眾值被迫使用大宗值的計畫而變慢，資料量大時可搭配篩選索引 |
+| `OPTION (OPTIMIZE FOR UNKNOWN)` | 改用欄位統計分佈的平均值產生中庸計畫 | 計畫不再針對任何特定值最佳化 |
+| `OPTION (RECOMPILE)` | 每次執行依當下參數重新編譯 | 增加 CPU 編譯成本，適合執行頻率低、參數組合複雜的報表，不適合高併發 OLTP |
+| Parameter Sensitive Plan 最佳化 | 由引擎為同一查詢依參數分派多份計畫，查詢不需改寫 | 只支援等號述詞，最多挑選三個述詞；版本、相容性層級門檻與各層級的述詞挑選差異見 `references/sqlserver.md` |
+| Query Store 強制計畫 | 將穩定的計畫固定下來 | 需啟用 Query Store，設定注意事項見 `references/sqlserver-troubleshooting.md` |
+
+找出受影響的查詢與清除計畫快取的方式，見 `references/sqlserver-troubleshooting.md`。
+
+### 索引設計
+
+- 叢集索引鍵選擇窄且不可變的欄位。每個非叢集索引的每一列都存一份叢集索引鍵作為 row locator，鍵多寬，表上所有非叢集索引就跟著多寬。以 16 bytes 的 `uniqueidentifier` 取代 4 bytes 的 `int`，多出的 12 bytes 大致按「資料列數 × 非叢集索引數」放大。
+- 叢集索引未宣告 `UNIQUE` 時，引擎會在索引鍵後補上 4 bytes 的 uniqueifier，同樣會放大到所有非叢集索引。
+- 更新叢集索引鍵的值，等於連帶改掉所有非叢集索引的 row locator，成本遠高於更新一般欄位。
+- 非叢集索引已包含叢集索引鍵，查詢只取索引鍵欄位加叢集索引鍵時不必回查資料頁，叢集索引鍵不必寫進 `INCLUDE`。非唯一的非叢集索引會把叢集索引鍵補在索引鍵尾端，中間層頁面也跟著變寬；唯一的非叢集索引只補成 included column。同一欄位不會存兩份，叢集索引鍵已寫在非叢集索引定義裡時不會再補。
+- GUID 作為叢集索引鍵時，除了寬度，非遞增的值會插入索引中間造成頁面分割，需改用循序產生的 GUID。
+- 遺漏索引建議（執行計畫提示或 `sys.dm_db_missing_index_*`）不照單全收。它只建議非叢集索引、不指定索引鍵的欄位順序，也不替大量 included column 做成本效益分析；多個建議常可整併，過多索引會降低寫入效能。
 
 ---
 
@@ -331,6 +409,26 @@ WHERE OrderDate >= TO_DATE(:date_str, 'YYYY-MM-DD')
 SELECT TO_CHAR(OrderDate, 'YYYY-MM-DD HH24:MI:SS') AS FormattedDate
 FROM Orders;
 ```
+
+### Unicode 參數型別（.NET 驅動）
+
+- 以 Dapper 搭配 `Oracle.ManagedDataAccess.Core` 寫入 `NVARCHAR2` 欄位時，`DbType.String` 會被對應到 `OracleDbType.Varchar2` 而非 `OracleDbType.NVarchar2`。資料庫字元集無法表示該字元時（例如不是 AL32UTF8），簡體中文等 Unicode 字元會變成亂碼；AL32UTF8 資料庫的 `VARCHAR2` 本身可儲存 Unicode 字元。
+- 寫入 `NVARCHAR2` 欄位的參數改以 `OracleParameter` 指定 `OracleDbType = OracleDbType.NVarchar2`。Dapper 的 `DynamicParameters` 不直接接受 `IDbDataParameter`，以實作 `SqlMapper.IDynamicParameters` 的參數類別，或以實作 `SqlMapper.ICustomQueryParameter` 的值傳入 `DynamicParameters.Add()`，把 `OracleParameter` 加進 `IDbCommand.Parameters`。
+
+### Function-Based Index
+
+條件欄位被函式包住（例如 `UPPER(TRIM(STATUS)) = 'A'`）時，原欄位的 B-Tree 索引對不上運算式。資料本身乾淨時直接比對原欄位；無法改寫條件時，對運算式建立 Function-Based Index：
+
+```sql
+CREATE INDEX IX_ORDERS_STATUS_UPPER
+ON ORDERS (UPPER(TRIM(STATUS)));
+
+EXEC DBMS_STATS.GATHER_TABLE_STATS(ownname => 'APP', tabname => 'ORDERS');
+```
+
+- 查詢條件的運算式必須與索引定義相同。Oracle 比對剖析後的運算式，大小寫與空白差異不影響，但 `UPPER(TRIM(STATUS))` 的索引接不住只寫 `UPPER(STATUS)` 的條件。
+- 索引運算式含自訂函式時，該函式必須宣告為 `DETERMINISTIC`，否則建立索引會被擋下。
+- 建立後收集統計資訊，Optimizer 才有依據評估是否使用。
 
 ### DUAL 虛擬資料表
 

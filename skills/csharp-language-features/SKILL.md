@@ -73,5 +73,10 @@ policy.allow_implicit_invocation: true
 
 ## Logging 與 Nameof
 
-- 實作日誌時優先使用 `[LoggerMessage]` Attribute 與 Source Generator。
+- 實作日誌時優先使用 `[LoggerMessage]` Attribute 與 Source Generator。未設定 `SkipEnabledCheck = true` 時，產生的實作會在內部檢查 `IsEnabled`，等級不符時不建立 state 也不格式化訊息；但傳入的參數在呼叫前就已求值，參數本身需要昂貴運算時，呼叫端仍以 `IsEnabled` 包住。
+- 手寫 `logger.IsEnabled(LogLevel.X)` 包住昂貴運算時，檢查的等級必須與內部 Log 呼叫的等級一致，調整 Log 等級時同步修改。
+- `LogInformation()` 等擴充方法的 placeholder 依參數順序對應，與 `{Name}` 的名稱無關；`[LoggerMessage]` 的 placeholder 則以不區分大小寫的名稱對應方法參數。模板要輸出大括號字元時寫成 `{{` 與 `}}`。
+- 不以字串串接組訊息（CA2254），使用 placeholder 讓 Logger 在實際寫入時才組字串。
+- `appsettings.json` 的 `Logging:LogLevel` 與 `AddFilter()` 的分類名稱可用 `*` 萬用字元，例如 `"*.Services": "Warning"`、`AddFilter("Microsoft.*", LogLevel.Warning)`。
+- `Logging:LogLevel` 套用所有 Logger Provider；`Logging:<Provider>:LogLevel`（例如 `Debug`、`EventSource`）只覆寫該 Provider。例外是 Windows EventLog Provider：未設定 `Logging:EventLog:LogLevel` 時不繼承 `Logging:LogLevel`，預設只記錄 `Warning` 以上。
 - 引用成員名稱時使用 `nameof()`，不硬編碼字串。
