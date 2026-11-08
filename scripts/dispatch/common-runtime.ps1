@@ -482,6 +482,8 @@ function Invoke-ExternalCommand {
             throw "無法啟動外部命令：$FileName"
         }
 
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
         if ($null -ne $StandardInput) {
             $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
             $inputBytes = $utf8NoBom.GetBytes($StandardInput)
@@ -489,8 +491,6 @@ function Invoke-ExternalCommand {
             $process.StandardInput.BaseStream.Flush()
         }
         $process.StandardInput.Close()
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
         $process.WaitForExit()
         $stdout = $stdoutTask.Result
         $stderr = $stderrTask.Result
