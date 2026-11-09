@@ -67,7 +67,7 @@ AI 看不到桌面視窗，實際能做到的程度取決於環境提供的工�
 
 | 工作 | 執行端 | 依據 |
 | --- | --- | --- |
-| 建置、以背景方式啟動 GUI 程式、擷取桌面截圖、讀取視窗位置與可見狀態、執行層級 B 的既有 UI 測試 | Codex 派遣（`scan` 檔位、write 模式） | Windows sandbox 實測可用：WPF 建置、Start-Process 啟動、System.Drawing 截圖、user32 GetWindowRect／IsWindowVisible |
+| 建置、以背景方式啟動 GUI 程式、擷取桌面截圖、讀取視窗位置與可見狀態、執行層級 B 的既有 UI 測試 | 依登錄表選出的 `type=test` 執行者（標註 `-Type test -Tags desktop-control,build-test`，選出 Codex `scan`，write 模式）；Codex 離線時選派入口回傳 `stopped`，停止並回報使用者 | Windows sandbox 實測可用：WPF 建置、Start-Process 啟動、System.Drawing 截圖、user32 GetWindowRect／IsWindowVisible |
 | 判定截圖與視窗狀態是否符合預期、產出手動檢查清單、決定是否進入修正迴圈 | Claude 端 | 需要讀圖比對與需求脈絡 |
 | 需要系統管理員權限的命令（例如 `powercfg /requests`） | 使用者在已提升權限的主控台執行 | 派遣不得提權，Codex 端執行時受阻 |
 | 螢幕錄影、滑鼠與鍵盤輸入注入 | 未驗證，派遣前先做單項探針 | 尚無實測紀錄 |

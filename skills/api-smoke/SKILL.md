@@ -2,12 +2,22 @@
 name: api-smoke
 description: Web API 煙霧驗證流程。當需要在修改或開發 Web API 端點後驗證 API 行為，或使用者要求呼叫 Swagger、寫腳本測試 API、進行多情境 API 測試時使用。
 audience: agent
+dispatch: split
 policy.allow_implicit_invocation: true
 ---
 
 # API Smoke Verification
 
 此 Skill 用於完成 Web API 變更後的低成本煙霧驗證。它不是完整 E2E 測試框架，不負責新增可重跑的測試案例；若使用者要求建立正式測試，改依專案既有測試架構處理。
+
+## 派遣分界
+
+| 工作 | 執行端 | 標註 |
+| --- | --- | --- |
+| 啟動服務、執行多情境 API 呼叫、寫入回查、擷取回應與日誌證據 | Codex `scan` | `-Type test -Tags build-test` |
+| 判讀回應是否符合預期、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
+
+Codex 離線時選派入口回傳 `stopped`，停止並回報使用者。
 
 ## 啟動條件
 

@@ -99,7 +99,7 @@ upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取�
 - Prepare 自動帶入：同線 `line.json`、`requirement-summary.md`；`dispatch_kind=resource` 且 `write_mode=readonly` 的派遣在同線沒有 `requirement-summary.md` 時略過摘要，其他派遣缺摘要時拒絕。Workflow 另帶入 `design.md`，資源派遣在第 4 欄提及 `design.md` 時帶入，並把派遣單複製到 dispatch worktree 的同線 handoff。`prepare_artifacts` 只用於追加其他檔案。
 - 輸出路徑安全：`result_path` 與 `preflight_result_path` 必須位於 SourceRoot 或 ExecutionRoot，root、既有各層目錄與寫入目標任一層為 reparse point 時拒絕；未指定時輸出到 ExecutionRoot 同線 history。需要 worktree 清除後仍可從來源工作樹取用時，明確指定 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\` 下的路徑。`prepare_result_path` 的目的地限於 ExecutionRoot 的同線 handoff、report 或 history line root，且不得與 target path 重疊；未指定時輸出到 ExecutionRoot 同線 history。目錄建立後、實際寫入前會再次核對路徑。
 - direct-write：Preflight 判定不建 worktree（`worktreeCreated=false`）時，Prepare 使用 Preflight 的 `executionRoot`（即 `sourceRoot`）作為 DispatchRoot，Request 的 `dispatch_root` 只用於路徑驗證；只寫同線 handoff 的資源派遣可直接使用正式入口。
-- 必填檔位：`profile` 為必填，值限「檔位用途與新舊對照」列出的六個檔位。缺少時以 `DispatchRequestMissingField` 拒絕，指定 `default` 或其他名稱時以 `DispatchRequestInvalidValue` 拒絕，兩者皆在 Preflight 前停止且 `process_started=false`。
+- 必填檔位：`profile` 為必填，值限「檔位用途與新舊對照」列出的四個檔位。缺少時以 `DispatchRequestMissingField` 拒絕，指定 `default` 或其他名稱時以 `DispatchRequestInvalidValue` 拒絕，兩者皆在 Preflight 前停止且 `process_started=false`。
 - 可省略欄位：`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名；advisor-consult 沒有 target 時預設 evidence pack 檔名，Start 注入與 Inspect 比對使用同一個值）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）與各階段結果路徑。Request 帶 `quota_before_path` 或 `quota_after_path` 時以欄位不允許拒絕。
 - 輸出欄位：`status`（`started`、`completed`、`failed`）、`completed_stages`、`failed_stage`、`error_code`、`error`、`process_started`、`process_exit_code`、`termination_reason`、`inspect_status`、`inspect_success`、`requested_units`、`result_path`、`result_sha256`、`inspect_result_path`。`Collect` 的參數取自這些欄位。所有 operation 的 JSON stdout 固定使用 UTF-8（無 BOM），不依 PowerShell host 的預設主控台編碼。
 
@@ -115,34 +115,22 @@ upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取�
 
 派工路徑不取得也不保存額度。`Dispatch`、`Start` 與 `Inspect` 不建立額度快照，RunRecord 與 ScopePlan 不含額度欄位，advisor 執行期間也不監看額度。需要額度數值時，由主 Agent 或使用者以 `Get-CodexQuota.ps1` 手動查詢，例如派工前呈現額度、advisor 授權請求與帳號切換。
 
-`Get-CodexQuota.ps1 -SnapshotPath <path>` 保留既有 key-value stdout，另外寫入 `ai-sessions.quota-snapshot.v1` JSON。有效快照包含 `captured_at_utc`、`state=Valid`，以及 `primary` 與 `secondary` 的 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at` 與 `source_file`。取得額度失敗時，快照檔仍以失敗的 `state` 與 `error` 寫出，stderr 輸出失敗類別。
+`Get-CodexQuota.ps1 -SnapshotPath <path>` 保留既有 key-value stdout，另外寫入 `ai-sessions.quota-snapshot.v1` JSON。有效快照包含 `captured_at_utc`、`state=Valid`，以及 `primary` 與 `secondary` 的 `used_percent`、`remaining_percent`、`window_minutes`、`resets_at` 與 `source_file`。回應缺少 `secondary_window`（欄位不存在或為 null）時，快照 `secondary` 與 `observations.secondary` 為 null，`state` 仍為 `Valid`。取得額度失敗時，快照檔仍以失敗的 `state` 與 `error` 寫出，stderr 輸出失敗類別。
 
 ### 主 Agent 的帳號切換決策
 
-帳號由主 Agent 依當次觀測選擇，選定後以新派遣啟動並告知使用者，切換不另設詢問站點。保留原 ScopePlan 單位、intensive 授權邊界及原派遣的失敗與成果；腳本維持單次選派與原失敗結果，不輪替帳號或自動重送。
+帳號由腳本選擇與更換，主 Agent 派工時不指定 `-CodexHome`。本節的判定不因 `codex_accounts` 登記的帳號數不同而不同，額度數值不參與帳號選擇。
 
-| 目前帳號的證據 | 決策 | 候選條件 |
-| --- | --- | --- |
-| primary 將盡 | 可依未執行工作量提前改派，告知實際數值與理由 | Valid、fresh、沒有 ServiceRejected |
-| secondary 實際服務端 usage-limit | 目前派遣已遭拒，且結構化 rejection 的 window=secondary，或原始事件明確表示週上限時可改派 | Valid、fresh、沒有 ServiceRejected |
-| secondary 偏低或為 0，沒有實際拒絕 | 保留剩餘額度，不作週額度切換 | 不推估用盡 |
-| generic 429、網路錯誤或視窗不明 | 保留原因為未確認，不推論週上限 | 不以 usage_limit=true 單獨判定 |
-| 候選 Unknown、stale、目錄缺失或遭拒 | 保留原因及原派遣成果，缺可靠候選時不切換 | 不試跑派遣驗證額度 |
+- 選帳號：未指定 `-CodexHome` 且登記清單非空時，Dispatch 依登記順序取第一個已登入的帳號。登入判定只看帳號目錄登入檔的路徑、大小與修改時間，不讀內容；缺少該檔位設定檔的帳號同樣略過。帳號是否支援檔位的 model 以服務端回應為準，不在啟動前預判。
+- 換帳號：未指定 `-CodexHome` 的 Dispatch 遭服務端拒絕（usage-limit、401 或 model not supported），且事件流尚無任何 item 進度時，腳本依登記順序改試下一個帳號，以 `<原 dispatchSlug>-r<n>` 的衍生 Request 冷啟動。重試只限換帳號，同一帳號不重送。
+- 不換帳號：指定 `-CodexHome`、背景模式、續行、非拒絕失敗、已有 item 進度時，維持單次選派與原失敗結果。背景模式與續行被拒後，主 Agent 依摘要檔或 RunRecord 的 `codex_home` 以 `-CodexHome` 明確指定下一個帳號。
+- 全數不可用：所有登記帳號都未登入或都被拒時，Dispatch 回報 `CodexAccountsAllUnavailable`，主 Agent 依 `instructions.md`「離線改派」將全部 Codex 執行者以 `-Offline` 傳入選派入口，依 `executor-selection` skill「狀態處置」處理。
+- 摘要檔：每次經過換帳號外層的 Dispatch 寫入 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\dispatch-account-failover-<dispatchSlug>.json`，列出候選、略過原因與每次嘗試的結果。失敗嘗試留下的 dispatch worktree 不自動清理，主 Agent 依摘要檔的 `dispatch_root` 以既有 `Cleanup` 處置。
 
-先讀目前 RunRecord、Inspect／failure receipt 與手動查詢的有效快照，核對拒絕原因與原始事件。`Get-DispatchEventEvidence.usage_limit=true` 也可能來自 rate-limit／429；通用拒絕的 window 為 unknown 時，使用原始證據確認，保留無法確認的狀態。
-
-從 `machine.json.codex_accounts` 選不同 home 的候選，逐一以既有工具明傳目錄查詢。每次使用新的快照路徑，保存原始 observation、狀態與 UTC 時間。
-
-```powershell
-pwsh -NoProfile -NonInteractive -File '<本機 .ai-agents 根目錄>\scripts\Get-CodexQuota.ps1' -CodexHome '<候選home>' -SnapshotPath '<work-root>\.local\ai-sessions\history\<lineSlug>\quota-candidate-<timestamp>.json'
-```
-
-此查詢沿用既有工具的行程內認證，不改父程序環境，也不由 Agent 讀取憑證。候選確認後以新 Request、新 dispatchSlug 與 `session_mode=cold-start`，執行 `Dispatch -RequestPath <新Request> -CodexHome <候選home>`。原派遣尚未結束時保留其 admission 與 worktree；新派遣照常接受 caller 名額與路徑衝突檢查。缺可靠候選的處置只影響帳號切換，其他派遣仍遵守額度不作 gate 的契約。
-
-告知格式如下，帳號名稱為本機別名，原觀測不明時填 unknown，證據使用絕對路徑。
+腳本換過帳號時，主 Agent 依下列格式告知使用者，帳號名稱為本機別名，摘要檔使用絕對路徑。
 
 ```text
-[帳號切換] 原帳號=<name>；新帳號=<name>；原因=<primary將盡|secondary服務端usage-limit>；原 primary=<n%|unknown>；原 secondary=<n%|unknown>；新 primary=<n%>；新 secondary=<n%>；觀測時間=<UTC>；新 dispatchSlug=<slug>；續行方式=cold-start；證據=<絕對路徑>
+[帳號切換] 原帳號=<name>；新帳號=<name>；拒絕種類=<usage-limit|unauthorized|model-not-supported>；摘要檔=<絕對路徑>
 ```
 
 ### ScopePlan 單位
@@ -163,7 +151,7 @@ decision
 decision_reason
 ```
 
-`unit_kind` 只允許 `workflow-phase`、`resource-target` 與 `advisor-evidence-question`。Workflow 以 `design.md` 的 Phase 為最小單位，資源派遣以派遣單第 3 欄的目標物件為最小單位，advisor consult 以 evidence pack 內的問題 ID 為最小單位，`requested_units` 依宣告順序排列。`Start` 的 `RequestedUnit` 依 `unit_kind` 核對。`workflow-phase` 與 `resource-target` 須為宣告單位依宣告順序的有序子集，不符以 `DispatchRequestedUnitMismatch` 拒絕工作。`advisor-evidence-question` 須與 evidence pack 宣告的問題 ID 清單完整且依序相等，不接受子集，不符以 `EvidencePackUnitOrderMismatch` 拒絕工作。混合 Workflow（Phase 由 Claude Haiku subagent 與 Codex 分別承接）的 Codex 派工以 Codex Phase 為宣告單位。執行端不得自行增加或拆分單位。
+`unit_kind` 只允許 `workflow-phase`、`resource-target` 與 `advisor-evidence-question`。Workflow 以 `design.md` 的 Phase 為最小單位，資源派遣以派遣單第 3 欄的目標物件為最小單位，advisor consult 以 evidence pack 內的問題 ID 為最小單位，`requested_units` 依宣告順序排列。`Start` 的 `RequestedUnit` 依 `unit_kind` 核對。`workflow-phase` 與 `resource-target` 須為宣告單位依宣告順序的有序子集，不符以 `DispatchRequestedUnitMismatch` 拒絕工作。`advisor-evidence-question` 須與 evidence pack 宣告的問題 ID 清單完整且依序相等，不接受子集，不符以 `EvidencePackUnitOrderMismatch` 拒絕工作。執行端不得自行增加或拆分單位。
 
 `ScopePlan` 一律選取宣告的全部單位：`selected_units` 等於 `requested_units`，`decision=full`。ScopePlan hash 紀錄與續行範圍核對照常執行。續行時讀到舊格式 ScopePlan（仍含 `primary_remaining_percent`、`estimate_source` 等額度欄位）照常接受，額度欄位忽略，不帶入新的 ScopePlan。
 
@@ -175,7 +163,7 @@ decision_reason
 
 ## Advisor consult resource dispatch
 
-`advisor` 是意見評估角色，不是實作檔位。實作使用 `implement`；使用者在當下 Session 指定時改用 `intensive`。`Profile=advisor` 只接受 `TaskType=advisor-consult`、`DispatchKind=resource` 與 `WriteMode=readonly`；Workflow、寫入模式或其他 TaskType 在 Codex 啟動前以 `AdvisorImplementationProfileRejected` 拒絕，`TaskType=advisor-consult` 未搭配 `Profile=advisor` 時以 `AdvisorProfileRequired` 拒絕。
+`advisor` 是意見評估角色。`Profile=advisor` 只接受 `TaskType=advisor-consult`、`DispatchKind=resource` 與 `WriteMode=readonly`；Workflow、寫入模式或其他 TaskType 在 Codex 啟動前以 `AdvisorImplementationProfileRejected` 拒絕，`TaskType=advisor-consult` 未搭配 `Profile=advisor` 時以 `AdvisorProfileRequired` 拒絕。
 
 `TaskType=advisor-consult` 使用單一 evidence pack，schema 為 `advisor-consult.evidence.v1`，必須包含目標段落原文摘錄與來源位置、已知結論、待答問題、可能反證與邊界。advisor 執行端只可讀取該 evidence pack，不得探索 repository、讀取其他來源、修改檔案或寫入 report。
 
@@ -410,7 +398,7 @@ pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation DiagnoseMode
 
 跨程序傳入陣列參數（`TargetPath`、`AddDirectory`、`CodexParentOption`）時，以 `-RequestPath` 傳入 `ai-sessions.dispatch-request.v1` JSON 檔，陣列元素的原文與順序即契約，逗號、空白、中文與 `$` 不經 shell 展開或重新切分。Start 續行需要提供這些陣列時，也將 `target_path`、`add_directory` 與 `codex_parent_option` 寫成 JSON array，透過 `-RequestPath` 傳入 `operation=Start` 的 request；不得以逗號字串替代。`Cleanup` 的 `report_path` 與 `evidence_path` 同樣是陣列，須放在 `operation=Cleanup` 的 request 檔中。`powershell.exe -File` 無法以命令列傳遞字串陣列，逗號串接會被視為單一字串，跨 PowerShell 執行環境呼叫時一律使用 request 檔。request 檔與命令列同一欄位不一致時以 `DispatchRequestMismatch` 停止。
 
-服務端以 usage-limit 拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件判定 service rejection 分類。執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不自動重試，等待重設，或由主 Agent 依「主 Agent 的帳號切換決策」改派。
+服務端以 usage-limit、401 或 model not supported 拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件與 stderr 判定 service rejection 分類與拒絕種類。執行端保存已確認成果、證據位置與未完成單位，該次嘗試記為失敗，同一帳號不重送。未指定 `-CodexHome` 的 Dispatch 由腳本依「主 Agent 的帳號切換決策」改試下一個帳號；全部帳號被拒時回報 `CodexAccountsAllUnavailable`，才等待重設或依 `instructions.md`「離線改派」處理。
 
 ### 額度狀態
 
@@ -418,9 +406,9 @@ pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation DiagnoseMode
 
 | 狀態 | 判定條件 | 處置 |
 | --- | --- | --- |
-| `Valid` | 回應含 `primary` 與 `secondary` 兩個視窗且欄位合法，沒有拒絕旗標 | 呈現給使用者或作為帳號切換的依據 |
+| `Valid` | 回應含合法 `primary` 視窗，沒有拒絕旗標；`secondary` 視窗缺少或為 null 時視為帳號沒有週視窗 | 呈現給使用者或作為帳號切換的依據 |
 | `ServiceRejected` | 回應帶有額度拒絕旗標，或顯示已達上限但缺少 `rate_limit_reached_type`（此時 reached type 記為 unknown） | 該帳號不作為切換候選，等待重設 |
-| `SnapshotUnavailable` | 認證資料缺漏、連線失敗、逾時、HTTP 非 2xx、回應格式或數值範圍不合法 | 以非零結束碼停止，stderr 保留失敗類別，不產生估算值 |
+| `SnapshotUnavailable` | 認證資料缺漏、連線失敗、逾時、HTTP 非 2xx、缺少 `primary` 視窗、回應格式或數值範圍不合法 | 以非零結束碼停止，stderr 保留失敗類別，不產生估算值 |
 
 observation 的 `freshness` 在寫入快照時依觀測時間距今判定，30 分鐘內為 `fresh`，超過為 `stale`。需要最新數值時重新執行一次查詢。
 
@@ -500,7 +488,7 @@ reportLineRoot=<executionRoot>\.local\ai-sessions\report\<lineSlug>
 
 Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
-1. 執行角色的觸發詞或 skill 名稱。Workflow 派工使用 `Developer` 的觸發詞；資源派遣使用派遣單第 2 欄指定的角色或 skill。
+1. 執行角色的觸發詞或 skill 名稱。Workflow 派工（`DispatchKind=workflow`，規則層目前沒有呼叫端，見「兩種派工差異」）使用 `Developer` 的觸發詞；資源派遣使用派遣單第 2 欄指定的角色或 skill。
 2. Workflow 派工使用 `dispatchLineRoot\design.md` 的絕對路徑，資源派遣使用派遣單的絕對路徑。
 3. `LineContext` 的 `lineSlug`、`sourceLineRoot`、`dispatchLineRoot`、`reportLineRoot`、`sourceRoot`、`dispatchRoot` 與相關產出落點的絕對路徑。
 4. 回報格式、產出落點與驗收條件。Workflow 派工另須要求結案報告包含輪起點 SHA、開工基準線、「Phase 對照」節、「需求對照」節與「判定為既有實作而未動工」節，並列出 `sourceLineRoot\requirement-summary.md` 的絕對路徑供 Developer 產出「需求對照」節。「Phase 對照」節逐 Phase 列出該 Phase 實際修改的檔案清單，供主 Agent 依 Phase 分組建立 commit。續 session 必須重述前輪「Phase 對照」與「判定為既有實作而未動工」兩節的全部條目。
@@ -511,7 +499,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ### 本機帳號清單與準備
 
-`<本機 .ai-agents 根目錄>\.local\machine.json` 保留 `ai-agents.machine.v1` 與原值班欄位，可加入選用的 `codex_accounts`。
+`<本機 .ai-agents 根目錄>\.local\machine.json` 含 `ai-agents.machine.v1`、值班欄位，以及選用的 `codex_accounts` 與 `coordinator_session_id`；值班欄位與 `coordinator_session_id` 的說明見 `collect.md`「值班通知」的欄位表。
 
 ```json
 {
@@ -525,26 +513,29 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 名稱符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，目錄使用已存在的絕對路徑。名稱與正規化路徑以不區分大小寫比較唯一性，reparse point 與同目錄別名拒絕。缺少清單或空陣列時沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 優先序；未登記 home 的 `codex_account_name=null`。格式異常回報 `CodexAccountConfigurationInvalid`，由使用者修正，維持原選擇。
 
-派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱> -ProjectPath <專案路徑>` 建立，執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>`、最小 `config.toml` 與專案信任段落，將 `.sandbox*` 與 `implement`、`review`、`deep-review`、`scan`、`advisor` 的 `<檔位>.config.toml`（`-IncludeIntensive` 時含 `intensive.config.toml`）連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml` 與各檔位連結，五個必備檔位缺少、不是連結或指向他處時警示，`intensive` 只在存在時檢查，殘留的 `default.config.toml` 只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。帳號閒置過久導致 `Get-CodexQuota.ps1` 或派工回報 401 時，請使用者以同一登入命令重新登入。
+派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱>` 建立，`-ProjectPath <專案路徑>` 為選填，只用於預先信任專案。執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>` 與最小 `config.toml`（指定 `-ProjectPath` 時另含專案信任段落），將 `.sandbox*` 與 `review`、`deep-review`、`scan`、`advisor` 的 `<檔位>.config.toml` 連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；寫入前先完整預檢帳號目錄、`config.toml` 與各連結，任一項類型或目標不符時輸出找到的連結類型、目標、預期與只刪連結的修法，不寫入任何項目；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml` 與各檔位連結，四個必備檔位缺少、不是連結或指向他處時警示，殘留的 `default.config.toml` 只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。帳號閒置過久導致 `Get-CodexQuota.ps1` 或派工回報 401 時，請使用者以同一登入命令重新登入。
 
-以 `Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 選帳號。主 Agent 派工一律明確指定 `-CodexHome`，預設用清單第一個帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。Dispatch 在 Preflight 與 Prepare 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path` 與 `codex_account_name` 採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
+派工時，Dispatch 在選定帳號後、Preflight 前確認該帳號的 `config.toml` 已信任派遣來源專案，缺少時在 `<machine.json 所在目錄>\codex-account.lock` 鎖內補上信任段落，並在派遣結果的 `project_trust` 記錄帳號、設定檔路徑與信任鍵。信任鍵為來源專案的 git 主工作樹根，以小寫寫入；來源是 linked worktree 時取其主工作樹根，來源不是 git 目錄時取來源目錄本身。此步驟只處理 `machine.json` 登記的帳號，使用者預設的 `~/.codex` 與未登記的 home 維持原樣，且只信任專案根目錄。
 
-本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定已實測（缺少 config.toml 時命令全被執行政策拒絕，補上 windows.sandbox 與專案信任後可執行，內容見 README），各 home 的 profile 為指向 `~/.codex` 同名檔案的 Symbolic Link，`--profile` 經由連結讀取，保留既有 profile/model hash gate。
+自動選帳號時，`config.toml` 不存在、是連結或格式不支援的帳號在候選階段略過並改試下一個帳號，原因碼為 `TrustConfigMissing`、`TrustConfigLinked`、`TrustConfigUnsupported`，寫入換帳號摘要檔的 `skipped` 與派遣結果 `account_failover_summary.skipped`。已登記但只手動建立 home、缺少 `config.toml` 的帳號同樣略過，由使用者以建立腳本補齊。所有帳號都被略過或拒絕時以 `CodexAccountsAllUnavailable` 拒絕派遣，訊息附各帳號的略過原因。嘗試階段的拒絕碼為 `CodexAccountConfigMissing`、`CodexAccountConfigLinked`、`CodexAccountConfigUnsupported`、`CodexAccountConfigChanged`、`CodexAccountConfigWriteFailed`、`CodexAccountTrustLockTimeout` 與 `CodexProjectPathUnsupported`。指定 `-CodexHome` 時設定異常直接拒絕，不改選其他帳號；`CodexAccountConfigChanged`、`CodexAccountConfigWriteFailed`、`CodexAccountTrustLockTimeout` 與 `CodexProjectPathUnsupported` 屬暫時性或全域性問題，該次嘗試失敗且不換帳號。主 Agent 回報使用者以建立腳本或只刪連結的修法處理，不自行編輯 `config.toml`；各碼的處置見 `recovery.md`「失敗與恢復導引」。
+
+主 Agent 不指定 `-CodexHome`，登記清單非空時由腳本選第一個已登入帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。`Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 只用於續行、背景模式後改派與使用者要求；指定的登記帳號未登入時以 `CodexAccountNotLoggedIn` 拒絕，不改選其他帳號。Dispatch 在 Preflight 與 Prepare 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path` 與 `codex_account_name` 採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
+
+本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定已實測（缺少 config.toml 時沒有 Windows sandbox 設定，派工的命令因需要核准而被執行政策拒絕；補上 windows.sandbox 與專案信任後可執行，內容見 README），各 home 的 profile 為指向 `~/.codex` 同名檔案的 Symbolic Link，`--profile` 經由連結讀取，保留既有 profile/model hash gate。
 
 ### 檔位用途與新舊對照
 
-本 Skill 使用六個語意檔位，由主 Agent 依用途在 Request 的 `profile` 明確指定，腳本不依任務類型自動選用。各檔位的實際 model、effort 與其餘設定以 `<CodexHome>/<檔位>.config.toml` 為準，各設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
+本 Skill 使用四個語意檔位，Request 的 `profile` 取自選派入口輸出的 `executor.profile`，腳本不依任務類型自動選用。各檔位的實際 model、effort 與其餘設定以 `<CodexHome>/<檔位>.config.toml` 為準，各設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
 
 | 檔位 | 用途 |
 | --- | --- |
-| `implement` | Developer、Support Engineer、Refactorer 的實作與測試循環 |
-| `review` | 未達大範圍條件的 Codex `Reviewer` 審查 |
-| `deep-review` | 規則檔機制條款的審查（不論檔數），或審查範圍達 3 個檔案以上，判定以 `instructions.md`「審查配對」為準 |
-| `scan` | 盤點、取證、驗證、診斷等讀取為主的工作 |
-| `advisor` | 意見評估，授權與 gate 見「Advisor consult resource dispatch」 |
-| `intensive` | 使用者在當下 Session 指定時取代 `implement`，指定不延續到其他 Session，不覆寫其他檔位 |
+| `review` | 未達大範圍條件的 Codex `Reviewer` 審查（`type=review`、`Deep=false`） |
+| `deep-review` | 規則檔機制條款的審查（不論檔數），或審查範圍達 3 個檔案以上（`type=review`、`Deep=true`），旗標定義見 `executor-selection` skill |
+| `scan` | 測試（煙霧驗證取證，`type=test`）、事實校閱與上網查證（`type=factcheck`）、影像產生（`type=generate`） |
+| `advisor` | 意見評估（`type=advise`），授權與 gate 見「Advisor consult resource dispatch」 |
 
-舊檔位 `default` 已移除。以 `default` 啟動的舊派遣不能續行，續行呼叫必須帶新檔位名稱，與錨點不同而以 `ParentOptionsMismatch` 拒絕，需要繼續時以新 `dispatchSlug` 冷啟動；`Inspect` 與 `Collect` 不經檔位白名單，照常讀取舊 RunRecord。統計舊 RunRecord 時依派工角色換算新檔位：developer、support 對應 `implement`，reviewer 對應 `review`，scan、verify、probe 對應 `scan`。
+已移除的 `default`、`implement`、`intensive` 檔位不能續行，續行呼叫必須帶上表的檔位名稱，與錨點不同而以 `ParentOptionsMismatch` 拒絕，需要繼續時以新 `dispatchSlug` 冷啟動。
+`Inspect` 與 `Collect` 不經檔位白名單，照常讀取舊 RunRecord。統計舊 RunRecord 時依派工角色換算檔位：reviewer 對應 `review`，scan、verify、probe 對應 `scan`；developer、support 的舊紀錄只供讀取，不換算到現行檔位。
 
 殘留的 `~/.codex\default.config.toml` 與各派工帳號目錄內指向它的連結不再被讀取，Setup 只偵測並警示。手動清理時先以 `Remove-Item -LiteralPath <帳號目錄>\default.config.toml` 刪除各帳號內的連結，只移除連結本身，再由使用者決定是否刪除 `~/.codex\default.config.toml`。
 
@@ -560,11 +551,11 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 | 機制探針 | 修改派工腳本或流程後 | 路徑、prompt 傳遞與事件流解析可運作 |
 | `DiagnoseModelEnvironment` | 需要確認實際使用的 model 與 reasoning effort 時 | profile 設定值與 rollout 中的 actual 證據 |
 
-`--help` 在參數驗證前短路輸出，不具參數證明力。六個語意檔位以外的臨時驗證檔位，名稱與內容由使用者提供，規則層不預設其存在，也不用於派工。
+`--help` 在參數驗證前短路輸出，不具參數證明力。四個語意檔位以外的臨時驗證檔位，名稱與內容由使用者提供，規則層不預設其存在，也不用於派工。
 
-`advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描依「檔位用途與新舊對照」使用 `implement` 或 `scan`（使用者在當下 Session 指定時實作改用 `intensive`），不以 `advisor` 執行。
+`advisor` 適用於推理密集且判斷資料可事先整理成 evidence pack 的意見評估，例如方案取捨、結案或續優化判斷與設計疑點評估。實作、例行編輯、步驟完整的任務、單一命令驗證、大量讀寫或掃描由 `executor-selection` skill 選出的 Claude 執行者處理，不以 `advisor` 執行。
 
-`advisor` 相對實作檔位的實際差異由兩份設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `<CodexHome>/advisor.config.toml` 與 `<CodexHome>/implement.config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
+`advisor` 相對其他檔位的實際差異由設定檔的差集決定，不由本文件斷言。說明諮詢價值前，先讀取 `<CodexHome>/advisor.config.toml` 與 `<CodexHome>/review.config.toml`，比對兩者的 `model`、`model_reasoning_effort` 與其餘鍵。
 
 ### advisor 的前置準備
 
@@ -583,15 +574,15 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ### 額度快照
 
-`~/.ai-agents/scripts/Get-CodexQuota.ps1` 以 Codex home 的 `auth.json` 取得認證標頭，向 `https://chatgpt.com/backend-api/wham/usage` 取得即時額度，這是額度快照的唯一來源。回應必須同時含 `primary` 與 `secondary` 視窗，每個視窗換算為 `used_percent`、`remaining_percent`（`100 - used_percent`）、`window_minutes`、`window_days`（`window_minutes / 1440`）與 `resets_at`（Unix timestamp，秒）。`source_file` 記錄端點與請求時間，不是本機檔案路徑。不得讀取或輸出 `auth.json` 的任何欄位值；認證資料缺漏或格式錯誤時，腳本只回報欄位名稱與檔案路徑。
+`~/.ai-agents/scripts/Get-CodexQuota.ps1` 以 Codex home 的 `auth.json` 取得認證標頭，向 `https://chatgpt.com/backend-api/wham/usage` 取得即時額度，這是額度快照的唯一來源。回應必須含 `primary` 視窗；`secondary` 視窗存在時同樣換算，缺少或為 null 時表示帳號沒有週視窗。每個視窗換算為 `used_percent`、`remaining_percent`（`100 - used_percent`）、`window_minutes`、`window_days`（`window_minutes / 1440`）與 `resets_at`（Unix timestamp，秒）。`source_file` 記錄端點與請求時間，不是本機檔案路徑。不得讀取或輸出 `auth.json` 的任何欄位值；認證資料缺漏或格式錯誤時，腳本只回報欄位名稱與檔案路徑。
 
 快照檔一律以新檔寫入。`Get-CodexQuota.ps1 -SnapshotPath` 以排他建立開檔，目標已存在時以 `QuotaSnapshotTargetAlreadyExists` 停止且不覆寫，呼叫端每次查詢使用新的檔名。
 
 快照只代表取得當下的用量。兩個視窗由所有檔位共用，不依模型分別計量。`advisor` 單次派遣可能在數十分鐘內耗盡整個 `primary` 視窗，需要掌握時由主 Agent 在派工前後手動查詢。快照不論 `state` 為何都不改變派工範圍，也不停止派工。
 
-兩個視窗都是固定視窗，`used_percent` 在視窗內單調累積，跨過 `resets_at` 後歸零並跳至下一格，額度不連續回補。`primary` 為 5 小時視窗，`secondary` 為 7 天視窗，容量相差約 33 倍，因此同一件任務在 `primary` 消耗的百分點約為 `secondary` 的 30 倍。
+兩個視窗都是固定視窗，`used_percent` 在視窗內單調累積，跨過 `resets_at` 後歸零並跳至下一格，額度不連續回補。有週視窗的帳號，`primary` 為 5 小時視窗，`secondary` 為 7 天視窗，容量相差約 33 倍，因此同一件任務在 `primary` 消耗的百分點約為 `secondary` 的 30 倍。沒有週視窗的帳號，`primary` 視窗長度不固定，曾實測為 30 天（`primary_window_minutes=43200`）。視窗長度一律以 `window_minutes` 為準。
 
-腳本成功時依序輸出下列兩組 key-value。主 Agent 以同一次讀取的 `primary_remaining_percent` 與 `secondary_remaining_percent` 向使用者呈現額度，例如附在 advisor 授權請求中。
+腳本成功時依序輸出下列兩組 key-value。帳號沒有週視窗時，以單行 `secondary_window=none` 取代 `secondary_*` 八行。主 Agent 以同一次讀取的 `primary_remaining_percent` 與 `secondary_remaining_percent` 向使用者呈現額度，例如附在 advisor 授權請求中。
 
 ```text
 primary_used_percent=
@@ -616,12 +607,12 @@ secondary_source_file=
 
 `Inspect` 預設唯讀，不寫入額度或推薦訊號。
 
-1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。其餘工作依「檔位用途與新舊對照」選檔位。實作用 `implement`（使用者在當下 Session 指定時用 `intensive`），審查依 `instructions.md`「審查配對」用 `review` 或 `deep-review`，盤點、取證、驗證與診斷用 `scan`。
+1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。其餘工作的檔位取自選派入口輸出的 `executor.profile`，審查依 `Deep` 旗標為 `review` 或 `deep-review`，測試與事實校閱為 `scan`。
 2. 屬意見評估時，主 Agent 先向使用者提出 advisor 授權請求；使用者同意後以 `AdvisorRequestSource=user-explicit` 派工。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工，該授權不延續到其他 Session。
 3. 額度只供顯示與紀錄，由主 Agent 手動查詢，時點為派工前、advisor 前、結案時與按需查詢；派工腳本不自動查詢。查詢失敗記為 unknown，派工照常進行。
 4. 所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
 5. 以 `advisor` 派工而 `advisor.config.toml` 不存在時，停止該次派工，不使用隱式 profile fallback。
-6. 每次派工都在 Request 明確指定檔位，名稱限「檔位用途與新舊對照」的六個語意檔位，臨時驗證檔位不進入派工判定。`intensive` 只在使用者於當下 Session 指定後取代 `implement`，由主 Agent 在 Request 傳入，腳本不自動選用。
+6. 每次派工都在 Request 明確指定檔位，名稱限「檔位用途與新舊對照」的四個語意檔位，臨時驗證檔位不進入派工判定。
 
 ### 決策歸屬
 
@@ -632,7 +623,7 @@ secondary_source_file=
 主 Agent 判斷值得諮詢時，在派工前輸出單行授權請求，格式如下。
 
 ```text
-[advisor 諮詢授權] primary 剩餘 <n>%、secondary 剩餘 <m>%；<需要 advisor 的具體理由>。是否執行 advisor 諮詢？
+[advisor 諮詢授權] primary 剩餘 <n>%、secondary <剩餘 <m>% 或 無週視窗>；<需要 advisor 的具體理由>。是否執行 advisor 諮詢？
 ```
 
 理由必須指出該評估的推理密集點與 evidence pack 已整理完成的依據。只寫「問題較難」或「需要深入分析」不構成理由。請求文字本身不構成授權證據；使用者明確同意後，以 `AdvisorRequestSource=user-explicit` 送出派工。使用者未回覆或未明確同意時不發動 `advisor`，不等待也不重複詢問。
@@ -642,7 +633,7 @@ secondary_source_file=
 
 共用本 Skill 的機制。Workflow 派工與資源派遣只以輸入、產出與結案要求區分；兩者都先使用 `Preflight` 依寫入面選擇 dispatch worktree 或 `sourceRoot`。
 
-| 面向 | Workflow 派工（`Developer`；Phase 可由 Claude Haiku 承接者不經本 Skill） | 資源派遣（`Reviewer`、`Support Engineer`、其餘一切） |
+| 面向 | Workflow 派工（`DispatchKind=workflow`，規則層目前沒有呼叫端；Workflow Phase 由 Claude 執行者承接，不經本 Skill） | 資源派遣（Codex 的測試、審查、顧問、事實校閱、影像產生） |
 | --- | --- | --- |
 | 必備輸入 | `dispatchLineRoot\design.md` 絕對路徑 | `executionRoot\.local\ai-sessions\handoff\dispatch-order-<dispatchSlug>.md` 派遣單絕對路徑 |
 | 產出落點 | `reportLineRoot\implement-closure-report.md`，回收後同步至 `sourceReportLineRoot` | `executionRoot\.local\ai-sessions\report\dispatch-report-<dispatchSlug>.md`，回收後同步至 `sourceRoot` |

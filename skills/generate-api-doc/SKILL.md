@@ -19,6 +19,13 @@ policy.allow_implicit_invocation: false
 
 若未傳入參數，掃描當前專案中所有 `*Controller.cs` 檔案，列出清單供使用者選擇。
 
+## 任務標註
+
+`dispatch: delegate` 的意義為不由主 Agent 自理，依本節標註呼叫 `scripts/Select-DispatchExecutor.ps1`，執行者與標註語意見 `executor-selection` skill。
+
+- 標註：`-Type edit -E <true|false> -T false -Tags build-test`。`E` 依目標控制器與方法是否已於派工前逐一列出判定。
+- 預期執行者：`E` 為真時 Haiku subagent，否則 Sonnet subagent。
+
 ## 執行步驟
 
 ### 1. 讀取目標檔案

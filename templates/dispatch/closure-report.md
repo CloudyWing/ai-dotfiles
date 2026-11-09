@@ -6,7 +6,7 @@ Workflow Collect 驗證下列三項，不符時以非零結束：
 - 「需求對照」節唯一，表格固定 6 欄且每欄非空；狀態限「已交付」「部分交付」「未交付」「排除（design.md §8）」四個字串，排除須含括號內文字。
 - 有選定需求時，表格後緊接一行「範圍外（本輪不要求交付）：#…」，中間不留空行。
 - 「Phase 對照」節以反引號列出的路徑集合，須與本輪 Git 差異一致。
-混合 Workflow 的 Haiku 報告依批次寫入 implement-closure-report-haiku-pre.md（前段）與 implement-closure-report-haiku-post.md（後段），各報告只涵蓋該批 Phase。Haiku 路徑不執行 Collect，由主 Agent 依 workflow-orchestration「Haiku 實作路徑」逐項核對上列三項。
+Claude 執行者（Haiku 或 Sonnet）承接時只寫一份 implement-closure-report.md，涵蓋承接的全部 Phase。Claude 實作路徑不執行 Collect，由主 Agent 依 workflow-orchestration「Claude 實作路徑」逐項核對上列三項。
 -->
 
 ## 已完成項目

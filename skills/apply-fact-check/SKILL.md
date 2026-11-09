@@ -27,14 +27,14 @@ policy.allow_implicit_invocation: true
 
 ### 經單一入口進入本 Skill
 
-使用者經 Claude 端單一入口進入時，入口層先執行 G1，取得確認後依 F1 判準由 Claude 端自理或派遣 Codex 執行 `fact-check-note`，再取得同線固定報告。只有在固定報告已成功產出且可讀取時，才進入本 Skill 並執行上述前置條件檢查。入口層回收不到報告時，於入口層停止並回報缺件，不進入本 Skill。
+使用者經 Claude 端單一入口進入時，入口層先執行 G1，取得確認後以 `Type=factcheck`，依 `executor-selection` 選出執行者執行 `fact-check-note`，再取得同線固定報告。只有在固定報告已成功產出且可讀取時，才進入本 Skill 並執行上述前置條件檢查。入口層回收不到報告時，於入口層停止並回報缺件，不進入本 Skill。
 
 ## 跨端交接入口
 
 本鏈由 Claude 端單一入口管理，固定交接流程如下：
 
 1. 使用者在 Claude 端觸發後，流程於 G1 停止並回報校閱目標與範圍，等待使用者確認。
-2. G1 取得確認後，流程依 F1 判準由 Claude 端自理或派遣 Codex 執行 `fact-check-note`，取得 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
+2. G1 取得確認後，流程以 `Type=factcheck`，依 `executor-selection` 選出執行者執行 `fact-check-note`，取得 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
 3. 回收時若無法讀取同線固定報告，流程在入口層停止並回報缺件，不進入本 Skill，也不使用替代輸入。
 4. 進入本 Skill 後，流程於 G2 停止並回報待裁決條目；G3 與 G4 依下表在後續改檔階段逐一執行。
 

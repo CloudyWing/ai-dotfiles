@@ -15,6 +15,13 @@ policy.allow_implicit_invocation: true
 - 「幫我建立 / 產生 / 製作 / 匯出 xxx Excel」
 - 明確說「使用 export-excel」
 
+## 任務標註
+
+`dispatch: delegate` 的意義為不由主 Agent 自理，依本節標註呼叫 `scripts/Select-DispatchExecutor.ps1`，執行者與標註語意見 `executor-selection` skill。
+
+- 標註：`-Type edit -E false -T false`。
+- 預期執行者：Sonnet subagent。
+
 ## 執行流程
 
 1. **分析需求** — 從使用者描述中確認：工作表數量、欄位清單、是否需要靜態標題列（Grid）、資料來源格式、輸出路徑、是否需要資料驗證或共用樣式。

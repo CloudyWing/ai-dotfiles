@@ -22,12 +22,19 @@ policy.allow_implicit_invocation: true
 - 使用者要求盤點專案既有的視覺慣例。
 - 協調者為涉及畫面的工作準備基準，而目標 app 的指定路徑尚無檔案。
 
+## 任務標註
+
+`dispatch: delegate` 的意義為不由主 Agent 自理，依本節標註呼叫 `scripts/Select-DispatchExecutor.ps1`，執行者與標註語意見 `executor-selection` skill。
+
+- 標註：`-Type survey`。掃描只寫入 `.local/ai-sessions/style-baselines/` 與樣本輸出位置，不修改專案原始檔。
+- 預期執行者：Sonnet 取證者。
+
 ## 協調者基準準備
 
 Analyst 在 B／C 線進入設計前、Maintainer 在產出 fix-plan 或改動計畫前準備基準；C 線先準備再交 Prototyper。
 
 1. 先選定目標 `app-name` 與 app 來源根，解析同一 `work-root` 的指定 `baseline-path`。檔案存在時實讀「掃描範圍」及「引用方式」，核對 app 身分與實際 `sample-path`。
-2. 缺少基準時依 `codex-dispatch` 的資源派遣契約交由 Codex 掃描，不需使用者手動觸發。派遣輸入包含選定 app 來源根、基準與樣本輸出位置、同線已驗證的 LineContext、下方既有抽取流程及排除範圍；只產出指定 app 的基準與樣本。
+2. 缺少基準時依本檔「任務標註」以 `executor-selection` 交 Sonnet 取證者掃描，不需使用者手動觸發。派遣輸入包含選定 app 來源根、基準與樣本輸出位置、同線已驗證的 LineContext、下方既有抽取流程及排除範圍；只產出指定 app 的基準與樣本。
 3. 成功後實讀回報檔及產物，核對 app-name、基準掃描範圍、實際 baseline-path 與 sample-path。將同一筆路徑及待決策清單交付下游，確認狀態以 in-context 的 `confirmed-choices` 傳遞；消費與確認方式依 `uiux`「基準輸入與確認狀態」。
 4. 派工失敗、缺欄、app 錯配或檔案不可讀時，保留原始錯誤、已查範圍與絕對缺件位置，停止下游。缺代表來源時明列未偵測到，需用該項的正式 Demo、設計或計畫保持阻擋，不以其他 app 或通用值補足。
 
@@ -191,7 +198,7 @@ HTML 骨架與 CSS 規則皆為專案既有程式碼的引用。除縮排外不�
 
 ## 跨端交接
 
-- `uiux-baseline` 是 Codex 執行段，負責依已固定的前端來源範圍掃描樣式。單一 app 將基準與待決策項寫入 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`；多個 app 則逐一寫入帶 `app-name` 後綴的獨立檔案。
+- `uiux-baseline` 是 Sonnet 執行段，負責依已固定的前端來源範圍掃描樣式。單一 app 將基準與待決策項寫入 `<work-root>/.local/ai-sessions/style-baselines/ui-style-baseline.md`；多個 app 則逐一寫入帶 `app-name` 後綴的獨立檔案。
 - 上游完成後，單一與多 app 均交付呼叫端選定的 app-name、baseline-path、sample-path 及待決策項；下游的配對核對及 confirmed-choices 消費依 `uiux`「基準輸入與確認狀態」。
 - 下游讀取指定基準檔失敗、交接欄位缺少或兩者不相符時，立即停止並回報缺件。下游只讀取通過驗證的指定檔案，不改用其他 app 的基準檔。
 - `uiux` 是 Claude 決策段，讀取基準檔的已統一慣例、常用模式與待決策項，判定版面重要性及不可自由裁量項；本 Skill 不替下游做 UI 取捨。

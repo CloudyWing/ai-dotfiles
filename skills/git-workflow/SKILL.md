@@ -180,16 +180,16 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 | Merge Commit（`--no-ff`） | `release-flow` 的 `release/vX.Y.Z`、`hotfix/vX.Y.Z` 併入 `main`，訊息固定為 `Merge branch '<分支>'` |
 | Rebase | 線分支或 release 分支同步整合分支或 `main`；已推送的分支依「改寫與 force push 邊界」 |
 | Squash Merge | 僅限 PR 協作專案 |
-| Phase commit 回收 | dispatch worktree → 來源分支，依 `design.md` Phase 順序回收 |
+| Phase commit 回收 | 來源工作樹的未 commit 變更 → 來源分支，依 `design.md` Phase 順序回收 |
 
 - 已推送分支的 rebase 與 force push 依「改寫與 force push 邊界」。
 - PR 協作專案 Squash 後的 commit message 使用 PR 標題，不使用自動產生的 commit 清單，且須符合 `generate-commit` skill 的規範。
 
 ### Phase commit 回收
 
-Codex 端不建立 commit，Workflow `Developer` 的成果以 dispatch worktree 的工作區差異形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
+Workflow Phase 由 Claude 執行者直接修改來源工作樹，執行者不建立 commit，成果以來源工作樹的未 commit 變更形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
 
-Workflow Developer 收下時先將成果套回來源工作樹，維持未 commit 的工作區變更，不建立 Phase commit，並保留 dispatch worktree。只有在 Reviewer 收下、需求意圖驗收完成、結案報告產出且使用者授權 commit 後，才依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。Phase commit 回收完成且驗證通過後，才可移除 Workflow Developer dispatch worktree。Reviewer 退回時，續行沿用保留的同一 dispatch worktree 與 thread。
+Developer 回收收下時維持未 commit 的工作區變更，不建立 Phase commit。只有在 Reviewer 收下、需求意圖驗收完成、結案報告產出且使用者授權 commit 後，才依 Phase 順序逐 Phase 暫存指名路徑並建立對應 commit。Reviewer 退回時，修正仍在同一來源工作樹進行。`DispatchKind=workflow` 機制的 dispatch worktree 回收見 `codex-dispatch` skill `references/collect.md`「Phase commit 回收與驗證」。
 
 Phase commit 回收步驟依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。來源分支是已通過 `codex-dispatch` 分支符合性檢查的線分支或整合分支。保留每個 Phase 的獨立語意，不在此步驟把全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收完成並通過驗證後，依模式檔規定的整理時機執行「整理流程」。每筆 commit 必須通過可用性驗證，且回收後歷史整理必須通過第一層零差異 gate。回收衝突時停止並保留 worktree 與證據。
 
@@ -237,6 +237,18 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 - 不使用 `--no-verify`。
 - 歸併計畫（例如把修正收進原 commit）不影響 tree，零差異 gate 偵測不到歸併錯誤。主 Agent 在回報列出計畫，並在 push 或合併的授權請求中呈現給使用者。
 
+## 當輪授權
+
+當輪授權指使用者在執行端當輪的直接回覆，或符合 `instructions.md` §1.5「授權期限」的協調 Session 轉述。轉述授權的判定依 `instructions.md` §1.5「授權期限」。
+
+| 動作 | 可否轉述 | 條件 |
+| --- | --- | --- |
+| 線分支本機 commit | 可 | 限 `feature/<lineSlug>` 的本機 commit |
+| 線分支 rebase | 可 | 須先建備份分支，一遇衝突就停下；解衝突須新的當輪授權，使用者直接回覆或新的轉述皆可，rebase 的轉述授權不涵蓋解衝突 |
+| 整合分支落地（含 `merge --ff-only`）、合併、打標籤、push、force push | 不可 | 使用者須在執行端當輪直接授權 |
+
+「commit 類」授權中，只有線分支本機 commit 適用轉述。
+
 ## 改寫與 force push 邊界
 
 | 分支 | 已推送後可否改寫 | 條件 |
@@ -249,7 +261,7 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 | 線分支、整理分支、備份分支 | 不推送 | 已被推送時停止並詢問使用者 |
 | 缺少或無效註記時的 `main` | 不改寫 | 視同 `release-flow` |
 
-- 每次 force push 都需使用者當輪授權。一般 push 的授權不涵蓋 force push，授權不跨輪、不跨分支。
+- 每次 force push 都需使用者在執行端當輪直接授權，協調 Session 轉述不適用。一般 push 的授權不涵蓋 force push，授權不跨輪、不跨分支。
 - 一律使用 `git push --force-with-lease=<ref>:<遠端預期 SHA> origin <branch>`，不使用 `--force`。
 - 授權請求固定格式為 `[force push 授權] 分支=<名稱>；遠端目前=<sha>；改寫後=<sha>；備份=<備份分支或 SHA>；理由=<一句話>`。
 - lease 失敗（遠端已被更新）時停止回報，不重試，也不改用 `--force`。
@@ -296,7 +308,7 @@ Git 只會回報 patch 套用成功或衝突，不會回報內容遺失。Squash
 
 只適用於整合上游變更的 rebase。純歷史重排發生衝突時，維持停止回報。
 
-1. 第一次 rebase 衝突時執行 `git rebase --abort`，回報衝突的 commit SHA、主題與檔案清單，取得使用者當輪授權後才續行。授權屬 commit 類，只涵蓋這次解衝突。`git rev-list --merges --count <upstreamBeforeSha>..<beforeSha>` 大於 `0` 時，範圍含 merge commit，`range-diff` 與一般 rebase 都會略過它，本路徑不適用，停止回報。
+1. 第一次 rebase 衝突時執行 `git rebase --abort`，回報衝突的 commit SHA、主題與檔案清單，取得使用者當輪授權後才續行。授權屬 commit 類，只涵蓋這次解衝突；該授權為本次解衝突新取得，前面 rebase 的轉述授權不涵蓋此步，依「當輪授權」。`git rev-list --merges --count <upstreamBeforeSha>..<beforeSha>` 大於 `0` 時，範圍含 merge commit，`range-diff` 與一般 rebase 都會略過它，本路徑不適用，停止回報。
 2. 在整理分支重新執行同一個 rebase，逐一解衝突後以 `git rebase --continue` 完成。備份分支保留不動。
 3. 記錄 `afterSha` 後，執行下列命令，比對 rebase 前後每一筆本地 commit。
 

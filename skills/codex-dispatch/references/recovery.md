@@ -6,8 +6,9 @@
 
 | 失敗形狀 | 恢復方式 | 詳細節 |
 | --- | --- | --- |
-| 事件流以 usage-limit 結束（服務端拒絕） | 不重試同一派遣；等待重設，或依「主 Agent 的帳號切換決策」以手動查詢的額度選另一帳號冷啟動；全部派工帳號不可用時依 `instructions.md` 的「派工帳號全數不可用時的承接」改由 Claude Sonnet subagent 承接 | 額度與範圍契約 |
-| admission 或 Start 準備階段失敗、Codex 程序未啟動 | 修正輸入後可用同一個 `dispatchSlug` 重新冷啟動。腳本會清除該次失敗嘗試建立的 ScopePlan hash 紀錄，`failure receipt` 與 `launch-failed` RunRecord 保留供稽核；已啟動成功者的 hash、ledger 與 owner 不受影響。若 `Cleanup` 缺少 Preflight，未啟動證明還要求 dispatch worktree 的 `.local\ai-sessions\history` 下不存在 `codex-exec-*.jsonl` 與 `codex-thread-<dispatchSlug>.txt`；任一檔案存在時以 `CleanupPreflightResultRequired` 拒絕並保留 worktree。該次嘗試已建立 dispatch worktree 時，Preflight 會因 dispatchRoot 已被占用而拒絕，此時改用新的 `dispatchSlug`；Prepare 結果檔已存在而發生 `PrepareResultCollision` 時，改用新的結果路徑或新的 `dispatchSlug` | 續 session 與跨介面接手 |
+| Dispatch 回報 `CodexAccountsAllUnavailable`（登記帳號全數未登入、或因 `config.toml` 設定異常被略過，或被服務端拒絕），或單一嘗試被服務端拒絕（usage-limit、401、model not supported） | 同一帳號不重送。未指定 `-CodexHome` 時腳本已逐帳號嘗試，回報全數不可用時依 `instructions.md`「離線改派」重新呼叫選派入口並依回傳狀態處置；略過原因含 `TrustConfigMissing`、`TrustConfigLinked` 或 `TrustConfigUnsupported` 時，先回報使用者並列出各帳號的略過原因與下一列的修法，再依「離線改派」處置，不靜默改派。指定 `-CodexHome`、背景模式或續行被拒時，主 Agent 依摘要檔或 RunRecord 指定下一個帳號 | 額度與範圍契約 |
+| Dispatch 於 `preflight` 階段回報 `CodexAccountConfigMissing`、`CodexAccountConfigLinked`、`CodexAccountConfigUnsupported`、`CodexAccountConfigChanged`、`CodexAccountConfigWriteFailed`、`CodexAccountTrustLockTimeout` 或 `CodexProjectPathUnsupported` | 不換帳號，主 Agent 不自行編輯 `config.toml`。`CodexAccountConfigMissing` 請使用者以 `New-CodexDispatchAccount.ps1 -Name <名稱>` 重跑；`CodexAccountConfigLinked` 請使用者以 `(Get-Item -LiteralPath '<路徑>' -Force).Delete()` 只刪除連結後重跑建立腳本；`CodexAccountConfigUnsupported` 請使用者依訊息的行號人工修正，既有非 `trusted` 的專案設定視為使用者決定，腳本不覆寫；`CodexAccountConfigChanged` 稍後重派；`CodexAccountTrustLockTimeout` 確認沒有卡住的程序後重派；`CodexAccountConfigWriteFailed` 排除權限或磁碟原因後重派；`CodexProjectPathUnsupported` 改用不含單引號或控制字元的絕對路徑 | `start.md`「本機帳號清單與準備」 |
+| admission 或 Start 準備階段失敗、Codex 程序未啟動 | 修正輸入後可用同一個 `dispatchSlug` 重新冷啟動；該次派遣經過換帳號外層、已寫出 `history/<lineSlug>/dispatch-account-failover-<dispatchSlug>.json` 時，摘要檔保留供稽核，腳本以 `DispatchAccountFailoverSummaryCollision` 拒絕同一個 `dispatchSlug`，改用新的 `dispatchSlug`。腳本會清除該次失敗嘗試建立的 ScopePlan hash 紀錄，`failure receipt` 與 `launch-failed` RunRecord 保留供稽核；已啟動成功者的 hash、ledger 與 owner 不受影響。若 `Cleanup` 缺少 Preflight，未啟動證明還要求 dispatch worktree 的 `.local\ai-sessions\history` 下不存在 `codex-exec-*.jsonl` 與 `codex-thread-<dispatchSlug>.txt`；任一檔案存在時以 `CleanupPreflightResultRequired` 拒絕並保留 worktree。該次嘗試已建立 dispatch worktree 時，Preflight 會因 dispatchRoot 已被占用而拒絕，此時改用新的 `dispatchSlug`；Prepare 結果檔已存在而發生 `PrepareResultCollision` 時，改用新的結果路徑或新的 `dispatchSlug` | 續 session 與跨介面接手 |
 | 續行被拒 | 以 `git -C <舊 dispatchRoot> diff HEAD` 與未追蹤檔案清單轉移成果，以新的 `dispatchSlug` 冷啟動 | Codex 進程 PID 與並行檢查 |
 | 事件流在最後訊息前中斷，沒有 `turn.completed` 或 `turn.failed` | 先執行 `Inspect` 與 `Collect` 取回中斷保全檔；只交付已確認單位與其證據，其餘 selected units 保持未完成 | InterruptionSafeguard |
 | 事件流以 `turn.failed` 結束或 exit code 非零 | 依 C 出口取失敗原因。若事件流以 `turn.failed` 結束且結案報告不存在，`Inspect` 與 `Collect` 回報 `recoverable_artifacts_present` 及 `recoverable_artifact_files`，供主 Agent 檢視相對 `baseSha` 的 worktree 變更並決定是否以新 `dispatchSlug` 冷啟動；欄位不改變失敗判定 | 完成判定與三出口 |
@@ -15,14 +16,15 @@
 | Prepare 失敗且 `PrepareFailed` 文件再次寫入失敗 | 由 operation result 的 `prepareResultWriteFailure.code=PrepareResultWriteFailed` 與 `prepareResultWriteFailure.path` 取得錯誤碼與目標路徑；`prepareResultSha256=null`，不將該路徑視為已成功保存的 Prepare 文件，修正寫入條件後重新 Prepare | 腳本介面與執行前提 |
 | 結案訊息缺少識別字 | 標記 `PromptNotDelivered`，修正啟動方式後重新派遣 | RecoveryPrecheck |
 
-### 全部派工帳號不可用時的承接
+### 離線改派的執行細節
 
-成立條件、承接者與例外見 `instructions.md`「派工帳號全數不可用時的承接」，本節補充執行細節。
+成立條件與政策見 `instructions.md`「離線改派」，各狀態的處置見 `executor-selection` skill「狀態處置」，本節補充執行細節。
 
-- 判定證據：只用既有證據（各帳號最近一次事件流或手動查詢快照），不為驗證額度而試跑派遣。
-- 規則來源：承接者以該工作原本的規則檔為規則來源（`developer.toml`、`reviewer.toml`、`support-engineer.toml` 等）。
-- 產出落點：同原派遣契約，不經 `codex-dispatch` 腳本。Workflow 的 Codex Phase 規則來源為 `developer.toml`，結案報告核對同 `workflow-orchestration` skill「Haiku 實作路徑」。
-- exceptions 依據：「替代方案」的依據欄含原方案失敗原因與各帳號證據的來源位置。
+- 判定證據：Dispatch 回報的 `CodexAccountsAllUnavailable` 與摘要檔 `history/<lineSlug>/dispatch-account-failover-<dispatchSlug>.json`（候選、略過原因與每次嘗試的拒絕種類），不採用各帳號最近一次派遣事件流。
+- 規則來源：承接者以該工作原本的規則檔為規則來源（`reviewer.toml`、`frontend-reviewer.toml`、`contract-auditor.toml` 等），由選派入口回傳的執行者承接。
+- 產出落點：降級審查依 `workflow-orchestration` skill「Sonnet 審查路徑」寫入 `review-report-claude.md`；事實查核改由 Sonnet 承接時沿用原派遣單第 7 欄的報告落點，不經 `codex-dispatch` 腳本。
+- exceptions 依據：「替代方案」的依據欄含原方案失敗原因與摘要檔的絕對路徑。
+- 停止：選派入口回傳 `stopped`（硬能力沒有替代者）或 `wait-reset`（顧問）時，不改派，回報使用者。
 - 恢復：帳號恢復後新派遣照常使用 Codex，不回頭重做已承接的工作。
 
 ### 四種阻塞形狀的產物與交接
@@ -32,8 +34,8 @@
 | 阻塞形狀 | 產物語意 | 操作交接 | 詳細節 |
 | --- | --- | --- | --- |
 | 入口不對稱 | `Dispatch` 是新派遣的唯一正式入口；Request 檔與命令列的同名欄位語意與驗證相同，兩邊不一致時以 `DispatchRequestMismatch` 拒絕 | 新的一筆派遣一律從 `Dispatch` 進入；`Preflight`、`Prepare`、`Start` 的分步入口只用於續行、恢復與測試 | 使用時機與入口選擇、Dispatch 正式入口 |
-| 失敗重試污染 | 程序未啟動的失敗嘗試留下 `failure receipt` 與 `launch-failed` RunRecord 供稽核，該次建立的 ScopePlan hash 會被清除 | 程序未啟動且未留下 dispatch worktree 時以同一個 `dispatchSlug` 重試，已留下 worktree 時改用新的 `dispatchSlug`；程序已啟動的派遣改走續行，或以新 `dispatchSlug` 冷啟動並轉移成果 | 失敗與恢復導引、續 session 與跨介面接手 |
-| 外部狀態恢復 | 服務端以 usage-limit 拒絕時不重試；中斷時以中斷保全檔記錄已確認單位與證據位置 | 主 Agent 需要額度數值時以 `Get-CodexQuota.ps1` 手動查詢，advisor 啟動由使用者授權；中斷後先 `Inspect`、`Collect` 取回中斷保全檔，只交付已確認單位 | 額度與範圍契約、InterruptionSafeguard、advisor 授權請求 |
+| 失敗重試污染 | 程序未啟動的失敗嘗試留下 `failure receipt` 與 `launch-failed` RunRecord 供稽核，該次建立的 ScopePlan hash 會被清除 | 程序未啟動、未留下 dispatch worktree 且未寫出換帳號摘要檔時以同一個 `dispatchSlug` 重試，已留下 worktree 或摘要檔時改用新的 `dispatchSlug`；程序已啟動的派遣改走續行，或以新 `dispatchSlug` 冷啟動並轉移成果 | 失敗與恢復導引、續 session 與跨介面接手 |
+| 外部狀態恢復 | 服務端拒絕時同一帳號不重試，未指定 `-CodexHome` 時腳本改試下一個帳號；中斷時以中斷保全檔記錄已確認單位與證據位置 | 主 Agent 需要額度數值供顯示時依 `instructions.md`「派工的額度查詢與範圍」手動查詢，advisor 啟動由使用者授權；中斷後先 `Inspect`、`Collect` 取回中斷保全檔，只交付已確認單位 | 額度與範圍契約、InterruptionSafeguard、advisor 授權請求 |
 | 同名參數語意 | `-ResultPath` 只寫 CLI envelope；`-PrepareResultPath` 寫 `ai-sessions.prepare.v1` 文件；每個產物只有一個寫入者 | `Start` 只接受 `ai-sessions.prepare.v1` 文件；`Collect` 的參數取自 `Dispatch` 輸出欄位，不自行拼湊路徑 | 最短正常路徑、Dispatch 正式入口 |
 
 `ScopePlan` hash 紀錄寫入 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\scope-plan-hash-<dispatchSlug>.json`，不同線可使用相同 `dispatchSlug`。讀取時若同線路徑不存在，才檢查舊版 history 根目錄的 `scope-plan-hash-<dispatchSlug>.json`；只有舊紀錄的 `line_slug`，或其 `root_run_id` 對應 RunRecord 的所屬線，與目前 `lineSlug` 相同時才沿用。其他線的舊紀錄不阻擋目前派遣，也不會被改寫或刪除。同一線內仍須使用不同 `dispatchSlug` 識別不同派遣。

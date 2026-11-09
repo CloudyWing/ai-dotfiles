@@ -2,12 +2,22 @@
 name: browser-smoke
 description: 瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。
 audience: agent
+dispatch: split
 policy.allow_implicit_invocation: true
 ---
 
 # Browser Smoke Verification
 
 此 Skill 用於完成前端或 Web UI 變更後的低成本瀏覽器驗證。它不是完整 E2E 測試框架，不負責新增可重跑的測試案例；若使用者要求建立正式測試，改依專案既有 Playwright、Cypress、Vitest 或其他測試架構處理。
+
+## 派遣分界
+
+| 工作 | 執行端 | 標註 |
+| --- | --- | --- |
+| 啟動服務、開啟頁面、執行操作流程（含以測試帳號登入）、擷取截圖與 console、network 證據 | Codex `scan` | `-Type test -Tags browse` |
+| 判讀截圖與證據是否符合預期、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
+
+需要使用者本人已登入的瀏覽器 session 時屬 `instructions.md` 不派清單，由 Claude 端操作。Codex 離線時選派入口回傳 `stopped`，停止並回報使用者，不改由 Claude 端代替 Codex 執行取證。
 
 ## 啟動條件
 

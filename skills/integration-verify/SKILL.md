@@ -2,14 +2,27 @@
 name: integration-verify
 description: 開發完成後的整合驗證入口。當使用者要求在功能開發完成後自行驗證、做整合測試，或說「幫我驗證」「驗證一下功能」但未指定驗證方式時使用。判斷專案類型後先執行既有單元測試，再路由到對應的煙霧驗證流程。
 audience: agent
+dispatch: split
 policy.allow_implicit_invocation: true
 ---
 
 # Integration Verification
 
-此 Skill 是「開發完成後讓 AI 自行整合驗證」的總入口。它負責判斷專案類型、判定執行環境、與使用者確認驗證範圍、執行既有單元測試，再依類型路由到對應的煙霧驗證流程。它本身不直接執行瀏覽器或 API 操作，實際驗證由分支 skill 或本檔的對應小節承擔。
+此 Skill 是「開發完成後讓 AI 自行整合驗證」的總入口。它負責判斷專案類型、判定執行環境、與使用者確認驗證範圍、執行既有單元測試，再依類型路由到對應的煙霧驗證流程。它本身不直接執行瀏覽器或 API 操作，實際驗證由分支 skill 或本檔的對應小節承擔，各段的執行端見「派遣分界」。
 
 此 Skill 不是完整 E2E 測試框架，不負責新增可重跑的測試案例。若使用者要求建立正式測試，改依專案既有測試架構處理。
+
+## 派遣分界
+
+工作拆成 Codex 端的取證與 Claude 端的判定，執行者由 `executor-selection` skill 的選派入口選出。
+
+| 工作 | 執行端 | 標註 |
+| --- | --- | --- |
+| 啟動服務、執行整合取證（瀏覽器、API、桌面操作）、寫入回查、擷取證據 | Codex `scan` | `-Type test`，依分支 skill 加 `-Tags browse`、`desktop-control` 或 `build-test` |
+| 單元測試與建置（步驟四） | 沿用實作者結案 gate 已執行的原始輸出；無可沿用輸出時派 Sonnet 取證者 | `-Type survey -Tags build-test` |
+| 判斷專案類型與執行環境、確認驗證範圍、判讀證據、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
+
+Codex 離線時，選派入口對 `test` 回傳 `stopped`。瀏覽器、登入與桌面操作的取證沒有替代者，停止並回報使用者，不改由 Claude 端操作。
 
 ## 行為基準
 
@@ -139,7 +152,7 @@ policy.allow_implicit_invocation: true
 
 ## 步驟四：執行既有單元測試
 
-煙霧驗證前先跑單元測試，先確認最底層的單元邏輯沒問題，再往上做整合層面的驗證。
+煙霧驗證前先跑單元測試，先確認最底層的單元邏輯沒問題，再往上做整合層面的驗證。實作者結案 gate 已附同一版本的單元測試原始輸出時沿用該輸出；需要重跑時依「派遣分界」交由 Sonnet 取證者執行。
 
 - 使用專案既有測試指令，例如 `dotnet test`、`npm test`、`npm run test:unit`。
 - 區分**快速單元測試**與**整合測試**（依賴 Docker、Testcontainers、實體資料庫或外部服務的測試）：

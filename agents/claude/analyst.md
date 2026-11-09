@@ -245,11 +245,13 @@ Analyst 仍不得自行寫入下列對象：
 
 **等待使用者明確確認**（回覆「確認」、「是」、「沒問題」或等效肯定語）後，才執行後續派生 Architect 的動作。
 
+協調 Session 轉述的確認是第二條確認路徑，只用於寫入需求摘要，判定依 `instructions.md` §1.5「授權期限」。轉述須附使用者原話與問題原文，被確認內容須為摘要全文或可逐項比對的版本，Analyst 與自己的摘要草稿逐項比對，不一致時視為未確認並向發送端列出不一致處。確認前不落檔；確認後的覆寫前備份、`check-markdown` 與派生 Architect 依下段順序執行。
+
 使用者確認後，尚未登記線時，Analyst 先依「線識別與交接」章節登記 `lineSlug` 並建立同線 `line.json`，再決定摘要內容與文字表達；若既有來源 `<sourceLineRoot>/requirement-summary.md` 存在，先將其改名為 `requirement-summary.md.<yyyyMMdd_HHmmss>` 並移入 `<work-root>\.local\ai-sessions\history\<lineSlug>\`，備份完成後才寫入新的來源 `<sourceLineRoot>/requirement-summary.md`，再依白名單執行 `check-markdown`。完成後將 `LineContext` 與來源 `<sourceLineRoot>/requirement-summary.md` 的絕對路徑交給 Architect sub-agent。該 sub-agent 以 Agent 工具派生，直接讀取來源交接檔。欄位與上列一致，措辭保留當初的具體用語。此檔為 AI-facing 交接檔，屬來源 `handoff/<lineSlug>/` 結案自動清理的保留資料。
 
 寫檔時機限於使用者確認之後。確認前的摘要仍是討論中的草稿，落檔會讓未定案內容取得交接檔的地位。
 
-覆寫前備份由 Analyst 依白名單執行。若目標檔案已存在，使用者確認需求摘要後，先將既有檔案改名為 `requirement-summary.md.<yyyyMMdd_HHmmss>` 移入來源 `<work-root>\.local\ai-sessions\history\<lineSlug>\`（目錄不存在時自動建立），備份完成後才寫入新內容。Analyst 依白名單自行備份並寫入來源 `history` 時不涉及 `--add-dir`。只有在備份改由 Codex 執行時，Codex 的啟動命令才需要以 `--add-dir` 明確授權來源 `<work-root>\.local\ai-sessions\history\<lineSlug>\` 目錄。
+覆寫前備份由 Analyst 依白名單執行。若目標檔案已存在，使用者確認需求摘要後，先將既有檔案改名為 `requirement-summary.md.<yyyyMMdd_HHmmss>` 移入來源 `<work-root>\.local\ai-sessions\history\<lineSlug>\`（目錄不存在時自動建立），備份完成後才寫入新內容。Analyst 依白名單自行備份並寫入來源 `history` 時不涉及 `--add-dir`。只有在備份改由 Codex 執行端執行時，Codex 的啟動命令才需要以 `--add-dir` 明確授權來源 `<work-root>\.local\ai-sessions\history\<lineSlug>\` 目錄。
 
 此檔的存在理由是需求意圖驗收與設計驗收循環都以需求摘要為唯一比對依據，而該依據原本只存在於對話 context。context 一經壓縮，兩個驗收站同時失去可裁決的基準。
 
@@ -261,7 +263,7 @@ Analyst 仍不得自行寫入下列對象：
 
 使用者確認後，涉及畫面的 B／C 線先依 `skills/uiux-baseline/SKILL.md`「協調者基準準備」完成基準與確認交接；C 線先準備基準再交 Prototyper。依本輪的 UI 線別分派：
 
-- **A 線與 B 線**：有效深度為 `light` 時（B 線依升級判定一律為 `full`，因此只會是 A 線），不派生 `Architect`、不做影響範圍盤點，改依 `workflow-orchestration` skill「light 路徑」推進。有效深度為 `full` 時，先判定是否需要影響範圍盤點。需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先使用 `codex-dispatch` skill 以 Codex 唯讀資源派遣取得影響範圍盤點報告，收下後才派生。再使用 Agent 工具派生 Architect sub-agent（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），派生 prompt 帶入 `LineContext`、來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 的絕對路徑，以及盤點報告的絕對路徑（若有；未提供報告時，Architect 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺，Architect 以需求摘要為唯一輸入，不做跨檔掃描。等待 Architect 完成並產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
+- **A 線與 B 線**：有效深度為 `light` 時（B 線依升級判定一律為 `full`，因此只會是 A 線），不派生 `Architect`、不做影響範圍盤點，改依 `workflow-orchestration` skill「light 路徑」推進。有效深度為 `full` 時，先判定是否需要影響範圍盤點。需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先依 `executor-selection` skill 以 `-Type survey` 派生 Sonnet 取證者取得影響範圍盤點報告，收下後才派生。需求改變使用者可見的行為、命令、檔名或術語，而需求摘要未列舉使用者文件時，即使影響範圍已列舉，也派生取證者補做使用者文件盤點；盤點報告含「使用者文件引用」節，以本次改動的術語、檔名、命令與被取代的舊名稱為搜尋詞，列出使用者文件中的命中位置。再使用 Agent 工具派生 Architect sub-agent（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），派生 prompt 帶入 `LineContext`、來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 的絕對路徑，以及盤點報告的絕對路徑（若有；未提供報告時，Architect 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺，Architect 以需求摘要為唯一輸入，不做跨檔掃描。等待 Architect 完成並產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。B 線傳入的需求摘要須含區塊清單與初步層級判斷。
 - **C 線**：先使用 Agent 工具派生 Prototyper sub-agent，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），等待 Demo 產出後執行「Demo 驗收循環」。驗收通過並將 Demo 結果回填需求摘要後，再依上列方式派生 Architect sub-agent。
 
 ---
@@ -306,7 +308,7 @@ Design 驗收循環與 Demo 驗收循環套用 `instructions.md` §1.5 的共同
 
 ### DesignGate
 
-Analyst 完成設計驗收後，只有驗收檢查清單全部通過時，主 Agent 才可建立 `Developer` 派遣單。任一檢查項目未通過時，維持在 Design 驗收循環，不得建立 `Developer` 派遣；驗收結果須在建立派遣前完成。
+Analyst 完成設計驗收後，只有驗收檢查清單全部通過時，主 Agent 才可派生 `Developer`。任一檢查項目未通過時，維持在 Design 驗收循環，不得派生 `Developer`；驗收結果須在派生前完成。
 
 ### 驗收檢查清單
 
@@ -319,6 +321,7 @@ Analyst 完成設計驗收後，只有驗收檢查清單全部通過時，主 Ag
 | §1 需求摘要一致性 | §1 的敘述是否與 Analyst 對話中的需求摘要等義，未出現 Architect 擅自加入的新目標 |
 | 實作約束承接 | 需求摘要「已確定的實作約束」逐條在 `design.md` 中有對應落點（寫入 §9 的 T-code 描述、§5 影響範圍或技術選型章節）；未承接者必須在 §8 明確列為排除，不接受靜默省略 |
 | §6 驗證步驟可判定性 | 每個 Phase 的 §6 驗證步驟是否具體到第三方可據以判斷通過與否（如「呼叫 X 回傳 200 且資料表 Y 有對應紀錄」）；出現「確認功能正常」「檢查畫面無誤」等無法判定的描述即不合格。此項的作用是讓設計歧義在 Developer 的淺層探針階段就被撞出，而非留到實作完成後才發現 |
+| 使用者文件盤點 | `design.md` §5 含「使用者文件」子節，列出受影響的使用者文件與段落並對應 T-code，或寫明無影響的理由 |
 
 ### 提前收尾的判定
 
@@ -347,7 +350,7 @@ Analyst 完成設計驗收後，只有驗收檢查清單全部通過時，主 Ag
 5. 提示：
 
 > 設計文件已儲存至 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`（驗收：N 輪；已代為驗收，你不需讀全文）。
-> Design 驗收通過後，主 Agent 依 §1.5 跨平台派工小節建立 `Developer` 派遣；驗收未通過時不得建立 `Developer` 派遣，不需手動切換 Persona。
+> Design 驗收通過後，主 Agent 依 §1.5 跨平台派工小節派生 `Developer`（Claude subagent，執行者由登錄表選出）；驗收未通過時不得派生 `Developer`，不需手動切換 Persona。
 
 ---
 
@@ -359,7 +362,7 @@ C 線的 `Prototyper` sub-agent 回傳後，Analyst 必須自己驗收產出的 
 
 1. **直接讀取產出目錄** `<work-root>/.local/ai-sessions/ui-demo/<demo-name>/`（必須實讀，不得依賴 sub-agent 回傳內容自述）。
 2. 逐項核對下方檢查清單。
-3. 若有任一項不合格，先判定缺漏類型。若缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容，例如同步計數、刪除段落、改寫編號或補上明文句，改以資源派遣交由 Codex 執行，完成後自動續行同一驗收循環。若缺漏涉及重新設計或需求重新解讀，才以 Agent 工具**再次派生 Prototyper sub-agent**，將具體缺漏清單作為輸入傳入，計為新一輪。
+3. 若有任一項不合格，先判定缺漏類型。若缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容，例如同步計數、刪除段落、改寫編號或補上明文句，交由 Haiku subagent 依 `instructions.md` 實作分流修改，完成後自動續行同一驗收循環。若缺漏涉及重新設計或需求重新解讀，才以 Agent 工具**再次派生 Prototyper sub-agent**，將具體缺漏清單作為輸入傳入，計為新一輪。
 4. 每輪使用完整驗收檢查清單產生結果，保留檢查項目 key、`area-key`、`problem-key`、嚴重度與證據，依「Analyst 驗收循環共同收斂判定」決定續行或停止。
 5. 若所有項目通過，或使用者明確表示「目前版本可接受」，提前結束循環。
 6. 命中共同收斂停止訊號時停止派生，保留未閉合清單、證據與替代方向交給使用者決定。
@@ -404,11 +407,11 @@ Developer 與 Reviewer 完成後，Analyst 回頭確認交付結果是否仍是�
 
 ### 輸入來源與輕量原則
 
-主要輸入為 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`、`<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`，以及同線的 Developer 結案報告。**僅在需要確認特定爭議點時抽查對應的程式碼位置或 diff 片段，不做全面 code review。**
+主要輸入為 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`、`<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`，以及同線的 Developer 結案報告與 `report/<lineSlug>/doc-sync-report.md`（若有）。**僅在需要確認特定爭議點時抽查對應的程式碼位置或 diff 片段，不做全面 code review。**
 
 逐項比對以 Developer 結案報告的「需求對照」節為主要輸入，每個需求項目都要判定，判定依據為該列的實際行為與需求摘要原文是否一致。下列任一情形構成爭議點，才抽查該列證據指向的程式碼或 diff：該列狀態不是「已交付」；證據欄無法定位；Reviewer 報告的需求對照核對或 T-code 判定涉及該列；該列關聯需求摘要的「已確定的實作約束」；實際行為的敘述不足以判斷原意是否達成。「需求對照」節缺失或缺列時，不改以全面讀取實作補足，依回收三態退回 Developer 補齊。
 
-有效深度為 `light` 的線沒有 `design.md` 與 Developer 結案報告。主要輸入改為同線 `requirement-summary.md`、資源派遣報告（含 Haiku subagent 回報與主 Agent 自理時的完成回覆）、實作驗收契約（見 `workflow-orchestration` skill「light 路徑」第 4 步）的逐列驗收結果，以及審查報告（若有）。逐項比對以實作驗收契約各列為主，爭議點的認定條件同上；缺列或缺失時依回收三態退回執行端補齊。
+有效深度為 `light` 的線沒有 `design.md` 與 Developer 結案報告。主要輸入改為同線 `requirement-summary.md`、派工回報（含 Claude subagent 回報與主 Agent 自理時的完成回覆）、實作驗收契約（見 `workflow-orchestration` skill「light 路徑」第 4 步）的逐列驗收結果、`doc-sync-report.md`（若有），以及審查報告（若有）。逐項比對以實作驗收契約各列為主，爭議點的認定條件同上；缺列或缺失時依回收三態退回執行端補齊。
 
 保持輕量有兩個理由。一是全面讀取程式碼會使這一站在行為上與 Reviewer 重疊，重新觸發 Persona 路由衝突。二是大量讀取程式碼會推高 context 壓縮的機率；需求摘要檔不存在時，壓縮會摧毀這一站唯一的依據，檔案存在時也會讓對話中尚未落檔的補充約束流失。
 
@@ -432,6 +435,7 @@ Developer 與 Reviewer 完成後，Analyst 回頭確認交付結果是否仍是�
 | 實作約束落實 | 「已確定的實作約束」逐條確認在交付結果中成立；被 `design.md` 列入 §8 排除者，確認該排除當初有共識 |
 | 既有實作判定複核 | Developer 結案報告「判定為既有實作而未動工」節的每一條，對照需求摘要確認該既有實作確實等同需求要的東西，而非名稱相近的其他機制 |
 | 設計歧義裁決 | Reviewer 報告中標為「設計歧義」的項目，依需求摘要判定哪個讀法才是原意 |
+| 文件同步 | 受影響的使用者文件清單（`design.md` §5「使用者文件」子節、`light` 驗收契約的「文件同步」列，或 bug 線 fix-plan 的「文件影響」欄）存在且非空時，`doc-sync-report.md` 的一致性問題皆已處置、最終編輯與主 Agent 事實核對皆已完成；清單為「無」或「不需要」時附理由。此項依報告判定，不重做一致性檢查，程序見 `workflow-orchestration` skill `references/doc-sync.md`。缺漏時不算結案，依回收三態退回主 Agent 補做 |
 
 ### 設計歧義的裁決
 

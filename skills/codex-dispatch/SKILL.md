@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # Codex 派工機制
 
-本 Skill 負責派工的執行機制。是否派工由 `instructions.md` §1.5 的路由規則判定，本 Skill 只處理指令、落點、等待、取證、續 session 與回收。
+本 Skill 負責 Codex 派工的執行機制，只處理已由執行者登錄表選定的 Codex 執行者（測試、審查、顧問、事實校閱、影像產生）。是否派工由 `instructions.md` §1.5 的路由規則判定，執行者判定見 `executor-selection` skill；本 Skill 只處理指令、落點、等待、取證、續 session 與回收。
 
 ## 階段路由
 

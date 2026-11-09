@@ -19,6 +19,13 @@ policy.allow_implicit_invocation: false
 
 若未傳入參數，詢問使用者要測試哪個類別。
 
+## 任務標註
+
+`dispatch: delegate` 的意義為不由主 Agent 自理，依本節標註呼叫 `scripts/Select-DispatchExecutor.ps1`，執行者與標註語意見 `executor-selection` skill。
+
+- 標註：`-Type edit -E false -T true -Tags build-test`。
+- 預期執行者：Sonnet subagent。
+
 ## 執行步驟
 
 ### 1. 讀取目標類別

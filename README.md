@@ -44,9 +44,9 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | --- | --- | --- |
 | Analyst、Developer、Editor、Maintainer | 依所在平台 | Persona，以語意切換 |
 | Architect、Prototyper | Claude | 由主 Agent 派生 |
-| Developer | Codex（Phase 可由 Claude Haiku subagent 承接） | Design 驗收通過後由主 Agent 以 `codex exec` 發動 |
-| Reviewer | Codex 或 Claude Sonnet subagent，依審查配對 | 由主 Agent 依派遣判準發動 |
-| Frontend Reviewer、Contract Auditor、Refactorer、Support Engineer | Codex | 由主 Agent 派遣，或 Maintainer 派生 Support Engineer |
+| Developer、Refactorer、Support Engineer | Claude subagent（Haiku 或 Sonnet，依執行者登錄表） | 由主 Agent 以 Agent 工具派生，或 Maintainer 派生 Support Engineer |
+| Reviewer、Frontend Reviewer、Contract Auditor | Codex（Codex 離線時降級為 Claude Sonnet subagent） | 由主 Agent 依派遣判準以資源派遣發動 |
+| 測試（煙霧驗證取證）、事實校閱、顧問、影像產生 | Codex | 由主 Agent 依執行者登錄表以資源派遣發動 |
 
 功能線建議在 Claude Code 處理 Analyst 與 Architect，之後的 Developer 與 Reviewer 鏈由主 Agent 在背景發動，不需手動切換平台。bug 由 Maintainer 診斷，實作交由 Support Engineer 完成。
 
@@ -84,6 +84,12 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 ```
 
 交接檔與報告綁定在本輪任務的 `work-root`，判定方式見 `instructions.md` §1.5「work-root 判定」。
+
+#### 本機設定 machine.json
+
+`~/.ai-agents/.local/machine.json` 是本機設定，不進版控，記錄值班 Session、派工帳號清單等只屬於這台電腦的資訊。
+
+`coordinator_session_id` 是選用欄位，填入協調 Session 的 id 後，Agent 就能辨識由協調 Session 轉述的使用者決定。這個欄位由你手動寫入，或請協調 Session 寫入。沒有設定時，Agent 只認啟動它的那個 Session。換了協調 Session 時，要一併更新這個 id。轉述的判定規則見 `instructions.md` §1.5「授權期限」。
 
 ---
 
@@ -127,10 +133,10 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 `line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示「工作總覽」，依序為 Session、Codex 額度、工作線與工作目錄四個區塊。資料來自 `scripts/Get-LineStatus.ps1 -AsJson` 與 `ccd_session_mgmt.list_sessions`，每 60 秒更新一次，也可按「重新整理」，更新過程不耗用模型 token。掃描範圍為預設清單加上目前 Session 所在的 repo。
 
 - 點 Session 列會開啟該 Session。
-- Codex 額度列在帳號登入失效時顯示「登入失效」與該帳號的重新登入命令，達到用量上限時顯示「已達上限」。登入由使用者自行執行。
-- 狀態列顯示一行摘要，內容為執行中 Session 數與額度最低帳號的 5 小時剩餘量。
+- Codex 額度列在帳號登入失效時顯示「登入失效」與該帳號的重新登入命令，達到用量上限時顯示「已達上限」。登入由使用者自行執行。沒有週視窗的帳號，額度列的週額度位置顯示「無週視窗」。
+- 狀態列顯示一行摘要，內容為執行中 Session 數與額度最低帳號的剩餘量。
 - Session 由執行中轉為閒置時跳一次提醒；看板載入後取得的第一次狀態只作為比較基準。
-- 全部帳號的 5 小時剩餘量都低於 20% 時跳一次提醒，同一視窗只提醒一次，視窗重設後才再提醒。已達上限與登入失效的帳號視同低於門檻；有帳號查詢失敗時不提醒。
+- 全部帳號的額度剩餘量都低於 20% 時跳一次提醒，提醒文字依各帳號的額度視窗長度標示（例如 5 小時、30 天）。同一視窗只提醒一次，視窗重設後才再提醒。已達上限與登入失效的帳號視同低於門檻；有帳號查詢失敗時不提醒。
 - 清理按鈕呼叫 `scripts/Invoke-WorkOverviewCleanup.ps1`，先列出可清理項目、大小與不能清的原因，按確認後才刪除。看板對工作區檔案的寫入只有清理；提醒狀態存在 plugin 的 store，複製按鈕寫入剪貼簿。
 
 Setup 的 8b 會安裝並啟用此 plugin，Desktop 開新 Session 時自動開啟 Pane。不執行 Setup 時，可手動安裝：
@@ -178,7 +184,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 派工使用 `implement`、`review`、`deep-review`、`scan`、`advisor` 與選用的 `intensive` 六個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時預設為 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。何時使用哪個檔位見 `instructions.md` §1.5。
+1. 派工使用 `review`、`deep-review`、`scan`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本選第一個已登入帳號，清單為空才預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `instructions.md` §1.5 與 `executor-selection` skill。
 2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。Setup 提供初始值，檔案建立後屬本機設定。
 
    ```toml
@@ -190,24 +196,24 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
    default_subagent_reasoning_effort = "<effort>"
    ```
 
-3. 每個檔位固定讀取各自的 `<檔位>.config.toml`，不讀取 `config.toml`。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
-4. 檔位檔屬本機設定，不進版控。Setup 在 `~/.codex` 缺少前五個檔位的設定檔時建立，不覆寫既有檔，`intensive` 不建立；另檢查各派工帳號的檔位連結，殘留的 `default.config.toml` 只警示不刪除。
+3. 每個檔位的設定寫在各自的 `<檔位>.config.toml`。執行時先載入 Codex home 的 `config.toml`，再疊加所選檔位的設定。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
+4. 檔位檔屬本機設定，不進版控。Setup 在 `~/.codex` 缺少四個檔位的設定檔時建立，不覆寫既有檔；另檢查各派工帳號的檔位連結，殘留的 `default.config.toml` 只警示不刪除。
 
 #### 獨立 Codex 帳號目錄
 
-派工可使用專用的 Codex 帳號目錄，與 Codex Desktop 使用的預設目錄 `~/.codex` 分開。派工只在單次子行程指定 `CODEX_HOME`，不會更換、改寫 Desktop 或預設目錄的登入，因此 Desktop 使用中不會被派工切換帳號。建議的配置是：`~/.codex` 留給 Desktop 且不登記，派工用的每個帳號各用一個專用目錄。Desktop 與某個派工帳號若登入同一個 ChatGPT 帳號，兩邊仍共用該帳號的額度。
+派工可使用專用的 Codex 帳號目錄，與 Codex Desktop 使用的預設目錄 `~/.codex` 分開。派工只在單次子行程指定 `CODEX_HOME`，不會更換、改寫 Desktop 或預設目錄的登入，因此 Desktop 使用中不會被派工切換帳號。建議的配置是 `~/.codex` 留給 Desktop 且不登記，派工用的每個帳號各用一個專用目錄。Desktop 與某個派工帳號若登入同一個 ChatGPT 帳號，兩邊仍共用該帳號的額度。
 
 派工帳號以 `scripts\New-CodexDispatchAccount.ps1` 建立。腳本建立 `~/.codex-<名稱>` 目錄與最小 `config.toml`，以連結共用 `~/.codex` 的沙盒狀態與檔位設定檔，並登記到 `~/.ai-agents/.local/machine.json`。
 
 ```powershell
-.\scripts\New-CodexDispatchAccount.ps1 -Name account-a -ProjectPath 'C:\Users\<使用者>\.ai-agents', 'D:\Projects\<專案>'
+.\scripts\New-CodexDispatchAccount.ps1 -Name account-a
 ```
 
-在 PowerShell 提示字元直接執行。`-ProjectPath` 接受陣列，以 `powershell.exe -File` 或 `pwsh -File` 呼叫時逗號串接會被視為單一字串，每次只能傳一個路徑。
+在 PowerShell 提示字元直接執行。派工時會自動把派遣的專案加入該帳號的信任清單，建立帳號時不必列出專案。`-ProjectPath` 為選填，用於預先信任專案，例如 `-ProjectPath 'C:\Users\<使用者>\.ai-agents'`。
 
-帳號已存在時重跑只補缺少的部分，不覆寫既有設定；新增專案時以相同名稱加上新的 `-ProjectPath` 重跑即可。加上 `-WhatIf` 可預覽而不寫入。建立 Symbolic Link 權限不足時，改以具備建立 Symbolic Link 權限的 PowerShell 重新執行。
+帳號已存在時重跑只補缺少的部分，不覆寫既有設定；之後新增專案不需要重跑。設定不符時，腳本列出問題與修法，不留下做一半的狀態。加上 `-WhatIf` 可預覽而不寫入。建立 Symbolic Link 權限不足時，改以具備建立 Symbolic Link 權限的 PowerShell 重新執行。
 
-腳本產生的 `config.toml` 內容如下，`[projects.'<小寫的專案絕對路徑>']` 依 `-ProjectPath` 逐一加入。缺少這個檔案時，Codex 在該 home 的所有命令都會被執行政策拒絕。
+`config.toml` 的最小內容為 `[windows]` 段。`[projects.'<小寫的專案絕對路徑>']` 由派工時自動補上，或由 `-ProjectPath` 預先加入。下例為補上一個專案信任後的內容。
 
 ```toml
 [windows]
@@ -216,6 +222,10 @@ sandbox = "elevated"
 [projects.'c:\users\<使用者>\.ai-agents']
 trust_level = "trusted"
 ```
+
+缺少 `config.toml` 時，該 home 沒有 Windows sandbox 設定，派工執行的命令會因需要核准而被執行政策拒絕。
+
+`config.toml` 設定異常的帳號會被略過，全部帳號都不可用時拒絕派工並說明原因。
 
 腳本不執行登入，最後輸出已設定 `CODEX_HOME` 的登入命令，由使用者自行執行。
 
@@ -238,8 +248,8 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 ├── docs/                               # 詳細索引與補充說明文件
 ├── git-global-excludes                 # 機器層 Git 排除清單
 ├── agents/
-│   ├── claude/                         # Claude 端 Persona 與 sub-agent（.md 格式）
-│   └── codex/                          # Codex 端 Persona 與 sub-agent（.toml 格式）
+│   ├── claude/                         # Persona 與 sub-agent 規則檔（.md 格式）
+│   └── codex/                          # Persona 與執行型 Agent 規則檔（.toml 格式，Claude subagent 承接時同樣讀取）
 ├── claude-plugins/                     # 本機 marketplace、hook 與狀態看板 plugin
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本、Demo 外框範本與派工範本
@@ -253,6 +263,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/` 根目錄只放使用者可直接執行的 Verb-Noun `.ps1` 與既有 `.csx` 腳本。
 - `scripts/Get-DispatchProgress.ps1` 唯讀查詢派遣進度，可依 `LineSlug` 或 `DispatchSlug` 篩選；預設顯示未結束與最近 24 小時內結束的項目。
 - `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態與額度。
+- `scripts/Select-DispatchExecutor.ps1` 依任務標註與 `scripts/dispatch/executor-registry.json` 選出派工執行者並輸出 `[派工判定]` 行，唯讀、不呼叫網路。
 - `scripts/Get-CodexQuota.ps1` 查詢 Codex 額度，只供顯示與紀錄。
 - `scripts/Invoke-WorkOverviewCleanup.ps1` 列出可清理的 worktree、分支與線層歷史備份，必須指定 `-Root`；預設只列出，以 `-ConfirmPlan` 帶入列出時的 planId 才刪除。
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
@@ -329,7 +340,7 @@ flowchart TD
     Maintainer --> Done
 ```
 
-> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依 §1.5 跨平台派工發動 `codex exec` 進入實作與審查循環。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 是 Codex 執行型 agent，處理程式碼技術債與語法現代化，每批修改後驗證測試。`architecture-improvement` 是人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
+> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依執行者登錄表派生 Claude subagent 進入實作，再以資源派遣發動 Codex 審查（Codex 離線時降級為 Claude Sonnet subagent）。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 由 Claude subagent 承接，處理程式碼技術債與語法現代化，每批修改後驗證測試。`architecture-improvement` 是人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
 
 ---
 

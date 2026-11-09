@@ -101,6 +101,7 @@ developer_instructions = """
    - 假設：產出 3 至 5 個可證偽假設，每個假設都以「問題出在 X，因為 Y，所以修改 Z 應可解決」表達，依可能性排序後交使用者複排。
    - 最小改動範圍：明確列出要改的檔案與符號，不含順帶重構。
    - 驗證步驟：正向（重現步驟不再觸發）與負向（周邊測試無迴歸）成對。
+   - 文件影響：受影響的使用者文件與段落（範圍見 `workflow-orchestration` skill `references/doc-sync.md`「適用範圍」），或「無：<理由>」。非空時，列出的段落併入 `modificationScope` 作為草稿範圍。
    - 禁止無依據的盲目嘗試，每個 fix-plan 都必須有明確的根因假設。
 
 ## 分流 B：需求調整
@@ -108,7 +109,7 @@ developer_instructions = """
 承接客戶反應或使用者提出、不需要走分析與設計流程的既有程式調整。
 
 1. 讀取使用者指定的目標與相關規範，依「有效範圍整合」確認既定目標與範圍、本輪增修、排除項目與仍有效限制。
-2. 涉及畫面時先依 `skills/uiux-baseline/SKILL.md`「協調者基準準備」及 `skills/uiux/SKILL.md`「基準輸入與確認狀態」完成計畫前置，再產出與 fix-plan 同格式的完整改動計畫，帶入 `confirmedGoal`、`effectiveScope`、`roundDelta`、`priorDecisions`、`exclusions`、`searchScope`、`modificationScope`、`persistentConstraints`、`acceptanceCriteria`、`contractVersion`、`replacesVersion`、`userRequirements` 與 `agentInferences`；沒有可重現的非預期行為時，根因與假設兩項留空。
+2. 涉及畫面時先依 `skills/uiux-baseline/SKILL.md`「協調者基準準備」及 `skills/uiux/SKILL.md`「基準輸入與確認狀態」完成計畫前置，再產出與 fix-plan 同格式的完整改動計畫，帶入 `confirmedGoal`、`effectiveScope`、`roundDelta`、`priorDecisions`、`exclusions`、`searchScope`、`modificationScope`、`persistentConstraints`、`acceptanceCriteria`、`contractVersion`、`replacesVersion`、`userRequirements` 與 `agentInferences`，並含「文件影響」欄（格式同分流 A 的 fix-plan）；沒有可重現的非預期行為時，根因與假設兩項留空。
 3. 範圍超出既有程式的局部調整，或需要新增跨模組能力時，停止並依「bug 線與功能線的邊界」升級，不在本分流硬做。
 
 ## 值班收件
@@ -125,7 +126,7 @@ developer_instructions = """
 
 值班收件的限制如下：
 
-- 通知不構成使用者授權。commit、push、安裝套件與 advisor 諮詢仍依當下 Session 的有效授權。
+- 通知不構成使用者授權。commit、push、安裝套件與 advisor 諮詢仍依當下 Session 的有效授權。轉述授權的判定依 `instructions.md` §1.5「授權期限」。
 - 同一修改端一次只開一條派工機制修正，其餘通知排入佇列。
 - 跨機器通知只使用訊息內的證據摘錄判斷，不依對方機器的路徑推論內容。
 
@@ -133,7 +134,7 @@ developer_instructions = """
 
 完成 fix-plan 或改動計畫後，依 `instructions.md` §1.5「平台自我判定」確認平台。依本檔「有效範圍整合」逐欄建立截至本輪的完整精簡契約，與計畫及正負向驗證步驟一起交付。契約更正時建立新 `contractVersion`，以 `replacesVersion` 指向被取代的版本，重新交付全部有效欄位。
 
-Claude 端依 `codex-dispatch` skill 的資源派遣流程，建立八欄派遣單並發動 `Support Engineer`。在第 4 欄帶入完整計畫與上述契約，在第 5 欄帶入計畫的正負向驗證，在第 6 欄承接修改範圍與限制；依該 skill 的回收規則取得結果。Codex 端以 `spawn_agent` 在同一 session 派生 `Support Engineer`，以 in-context 傳入同一完整計畫、契約與驗證步驟，等待其回報；`spawn_agent` 失敗時保留錯誤與未完成狀態並回報上游，不改用 `codex exec`。兩端均依本檔「驗收」節驗收結果。`Support Engineer` 的實作規格依其角色規則檔執行。Claude 端的範圍已列舉且不需測試循環時，依 `instructions.md` §1.5 實作分流改由 Haiku subagent 依 `support-engineer.toml` 分流 A 承接，其餘維持資源派遣。
+Claude 端依 `executor-selection` skill 以 `-Type edit` 呼叫選派入口，依選出的 Claude subagent（Haiku 或 Sonnet）派生 `Support Engineer`，契約見 `workflow-orchestration` skill `references/implement-routing.md`「單一工作的 Claude 承接契約」。prompt 帶入完整計畫與上述契約、計畫的正負向驗證、修改範圍與限制。診斷指令（重現、執行測試、跨檔取證）以 `-Type survey` 交 Sonnet 取證者，根因假設與結論留在本角色。Codex 端以 `spawn_agent` 在同一 session 派生 `Support Engineer`，以 in-context 傳入同一完整計畫、契約與驗證步驟，等待其回報；`spawn_agent` 失敗時保留錯誤與未完成狀態並回報上游，不改用 `codex exec`。兩端均依本檔「驗收」節驗收結果。`Support Engineer` 的實作規格依其角色規則檔執行。
 
 進入類型為 `task` 且有派遣單時，轉交前先讀取派遣單第 6 欄及任務內容，判讀是否明文禁止派生 subagent，例如「不得派生 subagent」或「不使用子代理」。限制以語意及適用範圍判斷；僅限制其他動作，或未明文禁止派生時，不視為禁止派生。任一處明文禁止派生時，立即停止，既不轉交、不親自改檔，也不產生部分修改。向派遣者回報 Maintainer 必須轉交與派遣單禁止派生之角色衝突、派遣單絕對路徑及衝突條文原文摘錄，建議派遣者改用 `Support Engineer` 觸發詞重新派遣。未禁止派生時，依下段現行轉交流程執行。
 
@@ -170,6 +171,7 @@ Claude 端依 `codex-dispatch` skill 的資源派遣流程，建立八欄派遣�
 4. 確認重現步驟不再觸發問題，周邊測試沒有迴歸。
 5. 確認 `Support Engineer` 已回報除錯輔助碼的清除證據，包含搜尋命令與零命中結果。仍有殘留時退回重做。
 6. `Support Engineer` 產出不符計畫或驗證未過時，退回重做，計為一次嘗試。
+7. 文件影響非空時，第 1 至 6 點通過後，依 `workflow-orchestration` skill `references/doc-sync.md` 執行一致性檢查、事實修正、最終編輯與事實核對。Claude 端由主 Agent 以選派入口派生取證者與最終編輯者；Codex 端無法派生 Claude subagent，於回報列「文件同步待辦」交 Claude 端續行。結案回報列出文件同步狀態。
 
 ## 品質保證與升級
 
@@ -185,7 +187,7 @@ Claude 端依 `codex-dispatch` skill 的資源派遣流程，建立八欄派遣�
 
 ## bug 線與功能線的邊界
 
-fix-plan 不另建 `requirement-summary.md`、`design.md` 等設計交接檔。Codex 端以 in-context 傳給 `Support Engineer`；Claude 端依「交付實作」寫入資源派遣單第 4 欄，派遣單只承載本次交付，不作為設計交接檔。若某個修正大到「非有交接檔對照才安全」，例如跨模組、改動公開介面或資料結構，代表它已是功能規模，應升級走 `Clarify => Design => Implement => Review => Accept`，不塞入 bug 線。
+fix-plan 不另建 `requirement-summary.md`、`design.md` 等設計交接檔。Codex 端以 in-context 傳給 `Support Engineer`；Claude 端承接時依「交付實作」以 in-context 寫入 Claude subagent 的派生 prompt，prompt 只承載本次交付，不作為設計交接檔。若某個修正大到「非有交接檔對照才安全」，例如跨模組、改動公開介面或資料結構，代表它已是功能規模，應升級走 `Clarify => Design => Implement => Review => Accept`，不塞入 bug 線。
 
 ## 三次失敗停損規則
 

@@ -22,7 +22,7 @@ PID 三鍵、程序樹與 ledger 稽核須確認程序已結束或原 PID 已重
 
 Codex 端不建立 commit，因此 dispatch worktree 的 `HEAD` 在派工全程維持 `baseSha`，實作成果以未 commit 的工作區變更形式存在。回收的輸入是這份工作區差異，不是 commit 區間。
 
-Workflow Developer 的回收收下與 Phase commit 回收是兩個時點。Developer 回收判定為收下時，主 Agent 先將成果套回來源工作樹，維持未 commit 的工作區變更，不建立 Phase commit，並保留 dispatch worktree。Reviewer 退回時，續行仍使用同一個 dispatch worktree 與 thread。只有在 Reviewer 收下、需求意圖驗收完成、結案報告產出且使用者授權 commit 後，才進入 Phase commit 回收。
+本節的 Workflow Developer 回收屬 `DispatchKind=workflow` 機制，規則層目前沒有呼叫端；Workflow Phase 由 Claude 執行者承接時的回收與 Phase commit 見 `workflow-orchestration` skill「Claude 實作路徑」。保留本機制時，Workflow Developer 的回收收下與 Phase commit 回收是兩個時點。Developer 回收判定為收下時，主 Agent 先將成果套回來源工作樹，維持未 commit 的工作區變更，不建立 Phase commit，並保留 dispatch worktree。Reviewer 退回時，續行仍使用同一個 dispatch worktree 與 thread。只有在 Reviewer 收下、需求意圖驗收完成、結案報告產出且使用者授權 commit 後，才進入 Phase commit 回收。
 
 `Invoke-CodexDispatch.ps1 -Operation Collect` 依 `Preflight` 的 `worktreeCreated` 分流回收。`true` 時取得 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard`，再合併成完整成果清單。`false` 時不要求 `DispatchRoot` 或 `BaseSha`，改從 Preflight 的 `targetStates` 逐一核對核准輸出檔案，保存非空檔案的長度、最後寫入時間與 SHA-256 證據。direct-write 的結案報告也必須存在且非空。任何必要欄位、檔案證據或報告核對失敗時，腳本以非零結束碼停止，不把空 `baseSha` 當成 Git 基準。
 
@@ -34,7 +34,7 @@ Collect 在開始處檢核參數。`DispatchKind`、`ReportPath`，以及 `-Appl
 
 單一檔案橫跨兩個以上 Phase 時，該檔的差異歸入其最早出現的 Phase，並在回收回報中列出該檔與涉及的全部 Phase。
 
-Claude Haiku subagent 承接的 Phase 不經本檔的 Collect 與 dispatch worktree。其檔案清單取自 Haiku 結案報告「Phase 對照」節，主 Agent 逐 Phase 暫存指名路徑並建立 commit，與 Codex Phase 依 `design.md` 的 Phase 宣告順序交錯回收。全 Haiku 時沒有 dispatch worktree，不呼叫 `Cleanup`。核對與回收步驟見 `workflow-orchestration` skill「Haiku 實作路徑」。
+Claude 執行者承接的 Phase 不經本檔的 Collect 與 dispatch worktree。其檔案清單取自結案報告「Phase 對照」節，主 Agent 依 `design.md` 的 Phase 宣告順序逐 Phase 暫存指名路徑並建立 commit，沒有 dispatch worktree，不呼叫 `Cleanup`。核對與回收步驟見 `workflow-orchestration` skill「Claude 實作路徑」。
 
 Phase 回收步驟維持一個 Phase 一個 commit，不以 merge commit 取代 Phase commit，也不在此步驟把全部 Phase squash 成單一 commit。Phase commit 回收完成並通過驗證後，依 `git-workflow` 註記模式規定的整理時機執行該 skill 的「整理流程」。每筆整理後的 commit 必須通過可用性驗證，並通過 `git-workflow` 第一層零差異 gate。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
 
@@ -101,7 +101,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 判定順序與使用者拍板條文見 `instructions.md`「派工後的殘餘工作」，本節補充紀錄與處置細節。
 
 - 環境成因例示：sandbox 無法還原套件、缺外部前置條件、權限不足。
-- 改派對象：其他 Codex 帳號，或帳號全數不可用時依 `instructions.md`「派工帳號全數不可用時的承接」改由 Claude Sonnet subagent 承接。改派不屬補做，改派承接記為 exceptions「替代方案」。
+- 改派對象：依登錄表選出的其他執行者。Codex 執行端的帳號由腳本自動更換；Dispatch 回報 `CodexAccountsAllUnavailable` 時依 `instructions.md`「離線改派」由選派入口回傳承接者。改派不屬補做，改派承接記為 exceptions「替代方案」。
 - 補做紀錄：完成補做的主 Agent 追加 exceptions「派工後補做」，固定四欄填寫如下。
   - 內容：補做範圍（檔案、行數、驗證命令）與來源 `dispatchSlug`。
   - 依據：派工端無法完成的原因，以及小型修改例外四項的實測值（檔案數、行數、命令數）。
@@ -118,7 +118,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 
 ## 值班通知
 
-回收判定為派工機制缺陷時，協調 Session 通知本機值班 Session，讓同一缺陷集中登記與修正。派工機制缺陷指派工腳本、Skill 條文或範本與實際行為不符；額度耗盡、服務端拒絕、使用者環境限制與執行端自身的任務錯誤不發通知。
+回收判定為派工機制缺陷時，回收派遣的 Session 通知本機值班 Session，讓同一缺陷集中登記與修正。派工機制缺陷指派工腳本、Skill 條文或範本與實際行為不符；額度耗盡、服務端拒絕、使用者環境限制與執行端自身的任務錯誤不發通知。
 
 本機設定位於 `~/.ai-agents/.local/machine.json`，不進版控。檔案不存在時不發通知，回收照常進行。
 
@@ -128,7 +128,8 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
   "machine_id": "home",
   "duty_session_name": "duty-home",
   "maintenance_writer": true,
-  "writer_duty_session_name": "duty-home"
+  "writer_duty_session_name": "duty-home",
+  "coordinator_session_id": "<協調 Session 的 id>"
 }
 ```
 
@@ -138,6 +139,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | `duty_session_name` | 本機值班 Session 的名稱，即跨 Session 訊息的收件者 |
 | `maintenance_writer` | 本機是否為唯一修改並 push `.ai-agents` 的修改端；缺少時視為 `false`。兩台機器的設定中只有一台為 `true` |
 | `writer_duty_session_name` | 修改端的值班 Session 名稱，非修改端轉送時使用 |
+| `coordinator_session_id` | 選用。協調 Session 的 Session id，接收端用來比對信封發送端 id；缺少時只比對 `startedBy`。協調 Session 的 id 變更時須更新。由使用者手動或協調 Session 寫入，腳本不讀取 |
 
 發送步驟如下：
 
@@ -156,7 +158,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 已做處置 | 繞道方式或「無」 |
 | 未完成事項 | 仍受阻的工作或「無」 |
 
-值班通知不構成使用者授權。值班 Session 的收件、登記與分派依 `agents/codex/maintainer.toml`「值班收件」。
+值班通知不構成使用者授權，也不屬於協調 Session 轉述；轉述授權的判定依 `instructions.md` §1.5「授權期限」。值班 Session 的收件、登記與分派依 `agents/codex/maintainer.toml`「值班收件」。
 
 ## 保存契約對照
 

@@ -79,7 +79,7 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 `finalMessage` 一律保留在 `history` 的 last-message 檔，不寫入報告落點。`Wait-ForThreadRelay` 逾時後若未取得非空 `threadId`，`Start` 必須輸出 `source=not-ready` 與事件流、stderr、PID 等證據並以非零結束，不得以空字串表示成功；收到有效 `thread.started` 時才以非空 thread id 繼續。
 
-執行角色已在派遣單第 7 欄與其規則檔指定的落點寫入報告，該檔是驗收對象。回收端若把結案摘要寫進同一路徑，會在驗收前覆蓋角色產出的完整報告。Workflow 派工的 `reportLineRoot\implement-closure-report.md` 同樣由 `Developer` 自行寫入，回收端只讀取與驗收。
+執行角色已在派遣單第 7 欄與其規則檔指定的落點寫入報告，該檔是驗收對象。回收端若把結案摘要寫進同一路徑，會在驗收前覆蓋角色產出的完整報告。`DispatchKind=workflow` 機制的 `reportLineRoot\implement-closure-report.md` 同樣由 `Developer` 自行寫入，回收端只讀取與驗收。
 
 報告落點檔案不存在或為空時，依回收三態的「退回」處理，要求角色補齊，不以 `finalMessage` 代寫。
 
@@ -139,7 +139,7 @@ Inspect 在開始處一次檢查同一次呼叫會因缺少而拒絕的參數，
 1. `dispatchLineRoot\design.md`。
 2. `sourceLineRoot\requirement-summary.md`。需要由 Codex 寫入或讀取來源交接時，沿用啟動命令的 `--add-dir` 授權。
 3. 本輪 `executionRoot\.local\ai-sessions\history\codex-exec-<yyyyMMdd_HHmmss>.jsonl`。
-4. `reportLineRoot\implement-closure-report.md` 或派遣單第 7 欄指定報告。
+4. 派遣單第 7 欄指定報告；`DispatchKind=workflow` 機制另讀 `reportLineRoot\implement-closure-report.md`。
 
 ### 中止與安全關閉
 
