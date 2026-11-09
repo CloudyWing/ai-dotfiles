@@ -7,7 +7,7 @@ import { isDispatchWorktree, toEpochMs, relativeTime, isStalled, sortSessionsByA
 import { BLOCK_IDS, BLOCK_ORDER, BLOCK_TITLES, countText, blockCounts, blockTitleText, stalledToggleText } from '../hooks/lib'
 import { DIM_AFTER_MS, lineNameTone, isLanded, parseFeatureBranches, lineRightText, displayWidth, canShowNote } from '../hooks/lib'
 import { loginCommand, loginDisplayMode, quotaErrorRow, scopedSessions, lowestPrimary, statusText } from '../hooks/lib'
-import { finishedSessions, finishedToastText, normalizeAlertSignature, quotaAlert, QUOTA_ALERT_BELOW, QUOTA_ALERT_KEY } from '../hooks/lib'
+import { finishedSessions, finishedToastText, normalizeAlertSignature, quotaAlert, QUOTA_ALERT_BELOW, QUOTA_ALERT_KEY, windowLabel } from '../hooks/lib'
 import { SESSION_OPEN_MODE, sessionLink, sessionOpenTarget } from '../hooks/lib'
 import type { Quota } from '../hooks/lib'
 import { CLEANUP_DELETE_TIMEOUT_MS, CLEANUP_LIST_LIMIT, CLEANUP_LIST_TIMEOUT_MS, CLEANUP_REVIEW_LIMIT, cleanupItemDetail, cleanupItemName, formatBytes, groupCleanupItems, parseCleanupOutput } from '../hooks/lib'
@@ -204,7 +204,8 @@ test('P5-d3 d4 details', () => {
   expect(detail?.filter(item => item.tone === 'attention').map(item => item.text)).toEqual(['19', '9', '25'])
   expect(rootDetail({ Path: 'x', DirtyCount: 0 })).toBe(null)
   expect(segmentsText(quotaDetail(28, '11-10 13:16'))).toBe('週 28% · 11-10 13:16 重置')
-  expect(segmentsText(quotaDetail(null, null))).toBe('週 -')
+  expect(segmentsText(quotaDetail(null, null))).toBe('無週視窗')
+  expect(segmentsText(quotaDetail(null, '11-10 13:16'))).toBe('無週視窗')
 })
 test('P5-e1 expanded state', () => {
   expect(normalizeExpanded(['stalledLines', 'stalledLines', 'bogus', 3])).toEqual(['stalledLines'])
@@ -392,7 +393,7 @@ test('P5-g3 roots and current highlight', () => {
 test('P5-g4 quota row and warning', () => {
   const quota = [{ Name: 'a', State: 'ok', PrimaryRemaining: 40, SecondaryRemaining: 28, SecondaryResetsAtLocal: '2026-11-10 13:16' }, { Name: 'b', State: 'ok', PrimaryRemaining: 100, SecondaryRemaining: 100 }, { Name: 'bad', State: 'unknown', Error: 'x' }]
   const result = buildSnapshot({ ok: true, value: { ...doc, quota, warnings: ['w'] } }, { ok: true, value: [] }, new Date('2026-11-05T01:23:10Z')).quota
-  expect(result.rows[0].bar).toEqual({ percent: 40, tone: 'warning' })
+  expect(result.rows[0].bar).toEqual({ percent: 40, tone: 'warning', window: '5 小時' })
   expect(result.rows[0].right).toBe('剩 40%')
   expect(segmentsText(result.rows[0].detail)).toBe('週 28% · 11-10 13:16 重置')
   expect(result.rows[1].dot).toBe('inactive')
@@ -664,12 +665,81 @@ test('P3-j quota row', () => {
   const quota = [{ Name: 'a', State: 'ok', PrimaryRemaining: 78, SecondaryRemaining: 42, PrimaryResetsAtLocal: '2025-01-02T03:04:00', SecondaryResetsAtLocal: '2025-01-03T03:04:00' }, { Name: 'b', State: 'ok' }]
   const rows = buildSnapshot({ ok: true, value: { ...doc, quota } }, { ok: true, value: [] }, new Date('2026-11-05T01:23:10Z')).quota.rows
   expect(rows[0].right).toBe('剩 78%')
-  expect(rows[0].bar).toEqual({ percent: 78, tone: 'inactive' })
+  expect(rows[0].bar).toEqual({ percent: 78, tone: 'inactive', window: '5 小時' })
   expect(segmentsText(rows[0].detail)).toBe('週 42% · 01-03 03:04 重置')
   expect(rows[0].detail?.filter(x => x.tone === 'attention').map(x => x.text)).toEqual(['42%'])
   expect(rows[1].bar?.percent).toBe(null)
   expect(rows[1].right).toBe('-')
-  expect(segmentsText(rows[1].detail)).toBe('週 -')
+  expect(segmentsText(rows[1].detail)).toBe('無週視窗')
+})
+test('P14 quota row without a weekly window', () => {
+  const base = { Name: 'a', State: 'ok', PrimaryRemaining: 40, PrimaryResetsAtLocal: '2026-11-10 13:16' }
+  const variants = [base, { ...base, SecondaryRemaining: null, SecondaryResetsAtLocal: null }]
+  for (const account of variants) {
+    const rows = buildSnapshot({ ok: true, value: { ...doc, quota: [account] } }, { ok: true, value: [] }, new Date('2026-11-05T01:23:10Z')).quota.rows
+    expect(rows.length).toBe(1)
+    expect(rows[0].right).toBe('剩 40%')
+    expect(rows[0].bar).toEqual({ percent: 40, tone: 'warning', window: '5 小時' })
+    expect(rows[0].dot).toBe('warning')
+    expect(segmentsText(rows[0].detail)).toBe('無週視窗')
+  }
+})
+test('P14 quota alert and status text ignore a missing weekly window', () => {
+  const base = { Name: 'a', State: 'ok', PrimaryRemaining: 10, PrimaryResetsAtLocal: 'T' }
+  const withSecondary = [{ ...base, SecondaryRemaining: 42 }]
+  for (const quota of [[base], [{ ...base, SecondaryRemaining: null, SecondaryResetsAtLocal: null }]]) {
+    expect(quotaAlert(quota, null)).toEqual(quotaAlert(withSecondary, null))
+    expect(quotaAlert(quota, null)).toEqual({ alert: true, signature: 'a@T', text: 'Codex 5 小時額度：a 剩 10%' })
+    expect(lowestPrimary(quota)).toBe(lowestPrimary(withSecondary))
+    expect(lowestPrimary(quota)).toBe(10)
+    expect(statusText(1, lowestPrimary(quota))).toBe(statusText(1, lowestPrimary(withSecondary)))
+    expect(statusText(1, lowestPrimary(quota))).toBe('1 執行中 · 額度 10%')
+  }
+})
+test('P14b windowLabel renders the actual window length', () => {
+  expect([300, 600, 10080, 43200, 90, 1440, 60, 1].map(windowLabel)).toEqual(['5 小時', '10 小時', '7 天', '30 天', '90 分鐘', '1 天', '1 小時', '1 分鐘'])
+  expect([null, undefined, 0, -300, NaN, Infinity, 90.5].map(windowLabel)).toEqual(Array(7).fill('5 小時'))
+})
+test('P14b isQuota accepts numeric and null PrimaryWindowMinutes and rejects strings', () => {
+  const account = { Name: 'a', State: 'ok', PrimaryRemaining: 40 }
+  const parse = (item: unknown) => {
+    const parsed = parseScriptOutput(JSON.stringify({ ...doc, quota: [item] }))
+    return parsed.ok ? parsed.value.quota.length : -1
+  }
+  expect(parse({ ...account, PrimaryWindowMinutes: 43200 })).toBe(1)
+  expect(parse({ ...account, PrimaryWindowMinutes: null })).toBe(1)
+  expect(parse(account)).toBe(1)
+  expect(parse({ ...account, PrimaryWindowMinutes: '43200' })).toBe(0)
+})
+test('P14b quota row bar carries the window label', () => {
+  const quota = [
+    { Name: 'a', State: 'ok', PrimaryRemaining: 40, PrimaryWindowMinutes: 43200 },
+    { Name: 'b', State: 'ok', PrimaryRemaining: 40, PrimaryWindowMinutes: 300, SecondaryRemaining: 70 },
+    { Name: 'c', State: 'ok', PrimaryRemaining: 40 },
+    { Name: 'd', State: 'ok', PrimaryRemaining: 40, PrimaryWindowMinutes: null }
+  ]
+  const rows = buildSnapshot({ ok: true, value: { ...doc, quota } }, { ok: true, value: [] }, new Date('2026-11-05T01:23:10Z')).quota.rows
+  expect(rows.map(item => item.bar)).toEqual([
+    { percent: 40, tone: 'warning', window: '30 天' },
+    { percent: 40, tone: 'warning', window: '5 小時' },
+    { percent: 40, tone: 'warning', window: '5 小時' },
+    { percent: 40, tone: 'warning', window: '5 小時' }
+  ])
+  expect(rows[0].right).toBe('剩 40%')
+})
+test('P14b quota alert text follows the window label of the accounts', () => {
+  const low = (name: string, value: number, minutes?: number | null): Quota => ({ Name: name, State: 'ok', PrimaryRemaining: value, PrimaryResetsAtLocal: 'T', PrimaryWindowMinutes: minutes })
+  const limit: Quota = { Name: 'c', State: 'unknown', ErrorKind: 'limit-reached' }
+  const login: Quota = { Name: 'd', State: 'unknown', ErrorKind: 'auth-expired' }
+  expect(quotaAlert([low('a', 10, 43200), low('b', 5, 43200)], null)).toEqual({ alert: true, signature: 'a@T|b@T', text: 'Codex 30 天額度：a 剩 10%、b 剩 5%' })
+  expect(quotaAlert([low('a', 10, 300), low('b', 5, 300)], null).text).toBe('Codex 5 小時額度：a 剩 10%、b 剩 5%')
+  expect(quotaAlert([low('a', 19.4, 300), low('b', 5, 43200)], null)).toEqual({ alert: true, signature: 'a@T|b@T', text: 'Codex 額度：a 剩 19%（5 小時）、b 剩 5%（30 天）' })
+  expect(quotaAlert([low('a', 19.4, 300), low('b', 5, 43200), limit, login], null).text).toBe('Codex 額度：a 剩 19%（5 小時）、b 剩 5%（30 天）、c 已達上限、d 登入失效')
+  expect(quotaAlert([low('a', 10, 43200), limit], null).text).toBe('Codex 30 天額度：a 剩 10%、c 已達上限')
+  expect(quotaAlert([low('a', 10, 43200), low('b', 10)], null).text).toBe('Codex 30 天額度：a 剩 10%、b 剩 10%')
+  expect(quotaAlert([low('a', 10), low('b', 5, null)], null).text).toBe('Codex 5 小時額度：a 剩 10%、b 剩 5%')
+  expect(quotaAlert([low('a', 10, 43200), low('b', 5, 300)], 'a@T|b@T')).toEqual({ alert: false, signature: 'a@T|b@T', text: null })
+  expect(quotaAlert([{ ...low('a', 10, 43200), State: 'unknown', ErrorKind: 'limit-reached' }, login], null).text).toBe('Codex 5 小時額度：a 已達上限、d 登入失效')
 })
 test('P3-k bars', () => {
   const svg = quotaBarSvg(50, 'inactive')

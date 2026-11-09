@@ -1,7 +1,7 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { BoardSnapshot, CleanupItem, CleanupPlan } from '../types'
 import type { Engine, On } from 'claude-code'
-import { defaultWorkRoots } from '../hooks/lib'
+import { buildSnapshot, defaultWorkRoots } from '../hooks/lib'
 import { notify } from '../hooks/register'
 
 const PANE = {
@@ -12,7 +12,7 @@ const row = { name: 'item', tag: '', right: '', rightShrink: false, dot: 'inacti
 const block = { rows: [{ ...row }], stalledRows: [], hiddenCount: 0, errorMessage: null }
 const snapshot: BoardSnapshot = {
   sessions: { ...block, rows: [{ ...row, dot: 'success', tag: 'line-one', right: '剛剛' }] },
-  quota: { ...block, rows: [{ ...row, dot: 'warning', right: '剩 40%', bar: { percent: 40, tone: 'warning' }, detail: [{ text: '週 ', tone: 'normal' }, { text: '28%', tone: 'attention' }] }] },
+  quota: { ...block, rows: [{ ...row, dot: 'warning', right: '剩 40%', bar: { percent: 40, tone: 'warning', window: '5 小時' }, detail: [{ text: '週 ', tone: 'normal' }, { text: '28%', tone: 'attention' }] }] },
   lines: { ...block, rows: [{ ...row }] },
   workRoots: { ...block, rows: [{ ...row, dot: 'warning', right: 'main', rightShrink: true, isCurrent: true, detail: [{ text: '3', tone: 'attention' }, { text: ' 未 commit', tone: 'normal' }] }] },
   currentLabel: null,
@@ -319,6 +319,32 @@ test('R22 quota and folded label', async ($, on) => {
   expect(await ui.find({ type: 'Text', text: '已結束／停擺 2 條 ▸' })).not.toBe(undefined)
   await ui.press({ key: 'toggle-stalledLines' })
   expect(await ui.find({ type: 'Text', text: '已結束／停擺 2 條 ▾' })).not.toBe(undefined)
+  await ui.unmount()
+})
+
+test('R23 quota row without a weekly window', async ($, on) => {
+  mock.store(on)
+  const noWeekly: BoardSnapshot = { ...snapshot, quota: { ...snapshot.quota, rows: [{ ...row, dot: 'warning', right: '剩 40%', bar: { percent: 40, tone: 'warning', window: '5 小時' }, detail: [{ text: '無週視窗', tone: 'normal' }] }] } }
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(noWeekly) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Box', key: 'row-quota-0' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: '無週視窗' })).not.toBe(undefined)
+  await ui.unmount()
+})
+
+test('R24 quota bar alt text follows the account window length', async ($, on) => {
+  mock.store(on)
+  const quota = [
+    { Name: 'monthly', State: 'ok', PrimaryRemaining: 40, PrimaryWindowMinutes: 43200 },
+    { Name: 'short', State: 'ok', PrimaryRemaining: 40, PrimaryWindowMinutes: 300, SecondaryRemaining: 70 },
+    { Name: 'legacy', State: 'ok', PrimaryRemaining: 40 },
+    { Name: 'unknown-level', State: 'ok', PrimaryWindowMinutes: 43200 }
+  ]
+  const built = buildSnapshot({ ok: true, value: { scannedRoots: [], lines: [], workRoots: [], quota, warnings: [] } }, { ok: true, value: [] }, new Date('2026-11-05T01:23:10Z'), null)
+  on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(built) : next(e))
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  const alts = (await ui.findAll({ type: 'Svg' })).map(item => String(item.props.alt)).filter(alt => /剩餘/.test(alt))
+  expect(alts).toEqual(['30 天剩餘 40%', '5 小時剩餘 40%', '5 小時剩餘 40%', '30 天剩餘量未知'])
   await ui.unmount()
 })
 

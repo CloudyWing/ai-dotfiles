@@ -125,7 +125,8 @@ export function rootDetail(root: Root): DetailSegment[] | null {
   return result.length ? result : null
 }
 export function quotaDetail(secondary: number | null, resetText: string | null): DetailSegment[] {
-  const result: DetailSegment[] = [{ text: '週 ', tone: 'normal' }, { text: secondary === null ? '-' : `${secondary}%`, tone: numberTone('weekly', secondary) }]
+  if (secondary === null) return [{ text: '無週視窗', tone: 'normal' }]
+  const result: DetailSegment[] = [{ text: '週 ', tone: 'normal' }, { text: `${secondary}%`, tone: numberTone('weekly', secondary) }]
   if (resetText) result.push({ text: ` · ${resetText} 重置`, tone: 'normal' })
   return result
 }
@@ -192,7 +193,7 @@ export type Result<T> = { ok: true; value: T } | { ok: false; error: string }
 export type Session = { cwd?: unknown; isArchived?: boolean; isRunning?: boolean; name?: string; title?: string; sessionId?: string; lastActivityAt?: unknown; link?: unknown }
 export type Line = { LineSlug: string; WorkRoot: string; CheckpointType?: string | null; CheckpointUpdatedUtc?: string | null; NextStepSummary?: string | null; Error?: string | null }
 export type Root = { Path: string; IsLinkedWorktree?: boolean | null; Branch?: string | null; DirtyCount?: number | null; MainAhead?: number | null; MainBehind?: number | null; Upstream?: string | null; UpstreamAhead?: number | null; Error?: string | null }
-export type Quota = { Name: string; State: string; CodexHome?: string | null; Error?: string | null; ErrorKind?: string | null; ErrorReason?: string | null; PrimaryRemaining?: number | null; SecondaryRemaining?: number | null; PrimaryResetsAtLocal?: string | null; SecondaryResetsAtLocal?: string | null }
+export type Quota = { Name: string; State: string; CodexHome?: string | null; Error?: string | null; ErrorKind?: string | null; ErrorReason?: string | null; PrimaryRemaining?: number | null; SecondaryRemaining?: number | null; PrimaryResetsAtLocal?: string | null; SecondaryResetsAtLocal?: string | null; PrimaryWindowMinutes?: number | null }
 export type Document = { scannedRoots: string[]; lines: Line[]; workRoots: Root[]; quota: Quota[]; warnings: string[] }
 export type WorktreeEntry = { path: string; isBare: boolean }
 export type GitProbe = { kind: 'failed' } | { kind: 'notRepo' } | { kind: 'repo'; topLevel: string; worktrees: WorktreeEntry[] | null }
@@ -242,7 +243,7 @@ function isRoot(value: unknown): value is Root {
 function isQuota(value: unknown): value is Quota {
   return isRecord(value) && typeof value.Name === 'string' && typeof value.State === 'string'
     && ['CodexHome', 'Error', 'ErrorKind', 'ErrorReason', 'PrimaryResetsAtLocal', 'SecondaryResetsAtLocal'].every(key => optional(value[key], 'string'))
-    && ['PrimaryRemaining', 'SecondaryRemaining'].every(key => optional(value[key], 'number'))
+    && ['PrimaryRemaining', 'SecondaryRemaining', 'PrimaryWindowMinutes'].every(key => optional(value[key], 'number'))
 }
 
 export function normalizePath(path: string): string {
@@ -497,6 +498,16 @@ export function sessionOpenTarget(mode: 'link' | 'process' | 'off', link: string
 export function scopedSessions(script: Result<Document>, sessions: Result<Session[]>): Session[] | null {
   return script.ok && sessions.ok ? filterSessions(sessions.value, script.value.scannedRoots) : null
 }
+const DEFAULT_WINDOW_LABEL = '5 小時'
+function isWindowMinutes(minutes: number | null | undefined): minutes is number {
+  return typeof minutes === 'number' && Number.isInteger(minutes) && minutes > 0
+}
+export function windowLabel(minutes: number | null | undefined): string {
+  if (!isWindowMinutes(minutes)) return DEFAULT_WINDOW_LABEL
+  if (minutes % 1440 === 0) return `${minutes / 1440} 天`
+  if (minutes % 60 === 0) return `${minutes / 60} 小時`
+  return `${minutes} 分鐘`
+}
 export function lowestPrimary(quota: Quota[]): number | null {
   const values = quota.filter(account => account.State === 'ok').map(account => roundPercent(account.PrimaryRemaining)).filter((value): value is number => value !== null)
   return values.length ? Math.min(...values) : null
@@ -523,13 +534,13 @@ export function finishedToastText(titles: string[]): string {
   return titles.length === 1 ? `「${displayed[0]}」已跑完` : `${titles.length} 個 Session 已跑完：${displayed.join('、')}${titles.length > 3 ? '…' : ''}`
 }
 
-type QuotaAlertAccount = { name: string; kind: 'high' | 'low' | 'limit' | 'login' | 'unknown'; percent: number | null; token: string }
+type QuotaAlertAccount = { name: string; kind: 'high' | 'low' | 'limit' | 'login' | 'unknown'; percent: number | null; token: string; window: string | null }
 function quotaAlertAccount(account: Quota): QuotaAlertAccount {
   const percent = account.State === 'ok' ? roundPercent(account.PrimaryRemaining) : null
-  if (percent !== null) return { name: account.Name, kind: percent >= QUOTA_ALERT_BELOW ? 'high' : 'low', percent, token: account.PrimaryResetsAtLocal ?? '' }
-  if (account.ErrorKind === 'limit-reached') return { name: account.Name, kind: 'limit', percent: null, token: '*' }
-  if (account.ErrorKind === 'auth-expired') return { name: account.Name, kind: 'login', percent: null, token: '*' }
-  return { name: account.Name, kind: 'unknown', percent: null, token: '' }
+  if (percent !== null) return { name: account.Name, kind: percent >= QUOTA_ALERT_BELOW ? 'high' : 'low', percent, token: account.PrimaryResetsAtLocal ?? '', window: account.State === 'ok' && isWindowMinutes(account.PrimaryWindowMinutes) ? windowLabel(account.PrimaryWindowMinutes) : null }
+  if (account.ErrorKind === 'limit-reached') return { name: account.Name, kind: 'limit', percent: null, token: '*', window: null }
+  if (account.ErrorKind === 'auth-expired') return { name: account.Name, kind: 'login', percent: null, token: '*', window: null }
+  return { name: account.Name, kind: 'unknown', percent: null, token: '', window: null }
 }
 function parseAlertSignature(value: string): Map<string, string> | null {
   const accounts = new Map<string, string>()
@@ -562,8 +573,11 @@ export function quotaAlert(quota: Quota[], previous: string | null): { alert: bo
   if (accounts.some(account => account.kind === 'unknown')) return { alert: false, signature: previous, text: null }
   const current = accounts.map(account => `${account.name}@${account.token}`).join('|')
   if (previous !== null && sameWindow(previous, current)) return { alert: false, signature: previous, text: null }
-  const details = accounts.map(account => account.kind === 'low' ? `${account.name} 剩 ${account.percent}%` : account.kind === 'limit' ? `${account.name} 已達上限` : `${account.name} 登入失效`)
-  return { alert: true, signature: current, text: `Codex 5 小時額度：${details.join('、')}` }
+  const windows = new Set(accounts.map(account => account.window).filter((window): window is string => window !== null))
+  const mixed = windows.size > 1
+  const details = accounts.map(account => account.kind === 'low' ? `${account.name} 剩 ${account.percent}%${mixed && account.window !== null ? `（${account.window}）` : ''}` : account.kind === 'limit' ? `${account.name} 已達上限` : `${account.name} 登入失效`)
+  const label = mixed ? '' : (windows.values().next().value ?? DEFAULT_WINDOW_LABEL)
+  return { alert: true, signature: current, text: `Codex ${label}額度：${details.join('、')}` }
 }
 
 export function mapSessionToLine(session: Session, document: Document): string | null {
@@ -657,7 +671,7 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
     if (account.State === 'unknown') return quotaErrorRow(account)
     const primary = roundPercent(account.PrimaryRemaining)
     const secondary = roundPercent(account.SecondaryRemaining)
-    return row(account.Name, { dot: quotaDotTone(primary, secondary), right: primary === null ? '-' : `剩 ${primary}%`, bar: { percent: primary, tone: quotaTone(primary) }, detail: quotaDetail(secondary, account.SecondaryResetsAtLocal ? time(account.SecondaryResetsAtLocal) : null) })
+    return row(account.Name, { dot: quotaDotTone(primary, secondary), right: primary === null ? '-' : `剩 ${primary}%`, bar: { percent: primary, tone: quotaTone(primary), window: windowLabel(account.PrimaryWindowMinutes) }, detail: quotaDetail(secondary, account.SecondaryResetsAtLocal ? time(account.SecondaryResetsAtLocal) : null) })
   })
   const quotaBlock = block(quota)
   if (data.warnings.length) quotaBlock.warning = data.warnings.join(' / ')

@@ -8,7 +8,7 @@ import type { CurrentRepo, GitProbe } from './lib'
 import { EXPAND_KEY, normalizeExpanded, toggleExpanded, stalledToggleText, canShowNote, parseFeatureBranches } from './lib'
 import { LOGIN_COMMAND_MODE, loginDisplayMode, lowestPrimary, scopedSessions, statusText } from './lib'
 import { finishedSessions, finishedToastText, normalizeAlertSignature, quotaAlert, QUOTA_ALERT_KEY } from './lib'
-import { SESSION_OPEN_MODE, sessionOpenTarget } from './lib'
+import { SESSION_OPEN_MODE, sessionOpenTarget, windowLabel } from './lib'
 import { CLEANUP_DELETE_TIMEOUT_MS, CLEANUP_LIST_TIMEOUT_MS, cleanupItemDetail, cleanupItemName, formatBytes, groupCleanupItems, parseCleanupOutput, scriptFileExists } from './lib'
 import { closableCleanupLines, closedLineArgument, normalizeClosedLines, toggleClosedLine } from './lib'
 
@@ -347,7 +347,7 @@ export const register: Register = (on, pluginOptions = {}) => {
             </Box>
             {(item.right || item.bar) && <Box flexDirection="row" alignItems="center" gap="xs" minWidth={0} flexShrink={item.rightShrink ? NOTE_SHRINK : 0}>
               <Text size="footnote" dimColor wrap="truncate-end">{item.right}</Text>
-              {item.bar && (Svg ? <Svg source={quotaBarSvg(item.bar.percent, item.bar.tone)} alt={item.bar.percent === null ? '5 小時剩餘量未知' : `5 小時剩餘 ${item.bar.percent}%`} width={BAR_WIDTH} height={BAR_HEIGHT} /> : <Text color={item.bar.tone}>{quotaBarText(item.bar.percent)}</Text>)}
+              {item.bar && (Svg ? <Svg source={quotaBarSvg(item.bar.percent, item.bar.tone)} alt={`${item.bar.window ?? windowLabel(null)}${item.bar.percent === null ? '剩餘量未知' : `剩餘 ${item.bar.percent}%`}`} width={BAR_WIDTH} height={BAR_HEIGHT} /> : <Text color={item.bar.tone}>{quotaBarText(item.bar.percent)}</Text>)}
             </Box>}
           </Box>
           {item.detail && <Text size="caption" wrap="truncate-end">{item.detail.map((segment, i) => <Text key={String(i)} color={segment.tone === 'attention' ? 'warning' : undefined} dimColor={segment.tone === 'normal'}>{segment.text}</Text>)}</Text>}

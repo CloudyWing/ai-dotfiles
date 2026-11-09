@@ -524,6 +524,7 @@ function Get-QuotaSummary {
         State                  = 'unknown'
         PrimaryRemaining       = $null
         PrimaryResetsAtLocal   = $null
+        PrimaryWindowMinutes   = $null
         SecondaryRemaining     = $null
         SecondaryResetsAtLocal = $null
         Error                  = $null
@@ -562,6 +563,12 @@ function Get-QuotaSummary {
         $summary.State = 'ok'
         $summary.PrimaryRemaining = [double]::Parse($values['primary_remaining_percent'], [System.Globalization.CultureInfo]::InvariantCulture)
         $summary.PrimaryResetsAtLocal = $values['primary_resets_at_local']
+        if ($values.ContainsKey('primary_window_minutes')) {
+            $windowMinutes = 0L
+            if ([int64]::TryParse($values['primary_window_minutes'], [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$windowMinutes)) {
+                $summary.PrimaryWindowMinutes = $windowMinutes
+            }
+        }
         if ($values.ContainsKey('secondary_remaining_percent')) {
             $summary.SecondaryRemaining = [double]::Parse($values['secondary_remaining_percent'], [System.Globalization.CultureInfo]::InvariantCulture)
             $summary.SecondaryResetsAtLocal = $values['secondary_resets_at_local']
@@ -597,6 +604,31 @@ function Get-CodexAccountList {
     }
 
     return , @($accountsProperty.Value)
+}
+
+function Format-QuotaWindowText {
+    param(
+        [AllowNull()]
+        [object]$State,
+
+        [AllowNull()]
+        [object]$Remaining,
+
+        [AllowNull()]
+        [object]$ResetsAtLocal,
+
+        [Parameter(Mandatory)]
+        [string]$WindowName
+    )
+
+    if ($null -ne $Remaining) {
+        return ('{0}% (reset {1})' -f $Remaining, $ResetsAtLocal)
+    }
+    if ([string]$State -eq 'ok' -and $WindowName -eq 'secondary') {
+        return '無週視窗'
+    }
+
+    return '-'
 }
 
 function Format-Cell {
@@ -731,8 +763,8 @@ if ($MyInvocation.InvocationName -ne '.') {
                 [pscustomobject]@{
                     Account   = $_.Name
                     State     = $_.State
-                    Primary   = if ($null -eq $_.PrimaryRemaining) { '-' } else { ('{0}% (reset {1})' -f $_.PrimaryRemaining, $_.PrimaryResetsAtLocal) }
-                    Secondary = if ($null -eq $_.SecondaryRemaining) { '-' } else { ('{0}% (reset {1})' -f $_.SecondaryRemaining, $_.SecondaryResetsAtLocal) }
+                    Primary   = Format-QuotaWindowText -State $_.State -Remaining $_.PrimaryRemaining -ResetsAtLocal $_.PrimaryResetsAtLocal -WindowName 'primary'
+                    Secondary = Format-QuotaWindowText -State $_.State -Remaining $_.SecondaryRemaining -ResetsAtLocal $_.SecondaryResetsAtLocal -WindowName 'secondary'
                     Error     = Format-Cell -Value $_.Error -MaxLength 60
                 }
             } | Format-Table -AutoSize | Out-String -Width 400 | Write-Output

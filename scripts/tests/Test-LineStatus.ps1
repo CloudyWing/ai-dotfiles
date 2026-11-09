@@ -253,6 +253,31 @@ exit 0
         $summary = Get-QuotaSummary -Name 'a' -CodexHome $quotedHome -QuotaScriptPath $quotedPath
         $summary.State -eq 'ok' -and $summary.PrimaryRemaining -eq 33 -and $summary.CodexHome -eq $quotedHome
     }
+    Test-Case C28b {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Out.WriteLine('primary_remaining_percent=40'); [Console]::Out.WriteLine('primary_window_minutes=43200'); [Console]::Out.WriteLine('secondary_window=none'); exit 0"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'ok' -and $summary.PrimaryWindowMinutes -eq 43200 -and $summary.PrimaryWindowMinutes -is [int64] -and $null -eq $summary.SecondaryRemaining
+    }
+    Test-Case C28c {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Out.WriteLine('primary_remaining_percent=40'); [Console]::Out.WriteLine('primary_window_minutes=300'); [Console]::Out.WriteLine('secondary_remaining_percent=70'); exit 0"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'ok' -and $summary.PrimaryWindowMinutes -eq 300 -and $summary.SecondaryRemaining -eq 70
+    }
+    Test-Case C28d {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Out.WriteLine('primary_remaining_percent=40'); exit 0"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'ok' -and $null -eq $summary.PrimaryWindowMinutes
+    }
+    Test-Case C28e {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Out.WriteLine('primary_remaining_percent=40'); [Console]::Out.WriteLine('primary_window_minutes=abc'); exit 0"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'ok' -and $null -eq $summary.PrimaryWindowMinutes
+    }
+    Test-Case C28f {
+        $null = New-FakeQuotaScript -Path $fakeQuotaPath -Body "[Console]::Error.WriteLine('Get-CodexQuota.ps1 失敗：QuotaApiFailure; category=Timeout; timeout_seconds=30'); exit 1"
+        $summary = Get-QuotaSummary -Name 'a' -CodexHome $fakeCodexHome -QuotaScriptPath $fakeQuotaPath
+        $summary.State -eq 'unknown' -and $null -eq $summary.PrimaryWindowMinutes
+    }
     Test-Case C30 {
         $bundle = Join-Path $tempRoot 'bundle'
         $emptyRoot = Join-Path $tempRoot 'empty-root'
@@ -266,7 +291,7 @@ exit 0
         $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $copiedScript -WorkRoot $emptyRoot -MachineConfigPath $machinePath -AsJson
         $code = $LASTEXITCODE
         $quotaJson = ($raw -join "`n") | ConvertFrom-Json
-        $keys = 'Name,CodexHome,State,PrimaryRemaining,PrimaryResetsAtLocal,SecondaryRemaining,SecondaryResetsAtLocal,Error,ErrorKind,ErrorReason'
+        $keys = 'Name,CodexHome,State,PrimaryRemaining,PrimaryResetsAtLocal,PrimaryWindowMinutes,SecondaryRemaining,SecondaryResetsAtLocal,Error,ErrorKind,ErrorReason'
         $code -eq 0 -and @($quotaJson.quota).Count -eq 2 -and ($raw -join '') -notmatch '[^\u0000-\u007f]' -and @($quotaJson.quota | Where-Object { ($_.PSObject.Properties.Name -join ',') -eq $keys -and $_.ErrorKind -eq 'auth-expired' -and $_.Error -match '失敗：' }).Count -eq 2
     }
     Test-Case C31 { $script:failed -eq 0 }

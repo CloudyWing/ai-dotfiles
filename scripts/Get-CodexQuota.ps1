@@ -616,6 +616,14 @@ function ConvertFrom-QuotaApiResponse {
     $windowResults = @{}
     if ($null -ne $rateLimit) {
         foreach ($windowName in @('primary', 'secondary')) {
+            if ($windowName -eq 'secondary') {
+                $secondaryWindowField = Get-QuotaApiField -Object $rateLimit -Name 'secondary_window'
+                if (-not $secondaryWindowField.Exists -or $null -eq $secondaryWindowField.Value) {
+                    $windowResults['secondary'] = $null
+                    continue
+                }
+            }
+
             try {
                 $windowResults[$windowName] = ConvertFrom-QuotaApiWindow -RateLimit $rateLimit -WindowName $windowName -SourceFile $sourceFile -ObservedAtUtc $ObservedAtUtc
             }
@@ -715,10 +723,10 @@ function ConvertFrom-QuotaApiResponse {
         }
     }
 
-    if ($null -eq $windowResults['primary'] -or $null -eq $windowResults['secondary']) {
+    if ($null -eq $windowResults['primary']) {
         return [pscustomobject]@{
             State                    = 'SnapshotUnavailable'
-            ErrorMessage             = 'QuotaApiResponseInvalid; both primary_window and secondary_window are required.'
+            ErrorMessage             = 'QuotaApiResponseInvalid; primary_window is required.'
             Primary                  = $null
             Secondary                = $null
             Observations             = $null
@@ -730,7 +738,10 @@ function ConvertFrom-QuotaApiResponse {
 
     $observations = [ordered]@{
         primary   = New-QuotaObservation -WindowName 'primary' -Candidate $windowResults['primary']
-        secondary = New-QuotaObservation -WindowName 'secondary' -Candidate $windowResults['secondary']
+        secondary = $null
+    }
+    if ($null -ne $windowResults['secondary']) {
+        $observations['secondary'] = New-QuotaObservation -WindowName 'secondary' -Candidate $windowResults['secondary']
     }
 
     return [pscustomobject]@{
@@ -1079,7 +1090,12 @@ try {
     }
 
     Write-QuotaWindow -WindowName 'primary' -Snapshot $quotaModel.Primary -CurrentUnixTime $currentUnixTime
-    Write-QuotaWindow -WindowName 'secondary' -Snapshot $quotaModel.Secondary -CurrentUnixTime $currentUnixTime
+    if ($null -ne $quotaModel.Secondary) {
+        Write-QuotaWindow -WindowName 'secondary' -Snapshot $quotaModel.Secondary -CurrentUnixTime $currentUnixTime
+    }
+    else {
+        Write-Output 'secondary_window=none'
+    }
     exit 0
 }
 catch {
