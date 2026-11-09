@@ -986,7 +986,8 @@ function Resolve-DispatchContinuationClassificationSource {
         }
 
         $null = Get-DispatchRunEvents -Record $matchedRecord
-        $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath
+        $recordErrorStreamPath = [string](Get-DispatchJsonProperty -Object $matchedRecord -Name 'error_stream_path')
+        $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath -ErrorStreamPath $recordErrorStreamPath
         if (-not [bool](Get-DispatchJsonProperty -Object $eventEvidence -Name 'exists')) {
             $source.reason = '本次事件流在核對期間已不可用。'
             $source.path = $eventPath
@@ -1445,7 +1446,7 @@ function Get-DispatchContinuationFailureHandoff {
         $failureClassification = 'QuotaServiceRejected'
         $retryAllowed = $false
         $resumable = $false
-        $recommendedNextStep = 'usage-limit 額度拒絕：等待額度恢復後由使用者決定；不要自動重試。'
+        $recommendedNextStep = Get-DispatchRejectionRecommendedNextStep -RejectionKind ([string](Get-DispatchJsonProperty -Object $classificationEventEvidence -Name 'rejection_kind'))
     }
     elseif ($serverStreamDisconnect) {
         $failureClassification = 'ServiceStreamDisconnected'

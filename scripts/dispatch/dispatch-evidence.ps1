@@ -496,6 +496,378 @@ function Read-CodexAccountConfiguration {
     catch { throw ('CodexAccountConfigurationInvalid：' + $_.Exception.Message) }
 }
 
+function Test-CodexAccountLoggedIn {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$AccountHome
+    )
+
+    $loginFilePath = Join-Path -Path $AccountHome -ChildPath 'auth.json'
+    $loginFile = New-Object System.IO.FileInfo -ArgumentList (ConvertTo-FileSystemApiPath -Path $loginFilePath)
+    $exists = $loginFile.Exists
+    $length = $null
+    $lastWriteUtc = $null
+    $reasonCode = 'LoginFileMissing'
+    if ($exists) {
+        $length = [int64]$loginFile.Length
+        $lastWriteUtc = $loginFile.LastWriteTimeUtc.ToString('o', [System.Globalization.CultureInfo]::InvariantCulture)
+        $reasonCode = if ($length -gt 0) { $null } else { 'LoginFileEmpty' }
+    }
+    return [pscustomobject]@{
+        logged_in = $null -eq $reasonCode
+        reason_code = $reasonCode
+        login_file_path = $loginFilePath
+        login_file_length = $length
+        login_file_last_write_utc = $lastWriteUtc
+    }
+}
+
+function Get-CodexAccountConfigLibraryPath {
+    [CmdletBinding()]
+    param()
+
+    $moduleRoot = $PSScriptRoot
+    if ([string]::IsNullOrWhiteSpace($moduleRoot)) {
+        $entryRoot = [string](Get-DispatchScriptVariableValue -Name 'DispatchEntryScriptRoot')
+        if (-not [string]::IsNullOrWhiteSpace($entryRoot)) { $moduleRoot = Join-Path -Path $entryRoot -ChildPath 'dispatch' }
+    }
+    return Join-Path -Path $moduleRoot -ChildPath 'codex-account-config.ps1'
+}
+
+function New-CodexProjectPathException {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Message)
+
+    $exception = New-Object System.InvalidOperationException -ArgumentList @('CodexProjectPathUnsupported：' + $Message)
+    $exception.Data['reasonCode'] = 'CodexProjectPathUnsupported'
+    $exception.Data['errorCode'] = 'CodexProjectPathUnsupported'
+    return $exception
+}
+
+function Get-CodexGitTrustRoot {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Directory)
+
+    $dotGitPath = Join-Path -Path $Directory -ChildPath '.git'
+    $dotGit = Get-Item -LiteralPath $dotGitPath -Force -ErrorAction SilentlyContinue
+    if ($null -eq $dotGit) { return $null }
+    if ($dotGit.PSIsContainer) {
+        return [pscustomobject]@{ root = $Directory; kind = 'source-root' }
+    }
+    $failure = '無法解析 git 主工作樹根（Codex 以主工作樹根判定信任）：' + $dotGitPath
+    $readGitMetadata = {
+        param([string]$FilePath)
+        $fileItem = Get-Item -LiteralPath $FilePath -Force -ErrorAction SilentlyContinue
+        if ($null -eq $fileItem -or $fileItem.PSIsContainer -or ($fileItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or $fileItem.Length -gt 65536) { return $null }
+        return ([IO.File]::ReadAllText($FilePath, [Text.Encoding]::UTF8)).Trim()
+    }
+    $toFullPath = {
+        param([string]$BaseDirectory, [string]$Relative)
+        $candidate = $Relative
+        if (-not [IO.Path]::IsPathRooted($candidate)) { $candidate = Join-Path -Path $BaseDirectory -ChildPath $candidate }
+        $full = [IO.Path]::GetFullPath($candidate)
+        if ($full -ne [IO.Path]::GetPathRoot($full)) { $full = $full.TrimEnd([char[]]@('\', '/')) }
+        return $full
+    }
+    $pointer = & $readGitMetadata $dotGitPath
+    $pointerMatch = $null
+    if ($null -ne $pointer) { $pointerMatch = [regex]::Match($pointer, '^gitdir:\s*(?<path>\S.*)$') }
+    if ($null -eq $pointerMatch -or -not $pointerMatch.Success) { throw (New-CodexProjectPathException -Message $failure) }
+    $gitDir = & $toFullPath $Directory $pointerMatch.Groups['path'].Value.Trim()
+    $gitDirItem = Get-Item -LiteralPath $gitDir -Force -ErrorAction SilentlyContinue
+    if ($null -eq $gitDirItem -or -not $gitDirItem.PSIsContainer -or ($gitDirItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw (New-CodexProjectPathException -Message $failure) }
+    $worktreesDir = Split-Path -Parent $gitDir
+    if (-not [string]::Equals((Split-Path -Leaf $worktreesDir), 'worktrees', [StringComparison]::OrdinalIgnoreCase)) { throw (New-CodexProjectPathException -Message $failure) }
+    $commonDir = Split-Path -Parent $worktreesDir
+    $registeredDotGit = & $readGitMetadata (Join-Path -Path $gitDir -ChildPath 'gitdir')
+    $commonDirText = & $readGitMetadata (Join-Path -Path $gitDir -ChildPath 'commondir')
+    if ([string]::IsNullOrWhiteSpace($registeredDotGit) -or [string]::IsNullOrWhiteSpace($commonDirText)) { throw (New-CodexProjectPathException -Message $failure) }
+    $registeredFull = & $toFullPath $gitDir $registeredDotGit
+    if (-not [string]::Equals((Split-Path -Leaf $registeredFull), '.git', [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Split-Path -Parent $registeredFull), $Directory, [StringComparison]::OrdinalIgnoreCase)) { throw (New-CodexProjectPathException -Message $failure) }
+    if (-not [string]::Equals((& $toFullPath $gitDir $commonDirText), $commonDir, [StringComparison]::OrdinalIgnoreCase)) { throw (New-CodexProjectPathException -Message $failure) }
+    $mainRoot = Split-Path -Parent $commonDir
+    if ([string]::IsNullOrWhiteSpace($mainRoot)) { throw (New-CodexProjectPathException -Message $failure) }
+    $mainDotGitPath = Join-Path -Path $mainRoot -ChildPath '.git'
+    $mainDotGit = Get-Item -LiteralPath $mainDotGitPath -Force -ErrorAction SilentlyContinue
+    if ($null -eq $mainDotGit) { throw (New-CodexProjectPathException -Message $failure) }
+    $mainGitDir = $mainDotGitPath
+    if (-not $mainDotGit.PSIsContainer) {
+        $mainPointer = & $readGitMetadata $mainDotGitPath
+        $mainPointerMatch = $null
+        if ($null -ne $mainPointer) { $mainPointerMatch = [regex]::Match($mainPointer, '^gitdir:\s*(?<path>\S.*)$') }
+        if ($null -eq $mainPointerMatch -or -not $mainPointerMatch.Success) { throw (New-CodexProjectPathException -Message $failure) }
+        $mainGitDir = & $toFullPath $mainRoot $mainPointerMatch.Groups['path'].Value.Trim()
+    }
+    if (-not [string]::Equals($mainGitDir, $commonDir, [StringComparison]::OrdinalIgnoreCase)) { throw (New-CodexProjectPathException -Message $failure) }
+    return [pscustomobject]@{ root = $mainRoot; kind = 'main-worktree' }
+}
+
+function Resolve-CodexProjectTrustKey {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$SourceRoot)
+
+    if ([string]::IsNullOrWhiteSpace($SourceRoot) -or $SourceRoot -notmatch '^(?:[A-Za-z]:[\\/]|\\\\)' -or $SourceRoot -match "['\x00-\x1f\x7f]") {
+        throw (New-CodexProjectPathException -Message ('SourceRoot 須為不含單引號與控制字元的絕對路徑：' + $SourceRoot))
+    }
+    $full = [IO.Path]::GetFullPath($SourceRoot)
+    if ($full -ne [IO.Path]::GetPathRoot($full)) { $full = $full.TrimEnd([char[]]@('\', '/')) }
+    $trustRoot = Get-CodexGitTrustRoot -Directory $full
+    $root = $full
+    $kind = 'source-root'
+    if ($null -ne $trustRoot) { $root = [string]$trustRoot.root; $kind = [string]$trustRoot.kind }
+    $key = $root.ToLowerInvariant()
+    if ($key -match "['\x00-\x1f\x7f]") {
+        throw (New-CodexProjectPathException -Message ('信任路徑含不支援字元：' + $root))
+    }
+    return [pscustomobject]@{ trust_key = $key; source_root = $full; trust_root_kind = $kind }
+}
+
+function Get-CodexDispatchAccountCandidates {
+    [CmdletBinding()]
+    param(
+        [string]$Profile,
+
+        [string]$MachineConfigPath,
+
+        [string]$SourceRoot
+    )
+
+    $candidates = New-Object 'System.Collections.Generic.List[object]'
+    $skipped = New-Object 'System.Collections.Generic.List[object]'
+    $trustKey = $null
+    if (-not [string]::IsNullOrWhiteSpace($SourceRoot)) {
+        . (Get-CodexAccountConfigLibraryPath)
+        $trustKey = [string](Resolve-CodexProjectTrustKey -SourceRoot $SourceRoot).trust_key
+    }
+    foreach ($account in @(Read-CodexAccountConfiguration -MachineConfigPath $MachineConfigPath)) {
+        $login = Test-CodexAccountLoggedIn -AccountHome ([string]$account.codex_home)
+        $skipReason = $null
+        $skipConfigPath = $null
+        $skipDetail = $null
+        if (-not [bool]$login.logged_in) {
+            $skipReason = [string]$login.reason_code
+        }
+        elseif (-not [string]::IsNullOrWhiteSpace($Profile) -and [string]::IsNullOrWhiteSpace((Resolve-ProfileConfigPath -CodexHome ([string]$account.codex_home) -Profile $Profile))) {
+            $skipReason = 'ProfileConfigMissing'
+        }
+        elseif ($null -ne $trustKey) {
+            $readiness = Test-AccountTrustReadiness -ConfigPath (Join-Path -Path ([string]$account.codex_home) -ChildPath 'config.toml') -TrustKey $trustKey
+            if (-not [bool]$readiness.ready) {
+                $skipReason = [string]$readiness.reason_code
+                $skipConfigPath = [string]$readiness.config_path
+                $skipDetail = [string]$readiness.detail
+            }
+        }
+        if ($null -eq $skipReason) {
+            $null = $candidates.Add([pscustomobject]@{ name = [string]$account.name; codex_home = [string]$account.codex_home })
+        }
+        else {
+            $null = $skipped.Add([pscustomobject]@{
+                    name = [string]$account.name
+                    codex_home = [string]$account.codex_home
+                    reason_code = $skipReason
+                    login_file_path = $login.login_file_path
+                    login_file_length = $login.login_file_length
+                    login_file_last_write_utc = $login.login_file_last_write_utc
+                    config_path = $skipConfigPath
+                    detail = $skipDetail
+                })
+        }
+    }
+    return [pscustomobject]@{
+        candidates = @($candidates.ToArray())
+        skipped = @($skipped.ToArray())
+    }
+}
+
+function Format-CodexAccountSkippedSummary {
+    [CmdletBinding()]
+    param([AllowEmptyCollection()][object[]]$Skipped = @())
+
+    if (@($Skipped).Count -eq 0) { return '無已登記帳號' }
+    return (@($Skipped | ForEach-Object {
+                $reasonCode = [string](Get-DispatchJsonProperty -Object $_ -Name 'reason_code')
+                $thirdColumn = [string](Get-DispatchJsonProperty -Object $_ -Name 'login_file_path')
+                if ((Get-CodexTrustSkipReasonCode) -contains $reasonCode) { $thirdColumn = [string](Get-DispatchJsonProperty -Object $_ -Name 'config_path') }
+                [string]$_.name + ':' + $reasonCode + ':' + $thirdColumn
+            }) -join '; ')
+}
+
+function Invoke-CodexAccountTrustBeforeWrite {
+    [CmdletBinding()]
+    param([string]$ConfigPath, [int]$Attempt)
+}
+
+function Get-CodexAccountFileSha256 {
+    [CmdletBinding()]
+    param([AllowNull()][byte[]]$Bytes)
+
+    if ($null -eq $Bytes) { return $null }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+function Get-CodexTrustSkipReasonCode {
+    [CmdletBinding()]
+    param()
+
+    return [string[]]@('TrustConfigMissing', 'TrustConfigLinked', 'TrustConfigUnsupported')
+}
+
+function Get-CodexTrustSkippedAccount {
+    [CmdletBinding()]
+    param([AllowNull()][object]$AccountSelection)
+
+    $skippedProperty = Get-DispatchJsonProperty -Object $AccountSelection -Name 'Skipped'
+    $skippedSource = @($skippedProperty)
+    $trustReasons = Get-CodexTrustSkipReasonCode
+    return @($skippedSource | Where-Object { $null -ne $_ -and $trustReasons -contains [string](Get-DispatchJsonProperty -Object $_ -Name 'reason_code') } | ForEach-Object {
+            [pscustomobject]@{
+                name = [string](Get-DispatchJsonProperty -Object $_ -Name 'name')
+                reason_code = [string](Get-DispatchJsonProperty -Object $_ -Name 'reason_code')
+                config_path = Get-DispatchJsonProperty -Object $_ -Name 'config_path'
+                detail = Get-DispatchJsonProperty -Object $_ -Name 'detail'
+            }
+        })
+}
+
+function New-CodexProjectTrustRejection {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object]$AccountSelection,
+        [Parameter(Mandatory)][System.Exception]$Exception
+    )
+
+    $reasonCode = [string]$Exception.Data['errorCode']
+    if ([string]::IsNullOrWhiteSpace($reasonCode)) { $reasonCode = [string]$Exception.Data['reasonCode'] }
+    if ([string]::IsNullOrWhiteSpace($reasonCode)) { $reasonCode = 'Unknown' }
+    $accountName = Get-DispatchJsonProperty -Object $AccountSelection -Name 'AccountName'
+    $accountHome = [string](Get-DispatchJsonProperty -Object $AccountSelection -Name 'CodexHome')
+    $configPath = [string]$Exception.Data['path']
+    if ([string]::IsNullOrWhiteSpace($configPath) -and -not [string]::IsNullOrWhiteSpace($accountHome)) { $configPath = Join-Path -Path $accountHome -ChildPath 'config.toml' }
+    return [pscustomobject][ordered]@{
+        action = 'rejected'
+        reason_code = $reasonCode
+        account_name = if ($null -eq $accountName) { $null } else { [string]$accountName }
+        codex_home = if ([string]::IsNullOrWhiteSpace($accountHome)) { $null } else { $accountHome }
+        config_path = if ([string]::IsNullOrWhiteSpace($configPath)) { $null } else { $configPath }
+        trust_key = $null
+        windows_section_added = $false
+        config_sha256_before = $null
+        config_sha256_after = $null
+        lock_wait_ms = $null
+        skipped_accounts = @(Get-CodexTrustSkippedAccount -AccountSelection $AccountSelection)
+    }
+}
+
+function Confirm-CodexAccountProjectTrust {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$AccountSelection,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$SourceRoot,
+
+        [string]$MachineConfigPath,
+
+        [ValidateRange(1, 120)]
+        [int]$LockTimeoutSeconds = 30,
+
+        [string]$DefaultCodexHome
+    )
+
+    $mode = [string](Get-DispatchJsonProperty -Object $AccountSelection -Name 'Mode')
+    $accountHome = [string](Get-DispatchJsonProperty -Object $AccountSelection -Name 'CodexHome')
+    $accountName = Get-DispatchJsonProperty -Object $AccountSelection -Name 'AccountName'
+    $skippedAccounts = @(Get-CodexTrustSkippedAccount -AccountSelection $AccountSelection)
+    $newResult = {
+        param([string]$Action, $ReasonCode, $ConfigPath, $TrustKey, [bool]$WindowsAdded, $ShaBefore, $ShaAfter, [int]$WaitMs)
+        [pscustomobject][ordered]@{
+            action = $Action
+            reason_code = $ReasonCode
+            account_name = if ($null -eq $accountName) { $null } else { [string]$accountName }
+            codex_home = if ([string]::IsNullOrWhiteSpace($accountHome)) { $null } else { $accountHome }
+            config_path = $ConfigPath
+            trust_key = $TrustKey
+            windows_section_added = $WindowsAdded
+            config_sha256_before = $ShaBefore
+            config_sha256_after = $ShaAfter
+            lock_wait_ms = $WaitMs
+            skipped_accounts = @($skippedAccounts)
+        }
+    }
+    if ($mode -ceq 'unregistered' -or [string]::IsNullOrWhiteSpace($mode)) {
+        return & $newResult 'not-applicable' 'unregistered' $null $null $false $null $null 0
+    }
+    $defaultHome = $DefaultCodexHome
+    if ([string]::IsNullOrWhiteSpace($defaultHome)) {
+        $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+        if (-not [string]::IsNullOrWhiteSpace($userProfile)) { $defaultHome = Join-Path -Path $userProfile -ChildPath '.codex' }
+    }
+    if (-not [string]::IsNullOrWhiteSpace($defaultHome) -and [string]::Equals(([IO.Path]::GetFullPath($accountHome)).TrimEnd('\', '/'), ([IO.Path]::GetFullPath($defaultHome)).TrimEnd('\', '/'), [StringComparison]::OrdinalIgnoreCase)) {
+        return & $newResult 'not-applicable' 'default-codex-home' $null $null $false $null $null 0
+    }
+
+    . (Get-CodexAccountConfigLibraryPath)
+    $lock = $null
+    try {
+        $trust = Resolve-CodexProjectTrustKey -SourceRoot $SourceRoot
+        $trustKey = [string]$trust.trust_key
+        $configPath = Join-Path -Path $accountHome -ChildPath 'config.toml'
+        if ([string]::IsNullOrWhiteSpace($MachineConfigPath)) {
+            $MachineConfigPath = Join-Path (Split-Path -Parent ([string](Get-DispatchScriptVariableValue -Name 'DispatchEntryScriptRoot'))) '.local\machine.json'
+        }
+        $lockPath = Join-Path -Path (Split-Path -Parent $MachineConfigPath) -ChildPath 'codex-account.lock'
+        $lock = Open-CodexAccountLock -LockPath $lockPath -TimeoutSeconds $LockTimeoutSeconds
+        $waitMs = [int]$lock.WaitMilliseconds
+        $maxAttempts = 3
+        for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
+            if ($null -eq (Get-AccountItem $configPath)) {
+                throw (New-AccountException -ReasonCode 'CodexAccountConfigMissing' -Path $configPath -Message ('登記帳號的 config.toml 不存在：' + $configPath + '。派工腳本不建立 config.toml，請以 New-CodexDispatchAccount.ps1 -Name <名稱> 重跑建立完整帳號目錄。'))
+            }
+            try {
+                $plan = Get-AccountConfigPlan -Path $configPath -Keys @($trustKey)
+            }
+            catch [System.IO.IOException] {
+                if ($attempt -lt $maxAttempts) { Start-Sleep -Milliseconds 100; continue }
+                throw (New-AccountException -ReasonCode 'CodexAccountConfigChanged' -Path $configPath -Message ('讀取 config.toml 時被其他程序占用，重試 ' + $maxAttempts + ' 次仍失敗：' + $configPath))
+            }
+            $shaBefore = Get-CodexAccountFileSha256 -Bytes $plan.Original
+            if (-not [bool]$plan.Changed) {
+                return & $newResult 'already-trusted' $null $configPath $trustKey $false $shaBefore $shaBefore $waitMs
+            }
+            Invoke-CodexAccountTrustBeforeWrite -ConfigPath $configPath -Attempt $attempt
+            try {
+                Set-AccountAtomicFile -Path $configPath -Bytes $plan.Bytes -Original $plan.Original
+            }
+            catch {
+                $writeReason = [string]$_.Exception.Data['reasonCode']
+                if ($writeReason -ceq 'CodexAccountConfigChanged') {
+                    if ($attempt -lt $maxAttempts) { continue }
+                    throw (New-AccountException -ReasonCode 'CodexAccountConfigChanged' -Path $configPath -Message ('config.toml 於讀取後被外部修改，重試 ' + $maxAttempts + ' 次仍失敗：' + $configPath))
+                }
+                throw (New-AccountException -ReasonCode 'CodexAccountConfigWriteFailed' -Path $configPath -Message ('寫入 config.toml 失敗：' + $configPath + '；' + $_.Exception.Message))
+            }
+            return & $newResult 'added' $null $configPath $trustKey ([bool]$plan.WindowsAdded) $shaBefore (Get-CodexAccountFileSha256 -Bytes $plan.Bytes) $waitMs
+        }
+    }
+    catch {
+        $exceptionReason = [string]$_.Exception.Data['reasonCode']
+        if (-not [string]::IsNullOrWhiteSpace($exceptionReason) -and [string]::IsNullOrWhiteSpace([string]$_.Exception.Data['errorCode'])) {
+            $_.Exception.Data['errorCode'] = $exceptionReason
+        }
+        throw
+    }
+    finally {
+        if ($null -ne $lock -and $null -ne $lock.Stream) { $lock.Stream.Dispose() }
+    }
+}
+
 function Get-CodexAccountProfileLinkStatus {
     [CmdletBinding()]
     param(
@@ -562,23 +934,44 @@ function Test-CodexLegacyDefaultProfile {
 
 function Resolve-CodexAccountSelection {
     [CmdletBinding()]
-    param([string]$CodexHomePath, [string]$Profile, [string]$MachineConfigPath)
+    param([string]$CodexHomePath, [string]$Profile, [string]$MachineConfigPath, [string]$SourceRoot)
 
     $accounts = @(Read-CodexAccountConfiguration -MachineConfigPath $MachineConfigPath)
+    if ([string]::IsNullOrWhiteSpace($CodexHomePath) -and $accounts.Count -gt 0) {
+        $candidateSet = Get-CodexDispatchAccountCandidates -Profile $Profile -MachineConfigPath $MachineConfigPath -SourceRoot $SourceRoot
+        if (@($candidateSet.candidates).Count -eq 0) {
+            throw ('CodexAccountsAllUnavailable：' + (Format-CodexAccountSkippedSummary -Skipped @($candidateSet.skipped)))
+        }
+        $firstCandidate = @($candidateSet.candidates)[0]
+        return [pscustomobject]@{
+            CodexHome = [string]$firstCandidate.codex_home
+            AccountName = [string]$firstCandidate.name
+            Mode = 'auto'
+            Candidates = @($candidateSet.candidates)
+            Skipped = @($candidateSet.skipped)
+        }
+    }
     $homePath = Resolve-CodexHomeForEvidence -CodexHomePath $CodexHomePath
     if ([string]::IsNullOrWhiteSpace($homePath) -or -not [IO.Directory]::Exists($homePath)) { throw ('CodexAccountHomeMissing：選定目錄不存在：' + $homePath) }
     $homePath = Normalize-DispatchRootPath -Path (Get-Item -LiteralPath $homePath -Force -ErrorAction Stop).FullName
     Assert-DispatchOutputPathNoReparsePoint -Root ([IO.Path]::GetPathRoot($homePath)) -Path $homePath
     $selected = @($accounts | Where-Object { [string]::Equals($_.codex_home, $homePath, [StringComparison]::OrdinalIgnoreCase) })
     $name = if ($selected.Count -eq 1) { $selected[0].name } else { $null }
+    $mode = if ($selected.Count -eq 1) { 'explicit' } else { 'unregistered' }
+    if ($mode -ceq 'explicit') {
+        $login = Test-CodexAccountLoggedIn -AccountHome $homePath
+        if (-not [bool]$login.logged_in) {
+            throw ('CodexAccountNotLoggedIn：' + $name + '; ' + [string]$login.reason_code + '; ' + [string]$login.login_file_path)
+        }
+    }
     if (-not [string]::IsNullOrWhiteSpace($Profile) -and [string]::IsNullOrWhiteSpace((Resolve-ProfileConfigPath -CodexHome $homePath -Profile $Profile))) {
         throw ('ProfileEvidenceUnknown：帳號 ' + [string]$name + ' 缺少選定 profile：' + (Join-Path $homePath ($Profile + '.config.toml')))
     }
-    return [pscustomobject]@{ CodexHome = $homePath; AccountName = $name }
+    return [pscustomobject]@{ CodexHome = $homePath; AccountName = $name; Mode = $mode; Candidates = @(); Skipped = @() }
 }
 
 function Get-CodexDispatchProfileNames {
-    return [string[]]@('implement', 'review', 'deep-review', 'scan', 'advisor', 'intensive')
+    return [string[]]@('review', 'deep-review', 'scan', 'advisor')
 }
 
 function Resolve-ProfileConfigPath {

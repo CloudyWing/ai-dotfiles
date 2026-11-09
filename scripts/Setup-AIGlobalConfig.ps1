@@ -540,12 +540,7 @@ try {
         if (-not (Test-Path -LiteralPath $accountConfigPath -PathType Leaf)) {
             Write-Warning ('  帳號 ' + $account.name + ' 缺少 ' + $accountConfigPath + '。請依 README.md §3 人工準備；基礎 config 必要鍵待使用者驗證。')
         }
-        $accountProfileNames = @(Get-CodexDispatchProfileNames | Where-Object { $_ -cne 'intensive' })
-        $accountIntensivePath = Join-Path $account.codex_home 'intensive.config.toml'
-        if ($null -ne (Get-Item -LiteralPath $accountIntensivePath -Force -ErrorAction SilentlyContinue)) {
-            Write-Host ('  已偵測到選用設定檔：' + $accountIntensivePath)
-            $accountProfileNames += 'intensive'
-        }
+        $accountProfileNames = @(Get-CodexDispatchProfileNames)
         foreach ($linkStatus in @(Get-CodexAccountProfileLinkStatus -AccountHome $account.codex_home -CodexDirectory $codexDir -ProfileName $accountProfileNames)) {
             if ($linkStatus.state -cne 'ok') {
                 Write-Warning ('  帳號 ' + $account.name + ' 的檔位設定檔 ' + $linkStatus.name + ' 狀態為 ' + $linkStatus.state + '：' + $linkStatus.path + '，預期為指向 ' + $linkStatus.expected_target + ' 的 Symbolic Link。請依 README.md §3 人工建立連結；腳本不會修改帳號目錄。')
@@ -562,7 +557,6 @@ catch {
 }
 
 $codexConfigPath = Join-Path $codexDir "config.toml"
-$intensiveProfilePath = Join-Path $codexDir "intensive.config.toml"
 $legacyProfileName = 'deep' + '.config.toml'
 $legacyProfilePath = Join-Path $codexDir $legacyProfileName
 $legacyDefaultName = 'default' + '.config.toml'
@@ -572,7 +566,6 @@ $maxEffortMatches = @()
 
 # 缺少的檔位設定檔依下表建立初始內容。檔案建立後屬本機設定，Setup 不再改寫。
 $codexProfileDefaults = [ordered]@{
-    'implement'   = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'high' }
     'review'      = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'high' }
     'deep-review' = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'high' }
     'scan'        = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'medium' }
@@ -584,7 +577,7 @@ $codexProfileAgentsLines = @(
     'default_subagent_model = "gpt-6-luna"'
     'default_subagent_reasoning_effort = "max"'
 )
-$requiredProfileNames = @(Get-CodexDispatchProfileNames | Where-Object { $_ -cne 'intensive' })
+$requiredProfileNames = @(Get-CodexDispatchProfileNames)
 $missingProfiles = @()
 $createdProfiles = @()
 $profileConflictDetected = $false
@@ -676,9 +669,6 @@ else {
 
 if ($createdProfiles.Count -gt 0) {
     Write-Host "  ✅ 已依初始值建立缺少的 Codex 檔位設定檔：$($createdProfiles -join ', ')。建立後可人工調整，Setup 不會覆寫。" -ForegroundColor DarkGreen
-}
-if (Test-Path -LiteralPath $intensiveProfilePath -PathType Leaf) {
-    Write-Host "  ✅ 已偵測到選用 Codex 檔位設定檔：$intensiveProfilePath" -ForegroundColor DarkGreen
 }
 
 $legacyDefaultDetected = Test-CodexLegacyDefaultProfile -Directory $codexDir

@@ -41,7 +41,7 @@ param(
 
     [string]$PromptPath,
 
-    [ValidateSet('implement', 'review', 'deep-review', 'scan', 'advisor', 'intensive')]
+    [ValidateSet('review', 'deep-review', 'scan', 'advisor')]
     [string]$Profile,
 
     [string]$CodexHome,
@@ -133,7 +133,9 @@ param(
 
     [switch]$TakeoverOwner,
 
-    [string[]]$EvidencePath
+    [string[]]$EvidencePath,
+
+    [switch]$NoAccountFailover
 )
 
 Set-StrictMode -Version Latest
@@ -888,7 +890,7 @@ try {
         'Start'     { Invoke-Start }
         'Inspect'   { Invoke-Inspect }
         'Dispatch'  {
-            $dispatchResult = Invoke-Dispatch
+            $dispatchResult = Invoke-DispatchWithAccountFailover -NoAccountFailover:$NoAccountFailover
             $script:ResultPath = $null
             $dispatchResult
         }

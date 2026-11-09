@@ -971,6 +971,30 @@ function Resolve-DispatchInspectBinding {
     }
 }
 
+function New-DispatchAccountFailoverEvidence {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$EventEvidence)
+
+    $kind = Get-DispatchJsonProperty -Object $EventEvidence -Name 'rejection_kind'
+    $itemCount = Get-DispatchJsonProperty -Object $EventEvidence -Name 'item_event_count'
+    return [ordered]@{
+        eligible = [bool](Test-DispatchAccountFailoverEligible -EventEvidence $EventEvidence)
+        rejection_kind = if ([string]::IsNullOrWhiteSpace([string]$kind)) { $null } else { [string]$kind }
+        item_event_count = if ($null -eq $itemCount) { 0 } else { [int]$itemCount }
+    }
+}
+
+function Get-DispatchRejectionObservation {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$RejectionKind)
+
+    switch ($RejectionKind) {
+        'unauthorized' { return '事件流或 stderr 包含 401 認證失敗，該帳號登入已失效或無權限，同一帳號不自動重試。' }
+        'model-not-supported' { return '事件流或 stderr 顯示該帳號不支援所選檔位的 model，同一帳號不自動重試。' }
+        default { return '事件流包含 quota service rejection，禁止自動 retry。' }
+    }
+}
+
 function Invoke-Inspect {
     $modelEvidence = $null
     $requiredOutputGate = $null
@@ -1140,8 +1164,11 @@ function Invoke-Inspect {
     if ($malformedJsonLine -gt 0) {
         Throw-DispatchInspectSanitizedFailure -Code 'InspectJsonParseFailed' -FilePath $eventPath -LineNumber $malformedJsonLine
     }
-    $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath
+    $inspectErrorStreamVariable = Get-Variable -Name 'ErrorStreamPath' -ErrorAction SilentlyContinue
+    $inspectErrorStreamPath = if ($null -eq $inspectErrorStreamVariable) { '' } else { [string]$inspectErrorStreamVariable.Value }
+    $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath -ErrorStreamPath $inspectErrorStreamPath
     $serviceRejectionEvidence = Convert-EventEvidenceToServiceRejection -EventEvidence $eventEvidence
+    $accountFailover = New-DispatchAccountFailoverEvidence -EventEvidence $eventEvidence
     $serverStreamDisconnect = (Get-DispatchJsonProperty -Object $eventEvidence -Name 'server_stream_disconnect') -eq $true -and ([string](Get-DispatchJsonProperty -Object $eventEvidence -Name 'last_event_type') -cne 'turn.completed')
     if ($null -eq $inspectRun) {
         try {
@@ -1184,6 +1211,11 @@ function Invoke-Inspect {
         if (-not [string]::IsNullOrWhiteSpace($failureErrorPath) -and (Test-Path -LiteralPath $failureErrorPath -PathType Leaf)) {
             $failureStderr = Get-Content -LiteralPath $failureErrorPath -Raw -Encoding UTF8
         }
+        if ([string]::IsNullOrWhiteSpace($inspectErrorStreamPath) -and -not [string]::IsNullOrWhiteSpace($failureErrorPath) -and (Test-Path -LiteralPath $failureErrorPath -PathType Leaf)) {
+            $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath -ErrorStreamPath $failureErrorPath
+            $serviceRejectionEvidence = Convert-EventEvidenceToServiceRejection -EventEvidence $eventEvidence
+            $accountFailover = New-DispatchAccountFailoverEvidence -EventEvidence $eventEvidence
+        }
         $launchFailureResult = [ordered]@{
             operation = 'Inspect'
             runId = $inspectRun.Record.run_id
@@ -1209,6 +1241,7 @@ function Invoke-Inspect {
             failure = $failure
             eventEvidence = $eventEvidence
             service_rejection = $serviceRejectionEvidence
+            account_failover = $accountFailover
             retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
             modelEvidence = $modelEvidence
             reasoningEffortEvidence = $modelEvidence.reasoning_effort
@@ -1320,6 +1353,7 @@ function Invoke-Inspect {
             diagnosis = $emptyDiagnosis
             eventEvidence = $eventEvidence
             service_rejection = $serviceRejectionEvidence
+            account_failover = $accountFailover
             retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
             eventStreamPath = $eventPath
             errorStreamPath = $ErrorStreamPath
@@ -1409,6 +1443,7 @@ function Invoke-Inspect {
             interruptionCheckpoint = $interruptionCheckpoint
             eventEvidence = $eventEvidence
             service_rejection = $serviceRejectionEvidence
+            account_failover = $accountFailover
             retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
             stderr = $unknownStderr
         }
@@ -1687,7 +1722,7 @@ function Invoke-Inspect {
             $executionResult.turnFailedReason = 'quota service rejection'
         }
         if ($null -eq $diagnosis -or [string](Get-OptionalObjectProperty -Object $diagnosis -Name 'reason_code') -ne 'QuotaServiceRejected') {
-            $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'QuotaServiceRejected' -Observation '事件流包含 quota service rejection，禁止自動 retry。' -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
+            $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'QuotaServiceRejected' -Observation (Get-DispatchRejectionObservation -RejectionKind ([string]$serviceRejectionEvidence.reason_code)) -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
         }
     }
     if ($serverStreamDisconnect -and $null -eq $serviceRejectionEvidence) {
@@ -1728,7 +1763,7 @@ function Invoke-Inspect {
     $interruptionIncompleteUnits = @($interruptionIncompleteUnitsValue | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
     if ($null -ne $serviceRejectionEvidence) {
         $executionResult.resumable = $false
-        $executionResult.recommended_next_step = 'usage-limit 額度拒絕：等待額度恢復後由使用者決定；不要自動重試。'
+        $executionResult.recommended_next_step = Get-DispatchRejectionRecommendedNextStep -RejectionKind ([string](Get-DispatchJsonProperty -Object $eventEvidence -Name 'rejection_kind'))
     }
     elseif ($serverStreamDisconnect) {
         $executionResult.resumable = [bool]($interruptionStatus.safePointPresent -and $interruptionIncompleteUnits.Count -gt 0)
@@ -1789,6 +1824,7 @@ function Invoke-Inspect {
         usage            = $usage
         eventEvidence   = $eventEvidence
         service_rejection = $serviceRejectionEvidence
+        account_failover = $accountFailover
         retry_allowed   = if ($null -ne $serviceRejectionEvidence) { $false } elseif ($serverStreamDisconnect) { $true } else { $null }
         recommended_next_step = Get-DispatchJsonProperty -Object $executionResult -Name 'recommended_next_step'
         resumable = Get-DispatchJsonProperty -Object $executionResult -Name 'resumable'
@@ -1836,6 +1872,7 @@ function Invoke-Inspect {
         Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'inspect_status' -Value $dispatchStatus
         Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'inspect_success' -Value ([bool]$executionResult.success)
         if ($serverStreamDisconnect -or $null -ne $serviceRejectionEvidence) {
+            Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'account_failover' -Value $accountFailover
             Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'retry_allowed' -Value $result.retry_allowed
             Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'recommended_next_step' -Value $result.recommended_next_step
             Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'resumable' -Value $result.resumable

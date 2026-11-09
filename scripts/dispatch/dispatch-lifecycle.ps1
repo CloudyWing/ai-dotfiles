@@ -692,6 +692,7 @@ function Invoke-Dispatch {
     $failureReceiptWritten = $false
     $failureReceiptSha256Value = $null
     $continuationFailureHandoff = $null
+    $projectTrust = $null
     $previousAccountSelection = Get-DispatchScriptVariableValue -Name 'DispatchAccountSelection'
 
     try {
@@ -716,12 +717,27 @@ function Invoke-Dispatch {
         $PrepareResultPath = $null
 
         $failedStage = 'preflight'
-        $script:DispatchAccountSelection = Resolve-CodexAccountSelection -CodexHomePath $CodexHome -Profile $Profile
+        try {
+            $script:DispatchAccountSelection = Resolve-CodexAccountSelection -CodexHomePath $CodexHome -Profile $Profile -SourceRoot ([string]$SourceRoot)
+        }
+        catch {
+            if (-not [string]::IsNullOrWhiteSpace([string]$_.Exception.Data['reasonCode'])) {
+                $projectTrust = New-CodexProjectTrustRejection -AccountSelection $null -Exception $_.Exception
+            }
+            throw
+        }
         $CodexHome = $script:DispatchAccountSelection.CodexHome
         if ([string]::IsNullOrWhiteSpace($requestedFailureReceiptPath)) {
             throw 'Dispatch request 必須提供 failure_receipt_path。'
         }
         $failureReceiptPathValue = Resolve-DispatchOutputPath -CandidatePath $requestedFailureReceiptPath -SourceRoot ([string]$SourceRoot) -ExecutionRoot ([string]$SourceRoot) -TargetPath @($TargetPath)
+        try {
+            $projectTrust = Confirm-CodexAccountProjectTrust -AccountSelection $script:DispatchAccountSelection -SourceRoot ([string]$SourceRoot)
+        }
+        catch {
+            $projectTrust = New-CodexProjectTrustRejection -AccountSelection $script:DispatchAccountSelection -Exception $_.Exception
+            throw
+        }
         $preflightResult = Invoke-Preflight
         if ($null -eq $preflightResult) {
             throw 'Preflight 未回傳結果。'
@@ -877,6 +893,7 @@ function Invoke-Dispatch {
         $result = New-DispatchResultEnvelope -Status 'started' -LineSlug $LineSlug -DispatchSlug $DispatchSlug -CompletedStages @($completedStages.ToArray()) -FailedStage '' -ErrorCode '' -ErrorMessage '' -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startStage.Path -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
         $result.background = -not [bool]$script:DispatchWaitForCompletion
         $result.requested_units = @($script:ResolvedRequestedUnit)
+        $result.project_trust = $projectTrust
         $writtenResult = Write-DispatchAtomicJsonDocument -Path $resultPathValue -Document $result -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
         $result.result_path = $writtenResult.Path
         $result.result_sha256 = $writtenResult.Hash
@@ -932,6 +949,8 @@ function Invoke-Dispatch {
             $result.termination_reason = if ([string]$inspectLastEventType -eq 'turn.failed' -and -not [string]::IsNullOrWhiteSpace($inspectTurnFailedReason)) { 'turn.failed: ' + $inspectTurnFailedReason } elseif (-not [string]::IsNullOrWhiteSpace($inspectLastEventType)) { [string]$inspectLastEventType } else { [string]$result.error }
             $result.inspect_status = if ($inspectSuccess) { 'completed' } else { 'failed' }
             $result.inspect_success = $inspectSuccess
+            $inspectAccountFailover = Get-DispatchResultPropertyValue -Object $inspectResult -Names @('account_failover')
+            if ($null -ne $inspectAccountFailover) { $result.account_failover = $inspectAccountFailover }
             $result.inspect_result_path = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('inspectResultPath', 'inspect_result_path'))
             $inspectExitCodeValue = 0
             $hasNonzeroInspectExitCode = $null -ne $inspectProcessExitCode -and [int]::TryParse([string]$inspectProcessExitCode, [ref]$inspectExitCodeValue) -and $inspectExitCodeValue -ne 0
@@ -1011,6 +1030,9 @@ function Invoke-Dispatch {
         }
         $failureResult = New-DispatchResultEnvelope -Status 'failed' -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -CompletedStages @($completedStages.ToArray()) -FailedStage $failedStage -ErrorCode $errorCode -ErrorMessage $failureException.Message -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startResultPathValue -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
         $failureResult.dispatch_execution_id = $dispatchToken
+        $failureResult.project_trust = $projectTrust
+        $failureOperationAccountFailover = Get-DispatchResultPropertyValue -Object $failureException.Data['operationResult'] -Names @('account_failover')
+        if ($null -ne $failureOperationAccountFailover) { $failureResult.account_failover = $failureOperationAccountFailover }
         $failureResult.failure_receipt_path = if ([string]::IsNullOrWhiteSpace($failureReceiptPathValue)) { $null } else { $failureReceiptPathValue }
         $failureResult.failure_receipt_saved = $false
         if ([string]$SessionMode -ieq 'continuation') {
@@ -1133,4 +1155,446 @@ function Invoke-Dispatch {
     finally {
         $script:DispatchAccountSelection = $previousAccountSelection
     }
+}
+
+function Test-DispatchAccountFailoverApplicable {
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()][string]$CodexHome,
+        [bool]$WaitForCompletion,
+        [AllowEmptyString()][string]$SessionMode,
+        [bool]$NoAccountFailover,
+        [AllowNull()][System.Collections.IDictionary]$BoundParameter = $null,
+        [string]$MachineConfigPath
+    )
+
+    if ($NoAccountFailover -or -not $WaitForCompletion) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($CodexHome)) { return $false }
+    if ([string]$SessionMode -ieq 'continuation') { return $false }
+    if ($null -ne $BoundParameter) {
+        foreach ($name in @($BoundParameter.Keys)) {
+            $value = $BoundParameter[$name]
+            if ($null -ne $value -and $value -is [System.Array]) { return $false }
+        }
+    }
+    try {
+        $accounts = @(Read-CodexAccountConfiguration -MachineConfigPath $MachineConfigPath)
+    }
+    catch {
+        return $false
+    }
+    return $accounts.Count -gt 0
+}
+
+function Invoke-DispatchWithAccountFailover {
+    [CmdletBinding()]
+    param(
+        [switch]$NoAccountFailover,
+
+        [string]$MachineConfigPath
+    )
+
+    $boundParameters = Get-DispatchScriptVariableValue -Name 'InvocationBoundParameters'
+    $applicable = Test-DispatchAccountFailoverApplicable `
+        -CodexHome ([string](Get-DispatchScriptVariableValue -Name 'CodexHome')) `
+        -WaitForCompletion ([bool](Get-DispatchScriptVariableValue -Name 'DispatchWaitForCompletion')) `
+        -SessionMode ([string](Get-DispatchScriptVariableValue -Name 'SessionMode')) `
+        -NoAccountFailover ([bool]$NoAccountFailover) `
+        -BoundParameter $boundParameters `
+        -MachineConfigPath $MachineConfigPath
+    if (-not $applicable) {
+        return Invoke-Dispatch
+    }
+    return Invoke-DispatchAccountFailover `
+        -RequestPath ([string](Get-DispatchScriptVariableValue -Name 'RequestPath')) `
+        -Profile ([string](Get-DispatchScriptVariableValue -Name 'Profile')) `
+        -MachineConfigPath $MachineConfigPath `
+        -BoundParameter $boundParameters
+}
+
+function Test-DispatchSlugText {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Text, [Parameter(Mandatory)][string]$Slug)
+
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    return [regex]::IsMatch($Text, ('(?<![A-Za-z0-9])' + [regex]::Escape($Slug) + '(?![A-Za-z0-9])'))
+}
+
+function Convert-DispatchSlugText {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Text, [Parameter(Mandatory)][string]$OldSlug, [Parameter(Mandatory)][string]$NewSlug)
+
+    if ([string]::IsNullOrEmpty($Text)) { return $Text }
+    return [regex]::Replace($Text, ('(?<![A-Za-z0-9])' + [regex]::Escape($OldSlug) + '(?![A-Za-z0-9])'), $NewSlug.Replace('$', '$$'))
+}
+
+function New-DispatchAttemptRequest {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Document,
+        [Parameter(Mandatory)][ValidateRange(2, 99)][int]$Attempt
+    )
+
+    $originalSlug = [string](Get-DispatchJsonProperty -Object $Document -Name 'dispatch_slug')
+    $newSlug = $originalSlug + '-r' + [string]$Attempt
+    $missingFields = New-Object 'System.Collections.Generic.List[string]'
+    if ([string]::IsNullOrWhiteSpace($originalSlug) -or $newSlug -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$') {
+        return [pscustomobject]@{ derivable = $false; dispatch_slug = $newSlug; document = $null; missing_fields = @('dispatch_slug') }
+    }
+    $copy = ConvertFrom-DispatchJson -Content (ConvertTo-Json -InputObject $Document -Depth 40)
+    foreach ($fieldName in @('dispatch_root', 'failure_receipt_path', 'result_path', 'preflight_result_path', 'prepare_result_path')) {
+        $value = Get-DispatchJsonProperty -Object $copy -Name $fieldName
+        if ($null -eq $value -or [string]::IsNullOrWhiteSpace([string]$value)) { continue }
+        if (-not (Test-DispatchSlugText -Text ([string]$value) -Slug $originalSlug)) {
+            $null = $missingFields.Add($fieldName)
+            continue
+        }
+        Set-DispatchJsonPropertyValue -Object $copy -Name $fieldName -Value (Convert-DispatchSlugText -Text ([string]$value) -OldSlug $originalSlug -NewSlug $newSlug)
+    }
+    $artifacts = Get-DispatchJsonProperty -Object $copy -Name 'prepare_artifacts'
+    if ($null -ne $artifacts) {
+        $artifactIndex = 0
+        foreach ($artifact in @($artifacts)) {
+            $destination = Get-DispatchJsonProperty -Object $artifact -Name 'destination'
+            if ($null -ne $destination -and -not [string]::IsNullOrWhiteSpace([string]$destination)) {
+                if (Test-DispatchSlugText -Text ([string]$destination) -Slug $originalSlug) {
+                    Set-DispatchJsonPropertyValue -Object $artifact -Name 'destination' -Value (Convert-DispatchSlugText -Text ([string]$destination) -OldSlug $originalSlug -NewSlug $newSlug)
+                }
+                else {
+                    $null = $missingFields.Add('prepare_artifacts[' + $artifactIndex + '].destination')
+                }
+            }
+            $artifactIndex++
+        }
+    }
+    Set-DispatchJsonPropertyValue -Object $copy -Name 'dispatch_slug' -Value $newSlug
+    return [pscustomobject]@{
+        derivable = $missingFields.Count -eq 0
+        dispatch_slug = $newSlug
+        document = if ($missingFields.Count -eq 0) { $copy } else { $null }
+        missing_fields = @($missingFields.ToArray())
+    }
+}
+
+function ConvertTo-DispatchProcessArgument {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Value)
+
+    if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') { return $Value }
+    $builder = New-Object System.Text.StringBuilder
+    $null = $builder.Append('"')
+    $backslashes = 0
+    foreach ($character in $Value.ToCharArray()) {
+        if ($character -eq [char]'\') {
+            $backslashes++
+            continue
+        }
+        if ($character -eq [char]'"') {
+            $null = $builder.Append('\', ($backslashes * 2 + 1)).Append('"')
+        }
+        else {
+            $null = $builder.Append('\', $backslashes).Append($character)
+        }
+        $backslashes = 0
+    }
+    $null = $builder.Append('\', ($backslashes * 2)).Append('"')
+    return $builder.ToString()
+}
+
+function Get-DispatchAttemptForwardArgument {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][System.Collections.IDictionary]$BoundParameter,
+        [string]$OriginalSlug,
+        [string]$NewSlug
+    )
+
+    $forward = New-Object 'System.Collections.Generic.List[string]'
+    $missing = New-Object 'System.Collections.Generic.List[string]'
+    if ($null -eq $BoundParameter) { return [pscustomobject]@{ arguments = @(); missing_fields = @() } }
+    $excluded = @('Operation', 'RequestPath', 'CodexHome', 'NoAccountFailover')
+    $slugRequired = @('DispatchSlug', 'DispatchRoot', 'FailureReceiptPath', 'ResultPath', 'PreflightResultPath', 'PrepareResultPath')
+    foreach ($name in @($BoundParameter.Keys)) {
+        $key = [string]$name
+        if ($excluded -contains $key) { continue }
+        $value = $BoundParameter[$name]
+        if ($value -is [System.Management.Automation.SwitchParameter]) {
+            if ([bool]$value) { $null = $forward.Add('-' + $key) }
+            continue
+        }
+        if ($null -eq $value) { continue }
+        $text = [string]$value
+        if (-not [string]::IsNullOrWhiteSpace($NewSlug)) {
+            if (Test-DispatchSlugText -Text $text -Slug $OriginalSlug) {
+                $text = Convert-DispatchSlugText -Text $text -OldSlug $OriginalSlug -NewSlug $NewSlug
+            }
+            elseif ($slugRequired -contains $key) {
+                $null = $missing.Add($key)
+                continue
+            }
+        }
+        $null = $forward.Add('-' + $key)
+        $null = $forward.Add($text)
+    }
+    return [pscustomobject]@{ arguments = @($forward.ToArray()); missing_fields = @($missing.ToArray()) }
+}
+
+function Invoke-DispatchAttemptProcess {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RequestPath,
+        [Parameter(Mandatory)][string]$CodexHome,
+        [string[]]$ForwardArgument = @(),
+        [string]$ResultPathHint
+    )
+
+    $entryRoot = [string](Get-DispatchScriptVariableValue -Name 'DispatchEntryScriptRoot')
+    $entryScript = Join-Path -Path $entryRoot -ChildPath 'Invoke-CodexDispatch.ps1'
+    $hostPath = (Get-Process -Id $PID).Path
+    $argumentList = @('-NoProfile', '-NonInteractive', '-File', $entryScript, '-Operation', 'Dispatch', '-RequestPath', $RequestPath, '-CodexHome', $CodexHome, '-NoAccountFailover') + @($ForwardArgument)
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $hostPath
+    $startInfo.Arguments = (@($argumentList | ForEach-Object { ConvertTo-DispatchProcessArgument -Value ([string]$_) }) -join ' ')
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.StandardOutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
+    $startInfo.StandardErrorEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $null = $process.Start()
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
+    $process.WaitForExit()
+    $stdout = $stdoutTask.Result
+    $stderr = $stderrTask.Result
+    $exitCode = $process.ExitCode
+    $process.Dispose()
+    $parsed = $null
+    $resultPathValue = $null
+    if (-not [string]::IsNullOrWhiteSpace($stdout)) {
+        $jsonText = $stdout.Trim()
+        $firstBrace = $jsonText.IndexOf('{')
+        $lastBrace = $jsonText.LastIndexOf('}')
+        if ($firstBrace -ge 0 -and $lastBrace -gt $firstBrace) {
+            try { $parsed = ConvertFrom-DispatchJson -Content $jsonText.Substring($firstBrace, $lastBrace - $firstBrace + 1) } catch { $parsed = $null }
+        }
+    }
+    if ($null -ne $parsed) {
+        $parsedResultPath = Get-DispatchResultPropertyValue -Object $parsed -Names @('result_path')
+        if ($null -ne $parsedResultPath) { $resultPathValue = [string]$parsedResultPath }
+    }
+    if ($null -eq $parsed -and -not [string]::IsNullOrWhiteSpace($ResultPathHint) -and (Test-Path -LiteralPath $ResultPathHint -PathType Leaf)) {
+        try {
+            $parsed = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $ResultPathHint)
+            $resultPathValue = $ResultPathHint
+        }
+        catch { $parsed = $null }
+    }
+    return [pscustomobject]@{
+        exit_code = [int]$exitCode
+        stdout = $stdout
+        stderr = $stderr
+        result = $parsed
+        result_path = $resultPathValue
+    }
+}
+
+function Get-DispatchAttemptProcessStarted {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug
+    )
+
+    # 依該次嘗試的 RunRecord 判定 Codex 程序是否已啟動：有任一筆確認啟動回 $true，
+    # 全部筆數都確認為未啟動（pre-start 階段失敗）回 $false，沒有 RunRecord 或無法判定回 $null（未知）。
+    try {
+        $directory = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        if (-not (Test-Path -LiteralPath $directory -PathType Container)) { return $null }
+        $classifications = New-Object 'System.Collections.Generic.List[object]'
+        foreach ($file in @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File -ErrorAction Stop)) {
+            $record = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $file.FullName)
+            if ($null -eq $record -or $record -isnot [pscustomobject]) { return $null }
+            $null = $classifications.Add((Get-DispatchRunRecordStartClassification -Record $record))
+        }
+        if ($classifications.Count -eq 0) { return $null }
+        if (@($classifications.ToArray() | Where-Object { $_.process_started -eq $true }).Count -gt 0) { return $true }
+        if (@($classifications.ToArray() | Where-Object { [string]$_.classification -ceq 'unstarted-sandbox' }).Count -eq $classifications.Count) { return $false }
+        return $null
+    }
+    catch {
+        return $null
+    }
+}
+
+function Write-DispatchAccountFailoverSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][object]$Document
+    )
+
+    return Write-DispatchAtomicJsonDocument -Path $Path -Document $Document -SourceRoot $SourceRoot -ExecutionRoot $SourceRoot -TargetPath @() -HashProperty '' -RequireAbsent -AbsentErrorCode 'DispatchAccountFailoverSummaryCollision'
+}
+
+function Invoke-DispatchAccountFailover {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$RequestPath,
+        [string]$Profile,
+        [string]$MachineConfigPath,
+        [AllowNull()][System.Collections.IDictionary]$BoundParameter = $null
+    )
+
+    $requestPathValue = Resolve-AbsolutePath -Path $RequestPath
+    $document = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $requestPathValue)
+    $sourceRootValue = [string](Get-DispatchJsonProperty -Object $document -Name 'source_root')
+    if ([string]::IsNullOrWhiteSpace($sourceRootValue)) { $sourceRootValue = [string](Get-DispatchScriptVariableValue -Name 'SourceRoot') }
+    $sourceRootPath = Resolve-AbsolutePath -Path $sourceRootValue
+    $lineSlugValue = [string](Get-DispatchJsonProperty -Object $document -Name 'line_slug')
+    $dispatchSlugValue = [string](Get-DispatchJsonProperty -Object $document -Name 'dispatch_slug')
+    $profileValue = $Profile
+    if ([string]::IsNullOrWhiteSpace($profileValue)) { $profileValue = [string](Get-DispatchJsonProperty -Object $document -Name 'profile') }
+    $summaryPath = Join-Path -Path (Join-Path -Path (Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history') -ChildPath $lineSlugValue) -ChildPath ('dispatch-account-failover-' + $dispatchSlugValue + '.json')
+    if ([System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $summaryPath))) {
+        throw ('DispatchAccountFailoverSummaryCollision：摘要檔已存在，拒絕覆寫：' + $summaryPath)
+    }
+
+    $candidateSet = Get-CodexDispatchAccountCandidates -Profile $profileValue -MachineConfigPath $MachineConfigPath -SourceRoot $sourceRootPath
+    $candidates = @($candidateSet.candidates)
+    $summary = [ordered]@{
+        schema = 'ai-sessions.dispatch-account-failover.v1'
+        line_slug = $lineSlugValue
+        dispatch_slug = $dispatchSlugValue
+        candidates = @($candidates)
+        skipped = @($candidateSet.skipped)
+        attempts = @()
+        all_unavailable = $false
+        final_attempt = $null
+        skipped_reason = $null
+    }
+    if ($candidates.Count -eq 0) {
+        $summary.all_unavailable = $true
+        $null = Write-DispatchAccountFailoverSummary -Path $summaryPath -SourceRoot $sourceRootPath -Document $summary
+        throw ('CodexAccountsAllUnavailable：' + (Format-CodexAccountSkippedSummary -Skipped @($candidateSet.skipped)))
+    }
+
+    $attempts = New-Object 'System.Collections.Generic.List[object]'
+    $finalResult = $null
+    $loopError = $null
+    $attemptNumber = 0
+    try {
+        foreach ($candidate in $candidates) {
+            $attemptNumber++
+            $attemptRequestPath = $requestPathValue
+            $attemptSlug = $dispatchSlugValue
+            $attemptDocument = $document
+            $forwardArguments = @()
+            if ($attemptNumber -ge 2) {
+                $derived = New-DispatchAttemptRequest -Document $document -Attempt $attemptNumber
+                $forward = Get-DispatchAttemptForwardArgument -BoundParameter $BoundParameter -OriginalSlug $dispatchSlugValue -NewSlug ([string]$derived.dispatch_slug)
+                if (-not [bool]$derived.derivable -or @($forward.missing_fields).Count -gt 0) {
+                    $summary.skipped_reason = 'AccountFailoverNotDerivable'
+                    break
+                }
+                $attemptSlug = [string]$derived.dispatch_slug
+                $attemptDocument = $derived.document
+                $attemptRequestPath = Join-Path -Path (Join-Path -Path (Join-Path -Path $sourceRootPath -ChildPath '.local\ai-sessions\history') -ChildPath $lineSlugValue) -ChildPath ('dispatch-request-' + $attemptSlug + '.json')
+                $null = Write-DispatchAtomicJsonDocument -Path $attemptRequestPath -Document $attemptDocument -SourceRoot $sourceRootPath -ExecutionRoot $sourceRootPath -TargetPath @() -HashProperty '' -RequireAbsent -AbsentErrorCode 'DispatchAccountFailoverRequestCollision'
+                $forwardArguments = @($forward.arguments)
+            }
+            else {
+                $forward = Get-DispatchAttemptForwardArgument -BoundParameter $BoundParameter -OriginalSlug $dispatchSlugValue -NewSlug ''
+                $forwardArguments = @($forward.arguments)
+            }
+            $resultPathHint = [string](Get-DispatchJsonProperty -Object $attemptDocument -Name 'result_path')
+            $run = Invoke-DispatchAttemptProcess -RequestPath $attemptRequestPath -CodexHome ([string]$candidate.codex_home) -ForwardArgument $forwardArguments -ResultPathHint $resultPathHint
+            $result = $run.result
+            $status = if ($null -eq $result) { '' } else { [string](Get-DispatchResultPropertyValue -Object $result -Names @('status')) }
+            $accountFailover = if ($null -eq $result) { $null } else { Get-DispatchResultPropertyValue -Object $result -Names @('account_failover') }
+            $eligible = $null -ne $accountFailover -and (Get-DispatchJsonProperty -Object $accountFailover -Name 'eligible') -eq $true
+            $outcome = if ($status -ceq 'completed') { 'completed' } elseif ($status -ceq 'failed' -and $eligible) { 'rejected' } else { 'failed' }
+            $kindValue = if ($null -eq $accountFailover) { $null } else { Get-DispatchJsonProperty -Object $accountFailover -Name 'rejection_kind' }
+            $itemCountValue = if ($null -eq $accountFailover) { $null } else { Get-DispatchJsonProperty -Object $accountFailover -Name 'item_event_count' }
+            $dispatchRootValue = [string](Get-DispatchJsonProperty -Object $attemptDocument -Name 'dispatch_root')
+            $attemptProjectTrust = $null
+            if ($null -ne $result) {
+                $resultDispatchRoot = Get-DispatchResultPropertyValue -Object $result -Names @('dispatch_root', 'dispatchRoot')
+                if ($null -ne $resultDispatchRoot) { $dispatchRootValue = [string]$resultDispatchRoot }
+                $attemptProjectTrust = Get-DispatchResultPropertyValue -Object $result -Names @('project_trust')
+            }
+            $resultPathValue = if ($null -ne $result -and $null -ne (Get-DispatchResultPropertyValue -Object $result -Names @('result_path'))) { [string](Get-DispatchResultPropertyValue -Object $result -Names @('result_path')) } else { $run.result_path }
+            $null = $attempts.Add([ordered]@{
+                    attempt = $attemptNumber
+                    dispatch_slug = $attemptSlug
+                    account_name = [string]$candidate.name
+                    codex_home = [string]$candidate.codex_home
+                    outcome = $outcome
+                    rejection_kind = if ($null -eq $kindValue) { $null } else { [string]$kindValue }
+                    item_event_count = if ($null -eq $itemCountValue) { $null } else { [int]$itemCountValue }
+                    dispatch_root = if ([string]::IsNullOrWhiteSpace($dispatchRootValue)) { $null } else { $dispatchRootValue }
+                    result_path = if ([string]::IsNullOrWhiteSpace($resultPathValue)) { $null } else { $resultPathValue }
+                    project_trust = $attemptProjectTrust
+                })
+            $summary.final_attempt = $attemptNumber
+            if ($null -eq $result) {
+                $attemptProcessStarted = Get-DispatchAttemptProcessStarted -SourceRoot $sourceRootPath -LineSlug $lineSlugValue -DispatchSlug $attemptSlug
+                $finalResult = [ordered]@{
+                    schema = 'ai-sessions.dispatch-result.v1'
+                    operation = 'Dispatch'
+                    status = 'failed'
+                    line_slug = $lineSlugValue
+                    dispatch_slug = $attemptSlug
+                    failed_stage = 'dispatch-account-failover'
+                    error_code = 'DispatchAccountFailoverAttemptFailed'
+                    error = ('Dispatch 子程序未回傳可解析的結果；exit_code=' + [string]$run.exit_code + '; stderr=' + [string]$run.stderr)
+                    process_started = $attemptProcessStarted
+                }
+            }
+            else {
+                $finalResult = $result
+            }
+            if ($outcome -cne 'rejected') { break }
+        }
+    }
+    catch {
+        $loopError = $_
+    }
+    $summary.attempts = @($attempts.ToArray())
+    $summary.all_unavailable = $attempts.Count -gt 0 -and $attempts.Count -eq $candidates.Count -and @($attempts.ToArray() | Where-Object { [string]$_.outcome -cne 'rejected' }).Count -eq 0
+    $null = Write-DispatchAccountFailoverSummary -Path $summaryPath -SourceRoot $sourceRootPath -Document $summary
+    if ($null -ne $loopError) { throw $loopError }
+    $failoverEvidence = [ordered]@{
+        summary_path = $summaryPath
+        attempt_count = $attempts.Count
+        all_unavailable = [bool]$summary.all_unavailable
+        error_code = if ([bool]$summary.all_unavailable) { 'CodexAccountsAllUnavailable' } else { $null }
+        skipped_reason = $summary.skipped_reason
+        skipped = @($candidateSet.skipped | ForEach-Object {
+                [ordered]@{
+                    name = [string]$_.name
+                    reason_code = [string]$_.reason_code
+                    config_path = $_.config_path
+                    detail = $_.detail
+                }
+            })
+    }
+    if ($null -eq $finalResult) {
+        throw 'DispatchAccountFailoverAttemptFailed：沒有任何嘗試產生結果。'
+    }
+    if ($finalResult -isnot [System.Collections.IDictionary]) {
+        $resultDictionary = [ordered]@{}
+        foreach ($resultProperty in $finalResult.PSObject.Properties) { $resultDictionary[$resultProperty.Name] = $resultProperty.Value }
+        $finalResult = $resultDictionary
+    }
+    $finalResult['account_failover_summary'] = $failoverEvidence
+    if ([bool]$summary.all_unavailable) {
+        $attemptSummaryText = (@($attempts.ToArray() | ForEach-Object { [string]$_.account_name + ':' + [string]$_.rejection_kind }) -join '; ')
+        if (@($candidateSet.skipped).Count -gt 0) { $attemptSummaryText += '; 略過：' + (Format-CodexAccountSkippedSummary -Skipped @($candidateSet.skipped)) }
+        [Console]::Error.WriteLine('CodexAccountsAllUnavailable：' + $attemptSummaryText)
+    }
+    return $finalResult
 }

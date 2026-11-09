@@ -240,7 +240,7 @@ function New-P1BInspectFixture {
     $eventPath = Join-Path $dispatchHistory ($fixture.Slug + '.jsonl')
     $lastMessagePath = Join-Path $dispatchHistory ($fixture.Slug + '-last.md')
     $scopePlanPath = Join-Path $dispatchHistory ($fixture.Slug + '-scope.json')
-    $scopePlan = New-ScopePlan -DispatchSlug $fixture.Slug -DispatchKind 'resource' -TaskType 'script-change' -RequestedProfile 'implement' -SessionMode 'cold-start' -CalibrationPath $null -Units @('d2-inspect') -UnitKind 'resource-target' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $null
+    $scopePlan = New-ScopePlan -DispatchSlug $fixture.Slug -DispatchKind 'resource' -TaskType 'script-change' -RequestedProfile 'scan' -SessionMode 'cold-start' -CalibrationPath $null -Units @('d2-inspect') -UnitKind 'resource-target' -Model $null -ModelEvidence $null -ReasoningEffortEvidence $null -ActivationDecision $null
     Write-P1BText $scopePlanPath ($scopePlan | ConvertTo-Json -Depth 30)
     $now = [DateTime]::UtcNow.ToString('o')
     $events = @(

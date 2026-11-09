@@ -1,0 +1,58 @@
+{
+  "schema": "ai-agents.executor-registry.v1",
+  "tags": {
+    "hard": ["write", "build-test", "web", "browse", "desktop-control", "image-gen"],
+    "constraint": ["family", "gated"]
+  },
+  "flags": ["E", "T", "Deep"],
+  "types": {
+    "edit": { "requiredFlags": ["E", "T"], "impliedTags": ["write"], "forbiddenTags": [] },
+    "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
+    "test": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
+    "generate": { "requiredFlags": [], "impliedTags": ["image-gen"], "forbiddenTags": ["write"] },
+    "factcheck": { "requiredFlags": [], "impliedTags": ["web"], "forbiddenTags": ["write"] },
+    "review": { "requiredFlags": ["Deep"], "impliedTags": [], "forbiddenTags": ["write"], "crossFamily": true, "degradable": ["family"] },
+    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] }
+  },
+  "executors": [
+    {
+      "id": "haiku", "display": "Haiku subagent", "platform": "claude", "model": "haiku", "family": "claude",
+      "accepts": ["edit"], "tags": ["write", "build-test"], "when": { "E": true, "T": false },
+      "order": 10, "gated": false, "escalationOnly": false, "escalatesTo": "sonnet"
+    },
+    {
+      "id": "codex-scan", "display": "Codex scan", "platform": "codex", "profile": "scan", "family": "codex",
+      "accepts": ["test", "generate", "factcheck"], "tags": ["build-test", "web", "browse", "desktop-control", "image-gen"], "when": {},
+      "order": 20, "gated": false, "escalationOnly": false, "escalatesTo": null,
+      "onOffline": { "test": "stop", "generate": "stop", "factcheck": "fallback" }
+    },
+    {
+      "id": "codex-review", "display": "Codex review", "platform": "codex", "profile": "review", "family": "codex",
+      "accepts": ["review"], "tags": [], "when": { "Deep": false },
+      "order": 30, "gated": false, "escalationOnly": false, "escalatesTo": null,
+      "onOffline": { "review": "degrade" }
+    },
+    {
+      "id": "codex-deep-review", "display": "Codex deep-review", "platform": "codex", "profile": "deep-review", "family": "codex",
+      "accepts": ["review"], "tags": [], "when": { "Deep": true },
+      "order": 31, "gated": false, "escalationOnly": false, "escalatesTo": null,
+      "onOffline": { "review": "degrade" }
+    },
+    {
+      "id": "codex-advisor", "display": "Codex advisor", "platform": "codex", "profile": "advisor", "family": "codex",
+      "accepts": ["advise"], "tags": [], "when": {},
+      "order": 40, "gated": true, "escalationOnly": false, "escalatesTo": null,
+      "onOffline": { "advise": "wait-reset" }
+    },
+    {
+      "id": "sonnet", "display": "Sonnet subagent", "platform": "claude", "model": "sonnet", "family": "claude",
+      "accepts": ["edit", "survey", "review", "factcheck"], "tags": ["write", "build-test", "web"], "when": {},
+      "order": 50, "gated": false, "escalationOnly": false, "escalatesTo": "opus"
+    },
+    {
+      "id": "opus", "display": "Opus subagent", "platform": "claude", "model": "opus", "family": "claude",
+      "accepts": ["edit", "survey", "review", "factcheck"], "tags": ["write", "build-test", "web"], "when": {},
+      "order": 90, "gated": false, "escalationOnly": true, "escalatesTo": null
+    }
+  ]
+}

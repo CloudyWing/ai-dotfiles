@@ -1,11 +1,75 @@
-﻿function Get-DispatchEventEvidence {
+﻿function Get-DispatchAccountRejectionKind {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    if ($Text -match '(?i)\b401\b|\bunauthori[sz]ed\b') { return 'unauthorized' }
+    if ($Text -match '(?i)\bmodel\b[^\r\n]{0,120}\bis\s+not\s+supported\b') { return 'model-not-supported' }
+    return $null
+}
+
+function Test-DispatchErrorStreamErrorLine {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line)) { return $false }
+    # Codex stderr 的錯誤行格式為「<ISO 8601 時間> ERROR <target>: <訊息>」，或不帶時間的「ERROR: <訊息>」。
+    # target 為 codex_core::tools:: 的錯誤是工具執行失敗，訊息會回顯被執行的完整命令列，不代表服務端拒絕。
+    $tracingMatch = [regex]::Match($Line, '^\s*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+ERROR\s+(?<target>[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*):\s')
+    if ($tracingMatch.Success) {
+        return -not $tracingMatch.Groups['target'].Value.StartsWith('codex_core::tools::', [System.StringComparison]::Ordinal)
+    }
+    return [regex]::IsMatch($Line, '^\s*ERROR:\s')
+}
+
+function Get-DispatchErrorStreamRejectionEvidence {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$ErrorStreamPath)
+
+    $found = New-Object 'System.Collections.Generic.List[object]'
+    if ([string]::IsNullOrWhiteSpace($ErrorStreamPath)) { return @() }
+    $errorPath = Resolve-AbsolutePath -Path $ErrorStreamPath
+    $text = $null
+    try {
+        $text = (New-Object System.Text.UTF8Encoding -ArgumentList @($false)).GetString((Read-DispatchSharedBytes -Path (ConvertTo-FileSystemApiPath -Path $errorPath)))
+    }
+    catch {
+        return @()
+    }
+    $errorSha256 = $null
+    foreach ($line in ($text -split '\r?\n')) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if (-not (Test-DispatchErrorStreamErrorLine -Line $line)) { continue }
+        $kind = Get-DispatchAccountRejectionKind -Text $line
+        if ($null -eq $kind) { continue }
+        if ($null -eq $errorSha256) { $errorSha256 = Get-FileSha256 -Path $errorPath }
+        $null = $found.Add([ordered]@{
+                rejection_kind = $kind
+                source = 'error-stream'
+                path = $errorPath
+                sha256 = $errorSha256
+                observed_at = $null
+                raw_line = $line.Substring(0, [Math]::Min(500, $line.Length))
+            })
+    }
+    return @($found.ToArray())
+}
+
+function Get-DispatchEventEvidence {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
-        [string]$EventPath
+        [string]$EventPath,
+
+        [string]$ErrorStreamPath
     )
 
     $resolvedPath = Resolve-AbsolutePath -Path $EventPath
+    $rejectionEvidence = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($errorStreamMatch in @(Get-DispatchErrorStreamRejectionEvidence -ErrorStreamPath $ErrorStreamPath)) {
+        $null = $rejectionEvidence.Add($errorStreamMatch)
+    }
+    $itemEventCount = 0
     if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $resolvedPath))) {
         return [ordered]@{
             path = $resolvedPath
@@ -18,6 +82,9 @@
             usage_limit = $false
             server_stream_disconnect_evidence = @()
             server_stream_disconnect = $false
+            rejection_kind = if ($rejectionEvidence.Count -eq 0) { $null } else { [string]$rejectionEvidence[0].rejection_kind }
+            rejection_evidence = @($rejectionEvidence.ToArray())
+            item_event_count = 0
         }
     }
 
@@ -46,6 +113,9 @@
             $payload = Get-DispatchJsonProperty -Object $event -Name 'data'
         }
         $recordType = [string](Get-DispatchJsonProperty -Object $event -Name 'type')
+        if ($recordType -ceq 'item.started' -or $recordType -ceq 'item.completed') {
+            $itemEventCount++
+        }
         $payloadType = [string](Get-DispatchJsonProperty -Object $payload -Name 'type')
         $isErrorEvent = (Test-DispatchErrorEventType -EventType $recordType) -or (Test-DispatchErrorEventType -EventType $payloadType)
         $rateLimits = Get-DispatchJsonProperty -Object $payload -Name 'rate_limits'
@@ -89,6 +159,23 @@
         }
 
         $messageText = $messageParts -join ' '
+        if ($isErrorEvent) {
+            $accountRejectionKind = Get-DispatchAccountRejectionKind -Text $messageText
+            if ($null -ne $accountRejectionKind) {
+                $rejectionTimestamp = Get-DispatchJsonProperty -Object $event -Name 'timestamp'
+                if ($null -eq $rejectionTimestamp) {
+                    $rejectionTimestamp = Get-DispatchJsonProperty -Object $event -Name 'created_at'
+                }
+                $null = $rejectionEvidence.Add([ordered]@{
+                        rejection_kind = $accountRejectionKind
+                        source = 'event-stream'
+                        path = $resolvedPath
+                        sha256 = $null
+                        observed_at = if ($null -eq $rejectionTimestamp) { $null } else { [string]$rejectionTimestamp }
+                        raw_line = $rawLine
+                    })
+            }
+        }
         $matchReasonCode = $null
         if ($messageText -match $usageLimitPattern) {
             $matchReasonCode = 'usage-limit'
@@ -135,6 +222,16 @@
         $lastType = [string](Get-DispatchJsonProperty -Object $events[$events.Count - 1] -Name 'type')
     }
     $serverStreamDisconnect = $serverStreamDisconnect -and $lastType -cne 'turn.completed'
+    $rejectionKind = $null
+    if (@($usageLimitEvidence.ToArray() | Where-Object { [string]$_.reason_code -ceq 'usage-limit' }).Count -gt 0) {
+        $rejectionKind = 'usage-limit'
+    }
+    elseif (@($rejectionEvidence.ToArray() | Where-Object { [string]$_.rejection_kind -ceq 'unauthorized' }).Count -gt 0) {
+        $rejectionKind = 'unauthorized'
+    }
+    elseif ($rejectionEvidence.Count -gt 0) {
+        $rejectionKind = [string]$rejectionEvidence[0].rejection_kind
+    }
     $state = 'unknown'
     if ($usageLimit) {
         $state = 'quota-rejected'
@@ -162,6 +259,32 @@
         usage_limit = $usageLimit
         server_stream_disconnect_evidence = @($serverStreamDisconnectEvidence.ToArray())
         server_stream_disconnect = $serverStreamDisconnect
+        rejection_kind = $rejectionKind
+        rejection_evidence = @($rejectionEvidence.ToArray())
+        item_event_count = $itemEventCount
+    }
+}
+
+function Test-DispatchAccountFailoverEligible {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowNull()][object]$EventEvidence)
+
+    if ($null -eq $EventEvidence) { return $false }
+    $kind = Get-DispatchJsonProperty -Object $EventEvidence -Name 'rejection_kind'
+    if ([string]::IsNullOrWhiteSpace([string]$kind)) { return $false }
+    $itemCount = Get-DispatchJsonProperty -Object $EventEvidence -Name 'item_event_count'
+    return $null -ne $itemCount -and [int]$itemCount -eq 0
+}
+
+function Get-DispatchRejectionRecommendedNextStep {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$RejectionKind)
+
+    switch ($RejectionKind) {
+        'usage-limit' { return 'usage-limit 額度拒絕：等待額度恢復後由使用者決定；未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號，同一帳號不重送。' }
+        'unauthorized' { return '401 認證失敗：未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號；仍失敗代表該帳號登入已失效，請重新登入後再派遣。同一帳號不重送。' }
+        'model-not-supported' { return '該帳號不支援所選檔位的 model：未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號；指定 -CodexHome 時請改用其他帳號。同一帳號不重送。' }
+        default { return 'usage-limit 額度拒絕：等待額度恢復後由使用者決定；不要自動重試。' }
     }
 }
 
@@ -178,6 +301,38 @@ function Convert-EventEvidenceToServiceRejection {
         [psobject]$EventEvidence
     )
 
+    $rejectionKind = [string](Get-DispatchJsonProperty -Object $EventEvidence -Name 'rejection_kind')
+    if ($rejectionKind -ceq 'unauthorized' -or $rejectionKind -ceq 'model-not-supported') {
+        $rejectionEvidenceValue = Get-DispatchJsonProperty -Object $EventEvidence -Name 'rejection_evidence'
+        $kindEvidence = @(foreach ($candidateEvidence in @($rejectionEvidenceValue)) {
+                if ($null -ne $candidateEvidence -and [string](Get-DispatchJsonProperty -Object $candidateEvidence -Name 'rejection_kind') -ceq $rejectionKind) { $candidateEvidence }
+            })
+        if ($kindEvidence.Count -eq 0) {
+            return $null
+        }
+        $lastKindEvidence = $kindEvidence[$kindEvidence.Count - 1]
+        $kindObservedAt = [DateTimeOffset]::UtcNow
+        $kindTimestamp = Get-DispatchJsonProperty -Object $lastKindEvidence -Name 'observed_at'
+        if ($null -ne $kindTimestamp) {
+            try { $kindObservedAt = [DateTimeOffset]$kindTimestamp } catch { }
+        }
+        $kindEvidencePath = [string](Get-DispatchJsonProperty -Object $lastKindEvidence -Name 'path')
+        $kindEvidenceSha256 = [string](Get-DispatchJsonProperty -Object $lastKindEvidence -Name 'sha256')
+        if ([string](Get-DispatchJsonProperty -Object $lastKindEvidence -Name 'source') -ceq 'event-stream') {
+            $kindEvidencePath = [string]$EventEvidence.path
+            $kindEvidenceSha256 = [string]$EventEvidence.sha256
+        }
+        return [ordered]@{
+            status              = 'quota-rejected'
+            window              = 'unknown'
+            reason_code         = $rejectionKind
+            observed_at_utc     = $kindObservedAt.ToUniversalTime().ToString('o')
+            raw_evidence_path   = $kindEvidencePath
+            raw_evidence_sha256 = $kindEvidenceSha256
+            resets_at           = $null
+            retry_allowed       = $false
+        }
+    }
     if ((Get-DispatchJsonProperty -Object $EventEvidence -Name 'usage_limit') -ne $true) {
         return $null
     }
@@ -437,7 +592,16 @@ function Get-DispatchFailureReasonCode {
             'ResumeAccountMismatch',
             'ResumeAccountUnverifiable',
             'CodexAccountConfigurationInvalid',
+            'CodexAccountNotLoggedIn',
+            'CodexAccountsAllUnavailable',
             'CodexAccountHomeMissing',
+            'CodexAccountConfigMissing',
+            'CodexAccountConfigLinked',
+            'CodexAccountConfigUnsupported',
+            'CodexAccountConfigChanged',
+            'CodexAccountConfigWriteFailed',
+            'CodexAccountTrustLockTimeout',
+            'CodexProjectPathUnsupported',
             'ProfileEvidenceUnknown',
             'ThreadRelayTimeout',
             'ProcessIdentityUnknown',
