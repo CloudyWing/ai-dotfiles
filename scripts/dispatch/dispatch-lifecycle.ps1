@@ -365,6 +365,7 @@ function Invoke-Preflight {
 
     $gitState = $null
     $baseline = $null
+    $preStartReceipt = [ordered]@{ path = $null; sha256 = $null; state = 'not-applicable'; error = $null }
     if ($worktreeCreated) {
         if (-not $hasBaseCommit) {
             throw 'Preflight worktree 建立前需要有效的基準 commit。'
@@ -403,6 +404,7 @@ function Invoke-Preflight {
         }
         $executionRootPath = $dispatchRootPath
         Write-DispatchProgress -Stage 'worktree-add' -Event 'end' -Detail $baseShaValue
+        $preStartReceipt = Write-DispatchPreStartReceipt -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
         Write-DispatchProgress -Stage 'carry-in' -Event 'begin'
         $carryInManifest = Apply-SourceCarryIn -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
         $lineProducedFiles = @($carryInManifest.UntrackedFiles | Where-Object {
@@ -475,6 +477,7 @@ function Invoke-Preflight {
         gitOrigin       = $gitState.GitOrigin
         baseSha         = $baseShaValue
         worktreeCreated = $worktreeCreated
+        preStartReceipt = $preStartReceipt
         carryInManifest = $carryInManifest
         inputWarnings   = @(@(Get-DispatchScriptVariableValue -Name 'DispatchInputFindings') | Where-Object { $null -ne $_ -and $_.severity -eq 'warning' })
         targetsOutsideRepository = @($targetsOutsideRepository)
@@ -743,6 +746,8 @@ function Invoke-Dispatch {
     $script:DispatchProgressTimers = @{}
     $script:DispatchProgressStack = New-Object 'System.Collections.Generic.List[string]'
     $script:DispatchProgressPath = $null
+    $script:DispatchPreStartReceiptContext = $null
+    $script:DispatchPreStartReceipt = [ordered]@{ path = $null; sha256 = $null; state = 'not-applicable'; error = $null }
 
     $completedStages = New-Object 'System.Collections.Generic.List[string]'
     $failedStage = 'validation'
@@ -810,6 +815,7 @@ function Invoke-Dispatch {
             throw 'Dispatch request 必須提供 failure_receipt_path。'
         }
         $failureReceiptPathValue = Resolve-DispatchOutputPath -CandidatePath $requestedFailureReceiptPath -SourceRoot ([string]$SourceRoot) -ExecutionRoot ([string]$SourceRoot) -TargetPath @($TargetPath)
+        $script:DispatchPreStartReceiptContext = [ordered]@{ Path = $failureReceiptPathValue; DispatchExecutionId = $dispatchToken; TargetPath = @($TargetPath) }
         try {
             $projectTrust = Confirm-CodexAccountProjectTrust -AccountSelection $script:DispatchAccountSelection -SourceRoot ([string]$SourceRoot)
         }
@@ -965,6 +971,9 @@ function Invoke-Dispatch {
             $startResultPathValue = Join-Path -Path $startHistoryRoot -ChildPath ('start-result-' + $DispatchSlug + '-' + $dispatchToken + '.json')
         }
         $startStage = Write-DispatchStageResult -Stage 'start' -Path $startResultPathValue -Result $startResult -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath) -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+        if ($script:DispatchPreStartReceipt.state -ne 'not-applicable') {
+            $null = Set-DispatchPreStartReceiptSuperseded -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath ([string](Get-DispatchResultPropertyValue -Object $startResult -Names @('runRecordPath', 'run_record_path')))
+        }
         $completedStages.Add('start')
         $sidecarPathValue = [string](Get-DispatchResultPropertyValue -Object $startResult -Names @('processExitCodeSidecarPath', 'process_exit_code_sidecar_path'))
         $evidencePosition = [ordered]@{
@@ -981,6 +990,7 @@ function Invoke-Dispatch {
         }
         $evidenceBinding = New-DispatchEvidenceBinding -ExecutionRoot $executionRootPath -EvidencePosition $evidencePosition
         $result = New-DispatchResultEnvelope -Status 'started' -LineSlug $LineSlug -DispatchSlug $DispatchSlug -CompletedStages @($completedStages.ToArray()) -FailedStage '' -ErrorCode '' -ErrorMessage '' -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startStage.Path -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
+        $result.pre_start_receipt = $script:DispatchPreStartReceipt
         $result.background = -not [bool]$script:DispatchWaitForCompletion
         $result.requested_units = @($script:ResolvedRequestedUnit)
         $result.project_trust = $projectTrust
@@ -1128,6 +1138,7 @@ function Invoke-Dispatch {
             catch { $resultPathValue = $null }
         }
         $failureResult = New-DispatchResultEnvelope -Status 'failed' -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -CompletedStages @($completedStages.ToArray()) -FailedStage $failedStage -ErrorCode $errorCode -ErrorMessage $failureMessage -ProcessStarted $processStarted -PreflightStage $preflightStage -PrepareStage $prepareStage -StartStage $startStage -ResultPathValue $resultPathValue -StartResultPathValue $startResultPathValue -SidecarPath $sidecarPathValue -StageBinding $stageBinding -EvidenceBinding $evidenceBinding
+        $failureResult.pre_start_receipt = $script:DispatchPreStartReceipt
         if ($null -ne $inputFailure -and [string](Get-DispatchResultPropertyValue -Object $inputFailure -Names @('operation')) -eq 'DispatchRequest') {
             $failureResult.detail = Get-DispatchResultPropertyValue -Object $inputFailure -Names @('detail')
         }
@@ -1185,7 +1196,13 @@ function Invoke-Dispatch {
         elseif (-not [string]::IsNullOrWhiteSpace($failureReceiptPathValue)) {
             try {
                 $receiptSourceRoot = if ([string]::IsNullOrWhiteSpace($sourceRootPath)) { [string]$SourceRoot } else { $sourceRootPath }
-                $receiptExecutionRoot = if ([string]::IsNullOrWhiteSpace($executionRootPath)) { $receiptSourceRoot } else { $executionRootPath }
+                $receiptExecutionRoot = if (-not [string]::IsNullOrWhiteSpace($executionRootPath)) {
+                    $executionRootPath
+                }
+                elseif ($script:DispatchPreStartReceipt.state -in @('written', 'write-failed') -and -not [string]::IsNullOrWhiteSpace([string]$DispatchRoot)) {
+                    [string]$DispatchRoot
+                }
+                else { $receiptSourceRoot }
                 $receiptDispatchRoot = if ([string]::IsNullOrWhiteSpace($DispatchRoot)) { $null } else { [string]$DispatchRoot }
                 $writtenReceipt = Write-DispatchFailureReceipt -Path $failureReceiptPathValue -LineSlug ([string]$LineSlug) -DispatchSlug ([string]$DispatchSlug) -DispatchExecutionId $dispatchToken -ErrorCode $errorCode -ErrorMessage $failureMessage -SourceRoot $receiptSourceRoot -ExecutionRoot $receiptExecutionRoot -DispatchRoot $receiptDispatchRoot -FailedStage $failedStage -ProcessStarted $processStarted -TargetPath @($TargetPath) -ContinuationHandoff $continuationFailureHandoff
                 $failureResult.failure_receipt_path = $writtenReceipt.Path
@@ -1255,6 +1272,7 @@ function Invoke-Dispatch {
         return $failureResult
     }
     finally {
+        $script:DispatchPreStartReceiptContext = $null
         $script:DispatchProgressOpenStage = $null
         $script:DispatchProgressTimers = @{}
         $script:DispatchProgressStack = New-Object 'System.Collections.Generic.List[string]'

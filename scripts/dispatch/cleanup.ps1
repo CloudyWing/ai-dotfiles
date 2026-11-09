@@ -23,6 +23,7 @@
         failure_code       = $null
         error              = $null
         owner_takeover     = [ordered]@{ used = $false; audit_path = $null; audit_sha256 = $null }
+        unstarted_proof    = [ordered]@{ used = $false; basis = $null; audit_path = $null; audit_sha256 = $null }
         inventory          = [ordered]@{
             report_root = $null
             referenced_paths = @()
@@ -86,17 +87,20 @@ function Throw-CleanupOperationFailure {
 
 function New-CleanupPreflightRequiredFailure {
     [CmdletBinding()]
-    param([AllowEmptyString()][string]$PreflightPath, [AllowEmptyString()][string]$RunPath)
+    param([AllowEmptyString()][string]$PreflightPath, [AllowEmptyString()][string]$RunPath, [AllowNull()][object]$NeverLaunchedProof)
 
     $missing = @()
     if ([string]::IsNullOrWhiteSpace($PreflightPath)) { $missing += 'preflight_result_path' }
     if ([string]::IsNullOrWhiteSpace($RunPath)) { $missing += 'run_record_path' }
     $preflightDisplay = if ([string]::IsNullOrWhiteSpace($PreflightPath)) { '未提供' } else { $PreflightPath }
     $runDisplay = if ([string]::IsNullOrWhiteSpace($RunPath)) { '未提供' } else { $RunPath }
-    return [pscustomobject]@{
-        Message = "Cleanup 缺少啟動前或未啟動證據。請在 Cleanup Request 補上 preflight_result_path（來源：Dispatch result 的 preflight_result_path）；Start 已失敗並寫入 launch-failed RunRecord 時改補 run_record_path（來源：Dispatch result 的 run_record_path 或 history\<lineSlug>\runs\<dispatchSlug>\）。目前 preflight_result_path=$preflightDisplay，run_record_path=$runDisplay"
-        Detail = [ordered]@{ missing_request_fields = $missing }
+    $message = "Cleanup 缺少啟動前或未啟動證據。請在 Cleanup Request 補上 preflight_result_path（來源：Dispatch result 的 preflight_result_path）；Start 已失敗並寫入 launch-failed RunRecord 時改補 run_record_path（來源：Dispatch result 的 run_record_path 或 history\<lineSlug>\runs\<dispatchSlug>\）。Dispatch 在建立 worktree 後、寫出 Preflight result 前停止時，可由約定路徑或 dispatch_request_path 的 dispatch-request 以 U1 至 U4 判定；請勿手寫 Preflight result 或收據。目前 preflight_result_path=$preflightDisplay，run_record_path=$runDisplay"
+    $detail = [ordered]@{ missing_request_fields = $missing }
+    if ($null -ne $NeverLaunchedProof -and -not $NeverLaunchedProof.Accepted) {
+        $message += '；未啟動判定未放行：' + (@($NeverLaunchedProof.Rejections | ForEach-Object { $_.message }) -join '；')
+        $detail.unstarted_proof = [ordered]@{ evaluated = $true; failed_conditions = @($NeverLaunchedProof.Rejections) }
     }
+    return [pscustomobject]@{ Message = $message; Detail = $detail }
 }
 
 function Get-CleanupPropertyValue {
@@ -826,6 +830,22 @@ function Test-CleanupUnstartedRunRecordEventStreamPresent {
     return [IO.File]::Exists($resolvedEventStreamPath)
 }
 
+function Read-CleanupFailureReceiptBinding {
+    [CmdletBinding()]
+    param([string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$FailureReceiptPath)
+
+    $path = Resolve-AbsolutePath $FailureReceiptPath
+    $sourceHistory = Join-Path (Join-Path $SourceRoot '.local\ai-sessions\history') $LineSlug
+    $dispatchHistory = Join-Path (Join-Path $DispatchRoot '.local\ai-sessions\history') $LineSlug
+    if (-not (Test-PathWithinRoot $path $sourceHistory) -and -not (Test-PathWithinRoot $path $dispatchHistory)) { throw ('CleanupFailureReceiptBoundary：' + $path) }
+    Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $path
+    $receipt = (Read-CleanupJsonDocument -Path $path -Name 'FailureReceipt').Document
+    foreach ($pair in @(@('schema','ai-sessions.dispatch-failure-receipt.v1'), @('source_root',$SourceRoot), @('dispatch_root',$DispatchRoot), @('execution_root',$DispatchRoot), @('line_slug',$LineSlug), @('dispatch_slug',$DispatchSlug))) {
+        if ([string](Get-CleanupPropertyValue -Object $receipt -Names @($pair[0])) -cne [string]$pair[1]) { throw ('CleanupIdentityMismatch：failure receipt 的 ' + $pair[0] + ' 不符。') }
+    }
+    return $receipt
+}
+
 function Test-CleanupUnstartedProof {
     [CmdletBinding()]
     param([string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$RunRecordPath, [string]$FailureReceiptPath, [bool]$HasPreflight)
@@ -850,17 +870,162 @@ function Test-CleanupUnstartedProof {
     Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $runRoot
     if ([IO.Directory]::Exists($runRoot) -and @(Get-ChildItem -LiteralPath $runRoot -File -Filter '*.json').Count -gt 0) { return $false }
     if ([string]::IsNullOrWhiteSpace($FailureReceiptPath)) { return $HasPreflight }
-    $path = Resolve-AbsolutePath $FailureReceiptPath
-    $sourceHistory = Join-Path (Join-Path $SourceRoot '.local\ai-sessions\history') $LineSlug
-    $dispatchHistory = Join-Path (Join-Path $DispatchRoot '.local\ai-sessions\history') $LineSlug
-    if (-not (Test-PathWithinRoot $path $sourceHistory) -and -not (Test-PathWithinRoot $path $dispatchHistory)) { throw ('CleanupFailureReceiptBoundary：' + $path) }
-    Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $path
-    $receipt = (Read-CleanupJsonDocument -Path $path -Name 'FailureReceipt').Document
-    foreach ($pair in @(@('schema','ai-sessions.dispatch-failure-receipt.v1'), @('source_root',$SourceRoot), @('dispatch_root',$DispatchRoot), @('execution_root',$DispatchRoot), @('line_slug',$LineSlug), @('dispatch_slug',$DispatchSlug))) {
-        if ([string](Get-CleanupPropertyValue -Object $receipt -Names @($pair[0])) -cne [string]$pair[1]) { throw ('CleanupIdentityMismatch：failure receipt 的 ' + $pair[0] + ' 不符。') }
-    }
+    $receipt = Read-CleanupFailureReceiptBinding -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -FailureReceiptPath $FailureReceiptPath
     $started = Get-CleanupPropertyValue -Object $receipt -Names @('process_started')
     return ($started -is [bool] -and -not $started)
+}
+
+function Read-CleanupDispatchRequestBinding {
+    [CmdletBinding()]
+    param([string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$Path)
+
+    $resolvedPath = Resolve-AbsolutePath -Path $Path
+    $sessionRoot = Join-Path $SourceRoot '.local\ai-sessions'
+    if (-not (Test-PathWithinRoot -Path $resolvedPath -Root $sessionRoot)) { throw ('CleanupDispatchRequestBoundary：' + $resolvedPath) }
+    try { Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $resolvedPath }
+    catch { throw ('CleanupDispatchRequestBoundary：' + $resolvedPath + '；' + $_.Exception.Message) }
+    $result = [ordered]@{ Accepted = $false; Reason = $null; Path = $resolvedPath; Sha256 = $null; Length = $null }
+    if (-not (Test-Path -LiteralPath $resolvedPath -PathType Leaf)) {
+        $result.Reason = 'dispatch-request 不存在：' + $resolvedPath
+        return [pscustomobject]$result
+    }
+    try { $request = (Read-CleanupJsonDocument -Path $resolvedPath -Name 'DispatchRequest').Document }
+    catch {
+        $result.Reason = 'JSON 無法解析'
+        return [pscustomobject]$result
+    }
+    if ([string](Get-CleanupPropertyValue $request @('schema')) -cne 'ai-sessions.dispatch-request.v1') { $result.Reason = 'schema 不符'; return [pscustomobject]$result }
+    if ([string](Get-CleanupPropertyValue $request @('operation')) -ine 'Dispatch') { $result.Reason = 'operation 不是 Dispatch'; return [pscustomobject]$result }
+    foreach ($pair in @(@('line_slug', $LineSlug), @('dispatch_slug', $DispatchSlug), @('source_root', $SourceRoot), @('dispatch_root', $DispatchRoot))) {
+        $actual = [string](Get-CleanupPropertyValue $request @($pair[0]))
+        $matchesIdentity = $false
+        if ($pair[0] -in @('source_root', 'dispatch_root')) {
+            if (-not [string]::IsNullOrWhiteSpace($actual)) {
+                try { $matchesIdentity = (Resolve-AbsolutePath -Path $actual) -ieq (Resolve-AbsolutePath -Path $pair[1]) } catch { $matchesIdentity = $false }
+            }
+        }
+        else { $matchesIdentity = $actual -ceq [string]$pair[1] }
+        if (-not $matchesIdentity) {
+            $result.Reason = $pair[0] + ' 不符（預期 ' + $pair[1] + '，實際 ' + $actual + '）'
+            return [pscustomobject]$result
+        }
+    }
+    $result.Sha256 = Get-FileSha256 -Path $resolvedPath
+    $result.Length = (Get-Item -LiteralPath $resolvedPath).Length
+    $result.Accepted = $true
+    return [pscustomobject]$result
+}
+
+function Test-CleanupNeverLaunchedProof {
+    [CmdletBinding()]
+    param([string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$FailureReceiptPath, [string]$DispatchRequestPath, [Parameter(Mandatory)][object]$AdmissionLock)
+
+    $rejections = New-Object System.Collections.Generic.List[object]
+    $alternatives = New-Object System.Collections.Generic.List[object]
+    $historyRoot = Join-Path $DispatchRoot '.local\ai-sessions\history'
+    $historyEmpty = Test-DispatchUnstartedRecoveryHistoryEmpty -ExecutionRoot $DispatchRoot -DispatchSlug $DispatchSlug
+    if (-not $historyEmpty) {
+        $rejections.Add([ordered]@{ id = 'U1'; message = ('U1 未通過：dispatch worktree 的 history 含 Codex 事件流（codex-exec-*.jsonl）或 codex-thread-' + $DispatchSlug + '.txt，或無法完整掃描：' + $historyRoot + '。已有啟動痕跡，不能視為未啟動。') })
+    }
+    $runRoot = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $runRoot
+    $runDirectoryExists = [IO.Directory]::Exists($runRoot)
+    $runCount = 0
+    $runReadable = $true
+    if ($runDirectoryExists) {
+        try { $runCount = @(Get-ChildItem -LiteralPath $runRoot -File -Filter '*.json' -ErrorAction Stop).Count }
+        catch { $runReadable = $false }
+    }
+    $runEmpty = $runReadable -and $runCount -eq 0
+    if (-not $runEmpty) {
+        $countDisplay = if ($runReadable) { [string]$runCount } else { '無法確認數量的' }
+        $rejections.Add([ordered]@{ id = 'U2'; message = ('U2 未通過：來源 runs\' + $DispatchSlug + '\ 已有 ' + $countDisplay + ' 筆 RunRecord 或無法完整掃描（' + $runRoot + '）。有 RunRecord 時請在 Cleanup 提供 run_record_path，由既有未啟動 RunRecord 判定處理。') })
+    }
+
+    $receiptReason = '未提供 -FailureReceiptPath'
+    $receiptAccepted = $false
+    $receiptPath = $null
+    $receiptHash = $null
+    $receiptLength = $null
+    $receiptStatus = $null
+    $receiptStarted = $null
+    $dispatcherProcess = $null
+    $dispatcherState = $null
+    $receiptBlocksRequest = $false
+    if (-not [string]::IsNullOrWhiteSpace($FailureReceiptPath)) {
+        $receiptPath = Resolve-AbsolutePath -Path $FailureReceiptPath
+        $sourceHistory = Join-Path (Join-Path $SourceRoot '.local\ai-sessions\history') $LineSlug
+        $dispatchHistory = Join-Path (Join-Path $DispatchRoot '.local\ai-sessions\history') $LineSlug
+        if (-not (Test-PathWithinRoot $receiptPath $sourceHistory) -and -not (Test-PathWithinRoot $receiptPath $dispatchHistory)) { throw ('CleanupFailureReceiptBoundary：' + $receiptPath) }
+        Assert-DispatchOutputPathNoReparsePoint -Root $SourceRoot -Path $receiptPath
+        if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { $receiptReason = '收據檔不存在' }
+        else {
+            $receipt = $null
+            try { $receipt = Read-CleanupFailureReceiptBinding -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -FailureReceiptPath $receiptPath }
+            catch {
+                if ($_.Exception.Message -match '^CleanupIdentityMismatch') { $receiptReason = $_.Exception.Message }
+                elseif ($_.Exception.Message -match '^CleanupFailureReceipt(Invalid|Missing)') { $receiptReason = $_.Exception.Message }
+                else { throw }
+            }
+            if ($null -ne $receipt) {
+                $receiptStarted = Get-CleanupPropertyValue $receipt @('process_started')
+                $receiptStatus = [string](Get-CleanupPropertyValue $receipt @('status'))
+                $dispatcherProcess = Get-CleanupPropertyValue $receipt @('dispatcher_process')
+                if ($receiptStarted -isnot [bool] -or $receiptStarted) { $receiptReason = '收據 process_started 不是 false' }
+                elseif ($receiptStatus -cnotin @('pending', 'failed')) { $receiptReason = '收據 status=' + $receiptStatus }
+                elseif ($null -eq $dispatcherProcess -and $receiptStatus -ceq 'pending') { $receiptReason = 'pending 收據缺少 dispatcher_process' }
+                else {
+                    if ($null -eq $dispatcherProcess) { $dispatcherState = 'not-recorded' }
+                    else { try { $dispatcherState = Get-DispatchAdmissionOwnerState -Entry $dispatcherProcess } catch { $dispatcherState = 'unknown' } }
+                    if ($dispatcherState -in @('ended', 'pid-reused', 'not-recorded')) {
+                        $receiptHash = Get-FileSha256 -Path $receiptPath
+                        $receiptLength = (Get-Item -LiteralPath $receiptPath).Length
+                        $receiptAccepted = $true
+                    }
+                    else {
+                        $receiptReason = 'dispatcher 程序仍在執行或狀態不明（' + $dispatcherState + '）'
+                        $receiptBlocksRequest = $true
+                    }
+                }
+            }
+        }
+    }
+    if (-not $receiptAccepted) { $alternatives.Add([ordered]@{ basis = 'failure-receipt'; reason = $receiptReason }) }
+    if ([string]::IsNullOrWhiteSpace($DispatchRequestPath)) {
+        $DispatchRequestPath = Join-Path (Join-Path (Join-Path $SourceRoot '.local\ai-sessions\history') $LineSlug) ('dispatch-request-' + $DispatchSlug + '.json')
+    }
+    $requestBinding = Read-CleanupDispatchRequestBinding -SourceRoot $SourceRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug -Path $DispatchRequestPath
+    if (-not $requestBinding.Accepted) { $alternatives.Add([ordered]@{ basis = 'dispatch-request'; reason = $requestBinding.Reason }) }
+    $basis = if ($receiptAccepted) { 'failure-receipt' } elseif ($receiptBlocksRequest) { $null } elseif ($requestBinding.Accepted) { 'dispatch-request' } else { $null }
+    if ($null -eq $basis) {
+        $blockedNote = if ($receiptBlocksRequest) { '收據顯示 dispatcher 仍在執行或狀態不明，不改用 dispatch-request。' } else { '' }
+        $rejections.Add([ordered]@{ id = 'U3'; message = ('U3 未通過：找不到可採用的派遣紀錄。failure receipt：' + $receiptReason + '；dispatch-request：' + $requestBinding.Reason + '（' + $requestBinding.Path + '）。' + $blockedNote + 'dispatch-request 預設讀取 history\<lineSlug>\dispatch-request-<dispatchSlug>.json，可用 dispatch_request_path 指定其他位置。') })
+    }
+    $ledgerCount = 0
+    $matchingEntries = @()
+    $ledgerHash = $null
+    $ledgerPath = [string]$AdmissionLock.LedgerPath
+    $ledgerReadable = $true
+    try {
+        $ledger = Read-DispatchAdmissionLedger -Lock $AdmissionLock
+        $ledgerHash = $ledger.Sha256
+        $ledgerEntries = @($ledger.Document.entries)
+        $ledgerCount = $ledgerEntries.Count
+        $matchingEntries = @($ledgerEntries | Where-Object { [string](Get-CleanupPropertyValue $_ @('dispatch_slug')) -ceq $DispatchSlug })
+    }
+    catch { $ledgerReadable = $false }
+    $ledgerEmpty = $ledgerReadable -and $matchingEntries.Count -eq 0
+    if (-not $ledgerEmpty) {
+        $reason = if ($ledgerReadable) { 'admission ledger 已有 dispatchSlug 的 entry（state=' + [string](Get-CleanupPropertyValue $matchingEntries[0] @('state')) + '，' + $ledgerPath + '）。ledger 記錄表示 Start 已進入啟動登記，請改走既有 owner 驗證與 -TakeoverOwner 流程。' } else { 'admission ledger 無法驗證（DispatchAdmissionLedgerUnverifiable）。' }
+        $rejections.Add([ordered]@{ id = 'U4'; message = 'U4 未通過：' + $reason })
+    }
+    $conditions = [ordered]@{
+        U1 = [ordered]@{ passed = [bool]$historyEmpty; history_root = $historyRoot }
+        U2 = [ordered]@{ passed = [bool]$runEmpty; run_directory = $runRoot; directory_exists = $runDirectoryExists; json_count = $runCount }
+        U3 = [ordered]@{ passed = ($null -ne $basis); basis = $basis; path = if ($basis -eq 'failure-receipt') { $receiptPath } else { $requestBinding.Path }; sha256 = if ($basis -eq 'failure-receipt') { $receiptHash } else { $requestBinding.Sha256 }; length = if ($basis -eq 'failure-receipt') { $receiptLength } else { $requestBinding.Length }; receipt_status = $receiptStatus; receipt_process_started = $receiptStarted; dispatcher_process = $dispatcherProcess; dispatcher_state = $dispatcherState }
+        U4 = [ordered]@{ passed = [bool]$ledgerEmpty; ledger_path = $ledgerPath; ledger_sha256 = $ledgerHash; ledger_entry_count = $ledgerCount; entries_for_dispatch_slug = $matchingEntries.Count }
+    }
+    return [pscustomobject]@{ Accepted = ($rejections.Count -eq 0); Basis = $basis; Conditions = $conditions; Rejections = @($rejections.ToArray()); RejectedAlternatives = @($alternatives.ToArray()); Fingerprint = Get-JsonSha256 -Value $conditions }
 }
 
 function Test-CleanupTakeoverTerminal {
@@ -999,6 +1164,21 @@ function Expand-CleanupTakeoverInventory {
     return $Inventory
 }
 
+function Write-CleanupUnstartedAudit {
+    [CmdletBinding()]
+    param([string]$Path, [System.Collections.IDictionary]$Audit, [string]$SourceRoot, [string]$DispatchRoot, [switch]$RequireAbsent)
+
+    $WhatIfPreference = $false
+
+    try {
+        $null = Write-DispatchAtomicJsonDocument -Path $Path -Document $Audit -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @() -RequireAbsent:$RequireAbsent
+        $saved = (Read-CleanupJsonDocument -Path $Path -Name 'UnstartedAudit').Document
+        if (($saved | ConvertTo-Json -Depth 60 -Compress) -cne ($Audit | ConvertTo-Json -Depth 60 -Compress)) { throw '未啟動稽核紀錄回讀不一致。' }
+        return Get-FileSha256 $Path
+    }
+    catch { throw ('CleanupUnstartedAuditWriteFailed：' + $_.Exception.Message) }
+}
+
 function Write-CleanupTakeoverAudit {
     [CmdletBinding()]
     param([string]$Path, [System.Collections.IDictionary]$Audit, [string]$SourceRoot, [string]$DispatchRoot)
@@ -1022,6 +1202,8 @@ function Invoke-Cleanup {
     $admissionOwner = $null
     $takeoverAudit = $null
     $takeoverAuditPath = $null
+    $unstartedAudit = $null
+    $unstartedAuditPath = $null
     try {
         if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($DispatchRoot) -or [string]::IsNullOrWhiteSpace($LineSlug) -or [string]::IsNullOrWhiteSpace($DispatchSlug)) {
             Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupRequiredParameterMissing' -Message 'Cleanup 必須提供 SourceRoot、DispatchRoot、LineSlug 與 DispatchSlug。'
@@ -1097,8 +1279,13 @@ function Invoke-Cleanup {
 
         $failureReceiptValue = [string](Get-DispatchScriptVariableValue -Name 'FailureReceiptPath')
         $hasRunRecord = -not [string]::IsNullOrWhiteSpace([string]$RunRecordPath)
-        $preflightFailure = New-CleanupPreflightRequiredFailure -PreflightPath ([string]$PreflightResultPath) -RunPath ([string]$RunRecordPath)
-        $unstarted = if ($hasRemovalRetryProof) { $false } else { Test-CleanupUnstartedProof -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath ([string]$RunRecordPath) -FailureReceiptPath $failureReceiptValue -HasPreflight $hasPreflight }
+        $neverLaunched = $null
+        if (-not $hasRemovalRetryProof -and -not $hasPreflight -and -not $hasRunRecord -and -not $residualRecovery) {
+            if ($null -eq $admissionLock) { $admissionLock = Open-DispatchAdmissionLock -SourceRoot $sourceRootPath }
+            $neverLaunched = Test-CleanupNeverLaunchedProof -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -FailureReceiptPath $failureReceiptValue -DispatchRequestPath ([string](Get-DispatchScriptVariableValue -Name 'DispatchRequestPath')) -AdmissionLock $admissionLock
+        }
+        $preflightFailure = New-CleanupPreflightRequiredFailure -PreflightPath ([string]$PreflightResultPath) -RunPath ([string]$RunRecordPath) -NeverLaunchedProof $neverLaunched
+        $unstarted = if ($hasRemovalRetryProof) { $false } elseif ($null -ne $neverLaunched -and $neverLaunched.Accepted) { $true } else { Test-CleanupUnstartedProof -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath ([string]$RunRecordPath) -FailureReceiptPath $failureReceiptValue -HasPreflight $hasPreflight }
         if (-not $hasRemovalRetryProof -and -not $hasPreflight -and $hasRunRecord -and (Test-CleanupUnstartedRunRecordEventStreamPresent -Path ([string]$RunRecordPath) -SourceRoot $sourceRootPath -ExecutionRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug)) {
             Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message $preflightFailure.Message -Detail $preflightFailure.Detail
         }
@@ -1107,14 +1294,14 @@ function Invoke-Cleanup {
                 Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message $preflightFailure.Message -Detail $preflightFailure.Detail
             }
 
-            $preflightOnlyMissingProof = -not $hasRunRecord -and (-not $hasPreflight -or -not $unstarted)
+            $preflightOnlyMissingProof = -not $hasRunRecord -and -not ($null -ne $neverLaunched -and $neverLaunched.Accepted) -and (-not $hasPreflight -or -not $unstarted)
             if (-not $residualRecovery -and $preflightOnlyMissingProof) {
                 Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode 'CleanupPreflightResultRequired' -Message $preflightFailure.Message -Detail $preflightFailure.Detail
             }
         }
 
         if ($null -ne $script:CallerSessionIdentity) {
-            $admissionLock = Open-DispatchAdmissionLock -SourceRoot $sourceRootPath
+            if ($null -eq $admissionLock) { $admissionLock = Open-DispatchAdmissionLock -SourceRoot $sourceRootPath }
             $admissionLedger = Read-DispatchAdmissionLedger -Lock $admissionLock
             $knownOwners = @($admissionLedger.Document.entries | Where-Object { [string]$_.dispatch_slug -ceq $DispatchSlug })
             if ($knownOwners.Count -gt 0 -or (-not $unstarted -and -not $residualRecovery)) {
@@ -1154,6 +1341,25 @@ function Invoke-Cleanup {
         }
         Assert-CleanupStopped -SourceRoot $sourceRootPath -DispatchSlug $DispatchSlug -LineSlug $LineSlug -Owner $admissionOwner
 
+        if ($null -ne $neverLaunched -and $neverLaunched.Accepted) {
+            $attemptId = [guid]::NewGuid().ToString('D')
+            $unstartedAuditPath = Join-Path (Split-Path -Parent $removalReceiptPath) ('cleanup-unstarted-' + $DispatchSlug + '-' + $attemptId + '.json')
+            $unstartedAudit = [ordered]@{
+                schema = 'ai-sessions.cleanup-unstarted-proof.v1'; attempt_id = $attemptId; line_slug = $LineSlug; dispatch_slug = $DispatchSlug
+                source_root = $sourceRootPath; dispatch_root = $dispatchRootPath; basis = $neverLaunched.Basis
+                caller_session_fingerprint = if ($null -eq $script:CallerSessionIdentity) { $null } else { [string]$script:CallerSessionIdentity.Fingerprint }
+                requested_at_utc = [DateTime]::UtcNow.ToString('o'); completed_at_utc = $null; status = 'validated'; failure_code = $null
+                conditions = $neverLaunched.Conditions; rejected_alternatives = @($neverLaunched.RejectedAlternatives); fingerprint = $neverLaunched.Fingerprint
+            }
+            $auditHash = Write-CleanupUnstartedAudit -Path $unstartedAuditPath -Audit $unstartedAudit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -RequireAbsent
+            $result.unstarted_proof = [ordered]@{ used = $true; basis = $neverLaunched.Basis; audit_path = $unstartedAuditPath; audit_sha256 = $auditHash }
+        }
+
+        if ($WhatIfPreference -and $null -ne $neverLaunched -and $neverLaunched.Accepted) {
+            $null = $PSCmdlet.ShouldProcess($dispatchRootPath, '移除 exact dispatch worktree')
+            Throw-CleanupOperationFailure -Result $result -Status 'removal-failed' -FailureCode 'CleanupWhatIf' -Message 'Cleanup 因 WhatIf 未執行 worktree 移除。'
+        }
+
         try {
             $inventory = Get-CleanupInventory -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -EvidencePath $EvidencePath -ReportPath @(Get-DispatchScriptVariableValue -Name 'ReportPath') -AlreadyPreservedFiles $alreadyPreservedFiles
             if ($null -ne $takeoverAudit) { $inventory = Expand-CleanupTakeoverInventory -Inventory $inventory -RunRecords $takeoverAudit.run_record_paths -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug }
@@ -1183,6 +1389,10 @@ function Invoke-Cleanup {
             }
         }
         $result.files = @($preserved.ToArray())
+        if ($null -ne $unstartedAudit) {
+            $unstartedAudit.status = 'preserved'
+            $result.unstarted_proof.audit_sha256 = Write-CleanupUnstartedAudit -Path $unstartedAuditPath -Audit $unstartedAudit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath
+        }
         if ($null -ne $takeoverAudit) {
             $takeoverAudit.preserved_files = $result.files
             $takeoverAudit.preserved_at_utc = [DateTime]::UtcNow.ToString('o')
@@ -1203,6 +1413,12 @@ function Invoke-Cleanup {
         }
         if ($unpreservedReports.Count -gt 0) {
             Throw-CleanupOperationFailure -Result $result -Status 'preservation-failed' -FailureCode 'CleanupReportUnpreserved' -Message ('CleanupReportUnpreserved：盤點後新增未列入保存清單的檔案，保留 worktree：' + ($unpreservedReports -join '; ')) -Detail @($unpreservedReports)
+        }
+        if ($null -ne $unstartedAudit) {
+            $proofRecheck = Test-CleanupNeverLaunchedProof -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -FailureReceiptPath $failureReceiptValue -DispatchRequestPath ([string](Get-DispatchScriptVariableValue -Name 'DispatchRequestPath')) -AdmissionLock $admissionLock
+            if (-not $proofRecheck.Accepted -or $proofRecheck.Fingerprint -cne $neverLaunched.Fingerprint) {
+                Throw-CleanupOperationFailure -Result $result -Status 'removal-failed' -FailureCode 'CleanupUnstartedProofDrift' -Message 'CleanupUnstartedProofDrift：移除前未啟動證明變動，保留 worktree。'
+            }
         }
         if ($null -ne $takeoverAudit) {
             $recheck = Test-CleanupTakeoverTerminal -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -RunRecordPath $RunRecordPath -Ledger $admissionLedger
@@ -1273,6 +1489,12 @@ function Invoke-Cleanup {
         $result.worktree_removed = $true
         $result.status = 'completed'
         $result.failure_code = $null
+        if ($null -ne $unstartedAudit) {
+            $unstartedAudit.status = 'completed'
+            $unstartedAudit.completed_at_utc = [DateTime]::UtcNow.ToString('o')
+            try { $result.unstarted_proof.audit_sha256 = Write-CleanupUnstartedAudit -Path $unstartedAuditPath -Audit $unstartedAudit -SourceRoot $sourceRootPath -DispatchRoot $sourceRootPath }
+            catch { $result.status = 'removal-failed'; $result.failure_code = 'CleanupUnstartedAuditWriteFailed'; $result.error = $_.Exception.Message }
+        }
         if ($null -ne $takeoverAudit) {
             $takeoverAudit.status = 'completed'
             $takeoverAudit.completed_at_utc = [DateTime]::UtcNow.ToString('o')
@@ -1287,6 +1509,11 @@ function Invoke-Cleanup {
         return $result
     }
     catch {
+        if ($null -ne $unstartedAudit -and -not $result.worktree_removed) {
+            $unstartedAudit.status = 'failed'
+            $unstartedAudit.failure_code = if ($null -ne $_.Exception.Data['errorCode']) { [string]$_.Exception.Data['errorCode'] } elseif ($_.Exception.Message -match '^([A-Za-z][A-Za-z0-9]+)：') { $Matches[1] } else { 'CleanupPreflightFailed' }
+            try { $result.unstarted_proof.audit_sha256 = Write-CleanupUnstartedAudit -Path $unstartedAuditPath -Audit $unstartedAudit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath } catch { }
+        }
         if ($null -ne $takeoverAudit -and -not $result.worktree_removed) {
             $takeoverAudit.status = 'failed'
             $takeoverAudit.failure_code = if ($null -ne $_.Exception.Data['errorCode']) { [string]$_.Exception.Data['errorCode'] } elseif ($_.Exception.Message -match '^([A-Za-z][A-Za-z0-9]+)：') { $Matches[1] } else { 'CleanupPreflightFailed' }
@@ -1309,6 +1536,11 @@ function Invoke-Cleanup {
         Throw-CleanupOperationFailure -Result $result -Status 'preflight-rejected' -FailureCode $failureCode -Message $_.Exception.Message -Detail $detail -TakeoverRejection $takeoverRejection
     }
     finally {
+        if ($null -ne $unstartedAudit -and -not $result.worktree_removed -and $unstartedAudit.status -cne 'failed') {
+            $unstartedAudit.status = 'failed'
+            $unstartedAudit.failure_code = $result.failure_code
+            try { $result.unstarted_proof.audit_sha256 = Write-CleanupUnstartedAudit -Path $unstartedAuditPath -Audit $unstartedAudit -SourceRoot $sourceRootPath -DispatchRoot $dispatchRootPath } catch { }
+        }
         if ($null -ne $takeoverAudit -and -not $result.worktree_removed -and $takeoverAudit.status -cne 'failed') {
             $takeoverAudit.status = 'failed'
             $takeoverAudit.failure_code = $result.failure_code

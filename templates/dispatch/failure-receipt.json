@@ -1,10 +1,18 @@
 {
   "schema": "ai-sessions.dispatch-failure-receipt.v1",
-  "status": "failed",
+  "status": "<pending | failed | superseded>",
   "failed_stage": "start",
   "error_code": "<Dispatch 失敗錯誤碼，例如 DispatchStartFailed>",
   "error": "<失敗訊息>",
   "process_started": false,
+  "written_at_utc": "2026-01-01T00:00:00Z",
+  "dispatcher_process": {
+    "process_id": 1234,
+    "process_name": "pwsh",
+    "process_start_time_utc": "2026-01-01T00:00:00Z"
+  },
+  "run_record_path": "<僅 superseded 時寫入：對應的 RunRecord 路徑>",
+  "superseded_at_utc": "<僅 superseded 時寫入：取代時間 UTC>",
   "line_slug": "<line-slug>",
   "dispatch_slug": "<dispatch-slug>",
   "dispatch_execution_id": "<Dispatch 執行識別碼>",

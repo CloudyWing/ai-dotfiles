@@ -28,7 +28,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-ONE', 'UPTO-P3', 'R123', 'F003-SIDECAR', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'DD-DEFECTS', 'DD-HANG')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-ONE', 'UPTO-P3', 'R123', 'F003-SIDECAR', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'DD-DEFECTS', 'DD-HANG', 'DD-PRESTART-RECEIPT')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1753,6 +1753,9 @@ function Invoke-Case {
         $cleanupMatch = $Name -ceq 'Phase 9 final git status guard detects repo-root fixture residue and restored pass'
         $focusedMatch = if ($script:focusedCase -ceq 'DD-DEFECTS') {
             $Name -match '^Phase \d+ DD-'
+        }
+        elseif ($script:focusedCase -ceq 'DD-PRESTART-RECEIPT') {
+            $Name -ceq 'Phase 6 DD-PRESTART-RECEIPT' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'DD-HANG') {
             $Name.Contains('DD-HANG')
@@ -5346,6 +5349,7 @@ if ($Phase -ge 3) {
     function Get-RequirementMap { return [ordered]@{ fixture = $true } }
     function Invoke-BaselineCase {
         param([string]$Name, [scriptblock]$Scenario, [switch]$Reject, [string]$ErrorPattern)
+        if ($script:focusedCase -ceq 'DD-PRESTART-RECEIPT') { return }
         if ($script:focusedCase -ceq 'DD-DEFECTS' -and $Name -notmatch '^Phase \d+ DD-') { return }
         $SourceRoot = $fixtureRoot
         $LineSlug = 'line-a'
@@ -6169,6 +6173,398 @@ return $hash
         catch { throw ('Cleanup guards 摘要不是有效 JSON：' + [string]$guardRun.stdout) }
         Assert-True ([string]$guardSummary.result -ceq 'PASS') ('Cleanup guards 摘要未通過：' + [string]$guardRun.stdout)
         Write-Phase9Evidence -Label 'DD_CLEANUP_GUARDS' -Value ([ordered]@{ command = $guardRun.command; exit_code = $guardRun.exit_code; stdout = $guardRun.stdout; stderr = $guardRun.stderr; summary_path = $guardSummary.summary_path })
+    }
+
+    Invoke-Case 'Phase 3 DD-UNSTARTED-REPRO' {
+        $scenario = New-Phase3CleanupScenario -ScenarioSlug 'dd-unstarted-repro'
+        $previousTakeoverOwner = Get-DispatchScriptVariableValue -Name 'TakeoverOwner'
+        $previousFailureReceiptPath = Get-DispatchScriptVariableValue -Name 'FailureReceiptPath'
+        $previousDispatchRequestPath = Get-DispatchScriptVariableValue -Name 'DispatchRequestPath'
+        $script:cleanupUseRealGit = $true
+        try {
+            $SourceRoot = $scenario.source_root
+            $DispatchRoot = $scenario.dispatch_root
+            $LineSlug = $scenario.line_slug
+            $DispatchSlug = $scenario.dispatch_slug
+            $PreflightResultPath = $null
+            $RunRecordPath = $null
+            $EvidencePath = @()
+            $ReportPath = @()
+            $ResultPath = $null
+            $script:FailureReceiptPath = ''
+            $script:DispatchRequestPath = ''
+
+            $sourceHistoryRoot = Join-Path $SourceRoot '.local/ai-sessions/history'
+            $dispatchHistoryRoot = Join-Path $DispatchRoot '.local/ai-sessions/history'
+            Remove-Item -LiteralPath $sourceHistoryRoot, $dispatchHistoryRoot -Recurse -Force
+            $sourceLineHistory = Join-Path $sourceHistoryRoot $LineSlug
+            $requestPath = Join-Path $sourceLineHistory ('dispatch-request-' + $DispatchSlug + '.json')
+            $receiptPath = Join-Path $sourceLineHistory ('dispatch-failure-' + $DispatchSlug + '.json')
+            $request = [ordered]@{
+                schema = 'ai-sessions.dispatch-request.v1'
+                operation = 'Dispatch'
+                source_root = $SourceRoot
+                dispatch_root = $DispatchRoot
+                line_slug = $LineSlug
+                dispatch_slug = $DispatchSlug
+                write_mode = 'write'
+                dispatch_kind = 'workflow'
+                target_path = @((Join-Path $SourceRoot 'tracked.txt'))
+                prompt_path = (Join-Path $SourceRoot 'tracked.txt')
+                task_type = 'code-change'
+                session_mode = 'cold-start'
+                unit_kind = 'workflow-phase'
+                requested_unit = @('Phase 16')
+                failure_receipt_path = $receiptPath
+            }
+            Write-Utf8NoBom -Path $requestPath -Content (($request | ConvertTo-Json -Depth 10) + [Environment]::NewLine) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+            $requestContext = Read-DispatchRequest -Path $requestPath
+            Assert-True ($requestContext.document.source_root -ceq $SourceRoot -and $requestContext.document.dispatch_root -ceq $DispatchRoot -and $requestContext.document.line_slug -ceq $LineSlug -and $requestContext.document.dispatch_slug -ceq $DispatchSlug) 'Dispatch Request 的身分與 fixture 不符。'
+            $sourceHistoryFiles = @(Get-ChildItem -LiteralPath $sourceHistoryRoot -File -Recurse -Force)
+            Assert-True ($sourceHistoryFiles.Count -eq 1 -and $sourceHistoryFiles[0].FullName -ceq $requestPath -and -not (Test-Path -LiteralPath $dispatchHistoryRoot) -and -not (Test-Path -LiteralPath $scenario.preflight_path) -and -not (Test-Path -LiteralPath $scenario.run_record_path) -and -not (Test-Path -LiteralPath $receiptPath)) '未啟動 fixture 含多餘的啟動證據。'
+
+            $assertRejected = {
+                param([bool]$Takeover)
+
+                $script:TakeoverOwner = $Takeover
+                $failure = $null
+                try { Invoke-Cleanup -Confirm:$false | Out-Null } catch { $failure = $_.Exception.Data['operationResult'] }
+                Assert-True ($null -ne $failure -and $failure.status -ceq 'preflight-rejected' -and $failure.failure_code -ceq 'CleanupPreflightResultRequired' -and (Test-Path -LiteralPath $DispatchRoot -PathType Container)) ('Cleanup 未拒絕或未保留 worktree；TakeoverOwner=' + $Takeover + '；result=' + (ConvertTo-Json -InputObject $failure -Depth 20 -Compress))
+            }
+
+            if ($null -eq (Get-Command Test-CleanupNeverLaunchedProof -CommandType Function -ErrorAction SilentlyContinue)) {
+                foreach ($takeover in @($false, $true)) { & $assertRejected $takeover }
+            }
+            Remove-Item -LiteralPath $requestPath -Force
+            foreach ($takeover in @($false, $true)) { & $assertRejected $takeover }
+        }
+        finally {
+            $script:TakeoverOwner = $previousTakeoverOwner
+            $script:FailureReceiptPath = $previousFailureReceiptPath
+            $script:DispatchRequestPath = $previousDispatchRequestPath
+            $script:cleanupUseRealGit = $false
+            Remove-Phase3CleanupScenario -Scenario $scenario
+        }
+    }
+
+    Invoke-Case 'Phase 3 DD-UNSTARTED-LEGACY' {
+        $priorReceiptPath = Get-DispatchScriptVariableValue -Name 'FailureReceiptPath'
+        $priorRequestPath = Get-DispatchScriptVariableValue -Name 'DispatchRequestPath'
+        $priorTakeover = Get-DispatchScriptVariableValue -Name 'TakeoverOwner'
+        $priorHook = Get-DispatchScriptVariableValue -Name 'CleanupBeforeRemovalHook'
+        $originalAuditWriter = (Get-Command Write-CleanupUnstartedAudit -CommandType Function).ScriptBlock
+        $script:cleanupUseRealGit = $true
+        try {
+            foreach ($mode in @('accepted', 'alternate-request', 'takeover', 'other-ledger', 'event', 'thread', 'run', 'existing-run-event', 'removal-retry', 'missing-request', 'explicit-missing', 'outside-request', 'invalid-json', 'wrong-schema', 'wrong-operation', 'wrong-source', 'wrong-dispatch', 'wrong-line', 'wrong-slug', 'ledger-active', 'ledger-ended', 'ledger-cleaned', 'ledger-invalid', 'all-failed', 'drift', 'what-if', 'what-if-inputs', 'audit-directory', 'lock')) {
+                $scenario = New-Phase3CleanupScenario -ScenarioSlug ('dd-unstarted-' + $mode)
+                try {
+                    $SourceRoot = $scenario.source_root
+                    $DispatchRoot = $scenario.dispatch_root
+                    $LineSlug = $scenario.line_slug
+                    $DispatchSlug = $scenario.dispatch_slug
+                    $PreflightResultPath = $null
+                    $RunRecordPath = $null
+                    $EvidencePath = @()
+                    $ReportPath = @()
+                    $ResultPath = $null
+                    $script:FailureReceiptPath = ''
+                    $script:DispatchRequestPath = ''
+                    $script:TakeoverOwner = $mode -eq 'takeover'
+                    $script:CleanupBeforeRemovalHook = $null
+                    $sourceHistory = Join-Path $SourceRoot '.local/ai-sessions/history'
+                    $dispatchHistory = Join-Path $DispatchRoot '.local/ai-sessions/history'
+                    Remove-Item -LiteralPath $sourceHistory, $dispatchHistory -Recurse -Force
+                    $null = New-Item -ItemType Directory -Path $dispatchHistory -Force
+                    $lineHistory = Join-Path $sourceHistory $LineSlug
+                    $dispatchRequestFixturePath = Join-Path $lineHistory ('dispatch-request-' + $DispatchSlug + '.json')
+                    $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; source_root = $SourceRoot; dispatch_root = $DispatchRoot; line_slug = $LineSlug; dispatch_slug = $DispatchSlug }
+                    switch ($mode) {
+                        'wrong-schema' { $request.schema = 'incorrect' }
+                        'wrong-operation' { $request.operation = 'Cleanup' }
+                        'wrong-source' { $request.source_root = $scenario.scenario_root }
+                        'wrong-dispatch' { $request.dispatch_root = $SourceRoot }
+                        'wrong-line' { $request.line_slug = 'different-line' }
+                        'wrong-slug' { $request.dispatch_slug = 'different-slug' }
+                    }
+                    Write-Utf8NoBom -Path $dispatchRequestFixturePath -Content ($request | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                    if ($mode -in @('alternate-request', 'what-if-inputs')) {
+                        $alternatePath = Join-Path $SourceRoot '.local/ai-sessions/inputs/dispatch-request.json'
+                        Write-Utf8NoBom -Path $alternatePath -Content ($request | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                        Remove-Item -LiteralPath $dispatchRequestFixturePath -Force
+                        $dispatchRequestFixturePath = $alternatePath
+                        $script:DispatchRequestPath = $alternatePath
+                        $cleanupRequestPath = Join-Path $SourceRoot '.local/ai-sessions/inputs/cleanup-request.json'
+                        $cleanupRequest = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Cleanup'; line_slug = $LineSlug; dispatch_slug = $DispatchSlug; dispatch_request_path = $alternatePath }
+                        Write-Utf8NoBom -Path $cleanupRequestPath -Content ($cleanupRequest | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                        $savedInvocation = $script:InvocationBoundParameters
+                        $savedContext = $script:RequestContext
+                        $RequestPath = $cleanupRequestPath
+                        $Operation = 'Cleanup'
+                        try {
+                            $script:InvocationBoundParameters = @{ Operation = 'Cleanup'; LineSlug = $LineSlug; DispatchSlug = $DispatchSlug; DispatchRequestPath = (Join-Path $lineHistory 'different.json') }
+                            $mismatch = $null
+                            try { $null = Apply-DispatchRequest } catch { $mismatch = $_.Exception.Data['operationResult'] }
+                            Assert-True ($null -ne $mismatch -and $mismatch.code -ceq 'DispatchRequestMismatch') 'Cleanup Request 與 CLI 不一致時未拒絕。'
+                            $script:InvocationBoundParameters.DispatchRequestPath = $alternatePath
+                            $context = Apply-DispatchRequest
+                            Assert-True ($context.cleanup_values.dispatch_request_path -ceq $alternatePath) 'Cleanup Request 未讀取 dispatch_request_path。'
+                            $script:DispatchRequestPath = ''
+                            $null = $script:InvocationBoundParameters.Remove('DispatchRequestPath')
+                            $null = Apply-DispatchRequest
+                            Assert-True ($script:DispatchRequestPath -ceq $alternatePath) 'Cleanup Request 未將 dispatch_request_path 套用至執行參數。'
+                            $cleanupRequest.dispatch_request_path = 'relative.json'
+                            Write-Utf8NoBom -Path $cleanupRequestPath -Content ($cleanupRequest | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                            $invalid = $null
+                            try { $null = Read-DispatchRequest -Path $cleanupRequestPath } catch { $invalid = $_.Exception.Data['operationResult'] }
+                            Assert-True ($null -ne $invalid -and $invalid.code -ceq 'DispatchRequestInvalidPath') 'Cleanup Request 未拒絕相對路徑。'
+                            $request.dispatch_request_path = $alternatePath
+                            $dispatchRequestPath = Join-Path $SourceRoot '.local/ai-sessions/inputs/invalid-dispatch.json'
+                            Write-Utf8NoBom -Path $dispatchRequestPath -Content ($request | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                            $notAllowed = $null
+                            try { $null = Read-DispatchRequest -Path $dispatchRequestPath } catch { $notAllowed = $_.Exception.Data['operationResult'] }
+                            Assert-True ($null -ne $notAllowed -and $notAllowed.code -ceq 'DispatchRequestFieldNotAllowed') 'Dispatch Request 未拒絕 Cleanup 專用欄位。'
+                        }
+                        finally { $script:InvocationBoundParameters = $savedInvocation; $script:RequestContext = $savedContext }
+                    }
+                    if ($mode -eq 'what-if-inputs') { Remove-Item -LiteralPath $lineHistory -Recurse -Force }
+                    if ($mode -eq 'explicit-missing') { $script:DispatchRequestPath = Join-Path $lineHistory 'missing.json' }
+                    if ($mode -eq 'outside-request') { $script:DispatchRequestPath = Join-Path $scenario.scenario_root 'outside.json' }
+                    if ($mode -in @('missing-request', 'all-failed')) { Remove-Item -LiteralPath $dispatchRequestFixturePath -Force }
+                    if ($mode -eq 'invalid-json') { Write-Utf8NoBom -Path $dispatchRequestFixturePath -Content '{' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @() }
+                    if ($mode -in @('event', 'thread', 'all-failed')) {
+                        $eventName = if ($mode -eq 'thread') { 'codex-thread-' + $DispatchSlug + '.txt' } else { 'codex-exec-x.jsonl' }
+                        Write-Utf8NoBom -Path (Join-Path $dispatchHistory $eventName) -Content 'fixture' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                    }
+                    if ($mode -in @('run', 'all-failed')) {
+                        Write-Utf8NoBom -Path $scenario.run_record_path -Content '{}' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                    }
+                    if ($mode -eq 'existing-run-event') {
+                        $eventPath = Join-Path (Join-Path $dispatchHistory $LineSlug) ('codex-exec-' + $DispatchSlug + '.jsonl')
+                        $record = [ordered]@{ schema = 'ai-sessions.dispatch-run.v1'; run_id = [IO.Path]::GetFileNameWithoutExtension($scenario.run_record_path); created_at_utc = [DateTime]::UtcNow.ToString('o'); line_slug = $LineSlug; dispatch_slug = $DispatchSlug; source_root = $SourceRoot; execution_root = $DispatchRoot; event_stream_path = $eventPath; launch_state = 'launch-failed'; failure = [ordered]@{ observation = [ordered]@{ process_started = $false } } }
+                        Write-Utf8NoBom -Path $scenario.run_record_path -Content ($record | ConvertTo-Json -Depth 20) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                        Write-Utf8NoBom -Path $eventPath -Content '{"type":"thread.started"}' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                        $RunRecordPath = $scenario.run_record_path
+                    }
+                    if ($mode -like 'ledger-*' -or $mode -in @('other-ledger', 'all-failed')) {
+                        $ledgerPath = Join-Path $sourceHistory 'dispatch-admission-ledger.json'
+                        $ledgerSlug = if ($mode -eq 'other-ledger') { 'different-slug' } else { $DispatchSlug }
+                        $ledgerState = switch ($mode) { 'ledger-ended' { 'ended' } 'ledger-cleaned' { 'cleaned' } default { 'active' } }
+                        $ledger = [ordered]@{ schema = 'ai-sessions.dispatch-admission.v1'; entries = @([ordered]@{ dispatch_slug = $ledgerSlug; state = $ledgerState }) }
+                        $ledgerContent = if ($mode -eq 'ledger-invalid') { '{' } else { $ledger | ConvertTo-Json -Depth 10 }
+                        Write-Utf8NoBom -Path $ledgerPath -Content $ledgerContent -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                    }
+                    if ($mode -eq 'drift') {
+                        $script:phase16DriftRun = $scenario.run_record_path
+                        $script:CleanupBeforeRemovalHook = { param($ReportRoot) $null = New-Item -ItemType Directory -Path (Split-Path -Parent $script:phase16DriftRun) -Force; [IO.File]::WriteAllText($script:phase16DriftRun, '{}') }
+                    }
+                    if ($mode -eq 'audit-directory') {
+                        $script:phase16OriginalAuditWriter = $originalAuditWriter
+                        Set-Item -Path Function:\Write-CleanupUnstartedAudit -Value {
+                            param([string]$Path, [System.Collections.IDictionary]$Audit, [string]$SourceRoot, [string]$DispatchRoot, [switch]$RequireAbsent)
+                            if ($RequireAbsent) { $null = New-Item -ItemType Directory -Path $Path -Force }
+                            & $script:phase16OriginalAuditWriter @PSBoundParameters
+                        }
+                    }
+                    if ($mode -eq 'lock') {
+                        $script:phase16LockSource = $SourceRoot
+                        $script:phase16LockModuleRoot = Join-Path $scriptsRoot 'dispatch'
+                        $script:phase16LockHost = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+                        $script:phase16LockProof = $false
+                        $script:CleanupBeforeRemovalHook = {
+                            param($ReportRoot)
+                            $moduleRoot = $script:phase16LockModuleRoot.Replace("'", "''")
+                            $source = $script:phase16LockSource.Replace("'", "''")
+                            $childCode = ". '$moduleRoot\common-runtime.ps1'; . '$moduleRoot\git-baseline.ps1'; . '$moduleRoot\Invoke-DispatchConcurrency.ps1'; try { `$lock = Open-DispatchAdmissionLock -SourceRoot '$source' -TimeoutSeconds 1; Close-DispatchAdmissionLock -Lock `$lock; exit 1 } catch { if (`$_.Exception.Data['errorCode'] -eq 'DispatchAdmissionLockTimeout') { exit 0 }; exit 2 }"
+                            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCode))
+                            $info = New-Object Diagnostics.ProcessStartInfo
+                            $info.FileName = $script:phase16LockHost
+                            $info.Arguments = '-NoProfile -NonInteractive -EncodedCommand ' + $encoded
+                            $info.UseShellExecute = $false
+                            $info.CreateNoWindow = $true
+                            $process = [Diagnostics.Process]::Start($info)
+                            try {
+                                if (-not $process.WaitForExit(10000)) { $process.Kill(); throw 'admission lock fixture timeout' }
+                                $script:phase16LockProof = $process.ExitCode -eq 0
+                            }
+                            finally { $process.Dispose() }
+                        }
+                    }
+                    $admissionPaths = Get-DispatchAdmissionPaths -SourceRoot $SourceRoot
+                    $lockFile = [IO.File]::Open($admissionPaths.LockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+                    $lockFile.Dispose()
+                    $worktreeHash = Get-FileSha256 (Join-Path $DispatchRoot 'tracked.txt')
+                    $sourceFilesBefore = @((Get-ChildItem -LiteralPath $sourceHistory -File -Recurse | Where-Object { $_.FullName -ine $admissionPaths.LockPath } | ForEach-Object { $_.FullName } | Sort-Object))
+                    $requestHash = if (Test-Path -LiteralPath $dispatchRequestFixturePath -PathType Leaf) { Get-FileSha256 $dispatchRequestFixturePath } else { $null }
+                    if ($mode -eq 'removal-retry') {
+                        $script:cleanupRemoveFailure = $true
+                        try { $firstResult = Invoke-Cleanup -Confirm:$false }
+                        finally { $script:cleanupRemoveFailure = $false }
+                        Assert-True ($firstResult.failure_code -ceq 'CleanupWorktreeRemovalFailed' -and -not $firstResult.worktree_removed) 'Cleanup fixture 未進入移除重試路徑。'
+                        Remove-Item -LiteralPath $dispatchRequestFixturePath -Force
+                        $retryResult = Invoke-Cleanup -Confirm:$false
+                        Assert-True ($retryResult.status -ceq 'completed' -and $retryResult.worktree_removed -and -not $retryResult.unstarted_proof.used) 'Cleanup 未依既有移除重試證明完成。'
+                        continue
+                    }
+                    $result = $null
+                    try { $result = Invoke-Cleanup -Confirm:$false -WhatIf:($mode -in @('what-if', 'what-if-inputs')) }
+                    catch { $result = $_.Exception.Data['operationResult'] }
+                    if ($mode -in @('accepted', 'alternate-request', 'takeover', 'other-ledger', 'lock')) {
+                        Assert-True ($null -ne $result -and $result.status -ceq 'completed' -and $result.worktree_removed -and $result.unstarted_proof.used -and $result.unstarted_proof.basis -ceq 'dispatch-request' -and -not $result.owner_takeover.used) ('未啟動 Cleanup 未放行：' + $mode + '; ' + ($result | ConvertTo-Json -Depth 30 -Compress))
+                        $audit = Get-Content -LiteralPath $result.unstarted_proof.audit_path -Raw -Encoding UTF8 | ConvertFrom-Json
+                        $attempt = [guid]::Empty
+                        Assert-True ($audit.schema -ceq 'ai-sessions.cleanup-unstarted-proof.v1' -and $audit.status -ceq 'completed' -and [guid]::TryParse([string]$audit.attempt_id, [ref]$attempt) -and $audit.conditions.U1.passed -and $audit.conditions.U2.passed -and $audit.conditions.U3.passed -and $audit.conditions.U4.passed -and $audit.conditions.U4.entries_for_dispatch_slug -eq 0 -and $audit.conditions.U3.sha256 -ceq $requestHash -and (Get-FileSha256 $result.unstarted_proof.audit_path) -ceq $result.unstarted_proof.audit_sha256 -and (Get-FileSha256 $dispatchRequestFixturePath) -ceq $requestHash) ('未啟動稽核內容不符：' + $mode)
+                        Assert-True (-not (Test-Path -LiteralPath $DispatchRoot) -and -not (Test-Path -LiteralPath $scenario.run_record_path)) ('Cleanup 留下 worktree 或產生 RunRecord：' + $mode)
+                        $registration = Invoke-Phase9GitCommand -RepositoryRoot $SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+                        Assert-True ([int]$registration.exit_code -eq 0 -and [string]$registration.output -notmatch [regex]::Escape($DispatchRoot.Replace('\', '/'))) ('Cleanup 後仍有 worktree registration：' + $mode)
+                        $lineFiles = @(Get-ChildItem -LiteralPath $lineHistory -File -Recurse | ForEach-Object { $_.FullName })
+                        $allowedFiles = @($dispatchRequestFixturePath, [string]$result.unstarted_proof.audit_path, (Join-Path $lineHistory ('cleanup-result-' + $DispatchSlug + '.json')))
+                        $unexpectedFiles = @($lineFiles | Where-Object { $allowedFiles -notcontains $_ })
+                        Assert-True ($unexpectedFiles.Count -eq 0 -and @(Get-ChildItem -LiteralPath $lineHistory -File -Filter ('cleanup-takeover-' + $DispatchSlug + '*.json') -ErrorAction SilentlyContinue).Count -eq 0) ('Cleanup 新增非預期證據：' + ($unexpectedFiles -join ', '))
+                        if ($mode -eq 'lock') { Assert-True $script:phase16LockProof 'Cleanup 證明與移除期間未持有 admission lock。' }
+                    }
+                    elseif ($mode -in @('drift', 'what-if', 'what-if-inputs', 'audit-directory', 'outside-request')) {
+                        $expectedCode = switch ($mode) { 'drift' { 'CleanupUnstartedProofDrift' } 'what-if' { 'CleanupWhatIf' } 'what-if-inputs' { 'CleanupWhatIf' } 'audit-directory' { 'CleanupUnstartedAuditWriteFailed' } default { 'CleanupDispatchRequestBoundary' } }
+                        Assert-True ($null -ne $result -and $result.failure_code -ceq $expectedCode -and (Test-Path -LiteralPath $DispatchRoot -PathType Container)) ('Cleanup 應保留 worktree：' + $mode + '; failure_code=' + [string](Get-CleanupPropertyValue -Object $result -Names @('failure_code')) + '; status=' + [string](Get-CleanupPropertyValue -Object $result -Names @('status')) + '; worktree_exists=' + [string](Test-Path -LiteralPath $DispatchRoot -PathType Container) + '; error=' + [string](Get-CleanupPropertyValue -Object $result -Names @('error')))
+                        if ($mode -in @('drift', 'what-if', 'what-if-inputs')) {
+                            $audit = Get-Content -LiteralPath $result.unstarted_proof.audit_path -Raw -Encoding UTF8 | ConvertFrom-Json
+                            Assert-True ($audit.status -ceq 'failed' -and $audit.failure_code -ceq $expectedCode) ('稽核未記錄失敗：' + $mode)
+                            if ($mode -in @('what-if', 'what-if-inputs')) {
+                                $preservedReport = Join-Path (Join-Path $SourceRoot '.local/ai-sessions/report') (Join-Path $LineSlug 'closure.md')
+                                Assert-True ($result.status -ceq 'removal-failed' -and $result.unstarted_proof.used -and -not (Test-Path -LiteralPath $preservedReport)) ('WhatIf 應在保存前停止並保留稽核：' + $mode)
+                            }
+                        }
+                    }
+                    else {
+                        $expected = if ($mode -eq 'existing-run-event') { 'Cleanup' } elseif ($mode -in @('event', 'thread')) { 'U1' } elseif ($mode -eq 'run') { 'U2' } elseif ($mode -like 'ledger-*') { 'U4' } elseif ($mode -eq 'all-failed') { 'U1.*U2.*U3.*U4' } else { 'U3' }
+                        Assert-True ($null -ne $result -and $result.status -ceq 'preflight-rejected' -and $result.failure_code -ceq 'CleanupPreflightResultRequired' -and $result.error -match $expected -and (Test-Path -LiteralPath $DispatchRoot -PathType Container)) ('Cleanup 未正確拒絕：' + $mode + '; ' + ($result | ConvertTo-Json -Depth 30 -Compress))
+                        $sourceFilesAfter = @((Get-ChildItem -LiteralPath $sourceHistory -File -Recurse | Where-Object { $_.FullName -ine $admissionPaths.LockPath } | ForEach-Object { $_.FullName } | Sort-Object))
+                        Assert-True (($sourceFilesBefore -join "`n") -ceq ($sourceFilesAfter -join "`n")) ('拒絕後新增來源 history 檔案：' + $mode)
+                    }
+                    if (Test-Path -LiteralPath $DispatchRoot -PathType Container) { Assert-True ((Get-FileSha256 (Join-Path $DispatchRoot 'tracked.txt')) -ceq $worktreeHash) ('拒絕後 worktree 內容變動：' + $mode) }
+                }
+                finally {
+                    Set-Item -Path Function:\Write-CleanupUnstartedAudit -Value $originalAuditWriter
+                    $script:CleanupBeforeRemovalHook = $null
+                    Remove-Phase3CleanupScenario -Scenario $scenario
+                }
+            }
+        }
+        finally {
+            $script:FailureReceiptPath = $priorReceiptPath
+            $script:DispatchRequestPath = $priorRequestPath
+            $script:TakeoverOwner = $priorTakeover
+            $script:CleanupBeforeRemovalHook = $priorHook
+            $script:cleanupUseRealGit = $false
+        }
+    }
+
+    Invoke-Case 'Phase 3 DD-UNSTARTED-RECEIPT' {
+        $priorReceiptPath = Get-DispatchScriptVariableValue -Name 'FailureReceiptPath'
+        $priorRequestPath = Get-DispatchScriptVariableValue -Name 'DispatchRequestPath'
+        $priorContext = Get-DispatchScriptVariableValue -Name 'DispatchPreStartReceiptContext'
+        $priorReceipt = Get-DispatchScriptVariableValue -Name 'DispatchPreStartReceipt'
+        $originalProcessInfo = (Get-Command Get-DispatchDispatcherProcessInfo -CommandType Function).ScriptBlock
+        $originalOwnerState = (Get-Command Get-DispatchAdmissionOwnerState -CommandType Function).ScriptBlock
+        $script:cleanupUseRealGit = $true
+        try {
+            foreach ($mode in @('pending-ended', 'legacy-failed', 'missing-receipt', 'started', 'superseded', 'active', 'active-with-request', 'missing-dispatcher', 'wrong-identity', 'event', 'run', 'ledger', 'unknown')) {
+                $scenario = New-Phase3CleanupScenario -ScenarioSlug ('dd-receipt-' + $mode)
+                $child = $null
+                try {
+                    $SourceRoot = $scenario.source_root
+                    $DispatchRoot = $scenario.dispatch_root
+                    $LineSlug = $scenario.line_slug
+                    $DispatchSlug = $scenario.dispatch_slug
+                    $PreflightResultPath = $null
+                    $RunRecordPath = $null
+                    $EvidencePath = @()
+                    $ReportPath = @()
+                    $ResultPath = $null
+                    $sourceHistory = Join-Path $SourceRoot '.local/ai-sessions/history'
+                    $dispatchHistory = Join-Path $DispatchRoot '.local/ai-sessions/history'
+                    Remove-Item -LiteralPath $sourceHistory, $dispatchHistory -Recurse -Force
+                    $null = New-Item -ItemType Directory -Path $dispatchHistory -Force
+                    $lineHistory = Join-Path $sourceHistory $LineSlug
+                    $receiptPath = Join-Path $lineHistory ('dispatch-failure-' + $DispatchSlug + '.json')
+                    $script:FailureReceiptPath = $receiptPath
+                    $script:DispatchRequestPath = ''
+                    if ($mode -notin @('legacy-failed', 'missing-receipt', 'missing-dispatcher')) {
+                        $info = New-Object Diagnostics.ProcessStartInfo
+                        $info.FileName = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+                        $info.Arguments = if ($mode -in @('active', 'active-with-request')) { '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 60"' } else { '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 1"' }
+                        $info.UseShellExecute = $false
+                        $info.CreateNoWindow = $true
+                        $child = [Diagnostics.Process]::Start($info)
+                        $script:phase16DispatcherInfo = [ordered]@{ process_id = $child.Id; process_name = $child.ProcessName; process_start_time_utc = $child.StartTime.ToUniversalTime().ToString('o') }
+                        if ($mode -notin @('active', 'active-with-request') -and -not $child.WaitForExit(10000)) { throw 'dispatcher fixture 未結束。' }
+                    }
+                    if ($mode -eq 'missing-receipt') {
+                        $requestPath = Join-Path $lineHistory ('dispatch-request-' + $DispatchSlug + '.json')
+                        $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; source_root = $SourceRoot; dispatch_root = $DispatchRoot; line_slug = $LineSlug; dispatch_slug = $DispatchSlug }
+                        Write-Utf8NoBom -Path $requestPath -Content ($request | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                    }
+                    elseif ($mode -eq 'legacy-failed') {
+                        $receipt = [ordered]@{ schema = 'ai-sessions.dispatch-failure-receipt.v1'; status = 'failed'; failed_stage = 'preflight'; error_code = 'DispatchExternalCommandTimeout'; process_started = $false; source_root = $SourceRoot; dispatch_root = $DispatchRoot; execution_root = $DispatchRoot; line_slug = $LineSlug; dispatch_slug = $DispatchSlug }
+                        Write-Utf8NoBom -Path $receiptPath -Content ($receipt | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                    }
+                    else {
+                        if ($mode -eq 'missing-dispatcher') { $script:phase16DispatcherInfo = $null }
+                        Set-Item -Path Function:\Get-DispatchDispatcherProcessInfo -Value { return $script:phase16DispatcherInfo }
+                        $script:DispatchPreStartReceiptContext = [ordered]@{ Path = $receiptPath; DispatchExecutionId = [guid]::NewGuid().ToString('N'); TargetPath = @((Join-Path $SourceRoot 'tracked.txt')) }
+                        $written = Write-DispatchPreStartReceipt -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -DispatchRoot $DispatchRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+                        Assert-True ($written.state -ceq 'written') ('pending 收據 fixture 寫入失敗：' + [string]$written.error)
+                        if ($mode -in @('started', 'superseded', 'wrong-identity')) {
+                            $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                            if ($mode -eq 'started') { $receipt.process_started = $true }
+                            if ($mode -eq 'superseded') { $receipt.status = 'superseded' }
+                            if ($mode -eq 'wrong-identity') { $receipt.source_root = $scenario.scenario_root }
+                            Write-Utf8NoBom -Path $receiptPath -Content ($receipt | ConvertTo-Json -Depth 20) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                        }
+                    }
+                    if ($mode -eq 'active-with-request') {
+                        $requestPath = Join-Path $lineHistory ('dispatch-request-' + $DispatchSlug + '.json')
+                        $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; source_root = $SourceRoot; dispatch_root = $DispatchRoot; line_slug = $LineSlug; dispatch_slug = $DispatchSlug }
+                        Write-Utf8NoBom -Path $requestPath -Content ($request | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                    }
+                    if ($mode -eq 'event') { Write-Utf8NoBom -Path (Join-Path $dispatchHistory 'codex-exec-x.jsonl') -Content '{}' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @() }
+                    if ($mode -eq 'run') { Write-Utf8NoBom -Path $scenario.run_record_path -Content '{}' -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @() }
+                    if ($mode -eq 'ledger') {
+                        $ledger = [ordered]@{ schema = 'ai-sessions.dispatch-admission.v1'; entries = @([ordered]@{ dispatch_slug = $DispatchSlug; state = 'active' }) }
+                        Write-Utf8NoBom -Path (Join-Path $sourceHistory 'dispatch-admission-ledger.json') -Content ($ledger | ConvertTo-Json -Depth 10) -SourceRoot $SourceRoot -ExecutionRoot $DispatchRoot -TargetPath @()
+                    }
+                    if ($mode -eq 'unknown') { Set-Item -Path Function:\Get-DispatchAdmissionOwnerState -Value { param($Entry) return 'unknown' } }
+                    $result = $null
+                    try { $result = Invoke-Cleanup -Confirm:$false } catch { $result = $_.Exception.Data['operationResult'] }
+                    if ($mode -in @('pending-ended', 'legacy-failed', 'missing-receipt')) {
+                        $basis = if ($mode -eq 'missing-receipt') { 'dispatch-request' } else { 'failure-receipt' }
+                        Assert-True ($null -ne $result -and $result.status -ceq 'completed' -and $result.worktree_removed -and $result.unstarted_proof.basis -ceq $basis) ('收據來源未放行：' + $mode + '; ' + ($result | ConvertTo-Json -Depth 30 -Compress))
+                        $audit = Get-Content -LiteralPath $result.unstarted_proof.audit_path -Raw -Encoding UTF8 | ConvertFrom-Json
+                        if ($mode -eq 'pending-ended') { Assert-True ($audit.conditions.U3.receipt_status -ceq 'pending' -and $audit.conditions.U3.dispatcher_state -ceq 'ended' -and @($audit.rejected_alternatives | Where-Object { $_.basis -ceq 'dispatch-request' }).Count -eq 1) 'pending 收據稽核內容不符。' }
+                        if ($mode -eq 'legacy-failed') { Assert-True ($audit.conditions.U3.dispatcher_state -ceq 'not-recorded') '舊收據 dispatcher_state 不符。' }
+                    }
+                    else {
+                        Assert-True ($null -ne $result -and $result.failure_code -in @('CleanupPreflightResultRequired', 'CleanupIdentityMismatch') -and (Test-Path -LiteralPath $DispatchRoot -PathType Container)) ('無效收據未遭拒絕：' + $mode + '; ' + ($result | ConvertTo-Json -Depth 30 -Compress))
+                        if ($mode -eq 'active-with-request') {
+                            $unstartedAudits = @(Get-ChildItem -LiteralPath $sourceHistory -Recurse -File -Filter 'cleanup-unstarted-*' -ErrorAction SilentlyContinue)
+                            Assert-True ($result.status -ceq 'preflight-rejected' -and $result.failure_code -ceq 'CleanupPreflightResultRequired' -and $result.error -match 'U3' -and $result.error -match '不改用 dispatch-request' -and $unstartedAudits.Count -eq 0) ('收據顯示 dispatcher 存活時 dispatch-request 不得使 U3 放行：' + ($result | ConvertTo-Json -Depth 30 -Compress))
+                        }
+                    }
+                }
+                finally {
+                    Set-Item -Path Function:\Get-DispatchDispatcherProcessInfo -Value $originalProcessInfo
+                    Set-Item -Path Function:\Get-DispatchAdmissionOwnerState -Value $originalOwnerState
+                    if ($null -ne $child) { if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }; $child.Dispose() }
+                    Remove-Phase3CleanupScenario -Scenario $scenario
+                }
+            }
+        }
+        finally {
+            $script:FailureReceiptPath = $priorReceiptPath
+            $script:DispatchRequestPath = $priorRequestPath
+            $script:DispatchPreStartReceiptContext = $priorContext
+            $script:DispatchPreStartReceipt = $priorReceipt
+            $script:cleanupUseRealGit = $false
+        }
     }
 }
 if ($Phase -ge 4) {
@@ -7664,7 +8060,49 @@ if ($Phase -ge 5) {
 }
 if ($Phase -ge 6) {
     function Invoke-DdHangChild {
-        param([string[]]$Arguments, [string]$WorkingDirectory)
+        [CmdletBinding()]
+        param(
+            [string[]]$Arguments,
+            [string]$WorkingDirectory,
+            [string]$Label,
+            [string]$ProgressLogPath,
+            [ValidateRange(1000, 600000)]
+            [int]$TimeoutMs = 90000
+        )
+        $timeoutSeconds = [int]($TimeoutMs / 1000)
+
+        function Get-DdHangProcessSnapshot {
+            [CmdletBinding()]
+            param([int]$RootProcessId)
+
+            $processRecords = @(Get-CimInstance -ClassName Win32_Process -ErrorAction Stop)
+            $pendingProcessIds = New-Object 'System.Collections.Generic.Queue[int]'
+            $snapshot = New-Object 'System.Collections.Generic.List[object]'
+            $visited = @{}
+            $pendingProcessIds.Enqueue($RootProcessId)
+            while ($pendingProcessIds.Count -gt 0) {
+                $currentProcessId = $pendingProcessIds.Dequeue()
+                if ($visited.ContainsKey($currentProcessId)) { continue }
+                $visited[$currentProcessId] = $true
+                foreach ($record in $processRecords) {
+                    if ([int]$record.ProcessId -eq $currentProcessId) {
+                        $commandLine = [string]$record.CommandLine
+                        if ($commandLine.Length -gt 200) { $commandLine = $commandLine.Substring(0, 200) }
+                        $snapshot.Add([pscustomobject]@{
+                                ProcessId = [int]$record.ProcessId
+                                ParentProcessId = [int]$record.ParentProcessId
+                                Name = [string]$record.Name
+                                CommandLine = $commandLine
+                            })
+                    }
+                    if ([int]$record.ParentProcessId -eq $currentProcessId -and -not $visited.ContainsKey([int]$record.ProcessId)) {
+                        $pendingProcessIds.Enqueue([int]$record.ProcessId)
+                    }
+                }
+            }
+            return $snapshot.ToArray()
+        }
+
         $process = New-Object System.Diagnostics.Process
         $info = New-Object System.Diagnostics.ProcessStartInfo
         $info.FileName = (Get-Process -Id $PID).Path
@@ -7680,13 +8118,107 @@ if ($Phase -ge 6) {
             if (-not $process.Start()) { throw '子程序啟動失敗。' }
             $stdout = $process.StandardOutput.ReadToEndAsync()
             $stderr = $process.StandardError.ReadToEndAsync()
-            if (-not $process.WaitForExit(90000)) {
-                & "$env:SystemRoot\System32\taskkill.exe" /PID $process.Id /T /F 2>&1 | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw ('guard 90 秒逾時，終止程序樹失敗，taskkill exit code ' + $LASTEXITCODE) }
-                if (-not $process.WaitForExit(5000)) { throw 'guard 90 秒逾時，無法終止子程序樹。' }
-                throw 'guard 90 秒逾時，已終止子程序樹。'
+            if (-not $process.WaitForExit($TimeoutMs)) {
+                $guardElapsedMs = $watch.ElapsedMilliseconds
+                $snapshotError = ''
+                $processSnapshot = @()
+                try { $processSnapshot = @(Get-DdHangProcessSnapshot -RootProcessId $process.Id) }
+                catch { $snapshotError = $_.Exception.Message }
+
+                $taskkillExitCode = '未取得'
+                $taskkillStdOut = '未取得'
+                $taskkillStdErr = '未取得'
+                $taskkillFailure = ''
+                $taskkillProcess = New-Object System.Diagnostics.Process
+                try {
+                    $taskkillInfo = New-Object System.Diagnostics.ProcessStartInfo
+                    $taskkillInfo.FileName = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+                    $taskkillInfo.Arguments = '/PID {0} /T /F' -f $process.Id
+                    $taskkillInfo.UseShellExecute = $false
+                    $taskkillInfo.CreateNoWindow = $true
+                    $taskkillInfo.RedirectStandardOutput = $true
+                    $taskkillInfo.RedirectStandardError = $true
+                    $taskkillProcess.StartInfo = $taskkillInfo
+                    if (-not $taskkillProcess.Start()) { throw 'taskkill 啟動失敗。' }
+                    $taskkillStdOutTask = $taskkillProcess.StandardOutput.ReadToEndAsync()
+                    $taskkillStdErrTask = $taskkillProcess.StandardError.ReadToEndAsync()
+                    if ($taskkillProcess.WaitForExit(30000)) {
+                        $taskkillExitCode = $taskkillProcess.ExitCode
+                    }
+                    else {
+                        $taskkillFailure = 'taskkill 30 秒內未結束。'
+                        try { $taskkillProcess.Kill() }
+                        catch { $taskkillFailure += ' 終止 taskkill 失敗：' + $_.Exception.Message }
+                    }
+                    try { $null = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($taskkillStdOutTask, $taskkillStdErrTask), 5000) }
+                    catch { $taskkillFailure += ' 讀取 taskkill 輸出失敗：' + $_.Exception.Message }
+                    if ($taskkillStdOutTask.Status -eq [Threading.Tasks.TaskStatus]::RanToCompletion) { $taskkillStdOut = $taskkillStdOutTask.Result }
+                    if ($taskkillStdErrTask.Status -eq [Threading.Tasks.TaskStatus]::RanToCompletion) { $taskkillStdErr = $taskkillStdErrTask.Result }
+                }
+                catch { $taskkillFailure += ' taskkill 執行失敗：' + $_.Exception.Message }
+                finally { $taskkillProcess.Dispose() }
+
+                $childExited = $false
+                if ($taskkillExitCode -eq 0) { $childExited = $process.WaitForExit(5000) }
+                $survivors = New-Object 'System.Collections.Generic.List[object]'
+                $survivorCheckErrors = New-Object 'System.Collections.Generic.List[string]'
+                foreach ($record in $processSnapshot) {
+                    try {
+                        $survivingProcess = [Diagnostics.Process]::GetProcessById([int]$record.ProcessId)
+                        try { $survivors.Add($record) }
+                        finally { $survivingProcess.Dispose() }
+                    }
+                    catch {
+                        $lookupException = $_.Exception
+                        if ($null -ne $lookupException.InnerException) { $lookupException = $lookupException.InnerException }
+                        if ($lookupException -isnot [System.ArgumentException]) {
+                            $survivorCheckErrors.Add(('PID ' + $record.ProcessId + ': ' + $lookupException.Message))
+                        }
+                    }
+                }
+
+                $progressTail = '未提供或檔案不存在'
+                if (-not [string]::IsNullOrWhiteSpace($ProgressLogPath) -and (Test-Path -LiteralPath $ProgressLogPath -PathType Leaf)) {
+                    try { $progressTail = @(Get-Content -LiteralPath $ProgressLogPath -Encoding UTF8 -Tail 20 -ErrorAction Stop) -join "`n" }
+                    catch { $progressTail = '讀取失敗：' + $_.Exception.Message }
+                }
+                try { $null = [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdout, $stderr), 5000) }
+                catch { $taskkillFailure += ' 讀取子程序輸出失敗：' + $_.Exception.Message }
+                $stdoutTail = '未取得'
+                $stderrTail = '未取得'
+                if ($stdout.Status -eq [Threading.Tasks.TaskStatus]::RanToCompletion) {
+                    $stdoutTail = [string]$stdout.Result
+                    if ($stdoutTail.Length -gt 2000) { $stdoutTail = $stdoutTail.Substring($stdoutTail.Length - 2000) }
+                }
+                if ($stderr.Status -eq [Threading.Tasks.TaskStatus]::RanToCompletion) {
+                    $stderrTail = [string]$stderr.Result
+                    if ($stderrTail.Length -gt 2000) { $stderrTail = $stderrTail.Substring($stderrTail.Length - 2000) }
+                }
+
+                $timeoutMessage = if ($taskkillExitCode -ne 0) { 'guard ' + $timeoutSeconds + ' 秒逾時，終止程序樹失敗。' }
+                elseif (-not $childExited) { 'guard ' + $timeoutSeconds + ' 秒逾時，無法終止子程序樹。' }
+                else { 'guard ' + $timeoutSeconds + ' 秒逾時，已終止子程序樹。' }
+                throw ($timeoutMessage + "`nLabel: " + $Label + "`nElapsedMs: " + $guardElapsedMs +
+                    "`ntaskkill exit code: " + $taskkillExitCode + "`ntaskkill stdout:`n" + $taskkillStdOut +
+                    "`ntaskkill stderr:`n" + $taskkillStdErr + "`ntaskkill／讀取錯誤: " + $taskkillFailure +
+                    "`n程序樹快照: " + (ConvertTo-Json -InputObject @($processSnapshot) -Depth 4 -Compress) +
+                    "`n快照錯誤: " + $snapshotError +
+                    "`n仍存活的程序: " + (ConvertTo-Json -InputObject @($survivors.ToArray()) -Depth 4 -Compress) +
+                    "`n存活檢查錯誤: " + ($survivorCheckErrors -join '; ') +
+                    "`n進度檔最後 20 行: " + $ProgressLogPath + "`n" + $progressTail +
+                    "`n子程序 stdout 最後 2000 字元:`n" + $stdoutTail +
+                    "`n子程序 stderr 最後 2000 字元:`n" + $stderrTail)
             }
             $watch.Stop()
+            if (-not [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($stdout, $stderr), 30000)) {
+                $pipeSnapshot = @()
+                $pipeSnapshotError = ''
+                try { $pipeSnapshot = @(Get-DdHangProcessSnapshot -RootProcessId $process.Id) }
+                catch { $pipeSnapshotError = $_.Exception.Message }
+                throw ('子程序已結束但輸出管線 30 秒內未關閉。Label: ' + $Label +
+                    '; 程序樹快照: ' + (ConvertTo-Json -InputObject @($pipeSnapshot) -Depth 4 -Compress) +
+                    '; 快照錯誤: ' + $pipeSnapshotError)
+            }
             return [pscustomobject]@{ ExitCode = $process.ExitCode; StdOut = $stdout.Result; StdErr = $stderr.Result; ElapsedMs = $watch.ElapsedMilliseconds }
         }
         finally { $process.Dispose() }
@@ -7942,7 +8474,7 @@ function Invoke-GitCommand {
         Assert-True ($result.status -eq 'failed' -and $result.error_code -eq 'DispatchExternalCommandTimeout' -and $result.failed_stage -eq 'preflight' -and -not $result.process_started) ('RECEIPT envelope 不符：' + $run.StdOut + $run.StdErr)
         Assert-True (Test-Path -LiteralPath $receipt) 'failure receipt 不存在。'
         $document = [IO.File]::ReadAllText($receipt) | ConvertFrom-Json
-        Assert-True ($document.schema -eq 'ai-sessions.dispatch-failure-receipt.v1' -and $document.error_code -eq 'DispatchExternalCommandTimeout') 'failure receipt 不符。'
+        Assert-True ($document.schema -eq 'ai-sessions.dispatch-failure-receipt.v1' -and $document.status -ceq 'failed' -and $document.error_code -ceq 'DispatchExternalCommandTimeout' -and -not $document.process_started) 'failure receipt 不符。'
         $history = Join-Path $f.Root '.local\ai-sessions\history'
         $dispatchHistory = Join-Path $f.DispatchRoot '.local\ai-sessions\history'
         foreach ($historyRoot in @($history, $dispatchHistory)) {
@@ -7977,6 +8509,118 @@ if ($result.ExitCode -ne 0 -or $watch.ElapsedMilliseconds -ge 30000 -or [IO.File
         [IO.File]::WriteAllText($probe, $body, (New-Object Text.UTF8Encoding($true)))
         $run = Invoke-DdHangChild -Arguments @('-File', $probe, (Join-Path $scriptsRoot 'dispatch\common-runtime.ps1'), $caseRoot) -WorkingDirectory $caseRoot
         Assert-True ($run.ExitCode -eq 0 -and $run.StdOut -match 'apply assertions passed') ('APPLY 斷言失敗：' + $run.StdErr)
+    }
+
+    Invoke-Case 'Phase 6 DD-PRESTART-RECEIPT' {
+        $lifecyclePath = Join-Path $scriptsRoot 'dispatch\dispatch-lifecycle.ps1'
+        $lifecycleText = [IO.File]::ReadAllText($lifecyclePath, [Text.Encoding]::UTF8)
+        $writeCalls = [regex]::Matches($lifecycleText, '\bWrite-DispatchPreStartReceipt\b')
+        $worktreeIndex = $lifecycleText.IndexOf("'worktree', 'add'", [StringComparison]::Ordinal)
+        $carryIndex = $lifecycleText.IndexOf('Apply-SourceCarryIn', $worktreeIndex, [StringComparison]::Ordinal)
+        Assert-True ($writeCalls.Count -eq 1 -and $worktreeIndex -ge 0 -and $writeCalls[0].Index -gt $worktreeIndex -and $writeCalls[0].Index -lt $carryIndex) 'pending 收據呼叫位置不符。'
+
+        $f = New-DdHangSmallFixture -Name 'dd-prestart-interrupted'
+        $override = @'
+function New-DispatchBaseline {
+    param([string]$SourceRoot, [string]$DispatchRoot, [string]$LineSlug, [string]$DispatchSlug, [string]$BaseSha, [string[]]$TargetPath)
+    Start-Sleep -Seconds 600
+}
+'@
+        $entryText = [IO.File]::ReadAllText($f.Entry, [Text.Encoding]::UTF8)
+        $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $override
+        [IO.File]::WriteAllText($f.Entry, $entryText, (New-Object Text.UTF8Encoding($true)))
+        $receipt = Join-Path $f.Root '.local\ai-sessions\history\dd-line\failure.json'
+        $request = [ordered]@{ schema='ai-sessions.dispatch-request.v1'; operation='Dispatch'; source_root=$f.Root; dispatch_root=$f.DispatchRoot; line_slug='dd-line'; dispatch_slug='dd-test'; profile='review'; write_mode='readonly'; dispatch_kind='resource'; task_type='resource-task'; unit_kind='resource-target'; session_mode='cold-start'; target_path=@($f.Target); prompt_path=(Join-Path $f.Root 'prompt.md'); required_identifier='result.md'; failure_receipt_path=$receipt }
+        $requestPath = Join-Path $f.Root '.local\request.json'
+        [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+        $info = New-Object Diagnostics.ProcessStartInfo
+        $info.FileName = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $info.Arguments = '-NoProfile -NonInteractive -File "' + $f.Entry + '" -Operation Dispatch -RequestPath "' + $requestPath + '" -CodexHome "' + $f.CodexHome + '" -CallerSessionId dd-prestart-fixture'
+        $info.WorkingDirectory = $f.Root
+        $info.UseShellExecute = $false
+        $info.CreateNoWindow = $true
+        $child = [Diagnostics.Process]::Start($info)
+        $priorReceiptPath = Get-DispatchScriptVariableValue -Name 'FailureReceiptPath'
+        $priorRequestPath = Get-DispatchScriptVariableValue -Name 'DispatchRequestPath'
+        try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(60)
+            while (-not (Test-Path -LiteralPath $receipt -PathType Leaf) -and -not $child.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100 }
+            Assert-True (Test-Path -LiteralPath $receipt -PathType Leaf) 'worktree 建立後未寫入 pending 收據。'
+            $document = Get-Content -LiteralPath $receipt -Raw -Encoding UTF8 | ConvertFrom-Json
+            $baselineRoot = Join-Path $f.Root '.local\ai-sessions\history\dd-line\baselines'
+            $baselineFiles = @(if (Test-Path -LiteralPath $baselineRoot -PathType Container) { Get-ChildItem -LiteralPath $baselineRoot -Filter '*.json' -File })
+            $dispatchId = [guid]::Empty
+            Assert-True ($document.status -ceq 'pending' -and -not $document.process_started -and $null -eq $document.failed_stage -and $document.dispatcher_process.process_id -eq $child.Id -and [guid]::TryParse([string]$document.dispatch_execution_id, [ref]$dispatchId) -and $baselineFiles.Count -eq 0) '中斷時的 pending 收據或 baseline 時序不符。'
+            $child.Kill()
+            if (-not $child.WaitForExit(10000)) { throw 'dispatcher fixture 未結束。' }
+            $SourceRoot = $f.Root; $DispatchRoot = $f.DispatchRoot; $LineSlug = 'dd-line'; $DispatchSlug = 'dd-test'
+            $PreflightResultPath = $null; $RunRecordPath = $null; $EvidencePath = @(); $ReportPath = @(); $ResultPath = $null
+            $script:FailureReceiptPath = $receipt; $script:DispatchRequestPath = ''; $script:cleanupUseRealGit = $true
+            $cleanup = Invoke-Cleanup -Confirm:$false
+            Assert-True ($cleanup.status -ceq 'completed' -and $cleanup.worktree_removed -and $cleanup.unstarted_proof.basis -ceq 'failure-receipt') 'dispatcher 結束後的收據未放行 Cleanup。'
+            $audit = Get-Content -LiteralPath $cleanup.unstarted_proof.audit_path -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-True ($audit.conditions.U3.dispatcher_state -ceq 'ended') '稽核未記錄 dispatcher 已結束。'
+        }
+        finally {
+            if (-not $child.HasExited) { $child.Kill(); $child.WaitForExit() }
+            $child.Dispose()
+            $script:FailureReceiptPath = $priorReceiptPath; $script:DispatchRequestPath = $priorRequestPath; $script:cleanupUseRealGit = $false
+        }
+
+        $standalone = New-DdHangSmallFixture -Name 'dd-prestart-standalone'
+        $standaloneReceipt = Join-Path $standalone.Root '.local\ai-sessions\history\dd-line\standalone.json'
+        $args = @('-File', $standalone.Entry, '-Operation', 'Preflight', '-SourceRoot', $standalone.Root, '-DispatchRoot', $standalone.DispatchRoot, '-LineSlug', 'dd-line', '-DispatchSlug', 'dd-test', '-CallerSessionId', 'dd-prestart-standalone', '-WriteMode', 'readonly', '-TargetPath', $standalone.Target, '-DispatchKind', 'resource', '-TaskType', 'resource-task', '-CodexHome', $standalone.CodexHome, '-Profile', 'review', '-FailureReceiptPath', $standaloneReceipt)
+        $childLabel = 'standalone-preflight'
+        $progressLogPath = Join-Path $standalone.Root '.local\ai-sessions\history\dd-line\dispatch-progress-dd-test.log'
+        $run = Invoke-DdHangChild -Arguments $args -WorkingDirectory $standalone.Root -Label $childLabel -ProgressLogPath $progressLogPath
+        Write-Host ('DD-PRESTART-TIMING ' + $childLabel + ' ' + $run.ElapsedMs)
+        $preflight = $run.StdOut | ConvertFrom-Json
+        Assert-True ($run.ExitCode -eq 0 -and $preflight.preStartReceipt.state -ceq 'not-applicable' -and -not (Test-Path -LiteralPath $standaloneReceipt)) '獨立 Preflight 不應寫入 pending 收據。'
+
+        foreach ($mode in @('prepare-failure', 'receipt-directory', 'started')) {
+            $case = New-DdHangSmallFixture -Name ('dd-prestart-' + $mode)
+            $receiptPath = Join-Path $case.Root '.local\ai-sessions\history\dd-line\failure.json'
+            if ($mode -eq 'receipt-directory') { $null = New-Item -ItemType Directory -Path $receiptPath -Force }
+            if ($mode -ne 'started') {
+                $entryText = [IO.File]::ReadAllText($case.Entry, [Text.Encoding]::UTF8)
+                $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText "function Invoke-Prepare { param([string[]]`$GuardTargetPath) throw 'fixture prepare failure' }"
+                [IO.File]::WriteAllText($case.Entry, $entryText, (New-Object Text.UTF8Encoding($true)))
+            }
+            $requestDoc = [ordered]@{ schema='ai-sessions.dispatch-request.v1'; operation='Dispatch'; source_root=$case.Root; dispatch_root=$case.DispatchRoot; line_slug='dd-line'; dispatch_slug='dd-test'; profile='review'; write_mode='readonly'; dispatch_kind='resource'; task_type='resource-task'; unit_kind='resource-target'; session_mode='cold-start'; target_path=@($case.Target); prompt_path=(Join-Path $case.Root 'prompt.md'); required_identifier='result.md'; failure_receipt_path=$receiptPath; background=$true }
+            $caseRequest = Join-Path $case.Root '.local\request.json'
+            [IO.File]::WriteAllText($caseRequest, ($requestDoc | ConvertTo-Json -Depth 8), (New-Object Text.UTF8Encoding($false)))
+            $args = @('-File', $case.Entry, '-Operation', 'Dispatch', '-RequestPath', $caseRequest, '-CodexHome', $case.CodexHome, '-CallerSessionId', ('dd-prestart-' + $mode))
+            if ($mode -eq 'started') {
+                $fakeCodex = Join-Path $case.Root '.local\codex-fixture.cmd'
+                $fakeText = '@echo off' + "`r`n" + 'echo {"type":"thread.started","thread_id":"00000000-0000-0000-0000-000000000001"}' + "`r`n" + 'echo {"type":"turn.completed"}' + "`r`n" + 'ping 127.0.0.1 -n 3 >nul' + "`r`nexit /b 0`r`n"
+                [IO.File]::WriteAllText($fakeCodex, $fakeText, (New-Object Text.UTF8Encoding($false)))
+                $args += @('-CodexPath', $fakeCodex)
+            }
+            $childLabel = $mode
+            $progressLogPath = Join-Path $case.Root '.local\ai-sessions\history\dd-line\dispatch-progress-dd-test.log'
+            # started 會走完 Preflight、Prepare 與 Start，無負載時已需約 80 秒，因此另給較寬的上限。
+            $childTimeoutMs = if ($mode -eq 'started') { 240000 } else { 90000 }
+            $run = Invoke-DdHangChild -Arguments $args -WorkingDirectory $case.Root -Label $childLabel -ProgressLogPath $progressLogPath -TimeoutMs $childTimeoutMs
+            Write-Host ('DD-PRESTART-TIMING ' + $childLabel + ' ' + $run.ElapsedMs)
+            Assert-True (-not [string]::IsNullOrWhiteSpace([string]$run.StdOut)) ('Dispatch 子程序未輸出結果：exit_code=' + $run.ExitCode + '; stderr=' + $run.StdErr)
+            $dispatch = $run.StdOut | ConvertFrom-Json
+            if ($mode -eq 'receipt-directory') {
+                Assert-True ($dispatch.error_code -ceq 'DispatchFailureReceiptPersistenceFailed' -and -not [string]::IsNullOrWhiteSpace([string]$dispatch.preflight_result_path)) ('收據寫入失敗未保留既有錯誤碼：' + $run.StdOut + $run.StdErr)
+                $preflightDocument = Get-Content -LiteralPath $dispatch.preflight_result_path -Raw -Encoding UTF8 | ConvertFrom-Json
+                Assert-True ($preflightDocument.preStartReceipt.state -ceq 'write-failed' -and -not [string]::IsNullOrWhiteSpace([string]$preflightDocument.preStartReceipt.error)) 'pending 寫入失敗阻斷 Preflight，或未留下錯誤。'
+            }
+            elseif ($mode -eq 'prepare-failure') {
+                Assert-True ($null -ne $dispatch -and [string](Get-CleanupPropertyValue -Object $dispatch -Names @('failed_stage')) -ceq 'prepare' -and [bool](Get-CleanupPropertyValue -Object $dispatch -Names @('failure_receipt_saved')) -and [string]::Equals([string](Get-CleanupPropertyValue -Object $dispatch -Names @('failure_receipt_path')), $receiptPath, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $receiptPath -PathType Leaf)) ('Prepare 失敗收據不存在或路徑不符：exit_code=' + $run.ExitCode + '; stdout=' + $run.StdOut + '; stderr=' + $run.StdErr)
+                $failedReceipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                Assert-True ($dispatch.status -ceq 'failed' -and $dispatch.failed_stage -ceq 'prepare' -and $failedReceipt.status -ceq 'failed' -and -not $failedReceipt.process_started -and $failedReceipt.failed_stage -ceq 'prepare' -and $failedReceipt.error_code -ceq $dispatch.error_code) 'Prepare 失敗未覆寫 pending 收據。'
+            }
+            else {
+                $superseded = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+                $startDocument = Get-Content -LiteralPath $dispatch.start_result_path -Raw -Encoding UTF8 | ConvertFrom-Json
+                Assert-True ($dispatch.pre_start_receipt.state -ceq 'superseded' -and $superseded.status -ceq 'superseded' -and $superseded.process_started -and $superseded.run_record_path -ceq $startDocument.runRecordPath) ('Start 未更新 pending 收據：' + $run.StdOut + $run.StdErr)
+                Start-Sleep -Seconds 3
+            }
+        }
     }
 
     Invoke-Case 'Phase 6 DD-RULES-PREFLIGHT 規則解析與拒絕' {
@@ -14977,10 +15621,10 @@ if ($Phase -ge 9) {
         Assert-True ([int]$Record.run.exit_code -ne 0) ('F-009 ' + $Label + ' CLI failed envelope 未以非零結束碼回傳：' + [string]$Record.output_text)
         $statusProperty = if ($null -eq $Record.output_document) { $null } else { $Record.output_document.PSObject.Properties['status'] }
         Assert-True ($null -ne $statusProperty -and [string]$statusProperty.Value -eq 'failed' -and [string]$Record.output_document.failed_stage -eq 'preflight' -and -not [bool]$Record.output_document.process_started) ('F-009 ' + $Label + ' CLI failed envelope 欄位不符：' + [string]$Record.output_text)
-        Assert-True ($Record.receipt_exists -and $null -ne $Record.receipt_document) ('F-009 ' + $Label + ' failure receipt missing：' + [string]$Record.output_text)
+        Assert-True ($null -ne $Record.receipt_document) ('F-009 ' + $Label + ' failure receipt missing：' + [string]$Record.output_text)
         $receipt = $Record.receipt_document
         Assert-True ([string]$receipt.schema -eq 'ai-sessions.dispatch-failure-receipt.v1' -and [string]$receipt.status -eq 'failed' -and [string]$receipt.failed_stage -eq 'preflight' -and -not [bool]$receipt.process_started) ('F-009 ' + $Label + ' receipt status contract 不符：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
-        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$receipt.error_code) -and -not [string]::IsNullOrWhiteSpace([string]$receipt.dispatch_slug)) ('F-009 ' + $Label + ' receipt 缺少 error_code 或 dispatch_slug：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$receipt.error_code) -and [string]$receipt.error_code -ceq [string]$Record.output_document.error_code -and -not [string]::IsNullOrWhiteSpace([string]$receipt.dispatch_slug)) ('F-009 ' + $Label + ' receipt error_code 或 dispatch_slug 不符：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
         $dispatchExecutionId = [guid]::Empty
         Assert-True ([Guid]::TryParse([string]$receipt.dispatch_execution_id, [ref]$dispatchExecutionId)) ('F-009 ' + $Label + ' receipt 缺少 dispatch_execution_id：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
         Assert-True ([bool]$receipt.failure_receipt_saved -and [string]::Equals([string]$receipt.failure_receipt_path, [string]$Record.receipt_path, [StringComparison]::OrdinalIgnoreCase)) ('F-009 ' + $Label + ' receipt saved metadata 不符：' + ($receipt | ConvertTo-Json -Depth 20 -Compress))
@@ -15016,7 +15660,8 @@ if ($Phase -ge 9) {
         Assert-True ($productionFunctionText.Contains($receiptCondition)) 'F-009 reverse 找不到 failure receipt writer 的 production guard。'
         $mutantFunctionText = $productionFunctionText.Replace($receiptCondition, $mutantCondition)
         Assert-True ($mutantFunctionText -ne $productionFunctionText) 'F-009 reverse mutant 未改變 executionRoot guard。'
-        $mutantText = Add-DispatchFunctionOverrideToEntry -EntryText ([IO.File]::ReadAllText($sourcePath)) -FunctionText $mutantFunctionText
+        $disablePending = "function Write-DispatchPreStartReceipt { param(`$SourceRoot, `$ExecutionRoot, `$DispatchRoot, `$LineSlug, `$DispatchSlug) return [ordered]@{ path = `$null; sha256 = `$null; state = 'not-applicable'; error = `$null } }"
+        $mutantText = Add-DispatchFunctionOverrideToEntry -EntryText ([IO.File]::ReadAllText($sourcePath)) -FunctionText ($mutantFunctionText + [Environment]::NewLine + $disablePending)
         $mutantPath = Join-Path $phase9Root 'f009-mutant-Invoke-CodexDispatch.ps1'
         $bomEncoding = New-Object System.Text.UTF8Encoding($true)
         [IO.File]::WriteAllText($mutantPath, $mutantText, $bomEncoding)
@@ -15026,7 +15671,7 @@ if ($Phase -ge 9) {
             Assert-True ([string]$record.run.command -match 'Operation.*Dispatch' -and [string]$record.run.command -match 'RequestPath') ('F-009 reverse ' + $scenario + ' 未透過實際 Dispatch CLI 入口。')
             $statusProperty = if ($null -eq $record.output_document) { $null } else { $record.output_document.PSObject.Properties['status'] }
             Assert-True ([int]$record.run.exit_code -ne 0 -and $null -ne $statusProperty -and [string]$statusProperty.Value -eq 'failed' -and [string]$record.output_document.failed_stage -eq 'preflight') ('F-009 reverse ' + $scenario + ' 未留下 late failed envelope：' + [string]$record.output_text)
-            Assert-True (-not $record.receipt_exists -and -not [bool]$record.start_counter_exists -and -not [bool]$record.output_document.failure_receipt_saved) ('F-009 reverse ' + $scenario + ' 意外宣告 failure receipt 已保存：' + [string]$record.output_text)
+            Assert-True ($null -eq $record.receipt_document -and -not [bool]$record.start_counter_exists -and -not [bool]$record.output_document.failure_receipt_saved) ('F-009 reverse ' + $scenario + ' 意外宣告 failure receipt 已保存：' + [string]$record.output_text)
             $reverseRecords.Add($record)
         }
         $script:phase9F009ReverseEvidence = [ordered]@{ mutation = 'failure receipt writer additionally required executionRootPath to be non-empty'; records = @($reverseRecords.ToArray()) }
@@ -16241,7 +16886,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
         $receiptHandoffProperty = if ($null -eq $integration.failure_receipt) { $null } else { $integration.failure_receipt.PSObject.Properties['continuation_handoff'] }
         $receiptHandoff = if ($null -eq $receiptHandoffProperty) { $null } else { $receiptHandoffProperty.Value }
         Assert-True ($dispatchResultText -match '"status"\s*:\s*"failed"' -and $dispatchResultText -match '"failed_stage"\s*:\s*"inspect"' -and $dispatchResultText -match '"process_started"\s*:\s*true') ('Inspect exception 未由真實 Invoke-Dispatch 失敗路徑接住：' + $dispatchResultText + [string]$integration.dispatch_run.stderr)
-        Assert-True ($null -ne $integration.failure_receipt -and [bool]$integration.failure_receipt.failure_receipt_saved -and $null -ne $receiptHandoff) ('Inspect exception 的通用 failure receipt 缺少 continuation_handoff：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
+        Assert-True ($null -ne $integration.failure_receipt -and [string]$integration.failure_receipt.status -ceq 'failed' -and -not [string]::IsNullOrWhiteSpace([string]$integration.failure_receipt.error_code) -and [bool]$integration.failure_receipt.process_started -and [bool]$integration.failure_receipt.failure_receipt_saved -and $null -ne $receiptHandoff) ('Inspect exception 的通用 failure receipt 缺少 continuation_handoff：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
         Assert-True (@($receiptHandoff.incomplete_units).Count -eq 1 -and [string]$receiptHandoff.incomplete_units[0] -ceq 'Phase 2' -and @($receiptHandoff.cold_start_entry.requested_unit).Count -eq 1 -and [string]$receiptHandoff.cold_start_entry.requested_unit[0] -ceq 'Phase 2') ('Inspect exception handoff 超出 continuation ScopePlan selected_units：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress))
         Assert-True (@($receiptHandoff.confirmed_results).Count -eq 0 -and [string]$receiptHandoff.confirmed_results_source.status -ceq 'insufficient' -and -not [string]::IsNullOrWhiteSpace([string]$receiptHandoff.confirmed_results_source.reason)) ('取不到 confirmed_results 時未保持空陣列並標記來源不足：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress))
         Assert-True (-not [bool]$receiptHandoff.automatic_retry -and @($integration.continuation_counter_lines).Count -eq 1) ('Dispatch 自動重送或 continuation_handoff 未提供冷啟動入口：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress) + '; starts=' + ($integration.continuation_counter_lines -join ','))
@@ -16268,7 +16913,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
         $receipt = $integration.failure_receipt
         $receiptHandoff = if ($null -eq $receipt) { $null } else { Get-OptionalPropertyValue -InputObject $receipt -Name 'continuation_handoff' }
         Assert-True ($null -ne $dispatchResult -and [string]$dispatchResult.status -ceq 'failed' -and [string]$dispatchResult.failed_stage -ceq 'inspect' -and [string]$dispatchResult.error_code -ceq 'DispatchInspectFailed' -and [string]$dispatchResult.error -match 'Injected wait exception' -and [bool]$dispatchResult.process_started) ('Dispatch wait 例外未回報實際 Inspect 階段：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
-        Assert-True ($null -ne $receipt -and [bool]$receipt.failure_receipt_saved -and [string]$receipt.failed_stage -ceq 'inspect' -and $null -ne $receiptHandoff -and -not [bool]$receiptHandoff.automatic_retry -and @($integration.continuation_counter_lines).Count -eq 1) ('Dispatch wait 例外未保留交接成果或觸發自動重試：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
+        Assert-True ($null -ne $receipt -and [string]$receipt.status -ceq 'failed' -and [string]$receipt.error_code -ceq [string]$dispatchResult.error_code -and [bool]$receipt.process_started -and [bool]$receipt.failure_receipt_saved -and [string]$receipt.failed_stage -ceq 'inspect' -and $null -ne $receiptHandoff -and -not [bool]$receiptHandoff.automatic_retry -and @($integration.continuation_counter_lines).Count -eq 1) ('Dispatch wait 例外未保留交接成果或觸發自動重試：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
         Write-Phase9Evidence -Label 'T046_DISPATCH_WAIT_EXCEPTION_STAGE' -Value ([ordered]@{
                 command = $integration.dispatch_run.command
                 exit_code = $integration.dispatch_run.exit_code
@@ -16290,7 +16935,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
         $receiptHandoff = if ($null -eq $receipt) { $null } else { Get-OptionalPropertyValue -InputObject $receipt -Name 'continuation_handoff' }
         $priorEventPath = [string]$integration.real.run_record_document.event_stream_path
         Assert-True ($null -ne $dispatchDocument -and [string]$dispatchDocument.status -ceq 'failed' -and [string]$dispatchDocument.failed_stage -ceq 'start' -and -not [bool]$dispatchDocument.process_started -and [string]$dispatchDocument.error_code -ceq 'DispatchStartFailed' -and [string]$dispatchDocument.error -match 'NoValidResumeAnchor') ('遺失 thread anchor 未保留 Start 失敗階段、錯誤原因與未啟動狀態：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
-        Assert-True ($null -ne $receipt -and [bool]$receipt.failure_receipt_saved -and [string]$receipt.failed_stage -ceq 'start' -and -not [bool]$receipt.process_started -and $null -ne $receiptHandoff) ('續行 Start 前失敗未保存 continuation handoff receipt：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
+        Assert-True ($null -ne $receipt -and [string]$receipt.status -ceq 'failed' -and [string]$receipt.error_code -ceq [string]$dispatchDocument.error_code -and [bool]$receipt.failure_receipt_saved -and [string]$receipt.failed_stage -ceq 'start' -and -not [bool]$receipt.process_started -and $null -ne $receiptHandoff) ('續行 Start 前失敗未保存 continuation handoff receipt：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
         Assert-True (@($receiptHandoff.confirmed_results | Where-Object { [string]$_ -ceq '前輪已完成 continuation handoff 探針。' }).Count -eq 1 -and [string]$receiptHandoff.confirmed_results_source.status -ceq 'available') ('thread 遺失時未從同 slug RunRecord 的前輪 safe point 交接已確認成果：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress))
         Assert-True (@($receiptHandoff.cold_start_entry.requested_unit).Count -eq 2 -and -not [bool]$receiptHandoff.cold_start_entry.automatic_retry -and [string]$receiptHandoff.cold_start_entry.session_mode -ceq 'cold-start' -and $null -eq $receiptHandoff.cold_start_entry.resume_thread_id) ('thread 遺失 handoff 未提供不自動重試的 cold-start 範圍：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress))
         Assert-True (@($receiptHandoff.source_locations | Where-Object { [string]$_.kind -ceq 'event_stream' -and [string]$_.path -ceq (Resolve-AbsolutePath -Path $priorEventPath) }).Count -eq 1 -and @($integration.continuation_counter_lines).Count -eq 0) ('handoff 未標示前輪事件來源或錯誤啟動 Codex：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress) + '; starts=' + ($integration.continuation_counter_lines -join ','))
@@ -16313,7 +16958,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
         $receiptHandoffProperty = if ($null -eq $integration.failure_receipt) { $null } else { $integration.failure_receipt.PSObject.Properties['continuation_handoff'] }
         $receiptHandoff = if ($null -eq $receiptHandoffProperty) { $null } else { $receiptHandoffProperty.Value }
         Assert-True ($dispatchResultText -match '"status"\s*:\s*"failed"' -and $dispatchResultText -match '"failed_stage"\s*:\s*"inspect"' -and $dispatchResultText -match '"process_started"\s*:\s*true') ('receipt 暫時寫入失敗未由真實 Invoke-Dispatch 通用路徑接續：' + $dispatchResultText + [string]$integration.dispatch_run.stderr)
-        Assert-True ($integration.temporary_receipt_marker_exists -and $null -ne $integration.failure_receipt -and [bool]$integration.failure_receipt.failure_receipt_saved -and $null -ne $receiptHandoff) ('receipt 重試沒有成功保存含 handoff 的 failure receipt：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
+        Assert-True ($integration.temporary_receipt_marker_exists -and $null -ne $integration.failure_receipt -and [string]$integration.failure_receipt.status -ceq 'failed' -and -not [string]::IsNullOrWhiteSpace([string]$integration.failure_receipt.error_code) -and [bool]$integration.failure_receipt.process_started -and [bool]$integration.failure_receipt.failure_receipt_saved -and $null -ne $receiptHandoff) ('receipt 重試沒有成功保存含 handoff 的 failure receipt：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
         Assert-True (@($receiptHandoff.incomplete_units).Count -eq 1 -and [string]$receiptHandoff.incomplete_units[0] -ceq 'Phase 2' -and @($receiptHandoff.cold_start_entry.requested_unit).Count -eq 1 -and [string]$receiptHandoff.cold_start_entry.requested_unit[0] -ceq 'Phase 2') ('receipt 重試後 continuation_handoff 遺失 selected scope：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress))
         Assert-True (-not [bool]$receiptHandoff.automatic_retry -and @($integration.continuation_counter_lines).Count -eq 1) ('receipt 重試使 Dispatch 重送 Codex：' + ($receiptHandoff | ConvertTo-Json -Depth 30 -Compress) + '; starts=' + ($integration.continuation_counter_lines -join ','))
         Write-Phase9Evidence -Label 'T042_INVOKE_DISPATCH_RECEIPT_RETRY' -Value ([ordered]@{
@@ -17299,7 +17944,7 @@ return & $script:cleanupTamperHashOriginal -Path $Path
         $handoff = if ($null -eq $receipt) { $null } else { Get-OptionalPropertyValue -InputObject $receipt -Name 'continuation_handoff' }
         $checkpointSources = @($handoff.source_locations | Where-Object { [string]$_.kind -ceq 'interruption_checkpoint' })
         Assert-True ($null -ne $dispatch -and [string]$dispatch.status -ceq 'failed' -and [string]$dispatch.failed_stage -ceq 'inspect' -and [int]$dispatch.process_exit_code -eq 0 -and [string]$dispatch.error_code -ceq 'DispatchInspectFailed') ('exit 0 且缺少 turn 終止事件未判為 continuation failure：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
-        Assert-True ($null -ne $receipt -and [bool]$receipt.failure_receipt_saved -and $null -ne $handoff -and $checkpointSources.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$checkpointSources[0].path) -and (Test-Path -LiteralPath ([string]$checkpointSources[0].path) -PathType Leaf)) ('F-034 failure receipt 未包含 T056 中斷保全紀錄位置：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
+        Assert-True ($null -ne $receipt -and [string]$receipt.status -ceq 'failed' -and [string]$receipt.error_code -ceq [string]$dispatch.error_code -and [bool]$receipt.process_started -and [bool]$receipt.failure_receipt_saved -and $null -ne $handoff -and $checkpointSources.Count -eq 1 -and -not [string]::IsNullOrWhiteSpace([string]$checkpointSources[0].path) -and (Test-Path -LiteralPath ([string]$checkpointSources[0].path) -PathType Leaf)) ('F-034 failure receipt 未包含 T056 中斷保全紀錄位置：' + [string]$integration.dispatch_run.stdout + [string]$integration.dispatch_run.stderr)
         Assert-True (@($handoff.incomplete_units).Count -eq 1 -and [string]$handoff.incomplete_units[0] -ceq 'Phase 2' -and -not [bool]$handoff.automatic_retry -and @($integration.continuation_counter_lines).Count -eq 1) ('F-034 handoff 範圍錯誤或 Dispatch 自動重送：' + ($handoff | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([bool]$integration.variant_modules_loaded -and (-not (Test-PathWithinRoot -Path $integration.variant_path -Root $PSScriptRoot)) -and -not (Test-Path -LiteralPath $integration.variant_path -PathType Leaf) -and @((Get-ChildItem -LiteralPath $PSScriptRoot -Filter '.phase9-t042-dispatch-*.ps1' -File -ErrorAction SilentlyContinue)).Count -eq 0) ('F034 的 T042 變體未從 repo 外載入模組或未清除：' + [string]$integration.variant_path)
         Write-Phase9Evidence -Label 'F034_INTERRUPTED_EXIT_ZERO_FAILURE_HANDOFF' -Value ([ordered]@{ command = $integration.dispatch_run.command; exit_code = $integration.dispatch_run.exit_code; dispatch_result = $dispatch; failure_receipt = $receipt; continuation_handoff = $handoff; interruption_checkpoint = $checkpointSources; variant_path = $integration.variant_path; variant_module_directory = $integration.variant_module_directory; variant_modules_loaded = $integration.variant_modules_loaded; variant_removed = -not (Test-Path -LiteralPath $integration.variant_path -PathType Leaf) })
@@ -19150,7 +19795,7 @@ $script:TargetPath = @()
         Assert-True (Test-PathWithinRoot -Path $preFix.dispatch_root -Root $preFix.test_execution_root) ('R-3 pre-fix dispatchRoot 未位於測試 executionRoot 下：' + ($preFix.request | ConvertTo-Json -Depth 20 -Compress))
         Assert-True (Test-PathWithinRoot -Path $preFix.request.prompt_path -Root $sourceScratchRoot) ('R-3 pre-fix prompt_path 未位於 sourceRoot scratch：' + ($preFix.request | ConvertTo-Json -Depth 20 -Compress))
         Assert-True ($preFix.request.dispatch_root -eq (Join-Path $preFix.source_root ('.local\ai-sessions\worktrees\' + $preFix.dispatch_slug))) ('R-3 pre-fix dispatch_root 未符合 sourceRoot worktrees 形態：' + ($preFix.request | ConvertTo-Json -Depth 20 -Compress))
-        Assert-True ($preFix.receipt_exists -and $null -ne $preFix.receipt_document -and [bool]$preFixDispatchResult.failure_receipt_saved -and [string]$preFix.receipt_document.failed_stage -eq 'start' -and -not [bool]$preFix.receipt_document.process_started) ('R-2 pre-fix boundary failure 未保存 start failure receipt：' + [string]$preFix.output_text)
+        Assert-True ($null -ne $preFix.receipt_document -and [bool]$preFixDispatchResult.failure_receipt_saved -and [string]$preFix.receipt_document.status -ceq 'failed' -and [string]$preFix.receipt_document.error_code -ceq [string]$preFixDispatchResult.error_code -and [string]$preFix.receipt_document.failed_stage -eq 'start' -and -not [bool]$preFix.receipt_document.process_started) ('R-2 pre-fix boundary failure 未保存 start failure receipt：' + [string]$preFix.output_text)
         Assert-True (@($preFix.composed_prompt_paths | Where-Object { Test-PathWithinRoot -Path $_ -Root $preFix.dispatch_root }).Count -gt 0) ('R-1/R-3 pre-fix 未留下 executionRoot 內的組合 Prompt：' + ($preFix | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([bool]$preFix.worktree_cleanup.removed -and -not [bool]$preFix.worktree_cleanup.registered_after) ('R-3 pre-fix 未清理隔離 git worktree：' + ($preFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([string]::Equals([string]$preFix.source_repo_worktree_before, [string]$preFix.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 pre-fix 改變來源 repo 的 git worktree list：before=' + [string]$preFix.source_repo_worktree_before + ' after=' + [string]$preFix.source_repo_worktree_after + ' cleanup=' + ($preFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
@@ -19281,7 +19926,7 @@ $script:TargetPath = @()
         Assert-True (((Test-PathWithinRoot -Path $postFix.start_result_document.promptSourcePath -Root $postFix.source_root) -and [string]::Equals([string]$postFix.start_result_document.promptSourcePath, [string]$postFix.prompt_source_path, [StringComparison]::OrdinalIgnoreCase))) 'R-1 post-fix promptSourcePath 未保留 sourceRoot scratch prompt。'
         Assert-True (Test-PathWithinRoot -Path $postFix.start_result_document.promptTransferPath -Root (Join-Path $postFix.execution_root '.local\ai-sessions\history')) 'R-1 post-fix promptTransferPath 未位於 execution history。'
         Assert-True ([string]::Equals([string]$postFixDispatchResult.prompt_transfer_path, [string]$postFix.start_result_document.promptTransferPath, [StringComparison]::OrdinalIgnoreCase)) 'R-1 Dispatch result 未保存搬運後 prompt transfer path。'
-        Assert-True (-not $postFix.receipt_exists) ('R-2 post-fix success 不應產生 failure receipt：' + ($postFix | ConvertTo-Json -Depth 30 -Compress))
+        Assert-True ($null -ne $postFix.receipt_document -and [string]$postFix.receipt_document.status -ceq 'superseded' -and [bool]$postFix.receipt_document.process_started -and $null -eq $postFix.receipt_document.error_code) ('R-2 post-fix 收據狀態不符：' + ($postFix | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([bool]$postFix.worktree_cleanup.removed -and -not [bool]$postFix.worktree_cleanup.registered_after) ('R-3 post-fix 未清理隔離 git worktree：' + ($postFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([string]::Equals([string]$postFix.source_repo_worktree_before, [string]$postFix.source_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 post-fix 改變來源 repo 的 git worktree list：before=' + [string]$postFix.source_repo_worktree_before + ' after=' + [string]$postFix.source_repo_worktree_after + ' cleanup=' + ($postFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
         Assert-True ([string]::Equals([string]$postFix.isolated_repo_worktree_before, [string]$postFix.isolated_repo_worktree_after, [StringComparison]::OrdinalIgnoreCase)) ('R-3 post-fix 改變隔離 repo 的 git worktree list：' + ($postFix.worktree_cleanup | ConvertTo-Json -Depth 30 -Compress))
@@ -24705,7 +25350,7 @@ function Invoke-GitCommand {
             if (Test-Path -LiteralPath $receiptPath -PathType Leaf) { $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json }
             Write-Phase9Evidence -Label 'BATCH2_REPORTPATH_DISPATCH_OUTSIDE' -Value ([ordered]@{ command=$run.command; exit_code=$run.exit_code; stdout=$run.stdout; stderr=$run.stderr; result=$result; receipt=$receipt; report_path=$reportPath; expected_execution_root=$dispatchRoot; worktree_add_attempted=(Test-Path -LiteralPath $markerPath -PathType Leaf) })
             Assert-True ($null -ne $result -and [string]$result.error_code -ceq 'DispatchReportPathOutsideExecutionRoot' -and -not [bool]$result.process_started -and [bool]$result.failure_receipt_saved) ('來源樹 report path 未依預期在 Dispatch failure path 拒絕：' + [string]$run.stdout + [string]$run.stderr)
-            Assert-True ($null -ne $receipt -and [string]$receipt.error_code -ceq 'DispatchReportPathOutsideExecutionRoot' -and -not [bool]$receipt.process_started) ('Dispatch failure receipt 未保存 report path 錯誤與未啟動狀態：' + [string]$run.stdout + [string]$run.stderr)
+            Assert-True ($null -ne $receipt -and [string]$receipt.status -ceq 'failed' -and [string]$receipt.error_code -ceq 'DispatchReportPathOutsideExecutionRoot' -and -not [bool]$receipt.process_started) ('Dispatch failure receipt 未保存 report path 錯誤與未啟動狀態：' + [string]$run.stdout + [string]$run.stderr)
             Assert-True ([string]$result.error -like ('*' + $reportPath + '*' + $dispatchRoot + '*') -and [string]$result.error -match 'Cleanup' -and -not (Test-Path -LiteralPath $markerPath -PathType Leaf)) ('錯誤未包含原始第 7 欄路徑、executionRoot、Cleanup 修正方式，或 worktree 建立已開始：' + [string]$run.stdout + [string]$run.stderr)
         }
         finally {

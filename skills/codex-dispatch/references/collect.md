@@ -162,7 +162,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 
 ## 保存契約對照
 
-Cleanup 驗證同一 dispatchSlug 的所有 RunRecord，保存各輪位於 worktree 的引用證據。移除 worktree 失敗後重試時，經身分驗證的 removal receipt 可證明已保存且目的檔雜湊相符的缺失來源檔。
+Cleanup 驗證同一 dispatchSlug 的所有 RunRecord，保存各輪位於 worktree 的引用證據。無 Preflight result 與 RunRecord 時，依 U1 至 U4 的從未啟動判定處理，條件與稽核見 `recovery.md`「失敗與恢復導引」。移除 worktree 失敗後重試時，經身分驗證的 removal receipt 可證明已保存且目的檔雜湊相符的缺失來源檔。
 
 派工產物的保存責任依下表。只有表中列出的建立者與更新者可以寫入該項；更新欄為「無」的項目建立後不再修改。回收端只做表中列出的處理，不代為補寫內容。
 
@@ -174,7 +174,8 @@ Cleanup 驗證同一 dispatchSlug 的所有 RunRecord，保存各輪位於 workt
 | last-message | 同事件流 | `Start` 啟動的 Codex 程序（`--output-last-message`） | 同建立者 | `Inspect` 只用於與事件流 finalMessage 比對；worktree 派遣由 `Cleanup` 保存回來源 | 事件流取證、完成判定與三出口 |
 | thread id | 同事件流 | `Start` 在事件流出現 `thread.started` 且檔案空白時寫入 | 無；續行只讀取比對 | worktree 派遣由 `Cleanup` 保存回來源 | 續 session 與跨介面接手 |
 | RunRecord | 來源 `history\<lineSlug>\runs\<dispatchSlug>\` | `Start`，目的已存在時拒絕 | `Start` 在 prompt 傳遞、啟動完成與啟動失敗時更新；`Inspect` 在事件流中斷時更新 `unknown_interruption`。皆為原子寫入 | 只讀；`Cleanup` 依其驗證路徑與 owner，不列入 worktree 保存清單 | 回收三態判定 |
-| failure receipt | Request 的 `failure_receipt_path`，可位於來源同線 `history\` 或 dispatch worktree 的同線 `history\` | `Dispatch`，在續行的 `Inspect` 判定失敗，或外層例外且尚未寫入時 | 同建立者；同一路徑的後一次寫入取代前一次 | `Start` 驗證未啟動證明時讀取；位於來源時原地保留，位於 dispatch worktree 時不在 `Cleanup` 保存清單，需保留時由主 Agent 在 `Cleanup` 前讀取 | 回收三態判定 |
+| failure receipt | Request 的 `failure_receipt_path`，可位於來源同線 `history\` 或 dispatch worktree 的同線 `history\` | `Dispatch` 在建立 worktree 後寫入 `pending`，或在外層例外與續行的 `Inspect` 失敗時寫入 `failed` | `Dispatch` 成功啟動後更新為 `superseded`；同一路徑的後一次寫入取代前一次，依 `status` 判讀 | `Start` 驗證未啟動證明時讀取；`Cleanup` 的從未啟動判定可讀取符合條件的 pending／failed 收據。位於來源時原地保留，位於 dispatch worktree 時不在 `Cleanup` 保存清單，需保留時由主 Agent 在 `Cleanup` 前讀取 | 回收三態判定 |
+| 未啟動 Cleanup 稽核 | 來源 `history\<lineSlug>\cleanup-unstarted-<dispatchSlug>-<attemptId>.json` | `Cleanup` 的從未啟動判定放行後寫入 `validated` | `Cleanup` 在保存、移除或失敗時更新狀態 | 留在來源同線 `history\`，不列入 worktree 保存清單 | 失敗與恢復導引 |
 | 中斷保全紀錄 | `executionRoot` 的 `history\<lineSlug>\interruption-checkpoint-<dispatchSlug>-<runId>.json`，worktree 派遣為 dispatch worktree，direct-write 為來源工作樹；RunRecord 的 `interruption_checkpoint_path` 為路徑權威。不可寫時以結案訊息中的中斷保全三行交付，位置在識別字三行之前 | `Start` 建立全數未完成的初始檔，並把絕對路徑寫入 prompt | 執行端每完成一個單位以原子寫入更新 | `Inspect`、`Collect` 讀取並回傳已確認單位、未完成單位與證據位置，不回寫該檔，仍接受舊派遣記錄的來源路徑；worktree 派遣由 `Cleanup` 保存回來源同線 `history`。未執行單位不產生結論 | InterruptionSafeguard |
 | Developer 結案報告 | dispatch worktree 的 `report\<lineSlug>\` | 執行端（Workflow 為 Developer）；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者 | `Collect` 與 Reviewer 只讀；`Cleanup` 依固定報告版本規則保存，無法判定新舊時封存 worktree 版本並保留來源版本 | 結案報告與 Git 來源紀錄 |
 | 協調者結案報告（需要你決定、已自行處理、僅供知悉三區） | 來源 `report\<lineSlug>\` | 主 Agent 判定內容並寫入 | 同建立者 | 不經派工回收；執行端不寫入此檔 | `instructions.md` §1.4 結案報告 |

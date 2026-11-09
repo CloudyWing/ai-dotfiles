@@ -33,6 +33,8 @@ param(
 
     [string]$RequestPath,
 
+    [string]$DispatchRequestPath,
+
     [string]$FailureReceiptPath,
 
     [string]$PrepareResultPath,
@@ -866,6 +868,12 @@ try {
     }
     if ($TakeoverOwner -and $Operation -ine 'Cleanup') {
         throw 'CleanupTakeoverOperationInvalid：TakeoverOwner 只適用於 Cleanup。'
+    }
+    if ($PSBoundParameters.ContainsKey('DispatchRequestPath') -and $Operation -ine 'Cleanup') {
+        throw 'CleanupDispatchRequestPathOperationInvalid：DispatchRequestPath 只適用於 Cleanup。'
+    }
+    if ($PSBoundParameters.ContainsKey('DispatchRequestPath') -and -not (Test-DispatchFullyQualifiedPath -Path $DispatchRequestPath)) {
+        Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message 'DispatchRequestPath 必須是完整絕對路徑。' -Field 'dispatch_request_path' -Detail ([ordered]@{ expected = 'fully-qualified path'; received = $DispatchRequestPath })
     }
     Assert-DispatchSessionMode
     $requiresCallerSessionCheck = $Operation -in @('Preflight', 'Prepare', 'Start', 'Dispatch', 'Cleanup') -or

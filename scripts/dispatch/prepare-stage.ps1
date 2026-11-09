@@ -1520,10 +1520,8 @@ function Write-DispatchFailureReceipt {
         [Parameter(Mandatory)]
         [string]$DispatchExecutionId,
 
-        [Parameter(Mandatory)]
         [string]$ErrorCode,
 
-        [Parameter(Mandatory)]
         [string]$ErrorMessage,
 
         [AllowEmptyString()]
@@ -1543,18 +1541,38 @@ function Write-DispatchFailureReceipt {
         [string[]]$TargetPath = @(),
 
         [AllowNull()]
-        [System.Collections.IDictionary]$ContinuationHandoff
+        [System.Collections.IDictionary]$ContinuationHandoff,
+
+        [ValidateSet('pending', 'failed', 'superseded')]
+        [string]$Status = 'failed',
+
+        [AllowNull()]
+        [System.Collections.IDictionary]$DispatcherProcess,
+
+        [string]$RunRecordPath,
+
+        [AllowEmptyString()]
+        [string]$ExpectedExistingSha256
     )
+
+    if ($Status -eq 'failed' -and ([string]::IsNullOrEmpty($ErrorCode) -or [string]::IsNullOrEmpty($ErrorMessage))) {
+        throw 'ErrorCode and ErrorMessage are required for a failed receipt.'
+    }
+    if (-not $PSBoundParameters.ContainsKey('DispatcherProcess')) {
+        $DispatcherProcess = Get-DispatchDispatcherProcessInfo
+    }
 
     $guardSourceRoot = $SourceRoot
     $guardExecutionRoot = if ([string]::IsNullOrWhiteSpace($ExecutionRoot)) { $SourceRoot } else { $ExecutionRoot }
     $document = [ordered]@{
         schema = 'ai-sessions.dispatch-failure-receipt.v1'
-        status = 'failed'
-        failed_stage = $FailedStage
-        error_code = $ErrorCode
-        error = $ErrorMessage
-        process_started = $ProcessStarted
+        status = $Status
+        failed_stage = if ($Status -eq 'failed') { $FailedStage } else { $null }
+        error_code = if ($Status -eq 'failed') { $ErrorCode } else { $null }
+        error = if ($Status -eq 'failed') { $ErrorMessage } else { $null }
+        process_started = if ($Status -eq 'failed') { $ProcessStarted } else { $Status -eq 'superseded' }
+        written_at_utc = [DateTime]::UtcNow.ToString('o')
+        dispatcher_process = $DispatcherProcess
         line_slug = $LineSlug
         dispatch_slug = $DispatchSlug
         dispatch_execution_id = $DispatchExecutionId
@@ -1563,6 +1581,10 @@ function Write-DispatchFailureReceipt {
         dispatch_root = if ([string]::IsNullOrWhiteSpace($DispatchRoot)) { $null } else { Resolve-AbsolutePath -Path $DispatchRoot }
         failure_receipt_path = Resolve-AbsolutePath -Path $Path
         failure_receipt_saved = $true
+    }
+    if ($Status -eq 'superseded') {
+        $document.run_record_path = $RunRecordPath
+        $document.superseded_at_utc = [DateTime]::UtcNow.ToString('o')
     }
     if ($null -ne $ContinuationHandoff) {
         $document.continuation_handoff = $ContinuationHandoff
@@ -1573,7 +1595,103 @@ function Write-DispatchFailureReceipt {
             }
         }
     }
-    return Write-DispatchAtomicJsonDocument -Path $Path -Document $document -SourceRoot $guardSourceRoot -ExecutionRoot $guardExecutionRoot -TargetPath @($TargetPath) -HashProperty ''
+    return Write-DispatchAtomicJsonDocument -Path $Path -Document $document -SourceRoot $guardSourceRoot -ExecutionRoot $guardExecutionRoot -TargetPath @($TargetPath) -HashProperty '' -ExpectedExistingSha256 $ExpectedExistingSha256
+}
+
+function Get-DispatchDispatcherProcessInfo {
+    [CmdletBinding()]
+    param()
+
+    $process = $null
+    try {
+        $process = [System.Diagnostics.Process]::GetCurrentProcess()
+        return [ordered]@{
+            process_id = $process.Id
+            process_name = $process.ProcessName
+            process_start_time_utc = $process.StartTime.ToUniversalTime().ToString('o')
+        }
+    }
+    catch {
+        return $null
+    }
+    finally {
+        if ($null -ne $process) { $process.Dispose() }
+    }
+}
+
+function Write-DispatchPreStartReceipt {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$DispatchRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug
+    )
+
+    $context = Get-DispatchScriptVariableValue -Name 'DispatchPreStartReceiptContext'
+    $result = [ordered]@{ path = $null; sha256 = $null; state = 'not-applicable'; error = $null }
+    if ($null -ne $context) {
+        $result.path = [string]$context.Path
+        try {
+            $written = Write-DispatchFailureReceipt -Path $context.Path -LineSlug $LineSlug -DispatchSlug $DispatchSlug -DispatchExecutionId $context.DispatchExecutionId -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -DispatchRoot $DispatchRoot -TargetPath @($context.TargetPath) -Status 'pending'
+            $result.path = $written.Path
+            $result.sha256 = $written.Sha256
+            $result.state = 'written'
+        }
+        catch {
+            $result.state = 'write-failed'
+            $result.error = $_.Exception.Message
+        }
+    }
+    $script:DispatchPreStartReceipt = $result
+    return $result
+}
+
+function Set-DispatchPreStartReceiptSuperseded {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot,
+        [Parameter(Mandatory)][string]$DispatchRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug,
+        [AllowEmptyString()][string]$RunRecordPath
+    )
+
+    $context = Get-DispatchScriptVariableValue -Name 'DispatchPreStartReceiptContext'
+    $result = [ordered]@{ path = $null; sha256 = $null; state = 'not-applicable'; error = $null }
+    if ($null -ne $context) {
+        $result.path = [string]$context.Path
+        try {
+            if ([string]::IsNullOrWhiteSpace($RunRecordPath)) { throw 'Start result is missing run_record_path.' }
+            $verifiedPath = Resolve-DispatchOutputPath -CandidatePath $context.Path -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @($context.TargetPath)
+            $existingSha256 = Get-FileSha256 -Path $verifiedPath
+            $receipt = ConvertFrom-DispatchJson -Content ([System.IO.File]::ReadAllText((ConvertTo-FileSystemApiPath -Path $verifiedPath), [System.Text.Encoding]::UTF8))
+            if ([string](Get-DispatchJsonProperty -Object $receipt -Name 'dispatch_execution_id') -cne [string]$context.DispatchExecutionId -or [string](Get-DispatchJsonProperty -Object $receipt -Name 'status') -cne 'pending') {
+                throw 'Pre-start receipt identity or pending status does not match.'
+            }
+            $processInfo = Get-DispatchJsonProperty -Object $receipt -Name 'dispatcher_process'
+            $processBinding = $null
+            if ($null -ne $processInfo) {
+                $processBinding = [ordered]@{
+                    process_id = Get-DispatchJsonProperty -Object $processInfo -Name 'process_id'
+                    process_name = Get-DispatchJsonProperty -Object $processInfo -Name 'process_name'
+                    process_start_time_utc = Get-DispatchJsonProperty -Object $processInfo -Name 'process_start_time_utc'
+                }
+            }
+            $written = Write-DispatchFailureReceipt -Path $verifiedPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug -DispatchExecutionId $context.DispatchExecutionId -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -DispatchRoot $DispatchRoot -TargetPath @($context.TargetPath) -Status 'superseded' -DispatcherProcess $processBinding -RunRecordPath $RunRecordPath -ExpectedExistingSha256 $existingSha256
+            $result.path = $written.Path
+            $result.sha256 = $written.Sha256
+            $result.state = 'superseded'
+        }
+        catch {
+            $result.state = 'supersede-failed'
+            $result.error = $_.Exception.Message
+        }
+    }
+    $script:DispatchPreStartReceipt = $result
+    return $result
 }
 
 function Write-PrepareResultDocument {

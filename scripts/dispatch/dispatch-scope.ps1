@@ -1307,7 +1307,7 @@ function Read-DispatchRequest {
     $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement', 'prepare_mode')
     $removedQuotaFields = @('quota_before_path', 'quota_after_path')
     $commonRootFields = @('source_root', 'dispatch_root', 'caller_session_id')
-    $cleanupOnlyFields = @('run_record_path', 'reviewer_report_path', 'report_path', 'evidence_path')
+    $cleanupOnlyFields = @('run_record_path', 'reviewer_report_path', 'report_path', 'evidence_path', 'dispatch_request_path')
     $allowedFields = @('schema', 'operation', 'line_slug', 'dispatch_slug', 'profile', 'advisor_request_source', 'target_path', 'add_directory', 'search', 'codex_parent_option', 'literal_values', 'prepare_artifacts', 'result_path', 'preflight_result_path') + $commonRootFields + $dispatchOnlyFields + $cleanupOnlyFields
     foreach ($property in $document.PSObject.Properties) {
         if ($removedQuotaFields -contains $property.Name) {
@@ -1545,9 +1545,12 @@ function Read-DispatchRequest {
         $dispatchValues.background = if ($dispatchFieldPresence.background) { [bool]$document.background } else { $false }
     }
     elseif ([string]$document.operation -ceq 'Cleanup') {
-        foreach ($field in @('source_root', 'dispatch_root', 'result_path', 'preflight_result_path', 'run_record_path', 'reviewer_report_path')) {
+        foreach ($field in @('source_root', 'dispatch_root', 'result_path', 'preflight_result_path', 'run_record_path', 'reviewer_report_path', 'dispatch_request_path')) {
             $cleanupFieldPresence[$field] = Test-DispatchRequestFieldPresent -Document $document -Name $field
             $cleanupValues[$field] = Get-DispatchRequestOptionalString -Document $document -Field $field -RequestPathValue $requestPathValue
+        }
+        if ($cleanupFieldPresence.dispatch_request_path -and -not (Test-DispatchFullyQualifiedPath -Path ([string]$cleanupValues.dispatch_request_path))) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message 'request 欄位 dispatch_request_path 必須是完整絕對路徑。' -RequestPathValue $requestPathValue -Field 'dispatch_request_path' -Detail ([ordered]@{ expected = 'fully-qualified path'; received = [string]$cleanupValues.dispatch_request_path })
         }
         foreach ($field in @('report_path', 'evidence_path')) {
             $cleanupFieldPresence[$field] = Test-DispatchRequestFieldPresent -Document $document -Name $field
@@ -1894,6 +1897,7 @@ function Apply-DispatchRequest {
                 @('ResultPath', 'result_path'),
                 @('PreflightResultPath', 'preflight_result_path'),
                 @('RunRecordPath', 'run_record_path'),
+                @('DispatchRequestPath', 'dispatch_request_path'),
                 @('ReviewerReportPath', 'reviewer_report_path'))) {
             $requestField = [string]$mapping[1]
             if (-not [bool]$context.cleanup_field_presence[$requestField]) { continue }
