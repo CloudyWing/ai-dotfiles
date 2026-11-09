@@ -89,7 +89,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 `~/.ai-agents/.local/machine.json` 是本機設定，不進版控，記錄值班 Session、派工帳號清單等只屬於這台電腦的資訊。
 
-`coordinator_session_id` 是選用欄位，填入協調 Session 的 id 後，Agent 就能辨識由協調 Session 轉述的使用者決定。這個欄位由你手動寫入，或請協調 Session 寫入。沒有設定時，Agent 只認啟動它的那個 Session。換了協調 Session 時，要一併更新這個 id。轉述的判定規則見 `instructions.md` §1.5「授權期限」。
+協調 Session 不需要登記。Agent 把啟動它的那個 Session 當作協調 Session，接受它轉述的使用者決定；你手動開的 Session 則要你直接在該 Session 回覆。轉述的判定規則見 `instructions.md` §1.5「授權期限」。
 
 ---
 

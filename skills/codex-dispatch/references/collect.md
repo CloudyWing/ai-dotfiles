@@ -128,8 +128,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
   "machine_id": "home",
   "duty_session_name": "duty-home",
   "maintenance_writer": true,
-  "writer_duty_session_name": "duty-home",
-  "coordinator_session_id": "<協調 Session 的 id>"
+  "writer_duty_session_name": "duty-home"
 }
 ```
 
@@ -139,7 +138,6 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | `duty_session_name` | 本機值班 Session 的名稱，即跨 Session 訊息的收件者 |
 | `maintenance_writer` | 本機是否為唯一修改並 push `.ai-agents` 的修改端；缺少時視為 `false`。兩台機器的設定中只有一台為 `true` |
 | `writer_duty_session_name` | 修改端的值班 Session 名稱，非修改端轉送時使用 |
-| `coordinator_session_id` | 選用。協調 Session 的 Session id，接收端用來比對信封發送端 id；缺少時只比對 `startedBy`。協調 Session 的 id 變更時須更新。由使用者手動或協調 Session 寫入，腳本不讀取 |
 
 發送步驟如下：
 

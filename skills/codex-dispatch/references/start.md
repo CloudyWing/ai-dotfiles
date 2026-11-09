@@ -499,7 +499,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 ### 本機帳號清單與準備
 
-`<本機 .ai-agents 根目錄>\.local\machine.json` 含 `ai-agents.machine.v1`、值班欄位，以及選用的 `codex_accounts` 與 `coordinator_session_id`；值班欄位與 `coordinator_session_id` 的說明見 `collect.md`「值班通知」的欄位表。
+`<本機 .ai-agents 根目錄>\.local\machine.json` 含 `ai-agents.machine.v1`、值班欄位，以及選用的 `codex_accounts`；值班欄位的說明見 `collect.md`「值班通知」的欄位表。
 
 ```json
 {
