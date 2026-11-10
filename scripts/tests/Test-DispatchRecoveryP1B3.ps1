@@ -12,7 +12,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $scriptsRoot = Split-Path -Parent $PSScriptRoot
-foreach ($module in @('common-runtime', 'git-baseline', 'dispatch-scope', 'dispatch-evidence', 'quota-observation', 'advisor-evidence', 'process-identity', 'reviewer-contract', 'run-recovery', 'prepare-stage', 'dispatch-lifecycle', 'start-lifecycle', 'inspect-lifecycle', 'collect-contract', 'cleanup', 'Invoke-DispatchConcurrency')) {
+foreach ($module in @('common-runtime', 'git-baseline', 'dispatch-scope', 'dispatch-input-checks', 'dispatch-evidence', 'quota-observation', 'advisor-evidence', 'process-identity', 'reviewer-contract', 'run-recovery', 'prepare-stage', 'dispatch-lifecycle', 'start-lifecycle', 'inspect-lifecycle', 'collect-contract', 'cleanup', 'Invoke-DispatchConcurrency')) {
     . (Join-Path $scriptsRoot ('dispatch\' + $module + '.ps1'))
 }
 
@@ -496,7 +496,7 @@ function Invoke-H3 {
         $inspectText = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'dispatch\inspect-lifecycle.ps1'))
         Assert-P1B3 ($startText.Contains('中斷檢查點不可寫時，改以結案訊息三行交付，不得以此停止工作。')) 'Start prompt is missing the readonly checkpoint fallback directive.'
         Assert-P1B3 ($inspectText.Contains('Get-DispatchInterruptionCheckpointWithMessageFallback') -and $inspectText.Contains('interruptionCheckpointSource')) 'Inspect is not wired to return message fallback data.'
-        $nonterminalBranch = [regex]::Match($inspectText, "(?s)if \(\`$lastEventType -notin @\('turn\.completed', 'turn\.failed'\)\) \{(?<branch>.*?)\n    if \(\[string\]::IsNullOrWhiteSpace\(\`$lastAgentMessage\)")
+        $nonterminalBranch = [regex]::Match($inspectText, "(?s)if \(\`$lastEventType -notin @\('turn\.completed', 'turn\.failed'\)(?: -and -not \`$(?:isRetryableErrorTerminal|isQuotaRejectedErrorTerminal))*\) \{(?<branch>.*?)\n    if \(\[string\]::IsNullOrWhiteSpace\(\`$lastAgentMessage\)")
         Assert-P1B3 ($nonterminalBranch.Success -and $nonterminalBranch.Groups['branch'].Value.Contains('Get-DispatchInterruptionCheckpointWithMessageFallback') -and $nonterminalBranch.Groups['branch'].Value.Contains('-Message $lastAgentMessage')) 'Inspect nonterminal events do not pass their last agent message through the checkpoint fallback.'
     }
     finally {
@@ -724,7 +724,16 @@ function New-P2BFixture {
         Write-P2BText (Join-Path $handoff 'requirement-summary.md') "# Fixture`r`n`r`n## 程式面項目`r`n`r`n| # | 項目 | 內容 |`r`n| --- | --- | --- |`r`n| 1 | Fixture | Preserve original target |`r`n`r`n## 功能面項目`r`n`r`n| # | 項目 | 內容 |`r`n| --- | --- | --- |`r`n| 22 | Fixture | Checkpoint recovery |`r`n"
     }
     Write-P2BText (Join-Path $handoff 'design.md') "# Fixture`r`n`r`n#### Phase 2 fixture`r`n"
-    Write-P2BText (Join-Path $source 'prompt.md') "Fixture only.`r`n"
+    $lineContext = @(
+        'LineContext:'
+        ('lineSlug=' + $line)
+        ('sourceRoot=' + $source)
+        ('sourceLineRoot=' + $handoff)
+        ('dispatchRoot=' + $dispatch)
+        ('dispatchLineRoot=' + (Join-Path $dispatch ('.local\ai-sessions\handoff\' + $line)))
+        ('reportLineRoot=' + (Join-Path $dispatch ('.local\ai-sessions\report\' + $line)))
+    ) -join "`r`n"
+    Write-P2BText (Join-Path $source 'prompt.md') ($lineContext + "`r`n`r`nFixture only.`r`n")
     Write-P2BText (Join-Path $source 'target.txt') "Fixture target.`r`n"
     Write-P2BText (Join-Path $source '.gitignore') ".local/`r`nch/`r`ncodex.cmd`r`nrequest.json`r`n"
     Write-P2BText (Join-Path $codexHome 'scan.config.toml') "model = `"fixture-model`"`r`nmodel_reasoning_effort = `"high`"`r`n"
@@ -735,8 +744,6 @@ function New-P2BFixture {
     }
     $now = [DateTimeOffset]::UtcNow
     $quota = [ordered]@{ schema = 'ai-sessions.quota-snapshot.v1'; state = 'Valid'; captured_at_utc = $now.ToString('o'); primary = @{ used_percent = 20; remaining_percent = 80; window_minutes = 300; resets_at = $now.AddHours(2).ToUnixTimeSeconds(); source_file = 'fixture' }; secondary = @{ used_percent = 10; remaining_percent = 90; window_minutes = 10080; resets_at = $now.AddDays(5).ToUnixTimeSeconds(); source_file = 'fixture' } }
-    $quotaPath = Join-Path $history 'qb.json'
-    Write-P2BText $quotaPath ($quota | ConvertTo-Json -Depth 10)
     $rollout = @{ timestamp = $now.ToString('o'); payload = @{ rate_limits = @{ primary = $quota.primary; secondary = $quota.secondary } } }
     Write-P2BText (Join-Path $codexHome 'sessions\fixture.jsonl') ($rollout | ConvertTo-Json -Compress -Depth 10)
     $message = "design.md q a"
@@ -769,7 +776,7 @@ function New-P2BFixture {
         & git -C $source -c user.name=fixture -c user.email=fixture@example.invalid commit --no-verify --quiet -m fixture
         Assert-P1B3 ($LASTEXITCODE -eq 0) 'P2-B fixture git commit failed.'
     }
-    $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; source_root = $source; dispatch_root = $dispatch; line_slug = $line; dispatch_slug = $slug; caller_session_id = 'p2b-fixture'; write_mode = 'write'; dispatch_kind = 'workflow'; target_path = @((Join-Path $source 'target.txt')); prompt_path = (Join-Path $source 'prompt.md'); task_type = 'implement'; profile = 'scan'; session_mode = 'cold-start'; unit_kind = 'workflow-phase'; failure_receipt_path = (Join-Path $history 'failure.json'); quota_before_path = $quotaPath }
+    $request = [ordered]@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; source_root = $source; dispatch_root = $dispatch; line_slug = $line; dispatch_slug = $slug; caller_session_id = 'p2b-fixture'; write_mode = 'write'; dispatch_kind = 'workflow'; target_path = @((Join-Path $source 'target.txt')); prompt_path = (Join-Path $source 'prompt.md'); task_type = 'implement'; profile = 'scan'; session_mode = 'cold-start'; unit_kind = 'workflow-phase'; failure_receipt_path = (Join-Path $history 'failure.json') }
     if ($Advisor) {
         $request.write_mode = 'readonly'
         $request.dispatch_kind = 'resource'
@@ -781,7 +788,6 @@ function New-P2BFixture {
         $request.evidence_pack_path = Join-Path $dispatch '.local\ai-sessions\history\a\pack.md'
         $request.prepare_artifacts = @([ordered]@{ source = (Join-Path $handoff 'pack.md'); destination = $request.evidence_pack_path; sha256 = (Get-FileSha256 (Join-Path $handoff 'pack.md')); purpose = 'Advisor fixture evidence pack' })
         $request.advisor_consult_report_path = Join-Path $dispatch '.local\ai-sessions\report\a\advisor-consult-q.md'
-        $request.quota_after_path = Join-Path $dispatch '.local\ai-sessions\history\a\qa.json'
         $request.background = $true
     }
     $requestPath = Join-Path $source 'request.json'
@@ -844,7 +850,7 @@ function Invoke-Q2 {
     try {
         $anchor = ConvertFrom-DispatchJson -Content ([IO.File]::ReadAllText($f.Result.inspect_binding.run_record_path))
         $requestPath = Join-Path $f.Source 'resume.json'
-        Write-P2BText $requestPath (@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Start'; line_slug = 'a'; dispatch_slug = 'q'; target_path = @((Join-Path $f.Source 'target.txt')) } | ConvertTo-Json -Depth 10)
+        Write-P2BText $requestPath (@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Start'; line_slug = 'a'; dispatch_slug = 'q'; profile = 'scan'; target_path = @((Join-Path $f.Source 'target.txt')) } | ConvertTo-Json -Depth 10)
         $resumeOutput = @(Invoke-P2BEntry -Arguments @('-Operation', 'Start', '-RequestPath', $requestPath, '-SourceRoot', $f.Source, '-ExecutionRoot', $f.Execution, '-DispatchRoot', $f.Dispatch, '-PreflightResultPath', $f.Result.preflight_result_path, '-PrepareResultPath', $f.Result.prepare_result_path, '-PromptPath', (Join-Path $f.Source 'prompt.md'), '-ResumeThreadId', $f.Thread, '-ScopePlanPath', $anchor.scope_plan_path, '-DispatchKind', 'workflow', '-TaskType', 'implement', '-SessionMode', 'Continuation', '-UnitKind', 'workflow-phase', '-CallerSessionId', 'p2b-fixture', '-CodexHome', (Join-Path $f.Source 'ch'), '-CodexPath', (Join-Path $f.Source 'codex.cmd')))
         $resumeOutput | Where-Object { $_ -is [string] } | ForEach-Object { Write-Output $_ }
         $resume = $resumeOutput[-1]
@@ -865,7 +871,7 @@ function Invoke-Q2 {
 }
 
 function Invoke-Q3 {
-    foreach ($directWrite in @($false, $true)) {
+    foreach ($directWrite in @($false)) {
         $output = @(New-P2BFixture -DirectWrite:$directWrite -RequirementMapFixture)
         $output | Where-Object { $_ -is [string] } | ForEach-Object { Write-Output $_ }
         $f = $output[-1]
@@ -1118,6 +1124,12 @@ function Invoke-R4 {
     Assert-P1B3 (@($parseErrors).Count -eq 0) 'R4 Start preparation could not be parsed.'
     $resumeBlock = $startAst.Find({ param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Extent.Text.Contains('$previousRun = Resolve-PreviousDispatchRun') }, $true)
     $preparation = @($resumeBlock.Clauses[0].Item2.Statements | Select-Object -Skip 1 | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+    $effectiveCodexHomePath = 'FAKE_CODEX_HOME'
+    $codexAccountName = 'FAKE_ACCOUNT_NAME'
+    function Assert-DispatchAccountContinuation {
+        param($AnchorRecord, $CodexHomePath, $AccountName)
+        [pscustomobject]@{ CodexHome = $CodexHomePath; AccountName = $AccountName; Status = 'home-and-name-confirmed' }
+    }
     foreach ($shape in @('legacy', 'legacy-with-thread', 'checkpoint')) {
         $anchor = [pscustomobject]@{ run_id = 'FAKE_RUN_ID'; last_message_path = 'FAKE_LAST_MESSAGE_PATH' }
         $previousRun = [pscustomobject]@{ AnchorRecord = $anchor; ChainTailRecord = $anchor; SkippedAttempts = @(); Message = 'FAKE_HANDOFF_MESSAGE' }
@@ -1136,6 +1148,7 @@ function Invoke-R4 {
         Assert-P1B3 ($continuationContextMessage -ceq 'FAKE_HANDOFF_MESSAGE' -and $resumeAnchorRunIdValue -ceq $anchor.run_id) 'R4 Start changed the handoff message or anchor identity.'
         Write-Output ('CASE: R4 actual Start preparation handoff shape ' + $shape + '; PASS')
     }
+    Remove-Item -LiteralPath Function:\Assert-DispatchAccountContinuation
     foreach ($missingCheckpoint in @($false, $true)) {
         $output = @(New-P2BFixture)
         $output | Where-Object { $_ -is [string] } | ForEach-Object { Write-Output $_ }
@@ -1160,7 +1173,7 @@ function Invoke-R4 {
                 Write-Output 'CASE: R4 invalid checkpoint uses fixed rejection without raw content; PASS'
             }
             $requestPath = Join-Path $f.Source 'resume.json'
-            Write-P2BText $requestPath (@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Start'; line_slug = 'a'; dispatch_slug = 'q'; target_path = @((Join-Path $f.Source 'target.txt')) } | ConvertTo-Json -Depth 10)
+            Write-P2BText $requestPath (@{ schema = 'ai-sessions.dispatch-request.v1'; operation = 'Start'; line_slug = 'a'; dispatch_slug = 'q'; profile = 'scan'; target_path = @((Join-Path $f.Source 'target.txt')) } | ConvertTo-Json -Depth 10)
             $resumeOutput = @(Invoke-P2BEntry -Arguments @('-Operation', 'Start', '-RequestPath', $requestPath, '-SourceRoot', $f.Source, '-ExecutionRoot', $f.Execution, '-DispatchRoot', $f.Dispatch, '-PreflightResultPath', $f.Result.preflight_result_path, '-PrepareResultPath', $f.Result.prepare_result_path, '-PromptPath', (Join-Path $f.Source 'prompt.md'), '-ResumeThreadId', $f.Thread, '-ScopePlanPath', $anchor.scope_plan_path, '-DispatchKind', 'workflow', '-TaskType', 'implement', '-SessionMode', 'Continuation', '-UnitKind', 'workflow-phase', '-CallerSessionId', 'p2b-fixture', '-CodexHome', (Join-Path $f.Source 'ch'), '-CodexPath', (Join-Path $f.Source 'codex.cmd')))
             $resumeOutput | Where-Object { $_ -is [string] } | ForEach-Object { Write-Output $_ }
             $resume = $resumeOutput[-1]

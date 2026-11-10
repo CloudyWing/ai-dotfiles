@@ -1576,7 +1576,6 @@ elseif ($Phase -eq 9) {
 else {
     $fixtureRoot = Join-Path (Join-Path $fixtureBaseRoot '.local/ai-sessions/scratch') (New-BindingFixtureName -Code 'r')
 }
-$null = Get-BindingFixturePathPlan -FixtureRoot $fixtureRoot
 $fixturePathComponent = $fixtureRoot
 while (-not [string]::IsNullOrWhiteSpace($fixturePathComponent)) {
     if (Test-Path -LiteralPath $fixturePathComponent) {
@@ -1589,6 +1588,7 @@ while (-not [string]::IsNullOrWhiteSpace($fixturePathComponent)) {
     if ([string]::Equals($fixtureParent, $fixturePathComponent, [StringComparison]::OrdinalIgnoreCase)) { break }
     $fixturePathComponent = $fixtureParent
 }
+$null = Get-BindingFixturePathPlan -FixtureRoot $fixtureRoot
 New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 # 所有檔位的設定檔皆為必備。以 fixture 內的 CODEX_HOME 取代真實的 ~/.codex，使未指定 CodexHome 的案例不讀取使用者環境。
 $testCodexHome = Join-Path $fixtureRoot 'test-codex-home'
@@ -10319,7 +10319,11 @@ exit $LASTEXITCODE
         $script:scopePlanFixtureDecision = 'full'
         $beforeStartCalls = $script:startCalls
         $caughtException = $null
+        $savedMachineConfigPathFunction = (Get-Command Get-DispatchMachineConfigPath -CommandType Function).ScriptBlock
         try {
+            # 隔離 repo 的 .local\machine.json，讓 Start 走到 baseline 檢查
+            $missingBaselineMachinePath = Join-Path $fixtureRoot '.local\t009-no-machine.json'
+            Set-Item -Path Function:\Get-DispatchMachineConfigPath -Value ([scriptblock]::Create("return '" + $missingBaselineMachinePath.Replace("'", "''") + "'"))
             try {
                 Invoke-Start
             }
@@ -10337,6 +10341,7 @@ exit $LASTEXITCODE
             Assert-True ($validatedRecord.launch_state -eq 'launch-failed') 'baseline 缺失 RunRecord 無法通過 validator。'
         }
         finally {
+            Set-Item -Path Function:\Get-DispatchMachineConfigPath -Value $savedMachineConfigPathFunction
             $script:scopePlanFixtureDecision = 'full'
         }
     }
@@ -10724,7 +10729,11 @@ exit $LASTEXITCODE
     Invoke-Case 'Phase 6 Start preserves fallback CodexHome and RunRecord launch state' {
     $hadCodexHome = Test-Path Env:CODEX_HOME
     $oldCodexHome = $env:CODEX_HOME
+    $savedMachineConfigPathFunction = (Get-Command Get-DispatchMachineConfigPath -CommandType Function).ScriptBlock
     try {
+        # 隔離 repo 的 .local\machine.json，否則登記帳號會取代 CODEX_HOME fallback
+        $phase6NoMachinePath = Join-Path $fixtureRoot '.local\phase6-no-machine.json'
+        Set-Item -Path Function:\Get-DispatchMachineConfigPath -Value ([scriptblock]::Create("return '" + $phase6NoMachinePath.Replace("'", "''") + "'"))
         $phase6FallbackCodexHome = Join-Path $fixtureRoot 'phase6-fallback-codex-home'
         New-Item -ItemType Directory -Path $phase6FallbackCodexHome -Force | Out-Null
         Write-Utf8NoBom -Path (Join-Path $phase6FallbackCodexHome 'scan.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n"
@@ -10761,6 +10770,7 @@ exit $LASTEXITCODE
         Assert-True ($record.prepare_status -eq 'not-required' -and $record.launch_state -eq 'started') 'RunRecord 未保留 Start 的 Prepare 狀態或啟動終態。'
     }
     finally {
+        Set-Item -Path Function:\Get-DispatchMachineConfigPath -Value $savedMachineConfigPathFunction
         if ($hadCodexHome) { $env:CODEX_HOME = $oldCodexHome } else { Remove-Item Env:CODEX_HOME -ErrorAction SilentlyContinue }
     }
 }
@@ -12962,7 +12972,7 @@ fixture
                 [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
                 [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = 'unexpected failure' } }
             )
-            Write-Utf8NoBom -Path $errorPath -Content 'unexpected status 401 Unauthorized'
+            Write-Utf8NoBom -Path $errorPath -Content '2026-11-09T09:02:00.123456Z ERROR codex_core::client: unexpected status 401 Unauthorized'
             $unauthorizedStderrResult = Invoke-Inspect
             Assert-True ($unauthorizedStderrResult.service_rejection.reason_code -ceq 'unauthorized' -and $unauthorizedStderrResult.account_failover.eligible -eq $true -and $unauthorizedStderrResult.recommended_next_step.Contains('重新登入')) 'stderr 的 401 未被 Inspect 分類為 unauthorized。'
             Write-Utf8NoBom -Path $errorPath -Content 'structured quota rejection fixture'
@@ -17464,7 +17474,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
             [pscustomobject]@{name='local-sandbox-failure';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='sandbox command failed'}});stderr='';kind=$null;usage_limit=$false;eligible=$false},
             [pscustomobject]@{name='unauthorized-event';events=@([ordered]@{type='error';message='401 Unauthorized'},[ordered]@{type='turn.failed';error=[ordered]@{message='401 Unauthorized'}});stderr='';kind='unauthorized';usage_limit=$false;eligible=$true},
             [pscustomobject]@{name='model-event';events=@([ordered]@{type='turn.failed';error=[ordered]@{message=$modelMessage}});stderr='';kind='model-not-supported';usage_limit=$false;eligible=$true},
-            [pscustomobject]@{name='model-stderr';events=@([ordered]@{type='turn.started'});stderr=$modelMessage;kind='model-not-supported';usage_limit=$false;eligible=$true},
+            [pscustomobject]@{name='model-stderr';events=@([ordered]@{type='turn.started'});stderr=('ERROR: '+$modelMessage);kind='model-not-supported';usage_limit=$false;eligible=$true},
             [pscustomobject]@{name='unrelated-not-supported';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='the feature is not supported'}});stderr='';kind='unclassified';usage_limit=$false;eligible=$true},
             [pscustomobject]@{name='progress-before-rejection';events=@([ordered]@{type='item.completed';item=[ordered]@{type='agent_message';text='partial'}},[ordered]@{type='turn.failed';error=[ordered]@{message=$modelMessage}});stderr='';kind='model-not-supported';usage_limit=$false;eligible=$false},
             [pscustomobject]@{name='completed';events=@([ordered]@{type='turn.completed'});stderr='';kind=$null;usage_limit=$false;eligible=$false}
