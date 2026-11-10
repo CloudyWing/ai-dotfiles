@@ -263,7 +263,7 @@ function New-GuardRealDispatch {
         ('reportLineRoot=' + (Join-Path $dispatchRoot ('.local\ai-sessions\report\' + $lineSlug)))
     ) -join "`n"
     Write-GuardText $promptPath ($lineContext + "`n`n" + 'guard dispatch prompt')
-    Write-GuardText (Join-Path $codexHome 'implement.config.toml') ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
+    Write-GuardText (Join-Path $codexHome 'scan.config.toml') ('model = "fixture-model"' + "`r`n" + 'model_reasoning_effort = "high"' + "`r`n")
     Invoke-GuardGit $source @('init', '-q')
     Invoke-GuardGit $source @('config', 'user.email', 'fixture@example.invalid')
     Invoke-GuardGit $source @('config', 'user.name', 'Fixture')
@@ -290,7 +290,7 @@ function New-GuardRealDispatch {
     $request = [ordered]@{
         schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'
         source_root = $source; dispatch_root = $dispatchRoot; line_slug = $lineSlug; dispatch_slug = $slug
-        profile = 'implement'; write_mode = 'write'; dispatch_kind = 'workflow'
+        profile = 'scan'; write_mode = 'write'; dispatch_kind = 'workflow'
         target_path = @($targetPath); prompt_path = $promptPath; task_type = 'script-change'; session_mode = 'cold-start'
         unit_kind = 'workflow-phase'; requested_unit = [string[]]@('Phase 1')
         failure_receipt_path = (Join-Path $sourceHistory 'failure-receipt.json'); result_path = $resultPath

@@ -305,8 +305,15 @@ function Invoke-DispatchInputChecks {
     }
     if ($promptExists) {
         foreach ($label in @('lineSlug', 'sourceLineRoot', 'dispatchLineRoot', 'reportLineRoot', 'sourceRoot', 'dispatchRoot')) {
-            $match = [regex]::Match($promptText, '(?im)^\s*(?:-\s*)?' + $label + '\s*[:=]\s*[`"'']?(?<value>[^\r\n`"'']+)', [Text.RegularExpressions.RegexOptions]::None)
-            if ($match.Success) { $contextValues[$label] = $match.Groups['value'].Value.Trim() }
+            $match = [regex]::Match($promptText, '(?im)^\s*(?:-\s*)?' + $label + '\s*[:=]\s*(?<value>[^\r\n]+)', [Text.RegularExpressions.RegexOptions]::None)
+            if ($match.Success) {
+                $rawValue = $match.Groups['value'].Value.Trim()
+                if ($rawValue.Length -ge 2) {
+                    $firstChar = $rawValue.Substring(0, 1)
+                    if ($firstChar -cin @('`', '"', "'") -and $rawValue.Substring($rawValue.Length - 1) -ceq $firstChar) { $rawValue = $rawValue.Substring(1, $rawValue.Length - 2) }
+                }
+                $contextValues[$label] = $rawValue.Trim()
+            }
         }
     }
     if ($Stage -eq 'Worktree') {

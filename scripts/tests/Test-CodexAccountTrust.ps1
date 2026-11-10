@@ -115,15 +115,25 @@ function TrNewRequest {
     param([string]$Root, [string]$Slug = 'tr-job')
     $lineSlug = 'tr-line'
     $history = Join-Path $Root ('.local\ai-sessions\history\' + $lineSlug)
-    $handoff = Join-Path $Root '.local\ai-sessions\handoff'
+    $handoff = Join-Path $Root ('.local\ai-sessions\handoff\' + $lineSlug)
     $null = New-Item -ItemType Directory -Path $history -Force
     $null = New-Item -ItemType Directory -Path $handoff -Force
+    $dispatchRoot = Join-Path $Root ('.local\ai-sessions\worktrees\' + $Slug)
     $promptPath = Join-Path $Root 'prompt.md'
     $targetPath = Join-Path $Root 'target.txt'
-    [IO.File]::WriteAllText($promptPath, 'fixture prompt', $utf8NoBom)
+    $lineContext = @(
+        'LineContext:'
+        ('lineSlug=' + $lineSlug)
+        ('sourceRoot=' + $Root)
+        ('sourceLineRoot=' + $handoff)
+        ('dispatchRoot=' + $dispatchRoot)
+        ('dispatchLineRoot=' + (Join-Path $dispatchRoot ('.local\ai-sessions\handoff\' + $lineSlug)))
+        ('reportLineRoot=' + (Join-Path $dispatchRoot ('.local\ai-sessions\report\' + $lineSlug)))
+    ) -join "`n"
+    [IO.File]::WriteAllText((Join-Path $handoff 'line.json'), ((ConvertTo-Json -InputObject ([ordered]@{ schema = 'ai-sessions.line.v1'; 'line-slug' = $lineSlug; kind = 'workflow' }) -Depth 5) + "`n"), $utf8NoBom)
+    [IO.File]::WriteAllText($promptPath, ($lineContext + "`n`n" + 'fixture prompt'), $utf8NoBom)
     [IO.File]::WriteAllText($targetPath, 'fixture target', $utf8NoBom)
     [IO.File]::WriteAllText((Join-Path $handoff ('dispatch-order-' + $Slug + '.md')), ("## 3. 目標物件`n`n- " + $targetPath + "`n`n## 4. 任務內容`n`ntask`n`n## 5. 驗收條件`n`nx`n"), $utf8NoBom)
-    $dispatchRoot = Join-Path $Root ('.local\ai-sessions\worktrees\' + $Slug)
     $document = [ordered]@{
         schema = 'ai-sessions.dispatch-request.v1'
         operation = 'Dispatch'

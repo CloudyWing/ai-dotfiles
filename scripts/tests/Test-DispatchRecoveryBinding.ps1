@@ -7204,7 +7204,7 @@ if ($Phase -ge 5) {
         param([object]$Fixture, [string]$Identifier, [switch]$ActualDispatch, [string]$WriteMode = 'readonly', [switch]$ClearCodexHome, [switch]$Collect, [switch]$OmitLineSlug)
         $dispatchRoot = Join-Path $Fixture.Root '.local\ai-sessions\worktrees\dd-test'
         $request = [ordered]@{
-            schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'dd-line'; dispatch_slug = 'dd-test'; profile = $(if ($WriteMode -eq 'readonly') { 'scan' } else { 'implement' })
+            schema = 'ai-sessions.dispatch-request.v1'; operation = 'Dispatch'; line_slug = 'dd-line'; dispatch_slug = 'dd-test'; profile = 'scan'
             source_root = $Fixture.Root; dispatch_root = $dispatchRoot; target_path = @($Fixture.Target); write_mode = $WriteMode; dispatch_kind = 'resource'
             prompt_path = (Join-Path $Fixture.Root 'prompt.md'); task_type = 'resource-task'; session_mode = 'cold-start'; unit_kind = 'resource-target'
             failure_receipt_path = (Join-Path $Fixture.Root '.local\ai-sessions\history\dd-line\failure.json')
@@ -7228,7 +7228,7 @@ if ($Phase -ge 5) {
             $ErrorActionPreference = 'Continue'
             $env:CODEX_HOME = Join-Path $Fixture.Root 'codex-home'
             New-Item -ItemType Directory -Path $env:CODEX_HOME -Force | Out-Null
-            foreach ($ddProfileName in @('implement', 'scan')) { [IO.File]::WriteAllText((Join-Path $env:CODEX_HOME ($ddProfileName + '.config.toml')), ('model = "fixture-model"' + "`r`n"), (New-Object Text.UTF8Encoding($false))) }
+            foreach ($ddProfileName in @('scan')) { [IO.File]::WriteAllText((Join-Path $env:CODEX_HOME ($ddProfileName + '.config.toml')), ('model = "fixture-model"' + "`r`n"), (New-Object Text.UTF8Encoding($false))) }
             if ($ClearCodexHome) { $env:CODEX_HOME = '' }
             if ($Collect) {
                 $output = @(& $hostPath -NoProfile -File $entryPath -Operation Collect -RequestPath $requestPath 2>&1)
@@ -10580,7 +10580,7 @@ exit $LASTEXITCODE
             $script:ScopePlanPath = $null
             $script:DispatchKind = 'workflow'
             $script:TaskType = 'unspecified'
-            $script:Profile = 'implement'
+            $script:Profile = 'scan'
             $script:SessionMode = 'cold-start'
             $script:AddDirectory = $null
             $script:Search = $false
@@ -11836,7 +11836,7 @@ if ($Phase -ge 8) {
                 $script:ScopePlanPath = $null
                 $script:DispatchKind = 'workflow'
                 $script:TaskType = 'unspecified'
-                $script:Profile = 'implement'
+                $script:Profile = 'scan'
                 $script:SessionMode = 'cold-start'
                 $script:AddDirectory = $null
                 $script:Search = $false
@@ -17495,7 +17495,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
             $dispatchSlug = 'missing-' + $selectedProfile
             $promptPath = Join-Path $caseRoot 'prompt.md'
             $targetPath = Join-Path $caseRoot 'target.txt'
-            if ($selectedProfile -ceq 'implement') { $null = Write-Phase9DispatchOrderFixture -SourceRoot $caseRoot -LineSlug 'a' -DispatchSlug $dispatchSlug -TargetPath $targetPath }
+            if ($selectedProfile -ceq 'scan') { $null = Write-Phase9DispatchOrderFixture -SourceRoot $caseRoot -LineSlug 'a' -DispatchSlug $dispatchSlug -TargetPath $targetPath }
             [IO.File]::WriteAllText($promptPath, 'fixture cold-start prompt', $utf8)
             [IO.File]::WriteAllText($targetPath, 'fixture target', $utf8)
             $preflightPath = Join-Path $caseRoot 'preflight.json'
@@ -20422,7 +20422,7 @@ throw 'RunRecord 事件流為空。'
     $script:phase9P3RewriteContext = $false
     $phase9DispatchCodexHome = Join-Path $phase9Root 'codex-home'
     $null = New-Item -ItemType Directory -Path $phase9DispatchCodexHome -Force
-    Write-Utf8NoBom -Path (Join-Path $phase9DispatchCodexHome 'implement.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n" -SourceRoot $phase9Root -ExecutionRoot $phase9Root -TargetPath @()
+    Write-Utf8NoBom -Path (Join-Path $phase9DispatchCodexHome 'scan.config.toml') -Content "model = 'fixture-model'`r`nmodel_reasoning_effort = 'high'`r`n" -SourceRoot $phase9Root -ExecutionRoot $phase9Root -TargetPath @()
     $script:CodexHome = $phase9DispatchCodexHome
     $CodexHome = $phase9DispatchCodexHome
     function Invoke-Preflight {
@@ -20483,7 +20483,7 @@ throw 'RunRecord 事件流為空。'
         $script:CodexHome = $null
         $script:InvocationBoundParameters = [ordered]@{}
         $script:RequestContext = $null
-        $script:Profile = 'implement'
+        $script:Profile = 'scan'
         $script:ProfileExplicit = $false
         $script:Model = $null
         $script:ReasoningEffort = $null
