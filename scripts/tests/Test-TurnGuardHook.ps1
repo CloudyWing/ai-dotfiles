@@ -9,9 +9,58 @@ $previous = $env:CLAUDE_PLUGIN_DATA
 New-Item -ItemType Directory -Path $root | Out-Null
 try {
     $env:CLAUDE_PLUGIN_DATA = $root
+    # 以原始位元組取得 hook 的 stdout，供斷言提醒輸出的編碼與 BOM。stdin 以無 BOM 的 UTF-8 送入。
+    function Invoke-Hook([string]$Json) {
+        $psi = New-Object Diagnostics.ProcessStartInfo
+        $psi.FileName = 'powershell.exe'
+        $psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $hook + '"'
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $psi.RedirectStandardInput = $true; $psi.RedirectStandardOutput = $true; $psi.RedirectStandardError = $true
+        $process = [Diagnostics.Process]::Start($psi)
+        try {
+            $errorTask = $process.StandardError.ReadToEndAsync()
+            $outputStream = New-Object IO.MemoryStream
+            $copyTask = $process.StandardOutput.BaseStream.CopyToAsync($outputStream)
+            $inputBytes = (New-Object Text.UTF8Encoding($false)).GetBytes($Json)
+            $process.StandardInput.BaseStream.Write($inputBytes, 0, $inputBytes.Length)
+            $process.StandardInput.Close()
+            if (-not $process.WaitForExit(60000)) { try { $process.Kill() } catch { }; throw 'hook process timeout' }
+            $copyTask.Wait(); $errorTask.Wait()
+            return [pscustomobject]@{ExitCode=$process.ExitCode;Stdout=$outputStream.ToArray();Stderr=$errorTask.Result}
+        } finally { $process.Dispose() }
+    }
     function Send-Event([string]$Json) {
-        $output = $Json | & powershell.exe -NoProfile -NonInteractive -File $hook 2>&1
-        if ($LASTEXITCODE -ne 0 -or @($output).Count -ne 0) { throw "hook output or exit failure: $output" }
+        $result = Invoke-Hook $Json
+        if ($result.ExitCode -ne 0 -or $result.Stdout.Length -ne 0 -or $result.Stderr.Length -ne 0) { throw "hook output or exit failure: exit=$($result.ExitCode) stdout=$([Text.Encoding]::UTF8.GetString($result.Stdout)) stderr=$($result.Stderr)" }
+    }
+    function Get-ReminderText([string]$FingerprintText, [int]$Repeat) {
+        return '同一失敗已在本 turn 重複 ' + $Repeat + ' 次：' + $FingerprintText + '。下一次嘗試前先說明為什麼這次會成功；說不出來就停下並回報。'
+    }
+    # 送出一筆預期會提醒的事件，斷言 stdout 為單一純 ASCII、無 BOM 的 JSON 物件，回傳解析後的 additionalContext。
+    function Send-EventExpectReminder([string]$Json, [string]$ExpectedText) {
+        $result = Invoke-Hook $Json
+        if ($result.ExitCode -ne 0 -or $result.Stderr.Length -ne 0) { throw "reminder exit or stderr failure: exit=$($result.ExitCode) stderr=$($result.Stderr)" }
+        $bytes = $result.Stdout
+        if ($bytes.Length -eq 0) { throw 'reminder stdout is empty' }
+        if ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) { throw 'reminder stdout has BOM' }
+        foreach ($b in $bytes) { if ($b -ge 128) { throw 'reminder stdout contains non-ASCII byte' } }
+        $outText = [Text.Encoding]::ASCII.GetString($bytes)
+        if ($outText.Trim() -notmatch '^\{.*\}$' -or @($outText.Trim() -split '\r?\n').Count -ne 1) { throw "reminder stdout is not a single json object: $outText" }
+        try { $parsed = $outText | ConvertFrom-Json -ErrorAction Stop } catch { throw "reminder stdout is not valid json: $outText" }
+        $names = @($parsed.PSObject.Properties.Name)
+        if ($names.Count -ne 1 -or $names[0] -ne 'hookSpecificOutput') { throw 'reminder top-level shape mismatch' }
+        $specific = $parsed.hookSpecificOutput
+        $specificNames = @($specific.PSObject.Properties.Name | Sort-Object)
+        if ($specificNames.Count -ne 2 -or $specificNames[0] -ne 'additionalContext' -or $specificNames[1] -ne 'hookEventName') { throw 'reminder hookSpecificOutput shape mismatch' }
+        if ($specific.hookEventName -ne 'PostToolUseFailure') { throw 'reminder hookEventName mismatch' }
+        if ($specific.additionalContext -cne $ExpectedText) { throw "reminder text mismatch: $($specific.additionalContext)" }
+    }
+    function Read-Rows([string]$SessionName) {
+        return @(Get-Content -LiteralPath (Join-Path $root ('turn-guard\' + $SessionName + '.jsonl')) -Encoding UTF8 | ForEach-Object { $_ | ConvertFrom-Json })
+    }
+    function Test-NotReminded($Row) {
+        return ($null -eq $Row.PSObject.Properties['reminded']) -or ($Row.reminded -eq $false)
     }
     Send-Event '{"session_id":"test","hook_event_name":"UserPromptSubmit","prompt":"private prompt marker"}'
     Send-Event '{"session_id":"test","hook_event_name":"PostToolUse","tool_name":"Read"}'
@@ -20,7 +69,9 @@ try {
     Send-Event '{"session_id":"test","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"cat x > y"}}'
     $failure = '{"session_id":"test","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"bad token=abc123 Bearer xyz"},"error":"failed"}'
     Send-Event $failure
-    Send-Event $failure
+    # 同一 turn 同一 agent 的第 2 次相同失敗會注入提醒，需自 fingerprint.text 推得預期文案。
+    $firstFailureRows = @(Get-Content -LiteralPath (Join-Path $root 'turn-guard\test.jsonl') | ForEach-Object { $_ | ConvertFrom-Json })
+    Send-EventExpectReminder $failure (Get-ReminderText $firstFailureRows[5].fingerprint.text 2)
     Send-Event '{"session_id":"test","hook_event_name":"Stop"}'
     Send-Event '{"session_id":"test","hook_event_name":"UserPromptSubmit","prompt":"second"}'
     $path = Join-Path $root 'turn-guard\test.jsonl'
@@ -114,6 +165,62 @@ try {
     $errors = Join-Path $root 'turn-guard\errors.jsonl'
     if (@(Get-Content $errors).Count -ne 4) { throw 'invalid input mismatch' }
     foreach ($file in @($path,$errors)) { $bytes=[IO.File]::ReadAllBytes($file); if ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) { throw 'unexpected BOM' } }
+    # 重複失敗提醒：第 1 次無輸出，第 2 次提醒一次，第 3 次以後不重複提醒。
+    $remindFailure = '{"session_id":"remind","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"reminder cmd"},"error":"reminder failure"}'
+    Send-Event '{"session_id":"remind","hook_event_name":"UserPromptSubmit","prompt":"p"}'
+    Send-Event $remindFailure
+    $remindText = (Read-Rows 'remind')[1].fingerprint.text
+    if ($remindText -ne 'Bash|reminder cmd|reminder failure') { throw "unexpected fingerprint text: $remindText" }
+    Send-EventExpectReminder $remindFailure (Get-ReminderText $remindText 2)
+    Send-Event $remindFailure
+    $remindRows = Read-Rows 'remind'
+    if ($remindRows.Count -ne 4 -or $remindRows[1].fingerprint.repeat -ne 1 -or -not (Test-NotReminded $remindRows[1])) { throw 'first failure must not remind' }
+    if ($remindRows[2].fingerprint.repeat -ne 2 -or $remindRows[2].reminded -ne $true -or $remindRows[2].fingerprint.text -ne $remindText) { throw 'second failure must be marked reminded' }
+    if ($remindRows[3].fingerprint.repeat -ne 3 -or -not (Test-NotReminded $remindRows[3])) { throw 'third failure must not remind again' }
+    # 不同指紋各自計數，其他事件在任何情況下 stdout 皆為空（Send-Event 斷言 stdout 為空）。
+    $otherFailure = '{"session_id":"remind","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"other cmd"},"error":"other failure"}'
+    Send-Event $otherFailure
+    Send-Event '{"session_id":"remind","hook_event_name":"PostToolUse","tool_name":"Bash","tool_input":{"command":"reminder cmd"}}'
+    Send-Event '{"session_id":"remind","hook_event_name":"Stop"}'
+    $remindRows = Read-Rows 'remind'
+    if ($remindRows[4].fingerprint.repeat -ne 1 -or -not (Test-NotReminded $remindRows[4])) { throw 'different fingerprint must count separately' }
+    $remindStop = $remindRows[6]
+    if (-not $remindStop.turn_end -or @($remindStop.fingerprints).Count -ne 2 -or ($remindStop.fingerprints | Where-Object text -eq $remindText).repeat -ne 3) { throw 'stop summary mismatch' }
+    foreach ($row in @($remindRows[0], $remindRows[5], $remindRows[6])) { if (-not (Test-NotReminded $row)) { throw "non-failure event marked reminded: $($row.event)" } }
+    # 新 turn 後相同指紋重新從 1 起算。
+    Send-Event '{"session_id":"remind","hook_event_name":"UserPromptSubmit","prompt":"next"}'
+    Send-Event $remindFailure
+    $remindRows = Read-Rows 'remind'
+    if ($remindRows[-1].turn -ne 2 -or $remindRows[-1].fingerprint.repeat -ne 1 -or -not (Test-NotReminded $remindRows[-1])) { throw 'new turn must restart fingerprint count' }
+    # 非 ASCII 指紋文字（含 surrogate pair）以 \uXXXX 跳脫輸出，解析後內容與紀錄一致。
+    $cjkFailure = '{"session_id":"remindcjk","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"測試 😀 cmd"},"error":"失敗 failure"}'
+    Send-Event '{"session_id":"remindcjk","hook_event_name":"UserPromptSubmit","prompt":"p"}'
+    Send-Event $cjkFailure
+    $cjkText = (Read-Rows 'remindcjk')[1].fingerprint.text
+    if ($cjkText -notmatch '測試' -or $cjkText -notmatch '失敗') { throw "unexpected cjk fingerprint text: $cjkText" }
+    Send-EventExpectReminder $cjkFailure (Get-ReminderText $cjkText 2)
+    # 指紋計數以 turn 加 agent_id 分開：subagent 的失敗不讓主 Session 收到提醒，提醒只注入觸發它的 agent。
+    $mainFailure = '{"session_id":"agents","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"agent cmd"},"error":"agent failure"}'
+    $subFailure = '{"session_id":"agents","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"agent cmd"},"error":"agent failure","agent_id":"sub-a"}'
+    $subBFailure = '{"session_id":"agents","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"agent cmd"},"error":"agent failure","agent_id":"sub-b"}'
+    Send-Event '{"session_id":"agents","hook_event_name":"UserPromptSubmit","prompt":"p"}'
+    Send-Event $mainFailure
+    Send-Event $subFailure
+    Send-Event $subBFailure
+    $agentRows = Read-Rows 'agents'
+    if ($agentRows[1].fingerprint.repeat -ne 1 -or $agentRows[2].fingerprint.repeat -ne 1 -or $agentRows[3].fingerprint.repeat -ne 1) { throw 'agent fingerprint counts must start separately' }
+    $agentText = $agentRows[1].fingerprint.text
+    Send-EventExpectReminder $subFailure (Get-ReminderText $agentText 2)
+    $agentRows = Read-Rows 'agents'
+    if ($agentRows[4].agent_id -ne 'sub-a' -or $agentRows[4].fingerprint.repeat -ne 2 -or $agentRows[4].reminded -ne $true) { throw 'subagent second failure must remind sub-a' }
+    if ($null -ne $agentRows[1].agent_id -or $agentRows[1].fingerprint.repeat -ne 1) { throw 'main session count changed by subagent failures' }
+    Send-EventExpectReminder $mainFailure (Get-ReminderText $agentText 2)
+    Send-Event '{"session_id":"agents","hook_event_name":"Stop"}'
+    $agentStop = (Read-Rows 'agents')[-1]
+    if (@($agentStop.fingerprints).Count -ne 1 -or @($agentStop.fingerprints)[0].repeat -ne 2) { throw 'stop summary must list main session fingerprints only' }
+    # 提醒條件只依指紋次數，唯讀取證計數（evidence）不參與輸出判定。
+    if ($source -match '唯讀取證') { throw 'hook source must not contain read-evidence reminder' }
+    foreach ($sourceLine in ($source -split '\r?\n')) { if ($sourceLine -match 'reminded|\$reminder' -and $sourceLine -match 'evidence') { throw "reminder condition references evidence: $sourceLine" } }
     # 並行壓力：同一 session 由多個行程同時寫入，檔案不得斷行，指紋次數不得少算。
     $workerCount = 8; $perWorker = 5
     $stressSession = 'stress'
@@ -121,22 +228,28 @@ try {
     Send-Event ('{"session_id":"' + $stressSession + '","hook_event_name":"UserPromptSubmit","prompt":"p"}')
     $workerScript = Join-Path $root 'stress-worker.ps1'
     [IO.File]::WriteAllText($workerScript, @'
-param([string]$Hook, [int]$Count, [string]$Id, [string]$ErrorFile)
+param([string]$Hook, [int]$Count, [string]$Id, [string]$ErrorFile, [string]$ReminderFile)
 $json = '{"session_id":"stress","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"stress cmd"},"error":"stress failure"}'
 for ($i = 0; $i -lt $Count; $i++) {
     $output = $json | & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Hook 2>&1
-    if ($LASTEXITCODE -ne 0 -or @($output).Count -ne 0) { [IO.File]::AppendAllText($ErrorFile, "worker $Id exit=$LASTEXITCODE output=$output`n") }
+    if ($LASTEXITCODE -ne 0) { [IO.File]::AppendAllText($ErrorFile, "worker $Id exit=$LASTEXITCODE output=$output`n"); continue }
+    if (@($output).Count -eq 0) { continue }
+    # 同指紋第 2 次會輸出提醒，其餘 stdout 非空一律視為失敗；提醒內容由測試主體驗證。
+    $text = (@($output) -join "`n")
+    if (@($output).Count -eq 1 -and $text -match '^\{"hookSpecificOutput":\{"hookEventName":"PostToolUseFailure","additionalContext":".*"\}\}$') { [IO.File]::AppendAllText($ReminderFile, $text + "`n") }
+    else { [IO.File]::AppendAllText($ErrorFile, "worker $Id unexpected output=$text`n") }
 }
 '@, (New-Object Text.UTF8Encoding($true)))
     $workerErrors = Join-Path $root 'stress-worker-errors.txt'
+    $workerReminders = Join-Path $root 'stress-worker-reminders.txt'
     $workers = @()
     try {
         for ($w = 0; $w -lt $workerCount; $w++) {
-            $workers += Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $workerScript + '"'),'-Hook',('"' + $hook + '"'),'-Count',$perWorker,'-Id',$w,'-ErrorFile',('"' + $workerErrors + '"'))
+            $workers += Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $workerScript + '"'),'-Hook',('"' + $hook + '"'),'-Count',$perWorker,'-Id',$w,'-ErrorFile',('"' + $workerErrors + '"'),'-ReminderFile',('"' + $workerReminders + '"'))
         }
         foreach ($worker in $workers) { if (-not $worker.WaitForExit(120000)) { throw 'stress worker timeout' } }
     } finally {
-        foreach ($worker in $workers) { if (-not $worker.HasExited) { try { $worker.Kill() } catch { } } }
+        foreach ($worker in $workers) { if (-not $worker.HasExited) { & taskkill.exe /T /F /PID $worker.Id 2>&1 | Out-Null; try { [void]$worker.WaitForExit(10000) } catch { } } }
     }
     if (Test-Path -LiteralPath $workerErrors) { throw ('stress worker failure: ' + [IO.File]::ReadAllText($workerErrors)) }
     $stressLines = @(Get-Content -LiteralPath $stressPath)
@@ -148,6 +261,14 @@ for ($i = 0; $i -lt $Count; $i++) {
     $expectedRepeats = @(1..($workerCount * $perWorker))
     if ($stressFailures.Count -ne $workerCount * $perWorker -or $repeats.Count -ne $expectedRepeats.Count -or (Compare-Object $repeats $expectedRepeats)) { throw "stress repeat set mismatch: $($repeats -join ',')" }
     if (@($stressRows | Where-Object { $_.turn -ne 1 }).Count -ne 0) { throw 'stress turn mismatch' }
+    # 並行情境下同指紋只在第 2 次提醒一次，紀錄的 reminded 與 worker 收到的 stdout 各只有一筆。
+    $stressReminded = @($stressFailures | Where-Object { $null -ne $_.PSObject.Properties['reminded'] -and $_.reminded -eq $true })
+    if ($stressReminded.Count -ne 1 -or $stressReminded[0].fingerprint.repeat -ne 2) { throw 'stress reminder record mismatch' }
+    if (-not (Test-Path -LiteralPath $workerReminders)) { throw 'stress reminder output missing' }
+    $stressReminderLines = @(Get-Content -LiteralPath $workerReminders | Where-Object { $_ -ne '' })
+    if ($stressReminderLines.Count -ne 1) { throw "stress reminder output count mismatch: $($stressReminderLines.Count)" }
+    $stressReminder = $stressReminderLines[0] | ConvertFrom-Json
+    if ($stressReminder.hookSpecificOutput.hookEventName -ne 'PostToolUseFailure' -or $stressReminder.hookSpecificOutput.additionalContext -cne (Get-ReminderText $stressReminded[0].fingerprint.text 2)) { throw 'stress reminder content mismatch' }
     # 取鎖逾時：鎖被他人持有時，hook 不寫 session 紀錄，只在 errors.jsonl 留下 lock_timeout。
     $lockSession = 'locktimeout'
     $lockSessionPath = Join-Path $root 'turn-guard\locktimeout.jsonl'

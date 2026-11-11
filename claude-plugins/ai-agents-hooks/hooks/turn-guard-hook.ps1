@@ -8,6 +8,7 @@ $event = $null
 $directory = $null
 $session = $null
 $lock = $null
+$reminder = $null
 # 取鎖等待上限。hooks.json 的 timeout 為 10 秒，啟動與寫入另需時間，故等待上限取 5 秒。
 $lockWaitMs = 5000
 # 清單只收錄確認不改變狀態的命令。
@@ -67,6 +68,21 @@ function Write-Record([string]$Path, $Record) {
         } catch { if ($attempt -lt 2) { Start-Sleep -Milliseconds 20 } }
     }
     throw 'record_write_failed'
+}
+# 主 Session 的事件沒有 agent_id，一律以空字串代表；subagent 內觸發時使用其 agent_id。
+function Get-AgentName($Value) {
+    if ($Value -is [string]) { return $Value }
+    return ''
+}
+# 重複失敗提醒以 PostToolUseFailure 的 additionalContext 注入。stdout 只輸出 ASCII 位元組、不帶 BOM，
+# 非 ASCII 字元以 \uXXXX 跳脫，避免主控台字碼頁影響內容。
+function Write-Reminder([string]$Text) {
+    $payload = [ordered]@{hookSpecificOutput=[ordered]@{hookEventName='PostToolUseFailure';additionalContext=$Text}}
+    $json = $payload | ConvertTo-Json -Compress -Depth 4
+    $ascii = [regex]::Replace($json, '[^\u0000-\u007F]', { param($m) '\u' + ([int][char]$m.Value).ToString('x4') })
+    $bytes = [Text.Encoding]::ASCII.GetBytes($ascii)
+    $out = [Console]::OpenStandardOutput()
+    try { $out.Write($bytes, 0, $bytes.Length); $out.Flush() } finally { $out.Dispose() }
 }
 # 以 session 為單位的檔案鎖。鎖檔與 session 紀錄同目錄，以 FileShare.None 獨占開啟，行程結束時由作業系統釋放。
 # 讀取既有紀錄、重算 turn 與指紋次數、附加寫入必須在同一把鎖內完成。
@@ -139,9 +155,11 @@ try {
         if ((Get-Value $row 'event') -eq 'PostToolUseFailure') {
             $counts.failure++; $fp = Get-Value $row 'fingerprint'
             if ($null -ne $fp) {
-                $key = [string]$fp.hash
+                # 指紋次數以 agent_id 加 hash 分開計算，同一 turn 內不同 agent 的失敗互不累計。
+                $agent = Get-AgentName (Get-Value $row 'agent_id')
+                $key = $agent + "`t" + [string]$fp.hash
                 $count = 1; if ($fingerprints.Contains($key)) { $count = [int]$fingerprints[$key].repeat + 1 }
-                $fingerprints[$key] = [ordered]@{hash=$key;text=[string]$fp.text;repeat=$count}
+                $fingerprints[$key] = [ordered]@{agent=$agent;hash=[string]$fp.hash;text=[string]$fp.text;repeat=$count}
             }
         }
     }
@@ -161,16 +179,27 @@ try {
             $errorLine = if ($firstLine.Count -gt 0) { $firstLine[0] } else { '' }
             $text = $tool + '|' + (Get-Normalized $subject) + '|' + (Get-Normalized $errorLine)
             $sha = [Security.Cryptography.SHA256]::Create(); try { $hash = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($text)))).Replace('-','').ToLowerInvariant().Substring(0,12) } finally { $sha.Dispose() }
-            $repeat = 1; if ($fingerprints.Contains($hash)) { $repeat = [int]$fingerprints[$hash].repeat + 1 }
-            $fp = [ordered]@{hash=$hash;text=$text;repeat=$repeat}; $fingerprints[$hash]=$fp; $record.fingerprint=$fp
+            $agent = Get-AgentName (Get-Value $inputObject 'agent_id')
+            $fpKey = $agent + "`t" + $hash
+            $repeat = 1; if ($fingerprints.Contains($fpKey)) { $repeat = [int]$fingerprints[$fpKey].repeat + 1 }
+            $fingerprints[$fpKey] = [ordered]@{agent=$agent;hash=$hash;text=$text;repeat=$repeat}
+            $record.fingerprint = [ordered]@{hash=$hash;text=$text;repeat=$repeat}
+            # 同一失敗在同一 turn、同一 agent 內累計第 2 次時提醒一次，第 3 次以後不再提醒。
+            if ($repeat -eq 2) {
+                $record.reminded = $true
+                $reminder = '同一失敗已在本 turn 重複 ' + $repeat + ' 次：' + $text + '。下一次嘗試前先說明為什麼這次會成功；說不出來就停下並回報。'
+            }
             $interrupt = Get-Value $inputObject 'is_interrupt'
             $record.is_interrupt = if ($interrupt -is [bool]) { $interrupt } else { $null }
         }
     }
     $counts.evidence = $counts.read + $counts.search + $counts.readonly_cmd; $record.counts=$counts
-    if ($event -eq 'Stop') { $record.fingerprints=@($fingerprints.Values); $record.turn_end=$true }
+    # Stop 只在主 Session 觸發，摘要只列主 Session 的指紋。
+    if ($event -eq 'Stop') { $record.fingerprints=@($fingerprints.Values | Where-Object { $_.agent -eq '' } | ForEach-Object { [ordered]@{hash=$_.hash;text=$_.text;repeat=$_.repeat} }); $record.turn_end=$true }
     $record.hook_ms=$timer.ElapsedMilliseconds
     Write-Record $path $record
+    # 紀錄寫入成功後才輸出提醒。
+    if ($null -ne $reminder) { Write-Reminder $reminder }
 } catch {
     if ($null -ne $directory) {
         try {
