@@ -124,9 +124,11 @@ Inspect 在開始處一次檢查同一次呼叫會因缺少而拒絕的參數，
 
 前輪以 usage-limit 中止、沒有 last-message、啟動失敗或終止原因不明時，續行沿既有執行鏈的 `attempt_parent_run_id`／`previous_run_id` 尋找有效 anchor；找不到有效 anchor 時以 `NoValidResumeAnchor` 停止。執行鏈保留失敗嘗試、事件流、ScopePlan、baseline、父層選項、process gate 與 model evidence，成果仍由 Inspect 與 Collect 驗收。有效 anchor 的事件流以 `turn.failed` 結束且沒有 last-message 時，Start 依 RunRecord 的 `interruption_checkpoint_path` 取得已驗證交接資料，新 RunRecord 的 `continuation_handoff_source_type` 記為 `interruption-checkpoint`；使用 last-message 時記為 `last-message`。兩者皆缺或檢查點驗證失敗時，以 `ResumeHandoffUnavailable` 拒絕並指出兩個檔案路徑。
 
-初次 Start 將有效父層選項寫入 RunRecord 的 `parent_options`（`profile`、`sandbox`、`add_directory` 保留原文與順序、`search`、`codex_parent_option` 保留原文與順序、`working_directory`）與 `parent_options_sha256`。續行未顯式傳入時從錨點還原，顯式傳入時逐欄比對，任一不同即以 `ParentOptionsMismatch` 拒絕並輸出欄位、數量與首個差異索引，不以當次呼叫值覆蓋錨點值；舊 RunRecord 沒有此欄位時輸出 `ParentOptionsUnknown`，不續行原 thread。
+初次 Start 將有效父層選項寫入 RunRecord 的 `parent_options`（`profile`、`sandbox`、`add_directory` 保留原文與順序、`search`、`codex_parent_option` 保留原文與順序、`working_directory`）與 `parent_options_sha256`。續行未顯式傳入時從錨點還原，顯式傳入時逐欄比對，任一不同即以 `ParentOptionsMismatch` 拒絕並輸出欄位、數量與首個差異索引，不以當次呼叫值覆蓋錨點值；唯讀類舊錨點不含 `windows.sandbox` 選項，Windows 續行在比對之後補上 `-c windows.sandbox="mxc"` 一組，新 RunRecord 的 `parent_options` 即為含 mxc 的形狀；舊 RunRecord 沒有此欄位時輸出 `ParentOptionsUnknown`，不續行原 thread。
 
-自動 token 組（shell 網路、`mxc` 與 NuGet 路徑覆寫，見 `references/start.md`「指令契約」）只在新 cold-start 合成，記錄於 `parent_options.codex_parent_option`。續行一律沿用錨點記錄的完整陣列：錨點含完整 token 組時原樣沿用；只含網路 token 的舊錨點維持原狀，不補加 `mxc` 與 NuGet 覆寫；token 組不完整或與原始派遣語意不符時以 `ParentOptionsMismatch` 拒絕。需要新的 token 組但錨點不含時，以新的 `dispatchSlug` 冷啟動。
+自動 token 組（shell 網路、`mxc` 與 NuGet 路徑覆寫，見 `references/start.md`「指令契約」）只在新 cold-start 合成，記錄於 `parent_options.codex_parent_option`。續行一律沿用錨點記錄的完整陣列。write 錨點含完整 token 組時原樣沿用；只含網路 token 的舊 write 錨點維持原狀，不補加 `mxc` 與 NuGet 覆寫；token 組不完整或與原始派遣語意不符時以 `ParentOptionsMismatch` 拒絕。write 需要新的 token 組但錨點不含時，以新的 `dispatchSlug` 冷啟動。
+
+唯讀類錨點只接受兩種形狀。含 `-c windows.sandbox="mxc"` 恰好一組的新形狀原樣沿用，顯式傳入選項時該組與錨點逐項相同。不含任何網路、`windows.sandbox` 與 NuGet 選項的舊形狀可以續行，Windows 續行時補上 mxc 一組。其餘形狀（含網路 token、NuGet 選項、`windows.sandbox="elevated"`、重複的 mxc 組、`--config=` 形式或不相鄰的 mxc）以 `ParentOptionsMismatch` 拒絕。
 
 續行不比對 worktree 的 ACL／SID 證據；ACL 證據缺少或與前輪不同時，有效 thread 仍可續行。Codex 在 `turn.started` 後沒有後續事件且非零結束時，Inspect 判定 `InterruptedUnknown`，保存事件尾段、stderr 與 exit code 並輸出 `cold_start_recommended=true`；該 worktree 不再作為續行目標，冷啟動改用新的 dispatch worktree。
 
@@ -168,8 +170,8 @@ Codex 有兩個彼此獨立的網路開關。
 | `-c sandbox_workspace_write.network_access=true` | Start 在 `write_mode=write` 且 sandbox 為 `workspace-write` 的新 cold-start 自動加入，置於 `exec` 前；Request 不提供開關，`codex_parent_option` 自帶同名覆寫時於啟動前拒絕 | shell 出網，例如 `dotnet restore`、`npm install`、`git fetch` 與下載套件 |
 | `--search` | 依派遣需要指定，屬 `codex` 的父層選項，置於 `exec` 或 `exec resume` 前 | Codex 的官方查證工具，不提供 shell 網路 |
 
-- 派遣 write 工作時，shell 可嘗試網路還原與建置。Windows 上 Start 同時改用 `mxc` 並把 NuGet 路徑指到 executionRoot 內，使 HTTPS 與 restore 可在 sandbox 內完成；npm、git 等其他工具在 `mxc` 內是否需要寫入使用者目錄未驗證。實際連線仍受本機網路、防火牆與組織政策影響；連線失敗時保存命令原文、stderr 與退出碼並回報受阻，不改用 sandbox 外執行、`danger-full-access` 或 `unelevated` 補足。
-- readonly 派遣（含 worktree readonly、advisor 與 direct-readonly）不帶 shell 網路覆寫，shell 出網預期失敗。唯讀 Reviewer 不執行建置或測試。
+- 派遣 write 工作時，shell 可嘗試網路還原與建置。Windows 上新 cold-start 的派遣與唯讀類續行都使用 `mxc`（見 `references/start.md`「指令契約」；舊 write 錨點續行沿用錨點，見「續 session 與跨介面接手」），write 另把 NuGet 路徑指到 executionRoot 內，使 HTTPS 與 restore 可在 sandbox 內完成；npm、git 等其他工具在 `mxc` 內是否需要寫入使用者目錄未驗證。實際連線仍受本機網路、防火牆與組織政策影響；連線失敗時保存命令原文、stderr 與退出碼並回報受阻，不改用 sandbox 外執行、`danger-full-access` 或 `unelevated` 補足。
+- readonly 派遣（含 worktree readonly、advisor 與 direct-readonly）不帶 shell 網路覆寫，Windows 上只帶 `-c windows.sandbox="mxc"`，shell 出網預期失敗。唯讀 Reviewer 不執行建置或測試。
 - 需要 shell 網路的工作派 write；工作必須唯讀時，網路動作改由主 Agent 依「sandbox 外環境動作」處理。
 - 事實查核類派遣必須啟用 `--search`。未啟用時，Codex 可能無法取得資料而改以記憶作答。shell 網路覆寫不取代 `--search`。
 

@@ -203,7 +203,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 派工可使用專用的 Codex 帳號目錄，與 Codex Desktop 使用的預設目錄 `~/.codex` 分開。派工只在單次子行程指定 `CODEX_HOME`，不會更換、改寫 Desktop 或預設目錄的登入，因此 Desktop 使用中不會被派工切換帳號。建議的配置是 `~/.codex` 留給 Desktop 且不登記，派工用的每個帳號各用一個專用目錄。Desktop 與某個派工帳號若登入同一個 ChatGPT 帳號，兩邊仍共用該帳號的額度。
 
-派工帳號以 `scripts\New-CodexDispatchAccount.ps1` 建立。腳本建立 `~/.codex-<名稱>` 目錄與最小 `config.toml`，以連結共用 `~/.codex` 的沙盒狀態與檔位設定檔，並登記到 `~/.ai-agents/.local/machine.json`。
+派工帳號以 `scripts\New-CodexDispatchAccount.ps1` 建立。腳本建立 `~/.codex-<名稱>` 目錄與最小 `config.toml`，以連結共用 `~/.codex` 的檔位設定檔，並登記到 `~/.ai-agents/.local/machine.json`。
 
 ```powershell
 .\scripts\New-CodexDispatchAccount.ps1 -Name account-a
@@ -217,13 +217,15 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 ```toml
 [windows]
-sandbox = "elevated"
+sandbox = "mxc"
 
 [projects.'c:\users\<使用者>\.ai-agents']
 trust_level = "trusted"
 ```
 
-缺少 `config.toml` 時，該 home 沒有 Windows sandbox 設定，派工執行的命令會因需要核准而被執行政策拒絕。
+`[windows]` 段的 `sandbox` 接受 `"mxc"` 與 `"elevated"`，缺少 `[windows]` 段時補上 `"mxc"`。Windows 上新啟動的派工一律以 MXC 執行，由派工腳本指定，不依賴此設定值。
+
+缺少 `config.toml` 的登記帳號在自動選帳號時被略過（原因碼 `TrustConfigMissing`），由建立腳本補齊。
 
 `config.toml` 設定異常的帳號會被略過，全部帳號都不可用時拒絕派工並說明原因。帳號回報檔位 model 不支援（停用訂閱的帳號也以此呈現）時，派工腳本把該帳號與 model 記在 `.local\codex-account-health.json`，24 小時內派工會略過該帳號；所有帳號都被記錄時仍實際嘗試一次。
 
