@@ -55,6 +55,7 @@ function Resolve-DispatchNetworkParentOptions {
     }
     if ($null -eq $Anchor) {
         if ($enabled) { $values += $automatic }
+        elseif (Test-IsWindowsPlatform) { $values += @('-c', 'windows.sandbox="mxc"') }
     }
     else {
         $anchorValues = @((Get-DispatchJsonProperty -Object $Anchor -Name 'codex_parent_option'))
@@ -71,7 +72,16 @@ function Resolve-DispatchNetworkParentOptions {
                 (($anchorValues[$index] -ceq '-c' -or $anchorValues[$index] -ceq '--config') -and $index + 1 -lt $anchorValues.Count -and $anchorValues[$index + 1] -match $keyPattern)) { $managedCount++ }
         }
         $automaticLength = 0
-        if ($automaticIndex -ge 0) {
+        if (-not $enabled) {
+            $mxcCount = 0
+            for ($index = 0; $index + 1 -lt $anchorValues.Count; $index++) {
+                if ($anchorValues[$index] -ceq '-c' -and $anchorValues[$index + 1] -ceq 'windows.sandbox="mxc"') { $mxcCount++; $automaticIndex = $index }
+            }
+            $mxcTokenCount = @($anchorValues | Where-Object { $_ -ceq 'windows.sandbox="mxc"' }).Count
+            if ($mxcTokenCount -ne $mxcCount -or ($managedCount -ne 0 -and -not ($managedCount -eq 1 -and $mxcCount -eq 1))) { throw 'ParentOptionsMismatch：anchor 自動選項組與原始派遣語意不符。' }
+            if ($mxcCount -eq 1) { $automaticLength = 2 } else { $automaticIndex = -1 }
+        }
+        elseif ($automaticIndex -ge 0) {
             $automaticLength = 2
             if ($managedCount -gt 1) {
                 $currentPaths = $automaticIndex + 7 -lt $anchorValues.Count -and
@@ -99,6 +109,23 @@ function Resolve-DispatchNetworkParentOptions {
         }
     }
     return ,$values
+}
+
+function Add-DispatchReadonlyMxcOption {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Model,
+        [string]$Sandbox,
+        [string]$WriteMode
+    )
+
+    if (-not (Test-IsWindowsPlatform) -or ($Sandbox -eq 'workspace-write' -and $WriteMode -eq 'write')) { return $Model }
+    $options = @((Get-DispatchJsonProperty -Object $Model -Name 'codex_parent_option') | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    for ($index = 0; $index + 1 -lt $options.Count; $index++) {
+        if ($options[$index] -ceq '-c' -and $options[$index + 1] -ceq 'windows.sandbox="mxc"') { return $Model }
+    }
+    $addDirectory = @((Get-DispatchJsonProperty -Object $Model -Name 'add_directory') | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+    return New-ParentOptionsModel -Profile ([string](Get-DispatchJsonProperty -Object $Model -Name 'profile')) -Sandbox ([string](Get-DispatchJsonProperty -Object $Model -Name 'sandbox')) -WorkingDirectory ([string](Get-DispatchJsonProperty -Object $Model -Name 'working_directory')) -AddDirectory $addDirectory -Search ([bool](Get-DispatchJsonProperty -Object $Model -Name 'search')) -CodexParentOption @($options + @('-c', 'windows.sandbox="mxc"'))
 }
 
 function Get-PreflightData {
@@ -1208,6 +1235,7 @@ function Invoke-Start {
         throw ($parentOptionsResolution.code + '：父層選項差異欄位=' + (($parentOptionsResolution.differences) -join ','))
     }
     $parentOptionsModel = $parentOptionsResolution.model
+    $parentOptionsModel = Add-DispatchReadonlyMxcOption -Model $parentOptionsModel -Sandbox $sandboxValue -WriteMode $writeModeValue
     $effectiveProfileValue = [string](Get-DispatchJsonProperty -Object $parentOptionsModel -Name 'profile')
     Assert-AdvisorContract -RequestedProfile $effectiveProfileValue -TaskType $TaskType -DispatchKind $dispatchKindValue -WriteMode $writeModeValue
     if (-not (Test-PathWithinRoot $lastMessagePathValue $executionRootPath)) { throw 'LastMessagePath 必須位於 executionRoot 內。' }

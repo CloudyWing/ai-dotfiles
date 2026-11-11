@@ -6842,7 +6842,19 @@ if ($Phase -ge 4) {
         $sandboxIndex = [Array]::IndexOf($arguments, '--sandbox')
         $parentOptions = @($StartResult.parentOptions.codex_parent_option)
         Assert-True ($sandboxIndex -ge 0 -and $arguments[$sandboxIndex + 1] -ceq 'read-only' -and $StartResult.parentOptions.sandbox -ceq 'read-only') 'Start 未使用 read-only sandbox。'
-        Assert-True ($arguments -cnotcontains '-c' -and $arguments -cnotcontains 'sandbox_workspace_write.network_access=true' -and $parentOptions -cnotcontains '-c' -and $parentOptions -cnotcontains 'sandbox_workspace_write.network_access=true') 'readonly Start 的 launcher 或 parentOptions 含網路 token。'
+        Assert-True ($arguments -cnotcontains 'sandbox_workspace_write.network_access=true' -and $parentOptions -cnotcontains 'sandbox_workspace_write.network_access=true' -and @($arguments | Where-Object { $_ -like '*NUGET_*' }).Count -eq 0 -and @($parentOptions | Where-Object { $_ -like '*NUGET_*' }).Count -eq 0) 'readonly Start 的 launcher 或 parentOptions 含網路或 NuGet token。'
+        $argumentDashC = @($arguments | Where-Object { $_ -ceq '-c' }).Count
+        $parentDashC = @($parentOptions | Where-Object { $_ -ceq '-c' }).Count
+        if (Test-IsWindowsPlatform) {
+            $mxcValueCount = @($arguments | Where-Object { $_ -ceq 'windows.sandbox="mxc"' }).Count
+            $mxcIndex = [Array]::IndexOf($arguments, 'windows.sandbox="mxc"')
+            $execIndex = [Array]::IndexOf($arguments, 'exec')
+            Assert-True ($argumentDashC -eq 1 -and $mxcValueCount -eq 1 -and $mxcIndex -ge 1 -and $arguments[$mxcIndex - 1] -ceq '-c' -and ($execIndex -lt 0 -or $mxcIndex -lt $execIndex)) 'Windows readonly Start 的 launcher 未恰好含一組 -c windows.sandbox="mxc"（須位於 exec 之前）。'
+            Assert-True (Compare-DispatchStringArrays -Left $parentOptions -Right @('-c', 'windows.sandbox="mxc"')) 'Windows readonly Start 的 parentOptions 未恰為 mxc 一組。'
+        }
+        else {
+            Assert-True ($argumentDashC -eq 0 -and $parentDashC -eq 0) '非 Windows readonly Start 不可含 -c。'
+        }
     }
 
     Invoke-Case 'Phase 4 network readonly Start advisor' {
@@ -6920,7 +6932,8 @@ if ($Phase -ge 4) {
         }
         foreach ($case in @(@('workspace-write', 'readonly'), @('read-only', 'readonly'))) {
             $readonly = Resolve-DispatchNetworkParentOptions -Sandbox $case[0] -WriteMode $case[1] -Options @() -Anchor $null
-            Assert-True ($readonly.Count -eq 0) 'readonly 不可加入網路選項。'
+            $readonlyExpected = if (Test-IsWindowsPlatform) { @('-c', 'windows.sandbox="mxc"') } else { @() }
+            Assert-True (Compare-DispatchStringArrays -Left $readonly -Right $readonlyExpected) 'readonly 只可加入 Windows 的 mxc 一組，不可加入網路選項。'
         }
         $anchor = New-ParentOptionsModel -Profile 'scan' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $options
         $explicit = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -ExecutionRoot $spaceRoot -Options @('--note=test') -OptionsProvided $true -Anchor $anchor
@@ -6963,6 +6976,114 @@ if ($Phase -ge 4) {
             $rejected = $false
             try { $null = Resolve-DispatchNetworkParentOptions -Sandbox 'workspace-write' -WriteMode 'write' -Options $conflict -Anchor $null } catch { $rejected = $_.Exception.Message -match 'NetworkAccessOverrideConflict' }
             Assert-True $rejected '呼叫者網路覆寫未拒絕。'
+        }
+    }
+
+    Invoke-Case 'Phase 4 network parent options readonly cold-start 與 mxc 補值' {
+        $mxc = @('-c', 'windows.sandbox="mxc"')
+        foreach ($case in @(@('workspace-write', 'readonly'), @('read-only', 'readonly'))) {
+            $empty = Resolve-DispatchNetworkParentOptions -Sandbox $case[0] -WriteMode $case[1] -Options @() -Anchor $null
+            $withNote = Resolve-DispatchNetworkParentOptions -Sandbox $case[0] -WriteMode $case[1] -Options @('--note=x') -Anchor $null
+            $nonWindowsEmpty = & { function Test-IsWindowsPlatform { return $false }; Resolve-DispatchNetworkParentOptions -Sandbox $case[0] -WriteMode $case[1] -Options @() -Anchor $null }
+            $nonWindowsNote = & { function Test-IsWindowsPlatform { return $false }; Resolve-DispatchNetworkParentOptions -Sandbox $case[0] -WriteMode $case[1] -Options @('--note=x') -Anchor $null }
+            if (Test-IsWindowsPlatform) {
+                Assert-True (Compare-DispatchStringArrays -Left $empty -Right $mxc) ('Windows readonly cold-start 未只回傳 mxc 一組：' + $case[0])
+                Assert-True (Compare-DispatchStringArrays -Left $withNote -Right (@('--note=x') + $mxc)) ('Windows readonly cold-start 未把 mxc 附加在呼叫者選項之後：' + $case[0])
+            }
+            Assert-True ($nonWindowsEmpty.Count -eq 0 -and (Compare-DispatchStringArrays -Left $nonWindowsNote -Right @('--note=x'))) ('非 Windows readonly cold-start 不可加入任何項目：' + $case[0])
+        }
+        $base = New-ParentOptionsModel -Profile 'scan' -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @($fixtureRoot) -Search $true -CodexParentOption @('--note=x')
+        $added = Add-DispatchReadonlyMxcOption -Model $base -Sandbox 'read-only' -WriteMode 'readonly'
+        $expectedAdded = New-ParentOptionsModel -Profile 'scan' -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @($fixtureRoot) -Search $true -CodexParentOption (@('--note=x') + $mxc)
+        if (Test-IsWindowsPlatform) {
+            Assert-True ($added.fingerprint -ceq $expectedAdded.fingerprint -and (Compare-DispatchStringArrays -Left @($added.codex_parent_option) -Right @($expectedAdded.codex_parent_option))) 'Add-DispatchReadonlyMxcOption 未對 readonly model 補上 mxc 一組。'
+            Assert-True ($added.profile -ceq 'scan' -and $added.sandbox -ceq 'read-only' -and $added.search -eq $true -and $added.working_directory -ceq $expectedAdded.working_directory -and (Compare-DispatchStringArrays -Left @($added.add_directory) -Right @($expectedAdded.add_directory))) 'Add-DispatchReadonlyMxcOption 改變了 mxc 以外的欄位。'
+            Assert-True ($base.fingerprint -cne $added.fingerprint -and @($base.codex_parent_option).Count -eq 1) 'Add-DispatchReadonlyMxcOption 不可修改傳入的 model。'
+            $again = Add-DispatchReadonlyMxcOption -Model $added -Sandbox 'read-only' -WriteMode 'readonly'
+            Assert-True ($again.fingerprint -ceq $added.fingerprint -and @($again.codex_parent_option | Where-Object { $_ -ceq 'windows.sandbox="mxc"' }).Count -eq 1) 'Add-DispatchReadonlyMxcOption 對已含 mxc 的 model 不冪等。'
+        }
+        $writeModel = New-ParentOptionsModel -Profile 'scan' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @('--note=x')
+        $writeResult = Add-DispatchReadonlyMxcOption -Model $writeModel -Sandbox 'workspace-write' -WriteMode 'write'
+        Assert-True ($writeResult.fingerprint -ceq $writeModel.fingerprint) 'write 派遣不可由 Add-DispatchReadonlyMxcOption 補值。'
+        $nonWindowsResult = & { function Test-IsWindowsPlatform { return $false }; Add-DispatchReadonlyMxcOption -Model $base -Sandbox 'read-only' -WriteMode 'readonly' }
+        Assert-True ($nonWindowsResult.fingerprint -ceq $base.fingerprint) '非 Windows 不可由 Add-DispatchReadonlyMxcOption 補值。'
+    }
+
+    Invoke-Case 'Phase 4 network parent options readonly anchor 新舊形狀續行' {
+        $mxc = @('-c', 'windows.sandbox="mxc"')
+        foreach ($sandbox in @('read-only', 'workspace-write')) {
+            $newOptions = @('--note=x') + $mxc
+            $newAnchor = New-ParentOptionsModel -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $newOptions
+            $omitted = Resolve-DispatchNetworkParentOptions -Sandbox $sandbox -WriteMode 'readonly' -Options @() -OptionsProvided $false -Anchor $newAnchor
+            $omittedResume = Resolve-ParentOptionsForStart -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $omitted -CodexParentOptionProvided $false -Anchor $newAnchor
+            Assert-True ($null -eq $omittedResume.code -and $omittedResume.model.fingerprint -ceq $newAnchor.fingerprint) ('新形狀 readonly anchor 省略選項續行失敗：' + $sandbox)
+            $explicit = Resolve-DispatchNetworkParentOptions -Sandbox $sandbox -WriteMode 'readonly' -Options @('--note=x') -OptionsProvided $true -Anchor $newAnchor
+            Assert-True (Compare-DispatchStringArrays -Left $explicit -Right $newOptions) ('新形狀 readonly anchor 顯式選項未還原 mxc 一組：' + $sandbox)
+            $explicitResume = Resolve-ParentOptionsForStart -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $explicit -CodexParentOptionProvided $true -Anchor $newAnchor
+            Assert-True ($null -eq $explicitResume.code -and $explicitResume.model.fingerprint -ceq $newAnchor.fingerprint) ('新形狀 readonly anchor 顯式選項續行失敗：' + $sandbox)
+            $afterAdd = Add-DispatchReadonlyMxcOption -Model $explicitResume.model -Sandbox $sandbox -WriteMode 'readonly'
+            Assert-True ($afterAdd.fingerprint -ceq $newAnchor.fingerprint) ('新形狀 readonly anchor 續行後不可再補 mxc：' + $sandbox)
+
+            $onlyMxcAnchor = New-ParentOptionsModel -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $mxc
+            $onlyMxc = Resolve-DispatchNetworkParentOptions -Sandbox $sandbox -WriteMode 'readonly' -Options @() -OptionsProvided $true -Anchor $onlyMxcAnchor
+            $onlyMxcResume = Resolve-ParentOptionsForStart -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $onlyMxc -CodexParentOptionProvided $true -Anchor $onlyMxcAnchor
+            Assert-True ((Compare-DispatchStringArrays -Left $onlyMxc -Right $mxc) -and $null -eq $onlyMxcResume.code -and $onlyMxcResume.model.fingerprint -ceq $onlyMxcAnchor.fingerprint) ('只含 mxc 一組的 readonly anchor 顯式傳入空選項續行失敗：' + $sandbox)
+
+            foreach ($oldOptions in @(@(), @('--note=old'))) {
+                $oldAnchor = New-ParentOptionsModel -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $oldOptions
+                foreach ($provided in @($false, $true)) {
+                    $options = if ($provided) { $oldOptions } else { @() }
+                    $oldResolved = Resolve-DispatchNetworkParentOptions -Sandbox $sandbox -WriteMode 'readonly' -Options $options -OptionsProvided $provided -Anchor $oldAnchor
+                    $oldResume = Resolve-ParentOptionsForStart -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $oldResolved -CodexParentOptionProvided $provided -Anchor $oldAnchor
+                    Assert-True ($null -eq $oldResume.code -and $oldResume.model.fingerprint -ceq $oldAnchor.fingerprint) ('舊形狀 readonly anchor 續行不可擲 ParentOptionsMismatch：' + $sandbox + ' provided=' + $provided + ' options=' + ($oldOptions -join ' '))
+                    $oldCompleted = Add-DispatchReadonlyMxcOption -Model $oldResume.model -Sandbox $sandbox -WriteMode 'readonly'
+                    if (Test-IsWindowsPlatform) {
+                        $oldExpected = New-ParentOptionsModel -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption (@($oldOptions) + $mxc)
+                        Assert-True ($oldCompleted.fingerprint -ceq $oldExpected.fingerprint -and $oldCompleted.fingerprint -cne $oldAnchor.fingerprint -and (Compare-DispatchStringArrays -Left @($oldCompleted.codex_parent_option) -Right @($oldExpected.codex_parent_option))) ('舊形狀 readonly anchor 續行未補 mxc 一組：' + $sandbox + ' provided=' + $provided + ' options=' + ($oldOptions -join ' '))
+                        $nextAnchor = $oldCompleted
+                        $nextResolved = Resolve-DispatchNetworkParentOptions -Sandbox $sandbox -WriteMode 'readonly' -Options @() -OptionsProvided $false -Anchor $nextAnchor
+                        $nextResume = Resolve-ParentOptionsForStart -Profile 'scan' -Sandbox $sandbox -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption $nextResolved -CodexParentOptionProvided $false -Anchor $nextAnchor
+                        Assert-True ($null -eq $nextResume.code -and $nextResume.model.fingerprint -ceq $oldCompleted.fingerprint) '補 mxc 後產生的新形狀 anchor 無法再續行。'
+                    }
+                    else {
+                        Assert-True ($oldCompleted.fingerprint -ceq $oldAnchor.fingerprint) '非 Windows 舊形狀 readonly anchor 續行不可補 mxc。'
+                    }
+                }
+            }
+        }
+    }
+
+    Invoke-Case 'Phase 4 network parent options readonly anchor 異常形狀與自帶覆寫拒絕' {
+        $network = @('-c', 'sandbox_workspace_write.network_access=true')
+        $anomalies = [ordered]@{
+            'network token' = $network
+            'mxc 加 NuGet' = @('-c', 'windows.sandbox="mxc"', '-c', "shell_environment_policy.set.NUGET_PACKAGES='C:\fixture\pkg'")
+            'elevated' = @('-c', 'windows.sandbox="elevated"')
+            '兩組 mxc' = @('-c', 'windows.sandbox="mxc"', '-c', 'windows.sandbox="mxc"')
+            '--config= 形式' = @('--config=windows.sandbox="mxc"')
+            '--config 形式' = @('--config', 'windows.sandbox="mxc"')
+            '不相鄰的 mxc' = @('-c', '--note=x', 'windows.sandbox="mxc"')
+            'NuGet 鍵' = @('-c', "shell_environment_policy.set.NUGET_HTTP_CACHE_PATH='C:\fixture\http'")
+        }
+        foreach ($sandbox in @('read-only', 'workspace-write')) {
+            foreach ($name in $anomalies.Keys) {
+                $anchor = [pscustomobject]@{ codex_parent_option = @($anomalies[$name]) }
+                foreach ($provided in @($false, $true)) {
+                    $rejected = $false
+                    try { $null = Resolve-DispatchNetworkParentOptions -Sandbox $sandbox -WriteMode 'readonly' -Options @() -OptionsProvided $provided -Anchor $anchor } catch { $rejected = $_.Exception.Message -match '^ParentOptionsMismatch' }
+                    Assert-True $rejected ('readonly anchor 異常形狀未擲 ParentOptionsMismatch：' + $name + ' ' + $sandbox + ' provided=' + $provided)
+                }
+            }
+            foreach ($key in @('windows.sandbox')) {
+                foreach ($form in @('-c', '--config', '--config=')) {
+                    foreach ($value in @('"mxc"', '"elevated"')) {
+                        $conflict = if ($form -eq '--config=') { @($form + $key + '=' + $value) } else { @($form, ($key + '=' + $value)) }
+                        $rejected = $false
+                        try { $null = Resolve-DispatchNetworkParentOptions -Sandbox $sandbox -WriteMode 'readonly' -Options $conflict -Anchor $null } catch { $rejected = $_.Exception.Message -match '^NetworkAccessOverrideConflict' }
+                        Assert-True $rejected ('readonly 呼叫者自帶 windows.sandbox 未拒絕：' + $form + ' ' + $value + ' ' + $sandbox)
+                    }
+                }
+            }
         }
     }
 
@@ -16169,7 +16290,7 @@ if ($Phase -ge 9) {
             foreach ($loginHome in @($accountFixtureHomeA, $accountFixtureHomeB)) {
                 [IO.File]::WriteAllText((Join-Path $loginHome 'auth.json'), '{"placeholder":"fixture-login-file"}', (New-Object Text.UTF8Encoding($false)))
                 $accountFixtureTrustKey = [string](Resolve-CodexProjectTrustKey -SourceRoot $sourceRoot).trust_key
-                [IO.File]::WriteAllText((Join-Path $loginHome 'config.toml'), ("[windows]`r`nsandbox = `"elevated`"`r`n`r`n[projects.'" + $accountFixtureTrustKey + "']`r`ntrust_level = `"trusted`"`r`n"), (New-Object Text.UTF8Encoding($false)))
+                [IO.File]::WriteAllText((Join-Path $loginHome 'config.toml'), ("[windows]`r`nsandbox = `"mxc`"`r`n`r`n[projects.'" + $accountFixtureTrustKey + "']`r`ntrust_level = `"trusted`"`r`n"), (New-Object Text.UTF8Encoding($false)))
             }
             $codexHome = $accountFixtureHomeB
             $fixtureScripts = Join-Path $caseRoot 'scripts'
