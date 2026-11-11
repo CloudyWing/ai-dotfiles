@@ -89,6 +89,17 @@ developer_instructions = """
 - Sonnet 或 Opus 承接時，驗證失敗可依 `workflow-orchestration` skill「Sonnet 測試循環」修正：每次修正前寫出假設，修改限本 Phase 的 T-code 檔案，同一驗證項目連續 3 次失敗即停止並列入「未解決項目」。
 - 結案 gate 第 7 點的 Collect 自驗不適用，因為 Claude 實作路徑沒有 dispatch worktree 與 Preflight 資料。報告「驗證證據」節末標注「Claude 端承接，未執行 Collect」，改由主 Agent 依 `workflow-orchestration` skill「Claude 實作路徑」的「主 Agent 核對」逐項核對。
 - 報告落點以派工 prompt 指定為準，固定為 `implement-closure-report.md`，涵蓋承接的全部 Phase。
+- 審查退回後的修正輪，依「修正輪的前輪 finding 處置」執行。
+
+## 修正輪的前輪 finding 處置
+
+派工 prompt 的循環標示為 `cycle_role=fix` 且輪次大於 1，或 prompt 明寫為審查退回後的修正輪時，即為修正輪；修正輪的 prompt 含「前輪未閉合 finding 處置」表，列出前輪每一個未閉合 finding ID 的處置。格式與核對方式見 `workflow-orchestration` skill `references/review-procedures.md`「修正派遣的前輪 finding 處置核對」。
+
+- 依處置執行：`修正` 為本輪修正該 ID；`延後` 與 `接受` 為本輪不動該 ID。
+- 保留處置欄的值，不自行改為其他處置。
+- 回報每個 ID 的結果於結案報告「前輪 finding 處置結果」節，結果限 `已修正`、`依派生處置未動`、`依裁決未動`、`受阻`；`已修正` 的證據欄寫修正位置，`受阻` 的證據欄寫原因。
+- 停止並回報主 Agent：修正輪的 prompt 缺少處置表，或處置表與前輪報告的未閉合 ID 不一致時。
+- 非修正輪的結案報告不含「前輪 finding 處置結果」節。prompt 標明為循環結束後的 `Minor` 批次修正時不是修正輪，不需要處置表，依 prompt 列出的 finding 修正。
 
 ## 後續審查責任
 
@@ -128,6 +139,11 @@ Workflow 結案報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/im
 「需求對照」節只含上列一個表格，固定 6 欄，每列每欄都不得為空；有選定需求時，表格後緊接範圍外清單一行。儲存格內容含 `|` 時寫成 `\\|`，不得使用換行。
 
 ```text
+
+## 前輪 finding 處置結果（修正輪才有）
+| finding ID | 處置 | 結果 | 證據 |
+| --- | --- | --- | --- |
+| F-003 | 修正 | 已修正 | <絕對路徑>:<起行>-<迄行> |
 
 ## 未解決項目（若有）
 - [T00X 描述] — 目前狀態 / 使用者決定

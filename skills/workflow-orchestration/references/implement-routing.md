@@ -7,7 +7,7 @@
 無 `design.md` 的單一工作，依下列各點派生選派入口選出的 Claude subagent。
 
 - 以 Agent 工具派生，`subagent_type` 為 `general-purpose`，`model` 取自選派入口輸出的 `executor.model`（`haiku` 或 `sonnet`）。
-- prompt 指定規則來源為 `~/.ai-agents/agents/codex/support-engineer.toml`，要求依「分流 A」執行，以 in-context 傳入完整契約欄位。`modificationScope` 為列舉的檔案與符號，`acceptanceCriteria` 為驗證命令加至少 1 項負向檢查。
+- prompt 指定規則來源為 `~/.ai-agents/agents/codex/support-engineer.toml`，要求依「分流 A」執行，以 in-context 傳入完整契約欄位。`modificationScope` 為列舉的檔案與符號，`acceptanceCriteria` 為驗證命令加至少 1 項負向檢查。審查退回後的修正輪另傳條件式欄位 `priorFindingDisposition`，值為「前輪未閉合 finding 處置」表（格式見 `review-procedures.md`「修正派遣的前輪 finding 處置核對」），非修正輪不傳。回收時依同一節比對處置集合。
 - Workflow Phase 的規則來源為 `~/.ai-agents/agents/codex/developer.toml`，契約見 `../SKILL.md`「Claude 實作路徑」。
 - 驗證未通過時，Haiku 不修正重試，回報命令原文與原始輸出；Sonnet 依 `../SKILL.md`「Sonnet 測試循環」修正。主 Agent 依 `instructions.md`「派工後的殘餘工作」判定殘餘處置。
 - 派生前依 `../SKILL.md`「主 Agent 核對」第 3 項步驟 1 記錄路徑雜湊基準。回收時依該項步驟 2 至 4 取得實際改動路徑集合，核對其落在 `modificationScope` 內。行數以 `git diff HEAD --numstat` 核對已追蹤檔，未追蹤新檔以檔案行數計。並核對驗證命令輸出。超出範圍時退回。

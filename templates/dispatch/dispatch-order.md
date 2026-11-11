@@ -30,6 +30,12 @@ Prepare 只接受位於同線 handoff 或 report 根目錄的派遣單；放在 
 <!-- 標題恰為必讀檔案加全形冒號，每行一個反引號包住的絕對路徑，不接行號；沒有必讀檔案時刪除整個區塊。清單後的其他條列須以非清單行隔開。 -->
 
 <!--
+審查派遣在必讀檔案區塊之外寫一行循環標示：循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）。值與 Request 的 cycle_id、cycle_round、cycle_role 一致。
+第 2 輪以上的審查，必讀檔案區塊另列前輪報告與修正派遣報告；新循環第 1 輪改寫一行「本線 Reviewer 最後一份報告的 manifest round=<N>」。規格見 workflow-orchestration skill references/review-procedures.md「循環標示與第 2 輪以上的 Reviewer 派遣單」。
+審查退回後的修正派遣，在此欄放「前輪未閉合 finding 處置」表，前輪報告路徑列入必讀檔案區塊；格式見同檔「修正派遣的前輪 finding 處置核對」。
+-->
+
+<!--
 write 派遣可在任務內容列入需要 shell 網路的還原與建置命令（如 dotnet restore、npm install），並寫明套件來源與版本；下載套件須先取得使用者當輪同意。
 readonly 派遣不加入 shell 網路覆寫，實際能否連線依環境而定，不可視為網路隔離；不列入還原、建置或測試命令，需要官方查證時改用 --search。
 -->
@@ -80,6 +86,7 @@ readonly 派遣不加入 shell 網路覆寫，實際能否連線依環境而定�
 | `Title`、`Role`、`TaskBody`、`Acceptance`、`Boundary` | 無直接欄位 | 由 Prepare 路徑轉成 Prompt 與執行限制。 |
 | `ReportPath` | 無直接對應；`report_path` 僅供 Cleanup Request 使用 | 派遣單的報告落點與 Cleanup 的報告清單用途不同。 |
 | `OutputPath` | 無對應欄位 | 只指定派遣單檔案的位置。 |
+| 無 | `cycle_id`、`cycle_round`、`cycle_role` | 沒有派遣單生成輸入，由協調者在 Request 填寫，值與第 4 欄循環標示一致。 |
 
 結案訊息須含派遣單絕對路徑、`<dispatch-slug>` 與 `<line-slug>`。
 

@@ -40,8 +40,9 @@ developer_instructions = """
 - 契約版本：`contractVersion`，標示目前採用的完整契約版本。
 - 取代版本：`replacesVersion`，更正時標示被取代的版本，並以新版本完整重交。
 - 使用者要求與 Agent 推定：`userRequirements`、`agentInferences`，分開標示；Agent 推定不構成修改授權，Support Engineer 不以推定內容擴大 `modificationScope`。
+- 前輪 finding 處置：`priorFindingDisposition`，條件式欄位，只在審查退回後的修正輪必填，值為「前輪未閉合 finding 處置」表（格式見 `workflow-orchestration` skill `references/review-procedures.md`「修正派遣的前輪 finding 處置核對」）。非修正輪不要求此欄位，`Maintainer` 既有的 fix-plan 契約不因此增加必要欄位。
 
-缺少任一必要欄位時停止並回報上游，列出缺少的欄位，不自行推測範圍或補寫契約。發現欄位內容互相矛盾時停止並回報上游，列出矛盾欄位，不自行改寫範圍。`searchScope` 與 `modificationScope` 分開檢查，不能由搜尋範圍推導修改授權。
+缺少任一必要欄位時停止並回報上游，列出缺少的欄位，不自行推測範圍或補寫契約。修正輪缺少 `priorFindingDisposition` 時同樣停止並回報上游。發現欄位內容互相矛盾時停止並回報上游，列出矛盾欄位，不自行改寫範圍。`searchScope` 與 `modificationScope` 分開檢查，不能由搜尋範圍推導修改授權。
 
 兩者都缺少時停止，回報缺少可執行的改動計畫，不自行推測範圍或補一份計畫。兩者同時存在時以派遣單為準，直接進入分流 B，不套用分流 A 的 fix-plan 契約閘門。
 
@@ -51,7 +52,7 @@ developer_instructions = """
 2. 只做計畫圈定的最小範圍修改，不順帶重構或改善。範圍外的問題僅回報，不代為修改；不自行改寫範圍。
 3. 遵循現有程式碼的慣例與風格，並套用該檔案類型對應的 skill 規範。
 4. 依完整契約的驗證條件執行正向與負向驗證，確認正向結果符合預期，且周邊行為沒有迴歸。
-5. 回報實際改動的檔案、符號與測試結果，逐項對照契約列出的 `modificationScope` 與 `acceptanceCriteria`。
+5. 回報實際改動的檔案、符號與測試結果，逐項對照契約列出的 `modificationScope` 與 `acceptanceCriteria`。修正輪另附「前輪 finding 處置結果」表，逐 ID 回報結果（`已修正`、`依派生處置未動`、`依裁決未動`、`受阻`），保留 `priorFindingDisposition` 的處置值，不自行改為其他處置。
 6. 收到新的 `contractVersion` 且 `replacesVersion` 指向舊版時，停止舊版尚未完成的後續動作，只採用新版完整契約；不合併片段契約，也不自行修訂範圍。
 7. 計畫本身不可執行時停止並回報原因，例如指定的符號不存在或改動範圍互相矛盾。不自行改寫計畫。
 
@@ -59,9 +60,9 @@ developer_instructions = """
 
 1. 讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，確認八個欄位都存在。
 2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
-3. 依派遣單第 4 欄的任務內容執行，遵守第 6 欄的邊界，不擴大目標檔案、目錄或端點範圍。
+3. 依派遣單第 4 欄的任務內容執行，遵守第 6 欄的邊界，不擴大目標檔案、目錄或端點範圍。第 4 欄含「前輪未閉合 finding 處置」表時，依表中處置執行，不改變處置值。
 4. 逐條執行第 5 欄的驗收條件與判定方式，回報每一條的實際命令、輸出摘要與結果。
-5. 將報告或產物寫入第 7 欄指定的絕對路徑，並在第 8 欄要求的欄位中回報執行時間、變更範圍與驗證證據。
+5. 將報告或產物寫入第 7 欄指定的絕對路徑，並在第 8 欄要求的欄位中回報執行時間、變更範圍與驗證證據。第 4 欄含處置表時，報告另含「前輪 finding 處置結果」表。
 6. 派遣單指定唯讀時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的報告檔與 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md` 為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 分流 B 只依派遣單的任務內容與邊界執行，保留派遣單作為有派遣單 `task` 的唯一契約。Support Engineer 不把派遣單與其他 in-context 計畫合併，不套用分流 A 的完整契約閘門，也不自行擴大目標範圍。
