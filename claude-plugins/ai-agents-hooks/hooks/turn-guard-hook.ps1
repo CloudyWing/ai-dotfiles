@@ -6,6 +6,10 @@ $ErrorActionPreference = 'Stop'
 $timer = [Diagnostics.Stopwatch]::StartNew()
 $event = $null
 $directory = $null
+$session = $null
+$lock = $null
+# 取鎖等待上限。hooks.json 的 timeout 為 10 秒，啟動與寫入另需時間，故等待上限取 5 秒。
+$lockWaitMs = 5000
 # 清單只收錄確認不改變狀態的命令。
 $readCommands = @('ls','dir','cat','type','head','tail','rg','grep','find','wc','stat','Get-Content','Get-ChildItem','Get-Item','Select-String','Test-Path','Get-Command','Measure-Object','Resolve-Path','Split-Path','Join-Path')
 function Get-Value($Object, [string]$Name) {
@@ -64,6 +68,21 @@ function Write-Record([string]$Path, $Record) {
     }
     throw 'record_write_failed'
 }
+# 以 session 為單位的檔案鎖。鎖檔與 session 紀錄同目錄，以 FileShare.None 獨占開啟，行程結束時由作業系統釋放。
+# 讀取既有紀錄、重算 turn 與指紋次數、附加寫入必須在同一把鎖內完成。
+function Enter-SessionLock([string]$Directory, [string]$Session) {
+    $lockPath = Join-Path $Directory ($Session + '.lock')
+    $waited = [Diagnostics.Stopwatch]::StartNew()
+    $random = New-Object Random
+    while ($true) {
+        try {
+            return New-Object IO.FileStream($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        } catch {
+            if ($waited.ElapsedMilliseconds -ge $lockWaitMs) { throw 'lock_timeout' }
+            Start-Sleep -Milliseconds $random.Next(10, 40)
+        }
+    }
+}
 try {
     if ([string]::IsNullOrWhiteSpace($env:CLAUDE_PLUGIN_DATA)) { exit 0 }
     $directory = Join-Path $env:CLAUDE_PLUGIN_DATA 'turn-guard'
@@ -76,6 +95,7 @@ try {
     if ($session -isnot [string] -or $session -notmatch '^[A-Za-z0-9_-]+$') { throw 'stdin_invalid' }
     $event = Get-Value $inputObject 'hook_event_name'
     $path = Join-Path $directory ($session + '.jsonl')
+    $lock = Enter-SessionLock $directory $session
     $turn = 0; $promptCount = 0; $readFailed = $false
     $currentLines = New-Object 'System.Collections.Generic.List[string]'
     if (Test-Path -LiteralPath $path) {
@@ -156,9 +176,13 @@ try {
         try {
             $message = $_.Exception.Message
             if ($message.Length -gt 200) { $message = $message.Substring(0, 200) }
-            $type = if ($message -eq 'stdin_invalid') { 'stdin_invalid' } else { 'hook_error' }
-            Write-Record (Join-Path $directory 'errors.jsonl') ([ordered]@{ts=[datetime]::UtcNow.ToString("yyyy-MM-dd'T'HH':'mm':'ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture);event=$event;type=$type;message=$message})
+            $type = if ($message -eq 'stdin_invalid' -or $message -eq 'lock_timeout') { $message } else { 'hook_error' }
+            $errorRecord = [ordered]@{ts=[datetime]::UtcNow.ToString("yyyy-MM-dd'T'HH':'mm':'ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture);event=$event;type=$type;message=$message}
+            if ($type -eq 'lock_timeout') { $errorRecord.session_id = $session }
+            Write-Record (Join-Path $directory 'errors.jsonl') $errorRecord
         } catch { }
     }
+} finally {
+    if ($null -ne $lock) { $lock.Dispose() }
 }
 exit 0

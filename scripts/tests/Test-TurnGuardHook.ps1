@@ -114,6 +114,56 @@ try {
     $errors = Join-Path $root 'turn-guard\errors.jsonl'
     if (@(Get-Content $errors).Count -ne 4) { throw 'invalid input mismatch' }
     foreach ($file in @($path,$errors)) { $bytes=[IO.File]::ReadAllBytes($file); if ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) { throw 'unexpected BOM' } }
+    # 並行壓力：同一 session 由多個行程同時寫入，檔案不得斷行，指紋次數不得少算。
+    $workerCount = 8; $perWorker = 5
+    $stressSession = 'stress'
+    $stressPath = Join-Path $root 'turn-guard\stress.jsonl'
+    Send-Event ('{"session_id":"' + $stressSession + '","hook_event_name":"UserPromptSubmit","prompt":"p"}')
+    $workerScript = Join-Path $root 'stress-worker.ps1'
+    [IO.File]::WriteAllText($workerScript, @'
+param([string]$Hook, [int]$Count, [string]$Id, [string]$ErrorFile)
+$json = '{"session_id":"stress","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"stress cmd"},"error":"stress failure"}'
+for ($i = 0; $i -lt $Count; $i++) {
+    $output = $json | & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Hook 2>&1
+    if ($LASTEXITCODE -ne 0 -or @($output).Count -ne 0) { [IO.File]::AppendAllText($ErrorFile, "worker $Id exit=$LASTEXITCODE output=$output`n") }
+}
+'@, (New-Object Text.UTF8Encoding($true)))
+    $workerErrors = Join-Path $root 'stress-worker-errors.txt'
+    $workers = @()
+    try {
+        for ($w = 0; $w -lt $workerCount; $w++) {
+            $workers += Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $workerScript + '"'),'-Hook',('"' + $hook + '"'),'-Count',$perWorker,'-Id',$w,'-ErrorFile',('"' + $workerErrors + '"'))
+        }
+        foreach ($worker in $workers) { if (-not $worker.WaitForExit(120000)) { throw 'stress worker timeout' } }
+    } finally {
+        foreach ($worker in $workers) { if (-not $worker.HasExited) { try { $worker.Kill() } catch { } } }
+    }
+    if (Test-Path -LiteralPath $workerErrors) { throw ('stress worker failure: ' + [IO.File]::ReadAllText($workerErrors)) }
+    $stressLines = @(Get-Content -LiteralPath $stressPath)
+    $expectedTotal = 1 + $workerCount * $perWorker
+    if ($stressLines.Count -ne $expectedTotal) { throw "stress line count mismatch: $($stressLines.Count) vs $expectedTotal" }
+    $stressRows = @(foreach ($line in $stressLines) { try { $line | ConvertFrom-Json } catch { throw "stress line is not valid json: $line" } })
+    $stressFailures = @($stressRows | Where-Object { $_.event -eq 'PostToolUseFailure' })
+    $repeats = @($stressFailures | ForEach-Object { [int]$_.fingerprint.repeat } | Sort-Object)
+    $expectedRepeats = @(1..($workerCount * $perWorker))
+    if ($stressFailures.Count -ne $workerCount * $perWorker -or $repeats.Count -ne $expectedRepeats.Count -or (Compare-Object $repeats $expectedRepeats)) { throw "stress repeat set mismatch: $($repeats -join ',')" }
+    if (@($stressRows | Where-Object { $_.turn -ne 1 }).Count -ne 0) { throw 'stress turn mismatch' }
+    # 取鎖逾時：鎖被他人持有時，hook 不寫 session 紀錄，只在 errors.jsonl 留下 lock_timeout。
+    $lockSession = 'locktimeout'
+    $lockSessionPath = Join-Path $root 'turn-guard\locktimeout.jsonl'
+    [IO.File]::WriteAllText($lockSessionPath, '{"event":"PostToolUse","turn":1,"class":"read"}' + "`n")
+    $errorsPath = Join-Path $root 'turn-guard\errors.jsonl'
+    $errorsBefore = @(Get-Content -LiteralPath $errorsPath).Count
+    $held = New-Object IO.FileStream((Join-Path $root 'turn-guard\locktimeout.lock'), [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $lockTimer = [Diagnostics.Stopwatch]::StartNew()
+    try { Send-Event ('{"session_id":"' + $lockSession + '","hook_event_name":"PostToolUse","tool_name":"Read"}') } finally { $held.Dispose() }
+    $lockTimer.Stop()
+    if ($lockTimer.ElapsedMilliseconds -ge 10000) { throw "lock timeout took too long: $($lockTimer.ElapsedMilliseconds) ms" }
+    if (@(Get-Content -LiteralPath $lockSessionPath).Count -ne 1) { throw 'session record written without lock' }
+    $errorRows = @(Get-Content -LiteralPath $errorsPath | ForEach-Object { $_ | ConvertFrom-Json })
+    $timeoutRows = @($errorRows | Select-Object -Skip $errorsBefore)
+    if ($timeoutRows.Count -ne 1 -or $timeoutRows[0].type -ne 'lock_timeout' -or $timeoutRows[0].session_id -ne $lockSession) { throw 'lock_timeout error record missing' }
+    Write-Host "Lock timeout elapsed: $($lockTimer.ElapsedMilliseconds) ms"
     $env:CLAUDE_PLUGIN_DATA = $null
     $cwd=Join-Path $root 'cwd'; New-Item -ItemType Directory -Path $cwd | Out-Null
     $before=@(Get-ChildItem -LiteralPath $root -Recurse -Force | ForEach-Object FullName | Sort-Object)
@@ -123,5 +173,8 @@ try {
     if (Compare-Object $before $after) { throw 'unset data created files in temp or current directory' }
     Write-Host "Long session hook_ms: $($long.hook_ms)"
     Write-Host 'Turn guard tests passed.'
-} finally { $env:CLAUDE_PLUGIN_DATA = $previous }
+} finally {
+    $env:CLAUDE_PLUGIN_DATA = $previous
+    try { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction Stop } catch { Write-Warning "temp cleanup failed: $root" }
+}
 exit 0
