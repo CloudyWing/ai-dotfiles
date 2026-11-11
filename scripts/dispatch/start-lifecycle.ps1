@@ -1276,6 +1276,12 @@ function Invoke-Start {
         }
     }
     $orderDirective = New-DispatchOrderPromptDirective -DispatchKind $dispatchKindValue -TaskType $TaskType -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -LineSlug $lineSlugValue -DispatchSlug $dispatchSlugValue
+    $cycleIdentity = if ($null -eq $script:RequestContext) { $null } else { Get-DispatchCycleIdentity -Document $script:RequestContext.document }
+    # 同一 worktree 的續行沒有 Dispatch Request 可帶循環欄位，屬同一輪內的補件，沿用錨點 RunRecord 的值。
+    if (($null -eq $cycleIdentity -or -not $cycleIdentity.present) -and $null -ne $previousRun -and $null -ne $previousRun.AnchorRecord) {
+        $anchorCycleIdentity = Get-DispatchCycleIdentity -Document $previousRun.AnchorRecord
+        if ($anchorCycleIdentity.present) { $cycleIdentity = $anchorCycleIdentity }
+    }
     $runRecord = [pscustomobject]@{
         schema = 'ai-sessions.dispatch-run.v1'
         run_id = $runId
@@ -1347,6 +1353,9 @@ function Invoke-Start {
         request_path = if ($null -eq $script:RequestContext) { $null } else { [string]$script:RequestContext.path }
         request_sha256 = if ($null -eq $script:RequestContext) { $null } else { [string]$script:RequestContext.sha256 }
         request_operation = if ($null -eq $script:RequestContext) { $null } else { [string](Get-DispatchJsonProperty -Object $script:RequestContext.document -Name 'operation') }
+        cycle_id = if ($null -eq $cycleIdentity) { $null } else { $cycleIdentity.cycle_id }
+        cycle_round = if ($null -eq $cycleIdentity) { $null } else { $cycleIdentity.cycle_round }
+        cycle_role = if ($null -eq $cycleIdentity) { $null } else { $cycleIdentity.cycle_role }
         caller_session_fingerprint = if ($null -eq $script:CallerSessionIdentity) { $null } else { [string]$script:CallerSessionIdentity.Fingerprint }
         caller_session_source = if ($null -eq $script:CallerSessionIdentity) { $null } else { [string]$script:CallerSessionIdentity.Source }
      }

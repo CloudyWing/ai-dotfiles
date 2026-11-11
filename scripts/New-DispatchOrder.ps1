@@ -427,6 +427,7 @@ CODE_FENCE
 | ``ReportPath`` | 無直接對應；``report_path`` 僅供 Cleanup Request 使用 | 派遣單的結案報告落點與 Cleanup 的報告清單用途不同。 |
 | ``OutputPath`` | 無對應欄位 | 只指定本工具寫入派遣單檔案的位置。 |
 | 無 | ``operation``、``source_root``、``dispatch_root``、``write_mode``、``dispatch_kind``、``prompt_path``、``task_type``、``session_mode``、``unit_kind``、``requested_unit``、``evidence_pack_path``、``advisor_consult_report_path``、``failure_receipt_path``、``result_path`` 等 | 依 runtime operation 與派遣流程提供，不由派遣單生成參數直接設定。 |
+| 無 | ``cycle_id``、``cycle_round``、``cycle_role`` | 沒有派遣單生成輸入，由協調者在 Request 填寫，值與第 4 欄循環標示一致。 |
 
 結案訊息須含派遣單絕對路徑、DISPATCH_SLUG_VALUE 與 LINE_SLUG_VALUE。
 

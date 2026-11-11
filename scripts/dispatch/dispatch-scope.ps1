@@ -943,6 +943,9 @@ function Get-DispatchRequestExpectedFormat {
         'line_slug' { return '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
         'dispatch_slug' { return '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
         'selected_requirement' { return '#<positive integer>[,#<positive integer>...]' }
+        'cycle_id' { return '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$），長度 1 至 64' }
+        'cycle_round' { return '1 至 99 的整數' }
+        'cycle_role' { return 'review|fix' }
         'failure_receipt_path' { return 'fully-qualified path' }
         'evidence_pack_path' { return 'fully-qualified path' }
         'advisor_consult_report_path' { return 'fully-qualified path' }
@@ -1256,6 +1259,85 @@ function Get-DispatchRequestEnumValue {
     return $value
 }
 
+function Get-DispatchCycleIdentity {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$Document,
+
+        [string]$RequestPathValue,
+
+        [switch]$Validate
+    )
+
+    $cycleFields = @('cycle_id', 'cycle_round', 'cycle_role')
+    $presentFields = New-Object 'System.Collections.Generic.List[string]'
+    $rawValues = @{}
+    foreach ($cycleField in $cycleFields) {
+        $rawValues[$cycleField] = $null
+        if ($null -ne $Document) {
+            $cycleProperty = $Document.PSObject.Properties[$cycleField]
+            if ($null -ne $cycleProperty) {
+                $presentFields.Add($cycleField)
+                $rawValues[$cycleField] = $cycleProperty.Value
+            }
+        }
+    }
+
+    if ($presentFields.Count -eq 0) {
+        return [pscustomobject]@{ present = $false; cycle_id = $null; cycle_round = $null; cycle_role = $null }
+    }
+
+    if ($Validate) {
+        $missingFields = @($cycleFields | Where-Object { $presentFields -notcontains $_ })
+        if ($missingFields.Count -gt 0) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestMissingField' -Message ("request 欄位 cycle_id、cycle_round、cycle_role 必須同時提供或同時省略，缺少：{0}" -f ($missingFields -join '、')) -RequestPathValue $RequestPathValue -Field ([string]$missingFields[0]) -Detail ([ordered]@{ missing = @($missingFields) })
+        }
+
+        $idValue = $rawValues['cycle_id']
+        if ($idValue -isnot [string] -or $idValue.Length -lt 1 -or $idValue.Length -gt 64 -or -not [regex]::IsMatch([string]$idValue, '^[a-z0-9]+(?:-[a-z0-9]+)*\z')) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 cycle_id 必須是 1 至 64 字元的小寫 slug。' -RequestPathValue $RequestPathValue -Field 'cycle_id' -Detail ([ordered]@{ received = $idValue })
+        }
+
+        $roundValue = $rawValues['cycle_round']
+        $roundNumber = 0
+        $roundValid = $false
+        if ($roundValue -is [string]) {
+            if ([regex]::IsMatch([string]$roundValue, '^[0-9]{1,2}\z') -and [int]::TryParse([string]$roundValue, [ref]$roundNumber)) {
+                $roundValid = $true
+            }
+        }
+        elseif ($roundValue -is [int] -or $roundValue -is [long] -or $roundValue -is [int16] -or $roundValue -is [byte]) {
+            if ([long]$roundValue -ge 1 -and [long]$roundValue -le 99) {
+                $roundNumber = [int]$roundValue
+                $roundValid = $true
+            }
+        }
+        if (-not $roundValid -or $roundNumber -lt 1 -or $roundNumber -gt 99) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 cycle_round 必須是 1 至 99 的整數。' -RequestPathValue $RequestPathValue -Field 'cycle_round' -Detail ([ordered]@{ received = $roundValue })
+        }
+
+        $roleValue = $rawValues['cycle_role']
+        if ($roleValue -isnot [string] -or @('review', 'fix') -cnotcontains [string]$roleValue) {
+            Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 cycle_role 必須是 review 或 fix。' -RequestPathValue $RequestPathValue -Field 'cycle_role' -Detail ([ordered]@{ received = $roleValue })
+        }
+
+        return [pscustomobject]@{ present = $true; cycle_id = [string]$idValue; cycle_round = [int]$roundNumber; cycle_role = [string]$roleValue }
+    }
+
+    $looseRound = $null
+    $looseRoundNumber = 0
+    if ($null -ne $rawValues['cycle_round'] -and [int]::TryParse([string]$rawValues['cycle_round'], [ref]$looseRoundNumber)) {
+        $looseRound = [int]$looseRoundNumber
+    }
+    return [pscustomobject]@{
+        present     = $true
+        cycle_id    = if ($null -eq $rawValues['cycle_id']) { $null } else { [string]$rawValues['cycle_id'] }
+        cycle_round = $looseRound
+        cycle_role  = if ($null -eq $rawValues['cycle_role']) { $null } else { [string]$rawValues['cycle_role'] }
+    }
+}
+
 function Read-DispatchRequest {
     [CmdletBinding()]
     param(
@@ -1304,7 +1386,7 @@ function Read-DispatchRequest {
         Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidJson' -Message 'request file 根節點必須是 JSON object。' -RequestPathValue $requestPathValue
     }
 
-    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement', 'prepare_mode')
+    $dispatchOnlyFields = @('write_mode', 'dispatch_kind', 'prompt_path', 'task_type', 'session_mode', 'unit_kind', 'requested_unit', 'continue_from_scope_plan', 'background', 'required_identifier', 'failure_receipt_path', 'prepare_result_path', 'evidence_pack_path', 'advisor_consult_report_path', 'selected_requirement', 'prepare_mode', 'cycle_id', 'cycle_round', 'cycle_role')
     $removedQuotaFields = @('quota_before_path', 'quota_after_path')
     $commonRootFields = @('source_root', 'dispatch_root', 'caller_session_id')
     $cleanupOnlyFields = @('run_record_path', 'reviewer_report_path', 'report_path', 'evidence_path', 'dispatch_request_path')
@@ -1502,6 +1584,11 @@ function Read-DispatchRequest {
         }
         if ($dispatchFieldPresence.selected_requirement -and ($selectedValue -isnot [string] -and $selectedValue -isnot [array] -or [string]$dispatchValues.selected_requirement -notmatch '^#[1-9][0-9]*(?:,#[1-9][0-9]*)*$')) {
             Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message 'request 欄位 selected_requirement 必須是編號字串或編號陣列。' -RequestPathValue $requestPathValue -Field 'selected_requirement' -Detail ([ordered]@{ expected_format = '#<positive integer>[,#<positive integer>...]'; input_length = ([string]$dispatchValues.selected_requirement).Length })
+        }
+        $cycleIdentity = Get-DispatchCycleIdentity -Document $document -RequestPathValue $requestPathValue -Validate
+        foreach ($cycleField in @('cycle_id', 'cycle_round', 'cycle_role')) {
+            $dispatchFieldPresence[$cycleField] = Test-DispatchRequestFieldPresent -Document $document -Name $cycleField
+            $dispatchValues[$cycleField] = $cycleIdentity.$cycleField
         }
         if (-not [string]::IsNullOrWhiteSpace([string]$dispatchValues.failure_receipt_path) -and -not (Test-DispatchFullyQualifiedPath -Path ([string]$dispatchValues.failure_receipt_path))) {
             Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidPath' -Message 'request 欄位 failure_receipt_path 必須是完整絕對路徑。' -RequestPathValue $requestPathValue -Field 'failure_receipt_path' -Detail ([ordered]@{ expected = 'fully-qualified path'; received = [string]$dispatchValues.failure_receipt_path })

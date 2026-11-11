@@ -23,5 +23,8 @@
   "selected_requirement": [
     "#22"
   ],
+  "cycle_id": "<target-key>-c1",
+  "cycle_round": 1,
+  "cycle_role": "review",
   "background": false
 }
