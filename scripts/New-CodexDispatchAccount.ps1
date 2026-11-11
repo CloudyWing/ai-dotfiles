@@ -77,12 +77,6 @@ function Test-AccountLinkPlan {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$AccountHome, [Parameter(Mandatory)][string]$Source)
     $conflicts = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets')) {
-        $conflict = Get-AccountLinkConflict -Path (Join-Path $AccountHome $namePart) -Target (Join-Path $Source $namePart) -Type Junction
-        if ($null -ne $conflict) { $conflicts.Add($conflict) }
-    }
-    $conflict = Get-AccountLinkConflict -Path (Join-Path $AccountHome '.sandbox_migration') -Target (Join-Path $Source '.sandbox_migration') -Type SymbolicLink
-    if ($null -ne $conflict) { $conflicts.Add($conflict) }
     foreach ($profile in @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) {
         $dest = Join-Path $AccountHome $profile
         $target = Join-Path $Source $profile
@@ -136,9 +130,7 @@ function New-CodexAccount {
     if ($null -ne $machineDirItem -and (-not $machineDirItem.PSIsContainer -or ($machineDirItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw "machine 目錄類型錯誤：$machineDir" }
     if ($null -eq $machineDirItem) {
         try {
-            $preflightNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets')
-            foreach ($namePart in $preflightNames) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Container)) { throw "來源目錄不存在：$namePart" } }
-            $preflightProfiles = @('.sandbox_migration', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')
+            $preflightProfiles = @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')
             foreach ($namePart in $preflightProfiles) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Leaf)) { throw "來源檔案不存在：$namePart" } }
             $preflightKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
             foreach ($project in $ProjectPath) {
@@ -171,10 +163,8 @@ function New-CodexAccount {
                 $lock = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             }
         }
-        $sourceNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets')
-        foreach ($namePart in $sourceNames) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Container)) { throw "來源目錄不存在：$namePart" } }
         $profiles = @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')
-        foreach ($namePart in @('.sandbox_migration') + $profiles) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Leaf)) { throw "來源檔案不存在：$namePart" } }
+        foreach ($namePart in $profiles) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Leaf)) { throw "來源檔案不存在：$namePart" } }
         $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         foreach ($project in $ProjectPath) {
             if (-not (Test-Path -LiteralPath $project -PathType Container)) { throw "專案目錄不存在：$project" }
@@ -201,9 +191,6 @@ function New-CodexAccount {
         } else { Write-AccountStatus 'config' $configPath 'exists' }
         if ($keys.Count -eq 0) { Write-AccountStatus 'trust（未預先信任專案，派工時自動補上）' $configPath 'skipped' }
         foreach ($key in $keys) { $status = if ($WhatIfPreference) { 'skipped' } elseif ($config.Missing -contains $key) { 'created' } else { 'exists' }; Write-AccountStatus 'trust' $key $status }
-        $step = 'sandbox'
-        foreach ($namePart in $sourceNames) { Set-AccountLink -Path (Join-Path $accountHomePath $namePart) -Target (Join-Path $source $namePart) -Type Junction -WhatIf:$WhatIfPreference }
-        Set-AccountLink -Path (Join-Path $accountHomePath '.sandbox_migration') -Target (Join-Path $source '.sandbox_migration') -Type SymbolicLink -WhatIf:$WhatIfPreference
         $step = 'profiles'
         foreach ($profile in @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) {
             $dest = Join-Path $accountHomePath $profile
