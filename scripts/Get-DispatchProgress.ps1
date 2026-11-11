@@ -186,7 +186,26 @@ function Get-DispatchEventStreamSummary {
         return $summary
     }
 
-    foreach ($line in [IO.File]::ReadAllLines($Path, [Text.Encoding]::UTF8)) {
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    $stream = $null
+    $reader = $null
+    try {
+        $stream = New-Object IO.FileStream($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+        $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8)
+        while ($null -ne ($readLine = $reader.ReadLine())) {
+            $lines.Add($readLine)
+        }
+    }
+    finally {
+        if ($null -ne $reader) {
+            $reader.Dispose()
+        }
+        elseif ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+
+    foreach ($line in $lines) {
         if ([string]::IsNullOrWhiteSpace($line)) {
             continue
         }
