@@ -5,6 +5,7 @@
 - 審查範圍：<diff 範圍與 commit>
 - 結論：<pass 或 fail>。<一句話說明 open 的 Critical／Major>
 - 缺陷審查：CONFIRMED <n>；PLAUSIBLE <n>
+- 循環：<cycle_id> 第 <cycle_round> 輪（未標示時填「未標示」）
 
 ## Finding manifest
 
@@ -76,6 +77,12 @@
 ## 本輪 finding 判定
 
 - [F-001] 未閉合 [Major] — <判定說明>。證據：<證據檔絕對路徑>:<行號>
+
+## 修正範圍外候選
+
+<!-- 第 2 輪以上才有此節，沒有候選時刪除整節。只收修正範圍外新發現的 Minor，編號為 C 加三位數，編號外不加方括號，不列入 manifest，不影響 conclusion。 -->
+
+- C-001 [Minor] 位置：<檔案:行號> — <一句話 summary>
 
 ## Standards 缺陷審查
 

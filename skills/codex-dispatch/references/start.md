@@ -21,7 +21,7 @@
 
 request 欄位先依 parser 白名單驗證，再依 operation 套用欄位作用域。識別欄位為 `schema`、`operation`、`line_slug`、`dispatch_slug`。其他一般白名單欄位為 `profile`、`advisor_request_source`、`target_path`、`add_directory`、`search`、`codex_parent_option`、`literal_values`、`prepare_artifacts`、`result_path`、`preflight_result_path`。共用根目錄欄位（`commonRootFields`）為 `source_root`、`dispatch_root`、`caller_session_id`。
 
-`Dispatch` 專用欄位（`dispatchOnlyFields`）完整清單為 `write_mode`、`dispatch_kind`、`prompt_path`、`task_type`、`session_mode`、`unit_kind`、`requested_unit`、`continue_from_scope_plan`、`background`、`required_identifier`、`failure_receipt_path`、`prepare_result_path`、`evidence_pack_path`、`advisor_consult_report_path`、`selected_requirement`。`Cleanup` 專用欄位（`cleanupOnlyFields`）為 `run_record_path`、`reviewer_report_path`、`report_path`、`evidence_path`、`dispatch_request_path`。`Dispatch` 不接受 Cleanup 專用欄位，`Cleanup` 不接受 Dispatch 專用欄位；其他 operation 不接受共用根目錄、`result_path`、`preflight_result_path` 或兩組 operation 專用欄位。`source_root`、`result_path` 與 `preflight_result_path` 只在 `Dispatch` 與 `Cleanup` 合法。同一欄位在 request 檔與命令列不一致時以 `DispatchRequestMismatch` 停止。
+`Dispatch` 專用欄位（`dispatchOnlyFields`）完整清單為 `write_mode`、`dispatch_kind`、`prompt_path`、`task_type`、`session_mode`、`unit_kind`、`requested_unit`、`continue_from_scope_plan`、`background`、`required_identifier`、`failure_receipt_path`、`prepare_result_path`、`evidence_pack_path`、`advisor_consult_report_path`、`selected_requirement`、`cycle_id`、`cycle_round`、`cycle_role`。`Cleanup` 專用欄位（`cleanupOnlyFields`）為 `run_record_path`、`reviewer_report_path`、`report_path`、`evidence_path`、`dispatch_request_path`。`Dispatch` 不接受 Cleanup 專用欄位，`Cleanup` 不接受 Dispatch 專用欄位；其他 operation 不接受共用根目錄、`result_path`、`preflight_result_path` 或兩組 operation 專用欄位。`source_root`、`result_path` 與 `preflight_result_path` 只在 `Dispatch` 與 `Cleanup` 合法。同一欄位在 request 檔與命令列不一致時以 `DispatchRequestMismatch` 停止。
 
 | Cleanup Request 欄位 | 用途 |
 | --- | --- |
@@ -108,7 +108,8 @@ upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取�
 - 輸出路徑安全：`result_path` 與 `preflight_result_path` 必須位於 SourceRoot 或 ExecutionRoot，root、既有各層目錄與寫入目標任一層為 reparse point 時拒絕；未指定時輸出到 ExecutionRoot 同線 history。需要 worktree 清除後仍可從來源工作樹取用時，明確指定 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\` 下的路徑。`prepare_result_path` 的目的地限於 ExecutionRoot 的同線 handoff、report 或 history line root，且不得與 target path 重疊；未指定時輸出到 ExecutionRoot 同線 history。目錄建立後、實際寫入前會再次核對路徑。
 - direct-write：Preflight 判定不建 worktree（`worktreeCreated=false`）時，Prepare 使用 Preflight 的 `executionRoot`（即 `sourceRoot`）作為 DispatchRoot，Request 的 `dispatch_root` 只用於路徑驗證；只寫同線 handoff 的資源派遣可直接使用正式入口。
 - 必填檔位：`profile` 為必填，值限「檔位用途與新舊對照」列出的四個檔位。缺少時以 `DispatchRequestMissingField` 拒絕，指定 `default` 或其他名稱時以 `DispatchRequestInvalidValue` 拒絕，兩者皆在 Preflight 前停止且 `process_started=false`。
-- 可省略欄位：`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名；advisor-consult 沒有 target 時預設 evidence pack 檔名，Start 注入與 Inspect 比對使用同一個值）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）與各階段結果路徑。Request 帶 `quota_before_path` 或 `quota_after_path` 時以欄位不允許拒絕。
+- 可省略欄位：`requested_unit`、`prepare_artifacts`、`background`（預設 `false`）、`required_identifier`（Workflow 預設 `design.md`，資源派遣預設第一個 target 的檔名；advisor-consult 沒有 target 時預設 evidence pack 檔名，Start 注入與 Inspect 比對使用同一個值）、`selected_requirement`（本輪選定需求，傳給 Workflow Collect）、`cycle_id`、`cycle_round`、`cycle_role`（三者同時提供或同時省略）與各階段結果路徑。Request 帶 `quota_before_path` 或 `quota_after_path` 時以欄位不允許拒絕。
+- 循環欄位：`cycle_id` 為 `^[a-z0-9]+(?:-[a-z0-9]+)*$`、長度 1 至 64，慣例 `<target-key>-c<n>`；`cycle_round` 為 1 至 99 的整數（JSON 整數或純數字字串）；`cycle_role` 為 `review` 或 `fix`。三者只提供一或兩個時以 `DispatchRequestMissingField` 拒絕並指名缺少的欄位，格式、範圍或列舉不符時以 `DispatchRequestInvalidValue` 拒絕。全部省略合法，RunRecord 對應欄位寫 `null`。Start 把三欄原樣寫入 RunRecord。換 worktree 的續行以新的 Dispatch Request 決定三欄；同一 worktree 的 `Start -ResumeThreadId` 沒有 Dispatch Request，三欄沿用錨點 RunRecord，代表同一輪內的補件。審查派遣由協調者填寫，值與派遣單第 4 欄循環標示一致，規則見 `workflow-orchestration` skill「循環識別與重新起算」。
 
 Request 驗證階段無法從目標推導 `required_identifier` 時拒絕，目錄型目標可明確提供該欄位。`-ValidateOnly` 在 Request 驗證後輸出 Finding，不進入 Preflight。
 - 輸出欄位：`status`（`started`、`completed`、`failed`）、`completed_stages`、`failed_stage`、`error_code`、`error`、`process_started`、`process_exit_code`、`termination_reason`、`inspect_status`、`inspect_success`、`requested_units`、`result_path`、`result_sha256`、`inspect_result_path`。`Collect` 的參數取自這些欄位。所有 operation 的 JSON stdout 固定使用 UTF-8（無 BOM），不依 PowerShell host 的預設主控台編碼。
@@ -173,7 +174,7 @@ decision_reason
 
 ### 需求級成本累計
 
-需求級成本累計依 [session-artifacts skill「需求級成本累計」](../../session-artifacts/SKILL.md#需求級成本累計) 辦理，派遣結束後的追加動作依該節第 2 項。
+需求級成本累計依 [session-artifacts skill「需求級成本累計」](../../session-artifacts/SKILL.md#需求級成本累計) 辦理。每個經 Dispatch result 綁定，或以 `-RunRecordPath` 解析 RunRecord 的 Inspect，由腳本自動在同線 `cost-ledger.md` 追加一列 `事件`，同一 `runId` 只追加一次；協調者追加其餘列類型。Inspect 輸出含 `costRecord`（`status` 為 `recorded`、`skipped-existing`、`skipped-not-dispatch` 或 `failed`，另含 `error_code`）；`failed` 不改變 Inspect 的成功判定，缺少的列由協調者手寫補上。事件列的耗時是 Inspect 當下減 RunRecord `started_at_utc`，為 Codex 運行時間的上界。
 
 ## Advisor consult resource dispatch
 
@@ -366,7 +367,7 @@ PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移�
 
 事件流以 `turn.failed` 結束且結案報告不存在時，`Inspect` 與 `Collect` 另回報 `recoverable_artifacts_present` 與 `recoverable_artifact_files`。檔案清單列出 worktree 相對 `baseSha` 的變更檔。這些欄位供主 Agent 判斷是否以新 `dispatchSlug` 冷啟動接續，不改變原有成功判定；`turn.failed` 仍是失敗結果。
 
-Reviewer 回收時，主 Agent 以 `Collect -ReviewerReportPath` 驗證報告的 `## Finding manifest`（schema `codex-dispatch.review-findings.v2`，規則見 `reviewer.toml`）。`reviewerFindings.valid=false` 表示報告自相矛盾或格式無法核對，`outputValid=false` 並以非零結束，依回收三態退回 Reviewer 補正；`valid=true` 且 `conclusion=fail` 表示報告有效但仍有 Critical 或 Major finding，依共同收斂契約退回 Developer 修正。兩種情況分開處理，不以 finding 數量推導結論。
+Reviewer 回收時，主 Agent 以 `Collect -ReviewerReportPath` 驗證報告的 `## Finding manifest`（schema `codex-dispatch.review-findings.v2`，規則見 `reviewer.toml`）。`reviewerFindings.valid=false` 表示報告自相矛盾或格式無法核對，`outputValid=false` 並以非零結束，依回收三態退回 Reviewer 補正；`valid=true` 且 `conclusion=fail` 表示報告有效且存在 open 的 Critical 或 Major finding，依共同收斂契約退回實作者修正；只有 Minor 時 `conclusion=pass`，剩餘 Minor 依共同收斂契約判定順序 1 批次修正或記為候選。兩種情況分開處理，不以 finding 數量推導結論。
 
 v2 manifest 以 `previous_status` 記錄前輪結束時的狀態快照，以 `current_judgment` 記錄本輪對每個 finding 的判定，`counts` 含九個欄位且只供等值驗證（舊報告缺少兩個 `accepted` 欄位時以 0 驗證），`evidence` 路徑必須是絕對路徑，且同一 ID 在 manifest 與正文「本輪 finding 判定」段落的證據位置必須相同。
 

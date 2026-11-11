@@ -238,7 +238,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 
 - **`Developer` 不是通用實作入口**：僅適用於 `Clarify => Design => Implement => Review => Accept` 流程中的實作階段。不走此流程的實作，不使用 `Developer` Persona。
 - **命中 Workflow 後主 Agent 不得代做**：當使用者訊息已明確指向既有 Workflow 階段時，主 Agent 只能做路由與 preflight，不得以主 Agent 身份直接執行該階段工作。有效深度為 `light` 的線沒有 Implement 階段的 Workflow 派工，實作依「Workflow 深度」。
-- **`Developer` 啟動前置條件**：至少需有可讀取的 `design.md` 作為設計基準，且 `Analyst` 已確認 Design 驗收通過與檢查清單全部通過。`CONTEXT.local.md` 若存在可作為補充交接，但不是 `Developer` 的必要前置。缺少 `design.md` 或設計驗收未通過時，主 Agent 必須停止並回報原因，不得派生 `Developer`；驗收結果須在派生前完成。
+- **`Developer` 啟動前置條件**：至少需有可讀取的 `design.md` 作為設計基準，且 `Analyst` 已確認 Design 驗收通過，即沒有未閉合的 `Critical` 或 `Major`，剩餘 `Minor` 已完成批次修正與核對（見 `analyst.md`「DesignGate」）。`CONTEXT.local.md` 若存在可作為補充交接，但不是 `Developer` 的必要前置。缺少 `design.md` 或設計驗收未通過時，主 Agent 必須停止並回報原因，不得派生 `Developer`；驗收結果須在派生前完成。
 
 #### Workflow 深度
 
@@ -508,7 +508,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 | 4 | Developer 結案報告有「未解決項目」 |
 | 5 | 本輪改寫了 `instructions.md`、任何 `SKILL.md` 或 agent 規則檔的機制條款 |
 
-主 Agent 依下限自理完成的改動不屬派遣產出，不套用上列必發清單，只對自己的 diff 做核對。Claude subagent（Haiku、Sonnet、Opus）承接的實作屬派工產出，適用上列必發清單。
+主 Agent 依下限自理完成的改動不屬派遣產出，不套用上列必發清單，只對自己的 diff 做核對。Claude subagent（Haiku、Sonnet、Opus）承接的實作屬派工產出，適用上列必發清單。共同收斂契約判定順序 1 結束循環後的 `Minor` 批次修正，第 1 項不適用，只做建置與測試 gate；沒有改到機制條款時不觸發新一輪審查，觸及第 2 項或改到機制條款（第 5 項）時另發審查，為新循環的第 1 輪。
 
 **可不發**：本輪僅改動文件敘述、排版或用詞，未觸及任何機制條款，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
 
@@ -558,16 +558,16 @@ Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動�
 - 升級與收斂停止：業務語意缺口、範圍取捨、妥協確認或共同收斂契約的停止訊號，停止相關派遣，保留證據，回報未閉合清單與替代方向，等待使用者選擇方向。
 - 執行者升級：執行者無法完成工作時，主 Agent 依 `executor-selection` skill「失敗升級與交接單」整理升級交接單；升級屬收斂停止，等待使用者拍板。
 
-收斂術語 `round`、`area-key`、`problem-key`、`closed`、`new-problem`、`severity` 與 `max-rounds` 的機械定義，以及派遣回收與 Git 計數分開判定的規則，見 `workflow-orchestration` skill「共同收斂契約」。四處循環共用該契約與下列判定順序。
+收斂術語 `round`、`area-key`、`problem-key`、`closed`、`new-problem`、`severity`、`max-rounds`、`cycle_id`、`cycle_round`、`cycle_role` 與 `target-key` 的機械定義，`Minor` 的批次修正與候選，範圍變動時的循環重新起算，以及派遣回收與 Git 計數分開判定的規則，見 `workflow-orchestration` skill「共同收斂契約」與「循環識別與重新起算」。四處循環共用該契約與下列判定順序。
 
 收斂判定依下列順序執行。
 
-1. 全部檢查項目通過時結束循環並進入下一站。
-2. 任一前輪問題連續兩輪未閉合時停止，保留證據並提出替代方向。
+1. 沒有未閉合的 `Critical` 或 `Major`（含前輪遺留與本輪新增）時結束循環並進入下一站。剩餘的 `Minor` 由一次批次修正處理或記為候選，不為 `Minor` 單獨再開一輪複審。
+2. 任一前輪 `Critical` 或 `Major` 問題連續兩輪未閉合時停止，保留證據並提出替代方向。
 3. 同一 `area-key` 連續兩輪出現新的 `Major` 以上問題時停止，保留證據並提出替代方向。
-4. 所有問題均屬純技術可解、未命中前兩項停止訊號，且前輪問題已閉合或本輪新問題只有 `Minor` 時自動續行。新出現的 `Major` 在尚未形成兩輪同區域或同問題停止訊號前，依純技術路徑續行修正。
+4. 存在未閉合的 `Critical` 或 `Major`，這些問題均屬純技術可解，且未命中前兩項停止訊號時自動續行下一輪。新出現的 `Major` 在尚未形成兩輪同區域或同問題停止訊號前，依純技術路徑續行修正。
 5. 修正需要改變 `requirement-summary.md` 的需求、範圍或 `design.md` 的已確認設計時停止，依升級兩道篩交由使用者拍板。
-6. `round` 達到 6 輪時停止，不以「仍有進展」覆寫安全上限；回報未閉合問題、證據與替代方向。
+6. 同一循環的 `round` 達到 6 輪，或同一 `target-key` 的循環世代將達 `c3`（第三次另起循環）時停止，不以「仍有進展」覆寫安全上限；回報未閉合問題、證據與替代方向，取得使用者確認後才繼續。Review 與實作修正循環的 `round` 以同一 `cycle_id` 的 `cycle_round` 計；Design、Demo、派遣回收與 Git 修正循環以各自循環保存的 `round` 計。
 
 #### 驗證分層與 integration-verify 掛載點
 
