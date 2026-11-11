@@ -1016,6 +1016,373 @@ function Resolve-InspectRunWaitBinding {
     return [pscustomobject]@{ Record = $record; EventStreamPath = $paths.event_stream_path; ScopePlanPath = $paths.scope_plan_path; SidecarPath = $paths.process_exit_code_sidecar_path }
 }
 
+function Get-DispatchRunUsage {
+    [CmdletBinding(DefaultParameterSetName = 'Event')]
+    param(
+        [Parameter(Mandatory, ParameterSetName = 'Event')]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Event,
+
+        [Parameter(Mandatory, ParameterSetName = 'Stream')]
+        [string]$EventStreamPath
+    )
+
+    $eventList = New-Object 'System.Collections.Generic.List[object]'
+    if ($PSCmdlet.ParameterSetName -eq 'Stream') {
+        if (Test-Path -LiteralPath $EventStreamPath -PathType Leaf) {
+            $utf8 = New-Object System.Text.UTF8Encoding($false, $false)
+            $streamText = $utf8.GetString((Read-DispatchSharedBytes -Path $EventStreamPath))
+            foreach ($streamLine in ($streamText -split '\r?\n')) {
+                if ([string]::IsNullOrWhiteSpace($streamLine)) {
+                    continue
+                }
+                try {
+                    $parsedEvent = $streamLine | ConvertFrom-Json -ErrorAction Stop
+                }
+                catch {
+                    continue
+                }
+                if ($null -ne $parsedEvent -and $parsedEvent -is [pscustomobject]) {
+                    $eventList.Add($parsedEvent)
+                }
+            }
+        }
+    }
+    else {
+        foreach ($inputEvent in @($Event)) {
+            if ($null -ne $inputEvent) {
+                $eventList.Add($inputEvent)
+            }
+        }
+    }
+
+    # turn.completed.usage 是 thread 的累計值，取最後一筆有效者，不跨筆加總。
+    $usageFields = @('input_tokens', 'cached_input_tokens', 'output_tokens', 'reasoning_output_tokens')
+    $lastUsage = $null
+    $turnCompletedCount = 0
+    $validUsageCount = 0
+    foreach ($eventItem in $eventList) {
+        $typeProperty = $eventItem.PSObject.Properties['type']
+        if ($null -eq $typeProperty -or [string]$typeProperty.Value -cne 'turn.completed') {
+            continue
+        }
+        $turnCompletedCount++
+        $usageProperty = $eventItem.PSObject.Properties['usage']
+        if ($null -eq $usageProperty -or -not (Test-UsageObject -Value $usageProperty.Value)) {
+            continue
+        }
+        $validUsageCount++
+        $lastUsage = $usageProperty.Value
+    }
+
+    $status = if ($validUsageCount -gt 0) { 'recorded' } elseif ($turnCompletedCount -gt 0) { 'no-usage-field' } else { 'no-terminal-event' }
+    $usageResult = $null
+    if ($status -eq 'recorded') {
+        $usageResult = [ordered]@{}
+        foreach ($usageField in $usageFields) {
+            $fieldProperty = $lastUsage.PSObject.Properties[$usageField]
+            $usageResult[$usageField] = if ($null -eq $fieldProperty) { [long]0 } else { [long]$fieldProperty.Value }
+        }
+    }
+    return [pscustomobject]@{
+        status               = $status
+        turn_completed_count = $turnCompletedCount
+        usage                = $usageResult
+    }
+}
+
+function Get-DispatchAnchorRunUsage {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Record,
+
+        [Parameter(Mandatory)]
+        [string]$SourceRoot
+    )
+
+    # 讀取續行 run 的錨點 RunRecord 並取其累計 usage；任何失敗一律回傳 $null，不得影響 Inspect。
+    try {
+        $anchorId = [string](Get-DispatchJsonProperty -Object $Record -Name 'previous_run_id')
+        if ([string]::IsNullOrWhiteSpace($anchorId)) {
+            $anchorId = [string](Get-DispatchJsonProperty -Object $Record -Name 'resume_anchor_run_id')
+        }
+        if ([string]::IsNullOrWhiteSpace($anchorId) -or -not [regex]::IsMatch($anchorId, '^[A-Za-z0-9-]+$')) {
+            return $null
+        }
+        $lineSlug = [string](Get-DispatchJsonProperty -Object $Record -Name 'line_slug')
+        $dispatchSlug = [string](Get-DispatchJsonProperty -Object $Record -Name 'dispatch_slug')
+        $anchorPath = Join-Path (Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $lineSlug -DispatchSlug $dispatchSlug) ($anchorId + '.json')
+        if (-not (Test-Path -LiteralPath $anchorPath -PathType Leaf)) {
+            return $null
+        }
+        $utf8 = New-Object System.Text.UTF8Encoding($false, $false)
+        $anchorRecord = $utf8.GetString([System.IO.File]::ReadAllBytes($anchorPath)).TrimStart([char]0xFEFF) | ConvertFrom-Json -ErrorAction Stop
+        $anchorStreamPath = [string](Get-DispatchJsonProperty -Object $anchorRecord -Name 'event_stream_path')
+        if ([string]::IsNullOrWhiteSpace($anchorStreamPath)) {
+            return $null
+        }
+        if (-not (Test-Path -LiteralPath $anchorStreamPath -PathType Leaf)) {
+            $anchorExecutionRoot = [string](Get-DispatchJsonProperty -Object $anchorRecord -Name 'execution_root')
+            if ([string]::IsNullOrWhiteSpace($anchorExecutionRoot) -or -not (Test-PathWithinRoot -Path $anchorStreamPath -Root $anchorExecutionRoot)) {
+                return $null
+            }
+            $relativePart = (Resolve-AbsolutePath -Path $anchorStreamPath).Substring((Normalize-DispatchRootPath -Path $anchorExecutionRoot).Length).TrimStart([char[]]@([char]92, [char]47))
+            $anchorStreamPath = Join-Path (Resolve-AbsolutePath -Path $SourceRoot) $relativePart
+            if (-not (Test-Path -LiteralPath $anchorStreamPath -PathType Leaf)) {
+                return $null
+            }
+        }
+        $anchorSummary = Get-DispatchRunUsage -EventStreamPath $anchorStreamPath
+        if ($anchorSummary.status -ne 'recorded') {
+            return $null
+        }
+        return $anchorSummary.usage
+    }
+    catch {
+        return $null
+    }
+}
+
+function Add-DispatchCostLedgerRow {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$LedgerPath,
+
+        [Parameter(Mandatory)]
+        [string]$RunId,
+
+        [Parameter(Mandatory)]
+        [string[]]$Row
+    )
+
+    if ($Row.Count -ne 14) {
+        throw ('成本事件列必須有 14 欄，實際為 {0} 欄。' -f $Row.Count)
+    }
+    $marker = '<!-- cost-ledger.v2 -->'
+    $cells = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($cell in $Row) {
+        $cellText = if ($null -eq $cell) { '' } else { [string]$cell }
+        $cells.Add(($cellText.Replace('|', '\|') -replace '\r\n|\r|\n', ' '))
+    }
+    $rowText = '| ' + ($cells -join ' | ') + ' |'
+    $headerLines = @(
+        $marker,
+        '| 時間（UTC） | 列類型 | 成本目標 | dispatchSlug | runId | cycle_id | cycle_round | cycle_role | 事件類型 | 耗時（秒） | input | cached_input | output | 備註 |',
+        '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |'
+    )
+
+    $ledgerDirectory = Split-Path -Parent $LedgerPath
+    if (-not [System.IO.Directory]::Exists($ledgerDirectory)) {
+        $null = [System.IO.Directory]::CreateDirectory($ledgerDirectory)
+    }
+
+    $stream = $null
+    for ($attempt = 1; $attempt -le 10; $attempt++) {
+        try {
+            $stream = New-Object System.IO.FileStream($LedgerPath, [System.IO.FileMode]::OpenOrCreate, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+            break
+        }
+        catch [System.IO.IOException] {
+            if ($attempt -ge 10) {
+                throw
+            }
+            Start-Sleep -Milliseconds 100
+        }
+    }
+
+    try {
+        $existingBytes = New-Object byte[] ([int]$stream.Length)
+        $readCount = 0
+        while ($readCount -lt $existingBytes.Length) {
+            $chunk = $stream.Read($existingBytes, $readCount, $existingBytes.Length - $readCount)
+            if ($chunk -le 0) { break }
+            $readCount += $chunk
+        }
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        $existingText = $utf8NoBom.GetString($existingBytes, 0, $readCount)
+        if ($existingText.Length -gt 0 -and $existingText[0] -eq [char]0xFEFF) {
+            $existingText = $existingText.Substring(1)
+        }
+
+        foreach ($existingLine in ($existingText -split '\r?\n')) {
+            if ($existingLine.Contains('| ' + $RunId + ' |') -and $existingLine.Contains('| 事件 |')) {
+                return 'skipped-existing'
+            }
+        }
+
+        $newLine = if ($existingText.Contains("`r`n") -or $existingText.Length -eq 0) { "`r`n" } else { "`n" }
+        $appendText = ''
+        if ($existingText.Trim().Length -eq 0) {
+            $ledgerLineSlug = Split-Path -Leaf $ledgerDirectory
+            $appendText = '# ' + $ledgerLineSlug + ' 成本紀錄' + $newLine + $newLine + ($headerLines -join $newLine) + $newLine + $rowText + $newLine
+        }
+        else {
+            if (-not ($existingText.EndsWith("`n"))) {
+                $appendText = $newLine
+            }
+            if ($existingText.Contains($marker)) {
+                $appendText += $rowText + $newLine
+            }
+            else {
+                $appendText += $newLine + ($headerLines -join $newLine) + $newLine + $rowText + $newLine
+            }
+        }
+        $appendBytes = $utf8NoBom.GetBytes($appendText)
+        $null = $stream.Seek(0, [System.IO.SeekOrigin]::End)
+        $stream.Write($appendBytes, 0, $appendBytes.Length)
+        $stream.Flush()
+    }
+    finally {
+        $stream.Dispose()
+    }
+    return 'recorded'
+}
+
+function Invoke-DispatchCostRecord {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Run,
+
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [object]$Result,
+
+        [Parameter(Mandatory)]
+        [AllowNull()]
+        [AllowEmptyCollection()]
+        [object[]]$Event,
+
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$SourceRoot,
+
+        [Parameter(Mandatory)]
+        [bool]$DispatchBound,
+
+        [AllowEmptyString()]
+        [string]$TaskType = ''
+    )
+
+    $outcome = [ordered]@{ status = 'failed'; error_code = $null }
+    $stage = 'validate'
+    try {
+        if (-not $DispatchBound) {
+            $outcome.status = 'skipped-not-dispatch'
+            return $outcome
+        }
+        $record = Get-DispatchJsonProperty -Object $Run -Name 'Record'
+        if ($null -eq $record) {
+            $record = $Run
+        }
+        $lineSlug = [string](Get-DispatchJsonProperty -Object $record -Name 'line_slug')
+        $dispatchSlug = [string](Get-DispatchJsonProperty -Object $record -Name 'dispatch_slug')
+        $runId = [string](Get-DispatchJsonProperty -Object $record -Name 'run_id')
+        if ([string]::IsNullOrWhiteSpace($SourceRoot) -or [string]::IsNullOrWhiteSpace($runId) -or [string]::IsNullOrWhiteSpace($dispatchSlug) -or -not [regex]::IsMatch($lineSlug, '^[a-z0-9]+(?:-[a-z0-9]+)*$')) {
+            throw 'RunRecord 缺少 line_slug、dispatch_slug 或 run_id，或 SourceRoot 為空。'
+        }
+        $ledgerDirectory = Join-Path (Join-Path (Join-Path (Join-Path $SourceRoot '.local') 'ai-sessions') 'report') $lineSlug
+        $ledgerPath = Join-Path $ledgerDirectory 'cost-ledger.md'
+        if (-not (Test-PathWithinRoot -Path $ledgerPath -Root $ledgerDirectory)) {
+            throw 'cost-ledger.md 路徑不在同線 report 目錄內。'
+        }
+
+        $stage = 'usage'
+        $usageSummary = Get-DispatchRunUsage -Event @($Event)
+
+        $stage = 'row'
+        $requestedThreadId = Get-DispatchJsonProperty -Object $record -Name 'requested_thread_id'
+        $eventKind = if ($null -eq $requestedThreadId -or [string]::IsNullOrWhiteSpace([string]$requestedThreadId)) { '首次' } else { '續行' }
+        $elapsedText = '-'
+        $startedAtText = [string](Get-DispatchJsonProperty -Object $record -Name 'started_at_utc')
+        $startedAt = [datetime]::MinValue
+        if (-not [string]::IsNullOrWhiteSpace($startedAtText) -and [datetime]::TryParse($startedAtText, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind, [ref]$startedAt)) {
+            $elapsedSeconds = [math]::Floor(([datetime]::UtcNow - $startedAt.ToUniversalTime()).TotalSeconds)
+            if ($elapsedSeconds -lt 0) { $elapsedSeconds = 0 }
+            $elapsedText = [string][int64]$elapsedSeconds
+        }
+        $cycleCells = @()
+        foreach ($cycleField in @('cycle_id', 'cycle_round', 'cycle_role')) {
+            $cycleValue = Get-DispatchJsonProperty -Object $record -Name $cycleField
+            $cycleCells += if ($null -eq $cycleValue -or [string]::IsNullOrWhiteSpace([string]$cycleValue)) { '-' } else { [string]$cycleValue }
+        }
+        $inputCell = '-'
+        $cachedCell = '-'
+        $outputCell = '-'
+        $usageBasis = 'none'
+        if ($usageSummary.status -eq 'recorded') {
+            $usageBasis = if ($eventKind -ceq '首次') { 'cumulative' } else { 'cumulative-no-anchor' }
+            $tokenFields = @('input_tokens', 'cached_input_tokens', 'output_tokens')
+            $tokenValues = @{}
+            foreach ($tokenField in $tokenFields) {
+                $tokenValues[$tokenField] = [long]$usageSummary.usage[$tokenField]
+            }
+            if ($eventKind -ceq '續行') {
+                $anchorUsage = Get-DispatchAnchorRunUsage -Record $record -SourceRoot $SourceRoot
+                if ($null -ne $anchorUsage) {
+                    $deltaValues = @{}
+                    $deltaValid = $true
+                    foreach ($tokenField in $tokenFields) {
+                        $deltaValues[$tokenField] = [long]$tokenValues[$tokenField] - [long]$anchorUsage[$tokenField]
+                        if ($deltaValues[$tokenField] -lt 0) {
+                            $deltaValid = $false
+                        }
+                    }
+                    if ($deltaValid) {
+                        $tokenValues = $deltaValues
+                        $usageBasis = 'delta'
+                    }
+                }
+            }
+            $inputCell = [string]$tokenValues['input_tokens']
+            $cachedCell = [string]$tokenValues['cached_input_tokens']
+            $outputCell = [string]$tokenValues['output_tokens']
+        }
+        $exitCodeValue = Get-DispatchJsonProperty -Object $Result -Name 'processExitCode'
+        $exitText = if ($null -eq $exitCodeValue) { '-' } else { [string]$exitCodeValue }
+        $resultStatus = [string](Get-DispatchJsonProperty -Object $Result -Name 'dispatchStatus')
+        if ($resultStatus -cne 'completed' -and $resultStatus -cne 'failed') {
+            $resultStatus = if ([bool](Get-DispatchJsonProperty -Object $Result -Name 'success')) { 'completed' } else { 'failed' }
+        }
+        $taskText = if ([string]::IsNullOrWhiteSpace($TaskType)) { '-' } else { $TaskType }
+        $noteText = 'exit={0};result={1};task={2};usage={3};usage_basis={4}' -f $exitText, $resultStatus, $taskText, $usageSummary.status, $usageBasis
+        $row = @(
+            [datetime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture),
+            '事件',
+            $lineSlug,
+            $dispatchSlug,
+            $runId,
+            [string]$cycleCells[0],
+            [string]$cycleCells[1],
+            [string]$cycleCells[2],
+            $eventKind,
+            $elapsedText,
+            $inputCell,
+            $cachedCell,
+            $outputCell,
+            $noteText
+        )
+
+        $stage = 'write'
+        $outcome.status = Add-DispatchCostLedgerRow -LedgerPath $ledgerPath -RunId $runId -Row $row
+    }
+    catch {
+        $outcome.status = 'failed'
+        $outcome.error_code = switch ($stage) {
+            'validate' { 'CostRecordInvalidRun' }
+            'usage' { 'CostRecordUsageFailed' }
+            'row' { 'CostRecordRowFailed' }
+            default { 'CostLedgerWriteFailed' }
+        }
+    }
+    return $outcome
+}
+
 function Invoke-Inspect {
     $modelEvidence = $null
     $requiredOutputGate = $null
@@ -1912,5 +2279,7 @@ function Invoke-Inspect {
         }
         $null = Write-DispatchAtomicJsonDocument -Path $dispatchInspectBinding.Path -Document $dispatchDocument -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @($TargetPath)
     }
+    $costDispatchBound = ($null -ne $dispatchInspectBinding) -or (-not [string]::IsNullOrWhiteSpace($RunRecordPath) -and $null -ne $inspectRun)
+    $result.costRecord = Invoke-DispatchCostRecord -Run $inspectRun -Result $result -Event @($events.ToArray()) -SourceRoot $SourceRoot -DispatchBound $costDispatchBound -TaskType ([string]$TaskType)
     return Protect-DispatchInspectResult -Result $result -SecretExposure $secretExposure
 }
