@@ -977,26 +977,171 @@ function Resolve-DispatchInspectBinding {
 
 function New-DispatchAccountFailoverEvidence {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][AllowNull()][object]$EventEvidence)
+    param(
+        [Parameter(Mandatory)][AllowNull()][object]$EventEvidence,
+
+        [AllowNull()][AllowEmptyString()][string]$CodexHome
+    )
 
     $kind = Get-DispatchJsonProperty -Object $EventEvidence -Name 'rejection_kind'
     $itemCount = Get-DispatchJsonProperty -Object $EventEvidence -Name 'item_event_count'
+    $terminalFailure = Get-DispatchJsonProperty -Object $EventEvidence -Name 'terminal_failure'
+    $messageExcerpt = [string](Get-DispatchJsonProperty -Object $terminalFailure -Name 'message')
+    $evidenceSource = [string](Get-DispatchJsonProperty -Object $terminalFailure -Name 'source')
     return [ordered]@{
         eligible = [bool](Test-DispatchAccountFailoverEligible -EventEvidence $EventEvidence)
         rejection_kind = if ([string]::IsNullOrWhiteSpace([string]$kind)) { $null } else { [string]$kind }
         item_event_count = if ($null -eq $itemCount) { 0 } else { [int]$itemCount }
+        message_excerpt = if ([string]::IsNullOrWhiteSpace($messageExcerpt)) { $null } else { $messageExcerpt }
+        evidence_source = if ([string]::IsNullOrWhiteSpace($evidenceSource)) { $null } else { $evidenceSource }
+        relogin_command = if ([string]$kind -ceq 'unauthorized') { Get-CodexAccountLoginCommand -CodexHome $CodexHome } else { $null }
     }
 }
 
 function Get-DispatchRejectionObservation {
     [CmdletBinding()]
-    param([AllowNull()][AllowEmptyString()][string]$RejectionKind)
+    param(
+        [AllowNull()][AllowEmptyString()][string]$RejectionKind,
+
+        [AllowNull()][AllowEmptyString()][string]$CodexHome
+    )
 
     switch ($RejectionKind) {
-        'unauthorized' { return '事件流或 stderr 包含 401 認證失敗，該帳號登入已失效或無權限，同一帳號不自動重試。' }
+        'unauthorized' {
+            $unauthorizedObservation = '事件流或 stderr 包含 401 認證失敗，該帳號登入已失效或無權限，同一帳號不自動重試。'
+            $loginCommand = Get-CodexAccountLoginCommand -CodexHome $CodexHome
+            if ($null -ne $loginCommand) { return $unauthorizedObservation + ' 重新登入命令：' + $loginCommand }
+            return $unauthorizedObservation
+        }
         'model-not-supported' { return '事件流或 stderr 顯示該帳號不支援所選檔位的 model，同一帳號不自動重試。' }
+        'subscription-inactive' { return '事件流或 stderr 顯示該帳號訂閱已停用，同一帳號不自動重試。' }
+        'rate-limited' { return '事件流顯示 rate limit 或 429 拒絕，同一帳號不自動重試。' }
+        'unclassified' { return '事件流或 stderr 的終局失敗訊息未歸入已知拒絕種類，且尚無 item 進度；視為服務端拒絕，同一帳號不自動重試。' }
         default { return '事件流包含 quota service rejection，禁止自動 retry。' }
     }
+}
+
+function Write-DispatchNonGitReadonlyReport {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$TaskType,
+        [AllowNull()][AllowEmptyString()][string]$WriteMode,
+        [AllowNull()][object]$RunRecord,
+        [AllowNull()][string[]]$ReportPath = @(),
+        [AllowNull()][AllowEmptyString()][string]$FinalMessage,
+        [bool]$SecretExposureSuspected,
+        [AllowNull()][AllowEmptyString()][string]$SourceRoot,
+        [AllowNull()][AllowEmptyString()][string]$ExecutionRoot,
+        [switch]$UseDispatchOrder
+    )
+
+    # 非 Git 來源的 readonly 派遣，Codex 沒有可寫的報告路徑，由 Inspect 把最後訊息落成派遣單第 7 欄報告（做法與 advisor-consult 一致）。
+    # -ReportPath（CLI）有值時以 CLI 為準；沒有值且指定 -UseDispatchOrder 時，由 RunRecord 綁定的派遣單解析第 7 欄。
+    $newResult = {
+        param([string]$Status, [string]$Reason, [string]$Path, [string]$Sha256, $Length)
+        return [ordered]@{ status = $Status; reason = if ([string]::IsNullOrWhiteSpace($Reason)) { $null } else { $Reason }; path = if ([string]::IsNullOrWhiteSpace($Path)) { $null } else { $Path }; sha256 = if ([string]::IsNullOrWhiteSpace($Sha256)) { $null } else { $Sha256 }; length = $Length }
+    }
+    if ($TaskType -ceq 'advisor-consult') { return & $newResult 'not-applicable' 'advisor-consult' $null $null $null }
+    if ($WriteMode -cne 'readonly') { return & $newResult 'not-applicable' 'not-readonly' $null $null $null }
+    $recordSourceRoot = [string](Get-DispatchJsonProperty -Object $RunRecord -Name 'source_root')
+    $recordExecutionRoot = [string](Get-DispatchJsonProperty -Object $RunRecord -Name 'execution_root')
+    if ([string]::IsNullOrWhiteSpace($recordSourceRoot) -or -not [string]::Equals($recordSourceRoot, $recordExecutionRoot, [StringComparison]::OrdinalIgnoreCase)) {
+        return & $newResult 'not-applicable' 'execution-root-differs' $null $null $null
+    }
+    $gitOrigin = $null
+    try {
+        $preflightPath = [string](Get-DispatchJsonProperty -Object $RunRecord -Name 'preflight_result_path')
+        $preflightDocument = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $preflightPath)
+        $gitOrigin = [string](Get-DispatchJsonProperty -Object $preflightDocument -Name 'gitOrigin')
+    }
+    catch {
+        return & $newResult 'not-applicable' 'preflight-unreadable' $null $null $null
+    }
+    if ($gitOrigin -cne 'not-applicable') {
+        return & $newResult 'not-applicable' 'git-source' $null $null $null
+    }
+
+    $reportPaths = @($ReportPath | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+    if ($reportPaths.Count -eq 0 -and $UseDispatchOrder) {
+        $recordLineSlug = [string](Get-DispatchJsonProperty -Object $RunRecord -Name 'line_slug')
+        $recordDispatchSlug = [string](Get-DispatchJsonProperty -Object $RunRecord -Name 'dispatch_slug')
+        $slugPattern = '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+        if ($recordLineSlug -cnotmatch $slugPattern -or $recordDispatchSlug -cnotmatch $slugPattern) { return & $newResult 'skipped' 'dispatch-order-unreadable' $null $null $null }
+        $orderPath = (Get-DispatchOrderLocation -SourceRoot $recordSourceRoot -ExecutionRoot $recordExecutionRoot -LineSlug $recordLineSlug -DispatchSlug $recordDispatchSlug).source
+        $orderReportPath = $null
+        try { $orderReportPath = [string](Read-DispatchOrderSections -Path $orderPath).ReportPath }
+        catch { return & $newResult 'skipped' 'dispatch-order-unreadable' $null $null $null }
+        if (-not [string]::IsNullOrWhiteSpace($orderReportPath)) { $reportPaths = @($orderReportPath) }
+    }
+    if ($reportPaths.Count -ne 1) { return & $newResult 'skipped' 'report-path-count' $null $null $null }
+    if ([string]::IsNullOrWhiteSpace($FinalMessage)) { return & $newResult 'skipped' 'final-message-empty' ([string]$reportPaths[0]) $null $null }
+    $reportFilePath = $null
+    try {
+        $reportFilePath = Resolve-DispatchOutputPath -CandidatePath ([string]$reportPaths[0]) -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @()
+    }
+    catch {
+        # 路徑守衛拒絕：超出根目錄為 report-path-outside-root；tracked 或其他守衛錯誤保留守衛的錯誤碼。
+        $guardCode = [string]$_.Exception.Data['errorCode']
+        $guardReason = if ([string]::IsNullOrWhiteSpace($guardCode) -or $guardCode -ceq 'DispatchOutputBoundary') { 'report-path-outside-root' } else { $guardCode }
+        return & $newResult 'skipped' $guardReason ([string]$reportPaths[0]) $null $null
+    }
+    $content = if ($SecretExposureSuspected) { Protect-DispatchInspectText -Text $FinalMessage } else { $FinalMessage }
+    $contentBytes = (New-Object System.Text.UTF8Encoding -ArgumentList @($false)).GetBytes($content)
+    $contentSha256 = Get-DispatchByteArraySha256 -Bytes $contentBytes
+    if ([IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $reportFilePath))) {
+        $existingSha256 = Get-FileSha256 -Path $reportFilePath
+        if ([string]::Equals($existingSha256, $contentSha256, [StringComparison]::OrdinalIgnoreCase)) { return & $newResult 'unchanged' $null $reportFilePath $contentSha256 $contentBytes.Length }
+        return & $newResult 'skipped' 'report-exists-different' $reportFilePath $existingSha256 $null
+    }
+    try {
+        Write-Utf8NoBom -Path $reportFilePath -Content $content -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @()
+    }
+    catch {
+        return & $newResult 'skipped' 'write-failed' $reportFilePath $null $null
+    }
+    return & $newResult 'written' $null $reportFilePath $contentSha256 $contentBytes.Length
+}
+
+function Update-DispatchAccountHealthFromInspect {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Record,
+        [Parameter(Mandatory)][object]$EventEvidence,
+        [Parameter(Mandatory)][object]$AccountFailover,
+        [Nullable[int]]$ProcessExitCode = $null,
+        [string]$DispatchSlug,
+        [string]$RunRecordPath,
+        [string]$EventStreamPath,
+        [string]$FallbackProfile,
+        [string]$MachineConfigPath,
+        [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow
+    )
+
+    # 帳號健康狀態（model 不支援記憶）的單一寫入點，由 Invoke-Inspect 呼叫。
+    # 帳號回應 model not supported 且尚無 item 進度時記錄「帳號 x 檔位 model」；判定成功（turn.completed 且程序碼 0）時清除。
+    # 記錄與清除都是 best-effort：失敗只回傳 error，不改變 Inspect 成敗。
+    $action = 'none'
+    $errorText = $null
+    try {
+        $accountName = [string](Get-DispatchJsonProperty -Object $Record -Name 'codex_account_name')
+        $accountHome = [string](Get-DispatchJsonProperty -Object $Record -Name 'codex_home')
+        $profileName = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $Record -Name 'parent_options') -Name 'profile')
+        if ([string]::IsNullOrWhiteSpace($profileName)) { $profileName = $FallbackProfile }
+        if (-not [string]::IsNullOrWhiteSpace($accountName) -and -not [string]::IsNullOrWhiteSpace($accountHome) -and -not [string]::IsNullOrWhiteSpace($profileName)) {
+            $modelName = Get-CodexAccountProfileModel -CodexHome $accountHome -Profile $profileName
+            if ((Get-DispatchJsonProperty -Object $AccountFailover -Name 'eligible') -eq $true -and [string](Get-DispatchJsonProperty -Object $AccountFailover -Name 'rejection_kind') -ceq 'model-not-supported') {
+                $null = Register-CodexAccountHealth -AccountName $accountName -CodexHome $accountHome -Profile $profileName -Model $modelName -ReasonCode 'model-not-supported' -Evidence ([ordered]@{ dispatch_slug = $DispatchSlug; run_record_path = $RunRecordPath; event_stream_path = $EventStreamPath }) -MachineConfigPath $MachineConfigPath -NowUtc $NowUtc
+                $action = 'registered'
+            }
+            elseif ([string](Get-DispatchJsonProperty -Object $EventEvidence -Name 'last_event_type') -ceq 'turn.completed' -and $null -ne $ProcessExitCode -and [int]$ProcessExitCode -eq 0) {
+                if (Clear-CodexAccountHealth -AccountName $accountName -CodexHome $accountHome -Profile $profileName -Model $modelName -MachineConfigPath $MachineConfigPath -NowUtc $NowUtc) { $action = 'cleared' }
+            }
+        }
+    }
+    catch {
+        $errorText = $_.Exception.Message
+    }
+    return [pscustomobject]@{ action = $action; error = $errorText }
 }
 
 function Resolve-InspectRunWaitBinding {
@@ -1566,7 +1711,7 @@ function Invoke-Inspect {
     }
     $inspectErrorStreamVariable = Get-Variable -Name 'ErrorStreamPath' -ErrorAction SilentlyContinue
     $inspectErrorStreamPath = if ($null -eq $inspectErrorStreamVariable) { '' } else { [string]$inspectErrorStreamVariable.Value }
-    $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath -ErrorStreamPath $inspectErrorStreamPath
+    $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath -ErrorStreamPath $inspectErrorStreamPath -ProcessExitCode $ProcessExitCode
     $serviceRejectionEvidence = Convert-EventEvidenceToServiceRejection -EventEvidence $eventEvidence
     $accountFailover = New-DispatchAccountFailoverEvidence -EventEvidence $eventEvidence
     $serverStreamDisconnect = (Get-DispatchJsonProperty -Object $eventEvidence -Name 'server_stream_disconnect') -eq $true -and ([string](Get-DispatchJsonProperty -Object $eventEvidence -Name 'last_event_type') -cne 'turn.completed')
@@ -1582,6 +1727,10 @@ function Invoke-Inspect {
             throw
         }
     }
+    $inspectAccountHome = [string](Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'codex_home')
+    $accountFailover = New-DispatchAccountFailoverEvidence -EventEvidence $eventEvidence -CodexHome $inspectAccountHome
+    $healthUpdate = Update-DispatchAccountHealthFromInspect -Record $inspectRun.Record -EventEvidence $eventEvidence -AccountFailover $accountFailover -ProcessExitCode $ProcessExitCode -DispatchSlug ([string]$DispatchSlug) -RunRecordPath ([string]$inspectRun.Path) -EventStreamPath ([string]$eventPath) -FallbackProfile ([string]$Profile)
+    if ($null -ne $healthUpdate.error) { $accountFailover['health_record_error'] = $healthUpdate.error }
     $secretExposure = Get-DispatchInspectSecretExposure -EventStreamPath $eventPath -LastMessagePath ([string]$inspectRun.Record.last_message_path)
     $recordModelEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'model_evidence'
     $recordReasoningEffortEvidence = Get-DispatchJsonProperty -Object $inspectRun.Record -Name 'reasoning_effort_evidence'
@@ -1612,9 +1761,9 @@ function Invoke-Inspect {
             $failureStderr = Get-Content -LiteralPath $failureErrorPath -Raw -Encoding UTF8
         }
         if ([string]::IsNullOrWhiteSpace($inspectErrorStreamPath) -and -not [string]::IsNullOrWhiteSpace($failureErrorPath) -and (Test-Path -LiteralPath $failureErrorPath -PathType Leaf)) {
-            $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath -ErrorStreamPath $failureErrorPath
+            $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath -ErrorStreamPath $failureErrorPath -ProcessExitCode $ProcessExitCode
             $serviceRejectionEvidence = Convert-EventEvidenceToServiceRejection -EventEvidence $eventEvidence
-            $accountFailover = New-DispatchAccountFailoverEvidence -EventEvidence $eventEvidence
+            $accountFailover = New-DispatchAccountFailoverEvidence -EventEvidence $eventEvidence -CodexHome $inspectAccountHome
         }
         $launchFailureResult = [ordered]@{
             operation = 'Inspect'
@@ -2122,7 +2271,7 @@ function Invoke-Inspect {
             $executionResult.turnFailedReason = 'quota service rejection'
         }
         if ($null -eq $diagnosis -or [string](Get-OptionalObjectProperty -Object $diagnosis -Name 'reason_code') -ne 'QuotaServiceRejected') {
-            $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'QuotaServiceRejected' -Observation (Get-DispatchRejectionObservation -RejectionKind ([string]$serviceRejectionEvidence.reason_code)) -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
+            $diagnosis = New-DispatchInspectDiagnosis -ReasonCode 'QuotaServiceRejected' -Observation (Get-DispatchRejectionObservation -RejectionKind ([string]$serviceRejectionEvidence.reason_code) -CodexHome $inspectAccountHome) -EventStreamPath $eventPath -ErrorStreamPath $ErrorStreamPath -RawEventLines @($rawEventLines.ToArray()) -Stderr $inspectStderr
         }
     }
     if ($serverStreamDisconnect -and $null -eq $serviceRejectionEvidence) {
@@ -2163,7 +2312,7 @@ function Invoke-Inspect {
     $interruptionIncompleteUnits = @($interruptionIncompleteUnitsValue | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | ForEach-Object { [string]$_ })
     if ($null -ne $serviceRejectionEvidence) {
         $executionResult.resumable = $false
-        $executionResult.recommended_next_step = Get-DispatchRejectionRecommendedNextStep -RejectionKind ([string](Get-DispatchJsonProperty -Object $eventEvidence -Name 'rejection_kind'))
+        $executionResult.recommended_next_step = Get-DispatchRejectionRecommendedNextStep -RejectionKind ([string](Get-DispatchJsonProperty -Object $eventEvidence -Name 'rejection_kind')) -CodexHome $inspectAccountHome
     }
     elseif ($serverStreamDisconnect) {
         $executionResult.resumable = [bool]($interruptionStatus.safePointPresent -and $interruptionIncompleteUnits.Count -gt 0)
@@ -2173,6 +2322,9 @@ function Invoke-Inspect {
         else {
             $executionResult.recommended_next_step = '可重試：使用 new dispatchSlug 以 cold-start 重新派遣，依 ScopePlan.selected_units 重新執行。'
         }
+    }
+    elseif ($accountFailover.eligible -eq $true -and [string]$accountFailover.rejection_kind -ceq 'unclassified') {
+        $executionResult.recommended_next_step = Get-DispatchRejectionRecommendedNextStep -RejectionKind 'unclassified'
     }
     $advisorReportPathValue = $AdvisorConsultReportPath
     if ($TaskType -eq 'advisor-consult') {
@@ -2194,6 +2346,9 @@ function Invoke-Inspect {
     if ($null -ne $inspectReportPathVariable) {
         $inspectConclusionReportPaths = @($inspectReportPathVariable.Value | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
     }
+    $inspectWriteModeVariable = Get-Variable -Name 'WriteMode' -ErrorAction SilentlyContinue
+    $inspectWriteMode = if ($null -eq $inspectWriteModeVariable) { '' } else { [string]$inspectWriteModeVariable.Value }
+    $reportWriteback = Write-DispatchNonGitReadonlyReport -TaskType ([string]$TaskType) -WriteMode $inspectWriteMode -RunRecord $inspectRun.Record -ReportPath @($inspectConclusionReportPaths) -FinalMessage $finalMessage -SecretExposureSuspected ([bool]$secretExposure.secret_exposure_suspected) -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -UseDispatchOrder
     $recoverableArtifactState = Get-DispatchRecoverableArtifactState -RunRecord $inspectRun.Record -ConclusionReportPath $inspectConclusionReportPaths
     $result = [ordered]@{
         operation        = 'Inspect'
@@ -2238,6 +2393,7 @@ function Invoke-Inspect {
         interruptionCheckpoint = $interruptionCheckpoint
         interruptionCheckpointSource = [string](Get-OptionalObjectProperty -Object $interruptionCheckpoint -Name 'source')
         advisorConsultReportPath = if ($TaskType -eq 'advisor-consult') { $advisorReportWrittenPath } else { $null }
+        reportWriteback  = $reportWriteback
          diagnosis        = $diagnosis
          stderr           = $inspectStderr
     }
@@ -2276,6 +2432,10 @@ function Invoke-Inspect {
             Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'retry_allowed' -Value $result.retry_allowed
             Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'recommended_next_step' -Value $result.recommended_next_step
             Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'resumable' -Value $result.resumable
+        }
+        elseif ($accountFailover.eligible -eq $true) {
+            # 未歸類拒絕沒有 service_rejection：只寫 account_failover，不改變一般失敗結果文件的其他欄位。
+            Set-DispatchJsonPropertyValue -Object $dispatchDocument -Name 'account_failover' -Value $accountFailover
         }
         $null = Write-DispatchAtomicJsonDocument -Path $dispatchInspectBinding.Path -Document $dispatchDocument -SourceRoot $SourceRoot -ExecutionRoot $ExecutionRoot -TargetPath @($TargetPath)
     }

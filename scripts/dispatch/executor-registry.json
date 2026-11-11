@@ -12,7 +12,7 @@
     "generate": { "requiredFlags": [], "impliedTags": ["image-gen"], "forbiddenTags": ["write"] },
     "factcheck": { "requiredFlags": [], "impliedTags": ["web"], "forbiddenTags": ["write"] },
     "review": { "requiredFlags": ["Deep"], "impliedTags": [], "forbiddenTags": ["write"], "crossFamily": true, "degradable": ["family"] },
-    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] }
+    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "crossFamily": true, "degradable": ["family"] }
   },
   "executors": [
     {
@@ -24,7 +24,7 @@
       "id": "codex-scan", "display": "Codex scan", "platform": "codex", "profile": "scan", "family": "codex",
       "accepts": ["test", "generate", "factcheck"], "tags": ["build-test", "web", "browse", "desktop-control", "image-gen"], "when": {},
       "order": 20, "gated": false, "escalationOnly": false, "escalatesTo": null,
-      "onOffline": { "test": "stop", "generate": "stop", "factcheck": "fallback" }
+      "onOffline": { "test": "fallback", "generate": "stop", "factcheck": "fallback" }
     },
     {
       "id": "codex-review", "display": "Codex review", "platform": "codex", "profile": "review", "family": "codex",
@@ -42,11 +42,11 @@
       "id": "codex-advisor", "display": "Codex advisor", "platform": "codex", "profile": "advisor", "family": "codex",
       "accepts": ["advise"], "tags": [], "when": {},
       "order": 40, "gated": true, "escalationOnly": false, "escalatesTo": null,
-      "onOffline": { "advise": "wait-reset" }
+      "onOffline": { "advise": "degrade" }
     },
     {
       "id": "sonnet", "display": "Sonnet subagent", "platform": "claude", "model": "sonnet", "family": "claude",
-      "accepts": ["edit", "survey", "review", "factcheck"], "tags": ["write", "build-test", "web"], "when": {},
+      "accepts": ["edit", "survey", "review", "factcheck", "test", "advise"], "tags": ["write", "build-test", "web"], "when": {},
       "order": 50, "gated": false, "escalationOnly": false, "escalatesTo": "opus"
     },
     {

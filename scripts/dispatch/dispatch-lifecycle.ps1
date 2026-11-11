@@ -738,6 +738,29 @@ function New-DispatchResultEnvelope {
     }
 }
 
+function New-DispatchAccountSelectionEvidence {
+    [CmdletBinding()]
+    param([AllowNull()][object]$AccountSelection)
+
+    # 派遣紀錄的帳號選擇證據：模式、選用帳號與被略過帳號的原因（含 model 不支援記憶造成的略過）。
+    if ($null -eq $AccountSelection) { return $null }
+    $accountName = Get-DispatchJsonProperty -Object $AccountSelection -Name 'AccountName'
+    $skippedEntries = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($skippedItem in (Get-DispatchJsonProperty -Object $AccountSelection -Name 'Skipped')) {
+        if ($null -eq $skippedItem) { continue }
+        $null = $skippedEntries.Add([ordered]@{
+                name = [string](Get-DispatchJsonProperty -Object $skippedItem -Name 'name')
+                reason_code = [string](Get-DispatchJsonProperty -Object $skippedItem -Name 'reason_code')
+                detail = Get-DispatchJsonProperty -Object $skippedItem -Name 'detail'
+            })
+    }
+    return [ordered]@{
+        mode = [string](Get-DispatchJsonProperty -Object $AccountSelection -Name 'Mode')
+        account_name = if ($null -eq $accountName) { $null } else { [string]$accountName }
+        skipped = @($skippedEntries.ToArray())
+    }
+}
+
 function Invoke-Dispatch {
     [CmdletBinding()]
     param()
@@ -994,6 +1017,7 @@ function Invoke-Dispatch {
         $result.background = -not [bool]$script:DispatchWaitForCompletion
         $result.requested_units = @($script:ResolvedRequestedUnit)
         $result.project_trust = $projectTrust
+        $result.account_selection = New-DispatchAccountSelectionEvidence -AccountSelection $script:DispatchAccountSelection
         $writtenResult = Write-DispatchAtomicJsonDocument -Path $resultPathValue -Document $result -SourceRoot $sourceRootPath -ExecutionRoot $executionRootPath -TargetPath @($TargetPath)
         $result.result_path = $writtenResult.Path
         $result.result_sha256 = $writtenResult.Hash
@@ -1144,6 +1168,7 @@ function Invoke-Dispatch {
         }
         $failureResult.dispatch_execution_id = $dispatchToken
         $failureResult.project_trust = $projectTrust
+        $failureResult.account_selection = New-DispatchAccountSelectionEvidence -AccountSelection $script:DispatchAccountSelection
         $failureOperationAccountFailover = Get-DispatchResultPropertyValue -Object $failureException.Data['operationResult'] -Names @('account_failover')
         if ($null -ne $failureOperationAccountFailover) { $failureResult.account_failover = $failureOperationAccountFailover }
         $failureResult.failure_receipt_path = if ([string]::IsNullOrWhiteSpace($failureReceiptPathValue)) { $null } else { $failureReceiptPathValue }
@@ -1288,16 +1313,23 @@ function Test-DispatchAccountFailoverApplicable {
         [AllowEmptyString()][string]$SessionMode,
         [bool]$NoAccountFailover,
         [AllowNull()][System.Collections.IDictionary]$BoundParameter = $null,
-        [string]$MachineConfigPath
+        [string]$MachineConfigPath,
+        [AllowNull()][object]$RequestDocument = $null
     )
 
     if ($NoAccountFailover -or -not $WaitForCompletion) { return $false }
     if (-not [string]::IsNullOrWhiteSpace($CodexHome)) { return $false }
     if ([string]$SessionMode -ieq 'continuation') { return $false }
     if ($null -ne $BoundParameter) {
+        # 陣列型別的綁定參數即使只有單一值也是陣列。子程序由 Request 取得同值，因此只有「Request 含對應欄位且內容相等」的陣列參數不影響外層。
+        $arrayFieldMap = @{ TargetPath = 'target_path'; AddDirectory = 'add_directory'; CodexParentOption = 'codex_parent_option'; RequestedUnit = 'requested_unit' }
         foreach ($name in @($BoundParameter.Keys)) {
             $value = $BoundParameter[$name]
-            if ($null -ne $value -and $value -is [System.Array]) { return $false }
+            if ($null -eq $value -or $value -isnot [System.Array]) { continue }
+            if ($null -eq $RequestDocument -or -not $arrayFieldMap.ContainsKey([string]$name)) { return $false }
+            $requestValue = Get-DispatchJsonProperty -Object $RequestDocument -Name ([string]$arrayFieldMap[[string]$name])
+            if ($null -eq $requestValue) { return $false }
+            if (-not (Compare-DispatchStringArrays -Left @($requestValue | ForEach-Object { [string]$_ }) -Right @($value | ForEach-Object { [string]$_ }))) { return $false }
         }
     }
     try {
@@ -1318,13 +1350,20 @@ function Invoke-DispatchWithAccountFailover {
     )
 
     $boundParameters = Get-DispatchScriptVariableValue -Name 'InvocationBoundParameters'
+    $requestDocument = $null
+    $requestPathText = [string](Get-DispatchScriptVariableValue -Name 'RequestPath')
+    if (-not [string]::IsNullOrWhiteSpace($requestPathText)) {
+        try { $requestDocument = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path (Resolve-AbsolutePath -Path $requestPathText)) }
+        catch { $requestDocument = $null }
+    }
     $applicable = Test-DispatchAccountFailoverApplicable `
         -CodexHome ([string](Get-DispatchScriptVariableValue -Name 'CodexHome')) `
         -WaitForCompletion ([bool](Get-DispatchScriptVariableValue -Name 'DispatchWaitForCompletion')) `
         -SessionMode ([string](Get-DispatchScriptVariableValue -Name 'SessionMode')) `
         -NoAccountFailover ([bool]$NoAccountFailover) `
         -BoundParameter $boundParameters `
-        -MachineConfigPath $MachineConfigPath
+        -MachineConfigPath $MachineConfigPath `
+        -RequestDocument $requestDocument
     if (-not $applicable) {
         return Invoke-Dispatch
     }
@@ -1446,6 +1485,8 @@ function Get-DispatchAttemptForwardArgument {
             continue
         }
         if ($null -eq $value) { continue }
+        # 陣列值（-TargetPath 等）不轉送：子程序由 Request 取得同值，外層已確認 Request 與綁定內容相等。
+        if ($value -is [System.Array]) { continue }
         $text = [string]$value
         if (-not [string]::IsNullOrWhiteSpace($NewSlug)) {
             if (Test-DispatchSlugText -Text $text -Slug $OriginalSlug) {
@@ -1598,11 +1639,15 @@ function Invoke-DispatchAccountFailover {
         all_unavailable = $false
         final_attempt = $null
         skipped_reason = $null
+        relogin_commands = @()
     }
+    $skippedWithRelogin = @(Get-CodexAccountSkippedWithRelogin -Skipped @($candidateSet.skipped))
+    $summary.skipped = @($skippedWithRelogin)
     if ($candidates.Count -eq 0) {
         $summary.all_unavailable = $true
+        $summary.relogin_commands = @(Get-CodexAccountReloginLine -Skipped @($candidateSet.skipped) | ForEach-Object { [ordered]@{ account_name = [string]$_.account_name; command = [string]$_.command } })
         $null = Write-DispatchAccountFailoverSummary -Path $summaryPath -SourceRoot $sourceRootPath -Document $summary
-        throw ('CodexAccountsAllUnavailable：' + (Format-CodexAccountSkippedSummary -Skipped @($candidateSet.skipped)))
+        throw ('CodexAccountsAllUnavailable：' + (Format-CodexAccountSkippedSummary -Skipped @($candidateSet.skipped)) + (Format-CodexAccountReloginSuffix -Skipped @($candidateSet.skipped)))
     }
 
     $attempts = New-Object 'System.Collections.Generic.List[object]'
@@ -1661,6 +1706,7 @@ function Invoke-DispatchAccountFailover {
                     dispatch_root = if ([string]::IsNullOrWhiteSpace($dispatchRootValue)) { $null } else { $dispatchRootValue }
                     result_path = if ([string]::IsNullOrWhiteSpace($resultPathValue)) { $null } else { $resultPathValue }
                     project_trust = $attemptProjectTrust
+                    relogin_command = if ([string]$kindValue -ceq 'unauthorized') { Get-CodexAccountLoginCommand -CodexHome ([string]$candidate.codex_home) } else { $null }
                 })
             $summary.final_attempt = $attemptNumber
             if ($null -eq $result) {
@@ -1688,6 +1734,8 @@ function Invoke-DispatchAccountFailover {
     }
     $summary.attempts = @($attempts.ToArray())
     $summary.all_unavailable = $attempts.Count -gt 0 -and $attempts.Count -eq $candidates.Count -and @($attempts.ToArray() | Where-Object { [string]$_.outcome -cne 'rejected' }).Count -eq 0
+    $reloginCommands = @(Get-CodexAccountReloginLine -Attempt @($attempts.ToArray()) -Skipped @($candidateSet.skipped) | ForEach-Object { [ordered]@{ account_name = [string]$_.account_name; command = [string]$_.command } })
+    $summary.relogin_commands = @($reloginCommands)
     $null = Write-DispatchAccountFailoverSummary -Path $summaryPath -SourceRoot $sourceRootPath -Document $summary
     if ($null -ne $loopError) { throw $loopError }
     $failoverEvidence = [ordered]@{
@@ -1696,12 +1744,14 @@ function Invoke-DispatchAccountFailover {
         all_unavailable = [bool]$summary.all_unavailable
         error_code = if ([bool]$summary.all_unavailable) { 'CodexAccountsAllUnavailable' } else { $null }
         skipped_reason = $summary.skipped_reason
-        skipped = @($candidateSet.skipped | ForEach-Object {
+        relogin_commands = @($reloginCommands)
+        skipped = @($skippedWithRelogin | ForEach-Object {
                 [ordered]@{
                     name = [string]$_.name
                     reason_code = [string]$_.reason_code
                     config_path = $_.config_path
                     detail = $_.detail
+                    relogin_command = $_.relogin_command
                 }
             })
     }
@@ -1717,7 +1767,345 @@ function Invoke-DispatchAccountFailover {
     if ([bool]$summary.all_unavailable) {
         $attemptSummaryText = (@($attempts.ToArray() | ForEach-Object { [string]$_.account_name + ':' + [string]$_.rejection_kind }) -join '; ')
         if (@($candidateSet.skipped).Count -gt 0) { $attemptSummaryText += '; 略過：' + (Format-CodexAccountSkippedSummary -Skipped @($candidateSet.skipped)) }
+        $attemptSummaryText += Format-CodexAccountReloginSuffix -Attempt @($attempts.ToArray()) -Skipped @($candidateSet.skipped)
         [Console]::Error.WriteLine('CodexAccountsAllUnavailable：' + $attemptSummaryText)
     }
     return $finalResult
+}
+
+function Set-DispatchInspectHandoff {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$InspectResult,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Handoff,
+        [string]$ErrorCode
+    )
+
+    Set-DispatchJsonPropertyValue -Object $InspectResult -Name 'account_failover_handoff' -Value $Handoff
+    if (-not [string]::IsNullOrWhiteSpace($ErrorCode)) { Set-DispatchJsonPropertyValue -Object $InspectResult -Name 'error_code' -Value $ErrorCode }
+    return $InspectResult
+}
+
+function New-DispatchBackgroundFailoverNotApplicable {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Reason)
+
+    return [pscustomobject]@{ applicable = $false; reason = $Reason }
+}
+
+function Get-DispatchBackgroundFailoverContext {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()][object]$InspectResult,
+        [switch]$NoAccountFailover
+    )
+
+    # 背景派遣被拒後換帳號的適用判定（H1 至 H5）與 hand-off 所需的脈絡。H6（候選清單）由呼叫端判定。
+    $resultPath = [string](Get-DispatchResultPropertyValue -Object $InspectResult -Names @('dispatchResultPath'))
+    if ([string]::IsNullOrWhiteSpace($resultPath)) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'no-dispatch-result-binding' }
+    $dispatchDocument = $null
+    try { $dispatchDocument = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $resultPath) }
+    catch { return New-DispatchBackgroundFailoverNotApplicable -Reason 'dispatch-result-unreadable' }
+    if ((Get-DispatchJsonProperty -Object $dispatchDocument -Name 'background') -ne $true) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'not-background' }
+    $accountFailover = Get-DispatchResultPropertyValue -Object $InspectResult -Names @('account_failover')
+    if ($null -eq $accountFailover -or (Get-DispatchJsonProperty -Object $accountFailover -Name 'eligible') -ne $true) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'not-eligible' }
+    if ($NoAccountFailover) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'no-account-failover' }
+    $selection = Get-DispatchJsonProperty -Object $dispatchDocument -Name 'account_selection'
+    $selectionMode = [string](Get-DispatchJsonProperty -Object $selection -Name 'mode')
+
+    $runRecordPath = [string](Get-DispatchResultPropertyValue -Object $InspectResult -Names @('runRecordPath'))
+    $record = $null
+    try { $record = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $runRecordPath) }
+    catch { return New-DispatchBackgroundFailoverNotApplicable -Reason 'run-record-unreadable' }
+    $accountName = [string](Get-DispatchJsonProperty -Object $record -Name 'codex_account_name')
+    $accountHome = [string](Get-DispatchJsonProperty -Object $record -Name 'codex_home')
+    if ([string]::IsNullOrWhiteSpace($accountName) -or [string]::IsNullOrWhiteSpace($accountHome)) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'account-not-registered' }
+
+    $requestPath = [string](Get-DispatchJsonProperty -Object $record -Name 'request_path')
+    if ([string]::IsNullOrWhiteSpace($requestPath)) {
+        $binding = Get-DispatchJsonProperty -Object $dispatchDocument -Name 'evidence_binding'
+        $requestPath = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $binding -Name 'evidence_position') -Name 'request_path')
+    }
+    $requestDocument = $null
+    if (-not [string]::IsNullOrWhiteSpace($requestPath)) {
+        try { $requestDocument = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $requestPath) }
+        catch { $requestDocument = $null }
+    }
+    if ($null -eq $requestDocument) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'request-path-missing' }
+    if ([string](Get-DispatchJsonProperty -Object $requestDocument -Name 'session_mode') -ieq 'continuation') { return New-DispatchBackgroundFailoverNotApplicable -Reason 'continuation' }
+
+    $profileName = [string](Get-DispatchJsonProperty -Object $requestDocument -Name 'profile')
+    if ([string]::IsNullOrWhiteSpace($profileName)) { $profileName = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $record -Name 'parent_options') -Name 'profile') }
+    $sourceRoot = [string](Get-DispatchJsonProperty -Object $record -Name 'source_root')
+    $lineSlug = [string](Get-DispatchJsonProperty -Object $record -Name 'line_slug')
+    $currentSlug = [string](Get-DispatchJsonProperty -Object $record -Name 'dispatch_slug')
+    if ([string]::IsNullOrWhiteSpace($sourceRoot) -or [string]::IsNullOrWhiteSpace($lineSlug) -or [string]::IsNullOrWhiteSpace($currentSlug)) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'run-record-unreadable' }
+    $historyDirectory = Join-Path -Path (Join-Path -Path (Resolve-AbsolutePath -Path $sourceRoot) -ChildPath '.local\ai-sessions\history') -ChildPath $lineSlug
+
+    # origin_slug：目前 slug 形如 <origin>-r<n> 且 <origin> 的背景摘要檔記有該 slug 的嘗試時取 <origin>，否則取目前 slug。
+    $originSlug = $currentSlug
+    $suffixMatch = [regex]::Match($currentSlug, '^(?<origin>.+)-r\d+$')
+    if ($suffixMatch.Success) {
+        $candidateSummaryPath = Join-Path -Path $historyDirectory -ChildPath ('dispatch-account-failover-' + $suffixMatch.Groups['origin'].Value + '.json')
+        if ([IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $candidateSummaryPath))) {
+            try {
+                $candidateSummary = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $candidateSummaryPath)
+                $candidateAttempts = Get-DispatchJsonProperty -Object $candidateSummary -Name 'attempts'
+                if (@($candidateAttempts | Where-Object { [string](Get-DispatchJsonProperty -Object $_ -Name 'dispatch_slug') -ceq $currentSlug }).Count -gt 0) {
+                    $originSlug = $suffixMatch.Groups['origin'].Value
+                }
+            }
+            catch { $originSlug = $currentSlug }
+        }
+    }
+    $summaryPath = Join-Path -Path $historyDirectory -ChildPath ('dispatch-account-failover-' + $originSlug + '.json')
+    $summary = $null
+    if ([IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $summaryPath))) {
+        try { $summary = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $summaryPath) }
+        catch { return New-DispatchBackgroundFailoverNotApplicable -Reason 'summary-invalid' }
+        if ([string](Get-DispatchJsonProperty -Object $summary -Name 'mode') -cne 'background' -or $null -eq (Get-DispatchJsonProperty -Object $summary -Name 'attempts')) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'summary-invalid' }
+    }
+    if ($selectionMode -cne 'auto') {
+        # 背景鏈的衍生嘗試由 Invoke-InspectBackgroundAccountFailover 以顯式 CodexHome 啟動，結果記為 explicit。
+        # 只有背景摘要檔記有該 slug，且該筆嘗試的帳號與 home 與 RunRecord 相符時視為已驗證的背景鏈；使用者自行指定 -CodexHome 的派遣不在此列。
+        $chainVerified = $false
+        if ($selectionMode -ceq 'explicit' -and $originSlug -cne $currentSlug -and $null -ne $summary) {
+            $summaryAttemptList = Get-DispatchJsonProperty -Object $summary -Name 'attempts'
+            $chainAttempts = @($summaryAttemptList | Where-Object {
+                    $null -ne $_ -and [string](Get-DispatchJsonProperty -Object $_ -Name 'dispatch_slug') -ceq $currentSlug -and
+                    [string](Get-DispatchJsonProperty -Object $_ -Name 'account_name') -ceq $accountName -and
+                    [string]::Equals([string](Get-DispatchJsonProperty -Object $_ -Name 'codex_home'), $accountHome, [StringComparison]::OrdinalIgnoreCase)
+                })
+            $chainVerified = $chainAttempts.Count -gt 0
+        }
+        if (-not $chainVerified) { return New-DispatchBackgroundFailoverNotApplicable -Reason 'explicit-codex-home' }
+    }
+    $dispatchRootValue = Get-DispatchResultPropertyValue -Object $dispatchDocument -Names @('dispatch_root', 'dispatchRoot')
+    if ($null -eq $dispatchRootValue) { $dispatchRootValue = Get-DispatchJsonProperty -Object $requestDocument -Name 'dispatch_root' }
+    return [pscustomobject]@{
+        applicable = $true
+        reason = $null
+        dispatch_document = $dispatchDocument
+        dispatch_result_path = $resultPath
+        run_record = $record
+        run_record_path = $runRecordPath
+        request_path = $requestPath
+        request_document = $requestDocument
+        profile = $profileName
+        source_root = (Resolve-AbsolutePath -Path $sourceRoot)
+        line_slug = $lineSlug
+        current_slug = $currentSlug
+        origin_slug = $originSlug
+        history_directory = $historyDirectory
+        summary_path = $summaryPath
+        summary = $summary
+        account_name = $accountName
+        account_home = $accountHome
+        dispatch_root = if ($null -eq $dispatchRootValue) { $null } else { [string]$dispatchRootValue }
+    }
+}
+
+function New-DispatchBackgroundFailoverSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Context,
+        [Parameter(Mandatory)][string]$OriginRequestPath,
+        [Parameter(Mandatory)][object]$CandidateSet,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$SkippedWithRelogin,
+        [Parameter(Mandatory)][object]$AttemptEntries,
+        [Parameter(Mandatory)][bool]$AllUnavailable,
+        [Parameter(Mandatory)][int]$FinalAttempt
+    )
+
+    return [ordered]@{
+        schema = 'ai-sessions.dispatch-account-failover.v1'
+        mode = 'background'
+        line_slug = [string]$Context.line_slug
+        dispatch_slug = [string]$Context.origin_slug
+        origin_request_path = $OriginRequestPath
+        candidates = @($CandidateSet.candidates)
+        skipped = @($SkippedWithRelogin)
+        attempts = @($AttemptEntries.ToArray())
+        all_unavailable = $AllUnavailable
+        final_attempt = $FinalAttempt
+        skipped_reason = $null
+        relogin_commands = @(Get-CodexAccountReloginLine -Attempt @($AttemptEntries.ToArray()) -Skipped @($CandidateSet.skipped) | ForEach-Object { [ordered]@{ account_name = [string]$_.account_name; command = [string]$_.command } })
+    }
+}
+
+function Write-DispatchBackgroundFailoverSummary {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Context,
+        [Parameter(Mandatory)][System.Collections.IDictionary]$Document
+    )
+
+    return Write-DispatchAtomicJsonDocument -Path ([string]$Context.summary_path) -Document $Document -SourceRoot ([string]$Context.source_root) -ExecutionRoot ([string]$Context.source_root) -TargetPath @() -HashProperty ''
+}
+
+function Invoke-InspectBackgroundAccountFailover {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowNull()][object]$InspectResult,
+        [switch]$NoAccountFailover,
+        [string]$MachineConfigPath
+    )
+
+    # 背景派遣被服務端拒絕且尚無 item 進度時，在主 Agent 執行 Inspect（-DispatchResultPath 綁定模式）時以下一個登記帳號重新啟動。
+    # 前景 Dispatch 的換帳號由 Invoke-DispatchAccountFailover 處理，不經此函式。
+    if ($null -eq $InspectResult) { return $InspectResult }
+    $context = Get-DispatchBackgroundFailoverContext -InspectResult $InspectResult -NoAccountFailover:$NoAccountFailover
+    if (-not [bool]$context.applicable) {
+        return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff ([ordered]@{ state = 'not-applicable'; reason = [string]$context.reason })
+    }
+
+    $record = $context.run_record
+    $failover = Get-DispatchResultPropertyValue -Object $InspectResult -Names @('account_failover')
+    $rejectionKind = [string](Get-DispatchJsonProperty -Object $failover -Name 'rejection_kind')
+    $itemEventCount = Get-DispatchJsonProperty -Object $failover -Name 'item_event_count'
+    $reloginCommand = if ($rejectionKind -ceq 'unauthorized') { Get-CodexAccountLoginCommand -CodexHome ([string]$context.account_home) } else { $null }
+
+    # 去重：同一個被拒嘗試重複 Inspect 時，依 RunRecord 已記錄的 hand-off 回報，不重新啟動。
+    $existingHandoff = Get-DispatchJsonProperty -Object $record -Name 'account_failover_handoff'
+    if ($null -ne $existingHandoff) {
+        $recordedState = [string](Get-DispatchJsonProperty -Object $existingHandoff -Name 'state')
+        $reportedState = switch ($recordedState) {
+            'started' { 'already-handed-off' }
+            'claimed' { 'handoff-incomplete' }
+            default { $recordedState }
+        }
+        $repeat = [ordered]@{ state = $reportedState }
+        foreach ($name in @('from_account', 'to_account', 'next_dispatch_slug', 'next_request_path', 'next_result_path', 'summary_path', 'rejection_kind', 'relogin_command', 'handed_off_at_utc')) {
+            $repeat[$name] = Get-DispatchJsonProperty -Object $existingHandoff -Name $name
+        }
+        $repeatErrorCode = if ($recordedState -ceq 'exhausted') { 'CodexAccountsAllUnavailable' } else { $null }
+        return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff $repeat -ErrorCode $repeatErrorCode
+    }
+
+    $summary = $context.summary
+    $attemptEntries = New-Object 'System.Collections.Generic.List[object]'
+    $currentAttemptNumber = 1
+    if ($null -ne $summary) {
+        $summaryAttempts = Get-DispatchJsonProperty -Object $summary -Name 'attempts'
+        foreach ($entry in @($summaryAttempts)) {
+            if ($null -eq $entry) { continue }
+            $copy = [ordered]@{}
+            foreach ($property in $entry.PSObject.Properties) { $copy[$property.Name] = $property.Value }
+            $null = $attemptEntries.Add($copy)
+        }
+        $matched = @($attemptEntries.ToArray() | Where-Object { [string]$_.dispatch_slug -ceq [string]$context.current_slug })
+        if ($matched.Count -eq 0) {
+            return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff ([ordered]@{ state = 'not-applicable'; reason = 'summary-invalid' })
+        }
+        $currentAttemptNumber = [int]$matched[0].attempt
+        $matched[0].outcome = 'rejected'
+        $matched[0].rejection_kind = if ([string]::IsNullOrWhiteSpace($rejectionKind)) { $null } else { $rejectionKind }
+        $matched[0].item_event_count = if ($null -eq $itemEventCount) { $null } else { [int]$itemEventCount }
+        $matched[0].relogin_command = $reloginCommand
+    }
+    else {
+        $null = $attemptEntries.Add([ordered]@{
+                attempt = 1
+                dispatch_slug = [string]$context.current_slug
+                account_name = [string]$context.account_name
+                codex_home = [string]$context.account_home
+                outcome = 'rejected'
+                rejection_kind = if ([string]::IsNullOrWhiteSpace($rejectionKind)) { $null } else { $rejectionKind }
+                item_event_count = if ($null -eq $itemEventCount) { $null } else { [int]$itemEventCount }
+                dispatch_root = $context.dispatch_root
+                result_path = [string]$context.dispatch_result_path
+                project_trust = $null
+                relogin_command = $reloginCommand
+            })
+    }
+    $originRequestPath = if ($null -ne $summary -and -not [string]::IsNullOrWhiteSpace([string](Get-DispatchJsonProperty -Object $summary -Name 'origin_request_path'))) { [string](Get-DispatchJsonProperty -Object $summary -Name 'origin_request_path') } else { [string]$context.request_path }
+    $attemptedNames = @($attemptEntries.ToArray() | ForEach-Object { [string]$_.account_name }) + @([string]$context.account_name)
+
+    # H6：候選清單（含健康狀態略過）扣除已嘗試帳號後仍有帳號。
+    $candidateSet = Get-CodexDispatchAccountCandidates -Profile ([string]$context.profile) -MachineConfigPath $MachineConfigPath -SourceRoot ([string]$context.source_root)
+    $remaining = @($candidateSet.candidates | Where-Object { $attemptedNames -notcontains [string]$_.name })
+    $skippedWithRelogin = @(Get-CodexAccountSkippedWithRelogin -Skipped @($candidateSet.skipped))
+    $handedOffAt = [DateTimeOffset]::UtcNow.ToString('o')
+
+    if ($remaining.Count -eq 0) {
+        $exhausted = [ordered]@{ state = 'exhausted'; from_account = [string]$context.account_name; to_account = $null; next_dispatch_slug = $null; next_request_path = $null; next_result_path = $null; summary_path = [string]$context.summary_path; rejection_kind = $rejectionKind; relogin_command = $reloginCommand; handed_off_at_utc = $handedOffAt }
+        Set-DispatchJsonPropertyValue -Object $record -Name 'account_failover_handoff' -Value $exhausted
+        try { $null = Write-DispatchRunRecord -Record $record -Update } catch { $exhausted['record_error'] = $_.Exception.Message }
+        try { $null = Write-DispatchBackgroundFailoverSummary -Context $context -Document (New-DispatchBackgroundFailoverSummary -Context $context -OriginRequestPath $originRequestPath -CandidateSet $candidateSet -SkippedWithRelogin $skippedWithRelogin -AttemptEntries $attemptEntries -AllUnavailable $true -FinalAttempt $currentAttemptNumber) } catch { $exhausted['summary_error'] = $_.Exception.Message }
+        return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff $exhausted -ErrorCode 'CodexAccountsAllUnavailable'
+    }
+
+    $nextCandidate = $remaining[0]
+    $nextAttempt = $currentAttemptNumber + 1
+    $originDocument = $null
+    try { $originDocument = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $originRequestPath) }
+    catch { $originDocument = $null }
+    $derived = if ($null -eq $originDocument) { $null } else { New-DispatchAttemptRequest -Document $originDocument -Attempt $nextAttempt }
+    if ($null -eq $derived -or -not [bool]$derived.derivable) {
+        return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff ([ordered]@{ state = 'not-applicable'; reason = 'request-not-derivable'; missing_fields = if ($null -eq $derived) { @('origin_request_path') } else { @($derived.missing_fields) } })
+    }
+    $nextSlug = [string]$derived.dispatch_slug
+    $nextRequestPath = Join-Path -Path ([string]$context.history_directory) -ChildPath ('dispatch-request-' + $nextSlug + '.json')
+    $nextResultPath = [string](Get-DispatchJsonProperty -Object $derived.document -Name 'result_path')
+    $handoffFields = [ordered]@{ state = 'claimed'; from_account = [string]$context.account_name; to_account = [string]$nextCandidate.name; next_dispatch_slug = $nextSlug; next_request_path = $nextRequestPath; next_result_path = $nextResultPath; summary_path = [string]$context.summary_path; rejection_kind = $rejectionKind; relogin_command = $reloginCommand; handed_off_at_utc = $handedOffAt }
+
+    # 衍生 Request 以 RequireAbsent 原子寫入，作為單一宣告點（併發的第二個 Inspect 會遇到碰撞）。
+    try {
+        $null = Write-DispatchAtomicJsonDocument -Path $nextRequestPath -Document $derived.document -SourceRoot ([string]$context.source_root) -ExecutionRoot ([string]$context.source_root) -TargetPath @() -HashProperty '' -RequireAbsent -AbsentErrorCode 'DispatchAccountFailoverRequestCollision'
+    }
+    catch {
+        if ($_.Exception.Message -match 'DispatchAccountFailoverRequestCollision') {
+            $collision = [ordered]@{}
+            foreach ($key in $handoffFields.Keys) { $collision[$key] = $handoffFields[$key] }
+            $collision.state = 'handoff-incomplete'
+            return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff $collision
+        }
+        throw
+    }
+
+    Set-DispatchJsonPropertyValue -Object $record -Name 'account_failover_handoff' -Value $handoffFields
+    try { $null = Write-DispatchRunRecord -Record $record -Update }
+    catch {
+        $handoffFields.state = 'handoff-write-failed'
+        $handoffFields.error = $_.Exception.Message
+        return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff $handoffFields
+    }
+
+    $forwardArguments = @()
+    if ([string]::IsNullOrWhiteSpace([string](Get-DispatchJsonProperty -Object $derived.document -Name 'profile')) -and -not [string]::IsNullOrWhiteSpace([string]$context.profile)) {
+        $forwardArguments = @('-Profile', [string]$context.profile)
+    }
+    $launchError = $null
+    $run = $null
+    try { $run = Invoke-DispatchAttemptProcess -RequestPath $nextRequestPath -CodexHome ([string]$nextCandidate.codex_home) -ForwardArgument $forwardArguments -ResultPathHint $nextResultPath }
+    catch { $launchError = $_.Exception.Message }
+    $startStatus = if ($null -eq $run -or $null -eq $run.result) { '' } else { [string](Get-DispatchResultPropertyValue -Object $run.result -Names @('status')) }
+    if ($null -eq $launchError -and ($startStatus -ceq '' -or $startStatus -ceq 'failed')) {
+        $launchError = if ($null -ne $run -and $null -ne $run.result) { [string](Get-DispatchResultPropertyValue -Object $run.result -Names @('error')) } else { '背景 Dispatch 子程序未回傳可解析的結果；exit_code=' + [string]$(if ($null -eq $run) { '' } else { $run.exit_code }) + '; stderr=' + [string]$(if ($null -eq $run) { '' } else { $run.stderr }) }
+    }
+    if ($null -ne $launchError) {
+        $handoffFields.state = 'launch-failed'
+        $handoffFields.error = $launchError
+    }
+    else {
+        $handoffFields.state = 'started'
+    }
+    try { $null = Write-DispatchRunRecord -Record $record -Update } catch { $handoffFields.record_error = $_.Exception.Message }
+
+    $nextDispatchRoot = [string](Get-DispatchJsonProperty -Object $derived.document -Name 'dispatch_root')
+    $null = $attemptEntries.Add([ordered]@{
+            attempt = $nextAttempt
+            dispatch_slug = $nextSlug
+            account_name = [string]$nextCandidate.name
+            codex_home = [string]$nextCandidate.codex_home
+            outcome = if ($null -ne $launchError) { 'launch-failed' } else { 'started' }
+            rejection_kind = $null
+            item_event_count = $null
+            dispatch_root = if ([string]::IsNullOrWhiteSpace($nextDispatchRoot)) { $null } else { $nextDispatchRoot }
+            result_path = if ([string]::IsNullOrWhiteSpace($nextResultPath)) { $null } else { $nextResultPath }
+            project_trust = $null
+            relogin_command = $null
+        })
+    try { $null = Write-DispatchBackgroundFailoverSummary -Context $context -Document (New-DispatchBackgroundFailoverSummary -Context $context -OriginRequestPath $originRequestPath -CandidateSet $candidateSet -SkippedWithRelogin $skippedWithRelogin -AttemptEntries $attemptEntries -AllUnavailable $false -FinalAttempt $nextAttempt) } catch { $handoffFields.summary_error = $_.Exception.Message }
+    return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff $handoffFields
 }

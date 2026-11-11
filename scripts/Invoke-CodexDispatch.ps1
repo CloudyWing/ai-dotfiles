@@ -907,7 +907,10 @@ try {
         'Preflight' { Invoke-Preflight }
         'Prepare'   { Invoke-Prepare -GuardTargetPath @($TargetPath) }
         'Start'     { Invoke-Start }
-        'Inspect'   { Invoke-Inspect }
+        'Inspect'   {
+            $inspectResult = Invoke-Inspect
+            Invoke-InspectBackgroundAccountFailover -InspectResult $inspectResult -NoAccountFailover:$NoAccountFailover
+        }
         'Dispatch'  {
             $dispatchResult = Invoke-DispatchWithAccountFailover -NoAccountFailover:$NoAccountFailover
             $script:ResultPath = $null

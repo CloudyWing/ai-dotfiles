@@ -12,6 +12,8 @@ scripts\dispatch\executor-registry.json，依固定演算法選出執行者並�
 結束碼：0 為 selected 或 degraded；10 為 escalation-candidate；20 為 needs-authorization；
 21 為 wait-reset；22 為 stopped；2 為標註無效；3 為登錄表不存在或無效。
 標註無效與登錄表無效時，stderr 首段格式為「Code：訊息」。
+結束碼 2 的錯誤碼含 SelectorParameterBinding：多值參數以空白分隔時，多餘的值會成為位置參數，
+腳本以此錯誤碼回報；-Tags 與 -Offline 的多個值請以逗號連接且不含空白。
 
 .PARAMETER Type
 任務類型，值域由登錄表 types 決定。
@@ -49,7 +51,7 @@ scripts\dispatch\executor-registry.json，依固定演算法選出執行者並�
 .PARAMETER Describe
 輸出登錄表的標籤詞彙、類型、旗標需求與執行者摘要，不做選擇。
 #>
-[CmdletBinding()]
+[CmdletBinding(PositionalBinding = $false)]
 param(
     [string]$Type,
     [string]$E,
@@ -62,7 +64,9 @@ param(
     [string]$EscalateFrom,
     [string]$Label,
     [string]$RegistryPath,
-    [switch]$Describe
+    [switch]$Describe,
+    [Parameter(ValueFromRemainingArguments = $true)]
+    [string[]]$RemainingArgument
 )
 
 Set-StrictMode -Version Latest
@@ -527,6 +531,9 @@ function Get-DescribeDocument {
 }
 
 function Invoke-Selector {
+    if ($null -ne $RemainingArgument -and @($RemainingArgument).Count -gt 0) {
+        throw (New-SelectorError -Code 'SelectorParameterBinding' -Message ('偵測到多餘的位置參數：{0}。-Tags 與 -Offline 的多個值請以逗號連接且不含空白，例如 -Offline codex-scan,codex-review' -f (@($RemainingArgument) -join ' ')) -ExitCode 2)
+    }
     $path = $RegistryPath
     if ([string]::IsNullOrWhiteSpace($path)) { $path = Join-Path -Path $PSScriptRoot -ChildPath 'dispatch\executor-registry.json' }
     $registry = Read-ExecutorRegistry -Path $path

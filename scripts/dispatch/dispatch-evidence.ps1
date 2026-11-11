@@ -743,6 +743,203 @@ function Resolve-CodexProjectTrustKey {
     return [pscustomobject]@{ trust_key = $key; source_root = $full; trust_root_kind = $kind }
 }
 
+function Get-CodexAccountHealthPath {
+    [CmdletBinding()]
+    param([string]$MachineConfigPath)
+
+    # 狀態檔與 machine.json 同目錄。測試以 $script:DispatchMachineConfigPathOverride 隔離，避免寫入真實的 .local。
+    if ([string]::IsNullOrWhiteSpace($MachineConfigPath)) {
+        $overridePath = [string](Get-DispatchScriptVariableValue -Name 'DispatchMachineConfigPathOverride')
+        $MachineConfigPath = if (-not [string]::IsNullOrWhiteSpace($overridePath)) { $overridePath } else { Get-DispatchMachineConfigPath }
+    }
+    return Join-Path -Path (Split-Path -Parent $MachineConfigPath) -ChildPath 'codex-account-health.json'
+}
+
+function ConvertTo-CodexAccountHealthTime {
+    [CmdletBinding()]
+    param([AllowNull()][object]$Value)
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [DateTimeOffset]) { return [DateTimeOffset]$Value }
+    if ($Value -is [DateTime]) { return [DateTimeOffset]::new(([DateTime]$Value).ToUniversalTime()) }
+    $parsed = [DateTimeOffset]::MinValue
+    if ([DateTimeOffset]::TryParse([string]$Value, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsed)) { return $parsed }
+    return $null
+}
+
+function Test-CodexAccountHealthKeyMatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Entry,
+        [AllowNull()][AllowEmptyString()][string]$AccountName,
+        [AllowNull()][AllowEmptyString()][string]$CodexHome,
+        [AllowNull()][AllowEmptyString()][string]$Profile,
+        [AllowNull()][AllowEmptyString()][string]$Model
+    )
+
+    $homeText = if ([string]::IsNullOrWhiteSpace($CodexHome)) { '' } else { $CodexHome.TrimEnd('\', '/') }
+    $entryHome = ([string](Get-DispatchJsonProperty -Object $Entry -Name 'codex_home')).TrimEnd('\', '/')
+    if (-not [string]::Equals([string](Get-DispatchJsonProperty -Object $Entry -Name 'account_name'), [string]$AccountName, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if (-not [string]::Equals($entryHome, $homeText, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    if (-not [string]::Equals([string](Get-DispatchJsonProperty -Object $Entry -Name 'profile'), [string]$Profile, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $entryModel = [string](Get-DispatchJsonProperty -Object $Entry -Name 'model')
+    if ([string]::IsNullOrWhiteSpace($entryModel) -or [string]::IsNullOrWhiteSpace($Model)) { return $true }
+    return [string]::Equals($entryModel, $Model, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-CodexAccountProfileModel {
+    [CmdletBinding()]
+    param([string]$CodexHome, [string]$Profile)
+
+    if ([string]::IsNullOrWhiteSpace($CodexHome) -or [string]::IsNullOrWhiteSpace($Profile)) { return $null }
+    $configPath = Resolve-ProfileConfigPath -CodexHome $CodexHome -Profile $Profile
+    if ([string]::IsNullOrWhiteSpace($configPath)) { return $null }
+    $evidence = Read-ProfileModelEvidence -ConfigPath $configPath -Profile $Profile
+    $modelEvidence = Get-DispatchJsonProperty -Object $evidence -Name 'model'
+    if ([string](Get-DispatchJsonProperty -Object $modelEvidence -Name 'status') -cne 'confirmed') { return $null }
+    $modelValue = [string](Get-DispatchJsonProperty -Object $modelEvidence -Name 'value')
+    if ([string]::IsNullOrWhiteSpace($modelValue)) { return $null }
+    return $modelValue
+}
+
+function Read-CodexAccountHealth {
+    [CmdletBinding()]
+    param([string]$MachineConfigPath, [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow)
+
+    # 回傳未過期的項目。檔案不存在、無法解析、schema 不符或項目缺欄位時不丟例外，以 state_file_invalid 標示。
+    $path = Get-CodexAccountHealthPath -MachineConfigPath $MachineConfigPath
+    $active = New-Object 'System.Collections.Generic.List[object]'
+    $invalid = $false
+    if ([IO.File]::Exists($path)) {
+        try {
+            $document = ConvertFrom-DispatchJson -Content ([IO.File]::ReadAllText($path, (New-Object Text.UTF8Encoding($false))))
+            $entriesProperty = if ($null -eq $document) { $null } else { $document.PSObject.Properties['entries'] }
+            if ($null -eq $document -or $document -isnot [pscustomobject] -or [string](Get-DispatchJsonProperty -Object $document -Name 'schema') -cne 'ai-agents.codex-account-health.v1' -or $null -eq $entriesProperty) {
+                throw 'schema 不符。'
+            }
+            foreach ($entry in @($entriesProperty.Value)) {
+                $complete = $null -ne $entry -and $entry -is [pscustomobject]
+                if ($complete) {
+                    foreach ($name in @('account_name', 'codex_home', 'profile', 'reason_code', 'recorded_at_utc', 'expires_at_utc')) {
+                        if ([string]::IsNullOrWhiteSpace([string](Get-DispatchJsonProperty -Object $entry -Name $name))) { $complete = $false }
+                    }
+                }
+                if (-not $complete) { $invalid = $true; continue }
+                $expires = ConvertTo-CodexAccountHealthTime -Value (Get-DispatchJsonProperty -Object $entry -Name 'expires_at_utc')
+                if ($null -ne $expires -and $expires -gt $NowUtc) { $null = $active.Add($entry) }
+            }
+        }
+        catch {
+            $invalid = $true
+            $active.Clear()
+        }
+    }
+    return [pscustomobject]@{ path = $path; entries = @($active.ToArray()); state_file_invalid = $invalid }
+}
+
+function Write-CodexAccountHealthDocument {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Entry,
+        [AllowNull()][byte[]]$Original
+    )
+
+    # 呼叫端須已持有 codex-account.lock 並已載入 codex-account-config.ps1（Set-AccountAtomicFile）。
+    $document = [ordered]@{ schema = 'ai-agents.codex-account-health.v1'; entries = @($Entry) }
+    $json = ConvertTo-Json -InputObject $document -Depth 8
+    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes($json + "`n")
+    Set-AccountAtomicFile -Path $Path -Bytes $bytes -Original $Original
+}
+
+function Register-CodexAccountHealth {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$AccountName,
+        [Parameter(Mandatory)][string]$CodexHome,
+        [Parameter(Mandatory)][string]$Profile,
+        [AllowNull()][AllowEmptyString()][string]$Model,
+        [Parameter(Mandatory)][string]$ReasonCode,
+        [AllowNull()][object]$Evidence = $null,
+        [string]$MachineConfigPath,
+        [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow,
+        [ValidateRange(1, 120)][int]$LockTimeoutSeconds = 10
+    )
+
+    $path = Get-CodexAccountHealthPath -MachineConfigPath $MachineConfigPath
+    $directory = Split-Path -Parent $path
+    if (-not [IO.Directory]::Exists($directory)) { $null = [IO.Directory]::CreateDirectory($directory) }
+    . (Get-CodexAccountConfigLibraryPath)
+    $lock = Open-CodexAccountLock -LockPath (Join-Path -Path $directory -ChildPath 'codex-account.lock') -TimeoutSeconds $LockTimeoutSeconds
+    try {
+        $original = $null
+        $kept = New-Object 'System.Collections.Generic.List[object]'
+        if ([IO.File]::Exists($path)) {
+            $original = [IO.File]::ReadAllBytes($path)
+            $current = Read-CodexAccountHealth -MachineConfigPath $path -NowUtc $NowUtc
+            if ([bool]$current.state_file_invalid) {
+                # 損毀檔先備份再以新內容替換，不直接覆寫掉原始內容。
+                $backupPath = $path + '.invalid-' + $NowUtc.UtcDateTime.ToString('yyyyMMddHHmmssfff', [Globalization.CultureInfo]::InvariantCulture)
+                [IO.File]::Copy($path, $backupPath, $true)
+            }
+            else {
+                foreach ($existing in @($current.entries)) {
+                    if (-not (Test-CodexAccountHealthKeyMatch -Entry $existing -AccountName $AccountName -CodexHome $CodexHome -Profile $Profile -Model $Model)) { $null = $kept.Add($existing) }
+                }
+            }
+        }
+        $recorded = $NowUtc.ToUniversalTime()
+        $entry = [ordered]@{
+            account_name = $AccountName
+            codex_home = $CodexHome
+            profile = $Profile
+            model = if ([string]::IsNullOrWhiteSpace($Model)) { $null } else { $Model }
+            reason_code = $ReasonCode
+            recorded_at_utc = $recorded.UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            expires_at_utc = $recorded.AddHours(24).UtcDateTime.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            evidence = $Evidence
+        }
+        $null = $kept.Add([pscustomobject]$entry)
+        Write-CodexAccountHealthDocument -Path $path -Entry @($kept.ToArray()) -Original $original
+        return [pscustomobject]$entry
+    }
+    finally {
+        if ($null -ne $lock -and $null -ne $lock.Stream) { $lock.Stream.Dispose() }
+    }
+}
+
+function Clear-CodexAccountHealth {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$AccountName,
+        [Parameter(Mandatory)][string]$CodexHome,
+        [Parameter(Mandatory)][string]$Profile,
+        [AllowNull()][AllowEmptyString()][string]$Model,
+        [string]$MachineConfigPath,
+        [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow,
+        [ValidateRange(1, 120)][int]$LockTimeoutSeconds = 10
+    )
+
+    # 派遣成功時移除符合鍵的項目。狀態檔不存在或不含該鍵時不寫檔，回傳 $false。
+    $path = Get-CodexAccountHealthPath -MachineConfigPath $MachineConfigPath
+    if (-not [IO.File]::Exists($path)) { return $false }
+    $peek = Read-CodexAccountHealth -MachineConfigPath $path -NowUtc $NowUtc
+    if ([bool]$peek.state_file_invalid -or @($peek.entries | Where-Object { Test-CodexAccountHealthKeyMatch -Entry $_ -AccountName $AccountName -CodexHome $CodexHome -Profile $Profile -Model $Model }).Count -eq 0) { return $false }
+    . (Get-CodexAccountConfigLibraryPath)
+    $lock = Open-CodexAccountLock -LockPath (Join-Path -Path (Split-Path -Parent $path) -ChildPath 'codex-account.lock') -TimeoutSeconds $LockTimeoutSeconds
+    try {
+        $original = [IO.File]::ReadAllBytes($path)
+        $current = Read-CodexAccountHealth -MachineConfigPath $path -NowUtc $NowUtc
+        if ([bool]$current.state_file_invalid) { return $false }
+        $remaining = @($current.entries | Where-Object { -not (Test-CodexAccountHealthKeyMatch -Entry $_ -AccountName $AccountName -CodexHome $CodexHome -Profile $Profile -Model $Model) })
+        Write-CodexAccountHealthDocument -Path $path -Entry @($remaining) -Original $original
+        return $true
+    }
+    finally {
+        if ($null -ne $lock -and $null -ne $lock.Stream) { $lock.Stream.Dispose() }
+    }
+}
+
 function Get-CodexDispatchAccountCandidates {
     [CmdletBinding()]
     param(
@@ -750,11 +947,18 @@ function Get-CodexDispatchAccountCandidates {
 
         [string]$MachineConfigPath,
 
-        [string]$SourceRoot
+        [string]$SourceRoot,
+
+        [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow
     )
 
     $candidates = New-Object 'System.Collections.Generic.List[object]'
     $skipped = New-Object 'System.Collections.Generic.List[object]'
+    $recordedHealth = New-Object 'System.Collections.Generic.List[object]'
+    $healthEntries = @()
+    if (-not [string]::IsNullOrWhiteSpace($Profile)) {
+        $healthEntries = @((Read-CodexAccountHealth -MachineConfigPath $MachineConfigPath -NowUtc $NowUtc).entries)
+    }
     $trustKey = $null
     if (-not [string]::IsNullOrWhiteSpace($SourceRoot)) {
         . (Get-CodexAccountConfigLibraryPath)
@@ -779,21 +983,48 @@ function Get-CodexDispatchAccountCandidates {
                 $skipDetail = [string]$readiness.detail
             }
         }
+        $healthRecordedAt = $null
+        if ($null -eq $skipReason -and $healthEntries.Count -gt 0) {
+            $accountModel = Get-CodexAccountProfileModel -CodexHome ([string]$account.codex_home) -Profile $Profile
+            foreach ($healthEntry in $healthEntries) {
+                if (Test-CodexAccountHealthKeyMatch -Entry $healthEntry -AccountName ([string]$account.name) -CodexHome ([string]$account.codex_home) -Profile $Profile -Model $accountModel) {
+                    $skipReason = 'ModelNotSupportedRecorded'
+                    $healthRecordedAt = ConvertTo-CodexAccountHealthTime -Value (Get-DispatchJsonProperty -Object $healthEntry -Name 'recorded_at_utc')
+                    $recordedModel = [string](Get-DispatchJsonProperty -Object $healthEntry -Name 'model')
+                    if ([string]::IsNullOrWhiteSpace($recordedModel)) { $recordedModel = '(未記錄)' }
+                    $skipDetail = 'model ' + $recordedModel + ' 於 ' + [string](Get-DispatchJsonProperty -Object $healthEntry -Name 'recorded_at_utc') + ' 被服務端拒絕，' + [string](Get-DispatchJsonProperty -Object $healthEntry -Name 'expires_at_utc') + ' 前略過'
+                    break
+                }
+            }
+        }
         if ($null -eq $skipReason) {
             $null = $candidates.Add([pscustomobject]@{ name = [string]$account.name; codex_home = [string]$account.codex_home })
         }
         else {
-            $null = $skipped.Add([pscustomobject]@{
-                    name = [string]$account.name
-                    codex_home = [string]$account.codex_home
-                    reason_code = $skipReason
-                    login_file_path = $login.login_file_path
-                    login_file_length = $login.login_file_length
-                    login_file_last_write_utc = $login.login_file_last_write_utc
-                    config_path = $skipConfigPath
-                    detail = $skipDetail
-                })
+            $skippedItem = [pscustomobject]@{
+                name = [string]$account.name
+                codex_home = [string]$account.codex_home
+                reason_code = $skipReason
+                login_file_path = $login.login_file_path
+                login_file_length = $login.login_file_length
+                login_file_last_write_utc = $login.login_file_last_write_utc
+                config_path = $skipConfigPath
+                detail = $skipDetail
+            }
+            $null = $skipped.Add($skippedItem)
+            if ($skipReason -ceq 'ModelNotSupportedRecorded') { $null = $recordedHealth.Add([pscustomobject]@{ item = $skippedItem; recorded_at = $healthRecordedAt; order = $recordedHealth.Count }) }
         }
+    }
+    if ($candidates.Count -eq 0 -and $recordedHealth.Count -gt 0) {
+        # 所有可用帳號都被記為不支援時，仍實際嘗試一次：取記錄時間最早者（同時刻取登記順序在前者）。
+        $oldest = @($recordedHealth.ToArray() | Sort-Object -Property @{ Expression = { if ($null -eq $_.recorded_at) { [DateTimeOffset]::MinValue } else { $_.recorded_at } } }, @{ Expression = { $_.order } })[0]
+        $null = $skipped.Remove($oldest.item)
+        $null = $candidates.Add([pscustomobject]@{
+                name = [string]$oldest.item.name
+                codex_home = [string]$oldest.item.codex_home
+                health_override = $true
+                override_detail = [string]$oldest.item.detail
+            })
     }
     return [pscustomobject]@{
         candidates = @($candidates.ToArray())
@@ -810,8 +1041,87 @@ function Format-CodexAccountSkippedSummary {
                 $reasonCode = [string](Get-DispatchJsonProperty -Object $_ -Name 'reason_code')
                 $thirdColumn = [string](Get-DispatchJsonProperty -Object $_ -Name 'login_file_path')
                 if ((Get-CodexTrustSkipReasonCode) -contains $reasonCode) { $thirdColumn = [string](Get-DispatchJsonProperty -Object $_ -Name 'config_path') }
+                elseif ($reasonCode -ceq 'ModelNotSupportedRecorded') {
+                    $detailText = [string](Get-DispatchJsonProperty -Object $_ -Name 'detail')
+                    $expiresMatch = [regex]::Match($detailText, '，(?<expires>[^，]+) 前略過$')
+                    $thirdColumn = if ($expiresMatch.Success) { $expiresMatch.Groups['expires'].Value } else { $detailText }
+                }
                 [string]$_.name + ':' + $reasonCode + ':' + $thirdColumn
             }) -join '; ')
+}
+
+function Get-CodexAccountLoginCommand {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$CodexHome)
+
+    # 格式與 New-CodexDispatchAccount.ps1 輸出的登入命令一致（Test-DispatchAccountFailover 的 drift 案例守住）。
+    # 路徑含單引號時以四個單引號跳脫；非絕對路徑不輸出命令。
+    if ([string]::IsNullOrWhiteSpace($CodexHome) -or -not [IO.Path]::IsPathRooted($CodexHome)) { return $null }
+    $escaped = $CodexHome.Replace("'", "''''")
+    return ("powershell.exe -NoProfile -Command '`$env:CODEX_HOME = ''{0}''; codex login'" -f $escaped)
+}
+
+function Get-CodexAccountReloginLine {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object[]]$Attempt = @(),
+        [AllowNull()][object[]]$Skipped = @()
+    )
+
+    # 需要使用者重新登入的帳號：401 被拒的嘗試，以及登入檔缺少或為空而被略過的帳號。
+    $lines = New-Object 'System.Collections.Generic.List[object]'
+    $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($entry in @($Attempt)) {
+        if ($null -eq $entry -or [string](Get-DispatchJsonProperty -Object $entry -Name 'rejection_kind') -cne 'unauthorized') { continue }
+        $name = [string](Get-DispatchJsonProperty -Object $entry -Name 'account_name')
+        $command = Get-CodexAccountLoginCommand -CodexHome ([string](Get-DispatchJsonProperty -Object $entry -Name 'codex_home'))
+        if ($null -eq $command -or [string]::IsNullOrWhiteSpace($name) -or -not $seen.Add($name)) { continue }
+        $null = $lines.Add([pscustomobject]@{ account_name = $name; reason = 'unauthorized'; command = $command })
+    }
+    foreach ($entry in @($Skipped)) {
+        if ($null -eq $entry) { continue }
+        $reasonCode = [string](Get-DispatchJsonProperty -Object $entry -Name 'reason_code')
+        if ($reasonCode -cne 'LoginFileMissing' -and $reasonCode -cne 'LoginFileEmpty') { continue }
+        $name = [string](Get-DispatchJsonProperty -Object $entry -Name 'name')
+        $command = Get-CodexAccountLoginCommand -CodexHome ([string](Get-DispatchJsonProperty -Object $entry -Name 'codex_home'))
+        if ($null -eq $command -or [string]::IsNullOrWhiteSpace($name) -or -not $seen.Add($name)) { continue }
+        $null = $lines.Add([pscustomobject]@{ account_name = $name; reason = $reasonCode; command = $command })
+    }
+    return @($lines.ToArray())
+}
+
+function Format-CodexAccountReloginSuffix {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][object[]]$Attempt = @(),
+        [AllowNull()][object[]]$Skipped = @()
+    )
+
+    $lines = @(Get-CodexAccountReloginLine -Attempt $Attempt -Skipped $Skipped)
+    if ($lines.Count -eq 0) { return '' }
+    return '；' + ((@($lines | ForEach-Object { '重新登入：' + [string]$_.account_name + ': ' + [string]$_.command })) -join '; ')
+}
+
+function Get-CodexAccountSkippedWithRelogin {
+    [CmdletBinding()]
+    param([AllowNull()][object[]]$Skipped = @())
+
+    # 複製略過清單並加上 relogin_command（登入檔缺少或為空的帳號才有值）。
+    $copies = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($entry in @($Skipped)) {
+        if ($null -eq $entry) { continue }
+        $copy = [ordered]@{}
+        if ($entry -is [System.Collections.IDictionary]) {
+            foreach ($key in $entry.Keys) { $copy[[string]$key] = $entry[$key] }
+        }
+        else {
+            foreach ($property in $entry.PSObject.Properties) { $copy[$property.Name] = $property.Value }
+        }
+        $reasonCode = [string](Get-DispatchJsonProperty -Object $entry -Name 'reason_code')
+        $copy['relogin_command'] = if ($reasonCode -ceq 'LoginFileMissing' -or $reasonCode -ceq 'LoginFileEmpty') { Get-CodexAccountLoginCommand -CodexHome ([string](Get-DispatchJsonProperty -Object $entry -Name 'codex_home')) } else { $null }
+        $null = $copies.Add($copy)
+    }
+    return @($copies.ToArray())
 }
 
 function Invoke-CodexAccountTrustBeforeWrite {
@@ -1059,7 +1369,7 @@ function Resolve-CodexAccountSelection {
     if ([string]::IsNullOrWhiteSpace($CodexHomePath) -and $accounts.Count -gt 0) {
         $candidateSet = Get-CodexDispatchAccountCandidates -Profile $Profile -MachineConfigPath $MachineConfigPath -SourceRoot $SourceRoot
         if (@($candidateSet.candidates).Count -eq 0) {
-            throw ('CodexAccountsAllUnavailable：' + (Format-CodexAccountSkippedSummary -Skipped @($candidateSet.skipped)))
+            throw ('CodexAccountsAllUnavailable：' + (Format-CodexAccountSkippedSummary -Skipped @($candidateSet.skipped)) + (Format-CodexAccountReloginSuffix -Skipped @($candidateSet.skipped)))
         }
         $firstCandidate = @($candidateSet.candidates)[0]
         return [pscustomobject]@{

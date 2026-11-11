@@ -1,4 +1,29 @@
-﻿function Get-DispatchAccountRejectionKind {
+﻿function Get-DispatchLocalFailurePattern {
+    [CmdletBinding()]
+    param()
+
+    # 本地失敗詞彙表（單一常數）：命中者視為本機執行失敗，不屬服務端拒絕，不觸發未分類換帳號。
+    # 擴充詞彙只改這個常數，並為每個新詞補一個正向案例。
+    return '(?i)\bsandbox\b|\bcommand\s+(?:failed|exited|not\s+found)\b|\bexit(?:ed)?\s+(?:with\s+)?(?:code|status)\b|\bapply_patch\b|\bpatch\s+failed\b|\btool\s+(?:call|execution)\b|\bcodex_core::tools\b|\bENOENT\b|\bEACCES\b|\bEPERM\b|no\s+such\s+file|cannot\s+find\s+(?:the\s+)?(?:path|file)|used\s+by\s+another\s+process|\bfailed\s+to\s+(?:start|launch|spawn)\b|\bspawn\b'
+}
+
+function Get-DispatchTerminalFailureEventType {
+    [CmdletBinding()]
+    param()
+
+    # 事件流最後一筆屬於這些類型時，視為終局失敗。
+    return [string[]]@('turn.failed', 'turn_failed', 'stream_error', 'turn_aborted')
+}
+
+function Get-DispatchServiceRejectionKindList {
+    [CmdletBinding()]
+    param()
+
+    # 事件證據含這些 rejection kind 時，Convert-EventEvidenceToServiceRejection 轉為 service rejection。unclassified 與 rate-limited 不在清單。
+    return [string[]]@('unauthorized', 'model-not-supported', 'subscription-inactive')
+}
+
+function Get-DispatchAccountRejectionKind {
     [CmdletBinding()]
     param([AllowNull()][AllowEmptyString()][string]$Text)
 
@@ -55,13 +80,187 @@ function Get-DispatchErrorStreamRejectionEvidence {
     return @($found.ToArray())
 }
 
+function Get-DispatchErrorStreamLineMessage {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Line)
+
+    if ([string]::IsNullOrWhiteSpace($Line)) { return '' }
+    $tracingMatch = [regex]::Match($Line, '^\s*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s+ERROR\s+[A-Za-z0-9_]+(?:::[A-Za-z0-9_]+)*:\s(?<message>.*)$')
+    if ($tracingMatch.Success) { return $tracingMatch.Groups['message'].Value.Trim() }
+    $plainMatch = [regex]::Match($Line, '^\s*ERROR:\s(?<message>.*)$')
+    if ($plainMatch.Success) { return $plainMatch.Groups['message'].Value.Trim() }
+    return $Line.Trim()
+}
+
+function Get-DispatchErrorStreamServerErrorLine {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$ErrorStreamPath)
+
+    $found = New-Object 'System.Collections.Generic.List[object]'
+    if ([string]::IsNullOrWhiteSpace($ErrorStreamPath)) { return @() }
+    $errorPath = Resolve-AbsolutePath -Path $ErrorStreamPath
+    $text = $null
+    try {
+        $text = (New-Object System.Text.UTF8Encoding -ArgumentList @($false)).GetString((Read-DispatchSharedBytes -Path (ConvertTo-FileSystemApiPath -Path $errorPath)))
+    }
+    catch {
+        return @()
+    }
+    foreach ($line in ($text -split '\r?\n')) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if (-not (Test-DispatchErrorStreamErrorLine -Line $line)) { continue }
+        $null = $found.Add([ordered]@{ line = $line; message = (Get-DispatchErrorStreamLineMessage -Line $line); path = $errorPath })
+    }
+    return @($found.ToArray())
+}
+
+function Get-DispatchEvidenceExcerpt {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Text, [ValidateRange(1, 4000)][int]$Length = 500)
+
+    if ([string]::IsNullOrEmpty($Text)) { return '' }
+    return $Text.Substring(0, [Math]::Min($Length, $Text.Length))
+}
+
+function Get-DispatchEventMessageText {
+    [CmdletBinding()]
+    param([AllowNull()][object]$EventObject)
+
+    $payload = Get-DispatchJsonProperty -Object $EventObject -Name 'payload'
+    if ($null -eq $payload) {
+        $payload = Get-DispatchJsonProperty -Object $EventObject -Name 'data'
+    }
+    $messageParts = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($source in @($EventObject, $payload)) {
+        foreach ($name in @('message', 'reason', 'code')) {
+            $value = Get-DispatchJsonProperty -Object $source -Name $name
+            if ($null -ne $value) {
+                $messageParts.Add([string]$value)
+            }
+        }
+        $errorObject = Get-DispatchJsonProperty -Object $source -Name 'error'
+        if ($errorObject -is [string]) {
+            $messageParts.Add($errorObject)
+        }
+        elseif ($null -ne $errorObject) {
+            foreach ($name in @('message', 'reason', 'code', 'type')) {
+                $value = Get-DispatchJsonProperty -Object $errorObject -Name $name
+                if ($null -ne $value) {
+                    $messageParts.Add([string]$value)
+                }
+            }
+        }
+    }
+    return ($messageParts.ToArray() -join ' ').Trim()
+}
+
+function Test-DispatchReconnectingMessage {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Message)
+
+    if ([string]::IsNullOrEmpty($Message)) { return $false }
+    return [regex]::IsMatch($Message, '(?i)^\s*Reconnecting\b')
+}
+
+function Test-DispatchTerminalFailureMessageExcluded {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Message)
+
+    if ([string]::IsNullOrWhiteSpace($Message)) { return $true }
+    # 暫時性重連訊息與 model metadata 警告不是終局失敗原因。
+    if (Test-DispatchReconnectingMessage -Message $Message) { return $true }
+    if ($Message -match '(?i)^\s*Model\s+metadata\b[^\r\n]*\bnot\s+found\b') { return $true }
+    return $false
+}
+
+function Test-DispatchLocalFailureText {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    return [regex]::IsMatch($Text, (Get-DispatchLocalFailurePattern))
+}
+
+function Get-DispatchTerminalFailureEvidence {
+    [CmdletBinding()]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$LastEventType,
+        [AllowNull()][object]$LastEvent,
+        [AllowNull()][AllowEmptyString()][string]$LastEventRawLine,
+        [AllowNull()][AllowEmptyString()][string]$EventPath,
+        [AllowNull()][AllowEmptyString()][string]$ErrorStreamPath,
+        [Nullable[int]]$ProcessExitCode = $null
+    )
+
+    # G1 與 G3：訊息只取自終局失敗事件，或在沒有終局事件且程序碼非零時取自 stderr 的服務端錯誤行。
+    if ((Get-DispatchTerminalFailureEventType) -ccontains $LastEventType) {
+        $eventMessage = Get-DispatchEventMessageText -EventObject $LastEvent
+        if (Test-DispatchTerminalFailureMessageExcluded -Message $eventMessage) { return $null }
+        return [ordered]@{
+            event_type = $LastEventType
+            message = Get-DispatchEvidenceExcerpt -Text $eventMessage
+            source = 'event-stream'
+            path = $EventPath
+            sha256 = $null
+            raw_line = Get-DispatchEvidenceExcerpt -Text $LastEventRawLine
+            local_failure = Test-DispatchLocalFailureText -Text $eventMessage
+        }
+    }
+    if ($LastEventType -ceq 'turn.completed') { return $null }
+    if ($null -eq $ProcessExitCode -or [int]$ProcessExitCode -eq 0) { return $null }
+    $selected = $null
+    foreach ($serverLine in @(Get-DispatchErrorStreamServerErrorLine -ErrorStreamPath $ErrorStreamPath)) {
+        if (Test-DispatchTerminalFailureMessageExcluded -Message ([string]$serverLine.message)) { continue }
+        $selected = $serverLine
+    }
+    if ($null -eq $selected) { return $null }
+    return [ordered]@{
+        event_type = $null
+        message = Get-DispatchEvidenceExcerpt -Text ([string]$selected.message)
+        source = 'error-stream'
+        path = [string]$selected.path
+        sha256 = Get-FileSha256 -Path ([string]$selected.path)
+        raw_line = Get-DispatchEvidenceExcerpt -Text ([string]$selected.line)
+        local_failure = Test-DispatchLocalFailureText -Text ([string]$selected.line)
+    }
+}
+
+function New-DispatchUnclassifiedRejectionEvidence {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$TerminalFailure)
+
+    return [ordered]@{
+        rejection_kind = 'unclassified'
+        source = [string]$TerminalFailure.source
+        path = [string]$TerminalFailure.path
+        sha256 = $TerminalFailure.sha256
+        observed_at = $null
+        raw_line = [string]$TerminalFailure.raw_line
+    }
+}
+
+function Test-DispatchTerminalFailureUnclassified {
+    [CmdletBinding()]
+    param([AllowNull()][object]$TerminalFailure)
+
+    # G4：訊息不命中本地失敗詞彙表。比對對象是未截斷的完整訊息（stderr 來源為整行，含 target），建立證據時已算出 local_failure；
+    # message 與 raw_line 只是截斷後的輸出證據，沒有 local_failure 欄位的證據物件才退回以截斷欄位比對。
+    if ($null -eq $TerminalFailure) { return $false }
+    $localFailure = Get-DispatchJsonProperty -Object $TerminalFailure -Name 'local_failure'
+    if ($localFailure -is [bool]) { return -not $localFailure }
+    $localText = if ([string]$TerminalFailure.source -ceq 'error-stream') { [string]$TerminalFailure.raw_line } else { [string]$TerminalFailure.message }
+    return -not (Test-DispatchLocalFailureText -Text $localText)
+}
+
 function Get-DispatchEventEvidence {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
         [string]$EventPath,
 
-        [string]$ErrorStreamPath
+        [string]$ErrorStreamPath,
+
+        [Nullable[int]]$ProcessExitCode = $null
     )
 
     $resolvedPath = Resolve-AbsolutePath -Path $EventPath
@@ -71,6 +270,12 @@ function Get-DispatchEventEvidence {
     }
     $itemEventCount = 0
     if (-not [System.IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $resolvedPath))) {
+        $missingTerminalFailure = Get-DispatchTerminalFailureEvidence -LastEventType $null -LastEvent $null -LastEventRawLine $null -EventPath $resolvedPath -ErrorStreamPath $ErrorStreamPath -ProcessExitCode $ProcessExitCode
+        $missingRejectionKind = if ($rejectionEvidence.Count -eq 0) { $null } else { [string]$rejectionEvidence[0].rejection_kind }
+        if ($null -eq $missingRejectionKind -and (Test-DispatchTerminalFailureUnclassified -TerminalFailure $missingTerminalFailure)) {
+            $missingRejectionKind = 'unclassified'
+            $null = $rejectionEvidence.Add((New-DispatchUnclassifiedRejectionEvidence -TerminalFailure $missingTerminalFailure))
+        }
         return [ordered]@{
             path = $resolvedPath
             exists = $false
@@ -82,8 +287,9 @@ function Get-DispatchEventEvidence {
             usage_limit = $false
             server_stream_disconnect_evidence = @()
             server_stream_disconnect = $false
-            rejection_kind = if ($rejectionEvidence.Count -eq 0) { $null } else { [string]$rejectionEvidence[0].rejection_kind }
+            rejection_kind = $missingRejectionKind
             rejection_evidence = @($rejectionEvidence.ToArray())
+            terminal_failure = $missingTerminalFailure
             item_event_count = 0
         }
     }
@@ -93,6 +299,8 @@ function Get-DispatchEventEvidence {
     $usageLimitEvidence = New-Object 'System.Collections.Generic.List[object]'
     $serverStreamDisconnectEvidence = New-Object 'System.Collections.Generic.List[object]'
     $usageLimit = $false
+    $nonTransientRateLimit = $false
+    $lastEventRawLine = $null
     $serverStreamDisconnect = $false
     $usageLimitPattern = '(?i)usage[\s_-]*limit(?:ed|[\s_-]*(?:reached|exceeded)|\b)'
     $rateLimitPattern = '(?i)rate[\s_-]*limit(?:ed|[\s_-]*(?:reached|exceeded)|\b)'
@@ -103,6 +311,7 @@ function Get-DispatchEventEvidence {
         try {
             $event = ConvertFrom-DispatchJson -Content $rawLine
             $null = $events.Add($event)
+            $lastEventRawLine = $rawLine
         }
         catch {
             continue
@@ -114,7 +323,11 @@ function Get-DispatchEventEvidence {
         }
         $recordType = [string](Get-DispatchJsonProperty -Object $event -Name 'type')
         if ($recordType -ceq 'item.started' -or $recordType -ceq 'item.completed') {
-            $itemEventCount++
+            # item.type 為 error 的項目是警告（例如 Model metadata not found），不是實際工作項目，不算作 item 進度。
+            $progressItemType = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $event -Name 'item') -Name 'type')
+            if ($progressItemType -cne 'error') {
+                $itemEventCount++
+            }
         }
         $payloadType = [string](Get-DispatchJsonProperty -Object $payload -Name 'type')
         $isErrorEvent = (Test-DispatchErrorEventType -EventType $recordType) -or (Test-DispatchErrorEventType -EventType $payloadType)
@@ -198,6 +411,8 @@ function Get-DispatchEventEvidence {
                 $timestampValue = Get-DispatchJsonProperty -Object $event -Name 'created_at'
             }
             $usageLimit = $true
+            # rate-limited 的證據只取終局或非暫時性事件；「Reconnecting... (HTTP 429)」之類的重連訊息不算。
+            if (-not (Test-DispatchReconnectingMessage -Message $messageText)) { $nonTransientRateLimit = $true }
             $null = $usageLimitEvidence.Add([ordered]@{
                     reason_code = $matchReasonCode
                     observed_at = if ($null -eq $timestampValue) { $null } else { [string]$timestampValue }
@@ -232,6 +447,20 @@ function Get-DispatchEventEvidence {
     elseif ($rejectionEvidence.Count -gt 0) {
         $rejectionKind = [string]$rejectionEvidence[0].rejection_kind
     }
+    elseif ($nonTransientRateLimit -and $lastType -cne 'turn.completed') {
+        $rejectionKind = 'rate-limited'
+    }
+    $terminalFailure = $null
+    if ($events.Count -gt 0) {
+        $terminalFailure = Get-DispatchTerminalFailureEvidence -LastEventType $lastType -LastEvent $events[$events.Count - 1] -LastEventRawLine $lastEventRawLine -EventPath $resolvedPath -ErrorStreamPath $ErrorStreamPath -ProcessExitCode $ProcessExitCode
+    }
+    else {
+        $terminalFailure = Get-DispatchTerminalFailureEvidence -LastEventType $null -LastEvent $null -LastEventRawLine $null -EventPath $resolvedPath -ErrorStreamPath $ErrorStreamPath -ProcessExitCode $ProcessExitCode
+    }
+    if ($null -eq $rejectionKind -and $itemEventCount -eq 0 -and -not $serverStreamDisconnect -and (Test-DispatchTerminalFailureUnclassified -TerminalFailure $terminalFailure)) {
+        $rejectionKind = 'unclassified'
+        $null = $rejectionEvidence.Add((New-DispatchUnclassifiedRejectionEvidence -TerminalFailure $terminalFailure))
+    }
     $state = 'unknown'
     if ($usageLimit) {
         $state = 'quota-rejected'
@@ -261,6 +490,7 @@ function Get-DispatchEventEvidence {
         server_stream_disconnect = $serverStreamDisconnect
         rejection_kind = $rejectionKind
         rejection_evidence = @($rejectionEvidence.ToArray())
+        terminal_failure = $terminalFailure
         item_event_count = $itemEventCount
     }
 }
@@ -278,12 +508,24 @@ function Test-DispatchAccountFailoverEligible {
 
 function Get-DispatchRejectionRecommendedNextStep {
     [CmdletBinding()]
-    param([AllowNull()][AllowEmptyString()][string]$RejectionKind)
+    param(
+        [AllowNull()][AllowEmptyString()][string]$RejectionKind,
+
+        [AllowNull()][AllowEmptyString()][string]$CodexHome
+    )
 
     switch ($RejectionKind) {
         'usage-limit' { return 'usage-limit 額度拒絕：等待額度恢復後由使用者決定；未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號，同一帳號不重送。' }
-        'unauthorized' { return '401 認證失敗：未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號；仍失敗代表該帳號登入已失效，請重新登入後再派遣。同一帳號不重送。' }
+        'unauthorized' {
+            $unauthorizedText = '401 認證失敗：未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號；仍失敗代表該帳號登入已失效，請重新登入後再派遣。同一帳號不重送。'
+            $loginCommand = Get-CodexAccountLoginCommand -CodexHome $CodexHome
+            if ($null -ne $loginCommand) { return $unauthorizedText + ' 重新登入命令：' + $loginCommand }
+            return $unauthorizedText + ' 重新登入命令見 account_failover.relogin_command 或換帳號摘要檔 attempts[].relogin_command。'
+        }
         'model-not-supported' { return '該帳號不支援所選檔位的 model：未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號；指定 -CodexHome 時請改用其他帳號。同一帳號不重送。' }
+        'subscription-inactive' { return '該帳號訂閱已停用：未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號；指定 -CodexHome 時請改用其他帳號，或恢復訂閱後再派遣。同一帳號不重送。' }
+        'rate-limited' { return 'rate limit 或 429 拒絕：未指定 -CodexHome 的 Dispatch 已由腳本改試下一個登記帳號；指定 -CodexHome 時請稍後再派遣或改用其他帳號。同一帳號不重送。' }
+        'unclassified' { return '服務端以未歸類訊息拒絕且尚無 item 進度：腳本改試下一個登記帳號；全部帳號用盡時請檢視 message_excerpt，確認是否為本地失敗。' }
         default { return 'usage-limit 額度拒絕：等待額度恢復後由使用者決定；不要自動重試。' }
     }
 }
@@ -302,7 +544,7 @@ function Convert-EventEvidenceToServiceRejection {
     )
 
     $rejectionKind = [string](Get-DispatchJsonProperty -Object $EventEvidence -Name 'rejection_kind')
-    if ($rejectionKind -ceq 'unauthorized' -or $rejectionKind -ceq 'model-not-supported') {
+    if ((Get-DispatchServiceRejectionKindList) -ccontains $rejectionKind) {
         $rejectionEvidenceValue = Get-DispatchJsonProperty -Object $EventEvidence -Name 'rejection_evidence'
         $kindEvidence = @(foreach ($candidateEvidence in @($rejectionEvidenceValue)) {
                 if ($null -ne $candidateEvidence -and [string](Get-DispatchJsonProperty -Object $candidateEvidence -Name 'rejection_kind') -ceq $rejectionKind) { $candidateEvidence }

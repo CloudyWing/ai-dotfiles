@@ -28,7 +28,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-ONE', 'UPTO-P3', 'R123', 'F003-SIDECAR', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'DD-DEFECTS', 'DD-HANG', 'DD-PRESTART-RECEIPT')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-ONE', 'UPTO-P3', 'R123', 'F003-SIDECAR', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'ACCOUNT-RESILIENCE', 'DD-DEFECTS', 'DD-HANG', 'DD-PRESTART-RECEIPT')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -1760,7 +1760,7 @@ function Invoke-Case {
         elseif ($script:focusedCase -ceq 'DD-HANG') {
             $Name.Contains('DD-HANG')
         }
-        elseif ($script:focusedCase -in @('FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY')) {
+        elseif ($script:focusedCase -in @('FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'ACCOUNT-RESILIENCE')) {
             $Name.StartsWith(('Phase 9 ' + $script:focusedCase), [StringComparison]::Ordinal) -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'BATCH4-QUOTA') {
@@ -12818,7 +12818,19 @@ fixture
             )
             $generalFailureResult = Invoke-Inspect
             Assert-True (-not $generalFailureResult.success -and $generalFailureResult.turnFailedReason -ceq 'ordinary failure') '一般 turn.failed 缺少 last-message 未完成 Inspect。'
-            Assert-True ($null -eq $generalFailureResult.service_rejection -and $null -ne $generalFailureResult.account_failover -and -not $generalFailureResult.account_failover.eligible -and $null -eq $generalFailureResult.account_failover.rejection_kind) '一般失敗不應列為可換帳號。'
+            Assert-True ($null -eq $generalFailureResult.service_rejection -and $null -ne $generalFailureResult.account_failover -and $generalFailureResult.account_failover.eligible -eq $true -and $generalFailureResult.account_failover.rejection_kind -ceq 'unclassified' -and $generalFailureResult.account_failover.item_event_count -eq 0 -and $generalFailureResult.account_failover.message_excerpt -ceq 'ordinary failure' -and $generalFailureResult.diagnosis.reason_code -cne 'QuotaServiceRejected' -and $generalFailureResult.recommended_next_step.Contains('message_excerpt')) '尚無 item 進度的未歸類失敗應列為可換帳號，且不產生 service_rejection。'
+            Write-Phase7JsonLines -Path $record.event_stream_path -Objects @(
+                [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+                [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = 'HTTP 403 Forbidden' } }
+            )
+            $forbiddenResult = Invoke-Inspect
+            Assert-True ($null -eq $forbiddenResult.service_rejection -and $forbiddenResult.account_failover.eligible -eq $true -and $forbiddenResult.account_failover.rejection_kind -ceq 'unclassified' -and $forbiddenResult.account_failover.message_excerpt -ceq 'HTTP 403 Forbidden') '403 的未歸類拒絕應列為可換帳號。'
+            Write-Phase7JsonLines -Path $record.event_stream_path -Objects @(
+                [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+                [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = 'sandbox command failed' } }
+            )
+            $localFailureResult = Invoke-Inspect
+            Assert-True ($null -eq $localFailureResult.service_rejection -and $localFailureResult.account_failover.eligible -eq $false -and $null -eq $localFailureResult.account_failover.rejection_kind) '本地失敗詞彙表命中的失敗不應列為可換帳號。'
             Write-Phase7JsonLines -Path $record.event_stream_path -Objects @(
                 [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
                 [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = "The 'gpt-6.1-terra' model is not supported when using Codex with a ChatGPT account" } }
@@ -17325,11 +17337,14 @@ function Sync-DispatchTrackedRawBytesFromSource {
         $scenarios = @(
             [pscustomobject]@{name='weekly-rejected';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='Weekly usage limit reached'}});stderr='';kind='usage-limit';usage_limit=$true;eligible=$true},
             [pscustomobject]@{name='unknown-window';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='Usage limit reached'}});stderr='';kind='usage-limit';usage_limit=$true;eligible=$true},
-            [pscustomobject]@{name='generic-429';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='HTTP 429 Too many requests'}});stderr='';kind=$null;usage_limit=$true;eligible=$false},
+            [pscustomobject]@{name='generic-429';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='HTTP 429 Too many requests'}});stderr='';kind='rate-limited';usage_limit=$true;eligible=$true},
+            [pscustomobject]@{name='http-403';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='HTTP 403 Forbidden'}});stderr='';kind='unclassified';usage_limit=$false;eligible=$true},
+            [pscustomobject]@{name='unknown-text';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='Something unexpected happened'}});stderr='';kind='unclassified';usage_limit=$false;eligible=$true},
+            [pscustomobject]@{name='local-sandbox-failure';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='sandbox command failed'}});stderr='';kind=$null;usage_limit=$false;eligible=$false},
             [pscustomobject]@{name='unauthorized-event';events=@([ordered]@{type='error';message='401 Unauthorized'},[ordered]@{type='turn.failed';error=[ordered]@{message='401 Unauthorized'}});stderr='';kind='unauthorized';usage_limit=$false;eligible=$true},
             [pscustomobject]@{name='model-event';events=@([ordered]@{type='turn.failed';error=[ordered]@{message=$modelMessage}});stderr='';kind='model-not-supported';usage_limit=$false;eligible=$true},
             [pscustomobject]@{name='model-stderr';events=@([ordered]@{type='turn.started'});stderr=$modelMessage;kind='model-not-supported';usage_limit=$false;eligible=$true},
-            [pscustomobject]@{name='unrelated-not-supported';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='the feature is not supported'}});stderr='';kind=$null;usage_limit=$false;eligible=$false},
+            [pscustomobject]@{name='unrelated-not-supported';events=@([ordered]@{type='turn.failed';error=[ordered]@{message='the feature is not supported'}});stderr='';kind='unclassified';usage_limit=$false;eligible=$true},
             [pscustomobject]@{name='progress-before-rejection';events=@([ordered]@{type='item.completed';item=[ordered]@{type='agent_message';text='partial'}},[ordered]@{type='turn.failed';error=[ordered]@{message=$modelMessage}});stderr='';kind='model-not-supported';usage_limit=$false;eligible=$false},
             [pscustomobject]@{name='completed';events=@([ordered]@{type='turn.completed'});stderr='';kind=$null;usage_limit=$false;eligible=$false}
         )
@@ -17344,7 +17359,9 @@ function Sync-DispatchTrackedRawBytesFromSource {
             Assert-True ([string]$eventEvidence.rejection_kind -ceq [string]$scenario.kind) ('rejection_kind 不符：'+$scenario.name+'; '+[string]$eventEvidence.rejection_kind)
             Assert-True ([bool]$eventEvidence.usage_limit -eq [bool]$scenario.usage_limit) ('usage_limit 旗標不符：'+$scenario.name)
             Assert-True ($eligible -eq $scenario.eligible) ('換帳號資格不符：'+$scenario.name)
-            if ($null -ne $scenario.kind) { Assert-True ($null -ne $rejection -and $rejection.reason_code -ceq $scenario.kind -and $rejection.retry_allowed -eq $false) ('service rejection 結構不符：'+$scenario.name) }
+            if (@('usage-limit','unauthorized','model-not-supported') -ccontains [string]$scenario.kind) { Assert-True ($null -ne $rejection -and $rejection.reason_code -ceq $scenario.kind -and $rejection.retry_allowed -eq $false) ('service rejection 結構不符：'+$scenario.name) }
+            elseif ([string]$scenario.kind -ceq 'rate-limited') { Assert-True ($null -ne $rejection -and $rejection.retry_allowed -eq $false) ('rate-limited 應產生 service rejection：'+$scenario.name) }
+            elseif ([string]$scenario.kind -ceq 'unclassified') { Assert-True ($null -eq $rejection) ('未歸類拒絕不應產生 service rejection：'+$scenario.name) }
             Write-Phase9Evidence -Label 'FOLLOWUP_POLICY_DECISION' -Value ([ordered]@{scenario=$scenario;event_evidence=$eventEvidence;service_rejection=$rejection;failover_eligible=$eligible})
         }
     }
@@ -25256,6 +25273,118 @@ function Invoke-Inspect { return [ordered]@{ operation='Inspect'; status='inspec
         }
         finally {
             if (Test-PathWithinRoot -Path $entryRoot -Root $fixtureRoot) { Remove-Item -LiteralPath $entryRoot -Recurse -Force }
+        }
+    }
+
+    Invoke-Case 'Phase 9 ACCOUNT-RESILIENCE non-Git readonly Inspect writes report' {
+        $utf8 = New-Object System.Text.UTF8Encoding($false)
+        $savedReportPath = Get-DispatchScriptVariableValue -Name 'ReportPath'
+        $caseRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'ar')
+        New-Item -ItemType Directory -Path $caseRoot -Force | Out-Null
+        $invokeReportInspect = {
+            param([string]$Slug, [string]$Message, [string]$ReportFile, [string]$GitOrigin = 'not-applicable', [string]$Mode = 'readonly', [string[]]$OrderReportLine = @(), [bool]$UseCliReportPath = $true)
+            $run = New-TestRun -Line 'line-a' -Dispatch $Slug
+            if (@($OrderReportLine).Count -gt 0) {
+                # 派遣單第 7 欄：正式回收路徑由 RunRecord 綁定的派遣單解析，不經 CLI 的 -ReportPath。
+                $null = Write-Phase9DispatchOrderFixture -SourceRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug $Slug -TargetPath (Join-Path $caseRoot 'order-target.txt') -ReportPath (@($OrderReportLine) -join "`n")
+            }
+            $runPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $Slug) ($run.run_id + '.json')
+            Write-Utf8NoBom -Path $run.preflight_result_path -Content (ConvertTo-Json -InputObject ([ordered]@{ sourceRoot = $fixtureRoot; executionRoot = $fixtureRoot; lineSlug = 'line-a'; dispatchSlug = $Slug; writeMode = $Mode; gitOrigin = $GitOrigin }))
+            $run.preflight_sha256 = Get-FileSha256 -Path $run.preflight_result_path
+            $null = Write-DispatchRunRecord -Record $run -Update
+            $events = @(
+                [ordered]@{ type = 'thread.started'; thread_id = $script:testThread }
+                [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = $Message } }
+                [ordered]@{ type = 'turn.completed'; usage = [ordered]@{ input_tokens = 1; output_tokens = 1 } }
+            )
+            Write-Utf8NoBom -Path $run.event_stream_path -Content (($events | ForEach-Object { ConvertTo-Json -InputObject $_ -Compress -Depth 8 }) -join "`n")
+            Write-Utf8NoBom -Path $run.last_message_path -Content $Message
+            $SourceRoot = $fixtureRoot
+            $ExecutionRoot = $fixtureRoot
+            $LineSlug = 'line-a'
+            $DispatchSlug = $Slug
+            $EventStreamPath = $run.event_stream_path
+            $ScopePlanPath = $run.scope_plan_path
+            $RunRecordPath = $runPath
+            $ProcessExitCode = 0
+            $RequiredIdentifier = 'design.md'
+            $Profile = 'scan'
+            $TaskType = 'script-change'
+            $SessionMode = 'cold-start'
+            $WriteMode = $Mode
+            $DispatchResultPath = $null
+            $WaitForCompletion = $false
+            $script:ReportPath = if ($UseCliReportPath) { @($ReportFile) } else { $null }
+            return Invoke-Inspect
+        }
+        try {
+            $reportFile = Join-Path $caseRoot 'readonly-report.md'
+            $message = "design.md ar-written line-a`n報告內文：第二行，含中文與 `"引號`"。"
+            $first = & $invokeReportInspect 'ar-written' $message $reportFile
+            $expectedBytes = $utf8.GetBytes($message)
+            $writtenBytes = [IO.File]::ReadAllBytes($reportFile)
+            Assert-True ($first.reportWriteback.status -ceq 'written' -and $first.reportWriteback.path -ieq $reportFile -and $first.reportWriteback.length -eq $expectedBytes.Length -and $first.reportWriteback.sha256 -ceq (Get-FileSha256 -Path $reportFile)) ('非 Git readonly Inspect 未代寫第 7 欄報告：' + (ConvertTo-Json -InputObject $first.reportWriteback -Compress))
+            Assert-True ($writtenBytes.Length -eq $expectedBytes.Length -and (-not (Compare-Object -ReferenceObject $expectedBytes -DifferenceObject $writtenBytes)) -and -not ($writtenBytes.Length -ge 3 -and $writtenBytes[0] -eq 239 -and $writtenBytes[1] -eq 187 -and $writtenBytes[2] -eq 191)) '代寫報告內容與最後訊息不是逐字相同的 UTF-8 無 BOM。'
+            $second = & $invokeReportInspect 'ar-written' $message $reportFile
+            Assert-True ($second.reportWriteback.status -ceq 'unchanged' -and $second.reportWriteback.sha256 -ceq $first.reportWriteback.sha256) '重複 Inspect 應為 unchanged。'
+
+            $secretFile = Join-Path $caseRoot 'secret-report.md'
+            $secretMessage = "design.md ar-secret line-a`napi_key=FAKE_SECRET_VALUE_AR"
+            $secretResult = & $invokeReportInspect 'ar-secret' $secretMessage $secretFile
+            $secretContent = [IO.File]::ReadAllText($secretFile, $utf8)
+            Assert-True ($secretResult.secret_exposure_suspected -eq $true -and $secretResult.reportWriteback.status -ceq 'written' -and -not $secretContent.Contains('FAKE_SECRET_VALUE_AR') -and $secretContent.Contains('ar-secret')) 'secret_exposure_suspected 時代寫報告應為遮蔽後的文字。'
+
+            $gitFile = Join-Path $caseRoot 'git-source-report.md'
+            $gitResult = & $invokeReportInspect 'ar-git' 'design.md ar-git line-a' $gitFile 'existing'
+            Assert-True ($gitResult.reportWriteback.status -ceq 'not-applicable' -and $gitResult.reportWriteback.reason -ceq 'git-source' -and -not (Test-Path -LiteralPath $gitFile)) 'Git 來源的 readonly 派遣不應代寫報告。'
+            $writeModeFile = Join-Path $caseRoot 'write-mode-report.md'
+            $writeResult = & $invokeReportInspect 'ar-write' 'design.md ar-write line-a' $writeModeFile 'not-applicable' 'write'
+            Assert-True ($writeResult.reportWriteback.status -ceq 'not-applicable' -and $writeResult.reportWriteback.reason -ceq 'not-readonly' -and -not (Test-Path -LiteralPath $writeModeFile)) '非 readonly 派遣不應代寫報告。'
+
+            $existingFile = Join-Path $caseRoot 'existing-report.md'
+            [IO.File]::WriteAllText($existingFile, 'pre-existing different content', $utf8)
+            $existingResult = & $invokeReportInspect 'ar-existing' 'design.md ar-existing line-a' $existingFile
+            Assert-True ($existingResult.reportWriteback.status -ceq 'skipped' -and $existingResult.reportWriteback.reason -ceq 'report-exists-different' -and [IO.File]::ReadAllText($existingFile, $utf8) -ceq 'pre-existing different content') '已存在且內容不同的報告不應被覆寫。'
+
+            $outsideFile = Join-Path ([IO.Path]::GetTempPath()) ('ar-outside-' + [guid]::NewGuid().ToString('N') + '.md')
+            $outsideResult = & $invokeReportInspect 'ar-outside' 'design.md ar-outside line-a' $outsideFile
+            Assert-True ($outsideResult.reportWriteback.status -ceq 'skipped' -and $outsideResult.reportWriteback.reason -ceq 'report-path-outside-root' -and -not (Test-Path -LiteralPath $outsideFile)) '超出根目錄的第 7 欄路徑不應被寫入。'
+
+            # 正式回收路徑：不設定 CLI 的 -ReportPath，由派遣單第 7 欄取得報告路徑。
+            $orderFile = Join-Path $caseRoot 'order-report.md'
+            $orderMessage = "design.md ar-order line-a`n派遣單第 7 欄報告。"
+            $orderFirst = & $invokeReportInspect 'ar-order' $orderMessage $orderFile 'not-applicable' 'readonly' @($orderFile) $false
+            $orderBytes = $utf8.GetBytes($orderMessage)
+            Assert-True ($orderFirst.reportWriteback.status -ceq 'written' -and $orderFirst.reportWriteback.path -ieq $orderFile -and (Test-Path -LiteralPath $orderFile -PathType Leaf) -and (-not (Compare-Object -ReferenceObject $orderBytes -DifferenceObject ([IO.File]::ReadAllBytes($orderFile))))) ('未提供 -ReportPath 時，非 Git readonly Inspect 未由派遣單第 7 欄代寫報告：' + (ConvertTo-Json -InputObject $orderFirst.reportWriteback -Compress))
+            $orderAgain = & $invokeReportInspect 'ar-order' $orderMessage $orderFile 'not-applicable' 'readonly' @($orderFile) $false
+            Assert-True ($orderAgain.reportWriteback.status -ceq 'unchanged') '由派遣單第 7 欄代寫後重複 Inspect 應為 unchanged。'
+            $twoFileA = Join-Path $caseRoot 'order-two-a.md'
+            $twoFileB = Join-Path $caseRoot 'order-two-b.md'
+            $orderTwo = & $invokeReportInspect 'ar-order-two' 'design.md ar-order-two line-a' $twoFileA 'not-applicable' 'readonly' @($twoFileA, $twoFileB) $false
+            Assert-True ($orderTwo.reportWriteback.status -ceq 'skipped' -and $orderTwo.reportWriteback.reason -ceq 'report-path-count' -and -not (Test-Path -LiteralPath $twoFileA) -and -not (Test-Path -LiteralPath $twoFileB)) '派遣單第 7 欄有兩個路徑時應略過且不寫入。'
+            $noOrder = & $invokeReportInspect 'ar-order-none' 'design.md ar-order-none line-a' (Join-Path $caseRoot 'order-none.md') 'not-applicable' 'readonly' @() $false
+            Assert-True ($noOrder.reportWriteback.status -ceq 'skipped' -and $noOrder.reportWriteback.reason -ceq 'dispatch-order-unreadable' -and -not (Test-Path -LiteralPath (Join-Path $caseRoot 'order-none.md'))) '沒有 -ReportPath 也沒有派遣單時應略過並標示派遣單不可讀。'
+            $cliWins = Join-Path $caseRoot 'cli-wins.md'
+            $orderLosesFile = Join-Path $caseRoot 'order-loses.md'
+            $cliResult = & $invokeReportInspect 'ar-order-cli' 'design.md ar-order-cli line-a' $cliWins 'not-applicable' 'readonly' @($orderLosesFile) $true
+            Assert-True ($cliResult.reportWriteback.status -ceq 'written' -and $cliResult.reportWriteback.path -ieq $cliWins -and (Test-Path -LiteralPath $cliWins -PathType Leaf) -and -not (Test-Path -LiteralPath $orderLosesFile)) 'CLI 明確提供 -ReportPath 時應以 CLI 為準。'
+
+            # 空訊息、第 7 欄零個或多個值、advisor-consult 與 tracked 路徑直接以函式驗證。
+            $preflightForDirect = Join-Path $caseRoot 'direct-preflight.json'
+            Write-Utf8NoBom -Path $preflightForDirect -Content '{"gitOrigin":"not-applicable"}'
+            $directRecord = [pscustomobject]@{ source_root = $fixtureRoot; execution_root = $fixtureRoot; preflight_result_path = $preflightForDirect }
+            $emptyFile = Join-Path $caseRoot 'empty-report.md'
+            $emptyResult = Write-DispatchNonGitReadonlyReport -TaskType 'script-change' -WriteMode 'readonly' -RunRecord $directRecord -ReportPath @($emptyFile) -FinalMessage '' -SecretExposureSuspected $false -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot
+            $zeroResult = Write-DispatchNonGitReadonlyReport -TaskType 'script-change' -WriteMode 'readonly' -RunRecord $directRecord -ReportPath @() -FinalMessage 'x' -SecretExposureSuspected $false -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot
+            $multiResult = Write-DispatchNonGitReadonlyReport -TaskType 'script-change' -WriteMode 'readonly' -RunRecord $directRecord -ReportPath @((Join-Path $caseRoot 'multi-a.md'), (Join-Path $caseRoot 'multi-b.md')) -FinalMessage 'x' -SecretExposureSuspected $false -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot
+            $advisorResult = Write-DispatchNonGitReadonlyReport -TaskType 'advisor-consult' -WriteMode 'readonly' -RunRecord $directRecord -ReportPath @((Join-Path $caseRoot 'advisor-report.md')) -FinalMessage 'x' -SecretExposureSuspected $false -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot
+            Assert-True ($emptyResult.status -ceq 'skipped' -and $emptyResult.reason -ceq 'final-message-empty' -and -not (Test-Path -LiteralPath $emptyFile)) '最後訊息為空不應建立報告。'
+            Assert-True ($zeroResult.status -ceq 'skipped' -and $zeroResult.reason -ceq 'report-path-count' -and $multiResult.status -ceq 'skipped' -and $multiResult.reason -ceq 'report-path-count' -and -not (Test-Path -LiteralPath (Join-Path $caseRoot 'multi-a.md'))) '第 7 欄零個或多個值應略過。'
+            Assert-True ($advisorResult.status -ceq 'not-applicable' -and $advisorResult.reason -ceq 'advisor-consult' -and -not (Test-Path -LiteralPath (Join-Path $caseRoot 'advisor-report.md'))) 'advisor-consult 沿用既有報告路徑，不重複代寫。'
+        }
+        finally {
+            $script:ReportPath = $savedReportPath
+            if (Test-PathWithinRoot -Path $caseRoot -Root $fixtureRoot) { Remove-Item -LiteralPath $caseRoot -Recurse -Force }
         }
     }
 

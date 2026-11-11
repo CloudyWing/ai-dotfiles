@@ -370,6 +370,29 @@ try {
         $summary.Contains('link:TrustConfigLinked:' + (Join-Path $linkHome 'config.toml')) -and $summary.Contains('nologin:LoginFileMissing:' + (Join-Path $noLoginHome 'auth.json'))
     }
 
+    # 帳號健康狀態（model 不支援記憶）與信任預檢並存：登入、檔位設定檔與信任判定的略過原因優先，健康狀態只作用於其餘帳號。
+    $healthRecordedAt = [DateTimeOffset]::new(2026, 11, 10, 8, 0, 0, [TimeSpan]::Zero)
+    Test-Case C08 {
+        $healthPath = Get-CodexAccountHealthPath -MachineConfigPath $machineC
+        try {
+            $null = Register-CodexAccountHealth -AccountName 'ok' -CodexHome $okHome -Profile 'scan' -Model 'fixture-model' -ReasonCode 'model-not-supported' -MachineConfigPath $machineC -NowUtc $healthRecordedAt
+            $null = Register-CodexAccountHealth -AccountName 'link' -CodexHome $linkHome -Profile 'scan' -Model 'fixture-model' -ReasonCode 'model-not-supported' -MachineConfigPath $machineC -NowUtc $healthRecordedAt
+            $overridden = Get-CodexDispatchAccountCandidates -Profile 'scan' -MachineConfigPath $machineC -SourceRoot $srcC -NowUtc $healthRecordedAt.AddHours(1)
+            $expired = Get-CodexDispatchAccountCandidates -Profile 'scan' -MachineConfigPath $machineC -SourceRoot $srcC -NowUtc $healthRecordedAt.AddHours(25)
+            $linkSkip = @($overridden.skipped | Where-Object { $_.name -ceq 'link' })[0]
+            # 信任可用的帳號只剩 ok 且被記錄時，仍實際嘗試一次；其餘帳號維持原略過原因。
+            (@($overridden.candidates | ForEach-Object { $_.name }) -join ',') -ceq 'ok' -and $overridden.candidates[0].health_override -eq $true -and @($overridden.skipped | Where-Object { $_.name -ceq 'ok' }).Count -eq 0 -and
+            $linkSkip.reason_code -ceq 'TrustConfigLinked' -and (@($overridden.skipped | ForEach-Object { $_.name + ':' + $_.reason_code }) -join ',') -ceq (@($candidateSet.skipped | ForEach-Object { $_.name + ':' + $_.reason_code }) -join ',') -and
+            (@($expired.candidates | ForEach-Object { $_.name }) -join ',') -ceq 'ok' -and $null -eq $expired.candidates[0].PSObject.Properties['health_override']
+        }
+        finally { if (Test-Path -LiteralPath $healthPath) { Remove-Item -LiteralPath $healthPath -Force } }
+    }
+    Test-Case C09 {
+        # 沒有狀態檔時結果與既有案例相同（C01），呼叫形狀不變。
+        $plain = Get-CodexDispatchAccountCandidates -Profile 'scan' -MachineConfigPath $machineC -SourceRoot $srcC
+        -not (Test-Path -LiteralPath (Get-CodexAccountHealthPath -MachineConfigPath $machineC)) -and (@($plain.candidates | ForEach-Object { $_.name }) -join ',') -ceq 'ok' -and @($plain.skipped).Count -eq @($candidateSet.skipped).Count
+    }
+
     # ---------- 指定 -CodexHome（explicit）遇到設定異常時直接拒絕 ----------
     Test-Case D01 {
         $selection = Resolve-CodexAccountSelection -CodexHomePath $linkHome -Profile 'scan' -MachineConfigPath $machineC -SourceRoot $srcC

@@ -140,6 +140,10 @@ try {
         $review = @($describe.Json.types | Where-Object { $_.name -eq 'review' })[0]
         (@($edit.requiredFlags) -join ',') -eq 'E,T' -and (@($review.requiredFlags) -join ',') -eq 'Deep' -and $review.crossFamily -eq $true -and (@($review.degradable) -join ',') -eq 'family'
     }
+    Test-Case D04 {
+        $advise = @($describe.Json.types | Where-Object { $_.name -eq 'advise' })[0]
+        $advise.crossFamily -eq $true -and (@($advise.degradable) -join ',') -eq 'family'
+    }
     Test-Case D03 {
         $profiles = @($describe.Json.executors | Where-Object { $_.platform -eq 'codex' } | ForEach-Object { $_.profile })
         ($profiles -join ',') -eq 'scan,review,deep-review,advisor'
@@ -159,8 +163,8 @@ try {
     Test-Case P11 { Assert-Selected '-Type factcheck' 'codex-scan' }
     Test-Case P12 { Assert-Selected '-Type review -Deep false -ImplementerFamily claude' 'codex-review' }
     Test-Case P13 { Assert-Selected '-Type review -Deep true -ImplementerFamily claude' 'codex-deep-review' }
-    Test-Case P14 { Assert-Selected '-Type advise' 'codex-advisor' 'needs-authorization' 20 }
-    Test-Case P15 { Assert-Selected '-Type advise -Authorized' 'codex-advisor' }
+    Test-Case P14 { Assert-Selected '-Type advise -ImplementerFamily claude' 'codex-advisor' 'needs-authorization' 20 }
+    Test-Case P15 { Assert-Selected '-Type advise -Authorized -ImplementerFamily claude' 'codex-advisor' }
     Test-Case P16 { Assert-Selected '-Type review -Deep false -ImplementerFamily codex' 'sonnet' }
     Test-Case P17 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate')
@@ -176,7 +180,20 @@ try {
     }
     Test-Case P20 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test -Tags web')
-        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-scan' -and @($r.Json.considered | Where-Object { $_.id -eq 'sonnet' })[0].reason -eq 'type-not-accepted'
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-scan' -and @($r.Json.considered | Where-Object { $_.id -eq 'sonnet' })[0].reason -eq 'eligible-lower-priority'
+    }
+
+    Test-Case P21 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor')
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'degraded' -and $r.Json.executor.id -eq 'sonnet' -and @($r.Json.degradations) -contains '同家族審查' -and $r.Json.dispatchLine.Contains('降級=同家族審查')
+    }
+    Test-Case P22 {
+        $r = Invoke-Selector -Arguments ((Split-Args '-Type test') + @('-Offline', 'codex-scan,codex-review,codex-deep-review,codex-advisor'))
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet'
+    }
+    Test-Case P23 {
+        $r = Invoke-Selector -Arguments ((Split-Args '-Type test -Tags build-test') + @('-Offline', 'codex-scan,codex-review,codex-deep-review,codex-advisor'))
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet'
     }
 
     # opus 在一般選擇中永不被選
@@ -184,7 +201,7 @@ try {
         '-Type edit -E true -T false', '-Type edit -E true -T true', '-Type edit -E false -T false', '-Type edit -E false -T true',
         '-Type survey', '-Type test', '-Type generate', '-Type factcheck',
         '-Type review -Deep true -ImplementerFamily claude', '-Type review -Deep false -ImplementerFamily claude',
-        '-Type review -Deep true -ImplementerFamily codex', '-Type advise -Authorized'
+        '-Type review -Deep true -ImplementerFamily codex', '-Type advise -Authorized -ImplementerFamily claude'
     )
     Test-Case O01 {
         foreach ($case in $opusCases) {
@@ -222,6 +239,18 @@ try {
     Test-Case V17 { Assert-Rejected '-Type edit -E true -T false -Offline sonnet,ghost' 'SelectorExecutorUnknown' }
     Test-Case V18 { Assert-Rejected '-Type generate -Tags write' 'SelectorTagNotAllowed' }
 
+    Test-Case V19 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Type test -Offline codex-scan codex-review')
+        $r.ExitCode -eq 2 -and $r.StdErr.StartsWith('SelectorParameterBinding') -and $r.StdErr.Contains('-Offline codex-scan,codex-review') -and $r.StdErr -notmatch 'SelectorFlagNotAllowed' -and $r.StdErr -notmatch '旗標 E' -and [string]::IsNullOrWhiteSpace($r.StdOut)
+    }
+    Test-Case V20 { Assert-Rejected '-Type advise' 'SelectorFamilyRequired' }
+    Test-Case V21 {
+        # 逗號連接的多值仍正常綁定，多個 -Tags 位置參數同樣回報參數綁定錯誤。
+        $ok = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse,desktop-control')
+        $bad = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse desktop-control')
+        $ok.ExitCode -eq 0 -and $bad.ExitCode -eq 2 -and $bad.StdErr.StartsWith('SelectorParameterBinding')
+    }
+
     # 離線改派
     Test-Case F01 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -Deep false -ImplementerFamily claude -Offline codex-review')
@@ -232,7 +261,7 @@ try {
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'degraded' -and $r.Json.executor.id -eq 'sonnet' -and @($r.Json.degradations) -contains '同家族審查'
     }
     Test-Case F03 {
-        foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control', '-Type test', '-Type generate')) {
+        foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control', '-Type generate')) {
             $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', 'codex-scan'))
             if ($r.ExitCode -ne 22 -or $r.Json.status -ne 'stopped' -or $r.Json.reason -ne 'offline' -or $null -ne $r.Json.executor) { throw "未停止：$case" }
         }
@@ -243,9 +272,9 @@ try {
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet' -and @($r.Json.degradations).Count -eq 0
     }
     Test-Case F05 {
-        foreach ($case in @('-Type advise', '-Type advise -Authorized')) {
+        foreach ($case in @('-Type advise -ImplementerFamily claude', '-Type advise -Authorized -ImplementerFamily claude')) {
             $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', 'codex-advisor'))
-            if ($r.ExitCode -ne 21 -or $r.Json.status -ne 'wait-reset' -or $null -ne $r.Json.executor) { throw "非 wait-reset：$case" }
+            if ($r.ExitCode -ne 0 -or $r.Json.status -ne 'degraded' -or $r.Json.executor.id -ne 'sonnet' -or @($r.Json.degradations) -notcontains '同家族審查') { throw "非降級為 Sonnet：$case" }
         }
         $true
     }
@@ -255,12 +284,19 @@ try {
         $generate = Invoke-Selector -Arguments ((Split-Args '-Type generate') + @('-Offline', $allCodex))
         $factcheck = Invoke-Selector -Arguments ((Split-Args '-Type factcheck') + @('-Offline', $allCodex))
         $review = Invoke-Selector -Arguments ((Split-Args '-Type review -Deep true -ImplementerFamily claude') + @('-Offline', $allCodex))
-        $advise = Invoke-Selector -Arguments ((Split-Args '-Type advise -Authorized') + @('-Offline', $allCodex))
+        $advise = Invoke-Selector -Arguments ((Split-Args '-Type advise -ImplementerFamily claude') + @('-Offline', $allCodex))
         $test.ExitCode -eq 22 -and $test.Json.status -eq 'stopped' -and
         $generate.ExitCode -eq 22 -and $generate.Json.status -eq 'stopped' -and
         $factcheck.ExitCode -eq 0 -and $factcheck.Json.executor.id -eq 'sonnet' -and @($factcheck.Json.degradations).Count -eq 0 -and
         $review.ExitCode -eq 0 -and $review.Json.status -eq 'degraded' -and $review.Json.executor.id -eq 'sonnet' -and
-        $advise.ExitCode -eq 21 -and $advise.Json.status -eq 'wait-reset'
+        $advise.ExitCode -eq 0 -and $advise.Json.status -eq 'degraded' -and $advise.Json.executor.id -eq 'sonnet' -and @($advise.Json.degradations) -contains '同家族審查'
+    }
+    Test-Case F23 {
+        foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control', '-Type generate')) {
+            $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', $allCodex))
+            if ($r.ExitCode -ne 22 -or $r.Json.status -ne 'stopped' -or $null -ne $r.Json.executor) { throw "全 Codex 離線時未停止：$case" }
+        }
+        $true
     }
     Test-Case F07 {
         $edit = Invoke-Selector -Arguments ((Split-Args '-Type edit -E true -T false') + @('-Offline', $allCodex))
@@ -314,7 +350,7 @@ try {
     }
     Test-Case E08 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test -EscalateFrom haiku')
-        $r.ExitCode -eq 22 -and $r.Json.reason -eq 'no-escalation'
+        $r.ExitCode -eq 10 -and $r.Json.status -eq 'escalation-candidate' -and $r.Json.executor.id -eq 'sonnet'
     }
     Test-Case E09 {
         $same = Invoke-Selector -Arguments (Split-Args '-Type review -Deep false -ImplementerFamily claude -EscalateFrom sonnet')
@@ -377,7 +413,7 @@ try {
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R13 {
-        $path = New-RegistryCopy 'fallback-no-peer' { param($r) (Get-ExecutorNode $r 'codex-scan').onOffline.test = 'fallback' }
+        $path = New-RegistryCopy 'fallback-no-peer' { param($r) (Get-ExecutorNode $r 'codex-scan').onOffline.generate = 'fallback' }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R14 {
@@ -426,7 +462,7 @@ try {
 
     # 決定性
     Test-Case X01 {
-        foreach ($case in @('-Type edit -E true -T false -Label 範例', '-Type review -Deep true -ImplementerFamily claude -Offline codex-deep-review', '-Type advise', '-Type test -Tags browse -Offline codex-scan', '-Type edit -E true -T false -EscalateFrom haiku')) {
+        foreach ($case in @('-Type edit -E true -T false -Label 範例', '-Type review -Deep true -ImplementerFamily claude -Offline codex-deep-review', '-Type advise -ImplementerFamily claude', '-Type test -Tags browse -Offline codex-scan', '-Type edit -E true -T false -EscalateFrom haiku')) {
             $first = Invoke-Selector -Arguments (Split-Args $case)
             $second = Invoke-Selector -Arguments (Split-Args $case)
             if ($first.StdOut -cne $second.StdOut -or $first.ExitCode -ne $second.ExitCode) { throw "輸出不一致：$case" }
@@ -463,12 +499,12 @@ try {
         $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] type=review Deep=否 執行者=Sonnet subagent 降級=同家族審查'
     }
     Test-Case L05 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type advise')
+        $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude')
         $r.Json.dispatchLine -ceq '[派工判定: 登錄表→待授權] type=advise 執行者=Codex advisor'
     }
     Test-Case L06 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type advise -Offline codex-advisor')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→等待重設] type=advise 執行者=無'
+        $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor')
+        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] type=advise 執行者=Sonnet subagent 降級=同家族審查'
     }
     Test-Case L07 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-scan')
@@ -488,8 +524,10 @@ try {
         $codes = @{}
         $codes[0] = (Invoke-Selector -Arguments (Split-Args '-Type survey')).ExitCode
         $codes[10] = (Invoke-Selector -Arguments (Split-Args '-Type survey -EscalateFrom sonnet')).ExitCode
-        $codes[20] = (Invoke-Selector -Arguments (Split-Args '-Type advise')).ExitCode
-        $codes[21] = (Invoke-Selector -Arguments (Split-Args '-Type advise -Offline codex-advisor')).ExitCode
+        $codes[20] = (Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude')).ExitCode
+        # 出貨登錄表的 advise 離線為 degrade，exit 21 以 Sonnet 不受理 advise 且 codex-advisor 設為 wait-reset 的暫存複本取得。
+        $waitResetRegistry = New-RegistryCopy 'wait-reset' { param($r) (Get-ExecutorNode $r 'sonnet').accepts = @('edit', 'survey', 'review', 'factcheck', 'test'); (Get-ExecutorNode $r 'codex-advisor').onOffline.advise = 'wait-reset' }
+        $codes[21] = (Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor') -Registry $waitResetRegistry).ExitCode
         $codes[22] = (Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-scan')).ExitCode
         $codes[2] = (Invoke-Selector -Arguments (Split-Args '-Type nope')).ExitCode
         $codes[3] = (Invoke-Selector -Arguments (Split-Args '-Type survey') -Registry (Join-Path $tempRoot 'absent.json')).ExitCode
