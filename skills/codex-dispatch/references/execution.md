@@ -79,11 +79,11 @@ C 出口的常見成因包括參數位置錯誤、模型不被伺服器接受、
 
 `usage` 只作為事後記錄。
 
-`finalMessage` 一律保留在 `history` 的 last-message 檔，不寫入報告落點。`Wait-ForThreadRelay` 逾時後若未取得非空 `threadId`，`Start` 必須輸出 `source=not-ready` 與事件流、stderr、PID 等證據並以非零結束，不得以空字串表示成功；收到有效 `thread.started` 時才以非空 thread id 繼續。
+`finalMessage` 一律保留在 `history` 的 last-message 檔。報告落點由執行角色寫入；非 Git 來源的 readonly 派遣因 sandbox 唯讀無法寫入，由 Inspect 將 `finalMessage` 以 UTF-8 無 BOM 逐字寫成第 7 欄報告，結果的 `reportWriteback.status` 為 `written`、`unchanged` 或 `skipped`（既有檔內容不同時不覆寫）。`Wait-ForThreadRelay` 逾時後若未取得非空 `threadId`，`Start` 必須輸出 `source=not-ready` 與事件流、stderr、PID 等證據並以非零結束，不得以空字串表示成功；收到有效 `thread.started` 時才以非空 thread id 繼續。
 
 執行角色已在派遣單第 7 欄與其規則檔指定的落點寫入報告，該檔是驗收對象。回收端若把結案摘要寫進同一路徑，會在驗收前覆蓋角色產出的完整報告。`DispatchKind=workflow` 機制的 `reportLineRoot\implement-closure-report.md` 同樣由 `Developer` 自行寫入，回收端只讀取與驗收。
 
-報告落點檔案不存在或為空時，依回收三態的「退回」處理，要求角色補齊，不以 `finalMessage` 代寫。
+由執行角色寫報告的派遣，報告落點檔案不存在或為空時，依回收三態的「退回」處理，要求角色補齊，不以 `finalMessage` 代寫。非 Git 來源的 readonly 派遣改由 Inspect 代寫，代寫結果為 `skipped` 或報告仍缺件時同樣依「退回」處理。
 
 ## 續 session 與跨介面接手
 

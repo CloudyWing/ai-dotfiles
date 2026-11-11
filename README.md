@@ -184,7 +184,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 派工使用 `review`、`deep-review`、`scan`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本選第一個已登入帳號，清單為空才預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `instructions.md` §1.5 與 `executor-selection` skill。
+1. 派工使用 `review`、`deep-review`、`scan`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `instructions.md` §1.5 與 `executor-selection` skill。
 2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。Setup 提供初始值，檔案建立後屬本機設定。
 
    ```toml
@@ -225,7 +225,7 @@ trust_level = "trusted"
 
 缺少 `config.toml` 時，該 home 沒有 Windows sandbox 設定，派工執行的命令會因需要核准而被執行政策拒絕。
 
-`config.toml` 設定異常的帳號會被略過，全部帳號都不可用時拒絕派工並說明原因。
+`config.toml` 設定異常的帳號會被略過，全部帳號都不可用時拒絕派工並說明原因。帳號回報檔位 model 不支援（停用訂閱的帳號也以此呈現）時，派工腳本把該帳號與 model 記在 `.local\codex-account-health.json`，24 小時內派工會略過該帳號；所有帳號都被記錄時仍實際嘗試一次。
 
 腳本不執行登入，最後輸出已設定 `CODEX_HOME` 的登入命令，由使用者自行執行。
 
@@ -233,7 +233,7 @@ trust_level = "trusted"
 powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.codex-account-a''; codex login'
 ```
 
-帳號閒置過久時 token 會失效，`Get-CodexQuota.ps1` 或派工會回報 401。此時以同一個登入命令重新登入。
+帳號閒置過久時 token 會失效，`Get-CodexQuota.ps1` 或派工會回報 401。派工回報 401，或帳號因登入檔缺少、為空而被略過時，派遣結果會附上該帳號、格式與上例相同的登入命令，執行該命令重新登入。
 
 ---
 

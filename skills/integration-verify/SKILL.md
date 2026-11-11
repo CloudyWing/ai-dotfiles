@@ -22,7 +22,7 @@ policy.allow_implicit_invocation: true
 | 單元測試與建置（步驟四） | 沿用實作者結案 gate 已執行的原始輸出；無可沿用輸出時派 Sonnet 取證者 | `-Type survey -Tags build-test` |
 | 判斷專案類型與執行環境、確認驗證範圍、判讀證據、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
 
-Codex 離線時，選派入口對 `test` 回傳 `stopped`。瀏覽器、登入與桌面操作的取證沒有替代者，停止並回報使用者，不改由 Claude 端操作。
+Codex 離線時，標註不含 `browse`、`desktop-control` 的 `test`（例如 API 煙霧驗證）由選派入口改選 Sonnet，依 `executor-selection` skill「Claude 測試取證者派生契約」派生取證者。帶 `browse` 或 `desktop-control` 標籤的取證，選派入口回傳 `stopped`；瀏覽器、登入與桌面操作的取證沒有替代者，停止並回報使用者，不改由 Claude 端操作。
 
 ## 行為基準
 

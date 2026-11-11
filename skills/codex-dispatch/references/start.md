@@ -136,16 +136,19 @@ Preflight 會唯讀檢查有效 `CodexHome` 的 `rules` 目錄。允許 `pwsh` �
 
 帳號由腳本選擇與更換，主 Agent 派工時不指定 `-CodexHome`。本節的判定不因 `codex_accounts` 登記的帳號數不同而不同，額度數值不參與帳號選擇。
 
-- 選帳號：未指定 `-CodexHome` 且登記清單非空時，Dispatch 依登記順序取第一個已登入的帳號。登入判定只看帳號目錄登入檔的路徑、大小與修改時間，不讀內容；缺少該檔位設定檔的帳號同樣略過。帳號是否支援檔位的 model 以服務端回應為準，不在啟動前預判。
-- 換帳號：未指定 `-CodexHome` 的 Dispatch 遭服務端拒絕（usage-limit、401 或 model not supported），且事件流尚無任何 item 進度時，腳本依登記順序改試下一個帳號，以 `<原 dispatchSlug>-r<n>` 的衍生 Request 冷啟動。重試只限換帳號，同一帳號不重送。
-- 不換帳號：指定 `-CodexHome`、背景模式、續行、非拒絕失敗、已有 item 進度時，維持單次選派與原失敗結果。背景模式與續行被拒後，主 Agent 依摘要檔或 RunRecord 的 `codex_home` 以 `-CodexHome` 明確指定下一個帳號。
+- 選帳號：未指定 `-CodexHome` 且登記清單非空時，Dispatch 依登記順序取第一個可用的帳號。登入判定只看帳號目錄登入檔的路徑、大小與修改時間，不讀內容；缺少該檔位設定檔的帳號同樣略過。帳號曾回報 model not supported 時，腳本把帳號、home、檔位與 model 記在 `machine.json` 同目錄的 `codex-account-health.json`，24 小時內以原因碼 `ModelNotSupportedRecorded` 略過該組合；檔位 model 改變後舊記錄不生效，成功派遣時清除記錄。所有候選都被記錄時，取記錄最舊者實際嘗試一次。派遣結果的 `account_selection` 列出選擇模式、選中帳號與 `skipped[]`。
+- 換帳號：未指定 `-CodexHome` 的 Dispatch 遭服務端拒絕，且事件流尚無任何 item 進度時，腳本依登記順序改試下一個帳號，以 `<原 dispatchSlug>-r<n>` 的衍生 Request 冷啟動。重試只限換帳號，同一帳號不重送。拒絕種類為 `usage-limit`、`unauthorized`、`model-not-supported`、`rate-limited` 與 `unclassified`。`unclassified` 指終局失敗、零 item、訊息不屬上列且不命中本地失敗詞彙（例如 sandbox、apply_patch、ENOENT、spawn）的錯誤；重連訊息、串流中斷與程序碼為 0 的 stderr 不計入。`item.type` 為 `error` 的 item 事件不算進度。
+- 背景模式：背景派遣被拒時，主 Agent 以 `-DispatchResultPath` 執行 Inspect，腳本確認被拒、零 item、未指定 `-CodexHome` 且非續行後，以下一個帳號啟動衍生 Request，並在被拒那一輪的 RunRecord 寫入 `account_failover_handoff`（`state` 為 `claimed`、`started`、`launch-failed` 或 `exhausted`）。同一輪重複 Inspect 回報 `already-handed-off`，不重複啟動；只有 `claimed` 而沒有 `started` 時回報 `handoff-incomplete`，由主 Agent 以衍生 Request 與 `-CodexHome` 手動處置。摘要檔 `mode` 為 `background`。
+- 陣列參數：`TargetPath`、`AddDirectory`、`CodexParentOption`、`RequestedUnit` 以陣列綁定時，Request 含對應欄位且內容相等即照常換帳號，陣列值不轉送給衍生嘗試；Request 缺少該欄位或內容不相等時維持單次選派。
+- 不換帳號：指定 `-CodexHome`、續行、本地失敗、已有 item 進度、以 `-RunRecordPath` 等待的背景派遣時，維持單次選派與原失敗結果。被拒後，主 Agent 依摘要檔或 RunRecord 的 `codex_home` 以 `-CodexHome` 明確指定下一個帳號。
+- 重新登入命令：帳號因 401 被拒，或因登入檔缺少、為空而略過時，`attempts[].relogin_command`、摘要檔 `relogin_commands[]`、`skipped[].relogin_command`、Inspect 的 `account_failover.relogin_command` 與 `CodexAccountsAllUnavailable` 訊息附該帳號的命令，格式為 `powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''<帳號目錄>''; codex login'`。主 Agent 把命令原文轉給使用者執行。
 - 全數不可用：所有登記帳號都未登入或都被拒時，Dispatch 回報 `CodexAccountsAllUnavailable`，主 Agent 依 `instructions.md`「離線改派」將全部 Codex 執行者以 `-Offline` 傳入選派入口，依 `executor-selection` skill「狀態處置」處理。
 - 摘要檔：每次經過換帳號外層的 Dispatch 寫入 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\dispatch-account-failover-<dispatchSlug>.json`，列出候選、略過原因與每次嘗試的結果。失敗嘗試留下的 dispatch worktree 不自動清理，主 Agent 依摘要檔的 `dispatch_root` 以既有 `Cleanup` 處置。
 
 腳本換過帳號時，主 Agent 依下列格式告知使用者，帳號名稱為本機別名，摘要檔使用絕對路徑。
 
 ```text
-[帳號切換] 原帳號=<name>；新帳號=<name>；拒絕種類=<usage-limit|unauthorized|model-not-supported>；摘要檔=<絕對路徑>
+[帳號切換] 原帳號=<name>；新帳號=<name>；拒絕種類=<usage-limit|unauthorized|model-not-supported|rate-limited|unclassified>；摘要檔=<絕對路徑>
 ```
 
 ### ScopePlan 單位
@@ -263,7 +266,7 @@ Request 範例如下，欄位值為示意。
 
 | Git 來源 | HEAD | `writeMode` | `dispatchKind` | target 狀態 | 結果 |
 | --- | --- | --- | --- | --- | --- |
-| 否 | 不適用 | `readonly` | 任一 | 任一 | 直接以 `sourceRoot` 執行，唯讀 sandbox，不建 worktree、不產生 Git 產物 |
+| 否 | 不適用 | `readonly` | 任一 | 任一 | 直接以 `sourceRoot` 執行，唯讀 sandbox，不建 worktree、不產生 Git 產物。Codex 無法寫入第 7 欄報告，由 Inspect 將最後訊息逐字寫成第 7 欄報告 |
 | 否 | 不適用 | `write` | `resource` | 任一 | direct-write，`executionRoot=sourceRoot`、`worktreeCreated=false` |
 | 否 | 不適用 | `write` | `workflow` | 任一 | 拒絕（`DispatchPreflightFailed`），Workflow 必須在隔離 worktree 執行 |
 | 是 | 有 | `readonly` | 任一 | 任一 | 建立隔離 worktree |
@@ -411,9 +414,9 @@ pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation DiagnoseMode
 
 交接物同步由獨立的 `Prepare` operation 執行（`ai-sessions.prepare.v1`）：只複製請求中明確列出、位於同線來源與允許目的根目錄內的檔案，逐一比對來源與目的 SHA-256，全部一致才標記 `Prepared`，任一缺件、越界或 hash 不符時標記 `PrepareFailed`。`Preflight` 不複製交接物，交接物只經由 Prepare 進入 worktree；建立 worktree 時的 tracked patch 與未追蹤檔案 carry-in 是工作區內容的同步，仍由 Preflight 執行，不屬於交接物複製。worktree 模式的 Start 必須收到 `Prepared` 結果，缺少或不一致時以 `PrepareRequired`／`PrepareArtifactMismatch` 停止；direct-write 使用 `status=not-required`。CodexHome 依序取顯式參數、`CODEX_HOME`、使用者目錄下的 `.codex`，實際值寫入 Prepare 結果、Start 輸出與 RunRecord。
 
-跨程序傳入陣列參數（`TargetPath`、`AddDirectory`、`CodexParentOption`）時，以 `-RequestPath` 傳入 `ai-sessions.dispatch-request.v1` JSON 檔，陣列元素的原文與順序即契約，逗號、空白、中文與 `$` 不經 shell 展開或重新切分。Start 續行需要提供這些陣列時，也將 `target_path`、`add_directory` 與 `codex_parent_option` 寫成 JSON array，透過 `-RequestPath` 傳入 `operation=Start` 的 request；不得以逗號字串替代。`Cleanup` 的 `report_path` 與 `evidence_path` 同樣是陣列，須放在 `operation=Cleanup` 的 request 檔中。`powershell.exe -File` 無法以命令列傳遞字串陣列，逗號串接會被視為單一字串，跨 PowerShell 執行環境呼叫時一律使用 request 檔。request 檔與命令列同一欄位不一致時以 `DispatchRequestMismatch` 停止。
+跨程序傳入陣列參數（`TargetPath`、`AddDirectory`、`CodexParentOption`）時，以 `-RequestPath` 傳入 `ai-sessions.dispatch-request.v1` JSON 檔，陣列元素的原文與順序即契約，逗號、空白、中文與 `$` 不經 shell 展開或重新切分。Start 續行需要提供這些陣列時，也將 `target_path`、`add_directory` 與 `codex_parent_option` 寫成 JSON array，透過 `-RequestPath` 傳入 `operation=Start` 的 request；不得以逗號字串替代。`Cleanup` 的 `report_path` 與 `evidence_path` 同樣是陣列，須放在 `operation=Cleanup` 的 request 檔中。`powershell.exe -File` 無法以命令列傳遞字串陣列，逗號串接會被視為單一字串，跨 PowerShell 執行環境呼叫時一律使用 request 檔。request 檔與命令列同一欄位不一致時以 `DispatchRequestMismatch` 停止。陣列參數同時寫在 Request 時，換帳號外層照常生效，見「主 Agent 的帳號切換決策」。
 
-服務端以 usage-limit、401 或 model not supported 拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件與 stderr 判定 service rejection 分類與拒絕種類。執行端保存已確認成果、證據位置與未完成單位，該次嘗試記為失敗，同一帳號不重送。未指定 `-CodexHome` 的 Dispatch 由腳本依「主 Agent 的帳號切換決策」改試下一個帳號；全部帳號被拒時回報 `CodexAccountsAllUnavailable`，才等待重設或依 `instructions.md`「離線改派」處理。
+服務端拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件與 stderr 判定 service rejection 分類與拒絕種類（usage-limit、401、model not supported、rate limit；未分類拒絕只標 `unclassified`，不產生 service rejection）。執行端保存已確認成果、證據位置與未完成單位，該次嘗試記為失敗，同一帳號不重送。未指定 `-CodexHome` 的 Dispatch 由腳本依「主 Agent 的帳號切換決策」改試下一個帳號；全部帳號被拒時回報 `CodexAccountsAllUnavailable`，才等待重設或依 `instructions.md`「離線改派」處理。
 
 ### 額度狀態
 
@@ -534,7 +537,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 名稱符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，目錄使用已存在的絕對路徑。名稱與正規化路徑以不區分大小寫比較唯一性，reparse point 與同目錄別名拒絕。缺少清單或空陣列時沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 優先序；未登記 home 的 `codex_account_name=null`。格式異常回報 `CodexAccountConfigurationInvalid`，由使用者修正，維持原選擇。
 
-派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱>` 建立，`-ProjectPath <專案路徑>` 為選填，只用於預先信任專案。執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>` 與最小 `config.toml`（指定 `-ProjectPath` 時另含專案信任段落），將 `.sandbox*` 與 `review`、`deep-review`、`scan`、`advisor` 的 `<檔位>.config.toml` 連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；寫入前先完整預檢帳號目錄、`config.toml` 與各連結，任一項類型或目標不符時輸出找到的連結類型、目標、預期與只刪連結的修法，不寫入任何項目；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml` 與各檔位連結，四個必備檔位缺少、不是連結或指向他處時警示，殘留的 `default.config.toml` 只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。`Get-CodexQuota.ps1` 回報 401 時，以該 `CODEX_HOME` 執行一次 codex（例如簡短的 `codex exec`）更新 token 後重新查詢；派工回報 401 時，以同一登入命令重新登入。
+派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱>` 建立，`-ProjectPath <專案路徑>` 為選填，只用於預先信任專案。執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>` 與最小 `config.toml`（指定 `-ProjectPath` 時另含專案信任段落），將 `.sandbox*` 與 `review`、`deep-review`、`scan`、`advisor` 的 `<檔位>.config.toml` 連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；寫入前先完整預檢帳號目錄、`config.toml` 與各連結，任一項類型或目標不符時輸出找到的連結類型、目標、預期與只刪連結的修法，不寫入任何項目；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml` 與各檔位連結，四個必備檔位缺少、不是連結或指向他處時警示，殘留的 `default.config.toml` 只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。`Get-CodexQuota.ps1` 回報 401 時，以該 `CODEX_HOME` 執行一次 codex（例如簡短的 `codex exec`）更新 token 後重新查詢；派工回報 401 時，派遣結果附該帳號的同格式登入命令，使用者以該命令重新登入。
 
 派工時，Dispatch 在選定帳號後、Preflight 前確認該帳號的 `config.toml` 已信任派遣來源專案，缺少時在 `<machine.json 所在目錄>\codex-account.lock` 鎖內補上信任段落，並在派遣結果的 `project_trust` 記錄帳號、設定檔路徑與信任鍵。信任鍵為來源專案的 git 主工作樹根，以小寫寫入；來源是 linked worktree 時取其主工作樹根，來源不是 git 目錄時取來源目錄本身。此步驟只處理 `machine.json` 登記的帳號，使用者預設的 `~/.codex` 與未登記的 home 維持原樣，且只信任專案根目錄。
 
@@ -542,7 +545,7 @@ Start 啟動前依 `scripts/dispatch/sandbox-env-denylist.psd1` 移除子程序�
 
 自動選帳號時，`config.toml` 不存在、是連結或格式不支援的帳號在候選階段略過並改試下一個帳號，原因碼為 `TrustConfigMissing`、`TrustConfigLinked`、`TrustConfigUnsupported`，寫入換帳號摘要檔的 `skipped` 與派遣結果 `account_failover_summary.skipped`。已登記但只手動建立 home、缺少 `config.toml` 的帳號同樣略過，由使用者以建立腳本補齊。所有帳號都被略過或拒絕時以 `CodexAccountsAllUnavailable` 拒絕派遣，訊息附各帳號的略過原因。嘗試階段的拒絕碼為 `CodexAccountConfigMissing`、`CodexAccountConfigLinked`、`CodexAccountConfigUnsupported`、`CodexAccountConfigChanged`、`CodexAccountConfigWriteFailed`、`CodexAccountTrustLockTimeout` 與 `CodexProjectPathUnsupported`。指定 `-CodexHome` 時設定異常直接拒絕，不改選其他帳號；`CodexAccountConfigChanged`、`CodexAccountConfigWriteFailed`、`CodexAccountTrustLockTimeout` 與 `CodexProjectPathUnsupported` 屬暫時性或全域性問題，該次嘗試失敗且不換帳號。主 Agent 回報使用者以建立腳本或只刪連結的修法處理，不自行編輯 `config.toml`；各碼的處置見 `recovery.md`「失敗與恢復導引」。
 
-主 Agent 不指定 `-CodexHome`，登記清單非空時由腳本選第一個已登入帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。`Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 只用於續行、背景模式後改派與使用者要求；指定的登記帳號未登入時以 `CodexAccountNotLoggedIn` 拒絕，不改選其他帳號。Dispatch 在 Preflight 與 Prepare 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path` 與 `codex_account_name` 採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
+主 Agent 不指定 `-CodexHome`，登記清單非空時由腳本選第一個已登入帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。`Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 只用於續行、背景換帳號回報 `handoff-incomplete` 或不適用時的改派，以及使用者要求；指定的登記帳號未登入時以 `CodexAccountNotLoggedIn` 拒絕，不改選其他帳號。Dispatch 在 Preflight 與 Prepare 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path` 與 `codex_account_name` 採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
 
 本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定已實測（缺少 config.toml 時沒有 Windows sandbox 設定，派工的命令因需要核准而被執行政策拒絕；補上 windows.sandbox 與專案信任後可執行，內容見 README），各 home 的 profile 為指向 `~/.codex` 同名檔案的 Symbolic Link，`--profile` 經由連結讀取，保留既有 profile/model hash gate。
 
@@ -676,7 +679,7 @@ secondary_source_file=
 | 4 | 任務內容 | 含動詞與具體對象，不使用「處理 X」或「改善 Y」等無法驗收的描述；必讀檔案列於 `必讀檔案：` 區塊 |
 | 5 | 驗收條件與 Codex 命令 | 以表格逐列提供驗收條件與第三方可執行命令；Codex 必須回報命令原文與原始輸出，包含完整 stdout、完整 stderr、exit code 與執行時間 |
 | 6 | 執行邊界 | 描述工作類型、目標物件、允許的報告與交接寫入，以及不得修改目標物件等行為限制。第 6 欄不描述 repository 排除檔案清單，隔離由 dispatch worktree 與 `--cd` 提供。「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；非唯讀派遣同樣不建立 commit，commit 由主 Agent 回收後處理。所有派遣共用三項明文寫入例外：派遣單第 7 欄的報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。角色固定報告的檔名由該角色的規則檔定義，派遣單不逐一列舉；第 6 欄不得以未列舉為由否定該寫入，否則角色規則與派遣單邊界會互相否定。需要完全不寫入任何檔案時，明文寫出「不產生任何檔案寫入」。 |
-| 7 | 產出落點 | 報告或產物的絕對路徑。建立 dispatch worktree 的資源派遣，此欄必須是 executionRoot（dispatch worktree）內的路徑，因為執行端 sandbox 無法寫入來源樹；指向來源樹的路徑在 `Preflight` 以 `DispatchReportPathOutsideExecutionRoot` 拒絕，回收後由 `Cleanup` 同步至來源。direct-write 派遣的 executionRoot 等於 sourceRoot，不受此限 |
+| 7 | 產出落點 | 報告或產物的絕對路徑。建立 dispatch worktree 的資源派遣，此欄必須是 executionRoot（dispatch worktree）內的路徑，因為執行端 sandbox 無法寫入來源樹；指向來源樹的路徑在 `Preflight` 以 `DispatchReportPathOutsideExecutionRoot` 拒絕，回收後由 `Cleanup` 同步至來源。direct-write 派遣的 executionRoot 等於 sourceRoot，不受此限。非 Git 來源的 readonly 派遣由 Inspect 代寫此欄報告，此欄須恰為一個路徑 |
 | 8 | 回報必備欄位 | Codex 端回報必須逐條列出第 5 欄命令原文、完整 stdout、完整 stderr、exit code、執行時間、執行狀態與判定結果。執行狀態為已執行、受阻、未執行或已補驗四選一，執行端只可使用前三者；受阻須說明缺少的環境能力與原始錯誤。已補驗只由主 Agent 於回收補驗後填寫 |
 
 派遣單第 3 欄接受 `text` 程式碼區塊與 Markdown 條列。條列項比對前剝除 `- ` 前綴與單層成對反引號。格式錯誤時，錯誤訊息列出剝除後的路徑與原始行號。

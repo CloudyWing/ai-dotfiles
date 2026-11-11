@@ -17,7 +17,7 @@ policy.allow_implicit_invocation: true
 | 啟動服務、執行多情境 API 呼叫、寫入回查、擷取回應與日誌證據 | Codex `scan` | `-Type test -Tags build-test` |
 | 判讀回應是否符合預期、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
 
-Codex 離線時選派入口回傳 `stopped`，停止並回報使用者。
+Codex 離線時，標註不含 `browse`、`desktop-control` 的 `test` 由選派入口改選 Sonnet，依 `executor-selection` skill「Claude 測試取證者派生契約」派生取證者，判讀仍留在 Claude 端並追加 exceptions「替代方案」。選派入口回傳 `stopped` 時，停止並回報使用者。
 
 ## 啟動條件
 

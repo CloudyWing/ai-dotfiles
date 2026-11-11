@@ -58,16 +58,18 @@ Workflow 的判定單位為 `design.md` 的 Phase。E=是代表該 Phase 的每�
 | `family` | 約束 | 審查者家族不得等於實作者家族，以 `-ImplementerFamily` 傳入實作者家族 |
 | `gated` | 約束 | 執行者需使用者當輪授權，以 `-Authorized` 表示已取得 |
 
-`review` 必須提供 `-ImplementerFamily`。Codex 不承擔實作，實作者家族目前恆為 `claude`。
+`review` 與 `advise` 必須提供 `-ImplementerFamily`。Codex 不承擔實作，實作者家族目前恆為 `claude`。
 
 ## 選派入口
 
 ```powershell
 pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
-  [-E <true|false>] [-T <true|false>] [-Deep <true|false>] [-Tags <標籤...>] `
-  [-ImplementerFamily <claude|codex>] [-Authorized] [-Offline <執行者 id...>] `
+  [-E <true|false>] [-T <true|false>] [-Deep <true|false>] [-Tags <標籤,標籤>] `
+  [-ImplementerFamily <claude|codex>] [-Authorized] [-Offline <執行者 id,執行者 id>] `
   [-EscalateFrom <執行者 id>] [-Label <說明>] [-RegistryPath <路徑>] [-Describe]
 ```
+
+- 以逗號連接 `-Tags` 與 `-Offline` 的多個值，不含空白，例如 `-Offline codex-scan,codex-review,codex-deep-review,codex-advisor`。`pwsh -File` 與同一行程 `&` 呼叫都適用這個寫法。以空白分隔時，多餘的值會成為位置參數，入口以結束碼 2、錯誤碼 `SelectorParameterBinding` 拒絕。
 
 - 輸出 stdout 單一 JSON 物件（schema `ai-agents.executor-selection.v1`），欄位含 `status`、`executor`、`degradations`、`requiresUserDecision`、`reason`、`considered` 與 `dispatchLine`。
 - 輸出 `dispatchLine` 原文作為本輪的 `[派工判定]` 行，不自行改寫判定值。
@@ -76,7 +78,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 選擇演算法如下，結果只由輸入與登錄表決定。
 
-1. 過濾出非「僅升級可選」、受理該類型、能力涵蓋有效標籤、條件全部符合、且（`review` 時）家族不等於實作者家族的執行者。
+1. 過濾出非「僅升級可選」、受理該類型、能力涵蓋有效標籤、條件全部符合、且（`review` 與 `advise` 時）家族不等於實作者家族的執行者。
 2. 排除 `-Offline` 後取排序值最小者。該執行者需授權且未提供 `-Authorized` 時為 `needs-authorization`，否則為 `selected`。
 3. 第 2 步為空且該類型有可降級約束時，放寬可降級約束重算，取排序值最小的在線執行者，狀態為 `degraded`。硬能力與受理類型永不放寬。
 4. 仍為空時，依原應選出的離線執行者對該類型的離線處置回傳 `wait-reset` 或 `stopped`；沒有任何合格執行者時為 `stopped`。
@@ -87,7 +89,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 | 狀態 | 結束碼 | 主 Agent 處置 |
 | --- | --- | --- |
 | `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch` 走資源派遣，`profile` 取自 `executor.profile` |
-| `degraded` | 0 | 同 `selected`；另追加 exceptions「替代方案」，審查報告首行標註「同家族審查」 |
+| `degraded` | 0 | 同 `selected`；另追加 exceptions「替代方案」，審查報告或第二意見報告首行標註「同家族審查」。`advise` 降級時由 Sonnet 以一般第二意見承接，不需 `[advisor 諮詢授權]` |
 | `escalation-candidate` | 10 | 停止後續實作，整理升級交接單，請使用者拍板 |
 | `needs-authorization` | 20 | 輸出 `instructions.md` 規定的 `[advisor 諮詢授權]` 請求，等待使用者當輪回覆 |
 | `wait-reset` | 21 | 回報使用者並等待額度重設，不改派 |
@@ -99,9 +101,9 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 離線的政策由 `instructions.md`「離線改派」規定，本節補充執行方式。
 
-- 判定離線的唯一來源是服務端拒絕（usage-limit、401 或 model not supported），額度數值不參與。model not supported 表示該帳號的方案不含檔位設定的 model，視為該帳號不可用。
-- 派工時不指定 `-CodexHome`。Dispatch 依 `machine.json` `codex_accounts` 登記順序選第一個已登入帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。細節見 `codex-dispatch` skill「主 Agent 的帳號切換決策」。
-- Dispatch 回報 `CodexAccountsAllUnavailable` 後，才將全部 `codex-*` 執行者 id 傳入 `-Offline` 重新呼叫選派入口，依回傳狀態處置。
+- 判定離線的唯一來源是服務端拒絕，額度數值不參與。拒絕包含 usage-limit、401、model not supported、rate limit，以及尚無 item 進度即以未分類錯誤終局失敗者。model not supported 表示該帳號的方案不含檔位設定的 model，停用訂閱的帳號也以此訊息呈現，視為該帳號不可用。
+- 派工時不指定 `-CodexHome`。Dispatch 依 `machine.json` `codex_accounts` 登記順序選第一個可用帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。帳號回報 model not supported 後記入帳號健康狀態檔，24 小時內略過該帳號與檔位 model 的組合。細節見 `codex-dispatch` skill「主 Agent 的帳號切換決策」。
+- Dispatch 回報 `CodexAccountsAllUnavailable` 後，才將全部 `codex-*` 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口，依回傳狀態處置。全離線時 `factcheck`、`review`、`advise` 與無 `browse`、`desktop-control` 標籤的 `test` 由 Sonnet 承接，`generate` 與帶上述標籤的 `test` 回傳 `stopped`。
 
 ## Claude 取證者派生契約
 
@@ -112,6 +114,16 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 - 要求回傳每個結論的來源位置與支持判定的原始摘錄，證據不足時明寫不足之處。
 - 限制取證者唯讀，不修改專案原始檔，不執行 git 寫入命令。
 - 保留根因假設的形成與結論在主 Agent。回收時依回收三態判定，證據不足時退回取證者，主 Agent 不改以零碎查詢補足。
+
+## Claude 測試取證者派生契約
+
+`test` 因 Codex 全離線而選出 Sonnet 時，以 Agent 工具派生冷啟動的測試取證者。只有標註不含 `browse`、`desktop-control` 的 `test` 會選出 Sonnet，例如 API 煙霧驗證與單元測試的取證。
+
+- 設定 `subagent_type` 為 `general-purpose`、`model` 為 `sonnet`。
+- 寫入 prompt 的內容含 `LineContext`、呼叫端 skill 規定的驗證步驟與命令、目標端點或檔案的絕對路徑、預期結果，以及輸出落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/test-<slug>.md`。
+- 要求逐條回報命令原文、完整 stdout、完整 stderr、exit code 與執行時間，不只回報結論。
+- 限制取證者不修改專案原始檔，不執行 git 寫入命令；需要啟動的背景進程在回報前關閉，刻意保留者附 port 或 PID。
+- 保留判讀與修正迴圈決策在主 Agent，回收時依回收三態判定。追加 exceptions「替代方案」，記錄原應由 Codex `scan` 承接。
 
 ## 失敗升級與交接單
 
@@ -139,7 +151,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 ## 擴充登錄表
 
 1. 修改 `scripts/dispatch/executor-registry.json`，新增或調整執行者、類型或離線處置。標籤詞彙合計不超過 8 個，排序值全表唯一。
-2. 確認每個 Codex 執行者的 `onOffline` 鍵恰好等於其 `accepts`，`profile` 屬於 `codex-dispatch` 的檔位白名單。
+2. 確認每個 Codex 執行者的 `onOffline` 鍵恰好等於其 `accepts`，`profile` 屬於 `codex-dispatch` 的檔位白名單。`onOffline` 值為 `fallback` 時，該類型必須另有其他非「僅升級可選」的執行者受理，否則登錄表無效；類型設 `crossFamily` 時，呼叫端必須提供 `-ImplementerFamily`。
 3. 執行 `pwsh -NoProfile -File scripts/tests/Test-SelectDispatchExecutor.ps1`，全部通過才算完成。
 4. 修改規則層引用的選派結果（例如本 Skill「各 delegate skill 的標註範例」的預期執行者）時同步更新。
 

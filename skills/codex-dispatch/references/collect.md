@@ -103,7 +103,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 判定順序與使用者拍板條文見 `instructions.md`「派工後的殘餘工作」，本節補充紀錄與處置細節。
 
 - 環境成因例示：sandbox 無法還原套件、缺外部前置條件、權限不足。
-- 改派對象：依登錄表選出的其他執行者。Codex 執行端的帳號由腳本自動更換；Dispatch 回報 `CodexAccountsAllUnavailable` 時依 `instructions.md`「離線改派」由選派入口回傳承接者。改派不屬補做，改派承接記為 exceptions「替代方案」。
+- 改派對象：依登錄表選出的其他執行者。Codex 執行端的帳號由腳本自動更換；Dispatch 回報 `CodexAccountsAllUnavailable` 時依 `instructions.md`「離線改派」由選派入口回傳承接者，審查、事實查核、顧問與無瀏覽器、桌面標籤的測試取證改由 Sonnet 承接。改派不屬補做，改派承接記為 exceptions「替代方案」。
 - 補做紀錄：完成補做的主 Agent 追加 exceptions「派工後補做」，固定四欄填寫如下。
   - 內容：補做範圍（檔案、行數、驗證命令）與來源 `dispatchSlug`。
   - 依據：派工端無法完成的原因，以及小型修改例外四項的實測值（檔案數、行數、命令數）。
