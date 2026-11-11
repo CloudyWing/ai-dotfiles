@@ -55,14 +55,13 @@ function NcCanSymlink {
     catch { return $false }
 }
 
-# 建立來源 Codex home（含三個 Junction 來源目錄、.sandbox_migration 與四個檔位設定檔）。
+# 建立來源 Codex home（四個檔位設定檔）。
 function NcNewEnv {
     param([string]$Name, [bool]$MachineDirectory)
     $root = NcNewDir -Name $Name
     $source = Join-Path $root 'source-codex'
     $null = New-Item -ItemType Directory -Path $source -Force
-    foreach ($directory in @('.sandbox', '.sandbox-bin', '.sandbox-secrets')) { $null = New-Item -ItemType Directory -Path (Join-Path $source $directory) -Force }
-    foreach ($file in @('.sandbox_migration', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { [IO.File]::WriteAllText((Join-Path $source $file), 'x', $utf8NoBom) }
+    foreach ($file in @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { [IO.File]::WriteAllText((Join-Path $source $file), 'x', $utf8NoBom) }
     $homeRoot = Join-Path $root 'homes'
     $null = New-Item -ItemType Directory -Path $homeRoot -Force
     $machineDir = Join-Path $root 'machine'
@@ -98,13 +97,16 @@ try {
     # ---------- 搬移等價：Get-AccountConfigPlan 與 T149 基準逐例相同 ----------
     $fixtureDirectory = NcNewDir -Name 'plan'
     $planCases = @(
-        @{ name = 'empty-file'; bytes = [byte[]]@(); keys = @('c:\x'); changed = $true; missing = 'c:\x'; sha = '97F464F81E58957C73A3A1EACD0DE3803805EC5E4AD3DF18F23CBED5A477521D'; length = 74 },
-        @{ name = 'missing-file'; bytes = $null; keys = @('c:\x'); changed = $true; missing = 'c:\x'; sha = '97F464F81E58957C73A3A1EACD0DE3803805EC5E4AD3DF18F23CBED5A477521D'; length = 74 },
+        @{ name = 'empty-file'; bytes = [byte[]]@(); keys = @('c:\x'); changed = $true; missing = 'c:\x'; sha = 'F74ECFE029C4136A41061DAB6413E4DB0E443D4569B190BD5DF86E3508991EF0'; length = 69 },
+        @{ name = 'missing-file'; bytes = $null; keys = @('c:\x'); changed = $true; missing = 'c:\x'; sha = 'F74ECFE029C4136A41061DAB6413E4DB0E443D4569B190BD5DF86E3508991EF0'; length = 69 },
         @{ name = 'windows-lf'; text = "[windows]`nsandbox = `"elevated`"`n"; keys = @('c:\x'); changed = $true; missing = 'c:\x'; sha = '97F464F81E58957C73A3A1EACD0DE3803805EC5E4AD3DF18F23CBED5A477521D'; length = 74 },
         @{ name = 'project-trusted'; text = "[windows]`nsandbox = `"elevated`"`n`n[projects.'c:\x']`ntrust_level = `"trusted`"`n"; keys = @('c:\x'); changed = $false; missing = ''; sha = '97F464F81E58957C73A3A1EACD0DE3803805EC5E4AD3DF18F23CBED5A477521D'; length = 74 },
         @{ name = 'project-add-crlf'; text = "model = `"m`"`r`n`r`n[windows]`r`nsandbox = `"elevated`"`r`n`r`n[projects.'c:\x']`r`ntrust_level = `"trusted`"`r`n"; keys = @('c:\x', 'c:\y'); changed = $true; missing = 'c:\y'; sha = '2198CF6FAE0672DE8B69245B0255B705949CBCEC2FDA58ECBAC7203A16C0C7B0'; length = 140 },
-        @{ name = 'no-trailing-nl'; text = "model = `"m`"`n[other]`na = 1"; keys = @('c:\x'); changed = $true; missing = 'c:\x'; sha = 'E924B1E0B6C138E6AE3E6C0F353A7055606AE35A83723805AF5FDFB9F83FC92A'; length = 100 },
-        @{ name = 'no-windows-multi'; text = "# comment`nmodel = `"m`"`n"; keys = @('c:\a', 'c:\b'); changed = $true; missing = 'c:\a|c:\b'; sha = '6D4F08EE67A79C27221A2982727A15335A23E7F76C84D6A68CCF8159F984C4B7'; length = 139 }
+        @{ name = 'no-trailing-nl'; text = "model = `"m`"`n[other]`na = 1"; keys = @('c:\x'); changed = $true; missing = 'c:\x'; sha = 'A36734AE7782935F0F793FD2D693F088E6BCE5F6168C025F56C86C548A394DDA'; length = 95 },
+        @{ name = 'no-windows-multi'; text = "# comment`nmodel = `"m`"`n"; keys = @('c:\a', 'c:\b'); changed = $true; missing = 'c:\a|c:\b'; sha = 'BDEA723EBFC5FD8121E430CBE8F8E42C764EABEDAC6DC1190EAD5C28D0318A69'; length = 134 },
+        @{ name = 'mxc-lf'; text = "[windows]`nsandbox = `"mxc`"`n"; keys = @('c:\x'); changed = $true; missing = 'c:\x'; sha = 'F74ECFE029C4136A41061DAB6413E4DB0E443D4569B190BD5DF86E3508991EF0'; length = 69 },
+        @{ name = 'mxc-project-trusted'; text = "[windows]`nsandbox = `"mxc`"`n`n[projects.'c:\x']`ntrust_level = `"trusted`"`n"; keys = @('c:\x'); changed = $false; missing = ''; sha = 'F74ECFE029C4136A41061DAB6413E4DB0E443D4569B190BD5DF86E3508991EF0'; length = 69 },
+        @{ name = 'mxc-add-crlf'; text = "model = `"m`"`r`n`r`n[windows]`r`nsandbox = `"mxc`"`r`n"; keys = @('c:\y'); changed = $true; missing = 'c:\y'; sha = '36E2ADEC2CFD95DFA84F279610E48A0AFD72EF36DEBF6F0B617542C481A7BD8C'; length = 89 }
     )
     foreach ($case in $planCases) {
         $caseName = $case.name
@@ -152,9 +154,8 @@ try {
 
     # ---------- 預檢無半成品 ----------
     $conflictCases = @(
-        @{ id = 'sandbox-junction-target'; setup = { param($e) $other = Join-Path $e.root 'other-sandbox'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home '.sandbox') -Target $other }; expect = @('連結類型或目標衝突', '.sandbox', 'LinkType=Junction', 'Target=') },
+        @{ id = 'profile-link-type'; setup = { param($e) $other = Join-Path $e.root 'other-profile'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home 'scan.config.toml') -Target $other }; expect = @('連結類型或目標衝突', 'scan.config.toml', 'LinkType=Junction', 'Target=', '預期：LinkType=SymbolicLink') },
         @{ id = 'config-link'; setup = { param($e) $other = Join-Path $e.root 'other-config'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home 'config.toml') -Target $other }; expect = @('CodexAccountConfigLinked', 'config.toml', 'LinkType=Junction', 'Target=', '預期：一般檔案') },
-        @{ id = 'migration-type'; setup = { param($e) $other = Join-Path $e.root 'other-migration'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home '.sandbox_migration') -Target $other }; expect = @('連結類型或目標衝突', '.sandbox_migration', 'LinkType=Junction', '預期：LinkType=SymbolicLink') },
         @{ id = 'profile-directory'; setup = { param($e) $null = New-Item -ItemType Directory -Path (Join-Path $e.account_home 'scan.config.toml') -Force }; expect = @('profile 類型錯誤', 'scan.config.toml', '一般目錄', '預期：LinkType=SymbolicLink') }
     )
     foreach ($conflict in $conflictCases) {
@@ -192,10 +193,10 @@ try {
         $null = New-Item -ItemType Directory -Path $environment.account_home -Force
         $other = Join-Path $environment.root 'wrong-target'
         $null = New-Item -ItemType Directory -Path $other -Force
-        $null = New-Item -ItemType Junction -Path (Join-Path $environment.account_home '.sandbox-bin') -Target $other
+        $null = New-Item -ItemType Junction -Path (Join-Path $environment.account_home 'scan.config.toml') -Target $other
         $run = NcRun -Env $environment
         $message = [string]$run.exception.Message
-        $message.Contains('LinkType=Junction') -and $message.Contains('Target=' + $other) -and $message.Contains('預期：LinkType=Junction，Target=' + (Join-Path $environment.source '.sandbox-bin')) -and $message.Contains("(Get-Item -LiteralPath '" + (Join-Path $environment.account_home '.sandbox-bin') + "' -Force).Delete()") -and
+        $message.Contains('LinkType=Junction') -and $message.Contains('Target=' + $other) -and $message.Contains('預期：LinkType=SymbolicLink，Target=' + (Join-Path $environment.source 'scan.config.toml')) -and $message.Contains("(Get-Item -LiteralPath '" + (Join-Path $environment.account_home 'scan.config.toml') + "' -Force).Delete()") -and
         -not $message.Contains('Remove-Item -Recurse') -and -not $message.Contains('Remove-Item')
     }
     Test-Case 'P03' {
@@ -206,7 +207,7 @@ try {
         $null = New-Item -ItemType Directory -Path (Join-Path $environment.account_home 'review.config.toml') -Force
         $other = Join-Path $environment.root 'x'
         $null = New-Item -ItemType Directory -Path $other -Force
-        $null = New-Item -ItemType Junction -Path (Join-Path $environment.account_home '.sandbox_migration') -Target $other
+        $null = New-Item -ItemType Junction -Path (Join-Path $environment.account_home 'scan.config.toml') -Target $other
         $listing = NcListing -Path $environment.account_home
         $conflicts = @(Test-AccountLinkPlan -AccountHome $environment.account_home -Source $environment.source)
         $clean.Count -eq 0 -and $conflicts.Count -eq 2 -and $listing -ceq (NcListing -Path $environment.account_home)
@@ -234,7 +235,24 @@ try {
             $environment = NcNewEnv -Name 'create-empty' -MachineDirectory $true
             $run = NcRun -Env $environment -ProjectPath @()
             $configText = [IO.File]::ReadAllText((Join-Path $environment.account_home 'config.toml'), [Text.Encoding]::UTF8)
-            $null -eq $run.exception -and $configText.Contains('[windows]') -and -not $configText.Contains('[projects') -and (@($run.lines | Where-Object { $_.StartsWith('trust（未預先信任專案，派工時自動補上）') }).Count -eq 1) -and (Test-Path -LiteralPath $environment.machine_path)
+            $sandboxNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets', '.sandbox_migration')
+            $sandboxPresent = @($sandboxNames | Where-Object { $null -ne (Get-Item -LiteralPath (Join-Path $environment.account_home $_) -Force -ErrorAction SilentlyContinue) })
+            $null -eq $run.exception -and $configText.Contains('[windows]') -and $configText.Contains("sandbox = `"mxc`"") -and -not $configText.Contains('elevated') -and -not $configText.Contains('[projects') -and (@($run.lines | Where-Object { $_.StartsWith('trust（未預先信任專案，派工時自動補上）') }).Count -eq 1) -and (Test-Path -LiteralPath $environment.machine_path) -and
+            $sandboxPresent.Count -eq 0 -and (NcListing -Path $environment.account_home) -ceq 'advisor.config.toml:link|config.toml:file|deep-review.config.toml:link|review.config.toml:link|scan.config.toml:link'
+        }
+        Test-Case 'T05' {
+            # 帳號 home 既有的 .sandbox 連結不被檢查、改名或刪除；來源 home 缺 .sandbox* 不影響建立。
+            $environment = NcNewEnv -Name 'create-existing-sandbox' -MachineDirectory $true
+            $null = New-Item -ItemType Directory -Path $environment.account_home -Force
+            $sandboxTarget = Join-Path $environment.root 'legacy-sandbox-target'
+            $null = New-Item -ItemType Directory -Path $sandboxTarget -Force
+            $sandboxLink = Join-Path $environment.account_home '.sandbox'
+            $null = New-Item -ItemType Junction -Path $sandboxLink -Target $sandboxTarget
+            $run = NcRun -Env $environment -ProjectPath @()
+            $linkItem = Get-Item -LiteralPath $sandboxLink -Force
+            $backups = @(Get-ChildItem -LiteralPath $environment.account_home -Force | Where-Object { $_.Name -like '.sandbox*.bak-*' })
+            $null -eq $run.exception -and $linkItem.LinkType -ceq 'Junction' -and [string]::Equals((($linkItem.Target | Select-Object -First 1) -replace '^\\\?\?\\', ''), $sandboxTarget, [StringComparison]::OrdinalIgnoreCase) -and $backups.Count -eq 0 -and (Test-Path -LiteralPath (Join-Path $sandboxTarget '.')) -and
+            (Test-Path -LiteralPath (Join-Path $environment.account_home 'config.toml'))
         }
         Test-Case 'T04' {
             $environment = NcNewEnv -Name 'create-projects' -MachineDirectory $true
@@ -250,6 +268,7 @@ try {
     else {
         Skip-Case 'T03' '無建立 Symbolic Link 權限，略過需要建立連結的完整建立案例。'
         Skip-Case 'T04' '無建立 Symbolic Link 權限，略過需要建立連結的完整建立案例。'
+        Skip-Case 'T05' '無建立 Symbolic Link 權限，略過需要建立連結的完整建立案例。'
     }
 }
 finally {

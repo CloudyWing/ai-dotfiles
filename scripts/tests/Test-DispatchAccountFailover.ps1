@@ -174,7 +174,7 @@ function FxEnsureTrust {
     foreach ($account in @($machine.codex_accounts)) {
         $configPath = Join-Path $account.codex_home 'config.toml'
         if (-not (Test-Path -LiteralPath $configPath)) {
-            [IO.File]::WriteAllText($configPath, ("[windows]`nsandbox = `"elevated`"`n`n[projects.'" + $Root.ToLowerInvariant() + "']`ntrust_level = `"trusted`"`n"), $utf8NoBom)
+            [IO.File]::WriteAllText($configPath, ("[windows]`nsandbox = `"mxc`"`n`n[projects.'" + $Root.ToLowerInvariant() + "']`ntrust_level = `"trusted`"`n"), $utf8NoBom)
         }
     }
 }

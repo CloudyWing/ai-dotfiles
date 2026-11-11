@@ -68,7 +68,7 @@ function TrSameBytes {
 function TrTrustText {
     param([string[]]$Key = @(), [bool]$Windows = $true, [string]$Newline = "`n")
     $text = ''
-    if ($Windows) { $text += 'model = "fixture"' + $Newline + $Newline + '[windows]' + $Newline + 'sandbox = "elevated"' + $Newline }
+    if ($Windows) { $text += 'model = "fixture"' + $Newline + $Newline + '[windows]' + $Newline + 'sandbox = "mxc"' + $Newline }
     foreach ($item in $Key) { $text += $Newline + "[projects.'" + $item + "']" + $Newline + 'trust_level = "trusted"' + $Newline }
     return $text
 }
@@ -247,9 +247,9 @@ try {
             $machine = TrWriteMachine -Path (Join-Path $root 'm\machine.json') -Account @(TrAccount 'a' $acctHome)
             $result = Confirm-CodexAccountProjectTrust -AccountSelection (TrSelection -AccountHome $acctHome) -SourceRoot $root -MachineConfigPath $machine
             $text = [IO.File]::ReadAllText((Join-Path $acctHome 'config.toml'), [Text.Encoding]::UTF8)
-            $results += [pscustomobject]@{ action = $result.action; windows = $result.windows_section_added; starts = $text.StartsWith($variant); windowsCount = ([regex]::Matches($text, '\[windows\]')).Count; projects = ([regex]::Matches($text, '\[projects\.')).Count }
+            $results += [pscustomobject]@{ action = $result.action; windows = $result.windows_section_added; starts = $text.StartsWith($variant); windowsCount = ([regex]::Matches($text, '\[windows\]')).Count; projects = ([regex]::Matches($text, '\[projects\.')).Count; mxc = $text.Contains("[windows]`nsandbox = `"mxc`"`n"); elevated = $text.Contains('elevated') }
         }
-        @($results | Where-Object { $_.action -ceq 'added' -and $_.windows -and $_.starts -and $_.windowsCount -eq 1 -and $_.projects -eq 1 }).Count -eq 2
+        @($results | Where-Object { $_.action -ceq 'added' -and $_.windows -and $_.starts -and $_.windowsCount -eq 1 -and $_.projects -eq 1 -and $_.mxc -and -not $_.elevated }).Count -eq 2
     }
 
     # ---------- 只信任專案根目錄 ----------
@@ -420,6 +420,62 @@ try {
         $dirSelection = TrSelection -AccountHome $dirHome -Name 'dir'
         $exception = TrCatch { Confirm-CodexAccountProjectTrust -AccountSelection $dirSelection -SourceRoot $srcC -MachineConfigPath $machineC }
         $null -ne $exception -and $exception.Message -match '^CodexAccountConfigLinked：' -and (Test-Path -LiteralPath (Join-Path $dirHome 'config.toml') -PathType Container)
+    }
+
+    # ---------- sandbox 設定值：mxc 與 elevated 皆接受，缺 [windows] 補 mxc ----------
+    $rootS = TrNewDir -Name 'sbx'
+    $srcS = Join-Path $rootS 'src'
+    $null = New-Item -ItemType Directory -Path $srcS -Force
+    $keyS = TrSourceKey $srcS
+    $sbxConfig = { param([string]$Value) ("[windows]`nsandbox = " + $Value + "`n`n[projects.'" + $keyS + "']`ntrust_level = `"trusted`"`n") }
+    $sbxHomes = [ordered]@{
+        mxc = TrNewHome -Root $rootS -Name 'mxc' -Config (& $sbxConfig '"mxc"')
+        elevated = TrNewHome -Root $rootS -Name 'elevated' -Config (& $sbxConfig '"elevated"')
+        unelevated = TrNewHome -Root $rootS -Name 'unelevated' -Config (& $sbxConfig '"unelevated"')
+        upper = TrNewHome -Root $rootS -Name 'upper' -Config (& $sbxConfig '"MXC"')
+        bare = TrNewHome -Root $rootS -Name 'bare' -Config (& $sbxConfig 'mxc')
+    }
+    $machineS = TrWriteMachine -Path (Join-Path $rootS 'm\machine.json') -Account @($sbxHomes.Keys | ForEach-Object { TrAccount $_ $sbxHomes[$_] })
+    Test-Case S01 {
+        $set = Get-CodexDispatchAccountCandidates -Profile 'scan' -MachineConfigPath $machineS -SourceRoot $srcS
+        $unsupported = @($set.skipped | Where-Object { $_.reason_code -ceq 'TrustConfigUnsupported' })
+        (@($set.candidates | ForEach-Object { $_.name }) -join ',') -ceq 'mxc,elevated' -and
+        (@($set.skipped | ForEach-Object { $_.name + ':' + $_.reason_code }) -join ',') -ceq 'unelevated:TrustConfigUnsupported,upper:TrustConfigUnsupported,bare:TrustConfigUnsupported' -and
+        @($unsupported | Where-Object { $_.detail -notmatch ':2$' }).Count -eq 0
+    }
+    Test-Case S02 {
+        . (Get-CodexAccountConfigLibraryPath)
+        $outcomes = @()
+        foreach ($name in @('mxc', 'elevated')) {
+            $path = Join-Path $sbxHomes[$name] 'config.toml'
+            $plan = Get-AccountConfigPlan -Path $path -Keys @($keyS)
+            $outcomes += [pscustomobject]@{ ok = (-not $plan.Changed -and -not $plan.WindowsAdded -and @($plan.Missing).Count -eq 0 -and (TrSameBytes $plan.Original (TrBytes $path)) -and (TrSameBytes $plan.Bytes (TrBytes $path))) }
+        }
+        @($outcomes | Where-Object { -not $_.ok }).Count -eq 0
+    }
+    Test-Case S03 {
+        . (Get-CodexAccountConfigLibraryPath)
+        $outcomes = @()
+        foreach ($name in @('unelevated', 'upper', 'bare')) {
+            $path = Join-Path $sbxHomes[$name] 'config.toml'
+            $before = TrBytes $path
+            $exception = TrCatch { Get-AccountConfigPlan -Path $path -Keys @($keyS) }
+            $outcomes += [pscustomobject]@{ ok = ($null -ne $exception -and $exception.Message -match '^CodexAccountConfigUnsupported：' -and $exception.Message.Contains('無效 sandbox 設定') -and $exception.Message.Contains($path + ':2') -and [string]$exception.Data['reasonCode'] -ceq 'CodexAccountConfigUnsupported' -and [string]$exception.Data['detail'] -ceq ($path + ':2') -and (TrSameBytes $before (TrBytes $path))) }
+        }
+        @($outcomes | Where-Object { -not $_.ok }).Count -eq 0
+    }
+    Test-Case S04 {
+        . (Get-CodexAccountConfigLibraryPath)
+        $outcomes = @()
+        foreach ($variant in @(@{ name = 'empty'; text = '' }, @{ name = 'other-keys'; text = ('model = "x"' + "`n") }, @{ name = 'missing-file'; text = $null })) {
+            $dir = TrNewDir -Name ('sbx-' + $variant.name)
+            $path = Join-Path $dir 'config.toml'
+            if ($null -ne $variant.text) { [IO.File]::WriteAllText($path, $variant.text, $utf8NoBom) }
+            $plan = Get-AccountConfigPlan -Path $path -Keys @()
+            $text = $utf8NoBom.GetString($plan.Bytes)
+            $outcomes += [pscustomobject]@{ ok = ($plan.Changed -and $plan.WindowsAdded -and ($null -eq $variant.text -or $text.StartsWith($variant.text)) -and $text.Contains("[windows]`nsandbox = `"mxc`"`n") -and -not $text.Contains('elevated')) }
+        }
+        @($outcomes | Where-Object { -not $_.ok }).Count -eq 0
     }
 
     # ---------- 改試下一個帳號 ----------

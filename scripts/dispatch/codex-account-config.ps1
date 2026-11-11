@@ -179,7 +179,7 @@ function Get-AccountConfigPlan {
         if ($section -eq '' -and $line -cmatch '^\s*(windows|projects)\s*=') { throw (New-AccountException -ReasonCode 'CodexAccountConfigUnsupported' -Path $Path -Detail "$Path`:$lineNumber" -Message "不支援的 TOML 寫法：$Path`:$lineNumber") }
         if ($section -eq 'windows' -and $line -cmatch '^\s*sandbox\s*=') {
             $sandboxCount++
-            if ($line -cnotmatch '^\s*sandbox\s*=\s*"elevated"\s*(#.*)?$') { throw (New-AccountException -ReasonCode 'CodexAccountConfigUnsupported' -Path $Path -Detail "$Path`:$lineNumber" -Message "無效 sandbox 設定：$Path`:$lineNumber") }
+            if ($line -cnotmatch '^\s*sandbox\s*=\s*"(mxc|elevated)"\s*(#.*)?$') { throw (New-AccountException -ReasonCode 'CodexAccountConfigUnsupported' -Path $Path -Detail "$Path`:$lineNumber" -Message "無效 sandbox 設定：$Path`:$lineNumber") }
             continue
         }
         if ($section.StartsWith('project:') -and $line -cmatch '^\s*trust_level\s*=') {
@@ -198,7 +198,7 @@ function Get-AccountConfigPlan {
     }
     $append = ''
     $windowsAdded = $false
-    if ($windowsCount -eq 0) { $append += "[windows]${newline}sandbox = `"elevated`"${newline}"; $windowsAdded = $true }
+    if ($windowsCount -eq 0) { $append += "[windows]${newline}sandbox = `"mxc`"${newline}"; $windowsAdded = $true }
     $missing = @($Keys | Where-Object { -not $projects.ContainsKey($_) })
     foreach ($key in $missing) { $append += "${newline}[projects.'$key']${newline}trust_level = `"trusted`"${newline}" }
     if ($append -and $text -and -not $text.EndsWith("`n")) { $append = $newline + $append }
