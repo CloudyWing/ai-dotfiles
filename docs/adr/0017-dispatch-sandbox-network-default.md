@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0034
 ---
 
 # ADR-0017：write 派遣預設開啟 sandbox 網路，續行沿用錨點記錄
