@@ -27,6 +27,7 @@
 | `ai-tool-discovery` | 知識型 | agent | Use when the agent is about to explore a project or generate AI support artifacts and needs the local tool inventory or the state and rebuild path of existing .local/ai-context artifacts. |
 | `api-smoke` | 知識型 | agent | Web API 煙霧驗證流程。當需要在修改或開發 Web API 端點後驗證 API 行為，或使用者要求呼叫 Swagger、寫腳本測試 API、進行多情境 API 測試時使用。 |
 | `apply-fact-check` | 知識型 | human | 依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md. |
+| `blazor-testing` | 知識型 | agent | Use when 撰寫或修改 Blazor 的 bUnit 元件測試（搭配 NUnit、MudBlazor），或 Blazor Hybrid（WPF 與 WinForms 的 BlazorWebView）與 Blazor Web App 的可重跑 e2e 測試（FlaUI、Playwright）時。 |
 | `browser-smoke` | 知識型 | agent | 瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。 |
 | `check-markdown` | 知識型 | human | 當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。 |
 | `codebase-design` | 知識型 | agent | Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。 |
