@@ -8,7 +8,7 @@ policy.allow_implicit_invocation: true
 
 # Browser Smoke Verification
 
-此 Skill 用於完成前端或 Web UI 變更後的低成本瀏覽器驗證。它不是完整 E2E 測試框架，不負責新增可重跑的測試案例；若使用者要求建立正式測試，改依專案既有 Playwright、Cypress、Vitest 或其他測試架構處理。
+此 Skill 用於完成前端或 Web UI 變更後的低成本瀏覽器驗證。它不是完整 E2E 測試框架，不負責新增可重跑的測試案例；若使用者要求建立可重跑的 E2E 或操作手冊，改用 `e2e-manual`；其他正式測試依專案既有 Playwright、Cypress、Vitest 或其他測試架構處理。
 
 ## 派遣分界
 

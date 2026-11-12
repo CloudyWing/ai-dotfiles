@@ -23,7 +23,7 @@
 | Skill | 類型 | 讀者 | 用途 |
 | --- | --- | --- | --- |
 | `ai-context-index` | 知識型 | agent | Use when an agent needs to create or update a project AI context index from the tools declared in AGENTS.md. |
-| `ai-profile` | 知識型 | agent | Use when 需要讀取、詢問或寫入專案 AGENTS.local.md 的 AI-PROFILE 區塊鍵（code-style.csharp、project-kind、workflow-depth、git-workflow、target.sqlserver、target.sqlserver.compat、target.oracle），或需判定哪些鍵缺少而須一次詢問時。 |
+| `ai-profile` | 知識型 | agent | Use when 需要讀取、詢問或寫入專案 AGENTS.local.md 的 AI-PROFILE 區塊鍵（code-style.csharp、project-kind、workflow-depth、git-workflow、manual-root、target.sqlserver、target.sqlserver.compat、target.oracle），或需判定哪些鍵缺少而須一次詢問時。 |
 | `ai-tool-discovery` | 知識型 | agent | Use when the agent is about to explore a project or generate AI support artifacts and needs the local tool inventory or the state and rebuild path of existing .local/ai-context artifacts. |
 | `api-smoke` | 知識型 | agent | Web API 煙霧驗證流程。當需要在修改或開發 Web API 端點後驗證 API 行為，或使用者要求呼叫 Swagger、寫腳本測試 API、進行多情境 API 測試時使用。 |
 | `apply-fact-check` | 知識型 | human | 依據事實校閱報告修改技術文件：以事實層為不可違反的約束，由改檔者負責表達層的措辭與行文連貫。Use when the user asks to apply fact-check results to a document, or to edit a document based on a previously produced fact-check-report.md. |
@@ -56,6 +56,7 @@
 | `desktop-smoke` | 知識型 | agent | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
 | `doc-editing` | 知識型 | agent | Use when 修改技術筆記、規格文件或 Markdown 文件，需要保留內容、查閱事實與維持文件結構時。 |
 | `docker` | 知識型 | agent | Dockerfile 與 Docker Compose 專案慣例：.NET 多階段建置的快取層寫法、非 root 執行、.NET 映像缺少字型與 Nginx 官方映像的設定陷阱、Compose Specification 檔名與相依寫法。當撰寫或檢視 Dockerfile、Compose 設定或 Nginx 容器設定時自動套用。 |
+| `e2e-manual` | 知識型 | agent | 可重跑 E2E 與操作手冊流程：從需求摘要的驗收條件挑出關鍵流程，撰寫 Playwright（網站）或 FlaUI 加 NUnit（WinForms、WPF）E2E，執行時自動截圖，全部通過才產出含畫面截圖的 .md 操作手冊。Use when 使用者明確要求建立可重跑的 E2E、操作手冊或手冊截圖，且專案的 project-kind 為 application 時。 |
 | `ef-core` | 知識型 | agent | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理、變更追蹤最佳實踐、模型設定（DateTime Kind、精度、資料庫預設值）、SaveChanges 失敗後的狀態與導覽屬性同步，以及依 AI-PROFILE 目標版本鍵設定 provider 相容性。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。 |
 | `elasticsearch` | 知識型 | agent | Elasticsearch 開發規範：明確 mapping 與 dynamic 設定、Query DSL 與 Query String 查詢的語意陷阱（term 與分詞、minimum_should_match、日期範圍、exists、wildcard 與 regexp、nested）。當設計 index mapping、撰寫或審查 Elasticsearch 查詢時自動套用。 |
 | `executor-selection` | 知識型 | agent | 派工執行者選派：替任務標註類型、旗標與標籤，呼叫 Select-DispatchExecutor.ps1 依執行者登錄表選出執行者，並處理離線改派、失敗升級與升級交接單。Use when 需要判定派工執行者、標註任務、發動選派入口、處理 Codex 離線或執行者升級時。 |

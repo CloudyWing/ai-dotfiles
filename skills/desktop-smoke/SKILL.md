@@ -8,7 +8,7 @@ dispatch: split
 
 # Desktop Smoke Verification
 
-此 Skill 用於完成 WinForm 或 WPF 桌面應用變更後的低成本煙霧驗證。它不是完整 E2E 測試框架，不負責新增可重跑的測試案例；若使用者要求建立正式測試，改依專案既有測試架構處理。
+此 Skill 用於完成 WinForm 或 WPF 桌面應用變更後的低成本煙霧驗證。它不是完整 E2E 測試框架，不負責新增可重跑的測試案例；若使用者要求建立可重跑的 E2E 或操作手冊，改用 `e2e-manual`；其他正式測試依專案既有測試架構處理。
 
 ## 啟動條件
 

@@ -1,6 +1,6 @@
 ---
 name: ai-profile
-description: 'Use when 需要讀取、詢問或寫入專案 AGENTS.local.md 的 AI-PROFILE 區塊鍵（code-style.csharp、project-kind、workflow-depth、git-workflow、target.sqlserver、target.sqlserver.compat、target.oracle），或需判定哪些鍵缺少而須一次詢問時。'
+description: 'Use when 需要讀取、詢問或寫入專案 AGENTS.local.md 的 AI-PROFILE 區塊鍵（code-style.csharp、project-kind、workflow-depth、git-workflow、manual-root、target.sqlserver、target.sqlserver.compat、target.oracle），或需判定哪些鍵缺少而須一次詢問時。'
 audience: agent
 dispatch: inline
 policy.allow_implicit_invocation: true
@@ -26,23 +26,24 @@ project-kind: library
 - 逐行讀取兩個標記之間的 `key: value`，鍵與值各自去除前後空白。
 - 鍵只能由小寫英數、`.`、`-` 組成；值為非空的單行文字。
 - 略過空行。鍵登錄表以外的鍵視為其他控制項，讀取時忽略，寫入時原樣保留。
-- 已登錄鍵的值須與鍵登錄表「合法值」欄大小寫完全一致。
+- 已登錄鍵的值須與鍵登錄表「合法值」欄一致：列舉值大小寫完全一致；合法值欄寫成格式描述的鍵（目前只有 `manual-root`）以該格式判定，不比對列舉。
 
 ## 錯誤處置
 
 兩類錯誤都向使用者指出錯誤位置，不猜測選擇，不修改檔案。
 
 - **結構錯誤**：只有單邊標記或標記不是完整獨立行；檔案內有兩個以上 `AI-PROFILE` 區塊；區塊內有重複鍵、無法解析成 `key: value` 的非空行，或不合法的鍵。停止所有依賴 AI-PROFILE 鍵的工作。
-- **值錯誤**：已登錄鍵的值不在合法值之內。停止阻擋範圍涵蓋該鍵的工作，以及依該鍵分流的規則所屬的工作；不改用其他值，也不套用未設定處置。
+- **值錯誤**：已登錄鍵的值不在合法值之內，或不符合格式描述。停止阻擋範圍涵蓋該鍵的工作，以及依該鍵分流的規則所屬的工作；不改用其他值，也不套用未設定處置。
 
 ## 鍵登錄表
 
 | 鍵 | 合法值 | 負責的 skill | 適用條件 | 阻擋範圍 | 缺少時處置 |
 | --- | --- | --- | --- | --- | --- |
 | `code-style.csharp` | `personal`、`standard`、`project` | `csharp-style` | 專案含 `*.csproj`、`*.sln`、`*.slnx`、`*.cs` 或 `*.csx` | 撰寫或修改 `*.cs`、`*.csx` | 詢問，選項依 `csharp-style` |
-| `project-kind` | `library`、`application`、`sample` | `ai-profile` | 專案含 `instructions.md` §1.5 work-root 判定所列的技術棧根標記 | `generate-readme-zh-tw` 的專案分類；`integration-verify` 步驟一的套件判定與 `sample` 深度 | 詢問並附「推薦答案偵測」的推薦答案；未回答時各消費端採其未設定處置 |
+| `project-kind` | `library`、`application`、`sample` | `ai-profile` | 專案含 `instructions.md` §1.5 work-root 判定所列的技術棧根標記 | `generate-readme-zh-tw` 的專案分類；`integration-verify` 步驟一的套件判定與 `sample` 深度；`e2e-manual` 的啟動條件判定 | 詢問並附「推薦答案偵測」的推薦答案；未回答時各消費端採其未設定處置 |
 | `workflow-depth` | `full`、`light` | `workflow-orchestration` | 進入 Workflow 時 | 不阻擋 | 不詢問；依 `instructions.md`「Workflow 深度」由 `project-kind` 推導 |
 | `git-workflow` | `trunk`、`release-flow` | `git-workflow` | 專案位於 Git repo | commit、啟動 Workflow、建立分支 | 詢問並附 `git-workflow` skill「推薦值推導」的推薦答案；各值的語意由該 skill 定義 |
+| `manual-root` | 路徑格式：非空單行，相對專案根目錄的路徑或絕對路徑 | `e2e-manual` | 使用者明確要求 `e2e-manual` 產出操作手冊，且 `project-kind` 為 `application` | `e2e-manual` 寫入 `<manual-root>` 下的操作手冊與圖；E2E 的撰寫與執行不阻擋 | 只在 `e2e-manual` 首次啟動時詢問（必答），附推薦答案 `docs/manual`；不列入「一次問完」 |
 | `target.sqlserver` | `2012`、`2014`、`2016`、`2017`、`2019`、`2022`、`2025` | `sql-query` | 專案相依 SQL Server 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 SQL Server 專用 SQL | 撰寫、修改或產生涉及 SQL Server 的原生 SQL、`FromSql*`、EF Core 對 SQL Server 的查詢與 provider 設定，以及整合測試的資料庫容器映像與相容性設定（SQL Server） | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |
 | `target.sqlserver.compat` | `90`、`100`、`110`、`120`、`130`、`140`、`150`、`160`、`170` | `sql-query` | `target.sqlserver` 已設定 | 不阻擋 | 不獨立詢問；視為 `target.sqlserver` 對應的預設相容性層級（對照見 `sql-query` 的 `references/sqlserver.md`） |
 | `target.oracle` | `11g`、`12cR1`、`12cR2`、`18c`、`19c`、`21c`、`23ai`、`26ai` | `sql-query` | 專案相依 Oracle 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 Oracle 專用 SQL | 撰寫、修改或產生涉及 Oracle 的原生 SQL、`FromSql*`、EF Core 對 Oracle 的查詢與 provider 設定，以及整合測試的資料庫容器映像與相容性設定（Oracle） | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |
@@ -82,10 +83,28 @@ project-kind: library
 
 新專案尚無專案檔時只適用第 1 與第 5 項，並參考建立要求中的描述。
 
+## manual-root
+
+鍵保存操作手冊的落點，擁有者為 `e2e-manual`，手冊與截圖的結構由該 skill 定義。
+
+### 取值與路徑解析
+
+- 值為單行路徑。相對路徑以 `AGENTS.local.md` 所在的專案根目錄為基準；絕對路徑原樣使用。
+- 專案不適合把文件放進 repo 時（例如 repo 的 `docs/` 另有用途），填 repo 外的絕對路徑。路徑在 repo 外時，手冊與圖不進版控。
+- 目錄不存在時由 `e2e-manual` 在寫入手冊時建立。
+
+### 詢問
+
+- 時機：`e2e-manual` 首次啟動且鍵缺少時，由 `e2e-manual` 單獨詢問，必答，不屬於「一次問完」。
+- 選項：推薦答案 `docs/manual`；使用者可改填其他相對路徑或 repo 外的絕對路徑。
+- 寫入：依「寫入」，推薦答案須經使用者確認才寫入。
+- 本機屬性：值寫在本機 `AGENTS.local.md`，不進版控，因此絕對路徑可以是本機專屬路徑。
+
 ## 一次問完
 
+- **適用範圍**：本節處理列舉值鍵。`manual-root` 的值是路徑，不適用本節，由 `e2e-manual` 啟動時依「manual-root」單獨詢問。
 - **觸發**：鍵登錄表中任一鍵在其阻擋範圍內第一次被需要，且該鍵缺少。
-- **收集**：列出鍵登錄表中適用此專案、缺少，且缺少時處置為詢問的全部鍵，包含阻擋範圍不涵蓋當前工作的鍵。`workflow-depth` 不詢問，不列入。本 Session 內使用者已略過的鍵，只在其自身阻擋範圍涵蓋當前工作時再次列出。
+- **收集**：列出鍵登錄表中適用此專案、缺少，且缺少時處置為詢問的全部鍵，包含阻擋範圍不涵蓋當前工作的鍵。`workflow-depth` 不詢問，`manual-root` 不適用本節，兩者都不列入。本 Session 內使用者已略過的鍵，只在其自身阻擋範圍涵蓋當前工作時再次列出。
 - **呈現**：在同一輪訊息列出全部鍵。每個鍵附合法選項、推薦答案與理由；負責的 skill 有選項差異者（例如 `code-style.csharp` 的新專案與既有專案）依該 skill 提供選項。阻擋範圍涵蓋當前工作的鍵標示必答，其餘標示可略過。
 - **等待**：必答鍵收到答案前，停止被阻擋的工作，不被阻擋的工作照常進行。可略過的鍵未回答時照常工作，留待其阻擋範圍被需要時再問。
 - **寫入**：依「寫入」一次寫入本輪收到的全部鍵，未回答的鍵不寫。推薦答案須經使用者確認（含「照推薦」之類的明確回覆）才寫入。
