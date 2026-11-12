@@ -61,6 +61,17 @@ AI 看不到桌面視窗，實際能做到的程度取決於環境提供的工�
 
 提高自動化程度的方向：桌面程式的邏輯與 UI 分離得越好（WPF 採 MVVM、商業邏輯抽離 code-behind），可被單元測試與層級 A / B 涵蓋的比例越高。若要長期提升，可評估在專案導入 FlaUI（.NET 原生、較輕量）或 WinAppDriver + Appium。
 
+## Blazor Hybrid 桌面應用
+
+WPF 或 WinForms 外殼以 BlazorWebView 承載 Blazor 時，畫面內容在 WebView2 裡，驗證時另依下列各點處理：
+
+- 讀取 WebView2 內容：正常狀態下 Blazor 元素經 UIA 可見，元素有 Name 與 ControlType，`ControlType.Document` 的 Name 為頁面標題。查詢要等待重試，不假設元素已存在。此行為只在 WPF 外殼驗證過，WinForms 外殼未經驗證。
+- 等待 Blazor 首次渲染完成：受測程式提供就緒訊號時等該訊號，否則等 Document 的 Name 變為頁面標題，之後才查詢與操作。
+- 判定白屏時搭配截圖：UIA 找得到元素時畫面仍可能未繪製，以 `PrintWindow` 擷取受測視窗並取樣像素判斷，不受其他視窗遮擋。
+- 取得 DOM 細節：啟動前以環境變數開啟 WebView2 遠端偵錯，再經 CDP 讀取。
+- 撰寫可重跑的測試：完整寫法與細節依 `blazor-testing` skill。
+- 與使用者同時使用電腦：預設以 UIA pattern 與 CDP 操作並以 `PrintWindow` 截圖，不搶前景；必要的真實輸入與隔離選項依 `blazor-testing` skill 的 `## 與使用者同時使用電腦`。
+
 ## 派遣分界
 
 工作拆成 Codex 端的建置與取證，以及 Claude 端的判定。
