@@ -86,6 +86,7 @@ applyTo: "**/*"
 - 產出前先判定讀者是人員或下一階段 Agent。
 - **Human-facing 產物**：套用本節既有的精簡、結論優先與雜訊清除規則，讓人員能快速理解決策與待辦事項。
 - **AI-facing 產物**：以下一階段能機械對照為準，完整保留輸入、限制、路徑、驗證條件與例外。Human-facing 的精簡規則不適用於此類產物。
+- 判定讀者後，進版控的產物（含 AI-facing 的規則檔與 skill）依 `doc-placement` 判定具體讀者與資訊落點；顯示給使用者的文字依 `uiux`「使用者可見文字」。
 
 #### 報告與文件呈現
 
@@ -210,7 +211,7 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | 編輯 `*.cs` 且新增或修改 `public` 成員，且 `project-kind` 不是 `sample`（未設定時亦載入） | 追加 `csharp-docs` |
 | 編輯 `*Tests/**/*.cs` 或含 `[Test]`／`[TestCase]` 的 `*.cs` | 追加 `csharp-nunit` |
 | 讀取或修改 `*.csproj`、`*.sln`、`*.slnx` | `csharp-language-features` |
-| 編輯 `*.md` | `check-markdown`、`doc-editing` |
+| 編輯 `*.md` | `check-markdown`、`doc-editing`；進版控的 `*.md` 追加 `doc-placement` |
 | 編輯 `*.ps1`、`*.psm1` | `powershell`、`scripting-conventions` |
 | 編輯 `*.sh` | `scripting-conventions` |
 | 編輯 `*.csx` | `scripting-conventions`、`ai-profile`、`csharp-style`（依註記追加參考檔，同 `*.cs`） |
@@ -222,6 +223,8 @@ Persona 需依所在平台決定規則檔的讀取方式與 sub-agent 的派生�
 | 編輯 `*.spec.ts`、`*.test.ts` | 追加 `vitest` |
 | 編輯 `*.sql` | `sql-query` |
 | 編輯 `Dockerfile`、`compose.yml`、`compose.yaml` | `docker` |
+| 撰寫程式碼註解、XML 文件、commit 訊息或 PR 描述，或判定某項資訊該寫入哪份文件 | `doc-placement` |
+| 新增或修改顯示給使用者的文字（UI 文字、副標、提示、Tooltip、空狀態、錯誤訊息，位於 `*.cs`、`*.razor`、`*.xaml`、`*.vue`、`*.ts`、`*.tsx` 或資源檔） | `uiux`（依「使用者可見文字」） |
 | 修改跨模組介面、分層或依賴方向 | `codebase-design` |
 | 撰寫或修改 `instructions.md` 與任何 `SKILL.md` | `writing-for-agents` |
 | 發動 `codex exec`、撰寫派遣單或執行派遣回收判定 | `codex-dispatch` |
