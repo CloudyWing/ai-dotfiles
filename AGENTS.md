@@ -32,6 +32,7 @@
 - 新增或調整 plugin 內容時，同步確認 Setup 的 8b、8c 與 `README.md` §3。
 - `docs/agents.md` 與 `docs/skills.md` 為 `.githooks/Update-Docs.ps1` 於 pre-commit 產生的生成檔，請勿手動編輯，手改會在下次 commit 被覆蓋。
 - `Update-Docs.ps1` 在 pre-commit 階段只對 `docs/agents.md` 與 `docs/skills.md` 執行 `git add`，不再處理 `instructions.md`。這兩個生成檔不手動編輯，通常不會有未暫存的變更；拆成多筆 commit 時，仍依 `git-workflow` skill 先確認 hook 的暫存目標再安排分組。Agent 的 Persona／sub-agent 分類由該腳本的 `$personaAgents` 清單決定；新增 Persona 時需同步更新此清單。
+- `.githooks/pre-commit` 在 `Update-Docs.ps1` 之後以 `pwsh` 執行 `.githooks/Test-StagedDocPath.ps1`。staged 的 `.md`、`.toml` 新增行含磁碟機絕對路徑（如使用者目錄）時阻擋 commit，`.local` 目錄與 `*.local.md` 不檢查。偵測規則在 `claude-plugins/ai-agents-hooks/hooks/lib/doc-path-check.ps1`。需要在進版控的文件寫路徑時，改用佔位符（如 `<sourceRoot>`）或相對路徑。
 
 ## 6. 設定位置權威對照
 
