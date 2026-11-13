@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-03
+superseded-by: 0041
 ---
 
 # ADR-0032：Codex 檔位依用途拆分並移除預設檔位
