@@ -55,6 +55,7 @@
 | `database-schema-context` | 知識型 | agent | Use when the user asks to export or inspect database schema context, use an existing offline schema snapshot, or check database schema changes with SchemaExporter. |
 | `desktop-smoke` | 知識型 | agent | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
 | `doc-editing` | 知識型 | agent | Use when 修改技術筆記、規格文件或 Markdown 文件，需要保留內容、查閱事實與維持文件結構時。 |
+| `doc-placement` | 知識型 | agent | Use when 撰寫或修改會進版控的 .md 文件（README、docs、AGENTS.md、規則檔）、程式碼註解、XML 文件、commit 訊息或 PR 描述，需要判定讀者與資訊落點，或要寫入本機路徑、內部代碼、實作細節與設計經過時。 |
 | `docker` | 知識型 | agent | Dockerfile 與 Docker Compose 專案慣例：.NET 多階段建置的快取層寫法、非 root 執行、.NET 映像缺少字型與 Nginx 官方映像的設定陷阱、Compose Specification 檔名與相依寫法。當撰寫或檢視 Dockerfile、Compose 設定或 Nginx 容器設定時自動套用。 |
 | `e2e-manual` | 知識型 | agent | 可重跑 E2E 與操作手冊流程：從需求摘要的驗收條件挑出關鍵流程，撰寫 Playwright（網站）或 FlaUI 加 NUnit（WinForms、WPF）E2E，執行時自動截圖，全部通過才產出含畫面截圖的 .md 操作手冊。Use when 使用者明確要求建立可重跑的 E2E、操作手冊或手冊截圖，且專案的 project-kind 為 application 時。 |
 | `ef-core` | 知識型 | agent | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理、變更追蹤最佳實踐、模型設定（DateTime Kind、精度、資料庫預設值）、SaveChanges 失敗後的狀態與導覽屬性同步，以及依 AI-PROFILE 目標版本鍵設定 provider 相容性。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。 |
@@ -80,7 +81,7 @@
 | `sql-query` | 知識型 | agent | SQL 撰寫規範：參數化查詢、索引友善寫法、效能陷阱迴避與可讀性格式要求，涵蓋 SQL Server（T-SQL）與 Oracle 雙資料庫的語法差異與語意陷阱，並依 AI-PROFILE 目標版本鍵避開不支援語法。當撰寫或審查原生 SQL 時自動套用。 |
 | `survey` | 知識型 | human | 掃描專案結構並產出供團隊成員閱讀的技術文件索引。當要求掃描專案、建立文件索引、補齊技術文件或盤點專案結構時使用。 |
 | `typescript-frontend` | 知識型 | agent | 前端 TypeScript 規範：strict 模式、型別設計、泛型使用、型別窄化與 Vue 3 整合。當偵測到前端 TypeScript 專案時自動套用。 |
-| `uiux` | 知識型 | agent | UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態與響應式版面。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」時亦適用。 |
+| `uiux` | 知識型 | agent | UI/UX 決策規範，含版面資訊層級、改動邊界與不可自由裁量清單、決策攤開格式、互動狀態、響應式版面與使用者可見文字準則。當新增或改動畫面版面、頁面配置、表單或列表排版、儀表板、元件擺放位置、響應式行為、互動狀態呈現，或撰寫與修改 UI 文字、副標、提示、Tooltip、空狀態與錯誤訊息時自動套用；使用者說「優化版面」「調整畫面」「這頁太亂」「幫我做個畫面」「改一下提示文字」「錯誤訊息怎麼寫」時亦適用。 |
 | `uiux-baseline` | 知識型 | agent | 掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced. |
 | `vitest` | 知識型 | agent | 前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。 |
 | `vue-router` | 知識型 | agent | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。 |
