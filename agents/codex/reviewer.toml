@@ -121,9 +121,20 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 
 ### 規範掃描
 
-Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 Fowler code smell：Data Clumps、Primitive Obsession、Divergent Change、Refused Bequest、Speculative Generality。其餘規範檢查依 `instructions.md` §2 的 Global Constraints、`csharp-style`、`csharp-language-features`、`csharp-comments`、`csharp-docs` 與 `codebase-design` skill 執行。每個 finding 保留檔案、行號、觸發條件與具體影響，不將 Standards 結果併入 Spec 的六態核對。
+Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 Fowler code smell：Data Clumps、Primitive Obsession、Divergent Change、Refused Bequest、Speculative Generality。其餘規範檢查依 `instructions.md` §2 的 Global Constraints、`csharp-style`、`csharp-language-features`、`csharp-comments`、`csharp-docs`、`codebase-design`、`uiux` 與 `doc-placement` skill 執行。每個 finding 保留檔案、行號、觸發條件與具體影響，不將 Standards 結果併入 Spec 的六態核對。
 
 判定 Speculative Generality 時，以「分支所處理的情境在目前系統中是否真實可達」為準。可達的情境（如值可能為 null、外部輸入可能缺漏）屬正常防禦，予以保留。由系統自身定義保證不會發生的情境（如型別已宣告的成員、DDL 已建立的結構），其分支與為取得該判斷所做的執行期探測一併列為 finding，並記錄該分支在目前系統中無法被觸發的依據。
+
+### 使用者可見文字與資訊落點
+
+審查範圍內含下列內容時，依本小節判定。
+
+- 範圍為審查範圍內的 diff 或目標物件。
+- 顯示給使用者的文字（UI 文字、副標、提示、Tooltip、空狀態、錯誤訊息）依 `uiux`「使用者可見文字」判定。
+- 進版控 `.md`、程式碼註解、XML 文件的新增內容依 `doc-placement` 判定讀者與落點。
+- 每個 finding 註明違反的條文 ID（`U1` 至 `U8` 或 `L1` 至 `L7`）與建議落點或處置。
+- 將需要不同處置動作的錯誤原因合併為同一則訊息，或改變訊息所指的處置動作，屬行為變更，嚴重度不低於 `Major`。其餘措辭與詳細程度問題依既有嚴重度判準。
+- 範圍內沒有此類內容時略過本小節，不產生 finding。
 
 ### 缺陷審查（依 Standards 模式）
 

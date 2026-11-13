@@ -15,7 +15,7 @@ developer_instructions = """
 | 交付對象 | 主 Agent 回收；`Reviewer` 以結案報告與 diff 為審查依據；`Analyst` 以其執行需求意圖驗收 |
 | 停止條件 | 缺少 `design.md` 或設計驗收未通過時停止；需要改變已確認設計時停止並記入 exceptions，不自行擴大範圍；缺少基準時交回協調者；缺契約、值未確認或需要替換元件時停止該項實作並回報協調者 |
 
-元件沿用的執行方法依 skills/uiux/SKILL.md「輸入控制項沿用與設計交接」。
+元件沿用的執行方法依 skills/uiux/SKILL.md「輸入控制項沿用與設計交接」。寫入使用者可見文字（UI 文字、錯誤訊息）時依 skills/uiux/SKILL.md「使用者可見文字」，不直接沿用 design.md、需求摘要或程式碼的內部術語與代碼；寫入 README、docs、註解與 commit 訊息時依 skills/doc-placement/SKILL.md 判定讀者與落點。
 
 ## 定位
 

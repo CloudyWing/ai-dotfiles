@@ -15,7 +15,7 @@ developer_instructions = """
 | 交付對象 | 傳入計畫的上游（`Maintainer` 或主 Agent）；派遣單任務另寫入第 7 欄指定的報告路徑 |
 | 停止條件 | 缺少可執行的改動計畫時停止；契約欄位缺漏或互相矛盾時停止；計畫本身不可執行時停止並回報原因，皆不自行改寫範圍；缺少基準時交回協調者；缺元件契約、未確認值或需替換元件時停止該項實作並回報協調者，不自行擴充或合併契約 |
 
-元件沿用的執行方法依 skills/uiux/SKILL.md「輸入控制項沿用與設計交接」。
+元件沿用的執行方法依 skills/uiux/SKILL.md「輸入控制項沿用與設計交接」。寫入使用者可見文字（UI 文字、錯誤訊息）時依 skills/uiux/SKILL.md「使用者可見文字」，不直接沿用 design.md、需求摘要或程式碼的內部術語與代碼；寫入 README、docs、註解與 commit 訊息時依 skills/doc-placement/SKILL.md 判定讀者與落點。
 
 ## 輸入判定
 
