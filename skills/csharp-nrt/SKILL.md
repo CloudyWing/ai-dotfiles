@@ -163,7 +163,7 @@ public partial class OrderList {
 | 一般元件的 `[Inject]`（.NET 9 以上，keyed service 除外） | `.razor.cs` 用傳統建構函式注入（見 `csharp-language-features`），`.razor` 用 `@inject` | 建構函式注入不需要屬性初始值 |
 | 初始化完成後仍可能為 `null` 的 `[SupplyParameterFromForm]`（純量欄位、依查詢載入且可能查無資料的 Model） | `T?` | `null` 是真實狀態，應由使用處處理 |
 | `[CascadingParameter]`（含 `HttpContext`） | `T?` | 只有上層提供時才有值；`HttpContext` 只在 static SSR 有值，interactive 轉譯時為 `null` |
-| `[Parameter]`（含 `[EditorRequired]`） | `T?` | `[EditorRequired]` 只產生編譯期警告，執行期仍可能未傳入 |
+| `[Parameter]`（含 `[EditorRequired]`） | `T?`；集合型別可宣告為非 nullable 並以 `= []` 初始化 | `[EditorRequired]` 與非 nullable 宣告都只產生編譯期警告，呼叫端仍可在執行期傳入 `null`。集合以 `= []` 初始化後，未傳入時元件直接處理空集合，省去 `null` 判斷 |
 | 在生命週期方法中才賦值的欄位或屬性（如 `EditContext`、從 `ScopedServices` 取得的服務；符合允許表的表單 Model 除外） | `T?` | 賦值依賴呼叫順序，例外或提早轉譯時仍為 `null` |
 
 ```csharp
@@ -175,6 +175,12 @@ private Movie Movie { get; set; } = default!;
 [SupplyParameterFromForm]
 private Movie? Movie { get; set; }
 ```
+
+`[Parameter]` 的集合型別指可用集合運算式 `[]` 初始化的序列型別，例如 `IReadOnlyList<T>`、`IList<T>`、`List<T>`、`T[]`、`IEnumerable<T>`。`string` 與字典型別不屬於此類，依表中 `T?` 宣告。以 `= []` 初始化時，注意下列三點：
+
+- `= []` 無法區分未傳入與傳入空集合。需要區分時改用 `T?`。
+- 呼叫端明確傳入 `null` 時，屬性值為 `null`，`= []` 擋不住。元件在使用處以 `Items ?? []` 讀取，不在元件內改寫參數本身。
+- `= []` 只在元件建立後從未傳入時生效。以 `@attributes` 展開或 `DynamicComponent` 傳參時，前一次有傳、這次沒傳的參數保留上一次的值，不會回到 `[]`。
 
 **範本產生碼**：ASP.NET Core Identity scaffold 產生的 `Components/Account/` 檔案，以成員為判定單位。維持範本原樣的成員不套用本節；新增或改寫的成員依本節規則宣告。其他來源複製的程式碼不屬於範本產生碼。
 
