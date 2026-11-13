@@ -55,7 +55,7 @@ EF fluent mapping 與 SQL 欄位對應須以 `rg` 找到來源後人工追蹤，
 ### 前置檢查
 
 1. 確認使用者指定的 connection 名稱。名稱的列出方式、安全名稱規則與執行檔解析順序沿用 `database-schema-context` Skill，連線字串不出現在任何命令、檔案或回報中。
-2. 以 `<exe> --help` 檢查能力。輸出不含 `comment-sql` 時停止，請使用者將 SchemaExporter 更新至 0.4.0 以上，不改以 Agent 或腳本拼 SQL。不以實際呼叫 `comment-sql` 試探版本，舊版會把未知參數交給桌面視窗，命令不會結束。
+2. 以 `<exe> --help` 檢查能力。輸出不含 `comment-sql` 時停止，請使用者將 SchemaExporter 更新至 0.5.0 以上，不改以 Agent 或腳本拼 SQL。
 3. 依 `database-schema-context` Skill 的「僅檢視既有文件」流程定位該 connection 的 Snapshot，路徑取自 `<ProjectRoot>/.local/ai-context/index.md` 的 Snapshot 列。Snapshot 不存在或不完整時，請使用者先以 `database-schema-context` 匯出，本階段不自行匯出。Snapshot 已過期時回報「已過期 N 天」，由使用者決定是否先刷新，因為新增段與差異段以 Snapshot 當下的註解為準。
 4. 讀取語彙表。沒有任何 Approved 詞條時，不建立或覆寫任何檔案，回報原因及待核准詞條數量。
 
@@ -90,6 +90,7 @@ schemaexporter comment-sql --snapshot "<snapshot>" --comments "<comments.json>" 
 | 1 | 參數錯誤。依 stderr 訊息修正命令後重跑。 |
 | 2 | 輸入檔錯誤或清單有問題，stderr 為 `Comment SQL failed: ...` 並逐項列出全部問題，輸出檔不會被建立或修改。依訊息修正 `comments.json` 後重跑。名稱對不上 Snapshot 時以 Snapshot 的寫法修正。註解超過長度上限或含不允許的字元時，修正會改變已核准的定義，停止並請使用者決定。同一項目修正一次後仍失敗時停止並回報。 |
 | 3 | 未預期的錯誤。保留 stderr 並回報，不重試。 |
+| 4 | 執行被取消。回報後停止，不重試。 |
 
 內容有誤時修正 `comments.json` 或回到語彙表，再重新執行子命令，不手動編輯 `comment-script.sql`。
 

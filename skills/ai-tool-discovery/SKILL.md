@@ -19,13 +19,13 @@ policy.allow_implicit_invocation: true
 | --- | --- | --- |
 | graphify | Get-Command graphify | graphify --version |
 | dotnet-script | Get-Command dotnet-script | dotnet-script --version |
-| SchemaExporter | Get-Command schemaexporter | 讀取 executable 的 FileVersionInfo.ProductVersion；空值時使用 FileVersion |
+| SchemaExporter | 依序 Get-Command schemaexporter、Get-Command CloudyWing.SchemaExporter.Cli，都找不到時檢查 %LOCALAPPDATA%\CloudyWing.SchemaExporter\current\tools\CloudyWing.SchemaExporter.Cli.exe | 讀取 executable 的 FileVersionInfo.ProductVersion，只取 `+` 之前的部分；空值時使用 FileVersion |
 | rg | Get-Command rg | rg --version |
 | ast-grep | Get-Command ast-grep | ast-grep --version |
 | jq | Get-Command jq | jq --version |
 | yq | Get-Command yq | 優先 yq --version；不支援時使用 yq -V，並確認輸出標記 Mike Farah 或 github.com/mikefarah/yq |
 
-Get-Command 找不到工具時，回報「未安裝」。命令存在但版本探測失敗時，回報「已安裝、版本未確認」及原始錯誤；不得將探測失敗推論為未安裝。yq 命令存在但輸出沒有 Mike Farah 或 github.com/mikefarah/yq 識別資訊時，回報「實作未確認」，不可將同名工具當成已確認的 yq。
+Get-Command 找不到工具時，回報「未安裝」。SchemaExporter 依上表定位方式的完整順序判定，兩個命令與安裝路徑都找不到時才回報「未安裝」；在安裝路徑找到時，以該執行檔讀取版本。命令存在但版本探測失敗時，回報「已安裝、版本未確認」及原始錯誤；不得將探測失敗推論為未安裝。yq 命令存在但輸出沒有 Mike Farah 或 github.com/mikefarah/yq 識別資訊時，回報「實作未確認」，不可將同名工具當成已確認的 yq。
 
 Inventory 快取只存工具名稱、命令定位狀態、版本或未確認原因，以及掃描時間。快取路徑為機器層 ~/.ai-agents/.local/cache/ai-tool-discovery.json，有效期為 7 天。快取採下列格式片段（完整快取有固定七種工具各一筆）；欄位缺漏、型別錯誤或工具清單與固定清單不一致時視為格式無效：
 

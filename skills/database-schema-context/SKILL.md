@@ -19,15 +19,15 @@ SchemaExporter 從自己的使用者設定讀取已設定的 named connection。
 
 使用者已提供連線名稱時使用該名稱。未提供時，列出 Name 與 DatabaseType 後請使用者選擇，不自行挑選。指定名稱不在 Schema.Connections 時回報「連線名稱不存在」，請使用者提供有效名稱，並停止流程；不得改用其他連線，也不得建立輸出目錄或輸出檔。
 
-SchemaExporter 執行檔依序解析：
+SchemaExporter CLI 執行檔依序解析：
 
 1. PATH 上的 schemaexporter。
-2. PATH 上的 CloudyWing.SchemaExporter。
-3. %LOCALAPPDATA%\CloudyWing.SchemaExporter\current\CloudyWing.SchemaExporter.exe。
+2. PATH 上的 CloudyWing.SchemaExporter.Cli。
+3. %LOCALAPPDATA%\CloudyWing.SchemaExporter\current\tools\CloudyWing.SchemaExporter.Cli.exe。
 
-前兩項使用 Windows Get-Command 以 Application 類型查找。第三項使用環境變數展開後的路徑。三者都找不到時回報無法定位執行檔並停止；不安裝或下載工具。
+前兩項使用 Windows Get-Command 以 Application 類型查找。第三項使用環境變數展開後的路徑。三者都找不到時回報無法定位執行檔並停止；不安裝或下載工具。桌面程式 CloudyWing.SchemaExporter.exe 帶引數啟動時直接以結束代碼 1 結束，不作為解析目標。下文命令中的 schemaexporter 代表解析到的 CLI 執行檔。
 
-每次啟動前，以執行檔的 --help、export --help 與 diff --help 檢查能力。確認支援 export --connection、--schema-summary、--snapshot，以及 diff 子命令的 --left、--right；任何必要能力缺少或說明無法確認時停止，並說明需要 SchemaExporter 0.4.0。
+每次啟動前，以執行檔的 --help、export --help 與 diff --help 檢查能力。確認支援 export --connection、--schema-summary、--snapshot，以及 diff 子命令的 --left、--right；任何必要能力缺少或說明無法確認時停止，並說明需要 SchemaExporter 0.5.0 以上。
 
 Schema context 設定檔為 <ProjectRoot>/.local/ai-context/schemaexporter/schema-context.json。以連線名稱作為 connections 的 key，每個項目只記錄 databaseType 與 freshnessDays。databaseType 必須與列出的 DatabaseType 相符，支援 SqlServer 與 Oracle；freshnessDays 為正整數，未設定時預設 7。範例如下：
 
