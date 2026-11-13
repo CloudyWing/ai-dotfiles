@@ -4,14 +4,14 @@
     "hard": ["write", "build-test", "web", "browse", "desktop-control", "image-gen"],
     "constraint": ["family", "gated"]
   },
-  "flags": ["E", "T", "Deep"],
+  "flags": ["E", "T"],
   "types": {
     "edit": { "requiredFlags": ["E", "T"], "impliedTags": ["write"], "forbiddenTags": [] },
     "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
     "test": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
     "generate": { "requiredFlags": [], "impliedTags": ["image-gen"], "forbiddenTags": ["write"] },
     "factcheck": { "requiredFlags": [], "impliedTags": ["web"], "forbiddenTags": ["write"] },
-    "review": { "requiredFlags": ["Deep"], "impliedTags": [], "forbiddenTags": ["write"], "crossFamily": true, "degradable": ["family"] },
+    "review": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "crossFamily": true, "degradable": ["family"] },
     "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "crossFamily": true, "degradable": ["family"] }
   },
   "executors": [
@@ -22,21 +22,21 @@
     },
     {
       "id": "codex-scan", "display": "Codex scan", "platform": "codex", "profile": "scan", "family": "codex",
-      "accepts": ["test", "generate", "factcheck"], "tags": ["build-test", "web", "browse", "desktop-control", "image-gen"], "when": {},
+      "accepts": ["test"], "tags": ["build-test", "web", "browse", "desktop-control"], "when": {},
       "order": 20, "gated": false, "escalationOnly": false, "escalatesTo": null,
-      "onOffline": { "test": "fallback", "generate": "stop", "factcheck": "fallback" }
+      "onOffline": { "test": "fallback" }
     },
     {
       "id": "codex-review", "display": "Codex review", "platform": "codex", "profile": "review", "family": "codex",
-      "accepts": ["review"], "tags": [], "when": { "Deep": false },
+      "accepts": ["review"], "tags": [], "when": {},
       "order": 30, "gated": false, "escalationOnly": false, "escalatesTo": null,
       "onOffline": { "review": "degrade" }
     },
     {
-      "id": "codex-deep-review", "display": "Codex deep-review", "platform": "codex", "profile": "deep-review", "family": "codex",
-      "accepts": ["review"], "tags": [], "when": { "Deep": true },
-      "order": 31, "gated": false, "escalationOnly": false, "escalatesTo": null,
-      "onOffline": { "review": "degrade" }
+      "id": "codex-content", "display": "Codex content", "platform": "codex", "profile": "content", "family": "codex",
+      "accepts": ["generate", "factcheck"], "tags": ["web", "image-gen"], "when": {},
+      "order": 35, "gated": false, "escalationOnly": false, "escalatesTo": null,
+      "onOffline": { "generate": "stop", "factcheck": "fallback" }
     },
     {
       "id": "codex-advisor", "display": "Codex advisor", "platform": "codex", "profile": "advisor", "family": "codex",

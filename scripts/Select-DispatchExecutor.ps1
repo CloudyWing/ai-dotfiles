@@ -25,7 +25,7 @@ scripts\dispatch\executor-registry.json，依固定演算法選出執行者並�
 旗標 T（需要測試循環），值為 true 或 false，僅該類型要求時提供。
 
 .PARAMETER Deep
-旗標 Deep（大範圍審查），值為 true 或 false，僅該類型要求時提供。
+已移除的旗標。type=review 不再依旗標選擇檔位，傳入此參數（任何值、任何類型）時以 SelectorFlagRemoved 結束碼 2 拒絕。
 
 .PARAMETER Tags
 任務所需的硬能力標籤，可用逗號分隔多個。
@@ -75,7 +75,8 @@ $ErrorActionPreference = 'Stop'
 $script:RegistrySchema = 'ai-agents.executor-registry.v1'
 $script:SelectionSchema = 'ai-agents.executor-selection.v1'
 $script:DescribeSchema = 'ai-agents.executor-describe.v1'
-$script:CodexProfileNames = @('review', 'deep-review', 'scan', 'advisor')
+$script:DeepFlagProvided = $PSBoundParameters.ContainsKey('Deep')
+$script:CodexProfileNames = @('review', 'scan', 'content', 'advisor')
 $script:OfflineActions = @('fallback', 'degrade', 'stop', 'wait-reset')
 $script:MaxTagVocabulary = 8
 
@@ -531,6 +532,9 @@ function Get-DescribeDocument {
 }
 
 function Invoke-Selector {
+    if ($script:DeepFlagProvided) {
+        throw (New-SelectorError -Code 'SelectorFlagRemoved' -Message '旗標 Deep 已移除，type=review 不再依旗標選擇檔位，請移除 -Deep。' -ExitCode 2)
+    }
     if ($null -ne $RemainingArgument -and @($RemainingArgument).Count -gt 0) {
         throw (New-SelectorError -Code 'SelectorParameterBinding' -Message ('偵測到多餘的位置參數：{0}。-Tags 與 -Offline 的多個值請以逗號連接且不含空白，例如 -Offline codex-scan,codex-review' -f (@($RemainingArgument) -join ' ')) -ExitCode 2)
     }
@@ -547,7 +551,7 @@ function Invoke-Selector {
     }
     $typeDef = $registry.Types[$Type]
 
-    $provided = [ordered]@{ E = $E; T = $T; Deep = $Deep }
+    $provided = [ordered]@{ E = $E; T = $T }
     $flags = @{}
     foreach ($flag in @($registry.Flags)) {
         $value = $null
