@@ -566,10 +566,10 @@ $maxEffortMatches = @()
 
 # 缺少的檔位設定檔依下表建立初始內容。檔案建立後屬本機設定，Setup 不再改寫。
 $codexProfileDefaults = [ordered]@{
-    'review'      = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'high' }
-    'deep-review' = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'high' }
-    'scan'        = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'medium' }
-    'advisor'     = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'high' }
+    'review'  = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'medium' }
+    'scan'    = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'max' }
+    'content' = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'medium' }
+    'advisor' = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'high' }
 }
 $codexProfileAgentsLines = @(
     '[agents]'

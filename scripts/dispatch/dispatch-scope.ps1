@@ -1527,7 +1527,7 @@ function Read-DispatchRequest {
             }
         }
         if (-not $matchedProfile) {
-            $removedProfileName = @('default', 'implement', 'intensive') | Where-Object { [string]::Equals($_, $profileValue, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+            $removedProfileName = (Get-CodexRemovedProfileNames) | Where-Object { [string]::Equals($_, $profileValue, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
             $message = if ($null -ne $removedProfileName) { '檔位 ' + $removedProfileName + ' 已移除。' } else { 'request 欄位 profile 格式無效。' }
             Throw-DispatchRequestFailure -Code 'DispatchRequestInvalidValue' -Message $message -RequestPathValue $requestPathValue -Field 'profile' -Detail ([ordered]@{ valid_values = $validProfiles; received = $profileValue })
         }

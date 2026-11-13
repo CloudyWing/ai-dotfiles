@@ -1275,6 +1275,10 @@ function Invoke-Start {
             }
         }
     }
+    if ($null -ne $anchorParentOptions) {
+        $phase = 'preparation'
+        Assert-ResumeAnchorProfileAvailable -AnchorParentOptions $anchorParentOptions
+    }
     $networkParentOptions = Resolve-DispatchNetworkParentOptions -Sandbox $sandboxValue -WriteMode $writeModeValue -ExecutionRoot $executionRootPath -Options $CodexParentOption -OptionsProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
     $parentOptionsResolution = Resolve-ParentOptionsForStart -Profile $effectiveProfileValue -ProfileProvided ([bool]$script:ProfileExplicit) -Sandbox $sandboxValue -WorkingDirectory $executionRootPath -AddDirectory $AddDirectory -Search ([bool]$Search) -AddDirectoryProvided ([bool]$script:AddDirectoryExplicit) -SearchProvided ([bool]$script:SearchExplicit) -CodexParentOption $networkParentOptions -CodexParentOptionProvided ([bool]$script:CodexParentOptionExplicit) -Anchor $anchorParentOptions
     if (-not [string]::IsNullOrWhiteSpace([string]$parentOptionsResolution.code)) {

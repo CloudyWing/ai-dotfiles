@@ -1593,7 +1593,7 @@ New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 # 所有檔位的設定檔皆為必備。以 fixture 內的 CODEX_HOME 取代真實的 ~/.codex，使未指定 CodexHome 的案例不讀取使用者環境。
 $testCodexHome = Join-Path $fixtureRoot 'test-codex-home'
 New-Item -ItemType Directory -Path $testCodexHome -Force | Out-Null
-foreach ($testProfileFileName in @('config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) {
+foreach ($testProfileFileName in @('config.toml', 'review.config.toml', 'scan.config.toml', 'content.config.toml', 'advisor.config.toml')) {
     [IO.File]::WriteAllText((Join-Path $testCodexHome $testProfileFileName), ("model = `"fixture-model`"`r`nmodel_reasoning_effort = `"high`"`r`n"), (New-Object System.Text.UTF8Encoding($false)))
 }
 $env:CODEX_HOME = $testCodexHome
@@ -7105,7 +7105,7 @@ if ($Phase -ge 4) {
     }
 
     Invoke-Case 'Phase 4 PROFILE-SPLIT removed profile anchors reject continuation with a current profile' {
-        foreach ($removedProfile in @('default', 'implement', 'intensive')) {
+        foreach ($removedProfile in @('default', 'implement', 'intensive', 'deep-review')) {
             $anchor = New-ParentOptionsModel -Profile $removedProfile -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
             $result = Resolve-ParentOptionsForStart -Profile 'scan' -ProfileProvided $true -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @() -Anchor $anchor
             Assert-True ($result.code -ceq 'ParentOptionsMismatch' -and $result.differences -contains 'profile') ('已移除檔位 ' + $removedProfile + ' 的 anchor 未拒絕跨檔位續行。')
@@ -7115,10 +7115,57 @@ if ($Phase -ge 4) {
     Invoke-Case 'Phase 4 INTENSIVE-PROFILE removed profile names cannot resolve a profile config path' {
         $removedProfileHome = Join-Path $fixtureRoot 'removed-profile-home'
         New-Item -ItemType Directory -Path $removedProfileHome -Force | Out-Null
-        foreach ($removedProfile in @('default', 'implement', 'intensive')) {
+        foreach ($removedProfile in @('default', 'implement', 'intensive', 'deep-review')) {
             Write-Utf8NoBom -Path (Join-Path $removedProfileHome ($removedProfile + '.config.toml')) -Content "model = `"m`"`r`n"
             Assert-True ($null -eq (Resolve-ProfileConfigPath -CodexHome $removedProfileHome -Profile $removedProfile)) ('已移除檔位 ' + $removedProfile + ' 仍可解析設定檔路徑。')
         }
+    }
+
+    Invoke-Case 'Phase 4 PROFILE-REMOVED removed profile anchors reject resume with ResumeProfileRemoved' {
+        foreach ($removedProfile in @('default', 'implement', 'intensive', 'deep-review')) {
+            $anchor = New-ParentOptionsModel -Profile $removedProfile -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
+            $failure = $null
+            try { Assert-ResumeAnchorProfileAvailable -AnchorParentOptions $anchor } catch { $failure = $_.Exception.Message }
+            Assert-True ($null -ne $failure -and $failure.StartsWith('ResumeProfileRemoved：') -and $failure.Contains($removedProfile) -and $failure.Contains('review, scan, content, advisor')) ('已移除檔位 ' + $removedProfile + ' 的錨點未以 ResumeProfileRemoved 拒絕。message=' + $failure)
+        }
+        $upperAnchor = New-ParentOptionsModel -Profile 'DEEP-REVIEW' -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
+        $upperFailure = $null
+        try { Assert-ResumeAnchorProfileAvailable -AnchorParentOptions $upperAnchor } catch { $upperFailure = $_.Exception.Message }
+        Assert-True ($null -ne $upperFailure -and $upperFailure.StartsWith('ResumeProfileRemoved：')) '已移除檔位名稱未以不分大小寫比對。'
+    }
+
+    Invoke-Case 'Phase 4 PROFILE-REMOVED current profiles and null anchor do not throw' {
+        foreach ($currentProfile in (Get-CodexDispatchProfileNames)) {
+            $anchor = New-ParentOptionsModel -Profile $currentProfile -Sandbox 'workspace-write' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
+            $failure = $null
+            try { Assert-ResumeAnchorProfileAvailable -AnchorParentOptions $anchor } catch { $failure = $_.Exception.Message }
+            Assert-True ($null -eq $failure) ('現行檔位 ' + $currentProfile + ' 的錨點被誤拒絕：' + $failure)
+        }
+        $nullFailure = $null
+        try { Assert-ResumeAnchorProfileAvailable -AnchorParentOptions $null } catch { $nullFailure = $_.Exception.Message }
+        Assert-True ($null -eq $nullFailure) '$null 錨點不應拋出。'
+    }
+
+    Invoke-Case 'Phase 4 PROFILE-REMOVED Invoke-Start checks the anchor profile before Resolve-ParentOptionsForStart' {
+        $startPath = Join-Path $scriptsRoot 'dispatch\start-lifecycle.ps1'
+        $startAst = [Management.Automation.Language.Parser]::ParseFile($startPath, [ref]$null, [ref]$null)
+        $invokeStartAst = $startAst.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-Start' }, $true)
+        Assert-True ($null -ne $invokeStartAst) '找不到 Invoke-Start 函式定義。'
+        $invokeStartText = $invokeStartAst.Extent.Text
+        $assertIndex = $invokeStartText.IndexOf('Assert-ResumeAnchorProfileAvailable')
+        $networkIndex = $invokeStartText.IndexOf('Resolve-DispatchNetworkParentOptions')
+        $resolveIndex = $invokeStartText.IndexOf('Resolve-ParentOptionsForStart')
+        Assert-True ($assertIndex -ge 0 -and $networkIndex -gt $assertIndex -and $resolveIndex -gt $assertIndex) 'Assert-ResumeAnchorProfileAvailable 未位於 Resolve-ParentOptionsForStart 之前。'
+    }
+
+    Invoke-Case 'Phase 4 PROFILE-REMOVED run record with a removed profile anchor stays readable' {
+        $removedRun = New-TestRun -Line 'line-a' -Dispatch 'phase4-removed-profile-anchor'
+        $removedRun.parent_options = New-ParentOptionsModel -Profile 'deep-review' -Sandbox 'read-only' -WorkingDirectory $fixtureRoot -AddDirectory @() -Search $false -CodexParentOption @()
+        $removedRun.parent_options_sha256 = $removedRun.parent_options.fingerprint
+        $removedRun.parent_options_status = 'confirmed'
+        $removedRunPath = Write-DispatchRunRecord -Record $removedRun -Update
+        $removedRecord = Read-DispatchRunRecord -Path $removedRunPath -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -LineSlug 'line-a' -DispatchSlug 'phase4-removed-profile-anchor'
+        Assert-True ($null -ne $removedRecord -and [string]$removedRecord.parent_options.profile -ceq 'deep-review') '已移除檔位的 RunRecord 無法讀取或 profile 遺失。'
     }
 
     Invoke-Case 'Phase 4 T001 anchor=advisor 顯式 Profile default 與 request profile 都拒絕 mismatch' {
@@ -7906,7 +7953,7 @@ if ($Phase -ge 5) {
             $request = Read-DispatchRequest -Path $path
             Assert-True ($request.profile -ceq $name) ('檔位未正規化：' + $name)
         }
-        foreach ($removedProfile in @('default', 'implement', 'intensive')) {
+        foreach ($removedProfile in @('default', 'implement', 'intensive', 'deep-review')) {
             $path = Join-Path $fixtureRoot ('profile-split-removed-' + $removedProfile + '.json')
             Write-Utf8NoBom -Path $path -Content ('{"schema":"ai-sessions.dispatch-request.v1","operation":"Start","line_slug":"line-a","dispatch_slug":"profile-split","profile":"' + $removedProfile + '"}')
             $failure = $null
@@ -7966,7 +8013,7 @@ if ($Phase -ge 5) {
         $validRequest = Read-DispatchRequest -Path $validPath
         Assert-True ($validRequest.profile -ceq 'scan' -and $validRequest.field_presence.profile) 'Request 未接受 scan profile。'
 
-        foreach ($rejectedProfile in @('implement', 'intensive', 'default', 'unsupported')) {
+        foreach ($rejectedProfile in @('implement', 'intensive', 'default', 'deep-review', 'unsupported')) {
             $invalidDocument = [ordered]@{}
             foreach ($property in $phase5SelectedRequestDocument.GetEnumerator()) { $invalidDocument[$property.Key] = $property.Value }
             $invalidDocument.profile = $rejectedProfile
@@ -8005,15 +8052,15 @@ if ($Phase -ge 5) {
             finally {
                 Set-Item -Path 'Function:\script:Throw-DispatchRequestFailure' -Value $originalRequestFailureHandler
             }
-            Assert-True ($null -ne $requestException -and $null -ne $script:capturedProfileRequestFailure -and $script:capturedProfileRequestFailure.code -ceq 'DispatchRequestInvalidValue' -and $script:capturedProfileRequestFailure.field -ceq 'profile' -and $script:capturedProfileRequestFailure.message -ceq $expectedProfileMessage -and (Compare-DispatchStringArrays -Left $script:capturedProfileRequestFailure.valid_values -Right @('review', 'deep-review', 'scan', 'advisor'))) ('profile ' + $rejectedProfile + ' 未以預期錯誤拒絕，或傳給錯誤處理器的 valid_values 未列出四個檔位。')
+            Assert-True ($null -ne $requestException -and $null -ne $script:capturedProfileRequestFailure -and $script:capturedProfileRequestFailure.code -ceq 'DispatchRequestInvalidValue' -and $script:capturedProfileRequestFailure.field -ceq 'profile' -and $script:capturedProfileRequestFailure.message -ceq $expectedProfileMessage -and (Compare-DispatchStringArrays -Left $script:capturedProfileRequestFailure.valid_values -Right @('review', 'scan', 'content', 'advisor'))) ('profile ' + $rejectedProfile + ' 未以預期錯誤拒絕，或傳給錯誤處理器的 valid_values 未列出四個檔位。')
         }
     }
 
     Invoke-Case 'Phase 5 INTENSIVE-PROFILE -Profile rejects implement and intensive at parameter binding' {
         $hostPath = (Get-Process -Id $PID).Path
-        foreach ($removedProfile in @('implement', 'intensive')) {
+        foreach ($removedProfile in @('implement', 'intensive', 'deep-review')) {
             $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile', '-NonInteractive', '-File', $sourcePath, '-Operation', 'Preflight', '-Profile', $removedProfile) -WorkingDirectory $fixtureRoot -EnvironmentVariables @{}
-            Assert-True ($run.exit_code -ne 0 -and (([string]$run.stdout + [string]$run.stderr) -match 'review,\s*deep-review,\s*scan,\s*advisor')) ('已移除檔位 ' + $removedProfile + ' 未被 -Profile 參數綁定拒絕。' + [string]$run.stdout + [string]$run.stderr)
+            Assert-True ($run.exit_code -ne 0 -and (([string]$run.stdout + [string]$run.stderr) -match 'review,\s*scan,\s*content,\s*advisor')) ('已移除檔位 ' + $removedProfile + ' 未被 -Profile 參數綁定拒絕。' + [string]$run.stdout + [string]$run.stderr)
         }
     }
 
@@ -8040,7 +8087,7 @@ if ($Phase -ge 5) {
         $requestValidationCases = @(
             [pscustomobject]@{ name = 'selected-requirement'; field = 'selected_requirement'; value = 'selected-requirement-secret'; expectedFormat = '#<positive integer>[,#<positive integer>...]' }
             [pscustomobject]@{ name = 'failure-receipt-path'; field = 'failure_receipt_path'; value = 'failure-receipt-secret'; expectedFormat = 'fully-qualified path' }
-            [pscustomobject]@{ name = 'profile'; field = 'profile'; value = 'profile-secret'; expectedFormat = 'review|deep-review|scan|advisor' }
+            [pscustomobject]@{ name = 'profile'; field = 'profile'; value = 'profile-secret'; expectedFormat = 'review|scan|content|advisor' }
             [pscustomobject]@{ name = 'advisor-request-source'; field = 'advisor_request_source'; value = 'advisor-source-secret'; expectedFormat = 'user-explicit' }
             [pscustomobject]@{ name = 'line-slug'; field = 'line_slug'; value = 'line_slug_secret'; expectedFormat = '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
             [pscustomobject]@{ name = 'dispatch-slug'; field = 'dispatch_slug'; value = 'dispatch_slug_secret'; expectedFormat = '小寫 slug（^[a-z0-9]+(?:-[a-z0-9]+)*$）' }
@@ -8800,7 +8847,7 @@ function New-DispatchBaseline {
         $machineDir = Join-Path $accountRoot 'machine'
         New-Item -ItemType Directory -Path $sourceCodex,$machineDir -Force | Out-Null
         foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets', 'rules')) { New-Item -ItemType Directory -Path (Join-Path $sourceCodex $namePart) -Force | Out-Null }
-        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
+        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'content.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
         $guardMessage = ''
         try { Set-AccountLink -Path (Join-Path $accountRoot 'rules') -Target (Join-Path $sourceCodex 'rules') -Type Junction } catch { $guardMessage = $_.Exception.Message }
         Assert-True ($guardMessage.Contains('禁止連結 rules')) '直接連結 rules 應被拒絕。'
@@ -8810,7 +8857,7 @@ function New-DispatchBaseline {
         $sourceWithoutRules = Join-Path $accountRoot 'source-clean'
         New-Item -ItemType Directory -Path $sourceWithoutRules -Force | Out-Null
         foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets')) { New-Item -ItemType Directory -Path (Join-Path $sourceWithoutRules $namePart) -Force | Out-Null }
-        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceWithoutRules $namePart) 'fixture' }
+        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'content.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceWithoutRules $namePart) 'fixture' }
         New-CodexAccount -Name 'fixture-clean' -HomeRoot $accountRoot -SourceCodex $sourceWithoutRules -MachinePath (Join-Path $machineDir 'machine.json')
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountRoot '.codex-fixture-clean\rules'))) '來源沒有 rules 時帳號 home 不應含 rules。'
     }
@@ -8821,7 +8868,7 @@ function New-DispatchBaseline {
         $machineDir = Join-Path $accountRoot 'machine'
         New-Item -ItemType Directory -Path $sourceCodex,$machineDir -Force | Out-Null
         foreach ($namePart in @('.sandbox', '.sandbox-bin', '.sandbox-secrets', 'rules')) { New-Item -ItemType Directory -Path (Join-Path $sourceCodex $namePart) -Force | Out-Null }
-        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
+        foreach ($namePart in @('.sandbox_migration', 'implement.config.toml', 'review.config.toml', 'content.config.toml', 'scan.config.toml', 'advisor.config.toml')) { Write-Utf8NoBom (Join-Path $sourceCodex $namePart) 'fixture' }
         New-CodexAccount -Name 'fixture' -HomeRoot $accountRoot -SourceCodex $sourceCodex -MachinePath (Join-Path $machineDir 'machine.json')
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountRoot '.codex-fixture\rules'))) '實際建立的帳號 home 不應含 rules。'
     }
@@ -12590,10 +12637,10 @@ fixture
     }
 
     $phase8ExpectedProfileDefaults = [ordered]@{
-        'review'      = @('gpt-6.1-terra', 'high')
-        'deep-review' = @('gpt-6.1-sol', 'high')
-        'scan'        = @('gpt-6.1-terra', 'medium')
-        'advisor'     = @('gpt-6.1-sol', 'high')
+        'review'  = @('gpt-6.1-sol', 'medium')
+        'scan'    = @('gpt-6.1-terra', 'max')
+        'content' = @('gpt-6.1-sol', 'medium')
+        'advisor' = @('gpt-6.1-sol', 'high')
     }
     $phase8RealCodexPrefix = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) '.codex'
     function Assert-Phase8SetupFixturePath {
@@ -12648,7 +12695,7 @@ fixture
         Remove-Item -LiteralPath $scanPath -Force
         $second = Invoke-SetupProfileCheck -CodexDirectory $caseRoot
         Assert-True (@($second.created_profiles).Count -eq 1 -and @($second.created_profiles)[0] -ceq 'scan.config.toml') ('只應重建被刪除的 scan 檔位。created=' + (@($second.created_profiles) -join ', '))
-        foreach ($name in @('review', 'deep-review', 'advisor')) {
+        foreach ($name in @('review', 'content', 'advisor')) {
             Assert-True ((Get-FileSha256 -Path (Join-Path $caseRoot ($name + '.config.toml'))) -ceq $hashes[$name]) ($name + ' 既有檔案內容被改寫。')
         }
         Assert-True ([IO.File]::ReadAllText($scanPath) -ceq $scanText) '重建的 scan 設定檔內容與用途對照不一致。'
@@ -12700,7 +12747,7 @@ fixture
         $requiredNames = @(Get-CodexDispatchProfileNames)
         $defaultKeys = @($result.profile_defaults.Keys)
         Assert-True ($defaultKeys.Count -eq $requiredNames.Count -and @($defaultKeys | Where-Object { $requiredNames -ccontains $_ }).Count -eq $requiredNames.Count) ('Setup 初始值表的鍵集合與檔位名稱集合不一致：' + ($defaultKeys -join ', '))
-        Assert-True ((@(Get-CodexDispatchProfileNames) -join ',') -ceq 'review,deep-review,scan,advisor') '檔位名稱集合或順序不符。'
+        Assert-True ((@(Get-CodexDispatchProfileNames) -join ',') -ceq 'review,scan,content,advisor') '檔位名稱集合或順序不符。'
     }
 
     Invoke-Case 'Phase 8 PROFILE-SPLIT account profile link status reports missing and not-link' {
@@ -12762,7 +12809,7 @@ fixture
         $script:profileSplitLinkTargets = @{
             ((Join-Path $accountRoot 'scan.config.toml')) = (Join-Path $codexRoot 'SCAN.config.toml')
             ((Join-Path $accountRoot 'review.config.toml')) = (Join-Path $caseRoot 'other\review.config.toml')
-            ((Join-Path $accountRoot 'deep-review.config.toml')) = ((Join-Path $codexRoot 'deep-review.config.toml') + '\')
+            ((Join-Path $accountRoot 'content.config.toml')) = ((Join-Path $codexRoot 'content.config.toml') + '\')
             ((Join-Path $accountRoot 'advisor.config.toml')) = '..\codex\advisor.config.toml'
         }
         function Get-Item {
@@ -12774,14 +12821,14 @@ fixture
             Microsoft.PowerShell.Management\Get-Item -LiteralPath $LiteralPath -Force:$Force
         }
         try {
-            $status = @(Get-CodexAccountProfileLinkStatus -AccountHome $accountRoot -CodexDirectory $codexRoot -ProfileName @('review', 'scan', 'deep-review', 'advisor', 'extra'))
+            $status = @(Get-CodexAccountProfileLinkStatus -AccountHome $accountRoot -CodexDirectory $codexRoot -ProfileName @('review', 'scan', 'content', 'advisor', 'extra'))
         }
         finally { $script:profileSplitLinkTargets = $null }
         $byName = @{}
         foreach ($item in $status) { $byName[$item.name] = $item.state }
         Assert-True ($byName['scan'] -ceq 'ok') ('大小寫不同的目標路徑應視為相同：' + $byName['scan'])
         Assert-True ($byName['review'] -ceq 'wrong-target') ('指向他處的連結應為 wrong-target：' + $byName['review'])
-        Assert-True ($byName['deep-review'] -ceq 'ok') ('結尾分隔符號不應影響比對：' + $byName['deep-review'])
+        Assert-True ($byName['content'] -ceq 'ok') ('結尾分隔符號不應影響比對：' + $byName['content'])
         Assert-True ($byName['advisor'] -ceq 'ok') ('相對目標應以連結所在目錄解析：' + $byName['advisor'])
         Assert-True ($byName['extra'] -ceq 'missing') ('不存在的檔位應為 missing：' + $byName['extra'])
     }

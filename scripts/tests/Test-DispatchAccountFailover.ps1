@@ -464,7 +464,7 @@ try {
         '{"type":"error","message":"The ''gpt-6.1-terra'' model is not supported when using Codex with a ChatGPT account."}',
         '{"type":"turn.failed","error":{"message":"The ''gpt-6.1-terra'' model is not supported when using Codex with a ChatGPT account."}}'
     )
-    $cloudyWingDeepReviewLine = @(
+    $cloudyWingReviewLine = @(
         '{"type":"thread.started","thread_id":"01a1c5de-9f15-7052-92fa-66695c6f58df"}',
         '{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `gpt-6.1-sol` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}',
         '{"type":"turn.started"}',
@@ -572,8 +572,8 @@ try {
         $null -eq $zero.rejection_kind -and $null -eq $unknown.rejection_kind -and -not (Test-DispatchAccountFailoverEligible -EventEvidence $zero) -and -not (Test-DispatchAccountFailoverEligible -EventEvidence $unknown)
     }
     Test-Case E24 {
-        # P1 實測分支 B：deep-review 的原文同為 model not supported，既有 kind 命中並可換帳號。
-        $files = FxEventsFromLine -Directory $eventDir -Name 'cloudy-deep-review' -Line $cloudyWingDeepReviewLine
+        # P1 實測分支 B：review 檔位的原文同為 model not supported，既有 kind 命中並可換帳號。
+        $files = FxEventsFromLine -Directory $eventDir -Name 'cloudy-review' -Line $cloudyWingReviewLine
         $evidence = Get-DispatchEventEvidence -EventPath $files.event -ErrorStreamPath $files.error -ProcessExitCode 1
         $evidence.rejection_kind -ceq 'model-not-supported' -and $evidence.item_event_count -eq 0 -and (Test-DispatchAccountFailoverEligible -EventEvidence $evidence)
     }

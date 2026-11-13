@@ -1400,7 +1400,28 @@ function Resolve-CodexAccountSelection {
 }
 
 function Get-CodexDispatchProfileNames {
-    return [string[]]@('review', 'deep-review', 'scan', 'advisor')
+    return [string[]]@('review', 'scan', 'content', 'advisor')
+}
+
+function Get-CodexRemovedProfileNames {
+    return [string[]]@('default', 'implement', 'intensive', 'deep-review')
+}
+
+function Assert-ResumeAnchorProfileAvailable {
+    [CmdletBinding()]
+    param(
+        [AllowNull()]
+        [object]$AnchorParentOptions
+    )
+
+    if ($null -eq $AnchorParentOptions) { return }
+    $anchorProfile = [string](Get-DispatchJsonProperty -Object $AnchorParentOptions -Name 'profile')
+    if ([string]::IsNullOrWhiteSpace($anchorProfile)) { return }
+    foreach ($removedName in (Get-CodexRemovedProfileNames)) {
+        if ([string]::Equals($removedName, $anchorProfile, [StringComparison]::OrdinalIgnoreCase)) {
+            throw ('ResumeProfileRemoved：錨點派遣使用的檔位 ' + $removedName + ' 已移除，無法續行。請以新的 dispatchSlug 冷啟動，並改用現行檔位（' + ((Get-CodexDispatchProfileNames) -join ', ') + '）。')
+        }
+    }
 }
 
 function Resolve-ProfileConfigPath {

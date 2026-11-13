@@ -48,7 +48,7 @@ param(
 
     [string]$PromptPath,
 
-    [ValidateSet('review', 'deep-review', 'scan', 'advisor')]
+    [ValidateSet('review', 'scan', 'content', 'advisor')]
     [string]$Profile,
 
     [string]$CodexHome,

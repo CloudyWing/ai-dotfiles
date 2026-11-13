@@ -77,7 +77,7 @@ function Test-AccountLinkPlan {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$AccountHome, [Parameter(Mandatory)][string]$Source)
     $conflicts = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($profile in @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) {
+    foreach ($profile in @('review.config.toml', 'scan.config.toml', 'content.config.toml', 'advisor.config.toml')) {
         $dest = Join-Path $AccountHome $profile
         $target = Join-Path $Source $profile
         $conflict = Get-AccountProfileTypeConflict -Path $dest -Target $target
@@ -130,7 +130,7 @@ function New-CodexAccount {
     if ($null -ne $machineDirItem -and (-not $machineDirItem.PSIsContainer -or ($machineDirItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw "machine 目錄類型錯誤：$machineDir" }
     if ($null -eq $machineDirItem) {
         try {
-            $preflightProfiles = @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')
+            $preflightProfiles = @('review.config.toml', 'scan.config.toml', 'content.config.toml', 'advisor.config.toml')
             foreach ($namePart in $preflightProfiles) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Leaf)) { throw "來源檔案不存在：$namePart" } }
             $preflightKeys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
             foreach ($project in $ProjectPath) {
@@ -163,7 +163,7 @@ function New-CodexAccount {
                 $lock = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             }
         }
-        $profiles = @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')
+        $profiles = @('review.config.toml', 'scan.config.toml', 'content.config.toml', 'advisor.config.toml')
         foreach ($namePart in $profiles) { if (-not (Test-Path -LiteralPath (Join-Path $source $namePart) -PathType Leaf)) { throw "來源檔案不存在：$namePart" } }
         $keys = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::Ordinal)
         foreach ($project in $ProjectPath) {
@@ -192,7 +192,7 @@ function New-CodexAccount {
         if ($keys.Count -eq 0) { Write-AccountStatus 'trust（未預先信任專案，派工時自動補上）' $configPath 'skipped' }
         foreach ($key in $keys) { $status = if ($WhatIfPreference) { 'skipped' } elseif ($config.Missing -contains $key) { 'created' } else { 'exists' }; Write-AccountStatus 'trust' $key $status }
         $step = 'profiles'
-        foreach ($profile in @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) {
+        foreach ($profile in @('review.config.toml', 'scan.config.toml', 'content.config.toml', 'advisor.config.toml')) {
             $dest = Join-Path $accountHomePath $profile
             $item = Get-AccountItem $dest
             $profileConflict = Get-AccountProfileTypeConflict -Path $dest -Target (Join-Path $source $profile)

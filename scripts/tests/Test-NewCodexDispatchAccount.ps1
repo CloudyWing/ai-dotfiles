@@ -61,7 +61,7 @@ function NcNewEnv {
     $root = NcNewDir -Name $Name
     $source = Join-Path $root 'source-codex'
     $null = New-Item -ItemType Directory -Path $source -Force
-    foreach ($file in @('review.config.toml', 'deep-review.config.toml', 'scan.config.toml', 'advisor.config.toml')) { [IO.File]::WriteAllText((Join-Path $source $file), 'x', $utf8NoBom) }
+    foreach ($file in @('review.config.toml', 'scan.config.toml', 'content.config.toml', 'advisor.config.toml')) { [IO.File]::WriteAllText((Join-Path $source $file), 'x', $utf8NoBom) }
     $homeRoot = Join-Path $root 'homes'
     $null = New-Item -ItemType Directory -Path $homeRoot -Force
     $machineDir = Join-Path $root 'machine'
@@ -238,7 +238,7 @@ try {
             $sandboxNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets', '.sandbox_migration')
             $sandboxPresent = @($sandboxNames | Where-Object { $null -ne (Get-Item -LiteralPath (Join-Path $environment.account_home $_) -Force -ErrorAction SilentlyContinue) })
             $null -eq $run.exception -and $configText.Contains('[windows]') -and $configText.Contains("sandbox = `"mxc`"") -and -not $configText.Contains('elevated') -and -not $configText.Contains('[projects') -and (@($run.lines | Where-Object { $_.StartsWith('trust（未預先信任專案，派工時自動補上）') }).Count -eq 1) -and (Test-Path -LiteralPath $environment.machine_path) -and
-            $sandboxPresent.Count -eq 0 -and (NcListing -Path $environment.account_home) -ceq 'advisor.config.toml:link|config.toml:file|deep-review.config.toml:link|review.config.toml:link|scan.config.toml:link'
+            $sandboxPresent.Count -eq 0 -and (NcListing -Path $environment.account_home) -ceq 'advisor.config.toml:link|config.toml:file|content.config.toml:link|review.config.toml:link|scan.config.toml:link'
         }
         Test-Case 'T05' {
             # 帳號 home 既有的 .sandbox 連結不被檢查、改名或刪除；來源 home 缺 .sandbox* 不影響建立。
