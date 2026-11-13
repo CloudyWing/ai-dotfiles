@@ -358,6 +358,8 @@ PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移�
 
 `readonly` 且建立 worktree 時，`Preflight` 檢查每個 `target_path` 是否位於 dispatch worktree repository 內且未被 gitignore 排除。範圍外路徑列入 `targetsOutsideRepository`；`Start` 將清單寫入 prompt，要求執行端直接讀取這些路徑，不經 Git 狀態盤點。對未被忽略的目錄 target，`Preflight` 逐檔檢查來源目錄中的子檔，個別被 gitignore 排除的檔案也逐一列入清單；遞迴盤點會略過 ReparsePoint。
 
+建立 worktree 時，`Start` 另依 `targetStates` 在 prompt 寫入「[Git 路徑對應]」，逐條列出 `target_path` 對應的 dispatch worktree 相對 pathspec，並要求 Git 命令一律在 dispatch worktree 執行。Windows 的 `mxc` 沙盒不允許執行端把工作目錄切到 sourceRoot，在 sourceRoot 執行 `git status` 會失敗；dispatch worktree 已帶入來源的未 commit 變更，Git 證據在其中取得。列入 `targetsOutsideRepository` 的路徑不列入對應。
+
 `targetStates` 記錄每個 target 的類型。已存在的路徑依實際類型記錄；新 Preflight 的缺席路徑依輸入結尾的 `\` 或 `/` 判定為目錄或精確檔案。舊版 Preflight 結果缺少 `TargetKind` 時，若 `Exists=true`，`Collect` 依 source 與 dispatch 路徑的實際狀態推斷並標示 `kind_source=inferred`；若 `Exists=false`，固定視為精確檔案，不依輸入分隔符號推斷目錄。`Collect` 發現派遣端類型與記錄類型不一致時，以 `CollectTargetKindChanged` 拒絕，包含 file 變成 directory 或 directory 變成 file；類型一致的目錄 target 維持子檔套回行為。
 
 `Start` 會固定 `--cd`、`--sandbox`、`--profile`、`--add-dir`、`--search` 等父層選項的位置，再執行 `codex exec` 或同一 thread 的 `codex exec resume`。`--json`、`--output-last-message` 與 prompt 選項位於子命令之後。事件流、stderr、last-message、thread id 與 PID 記錄各自保存，啟動結果包含實際參數，供後續複核。
