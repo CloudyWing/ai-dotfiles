@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 [CmdletBinding()]
 param(
-    [ValidateSet('B1','B2','B3','B4','B5','B6','B7','B8','B9','D1','D2','D3','D4','D5','D6','D7','All')][string]$Unit = 'All',
+    [ValidateSet('B1','B2','B3','B4','B5','B6','B7','B8','B9','D1','D2','D3','D4','D5','D6','D7','D8','All')][string]$Unit = 'All',
     [string]$FixtureBaseRootPath = 'C:\tmp',
     [ValidateRange(1,2)][int]$Repeat = 2
 )
@@ -1329,6 +1329,68 @@ for ($script:Round = 1; $script:Round -le $Repeat; $script:Round++) {
             foreach ($term in $requiredTerms) { Assert-P1B ($skillText.Contains($term)) ('Dispatch skill omits required compatibility text: ' + $term) }
             Assert-P1B (-not $skillText.Contains('保存原文與行號，繼續解析其餘事件')) 'Dispatch skill still says malformed event lines are preserved in results and parsing continues.'
             Assert-P1B (-not $skillText.Contains('失敗原因取 `turn.failed.error.message`')) 'Dispatch skill still says Inspect returns the raw turn.failed error message.'
+        }
+    }
+    if ($Unit -in @('D8','All')) {
+        Invoke-P1BCase 'Start prompt maps source target paths to dispatch worktree relative git pathspecs' {
+            $sourceRootValue = 'C:\fixture\src-root'
+            $executionRootValue = 'C:\fixture\src-root\.local\ai-sessions\worktrees\d8-slug'
+            $fileTarget = $sourceRootValue + '\scripts\dispatch\a.ps1'
+            $dirTarget = $sourceRootValue + '\docs'
+            $ignoredTarget = $sourceRootValue + '\.local\ai-sessions\report\x\review-report.md'
+            $newPreflight = {
+                param([hashtable]$Override)
+                $values = [ordered]@{
+                    sourceRoot               = $sourceRootValue
+                    executionRoot            = $executionRootValue
+                    worktreeCreated          = $true
+                    targetsOutsideRepository = @()
+                    targetStates             = @(
+                        [pscustomobject]@{ InputPath = $fileTarget; FullPath = $fileTarget; RelativePath = 'scripts\dispatch\a.ps1'; Exists = $true; TargetKind = 'file'; IsTracked = $true },
+                        [pscustomobject]@{ InputPath = $dirTarget; FullPath = $dirTarget; RelativePath = 'docs'; Exists = $true; TargetKind = 'directory'; IsTracked = $true }
+                    )
+                }
+                foreach ($key in @($Override.Keys)) { $values[$key] = $Override[$key] }
+                return [pscustomobject]$values
+            }
+
+            $directive = New-DispatchGitPathMappingPromptDirective -Preflight (& $newPreflight @{})
+            Assert-P1B (-not [string]::IsNullOrWhiteSpace($directive)) 'Git path mapping directive was not produced for a worktree dispatch.'
+            Assert-P1B ($directive.StartsWith('[Git 路徑對應]')) ('Directive header is missing: ' + $directive)
+            Assert-P1B ($directive.Contains($executionRootValue)) 'Directive omitted the execution root.'
+            Assert-P1B ($directive.Contains('- ' + $fileTarget + ' => scripts/dispatch/a.ps1')) ('Directive omitted the file pathspec mapping: ' + $directive)
+            Assert-P1B ($directive.Contains('- ' + $dirTarget + ' => docs')) ('Directive omitted the directory pathspec mapping: ' + $directive)
+            Assert-P1B (-not $directive.Contains('=> scripts\dispatch')) 'Directive kept a backslash pathspec.'
+
+            $withOutside = New-DispatchGitPathMappingPromptDirective -Preflight (& $newPreflight @{
+                    targetsOutsideRepository = @($ignoredTarget)
+                    targetStates             = @(
+                        [pscustomobject]@{ FullPath = $fileTarget; RelativePath = 'scripts\dispatch\a.ps1' },
+                        [pscustomobject]@{ FullPath = $ignoredTarget; RelativePath = '.local\ai-sessions\report\x\review-report.md' },
+                        [pscustomobject]@{ FullPath = $fileTarget; RelativePath = 'scripts\dispatch\a.ps1' }
+                    )
+                })
+            Assert-P1B ($withOutside.Contains('=> scripts/dispatch/a.ps1') -and -not $withOutside.Contains($ignoredTarget) -and -not $withOutside.Contains('review-report.md')) ('Directive listed an outside-repository target: ' + $withOutside)
+            $mappingLineCount = @($withOutside -split '\r?\n' | Where-Object { $_.StartsWith('- ') }).Count
+            Assert-P1B ($mappingLineCount -eq 1) ('Directive did not list a duplicated FullPath exactly once: ' + $withOutside)
+
+            $onlyOutside = New-DispatchGitPathMappingPromptDirective -Preflight (& $newPreflight @{
+                    targetsOutsideRepository = @($ignoredTarget)
+                    targetStates             = @([pscustomobject]@{ FullPath = $ignoredTarget; RelativePath = '.local\x.md' })
+                })
+            Assert-P1B ($null -eq $onlyOutside) 'Directive was produced when every target is outside the repository.'
+
+            Assert-P1B ($null -eq (New-DispatchGitPathMappingPromptDirective -Preflight (& $newPreflight @{ worktreeCreated = $false }))) 'Directive was produced without a dispatch worktree.'
+            Assert-P1B ($null -eq (New-DispatchGitPathMappingPromptDirective -Preflight (& $newPreflight @{ executionRoot = $sourceRootValue }))) 'Directive was produced when sourceRoot equals executionRoot.'
+            Assert-P1B ($null -eq (New-DispatchGitPathMappingPromptDirective -Preflight (& $newPreflight @{ executionRoot = $sourceRootValue.ToUpperInvariant() }))) 'Directive was produced when sourceRoot equals executionRoot ignoring case.'
+            Assert-P1B ($null -eq (New-DispatchGitPathMappingPromptDirective -Preflight (& $newPreflight @{ targetStates = @() }))) 'Directive was produced without target states.'
+
+            $roundTripped = ConvertFrom-DispatchJson -Content ((& $newPreflight @{}) | ConvertTo-Json -Depth 10)
+            $roundTrippedDirective = New-DispatchGitPathMappingPromptDirective -Preflight $roundTripped
+            Assert-P1B ($roundTrippedDirective -ceq $directive) ('Directive from a JSON-loaded Preflight differs from the in-memory result: ' + $roundTrippedDirective)
+            $singleStateJson = ConvertFrom-DispatchJson -Content ((& $newPreflight @{ targetStates = @([pscustomobject]@{ FullPath = $dirTarget; RelativePath = 'docs' }) }) | ConvertTo-Json -Depth 10)
+            $singleDirective = New-DispatchGitPathMappingPromptDirective -Preflight $singleStateJson
+            Assert-P1B ($singleDirective.Contains('- ' + $dirTarget + ' => docs')) 'Directive from a single-target JSON-loaded Preflight omitted the mapping.'
         }
     }
 }

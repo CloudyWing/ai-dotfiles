@@ -173,6 +173,53 @@ function New-TargetsOutsideRepositoryPromptDirective {
         $pathList
 }
 
+function New-DispatchGitPathMappingPromptDirective {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object]$Preflight
+    )
+
+    $worktreeCreated = Get-DispatchResultPropertyValue -Object $Preflight -Names @('worktreeCreated')
+    if ($worktreeCreated -isnot [bool] -or -not $worktreeCreated) {
+        return $null
+    }
+    $sourceRootValue = [string](Get-DispatchResultPropertyValue -Object $Preflight -Names @('sourceRoot'))
+    $executionRootValue = [string](Get-DispatchResultPropertyValue -Object $Preflight -Names @('executionRoot'))
+    if ([string]::IsNullOrWhiteSpace($sourceRootValue) -or [string]::IsNullOrWhiteSpace($executionRootValue) -or $sourceRootValue.Equals($executionRootValue, [StringComparison]::OrdinalIgnoreCase)) {
+        return $null
+    }
+    $targetStates = @(Get-DispatchResultPropertyValue -Object $Preflight -Names @('targetStates') | Where-Object { $null -ne $_ })
+    if ($targetStates.Count -eq 0) {
+        return $null
+    }
+    $outsideTargets = @(Get-DispatchResultPropertyValue -Object $Preflight -Names @('targetsOutsideRepository') | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_ })
+
+    $seenFullPaths = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    $mappingLines = New-Object System.Collections.Generic.List[string]
+    foreach ($targetState in $targetStates) {
+        $fullPath = [string](Get-DispatchJsonProperty -Object $targetState -Name 'FullPath')
+        $relativePath = [string](Get-DispatchJsonProperty -Object $targetState -Name 'RelativePath')
+        if ([string]::IsNullOrWhiteSpace($fullPath) -or [string]::IsNullOrWhiteSpace($relativePath)) {
+            continue
+        }
+        if (@($outsideTargets | Where-Object { $_.Equals($fullPath, [StringComparison]::OrdinalIgnoreCase) }).Count -gt 0) {
+            continue
+        }
+        if (-not $seenFullPaths.Add($fullPath)) {
+            continue
+        }
+        $mappingLines.Add('- ' + $fullPath + ' => ' + $relativePath.Replace([string][char]92, [string][char]47))
+    }
+    if ($mappingLines.Count -eq 0) {
+        return $null
+    }
+
+    return '[Git 路徑對應]' + [Environment]::NewLine +
+        'Git 命令一律在 dispatch worktree 執行：' + $executionRootValue + '。不要切換到 sourceRoot，也不要以 git -C 或絕對路徑 pathspec 指向 sourceRoot：' + $sourceRootValue + '。dispatch worktree 已帶入 sourceRoot 的未 commit 變更與未追蹤檔案，機密檔與被 gitignore 排除的檔案除外。派遣單第 3 欄的 sourceRoot 路徑依下列對應改用相對 pathspec：' + [Environment]::NewLine +
+        ($mappingLines.ToArray() -join [Environment]::NewLine)
+}
+
 function ConvertTo-CmdArgument {
     param(
         [Parameter(Mandatory)]
@@ -1667,6 +1714,10 @@ function Invoke-Start {
     $outsideRepositoryDirective = New-TargetsOutsideRepositoryPromptDirective -Preflight $preflight
     if (-not [string]::IsNullOrWhiteSpace($outsideRepositoryDirective)) {
         $promptDirectives.Add($outsideRepositoryDirective)
+    }
+    $gitPathMappingDirective = New-DispatchGitPathMappingPromptDirective -Preflight $preflight
+    if (-not [string]::IsNullOrWhiteSpace($gitPathMappingDirective)) {
+        $promptDirectives.Add($gitPathMappingDirective)
     }
     $promptDirectives.Add(
         '[中斷保全]' + [Environment]::NewLine +
