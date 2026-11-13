@@ -382,7 +382,7 @@ Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依�
 
 ##### F1 派工判準
 
-先判定工作是否留在主 Agent，再由登錄表選出執行者。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，這類工作不派出。Codex 端只有四個檔位（review、deep-review、scan、advisor），`scan` 用於測試與事實校閱，其餘依名稱；用途對照與設定檔見 `codex-dispatch` skill「檔位用途與新舊對照」，執行者與檔位的對應只存在登錄表。
+先判定工作是否留在主 Agent，再由登錄表選出執行者。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，這類工作不派出。Codex 端只有四個檔位（review、scan、content、advisor），`scan` 用於測試，`content` 用於事實校閱與影像產生，其餘依名稱；用途對照與設定檔見 `codex-dispatch` skill「檔位用途與新舊對照」，執行者與檔位的對應只存在登錄表。
 
 本輪工作命中某個 skill 時，先讀該 skill frontmatter 的 `dispatch` 欄位。`inline` 直接由 Claude 端處理；`delegate` 不由主 Agent 自理，依該 skill「## 任務標註」節呼叫選派入口；`split` 依該 skill 的「## 派遣分界」章節拆分。這三個值不再走下列判定順序。`either` 不指定歸屬，依下列判定順序處理。
 
@@ -470,7 +470,7 @@ Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依�
 1. 帳號由 Dispatch 腳本依 `machine.json` `codex_accounts` 登記清單動態選擇，主 Agent 不指定 `-CodexHome`。啟動前檢查是否已登入（登入檔存在，只看路徑、大小與修改時間，不讀內容），未登入者略過，並唯讀檢查該帳號 `config.toml` 能否信任派遣專案，不能者同樣略過。帳號遭服務端回報 model not supported 時，腳本把帳號與檔位 model 記在 `.local` 的帳號健康狀態檔，24 小時內略過該組合並在派遣紀錄寫出略過原因；所有帳號都被記錄時仍實際嘗試一次。
 2. 派遣遭服務端拒絕且尚無任何 item 進度時（含未歸入已知種類的拒絕），腳本改試下一個登記帳號：前景派遣由換帳號外層處理，背景派遣在 Inspect 偵測被拒時以下一個帳號重新啟動。重試只限換帳號，同一帳號不重送。帳號因 401 或登入檔缺少而不可用時，派遣結果與 Inspect 訊息附該帳號的 PowerShell 重新登入命令，主 Agent 原文轉給使用者。
 3. 「全數不可用」只依 Dispatch 回報的 `CodexAccountsAllUnavailable` 判定。
-4. 全數確認不可用後，將全部 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-review`）重新呼叫選派入口，依回傳狀態處置（降級審查、降級第二意見、改由 Sonnet 承接測試取證或事實查核，或停止回報），各狀態的處置見 `executor-selection` skill「狀態處置」。降級或改派時追加 exceptions「替代方案」，主 Agent 不自行頂替，硬能力（桌面控制、影像產生、瀏覽器與登入測試）沒有替代者時停止並回報使用者。
+4. 全數確認不可用後，將全部 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-review,codex-advisor`）重新呼叫選派入口，依回傳狀態處置（降級審查、降級第二意見、改由 Sonnet 承接測試取證或事實查核，或停止回報），各狀態的處置見 `executor-selection` skill「狀態處置」。降級或改派時追加 exceptions「替代方案」，主 Agent 不自行頂替，硬能力（桌面控制、影像產生、瀏覽器與登入測試）沒有替代者時停止並回報使用者。
 
 執行細節與恢復見 `codex-dispatch` skill `references/recovery.md`「離線改派的執行細節」。
 
@@ -484,7 +484,7 @@ Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依�
 | --- | --- | --- | --- |
 | 一般第二意見 | 方案取捨的另一角度、規則條款自洽性檢查、設計疑點複審 | `type=survey`，冷啟動 Claude Sonnet subagent，輸入為問題與證據檔絕對路徑 | 不需使用者授權 |
 | 高風險決策的跨家族交叉檢查 | 符合任一項即屬高風險決策。改變公開契約、資料結構或安全邊界；不可逆操作（刪除、發版、force push）；Sonnet 第二意見之間結論相左且影響 Phase 方向 | `type=advise`，Codex `advisor`；離線時改由 Sonnet 第二意見接手並標註同家族審查 | 啟動 Codex `advisor` 沿用 `[advisor 諮詢授權]` 與 `AdvisorRequestSource=user-explicit`；Sonnet 接手不需授權 |
-| 事實查核 | 版本、API 行為、外部規格等須上網查證的事實 | `type=factcheck`，Codex `scan`；離線時改由 Sonnet subagent 承接 | 不需使用者授權 |
+| 事實查核 | 版本、API 行為、外部規格等須上網查證的事實 | `type=factcheck`，Codex `content`；離線時改由 Sonnet subagent 承接 | 不需使用者授權 |
 
 advisor 只在使用者授權後啟動，以 `AdvisorRequestSource=user-explicit` 傳入。主 Agent 判斷值得諮詢時先向使用者提出請求，請求附上當下查詢到的額度供使用者判斷。請求原文固定如下，請求本身不構成授權。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工；該授權不延續到其他 Session。
 
@@ -541,7 +541,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 
 - 「審查者不得是改寫者」與本表並存。順序 1 已使 Claude 改寫的規則檔由 Codex 審查。
 - `Frontend Reviewer` 與 `Contract Auditor` 維持 Codex，Codex 離線時的處置同 `Reviewer`。
-- Codex `Reviewer` 的檔位由登錄表依 `Deep` 旗標選出（`review` 或 `deep-review`），旗標定義見 `executor-selection` skill「任務標註」。此判定屬規則決定，不需使用者在當下 Session 指定。
+- Codex `Reviewer` 的檔位固定為 `review`，不依檔數或規則檔與否分層。此判定屬規則決定，不需使用者在當下 Session 指定。
 - Codex 離線時，選派入口以 `degraded` 回傳 Sonnet subagent，審查報告首行標註「同家族審查」並追加 exceptions「替代方案」。派生契約與鏡像報告 `review-report-claude.md` 見 `workflow-orchestration` skill「Sonnet 審查路徑」。
 
 `Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，同線並行上限為 2。並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行。

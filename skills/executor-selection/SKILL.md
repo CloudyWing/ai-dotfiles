@@ -39,7 +39,6 @@ policy.allow_implicit_invocation: true
 | --- | --- |
 | `E`（範圍已列舉） | 全部目標檔案與修改位置可於派工前以絕對路徑與符號逐一列出 |
 | `T`（需要測試循環） | 符合任一項即為真。修改行為邏輯或修 bug；新增或調整測試；預期驗證命令需執行超過 1 次。純機械展開（重新命名、搬移、格式、樣板、對映表套用、註解補齊）且驗證至多 1 次者為假 |
-| `Deep`（大範圍審查） | 符合任一項即為真。規則檔機制條款（`instructions.md`、任何 `SKILL.md`、agent 規則檔）的審查，不論檔數；審查範圍達 3 個檔案以上 |
 
 Workflow 的判定單位為 `design.md` 的 Phase。E=是代表該 Phase 的每條 T-code 皆含動詞、完整檔案路徑與修改位置；T 另計 Checkpoint 需執行建置或測試命令超過 1 次的情形（靜態 Grep、檔案比對與結案 gate 的建置與測試各一次不計）。
 
@@ -64,12 +63,12 @@ Workflow 的判定單位為 `design.md` 的 Phase。E=是代表該 Phase 的每�
 
 ```powershell
 pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
-  [-E <true|false>] [-T <true|false>] [-Deep <true|false>] [-Tags <標籤,標籤>] `
+  [-E <true|false>] [-T <true|false>] [-Tags <標籤,標籤>] `
   [-ImplementerFamily <claude|codex>] [-Authorized] [-Offline <執行者 id,執行者 id>] `
   [-EscalateFrom <執行者 id>] [-Label <說明>] [-RegistryPath <路徑>] [-Describe]
 ```
 
-- 以逗號連接 `-Tags` 與 `-Offline` 的多個值，不含空白，例如 `-Offline codex-scan,codex-review,codex-deep-review,codex-advisor`。`pwsh -File` 與同一行程 `&` 呼叫都適用這個寫法。以空白分隔時，多餘的值會成為位置參數，入口以結束碼 2、錯誤碼 `SelectorParameterBinding` 拒絕。
+- 以逗號連接 `-Tags` 與 `-Offline` 的多個值，不含空白，例如 `-Offline codex-scan,codex-content,codex-review,codex-advisor`。`pwsh -File` 與同一行程 `&` 呼叫都適用這個寫法。以空白分隔時，多餘的值會成為位置參數，入口以結束碼 2、錯誤碼 `SelectorParameterBinding` 拒絕。
 
 - 輸出 stdout 單一 JSON 物件（schema `ai-agents.executor-selection.v1`），欄位含 `status`、`executor`、`degradations`、`requiresUserDecision`、`reason`、`considered` 與 `dispatchLine`。
 - 輸出 `dispatchLine` 原文作為本輪的 `[派工判定]` 行，不自行改寫判定值。

@@ -184,7 +184,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 派工使用 `review`、`deep-review`、`scan`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `instructions.md` §1.5 與 `executor-selection` skill。
+1. 派工使用 `review`、`scan`、`content`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `instructions.md` §1.5 與 `executor-selection` skill。
 2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。Setup 提供初始值，檔案建立後屬本機設定。
 
    ```toml

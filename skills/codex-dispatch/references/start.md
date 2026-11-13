@@ -539,7 +539,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 名稱符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，目錄使用已存在的絕對路徑。名稱與正規化路徑以不區分大小寫比較唯一性，reparse point 與同目錄別名拒絕。缺少清單或空陣列時沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 優先序；未登記 home 的 `codex_account_name=null`。格式異常回報 `CodexAccountConfigurationInvalid`，由使用者修正，維持原選擇。
 
-派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱>` 建立，`-ProjectPath <專案路徑>` 為選填，只用於預先信任專案。執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>` 與最小 `config.toml`（指定 `-ProjectPath` 時另含專案信任段落），將 `review`、`deep-review`、`scan`、`advisor` 的 `<檔位>.config.toml` 連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；寫入前先完整預檢帳號目錄、`config.toml` 與各連結，任一項類型或目標不符時輸出找到的連結類型、目標、預期與只刪連結的修法，不寫入任何項目；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml` 與各檔位連結，四個必備檔位缺少、不是連結或指向他處時警示，殘留的 `default.config.toml` 只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。`Get-CodexQuota.ps1` 回報 401 時，以該 `CODEX_HOME` 執行一次 codex（例如簡短的 `codex exec`）更新 token 後重新查詢；派工回報 401 時，派遣結果附該帳號的同格式登入命令，使用者以該命令重新登入。
+派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱>` 建立，`-ProjectPath <專案路徑>` 為選填，只用於預先信任專案。執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>` 與最小 `config.toml`（指定 `-ProjectPath` 時另含專案信任段落），將 `review`、`scan`、`content`、`advisor` 的 `<檔位>.config.toml` 連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；寫入前先完整預檢帳號目錄、`config.toml` 與各連結，任一項類型或目標不符時輸出找到的連結類型、目標、預期與只刪連結的修法，不寫入任何項目；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml` 與各檔位連結，四個必備檔位缺少、不是連結或指向他處時警示，殘留的 `default.config.toml` 只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。`Get-CodexQuota.ps1` 回報 401 時，以該 `CODEX_HOME` 執行一次 codex（例如簡短的 `codex exec`）更新 token 後重新查詢；派工回報 401 時，派遣結果附該帳號的同格式登入命令，使用者以該命令重新登入。
 
 派工時，Dispatch 在選定帳號後、Preflight 前確認該帳號的 `config.toml` 已信任派遣來源專案，缺少時在 `<machine.json 所在目錄>\codex-account.lock` 鎖內補上信任段落，並在派遣結果的 `project_trust` 記錄帳號、設定檔路徑與信任鍵。信任鍵為來源專案的 git 主工作樹根，以小寫寫入；來源是 linked worktree 時取其主工作樹根，來源不是 git 目錄時取來源目錄本身。此步驟只處理 `machine.json` 登記的帳號，使用者預設的 `~/.codex` 與未登記的 home 維持原樣，且只信任專案根目錄。
 
@@ -557,13 +557,13 @@ Start 啟動前依 `scripts/dispatch/sandbox-env-denylist.psd1` 移除子程序�
 
 | 檔位 | 用途 |
 | --- | --- |
-| `review` | 未達大範圍條件的 Codex `Reviewer` 審查（`type=review`、`Deep=false`） |
-| `deep-review` | 規則檔機制條款的審查（不論檔數），或審查範圍達 3 個檔案以上（`type=review`、`Deep=true`），旗標定義見 `executor-selection` skill |
-| `scan` | 測試（煙霧驗證取證，`type=test`）、事實校閱與上網查證（`type=factcheck`）、影像產生（`type=generate`） |
+| `review` | Codex `Reviewer` 審查（`type=review`），不依檔數或規則檔與否分層 |
+| `scan` | 測試（煙霧驗證取證，`type=test`） |
+| `content` | 事實校閱與上網查證（`type=factcheck`）、影像產生（`type=generate`） |
 | `advisor` | 意見評估（`type=advise`），授權與 gate 見「Advisor consult resource dispatch」 |
 
-已移除的 `default`、`implement`、`intensive` 檔位不能續行，續行呼叫必須帶上表的檔位名稱，與錨點不同而以 `ParentOptionsMismatch` 拒絕，需要繼續時以新 `dispatchSlug` 冷啟動。
-`Inspect` 與 `Collect` 不經檔位白名單，照常讀取舊 RunRecord。統計舊 RunRecord 時依派工角色換算檔位：reviewer 對應 `review`，scan、verify、probe 對應 `scan`；developer、support 的舊紀錄只供讀取，不換算到現行檔位。
+已移除的 `default`、`implement`、`intensive`、`deep-review` 檔位不能續行。續行錨點為這些檔位時，`Start` 在啟動前以 `ResumeProfileRemoved` 拒絕並指名該檔位，`process_started=false`；需要繼續時以新 `dispatchSlug` 冷啟動，改用上表的檔位。`-Profile` 或 Request 的 `profile` 指定這些名稱時，同樣在啟動前拒絕。
+`Inspect` 與 `Collect` 不經檔位白名單，照常讀取舊 RunRecord。統計舊 RunRecord 時依派工角色換算檔位：reviewer 對應 `review`，scan、verify、probe 對應 `scan`，`deep-review` 換算為 `review`；舊 `scan` 紀錄不依任務類型拆分；developer、support 的舊紀錄只供讀取，不換算到現行檔位。
 
 殘留的 `~/.codex\default.config.toml` 與各派工帳號目錄內指向它的連結不再被讀取，Setup 只偵測並警示。手動清理時先以 `Remove-Item -LiteralPath <帳號目錄>\default.config.toml` 刪除各帳號內的連結，只移除連結本身，再由使用者決定是否刪除 `~/.codex\default.config.toml`。
 
@@ -635,7 +635,7 @@ secondary_source_file=
 
 `Inspect` 預設唯讀，不寫入額度或推薦訊號。
 
-1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。其餘工作的檔位取自選派入口輸出的 `executor.profile`，審查依 `Deep` 旗標為 `review` 或 `deep-review`，測試與事實校閱為 `scan`。
+1. 主 Agent 先判斷工作是否屬意見評估，且判斷資料可整理成 evidence pack。其餘工作的檔位取自選派入口輸出的 `executor.profile`，審查為 `review`，測試為 `scan`，事實校閱與影像產生為 `content`。
 2. 屬意見評估時，主 Agent 先向使用者提出 advisor 授權請求；使用者同意後以 `AdvisorRequestSource=user-explicit` 派工。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工，該授權不延續到其他 Session。
 3. 額度只供顯示與紀錄，由主 Agent 手動查詢，時點為派工前、advisor 前、結案時與按需查詢；派工腳本不自動查詢。查詢失敗記為 unknown，派工照常進行。
 4. 所有出口都注入 `InterruptionSafeguard`，保留已確認結論、證據位置、未完成單位與不可推論內容。續行沿用原始 thread、父層選項與 ScopePlan。
