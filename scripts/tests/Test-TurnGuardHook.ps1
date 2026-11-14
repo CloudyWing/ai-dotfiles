@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param()
 Set-StrictMode -Version Latest
@@ -12,7 +12,7 @@ try {
     # 以原始位元組取得 hook 的 stdout，供斷言提醒輸出的編碼與 BOM。stdin 以無 BOM 的 UTF-8 送入。
     function Invoke-Hook([string]$Json) {
         $psi = New-Object Diagnostics.ProcessStartInfo
-        $psi.FileName = 'powershell.exe'
+        $psi.FileName = 'pwsh'
         $psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $hook + '"'
         $psi.UseShellExecute = $false
         $psi.CreateNoWindow = $true
@@ -231,7 +231,7 @@ try {
 param([string]$Hook, [int]$Count, [string]$Id, [string]$ErrorFile, [string]$ReminderFile)
 $json = '{"session_id":"stress","hook_event_name":"PostToolUseFailure","tool_name":"Bash","tool_input":{"command":"stress cmd"},"error":"stress failure"}'
 for ($i = 0; $i -lt $Count; $i++) {
-    $output = $json | & powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Hook 2>&1
+    $output = $json | & pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $Hook 2>&1
     if ($LASTEXITCODE -ne 0) { [IO.File]::AppendAllText($ErrorFile, "worker $Id exit=$LASTEXITCODE output=$output`n"); continue }
     if (@($output).Count -eq 0) { continue }
     # 同指紋第 2 次會輸出提醒，其餘 stdout 非空一律視為失敗；提醒內容由測試主體驗證。
@@ -245,7 +245,7 @@ for ($i = 0; $i -lt $Count; $i++) {
     $workers = @()
     try {
         for ($w = 0; $w -lt $workerCount; $w++) {
-            $workers += Start-Process -FilePath 'powershell.exe' -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $workerScript + '"'),'-Hook',('"' + $hook + '"'),'-Count',$perWorker,'-Id',$w,'-ErrorFile',('"' + $workerErrors + '"'),'-ReminderFile',('"' + $workerReminders + '"'))
+            $workers += Start-Process -FilePath 'pwsh' -PassThru -WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',('"' + $workerScript + '"'),'-Hook',('"' + $hook + '"'),'-Count',$perWorker,'-Id',$w,'-ErrorFile',('"' + $workerErrors + '"'),'-ReminderFile',('"' + $workerReminders + '"'))
         }
         foreach ($worker in $workers) { if (-not $worker.WaitForExit(120000)) { throw 'stress worker timeout' } }
     } finally {

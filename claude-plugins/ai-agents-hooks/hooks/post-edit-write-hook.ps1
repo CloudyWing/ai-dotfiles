@@ -1,4 +1,6 @@
-﻿[Console]::InputEncoding = [System.Text.Encoding]::UTF8
+﻿#Requires -Version 7.0
+
+[Console]::InputEncoding = [System.Text.Encoding]::UTF8
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $raw = [Console]::In.ReadToEnd()
