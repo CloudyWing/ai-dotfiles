@@ -9,6 +9,7 @@
 | 情境 | 入口 | 必要輸入 | 提供方式 |
 | --- | --- | --- | --- |
 | 建立資源派遣單 | `scripts\New-DispatchOrder.ps1` | `Title`、`Role`、`TargetPath`、`TaskBody`、`Acceptance`、`Boundary`、`ReportPath`、`DispatchSlug`、`LineSlug`；`OutputPath`、`RequiredRead` 選填 | 命令列參數；省略 `OutputPath` 時派遣單寫入來源工作樹 `handoff\<lineSlug>\dispatch-order-<dispatchSlug>.md`，即 `Dispatch` 讀取的位置，八個欄位定義見「派遣單契約」 |
+| 一次產出資源派遣的 Request、prompt、派遣單與 `line.json` | `scripts\New-DispatchInputs.ps1` | `SourceRoot`、`LineSlug`、`DispatchSlug`、`TaskType`、`Profile`；非 advise 另需派遣單參數 | 命令列參數；只支援唯讀資源派遣，參數、輸出與錯誤碼見「派遣輸入產生器」 |
 | 首次啟動一筆派遣（正式入口） | `scripts\Invoke-CodexDispatch.ps1 -Operation Dispatch` | `source_root`、`dispatch_root`、`line_slug`、`dispatch_slug`、`write_mode`、`dispatch_kind`、至少一個 `target_path`、`prompt_path`、`task_type`、`session_mode`、`unit_kind`、`failure_receipt_path` | 只接受 `operation=Dispatch` 的 request 檔（UTF-8 無 BOM），以 `-RequestPath` 傳入；欄位表與範例見「Dispatch 正式入口」 |
 | 同一 worktree 續行；換 worktree 續行；恢復或階段間檢查 | 同一 worktree 使用 `Start -ResumeThreadId`；換 worktree 使用 `Dispatch` 的 `session_mode=Continuation`；階段間檢查可分步呼叫 `Preflight`、`Prepare`、`Start` | 同一 worktree 的 Start 使用前輪 Dispatch result 記錄的 Preflight、Prepare 結果路徑及原 ScopePlan；換 worktree 使用新 `dispatchSlug`、重建 worktree 並承接父 ScopePlan | Start 參數來源見「續 session 與跨介面接手」；Dispatch 使用 request 檔；`prepare_artifacts` 只能經 request 檔傳入 |
 | 執行結束或中斷後 | `Inspect`，接著 `Collect` | 事件流、stderr、last-message、Preflight 結果與報告路徑；中斷時另回收逐單位保全檔 | 命令列參數 |
@@ -30,6 +31,34 @@ request 欄位先依 parser 白名單驗證，再依 operation 套用欄位作�
 Request 的 `operation` 以不區分大小寫的方式驗證，解析後使用正式 operation 名稱；命令列與 Request 的 operation 比對也不區分大小寫。結果的 `dispatch_request` 會保存 Request 檔路徑、SHA-256、位元組長度、正規化 operation、line／dispatch identity、欄位 presence，以及共用、Dispatch 與 Cleanup 欄位的正規化值。陣列欄位另保存筆數、SHA-256 與值；`literal_values` 另有獨立 SHA-256。
 
 Start 將 Request 檔路徑、SHA-256 與 operation 綁定至 RunRecord。advisor Inspect 會重新讀取 evidence pack，核對 Start 記錄的 SHA-256 與檔案長度，並在結果中回報 evidence pack 路徑與 hash；來源變更或內容不符時停止驗收。
+
+### 派遣輸入產生器
+
+`scripts\New-DispatchInputs.ps1` 為唯讀資源派遣一次產出全部派遣輸入，再交給 `Dispatch` 正式入口啟動。產生器固定 `dispatch_kind=resource`、`write_mode=readonly`、`session_mode=cold-start`；Workflow 派工、寫入派遣與 Prepare `refresh` 不經產生器，`-TaskType edit` 以 `DispatchInputTaskTypeUnsupported` 拒絕。
+
+| 參數 | 說明 |
+| --- | --- |
+| `-SourceRoot`、`-LineSlug`、`-DispatchSlug` | 必填。`SourceRoot` 須為存在的目錄，兩個 slug 須符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$` |
+| `-TaskType` | 必填，取 `review`、`test`、`generate`、`factcheck`、`advise`。`advise` 寫入 Request 時為 `advisor-consult`，其餘原樣 |
+| `-Profile` | 必填，取選派入口輸出的 `executor.profile`（`review`、`scan`、`content`、`advisor`）。產生器讀 `scripts\dispatch\executor-registry.json`，沒有 Codex 執行者同時具備該檔位且受理該類型時以 `DispatchInputProfileTaskMismatch` 拒絕；已移除的檔位名稱在參數繫結階段被拒絕 |
+| `-TargetPath`、`-Role`、`-Title`、`-TaskBody`、`-Acceptance`、`-Boundary`、`-ReportPath`、`-RequiredRead` | 非 advise 時轉傳 `New-DispatchOrder.ps1` 產生派遣單，各欄規則同該入口。路徑一律為完整絕對路徑。Preflight 會建立 dispatch worktree 時，`ReportPath` 須位於 `executionRoot` 內，否則以 `DispatchReportPathOutsideExecutionRoot` 拒絕 |
+| advise 時的派遣單參數 | 不產生派遣單，`Role`、`TaskBody`、`Acceptance`、`Boundary`、`ReportPath` 不需提供。`TargetPath` 省略時取 `EvidencePackPath`，`Role` 預設 `advisor`，`Title` 預設 `advisor 諮詢：<dispatchSlug>` |
+| `-SemanticLabel`、`-LineKind` | `line.json` 不存在時 `SemanticLabel` 必填；`LineKind` 取 `workflow` 或 `adhoc`，預設 `adhoc` |
+| `-RequiredIdentifier`、`-CallerSessionId`、`-Background` | 對應 Request 的 `required_identifier`、`caller_session_id`、`background` |
+| `-EvidencePackPath`、`-AdvisorReportPath`、`-AdvisorRequestSource` | 僅 advise 使用，對應 `evidence_pack_path`、`advisor_consult_report_path`、`advisor_request_source`；`AdvisorRequestSource` 只接受 `user-explicit` |
+
+輸出全部落在 `<SourceRoot>\.local\ai-sessions\` 之下，以排他建立寫入，任一輸出檔已存在時以 `DispatchInputOutputExists` 拒絕，不覆寫。
+
+| 產物 | 路徑 |
+| --- | --- |
+| `line.json` | `handoff\<lineSlug>\line.json`，只在不存在時建立；已存在時只驗證 `line-slug`，不一致或無法讀取時以 `DispatchInputLineManifestMismatch` 拒絕 |
+| 派遣單（非 advise） | `handoff\<lineSlug>\dispatch-order-<dispatchSlug>.md`，由 `New-DispatchOrder.ps1` 產生，失敗時以 `DispatchInputOrderFailed` 回報 |
+| prompt | `handoff\<lineSlug>\dispatch-prompt-<dispatchSlug>.md`，開頭為六標籤的 LineContext 區塊，接「Prompt 必備元素」第 1 至 4 項 |
+| Request | `history\<lineSlug>\dispatch-request-<dispatchSlug>.json`，`dispatch_root` 固定為 `<SourceRoot>\.local\ai-sessions\worktrees\<dispatchSlug>`；prompt LineContext 的執行根目錄依 Preflight 是否會建立 worktree 預先決定 |
+
+全部檔案寫入後，產生器以 `Invoke-CodexDispatch.ps1 -Operation Dispatch -RequestPath <request> -ValidateOnly` 自檢。exit code 為 0 且 `findings` 沒有 error 才算成功，stdout 輸出單一 JSON，含 `request_path`、`prompt_path`、`order_path`（advise 為 null）、`line_manifest_path`、`line_manifest_created` 與 `validate_only`。自檢失敗時刪除本次建立的 Request、prompt 與派遣單，以 `DispatchInputSelfCheckFailed` 與 exit 1 回報。`line.json` 一律保留，包含本次新建的，因為同線其他產生器可能已沿用它。Git 探針失敗時以 `DispatchInputGitProbeFailed` 回報。其他錯誤沿用 `ai-sessions.dispatch-order-validation.v1` 格式的 stderr JSON 與 `DispatchRequestMissingField`、`DispatchRequestInvalidPath` 等既有錯誤碼，回滾範圍相同。
+
+產生成功後，以輸出的 `request_path` 呼叫 `Invoke-CodexDispatch.ps1 -Operation Dispatch -RequestPath <request_path>` 啟動派遣。
 
 ### Caller Session 身分與併行准入
 
@@ -101,6 +130,7 @@ upstream 以 `git -C <sourceRoot> rev-parse --abbrev-ref '@{upstream}'` 讀取�
 
 - Preflight 進度逐行追加至 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\dispatch-progress-<dispatchSlug>.log`。每行以 Tab 分隔 UTC 時間、PID、stage、event、elapsedMs 與 detail。Dispatch stage 為 `dispatch-preflight`、`dispatch-prepare`、`dispatch-start`；Preflight stage 為 `admission`、`worktree-add`、`carry-in`、`sync-raw-bytes`、`baseline`、`target-ignore-scan`、`output-directories`。最後一行是 `begin` 且超過該階段合理時間時可據此定位停點；持續出現 `end` 或下一個 `begin` 表示仍有進度。外部程序逾時回報 `DispatchExternalCommandTimeout`；`check-ignore` 預設上限為 120 秒，其他 Git 命令為 600 秒。
 - 啟動前收據：建立 worktree 後寫入 `pending` 收據，成功啟動後更新為 `superseded`，失敗時寫入 `failed`；Dispatch result 的 `pre_start_receipt` 記錄路徑、SHA-256、狀態與錯誤。
+- 同 slug 冷啟動守衛：`session_mode` 不是 `continuation` 時（含單獨 `-Operation Preflight`），Preflight 在「dispatchRoot 已存在」檢查與建立 worktree 之前，讀取來源 `history\<lineSlug>\runs\<dispatchSlug>\` 的全部 RunRecord。沒有 RunRecord，或 RunRecord 全為未啟動（`unstarted-sandbox`）時放行。任一筆已實際啟動時以 `DispatchColdStartAlreadyStarted` 拒絕；任一筆無法判定啟動狀態（JSON 損毀、`launch_state=prepared`、`launch-failed` 缺 `process_started`、讀檔失敗）時以 `DispatchColdStartRunRecordUnverifiable` 拒絕，兩者都不建立 worktree。訊息以碼名起頭，列出 dispatchSlug 與每一筆相關 RunRecord 的絕對路徑。處置為改用新的 dispatchSlug（例如 `<原 dispatchSlug>-r2`），或以 `session_mode=continuation` 依 `references/recovery.md` 的續行流程處理。Dispatch result 的 `error_code` 帶出新碼；單獨 Preflight 只在 stderr 輸出。
 - 單位自動產生：Workflow 依 `design.md`「實作任務清單」章（`## ` 開頭且含「實作任務清單」的章節）內的 `### Phase N` 或 `#### Phase N` 標題順序產生 `requested_unit`，找不到該章時才解析全文件；章內同編號連續小節合併為一個單位，非連續重複拒絕；資源派遣依 `<sourceRoot>\.local\ai-sessions\handoff\<lineSlug>\dispatch-order-<dispatchSlug>.md` 第 3 欄產生，Request 的 `target_path` 必須與該欄完全相符。明確提供的 `requested_unit` 必須是來源清單的有序子集合。來源與 Request 不一致時，入口在 Preflight、Prepare、worktree 建立與 Codex 啟動前拒絕，回傳 `operation: DispatchRequest`、`process_started: false` 與 `detail.differences`。Request 欄位驗證錯誤的 detail 只列欄位名稱、預期格式與輸入長度，不回顯原始輸入值。
 - 派遣單目標路徑：第 3 欄若填入含 `dispatchSlug` 的 worktree 絕對路徑，改用新的 `dispatchSlug` 時需同步更新目標路徑並重產派遣單。目標位於 `sourceRoot` 且所選 sandbox 能直接讀取時，建議填穩定的 `sourceRoot` 絕對路徑。`targetsOutsideRepository` 只涵蓋 `sourceRoot` 內、位於 repository 外或被 gitignore 排除的路徑；`target_path` 一律必須位於 `sourceRoot` 內，超出時 Preflight 以 `DispatchOutputBoundary` 拒絕。此建議不改變 Request `target_path` 必須與第 3 欄完全相符的條件。
 - 外部資料：唯讀取證需要讀取 `sourceRoot` 以外的路徑時，以 `sourceRoot` 內的題目檔為第 3 欄目標並使用 `readonly`，外部路徑以絕對路徑逐一列在第 4 欄。read-only sandbox 可讀取這些路徑，但它們不進入 `target_path` 與 ScopePlan，派遣報告須逐條列出實際讀取的外部路徑。不以 `write` 或 direct-write 承接唯讀取證。
@@ -410,15 +440,15 @@ pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation DiagnoseMode
 
 `ThreadId` 與 `StartedAtUtc` 必填，`CodexHome` 省略時依 `CODEX_HOME` 或使用者的 `.codex` 目錄解析。輸出 JSON 含 `profile_model`、`profile_reasoning_effort`、`actual_model`、`actual_reasoning_effort` 與 `rollout_paths`；找不到精確對應的 session 或時間證據不足時，actual 的 `status` 為 `unknown`，不以 profile 設定值代填。
 
-派工腳本的回歸測試以 `scripts\tests\Test-DispatchRecoveryBinding.ps1 -Phase <1-9>` 單一入口執行，入口會依序在 Windows PowerShell 5.1 與 pwsh 7 執行並彙整結果，任一環境失敗即整體 exit 1。Phase 9 可選附加 `-SkipPhase9Diagnostic`；主組失敗時跳過診斷重跑並標示 `diagnostic_skipped=true`，省略參數時維持既有診斷行為。回收覆核時執行此入口，不需另外分別呼叫兩個執行環境。
+派工腳本的回歸測試以 `scripts\tests\Test-DispatchRecoveryBinding.ps1 -Phase <1-9>` 單一入口以 pwsh 7 執行，任一案例失敗即整體 exit 1。Phase 9 可選附加 `-SkipPhase9Diagnostic`；主組失敗時跳過診斷重跑並標示 `diagnostic_skipped=true`，省略參數時維持既有診斷行為。回收覆核時以 pwsh 執行此入口。
 
 `Collect` 在 worktree 路徑合併 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard` 的檔案清單。報告核對方式依 `DispatchKind` 分流：`workflow` 以結案報告「Phase 對照」節逐項比對檔案清單，並以「需求對照」節比對 `RequirementSummaryPath` 的需求項目編號，`resource` 只確認報告存在且非空並回傳其長度與 SHA-256。「需求對照」核對要求需求摘要同時具備 `## 程式面項目` 與 `## 功能面項目` 兩節，兩節表格的 `#` 編號合併後不得重複，且每個編號在結案報告「需求對照」表格恰有一列 `#<n>`；表格固定 6 欄（需求、驗收方向、T-code、實際行為、證據、狀態），以未跳脫的 `|` 切欄，每欄非空，狀態為四個合法值之一。缺節、摘要編號重複、缺列、重複列、多出摘要沒有的編號、欄數不符或欄位為空時，以非零結束碼停止並列出不符的編號。此核對只驗結構完整，不判定內容是否正確，內容一致性由 Reviewer 的需求對照核對負責。resource 的結案要求是逐條驗收，不逐 Phase 列出檔案清單，對它要求「Phase 對照」節會使每次資源派遣都無法回收。direct-write 路徑則讀取 Preflight 的 `targetStates`，確認每個核准輸出都存在、為非空檔案，並回傳檔案長度、最後寫入時間與 SHA-256。任一數量、路徑、檔案證據或報告不一致都停止回收，且在成果尚未完成回收前不得移除 worktree。
 
 交接物同步由獨立的 `Prepare` operation 執行（`ai-sessions.prepare.v1`）：只複製請求中明確列出、位於同線來源與允許目的根目錄內的檔案，逐一比對來源與目的 SHA-256，全部一致才標記 `Prepared`，任一缺件、越界或 hash 不符時標記 `PrepareFailed`。`Preflight` 不複製交接物，交接物只經由 Prepare 進入 worktree；建立 worktree 時的 tracked patch 與未追蹤檔案 carry-in 是工作區內容的同步，仍由 Preflight 執行，不屬於交接物複製。worktree 模式的 Start 必須收到 `Prepared` 結果，缺少或不一致時以 `PrepareRequired`／`PrepareArtifactMismatch` 停止；direct-write 使用 `status=not-required`。CodexHome 依序取顯式參數、`CODEX_HOME`、使用者目錄下的 `.codex`，實際值寫入 Prepare 結果、Start 輸出與 RunRecord。
 
-跨程序傳入陣列參數（`TargetPath`、`AddDirectory`、`CodexParentOption`）時，以 `-RequestPath` 傳入 `ai-sessions.dispatch-request.v1` JSON 檔，陣列元素的原文與順序即契約，逗號、空白、中文與 `$` 不經 shell 展開或重新切分。Start 續行需要提供這些陣列時，也將 `target_path`、`add_directory` 與 `codex_parent_option` 寫成 JSON array，透過 `-RequestPath` 傳入 `operation=Start` 的 request；不得以逗號字串替代。`Cleanup` 的 `report_path` 與 `evidence_path` 同樣是陣列，須放在 `operation=Cleanup` 的 request 檔中。`powershell.exe -File` 無法以命令列傳遞字串陣列，逗號串接會被視為單一字串，跨 PowerShell 執行環境呼叫時一律使用 request 檔。request 檔與命令列同一欄位不一致時以 `DispatchRequestMismatch` 停止。陣列參數同時寫在 Request 時，換帳號外層照常生效，見「主 Agent 的帳號切換決策」。
+跨程序傳入陣列參數（`TargetPath`、`AddDirectory`、`CodexParentOption`）時，以 `-RequestPath` 傳入 `ai-sessions.dispatch-request.v1` JSON 檔，陣列元素的原文與順序即契約，逗號、空白、中文與 `$` 不經 shell 展開或重新切分。Start 續行需要提供這些陣列時，也將 `target_path`、`add_directory` 與 `codex_parent_option` 寫成 JSON array，透過 `-RequestPath` 傳入 `operation=Start` 的 request；不得以逗號字串替代。`Cleanup` 的 `report_path` 與 `evidence_path` 同樣是陣列，須放在 `operation=Cleanup` 的 request 檔中。以 `-File` 啟動的腳本（`pwsh -File` 與 `powershell.exe -File` 皆同）無法以命令列傳遞字串陣列，逗號串接會被視為單一字串，跨程序呼叫時一律使用 request 檔。request 檔與命令列同一欄位不一致時以 `DispatchRequestMismatch` 停止。陣列參數同時寫在 Request 時，換帳號外層照常生效，見「主 Agent 的帳號切換決策」。
 
-服務端拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件與 stderr 判定 service rejection 分類與拒絕種類（usage-limit、401、model not supported、rate limit；未分類拒絕只標 `unclassified`，不產生 service rejection）。執行端保存已確認成果、證據位置與未完成單位，該次嘗試記為失敗，同一帳號不重送。未指定 `-CodexHome` 的 Dispatch 由腳本依「主 Agent 的帳號切換決策」改試下一個帳號；全部帳號被拒時回報 `CodexAccountsAllUnavailable`，才等待重設或依 `instructions.md`「離線改派」處理。
+服務端拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件與 stderr 判定 service rejection 分類與拒絕種類（usage-limit、401、model not supported、rate limit；未分類拒絕只標 `unclassified`，不產生 service rejection）。執行端保存已確認成果、證據位置與未完成單位，該次嘗試記為失敗，同一帳號不重送。未指定 `-CodexHome` 的 Dispatch 由腳本依「主 Agent 的帳號切換決策」改試下一個帳號；全部帳號被拒時回報 `CodexAccountsAllUnavailable`，主 Agent 依 `instructions.md`「離線改派」將全部 Codex 執行者以 `-Offline` 傳入選派入口並依回傳狀態處置。
 
 ### 額度狀態
 
@@ -505,12 +535,14 @@ Prompt 必須明列已驗證的 `LineContext`，格式如下：
 
 ```text
 lineSlug=<lineSlug>
+sourceRoot=<sourceRoot>
+dispatchRoot=<executionRoot>
 sourceLineRoot=<sourceRoot>\.local\ai-sessions\handoff\<lineSlug>
 dispatchLineRoot=<executionRoot>\.local\ai-sessions\handoff\<lineSlug>
 reportLineRoot=<executionRoot>\.local\ai-sessions\report\<lineSlug>
 ```
 
-`executionRoot` 取自 `Preflight` 的輸出，不由 Agent 自行推導。`worktreeCreated=false` 的直接寫入派遣沒有 dispatch worktree，此時 `executionRoot` 等於 `sourceRoot`，`dispatchLineRoot` 與 `reportLineRoot` 隨之落在來源工作樹。以 `dispatchRoot` 組出的路徑在該情境會指向不存在的位置。
+`executionRoot` 取自 `Preflight` 的輸出，不由 Agent 自行推導；使用派遣輸入產生器時，由產生器以 Preflight 相同的判定預先決定。`worktreeCreated=false` 的直接寫入派遣沒有 dispatch worktree，此時 `executionRoot` 等於 `sourceRoot`，`dispatchLineRoot` 與 `reportLineRoot` 隨之落在來源工作樹。以 `dispatchRoot` 組出的路徑在該情境會指向不存在的位置。
 
 Prompt 至少包含下列元素，缺一即視為契約未滿足。
 

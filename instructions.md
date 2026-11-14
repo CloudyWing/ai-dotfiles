@@ -473,7 +473,7 @@ Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依�
 **離線改派**：執行者只分在線與離線，判定離線的唯一來源是服務端拒絕（usage-limit、401、model not supported，以及尚無 item 進度即遭服務端拒絕的其他錯誤），額度數值不參與。規則寫法不因帳號數不同而不同。
 
 1. 帳號由 Dispatch 腳本依 `machine.json` `codex_accounts` 登記清單動態選擇，主 Agent 不指定 `-CodexHome`。啟動前檢查是否已登入（登入檔存在，只看路徑、大小與修改時間，不讀內容），未登入者略過，並唯讀檢查該帳號 `config.toml` 能否信任派遣專案，不能者同樣略過。帳號遭服務端回報 model not supported 時，腳本把帳號與檔位 model 記在 `.local` 的帳號健康狀態檔，24 小時內略過該組合並在派遣紀錄寫出略過原因；所有帳號都被記錄時仍實際嘗試一次。
-2. 派遣遭服務端拒絕且尚無任何 item 進度時（含未歸入已知種類的拒絕），腳本改試下一個登記帳號：前景派遣由換帳號外層處理，背景派遣在 Inspect 偵測被拒時以下一個帳號重新啟動。重試只限換帳號，同一帳號不重送。帳號因 401 或登入檔缺少而不可用時，派遣結果與 Inspect 訊息附該帳號的 PowerShell 重新登入命令，主 Agent 原文轉給使用者。
+2. 派遣遭服務端拒絕且尚無任何 item 進度時（含未歸入已知種類的拒絕），腳本改試下一個登記帳號：前景派遣由換帳號外層處理，背景派遣在 Inspect 偵測被拒時以下一個帳號重新啟動。重試只限換帳號，同一帳號不重送。帳號因 401 被拒，或因登入檔缺少、為空而略過時，派遣結果與 Inspect 訊息附該帳號的 PowerShell 重新登入命令，主 Agent 原文轉給使用者。
 3. 「全數不可用」只依 Dispatch 回報的 `CodexAccountsAllUnavailable` 判定。
 4. 全數確認不可用後，將全部 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-review,codex-advisor`）重新呼叫選派入口，依回傳狀態處置（降級審查、降級第二意見、改由 Sonnet 承接測試取證或事實查核，或停止回報），各狀態的處置見 `executor-selection` skill「狀態處置」。降級或改派時追加 exceptions「替代方案」，主 Agent 不自行頂替，硬能力（桌面控制、影像產生、瀏覽器與登入測試）沒有替代者時停止並回報使用者。
 

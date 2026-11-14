@@ -1,6 +1,6 @@
 ---
 name: powershell
-description: 'PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。'
+description: 'PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名、版本目標與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
@@ -11,11 +11,13 @@ policy.allow_implicit_invocation: true
 
 - 檔案編碼依全域規則 §2 Encoding Strategy（UTF-8 with BOM），本檔不另行定義。
 - 新腳本預設以 **PowerShell 7+ (pwsh)** 為目標版本。
-- 若腳本需在 Windows PowerShell 5.1 執行（如散佈到未安裝 pwsh 的機器、被 Windows 工作排程器以 `powershell.exe` 呼叫），必須遵守 5.1 語法邊界，並在腳本開頭以 `#Requires -Version 5.1` 標明。
+- 只支援 pwsh 7 的腳本在檔首宣告 `#Requires -Version 7.0`。
+- 只支援 pwsh 7、但需要在 Windows PowerShell 5.1 啟動時印出安裝指引的入口腳本，檔首維持 `#Requires -Version 5.1`，本體語法維持 5.1 可解析。開頭以 `$PSVersionTable.PSVersion.Major` 判斷版本，在 5.1 印出安裝指引後以非零結束碼結束；宣告 `#Requires -Version 7.0` 的模組在判斷通過後才 dot-source。
+- 腳本需在 Windows PowerShell 5.1 執行時（如 `.githooks`、其他專案明確要求 5.1、散佈到未安裝 pwsh 的機器、被 Windows 工作排程器以 `powershell.exe` 呼叫），必須遵守 5.1 語法邊界，並在腳本開頭以 `#Requires -Version 5.1` 標明。
 
 ## 5.1 相容語法邊界
 
-目標包含 5.1 時，下列 7+ 語法**禁止使用**：
+目標包含 5.1 時（含上述維持 5.1 可解析的入口腳本本體），下列 7+ 語法**禁止使用**：
 
 - Pipeline chain 運算子 `&&`、`||` → 改用 `if ($?)` 或檢查 `$LASTEXITCODE`。
 - 三元運算子 `? :`、null 合併 `??`、null 條件 `?.` → 改用 `if/else` 與明確的 `$null` 檢查。

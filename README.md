@@ -10,7 +10,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ## 安裝
 
-1. 以系統管理員身分開啟 PowerShell，執行 Setup。腳本不是以系統管理員身分執行時會直接結束；加上 `-WhatIf` 可預覽。
+1. 以系統管理員身分開啟 PowerShell 7（pwsh），在 pwsh 執行 Setup。在 Windows PowerShell 5.1 啟動時，Setup 會印出 `winget install Microsoft.PowerShell` 安裝指引並以非零結束碼結束；不是以系統管理員身分執行時同樣直接結束。加上 `-WhatIf` 可預覽。
 
    ```powershell
    ~\.ai-agents\scripts\Setup-AIGlobalConfig.ps1
@@ -127,6 +127,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | --- | --- | --- |
 | `post-edit-write-hook.ps1` | Edit 或 Write 工具寫入檔案後 | 提示執行 check-markdown skill（`.md`）；驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
 | `turn-guard-hook.ps1` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | 將每個 turn 的工具使用與失敗紀錄寫入 `${CLAUDE_PLUGIN_DATA}\turn-guard\<session_id>.jsonl`；同一失敗在同一 turn、同一 agent 內第 2 次發生時，以 `additionalContext` 提醒該 agent 一次，要求先說明下次為何會成功，說不出來就停下回報；不阻擋工具執行 |
+| `powershell-host-guard-hook.ps1` | `PreToolUse`，工具為 `Bash` 或 `PowerShell` | 命令中任一區段直接呼叫 `powershell.exe`（含 `Start-Process powershell.exe`）時拒絕執行，原因附 `pwsh -NoProfile -File` 寫法。屬最佳努力的策略檢查，輸入無法解析時放行，不涵蓋巢狀 shell（例如 `cmd /c powershell.exe`）、動態組合的命令字串與別名。例外為執行 `Setup-AIGlobalConfig.ps1` 的區段；其他專案明確要求 5.1 時，在 Claude Code 設定的 `env` 加入 `AI_AGENTS_ALLOW_POWERSHELL51=1` |
 
 #### 狀態看板 plugin
 
@@ -165,7 +166,7 @@ claude plugin install line-status-board@ai-agents-local --scope user
 - 使用 `npm i -g @openai/codex` 安裝 Codex CLI，更新使用 `codex update`。
 - 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附的 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於派工。
 - 安裝或更換環境時執行 `codex --version` 確認 CLI 可用；更換機器後先執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
-- 派工的啟動端需要 PowerShell 7+。
+- 派工腳本、狀態查詢腳本、Setup 與派工測試都需要 PowerShell 7+（pwsh）。以 Windows PowerShell 5.1 執行時，Setup 印出安裝指引後結束，其餘腳本會被 `#Requires -Version 7.0` 拒絕。
 - 派工需要隔離 worktree 時，來源目錄必須是 Git repo；腳本不會自動 `git init`。
 
 #### Windows 長路徑
@@ -266,10 +267,12 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Get-DispatchProgress.ps1` 唯讀查詢派遣進度，可依 `LineSlug` 或 `DispatchSlug` 篩選；預設顯示未結束與最近 24 小時內結束的項目。
 - `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態與額度。
 - `scripts/Select-DispatchExecutor.ps1` 依任務標註與 `scripts/dispatch/executor-registry.json` 選出派工執行者並輸出 `[派工判定]` 行，唯讀、不呼叫網路。
+- `scripts/New-DispatchInputs.ps1` 產生資源派遣（唯讀）的輸入，一次寫出 Request、`line.json`（不存在時）、prompt 與派遣單，並以 `Invoke-CodexDispatch.ps1 -Operation Dispatch -ValidateOnly` 自檢；自檢失敗時刪除本次建立的檔案，新建的 `line.json` 保留。
 - `scripts/Get-CodexQuota.ps1` 查詢 Codex 額度，只供顯示與紀錄。
 - `scripts/Invoke-WorkOverviewCleanup.ps1` 列出可清理的 worktree、分支與線層歷史備份，必須指定 `-Root`；預設只列出，以 `-ConfirmPlan` 帶入列出時的 planId 才刪除。
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
 - 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
+- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
 - `claude-plugins/` 內由工具自動呼叫的 hook 腳本，使用全小寫 kebab-case 命名。
 - `.githooks/` 內為 Git 原生 Hook，由 `Setup-AIGlobalConfig.ps1` 透過 `core.hooksPath` 啟用。
 

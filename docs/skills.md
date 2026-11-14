@@ -72,7 +72,7 @@
 | `messaging` | 知識型 | agent | 訊息佇列開發規範：RabbitMQ 與 MQTT 的命名慣例、冪等消費、重試與 DLQ 策略、MQTT 遺囑與持久 Session、Mosquitto 容器設定、訊息版本演進。當撰寫或修改訊息發佈與消費邏輯時自動套用。 |
 | `openapi-client` | 知識型 | agent | 前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。當撰寫前端 API 呼叫層或同步前後端型別時自動套用。 |
 | `pinia` | 知識型 | agent | Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。當撰寫或修改 Pinia Store 及其元件整合時自動套用。 |
-| `powershell` | 知識型 | agent | PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。 |
+| `powershell` | 知識型 | agent | PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名、版本目標與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。 |
 | `redis-caching` | 知識型 | agent | Redis 快取開發規範：Key 命名階層、TTL 策略、Cache-Aside 模式與 StackExchange.Redis 連線管理。當撰寫或修改快取邏輯時自動套用。 |
 | `requirement-context` | 知識型 | agent | 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。 |
 | `scripting-conventions` | 知識型 | agent | Use when 選擇或撰寫 PowerShell、Shell 或 C# Script，需判斷執行平台、編碼與相依工具時。 |
