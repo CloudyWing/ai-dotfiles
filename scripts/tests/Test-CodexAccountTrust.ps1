@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param()
 
@@ -1007,7 +1007,8 @@ catch {
     # ---------- 檔案編碼 ----------
     Test-Case X01 {
         $files = @('scripts\dispatch\codex-account-config.ps1', 'scripts\dispatch\dispatch-evidence.ps1', 'scripts\dispatch\dispatch-lifecycle.ps1', 'scripts\dispatch\run-recovery.ps1', 'scripts\New-CodexDispatchAccount.ps1',
-            'scripts\tests\Test-CodexAccountTrust.ps1', 'scripts\tests\Test-NewCodexDispatchAccount.ps1', 'scripts\tests\Test-DispatchAccountFailover.ps1', 'scripts\tests\Test-DispatchRecoveryBinding.ps1')
+            'scripts\tests\Test-CodexAccountTrust.ps1', 'scripts\tests\Test-NewCodexDispatchAccount.ps1', 'scripts\tests\Test-DispatchAccountFailover.ps1', 'scripts\tests\Test-DispatchRecoveryBinding.ps1',
+            'claude-plugins\ai-agents-hooks\hooks\powershell-host-guard-hook.ps1', 'scripts\New-DispatchInputs.ps1', 'scripts\tests\Test-NewDispatchInputs.ps1', 'scripts\tests\Test-PowerShellHostGuardHook.ps1', 'scripts\tests\Test-SetupRequiresPwsh7.ps1')
         $repoRoot = Split-Path -Parent $scriptsRoot
         foreach ($relative in $files) {
             $path = Join-Path $repoRoot $relative

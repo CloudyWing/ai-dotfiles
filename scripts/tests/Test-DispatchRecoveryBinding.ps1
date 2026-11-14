@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 
 [CmdletBinding()]
 param(
@@ -28,7 +28,7 @@ param(
     [AllowEmptyString()]
     [string]$FixtureNamespace,
 
-    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-ONE', 'UPTO-P3', 'R123', 'F003-SIDECAR', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K2', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'ACCOUNT-RESILIENCE', 'DD-DEFECTS', 'DD-HANG', 'DD-PRESTART-RECEIPT')]
+    [ValidateSet('', 'P0-C', 'F-002', 'F-003', 'F-006', 'F-007', 'F-009-CMDLET', 'F-011', 'F-032', 'F-033', 'F-034', 'F-035', 'F-066', 'F-099', 'F-101', 'P3', 'P3-ONE', 'UPTO-P3', 'R123', 'F003-SIDECAR', 'P3-BASELINE', 'T056', 'S-3', 'BATCH1A', 'BATCH1B', 'BATCH1-SUPPORT', 'BATCH15-EVIDENCE', 'BATCH1-REPLACE', 'BATCH2-INSPECT-REPORTPATH', 'BATCH3-EOL', 'BATCH3G', 'BATCH3H', 'T003', 'T042', 'T043', 'T044', 'T044-PHASE3', 'T045', 'T046', 'T049', 'ENV-LIMITED', 'ENV-LIMITED-AGGREGATOR', 'H5-ADVISOR-RESUME', 'P0-B', 'DISPATCH-PROGRESS', 'C16-PATH-GIT', 'C16-T007', 'C16-F-002', 'C16-QUOTA-ADVISOR', 'C16-ADVISOR-FENCE', 'C16-GITIGNORE', 'C16-FIX6', 'C16-FIX7', 'C16-FIX8', 'C16-FIX9', 'C16-FIX10', 'C16-FIX11', 'BATCH4-QUOTA', 'C16-MOVE4', 'C16-MOVE5', 'C16-MOVE6', 'G2-TURNFAILED', 'G2-F015', 'G5-REPRO', 'BATCH5-S1', 'BATCH5-S2', 'BATCH5-PARAMS', 'FIX3-U2', 'FIX3-U3', 'INTENSIVE-PROFILE', 'PROFILE-SPLIT', 'NETWORK-READONLY', 'BATCH6-K1', 'BATCH6-K3', 'FOLLOWUP-CLEANUP', 'FOLLOWUP-ACCOUNT', 'FOLLOWUP-POLICY', 'ACCOUNT-RESILIENCE', 'DD-DEFECTS', 'DD-HANG', 'DD-PRESTART-RECEIPT')]
     [AllowEmptyString()]
     [string]$FocusedCase,
 
@@ -40,15 +40,7 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [Text.Encoding]::UTF8
-if ($PSVersionTable.PSEdition -eq 'Desktop') {
-    $env:PSModulePath = @(
-        (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'),
-        (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
-        (Join-Path $env:WINDIR 'system32\WindowsPowerShell\v1.0\Modules')
-    ) -join ';'
-    Get-Module Microsoft.PowerShell.Utility | Where-Object { $_.Version.Major -ne 3 } | Remove-Module -Force
-    Import-Module (Join-Path $env:WINDIR 'system32\WindowsPowerShell\v1.0\Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force -ErrorAction Stop
-}
+$script:phase9CaseProcessTimings = New-Object 'System.Collections.Generic.List[object]'
 $scriptsRoot = Split-Path -Parent $PSScriptRoot
 $root = Split-Path -Parent $scriptsRoot
 $sourcePath = Join-Path $scriptsRoot 'Invoke-CodexDispatch.ps1'
@@ -416,18 +408,6 @@ function Invoke-Phase9Process {
         foreach ($environmentEntry in Get-ChildItem Env:) {
             $startInfo.EnvironmentVariables[[string]$environmentEntry.Name] = [string]$environmentEntry.Value
         }
-        if ([string]::Equals([IO.Path]::GetFileName($HostPath), 'powershell.exe', [StringComparison]::OrdinalIgnoreCase)) {
-            $windowsPowerShellModulePaths = New-Object System.Collections.Generic.List[string]
-            foreach ($modulePath in @(
-                    (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'),
-                    (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
-                    (Join-Path $env:WINDIR 'system32\WindowsPowerShell\v1.0\Modules'))) {
-                if (-not [string]::IsNullOrWhiteSpace($modulePath)) {
-                    $windowsPowerShellModulePaths.Add($modulePath)
-                }
-            }
-            $startInfo.EnvironmentVariables['PSModulePath'] = $windowsPowerShellModulePaths -join ';'
-        }
         foreach ($key in $EnvironmentVariables.Keys) {
             $startInfo.EnvironmentVariables[[string]$key] = [string]$EnvironmentVariables[$key]
         }
@@ -441,24 +421,32 @@ function Invoke-Phase9Process {
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $process.WaitForExit()
+        $finish = [DateTimeOffset]::UtcNow
+        $durationMs = [math]::Round(($finish - $start).TotalMilliseconds, 3)
+        $null = $script:phase9CaseProcessTimings.Add([pscustomobject]@{ host = $hostName; duration_ms = $durationMs; exit_code = $process.ExitCode })
         return [pscustomobject]@{
             host_path = $HostPath
             arguments = @($Arguments)
             command = $HostPath + ' ' + $argumentText
             start_utc = $start.ToString('o')
-            finish_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            finish_utc = $finish.ToString('o')
+            duration_ms = $durationMs
             exit_code = $process.ExitCode
             stdout = $stdoutTask.Result
             stderr = $stderrTask.Result
         }
     }
     catch {
+        $finish = [DateTimeOffset]::UtcNow
+        $durationMs = [math]::Round(($finish - $start).TotalMilliseconds, 3)
+        $null = $script:phase9CaseProcessTimings.Add([pscustomobject]@{ host = $hostName; duration_ms = $durationMs; exit_code = 1 })
         return [pscustomobject]@{
             host_path = $HostPath
             arguments = @($Arguments)
             command = $HostPath + ' ' + $argumentText
             start_utc = $start.ToString('o')
-            finish_utc = [DateTimeOffset]::UtcNow.ToString('o')
+            finish_utc = $finish.ToString('o')
+            duration_ms = $durationMs
             exit_code = 1
             stdout = ''
             stderr = ''
@@ -556,18 +544,6 @@ function Invoke-TestChildProcess {
         $startInfo.WorkingDirectory = (Get-Location).Path
         $startInfo.UseShellExecute = $false
         $startInfo.CreateNoWindow = $true
-        if ($HostLabel -eq 'powershell.exe') {
-            $windowsPowerShellModulePaths = New-Object System.Collections.Generic.List[string]
-            foreach ($modulePath in @(
-                    (Join-Path $env:USERPROFILE 'Documents\WindowsPowerShell\Modules'),
-                    (Join-Path $env:ProgramFiles 'WindowsPowerShell\Modules'),
-                    (Join-Path $env:WINDIR 'system32\WindowsPowerShell\v1.0\Modules'))) {
-                if (-not [string]::IsNullOrWhiteSpace($modulePath)) {
-                    $windowsPowerShellModulePaths.Add($modulePath)
-                }
-            }
-            $startInfo.EnvironmentVariables['PSModulePath'] = $windowsPowerShellModulePaths -join ';'
-        }
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
         $utf8 = New-Object System.Text.UTF8Encoding($false)
@@ -617,6 +593,22 @@ function Invoke-TestChildProcess {
     }
 }
 
+function Get-Phase9AllowedEnvironmentLimitedCaseNames {
+    [CmdletBinding()]
+    param()
+
+    # 缺 Symbolic Link 權限的主機上，建立帳號連結的案例判為 ENV-LIMITED；這是唯一允許附原因而不使結果無效的案例。
+    return @('Phase 6 DD-RULES-ACCOUNT 實際建立帳號')
+}
+
+function Test-Phase9SymbolicLinkPrivilegeDetail {
+    [CmdletBinding()]
+    param([AllowEmptyString()][string]$Detail)
+
+    # 允許名單內的案例只在失敗訊息同時指名 SymbolicLink 與權限不足時才是 ENV-LIMITED；單純的拒絕存取、access denied 屬一般失敗。
+    return $Detail -match '(?i)SymbolicLink' -and $Detail -match '(?i)privilege.{0,40}(held|required)|所需的權限|需要系統管理員權限|系統管理員權限|權限不足'
+}
+
 function Test-ChildSummary {
     [CmdletBinding()]
     param(
@@ -650,6 +642,7 @@ function Test-ChildSummary {
     }
     $summaryTotal = if ($phase9SummaryMatch.Success) { $phase9SummaryMatch.Groups['total'].Value } elseif ($legacyPhase9SummaryMatch.Success) { $legacyPhase9SummaryMatch.Groups['total'].Value } else { $summaryMatch.Groups['total'].Value }
     $summaryFailed = if ($phase9SummaryMatch.Success) { [string]([int]$phase9SummaryMatch.Groups['phase9Failed'].Value + [int]$phase9SummaryMatch.Groups['environmentLimited'].Value + [int]$phase9SummaryMatch.Groups['baselineFailed'].Value) } elseif ($legacyPhase9SummaryMatch.Success) { $legacyPhase9SummaryMatch.Groups['phase9Failed'].Value } else { $summaryMatch.Groups['failed'].Value }
+    $allowedEnvironmentLimitedNames = @()
     if ($phase9SummaryMatch.Success) {
         $totalCount = [int]$phase9SummaryMatch.Groups['total'].Value
         $passedCount = [int]$phase9SummaryMatch.Groups['passed'].Value
@@ -661,7 +654,31 @@ function Test-ChildSummary {
             return [pscustomobject]@{ valid = $false; reason = 'Phase 9 case summary counts do not reconcile' }
         }
         if ($environmentLimitedCount -gt 0) {
-            return [pscustomobject]@{ valid = $false; reason = ('Phase 9 contains {0} ENV-LIMITED cases which are not counted as passed' -f $environmentLimitedCount) }
+            # 只有允許名單內、附非空 ENVIRONMENT_NOTE 且案例區塊數與摘要一致的 ENV-LIMITED 不使結果無效；其餘維持拒絕。
+            $childStdout = [string]$ChildResult.stdout
+            $allowedCaseNames = @(Get-Phase9AllowedEnvironmentLimitedCaseNames)
+            $caseHeaderMatches = @([regex]::Matches($childStdout, '(?m)^CASE: (?<name>[^\r\n]*)'))
+            $limitedCaseNames = New-Object 'System.Collections.Generic.List[string]'
+            for ($caseIndex = 0; $caseIndex -lt $caseHeaderMatches.Count; $caseIndex++) {
+                $blockStart = $caseHeaderMatches[$caseIndex].Index
+                $blockEnd = if ($caseIndex + 1 -lt $caseHeaderMatches.Count) { $caseHeaderMatches[$caseIndex + 1].Index } else { $childStdout.Length }
+                $caseBlock = $childStdout.Substring($blockStart, $blockEnd - $blockStart)
+                if (-not [regex]::IsMatch($caseBlock, '(?m)^CATEGORY: ENV-LIMITED[ \t]*\r?$')) { continue }
+                $caseName = $caseHeaderMatches[$caseIndex].Groups['name'].Value.Trim()
+                $noteMatch = [regex]::Match($caseBlock, '(?ms)^ENVIRONMENT_NOTE:(?<note>.*?)(?=^(?:ISOLATION_ID:|CASE_START_UTC:|ENV-LIMITED-ALLOWED:)|\z)')
+                if ($caseName -notin $allowedCaseNames) {
+                    return [pscustomobject]@{ valid = $false; reason = ('Phase 9 ENV-LIMITED case is not in the allowed list: ' + $caseName) }
+                }
+                if (-not $noteMatch.Success -or [string]::IsNullOrWhiteSpace($noteMatch.Groups['note'].Value)) {
+                    return [pscustomobject]@{ valid = $false; reason = ('Phase 9 ENV-LIMITED case has no ENVIRONMENT_NOTE reason: ' + $caseName) }
+                }
+                $limitedCaseNames.Add($caseName)
+            }
+            if ($limitedCaseNames.Count -ne $environmentLimitedCount) {
+                return [pscustomobject]@{ valid = $false; reason = ('Phase 9 ENV-LIMITED case blocks ({0}) do not match the summary count ({1})' -f $limitedCaseNames.Count, $environmentLimitedCount) }
+            }
+            $allowedEnvironmentLimitedNames = @($limitedCaseNames.ToArray())
+            $summaryFailed = [string]([int]$summaryFailed - $environmentLimitedCount)
         }
     }
     elseif ($legacyPhase9SummaryMatch.Success) {
@@ -696,7 +713,8 @@ function Test-ChildSummary {
         return [pscustomobject]@{ valid = $false; reason = 'repository git worktree list changed' }
     }
     $summaryReason = if ($phase9SummaryMatch.Success) {
-        'child passed {0} cases; baseline failures {1}; isolated {2}' -f $phase9SummaryMatch.Groups['passed'].Value, $phase9SummaryMatch.Groups['baselineFailed'].Value, $phase9SummaryMatch.Groups['isolated'].Value
+        ('child passed {0} cases; baseline failures {1}; isolated {2}' -f $phase9SummaryMatch.Groups['passed'].Value, $phase9SummaryMatch.Groups['baselineFailed'].Value, $phase9SummaryMatch.Groups['isolated'].Value) +
+        $(if ($allowedEnvironmentLimitedNames.Count -gt 0) { '; ENV-LIMITED-ALLOWED: ' + ($allowedEnvironmentLimitedNames -join ', ') } else { '' })
     }
     elseif ($legacyPhase9SummaryMatch.Success) {
         'child passed {0} cases; isolated {1}' -f $legacyPhase9SummaryMatch.Groups['passed'].Value, $legacyPhase9SummaryMatch.Groups['isolated'].Value
@@ -1414,7 +1432,6 @@ if (-not $Child) {
     $probeTextValue = '  中文，逗號,$literal  '
     $scriptPathValue = [IO.Path]::GetFullPath($PSCommandPath)
     $hostDefinitions = @(
-        [pscustomobject]@{ Label = 'powershell.exe'; Name = 'powershell.exe' }
         [pscustomobject]@{ Label = 'pwsh'; Name = 'pwsh' }
     )
     $aggregateResults = New-Object System.Collections.Generic.List[object]
@@ -1605,6 +1622,7 @@ $script:passedCount = 0
 $script:isolatedCount = 0
 $script:failures = 0
 $script:environmentLimitedCount = 0
+$script:allowedEnvironmentLimitedCount = 0
 $script:baselineFailedCount = 0
 $script:focusedCase = $FocusedCase
 $script:DispatchCheckIgnoreTimeoutSeconds = 120
@@ -1801,7 +1819,7 @@ function Invoke-Case {
             $Name -match '^Phase 9 F-006' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'F-011') {
-            $Name -ceq 'Phase 7 API allowed=false fail-closed service rejection' -or $Name -match '^Phase 9 F-011' -or $cleanupMatch
+            $Name -ceq 'Phase 7 API allowed=false fail-closed service rejection' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'F-009-CMDLET') {
             $Name -ceq 'Phase 9 F-009 dispatch-scope helpers expose CmdletBinding' -or $cleanupMatch
@@ -1896,7 +1914,7 @@ function Invoke-Case {
             $Name -ceq 'Phase 9 Get-DispatchProgress reports seven lifecycle states without writing files' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'T043') {
-            $Name -match '^Phase 9 T043' -or $Name -ceq 'Phase 9 process identity prevents a second continuation Start' -or $cleanupMatch
+            $Name -match '^Phase 9 T043' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'T044') {
             $Name -match '^Phase 9 T044' -or $cleanupMatch
@@ -1911,9 +1929,6 @@ function Invoke-Case {
             $Name -ceq 'Phase 9 BATCH6-K1 Cleanup preserves binary report bytes and rejects destination tampering' -or
             $Name -match '^Phase 9 P0-B' -or $cleanupMatch
         }
-        elseif ($script:focusedCase -ceq 'BATCH6-K2') {
-            $Name -match '^Phase 9 BATCH6-K2'
-        }
         elseif ($script:focusedCase -ceq 'BATCH6-K3') {
             $Name -match '^Phase 9 BATCH6-K3'
         }
@@ -1921,7 +1936,7 @@ function Invoke-Case {
             $Name -match '^Phase 5 T045' -or $cleanupMatch
         }
         elseif ($script:focusedCase -ceq 'T046') {
-            $Name -match '^Phase 9 T046' -or $Name -ceq 'Phase 9 T042 Invoke-Dispatch Inspect exception writes continuation handoff without retry' -or $Name -ceq 'Phase 9 F-007 advisor Inspect includes periodic observation'
+            $Name -match '^Phase 9 T046' -or $Name -ceq 'Phase 9 T042 Invoke-Dispatch Inspect exception writes continuation handoff without retry'
         }
         elseif ($script:focusedCase -ceq 'C16-PATH-GIT') {
             $Name -match '^Phase 9 P2 (output path|tracked result path|TargetPath result collision)' -or $Name -match '^Phase 9 R-1/R-2/R-3' -or $cleanupMatch
@@ -2016,6 +2031,8 @@ function Invoke-Case {
     $actual = 'pass'
     $detail = ''
     $stack = ''
+    $script:phase9CaseProcessTimings.Clear()
+    $caseStartUtc = [DateTimeOffset]::UtcNow
     try {
         & $Action | Out-Null
     }
@@ -2029,6 +2046,9 @@ function Invoke-Case {
         $script:ExecutionRoot = $fixtureRoot
         $script:TargetPath = @()
     }
+    $caseFinishUtc = [DateTimeOffset]::UtcNow
+    $caseProcessCount = $script:phase9CaseProcessTimings.Count
+    $caseProcessDurationMs = [math]::Round([double](@($script:phase9CaseProcessTimings.ToArray() | ForEach-Object { [double]$_.duration_ms }) | Measure-Object -Sum).Sum, 3)
     $assertionResult = if ($Isolated -and $actual -eq 'pass') { 'ISOLATED' } elseif ($actual -eq $expected) { 'PASS' } else { 'FAIL' }
     if ($Reject -and -not [string]::IsNullOrWhiteSpace($ErrorPattern) -and $detail -notmatch $ErrorPattern) { $assertionResult = 'FAIL' }
     $category = $assertionResult
@@ -2042,7 +2062,7 @@ function Invoke-Case {
         $category = [string]$classification.category
         $environmentNote = [string]$classification.environment_note
     }
-    elseif ($assertionResult -eq 'FAIL' -and $Name -in @('Phase 6 DD-RULES-PREFLIGHT Junction 規則', 'Phase 6 DD-RULES-ACCOUNT 實際建立帳號') -and $detail -match '(?i)access.{0,12}denied|privilege.{0,40}(held|required)|拒絕存取|存取被拒|權限不足|所需的權限|需要系統管理員權限') {
+    elseif ($assertionResult -eq 'FAIL' -and $Name -in @(Get-Phase9AllowedEnvironmentLimitedCaseNames) -and (Test-Phase9SymbolicLinkPrivilegeDetail -Detail $detail)) {
         $category = 'ENV-LIMITED'
         $environmentNote = $detail
     }
@@ -2055,6 +2075,7 @@ function Invoke-Case {
     else {
         $null
     }
+    $allowedEnvironmentLimitedReason = $null
 
     if ($category -eq 'ISOLATED') {
         $script:isolatedCount++
@@ -2064,6 +2085,10 @@ function Invoke-Case {
     }
     elseif ($category -eq 'ENV-LIMITED') {
         $script:environmentLimitedCount++
+        if ($Name -in @(Get-Phase9AllowedEnvironmentLimitedCaseNames) -and -not [string]::IsNullOrWhiteSpace($environmentNote)) {
+            $script:allowedEnvironmentLimitedCount++
+            $allowedEnvironmentLimitedReason = [regex]::Replace($environmentNote.Trim(), '\s+', ' ')
+        }
     }
     elseif ($category -eq 'BASELINE-FAILED') {
         $script:baselineFailedCount++
@@ -2089,7 +2114,15 @@ ISOLATION_EVIDENCE: $IsolationEvidence
 ISOLATION_RELEASE_CONDITION: $IsolationReleaseCondition
 ISOLATION_DEADLINE: $IsolationDeadline
 ISOLATION_REPLACEMENT_VERIFICATION: $IsolationReplacementVerification"
-})"
+})
+CASE_START_UTC: $($caseStartUtc.ToString('o'))
+CASE_FINISH_UTC: $($caseFinishUtc.ToString('o'))
+CASE_DURATION_MS: $([math]::Round(($caseFinishUtc - $caseStartUtc).TotalMilliseconds, 3))
+CASE_PROCESS_COUNT: $caseProcessCount
+CASE_PROCESS_DURATION_MS: $caseProcessDurationMs"
+    if (-not [string]::IsNullOrWhiteSpace($allowedEnvironmentLimitedReason)) {
+        Write-Output ('ENV-LIMITED-ALLOWED: ' + $Name + ': ' + $allowedEnvironmentLimitedReason)
+    }
 }
 
 function Assert-True {
@@ -2505,7 +2538,6 @@ $script:phase9RealDispatchGitSourceRoot = $null
 $script:phase9RealDispatchGitRoot = $null
 $script:cleanupUseRealGit = $false
 $script:cleanupRemoveFailure = $false
-$script:cleanupDriveLetter = $null
 $phase6PromptPath = Join-Path $fixtureRoot 'phase6-prompt.md'
 Write-Utf8NoBom -Path $phase6PromptPath -Content 'phase6 prompt'
 
@@ -3893,7 +3925,7 @@ Invoke-Case 'Collect invalid reviewer report 輸出 reviewerFindings 且 exit �
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
-        $cliOutput = @(& powershell.exe -NoProfile -NonInteractive -File $sourcePath -Operation Collect -DispatchKind resource -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -PreflightResultPath $invalidPreflightPath -ReportPath $invalidClosurePath -ReviewerReportPath $invalidReviewerPath -ResultPath $invalidResultPath 2>&1)
+        $cliOutput = @(& pwsh -NoProfile -NonInteractive -File $sourcePath -Operation Collect -DispatchKind resource -SourceRoot $fixtureRoot -ExecutionRoot $fixtureRoot -PreflightResultPath $invalidPreflightPath -ReportPath $invalidClosurePath -ReviewerReportPath $invalidReviewerPath -ResultPath $invalidResultPath 2>&1)
         $cliExitCode = $LASTEXITCODE
     }
     finally {
@@ -3955,32 +3987,6 @@ function New-Phase3CleanupScenario {
     )
 
     $fixturePathRoot = $fixtureRoot
-    $requiresShortDrive = $false
-    if ([string]::Equals([string]$PSVersionTable.PSEdition, 'Desktop', [StringComparison]::OrdinalIgnoreCase)) {
-        try {
-            $candidateRoot = Join-Path $fixtureRoot 'c-12345678\source'
-            $null = Get-BindingFixturePathPlan -FixtureRoot $candidateRoot -DispatchSlug 'q-12345678' -LineSlug 'line-a'
-        }
-        catch { $requiresShortDrive = $true }
-    }
-    if ($requiresShortDrive) {
-        if ([string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
-            foreach ($candidate in @('Z:', 'Y:', 'X:', 'W:')) {
-                if (Test-Path -LiteralPath ($candidate + '\')) {
-                    continue
-                }
-                $substOutput = & subst $candidate $fixtureRoot 2>&1
-                if ($LASTEXITCODE -eq 0 -and (Test-Path -LiteralPath ($candidate + '\'))) {
-                    $script:cleanupDriveLetter = $candidate
-                    break
-                }
-            }
-        }
-        if ([string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
-            throw 'Cleanup fixture 無法建立 Desktop PowerShell 短路徑映射。'
-        }
-        $fixturePathRoot = $script:cleanupDriveLetter + '\'
-    }
     $ScenarioSlug = New-BindingFixtureName -Code 'q'
     $scenarioRoot = Join-Path $fixturePathRoot (New-BindingFixtureName -Code 'c')
     $sourceRoot = Join-Path $scenarioRoot 'source'
@@ -3994,7 +4000,7 @@ function New-Phase3CleanupScenario {
     $dispatchRoot = Join-Path $sourceRoot ('.local/ai-sessions/worktrees/' + $ScenarioSlug)
     $worktreeResult = Invoke-Phase9GitCommand -RepositoryRoot $sourceRoot -Arguments @('worktree', 'add', '--detach', '--', $dispatchRoot, 'HEAD')
     if ([int]$worktreeResult.exit_code -ne 0) {
-        throw ('Cleanup fixture worktree add failed; drive=' + [string]$script:cleanupDriveLetter + '; result=' + ($worktreeResult | ConvertTo-Json -Depth 10 -Compress))
+        throw ('Cleanup fixture worktree add failed; result=' + ($worktreeResult | ConvertTo-Json -Depth 10 -Compress))
     }
 
     $lineSlug = 'line-a'
@@ -4058,7 +4064,7 @@ function Remove-Phase3CleanupScenario {
         [psobject]$Scenario
     )
 
-    $fixturePathRoot = if ([string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) { $fixtureRoot } else { $script:cleanupDriveLetter + '\' }
+    $fixturePathRoot = $fixtureRoot
     if (-not (Test-PathWithinRoot -Path $Scenario.scenario_root -Root $fixturePathRoot) -or [string]::Equals((Resolve-AbsolutePath $Scenario.scenario_root), (Resolve-AbsolutePath $fixturePathRoot), [StringComparison]::OrdinalIgnoreCase)) {
         throw ('Cleanup fixture cleanup target 超出 fixtureRoot：' + $Scenario.scenario_root)
     }
@@ -4068,14 +4074,6 @@ function Remove-Phase3CleanupScenario {
     }
     if (Test-Path -LiteralPath $Scenario.scenario_root) {
         Remove-Item -LiteralPath $Scenario.scenario_root -Recurse -Force
-    }
-    if (-not [string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
-        $unmountLetter = $script:cleanupDriveLetter
-        $substOutput = & subst $unmountLetter /d 2>&1
-        $script:cleanupDriveLetter = $null
-        if ($LASTEXITCODE -ne 0) {
-            throw ('Cleanup fixture short path mapping removal failed: ' + ($substOutput -join [Environment]::NewLine))
-        }
     }
 }
 Invoke-Case 'Inspect 最終輸出包含 runId 與 runRecordPath' {
@@ -4141,12 +4139,7 @@ if ($Phase -ge 2) {
             [string]$DiagnosticStartedAtUtc
         )
 
-        $hostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
-            (Get-Command powershell.exe -ErrorAction Stop).Source
-        }
-        else {
-            (Get-Command pwsh.exe -ErrorAction Stop).Source
-        }
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $arguments = @(
             '-NoProfile'
             '-NonInteractive'
@@ -5245,13 +5238,6 @@ if ($Phase -ge 3) {
             }
             $exitCode = $LASTEXITCODE
             $outputLines = @($gitOutput | ForEach-Object { [string]$_ })
-            if (-not [string]::IsNullOrWhiteSpace([string]$script:cleanupDriveLetter)) {
-                $sourcePrefix = ((Resolve-AbsolutePath -Path $fixtureRoot).TrimEnd('\', '/')).Replace('\', '/') + '/'
-                $mappedPrefix = $script:cleanupDriveLetter.TrimEnd('\', '/') + '/'
-                $outputLines = @($outputLines | ForEach-Object {
-                        [regex]::Replace([string]$_, [regex]::Escape($sourcePrefix), $mappedPrefix, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)
-                    })
-            }
             $outputText = $outputLines -join [Environment]::NewLine
             return [pscustomobject]@{
                 ExitCode = $exitCode
@@ -9439,7 +9425,7 @@ exit $LASTEXITCODE
         $mutantPath = Join-Path $fixtureRoot 'phase4-report-source-mutant-Invoke-CodexDispatch.ps1'
         $mutantText = Add-DispatchFunctionOverrideToEntry -EntryText ([IO.File]::ReadAllText($sourcePath)) -FunctionText $mutantFunctionText
         [IO.File]::WriteAllText($mutantPath, $mutantText, (New-Object Text.UTF8Encoding($true)))
-        $mutantRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+        $mutantRun = Invoke-Phase9Process -HostPath ((Get-Command pwsh.exe -ErrorAction Stop).Source) -Arguments @(
             '-NoProfile'
             '-File'
             $mutantPath
@@ -9512,7 +9498,7 @@ exit $LASTEXITCODE
 ")
             $caseScriptPath = Join-Path $fixtureRoot ($Label + '-Invoke-CodexDispatch.ps1')
             [IO.File]::WriteAllText($caseScriptPath, $ScriptText, (New-Object Text.UTF8Encoding($true)))
-            $caseRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+            $caseRun = Invoke-Phase9Process -HostPath ((Get-Command pwsh.exe -ErrorAction Stop).Source) -Arguments @(
                 '-NoProfile'
                 '-File'
                 $caseScriptPath
@@ -9581,7 +9567,7 @@ exit $LASTEXITCODE
         }
         Write-Utf8NoBom -Path $collectPreflightPath -Content (($collectPreflight | ConvertTo-Json -Depth 10) + "
 ")
-        $collectRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+        $collectRun = Invoke-Phase9Process -HostPath ((Get-Command pwsh.exe -ErrorAction Stop).Source) -Arguments @(
             '-NoProfile'
             '-File'
             $sourcePath
@@ -9627,7 +9613,7 @@ exit $LASTEXITCODE
 ")
         $collectMutantPath = Join-Path $fixtureRoot 'phase4-collect-reviewer-mutant-Invoke-CodexDispatch.ps1'
         [IO.File]::WriteAllText($collectMutantPath, $collectMutantText, (New-Object Text.UTF8Encoding($true)))
-        $collectMutantRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+        $collectMutantRun = Invoke-Phase9Process -HostPath ((Get-Command pwsh.exe -ErrorAction Stop).Source) -Arguments @(
             '-NoProfile'
             '-File'
             $collectMutantPath
@@ -9677,13 +9663,8 @@ exit $LASTEXITCODE
         Write-Utf8NoBom -Path $phase6MinimalRequestPath -Content (($minimalRequest | ConvertTo-Json -Depth 10) + "
 ")
         New-Item -ItemType Directory -Path $phase6MinimalDispatchRoot -Force | Out-Null
-        $hostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
-            Join-Path $PSHOME 'powershell.exe'
-        }
-        else {
-            $hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
-            if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
-        }
+        $hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
+        $hostPath = if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
         $arguments = @(
             '-NoProfile'
             '-File'
@@ -10430,13 +10411,8 @@ exit $LASTEXITCODE
 ")
         Write-Utf8NoBom -Path (Join-Path $realLineRoot 'requirement-summary.md') -Content '# Real Git requirement fixture'
         Write-Utf8NoBom -Path (Join-Path $realLineRoot 'design.md') -Content '# Real Git design fixture'
-        $hostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
-            Join-Path $PSHOME 'powershell.exe'
-        }
-        else {
-            $hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
-            if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
-        }
+        $hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
+        $hostPath = if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
         $realArguments = @(
             '-NoProfile'
             '-File'
@@ -10475,7 +10451,7 @@ exit $LASTEXITCODE
     Invoke-Case 'Phase 5 T021 非法 SessionMode 回報收到值與合法值' {
         $phase5IllegalSessionPromptPath = Join-Path $fixtureRoot 'phase5-illegal-session-prompt.md'
         Write-Utf8NoBom -Path $phase5IllegalSessionPromptPath -Content 'phase5 illegal session mode probe'
-        $illegalSessionRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+        $illegalSessionRun = Invoke-Phase9Process -HostPath ((Get-Command pwsh.exe -ErrorAction Stop).Source) -Arguments @(
             '-NoProfile'
             '-File'
             $sourcePath
@@ -10557,7 +10533,7 @@ exit $LASTEXITCODE
             '-ResultPath'
             $phase5CollisionResultPath
         )
-        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         try {
             Write-Utf8NoBom -Path $phase5CollisionResultPath -Content $phase5CollisionSentinel
             $preFixBytes = [IO.File]::ReadAllBytes($phase5CollisionResultPath)
@@ -10642,7 +10618,7 @@ exit $LASTEXITCODE
         $diagnosticMutantPath = Join-Path $fixtureRoot 'phase5-result-diagnostic-mutant-Invoke-CodexDispatch.ps1'
         $diagnosticMutantText = Add-DispatchFunctionOverrideToEntry -EntryText ([IO.File]::ReadAllText($sourcePath)) -FunctionText $diagnosticMutantFunctionText
         [IO.File]::WriteAllText($diagnosticMutantPath, $diagnosticMutantText, (New-Object Text.UTF8Encoding($true)))
-        $diagnosticMutantRun = Invoke-Phase9Process -HostPath ((Get-Command powershell.exe -ErrorAction Stop).Source) -Arguments @(
+        $diagnosticMutantRun = Invoke-Phase9Process -HostPath ((Get-Command pwsh.exe -ErrorAction Stop).Source) -Arguments @(
             '-NoProfile'
             '-File'
             $diagnosticMutantPath
@@ -10882,13 +10858,8 @@ if ($Phase -ge 7) {
         New-Item -ItemType Directory -Path $CodexHomePath -Force | Out-Null
         Write-Utf8NoBom -Path $authPath -Content (($authDocument | ConvertTo-Json -Depth 4) + "`r`n")
 
-        $hostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
-            Join-Path $PSHOME 'powershell.exe'
-        }
-        else {
-            $hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
-            if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
-        }
+        $hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
+        $hostPath = if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
         $wrapperContent = @'
 [CmdletBinding()]
 param(
@@ -11373,7 +11344,7 @@ exit $LASTEXITCODE
 '@
     [System.IO.File]::WriteAllText($phase7DispatchOrderDriverPath, $phase7DispatchOrderDriver + "`r`n", (New-Object System.Text.UTF8Encoding($true)))
     $phase7DispatchOrderReportPath = Join-Path $phase7Root '.local/ai-sessions/report/line-a/closure.md'
-    $phase7DispatchOrderHostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
+    $phase7DispatchOrderHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
 
     function Invoke-Phase7DispatchOrder {
         param(
@@ -15527,7 +15498,7 @@ if ($Phase -ge 9) {
     }
 
     Invoke-Case 'Phase 9 F-005 actual Dispatch CLI rejects every missing field before external start' {
-        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $counterPath = Join-Path $phase9Root 'f005-external-started.txt'
         $fakeCodexPath = Join-Path $phase9Root 'codex.cmd'
         Write-Utf8NoBom -Path $fakeCodexPath -Content ('@echo off' + "`r`n" + ('>"' + $counterPath + '" echo started') + "`r`n" + 'exit /b 0' + "`r`n")
@@ -15592,7 +15563,7 @@ if ($Phase -ge 9) {
         [IO.File]::WriteAllText($mutantModulePath, $scopeModuleText.Replace($readRequestAst[0].Extent.Text, $mutantSource), $bomEncoding)
         [IO.File]::WriteAllText($mutantPath, $mutantEntryText, $bomEncoding)
 
-        if ($PSVersionTable.PSEdition -eq 'Desktop' -and -not $SkipF005ReverseExperiment) {
+        if (-not $SkipF005ReverseExperiment) {
             $delayedRequest = [ordered]@{}
             foreach ($propertyName in $dispatchRequest.Keys) {
                 $delayedRequest[$propertyName] = $dispatchRequest[$propertyName]
@@ -15622,7 +15593,7 @@ if ($Phase -ge 9) {
             Write-Utf8NoBom -Path $delayedRequestPath -Content (($delayedRequest | ConvertTo-Json -Depth 20) + "
 ")
 
-            $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+            $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
             $pathValue = $phase9Root + ';' + [string]$env:PATH
             $delayedRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
                 '-NoProfile'
@@ -15662,12 +15633,7 @@ if ($Phase -ge 9) {
             Write-Phase9Evidence -Label 'F005_DELAYED_VALIDATION_REVERSE_EXPERIMENT' -Value $script:phase9F005ReverseEvidence
         }
         else {
-            $skipReason = if ($SkipF005ReverseExperiment) {
-                'Phase 9 診斷重跑略過 reverse experiment，維持單次實驗。'
-            }
-            else {
-                'reverse experiment 僅在 Windows PowerShell 首次宿主執行。'
-            }
+            $skipReason = 'Phase 9 診斷重跑略過 reverse experiment，維持單次實驗。'
             Write-Phase9Evidence -Label 'F005_DELAYED_VALIDATION_REVERSE_EXPERIMENT' -Value ([ordered]@{ result = 'skipped'; reason = $skipReason })
         }
         Write-Phase9Evidence -Label 'F005_NORMAL_FAILURES' -Value @($script:phase9F005CliEvidence)
@@ -15759,7 +15725,7 @@ if ($Phase -ge 9) {
             [IO.File]::WriteAllText($manifestEntry, $entryText, (New-Object Text.UTF8Encoding($true)))
             $ScriptPath = $manifestEntry
         }
-        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
             '-NoProfile'
             '-File'
@@ -16386,7 +16352,11 @@ function Invoke-Prepare {
             Copy-DispatchModulesBesideTestEntry -ScriptPath $entryPath
             $ScriptPath = $entryPath
         }
-        $hostPath = if ($UseCurrentHost -and $PSVersionTable.PSEdition -eq 'Core') { (Get-Command pwsh.exe -ErrorAction Stop).Source } else { (Get-Command powershell.exe -ErrorAction Stop).Source }
+        # Dispatch 子程序一律使用 pwsh；-UseCurrentHost 只控制結果路徑、-NonInteractive 前置與 BATCH3 hook 的參數索引。
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
+        if (-not [string]::Equals([IO.Path]::GetFileName($hostPath), 'pwsh.exe', [StringComparison]::OrdinalIgnoreCase)) {
+            throw ('真實 Dispatch 子程序宿主必須是 pwsh.exe：' + $hostPath)
+        }
         $dispatchArguments = @(
             '-NoProfile'
             '-File'
@@ -16677,6 +16647,39 @@ function Sync-DispatchTrackedRawBytesFromSource {
         }
     }
 
+    Invoke-Case 'Phase 9 DD-PWSH-HOST 真實 Dispatch 子程序宿主預設為 pwsh' {
+        $helperAst = $invokeSRealDispatchCase.Ast
+        $hostPathAssignments = @($helperAst.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and $node.Left.Extent.Text -ceq '$hostPath'
+                }, $true))
+        Assert-True ($hostPathAssignments.Count -ge 1) 'DD-PWSH-HOST 找不到 helper 內的 $hostPath 賦值敘述。'
+        foreach ($assignment in $hostPathAssignments) {
+            Assert-True (-not $assignment.Extent.Text.Contains('powershell.exe')) ('DD-PWSH-HOST $hostPath 賦值敘述含 powershell.exe：' + $assignment.Extent.Text)
+        }
+        Assert-True (@($hostPathAssignments | Where-Object { $_.Right.Extent.Text.Contains('Get-Command pwsh.exe') }).Count -eq 1) 'DD-PWSH-HOST $hostPath 賦值敘述未以 Get-Command pwsh.exe 取得宿主。'
+        $hostGuards = @($helperAst.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.IfStatementAst] -and
+                    $node.Clauses[0].Item1.Extent.Text.Contains('GetFileName($hostPath)') -and
+                    $node.Clauses[0].Item1.Extent.Text.Contains("'pwsh.exe'") -and
+                    $node.Clauses[0].Item2.Extent.Text.Contains('throw')
+                }, $true))
+        Assert-True ($hostGuards.Count -eq 1) 'DD-PWSH-HOST helper 缺少宿主檔名不是 pwsh.exe 時 throw 的自檢。'
+
+        $real = $null
+        try {
+            $real = & $invokeSRealDispatchCase -Name 'dd-pwsh-host' -ScriptPath $sourcePath -DispatchKind resource -WriteMode readonly
+            Assert-True ([string]::Equals([IO.Path]::GetFileName([string]$real.run.host_path), 'pwsh.exe', [StringComparison]::OrdinalIgnoreCase)) ('DD-PWSH-HOST 未帶 -UseCurrentHost 的呼叫仍使用非 pwsh 宿主：' + [string]$real.run.host_path)
+            Assert-True (@($real.run.arguments | Where-Object { [string]$_ -ieq '-NonInteractive' }).Count -ge 1) 'DD-PWSH-HOST 子程序參數缺少 -NonInteractive。'
+        }
+        finally {
+            if ($null -ne $real -and (Test-Path -LiteralPath $real.dispatch_root -PathType Container)) {
+                $null = Invoke-Phase9GitCommand -RepositoryRoot $real.source_root -Arguments @('worktree', 'remove', '--force', '--', $real.dispatch_root)
+            }
+        }
+    }
+
     Invoke-Case 'BATCH4 Dispatch omits quota files and before-snapshot stage' {
         $real = & $invokeSRealDispatchCase -Name 'batch4-no-quota-dispatch' -ScriptPath $sourcePath -UseCurrentHost
         Assert-True ([int]$real.run.exit_code -eq 0 -and [string]$real.output_document.status -eq 'completed' -and [bool]$real.external_start_exists) ('BATCH4 Dispatch did not complete: ' + [string]$real.output_text)
@@ -16926,12 +16929,7 @@ function Sync-DispatchTrackedRawBytesFromSource {
                 $environmentVariables.PHASE9_T042_RECEIPT_MARKER = $temporaryReceiptMarker
             }
 
-            $dispatchHostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
-                (Get-Command powershell.exe -ErrorAction Stop).Source
-            }
-            else {
-                (Get-Command pwsh.exe -ErrorAction Stop).Source
-            }
+            $dispatchHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
             $dispatchArguments = @(
                 '-NoProfile'
                 '-NonInteractive'
@@ -18195,7 +18193,7 @@ return & $script:cleanupTamperHashOriginal -Path $Path
         )
         Write-Utf8NoBom -Path $real.codex_path -Content (($fakeCodexLines -join ([char]13 + [char]10)) + [Environment]::NewLine) -SourceRoot $real.source_root -ExecutionRoot $real.execution_root -TargetPath @()
 
-        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $continuationArguments = @(
             '-NoProfile'
             '-NonInteractive'
@@ -19086,7 +19084,7 @@ public sealed class CodexBatch1FileReplaceLock : IDisposable
         $collectReportPath = Join-Path $direct.source_root '.local\ai-sessions\report\a\readonly-report.md'
         Write-Utf8NoBom -Path $collectReportPath -Content "# readonly result
 " -SourceRoot $direct.source_root -ExecutionRoot $direct.execution_root -TargetPath @()
-        $collectHostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $collectHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $collectRun = Invoke-Phase9Process -HostPath $collectHostPath -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $sourcePath, '-Operation', 'Collect', '-DispatchKind', 'resource', '-PreflightResultPath', $direct.preflight_result_path, '-ReportPath', $collectReportPath) -WorkingDirectory $direct.source_root -EnvironmentVariables @{}
         $collectResult = if ([int]$collectRun.exit_code -eq 0) { ConvertFrom-Json -InputObject ([string]$collectRun.stdout) } else { $null }
         Assert-True ([int]$collectRun.exit_code -eq 0 -and $collectResult.collectionMode -eq 'direct-write' -and @($collectResult.approvedOutputs).Count -eq 1 -and @($collectResult.reportEvidence).Count -eq 1) ('非 Git readonly Collect 未使用檔案證據：' + [string]$collectRun.stdout + [string]$collectRun.stderr)
@@ -19438,7 +19436,7 @@ public sealed class CodexBatch1FileReplaceLock : IDisposable
         $background = & $invokeSRealDispatchCase -Name 'batch1a-background-wait' -ScriptPath $sourcePath -DispatchKind workflow -WriteMode write -OmitRequestedUnit -OmitPrepareArtifacts -Background
         $script:batch1aBackground = $background
         Assert-True ([int]$background.run.exit_code -eq 0 -and $null -ne $background.output_document -and [string]$background.output_document.status -eq 'started' -and [bool]$background.output_document.background) ('batch1a background Dispatch 未回報 started：' + [string]$background.output_text)
-        $inspectHost = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $inspectHost = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $inspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments @(
             '-NoProfile'
             '-File'
@@ -19522,7 +19520,7 @@ public sealed class CodexBatch1FileReplaceLock : IDisposable
         Assert-True ($null -ne $real.inspect_result_path -and [IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $real.inspect_result_path))) 'T011 Start 未輸出可直接使用的 inspectResultPath。'
         Assert-True (Test-PathWithinRoot -Path $real.inspect_result_path -Root (Join-Path $real.execution_root '.local\ai-sessions\history')) 'T011 inspectResultPath 未位於 execution history。'
 
-        $inspectHost = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $inspectHost = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $inspectRun = Invoke-Phase9Process -HostPath $inspectHost -Arguments @(
             '-NoProfile'
             '-File'
@@ -19804,7 +19802,7 @@ $script:TargetPath = @()
 
             $caseResult = $null
             try {
-                $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+                $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
                 $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
                     '-NoProfile'
                     '-File'
@@ -21131,7 +21129,8 @@ throw 'RunRecord 事件流為空。'
         $scriptOperations = @([regex]::Matches($validOperationsMatch.Groups['body'].Value, "'([^']+)'") | ForEach-Object { $_.Groups[1].Value })
         $dispatchSwitchMatch = [regex]::Match($productionText, '(?ms)\$result\s*=\s*switch\s*\(\$Operation\)\s*\{(?<body>.*?)^\s*default')
         Assert-True $dispatchSwitchMatch.Success '找不到 production operation dispatch switch。'
-        $dispatchOperations = @([regex]::Matches($dispatchSwitchMatch.Groups['body'].Value, '''([^'']+)''\s*\{\s*(?:\$[A-Za-z_][A-Za-z0-9_]*\s*=\s*)?Invoke-') | ForEach-Object { $_.Groups[1].Value })
+        # 以分支標籤判定 operation，不依賴分支本體第一個敘述的形狀；Inspect 分支以 try 包住 Invoke-Inspect。
+        $dispatchOperations = @([regex]::Matches($dispatchSwitchMatch.Groups['body'].Value, '(?m)^\s*''([^'']+)''\s*\{') | ForEach-Object { $_.Groups[1].Value })
         $skillText = Get-DispatchSkillText
         $readSkillOperations = {
             param([Parameter(Mandatory)][string]$Text)
@@ -21245,12 +21244,7 @@ throw 'RunRecord 事件流為空。'
 ")
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $sourceRoot '.gitignore'))) 'fixture 預先包含 .gitignore。'
 
-        $preflightHostPath = if ($PSVersionTable.PSEdition -eq 'Core') {
-            (Get-Command pwsh.exe -ErrorAction Stop).Source
-        }
-        else {
-            (Get-Command powershell.exe -ErrorAction Stop).Source
-        }
+        $preflightHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $preflightRun = Invoke-Phase9Process -HostPath $preflightHostPath -Arguments @(
             '-NoProfile'
             '-NonInteractive'
@@ -21322,12 +21316,7 @@ throw 'RunRecord 事件流為空。'
             Write-Utf8NoBom -Path $sensitivePath -Content ('fixture-secret-' + $ScenarioId)
         }
 
-        $preflightHostPath = if ($PSVersionTable.PSEdition -eq 'Core') {
-            (Get-Command pwsh.exe -ErrorAction Stop).Source
-        }
-        else {
-            (Get-Command powershell.exe -ErrorAction Stop).Source
-        }
+        $preflightHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $preflightRun = Invoke-Phase9Process -HostPath $preflightHostPath -Arguments @(
             '-NoProfile'
             '-NonInteractive'
@@ -21451,7 +21440,7 @@ throw 'RunRecord 事件流為空。'
             [switch]$UseRequestForTargets
         )
 
-        $hostPath = if ($PSVersionTable.PSEdition -eq 'Core') { (Get-Command pwsh.exe -ErrorAction Stop).Source } else { (Get-Command powershell.exe -ErrorAction Stop).Source }
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $arguments = @(
             '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $sourcePath,
             '-Operation', $OperationName, '-SourceRoot', $Fixture.SourceRoot,
@@ -21521,7 +21510,7 @@ throw 'RunRecord 事件流為空。'
                 '$ErrorActionPreference = ''Stop'''
                 '[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)'
             )
-            foreach ($moduleName in @('common-runtime.ps1', 'git-baseline.ps1', 'dispatch-scope.ps1', 'dispatch-evidence.ps1', 'quota-observation.ps1', 'advisor-evidence.ps1', 'process-identity.ps1', 'reviewer-contract.ps1', 'run-recovery.ps1', 'prepare-stage.ps1', 'dispatch-lifecycle.ps1', 'start-lifecycle.ps1', 'inspect-lifecycle.ps1', 'collect-contract.ps1', 'cleanup.ps1', 'Invoke-DispatchConcurrency.ps1')) {
+            foreach ($moduleName in @('common-runtime.ps1', 'git-baseline.ps1', 'dispatch-scope.ps1', 'dispatch-input-checks.ps1', 'dispatch-evidence.ps1', 'quota-observation.ps1', 'advisor-evidence.ps1', 'process-identity.ps1', 'reviewer-contract.ps1', 'run-recovery.ps1', 'prepare-stage.ps1', 'dispatch-lifecycle.ps1', 'start-lifecycle.ps1', 'inspect-lifecycle.ps1', 'collect-contract.ps1', 'cleanup.ps1', 'Invoke-DispatchConcurrency.ps1')) {
                 $childLines += ('. ''' + (Join-Path $dispatchModuleRoot $moduleName).Replace("'", "''") + '''')
             }
             # 依正式入口的參數預設值與頂層 $script: 初始化建立狀態，只略過 RequestResourceOrder。
@@ -21555,7 +21544,7 @@ throw 'RunRecord 事件流為空。'
                 '[ordered]@{ worktreeCreated = [bool]$result.worktreeCreated; executionRoot = [string]$result.executionRoot; request_order_defined = [bool](Get-Variable -Scope Script -Name ''RequestResourceOrder'' -ErrorAction SilentlyContinue) } | ConvertTo-Json -Compress'
             )
             Write-Utf8NoBom -Path $childScriptPath -Content (($childLines -join "`r`n") + "`r`n")
-            $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+            $hostPath = Join-Path $PSHOME 'pwsh.exe'
             $childRun = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $childScriptPath) -WorkingDirectory $fixture.SourceRoot -EnvironmentVariables @{}
             Write-Phase9Evidence -Label 'BATCH4_UNSET_REQUEST_ORDER_PREFLIGHT' -Value ([ordered]@{ exit_code = $childRun.exit_code; stdout = $childRun.stdout; stderr = $childRun.stderr })
             $childResult = $null
@@ -21608,12 +21597,7 @@ throw 'RunRecord 事件流為空。'
             Assert-True ([int]$gitRun.exit_code -eq 0) ('建立既有 Git fixture 失敗：' + [string]$gitRun.stderr)
         }
 
-        $preflightHostPath = if ($PSVersionTable.PSEdition -eq 'Core') {
-            (Get-Command pwsh.exe -ErrorAction Stop).Source
-        }
-        else {
-            (Get-Command powershell.exe -ErrorAction Stop).Source
-        }
+        $preflightHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         try {
             $preflightRun = Invoke-Phase9Process -HostPath $preflightHostPath -Arguments @(
                 '-NoProfile'
@@ -21674,6 +21658,178 @@ throw 'RunRecord 事件流為空。'
                 $null = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'remove', '--force', '--', $fixture.DispatchRoot)
             }
         }
+    }
+
+    function Write-ColdStartRunRecordFixture {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][psobject]$Fixture,
+            [Parameter(Mandatory)][ValidateSet('started', 'launch-failed-started', 'unstarted', 'prepared', 'corrupt', 'unknown-failure')][string]$Kind
+        )
+
+        $runDirectory = Join-Path $Fixture.SourceRoot ('.local\ai-sessions\history\' + $Fixture.LineSlug + '\runs\' + $Fixture.LineSlug)
+        New-Item -ItemType Directory -Path $runDirectory -Force | Out-Null
+        $runId = [guid]::NewGuid().ToString()
+        $path = Join-Path $runDirectory ($runId + '.json')
+        $content = switch ($Kind) {
+            'started' { '{"run_id":"' + $runId + '","launch_state":"started"}' }
+            'launch-failed-started' { '{"run_id":"' + $runId + '","launch_state":"launch-failed","failure":{"phase":"start","observation":{"process_started":true,"failure_stage":"launch"}}}' }
+            'unstarted' { '{"run_id":"' + $runId + '","launch_state":"launch-failed","failure":{"phase":"preparation","observation":{"process_started":false,"failure_stage":"preparation"}}}' }
+            'prepared' { '{"run_id":"' + $runId + '","launch_state":"prepared"}' }
+            'unknown-failure' { '{"run_id":"' + $runId + '","launch_state":"launch-failed"}' }
+            'corrupt' { '{"run_id": "broken", ' }
+        }
+        Write-Utf8NoBom -Path $path -Content $content
+        return $path
+    }
+
+    function Invoke-ColdStartPreflight {
+        [CmdletBinding()]
+        param(
+            [Parameter(Mandatory)][psobject]$Fixture,
+            [string]$SessionModeValue = 'cold-start'
+        )
+
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
+        $arguments = @(
+            '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', $sourcePath,
+            '-Operation', 'Preflight', '-SourceRoot', $Fixture.SourceRoot,
+            '-DispatchRoot', $Fixture.DispatchRoot, '-LineSlug', $Fixture.LineSlug,
+            '-DispatchSlug', $Fixture.LineSlug, '-WriteMode', 'readonly',
+            '-TargetPath', (Join-Path $Fixture.SourceRoot 'tracked.ps1'),
+            '-DispatchKind', 'workflow', '-TaskType', 'script-change', '-SessionMode', $SessionModeValue
+        )
+        return Invoke-Phase9Process -HostPath $hostPath -Arguments $arguments -WorkingDirectory $Fixture.SourceRoot -EnvironmentVariables @{}
+    }
+
+    function Remove-ColdStartFixture {
+        [CmdletBinding()]
+        param([Parameter(Mandatory)][psobject]$Fixture)
+
+        if (Test-Path -LiteralPath $Fixture.DispatchRoot -PathType Container) {
+            $registeredWorktrees = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $Fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+            if ($registeredWorktrees.IndexOf(($Fixture.DispatchRoot -replace '\\', '/'), [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $null = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $Fixture.SourceRoot -Arguments @('worktree', 'remove', '--force', '--', $Fixture.DispatchRoot)
+            }
+        }
+        if (Test-Path -LiteralPath $Fixture.SourceRoot) {
+            Assert-True (Test-PathWithinRoot -Path $Fixture.SourceRoot -Root $script:fixtureRoot) 'DD-COLDSTART cleanup 路徑超出 fixture root。'
+            Remove-Item -LiteralPath $Fixture.SourceRoot -Recurse -Force
+        }
+    }
+
+    Invoke-Case 'Phase 9 DD-COLDSTART 判定函式涵蓋 none、unstarted、actual-start、unverifiable 與聚合優先序' {
+        $fixture = New-Fix3PreflightFixture -Name 'dd-coldstart-state'
+        try {
+            $none = Get-DispatchColdStartGuardState -SourceRoot $fixture.SourceRoot -LineSlug $fixture.LineSlug -DispatchSlug $fixture.LineSlug
+            Assert-True ($none.state -ceq 'none' -and @($none.actualStartPaths).Count -eq 0 -and @($none.unverifiablePaths).Count -eq 0) '沒有 RunRecord 目錄時應為 none。'
+            $unstartedPath = Write-ColdStartRunRecordFixture -Fixture $fixture -Kind 'unstarted'
+            $unstarted = Get-DispatchColdStartGuardState -SourceRoot $fixture.SourceRoot -LineSlug $fixture.LineSlug -DispatchSlug $fixture.LineSlug
+            Assert-True ($unstarted.state -ceq 'unstarted') ('只有 unstarted-sandbox 紀錄時應為 unstarted：' + $unstarted.state)
+            $null = Assert-DispatchColdStartNotStarted -SourceRoot $fixture.SourceRoot -LineSlug $fixture.LineSlug -DispatchSlug $fixture.LineSlug
+
+            $startedPath = Write-ColdStartRunRecordFixture -Fixture $fixture -Kind 'started'
+            $mixed = Get-DispatchColdStartGuardState -SourceRoot $fixture.SourceRoot -LineSlug $fixture.LineSlug -DispatchSlug $fixture.LineSlug
+            Assert-True ($mixed.state -ceq 'actual-start' -and @($mixed.actualStartPaths).Count -eq 1 -and [string]::Equals([string]$mixed.actualStartPaths[0], $startedPath, [StringComparison]::OrdinalIgnoreCase)) ('unstarted 與 started 並存時應為 actual-start 且只列 started 那筆：' + ($mixed | ConvertTo-Json -Compress))
+            $thrown = $null
+            try { $null = Assert-DispatchColdStartNotStarted -SourceRoot $fixture.SourceRoot -LineSlug $fixture.LineSlug -DispatchSlug $fixture.LineSlug } catch { $thrown = $_.Exception }
+            Assert-True ($null -ne $thrown -and $thrown.Data['errorCode'] -ceq 'DispatchColdStartAlreadyStarted') 'actual-start 應以 DispatchColdStartAlreadyStarted 拒絕。'
+            Assert-True ($thrown.Message.Contains('DispatchColdStartAlreadyStarted') -and $thrown.Message.Contains($startedPath) -and -not $thrown.Message.Contains($unstartedPath) -and $thrown.Message.Contains('新的 dispatchSlug') -and $thrown.Message.Contains('continuation')) ('拒絕訊息缺少碼名、started 紀錄絕對路徑、新的 dispatchSlug 或 continuation：' + $thrown.Message)
+
+            $corruptPath = Write-ColdStartRunRecordFixture -Fixture $fixture -Kind 'corrupt'
+            $priority = Get-DispatchColdStartGuardState -SourceRoot $fixture.SourceRoot -LineSlug $fixture.LineSlug -DispatchSlug $fixture.LineSlug
+            Assert-True ($priority.state -ceq 'actual-start' -and @($priority.unverifiablePaths).Count -eq 1) ('actual-start 應優先於 unverifiable：' + ($priority | ConvertTo-Json -Compress))
+            Remove-Item -LiteralPath $startedPath -Force
+            $unverifiable = Get-DispatchColdStartGuardState -SourceRoot $fixture.SourceRoot -LineSlug $fixture.LineSlug -DispatchSlug $fixture.LineSlug
+            Assert-True ($unverifiable.state -ceq 'unverifiable' -and [string]::Equals([string]$unverifiable.unverifiablePaths[0], $corruptPath, [StringComparison]::OrdinalIgnoreCase)) ('損毀 JSON 應為 unverifiable：' + ($unverifiable | ConvertTo-Json -Compress))
+            $thrown = $null
+            try { $null = Assert-DispatchColdStartNotStarted -SourceRoot $fixture.SourceRoot -LineSlug $fixture.LineSlug -DispatchSlug $fixture.LineSlug } catch { $thrown = $_.Exception }
+            Assert-True ($null -ne $thrown -and $thrown.Data['errorCode'] -ceq 'DispatchColdStartRunRecordUnverifiable' -and $thrown.Message.Contains($corruptPath) -and $thrown.Message.Contains('新的 dispatchSlug')) 'unverifiable 應以 DispatchColdStartRunRecordUnverifiable 拒絕並列出該檔路徑。'
+        }
+        finally {
+            Remove-ColdStartFixture -Fixture $fixture
+        }
+    }
+
+    Invoke-Case 'Phase 9 DD-COLDSTART Preflight 對無紀錄、只有未啟動紀錄與 continuation 不以新碼拒絕' {
+        $freshFixture = New-Fix3PreflightFixture -Name 'dd-coldstart-fresh' -Commit
+        try {
+            $freshRun = Invoke-ColdStartPreflight -Fixture $freshFixture
+            $freshOutput = [string]::Concat([string]$freshRun.stdout, [Environment]::NewLine, [string]$freshRun.stderr)
+            Assert-True ([int]$freshRun.exit_code -eq 0 -and -not $freshOutput.Contains('DispatchColdStart') -and (Test-Path -LiteralPath $freshFixture.DispatchRoot -PathType Container)) ('沒有 RunRecord 的冷啟動 Preflight 應通過並建立 worktree：' + $freshOutput)
+        }
+        finally { Remove-ColdStartFixture -Fixture $freshFixture }
+
+        $unstartedFixture = New-Fix3PreflightFixture -Name 'dd-coldstart-unstarted' -Commit
+        try {
+            $null = Write-ColdStartRunRecordFixture -Fixture $unstartedFixture -Kind 'unstarted'
+            $unstartedRun = Invoke-ColdStartPreflight -Fixture $unstartedFixture
+            $unstartedOutput = [string]::Concat([string]$unstartedRun.stdout, [Environment]::NewLine, [string]$unstartedRun.stderr)
+            Assert-True ([int]$unstartedRun.exit_code -eq 0 -and -not $unstartedOutput.Contains('DispatchColdStart') -and (Test-Path -LiteralPath $unstartedFixture.DispatchRoot -PathType Container)) ('只有 unstarted-sandbox 紀錄的冷啟動 Preflight 應通過：' + $unstartedOutput)
+        }
+        finally { Remove-ColdStartFixture -Fixture $unstartedFixture }
+
+        $continuationFixture = New-Fix3PreflightFixture -Name 'dd-coldstart-continuation' -Commit
+        try {
+            $null = Write-ColdStartRunRecordFixture -Fixture $continuationFixture -Kind 'started'
+            $continuationRun = Invoke-ColdStartPreflight -Fixture $continuationFixture -SessionModeValue 'continuation'
+            $continuationOutput = [string]::Concat([string]$continuationRun.stdout, [Environment]::NewLine, [string]$continuationRun.stderr)
+            Assert-True (-not $continuationOutput.Contains('DispatchColdStart')) ('session_mode=continuation 不應觸發冷啟動守衛：' + $continuationOutput)
+        }
+        finally { Remove-ColdStartFixture -Fixture $continuationFixture }
+    }
+
+    Invoke-Case 'Phase 9 DD-COLDSTART started 與 process_started 紀錄於 worktree 建立前被 Preflight 拒絕' {
+        foreach ($scenario in @(
+                [pscustomobject]@{ Name = 'dd-coldstart-started'; Kinds = @('started'); PreCreateRoot = $false }
+                [pscustomobject]@{ Name = 'dd-coldstart-pstarted'; Kinds = @('launch-failed-started'); PreCreateRoot = $false }
+                [pscustomobject]@{ Name = 'dd-coldstart-mixed'; Kinds = @('unstarted', 'started'); PreCreateRoot = $false }
+                [pscustomobject]@{ Name = 'dd-coldstart-occupied'; Kinds = @('started'); PreCreateRoot = $true })) {
+            $fixture = New-Fix3PreflightFixture -Name $scenario.Name -Commit
+            try {
+                $recordPaths = @($scenario.Kinds | ForEach-Object { Write-ColdStartRunRecordFixture -Fixture $fixture -Kind $_ })
+                if ($scenario.PreCreateRoot) { New-Item -ItemType Directory -Path $fixture.DispatchRoot -Force | Out-Null }
+                $worktreesBefore = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+                $run = Invoke-ColdStartPreflight -Fixture $fixture
+                $output = [string]::Concat([string]$run.stdout, [Environment]::NewLine, [string]$run.stderr)
+                $worktreesAfter = Invoke-Phase9RepositoryGitCommand -RepositoryRoot $fixture.SourceRoot -Arguments @('worktree', 'list', '--porcelain')
+                Assert-True ([int]$run.exit_code -ne 0 -and $output.Contains('DispatchColdStartAlreadyStarted') -and $output.Contains($recordPaths[-1]) -and $output.Contains('新的 dispatchSlug') -and $output.Contains('continuation')) ("$($scenario.Name)：拒絕輸出缺少碼名、紀錄路徑或正確做法：" + $output)
+                Assert-True (-not $output.Contains('視為已被占用')) ("$($scenario.Name)：應回報新碼而非占用訊息：" + $output)
+                if (-not $scenario.PreCreateRoot) {
+                    Assert-True (-not (Test-Path -LiteralPath $fixture.DispatchRoot)) ("$($scenario.Name)：拒絕後 dispatchRoot 不應存在。")
+                }
+                Assert-True ([string]::Equals($worktreesBefore, $worktreesAfter, [StringComparison]::Ordinal)) ("$($scenario.Name)：拒絕後 git worktree list 不應變動。")
+                if ($scenario.Kinds.Count -gt 1) {
+                    Assert-True (-not $output.Contains($recordPaths[0])) ("$($scenario.Name)：混合案例只應列出 started 那筆。")
+                }
+            }
+            finally { Remove-ColdStartFixture -Fixture $fixture }
+        }
+    }
+
+    Invoke-Case 'Phase 9 DD-COLDSTART 無法判定啟動狀態的紀錄於 worktree 建立前被 Preflight 拒絕' {
+        foreach ($kind in @('prepared', 'corrupt', 'unknown-failure')) {
+            $fixture = New-Fix3PreflightFixture -Name ('dd-coldstart-unverifiable-' + $kind) -Commit
+            try {
+                $recordPath = Write-ColdStartRunRecordFixture -Fixture $fixture -Kind $kind
+                $run = Invoke-ColdStartPreflight -Fixture $fixture
+                $output = [string]::Concat([string]$run.stdout, [Environment]::NewLine, [string]$run.stderr)
+                Assert-True ([int]$run.exit_code -ne 0 -and $output.Contains('DispatchColdStartRunRecordUnverifiable') -and $output.Contains($recordPath) -and $output.Contains('新的 dispatchSlug')) ("$kind：拒絕輸出缺少碼名、紀錄路徑或正確做法：" + $output)
+                Assert-True (-not (Test-Path -LiteralPath $fixture.DispatchRoot)) "${kind}：拒絕後 dispatchRoot 不應存在。"
+            }
+            finally { Remove-ColdStartFixture -Fixture $fixture }
+        }
+    }
+
+    Invoke-Case 'Phase 9 DD-COLDSTART 守衛呼叫位置早於占用檢查與 git worktree add' {
+        $lifecycleText = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'dispatch\dispatch-lifecycle.ps1'))
+        $guardIndex = $lifecycleText.IndexOf('Assert-DispatchColdStartNotStarted', [StringComparison]::Ordinal)
+        $occupiedIndex = $lifecycleText.IndexOf('dispatchRoot 已存在，視為已被占用', [StringComparison]::Ordinal)
+        $worktreeAddIndex = $lifecycleText.IndexOf("'worktree', 'add'", [StringComparison]::Ordinal)
+        $manifestIndex = $lifecycleText.IndexOf('Read-LineManifest -SourceRoot $sourceRootPath', [StringComparison]::Ordinal)
+        Assert-True ($guardIndex -ge 0 -and $occupiedIndex -gt $guardIndex -and $worktreeAddIndex -gt $guardIndex -and $manifestIndex -gt $guardIndex) ("守衛呼叫位置不在占用檢查、Read-LineManifest 與 git worktree add 之前：guard=$guardIndex occupied=$occupiedIndex manifest=$manifestIndex add=$worktreeAddIndex")
+        $guardCalls = [regex]::Matches($lifecycleText, 'Assert-DispatchColdStartNotStarted').Count
+        Assert-True ($guardCalls -eq 1) ("Assert-DispatchColdStartNotStarted 應只在 Invoke-Preflight 呼叫一次：$guardCalls")
     }
 
     Invoke-Case 'Phase 9 FIX3-U2 workflow write rejects untracked targets before creating artifacts' {
@@ -21942,7 +22098,7 @@ throw 'RunRecord 事件流為空。'
         }
         Write-Utf8NoBom -Path $actualRequestPath -Content (($actualRequest | ConvertTo-Json -Depth 20) + "
 ")
-        $hostPath = (Get-Command powershell.exe -ErrorAction Stop).Source
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @(
             '-NoProfile'
             '-File'
@@ -22458,7 +22614,7 @@ throw 'RunRecord 事件流為空。'
             $workerArgumentText = ($workerArguments | ForEach-Object { ConvertTo-ProcessArgument -Value ([string]$_) }) -join ' '
             $secondProcess = New-Object System.Diagnostics.Process
             $secondStartInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $secondStartInfo.FileName = (Get-Command powershell.exe -ErrorAction Stop).Source
+            $secondStartInfo.FileName = (Get-Command pwsh.exe -ErrorAction Stop).Source
             $secondStartInfo.Arguments = $workerArgumentText
             $secondStartInfo.WorkingDirectory = $root
             $secondStartInfo.UseShellExecute = $false
@@ -22778,12 +22934,7 @@ finally {
         Assert-True ($operationResult -is [System.Collections.IDictionary]) 'Malformed Dispatch result did not preserve the structured operation result.'
         $directResultJson = ConvertTo-Json -InputObject $operationResult -Depth 30 -Compress
 
-        $inspectHostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
-            (Get-Command powershell.exe -ErrorAction Stop).Source
-        }
-        else {
-            (Get-Command pwsh.exe -ErrorAction Stop).Source
-        }
+        $inspectHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $inspectRun = Invoke-Phase9Process -HostPath $inspectHostPath -Arguments @(
             '-NoProfile'
             '-File'
@@ -23919,7 +24070,7 @@ finally {
 & '$generatorPathLiteral' @orderParameters
 "@
         [IO.File]::WriteAllText($driverPath, $driverContent, (New-Object System.Text.UTF8Encoding($true)))
-        $hostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
+        $hostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile', '-NonInteractive', '-File', $driverPath) -WorkingDirectory $caseRoot -EnvironmentVariables @{}
         Assert-True ($run.exit_code -eq 0 -and (Test-Path -LiteralPath $outputPath -PathType Leaf)) ('New-DispatchOrder explicit -OutputPath failed with CRLF input: ' + [string]$run.stdout + [string]$run.stderr)
         $content = [IO.File]::ReadAllText($outputPath, [Text.Encoding]::UTF8)
@@ -24047,7 +24198,7 @@ finally {
         Write-Utf8NoBom -Path $collectReportPath -Content ($collectReport + [Environment]::NewLine) -SourceRoot $real.source_root -ExecutionRoot $real.execution_root -TargetPath @()
 
         $preflight = Get-Content -LiteralPath $real.preflight_result_path -Raw -Encoding UTF8 | ConvertFrom-Json
-        $collectHostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
+        $collectHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $collectArguments = @(
             '-NoProfile'
             '-NonInteractive'
@@ -24570,6 +24721,144 @@ if ($Phase -eq 9) {
         Assert-True (-not [bool]$childSummary.valid) 'Test-ChildSummary 忽略 BASELINE-FAILED 並將子程序標記為成功。'
     }
 
+    # 需求 17：以字串組出的假子程序輸出餵給 Test-ChildSummary，驗證允許名單內的 ENV-LIMITED 不使結果無效。
+    $newDdChildSummary = {
+        param([string[]]$CaseText, [string]$SummaryLine, [int]$ExitCode = 0)
+        $probeDate = '2026-01-01T00:00:00.0000000Z'
+        $probeText = '  中文，逗號,$literal  '
+        $lines = @("PROBE_DATE_ECHO: <$probeDate>", 'PROBE_EMPTY_ECHO: <>', 'PROBE_WHITESPACE_ECHO: <  >', "PROBE_TEXT_ECHO: <$probeText>") + @($CaseText) + @($SummaryLine)
+        $childResult = [pscustomobject]@{ exit_code = $ExitCode; launch_error = $null; stdout = ($lines -join "`n") }
+        return Test-ChildSummary -ChildResult $childResult -ExpectedDate $probeDate -ExpectedEmpty '' -ExpectedWhitespace '  ' -ExpectedText $probeText
+    }
+    $newDdCaseText = {
+        param([string]$Name, [string]$Category, [string]$Note = '')
+        $text = "CASE: $Name`nEXPECTED: pass`nACTUAL: pass `nSTACK: `nRESULT: " + $(if ($Category -ceq 'PASS') { 'PASS' } else { 'FAIL' }) + "`nCATEGORY: $Category"
+        if (-not [string]::IsNullOrEmpty($Note)) { $text += "`nENVIRONMENT_NOTE: $Note" }
+        return ($text + "`nCASE_START_UTC: 2026-11-14T00:00:00.0000000+00:00`nCASE_FINISH_UTC: 2026-11-14T00:00:01.0000000+00:00`nCASE_DURATION_MS: 1000`nCASE_PROCESS_COUNT: 0`nCASE_PROCESS_DURATION_MS: 0")
+    }
+    Invoke-Case 'Phase 9 DD-ENV-LIMITED-ALLOW 允許名單內附原因的 ENV-LIMITED 不使結果無效' {
+        $allowedName = 'Phase 6 DD-RULES-ACCOUNT 實際建立帳號'
+        Assert-True (@(Get-Phase9AllowedEnvironmentLimitedCaseNames).Count -eq 1 -and @(Get-Phase9AllowedEnvironmentLimitedCaseNames)[0] -ceq $allowedName) '允許名單應恰有 Phase 6 DD-RULES-ACCOUNT 實際建立帳號。'
+        Assert-True ((Get-Phase9ProcessExitCode -EnvironmentLimitedCount 0) -eq 0 -and (Get-Phase9ProcessExitCode -EnvironmentLimitedCount 1) -eq 1) 'Get-Phase9ProcessExitCode 的 ENV-LIMITED 計數判定改變。'
+        $allowedBlock = & $newDdCaseText $allowedName 'ENV-LIMITED' "需要系統管理員權限才能建立 Symbolic Link`n第二行原因說明"
+        $summary = & $newDdChildSummary @((& $newDdCaseText 'Phase 9 DD-FIXTURE pass one' 'PASS'), (& $newDdCaseText 'Phase 9 DD-FIXTURE pass two' 'PASS'), $allowedBlock) 'TOTAL: 3; PASS: 2; FAIL: 0; ENV-LIMITED: 1; BASELINE-FAILED: 0; ISOLATED: 0;'
+        Assert-True ($summary.valid -and $summary.reason.Contains('ENV-LIMITED-ALLOWED')) ('允許名單內附多行原因的 ENV-LIMITED 應判有效：' + ($summary | ConvertTo-Json -Compress))
+        $noLimited = & $newDdChildSummary @((& $newDdCaseText 'Phase 9 DD-FIXTURE pass one' 'PASS'), (& $newDdCaseText 'Phase 9 DD-FIXTURE pass two' 'PASS')) 'TOTAL: 2; PASS: 2; FAIL: 0; ENV-LIMITED: 0; BASELINE-FAILED: 0; ISOLATED: 0;'
+        Assert-True ($noLimited.valid -and -not $noLimited.reason.Contains('ENV-LIMITED-ALLOWED')) ('沒有 ENV-LIMITED 的輸出應維持有效：' + ($noLimited | ConvertTo-Json -Compress))
+        $timed = & $newDdChildSummary @((& $newDdCaseText 'Phase 9 DD-FIXTURE pass one' 'PASS')) 'TOTAL: 1; PASS: 1; FAIL: 0; ENV-LIMITED: 0; BASELINE-FAILED: 0; ISOLATED: 0; FIXTURES: C:\fixture'
+        Assert-True ($timed.valid) ('含逐案計時行的輸出仍應解析 TOTAL 摘要行：' + ($timed | ConvertTo-Json -Compress))
+    }
+    Invoke-Case 'Phase 9 DD-ENV-LIMITED-ALLOW 名單外、缺原因、案例數不符與同時失敗仍判無效' {
+        $allowedName = 'Phase 6 DD-RULES-ACCOUNT 實際建立帳號'
+        $otherName = 'Phase 9 ENV-LIMITED injected refusal is aggregated outside PASS'
+        $oneLimited = 'TOTAL: 1; PASS: 0; FAIL: 0; ENV-LIMITED: 1; BASELINE-FAILED: 0; ISOLATED: 0;'
+        $notAllowed = & $newDdChildSummary @((& $newDdCaseText $otherName 'ENV-LIMITED' 'Win32_Process access denied')) $oneLimited
+        Assert-True (-not $notAllowed.valid) ('不在允許名單的 ENV-LIMITED 應判無效：' + ($notAllowed | ConvertTo-Json -Compress))
+        $noReason = & $newDdChildSummary @((& $newDdCaseText $allowedName 'ENV-LIMITED' '')) $oneLimited
+        Assert-True (-not $noReason.valid) ('允許名稱但缺原因應判無效：' + ($noReason | ConvertTo-Json -Compress))
+        $withFail = & $newDdChildSummary @((& $newDdCaseText $allowedName 'ENV-LIMITED' 'symbolic link denied'), (& $newDdCaseText 'Phase 9 DD-FIXTURE failing' 'FAIL')) 'TOTAL: 2; PASS: 0; FAIL: 1; ENV-LIMITED: 1; BASELINE-FAILED: 0; ISOLATED: 0;'
+        Assert-True (-not $withFail.valid) ('允許名稱的 ENV-LIMITED 加 FAIL 應判無效：' + ($withFail | ConvertTo-Json -Compress))
+        $countMismatch = & $newDdChildSummary @() $oneLimited
+        Assert-True (-not $countMismatch.valid) ('摘要 ENV-LIMITED 數與案例區塊數不一致應判無效：' + ($countMismatch | ConvertTo-Json -Compress))
+        $mixed = & $newDdChildSummary @((& $newDdCaseText $allowedName 'ENV-LIMITED' 'symbolic link denied'), (& $newDdCaseText $otherName 'ENV-LIMITED' 'Win32_Process access denied')) 'TOTAL: 2; PASS: 0; FAIL: 0; ENV-LIMITED: 2; BASELINE-FAILED: 0; ISOLATED: 0;'
+        Assert-True (-not $mixed.valid) ('一個允許、一個不在名單的 ENV-LIMITED 應判無效：' + ($mixed | ConvertTo-Json -Compress))
+        # 靜態：Test-ChildSummary 不再對 $environmentLimitedCount -gt 0 無條件 return valid = $false；Invoke-Case 的 ENV-LIMITED 名單只引用允許名單。
+        $scriptAst = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
+        $childSummaryFunction = @($scriptAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Test-ChildSummary' }, $true))[0]
+        $unconditional = @($childSummaryFunction.Body.FindAll({ param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$environmentLimitedCount -gt 0' -and @($node.Clauses[0].Item2.Statements).Count -eq 1 -and $node.Clauses[0].Item2.Statements[0] -is [Management.Automation.Language.ReturnStatementAst] }, $true))
+        Assert-True ($unconditional.Count -eq 0) 'Test-ChildSummary 仍對所有 ENV-LIMITED 無條件 return valid = $false。'
+        $invokeCaseFunction = @($scriptAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-Case' }, $true))[0]
+        Assert-True (-not $invokeCaseFunction.Body.Extent.Text.Contains('DD-RULES-PREFLIGHT Junction') -and $invokeCaseFunction.Body.Extent.Text.Contains('Get-Phase9AllowedEnvironmentLimitedCaseNames')) 'Invoke-Case 的 ENV-LIMITED 名單仍含 DD-RULES-PREFLIGHT Junction 規則或未引用允許名單。'
+    }
+
+    Invoke-Case 'Phase 9 DD-ENV-LIMITED-ALLOW 允許名單案例只接受 SymbolicLink 權限不足訊息' {
+        $actualMessage = '建立 SymbolicLink 失敗：C:\x\review.config.toml；備份：；此作業需要系統管理員權限。。請以具備建立 Symbolic Link 權限的 PowerShell 重新執行。'
+        Assert-True (Test-Phase9SymbolicLinkPrivilegeDetail -Detail $actualMessage) '實際的 Symbolic Link 權限不足訊息應判為環境限制。'
+        Assert-True (Test-Phase9SymbolicLinkPrivilegeDetail -Detail 'Failed to create SymbolicLink: A required privilege is not held by the client.') '英文的 SymbolicLink 權限不足訊息應判為環境限制。'
+        foreach ($negative in @('拒絕存取路徑 C:\x\locked.toml', 'Access to the path is denied. access denied', '建立 SymbolicLink 失敗：找不到路徑 C:\x', '需要系統管理員權限但沒有指名連結類型', '')) {
+            Assert-True (-not (Test-Phase9SymbolicLinkPrivilegeDetail -Detail $negative)) ('一般的拒絕存取或缺少 SymbolicLink 字樣的訊息不應判為環境限制：' + $negative)
+        }
+        $scriptAst = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
+        $invokeCaseFunction = @($scriptAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-Case' }, $true))[0]
+        Assert-True ($invokeCaseFunction.Body.Extent.Text.Contains('Test-Phase9SymbolicLinkPrivilegeDetail -Detail $detail') -and -not $invokeCaseFunction.Body.Extent.Text.Contains('access.{0,12}denied')) 'Invoke-Case 的 ENV-LIMITED 分類未改用 SymbolicLink 權限判定。'
+    }
+
+    # 需求 19：逐案耗時。
+    Invoke-Case 'Phase 9 DD-CASE-TIMING Invoke-Phase9Process 回傳 duration_ms 並登記逐案清單' {
+        $pwshPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
+        $timed = Invoke-Phase9Process -HostPath $pwshPath -Arguments @('-NoProfile', '-Command', 'exit 3') -WorkingDirectory $fixtureRoot -EnvironmentVariables $null
+        Assert-True ($timed.exit_code -eq 3 -and $timed.duration_ms -is [double] -and [double]$timed.duration_ms -gt 0) ('Invoke-Phase9Process 未回傳大於 0 的 duration_ms：' + ($timed | ConvertTo-Json -Depth 4 -Compress))
+        $missing = Invoke-Phase9Process -HostPath (Join-Path $fixtureRoot 'no-such-host\pwsh.exe') -Arguments @('-NoProfile', '-Command', 'exit 0') -WorkingDirectory $fixtureRoot -EnvironmentVariables $null
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$missing.launch_error) -and $null -ne $missing.PSObject.Properties['duration_ms'] -and [double]$missing.duration_ms -ge 0) ('launch_error 路徑缺少 duration_ms：' + ($missing | ConvertTo-Json -Depth 4 -Compress))
+        Assert-True (@($script:phase9CaseProcessTimings.ToArray() | Where-Object { $_.exit_code -eq 3 -and $_.host -ieq 'pwsh.exe' }).Count -eq 1) 'Invoke-Phase9Process 未把 { host; duration_ms; exit_code } 附加到逐案清單。'
+    }
+    Invoke-Case 'Phase 9 DD-CASE-TIMING Invoke-Case 輸出計時行且被篩掉的案例不輸出' {
+        $noProcess = (@(Invoke-Case 'Phase 9 DD-CASE-TIMING nested without process' { Assert-True $true 'nested' }) -join "`n")
+        $startMatch = [regex]::Match($noProcess, '(?m)^CASE_START_UTC: (?<value>\S+)')
+        $finishMatch = [regex]::Match($noProcess, '(?m)^CASE_FINISH_UTC: (?<value>\S+)')
+        Assert-True ($startMatch.Success -and $finishMatch.Success -and [regex]::IsMatch($noProcess, '(?m)^CASE_DURATION_MS: \d+(\.\d+)?\s*$') -and [regex]::IsMatch($noProcess, '(?m)^CASE_PROCESS_COUNT: 0\s*$') -and [regex]::IsMatch($noProcess, '(?m)^CASE_PROCESS_DURATION_MS: 0\s*$')) ('巢狀案例缺少計時行：' + $noProcess)
+        $startUtc = [DateTimeOffset]::Parse($startMatch.Groups['value'].Value, [Globalization.CultureInfo]::InvariantCulture)
+        $finishUtc = [DateTimeOffset]::Parse($finishMatch.Groups['value'].Value, [Globalization.CultureInfo]::InvariantCulture)
+        Assert-True ($finishUtc -ge $startUtc) 'CASE_FINISH_UTC 早於 CASE_START_UTC。'
+
+        $script:ddCaseTimingProcessDuration = $null
+        $withProcess = (@(Invoke-Case 'Phase 9 DD-CASE-TIMING nested with process' {
+                    $pwshPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
+                    $run = Invoke-Phase9Process -HostPath $pwshPath -Arguments @('-NoProfile', '-Command', 'exit 0') -WorkingDirectory $fixtureRoot -EnvironmentVariables $null
+                    $script:ddCaseTimingProcessDuration = [double]$run.duration_ms
+                }) -join "`n")
+        $durationMatch = [regex]::Match($withProcess, '(?m)^CASE_PROCESS_DURATION_MS: (?<value>\d+(\.\d+)?)\s*$')
+        Assert-True ([regex]::IsMatch($withProcess, '(?m)^CASE_PROCESS_COUNT: 1\s*$') -and $durationMatch.Success -and [math]::Abs([double]::Parse($durationMatch.Groups['value'].Value, [Globalization.CultureInfo]::InvariantCulture) - $script:ddCaseTimingProcessDuration) -le 0.001 -and $script:ddCaseTimingProcessDuration -ge 0) ('含一次子程序的巢狀案例計時不符：' + $withProcess)
+
+        $rejected = (@(Invoke-Case 'Phase 9 DD-CASE-TIMING nested reject' -Reject { throw 'expected rejection' }) -join "`n")
+        Assert-True ($rejected.Contains('CATEGORY: PASS') -and [regex]::IsMatch($rejected, '(?m)^CASE_START_UTC: ')) ('-Reject 的巢狀案例應仍輸出計時行且 CATEGORY: PASS：' + $rejected)
+
+        $scriptAst = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
+        $invokeCaseFunction = @($scriptAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-Case' }, $true))[0]
+        $filterIf = @($invokeCaseFunction.Body.FindAll({ param($node) $node -is [Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '-not $focusedMatch' }, $true))[0]
+        $timingOffset = $invokeCaseFunction.Extent.StartOffset + $invokeCaseFunction.Extent.Text.IndexOf('CASE_START_UTC:')
+        Assert-True ($null -ne $filterIf -and $timingOffset -gt $filterIf.Extent.EndOffset) '計時輸出敘述必須位於 FocusedCase 篩選 return 之後。'
+    }
+
+    # 需求 20：FocusedCase 的 ValidateSet 與篩選式不含無對應案例的值與名稱引用（以字串串接組出失效名稱，避免自我命中）。
+    Invoke-Case 'Phase 9 DD-FOCUSED-CASE ValidateSet 與篩選式不含失效值與案例名稱' {
+        $staleValue = 'BATCH6-' + 'K2'
+        $staleNames = @(('Phase 9 process identity prevents a second ' + 'continuation Start'), ('Phase 9 F-007 advisor Inspect includes ' + 'periodic observation'))
+        $scriptText = [IO.File]::ReadAllText($PSCommandPath, [Text.Encoding]::UTF8)
+        Assert-True (-not $scriptText.Contains($staleValue)) ('檔案仍含失效的 FocusedCase 值 ' + $staleValue)
+        foreach ($staleName in $staleNames) { Assert-True (-not $scriptText.Contains($staleName)) ('檔案仍含失效的案例名稱：' + $staleName) }
+        $scriptAst = [Management.Automation.Language.Parser]::ParseFile($PSCommandPath, [ref]$null, [ref]$null)
+        $focusedParameter = @($scriptAst.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -ceq 'FocusedCase' })[0]
+        $validateSetValues = @($focusedParameter.Attributes | Where-Object { $_.TypeName.Name -ceq 'ValidateSet' } | ForEach-Object { $_.PositionalArguments | ForEach-Object { [string]$_.Value } })
+        Assert-True ($validateSetValues.Count -gt 0 -and $staleValue -notin $validateSetValues) 'ValidateSet 仍含失效值。'
+        $invokeCaseFunction = @($scriptAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-Case' }, $true))[0]
+        Assert-True (-not $invokeCaseFunction.Body.Extent.Text.Contains($staleValue)) 'Invoke-Case 篩選式仍含失效值分支。'
+        $tailText = $scriptText.Substring($invokeCaseFunction.Extent.EndOffset)
+        $nameComparisons = @($invokeCaseFunction.Body.FindAll({ param($node) $node -is [Management.Automation.Language.BinaryExpressionAst] -and $node.Left.Extent.Text -ceq '$Name' -and $node.Operator -in @([Management.Automation.Language.TokenKind]::Ceq, [Management.Automation.Language.TokenKind]::In, [Management.Automation.Language.TokenKind]::Imatch, [Management.Automation.Language.TokenKind]::Cmatch) }, $true))
+        $missing = New-Object 'System.Collections.Generic.List[string]'
+        $checkedLiterals = 0
+        $checkedPrefixes = 0
+        foreach ($comparison in $nameComparisons) {
+            if ($comparison.Operator -in @([Management.Automation.Language.TokenKind]::Imatch, [Management.Automation.Language.TokenKind]::Cmatch)) {
+                if ($comparison.Right -isnot [Management.Automation.Language.StringConstantExpressionAst]) { continue }
+                $pattern = [string]$comparison.Right.Value
+                if (-not $pattern.StartsWith('^Phase ', [StringComparison]::Ordinal) -or $pattern.Substring(1) -match '[()|\[\]\\.*+?{}$^]') { continue }
+                $prefix = $pattern.Substring(1)
+                $checkedPrefixes++
+                if (-not $tailText.Contains("'" + $prefix)) { $missing.Add('前綴 ' + $prefix + '（行 ' + $comparison.Extent.StartLineNumber + '）') }
+                continue
+            }
+            $literals = @($comparison.Right.FindAll({ param($node) $node -is [Management.Automation.Language.StringConstantExpressionAst] }, $true) | ForEach-Object { [string]$_.Value })
+            if ($comparison.Right -is [Management.Automation.Language.StringConstantExpressionAst]) { $literals = @([string]$comparison.Right.Value) }
+            foreach ($literal in $literals) {
+                $checkedLiterals++
+                if (-not $tailText.Contains("'" + $literal + "'")) { $missing.Add('名稱 ' + $literal + '（行 ' + $comparison.Extent.StartLineNumber + '）') }
+            }
+        }
+        Assert-True ($checkedLiterals -gt 0 -and $checkedPrefixes -gt 0) '靜態檢查沒有取得任何字面名稱或前綴，檢查邏輯失效。'
+        Assert-True ($missing.Count -eq 0) ('FocusedCase 篩選式引用了找不到對應案例的名稱：' + ($missing -join '；'))
+    }
+
     Invoke-Case 'Phase 9 ENV-LIMITED classification preserves assertion failures' {
         $queryDenied = Get-Phase9CaseClassification -AssertionsPassed $false -RawQueryOutput 'Win32_Process query failed: access denied' -IdentityStatus 'identity-unverified' -RequiredIdentityEvidenceMissing $true -OtherAssertionFailureCount 0
         Assert-True ($queryDenied.category -ceq 'ENV-LIMITED') ('明確查詢拒絕且沒有其他失敗時未分類為 ENV-LIMITED：' + ($queryDenied | ConvertTo-Json -Compress))
@@ -24664,7 +24953,7 @@ function Invoke-Prepare { throw 'BATCH2_PREPARE_REACHED' }
         $gitOverrides = $gitOverrides.Replace('__TRACKED_TARGET__', ([string]$TrackedTarget).ToLowerInvariant()).Replace('__MARKER_PATH__', $markerPath)
         $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $gitOverrides
         [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
-        $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+        $hostPath = Join-Path $PSHOME 'pwsh.exe'
         $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Dispatch','-RequestPath',$requestPath) -WorkingDirectory $CaseRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
         $result = $null
         if (-not [string]::IsNullOrWhiteSpace([string]$run.stdout)) { try { $result = ConvertFrom-Json -InputObject ([string]$run.stdout) } catch { $result = $null } }
@@ -24720,7 +25009,7 @@ function Invoke-GitCommand {
         $overrides = $overrides.Replace('__MARKER_PATH__', $markerPath)
         $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $overrides
         [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
-        $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+        $hostPath = Join-Path $PSHOME 'pwsh.exe'
         $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Preflight','-SourceRoot',$CaseRoot,'-DispatchRoot',$dispatchRoot,'-LineSlug','line-a','-DispatchSlug',$DispatchSlug,'-CallerSessionId','batch2-caller','-WriteMode','readonly','-TargetPath',$targetPath,'-DispatchKind',$DispatchKind,'-TaskType',$TaskType,'-UnitKind',$UnitKind) -WorkingDirectory $CaseRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
         $orderPath = Join-Path $CaseRoot ('.local\ai-sessions\handoff\line-a\dispatch-order-' + $DispatchSlug + '.md')
         return [pscustomobject]@{ Run=$run; MarkerPath=$markerPath; OrderPath=$orderPath }
@@ -24781,7 +25070,7 @@ function Invoke-GitCommand {
 
         $batch3RealFixture = & $invokeSRealDispatchCase @batch3HelperParameters
         Assert-True ([int]$batch3RealFixture.run.exit_code -eq 0 -and (Test-Path -LiteralPath $batch3RealFixture.preflight_result_path -PathType Leaf) -and $null -ne $batch3RealFixture.run_record_document) ('BATCH3 真實 Preflight fixture 失敗：' + [string]$batch3RealFixture.output_text)
-        $batch3ExpectedHostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
+        $batch3ExpectedHostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         Assert-True ([string]::Equals([string]$batch3RealFixture.run.host_path, $batch3ExpectedHostPath, [StringComparison]::OrdinalIgnoreCase)) ('BATCH3 Preflight 未使用目前 PowerShell 宿主：expected=' + $batch3ExpectedHostPath + '; actual=' + [string]$batch3RealFixture.run.host_path)
         $batch3Preflight = Get-Content -LiteralPath $batch3RealFixture.preflight_result_path -Raw -Encoding UTF8 | ConvertFrom-Json
         $batch3Baseline = Read-DispatchBaseline -Path $batch3Preflight.baselinePath -Sha256 $batch3Preflight.baselineSha256 -SourceRoot $batch3RealFixture.source_root -DispatchRoot $batch3RealFixture.dispatch_root -LineSlug 'a' -DispatchSlug $batch3RealFixture.dispatch_slug -BaseSha $batch3Preflight.baseSha
@@ -24800,7 +25089,7 @@ function Invoke-GitCommand {
         $null = New-Item -ItemType Directory -Path $batch3ReportParent -Force
         [IO.File]::WriteAllText($batch3ReportPath, "BATCH3-EOL fixture report`r`n", (New-Object System.Text.UTF8Encoding($false)))
 
-        $batch3HostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') { (Get-Command powershell.exe -ErrorAction Stop).Source } else { (Get-Command pwsh.exe -ErrorAction Stop).Source }
+        $batch3HostPath = (Get-Command pwsh.exe -ErrorAction Stop).Source
         $batch3Arguments = @(
             '-NoLogo'
             '-NoProfile'
@@ -25442,7 +25731,7 @@ function Invoke-Inspect { return [ordered]@{ operation='Inspect'; status='inspec
 '@
             $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $override
             [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
-            $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+            $hostPath = Join-Path $PSHOME 'pwsh.exe'
             $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Inspect','-SourceRoot',$entryRoot,'-LineSlug','line-a','-DispatchSlug','batch2-inspect') -WorkingDirectory $entryRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
             Write-Phase9Evidence -Label 'BATCH2_INSPECT_ADMISSION_PRE_FIXTURE' -Value ([ordered]@{ command=$run.command; exit_code=$run.exit_code; stdout=$run.stdout; stderr=$run.stderr })
             Assert-True ($run.exit_code -eq 0) ('Inspect 在兩筆 readonly admission 下未通過：' + [string]$run.stdout + [string]$run.stderr)
@@ -25566,6 +25855,178 @@ function Invoke-Inspect { return [ordered]@{ operation='Inspect'; status='inspec
         }
     }
 
+    # stderr-only 拒絕（401）的三種事件流：E1 空檔、E2 只有 thread.started 與 turn.started、E3 只有 thread.started；進程 exit code 為 1。
+    $accountResilienceStderrLine = '2026-11-09T09:02:00.123456Z ERROR codex_core::client: unexpected status 401 Unauthorized'
+    $invokeStderrOnlyInspect = {
+        param([string]$Kind, [switch]$WithoutBinding)
+        $fixture = Set-Phase9DispatchInspectContext -SidecarExitCode 1
+        $stderrPath = Join-Path $fixtureRoot ('.local\ai-sessions\history\c1-' + $Kind.ToLowerInvariant() + '-stderr.txt')
+        [IO.File]::WriteAllText($stderrPath, $accountResilienceStderrLine, (New-Object System.Text.UTF8Encoding($false)))
+        $threadLine = ConvertTo-Json -InputObject ([ordered]@{ type = 'thread.started'; thread_id = $a.thread_id }) -Compress
+        $turnLine = ConvertTo-Json -InputObject ([ordered]@{ type = 'turn.started' }) -Compress
+        $eventText = switch ($Kind) { 'E1' { '' } 'E2' { $threadLine + "`n" + $turnLine } 'BLANK' { "  `n`n  `n" } 'NOTHREAD' { $turnLine } 'NONJSON' { 'this is not json' } default { $threadLine } }
+        [IO.File]::WriteAllText($a.event_stream_path, $eventText, (New-Object System.Text.UTF8Encoding($false)))
+        $script:ErrorStreamPath = $stderrPath
+        if ($WithoutBinding) {
+            $script:DispatchResultPath = ''
+            $script:RunRecordPath = $aPath
+            $script:EventStreamPath = $a.event_stream_path
+            $script:ScopePlanPath = $a.scope_plan_path
+            $script:ProcessExitCode = [Nullable[int]]1
+            $script:InvocationBoundParameters = [ordered]@{}
+        }
+        $captured = [pscustomobject]@{ fixture = $fixture; result = $null; exception = $null }
+        try { $captured.result = Invoke-Inspect }
+        catch { $captured.exception = $_.Exception }
+        return $captured
+    }
+
+    Invoke-Case 'Phase 9 ACCOUNT-RESILIENCE C1 E1 空事件流' {
+        # 不替換 Get-DispatchRunEvents：正式流程的 Resolve-InspectDispatchRun 須讓空事件流抵達 Invoke-Inspect 的 InspectEventStreamEmpty 出口。
+        try {
+            $run = & $invokeStderrOnlyInspect 'E1'
+            Assert-True ($null -eq $run.result -and $null -ne $run.exception -and $run.exception.Message.Contains('InspectEventStreamEmpty')) ('E1 應以 InspectEventStreamEmpty 拋出：' + $(if ($null -ne $run.exception) { $run.exception.Message } else { '未拋出' }))
+            $operationResult = $run.exception.Data['operationResult']
+            Assert-True ($operationResult -is [System.Collections.IDictionary] -and [string]$operationResult['dispatchResultPath'] -ceq [string]$run.fixture.ResultPath -and $null -ne $operationResult['account_failover'] -and $operationResult['account_failover']['eligible'] -eq $true) ('E1 例外的 operationResult 缺少 dispatchResultPath 或 account_failover.eligible：' + ($operationResult | ConvertTo-Json -Depth 8 -Compress))
+        }
+        finally { $null = Set-Phase9DispatchInspectContext -SidecarExitCode 0 }
+    }
+    Invoke-Case 'Phase 9 ACCOUNT-RESILIENCE C1 E1 邊界：只放行全空白事件流，其餘無效事件流仍由事件流驗證擋下' {
+        try {
+            # 只含空白與換行的事件流抵達 InspectEventStreamEmpty 出口。
+            $blank = & $invokeStderrOnlyInspect 'BLANK'
+            Assert-True ($null -eq $blank.result -and $null -ne $blank.exception -and $blank.exception.Message.Contains('InspectEventStreamEmpty') -and $blank.exception.Data['operationResult'] -is [System.Collections.IDictionary]) ('全空白事件流應抵達 InspectEventStreamEmpty：' + $(if ($null -ne $blank.exception) { $blank.exception.Message } else { '未拋出' }))
+            # 缺 thread.started 的非空事件流仍由 Get-DispatchRunEvents 擋下。
+            $noThread = & $invokeStderrOnlyInspect 'NOTHREAD'
+            Assert-True ($null -ne $noThread.exception -and $noThread.exception.Message.Contains('thread.started') -and -not $noThread.exception.Message.Contains('InspectEventStreamEmpty')) ('缺 thread.started 的事件流應被事件流驗證擋下：' + $(if ($null -ne $noThread.exception) { $noThread.exception.Message } else { '未拋出' }))
+            # 非 JSON 內容仍被擋下，且不是 InspectEventStreamEmpty。
+            $nonJson = & $invokeStderrOnlyInspect 'NONJSON'
+            Assert-True ($null -ne $nonJson.exception -and -not $nonJson.exception.Message.Contains('InspectEventStreamEmpty')) ('非 JSON 事件流應被擋下且不是 InspectEventStreamEmpty：' + $(if ($null -ne $nonJson.exception) { $nonJson.exception.Message } else { '未拋出' }))
+        }
+        finally { $null = Set-Phase9DispatchInspectContext -SidecarExitCode 0 }
+    }
+    Invoke-Case 'Phase 9 ACCOUNT-RESILIENCE C1 E2 turn.started 提早出口' {
+        try {
+            $run = & $invokeStderrOnlyInspect 'E2'
+            Assert-True ($null -eq $run.exception -and $null -ne $run.result) ('E2 不應拋出：' + $(if ($null -ne $run.exception) { $run.exception.Message } else { '' }))
+            Assert-True ([string]$run.result.dispatchResultPath -ceq [string]$run.fixture.ResultPath -and $run.result.account_failover.eligible -eq $true -and [string]$run.result.lastEventType -ceq 'turn.started') ('E2 結果缺少 dispatchResultPath 或 account_failover.eligible：' + ($run.result | ConvertTo-Json -Depth 8 -Compress))
+            # 負向：-RunRecordPath 無綁定模式下 dispatchResultPath 為空，背景接力判為 not-applicable／no-dispatch-result-binding。
+            $unbound = & $invokeStderrOnlyInspect 'E2' -WithoutBinding
+            Assert-True ($null -eq $unbound.exception -and $null -ne $unbound.result -and [string]::IsNullOrWhiteSpace([string]$unbound.result.dispatchResultPath)) ('無綁定模式的 E2 結果不應含 dispatchResultPath：' + $(if ($null -ne $unbound.exception) { $unbound.exception.Message } else { '' }))
+            $handoff = Invoke-InspectBackgroundAccountFailover -InspectResult $unbound.result
+            Assert-True ([string]$handoff.account_failover_handoff.state -ceq 'not-applicable' -and [string]$handoff.account_failover_handoff.reason -ceq 'no-dispatch-result-binding') ('無綁定模式未維持 not-applicable／no-dispatch-result-binding：' + ($handoff | ConvertTo-Json -Depth 8 -Compress))
+        }
+        finally { $null = Set-Phase9DispatchInspectContext -SidecarExitCode 0 }
+    }
+    Invoke-Case 'Phase 9 ACCOUNT-RESILIENCE C1 E3 無終局事件提早出口' {
+        try {
+            $run = & $invokeStderrOnlyInspect 'E3'
+            Assert-True ($null -eq $run.exception -and $null -ne $run.result) ('E3 不應拋出：' + $(if ($null -ne $run.exception) { $run.exception.Message } else { '' }))
+            Assert-True ($run.result.account_failover.eligible -eq $true -and -not [string]::IsNullOrWhiteSpace([string]$run.result.account_failover.rejection_kind) -and [string]$run.result.dispatchResultPath -ceq [string]$run.fixture.ResultPath -and [string]$run.result.recoveryState -ceq 'InterruptedUnknown') ('E3 結果缺少 account_failover.eligible 或 rejection_kind：' + ($run.result | ConvertTo-Json -Depth 8 -Compress))
+        }
+        finally { $null = Set-Phase9DispatchInspectContext -SidecarExitCode 0 }
+    }
+
+    # launch-failed 的 RunRecord：stderr 檔含 model-not-supported 錯誤行時，後補分類寫入健康狀態。
+    $newC2Fixture = {
+        param([string]$Slug, [AllowEmptyString()][string]$StderrText, [object[]]$EventLine = @())
+        $c2Root = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'c2')
+        New-Item -ItemType Directory -Path $c2Root -Force | Out-Null
+        $accountHome = Join-Path $c2Root 'acct-c2'
+        New-Item -ItemType Directory -Path $accountHome -Force | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $accountHome 'auth.json'), [byte[]]@(123, 125))
+        [IO.File]::WriteAllText((Join-Path $accountHome 'scan.config.toml'), 'model = "fixture-model"', (New-Object System.Text.UTF8Encoding($false)))
+        # 第二個帳號未記錄任何拒絕，避免唯一帳號被健康狀態略過規則保留為候選。
+        $otherHome = Join-Path $c2Root 'acct-c2-other'
+        New-Item -ItemType Directory -Path $otherHome -Force | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $otherHome 'auth.json'), [byte[]]@(123, 125))
+        [IO.File]::WriteAllText((Join-Path $otherHome 'scan.config.toml'), 'model = "fixture-model"', (New-Object System.Text.UTF8Encoding($false)))
+        $machinePath = Join-Path $c2Root 'machine.json'
+        [IO.File]::WriteAllText($machinePath, (ConvertTo-Json -InputObject ([ordered]@{ schema = 'ai-agents.machine.v1'; codex_accounts = @([ordered]@{ name = 'acct-c2'; codex_home = $accountHome }, [ordered]@{ name = 'acct-c2-other'; codex_home = $otherHome }) }) -Depth 6), (New-Object System.Text.UTF8Encoding($false)))
+        $record = New-TestRun -Line 'line-a' -Dispatch $Slug -CodexHome $accountHome
+        Set-DispatchJsonPropertyValue -Object $record -Name 'codex_account_name' -Value 'acct-c2'
+        $stderrPath = Join-Path $c2Root 'stderr.txt'
+        if (-not [string]::IsNullOrEmpty($StderrText)) { [IO.File]::WriteAllText($stderrPath, $StderrText, (New-Object System.Text.UTF8Encoding($false))) }
+        $record.launch_state = 'launch-failed'
+        $record.started_at_utc = $null
+        $record.scope_plan_path = $null
+        $record.scope_plan_sha256 = $null
+        $record.failure = New-DispatchFailureRecord -Phase 'preparation' -Message 'c2 launch failed fixture' -ReasonCode 'FixtureFailure' -ProcessStarted $false -EventPath $record.event_stream_path -ErrorPath $(if ([string]::IsNullOrEmpty($StderrText)) { $null } else { $stderrPath }) -LastMessagePath $record.last_message_path -ThreadPath $null -PidPath $record.pid_record_path -LauncherPath $null -RolloutPaths @() -Observation ([ordered]@{ process_started = $false; process_exit_code = $null; failure_stage = 'preparation' })
+        $null = Write-DispatchRunRecord -Record $record -Update
+        if (@($EventLine).Count -gt 0) {
+            [IO.File]::WriteAllText($record.event_stream_path, ((@($EventLine | ForEach-Object { ConvertTo-Json -InputObject $_ -Depth 8 -Compress }) -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+        }
+        else { Remove-Item -LiteralPath $record.event_stream_path -Force -ErrorAction SilentlyContinue }
+        return [pscustomobject]@{ record = $record; machine = $machinePath; account_home = $accountHome; root = $c2Root }
+    }
+    $invokeC2Inspect = {
+        param([object]$Fixture, [string]$Slug, [string]$HealthMachinePath)
+        $script:DispatchMachineConfigPathOverride = $HealthMachinePath
+        $script:SourceRoot = $fixtureRoot
+        $script:ExecutionRoot = $fixtureRoot
+        $script:LineSlug = 'line-a'
+        $script:DispatchSlug = $Slug
+        $script:EventStreamPath = $Fixture.record.event_stream_path
+        $script:ScopePlanPath = $null
+        $script:RunRecordPath = Join-Path (Get-DispatchRunDirectory $fixtureRoot 'line-a' $Slug) ($Fixture.record.run_id + '.json')
+        $script:ProcessExitCode = [Nullable[int]]1
+        $script:RequiredIdentifier = 'design.md'
+        $script:DispatchResultPath = ''
+        $script:WaitForCompletion = $false
+        $script:ErrorStreamPath = ''
+        $script:LastMessagePath = $Fixture.record.last_message_path
+        $script:ThreadIdPath = ''
+        $script:TargetPath = @()
+        $script:TaskType = 'implement'
+        $script:SessionMode = 'cold-start'
+        $script:Profile = 'scan'
+        $script:WriteMode = 'readonly'
+        $script:InvocationBoundParameters = [ordered]@{}
+        return Invoke-Inspect
+    }
+    $c2SnapshotNames = @('DispatchMachineConfigPathOverride', 'DispatchResultPath', 'DispatchSlug', 'ErrorStreamPath', 'EventStreamPath', 'ExecutionRoot', 'InvocationBoundParameters', 'LastMessagePath', 'LineSlug', 'ProcessExitCode', 'Profile', 'RequiredIdentifier', 'RunRecordPath', 'ScopePlanPath', 'SessionMode', 'SourceRoot', 'TargetPath', 'TaskType', 'ThreadIdPath', 'WaitForCompletion', 'WriteMode')
+    $c2ModelMessageLine = "2026-11-09T09:02:00.123456Z ERROR codex_core::client: The 'gpt-6.1-terra' model is not supported when using Codex with a ChatGPT account"
+
+    Invoke-Case 'Phase 9 ACCOUNT-RESILIENCE C2 launch-failed 後補分類寫入健康狀態' {
+        $snapshot = Get-ScriptVariableSnapshot -Name $c2SnapshotNames
+        try {
+            # 正向：stderr 檔含 model-not-supported，事件流沒有拒絕訊息。
+            $fixture = & $newC2Fixture 'c2-model-stderr' $c2ModelMessageLine
+            $result = & $invokeC2Inspect $fixture 'c2-model-stderr' $fixture.machine
+            $health = Read-CodexAccountHealth -MachineConfigPath $fixture.machine
+            $entries = @($health.entries)
+            Assert-True ($entries.Count -eq 1 -and [string]$entries[0].account_name -ceq 'acct-c2' -and [string]$entries[0].profile -ceq 'scan' -and [string]$entries[0].model -ceq 'fixture-model' -and [string]$entries[0].reason_code -ceq 'model-not-supported') ('後補分類未寫入恰一筆健康狀態：' + ($health | ConvertTo-Json -Depth 8 -Compress))
+            Assert-True ($result.account_failover.rejection_kind -ceq 'model-not-supported' -and -not $result.account_failover.Contains('health_record_error')) ('後補分類的 account_failover 不符：' + ($result.account_failover | ConvertTo-Json -Depth 8 -Compress))
+            $within = Get-CodexDispatchAccountCandidates -Profile 'scan' -MachineConfigPath $fixture.machine -NowUtc ([DateTimeOffset]::UtcNow.AddHours(1))
+            $after = Get-CodexDispatchAccountCandidates -Profile 'scan' -MachineConfigPath $fixture.machine -NowUtc ([DateTimeOffset]::UtcNow.AddHours(25))
+            Assert-True (@($within.skipped | Where-Object { $_.reason_code -ceq 'ModelNotSupportedRecorded' }).Count -eq 1 -and @($after.skipped | Where-Object { $_.reason_code -ceq 'ModelNotSupportedRecorded' }).Count -eq 0) '記錄後 24 小時內應略過該帳號，25 小時後不再略過。'
+
+            # 負向 1：其他拒絕（unauthorized、unclassified）或沒有 stderr 時不寫狀態檔。
+            foreach ($negative in @(@('c2-unauthorized', $accountResilienceStderrLine), @('c2-unclassified', '2026-11-09T09:02:00.123456Z ERROR codex_core::client: unexpected status 403 Forbidden'), @('c2-no-stderr', ''))) {
+                $negativeFixture = & $newC2Fixture $negative[0] $negative[1]
+                $null = & $invokeC2Inspect $negativeFixture $negative[0] $negativeFixture.machine
+                $negativeHealth = Read-CodexAccountHealth -MachineConfigPath $negativeFixture.machine
+                Assert-True (@($negativeHealth.entries).Count -eq 0 -and -not (Test-Path -LiteralPath (Get-CodexAccountHealthPath -MachineConfigPath $negativeFixture.machine))) ($negative[0] + ' 不應寫入健康狀態。')
+            }
+
+            # 負向 2：首次呼叫已 registered（事件流本身含 model-not-supported 的 turn.failed）時，狀態檔仍恰一筆。
+            $eventFixture = & $newC2Fixture 'c2-event-model' $c2ModelMessageLine @(
+                [ordered]@{ type = 'thread.started'; thread_id = [guid]::NewGuid().ToString('D') }
+                [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = "The 'gpt-6.1-terra' model is not supported when using Codex with a ChatGPT account" } }
+            )
+            $null = & $invokeC2Inspect $eventFixture 'c2-event-model' $eventFixture.machine
+            Assert-True (@((Read-CodexAccountHealth -MachineConfigPath $eventFixture.machine).entries).Count -eq 1) '首次已 registered 時狀態檔應恰一筆。'
+
+            # 負向 3：狀態檔路徑不可寫時，Inspect 仍回傳結果且 health_record_error 非空。
+            $blockedFixture = & $newC2Fixture 'c2-blocked' $c2ModelMessageLine
+            $blocker = Join-Path $blockedFixture.root 'blocker-file'
+            [IO.File]::WriteAllText($blocker, 'x', (New-Object System.Text.UTF8Encoding($false)))
+            $blockedResult = & $invokeC2Inspect $blockedFixture 'c2-blocked' (Join-Path $blocker 'sub\machine.json')
+            Assert-True ($null -ne $blockedResult -and $blockedResult.account_failover.Contains('health_record_error') -and -not [string]::IsNullOrWhiteSpace([string]$blockedResult.account_failover['health_record_error'])) ('狀態檔不可寫時未回報 health_record_error：' + ($blockedResult.account_failover | ConvertTo-Json -Depth 8 -Compress))
+        }
+        finally { Restore-ScriptVariableSnapshot -Snapshot $snapshot }
+    }
+
     Invoke-Case 'Phase 9 BATCH2 Prepare still hits readonly admission cap' {
         $entryRoot = Join-Path $fixtureRoot (New-BindingFixtureName -Code 'b2')
         New-Item -ItemType Directory -Path $entryRoot -Force | Out-Null
@@ -25591,7 +26052,7 @@ function Invoke-Prepare { return [ordered]@{ status='prepared'; fixture_invoked=
 '@
             $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $override
             [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
-            $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+            $hostPath = Join-Path $PSHOME 'pwsh.exe'
             $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Prepare','-SourceRoot',$entryRoot,'-LineSlug','line-a','-DispatchSlug','batch2-prepare') -WorkingDirectory $entryRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
             Write-Phase9Evidence -Label 'BATCH2_PREPARE_READONLY_ADMISSION_CAP' -Value ([ordered]@{ command=$run.command; exit_code=$run.exit_code; stdout=$run.stdout; stderr=$run.stderr })
             Assert-True ($run.exit_code -eq 1 -and [string]$run.stderr -match 'DispatchAdmissionReadonlyLimit') ('Prepare 未在兩筆 readonly admission 下維持既有上限：' + [string]$run.stdout + [string]$run.stderr)
@@ -25649,7 +26110,7 @@ function Invoke-GitCommand {
             $gitOverrides = $gitOverrides.Replace('__MARKER_PATH__', $markerPath)
             $entryText = Add-DispatchFunctionOverrideToEntry -EntryText $entryText -FunctionText $gitOverrides
             [IO.File]::WriteAllText($entryPath, $entryText, [Text.UTF8Encoding]::new($true))
-            $hostPath = if ($PSVersionTable.PSEdition -ceq 'Core') { Join-Path $PSHOME 'pwsh.exe' } else { Join-Path $PSHOME 'powershell.exe' }
+            $hostPath = Join-Path $PSHOME 'pwsh.exe'
             $run = Invoke-Phase9Process -HostPath $hostPath -Arguments @('-NoProfile','-NonInteractive','-ExecutionPolicy','Bypass','-File',$entryPath,'-Operation','Dispatch','-RequestPath',$requestPath) -WorkingDirectory $caseRoot -EnvironmentVariables @{ TEMP='C:\tmp'; TMP='C:\tmp'; PSExecutionPolicyPreference='Bypass' }
             $result = $null
             if (-not [string]::IsNullOrWhiteSpace([string]$run.stdout)) { try { $result = ConvertFrom-Json -InputObject ([string]$run.stdout) } catch { $result = $null } }
@@ -27498,6 +27959,6 @@ function Invoke-GitCommand {
 else {
     Write-Output "TOTAL: $script:caseCount; FAILED: $script:failures; FIXTURES: $fixtureRoot"
 }
-$phase9ExitCode = Get-Phase9ProcessExitCode -FailureCount $script:failures -EnvironmentLimitedCount $script:environmentLimitedCount -BaselineFailedCount $script:baselineFailedCount
+$phase9ExitCode = Get-Phase9ProcessExitCode -FailureCount $script:failures -EnvironmentLimitedCount ($script:environmentLimitedCount - $script:allowedEnvironmentLimitedCount) -BaselineFailedCount $script:baselineFailedCount
 if ($phase9ExitCode -ne 0) { exit $phase9ExitCode }
 exit 0

@@ -1,4 +1,6 @@
-﻿function New-DispatchPrompt {
+﻿#Requires -Version 7.0
+
+function New-DispatchPrompt {
     param(
         [Parameter(Mandatory)]
         [string]$PromptPath,

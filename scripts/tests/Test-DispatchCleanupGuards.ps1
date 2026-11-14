@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$FixtureBaseRootPath = $env:TEMP,
@@ -11,7 +11,7 @@ $ErrorActionPreference = 'Stop'
 $scriptsRoot = Split-Path -Parent $PSScriptRoot
 $repoRoot = Split-Path -Parent $scriptsRoot
 foreach ($moduleName in @(
-        'common-runtime.ps1', 'git-baseline.ps1', 'dispatch-scope.ps1', 'dispatch-evidence.ps1',
+        'common-runtime.ps1', 'git-baseline.ps1', 'dispatch-scope.ps1', 'dispatch-input-checks.ps1', 'dispatch-evidence.ps1',
         'quota-observation.ps1', 'advisor-evidence.ps1', 'process-identity.ps1', 'reviewer-contract.ps1',
         'run-recovery.ps1', 'prepare-stage.ps1', 'dispatch-lifecycle.ps1', 'start-lifecycle.ps1',
         'inspect-lifecycle.ps1', 'collect-contract.ps1', 'cleanup.ps1', 'Invoke-DispatchConcurrency.ps1')) {
@@ -67,8 +67,8 @@ function Write-GuardText {
 }
 function Invoke-GuardGit {
     param([string]$Root, [string[]]$Arguments)
-    # Windows PowerShell 5.1 會把原生命令寫到 stderr 的進度訊息轉成 ErrorRecord，Stop 偏好下會中止，
-    # 因此呼叫期間改為 Continue，只以結束碼判定成敗。
+    # 原生命令寫到 stderr 的進度訊息會以 ErrorRecord 輸出，
+    # 呼叫期間改為 Continue，只以結束碼判定成敗。
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {

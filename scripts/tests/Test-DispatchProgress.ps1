@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [string]$ScriptPath
@@ -6,7 +6,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-# Windows PowerShell 5.1 的 param 預設值取不到 $PSScriptRoot，改在主體補上預設路徑。
+# 未指定 -ScriptPath 時，預設為測試目錄上一層的 Get-DispatchProgress.ps1。
 if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
     $ScriptPath = Join-Path $PSScriptRoot '..\Get-DispatchProgress.ps1'
 }

@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 
 function New-DispatchInputFinding {
     [CmdletBinding()]
@@ -487,4 +487,50 @@ function Assert-DispatchInputFindings {
         if (@($errors | Where-Object { $_.check_id -eq 'DI-STYLE' -and $_.field -eq 'code-style.csharp' -and $_.code -eq 'DispatchInputProfileKeyMissing' }).Count -gt 0) { $detail.missing_keys = @('code-style.csharp') }
         Throw-DispatchRequestFailure -Code $errors[0].code -Message (($errors | ForEach-Object { $_.message }) -join '；') -RequestPathValue $RequestPathValue -Field $errors[0].field -Detail $detail
     }
+}
+
+function Get-DispatchExpectedExecutionMode {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')][string]$DispatchSlug,
+        [Parameter(Mandatory)][string]$WriteMode,
+        [Parameter(Mandatory)][bool]$IsRepository,
+        [Parameter(Mandatory)][bool]$HasBaseCommit,
+        [bool]$HasTrackedWriteTarget = $false
+    )
+
+    $sourceRootPath = [IO.Path]::GetFullPath($SourceRoot)
+    $dispatchRootPath = [IO.Path]::GetFullPath((Join-Path $sourceRootPath (Join-Path '.local\ai-sessions\worktrees' $DispatchSlug)))
+    $worktreeCreated = switch ($WriteMode) {
+        'readonly' { $IsRepository -and $HasBaseCommit }
+        'write' { $IsRepository -and $HasTrackedWriteTarget }
+        default { $false }
+    }
+    return [pscustomobject]@{
+        dispatchRoot = $dispatchRootPath
+        executionRoot = if ($worktreeCreated) { $dispatchRootPath } else { $sourceRootPath }
+        worktreeCreated = [bool]$worktreeCreated
+    }
+}
+
+function Format-DispatchLineContextBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][ValidatePattern('^[a-z0-9]+(?:-[a-z0-9]+)*$')][string]$LineSlug,
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$ExecutionRoot
+    )
+
+    $sourceRootPath = [IO.Path]::GetFullPath($SourceRoot)
+    $executionRootPath = [IO.Path]::GetFullPath($ExecutionRoot)
+    $lines = @(
+        'lineSlug=' + $LineSlug
+        'sourceRoot=' + $sourceRootPath
+        'dispatchRoot=' + $executionRootPath
+        'sourceLineRoot=' + (Join-Path $sourceRootPath ('.local\ai-sessions\handoff\' + $LineSlug))
+        'dispatchLineRoot=' + (Join-Path $executionRootPath ('.local\ai-sessions\handoff\' + $LineSlug))
+        'reportLineRoot=' + (Join-Path $executionRootPath ('.local\ai-sessions\report\' + $LineSlug))
+    )
+    return ($lines -join "`r`n")
 }

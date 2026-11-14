@@ -1,4 +1,6 @@
-﻿function Initialize-DispatchBoundFileCopy {
+﻿#Requires -Version 7.0
+
+function Initialize-DispatchBoundFileCopy {
     [CmdletBinding()]
     param()
 

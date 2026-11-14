@@ -1,4 +1,6 @@
-﻿function Get-AccountPath {
+﻿#Requires -Version 7.0
+
+function Get-AccountPath {
     param([string]$Path)
     $full = [IO.Path]::GetFullPath($Path)
     if ($full -ne [IO.Path]::GetPathRoot($full)) { $full = $full.TrimEnd([char[]]@('\', '/')) }

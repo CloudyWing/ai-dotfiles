@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding(DefaultParameterSetName = 'Path')]
 param(
     [Parameter(Mandatory, ParameterSetName = 'Path')][string]$TranscriptPath,

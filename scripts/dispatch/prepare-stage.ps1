@@ -1,4 +1,6 @@
-﻿function Get-PrepareRootInfo {
+﻿#Requires -Version 7.0
+
+function Get-PrepareRootInfo {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]

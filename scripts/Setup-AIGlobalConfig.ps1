@@ -2,7 +2,7 @@
 
 # ----------------------------------------------------------------
 # Setup-AIGlobalConfig.ps1 - AI 全域設定連結自動化（收斂式安裝 / 含斷鍊清除）
-# 支援 -WhatIf 預覽；相容 Windows PowerShell 5.1 與 PowerShell 7+。
+# 支援 -WhatIf 預覽；只支援 PowerShell 7 以上，於 Windows PowerShell 5.1 啟動時印出安裝指引並以非零結束碼結束。
 # ----------------------------------------------------------------
 
 [CmdletBinding(SupportsShouldProcess)]
@@ -13,6 +13,16 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# 版本判斷：Setup 只支援 PowerShell 7 以上。
+# 檔首維持 #Requires -Version 5.1，使 Windows PowerShell 5.1 能執行到這裡並印出安裝指引。
+# 本檔本體必須維持 5.1 可解析，不得使用 7 專屬語法；下方 dot-source 的模組含 #Requires -Version 7.0，只能在此判斷之後載入。
+if ($PSVersionTable.PSVersion.Major -lt 7) {
+    Write-Error ("Setup-AIGlobalConfig.ps1 只支援 PowerShell 7 以上，目前版本為 {0}。" -f $PSVersionTable.PSVersion) -ErrorAction Continue
+    Write-Error "請先安裝 PowerShell 7：winget install Microsoft.PowerShell" -ErrorAction Continue
+    Write-Error "安裝後以系統管理員身分開啟 pwsh 重新執行本腳本。" -ErrorAction Continue
+    exit 1
+}
 
 # Windows 長路徑檢查
 function Set-WindowsLongPaths {

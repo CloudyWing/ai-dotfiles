@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param()
 Set-StrictMode -Version Latest
@@ -8,7 +8,7 @@ $script = Join-Path (Split-Path -Parent $PSScriptRoot) 'Get-ClaudeSessionUsage.p
 function Assert-Equal($Actual, $Expected, [string]$Name) { if ($Actual -ne $Expected) { throw "$Name expected [$Expected], got [$Actual]" } }
 function Invoke-Usage([string[]]$Arguments) {
     $previous = $ErrorActionPreference
-    try { $ErrorActionPreference = 'Continue'; $output = & powershell.exe -NoProfile -File $script @Arguments 2>&1; $code = $LASTEXITCODE }
+    try { $ErrorActionPreference = 'Continue'; $output = & pwsh -NoProfile -File $script @Arguments 2>&1; $code = $LASTEXITCODE }
     finally { $ErrorActionPreference = $previous }
     $values = @{}
     foreach ($line in $output) { if ("$line" -match '^([^=]+)=(.*)$') { $values[$Matches[1]] = $Matches[2] } }

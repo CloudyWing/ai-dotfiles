@@ -1,4 +1,6 @@
-﻿function New-ParentOptionsModel {
+﻿#Requires -Version 7.0
+
+function New-ParentOptionsModel {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]
@@ -806,7 +808,7 @@ function Read-CodexAccountHealth {
     [CmdletBinding()]
     param([string]$MachineConfigPath, [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow)
 
-    # 回傳未過期的項目。檔案不存在、無法解析、schema 不符或項目缺欄位時不丟例外，以 state_file_invalid 標示。
+    # 回傳未過期的項目。檔案不存在、無法解析、schema 不符，或任一項目缺必要欄位、不是物件時不丟例外，整份視為空集合並以 state_file_invalid 標示。
     $path = Get-CodexAccountHealthPath -MachineConfigPath $MachineConfigPath
     $active = New-Object 'System.Collections.Generic.List[object]'
     $invalid = $false
@@ -824,7 +826,7 @@ function Read-CodexAccountHealth {
                         if ([string]::IsNullOrWhiteSpace([string](Get-DispatchJsonProperty -Object $entry -Name $name))) { $complete = $false }
                     }
                 }
-                if (-not $complete) { $invalid = $true; continue }
+                if (-not $complete) { throw '項目缺必要欄位或不是物件。' }
                 $expires = ConvertTo-CodexAccountHealthTime -Value (Get-DispatchJsonProperty -Object $entry -Name 'expires_at_utc')
                 if ($null -ne $expires -and $expires -gt $NowUtc) { $null = $active.Add($entry) }
             }
@@ -1056,7 +1058,7 @@ function Get-CodexAccountLoginCommand {
 
     # 格式與 New-CodexDispatchAccount.ps1 輸出的登入命令一致（Test-DispatchAccountFailover 的 drift 案例守住）。
     # 路徑含單引號時以四個單引號跳脫；非絕對路徑不輸出命令。
-    if ([string]::IsNullOrWhiteSpace($CodexHome) -or -not [IO.Path]::IsPathRooted($CodexHome)) { return $null }
+    if ([string]::IsNullOrWhiteSpace($CodexHome) -or -not (Test-DispatchFullyQualifiedPath -Path $CodexHome)) { return $null }
     $escaped = $CodexHome.Replace("'", "''''")
     return ("powershell.exe -NoProfile -Command '`$env:CODEX_HOME = ''{0}''; codex login'" -f $escaped)
 }

@@ -1,4 +1,6 @@
-﻿function Test-IsWindowsPlatform {
+﻿#Requires -Version 7.0
+
+function Test-IsWindowsPlatform {
     return [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT
 }
 
@@ -457,6 +459,88 @@ function New-ProcessStartInfo {
     }
 
     return $startInfo
+}
+
+function Initialize-DispatchStdHandleGuard {
+    [CmdletBinding()]
+    param()
+
+    if (-not (Test-IsWindowsPlatform)) { return $false }
+    if ($null -eq ('DispatchStdHandleGuard' -as [type])) {
+        Add-Type -Language CSharp -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class DispatchStdHandleGuard
+{
+    private const int HandleFlagInherit = 1;
+    private static readonly int[] StdHandleIds = new int[] { -10, -11, -12 };
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern IntPtr GetStdHandle(int nStdHandle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetHandleInformation(IntPtr hObject, out int lpdwFlags);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool SetHandleInformation(IntPtr hObject, int dwMask, int dwFlags);
+
+    public static int GetInheritFlag(int stdHandleId)
+    {
+        IntPtr handle = GetStdHandle(stdHandleId);
+        if (handle == IntPtr.Zero || handle == new IntPtr(-1)) { return -1; }
+        int flags;
+        if (!GetHandleInformation(handle, out flags)) { return -1; }
+        return flags & HandleFlagInherit;
+    }
+
+    public static IntPtr[] Suspend()
+    {
+        List<IntPtr> suspended = new List<IntPtr>();
+        foreach (int id in StdHandleIds)
+        {
+            IntPtr handle = GetStdHandle(id);
+            if (handle == IntPtr.Zero || handle == new IntPtr(-1)) { continue; }
+            int flags;
+            if (!GetHandleInformation(handle, out flags)) { continue; }
+            if ((flags & HandleFlagInherit) == 0) { continue; }
+            if (SetHandleInformation(handle, HandleFlagInherit, 0)) { suspended.Add(handle); }
+        }
+        return suspended.ToArray();
+    }
+
+    public static void Restore(IntPtr[] suspended)
+    {
+        if (suspended == null) { return; }
+        foreach (IntPtr handle in suspended)
+        {
+            SetHandleInformation(handle, HandleFlagInherit, HandleFlagInherit);
+        }
+    }
+}
+'@
+    }
+    return $true
+}
+
+function Invoke-WithoutStdHandleInheritance {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [scriptblock]$ScriptBlock
+    )
+
+    if (-not (Initialize-DispatchStdHandleGuard)) {
+        return (& $ScriptBlock)
+    }
+    $suspended = [DispatchStdHandleGuard]::Suspend()
+    try {
+        return (& $ScriptBlock)
+    }
+    finally {
+        [DispatchStdHandleGuard]::Restore($suspended)
+    }
 }
 
 function Invoke-ExternalCommand {

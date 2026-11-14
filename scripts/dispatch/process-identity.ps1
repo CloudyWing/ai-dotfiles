@@ -1,4 +1,6 @@
-﻿function Add-AtomicJsonLine {
+﻿#Requires -Version 7.0
+
+function Add-AtomicJsonLine {
     param(
         [Parameter(Mandatory)]
         [string]$Path,

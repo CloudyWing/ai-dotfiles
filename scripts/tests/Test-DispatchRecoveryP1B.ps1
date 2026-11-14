@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [ValidateSet('B1','B2','B3','B4','B5','B6','B7','B8','B9','D1','D2','D3','D4','D5','D6','D7','D8','All')][string]$Unit = 'All',
@@ -10,7 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $scriptsRoot = Split-Path -Parent $PSScriptRoot
-foreach ($module in @('common-runtime','git-baseline','dispatch-scope','dispatch-evidence','quota-observation','advisor-evidence','process-identity','reviewer-contract','run-recovery','prepare-stage','dispatch-lifecycle','start-lifecycle','inspect-lifecycle','collect-contract','cleanup','Invoke-DispatchConcurrency')) {
+foreach ($module in @('common-runtime','git-baseline','dispatch-scope','dispatch-input-checks','dispatch-evidence','quota-observation','advisor-evidence','process-identity','reviewer-contract','run-recovery','prepare-stage','dispatch-lifecycle','start-lifecycle','inspect-lifecycle','collect-contract','cleanup','Invoke-DispatchConcurrency')) {
     . (Join-Path $scriptsRoot ('dispatch\' + $module + '.ps1'))
 }
 $script:InvocationBoundParameters = @{}

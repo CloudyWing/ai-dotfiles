@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 
 [CmdletBinding()]
 param(
@@ -908,8 +908,38 @@ try {
         'Prepare'   { Invoke-Prepare -GuardTargetPath @($TargetPath) }
         'Start'     { Invoke-Start }
         'Inspect'   {
-            $inspectResult = Invoke-Inspect
-            Invoke-InspectBackgroundAccountFailover -InspectResult $inspectResult -NoAccountFailover:$NoAccountFailover
+            # stderr-only 拒絕使 Invoke-Inspect 拋出 InspectEventStreamEmpty 時，例外的 operationResult 已含可接力的 account_failover，仍交由背景接力處理。
+            $inspectException = $null
+            $inspectResult = $null
+            try { $inspectResult = Invoke-Inspect }
+            catch { $inspectException = $_ }
+            if ($null -eq $inspectException) {
+                Invoke-InspectBackgroundAccountFailover -InspectResult $inspectResult -NoAccountFailover:$NoAccountFailover
+            }
+            else {
+                $inspectFailureResult = $inspectException.Exception.Data['operationResult']
+                $inspectHandoffResult = $null
+                if ($inspectFailureResult -is [System.Collections.IDictionary]) {
+                    $inspectFailureFailover = $null
+                    if ($inspectFailureResult.Contains('account_failover')) { $inspectFailureFailover = $inspectFailureResult['account_failover'] }
+                    if ((Get-DispatchJsonProperty -Object $inspectFailureFailover -Name 'eligible') -eq $true) {
+                        $inspectResultCopy = [ordered]@{}
+                        foreach ($inspectFailureKey in $inspectFailureResult.Keys) { $inspectResultCopy[$inspectFailureKey] = $inspectFailureResult[$inspectFailureKey] }
+                        # 接力函式自己拋出時保留原 Invoke-Inspect 例外的診斷，接力失敗資訊附於原 operationResult 的 account_failover_handoff_error 與例外 Data。
+                        try {
+                            $inspectCandidate = Invoke-InspectBackgroundAccountFailover -InspectResult $inspectResultCopy -NoAccountFailover:$NoAccountFailover
+                            $inspectHandoffState = [string](Get-DispatchJsonProperty -Object (Get-DispatchJsonProperty -Object $inspectCandidate -Name 'account_failover_handoff') -Name 'state')
+                            if (-not [string]::IsNullOrWhiteSpace($inspectHandoffState) -and $inspectHandoffState -cne 'not-applicable') { $inspectHandoffResult = $inspectCandidate }
+                        }
+                        catch {
+                            $inspectFailureResult['account_failover_handoff_error'] = [string]$_.Exception.Message
+                            $inspectException.Exception.Data['account_failover_handoff_error'] = [string]$_.Exception.Message
+                        }
+                    }
+                }
+                if ($null -eq $inspectHandoffResult) { throw $inspectException }
+                $inspectHandoffResult
+            }
         }
         'Dispatch'  {
             $dispatchResult = Invoke-DispatchWithAccountFailover -NoAccountFailover:$NoAccountFailover

@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [ValidateScript({ $_ -cmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' })]

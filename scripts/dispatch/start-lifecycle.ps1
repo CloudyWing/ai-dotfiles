@@ -1,4 +1,6 @@
-﻿function Get-CodexExecutablePath {
+﻿#Requires -Version 7.0
+
+function Get-CodexExecutablePath {
     param(
         [string]$ConfiguredPath
     )
@@ -319,6 +321,7 @@ function New-CodexLauncher {
     $codexCommandLine = ("'" + $CodexExecutable.Replace("'", "'\\''") + "'") + ' ' + $argumentsText + ' < ' + ("'" + $PromptPath.Replace("'", "'\\''") + "'") + ' > ' + ("'" + $EventPath.Replace("'", "'\\''") + "'") + ' 2> ' + ("'" + $ErrorPath.Replace("'", "'\\''") + "'")
     $contentLines = @(
         '#!/bin/sh'
+        'exec </dev/null >/dev/null 2>&1'
         $codexCommandLine
     )
     if (-not [string]::IsNullOrWhiteSpace($ExitSidecarPath)) {
@@ -337,7 +340,7 @@ function New-CodexLauncher {
         )
     }
     else {
-        $contentLines[1] = 'exec ' + $contentLines[1]
+        $contentLines[2] = 'exec ' + $contentLines[2]
     }
     $content = $contentLines -join "
 "
@@ -1104,6 +1107,12 @@ function Invoke-Start {
     }
     if ($TaskType -eq 'advisor-consult' -and $AdvisorRequestSource -ne 'user-explicit') {
         throw 'AdvisorAuthorizationRequired：advisor-consult 必須由呼叫端明確提供 user-explicit 授權；process_started=false'
+    }
+    try {
+        $null = Initialize-DispatchStdHandleGuard
+    }
+    catch {
+        throw ('StdHandleGuardInitializationFailed：無法初始化 std handle 繼承防護，未啟動任何程序；process_started=false；' + $_.Exception.Message)
     }
     $sourceRootPath = Resolve-AbsolutePath -Path $sourceRootValue
     $executionRootPath = Resolve-AbsolutePath -Path $executionRootValue
@@ -1906,7 +1915,7 @@ function Invoke-Start {
                     return [pscustomobject]@{ Blocked = $blocking.Count -gt 0; BlockingRecords = $blocking; PidCheckResult = $check }
                 } `
                 -StartAction {
-                    if (-not $process.Start()) { throw 'Codex 啟動失敗。' }
+                    if (-not (Invoke-WithoutStdHandleInheritance -ScriptBlock { $process.Start() })) { throw 'Codex 啟動失敗。' }
                     $script:DispatchAdmissionStartedPid = [int]$process.Id
                     $snapshot = $null
                     try {
@@ -1932,7 +1941,7 @@ function Invoke-Start {
             $processStarted = $true
         }
         else {
-            if (-not $process.Start()) {
+            if (-not (Invoke-WithoutStdHandleInheritance -ScriptBlock { $process.Start() })) {
                 throw 'Codex 啟動失敗。'
             }
             $processStarted = $true

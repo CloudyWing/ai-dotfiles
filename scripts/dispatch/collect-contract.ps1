@@ -1,4 +1,6 @@
-﻿function Get-NameOnlyList {
+﻿#Requires -Version 7.0
+
+function Get-NameOnlyList {
     param(
         [Parameter(Mandatory)]
         [psobject]$Result

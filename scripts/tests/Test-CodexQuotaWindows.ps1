@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param()
 
@@ -15,13 +15,8 @@ $passed = 0
 $caseCounter = 0
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $utf8Bom = New-Object System.Text.UTF8Encoding($true)
-$hostPath = if ($PSVersionTable.PSEdition -eq 'Desktop') {
-    Join-Path $PSHOME 'powershell.exe'
-}
-else {
-    $hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
-    if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
-}
+$hostCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
+$hostPath = if ([string]::IsNullOrWhiteSpace($hostCommand.Source)) { $hostCommand.Path } else { $hostCommand.Source }
 
 function Test-Case {
     param([string]$Id, [scriptblock]$Check)

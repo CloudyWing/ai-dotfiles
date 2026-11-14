@@ -1,4 +1,6 @@
-﻿function Get-EventPropertyValue {
+﻿#Requires -Version 7.0
+
+function Get-EventPropertyValue {
     param(
         [Parameter(Mandatory)]
         [psobject]$Object,
@@ -1089,7 +1091,9 @@ function Write-DispatchNonGitReadonlyReport {
     $contentBytes = (New-Object System.Text.UTF8Encoding -ArgumentList @($false)).GetBytes($content)
     $contentSha256 = Get-DispatchByteArraySha256 -Bytes $contentBytes
     if ([IO.File]::Exists((ConvertTo-FileSystemApiPath -Path $reportFilePath))) {
-        $existingSha256 = Get-FileSha256 -Path $reportFilePath
+        $existingSha256 = $null
+        try { $existingSha256 = Get-FileSha256 -Path $reportFilePath }
+        catch { return & $newResult 'skipped' 'write-failed' $reportFilePath $null $null }
         if ([string]::Equals($existingSha256, $contentSha256, [StringComparison]::OrdinalIgnoreCase)) { return & $newResult 'unchanged' $null $reportFilePath $contentSha256 $contentBytes.Length }
         return & $newResult 'skipped' 'report-exists-different' $reportFilePath $existingSha256 $null
     }
@@ -1764,6 +1768,13 @@ function Invoke-Inspect {
             $eventEvidence = Get-DispatchEventEvidence -EventPath $eventPath -ErrorStreamPath $failureErrorPath -ProcessExitCode $ProcessExitCode
             $serviceRejectionEvidence = Convert-EventEvidenceToServiceRejection -EventEvidence $eventEvidence
             $accountFailover = New-DispatchAccountFailoverEvidence -EventEvidence $eventEvidence -CodexHome $inspectAccountHome
+            # 重算後才取得 stderr 證據：首次呼叫尚未登記時補呼叫一次，並以最後一次呼叫的結果更新 health_record_error。
+            $healthRecordError = $healthUpdate.error
+            if ([string]$healthUpdate.action -cne 'registered') {
+                $healthRetry = Update-DispatchAccountHealthFromInspect -Record $inspectRun.Record -EventEvidence $eventEvidence -AccountFailover $accountFailover -ProcessExitCode $ProcessExitCode -DispatchSlug ([string]$DispatchSlug) -RunRecordPath ([string]$inspectRun.Path) -EventStreamPath ([string]$eventPath) -FallbackProfile ([string]$Profile)
+                $healthRecordError = $healthRetry.error
+            }
+            if ($null -ne $healthRecordError) { $accountFailover['health_record_error'] = $healthRecordError }
         }
         $launchFailureResult = [ordered]@{
             operation = 'Inspect'
@@ -1977,6 +1988,7 @@ function Invoke-Inspect {
             processExitCodeSource = $processExitCodeSource
             processExitCodeSidecarPath = $processExitCodeSidecarPath
             processExitCodeSidecarSha256 = $processExitCodeSidecarSha256
+            dispatchResultPath = $dispatchResultPathValue
             eventCount = $events.Count
             lastEventType = $eventTailType
             threadId = [string](Get-EventPropertyValue -Object $events[0] -Name 'thread_id')
@@ -2128,6 +2140,7 @@ function Invoke-Inspect {
             scopePlan = $interruptionScopePlan
             eventEvidence = $eventEvidence
             service_rejection = $serviceRejectionEvidence
+            account_failover = $accountFailover
             retry_allowed = if ($null -eq $serviceRejectionEvidence) { $null } else { $false }
             stderr = $inspectStderr
         }

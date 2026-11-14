@@ -1,4 +1,6 @@
-﻿function Get-ReviewerPropertyValue {
+﻿#Requires -Version 7.0
+
+function Get-ReviewerPropertyValue {
     param(
         [AllowNull()]
         [object]$Object,

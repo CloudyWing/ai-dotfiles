@@ -1,4 +1,6 @@
-﻿function New-CleanupOperationResult {
+﻿#Requires -Version 7.0
+
+function New-CleanupOperationResult {
     [CmdletBinding()]
     param(
         [AllowEmptyString()][string]$SourceRoot,

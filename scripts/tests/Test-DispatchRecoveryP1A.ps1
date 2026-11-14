@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param(
     [ValidateSet('U1', 'U2', 'U3')][string]$Unit = 'U1',
@@ -18,7 +18,7 @@ $script:ExecutionRoot = ''
 $script:TargetPath = @()
 $script:CallerSessionIdentity = $null
 foreach ($moduleName in @(
-        'common-runtime.ps1', 'git-baseline.ps1', 'dispatch-scope.ps1', 'dispatch-evidence.ps1',
+        'common-runtime.ps1', 'git-baseline.ps1', 'dispatch-scope.ps1', 'dispatch-input-checks.ps1', 'dispatch-evidence.ps1',
         'quota-observation.ps1', 'advisor-evidence.ps1', 'process-identity.ps1', 'reviewer-contract.ps1',
         'run-recovery.ps1', 'prepare-stage.ps1', 'dispatch-lifecycle.ps1', 'start-lifecycle.ps1',
         'inspect-lifecycle.ps1', 'collect-contract.ps1', 'cleanup.ps1', 'Invoke-DispatchConcurrency.ps1')) {

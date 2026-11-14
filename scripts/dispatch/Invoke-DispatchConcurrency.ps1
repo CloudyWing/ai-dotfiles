@@ -1,4 +1,6 @@
-﻿function New-DispatchAdmissionFailure {
+﻿#Requires -Version 7.0
+
+function New-DispatchAdmissionFailure {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$Code,

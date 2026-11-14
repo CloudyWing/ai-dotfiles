@@ -1,4 +1,6 @@
-﻿function Get-DispatchIgnoredPathLookup {
+﻿#Requires -Version 7.0
+
+function Get-DispatchIgnoredPathLookup {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][string]$DispatchRoot,
@@ -257,6 +259,10 @@ function Invoke-Preflight {
     if (-not [string]::Equals($dispatchRootPath, (Resolve-AbsolutePath -Path $expectedDispatchRoot), [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "dispatchRoot 必須位於 sourceRoot 的隔離 worktree 路徑，且與 dispatchSlug 一一對應：$expectedDispatchRoot"
     }
+    $preflightSessionMode = Get-Variable -Name 'SessionMode' -Scope Script -ValueOnly -ErrorAction SilentlyContinue
+    if ([string]$preflightSessionMode -ine 'continuation') {
+        $null = Assert-DispatchColdStartNotStarted -SourceRoot $sourceRootPath -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    }
     if (Test-Path -LiteralPath $dispatchRootPath) {
         throw "dispatchRoot 已存在，視為已被占用：$dispatchRootPath"
     }
@@ -288,17 +294,14 @@ function Invoke-Preflight {
             $hasBaseCommit = $true
         }
     }
-    $worktreeCreated = $WriteMode -eq 'readonly' -and $gitProbeState.IsRepository
     $hasTrackedWriteTarget = $false
     if ($WriteMode -eq 'write') {
         if ($gitProbeState.IsRepository) {
             $targetStates = @(Get-TrackedPathState -SourceRoot $sourceRootPath -TargetPath $TargetPath)
             $hasTrackedWriteTarget = @($targetStates | Where-Object { $_.IsTracked }).Count -gt 0
-            $worktreeCreated = $hasTrackedWriteTarget
         }
         else {
             $targetStates = @(Get-NonGitTargetState -SourceRoot $sourceRootPath -TargetPath $TargetPath)
-            $worktreeCreated = $false
         }
     }
     elseif (-not $gitProbeState.IsRepository) {
@@ -315,14 +318,11 @@ function Invoke-Preflight {
         Throw-DispatchPreflightFailure -Message ('Workflow write 必須至少包含一個 tracked target；Preflight 未建立產物。目標皆未追蹤時請改走資源派遣 direct-write（dispatch_kind=resource、write_mode=write，Prepare 為 not-required）；Workflow 的 worktree 隔離與 Collect 驗收依賴 git baseline，不放寬此限制。targets: ' + $targetStateDetails + $baselineCommitMessage)
     }
 
-    if ($gitProbeState.IsRepository -and -not $hasBaseCommit) {
-        if ($WriteMode -eq 'readonly') {
-            $worktreeCreated = $false
-        }
-        elseif ($WriteMode -eq 'write') {
-            Throw-DispatchPreflightFailure -Message 'Git write dispatch 需要先有基準 commit；請先在 SourceRoot 建立 commit，再執行 Preflight。'
-        }
+    if ($gitProbeState.IsRepository -and -not $hasBaseCommit -and $WriteMode -eq 'write') {
+        Throw-DispatchPreflightFailure -Message 'Git write dispatch 需要先有基準 commit；請先在 SourceRoot 建立 commit，再執行 Preflight。'
     }
+    $expectedExecutionMode = Get-DispatchExpectedExecutionMode -SourceRoot $sourceRootPath -DispatchSlug $DispatchSlug -WriteMode $WriteMode -IsRepository ([bool]$gitProbeState.IsRepository) -HasBaseCommit $hasBaseCommit -HasTrackedWriteTarget $hasTrackedWriteTarget
+    $worktreeCreated = [bool]$expectedExecutionMode.worktreeCreated
 
     $requestResourceOrder = Get-Variable -Scope Script -Name 'RequestResourceOrder' -ValueOnly -ErrorAction SilentlyContinue
     if ($DispatchKind -eq 'resource' -and $worktreeCreated -and $null -ne $requestResourceOrder) {
@@ -1526,7 +1526,7 @@ function Invoke-DispatchAttemptProcess {
     $startInfo.StandardErrorEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
-    $null = $process.Start()
+    $null = Invoke-WithoutStdHandleInheritance -ScriptBlock { $process.Start() }
     $stdoutTask = $process.StandardOutput.ReadToEndAsync()
     $stderrTask = $process.StandardError.ReadToEndAsync()
     $process.WaitForExit()
@@ -1943,6 +1943,30 @@ function Write-DispatchBackgroundFailoverSummary {
     return Write-DispatchAtomicJsonDocument -Path ([string]$Context.summary_path) -Document $Document -SourceRoot ([string]$Context.source_root) -ExecutionRoot ([string]$Context.source_root) -TargetPath @() -HashProperty ''
 }
 
+$script:DispatchHandoffCollisionRereadAttempts = 20
+$script:DispatchHandoffCollisionRereadIntervalMs = 250
+
+function Get-DispatchRecordedHandoffReport {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Handoff
+    )
+
+    # RunRecord 記錄的 hand-off 狀態對映為回報狀態：started 為 already-handed-off，claimed 為 handoff-incomplete，其餘原樣。
+    $recordedState = [string](Get-DispatchJsonProperty -Object $Handoff -Name 'state')
+    $reportedState = switch ($recordedState) {
+        'started' { 'already-handed-off' }
+        'claimed' { 'handoff-incomplete' }
+        default { $recordedState }
+    }
+    $report = [ordered]@{ state = $reportedState }
+    foreach ($name in @('from_account', 'to_account', 'next_dispatch_slug', 'next_request_path', 'next_result_path', 'summary_path', 'rejection_kind', 'relogin_command', 'handed_off_at_utc')) {
+        $report[$name] = Get-DispatchJsonProperty -Object $Handoff -Name $name
+    }
+    $reportErrorCode = if ($recordedState -ceq 'exhausted') { 'CodexAccountsAllUnavailable' } else { $null }
+    return [pscustomobject]@{ handoff = $report; error_code = $reportErrorCode }
+}
+
 function Invoke-InspectBackgroundAccountFailover {
     [CmdletBinding()]
     param(
@@ -1968,18 +1992,8 @@ function Invoke-InspectBackgroundAccountFailover {
     # 去重：同一個被拒嘗試重複 Inspect 時，依 RunRecord 已記錄的 hand-off 回報，不重新啟動。
     $existingHandoff = Get-DispatchJsonProperty -Object $record -Name 'account_failover_handoff'
     if ($null -ne $existingHandoff) {
-        $recordedState = [string](Get-DispatchJsonProperty -Object $existingHandoff -Name 'state')
-        $reportedState = switch ($recordedState) {
-            'started' { 'already-handed-off' }
-            'claimed' { 'handoff-incomplete' }
-            default { $recordedState }
-        }
-        $repeat = [ordered]@{ state = $reportedState }
-        foreach ($name in @('from_account', 'to_account', 'next_dispatch_slug', 'next_request_path', 'next_result_path', 'summary_path', 'rejection_kind', 'relogin_command', 'handed_off_at_utc')) {
-            $repeat[$name] = Get-DispatchJsonProperty -Object $existingHandoff -Name $name
-        }
-        $repeatErrorCode = if ($recordedState -ceq 'exhausted') { 'CodexAccountsAllUnavailable' } else { $null }
-        return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff $repeat -ErrorCode $repeatErrorCode
+        $repeatReport = Get-DispatchRecordedHandoffReport -Handoff $existingHandoff
+        return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff $repeatReport.handoff -ErrorCode $repeatReport.error_code
     }
 
     $summary = $context.summary
@@ -2055,6 +2069,25 @@ function Invoke-InspectBackgroundAccountFailover {
     }
     catch {
         if ($_.Exception.Message -match 'DispatchAccountFailoverRequestCollision') {
+            # 後到者不啟動、不改既有衍生 Request，改讀 RunRecord 取贏家記錄的 hand-off；贏家仍在 claimed 或尚未寫入時有界重讀。
+            $collisionRunRecordPath = [string]$context.run_record_path
+            $collisionRereadAttempts = Get-DispatchScriptVariableValue -Name 'DispatchHandoffCollisionRereadAttempts'
+            if ($null -eq $collisionRereadAttempts) { $collisionRereadAttempts = 20 }
+            $collisionRereadIntervalMs = Get-DispatchScriptVariableValue -Name 'DispatchHandoffCollisionRereadIntervalMs'
+            if ($null -eq $collisionRereadIntervalMs) { $collisionRereadIntervalMs = 250 }
+            for ($rereadIndex = 0; $rereadIndex -lt [int]$collisionRereadAttempts; $rereadIndex++) {
+                if ($rereadIndex -gt 0) { Start-Sleep -Milliseconds ([int]$collisionRereadIntervalMs) }
+                $rereadHandoff = $null
+                try {
+                    $rereadRecord = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $collisionRunRecordPath)
+                    $rereadHandoff = Get-DispatchJsonProperty -Object $rereadRecord -Name 'account_failover_handoff'
+                }
+                catch { $rereadHandoff = $null }
+                if ($null -ne $rereadHandoff -and [string](Get-DispatchJsonProperty -Object $rereadHandoff -Name 'state') -cne 'claimed') {
+                    $collisionReport = Get-DispatchRecordedHandoffReport -Handoff $rereadHandoff
+                    return Set-DispatchInspectHandoff -InspectResult $InspectResult -Handoff $collisionReport.handoff -ErrorCode $collisionReport.error_code
+                }
+            }
             $collision = [ordered]@{}
             foreach ($key in $handoffFields.Keys) { $collision[$key] = $handoffFields[$key] }
             $collision.state = 'handoff-incomplete'

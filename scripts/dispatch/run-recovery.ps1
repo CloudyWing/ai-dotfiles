@@ -1,4 +1,6 @@
-﻿function Get-DispatchLocalFailurePattern {
+﻿#Requires -Version 7.0
+
+function Get-DispatchLocalFailurePattern {
     [CmdletBinding()]
     param()
 
@@ -847,6 +849,7 @@ function Get-DispatchFailureReasonCode {
             'ProfileEvidenceUnknown',
             'ThreadRelayTimeout',
             'ProcessIdentityUnknown',
+            'StdHandleGuardInitializationFailed',
             'CodexLaunchFailed',
             'ParentOptionsMismatch',
             'ParentOptionsUnknown',
@@ -1444,6 +1447,93 @@ function Resolve-LatestColdStartFailure {
     return $latestRecord
 }
 
+function Get-DispatchColdStartGuardState {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug
+    )
+
+    $emptyResult = [pscustomobject]@{
+        state = 'none'
+        actualStartPaths = @()
+        unverifiablePaths = @()
+    }
+    # slug 格式不符時不在此處拋出，交由 Preflight 既有驗證回報。
+    $slugPattern = '^[a-z0-9]+(?:-[a-z0-9]+)*$'
+    if ($LineSlug -cnotmatch $slugPattern -or $DispatchSlug -cnotmatch $slugPattern) {
+        return $emptyResult
+    }
+    $directory = Get-DispatchRunDirectory -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+        return $emptyResult
+    }
+    $files = @()
+    try {
+        $files = @(Get-ChildItem -LiteralPath $directory -Filter '*.json' -File -ErrorAction Stop | Sort-Object -Property Name)
+    }
+    catch {
+        return [pscustomobject]@{
+            state = 'unverifiable'
+            actualStartPaths = @()
+            unverifiablePaths = @($directory)
+        }
+    }
+    if ($files.Count -eq 0) {
+        return $emptyResult
+    }
+
+    $actualStartPaths = New-Object System.Collections.Generic.List[string]
+    $unverifiablePaths = New-Object System.Collections.Generic.List[string]
+    $unstartedCount = 0
+    foreach ($file in $files) {
+        $classification = $null
+        try {
+            $record = ConvertFrom-DispatchJson -Content (Read-DispatchUtf8Text -Path $file.FullName)
+            if ($null -eq $record -or $record -isnot [pscustomobject]) { throw 'RunRecord 必須為 JSON object。' }
+            $classification = [string](Get-DispatchRunRecordStartClassification -Record $record).classification
+        }
+        catch {
+            $classification = 'unreadable'
+        }
+        switch ($classification) {
+            'actual-start' { $actualStartPaths.Add($file.FullName) }
+            'unstarted-sandbox' { $unstartedCount++ }
+            default { $unverifiablePaths.Add($file.FullName) }
+        }
+    }
+
+    $state = if ($actualStartPaths.Count -gt 0) { 'actual-start' }
+    elseif ($unverifiablePaths.Count -gt 0) { 'unverifiable' }
+    elseif ($unstartedCount -gt 0) { 'unstarted' }
+    else { 'none' }
+    return [pscustomobject]@{
+        state = $state
+        actualStartPaths = @($actualStartPaths.ToArray())
+        unverifiablePaths = @($unverifiablePaths.ToArray())
+    }
+}
+
+function Assert-DispatchColdStartNotStarted {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SourceRoot,
+        [Parameter(Mandatory)][string]$LineSlug,
+        [Parameter(Mandatory)][string]$DispatchSlug
+    )
+
+    $guard = Get-DispatchColdStartGuardState -SourceRoot $SourceRoot -LineSlug $LineSlug -DispatchSlug $DispatchSlug
+    $remedy = ('請改用新的 dispatchSlug（例如 {0}-r2），或以 session_mode=continuation 依續行流程處理（skills\codex-dispatch\references\recovery.md）。' -f $DispatchSlug)
+    if ($guard.state -eq 'actual-start') {
+        Throw-DispatchPreflightFailure -Code 'DispatchColdStartAlreadyStarted' -Message ('DispatchColdStartAlreadyStarted：dispatchSlug {0} 已實際啟動，不得再冷啟動。既有 RunRecord：{1}。{2}' -f $DispatchSlug, (@($guard.actualStartPaths) -join '; '), $remedy)
+    }
+    if ($guard.state -eq 'unverifiable') {
+        Throw-DispatchPreflightFailure -Code 'DispatchColdStartRunRecordUnverifiable' -Message ('DispatchColdStartRunRecordUnverifiable：dispatchSlug {0} 的既有 RunRecord 無法判定是否已啟動（狀態未知、JSON 損毀或讀取失敗），不得再冷啟動。無法判定的 RunRecord：{1}。{2}' -f $DispatchSlug, (@($guard.unverifiablePaths) -join '; '), $remedy)
+    }
+    return $guard
+}
+
 function Assert-DispatchAccountContinuation {
     [CmdletBinding()]
     param([Parameter(Mandatory)][object]$AnchorRecord, [Parameter(Mandatory)][string]$CodexHomePath, [AllowNull()][string]$AccountName)
@@ -1829,7 +1919,12 @@ function Resolve-InspectDispatchRun {
         throw $missingException
     }
     if (-not [string]::Equals($match.Record.scope_plan_path, (Resolve-AbsolutePath $ScopePlanPath), [StringComparison]::OrdinalIgnoreCase)) { throw 'Inspect ScopePlan 與 RunRecord 不一致。' }
-    $null = Get-DispatchRunEvents $match.Record
+    # 空事件流交由 Invoke-Inspect 的 InspectEventStreamEmpty 出口處理，該出口附 operationResult，背景帳號接力才能取得。
+    $eventStreamBlank = $false
+    if (Test-Path -LiteralPath $match.Record.event_stream_path -PathType Leaf) {
+        $eventStreamBlank = [string]::IsNullOrWhiteSpace((Read-DispatchUtf8Text -Path $match.Record.event_stream_path))
+    }
+    if (-not $eventStreamBlank) { $null = Get-DispatchRunEvents $match.Record }
     return $match
 }
 

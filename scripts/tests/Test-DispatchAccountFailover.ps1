@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param()
 
@@ -122,6 +122,31 @@ function Invoke-DispatchAttemptProcess {
     if ($null -eq $behavior) { $behavior = 'completed' }
     $result = FxMakeResult -Behavior $behavior -Slug ([string]$requestDocument.dispatch_slug)
     return [pscustomobject]@{ exit_code = $(if ($null -ne $result -and [string]$result.status -eq 'completed') { 0 } else { 1 }); stdout = ''; stderr = ''; result = $result; result_path = $null }
+}
+
+# 衍生 Request 的原子寫入替身：僅在 $script:FxCollisionHook 設定且路徑相符時，先把贏家的 hand-off 寫入磁碟上的 RunRecord，再拋出碰撞錯誤；其餘呼叫轉給原函式。
+$script:FxCollisionHook = $null
+$realAtomicJsonWriter = ${function:Write-DispatchAtomicJsonDocument}
+function Write-DispatchAtomicJsonDocument {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [Parameter(Mandatory)][psobject]$Document,
+        [AllowEmptyString()][string]$SourceRoot,
+        [AllowEmptyString()][string]$ExecutionRoot,
+        [string[]]$TargetPath = @(),
+        [string]$HashProperty = 'result_sha256',
+        [AllowEmptyString()][string]$ExpectedExistingSha256,
+        [switch]$RequireAbsent,
+        [string]$AbsentErrorCode = 'DispatchResultBindingConflict'
+    )
+    if ($null -ne $script:FxCollisionHook -and [string]::Equals($Path, [string]$script:FxCollisionHook.path, [StringComparison]::OrdinalIgnoreCase)) {
+        $loadedRecord = ConvertFrom-DispatchJson -Content ([IO.File]::ReadAllText([string]$script:FxCollisionHook.record_path, [Text.Encoding]::UTF8))
+        Set-DispatchJsonPropertyValue -Object $loadedRecord -Name 'account_failover_handoff' -Value $script:FxCollisionHook.handoff
+        [IO.File]::WriteAllText([string]$script:FxCollisionHook.record_path, (ConvertTo-Json -InputObject $loadedRecord -Depth 20), (New-Object Text.UTF8Encoding($false)))
+        throw ($AbsentErrorCode + '：fixture collision')
+    }
+    return & $realAtomicJsonWriter @PSBoundParameters
 }
 
 function FxMakeResult {
@@ -1511,6 +1536,238 @@ try {
         if ($firstBrace -ge 0 -and $lastBrace -gt $firstBrace) { $parsed = ConvertFrom-DispatchJson -Content $output.Substring($firstBrace, $lastBrace - $firstBrace + 1) }
         $null -ne $parsed -and $null -ne $parsed.PSObject.Properties['account_failover_handoff'] -and $parsed.account_failover_handoff.to_account -ceq 'acct-b' -and $parsed.account_failover_handoff.state -cin @('started', 'launch-failed') -and
         $parsed.account_failover_handoff.next_dispatch_slug -ceq 'fx-bg14-r2' -and (Test-Path -LiteralPath $parsed.account_failover_handoff.next_request_path -PathType Leaf)
+    }
+
+    # ---------- C1 入口攔截：Inspect 例外附 operationResult 時仍交由背景接力 ----------
+    # 腳本與模組複製到暫存目錄，在複本最後載入模組附加 Invoke-Inspect 替身（拋出附 operationResult 的例外，processExitCode 為 3），其餘走實際入口程式碼。
+    function FxRunInspectEntryProbe {
+        param([object]$Background, [object]$Inspect, [bool]$Eligible = $true, [switch]$NoAccountFailover, [string]$Name, [string]$ExtraStub = '')
+        $probeRoot = FxNewDir -Name $Name
+        $scriptsCopy = Join-Path $probeRoot 'scripts'
+        $null = New-Item -ItemType Directory -Path $scriptsCopy -Force
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'dispatch') -Destination (Join-Path $scriptsCopy 'dispatch') -Recurse
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'Invoke-CodexDispatch.ps1') -Destination $scriptsCopy
+        $null = New-Item -ItemType Directory -Path (Join-Path $probeRoot '.local') -Force
+        Copy-Item -LiteralPath $Background.machine -Destination (Join-Path $probeRoot '.local\machine.json')
+        $eligibleText = if ($Eligible) { '$true' } else { '$false' }
+        $stub = "`r`nfunction Invoke-Inspect { `$operationResult = [ordered]@{ operation = 'Inspect'; runRecordPath = '" + ([string]$Inspect.runRecordPath).Replace("'", "''") + "'; dispatchResultPath = '" + ([string]$Inspect.dispatchResultPath).Replace("'", "''") + "'; success = `$false; errorCode = 'InspectEventStreamEmpty'; processExitCode = 3; account_failover = [ordered]@{ eligible = " + $eligibleText + "; rejection_kind = 'unclassified'; item_event_count = 0 } }; `$exception = New-Object System.Exception('InspectEventStreamEmpty: fixture'); `$exception.Data['operationResult'] = `$operationResult; throw `$exception }`r`n"
+        [IO.File]::AppendAllText((Join-Path $scriptsCopy 'dispatch\cleanup.ps1'), $stub + $ExtraStub, (New-Object Text.UTF8Encoding($true)))
+        $startInfo = New-Object Diagnostics.ProcessStartInfo
+        $startInfo.FileName = (Get-Process -Id $PID).Path
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', (Join-Path $scriptsCopy 'Invoke-CodexDispatch.ps1'), '-Operation', 'Inspect', '-DispatchResultPath', [string]$Inspect.dispatchResultPath)) { $startInfo.ArgumentList.Add($argument) }
+        if ($NoAccountFailover) { $startInfo.ArgumentList.Add('-NoAccountFailover') }
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
+        $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
+        $process = [Diagnostics.Process]::Start($startInfo)
+        try {
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(180000)) { try { $process.Kill() } catch { }; throw 'Inspect 入口探針逾時。' }
+            $stdoutTask.Wait(); $stderrTask.Wait()
+            $output = [string]$stdoutTask.Result
+            $firstBrace = $output.IndexOf('{')
+            $lastBrace = $output.LastIndexOf('}')
+            $parsed = $null
+            if ($firstBrace -ge 0 -and $lastBrace -gt $firstBrace) { $parsed = ConvertFrom-DispatchJson -Content $output.Substring($firstBrace, $lastBrace - $firstBrace + 1) }
+            return [pscustomobject]@{ exit_code = $process.ExitCode; stdout = $output; stderr = [string]$stderrTask.Result; parsed = $parsed }
+        }
+        finally { $process.Dispose() }
+    }
+    Test-Case C1-MOUNT-EMPTY {
+        $bg = FxNewBackgroundFixture -Slug 'fx-c1a' -Account @('acct-a', 'acct-b')
+        $inspect = FxNewBackgroundAttempt -Background $bg -Slug 'fx-c1a' -AccountIndex 0 -RequestPath $bg.fixture.request_path
+        $probe = FxRunInspectEntryProbe -Background $bg -Inspect $inspect -Name 'c1-empty'
+        $handoff = if ($null -ne $probe.parsed -and $null -ne $probe.parsed.PSObject.Properties['account_failover_handoff']) { $probe.parsed.account_failover_handoff } else { $null }
+        $null -ne $handoff -and $handoff.state -cin @('started', 'launch-failed') -and $handoff.to_account -ceq 'acct-b' -and $handoff.next_dispatch_slug -ceq 'fx-c1a-r2' -and $probe.exit_code -eq 3 -and $probe.parsed.errorCode -ceq 'InspectEventStreamEmpty'
+    }
+    Test-Case C1-MOUNT-NOT-ELIGIBLE {
+        $bg = FxNewBackgroundFixture -Slug 'fx-c1b' -Account @('acct-a', 'acct-b')
+        $inspect = FxNewBackgroundAttempt -Background $bg -Slug 'fx-c1b' -AccountIndex 0 -RequestPath $bg.fixture.request_path
+        $probe = FxRunInspectEntryProbe -Background $bg -Inspect $inspect -Eligible $false -Name 'c1-not-eligible'
+        $probe.exit_code -eq 1 -and $probe.stderr.Contains('Invoke-CodexDispatch.ps1') -and $probe.stderr.Contains('失敗') -and $null -ne $probe.parsed -and $probe.parsed.errorCode -ceq 'InspectEventStreamEmpty' -and $null -eq $probe.parsed.PSObject.Properties['account_failover_handoff']
+    }
+    Test-Case C1-MOUNT-RELAY-THROWS {
+        # 接力函式自己拋出時，保留原 Invoke-Inspect 例外的診斷（InspectEventStreamEmpty 的 operationResult），接力失敗資訊另附欄位。
+        $bg = FxNewBackgroundFixture -Slug 'fx-c1d' -Account @('acct-a', 'acct-b')
+        $inspect = FxNewBackgroundAttempt -Background $bg -Slug 'fx-c1d' -AccountIndex 0 -RequestPath $bg.fixture.request_path
+        $extra = "`r`nfunction Invoke-InspectBackgroundAccountFailover { param(`$InspectResult, [switch]`$NoAccountFailover) throw 'relay boom fixture' }`r`n"
+        $probe = FxRunInspectEntryProbe -Background $bg -Inspect $inspect -Name 'c1-relay-throws' -ExtraStub $extra
+        $probe.exit_code -eq 1 -and $probe.stderr.Contains('Invoke-CodexDispatch.ps1') -and $null -ne $probe.parsed -and $probe.parsed.errorCode -ceq 'InspectEventStreamEmpty' -and $null -eq $probe.parsed.PSObject.Properties['account_failover_handoff'] -and
+        $null -ne $probe.parsed.PSObject.Properties['account_failover_handoff_error'] -and ([string]$probe.parsed.account_failover_handoff_error).Contains('relay boom fixture') -and $probe.stderr.Contains('InspectEventStreamEmpty')
+    }
+    Test-Case C1-MOUNT-NOT-APPLICABLE {
+        $scenarios = @(
+            @{ name = 'no-account-failover'; noFailover = $true; background = $true },
+            @{ name = 'foreground-result'; noFailover = $false; background = $false }
+        )
+        foreach ($scenario in $scenarios) {
+            $slug = 'fx-c1c-' + $scenario.name
+            $bg = FxNewBackgroundFixture -Slug $slug -Account @('acct-a', 'acct-b')
+            $inspect = FxNewBackgroundAttempt -Background $bg -Slug $slug -AccountIndex 0 -RequestPath $bg.fixture.request_path -IsBackground ([bool]$scenario.background)
+            $probe = FxRunInspectEntryProbe -Background $bg -Inspect $inspect -NoAccountFailover:([bool]$scenario.noFailover) -Name ('c1-not-applicable-' + $scenario.name)
+            if (-not ($probe.exit_code -eq 1 -and $probe.stderr.Contains('Invoke-CodexDispatch.ps1') -and $null -ne $probe.parsed -and $probe.parsed.errorCode -ceq 'InspectEventStreamEmpty' -and $null -eq $probe.parsed.PSObject.Properties['account_failover_handoff'])) {
+                throw ('應維持原行為 exit 1 並重新拋出且原 operationResult 不含 account_failover_handoff：' + $scenario.name + '；exit=' + $probe.exit_code + '；stderr=' + $probe.stderr)
+            }
+        }
+        $true
+    }
+
+    # ---------- C4 併發 Inspect 碰撞：後到者讀 RunRecord 回報，不重新啟動 ----------
+    Test-Case C4-RACE-STARTED {
+        $bg = FxNewBackgroundFixture -Slug 'fx-c4a' -Account @('acct-a', 'acct-b')
+        FxReset
+        $inspect = FxNewBackgroundAttempt -Background $bg -Slug 'fx-c4a' -AccountIndex 0 -RequestPath $bg.fixture.request_path
+        $collidingPath = Join-Path $bg.fixture.history 'dispatch-request-fx-c4a-r2.json'
+        $winner = [ordered]@{ state = 'started'; from_account = 'acct-a'; to_account = 'acct-b'; next_dispatch_slug = 'fx-c4a-r2'; next_request_path = $collidingPath; next_result_path = 'C:\fx\result-fx-c4a-r2.json'; summary_path = (Join-Path $bg.fixture.history 'dispatch-account-failover-fx-c4a.json') }
+        $script:FxCollisionHook = [pscustomobject]@{ path = $collidingPath; record_path = [string]$inspect.runRecordPath; handoff = $winner }
+        try { $result = Invoke-InspectBackgroundAccountFailover -InspectResult $inspect -MachineConfigPath $bg.machine }
+        finally { $script:FxCollisionHook = $null }
+        $recorded = (FxBackgroundRecord -Inspect $inspect).account_failover_handoff
+        $handoff = $result.account_failover_handoff
+        $script:FxAttemptLog.Count -eq 0 -and $handoff.state -ceq 'already-handed-off' -and $handoff.to_account -ceq $recorded.to_account -and $handoff.next_dispatch_slug -ceq $recorded.next_dispatch_slug -and $handoff.next_request_path -ceq $recorded.next_request_path -and $handoff.next_result_path -ceq $recorded.next_result_path -and -not (Test-Path -LiteralPath $collidingPath)
+    }
+    Test-Case C4-RACE-CLAIMED {
+        $bg = FxNewBackgroundFixture -Slug 'fx-c4b' -Account @('acct-a', 'acct-b')
+        FxReset
+        $inspect = FxNewBackgroundAttempt -Background $bg -Slug 'fx-c4b' -AccountIndex 0 -RequestPath $bg.fixture.request_path
+        $collidingPath = Join-Path $bg.fixture.history 'dispatch-request-fx-c4b-r2.json'
+        [IO.File]::WriteAllText($collidingPath, '{}', $utf8NoBom)
+        $hashBefore = (Get-FileHash -LiteralPath $collidingPath -Algorithm SHA256).Hash
+        $winner = [ordered]@{ state = 'claimed'; from_account = 'acct-a'; to_account = 'acct-b'; next_dispatch_slug = 'fx-c4b-r2'; next_request_path = $collidingPath; next_result_path = 'C:\fx\result-fx-c4b-r2.json'; summary_path = (Join-Path $bg.fixture.history 'dispatch-account-failover-fx-c4b.json') }
+        $script:FxCollisionHook = [pscustomobject]@{ path = $collidingPath; record_path = [string]$inspect.runRecordPath; handoff = $winner }
+        $script:DispatchHandoffCollisionRereadAttempts = 2
+        $script:DispatchHandoffCollisionRereadIntervalMs = 10
+        try { $result = Invoke-InspectBackgroundAccountFailover -InspectResult $inspect -MachineConfigPath $bg.machine }
+        finally {
+            $script:FxCollisionHook = $null
+            $script:DispatchHandoffCollisionRereadAttempts = 20
+            $script:DispatchHandoffCollisionRereadIntervalMs = 250
+        }
+        $script:FxAttemptLog.Count -eq 0 -and $result.account_failover_handoff.state -ceq 'handoff-incomplete' -and $hashBefore -ceq (Get-FileHash -LiteralPath $collidingPath -Algorithm SHA256).Hash
+    }
+    Test-Case C4-STATIC {
+        # 去重區塊與碰撞區塊都經 Get-DispatchRecordedHandoffReport；碰撞 catch 區塊含重讀 RunRecord 的呼叫。
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptsRoot 'dispatch\dispatch-lifecycle.ps1'), [ref]$tokens, [ref]$errors)
+        $function = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-InspectBackgroundAccountFailover' }, $true))[0]
+        $mapperCalls = @($function.Body.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Get-DispatchRecordedHandoffReport' }, $true))
+        $collisionCatches = @($function.Body.FindAll({ param($node) $node -is [Management.Automation.Language.CatchClauseAst] -and $node.Extent.Text.Contains('DispatchAccountFailoverRequestCollision') }, $true))
+        $rereadCalls = @(if ($collisionCatches.Count -eq 1) { $collisionCatches[0].Body.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Read-DispatchUtf8Text' }, $true) })
+        $errors.Count -eq 0 -and $mapperCalls.Count -eq 2 -and $collisionCatches.Count -eq 1 -and $rereadCalls.Count -ge 1
+    }
+
+    # ---------- C10 既有報告無法讀取雜湊時回報 skipped／write-failed，不使 Inspect 失敗 ----------
+    Test-Case C10-LOCKED {
+        $root = FxNewDir -Name 'c10-repo'
+        $reportFile = Join-Path $root 'report.md'
+        [IO.File]::WriteAllText($reportFile, 'locked report content', $utf8NoBom)
+        & git -C $root init --quiet 2>&1 | Out-Null
+        $preflight = Join-Path $root 'preflight.json'
+        [IO.File]::WriteAllText($preflight, '{"gitOrigin":"not-applicable"}', $utf8NoBom)
+        $record = [pscustomobject]@{ source_root = $root; execution_root = $root; preflight_result_path = $preflight }
+        $stream = [IO.File]::Open($reportFile, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try { $locked = Write-DispatchNonGitReadonlyReport -TaskType 'script-change' -WriteMode 'readonly' -RunRecord $record -ReportPath @($reportFile) -FinalMessage 'locked report content' -SecretExposureSuspected $false -SourceRoot $root -ExecutionRoot $root }
+        finally { $stream.Dispose() }
+        $released = Write-DispatchNonGitReadonlyReport -TaskType 'script-change' -WriteMode 'readonly' -RunRecord $record -ReportPath @($reportFile) -FinalMessage 'locked report content' -SecretExposureSuspected $false -SourceRoot $root -ExecutionRoot $root
+        $locked.status -ceq 'skipped' -and $locked.reason -ceq 'write-failed' -and $locked.path -ieq $reportFile -and $null -eq $locked.sha256 -and $released.status -ceq 'unchanged'
+    }
+    Test-Case C10-STATIC {
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptsRoot 'dispatch\inspect-lifecycle.ps1'), [ref]$tokens, [ref]$errors)
+        $function = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-DispatchNonGitReadonlyReport' }, $true))[0]
+        $hashCalls = @($function.Body.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Get-FileSha256' }, $true))
+        $insideTry = @($hashCalls | Where-Object {
+                $parent = $_.Parent
+                while ($null -ne $parent -and $parent -isnot [Management.Automation.Language.TryStatementAst]) { $parent = $parent.Parent }
+                $null -ne $parent
+            })
+        $errors.Count -eq 0 -and $hashCalls.Count -ge 1 -and $insideTry.Count -eq $hashCalls.Count
+    }
+
+    # ---------- C5 健康狀態檔缺欄：整份視為空集合 ----------
+    function FxEditHealthFile {
+        param([object]$Setup, [scriptblock]$Edit)
+        $document = ConvertFrom-DispatchJson -Content ([IO.File]::ReadAllText($Setup.path, [Text.Encoding]::UTF8))
+        & $Edit $document
+        [IO.File]::WriteAllText($Setup.path, (ConvertTo-Json -InputObject $document -Depth 8), $utf8NoBom)
+    }
+    Test-Case C5-PARTIAL {
+        $scenarios = @('profile', 'expires_at_utc')
+        foreach ($missingField in $scenarios) {
+            $setup = FxHealthSetup -Name ('c5-partial-' + $missingField)
+            $null = FxRegisterHealth -Setup $setup -Index 0 -Now $healthNow
+            $null = FxRegisterHealth -Setup $setup -Index 1 -Now $healthNow
+            $fieldToRemove = $missingField
+            FxEditHealthFile -Setup $setup -Edit { param($document) $null = @($document.entries)[1].PSObject.Properties.Remove($fieldToRemove) }
+            $read = Read-CodexAccountHealth -MachineConfigPath $setup.machine -NowUtc $healthNow.AddHours(1)
+            $set = Get-CodexDispatchAccountCandidates -Profile 'scan' -MachineConfigPath $setup.machine -NowUtc $healthNow.AddHours(1)
+            $withoutFile = FxHealthSetup -Name ('c5-nofile-' + $missingField)
+            $baseline = Get-CodexDispatchAccountCandidates -Profile 'scan' -MachineConfigPath $withoutFile.machine -NowUtc $healthNow.AddHours(1)
+            $null = FxRegisterHealth -Setup $setup -Index 0 -Now $healthNow.AddHours(2)
+            $backups = @(Get-ChildItem -LiteralPath (Split-Path -Parent $setup.path) -Filter 'codex-account-health.json.invalid-*' -File)
+            $after = @((Read-CodexAccountHealth -MachineConfigPath $setup.machine -NowUtc $healthNow.AddHours(3)).entries)
+            if (-not (@($read.entries).Count -eq 0 -and $read.state_file_invalid -eq $true -and @($set.skipped | Where-Object { $_.reason_code -ceq 'ModelNotSupportedRecorded' }).Count -eq 0 -and @($set.candidates).Count -eq @($baseline.candidates).Count -and $backups.Count -eq 1 -and $after.Count -eq 1 -and $after[0].account_name -ceq 'h-a')) {
+                throw ('缺 ' + $missingField + ' 時未整份視為空集合：entries=' + @($read.entries).Count + '；invalid=' + $read.state_file_invalid + '；candidates=' + @($set.candidates).Count + '/' + @($baseline.candidates).Count + '；backups=' + $backups.Count + '；after=' + $after.Count)
+            }
+        }
+        $true
+    }
+    Test-Case C5-MODEL-OPTIONAL {
+        $setup = FxHealthSetup -Name 'c5-model-optional'
+        $null = FxRegisterHealth -Setup $setup -Index 0 -Now $healthNow
+        $null = FxRegisterHealth -Setup $setup -Index 1 -Now $healthNow
+        FxEditHealthFile -Setup $setup -Edit {
+            param($document)
+            $null = @($document.entries)[0].PSObject.Properties.Remove('model')
+            $expired = ConvertFrom-DispatchJson -Content (ConvertTo-Json -InputObject @($document.entries)[1] -Depth 8)
+            $expired.account_name = 'h-expired'
+            $expired.expires_at_utc = $healthNow.AddHours(-1).UtcDateTime.ToString('o')
+            $document.entries = @(@($document.entries) + $expired)
+        }
+        $read = Read-CodexAccountHealth -MachineConfigPath $setup.machine -NowUtc $healthNow.AddHours(1)
+        $names = @($read.entries | ForEach-Object { $_.account_name })
+        $read.state_file_invalid -eq $false -and @($read.entries).Count -eq 2 -and ($names -join ',') -ceq 'h-a,h-b'
+    }
+    Test-Case C5-STATIC {
+        $tokens = $null; $errors = $null
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptsRoot 'dispatch\dispatch-evidence.ps1'), [ref]$tokens, [ref]$errors)
+        $function = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Read-CodexAccountHealth' }, $true))[0]
+        $continues = @($function.Body.FindAll({ param($node) $node -is [Management.Automation.Language.ContinueStatementAst] }, $true))
+        $errors.Count -eq 0 -and $continues.Count -eq 0
+    }
+
+    # ---------- C6 登入命令只對完整絕對路徑輸出 ----------
+    Test-Case C6-POS {
+        $creatorText = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'New-CodexDispatchAccount.ps1'), [Text.Encoding]::UTF8)
+        $templateMatch = [regex]::Match($creatorText, 'Write-Host \("(?<template>powershell\.exe -NoProfile -Command [^"]*)" -f \$escaped\)')
+        if (-not $templateMatch.Success) { throw '找不到 New-CodexDispatchAccount.ps1 的登入命令樣板。' }
+        $template = $templateMatch.Groups['template'].Value.Replace('`$', '$')
+        foreach ($sample in @('C:\a\b', 'C:/a/b', '\\srv\share\x', "C:\a\it's")) {
+            $command = Get-CodexAccountLoginCommand -CodexHome $sample
+            if ($null -eq $command -or ($template -f $sample.Replace("'", "''''")) -cne $command) { throw ('完整絕對路徑應輸出與樣板一致的命令：' + $sample + '；實際：' + $command) }
+        }
+        $true
+    }
+    Test-Case C6-NEG {
+        foreach ($sample in @('\foo', '/foo', 'C:foo', 'foo\bar', '.', '', $null)) {
+            if ($null -ne (Get-CodexAccountLoginCommand -CodexHome $sample)) { throw ('非完整絕對路徑不應輸出命令：' + [string]$sample) }
+        }
+        $attempt = [pscustomobject]@{ account_name = 'acct-neg'; rejection_kind = 'unauthorized'; codex_home = '\foo' }
+        $skipped = [pscustomobject]@{ name = 'acct-skip'; reason_code = 'LoginFileMissing'; codex_home = '\foo' }
+        $lines = @(Get-CodexAccountReloginLine -Attempt @($attempt) -Skipped @($skipped))
+        $bg = FxNewBackgroundFixture -Slug 'fx-c6' -Account @('acct-a', 'acct-b')
+        FxReset
+        $script:FxBehavior['acct-b'] = 'started'
+        $inspect = FxNewBackgroundAttempt -Background $bg -Slug 'fx-c6' -AccountIndex 0 -RequestPath $bg.fixture.request_path -Kind 'unauthorized'
+        $loaded = ConvertFrom-DispatchJson -Content ([IO.File]::ReadAllText([string]$inspect.runRecordPath, [Text.Encoding]::UTF8))
+        Set-DispatchJsonPropertyValue -Object $loaded -Name 'codex_home' -Value '\foo'
+        [IO.File]::WriteAllText([string]$inspect.runRecordPath, (ConvertTo-Json -InputObject $loaded -Depth 20), $utf8NoBom)
+        $result = Invoke-InspectBackgroundAccountFailover -InspectResult $inspect -MachineConfigPath $bg.machine
+        $lines.Count -eq 0 -and $result.account_failover_handoff.state -ceq 'started' -and $null -eq $result.account_failover_handoff.relogin_command
     }
 
     # ---------- 真實子程序執行器 ----------

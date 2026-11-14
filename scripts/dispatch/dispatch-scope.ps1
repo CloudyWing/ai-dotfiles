@@ -1,4 +1,6 @@
-﻿function Get-DispatchWorkflowPhaseUnits {
+﻿#Requires -Version 7.0
+
+function Get-DispatchWorkflowPhaseUnits {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)]

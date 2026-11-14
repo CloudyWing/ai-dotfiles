@@ -1,4 +1,4 @@
-﻿#Requires -Version 5.1
+﻿#Requires -Version 7.0
 [CmdletBinding()]
 param()
 
@@ -111,7 +111,7 @@ try {
         $null = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
         $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191 -and $errors.Count -eq 0
     }
-    Test-Case S02 { $text -match '(?m)^#Requires -Version 5\.1' -and $text -match '(?m)^Set-StrictMode -Version Latest' }
+    Test-Case S02 { $text -match '(?m)^#Requires -Version 7\.0' -and $text -match '(?m)^Set-StrictMode -Version Latest' }
     Test-Case S03 { $text -notmatch 'Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Copy-Item|Move-Item|Rename-Item|Tee-Object|Export-|Invoke-WebRequest|Invoke-RestMethod|\$env:|GetEnvironmentVariable|WriteAllText|>>' }
     Test-Case S04 {
         $bytes = [IO.File]::ReadAllBytes($registryPath)
