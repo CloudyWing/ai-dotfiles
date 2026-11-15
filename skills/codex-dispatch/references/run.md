@@ -61,7 +61,9 @@
 | --- | --- |
 | `git rev-parse`、`git log`、`git show`、`git diff <rev> <rev>`、`git diff --cached`、`git ls-files -m -o --exclude-standard` | `git status`、`git diff`（比對工作樹）、`git diff HEAD` |
 
-需要工作樹狀態時，用 `git ls-files -m -o --exclude-standard` 列出已修改與未追蹤的檔案，再直接讀取檔案內容。
+需要工作樹狀態時，用 `git ls-files -m -o --exclude-standard` 列出已修改與未追蹤的檔案，用 `git diff --cached --name-status HEAD` 列出已暫存的變更，再以 `git show HEAD:<path>` 與直接讀取的檔案內容比對。Reviewer 的盤點步驟見 `agents/codex/reviewer.toml`「啟動流程」第 5 點。
+
+`git ls-files --exclude-standard` 與 `git diff --cached` 在沙盒內會於 stderr 印出無法存取使用者層級 git 設定的 warning，結束碼仍為 0，以結束碼判定成敗。
 
 ## 回收
 

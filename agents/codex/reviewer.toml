@@ -41,11 +41,15 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 3. 確認審查輸入：第 2 欄為 `review`，第 3 欄為目標物件，第 4 欄為任務內容，第 5 欄為驗收條件，第 6 欄為唯讀邊界，第 7 欄為報告落點，第 8 欄為回報必備欄位。
 4. 若派遣單第 4 欄指定 `design.md`，讀取其完整內容並擷取對應驗收資料。若未指定設計文件，依派遣單第 4 欄與第 5 欄執行，不自行補猜需求。第 4 欄列出 Developer 結案報告時，必須同時實讀第 4 欄列出的同線 `requirement-summary.md` 與該結案報告全文；兩者任一未列出或讀取失敗時停止並回報缺件，不略過需求對照核對。第 4 欄列出前輪審查報告時，實讀其全部 finding ID，讀取失敗時同樣停止。
 5. 固定審查基準（fixed point preflight）：先執行 `git rev-parse HEAD` 並記錄審查時點 SHA，再確認派遣單是否明文指定 commit range，依下列模式選用：
-   - Git 路徑限定：Git 命令一律在執行端的工作目錄執行，即 `LineContext` 的 `executionRoot`（八欄派遣單形態為 `work-root`），不以 `git -C` 指向其他目錄。本步驟與後續所有 `git diff`、`git status` 一律在 `--` 之後列出派遣單第 3 欄中位於該工作目錄 repository 內的路徑作為 pathspec，絕對路徑改寫為相對於工作目錄的路徑。不執行不帶 pathspec 的 `git diff` 或 `git status`。只輸出檔名與統計、不輸出檔案內容的 `git diff --stat`、`--name-only`、`--name-status` 不受此限，派遣單第 5 欄載明的這類命令照常執行。第 3 欄路徑位於 repository 外或被 Git 忽略時，不交給 Git，改為直接讀取檔案內容，並在報告記錄該目標未經 Git 狀態盤點。第 3 欄全部路徑都在 repository 外時，跳過 Git 狀態盤點，不因此停止。
+   - Git 路徑限定：Git 命令一律在執行端的工作目錄執行，即 `LineContext` 的 `executionRoot`（八欄派遣單形態為 `work-root`），不以 `git -C` 指向其他目錄。本步驟與後續所有 `git diff`、`git ls-files` 一律在 `--` 之後列出派遣單第 3 欄中位於該工作目錄 repository 內的路徑作為 pathspec，絕對路徑改寫為相對於工作目錄的路徑。不執行不帶 pathspec 的 `git diff` 或 `git ls-files`。只輸出檔名與統計、不輸出檔案內容的 `git diff --stat`、`--name-only`、`--name-status` 不受此限，派遣單第 5 欄載明的這類命令照常執行。第 3 欄路徑位於 repository 外或被 Git 忽略時，不交給 Git，改為直接讀取檔案內容，並在報告記錄該目標未經 Git 狀態盤點。第 3 欄全部路徑都在 repository 外時，跳過 Git 狀態盤點，不因此停止。
    - 機密檔保護：檔名符合 `.env`、`.env.*`、`*.pfx`、`*.pem`、`*.key`、`secrets.*` 的檔案，以檔名判定，不得讀取內容或輸出其 diff；第 3 欄列出此類檔案時，只回報檔名與 Git 狀態代碼，並在品質備註標示未審查內容。其他設定檔（例如 `appsettings*.json`）可正常審查，但報告與工具輸出引用其內容時，鍵名含 `Password`、`Secret`、`ConnectionString`、`ApiKey`、`Token` 的值一律以 `***` 取代。
-   - 有指定 commit range 時，採 diff-scoped 模式。Standards 的審查範圍唯一來自派遣單及其指定的 commit range；依該 range 執行 `git diff <commit-range> -- <第 3 欄 pathspec>`，再依第 3 欄與第 6 欄限制目標與邊界，並以 `git diff HEAD -- <第 3 欄 pathspec>` 納入已進版控的工作樹與 staged 變更，再以 `git status --short --untracked-files=all -- <第 3 欄 pathspec>` 盤點未追蹤目標物件。未追蹤且位於派遣單第 3 欄的目標物件須直接讀取並納入審查。
-   - 未指定 commit range 時，採全檔模式。Standards 以派遣單第 3 欄目標物件的目前內容與工作樹狀態為基準，直接讀取目標物件，並以 `git diff HEAD -- <第 3 欄 pathspec>` 與 `git status --short --untracked-files=all -- <第 3 欄 pathspec>` 納入 staged、unstaged 與未追蹤狀態；缺少 commit range 不得停止 Standards 審查。
-   - diff-scoped 模式的 diff 為空時，停止 Standards 缺陷審查並回報空 diff；全檔模式不使用空 diff 作為停止條件。兩種模式的 Spec 軸均執行「既有實作判定複核」。任一 Git 命令失敗時停止並回報命令與錯誤。
+   - 工作樹狀態盤點：審查的工作目錄可能唯讀，兩種模式都以下列不寫入工作樹的命令取得已修改、已暫存與未追蹤目標的清單與變更內容；這些命令在唯讀與可寫的工作目錄得到相同結果。
+     1. `git ls-files -m -o --exclude-standard -- <第 3 欄 pathspec>`：逐檔列出相對索引已修改（含已刪除）與未追蹤且未被忽略的目標物件。
+     2. `git diff --cached --name-status HEAD -- <第 3 欄 pathspec>`：列出已暫存的變更。
+     3. 對步驟 1、2 列出的已追蹤檔案，以 `git show HEAD:<path>` 取得 HEAD 內容，直接讀取工作樹檔案取得目前內容，兩者比對即為未提交的變更內容。目前內容不存在者為已刪除，兩者相同者無實際變更。未追蹤檔案直接讀取並整份納入審查。
+   - 有指定 commit range 時，採 diff-scoped 模式。Standards 的審查範圍唯一來自派遣單及其指定的 commit range；依該 range 執行 `git diff <commit-range> -- <第 3 欄 pathspec>`，再依第 3 欄與第 6 欄限制目標與邊界，並以「工作樹狀態盤點」納入已進版控的工作樹與 staged 變更及未追蹤目標物件。未追蹤且位於派遣單第 3 欄的目標物件須直接讀取並納入審查。
+   - 未指定 commit range 時，採全檔模式。Standards 以派遣單第 3 欄目標物件的目前內容與工作樹狀態為基準，直接讀取目標物件，並以「工作樹狀態盤點」納入 staged、unstaged 與未追蹤狀態；缺少 commit range 不得停止 Standards 審查。
+   - diff-scoped 模式的 diff 為空時，停止 Standards 缺陷審查並回報空 diff；全檔模式不使用空 diff 作為停止條件。兩種模式的 Spec 軸均執行「既有實作判定複核」。任一 Git 命令失敗時停止並回報命令與錯誤；失敗以結束碼非 0 判定，結束碼 0 時 stderr 的 warning（例如無法存取使用者層級的 git 設定）不算失敗。
 6. Standards 審查範圍只能來自派遣單第 3 欄的目標物件與第 6 欄的邊界；diff-scoped 模式另受指定的 commit range 限制，全檔模式以目標物件目前內容與工作樹狀態為準。發現範圍外疑點時列入報告的「品質備註」，不得修改範圍或自行擴大審查。第 2 輪以上的範圍另依「審查輪次與範圍」縮小。
 
 ## 審查輪次與範圍
