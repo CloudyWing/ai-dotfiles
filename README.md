@@ -20,7 +20,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
    - 建立各工具指向本 repo 的 Symbolic Link，對應位置見 §3。
    - 註冊本機 marketplace `ai-agents-local`，安裝並啟用其中的 plugin（hook 與狀態看板）。
    - 設定本 repo 的 `core.hooksPath` 與機器層 Git 排除清單。
-   - 檢查 Windows 長路徑與 Codex CLI；Codex 檔位設定檔缺少時依初始值建立，其餘缺件印出修復指引。
+   - 檢查 Windows 長路徑與 Codex CLI；把各派工帳號目錄的檔位設定檔建成指向 repo 產生檔的 Symbolic Link，已有一般檔案或指向別處的連結時不覆蓋，改列出要執行的命令；其餘缺件印出修復指引。
 3. 需要跨平台派工時，依 §3「Codex CLI 前置需求」安裝 Codex CLI，並依「Codex profile 檔位設定」確認檔位設定檔。派工帳號目錄為選用，見「獨立 Codex 帳號目錄」。
 
 ---
@@ -191,8 +191,8 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 派工使用 `review`、`scan`、`content`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。審查類使用的 `scripts/Invoke-CodexRun.ps1` 不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md` 與 `executor-selection` skill。
-2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。Setup 提供初始值，檔案建立後屬本機設定。
+1. 派工使用的檔位清單以 `scripts/dispatch/executor-registry.json` 為準，不在本文件另列。現行清單與各檔位的設定用 `pwsh -NoProfile -File scripts\Select-DispatchExecutor.ps1 -Describe` 查詢（各 Codex 執行者的 `profile` 與 `profileSettings`）。派工以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。審查類使用的 `scripts/Invoke-CodexRun.ps1` 不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`；選定帳號後、啟動 Codex 前，另比對實際要使用的帳號的檔位設定檔：必須是指向主 checkout 產生檔的 Symbolic Link 且內容相同（一般檔案即使內容相同也不通過，不允許單機覆寫），入口所在工作樹的登錄表設定也必須已落地到主 checkout。不一致時以結束碼 2（`CodexProfileDrift`）停止，列出每行可直接貼到 pwsh 的修正命令，不自行改檔，也不跳到下一個帳號；所有已登入帳號的檔位檔都缺失時同樣以此方式回報，不會被當成帳號全數不可用；換帳號後對新的候選帳號在使用前再比對一次，未使用的候選帳號不一致不阻擋。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md` 與 `executor-selection` skill。
+2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。這些值寫在 `scripts/dispatch/executor-registry.json` 各 Codex 執行者的 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort`），不手動編輯設定檔。`effort` 與 `subagentEffort` 必須在登錄表的 `codexEfforts` 清單內（`max` 需要 Codex 0.147 以上，見 §8）。
 
    ```toml
    model = "<model-id>"
@@ -204,13 +204,16 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
    ```
 
 3. 每個檔位的設定寫在各自的 `<檔位>.config.toml`。執行時先載入 Codex home 的 `config.toml`，再疊加所選檔位的設定。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
-4. 檔位檔屬本機設定，不進版控。Setup 在 `~/.codex` 缺少四個檔位的設定檔時建立，不覆寫既有檔；另檢查各派工帳號的檔位連結，殘留的 `default.config.toml` 只警示不刪除。
+4. 登錄表是檔位名稱與設定的唯一來源，增減檔位或調整 model 與推理強度只改登錄表。`.githooks/pre-commit` 以 `-FromIndex` 呼叫 `.githooks/Update-CodexProfiles.ps1`，依暫存區內的登錄表產生 `scripts/codex-profiles/<檔位>.config.toml` 並暫存，這些產生檔進版控，檔首註明請勿手改。需要手動重產生時執行 `pwsh -NoProfile -File .githooks\Update-CodexProfiles.ps1`，加 `-Check` 只比對不寫檔。
+5. Setup 只處理帳號目錄：先確認 repo 內的產生檔與登錄表一致（不一致就停止並說明要先重新產生），再對 `machine.json` 登記的每個派工帳號，缺少的檔位檔建成指向本 repo `scripts/codex-profiles/` 同名產生檔的 Symbolic Link，已正確者略過。帳號目錄已有一般檔案或指向別處的連結時，Setup 不覆蓋，列出狀態與要執行的命令，結束碼為 1。不允許單台電腦覆寫檔位設定，要改設定就改登錄表。逐項建立連結時中途失敗，已建立的連結保留（它們是正確狀態），修正原因後重跑 Setup 即可補完。
+6. 沒有登記任何派工帳號時，舊入口 `Invoke-CodexDispatch.ps1` 回退使用 `~/.codex`，而 Setup 不再替 `~/.codex` 建立檔位設定檔。此情形需先以 `scripts\New-CodexDispatchAccount.ps1` 登記派工帳號，或自行在 `~/.codex` 準備檔位設定檔。
+7. `~/.codex` 是 Codex Desktop 自己的目錄。已登記派工帳號且各帳號目錄的連結都已指向 repo 產生檔時，派工不再讀取其中的現行檔位設定檔，Setup 逐檔列出可自行執行的 `Remove-Item -LiteralPath` 命令，不自動刪除。沒有登記派工帳號時，舊入口回退使用這些檔案，不要移除。已退役的檔位名稱列在登錄表的 `retiredProfiles`，這些名稱的殘留檔無論如何都不再被讀取，Setup 同樣逐檔列出移除命令。
 
 #### 獨立 Codex 帳號目錄
 
 派工可使用專用的 Codex 帳號目錄，與 Codex Desktop 使用的預設目錄 `~/.codex` 分開。派工只在單次子行程指定 `CODEX_HOME`，不會更換、改寫 Desktop 或預設目錄的登入，因此 Desktop 使用中不會被派工切換帳號。建議的配置是 `~/.codex` 留給 Desktop 且不登記，派工用的每個帳號各用一個專用目錄。Desktop 與某個派工帳號若登入同一個 ChatGPT 帳號，兩邊仍共用該帳號的額度。
 
-派工帳號以 `scripts\New-CodexDispatchAccount.ps1` 建立。腳本建立 `~/.codex-<名稱>` 目錄與最小 `config.toml`，以連結共用 `~/.codex` 的檔位設定檔，並登記到 `~/.ai-agents/.local/machine.json`。
+派工帳號以 `scripts\New-CodexDispatchAccount.ps1` 建立。腳本建立 `~/.codex-<名稱>` 目錄與最小 `config.toml`，以連結指向主 checkout 的 `scripts/codex-profiles/` 檔位產生檔（檔名清單取自登錄表），並登記到 `~/.ai-agents/.local/machine.json`。
 
 ```powershell
 .\scripts\New-CodexDispatchAccount.ps1 -Name account-a
@@ -253,7 +256,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 ├── .gitignore                          # 版控排除清單
 ├── .gitattributes                      # 行尾格式與二進位標記
 ├── .editorconfig                       # 編輯器格式設定（最高優先）
-├── .githooks/                          # Git 原生 Hook（pre-commit、Update-Docs.ps1 與 Test-StagedDocPath.ps1）
+├── .githooks/                          # Git 原生 Hook（pre-commit、Update-Docs.ps1、Test-StagedDocPath.ps1 與 Update-CodexProfiles.ps1）
 ├── AGENTS.md                           # 維護本 repo 的專案層規則
 ├── LICENSE.md                          # 授權條款
 ├── README.md                           # 本文件
@@ -268,7 +271,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 ├── claude-plugins/                     # 本機 marketplace、hook 與狀態看板 plugin
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本、Demo 外框範本與派工範本
-└── scripts/                            # 安裝、派工、查詢與索引腳本（dispatch/ 責任檔、tests/ 測試）
+└── scripts/                            # 安裝、派工、查詢與索引腳本（dispatch/ 責任檔、lib/ 登錄表讀取與驗證、codex-profiles/ 檔位設定檔產生檔、tests/ 測試）
 ```
 
 ---
@@ -280,7 +283,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態與額度。
 - `scripts/Select-DispatchExecutor.ps1` 依任務標註與 `scripts/dispatch/executor-registry.json` 選出派工執行者並輸出 `[派工判定]` 行，唯讀、不呼叫網路。
 - `scripts/New-DispatchInputs.ps1` 產生資源派遣（唯讀）的輸入，一次寫出 Request、`line.json`（不存在時）、prompt 與派遣單，並以 `Invoke-CodexDispatch.ps1 -Operation Dispatch -ValidateOnly` 自檢；自檢失敗時刪除本次建立的檔案，新建的 `line.json` 保留。
-- `scripts/Invoke-CodexRun.ps1` 對一份派遣檔執行一次 `codex exec`，目前用於審查類。帳號由 `machine.json` 登記清單選擇，讀取主 checkout 的 `.local/machine.json`，在線工作樹發動時相同。專案信任的處理見 `skills/codex-dispatch/references/run.md` 的「帳號」章節。
+- `scripts/Invoke-CodexRun.ps1` 對一份派遣檔執行一次 `codex exec`，目前用於審查類，啟動前比對帳號目錄的檔位設定檔與 repo 產生檔。帳號由 `machine.json` 登記清單選擇，讀取主 checkout 的 `.local/machine.json`，在線工作樹發動時相同。專案信任的處理見 `skills/codex-dispatch/references/run.md` 的「帳號」章節。
 - `scripts/Test-CodexReviewReport.ps1` 檢查審查報告的 finding 清單，`valid` 為 `false` 時結束碼為 1。
 - `scripts/Get-CodexQuota.ps1` 查詢 Codex 額度，只供顯示與紀錄。
 - `scripts/Invoke-WorkOverviewCleanup.ps1` 列出可清理的 worktree、分支與線層歷史備份，必須指定 `-Root`；預設只列出，以 `-ConfirmPlan` 帶入列出時的 planId 才刪除。
@@ -306,7 +309,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 git config core.hooksPath .githooks
 ```
 
-啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md` 與 `docs/skills.md` 並納入本次 commit。這兩個檔案為生成檔，請勿手動編輯；frontmatter 不一致時，腳本以非零結束碼阻止 commit。每次 `git commit` 另會檢查 staged 的 `.md`、`.toml` 新增行是否含磁碟機絕對路徑（`.githooks/Test-StagedDocPath.ps1`），違規時阻止 commit。
+啟用後，每次 `git commit` 會自動執行 `.githooks/Update-Docs.ps1`，重新產生 `docs/agents.md` 與 `docs/skills.md` 並納入本次 commit。這兩個檔案為生成檔，請勿手動編輯；frontmatter 不一致時，腳本以非零結束碼阻止 commit。每次 `git commit` 另會檢查 staged 的 `.md`、`.toml` 新增行是否含磁碟機絕對路徑（`.githooks/Test-StagedDocPath.ps1`），違規時阻止 commit。通過後，`.githooks/Update-CodexProfiles.ps1` 依登錄表重新產生 `scripts/codex-profiles/` 的檔位設定檔並納入本次 commit。
 
 ---
 

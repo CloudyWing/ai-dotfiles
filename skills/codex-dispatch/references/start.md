@@ -573,7 +573,7 @@ Prompt 至少包含下列元素，缺一即視為契約未滿足。
 
 名稱符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，目錄使用已存在的絕對路徑。名稱與正規化路徑以不區分大小寫比較唯一性，reparse point 與同目錄別名拒絕。缺少清單或空陣列時沿用 CLI `-CodexHome`、程序 `CODEX_HOME`、`~/.codex` 優先序；未登記 home 的 `codex_account_name=null`。格式異常回報 `CodexAccountConfigurationInvalid`，由使用者修正，維持原選擇。
 
-派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱>` 建立，`-ProjectPath <專案路徑>` 為選填，只用於預先信任專案。執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>` 與最小 `config.toml`（指定 `-ProjectPath` 時另含專案信任段落），將 `review`、`scan`、`content`、`advisor` 的 `<檔位>.config.toml` 連結到 `~/.codex` 同名項目，並登記 `codex_accounts`；寫入前先完整預檢帳號目錄、`config.toml` 與各連結，任一項類型或目標不符時輸出找到的連結類型、目標、預期與只刪連結的修法，不寫入任何項目；重跑只補缺項並逐項回報狀態，既有一般檔案或目錄先改名為 `<名稱>.bak-<時間戳>` 再改建連結，指向其他目標的連結則報錯停止。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml` 與各檔位連結，四個必備檔位缺少、不是連結或指向他處時警示，殘留的 `default.config.toml` 只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。`Get-CodexQuota.ps1` 回報 401 時，以該 `CODEX_HOME` 執行一次 codex（例如簡短的 `codex exec`）更新 token 後重新查詢；派工回報 401 時，派遣結果附該帳號的同格式登入命令，使用者以該命令重新登入。
+派工帳號由使用者以 `<本機 .ai-agents 根目錄>\scripts\New-CodexDispatchAccount.ps1 -Name <名稱>` 建立，`-ProjectPath <專案路徑>` 為選填，只用於預先信任專案。執行的 PowerShell 須具備建立 Symbolic Link 的權限（系統管理員，或已啟用 Windows 開發人員模式）。腳本建立 `~/.codex-<名稱>` 與最小 `config.toml`（指定 `-ProjectPath` 時另含專案信任段落），為登錄表內每個檔位建立 `<檔位>.config.toml` 的 Symbolic Link，指向主 checkout 的 `scripts/codex-profiles/` 產生檔，並登記 `codex_accounts`；寫入前先完整預檢帳號目錄、`config.toml` 與各連結，任一項類型或目標不符時輸出找到的連結類型、目標、預期與只刪連結的修法，不寫入任何項目；重跑只補缺項並逐項回報狀態，帳號目錄內既有的一般檔案、目錄或指向其他目標的連結一律視為預檢衝突，列出狀態與修正命令後停止，不改名也不覆蓋。主 Agent 遇到帳號缺件或 profile 類型錯誤時，回報使用者以此腳本修復，不自行建立帳號目錄或連結。Setup 逐帳號檢查 `config.toml`，並為缺少的檔位建立連結、比對現況；檔位檔已是一般檔案或指向他處的連結時不覆蓋，列出可貼上的命令並以結束碼 1 結束，殘留的已退役檔位檔只警示不刪除。腳本只輸出登入命令，使用者在只影響登入子行程的 `CODEX_HOME` 下自行執行 `codex login`；保留 Desktop 的預設 home 與使用者／機器環境變數。`Get-CodexQuota.ps1` 回報 401 時，以該 `CODEX_HOME` 執行一次 codex（例如簡短的 `codex exec`）更新 token 後重新查詢；派工回報 401 時，派遣結果附該帳號的同格式登入命令，使用者以該命令重新登入。
 
 派工時，Dispatch 在選定帳號後、Preflight 前確認該帳號的 `config.toml` 已信任派遣來源專案，缺少時在 `<machine.json 所在目錄>\codex-account.lock` 鎖內補上信任段落，並在派遣結果的 `project_trust` 記錄帳號、設定檔路徑與信任鍵。信任鍵為來源專案的 git 主工作樹根，以小寫寫入；來源是 linked worktree 時取其主工作樹根，來源不是 git 目錄時取來源目錄本身。此步驟只處理 `machine.json` 登記的帳號，使用者預設的 `~/.codex` 與未登記的 home 維持原樣，且只信任專案根目錄。
 
@@ -583,11 +583,11 @@ Start 啟動前依 `scripts/dispatch/sandbox-env-denylist.psd1` 移除子程序�
 
 主 Agent 不指定 `-CodexHome`，登記清單非空時由腳本選第一個已登入帳號，不依賴 `~/.codex` 的回退解析（該目錄供 Codex Desktop 使用，不登記為派工帳號）。`Dispatch -RequestPath <Request> -CodexHome <清單中的目錄>` 只用於續行、背景換帳號回報 `handoff-incomplete` 或不適用時的改派，以及使用者要求；指定的登記帳號未登入時以 `CodexAccountNotLoggedIn` 拒絕，不改選其他帳號。Dispatch 在 Preflight 與 Prepare 前固定 home/name，Start 明設專用 ProcessStartInfo 的 `CODEX_HOME`，RunRecord 的 `codex_home`、`effective_codex_home`、`profile_config_path` 與 `codex_account_name` 採同一選擇。同一次執行不追隨清單變更。新增程式碼與 Agent 只處理目錄、設定與環境，不讀取、輸出或搜尋任何憑證檔內容；對憑證僅可取得路徑、檔名、大小及修改時間。保留既有 Get-CodexQuota.ps1 行程內、不輸出憑證值的認證途徑。
 
-本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定為 `[windows]` 段（`sandbox = "mxc"`）與專案信任，內容見 README，各 home 的 profile 為指向 `~/.codex` 同名檔案的 Symbolic Link，`--profile` 經由連結讀取，保留既有 profile/model hash gate。
+本機唯讀證據為 `codex-cli 0.159.0` 的 `codex --help`，`--profile` 說明為將 `$CODEX_HOME/<name>.config.toml` 疊加於基礎使用者設定。派工帳號 home 的基礎 config 最小必要設定為 `[windows]` 段（`sandbox = "mxc"`）與專案信任，內容見 README，各 home 的 profile 為指向本 repo `scripts/codex-profiles/` 同名產生檔的 Symbolic Link，`--profile` 經由連結讀取，保留既有 profile/model hash gate。
 
 ### 檔位用途與新舊對照
 
-本 Skill 使用四個語意檔位，Request 的 `profile` 取自選派入口輸出的 `executor.profile`，腳本不依任務類型自動選用。各檔位的實際 model、effort 與其餘設定以 `<CodexHome>/<檔位>.config.toml` 為準，各設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
+本 Skill 使用四個語意檔位，Request 的 `profile` 取自選派入口輸出的 `executor.profile`，腳本不依任務類型自動選用。各檔位的實際 model、effort 與其餘設定由登錄表 `profileSettings` 產生，產生檔經帳號目錄的連結以 `<CodexHome>/<檔位>.config.toml` 讀取，各設定檔均可保留 `[agents]` 區段，規則層只傳遞語意檔位名稱。
 
 | 檔位 | 用途 |
 | --- | --- |

@@ -1,0 +1,8 @@
+# 此檔由 scripts/dispatch/executor-registry.json 的執行者 codex-review 產生，請勿手動編輯；修改請改登錄表。
+model = "gpt-6.1-sol"
+model_reasoning_effort = "medium"
+
+[agents]
+enabled = true
+default_subagent_model = "gpt-6-luna"
+default_subagent_reasoning_effort = "max"

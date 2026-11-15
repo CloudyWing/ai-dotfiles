@@ -31,6 +31,8 @@
 - 新增或調整 plugin 內容時，同步確認 Setup 的 8b、8c 與 `README.md` §3。
 - `docs/agents.md` 與 `docs/skills.md` 為 `.githooks/Update-Docs.ps1` 於 pre-commit 產生的生成檔，請勿手動編輯，手改會在下次 commit 被覆蓋。
 - `Update-Docs.ps1` 在 pre-commit 階段只對 `docs/agents.md` 與 `docs/skills.md` 執行 `git add`，不再處理 `instructions.md`。這兩個生成檔不手動編輯，通常不會有未暫存的變更；拆成多筆 commit 時，仍依 `git-workflow` skill 先確認 hook 的暫存目標再安排分組。Agent 的 Persona／sub-agent 分類由該腳本的 `$personaAgents` 清單決定；新增 Persona 時需同步更新此清單。
+- `scripts/codex-profiles/<檔位>.config.toml` 為 `.githooks/Update-CodexProfiles.ps1` 於 pre-commit 由 `scripts/dispatch/executor-registry.json` 的 `profileSettings` 產生並暫存的生成檔，請勿手動編輯；要改檔位的 model 或推理強度就改登錄表。該腳本以 pwsh 7 執行（`-Check` 只比對不寫檔，pre-commit 加 `-FromIndex` 以暫存區的登錄表產生），在 `Test-StagedDocPath.ps1` 之後由 `pre-commit` 呼叫。各派工帳號目錄的檔位設定檔由 `scripts\Setup-AIGlobalConfig.ps1` 與 `New-CodexDispatchAccount.ps1` 建成指向這些產生檔的連結。
+- 執行者登錄表的讀取與結構驗證只在 `scripts/lib/executor-registry.ps1`。`scripts/Select-DispatchExecutor.ps1` 只 dot-source 這一個檔（以自身所在位置為基準），`scripts/codex-run/45-profile-sync.ps1` 也 dot-source 它，產生器、Setup、帳號建立與 `Invoke-CodexRun.ps1` 的派工前比對經由後者使用同一組函式。該檔只定義函式，與選派入口同樣不寫檔、不呼叫網路、不讀取環境變數，`scripts/tests/Test-SelectDispatchExecutor.ps1` 的 S03、S06 會檢查。
 - `.githooks/pre-commit` 在 `Update-Docs.ps1` 之後以 `pwsh` 執行 `.githooks/Test-StagedDocPath.ps1`。staged 的 `.md`、`.toml` 新增行含磁碟機絕對路徑（如使用者目錄）時阻擋 commit，`.local` 目錄與 `*.local.md` 不檢查。偵測規則在 `claude-plugins/ai-agents-hooks/hooks/lib/doc-path-check.ps1`。需要在進版控的文件寫路徑時，改用佔位符（如 `<sourceRoot>`）或相對路徑。
 
 ## 6. 設定位置權威對照

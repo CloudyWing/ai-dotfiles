@@ -61,7 +61,7 @@ function NcNewEnv {
     $root = NcNewDir -Name $Name
     $source = Join-Path $root 'source-codex'
     $null = New-Item -ItemType Directory -Path $source -Force
-    foreach ($file in @('review.config.toml', 'scan.config.toml', 'content.config.toml', 'advisor.config.toml')) { [IO.File]::WriteAllText((Join-Path $source $file), 'x', $utf8NoBom) }
+    foreach ($file in @(Get-AccountProfileFileName)) { [IO.File]::WriteAllText((Join-Path $source $file), 'x', $utf8NoBom) }
     $homeRoot = Join-Path $root 'homes'
     $null = New-Item -ItemType Directory -Path $homeRoot -Force
     $machineDir = Join-Path $root 'machine'
@@ -75,10 +75,10 @@ function NcRun {
     $exception = $null
     try {
         if ($WhatIfRun) {
-            New-CodexAccount -Name 'acct' -HomeRoot $Env.home_root -SourceCodex $Env.source -MachinePath $Env.machine_path -ProjectPath $ProjectPath -WhatIf 6>&1 | ForEach-Object { $null = $lines.Add([string]$_) }
+            New-CodexAccount -Name 'acct' -HomeRoot $Env.home_root -SourceCodex $Env.source -ProfileSourceDirectory $Env.source -MachinePath $Env.machine_path -ProjectPath $ProjectPath -WhatIf 6>&1 | ForEach-Object { $null = $lines.Add([string]$_) }
         }
         else {
-            New-CodexAccount -Name 'acct' -HomeRoot $Env.home_root -SourceCodex $Env.source -MachinePath $Env.machine_path -ProjectPath $ProjectPath 6>&1 | ForEach-Object { $null = $lines.Add([string]$_) }
+            New-CodexAccount -Name 'acct' -HomeRoot $Env.home_root -SourceCodex $Env.source -ProfileSourceDirectory $Env.source -MachinePath $Env.machine_path -ProjectPath $ProjectPath 6>&1 | ForEach-Object { $null = $lines.Add([string]$_) }
         }
     }
     catch { $exception = $_.Exception }
@@ -213,6 +213,60 @@ try {
         $clean.Count -eq 0 -and $conflicts.Count -eq 2 -and $listing -ceq (NcListing -Path $environment.account_home)
     }
 
+    # ---------- 中途失敗：只回復本次建立的項目 ----------
+    function Invoke-FailingCreate {
+        param([object]$Env, [int]$FailOnLink = 2)
+        # 以替身 New-Item 讓第 $FailOnLink 個 Symbolic Link 建立失敗；其餘連結以一般檔案占位，使流程可走到失敗點。
+        $script:linkCounter = 0
+        function New-Item {
+            [CmdletBinding()]
+            param([string]$ItemType, [string]$Path, [string]$Target, [switch]$Force, [string]$Name, $Value)
+            if ($ItemType -ceq 'SymbolicLink') {
+                $script:linkCounter++
+                if ($script:linkCounter -ge $FailOnLink) { throw '用戶端沒有所需的權限。' }
+                [IO.File]::WriteAllText($Path, 'link-placeholder')
+                return
+            }
+            Microsoft.PowerShell.Management\New-Item @PSBoundParameters
+        }
+        return (NcRun -Env $Env)
+    }
+    Test-Case 'RB01 連結建立到一半失敗：本次建立的連結、config.toml 與帳號目錄都回復，既有的 machine 目錄不動，machine.json 沒有寫入' {
+        $environment = NcNewEnv -Name 'rollback-fresh' -MachineDirectory $true
+        $machineBefore = NcListing -Path $environment.machine_dir
+        $run = Invoke-FailingCreate -Env $environment
+        $text = $run.lines -join "`n"
+        $null -ne $run.exception -and -not (Test-Path -LiteralPath $environment.account_home) -and ($machineBefore -ceq (NcListing -Path $environment.machine_dir)) -and -not (Test-Path -LiteralPath $environment.machine_path) -and
+        $text.Contains('rolled-back') -and $text.Contains('已回復本次建立的項目') -and $text.Contains('failed: profiles')
+    }
+    Test-Case 'RB02 machine 目錄也是本次建立：失敗後一併移除（空目錄）' {
+        $environment = NcNewEnv -Name 'rollback-nomachine' -MachineDirectory $false
+        $run = Invoke-FailingCreate -Env $environment
+        $null -ne $run.exception -and -not (Test-Path -LiteralPath $environment.account_home) -and -not (Test-Path -LiteralPath $environment.machine_dir)
+    }
+    Test-Case 'RB03 帳號目錄與 config.toml 原本就存在：只移除本次建立的連結，既有的目錄、config.toml 與其他檔案不動' {
+        $environment = NcNewEnv -Name 'rollback-existing' -MachineDirectory $true
+        $null = New-Item -ItemType Directory -Path $environment.account_home -Force
+        $configPath = Join-Path $environment.account_home 'config.toml'
+        [IO.File]::WriteAllText($configPath, "[windows]`nsandbox = `"mxc`"`n", $utf8NoBom)
+        $keepPath = Join-Path $environment.account_home 'keep.txt'
+        [IO.File]::WriteAllText($keepPath, 'keep', $utf8NoBom)
+        $configSha = (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash
+        $run = Invoke-FailingCreate -Env $environment
+        $left = @(Get-ChildItem -LiteralPath $environment.account_home -Force | ForEach-Object { $_.Name } | Sort-Object)
+        $null -ne $run.exception -and ($left -join '|') -ceq 'config.toml|keep.txt' -and (Get-FileHash -LiteralPath $configPath -Algorithm SHA256).Hash -ceq $configSha -and -not (Test-Path -LiteralPath $environment.machine_path)
+    }
+    if ($canSymlink) { Test-Case 'RB04 回復只動本次建立的連結：帳號目錄內本次之前就存在的連結不被移除' {
+        $environment = NcNewEnv -Name 'rollback-prelink' -MachineDirectory $true
+        $null = New-Item -ItemType Directory -Path $environment.account_home -Force
+        $firstName = @(Get-AccountProfileFileName)[0]
+        $preLinkTarget = Join-Path $environment.source $firstName
+        $preLinkPath = Join-Path $environment.account_home $firstName
+        $null = New-Item -ItemType SymbolicLink -Path $preLinkPath -Target $preLinkTarget
+        $run = Invoke-FailingCreate -Env $environment
+        $null -ne $run.exception -and $null -ne (Get-Item -LiteralPath $preLinkPath -Force -ErrorAction SilentlyContinue)
+    } } else { Skip-Case 'RB04' '沒有建立 Symbolic Link 的權限，無法預先放置既有連結。' }
+
     # ---------- -ProjectPath ----------
     Test-Case 'T01' {
         $environment = NcNewEnv -Name 'noproject' -MachineDirectory $false
@@ -238,7 +292,7 @@ try {
             $sandboxNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets', '.sandbox_migration')
             $sandboxPresent = @($sandboxNames | Where-Object { $null -ne (Get-Item -LiteralPath (Join-Path $environment.account_home $_) -Force -ErrorAction SilentlyContinue) })
             $null -eq $run.exception -and $configText.Contains('[windows]') -and $configText.Contains("sandbox = `"mxc`"") -and -not $configText.Contains('elevated') -and -not $configText.Contains('[projects') -and (@($run.lines | Where-Object { $_.StartsWith('trust（未預先信任專案，派工時自動補上）') }).Count -eq 1) -and (Test-Path -LiteralPath $environment.machine_path) -and
-            $sandboxPresent.Count -eq 0 -and (NcListing -Path $environment.account_home) -ceq 'advisor.config.toml:link|config.toml:file|content.config.toml:link|review.config.toml:link|scan.config.toml:link'
+            $sandboxPresent.Count -eq 0 -and (NcListing -Path $environment.account_home) -ceq ((@(@(Get-AccountProfileFileName) | ForEach-Object { $_ + ':link' }) + @('config.toml:file') | Sort-Object) -join '|')
         }
         Test-Case 'T05' {
             # 帳號 home 既有的 .sandbox 連結不被檢查、改名或刪除；來源 home 缺 .sandbox* 不影響建立。

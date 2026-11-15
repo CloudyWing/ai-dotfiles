@@ -5,6 +5,8 @@
     "constraint": ["family", "gated"]
   },
   "flags": ["E", "T"],
+  "codexEfforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+  "retiredProfiles": ["default", "implement", "intensive", "deep", "deep-review"],
   "types": {
     "edit": { "requiredFlags": ["E", "T"], "impliedTags": ["write"], "forbiddenTags": [] },
     "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
@@ -22,24 +24,28 @@
     },
     {
       "id": "codex-scan", "display": "Codex scan", "platform": "codex", "profile": "scan", "family": "codex", "entry": "scripts/Invoke-CodexDispatch.ps1",
+      "profileSettings": { "model": "gpt-6.1-terra", "effort": "max", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["test"], "tags": ["build-test", "web", "browse", "desktop-control"], "when": {},
       "order": 20, "gated": false, "escalationOnly": false, "escalatesTo": null,
       "onOffline": { "test": "fallback" }
     },
     {
       "id": "codex-review", "display": "Codex review", "platform": "codex", "profile": "review", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
+      "profileSettings": { "model": "gpt-6.1-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["review"], "tags": [], "when": {},
       "order": 30, "gated": false, "escalationOnly": false, "escalatesTo": null,
       "onOffline": { "review": "degrade" }
     },
     {
       "id": "codex-content", "display": "Codex content", "platform": "codex", "profile": "content", "family": "codex", "entry": "scripts/Invoke-CodexDispatch.ps1",
+      "profileSettings": { "model": "gpt-6.1-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["generate", "factcheck"], "tags": ["web", "image-gen"], "when": {},
       "order": 35, "gated": false, "escalationOnly": false, "escalatesTo": null,
       "onOffline": { "generate": "stop", "factcheck": "fallback" }
     },
     {
       "id": "codex-advisor", "display": "Codex advisor", "platform": "codex", "profile": "advisor", "family": "codex", "entry": "scripts/Invoke-CodexDispatch.ps1",
+      "profileSettings": { "model": "gpt-6.1-sol", "effort": "high", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["advise"], "tags": [], "when": {},
       "order": 40, "gated": true, "escalationOnly": false, "escalatesTo": null,
       "onOffline": { "advise": "degrade" }

@@ -10,6 +10,7 @@ $moduleRoot = Join-Path $scriptsRoot 'codex-run'
 . (Join-Path $PSScriptRoot 'codex-run-fixtures\TestHelpers.ps1')
 . (Join-Path $moduleRoot '00-common.ps1')
 . (Join-Path $moduleRoot '10-order.ps1')
+. (Join-Path $moduleRoot '45-profile-sync.ps1')
 
 try {
     $root = New-TestDirectory -Name 'order'

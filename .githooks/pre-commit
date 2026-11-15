@@ -1,4 +1,5 @@
 #!/bin/bash
 SCRIPT="$(cygpath -w "$(git rev-parse --show-toplevel)/.githooks/Update-Docs.ps1")"
 powershell.exe -NonInteractive -ExecutionPolicy Bypass -File "$SCRIPT" || exit $?
-pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "$(git rev-parse --show-toplevel)/.githooks/Test-StagedDocPath.ps1")"
+pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "$(git rev-parse --show-toplevel)/.githooks/Test-StagedDocPath.ps1")" || exit $?
+pwsh -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$(cygpath -w "$(git rev-parse --show-toplevel)/.githooks/Update-CodexProfiles.ps1")" -FromIndex

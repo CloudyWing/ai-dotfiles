@@ -102,13 +102,14 @@ function New-OrderFile {
     return $path
 }
 function Invoke-Entry {
-    param($Environment, [string]$OrderPath, [string]$CodexPath, [string]$MachinePath, [switch]$OmitMachine, [string]$EntryScript = $entryPath, [int]$TimeoutSeconds = 0)
+    param($Environment, [string]$OrderPath, [string]$CodexPath, [string]$MachinePath, [switch]$OmitMachine, [string]$EntryScript = $entryPath, [int]$TimeoutSeconds = 0, [string]$ProfileSourceRoot, [switch]$CheckProfile)
     [Environment]::SetEnvironmentVariable('FAKE_CODEX_SCENARIO_DIR', $Environment.Scenarios)
     if ([string]::IsNullOrEmpty($CodexPath)) { $CodexPath = $Environment.Codex }
     if ([string]::IsNullOrEmpty($MachinePath)) { $MachinePath = $Environment.Machine }
     $errPath = Join-Path $Environment.Base ('stderr-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
     $arguments = @('-NoProfile', '-File', $EntryScript, '-DispatchFile', $OrderPath, '-CodexPath', $CodexPath)
     if (-not $OmitMachine) { $arguments += @('-MachineConfigPath', $MachinePath) }
+    if (-not [string]::IsNullOrEmpty($ProfileSourceRoot)) { $arguments += @('-ProfileSourceRoot', $ProfileSourceRoot) } elseif (-not $CheckProfile) { $arguments += '-SkipProfileCheck' }
     if ($TimeoutSeconds -gt 0) { $arguments += @('-TimeoutSeconds', [string]$TimeoutSeconds) }
     $output = & $hostPath @arguments 2> $errPath
     $exitCode = $LASTEXITCODE
@@ -232,6 +233,9 @@ try {
         $null = New-Item -ItemType Directory -Path $worktreeScripts -Force
         Copy-Item -LiteralPath $entryPath -Destination $worktreeScripts
         Copy-Item -LiteralPath $moduleRoot -Destination (Join-Path $worktreeScripts 'codex-run') -Recurse
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'lib') -Destination (Join-Path $worktreeScripts 'lib') -Recurse
+        $null = New-Item -ItemType Directory -Path (Join-Path $worktreeScripts 'dispatch') -Force
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'dispatch\executor-registry.json') -Destination (Join-Path $worktreeScripts 'dispatch\executor-registry.json')
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $e2.Exec '.local\machine.json'))) '前置條件：worktree 不應有 machine.json'
         $run = Invoke-Entry -Environment $e2 -OrderPath (New-OrderFile -Environment $e2) -OmitMachine -EntryScript (Join-Path $worktreeScripts 'Invoke-CodexRun.ps1')
         Assert-Success $run
@@ -473,10 +477,10 @@ try {
         $e19 = New-EntryEnvironment -Name 'graceend'
         Set-Scenario -Environment $e19 -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText); hang_seconds = 120 }
         $wrapper = Join-Path $e19.Base 'Invoke-ShortGrace.ps1'
-        $wrapperText = "param([string]`$DispatchFile, [string]`$CodexPath, [string]`$MachineConfigPath)`n" +
+        $wrapperText = "param([string]`$DispatchFile, [string]`$CodexPath, [string]`$MachineConfigPath, [switch]`$SkipProfileCheck)`n" +
         "Set-StrictMode -Version Latest`n`$ErrorActionPreference = 'Stop'`n" +
         "foreach (`$module in (Get-ChildItem -LiteralPath '" + $moduleRoot + "' -Filter '*.ps1' | Sort-Object -Property Name)) { . `$module.FullName }`n" +
-        "`$outcome = Invoke-CodexRunMain -DispatchFile `$DispatchFile -CodexPath `$CodexPath -MachineConfigPath `$MachineConfigPath -TurnEndGraceSeconds 3`n" +
+        "`$outcome = Invoke-CodexRunMain -DispatchFile `$DispatchFile -CodexPath `$CodexPath -MachineConfigPath `$MachineConfigPath -TurnEndGraceSeconds 3 -SkipProfileCheck:`$SkipProfileCheck`n" +
         "[Console]::Out.WriteLine((ConvertTo-AsciiJson -InputObject `$outcome.Document -Depth 10 -Compress))`nexit `$outcome.ExitCode`n"
         Write-TestUtf8 -Path $wrapper -Text $wrapperText
         $watch = [Diagnostics.Stopwatch]::StartNew()
@@ -492,6 +496,149 @@ try {
         Assert-Equal 'after-turn-end' $record.terminated_by_entry
         Assert-Equal 'recorded' $record.usage.status
         Assert-True (-not [string]::IsNullOrWhiteSpace([string]$record.ended_utc)) 'ended_utc 應已寫入'
+    }
+    . (Join-Path $moduleRoot '45-profile-sync.ps1')
+    function New-ProfileRoot {
+        param($Environment, [scriptblock]$Mutate)
+        # 假 repo 根目錄：登錄表複製自本 repo（可用 $Mutate 改 JSON），產生檔由該登錄表產生；兩個帳號目錄的 review 檔位檔複製自產生檔。
+        $root = Join-Path $Environment.Base 'profile-root'
+        $null = New-Item -ItemType Directory -Path (Join-Path $root 'scripts\dispatch') -Force
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'dispatch\executor-registry.json') -Destination (Join-Path $root 'scripts\dispatch\executor-registry.json')
+        if ($null -ne $Mutate) {
+            $registryFile = Join-Path $root 'scripts\dispatch\executor-registry.json'
+            $registryObject = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($registryFile)) -Depth 30
+            & $Mutate $registryObject
+            [IO.File]::WriteAllText($registryFile, (ConvertTo-Json -InputObject $registryObject -Depth 30))
+        }
+        $null = Sync-CodexProfileGeneratedFile -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root) -OutputDirectory (Get-CodexProfileGeneratedDirectory -RepoRoot $root)
+        $generated = Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $root) 'review.config.toml'
+        foreach ($homePath in @($Environment.HomeA, $Environment.HomeB)) { Copy-Item -LiteralPath $generated -Destination (Join-Path $homePath 'review.config.toml') -Force }
+        return $root
+    }
+    function New-LinkShimWrapper {
+        param($Environment)
+        # 沒有 Symbolic Link 權限時，以包裝腳本把連結狀態替身為「正確的連結」，其餘比對（內容、產生檔、登錄表、工作樹）照常執行。
+        $wrapper = Join-Path $Environment.Base 'Invoke-LinkShim.ps1'
+        $text = "param([string]`$DispatchFile, [string]`$CodexPath, [string]`$MachineConfigPath, [string]`$ProfileSourceRoot)`n" +
+        "Set-StrictMode -Version Latest`n`$ErrorActionPreference = 'Stop'`n" +
+        "foreach (`$module in (Get-ChildItem -LiteralPath '" + $moduleRoot + "' -Filter '*.ps1' | Sort-Object -Property Name)) { . `$module.FullName }`n" +
+        "function Get-CodexProfileLinkState { param([string]`$LinkPath, [string]`$TargetPath) return [pscustomobject]@{ state = 'ok'; path = `$LinkPath; expected_target = `$TargetPath; actual_target = `$TargetPath; kind = 'SymbolicLink'; fix_commands = [string[]]@(); fix_note = `$null } }`n" +
+        "`$outcome = Invoke-CodexRunMain -DispatchFile `$DispatchFile -CodexPath `$CodexPath -MachineConfigPath `$MachineConfigPath -ProfileSourceRoot `$ProfileSourceRoot`n" +
+        "[Console]::Out.WriteLine((ConvertTo-AsciiJson -InputObject `$outcome.Document -Depth 10 -Compress))`nexit `$outcome.ExitCode`n"
+        Write-TestUtf8 -Path $wrapper -Text $text
+        return $wrapper
+    }
+    Test-Case 'E2E-PROFILE-MATCH 帳號目錄的檔位設定檔與 repo 產生檔一致：照常啟動並成功' {
+        $e20 = New-EntryEnvironment -Name 'profilematch'
+        Set-Scenario -Environment $e20 -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $profileRoot = New-ProfileRoot -Environment $e20
+        $run = Invoke-Entry -Environment $e20 -OrderPath (New-OrderFile -Environment $e20) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e20)
+        Assert-Success $run
+        Assert-Equal 0 $run.ExitCode
+        $calls20 = Get-Call -Environment $e20
+        Assert-True ($calls20.Count -ge 1) '一致時應啟動 codex'
+    }
+    Test-Case 'E2E-PROFILE-DRIFT 檔位設定檔與 repo 產生檔不一致：結束碼 2、不啟動 codex、不改檔、訊息含修正命令' {
+        $e21 = New-EntryEnvironment -Name 'profiledrift'
+        Set-Scenario -Environment $e21 -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $profileRoot = New-ProfileRoot -Environment $e21
+        $driftPath = Join-Path $e21.HomeA 'review.config.toml'
+        Write-TestUtf8 -Path $driftPath -Text "model = `"hand-edited`"`n"
+        $before = Get-FileHash -LiteralPath $driftPath
+        $beforeGenerated = Get-FileHash -LiteralPath (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $profileRoot) 'review.config.toml')
+        $run = Invoke-Entry -Environment $e21 -OrderPath (New-OrderFile -Environment $e21) -ProfileSourceRoot $profileRoot
+        Assert-Equal 2 $run.ExitCode
+        Assert-Equal 'stopped' $run.Document.status
+        Assert-Equal 'CodexProfileDrift' $run.Document.error.code
+        Assert-True ($run.Document.error.message.Contains($driftPath)) '訊息應列出不一致的檔案路徑'
+        Assert-True ($run.Document.error.message.Contains('ProfileFileDrift')) '訊息應含問題代碼'
+        Assert-True ($run.Document.error.message.Contains('New-Item -ItemType SymbolicLink')) '訊息應含修正命令'
+        Assert-True ($run.Document.error.message.Contains((Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $profileRoot) 'review.config.toml'))) '修正命令的連結目標應指向比對基準 repo 的產生檔'
+        $commandLines = @($run.Document.error.message -split "`r?`n" | Where-Object { $_ -match '^(New-Item|Remove-Item|Move-Item) ' })
+        Assert-True ($commandLines.Count -ge 2) '每個命令應獨立成行'
+        foreach ($commandLine in $commandLines) { Assert-True ($commandLine -cnotmatch '[一-鿿]') ('命令行不得混說明：' + $commandLine) }
+        $calls21 = Get-Call -Environment $e21
+        Assert-Equal 0 $calls21.Count '不一致時不得啟動 codex'
+        Assert-Equal $before.Hash (Get-FileHash -LiteralPath $driftPath).Hash '不得改動帳號目錄的檔案'
+        Assert-Equal $beforeGenerated.Hash (Get-FileHash -LiteralPath (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $profileRoot) 'review.config.toml')).Hash '不得改動 repo 產生檔'
+    }
+    Test-Case 'E2E-PROFILE-SCOPE-UNUSED 只檢查實際要使用的帳號：第一個帳號一致、未使用的第二個帳號不一致時照常成功' {
+        $e22 = New-EntryEnvironment -Name 'profilescope1'
+        Set-Scenario -Environment $e22 -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $profileRoot = New-ProfileRoot -Environment $e22
+        Write-TestUtf8 -Path (Join-Path $e22.HomeB 'review.config.toml') -Text "model = `"hand-edited`"`n"
+        $run = Invoke-Entry -Environment $e22 -OrderPath (New-OrderFile -Environment $e22) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e22)
+        Assert-Success $run
+        Assert-Equal 0 $run.ExitCode
+        Assert-Equal @('acct-a') @($run.Document.attempts | ForEach-Object { $_.account })
+    }
+    Test-Case 'E2E-PROFILE-SCOPE-FAILOVER 換帳號後對新的候選帳號在使用前再比對：第一個被拒、第二個不一致時結束碼 2，不啟動第二個帳號' {
+        $e23 = New-EntryEnvironment -Name 'profilescope2'
+        Set-Scenario -Environment $e23 -Account 'acct-a' -Scenario @{ events = $usageLimitEvents; exit_code = 1; last_message = $null; report = $null }
+        Set-Scenario -Environment $e23 -Account 'acct-b' -Scenario @{ events = $successEvents; exit_code = 0; last_message = 'ok'; report = (New-ReviewReportText) }
+        $profileRoot = New-ProfileRoot -Environment $e23
+        $driftPath = Join-Path $e23.HomeB 'review.config.toml'
+        Write-TestUtf8 -Path $driftPath -Text "model = `"hand-edited`"`n"
+        $run = Invoke-Entry -Environment $e23 -OrderPath (New-OrderFile -Environment $e23) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e23)
+        Assert-Equal 2 $run.ExitCode
+        Assert-Equal 'CodexProfileDrift' $run.Document.error.code
+        Assert-True ($run.Document.error.message.Contains($driftPath)) '訊息應列出第二個帳號的檔案'
+        Assert-Equal @('acct-a') @($run.Document.attempts | ForEach-Object { $_.account })
+        $calls23 = Get-Call -Environment $e23
+        Assert-Equal 0 @($calls23 | Where-Object { $_.subcommand -ceq 'exec' -and $_.account -ceq 'acct-b' }).Count '不得啟動第二個帳號'
+    }
+    Test-Case 'E2E-PROFILE-MAIN-ROOT 未指定 -ProfileSourceRoot 時以 machine.json 所在的主 checkout 為比對基準，修正命令的連結目標指向主 checkout' {
+        $e24 = New-EntryEnvironment -Name 'profilemain'
+        Set-Scenario -Environment $e24 -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = 'ok'; report = (New-ReviewReportText) }
+        $mainRoot = $e24.Repo.Root
+        $null = New-Item -ItemType Directory -Path (Join-Path $mainRoot 'scripts\dispatch') -Force
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'dispatch\executor-registry.json') -Destination (Join-Path $mainRoot 'scripts\dispatch\executor-registry.json')
+        $null = Sync-CodexProfileGeneratedFile -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $mainRoot) -OutputDirectory (Get-CodexProfileGeneratedDirectory -RepoRoot $mainRoot)
+        Write-TestUtf8 -Path (Join-Path $e24.HomeA 'review.config.toml') -Text "model = `"hand-edited`"`n"
+        $run = Invoke-Entry -Environment $e24 -OrderPath (New-OrderFile -Environment $e24) -CheckProfile
+        Assert-Equal 2 $run.ExitCode
+        Assert-Equal 'CodexProfileDrift' $run.Document.error.code
+        Assert-True ($run.Document.error.message.Contains((Join-Path $mainRoot 'scripts\codex-profiles\review.config.toml'))) '連結目標應指向主 checkout 的產生檔'
+        Assert-True (-not $run.Document.error.message.Contains((Join-Path $repoRoot 'scripts\codex-profiles'))) '不得指向入口所在 repo 的產生檔'
+    }
+    Test-Case 'E2E-PROFILE-ALL-MISSING 所有已登入帳號的檔位檔都缺失：回報 CodexProfileDrift（結束碼 2）與修正命令，不是 CodexAccountsAllUnavailable，不啟動 codex' {
+        $e25 = New-EntryEnvironment -Name 'profileallmissing'
+        $profileRoot = New-ProfileRoot -Environment $e25
+        foreach ($homePath in @($e25.HomeA, $e25.HomeB)) { Remove-Item -LiteralPath (Join-Path $homePath 'review.config.toml') -Force }
+        $run = Invoke-Entry -Environment $e25 -OrderPath (New-OrderFile -Environment $e25) -ProfileSourceRoot $profileRoot
+        Assert-Equal 2 $run.ExitCode
+        Assert-Equal 'CodexProfileDrift' $run.Document.error.code
+        Assert-True ($run.Document.error.code -cne 'CodexAccountsAllUnavailable') '不得回報帳號全數不可用'
+        Assert-True ($run.Document.error.message.Contains('ProfileFileMissing')) '訊息應含代碼'
+        Assert-True ($run.Document.error.message.Contains((Join-Path $e25.HomeA 'review.config.toml')) -and $run.Document.error.message.Contains((Join-Path $e25.HomeB 'review.config.toml'))) '應列出每個缺檔的帳號'
+        $commandLines = @($run.Document.error.message -split "`r?`n" | Where-Object { $_ -match '^New-Item -ItemType SymbolicLink ' })
+        Assert-True ($commandLines.Count -ge 2) '每個帳號各有可貼上的建立連結命令'
+        $calls25 = Get-Call -Environment $e25
+        Assert-Equal 0 $calls25.Count '不得啟動 codex'
+    }
+    Test-Case 'E2E-PROFILE-REGULAR-FILE 帳號目錄的檔位檔是內容相同的一般檔案：判不一致（ProfileFileNotLink），結束碼 2，不啟動 codex' {
+        $e26 = New-EntryEnvironment -Name 'profileregular'
+        Set-Scenario -Environment $e26 -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $profileRoot = New-ProfileRoot -Environment $e26
+        $run = Invoke-Entry -Environment $e26 -OrderPath (New-OrderFile -Environment $e26) -ProfileSourceRoot $profileRoot
+        Assert-Equal 2 $run.ExitCode
+        Assert-Equal 'CodexProfileDrift' $run.Document.error.code
+        Assert-True ($run.Document.error.message.Contains('ProfileFileNotLink')) '訊息應含代碼'
+        $calls26 = Get-Call -Environment $e26
+        Assert-Equal 0 $calls26.Count '不得啟動 codex'
+    }
+    Test-Case 'E2E-PROFILE-TREE-NOT-LANDED 入口所在工作樹的登錄表設定尚未落地到主 checkout：結束碼 2，訊息說明尚未落地，不啟動 codex' {
+        $e27 = New-EntryEnvironment -Name 'profiletree'
+        Set-Scenario -Environment $e27 -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        # 主 checkout（假）的登錄表與產生檔是另一組設定，帳號檔位檔與它一致；入口所在 repo（本 repo）的登錄表則是現行設定。
+        $profileRoot = New-ProfileRoot -Environment $e27 -Mutate { param($r) @($r.executors | Where-Object { $_.platform -ceq 'codex' -and $_.profile -ceq 'review' })[0].profileSettings.model = 'm-main-checkout-only' }
+        $run = Invoke-Entry -Environment $e27 -OrderPath (New-OrderFile -Environment $e27) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e27)
+        Assert-Equal 2 $run.ExitCode
+        Assert-Equal 'CodexProfileDrift' $run.Document.error.code
+        Assert-True ($run.Document.error.message.Contains('TreeRegistryNotLanded')) '訊息應含代碼'
+        Assert-True ($run.Document.error.message.Contains('尚未落地')) '訊息應說明工作樹的登錄表尚未落地'
+        $calls27 = Get-Call -Environment $e27
+        Assert-Equal 0 $calls27.Count '不得啟動 codex'
     }
     Test-Case 'E2E-DISPATCH-UNTOUCHED 本線對現行入口目錄 scripts\dispatch 的變更只有登錄表' {
         $status = @(& git -C $repoRoot status --porcelain -- scripts/dispatch)

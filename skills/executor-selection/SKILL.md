@@ -149,10 +149,11 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 ## 擴充登錄表
 
-1. 修改 `scripts/dispatch/executor-registry.json`，新增或調整執行者、類型或離線處置。標籤詞彙合計不超過 8 個，排序值全表唯一。每個 Codex 執行者必填 `entry`，值為相對於 repo 根目錄的入口腳本路徑，格式為 `scripts/<檔名>.ps1`；Claude 執行者不得有此欄位。
-2. 確認每個 Codex 執行者的 `onOffline` 鍵恰好等於其 `accepts`，`profile` 屬於 `codex-dispatch` 的檔位白名單。`onOffline` 值為 `fallback` 時，該類型必須另有其他非「僅升級可選」的執行者受理，否則登錄表無效；類型設 `crossFamily` 時，呼叫端必須提供 `-ImplementerFamily`。
+1. 修改 `scripts/dispatch/executor-registry.json`，新增或調整執行者、類型或離線處置。標籤詞彙合計不超過 8 個，排序值全表唯一。每個 Codex 執行者必填 `entry`，值為相對於 repo 根目錄的入口腳本路徑，格式為 `scripts/<檔名>.ps1`；Claude 執行者不得有此欄位。每個 Codex 執行者另必填 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort` 四個字串），Claude 執行者不得有此欄位。檔位設定檔由這些欄位產生，見步驟 4。
+2. 確認每個 Codex 執行者的 `onOffline` 鍵恰好等於其 `accepts`，`profile` 在登錄表內唯一，且不在登錄表頂層的 `retiredProfiles`（已退役的檔位名稱）內；`profileSettings.effort` 與 `subagentEffort` 必須在頂層 `codexEfforts` 內。檔位名稱、退役名稱與 effort 允許清單都只存在登錄表，沒有第二份。`platform` 與 `id` 的格式同樣受驗證。登錄表的讀取與結構驗證只寫在 `scripts/lib/executor-registry.ps1`，選派入口、檔位設定檔的產生器、Setup、帳號建立與派工前比對都載入這個檔並呼叫同一組函式，不另有規則；要改驗證規則只改這個檔。`onOffline` 值為 `fallback` 時，該類型必須另有其他非「僅升級可選」的執行者受理，否則登錄表無效；類型設 `crossFamily` 時，呼叫端必須提供 `-ImplementerFamily`。
 3. 執行 `pwsh -NoProfile -File scripts/tests/Test-SelectDispatchExecutor.ps1`，全部通過才算完成。
-4. 修改規則層引用的選派結果（例如本 Skill「各 delegate skill 的標註範例」的預期執行者）時同步更新。
+4. 修改 `profile` 或 `profileSettings` 後，commit 時 `.githooks/Update-CodexProfiles.ps1` 會重新產生 `scripts/codex-profiles/<檔位>.config.toml` 並暫存；需要提早確認時手動執行 `pwsh -NoProfile -File .githooks\Update-CodexProfiles.ps1`。新增檔位後，各機器重跑 `scripts\Setup-AIGlobalConfig.ps1` 為帳號目錄建立連結；未建立或內容與產生檔不一致時，`Invoke-CodexRun.ps1` 在啟動前停止（`CodexProfileDrift`）。`-Describe` 輸出每個 Codex 執行者的 `profileSettings`。
+5. 修改規則層引用的選派結果（例如本 Skill「各 delegate skill 的標註範例」的預期執行者）時同步更新。
 
 ## 各 delegate skill 的標註範例
 

@@ -6,6 +6,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $scriptPath = (Resolve-Path (Join-Path $PSScriptRoot '..\Select-DispatchExecutor.ps1')).Path
 $registryPath = (Resolve-Path (Join-Path $PSScriptRoot '..\dispatch\executor-registry.json')).Path
+$libraryPath = (Resolve-Path (Join-Path $PSScriptRoot '..\lib\executor-registry.ps1')).Path
 $evidencePath = (Resolve-Path (Join-Path $PSScriptRoot '..\dispatch\dispatch-evidence.ps1')).Path
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('select-executor-' + [guid]::NewGuid().ToString('N'))
 $hostPath = (Get-Process -Id $PID).Path
@@ -33,7 +34,7 @@ function ConvertTo-QuotedArgument {
 }
 
 function Invoke-Selector {
-    param([string[]]$Arguments = @(), [string]$Registry)
+    param([string[]]$Arguments = @(), [string]$Registry, [string]$WorkingDirectory)
 
     $all = @('-NoProfile', '-NonInteractive', '-File', $scriptPath) + $Arguments
     if (-not [string]::IsNullOrWhiteSpace($Registry)) { $all += @('-RegistryPath', $Registry) }
@@ -44,6 +45,7 @@ function Invoke-Selector {
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
     $startInfo.CreateNoWindow = $true
+    if (-not [string]::IsNullOrWhiteSpace($WorkingDirectory)) { $startInfo.WorkingDirectory = $WorkingDirectory }
     $startInfo.StandardOutputEncoding = [Text.Encoding]::UTF8
     $startInfo.StandardErrorEncoding = [Text.Encoding]::UTF8
     $process = New-Object System.Diagnostics.Process
@@ -124,6 +126,7 @@ try {
 
     # 檔案編碼與靜態性質
     $text = [IO.File]::ReadAllText($scriptPath)
+    $libraryText = [IO.File]::ReadAllText($libraryPath)
     Test-Case S01 {
         $bytes = [IO.File]::ReadAllBytes($scriptPath)
         $tokens = $null; $errors = $null
@@ -131,28 +134,63 @@ try {
         $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191 -and $errors.Count -eq 0
     }
     Test-Case S02 { $text -match '(?m)^#Requires -Version 7\.0' -and $text -match '(?m)^Set-StrictMode -Version Latest' }
-    Test-Case S03 { $text -notmatch 'Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Copy-Item|Move-Item|Rename-Item|Tee-Object|Export-|Invoke-WebRequest|Invoke-RestMethod|\$env:|GetEnvironmentVariable|WriteAllText|>>' }
+    Test-Case S03 {
+        # 選派入口與其唯一載入的共用函式檔都不寫檔、不呼叫網路、不讀取環境變數。
+        $forbidden = 'Set-Content|Add-Content|Out-File|New-Item|Remove-Item|Copy-Item|Move-Item|Rename-Item|Tee-Object|Export-|Invoke-WebRequest|Invoke-RestMethod|\$env:|GetEnvironmentVariable|WriteAllText|>>'
+        $text -notmatch $forbidden -and $libraryText -notmatch $forbidden
+    }
+    Test-Case S06 {
+        # 選派入口只 dot-source 一個檔：以 $PSScriptRoot 為基準的 lib\executor-registry.ps1；共用函式檔本身不 dot-source 任何檔，也不含頂層陳述（只定義函式）。
+        $selectorAst = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$null, [ref]$null)
+        $dotSources = @($selectorAst.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.InvocationOperator -eq [Management.Automation.Language.TokenKind]::Dot }, $true))
+        $libraryAst = [Management.Automation.Language.Parser]::ParseFile($libraryPath, [ref]$null, [ref]$null)
+        $libraryDotSources = @($libraryAst.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.InvocationOperator -eq [Management.Automation.Language.TokenKind]::Dot }, $true))
+        $libraryTopLevel = @($libraryAst.EndBlock.Statements | Where-Object { $_ -isnot [Management.Automation.Language.FunctionDefinitionAst] })
+        $dotSources.Count -eq 1 -and $dotSources[0].Extent.Text -ceq '. $script:RegistryLibraryPath' -and
+        $text -match [regex]::Escape("`$script:RegistryLibraryPath = Join-Path -Path `$PSScriptRoot -ChildPath 'lib\executor-registry.ps1'") -and
+        $text -notmatch '(?im)^\s*(Import-Module|using\s+module)' -and $libraryDotSources.Count -eq 0 -and $libraryTopLevel.Count -eq 0 -and
+        $text -notmatch 'function (Read-ExecutorRegistry|ConvertTo-ExecutorRegistry|ConvertTo-ValidatedRegistry)\b'
+    }
+    Test-Case S07 {
+        # 共用函式檔不存在或有語法錯誤時，選派入口以 SelectorRegistryLibraryUnavailable 結束碼 1 明確失敗，stdout 為空。
+        # 共用函式檔與選派入口同在一處時，以絕對路徑從其他工作目錄執行可正常載入（載入以選派入口所在位置為基準）。
+        $isolated = Join-Path $tempRoot 'isolated'
+        $null = New-Item -ItemType Directory -Path (Join-Path $isolated 'lib') -Force
+        $isolatedScript = Join-Path $isolated 'Select-DispatchExecutor.ps1'
+        Copy-Item -LiteralPath $scriptPath -Destination $isolatedScript
+        $saved = $script:scriptPath
+        try {
+            $script:scriptPath = $isolatedScript
+            $missing = Invoke-Selector -Arguments (Split-Args '-Type survey') -Registry $registryPath
+            Set-Content -LiteralPath (Join-Path $isolated 'lib\executor-registry.ps1') -Value 'function Read-ExecutorRegistry { ' -Encoding utf8
+            $broken = Invoke-Selector -Arguments (Split-Args '-Type survey') -Registry $registryPath
+            Copy-Item -LiteralPath $libraryPath -Destination (Join-Path $isolated 'lib\executor-registry.ps1') -Force
+            $otherDirectory = Join-Path $tempRoot 'other-cwd'
+            $null = New-Item -ItemType Directory -Path $otherDirectory -Force
+            $loaded = Invoke-Selector -Arguments (Split-Args '-Type survey') -Registry $registryPath -WorkingDirectory $otherDirectory
+        }
+        finally { $script:scriptPath = $saved }
+        $missing.ExitCode -eq 1 -and $missing.StdErr.StartsWith('SelectorRegistryLibraryUnavailable') -and [string]::IsNullOrWhiteSpace($missing.StdOut) -and
+        $broken.ExitCode -eq 1 -and $broken.StdErr.StartsWith('SelectorRegistryLibraryUnavailable') -and [string]::IsNullOrWhiteSpace($broken.StdOut) -and
+        $loaded.ExitCode -eq 0 -and $loaded.Json.executor.id -ceq 'sonnet'
+    }
     Test-Case S04 {
         $bytes = [IO.File]::ReadAllBytes($registryPath)
         $registryJson = [Text.Encoding]::UTF8.GetString($bytes) | ConvertFrom-Json
         -not ($bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) -and $registryJson.schema -eq 'ai-agents.executor-registry.v1'
     }
     Test-Case S05 {
-        $tokens = $null; $errors = $null
-        $ast = [Management.Automation.Language.Parser]::ParseFile($evidencePath, [ref]$tokens, [ref]$errors)
-        $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Get-CodexDispatchProfileNames' }, $true)
-        Invoke-Expression $function.Extent.Text
-        $names = @(Get-CodexDispatchProfileNames)
-        $literal = [regex]::Match($text, "CodexProfileNames = @\(([^)]*)\)").Groups[1].Value -replace "'", '' -replace '\s', ''
-        ($names -join ',') -ceq 'review,scan,content,advisor' -and $literal -ceq ($names -join ',')
+        # 檔位名稱不再於腳本內寫死白名單，只由登錄表決定。
+        $text -notmatch 'CodexProfileNames' -and $text -notmatch "'review', 'scan', 'content', 'advisor'"
     }
 
     # 出貨登錄表：詞彙與 -Describe
     $describe = Invoke-Selector -Arguments @('-Describe')
+    $registryRaw = Get-Content -LiteralPath $registryPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Test-Case D01 {
         $d = $describe.Json
         $describe.ExitCode -eq 0 -and @($d.tags.hard).Count -eq 6 -and @($d.tags.constraint).Count -eq 2 -and (@($d.tags.hard).Count + @($d.tags.constraint).Count) -le 8 -and
-        @($d.executors).Count -eq 7 -and @($d.types).Count -eq 7 -and (@($d.flags) -join ',') -eq 'E,T'
+        @($d.executors).Count -eq @($registryRaw.executors).Count -and @($d.types).Count -eq @($registryRaw.types.PSObject.Properties).Count -and (@($d.flags) -join ',') -eq 'E,T'
     }
     Test-Case D02 {
         $edit = @($describe.Json.types | Where-Object { $_.name -eq 'edit' })[0]
@@ -169,9 +207,23 @@ try {
         $deep = @($describe.Json.executors | Where-Object { $_.id -eq 'codex-deep-review' })
         $null -ne $content -and (@($content.accepts) -join ',') -eq 'generate,factcheck' -and (@($content.tags) -join ',') -eq 'web,image-gen' -and $deep.Count -eq 0 -and (@($scan.accepts) -join ',') -eq 'test'
     }
+    Test-Case D06 {
+        # -Describe 輸出每個 Codex 執行者的檔位設定（逐欄等於登錄表），Claude 執行者沒有。
+        $codex = @($describe.Json.executors | Where-Object { $_.platform -eq 'codex' })
+        $claude = @($describe.Json.executors | Where-Object { $_.platform -eq 'claude' })
+        $rawCodex = @($registryRaw.executors | Where-Object { $_.platform -ceq 'codex' })
+        $same = $codex.Count -eq $rawCodex.Count
+        foreach ($row in $codex) {
+            $node = @($rawCodex | Where-Object { $_.id -ceq $row.id })[0]
+            if ($null -eq $node -or $null -eq $row.profileSettings) { $same = $false; continue }
+            foreach ($key in @('model', 'effort', 'subagentModel', 'subagentEffort')) { if ($row.profileSettings.$key -cne $node.profileSettings.$key) { $same = $false } }
+        }
+        $same -and (@($claude | Where-Object { $null -ne $_.PSObject.Properties['profileSettings'] }).Count -eq 0)
+    }
     Test-Case D03 {
         $profiles = @($describe.Json.executors | Where-Object { $_.platform -eq 'codex' } | ForEach-Object { $_.profile })
-        ($profiles -join ',') -eq 'scan,review,content,advisor'
+        $expected = @($registryRaw.executors | Where-Object { $_.platform -ceq 'codex' } | ForEach-Object { $_.profile })
+        $expected.Count -gt 0 -and ($profiles -join ',') -ceq ($expected -join ',')
     }
 
     # 每類任務的選派
@@ -238,7 +290,7 @@ try {
     }
     Test-Case P28 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude')
-        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-review' -and @($r.Json.considered).Count -eq 7 -and @($r.Json.considered | Where-Object { $_.id -eq 'codex-deep-review' }).Count -eq 0
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-review' -and @($r.Json.considered).Count -eq @($registryRaw.executors).Count -and @($r.Json.considered | Where-Object { $_.id -eq 'codex-deep-review' }).Count -eq 0
     }
 
     # opus 在一般選擇中永不被選
@@ -440,12 +492,17 @@ try {
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R06 {
-        $path = New-RegistryCopy 'profile-implement' { param($r) (Get-ExecutorNode $r 'codex-scan').profile = 'implement' }
+        $retired = [string]@($registryRaw.retiredProfiles)[0]
+        $path = New-RegistryCopy 'profile-retired' { param($r) (Get-ExecutorNode $r 'codex-scan').profile = $retired }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R07 {
-        $path = New-RegistryCopy 'profile-intensive' { param($r) (Get-ExecutorNode $r 'codex-scan').profile = 'intensive' }
+        # 退役名單完全由登錄表的 retiredProfiles 決定：改名單後，原名單內的名稱可用，新名單內的名稱被拒絕。
+        $path = New-RegistryCopy 'retired-custom' { param($r) $r.retiredProfiles = @('zzz-retired'); (Get-ExecutorNode $r 'codex-scan').profile = 'zzz-retired' }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+        $path2 = New-RegistryCopy 'retired-custom-ok' { param($r) $r.retiredProfiles = @('zzz-retired'); (Get-ExecutorNode $r 'codex-scan').profile = 'implement' }
+        $r2 = Invoke-Selector -Arguments (Split-Args '-Describe') -Registry $path2
+        $r2.ExitCode -eq 0
     }
     Test-Case R08 { Assert-Rejected '-Type survey' 'SelectorRegistryNotFound' 3 (Join-Path $tempRoot 'missing.json') }
     Test-Case R09 {
@@ -494,6 +551,52 @@ try {
         $path = New-RegistryCopy 'codex-no-profile' { param($r) $node = Get-ExecutorNode $r 'codex-advisor'; $node.PSObject.Properties.Remove('profile') }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
+    Test-Case R19A {
+        $path = New-RegistryCopy 'no-profile-settings' { param($r) (Get-ExecutorNode $r 'codex-review').PSObject.Properties.Remove('profileSettings') }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19B {
+        $path = New-RegistryCopy 'no-effort' { param($r) (Get-ExecutorNode $r 'codex-scan').profileSettings.PSObject.Properties.Remove('effort') }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19C {
+        $path = New-RegistryCopy 'bad-model-value' { param($r) (Get-ExecutorNode $r 'codex-review').profileSettings.model = 'x"; [evil]' }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19D {
+        $path = New-RegistryCopy 'duplicate-profile' { param($r) (Get-ExecutorNode $r 'codex-content').profile = 'review' }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19E {
+        # 新增檔位只改登錄表即可通過驗證（不再有腳本內白名單）。
+        $path = New-RegistryCopy 'new-profile' { param($r) (Get-ExecutorNode $r 'codex-content').profile = 'content-2' }
+        $r = Invoke-Selector -Arguments (Split-Args '-Describe') -Registry $path
+        $r.ExitCode -eq 0
+    }
+    Test-Case R19F {
+        $path = New-RegistryCopy 'claude-with-settings' { param($r) (Get-ExecutorNode $r 'sonnet') | Add-Member -NotePropertyName profileSettings -NotePropertyValue ([pscustomobject]@{ model = 'm' }) }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19G {
+        $path = New-RegistryCopy 'platform-case' { param($r) (Get-ExecutorNode $r 'codex-review').platform = 'Codex' }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19H {
+        $path = New-RegistryCopy 'effort-not-allowed' { param($r) (Get-ExecutorNode $r 'codex-review').profileSettings.effort = 'turbo' }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19I {
+        $path = New-RegistryCopy 'subagent-effort-not-allowed' { param($r) (Get-ExecutorNode $r 'codex-review').profileSettings.subagentEffort = 'turbo' }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19J {
+        $path = New-RegistryCopy 'id-newline' { param($r) (Get-ExecutorNode $r 'codex-review').id = "codex-x`n[evil]" }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
+    Test-Case R19K {
+        $path = New-RegistryCopy 'no-efforts-list' { param($r) $r.PSObject.Properties.Remove('codexEfforts') }
+        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+    }
     Test-Case R20 {
         $path = New-RegistryCopy 'bad-schema' { param($r) $r.schema = 'ai-agents.executor-registry.v0' }
         Assert-Rejected '-Describe' 'SelectorRegistryInvalid' 3 $path
@@ -515,8 +618,9 @@ try {
     }
 
     Test-Case R24 {
-        $path = New-RegistryCopy 'profile-deep-review' { param($r) (Get-ExecutorNode $r 'codex-review').profile = 'deep-review' }
-        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
+        $path = New-RegistryCopy 'no-retired-list' { param($r) $r.PSObject.Properties.Remove('retiredProfiles') ; (Get-ExecutorNode $r 'codex-review').profile = 'implement' }
+        $r3 = Invoke-Selector -Arguments (Split-Args '-Describe') -Registry $path
+        $r3.ExitCode -eq 0
     }
 
     # 決定性
@@ -537,7 +641,7 @@ try {
     }
     Test-Case X03 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type survey')
-        $r.StdOut -notmatch '[^\u0000-\u007F]' -and $r.Json.schema -eq 'ai-agents.executor-selection.v1' -and @($r.Json.considered).Count -eq 7
+        $r.StdOut -notmatch '[^\u0000-\u007F]' -and $r.Json.schema -eq 'ai-agents.executor-selection.v1' -and @($r.Json.considered).Count -eq @($registryRaw.executors).Count
     }
 
     # dispatchLine 格式
@@ -611,8 +715,9 @@ try {
         $codexRows = @($rows | Where-Object { $_.platform -ceq 'codex' })
         $claudeRows = @($rows | Where-Object { $_.platform -ceq 'claude' })
         $entries = @($codexRows | ForEach-Object { $_.id + '=' + $_.entry })
-        $r.ExitCode -eq 0 -and $codexRows.Count -eq 4 -and @($claudeRows | Where-Object { $null -ne $_.PSObject.Properties['entry'] }).Count -eq 0 -and
-        ($entries -join ',') -ceq 'codex-scan=scripts/Invoke-CodexDispatch.ps1,codex-review=scripts/Invoke-CodexRun.ps1,codex-content=scripts/Invoke-CodexDispatch.ps1,codex-advisor=scripts/Invoke-CodexDispatch.ps1'
+        $rawEntries = @($registryRaw.executors | Where-Object { $_.platform -ceq 'codex' } | ForEach-Object { $_.id + '=' + $_.entry })
+        $r.ExitCode -eq 0 -and $codexRows.Count -eq $rawEntries.Count -and @($claudeRows | Where-Object { $null -ne $_.PSObject.Properties['entry'] }).Count -eq 0 -and
+        ($entries -join ',') -ceq ($rawEntries -join ',')
     }
     Test-Case EN05 {
         $missing = New-RegistryCopy 'entry-missing' { param($r) [void](Get-ExecutorNode $r 'codex-review').PSObject.Properties.Remove('entry') }
@@ -665,7 +770,7 @@ try {
     if ($null -eq $entryBaseline.Commit) { Write-Output ('N/A EN09 不適用：' + $entryBaseline.Reason) }
     else {
         Test-Case EN09 {
-            # 與新增 entry 之前的輸出對照：新舊輸出都移除 entry 後逐字相同。基準 commit 見上方 Get-EntryBaseline。
+            # 與新增 entry 之前的輸出對照：新舊輸出都移除 entry 與 profileSettings 後逐字相同。基準 commit 見上方 Get-EntryBaseline。
             $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
             $baselineCommit = $entryBaseline.Commit
             $oldRoot = Join-Path $tempRoot 'baseline'
@@ -674,16 +779,27 @@ try {
             $oldRegistry = Join-Path $oldRoot 'dispatch\executor-registry.json'
             Save-GitBlob -Repository $repoRoot -Spec ($baselineCommit + ':scripts/Select-DispatchExecutor.ps1') -Destination $oldScript
             Save-GitBlob -Repository $repoRoot -Spec ($baselineCommit + ':scripts/dispatch/executor-registry.json') -Destination $oldRegistry
+            # 新入口用的登錄表是基準登錄表補上新欄位（entry、profileSettings、codexEfforts、retiredProfiles）的版本，
+            # 兩邊資料相同，結果不受出貨登錄表增減執行者或檔位影響。
+            $augmented = Get-Content -LiteralPath $oldRegistry -Raw -Encoding UTF8 | ConvertFrom-Json
+            $augmented | Add-Member -NotePropertyName codexEfforts -NotePropertyValue @('low', 'medium', 'high', 'max')
+            $augmented | Add-Member -NotePropertyName retiredProfiles -NotePropertyValue @()
+            foreach ($row in @($augmented.executors | Where-Object { $_.platform -ceq 'codex' })) {
+                $row | Add-Member -NotePropertyName entry -NotePropertyValue 'scripts/Invoke-CodexDispatch.ps1'
+                $row | Add-Member -NotePropertyName profileSettings -NotePropertyValue ([pscustomobject]@{ model = 'm'; effort = 'low'; subagentModel = 's'; subagentEffort = 'low' })
+            }
+            $augmentedPath = Join-Path $oldRoot 'augmented-registry.json'
+            [IO.File]::WriteAllText($augmentedPath, ($augmented | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
             $specs = @('-Type review -ImplementerFamily claude', '-Type test', '-Type generate', '-Type factcheck', '-Type advise -ImplementerFamily claude -Authorized', '-Type survey', '-Type edit -E true -T false', '-Describe', '-Type review -ImplementerFamily claude -Offline codex-review')
             $mismatch = @()
             foreach ($spec in $specs) {
                 $specArguments = @(Split-Args $spec)
                 $oldText = (& $hostPath -NoProfile -NonInteractive -File $oldScript @specArguments -RegistryPath $oldRegistry 2>$null) -join "`n"
-                $new = (Invoke-Selector -Arguments (Split-Args $spec)).Json
+                $new = (Invoke-Selector -Arguments (Split-Args $spec) -Registry $augmentedPath).Json
                 $old = $oldText | ConvertFrom-Json
                 foreach ($document in @($old, $new)) {
                     if ($null -ne $document.PSObject.Properties['executor'] -and $null -ne $document.executor) { [void]$document.executor.PSObject.Properties.Remove('entry') }
-                    if ($null -ne $document.PSObject.Properties['executors']) { foreach ($row in @($document.executors)) { [void]$row.PSObject.Properties.Remove('entry') } }
+                    if ($null -ne $document.PSObject.Properties['executors']) { foreach ($row in @($document.executors)) { [void]$row.PSObject.Properties.Remove('entry'); [void]$row.PSObject.Properties.Remove('profileSettings') } }
                 }
                 if (($old | ConvertTo-Json -Depth 10 -Compress) -cne ($new | ConvertTo-Json -Depth 10 -Compress)) { $mismatch += $spec }
             }

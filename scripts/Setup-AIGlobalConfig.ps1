@@ -540,167 +540,150 @@ else {
     }
 }
 
-# 帳號清單只作存在診斷，設定與登入由使用者維護。
+# 檔位設定檔：登錄表是唯一來源，產生檔放在來源 checkout 的 scripts\codex-profiles（由 pre-commit 產生並進版控）。
+# Setup 把各派工帳號目錄的檔位檔建成指向產生檔的 Symbolic Link，並比對現況。
+# 「建立連結」與「比對現況」是 45-profile-sync.ps1 內可分開呼叫的函式（New-CodexProfileAccountLink、Get-CodexProfileAccountState）。
+# 帳號目錄已有一般檔案或指向別處的連結時不覆蓋，只列出狀態與使用者要執行的命令。
+. (Join-Path $PSScriptRoot 'codex-run\45-profile-sync.ps1')
 . (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
 . (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
 . (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
+$profileBlockedCount = 0
+$profileSpecs = @()
+$profileGeneratedDirectory = Get-CodexProfileGeneratedDirectory -RepoRoot $configRoot
 try {
-    $machineAccounts = @(Read-CodexAccountConfiguration -MachineConfigPath (Join-Path $configRoot '.local\machine.json'))
-    foreach ($account in $machineAccounts) {
-        Write-Host ('  Codex 帳號 ' + $account.name + '：' + $account.codex_home)
-        $accountConfigPath = Join-Path $account.codex_home 'config.toml'
-        if (-not (Test-Path -LiteralPath $accountConfigPath -PathType Leaf)) {
-            Write-Warning ('  帳號 ' + $account.name + ' 缺少 ' + $accountConfigPath + '。請依 README.md §3 人工準備；基礎 config 必要鍵待使用者驗證。')
-        }
-        $accountProfileNames = @(Get-CodexDispatchProfileNames)
-        foreach ($linkStatus in @(Get-CodexAccountProfileLinkStatus -AccountHome $account.codex_home -CodexDirectory $codexDir -ProfileName $accountProfileNames)) {
-            if ($linkStatus.state -cne 'ok') {
-                Write-Warning ('  帳號 ' + $account.name + ' 的檔位設定檔 ' + $linkStatus.name + ' 狀態為 ' + $linkStatus.state + '：' + $linkStatus.path + '，預期為指向 ' + $linkStatus.expected_target + ' 的 Symbolic Link。請依 README.md §3 人工建立連結；腳本不會修改帳號目錄。')
-            }
-        }
-        if (Test-CodexLegacyDefaultProfile -Directory $account.codex_home) {
-            $accountLegacyDefaultPath = Join-Path $account.codex_home ('default' + '.config.toml')
-            Write-Warning ('  帳號 ' + $account.name + ' 殘留已停用的檔位設定檔：' + $accountLegacyDefaultPath + '。派工不再讀取，腳本不會刪除；請以 Remove-Item -LiteralPath 只移除該連結本身。')
-        }
-    }
+    $profileSpecs = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $configRoot))
 }
 catch {
-    Write-Warning ($_.Exception.Message + '。請修正本機帳號清單；保留原預設目錄，未切換帳號。')
+    Write-Warning ('  讀取登錄表的檔位設定失敗：' + $_.Exception.Message)
+    $profileBlockedCount++
+}
+$profileLinkCommands = New-Object 'System.Collections.Generic.List[string]'
+# 建立連結前先確認 repo 內的產生檔與登錄表一致（缺檔、內容過期或有多餘檔案都算不一致），否則連到過期設定。
+$profileGeneratedStale = $false
+$profileResidueCommands = New-Object 'System.Collections.Generic.List[string]'
+$retiredProfileNames = @()
+if ($profileSpecs.Count -gt 0) {
+    $retiredProfileNames = @(Get-CodexRetiredProfileName -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $configRoot))
+    $staleChanges = @(Sync-CodexProfileGeneratedFile -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $configRoot) -OutputDirectory $profileGeneratedDirectory -CheckOnly)
+    if ($staleChanges.Count -gt 0) {
+        $profileGeneratedStale = $true
+        $profileBlockedCount++
+        foreach ($staleChange in $staleChanges) { Write-Warning ('  檔位產生檔與登錄表不一致（' + $staleChange.action + '）：' + $staleChange.path) }
+        Write-Warning '  未建立任何檔位設定檔連結。請先在登錄表所在的 checkout 重新產生並 commit，再重跑 Setup。'
+        $profileLinkCommands.Add('# 重新產生檔位設定檔（不需要系統管理員）')
+        $profileLinkCommands.Add('pwsh -NoProfile -File ' + (ConvertTo-CodexProfileQuoted -Text (Join-Path $configRoot '.githooks\Update-CodexProfiles.ps1')))
+    }
+}
+$machineAccounts = @()
+$machineReadFailed = $false
+try {
+    $machineAccounts = @(Read-CodexAccountConfiguration -MachineConfigPath (Join-Path $configRoot '.local\machine.json'))
+}
+catch {
+    $machineReadFailed = $true
+    $profileBlockedCount++
+    Write-Warning ('  讀取 .local\machine.json 的帳號登記失敗：' + $_.Exception.Message + '。請修正該檔後重跑 Setup；本次沒有建立任何檔位設定檔連結。')
+}
+foreach ($account in $machineAccounts) {
+    Write-Host ('  Codex 帳號 ' + $account.name + '：' + $account.codex_home)
+    $accountConfigPath = Join-Path $account.codex_home 'config.toml'
+    if (-not (Test-Path -LiteralPath $accountConfigPath -PathType Leaf)) {
+        Write-Warning ('  帳號 ' + $account.name + ' 缺少 ' + $accountConfigPath + '。請依 README.md §3 人工準備；基礎 config 必要鍵待使用者驗證。')
+    }
+    if ($profileSpecs.Count -eq 0 -or $profileGeneratedStale) { continue }
+    $linkResults = @(New-CodexProfileAccountLink -AccountHome $account.codex_home -ProfileDirectory $profileGeneratedDirectory -Spec $profileSpecs -WhatIf:$WhatIfPreference)
+    foreach ($linkResult in $linkResults) {
+        switch ($linkResult.action) {
+            'ok' { Write-Host ('  ✅ ' + $linkResult.path + ' 已指向 ' + $linkResult.expected_target) -ForegroundColor DarkGreen }
+            'created' { Write-Host ('  ✅ 已建立連結 ' + $linkResult.path + ' → ' + $linkResult.expected_target) -ForegroundColor DarkGreen }
+            'would-create' { Write-Host ('  將建立連結 ' + $linkResult.path + ' → ' + $linkResult.expected_target) }
+            'target-missing' {
+                Write-Warning ('  ' + $linkResult.path + ' 未建立：repo 產生檔不存在 ' + $linkResult.expected_target)
+                $profileBlockedCount++
+            }
+            'create-failed' {
+                Write-Warning ('  ' + $linkResult.path + ' 建立連結失敗：' + $linkResult.error + '。已建立的連結保留（它們是正確狀態，不回復），修正原因後重跑 Setup 即可補完；建立 Symbolic Link 需要系統管理員身分的 pwsh。')
+                $profileBlockedCount++
+            }
+            default {
+                $actualText = $linkResult.kind
+                if ($null -ne $linkResult.actual_target) { $actualText = $linkResult.kind + ' → ' + $linkResult.actual_target }
+                Write-Warning ('  帳號 ' + $account.name + ' 的檔位設定檔 ' + $linkResult.path + ' 狀態為 ' + $linkResult.state + '（' + $actualText + '），預期為指向 ' + $linkResult.expected_target + ' 的 Symbolic Link。Setup 不覆蓋既有檔案或連結。')
+                $profileLinkCommands.Add('# 帳號 ' + $account.name + ' 的 ' + $linkResult.path)
+                foreach ($fixLine in @(Format-CodexProfileFixLine -Command $linkResult.fix_commands -Note $linkResult.fix_note)) { $profileLinkCommands.Add($fixLine) }
+                $profileBlockedCount++
+            }
+        }
+    }
+    foreach ($residuePath in @(Get-CodexProfileResidue -Directory $account.codex_home -RetiredName $retiredProfileNames)) {
+        Write-Warning ('  帳號 ' + $account.name + ' 殘留已退役的檔位設定檔：' + $residuePath + '。派工不再讀取，腳本不會刪除；移除命令列在最後。')
+        $profileResidueCommands.Add('Remove-Item -LiteralPath ' + (ConvertTo-CodexProfileQuoted -Text $residuePath))
+    }
+}
+if ($machineAccounts.Count -eq 0 -and -not $machineReadFailed) {
+    Write-Warning '  沒有登記的派工帳號，未建立檔位設定檔連結。請先以 New-CodexDispatchAccount.ps1 登記帳號。'
 }
 
-$codexConfigPath = Join-Path $codexDir "config.toml"
-$legacyProfileName = 'deep' + '.config.toml'
-$legacyProfilePath = Join-Path $codexDir $legacyProfileName
-$legacyDefaultName = 'default' + '.config.toml'
-$legacyDefaultPath = Join-Path $codexDir $legacyDefaultName
-$legacyDefaultDetected = $false
-$maxEffortMatches = @()
-
-# 缺少的檔位設定檔依下表建立初始內容。檔案建立後屬本機設定，Setup 不再改寫。
-$codexProfileDefaults = [ordered]@{
-    'review'  = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'medium' }
-    'scan'    = [ordered]@{ model = 'gpt-6.1-terra'; effort = 'max' }
-    'content' = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'medium' }
-    'advisor' = [ordered]@{ model = 'gpt-6.1-sol'; effort = 'high' }
-}
-$codexProfileAgentsLines = @(
-    '[agents]'
-    'enabled = true'
-    'default_subagent_model = "gpt-6-luna"'
-    'default_subagent_reasoning_effort = "max"'
-)
-$requiredProfileNames = @(Get-CodexDispatchProfileNames)
-$missingProfiles = @()
-$createdProfiles = @()
-$profileConflictDetected = $false
-
+# ~\.codex 是 Codex 桌面版自己的目錄。派工只讀帳號目錄的連結，此處的檔位檔不再被使用，只列出，不刪除。
+$codexConfigPath = Join-Path $codexDir 'config.toml'
 if (Test-Path -LiteralPath $codexConfigPath -PathType Leaf) {
     Write-Host "  ✅ Codex 基礎設定檔存在：$codexConfigPath" -ForegroundColor DarkGreen
 }
 else {
     Write-Warning "  ⚠️ 找不到 Codex 設定檔：$codexConfigPath"
 }
-
-$legacyProfilePresent = Test-Path -LiteralPath $legacyProfilePath -PathType Leaf
-foreach ($profileName in $requiredProfileNames) {
-    $profileFileName = $profileName + '.config.toml'
-    $profilePath = Join-Path $codexDir $profileFileName
-    if (Test-Path -LiteralPath $profilePath -PathType Leaf) {
-        continue
+$desktopActivePaths = @()
+foreach ($profileSpec in $profileSpecs) {
+    $desktopProfilePath = Join-Path $codexDir $profileSpec.FileName
+    if ($null -ne (Get-Item -LiteralPath $desktopProfilePath -Force -ErrorAction SilentlyContinue)) { $desktopActivePaths += $desktopProfilePath }
+}
+# 登錄表內現行檔位的檔案：已登記派工帳號且連結都已改接時才可移除；沒有登記派工帳號時，舊入口回退使用這些檔案，不可移除。
+if ($desktopActivePaths.Count -gt 0) {
+    if ($machineReadFailed -or $profileBlockedCount -gt 0) {
+        Write-Warning ('  ' + $codexDir + ' 內有現行檔位的設定檔（' + ($desktopActivePaths -join '、') + '）。帳號目錄的連結尚未全部就緒，先不要移除。')
     }
-    if ($null -ne (Get-Item -LiteralPath $profilePath -Force -ErrorAction SilentlyContinue)) {
-        Write-Warning "  ⚠️ $profilePath 已存在但不是可讀取的檔案（例如斷鏈或目錄）。腳本不會修改，請人工處理。"
-        $missingProfiles += $profileFileName
-        continue
+    elseif ($machineAccounts.Count -eq 0) {
+        Write-Warning ('  ' + $codexDir + ' 內有現行檔位的設定檔（' + ($desktopActivePaths -join '、') + '）。沒有登記派工帳號時，舊入口回退使用這些檔案，請不要移除；要移除前先以 New-CodexDispatchAccount.ps1 登記派工帳號並重跑 Setup。')
     }
-    if ($profileName -ceq 'advisor' -and $legacyProfilePresent) {
-        # 舊檔名存在時由下方的重新命名指引處理，不另建 advisor.config.toml。
-        $missingProfiles += $profileFileName
-        continue
-    }
-    if (-not $codexProfileDefaults.Contains($profileName)) {
-        Write-Warning "  ⚠️ Setup 沒有 $profileName 檔位的初始值，未建立 $profilePath。"
-        $missingProfiles += $profileFileName
-        continue
-    }
-    $profileDefault = $codexProfileDefaults[$profileName]
-    $profileLines = @(
-        "# Codex 檔位 $profileName。Setup 提供初始值，檔案建立後屬本機設定，可人工調整。"
-        ('model = "' + $profileDefault.model + '"')
-        ('model_reasoning_effort = "' + $profileDefault.effort + '"')
-        ''
-    ) + $codexProfileAgentsLines
-    $profileBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes(($profileLines -join [Environment]::NewLine) + [Environment]::NewLine)
-    $profileCreatedByThisRun = $false
-    try {
-        $profileStream = [System.IO.File]::Open($profilePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-        $profileCreatedByThisRun = $true
-        try {
-            $profileStream.Write($profileBytes, 0, $profileBytes.Length)
-        }
-        finally {
-            $profileStream.Dispose()
-        }
-        $createdProfiles += $profileFileName
-        Write-Host "  ✅ 已建立 Codex 檔位設定檔：$profilePath" -ForegroundColor DarkGreen
-    }
-    catch {
-        if ($profileCreatedByThisRun) {
-            # 本次建立後寫入失敗，移除不完整的檔案，避免被當成已存在的設定檔。
-            Remove-Item -LiteralPath $profilePath -Force -ErrorAction SilentlyContinue
-        }
-        elseif (Test-Path -LiteralPath $profilePath -PathType Leaf) {
-            # 另一個 Setup 同時建立了同名檔案，視為已存在。
-            continue
-        }
-        Write-Warning "  ⚠️ 無法建立 Codex 檔位設定檔 $profilePath：$($_.Exception.Message)"
-        $missingProfiles += $profileFileName
+    else {
+        Write-Host ('  ' + $codexDir + ' 內有派工不再讀取的檔位設定檔：' + ($desktopActivePaths -join '、') + '。各帳號目錄的連結都已就緒，可自行移除，命令列在最後。') -ForegroundColor Yellow
+        foreach ($desktopActivePath in $desktopActivePaths) { $profileResidueCommands.Add('Remove-Item -LiteralPath ' + (ConvertTo-CodexProfileQuoted -Text $desktopActivePath)) }
     }
 }
-
-foreach ($profileName in (Get-CodexDispatchProfileNames)) {
-    $scanProfilePath = Join-Path $codexDir ($profileName + '.config.toml')
-    if (Test-Path -LiteralPath $scanProfilePath -PathType Leaf) {
-        $maxEffortMatches += @(Select-String -LiteralPath $scanProfilePath -Pattern '^\s*model_reasoning_effort\s*=\s*["'']max["'']\s*$')
-    }
+foreach ($desktopResiduePath in @(Get-CodexProfileResidue -Directory $codexDir -RetiredName $retiredProfileNames)) {
+    Write-Warning ('  ' + $codexDir + ' 殘留已退役的檔位設定檔：' + $desktopResiduePath + '。派工不再讀取，腳本不會刪除；移除命令列在最後。')
+    $profileResidueCommands.Add('Remove-Item -LiteralPath ' + (ConvertTo-CodexProfileQuoted -Text $desktopResiduePath))
 }
 
+# max effort 需要 Codex 0.147.0 以上，依登錄表內的設定判斷。
 $minimumMaxVersion = [version]'0.147.0'
-if ($maxEffortMatches.Count -eq 0) {
-    Write-Host "  ✅ 未偵測到需要檢查版本相容性的 max effort 設定。" -ForegroundColor DarkGreen
+$maxEffortProfiles = @($profileSpecs | Where-Object { $_.Effort -ceq 'max' -or $_.SubagentEffort -ceq 'max' })
+if ($maxEffortProfiles.Count -eq 0) {
+    Write-Host "  ✅ 登錄表未使用需要檢查版本相容性的 max effort。" -ForegroundColor DarkGreen
 }
 elseif ($null -eq $codexVersion) {
-    Write-Warning "  ⚠️ 設定檔含 max effort，但目前無法取得 Codex 版本，請參考 README.md §8「疑難排解」。"
+    Write-Warning "  ⚠️ 登錄表含 max effort，但目前無法取得 Codex 版本，請參考 README.md §8「疑難排解」。"
 }
 elseif ($codexVersion -lt $minimumMaxVersion) {
-    Write-Warning "  ⚠️ Codex $codexVersion 不支援設定檔中的 max effort。請更新至不低於 $minimumMaxVersion 的版本，並參考 README.md §8「疑難排解」。"
+    Write-Warning "  ⚠️ Codex $codexVersion 不支援登錄表中的 max effort。請更新至不低於 $minimumMaxVersion 的版本，並參考 README.md §8「疑難排解」。"
 }
 else {
     Write-Host "  ✅ Codex $codexVersion 與 max effort 相容。" -ForegroundColor DarkGreen
 }
 
-if ($createdProfiles.Count -gt 0) {
-    Write-Host "  ✅ 已依初始值建立缺少的 Codex 檔位設定檔：$($createdProfiles -join ', ')。建立後可人工調整，Setup 不會覆寫。" -ForegroundColor DarkGreen
+if ($profileLinkCommands.Count -gt 0) {
+    Write-Host ''
+    Write-Host '以下帳號目錄的檔位設定檔需要由你處理，每一行可直接貼到系統管理員 pwsh 執行（# 開頭為說明），處理後重新執行 Setup：' -ForegroundColor Yellow
+    foreach ($profileLinkCommand in $profileLinkCommands) { Write-Host $profileLinkCommand }
 }
-
-$legacyDefaultDetected = Test-CodexLegacyDefaultProfile -Directory $codexDir
-if ($legacyDefaultDetected) {
-    Write-Warning "  ⚠️ 偵測到已停用的檔位設定檔 $legacyDefaultPath（default 檔位已移除，派工不再讀取）。腳本不會自動搬移或刪除；請先以 Remove-Item -LiteralPath 移除各帳號目錄內指向它的連結（只移除連結本身），再自行決定是否刪除此檔。對照規則見 skills/codex-dispatch/references/start.md 的「檔位用途與新舊對照」。"
+if ($profileResidueCommands.Count -gt 0) {
+    Write-Host ''
+    Write-Host '以下為可自行執行的清理命令（每行一個，只移除所列的連結或檔案本身）：' -ForegroundColor Yellow
+    foreach ($residueCommand in $profileResidueCommands) { Write-Host $residueCommand }
 }
-
-if ($legacyProfilePresent) {
-    if (-not (Test-Path -LiteralPath (Join-Path $codexDir 'advisor.config.toml') -PathType Leaf)) {
-        Write-Warning "  ⚠️ 偵測到舊設定檔 $legacyProfileName。請將其重新命名為 advisor.config.toml 後重新執行 Setup。腳本不會自動搬移或刪除檔案。"
-    }
-    else {
-        $profileConflictDetected = $true
-        Write-Warning "  ⚠️ 偵測到 $legacyProfileName 與 advisor.config.toml 同時存在，設定檔發生衝突。請人工處理後再重新執行 Setup。腳本不會自動搬移或刪除檔案。"
-    }
+if ($profileBlockedCount -gt 0) {
+    Write-Warning "  ⚠️ Codex 檔位設定檔尚未全部就緒（$profileBlockedCount 項），請依上列訊息處理。"
+    exit 1
 }
-
-if ($missingProfiles.Count -gt 0) {
-    Write-Warning "  ⚠️ Codex 檔位設定檔缺件：$($missingProfiles -join ', ')。請參考 README.md §3「Codex CLI 前置需求」。"
-}
-elseif (-not $profileConflictDetected) {
-    Write-Host "  ✅ Codex 檔位設定檔（$($requiredProfileNames -join '、')）均存在。" -ForegroundColor DarkGreen
-}
+Write-Host "  ✅ Codex 檔位設定檔（$(($profileSpecs | ForEach-Object { $_.Profile }) -join '、')）均已指向 repo 產生檔。" -ForegroundColor DarkGreen

@@ -210,6 +210,37 @@ function Invoke-RunAttempt {
     }
 }
 
+function Assert-RunProfileConsistency {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Profile,
+
+        [Parameter(Mandatory)]
+        [string[]]$AccountHome,
+
+        [Parameter(Mandatory)]
+        [string]$ProfileSourceRoot
+    )
+
+    # 啟動 Codex 前只讀比對實際要使用的帳號：帳號目錄的檔位設定檔必須是指向主 checkout 產生檔的 Symbolic Link 且內容相同，
+    # 產生檔等於主 checkout 登錄表的預期內容，入口所在工作樹的登錄表設定也已落地到主 checkout。
+    # 不一致時停止，不改任何檔案，訊息列出可整行貼到 pwsh 的修正命令。
+    try {
+        $findings = @(Test-CodexProfileConsistency -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $ProfileSourceRoot) -GeneratedDirectory (Get-CodexProfileGeneratedDirectory -RepoRoot $ProfileSourceRoot) -AccountHome @($AccountHome) -Profile $Profile -TreeRegistryPath (Get-CodexProfileRegistryPath -RepoRoot (Get-CodexProfileRepoRoot)))
+    }
+    catch {
+        throw (New-RunError -Code 'CodexProfileDrift' -Message ('無法比對檔位設定檔，已停止，未啟動 Codex，未改任何檔案：' + $_.Exception.Message) -ExitCode 2)
+    }
+    if ($findings.Count -eq 0) { return }
+    $lines = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($finding in $findings) {
+        $lines.Add('[' + $finding.code + '] ' + $finding.path + '：' + $finding.detail)
+        foreach ($fixLine in @(Format-CodexProfileFixLine -Command $finding.fix_commands -Note $finding.fix_note)) { $lines.Add($fixLine) }
+    }
+    throw (New-RunError -Code 'CodexProfileDrift' -Message ('檔位 ' + $Profile + ' 的設定檔與主 checkout 的產生檔不一致，已停止，未啟動 Codex，未改任何檔案。以下每一行可直接貼到 pwsh 執行，# 開頭為說明：' + [Environment]::NewLine + ($lines -join [Environment]::NewLine)) -ExitCode 2)
+}
+
 function Invoke-CodexRunMain {
     [CmdletBinding()]
     param(
@@ -225,7 +256,13 @@ function Invoke-CodexRunMain {
 
         # 回合結束後的寬限秒數。入口不對外提供，供測試縮短。
         [ValidateRange(0, 3600)]
-        [int]$TurnEndGraceSeconds = 60
+        [int]$TurnEndGraceSeconds = 60,
+
+        # 檔位設定檔比對的 repo 根目錄（含 scripts\dispatch\executor-registry.json 與 scripts\codex-profiles）。測試與診斷用，預設為主 checkout（machine.json 所在 repo）。
+        [string]$ProfileSourceRoot,
+
+        # 略過派工前的檔位設定檔比對。測試與診斷用；略過時於 stderr 留下一行紀錄。
+        [switch]$SkipProfileCheck
     )
 
     # 回傳 ExitCode 與 Document（ai-agents.codex-run-result.v1）。診斷行寫 stderr，結果文件由入口輸出到 stdout。
@@ -245,11 +282,28 @@ function Invoke-CodexRunMain {
         $machinePath = $MachineConfigPath
         if ([string]::IsNullOrWhiteSpace($machinePath)) { $machinePath = Resolve-RunMachineConfigPath }
         $selection = Get-RunAccountCandidate -Profile $order.profile -MachineConfigPath $machinePath
+        $profileRoot = $ProfileSourceRoot
+        if ([string]::IsNullOrWhiteSpace($profileRoot)) { $profileRoot = Split-Path -Parent (Split-Path -Parent $machinePath) }
+        if (@($selection.candidates).Count -eq 0 -and -not $SkipProfileCheck) {
+            # 已登入的帳號因檔位設定檔缺失而被排除時，這是本機檔位設定問題，不是 Codex 帳號全數不可用；
+            # 以 CodexProfileDrift 回報修正命令，避免呼叫端誤判為 Codex 離線而改派。
+            $missingProfileHomes = @(@($selection.skipped) | Where-Object { $_.reason_code -ceq 'ProfileConfigMissing' } | ForEach-Object { [string]$_.codex_home })
+            if ($missingProfileHomes.Count -gt 0) {
+                Assert-RunProfileConsistency -Profile $order.profile -AccountHome $missingProfileHomes -ProfileSourceRoot $profileRoot
+            }
+        }
         if (@($selection.candidates).Count -eq 0) {
             throw (New-RunError -Code 'CodexAccountsAllUnavailable' -Message ('所有登記帳號都不可用：' + (Format-RunAccountSkippedSummary -Skipped $selection.skipped)) -ExitCode 4)
         }
         foreach ($skippedItem in @($selection.skipped)) {
             Write-RunDiagnostic ('[codex-run] 略過帳號 ' + $skippedItem.name + '：' + $skippedItem.reason_code)
+        }
+        if ($SkipProfileCheck) {
+            Write-RunDiagnostic '[codex-run] 已略過檔位設定檔比對（-SkipProfileCheck）。'
+        }
+        else {
+            # 只檢查實際要使用的帳號；換帳號後對新的候選帳號在使用前再檢查，未使用的候選帳號不一致不阻擋。
+            Assert-RunProfileConsistency -Profile $order.profile -AccountHome ([string]$selection.candidates[0].codex_home) -ProfileSourceRoot $profileRoot
         }
         if (-not (Test-RunMxc -CodexPath $codex -CodexHome $selection.candidates[0].codex_home)) {
             throw (New-RunError -Code 'RunMxcUnavailable' -Message '偵測不到 MXC 沙盒（codex sandbox 探針失敗）。新入口不改用其他沙盒，也不在沒有沙盒的情況下啟動 Codex。' -ExitCode 3)
@@ -260,7 +314,12 @@ function Invoke-CodexRunMain {
 
         $lastAttempt = $null
         $exhausted = $false
+        $candidateIndex = 0
         foreach ($candidate in @($selection.candidates)) {
+            if ($candidateIndex -gt 0 -and -not $SkipProfileCheck) {
+                Assert-RunProfileConsistency -Profile $order.profile -AccountHome ([string]$candidate.codex_home) -ProfileSourceRoot $profileRoot
+            }
+            $candidateIndex++
             $lastAttempt = Invoke-RunAttempt -Order $order -Candidate $candidate -CodexPath $codex -MachineConfigPath $machinePath -DispatchSha256 $dispatchSha -IsGitRepository $isGit -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds
             $attempts.Add([ordered]@{
                     run_key = $lastAttempt.run_key

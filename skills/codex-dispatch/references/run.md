@@ -37,6 +37,7 @@
 | 1 | `failed` 或 `rejected` | 執行失敗（含逾時，執行紀錄的 `failure_reason` 為 `timeout`），或服務端拒絕時已有進度 | 讀 `final.stderr_path` 與 `final.events_path` 判斷原因後整筆重跑 |
 | 1 | `stopped`，或沒有 JSON 輸出 | 執行紀錄或成本列寫入失敗，或入口發生未預期的錯誤 | 讀 stderr 的錯誤訊息；報告若已產生仍保留在輸出目錄，排除原因後重跑 |
 | 2 | `stopped` | 派遣檔無效或引用的路徑不合格 | 依 `error.details` 列出的每個路徑與原因修正派遣檔 |
+| 2 | `stopped` | `error.code` 為 `CodexProfileDrift`：實際要使用的帳號的檔位設定檔與主 checkout 的產生檔不一致（內容不同或連結指向他處），或產生檔與登錄表不一致 | 逐行貼到 pwsh 執行 `error.message` 列出的修正命令（重跑 `Update-CodexProfiles.ps1`、重跑 Setup 或移走帳號目錄內的一般檔案後重建連結），再重跑。入口沒有啟動 Codex，也沒有改任何檔案 |
 | 3 | `stopped` | 非 Windows、找不到 codex，或 MXC 不可用 | 回報使用者，不改用其他沙盒 |
 | 4 | `stopped` | 沒有登記帳號、全部帳號不可用，或候選帳號都被服務端拒絕 | 見「帳號」 |
 
@@ -109,6 +110,7 @@
 - 拒絕原因為未授權時，PowerShell 版重新登入命令原文轉給使用者。命令在結果 JSON 的 `attempts[].relogin_command`（每次嘗試各一個）與 `final.relogin_command`（最後一次嘗試），其餘嘗試為 `null`，stderr 不輸出。
 - 帳號因登入檔缺少或為空而被略過時，分兩種情形。全部帳號都被略過、結束碼為 4 時，含重新登入命令的略過摘要寫在 `error.message`，stderr 輸出同一則訊息，命令原文轉給使用者。仍有可用帳號時，入口只在 stderr 列出被略過帳號的名稱與原因代碼，沒有重新登入命令，結果 JSON 的 `attempts` 與 `final` 也只含實際嘗試的帳號。
 - 結束碼 4 且 `error.code` 為 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，依 `executor-selection` skill 以 `-Offline` 傳入全部 Codex 執行者重新呼叫選派入口，依回傳狀態處置。
+- 選定帳號後、啟動 Codex 前，入口只讀比對實際要使用的帳號目錄內該檔位的設定檔與主 checkout（`machine.json` 所在 repo）的產生檔（內容相同，CRLF 與 LF 視為相同；若是連結必須指向該產生檔），並確認產生檔等於登錄表預期內容。不一致時以結束碼 2、`CodexProfileDrift` 停止，不改檔，不跳到下一個帳號。換帳號後對新的候選帳號在使用前同樣比對，未使用的候選帳號不一致不阻擋。檔位設定檔的來源是登錄表 `profileSettings`，產生與連結方式見 README §3「Codex profile 檔位設定」。
 - 入口不做專案信任預檢，也不自動補信任。
 
 ## 成本列

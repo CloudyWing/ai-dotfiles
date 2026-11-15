@@ -67,8 +67,14 @@ function Read-RunDispatchFile {
         $errors.Add('task_type 必須是非空字串。')
     }
     $profile = Get-FieldValue 'profile'
-    if ($presentKeys -ccontains 'profile' -and (@('review', 'scan', 'content', 'advisor') -cnotcontains $profile)) {
-        $errors.Add('profile 必須是 review、scan、content、advisor 之一。')
+    if ($presentKeys -ccontains 'profile') {
+        # 檔位名稱只由登錄表決定（依賴 45-profile-sync.ps1，由入口一併載入）。
+        $profileNames = @()
+        try { $profileNames = @(Get-CodexProfileName -RegistryPath (Get-CodexProfileRegistryPath)) }
+        catch { $errors.Add('無法由登錄表取得檔位清單：' + $_.Exception.Message) }
+        if ($profileNames.Count -gt 0 -and $profileNames -cnotcontains $profile) {
+            $errors.Add('profile 必須是登錄表內的檔位之一（' + ($profileNames -join '、') + '）。')
+        }
     }
     foreach ($stringField in @('role_file', 'execution_root', 'report_line_root', 'report_name')) {
         $value = Get-FieldValue $stringField

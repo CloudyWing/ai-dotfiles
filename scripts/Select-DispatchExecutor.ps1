@@ -7,10 +7,12 @@
 .DESCRIPTION
 驗證任務標註（類型、旗標、標籤、實作者家族、離線清單），讀取
 scripts\dispatch\executor-registry.json，依固定演算法選出執行者並產生 [派工判定] 行。
-腳本不寫檔、不呼叫網路、不讀取環境變數，同輸入與同登錄表的輸出完全相同。
+登錄表的讀取與結構驗證載入同目錄 lib\executor-registry.ps1（產生器、Setup、帳號建立與派工前比對共用同一份）。
+腳本與該檔都不寫檔、不呼叫網路、不讀取環境變數，同輸入與同登錄表的輸出完全相同。
 
 結束碼：0 為 selected 或 degraded；10 為 escalation-candidate；20 為 needs-authorization；
-21 為 wait-reset；22 為 stopped；2 為標註無效；3 為登錄表不存在或無效。
+21 為 wait-reset；22 為 stopped；2 為標註無效；3 為登錄表不存在或無效；
+1 為內部錯誤，或 lib\executor-registry.ps1 不存在或無法載入（SelectorRegistryLibraryUnavailable）。
 標註無效與登錄表無效時，stderr 首段格式為「Code：訊息」。
 結束碼 2 的錯誤碼含 SelectorParameterBinding：多值參數以空白分隔時，多餘的值會成為位置參數，
 腳本以此錯誤碼回報；-Tags 與 -Offline 的多個值請以逗號連接且不含空白。
@@ -72,13 +74,23 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$script:RegistrySchema = 'ai-agents.executor-registry.v1'
 $script:SelectionSchema = 'ai-agents.executor-selection.v1'
 $script:DescribeSchema = 'ai-agents.executor-describe.v1'
 $script:DeepFlagProvided = $PSBoundParameters.ContainsKey('Deep')
-$script:CodexProfileNames = @('review', 'scan', 'content', 'advisor')
-$script:OfflineActions = @('fallback', 'degrade', 'stop', 'wait-reset')
-$script:MaxTagVocabulary = 8
+
+# 登錄表的讀取與結構驗證在 lib\executor-registry.ps1，這是本腳本唯一載入的檔案，以本腳本所在位置為基準，
+# 不受呼叫端工作目錄影響。檔案不存在或無法解析時以 SelectorRegistryLibraryUnavailable 結束碼 1 結束。
+$script:RegistryLibraryPath = Join-Path -Path $PSScriptRoot -ChildPath 'lib\executor-registry.ps1'
+try {
+    if (-not (Test-Path -LiteralPath $script:RegistryLibraryPath -PathType Leaf)) { throw ('檔案不存在：{0}' -f $script:RegistryLibraryPath) }
+    . $script:RegistryLibraryPath
+}
+catch {
+    $loadMessage = 'SelectorRegistryLibraryUnavailable：無法載入登錄表共用函式檔 {0}：{1}' -f $script:RegistryLibraryPath, $_.Exception.Message
+    if ($MyInvocation.InvocationName -eq '.') { throw $loadMessage }
+    [Console]::Error.WriteLine($loadMessage)
+    exit 1
+}
 
 function New-SelectorError {
     param(
@@ -98,32 +110,6 @@ function New-SelectorError {
     return $exception
 }
 
-function Get-Prop {
-    param($Object, [string]$Name)
-
-    if ($null -eq $Object) { return $null }
-    $property = $Object.PSObject.Properties[$Name]
-    if ($null -eq $property) { return $null }
-    return $property.Value
-}
-
-function Get-ListProp {
-    param($Object, [string]$Name)
-
-    $value = Get-Prop -Object $Object -Name $Name
-    if ($null -eq $value) { return , @() }
-    return , @($value)
-}
-
-function Test-StringArray {
-    param($Value)
-
-    foreach ($item in @($Value)) {
-        if ($item -isnot [string] -or [string]::IsNullOrWhiteSpace($item)) { return $false }
-    }
-    return $true
-}
-
 function Split-ListArgument {
     param([string[]]$Value)
 
@@ -141,195 +127,6 @@ function ConvertTo-AsciiJson {
     param([string]$Json)
 
     return [regex]::Replace($Json, '[^\u0000-\u007F]', [System.Text.RegularExpressions.MatchEvaluator] { param($match) '\u{0:x4}' -f [int][char]$match.Value[0] })
-}
-
-function Read-ExecutorRegistry {
-    param([string]$Path)
-
-    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-        throw (New-SelectorError -Code 'SelectorRegistryNotFound' -Message ('登錄表不存在：{0}' -f $Path) -ExitCode 3)
-    }
-    $text = [System.IO.File]::ReadAllText($Path, (New-Object System.Text.UTF8Encoding($false)))
-    if ([string]::IsNullOrWhiteSpace($text)) {
-        throw (New-SelectorError -Code 'SelectorRegistryInvalid' -Message ('登錄表為空：{0}' -f $Path) -ExitCode 3)
-    }
-    try {
-        $raw = $text | ConvertFrom-Json
-    }
-    catch {
-        throw (New-SelectorError -Code 'SelectorRegistryInvalid' -Message ('登錄表不是有效的 JSON：{0}' -f $_.Exception.Message) -ExitCode 3)
-    }
-    return (ConvertTo-ValidatedRegistry -Raw $raw)
-}
-
-function ConvertTo-ValidatedRegistry {
-    param($Raw)
-
-    $fail = {
-        param([string]$Message)
-        throw (New-SelectorError -Code 'SelectorRegistryInvalid' -Message $Message -ExitCode 3)
-    }
-
-    if ((Get-Prop $Raw 'schema') -ne $script:RegistrySchema) { & $fail ('schema 必須為 {0}' -f $script:RegistrySchema) }
-
-    $tagsNode = Get-Prop $Raw 'tags'
-    $hard = Get-ListProp $tagsNode 'hard'
-    $constraint = Get-ListProp $tagsNode 'constraint'
-    if ($hard.Count -eq 0 -or -not (Test-StringArray $hard)) { & $fail 'tags.hard 必須為非空字串陣列' }
-    if ($constraint.Count -eq 0 -or -not (Test-StringArray $constraint)) { & $fail 'tags.constraint 必須為非空字串陣列' }
-    $allTags = @($hard) + @($constraint)
-    if ($allTags.Count -gt $script:MaxTagVocabulary) { & $fail ('標籤詞彙合計 {0} 個，超過上限 {1}' -f $allTags.Count, $script:MaxTagVocabulary) }
-    if (@($allTags | Select-Object -Unique).Count -ne $allTags.Count) { & $fail '標籤詞彙有重複' }
-
-    $flags = Get-ListProp $Raw 'flags'
-    if ($flags.Count -eq 0 -or -not (Test-StringArray $flags) -or @($flags | Select-Object -Unique).Count -ne $flags.Count) { & $fail 'flags 必須為非空且不重複的字串陣列' }
-
-    $typesNode = Get-Prop $Raw 'types'
-    if ($null -eq $typesNode -or @($typesNode.PSObject.Properties).Count -eq 0) { & $fail 'types 不得為空' }
-    $types = [ordered]@{}
-    foreach ($property in $typesNode.PSObject.Properties) {
-        $name = $property.Name
-        $node = $property.Value
-        $required = Get-ListProp $node 'requiredFlags'
-        $implied = Get-ListProp $node 'impliedTags'
-        $forbidden = Get-ListProp $node 'forbiddenTags'
-        $degradable = Get-ListProp $node 'degradable'
-        foreach ($flag in $required) { if ($flags -notcontains $flag) { & $fail ('types.{0}.requiredFlags 含未知旗標 {1}' -f $name, $flag) } }
-        foreach ($tag in $implied) { if ($hard -notcontains $tag) { & $fail ('types.{0}.impliedTags 含未知硬能力 {1}' -f $name, $tag) } }
-        foreach ($tag in $forbidden) { if ($hard -notcontains $tag) { & $fail ('types.{0}.forbiddenTags 含未知硬能力 {1}' -f $name, $tag) } }
-        foreach ($tag in $degradable) { if ($constraint -notcontains $tag) { & $fail ('types.{0}.degradable 含未知約束 {1}' -f $name, $tag) } }
-        $crossFamily = Get-Prop $node 'crossFamily'
-        if ($null -ne $crossFamily -and $crossFamily -isnot [bool]) { & $fail ('types.{0}.crossFamily 必須為布林' -f $name) }
-        $types[$name] = [pscustomobject]@{
-            Name          = $name
-            RequiredFlags = $required
-            ImpliedTags   = $implied
-            ForbiddenTags = $forbidden
-            CrossFamily   = ($crossFamily -eq $true)
-            Degradable    = $degradable
-        }
-    }
-
-    $executorNodes = Get-ListProp $Raw 'executors'
-    if ($executorNodes.Count -eq 0) { & $fail 'executors 不得為空' }
-    $executors = New-Object 'System.Collections.Generic.List[object]'
-    $ids = @{}
-    $orders = @{}
-    foreach ($node in $executorNodes) {
-        $id = Get-Prop $node 'id'
-        if ($id -isnot [string] -or [string]::IsNullOrWhiteSpace($id)) { & $fail 'executors[].id 必須為非空字串' }
-        if ($ids.ContainsKey($id)) { & $fail ('執行者 id 重複：{0}' -f $id) }
-        $ids[$id] = $true
-        $order = Get-Prop $node 'order'
-        if ($order -isnot [int] -and $order -isnot [long]) { & $fail ('執行者 {0} 的 order 必須為整數' -f $id) }
-        if ($orders.ContainsKey([long]$order)) { & $fail ('排序值重複：{0}' -f $order) }
-        $orders[[long]$order] = $true
-        $platform = Get-Prop $node 'platform'
-        if ($platform -ne 'claude' -and $platform -ne 'codex') { & $fail ('執行者 {0} 的 platform 必須為 claude 或 codex' -f $id) }
-        $model = Get-Prop $node 'model'
-        $profile = Get-Prop $node 'profile'
-        $entry = Get-Prop $node 'entry'
-        if ($platform -eq 'claude' -and ($model -isnot [string] -or [string]::IsNullOrWhiteSpace($model))) { & $fail ('執行者 {0} 缺少 model' -f $id) }
-        if ($platform -eq 'codex') {
-            if ($profile -isnot [string] -or [string]::IsNullOrWhiteSpace($profile)) { & $fail ('執行者 {0} 缺少 profile' -f $id) }
-            if ($script:CodexProfileNames -cnotcontains $profile) { & $fail ('執行者 {0} 的 profile {1} 不在 Codex 檔位白名單內' -f $id, $profile) }
-            if ($entry -isnot [string] -or $entry -cnotmatch '^scripts/[A-Za-z0-9._-]+\.ps1$') { & $fail ('執行者 {0} 缺少 entry，或 entry 不符合 ^scripts/[A-Za-z0-9._-]+\.ps1$' -f $id) }
-        }
-        elseif ($null -ne $node.PSObject.Properties['entry']) {
-            & $fail ('Claude 執行者 {0} 不得有 entry 欄位' -f $id)
-        }
-        $display = Get-Prop $node 'display'
-        $family = Get-Prop $node 'family'
-        if ($display -isnot [string] -or [string]::IsNullOrWhiteSpace($display)) { & $fail ('執行者 {0} 缺少 display' -f $id) }
-        if ($family -isnot [string] -or [string]::IsNullOrWhiteSpace($family)) { & $fail ('執行者 {0} 缺少 family' -f $id) }
-        $accepts = Get-ListProp $node 'accepts'
-        if ($accepts.Count -eq 0 -or -not (Test-StringArray $accepts)) { & $fail ('執行者 {0} 的 accepts 必須為非空字串陣列' -f $id) }
-        foreach ($accept in $accepts) { if (-not $types.Contains($accept)) { & $fail ('執行者 {0} 受理未知類型 {1}' -f $id, $accept) } }
-        $tags = Get-ListProp $node 'tags'
-        if (-not (Test-StringArray $tags)) { & $fail ('執行者 {0} 的 tags 必須為字串陣列' -f $id) }
-        foreach ($tag in $tags) { if ($hard -notcontains $tag) { & $fail ('執行者 {0} 的 tags 含未知硬能力 {1}' -f $id, $tag) } }
-        $whenNode = Get-Prop $node 'when'
-        $when = [ordered]@{}
-        $allowedFlags = @()
-        foreach ($accept in $accepts) { $allowedFlags += @($types[$accept].RequiredFlags) }
-        if ($null -ne $whenNode) {
-            foreach ($property in $whenNode.PSObject.Properties) {
-                if ($flags -notcontains $property.Name) { & $fail ('執行者 {0} 的 when 含未知旗標 {1}' -f $id, $property.Name) }
-                if ($allowedFlags -notcontains $property.Name) { & $fail ('執行者 {0} 的 when 旗標 {1} 不屬於其受理類型的 requiredFlags' -f $id, $property.Name) }
-                if ($property.Value -isnot [bool]) { & $fail ('執行者 {0} 的 when.{1} 必須為布林' -f $id, $property.Name) }
-                $when[$property.Name] = $property.Value
-            }
-        }
-        $gated = Get-Prop $node 'gated'
-        $escalationOnly = Get-Prop $node 'escalationOnly'
-        if ($gated -isnot [bool]) { & $fail ('執行者 {0} 的 gated 必須為布林' -f $id) }
-        if ($escalationOnly -isnot [bool]) { & $fail ('執行者 {0} 的 escalationOnly 必須為布林' -f $id) }
-        $escalatesTo = Get-Prop $node 'escalatesTo'
-        if ($null -ne $escalatesTo -and $escalatesTo -isnot [string]) { & $fail ('執行者 {0} 的 escalatesTo 必須為字串或 null' -f $id) }
-        $executors.Add([pscustomobject]@{
-                Id             = $id
-                Display        = $display
-                Platform       = $platform
-                Model          = $model
-                Profile        = $profile
-                Entry          = $entry
-                Family         = $family
-                Accepts        = $accepts
-                Tags           = $tags
-                When           = $when
-                Order          = [long]$order
-                Gated          = $gated
-                EscalationOnly = $escalationOnly
-                EscalatesTo    = $escalatesTo
-                OnOfflineNode  = (Get-Prop $node 'onOffline')
-                OnOffline      = $null
-            })
-    }
-
-    $byId = @{}
-    foreach ($executor in $executors) { $byId[$executor.Id] = $executor }
-    foreach ($executor in $executors) {
-        if ($null -ne $executor.EscalatesTo -and -not $byId.ContainsKey($executor.EscalatesTo)) { & $fail ('執行者 {0} 的 escalatesTo 指向不存在的執行者 {1}' -f $executor.Id, $executor.EscalatesTo) }
-    }
-    foreach ($executor in $executors) {
-        $visited = @{ $executor.Id = $true }
-        $next = $executor.EscalatesTo
-        while ($null -ne $next) {
-            if ($visited.ContainsKey($next)) { & $fail ('escalatesTo 成環，涉及執行者 {0}' -f $executor.Id) }
-            $visited[$next] = $true
-            $next = $byId[$next].EscalatesTo
-        }
-    }
-
-    foreach ($executor in $executors) {
-        if ($executor.Platform -ne 'codex') { continue }
-        $node = $executor.OnOfflineNode
-        if ($null -eq $node) { & $fail ('Codex 執行者 {0} 缺少 onOffline' -f $executor.Id) }
-        $keySet = @($node.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object)
-        $acceptSet = @($executor.Accepts | Sort-Object)
-        if (($keySet -join '|') -ne ($acceptSet -join '|')) { & $fail ('執行者 {0} 的 onOffline 鍵與 accepts 不相等' -f $executor.Id) }
-        $map = [ordered]@{}
-        foreach ($property in $node.PSObject.Properties) {
-            $action = $property.Value
-            if ($script:OfflineActions -cnotcontains $action) { & $fail ('執行者 {0} 的 onOffline.{1} 值無效：{2}' -f $executor.Id, $property.Name, $action) }
-            if ($action -eq 'fallback' -or $action -eq 'degrade') {
-                $others = @($executors | Where-Object { $_.Id -ne $executor.Id -and -not $_.EscalationOnly -and $_.Accepts -contains $property.Name })
-                if ($others.Count -eq 0) { & $fail ('執行者 {0} 的 onOffline.{1} 為 {2}，但同類型沒有其他非僅升級可選的受理者' -f $executor.Id, $property.Name, $action) }
-            }
-            if ($action -eq 'degrade' -and @($types[$property.Name].Degradable).Count -eq 0) { & $fail ('執行者 {0} 的 onOffline.{1} 為 degrade，但類型沒有 degradable' -f $executor.Id, $property.Name) }
-            $map[$property.Name] = $action
-        }
-        $executor.OnOffline = $map
-    }
-
-    return [pscustomobject]@{
-        HardTags   = $hard
-        Constraint = $constraint
-        Flags      = $flags
-        Types      = $types
-        Executors  = @($executors | Sort-Object -Property Order)
-        ById       = $byId
-    }
 }
 
 function ConvertTo-FlagValue {
@@ -525,7 +322,7 @@ function Get-DescribeDocument {
             escalationOnly = $executor.EscalationOnly
             escalatesTo    = $executor.EscalatesTo
         }
-        if ($executor.Platform -eq 'claude') { $row['model'] = $executor.Model } else { $row['profile'] = $executor.Profile; $row['entry'] = $executor.Entry }
+        if ($executor.Platform -eq 'claude') { $row['model'] = $executor.Model } else { $row['profile'] = $executor.Profile; $row['entry'] = $executor.Entry; $row['profileSettings'] = $executor.ProfileSettings }
         $executorRows += , $row
     }
     return [ordered]@{
