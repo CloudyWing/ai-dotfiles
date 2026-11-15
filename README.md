@@ -167,7 +167,8 @@ claude plugin install line-status-board@ai-agents-local --scope user
 - 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附的 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於派工。
 - 安裝或更換環境時執行 `codex --version` 確認 CLI 可用；更換機器後先執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
 - 派工腳本、狀態查詢腳本、Setup 與派工測試都需要 PowerShell 7+（pwsh）。以 Windows PowerShell 5.1 執行時，Setup 印出安裝指引後結束，其餘腳本會被 `#Requires -Version 7.0` 拒絕。
-- 派工需要隔離 worktree 時，來源目錄必須是 Git repo；腳本不會自動 `git init`。
+- 測試、顧問、事實校閱與影像產生的派工需要隔離 worktree 時，來源目錄必須是 Git repo；腳本不會自動 `git init`。
+- 審查類的派工由 `scripts/Invoke-CodexRun.ps1` 直接在線工作樹執行，不建立隔離 worktree，需要 Codex 的 MXC 沙盒。偵測不到 MXC 時腳本停止並回報。
 
 #### Windows 長路徑
 
@@ -185,7 +186,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 派工使用 `review`、`scan`、`content`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `instructions.md` §1.5 與 `executor-selection` skill。
+1. 派工使用 `review`、`scan`、`content`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。審查類使用的 `scripts/Invoke-CodexRun.ps1` 不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `instructions.md` §1.5 與 `executor-selection` skill。
 2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。Setup 提供初始值，檔案建立後屬本機設定。
 
    ```toml
@@ -272,6 +273,8 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態與額度。
 - `scripts/Select-DispatchExecutor.ps1` 依任務標註與 `scripts/dispatch/executor-registry.json` 選出派工執行者並輸出 `[派工判定]` 行，唯讀、不呼叫網路。
 - `scripts/New-DispatchInputs.ps1` 產生資源派遣（唯讀）的輸入，一次寫出 Request、`line.json`（不存在時）、prompt 與派遣單，並以 `Invoke-CodexDispatch.ps1 -Operation Dispatch -ValidateOnly` 自檢；自檢失敗時刪除本次建立的檔案，新建的 `line.json` 保留。
+- `scripts/Invoke-CodexRun.ps1` 對一份派遣檔執行一次 `codex exec`，目前用於審查類。帳號由 `machine.json` 登記清單選擇，讀取主 checkout 的 `.local/machine.json`，在線工作樹發動時相同。專案信任的處理見 `skills/codex-dispatch/references/run.md` 的「帳號」章節。
+- `scripts/Test-CodexReviewReport.ps1` 檢查審查報告的 finding 清單，`valid` 為 `false` 時結束碼為 1。
 - `scripts/Get-CodexQuota.ps1` 查詢 Codex 額度，只供顯示與紀錄。
 - `scripts/Invoke-WorkOverviewCleanup.ps1` 列出可清理的 worktree、分支與線層歷史備份，必須指定 `-Root`；預設只列出，以 `-ConfirmPlan` 帶入列出時的 planId 才刪除。
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
@@ -282,6 +285,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Ensure-AiContextArtifacts.ps1` 依來源指紋決定是否重產 `.local/ai-context/` 的索引產物，並呼叫 `Export-ApiSurface.csx`、`Export-TypeHierarchy.csx` 與 `Export-ProjectGraph.csx`。
 - `scripts/Export-CommentVocabularyCandidates.csx` 唯讀掃描 `.cs`，輸出資料庫註解語彙候選 JSON，由 `database-comment-generator` skill 使用。
 - 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
+- `scripts/tests/Test-CodexRunAll.ps1` 執行 `Invoke-CodexRun.ps1` 的全部測試，不呼叫 Codex 服務端。`scripts/tests/Invoke-CodexRunLive.ps1 -Scenario review|failover` 以真實 Codex 驗證一筆審查與一筆換帳號，加上 `-DryRun` 只列出將執行的內容，不加 `-DryRun` 會呼叫 Codex 服務端並消耗額度。
 - 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
 - `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts` 與 `render.test.tsx` 兩個測試檔，從 `claude-code/testing` 匯入。
 - `claude-plugins/` 內由工具自動呼叫的 hook 腳本，使用全小寫 kebab-case 命名。
