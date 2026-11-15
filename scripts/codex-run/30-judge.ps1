@@ -260,14 +260,23 @@ function Get-RunResult {
         [string]$ReportPath,
 
         [Parameter(Mandatory)]
-        [object]$Evidence
+        [object]$Evidence,
+
+        # 入口因總時限終止了子行程。
+        [switch]$TimedOut,
+
+        # 事件流已是 turn.completed 且最後訊息非空，子行程在寬限內未結束而由入口終止。被終止的結束碼不代表執行失敗，不納入判定。
+        [switch]$TerminatedAfterTurnEnd
     )
 
     $rejectionKind = [string](Get-RunJsonProperty -Object $Evidence -Name 'rejection_kind')
     if (-not [string]::IsNullOrWhiteSpace($rejectionKind)) {
         return [pscustomobject]@{ result = 'rejected'; failure_reason = $rejectionKind }
     }
-    if ($ExitCode -ne 0) {
+    if ($TimedOut) {
+        return [pscustomobject]@{ result = 'failed'; failure_reason = 'timeout' }
+    }
+    if ($ExitCode -ne 0 -and -not $TerminatedAfterTurnEnd) {
         return [pscustomobject]@{ result = 'failed'; failure_reason = 'nonzero-exit' }
     }
     $lastMessageExists = -not [string]::IsNullOrWhiteSpace($LastMessagePath) -and [IO.File]::Exists($LastMessagePath) -and (New-Object System.IO.FileInfo -ArgumentList @($LastMessagePath)).Length -gt 0

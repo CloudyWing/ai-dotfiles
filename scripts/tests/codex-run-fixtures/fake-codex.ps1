@@ -7,6 +7,7 @@
 #   last_message  寫入 --output-last-message 指定路徑的文字，null 表示不寫
 #   report        寫入 stdin prompt 中「報告檔:」行指定路徑的文字，null 表示不寫，空字串表示建立空檔
 #   modify_target 執行中追加內容的檔案路徑
+#   hang_seconds  輸出與檔案都寫完後不結束，睡這麼多秒再以 exit_code 結束（exec 用；本行程的 PID 寫到場景目錄 pid-<名稱>.txt）
 #   mxc           sandbox 子命令的回應，ok 或 fail（預設 ok）
 # 每次呼叫把子命令、引數、環境變數名稱、stdin 位元組的 SHA-256 追加到 FAKE_CODEX_SCENARIO_DIR\calls.jsonl。
 $utf8NoBom = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
@@ -54,6 +55,7 @@ if ($subcommand -ne 'exec' -or $null -eq $scenario) {
     exit 9
 }
 
+[IO.File]::WriteAllText((Join-Path $scenarioDir ('pid-' + $accountName + '.txt')), [string]$PID, $utf8NoBom)
 $modifyTarget = Get-ScenarioValue 'modify_target' $null
 if ($null -ne $modifyTarget) { [IO.File]::AppendAllText($modifyTarget, "`nmodified-by-fake-codex", $utf8NoBom) }
 
@@ -73,5 +75,7 @@ $report = Get-ScenarioValue 'report' $null
 $reportMatch = [regex]::Match($stdinText, '(?m)^報告檔: (?<path>.+?)\r?$')
 if ($null -ne $report -and $reportMatch.Success) { [IO.File]::WriteAllText($reportMatch.Groups['path'].Value, [string]$report, $utf8NoBom) }
 
+$hangSeconds = [int](Get-ScenarioValue 'hang_seconds' 0)
+if ($hangSeconds -gt 0) { Start-Sleep -Seconds $hangSeconds }
 $exitCode = Get-ScenarioValue 'exit_code' 0
 exit ([int]$exitCode)

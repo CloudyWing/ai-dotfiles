@@ -52,7 +52,9 @@ function Invoke-RunAttempt {
         [Parameter(Mandatory)][string]$CodexPath,
         [Parameter(Mandatory)][string]$MachineConfigPath,
         [Parameter(Mandatory)][string]$DispatchSha256,
-        [Parameter(Mandatory)][bool]$IsGitRepository
+        [Parameter(Mandatory)][bool]$IsGitRepository,
+        [Parameter(Mandatory)][int]$TimeoutSeconds,
+        [Parameter(Mandatory)][int]$TurnEndGraceSeconds
     )
 
     # 一個帳號一次嘗試，各自有獨立的 runKey、輸出目錄、紀錄與成本列。
@@ -94,6 +96,7 @@ function Invoke-RunAttempt {
         exit_code = $null
         result = $null
         failure_reason = $null
+        terminated_by_entry = $null
         rejection_kind = $null
         item_event_count = $null
         usage = $null
@@ -113,10 +116,13 @@ function Invoke-RunAttempt {
     $exitCode = -1
     $duration = 0.0
     $launchFailed = $false
+    $terminatedBy = $null
     try {
-        $process = Invoke-RunCodexProcess -CodexPath $CodexPath -Argument $argument -Prompt $prompt -CodexHome $Candidate.codex_home -EventStreamPath $eventsPath -StderrPath $stderrPath -WorkingDirectory $Order.execution_root
+        $process = Invoke-RunCodexProcess -CodexPath $CodexPath -Argument $argument -Prompt $prompt -CodexHome $Candidate.codex_home -EventStreamPath $eventsPath -StderrPath $stderrPath -WorkingDirectory $Order.execution_root `
+            -LastMessagePath $lastMessagePath -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds
         $exitCode = [int]$process.ExitCode
         $duration = [double]$process.DurationSeconds
+        $terminatedBy = $process.TerminatedBy
     }
     catch {
         if ($_.Exception.Data.Contains('Code')) { throw }
@@ -128,8 +134,11 @@ function Invoke-RunAttempt {
     $sourceEnd = Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot @($Order.report_line_root)
     $sourceChanged = (ConvertTo-Json -InputObject $sourceStart -Compress) -cne (ConvertTo-Json -InputObject $sourceEnd -Compress)
 
-    $evidence = Get-RunEventEvidence -EventStreamPath $eventsPath -StderrPath $stderrPath -ExitCode $(if ($launchFailed) { $null } else { $exitCode })
-    $judged = Get-RunResult -ExitCode $exitCode -LastMessagePath $lastMessagePath -ReportPath $reportPath -Evidence $evidence
+    if ($terminatedBy -ceq 'timeout') { Write-RunDiagnostic ('[codex-run] 超過總時限 ' + $TimeoutSeconds + ' 秒，已終止 codex 行程樹。') }
+    if ($terminatedBy -ceq 'after-turn-end') { Write-RunDiagnostic ('[codex-run] 回合結束後 ' + $TurnEndGraceSeconds + ' 秒 codex 行程仍未結束，已由入口終止，結果依報告判定。') }
+    # 被入口終止的行程，結束碼是終止所致，不拿來判讀事件流。
+    $evidence = Get-RunEventEvidence -EventStreamPath $eventsPath -StderrPath $stderrPath -ExitCode $(if ($launchFailed -or $null -ne $terminatedBy) { $null } else { $exitCode })
+    $judged = Get-RunResult -ExitCode $exitCode -LastMessagePath $lastMessagePath -ReportPath $reportPath -Evidence $evidence -TimedOut:($terminatedBy -ceq 'timeout') -TerminatedAfterTurnEnd:($terminatedBy -ceq 'after-turn-end')
     $result = $judged.result
     $failureReason = $judged.failure_reason
     if ($launchFailed) { $result = 'failed'; $failureReason = 'launch-failed' }
@@ -163,6 +172,7 @@ function Invoke-RunAttempt {
     $record['exit_code'] = if ($launchFailed) { $null } else { $exitCode }
     $record['result'] = $result
     $record['failure_reason'] = $failureReason
+    $record['terminated_by_entry'] = $terminatedBy
     $record['rejection_kind'] = $evidence.rejection_kind
     $record['item_event_count'] = $evidence.item_event_count
     $record['usage'] = $evidence.usage
@@ -208,7 +218,14 @@ function Invoke-CodexRunMain {
 
         [string]$CodexPath,
 
-        [string]$MachineConfigPath
+        [string]$MachineConfigPath,
+
+        [ValidateRange(1, 86400)]
+        [int]$TimeoutSeconds = 1800,
+
+        # 回合結束後的寬限秒數。入口不對外提供，供測試縮短。
+        [ValidateRange(0, 3600)]
+        [int]$TurnEndGraceSeconds = 60
     )
 
     # 回傳 ExitCode 與 Document（ai-agents.codex-run-result.v1）。診斷行寫 stderr，結果文件由入口輸出到 stdout。
@@ -244,7 +261,7 @@ function Invoke-CodexRunMain {
         $lastAttempt = $null
         $exhausted = $false
         foreach ($candidate in @($selection.candidates)) {
-            $lastAttempt = Invoke-RunAttempt -Order $order -Candidate $candidate -CodexPath $codex -MachineConfigPath $machinePath -DispatchSha256 $dispatchSha -IsGitRepository $isGit
+            $lastAttempt = Invoke-RunAttempt -Order $order -Candidate $candidate -CodexPath $codex -MachineConfigPath $machinePath -DispatchSha256 $dispatchSha -IsGitRepository $isGit -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds
             $attempts.Add([ordered]@{
                     run_key = $lastAttempt.run_key
                     account = $lastAttempt.account

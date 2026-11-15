@@ -2,7 +2,7 @@
 [CmdletBinding()]
 param(
     # 單獨重跑啟動修正的一段。All 為全部案例。
-    [ValidateSet('All', 'Handle', 'Encoding', 'Env')]
+    [ValidateSet('All', 'Handle', 'Encoding', 'Env', 'Wait')]
     [string]$Case = 'All'
 )
 
@@ -45,6 +45,20 @@ if ($mode -eq 'args-stdin-env') {
     $stderr.Flush()
     exit 0
 }
+if ($mode -in @('emit-then-sleep', 'hang-no-turn', 'turn-end-hang', 'turn-end-no-message')) {
+    [IO.File]::WriteAllText((Join-Path $home1 'pid.txt'), [string]$PID, (New-Object Text.UTF8Encoding($false)))
+    $stdout = [Console]::OpenStandardOutput()
+    $lines = if ($mode -eq 'emit-then-sleep') { @('{"type":"turn.started"}') } elseif ($mode -eq 'hang-no-turn') { @('{"type":"turn.started"}', '{"type":"item.started","item":{"type":"command_execution"}}') } else { @('{"type":"turn.started"}', '{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}') }
+    foreach ($line in $lines) { $bytes = [Text.Encoding]::UTF8.GetBytes($line + "`n"); $stdout.Write($bytes, 0, $bytes.Length) }
+    $stdout.Flush()
+    $stderr = [Console]::OpenStandardError()
+    $stderr.Write([byte[]]@(0x45, 0x0A), 0, 2)
+    $stderr.Flush()
+    $messageIndex = [array]::IndexOf(@($args), '--output-last-message')
+    if ($mode -eq 'turn-end-hang' -and $messageIndex -ge 0) { [IO.File]::WriteAllText(@($args)[$messageIndex + 1], 'done', (New-Object Text.UTF8Encoding($false))) }
+    Start-Sleep -Seconds $(if ($mode -eq 'emit-then-sleep') { 9 } else { 120 })
+    exit 0
+}
 if ($mode -eq 'mxc-ok') { if ($args -contains 'sandbox' -and $args -contains ':workspace') { Write-Output 'MXC_OK' }; exit 0 }
 if ($mode -eq 'mxc-exit1') { Write-Output 'MXC_OK'; exit 1 }
 if ($mode -eq 'mxc-silent') { exit 0 }
@@ -59,11 +73,11 @@ try {
     $null = New-Item -ItemType Directory -Path $aiRoot -Force
 
     function Invoke-FakeRun {
-        param([string]$Mode, [string[]]$Argument = @('exec', '-'), [string]$Prompt = 'p', [string]$Name = 'run')
+        param([string]$Mode, [string[]]$Argument = @('exec', '-'), [string]$Prompt = 'p', [string]$Name = 'run', [hashtable]$Extra = @{})
         $codexHome = Join-Path $root ($Name + '-home')
         $null = New-Item -ItemType Directory -Path $codexHome -Force
         [Environment]::SetEnvironmentVariable('FAKE_MODE', $Mode)
-        $result = Invoke-RunCodexProcess -CodexPath $fakeCodex -Argument $Argument -Prompt $Prompt -CodexHome $codexHome -EventStreamPath (Join-Path $root ($Name + '.events.jsonl')) -StderrPath (Join-Path $root ($Name + '.stderr.txt'))
+        $result = Invoke-RunCodexProcess -CodexPath $fakeCodex -Argument $Argument -Prompt $Prompt -CodexHome $codexHome -EventStreamPath (Join-Path $root ($Name + '.events.jsonl')) -StderrPath (Join-Path $root ($Name + '.stderr.txt')) @Extra
         return [pscustomobject]@{ Result = $result; Home = $codexHome; Events = (Join-Path $root ($Name + '.events.jsonl')); Stderr = (Join-Path $root ($Name + '.stderr.txt')) }
     }
 
@@ -393,6 +407,107 @@ exit 0
         }
     }
 
+    # ---------- [FIX-FLUSH]、[FIX-TIMEOUT]、[FIX-GRACE] 等待出口與即時落地 ----------
+    if ($Case -in @('All', 'Wait')) {
+        function Read-SharedBytes {
+            param([string]$Path)
+            $stream = New-Object System.IO.FileStream -ArgumentList @($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+            try {
+                $buffer = New-Object 'byte[]' 4096
+                return $stream.Read($buffer, 0, $buffer.Length)
+            }
+            finally { $stream.Dispose() }
+        }
+        function Test-ProcessGone {
+            param([int]$ProcessId)
+            for ($i = 0; $i -lt 20; $i++) {
+                if ($null -eq (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) { return $true }
+                Start-Sleep -Milliseconds 250
+            }
+            return $false
+        }
+        Test-Case '[FIX-FLUSH] POSITIVE 子行程輸出小事件後停住，執行中事件檔與 stderr 檔已有內容' {
+            $codexHome = Join-Path $root 'flush-home'
+            $null = New-Item -ItemType Directory -Path $codexHome -Force
+            $eventsPath = Join-Path $root 'flush.events.jsonl'
+            $stderrPath = Join-Path $root 'flush.stderr.txt'
+            [Environment]::SetEnvironmentVariable('FAKE_MODE', 'emit-then-sleep')
+            $job = Start-ThreadJob -ArgumentList @($moduleRoot, $fakeCodex, $codexHome, $eventsPath, $stderrPath) -ScriptBlock {
+                param($ModuleRoot, $Fake, $CodexHome, $Events, $Stderr)
+                Set-StrictMode -Version Latest
+                $ErrorActionPreference = 'Stop'
+                . (Join-Path $ModuleRoot '00-common.ps1')
+                . (Join-Path $ModuleRoot '20-process.ps1')
+                Invoke-RunCodexProcess -CodexPath $Fake -Argument @('exec', '-') -Prompt 'p' -CodexHome $CodexHome -EventStreamPath $Events -StderrPath $Stderr
+            }
+            try {
+                $eventBytes = 0
+                $stderrBytes = 0
+                $stateWhenSeen = $null
+                $deadline = [DateTime]::UtcNow.AddSeconds(8)
+                while ([DateTime]::UtcNow -lt $deadline -and $job.State -in @('NotStarted', 'Running')) {
+                    if ([IO.File]::Exists($eventsPath) -and [IO.File]::Exists($stderrPath)) {
+                        $eventBytes = Read-SharedBytes -Path $eventsPath
+                        $stderrBytes = Read-SharedBytes -Path $stderrPath
+                        if ($eventBytes -gt 0 -and $stderrBytes -gt 0) { $stateWhenSeen = $(if ($job.State -in @('NotStarted', 'Running')) { 'Running' } else { [string]$job.State }); break }
+                    }
+                    Start-Sleep -Milliseconds 200
+                }
+                Assert-Equal 'Running' $stateWhenSeen '看到內容時子行程應仍在執行'
+                Assert-True ($eventBytes -gt 0) '事件檔在執行中應已有內容'
+                Assert-True ($stderrBytes -gt 0) 'stderr 檔在執行中應已有內容'
+            }
+            finally {
+                $null = Receive-Job -Job $job -Wait -ErrorAction SilentlyContinue
+                Remove-Job -Job $job -Force
+            }
+        }
+        Test-Case '[FIX-FLUSH] MUTANT 預設 4096 緩衝的 FileStream 在寫入後、關閉前讀不到內容，同一斷言對它失敗' {
+            $path = Join-Path $root 'flush-mutant.bin'
+            $buffered = New-Object System.IO.FileStream -ArgumentList @($path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try {
+                $buffered.Write([byte[]]@(1, 2, 3, 4), 0, 4)
+                $null = Assert-Throws -Script { Assert-True ((Read-SharedBytes -Path $path) -gt 0) '讀不到內容' }
+            }
+            finally { $buffered.Dispose() }
+            $unbuffered = New-Object System.IO.FileStream -ArgumentList @($path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read, 0)
+            try {
+                $unbuffered.Write([byte[]]@(1, 2, 3, 4), 0, 4)
+                Assert-Equal 4 (Read-SharedBytes -Path $path)
+            }
+            finally { $unbuffered.Dispose() }
+        }
+        Test-Case '[FIX-TIMEOUT] 子行程不輸出 turn.completed 且不結束時，入口在總時限內返回並終止行程樹' {
+            $run = Invoke-FakeRun -Mode 'hang-no-turn' -Name 'timeout' -Extra @{ TimeoutSeconds = 8; TurnEndGraceSeconds = 2 }
+            Assert-Equal 'timeout' $run.Result.TerminatedBy
+            Assert-True ($run.Result.DurationSeconds -lt 30) ('應在時限附近返回，實際 ' + $run.Result.DurationSeconds + ' 秒')
+            Assert-True ($run.Result.DurationSeconds -ge 8) '不應早於時限'
+            $fakePid = [int](Get-Content -LiteralPath (Join-Path $run.Home 'pid.txt') -Raw)
+            Assert-True (Test-ProcessGone -ProcessId $fakePid) '假子行程應已被終止'
+            Assert-True ((Get-Content -LiteralPath $run.Events -Raw).Contains('item.started')) '終止前輸出的事件仍保留'
+        }
+        Test-Case '[FIX-GRACE] 事件流為 turn.completed 且最後訊息非空後，子行程在寬限內未結束則由入口終止' {
+            $messagePath = Join-Path $root 'grace-last-message.md'
+            $run = Invoke-FakeRun -Mode 'turn-end-hang' -Name 'grace' -Argument @('exec', '--output-last-message', $messagePath, '-') -Extra @{ TimeoutSeconds = 60; TurnEndGraceSeconds = 3; LastMessagePath = $messagePath }
+            Assert-Equal 'after-turn-end' $run.Result.TerminatedBy
+            Assert-True ($run.Result.DurationSeconds -lt 40) ('應在寬限後返回，實際 ' + $run.Result.DurationSeconds + ' 秒')
+            $fakePid = [int](Get-Content -LiteralPath (Join-Path $run.Home 'pid.txt') -Raw)
+            Assert-True (Test-ProcessGone -ProcessId $fakePid) '假子行程應已被終止'
+        }
+        Test-Case '[FIX-GRACE] NEGATIVE 沒有最後訊息時不套用寬限，改由總時限終止' {
+            $messagePath = Join-Path $root 'grace-none-last-message.md'
+            $run = Invoke-FakeRun -Mode 'turn-end-no-message' -Name 'grace-none' -Argument @('exec', '--output-last-message', $messagePath, '-') -Extra @{ TimeoutSeconds = 9; TurnEndGraceSeconds = 1; LastMessagePath = $messagePath }
+            Assert-Equal 'timeout' $run.Result.TerminatedBy
+            $fakePid = [int](Get-Content -LiteralPath (Join-Path $run.Home 'pid.txt') -Raw)
+            Assert-True (Test-ProcessGone -ProcessId $fakePid) '假子行程應已被終止'
+        }
+        Test-Case '[FIX-GRACE] NEGATIVE 正常結束的子行程不被終止' {
+            $run = Invoke-FakeRun -Mode 'args-stdin-env' -Name 'normal-exit' -Extra @{ TimeoutSeconds = 60; TurnEndGraceSeconds = 1 }
+            Assert-True ($null -eq $run.Result.TerminatedBy) '不應有終止原因'
+            Assert-Equal 0 ([int]$run.Result.ExitCode)
+        }
+    }
+
     # ---------- [FIX-ENV] 機密環境變數清除 ----------
     if ($Case -in @('All', 'Env')) {
         function Set-FixtureEnvironment {
@@ -433,6 +548,13 @@ exit 0
             $envText = Get-Content -LiteralPath (Join-Path $codexHome 'env.txt') -Raw
             $null = Assert-Throws -Script { Assert-SecretsRemoved -EnvText $envText }
             Assert-True (@($envText -split "`n") -contains 'FAKE_API_TOKEN') '對照組應含 FAKE_API_TOKEN'
+        }
+        Test-Case '[FIX-ENV] GIT-ISOLATION 子行程環境含 GIT_CONFIG_GLOBAL 與 GIT_CONFIG_NOSYSTEM，使沙盒內 git 不讀全域與系統設定' {
+            Set-FixtureEnvironment
+            $gitRun = Invoke-FakeRun -Mode 'args-stdin-env' -Name 'git-env'
+            $envNamesSeen = @((Get-Content -LiteralPath (Join-Path $gitRun.Home 'env.txt') -Raw) -split "`n")
+            Assert-True ($envNamesSeen -contains 'GIT_CONFIG_GLOBAL') 'GIT_CONFIG_GLOBAL'
+            Assert-True ($envNamesSeen -contains 'GIT_CONFIG_NOSYSTEM') 'GIT_CONFIG_NOSYSTEM'
         }
         Test-Case '[FIX-ENV] ERRORS 名單缺少、無法匯入、結構異常時分別丟對應錯誤' {
             $startInfo = New-RunProcessStartInfo -FileName $fakeCodex -Argument @()

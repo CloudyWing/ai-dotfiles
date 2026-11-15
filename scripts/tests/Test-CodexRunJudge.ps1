@@ -213,6 +213,25 @@ try {
         Assert-True ($actual.result -ne 'success') '不應為 success'
         Assert-Equal 'report-missing' $actual.failure_reason
     }
+    Test-Case 'RESULT-TIMEOUT 逾時為 failed（timeout），拒絕種類優先；回合結束後終止者不看結束碼，仍須最後訊息與報告' {
+        $none = [pscustomobject]@{ rejection_kind = $null; item_event_count = 0 }
+        $lastMessage = Join-Path $root 'last-t.md'
+        $report = Join-Path $root 'report-t.md'
+        $absent = Join-Path $root 'absent-t.md'
+        Write-TestUtf8 -Path $lastMessage -Text 'done'
+        Write-TestUtf8 -Path $report -Text '# 報告'
+        $timedOut = Get-RunResult -ExitCode 1 -LastMessagePath $lastMessage -ReportPath $report -Evidence $none -TimedOut
+        Assert-Equal 'failed' $timedOut.result
+        Assert-Equal 'timeout' $timedOut.failure_reason
+        $timedOutRejected = Get-RunResult -ExitCode 1 -LastMessagePath $absent -ReportPath $absent -Evidence ([pscustomobject]@{ rejection_kind = 'unauthorized'; item_event_count = 0 }) -TimedOut
+        Assert-Equal 'rejected' $timedOutRejected.result
+        $terminated = Get-RunResult -ExitCode 1 -LastMessagePath $lastMessage -ReportPath $report -Evidence $none -TerminatedAfterTurnEnd
+        Assert-Equal 'success' $terminated.result
+        $terminatedNoReport = Get-RunResult -ExitCode 1 -LastMessagePath $lastMessage -ReportPath $absent -Evidence $none -TerminatedAfterTurnEnd
+        Assert-Equal 'report-missing' $terminatedNoReport.failure_reason
+        $notTerminated = Get-RunResult -ExitCode 1 -LastMessagePath $lastMessage -ReportPath $report -Evidence $none
+        Assert-Equal 'nonzero-exit' $notTerminated.failure_reason
+    }
     Test-Case 'FAILOVER-ELIGIBLE 換帳號資格只看拒絕種類與零進度' {
         Assert-True (-not (Test-RunFailoverEligible -Evidence $null))
         Assert-True (-not (Test-RunFailoverEligible -Evidence ([pscustomobject]@{ rejection_kind = $null; item_event_count = 0 })))

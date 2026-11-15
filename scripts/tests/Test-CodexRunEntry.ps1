@@ -102,13 +102,14 @@ function New-OrderFile {
     return $path
 }
 function Invoke-Entry {
-    param($Environment, [string]$OrderPath, [string]$CodexPath, [string]$MachinePath, [switch]$OmitMachine, [string]$EntryScript = $entryPath)
+    param($Environment, [string]$OrderPath, [string]$CodexPath, [string]$MachinePath, [switch]$OmitMachine, [string]$EntryScript = $entryPath, [int]$TimeoutSeconds = 0)
     [Environment]::SetEnvironmentVariable('FAKE_CODEX_SCENARIO_DIR', $Environment.Scenarios)
     if ([string]::IsNullOrEmpty($CodexPath)) { $CodexPath = $Environment.Codex }
     if ([string]::IsNullOrEmpty($MachinePath)) { $MachinePath = $Environment.Machine }
     $errPath = Join-Path $Environment.Base ('stderr-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
     $arguments = @('-NoProfile', '-File', $EntryScript, '-DispatchFile', $OrderPath, '-CodexPath', $CodexPath)
     if (-not $OmitMachine) { $arguments += @('-MachineConfigPath', $MachinePath) }
+    if ($TimeoutSeconds -gt 0) { $arguments += @('-TimeoutSeconds', [string]$TimeoutSeconds) }
     $output = & $hostPath @arguments 2> $errPath
     $exitCode = $LASTEXITCODE
     $stdoutText = (@($output | ForEach-Object { [string]$_ }) -join "`n")
@@ -169,7 +170,7 @@ try {
     Test-Case 'E2E-RECORD 執行紀錄含 §2.3.5 全部欄位，來源雜湊前後一致' {
         $record = Get-Record -Path $run1.Document.final.record_path
         foreach ($field in @('schema', 'run_key', 'run_id', 'line_slug', 'dispatch_slug', 'task_type', 'profile', 'dispatch_file', 'account', 'model', 'execution_root', 'output_dir', 'report_path', 'started_utc', 'ended_utc', 'duration_seconds',
-                'source_state_start', 'source_state_end', 'source_changed', 'exit_code', 'result', 'failure_reason', 'rejection_kind', 'item_event_count', 'usage', 'last_message', 'events_path', 'stderr_path', 'report', 'review_report_check', 'permission')) {
+                'source_state_start', 'source_state_end', 'source_changed', 'exit_code', 'result', 'failure_reason', 'terminated_by_entry', 'rejection_kind', 'item_event_count', 'usage', 'last_message', 'events_path', 'stderr_path', 'report', 'review_report_check', 'permission')) {
             Assert-True ($null -ne $record.PSObject.Properties[$field]) ('缺少欄位 ' + $field)
         }
         Assert-Equal 'ai-agents.codex-run-record.v1' $record.schema
@@ -446,6 +447,51 @@ try {
         Assert-Equal 'success' $run.Document.status
         Assert-Equal $false $run.Document.final.review_report_check.valid
         Assert-Equal @("F-001 severity: invalid value 'High'") @($run.Document.final.review_report_check.errors)
+    }
+    Test-Case 'E2E-TIMEOUT 總時限內沒有結束：入口在時限內返回，行程樹已消失，紀錄 failed 與 timeout，不換帳號' {
+        $e18 = New-EntryEnvironment -Name 'timeout'
+        Set-Scenario -Environment $e18 -Account 'acct-a' -Scenario @{ events = @([ordered]@{ type = 'turn.started' }, [ordered]@{ type = 'item.started'; item = [ordered]@{ type = 'command_execution' } }); exit_code = 0; hang_seconds = 120 }
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        $run = Invoke-Entry -Environment $e18 -OrderPath (New-OrderFile -Environment $e18) -TimeoutSeconds 8
+        $watch.Stop()
+        Assert-Success $run
+        Assert-True ($watch.Elapsed.TotalSeconds -lt 60) ('應在時限附近返回，實際 ' + [int]$watch.Elapsed.TotalSeconds + ' 秒')
+        Assert-Equal 1 $run.ExitCode
+        Assert-Equal 'failed' $run.Document.status
+        $record = Get-Record -Path $run.Document.final.record_path
+        Assert-Equal 'failed' $record.result
+        Assert-Equal 'timeout' $record.failure_reason
+        Assert-Equal 'timeout' $record.terminated_by_entry
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$record.ended_utc)) 'ended_utc 應已寫入'
+        Assert-Equal 1 (@((Get-Call -Environment $e18) | Where-Object { $_.subcommand -eq 'exec' }).Count)
+        $fakePid = [int](Get-Content -LiteralPath (Join-Path $e18.Scenarios 'pid-acct-a.txt') -Raw)
+        $gone = $false
+        for ($i = 0; $i -lt 20 -and -not $gone; $i++) { $gone = $null -eq (Get-Process -Id $fakePid -ErrorAction SilentlyContinue); if (-not $gone) { Start-Sleep -Milliseconds 250 } }
+        Assert-True $gone '假 codex 行程應已被終止'
+    }
+    Test-Case 'E2E-TURN-END-GRACE 回合結束後行程不結束：寬限後由入口終止，報告存在且格式合格時判成功並在紀錄註記' {
+        $e19 = New-EntryEnvironment -Name 'graceend'
+        Set-Scenario -Environment $e19 -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText); hang_seconds = 120 }
+        $wrapper = Join-Path $e19.Base 'Invoke-ShortGrace.ps1'
+        $wrapperText = "param([string]`$DispatchFile, [string]`$CodexPath, [string]`$MachineConfigPath)`n" +
+        "Set-StrictMode -Version Latest`n`$ErrorActionPreference = 'Stop'`n" +
+        "foreach (`$module in (Get-ChildItem -LiteralPath '" + $moduleRoot + "' -Filter '*.ps1' | Sort-Object -Property Name)) { . `$module.FullName }`n" +
+        "`$outcome = Invoke-CodexRunMain -DispatchFile `$DispatchFile -CodexPath `$CodexPath -MachineConfigPath `$MachineConfigPath -TurnEndGraceSeconds 3`n" +
+        "[Console]::Out.WriteLine((ConvertTo-AsciiJson -InputObject `$outcome.Document -Depth 10 -Compress))`nexit `$outcome.ExitCode`n"
+        Write-TestUtf8 -Path $wrapper -Text $wrapperText
+        $watch = [Diagnostics.Stopwatch]::StartNew()
+        $run = Invoke-Entry -Environment $e19 -OrderPath (New-OrderFile -Environment $e19) -EntryScript $wrapper
+        $watch.Stop()
+        Assert-Success $run
+        Assert-True ($watch.Elapsed.TotalSeconds -lt 90) ('應在寬限後返回，實際 ' + [int]$watch.Elapsed.TotalSeconds + ' 秒')
+        Assert-Equal 0 $run.ExitCode
+        Assert-Equal 'success' $run.Document.status
+        Assert-Equal $true $run.Document.final.review_report_check.valid
+        $record = Get-Record -Path $run.Document.final.record_path
+        Assert-Equal 'success' $record.result
+        Assert-Equal 'after-turn-end' $record.terminated_by_entry
+        Assert-Equal 'recorded' $record.usage.status
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$record.ended_utc)) 'ended_utc 應已寫入'
     }
     Test-Case 'E2E-DISPATCH-UNTOUCHED 本線對現行入口目錄 scripts\dispatch 的變更只有登錄表' {
         $status = @(& git -C $repoRoot status --porcelain -- scripts/dispatch)

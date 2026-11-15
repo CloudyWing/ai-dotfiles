@@ -159,6 +159,47 @@ function Remove-RunSecretEnvironmentVariable {
     return @($removed.ToArray())
 }
 
+function Test-RunTurnEnded {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$EventStreamPath,
+
+        [string]$LastMessagePath
+    )
+
+    # 回合已結束：事件流最後一個事件為 turn.completed，且最後訊息檔存在且非空。
+    # 事件流由 Invoke-RunCodexProcess 無緩衝寫入，執行中可以共享讀取。只讀檔尾，不整檔讀入。
+    if ([string]::IsNullOrWhiteSpace($LastMessagePath) -or -not [IO.File]::Exists($LastMessagePath)) { return $false }
+    if ((New-Object System.IO.FileInfo -ArgumentList @($LastMessagePath)).Length -eq 0) { return $false }
+    try {
+        $stream = New-Object System.IO.FileStream -ArgumentList @($EventStreamPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $tailLength = [int][Math]::Min([long]65536, $stream.Length)
+            if ($tailLength -eq 0) { return $false }
+            $null = $stream.Seek(-$tailLength, [IO.SeekOrigin]::End)
+            $buffer = New-Object 'byte[]' $tailLength
+            $read = $stream.Read($buffer, 0, $tailLength)
+            $text = (New-Object System.Text.UTF8Encoding -ArgumentList @($false)).GetString($buffer, 0, $read)
+        }
+        finally {
+            $stream.Dispose()
+        }
+    }
+    catch {
+        return $false
+    }
+    $lastLine = @($text -split '\r?\n' | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) | Select-Object -Last 1
+    if ($null -eq $lastLine) { return $false }
+    try {
+        $parsed = ConvertFrom-Json -InputObject $lastLine -Depth 20
+    }
+    catch {
+        return $false
+    }
+    return $parsed -is [pscustomobject] -and [string](Get-RunJsonProperty -Object $parsed -Name 'type') -ceq 'turn.completed'
+}
+
 function Invoke-RunCodexProcess {
     [CmdletBinding()]
     param(
@@ -181,10 +222,21 @@ function Invoke-RunCodexProcess {
         [Parameter(Mandatory)]
         [string]$StderrPath,
 
-        [string]$WorkingDirectory
+        [string]$WorkingDirectory,
+
+        # 回合結束寬限的判斷依據；空值時不套用寬限。
+        [string]$LastMessagePath,
+
+        [ValidateRange(1, 86400)]
+        [int]$TimeoutSeconds = 1800,
+
+        [ValidateRange(0, 3600)]
+        [int]$TurnEndGraceSeconds = 60
     )
 
-    # 同步執行：啟動、寫 prompt、位元組原樣複製 stdout 與 stderr、等待結束。不設逾時。
+    # 同步執行：啟動、寫 prompt、位元組原樣複製 stdout 與 stderr、等待結束。
+    # 等待有兩個出口：總時限 TimeoutSeconds；事件流出現 turn.completed 且最後訊息非空之後，子行程 TurnEndGraceSeconds 內仍未結束。
+    # 兩者都終止整棵行程樹，回傳 TerminatedBy（timeout 或 after-turn-end，否則 $null）。
     foreach ($path in @($EventStreamPath, $StderrPath)) {
         $directory = Split-Path -Parent $path
         if (-not [IO.Directory]::Exists($directory)) { $null = [IO.Directory]::CreateDirectory($directory) }
@@ -192,15 +244,20 @@ function Invoke-RunCodexProcess {
     $startInfo = New-RunProcessStartInfo -FileName $CodexPath -Argument $Argument -WorkingDirectory $WorkingDirectory
     $removed = @(Remove-RunSecretEnvironmentVariable -StartInfo $startInfo)
     $startInfo.EnvironmentVariables['CODEX_HOME'] = $CodexHome
+    # 沙盒內的 git 讀不到使用者家目錄的 .gitconfig 會整個失敗；不讀全域與系統設定，不擴大沙盒可讀範圍。
+    $startInfo.EnvironmentVariables['GIT_CONFIG_GLOBAL'] = 'NUL'
+    $startInfo.EnvironmentVariables['GIT_CONFIG_NOSYSTEM'] = '1'
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
     $eventStream = $null
     $stderrStream = $null
+    $terminatedBy = $null
     $stopwatch = [Diagnostics.Stopwatch]::StartNew()
     try {
-        $eventStream = New-Object System.IO.FileStream -ArgumentList @($EventStreamPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
-        $stderrStream = New-Object System.IO.FileStream -ArgumentList @($StderrPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+        # bufferSize 0：不經 .NET 緩衝，事件在執行中即可被共享讀取。
+        $eventStream = New-Object System.IO.FileStream -ArgumentList @($EventStreamPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read, 0)
+        $stderrStream = New-Object System.IO.FileStream -ArgumentList @($StderrPath, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read, 0)
         $null = Invoke-RunWithoutStdHandleInheritance -ScriptBlock { $process.Start() }
         $stdoutTask = $process.StandardOutput.BaseStream.CopyToAsync($eventStream)
         $stderrTask = $process.StandardError.BaseStream.CopyToAsync($stderrStream)
@@ -211,14 +268,28 @@ function Invoke-RunCodexProcess {
         catch [System.IO.IOException] {
             # 子行程未讀完 prompt 就結束（管線已關閉）。結果由結束碼與事件流判定。
         }
-        $process.WaitForExit()
+        $turnEndedAt = $null
+        while (-not $process.WaitForExit(500)) {
+            $elapsed = $stopwatch.Elapsed.TotalSeconds
+            if ($elapsed -ge $TimeoutSeconds) { $terminatedBy = 'timeout'; break }
+            if ($null -eq $turnEndedAt) {
+                if (Test-RunTurnEnded -EventStreamPath $EventStreamPath -LastMessagePath $LastMessagePath) { $turnEndedAt = $elapsed }
+            }
+            elseif ($elapsed - $turnEndedAt -ge $TurnEndGraceSeconds) { $terminatedBy = 'after-turn-end'; break }
+        }
+        if ($null -ne $terminatedBy) {
+            try { $process.Kill($true) } catch { $null = $_ }
+            $null = $process.WaitForExit(10000)
+        }
+        else {
+            $process.WaitForExit()
+        }
         # 子行程已結束。孫行程若仍握著管線，最多再等 10 秒讓兩個複製工作收尾。
         $null = [System.Threading.Tasks.Task]::WaitAll(@($stdoutTask, $stderrTask), 10000)
-        $eventStream.Flush()
-        $stderrStream.Flush()
         return [pscustomobject]@{
             ExitCode = $process.ExitCode
             DurationSeconds = [math]::Round($stopwatch.Elapsed.TotalSeconds, 1)
+            TerminatedBy = $terminatedBy
             RemovedEnvironmentVariable = $removed
         }
     }

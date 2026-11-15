@@ -25,6 +25,8 @@
 
    入口自行選擇派工帳號，不指定 `CODEX_HOME`。帳號登記讀取主 checkout 的 `.local\machine.json`，在線工作樹發動時結果相同。
 
+   單次執行的總時限預設 1800 秒，需要調整時加 `-TimeoutSeconds <秒>`。等待與終止的規則見「等待與終止」。
+
 ## 結果
 
 入口在 stdout 輸出一份 JSON，並以結束碼表示結果。人員可讀的診斷訊息在 stderr。
@@ -32,7 +34,7 @@
 | 結束碼 | `status` | 意義 | 處置 |
 | --- | --- | --- | --- |
 | 0 | `success` | Codex 正常結束且報告存在 | 進入「回收」。`error` 非空時表示健康狀態檔寫入失敗，不影響本次結果，把訊息回報使用者 |
-| 1 | `failed` 或 `rejected` | 執行失敗，或服務端拒絕時已有進度 | 讀 `final.stderr_path` 與 `final.events_path` 判斷原因後整筆重跑 |
+| 1 | `failed` 或 `rejected` | 執行失敗（含逾時，執行紀錄的 `failure_reason` 為 `timeout`），或服務端拒絕時已有進度 | 讀 `final.stderr_path` 與 `final.events_path` 判斷原因後整筆重跑 |
 | 1 | `stopped`，或沒有 JSON 輸出 | 執行紀錄或成本列寫入失敗，或入口發生未預期的錯誤 | 讀 stderr 的錯誤訊息；報告若已產生仍保留在輸出目錄，排除原因後重跑 |
 | 2 | `stopped` | 派遣檔無效或引用的路徑不合格 | 依 `error.details` 列出的每個路徑與原因修正派遣檔 |
 | 3 | `stopped` | 非 Windows、找不到 codex，或 MXC 不可用 | 回報使用者，不改用其他沙盒 |
@@ -41,6 +43,25 @@
 `attempts` 列出每一次嘗試。換帳號後的每次嘗試各有自己的執行紀錄、輸出目錄與成本列。`final` 指向最後一次嘗試的報告、紀錄、最後訊息、事件流與 stderr。
 
 每次嘗試的檔案位於 `<report_line_root>\runs\`：輸出目錄 `<runKey>\`、`<runKey>.record.json`、`<runKey>.events.jsonl`、`<runKey>.stderr.txt`、`<runKey>.last-message.md`。
+
+## 等待與終止
+
+- 事件流與 stderr 在執行中即時寫入檔案，可以在執行中讀取進度。
+- 超過總時限（`-TimeoutSeconds`）時，入口終止整棵 Codex 行程樹，結果為 `failed`，`failure_reason` 為 `timeout`，執行紀錄的 `terminated_by_entry` 為 `timeout`。
+- 事件流的最後一個事件為 `turn.completed` 且最後訊息檔非空之後，Codex 行程 60 秒內仍未結束時，入口終止行程樹，執行紀錄的 `terminated_by_entry` 為 `after-turn-end`。結果依報告判定，與正常結束相同，報告存在且格式合格即為成功，不需要重跑。
+- 行程由入口終止時，執行紀錄的 `exit_code` 是終止所致的值，不作為判定依據。
+
+## 沙盒內的 git
+
+入口對 Codex 行程設定 `GIT_CONFIG_GLOBAL=NUL` 與 `GIT_CONFIG_NOSYSTEM=1`，沙盒內的 git 不讀全域與系統設定。沙盒不授權使用者家目錄的 `.gitconfig`，未設定時 git 在讀取設定檔時整個失敗。
+
+沙盒不允許行程切換到唯讀目錄，因此需要工作樹的命令不可用，與設定檔無關。
+
+| 可用 | 不可用 |
+| --- | --- |
+| `git rev-parse`、`git log`、`git show`、`git diff <rev> <rev>`、`git diff --cached`、`git ls-files -m -o --exclude-standard` | `git status`、`git diff`（比對工作樹）、`git diff HEAD` |
+
+需要工作樹狀態時，用 `git ls-files -m -o --exclude-standard` 列出已修改與未追蹤的檔案，再直接讀取檔案內容。
 
 ## 回收
 
@@ -93,7 +114,7 @@
 
 ## 重跑
 
-重跑使用同一份派遣檔與同一個 `dispatch_slug`，入口以時間戳與隨機碼區分每次執行，不會覆寫前一次的輸出。卡住的執行由主 Agent 終止該背景命令，留下沒有結束時間的執行紀錄，不影響下一次發動。
+重跑使用同一份派遣檔與同一個 `dispatch_slug`，入口以時間戳與隨機碼區分每次執行，不會覆寫前一次的輸出。逾時的執行已由入口終止並寫入結果，直接重跑。主 Agent 手動終止背景命令時，執行紀錄沒有結束時間，不影響下一次發動。
 
 ## 切回現行入口
 

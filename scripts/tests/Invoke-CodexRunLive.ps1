@@ -11,6 +11,7 @@ failover 場景另產生暫存的 machine.json：第一個帳號的 auth.json �
 
 -DryRun 只列出將產生的派遣檔、machine.json 與將執行的命令，不寫任何檔案、不呼叫服務端。
 非 -DryRun 執行前請確認額度並取得使用者同意（真實執行的驗證見設計文件 Phase 9）。
+非 -DryRun 時會建立 report\live-verify 目錄與 handoff\live-verify\line.json。
 
 .PARAMETER Scenario
 review 或 failover。
