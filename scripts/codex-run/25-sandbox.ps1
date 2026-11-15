@@ -1,0 +1,224 @@
+﻿#Requires -Version 7.0
+# 權限設定參數、exec 引數組成、MXC 偵測與 codex 執行檔解析。依賴 00-common.ps1、20-process.ps1。
+
+$script:RunPermissionProfileName = 'dispatch_review'
+$script:RunGlobScanMaxDepth = 6
+
+function Get-RunCodexPath {
+    [CmdletBinding()]
+    param(
+        [string]$ConfiguredPath
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ConfiguredPath)) {
+        if (-not [IO.Path]::IsPathFullyQualified($ConfiguredPath) -or -not [IO.File]::Exists($ConfiguredPath)) {
+            throw (New-RunError -Code 'RunCodexNotFound' -Message ('codex 執行檔不存在：' + $ConfiguredPath) -ExitCode 3)
+        }
+        return $ConfiguredPath
+    }
+    $name = if ([OperatingSystem]::IsWindows()) { 'codex.cmd' } else { 'codex' }
+    $command = Get-Command -Name $name -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $command) {
+        throw (New-RunError -Code 'RunCodexNotFound' -Message ('PATH 上找不到 ' + $name + '。') -ExitCode 3)
+    }
+    return [string]$command.Source
+}
+
+function Test-RunMxc {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$CodexPath,
+
+        [Parameter(Mandatory)]
+        [string]$CodexHome,
+
+        [ValidateRange(1, 600)]
+        [int]$TimeoutSeconds = 120
+    )
+
+    # 以 codex sandbox 執行一個無害命令偵測 MXC，不呼叫服務端。stdout 含 MXC_OK 且結束碼 0 才算可用。
+    $arguments = @('-c', 'windows.sandbox="mxc"', 'sandbox', '--include-managed-config', '--permission-profile', ':workspace', '--', 'cmd.exe', '/d', '/c', 'echo', 'MXC_OK')
+    $startInfo = New-RunProcessStartInfo -FileName $CodexPath -Argument $arguments -WorkingDirectory ([IO.Path]::GetTempPath())
+    $null = Remove-RunSecretEnvironmentVariable -StartInfo $startInfo
+    $startInfo.EnvironmentVariables['CODEX_HOME'] = $CodexHome
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        try {
+            $null = Invoke-RunWithoutStdHandleInheritance -ScriptBlock { $process.Start() }
+        }
+        catch {
+            return $false
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.StandardInput.Close()
+        if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
+            try { $process.Kill($true) } catch { $null = $_ }
+            return $false
+        }
+        $process.WaitForExit()
+        # 孫行程若握著輸出管線，Result 會無限期阻塞；最多再等 5 秒，取不到輸出視為探針失敗。
+        if (-not $stdoutTask.Wait(5000)) { return $false }
+        return ($process.ExitCode -eq 0) -and $stdoutTask.Result.Contains('MXC_OK')
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
+function Assert-RunPermissionArgument {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyCollection()]
+        [string[]]$Argument
+    )
+
+    # 同時傳入 --sandbox 會改用舊式沙盒設定，使權限設定失效。
+    foreach ($item in $Argument) {
+        if ($item -ceq '--sandbox' -or $item -ceq '-s' -or $item.StartsWith('--sandbox=', [StringComparison]::Ordinal)) {
+            throw (New-RunError -Code 'RunPermissionArgumentInvalid' -Message '參數含 --sandbox，會改用舊式沙盒設定。' -ExitCode 3)
+        }
+    }
+}
+
+function Get-RunPermissionPlan {
+    [CmdletBinding()]
+    param(
+        [ValidateSet('review')]
+        [string]$TaskType = 'review',
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$OutputDirectory,
+
+        [string]$AiAgentsRoot = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.ai-agents'),
+
+        # 該線的報告目錄。審查第 2 輪以上要讀前輪報告，因此列入可讀範圍。
+        [string]$ReportLineRoot
+    )
+
+    $separators = [char[]]@('\', '/')
+    $normalized = @()
+    $pathList = @($ExecutionRoot, $AiAgentsRoot, $OutputDirectory)
+    if (-not [string]::IsNullOrWhiteSpace($ReportLineRoot)) { $pathList += $ReportLineRoot }
+    foreach ($path in $pathList) {
+        if (-not [IO.Path]::IsPathFullyQualified($path)) {
+            throw (New-RunError -Code 'RunPermissionArgumentInvalid' -Message ('權限設定的路徑必須是絕對路徑：' + $path) -ExitCode 3)
+        }
+        $full = [IO.Path]::GetFullPath($path).TrimEnd($separators)
+        if ($full.Length -le 2 -or $full -match "['`"\x00-\x1f]") {
+            throw (New-RunError -Code 'RunPermissionArgumentInvalid' -Message ('權限設定不接受磁碟根目錄或含引號、控制字元的路徑：' + $path) -ExitCode 3)
+        }
+        $normalized += $full
+    }
+    # 路徑相同（不分大小寫）時只保留一份，避免 filesystem 內出現重複的 TOML 鍵。
+    $readRoots = New-Object 'System.Collections.Generic.List[string]'
+    $candidates = @($normalized[0], $normalized[1])
+    if ($normalized.Count -gt 3) { $candidates += $normalized[3] }
+    foreach ($candidate in $candidates) {
+        if (@($readRoots | Where-Object { [string]::Equals($_, $candidate, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) { $readRoots.Add($candidate) }
+    }
+    return [pscustomobject]@{
+        name = $script:RunPermissionProfileName
+        read_roots = [string[]]@($readRoots.ToArray())
+        write_roots = [string[]]@($normalized[2])
+        deny_patterns = [string[]]@(Get-RunDenyPattern)
+        glob_scan_max_depth = $script:RunGlobScanMaxDepth
+    }
+}
+
+function New-RunPermissionArgument {
+    [CmdletBinding()]
+    param(
+        [ValidateSet('review')]
+        [string]$TaskType = 'review',
+
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$OutputDirectory,
+
+        [string]$AiAgentsRoot = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.ai-agents'),
+
+        [string]$ReportLineRoot
+    )
+
+    # 路徑以 TOML literal 鍵（單引號）表達，避免反斜線與 cmd.exe 的引號轉手問題。
+    # 禁止讀取的樣式放在 :workspace_roots 之下，相對於 --cd 指定的工作目錄，沙盒行程啟動時列舉一次。
+    # 工作目錄之外的可讀根目錄（~\.ai-agents、report_line_root）以「該目錄為鍵的子表」表達：「.」為 read，並附同一組 deny 樣式。
+    # 子表寫法經 codex sandbox 實測可使這些目錄內的機密樣式檔被拒；只給 "read" 字串時機密樣式檔可讀。
+    $plan = Get-RunPermissionPlan -TaskType $TaskType -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot
+    $entries = New-Object 'System.Collections.Generic.List[string]'
+    $entries.Add('":minimal"="read"')
+    $entries.Add('glob_scan_max_depth=' + $plan.glob_scan_max_depth)
+    $denyEntries = @($plan.deny_patterns | ForEach-Object { '"**/' + $_ + '"="deny"' })
+    $emittedRoots = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($path in $plan.read_roots) {
+        # 在已列出根目錄之下的路徑已被涵蓋，不重複加。執行目錄（第一項）一律列出。
+        if (@($emittedRoots | Where-Object { Test-RunPathUnder -Path $path -Root $_ }).Count -gt 0) { continue }
+        if ($emittedRoots.Count -eq 0) { $entries.Add("'" + $path + "'=`"read`"") }
+        else { $entries.Add("'" + $path + "'={`".`"=`"read`", " + ($denyEntries -join ', ') + '}') }
+        $emittedRoots.Add($path)
+    }
+    foreach ($path in $plan.write_roots) { $entries.Add("'" + $path + "'=`"write`"") }
+    $workspaceEntries = New-Object 'System.Collections.Generic.List[string]'
+    $workspaceEntries.Add('"."="read"')
+    foreach ($denyEntry in $denyEntries) { $workspaceEntries.Add($denyEntry) }
+    $entries.Add('":workspace_roots"={' + ($workspaceEntries -join ', ') + '}')
+    $filesystem = '{' + ($entries -join ', ') + '}'
+
+    $arguments = [string[]]@(
+        '-c', 'windows.sandbox="mxc"',
+        '-c', ('default_permissions="' + $plan.name + '"'),
+        '-c', ('permissions.' + $plan.name + '.filesystem=' + $filesystem)
+    )
+    Assert-RunPermissionArgument -Argument $arguments
+    return $arguments
+}
+
+function New-RunExecArgument {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$ExecutionRoot,
+
+        [Parameter(Mandatory)]
+        [string]$Profile,
+
+        [Parameter(Mandatory)]
+        [string]$OutputDirectory,
+
+        [Parameter(Mandatory)]
+        [string]$LastMessagePath,
+
+        [Parameter(Mandatory)]
+        [bool]$IsGitRepository,
+
+        [string]$AiAgentsRoot = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.ai-agents'),
+
+        [string]$ReportLineRoot
+    )
+
+    # 父層選項（--cd、--profile、-c）在 exec 之前；exec 之後為 --json、--output-last-message，prompt 以 - 從 stdin 讀入。
+    $arguments = New-Object 'System.Collections.Generic.List[string]'
+    $arguments.Add('--cd')
+    $arguments.Add($ExecutionRoot)
+    $arguments.Add('--profile')
+    $arguments.Add($Profile)
+    foreach ($item in (New-RunPermissionArgument -TaskType review -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot)) { $arguments.Add($item) }
+    $arguments.Add('exec')
+    if (-not $IsGitRepository) { $arguments.Add('--skip-git-repo-check') }
+    $arguments.Add('--json')
+    $arguments.Add('--output-last-message')
+    $arguments.Add($LastMessagePath)
+    $arguments.Add('-')
+    $result = [string[]]@($arguments.ToArray())
+    Assert-RunPermissionArgument -Argument $result
+    return $result
+}
