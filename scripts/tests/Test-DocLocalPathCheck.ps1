@@ -10,6 +10,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $libraryPath = Join-Path $repoRoot 'claude-plugins\ai-agents-hooks\hooks\lib\doc-path-check.ps1'
 $stagedScript = Join-Path $repoRoot '.githooks\Test-StagedDocPath.ps1'
+$hookScript = Join-Path $repoRoot 'claude-plugins\ai-agents-hooks\hooks\doc-path-hook.ps1'
 . $libraryPath
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
@@ -118,7 +119,7 @@ foreach ($path in $included) {
 # 3. 新增的 .ps1 皆為 UTF-8 with BOM
 # ---------------------------------------------------------------------------
 
-foreach ($file in @($libraryPath, $stagedScript, $PSCommandPath)) {
+foreach ($file in @($libraryPath, $stagedScript, $hookScript, $PSCommandPath)) {
     $bytes = [System.IO.File]::ReadAllBytes($file)
     Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) "缺少 UTF-8 BOM：$file"
 }
@@ -278,6 +279,93 @@ try {
     $result = Invoke-PathCheck $repo
     Assert-Equal $result.ExitCode 1 '檔名含空白的 staged .md 含路徑應退出碼 1'
     Assert-True ($result.Output -match 'docs/my file\.md:2: C:\\Users\\Alice\\x') "輸出應含檔名 docs/my file.md：$($result.Output)"
+
+    # -----------------------------------------------------------------------
+    # 5. doc-path-hook.ps1（PostToolUse 提醒 hook，子行程送 stdin JSON）
+    # -----------------------------------------------------------------------
+
+    function Invoke-PathHook {
+        param([string]$StdinText)
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
+        foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $hookScript)) { $startInfo.ArgumentList.Add($argument) }
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.UseShellExecute = $false
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        try {
+            $stdinBytes = $utf8NoBom.GetBytes($StdinText)
+            $process.StandardInput.BaseStream.Write($stdinBytes, 0, $stdinBytes.Length)
+            $process.StandardInput.Close()
+            $buffer = [System.IO.MemoryStream]::new()
+            $process.StandardOutput.BaseStream.CopyTo($buffer)
+            [void]$process.StandardError.ReadToEnd()
+            $process.WaitForExit()
+            return [pscustomobject]@{ ExitCode = $process.ExitCode; Bytes = $buffer.ToArray() }
+        }
+        finally {
+            $process.Dispose()
+        }
+    }
+
+    function New-HookInput {
+        param([string]$Tool, [string]$FilePath, [string]$Content, [string]$NewString, [string]$OldString)
+        $toolInput = [ordered]@{ file_path = $FilePath }
+        if ($Tool -eq 'Write') { $toolInput['content'] = $Content }
+        if ($Tool -eq 'Edit') { $toolInput['old_string'] = $OldString; $toolInput['new_string'] = $NewString }
+        return ([ordered]@{ tool_name = $Tool; tool_input = $toolInput } | ConvertTo-Json -Compress -Depth 4)
+    }
+
+    function Assert-HookSilent {
+        param($Result, [string]$Message)
+        Assert-Equal $Result.ExitCode 0 "$Message（退出碼）"
+        Assert-Equal $Result.Bytes.Length 0 "$Message（無輸出）"
+    }
+
+    $hookRepo = New-TestRepo 'hook-repo'
+    Write-RepoFile $hookRepo '.gitignore' @('ignored.md')
+    Write-RepoFile $hookRepo 'docs/a.md' @('x')
+    $trackedMd = Join-Path $hookRepo 'docs\a.md'
+
+    # 5.1 Write 含路徑：單一 ASCII JSON 物件、無 BOM，additionalContext 含檔案、行號、token 與 doc-placement。
+    $result = Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath $trackedMd -Content "第一行`n第二行 D:\x\y 結尾")
+    Assert-Equal $result.ExitCode 0 'Write 含路徑：退出碼 0'
+    Assert-True ($result.Bytes.Length -gt 0 -and $result.Bytes[0] -eq 123) 'Write 含路徑：輸出以 { 開頭且無 BOM'
+    Assert-True (@($result.Bytes | Where-Object { $_ -ge 128 }).Count -eq 0) 'Write 含路徑：輸出為純 ASCII'
+    $payload = [System.Text.Encoding]::ASCII.GetString($result.Bytes) | ConvertFrom-Json
+    Assert-Equal @($payload.PSObject.Properties.Name).Count 1 'Write 含路徑：頂層只有 hookSpecificOutput'
+    Assert-Equal $payload.hookSpecificOutput.hookEventName 'PostToolUse' 'hookEventName 為 PostToolUse'
+    $context = [string]$payload.hookSpecificOutput.additionalContext
+    Assert-True ($context.Contains($trackedMd)) "additionalContext 含檔案路徑：$context"
+    Assert-True ($context.Contains('line 2: D:\x\y')) "additionalContext 含行號與 token：$context"
+    Assert-True ($context.Contains('doc-placement')) 'additionalContext 含 doc-placement'
+
+    # 5.2 Edit 的 new_string 含路徑時同。
+    $result = Invoke-PathHook (New-HookInput -Tool 'Edit' -FilePath $trackedMd -OldString '乾淨' -NewString '新內容 E:\Work\repo')
+    $payload = [System.Text.Encoding]::ASCII.GetString($result.Bytes) | ConvertFrom-Json
+    $context = [string]$payload.hookSpecificOutput.additionalContext
+    Assert-True ($context.Contains('line 1: E:\Work\repo') -and $context.Contains('doc-placement')) "Edit 的 new_string 含路徑應提醒：$context"
+
+    # 5.3 負向：以下情境皆退出 0 且無輸出。
+    Write-RepoFile $hookRepo '.local/x.md' @('x')
+    Write-RepoFile $hookRepo 'AGENTS.local.md' @('x')
+    Write-RepoFile $hookRepo 'ignored.md' @('x')
+    Write-RepoFile $hookRepo 'scripts/run.ps1' @('x')
+    $dirty = 'C:\Users\Alice\x'
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath (Join-Path $hookRepo '.local\x.md') -Content $dirty)) '.local 不提醒'
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath (Join-Path $hookRepo 'AGENTS.local.md') -Content $dirty)) '*.local.md 不提醒'
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath (Join-Path $hookRepo 'ignored.md') -Content $dirty)) '被 .gitignore 忽略的 .md 不提醒'
+    $noGit = Join-Path $tempBase 'hook-no-git'
+    New-Item -ItemType Directory -Path $noGit | Out-Null
+    Write-RepoFile $noGit 'a.md' @('x')
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath (Join-Path $noGit 'a.md') -Content $dirty)) '非 git 目錄的 .md 不提醒'
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath $trackedMd -Content 'C:\Users\<使用者>\x 與 C:\<專案目錄>\y')) '只含佔位符不提醒'
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath (Join-Path $hookRepo 'scripts\run.ps1') -Content $dirty)) '.ps1 不提醒'
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Edit' -FilePath $trackedMd -OldString $dirty -NewString '乾淨')) 'old_string 含路徑但 new_string 乾淨不提醒'
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Read' -FilePath $trackedMd)) 'tool_name 為 Read 不提醒'
+    Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath $trackedMd -Content '')) 'Write 內容為空不提醒'
+    Assert-HookSilent (Invoke-PathHook 'not json') 'stdin 非 JSON 不提醒'
+    Assert-HookSilent (Invoke-PathHook '{"tool_name":"Write"}') '缺少 tool_input 不提醒'
 
     Write-Host "assertions: $assertCount"
     Write-Host 'Doc local path check tests passed.'
