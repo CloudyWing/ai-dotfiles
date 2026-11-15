@@ -59,9 +59,9 @@
 
 | 可用 | 不可用 |
 | --- | --- |
-| `git rev-parse`、`git log`、`git show`、`git diff <rev> <rev>`、`git diff --cached`、`git ls-files -m -o --exclude-standard` | `git status`、`git diff`（比對工作樹）、`git diff HEAD` |
+| `git rev-parse`、`git log`、`git show`、`git diff <rev> <rev>`、`git diff --cached`、`git ls-files -m -o --exclude-standard`、`git ls-tree` | `git status`、`git diff`（比對工作樹）、`git diff HEAD` |
 
-需要工作樹狀態時，用 `git ls-files -m -o --exclude-standard` 列出已修改與未追蹤的檔案，用 `git diff --cached --name-status HEAD` 列出已暫存的變更，再以 `git show HEAD:<path>` 與直接讀取的檔案內容比對。Reviewer 的盤點步驟見 `agents/codex/reviewer.toml`「啟動流程」第 5 點。
+需要工作樹狀態時，用 `git ls-files -m -o --exclude-standard` 列出已修改與未追蹤的檔案，用 `git diff --cached --name-status HEAD` 列出已暫存的變更，再以 `git ls-tree --name-only HEAD -- <path>` 判定 HEAD 是否有該路徑。HEAD 有者以 `git show HEAD:<path>` 與直接讀取的檔案內容比對，HEAD 沒有者（已暫存新增、重新命名後的新路徑、未追蹤）不執行 `git show`，整份讀取檔案。Reviewer 的盤點步驟見 `agents/codex/reviewer.toml`「啟動流程」第 5 點。
 
 `git ls-files --exclude-standard` 與 `git diff --cached` 在沙盒內會於 stderr 印出無法存取使用者層級 git 設定的 warning，結束碼仍為 0，以結束碼判定成敗。
 
@@ -106,7 +106,8 @@
 
 - 入口依登記順序選第一個可用帳號。已登入、該檔位的設定檔存在，且未被記為不支援該檔位的 model，三項都成立才算可用。全部帳號都被記為不支援時，入口取記錄時間最早的帳號實際嘗試一次。
 - 服務端拒絕且尚無任何進度時，入口自動改試下一個帳號，同一帳號不重送。
-- 拒絕原因為未授權，或帳號因登入檔缺少而被略過時，結果 JSON 與 stderr 附 PowerShell 版重新登入命令，原文轉給使用者。
+- 拒絕原因為未授權時，PowerShell 版重新登入命令原文轉給使用者。命令在結果 JSON 的 `attempts[].relogin_command`（每次嘗試各一個）與 `final.relogin_command`（最後一次嘗試），其餘嘗試為 `null`，stderr 不輸出。
+- 帳號因登入檔缺少或為空而被略過時，分兩種情形。全部帳號都被略過、結束碼為 4 時，含重新登入命令的略過摘要寫在 `error.message`，stderr 輸出同一則訊息，命令原文轉給使用者。仍有可用帳號時，入口只在 stderr 列出被略過帳號的名稱與原因代碼，沒有重新登入命令，結果 JSON 的 `attempts` 與 `final` 也只含實際嘗試的帳號。
 - 結束碼 4 且 `error.code` 為 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，依 `executor-selection` skill 以 `-Offline` 傳入全部 Codex 執行者重新呼叫選派入口，依回傳狀態處置。
 - 入口不做專案信任預檢，也不自動補信任。
 

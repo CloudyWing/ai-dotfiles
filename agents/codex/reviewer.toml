@@ -45,8 +45,10 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
    - 機密檔保護：檔名符合 `.env`、`.env.*`、`*.pfx`、`*.pem`、`*.key`、`secrets.*` 的檔案，以檔名判定，不得讀取內容或輸出其 diff；第 3 欄列出此類檔案時，只回報檔名與 Git 狀態代碼，並在品質備註標示未審查內容。其他設定檔（例如 `appsettings*.json`）可正常審查，但報告與工具輸出引用其內容時，鍵名含 `Password`、`Secret`、`ConnectionString`、`ApiKey`、`Token` 的值一律以 `***` 取代。
    - 工作樹狀態盤點：審查的工作目錄可能唯讀，兩種模式都以下列不寫入工作樹的命令取得已修改、已暫存與未追蹤目標的清單與變更內容；這些命令在唯讀與可寫的工作目錄得到相同結果。
      1. `git ls-files -m -o --exclude-standard -- <第 3 欄 pathspec>`：逐檔列出相對索引已修改（含已刪除）與未追蹤且未被忽略的目標物件。
-     2. `git diff --cached --name-status HEAD -- <第 3 欄 pathspec>`：列出已暫存的變更。
-     3. 對步驟 1、2 列出的已追蹤檔案，以 `git show HEAD:<path>` 取得 HEAD 內容，直接讀取工作樹檔案取得目前內容，兩者比對即為未提交的變更內容。目前內容不存在者為已刪除，兩者相同者無實際變更。未追蹤檔案直接讀取並整份納入審查。
+     2. `git diff --cached --name-status HEAD -- <第 3 欄 pathspec>`：列出已暫存的變更。每行為狀態、TAB、路徑；重新命名與複製為狀態加相似度（如 `R100`）、TAB、舊路徑、TAB、新路徑。重新命名與複製的偵測要求新舊路徑同在 pathspec 內，舊路徑在 pathspec 外時，新路徑的狀態為 `A`。
+     3. 對步驟 1、2 列出的每個路徑（重新命名與複製取新路徑），以 `git ls-tree --name-only HEAD -- <path>` 判定 HEAD 是否有該路徑。輸出為空表示 HEAD 沒有，結束碼仍為 0。
+     4. HEAD 沒有該路徑者（已暫存新增、重新命名與複製後的新路徑、以 `git add -N` 登記的路徑、未追蹤檔案）不執行 `git show HEAD:<path>`，直接讀取工作樹檔案，整份視為新增內容納入審查。重新命名與複製另以 `git show HEAD:<舊路徑>` 取得舊路徑的 HEAD 內容作對照。
+     5. HEAD 有該路徑者，以 `git show HEAD:<path>` 取得 HEAD 內容，直接讀取工作樹檔案取得目前內容，兩者比對即為未提交的變更內容。目前內容不存在者為已刪除（含已暫存的刪除），只呈現 HEAD 內容；兩者相同者無實際變更。
    - 有指定 commit range 時，採 diff-scoped 模式。Standards 的審查範圍唯一來自派遣單及其指定的 commit range；依該 range 執行 `git diff <commit-range> -- <第 3 欄 pathspec>`，再依第 3 欄與第 6 欄限制目標與邊界，並以「工作樹狀態盤點」納入已進版控的工作樹與 staged 變更及未追蹤目標物件。未追蹤且位於派遣單第 3 欄的目標物件須直接讀取並納入審查。
    - 未指定 commit range 時，採全檔模式。Standards 以派遣單第 3 欄目標物件的目前內容與工作樹狀態為基準，直接讀取目標物件，並以「工作樹狀態盤點」納入 staged、unstaged 與未追蹤狀態；缺少 commit range 不得停止 Standards 審查。
    - diff-scoped 模式的 diff 為空時，停止 Standards 缺陷審查並回報空 diff；全檔模式不使用空 diff 作為停止條件。兩種模式的 Spec 軸均執行「既有實作判定複核」。任一 Git 命令失敗時停止並回報命令與錯誤；失敗以結束碼非 0 判定，結束碼 0 時 stderr 的 warning（例如無法存取使用者層級的 git 設定）不算失敗。
