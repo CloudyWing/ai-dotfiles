@@ -469,15 +469,15 @@ Claude 端使用 Agent 工具建立下列 sub-agent 時，呼叫參數必須依�
 
 額度查詢只供顯示與紀錄，不作派工的放行條件，也不參與執行者選擇。額度是否足夠由使用者判斷。派工腳本不自動查詢額度，由主 Agent 以 `Get-CodexQuota.ps1` 手動查詢，時點為派工前、advisor 諮詢前、結案時，以及按需查詢。查詢失敗、快照過期或視窗重設時記為 unknown，派工照常進行，不推算餘額。
 
-派工範圍由派遣契約明確宣告，額度不改寫範圍。`ScopePlan` 只適用 Codex 資源派遣與 `advisor-consult`，最小單位固定如下。資源派遣使用派遣單第 3 欄的目標物件，`advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。`selected_units` 等於宣告的全部單位，執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
+派工範圍由派遣契約明確宣告，額度不改寫範圍。`ScopePlan` 只適用經 `scripts\Invoke-CodexDispatch.ps1` 發動的 Codex 資源派遣與 `advisor-consult`，經 `scripts\Invoke-CodexRun.ps1` 發動的派遣以派遣檔的 `targets` 為範圍，不使用 `ScopePlan`。最小單位固定如下。資源派遣使用派遣單第 3 欄的目標物件，`advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。`selected_units` 等於宣告的全部單位，執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
 
-低額度或 unknown 都不縮小範圍、不停止執行中的派工。服務端明確拒絕（例如 usage-limit）時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不重試，不以未執行的單位補寫結論。每次派工保存 `ScopePlan` 與 usage，作為成本紀錄。
+低額度或 unknown 都不縮小範圍、不停止執行中的派工。服務端明確拒絕（例如 usage-limit）時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不重試，不以未執行的單位補寫結論。經 `Invoke-CodexDispatch.ps1` 發動的派工保存 `ScopePlan`，所有派工保存 usage，作為成本紀錄。
 
 **離線改派**：執行者只分在線與離線，判定離線的唯一來源是服務端拒絕（usage-limit、401、model not supported，以及尚無 item 進度即遭服務端拒絕的其他錯誤），額度數值不參與。規則寫法不因帳號數不同而不同。
 
-1. 帳號由 Dispatch 腳本依 `machine.json` `codex_accounts` 登記清單動態選擇，主 Agent 不指定 `-CodexHome`。啟動前檢查是否已登入（登入檔存在，只看路徑、大小與修改時間，不讀內容），未登入者略過，並唯讀檢查該帳號 `config.toml` 能否信任派遣專案，不能者同樣略過。帳號遭服務端回報 model not supported 時，腳本把帳號與檔位 model 記在 `.local` 的帳號健康狀態檔，24 小時內略過該組合並在派遣紀錄寫出略過原因；所有帳號都被記錄時仍實際嘗試一次。
+1. 帳號由入口腳本依 `machine.json` `codex_accounts` 登記清單動態選擇，主 Agent 不指定 `-CodexHome`。本點的專案信任檢查與第 2 點的背景派遣只適用 `scripts\Invoke-CodexDispatch.ps1`；`scripts\Invoke-CodexRun.ps1` 的帳號檢查與換帳號見 `codex-dispatch` skill `references/run.md`「帳號」。啟動前檢查是否已登入（登入檔存在，只看路徑、大小與修改時間，不讀內容），未登入者略過，並唯讀檢查該帳號 `config.toml` 能否信任派遣專案，不能者同樣略過。帳號遭服務端回報 model not supported 時，腳本把帳號與檔位 model 記在 `.local` 的帳號健康狀態檔，24 小時內略過該組合並在派遣紀錄寫出略過原因；所有帳號都被記錄時仍實際嘗試一次。
 2. 派遣遭服務端拒絕且尚無任何 item 進度時（含未歸入已知種類的拒絕），腳本改試下一個登記帳號：前景派遣由換帳號外層處理，背景派遣在 Inspect 偵測被拒時以下一個帳號重新啟動。重試只限換帳號，同一帳號不重送。帳號因 401 被拒，或因登入檔缺少、為空而略過時，派遣結果與 Inspect 訊息附該帳號的 PowerShell 重新登入命令，主 Agent 原文轉給使用者。
-3. 「全數不可用」只依 Dispatch 回報的 `CodexAccountsAllUnavailable` 判定。
+3. 「全數不可用」只依入口腳本的回報判定：`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable`，或 `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted`。
 4. 全數確認不可用後，將全部 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-review,codex-advisor`）重新呼叫選派入口，依回傳狀態處置（降級審查、降級第二意見、改由 Sonnet 承接測試取證或事實查核，或停止回報），各狀態的處置見 `executor-selection` skill「狀態處置」。降級或改派時追加 exceptions「替代方案」，主 Agent 不自行頂替，硬能力（桌面控制、影像產生、瀏覽器與登入測試）沒有替代者時停止並回報使用者。
 
 執行細節與恢復見 `codex-dispatch` skill `references/recovery.md`「離線改派的執行細節」。
@@ -504,7 +504,7 @@ advisor 只在使用者授權後啟動，以 `AdvisorRequestSource=user-explicit
 
 ##### Reviewer 派遣發動判準
 
-Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，不得默默略過，接著進入需求意圖驗收。不發理由的紀錄用於補償「該做的事沒做且無人察覺」的失效模式。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為所有派遣共用的明文寫入例外。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
+Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，不得默默略過，接著進入需求意圖驗收。不發理由的紀錄用於補償「該做的事沒做且無人察覺」的失效模式。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為經 `scripts\Invoke-CodexDispatch.ps1` 發動的派遣共用的明文寫入例外。經 `scripts\Invoke-CodexRun.ps1` 發動的審查者只能寫入該次執行的輸出目錄，例外寫在報告的 `## 例外回報` 節，由主 Agent 回收後併入 `exceptions.md`；Sonnet 審查路徑的審查者只寫派遣單第 7 欄的報告檔，例外同樣寫在報告內由主 Agent 併入。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 **必發清單（命中任一即發）**：
 
@@ -552,7 +552,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 - Codex `Reviewer` 的檔位固定為 `review`，不依檔數或規則檔與否分層。此判定屬規則決定，不需使用者在當下 Session 指定。
 - Codex 離線時，選派入口以 `degraded` 回傳 Sonnet subagent，審查報告首行標註「同家族審查」並追加 exceptions「替代方案」。派生契約與鏡像報告 `review-report-claude.md` 見 `workflow-orchestration` skill「Sonnet 審查路徑」。
 
-`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，同線並行上限為 2。並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行。
+`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動。`Frontend Reviewer` 與 `Contract Auditor` 的同線並行上限為 2，並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行；經 `scripts\Invoke-CodexRun.ps1` 發動的 `Reviewer` 不設並行上限。`Frontend Reviewer` 與 `Contract Auditor` 一律經 `scripts\Invoke-CodexDispatch.ps1` 發動，不依選派入口輸出的 `executor.entry`。
 
 Reviewer 回收後，設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。Reviewer 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`、同線 `requirement-summary.md`、Developer 結案報告（若有）與前輪報告，不自行修改程式碼、執行建置或測試；第 4 欄的檔案清單與回收程序見 `workflow-orchestration` skill `references/review-procedures.md`「Reviewer 派遣單與回收」。
 

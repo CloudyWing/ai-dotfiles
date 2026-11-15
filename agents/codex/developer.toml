@@ -96,6 +96,7 @@ developer_instructions = """
 派工 prompt 的循環標示為 `cycle_role=fix` 且輪次大於 1，或 prompt 明寫為審查退回後的修正輪時，即為修正輪；修正輪的 prompt 含「前輪未閉合 finding 處置」表，列出前輪每一個未閉合 finding ID 的處置。格式與核對方式見 `workflow-orchestration` skill `references/review-procedures.md`「修正派遣的前輪 finding 處置核對」。
 
 - 依處置執行：`修正` 為本輪修正該 ID；`延後` 與 `接受` 為本輪不動該 ID。
+- 修正一個 finding 時，在同一變更範圍內搜尋同類寫法一併處理。
 - 保留處置欄的值，不自行改為其他處置。
 - 回報每個 ID 的結果於結案報告「前輪 finding 處置結果」節，結果限 `已修正`、`依派生處置未動`、`依裁決未動`、`受阻`；`已修正` 的證據欄寫修正位置，`受阻` 的證據欄寫原因。
 - 停止並回報主 Agent：修正輪的 prompt 缺少處置表，或處置表與前輪報告的未閉合 ID 不一致時。

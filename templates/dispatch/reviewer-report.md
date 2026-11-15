@@ -11,46 +11,15 @@
 
 ```json
 {
-  "schema": "codex-dispatch.review-findings.v2",
-  "line_slug": "<line-slug>",
-  "dispatch_slug": "<dispatch-slug>",
-  "round": 1,
-  "previous_status": [],
-  "current_judgment": [
+  "schema": "codex-run.review-findings.v1",
+  "findings": [
     {
       "id": "F-001",
-      "status": "open",
       "severity": "Major",
-      "evidence": [
-        {
-          "path": "<證據檔絕對路徑>",
-          "line": 1
-        }
-      ]
-    }
-  ],
-  "current_findings": [
-    {
-      "id": "F-001",
-      "axis": "Standards",
       "status": "open",
-      "severity": "Major",
-      "disposition": "new",
       "summary": "<一句話描述缺陷>"
     }
-  ],
-  "counts": {
-    "previous_closed": 0,
-    "previous_open": 0,
-    "previous_withdrawn": 0,
-    "previous_accepted": 0,
-    "current_new": 1,
-    "current_open": 1,
-    "current_closed": 0,
-    "current_withdrawn": 0,
-    "current_accepted": 0
-  },
-  "conclusion": "fail"
+  ]
 }
 ```
 
@@ -80,7 +49,7 @@
 
 ## 修正範圍外候選
 
-<!-- 第 2 輪以上才有此節，沒有候選時刪除整節。只收修正範圍外新發現的 Minor，編號為 C 加三位數，編號外不加方括號，不列入 manifest，不影響 conclusion。 -->
+<!-- 第 2 輪以上才有此節，沒有候選時刪除整節。只收修正範圍外新發現的 Minor，編號為 C 加三位數，編號外不加方括號，不列入 manifest，不影響結論。 -->
 
 - C-001 [Minor] 位置：<檔案:行號> — <一句話 summary>
 
@@ -91,3 +60,14 @@
 - 位置：<檔案:行號>
 - failure_scenario：<具體輸入或狀態導致的錯誤結果>
 - 判定依據：<依據>
+
+## 例外回報
+
+<!-- 沒有例外時刪除整節。條目格式與同線 exceptions.md 相同，由主 Agent 回收後併入。 -->
+
+### <yyyy-MM-dd HH:mm:ss> - <觸發類型>
+
+- 觸發類型：<偏離設計 | 自行採用假設 | 替代方案 | 範圍外既有問題 | 未涵蓋決策 | 繞過授權>
+- 內容：<發生什麼>
+- 依據：<為何這樣決定>
+- 位置：<檔案:行號>

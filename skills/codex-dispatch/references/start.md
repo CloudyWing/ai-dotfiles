@@ -6,6 +6,8 @@
 
 主 Agent 依 F1 判準判定要派工後載入本 Skill。執行端角色依角色規則檔引用本 Skill 的共用作業節時，只讀取被引用的節。
 
+選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 且角色為 `Reviewer` 時改讀 `run.md`；`Frontend Reviewer` 與 `Contract Auditor` 不論 `executor.entry` 一律依本檔。本檔其餘流程適用於經 `scripts/Invoke-CodexDispatch.ps1` 發動的派遣。
+
 | 情境 | 入口 | 必要輸入 | 提供方式 |
 | --- | --- | --- | --- |
 | 建立資源派遣單 | `scripts\New-DispatchOrder.ps1` | `Title`、`Role`、`TargetPath`、`TaskBody`、`Acceptance`、`Boundary`、`ReportPath`、`DispatchSlug`、`LineSlug`；`OutputPath`、`RequiredRead` 選填 | 命令列參數；省略 `OutputPath` 時派遣單寫入來源工作樹 `handoff\<lineSlug>\dispatch-order-<dispatchSlug>.md`，即 `Dispatch` 讀取的位置，八個欄位定義見「派遣單契約」 |
@@ -402,7 +404,7 @@ PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移�
 
 事件流以 `turn.failed` 結束且結案報告不存在時，`Inspect` 與 `Collect` 另回報 `recoverable_artifacts_present` 與 `recoverable_artifact_files`。檔案清單列出 worktree 相對 `baseSha` 的變更檔。這些欄位供主 Agent 判斷是否以新 `dispatchSlug` 冷啟動接續，不改變原有成功判定；`turn.failed` 仍是失敗結果。
 
-Reviewer 回收時，主 Agent 以 `Collect -ReviewerReportPath` 驗證報告的 `## Finding manifest`（schema `codex-dispatch.review-findings.v2`，規則見 `reviewer.toml`）。`reviewerFindings.valid=false` 表示報告自相矛盾或格式無法核對，`outputValid=false` 並以非零結束，依回收三態退回 Reviewer 補正；`valid=true` 且 `conclusion=fail` 表示報告有效且存在 open 的 Critical 或 Major finding，依共同收斂契約退回實作者修正；只有 Minor 時 `conclusion=pass`，剩餘 Minor 依共同收斂契約判定順序 1 批次修正或記為候選。兩種情況分開處理，不以 finding 數量推導結論。
+本段與其後的 manifest 說明適用於經 `scripts/Invoke-CodexDispatch.ps1` 回收的舊格式審查報告。`Reviewer` 已改由 `run.md` 的流程回收，報告格式見 `reviewer.toml`。Reviewer 回收時，主 Agent 以 `Collect -ReviewerReportPath` 驗證報告的 `## Finding manifest`（schema `codex-dispatch.review-findings.v2`，規則見 `reviewer.toml`）。`reviewerFindings.valid=false` 表示報告自相矛盾或格式無法核對，`outputValid=false` 並以非零結束，依回收三態退回 Reviewer 補正；`valid=true` 且 `conclusion=fail` 表示報告有效且存在 open 的 Critical 或 Major finding，依共同收斂契約退回實作者修正；只有 Minor 時 `conclusion=pass`，剩餘 Minor 依共同收斂契約判定順序 1 批次修正或記為候選。兩種情況分開處理，不以 finding 數量推導結論。
 
 v2 manifest 以 `previous_status` 記錄前輪結束時的狀態快照，以 `current_judgment` 記錄本輪對每個 finding 的判定，`counts` 含九個欄位且只供等值驗證（舊報告缺少兩個 `accepted` 欄位時以 0 驗證），`evidence` 路徑必須是絕對路徑，且同一 ID 在 manifest 與正文「本輪 finding 判定」段落的證據位置必須相同。
 

@@ -31,7 +31,7 @@ Prepare 只接受位於同線 handoff 或 report 根目錄的派遣單；放在 
 
 <!--
 審查派遣在必讀檔案區塊之外寫一行循環標示：循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）。值與 Request 的 cycle_id、cycle_round、cycle_role 一致。
-第 2 輪以上的審查，必讀檔案區塊另列前輪報告與修正派遣報告；新循環第 1 輪改寫一行「本線 Reviewer 最後一份報告的 manifest round=<N>」。規格見 workflow-orchestration skill references/review-procedures.md「循環標示與第 2 輪以上的 Reviewer 派遣單」。
+第 2 輪以上的審查，必讀檔案區塊另列前輪報告與修正派遣報告；新循環第 1 輪不列前輪報告。規格見 workflow-orchestration skill references/review-procedures.md「循環標示與第 2 輪以上的 Reviewer 派遣單」。
 審查退回後的修正派遣，在此欄放「前輪未閉合 finding 處置」表，前輪報告路徑列入必讀檔案區塊；格式見同檔「修正派遣的前輪 finding 處置核對」。
 -->
 

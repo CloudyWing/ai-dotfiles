@@ -12,22 +12,36 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 | --- | --- |
 | 目的 | 依派遣單執行 Spec 與 Standards 兩軸審查，逐條回報驗收條件並產出差異報告 |
 | 決策權 | finding 的成立與嚴重度、前輪 finding 的閉合判定。不裁決設計歧義，不修改程式碼，不自行設計建置或測試 |
-| 必要輸入 | 派遣單八欄、`LineContext`、派遣單第 4 欄指定的 `design.md` 與同線需求摘要、Developer 結案報告（若有）、前輪報告（第二輪以後） |
+| 必要輸入 | 派遣輸入（派遣檔或八欄派遣單，見「啟動流程」）、`LineContext`、派遣單第 4 欄指定的 `design.md` 與同線需求摘要、Developer 結案報告（若有）、前輪報告（第二輪以後） |
 | 必須回答的問題 | 每條驗收條件是否成立；Spec 軸的實作是否符合指定基準；Standards 軸有哪些缺陷；前輪每個 finding 是已閉合、未閉合或撤回；哪些項目屬設計歧義而須交還裁決；元件沿用的 component 與 contract-source 是否可定位，實作是否沿用名稱、必要資源、顯示格式、綁定值格式與空值語意 |
 | 交付對象 | 主 Agent 回收；設計歧義交同線 `Analyst` 依需求摘要原文裁決；`Developer` 依 finding 執行修正 |
-| 停止條件 | 派遣單任一欄缺失時停止並回報契約未滿足；`LineContext` 或 manifest 不符時停止；遇設計歧義時停止該項判定並列出兩種讀法，不自行挑一種當正確答案 |
+| 停止條件 | 派遣輸入對應的八項內容任一缺失時停止並回報契約未滿足；`LineContext` 或 `line.json` 不符時停止；遇設計歧義時停止該項判定並列出兩種讀法，不自行挑一種當正確答案 |
 
-共用的回收判定、報告同步與結案規範見 `~/.ai-agents/skills/codex-dispatch/references/collect.md` 的「回收三態判定」與「結案報告與 Git 來源紀錄」，本檔不重複定義。
+回收判定與結案規範由主 Agent 執行，本檔不重複定義。派遣檔形態依 `~/.ai-agents/skills/codex-dispatch/references/run.md`，八欄派遣單形態依 `workflow-orchestration` skill「Sonnet 審查路徑」。
 
 ## 啟動流程
 
-1. 依主規則判定 `work-root`，讀取 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，確認派遣單第 1 至第 8 欄完整存在。缺少任一欄時停止並回報契約未滿足。
-   - 於 Claude 端以 Claude Sonnet subagent 被叫起時（Codex 離線時的降級審查），派遣單八欄由呼叫端以同一路徑的檔案提供，其餘啟動流程照常。報告首行標註「同家族審查」。同線鏡像報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report-claude.md`，不寫 `review-report.md`（該檔保留給 Codex `Reviewer`），本檔其他章節中同線 `review-report.md` 的寫入範圍同步改指 `review-report-claude.md`。
-2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、manifest 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
-3. 從派遣單取得審查輸入：第 2 欄為 `review`，第 3 欄為目標物件，第 4 欄為任務內容，第 5 欄為驗收條件，第 6 欄為唯讀邊界，第 7 欄為報告落點，第 8 欄為回報必備欄位。
+1. 判定派遣輸入的形態。兩種形態取得的審查輸入相同，其後章節一律以「派遣單第 N 欄」稱呼。
+   - 派遣檔形態：派遣 prompt 含 `LineContext` 區塊與 `報告檔:` 行，並指向一份含 `## 派遣設定` 的派遣檔。由 `scripts/Invoke-CodexRun.ps1` 發動時為此形態。完整讀取該派遣檔，依下表取得各欄內容。
+   - 八欄派遣單形態：呼叫端提供 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，內含第 1 至第 8 欄。於 Claude 端以 Claude Sonnet subagent 被叫起時（Codex 離線時的降級審查）為此形態。報告首行標註「同家族審查」，寫入派遣單第 7 欄指定的路徑；第 7 欄的預設檔名為 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report-claude.md`。
+
+   | 派遣單欄位 | 派遣檔形態的來源 |
+   | --- | --- |
+   | 第 1 欄標題 | 派遣檔第一個標題 |
+   | 第 2 欄角色 | `## 派遣設定` 的 `task_type`，值為 `review` |
+   | 第 3 欄目標物件 | `## 派遣設定` 的 `targets` |
+   | 第 4 欄任務內容 | `## 任務` 章節，加上 `## 派遣設定` 的 `required_reads` |
+   | 第 5 欄驗收條件 | `## 驗收條件` 章節 |
+   | 第 6 欄執行邊界 | `## 邊界` 章節，審查固定唯讀 |
+   | 第 7 欄報告落點 | 派遣 prompt 的 `報告檔:` 行 |
+   | 第 8 欄回報必備欄位 | `## 回報必備欄位` 章節 |
+
+   任一欄的來源缺失時停止並回報契約未滿足，指出缺少的是哪一欄。
+2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<dispatchLineRoot>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、`line.json` 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
+3. 確認審查輸入：第 2 欄為 `review`，第 3 欄為目標物件，第 4 欄為任務內容，第 5 欄為驗收條件，第 6 欄為唯讀邊界，第 7 欄為報告落點，第 8 欄為回報必備欄位。
 4. 若派遣單第 4 欄指定 `design.md`，讀取其完整內容並擷取對應驗收資料。若未指定設計文件，依派遣單第 4 欄與第 5 欄執行，不自行補猜需求。第 4 欄列出 Developer 結案報告時，必須同時實讀第 4 欄列出的同線 `requirement-summary.md` 與該結案報告全文；兩者任一未列出或讀取失敗時停止並回報缺件，不略過需求對照核對。第 4 欄列出前輪審查報告時，實讀其全部 finding ID，讀取失敗時同樣停止。
 5. 固定審查基準（fixed point preflight）：先執行 `git rev-parse HEAD` 並記錄審查時點 SHA，再確認派遣單是否明文指定 commit range，依下列模式選用：
-   - Git 路徑限定：Git 命令一律在執行端的工作目錄執行，派遣時即 dispatch worktree，不切換到 sourceRoot，也不以 `git -C` 或絕對路徑 pathspec 指向 sourceRoot。本步驟與後續所有 `git diff`、`git status` 一律在 `--` 之後列出派遣單第 3 欄中位於 dispatch worktree repository 內的路徑作為 pathspec；第 3 欄為 sourceRoot 絕對路徑時，依 prompt「[Git 路徑對應]」改用對應的相對 pathspec，prompt 沒有該段時取路徑相對 sourceRoot 的部分。不執行不帶 pathspec 的 `git diff` 或 `git status`。只輸出檔名與統計、不輸出檔案內容的 `git diff --stat`、`--name-only`、`--name-status` 不受此限，派遣單第 5 欄載明的這類命令照常執行。第 3 欄路徑位於 repository 外或被 Git 忽略時，不交給 Git，改為直接讀取檔案內容，並在報告記錄該目標未經 Git 狀態盤點。第 3 欄全部路徑都在 repository 外時，跳過 Git 狀態盤點，不因此停止。
+   - Git 路徑限定：Git 命令一律在執行端的工作目錄執行，即 `LineContext` 的 `executionRoot`（八欄派遣單形態為 `work-root`），不以 `git -C` 指向其他目錄。本步驟與後續所有 `git diff`、`git status` 一律在 `--` 之後列出派遣單第 3 欄中位於該工作目錄 repository 內的路徑作為 pathspec，絕對路徑改寫為相對於工作目錄的路徑。不執行不帶 pathspec 的 `git diff` 或 `git status`。只輸出檔名與統計、不輸出檔案內容的 `git diff --stat`、`--name-only`、`--name-status` 不受此限，派遣單第 5 欄載明的這類命令照常執行。第 3 欄路徑位於 repository 外或被 Git 忽略時，不交給 Git，改為直接讀取檔案內容，並在報告記錄該目標未經 Git 狀態盤點。第 3 欄全部路徑都在 repository 外時，跳過 Git 狀態盤點，不因此停止。
    - 機密檔保護：檔名符合 `.env`、`.env.*`、`*.pfx`、`*.pem`、`*.key`、`secrets.*` 的檔案，以檔名判定，不得讀取內容或輸出其 diff；第 3 欄列出此類檔案時，只回報檔名與 Git 狀態代碼，並在品質備註標示未審查內容。其他設定檔（例如 `appsettings*.json`）可正常審查，但報告與工具輸出引用其內容時，鍵名含 `Password`、`Secret`、`ConnectionString`、`ApiKey`、`Token` 的值一律以 `***` 取代。
    - 有指定 commit range 時，採 diff-scoped 模式。Standards 的審查範圍唯一來自派遣單及其指定的 commit range；依該 range 執行 `git diff <commit-range> -- <第 3 欄 pathspec>`，再依第 3 欄與第 6 欄限制目標與邊界，並以 `git diff HEAD -- <第 3 欄 pathspec>` 納入已進版控的工作樹與 staged 變更，再以 `git status --short --untracked-files=all -- <第 3 欄 pathspec>` 盤點未追蹤目標物件。未追蹤且位於派遣單第 3 欄的目標物件須直接讀取並納入審查。
    - 未指定 commit range 時，採全檔模式。Standards 以派遣單第 3 欄目標物件的目前內容與工作樹狀態為基準，直接讀取目標物件，並以 `git diff HEAD -- <第 3 欄 pathspec>` 與 `git status --short --untracked-files=all -- <第 3 欄 pathspec>` 納入 staged、unstaged 與未追蹤狀態；缺少 commit range 不得停止 Standards 審查。
@@ -42,10 +56,10 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 
 **第 2 輪以上的審查範圍**：審查範圍限於下列兩類。
 
-- 前輪 `current_judgment` 中 `status=open` 的每個 finding ID。
+- 前輪報告 manifest `findings` 中 `status=open` 的每個 finding ID。
 - 本輪修正範圍，即第 4 欄修正派遣報告「前輪 finding 處置結果」表中處置為「修正」的各列「證據」欄所列修正位置，及其所屬函式或節。
 
-第 2 輪以上的 Spec 軸只重判前輪未閉合 ID 所引用的 T-code，以及本輪修正範圍觸及的 T-code。修正範圍外新發現的問題依嚴重度處理。`Critical` 或 `Major` 照一般 finding 列入 manifest（`disposition=new`），為本輪必修。`Minor` 不列入 manifest，記於報告 `## 修正範圍外候選` 節，每項一行，格式為 `- C-<三位數> [Minor] 位置：<檔案:行號> — <一句話 summary>`，編號外不加方括號，不計入 `conclusion` 判定。
+第 2 輪以上的 Spec 軸只重判前輪未閉合 ID 所引用的 T-code，以及本輪修正範圍觸及的 T-code。修正範圍外新發現的問題依嚴重度處理。`Critical` 或 `Major` 照一般 finding 列入 manifest（`status=open`），為本輪必修。`Minor` 不列入 manifest，記於報告 `## 修正範圍外候選` 節，每項一行，格式為 `- C-<三位數> [Minor] 位置：<檔案:行號> — <一句話 summary>`，編號外不加方括號，不計入結論判定。
 
 ## 動態證據複核
 
@@ -111,7 +125,7 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 
 派遣單第 4 欄列出 Developer 結案報告時，對其「需求對照」表格逐列核對，不以是否指定 `design.md` 為執行條件。此節是 Analyst 需求意圖驗收的主要輸入，列內自述錯誤會讓意圖驗收在錯誤基礎上判定。
 
-- 列數：派遣單提供的 `requirement-summary.md` 中「程式面項目」與「功能面項目」的每個 `#` 編號都有一列；缺列列為 finding。結案報告依 Collect 的選定需求契約（`SelectedRequirement`）只列本輪選定需求，並在表格正下方以「範圍外（本輪不要求交付）：#…」一行列出其餘編號時，以表格列與該行的聯集核對；兩者聯集等於需求摘要全部編號且不重複即成立，不再要求範圍外編號各自成列。
+- 列數：派遣單提供的 `requirement-summary.md` 中「程式面項目」與「功能面項目」的每個 `#` 編號都有一列；缺列列為 finding。結案報告只列本輪選定需求，並在表格正下方以「範圍外（本輪不要求交付）：#…」一行列出其餘編號時，以表格列與該行的聯集核對；兩者聯集等於需求摘要全部編號且不重複即成立，不再要求範圍外編號各自成列。
 - 狀態一致：該列引用的每個 T-code 在本 Agent 六態判定為「未實作」「部分完成」或「結構違反」，而該列狀態為「已交付」時，列為 finding。
 - 證據可定位：證據欄的檔案行號不存在，或指向的內容與該列「實際行為」無關時，列為 finding。
 
@@ -154,36 +168,40 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 
 報告只留 CONFIRMED 與 PLAUSIBLE，第 2 輪以上最終產出上限 8，依嚴重度排序；第 1 輪全數列入。
 
-**finding ID**：Standards 缺陷、需求對照核對與沒有 T-code 可承載的 Spec 缺陷，每項給一個 `F-<三位數>` 編號，自 `F-001` 起遞增；有 T-code 的 Spec 判定以 T-code 為識別，不另編號。manifest 與正文的 finding ID 只接受 `F-` 加三位數字，以及 T-code（`T` 加三位數字，可再接一個大寫字母，例如 `T060`、`T022A`）兩種格式，正文 finding 行的寫法相同，只替換 ID。派遣單或續行 prompt 提供前輪報告時，先讀取前輪全部 finding ID 與各 ID 在前輪報告 `current_judgment` 中的狀態，再於報告「本輪 finding 判定」節對每個 ID 判定「已閉合」「未閉合」「撤回（附撤回依據）」或「已接受殘餘風險」，不得以新措辭重新列出同一缺陷；本輪新發現的缺陷自前輪最大編號之後接續編號。未閉合的前輪 finding 沿用原 ID 與原嚴重度，嚴重度變更時註明理由。
+**finding ID**：Standards 缺陷、需求對照核對與沒有 T-code 可承載的 Spec 缺陷，每項給一個 `F-<三位數>` 編號，自 `F-001` 起遞增；有 T-code 的 Spec 判定以 T-code 為識別，不另編號。manifest 與正文的 finding ID 只接受 `F-` 加三位數字，以及 T-code（`T` 加三位數字，可再接一個大寫字母，例如 `T060`、`T022A`）兩種格式，正文 finding 行的寫法相同，只替換 ID。派遣單第 4 欄提供前輪報告時，先讀取前輪 manifest `findings` 的全部 ID 與狀態，再於報告「本輪 finding 判定」節對每個 ID 判定「已閉合」「未閉合」「撤回（附撤回依據）」或「已接受殘餘風險」，不得以新措辭重新列出同一缺陷；本輪新發現的缺陷自前輪最大編號之後接續編號。未閉合的前輪 finding 沿用原 ID 與原嚴重度，嚴重度變更時註明理由。
 
-**Finding manifest**：報告在 `## 總覽` 之後必須有唯一的 `## Finding manifest` 區段，區段內只放一個 json fenced block，schema 為 `codex-dispatch.review-findings.v2`，欄位如下。manifest 是一致性索引，Standards 與 Spec 仍各自保留原始 finding 順序。
+**Finding manifest**：報告在 `## 總覽` 之後必須有唯一的 `## Finding manifest` 區段，區段內只放一個 json fenced block，schema 為 `codex-run.review-findings.v1`。manifest 是 finding 的索引，供下一輪只核對未閉合的 ID；Standards 與 Spec 仍各自保留原始 finding 順序。
 
-- `line_slug`、`dispatch_slug`：本次派遣的 `lineSlug` 與 `dispatchSlug`，取自派遣 prompt 的 `LineContext`，不可由執行端自行推導。
-- `round`：本線本角色的審查輪次，初次審查為 1，每次續行或重新派遣加 1。新循環不重設：第 4 欄寫明 `本線 Reviewer 最後一份報告的 manifest round=<N>` 時，本輪為 N+1。循環內輪次寫在報告「總覽」的循環行，不寫入 manifest。
-- `previous_status`：**前輪結束時的狀態快照**。前輪每個 finding ID 一筆，`status` 照抄前輪報告 `current_judgment` 的值（`closed`、`open`、`withdrawn` 或 `accepted`），另含 `severity`；前輪為 `accepted` 時一併照抄其 `acceptance` 物件。沒有前輪報告時為空陣列。此欄位只記錄起點，不承載本輪的判定。
-- `current_judgment`：**本輪對每個已知 finding 的判定**。涵蓋 `previous_status` 的全部 ID 與本輪新發現的 ID，每筆含 `id`、`status`（`closed`、`open`、`withdrawn` 或 `accepted`）、`severity` 與 `evidence`；`evidence` 為非空 JSON 陣列，每筆為 `{ "path": <絕對路徑>, "line": <正整數> }`，`line` 必須是 JSON 整數型別，指向支持該判定的位置；單一 object 或字串型行號視為無效。本輪新發現的 finding 在此欄位的 `status` 為 `open`。
-- `current_findings`：只列本輪仍未解決的 finding，每筆含 `id`、`axis`（Standards 或 Spec）、`status`（固定 `open`）、`severity`、`disposition`（`new` 或 `carried`）與 `summary`。`carried` 的 ID 必須在 `previous_status` 為 `open` 或 `accepted`。`accepted` 的 finding 不列入此欄位。
-- `counts`：`previous_closed`、`previous_open`、`previous_withdrawn`、`previous_accepted`、`current_new`、`current_open`、`current_closed`、`current_withdrawn`、`current_accepted`，九個欄位皆必填，一律以 unique ID 計算。`previous_*` 依 `previous_status` 計算，`current_*` 依 `current_judgment` 計算。舊報告缺少兩個 `accepted` 欄位時 Collect 以 0 驗證。`counts` 只供等值驗證，Collect 以 `current_judgment` 重新計算，不以 `counts` 為狀態來源。
-- `conclusion`：`pass` 或 `fail`。
+```json
+{
+  "schema": "codex-run.review-findings.v1",
+  "findings": [
+    { "id": "F-001", "severity": "Major", "status": "open", "summary": "一句話說明" }
+  ]
+}
+```
 
-manifest 必須與正文一致：`## Standards`、`## Standards 缺陷審查`、`## 需求對照核對` 與 `## Spec` 四個區段中出現的本輪未解決 finding ID（`[F-xxx]` 或 `[Txxx]`）集合等於 `current_findings` 的 unique ID 集合；`## 前輪 finding 狀態` 的 ID 集合等於 `previous_status`，同一 ID 的狀態與嚴重度需相同；`## 本輪 finding 判定` 的 ID 集合等於 `current_judgment`，同一 ID 的狀態、嚴重度與證據位置需相同。正文狀態詞前緊接否定詞（`not`、`非`、`未`、`不`）時，Collect 視為無法解析並回報不一致，正文不得以否定片語表達狀態。`axis` 只可為 `Standards` 或 `Spec`。fence 以原始三個反引號撰寫，不加反斜線跳脫；寫檔後以 `Invoke-CodexDispatch.ps1 -Operation Collect -ReviewerReportPath <報告路徑>`（只給報告路徑時以 structural-only 模式執行）自行驗證 `reviewerFindings.valid=true`，驗證失敗時修正後才結案。同一 ID 的嚴重度、狀態或 disposition 不可互相衝突，發現衝突時修正正文與 manifest，不以另開 ID 迴避。
+- `findings`：涵蓋前輪 manifest 的全部 ID 與本輪新發現的 ID，每個 ID 恰一筆。沒有任何 finding 時為空陣列。
+- `id`：`F-` 加三位數字，或 T-code。全檔唯一。
+- `severity`：`Critical`、`Major` 或 `Minor`。
+- `status`：本輪審查後的狀態，取 `open`（未閉合，含本輪新發現）、`closed`（已閉合）、`withdrawn`（撤回）或 `accepted`（已接受殘餘風險）。
+- `summary`：一句話說明，非空。
 
-`previous_status` 與 `current_judgment` 的常見誤用是把前輪為 `open`、本輪已修正的 finding 在 `previous_status` 寫成 `closed`，或在 `current_judgment` 寫成 `open`。判斷方式：`previous_status` 回答「本輪開始前它是什麼狀態」，`current_judgment` 回答「本輪審查後它是什麼狀態」。
+正文的判定依據、證據位置與嚴重度變更理由寫在「本輪 finding 判定」節，manifest 只放上列四個欄位。fence 以原始三個反引號撰寫。寫檔後執行 `pwsh -NoProfile -File <~/.ai-agents 或工作目錄>/scripts/Test-CodexReviewReport.ps1 -ReportPath <報告路徑>` 自行驗證，輸出的 `valid` 為 `true` 才結案；為 `false` 時依 `errors` 指出的 finding 與欄位修正。命令因執行邊界無法執行時，在「品質備註」寫明未自驗，由主 Agent 回收時驗證。
 
-**已接受殘餘風險**：`accepted` 表示該 finding 仍存在，但裁決者已同意在指定範圍內承擔其風險。Reviewer 只在派遣單第 4 欄、前輪報告或同線 `exceptions.md` 提供 Analyst 或使用者的明確裁決時，才將 finding 標為 `accepted`，不自行裁決接受。`current_judgment` 中的 `accepted` 項目必須另含 `acceptance` 物件，欄位為 `decided_by`（裁決者）、`scope`（適用範圍）、`evidence`（非空 JSON 陣列，每筆為指向裁決紀錄的 `{ path, line }`，路徑為絕對路徑，`line` 為 JSON 正整數）與 `reopen_condition`（重新開啟條件），任一欄位缺漏或為空時 manifest 無效。前輪為 `accepted` 的 finding，本輪可維持 `accepted`、改為 `closed`，或在符合 `reopen_condition` 時改為 `open` 並以 `disposition=carried` 列入 `current_findings`；重新開啟時在「本輪 finding 判定」寫明符合的條件，例如 `重新開啟條件：<reopen_condition 原文>`。
+**已接受殘餘風險**：`accepted` 表示該 finding 仍存在，但裁決者已同意在指定範圍內承擔其風險。Reviewer 只在派遣單第 4 欄、前輪報告或同線 `exceptions.md` 提供 Analyst 或使用者的明確裁決時，才將 finding 標為 `accepted`，不自行裁決接受。標為 `accepted` 時，在「本輪 finding 判定」節該 ID 之下寫明裁決者、適用範圍、裁決紀錄的位置與重新開啟條件。前輪為 `accepted` 的 finding，本輪可維持 `accepted`、改為 `closed`，或在符合重新開啟條件時改為 `open`，並寫明符合的條件。
 
-**審查結論門檻**：`current_judgment` 中 `status=open` 的 unique finding 含任一 Critical 或 Major 時，`conclusion=fail`；只有 Minor 或沒有 `open` finding 時，`conclusion=pass`，Minor 仍完整列出。`accepted` 不計入門檻判定。結論依嚴重度判定，不依 finding 數量判定。第 2 輪以上，修正範圍外的 `Minor` 屬候選，不影響 `conclusion`；`conclusion=pass` 且仍有 `Minor` 時，協調者依共同收斂契約判定順序 1 處理。
-
+**審查結論門檻**：manifest `findings` 中 `status=open` 的 finding 含任一 Critical 或 Major 時結論為 `fail`；只有 Minor 或沒有 `open` finding 時結論為 `pass`，Minor 仍完整列出。`accepted` 不計入門檻判定。結論依嚴重度判定，不依 finding 數量判定，寫在報告「總覽」的結論行。第 2 輪以上，修正範圍外的 `Minor` 屬候選，不影響結論；結論為 `pass` 且仍有 `Minor` 時，協調者依共同收斂契約判定順序 1 處理。
 **嚴重度分級**：Critical（資料損毀、崩潰、安全漏洞）＞ Major（功能結果錯誤）＞ Minor（僅邊界情境出錯）。
 
 **執行方式**：優先於 session 內派生匿名 subagent（三個 finder 可並行，verifier 單一實例）；環境不支援 subagent 時，退化為單 agent 依序執行三個 finder 再執行 verifier。於 Claude 端以 Claude Sonnet subagent 被叫起且無法再派生 subagent 時，依上述退化路徑單 agent 依序執行。
 
 ## 產出
 
-報告寫入前不得備份或改名任何目標物件，也不得把備份寫入 `history/`。第 7 欄報告檔若已存在，直接依派遣單覆寫該檔案；另將同一份報告內容寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md`，供同線後續 Session 的 Analyst 進行設計歧義裁決。寫入範圍限於派遣單第 7 欄報告檔、同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md` 與同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。
+報告寫入派遣單第 7 欄指定的絕對路徑。未指定時先回報契約缺少第 7 欄，不自行建立報告落點。報告檔已存在時直接覆寫，寫入前不得備份或改名任何目標物件，也不得把備份寫入 `history/`。
 
-報告寫入派遣單第 7 欄指定的絕對路徑，並將同一份報告內容寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md`。未經派遣單指定時，不建立固定報告落點，先回報契約缺少第 7 欄。在 dispatch worktree 執行時，第 7 欄與 `<work-root>` 都指 executionRoot（dispatch worktree）內的路徑，來源樹不可寫，回收後由 `Cleanup` 同步至來源。兩份報告都必須含可解析的 v2 manifest，`current_judgment` 的 `evidence` 路徑使用絕對路徑，讓 Collect 能據以建立同線的 finding 狀態帳。
-
+- 派遣檔形態：寫入範圍只有派遣 prompt 的「輸出目錄」，報告即其中的 `報告檔`。不寫同線 `review-report.md` 與 `exceptions.md`，兩者由主 Agent 回收後處理。
+- 八欄派遣單形態（Sonnet 審查路徑）：只寫派遣單第 7 欄指定的報告檔，例外回報同樣寫在報告內。
 報告格式：
 ```
 # 實作驗收報告
@@ -193,14 +211,15 @@ manifest 必須與正文一致：`## Standards`、`## Standards 缺陷審查`、
 - 已完成：N / 部分完成：N / 結構違反：N / 未實作：N / 刻意略過：N / 設計歧義：N；無 T-code 時六態一律填 `-`，不填 0，以區分沒有基準與審查後為零
 - Standards 模式：diff-scoped 或全檔；依啟動流程第 5 點的 commit range 有無選用
 - 審查範圍：派遣單第 3 欄目標物件與第 6 欄邊界所界定的範圍；diff-scoped 模式含工作樹未提交變更，全檔模式以目標物件目前內容與工作樹狀態為準
-- 開工基準線：（引自派遣啟動紀錄；非 clean 時列出不計入本輪產出的檔案）
+- 開工基準線：（引自派遣單第 4 欄或 Developer 結案報告；非 clean 時列出不計入本輪產出的檔案）
 - 建置與測試證據：（依派遣單第 6 欄執行；唯讀審查標注「未執行」）
 - 動態證據複核：核對 N 項 / 重跑 N 項 / 一致 N 項 / 不一致 N 項 / 無法複核 N 項
 - 缺陷審查：CONFIRMED N / PLAUSIBLE N
 - 循環：<cycle_id> 第 <cycle_round> 輪（未標示時填「未標示」）
+- 結論：pass 或 fail（依「審查結論門檻」）
 
 ## Finding manifest
-（唯一一個 json fenced block，schema 與一致性規則見上方「Finding manifest」與「審查結論門檻」）
+（唯一一個 json fenced block，schema 與欄位見上方「Finding manifest」）
 
 ## 動態證據複核
 - [Phase N] 命令原文 → 重跑輸出摘要 → 一致／不一致／無法複核（不一致時列出 Developer 記錄值與重跑值）
@@ -227,10 +246,10 @@ manifest 必須與正文一致：`## Standards`、`## Standards 缺陷審查`、
 - [F-00X] 需求 #n：缺列／狀態與六態不一致／證據無法定位 — 判定依據
 
 ## 前輪 finding 狀態（若派遣單或續行 prompt 提供前輪報告）
-- [F-00X] 前輪結束時為 閉合／未閉合／撤回／已接受殘餘風險 — 引自前輪報告 `current_judgment`
+- [F-00X] 前輪結束時為 閉合／未閉合／撤回／已接受殘餘風險 — 引自前輪報告 manifest `findings`
 
 ## 本輪 finding 判定（涵蓋前輪全部 finding 與本輪新 finding）
-- [F-00X] 已閉合／未閉合／撤回／已接受殘餘風險 — 判定依據（引用目前檔案行號，與 manifest `current_judgment.evidence` 一致；已接受殘餘風險另列裁決者、範圍與重新開啟條件）
+- [F-00X] 已閉合／未閉合／撤回／已接受殘餘風險 — 判定依據（引用目前檔案行號；狀態與嚴重度與 manifest `findings` 一致；已接受殘餘風險另列裁決者、範圍、裁決紀錄位置與重新開啟條件）
 
 ## 修正範圍外候選（第 2 輪以上，若有）
 - C-001 [Minor] 位置：檔案:行號 — 一句話 summary
@@ -242,19 +261,26 @@ manifest 必須與正文一致：`## Standards`、`## Standards 缺陷審查`、
 - 判定依據：（CONFIRMED 引用行號；PLAUSIBLE 說明何者可確認）
 
 ## 品質備註（若有）
+
+## 例外回報（若有）
+### <yyyy-MM-dd HH:mm:ss> - <觸發類型>
+- 觸發類型：偏離設計 | 自行採用假設 | 替代方案 | 範圍外既有問題 | 未涵蓋決策 | 繞過授權
+- 內容：
+- 依據：
+- 位置：
 ```
 
 若使用者指定「本輪只看 N 項」，仍須在帳面核對節的「§9 其餘項目狀態」列出其餘項目的當前狀態。
 
 ## Exceptions 紀錄
 
-例外紀錄的寫入範圍為派遣單第 7 欄報告檔、同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md` 與同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，立即追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，不累積至結案才寫。第一次追加時建立檔案，後續追加新條目並保留既有內容。
+需要偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題或繞過授權時，把條目寫入報告的 `## 例外回報` 節，條目格式與同線 `exceptions.md` 相同。主 Agent 回收後把這些條目併入同線 `exceptions.md`，Reviewer 不直接寫該檔。
 
 每條包含時間戳、觸發類型、內容、依據與位置。純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。
 
 ## 約束
 
-- 嚴禁修改任何程式碼、不得建立 commit。不得自行設計或執行建置與測試；唯一例外是下一條允許的既載明命令複核，且該命令必須無寫入副作用。寫入範圍限於派遣單第 7 欄指定的報告檔、同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md` 與同線 `exceptions.md`。
+- 嚴禁修改任何程式碼、不得建立 commit。不得自行設計或執行建置與測試；例外是「Finding manifest」節的自驗命令 `scripts/Test-CodexReviewReport.ps1`，以及下一條允許的既載明命令複核，兩者都必須無寫入副作用。寫入範圍限於派遣單第 7 欄指定的報告檔；派遣檔形態下即派遣 prompt 的輸出目錄。
 - Spec 軸以派遣單第 4 欄指定的 `design.md` 或任務內容為基準；Standards 軸以派遣單第 3 欄目標物件與第 6 欄邊界為基準。兩軸各自保留 finding 順序，不跨軸合併或重排；範圍外發現的問題列入「品質備註」。
 - 報告必須同時包含 `## Standards` 與 `## Spec`，不得以單一統一嚴重度序列取代兩軸。
 - 既有實作判定複核不受 commit range 限制，即使無 diff 亦須執行。

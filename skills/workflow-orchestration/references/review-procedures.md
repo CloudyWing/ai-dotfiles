@@ -14,20 +14,20 @@
 - 讀取範圍：Reviewer Agent 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告（若有），依第 5 欄逐條回報驗收結果。
 - 審查 Workflow 實作時，主 Agent 在第 4 欄同時列出 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告三份檔案的絕對路徑，供 Reviewer 執行需求對照核對。
 - 第二輪以後的審查：`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 對同一條線的第二輪以後審查，第 4 欄另列同一角色前輪報告的絕對路徑，審查者依其 `F-<三位數>` finding ID 判定閉合狀態。
+- 派遣輸入的形式依選派入口輸出的 `executor.entry`。值為 `scripts/Invoke-CodexRun.ps1` 時寫派遣檔，各欄內容寫入派遣檔的對應部分，發動與回收依 `codex-dispatch` skill `references/run.md`；Sonnet 審查路徑寫八欄派遣單。兩者的對應見 `reviewer.toml`「啟動流程」。本檔其餘各節的「第 N 欄」同時指派遣檔的對應部分。
 - 回收後：設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。
 
 ## 循環標示與第 2 輪以上的 Reviewer 派遣單
 
 Reviewer 派遣單第 4 欄依下列規格標示審查循環，循環術語見 `../SKILL.md`「共同收斂契約」與「循環識別與重新起算」。
 
-- 寫入一行循環標示，格式為 `循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）`。這一行是第 4 欄的一般文字行，不含路徑，放在「必讀檔案：」區塊之外。Codex 派遣的值與 Request 的 `cycle_id`、`cycle_round`、`cycle_role` 一致。
+- 寫入一行循環標示，格式為 `循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）`。這一行是第 4 欄的一般文字行，不含路徑，放在「必讀檔案：」區塊之外。派遣檔形式把這一行寫在 `## 任務` 章節的第一行，並把同一組值填入 `## 派遣設定` 的 `cycle`。
 - 第 2 輪以上：「必讀檔案：」區塊另列前輪報告與修正派遣報告的絕對路徑。修正派遣報告在 Workflow 為 `report/<lineSlug>/implement-closure-report.md`，在 `light` 線與單一工作為第 4 欄既有的派工回報檔，內含「前輪 finding 處置結果」表。
-- 新循環第 1 輪：不列前輪報告，另寫一行 `本線 Reviewer 最後一份報告的 manifest round=<N>`；Reviewer 本輪 manifest `round` 為 N+1。
-- 維持 manifest `round` 為同線同角色的審查序號，新循環不重設。Collect 的 finding 狀態帳以 `finding_id/round` 為鍵，重設會觸發 `LedgerConflict`。循環內輪次寫在報告「總覽」的循環行，不進 manifest。漏寫 `manifest round` 行而觸發 `LedgerConflict` 時，協調者補上該行後重派。
+- 新循環第 1 輪：不列前輪報告。
 
 ## 修正派遣的前輪 finding 處置核對
 
-審查退回後的修正派生，協調者對前輪每一個未閉合 finding 寫明處置，執行端逐條回報結果，回收時機械比對。不要求每輪修完全部 finding。前輪未閉合 ID 為前輪 Reviewer 報告 manifest `current_judgment` 中 `status=open` 的全部 ID，`accepted` 不計。
+審查退回後的修正派生，協調者對前輪每一個未閉合 finding 寫明處置，執行端逐條回報結果，回收時機械比對。不要求每輪修完全部 finding。前輪未閉合 ID 為前輪 Reviewer 報告 manifest `findings` 中 `status=open` 的全部 ID，`accepted` 不計。
 
 協調者撰寫處置表，以 in-context 方式隨派生 prompt 傳入：Workflow 放在 Developer 派生 prompt，單一工作放在分流 A 的 `priorFindingDisposition` 欄位，分流 B 放在派遣單第 4 欄並把前輪報告路徑列入「必讀檔案：」區塊。
 

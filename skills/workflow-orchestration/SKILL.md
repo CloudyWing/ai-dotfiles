@@ -18,7 +18,7 @@ Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢
 3. 派生 Developer 並回收結果。單一 Claude 執行者依宣告順序完成全部 Phase，直接修改來源工作樹，不建立 Phase commit。回收依「Claude 實作路徑」的「主 Agent 核對」。回收「收下」後，協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，欄位見 `session-artifacts` skill「需求級成本累計」。
 4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的升級結果。回收後仍有殘餘工作時，依 `instructions.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
 5. 文件同步。`design.md` §5「使用者文件」子節列有受影響文件時，依 `references/doc-sync.md` 執行一致性檢查、事實修正、最終編輯與事實核對，結果寫入 `report/<lineSlug>/doc-sync-report.md`；子節為「無」時記錄理由後直接進入下一步。
-6. 命中 Reviewer 必發清單時，依 `instructions.md` 審查配對決定審查者並直接派出，不詢問使用者。Codex `Reviewer` 走資源派遣；Codex 離線時選派入口回傳 `degraded`，改走本 Skill「Sonnet 審查路徑」。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
+6. 命中 Reviewer 必發清單時，依 `instructions.md` 審查配對決定審查者並直接派出，不詢問使用者。Codex `Reviewer` 依 `codex-dispatch` skill `references/run.md` 發動；Codex 離線時選派入口回傳 `degraded`，改走本 Skill「Sonnet 審查路徑」。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
 7. 審查者以純技術原因退回時（存在未閉合的 `Critical` 或 `Major`），依「Claude 實作路徑」的「審查與修正」由同一執行者重新派生修正；執行者需要更換時依 `references/implement-routing.md`「失敗與升級」處理。修正完成後回到 Developer 回收與審查判定；修正改變了行為、術語或檔名時，對受影響段落重跑第 5 步。審查結果只剩 `Minor` 時不退回，依共同收斂契約順序 1 批次修正或記為候選後進入第 8 步。
 8. 審查者收下時進入 Analyst 需求意圖驗收。Analyst 讀取 `implement-closure-report.md`、`doc-sync-report.md`（若有）與審查者的報告（`review-report.md`，降級時為 `review-report-claude.md`）。需求意圖驗收完成後輸出 Workflow 結案報告，報告列出文件同步結果（受影響文件與 `doc-sync-report.md` 路徑，無影響時列理由）。
 9. 結案報告完成後等待使用者當輪授權 commit；取得授權後才執行 Phase commit 回收，完成驗證與報告同步。之後依 `git-workflow` 註記模式進入整理與落地，`trunk` 於 push 前整理，`release-flow` 執行合併前流程；整理、落地、push 與合併都待使用者當輪授權。Accept 之後對尚未推送的 Phase commit 的修正，由 `generate-commit` 步驟 4 建立 `fixup!` commit。
@@ -39,9 +39,9 @@ Codex 離線、選派入口以 `degraded` 回傳 Sonnet subagent 時，依下列
 
 1. 建立派遣單八欄，寫入 `handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，第 7 欄報告落點依 `reviewer.toml`。第 4 欄含循環標示行，格式見 `references/review-procedures.md`「循環標示與第 2 輪以上的 Reviewer 派遣單」。
 2. 以 Agent 工具派生冷啟動 subagent，`subagent_type` 為 `general-purpose`，`model` 為 `sonnet`，規則來源為 `~/.ai-agents/agents/codex/reviewer.toml`，prompt 帶 `LineContext`、派遣單路徑與循環標示。審查輪次與範圍依 `reviewer.toml`「審查輪次與範圍」，第 1 輪完整度與第 2 輪以上的審查範圍同樣適用於 Sonnet 審查者。
-3. 審查者將同線鏡像報告寫入 `report/<lineSlug>/review-report-claude.md`，報告首行標註「同家族審查」，不寫 `review-report.md`。主 Agent 追加 exceptions「替代方案」。
-4. 報告完成後以 `Invoke-CodexDispatch.ps1 -Operation Collect -ReviewerReportPath <報告路徑>` 自驗 manifest，主 Agent 依回收三態判定。此路徑不經 Preflight、Prepare、Start、Inspect，沒有 RunRecord 與 PID 三鍵檢查，Collect 僅做結構核對。自驗後協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，`cycle_role` 為 `review`，欄位見 `session-artifacts` skill「需求級成本累計」。
-5. 同線同時只發一位審查者，並行上限 2 的腳本控管不適用此路徑，由主 Agent 自律。
+3. 審查者將報告寫入派遣單第 7 欄指定的路徑，預設為 `report/<lineSlug>/review-report-claude.md`，報告首行標註「同家族審查」，不寫 `review-report.md`。主 Agent 追加 exceptions「替代方案」，並把報告 `## 例外回報` 節的條目併入同線 `exceptions.md`。
+4. 報告完成後以 `pwsh -NoProfile -File scripts/Test-CodexReviewReport.ps1 -ReportPath <報告路徑>` 自驗 manifest，`valid` 為 `true` 後主 Agent 依回收三態判定。此路徑沒有執行紀錄與自動追加的成本列，協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，`cycle_role` 為 `review`，欄位見 `session-artifacts` skill「需求級成本累計」。
+5. 同線同時只發一位審查者，由主 Agent 自律。
 
 ## Claude 實作路徑
 
@@ -165,7 +165,7 @@ Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` �
 
 1. 追加 `循環重啟` 列到同線 `cost-ledger.md`：`cycle_id` 欄填新 ID，`cycle_round` 填 `1`，備註寫「舊循環=<舊 cycle_id>；變動類型=目標|需求|方案；原因=<一句話>；舊循環結束輪次=<n>；舊循環未結 ID 與處置=<F-nnn:延後|撤回|由新循環第 1 輪重新審查,…>」。變動原因只記在這一列。
 2. 建立新 `cycle_id`，世代為同一 `target-key` 加 1，例如 `c16-move-c1` 變為 `c16-move-c2`。
-3. 執行新循環第 1 輪的完整審查（`reviewer.toml`「審查輪次與範圍」），不傳前輪報告，舊循環的未閉合 ID 不帶入 `previous_status`，仍存在的缺陷由第 1 輪重新發現。
+3. 執行新循環第 1 輪的完整審查（`reviewer.toml`「審查輪次與範圍」），不傳前輪報告，舊循環的未閉合 ID 不帶入新循環，仍存在的缺陷由第 1 輪重新發現。
 4. 重設三個計數：`max-rounds`、「連續兩輪未閉合」與「同一 `area-key` 連續兩輪新 `Major`」都以 `cycle_id` 為單位，新循環從零起算。
 5. 保留舊循環已發生的 run 與成本在原 `cycle_id` 之下，舊循環的 `cycle_round` 不再增加。
 6. 同一 `target-key` 的世代將達 `c3` 時停止。協調者在追加 `循環重啟` 列之前停止，向使用者說明前兩個循環的結束輪次與變動原因，取得使用者確認後才建立 `c3`，防止以重新起算繞過 `max-rounds`。
