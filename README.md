@@ -89,7 +89,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 `~/.ai-agents/.local/machine.json` 是本機設定，不進版控，記錄值班 Session、派工帳號清單等只屬於這台電腦的資訊。
 
-協調 Session 不需要登記。Agent 把啟動它的那個 Session 當作協調 Session，接受它轉述的使用者決定；你手動開的 Session 則要你直接在該 Session 回覆。轉述的判定規則見 `instructions.md` §1.5「授權期限」。
+協調 Session 不需要登記。Agent 把啟動它的那個 Session，以及該 Session 指定的接手 Session，當作協調 Session，接受它轉述的使用者決定；你手動開的 Session 則要你直接在該 Session 回覆。轉述的判定規則見 `instructions.md` §1.5「授權期限」。
 
 ---
 

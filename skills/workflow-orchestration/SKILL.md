@@ -11,10 +11,10 @@ policy.allow_implicit_invocation: true
 
 ## 自動推進鏈
 
-Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢查點的建檔與建檔內容仍依 §1.4 執行，建議接手指令輸出後原 Session 直接繼續。
+Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢查點的建檔與建檔內容仍依 §1.4 執行，寫完後原 Session 直接繼續。
 
 1. 分支前置。啟動 Workflow 屬 `git-workflow` 註記的阻擋範圍，先依 `git-workflow` skill「git-workflow 註記與模式載入」確認註記有效。再依該 skill「線分支與獨立 worktree」的適用判定決定直接在整合分支或開線分支；`release-flow` 已有版本標籤且目前位於主分支（`git-workflow` skill「主分支判定」的結果）時停止並詢問版號，尚無版本標籤時主分支即整合分支（見 `references/release-flow.md`「初次發佈前」）。開線分支時執行該節的建立程序並切換 work-root，之後的 `design-accepted` 交接檢查點、派工與回收都使用新 work-root。
-2. 依 `instructions.md` Workflow Phase 的實作分流逐 Phase 呼叫選派入口，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：全部 Phase=<執行者>`，見 `references/implement-routing.md`「Workflow Phase 的判定記錄」），輸出建議接手指令後依本 Skill「Claude 實作路徑」派生 Developer。
+2. 依 `instructions.md` Workflow Phase 的實作分流逐 Phase 呼叫選派入口，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：全部 Phase=<執行者>`，見 `references/implement-routing.md`「Workflow Phase 的判定記錄」），再依本 Skill「Claude 實作路徑」派生 Developer。
 3. 派生 Developer 並回收結果。單一 Claude 執行者依宣告順序完成全部 Phase，直接修改來源工作樹，不建立 Phase commit。回收依「Claude 實作路徑」的「主 Agent 核對」。回收「收下」後，協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，欄位見 `session-artifacts` skill「需求級成本累計」。
 4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的升級結果。回收後仍有殘餘工作時，依 `instructions.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
 5. 文件同步。`design.md` §5「使用者文件」子節列有受影響文件時，依 `references/doc-sync.md` 執行一致性檢查、事實修正、最終編輯與事實核對，結果寫入 `report/<lineSlug>/doc-sync-report.md`；子節為「無」時記錄理由後直接進入下一步。
