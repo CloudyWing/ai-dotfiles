@@ -80,6 +80,25 @@ function New-RegistryCopy {
     return $path
 }
 
+function Save-GitBlob {
+    # 以位元組原樣取出 git 物件（經 PowerShell 管線會依主控台編碼轉碼而毀損 UTF-8）。
+    param([string]$Repository, [string]$Spec, [string]$Destination)
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = 'git'
+    foreach ($item in @('-C', $Repository, 'show', $Spec)) { [void]$startInfo.ArgumentList.Add($item) }
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    try {
+        $file = [IO.File]::Create($Destination)
+        try { $process.StandardOutput.BaseStream.CopyTo($file) } finally { $file.Dispose() }
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw ('git show ' + $Spec + ' 失敗') }
+    }
+    finally { $process.Dispose() }
+}
+
 function Get-ExecutorNode {
     param($Registry, [string]$Id)
 
@@ -566,6 +585,111 @@ try {
     Test-Case L11 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck')
         $r.Json.dispatchLine -ceq '[派工判定: 登錄表→codex-content] type=factcheck 執行者=Codex content'
+    }
+
+    # 登錄表 entry 欄位（審查類切到新入口，其餘 Codex 類維持現行入口）
+    Test-Case EN01 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude')
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'codex-review' -and $r.Json.executor.entry -ceq 'scripts/Invoke-CodexRun.ps1' -and $r.Json.executor.profile -ceq 'review'
+    }
+    Test-Case EN02 {
+        $cases = @(
+            @('-Type test', 'codex-scan'), @('-Type generate', 'codex-content'), @('-Type factcheck', 'codex-content'),
+            @('-Type advise -ImplementerFamily claude -Authorized', 'codex-advisor'))
+        @($cases | Where-Object {
+                $r = Invoke-Selector -Arguments (Split-Args $_[0])
+                -not ($r.ExitCode -eq 0 -and $r.Json.executor.id -ceq $_[1] -and $r.Json.executor.entry -ceq 'scripts/Invoke-CodexDispatch.ps1')
+            }).Count -eq 0
+    }
+    Test-Case EN03 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Type survey')
+        $r.ExitCode -eq 0 -and $r.Json.executor.platform -ceq 'claude' -and $null -eq $r.Json.executor.PSObject.Properties['entry']
+    }
+    Test-Case EN04 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Describe')
+        $rows = @($r.Json.executors)
+        $codexRows = @($rows | Where-Object { $_.platform -ceq 'codex' })
+        $claudeRows = @($rows | Where-Object { $_.platform -ceq 'claude' })
+        $entries = @($codexRows | ForEach-Object { $_.id + '=' + $_.entry })
+        $r.ExitCode -eq 0 -and $codexRows.Count -eq 4 -and @($claudeRows | Where-Object { $null -ne $_.PSObject.Properties['entry'] }).Count -eq 0 -and
+        ($entries -join ',') -ceq 'codex-scan=scripts/Invoke-CodexDispatch.ps1,codex-review=scripts/Invoke-CodexRun.ps1,codex-content=scripts/Invoke-CodexDispatch.ps1,codex-advisor=scripts/Invoke-CodexDispatch.ps1'
+    }
+    Test-Case EN05 {
+        $missing = New-RegistryCopy 'entry-missing' { param($r) [void](Get-ExecutorNode $r 'codex-review').PSObject.Properties.Remove('entry') }
+        Assert-Rejected -ArgumentText '-Type review -ImplementerFamily claude' -Code 'SelectorRegistryInvalid' -ExpectedExit 3 -Registry $missing
+    }
+    Test-Case EN06 {
+        $traversal = New-RegistryCopy 'entry-traversal' { param($r) (Get-ExecutorNode $r 'codex-review').entry = '../x.ps1' }
+        $spaced = New-RegistryCopy 'entry-space' { param($r) (Get-ExecutorNode $r 'codex-review').entry = 'scripts/a b.ps1' }
+        $nested = New-RegistryCopy 'entry-nested' { param($r) (Get-ExecutorNode $r 'codex-review').entry = 'scripts/sub/x.ps1' }
+        $notScript = New-RegistryCopy 'entry-ext' { param($r) (Get-ExecutorNode $r 'codex-review').entry = 'scripts/Invoke-CodexRun.cmd' }
+        (Assert-Rejected -ArgumentText '-Type review -ImplementerFamily claude' -Code 'SelectorRegistryInvalid' -ExpectedExit 3 -Registry $traversal) -and
+        (Assert-Rejected -ArgumentText '-Type review -ImplementerFamily claude' -Code 'SelectorRegistryInvalid' -ExpectedExit 3 -Registry $spaced) -and
+        (Assert-Rejected -ArgumentText '-Type review -ImplementerFamily claude' -Code 'SelectorRegistryInvalid' -ExpectedExit 3 -Registry $nested) -and
+        (Assert-Rejected -ArgumentText '-Type review -ImplementerFamily claude' -Code 'SelectorRegistryInvalid' -ExpectedExit 3 -Registry $notScript)
+    }
+    Test-Case EN07 {
+        $claudeEntry = New-RegistryCopy 'entry-claude' { param($r) (Get-ExecutorNode $r 'sonnet') | Add-Member -NotePropertyName entry -NotePropertyValue 'scripts/Invoke-CodexRun.ps1' }
+        Assert-Rejected -ArgumentText '-Type survey' -Code 'SelectorRegistryInvalid' -ExpectedExit 3 -Registry $claudeEntry
+    }
+    Test-Case EN08 {
+        $switchedBack = New-RegistryCopy 'entry-switch-back' { param($r) (Get-ExecutorNode $r 'codex-review').entry = 'scripts/Invoke-CodexDispatch.ps1' }
+        $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude') -Registry $switchedBack
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'codex-review' -and $r.Json.executor.entry -ceq 'scripts/Invoke-CodexDispatch.ps1' -and $r.Json.dispatchLine -ceq '[派工判定: 登錄表→codex-review] type=review 執行者=Codex review'
+    }
+    # EN09 的對照基準：登錄表首次出現 entry 欄位之前的最後一個 commit（登錄表的 entry 變更尚未 commit 時為 HEAD）。
+    # 找不到基準或 git 不可用時，該案例標示為不適用並說明原因，不計入通過或失敗的斷言數。
+    function Get-EntryBaseline {
+        param([string]$Repository)
+
+        try {
+            $registryRelative = 'scripts/dispatch/executor-registry.json'
+            $headText = (& git -C $Repository show ('HEAD:' + $registryRelative) 2>$null) -join "`n"
+            if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ Commit = $null; Reason = '無法讀取 HEAD 的登錄表。' } }
+            if ($headText -notmatch '"entry"') {
+                $head = @(& git -C $Repository rev-parse HEAD 2>$null)
+                if ($LASTEXITCODE -ne 0 -or $head.Count -eq 0) { return [pscustomobject]@{ Commit = $null; Reason = '無法取得 HEAD。' } }
+                return [pscustomobject]@{ Commit = ([string]$head[0]).Trim(); Reason = $null }
+            }
+            $introduced = @(& git -C $Repository log '-S"entry"' --diff-filter=M --format=%H --reverse -- $registryRelative 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $introduced.Count -eq 0) { return [pscustomobject]@{ Commit = $null; Reason = '歷史中找不到登錄表首次出現 entry 欄位的 commit。' } }
+            $parent = @(& git -C $Repository rev-parse (([string]$introduced[0]).Trim() + '^') 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $parent.Count -eq 0) { return [pscustomobject]@{ Commit = $null; Reason = '首次出現 entry 的 commit 沒有父 commit。' } }
+            return [pscustomobject]@{ Commit = ([string]$parent[0]).Trim(); Reason = $null }
+        }
+        catch {
+            return [pscustomobject]@{ Commit = $null; Reason = ('git 不可用：' + $_.Exception.Message) }
+        }
+    }
+    $entryBaseline = Get-EntryBaseline -Repository (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
+    if ($null -eq $entryBaseline.Commit) { Write-Output ('N/A EN09 不適用：' + $entryBaseline.Reason) }
+    else {
+        Test-Case EN09 {
+            # 與新增 entry 之前的輸出對照：新舊輸出都移除 entry 後逐字相同。基準 commit 見上方 Get-EntryBaseline。
+            $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+            $baselineCommit = $entryBaseline.Commit
+            $oldRoot = Join-Path $tempRoot 'baseline'
+            $null = New-Item -ItemType Directory -Path (Join-Path $oldRoot 'dispatch') -Force
+            $oldScript = Join-Path $oldRoot 'Select-DispatchExecutor.ps1'
+            $oldRegistry = Join-Path $oldRoot 'dispatch\executor-registry.json'
+            Save-GitBlob -Repository $repoRoot -Spec ($baselineCommit + ':scripts/Select-DispatchExecutor.ps1') -Destination $oldScript
+            Save-GitBlob -Repository $repoRoot -Spec ($baselineCommit + ':scripts/dispatch/executor-registry.json') -Destination $oldRegistry
+            $specs = @('-Type review -ImplementerFamily claude', '-Type test', '-Type generate', '-Type factcheck', '-Type advise -ImplementerFamily claude -Authorized', '-Type survey', '-Type edit -E true -T false', '-Describe', '-Type review -ImplementerFamily claude -Offline codex-review')
+            $mismatch = @()
+            foreach ($spec in $specs) {
+                $specArguments = @(Split-Args $spec)
+                $oldText = (& $hostPath -NoProfile -NonInteractive -File $oldScript @specArguments -RegistryPath $oldRegistry 2>$null) -join "`n"
+                $new = (Invoke-Selector -Arguments (Split-Args $spec)).Json
+                $old = $oldText | ConvertFrom-Json
+                foreach ($document in @($old, $new)) {
+                    if ($null -ne $document.PSObject.Properties['executor'] -and $null -ne $document.executor) { [void]$document.executor.PSObject.Properties.Remove('entry') }
+                    if ($null -ne $document.PSObject.Properties['executors']) { foreach ($row in @($document.executors)) { [void]$row.PSObject.Properties.Remove('entry') } }
+                }
+                if (($old | ConvertTo-Json -Depth 10 -Compress) -cne ($new | ConvertTo-Json -Depth 10 -Compress)) { $mismatch += $spec }
+            }
+            if ($mismatch.Count -gt 0) { throw ('與基準輸出不同：' + ($mismatch -join '; ')) }
+            $true
+        }
     }
 
     # 結束碼與 stderr 格式彙整

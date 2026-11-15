@@ -228,10 +228,15 @@ function ConvertTo-ValidatedRegistry {
         if ($platform -ne 'claude' -and $platform -ne 'codex') { & $fail ('執行者 {0} 的 platform 必須為 claude 或 codex' -f $id) }
         $model = Get-Prop $node 'model'
         $profile = Get-Prop $node 'profile'
+        $entry = Get-Prop $node 'entry'
         if ($platform -eq 'claude' -and ($model -isnot [string] -or [string]::IsNullOrWhiteSpace($model))) { & $fail ('執行者 {0} 缺少 model' -f $id) }
         if ($platform -eq 'codex') {
             if ($profile -isnot [string] -or [string]::IsNullOrWhiteSpace($profile)) { & $fail ('執行者 {0} 缺少 profile' -f $id) }
             if ($script:CodexProfileNames -cnotcontains $profile) { & $fail ('執行者 {0} 的 profile {1} 不在 Codex 檔位白名單內' -f $id, $profile) }
+            if ($entry -isnot [string] -or $entry -cnotmatch '^scripts/[A-Za-z0-9._-]+\.ps1$') { & $fail ('執行者 {0} 缺少 entry，或 entry 不符合 ^scripts/[A-Za-z0-9._-]+\.ps1$' -f $id) }
+        }
+        elseif ($null -ne $node.PSObject.Properties['entry']) {
+            & $fail ('Claude 執行者 {0} 不得有 entry 欄位' -f $id)
         }
         $display = Get-Prop $node 'display'
         $family = Get-Prop $node 'family'
@@ -267,6 +272,7 @@ function ConvertTo-ValidatedRegistry {
                 Platform       = $platform
                 Model          = $model
                 Profile        = $profile
+                Entry          = $entry
                 Family         = $family
                 Accepts        = $accepts
                 Tags           = $tags
@@ -519,7 +525,7 @@ function Get-DescribeDocument {
             escalationOnly = $executor.EscalationOnly
             escalatesTo    = $executor.EscalatesTo
         }
-        if ($executor.Platform -eq 'claude') { $row['model'] = $executor.Model } else { $row['profile'] = $executor.Profile }
+        if ($executor.Platform -eq 'claude') { $row['model'] = $executor.Model } else { $row['profile'] = $executor.Profile; $row['entry'] = $executor.Entry }
         $executorRows += , $row
     }
     return [ordered]@{
@@ -605,7 +611,7 @@ function Invoke-Selector {
     $executorNode = $null
     if ($null -ne $selection.Executor) {
         $executorNode = [ordered]@{ id = $selection.Executor.Id; display = $selection.Executor.Display; platform = $selection.Executor.Platform }
-        if ($selection.Executor.Platform -eq 'claude') { $executorNode['model'] = $selection.Executor.Model } else { $executorNode['profile'] = $selection.Executor.Profile }
+        if ($selection.Executor.Platform -eq 'claude') { $executorNode['model'] = $selection.Executor.Model } else { $executorNode['profile'] = $selection.Executor.Profile; $executorNode['entry'] = $selection.Executor.Entry }
         $executorNode['order'] = $selection.Executor.Order
     }
     $document = [ordered]@{
