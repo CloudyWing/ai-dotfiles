@@ -126,7 +126,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | Hook 腳本 | 觸發條件 | 用途 |
 | --- | --- | --- |
 | `post-edit-write-hook.ps1` | Edit 或 Write 工具寫入檔案後 | 提示執行 check-markdown skill（`.md`）；驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
-| `turn-guard-hook.ps1` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | 將每個 turn 的工具使用與失敗紀錄寫入 `${CLAUDE_PLUGIN_DATA}\turn-guard\<session_id>.jsonl`；同一失敗在同一 turn、同一 agent 內第 2 次發生時，以 `additionalContext` 提醒該 agent 一次，要求先說明下次為何會成功，說不出來就停下回報；不阻擋工具執行 |
+| `turn-guard-hook.ps1` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | 將每個 turn 的工具使用與失敗紀錄寫入 `${CLAUDE_PLUGIN_DATA}\turn-guard\<session_id>.jsonl`；同一失敗在同一 turn、同一 agent 內第 2 次發生時，以 `additionalContext` 提醒該 agent 一次，要求先說明下次為何會成功，說不出來就停下回報；不阻擋工具執行。`PostToolUse` 與 `PostToolUseFailure` 只對 `Bash`、`PowerShell`、`Read`、`Grep`、`Glob`、`Edit`、`Write`、`Skill`、`Agent` 觸發，其他工具不記錄也不提醒 |
 | `powershell-host-guard-hook.ps1` | `PreToolUse`，工具為 `Bash` 或 `PowerShell` | 命令中任一區段直接呼叫 `powershell.exe`（含 `Start-Process powershell.exe`）時拒絕執行，原因附 `pwsh -NoProfile -File` 寫法。屬最佳努力的策略檢查，輸入無法解析時放行，不涵蓋巢狀 shell（例如 `cmd /c powershell.exe`）、動態組合的命令字串與別名。例外為執行 `Setup-AIGlobalConfig.ps1` 的區段；其他專案明確要求 5.1 時，在 Claude Code 設定的 `env` 加入 `AI_AGENTS_ALLOW_POWERSHELL51=1` |
 
 #### 狀態看板 plugin
