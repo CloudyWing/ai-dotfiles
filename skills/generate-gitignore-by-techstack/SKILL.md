@@ -22,7 +22,7 @@ policy.allow_implicit_invocation: false
 | `*.vue` | （已含於 Node） |
 | `*.py`、`pyproject.toml` | `Python.gitignore` |
 | `go.mod` | `Go.gitignore` |
-| `Dockerfile` | `community/Golang/Go.gitignore`（或直接加 docker 排除段） |
+| `Dockerfile` | 無對應範本，直接加 docker 排除段 |
 | JetBrains IDE（`.idea/`） | `JetBrains.gitignore` |
 | VS Code（`.vscode/`） | `VisualStudioCode.gitignore` |
 
