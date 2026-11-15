@@ -8,10 +8,10 @@
     ],
     "PostToolUse": [
       { "matcher": "Edit|Write", "hooks": [{ "type": "command", "command": "pwsh.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/post-edit-write-hook.ps1"] }] },
-      { "hooks": [{ "type": "command", "command": "pwsh.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/turn-guard-hook.ps1"], "timeout": 10 }] }
+      { "matcher": "Bash|PowerShell|Read|Grep|Glob|Edit|Write|Skill|Agent", "hooks": [{ "type": "command", "command": "pwsh.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/turn-guard-hook.ps1"], "timeout": 10 }] }
     ],
     "PostToolUseFailure": [
-      { "hooks": [{ "type": "command", "command": "pwsh.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/turn-guard-hook.ps1"], "timeout": 10 }] }
+      { "matcher": "Bash|PowerShell|Read|Grep|Glob|Edit|Write|Skill|Agent", "hooks": [{ "type": "command", "command": "pwsh.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/turn-guard-hook.ps1"], "timeout": 10 }] }
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "pwsh.exe", "args": ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", "${CLAUDE_PLUGIN_ROOT}/hooks/turn-guard-hook.ps1"], "timeout": 10 }] }
