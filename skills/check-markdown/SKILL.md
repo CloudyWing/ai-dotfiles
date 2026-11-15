@@ -105,7 +105,7 @@ policy.allow_implicit_invocation: true
 - ❌ `這個設計有風險——它假設輸入永遠合法。`
 - ✅ `這個設計有風險，它假設輸入永遠合法。`
 
-寫檔後由 post-edit-write hook 機械掃描 `.md` 檔的 `——`；程式碼區塊與反引號內的內容保留原樣，不套用此規則。
+post-edit-write hook 會在寫檔後掃描 `.md` 檔的 `——`，但 PostToolUse 的純文字輸出不進入模型 context，寫檔後仍須自行檢查；程式碼區塊與反引號內的內容保留原樣，不套用此規則。
 
 ### 7. 平台特定注意事項
 
