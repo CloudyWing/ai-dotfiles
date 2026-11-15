@@ -246,9 +246,13 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 ~/.ai-agents/
 ├── .gitignore                          # 版控排除清單
 ├── .gitattributes                      # 行尾格式與二進位標記
+├── .editorconfig                       # 編輯器格式設定（最高優先）
+├── .githooks/                          # Git 原生 Hook（pre-commit、Update-Docs.ps1 與 Test-StagedDocPath.ps1）
+├── AGENTS.md                           # 維護本 repo 的專案層規則
+├── LICENSE.md                          # 授權條款
 ├── README.md                           # 本文件
 ├── instructions.md                     # 核心開發規範（主 Rule）
-├── docs/                               # 詳細索引與補充說明文件
+├── docs/                               # Agent／Skill 索引（生成檔）與 ADR（adr/）
 ├── git-global-excludes                 # 機器層 Git 排除清單
 ├── agents/
 │   ├── claude/                         # Persona 與 sub-agent 規則檔（.md 格式）
@@ -256,7 +260,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 ├── claude-plugins/                     # 本機 marketplace、hook 與狀態看板 plugin
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本、Demo 外框範本與派工範本
-└── scripts/                            # 安裝、檢查與 hooks 腳本
+└── scripts/                            # 安裝、派工、查詢與索引腳本（dispatch/ 責任檔、tests/ 測試）
 ```
 
 ---
@@ -271,8 +275,15 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Get-CodexQuota.ps1` 查詢 Codex 額度，只供顯示與紀錄。
 - `scripts/Invoke-WorkOverviewCleanup.ps1` 列出可清理的 worktree、分支與線層歷史備份，必須指定 `-Root`；預設只列出，以 `-ConfirmPlan` 帶入列出時的 planId 才刪除。
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
+- `scripts/Setup-AIGlobalConfig.ps1` 建立各工具的 symlink 與 Git Hook 設定，見「安裝」與 §3。
+- `scripts/Invoke-CodexDispatch.ps1` 是 Codex 資源派遣的入口，由 `codex-dispatch` skill 呼叫。
+- `scripts/New-DispatchOrder.ps1` 依參數產生派遣單 Markdown 並驗證驗收命令。
+- `scripts/New-CodexDispatchAccount.ps1` 建立派工帳號，見 §3。
+- `scripts/Ensure-AiContextArtifacts.ps1` 依來源指紋決定是否重產 `.local/ai-context/` 的索引產物，並呼叫 `Export-ApiSurface.csx`、`Export-TypeHierarchy.csx` 與 `Export-ProjectGraph.csx`。
+- `scripts/Export-CommentVocabularyCandidates.csx` 唯讀掃描 `.cs`，輸出資料庫註解語彙候選 JSON，由 `database-comment-generator` skill 使用。
 - 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
-- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
+- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
+- `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts` 與 `render.test.tsx` 兩個測試檔，從 `claude-code/testing` 匯入。
 - `claude-plugins/` 內由工具自動呼叫的 hook 腳本，使用全小寫 kebab-case 命名。
 - `.githooks/` 內為 Git 原生 Hook，由 `Setup-AIGlobalConfig.ps1` 透過 `core.hooksPath` 啟用。
 
