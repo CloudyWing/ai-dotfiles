@@ -54,7 +54,7 @@ policy.allow_implicit_invocation: false
 
 對 Prettier 與 ESLint 各自比對既有規則與範本規則：
 
-**Prettier 衝突項**：同一鍵但值不同（如現有 `tabWidth: 2`、範本為 `4`）。
+**Prettier 衝突項**：同一鍵但值不同（如現有 `tabWidth: 4`、範本為 `2`）。
 
 **ESLint 衝突項**：
 
@@ -76,8 +76,8 @@ policy.allow_implicit_invocation: false
 
 【.prettierrc.json】
 {
-    "tabWidth": 4,
-    ...
+  "tabWidth": 2,
+  ...
 }
 
 【eslint.config.js】
