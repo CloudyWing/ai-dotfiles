@@ -98,7 +98,7 @@ M3 的分母含 `cycle_id` 為 `-` 的 `事件` 列。
 
 ## 舊資料（基準）算法
 
-基準使用下節的基準鏈。輪次取自各報告的 manifest `round`，input 取自 `C:\Users\CloudyWing\.ai-agents\.local\ai-sessions\report\dispatch-cost-ledger\raw\runs.csv`（排除 `is_fixture=True`）中 `line_slug` 與 `dispatch_slug` 對應的列，只計 `usage_available=True` 的列，同一 slug 有多個 run 時加總。歷史派遣不回填 `cycle_*` 欄位或 usage，基準只以本節算法計算。
+基準使用下節的基準鏈。輪次取自各報告的 manifest `round`，input 取自 `<sourceRoot>\.local\ai-sessions\report\dispatch-cost-ledger\raw\runs.csv`（排除 `is_fixture=True`）中 `line_slug` 與 `dispatch_slug` 對應的列，只計 `usage_available=True` 的列，同一 slug 有多個 run 時加總。歷史派遣不回填 `cycle_*` 欄位或 usage，基準只以本節算法計算。
 
 ## 比較規則
 
@@ -109,7 +109,7 @@ M3 的分母含 `cycle_id` 為 `-` 的 `事件` 列。
 
 ## 基準鏈
 
-來源為 `C:\Users\CloudyWing\.ai-agents\.local\ai-sessions\report\dispatch-report-redo-cause-scan-2.md`「Q1 實際輪數」與逐次證據表，資料截止 2026-11-01。
+來源為 `<sourceRoot>\.local\ai-sessions\report\dispatch-report-redo-cause-scan-2.md`「Q1 實際輪數」與逐次證據表，資料截止 2026-11-01。
 
 | 鏈 | lineSlug | 輪數（manifest `round`） | slug 與輪次對應 | 輪次來源 |
 | --- | --- | ---: | --- | --- |
@@ -136,7 +136,7 @@ M3 的分母含 `cycle_id` 為 `-` 的 `事件` 列。
 2026-11-10 以下列命令重算，pwsh 7 與 Windows PowerShell 5.1 輸出相同，exit code 0。
 
 ```text
-pwsh -NoProfile -File <暫存檔> -RunsCsv 'C:\Users\CloudyWing\.ai-agents\.local\ai-sessions\report\dispatch-cost-ledger\raw\runs.csv'
+pwsh -NoProfile -File <暫存檔> -RunsCsv '<sourceRoot>\.local\ai-sessions\report\dispatch-cost-ledger\raw\runs.csv'
 
 chain                  rounds usage_rounds runs usage_runs input_total input_r1 m2_pct
 schema-ai-integration       9            9    9          9   130335500 10321830  92.08
@@ -149,7 +149,7 @@ M1u median = 9 over 9,9,10,9
 M2 combined = 91.48% (r1=31562832, total=370316922)
 ```
 
-重算方式為將下列腳本存成暫存檔（例如 `<work-root>\.local\ai-sessions\scratch\baseline.ps1`），再執行 `pwsh -NoProfile -File <暫存檔> -RunsCsv 'C:\Users\CloudyWing\.ai-agents\.local\ai-sessions\report\dispatch-cost-ledger\raw\runs.csv'`。腳本依上節基準鏈表對映 slug 與輪次，加總 `usage_available=True` 列的 `input_tokens`。
+重算方式為將下列腳本存成暫存檔（例如 `<work-root>\.local\ai-sessions\scratch\baseline.ps1`），再執行 `pwsh -NoProfile -File <暫存檔> -RunsCsv '<sourceRoot>\.local\ai-sessions\report\dispatch-cost-ledger\raw\runs.csv'`。腳本依上節基準鏈表對映 slug 與輪次，加總 `usage_available=True` 列的 `input_tokens`。
 
 ```powershell
 param([Parameter(Mandatory)][string]$RunsCsv)

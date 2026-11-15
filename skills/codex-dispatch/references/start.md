@@ -726,7 +726,7 @@ secondary_source_file=
 
 ```markdown
 必讀檔案：
-- `C:\專案\文件.md`
+- `C:\<專案目錄>\文件.md`
 ```
 
 Stage A 檢查區塊格式與來源路徑（區塊列出的同線 `design.md` 來源由 `DispatchInputDesignMissing` 檢查），Stage B 檢查 dispatch worktree 內的全部區塊路徑，含 worktree 內的同線 `design.md` 副本，缺件回報 `DispatchInputReferenceMissing`（`DI-REF-B`）。格式錯誤分別回報 `DispatchInputRequiredReadHeadingInvalid`、`DispatchInputRequiredReadEmpty`、`DispatchInputRequiredReadLineInvalid`、`DispatchInputRequiredReadMultiplePaths`、`DispatchInputRequiredReadNotAbsolute`；缺件回報 `DispatchInputReferenceMissing`。依訊息中的正確寫法修正後重送。
