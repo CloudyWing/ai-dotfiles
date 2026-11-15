@@ -7,12 +7,13 @@
 - 全域規則的單一來源是 `instructions.md`。
 - 各家 AI 工具的全域指令檔（如 CLAUDE.md、AGENTS.md、GEMINI.md 等）均為 Windows Symbolic Link，最終都指向 `instructions.md`。具體對應關係見 `README.md` §3。
 - 修改全域規則一律改 `instructions.md`，不要去改各工具目錄下的 symlink。
+- 修改 `instructions.md`、`agents/` 下的規則檔或 SKILL.md 的機制條款前，先讀 `.claude/skills/repo-rule-change/SKILL.md`（同步位置與 Codex TOML 格式限制）。
 - 上述全域指令檔位於各工具的使用者設定目錄。本檔是 repo 根目錄的專案層 `AGENTS.md`，只記錄維護本 repo 所需的事實，兩者同名但不是同一份檔案。
 
 ## 2. 新增 / 修改 Skill
 
-- Skill 寫入 `skills/<name>/SKILL.md` 即可，各家工具會透過各自的 symlink 同時讀到。
-- 不需要為各工具各寫一份。
+- Skill 寫入 `skills/<name>/SKILL.md` 即可，各家工具會透過各自的 symlink 同時讀到，不需要為各工具各寫一份。
+- 只在維護本 repo 時適用的 skill 放 `.claude/skills/`，不放 `skills/`。新增或搬移 skill 前，先讀 `.claude/skills/repo-skill-authoring/SKILL.md`（放置位置、frontmatter 檢查與生成檔）。
 
 ## 3. Persona 路由規則
 
@@ -21,9 +22,7 @@
 
 ## 4. Codex Agent 定義格式
 
-- `agents/codex/*.toml` 的頂層 bare key 只允許 `name`、`description`、`developer_instructions` 三個。Codex 讀到其他頂層鍵時會判定整份檔案 malformed 並丟棄該 agent 定義，只在 stderr 印一行警告，不中斷執行。
-- 其他供文件生成使用的中繼資料以單行註解承載，格式為 `# doc-meta: <key> = "<value>"`。慣例上將它置於 `description` 之後、`developer_instructions` 之前。硬性要求是不得寫入 `developer_instructions` 多行字串內，否則會成為 agent 指令內容的一部分，不再是中繼資料。目前使用的是 `audience`，值為 `agent` 或 `human`。
-- `.githooks/Update-Docs.ps1` 以 `Get-TomlMetaValue` 讀取該註解產生 `docs/agents.md` 的「讀者」欄，並以 `Assert-CodexTomlTopLevelKey` 檢查頂層鍵白名單。違反白名單時 pre-commit 直接失敗，避免 Codex 端的靜默丟棄。
+- `agents/codex/*.toml` 的頂層 bare key 只允許 `name`、`description`、`developer_instructions` 三個。Codex 讀到其他頂層鍵時會丟棄整份 agent 定義，只在 stderr 印一行警告。修改 `agents/codex/*.toml` 前先讀 `.claude/skills/repo-rule-change/SKILL.md`（其餘格式限制與 pre-commit 檢查）。
 
 ## 5. 設定散佈與 Hook
 
