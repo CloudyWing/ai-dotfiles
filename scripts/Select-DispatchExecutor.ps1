@@ -5,17 +5,22 @@
 依執行者登錄表為任務選出派工執行者，唯讀輸出單一 JSON 物件。
 
 .DESCRIPTION
-驗證任務標註（類型、旗標、標籤、實作者家族、離線清單），讀取
+驗證任務標註（類型、旗標、標籤、優先條件、實作者家族、離線清單、未完成次數），讀取
 scripts\dispatch\executor-registry.json，依固定演算法選出執行者並產生 [派工判定] 行。
+
+演算法：受理該類型、硬能力涵蓋有效標籤且條件全部符合的執行者為候選（必要條件）；
+候選依優先條件逐項比較，滿足者在前，第一項相同再比下一項，全部相同時排序值小者在前；
+依序略過 -Offline 列出者與未完成次數達登錄表 maxIncomplete 者，第一位未被略過者為選中者。
+
 登錄表的讀取與結構驗證載入同目錄 lib\executor-registry.ps1（產生器、Setup、帳號建立與派工前比對共用同一份）。
 腳本與該檔都不寫檔、不呼叫網路、不讀取環境變數，同輸入與同登錄表的輸出完全相同。
 
-結束碼：0 為 selected 或 degraded；10 為 escalation-candidate；20 為 needs-authorization；
-21 為 wait-reset；22 為 stopped；2 為標註無效；3 為登錄表不存在或無效；
+結束碼：0 為 selected；10 為 needs-user-decision；20 為 needs-authorization；22 為 stopped；
+2 為標註無效；3 為登錄表不存在或無效；
 1 為內部錯誤，或 lib\executor-registry.ps1 不存在或無法載入（SelectorRegistryLibraryUnavailable）。
 標註無效與登錄表無效時，stderr 首段格式為「Code：訊息」。
 結束碼 2 的錯誤碼含 SelectorParameterBinding：多值參數以空白分隔時，多餘的值會成為位置參數，
-腳本以此錯誤碼回報；-Tags 與 -Offline 的多個值請以逗號連接且不含空白。
+腳本以此錯誤碼回報；-Tags、-Prefer、-Offline 與 -Incomplete 的多個值請以逗號連接且不含空白。
 
 .PARAMETER Type
 任務類型，值域由登錄表 types 決定。
@@ -27,22 +32,30 @@ scripts\dispatch\executor-registry.json，依固定演算法選出執行者並�
 旗標 T（需要測試循環），值為 true 或 false，僅該類型要求時提供。
 
 .PARAMETER Deep
-已移除的旗標。type=review 不再依旗標選擇檔位，傳入此參數（任何值、任何類型）時以 SelectorFlagRemoved 結束碼 2 拒絕。
+已移除的旗標。傳入此參數（任何值、任何類型）時以 SelectorFlagRemoved 結束碼 2 拒絕。
 
 .PARAMETER Tags
-任務所需的硬能力標籤，可用逗號分隔多個。
+任務的必要條件：所需的硬能力標籤，可用逗號分隔多個。
+
+.PARAMETER Prefer
+任務的優先條件，依重要性由高到低，可用逗號分隔多個。值為硬能力標籤或 family。
+接在該類型登錄表 preferred 之後，已出現者不重複。
 
 .PARAMETER ImplementerFamily
-實作者家族，claude 或 codex。types 設定 crossFamily 的類型必填。
+實作者家族，claude 或 codex。有效優先條件含 family 時必填。
 
 .PARAMETER Authorized
 使用者已授權 gated 執行者。
 
 .PARAMETER Offline
-經服務端拒絕且確認的離線執行者 id，可用逗號分隔多個。
+經服務端拒絕且確認不可用的執行者 id，可用逗號分隔多個。
+
+.PARAMETER Incomplete
+同一任務內各執行者已累計的未完成次數，格式為 id:次數，可用逗號分隔多個，同一 id 只能出現一次。
+次數為 0 至 999 的整數（與登錄表 maxIncomplete 的上限相同），達登錄表 maxIncomplete 的執行者不再被選中。
 
 .PARAMETER EscalateFrom
-失敗升級的原執行者 id。提供時改走升級路徑。
+已移除的參數。傳入時以 SelectorFlagRemoved 結束碼 2 拒絕，改用 -Incomplete。
 
 .PARAMETER Label
 附在 dispatchLine 的任務說明。
@@ -60,9 +73,11 @@ param(
     [string]$T,
     [string]$Deep,
     [string[]]$Tags,
+    [string[]]$Prefer,
     [string]$ImplementerFamily,
     [switch]$Authorized,
     [string[]]$Offline,
+    [string[]]$Incomplete,
     [string]$EscalateFrom,
     [string]$Label,
     [string]$RegistryPath,
@@ -77,6 +92,10 @@ $ErrorActionPreference = 'Stop'
 $script:SelectionSchema = 'ai-agents.executor-selection.v1'
 $script:DescribeSchema = 'ai-agents.executor-describe.v1'
 $script:DeepFlagProvided = $PSBoundParameters.ContainsKey('Deep')
+$script:EscalateFromProvided = $PSBoundParameters.ContainsKey('EscalateFrom')
+# 優先條件 family：執行者家族不等於實作者家族。判定行以括號補上讀者看得懂的說法。
+$script:FamilyPreference = 'family'
+$script:PreferenceCaptions = @{ family = '同家族審查' }
 
 # 登錄表的讀取與結構驗證在 lib\executor-registry.ps1，這是本腳本唯一載入的檔案，以本腳本所在位置為基準，
 # 不受呼叫端工作目錄影響。檔案不存在或無法解析時以 SelectorRegistryLibraryUnavailable 結束碼 1 結束。
@@ -138,116 +157,82 @@ function ConvertTo-FlagValue {
 }
 
 function Get-ExclusionReason {
-    param($Executor, $TypeDef, [string]$TypeName, $Flags, [string[]]$EffectiveTags, [string]$ImplementerFamily, [bool]$CheckFamily, [bool]$AllowEscalationOnly)
+    param($Executor, [string]$TypeName, $Flags, [string[]]$EffectiveTags)
 
-    if ($Executor.EscalationOnly -and -not $AllowEscalationOnly) { return 'escalation-only' }
+    # 必要條件：受理類型、硬能力涵蓋有效標籤、when 全部符合。回傳 $null 表示是候選。
     if ($Executor.Accepts -notcontains $TypeName) { return 'type-not-accepted' }
     $missing = @($EffectiveTags | Where-Object { $Executor.Tags -notcontains $_ })
     if ($missing.Count -gt 0) { return ('tag-missing:{0}' -f ($missing -join ',')) }
     foreach ($key in $Executor.When.Keys) {
         if (-not $Flags.ContainsKey($key) -or $Flags[$key] -ne $Executor.When[$key]) { return ('when-mismatch:{0}' -f $key) }
     }
-    if ($CheckFamily -and $TypeDef.CrossFamily -and $Executor.Family -eq $ImplementerFamily) { return 'same-family' }
     return $null
 }
 
+function Test-PreferenceMet {
+    param($Executor, [string]$Preference, [string]$ImplementerFamily)
+
+    if ($Preference -ceq $script:FamilyPreference) { return ($Executor.Family -ne $ImplementerFamily) }
+    return ($Executor.Tags -contains $Preference)
+}
+
 function Get-ExecutorSelection {
-    param($Registry, [string]$TypeName, $Flags, [string[]]$EffectiveTags, [string]$ImplementerFamily, [bool]$IsAuthorized, [string[]]$OfflineIds, [string]$EscalateFromId)
+    param($Registry, [string]$TypeName, $Flags, [string[]]$EffectiveTags, [string[]]$Preferences, [string]$ImplementerFamily, [bool]$IsAuthorized, [string[]]$OfflineIds, $IncompleteCounts)
 
-    $typeDef = $Registry.Types[$TypeName]
-    $executors = @($Registry.Executors)
-    $relaxFamily = ($typeDef.Degradable -contains 'family')
     $reasons = @{}
-    $chosen = $null
-    $status = $null
-    $reason = $null
-    $degradations = @()
+    $ranked = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($executor in @($Registry.Executors)) {
+        $excluded = Get-ExclusionReason -Executor $executor -TypeName $TypeName -Flags $Flags -EffectiveTags $EffectiveTags
+        if ($null -ne $excluded) { $reasons[$executor.Id] = $excluded; continue }
+        # 排序鍵：每個優先條件一位，滿足為 0、未滿足為 1，依重要性由高到低；字串比較即逐項比較。
+        $unmet = @($Preferences | Where-Object { -not (Test-PreferenceMet -Executor $executor -Preference $_ -ImplementerFamily $ImplementerFamily) })
+        $key = (@($Preferences | ForEach-Object { if ($unmet -ccontains $_) { '1' } else { '0' } }) -join '')
+        $ranked.Add([pscustomobject]@{ Executor = $executor; Unmet = $unmet; Key = $key })
+    }
+    # Registry.Executors 已依 order 排序，Sort-Object -Stable 保留同鍵者的 order 順序。
+    $candidates = @($ranked.ToArray() | Sort-Object -Property Key -Stable)
 
-    if (-not [string]::IsNullOrWhiteSpace($EscalateFromId)) {
-        $chain = New-Object 'System.Collections.Generic.List[string]'
-        $next = $Registry.ById[$EscalateFromId].EscalatesTo
-        while ($null -ne $next) {
-            $chain.Add($next)
-            $next = $Registry.ById[$next].EscalatesTo
+    $chosen = $null
+    $skipped = @()
+    $hitIncompleteLimit = $false
+    foreach ($candidate in $candidates) {
+        $id = $candidate.Executor.Id
+        if ($null -ne $chosen) { $reasons[$id] = 'eligible-lower-priority'; continue }
+        if ($OfflineIds -contains $id) {
+            $reasons[$id] = 'offline'
+            $skipped += , ([ordered]@{ id = $id; reason = 'offline' })
+            continue
         }
-        foreach ($executor in $executors) {
-            if (-not $chain.Contains($executor.Id)) { $reasons[$executor.Id] = 'not-in-escalation-chain'; continue }
-            $excluded = Get-ExclusionReason -Executor $executor -TypeDef $typeDef -TypeName $TypeName -Flags $Flags -EffectiveTags $EffectiveTags -ImplementerFamily $ImplementerFamily -CheckFamily $false -AllowEscalationOnly $true
-            if ($null -eq $excluded -and $OfflineIds -contains $executor.Id) { $excluded = 'offline' }
-            if ($null -ne $excluded) { $reasons[$executor.Id] = $excluded } else { $reasons[$executor.Id] = 'eligible-lower-priority' }
+        if ($IncompleteCounts.ContainsKey($id) -and $IncompleteCounts[$id] -ge $Registry.MaxIncomplete) {
+            $reasons[$id] = 'incomplete-limit'
+            $skipped += , ([ordered]@{ id = $id; reason = 'incomplete-limit' })
+            $hitIncompleteLimit = $true
+            continue
         }
-        foreach ($id in $chain) {
-            if ($reasons[$id] -eq 'eligible-lower-priority') { $chosen = $Registry.ById[$id]; break }
-        }
-        if ($null -ne $chosen) {
-            $status = 'escalation-candidate'
-            $reason = 'escalation-chain'
-            $reasons[$chosen.Id] = 'escalation-candidate'
-            if ($typeDef.CrossFamily -and $chosen.Family -eq $ImplementerFamily) { $degradations = @('同家族審查') }
-        }
-        else {
-            $status = 'stopped'
-            $reason = 'no-escalation'
-        }
+        $chosen = $candidate
+        $reasons[$id] = 'selected'
     }
-    else {
-        $strict = @{}
-        $relaxed = @{}
-        foreach ($executor in $executors) {
-            $strict[$executor.Id] = Get-ExclusionReason -Executor $executor -TypeDef $typeDef -TypeName $TypeName -Flags $Flags -EffectiveTags $EffectiveTags -ImplementerFamily $ImplementerFamily -CheckFamily $true -AllowEscalationOnly $false
-            $relaxed[$executor.Id] = Get-ExclusionReason -Executor $executor -TypeDef $typeDef -TypeName $TypeName -Flags $Flags -EffectiveTags $EffectiveTags -ImplementerFamily $ImplementerFamily -CheckFamily (-not $relaxFamily) -AllowEscalationOnly $false
-        }
-        $c0Online = @($executors | Where-Object { $null -eq $strict[$_.Id] -and $OfflineIds -notcontains $_.Id })
-        if ($c0Online.Count -gt 0) {
-            $chosen = $c0Online[0]
-            if ($chosen.Gated -and -not $IsAuthorized) { $status = 'needs-authorization'; $reason = 'authorization-required' }
-            else { $status = 'selected'; $reason = 'lowest-order-eligible' }
-        }
-        elseif (@($typeDef.Degradable).Count -gt 0) {
-            $c1 = @($executors | Where-Object { $null -eq $relaxed[$_.Id] -and $OfflineIds -notcontains $_.Id })
-            if ($c1.Count -gt 0) {
-                $chosen = $c1[0]
-                $status = 'degraded'
-                $reason = 'family-relaxed'
-                $degradations = @('同家族審查')
-            }
-        }
-        if ($null -eq $chosen) {
-            $q = @($executors | Where-Object { $null -eq $relaxed[$_.Id] })
-            if ($q.Count -eq 0) {
-                $status = 'stopped'
-                $reason = 'no-eligible-executor'
-            }
-            else {
-                $action = 'stop'
-                if ($null -ne $q[0].OnOffline -and $q[0].OnOffline.Contains($TypeName)) { $action = $q[0].OnOffline[$TypeName] }
-                if ($action -eq 'wait-reset') { $status = 'wait-reset' } else { $status = 'stopped' }
-                $reason = 'offline'
-            }
-        }
-        foreach ($executor in $executors) {
-            if ($null -ne $chosen -and $executor.Id -eq $chosen.Id) {
-                if ($status -eq 'degraded') { $reasons[$executor.Id] = 'degraded' } else { $reasons[$executor.Id] = 'selected' }
-                continue
-            }
-            $base = $strict[$executor.Id]
-            if ($status -eq 'degraded') { $base = $relaxed[$executor.Id] }
-            if ($null -ne $base) { $reasons[$executor.Id] = $base }
-            elseif ($OfflineIds -contains $executor.Id) { $reasons[$executor.Id] = 'offline' }
-            else { $reasons[$executor.Id] = 'eligible-lower-priority' }
-        }
+
+    if ($null -ne $chosen) {
+        if ($chosen.Executor.Gated -and -not $IsAuthorized) { $status = 'needs-authorization'; $reason = 'authorization-required' }
+        else { $status = 'selected'; $reason = 'best-match' }
     }
+    elseif ($candidates.Count -eq 0) { $status = 'stopped'; $reason = 'no-eligible-executor' }
+    elseif ($hitIncompleteLimit) { $status = 'needs-user-decision'; $reason = 'all-candidates-exhausted' }
+    else { $status = 'stopped'; $reason = 'offline' }
 
     $considered = @()
-    foreach ($executor in $executors) {
+    foreach ($executor in @($Registry.Executors)) {
         $considered += , ([ordered]@{ id = $executor.Id; reason = $reasons[$executor.Id] })
     }
     return [pscustomobject]@{
-        Status       = $status
-        Executor     = $chosen
-        Degradations = $degradations
-        Reason       = $reason
-        Considered   = $considered
+        Status           = $status
+        Executor         = $(if ($null -ne $chosen) { $chosen.Executor } else { $null })
+        UnmetPreferences = $(if ($null -ne $chosen) { @($chosen.Unmet) } else { @() })
+        Candidates       = @($candidates | ForEach-Object { $_.Executor.Id })
+        Skipped          = $skipped
+        Reason           = $reason
+        Considered       = $considered
     }
 }
 
@@ -263,11 +248,9 @@ function Get-DispatchLine {
 
     $judgement = switch ($Selection.Status) {
         'selected' { '登錄表→{0}' -f $Selection.Executor.Id }
-        'degraded' { '登錄表→{0}' -f $Selection.Executor.Id }
         'needs-authorization' { '登錄表→待授權' }
-        'wait-reset' { '登錄表→等待重設' }
+        'needs-user-decision' { '登錄表→需使用者決定' }
         'stopped' { '登錄表→停止' }
-        'escalation-candidate' { '登錄表→升級候選 {0}' -f $Selection.Executor.Id }
     }
     $parts = New-Object 'System.Collections.Generic.List[string]'
     if (-not [string]::IsNullOrWhiteSpace($LabelText)) { $parts.Add($LabelText.Trim()) }
@@ -275,9 +258,16 @@ function Get-DispatchLine {
     foreach ($flag in @($TypeDef.RequiredFlags)) { $parts.Add(('{0}={1}' -f $flag, (Format-YesNo $Flags[$flag]))) }
     if ($null -ne $Selection.Executor) { $parts.Add(('執行者={0}' -f $Selection.Executor.Display)) }
     else { $parts.Add('執行者=無') }
-    $line = '[派工判定: {0}] {1}' -f $judgement, ($parts -join ' ')
-    if ($Selection.Status -eq 'degraded' -or ($Selection.Status -eq 'escalation-candidate' -and @($Selection.Degradations).Count -gt 0)) { $line += ' 降級=同家族審查' }
-    return $line
+    if (@($Selection.UnmetPreferences).Count -gt 0) {
+        $names = @($Selection.UnmetPreferences | ForEach-Object {
+                if ($script:PreferenceCaptions.ContainsKey($_)) { '{0}（{1}）' -f $_, $script:PreferenceCaptions[$_] } else { $_ }
+            })
+        $parts.Add(('未滿足優先條件={0}' -f ($names -join ',')))
+    }
+    if (@($Selection.Skipped).Count -gt 0) {
+        $parts.Add(('略過={0}' -f ((@($Selection.Skipped) | ForEach-Object { '{0}:{1}' -f $_.id, $_.reason }) -join ',')))
+    }
+    return ('[派工判定: {0}] {1}' -f $judgement, ($parts -join ' '))
 }
 
 function Get-StatusExitCode {
@@ -285,10 +275,8 @@ function Get-StatusExitCode {
 
     switch ($Status) {
         'selected' { return 0 }
-        'degraded' { return 0 }
-        'escalation-candidate' { return 10 }
+        'needs-user-decision' { return 10 }
         'needs-authorization' { return 20 }
-        'wait-reset' { return 21 }
         'stopped' { return 22 }
     }
     return 1
@@ -304,33 +292,32 @@ function Get-DescribeDocument {
                 requiredFlags = @($type.RequiredFlags)
                 impliedTags   = @($type.ImpliedTags)
                 forbiddenTags = @($type.ForbiddenTags)
-                crossFamily   = $type.CrossFamily
-                degradable    = @($type.Degradable)
+                preferred     = @($type.Preferred)
             })
     }
     $executorRows = @()
     foreach ($executor in $Registry.Executors) {
         $row = [ordered]@{
-            id             = $executor.Id
-            display        = $executor.Display
-            platform       = $executor.Platform
-            accepts        = @($executor.Accepts)
-            tags           = @($executor.Tags)
-            when           = $executor.When
-            order          = $executor.Order
-            gated          = $executor.Gated
-            escalationOnly = $executor.EscalationOnly
-            escalatesTo    = $executor.EscalatesTo
+            id       = $executor.Id
+            display  = $executor.Display
+            platform = $executor.Platform
+            family   = $executor.Family
+            accepts  = @($executor.Accepts)
+            tags     = @($executor.Tags)
+            when     = $executor.When
+            order    = $executor.Order
+            gated    = $executor.Gated
         }
         if ($executor.Platform -eq 'claude') { $row['model'] = $executor.Model } else { $row['profile'] = $executor.Profile; $row['entry'] = $executor.Entry; $row['profileSettings'] = $executor.ProfileSettings }
         $executorRows += , $row
     }
     return [ordered]@{
-        schema    = $script:DescribeSchema
-        tags      = [ordered]@{ hard = @($Registry.HardTags); constraint = @($Registry.Constraint) }
-        flags     = @($Registry.Flags)
-        types     = $typeRows
-        executors = $executorRows
+        schema        = $script:DescribeSchema
+        tags          = [ordered]@{ hard = @($Registry.HardTags); constraint = @($Registry.Constraint) }
+        flags         = @($Registry.Flags)
+        maxIncomplete = $Registry.MaxIncomplete
+        types         = $typeRows
+        executors     = $executorRows
     }
 }
 
@@ -338,8 +325,11 @@ function Invoke-Selector {
     if ($script:DeepFlagProvided) {
         throw (New-SelectorError -Code 'SelectorFlagRemoved' -Message '旗標 Deep 已移除，type=review 不再依旗標選擇檔位，請移除 -Deep。' -ExitCode 2)
     }
+    if ($script:EscalateFromProvided) {
+        throw (New-SelectorError -Code 'SelectorFlagRemoved' -Message '參數 EscalateFrom 已移除，請改以 -Incomplete <執行者 id>:<未完成次數> 傳入，由候選排序決定下一位。' -ExitCode 2)
+    }
     if ($null -ne $RemainingArgument -and @($RemainingArgument).Count -gt 0) {
-        throw (New-SelectorError -Code 'SelectorParameterBinding' -Message ('偵測到多餘的位置參數：{0}。-Tags 與 -Offline 的多個值請以逗號連接且不含空白，例如 -Offline codex-scan,codex-review' -f (@($RemainingArgument) -join ' ')) -ExitCode 2)
+        throw (New-SelectorError -Code 'SelectorParameterBinding' -Message ('偵測到多餘的位置參數：{0}。-Tags、-Prefer、-Offline 與 -Incomplete 的多個值請以逗號連接且不含空白，例如 -Offline codex-scan,codex-review' -f (@($RemainingArgument) -join ' ')) -ExitCode 2)
     }
     $path = $RegistryPath
     if ([string]::IsNullOrWhiteSpace($path)) { $path = Join-Path -Path $PSScriptRoot -ChildPath 'dispatch\executor-registry.json' }
@@ -381,8 +371,19 @@ function Invoke-Selector {
     }
     $effectiveTags = @($registry.HardTags | Where-Object { $requestedTags -contains $_ -or $typeDef.ImpliedTags -contains $_ })
 
-    if ($typeDef.CrossFamily -and ($ImplementerFamily -cne 'claude' -and $ImplementerFamily -cne 'codex')) {
-        throw (New-SelectorError -Code 'SelectorFamilyRequired' -Message ('類型 {0} 必須提供 -ImplementerFamily（claude 或 codex）' -f $Type) -ExitCode 2)
+    # 有效優先條件：類型的 preferred 在前，任務以 -Prefer 追加者在後。
+    $preferences = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($item in @($typeDef.Preferred)) { $preferences.Add($item) }
+    foreach ($item in (Split-ListArgument -Value $Prefer)) {
+        if (@($registry.HardTags) -cnotcontains $item -and -not ($item -ceq $script:FamilyPreference -and @($registry.Constraint) -ccontains $item)) {
+            throw (New-SelectorError -Code 'SelectorPreferInvalid' -Message ('未知的優先條件：{0}。可用值：{1}' -f $item, ((@($registry.HardTags) + @($script:FamilyPreference)) -join ', ')) -ExitCode 2)
+        }
+        if (-not $preferences.Contains($item)) { $preferences.Add($item) }
+    }
+    $needsFamily = $preferences.Contains($script:FamilyPreference)
+
+    if ($needsFamily -and ($ImplementerFamily -cne 'claude' -and $ImplementerFamily -cne 'codex')) {
+        throw (New-SelectorError -Code 'SelectorFamilyRequired' -Message ('類型 {0} 的優先條件含 family，必須提供 -ImplementerFamily（claude 或 codex）' -f $Type) -ExitCode 2)
     }
 
     $offlineIds = Split-ListArgument -Value $Offline
@@ -391,19 +392,38 @@ function Invoke-Selector {
             throw (New-SelectorError -Code 'SelectorExecutorUnknown' -Message ('-Offline 含未知的執行者 id：{0}' -f $id) -ExitCode 2)
         }
     }
-    if (-not [string]::IsNullOrWhiteSpace($EscalateFrom) -and -not $registry.ById.ContainsKey($EscalateFrom)) {
-        throw (New-SelectorError -Code 'SelectorExecutorUnknown' -Message ('-EscalateFrom 為未知的執行者 id：{0}' -f $EscalateFrom) -ExitCode 2)
-    }
 
-    $selection = Get-ExecutorSelection -Registry $registry -TypeName $Type -Flags $flags -EffectiveTags $effectiveTags -ImplementerFamily $ImplementerFamily -IsAuthorized ([bool]$Authorized) -OfflineIds $offlineIds -EscalateFromId $EscalateFrom
+    # 不經 Split-ListArgument：它會先去掉完全相同的項目，同一 id 重複時就看不出來。
+    $incompleteEntries = @(@($Incomplete) | Where-Object { $null -ne $_ } | ForEach-Object { $_ -split '[,;\s]+' } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    $incompleteCounts = [ordered]@{}
+    foreach ($entry in $incompleteEntries) {
+        $match = [regex]::Match($entry, '^(?<id>[^:]+):(?<count>[0-9]+)$')
+        # 次數上限與登錄表 maxIncomplete 的上限相同；位數先擋下，避免超大數字轉型失敗。
+        if (-not $match.Success -or $match.Groups['count'].Value.Length -gt 9 -or [long]$match.Groups['count'].Value -gt $registry.IncompleteLimit) {
+            throw (New-SelectorError -Code 'SelectorIncompleteInvalid' -Message ('-Incomplete 的格式必須為 <執行者 id>:<0 至 {0} 的整數>：{1}' -f $registry.IncompleteLimit, $entry) -ExitCode 2)
+        }
+        $id = $match.Groups['id'].Value
+        if (-not $registry.ById.ContainsKey($id)) {
+            throw (New-SelectorError -Code 'SelectorExecutorUnknown' -Message ('-Incomplete 含未知的執行者 id：{0}' -f $id) -ExitCode 2)
+        }
+        if ($incompleteCounts.Contains($id)) {
+            throw (New-SelectorError -Code 'SelectorIncompleteInvalid' -Message ('-Incomplete 的執行者 id 重複：{0}' -f $id) -ExitCode 2)
+        }
+        $incompleteCounts[$id] = [int]$match.Groups['count'].Value
+    }
+    $incompleteLookup = @{}
+    foreach ($id in $incompleteCounts.Keys) { $incompleteLookup[$id] = $incompleteCounts[$id] }
+
+    $selection = Get-ExecutorSelection -Registry $registry -TypeName $Type -Flags $flags -EffectiveTags $effectiveTags -Preferences $preferences.ToArray() -ImplementerFamily $ImplementerFamily -IsAuthorized ([bool]$Authorized) -OfflineIds $offlineIds -IncompleteCounts $incompleteLookup
 
     $labels = [ordered]@{}
     foreach ($flag in @($registry.Flags)) { if ($flags.ContainsKey($flag)) { $labels[$flag] = $flags[$flag] } }
     $labels['tags'] = @($effectiveTags)
-    if ($typeDef.CrossFamily) { $labels['implementerFamily'] = $ImplementerFamily } else { $labels['implementerFamily'] = $null }
+    $labels['prefer'] = @($preferences.ToArray())
+    if ($needsFamily) { $labels['implementerFamily'] = $ImplementerFamily } else { $labels['implementerFamily'] = $null }
     $labels['authorized'] = [bool]$Authorized
     $labels['offline'] = @($offlineIds)
-    if ([string]::IsNullOrWhiteSpace($EscalateFrom)) { $labels['escalateFrom'] = $null } else { $labels['escalateFrom'] = $EscalateFrom }
+    $labels['incomplete'] = $incompleteCounts
 
     $executorNode = $null
     if ($null -ne $selection.Executor) {
@@ -417,8 +437,10 @@ function Invoke-Selector {
         type                 = $Type
         labels               = $labels
         executor             = $executorNode
-        degradations         = @($selection.Degradations)
-        requiresUserDecision = ($selection.Status -eq 'escalation-candidate')
+        unmetPreferences     = @($selection.UnmetPreferences)
+        candidates           = @($selection.Candidates)
+        skipped              = @($selection.Skipped)
+        requiresUserDecision = ($selection.Status -eq 'needs-user-decision')
         reason               = $selection.Reason
         considered           = @($selection.Considered)
         dispatchLine         = (Get-DispatchLine -Selection $selection -TypeName $Type -TypeDef $typeDef -Flags $flags -LabelText $Label)

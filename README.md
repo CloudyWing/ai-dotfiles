@@ -46,7 +46,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | Developer、Maintainer | Claude | Persona，以語意切換；Developer 在 Workflow 中由主 Agent 派生 |
 | Architect、Prototyper | Claude | 由主 Agent 派生 |
 | Developer、Refactorer、Support Engineer | Claude subagent（Haiku 或 Sonnet，依執行者登錄表） | 由主 Agent 以 Agent 工具派生，或 Maintainer 派生 Support Engineer |
-| Reviewer、Frontend Reviewer、Contract Auditor | Codex（Codex 離線時降級為 Claude Sonnet subagent） | 由主 Agent 依派遣判準以資源派遣發動 |
+| Reviewer、Frontend Reviewer、Contract Auditor | Codex（Codex 不可用時由執行者登錄表選出的 Claude Sonnet subagent 承接） | 由主 Agent 依派遣判準以資源派遣發動 |
 | 測試（煙霧驗證取證）、事實校閱、顧問、影像產生 | Codex | 由主 Agent 依執行者登錄表以資源派遣發動 |
 
 實作類角色（Developer、Maintainer、Support Engineer、Refactorer）只在 Claude 端執行，Codex 端只承接審查、測試取證、事實校閱、顧問與影像產生。
@@ -192,7 +192,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 #### Codex profile 檔位設定
 
 1. 派工使用的檔位清單以 `scripts/dispatch/executor-registry.json` 為準，不在本文件另列。現行清單與各檔位的設定用 `pwsh -NoProfile -File scripts\Select-DispatchExecutor.ps1 -Describe` 查詢（各 Codex 執行者的 `profile` 與 `profileSettings`）。派工以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。審查類使用的 `scripts/Invoke-CodexRun.ps1` 不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`；選定帳號後、啟動 Codex 前，另比對實際要使用的帳號的檔位設定檔：必須是指向主 checkout 產生檔的 Symbolic Link 且內容相同（一般檔案即使內容相同也不通過，不允許單機覆寫），入口所在工作樹的登錄表設定也必須已落地到主 checkout。不一致時以結束碼 2（`CodexProfileDrift`）停止，列出每行可直接貼到 pwsh 的修正命令，不自行改檔，也不跳到下一個帳號；所有已登入帳號的檔位檔都缺失時同樣以此方式回報，不會被當成帳號全數不可用；換帳號後對新的候選帳號在使用前再比對一次，未使用的候選帳號不一致不阻擋。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md` 與 `executor-selection` skill。
-2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。這些值寫在 `scripts/dispatch/executor-registry.json` 各 Codex 執行者的 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort`），不手動編輯設定檔。`effort` 與 `subagentEffort` 必須在登錄表的 `codexEfforts` 清單內（`max` 需要 Codex 0.147 以上，見 §8）。
+2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。這些值寫在 `scripts/dispatch/executor-registry.json` 各 Codex 執行者的 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort`），不手動編輯設定檔。`profileSettings` 另可選填 `fallbackModels`，列出帳號不支援主要 model 時依序改用的 model；`Invoke-CodexRun.ps1` 以 `-c model=` 套用，產生檔只以註解列出這份清單。`effort` 與 `subagentEffort` 必須在登錄表的 `codexEfforts` 清單內（`max` 需要 Codex 0.147 以上，見 §8）。
 
    ```toml
    model = "<model-id>"
@@ -370,7 +370,7 @@ flowchart TD
     Maintainer --> Done
 ```
 
-> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依執行者登錄表派生 Claude subagent 進入實作，再以資源派遣發動 Codex 審查（Codex 離線時降級為 Claude Sonnet subagent）。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 由 Claude subagent 承接，處理程式碼技術債與語法現代化，每批修改後驗證測試。`architecture-improvement` 是人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
+> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依執行者登錄表派生 Claude subagent 進入實作，再以資源派遣發動 Codex 審查（Codex 不可用時由執行者登錄表選出的 Claude Sonnet subagent 承接）。判定為 C 線時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 由 Claude subagent 承接，處理程式碼技術債與語法現代化，每批修改後驗證測試。`architecture-improvement` 是人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
 
 ---
 

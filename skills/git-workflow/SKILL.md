@@ -130,7 +130,7 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 
     `--track` 讓線分支的 upstream 指向整合分支，`git rev-parse --abbrev-ref feature/<lineSlug>@{upstream}` 可讀回整合分支名稱。
 4. 確認本機排除：在新 worktree 執行 `git check-ignore -q .local/ai-sessions`，失敗時停止回報，不寫入任何 `.local` 內容。
-5. 複製本機資料到新 worktree：`AGENTS.local.md`、`.local\ai-context\`（存在時）、`.local\ai-sessions\handoff\<lineSlug>\`、`.local\ai-sessions\report\<lineSlug>\`。複製後逐檔比對 SHA-256，不一致時停止，以 `git worktree remove "<路徑>"`（不加 `--force`）移除本次建立的 worktree 並回報。
+5. 複製本機資料到新 worktree：`AGENTS.local.md`、`.local\machine.json`（存在時，派工腳本與其測試讀取帳號登記）、`.local\ai-context\`（存在時）、`.local\ai-sessions\handoff\<lineSlug>\`、`.local\ai-sessions\report\<lineSlug>\`。複製後逐檔比對 SHA-256，不一致時停止，以 `git worktree remove "<路徑>"`（不加 `--force`）移除本次建立的 worktree 並回報。
 6. 切換 work-root：該 worktree 根目錄成為本線的 work-root，之後的 `LineContext`、交接檢查點與派遣 `sourceRoot` 都使用新 work-root。主 checkout 的同線目錄保留原樣，不再寫入。
 7. 保持線分支不推送。遠端已有同名分支（`git ls-remote --heads origin feature/<lineSlug>` 有輸出）且需要改寫其歷史時，停止並詢問使用者。
 

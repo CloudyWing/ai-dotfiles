@@ -30,9 +30,9 @@
 
 - 判定證據：Dispatch 回報的 `CodexAccountsAllUnavailable` 與摘要檔 `history/<lineSlug>/dispatch-account-failover-<dispatchSlug>.json`（候選、略過原因與每次嘗試的拒絕種類），不採用各帳號最近一次派遣事件流。
 - 規則來源：承接者以該工作原本的規則檔為規則來源（`reviewer.toml`、`frontend-reviewer.toml`、`contract-auditor.toml` 等），由選派入口回傳的執行者承接。
-- 產出落點：降級審查依 `workflow-orchestration` skill「Sonnet 審查路徑」寫入 `review-report-claude.md`；事實查核改由 Sonnet 承接時沿用原派遣單第 7 欄的報告落點，不經 `codex-dispatch` 腳本。顧問降級為 Sonnet 第二意見時，以 evidence pack 的問題與證據檔絕對路徑派生冷啟動 subagent，報告首行標註「同家族審查」；測試取證改由 Sonnet 承接時依 `executor-selection` skill「Claude 測試取證者派生契約」。
+- 產出落點：審查改由 Claude 審查者承接時依 `workflow-orchestration` skill「審查的發動」，報告同樣是 `review-report.md`；事實查核改由 Sonnet 承接時沿用原派遣單第 7 欄的報告落點，不經 `codex-dispatch` 腳本。顧問改由 Sonnet 以第二意見承接時，以 evidence pack 的問題與證據檔絕對路徑派生冷啟動 subagent，報告首行標註「同家族審查」；測試取證改由 Sonnet 承接時依 `executor-selection` skill「Claude 測試取證者派生契約」。
 - 紀錄：改由其他執行者承接不追加 exceptions；在報告或回報中註明實際執行者、原應承接者與摘要檔的絕對路徑。
-- 停止：選派入口回傳 `stopped`（影像產生，或帶瀏覽器、桌面標籤的測試，沒有替代者）時，不改派，回報使用者。自訂登錄表把離線處置設為 `wait-reset` 時同樣不改派。
+- 停止：選派入口回傳 `stopped`（影像產生，或帶瀏覽器、桌面標籤的測試，沒有替代者）時，不改派，回報使用者。
 - 恢復：帳號恢復後新派遣照常使用 Codex，不回頭重做已承接的工作。
 
 ### 四種阻塞形狀的產物與交接
@@ -72,6 +72,6 @@ Workflow 派工沒有派遣單，以派遣單絕對路徑作為共同條件會�
 - 每輪逐條保存第 5 欄驗收結果、命令輸出、報告與事件證據。前輪未成立的驗收列在本輪相同 key 成立且沒有反證時標記 `closed`；本輪 key 不在前輪未成立集合且沒有同一 key 的改寫或重新命名時標記 `new-problem`。
 - `dispatch-return-count` 只記錄該派遣的退回稽核資料，不作一般停止條件。`PromptNotDelivered` 是啟動契約錯誤，不增加此計數。
 - 沒有未成立的 `Critical` 或 `Major` 驗收列時結束循環。驗收列仍是放行門檻。未成立的 `Minor` 驗收列由協調者依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」小型門檻補件收尾，超過門檻時退回執行端補件，兩者都不增加 `recovery-round`，全部驗收列成立後進入下一站，不為 `Minor` 單獨再開一輪複審。
-- 任一前輪 `Critical` 或 `Major` 問題連續兩輪未閉合、同一 `area-key` 連續兩輪出現新的 `Major` 以上問題、修正需要改變需求或已確認設計，或 `recovery-round` 達到 6 輪時停止，保留證據並提出替代方向。
+- 修正需要改變需求或已確認設計時停止，保留證據並提出替代方向。未成立的 `Critical` 或 `Major` 驗收列依 `rules/claude/30-dispatch.md`「執行者轉移」為執行者計次，適用範圍見 `rules/claude/40-workflow.md`「Review 修正與派遣回收循環的適用範圍」。
 - 存在未成立的 `Critical` 或 `Major` 驗收列，這些問題均屬純技術可解，且未命中上述停止訊號時自動續行下一輪。新出現的 `Major` 在尚未形成停止訊號前依純技術路徑續行。
 

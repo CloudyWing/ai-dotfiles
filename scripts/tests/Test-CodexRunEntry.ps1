@@ -171,12 +171,25 @@ try {
     Test-Case 'E2E-RECORD 執行紀錄含 §2.3.5 全部欄位，來源雜湊前後一致' {
         $record = Get-Record -Path $run1.Document.final.record_path
         foreach ($field in @('schema', 'run_key', 'run_id', 'line_slug', 'dispatch_slug', 'task_type', 'profile', 'dispatch_file', 'account', 'model', 'execution_root', 'output_dir', 'report_path', 'started_utc', 'ended_utc', 'duration_seconds',
-                'source_state_start', 'source_state_end', 'source_changed', 'exit_code', 'result', 'failure_reason', 'terminated_by_entry', 'rejection_kind', 'item_event_count', 'usage', 'last_message', 'events_path', 'stderr_path', 'report', 'review_report_check', 'permission')) {
+                'timeout_seconds', 'turn_end_grace_seconds', 'source_state_start', 'source_state_end', 'source_changed', 'exit_code', 'result', 'failure_reason', 'terminated_by_entry', 'rejection_kind', 'item_event_count', 'usage', 'last_message', 'events_path', 'stderr_path', 'report', 'review_report_check', 'permission')) {
             Assert-True ($null -ne $record.PSObject.Properties[$field]) ('缺少欄位 ' + $field)
         }
         Assert-Equal 'ai-agents.codex-run-record.v1' $record.schema
         Assert-Equal 'acct-a' $record.account.name
         Assert-Equal 'model-a' $record.model
+        # 未指定時限時，紀錄寫入入口實際套用的預設值（取自 Invoke-CodexRunMain 的參數預設，不在測試寫死數字）。
+        $runAst = [Management.Automation.Language.Parser]::ParseFile((Join-Path $moduleRoot '70-run.ps1'), [ref]$null, [ref]$null)
+        $mainFunction = @($runAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-CodexRunMain' }, $true))[0]
+        $mainParameters = $mainFunction.Body.ParamBlock.Parameters
+        $defaultOf = { param([string]$Name) [int](@($mainParameters | Where-Object { $_.Name.VariablePath.UserPath -ceq $Name })[0].DefaultValue.Value) }
+        Assert-True ((& $defaultOf 'TimeoutSeconds') -gt 0) '讀不到 TimeoutSeconds 的預設值'
+        Assert-Equal (& $defaultOf 'TimeoutSeconds') ([int]$record.timeout_seconds)
+        Assert-Equal (& $defaultOf 'TurnEndGraceSeconds') ([int]$record.turn_end_grace_seconds)
+        Assert-True ($record.timeout_seconds -is [long] -or $record.timeout_seconds -is [int]) 'timeout_seconds 應為整數'
+        $draft = Get-Record -Path (Join-Path $e1.Scenarios 'record-draft-acct-a.json')
+        Assert-True ($null -eq $draft.ended_utc -and $null -eq $draft.result) '初稿應在 Codex 結束前寫出（ended_utc 與 result 尚為 null）'
+        Assert-Equal ([int]$record.timeout_seconds) ([int]$draft.timeout_seconds) '初稿的 timeout_seconds'
+        Assert-Equal ([int]$record.turn_end_grace_seconds) ([int]$draft.turn_end_grace_seconds) '初稿的 turn_end_grace_seconds'
         Assert-Equal (Get-RunSha256File -Path $order1) $record.dispatch_file.sha256
         Assert-Equal 'success' $record.result
         Assert-Equal 0 ([int]$record.exit_code)
@@ -417,6 +430,8 @@ try {
         Assert-True ($null -eq $run.Document.attempts[0].relogin_command) 'usage-limit 不需要登入命令'
         Assert-Equal ('$env:CODEX_HOME=''' + $e14.HomeB + '''; codex login') $run.Document.attempts[1].relogin_command
         Assert-Equal ('$env:CODEX_HOME=''' + $e14.HomeB + '''; codex login') $run.Document.final.relogin_command
+        Assert-True ($null -ne $run.Document.PSObject.Properties['fallback']) '結果文件應有 fallback 欄位'
+        Assert-True ($null -eq $run.Document.fallback) '找不到登錄表（此環境的主 checkout 沒有登錄表）時 fallback 為 null'
     }
     Test-Case 'E2E-REPORT-MISSING 報告不存在或為空時 result=failed，原因 report-missing 與 report-empty，結束碼 1' {
         $e15 = New-EntryEnvironment -Name 'noreport'
@@ -467,6 +482,12 @@ try {
         Assert-Equal 'timeout' $record.failure_reason
         Assert-Equal 'timeout' $record.terminated_by_entry
         Assert-True (-not [string]::IsNullOrWhiteSpace([string]$record.ended_utc)) 'ended_utc 應已寫入'
+        # 以 -TimeoutSeconds 指定非預設值：初稿（執行中）與完稿都記錄實際套用的 8 秒。
+        $draft = Get-Record -Path (Join-Path $e18.Scenarios 'record-draft-acct-a.json')
+        Assert-True ($null -eq $draft.ended_utc) '初稿應在 Codex 結束前寫出'
+        Assert-Equal 8 ([int]$draft.timeout_seconds) '初稿的 timeout_seconds'
+        Assert-Equal 8 ([int]$record.timeout_seconds) '完稿的 timeout_seconds'
+        Assert-Equal ([int]$draft.turn_end_grace_seconds) ([int]$record.turn_end_grace_seconds)
         Assert-Equal 1 (@((Get-Call -Environment $e18) | Where-Object { $_.subcommand -eq 'exec' }).Count)
         $fakePid = [int](Get-Content -LiteralPath (Join-Path $e18.Scenarios 'pid-acct-a.txt') -Raw)
         $gone = $false
@@ -494,6 +515,12 @@ try {
         $record = Get-Record -Path $run.Document.final.record_path
         Assert-Equal 'success' $record.result
         Assert-Equal 'after-turn-end' $record.terminated_by_entry
+        # 以非預設的回合結束寬限（3 秒）發動：初稿與完稿都記錄實際套用的值，可為 0 以上的整數。
+        $draft = Get-Record -Path (Join-Path $e19.Scenarios 'record-draft-acct-a.json')
+        Assert-True ($null -eq $draft.ended_utc) '初稿應在 Codex 結束前寫出'
+        Assert-Equal 3 ([int]$draft.turn_end_grace_seconds) '初稿的 turn_end_grace_seconds'
+        Assert-Equal 3 ([int]$record.turn_end_grace_seconds) '完稿的 turn_end_grace_seconds'
+        Assert-Equal ([int]$draft.timeout_seconds) ([int]$record.timeout_seconds)
         Assert-Equal 'recorded' $record.usage.status
         Assert-True (-not [string]::IsNullOrWhiteSpace([string]$record.ended_utc)) 'ended_utc 應已寫入'
     }
@@ -639,6 +666,114 @@ try {
         Assert-True ($run.Document.error.message.Contains('尚未落地')) '訊息應說明工作樹的登錄表尚未落地'
         $calls27 = Get-Call -Environment $e27
         Assert-Equal 0 $calls27.Count '不得啟動 codex'
+    }
+    # ---------- 備援 model 與全部帳號不可用時的下一位執行者 ----------
+    # 入口會比對所在工作樹的登錄表與 -ProfileSourceRoot 的產生檔，因此假 repo 沿用出貨登錄表的備援清單，不另行改寫；
+    # 執行者 id、顯示名稱、主要與備援 model 都由登錄表讀出，不寫死出貨登錄表的值。review 檔位沒有備援 model 時相關案例略過。
+    function Get-ReviewExecutorNode {
+        param([string]$ProfileRoot)
+        $registryObject = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText((Get-CodexProfileRegistryPath -RepoRoot $ProfileRoot))) -Depth 30
+        return @($registryObject.executors | Where-Object { $_.platform -ceq 'codex' -and $_.profile -ceq 'review' })[0]
+    }
+    Test-Case 'E2E-FALLBACK-MODEL 帳號不支援主要 model 時同帳號改用備援 model：第二次嘗試帶 -c model=，紀錄與結果註明實際 model' {
+        $e30 = New-EntryEnvironment -Name 'fallbackmodel'
+        $profileRoot = New-ProfileRoot -Environment $e30
+        $reviewNode = Get-ReviewExecutorNode -ProfileRoot $profileRoot
+        $primary = [string]$reviewNode.profileSettings.model
+        $fallbacks = @($reviewNode.profileSettings.PSObject.Properties['fallbackModels'] | ForEach-Object { $_.Value })
+        if ($fallbacks.Count -eq 0) { Write-Output 'SKIP E2E-FALLBACK-MODEL 出貨登錄表的 review 檔位沒有備援 model'; return }
+        $fb = [string]$fallbacks[0]
+        Set-Scenario -Environment $e30 -Account 'acct-a' -Scenario @{ events = $modelEvents; exit_code = 1; last_message = $null; report = $null }
+        Set-Scenario -Environment $e30 -Account ('acct-a@' + $fb) -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $run = Invoke-Entry -Environment $e30 -OrderPath (New-OrderFile -Environment $e30) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e30)
+        Assert-Success $run
+        Assert-Equal 0 $run.ExitCode
+        $attempts = @($run.Document.attempts)
+        Assert-Equal @('acct-a', 'acct-a') @($attempts | ForEach-Object { $_.account })
+        Assert-Equal @($primary, $fb) @($attempts | ForEach-Object { $_.model })
+        Assert-Equal @('rejected', 'success') @($attempts | ForEach-Object { $_.result })
+        Assert-Equal 'model-not-supported' $attempts[0].rejection_kind
+        Assert-Equal $fb $run.Document.final.model
+        Assert-Equal 'fallback' $run.Document.final.model_source
+        Assert-True ($null -eq $run.Document.fallback) '成功時 fallback 為 null'
+        $records = @($attempts | ForEach-Object { Get-Record -Path $_.record_path })
+        Assert-Equal @('primary', 'fallback') @($records | ForEach-Object { $_.model_source })
+        Assert-Equal $fb $records[1].model
+        $execCalls = @((Get-Call -Environment $e30) | Where-Object { $_.subcommand -eq 'exec' })
+        Assert-Equal 2 $execCalls.Count
+        Assert-Equal 0 (@($execCalls[0].args | Where-Object { $_ -match '^model=' }).Count) '主要 model 的嘗試不應帶 model 覆寫'
+        Assert-Equal 1 (@($execCalls[1].args | Where-Object { $_ -match ('^model="?' + [regex]::Escape($fb) + '"?$') }).Count) '備援 model 的嘗試應帶 -c model=<備援 model>'
+        $stdin = Get-Content -LiteralPath (Join-Path $e30.Scenarios 'stdin-acct-a.txt') -Raw
+        Assert-True ($stdin.Contains('審查者: ' + [string]$reviewNode.display + '；model: ' + $fb + '（備援）')) ('prompt 未註明實際 model：' + $stdin)
+        $health = Get-Content -LiteralPath $e30.Health -Raw | ConvertFrom-Json
+        Assert-Equal @($primary) @($health.entries | ForEach-Object { $_.model }) '健康狀態檔應只記錄被拒絕的主要 model'
+        # 第二次發動：主要 model 已記為不支援，直接以備援 model 嘗試，不再試主要 model。
+        $callsBefore = (Get-Call -Environment $e30).Count
+        $second = Invoke-Entry -Environment $e30 -OrderPath (New-OrderFile -Environment $e30 -FileName 'order2.md') -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e30)
+        Assert-Equal 0 $second.ExitCode
+        Assert-Equal @($fb) @($second.Document.attempts | ForEach-Object { $_.model })
+        Assert-Equal 1 (@((Get-Call -Environment $e30) | Select-Object -Skip $callsBefore | Where-Object { $_.subcommand -eq 'exec' }).Count)
+    }
+    Test-Case 'E2E-FALLBACK-MODEL-CHAIN 備援 model 也被拒時依序試下一個備援 model，都被拒才換下一個帳號' {
+        $e31 = New-EntryEnvironment -Name 'fallbackchain'
+        $profileRoot = New-ProfileRoot -Environment $e31
+        $reviewNode = Get-ReviewExecutorNode -ProfileRoot $profileRoot
+        $fallbacks = @($reviewNode.profileSettings.PSObject.Properties['fallbackModels'] | ForEach-Object { $_.Value })
+        if ($fallbacks.Count -eq 0) { Write-Output 'SKIP E2E-FALLBACK-MODEL-CHAIN 出貨登錄表的 review 檔位沒有備援 model'; return }
+        Set-Scenario -Environment $e31 -Account 'acct-a' -Scenario @{ events = $modelEvents; exit_code = 1; last_message = $null; report = $null }
+        Set-Scenario -Environment $e31 -Account 'acct-b' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $run = Invoke-Entry -Environment $e31 -OrderPath (New-OrderFile -Environment $e31) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e31)
+        Assert-Success $run
+        Assert-Equal 0 $run.ExitCode
+        $attempts = @($run.Document.attempts)
+        Assert-Equal (@(@('acct-a') * (1 + $fallbacks.Count)) + @('acct-b')) @($attempts | ForEach-Object { $_.account })
+        Assert-Equal (@([string]$reviewNode.profileSettings.model) + @($fallbacks | ForEach-Object { [string]$_ })) @($attempts | Where-Object { $_.account -eq 'acct-a' } | ForEach-Object { $_.model })
+        Assert-Equal 'primary' $run.Document.final.model_source
+        Assert-Equal (1 + $fallbacks.Count) (@((Get-Content -LiteralPath $e31.Health -Raw | ConvertFrom-Json).entries).Count) '每個被拒的 model 各有一筆紀錄'
+    }
+    Test-Case 'E2E-FALLBACK-MODEL-USAGE-LIMIT 額度用完不是 model 問題：不在同帳號改試備援 model，直接換下一個帳號' {
+        $e32 = New-EntryEnvironment -Name 'fallbackusage'
+        $profileRoot = New-ProfileRoot -Environment $e32
+        Set-Scenario -Environment $e32 -Account 'acct-a' -Scenario @{ events = $usageLimitEvents; exit_code = 1; last_message = $null; report = $null }
+        Set-Scenario -Environment $e32 -Account 'acct-b' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $run = Invoke-Entry -Environment $e32 -OrderPath (New-OrderFile -Environment $e32) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e32)
+        Assert-Success $run
+        Assert-Equal 0 $run.ExitCode
+        Assert-Equal @('acct-a', 'acct-b') @($run.Document.attempts | ForEach-Object { $_.account })
+        Assert-Equal 'primary' $run.Document.final.model_source
+    }
+    Test-Case 'E2E-NEXT-EXECUTOR-EXHAUSTED 候選帳號都被拒：結束碼 4，fallback 帶選派入口選出的下一位執行者，不寫任何狀態檔' {
+        $e33 = New-EntryEnvironment -Name 'nextexhausted'
+        $profileRoot = New-ProfileRoot -Environment $e33
+        $reviewId = [string](Get-ReviewExecutorNode -ProfileRoot $profileRoot).id
+        Set-Scenario -Environment $e33 -Account 'acct-a' -Scenario @{ events = $usageLimitEvents; exit_code = 1; last_message = $null; report = $null }
+        Set-Scenario -Environment $e33 -Account 'acct-b' -Scenario @{ events = $usageLimitEvents; exit_code = 1; last_message = $null; report = $null }
+        $before = Get-DirectorySnapshot -Root $e33.MachineDirectory
+        $run = Invoke-Entry -Environment $e33 -OrderPath (New-OrderFile -Environment $e33) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e33)
+        Assert-Success $run
+        Assert-Equal 4 $run.ExitCode
+        Assert-Equal 'CodexAccountsExhausted' $run.Document.error.code
+        Assert-Equal $reviewId $run.Document.fallback.unavailable_executor
+        $selection = $run.Document.fallback.selection
+        Assert-Equal 'selected' $selection.status
+        Assert-Equal 'claude' $selection.executor.platform
+        Assert-True ($selection.executor.id -cne $reviewId) '下一位不應是被拒絕的執行者'
+        Assert-Equal @($reviewId) @($selection.labels.offline)
+        Assert-Equal @('family') @($selection.unmetPreferences)
+        Assert-True ($selection.dispatchLine.Contains('同家族審查') -and $selection.dispatchLine.Contains('略過=' + $reviewId + ':offline')) $selection.dispatchLine
+        Assert-Equal $before (Get-DirectorySnapshot -Root $e33.MachineDirectory) '額度用完不應留下任何狀態檔，下一次派工照常先試 Codex'
+    }
+    Test-Case 'E2E-NEXT-EXECUTOR-ALL-UNAVAILABLE 全部帳號未登入：結束碼 4、CodexAccountsAllUnavailable，fallback 同樣帶下一位執行者' {
+        $e34 = New-EntryEnvironment -Name 'nextunavailable'
+        $profileRoot = New-ProfileRoot -Environment $e34
+        Remove-Item -LiteralPath (Join-Path $e34.HomeA 'auth.json'), (Join-Path $e34.HomeB 'auth.json') -Force
+        $run = Invoke-Entry -Environment $e34 -OrderPath (New-OrderFile -Environment $e34) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $e34)
+        Assert-Success $run
+        Assert-Equal 4 $run.ExitCode
+        Assert-Equal 'CodexAccountsAllUnavailable' $run.Document.error.code
+        Assert-Equal 'selected' $run.Document.fallback.selection.status
+        Assert-Equal 'claude' $run.Document.fallback.selection.executor.platform
+        Assert-Equal 0 ((Get-Call -Environment $e34).Count)
     }
     Test-Case 'E2E-DISPATCH-UNTOUCHED 本線對現行入口目錄 scripts\dispatch 的變更只有登錄表' {
         $status = @(& git -C $repoRoot status --porcelain -- scripts/dispatch)

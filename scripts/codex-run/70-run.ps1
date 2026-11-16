@@ -12,9 +12,11 @@ function New-RunPrompt {
     param(
         [Parameter(Mandatory)][object]$Order,
         [Parameter(Mandatory)][string]$OutputDirectory,
-        [Parameter(Mandatory)][string]$ReportPath
+        [Parameter(Mandatory)][string]$ReportPath,
+        [AllowNull()][AllowEmptyString()][string]$ReviewerLine
     )
 
+    # 「審查者:」行由審查者照抄到報告「## 總覽」第一行，使報告標明實際執行者與 model。
     $lines = @(
         'LineContext'
         ('- lineSlug: ' + $Order.line_slug)
@@ -23,6 +25,7 @@ function New-RunPrompt {
         ('- executionRoot: ' + $Order.execution_root)
         ('輸出目錄: ' + $OutputDirectory)
         ('報告檔: ' + $ReportPath)
+        if (-not [string]::IsNullOrWhiteSpace($ReviewerLine)) { '審查者: ' + $ReviewerLine }
         ''
         ('請以 Reviewer 身分，先完整讀取角色規則檔 `' + $Order.role_file + '`，再讀取派遣檔 `' + $Order.dispatch_file_path + '` 依其內容執行。')
     )
@@ -54,10 +57,23 @@ function Invoke-RunAttempt {
         [Parameter(Mandatory)][string]$DispatchSha256,
         [Parameter(Mandatory)][bool]$IsGitRepository,
         [Parameter(Mandatory)][int]$TimeoutSeconds,
-        [Parameter(Mandatory)][int]$TurnEndGraceSeconds
+        [Parameter(Mandatory)][int]$TurnEndGraceSeconds,
+        [AllowNull()][AllowEmptyString()][string]$ExecutorDisplay
     )
 
-    # 一個帳號一次嘗試，各自有獨立的 runKey、輸出目錄、紀錄與成本列。
+    # 一個帳號搭配一個 model 的一次嘗試，各自有獨立的 runKey、輸出目錄、紀錄與成本列。
+    # Candidate.model 是本次實際使用的 model；與 Candidate.primary_model 不同時為備援 model，以 -c model= 覆寫檔位設定。
+    $modelSource = 'primary'
+    $modelOverride = $null
+    if (-not [string]::IsNullOrWhiteSpace([string]$Candidate.model) -and [string]$Candidate.model -cne [string]$Candidate.primary_model) {
+        $modelSource = 'fallback'
+        $modelOverride = [string]$Candidate.model
+    }
+    $reviewerLine = $null
+    if (-not [string]::IsNullOrWhiteSpace($ExecutorDisplay)) {
+        $reviewerLine = $ExecutorDisplay
+        if (-not [string]::IsNullOrWhiteSpace([string]$Candidate.model)) { $reviewerLine += '；model: ' + [string]$Candidate.model + $(if ($modelSource -ceq 'fallback') { '（備援）' } else { '' }) }
+    }
     $runId = New-RunId
     $runKey = $Order.dispatch_slug + '-' + $runId
     $runsDirectory = Join-Path $Order.report_line_root 'runs'
@@ -84,10 +100,14 @@ function Invoke-RunAttempt {
         dispatch_file = [ordered]@{ path = $Order.dispatch_file_path; sha256 = $DispatchSha256 }
         account = [ordered]@{ name = $Candidate.name; codex_home = $Candidate.codex_home }
         model = $Candidate.model
+        model_source = $modelSource
         execution_root = $Order.execution_root
         output_dir = $outputDirectory
         report_path = $reportPath
         started_utc = ConvertTo-RunIsoTime -Value $startedAt
+        # 本次實際套用的時限。初稿就寫入，執行中的派工可由紀錄判斷是否已超過時限，不必推測入口的預設值。
+        timeout_seconds = [int]$TimeoutSeconds
+        turn_end_grace_seconds = [int]$TurnEndGraceSeconds
         ended_utc = $null
         duration_seconds = $null
         source_state_start = $sourceStart
@@ -110,9 +130,9 @@ function Invoke-RunAttempt {
     try { Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8 }
     catch { throw (New-RunError -Code 'RunRecordWriteFailed' -Message ('執行紀錄初稿寫入失敗：' + $_.Exception.Message) -ExitCode 1) }
 
-    $argument = New-RunExecArgument -ExecutionRoot $Order.execution_root -Profile $Order.profile -OutputDirectory $outputDirectory -LastMessagePath $lastMessagePath -IsGitRepository $IsGitRepository -ReportLineRoot $Order.report_line_root
-    $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath
-    Write-RunDiagnostic ('[codex-run] 嘗試帳號 ' + $Candidate.name + '，runKey ' + $runKey)
+    $argument = New-RunExecArgument -ExecutionRoot $Order.execution_root -Profile $Order.profile -OutputDirectory $outputDirectory -LastMessagePath $lastMessagePath -IsGitRepository $IsGitRepository -ReportLineRoot $Order.report_line_root -ModelOverride $modelOverride
+    $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath -ReviewerLine $reviewerLine
+    Write-RunDiagnostic ('[codex-run] 嘗試帳號 ' + $Candidate.name + $(if ($modelSource -ceq 'fallback') { '（備援 model ' + $modelOverride + '）' } else { '' }) + '，runKey ' + $runKey)
     $exitCode = -1
     $duration = 0.0
     $launchFailed = $false
@@ -194,6 +214,8 @@ function Invoke-RunAttempt {
     return [pscustomobject]@{
         run_key = $runKey
         account = $Candidate.name
+        model = $Candidate.model
+        model_source = $modelSource
         result = $result
         failure_reason = $failureReason
         rejection_kind = $evidence.rejection_kind
@@ -241,6 +263,47 @@ function Assert-RunProfileConsistency {
     throw (New-RunError -Code 'CodexProfileDrift' -Message ('檔位 ' + $Profile + ' 的設定檔與主 checkout 的產生檔不一致，已停止，未啟動 Codex，未改任何檔案。以下每一行可直接貼到 pwsh 執行，# 開頭為說明：' + [Environment]::NewLine + ($lines -join [Environment]::NewLine)) -ExitCode 2)
 }
 
+function Get-RunProfileExecutor {
+    param(
+        [Parameter(Mandatory)][string]$Profile,
+        [Parameter(Mandatory)][string]$RegistryPath
+    )
+
+    # 登錄表內使用該檔位的 Codex 執行者（Id、Display、FallbackModels）。登錄表讀不到或沒有該檔位時回傳 $null，
+    # 呼叫端視為沒有備援 model，也不產生下一位執行者；檔位設定本身的問題由派工前比對回報。
+    try {
+        $registry = Read-CodexProfileRegistry -RegistryPath $RegistryPath
+        $executor = @($registry.Executors | Where-Object { $_.Platform -ceq 'codex' -and $_.Profile -ceq $Profile })
+        if ($executor.Count -eq 0) { return $null }
+        return [pscustomobject]@{ Id = [string]$executor[0].Id; Display = [string]$executor[0].Display; FallbackModels = [string[]]@($executor[0].ProfileSettings['fallbackModels']) }
+    }
+    catch { return $null }
+}
+
+function Get-RunFallbackSelection {
+    param(
+        [Parameter(Mandatory)][string]$TaskType,
+        [Parameter(Mandatory)][string]$UnavailableExecutorId
+    )
+
+    # 全部帳號不可用時，以選派入口取得下一位執行者，協調者不必手動帶 -Offline 重新呼叫。
+    # 實作者家族固定為 claude（Codex 不承擔實作）。不寫任何狀態，下一次新的派工照常先選 Codex。
+    # 選派入口無法執行或輸出不是 JSON 時回傳 $null，呼叫端照常回報原錯誤。
+    try {
+        $selectorPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Select-DispatchExecutor.ps1'
+        if (-not [IO.File]::Exists($selectorPath)) { throw ('找不到選派入口：' + $selectorPath) }
+        $hostPath = (Get-Process -Id $PID).Path
+        $output = @(& $hostPath -NoProfile -NonInteractive -File $selectorPath -Type $TaskType -ImplementerFamily claude -Offline $UnavailableExecutorId 2>$null)
+        $text = ($output | ForEach-Object { [string]$_ }) -join "`n"
+        if ([string]::IsNullOrWhiteSpace($text)) { throw ('選派入口沒有輸出，結束碼 ' + $LASTEXITCODE) }
+        return [ordered]@{ unavailable_executor = $UnavailableExecutorId; selection = (ConvertFrom-Json -InputObject $text) }
+    }
+    catch {
+        Write-RunDiagnostic ('[codex-run] 無法取得下一位執行者，請以 -Offline ' + $UnavailableExecutorId + ' 手動呼叫選派入口：' + $_.Exception.Message)
+        return $null
+    }
+}
+
 function Invoke-CodexRunMain {
     [CmdletBinding()]
     param(
@@ -268,6 +331,9 @@ function Invoke-CodexRunMain {
     # 回傳 ExitCode 與 Document（ai-agents.codex-run-result.v1）。診斷行寫 stderr，結果文件由入口輸出到 stdout。
     $attempts = New-Object 'System.Collections.Generic.List[object]'
     $final = $null
+    $fallback = $null
+    $profileExecutor = $null
+    $taskType = $null
     $errorInfo = $null
     $status = 'stopped'
     $exitCode = 1
@@ -281,9 +347,14 @@ function Invoke-CodexRunMain {
         $codex = Get-RunCodexPath -ConfiguredPath $CodexPath
         $machinePath = $MachineConfigPath
         if ([string]::IsNullOrWhiteSpace($machinePath)) { $machinePath = Resolve-RunMachineConfigPath }
-        $selection = Get-RunAccountCandidate -Profile $order.profile -MachineConfigPath $machinePath
         $profileRoot = $ProfileSourceRoot
         if ([string]::IsNullOrWhiteSpace($profileRoot)) { $profileRoot = Split-Path -Parent (Split-Path -Parent $machinePath) }
+        # 備援 model 與執行者名稱取自主 checkout 的登錄表，與派工前比對使用同一份。
+        $taskType = [string]$order.task_type
+        $profileExecutor = Get-RunProfileExecutor -Profile $order.profile -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $profileRoot)
+        $fallbackModels = if ($null -ne $profileExecutor) { [string[]]@($profileExecutor.FallbackModels) } else { [string[]]@() }
+        $executorDisplay = if ($null -ne $profileExecutor) { [string]$profileExecutor.Display } else { $null }
+        $selection = Get-RunAccountCandidate -Profile $order.profile -MachineConfigPath $machinePath -FallbackModel $fallbackModels
         if (@($selection.candidates).Count -eq 0 -and -not $SkipProfileCheck) {
             # 已登入的帳號因檔位設定檔缺失而被排除時，這是本機檔位設定問題，不是 Codex 帳號全數不可用；
             # 以 CodexProfileDrift 回報修正命令，避免呼叫端誤判為 Codex 離線而改派。
@@ -320,35 +391,47 @@ function Invoke-CodexRunMain {
                 Assert-RunProfileConsistency -Profile $order.profile -AccountHome ([string]$candidate.codex_home) -ProfileSourceRoot $profileRoot
             }
             $candidateIndex++
-            $lastAttempt = Invoke-RunAttempt -Order $order -Candidate $candidate -CodexPath $codex -MachineConfigPath $machinePath -DispatchSha256 $dispatchSha -IsGitRepository $isGit -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds
-            $attempts.Add([ordered]@{
+            # 同一帳號依序嘗試可用的 model：被服務端以 model not supported 拒絕且尚無進度時改試下一個 model，
+            # 其他拒絕種類（額度、未授權等）換 model 無效，改試下一個帳號。同一帳號的同一個 model 不重送。
+            $settled = $false
+            foreach ($model in @($candidate.models)) {
+                $attemptCandidate = [pscustomobject]@{ name = $candidate.name; codex_home = $candidate.codex_home; model = $model; primary_model = $candidate.primary_model }
+                $lastAttempt = Invoke-RunAttempt -Order $order -Candidate $attemptCandidate -CodexPath $codex -MachineConfigPath $machinePath -DispatchSha256 $dispatchSha -IsGitRepository $isGit -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds -ExecutorDisplay $executorDisplay
+                $attempts.Add([ordered]@{
+                        run_key = $lastAttempt.run_key
+                        account = $lastAttempt.account
+                        model = $lastAttempt.model
+                        result = $lastAttempt.result
+                        rejection_kind = $lastAttempt.rejection_kind
+                        record_path = $lastAttempt.record_path
+                        relogin_command = $lastAttempt.relogin_command
+                    })
+                $final = [ordered]@{
                     run_key = $lastAttempt.run_key
-                    account = $lastAttempt.account
-                    result = $lastAttempt.result
-                    rejection_kind = $lastAttempt.rejection_kind
+                    model = $lastAttempt.model
+                    model_source = $lastAttempt.model_source
+                    report_path = $lastAttempt.report_path
                     record_path = $lastAttempt.record_path
+                    last_message_path = $lastAttempt.last_message_path
+                    events_path = $lastAttempt.events_path
+                    stderr_path = $lastAttempt.stderr_path
+                    source_changed = $lastAttempt.source_changed
+                    review_report_check = $lastAttempt.review_report_check
                     relogin_command = $lastAttempt.relogin_command
-                })
-            $final = [ordered]@{
-                run_key = $lastAttempt.run_key
-                report_path = $lastAttempt.report_path
-                record_path = $lastAttempt.record_path
-                last_message_path = $lastAttempt.last_message_path
-                events_path = $lastAttempt.events_path
-                stderr_path = $lastAttempt.stderr_path
-                source_changed = $lastAttempt.source_changed
-                review_report_check = $lastAttempt.review_report_check
-                relogin_command = $lastAttempt.relogin_command
+                }
+                if ($lastAttempt.result -ceq 'rejected' -and $lastAttempt.failover_eligible) {
+                    $exhausted = $true
+                    if ($lastAttempt.rejection_kind -ceq 'model-not-supported') { continue }
+                    break
+                }
+                $exhausted = $false
+                $settled = $true
+                break
             }
-            if ($lastAttempt.result -ceq 'rejected' -and $lastAttempt.failover_eligible) {
-                $exhausted = $true
-                continue
-            }
-            $exhausted = $false
-            break
+            if ($settled) { break }
         }
         if ($exhausted) {
-            throw (New-RunError -Code 'CodexAccountsExhausted' -Message ('所有候選帳號都被服務端拒絕：' + (@($attempts | ForEach-Object { $_.account + ':' + $_.rejection_kind }) -join '; ')) -ExitCode 4)
+            throw (New-RunError -Code 'CodexAccountsExhausted' -Message ('所有候選帳號都被服務端拒絕：' + (@($attempts | ForEach-Object { $_.account + $(if ([string]::IsNullOrWhiteSpace([string]$_.model)) { '' } else { '(' + $_.model + ')' }) + ':' + $_.rejection_kind }) -join '; ')) -ExitCode 4)
         }
         $status = [string]$lastAttempt.result
         $exitCode = if ($status -ceq 'success') { 0 } else { 1 }
@@ -367,6 +450,9 @@ function Invoke-CodexRunMain {
             $exitCode = 1
         }
         $status = 'stopped'
+        if (($errorInfo.code -ceq 'CodexAccountsAllUnavailable' -or $errorInfo.code -ceq 'CodexAccountsExhausted') -and $null -ne $profileExecutor -and -not [string]::IsNullOrWhiteSpace($taskType)) {
+            $fallback = Get-RunFallbackSelection -TaskType $taskType -UnavailableExecutorId $profileExecutor.Id
+        }
         $pathDetails = @(@($errorInfo.details) | Where-Object { $_ -is [pscustomobject] -and $null -ne $_.PSObject.Properties['path'] })
         if ($pathDetails.Count -gt 0) {
             # 訊息本文已含每個路徑，stderr 改為摘要加逐行明細，每個路徑只出現一次。
@@ -384,6 +470,7 @@ function Invoke-CodexRunMain {
         error = $errorInfo
         attempts = @($attempts.ToArray())
         final = $final
+        fallback = $fallback
     }
     return [pscustomobject]@{ ExitCode = $exitCode; Document = $document }
 }

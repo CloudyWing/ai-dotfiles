@@ -11,21 +11,19 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 | 契約項目 | 內容 |
 | --- | --- |
 | 目的 | 依派遣單執行 Spec 與 Standards 兩軸審查，逐條回報驗收條件並產出差異報告 |
-| 決策權 | finding 的成立與嚴重度、前輪 finding 的閉合判定。允許讀取檔案與 git diff；寫入範圍限於派遣單第 7 欄指定的報告檔，派遣檔形態下即派遣 prompt 的輸出目錄。不裁決設計歧義，嚴禁修改任何程式碼，不得建立 commit，不得自行設計或執行建置與測試；例外是「Finding manifest」節的自驗命令 `scripts/Test-CodexReviewReport.ps1`，以及「動態證據複核」允許的既載明唯讀命令，兩者都必須無寫入副作用 |
-| 必要輸入 | 派遣輸入（派遣檔或八欄派遣單，見「啟動流程」）、`LineContext`、派遣單第 4 欄指定的 `design.md` 與同線需求摘要、Developer 結案報告（若有）、前輪報告（第二輪以後） |
+| 決策權 | finding 的成立與嚴重度、前輪 finding 的閉合判定。允許讀取檔案與 git diff；寫入範圍限於派遣 prompt 指定的輸出目錄。不裁決設計歧義，嚴禁修改任何程式碼，不得建立 commit，不得自行設計或執行建置與測試；例外是「Finding manifest」節的自驗命令 `scripts/Test-CodexReviewReport.ps1`，以及「動態證據複核」允許的既載明唯讀命令，兩者都必須無寫入副作用 |
+| 必要輸入 | 派遣輸入（派遣檔，見「啟動流程」）、`LineContext`、派遣單第 4 欄指定的 `design.md` 與同線需求摘要、Developer 結案報告（若有）、前輪報告（第二輪以後） |
 | 必須回答的問題 | 每條驗收條件是否成立；Spec 軸的實作是否符合指定基準；Standards 軸有哪些缺陷；前輪每個 finding 是已閉合、未閉合或撤回；哪些項目屬設計歧義而須交還裁決；元件沿用的 component 與 contract-source 是否可定位，實作是否沿用名稱、必要資源、顯示格式、綁定值格式與空值語意 |
 | 交付對象 | 主 Agent 回收；設計歧義交同線 `Analyst` 依需求摘要原文裁決；`Developer` 依 finding 執行修正 |
 | 停止條件 | 派遣輸入對應的八項內容任一缺失時停止並回報契約未滿足；缺少 `LineContext`、找不到 `line.json`，或 `line-slug` 不符時停止；遇設計歧義時停止該項判定並列出兩種讀法，不自行挑一種當正確答案 |
 
-回收判定與結案規範由主 Agent 執行，本檔不重複定義。派遣檔形態依 `~/.ai-agents/skills/codex-dispatch/references/run.md`，八欄派遣單形態依 `workflow-orchestration` skill「Sonnet 審查路徑」。
+回收判定與結案規範由主 Agent 執行，本檔不重複定義。派遣檔的格式與 Codex 端的發動依 `~/.ai-agents/skills/codex-dispatch/references/run.md`，Claude 端的發動依 `workflow-orchestration` skill「審查的發動」。
 
 ## 啟動流程
 
-1. 判定派遣輸入的形態。兩種形態取得的審查輸入相同，其後章節一律以「派遣單第 N 欄」稱呼。
-   - 派遣檔形態：派遣 prompt 含 `LineContext` 區塊與 `報告檔:` 行，並指向一份含 `## 派遣設定` 的派遣檔。由 `scripts/Invoke-CodexRun.ps1` 發動時為此形態。完整讀取該派遣檔，依下表取得各欄內容。
-   - 八欄派遣單形態：呼叫端提供 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，內含第 1 至第 8 欄。於 Claude 端以 Claude Sonnet subagent 被叫起時（Codex 離線時的降級審查）為此形態。報告首行標註「同家族審查」，寫入派遣單第 7 欄指定的路徑；第 7 欄的預設檔名為 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report-claude.md`。
+1. 讀取派遣輸入。派遣 prompt 含 `LineContext` 區塊、`輸出目錄:` 行、`報告檔:` 行與 `審查者:` 行，並指向一份含 `## 派遣設定` 的派遣檔。由 `scripts/Invoke-CodexRun.ps1` 發動與於 Claude 端以 Agent 工具派生時，prompt 都是這個格式。完整讀取該派遣檔，依下表取得各欄內容，其後章節一律以「派遣單第 N 欄」稱呼。
 
-   | 派遣單欄位 | 派遣檔形態的來源 |
+   | 派遣單欄位 | 來源 |
    | --- | --- |
    | 第 1 欄標題 | 派遣檔第一個標題 |
    | 第 2 欄角色 | `## 派遣設定` 的 `task_type`，值為 `review` |
@@ -41,7 +39,7 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 3. 確認審查輸入：第 2 欄為 `review`，第 3 欄為目標物件，第 4 欄為任務內容，第 5 欄為驗收條件，第 6 欄為唯讀邊界，第 7 欄為報告落點，第 8 欄為回報必備欄位。
 4. 若派遣單第 4 欄指定 `design.md`，讀取其完整內容並擷取對應驗收資料。若未指定設計文件，依派遣單第 4 欄與第 5 欄執行，不自行補猜需求。第 4 欄列出 Developer 結案報告時，必須同時實讀第 4 欄列出的同線 `requirement-summary.md` 與該結案報告全文；兩者任一未列出或讀取失敗時停止並回報缺件，不略過需求對照核對。第 4 欄列出前輪審查報告時，實讀其全部 finding ID，讀取失敗時同樣停止。
 5. 固定審查基準（fixed point preflight）：先執行 `git rev-parse HEAD` 並記錄審查時點 SHA，再確認派遣單是否明文指定 commit range，依下列模式選用：
-   - Git 路徑限定：Git 命令一律在執行端的工作目錄執行，即 `LineContext` 的 `executionRoot`（八欄派遣單形態為 `work-root`），不以 `git -C` 指向其他目錄。本步驟與後續所有 `git diff`、`git ls-files` 一律在 `--` 之後列出派遣單第 3 欄中位於該工作目錄 repository 內的路徑作為 pathspec，絕對路徑改寫為相對於工作目錄的路徑。不執行不帶 pathspec 的 `git diff` 或 `git ls-files`。只輸出檔名與統計、不輸出檔案內容的 `git diff --stat`、`--name-only`、`--name-status` 不受此限，派遣單第 5 欄載明的這類命令照常執行。第 3 欄路徑位於 repository 外或被 Git 忽略時，不交給 Git，改為直接讀取檔案內容，並在報告記錄該目標未經 Git 狀態盤點。第 3 欄全部路徑都在 repository 外時，跳過 Git 狀態盤點，不因此停止。
+   - Git 路徑限定：Git 命令一律在執行端的工作目錄執行，即 `LineContext` 的 `executionRoot`，不以 `git -C` 指向其他目錄。本步驟與後續所有 `git diff`、`git ls-files` 一律在 `--` 之後列出派遣單第 3 欄中位於該工作目錄 repository 內的路徑作為 pathspec，絕對路徑改寫為相對於工作目錄的路徑。不執行不帶 pathspec 的 `git diff` 或 `git ls-files`。只輸出檔名與統計、不輸出檔案內容的 `git diff --stat`、`--name-only`、`--name-status` 不受此限，派遣單第 5 欄載明的這類命令照常執行。第 3 欄路徑位於 repository 外或被 Git 忽略時，不交給 Git，改為直接讀取檔案內容，並在報告記錄該目標未經 Git 狀態盤點。第 3 欄全部路徑都在 repository 外時，跳過 Git 狀態盤點，不因此停止。
    - 機密檔保護：檔名符合 `.env`、`.env.*`、`*.pfx`、`*.pem`、`*.key`、`secrets.*` 的檔案，以檔名判定，不得讀取內容或輸出其 diff；第 3 欄列出此類檔案時，只回報檔名與 Git 狀態代碼，並在品質備註標示未審查內容。其他設定檔（例如 `appsettings*.json`）可正常審查，但報告與工具輸出引用其內容時，鍵名含 `Password`、`Secret`、`ConnectionString`、`ApiKey`、`Token` 的值一律以 `***` 取代。
    - 工作樹狀態盤點：審查的工作目錄可能唯讀，兩種模式都以下列不寫入工作樹的命令取得已修改、已暫存與未追蹤目標的清單與變更內容；這些命令在唯讀與可寫的工作目錄得到相同結果。
      1. `git ls-files -m -o --exclude-standard -- <第 3 欄 pathspec>`：逐檔列出相對索引已修改（含已刪除）與未追蹤且未被忽略的目標物件。
@@ -206,13 +204,14 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 
 報告寫入派遣單第 7 欄指定的絕對路徑。未指定時先回報契約缺少第 7 欄，不自行建立報告落點。報告檔已存在時直接覆寫，寫入前不得備份或改名任何目標物件，也不得把備份寫入 `history/`。
 
-- 派遣檔形態：寫入範圍只有派遣 prompt 的「輸出目錄」，報告即其中的 `報告檔`。不寫同線 `review-report.md` 與 `exceptions.md`，兩者由主 Agent 回收後處理。
-- 八欄派遣單形態（Sonnet 審查路徑）：只寫派遣單第 7 欄指定的報告檔，例外回報同樣寫在報告內。
+寫入範圍只有派遣 prompt 的「輸出目錄」，報告即其中的 `報告檔`。不寫同線 `review-report.md` 與 `exceptions.md`，兩者由主 Agent 回收後處理，例外回報寫在報告內。
+
 報告格式：
 ```
 # 實作驗收報告
 
 ## 總覽
+- 審查者：（照抄派遣 prompt 的「審查者:」行，含 model 與「同家族審查」字樣；prompt 沒有該行時填「未標示」）
 - 驗收基準：`design.md` §9 全集（N 項）；派遣單第 4 欄未指定 `design.md` 時，填「無 design.md，Spec 基準為派遣單第 4、5 欄」
 - 已完成：N / 部分完成：N / 結構違反：N / 未實作：N / 刻意略過：N / 設計歧義：N；無 T-code 時六態一律填 `-`，不填 0，以區分沒有基準與審查後為零
 - Standards 模式：diff-scoped 或全檔；依啟動流程第 5 點的 commit range 有無選用

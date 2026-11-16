@@ -18,7 +18,7 @@ Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` �
 
 - Haiku 驗證失敗時不修復重試，回報命令原文與原始輸出。
 - Sonnet 驗證失敗時可修正後重跑。每次修正前寫出假設（「我認為問題出在 X，因為 Y，所以改 Z」），修改限本 Phase 的 T-code 檔案。
-- 同一驗證項目連續 3 次失敗時停止，於報告「未解決項目」列出命令原文與原始輸出，交主 Agent 依 `implement-routing.md`「失敗與升級」判定。
+- 同一驗證項目連續 3 次失敗時停止，於報告「未解決項目」列出命令原文與原始輸出，交主 Agent 依 `implement-routing.md`「未完成與轉移」判定。
 
 ## 主 Agent 核對
 
@@ -36,7 +36,7 @@ Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` �
 6. 「判定為既有實作而未動工」節的每筆登記含檔案路徑與行號；`design.md` §6 負向檢查（移除清單 Grep）結果為 0。
 7. 修正輪的處置核對：報告「前輪 finding 處置結果」節依 `review-procedures.md`「修正派遣的前輪 finding 處置核對」比對，集合與處置值全部相符。
 
-三態判定：適用各項皆通過為「收下」；純技術缺漏為「退回」，重新派生視為修正輪次；涉及業務語意或需改變已確認設計為「升級」。報告缺失或為空時第 1 項不成立，退回，不補寫。實際改動路徑超出 Phase 範圍時退回，並要求執行者還原基準線為 clean 的越界檔案，仍越界則依 `implement-routing.md`「失敗與升級」處理，主 Agent 不自行還原來源樹。收下後寫入 `developer-collected` 檢查點，「已回收」欄列報告路徑與三態。
+三態判定：適用各項皆通過為「收下」；純技術缺漏為「退回」，重新派生視為修正輪次；涉及業務語意或需改變已確認設計為「升級」。報告缺失或為空時第 1 項不成立，退回，不補寫。實際改動路徑超出 Phase 範圍時退回，並要求執行者還原基準線為 clean 的越界檔案，仍越界則依 `implement-routing.md`「未完成與轉移」處理，主 Agent 不自行還原來源樹。收下後寫入 `developer-collected` 檢查點，「已回收」欄列報告路徑與三態。
 
 ## 收斂計數
 
@@ -47,7 +47,7 @@ Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` �
 ## 審查與修正
 
 - 審查配對依 `rules/claude/40-workflow.md` 審查配對，Claude 實作的變更由 Codex `Reviewer` 審查。必發清單第 1 項因 diff 觸及程式碼檔而命中，不另設豁免。
-- 審查者退回的修正：各 finding 依小型修改例外重判。門檻內者由主 Agent 自理，或以「前輪未閉合 finding 處置」表與 Phase 範圍重新派生同一執行者；同一執行者無法完成時依 `implement-routing.md`「失敗與升級」處理。
+- 審查者退回的修正：各 finding 依小型修改例外重判。門檻內者由主 Agent 自理，或以「前輪未閉合 finding 處置」表與 Phase 範圍重新派生同一執行者；同一執行者無法完成時依 `implement-routing.md`「未完成與轉移」處理。
 
 ## Phase commit 回收
 

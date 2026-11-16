@@ -8,6 +8,7 @@
 
 - 以 Agent 工具派生，`subagent_type` 為 `general-purpose`，`model` 取自選派入口輸出的 `executor.model`（`haiku` 或 `sonnet`）。
 - prompt 指定規則來源為 `~/.ai-agents/agents/claude/support-engineer.md`，以 in-context 傳入下方「有效範圍契約欄位」的完整欄位。`modificationScope` 為列舉的檔案與符號，`acceptanceCriteria` 為驗證命令加至少 1 項負向檢查。審查退回後的修正輪另傳條件式欄位 `priorFindingDisposition`，值為「前輪未閉合 finding 處置」表（格式見 `review-procedures.md`「修正派遣的前輪 finding 處置核對」），非修正輪不傳。回收時依同一節比對處置集合。
+- prompt 指定回報檔落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/support-engineer-report.md`，重派時覆寫同名舊檔，並帶入本任務的未完成次數行（格式見 `executor-selection` skill「執行者轉移與交接單」），要求執行者在回報檔第一行照抄。回收時核對第一行與派出時帶入的對照相同，不同或缺少時依派出時的對照更正該行。工作沒有登記線而無處寫回報檔時不指定落點，未完成次數由協調者在下一次派出的 prompt 帶入。
 - Workflow Phase 的規則來源為 `~/.ai-agents/agents/claude/developer.md`，契約見 `claude-implement.md`。
 - 驗證未通過時，Haiku 不修正重試，回報命令原文與原始輸出；Sonnet 依 `claude-implement.md`「Sonnet 測試循環」修正。主 Agent 依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定殘餘處置。
 - 派生前依 `claude-implement.md`「主 Agent 核對」第 3 項步驟 1 記錄路徑雜湊基準。回收時依該項步驟 2 至 4 取得實際改動路徑集合，核對其落在 `modificationScope` 內。行數以 `git diff HEAD --numstat` 核對已追蹤檔，未追蹤新檔以檔案行數計。並核對驗證命令輸出。超出範圍時退回。
@@ -55,20 +56,20 @@
 ## Workflow Phase 的判定記錄
 
 - `[派工判定]` 使用選派入口輸出的 `dispatchLine`，理由以 `P<n>` 起首。
-- 整個 Workflow 由各 Phase 選派結果中排序值最大的執行者單一承接。判定結果寫入 `design-accepted` 檢查點「下一站」欄，格式為 `Developer 派工：全部 Phase=<執行者>`；Phase 中另有主 Agent 執行的規則檔或文件撰寫時，於同一欄逐 Phase 標示，例如 `P1=主 Agent、P2=Sonnet subagent`。
-- 後續檢查點（`developer-collected`）沿用同一欄並更新升級結果。不新增檢查點欄位，不新增檔案。
+- 整個 Workflow 由各 Phase 選派結果中排序值最大的執行者單一承接。判定結果寫入 `design-accepted` 檢查點「下一站」欄，格式為 `Developer 派工：全部 Phase=<執行者>；未完成次數：無`（尚無任何未完成時固定寫「無」，不省略）；Phase 中另有主 Agent 執行的規則檔或文件撰寫時，於同一欄逐 Phase 標示，例如 `P1=主 Agent、P2=Sonnet subagent`。
+- 後續檢查點（`developer-collected`）沿用同一欄，更新執行者，並在其後寫入本任務完整的未完成次數（固定一行 `未完成次數：<執行者 id>:<n>,<執行者 id>:<n>`，含已轉移走的執行者，格式與讀寫時點見 `executor-selection` skill「執行者轉移與交接單」）。例如 `Developer 派工：全部 Phase=Sonnet subagent；未完成次數：haiku:3,sonnet:1`。次數以 `；` 接在同一行。「下一站」改為文件同步、Reviewer 或需求意圖驗收之後，這一行仍保留在同一欄，直到任務收下。
 
 ## Workflow 不使用隔離工作樹的原因
 
 後續 Phase 需要看到先前 Phase 套回來源樹、尚未 commit 的成果。隔離工作樹由 `HEAD` 建立，不含這些成果，因此 Workflow Phase 的 Claude subagent 直接修改來源工作樹。
 
-## 失敗與升級
+## 未完成與轉移
 
 執行者驗證失敗、審查退回或自述無法完成時，依 `rules/claude/30-dispatch.md`「執行者轉移」計次。同一任務累計三次未完成時，依下列程序處理。
 
-1. 以 `-EscalateFrom <原執行者 id>` 呼叫選派入口取得下一位執行者。沒有下一位時停止並回報。
-2. 依 `executor-selection` skill「失敗升級與交接單」整理升級交接單。
-3. 以交接單派生下一位執行者，不需使用者拍板，記 exceptions「替代方案」，依據含原執行者失敗原因與證據的來源位置。
-4. 失敗 Phase 的下游 Phase 依 blocking edge 等待。
+1. 讀取線層產物中本任務完整的未完成次數對照，以 `-Incomplete` 整串傳給選派入口（含已轉移走的執行者），取得候選清單的下一位執行者。入口回傳 `needs-user-decision` 時停止並回報。
+2. 依 `executor-selection` skill「執行者轉移與交接單」整理交接單。
+3. 以交接單派生下一位執行者，不需使用者拍板，記 exceptions「替代方案」，依據含原執行者未完成的原因與證據的來源位置，內容含完整的未完成次數對照。派生後把同一份對照寫回「下一站」欄。
+4. 未完成 Phase 的下游 Phase 依 blocking edge 等待。
 
 不以相同條件反覆重派同一執行者。修正工作在小型修改例外門檻內時，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」處理。

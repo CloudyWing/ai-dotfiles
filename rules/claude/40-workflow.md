@@ -23,7 +23,7 @@
 
 ## Reviewer 派遣發動判準
 
-Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，不得默默略過，接著進入需求意圖驗收。不發理由的紀錄用於補償「該做的事沒做且無人察覺」的失效模式。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為經 `scripts\Invoke-CodexDispatch.ps1` 發動的派遣共用的明文寫入例外。經 `scripts\Invoke-CodexRun.ps1` 發動的審查者只能寫入該次執行的輸出目錄，例外寫在報告的 `## 例外回報` 節，由主 Agent 回收後併入 `exceptions.md`；Sonnet 審查路徑的審查者只寫派遣單第 7 欄的報告檔，例外同樣寫在報告內由主 Agent 併入。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
+Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，不得默默略過，接著進入需求意圖驗收。不發理由的紀錄用於補償「該做的事沒做且無人察覺」的失效模式。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為經 `scripts\Invoke-CodexDispatch.ps1` 發動的派遣共用的明文寫入例外。經 `scripts\Invoke-CodexRun.ps1` 發動的審查者，以及以 Agent 工具派生的 Claude 審查者，都只能寫入該次審查的輸出目錄，例外寫在報告的 `## 例外回報` 節，由主 Agent 回收後併入 `exceptions.md`。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 **必發清單（命中任一即發）**：
 
@@ -62,7 +62,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 - 「審查者不得是改寫者」與本表並存。順序 1 已使 Claude 改寫的規則檔由 Codex 審查。
 - `Frontend Reviewer` 與 `Contract Auditor` 維持 Codex，Codex 離線時的處置同 `Reviewer`。
 - Codex `Reviewer` 的檔位固定為 `review`，不依檔數或規則檔與否分層。此判定屬規則決定，不需使用者在當下 Session 指定。
-- Codex 不可用時（判定依 `rules/claude/30-dispatch.md`「離線改派」，以服務端拒絕為準），優先條件無法滿足，由選派入口選出的同家族執行者審查，目前為 Sonnet subagent；規則檔機制條款同樣適用。協調者直接依選派結果派出，不等待 Codex 恢復。這是選派的正常結果，不追加 exceptions；審查報告首行標註「同家族審查」，讓讀者知道審查者。選派入口以狀態 `degraded` 表示這個結果，派生方式與報告檔名 `review-report-claude.md` 見 `workflow-orchestration` skill「Sonnet 審查路徑」。
+- Codex 不可用時（判定依 `rules/claude/30-dispatch.md`「離線改派」，以服務端拒絕為準），優先條件無法滿足，由選派入口選出的同家族執行者審查，目前為 Sonnet subagent；規則檔機制條款同樣適用。協調者直接依選派結果派出，不等待 Codex 恢復。這是選派的正常結果，不追加 exceptions。選派入口照常回傳 `selected`，並以 `unmetPreferences` 與判定行標示同家族審查。審查流程、派遣檔與報告檔名 `review-report.md` 不因審查者而異，報告 `## 總覽` 第一行寫明審查者，發動方式見 `workflow-orchestration` skill「審查的發動」。
 
 `Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動。`Frontend Reviewer` 與 `Contract Auditor` 的同線並行上限為 2，並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行；經 `scripts\Invoke-CodexRun.ps1` 發動的 `Reviewer` 不設並行上限。`Frontend Reviewer` 與 `Contract Auditor` 一律經 `scripts\Invoke-CodexDispatch.ps1` 發動，不依選派入口輸出的 `executor.entry`。
 
@@ -77,7 +77,7 @@ Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動�
 - 授權類停頓：「授權分類」中須當輪直接授權的動作（push、發佈等；advisor 諮詢在當下 Session 已授權者除外），等待使用者當輪回覆。整理與符合落地條件的落地不需授權，不在此停頓。轉述授權的判定依「授權期限」。
 - 升級與收斂停止：業務語意缺口、範圍取捨、妥協確認或共同收斂契約的停止訊號，停止相依的派遣，保留證據，回報未閉合清單與替代方向，等待使用者選擇方向；不相依的站點依「遇真問題只停相依部分」繼續。
 
-執行者無法完成工作時依「執行者轉移」處理，不屬收斂停止。
+執行者無法完成工作時依「執行者轉移」處理，不屬收斂停止。Review 退回後的修正循環與派遣回收循環的未閉合問題同樣依「執行者轉移」計次，見下列判定順序之後的適用範圍。
 
 收斂術語 `round`、`area-key`、`problem-key`、`closed`、`new-problem`、`severity`、`max-rounds`、`cycle_id`、`cycle_round`、`cycle_role` 與 `target-key` 的機械定義，`Minor` 的批次修正與候選，範圍變動時的循環重新起算，以及派遣回收與 Git 計數分開判定的規則，見 `workflow-orchestration` skill「共同收斂契約」與「循環識別與重新起算」。四處循環共用該契約與下列判定順序。
 
@@ -90,11 +90,13 @@ Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動�
 5. 修正需要改變 `requirement-summary.md` 的需求、範圍或 `design.md` 的已確認設計時停止，依升級兩道篩交由使用者拍板。
 6. 同一循環的 `round` 達到 6 輪，或同一 `target-key` 的循環世代將達 `c3`（第三次另起循環）時停止，不以「仍有進展」覆寫安全上限；回報未閉合問題、證據與替代方向，取得使用者確認後才繼續。Review 與實作修正循環的 `round` 以同一 `cycle_id` 的 `cycle_round` 計；Design、Demo、派遣回收與 Git 修正循環以各自循環保存的 `round` 計。
 
+**Review 修正與派遣回收循環的適用範圍**：這兩種循環不適用順序 2、順序 3 與順序 6 的 6 輪上限，改依「執行者轉移」。存在未閉合的 `Critical` 或 `Major` 而退回時，為目前的執行者計一次未完成並續行下一輪；累計達上限時轉給候選清單的下一位，選派入口回傳 `needs-user-decision` 時才停止並回報。順序 1、順序 4、順序 5 與順序 6 的 `c3` 上限照常適用。Design、Demo、文件同步與 Git 修正循環照常適用全部順序。目的是讓可由其他執行者解決的純技術問題不提早交給使用者。
+
 ## 驗證分層與 integration-verify 掛載點
 
 Workflow 驗證四層（淺層探針、建置與測試 gate、缺陷審查、完整煙霧）的執行者、深度與時機見 `workflow-orchestration` skill「驗證分層」。
 
-- `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Developer 結案自動流程。煙霧驗證的取證由 Codex `scan`（`type=test`）執行，Codex 離線且標註不含瀏覽器、桌面標籤時由 Sonnet subagent 承接，判讀與修正迴圈決策留在 Claude 端；淺層探針與建置測試 gate 由 Claude 實作者執行，缺陷審查由 Codex `Reviewer` 執行（離線時降級為 Sonnet subagent）。
+- `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Developer 結案自動流程。煙霧驗證的取證由 Codex `scan`（`type=test`）執行，Codex 離線且標註不含瀏覽器、桌面標籤時由 Sonnet subagent 承接，判讀與修正迴圈決策留在 Claude 端；淺層探針與建置測試 gate 由 Claude 實作者執行，缺陷審查由 Codex `Reviewer` 執行（Codex 不可用時由選派入口選出的同家族執行者審查，目前為 Sonnet subagent）。
 - Reviewer 不執行測試與動態驗證，正常路徑是讀取 Developer 結案報告附帶的原始輸出並做靜態核對；重跑唯讀命令的條件見 `agents/codex/reviewer.toml`「動態證據複核」。
 - Maintainer 不承擔常規驗證，依進入類型執行 bug 診斷或需求調整；`Support Engineer` 只執行計畫指定的驗證步驟。
 

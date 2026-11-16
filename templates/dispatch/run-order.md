@@ -7,7 +7,7 @@
 - schema 固定 ai-agents.codex-run-order.v1。
 - line_slug、dispatch_slug 為小寫英數與連字號。
 - task_type 目前只接受 review。
-- profile 取選派入口輸出的 executor.profile。
+- profile 取選派入口輸出的 executor.profile；改由 Claude 審查者承接時沿用原值，Claude 審查者不讀這一欄。
 - role_file、execution_root、report_line_root、targets、required_reads 一律為絕對路徑；targets 的目錄以結尾反斜線標示，required_reads 可為空陣列。
 - report_name 只含檔名。報告落在 <report_line_root>\runs\<dispatch_slug>-<runId>\<report_name>。
 - cycle 選填，含 id、round（正整數）、role，寫入成本帳的 cycle 欄位；省略時三欄寫「-」。

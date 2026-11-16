@@ -101,6 +101,48 @@ function Save-GitBlob {
     finally { $process.Dispose() }
 }
 
+function New-FixtureRegistry {
+    # 自建的假登錄表，執行者與類型名稱都與出貨登錄表無關。選派規則的案例一律用它，出貨登錄表增減執行者不影響這些案例。
+    # 候選排序的設計：probe 類型的優先條件為 net、gui，五位候選的排序值與優先條件滿足情形刻意相反，
+    # 只依排序值會得到 charlie、delta、golf、echo，依規則應為 echo、delta、golf、charlie。
+    param([string]$Name, [scriptblock]$Mutate)
+
+    $registry = [pscustomobject]@{
+        schema          = 'ai-agents.executor-registry.v1'
+        tags            = [pscustomobject]@{ hard = @('write', 'run', 'net', 'gui'); constraint = @('family', 'gated') }
+        flags           = @('E', 'T')
+        codexEfforts    = @('low', 'medium', 'high')
+        retiredProfiles = @('old')
+        maxIncomplete   = 3
+        types           = [pscustomobject]@{
+            edit  = [pscustomobject]@{ requiredFlags = @('E', 'T'); impliedTags = @('write'); forbiddenTags = @() }
+            look  = [pscustomobject]@{ requiredFlags = @(); impliedTags = @(); forbiddenTags = @('write') }
+            check = [pscustomobject]@{ requiredFlags = @(); impliedTags = @(); forbiddenTags = @('write'); preferred = @('family') }
+            probe = [pscustomobject]@{ requiredFlags = @(); impliedTags = @(); forbiddenTags = @('write'); preferred = @('net', 'gui') }
+            ask   = [pscustomobject]@{ requiredFlags = @(); impliedTags = @(); forbiddenTags = @('write'); preferred = @('family') }
+        }
+        executors       = @(
+            [pscustomobject]@{ id = 'alpha'; display = 'Alpha'; platform = 'claude'; model = 'm-alpha'; family = 'claude'; accepts = @('edit'); tags = @('write', 'run'); when = [pscustomobject]@{ E = $true; T = $false }; order = 10; gated = $false }
+            [pscustomobject]@{ id = 'bravo'; display = 'Bravo'; platform = 'codex'; profile = 'pb'; family = 'codex'; entry = 'scripts/Invoke-CodexRun.ps1'; profileSettings = [pscustomobject]@{ model = 'big'; effort = 'low'; subagentModel = 'tiny'; subagentEffort = 'low'; fallbackModels = @('mid', 'small') }; accepts = @('check'); tags = @(); when = [pscustomobject]@{}; order = 20; gated = $false }
+            [pscustomobject]@{ id = 'foxtrot'; display = 'Foxtrot'; platform = 'codex'; profile = 'pf'; family = 'codex'; entry = 'scripts/Invoke-CodexDispatch.ps1'; profileSettings = [pscustomobject]@{ model = 'big'; effort = 'high'; subagentModel = 'tiny'; subagentEffort = 'low' }; accepts = @('ask'); tags = @(); when = [pscustomobject]@{}; order = 25; gated = $true }
+            [pscustomobject]@{ id = 'charlie'; display = 'Charlie'; platform = 'claude'; model = 'm-charlie'; family = 'claude'; accepts = @('edit', 'look', 'check', 'probe', 'ask'); tags = @('write', 'run', 'gui'); when = [pscustomobject]@{}; order = 30; gated = $false }
+            [pscustomobject]@{ id = 'delta'; display = 'Delta'; platform = 'claude'; model = 'm-delta'; family = 'claude'; accepts = @('edit', 'look', 'check', 'probe'); tags = @('write', 'run', 'net'); when = [pscustomobject]@{}; order = 40; gated = $false }
+            [pscustomobject]@{ id = 'golf'; display = 'Golf'; platform = 'claude'; model = 'm-golf'; family = 'claude'; accepts = @('probe'); tags = @('net'); when = [pscustomobject]@{}; order = 45; gated = $false }
+            [pscustomobject]@{ id = 'echo'; display = 'Echo'; platform = 'claude'; model = 'm-echo'; family = 'claude'; accepts = @('probe'); tags = @('net', 'gui'); when = [pscustomobject]@{}; order = 50; gated = $false }
+        )
+    }
+    if ($null -ne $Mutate) { & $Mutate $registry }
+    $path = Join-Path $tempRoot ('fixture-' + $Name + '.json')
+    [IO.File]::WriteAllText($path, ($registry | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
+    return $path
+}
+
+function Invoke-Fixture {
+    param([string]$ArgumentText, [string]$Registry)
+
+    return (Invoke-Selector -Arguments (Split-Args $ArgumentText) -Registry $Registry)
+}
+
 function Get-ExecutorNode {
     param($Registry, [string]$Id)
 
@@ -195,11 +237,12 @@ try {
     Test-Case D02 {
         $edit = @($describe.Json.types | Where-Object { $_.name -eq 'edit' })[0]
         $review = @($describe.Json.types | Where-Object { $_.name -eq 'review' })[0]
-        (@($edit.requiredFlags) -join ',') -eq 'E,T' -and (@($review.requiredFlags) -join ',') -eq '' -and $review.crossFamily -eq $true -and (@($review.degradable) -join ',') -eq 'family'
+        (@($edit.requiredFlags) -join ',') -eq 'E,T' -and (@($review.requiredFlags) -join ',') -eq '' -and (@($review.preferred) -join ',') -eq 'family' -and @($edit.preferred).Count -eq 0 -and
+        $null -eq $review.PSObject.Properties['crossFamily'] -and $null -eq $review.PSObject.Properties['degradable']
     }
     Test-Case D04 {
         $advise = @($describe.Json.types | Where-Object { $_.name -eq 'advise' })[0]
-        $advise.crossFamily -eq $true -and (@($advise.degradable) -join ',') -eq 'family'
+        (@($advise.preferred) -join ',') -eq 'family' -and $describe.Json.maxIncomplete -eq $registryRaw.maxIncomplete
     }
     Test-Case D05 {
         $content = @($describe.Json.executors | Where-Object { $_.id -eq 'codex-content' })[0]
@@ -261,7 +304,7 @@ try {
 
     Test-Case P21 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor')
-        $r.ExitCode -eq 0 -and $r.Json.status -eq 'degraded' -and $r.Json.executor.id -eq 'sonnet' -and @($r.Json.degradations) -contains '同家族審查' -and $r.Json.dispatchLine.Contains('降級=同家族審查')
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet' -and (@($r.Json.unmetPreferences) -join ',') -eq 'family' -and $r.Json.dispatchLine.Contains('同家族審查')
     }
     Test-Case P22 {
         $r = Invoke-Selector -Arguments ((Split-Args '-Type test') + @('-Offline', 'codex-scan,codex-content,codex-review,codex-advisor'))
@@ -293,24 +336,25 @@ try {
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-review' -and @($r.Json.considered).Count -eq @($registryRaw.executors).Count -and @($r.Json.considered | Where-Object { $_.id -eq 'codex-deep-review' }).Count -eq 0
     }
 
-    # opus 在一般選擇中永不被選
-    $opusCases = @(
+    # 出貨登錄表的一般性質（不寫死執行者 id）：沒有離線與未完成時選中候選清單第一位；候選全部離線時停止。
+    $generalCases = @(
         '-Type edit -E true -T false', '-Type edit -E true -T true', '-Type edit -E false -T false', '-Type edit -E false -T true',
         '-Type survey', '-Type test', '-Type generate', '-Type factcheck',
         '-Type review -ImplementerFamily claude', '-Type review -ImplementerFamily codex', '-Type advise -Authorized -ImplementerFamily claude'
     )
     Test-Case O01 {
-        foreach ($case in $opusCases) {
+        foreach ($case in $generalCases) {
             $r = Invoke-Selector -Arguments (Split-Args $case)
-            if ($r.Json.executor -and $r.Json.executor.id -eq 'opus') { throw "opus 被選：$case" }
-            if (@($r.Json.considered | Where-Object { $_.id -eq 'opus' })[0].reason -ne 'escalation-only') { throw "opus 排除原因不是 escalation-only：$case" }
+            if ($r.ExitCode -ne 0 -or $r.Json.executor.id -ne @($r.Json.candidates)[0]) { throw "未選中候選清單第一位：$case" }
+            if (@($r.Json.skipped).Count -ne 0 -or @($r.Json.unmetPreferences).Count -ne 0) { throw "一般選派不應有略過或未滿足的優先條件：$case" }
         }
         $true
     }
     Test-Case O02 {
-        foreach ($case in @('-Type edit -E false -T true', '-Type survey', '-Type factcheck', '-Type review -ImplementerFamily claude')) {
-            $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', 'haiku,codex-scan,codex-content,codex-review,codex-advisor,sonnet'))
-            if ($r.ExitCode -ne 22 -or $r.Json.status -ne 'stopped' -or $null -ne $r.Json.executor) { throw "離線後仍有執行者：$case" }
+        foreach ($case in $generalCases) {
+            $first = Invoke-Selector -Arguments (Split-Args $case)
+            $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', (@($first.Json.candidates) -join ',')))
+            if ($r.ExitCode -ne 22 -or $r.Json.status -ne 'stopped' -or $r.Json.reason -ne 'offline' -or $null -ne $r.Json.executor) { throw "候選全部離線後仍有執行者：$case" }
         }
         $true
     }
@@ -330,7 +374,7 @@ try {
     Test-Case V13 { Assert-Rejected '-Type review' 'SelectorFamilyRequired' }
     Test-Case V14 { Assert-Rejected '-Type review -ImplementerFamily gemini' 'SelectorFamilyRequired' }
     Test-Case V15 { Assert-Rejected '-Type survey -Offline ghost' 'SelectorExecutorUnknown' }
-    Test-Case V16 { Assert-Rejected '-Type survey -EscalateFrom ghost' 'SelectorExecutorUnknown' }
+    Test-Case V16 { Assert-Rejected '-Type survey -EscalateFrom ghost' 'SelectorFlagRemoved' }
     Test-Case V17 { Assert-Rejected '-Type edit -E true -T false -Offline sonnet,ghost' 'SelectorExecutorUnknown' }
     Test-Case V18 { Assert-Rejected '-Type generate -Tags write' 'SelectorTagNotAllowed' }
 
@@ -353,7 +397,7 @@ try {
     # 離線改派
     Test-Case F01 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude -Offline codex-review')
-        $r.ExitCode -eq 0 -and $r.Json.status -eq 'degraded' -and $r.Json.executor.id -eq 'sonnet' -and @($r.Json.degradations) -contains '同家族審查'
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet' -and (@($r.Json.unmetPreferences) -join ',') -eq 'family' -and $null -eq $r.Json.PSObject.Properties['degradations']
     }
     Test-Case F03 {
         foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control')) {
@@ -366,12 +410,12 @@ try {
     }
     Test-Case F04 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck -Offline codex-content')
-        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet' -and @($r.Json.degradations).Count -eq 0
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet' -and @($r.Json.unmetPreferences).Count -eq 0
     }
     Test-Case F05 {
         foreach ($case in @('-Type advise -ImplementerFamily claude', '-Type advise -Authorized -ImplementerFamily claude')) {
             $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', 'codex-advisor'))
-            if ($r.ExitCode -ne 0 -or $r.Json.status -ne 'degraded' -or $r.Json.executor.id -ne 'sonnet' -or @($r.Json.degradations) -notcontains '同家族審查') { throw "非降級為 Sonnet：$case" }
+            if ($r.ExitCode -ne 0 -or $r.Json.status -ne 'selected' -or $r.Json.executor.id -ne 'sonnet' -or (@($r.Json.unmetPreferences) -join ',') -ne 'family') { throw "未改由 Sonnet 承接：$case" }
         }
         $true
     }
@@ -384,9 +428,9 @@ try {
         $advise = Invoke-Selector -Arguments ((Split-Args '-Type advise -ImplementerFamily claude') + @('-Offline', $allCodex))
         $test.ExitCode -eq 22 -and $test.Json.status -eq 'stopped' -and
         $generate.ExitCode -eq 22 -and $generate.Json.status -eq 'stopped' -and
-        $factcheck.ExitCode -eq 0 -and $factcheck.Json.executor.id -eq 'sonnet' -and @($factcheck.Json.degradations).Count -eq 0 -and
-        $review.ExitCode -eq 0 -and $review.Json.status -eq 'degraded' -and $review.Json.executor.id -eq 'sonnet' -and
-        $advise.ExitCode -eq 0 -and $advise.Json.status -eq 'degraded' -and $advise.Json.executor.id -eq 'sonnet' -and @($advise.Json.degradations) -contains '同家族審查'
+        $factcheck.ExitCode -eq 0 -and $factcheck.Json.executor.id -eq 'sonnet' -and @($factcheck.Json.unmetPreferences).Count -eq 0 -and
+        $review.ExitCode -eq 0 -and $review.Json.status -eq 'selected' -and $review.Json.executor.id -eq 'sonnet' -and
+        $advise.ExitCode -eq 0 -and $advise.Json.status -eq 'selected' -and $advise.Json.executor.id -eq 'sonnet' -and (@($advise.Json.unmetPreferences) -join ',') -eq 'family'
     }
     Test-Case F23 {
         foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control', '-Type generate')) {
@@ -405,14 +449,17 @@ try {
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet'
     }
     Test-Case F09 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude -Offline codex-review,sonnet')
-        $r.ExitCode -eq 22 -and $r.Json.status -eq 'stopped' -and $r.Json.reason -eq 'offline'
+        # 前兩位候選離線時由候選清單的下一位承接；候選全部離線才停止。
+        $first = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude')
+        $candidates = @($first.Json.candidates)
+        $r = Invoke-Selector -Arguments ((Split-Args '-Type review -ImplementerFamily claude') + @('-Offline', (@($candidates[0], $candidates[1]) -join ',')))
+        $candidates.Count -ge 3 -and $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq $candidates[2] -and @($r.Json.skipped).Count -eq 2
     }
     Test-Case F10 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude -Offline codex-review')
         $reasons = @{}
         foreach ($row in $r.Json.considered) { $reasons[$row.id] = $row.reason }
-        $reasons['codex-review'] -eq 'offline' -and $reasons['sonnet'] -eq 'degraded' -and $reasons['codex-content'] -eq 'type-not-accepted'
+        $reasons['codex-review'] -eq 'offline' -and $reasons['sonnet'] -eq 'selected' -and $reasons['codex-content'] -eq 'type-not-accepted'
     }
 
     Test-Case F11 {
@@ -424,55 +471,228 @@ try {
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-content'
     }
 
-    # 升級路徑
-    Test-Case E01 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false -EscalateFrom haiku')
-        $r.ExitCode -eq 10 -and $r.Json.status -eq 'escalation-candidate' -and $r.Json.executor.id -eq 'sonnet' -and $r.Json.requiresUserDecision -eq $true
+    # 以下各組使用自建登錄表（New-FixtureRegistry），不依賴出貨登錄表的執行者。
+    $fixture = New-FixtureRegistry 'base'
+
+    # 必要條件與優先條件的比對
+    Test-Case M01 {
+        # 兩個優先條件逐項比較：先比 net，再比 gui，都相同才依排序值。
+        $r = Invoke-Fixture '-Type probe' $fixture
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and (@($r.Json.candidates) -join ',') -eq 'echo,delta,golf,charlie' -and $r.Json.executor.id -eq 'echo' -and
+        @($r.Json.unmetPreferences).Count -eq 0 -and (@($r.Json.labels.prefer) -join ',') -eq 'net,gui' -and $r.Json.reason -eq 'best-match'
     }
-    Test-Case E02 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false -EscalateFrom sonnet')
-        $r.ExitCode -eq 10 -and $r.Json.executor.id -eq 'opus' -and $r.Json.requiresUserDecision -eq $true
+    Test-Case M02 {
+        # 第一項優先條件的重要性高於第二項：delta 只滿足 net、charlie 只滿足 gui，delta 在前。
+        $r = Invoke-Fixture '-Type probe -Offline echo' $fixture
+        $r.Json.executor.id -eq 'delta' -and (@($r.Json.unmetPreferences) -join ',') -eq 'gui' -and $r.Json.dispatchLine -ceq '[派工判定: 登錄表→delta] type=probe 執行者=Delta 未滿足優先條件=gui 略過=echo:offline'
     }
-    Test-Case E03 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false -EscalateFrom opus')
-        $r.ExitCode -eq 22 -and $r.Json.status -eq 'stopped' -and $r.Json.reason -eq 'no-escalation' -and $null -eq $r.Json.executor
+    Test-Case M03 {
+        # 優先條件全部相同時依排序值：delta（40）與 golf（45）都只滿足 net。
+        $r = Invoke-Fixture '-Type probe -Offline echo,delta' $fixture
+        $r.Json.executor.id -eq 'golf' -and (@($r.Json.skipped | ForEach-Object { $_.id + ':' + $_.reason }) -join ',') -eq 'echo:offline,delta:offline'
     }
-    Test-Case E04 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false -EscalateFrom haiku -Offline sonnet')
-        $r.ExitCode -eq 10 -and $r.Json.executor.id -eq 'opus'
+    Test-Case M04 {
+        # 沒有優先條件的類型只依排序值；任務以 -Prefer 宣告後改變順序。
+        $plain = Invoke-Fixture '-Type look' $fixture
+        $prefer = Invoke-Fixture '-Type look -Prefer net' $fixture
+        (@($plain.Json.candidates) -join ',') -eq 'charlie,delta' -and $plain.Json.executor.id -eq 'charlie' -and
+        (@($prefer.Json.candidates) -join ',') -eq 'delta,charlie' -and $prefer.Json.executor.id -eq 'delta' -and (@($prefer.Json.labels.prefer) -join ',') -eq 'net'
     }
-    Test-Case E05 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false -EscalateFrom haiku -Offline sonnet,opus')
-        $r.ExitCode -eq 22 -and $r.Json.reason -eq 'no-escalation'
+    Test-Case M05 {
+        # -Prefer 接在類型的 preferred 之後，重複者不再加入；類型的優先條件仍先比較。
+        $r = Invoke-Fixture '-Type probe -Prefer gui,run,net' $fixture
+        (@($r.Json.labels.prefer) -join ',') -eq 'net,gui,run' -and (@($r.Json.candidates) -join ',') -eq 'echo,delta,golf,charlie'
     }
-    Test-Case E06 {
-        $scan = Invoke-Selector -Arguments (Split-Args '-Type test -EscalateFrom codex-scan')
-        $review = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude -EscalateFrom codex-review')
-        $scan.ExitCode -eq 22 -and $scan.Json.reason -eq 'no-escalation' -and $review.ExitCode -eq 22 -and $review.Json.reason -eq 'no-escalation'
+    Test-Case M06 {
+        # 必要條件先於優先條件：-Tags 排除不具備的執行者，不論其優先條件多符合。
+        $r = Invoke-Fixture '-Type probe -Tags gui' $fixture
+        $reasons = @{}
+        foreach ($row in $r.Json.considered) { $reasons[$row.id] = $row.reason }
+        (@($r.Json.candidates) -join ',') -eq 'echo,charlie' -and $reasons['delta'] -eq 'tag-missing:gui' -and $reasons['golf'] -eq 'tag-missing:gui' -and $reasons['alpha'] -eq 'type-not-accepted'
     }
-    Test-Case E07 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type survey -EscalateFrom sonnet')
-        $r.ExitCode -eq 10 -and $r.Json.executor.id -eq 'opus'
+    Test-Case M07 {
+        # 沒有任何執行者符合必要條件。
+        $r = Invoke-Fixture '-Type look -Tags gui,net' $fixture
+        $r.ExitCode -eq 22 -and $r.Json.status -eq 'stopped' -and $r.Json.reason -eq 'no-eligible-executor' -and @($r.Json.candidates).Count -eq 0
     }
-    Test-Case E08 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type test -EscalateFrom haiku')
-        $r.ExitCode -eq 10 -and $r.Json.status -eq 'escalation-candidate' -and $r.Json.executor.id -eq 'sonnet'
+    Test-Case M08 {
+        # 跨家族是優先條件：Codex 可用時選 Codex，實作者為 codex 時同家族的 bravo 排到最後。
+        $claude = Invoke-Fixture '-Type check -ImplementerFamily claude' $fixture
+        $codex = Invoke-Fixture '-Type check -ImplementerFamily codex' $fixture
+        $claude.Json.executor.id -eq 'bravo' -and @($claude.Json.unmetPreferences).Count -eq 0 -and (@($claude.Json.candidates) -join ',') -eq 'bravo,charlie,delta' -and
+        $codex.Json.executor.id -eq 'charlie' -and (@($codex.Json.candidates) -join ',') -eq 'charlie,delta,bravo'
     }
-    Test-Case E09 {
-        $same = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude -EscalateFrom sonnet')
-        $same.ExitCode -eq 10 -and $same.Json.status -eq 'escalation-candidate' -and $same.Json.executor.id -eq 'opus' -and $same.Json.requiresUserDecision -eq $true -and
-        @($same.Json.degradations) -contains '同家族審查' -and $same.Json.dispatchLine.Contains('降級=同家族審查')
+    Test-Case M09 {
+        Assert-Rejected '-Type look -Prefer telepathy' 'SelectorPreferInvalid' 2 $fixture
     }
-    Test-Case E10 {
-        $cross = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily codex -EscalateFrom sonnet')
-        $edit = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false -EscalateFrom sonnet')
-        $cross.ExitCode -eq 10 -and $cross.Json.executor.id -eq 'opus' -and @($cross.Json.degradations).Count -eq 0 -and -not $cross.Json.dispatchLine.Contains('降級') -and
-        $edit.ExitCode -eq 10 -and $edit.Json.executor.id -eq 'opus' -and @($edit.Json.degradations).Count -eq 0
+    Test-Case M10 {
+        Assert-Rejected '-Type look -Prefer gated' 'SelectorPreferInvalid' 2 $fixture
+    }
+    Test-Case M11 {
+        # 任務自行宣告 family 優先條件時同樣必須提供實作者家族。
+        (Assert-Rejected '-Type look -Prefer family' 'SelectorFamilyRequired' 2 $fixture) -and (Invoke-Fixture '-Type look -Prefer family -ImplementerFamily claude' $fixture).ExitCode -eq 0
+    }
+
+    # 不可用時的選派
+    Test-Case U01 {
+        # 首選不可用時選出下一位，狀態仍是 selected、結束碼 0，並標出未滿足的優先條件與被略過者。
+        $r = Invoke-Fixture '-Type check -ImplementerFamily claude -Offline bravo' $fixture
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'charlie' -and (@($r.Json.unmetPreferences) -join ',') -eq 'family' -and
+        $r.Json.requiresUserDecision -eq $false -and $null -eq $r.Json.PSObject.Properties['degradations'] -and
+        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→charlie] type=check 執行者=Charlie 未滿足優先條件=family（同家族審查） 略過=bravo:offline'
+    }
+    Test-Case U02 {
+        # 選派入口不保存不可用狀態：下一次不帶 -Offline 的呼叫仍先選首選。
+        $null = Invoke-Fixture '-Type check -ImplementerFamily claude -Offline bravo' $fixture
+        $r = Invoke-Fixture '-Type check -ImplementerFamily claude' $fixture
+        $r.Json.executor.id -eq 'bravo' -and @($r.Json.skipped).Count -eq 0 -and $r.Json.dispatchLine -ceq '[派工判定: 登錄表→bravo] type=check 執行者=Bravo'
+    }
+    Test-Case U03 {
+        $r = Invoke-Fixture '-Type check -ImplementerFamily claude -Offline bravo,charlie,delta' $fixture
+        $r.ExitCode -eq 22 -and $r.Json.status -eq 'stopped' -and $r.Json.reason -eq 'offline' -and $null -eq $r.Json.executor -and $r.Json.requiresUserDecision -eq $false -and
+        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→停止] type=check 執行者=無 略過=bravo:offline,charlie:offline,delta:offline'
+    }
+    Test-Case U04 {
+        # 需授權的首選不可用時，下一位不需授權即可承接；首選可用且未授權時仍為待授權。
+        $offline = Invoke-Fixture '-Type ask -ImplementerFamily claude -Offline foxtrot' $fixture
+        $gated = Invoke-Fixture '-Type ask -ImplementerFamily claude' $fixture
+        $offline.ExitCode -eq 0 -and $offline.Json.executor.id -eq 'charlie' -and $gated.ExitCode -eq 20 -and $gated.Json.status -eq 'needs-authorization' -and $gated.Json.executor.id -eq 'foxtrot'
+    }
+    Test-Case U05 {
+        # 輸出不再有 degraded 狀態、降級字樣與已移除的欄位。
+        $r = Invoke-Fixture '-Type check -ImplementerFamily claude -Offline bravo' $fixture
+        $r.StdOut -notmatch 'degrad' -and $r.Json.dispatchLine -notmatch '降級' -and $null -eq $r.Json.labels.PSObject.Properties['escalateFrom']
+    }
+
+    # 未完成次數與切換
+    Test-Case I01 {
+        # 未達上限不切換。
+        $r = Invoke-Fixture '-Type edit -E true -T false -Incomplete alpha:2' $fixture
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'alpha' -and @($r.Json.skipped).Count -eq 0 -and $r.Json.labels.incomplete.alpha -eq 2
+    }
+    Test-Case I02 {
+        # 達上限即自動換下一位，不需使用者決定。
+        $r = Invoke-Fixture '-Type edit -E true -T false -Incomplete alpha:3' $fixture
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'charlie' -and $r.Json.requiresUserDecision -eq $false -and
+        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→charlie] type=edit E=是 T=否 執行者=Charlie 略過=alpha:incomplete-limit' -and
+        @($r.Json.considered | Where-Object { $_.id -eq 'alpha' })[0].reason -eq 'incomplete-limit'
+    }
+    Test-Case I03 {
+        $r = Invoke-Fixture '-Type edit -E true -T false -Incomplete alpha:3,charlie:4' $fixture
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'delta'
+    }
+    Test-Case I04 {
+        # 最後一位也達上限：回傳需使用者決定，結束碼 10，沒有執行者。
+        $r = Invoke-Fixture '-Type edit -E true -T false -Incomplete alpha:3,charlie:3,delta:3' $fixture
+        $r.ExitCode -eq 10 -and $r.Json.status -eq 'needs-user-decision' -and $r.Json.reason -eq 'all-candidates-exhausted' -and $null -eq $r.Json.executor -and $r.Json.requiresUserDecision -eq $true -and
+        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→需使用者決定] type=edit E=是 T=否 執行者=無 略過=alpha:incomplete-limit,charlie:incomplete-limit,delta:incomplete-limit'
+    }
+    Test-Case I05 {
+        # 不是候選的執行者的次數不影響結果（E=否時 alpha 不符合 when）。
+        $r = Invoke-Fixture '-Type edit -E false -T true -Incomplete alpha:9' $fixture
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'charlie' -and @($r.Json.skipped).Count -eq 0
+    }
+    Test-Case I06 {
+        # 離線與未完成並存：有人因未完成上限被略過且沒有人可選時為需使用者決定；全部只是離線時為停止。
+        $mixed = Invoke-Fixture '-Type look -Offline charlie -Incomplete delta:3' $fixture
+        $offline = Invoke-Fixture '-Type look -Offline charlie,delta' $fixture
+        $mixed.ExitCode -eq 10 -and $mixed.Json.status -eq 'needs-user-decision' -and $offline.ExitCode -eq 22 -and $offline.Json.status -eq 'stopped'
+    }
+    Test-Case I07 {
+        # 上限取自登錄表 maxIncomplete。
+        $two = New-FixtureRegistry 'max-two' { param($r) $r.maxIncomplete = 2 }
+        (Invoke-Fixture '-Type edit -E true -T false -Incomplete alpha:2' $two).Json.executor.id -eq 'charlie' -and (Invoke-Fixture '-Type edit -E true -T false -Incomplete alpha:1' $two).Json.executor.id -eq 'alpha'
+    }
+    Test-Case I08 {
+        # 審查者換人：首選達上限後由同家族的下一位承接。
+        $r = Invoke-Fixture '-Type check -ImplementerFamily claude -Incomplete bravo:3' $fixture
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'charlie' -and (@($r.Json.unmetPreferences) -join ',') -eq 'family'
+    }
+    Test-Case I09 { Assert-Rejected '-Type look -Incomplete charlie' 'SelectorIncompleteInvalid' 2 $fixture }
+    Test-Case I10 { Assert-Rejected '-Type look -Incomplete charlie:x' 'SelectorIncompleteInvalid' 2 $fixture }
+    Test-Case I11 { Assert-Rejected '-Type look -Incomplete ghost:1' 'SelectorExecutorUnknown' 2 $fixture }
+    Test-Case I12 { Assert-Rejected '-Type look -Incomplete charlie:1,charlie:2' 'SelectorIncompleteInvalid' 2 $fixture }
+    Test-Case I14 {
+        # 同一 id 重複時即使次數相同也拒絕（以單一逗號連接的字串傳入）。
+        $single = Invoke-Fixture '-Type look -Incomplete charlie:1,charlie:1' $fixture
+        $single.ExitCode -eq 2 -and $single.StdErr.StartsWith('SelectorIncompleteInvalid') -and [string]::IsNullOrWhiteSpace($single.StdOut)
+    }
+    Test-Case I15 {
+        # 次數的範圍為 0 至上限（999），與登錄表 maxIncomplete 的上限相同：邊界值可用，超過即拒絕並在訊息寫明範圍。
+        $zero = Invoke-Fixture '-Type look -Incomplete charlie:0' $fixture
+        $top = Invoke-Fixture '-Type look -Incomplete charlie:999' $fixture
+        $over = Invoke-Fixture '-Type look -Incomplete charlie:1000' $fixture
+        $huge = Invoke-Fixture '-Type look -Incomplete charlie:99999999999999999999' $fixture
+        $negative = Invoke-Fixture '-Type look -Incomplete charlie:-1' $fixture
+        $zero.ExitCode -eq 0 -and $zero.Json.executor.id -eq 'charlie' -and $zero.Json.labels.incomplete.charlie -eq 0 -and
+        $top.ExitCode -eq 0 -and $top.Json.executor.id -eq 'delta' -and $top.Json.labels.incomplete.charlie -eq 999 -and
+        $over.ExitCode -eq 2 -and $over.StdErr.StartsWith('SelectorIncompleteInvalid') -and $over.StdErr.Contains('999') -and
+        $huge.ExitCode -eq 2 -and $huge.StdErr.StartsWith('SelectorIncompleteInvalid') -and
+        $negative.ExitCode -eq 2 -and $negative.StdErr.StartsWith('SelectorIncompleteInvalid')
+    }
+    Test-Case I16 {
+        # 登錄表 maxIncomplete 設為上限時，合法的 -Incomplete 次數可以到達這個門檻。
+        $top = New-FixtureRegistry 'max-top' { param($r) $r.maxIncomplete = 999 }
+        $below = Invoke-Fixture '-Type look -Incomplete charlie:998' $top
+        $reached = Invoke-Fixture '-Type look -Incomplete charlie:999' $top
+        $describe = Invoke-Selector -Arguments @('-Describe') -Registry $top
+        $below.Json.executor.id -eq 'charlie' -and $reached.Json.executor.id -eq 'delta' -and $describe.Json.maxIncomplete -eq 999
+    }
+    Test-Case I13 {
+        # -EscalateFrom 已移除，訊息指向 -Incomplete。
+        $r = Invoke-Fixture '-Type edit -E true -T false -EscalateFrom alpha' $fixture
+        $r.ExitCode -eq 2 -and $r.StdErr.StartsWith('SelectorFlagRemoved') -and $r.StdErr.Contains('-Incomplete') -and [string]::IsNullOrWhiteSpace($r.StdOut)
+    }
+
+    # 備援 model 與新欄位的登錄表驗證
+    Test-Case B01 {
+        $r = Invoke-Selector -Arguments @('-Describe') -Registry $fixture
+        $bravo = @($r.Json.executors | Where-Object { $_.id -eq 'bravo' })[0]
+        $foxtrot = @($r.Json.executors | Where-Object { $_.id -eq 'foxtrot' })[0]
+        $r.ExitCode -eq 0 -and (@($bravo.profileSettings.fallbackModels) -join ',') -eq 'mid,small' -and @($foxtrot.profileSettings.fallbackModels).Count -eq 0 -and $r.Json.maxIncomplete -eq 3 -and
+        $null -eq $bravo.PSObject.Properties['escalatesTo'] -and $null -eq $bravo.PSObject.Properties['escalationOnly']
+    }
+    Test-Case B03 {
+        # 空陣列與省略都合法：preferred 為空陣列的類型沒有優先條件，fallbackModels 為空陣列的執行者沒有備援 model。
+        $path = New-FixtureRegistry 'empty-arrays' { param($r) $r.types.check.preferred = @(); $r.executors[1].profileSettings.fallbackModels = @() }
+        $describe = Invoke-Selector -Arguments @('-Describe') -Registry $path
+        $check = @($describe.Json.types | Where-Object { $_.name -eq 'check' })[0]
+        $bravo = @($describe.Json.executors | Where-Object { $_.id -eq 'bravo' })[0]
+        $describe.ExitCode -eq 0 -and @($check.preferred).Count -eq 0 -and @($bravo.profileSettings.fallbackModels).Count -eq 0 -and (Invoke-Fixture '-Type check' $path).ExitCode -eq 0
+    }
+    Test-Case B02 {
+        $invalid = [ordered]@{
+            'fallback-dup'        = { param($r) $r.executors[1].profileSettings.fallbackModels = @('mid', 'mid') }
+            'fallback-primary'    = { param($r) $r.executors[1].profileSettings.fallbackModels = @('big') }
+            'fallback-bad-name'   = { param($r) $r.executors[1].profileSettings.fallbackModels = @('has space') }
+            'max-zero'            = { param($r) $r.maxIncomplete = 0 }
+            'max-over-limit'      = { param($r) $r.maxIncomplete = 1000 }
+            'max-int64'           = { param($r) $r.maxIncomplete = 4294967296 }
+            'max-string'          = { param($r) $r.maxIncomplete = '3' }
+            'max-fraction'        = { param($r) $r.maxIncomplete = 2.5 }
+            'preferred-scalar'    = { param($r) $r.types.check.preferred = 'family' }
+            'fallback-scalar'     = { param($r) $r.executors[1].profileSettings.fallbackModels = 'mid' }
+            'max-missing'         = { param($r) $r.PSObject.Properties.Remove('maxIncomplete') }
+            'preferred-unknown'   = { param($r) $r.types.look | Add-Member -NotePropertyName preferred -NotePropertyValue @('telepathy') }
+            'preferred-gated'     = { param($r) $r.types.look | Add-Member -NotePropertyName preferred -NotePropertyValue @('gated') }
+            'preferred-dup'       = { param($r) $r.types.probe.preferred = @('net', 'net') }
+            'type-no-executor'    = { param($r) $r.types | Add-Member -NotePropertyName orphan -NotePropertyValue ([pscustomobject]@{ requiredFlags = @(); impliedTags = @(); forbiddenTags = @() }) }
+            'removed-crossfamily' = { param($r) $r.types.check | Add-Member -NotePropertyName crossFamily -NotePropertyValue $true }
+            'removed-degradable'  = { param($r) $r.types.check | Add-Member -NotePropertyName degradable -NotePropertyValue @('family') }
+            'removed-escalatesto' = { param($r) $r.executors[0] | Add-Member -NotePropertyName escalatesTo -NotePropertyValue 'charlie' }
+            'removed-esc-only'    = { param($r) $r.executors[6] | Add-Member -NotePropertyName escalationOnly -NotePropertyValue $true }
+            'removed-onoffline'   = { param($r) $r.executors[1] | Add-Member -NotePropertyName onOffline -NotePropertyValue ([pscustomobject]@{ check = 'stop' }) }
+        }
+        foreach ($name in $invalid.Keys) {
+            $path = New-FixtureRegistry $name $invalid[$name]
+            if (-not (Assert-Rejected '-Type look' 'SelectorRegistryInvalid' 3 $path)) { throw "登錄表應被判定無效：$name" }
+        }
+        $true
     }
 
     # 登錄表驗證失敗（暫存複本）
     Test-Case R01 {
-        $path = New-RegistryCopy 'dup-id' { param($r) $r.executors[1].id = 'haiku'; $r.executors[0].escalatesTo = $null }
+        $path = New-RegistryCopy 'dup-id' { param($r) $r.executors[1].id = $r.executors[0].id }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R02 {
@@ -481,14 +701,6 @@ try {
     }
     Test-Case R03 {
         $path = New-RegistryCopy 'tag-overflow' { param($r) $r.tags.hard = @($r.tags.hard) + @('extra-tag') }
-        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
-    }
-    Test-Case R04 {
-        $path = New-RegistryCopy 'cycle' { param($r) (Get-ExecutorNode $r 'opus').escalatesTo = 'haiku' }
-        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
-    }
-    Test-Case R05 {
-        $path = New-RegistryCopy 'offline-keys' { param($r) $node = Get-ExecutorNode $r 'codex-content'; $node.onOffline = [pscustomobject]@{ generate = 'stop' } }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R06 {
@@ -523,28 +735,12 @@ try {
         $path = New-RegistryCopy 'unknown-tag' { param($r) (Get-ExecutorNode $r 'sonnet').tags = @('write', 'telepathy') }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
-    Test-Case R13 {
-        $path = New-RegistryCopy 'fallback-no-peer' { param($r) (Get-ExecutorNode $r 'codex-content').onOffline.generate = 'fallback' }
-        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
-    }
-    Test-Case R14 {
-        $path = New-RegistryCopy 'degrade-no-degradable' { param($r) (Get-ExecutorNode $r 'codex-content').onOffline.factcheck = 'degrade' }
-        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
-    }
     Test-Case R15 {
         $path = New-RegistryCopy 'unknown-type' { param($r) (Get-ExecutorNode $r 'sonnet').accepts = @('edit', 'survey', 'review', 'factcheck', 'dream') }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R16 {
         $path = New-RegistryCopy 'when-flag' { param($r) (Get-ExecutorNode $r 'codex-scan').when = [pscustomobject]@{ Deep = $true } }
-        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
-    }
-    Test-Case R17 {
-        $path = New-RegistryCopy 'dangling-escalation' { param($r) (Get-ExecutorNode $r 'haiku').escalatesTo = 'nobody' }
-        Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
-    }
-    Test-Case R18 {
-        $path = New-RegistryCopy 'self-cycle' { param($r) (Get-ExecutorNode $r 'sonnet').escalatesTo = 'sonnet' }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R19 {
@@ -659,7 +855,7 @@ try {
     }
     Test-Case L04 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude -Offline codex-review')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] type=review 執行者=Sonnet subagent 降級=同家族審查'
+        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] type=review 執行者=Sonnet subagent 未滿足優先條件=family（同家族審查） 略過=codex-review:offline'
     }
     Test-Case L05 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude')
@@ -667,15 +863,11 @@ try {
     }
     Test-Case L06 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] type=advise 執行者=Sonnet subagent 降級=同家族審查'
+        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] type=advise 執行者=Sonnet subagent 未滿足優先條件=family（同家族審查） 略過=codex-advisor:offline'
     }
     Test-Case L07 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→停止] type=generate 執行者=無'
-    }
-    Test-Case L08 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false -EscalateFrom haiku')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→升級候選 sonnet] type=edit E=是 T=否 執行者=Sonnet subagent'
+        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→停止] type=generate 執行者=無 略過=codex-content:offline'
     }
     Test-Case L09 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test')
@@ -742,85 +934,16 @@ try {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude') -Registry $switchedBack
         $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'codex-review' -and $r.Json.executor.entry -ceq 'scripts/Invoke-CodexDispatch.ps1' -and $r.Json.dispatchLine -ceq '[派工判定: 登錄表→codex-review] type=review 執行者=Codex review'
     }
-    # EN09 的對照基準：登錄表首次出現 entry 欄位之前的最後一個 commit（登錄表的 entry 變更尚未 commit 時為 HEAD）。
-    # 找不到基準或 git 不可用時，該案例標示為不適用並說明原因，不計入通過或失敗的斷言數。
-    function Get-EntryBaseline {
-        param([string]$Repository)
-
-        try {
-            $registryRelative = 'scripts/dispatch/executor-registry.json'
-            $headText = (& git -C $Repository show ('HEAD:' + $registryRelative) 2>$null) -join "`n"
-            if ($LASTEXITCODE -ne 0) { return [pscustomobject]@{ Commit = $null; Reason = '無法讀取 HEAD 的登錄表。' } }
-            if ($headText -notmatch '"entry"') {
-                $head = @(& git -C $Repository rev-parse HEAD 2>$null)
-                if ($LASTEXITCODE -ne 0 -or $head.Count -eq 0) { return [pscustomobject]@{ Commit = $null; Reason = '無法取得 HEAD。' } }
-                return [pscustomobject]@{ Commit = ([string]$head[0]).Trim(); Reason = $null }
-            }
-            $introduced = @(& git -C $Repository log '-S"entry"' --diff-filter=M --format=%H --reverse -- $registryRelative 2>$null)
-            if ($LASTEXITCODE -ne 0 -or $introduced.Count -eq 0) { return [pscustomobject]@{ Commit = $null; Reason = '歷史中找不到登錄表首次出現 entry 欄位的 commit。' } }
-            $parent = @(& git -C $Repository rev-parse (([string]$introduced[0]).Trim() + '^') 2>$null)
-            if ($LASTEXITCODE -ne 0 -or $parent.Count -eq 0) { return [pscustomobject]@{ Commit = $null; Reason = '首次出現 entry 的 commit 沒有父 commit。' } }
-            return [pscustomobject]@{ Commit = ([string]$parent[0]).Trim(); Reason = $null }
-        }
-        catch {
-            return [pscustomobject]@{ Commit = $null; Reason = ('git 不可用：' + $_.Exception.Message) }
-        }
-    }
-    $entryBaseline = Get-EntryBaseline -Repository (Split-Path -Parent (Split-Path -Parent $PSScriptRoot))
-    if ($null -eq $entryBaseline.Commit) { Write-Output ('N/A EN09 不適用：' + $entryBaseline.Reason) }
-    else {
-        Test-Case EN09 {
-            # 與新增 entry 之前的輸出對照：新舊輸出都移除 entry 與 profileSettings 後逐字相同。基準 commit 見上方 Get-EntryBaseline。
-            $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-            $baselineCommit = $entryBaseline.Commit
-            $oldRoot = Join-Path $tempRoot 'baseline'
-            $null = New-Item -ItemType Directory -Path (Join-Path $oldRoot 'dispatch') -Force
-            $oldScript = Join-Path $oldRoot 'Select-DispatchExecutor.ps1'
-            $oldRegistry = Join-Path $oldRoot 'dispatch\executor-registry.json'
-            Save-GitBlob -Repository $repoRoot -Spec ($baselineCommit + ':scripts/Select-DispatchExecutor.ps1') -Destination $oldScript
-            Save-GitBlob -Repository $repoRoot -Spec ($baselineCommit + ':scripts/dispatch/executor-registry.json') -Destination $oldRegistry
-            # 新入口用的登錄表是基準登錄表補上新欄位（entry、profileSettings、codexEfforts、retiredProfiles）的版本，
-            # 兩邊資料相同，結果不受出貨登錄表增減執行者或檔位影響。
-            $augmented = Get-Content -LiteralPath $oldRegistry -Raw -Encoding UTF8 | ConvertFrom-Json
-            $augmented | Add-Member -NotePropertyName codexEfforts -NotePropertyValue @('low', 'medium', 'high', 'max')
-            $augmented | Add-Member -NotePropertyName retiredProfiles -NotePropertyValue @()
-            foreach ($row in @($augmented.executors | Where-Object { $_.platform -ceq 'codex' })) {
-                $row | Add-Member -NotePropertyName entry -NotePropertyValue 'scripts/Invoke-CodexDispatch.ps1'
-                $row | Add-Member -NotePropertyName profileSettings -NotePropertyValue ([pscustomobject]@{ model = 'm'; effort = 'low'; subagentModel = 's'; subagentEffort = 'low' })
-            }
-            $augmentedPath = Join-Path $oldRoot 'augmented-registry.json'
-            [IO.File]::WriteAllText($augmentedPath, ($augmented | ConvertTo-Json -Depth 10), (New-Object Text.UTF8Encoding($false)))
-            $specs = @('-Type review -ImplementerFamily claude', '-Type test', '-Type generate', '-Type factcheck', '-Type advise -ImplementerFamily claude -Authorized', '-Type survey', '-Type edit -E true -T false', '-Describe', '-Type review -ImplementerFamily claude -Offline codex-review')
-            $mismatch = @()
-            foreach ($spec in $specs) {
-                $specArguments = @(Split-Args $spec)
-                $oldText = (& $hostPath -NoProfile -NonInteractive -File $oldScript @specArguments -RegistryPath $oldRegistry 2>$null) -join "`n"
-                $new = (Invoke-Selector -Arguments (Split-Args $spec) -Registry $augmentedPath).Json
-                $old = $oldText | ConvertFrom-Json
-                foreach ($document in @($old, $new)) {
-                    if ($null -ne $document.PSObject.Properties['executor'] -and $null -ne $document.executor) { [void]$document.executor.PSObject.Properties.Remove('entry') }
-                    if ($null -ne $document.PSObject.Properties['executors']) { foreach ($row in @($document.executors)) { [void]$row.PSObject.Properties.Remove('entry'); [void]$row.PSObject.Properties.Remove('profileSettings') } }
-                }
-                if (($old | ConvertTo-Json -Depth 10 -Compress) -cne ($new | ConvertTo-Json -Depth 10 -Compress)) { $mismatch += $spec }
-            }
-            if ($mismatch.Count -gt 0) { throw ('與基準輸出不同：' + ($mismatch -join '; ')) }
-            $true
-        }
-    }
-
     # 結束碼與 stderr 格式彙整
     Test-Case Z01 {
         $codes = @{}
-        $codes[0] = (Invoke-Selector -Arguments (Split-Args '-Type survey')).ExitCode
-        $codes[10] = (Invoke-Selector -Arguments (Split-Args '-Type survey -EscalateFrom sonnet')).ExitCode
-        $codes[20] = (Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude')).ExitCode
-        # 出貨登錄表的 advise 離線為 degrade，exit 21 以 Sonnet 不受理 advise 且 codex-advisor 設為 wait-reset 的暫存複本取得。
-        $waitResetRegistry = New-RegistryCopy 'wait-reset' { param($r) (Get-ExecutorNode $r 'sonnet').accepts = @('edit', 'survey', 'review', 'factcheck', 'test'); (Get-ExecutorNode $r 'codex-advisor').onOffline.advise = 'wait-reset' }
-        $codes[21] = (Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor') -Registry $waitResetRegistry).ExitCode
-        $codes[22] = (Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content')).ExitCode
-        $codes[2] = (Invoke-Selector -Arguments (Split-Args '-Type nope')).ExitCode
-        $codes[3] = (Invoke-Selector -Arguments (Split-Args '-Type survey') -Registry (Join-Path $tempRoot 'absent.json')).ExitCode
-        @(@(0, 10, 20, 21, 22, 2, 3) | Where-Object { $codes[$_] -ne $_ }).Count -eq 0
+        $codes[0] = (Invoke-Fixture '-Type look' $fixture).ExitCode
+        $codes[10] = (Invoke-Fixture '-Type look -Incomplete charlie:3,delta:3' $fixture).ExitCode
+        $codes[20] = (Invoke-Fixture '-Type ask -ImplementerFamily claude' $fixture).ExitCode
+        $codes[22] = (Invoke-Fixture '-Type look -Offline charlie,delta' $fixture).ExitCode
+        $codes[2] = (Invoke-Fixture '-Type nope' $fixture).ExitCode
+        $codes[3] = (Invoke-Selector -Arguments (Split-Args '-Type look') -Registry (Join-Path $tempRoot 'absent.json')).ExitCode
+        @(@(0, 10, 20, 22, 2, 3) | Where-Object { $codes[$_] -ne $_ }).Count -eq 0
     }
 }
 catch {

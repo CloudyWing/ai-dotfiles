@@ -113,6 +113,7 @@ function Read-CodexProfileSpec {
             Effort = [string]$executor.ProfileSettings['effort']
             SubagentModel = [string]$executor.ProfileSettings['subagentModel']
             SubagentEffort = [string]$executor.ProfileSettings['subagentEffort']
+            FallbackModels = [string[]]@($executor.ProfileSettings['fallbackModels'])
         }
     }
     if (@($specs).Count -eq 0) {
@@ -129,8 +130,14 @@ function Get-CodexProfileExpectedContent {
     foreach ($value in @($Spec.ExecutorId, $Spec.Model, $Spec.Effort, $Spec.SubagentModel, $Spec.SubagentEffort)) {
         if ($value -isnot [string] -or $value -cmatch '[\r\n]') { throw (New-CodexProfileError -Code 'CodexProfileSpecInvalid' -Message '產生檔內容的欄位值不得為空或含換行。') }
     }
+    # 備援 model 由入口以 -c model= 套用，Codex 不從本檔讀取；寫成註解使產生檔完整反映登錄表，派工前比對因此涵蓋備援清單。
+    $fallbackModels = Get-ExecutorRegistryList -Object $Spec -Name 'FallbackModels'
+    foreach ($value in $fallbackModels) {
+        if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value) -or $value -cmatch '[\r\n]') { throw (New-CodexProfileError -Code 'CodexProfileSpecInvalid' -Message '產生檔內容的欄位值不得為空或含換行。') }
+    }
     $lines = @(
         ('# 此檔由 ' + ($script:CodexProfileRegistryRelativePath.Replace('\', '/')) + ' 的執行者 ' + $Spec.ExecutorId + ' 產生，請勿手動編輯；修改請改登錄表。')
+        if ($fallbackModels.Count -gt 0) { '# 備援 model（依序，主要 model 在帳號不被支援時由派工入口改用）：' + ($fallbackModels -join '、') }
         ('model = "' + $Spec.Model + '"')
         ('model_reasoning_effort = "' + $Spec.Effort + '"')
         ''

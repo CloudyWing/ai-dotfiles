@@ -114,7 +114,7 @@ Developer 與 Reviewer 完成後，Analyst 回頭確認交付結果是否仍是�
 
 ### 輸入與抽查範圍
 
-主要輸入為同線 `requirement-summary.md`、`report/<lineSlug>/review-report.md`（降級時為 `review-report-claude.md`）、`design.md`、Developer 結案報告與 `doc-sync-report.md`（若有）。逐項比對以結案報告的「需求對照」節為主，每個需求項目都要判定，判定依據為該列的實際行為與需求摘要原文是否一致。
+主要輸入為同線 `requirement-summary.md`、`report/<lineSlug>/review-report.md`、`design.md`、Developer 結案報告與 `doc-sync-report.md`（若有）。逐項比對以結案報告的「需求對照」節為主，每個需求項目都要判定，判定依據為該列的實際行為與需求摘要原文是否一致。
 
 只有下列情形構成爭議點，才抽查該列證據指向的程式碼或 diff，不做全面 code review：該列狀態不是「已交付」；證據欄無法定位；Reviewer 報告的需求對照核對或 T-code 判定涉及該列；該列關聯「已確定的實作約束」；實際行為的敘述不足以判斷原意是否達成。「需求對照」節缺失或缺列時，依回收三態退回 Developer 補齊。
 

@@ -59,7 +59,7 @@
 | `e2e-manual` | 知識型 | agent | 可重跑 E2E 與操作手冊流程：從需求摘要的驗收條件挑出關鍵流程，撰寫 Playwright（網站）或 FlaUI 加 NUnit（WinForms、WPF）E2E，執行時自動截圖，全部通過才產出含畫面截圖的 .md 操作手冊。Use when 使用者明確要求建立可重跑的 E2E、操作手冊或手冊截圖，且專案的 project-kind 為 application 時。 |
 | `ef-core` | 知識型 | agent | Entity Framework Core 開發規範：DbContext Lifetime、查詢效能、Migration 管理、變更追蹤最佳實踐、模型設定（DateTime Kind、精度、資料庫預設值）、SaveChanges 失敗後的狀態與導覽屬性同步，以及依 AI-PROFILE 目標版本鍵設定 provider 相容性。當偵測到 EF Core 相依，或撰寫 DbContext、資料庫查詢與 Migration 時自動套用。 |
 | `elasticsearch` | 知識型 | agent | Elasticsearch 開發規範：明確 mapping 與 dynamic 設定、Query DSL 與 Query String 查詢的語意陷阱（term 與分詞、minimum_should_match、日期範圍、exists、wildcard 與 regexp、nested）。當設計 index mapping、撰寫或審查 Elasticsearch 查詢時自動套用。 |
-| `executor-selection` | 知識型 | agent | 派工執行者選派：替任務標註類型、旗標與標籤，呼叫 Select-DispatchExecutor.ps1 依執行者登錄表選出執行者，並處理離線改派、失敗升級與升級交接單。Use when 需要判定派工執行者、標註任務、發動選派入口、處理 Codex 離線或執行者升級時。 |
+| `executor-selection` | 知識型 | agent | 派工執行者選派：替任務標註類型、旗標與標籤，呼叫 Select-DispatchExecutor.ps1 依執行者登錄表選出執行者，並處理離線改派、執行者轉移與交接單。Use when 需要判定派工執行者、標註任務、發動選派入口、處理 Codex 離線或執行者轉移時。 |
 | `export-excel` | 知識型 | human | 匯出 Excel 試算表的技能，主要支援 Grid 與 RecordSet 兩種模板，可自訂樣式、命名樣式、資料驗證與工作表保護。當要求匯出或產生 Excel 檔案時使用。 |
 | `fact-check-note` | 知識型 | human | 技術內容事實校閱：逐條檢查技術文件的觀念、術語與 API 版本正確性，產出附官方依據的校閱報告，作為改檔流程的輸入。Use when the user asks to verify, fact-check, or audit the accuracy of technical documentation or notes. |
 | `generate-commit` | 知識型 | human | 依據 Git Diff 產生符合規範的 Commit 訊息，含過渡檔案過濾與拆分建議。當使用者要求提交變更或產生 commit 訊息時使用。 |

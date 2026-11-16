@@ -48,6 +48,22 @@ function Test-ExecutorRegistryStringArray {
     return $true
 }
 
+function Test-ExecutorRegistryArrayProperty {
+    param($Object, [string]$Name)
+
+    # 欄位不存在，或原始 JSON 值為陣列時回傳 $true。單一字串等純量回傳 $false。
+    # 須在 Get-ExecutorRegistryList 之前檢查，後者會把純量包成單元素陣列。
+    if ($null -eq $Object) { return $true }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $true }
+    return ($property.Value -is [array])
+}
+
+function Get-ExecutorRegistryIncompleteLimit {
+    # 未完成次數的可表示上限。登錄表 maxIncomplete 與選派入口 -Incomplete 的次數共用這個上限，兩者都以 Int32 保存。
+    return 999
+}
+
 function Read-ExecutorRegistry {
     param([Parameter(Mandatory)][string]$Path)
 
@@ -72,11 +88,18 @@ function Read-ExecutorRegistry {
 function ConvertTo-ExecutorRegistry {
     param($Raw)
 
-    # 回傳物件：HardTags、Constraint、Flags、CodexEfforts、RetiredProfiles、Types（依登錄表順序的 ordered 字典）、
-    # Executors（依 order 排序）、ById。Codex 執行者的 ProfileSettings 是含 model、effort、subagentModel、subagentEffort 的 ordered 字典。
+    # 回傳物件：HardTags、Constraint、Flags、CodexEfforts、RetiredProfiles、MaxIncomplete、IncompleteLimit、Types（依登錄表順序的 ordered 字典）、
+    # Executors（依 order 排序）、ById。Codex 執行者的 ProfileSettings 是含 model、effort、subagentModel、subagentEffort（字串）
+    # 與 fallbackModels（字串陣列，可為空）的 ordered 字典。
     $registrySchema = 'ai-agents.executor-registry.v1'
     $profileSettingKeys = @('model', 'effort', 'subagentModel', 'subagentEffort')
-    $offlineActions = @('fallback', 'degrade', 'stop', 'wait-reset')
+    $profileSettingOptionalKeys = @('fallbackModels')
+    $modelPattern = '^[A-Za-z0-9][A-Za-z0-9._-]*$'
+    # 已移除的欄位。出現時登錄表無效，避免舊設定被靜默忽略。
+    $removedTypeKeys = @('crossFamily', 'degradable')
+    $removedExecutorKeys = @('escalationOnly', 'escalatesTo', 'onOffline')
+    # 類型的優先條件可用的約束名稱：執行者家族不等於實作者家族。
+    $preferenceConstraints = @('family')
     $maxTagVocabulary = 8
 
     $fail = {
@@ -101,6 +124,11 @@ function ConvertTo-ExecutorRegistry {
     $retiredProfiles = Get-ExecutorRegistryList $Raw 'retiredProfiles'
     if (-not (Test-ExecutorRegistryStringArray $retiredProfiles) -or @($retiredProfiles | Where-Object { $_ -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$' }).Count -gt 0) { & $fail 'retiredProfiles 必須為檔位名稱字串陣列' }
 
+    # maxIncomplete：同一任務內某執行者的未完成次數達到此值即不再選派給它。
+    $maxIncomplete = Get-ExecutorRegistryProperty $Raw 'maxIncomplete'
+    $incompleteLimit = Get-ExecutorRegistryIncompleteLimit
+    if (($maxIncomplete -isnot [int] -and $maxIncomplete -isnot [long]) -or [long]$maxIncomplete -lt 1 -or [long]$maxIncomplete -gt $incompleteLimit) { & $fail ('maxIncomplete 必須為 1 至 {0} 的整數' -f $incompleteLimit) }
+
     $flags = Get-ExecutorRegistryList $Raw 'flags'
     if ($flags.Count -eq 0 -or -not (Test-ExecutorRegistryStringArray $flags) -or @($flags | Select-Object -Unique).Count -ne $flags.Count) { & $fail 'flags 必須為非空且不重複的字串陣列' }
 
@@ -113,20 +141,23 @@ function ConvertTo-ExecutorRegistry {
         $required = Get-ExecutorRegistryList $node 'requiredFlags'
         $implied = Get-ExecutorRegistryList $node 'impliedTags'
         $forbidden = Get-ExecutorRegistryList $node 'forbiddenTags'
-        $degradable = Get-ExecutorRegistryList $node 'degradable'
+        if (-not (Test-ExecutorRegistryArrayProperty $node 'preferred')) { & $fail ('types.{0}.preferred 必須為陣列' -f $name) }
+        $preferred = Get-ExecutorRegistryList $node 'preferred'
+        foreach ($removedKey in $removedTypeKeys) { if ($null -ne $node.PSObject.Properties[$removedKey]) { & $fail ('types.{0}.{1} 已移除，優先條件請改用 preferred' -f $name, $removedKey) } }
         foreach ($flag in $required) { if ($flags -notcontains $flag) { & $fail ('types.{0}.requiredFlags 含未知旗標 {1}' -f $name, $flag) } }
         foreach ($tag in $implied) { if ($hard -notcontains $tag) { & $fail ('types.{0}.impliedTags 含未知硬能力 {1}' -f $name, $tag) } }
         foreach ($tag in $forbidden) { if ($hard -notcontains $tag) { & $fail ('types.{0}.forbiddenTags 含未知硬能力 {1}' -f $name, $tag) } }
-        foreach ($tag in $degradable) { if ($constraint -notcontains $tag) { & $fail ('types.{0}.degradable 含未知約束 {1}' -f $name, $tag) } }
-        $crossFamily = Get-ExecutorRegistryProperty $node 'crossFamily'
-        if ($null -ne $crossFamily -and $crossFamily -isnot [bool]) { & $fail ('types.{0}.crossFamily 必須為布林' -f $name) }
+        if (-not (Test-ExecutorRegistryStringArray $preferred)) { & $fail ('types.{0}.preferred 必須為字串陣列' -f $name) }
+        foreach ($tag in $preferred) {
+            if ($hard -cnotcontains $tag -and -not ($preferenceConstraints -ccontains $tag -and $constraint -ccontains $tag)) { & $fail ('types.{0}.preferred 含未知的優先條件 {1}' -f $name, $tag) }
+        }
+        if (@($preferred | Select-Object -Unique).Count -ne $preferred.Count) { & $fail ('types.{0}.preferred 有重複' -f $name) }
         $types[$name] = [pscustomobject]@{
             Name          = $name
             RequiredFlags = $required
             ImpliedTags   = $implied
             ForbiddenTags = $forbidden
-            CrossFamily   = ($crossFamily -eq $true)
-            Degradable    = $degradable
+            Preferred     = $preferred
         }
     }
 
@@ -140,6 +171,7 @@ function ConvertTo-ExecutorRegistry {
         $id = Get-ExecutorRegistryProperty $node 'id'
         if ($id -isnot [string] -or $id -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$') { & $fail 'executors[].id 必須為符合 ^[a-z0-9]+(?:-[a-z0-9]+)*$ 的字串' }
         if ($ids.ContainsKey($id)) { & $fail ('執行者 id 重複：{0}' -f $id) }
+        foreach ($removedKey in $removedExecutorKeys) { if ($null -ne $node.PSObject.Properties[$removedKey]) { & $fail ('執行者 {0} 的 {1} 已移除；下一位執行者由候選排序決定' -f $id, $removedKey) } }
         $ids[$id] = $true
         $order = Get-ExecutorRegistryProperty $node 'order'
         if ($order -isnot [int] -and $order -isnot [long]) { & $fail ('執行者 {0} 的 order 必須為整數' -f $id) }
@@ -161,15 +193,24 @@ function ConvertTo-ExecutorRegistry {
             $settingsNode = Get-ExecutorRegistryProperty $node 'profileSettings'
             if ($settingsNode -isnot [pscustomobject]) { & $fail ('執行者 {0} 缺少 profileSettings 物件' -f $id) }
             foreach ($property in $settingsNode.PSObject.Properties) {
-                if ($profileSettingKeys -cnotcontains $property.Name) { & $fail ('執行者 {0} 的 profileSettings 含未知欄位 {1}' -f $id, $property.Name) }
+                if ($profileSettingKeys -cnotcontains $property.Name -and $profileSettingOptionalKeys -cnotcontains $property.Name) { & $fail ('執行者 {0} 的 profileSettings 含未知欄位 {1}' -f $id, $property.Name) }
             }
             $profileSettings = [ordered]@{}
             foreach ($key in $profileSettingKeys) {
                 $settingValue = Get-ExecutorRegistryProperty $settingsNode $key
-                if ($settingValue -isnot [string] -or $settingValue -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') { & $fail ('執行者 {0} 的 profileSettings.{1} 缺少或不是 ^[A-Za-z0-9][A-Za-z0-9._-]*$ 的字串' -f $id, $key) }
+                if ($settingValue -isnot [string] -or $settingValue -cnotmatch $modelPattern) { & $fail ('執行者 {0} 的 profileSettings.{1} 缺少或不是 {2} 的字串' -f $id, $key, $modelPattern) }
                 if (($key -ceq 'effort' -or $key -ceq 'subagentEffort') -and $codexEfforts -cnotcontains $settingValue) { & $fail ('執行者 {0} 的 profileSettings.{1} 的值 {2} 不在 codexEfforts（{3}）內' -f $id, $key, $settingValue, ($codexEfforts -join ', ')) }
                 $profileSettings[$key] = $settingValue
             }
+            # fallbackModels：主要 model 在某帳號不被支援時依序改用的 model。選填，不得重複，不得含主要 model。
+            if (-not (Test-ExecutorRegistryArrayProperty $settingsNode 'fallbackModels')) { & $fail ('執行者 {0} 的 profileSettings.fallbackModels 必須為陣列' -f $id) }
+            $fallbackModels = Get-ExecutorRegistryList $settingsNode 'fallbackModels'
+            foreach ($fallbackModel in $fallbackModels) {
+                if ($fallbackModel -isnot [string] -or $fallbackModel -cnotmatch $modelPattern) { & $fail ('執行者 {0} 的 profileSettings.fallbackModels 必須為符合 {1} 的字串陣列' -f $id, $modelPattern) }
+                if ($fallbackModel -ceq $profileSettings['model']) { & $fail ('執行者 {0} 的 profileSettings.fallbackModels 不得含主要 model {1}' -f $id, $fallbackModel) }
+            }
+            if (@($fallbackModels | Select-Object -Unique).Count -ne $fallbackModels.Count) { & $fail ('執行者 {0} 的 profileSettings.fallbackModels 有重複' -f $id) }
+            $profileSettings['fallbackModels'] = [string[]]@($fallbackModels)
             if ($entry -isnot [string] -or $entry -cnotmatch '^scripts/[A-Za-z0-9._-]+\.ps1$') { & $fail ('執行者 {0} 缺少 entry，或 entry 不符合 ^scripts/[A-Za-z0-9._-]+\.ps1$' -f $id) }
         }
         elseif ($null -ne $node.PSObject.Properties['entry']) {
@@ -201,11 +242,7 @@ function ConvertTo-ExecutorRegistry {
             }
         }
         $gated = Get-ExecutorRegistryProperty $node 'gated'
-        $escalationOnly = Get-ExecutorRegistryProperty $node 'escalationOnly'
         if ($gated -isnot [bool]) { & $fail ('執行者 {0} 的 gated 必須為布林' -f $id) }
-        if ($escalationOnly -isnot [bool]) { & $fail ('執行者 {0} 的 escalationOnly 必須為布林' -f $id) }
-        $escalatesTo = Get-ExecutorRegistryProperty $node 'escalatesTo'
-        if ($null -ne $escalatesTo -and $escalatesTo -isnot [string]) { & $fail ('執行者 {0} 的 escalatesTo 必須為字串或 null' -f $id) }
         $executors.Add([pscustomobject]@{
                 Id              = $id
                 Display         = $display
@@ -220,47 +257,13 @@ function ConvertTo-ExecutorRegistry {
                 When            = $when
                 Order           = [long]$order
                 Gated           = $gated
-                EscalationOnly  = $escalationOnly
-                EscalatesTo     = $escalatesTo
-                OnOfflineNode   = (Get-ExecutorRegistryProperty $node 'onOffline')
-                OnOffline       = $null
             })
     }
 
     $byId = @{}
     foreach ($executor in $executors) { $byId[$executor.Id] = $executor }
-    foreach ($executor in $executors) {
-        if ($null -ne $executor.EscalatesTo -and -not $byId.ContainsKey($executor.EscalatesTo)) { & $fail ('執行者 {0} 的 escalatesTo 指向不存在的執行者 {1}' -f $executor.Id, $executor.EscalatesTo) }
-    }
-    foreach ($executor in $executors) {
-        $visited = @{ $executor.Id = $true }
-        $next = $executor.EscalatesTo
-        while ($null -ne $next) {
-            if ($visited.ContainsKey($next)) { & $fail ('escalatesTo 成環，涉及執行者 {0}' -f $executor.Id) }
-            $visited[$next] = $true
-            $next = $byId[$next].EscalatesTo
-        }
-    }
-
-    foreach ($executor in $executors) {
-        if ($executor.Platform -ne 'codex') { continue }
-        $node = $executor.OnOfflineNode
-        if ($null -eq $node) { & $fail ('Codex 執行者 {0} 缺少 onOffline' -f $executor.Id) }
-        $keySet = @($node.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object)
-        $acceptSet = @($executor.Accepts | Sort-Object)
-        if (($keySet -join '|') -ne ($acceptSet -join '|')) { & $fail ('執行者 {0} 的 onOffline 鍵與 accepts 不相等' -f $executor.Id) }
-        $map = [ordered]@{}
-        foreach ($property in $node.PSObject.Properties) {
-            $action = $property.Value
-            if ($offlineActions -cnotcontains $action) { & $fail ('執行者 {0} 的 onOffline.{1} 值無效：{2}' -f $executor.Id, $property.Name, $action) }
-            if ($action -eq 'fallback' -or $action -eq 'degrade') {
-                $others = @($executors | Where-Object { $_.Id -ne $executor.Id -and -not $_.EscalationOnly -and $_.Accepts -contains $property.Name })
-                if ($others.Count -eq 0) { & $fail ('執行者 {0} 的 onOffline.{1} 為 {2}，但同類型沒有其他非僅升級可選的受理者' -f $executor.Id, $property.Name, $action) }
-            }
-            if ($action -eq 'degrade' -and @($types[$property.Name].Degradable).Count -eq 0) { & $fail ('執行者 {0} 的 onOffline.{1} 為 degrade，但類型沒有 degradable' -f $executor.Id, $property.Name) }
-            $map[$property.Name] = $action
-        }
-        $executor.OnOffline = $map
+    foreach ($typeName in $types.Keys) {
+        if (@($executors | Where-Object { $_.Accepts -contains $typeName }).Count -eq 0) { & $fail ('類型 {0} 沒有任何執行者受理' -f $typeName) }
     }
 
     return [pscustomobject]@{
@@ -269,6 +272,8 @@ function ConvertTo-ExecutorRegistry {
         Flags           = $flags
         CodexEfforts    = $codexEfforts
         RetiredProfiles = $retiredProfiles
+        MaxIncomplete   = [int]$maxIncomplete
+        IncompleteLimit = [int]$incompleteLimit
         Types           = $types
         Executors       = @($executors | Sort-Object -Property Order)
         ById            = $byId

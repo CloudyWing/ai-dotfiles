@@ -104,6 +104,39 @@ try {
         $null = Register-RunAccountHealth -AccountName 'acct-a' -CodexHome $homeA -Profile 'review' -Model 'gpt-a' -ReasonCode 'model-not-supported' -MachineConfigPath $machinePath -NowUtc ([DateTimeOffset]::UtcNow.AddHours(-26))
         $null = Clear-RunAccountHealth -AccountName 'acct-a' -CodexHome $homeA -Profile 'review' -Model 'gpt-a' -MachineConfigPath $machinePath -NowUtc ([DateTimeOffset]::UtcNow.AddHours(-26))
     }
+    Test-Case 'FALLBACK-MODEL-LIST 提供備援 model 時，候選的 models 為主要 model 後接備援 model，model 為第一項' {
+        $selection = Get-RunAccountCandidate -Profile 'review' -MachineConfigPath $machinePath -FallbackModel @('fb-1', 'fb-2', 'gpt-a')
+        Assert-Equal @('acct-a', 'acct-b') (& $nameOf $selection.candidates)
+        Assert-Equal @('gpt-a', 'fb-1', 'fb-2') @($selection.candidates[0].models)
+        Assert-Equal 'gpt-a' $selection.candidates[0].model
+        Assert-Equal 'gpt-a' $selection.candidates[0].primary_model
+        Assert-Equal @('gpt-b', 'fb-1', 'fb-2', 'gpt-a') @($selection.candidates[1].models)
+        $plain = Get-RunAccountCandidate -Profile 'review' -MachineConfigPath $machinePath
+        Assert-Equal @('gpt-a') @($plain.candidates[0].models) '未提供備援 model 時只有主要 model'
+    }
+    Test-Case 'FALLBACK-MODEL-PRIMARY-UNSUPPORTED 主要 model 被記為不支援時，帳號不被略過，改用第一個未被記為不支援的備援 model' {
+        $null = Register-RunAccountHealth -AccountName 'acct-a' -CodexHome $homeA -Profile 'review' -Model 'gpt-a' -ReasonCode 'model-not-supported' -MachineConfigPath $machinePath
+        $selection = Get-RunAccountCandidate -Profile 'review' -MachineConfigPath $machinePath -FallbackModel @('fb-1', 'fb-2')
+        Assert-Equal @('acct-a', 'acct-b') (& $nameOf $selection.candidates)
+        Assert-Equal 'fb-1' $selection.candidates[0].model
+        Assert-Equal @('fb-1', 'fb-2') @($selection.candidates[0].models)
+        Assert-Equal 'gpt-a' $selection.candidates[0].primary_model
+        Assert-Equal 0 (@($selection.skipped).Count)
+        $null = Register-RunAccountHealth -AccountName 'acct-a' -CodexHome $homeA -Profile 'review' -Model 'fb-1' -ReasonCode 'model-not-supported' -MachineConfigPath $machinePath
+        $selection = Get-RunAccountCandidate -Profile 'review' -MachineConfigPath $machinePath -FallbackModel @('fb-1', 'fb-2')
+        Assert-Equal 'fb-2' $selection.candidates[0].model
+        $without = Get-RunAccountCandidate -Profile 'review' -MachineConfigPath $machinePath
+        Assert-Equal @('acct-b') (& $nameOf $without.candidates) '沒有備援 model 時照舊略過該帳號'
+    }
+    Test-Case 'FALLBACK-MODEL-ALL-UNSUPPORTED 主要與全部備援 model 都被記為不支援時才略過該帳號，略過說明列出每個 model' {
+        $null = Register-RunAccountHealth -AccountName 'acct-a' -CodexHome $homeA -Profile 'review' -Model 'fb-2' -ReasonCode 'model-not-supported' -MachineConfigPath $machinePath
+        $selection = Get-RunAccountCandidate -Profile 'review' -MachineConfigPath $machinePath -FallbackModel @('fb-1', 'fb-2')
+        Assert-Equal @('acct-b') (& $nameOf $selection.candidates)
+        Assert-Equal @('ModelNotSupportedRecorded') @($selection.skipped | ForEach-Object { $_.reason_code })
+        foreach ($name in @('gpt-a', 'fb-1', 'fb-2')) { Assert-True ([string]$selection.skipped[0].detail).Contains('model ' + $name + ' ') ('略過說明缺少 ' + $name) }
+        foreach ($name in @('gpt-a', 'fb-1', 'fb-2')) { $null = Clear-RunAccountHealth -AccountName 'acct-a' -CodexHome $homeA -Profile 'review' -Model $name -MachineConfigPath $machinePath }
+        Assert-Equal 0 (@((Read-RunAccountHealth -MachineConfigPath $machinePath).entries).Count)
+    }
     Test-Case 'HEALTH-SAME-KEY 同鍵再次記錄時取代原項目，不累積重複項' {
         $null = Register-RunAccountHealth -AccountName 'acct-a' -CodexHome $homeA -Profile 'review' -Model 'gpt-a' -ReasonCode 'model-not-supported' -MachineConfigPath $machinePath
         $null = Register-RunAccountHealth -AccountName 'acct-a' -CodexHome $homeA -Profile 'review' -Model 'gpt-a' -ReasonCode 'model-not-supported' -MachineConfigPath $machinePath

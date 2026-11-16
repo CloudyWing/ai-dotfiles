@@ -43,9 +43,10 @@ function New-FixtureRegistryObject {
   "flags": ["E", "T"],
   "codexEfforts": ["low", "medium", "high"],
   "retiredProfiles": ["retired-one", "retired-two"],
+  "maxIncomplete": 3,
   "types": { "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": [] } },
   "executors": [
-    { "id": "claude-one", "display": "Claude one", "platform": "claude", "model": "claude-model", "family": "claude", "accepts": ["survey"], "tags": [], "when": {}, "order": 90, "gated": false, "escalationOnly": false, "escalatesTo": null }
+    { "id": "claude-one", "display": "Claude one", "platform": "claude", "model": "claude-model", "family": "claude", "accepts": ["survey"], "tags": [], "when": {}, "order": 90, "gated": false }
   ]
 }
 '@
@@ -57,8 +58,7 @@ function New-FixtureRegistryObject {
         $nodes += [pscustomobject]@{
             id = 'codex-' + $name; display = 'Codex ' + $name; platform = 'codex'; profile = $name; family = 'codex'; entry = 'scripts/Invoke-CodexRun.ps1'
             profileSettings = [pscustomobject]@{ model = 'm-' + $name; effort = 'medium'; subagentModel = 'sub-' + $name; subagentEffort = 'medium' }
-            accepts = @('survey'); tags = @(); when = [pscustomobject]@{}; order = $order; gated = $false; escalationOnly = $false; escalatesTo = $null
-            onOffline = [pscustomobject]@{ survey = 'fallback' }
+            accepts = @('survey'); tags = @(); when = [pscustomobject]@{}; order = $order; gated = $false
         }
     }
     $registry.executors = $nodes
@@ -129,6 +129,30 @@ try {
         Assert-Equal @('model = "m-test-1"', ('model_reasoning_effort = "' + $efforts[1] + '"'), '[agents]', 'enabled = true', 'default_subagent_model = "sub-test-2"', ('default_subagent_reasoning_effort = "' + $efforts[2] + '"')) $lines
         $other = Read-CodexProfileFileText -Path (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $root) 'beta.config.toml')
         Assert-True ($other.Contains('model = "m-beta"')) '其他檔位不受影響'
+    }
+    Test-Case 'GEN-FALLBACK-MODELS 登錄表宣告備援 model 時產生檔多一行註解列出清單，未宣告的檔位沒有；model 設定行不變' {
+        $root = New-FakeRepo -Name 'fallback' -Mutate {
+            param($r)
+            (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName fallbackModels -NotePropertyValue @('fb-one', 'fb-two')
+        }
+        $registryPath = Get-CodexProfileRegistryPath -RepoRoot $root
+        $spec = @(Read-CodexProfileSpec -RegistryPath $registryPath)
+        Assert-Equal @('fb-one', 'fb-two') @($spec[0].FallbackModels)
+        Assert-Equal 0 (@($spec[1].FallbackModels).Count)
+        $null = Sync-CodexProfileGeneratedFile -RegistryPath $registryPath -OutputDirectory (Get-CodexProfileGeneratedDirectory -RepoRoot $root)
+        $alpha = Read-CodexProfileFileText -Path (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $root) 'alpha.config.toml')
+        $beta = Read-CodexProfileFileText -Path (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $root) 'beta.config.toml')
+        $comments = @($alpha -split "`n" | Where-Object { $_ -match '^#' })
+        Assert-Equal 2 $comments.Count
+        Assert-True ($comments[1].Contains('fb-one、fb-two')) ('備援 model 註解不含清單：' + $comments[1])
+        Assert-True ($alpha.Contains('model = "m-alpha"')) 'model 設定行應維持主要 model'
+        Assert-Equal 1 (@($beta -split "`n" | Where-Object { $_ -match '^#' }).Count) '未宣告備援 model 的檔位只有一行註解'
+        # 備援清單改動後產生檔隨之過期，派工前比對因此涵蓋備援清單。
+        $raw = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($registryPath)) -Depth 30
+        (Get-FakeCodex -Registry $raw -Index 0).profileSettings.fallbackModels = @('fb-two')
+        [IO.File]::WriteAllText($registryPath, (ConvertTo-Json -InputObject $raw -Depth 30))
+        $changes = @(Sync-CodexProfileGeneratedFile -RegistryPath $registryPath -OutputDirectory (Get-CodexProfileGeneratedDirectory -RepoRoot $root) -CheckOnly)
+        Assert-Equal @('updated') @($changes | ForEach-Object { $_.action })
     }
     Test-Case 'GEN-REGISTRY-MAPPING 出貨登錄表的每個 Codex 執行者都對映到 repo 內的產生檔，欄位值取自登錄表（不寫死任何值）' {
         $raw = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($realRegistry)) -Depth 30

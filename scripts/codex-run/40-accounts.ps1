@@ -327,10 +327,16 @@ function Get-RunAccountCandidate {
         [Parameter(Mandatory)]
         [string]$MachineConfigPath,
 
+        # 檔位的備援 model（依序），取自登錄表 profileSettings.fallbackModels。
+        [AllowEmptyCollection()]
+        [string[]]$FallbackModel = @(),
+
         [DateTimeOffset]$NowUtc = [DateTimeOffset]::UtcNow
     )
 
-    # 依登記順序逐帳號檢查登入檔、檔位設定檔與健康狀態。所有可用帳號都被記為不支援時，取記錄時間最早者實際嘗試一次。
+    # 依登記順序逐帳號檢查登入檔、檔位設定檔與健康狀態。帳號的可用 model 為「檔位設定檔的主要 model、備援 model」依序扣掉
+    # 被記為不支援者，候選的 models 為這份清單，model 為其第一項；清單為空才略過該帳號。
+    # 所有可用帳號都被記為不支援時，取記錄時間最早者以主要 model 實際嘗試一次。
     $candidates = New-Object 'System.Collections.Generic.List[object]'
     $skipped = New-Object 'System.Collections.Generic.List[object]'
     $recordedHealth = New-Object 'System.Collections.Generic.List[object]'
@@ -349,19 +355,32 @@ function Get-RunAccountCandidate {
         }
         else {
             $model = Get-RunProfileModel -CodexHome $account.codex_home -Profile $Profile
-            foreach ($healthEntry in $healthEntries) {
-                if (Test-RunHealthKeyMatch -Entry $healthEntry -AccountName $account.name -CodexHome $account.codex_home -Profile $Profile -Model $model) {
-                    $skipReason = 'ModelNotSupportedRecorded'
-                    $recordedAt = ConvertTo-RunHealthTime -Value (Get-RunJsonProperty -Object $healthEntry -Name 'recorded_at_utc')
-                    $recordedModel = [string](Get-RunJsonProperty -Object $healthEntry -Name 'model')
-                    if ([string]::IsNullOrWhiteSpace($recordedModel)) { $recordedModel = '(未記錄)' }
-                    $skipDetail = 'model ' + $recordedModel + ' 於 ' + [string](Get-RunJsonProperty -Object $healthEntry -Name 'recorded_at_utc') + ' 被服務端拒絕，' + [string](Get-RunJsonProperty -Object $healthEntry -Name 'expires_at_utc') + ' 前略過'
-                    break
+            $modelChain = New-Object 'System.Collections.Generic.List[object]'
+            $modelChain.Add($model)
+            foreach ($fallback in @($FallbackModel)) {
+                if (-not [string]::IsNullOrWhiteSpace($fallback) -and $modelChain -cnotcontains $fallback) { $modelChain.Add($fallback) }
+            }
+            $usableModels = New-Object 'System.Collections.Generic.List[object]'
+            $details = New-Object 'System.Collections.Generic.List[string]'
+            foreach ($chainModel in $modelChain) {
+                $matched = $null
+                foreach ($healthEntry in $healthEntries) {
+                    if (Test-RunHealthKeyMatch -Entry $healthEntry -AccountName $account.name -CodexHome $account.codex_home -Profile $Profile -Model $chainModel) { $matched = $healthEntry; break }
                 }
+                if ($null -eq $matched) { $usableModels.Add($chainModel); continue }
+                $matchedAt = ConvertTo-RunHealthTime -Value (Get-RunJsonProperty -Object $matched -Name 'recorded_at_utc')
+                if ($null -eq $recordedAt -or ($null -ne $matchedAt -and $matchedAt -lt $recordedAt)) { $recordedAt = $matchedAt }
+                $recordedModel = [string](Get-RunJsonProperty -Object $matched -Name 'model')
+                if ([string]::IsNullOrWhiteSpace($recordedModel)) { $recordedModel = '(未記錄)' }
+                $details.Add('model ' + $recordedModel + ' 於 ' + [string](Get-RunJsonProperty -Object $matched -Name 'recorded_at_utc') + ' 被服務端拒絕，' + [string](Get-RunJsonProperty -Object $matched -Name 'expires_at_utc') + ' 前略過')
+            }
+            if ($usableModels.Count -eq 0) {
+                $skipReason = 'ModelNotSupportedRecorded'
+                $skipDetail = $details -join '；'
             }
         }
         if ($null -eq $skipReason) {
-            $candidates.Add([pscustomobject]@{ name = $account.name; codex_home = $account.codex_home; model = $model; health_override = $false })
+            $candidates.Add([pscustomobject]@{ name = $account.name; codex_home = $account.codex_home; model = $usableModels[0]; models = @($usableModels.ToArray()); primary_model = $model; health_override = $false })
             continue
         }
         $item = [pscustomobject]@{
@@ -380,7 +399,7 @@ function Get-RunAccountCandidate {
     if ($candidates.Count -eq 0 -and $recordedHealth.Count -gt 0) {
         $oldest = @($recordedHealth.ToArray() | Sort-Object -Property @{ Expression = { if ($null -eq $_.recorded_at) { [DateTimeOffset]::MinValue } else { $_.recorded_at } } }, @{ Expression = { $_.order } })[0]
         $null = $skipped.Remove($oldest.item)
-        $candidates.Add([pscustomobject]@{ name = $oldest.item.name; codex_home = $oldest.item.codex_home; model = $oldest.model; health_override = $true })
+        $candidates.Add([pscustomobject]@{ name = $oldest.item.name; codex_home = $oldest.item.codex_home; model = $oldest.model; models = @($oldest.model); primary_model = $oldest.model; health_override = $true })
     }
     return [pscustomobject]@{ candidates = @($candidates.ToArray()); skipped = @($skipped.ToArray()) }
 }

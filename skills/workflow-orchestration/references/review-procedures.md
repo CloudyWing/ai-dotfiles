@@ -1,6 +1,6 @@
 # 審查程序
 
-本檔收錄審查配對判定之後的派遣單細節、規則檔改寫的審查前置與 Reviewer 回收的輸入規格。配對與發動條件見 `rules/claude/40-workflow.md`「審查配對」「Reviewer 派遣發動判準」。Sonnet 審查的逐站步驟見 `../SKILL.md`「Sonnet 審查路徑」。
+本檔收錄審查配對判定之後的派遣單細節、規則檔改寫的審查前置與 Reviewer 回收的輸入規格。配對與發動條件見 `rules/claude/40-workflow.md`「審查配對」「Reviewer 派遣發動判準」。發動步驟見 `../SKILL.md`「審查的發動」。
 
 ## 規則檔改寫的審查前置
 
@@ -14,8 +14,40 @@
 - 讀取範圍：Reviewer Agent 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告（若有），依第 5 欄逐條回報驗收結果。
 - 審查 Workflow 實作時，主 Agent 在第 4 欄同時列出 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告三份檔案的絕對路徑，供 Reviewer 執行需求對照核對。
 - 第二輪以後的審查：`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 對同一條線的第二輪以後審查，第 4 欄另列同一角色前輪報告的絕對路徑，審查者依其 `F-<三位數>` finding ID 判定閉合狀態。
-- 派遣輸入的形式依選派入口輸出的 `executor.entry`。值為 `scripts/Invoke-CodexRun.ps1` 時寫派遣檔，各欄內容寫入派遣檔的對應部分，發動與回收依 `codex-dispatch` skill `references/run.md`；Sonnet 審查路徑寫八欄派遣單。兩者的對應見 `reviewer.toml`「啟動流程」。本檔其餘各節的「第 N 欄」同時指派遣檔的對應部分。
+- 派遣輸入一律是派遣檔（`templates/dispatch/run-order.md`），各欄內容寫入派遣檔的對應部分，對應見 `reviewer.toml`「啟動流程」。Codex 審查者的發動與回收依 `codex-dispatch` skill `references/run.md`，Claude 審查者的發動依本檔「Claude 審查者的發動」。本檔其餘各節的「第 N 欄」指派遣檔的對應部分。
 - 回收後：設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。
+
+## Claude 審查者的發動
+
+選派入口選出 Claude 執行者時（Codex 不可用，或 Codex 審查者已達未完成次數上限），依下列步驟發動。派遣檔、角色規則檔與回收步驟與 Codex 審查者相同。
+
+1. 沿用或撰寫派遣檔。Codex 被拒絕後改派時沿用同一份派遣檔；直接選出 Claude 執行者時依 `codex-dispatch` skill `references/run.md`「發動」第 1 步撰寫，`profile` 填 `review` 類型 Codex 執行者的檔位（選派入口 `-Describe` 可查），Claude 審查者不讀這一欄。
+2. 建立輸出目錄 `<report_line_root>\runs\<dispatchSlug>-<執行者 id>\`，並以下列命令保存派生前的來源狀態。這個命令呼叫 Codex 入口使用的同一個函式 `Get-RunSourceState`，記錄 `HEAD`、目標相對於 `HEAD` 的差異雜湊與未追蹤檔案的內容雜湊；目標在派生前已有未提交修改或未追蹤檔案時，內容再被改動同樣會使雜湊改變。`<ai-agents 根目錄>` 為 `~\.ai-agents` 展開後的路徑，`-Target` 列出派遣檔 `targets` 的全部路徑。快照只涵蓋 `targets`：審查者寫入 `targets` 以外的檔案，或寫入 `report_line_root` 之內的其他檔案時，這項比對偵測不到，Claude 審查者沒有沙盒限制寫入範圍。命令失敗或 `source-state-before.json` 沒有產生時，排除原因後重新執行，取得快照之前不派生審查者。
+
+   ```powershell
+   pwsh -NoProfile -Command ". '<ai-agents 根目錄>\scripts\codex-run\00-common.ps1'; . '<ai-agents 根目錄>\scripts\codex-run\50-source-state.ps1'; Get-RunSourceState -ExecutionRoot '<execution_root>' -Target @('<target 1>', '<target 2>') -ExcludeRoot @('<report_line_root>') | ConvertTo-Json -Depth 8 -Compress | Set-Content -LiteralPath '<輸出目錄>\source-state-before.json' -Encoding utf8"
+   ```
+
+3. 以 Agent 工具派生冷啟動 subagent，`subagent_type` 為 `general-purpose`，`model` 取自選派入口輸出的 `executor.model`。prompt 與入口產生的格式相同，內容如下。
+
+   ```text
+   LineContext
+   - lineSlug: <lineSlug>
+   - dispatchLineRoot: <派遣檔所在目錄>
+   - reportLineRoot: <report_line_root>
+   - executionRoot: <execution_root>
+   輸出目錄: <輸出目錄>
+   報告檔: <輸出目錄>\review-report.md
+   審查者: <executor.display>；同家族審查
+
+   請以 Reviewer 身分，先完整讀取角色規則檔 `<role_file>`，再讀取派遣檔 `<派遣檔絕對路徑>` 依其內容執行。
+   ```
+
+4. 回收依 `run.md`「回收」。入口結果 JSON 的欄位改以下列方式取得。
+   - `final.review_report_check`：執行 `pwsh -NoProfile -File scripts/Test-CodexReviewReport.ps1 -ReportPath <報告檔>`，以輸出的 `valid` 與 `errors` 判定。
+   - `final.source_changed`：審查者結束後以第 2 步的同一命令寫出 `<輸出目錄>\source-state-after.json`，兩個檔案的內容逐字相同為 `false`，`head`、`diff_sha256`、`content_sha256` 任一不同為 `true`。兩個檔案留在輸出目錄作為這次審查的唯讀證據。`source_changed` 為 `false` 只表示 `targets` 的內容與 `HEAD` 沒有變動，不表示審查者沒有寫入其他位置。任一個快照檔缺失或無法讀取時，視為無法證明唯讀，不判為 `false`，不收下這份報告，重新發動。
+   - 成本列：這個路徑沒有執行紀錄與自動追加的成本列，協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，`cycle_role` 為 `review`，欄位見 `session-artifacts` skill「需求級成本累計」。
+5. 收下後同樣把報告複製為同線 `review-report.md`，並把 `## 例外回報` 節的條目併入同線 `exceptions.md`。
 
 ## 循環標示與第 2 輪以上的 Reviewer 派遣單
 

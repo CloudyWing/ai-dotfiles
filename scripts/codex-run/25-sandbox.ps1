@@ -202,7 +202,10 @@ function New-RunExecArgument {
 
         [string]$AiAgentsRoot = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.ai-agents'),
 
-        [string]$ReportLineRoot
+        [string]$ReportLineRoot,
+
+        # 備援 model。提供時以 -c model= 覆寫檔位設定檔的 model，其餘設定沿用檔位。
+        [string]$ModelOverride
     )
 
     # 父層選項（--cd、--profile、-c）在 exec 之前；exec 之後為 --json、--output-last-message，prompt 以 - 從 stdin 讀入。
@@ -211,6 +214,13 @@ function New-RunExecArgument {
     $arguments.Add($ExecutionRoot)
     $arguments.Add('--profile')
     $arguments.Add($Profile)
+    if (-not [string]::IsNullOrWhiteSpace($ModelOverride)) {
+        if ($ModelOverride -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            throw (New-RunError -Code 'RunModelOverrideInvalid' -Message ('備援 model 名稱不合法：' + $ModelOverride) -ExitCode 2)
+        }
+        $arguments.Add('-c')
+        $arguments.Add('model="' + $ModelOverride + '"')
+    }
     foreach ($item in (New-RunPermissionArgument -TaskType review -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot)) { $arguments.Add($item) }
     $arguments.Add('exec')
     if (-not $IsGitRepository) { $arguments.Add('--skip-git-repo-check') }

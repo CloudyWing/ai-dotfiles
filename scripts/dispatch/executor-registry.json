@@ -7,58 +7,55 @@
   "flags": ["E", "T"],
   "codexEfforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
   "retiredProfiles": ["default", "implement", "intensive", "deep", "deep-review"],
+  "maxIncomplete": 3,
   "types": {
     "edit": { "requiredFlags": ["E", "T"], "impliedTags": ["write"], "forbiddenTags": [] },
     "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
     "test": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
     "generate": { "requiredFlags": [], "impliedTags": ["image-gen"], "forbiddenTags": ["write"] },
     "factcheck": { "requiredFlags": [], "impliedTags": ["web"], "forbiddenTags": ["write"] },
-    "review": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "crossFamily": true, "degradable": ["family"] },
-    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "crossFamily": true, "degradable": ["family"] }
+    "review": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "preferred": ["family"] },
+    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "preferred": ["family"] }
   },
   "executors": [
     {
       "id": "haiku", "display": "Haiku subagent", "platform": "claude", "model": "haiku", "family": "claude",
       "accepts": ["edit"], "tags": ["write", "build-test"], "when": { "E": true, "T": false },
-      "order": 10, "gated": false, "escalationOnly": false, "escalatesTo": "sonnet"
+      "order": 10, "gated": false
     },
     {
       "id": "codex-scan", "display": "Codex scan", "platform": "codex", "profile": "scan", "family": "codex", "entry": "scripts/Invoke-CodexDispatch.ps1",
       "profileSettings": { "model": "gpt-6.1-terra", "effort": "max", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["test"], "tags": ["build-test", "web", "browse", "desktop-control"], "when": {},
-      "order": 20, "gated": false, "escalationOnly": false, "escalatesTo": null,
-      "onOffline": { "test": "fallback" }
+      "order": 20, "gated": false
     },
     {
       "id": "codex-review", "display": "Codex review", "platform": "codex", "profile": "review", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
-      "profileSettings": { "model": "gpt-6.1-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
+      "profileSettings": { "model": "gpt-6.1-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max", "fallbackModels": ["gpt-5.6-terra"] },
       "accepts": ["review"], "tags": [], "when": {},
-      "order": 30, "gated": false, "escalationOnly": false, "escalatesTo": null,
-      "onOffline": { "review": "degrade" }
+      "order": 30, "gated": false
     },
     {
       "id": "codex-content", "display": "Codex content", "platform": "codex", "profile": "content", "family": "codex", "entry": "scripts/Invoke-CodexDispatch.ps1",
       "profileSettings": { "model": "gpt-6.1-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["generate", "factcheck"], "tags": ["web", "image-gen"], "when": {},
-      "order": 35, "gated": false, "escalationOnly": false, "escalatesTo": null,
-      "onOffline": { "generate": "stop", "factcheck": "fallback" }
+      "order": 35, "gated": false
     },
     {
       "id": "codex-advisor", "display": "Codex advisor", "platform": "codex", "profile": "advisor", "family": "codex", "entry": "scripts/Invoke-CodexDispatch.ps1",
       "profileSettings": { "model": "gpt-6.1-sol", "effort": "high", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["advise"], "tags": [], "when": {},
-      "order": 40, "gated": true, "escalationOnly": false, "escalatesTo": null,
-      "onOffline": { "advise": "degrade" }
+      "order": 40, "gated": true
     },
     {
       "id": "sonnet", "display": "Sonnet subagent", "platform": "claude", "model": "sonnet", "family": "claude",
       "accepts": ["edit", "survey", "review", "factcheck", "test", "advise"], "tags": ["write", "build-test", "web"], "when": {},
-      "order": 50, "gated": false, "escalationOnly": false, "escalatesTo": "opus"
+      "order": 50, "gated": false
     },
     {
       "id": "opus", "display": "Opus subagent", "platform": "claude", "model": "opus", "family": "claude",
       "accepts": ["edit", "survey", "review", "factcheck"], "tags": ["write", "build-test", "web"], "when": {},
-      "order": 90, "gated": false, "escalationOnly": true, "escalatesTo": null
+      "order": 90, "gated": false
     }
   ]
 }

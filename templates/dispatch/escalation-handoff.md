@@ -1,15 +1,16 @@
-# 升級交接單
+# 執行者轉移交接單
 
-<!-- 由主 Agent 依 skills/executor-selection/SKILL.md「失敗升級與交接單」撰寫，不由失敗的執行者撰寫。落點為 <work-root>/.local/ai-sessions/handoff/<lineSlug>/escalation-handoff-<序號>.md。沒有通過驗證證據的欄位寫「無」。 -->
+<!-- 由主 Agent 依 skills/executor-selection/SKILL.md「執行者轉移與交接單」撰寫，不由未完成的執行者撰寫。落點為 <work-root>/.local/ai-sessions/handoff/<lineSlug>/escalation-handoff-<序號>.md。沒有通過驗證證據的欄位寫「無」。 -->
 
 ## 識別
 
 - lineSlug：
 - 任務：
 - 原執行者 id：
-- 升級目標 id：
+- 接手執行者 id：
 - 序號：
-- 使用者拍板：<拍板原文與時間>
+- 未完成次數：<轉移當下本任務全部執行者的完整對照，格式 id:n,id:n，含原執行者與更早已轉移走的執行者；即選出接手者那一次呼叫選派入口所用的 -Incomplete 值。接手之後的次數以線層產物的未完成次數行為準，不回頭更新本欄>
+- 原執行者各次未完成的證據位置：
 
 ## 已驗證限制
 

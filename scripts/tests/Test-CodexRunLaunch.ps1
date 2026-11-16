@@ -163,6 +163,16 @@ try {
             $null = Assert-Throws -Code 'RunPermissionArgumentInvalid' -Script { Assert-RunPermissionArgument -Argument ($permissionArgs + @('--sandbox', 'read-only')) }
             $null = Assert-Throws -Code 'RunPermissionArgumentInvalid' -Script { Assert-RunPermissionArgument -Argument @('--sandbox=workspace-write') }
         }
+        Test-Case 'EXEC-MODEL-OVERRIDE 備援 model 以 -c model= 放在 --profile 之後、exec 之前；未提供時不出現；名稱不合法時拒絕' {
+            $last = Join-Path $root 'last.md'
+            $override = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile review -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot -ModelOverride 'fb-model.1')
+            $plain = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile review -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot)
+            Assert-Equal @('--cd', $execRoot, '--profile', 'review', '-c', 'model="fb-model.1"') @($override[0..5])
+            Assert-True ([array]::IndexOf($override, 'exec') -gt 5) 'model 覆寫應在 exec 之前'
+            Assert-Equal 0 (@($plain | Where-Object { $_ -like 'model=*' }).Count) '未提供備援 model 時不應有 model 覆寫'
+            Assert-Equal ($plain.Count + 2) $override.Count
+            $null = Assert-Throws -Code 'RunModelOverrideInvalid' -Script { New-RunExecArgument -ExecutionRoot $execRoot -Profile review -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot -ModelOverride 'bad" x' }
+        }
         Test-Case 'EXEC-ARGS exec 引數順序與 --skip-git-repo-check' {
             $last = Join-Path $root 'last.md'
             $git = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile review -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot)

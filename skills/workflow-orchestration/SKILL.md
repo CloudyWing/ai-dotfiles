@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # Workflow 推進與收斂
 
-本 Skill 提供 `Clarify => Design => Implement => Review => Accept` Workflow 的需求確認後分派、Design 與 Demo 驗收、逐站推進步驟、Sonnet 審查路徑、Claude 實作路徑（Haiku 與 Sonnet）、結案前文件同步、`light` 路徑、共同收斂契約的術語定義與驗證分層。有效深度為 `light` 的線依「light 路徑」執行，深度的解析優先序與放寬範圍由 `rules/claude/40-workflow.md`「Workflow 深度」規定。角色權責、授權類停頓、升級與收斂停止的判定順序由 `rules/claude/40-workflow.md`「Workflow 自動推進鏈與共同收斂契約」規定；交接檢查點的建檔內容依 `rules/claude/20-coordination.md`「Workflow 交接檢查點」。執行者由執行者登錄表選出，見 `executor-selection` skill。
+本 Skill 提供 `Clarify => Design => Implement => Review => Accept` Workflow 的需求確認後分派、Design 與 Demo 驗收、逐站推進步驟、審查的發動、Claude 實作路徑（Haiku 與 Sonnet）、結案前文件同步、`light` 路徑、共同收斂契約的術語定義與驗證分層。有效深度為 `light` 的線依「light 路徑」執行，深度的解析優先序與放寬範圍由 `rules/claude/40-workflow.md`「Workflow 深度」規定。角色權責、授權類停頓、升級與收斂停止的判定順序由 `rules/claude/40-workflow.md`「Workflow 自動推進鏈與共同收斂契約」規定；交接檢查點的建檔內容依 `rules/claude/20-coordination.md`「Workflow 交接檢查點」。執行者由執行者登錄表選出，見 `executor-selection` skill。
 
 ## 需求確認後的分派
 
@@ -69,26 +69,27 @@ Demo 驗收向使用者呈現 Demo 目錄路徑與開啟方式、版面決策說
 Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢查點的建檔與建檔內容仍依 `rules/claude/20-coordination.md`「Workflow 交接檢查點」執行，寫完後原 Session 直接繼續。
 
 1. 分支前置。啟動 Workflow 屬 `git-workflow` 註記的阻擋範圍，先依 `git-workflow` skill「git-workflow 註記與模式載入」確認註記有效。再依該 skill「線分支與獨立 worktree」的適用判定決定直接在整合分支或開線分支；`release-flow` 已有版本標籤且目前位於主分支（`git-workflow` skill「主分支判定」的結果）時停止並詢問版號，尚無版本標籤時主分支即整合分支（見 `references/release-flow.md`「初次發佈前」）。開線分支時執行該節的建立程序並切換 work-root，之後的 `design-accepted` 交接檢查點、派工與回收都使用新 work-root。
-2. 依 `rules/claude/30-dispatch.md` Workflow Phase 的實作分流逐 Phase 呼叫選派入口，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：全部 Phase=<執行者>`，見 `references/implement-routing.md`「Workflow Phase 的判定記錄」），再依本 Skill「Claude 實作路徑」（`references/claude-implement.md`）派生 Developer。
+2. 依 `rules/claude/30-dispatch.md` Workflow Phase 的實作分流逐 Phase 呼叫選派入口，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：全部 Phase=<執行者>；未完成次數：無`，見 `references/implement-routing.md`「Workflow Phase 的判定記錄」），再依本 Skill「Claude 實作路徑」（`references/claude-implement.md`）派生 Developer。
 3. 派生 Developer 並回收結果。單一 Claude 執行者依宣告順序完成全部 Phase，直接修改來源工作樹，執行者不建立 commit。回收依 `references/claude-implement.md`「主 Agent 核對」。回收「收下」後，主 Agent 立即依同檔「Phase commit 回收」逐 Phase 建立 commit，不等審查與需求意圖驗收。協調者另在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，欄位見 `session-artifacts` skill「需求級成本累計」。
-4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的升級結果。回收後仍有殘餘工作時，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
+4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的執行者與本任務完整的未完成次數對照（見 `references/implement-routing.md`「Workflow Phase 的判定記錄」）。回收後仍有殘餘工作時，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
 5. 文件同步。`design.md` §5「使用者文件」子節列有受影響文件時，依 `references/doc-sync.md` 執行一致性檢查、事實修正、最終編輯與事實核對，結果寫入 `report/<lineSlug>/doc-sync-report.md`；子節為「無」時記錄理由後直接進入下一步。
-6. 命中 Reviewer 必發清單時，依 `rules/claude/40-workflow.md` 審查配對決定審查者並直接派出，不詢問使用者。Codex `Reviewer` 依 `codex-dispatch` skill `references/run.md` 發動；Codex 離線時選派入口回傳 `degraded`，改走本 Skill「Sonnet 審查路徑」。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
-7. 審查者以純技術原因退回時（存在未閉合的 `Critical` 或 `Major`），依 `references/claude-implement.md`「審查與修正」由同一執行者重新派生修正；執行者需要更換時依 `references/implement-routing.md`「失敗與升級」處理。修正完成後回到 Developer 回收與審查判定，修正回收並覆核後立即由 `generate-commit` 步驟 4 建立 `fixup!` commit；修正改變了行為、術語或檔名時，對受影響段落重跑第 5 步。審查結果只剩 `Minor` 時不退回，依共同收斂契約順序 1 批次修正或記為候選後進入第 8 步。
-8. 審查者收下時進入 Analyst 需求意圖驗收。Analyst 讀取 `implement-closure-report.md`、`doc-sync-report.md`（若有）與審查者的報告（`review-report.md`，降級時為 `review-report-claude.md`）。需求意圖驗收完成後輸出 Workflow 結案報告，報告列出文件同步結果（受影響文件與 `doc-sync-report.md` 路徑，無影響時列理由）。
+6. 命中 Reviewer 必發清單時，依 `rules/claude/40-workflow.md` 審查配對決定審查者並直接派出，不詢問使用者。發動方式依本 Skill「審查的發動」，Codex 與 Claude 審查者共用同一份派遣檔。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
+7. 審查者以純技術原因退回時（存在未閉合的 `Critical` 或 `Major`），依 `references/claude-implement.md`「審查與修正」由同一執行者重新派生修正；執行者需要更換時依 `references/implement-routing.md`「未完成與轉移」處理。修正完成後回到 Developer 回收與審查判定，修正回收並覆核後立即由 `generate-commit` 步驟 4 建立 `fixup!` commit；修正改變了行為、術語或檔名時，對受影響段落重跑第 5 步。審查結果只剩 `Minor` 時不退回，依共同收斂契約順序 1 批次修正或記為候選後進入第 8 步。
+8. 審查者收下時進入 Analyst 需求意圖驗收。Analyst 讀取 `implement-closure-report.md`、`doc-sync-report.md`（若有）與審查者的報告 `review-report.md`。需求意圖驗收完成後輸出 Workflow 結案報告，報告列出文件同步結果（受影響文件與 `doc-sync-report.md` 路徑，無影響時列理由）。
 9. 結案報告完成後，確認本線成果都已成為 commit（Phase commit 與其後的 `fixup!` commit），完成報告同步。之後依 `git-workflow` 註記模式進入整理與落地。線分支的整理與符合 `rules/claude/20-coordination.md`「授權分類」落地條件的落地不需授權；`trunk` 於 push 前完成審查與整理，`release-flow` 於合併前流程整理；push 與發佈待使用者當輪授權。每個 Phase 一筆 commit 的最終形態由整理收合 `fixup!` 達成。Accept 之後對尚未推送的 Phase commit 的修正，由 `generate-commit` 步驟 4 建立 `fixup!` commit。
 
 第 1、2 步是 Design 階段的收尾，第 3 至 5 步屬 Implement，第 6、7 步屬 Review，第 8、9 步屬 Accept。Phase commit 回收在第 3 步收下後執行。Accept 階段涵蓋 Analyst 需求意圖驗收、Workflow 結案報告，以及依註記模式的整理與落地。
 
-## Sonnet 審查路徑
+## 審查的發動
 
-Codex 離線、選派入口以 `degraded` 回傳 Sonnet subagent 時，依下列步驟執行。
+審查者由選派入口以 `type=review` 選出。Codex 與 Claude 審查者使用同一份派遣檔、同一份角色規則檔（`agents/codex/reviewer.toml`）與同一套回收步驟，報告一律是同線 `review-report.md`，報告 `## 總覽` 第一行寫明審查者。
 
-1. 建立派遣單八欄，寫入 `handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，第 7 欄報告落點依 `reviewer.toml`。第 4 欄含循環標示行，格式見 `references/review-procedures.md`「循環標示與第 2 輪以上的 Reviewer 派遣單」。
-2. 以 Agent 工具派生冷啟動 subagent，`subagent_type` 為 `general-purpose`，`model` 為 `sonnet`，規則來源為 `~/.ai-agents/agents/codex/reviewer.toml`，prompt 帶 `LineContext`、派遣單路徑與循環標示。審查輪次與範圍依 `reviewer.toml`「審查輪次與範圍」，第 1 輪完整度與第 2 輪以上的審查範圍同樣適用於 Sonnet 審查者。
-3. 審查者將報告寫入派遣單第 7 欄指定的路徑，預設為 `report/<lineSlug>/review-report-claude.md`，報告首行標註「同家族審查」，不寫 `review-report.md`。主 Agent 把報告 `## 例外回報` 節的條目併入同線 `exceptions.md`；改由同家族執行者審查本身不另記 exceptions。
-4. 報告完成後以 `pwsh -NoProfile -File scripts/Test-CodexReviewReport.ps1 -ReportPath <報告路徑>` 自驗 manifest，`valid` 為 `true` 後主 Agent 依回收三態判定。此路徑沒有執行紀錄與自動追加的成本列，協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，`cycle_role` 為 `review`，欄位見 `session-artifacts` skill「需求級成本累計」。
-5. 同線同時只發一位審查者，由主 Agent 自律。
+1. 撰寫派遣檔 `handoff/<lineSlug>/run-order-<dispatchSlug>.md`，欄位與章節依 `codex-dispatch` skill `references/run.md`「發動」，循環標示見 `references/review-procedures.md`「循環標示與第 2 輪以上的 Reviewer 派遣單」。
+2. 依選出的執行者發動。
+   - Codex 執行者：依 `codex-dispatch` skill `references/run.md` 以 `scripts/Invoke-CodexRun.ps1` 發動。結果的結束碼為 4 且 `fallback.selection` 選出 Claude 執行者時，沿用同一份派遣檔改由該執行者審查，不等待 Codex 恢復。
+   - Claude 執行者：依 `references/review-procedures.md`「Claude 審查者的發動」以 Agent 工具派生冷啟動 subagent。
+3. 回收依 `codex-dispatch` skill `references/run.md`「回收」，兩種執行者相同。審查輪次與範圍依 `reviewer.toml`「審查輪次與範圍」。由同家族執行者審查不另記 exceptions。
+4. 同線同時只發一位審查者，由主 Agent 自律。
 
 ## Claude 實作路徑
 
@@ -134,7 +135,7 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 | --- | --- | --- | --- |
 | 淺層探針 | Claude 實作者（Developer） | 對改動的端點或畫面單發確認路徑通 | 每階段完成後，依 `design.md` §6 |
 | 建置與測試 gate | Claude 實作者（Developer） | 建置與既有測試各執行一次 | 結案時一次 |
-| 缺陷審查 | Codex `Reviewer`（Codex 離線時降級為 Claude Sonnet subagent） | diff-scoped 靜態審查，不執行測試 | 主 Agent 依 Reviewer 派遣判準與審查配對以派遣單發動 |
+| 缺陷審查 | Codex `Reviewer`（Codex 不可用時由選派入口選出的同家族執行者審查） | diff-scoped 靜態審查，不執行測試 | 主 Agent 依 Reviewer 派遣判準與審查配對以派遣單發動 |
 | 完整煙霧 | `integration-verify` skill，取證由 Codex `scan`（`type=test`）執行，判讀在 Claude 端 | 多情境、寫入回查、持久化往返 | 交付節點 |
 
 `integration-verify` 的觸發方式、Reviewer 的動態證據複核條件與需求意圖驗收的歸屬見 `rules/claude/40-workflow.md`「驗證分層與 integration-verify 掛載點」。
