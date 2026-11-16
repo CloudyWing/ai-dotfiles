@@ -174,7 +174,7 @@ Preflight 會唯讀檢查有效 `CodexHome` 的 `rules` 目錄。允許 `pwsh` �
 - 陣列參數：`TargetPath`、`AddDirectory`、`CodexParentOption`、`RequestedUnit` 以陣列綁定時，Request 含對應欄位且內容相等即照常換帳號，陣列值不轉送給衍生嘗試；Request 缺少該欄位或內容不相等時維持單次選派。
 - 不換帳號：指定 `-CodexHome`、續行、本地失敗、已有 item 進度、以 `-RunRecordPath` 等待的背景派遣時，維持單次選派與原失敗結果。被拒後，主 Agent 依摘要檔或 RunRecord 的 `codex_home` 以 `-CodexHome` 明確指定下一個帳號。
 - 重新登入命令：帳號因 401 被拒，或因登入檔缺少、為空而略過時，`attempts[].relogin_command`、摘要檔 `relogin_commands[]`、`skipped[].relogin_command`、Inspect 的 `account_failover.relogin_command` 與 `CodexAccountsAllUnavailable` 訊息附該帳號的命令，格式為 `powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''<帳號目錄>''; codex login'`。主 Agent 把命令原文轉給使用者執行。
-- 全數不可用：所有登記帳號都未登入或都被拒時，Dispatch 回報 `CodexAccountsAllUnavailable`，主 Agent 依 `instructions.md`「離線改派」將全部 Codex 執行者以 `-Offline` 傳入選派入口，依 `executor-selection` skill「狀態處置」處理。
+- 全數不可用：所有登記帳號都未登入或都被拒時，Dispatch 回報 `CodexAccountsAllUnavailable`，主 Agent 依 `rules/claude/30-dispatch.md`「離線改派」將全部 Codex 執行者以 `-Offline` 傳入選派入口，依 `executor-selection` skill「狀態處置」處理。
 - 摘要檔：每次經過換帳號外層的 Dispatch 寫入 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\dispatch-account-failover-<dispatchSlug>.json`，列出候選、略過原因與每次嘗試的結果。失敗嘗試留下的 dispatch worktree 不自動清理，主 Agent 依摘要檔的 `dispatch_root` 以既有 `Cleanup` 處置。
 
 腳本換過帳號時，主 Agent 依下列格式告知使用者，帳號名稱為本機別名，摘要檔使用絕對路徑。
@@ -224,7 +224,7 @@ evidence pack 的內容契約如下，由建立 pack 的主 Agent 負責。
 - 可能反證：寫成可檢查的問題或條件，例如「若 X 成立，建議是否改變」，讓 advisor 能逐條回答，不只列出疑慮。
 - 送出前，主 Agent 先寫下自己的判斷，回收後逐項對照顧問意見，同意或不同意都附理由，以「主 Agent 決定、依據、與顧問意見異同」記錄於同線 `exceptions.md`。顧問只提供另一視角，決策由主 Agent 或使用者作出。
 
-同一問題需要追問或補充證據時，沿用原 `dispatchSlug` 的 thread 續談，問題 ID 不變。新增目標、新增來源、新增問題單位或需要不同權限時，建立新的 evidence pack 與新的 `dispatchSlug`；新問題使用新的問題 ID，不併入原派遣的問題集合。advisor 啟動的授權依 `instructions.md` §1.5 advisor consult 掛載點：先向使用者請求，使用者在當下 Session 授權後才派工，授權不延續到其他 Session，也不依額度縮小問題範圍。
+同一問題需要追問或補充證據時，沿用原 `dispatchSlug` 的 thread 續談，問題 ID 不變。新增目標、新增來源、新增問題單位或需要不同權限時，建立新的 evidence pack 與新的 `dispatchSlug`；新問題使用新的問題 ID，不併入原派遣的問題集合。advisor 啟動的授權依 `rules/claude/30-dispatch.md` advisor consult 掛載點：先向使用者請求，使用者在當下 Session 授權後才派工，授權不延續到其他 Session，也不依額度縮小問題範圍。
 
 advisor 的 worktree `Start` 仍必須提供 `PrepareResultPath`，且該檔案的狀態必須是 `Prepared`。`advisor-consult` 必須提供 `AdvisorConsultReportPath`，固定位於 `executionRoot\.local\ai-sessions\report\<lineSlug>`，檔名為 `advisor-consult-<dispatchSlug>.md`，不能改指 `sourceRoot` 的同線 report 或其他來源落點。
 
@@ -450,7 +450,7 @@ pwsh -NoProfile -File .\scripts\Invoke-CodexDispatch.ps1 -Operation DiagnoseMode
 
 跨程序傳入陣列參數（`TargetPath`、`AddDirectory`、`CodexParentOption`）時，以 `-RequestPath` 傳入 `ai-sessions.dispatch-request.v1` JSON 檔，陣列元素的原文與順序即契約，逗號、空白、中文與 `$` 不經 shell 展開或重新切分。Start 續行需要提供這些陣列時，也將 `target_path`、`add_directory` 與 `codex_parent_option` 寫成 JSON array，透過 `-RequestPath` 傳入 `operation=Start` 的 request；不得以逗號字串替代。`Cleanup` 的 `report_path` 與 `evidence_path` 同樣是陣列，須放在 `operation=Cleanup` 的 request 檔中。以 `-File` 啟動的腳本（`pwsh -File` 與 `powershell.exe -File` 皆同）無法以命令列傳遞字串陣列，逗號串接會被視為單一字串，跨程序呼叫時一律使用 request 檔。request 檔與命令列同一欄位不一致時以 `DispatchRequestMismatch` 停止。陣列參數同時寫在 Request 時，換帳號外層照常生效，見「主 Agent 的帳號切換決策」。
 
-服務端拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件與 stderr 判定 service rejection 分類與拒絕種類（usage-limit、401、model not supported、rate limit；未分類拒絕只標 `unclassified`，不產生 service rejection）。執行端保存已確認成果、證據位置與未完成單位，該次嘗試記為失敗，同一帳號不重送。未指定 `-CodexHome` 的 Dispatch 由腳本依「主 Agent 的帳號切換決策」改試下一個帳號；全部帳號被拒時回報 `CodexAccountsAllUnavailable`，主 Agent 依 `instructions.md`「離線改派」將全部 Codex 執行者以 `-Offline` 傳入選派入口並依回傳狀態處置。
+服務端拒絕時，事件流以 `turn.failed` 結束，`Inspect` 依原始事件與 stderr 判定 service rejection 分類與拒絕種類（usage-limit、401、model not supported、rate limit；未分類拒絕只標 `unclassified`，不產生 service rejection）。執行端保存已確認成果、證據位置與未完成單位，該次嘗試記為失敗，同一帳號不重送。未指定 `-CodexHome` 的 Dispatch 由腳本依「主 Agent 的帳號切換決策」改試下一個帳號；全部帳號被拒時回報 `CodexAccountsAllUnavailable`，主 Agent 依 `rules/claude/30-dispatch.md`「離線改派」將全部 Codex 執行者以 `-Offline` 傳入選派入口並依回傳狀態處置。
 
 ### 額度狀態
 

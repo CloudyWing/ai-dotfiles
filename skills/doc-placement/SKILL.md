@@ -45,7 +45,7 @@ AI-facing 但進版控的檔案（規則檔、skill）同樣適用。`.local/` �
 | 程式碼註解 | 本 skill（L1、L3、L4） | `csharp-comments` |
 | XML 文件 | 本 skill（L1、L3、L4） | `csharp-docs` |
 | commit 訊息與 PR 描述 | 本 skill（L1、L3、L4） | `generate-commit` |
-| 規則層（`instructions.md`、`agents/`） | 本 skill；規則層另依 `instructions.md` §0 排除路徑與命令配方 | `check-markdown`、`doc-editing`（僅 `.md` 檔案）、`writing-for-agents` |
+| 規則層（`instructions.md`、`rules/claude/`、`agents/`） | 本 skill；規則層另依 `instructions.md` §0 排除路徑與命令配方 | `check-markdown`、`doc-editing`（僅 `.md` 檔案）、`writing-for-agents` |
 | 工作產物 | `session-artifacts` | 同左 |
 | 對話回覆 | 不適用 | 不適用 |
 

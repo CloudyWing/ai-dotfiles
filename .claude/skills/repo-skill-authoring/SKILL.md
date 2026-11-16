@@ -36,7 +36,7 @@ policy.allow_implicit_invocation: true
 ## 載入觸發
 
 - Skill 靠 `description` 的觸發句被載入。
-- 需要依檔案類型強制載入時，在 `instructions.md` §1.5「Skill 載入紀律」的對照表新增一列。§1.5 的 Persona 表只列 Persona，不列 skill。
+- 需要依檔案類型強制載入時，在 `instructions.md` §1.5「Skill 載入紀律」的對照表新增一列。`rules/claude/10-persona-routing.md` 的 Persona 表只列 Persona，不列 skill。
 
 ## 生成檔
 

@@ -15,4 +15,4 @@ date: 2026-11-02
 
 ## Consequences
 
-`light` 線的程式碼 diff 可能未經跨家族審查，風險由原始輸出核對失敗即恢復必發、升級判定優先於所有深度來源，以及需求摘要 `## Workflow 深度` 節的記錄承擔。調整放寬範圍時，須同步更新 `instructions.md` 的風險邊界表與 `workflow-orchestration` 的 light 路徑。
+`light` 線的程式碼 diff 可能未經跨家族審查，風險由原始輸出核對失敗即恢復必發、升級判定優先於所有深度來源，以及需求摘要 `## Workflow 深度` 節的記錄承擔。調整放寬範圍時，須同步更新 `rules/claude/40-workflow.md` 的風險邊界表與 `workflow-orchestration` 的 light 路徑。

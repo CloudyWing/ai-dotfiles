@@ -239,7 +239,7 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 
 ## 當輪授權
 
-當輪授權指使用者在執行端當輪的直接回覆，或符合 `instructions.md` §1.5「授權期限」的協調 Session 轉述。轉述授權的判定依 `instructions.md` §1.5「授權期限」。
+當輪授權指使用者在執行端當輪的直接回覆，或符合 `rules/claude/20-coordination.md`「授權期限」的協調 Session 轉述。轉述授權的判定依 `rules/claude/20-coordination.md`「授權期限」。
 
 | 動作 | 可否轉述 | 條件 |
 | --- | --- | --- |

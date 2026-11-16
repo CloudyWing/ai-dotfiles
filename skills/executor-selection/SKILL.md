@@ -7,11 +7,11 @@ policy.allow_implicit_invocation: true
 
 # 派工執行者選派
 
-本 Skill 把「這份工作交給誰」交給資料與腳本判定。執行者清單、受理類型、能力標籤、條件、排序值、離線處置與升級鏈只存在登錄表 `scripts/dispatch/executor-registry.json`，選派由 `scripts/Select-DispatchExecutor.ps1` 執行。本 Skill 定義標註語意、入口用法、各狀態的處置與升級交接單。是否進入登錄表判定、不派清單、下限三題與小型修改例外由 `instructions.md` §1.5「F1 派工判準」規定。
+本 Skill 把「這份工作交給誰」交給資料與腳本判定。執行者清單、受理類型、能力標籤、條件、排序值、離線處置與升級鏈只存在登錄表 `scripts/dispatch/executor-registry.json`，選派由 `scripts/Select-DispatchExecutor.ps1` 執行。本 Skill 定義標註語意、入口用法、各狀態的處置與升級交接單。是否進入登錄表判定、不派清單、下限三題與小型修改例外由 `rules/claude/30-dispatch.md`「F1 派工判準」規定。
 
 ## 使用時機
 
-- 讀取本 Skill 的時點為工作已通過 `instructions.md` 的不派清單與下限三題，需要由主 Agent 以外的執行者處理時。
+- 讀取本 Skill 的時點為工作已通過 `rules/claude/30-dispatch.md` 的不派清單與下限三題，需要由主 Agent 以外的執行者處理時。
 - 確認選出 Codex 執行者後，再載入 `codex-dispatch` skill 走資源派遣；選出 Claude 執行者時不經 `codex-dispatch`。
 - 修改登錄表或選派入口時，依「擴充登錄表」執行。
 
@@ -90,7 +90,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 | `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch`，依 `executor.entry` 讀取對應流程（`scripts/Invoke-CodexRun.ps1` 且角色為 `Reviewer` 時讀 `references/run.md` 並以派遣檔發動，不使用 `New-DispatchInputs.ps1`；其餘讀 `references/start.md`），`profile` 取自 `executor.profile` |
 | `degraded` | 0 | 同 `selected`；另追加 exceptions「替代方案」，審查報告或第二意見報告首行標註「同家族審查」。`advise` 降級時由 Sonnet 以一般第二意見承接，不需 `[advisor 諮詢授權]` |
 | `escalation-candidate` | 10 | 停止後續實作，整理升級交接單，請使用者拍板 |
-| `needs-authorization` | 20 | 輸出 `instructions.md` 規定的 `[advisor 諮詢授權]` 請求，等待使用者當輪回覆 |
+| `needs-authorization` | 20 | 輸出 `rules/claude/30-dispatch.md` 規定的 `[advisor 諮詢授權]` 請求，等待使用者當輪回覆 |
 | `wait-reset` | 21 | 回報使用者並等待額度重設，不改派 |
 | `stopped` | 22 | 回報使用者，附 `reason` 與已查範圍，不以其他執行者頂替硬能力 |
 | 標註無效 | 2 | 依 stderr 錯誤碼修正標註後重新呼叫 |
@@ -98,7 +98,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 ## 離線與帳號判定
 
-離線的政策由 `instructions.md`「離線改派」規定，本節補充執行方式。
+離線的政策由 `rules/claude/30-dispatch.md`「離線改派」規定，本節補充執行方式。
 
 - 判定離線的唯一來源是服務端拒絕，額度數值不參與。拒絕包含 usage-limit、401、model not supported、rate limit，以及尚無 item 進度即以未分類錯誤終局失敗者。model not supported 表示該帳號的方案不含檔位設定的 model，停用訂閱的帳號也以此訊息呈現，視為該帳號不可用。
 - 派工時不指定 `-CodexHome`。Dispatch 依 `machine.json` `codex_accounts` 登記順序選第一個可用帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。帳號回報 model not supported 後記入帳號健康狀態檔，24 小時內略過該帳號與檔位 model 的組合。細節見 `codex-dispatch` skill「主 Agent 的帳號切換決策」。

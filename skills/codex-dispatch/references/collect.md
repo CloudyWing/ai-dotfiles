@@ -69,7 +69,7 @@ Phase commit 回收完成後，依 `git-workflow` skill 的「重整後驗證」
 
 ### Finding 編號與前輪對照
 
-適用於產出 finding 的審查角色，例如 Reviewer、Frontend Reviewer 與 Contract Auditor。本節規定編號與前輪對照的共同步驟；finding 的分類、報告區段格式與 Reviewer manifest 由各角色規則檔定義。編號延續與停止判定的共同定義為 `instructions.md` §1.5 共同收斂契約的 `problem-key`，審查循環的 `problem-key` 即 finding ID。
+適用於產出 finding 的審查角色，例如 Reviewer、Frontend Reviewer 與 Contract Auditor。本節規定編號與前輪對照的共同步驟；finding 的分類、報告區段格式與 Reviewer manifest 由各角色規則檔定義。編號延續與停止判定的共同定義為 `rules/claude/40-workflow.md` 共同收斂契約的 `problem-key`，審查循環的 `problem-key` 即 finding ID。
 
 1. 每項 finding 以 `F-<三位數>` 編號，自 `F-001` 起遞增。角色規則檔允許以其他識別承載者（例如 Reviewer 以 T-code 承載 Spec 判定）依該角色規定。
 2. 派遣單第 4 欄或續行 prompt 列出同一角色的前輪報告時，先實讀前輪全部 finding ID 與各 ID 的前輪結束狀態。前輪報告讀取失敗時停止並回報缺件，不以本輪觀察推測前輪狀態。
@@ -92,27 +92,27 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | --- | --- | --- |
 | 收下 | 產出落點檔案存在且非空，全部驗收條件逐條成立，且沒有任何未補驗的受阻或未執行條件 | Workflow `Developer` 先將成果套回來源工作樹且不建立 Phase commit，保留 dispatch worktree；Reviewer、需求意圖驗收與結案報告完成後，等待使用者授權 commit 再進入 Phase commit 回收。資源派遣同步報告與核准交接產物後結束 |
 | 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏或未執行第 5 欄命令 | 一般純技術補件依續 session 契約使用同一個 dispatch worktree resume，帶入未達成條件清單與下一個 `recovery-round`，自動續行且不詢問使用者。完成後回到 Developer 或 Reviewer 站點。額度不足時依 `ScopePlan` 的中止保全流程保存已取得的結論與證據，再由回收端判定是否重新建立 cold-start。 |
-| 升級 | 原因命中 `instructions.md` §1.5 升級兩道篩的三類拍板判準，或命中共同收斂契約的停止訊號 | 停止派遣，保留 dispatch worktree 與證據，回報未閉合清單與替代方向，等待使用者選擇方向 |
+| 升級 | 原因命中 `rules/claude/20-coordination.md` 升級兩道篩的三類拍板判準，或命中共同收斂契約的停止訊號 | 停止派遣，保留 dispatch worktree 與證據，回報未閉合清單與替代方向，等待使用者選擇方向 |
 
-收下後仍有殘餘工作時，依 `instructions.md` 的「派工後的殘餘工作」判定處置，紀錄與環境成因的處理見本節末「派工後的殘餘工作」。
+收下後仍有殘餘工作時，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定處置，紀錄與環境成因的處理見本節末「派工後的殘餘工作」。
 
 回收判定成立且不需續 session 時，先完成事件流、thread id、last-message、報告與核准交接產物同步，再以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 執行資源派遣 worktree 清理。Workflow Developer dispatch worktree 僅在使用者授權 commit、Phase commit 回收與驗證完成後執行 `Cleanup`。`Cleanup` 依 `SourceRoot\.local\ai-sessions\history\<lineSlug>\runs\<dispatchSlug>` 驗證 RunRecord 路徑與 line／dispatch／source／execution owner，RunRecord 留在 SourceRoot history，不列入 worktree 檔案保存清單。省略 `EvidencePath` 時採用 RunRecord 引用且位於 dispatch worktree 的既存證據；明列未引用檔案時拒絕並列出可接受清單。RunRecord 或 evidence 路徑越界、owner 不符、保存清單驗證失敗或 worktree 移除失敗時保留 worktree 並回報錯誤。不得改用其他方式強制移除。report 根目錄的 `dispatch-report-<dispatchSlug>.md` 一律同步至來源 report 根目錄，不依賴 `ReportPath` 是否列出；其他未列入保存清單的 report 檔案會阻止移除 worktree。
 
 ### 派工後的殘餘工作
 
-判定順序與使用者拍板條文見 `instructions.md`「派工後的殘餘工作」，本節補充紀錄與處置細節。
+判定順序與使用者拍板條文見 `rules/claude/30-dispatch.md`「派工後的殘餘工作」，本節補充紀錄與處置細節。
 
 - 環境成因例示：sandbox 無法還原套件、缺外部前置條件、權限不足。
-- 改派對象：依登錄表選出的其他執行者。Codex 執行端的帳號由腳本自動更換；Dispatch 回報 `CodexAccountsAllUnavailable` 時依 `instructions.md`「離線改派」由選派入口回傳承接者，審查、事實查核、顧問與無瀏覽器、桌面標籤的測試取證改由 Sonnet 承接。改派不屬補做，改派承接記為 exceptions「替代方案」。
+- 改派對象：依登錄表選出的其他執行者。Codex 執行端的帳號由腳本自動更換；Dispatch 回報 `CodexAccountsAllUnavailable` 時依 `rules/claude/30-dispatch.md`「離線改派」由選派入口回傳承接者，審查、事實查核、顧問與無瀏覽器、桌面標籤的測試取證改由 Sonnet 承接。改派不屬補做，改派承接記為 exceptions「替代方案」。
 - 補做紀錄：完成補做的主 Agent 追加 exceptions「派工後補做」，固定四欄填寫如下。
   - 內容：補做範圍（檔案、行數、驗證命令）與來源 `dispatchSlug`。
   - 依據：派工端無法完成的原因，以及小型修改例外四項的實測值（檔案數、行數、命令數）。
   - 位置：檔案與行號或 T-code。
-- 重跑不計：回收覆核重跑既載命令、對照輸出與結論，不計入補做、不記錄。任何寫入改動即屬殘餘工作收尾，依 `instructions.md` 的判定順序判定並記錄；只讀重跑不算補做。
+- 重跑不計：回收覆核重跑既載命令、對照輸出與結論，不計入補做、不記錄。任何寫入改動即屬殘餘工作收尾，依 `rules/claude/30-dispatch.md` 的判定順序判定並記錄；只讀重跑不算補做。
 
 ### 覆核取證助手
 
-需實讀的來源量大到會持續留在主 Agent context 時，主 Agent 可派生冷啟動的 Claude subagent 作為覆核取證助手（`model` 見 `instructions.md`「Claude 端 sub-agent 模型指定」）。
+需實讀的來源量大到會持續留在主 Agent context 時，主 Agent 可派生冷啟動的 Claude subagent 作為覆核取證助手（`model` 見 `rules/claude/10-persona-routing.md`「Claude 端 sub-agent 模型指定」）。
 
 - 輸入：同線 `lineSlug`、待核對的驗收條件原文、相關的已確定實作約束原文、證據與來源的絕對路徑。未落檔的語意不交給助手推斷，缺件時由主 Agent 補齊後再派生。
 - 回傳：逐條列出條件、來源位置、支持或反駁結論的原始摘錄與缺漏項目。只回判定而無摘錄的回傳視為未完成。
@@ -158,7 +158,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 已做處置 | 繞道方式或「無」 |
 | 未完成事項 | 仍受阻的工作或「無」 |
 
-值班通知不構成使用者授權，也不屬於協調 Session 轉述；轉述授權的判定依 `instructions.md` §1.5「授權期限」。值班 Session 的收件、登記與分派依 `agents/claude/maintainer.md`「值班收件」。
+值班通知不構成使用者授權，也不屬於協調 Session 轉述；轉述授權的判定依 `rules/claude/20-coordination.md`「授權期限」。值班 Session 的收件、登記與分派依 `agents/claude/maintainer.md`「值班收件」。
 
 ## 保存契約對照
 
@@ -178,7 +178,7 @@ Cleanup 驗證同一 dispatchSlug 的所有 RunRecord，保存各輪位於 workt
 | 未啟動 Cleanup 稽核 | 來源 `history\<lineSlug>\cleanup-unstarted-<dispatchSlug>-<attemptId>.json` | `Cleanup` 的從未啟動判定放行後寫入 `validated` | `Cleanup` 在保存、移除或失敗時更新狀態 | 留在來源同線 `history\`，不列入 worktree 保存清單 | 失敗與恢復導引 |
 | 中斷保全紀錄 | `executionRoot` 的 `history\<lineSlug>\interruption-checkpoint-<dispatchSlug>-<runId>.json`，worktree 派遣為 dispatch worktree，direct-write 為來源工作樹；RunRecord 的 `interruption_checkpoint_path` 為路徑權威。不可寫時以結案訊息中的中斷保全三行交付，位置在識別字三行之前 | `Start` 建立全數未完成的初始檔，並把絕對路徑寫入 prompt | 執行端每完成一個單位以原子寫入更新 | `Inspect`、`Collect` 讀取並回傳已確認單位、未完成單位與證據位置，不回寫該檔，仍接受舊派遣記錄的來源路徑；worktree 派遣由 `Cleanup` 保存回來源同線 `history`。未執行單位不產生結論 | InterruptionSafeguard |
 | Developer 結案報告 | dispatch worktree 的 `report\<lineSlug>\` | 執行端（Workflow 為 Developer）；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者 | `Collect` 與 Reviewer 只讀；`Cleanup` 依固定報告版本規則保存，無法判定新舊時封存 worktree 版本並保留來源版本 | 結案報告與 Git 來源紀錄 |
-| 協調者結案報告（需要你決定、已自行處理、僅供知悉三區） | 來源 `report\<lineSlug>\` | 主 Agent 判定內容並寫入 | 同建立者 | 不經派工回收；執行端不寫入此檔 | `instructions.md` §1.4 結案報告 |
+| 協調者結案報告（需要你決定、已自行處理、僅供知悉三區） | 來源 `report\<lineSlug>\` | 主 Agent 判定內容並寫入 | 同建立者 | 不經派工回收；執行端不寫入此檔 | `rules/claude/20-coordination.md` 結案報告 |
 | advisor 諮詢報告 | `executionRoot` 的 `report\<lineSlug>\advisor-consult-<dispatchSlug>.md` | `advisor-consult` 的 `Inspect`，依事件流與 last-message 產生 | 同建立者；每次 `Inspect` 覆寫 | 主 Agent 讀取後決定是否採用；`Cleanup` 保存回來源，來源已有不同內容時以目的衝突停止。advisor 執行端不寫入 | Advisor consult resource dispatch |
 | 派遣報告與角色固定報告 | 派遣單第 7 欄落點、角色規則檔指定的同線固定報告 | 執行端；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者；Reviewer 直接覆寫，Frontend Reviewer 與 Contract Auditor 先把前版移入 `history\` 再寫新版 | `Cleanup` 保存 report 根目錄的派遣報告及 `review-report`、`frontend-reviewer-report`、`contract-auditor-report`、`implement-closure-report`、`support-engineer-report`、`cleanup-review` 固定報告。以 RunRecord 啟動時間或 manifest round 判斷新舊並封存另一份；版本不明時後三者封存 worktree 版本並保留來源，前三者保留 worktree 並回報錯誤 | 派遣單契約 |
 | 同線 `exceptions.md` | `report\<lineSlug>\exceptions.md` | 第一個需要記錄的執行端或主 Agent；Request 的 `prepare_artifacts` 列入來源既有檔時，`Prepare` 建立執行端副本 | 執行端與主 Agent 只追加；`Cleanup` 把 worktree 新增的區塊合入來源後以原子取代寫回 | 保留來源既有區塊；worktree 區塊與來源區塊全文相同時不附加，worktree 內重複區塊只附加一次。同標題但內文不同視為不同條目；兩邊標題前內容只含 H1 與空白時相容，來源前文維持不變，其他不一致時停止 | 回收三態判定 |

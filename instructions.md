@@ -205,7 +205,7 @@ applyTo: "**/*"
 | 撰寫程式碼註解、XML 文件、commit 訊息或 PR 描述，或判定某項資訊該寫入哪份文件 | `doc-placement` |
 | 新增或修改顯示給使用者的文字（UI 文字、副標、提示、Tooltip、空狀態、錯誤訊息，位於 `*.cs`、`*.razor`、`*.xaml`、`*.vue`、`*.ts`、`*.tsx` 或資源檔） | `uiux`（依「使用者可見文字」） |
 | 修改跨模組介面、分層或依賴方向 | `codebase-design` |
-| 撰寫或修改 `instructions.md` 與任何 `SKILL.md` | `writing-for-agents` |
+| 撰寫或修改 `instructions.md`、`rules/claude/` 下的規則檔與任何 `SKILL.md` | `writing-for-agents` |
 | 發動 `codex exec` 或 advisor consult、撰寫派遣單、執行派遣回收判定 | `codex-dispatch` |
 | 需要主 Agent 以外的執行者：判定派工執行者、標註任務類型與標籤、發動選派入口、處理 Codex 離線或執行者轉移 | `executor-selection` |
 | 執行或回收 `Clarify => Design => Implement => Review => Accept` Workflow、判定其共同收斂循環、執行結案前文件同步（含 bug 線），或規劃 Workflow 驗證與交付 | `workflow-orchestration` |
@@ -458,7 +458,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 | 2 | 涉及跨模組介面、分層或依賴方向變更 |
 | 3 | Developer 結案報告的 exception 含「偏離設計」或「替代方案」條目 |
 | 4 | Developer 結案報告有「未解決項目」 |
-| 5 | 本輪改寫了 `instructions.md`、任何 `SKILL.md` 或 agent 規則檔的機制條款 |
+| 5 | 本輪改寫了 `instructions.md`、`rules/claude/` 下的規則檔、任何 `SKILL.md` 或 agent 規則檔的機制條款 |
 
 主 Agent 依下限自理完成的改動不屬派遣產出，不套用上列必發清單，只對自己的 diff 做核對。Claude subagent（Haiku、Sonnet、Opus）承接的實作屬派工產出，適用上列必發清單。共同收斂契約判定順序 1 結束循環後的 `Minor` 批次修正，第 1 項不適用，只做建置與測試 gate；沒有改到機制條款時不觸發新一輪審查，觸及第 2 項或改到機制條款（第 5 項）時另發審查，為新循環的第 1 輪。
 
@@ -481,7 +481,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 
 | 順序 | 變更來源（實作者） | 審查者 |
 | --- | --- | --- |
-| 順序 1 | 規則檔機制條款改寫（`instructions.md`、任何 `SKILL.md`、agent 規則檔，即必發清單第 5 項） | Codex `Reviewer` |
+| 順序 1 | 規則檔機制條款改寫（`instructions.md`、`rules/claude/` 下的規則檔、任何 `SKILL.md`、agent 規則檔，即必發清單第 5 項） | Codex `Reviewer` |
 | 順序 2 | Claude 家族（主 Agent、Haiku、Sonnet、Opus subagent） | Codex `Reviewer` |
 
 - 「審查者不得是改寫者」與本表並存。順序 1 已使 Claude 改寫的規則檔由 Codex 審查。

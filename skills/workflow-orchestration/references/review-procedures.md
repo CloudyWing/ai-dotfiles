@@ -1,6 +1,6 @@
 # 審查程序
 
-本檔收錄審查配對判定之後的派遣單細節、規則檔改寫的審查前置與 Reviewer 回收的輸入規格。配對與發動條件見 `instructions.md`「審查配對」「Reviewer 派遣發動判準」。入口見 `../SKILL.md`「審查程序」。Sonnet 審查的逐站步驟見 `../SKILL.md`「Sonnet 審查路徑」。
+本檔收錄審查配對判定之後的派遣單細節、規則檔改寫的審查前置與 Reviewer 回收的輸入規格。配對與發動條件見 `rules/claude/40-workflow.md`「審查配對」「Reviewer 派遣發動判準」。入口見 `../SKILL.md`「審查程序」。Sonnet 審查的逐站步驟見 `../SKILL.md`「Sonnet 審查路徑」。
 
 ## 規則檔改寫的審查前置
 

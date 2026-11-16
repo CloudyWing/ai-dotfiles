@@ -41,7 +41,7 @@ project-kind: library
 | --- | --- | --- | --- | --- | --- |
 | `code-style.csharp` | `personal`、`standard`、`project` | `csharp-style` | 專案含 `*.csproj`、`*.sln`、`*.slnx`、`*.cs` 或 `*.csx` | 撰寫或修改 `*.cs`、`*.csx` | 詢問，選項依 `csharp-style` |
 | `project-kind` | `library`、`application`、`sample` | `ai-profile` | 專案含 `instructions.md` §1.5 work-root 判定所列的技術棧根標記 | `generate-readme-zh-tw` 的專案分類；`integration-verify` 步驟一的套件判定與 `sample` 深度；`e2e-manual` 的啟動條件判定 | 詢問並附「推薦答案偵測」的推薦答案；未回答時各消費端採其未設定處置 |
-| `workflow-depth` | `full`、`light` | `workflow-orchestration` | 進入 Workflow 時 | 不阻擋 | 不詢問；依 `instructions.md`「Workflow 深度」由 `project-kind` 推導 |
+| `workflow-depth` | `full`、`light` | `workflow-orchestration` | 進入 Workflow 時 | 不阻擋 | 不詢問；依 `rules/claude/40-workflow.md`「Workflow 深度」由 `project-kind` 推導 |
 | `git-workflow` | `trunk`、`release-flow` | `git-workflow` | 專案位於 Git repo | commit、啟動 Workflow、建立分支 | 詢問並附 `git-workflow` skill「推薦值推導」的推薦答案；各值的語意由該 skill 定義 |
 | `manual-root` | 路徑格式：非空單行，相對專案根目錄的路徑或絕對路徑 | `e2e-manual` | 使用者明確要求 `e2e-manual` 產出操作手冊，且 `project-kind` 為 `application` | `e2e-manual` 寫入 `<manual-root>` 下的操作手冊與圖；E2E 的撰寫與執行不阻擋 | 只在 `e2e-manual` 首次啟動時詢問（必答），附推薦答案 `docs/manual`；不列入「一次問完」 |
 | `target.sqlserver` | `2012`、`2014`、`2016`、`2017`、`2019`、`2022`、`2025` | `sql-query` | 專案相依 SQL Server 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 SQL Server 專用 SQL | 撰寫、修改或產生涉及 SQL Server 的原生 SQL、`FromSql*`、EF Core 對 SQL Server 的查詢與 provider 設定，以及整合測試的資料庫容器映像與相容性設定（SQL Server） | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |

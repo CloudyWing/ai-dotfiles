@@ -95,6 +95,7 @@ $desired = @(
     @{ Link = "$claudeDir\CLAUDE.md"; Source = "instructions.md" }
     @{ Link = "$claudeDir\skills";    Source = "skills" }
     @{ Link = "$claudeDir\agents";    Source = "agents\claude" }
+    @{ Link = "$claudeDir\rules";     Source = "rules\claude" }
     @{ Link = "$codexDir\AGENTS.md";  Source = "instructions.md" }
     @{ Link = "$codexDir\agents";     Source = "agents\codex" }
     @{ Link = "$agentsDir\skills";    Source = "skills" }
@@ -504,6 +505,7 @@ Write-Host "  - 機器層 Git 排除清單位於 $configRootDisplay/git-global-e
 Write-Host "  - Claude Code 透過 ~/.claude/CLAUDE.md 符號連結讀取"
 Write-Host "  - Claude Code skills → $configRootDisplay/skills/"
 Write-Host "  - Claude Code agents → $configRootDisplay/agents/claude/"
+Write-Host "  - Claude Code rules → $configRootDisplay/rules/claude/（只在 Claude 端載入的常駐規則）"
 Write-Host "  - Claude Code plugin 由本機 marketplace 提供，包含 ai-agents-hooks@ai-agents-local 與 line-status-board@ai-agents-local，原始碼位於 $($claudeMarketplaceRoot.Replace($env:USERPROFILE, '~'))"
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
 Write-Host "  - Codex agents → $configRootDisplay/agents/codex/"

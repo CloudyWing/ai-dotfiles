@@ -15,4 +15,4 @@ date: 2026-11-11
 
 ## Consequences
 
-`Minor` 不再單獨觸發複審，循環輪數下降，代價是部分 `Minor` 以候選形式留到後續處理。批次修正改到機制條款時仍會開新循環，次數由 `c3` 停止條件限制；`instructions.md`、`analyst.md`、`workflow-orchestration`、`codex-dispatch` 與 `git-workflow` 的收斂判定須維持同一套說法。
+`Minor` 不再單獨觸發複審，循環輪數下降，代價是部分 `Minor` 以候選形式留到後續處理。批次修正改到機制條款時仍會開新循環，次數由 `c3` 停止條件限制；`rules/claude/40-workflow.md`、`analyst.md`、`workflow-orchestration`、`codex-dispatch` 與 `git-workflow` 的收斂判定須維持同一套說法。

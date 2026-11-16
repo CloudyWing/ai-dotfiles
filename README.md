@@ -35,7 +35,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ### 本專案策略
 
-- 以 `instructions.md` 作為唯一主規則檔（Single Rule）。
+- 以 `instructions.md` 作為 Claude 與 Codex 共用的主規則檔（Single Rule）；只有 Claude 端需要的 Persona、協調、授權、派工與 Workflow 審查規則放在 `rules/claude/`，每條規則只存在一處。
 - Commit 訊息生成以 `skills/generate-commit/` Skill 形式獨立管理。
 
 ### 平台分工
@@ -92,7 +92,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 `~/.ai-agents/.local/machine.json` 是本機設定，不進版控，記錄值班 Session、派工帳號清單等只屬於這台電腦的資訊。
 
-協調 Session 不需要登記。Agent 把啟動它的那個 Session，以及該 Session 指定的接手 Session，當作協調 Session，接受它轉述的使用者決定；你手動開的 Session 則要你直接在該 Session 回覆。轉述的判定規則見 `instructions.md` §1.5「授權期限」。
+協調 Session 不需要登記。Agent 把啟動它的那個 Session，以及該 Session 指定的接手 Session，當作協調 Session，接受它轉述的使用者決定；你手動開的 Session 則要你直接在該 Session 回覆。轉述的判定規則見 `rules/claude/20-coordination.md`「授權期限」。
 
 ---
 
@@ -117,7 +117,8 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 | 路徑 | 用途 |
 | --- | --- |
-| `CLAUDE.md` | 全域記憶與指令（Claude Code 會自動讀取） |
+| `CLAUDE.md` | 全域記憶與指令（Claude Code 會自動讀取），連結到 `instructions.md` |
+| `rules/*.md` | 只在 Claude 端載入的常駐規則，啟動時與 `CLAUDE.md` 一同載入，子代理同樣載入。`rules` 是連結到 `rules/claude/` 的目錄連結；連結缺失或中斷時 Claude Code 不會提示，Persona、授權與派工規則會整組失效，連結缺失時重跑 Setup 即可恢復；連結仍存在但指向其他位置（例如 repo 搬移後）時，Setup 會印出警告並略過，確認後加 `-Force` 重跑才會重建 |
 | `skills/<name>/SKILL.md` | Skills（知識型自動載入；指令型以 `/skill-name` 呼叫） |
 | `agents/*.md` | 全域自訂 Persona 與 Claude 端 sub-agent |
 | `settings.json` | 工具權限與其他使用者設定 |
@@ -190,7 +191,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 派工使用 `review`、`scan`、`content`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。審查類使用的 `scripts/Invoke-CodexRun.ps1` 不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `instructions.md` §1.5 與 `executor-selection` skill。
+1. 派工使用 `review`、`scan`、`content`、`advisor` 四個檔位，以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。審查類使用的 `scripts/Invoke-CodexRun.ps1` 不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md` 與 `executor-selection` skill。
 2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。Setup 提供初始值，檔案建立後屬本機設定。
 
    ```toml
@@ -256,7 +257,9 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 ├── AGENTS.md                           # 維護本 repo 的專案層規則
 ├── LICENSE.md                          # 授權條款
 ├── README.md                           # 本文件
-├── instructions.md                     # 核心開發規範（主 Rule）
+├── instructions.md                     # 核心開發規範（主 Rule，Claude 與 Codex 共用）
+├── rules/
+│   └── claude/                         # 只在 Claude 端載入的常駐規則（Persona、協調與授權、派工、Workflow 與審查）
 ├── docs/                               # Agent／Skill 索引（生成檔）與 ADR（adr/）
 ├── git-global-excludes                 # 機器層 Git 排除清單
 ├── agents/

@@ -8,7 +8,7 @@
 | --- | --- | --- |
 | 納入 | 以人為讀者的文件：專案根目錄 `README.md`、`docs/` 下手寫文件、使用手冊 | `README.md` |
 | 排除：生成檔 | 由腳本或 hook 產生的檔案，依檔頭生成標記或專案 `AGENTS.md` 宣告判定 | `docs/agents.md`、`docs/skills.md` |
-| 排除：agent 規則檔 | `instructions.md`、`agents/` 與 `skills/` 下的規則檔與 `SKILL.md`、專案層 `AGENTS.md`、`GLOSSARY.md`，由 Reviewer 審查 | `skills/workflow-orchestration/SKILL.md` |
+| 排除：agent 規則檔 | `instructions.md`、`rules/claude/`、`agents/` 與 `skills/` 下的規則檔與 `SKILL.md`、專案層 `AGENTS.md`、`GLOSSARY.md`，由 Reviewer 審查 | `skills/workflow-orchestration/SKILL.md` |
 | 排除：追加式文件 | `docs/adr/`、CHANGELOG。既有條目不改寫，新增由 `adr` skill 與發版流程觸發 | `docs/adr/` 下的 ADR |
 
 受影響文件清單為空時，在盤點來源寫明理由，不執行後續步驟。

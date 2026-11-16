@@ -16,4 +16,4 @@ ADR-0009 規定 `intensive` 只在使用者於當下 Session 明確指定後使�
 
 ## Consequences
 
-大範圍審查的 Codex 消耗較高，檔位判定集中在 `instructions.md` 的審查配對，README 與 `start.md` 指回該處。本決策取代 ADR-0009 的檔位選用條件。
+大範圍審查的 Codex 消耗較高，檔位判定集中在 `rules/claude/40-workflow.md` 的審查配對，README 與 `start.md` 指回該處。本決策取代 ADR-0009 的檔位選用條件。

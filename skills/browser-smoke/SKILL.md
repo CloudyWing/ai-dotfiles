@@ -17,7 +17,7 @@ policy.allow_implicit_invocation: true
 | 啟動服務、開啟頁面、執行操作流程（含以測試帳號登入）、擷取截圖與 console、network 證據 | Codex `scan` | `-Type test -Tags browse` |
 | 判讀截圖與證據是否符合預期、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
 
-需要使用者本人已登入的瀏覽器 session 時屬 `instructions.md` 不派清單，由 Claude 端操作。Codex 離線時選派入口回傳 `stopped`，停止並回報使用者，不改由 Claude 端代替 Codex 執行取證。
+需要使用者本人已登入的瀏覽器 session 時屬 `rules/claude/30-dispatch.md` 不派清單，由 Claude 端操作。Codex 離線時選派入口回傳 `stopped`，停止並回報使用者，不改由 Claude 端代替 Codex 執行取證。
 
 ## 啟動條件
 

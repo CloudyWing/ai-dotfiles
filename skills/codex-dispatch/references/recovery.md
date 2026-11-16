@@ -6,7 +6,7 @@
 
 | 失敗形狀 | 恢復方式 | 詳細節 |
 | --- | --- | --- |
-| Dispatch 回報 `CodexAccountsAllUnavailable`（登記帳號全數未登入、或因 `config.toml` 設定異常被略過，或被服務端拒絕），或單一嘗試被服務端拒絕（usage-limit、401、model not supported、rate limit 或未分類拒絕） | 同一帳號不重送。未指定 `-CodexHome` 時腳本已逐帳號嘗試（背景派遣在 Inspect 時換帳號），摘要檔或訊息附重新登入命令時（帳號因 401 被拒，或因登入檔缺少、為空而略過）原文轉給使用者，回報全數不可用時依 `instructions.md`「離線改派」重新呼叫選派入口並依回傳狀態處置；略過原因含 `TrustConfigMissing`、`TrustConfigLinked` 或 `TrustConfigUnsupported` 時，先回報使用者並列出各帳號的略過原因與下一列的修法，再依「離線改派」處置，不靜默改派。指定 `-CodexHome`、續行被拒，或背景換帳號回報 `handoff-incomplete` 或不適用時，主 Agent 依摘要檔或 RunRecord 指定下一個帳號 | 額度與範圍契約 |
+| Dispatch 回報 `CodexAccountsAllUnavailable`（登記帳號全數未登入、或因 `config.toml` 設定異常被略過，或被服務端拒絕），或單一嘗試被服務端拒絕（usage-limit、401、model not supported、rate limit 或未分類拒絕） | 同一帳號不重送。未指定 `-CodexHome` 時腳本已逐帳號嘗試（背景派遣在 Inspect 時換帳號），摘要檔或訊息附重新登入命令時（帳號因 401 被拒，或因登入檔缺少、為空而略過）原文轉給使用者，回報全數不可用時依 `rules/claude/30-dispatch.md`「離線改派」重新呼叫選派入口並依回傳狀態處置；略過原因含 `TrustConfigMissing`、`TrustConfigLinked` 或 `TrustConfigUnsupported` 時，先回報使用者並列出各帳號的略過原因與下一列的修法，再依「離線改派」處置，不靜默改派。指定 `-CodexHome`、續行被拒，或背景換帳號回報 `handoff-incomplete` 或不適用時，主 Agent 依摘要檔或 RunRecord 指定下一個帳號 | 額度與範圍契約 |
 | Dispatch 於 `preflight` 階段回報 `CodexAccountConfigMissing`、`CodexAccountConfigLinked`、`CodexAccountConfigUnsupported`、`CodexAccountConfigChanged`、`CodexAccountConfigWriteFailed`、`CodexAccountTrustLockTimeout` 或 `CodexProjectPathUnsupported` | 不換帳號，主 Agent 不自行編輯 `config.toml`。`CodexAccountConfigMissing` 請使用者以 `New-CodexDispatchAccount.ps1 -Name <名稱>` 重跑；`CodexAccountConfigLinked` 請使用者以 `(Get-Item -LiteralPath '<路徑>' -Force).Delete()` 只刪除連結後重跑建立腳本；`CodexAccountConfigUnsupported` 請使用者依訊息的行號人工修正，既有非 `trusted` 的專案設定視為使用者決定，腳本不覆寫；`CodexAccountConfigChanged` 稍後重派；`CodexAccountTrustLockTimeout` 確認沒有卡住的程序後重派；`CodexAccountConfigWriteFailed` 排除權限或磁碟原因後重派；`CodexProjectPathUnsupported` 改用不含單引號或控制字元的絕對路徑 | `start.md`「本機帳號清單與準備」 |
 | admission 或 Start 準備階段失敗、Codex 程序未啟動 | 修正輸入後，同一個 `dispatchSlug` 的 RunRecord 全為未啟動（`unstarted-sandbox`）時可用同一個 `dispatchSlug` 重新冷啟動；有已實際啟動的紀錄時 Preflight 以 `DispatchColdStartAlreadyStarted` 拒絕，有無法判定的紀錄時以 `DispatchColdStartRunRecordUnverifiable` 拒絕，改用新的 `dispatchSlug` 或依續行流程處理；該次派遣經過換帳號外層、已寫出 `history/<lineSlug>/dispatch-account-failover-<dispatchSlug>.json` 時，摘要檔保留供稽核，腳本以 `DispatchAccountFailoverSummaryCollision` 拒絕同一個 `dispatchSlug`，改用新的 `dispatchSlug`。腳本會清除該次失敗嘗試建立的 ScopePlan hash 紀錄，`failure receipt` 與 `launch-failed` RunRecord 保留供稽核；已啟動成功者的 hash、ledger 與 owner 不受影響。Cleanup 依 Preflight result、符合未啟動條件且無事件流的 `launch-failed` RunRecord，或無兩者時的 U1 至 U4 從未啟動判定放行。U1 要求 worktree history 無 `codex-exec-*.jsonl` 與 `codex-thread-<dispatchSlug>.txt`；U2 要求來源 `history\<lineSlug>\runs\<dispatchSlug>\` 無 RunRecord；U3 要求相符的 dispatch-request，預設讀 `history\<lineSlug>\dispatch-request-<dispatchSlug>.json`，可用 `dispatch_request_path` 指定，或使用 `process_started=false` 的 pending／failed 收據與已結束的 dispatcher 身分；舊版 failed 收據可沒有 dispatcher 身分。收據只能經 CLI `-FailureReceiptPath` 提供，Cleanup Request 不接受 `failure_receipt_path`；收據顯示 dispatcher 仍在執行或狀態不明時，U3 不通過，不改用 dispatch-request。U4 要求 admission ledger 無該 dispatchSlug 的 entry。放行後留存 `cleanup-unstarted-<dispatchSlug>-<attemptId>.json` 稽核檔。三種證據皆不成立時以 `CleanupPreflightResultRequired` 拒絕並列出未通過項目；有 RunRecord 時提供 `run_record_path`，有啟動痕跡或 ledger entry 時依續行或 owner 接手流程處理。請勿手寫 Preflight result、failure receipt、RunRecord 或 dispatch-request。該次嘗試已建立 dispatch worktree 時，Preflight 會因 dispatchRoot 已被占用而拒絕，此時改用新的 `dispatchSlug`；Prepare 結果檔已存在而發生 `PrepareResultCollision` 時，改用新的結果路徑或新的 `dispatchSlug` | 續 session 與跨介面接手 |
 | 續行被拒 | 以 `git -C <舊 dispatchRoot> diff HEAD` 與未追蹤檔案清單轉移成果，以新的 `dispatchSlug` 冷啟動 | Codex 進程 PID 與並行檢查 |
@@ -26,7 +26,7 @@
 
 ### 離線改派的執行細節
 
-成立條件與政策見 `instructions.md`「離線改派」，各狀態的處置見 `executor-selection` skill「狀態處置」，本節補充執行細節。
+成立條件與政策見 `rules/claude/30-dispatch.md`「離線改派」，各狀態的處置見 `executor-selection` skill「狀態處置」，本節補充執行細節。
 
 - 判定證據：Dispatch 回報的 `CodexAccountsAllUnavailable` 與摘要檔 `history/<lineSlug>/dispatch-account-failover-<dispatchSlug>.json`（候選、略過原因與每次嘗試的拒絕種類），不採用各帳號最近一次派遣事件流。
 - 規則來源：承接者以該工作原本的規則檔為規則來源（`reviewer.toml`、`frontend-reviewer.toml`、`contract-auditor.toml` 等），由選派入口回傳的執行者承接。
@@ -43,7 +43,7 @@
 | --- | --- | --- | --- |
 | 入口不對稱 | `Dispatch` 是新派遣的唯一正式入口；Request 檔與命令列的同名欄位語意與驗證相同，兩邊不一致時以 `DispatchRequestMismatch` 拒絕 | 新的一筆派遣一律從 `Dispatch` 進入；`Preflight`、`Prepare`、`Start` 的分步入口只用於續行、恢復與測試 | 使用時機與入口選擇、Dispatch 正式入口 |
 | 失敗重試污染 | worktree 建立後先寫 `status=pending` 的收據；失敗時寫 `failed`，成功啟動後更新為 `superseded`。`launch-failed` RunRecord 供稽核，該次失敗嘗試建立的 ScopePlan hash 會被清除 | 程序未啟動、未留下 dispatch worktree 且未寫出換帳號摘要檔時以同一個 `dispatchSlug` 重試，已留下 worktree 或摘要檔時改用新的 `dispatchSlug`；程序已啟動的派遣改走續行，或以新 `dispatchSlug` 冷啟動並轉移成果 | 失敗與恢復導引、續 session 與跨介面接手 |
-| 外部狀態恢復 | 服務端拒絕時同一帳號不重試，未指定 `-CodexHome` 時腳本改試下一個帳號；中斷時以中斷保全檔記錄已確認單位與證據位置 | 主 Agent 需要額度數值供顯示時依 `instructions.md`「派工的額度查詢與範圍」手動查詢，advisor 啟動由使用者授權；中斷後先 `Inspect`、`Collect` 取回中斷保全檔，只交付已確認單位 | 額度與範圍契約、InterruptionSafeguard、advisor 授權請求 |
+| 外部狀態恢復 | 服務端拒絕時同一帳號不重試，未指定 `-CodexHome` 時腳本改試下一個帳號；中斷時以中斷保全檔記錄已確認單位與證據位置 | 主 Agent 需要額度數值供顯示時依 `rules/claude/30-dispatch.md`「派工的額度查詢與範圍」手動查詢，advisor 啟動由使用者授權；中斷後先 `Inspect`、`Collect` 取回中斷保全檔，只交付已確認單位 | 額度與範圍契約、InterruptionSafeguard、advisor 授權請求 |
 | 同名參數語意 | `-ResultPath` 只寫 CLI envelope；`-PrepareResultPath` 寫 `ai-sessions.prepare.v1` 文件；每個產物只有一個寫入者 | `Start` 只接受 `ai-sessions.prepare.v1` 文件；`Collect` 的參數取自 `Dispatch` 輸出欄位，不自行拼湊路徑 | 最短正常路徑、Dispatch 正式入口 |
 
 `ScopePlan` hash 紀錄寫入 `<sourceRoot>\.local\ai-sessions\history\<lineSlug>\scope-plan-hash-<dispatchSlug>.json`，不同線可使用相同 `dispatchSlug`。讀取時若同線路徑不存在，才檢查舊版 history 根目錄的 `scope-plan-hash-<dispatchSlug>.json`；只有舊紀錄的 `line_slug`，或其 `root_run_id` 對應 RunRecord 的所屬線，與目前 `lineSlug` 相同時才沿用。其他線的舊紀錄不阻擋目前派遣，也不會被改寫或刪除。同一線內仍須使用不同 `dispatchSlug` 識別不同派遣。
@@ -61,7 +61,7 @@ Workflow 派工沒有派遣單，以派遣單絕對路徑作為共同條件會�
 
 ### 回收收斂判定
 
-回收三態套用 `instructions.md` §1.5 的共同收斂契約。一次修正連同其驗收或回歸判定為一輪，初次執行為第 1 輪。對派遣回收而言，`recovery-round` 記錄每次純技術續行增加的輪次。派遣回收的 `problem-key` 使用 `dispatchSlug` 加派遣單第 5 欄的驗收列序號，驗收列序號在同一派遣的各輪保持不變。
+回收三態套用 `rules/claude/40-workflow.md` 的共同收斂契約。一次修正連同其驗收或回歸判定為一輪，初次執行為第 1 輪。對派遣回收而言，`recovery-round` 記錄每次純技術續行增加的輪次。派遣回收的 `problem-key` 使用 `dispatchSlug` 加派遣單第 5 欄的驗收列序號，驗收列序號在同一派遣的各輪保持不變。
 
 派遣回收的 `area-key` 為派遣單第 5 欄驗收條件所屬的目標物件檔案與節名。嚴重度映射如下。
 
@@ -71,7 +71,7 @@ Workflow 派工沒有派遣單，以派遣單絕對路徑作為共同條件會�
 
 - 每輪逐條保存第 5 欄驗收結果、命令輸出、報告與事件證據。前輪未成立的驗收列在本輪相同 key 成立且沒有反證時標記 `closed`；本輪 key 不在前輪未成立集合且沒有同一 key 的改寫或重新命名時標記 `new-problem`。
 - `dispatch-return-count` 只記錄該派遣的退回稽核資料，不作一般停止條件。`PromptNotDelivered` 是啟動契約錯誤，不增加此計數。
-- 沒有未成立的 `Critical` 或 `Major` 驗收列時結束循環。驗收列仍是放行門檻。未成立的 `Minor` 驗收列由協調者依 `instructions.md`「派工後的殘餘工作」小型門檻補件收尾，超過門檻時退回執行端補件，兩者都不增加 `recovery-round`，全部驗收列成立後進入下一站，不為 `Minor` 單獨再開一輪複審。
+- 沒有未成立的 `Critical` 或 `Major` 驗收列時結束循環。驗收列仍是放行門檻。未成立的 `Minor` 驗收列由協調者依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」小型門檻補件收尾，超過門檻時退回執行端補件，兩者都不增加 `recovery-round`，全部驗收列成立後進入下一站，不為 `Minor` 單獨再開一輪複審。
 - 任一前輪 `Critical` 或 `Major` 問題連續兩輪未閉合、同一 `area-key` 連續兩輪出現新的 `Major` 以上問題、修正需要改變需求或已確認設計，或 `recovery-round` 達到 6 輪時停止，保留證據並提出替代方向。
 - 存在未成立的 `Critical` 或 `Major` 驗收列，這些問題均屬純技術可解，且未命中上述停止訊號時自動續行下一輪。新出現的 `Major` 在尚未形成停止訊號前依純技術路徑續行。
 
