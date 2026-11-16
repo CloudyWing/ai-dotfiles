@@ -43,14 +43,11 @@ policy.allow_implicit_invocation: true
 ```csharp
 [Test]
 public async Task SaveOrderAsync_ValidOrder_PersistsToDatabaseAsync() {
-    // Arrange
     IOrderRepository repo = Substitute.For<IOrderRepository>();
     OrderService sut = new(repo);
 
-    // Act
     await sut.SaveOrderAsync(new Order { Id = 1 });
 
-    // Assert
     await repo.Received(1).InsertAsync(Arg.Any<Order>());
 }
 ```

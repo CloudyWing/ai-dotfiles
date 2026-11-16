@@ -30,7 +30,7 @@ policy.allow_implicit_invocation: true
 
 ## 回應格式一致性
 
-- API 的錯誤回應必須遵循 **ProblemDetails（RFC 7807）** 格式。
+- API 的錯誤回應必須遵循 **ProblemDetails（RFC 9457）** 格式。
 - 使用 `Results.Problem(...)` 或 `Results.ValidationProblem(...)` 產生標準化錯誤。
 
 ## API 版本控制

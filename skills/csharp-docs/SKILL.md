@@ -27,8 +27,7 @@ policy.allow_implicit_invocation: true
 
 `project-kind` 未設定時比照 `application`（非 Web）。鍵為 `library` 時，測試專案與 `IsPackable=false` 的專案依專案層解析視為 `application`。
 
-- `<summary>` 以第三人稱現在式動詞開頭，例如 `Gets...` 或 `Initializes...`，說明 Why 與 What。
-- `<summary>` 提供一句話的簡短描述。中文直接描述動作，例如取得、設定或初始化。
+- `<summary>` 提供一句話的簡短描述，以中文直接描述動作開頭，例如取得、設定或初始化，說明 Why 與 What。
 - `<remarks>`：用於補充詳細資訊、實作細節或上下文。
 - `<see langword>`：用於語言關鍵字（如 `null`, `true`, `false`, `int`, `bool`）。
 - `<c>`：用於行內程式碼片段。
@@ -48,8 +47,8 @@ policy.allow_implicit_invocation: true
 ## 屬性 (Properties)
 
 - `<summary>` 開頭應為：
-  - 讀寫屬性：「取得或設定... (Gets or sets ...)」
-  - 唯讀屬性：「取得... (Gets ...)」
+  - 讀寫屬性：「取得或設定...」
+  - 唯讀屬性：「取得...」
   - 布林屬性：「取得或設定一個值，用以指出是否...」
 - 可使用 `<value>` 標籤描述回傳值的涵義及預設值。
 

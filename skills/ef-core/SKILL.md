@@ -11,39 +11,7 @@ policy.allow_implicit_invocation: true
 
 - DbContext **必須**註冊為 `Scoped`（`AddDbContext<T>` 預設行為）。
 - **禁止**將 DbContext 注入至 Singleton 服務，會導致 Captive Dependency 與並行存取問題。
-- 若需在 Singleton 或背景服務中使用，必須注入 `IDbContextFactory<T>` 並在使用處建立短生命週期實例。
-
-```csharp
-// ✅ 正確：背景服務使用 IDbContextFactory
-public class MyBackgroundService : BackgroundService {
-    private readonly IDbContextFactory<AppDbContext> contextFactory;
-
-    public MyBackgroundService(IDbContextFactory<AppDbContext> contextFactory) {
-        this.contextFactory = contextFactory;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        await using AppDbContext db = await contextFactory.CreateDbContextAsync(stoppingToken)
-            .ConfigureAwait(false);
-        // ...
-    }
-}
-```
-
-```csharp
-// ❌ 錯誤：背景服務以 Singleton 存活，直接注入 DbContext
-public class MyBackgroundService : BackgroundService {
-    private readonly AppDbContext db;
-
-    public MyBackgroundService(AppDbContext db) {
-        this.db = db;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        await db.SaveChangesAsync(stoppingToken).ConfigureAwait(false);
-    }
-}
-```
+- 若需在 Singleton 或背景服務中使用，必須注入 `IDbContextFactory<T>` 並在使用處建立短生命週期實例（`await using` 搭配 `CreateDbContextAsync`）。
 
 ## 查詢效能（Crucial）
 
@@ -56,24 +24,6 @@ public class MyBackgroundService : BackgroundService {
 
 - **唯讀查詢**（不需要後續更新的資料）必須加上 `.AsNoTracking()`，降低記憶體與效能開銷。
 - 若整個 DbContext 的查詢皆為唯讀場景，可在註冊時設定 `UseQueryTrackingBehavior(QueryTrackingBehavior.NoTracking)`。
-
-```csharp
-// ✅ 正確：唯讀查詢
-IReadOnlyList<OrderDto> orders = await db.Orders
-    .AsNoTracking()
-    .Where(o => o.Status == OrderStatus.Completed)
-    .Select(o => new OrderDto {
-        Id = o.Id,
-        Total = o.Total
-    })
-    .ToListAsync(cancellationToken)
-    .ConfigureAwait(false);
-
-// ❌ 錯誤：唯讀場景未加 AsNoTracking，且回傳整個 Entity
-List<Order> orders = await db.Orders
-    .Where(o => o.Status == OrderStatus.Completed)
-    .ToListAsync(cancellationToken);
-```
 
 ### 投影優先
 

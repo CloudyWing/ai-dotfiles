@@ -159,28 +159,7 @@ FROM Orders;
 
 #### 避免破壞索引的寫法
 
-- **禁止對欄位套用函式**後再比較，會導致索引失效：
-
-```sql
--- ❌ 索引失效（T-SQL）
-WHERE YEAR(OrderDate) = 2024
-WHERE CONVERT(VARCHAR, OrderDate, 112) = '20240101'
-WHERE ISNULL(Status, 0) = 1
-
--- ❌ 索引失效（Oracle）
-WHERE EXTRACT(YEAR FROM OrderDate) = 2024
-WHERE TO_CHAR(OrderDate, 'YYYYMMDD') = '20240101'
-WHERE NVL(Status, 0) = 1
-
--- ✅ 索引友善（T-SQL）
-WHERE OrderDate >= '2024-01-01' AND OrderDate < '2025-01-01'
-WHERE Status = 1
-
--- ✅ 索引友善（Oracle）
-WHERE OrderDate >= DATE '2024-01-01' AND OrderDate < DATE '2025-01-01'
-WHERE Status = 1
-```
-
+- **禁止對欄位套用函式**後再比較，會導致索引失效。例如 `WHERE YEAR(OrderDate) = 2024`（Oracle 為 `EXTRACT(YEAR FROM OrderDate)`）改寫為 `WHERE OrderDate >= '2024-01-01' AND OrderDate < '2025-01-01'`（Oracle 用 `DATE '2024-01-01'` 字面值）；以 `CONVERT`、`TO_CHAR` 轉成字串再比對日期同樣改寫為範圍條件；`ISNULL(Status, 0) = 1`（Oracle 為 `NVL`）改寫為 `Status = 1`。
 - **禁止對欄位進行隱式型別轉換**：確保比較值的型別與欄位型別一致（如 `NVARCHAR` 欄位使用 `N'...'` 前綴）。
 
 #### 萬用字元查詢
@@ -196,22 +175,7 @@ WHERE Status = 1
 ### NULL 處理
 
 - 比較 NULL 使用 `IS NULL` / `IS NOT NULL`，禁止 `= NULL`。
-- 注意 `NOT IN` 與 NULL 值的陷阱：若子查詢可能回傳 NULL，改用 `NOT EXISTS`。
-
-```sql
--- ❌ 當子查詢含 NULL 時，NOT IN 會回傳空結果
-SELECT ProductId, ProductName, CategoryId FROM Products
-WHERE CategoryId NOT IN (SELECT CategoryId FROM ExcludedCategories);
-
--- ✅ NOT EXISTS 不受 NULL 影響
-SELECT p.ProductId, p.ProductName, p.CategoryId
-FROM Products p
-WHERE NOT EXISTS (
-    SELECT 1
-    FROM ExcludedCategories e
-    WHERE e.CategoryId = p.CategoryId
-);
-```
+- 注意 `NOT IN` 與 NULL 值的陷阱：若子查詢可能回傳 NULL，改用 `NOT EXISTS`。子查詢含 NULL 時，`NOT IN` 會回傳空結果。
 
 ### 分頁查詢
 

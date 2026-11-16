@@ -122,56 +122,13 @@ public class OrderItem {
 
 ### Domain Model
 
-透過建構函式保護不變式 (invariant)，屬性盡量唯讀。
+透過建構函式保護不變式 (invariant)，屬性盡量唯讀（`private set`），建構函式以 Guard Clause 驗證參數。
 
-```csharp
-public class Customer {
-    public Customer(string name, string email) {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(email);
-        Name = name;
-        Email = email;
-    }
-
-    public int Id { get; private set; }
-    public string Name { get; private set; }
-    public string Email { get; private set; }
-    public string? Phone { get; private set; }
-}
-```
-
-若 Domain Model 同時使用 `required` 屬性，建構函式可標註 `[SetsRequiredMembers]`：
-
-```csharp
-public class Customer {
-    [SetsRequiredMembers]
-    public Customer(string name, string email) {
-        ArgumentException.ThrowIfNullOrWhiteSpace(name);
-        ArgumentException.ThrowIfNullOrWhiteSpace(email);
-        Name = name;
-        Email = email;
-    }
-
-    public int Id { get; private set; }
-    public required string Name { get; private set; }
-    public required string Email { get; private set; }
-    public string? Phone { get; private set; }
-}
-```
+若 Domain Model 同時使用 `required` 屬性，建構函式可標註 `[SetsRequiredMembers]`。
 
 ### Record Types
 
-Record 的 positional parameter 天生具備 `required` 語意，不需額外標註。
-
-```csharp
-// positional parameter 本身即為必填
-public record OrderSummary(int Id, string CustomerName, decimal Total);
-
-// 可選屬性另外宣告
-public record CustomerInfo(string Name, string Email) {
-    public string? Phone { get; init; }
-}
-```
+Record 的 positional parameter 天生具備 `required` 語意，不需額外標註。可選屬性另以 `init` 屬性宣告（如 `public string? Phone { get; init; }`）。
 
 ---
 
@@ -182,19 +139,6 @@ public record CustomerInfo(string Name, string Email) {
 - DTO / Response 的集合屬性：集合本身不應為 null，用 `= []` 初始化。元素是否 nullable 依業務語意決定。
 - 方法參數的集合：集合本身通常不接受 null（呼叫端傳空集合），除非 null 與空集合有不同語意。
 - 方法回傳值：回傳空集合而非 null。
-
-```csharp
-// ✅ 正確
-public IReadOnlyList<string> GetTags() {
-    // 無資料時回傳空集合
-    return [];
-}
-
-// ❌ 錯誤：回傳 null 強迫呼叫端做 null check
-public IReadOnlyList<string>? GetTags() {
-    return null;
-}
-```
 
 ---
 

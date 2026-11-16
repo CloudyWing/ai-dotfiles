@@ -11,25 +11,7 @@ policy.allow_implicit_invocation: true
 
 ### 何時拋出例外
 
-例外用於表達**程式無法繼續正常流程**的狀況，不用於控制流程。
-
-```csharp
-// ❌ 錯誤：用例外控制流程
-try {
-    Order order = GetOrder(id);
-    Process(order);
-} catch (OrderNotFoundException) {
-    return NotFound();
-}
-
-// ✅ 正確：可預期的失敗用回傳值處理
-Order? order = FindOrder(id);
-if (order is null) {
-    return NotFound();
-}
-
-Process(order);
-```
+例外用於表達**程式無法繼續正常流程**的狀況，不用於控制流程。可預期的失敗（如查無資料）以回傳值處理，例如 `FindOrder` 回傳 `null` 後由呼叫端判斷，不以 `try-catch` 攔截 `OrderNotFoundException` 來分流。
 
 ### 例外類型選用
 
@@ -71,15 +53,6 @@ public class InsufficientBalanceException : InvalidOperationException {
 
 ### 內建 Guard 方法（.NET 6+）
 
-```csharp
-public void CreateOrder(string customerName, int quantity) {
-    ArgumentException.ThrowIfNullOrWhiteSpace(customerName);
-    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);
-
-    // 業務邏輯
-}
-```
-
 常用的內建 Guard 方法：
 
 | 方法 | .NET 版本 |
@@ -107,23 +80,8 @@ public void CreateOrder(string customerName, int quantity) {
 
 ### 重新拋出
 
-```csharp
-// ✅ 正確：保留原始堆疊追蹤
-catch (DbUpdateException ex) {
-    logger.LogError(ex, "資料庫更新失敗");
-    throw; // 保留原始 Stack Trace
-}
-
-// ❌ 錯誤：破壞堆疊追蹤
-catch (DbUpdateException ex) {
-    throw ex; // Stack Trace 從此處重新開始
-}
-
-// ✅ 正確：包裝為更高層的例外時，傳入內部例外
-catch (DbUpdateException ex) {
-    throw new OrderPersistenceException("訂單儲存失敗", ex);
-}
-```
+- 重新拋出使用 `throw;`，保留原始堆疊追蹤；禁止 `throw ex;`（Stack Trace 會從該處重新開始）。
+- 包裝為更高層的例外時，將原例外傳入內部例外（inner exception）。
 
 ### finally 與資源釋放
 
@@ -134,38 +92,8 @@ catch (DbUpdateException ex) {
 
 ### IExceptionHandler（.NET 8+）
 
-```csharp
-public class GlobalExceptionHandler : IExceptionHandler {
-    private readonly ILogger<GlobalExceptionHandler> logger;
-
-    public GlobalExceptionHandler(ILogger<GlobalExceptionHandler> logger) {
-        this.logger = logger;
-    }
-
-    public async ValueTask<bool> TryHandleAsync(
-        HttpContext httpContext,
-        Exception exception,
-        CancellationToken cancellationToken
-    ) {
-        logger.LogError(exception, "未處理的例外");
-
-        ProblemDetails problemDetails = new() {
-            Status = StatusCodes.Status500InternalServerError,
-            Title = "伺服器內部錯誤"
-        };
-
-        httpContext.Response.StatusCode = problemDetails.Status.Value;
-        await httpContext.Response.WriteAsJsonAsync(problemDetails, cancellationToken)
-            .ConfigureAwait(false);
-
-        return true;
-    }
-}
-
-// 註冊
-builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
-builder.Services.AddProblemDetails();
-```
+- 實作 `IExceptionHandler`（如 `GlobalExceptionHandler`）：記錄例外後寫出狀態 500 的 ProblemDetails，`Title` 使用通用訊息（如「伺服器內部錯誤」），不輸出例外細節，回傳 `true` 表示已處理。
+- 以 `AddExceptionHandler<T>()` 與 `AddProblemDetails()` 註冊，並在管線呼叫 `app.UseExceptionHandler()`；未呼叫時已註冊的 Handler 不會被執行。
 
 ### 多重 Handler 鏈
 
@@ -181,51 +109,13 @@ builder.Services.AddExceptionHandler<GlobalExceptionHandler>(); // 兜底
 
 所有 API 錯誤回應必須遵循 RFC 9457（ProblemDetails）。
 
-```csharp
-// ✅ 正確
-return Results.Problem(
-    title: "訂單不存在",
-    detail: $"找不到 ID 為 {orderId} 的訂單。",
-    statusCode: StatusCodes.Status404NotFound
-);
-
-// ❌ 錯誤：自訂格式
-return Results.Json(new { code = 404, message = "Not found" }, statusCode: 404);
-```
-
-### 驗證錯誤
-
-```csharp
-return Results.ValidationProblem(
-    errors: new Dictionary<string, string[]> {
-        ["CustomerName"] = ["客戶名稱為必填欄位。"],
-        ["Quantity"] = ["數量必須大於零。"]
-    }
-);
-```
+- 以 `Results.Problem(title, detail, statusCode)` 回傳錯誤，不回傳 `{ code, message }` 這類自訂格式。
+- 驗證錯誤以 `Results.ValidationProblem(errors)` 回傳，`errors` 為欄位名稱對應訊息陣列的字典。
 
 ## Result Pattern（視專案慣例）
 
 若專案採用 Result Pattern 取代例外驅動的錯誤處理，遵循以下原則：
 
 - Result 類別包含 `IsSuccess`、`Value`（成功時）、`Error`（失敗時）。
-- Service Layer 回傳 Result，Controller / Endpoint 層轉換為對應的 HTTP 回應。
+- Service Layer 以 `Result<T>.Success(value)` 或 `Result<T>.Failure(error)` 回傳 Result，Controller / Endpoint 層轉換為對應的 HTTP 回應：成功回傳對應結果（如 `Results.Created`），失敗以 `Results.Problem` 回傳並把 `Error` 放入 `detail`（業務錯誤如 400）。
 - **不混用**：同一個 Service 方法不同時使用 Result 回傳與拋出例外來表達業務錯誤。
-
-```csharp
-// Service
-public Result<Order> PlaceOrder(PlaceOrderRequest request) {
-    if (request.Quantity <= 0) {
-        return Result<Order>.Failure("數量必須大於零。");
-    }
-
-    // 業務邏輯...
-    return Result<Order>.Success(order);
-}
-
-// Endpoint
-Result<Order> result = orderService.PlaceOrder(request);
-return result.IsSuccess
-    ? Results.Created($"/api/orders/{result.Value.Id}", result.Value)
-    : Results.Problem(title: "下單失敗", detail: result.Error, statusCode: 400);
-```
