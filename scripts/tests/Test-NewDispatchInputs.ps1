@@ -494,7 +494,7 @@ exit 1
     }
 
     # 負向 9。
-    foreach ($relativePath in @('scripts\New-DispatchInputs.ps1', 'scripts\tests\Test-NewDispatchInputs.ps1', 'scripts\tests\Test-PowerShellHostGuardHook.ps1', 'claude-plugins\ai-agents-hooks\hooks\powershell-host-guard-hook.ps1')) {
+    foreach ($relativePath in @('scripts\New-DispatchInputs.ps1', 'scripts\tests\Test-NewDispatchInputs.ps1', 'scripts\tests\Test-PowerShellHostGuardHook.ps1', 'scripts\tests\Test-PostEditWriteHook.ps1')) {
         $capturedRelativePath = $relativePath
         Test-Case ("N09 $relativePath 為 UTF-8 with BOM 與 CRLF") {
             $bytes = [IO.File]::ReadAllBytes((Join-Path $repositoryRoot $capturedRelativePath))

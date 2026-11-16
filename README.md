@@ -125,14 +125,14 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 #### Claude Code Hook 設定
 
-本專案的 hook 由本機 marketplace `ai-agents-local` 的 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `claude-plugins/`，由 Setup 的 8b 註冊並啟用。修改 plugin 內的 hook 腳本後，新 session 不需重新安裝即可採用新內容。
+本專案的 hook 由本機 marketplace `ai-agents-local` 的 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `claude-plugins/`，由 Setup 的 8b 註冊並啟用。hook 在 Claude Code 行程內執行，不另外啟動 PowerShell；模組結構見 `AGENTS.md` §5。修改 plugin 內的 hook 後，新 session 不需重新安裝即可採用新內容。
 
-| Hook 腳本 | 觸發條件 | 用途 |
+| Hook | 觸發條件 | 用途 |
 | --- | --- | --- |
-| `post-edit-write-hook.ps1` | Edit 或 Write 工具寫入檔案後 | 提示執行 check-markdown skill（`.md`）；驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM） |
-| `doc-path-hook.ps1` | Edit 或 Write 工具寫入檔案後 | 進版控的 `.md` 含本機磁碟機絕對路徑時，以 `additionalContext` 提醒改用佔位符或相對路徑；只提醒，不阻擋寫入 |
-| `turn-guard-hook.ps1` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | 將每個 turn 的工具使用與失敗紀錄寫入 `${CLAUDE_PLUGIN_DATA}\turn-guard\<session_id>.jsonl`；同一失敗在同一 turn、同一 agent 內第 2 次發生時，以 `additionalContext` 提醒該 agent 一次，要求先說明下次為何會成功，說不出來就停下回報；不阻擋工具執行。`PostToolUse` 與 `PostToolUseFailure` 只對 `Bash`、`PowerShell`、`Read`、`Grep`、`Glob`、`Edit`、`Write`、`Skill`、`Agent` 觸發，其他工具不記錄也不提醒 |
-| `powershell-host-guard-hook.ps1` | `PreToolUse`，工具為 `Bash` 或 `PowerShell` | 命令中任一區段直接呼叫 `powershell.exe`（含 `Start-Process powershell.exe`）時拒絕執行，原因附 `pwsh -NoProfile -File` 寫法。屬最佳努力的策略檢查，輸入無法解析時放行，不涵蓋巢狀 shell（例如 `cmd /c powershell.exe`）、動態組合的命令字串與別名。例外為執行 `Setup-AIGlobalConfig.ps1` 的區段；其他專案明確要求 5.1 時，在 Claude Code 設定的 `env` 加入 `AI_AGENTS_ALLOW_POWERSHELL51=1` |
+| `post-edit-write` | Edit 或 Write 工具寫入檔案後 | 提示執行 check-markdown skill（`.md`）；驗證 BOM 規範（`.ps1`/`.csv` 需有 BOM，`.md`/`.json` 等不可有 BOM）。訊息只寫入 debug log，不送給模型 |
+| `doc-path` | Edit 或 Write 工具寫入檔案後 | 進版控的 `.md` 含本機磁碟機絕對路徑時，以 `additionalContext` 提醒改用佔位符或相對路徑；只提醒，不阻擋寫入。偵測規則與 pre-commit 使用的 `hooks/lib/doc-path-check.ps1` 相同 |
+| `turn-guard` | `UserPromptSubmit`、`PostToolUse`、`PostToolUseFailure`、`Stop` | 將每個 turn 的工具使用與失敗紀錄寫入 `~\.claude\plugins\data\ai-agents-hooks-ai-agents-local\turn-guard\` 下以 `<session_id>.` 開頭的 `.jsonl` 檔（環境變數 `CLAUDE_PLUGIN_DATA` 或 `CLAUDE_CONFIG_DIR` 有設定時改用其下的同名位置）；同一失敗在同一 turn、同一 agent 內第 2 次發生時，以 `additionalContext` 提醒該 agent 一次，要求先說明下次為何會成功，說不出來就停下回報；不阻擋工具執行。`PostToolUse` 與 `PostToolUseFailure` 只對 `Bash`、`PowerShell`、`Read`、`Grep`、`Glob`、`Edit`、`Write`、`Skill`、`Agent` 觸發，其他工具不記錄也不提醒 |
+| `host-guard` | `PreToolUse`，工具為 `Bash` 或 `PowerShell` | 命令中任一區段直接呼叫 `powershell.exe`（含 `Start-Process powershell.exe`）時拒絕執行，原因附 `pwsh -NoProfile -File` 寫法。屬最佳努力的策略檢查，輸入無法解析時放行，不涵蓋巢狀 shell（例如 `cmd /c powershell.exe`）、動態組合的命令字串與別名。例外為執行 `Setup-AIGlobalConfig.ps1` 的區段；其他專案明確要求 5.1 時，在 Claude Code 設定的 `env` 加入 `AI_AGENTS_ALLOW_POWERSHELL51=1` |
 
 #### 狀態看板 plugin
 
@@ -298,9 +298,10 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Export-CommentVocabularyCandidates.csx` 唯讀掃描 `.cs`，輸出資料庫註解語彙候選 JSON，由 `database-comment-generator` skill 使用。
 - 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
 - `scripts/tests/Test-CodexRunAll.ps1` 執行 `Invoke-CodexRun.ps1` 的全部測試，不呼叫 Codex 服務端。`scripts/tests/Invoke-CodexRunLive.ps1 -Scenario review|failover` 以真實 Codex 驗證一筆審查與一筆換帳號，加上 `-DryRun` 只列出將執行的內容，不加 `-DryRun` 會呼叫 Codex 服務端並消耗額度。
-- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
-- `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts`、`render.test.tsx` 與 `dispatch.test.tsx` 三個測試檔，從 `claude-code/testing` 匯入，以 `claude plugin test claude-plugins/line-status-board` 執行。
-- `claude-plugins/` 內由工具自動呼叫的 hook 腳本，使用全小寫 kebab-case 命名。
+- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-TurnGuardHook.ps1`、`Test-DocLocalPathCheck.ps1` 與 `Test-PostEditWriteHook.ps1`（其餘三個 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
+- hook 的四個 PowerShell 測試經 `claude-plugins/ai-agents-hooks/tests/run-hook.ts` 執行 `hooks/core/` 的判定邏輯，需要 PATH 上有 Node.js 22.18 以上（可直接執行 `.ts`）；Node.js 只用於測試，外掛執行時不需要。
+- `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts`、`render.test.tsx` 與 `dispatch.test.tsx` 三個測試檔，`claude-plugins/ai-agents-hooks/tests/` 有 `register.test.ts`，皆從 `claude-code/testing` 匯入，以 `claude plugin test <plugin 目錄>` 執行。
+- `claude-plugins/` 內的檔案使用全小寫 kebab-case 命名。
 - `.githooks/` 內為 Git 原生 Hook，由 `Setup-AIGlobalConfig.ps1` 透過 `core.hooksPath` 啟用。
 
 ### Git Hook 設定

@@ -10,8 +10,28 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $libraryPath = Join-Path $repoRoot 'claude-plugins\ai-agents-hooks\hooks\lib\doc-path-check.ps1'
 $stagedScript = Join-Path $repoRoot '.githooks\Test-StagedDocPath.ps1'
-$hookScript = Join-Path $repoRoot 'claude-plugins\ai-agents-hooks\hooks\doc-path-hook.ps1'
+# PostToolUse 提醒 hook 的判定在 hooks\core\doc-path.ts，由 tests\run-hook.ts 以命令型 hook 的 stdin 與 stdout 形式執行。
+$runHook = Join-Path $repoRoot 'claude-plugins\ai-agents-hooks\tests\run-hook.ts'
+$hookCore = Join-Path $repoRoot 'claude-plugins\ai-agents-hooks\hooks\core\doc-path.ts'
 . $libraryPath
+
+# 偵測規則有 PowerShell 與 TypeScript 兩份實作。下列包裝記下本測試交給 PowerShell 函式庫的每一筆輸入，
+# 測試結尾把同一組輸入交給 TypeScript 實作，逐筆比對結果相同。
+$script:parityCases = [System.Collections.Generic.List[object]]::new()
+$script:findOriginal = ${function:Find-LocalPathViolation}
+$script:excludedOriginal = ${function:Test-LocalPathExcludedFile}
+function Find-LocalPathViolation {
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+    $script:parityCases.Add([ordered]@{ kind = 'find'; input = $Text })
+    & $script:findOriginal -Text $Text
+}
+function Test-LocalPathExcludedFile {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Path)
+    $script:parityCases.Add([ordered]@{ kind = 'excluded'; input = $Path })
+    & $script:excludedOriginal -Path $Path
+}
 
 $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 $assertCount = 0
@@ -99,6 +119,14 @@ Assert-Equal $partial.Count 1 '真實根目錄後接佔位符仍為違規'
 $json = @(Find-LocalPathViolation -Text '{"path":"C:\\Users\\Alice\\.codex"}')
 Assert-Equal $json.Count 1 'JSON 字串中的跳脫路徑回報'
 
+# 空白終止字元以明確列舉寫出：U+0085、U+00A0、U+3000、U+2028 終止 token，U+FEFF 不終止。這些輸入也進入第 6 節的兩份實作比對。
+foreach ($separator in @([char]0x0085, [char]0x00A0, [char]0x3000, [char]0x2028)) {
+    $split = @(Find-LocalPathViolation -Text ('C:\one' + $separator + 'D:\two'))
+    Assert-Equal ($split -join '|') 'C:\one|D:\two' ('空白終止 token：U+{0:X4}' -f [int]$separator)
+}
+$joined = @(Find-LocalPathViolation -Text ('C:\one' + [char]0xFEFF + 'D:\two'))
+Assert-Equal ($joined -join '|') ('C:\one' + [char]0xFEFF + 'D:\two') 'U+FEFF 不終止 token'
+
 # ---------------------------------------------------------------------------
 # 2. Test-LocalPathExcludedFile
 # ---------------------------------------------------------------------------
@@ -119,10 +147,12 @@ foreach ($path in $included) {
 # 3. 新增的 .ps1 皆為 UTF-8 with BOM
 # ---------------------------------------------------------------------------
 
-foreach ($file in @($libraryPath, $stagedScript, $hookScript, $PSCommandPath)) {
+foreach ($file in @($libraryPath, $stagedScript, $PSCommandPath)) {
     $bytes = [System.IO.File]::ReadAllBytes($file)
     Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 239 -and $bytes[1] -eq 187 -and $bytes[2] -eq 191) "缺少 UTF-8 BOM：$file"
 }
+$coreBytes = [System.IO.File]::ReadAllBytes($hookCore)
+Assert-True (-not ($coreBytes.Length -ge 3 -and $coreBytes[0] -eq 239 -and $coreBytes[1] -eq 187 -and $coreBytes[2] -eq 191)) "TypeScript 檔不應有 BOM：$hookCore"
 
 # ---------------------------------------------------------------------------
 # 4. Test-StagedDocPath.ps1（temp git repo）
@@ -281,13 +311,13 @@ try {
     Assert-True ($result.Output -match 'docs/my file\.md:2: C:\\Users\\Alice\\x') "輸出應含檔名 docs/my file.md：$($result.Output)"
 
     # -----------------------------------------------------------------------
-    # 5. doc-path-hook.ps1（PostToolUse 提醒 hook，子行程送 stdin JSON）
+    # 5. doc-path 提醒 hook（PostToolUse，經 tests\run-hook.ts 以子行程送 stdin JSON）
     # -----------------------------------------------------------------------
 
     function Invoke-PathHook {
-        param([string]$StdinText)
-        $startInfo = [System.Diagnostics.ProcessStartInfo]::new('pwsh')
-        foreach ($argument in @('-NoProfile', '-NonInteractive', '-File', $hookScript)) { $startInfo.ArgumentList.Add($argument) }
+        param([string]$StdinText, [string]$Mode = 'doc-path')
+        $startInfo = [System.Diagnostics.ProcessStartInfo]::new('node')
+        foreach ($argument in @('--no-warnings', $runHook, $Mode)) { $startInfo.ArgumentList.Add($argument) }
         $startInfo.RedirectStandardInput = $true
         $startInfo.RedirectStandardOutput = $true
         $startInfo.RedirectStandardError = $true
@@ -366,6 +396,26 @@ try {
     Assert-HookSilent (Invoke-PathHook (New-HookInput -Tool 'Write' -FilePath $trackedMd -Content '')) 'Write 內容為空不提醒'
     Assert-HookSilent (Invoke-PathHook 'not json') 'stdin 非 JSON 不提醒'
     Assert-HookSilent (Invoke-PathHook '{"tool_name":"Write"}') '缺少 tool_input 不提醒'
+
+    # 6. 兩份實作的一致性：本測試交給 PowerShell 函式庫的全部輸入，逐筆比對 TypeScript 實作的結果
+
+    $cases = @($script:parityCases | ForEach-Object { [pscustomobject]@{ kind = $_.kind; input = $_.input } })
+    Assert-True ($cases.Count -gt 0) '一致性比對沒有收集到任何輸入'
+    $expected = @(foreach ($case in $cases) {
+        if ($case.kind -eq 'excluded') { [bool](& $script:excludedOriginal -Path $case.input) } else { , @(& $script:findOriginal -Text $case.input) }
+    })
+    $parityInput = ConvertTo-Json -InputObject $cases -Compress -Depth 4
+    $parityResult = Invoke-PathHook -StdinText $parityInput -Mode 'lib-parity'
+    Assert-Equal $parityResult.ExitCode 0 '一致性比對的轉接器退出碼'
+    $actual = @([System.Text.Encoding]::ASCII.GetString($parityResult.Bytes) | ConvertFrom-Json -NoEnumerate)
+    if ($actual.Count -eq 1 -and $actual[0] -is [array]) { $actual = @($actual[0]) }
+    Assert-Equal $actual.Count $cases.Count '一致性比對的結果筆數'
+    for ($i = 0; $i -lt $cases.Count; $i++) {
+        $expectedJson = ConvertTo-Json -InputObject $expected[$i] -Compress
+        $actualJson = ConvertTo-Json -InputObject $actual[$i] -Compress
+        Assert-Equal $actualJson $expectedJson ("兩份實作結果不同（{0}）：{1}" -f $cases[$i].kind, $cases[$i].input)
+    }
+    Write-Host "parity cases: $($cases.Count)"
 
     Write-Host "assertions: $assertCount"
     Write-Host 'Doc local path check tests passed.'

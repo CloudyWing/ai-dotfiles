@@ -52,6 +52,6 @@ AI-facing 但進版控的檔案（規則檔、skill）同樣適用。`.local/` �
 ## 本機路徑機械檢查
 
 - 本 repo 的 pre-commit 於 staged 的 `.md`、`.toml` 新增行含磁碟機絕對路徑時阻擋 commit，偵測由 `.githooks/Test-StagedDocPath.ps1` 執行。
-- 已安裝 `ai-agents-hooks` plugin 的專案，Claude Code 以 Write 或 Edit 寫入進版控的 `.md` 時，若本次寫入的文字含磁碟機絕對路徑，plugin hook `doc-path-hook.ps1` 會提醒改用佔位符或相對路徑；只提醒，不阻擋寫入。
+- 已安裝 `ai-agents-hooks` plugin 的專案，Claude Code 以 Write 或 Edit 寫入進版控的 `.md` 時，若本次寫入的文字含磁碟機絕對路徑，plugin 的 doc-path hook 會提醒改用佔位符或相對路徑；只提醒，不阻擋寫入。
 - 佔位符形式不算違規，例如 `<使用者>`、`<sourceRoot>`、`C:\<使用者>\...`。
 - `.local/` 目錄與 `*.local.md` 不檢查。

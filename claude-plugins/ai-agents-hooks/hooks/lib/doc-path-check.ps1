@@ -1,10 +1,13 @@
 ﻿#Requires -Version 7.0
-# 本機路徑偵測函式庫。供 .githooks/Test-StagedDocPath.ps1 與 hooks/doc-path-hook.ps1 共用。
+# 本機路徑偵測函式庫，供 .githooks/Test-StagedDocPath.ps1 使用。外掛的 hooks/core/doc-path.ts 以 TypeScript 實作同一套規則，
+# 兩份實作由 scripts/tests/Test-DocLocalPathCheck.ps1 以同一組輸入比對。
 # 純函式：不讀寫檔案、不呼叫 git。
 Set-StrictMode -Version Latest
 
 # 路徑 token 的終止字元：空白、反引號、單雙引號與全形標點（，。；：、（）「」）。
-$script:LocalPathTerminators = '\s`''"，。；：、（）「」'
+# 空白以明確列舉寫出（即 .NET 的 \s：U+0009 至 U+000D、U+0085 與 Unicode Z 類），與 hooks/core/doc-path.ts 的列舉字面相同。
+$script:LocalPathWhiteSpace = '\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000'
+$script:LocalPathTerminators = $script:LocalPathWhiteSpace + '`''"，。；：、（）「」'
 
 # 起點：字母加冒號，後接一個以上的分隔符與至少一個路徑片段字元。字母前不得是英數字（排除 https://）。
 $script:LocalPathTokenPattern = [regex]::new(

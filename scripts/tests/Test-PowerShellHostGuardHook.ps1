@@ -6,8 +6,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $repositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
-$hookPath = Join-Path $repositoryRoot 'claude-plugins\ai-agents-hooks\hooks\powershell-host-guard-hook.ps1'
+# 判定邏輯在 hooks\core\host-guard.ts，由 tests\run-hook.ts 以命令型 hook 的 stdin 與 stdout 形式執行。
+$runHookPath = Join-Path $repositoryRoot 'claude-plugins\ai-agents-hooks\tests\run-hook.ts'
 $hooksJsonPath = Join-Path $repositoryRoot 'claude-plugins\ai-agents-hooks\hooks\hooks.json'
+$registerPath = Join-Path $repositoryRoot 'claude-plugins\ai-agents-hooks\hooks\register.ts'
 $passed = 0
 $failed = 0
 $optInName = 'AI_AGENTS_ALLOW_POWERSHELL51'
@@ -36,8 +38,8 @@ function Invoke-Hook {
     param([Parameter(Mandatory)][AllowEmptyString()][string]$InputText, [hashtable]$EnvironmentVariables = @{})
 
     $startInfo = New-Object Diagnostics.ProcessStartInfo
-    $startInfo.FileName = 'pwsh'
-    $startInfo.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $hookPath + '"'
+    $startInfo.FileName = 'node'
+    $startInfo.Arguments = '--no-warnings "' + $runHookPath + '" host-guard'
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardInput = $true
@@ -91,12 +93,14 @@ function Assert-Denied {
 try {
     [Environment]::SetEnvironmentVariable($optInName, $null)
 
-    Test-Case 'P01 hook 檔為 UTF-8 with BOM、CRLF 並以 #Requires -Version 7.0 開頭' {
-        $bytes = [IO.File]::ReadAllBytes($hookPath)
-        Assert-True ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) '缺少 UTF-8 BOM'
-        $text = [Text.Encoding]::UTF8.GetString($bytes, 3, $bytes.Length - 3)
-        Assert-True ($text.StartsWith('#Requires -Version 7.0', [StringComparison]::Ordinal)) '首行不是 #Requires -Version 7.0'
+    Test-Case 'P01 判定邏輯檔 host-guard.ts 為 UTF-8 無 BOM、CRLF，且 register.ts 由它取得判定' {
+        $corePath = Join-Path $repositoryRoot 'claude-plugins\ai-agents-hooks\hooks\core\host-guard.ts'
+        $bytes = [IO.File]::ReadAllBytes($corePath)
+        Assert-True (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) '含 UTF-8 BOM'
+        $text = [Text.Encoding]::UTF8.GetString($bytes)
         Assert-True (-not [regex]::IsMatch($text, '(?<!\r)\n')) '含單獨 LF 行尾'
+        $registerText = Get-Content -LiteralPath $registerPath -Raw -Encoding UTF8
+        Assert-True ($registerText.Contains("import { hostGuardDenyReason } from './core/host-guard'")) 'register.ts 未匯入 hostGuardDenyReason'
     }
 
     $allowedCommands = @(
@@ -169,6 +173,28 @@ try {
     Test-Case 'D15 拒絕：含 \" 跳脫的引號字串結束後，引號外的 ; powershell.exe 仍被擋' {
         Assert-Denied -InputText (New-HookInput -Command 'git commit -m "note \"a\" b"; powershell.exe -c x')
     }
+
+    # 空白字元集合與 [char]::IsWhiteSpace 相同：U+FEFF 不是空白，U+0085、U+00A0、U+3000 是空白。
+    Test-Case 'W01 放行：U+FEFF 夾在 powershell.exe 與參數之間時不切 token' {
+        Assert-Allowed -InputText (New-HookInput -Command ('powershell.exe' + [char]0xFEFF + '-Command Get-Date'))
+    }
+    Test-Case 'W02 拒絕：U+0085 視為空白而切 token' {
+        Assert-Denied -InputText (New-HookInput -Command ('powershell.exe' + [char]0x0085 + '-Command Get-Date'))
+    }
+    Test-Case 'W03 拒絕：U+00A0 視為空白而切 token' {
+        Assert-Denied -InputText (New-HookInput -Command ('powershell.exe' + [char]0x00A0 + '-Command Get-Date'))
+    }
+    Test-Case 'W04 拒絕：U+3000 視為空白而切 token' {
+        Assert-Denied -InputText (New-HookInput -ToolName 'PowerShell' -Command ('powershell.exe' + [char]0x3000 + '-Command Get-Date'))
+    }
+    # 已接受的差異（設計 X7）：緊貼命令名的零權重字元使 token 不等於 powershell.exe，新版放行。
+    # 舊版以 PowerShell -eq 的文化比較忽略這些字元而拒絕；這類 token 實際上找不到命令，不會執行 powershell.exe。
+    Test-Case 'W05 放行：U+200B 緊貼在 powershell.exe 之前（X7）' {
+        Assert-Allowed -InputText (New-HookInput -Command ([string][char]0x200B + 'powershell.exe -Command Get-Date'))
+    }
+    Test-Case 'W06 放行：U+00AD 夾在 powershell.exe 之中（X7）' {
+        Assert-Allowed -InputText (New-HookInput -ToolName 'PowerShell' -Command ('power' + [char]0x00AD + 'shell.exe -Command Get-Date'))
+    }
     Test-Case 'D16 拒絕：heredoc 結束標記之後的 powershell.exe 仍被擋' {
         Assert-Denied -InputText (New-HookInput -Command ("cat > f.md <<'EOF'`nbody`nEOF`npowershell.exe -c x"))
     }
@@ -198,14 +224,16 @@ try {
         Assert-True ($parsed.hookSpecificOutput.hookEventName -ceq 'PreToolUse' -and $parsed.hookSpecificOutput.permissionDecision -ceq 'deny') 'hookEventName 或 permissionDecision 不符'
     }
 
-    Test-Case 'H01 hooks.json 含 PreToolUse，matcher 為 Bash|PowerShell，指向新 hook' {
+    Test-Case 'H01 hooks.json 只列出 register.ts 模組，PreToolUse 以 Bash 與 PowerShell 的 matcher 註冊' {
         $hooks = Get-Content -LiteralPath $hooksJsonPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        $preToolUse = @($hooks.hooks.PreToolUse)
-        Assert-True ($preToolUse.Count -eq 1 -and $preToolUse[0].matcher -ceq 'Bash|PowerShell') 'PreToolUse matcher 不符'
-        $entry = @($preToolUse[0].hooks)[0]
-        Assert-True ($entry.type -ceq 'command' -and $entry.command -ceq 'pwsh.exe' -and [int]$entry.timeout -eq 10) 'PreToolUse 的 type、command 或 timeout 不符'
-        $arguments = @($entry.args)
-        Assert-True ($arguments[-1] -ceq '${CLAUDE_PLUGIN_ROOT}/hooks/powershell-host-guard-hook.ps1') ('args 末項不是新 hook：' + $arguments[-1])
+        $names = @($hooks.PSObject.Properties.Name)
+        Assert-True ($names.Count -eq 1 -and $names[0] -ceq 'modules') ('hooks.json 頂層鍵不符：' + ($names -join ','))
+        $modules = @($hooks.modules)
+        Assert-True ($modules.Count -eq 1 -and $modules[0] -ceq './register.ts') ('modules 不符：' + ($modules -join ','))
+        $registerText = Get-Content -LiteralPath $registerPath -Raw -Encoding UTF8
+        $registrations = [regex]::Matches($registerText, "on\('classic\.PreToolUse'")
+        Assert-True ($registrations.Count -eq 1) ('classic.PreToolUse 註冊數不是 1：' + $registrations.Count)
+        Assert-True ($registerText.Contains("on('classic.PreToolUse', { tool: ['Bash', 'PowerShell'] }")) 'classic.PreToolUse 的 matcher 不是 Bash 與 PowerShell'
     }
 
     Test-Case 'H02 hooks.json 不含 powershell.exe 作為 command' {
