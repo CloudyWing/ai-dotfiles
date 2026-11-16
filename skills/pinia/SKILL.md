@@ -184,48 +184,9 @@ orderStore.isLoading;
 
 Setup Store 不像 Options Store 自帶 `$reset()`，必須手動實作。
 
-```typescript
-export const useOrderStore = defineStore('order', () => {
-  const orders = ref<Order[]>([]);
-  const currentPage = ref(1);
-
-  // ✅ 手動實作 $reset
-  function $reset() {
-    orders.value = [];
-    currentPage.value = 1;
-  }
-
-  return { orders, currentPage, $reset };
-});
-```
-
 - 在登出或頁面切換時呼叫 `$reset()` 清除狀態，防止資料洩漏。
 
 ## 非同步 Action
-
-```typescript
-export const useOrderStore = defineStore('order', () => {
-  const orders = ref<Order[]>([]);
-  const isLoading = ref(false);
-  const error = ref<string | null>(null);
-
-  // ✅ 非同步 Action 模式
-  async function fetchOrders() {
-    isLoading.value = true;
-    error.value = null;
-    try {
-      orders.value = await orderApi.getAll();
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : '載入訂單失敗';
-      throw e; // 重新拋出，讓元件決定是否顯示 Toast
-    } finally {
-      isLoading.value = false;
-    }
-  }
-
-  return { orders, isLoading, error, fetchOrders };
-});
-```
 
 - 每個非同步 Action 搭配 `isLoading` 和 `error` 狀態。
 - 錯誤在 Store 中記錄，同時 `throw` 讓元件層可選擇性顯示通知。
@@ -265,24 +226,6 @@ export const useAuthStore = defineStore('auth', () => {
 - Token 使用 `localStorage`（跨分頁持久）；UI 偏好可用 `sessionStorage`。
 
 ## 測試
-
-```typescript
-import { setActivePinia, createPinia } from 'pinia';
-import { useOrderStore } from '@/stores/order';
-
-describe('useOrderStore', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-  });
-
-  it('fetchOrders should populate orders', async () => {
-    const store = useOrderStore();
-    // Mock API...
-    await store.fetchOrders();
-    expect(store.orders).toHaveLength(3);
-  });
-});
-```
 
 - 每個測試前呼叫 `setActivePinia(createPinia())` 建立全新的 Pinia 實例。
 - Store 測試聚焦 Action 的業務邏輯，不測試 Pinia 框架本身的響應式行為。

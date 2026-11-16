@@ -30,70 +30,6 @@
   }
   ```
 
-## 成員順序
-
-成員順序規則見 `SKILL.md`「結構與排序」，以下為 `personal` 風格的完整排列範例。
-
-```csharp
-public class Sample {
-    // Fields
-    public const int MaxCount = 100;
-    private static int instanceCount;
-    private readonly string name;
-
-    // Constructors
-    public Sample(string name) {
-        this.name = name;
-    }
-
-    // Finalizer
-    ~Sample() {
-    }
-
-    // Delegates
-    public delegate int Operation(int value);
-
-    // Events
-    public event EventHandler Changed;
-
-    // Properties
-    public int Count { get; private set; }
-
-    // Indexers
-    public char this[int index] => name[index];
-
-    // Methods
-    public void Reset() {
-        Count = 0;
-    }
-
-    // Operators
-    public static Sample operator +(Sample left, Sample right) {
-        return left;
-    }
-
-    // Nested Types
-    public enum State {
-        Idle,
-        Running
-    }
-}
-```
-
-## 空行
-
-- **連續空行上限**：任何位置最多保留一個連續空行。實際上限由專案 `.editorconfig` 決定。
-
-  ```csharp
-  public void Reset() {
-      Count = 0;
-  }
-
-  public void Clear() {
-      Items.Clear();
-  }
-  ```
-
 ## 換行收尾
 
 - **右括弧獨立成行**：條件式、方法宣告參數、建構式參數與方法呼叫引數換行時，右括弧 `)` 獨立成行，縮排與開頭對齊；`{` 接於 `)` 後方同行。
@@ -120,11 +56,6 @@ public class Sample {
       paymentInfo,
       cancellationToken
   );
-
-  // ❌ 換行了，但 ) 沒有獨立成行
-  if (order.IsPaid
-      && order.HasStock) {
-  }
   ```
 
 - **第一個 `where` 接於 `)` 同行**：泛型方法的參數換行時，第一個 `where` 約束接在 `)` 後方，其餘 `where` 各自換行。

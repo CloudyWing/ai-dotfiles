@@ -15,8 +15,6 @@ policy.allow_implicit_invocation: false
 
 讀取以下資訊以了解專案性質：
 
-- `README.md`（若存在）：查看用途描述、技術棧
-- `*.csproj`、`package.json`、`pyproject.toml` 等專案檔：確認語言與框架
 - 是否已有 `LICENSE` 或 `LICENSE.md` 檔案（若已存在，詢問使用者是否要取代）
 
 ### 2. 掃描相依性授權相容性

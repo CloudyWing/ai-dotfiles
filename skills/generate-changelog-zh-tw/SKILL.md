@@ -28,8 +28,6 @@ policy.allow_implicit_invocation: false
 /generate-changelog-zh-tw [版本號]
 ```
 
-若未傳入版本號，依 MinVer 規格自動推算下一個版本號（見步驟 1）。
-
 ## 執行步驟
 
 ### 1. 確認版本號

@@ -8,13 +8,6 @@ policy.allow_implicit_invocation: true
 
 # Excel 試算表匯出技能
 
-## 觸發條件
-
-使用者提到 Excel 相關的建立、匯出、產生、製作需求時，執行本 Skill。常見觸發語句包含但不限於：
-
-- 「幫我建立 / 產生 / 製作 / 匯出 xxx Excel」
-- 明確說「使用 export-excel」
-
 ## 任務標註
 
 `dispatch: delegate` 的意義為不由主 Agent 自理，依本節標註呼叫 `scripts/Select-DispatchExecutor.ps1`，執行者與標註語意見 `executor-selection` skill。

@@ -7,8 +7,6 @@ policy.allow_implicit_invocation: true
 
 # SQL 撰寫規範
 
-本規範涵蓋 SQL Server（T-SQL）與 Oracle 兩種資料庫的原生 SQL 撰寫，內容包含查詢、DML、交易與可讀性格式。「目標版本」節先定義依正式環境版本選用語法的方式。其後的規範分三層，先列兩庫共通規範，再分列 SQL Server 專屬與 Oracle 專屬語法。撰寫或審查原生 SQL 時自動套用。
-
 ## 目標版本
 
 本節定義目標版本鍵的語意、讀取與詢問流程，以及版本資料的判讀方式。版本門檻資料只記載在 `references/` 的參考檔，本體不寫具體版本。`ef-core` 與 `ai-profile` 引用本節，不另行定義。
@@ -220,16 +218,6 @@ WHERE NOT EXISTS (
 - 使用 `OFFSET ... FETCH NEXT` 語法，不使用舊式 `ROW_NUMBER()` 子查詢包裝。版本門檻與低於門檻的替代寫法見 references/sqlserver.md 與 references/oracle.md。
 - SQL Server 的 `OFFSET` / `FETCH`、Oracle 的 `OFFSET ... FETCH` 分頁，以及低版本替代用的 `ROWNUM` 雙層查詢，都必須先建立唯一且穩定的 `ORDER BY`，非唯一欄位須追加 unique key。唯一排序鍵只固定單一資料快照內相同排序值的順序，不保證跨請求的資料集合一致。keyset pagination（seek method）可避免 offset 位移造成的部分頁面漂移，但不等於 snapshot。其排序鍵與 cursor 鍵必須不可變，鍵變更時視為新序列；資料列在 cursor 前後移動仍可能漏列或重複；它只能以前後 cursor 翻相鄰頁，無法任意跳頁。需要固定資料集合時，快照隔離必須涵蓋所有頁面的同一交易範圍，並使用與資料庫相容的隔離層級。
 
-```sql
-SELECT
-    ProductId
-    ,ProductName
-FROM Products
-ORDER BY ProductId
-OFFSET @PageSize * (@PageNumber - 1) ROWS
-FETCH NEXT @PageSize ROWS ONLY;
-```
-
 ### 效能注意事項
 
 - **避免巢狀子查詢過深**：超過 2 層的巢狀子查詢應考慮改用 CTE（`WITH`）或暫存資料表提升可讀性與效能。
@@ -244,18 +232,7 @@ FETCH NEXT @PageSize ROWS ONLY;
 
 ### 動態 SQL 參數化
 
-- 預存程序內部的動態 SQL 必須使用 `sp_executesql` 搭配參數，禁止 `EXEC('SELECT ...' + @input)`：
-
-```sql
--- ✅ 正確
-EXEC sp_executesql
-    N'SELECT ProductId, ProductName FROM Products WHERE CategoryId = @CategoryId',
-    N'@CategoryId INT',
-    @CategoryId = @inputCategoryId;
-
--- ❌ 錯誤
-EXEC('SELECT * FROM Products WHERE CategoryId = ' + @inputCategoryId);
-```
+- 預存程序內部的動態 SQL 必須使用 `sp_executesql` 搭配參數，禁止 `EXEC('SELECT ...' + @input)`。
 
 ### 日期時間型別與區間查詢
 
@@ -301,21 +278,7 @@ db.Table.Where(x => x.Time >= input.StartTime && x.Time < input.EndTime);
 
 ### Parameter Sniffing
 
-SQL Server 第一次編譯參數化查詢時，依當下傳入的參數值估算筆數並快取計畫，在重新編譯或計畫被清除前，後續不同參數值重用同一份計畫。參數值對應的資料量落差極大時，重用的計畫會讓其中一方效能崩潰，例如 `@Status = 0` 對到 10 筆、`@Status = 1` 對到 500 萬筆。判定依據是參數值對應的資料量落差，與參數值本身的數值大小無關。
-
-- 只有預存程序、透過 `sp_executesql` 送出的查詢與 prepared 查詢會被嗅探。.NET 的參數化查詢（`SqlCommand` 搭配 `SqlParameter`、Dapper、EF Core）在伺服器端以 `sp_executesql` 執行，呼叫 `SqlCommand.Prepare()` 時則以 `sp_prepexec` 等 prepared 方式執行，兩者都屬於會被嗅探的範圍。
-- 重現或比較時，以 `sp_executesql` 作為參數化的一側，不用 `DECLARE` 區域變數。區域變數在編譯期看不到值（加了 `OPTION (RECOMPILE)` 時例外），最佳化器改用統計資料的平均密度估算，沒有統計資料時改用啟發式估算，行為接近 `OPTIMIZE FOR UNKNOWN`，比出來的差異與 Parameter Sniffing 無關。
-- 處理方式依查詢性質選擇：
-
-| 方式 | 作法 | 代價 |
-| --- | --- | --- |
-| `OPTION (OPTIMIZE FOR (@p = value))` | 針對大宗值產生計畫 | 小眾值被迫使用大宗值的計畫而變慢，資料量大時可搭配篩選索引 |
-| `OPTION (OPTIMIZE FOR UNKNOWN)` | 改用欄位統計分佈的平均值產生中庸計畫 | 計畫不再針對任何特定值最佳化 |
-| `OPTION (RECOMPILE)` | 每次執行依當下參數重新編譯 | 增加 CPU 編譯成本，適合執行頻率低、參數組合複雜的報表，不適合高併發 OLTP |
-| Parameter Sensitive Plan 最佳化 | 由引擎為同一查詢依參數分派多份計畫，查詢不需改寫 | 只支援等號述詞，最多挑選三個述詞；版本、相容性層級門檻與各層級的述詞挑選差異見 `references/sqlserver.md` |
-| Query Store 強制計畫 | 將穩定的計畫固定下來 | 需啟用 Query Store，設定注意事項見 `references/sqlserver-troubleshooting.md` |
-
-找出受影響的查詢與清除計畫快取的方式，見 `references/sqlserver-troubleshooting.md`。
+查詢忽快忽慢、不同參數值效能落差極大，或要重現與比較參數嗅探問題時，成因、重現方式與處理方式（`OPTIMIZE FOR`、`RECOMPILE`、Parameter Sensitive Plan、Query Store 強制計畫）讀 `references/sqlserver-troubleshooting.md`「Parameter Sniffing 成因與處理方式」。
 
 ### 索引設計
 
@@ -361,18 +324,7 @@ SELECT FirstName || ' ' || LastName AS FullName FROM Employees;
 
 ### 動態 SQL 參數化
 
-- 動態 SQL 使用 **Bind Variables**（`:paramName`），禁止字串串接：
-
-```sql
--- ✅ 正確
-EXECUTE IMMEDIATE 'SELECT ProductName FROM Products WHERE ProductId = :pid'
-    INTO v_product_name
-    USING v_product_id;
-
--- ❌ 錯誤
-EXECUTE IMMEDIATE 'SELECT ProductName FROM Products WHERE ProductId = ' || v_product_id
-    INTO v_product_name;
-```
+- 動態 SQL 使用 **Bind Variables**（`:paramName`），禁止字串串接。
 
 ### 分頁查詢
 
@@ -399,16 +351,7 @@ VALUES (seq_products.NEXTVAL, :product_name);
 
 ### 日期與字串轉換
 
-- 日期格式轉換使用 `TO_DATE` / `TO_CHAR`，必須明確指定格式遮罩：
-
-```sql
--- 字串轉日期
-WHERE OrderDate >= TO_DATE(:date_str, 'YYYY-MM-DD')
-
--- 日期轉字串
-SELECT TO_CHAR(OrderDate, 'YYYY-MM-DD HH24:MI:SS') AS FormattedDate
-FROM Orders;
-```
+- 日期格式轉換使用 `TO_DATE` / `TO_CHAR`，必須明確指定格式遮罩。
 
 ### Unicode 參數型別（.NET 驅動）
 

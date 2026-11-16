@@ -14,7 +14,7 @@
 | `2017` | `mcr.microsoft.com/mssql/server` | `2017-`，例如 `2017-GA-ubuntu` | 無 | [Quickstart: Run SQL Server Linux container images with Docker](https://learn.microsoft.com/sql/linux/install-upgrade/quickstart-install-docker) |
 | `2019` | `mcr.microsoft.com/mssql/server` | `2019-`，例如 `2019-CU18-ubuntu-20.04` | 無 | [Deploy and connect to SQL Server Linux containers](https://learn.microsoft.com/en-us/sql/linux/containers/deploy) |
 | `2022` | `mcr.microsoft.com/mssql/server` | `2022-`，例如 `2022-CU11-ubuntu-22.04` | 無 | [Quickstart: Run SQL Server Linux container images with Docker](https://learn.microsoft.com/sql/linux/install-upgrade/quickstart-install-docker) |
-| `2025` | `mcr.microsoft.com/mssql/server` | `2025-`，例如 `2025-GA-ubuntu` | 無 | [Quickstart: Run SQL Server Linux container images with Docker](https://learn.microsoft.com/sql/linux/install-upgrade/quickstart-install-docker) |
+| `2025` | `mcr.microsoft.com/mssql/server` | `2025-`，例如 `2025-RTM-ubuntu-22.04` | 無 | [Quickstart: Run SQL Server Linux container images with Docker](https://learn.microsoft.com/sql/linux/install-upgrade/quickstart-install-docker) |
 
 `2012`、`2014`、`2016` 三列的依據是 SQL Server on Linux 自 `2017` 起提供，官方容器映像都是 Linux 映像。
 

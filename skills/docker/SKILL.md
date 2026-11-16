@@ -57,7 +57,6 @@ USER app
 
 - `map` 只能放在 `http` 區塊，定義的變數對所有 `server` 區塊都有效。多個 `map` 定義相同的輸出變數時，以最後載入的為準，前面的定義被捨棄。
 - `conf.d/*.conf` 依檔名字母順序載入，各檔的 `map` 共用同一個命名空間。將所有 `map` 集中在單一 conf 檔（例如 `maps.conf`），避免被其他檔案覆蓋。
-- `access_log`、`error_log` 在 `server` 或 `location` 設定時覆寫上層，未設定時繼承 `http` 或 main 層的設定。`error_log` 可設在 main、`http`、`mail`、`stream`、`server`、`location`；`access_log` 可設在 `http`、`server`、`location`、`if in location`、`limit_except`。
 - 官方映像 1.19 起支援 template，`/etc/nginx/templates/*.template` 在容器啟動時以環境變數替換，輸出到 `/etc/nginx/conf.d/`。替換只在容器啟動時進行，修改環境變數後要重建容器（`docker compose up -d`）；`nginx -s reload` 不會重新替換。需要頻繁調整設定時，改用直接掛載 conf 檔。
 
 ## Compose 整合

@@ -101,43 +101,6 @@ src/
 
 ## Vue 元件測試
 
-### 基本結構
-
-```typescript
-import { describe, it, expect } from 'vitest';
-import { mount } from '@vue/test-utils';
-import OrderCard from '@/components/OrderCard.vue';
-
-describe('OrderCard', () => {
-  it('should render order title', () => {
-    const wrapper = mount(OrderCard, {
-      props: {
-        order: {
-          id: 1,
-          title: '測試訂單',
-          status: 'pending'
-        }
-      }
-    });
-
-    expect(wrapper.text()).toContain('測試訂單');
-  });
-
-  it('should emit delete event when delete button clicked', async () => {
-    const wrapper = mount(OrderCard, {
-      props: {
-        order: { id: 1, title: '測試', status: 'pending' }
-      }
-    });
-
-    await wrapper.find('[data-testid="delete-btn"]').trigger('click');
-
-    expect(wrapper.emitted('delete')).toHaveLength(1);
-    expect(wrapper.emitted('delete')![0]).toEqual([1]);
-  });
-});
-```
-
 ### 測試選擇器
 
 ```vue
@@ -174,47 +137,6 @@ function mountWithPlugins(component: Component, options = {}) {
 
 ## Composable 測試
 
-### 獨立測試（不依賴元件）
-
-```typescript
-import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { useOrderList } from '@/composables/useOrderList';
-import { orderApi } from '@/api/order';
-import { flushPromises } from '@vue/test-utils';
-
-vi.mock('@/api/order');
-
-describe('useOrderList', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it('should fetch orders on initialization', async () => {
-    const mockOrders = [
-      { id: 1, title: '訂單 A', status: 'pending' },
-      { id: 2, title: '訂單 B', status: 'completed' }
-    ];
-    vi.mocked(orderApi.getAll).mockResolvedValue(mockOrders);
-
-    const { orders, isLoading } = useOrderList();
-
-    expect(isLoading.value).toBe(true);
-    await flushPromises();
-    expect(isLoading.value).toBe(false);
-    expect(orders.value).toEqual(mockOrders);
-  });
-
-  it('should handle fetch error', async () => {
-    vi.mocked(orderApi.getAll).mockRejectedValue(new Error('Network Error'));
-
-    const { error } = useOrderList();
-
-    await flushPromises();
-    expect(error.value).toBe('Network Error');
-  });
-});
-```
-
 ### 需要 Vue 生命週期的 Composable
 
 若 Composable 使用 `onMounted` 等生命週期 Hook，需要在元件 setup 中執行：
@@ -240,46 +162,6 @@ const { result } = withSetup(() => useOrderList());
 
 ## Mock 策略
 
-### 模組 Mock
-
-```typescript
-// Mock 整個模組
-vi.mock('@/api/order', () => ({
-  orderApi: {
-    getAll: vi.fn(),
-    create: vi.fn(),
-    delete: vi.fn()
-  }
-}));
-
-// 或自動 Mock（所有匯出替換為 vi.fn()）
-vi.mock('@/api/order');
-```
-
-### Timer Mock
-
-```typescript
-describe('debounced search', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it('should debounce search input', async () => {
-    const { search } = useSearch();
-
-    search('test');
-    expect(searchApi.query).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(300);
-    expect(searchApi.query).toHaveBeenCalledWith('test');
-  });
-});
-```
-
 ### API Mock
 
 ```typescript
@@ -292,44 +174,6 @@ vi.mock('@/lib/axios', () => ({
     delete: vi.fn()
   }
 }));
-```
-
-## Pinia Store 測試
-
-```typescript
-import { setActivePinia, createPinia } from 'pinia';
-import { useOrderStore } from '@/stores/order';
-
-vi.mock('@/api/order');
-
-describe('useOrderStore', () => {
-  beforeEach(() => {
-    setActivePinia(createPinia());
-    vi.clearAllMocks();
-  });
-
-  it('should fetch and store orders', async () => {
-    const mockOrders = [{ id: 1, title: '訂單 A', status: 'pending' }];
-    vi.mocked(orderApi.getAll).mockResolvedValue(mockOrders);
-
-    const store = useOrderStore();
-    await store.fetchOrders();
-
-    expect(store.orders).toEqual(mockOrders);
-    expect(store.isLoading).toBe(false);
-  });
-
-  it('should compute pending orders', async () => {
-    const store = useOrderStore();
-    store.orders = [
-      { id: 1, status: 'pending' },
-      { id: 2, status: 'completed' },
-      { id: 3, status: 'pending' }
-    ] as Order[];
-
-    expect(store.pendingOrders).toHaveLength(2);
-  });
-});
 ```
 
 ## 斷言最佳實踐

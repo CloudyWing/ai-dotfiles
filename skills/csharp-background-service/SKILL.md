@@ -19,42 +19,6 @@ policy.allow_implicit_invocation: true
 
 ## BackgroundService 實作規範
 
-### 基本結構
-
-```csharp
-public class OrderSyncService : BackgroundService {
-    private readonly IServiceScopeFactory scopeFactory;
-    private readonly ILogger<OrderSyncService> logger;
-
-    public OrderSyncService(IServiceScopeFactory scopeFactory, ILogger<OrderSyncService> logger) {
-        this.scopeFactory = scopeFactory;
-        this.logger = logger;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        logger.LogInformation("OrderSyncService 已啟動");
-
-        while (!stoppingToken.IsCancellationRequested) {
-            try {
-                await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-                IOrderRepository repository = scope.ServiceProvider
-                    .GetRequiredService<IOrderRepository>();
-
-                await repository.SyncPendingOrdersAsync(stoppingToken).ConfigureAwait(false);
-            } catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) {
-                // 正常停止，不記錄為錯誤
-            } catch (Exception ex) {
-                logger.LogError(ex, "訂單同步發生錯誤，將在下次迴圈重試");
-            }
-
-            await Task.Delay(TimeSpan.FromMinutes(5), stoppingToken).ConfigureAwait(false);
-        }
-
-        logger.LogInformation("OrderSyncService 已停止");
-    }
-}
-```
-
 ### 關鍵規範
 
 - **CancellationToken**：`ExecuteAsync` 的 `stoppingToken` 必須傳遞給所有非同步操作與 `Task.Delay`。
@@ -147,8 +111,6 @@ public class CacheWarmupService : IHostedService {
 ```
 
 範例中的 `GetPageAsync` 必須將 `cancellationToken` 傳遞至資料來源。`pageSize: 100` 限制單次預熱資料量，`CancelAfter(TimeSpan.FromSeconds(5))` 限制該次預熱耗時；逾時或 Host 停止時，`StartAsync` 觀察取消例外並讓必要條件未滿足的 Host 維持啟動失敗。
-
-> `StartAsync` 中的預熱範例只適用於資料量與耗時有界、具取消處置且該資料是 Host 就緒必要條件的初始化。一般快取預熱不得以無界外部 I/O 阻塞 Host 啟動。
 
 - `StartAsync` 應快速返回，不在其中執行無界外部 I/O。需要長期或非必要預熱時，移到可追蹤且可取消的背景路徑，並在 `StopAsync` 等待已保存的工作完成。
 - `StopAsync` 有 timeout（預設 30 秒），必須在時限內完成清理。
@@ -248,29 +210,6 @@ builder.Services.AddHostedService<QueuedHostedService>();
 
 ### PeriodicTimer（.NET 6+，推薦）
 
-```csharp
-public class MetricsCollector : BackgroundService {
-    private readonly ILogger<MetricsCollector> logger;
-
-    public MetricsCollector(ILogger<MetricsCollector> logger) {
-        this.logger = logger;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        using PeriodicTimer timer = new(TimeSpan.FromSeconds(30));
-
-        while (await timer.WaitForNextTickAsync(stoppingToken).ConfigureAwait(false)) {
-            try {
-                // 收集指標
-                logger.LogDebug("收集系統指標");
-            } catch (Exception ex) {
-                logger.LogError(ex, "指標收集失敗");
-            }
-        }
-    }
-}
-```
-
 - `PeriodicTimer` 確保上一次 tick 的工作完成後才開始計時，避免重疊執行。
 - 優於 `Task.Delay`：語意更明確，且不會因工作耗時導致間隔漂移。
 - `System.Threading.Timer`、`System.Timers.Timer` 或其他 callback-based timer 若可能在前一次 callback 完成前再次觸發，必須改用 `PeriodicTimer`，或以該 timer 專用的 lock / semaphore 序列化 callback；不可只依賴 callback 順序。
@@ -278,14 +217,6 @@ public class MetricsCollector : BackgroundService {
 
 ## 註冊與啟動順序
 
-```csharp
-// 基本註冊
-builder.Services.AddHostedService<OrderSyncService>();
-builder.Services.AddHostedService<MetricsCollector>();
-```
-
-- Hosted Service 依**註冊順序**依次啟動（`StartAsync` 依序呼叫）。
-- 停止時以**反向順序**依次停止。
 - 若某個服務的啟動依賴另一個服務已完成初始化，應透過共享狀態（如 `TaskCompletionSource`）協調，不依賴註冊順序。
 - 多個 Host instance 會同時執行相同的 hosted schedule；需要單次執行時，使用分散式 lock、leader election 或集中式 queue，並以冪等處理作為重試與 lock 失效的最後保護。process 內 lock 只涵蓋單一 instance。
 

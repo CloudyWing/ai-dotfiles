@@ -208,13 +208,6 @@ static `StringBuilder`、緩衝區或相似可變工作物件被多個呼叫共�
 
 本分類收納 elapsed duration、point-in-time / ordering、calendar / business date 與 deadline / timeout 的時間條目。
 
-| 用途 | 判定重點 |
-| --- | --- |
-| elapsed duration | 使用單調時鐘量測經過時間，避免牆上時鐘調整影響結果。 |
-| point-in-time / ordering | 儲存與比較帶有明確時區及精度的時間點，避免排序鍵碰撞。 |
-| calendar / business date | 依業務時區與日曆邊界計算日期，不把固定秒數當成日曆規則。 |
-| deadline / timeout | 先建立單一絕對 deadline，再把剩餘時間傳給每個操作。 |
-
 ### SD-017 — 以 wall-clock subtraction 量測 elapsed duration
 
 用 `DateTime.Now` 或 `DateTime.UtcNow` 相減量測工作耗時，系統校時會讓耗時變負數或突然增加。

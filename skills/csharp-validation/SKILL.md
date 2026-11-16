@@ -27,40 +27,9 @@ policy.allow_implicit_invocation: true
 
 適用於大多數格式驗證場景。ASP.NET Core Model Binding 原生支援，零設定即可使用。
 
-```csharp
-public class CreateOrderRequest {
-    [Required(ErrorMessage = "客戶名稱為必填。")]
-    [StringLength(100, ErrorMessage = "客戶名稱不可超過 100 字。")]
-    public required string CustomerName { get; set; }
-
-    [Range(1, 10000, ErrorMessage = "數量必須介於 1 到 10000 之間。")]
-    public required int Quantity { get; set; }
-
-    [EmailAddress(ErrorMessage = "Email 格式不正確。")]
-    public string? ContactEmail { get; set; }
-}
-```
-
 ### FluentValidation（複雜或跨屬性驗證）
 
 適用於需要跨屬性條件判斷、依情境切換規則、或需要注入服務的驗證場景。
-
-```csharp
-public class CreateOrderRequestValidator : AbstractValidator<CreateOrderRequest> {
-    public CreateOrderRequestValidator() {
-        RuleFor(x => x.CustomerName)
-            .NotEmpty().WithMessage("客戶名稱為必填。")
-            .MaximumLength(100).WithMessage("客戶名稱不可超過 100 字。");
-
-        RuleFor(x => x.Quantity)
-            .InclusiveBetween(1, 10000).WithMessage("數量必須介於 1 到 10000 之間。");
-
-        RuleFor(x => x.ContactEmail)
-            .EmailAddress().WithMessage("Email 格式不正確。")
-            .When(x => x.ContactEmail is not null);
-    }
-}
-```
 
 ### 選型原則
 
@@ -75,13 +44,6 @@ public class CreateOrderRequestValidator : AbstractValidator<CreateOrderRequest>
 | Attribute | 用途 |
 | --- | --- |
 | `[Required]` | 必填（搭配 NRT 的 `required` keyword 使用） |
-| `[StringLength(max)]` | 字串最大長度 |
-| `[MinLength]` / `[MaxLength]` | 集合或字串的長度限制 |
-| `[Range(min, max)]` | 數值範圍 |
-| `[EmailAddress]` | Email 格式 |
-| `[Phone]` | 電話格式 |
-| `[Url]` | URL 格式 |
-| `[RegularExpression]` | 自訂正規表達式 |
 | `[Compare]` | 兩個屬性值必須一致（如密碼確認） |
 | `[AllowedValues]` | 限制允許的值（.NET 8+） |
 | `[DeniedValues]` | 限制禁止的值（.NET 8+） |
@@ -93,33 +55,7 @@ public class CreateOrderRequestValidator : AbstractValidator<CreateOrderRequest>
 - 錯誤訊息使用**台灣用語正體中文**。
 - 訊息格式：「{欄位中文名}{驗證規則說明}。」（以句號結尾）。
 
-### 自訂 ValidationAttribute
-
-```csharp
-[AttributeUsage(AttributeTargets.Property | AttributeTargets.Field)]
-public class TaiwanIdAttribute : ValidationAttribute {
-    protected override ValidationResult? IsValid(object? value, ValidationContext validationContext) {
-        if (value is not string id) {
-            return ValidationResult.Success;
-        }
-
-        if (!TaiwanIdValidator.IsValid(id)) {
-            return new ValidationResult(ErrorMessage ?? "身分證格式不正確。");
-        }
-
-        return ValidationResult.Success;
-    }
-}
-```
-
 ## FluentValidation 規範
-
-### 註冊
-
-```csharp
-// 掃描組件中所有 Validator 並註冊
-builder.Services.AddValidatorsFromAssemblyContaining<CreateOrderRequestValidator>();
-```
 
 ### Minimal API 整合
 
@@ -152,69 +88,17 @@ app.MapPost("/api/orders", (CreateOrderRequest request) => { /* ... */ })
    .AddEndpointFilter<ValidationFilter<CreateOrderRequest>>();
 ```
 
-### 跨屬性驗證
-
-```csharp
-public class DateRangeRequestValidator : AbstractValidator<DateRangeRequest> {
-    public DateRangeRequestValidator() {
-        RuleFor(x => x.StartDate)
-            .NotEmpty().WithMessage("起始日期為必填。");
-
-        RuleFor(x => x.EndDate)
-            .NotEmpty().WithMessage("結束日期為必填。")
-            .GreaterThanOrEqualTo(x => x.StartDate)
-            .WithMessage("結束日期不可早於起始日期。");
-    }
-}
-```
-
-### 條件式驗證
-
-```csharp
-RuleFor(x => x.CompanyName)
-    .NotEmpty().WithMessage("公司名稱為必填。")
-    .When(x => x.CustomerType == CustomerType.Business);
-```
-
 ## ASP.NET Core 整合
 
 ### Model State 自動驗證（Controller）
 
 ASP.NET Core MVC 預設啟用 `[ApiController]` 時，Model Validation 失敗會自動回傳 `ValidationProblemDetails`（400）。不需要在每個 Action 中手動檢查 `ModelState.IsValid`。
 
-```csharp
-// ❌ 不需要：[ApiController] 已自動處理
-[HttpPost]
-public IActionResult Create(CreateOrderRequest request) {
-    if (!ModelState.IsValid) {
-        return BadRequest(ModelState);
-    }
-    // ...
-}
-
-// ✅ 正確：直接使用，驗證由框架處理
-[HttpPost]
-public IActionResult Create(CreateOrderRequest request) {
-    // request 到達此處已通過格式驗證
-    // ...
-}
-```
-
 ### 必填欄位與繫結來源
 
 - 實值型別繫結不到值時會得到預設值（例如 `bool` 為 `false`），無法分辨對方是漏傳還是傳了預設值。
 - `[BindRequired]` 只對表單資料等模型繫結生效，對 `[FromBody]` 的 JSON 或 XML 不生效，因為 `[FromBody]` 的請求本文由 input formatter 反序列化，不經過模型繫結。`[FromBody]` 的實值型別必填欄位改用 `Nullable<T>` 搭配 `[Required]`，或使用 `required` 屬性（見 `csharp-nrt` skill）。
 - 專案啟用 NRT 時，MVC 對非 nullable 的參考型別屬性隱含套用 `[Required(AllowEmptyStrings = true)]`，即使沒加 `[Required]` 也會擋下 `null`。空字串是否被擋依繫結來源而定。`[FromBody]` JSON 的空字串保留為空字串而通過；表單等模型繫結預設把空字串轉成 `null`，因此驗證失敗。
-
-### 停用自動驗證的情境
-
-若需要自訂驗證流程（如部分欄位條件式驗證），可在特定 Controller 停用：
-
-```csharp
-builder.Services.Configure<ApiBehaviorOptions>(options => {
-    options.SuppressModelStateInvalidFilter = true;
-});
-```
 
 ## 防禦性驗證原則
 
@@ -229,28 +113,3 @@ builder.Services.Configure<ApiBehaviorOptions>(options => {
 | `application` | 系統邊界入口與 Domain Model 建構函式的不變式保護 |
 | `sample` | 不強制 |
 | 未設定 | 比照 `application` |
-
-```csharp
-// ✅ 正確（`library`）：公開方法驗證參數
-public class OrderService {
-    private readonly IOrderRepository repository;
-
-    public OrderService(IOrderRepository repository) {
-        this.repository = repository;
-    }
-
-    public async Task<Order> GetOrderAsync(int orderId, CancellationToken cancellationToken) {
-        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(orderId);
-
-        return await repository.GetByIdAsync(orderId, cancellationToken).ConfigureAwait(false)
-            ?? throw new KeyNotFoundException($"找不到 ID 為 {orderId} 的訂單。");
-    }
-}
-
-// ❌ 錯誤：私有方法重複驗證已在公開方法中驗證過的值
-private decimal CalculateTotal(int quantity, decimal unitPrice) {
-    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(quantity);    // 多餘
-    ArgumentOutOfRangeException.ThrowIfNegativeOrZero(unitPrice);  // 多餘
-    return quantity * unitPrice;
-}
-```

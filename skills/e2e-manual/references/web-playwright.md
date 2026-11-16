@@ -32,18 +32,10 @@
 
 覆寫 `PageTest` 的 `ContextOptions`，固定 viewport、縮放與語系，讓每次截圖一致：
 
-```csharp
-public override BrowserNewContextOptions ContextOptions()
-{
-    return new BrowserNewContextOptions
-    {
-        ViewportSize = new ViewportSize { Width = 1280, Height = 800 },
-        DeviceScaleFactor = 1,
-        Locale = "zh-TW",
-        BaseURL = Environment.GetEnvironmentVariable("E2E_BASE_URL")
-    };
-}
-```
+- `ViewportSize` 為寬 1280、高 800。
+- `DeviceScaleFactor` 為 1。
+- `Locale` 為 `zh-TW`。
+- `BaseURL` 取自環境變數 `E2E_BASE_URL`。
 
 Node 專案在 `playwright.config.ts` 的 `use` 設定 `viewport: { width: 1280, height: 800 }`、`deviceScaleFactor: 1`、`locale: 'zh-TW'`。
 
@@ -54,18 +46,7 @@ Node 專案在 `playwright.config.ts` 的 `use` 設定 `viewport: { width: 1280,
 
 ## 截圖
 
-```csharp
-private Task CaptureAsync(string path)
-{
-    return Page.ScreenshotAsync(new PageScreenshotOptions
-    {
-        Path = path,
-        Animations = ScreenshotAnimations.Disabled,
-        Caret = ScreenshotCaret.Hide
-    });
-}
-```
-
+- 以測試類別的 `CaptureAsync(string path)` 方法呼叫 `Page.ScreenshotAsync`，把截圖輸出到 `path`，並設定 `Animations = ScreenshotAnimations.Disabled` 與 `Caret = ScreenshotCaret.Hide`，停用動畫並隱藏游標。流程骨架與 `recorder.md` 以該方法作為截圖委派。
 - 只截 viewport，不使用 `FullPage`，讓手冊截圖與使用者實際看到的畫面一致。
 - 目標元素不在可視範圍時，先呼叫 `ScrollIntoViewIfNeededAsync` 再截圖。
 - 截圖前以 Web-first 斷言（`Expect(...).ToBeVisibleAsync()` 等）等待畫面穩定。
@@ -133,4 +114,4 @@ $env:E2E_MANUAL_STAGING = '<work-root>\.local\ai-sessions\scratch\e2e-manual\<�
 dotnet test tests/<ProjectName>.E2ETests --filter "TestCategory=E2E&FullyQualifiedName~<Feature>E2ETests"
 ```
 
-一次只執行一個功能的測試類別，`E2E_MANUAL_STAGING` 指向同一個功能，避免不同功能的 `flowNN.json` 與截圖互相覆蓋。Node 專案以相同環境變數執行 `npx playwright test e2e/<功能>.spec.ts`。
+Node 專案以相同環境變數執行 `npx playwright test e2e/<功能>.spec.ts`。

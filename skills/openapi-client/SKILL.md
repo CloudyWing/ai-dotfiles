@@ -211,39 +211,6 @@ async function handleSubmit() {
 
 ### AbortController
 
-```typescript
-// Composable 中管理請求取消
-export function useOrderDetail(id: Ref<number>) {
-  const order = ref<Order | null>(null);
-  let abortController: AbortController | null = null;
-
-  async function fetchDetail() {
-    // 取消前一次請求
-    abortController?.abort();
-    abortController = new AbortController();
-
-    try {
-      const response = await apiClient.get<Order>(`/orders/${id.value}`, {
-        signal: abortController.signal
-      });
-      order.value = response.data;
-    } catch (error) {
-      if (!axios.isCancel(error)) {
-        throw error;
-      }
-    }
-  }
-
-  watch(id, fetchDetail, { immediate: true });
-
-  onUnmounted(() => {
-    abortController?.abort();
-  });
-
-  return { order };
-}
-```
-
 - 路由切換或元件卸載時，取消進行中的 API 請求。
 - 搜尋輸入等連續觸發的場景，新請求前取消舊請求。
 
@@ -269,25 +236,6 @@ npx openapi-typescript https://localhost:5001/swagger/v1/swagger.json -o src/typ
 - 使用 `interface` 定義 API 回應型別，方便擴展。
 
 ## 檔案上傳
-
-```typescript
-async function uploadFile(file: File): Promise<UploadResult> {
-  const formData = new FormData();
-  formData.append('file', file);
-
-  const response = await apiClient.post<UploadResult>('/files/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-    onUploadProgress: (progressEvent) => {
-      const percent = Math.round(
-        (progressEvent.loaded * 100) / (progressEvent.total ?? 1)
-      );
-      uploadProgress.value = percent;
-    }
-  });
-
-  return response.data;
-}
-```
 
 - 檔案上傳使用 `FormData`，設定 `Content-Type: multipart/form-data`。
 - 提供上傳進度回報（`onUploadProgress`）給 UI 層。

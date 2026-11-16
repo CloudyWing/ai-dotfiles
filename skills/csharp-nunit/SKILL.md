@@ -11,7 +11,6 @@ policy.allow_implicit_invocation: true
 
 ## 測試結構 (Structure)
 
-- 使用 `[Test]` 標示無參數的單一測試案例。
 - 嚴格遵守 **Arrange-Act-Assert (AAA)** 模式，三個區塊間應空一行以利閱讀，不加 `// Arrange`、`// Act`、`// Assert` 等區塊注釋。
 - 測試方法命名遵循 `[UnitOfWork]_[StateUnderTest]_[ExpectedBehavior]` 格式（例如 `Calculate_InvalidInput_ThrowsArgumentException`）。
 - 若需共用上下文，優先使用 `[SetUp]` 與 `[TearDown]`。
@@ -71,7 +70,7 @@ public void GetOrderAsync_NotFound_ThrowsKeyNotFoundException() {
 }
 ```
 
-- **非同步 SetUp / TearDown**：方法加上 `async Task` 回傳型別，NUnit 4+ 原生支援：
+- **非同步 SetUp / TearDown**：方法加上 `async Task` 回傳型別，NUnit 3.0 起原生支援：
 
 ```csharp
 [SetUp]

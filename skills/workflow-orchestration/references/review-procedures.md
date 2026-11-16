@@ -1,6 +1,6 @@
 # 審查程序
 
-本檔收錄審查配對判定之後的派遣單細節、規則檔改寫的審查前置與 Reviewer 回收的輸入規格。配對與發動條件見 `rules/claude/40-workflow.md`「審查配對」「Reviewer 派遣發動判準」。入口見 `../SKILL.md`「審查程序」。Sonnet 審查的逐站步驟見 `../SKILL.md`「Sonnet 審查路徑」。
+本檔收錄審查配對判定之後的派遣單細節、規則檔改寫的審查前置與 Reviewer 回收的輸入規格。配對與發動條件見 `rules/claude/40-workflow.md`「審查配對」「Reviewer 派遣發動判準」。Sonnet 審查的逐站步驟見 `../SKILL.md`「Sonnet 審查路徑」。
 
 ## 規則檔改寫的審查前置
 
@@ -19,7 +19,7 @@
 
 ## 循環標示與第 2 輪以上的 Reviewer 派遣單
 
-Reviewer 派遣單第 4 欄依下列規格標示審查循環，循環術語見 `../SKILL.md`「共同收斂契約」與「循環識別與重新起算」。
+Reviewer 派遣單第 4 欄依下列規格標示審查循環，循環術語見 `convergence.md`「共同收斂契約」與「循環識別與重新起算」。
 
 - 寫入一行循環標示，格式為 `循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）`。這一行是第 4 欄的一般文字行，不含路徑，放在「必讀檔案：」區塊之外。派遣檔形式把這一行寫在 `## 任務` 章節的第一行，並把同一組值填入 `## 派遣設定` 的 `cycle`。
 - 第 2 輪以上：「必讀檔案：」區塊另列前輪報告與修正派遣報告的絕對路徑。修正派遣報告在 Workflow 為 `report/<lineSlug>/implement-closure-report.md`，在 `light` 線與單一工作為第 4 欄既有的派工回報檔，內含「前輪 finding 處置結果」表。

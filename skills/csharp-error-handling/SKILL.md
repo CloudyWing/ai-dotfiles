@@ -105,22 +105,6 @@ public void CreateOrder(string customerName, int quantity) {
 - **禁止**空的 catch 區塊（吞掉例外）。
 - **禁止**捕捉 `Exception` 基底類別後不做任何處理。
 
-```csharp
-// ❌ 錯誤：吞掉例外
-try {
-    await SendEmailAsync(order);
-} catch (Exception) {
-    // 靜默忽略
-}
-
-// ✅ 正確：若允許信件發送失敗，至少記錄日誌
-try {
-    await SendEmailAsync(order);
-} catch (SmtpException ex) {
-    logger.LogWarning(ex, "訂單 {OrderId} 的通知信發送失敗", order.Id);
-}
-```
-
 ### 重新拋出
 
 ```csharp
@@ -147,19 +131,6 @@ catch (DbUpdateException ex) {
 - `finally` 區塊中**禁止**拋出新例外（會覆蓋原始例外）。
 
 ## 全域錯誤處理（ASP.NET Core）
-
-### Exception Handler Middleware
-
-```csharp
-// Program.cs
-if (app.Environment.IsDevelopment()) {
-    app.UseDeveloperExceptionPage();
-} else {
-    app.UseExceptionHandler();
-}
-
-app.UseStatusCodePages();
-```
 
 ### IExceptionHandler（.NET 8+）
 
@@ -257,18 +228,4 @@ Result<Order> result = orderService.PlaceOrder(request);
 return result.IsSuccess
     ? Results.Created($"/api/orders/{result.Value.Id}", result.Value)
     : Results.Problem(title: "下單失敗", detail: result.Error, statusCode: 400);
-```
-
-## 非同步例外處理
-
-- `async Task` 方法中的例外會被捕獲並封裝在回傳的 `Task` 中，由 `await` 時重新拋出。
-- **禁止** `async void`（例外無法被捕捉，會直接崩潰）。唯一例外：事件處理器。
-- 使用 `CancellationToken` 時，`OperationCanceledException` 通常不需要記錄為錯誤（屬於正常取消流程）。
-
-```csharp
-try {
-    await ProcessOrderAsync(order, cancellationToken);
-} catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested) {
-    logger.LogInformation("訂單處理已取消");
-}
 ```

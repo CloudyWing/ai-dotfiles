@@ -46,15 +46,6 @@ public class ChatHub : Hub {
 - 用戶端接收的事件名稱（`SendAsync` 的第一個參數）使用 PascalCase，與前端 `on` 方法對應。
 - 命名應明確表達動作語意（如 `SendMessage`、`JoinRoom`、`LeaveRoom`）。
 
-### 回傳值
-
-```csharp
-// ✅ Hub 方法可以有回傳值（用戶端可 await 取得結果）
-public async Task<IReadOnlyList<MessageDto>> GetRecentMessages(string roomId) {
-    return await chatService.GetRecentMessagesAsync(roomId).ConfigureAwait(false);
-}
-```
-
 ### 強型別 Hub（推薦）
 
 使用介面定義用戶端方法，獲得編譯時期型別檢查。
@@ -81,93 +72,11 @@ public class ChatHub : Hub<IChatClient> {
 }
 ```
 
-## 連線生命週期
-
-```csharp
-public override async Task OnConnectedAsync() {
-    string connectionId = Context.ConnectionId;
-    string? userId = Context.UserIdentifier;
-    logger.LogInformation("用戶 {UserId} 已連線，ConnectionId: {ConnectionId}", userId, connectionId);
-    await base.OnConnectedAsync().ConfigureAwait(false);
-}
-
-public override async Task OnDisconnectedAsync(Exception? exception) {
-    if (exception is not null) {
-        logger.LogWarning(exception, "用戶 {ConnectionId} 異常斷線", Context.ConnectionId);
-    }
-
-    await base.OnDisconnectedAsync(exception).ConfigureAwait(false);
-}
-```
-
 ## 群組管理
 
-```csharp
-public async Task JoinRoom(string roomId) {
-    await Groups.AddToGroupAsync(Context.ConnectionId, roomId).ConfigureAwait(false);
-    await Clients.Group(roomId).UserJoined(Context.User?.Identity?.Name ?? "匿名")
-        .ConfigureAwait(false);
-}
-
-public async Task LeaveRoom(string roomId) {
-    await Groups.RemoveFromGroupAsync(Context.ConnectionId, roomId).ConfigureAwait(false);
-    await Clients.Group(roomId).UserLeft(Context.User?.Identity?.Name ?? "匿名")
-        .ConfigureAwait(false);
-}
-```
-
-- 群組成員資格在連線斷開時自動清除，不需手動移除。
 - 群組名稱使用有意義的識別字（如 `room:{roomId}`、`order:{orderId}`）。
 
-## 從 Hub 外部發送訊息
-
-在 Controller、BackgroundService 或其他服務中發送 SignalR 訊息，使用 `IHubContext<T>` 注入。
-
-```csharp
-// 非強型別 Hub
-public class NotificationService {
-    private readonly IHubContext<NotificationHub> hubContext;
-
-    public NotificationService(IHubContext<NotificationHub> hubContext) {
-        this.hubContext = hubContext;
-    }
-
-    public async Task NotifyOrderCompletedAsync(int orderId, CancellationToken cancellationToken) {
-        await hubContext.Clients.Group($"order:{orderId}")
-            .SendAsync("OrderCompleted", orderId, cancellationToken)
-            .ConfigureAwait(false);
-    }
-}
-
-// 強型別 Hub
-public class NotificationService {
-    private readonly IHubContext<NotificationHub, INotificationClient> hubContext;
-
-    public NotificationService(IHubContext<NotificationHub, INotificationClient> hubContext) {
-        this.hubContext = hubContext;
-    }
-
-    public async Task NotifyOrderCompletedAsync(int orderId, CancellationToken cancellationToken) {
-        await hubContext.Clients.Group($"order:{orderId}")
-            .OrderCompleted(orderId)
-            .ConfigureAwait(false);
-    }
-}
-```
-
 ## 認證與授權
-
-```csharp
-// Hub 層級授權
-[Authorize]
-public class ChatHub : Hub<IChatClient> {
-    // 方法層級授權
-    [Authorize(Roles = "Admin")]
-    public async Task DeleteMessage(int messageId) {
-        // ...
-    }
-}
-```
 
 - JWT 認證時，Token 透過 Query String 傳遞（WebSocket 不支援自訂 Header）：
 
@@ -189,25 +98,8 @@ builder.Services.AddAuthentication().AddJwtBearer(options => {
 
 ## 錯誤處理
 
-- Hub 方法拋出的例外預設不會傳送詳細資訊給用戶端（安全考量）。
 - 開發環境可啟用詳細錯誤：`builder.Services.AddSignalR(o => o.EnableDetailedErrors = true);`
-- 需要回傳結構化錯誤給用戶端時，使用 `HubException`：
-
-```csharp
-public async Task SendMessage(string roomId, string message) {
-    if (string.IsNullOrWhiteSpace(message)) {
-        throw new HubException("訊息內容不可為空。");
-    }
-
-    bool isMember = await chatService.IsMemberAsync(Context.UserIdentifier!, roomId)
-        .ConfigureAwait(false);
-    if (!isMember) {
-        throw new HubException("您不是此聊天室的成員。");
-    }
-
-    // ...
-}
-```
+- 需要回傳結構化錯誤給用戶端時，使用 `HubException`。
 
 ## 設定與註冊
 

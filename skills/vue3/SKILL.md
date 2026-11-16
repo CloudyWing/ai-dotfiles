@@ -132,47 +132,6 @@ const title = defineModel<string>('title');
 
 ## Composable 設計
 
-### 基本結構
-
-```typescript
-// composables/useOrderList.ts
-import { ref, computed, onMounted } from 'vue';
-import type { Order } from '@/types/order';
-import { orderApi } from '@/api/order';
-
-export function useOrderList() {
-  const orders = ref<Order[]>([]);
-  const isLoading = ref(false);
-  const error = ref<string | null>(null);
-
-  const pendingOrders = computed(() =>
-    orders.value.filter(o => o.status === 'pending')
-  );
-
-  async function fetchOrders() {
-    isLoading.value = true;
-    error.value = null;
-    try {
-      orders.value = await orderApi.getAll();
-    } catch (e) {
-      error.value = e instanceof Error ? e.message : '載入失敗';
-    } finally {
-      isLoading.value = false;
-    }
-  }
-
-  onMounted(fetchOrders);
-
-  return {
-    orders: computed(() => orders.value),
-    pendingOrders,
-    isLoading: computed(() => isLoading.value),
-    error: computed(() => error.value),
-    fetchOrders
-  };
-}
-```
-
 ### Composable 原則
 
 - 命名以 `use` 開頭。
@@ -189,20 +148,6 @@ export function useOrderList() {
 - `reactive` 僅在物件結構固定且不需要重新賦值時考慮使用。
 - **禁止** `reactive` 整體重新賦值（會斷開響應式追蹤）。
 
-```typescript
-// ✅ 預設用 ref
-const count = ref(0);
-const user = ref<User | null>(null);
-const items = ref<Item[]>([]);
-
-// ❌ 錯誤：reactive 整體重新賦值
-const state = reactive({ items: [] as Item[] });
-state = reactive({ items: newItems }); // 斷開響應式
-
-// ✅ 若用 reactive，修改屬性
-state.items = newItems;
-```
-
 ### computed vs watch
 
 | 用途 | 選擇 |
@@ -212,23 +157,6 @@ state.items = newItems;
 
 - **禁止**在 `computed` 中執行副作用。
 - `watchEffect` 適合自動追蹤依賴的場景；`watch` 適合需要存取新舊值或控制執行時機的場景。
-
-```typescript
-// ✅ computed：衍生值
-const fullName = computed(() => `${firstName.value} ${lastName.value}`);
-
-// ✅ watch：副作用
-watch(selectedId, async (newId) => {
-  if (newId) {
-    detail.value = await fetchDetail(newId);
-  }
-});
-
-// ✅ watchEffect：自動追蹤依賴
-watchEffect(() => {
-  console.log(`目前選取：${selectedId.value}`);
-});
-```
 
 ## Template 規範
 
@@ -249,18 +177,6 @@ watchEffect(() => {
 - **禁止** `v-if` 與 `v-for` 並用在同一元素上（`v-if` 優先級較高，Vue 3 中會報警告）。
 
 ### 屬性排序
-
-```vue
-<MyComponent
-  v-if="isVisible"
-  v-model="value"
-  :title="title"
-  :items="items"
-  class="my-class"
-  @click="handleClick"
-  @update="handleUpdate"
-/>
-```
 
 順序：指令（`v-if`、`v-for`）→ 繫結（`v-model`、`:prop`）→ 靜態屬性 → 事件（`@event`）。
 
@@ -300,17 +216,8 @@ export default defineConfig({
 
 ### 環境變數
 
-- 環境變數檔案：`.env`（所有環境）、`.env.development`、`.env.production`。
 - 前綴規則：只有 `VITE_` 前綴的變數會暴露給前端程式碼。
 - **禁止**將機密資訊放入前端環境變數（前端程式碼會被打包至 bundle 中，對使用者可見）。
-
-```typescript
-// ✅ 使用環境變數
-const apiBase = import.meta.env.VITE_API_BASE_URL;
-
-// ❌ 機密不可放前端環境變數
-const apiKey = import.meta.env.VITE_API_SECRET_KEY; // 會暴露在 bundle 中
-```
 
 ### Build 最佳化
 
@@ -329,7 +236,6 @@ export default defineConfig({
 ```
 
 - 第三方套件拆為獨立 chunk（`vendor`），利用瀏覽器快取。
-- 路由元件使用動態 import 實現 Code Splitting（參閱 `vue-router` skill）。
 
 ## 目錄結構
 

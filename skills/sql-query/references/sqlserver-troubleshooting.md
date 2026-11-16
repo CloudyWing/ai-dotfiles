@@ -39,7 +39,7 @@ ORDER BY [Max/Avg Ratio] DESC;
 
 - `sys.dm_exec_sql_text(st.sql_handle)` 對 ad hoc 查詢回傳的 `dbid` 為 NULL，上面的 `WHERE t.dbid = ...` 會把這類查詢篩掉；需要涵蓋時改以 `sys.dm_exec_plan_attributes(st.plan_handle)` 的 `dbid` 篩選。
 - `sys.dm_exec_query_stats` 只涵蓋仍留在計畫快取的查詢，服務重啟或清過快取後統計歸零。已啟用 Query Store 時，改用其報表看歷史趨勢。
-- 辨識方式為拿 `sp_executesql` 的參數化查詢與寫死值的查詢比較。參數化時變慢、寫死值時恢復正常，很可能受 Parameter Sniffing 影響。不用 `DECLARE` 區域變數當參數化的一側，理由見 SKILL.md「Parameter Sniffing」。
+- 辨識方式為拿 `sp_executesql` 的參數化查詢與寫死值的查詢比較。參數化時變慢、寫死值時恢復正常，很可能受 Parameter Sniffing 影響。不用 `DECLARE` 區域變數當參數化的一側，理由見本檔「Parameter Sniffing 成因與處理方式」。
 
 ### 清除計畫快取
 
@@ -87,3 +87,21 @@ ORDER BY estimated_improvement DESC;
 ```
 
 產出的建議依 SKILL.md「索引設計」評估整併，不直接全數建立。執行時間極長的查詢可先看估計執行計畫找明顯缺漏的索引，時間降下來後再以實際執行計畫驗證。
+
+## Parameter Sniffing 成因與處理方式
+
+SQL Server 第一次編譯參數化查詢時，依當下傳入的參數值估算筆數並快取計畫，在重新編譯或計畫被清除前，後續不同參數值重用同一份計畫。參數值對應的資料量落差極大時，重用的計畫會讓其中一方效能崩潰，例如 `@Status = 0` 對到 10 筆、`@Status = 1` 對到 500 萬筆。判定依據是參數值對應的資料量落差，與參數值本身的數值大小無關。
+
+- 只有預存程序、透過 `sp_executesql` 送出的查詢與 prepared 查詢會被嗅探。.NET 的參數化查詢（`SqlCommand` 搭配 `SqlParameter`、Dapper、EF Core）在伺服器端以 `sp_executesql` 執行，呼叫 `SqlCommand.Prepare()` 時則以 `sp_prepexec` 等 prepared 方式執行，兩者都屬於會被嗅探的範圍。
+- 重現或比較時，以 `sp_executesql` 作為參數化的一側，不用 `DECLARE` 區域變數。區域變數在編譯期看不到值（加了 `OPTION (RECOMPILE)` 時例外），最佳化器改用統計資料的平均密度估算，沒有統計資料時改用啟發式估算，行為接近 `OPTIMIZE FOR UNKNOWN`，比出來的差異與 Parameter Sniffing 無關。
+- 處理方式依查詢性質選擇：
+
+| 方式 | 作法 | 代價 |
+| --- | --- | --- |
+| `OPTION (OPTIMIZE FOR (@p = value))` | 針對大宗值產生計畫 | 小眾值被迫使用大宗值的計畫而變慢，資料量大時可搭配篩選索引 |
+| `OPTION (OPTIMIZE FOR UNKNOWN)` | 改用欄位統計分佈的平均值產生中庸計畫 | 計畫不再針對任何特定值最佳化 |
+| `OPTION (RECOMPILE)` | 每次執行依當下參數重新編譯 | 增加 CPU 編譯成本，適合執行頻率低、參數組合複雜的報表，不適合高併發 OLTP |
+| Parameter Sensitive Plan 最佳化 | 由引擎為同一查詢依參數分派多份計畫，查詢不需改寫 | 只支援等號述詞，最多挑選三個述詞；版本、相容性層級門檻與各層級的述詞挑選差異見 `sqlserver.md` |
+| Query Store 強制計畫 | 將穩定的計畫固定下來 | 需啟用 Query Store，設定注意事項見本檔「Query Store」 |
+
+找出受影響的查詢與清除計畫快取的方式，見本檔「Parameter Sniffing」的「找出受影響的查詢」與「清除計畫快取」。

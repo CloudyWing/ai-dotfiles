@@ -7,8 +7,6 @@ policy.allow_implicit_invocation: true
 
 # ASP.NET Core 認證授權規範
 
-機密管理（signing key、client secret 不落原始碼）依全域 §2 Security Baseline，本文件不重複。
-
 ## JWT Bearer 驗證（Crucial）
 
 - 有 OIDC Provider（IdP）時，一律設定 `Authority` 走 discovery 文件自動取得 JWKS，**禁止**在程式碼或設定檔中硬編碼簽章金鑰或手動貼上 JWKS 內容。
@@ -53,17 +51,7 @@ public static class ClaimsPrincipalExtensions {
 
 - **Policy 優先於 Role 字串**：授權判斷以 Policy 名稱為單位註冊與引用，`[Authorize(Roles = "Admin")]` 僅限單純角色即可表達的情境；複合條件（角色 + claim + 資源）一律走 Policy 或 `IAuthorizationRequirement`。
 - Policy 名稱以常數類別集中管理，引用處使用 `nameof()` 或常數，不散落字串。
-- **預設拒絕**：對外 API 專案設定 Fallback Policy，未標註的端點預設要求已認證，匿名端點必須明確標 `[AllowAnonymous]`：
-
-```csharp
-builder.Services.AddAuthorization(options => {
-    options.FallbackPolicy = new AuthorizationPolicyBuilder()
-        .RequireAuthenticatedUser()
-        .Build();
-});
-```
-
-- Middleware 順序固定為 `UseAuthentication()` → `UseAuthorization()`，且在 `MapControllers()` / `MapXxx()` 之前。
+- **預設拒絕**：對外 API 專案設定 Fallback Policy，未標註的端點預設要求已認證，匿名端點必須明確標 `[AllowAnonymous]`。
 
 ## 錯誤回應語意
 

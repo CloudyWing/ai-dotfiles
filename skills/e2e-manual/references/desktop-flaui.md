@@ -2,10 +2,6 @@
 
 本檔是 `e2e-manual` 視窗程式路徑的寫法，適用 WinForms 與 WPF 原生程式。Blazor Hybrid 的測試碼依 `blazor-testing` skill 撰寫，截圖規則同本檔。
 
-## 沙盒狀態
-
-FlaUI 在 Codex 沙盒能否操作元件尚未實測。本路徑的 E2E 由使用者在本機主控台執行，或在使用者當輪同意後由 Claude 端執行，不送 Codex，執行端判定見 `SKILL.md`「派遣分界」。回報的「FlaUI 沙盒能力」欄固定寫「未驗證」。
-
 ## 專案設定
 
 - 參考 `NUnit`、`NUnit3TestAdapter`、`Microsoft.NET.Test.Sdk`、`FlaUI.Core`，再依受測程式加 `FlaUI.UIA3`（WPF）或 `FlaUI.UIA2`（WinForms）。控制項找不到時，改用另一種 UIA 實作實測後再決定。

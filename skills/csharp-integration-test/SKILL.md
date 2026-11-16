@@ -30,7 +30,6 @@ public class ApiTestFactory : WebApplicationFactory<Program> {
 }
 ```
 
-- `Program` 需可被測試專案存取：Minimal API 專案在 `Program.cs` 結尾補 `public partial class Program { }`。
 - 環境名稱固定使用 `IntegrationTest`，對應的 `appsettings.IntegrationTest.json` 只放測試專用覆寫，不複製整份設定。
 
 ## 外部相依的替身策略（Crucial）

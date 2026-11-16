@@ -24,7 +24,7 @@
 
 - 純文件修改指變更檔案全部符合 `*.md`、`docs/**`、`LICENSE*`，且不含 `CHANGELOG.md`。
 - `main` 上的變更含非純文件檔案時，commit 停止並詢問版號，處置與啟動 Workflow 相同。
-- 純文件修改 commit 到 `main` 之後，進行中的 `release/*`、`hotfix/*` 在下一次於其上 commit 前或合併前（先到者為準），以 `git merge-base --is-ancestor main <分支>` 檢查。落後時以本體「整理流程」的整理分支 rebase 到 `main`，走第一層「整合上游變更」路徑；分支已推送時依本體「改寫與 force push 邊界」取得當輪授權。
+- 純文件修改 commit 到 `main` 之後，進行中的 `release/*`、`hotfix/*` 在下一次於其上 commit 前或合併前（先到者為準），以 `git merge-base --is-ancestor main <分支>` 檢查。落後時以本體「整理流程」的整理分支 rebase 到 `main`，走 `history-rewrite.md` 第一層「整合上游變更」路徑；分支已推送時依本體「改寫與 force push 邊界」取得當輪授權。
 - 開發期間（合併前流程以外）的 commit 變更集含 `CHANGELOG.md` 時停止，說明 CHANGELOG 在合併前流程才寫入，詢問是否將該檔排除於本次 commit。
 
 ## 初次發佈前
@@ -88,7 +88,7 @@
 1. 記錄 `beforeSha` 為 `git rev-parse main` 的輸出。
 2. 建立備份：`git branch backup/main-before-initial-squash-<beforeSha 前 7 碼> <beforeSha>`。同名分支已存在時停止，不覆蓋。
 3. 建立整理分支並提交。執行 `git checkout --orphan refactor/tidy-main` 保留目前的 index 與工作樹，再以 `git commit -F <訊息檔>` 建立無父 commit，記錄 `afterSha`。訊息依 `generate-commit` skill「初始 commit」的固定格式。hook 照常執行，不使用 `--no-verify`。
-4. 驗證。以本體第一層「純歷史重排」的完整 tree 比對確認 `beforeSha` 與 `afterSha` 沒有檔案內容差異，`git rev-list --count <afterSha>` 輸出 `1`，且 `git status --porcelain` 沒有輸出。hook 已暫存的改動會讓完整 tree 比對失敗；hook 留下未暫存或未追蹤的改動時，`git status --porcelain` 會有輸出，同樣判定失敗。
+4. 驗證。以 `history-rewrite.md` 第一層「純歷史重排」的完整 tree 比對確認 `beforeSha` 與 `afterSha` 沒有檔案內容差異，`git rev-list --count <afterSha>` 輸出 `1`，且 `git status --porcelain` 沒有輸出。hook 已暫存的改動會讓完整 tree 比對失敗；hook 留下未暫存或未追蹤的改動時，`git status --porcelain` 會有輸出，同樣判定失敗。
 5. 執行本體「重整後驗證」。
 6. 更新 `main`：執行 `git switch main`，再確認一次 `git status --porcelain` 沒有輸出（切換會觸發 post-checkout hook），通過後才執行 `git reset --hard <afterSha>`，再以 `git branch -D refactor/tidy-main` 刪除整理分支。有輸出時不執行 reset，停止回報。第 4、5 步任一失敗時不切換、不刪除，保留 `main`、備份分支、整理分支與證據。
 7. 首次推送成功，且 `git rev-parse origin/main` 等於 `afterSha` 後，才以 `git branch -D` 刪除備份分支。尚未推送時保留備份分支，在回報中列出名稱。
@@ -115,7 +115,7 @@ hotfix 合併到 `main` 後，偵測進行中的 release 分支，即本機 `ref
 | 偵測結果 | 處置 |
 | --- | --- |
 | 沒有 | 回報「無進行中的 release 分支，略過同步」，不建立分支 |
-| 一個 | 將該分支 rebase 到 `main`，以本體「整理流程」的整理分支執行並走第一層「整合上游變更」路徑；已推送時依本體「改寫與 force push 邊界」取得當輪授權；衝突時停止回報 |
+| 一個 | 將該分支 rebase 到 `main`，以本體「整理流程」的整理分支執行並走 `history-rewrite.md` 第一層「整合上游變更」路徑；已推送時依本體「改寫與 force push 邊界」取得當輪授權；衝突時停止回報 |
 | 多個 | 列出並詢問使用者，不自行選擇 |
 
 ## 改寫與 force push

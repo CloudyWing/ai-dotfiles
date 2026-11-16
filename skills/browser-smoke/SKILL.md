@@ -111,7 +111,6 @@ policy.allow_implicit_invocation: true
 驗證結束後（成功或中止皆適用）：
 
 - 關閉本流程自行開啟的瀏覽器分頁或實例。沿用的既有瀏覽器工作階段不關閉。
-- dev server 若為本流程啟動，可保留供使用者繼續開發，但須在報告中註明仍在執行。
 - 刪除驗證過程產生的臨時檔案。用於說明問題的截圖除外，存入 `<work-root>/.local/ai-sessions/screenshots/` 保留並於報告中引用。
 
 ## 驗證報告格式

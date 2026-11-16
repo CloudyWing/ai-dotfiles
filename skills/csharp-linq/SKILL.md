@@ -31,18 +31,3 @@ EF Core 的 LINQ to SQL 查詢由 `ef-core` skill 管轄，本文件不重複。
 
 - 每個 LINQ 操作子獨立一行，以 `.` 開頭對齊。
 - Lambda 簡短時（單一條件或單一投影）使用 expression body；複雜時使用 statement body 並換行。
-
-```csharp
-// ✅ 正確：鏈式每行一個操作子
-IReadOnlyList<OrderSummary> summaries = orders
-    .Where(o => o.Status == OrderStatus.Completed)
-    .OrderByDescending(o => o.CreatedAt)
-    .Select(o => new OrderSummary {
-        Id = o.Id,
-        Total = o.Total
-    })
-    .ToList();
-
-// ❌ 錯誤：全部擠在一行
-IReadOnlyList<OrderSummary> summaries = orders.Where(o => o.Status == OrderStatus.Completed).OrderByDescending(o => o.CreatedAt).Select(o => new OrderSummary { Id = o.Id, Total = o.Total }).ToList();
-```

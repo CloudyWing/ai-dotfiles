@@ -25,10 +25,6 @@ policy.allow_implicit_invocation: true
 
 不得在缺少校閱報告的情況下，憑空對文件做「事實修正」。
 
-### 經單一入口進入本 Skill
-
-使用者經 Claude 端單一入口進入時，入口層先執行 G1，取得確認後以 `Type=factcheck`，依 `executor-selection` 選出執行者執行 `fact-check-note`，再取得同線固定報告。只有在固定報告已成功產出且可讀取時，才進入本 Skill 並執行上述前置條件檢查。入口層回收不到報告時，於入口層停止並回報缺件，不進入本 Skill。
-
 ## 跨端交接入口
 
 本鏈由 Claude 端單一入口管理，固定交接流程如下：
@@ -93,7 +89,6 @@ policy.allow_implicit_invocation: true
 - **單一檔案改檔**：本 skill 一次處理一個目標文件，對應一份校閱報告。
 - **不重新校閱**：本 skill 不對「校閱結論本身」做事實再判斷。若懷疑校閱有誤，必須以技術理由提出，由使用者裁決，不得自行降級或忽略。
 - **不擴大修改範圍**：僅修改報告中明確列出的條目所在位置。發現報告外的疑似錯誤，須另行回報，不得順手修改。
-- **保留文件編碼與格式**：依全域 Encoding Strategy 維持目標文件原編碼。
 - **校閱報告為審計紀錄**：完成改檔後不刪除 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`，保留在同線 report 目錄，不納入結案自動清理。
 
 ## Claude 端四個 gate

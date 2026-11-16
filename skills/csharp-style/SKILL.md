@@ -103,19 +103,9 @@ policy.allow_implicit_invocation: true
 - **換行基準**：以 120 字元為換行基準。賦值運算子 `=` 保留在前一行；二元運算子（`&&`、`||`）與 Lambda（`=>`）換行至新行開頭。專案 `.editorconfig` 設定運算子換行位置時以其為準。
 
   ```csharp
-  // = 留在前一行，運算式換行
-  decimal total = basePrice
-      + shippingFee
-      + taxAmount;
-
   // => 換至新行開頭，與 = 做區隔
   public string DisplayName
       => $"{firstName} {lastName}";
-
-  // ❌ 二元運算子留在行末，不易看出下一行仍屬同一運算式
-  decimal subtotal = basePrice +
-      shippingFee +
-      taxAmount;
   ```
 
 - **三元運算子**：
@@ -124,14 +114,6 @@ policy.allow_implicit_invocation: true
   - 巢狀：一律換行，下列兩種排版皆可。
 
   ```csharp
-  // 短，單行
-  string label = isActive ? "啟用" : "停用";
-
-  // 過長，換行
-  string message = isActive
-      ? BuildActiveMessage(user)
-      : BuildInactiveMessage(user);
-
   // 巢狀排版一：逐層縮排，子條件置於 : 之後
   string grade = score >= 90
       ? "A"
@@ -143,9 +125,6 @@ policy.allow_implicit_invocation: true
   string size = count > 100 ? "large"
       : count > 10 ? "medium"
       : "small";
-
-  // ❌ 巢狀卻全擠在單行，分支邊界難以辨識
-  string tier = amount >= 10000 ? "VIP" : amount >= 1000 ? "Gold" : "Silver";
   ```
 
 - **`switch` 運算式**：每個 arm 各佔一行，`=>` 前後各一個空格；不跨 arm 對齊 `=>`；discard `_` arm 置於最後，最後一個 arm 不加結尾逗號。`{` 位置依 `.editorconfig` 設定。
@@ -158,10 +137,6 @@ policy.allow_implicit_invocation: true
       .OrderBy(u => u.Name)
       .Select(u => u.Name)
       .ToList();
-
-  // ❌ 換行了，卻把引數硬擠回同一行，失去換行的意義
-  OrderResult result = orderService.Process(order, paymentInfo,
-      cancellationToken);
   ```
 
 - **物件與集合初始設定式**：是否使用初始設定式、target-typed `new()` 或集合運算式 `[]` 由 `.editorconfig` 與 analyzer 約束；此處僅規範多行時的排版。
@@ -185,5 +160,4 @@ policy.allow_implicit_invocation: true
 ## .NET 品質檢查
 
 - 實作 `IDisposable` 或 `IAsyncDisposable` 的物件必須在 `using` 區塊或 `try/finally` 中釋放。發現 `new HttpClient()` 時改用 `IHttpClientFactory`。
-- SOLID 的模組邊界、Interface、Adapter、依賴方向與刪除測試規則參閱 `codebase-design` skill。
 - 字串串接迴圈使用 `StringBuilder` 或 `string.Join()`。對 `IEnumerable<T>` 多次執行 `.Count()` 或迴圈時先物化。同步 I/O 優先改用非同步版本。

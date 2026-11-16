@@ -154,48 +154,10 @@ protected override void ConfigureConventions(ModelConfigurationBuilder configura
 - 只追蹤子表並設定外鍵屬性（例如 `sub.MainId`）時，兩端的導覽屬性都不會同步；以 `Find()` 等方式載入主表後才同步。
 - `main.Subs.Remove(sub)` 解除關聯後的結果取決於關聯是否為必要關聯與 `DeleteBehavior`。外鍵可為 `null` 的選擇性關聯預設把外鍵設為 `null`，子表資料保留；必要關聯預設把子表資料視為孤兒刪除；多對多關聯只刪除聯結表的那一列。要刪除子表資料時明確使用 `context.Subs.Remove(sub)`。
 
-## 交易管理
-
-- 單一 `SaveChangesAsync()` 呼叫本身即為一個交易，簡單場景不需額外包裝。
-- 跨多次 `SaveChangesAsync()` 或需要搭配其他外部操作時，使用 `IDbContextTransaction`：
-
-```csharp
-await using IDbContextTransaction transaction = await db.Database
-    .BeginTransactionAsync(cancellationToken)
-    .ConfigureAwait(false);
-
-try {
-    // 多個操作...
-    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-    await transaction.CommitAsync(cancellationToken).ConfigureAwait(false);
-} catch {
-    await transaction.RollbackAsync(cancellationToken).ConfigureAwait(false);
-    throw;
-}
-```
-
 ## 樂觀並發控制（Optimistic Concurrency）
 
 - 需要防止更新衝突的實體，使用 `[Timestamp]` Attribute（SQL Server `rowversion`）或 `[ConcurrencyCheck]`（任意欄位；Fluent API 為 `IsConcurrencyToken()`）。
 - EF Core 偵測到並發衝突時拋出 `DbUpdateConcurrencyException`，必須明確處理（重試或提示使用者）。
-
-```csharp
-public class Order {
-    public int Id { get; set; }
-
-    [Timestamp]
-    public byte[] RowVersion { get; set; } = [];
-}
-
-// 並發衝突處理
-try {
-    await db.SaveChangesAsync(cancellationToken).ConfigureAwait(false);
-} catch (DbUpdateConcurrencyException ex) {
-    // 重新從資料庫取得最新值，決定合併策略
-    await ex.Entries.Single().ReloadAsync(cancellationToken).ConfigureAwait(false);
-    throw;
-}
-```
 
 ## Lazy Loading 警告
 
@@ -220,16 +182,3 @@ try {
 
 - 優先使用 LINQ 查詢；僅在 LINQ 無法表達或效能明確不足時，才使用 `FromSqlInterpolated()` 或 `FromSqlRaw()`。
 - 使用 `FromSqlRaw()` 時，**必須**透過參數化查詢防止 SQL Injection，禁止字串串接。
-
-```csharp
-// ✅ 正確：參數化
-IReadOnlyList<Product> products = await db.Products
-    .FromSqlInterpolated($"SELECT ProductId, ProductName, CategoryId FROM Products WHERE CategoryId = {categoryId}")
-    .ToListAsync(cancellationToken)
-    .ConfigureAwait(false);
-
-// ❌ 錯誤：字串串接
-IReadOnlyList<Product> products = await db.Products
-    .FromSqlRaw("SELECT ProductId, ProductName, CategoryId FROM Products WHERE CategoryId = " + categoryId)
-    .ToListAsync(cancellationToken);
-```

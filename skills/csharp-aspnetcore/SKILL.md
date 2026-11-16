@@ -23,24 +23,6 @@ policy.allow_implicit_invocation: true
 - **禁止**在方法內直接 `new HttpClient()`，會造成 Socket 耗盡問題。
 - 必須透過 `IHttpClientFactory` 或具名/型別化用戶端（Named / Typed Client）注入。
 
-```csharp
-// ✅ 正確
-builder.Services.AddHttpClient<MyService>();
-
-public class MyService {
-    private readonly HttpClient httpClient;
-
-    public MyService(HttpClient httpClient) {
-        this.httpClient = httpClient;
-    }
-}
-
-// ❌ 錯誤
-public void DoWork() {
-    using HttpClient client = new();
-}
-```
-
 ## Minimal API vs Controller
 
 - 不主動替換現有架構形式（Minimal API ↔ Controller）。
@@ -51,17 +33,6 @@ public void DoWork() {
 - API 的錯誤回應必須遵循 **ProblemDetails（RFC 7807）** 格式。
 - 使用 `Results.Problem(...)` 或 `Results.ValidationProblem(...)` 產生標準化錯誤。
 
-```csharp
-// ✅ 正確
-return Results.Problem(
-    title: "資源不存在",
-    statusCode: StatusCodes.Status404NotFound
-);
-
-// ❌ 錯誤
-return Results.Json(new { error = "Not found" }, statusCode: 404);
-```
-
 ## API 版本控制
 
 - 若專案已啟用 API Versioning（如 `Asp.Versioning.Http`），產生或修改端點時必須加入對應版本路由前綴（如 `/api/v1/`）。
@@ -71,28 +42,6 @@ return Results.Json(new { error = "Not found" }, statusCode: 404);
 
 - **禁止**在服務類別中直接注入 `IConfiguration` 並以字串索引取值，會散落硬編碼 Key 且缺乏型別安全。
 - 統一使用 **Options Pattern**：定義 POCO 設定類別，以 `IOptions<T>` / `IOptionsSnapshot<T>` / `IOptionsMonitor<T>` 注入。
-
-| 介面 | Lifetime | 適用情境 |
-| --- | --- | --- |
-| `IOptions<T>` | Singleton | 應用程式啟動後不會變更的設定 |
-| `IOptionsSnapshot<T>` | Scoped | 每次請求重新讀取（支援熱更新，不可用於 Singleton） |
-| `IOptionsMonitor<T>` | Singleton | 需要即時感知設定變更（支援 `OnChange` 回呼） |
-
-```csharp
-// 註冊
-builder.Services.Configure<SmtpOptions>(
-    builder.Configuration.GetSection("Smtp")
-);
-
-// 注入
-public class EmailService {
-    private readonly SmtpOptions smtp;
-
-    public EmailService(IOptions<SmtpOptions> options) {
-        smtp = options.Value;
-    }
-}
-```
 
 ## SameSite Cookie
 
@@ -118,4 +67,3 @@ public class EmailService {
 ## 背景服務
 
 - 不要在 Controller / Service 中自行 `Task.Run` 長期工作，一律改用 Hosted Service。
-- 選型（`BackgroundService` vs `IHostedService`）、實作規範與 Scoped 服務存取，參閱 `csharp-background-service` skill，本文件不重複。

@@ -36,22 +36,6 @@ policy.allow_implicit_invocation: true
 | `interface` | 物件形狀定義（API 回應、Props、State）、可擴展的契約 |
 | `type` | 聯合型別、交叉型別、Mapped Types、Utility Types 組合 |
 
-```typescript
-// ✅ interface：物件形狀
-interface Order {
-  id: number;
-  customerName: string;
-  items: ReadonlyArray<OrderItem>;
-  note?: string;
-}
-
-// ✅ type：聯合型別
-type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled';
-
-// ✅ type：複雜型別操作
-type PartialOrder = Partial<Pick<Order, 'customerName' | 'note'>>;
-```
-
 - 同一專案中選定一種作為物件定義的預設，保持一致。
 - **禁止**在 interface 和 type 之間反覆切換同一個型別定義。
 
@@ -172,57 +156,12 @@ type Status = 'pending' | 'active' | 'closed';
 
 ## 泛型
 
-### 元件 Props 泛型
-
-```vue
-<script setup lang="ts" generic="T">
-defineProps<{
-  items: ReadonlyArray<T>;
-  selected?: T;
-}>();
-
-const emit = defineEmits<{
-  select: [item: T];
-}>();
-</script>
-```
-
 ### 函式泛型
-
-```typescript
-// ✅ 泛型工具函式
-function groupBy<T, K extends string | number>(
-  items: ReadonlyArray<T>,
-  keyFn: (item: T) => K
-): Record<K, T[]> {
-  const result = {} as Record<K, T[]>;
-  for (const item of items) {
-    const key = keyFn(item);
-    (result[key] ??= []).push(item);
-  }
-  return result;
-}
-
-// 使用時自動推斷型別
-const grouped = groupBy(orders, o => o.status);
-```
 
 - 泛型參數只在需要關聯多個位置的型別時使用，不為了泛型而泛型。
 - 命名：單一參數用 `T`；多參數用有意義的名稱（如 `TInput`、`TOutput`）。
 
 ## Utility Types 常用清單
-
-| Type | 用途 |
-| --- | --- |
-| `Partial<T>` | 所有屬性可選 |
-| `Required<T>` | 所有屬性必填 |
-| `Pick<T, K>` | 選取部分屬性 |
-| `Omit<T, K>` | 排除部分屬性 |
-| `Record<K, V>` | 建立鍵值對型別 |
-| `Readonly<T>` | 所有屬性唯讀 |
-| `ReturnType<T>` | 取得函式回傳型別 |
-| `Parameters<T>` | 取得函式參數型別 |
-| `Awaited<T>` | 取得 Promise 解析後的型別 |
 
 ```typescript
 // 常見組合
@@ -243,23 +182,6 @@ src/types/
 - 一個 domain 一個型別檔案，以 domain 名稱命名。
 - 匯出使用 `export type`（確保型別在編譯後被移除）。
 - **禁止**將所有型別放在一個巨大的 `types.ts` 中。
-
-```typescript
-// types/order.ts
-export interface Order {
-  id: number;
-  customerName: string;
-  items: ReadonlyArray<OrderItem>;
-}
-
-export interface OrderItem {
-  productId: number;
-  quantity: number;
-  unitPrice: number;
-}
-
-export type OrderStatus = 'pending' | 'processing' | 'completed' | 'cancelled';
-```
 
 ## 非同步型別安全
 
@@ -285,18 +207,6 @@ async function fetchOrder(id: number): Promise<Order> {
 ```
 
 ## 與 Vue 3 整合
-
-### 元件實例型別
-
-```typescript
-import type { ComponentPublicInstance } from 'vue';
-
-// Template Ref 型別
-const formRef = ref<InstanceType<typeof MyForm> | null>(null);
-
-// 使用
-formRef.value?.validate();
-```
 
 ### Provide / Inject 型別安全
 

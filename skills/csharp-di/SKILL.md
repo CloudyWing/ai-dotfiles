@@ -14,37 +14,12 @@ policy.allow_implicit_invocation: true
 - 非 Web 應用程式（Console、Worker Service）使用 `Host.CreateDefaultBuilder()` 或 `Host.CreateApplicationBuilder()` 建立宿主，統一 DI、Configuration、Logging 基礎設施。
 - **禁止**在 Generic Host 應用程式中手動建立 `ServiceCollection` 再 `BuildServiceProvider()`，除非是單元測試場景。
 
-```csharp
-// ✅ 正確
-HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddHostedService<MyWorker>();
-IHost host = builder.Build();
-await host.RunAsync().ConfigureAwait(false);
-
-// ❌ 錯誤：手動建立容器
-ServiceCollection services = new();
-services.AddSingleton<IMyService, MyService>();
-ServiceProvider provider = services.BuildServiceProvider();
-```
-
-## Worker Service（BackgroundService）
-
-- 實作規範（`ExecuteAsync` 結構、`CancellationToken`、例外處理）與 Scoped 服務存取（`IServiceScopeFactory` / `IDbContextFactory`），參閱 `csharp-background-service` skill，本文件不重複。
-
 ## 註冊慣例
 
 ### 介面與實作分離
 
 - 註冊服務時**必須**以介面為服務型別，具體實作為實作型別。
 - 禁止直接註冊具體類別（除非該類別本身就是最終消費端，如 `BackgroundService`）。
-
-```csharp
-// ✅ 正確
-builder.Services.AddScoped<IOrderService, OrderService>();
-
-// ❌ 錯誤
-builder.Services.AddScoped<OrderService>();
-```
 
 ### 多實作註冊
 
@@ -64,21 +39,7 @@ public class OrderController {
 }
 ```
 
-- 若需注入所有實作，使用 `IEnumerable<T>` 接收：
-
-```csharp
-builder.Services.AddScoped<IValidator, NameValidator>();
-builder.Services.AddScoped<IValidator, EmailValidator>();
-
-// 消費端：注入所有 IValidator 實作
-public class ValidationService {
-    private readonly IEnumerable<IValidator> validators;
-
-    public ValidationService(IEnumerable<IValidator> validators) {
-        this.validators = validators;
-    }
-}
-```
+- 若需注入所有實作，使用 `IEnumerable<T>` 接收。
 
 ## Decorator 模式
 

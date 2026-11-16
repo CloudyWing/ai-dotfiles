@@ -23,7 +23,7 @@ policy.allow_implicit_invocation: true
 ## 快取模式
 
 - **預設 Cache-Aside**：讀取先查快取，未命中查資料來源後回填。寫入時**失效（刪除）對應 Key**，不採「寫入時更新快取值」（雙寫易產生不一致）。
-- 高併發熱點 Key 的回源需防擊穿：優先使用 .NET 9+ 的 `HybridCache`（內建 stampede 防護與 L1/L2 兩層）；未使用 HybridCache 時以 per-key 鎖或單飛（single-flight）模式限制同時回源數。
+- 高併發熱點 Key 的回源需防擊穿：優先使用 `Microsoft.Extensions.Caching.Hybrid` 的 `HybridCache`（ASP.NET Core 文件自 .NET 9 起收錄，內建 stampede 防護與 L1/L2 兩層）；未使用 HybridCache 時以 per-key 鎖或單飛（single-flight）模式限制同時回源數。
 - 高併發 Key 的 concurrent rebuild 必須在每個 Key 維持 single-flight。`HybridCache` 內部維護的 in-flight 狀態由 `HybridCache` 擁有與清理，呼叫端不得以自建 per-key lock 清除或釋放該狀態；應用程式自建的 per-key lock 與 in-flight 狀態由建立它的協調器擁有。互斥鎖本身不構成 single-flight，成功取得 lock 後必須重新檢查快取，或讓所有請求共用同一個 in-flight `Task`。
 - 應用程式自建的回源工作在成功取得 lock 後，無論成功、失敗或取消，都要在其 `try` / `finally` 釋放 lock 並清除由該工作擁有的 in-flight 狀態。只有成功取得 lock 的執行緒或非同步工作可以釋放該 lock；取消或例外若發生在 `WaitAsync` 成功返回前，不得釋放未持有的 lock。使用 `SemaphoreSlim` 時，`WaitAsync(cancellationToken)` 成功返回後才進入包覆回源工作的 `try`，並將 `Release` 放在該 `try` 的 `finally`。
 - per-key 狀態的移除必須涵蓋等待者。每個等待者必須以不可分割的原子步驟取得狀態參考並登記等待者計數，不能先讀取參考再稍後計數；完成等待與回源後才遞減。只有狀態表仍指向同一個 state、持有者已完成且等待者計數歸零時，才可 reference-conditional removal。也可改用 Task-based coalescing，且只能在同一個 in-flight `Task` 完成後移除。A 清除狀態後，C 不得建立新 semaphore 再讓仍持有舊狀態參考的 B 並行回源。

@@ -36,11 +36,7 @@ policy.allow_implicit_invocation: true
 
 ## 共用產物 ensure
 
-三支 Roslyn exporter 與 graphify 由 Ensure-AiContextArtifacts.ps1 唯一負責來源指紋、no-op 判斷、產物提升及索引登記。呼叫格式為：
-
-pwsh -NoProfile -File '<AiAgentsRoot>/scripts/Ensure-AiContextArtifacts.ps1' -ProjectRoot '<ProjectRoot>' -ToolName <ToolName>
-
-以單引號序列化 PowerShell 路徑；路徑中的單引號寫成兩個單引號。
+三支 Roslyn exporter 與 graphify 由 Ensure-AiContextArtifacts.ps1 唯一負責來源指紋、no-op 判斷、產物提升及索引登記。
 
 三個 Export ToolName 的 ProjectRoot 根目錄必須包含唯一一個 .sln 或 .slnx。graphify 直接以 ProjectRoot 為輸入。ToolName 限定為 Export-ApiSurface、Export-TypeHierarchy、Export-ProjectGraph、graphify。三支 exporter 維持原有 Markdown 輸出路徑，並接受額外暫存輸出目標。graphify ensure 以 ProjectRoot 作為子行程工作目錄執行 `graphify update '<ProjectRoot>'`，不傳入 `--out`；graphify 在 ProjectRoot 根目錄建立 `graphify-out/`。Ensure 先確認該目錄不存在，再驗證 `graph.json` 非空並將整個目錄（含 `manifest.json`）搬入 `.local/ai-context/graphify/graphify-out/`；若該目錄預先存在，Ensure 以 exit 1 停止且不修改其中內容，請使用者自行處理。
 

@@ -40,32 +40,16 @@ policy.allow_implicit_invocation: false
 
 ### 2. 補齊 XML 文件
 
-依 `csharp-docs` skill 規範，為每個 Public 方法補齊：
-
-```csharp
-/// <summary>
-/// [動詞開頭的第三人稱現在式說明，描述 What 與 Why]
-/// </summary>
-/// <param name="[paramName]">[參數說明]</param>
-/// <returns>[回傳值說明]</returns>
-```
+依 `csharp-docs` skill 規範，為每個 Public 方法補齊。
 
 規則：
 
-- `<summary>` 以第三人稱現在式動詞開頭（Gets、Creates、Updates、Deletes、Processes）。
 - 若方法已有 `<inheritdoc />`，保留不覆蓋。
 - 僅補齊缺少的標籤，不移除已有內容。
 
 ### 3. 補齊 Swagger Attributes
 
-依 HTTP 方法與回傳型別判斷要加入的 Attributes：
-
-```csharp
-[ProducesResponseType(typeof(ResponseDto), StatusCodes.Status200OK)]
-[ProducesResponseType(StatusCodes.Status400BadRequest)]
-[ProducesResponseType(StatusCodes.Status404NotFound)]
-[ProducesResponseType(StatusCodes.Status500InternalServerError)]
-```
+依 HTTP 方法與回傳型別判斷要加入的 Attributes。
 
 判斷規則：
 
@@ -82,8 +66,6 @@ policy.allow_implicit_invocation: false
 ### 4. 補齊 Summary Tag（Swagger UI 用）
 
 若 Action 方法尚無 `[EndpointSummary]`（Minimal API）或 XML `<summary>` 已覆蓋 Swagger 顯示，則不額外加入。
-
-Controller API 的 Swagger 摘要來自 XML `<summary>`，確保存在即可。
 
 ### 5. 確認中斷點
 
@@ -115,6 +97,5 @@ Controller API 的 Swagger 摘要來自 XML `<summary>`，確保存在即可。
 
 ## 注意事項
 
-- 產生的 C# 程式碼遵循專案 `.editorconfig` 與 `csharp-style` skill 的風格規範。
 - 若專案使用 `Swashbuckle.AspNetCore` 以外的 OpenAPI 套件，輸出前確認 Attribute 名稱是否相容。
 - 不修改業務邏輯，僅新增文件相關的 Attributes 與 XML 註解。

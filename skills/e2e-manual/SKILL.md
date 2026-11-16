@@ -10,16 +10,6 @@ policy.allow_implicit_invocation: true
 
 本 Skill 產出涵蓋關鍵流程、可重跑的 E2E 測試，以及由 E2E 執行時自動截圖組成的 `.md` 操作手冊。`browser-smoke`、`desktop-smoke`、`integration-verify` 負責一次性驗證，本 Skill 負責留下可重跑的測試與手冊。本 Skill 只在使用者要求時執行，不自動掛入 Workflow。
 
-## 流程總覽
-
-1. 判定啟動條件。
-2. 判定受測程式型別，選擇網站或視窗程式路徑。
-3. 從需求摘要列出候選流程，由使用者勾選關鍵流程。
-4. 撰寫 E2E 測試碼。
-5. 執行 E2E，取回步驟紀錄與截圖。
-6. 依更新條件判定，通過的功能才更新手冊。
-7. 收尾清理並回報。
-
 ## 啟動條件
 
 三個條件依序判定，全部成立才啟動。
@@ -65,16 +55,6 @@ policy.allow_implicit_invocation: true
 5. 以使用者確認後的表格決定功能歸屬，一個功能對應一份手冊。
 
 需求摘要不存在、讀取失敗或沒有任何驗收條件時停止，回報缺少的項目。使用者可改在對話中逐條口述流程，口述內容視為候選來源，仍走第 3 至 5 步。候選只來自需求摘要或使用者口述，不從程式碼、diff 或畫面推導。
-
-## E2E 撰寫與執行通則
-
-| 項目 | 網站路徑 | 視窗程式路徑 |
-| --- | --- | --- |
-| 工具 | Playwright | FlaUI 加 NUnit |
-| 專案 | `tests/<ProjectName>.E2ETests`，.NET 專案用 `Microsoft.Playwright.NUnit`；Node 專案用 `@playwright/test` | `tests/<ProjectName>.E2ETests`，FlaUI 的 UIA 實作 WinForms 先用 UIA2、WPF 先用 UIA3 |
-| 受測程式啟動 | 沿用專案既有 script 或已執行的服務，基底位址由 `E2E_BASE_URL` 傳入 | 由測試啟動 exe，生命週期規則見 [references/desktop-flaui.md](references/desktop-flaui.md) |
-| 截圖工具 | Playwright 的 page screenshot | PrintWindow（`PW_RENDERFULLCONTENT`）擷取視窗內容 |
-| 細節 | [references/web-playwright.md](references/web-playwright.md) | [references/desktop-flaui.md](references/desktop-flaui.md) |
 
 ## 截圖
 
@@ -196,7 +176,6 @@ policy.allow_implicit_invocation: true
 
 ## 收尾清理
 
-- 關閉本流程自行啟動的站台、瀏覽器與受測程式。
 - 保留 staging 到手冊判定與回報完成，之後由主 Agent 依 `instructions.md` 環境清理處理。
 
 ## 回報格式

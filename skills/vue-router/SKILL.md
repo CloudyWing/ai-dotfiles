@@ -160,8 +160,6 @@ onBeforeRouteLeave((to, from) => {
 ### Guard 注意事項
 
 - Guard 中使用 Pinia Store 時，必須在 Guard 函式**內部**呼叫 `useXxxStore()`（而非模組頂層），確保 Pinia 已初始化。
-- Guard 回傳 `false` 取消導航；回傳路由物件重導向；不回傳或回傳 `true` 允許通過。
-- 非同步 Guard 支援 `async/await`。
 
 ## Route Meta 型別安全
 
@@ -184,53 +182,7 @@ declare module 'vue-router' {
 - 將 Meta 型別定義放在獨立檔案中，並確保該檔案被 `tsconfig.json` 涵蓋。
 - 定義後，`to.meta.requiresAuth` 等存取具備型別檢查。
 
-## Props 傳遞
-
-### Boolean Mode
-
-```typescript
-// 路由參數自動映射為元件 Props
-{
-  path: '/orders/:id',
-  component: () => import('@/views/orders/OrderDetailView.vue'),
-  props: true // :id 會傳為 props.id
-}
-```
-
-### Function Mode
-
-```typescript
-{
-  path: '/orders/:id',
-  component: () => import('@/views/orders/OrderDetailView.vue'),
-  props: (route) => ({
-    id: Number(route.params.id) // 轉型
-  })
-}
-```
-
-- 使用 Function Mode 對路由參數做型別轉換（params 預設為字串）。
-
 ## 程式化導航
-
-```typescript
-import { useRouter, useRoute } from 'vue-router';
-
-const router = useRouter();
-const route = useRoute();
-
-// ✅ 使用 name 導航（路徑變更時不需改程式碼）
-router.push({ name: 'OrderDetail', params: { id: orderId } });
-
-// ✅ 附帶 query
-router.push({ name: 'OrderList', query: { status: 'pending' } });
-
-// ✅ 替換歷史記錄（返回鍵不會回到前一頁）
-router.replace({ name: 'Home' });
-
-// ❌ 避免：硬編碼路徑
-router.push(`/orders/${orderId}`);
-```
 
 - 程式化導航優先使用 `name`，避免硬編碼路徑。
 - 路由參數使用 `params`，查詢條件使用 `query`。
@@ -241,24 +193,6 @@ router.push(`/orders/${orderId}`);
 router.afterEach((to) => {
   const title = to.meta.title;
   document.title = title ? `${title} | MyApp` : 'MyApp';
-});
-```
-
-## Scroll Behavior
-
-```typescript
-const router = createRouter({
-  history: createWebHistory(),
-  routes,
-  scrollBehavior(to, from, savedPosition) {
-    if (savedPosition) {
-      return savedPosition; // 瀏覽器返回時恢復滾動位置
-    }
-    if (to.hash) {
-      return { el: to.hash }; // 錨點定位
-    }
-    return { top: 0 }; // 新頁面回到頂端
-  }
 });
 ```
 

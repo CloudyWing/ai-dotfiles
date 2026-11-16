@@ -78,4 +78,3 @@ param(
 ## 自動化情境限制
 
 - 供 CI、git hook 或排程執行的腳本，禁止任何互動式呼叫（`Read-Host`、`Get-Credential`、確認提示）；需要確認行為時改以參數（如 `-Force`）控制。
-- 機密資料依全域 Security Baseline 透過環境變數或 Secret Manager 注入，不硬編碼於腳本中。
