@@ -69,23 +69,7 @@ policy.allow_implicit_invocation: false
 
 ### 4. 套用前確認
 
-分別顯示 `.prettierrc.json` 與 `eslint.config.js` 的預覽內容（或僅顯示新增/修改的段落），**停止等待使用者確認**後再執行寫入。確認格式：
-
-```
-以下是將要寫入的設定預覽：
-
-【.prettierrc.json】
-{
-  "tabWidth": 2,
-  ...
-}
-
-【eslint.config.js】
-import js from '@eslint/js';
-...
-
-確認後將寫入，請回覆「確認」。
-```
+分別顯示 `.prettierrc.json` 與 `eslint.config.js` 的預覽內容（或僅顯示新增/修改的段落），**停止等待使用者確認**後再執行寫入，請使用者回覆「確認」。
 
 若使用者要求調整，修改後重新顯示確認。
 
@@ -102,31 +86,9 @@ import js from '@eslint/js';
 
 寫入完成後，提醒使用者下列事項（不自動執行）：
 
-1. **安裝相依套件**：依專案的套件管理器執行對應指令。
+1. **安裝相依套件**：依專案的套件管理器以 dev dependency 安裝 `eslint`、`@eslint/js`、`typescript-eslint`、`eslint-plugin-vue`、`eslint-config-prettier`、`prettier`（`npm install -D`、`pnpm add -D` 或 `yarn add -D`）。若專案非 Vue，移除 `eslint-plugin-vue`。
 
-   ```bash
-   # npm
-   npm install -D eslint @eslint/js typescript-eslint eslint-plugin-vue eslint-config-prettier prettier
-
-   # pnpm
-   pnpm add -D eslint @eslint/js typescript-eslint eslint-plugin-vue eslint-config-prettier prettier
-
-   # yarn
-   yarn add -D eslint @eslint/js typescript-eslint eslint-plugin-vue eslint-config-prettier prettier
-   ```
-
-   若專案非 Vue，移除 `eslint-plugin-vue`。
-
-2. **加入 npm scripts**（若 `package.json` 尚無對應 scripts）：
-
-   ```json
-   {
-     "scripts": {
-       "lint": "eslint . --fix",
-       "format": "prettier --write ."
-     }
-   }
-   ```
+2. **加入 npm scripts**（若 `package.json` 尚無對應 scripts）：`"lint": "eslint . --fix"` 與 `"format": "prettier --write ."`。
 
 3. **非 Vue / 純 TS 專案的調整**：
 

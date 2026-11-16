@@ -11,53 +11,14 @@ policy.allow_implicit_invocation: true
 
 ### 目錄結構
 
-```text
-src/
-├── Protos/
-│   ├── order_service.proto
-│   └── product_service.proto
-├── Services/
-│   ├── OrderGrpcService.cs
-│   └── ProductGrpcService.cs
-```
-
 - Proto 檔案集中於 `Protos/` 目錄。
+- 服務實作放在 `Services/` 目錄（如 `OrderGrpcService.cs`）。
 - 檔名使用 snake_case（`order_service.proto`），與 Protobuf 社群慣例一致。
-- 每個 `.proto` 檔案對應一個邏輯上的服務domain。
+- 每個 `.proto` 檔案對應一個邏輯上的服務 domain。
 
 ### Proto 檔案規範
 
-```protobuf
-syntax = "proto3";
-
-option csharp_namespace = "MyApp.Grpc";
-
-package myapp.v1;
-
-service OrderService {
-  rpc GetOrder (GetOrderRequest) returns (GetOrderResponse);
-  rpc ListOrders (ListOrdersRequest) returns (ListOrdersResponse);
-  rpc CreateOrder (CreateOrderRequest) returns (CreateOrderResponse);
-}
-
-message GetOrderRequest {
-  int32 id = 1;
-}
-
-message GetOrderResponse {
-  int32 id = 1;
-  string customer_name = 2;
-  google.protobuf.Timestamp created_at = 3;
-  repeated OrderItemMessage items = 4;
-}
-
-message OrderItemMessage {
-  int32 product_id = 1;
-  int32 quantity = 2;
-  double unit_price = 3;
-}
-```
-
+- 使用 `syntax = "proto3"`；日期時間欄位使用 `google.protobuf.Timestamp`（需 `import "google/protobuf/timestamp.proto";`）。
 - **必須**指定 `csharp_namespace`，避免產生的 C# 程式碼落入預設命名空間。
 - **必須**指定 `package`，含版本號（如 `myapp.v1`）。
 - 欄位命名使用 snake_case（Protobuf 慣例，Code Generator 會轉為 PascalCase）。
@@ -92,82 +53,21 @@ message OrderItemMessage {
 
 ### 拋出錯誤
 
-```csharp
-// ✅ 正確：使用 RpcException 搭配明確的 StatusCode
-throw new RpcException(new Status(StatusCode.InvalidArgument, "客戶名稱不可為空"));
-
-// ❌ 錯誤：拋出一般例外（用戶端只會收到 StatusCode.Unknown）
-throw new ArgumentException("客戶名稱不可為空");
-```
+- 以 `RpcException` 搭配明確的 `StatusCode` 拋出錯誤。拋出一般例外時，用戶端只會收到 `StatusCode.Unknown`。
 
 ### 全域錯誤攔截器
 
-```csharp
-public class ErrorInterceptor : Interceptor {
-    private readonly ILogger<ErrorInterceptor> logger;
-
-    public ErrorInterceptor(ILogger<ErrorInterceptor> logger) {
-        this.logger = logger;
-    }
-
-    public override async Task<TResponse> UnaryServerHandler<TRequest, TResponse>(
-        TRequest request,
-        ServerCallContext context,
-        UnaryServerMethod<TRequest, TResponse> continuation
-    ) {
-        try {
-            return await continuation(request, context).ConfigureAwait(false);
-        } catch (RpcException) {
-            throw; // 已處理的 gRPC 錯誤直接傳播
-        } catch (Exception ex) {
-            logger.LogError(ex, "gRPC 方法 {Method} 發生未處理的例外", context.Method);
-            throw new RpcException(new Status(StatusCode.Internal, "伺服器內部錯誤"));
-        }
-    }
-}
-```
+- 以全域 Interceptor（如 `ErrorInterceptor`）覆寫 `UnaryServerHandler`：`RpcException` 直接傳播；其餘例外記錄後轉為 `StatusCode.Internal`，回應訊息不含內部細節。
 
 ## 攔截器（Interceptor）
 
-```csharp
-// 註冊
-builder.Services.AddGrpc(options => {
-    options.Interceptors.Add<ErrorInterceptor>();
-    options.Interceptors.Add<LoggingInterceptor>();
-});
-```
-
+- 於 `AddGrpc` 的 `options.Interceptors.Add<T>()` 註冊，錯誤攔截器最先註冊（位於最外層）。
 - 攔截器依註冊順序執行（外到內），回應時反向（內到外）。
 - 攔截器本身為 Transient，可透過建構函式注入服務。
 
 ## 用戶端工廠（gRPC Client Factory）
 
-```csharp
-// 註冊
-builder.Services.AddGrpcClient<OrderService.OrderServiceClient>(options => {
-    options.Address = new Uri("https://localhost:5001");
-})
-.ConfigureChannel(options => {
-    options.MaxRetryAttempts = 3;
-});
-
-// 使用
-public class OrderProxy {
-    private readonly OrderService.OrderServiceClient client;
-
-    public OrderProxy(OrderService.OrderServiceClient client) {
-        this.client = client;
-    }
-
-    public async Task<GetOrderResponse> GetOrderAsync(int id, CancellationToken cancellationToken) {
-        return await client.GetOrderAsync(
-            new GetOrderRequest { Id = id },
-            cancellationToken: cancellationToken
-        ).ConfigureAwait(false);
-    }
-}
-```
-
+- 以 `AddGrpcClient<TClient>` 註冊並設定 `Address`，產生的 client 由建構函式注入，呼叫時傳入 `cancellationToken`。
 - **禁止**手動建立 `GrpcChannel`。使用 `AddGrpcClient` 搭配 HttpClientFactory，獲得連線管理與重試策略。
 
 ## 串流（Streaming）

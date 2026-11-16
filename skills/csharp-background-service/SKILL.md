@@ -29,88 +29,12 @@ policy.allow_implicit_invocation: true
 
 BackgroundService 註冊為 Singleton，**不能**直接注入 Scoped 服務（如 DbContext）。必須透過 `IServiceScopeFactory` 建立 Scope。
 
-```csharp
-// ❌ 錯誤：直接注入 Scoped 服務
-public class MyWorker : BackgroundService {
-    public MyWorker(AppDbContext db) { /* ... */ }
-}
-
-// ✅ 正確：透過 IServiceScopeFactory
-public class MyWorker : BackgroundService {
-    private readonly IServiceScopeFactory scopeFactory;
-
-    public MyWorker(IServiceScopeFactory scopeFactory) {
-        this.scopeFactory = scopeFactory;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-        AppDbContext db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-    }
-}
-
-// ✅ 正確：EF Core 場景優先使用 IDbContextFactory
-public class MyWorker : BackgroundService {
-    private readonly IDbContextFactory<AppDbContext> factory;
-
-    public MyWorker(IDbContextFactory<AppDbContext> factory) {
-        this.factory = factory;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        await using AppDbContext db = await factory.CreateDbContextAsync(stoppingToken)
-            .ConfigureAwait(false);
-    }
-}
-```
+- 以 `scopeFactory.CreateAsyncScope()` 搭配 `await using` 建立 Scope，再由 `scope.ServiceProvider` 解析 Scoped 服務。
+- EF Core 場景優先注入 `IDbContextFactory<TContext>`，以 `await using` 搭配 `CreateDbContextAsync(stoppingToken)` 建立並釋放 DbContext。
 
 ## IHostedService 實作規範
 
-```csharp
-public class CacheWarmupService : IHostedService {
-    private readonly IServiceScopeFactory scopeFactory;
-    private readonly IMemoryCache cache;
-    private readonly ILogger<CacheWarmupService> logger;
-
-    public CacheWarmupService(
-        IServiceScopeFactory scopeFactory,
-        IMemoryCache cache,
-        ILogger<CacheWarmupService> logger
-    ) {
-        this.scopeFactory = scopeFactory;
-        this.cache = cache;
-        this.logger = logger;
-    }
-
-    public async Task StartAsync(CancellationToken cancellationToken) {
-        logger.LogInformation("開始預熱快取");
-
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-        IProductRepository repository = scope.ServiceProvider
-            .GetRequiredService<IProductRepository>();
-
-        using CancellationTokenSource warmupCts =
-            CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        warmupCts.CancelAfter(TimeSpan.FromSeconds(5));
-
-        IReadOnlyList<Product> products = await repository
-            .GetPageAsync(
-                pageNumber: 1,
-                pageSize: 100,
-                cancellationToken: warmupCts.Token)
-            .ConfigureAwait(false);
-
-        cache.Set("products:page:1", products, TimeSpan.FromHours(1));
-        logger.LogInformation("快取預熱完成，第一頁共 {Count} 筆產品", products.Count);
-    }
-
-    public Task StopAsync(CancellationToken cancellationToken) {
-        return Task.CompletedTask;
-    }
-}
-```
-
-範例中的 `GetPageAsync` 必須將 `cancellationToken` 傳遞至資料來源。`pageSize: 100` 限制單次預熱資料量，`CancelAfter(TimeSpan.FromSeconds(5))` 限制該次預熱耗時；逾時或 Host 停止時，`StartAsync` 觀察取消例外並讓必要條件未滿足的 Host 維持啟動失敗。
+在 `StartAsync` 預熱時，以 `CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)` 建立連結的 CTS（以 `using` 釋放）並呼叫 `CancelAfter`（例如 5 秒）限制該次預熱耗時，傳遞至資料來源的必須是這個連結 CTS 的 `.Token`，不是 `StartAsync` 的原始 `cancellationToken`，資料來源才會同時因逾時與 Host 停止而取消；另以筆數上限限制單次預熱資料量（例如只取第一頁 100 筆）。預熱需要 Scoped 服務時同樣以 `CreateAsyncScope` 解析。逾時或 Host 停止時，`StartAsync` 觀察取消例外並讓必要條件未滿足的 Host 維持啟動失敗。
 
 - `StartAsync` 應快速返回，不在其中執行無界外部 I/O。需要長期或非必要預熱時，移到可追蹤且可取消的背景路徑，並在 `StopAsync` 等待已保存的工作完成。
 - `StopAsync` 有 timeout（預設 30 秒），必須在時限內完成清理。
@@ -119,98 +43,18 @@ public class CacheWarmupService : IHostedService {
 
 適用於「生產者-消費者」場景：HTTP 請求快速入隊，背景服務非同步處理。
 
-### 佇列定義
-
-```csharp
-public class BackgroundTaskQueue {
-    private readonly Channel<Func<IServiceScopeFactory, CancellationToken, ValueTask>> channel
-        = Channel.CreateBounded<Func<IServiceScopeFactory, CancellationToken, ValueTask>>(
-            new BoundedChannelOptions(100) {
-                FullMode = BoundedChannelFullMode.Wait
-            });
-
-    public async ValueTask EnqueueAsync(
-        Func<IServiceScopeFactory, CancellationToken, ValueTask> workItem,
-        CancellationToken cancellationToken
-    ) {
-        ArgumentNullException.ThrowIfNull(workItem);
-        await channel.Writer.WriteAsync(workItem, cancellationToken).ConfigureAwait(false);
-    }
-
-    public async ValueTask<Func<IServiceScopeFactory, CancellationToken, ValueTask>> DequeueAsync(
-        CancellationToken cancellationToken
-    ) {
-        return await channel.Reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-    }
-}
-```
-
-### 消費者
-
-```csharp
-public class QueuedHostedService : BackgroundService {
-    private readonly BackgroundTaskQueue taskQueue;
-    private readonly IServiceScopeFactory scopeFactory;
-    private readonly ILogger<QueuedHostedService> logger;
-
-    public QueuedHostedService(
-        BackgroundTaskQueue taskQueue,
-        IServiceScopeFactory scopeFactory,
-        ILogger<QueuedHostedService> logger
-    ) {
-        this.taskQueue = taskQueue;
-        this.scopeFactory = scopeFactory;
-        this.logger = logger;
-    }
-
-    protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-        while (!stoppingToken.IsCancellationRequested) {
-            Func<IServiceScopeFactory, CancellationToken, ValueTask> workItem
-                = await taskQueue.DequeueAsync(stoppingToken).ConfigureAwait(false);
-
-            try {
-                await workItem(scopeFactory, stoppingToken).ConfigureAwait(false);
-            } catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) {
-                // 正常停止
-            } catch (Exception ex) {
-                logger.LogError(ex, "佇列工作項目執行失敗");
-            }
-        }
-    }
-}
-```
-
-### 生產者（Endpoint）
-
-```csharp
-app.MapPost("/api/reports/generate", async (
-    GenerateReportRequest request,
-    BackgroundTaskQueue queue,
-    CancellationToken cancellationToken
-) => {
-    await queue.EnqueueAsync(async (scopeFactory, token) => {
-        await using AsyncServiceScope scope = scopeFactory.CreateAsyncScope();
-        IReportService reportService = scope.ServiceProvider
-            .GetRequiredService<IReportService>();
-        await reportService.GenerateAsync(request.ReportId, token).ConfigureAwait(false);
-    }, cancellationToken).ConfigureAwait(false);
-
-    return Results.Accepted();
-});
-```
-
-### 註冊
-
-```csharp
-builder.Services.AddSingleton<BackgroundTaskQueue>();
-builder.Services.AddHostedService<QueuedHostedService>();
-```
+- 佇列使用有界 Channel（`Channel.CreateBounded`，容量依負載設定，例如 100），`FullMode` 為 `BoundedChannelFullMode.Wait`。
+- 工作項目型別為 `Func<IServiceScopeFactory, CancellationToken, ValueTask>`，由工作項目自行建立 Scope 解析 Scoped 服務。
+- 消費者為 `BackgroundService`，在迴圈內逐筆取出並以 try-catch 包住執行：`stoppingToken` 觸發時的 `OperationCanceledException` 視為正常停止，其餘例外記錄後繼續處理下一筆。
+- 生產者（Endpoint）以 HTTP 請求的 `CancellationToken` 等待入隊（一路傳到 `channel.Writer.WriteAsync`），佇列已滿時用戶端中止請求即可取消等待；入隊後回傳 `202 Accepted`。
+- 消費者取出（`channel.Reader.ReadAsync`）與執行工作項目都使用 `stoppingToken`，工作項目收到的是這個停止 Token，不是請求的 Token。
+- 佇列註冊為 Singleton，消費者以 `AddHostedService` 註冊。
 
 ## 定時任務（Timer-based）
 
 ### PeriodicTimer（.NET 6+，推薦）
 
-- `PeriodicTimer` 確保上一次 tick 的工作完成後才開始計時，避免重疊執行。
+- `PeriodicTimer` 以 `WaitForNextTickAsync` 逐次等待，迴圈內的工作完成後才等待下一次 tick，不會重疊執行；工作期間錯過的多次 tick 會合併為一次。
 - 優於 `Task.Delay`：語意更明確，且不會因工作耗時導致間隔漂移。
 - `System.Threading.Timer`、`System.Timers.Timer` 或其他 callback-based timer 若可能在前一次 callback 完成前再次觸發，必須改用 `PeriodicTimer`，或以該 timer 專用的 lock / semaphore 序列化 callback；不可只依賴 callback 順序。
 - Timer 必須由生命週期擁有者保存強參考，並在停止或 dispose 生命週期結束時釋放。只有短暫區域變數或弱參考時，GC 可能回收 Timer，導致排程停止。
@@ -222,19 +66,5 @@ builder.Services.AddHostedService<QueuedHostedService>();
 
 ## 禁止模式
 
-```csharp
-// ❌ 禁止：在 Controller 中 Task.Run 長期工作
-[HttpPost]
-public IActionResult StartWork() {
-    Task.Run(async () => await DoLongWorkAsync()); // Fire-and-forget，無法追蹤
-    return Accepted();
-}
-
-// ❌ 禁止：在 ExecuteAsync 中不處理例外
-protected override async Task ExecuteAsync(CancellationToken stoppingToken) {
-    while (!stoppingToken.IsCancellationRequested) {
-        await ProcessAsync(stoppingToken); // 未 try-catch，例外會終止 Host
-        await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
-    }
-}
-```
+- 禁止在 Controller 以 `Task.Run` 啟動長期工作。Fire-and-forget 的工作無法追蹤。
+- 禁止 `ExecuteAsync` 的迴圈不處理例外。未以 try-catch 包住的例外會終止 Host。

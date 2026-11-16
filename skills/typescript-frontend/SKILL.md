@@ -41,116 +41,28 @@ policy.allow_implicit_invocation: true
 
 ### 禁止 any（Crucial）
 
-```typescript
-// ❌ 禁止
-function process(data: any) { }
-const result: any = fetchData();
-
-// ✅ 替代方案
-function process(data: unknown) {
-  if (isOrder(data)) {
-    // 窄化後使用
-  }
-}
-
-// ✅ 泛型
-function process<T>(data: T): T { }
-```
-
 - `any` 完全繞過型別檢查，等同關閉 TypeScript。
 - 需要表達「任意型別」時使用 `unknown`，強制呼叫端做型別窄化。
 - 第三方套件缺少型別定義時，優先尋找 `@types/*` 套件；無法取得時，自行撰寫 `.d.ts` 宣告檔。
 
 ### 避免 as 斷言
 
-```typescript
-// ❌ 避免：型別斷言（跳過檢查）
-const order = response.data as Order;
-
-// ✅ 正確：使用 Type Guard 做執行期驗證
-function isOrder(data: unknown): data is Order {
-  return (
-    typeof data === 'object'
-    && data !== null
-    && 'id' in data
-    && 'customerName' in data
-  );
-}
-
-if (isOrder(response.data)) {
-  // data 在此處為 Order 型別
-}
-```
-
+- API 回應等外部資料以 Type Guard（`data is Order`）做執行期驗證後使用，避免以 `as` 斷言。
 - `as` 不做執行期檢查，API 回傳格式變更時不會報錯。
 - 允許使用 `as` 的情境：`as const`（常數斷言）、測試程式碼中已知結構的資料。
 
 ## 型別窄化（Type Narrowing）
 
-### 常用窄化技巧
-
-```typescript
-// typeof guard
-function formatValue(value: string | number): string {
-  if (typeof value === 'string') {
-    return value.toUpperCase();
-  }
-  return value.toFixed(2);
-}
-
-// in operator
-function getArea(shape: Circle | Rectangle): number {
-  if ('radius' in shape) {
-    return Math.PI * shape.radius ** 2;
-  }
-  return shape.width * shape.height;
-}
-
-// Discriminated Union（推薦）
-type ApiResult<T> =
-  | { success: true; data: T }
-  | { success: false; error: string };
-
-function handleResult(result: ApiResult<Order>) {
-  if (result.success) {
-    // result.data 可用
-    console.log(result.data.id);
-  } else {
-    // result.error 可用
-    console.error(result.error);
-  }
-}
-```
+- 依情境使用 `typeof`、`in` 運算子與 Discriminated Union 窄化型別。
 
 ### Discriminated Union 設計
 
 - API 回應、表單狀態、非同步操作等多態場景，優先使用 Discriminated Union。
-- 判別屬性（discriminant）使用字串字面量型別。
+- 判別屬性（discriminant）使用字串字面量型別（如 `status: 'success' | 'error'`）。
 
 ## 列舉替代方案
 
-```typescript
-// ❌ 避免 enum（產生額外的 JavaScript 程式碼）
-enum Status {
-  Pending,
-  Active,
-  Closed
-}
-
-// ✅ 使用 const 物件 + as const
-const Status = {
-  Pending: 'pending',
-  Active: 'active',
-  Closed: 'closed'
-} as const;
-
-type Status = typeof Status[keyof typeof Status];
-// => 'pending' | 'active' | 'closed'
-
-// ✅ 簡單場景直接用聯合型別
-type Status = 'pending' | 'active' | 'closed';
-```
-
+- 避免使用 `enum`。改用 `as const` 物件，並以 `typeof Status[keyof typeof Status]` 取得聯合型別；簡單場景直接用字串聯合型別（如 `'pending' | 'active' | 'closed'`）。
 - TypeScript `enum` 產生額外的 IIFE 程式碼，增加 bundle 大小。
 - 與後端 API 的溝通使用字串值，避免數字 enum 的脆弱性。
 
@@ -163,77 +75,28 @@ type Status = 'pending' | 'active' | 'closed';
 
 ## Utility Types 常用清單
 
-```typescript
-// 常見組合
-type CreateOrderInput = Omit<Order, 'id' | 'createdAt'>;
-type OrderUpdate = Partial<Pick<Order, 'customerName' | 'note'>>;
-```
+- 輸入型別由實體型別以 `Omit`、`Pick`、`Partial` 衍生（如 `Omit<Order, 'id' | 'createdAt'>`、`Partial<Pick<Order, 'customerName' | 'note'>>`）。
 
 ## 型別檔案組織
-
-```text
-src/types/
-├── order.ts        # 訂單相關型別
-├── customer.ts     # 客戶相關型別
-├── api.ts          # API 通用型別（Response wrapper、Pagination）
-└── index.ts        # 統一匯出
-```
 
 - 一個 domain 一個型別檔案，以 domain 名稱命名。
 - 匯出使用 `export type`（確保型別在編譯後被移除）。
 - **禁止**將所有型別放在一個巨大的 `types.ts` 中。
+- API 通用型別（分頁回應、ProblemDetails）放 `types/api.ts`；`index.ts` 統一匯出。
 
 ## 非同步型別安全
 
-```typescript
-// ✅ API 回應型別
-interface ApiResponse<T> {
-  data: T;
-  message: string;
-}
-
-interface PaginatedResponse<T> {
-  data: ReadonlyArray<T>;
-  total: number;
-  page: number;
-  pageSize: number;
-}
-
-// ✅ 非同步函式回傳型別明確標註
-async function fetchOrder(id: number): Promise<Order> {
-  const response = await api.get<ApiResponse<Order>>(`/orders/${id}`);
-  return response.data.data;
-}
-```
+- 非同步函式的回傳型別明確標註（如 `Promise<Order>`）。
+- 單一資源的 API 回應不包 wrapper，成功時的回應內容就是資源型別（如 `api.get<Order>`）；分頁清單使用 `PaginatedResponse<T>`；錯誤回應為 ProblemDetails。型別定義見 `openapi-client` skill「通用型別定義」。
 
 ## 與 Vue 3 整合
 
 ### Provide / Inject 型別安全
 
-```typescript
-// keys.ts
-import type { InjectionKey } from 'vue';
-import type { AuthService } from '@/services/auth';
-
-export const authServiceKey: InjectionKey<AuthService> = Symbol('authService');
-
-// 提供方
-provide(authServiceKey, authService);
-
-// 注入方
-const authService = inject(authServiceKey);
-if (!authService) {
-  throw new Error('AuthService 未提供');
-}
-```
+- 以 `InjectionKey<T>` 的 `Symbol` 作為 key，集中定義於 `keys.ts`。
+- `inject` 的結果可能為 `undefined`，使用前檢查，缺少時拋出錯誤。
 
 ### 事件型別
 
-```typescript
-// ✅ 原生事件型別
-function handleClick(event: MouseEvent) { }
-function handleInput(event: Event) {
-  const target = event.target as HTMLInputElement;
-  console.log(target.value);
-}
-```
+- 事件處理函式的參數標註原生事件型別（如 `MouseEvent`、`Event`）。
+- `event.target` 以 `instanceof`（如 `HTMLInputElement`）窄化後使用。

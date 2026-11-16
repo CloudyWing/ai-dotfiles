@@ -11,56 +11,11 @@ policy.allow_implicit_invocation: true
 
 ### 路由定義結構
 
-```typescript
-// router/index.ts
-import { createRouter, createWebHistory } from 'vue-router';
-import type { RouteRecordRaw } from 'vue-router';
-
-const routes: ReadonlyArray<RouteRecordRaw> = [
-  {
-    path: '/',
-    component: () => import('@/layouts/DefaultLayout.vue'),
-    children: [
-      {
-        path: '',
-        name: 'Home',
-        component: () => import('@/views/HomeView.vue')
-      },
-      {
-        path: 'orders',
-        name: 'OrderList',
-        component: () => import('@/views/orders/OrderListView.vue'),
-        meta: { requiresAuth: true }
-      },
-      {
-        path: 'orders/:id',
-        name: 'OrderDetail',
-        component: () => import('@/views/orders/OrderDetailView.vue'),
-        meta: { requiresAuth: true },
-        props: true
-      }
-    ]
-  },
-  {
-    path: '/login',
-    name: 'Login',
-    component: () => import('@/views/LoginView.vue'),
-    meta: { guestOnly: true }
-  },
-  {
-    path: '/:pathMatch(.*)*',
-    name: 'NotFound',
-    component: () => import('@/views/NotFoundView.vue')
-  }
-];
-
-const router = createRouter({
-  history: createWebHistory(import.meta.env.BASE_URL),
-  routes
-});
-
-export default router;
-```
+- 路由定義於 `router/index.ts`，路由陣列的型別標註為 `ReadonlyArray<RouteRecordRaw>`。
+- History 使用 `createWebHistory(import.meta.env.BASE_URL)`。
+- 帶參數的路由設定 `props: true`，由元件以 Props 接收參數。
+- 共用同一個 Layout 的頁面放在以該 Layout 為 `component` 的頂層路由 `children` 內，子路由的 `path` 不加開頭的 `/`；不使用該 Layout 的頁面（如 `Login`、`NotFound`）為與它並列的頂層路由。
+- 路由陣列最後定義 catch-all 路由 `/:pathMatch(.*)*`（`NotFound`）。
 
 ### 命名規範
 
@@ -81,104 +36,22 @@ export default router;
 
 ### 所有頁面元件必須動態載入
 
-```typescript
-// ✅ 正確：動態 import
-{
-  path: '/orders',
-  component: () => import('@/views/orders/OrderListView.vue')
-}
-
-// ❌ 錯誤：靜態 import（會全部打包進主 bundle）
-import OrderListView from '@/views/orders/OrderListView.vue';
-{
-  path: '/orders',
-  component: OrderListView
-}
-```
-
+- 頁面元件一律以 `component: () => import('...')` 動態載入，不使用靜態 import（會全部打包進主 bundle）。
 - 動態 import 搭配 Vite 自動實現 Code Splitting，每個路由產生獨立的 chunk。
 - Layout 元件若體積小且所有路由都使用，可選擇靜態 import。
 
 ## Navigation Guard
 
-### 全域 Guard
-
-```typescript
-// router/index.ts
-router.beforeEach(async (to, from) => {
-  const authStore = useAuthStore();
-
-  // 需要認證的路由
-  if (to.meta.requiresAuth && !authStore.isAuthenticated) {
-    return {
-      name: 'Login',
-      query: { redirect: to.fullPath }
-    };
-  }
-
-  // 僅限訪客（已登入不可進入）
-  if (to.meta.guestOnly && authStore.isAuthenticated) {
-    return { name: 'Home' };
-  }
-});
-```
-
-### 路由層級 Guard
-
-```typescript
-{
-  path: '/admin',
-  component: () => import('@/views/admin/AdminView.vue'),
-  beforeEnter: (to, from) => {
-    const authStore = useAuthStore();
-    if (!authStore.hasRole('admin')) {
-      return { name: 'Forbidden' };
-    }
-  }
-}
-```
-
-### 元件內 Guard
-
-```vue
-<script setup lang="ts">
-import { onBeforeRouteLeave } from 'vue-router';
-
-const hasUnsavedChanges = ref(false);
-
-onBeforeRouteLeave((to, from) => {
-  if (hasUnsavedChanges.value) {
-    const answer = window.confirm('尚有未儲存的變更，確定離開？');
-    if (!answer) {
-      return false;
-    }
-  }
-});
-</script>
-```
-
-### Guard 注意事項
-
+- 依範圍選用 Guard：全域 `beforeEach` 處理認證，路由層級 `beforeEnter` 處理角色檢查（不具角色時導向 `Forbidden`），元件內 `onBeforeRouteLeave` 處理未儲存變更的離開確認（使用者取消時回傳 `false`）。
+- 全域 `beforeEach`：`meta.requiresAuth` 且未登入時導向 `Login`，並以 `query.redirect` 帶上 `to.fullPath`；`meta.guestOnly` 且已登入時導向 `Home`。
+- Guard 優先以回傳值控制導航（回傳路由位置，或回傳 `false` 取消導航）。
 - Guard 中使用 Pinia Store 時，必須在 Guard 函式**內部**呼叫 `useXxxStore()`（而非模組頂層），確保 Pinia 已初始化。
 
 ## Route Meta 型別安全
 
 ### 擴充 RouteMeta 型別
 
-```typescript
-// router/types.ts
-export {};
-
-declare module 'vue-router' {
-  interface RouteMeta {
-    requiresAuth?: boolean;
-    guestOnly?: boolean;
-    roles?: ReadonlyArray<string>;
-    title?: string;
-  }
-}
-```
-
+- 以 `declare module 'vue-router'` 擴充 `RouteMeta`，欄位為 `requiresAuth`、`guestOnly`、`roles`（`ReadonlyArray<string>`）與 `title`，皆為選填。型別擴充檔為 `router/types.ts`，檔內需有 `export {}` 使其成為模組。
 - 將 Meta 型別定義放在獨立檔案中，並確保該檔案被 `tsconfig.json` 涵蓋。
 - 定義後，`to.meta.requiresAuth` 等存取具備型別檢查。
 
@@ -189,49 +62,8 @@ declare module 'vue-router' {
 
 ## 頁面標題
 
-```typescript
-router.afterEach((to) => {
-  const title = to.meta.title;
-  document.title = title ? `${title} | MyApp` : 'MyApp';
-});
-```
+- 在 `router.afterEach` 依 `to.meta.title` 設定 `document.title`，格式為 `<title> | <應用程式名稱>`；沒有 `title` 時只顯示應用程式名稱。
 
 ## 路由模組化
 
-大型專案可將路由定義拆分為多個模組：
-
-```typescript
-// router/modules/order.ts
-import type { RouteRecordRaw } from 'vue-router';
-
-export const orderRoutes: ReadonlyArray<RouteRecordRaw> = [
-  {
-    path: 'orders',
-    name: 'OrderList',
-    component: () => import('@/views/orders/OrderListView.vue'),
-    meta: { requiresAuth: true, title: '訂單列表' }
-  },
-  {
-    path: 'orders/:id',
-    name: 'OrderDetail',
-    component: () => import('@/views/orders/OrderDetailView.vue'),
-    meta: { requiresAuth: true, title: '訂單明細' },
-    props: true
-  }
-];
-
-// router/index.ts
-import { orderRoutes } from './modules/order';
-import { customerRoutes } from './modules/customer';
-
-const routes: ReadonlyArray<RouteRecordRaw> = [
-  {
-    path: '/',
-    component: () => import('@/layouts/DefaultLayout.vue'),
-    children: [
-      ...orderRoutes,
-      ...customerRoutes
-    ]
-  }
-];
-```
+大型專案可將路由定義拆到 `router/modules/<domain>.ts`，各模組匯出 `ReadonlyArray<RouteRecordRaw>`，由 `router/index.ts` 展開到對應 Layout 路由的 `children`。

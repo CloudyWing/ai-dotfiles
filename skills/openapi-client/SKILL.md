@@ -31,45 +31,9 @@ policy.allow_implicit_invocation: true
 
 ### 建立共用實例
 
-```typescript
-// lib/axios.ts
-import axios from 'axios';
-import type { AxiosInstance, InternalAxiosRequestConfig, AxiosResponse, AxiosError } from 'axios';
-
-const apiClient: AxiosInstance = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
-  timeout: 30000,
-  headers: {
-    'Content-Type': 'application/json'
-  }
-});
-
-// Request Interceptor
-apiClient.interceptors.request.use(
-  (config: InternalAxiosRequestConfig) => {
-    const token = localStorage.getItem('token');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error: AxiosError) => Promise.reject(error)
-);
-
-// Response Interceptor
-apiClient.interceptors.response.use(
-  (response: AxiosResponse) => response,
-  (error: AxiosError) => {
-    if (error.response?.status === 401) {
-      // Token 過期，導向登入頁
-      window.location.href = '/login';
-    }
-    return Promise.reject(error);
-  }
-);
-
-export default apiClient;
-```
+- 共用實例定義於 `lib/axios.ts` 並以 default export 匯出。`baseURL` 取 `import.meta.env.VITE_API_BASE_URL`，未設定時為 `/api`。
+- 明確設定 `timeout`（如 30 秒；Axios 預設不逾時），預設標頭 `Content-Type` 為 `application/json`。
+- Request Interceptor 在有 Token 時注入 `Authorization: Bearer <token>`；Response Interceptor 在 401 時以 `window.location.href = '/login'` 整頁導向登入頁，不在 `lib/axios.ts` 匯入 Router。兩者的錯誤處理都以 `Promise.reject(error)` 把錯誤交還呼叫端，不吞掉錯誤。
 
 ### Axios 規範
 
@@ -79,44 +43,10 @@ export default apiClient;
 
 ## API 模組設計
 
-### 按 Domain 組織
-
-```typescript
-// api/order.ts
-import apiClient from '@/lib/axios';
-import type { Order, CreateOrderInput, UpdateOrderInput } from '@/types/order';
-import type { PaginatedResponse } from '@/types/api';
-
-export const orderApi = {
-  async getAll(params?: { status?: string; page?: number }): Promise<PaginatedResponse<Order>> {
-    const response = await apiClient.get<PaginatedResponse<Order>>('/orders', { params });
-    return response.data;
-  },
-
-  async getById(id: number): Promise<Order> {
-    const response = await apiClient.get<Order>(`/orders/${id}`);
-    return response.data;
-  },
-
-  async create(input: CreateOrderInput): Promise<Order> {
-    const response = await apiClient.post<Order>('/orders', input);
-    return response.data;
-  },
-
-  async update(id: number, input: UpdateOrderInput): Promise<Order> {
-    const response = await apiClient.put<Order>(`/orders/${id}`, input);
-    return response.data;
-  },
-
-  async delete(id: number): Promise<void> {
-    await apiClient.delete(`/orders/${id}`);
-  }
-};
-```
-
 ### API 模組原則
 
 - 一個 Domain 一個檔案（`order.ts`、`customer.ts`）。
+- 模組匯出單一物件 `<domain>Api`（如 `orderApi`），方法命名為 `getAll`、`getById`、`create`、`update`、`delete`。`getAll` 的查詢條件以 `params` 傳遞並回傳 `PaginatedResponse<T>`，`delete` 回傳 `void`。
 - 每個方法都有明確的輸入與回傳型別。
 - 方法內部解包 `response.data`，呼叫端不需要處理 Axios 的 Response 結構。
 - **禁止**在 API 模組中直接操作 Store 或 Router（保持純粹的資料存取層）。
@@ -125,12 +55,6 @@ export const orderApi = {
 
 ```typescript
 // types/api.ts
-
-/** API 標準回應包裝 */
-interface ApiResponse<T> {
-  data: T;
-  message: string;
-}
 
 /** 分頁回應 */
 interface PaginatedResponse<T> {
@@ -153,59 +77,19 @@ interface ProblemDetails {
 ```
 
 - 這些型別直接對應後端的回應格式。若後端修改回應結構，此處同步更新。
+- 單一資源的回應不包 wrapper，成功時直接回傳資源；分頁清單使用 `PaginatedResponse<T>`；錯誤回應為 ProblemDetails。
 
 ## 錯誤處理（Crucial）
 
 ### API 錯誤型別
 
-```typescript
-// lib/apiError.ts
-import type { AxiosError } from 'axios';
-import type { ProblemDetails } from '@/types/api';
+錯誤判讀集中於 `lib/apiError.ts`，提供下列函式：
 
-export function isApiError(error: unknown): error is AxiosError<ProblemDetails> {
-  return axios.isAxiosError(error) && error.response?.data?.title !== undefined;
-}
+- `isApiError(error)`：Type Guard。`axios.isAxiosError(error)` 成立，且回應內容含 ProblemDetails 的 `title`。
+- `getErrorMessage(error)`：依序取 ProblemDetails 的 `detail`、`title`，再取 `Error.message`，皆無時回傳通用訊息。
+- `getValidationErrors(error)`：回應狀態為 400（ASP.NET Core 驗證失敗的預設狀態碼）且含 `errors` 時回傳 `Record<string, string[]>`，否則回傳空物件。
 
-export function getErrorMessage(error: unknown): string {
-  if (isApiError(error)) {
-    return error.response!.data.detail ?? error.response!.data.title;
-  }
-  if (error instanceof Error) {
-    return error.message;
-  }
-  return '發生未預期的錯誤';
-}
-
-export function getValidationErrors(error: unknown): Record<string, string[]> {
-  if (isApiError(error) && error.response?.status === 422) {
-    return error.response.data.errors ?? {};
-  }
-  return {};
-}
-```
-
-### 元件中的錯誤處理
-
-```vue
-<script setup lang="ts">
-import { getErrorMessage, getValidationErrors } from '@/lib/apiError';
-
-async function handleSubmit() {
-  try {
-    await orderStore.createOrder(formData.value);
-    router.push({ name: 'OrderList' });
-  } catch (error) {
-    const validationErrors = getValidationErrors(error);
-    if (Object.keys(validationErrors).length > 0) {
-      fieldErrors.value = validationErrors;
-    } else {
-      toast.error(getErrorMessage(error));
-    }
-  }
-}
-</script>
-```
+元件 `catch` 後先取 `getValidationErrors` 的結果顯示於表單欄位；沒有欄位錯誤時，以通知顯示 `getErrorMessage` 的訊息。
 
 ## 取消請求
 
@@ -218,12 +102,7 @@ async function handleSubmit() {
 
 ### 自動產生（推薦）
 
-```bash
-# 從後端 Swagger endpoint 產生型別
-npx openapi-typescript https://localhost:5001/swagger/v1/swagger.json -o src/types/generated/api.d.ts
-```
-
-- 將型別產生指令加入 `package.json` 的 scripts：`"api:types": "openapi-typescript ..."`。
+- 以 `npx openapi-typescript <swagger.json 位址> -o src/types/generated/api.d.ts` 從後端 Swagger endpoint 產生型別，並將指令加入 `package.json` 的 scripts（如 `api:types`）。
 - 產生的型別檔案納入版控，確保 CI 環境不需要啟動後端服務。
 - 手動撰寫的型別不混入產生的檔案中。
 

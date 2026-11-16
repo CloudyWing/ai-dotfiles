@@ -13,76 +13,17 @@ policy.allow_implicit_invocation: true
 
 所有新建的 Single File Component（SFC）**必須**使用 `<script setup>` 語法。禁止在新檔案中使用 Options API 或非 `<script setup>` 的 Composition API。
 
-```vue
-<!-- ✅ 正確 -->
-<script setup lang="ts">
-import { ref, computed } from 'vue';
-import type { Order } from '@/types/order';
-
-const props = defineProps<{
-  orderId: number;
-}>();
-
-const emit = defineEmits<{
-  update: [order: Order];
-  delete: [id: number];
-}>();
-
-const count = ref(0);
-const doubled = computed(() => count.value * 2);
-</script>
-
-<!-- ❌ 錯誤：Options API -->
-<script lang="ts">
-export default {
-  data() {
-    return { count: 0 };
-  }
-};
-</script>
-```
-
 - 遵循**專案既有慣例**：若整個專案仍在使用 Options API，新檔案可沿用，但不在同一元件中混用。
 
 ### defineProps & defineEmits
 
-- **必須**使用 TypeScript 型別宣告（Type-based）而非 Runtime 宣告。
+- **必須**使用 TypeScript 型別宣告（Type-based）而非 Runtime 宣告，`<script setup>` 加上 `lang="ts"`。
+- `defineEmits` 以具名 tuple 宣告事件參數（如 `update: [order: Order]`）；陣列型別的 Props 使用 `ReadonlyArray<T>`。
 - Props 預設值使用 `withDefaults`。
-
-```typescript
-// ✅ 正確：Type-based
-const props = defineProps<{
-  title: string;
-  count?: number;
-  items: ReadonlyArray<Item>;
-}>();
-
-// ✅ 帶預設值
-const props = withDefaults(defineProps<{
-  title: string;
-  count?: number;
-}>(), {
-  count: 0
-});
-
-// ❌ 錯誤：Runtime 宣告
-const props = defineProps({
-  title: { type: String, required: true },
-  count: { type: Number, default: 0 }
-});
-```
 
 ### defineModel（Vue 3.4+）
 
 雙向繫結使用 `defineModel` 取代手動的 `props` + `emit` 組合。
-
-```vue
-<script setup lang="ts">
-// ✅ 簡潔的 v-model 支援
-const modelValue = defineModel<string>({ required: true });
-const title = defineModel<string>('title');
-</script>
-```
 
 ## 元件設計原則
 
@@ -106,29 +47,9 @@ const title = defineModel<string>('title');
 
 ### SFC 區塊排序
 
-```vue
-<script setup lang="ts">
-// 1. imports
-// 2. props & emits
-// 3. composables
-// 4. reactive state
-// 5. computed
-// 6. watchers
-// 7. methods
-// 8. lifecycle hooks
-</script>
-
-<template>
-  <!-- HTML -->
-</template>
-
-<style scoped>
-/* CSS */
-</style>
-```
-
 - 區塊順序固定為 `script` → `template` → `style`。
 - `<style>` **必須**加上 `scoped`，除非有明確需要全域樣式的理由。
+- `<script setup>` 內依序排列 imports、props 與 emits、composables、響應式狀態、computed、watchers、methods、lifecycle hooks。
 
 ## Composable 設計
 
@@ -162,13 +83,8 @@ const title = defineModel<string>('title');
 
 ### v-for 必須搭配 key
 
-```vue
-<!-- ✅ 正確：唯一且穩定的 key -->
-<li v-for="order in orders" :key="order.id">{{ order.name }}</li>
-
-<!-- ❌ 錯誤：使用 index 作為 key（元素新增/刪除時會錯亂） -->
-<li v-for="(order, index) in orders" :key="index">{{ order.name }}</li>
-```
+- `key` 使用唯一且穩定的值（如 `order.id`）。
+- 不使用 index 作為 `key`，元素新增或刪除時會錯亂。
 
 ### v-if vs v-show
 
@@ -184,30 +100,7 @@ const title = defineModel<string>('title');
 
 ### 基本設定
 
-```typescript
-// vite.config.ts
-import { defineConfig } from 'vite';
-import vue from '@vitejs/plugin-vue';
-import { fileURLToPath, URL } from 'node:url';
-
-export default defineConfig({
-  plugins: [vue()],
-  resolve: {
-    alias: {
-      '@': fileURLToPath(new URL('./src', import.meta.url))
-    }
-  },
-  server: {
-    proxy: {
-      '/api': {
-        target: 'https://localhost:5001',
-        changeOrigin: true,
-        secure: false
-      }
-    }
-  }
-});
-```
+- 開發伺服器以 `server.proxy` 將 `/api` 轉發到後端（`changeOrigin: true`；後端使用自簽憑證時 `secure: false`）。
 
 ### 路徑別名
 
@@ -221,21 +114,7 @@ export default defineConfig({
 
 ### Build 最佳化
 
-```typescript
-export default defineConfig({
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          vendor: ['vue', 'vue-router', 'pinia']
-        }
-      }
-    }
-  }
-});
-```
-
-- 第三方套件拆為獨立 chunk（`vendor`），利用瀏覽器快取。
+- 第三方套件以 `build.rollupOptions.output.manualChunks` 拆為獨立 chunk（`vendor`，如 `vue`、`vue-router`、`pinia`），利用瀏覽器快取。
 
 ## 目錄結構
 

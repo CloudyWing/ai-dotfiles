@@ -13,31 +13,6 @@ policy.allow_implicit_invocation: true
 - **禁止**在 Hub 中儲存狀態（instance field）。跨呼叫的狀態必須使用外部儲存（如 Redis、資料庫或 `IMemoryCache`）。
 - Hub 可透過建構函式注入 Scoped 與 Transient 服務。注入 Singleton 服務時需注意執行緒安全。
 
-```csharp
-// ❌ 錯誤：在 Hub 中儲存狀態
-public class ChatHub : Hub {
-    private readonly List<string> messages = []; // 每次呼叫都是新實例，此欄位無用
-
-    public async Task SendMessage(string message) {
-        messages.Add(message); // 永遠只有一筆
-    }
-}
-
-// ✅ 正確：使用外部服務管理狀態
-public class ChatHub : Hub {
-    private readonly IChatService chatService;
-
-    public ChatHub(IChatService chatService) {
-        this.chatService = chatService;
-    }
-
-    public async Task SendMessage(string message) {
-        await chatService.SaveMessageAsync(message).ConfigureAwait(false);
-        await Clients.All.SendAsync("ReceiveMessage", message).ConfigureAwait(false);
-    }
-}
-```
-
 ## Hub 設計原則
 
 ### 方法命名
@@ -48,29 +23,7 @@ public class ChatHub : Hub {
 
 ### 強型別 Hub（推薦）
 
-使用介面定義用戶端方法，獲得編譯時期型別檢查。
-
-```csharp
-public interface IChatClient {
-    Task ReceiveMessage(string user, string message);
-    Task UserJoined(string user);
-    Task UserLeft(string user);
-}
-
-public class ChatHub : Hub<IChatClient> {
-    private readonly IChatService chatService;
-
-    public ChatHub(IChatService chatService) {
-        this.chatService = chatService;
-    }
-
-    public async Task SendMessage(string message) {
-        string user = Context.User?.Identity?.Name ?? "匿名";
-        await chatService.SaveMessageAsync(user, message).ConfigureAwait(false);
-        await Clients.All.ReceiveMessage(user, message).ConfigureAwait(false);
-    }
-}
-```
+使用介面定義用戶端方法（如 `IChatClient`），Hub 繼承 `Hub<IChatClient>`，獲得編譯時期型別檢查。
 
 ## 群組管理
 
@@ -78,23 +31,7 @@ public class ChatHub : Hub<IChatClient> {
 
 ## 認證與授權
 
-- JWT 認證時，Token 透過 Query String 傳遞（WebSocket 不支援自訂 Header）：
-
-```csharp
-builder.Services.AddAuthentication().AddJwtBearer(options => {
-    options.Events = new JwtBearerEvents {
-        OnMessageReceived = context => {
-            string? accessToken = context.Request.Query["access_token"];
-            PathString path = context.HttpContext.Request.Path;
-            if (!string.IsNullOrEmpty(accessToken) && path.StartsWithSegments("/hubs")) {
-                context.Token = accessToken;
-            }
-
-            return Task.CompletedTask;
-        }
-    };
-});
-```
+- JWT 認證時，Token 透過 Query String 傳遞（WebSocket 不支援自訂 Header）。在 `JwtBearerEvents.OnMessageReceived` 讀取 Query String 的 `access_token`，僅在 Token 有值且 `context.HttpContext.Request.Path.StartsWithSegments("/hubs")` 成立時設為 `context.Token`。路徑以 `StartsWithSegments` 依路徑段比對，不以字串前綴比對，`/hubs-admin` 這類路徑不得接受 Query String Token。
 
 ## 錯誤處理
 
@@ -103,17 +40,9 @@ builder.Services.AddAuthentication().AddJwtBearer(options => {
 
 ## 設定與註冊
 
-```csharp
-// Program.cs
-builder.Services.AddSignalR(options => {
-    options.MaximumReceiveMessageSize = 64 * 1024; // 64 KB
-    options.KeepAliveInterval = TimeSpan.FromSeconds(15);
-    options.ClientTimeoutInterval = TimeSpan.FromSeconds(30);
-    options.EnableDetailedErrors = builder.Environment.IsDevelopment();
-});
-
-app.MapHub<ChatHub>("/hubs/chat");
-```
+- Hub 路由掛在 `/hubs/` 之下（如 `/hubs/chat`），與 JWT 的路徑判斷一致。
+- `EnableDetailedErrors` 只在開發環境啟用（`builder.Environment.IsDevelopment()`）。
+- 訊息大小上限與逾時（`MaximumReceiveMessageSize`、`KeepAliveInterval`、`ClientTimeoutInterval`）依需求在 `AddSignalR` 明確設定。
 
 ## Scale-Out
 
@@ -121,12 +50,7 @@ app.MapHub<ChatHub>("/hubs/chat");
 
 ### Redis Backplane
 
-```csharp
-builder.Services.AddSignalR()
-    .AddStackExchangeRedis(connectionString, options => {
-        options.Configuration.ChannelPrefix = RedisChannel.Literal("MyApp");
-    });
-```
+- 以 `AddStackExchangeRedis` 設定，並以 `options.Configuration.ChannelPrefix`（`RedisChannel.Literal("<應用程式名稱>")`）區隔共用同一個 Redis 的應用程式。
 
 ### 選型原則
 
