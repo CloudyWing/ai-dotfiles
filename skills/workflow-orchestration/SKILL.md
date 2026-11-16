@@ -86,7 +86,7 @@ Codex 離線、選派入口以 `degraded` 回傳 Sonnet subagent 時，依下列
 
 1. 建立派遣單八欄，寫入 `handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，第 7 欄報告落點依 `reviewer.toml`。第 4 欄含循環標示行，格式見 `references/review-procedures.md`「循環標示與第 2 輪以上的 Reviewer 派遣單」。
 2. 以 Agent 工具派生冷啟動 subagent，`subagent_type` 為 `general-purpose`，`model` 為 `sonnet`，規則來源為 `~/.ai-agents/agents/codex/reviewer.toml`，prompt 帶 `LineContext`、派遣單路徑與循環標示。審查輪次與範圍依 `reviewer.toml`「審查輪次與範圍」，第 1 輪完整度與第 2 輪以上的審查範圍同樣適用於 Sonnet 審查者。
-3. 審查者將報告寫入派遣單第 7 欄指定的路徑，預設為 `report/<lineSlug>/review-report-claude.md`，報告首行標註「同家族審查」，不寫 `review-report.md`。主 Agent 追加 exceptions「替代方案」，並把報告 `## 例外回報` 節的條目併入同線 `exceptions.md`。
+3. 審查者將報告寫入派遣單第 7 欄指定的路徑，預設為 `report/<lineSlug>/review-report-claude.md`，報告首行標註「同家族審查」，不寫 `review-report.md`。主 Agent 把報告 `## 例外回報` 節的條目併入同線 `exceptions.md`；改由同家族執行者審查本身不另記 exceptions。
 4. 報告完成後以 `pwsh -NoProfile -File scripts/Test-CodexReviewReport.ps1 -ReportPath <報告路徑>` 自驗 manifest，`valid` 為 `true` 後主 Agent 依回收三態判定。此路徑沒有執行紀錄與自動追加的成本列，協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，`cycle_role` 為 `review`，欄位見 `session-artifacts` skill「需求級成本累計」。
 5. 同線同時只發一位審查者，由主 Agent 自律。
 

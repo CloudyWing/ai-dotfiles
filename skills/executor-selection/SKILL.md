@@ -88,7 +88,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 | 狀態 | 結束碼 | 主 Agent 處置 |
 | --- | --- | --- |
 | `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch`，依 `executor.entry` 讀取對應流程（`scripts/Invoke-CodexRun.ps1` 且角色為 `Reviewer` 時讀 `references/run.md` 並以派遣檔發動，不使用 `New-DispatchInputs.ps1`；其餘讀 `references/start.md`），`profile` 取自 `executor.profile` |
-| `degraded` | 0 | 同 `selected`；另追加 exceptions「替代方案」，審查報告或第二意見報告首行標註「同家族審查」。`advise` 降級時由 Sonnet 以一般第二意見承接，不需 `[advisor 諮詢授權]` |
+| `degraded` | 0 | 同 `selected`。這個狀態表示該類型的優先條件（家族）未能滿足，屬選派的正常結果，不追加 exceptions；審查報告或第二意見報告首行標註「同家族審查」。`advise` 降級時由 Sonnet 以一般第二意見承接，不需 `[advisor 諮詢授權]` |
 | `escalation-candidate` | 10 | 停止後續實作，整理升級交接單，請使用者拍板 |
 | `needs-authorization` | 20 | 輸出 `rules/claude/30-dispatch.md` 規定的 `[advisor 諮詢授權]` 請求，等待使用者當輪回覆 |
 | `wait-reset` | 21 | 回報使用者並等待額度重設，不改派 |
@@ -122,7 +122,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 - 寫入 prompt 的內容含 `LineContext`、呼叫端 skill 規定的驗證步驟與命令、目標端點或檔案的絕對路徑、預期結果，以及輸出落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/test-<slug>.md`。
 - 要求逐條回報命令原文、完整 stdout、完整 stderr、exit code 與執行時間，不只回報結論。
 - 限制取證者不修改專案原始檔，不執行 git 寫入命令；需要啟動的背景進程在回報前關閉，刻意保留者附 port 或 PID。
-- 保留判讀與修正迴圈決策在主 Agent，回收時依回收三態判定。追加 exceptions「替代方案」，記錄原應由 Codex `scan` 承接。
+- 保留判讀與修正迴圈決策在主 Agent，回收時依回收三態判定。不追加 exceptions，在回報中註明原應由 Codex `scan` 承接。
 
 ## 失敗升級與交接單
 

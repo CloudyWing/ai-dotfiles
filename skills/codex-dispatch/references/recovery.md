@@ -31,7 +31,7 @@
 - 判定證據：Dispatch 回報的 `CodexAccountsAllUnavailable` 與摘要檔 `history/<lineSlug>/dispatch-account-failover-<dispatchSlug>.json`（候選、略過原因與每次嘗試的拒絕種類），不採用各帳號最近一次派遣事件流。
 - 規則來源：承接者以該工作原本的規則檔為規則來源（`reviewer.toml`、`frontend-reviewer.toml`、`contract-auditor.toml` 等），由選派入口回傳的執行者承接。
 - 產出落點：降級審查依 `workflow-orchestration` skill「Sonnet 審查路徑」寫入 `review-report-claude.md`；事實查核改由 Sonnet 承接時沿用原派遣單第 7 欄的報告落點，不經 `codex-dispatch` 腳本。顧問降級為 Sonnet 第二意見時，以 evidence pack 的問題與證據檔絕對路徑派生冷啟動 subagent，報告首行標註「同家族審查」；測試取證改由 Sonnet 承接時依 `executor-selection` skill「Claude 測試取證者派生契約」。
-- exceptions 依據：「替代方案」的依據欄含原方案失敗原因與摘要檔的絕對路徑。
+- 紀錄：改由其他執行者承接不追加 exceptions；在報告或回報中註明實際執行者、原應承接者與摘要檔的絕對路徑。
 - 停止：選派入口回傳 `stopped`（影像產生，或帶瀏覽器、桌面標籤的測試，沒有替代者）時，不改派，回報使用者。自訂登錄表把離線處置設為 `wait-reset` 時同樣不改派。
 - 恢復：帳號恢復後新派遣照常使用 Codex，不回頭重做已承接的工作。
 
