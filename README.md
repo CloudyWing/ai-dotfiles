@@ -320,7 +320,7 @@ git config core.hooksPath .githooks
 Skill 分為兩種類型：
 
 - **知識型**：Claude 依上下文自動載入並套用（如編碼規範、LINQ 查詢規則）。
-- **指令型**：須使用者以 `/skill-name` 明確觸發（如 `/generate-changelog-zh-tw`、`/generate-unit-test`）。
+- **指令型**：須使用者以 `/skill-name` 明確觸發（如 `/generate-changelog-zh-tw`、`/generate-api-doc`）。
 
 ---
 

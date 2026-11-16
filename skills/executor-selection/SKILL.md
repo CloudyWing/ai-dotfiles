@@ -161,7 +161,6 @@ frontmatter 宣告 `dispatch: delegate` 的 skill 不由主 Agent 自理，改�
 
 | Skill | 標註 | 預期執行者 |
 | --- | --- | --- |
-| `generate-unit-test` | `-Type edit -E false -T true -Tags build-test` | Sonnet |
 | `export-excel` | `-Type edit -E false -T false` | Sonnet |
 | `generate-api-doc` | `-Type edit -E <依控制器與方法是否已逐一列出> -T false -Tags build-test` | E 為真時 Haiku，否則 Sonnet |
 | `uiux-baseline` | `-Type survey` | Sonnet |
