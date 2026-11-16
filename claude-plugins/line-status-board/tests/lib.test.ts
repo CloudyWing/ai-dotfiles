@@ -350,11 +350,11 @@ test('P5 phase 1 remaining tone and detail boundaries', () => {
 test('P5 phase 1 remaining labels and icon contract', () => {
   for (const value of ['developer-collected', 'developer-collected (partial)', '`developer-collected`（前一版為 `design-accepted`）']) expect(checkpointLabel(value)).toBe('Dev 回收')
   expect(checkpointLabel('結案')).toBe('結案')
-  for (const id of ['sessions', 'quota', 'lines', 'workRoots'] as const) {
+  for (const id of ['sessions', 'dispatch', 'quota', 'lines', 'workRoots'] as const) {
     const svg = iconSvg(id)
     for (const fragment of ['xmlns=', 'width="14"', 'height="14"', 'viewBox="0 0 14 14"', 'fill="none"', '</svg>']) expect(svg.includes(fragment)).toBe(true)
   }
-  expect(Object.values(ICON_ALT)).toEqual(['Session 圖示', 'Codex 額度圖示', '工作線圖示', '工作目錄圖示'])
+  expect(Object.values(ICON_ALT)).toEqual(['Session 圖示', '派工圖示', 'Codex 額度圖示', '工作線圖示', '工作目錄圖示'])
   expect(DIVIDER_SVG.includes('preserveAspectRatio="none"')).toBe(true)
   expect((DIVIDER_SVG.match(/<rect/g) || []).length).toBe(1)
 })
@@ -406,12 +406,14 @@ test('P5-h1 h2 block counts and ordering', () => {
   expect(countText('quota', 4, 32)).toBe('顯示 4 個帳號，共 32 個帳號')
   expect(countText('lines', 4, 32)).toBe('顯示 4 條，共 32 條')
   expect(countText('workRoots', 4, 32)).toBe('顯示 4 個，共 32 個')
+  expect(countText('dispatch', 4, 32)).toBe('顯示 4 筆，共 32 筆')
   expect(blockCounts(block, false)).toEqual({ shown: 2, total: 3 })
   expect(blockTitleText('lines', block, false, false)).toBe('工作線 顯示 2 條，共 3 條 ▾')
   expect(blockTitleText('lines', block, true, false)).toBe('工作線 顯示 2 條，共 3 條 ▸')
   expect(blockTitleText('lines', undefined, false, false)).toBe('工作線 ▾')
-  expect(BLOCK_ORDER).toEqual(['sessions', 'quota', 'lines', 'workRoots'])
-  expect(BLOCK_IDS).toEqual(['sessions', 'lines', 'workRoots', 'quota'])
+  expect(BLOCK_ORDER).toEqual(['sessions', 'dispatch', 'quota', 'lines', 'workRoots'])
+  expect(BLOCK_IDS).toEqual(['sessions', 'dispatch', 'lines', 'workRoots', 'quota'])
+  expect(BLOCK_TITLES.dispatch).toBe('派工')
   expect(BLOCK_TITLES.quota).toBe('Codex 額度')
   expect(BLOCK_TITLES.lines).toBe('工作線')
   expect(BLOCK_TITLES.workRoots).toBe('工作目錄')

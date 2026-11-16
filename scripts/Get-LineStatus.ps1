@@ -10,8 +10,12 @@ report\<lineSlug>\handoff-checkpoint.md 的檢查點類型與下一站，加上�
 分支、未 commit 檔案數、相對主分支與 upstream 的 ahead/behind，以及 machine.json
 codex_accounts 各帳號的額度摘要。
 
+另彙整 Invoke-CodexRun.ps1 在各 work-root 的 report\<lineSlug>\runs\ 寫出的執行紀錄：
+執行中、已超過時限（最後活動在 24 小時內）與最近結束的派工，以及各登記帳號最近一次的結果與
+codex-account-health.json 中未過期的不支援 model 項目。
+
 腳本不寫入任何檔案。Git 以 --no-optional-locks 執行，避免 status 更新 index。
-不讀取派工的 RunRecord、dispatch result 與 scope-plan 檔。
+執行紀錄只讀 *.record.json 與同名 events.jsonl 的最後寫入時間，不讀事件內容與報告。
 
 .PARAMETER WorkRoot
 要掃描的 work-root 清單，可含萬用字元或以分號分隔。預設包含 .ai-agents、.ai-agents.wt 與 Desktop worktree 目錄。
@@ -64,6 +68,10 @@ if ($WorkRoot.Count -eq 0) {
     )
 }
 $script:Warnings = New-Object 'System.Collections.Generic.List[string]'
+# 仍無結果且最後活動已超過 24 小時的派工不再列出，與新入口記錄帳號不支援 model 的保留時間相同。
+$script:AbandonAfterSeconds = 24 * 60 * 60
+# 紀錄自帶時限時，近期事件門檻的下限，與新入口 Invoke-CodexRunMain 預設的回合結束寬限相同。
+$script:MinSilenceSeconds = 60
 
 function Invoke-ExternalCommand {
     param(
@@ -650,6 +658,440 @@ function Format-Cell {
     return $text
 }
 
+function Get-ObjectValue {
+    param(
+        [AllowNull()]
+        [object]$Object,
+
+        [Parameter(Mandatory)]
+        [string]$Name
+    )
+
+    if ($Object -isnot [pscustomobject]) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+
+    return $property.Value
+}
+
+function ConvertTo-UtcDateTime {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) { return $null }
+    if ($Value -is [DateTime]) { return ([DateTime]$Value).ToUniversalTime() }
+    if ($Value -is [DateTimeOffset]) { return ([DateTimeOffset]$Value).UtcDateTime }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+    $parsed = [DateTimeOffset]::MinValue
+    $styles = [System.Globalization.DateTimeStyles]::AssumeUniversal
+    if ([DateTimeOffset]::TryParse($text, [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$parsed)) {
+        return $parsed.UtcDateTime
+    }
+
+    return $null
+}
+
+function ConvertTo-IsoUtcText {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value) { return $null }
+
+    return ([DateTime]$Value).ToString('yyyy-MM-ddTHH:mm:ssZ', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
+function ConvertTo-TextOrNull {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    if ($null -eq $Value -or $Value -is [pscustomobject] -or $Value -is [array]) { return $null }
+    $text = [string]$Value
+    if ([string]::IsNullOrWhiteSpace($text)) { return $null }
+
+    return $text
+}
+
+function Get-DispatchLimit {
+    param(
+        [Parameter(Mandatory)]
+        [string]$RunScriptPath
+    )
+
+    # 逾時與回合結束寬限取自新入口 Invoke-CodexRunMain 的參數預設值，讀不到時為 $null。
+    $limit = [ordered]@{
+        TimeoutSeconds      = $null
+        TurnEndGraceSeconds = $null
+    }
+    try {
+        if (Test-Path -LiteralPath $RunScriptPath -PathType Leaf) {
+            $tokens = $null
+            $parseErrors = $null
+            $ast = [System.Management.Automation.Language.Parser]::ParseFile($RunScriptPath, [ref]$tokens, [ref]$parseErrors)
+            $function = $ast.Find({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-CodexRunMain'
+                }, $true)
+            if ($null -ne $function -and $null -ne $function.Body.ParamBlock) {
+                foreach ($parameter in $function.Body.ParamBlock.Parameters) {
+                    $name = $parameter.Name.VariablePath.UserPath
+                    $default = $parameter.DefaultValue
+                    if ($limit.Contains($name) -and $default -is [System.Management.Automation.Language.ConstantExpressionAst] -and $default.Value -is [int] -and $default.Value -gt 0) {
+                        $limit[$name] = [int]$default.Value
+                    }
+                }
+            }
+        }
+    }
+    catch {
+        $limit.TimeoutSeconds = $null
+        $limit.TurnEndGraceSeconds = $null
+    }
+
+    return [pscustomobject]$limit
+}
+
+function ConvertTo-NumberOrNull {
+    param(
+        [AllowNull()]
+        [object]$Value
+    )
+
+    # 只接受 JSON 數值；字串、布林、日期、物件與無法轉成有限 double 的值都視為沒有該欄位。
+    if ($null -eq $Value -or $Value -is [bool]) { return $null }
+    $isNumber = $Value -is [int] -or $Value -is [long] -or $Value -is [double] -or $Value -is [decimal] -or $Value -is [single] -or
+        $Value -is [int16] -or $Value -is [byte] -or $Value -is [System.Numerics.BigInteger]
+    if (-not $isNumber) { return $null }
+    try {
+        $number = [double]$Value
+    }
+    catch {
+        return $null
+    }
+    if ([double]::IsNaN($number) -or [double]::IsInfinity($number)) { return $null }
+
+    return $number
+}
+
+function ConvertTo-CountOrNull {
+    param(
+        [AllowNull()]
+        [object]$Value,
+
+        [int]$Minimum = 0
+    )
+
+    $number = ConvertTo-NumberOrNull -Value $Value
+    if ($null -eq $number -or $number -lt $Minimum -or $number -gt [int]::MaxValue -or [math]::Floor($number) -ne $number) { return $null }
+
+    return [int]$number
+}
+
+function Get-DispatchRunRecord {
+    param(
+        [Parameter(Mandatory)]
+        [System.IO.FileInfo]$RecordFile,
+
+        [Parameter(Mandatory)]
+        [string]$Root,
+
+        [Parameter(Mandatory)]
+        [DateTime]$NowUtc,
+
+        [Parameter(Mandatory)]
+        [object]$Limit,
+
+        [Nullable[DateTime]]$LastEventUtc
+    )
+
+    # 位置一律取自紀錄檔所在目錄；紀錄內的路徑欄位在檔案搬移後會失效，不使用。
+    $suffix = '.record.json'
+    $baseName = $RecordFile.Name.Substring(0, $RecordFile.Name.Length - $suffix.Length)
+    $run = [ordered]@{
+        RunKey            = $baseName
+        LineSlug          = $RecordFile.Directory.Parent.Name
+        DispatchSlug      = $null
+        TaskType          = $null
+        Profile           = $null
+        Account           = $null
+        Model             = $null
+        WorkRoot          = $Root
+        State             = 'invalid'
+        LimitSource       = $null
+        StartedUtc        = $null
+        EndedUtc          = $null
+        DurationSeconds   = $null
+        LastEventUtc      = ConvertTo-IsoUtcText -Value $LastEventUtc
+        RecordUpdatedUtc  = ConvertTo-IsoUtcText -Value $RecordFile.LastWriteTimeUtc
+        Result            = $null
+        FailureReason     = $null
+        RejectionKind     = $null
+        TerminatedByEntry = $null
+        ItemEventCount    = $null
+        ReportExists      = $null
+        ReviewReportValid = $null
+        Error             = $null
+    }
+
+    try {
+        $record = Get-Content -LiteralPath $RecordFile.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($record -isnot [pscustomobject]) { throw '內容不是物件' }
+
+        $runKey = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'run_key')
+        if ($null -ne $runKey) { $run.RunKey = $runKey }
+        $lineSlug = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'line_slug')
+        if ($null -ne $lineSlug) { $run.LineSlug = $lineSlug }
+        $run.DispatchSlug = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'dispatch_slug')
+        $run.TaskType = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'task_type')
+        $run.Profile = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'profile')
+        $run.Account = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object (Get-ObjectValue -Object $record -Name 'account') -Name 'name')
+        $run.Model = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'model')
+        $run.Result = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'result')
+        $run.FailureReason = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'failure_reason')
+        $run.RejectionKind = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'rejection_kind')
+        $run.TerminatedByEntry = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'terminated_by_entry')
+
+        # 單一欄位型別或數值不符時只略過該欄位，不讓整筆紀錄作廢。
+        $run.ItemEventCount = ConvertTo-CountOrNull -Value (Get-ObjectValue -Object $record -Name 'item_event_count')
+        $duration = ConvertTo-NumberOrNull -Value (Get-ObjectValue -Object $record -Name 'duration_seconds')
+        if ($null -ne $duration -and $duration -ge 0) { $run.DurationSeconds = [math]::Round($duration, 1) }
+        $reportExists = Get-ObjectValue -Object (Get-ObjectValue -Object $record -Name 'report') -Name 'exists'
+        if ($reportExists -is [bool]) { $run.ReportExists = $reportExists }
+        $reviewValid = Get-ObjectValue -Object (Get-ObjectValue -Object $record -Name 'review_report_check') -Name 'valid'
+        if ($reviewValid -is [bool]) { $run.ReviewReportValid = $reviewValid }
+
+        $started = ConvertTo-UtcDateTime -Value (Get-ObjectValue -Object $record -Name 'started_utc')
+        if ($null -eq $started) { throw '缺少 started_utc' }
+        $run.StartedUtc = ConvertTo-IsoUtcText -Value $started
+        $run.EndedUtc = ConvertTo-IsoUtcText -Value (ConvertTo-UtcDateTime -Value (Get-ObjectValue -Object $record -Name 'ended_utc'))
+
+        if ($null -ne $run.Result) {
+            $run.State = 'ended'
+        }
+        else {
+            # 紀錄帶有該次實際套用的時限時優先採用，只帶其中一欄時另一欄取入口預設值；兩者都沒有時以入口預設值為輔，並以距最後事件的時間為主。
+            $recordTimeout = ConvertTo-CountOrNull -Value (Get-ObjectValue -Object $record -Name 'timeout_seconds') -Minimum 1
+            $recordGrace = ConvertTo-CountOrNull -Value (Get-ObjectValue -Object $record -Name 'turn_end_grace_seconds') -Minimum 0
+            $limitSeconds = $null
+            $silenceSeconds = $null
+            if ($null -ne $recordTimeout -or $null -ne $recordGrace) {
+                $timeout = if ($null -ne $recordTimeout) { $recordTimeout } else { $Limit.TimeoutSeconds }
+                $grace = if ($null -ne $recordGrace) { $recordGrace } elseif ($null -ne $Limit.TurnEndGraceSeconds) { $Limit.TurnEndGraceSeconds } else { 0 }
+                if ($null -ne $timeout) {
+                    $run.LimitSource = 'record'
+                    $limitSeconds = $timeout + $grace
+                    # 入口在總時限後還要終止行程並寫入結果，近期事件的門檻不低於入口預設的回合結束寬限。
+                    $silenceSeconds = [math]::Max($grace, $script:MinSilenceSeconds)
+                }
+            }
+            if ($null -eq $limitSeconds -and $null -ne $Limit.TimeoutSeconds -and $null -ne $Limit.TurnEndGraceSeconds) {
+                $run.LimitSource = 'default'
+                $limitSeconds = $Limit.TimeoutSeconds + $Limit.TurnEndGraceSeconds
+                $silenceSeconds = $limitSeconds
+            }
+
+            $run.State = 'running'
+            $lastActivity = if ($null -ne $LastEventUtc -and $LastEventUtc -gt $started) { [DateTime]$LastEventUtc } else { $started }
+            $sinceActivity = ($NowUtc - $lastActivity).TotalSeconds
+            if ($sinceActivity -gt $script:AbandonAfterSeconds) {
+                # 不論時限是否已知，最後活動超過 24 小時且仍無結果的紀錄不再列出。
+                $run.State = 'abandoned'
+            }
+            elseif ($null -ne $limitSeconds -and ($NowUtc - $started).TotalSeconds -gt $limitSeconds -and $sinceActivity -gt $silenceSeconds) {
+                $run.State = 'overdue'
+            }
+        }
+    }
+    catch {
+        $run.State = 'invalid'
+        $run.Error = ('執行紀錄無法讀取：{0}' -f (($_.Exception.Message -split "`r?`n", 2)[0]))
+    }
+
+    return [pscustomobject]$run
+}
+
+function Get-AccountHealthEntryList {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [Parameter(Mandatory)]
+        [DateTime]$NowUtc
+    )
+
+    # 只回傳未過期且欄位齊全的項目；檔案不存在時為空集合，無法解析時擲出例外由呼叫端轉成警告。
+    $entries = New-Object -TypeName System.Collections.Generic.List[object]
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return @() }
+
+    $document = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+    if ([string](Get-ObjectValue -Object $document -Name 'schema') -cne 'ai-agents.codex-account-health.v1') {
+        throw 'schema 不符'
+    }
+    foreach ($entry in @(Get-ObjectValue -Object $document -Name 'entries')) {
+        $accountName = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $entry -Name 'account_name')
+        $expires = ConvertTo-UtcDateTime -Value (Get-ObjectValue -Object $entry -Name 'expires_at_utc')
+        if ($null -eq $accountName -or $null -eq $expires -or $expires -le $NowUtc) { continue }
+        $entries.Add([pscustomobject]@{
+                Account      = $accountName
+                Profile      = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $entry -Name 'profile')
+                Model        = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $entry -Name 'model')
+                ReasonCode   = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $entry -Name 'reason_code')
+                ExpiresAtUtc = ConvertTo-IsoUtcText -Value $expires
+            })
+    }
+
+    return $entries.ToArray()
+}
+
+function Get-DispatchRunRank {
+    param(
+        [Parameter(Mandatory)]
+        [object]$Run
+    )
+
+    # 同名紀錄出現在多個 root 時的取捨：已結束優先，其次執行中與超過時限，再其次停留過久，最後無法讀取。
+    switch ([string]$Run.State) {
+        'ended' { return 4 }
+        'running' { return 3 }
+        'overdue' { return 3 }
+        'abandoned' { return 2 }
+        default { return 1 }
+    }
+}
+
+function Test-RunRecordOpen {
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Items
+    )
+
+    # 不解析 JSON，只以文字判斷紀錄是否尚無結果，供筆數上限之外的紀錄決定是否仍要讀取。
+    foreach ($item in $Items) {
+        try {
+            if ([regex]::IsMatch([System.IO.File]::ReadAllText($item.File.FullName), '"result"\s*:\s*null')) { return $true }
+        }
+        catch {
+            continue
+        }
+    }
+
+    return $false
+}
+
+function Get-DispatchSummary {
+    param(
+        [AllowEmptyCollection()]
+        [string[]]$Roots,
+
+        [AllowEmptyCollection()]
+        [string[]]$AccountNames,
+
+        [Parameter(Mandatory)]
+        [string]$HealthPath,
+
+        [Parameter(Mandatory)]
+        [string]$RunScriptPath,
+
+        [DateTime]$NowUtc = [DateTime]::UtcNow,
+
+        [int]$ReadLimit = 40,
+
+        [int]$EndedLimit = 10
+    )
+
+    $warnings = New-Object -TypeName System.Collections.Generic.List[string]
+    $limit = Get-DispatchLimit -RunScriptPath $RunScriptPath
+    if ($null -eq $limit.TimeoutSeconds -or $null -eq $limit.TurnEndGraceSeconds) {
+        $warnings.Add('讀不到派工的逾時設定，無法判斷派工是否已超過時限')
+    }
+
+    $suffix = '.record.json'
+    $groups = New-Object -TypeName 'System.Collections.Generic.Dictionary[string, System.Collections.Generic.List[object]]' -ArgumentList ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($root in $Roots) {
+        $reportRoot = Join-Path -Path $root -ChildPath '.local\ai-sessions\report'
+        if (-not (Test-Path -LiteralPath $reportRoot -PathType Container)) { continue }
+        foreach ($lineDirectory in @(Get-ChildItem -LiteralPath $reportRoot -Directory -ErrorAction SilentlyContinue)) {
+            $runsDirectory = Join-Path -Path $lineDirectory.FullName -ChildPath 'runs'
+            if (-not (Test-Path -LiteralPath $runsDirectory -PathType Container)) { continue }
+            foreach ($file in @(Get-ChildItem -LiteralPath $runsDirectory -File -Filter ('*' + $suffix) -ErrorAction SilentlyContinue)) {
+                if (-not $file.Name.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase)) { continue }
+                $eventsPath = Join-Path -Path $file.DirectoryName -ChildPath ($file.Name.Substring(0, $file.Name.Length - $suffix.Length) + '.events.jsonl')
+                $eventsUtc = $null
+                if (Test-Path -LiteralPath $eventsPath -PathType Leaf) { $eventsUtc = [System.IO.File]::GetLastWriteTimeUtc($eventsPath) }
+                $activity = $file.LastWriteTimeUtc
+                if ($null -ne $eventsUtc -and $eventsUtc -gt $activity) { $activity = $eventsUtc }
+                if (-not $groups.ContainsKey($file.Name)) { $groups[$file.Name] = New-Object -TypeName System.Collections.Generic.List[object] }
+                $groups[$file.Name].Add([pscustomobject]@{ File = $file; Root = $root; EventsUtc = $eventsUtc; Activity = $activity })
+            }
+        }
+    }
+
+    # 讀取順序以紀錄或事件檔的最後寫入時間為準。最近一個總時限內有活動的紀錄，以及 24 小時內尚無結果的紀錄一律讀取，不受筆數上限排擠。
+    $recentSeconds = if ($null -ne $limit.TimeoutSeconds -and $null -ne $limit.TurnEndGraceSeconds) { $limit.TimeoutSeconds + $limit.TurnEndGraceSeconds } else { 0 }
+    $orderedGroups = @($groups.Values | ForEach-Object {
+            $items = $_
+            [pscustomobject]@{ Items = $items; Activity = (@($items | ForEach-Object { $_.Activity }) | Sort-Object -Descending | Select-Object -First 1) }
+        } | Sort-Object -Property Activity -Descending)
+    $selected = @(for ($index = 0; $index -lt $orderedGroups.Count; $index++) {
+            $group = $orderedGroups[$index]
+            $age = ($NowUtc - $group.Activity).TotalSeconds
+            if ($index -lt $ReadLimit -or $age -le $recentSeconds) { $group }
+            elseif ($age -le $script:AbandonAfterSeconds -and (Test-RunRecordOpen -Items $group.Items.ToArray())) { $group }
+        })
+
+    $runs = @(foreach ($group in $selected) {
+            $parsed = @($group.Items | ForEach-Object {
+                    $run = Get-DispatchRunRecord -RecordFile $_.File -Root $_.Root -NowUtc $NowUtc -Limit $limit -LastEventUtc $_.EventsUtc
+                    [pscustomobject]@{ Run = $run; Rank = (Get-DispatchRunRank -Run $run); Activity = $_.Activity }
+                })
+            (@($parsed | Sort-Object -Property @{ Expression = { $_.Rank }; Descending = $true }, @{ Expression = { $_.Activity }; Descending = $true }) | Select-Object -First 1).Run
+        })
+    $open = @($runs | Where-Object { $_.State -eq 'running' -or $_.State -eq 'overdue' } | Sort-Object -Property StartedUtc -Descending)
+    $closed = @($runs | Where-Object { $_.State -eq 'ended' -or $_.State -eq 'invalid' } | Sort-Object -Property RecordUpdatedUtc -Descending | Select-Object -First $EndedLimit)
+
+    $health = @()
+    try {
+        $health = @(Get-AccountHealthEntryList -Path $HealthPath -NowUtc $NowUtc)
+    }
+    catch {
+        $warnings.Add('帳號狀態檔無法讀取，未顯示不支援的 model')
+    }
+
+    $accounts = @(foreach ($accountName in $AccountNames) {
+            if ([string]::IsNullOrWhiteSpace($accountName)) { continue }
+            $last = @($runs | Where-Object { $_.State -eq 'ended' -and [string]::Equals([string]$_.Account, $accountName, [StringComparison]::OrdinalIgnoreCase) } |
+                    Sort-Object -Property @{ Expression = { if ($null -eq $_.EndedUtc) { $_.RecordUpdatedUtc } else { $_.EndedUtc } }; Descending = $true } |
+                    Select-Object -First 1)
+            $lastRun = if ($last.Count -gt 0) { $last[0] } else { $null }
+            [pscustomobject][ordered]@{
+                Name              = $accountName
+                LastResult        = if ($null -ne $lastRun) { $lastRun.Result } else { $null }
+                LastFailureReason = if ($null -ne $lastRun) { $lastRun.FailureReason } else { $null }
+                LastRejectionKind = if ($null -ne $lastRun) { $lastRun.RejectionKind } else { $null }
+                LastEndedUtc      = if ($null -ne $lastRun) { if ($null -eq $lastRun.EndedUtc) { $lastRun.RecordUpdatedUtc } else { $lastRun.EndedUtc } } else { $null }
+                Unsupported       = @($health | Where-Object { [string]::Equals([string]$_.Account, $accountName, [StringComparison]::OrdinalIgnoreCase) } |
+                        ForEach-Object { [pscustomobject][ordered]@{ Profile = $_.Profile; Model = $_.Model; ExpiresAtUtc = $_.ExpiresAtUtc } })
+            }
+        })
+
+    return [pscustomobject][ordered]@{
+        timeoutSeconds      = $limit.TimeoutSeconds
+        turnEndGraceSeconds = $limit.TurnEndGraceSeconds
+        totalCount          = $groups.Count
+        runs                = @($open) + @($closed)
+        accounts            = $accounts
+        warnings            = @($warnings.ToArray())
+        error               = $null
+        errorDetail         = $null
+    }
+}
+
 function ConvertTo-AsciiJson {
     param([string]$Json)
     return [regex]::Replace($Json, '[^\u0000-\u007F]', [System.Text.RegularExpressions.MatchEvaluator]{ param($match) '\u{0:x4}' -f [int][char]$match.Value[0] })
@@ -694,10 +1136,35 @@ if ($MyInvocation.InvocationName -ne '.') {
         }
 
         $quotaSummaries = @()
+        $accountList = @()
         if (-not $SkipQuota) {
             $quotaScript = Join-Path -Path $PSScriptRoot -ChildPath 'Get-CodexQuota.ps1'
-            foreach ($account in (Get-CodexAccountList -Path $MachineConfigPath)) {
+            $accountList = @(Get-CodexAccountList -Path $MachineConfigPath | ForEach-Object { $_ })
+            foreach ($account in $accountList) {
                 $quotaSummaries += Get-QuotaSummary -Name ([string]$account.name) -CodexHome ([string]$account.codex_home) -QuotaScriptPath $quotaScript
+            }
+        }
+
+        # 派工彙整失敗只影響派工區塊，不讓整份輸出失敗。
+        try {
+            if ($SkipQuota -and (Test-Path -LiteralPath $MachineConfigPath -PathType Leaf)) {
+                $accountList = @(Get-CodexAccountList -Path $MachineConfigPath | ForEach-Object { $_ })
+            }
+            $accountNames = @($accountList | ForEach-Object { [string](Get-ObjectValue -Object $_ -Name 'name') } | Where-Object { $_.Length -gt 0 })
+            $dispatchSummary = Get-DispatchSummary -Roots @($roots) -AccountNames $accountNames `
+                -HealthPath (Join-Path -Path (Split-Path -Parent $MachineConfigPath) -ChildPath 'codex-account-health.json') `
+                -RunScriptPath (Join-Path -Path $PSScriptRoot -ChildPath 'codex-run\70-run.ps1')
+        }
+        catch {
+            $dispatchSummary = [pscustomobject][ordered]@{
+                timeoutSeconds      = $null
+                turnEndGraceSeconds = $null
+                totalCount          = 0
+                runs                = @()
+                accounts            = @()
+                warnings            = @()
+                error               = '派工紀錄無法彙整，請按「重新整理」再試一次'
+                errorDetail         = (($_.Exception.Message -split "`r?`n", 2)[0])
             }
         }
 
@@ -716,6 +1183,7 @@ if ($MyInvocation.InvocationName -ne '.') {
                 workRoots      = @($gitStatuses)
                 lines          = $sortedLines
                 quota          = @($quotaSummaries)
+                dispatch       = $dispatchSummary
             }
             Write-Output (ConvertTo-AsciiJson -Json ($document | ConvertTo-Json -Depth 6))
             exit 0
@@ -756,6 +1224,26 @@ if ($MyInvocation.InvocationName -ne '.') {
                 WorkRoot   = Split-Path -Leaf $_.WorkRoot
             }
         } | Format-Table -AutoSize | Out-String -Width 400 | Write-Output
+
+        Write-Output ('== Dispatch ({0})' -f $dispatchSummary.totalCount)
+        if ($null -ne $dispatchSummary.error) {
+            Write-Output $dispatchSummary.error
+        }
+        @($dispatchSummary.runs) | ForEach-Object {
+            [pscustomobject]@{
+                Line     = Format-Cell -Value $_.LineSlug
+                Type     = Format-Cell -Value $_.TaskType
+                Account  = Format-Cell -Value $_.Account
+                Model    = Format-Cell -Value $_.Model
+                State    = $_.State
+                Started  = Format-Cell -Value $_.StartedUtc
+                Seconds  = Format-Cell -Value $_.DurationSeconds
+                Result   = Format-Cell -Value $_.Result
+                Reason   = Format-Cell -Value $(if ($null -ne $_.RejectionKind) { $_.RejectionKind } elseif ($null -ne $_.FailureReason) { $_.FailureReason } else { $_.Error }) -MaxLength 40
+                WorkRoot = Split-Path -Leaf $_.WorkRoot
+            }
+        } | Format-Table -AutoSize | Out-String -Width 400 | Write-Output
+        @($dispatchSummary.warnings) | ForEach-Object { Write-Output $_ }
 
         if (-not $SkipQuota) {
             Write-Output '== Codex quota'

@@ -12,13 +12,16 @@ const row = { name: 'item', tag: '', right: '', rightShrink: false, dot: 'inacti
 const block = { rows: [{ ...row }], stalledRows: [], hiddenCount: 0, errorMessage: null }
 const snapshot: BoardSnapshot = {
   sessions: { ...block, rows: [{ ...row, dot: 'success', tag: 'line-one', right: '剛剛' }] },
+  dispatch: { ...block, rows: [{ ...row, name: 'dispatch-row' }] },
   quota: { ...block, rows: [{ ...row, dot: 'warning', right: '剩 40%', bar: { percent: 40, tone: 'warning', window: '5 小時' }, detail: [{ text: '週 ', tone: 'normal' }, { text: '28%', tone: 'attention' }] }] },
   lines: { ...block, rows: [{ ...row }] },
   workRoots: { ...block, rows: [{ ...row, dot: 'warning', right: 'main', rightShrink: true, isCurrent: true, detail: [{ text: '3', tone: 'attention' }, { text: ' 未 commit', tone: 'normal' }] }] },
   currentLabel: null,
-  scannedRoots: []
+  scannedRoots: [],
+  waitingCount: 0,
+  dispatchDetail: null
 }
-const snapshotAnswer = (value: BoardSnapshot) => ({ value: { value: { shape: 'snapshot-6', value }, version: 1 } })
+const snapshotAnswer = (value: BoardSnapshot) => ({ value: { value: { shape: 'snapshot-7', value }, version: 1 } })
 
 const loginText = '$env:CODEX_HOME = "C:\\Users\\X\\.codex-a"; codex login; Remove-Item Env:CODEX_HOME'
 const loginSnapshot: BoardSnapshot = { ...snapshot, quota: { ...snapshot.quota, rows: [{ ...row, name: 'account · 登入失效', dot: 'error', tone: 'error', login: { account: 'account', command: loginText } }] } }
@@ -167,7 +170,7 @@ test('R5 non desktop uses text bars', async ($, on) => {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Svg' })).toBe(undefined)
     expect(await ui.find({ type: 'Text', text: /[█░]/ })).not.toBe(undefined)
-    expect((await ui.findAll({ type: 'Text', text: /^─+$/ })).length).toBe(3)
+    expect((await ui.findAll({ type: 'Text', text: /^─+$/ })).length).toBe(4)
     await ui.unmount()
   }
 })
@@ -177,7 +180,7 @@ test('R6 no old header or extra buttons', async ($, on) => {
   for (const surface of ['desktop', 'terminal', 'mobile', 'vscode'] as const) {
     const ui = await $.ui.mount({ ...PANE, surface })
     expect(await ui.find({ type: 'Text', text: /Session（|● 執行中/ })).toBe(undefined)
-    expect((await ui.findAll({ type: 'Button' })).length).toBe(6)
+    expect((await ui.findAll({ type: 'Button' })).length).toBe(7)
     await ui.unmount()
   }
 })
@@ -185,9 +188,9 @@ test('R10 R11 block order and titles', async ($, on) => {
   mock.store(on)
   on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(snapshot) : next(e))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.findAll({ type: 'Button' })).map(x => x.key)).toEqual(['toggle-sessions', 'toggle-quota', 'toggle-lines', 'toggle-workRoots', 'cleanup-open', 'refresh'])
-  for (const title of ['Session 顯示 1 個，共 1 個 ▾', 'Codex 額度 顯示 1 個帳號，共 1 個帳號 ▾', '工作線 顯示 1 條，共 1 條 ▾', '工作目錄 顯示 1 個，共 1 個 ▾']) expect(await ui.find({ type: 'Text', text: title })).not.toBe(undefined)
-  for (const id of ['sessions', 'quota', 'lines', 'workRoots']) expect(await ui.find({ type: 'Box', key: `row-${id}-0` })).not.toBe(undefined)
+  expect((await ui.findAll({ type: 'Button' })).map(x => x.key)).toEqual(['toggle-sessions', 'toggle-dispatch', 'toggle-quota', 'toggle-lines', 'toggle-workRoots', 'cleanup-open', 'refresh'])
+  for (const title of ['Session 顯示 1 個，共 1 個 ▾', '派工 顯示 1 筆，共 1 筆 ▾', 'Codex 額度 顯示 1 個帳號，共 1 個帳號 ▾', '工作線 顯示 1 條，共 1 條 ▾', '工作目錄 顯示 1 個，共 1 個 ▾']) expect(await ui.find({ type: 'Text', text: title })).not.toBe(undefined)
+  for (const id of ['sessions', 'dispatch', 'quota', 'lines', 'workRoots']) expect(await ui.find({ type: 'Box', key: `row-${id}-0` })).not.toBe(undefined)
   await ui.unmount()
 })
 test('R11b empty states use section names', async ($, on) => {
@@ -202,7 +205,7 @@ test('R12 R13 dot and number colours', async ($, on) => {
   mock.store(on)
   on('state.get', ($, e, next) => e.key === 'snapshot' ? snapshotAnswer(snapshot) : next(e))
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.findAll({ type: 'Text', text: '●' })).map(x => x.props.color)).toEqual(['success', 'warning', 'inactive', 'warning'])
+  expect((await ui.findAll({ type: 'Text', text: '●' })).map(x => x.props.color)).toEqual(['success', 'inactive', 'warning', 'inactive', 'warning'])
   expect((await ui.findAll({ type: 'Text' })).some(x => x.text === '3' && x.props.color === 'warning')).toBe(true)
   expect((await ui.findAll({ type: 'Text' })).some(x => x.text === '28%' && x.props.color === 'warning')).toBe(true)
   expect((await ui.findAll({ type: 'Text' })).some(x => x.text === ' 未 commit' && x.props.dimColor === true)).toBe(true)
@@ -216,9 +219,9 @@ test('R14 R15 dividers and icons', async ($, on) => {
   const svg = await ui.findAll({ type: 'Svg' })
   expect(svg[0].props.alt).toBe('Session 圖示')
   const dividers = svg.filter(x => x.props.alt === '分隔線')
-  expect(dividers.length).toBe(3)
+  expect(dividers.length).toBe(4)
   expect(dividers.every(x => x.props.height === 1 && x.props.width === undefined)).toBe(true)
-  for (const alt of ['Session 圖示', 'Codex 額度圖示', '工作線圖示', '工作目錄圖示']) {
+  for (const alt of ['Session 圖示', '派工圖示', 'Codex 額度圖示', '工作線圖示', '工作目錄圖示']) {
     const icons = svg.filter(x => x.props.alt === alt)
     expect(icons.length).toBe(1)
     expect(icons[0].props.width).toBe(14)
@@ -228,7 +231,7 @@ test('R14 R15 dividers and icons', async ($, on) => {
   for (const surface of ['terminal', 'mobile'] as const) {
     const other = await $.ui.mount({ ...PANE, surface })
     expect((await other.findAll({ type: 'Svg' })).length).toBe(0)
-    expect((await other.findAll({ type: 'Text', text: /^─+$/ })).map(x => x.text?.length)).toEqual([40, 40, 40])
+    expect((await other.findAll({ type: 'Text', text: /^─+$/ })).map(x => x.text?.length)).toEqual([40, 40, 40, 40])
     await other.unmount()
   }
 })
@@ -240,7 +243,7 @@ test('R16 layout shrink and current background', async ($, on) => {
   expect(boxes.find(x => x.text === '剛剛')?.props.flexShrink).toBe(0)
   expect(boxes.filter(x => x.props.flexShrink === 8).length).toBe(2)
   expect(boxes.some(x => x.props.flexShrink === 1)).toBe(true)
-  expect(boxes.filter(x => x.props.paddingLeft === 2).length).toBe(4)
+  expect(boxes.filter(x => x.props.paddingLeft === 2).length).toBe(5)
   expect((await ui.find({ type: 'Box', key: 'row-workRoots-0' }))?.props.backgroundColor).toBe('#80808014')
   expect((await ui.find({ type: 'Box', key: 'row-sessions-0' }))?.props.backgroundColor).toBe(undefined)
   await ui.unmount()
@@ -349,7 +352,7 @@ test('R24 quota bar alt text follows the account window length', async ($, on) =
 })
 
 type Call = { argv: readonly string[]; cwd?: string; timeoutMs?: number }
-type Fixture = { calls: Call[]; placed: boolean; cwd: string; failure: string; release?: () => void; active: number; peak: number; writes: number; sessions: object[]; sessionFailure?: boolean; document: object; porcelain?: string; branches: string; branchFailure?: 'exit' | 'reject' }
+type Fixture = { calls: Call[]; placed: boolean; cwd: string; failure: string; release?: () => void; active: number; peak: number; writes: number; sessions: object[]; sessionFailure?: boolean; document: object; porcelain?: string; branches: string; branchFailure?: 'exit' | 'reject'; clock?: ReturnType<typeof mock.clock>; store?: Map<string, unknown> }
 const options = { options: { workRoots: '', scriptPath: 'C:\\x\\Get-LineStatus.ps1' } }
 const result = (stdout: string, exitCode = 0, stderr = '') => ({ exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false })
 async function waitFor(predicate: () => boolean, calls: Call[]): Promise<void> {
@@ -362,7 +365,7 @@ async function waitFor(predicate: () => boolean, calls: Call[]): Promise<void> {
 function setup(on: On, profile = true, useStore = true): Fixture {
   const state: Fixture = { calls: [], placed: true, cwd: 'D:\\Work\\Other.wt\\feat', failure: '', active: 0, peak: 0, writes: 0, sessions: [], branches: '', document: { scannedRoots: [], lines: [], workRoots: [], quota: [], warnings: [] } }
   if (useStore) mock.store(on)
-  mock.clock(on)
+  state.clock = mock.clock(on)
   mock.env(on, profile ? { USERPROFILE: 'C:\\Users\\X' } : {})
   on('ui.open', () => ({ value: { isPlaced: true } }))
   on('ui.panes', () => ({ value: [{ id: 'line-status-board', title: '工作總覽', isPlaced: state.placed }] }))
@@ -462,7 +465,7 @@ test('P7 phase 3 stored quota signature prevents a repeat on startup', options, 
   let writes = 0
   state.document = { scannedRoots: [state.cwd], lines: [], workRoots: [], quota: [{ Name: 'stored', State: 'ok', PrimaryRemaining: 7, PrimaryResetsAtLocal: 'T' }], warnings: [] }
   on('store.get', (_, e) => { if (e.key === 'quota-alert') reads++; return { value: 'stored@T' } })
-  on('store.set', () => { writes++; return { value: undefined } })
+  on('store.set', (_, e) => { if (e.key === 'quota-alert') writes++; return { value: undefined } })
   on('ui.toast', (_, e) => { toasts.push(e.text); return { value: undefined } })
   await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
   await finish(state)
@@ -655,7 +658,7 @@ test('H9 old script error', options, async ($, on) => {
   await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
   await finish(state)
   const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
-  expect((await ui.findAll({ type: 'Text', text: /ForceWorkRoot/ })).length).toBe(3)
+  expect((await ui.findAll({ type: 'Text', text: /ForceWorkRoot/ })).length).toBe(4)
   expect(scripts(state).length).toBe(1)
   await ui.unmount()
 })
@@ -999,5 +1002,66 @@ test('P7 review round 2 designation can be cancelled before listing again', opti
   expect(cleanupCalls(state)[1].argv.includes('-ClosedLine')).toBe(false)
   expect(cleanupCalls(state)[1].argv.slice(-2)).toEqual(['-ConfirmPlan', 'plan-123'])
   await ui.press({ key: 'cleanup-close' })
+  await ui.unmount()
+})
+test('Z2a timer refresh reuses a fresh script result from another Session while manual refresh runs the script', options, async ($, on) => {
+  const state = setup(on, true, false)
+  const store = new Map<string, unknown>()
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => { store.set(e.key, e.value); return { value: undefined } })
+  on('store.delete', (_, e) => { store.delete(e.key); return { value: undefined } })
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('ui.status', () => ({ value: undefined }))
+  state.document = { scannedRoots: [state.cwd], lines: [], workRoots: [], quota: [], warnings: [] }
+  await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
+  await finish(state)
+  const saved = store.get('script-cache') as { signature: string; owner: string; at: number; stdout: string }
+  expect(typeof saved?.signature).toBe('string')
+  expect(JSON.parse(saved.stdout).scannedRoots).toEqual([state.cwd])
+  const sharedAt = Date.now() - 50000
+  store.set('script-cache', { ...saved, owner: 'another-session', at: sharedAt })
+  await state.clock!.advance(60000)
+  for (let i = 0; i < 30; i++) await new Promise(resolve => setTimeout(resolve, 0))
+  expect(scripts(state).length).toBe(1)
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: `最後更新 ${new Date(sharedAt).toLocaleTimeString('zh-TW', { hour12: false })}` })).not.toBe(undefined)
+  await ui.press({ key: 'refresh' })
+  await finish(state, 2)
+  expect(scripts(state).length).toBe(2)
+  store.set('script-cache', { ...saved, owner: 'another-session', at: Date.now() - 61000 })
+  await state.clock!.advance(60000)
+  await finish(state, 3)
+  expect(scripts(state).length).toBe(3)
+  await ui.unmount()
+})
+test('Z2a refresh reads waits from the store, shows the live one, counts it and deletes expired and old-format keys', options, async ($, on) => {
+  const state = setup(on, true, false)
+  const store = new Map<string, unknown>()
+  const statuses: (string | undefined)[] = []
+  on('store.get', (_, e) => ({ value: store.get(e.key) }))
+  on('store.set', (_, e) => { store.set(e.key, e.value); return { value: undefined } })
+  on('store.delete', (_, e) => { store.delete(e.key); return { value: undefined } })
+  on('store.keys', () => ({ value: [...store.keys()] }))
+  on('ui.status', (_, e) => { statuses.push(e.text); return { value: undefined } })
+  on('ui.toast', () => ({ value: undefined }))
+  const nowMs = Date.now()
+  state.sessions = [
+    { sessionId: 'local_w', cwd: state.cwd, title: '等待者', isRunning: false, lastActivityAt: new Date(nowMs - 3 * 60000).toISOString() },
+    { sessionId: 'local_s', cwd: state.cwd, title: '舊請求', isRunning: true, lastActivityAt: new Date(nowMs - 13 * 60000).toISOString() }
+  ]
+  state.document = { scannedRoots: [state.cwd], lines: [], workRoots: [], quota: [], warnings: [] }
+  store.set('waiting:local_w:c1', { kind: 'permission', tool: 'Bash', at: nowMs - 2 * 60000 })
+  store.set('waiting:local_s:c2', { kind: 'permission', tool: 'Edit', at: nowMs - 12 * 60000 })
+  store.set('waiting:local_w:c0', { kind: 'permission', tool: 'Bash', at: nowMs - 25 * 60 * 60000 })
+  store.set('waiting:local_old', { kind: 'permission', tool: 'Bash', at: nowMs - 60000 })
+  store.set('waiting:local_w:bad', { kind: 'nope', at: nowMs - 60000 })
+  await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
+  await finish(state)
+  for (let i = 0; i < 30; i++) await new Promise(resolve => setTimeout(resolve, 0))
+  expect([...store.keys()].filter(key => key.startsWith('waiting:')).sort()).toEqual(['waiting:local_s:c2', 'waiting:local_w:c1'])
+  expect(statuses.at(-1)).toBe('1 等你 · 1 執行中')
+  const ui = await $.ui.mount({ ...PANE, surface: 'desktop' })
+  expect(await ui.find({ type: 'Text', text: '等你同意：Bash · 2 分鐘前' })).not.toBe(undefined)
+  expect(await ui.find({ type: 'Text', text: '同意請求 12 分鐘前：Edit' })).not.toBe(undefined)
   await ui.unmount()
 })

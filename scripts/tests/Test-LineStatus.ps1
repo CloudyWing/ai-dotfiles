@@ -182,7 +182,7 @@ try {
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($encodedCommand))
     $emptyResult = Invoke-ExternalCommand -FilePath $hostPath -ArgumentList @('-NoProfile', '-EncodedCommand', $encodedCommand)
     $emptyForce = $emptyResult.StdOut | ConvertFrom-Json
-    Test-Case C20 { $emptyResult.ExitCode -eq 0 -and (($original.PSObject.Properties.Name -join ',') -eq 'schema,generatedAtUtc,scannedRoots,warnings,workRoots,lines,quota') -and $original.schema -eq 'ai-agents.line-status.v1' -and (($original | Select-Object * -ExcludeProperty generatedAtUtc | ConvertTo-Json -Depth 6) -eq ($emptyForce | Select-Object * -ExcludeProperty generatedAtUtc | ConvertTo-Json -Depth 6)) }
+    Test-Case C20 { $emptyResult.ExitCode -eq 0 -and (($original.PSObject.Properties.Name -join ',') -eq 'schema,generatedAtUtc,scannedRoots,warnings,workRoots,lines,quota,dispatch') -and $original.schema -eq 'ai-agents.line-status.v1' -and (($original | Select-Object * -ExcludeProperty generatedAtUtc | ConvertTo-Json -Depth 6) -eq ($emptyForce | Select-Object * -ExcludeProperty generatedAtUtc | ConvertTo-Json -Depth 6)) }
     Test-Case C21 {
         $tokens = $null; $errors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile((Resolve-Path $scriptPath).Path, [ref]$tokens, [ref]$errors)
@@ -293,6 +293,119 @@ exit 0
         $quotaJson = ($raw -join "`n") | ConvertFrom-Json
         $keys = 'Name,CodexHome,State,PrimaryRemaining,PrimaryResetsAtLocal,PrimaryWindowMinutes,SecondaryRemaining,SecondaryResetsAtLocal,Error,ErrorKind,ErrorReason'
         $code -eq 0 -and @($quotaJson.quota).Count -eq 2 -and ($raw -join '') -notmatch '[^\u0000-\u007f]' -and @($quotaJson.quota | Where-Object { ($_.PSObject.Properties.Name -join ',') -eq $keys -and $_.ErrorKind -eq 'auth-expired' -and $_.Error -match '失敗：' }).Count -eq 2
+    }
+    # 派工執行紀錄彙整（Invoke-CodexRun.ps1 的 runs\*.record.json）
+    $dispatchNow = [DateTime]::new(2026, 11, 16, 12, 0, 0, [DateTimeKind]::Utc)
+    $dispatchMain = Join-Path $tempRoot 'dispatch-main'
+    $dispatchTree = Join-Path $tempRoot 'dispatch-tree'
+    $dispatchEmpty = Join-Path $tempRoot 'dispatch-empty'
+    $runScript = Join-Path $PSScriptRoot '..\codex-run\70-run.ps1'
+    $noBom = New-Object Text.UTF8Encoding($false)
+    function New-RunFixture {
+        param([string]$Root, [string]$Line, [string]$RunKey, [hashtable]$Fields, [string]$RawText, [Nullable[DateTime]]$EventsUtc, [Nullable[DateTime]]$RecordUtc)
+        $runs = Join-Path $Root ".local\ai-sessions\report\$Line\runs"
+        New-Item -ItemType Directory -Force -Path $runs | Out-Null
+        $path = Join-Path $runs ($RunKey + '.record.json')
+        $text = $RawText
+        if ([string]::IsNullOrEmpty($text)) {
+            $record = [ordered]@{ schema = 'ai-agents.codex-run-record.v1'; run_key = $RunKey; line_slug = $Line; dispatch_slug = 'fx'; task_type = 'review'; profile = 'review'; account = @{ name = 'acct-a'; codex_home = 'C:\x' }; model = 'model-x'; started_utc = '2026-11-16T11:00:00.0000000Z'; ended_utc = $null; duration_seconds = $null; result = $null; failure_reason = $null; terminated_by_entry = $null; rejection_kind = $null; item_event_count = $null; future_field = @{ nested = 1 } }
+            foreach ($key in $Fields.Keys) { $record[$key] = $Fields[$key] }
+            $text = $record | ConvertTo-Json -Depth 6
+        }
+        [IO.File]::WriteAllText($path, $text, $noBom)
+        if ($null -ne $RecordUtc) { [IO.File]::SetLastWriteTimeUtc($path, $RecordUtc) }
+        if ($null -ne $EventsUtc) {
+            $events = Join-Path $runs ($RunKey + '.events.jsonl')
+            [IO.File]::WriteAllText($events, '{"type":"turn.started"}', $noBom)
+            [IO.File]::SetLastWriteTimeUtc($events, $EventsUtc)
+        }
+    }
+    New-Item -ItemType Directory -Path $dispatchEmpty | Out-Null
+    $healthMissing = Join-Path $tempRoot 'no-health.json'
+    $none = Get-DispatchSummary -Roots @($dispatchEmpty, (Join-Path $tempRoot 'dispatch-absent')) -AccountNames @() -HealthPath $healthMissing -RunScriptPath $runScript -NowUtc $dispatchNow
+    Test-Case D01 { $none.totalCount -eq 0 -and @($none.runs).Count -eq 0 -and @($none.accounts).Count -eq 0 -and $null -eq $none.error -and $none.timeoutSeconds -eq 1800 -and $none.turnEndGraceSeconds -eq 60 -and @($none.warnings).Count -eq 0 }
+
+    # 執行中：最近有事件、事件間隔數分鐘、超過預設時限但仍有事件（以較大 -TimeoutSeconds 發動）
+    New-RunFixture -Root $dispatchTree -Line 'line-tree' -RunKey 'run-tree' -Fields @{ started_utc = '2026-11-16T11:50:00.0000000Z' } -EventsUtc $dispatchNow.AddSeconds(-10) -RecordUtc $dispatchNow.AddMinutes(-10)
+    New-RunFixture -Root $dispatchTree -Line 'line-tree' -RunKey 'run-gap' -Fields @{ started_utc = '2026-11-16T11:40:00.0000000Z' } -EventsUtc $dispatchNow.AddSeconds(-200) -RecordUtc $dispatchNow.AddMinutes(-20)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-long-alive' -Fields @{ started_utc = '2026-11-16T10:00:00.0000000Z' } -EventsUtc $dispatchNow.AddSeconds(-30) -RecordUtc $dispatchNow.AddMinutes(-120)
+    # 超過時限：預設時限與事件皆過久；紀錄自帶時限且已超過；紀錄自帶較大時限而尚未超過；停留超過 24 小時
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-overdue' -Fields @{ started_utc = '2026-11-16T11:00:00.0000000Z' } -EventsUtc $dispatchNow.AddMinutes(-55) -RecordUtc $dispatchNow.AddMinutes(-60)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-own-limit' -Fields @{ started_utc = '2026-11-16T11:45:00.0000000Z'; timeout_seconds = 600; turn_end_grace_seconds = 60 } -EventsUtc $dispatchNow.AddMinutes(-5) -RecordUtc $dispatchNow.AddMinutes(-15)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-own-long' -Fields @{ started_utc = '2026-11-16T10:30:00.0000000Z'; timeout_seconds = 7200; turn_end_grace_seconds = 60 } -EventsUtc $dispatchNow.AddMinutes(-40) -RecordUtc $dispatchNow.AddMinutes(-90)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-abandoned' -Fields @{ started_utc = '2026-11-13T12:00:00.0000000Z' } -RecordUtc $dispatchNow.AddDays(-3)
+    # 紀錄只帶其中一個時限欄位，或寬限為 0
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-only-timeout' -Fields @{ started_utc = '2026-11-16T11:15:00.0000000Z'; timeout_seconds = 600 } -EventsUtc $dispatchNow.AddSeconds(-20) -RecordUtc $dispatchNow.AddMinutes(-45)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-only-silent' -Fields @{ started_utc = '2026-11-16T11:15:30.0000000Z'; timeout_seconds = 600 } -EventsUtc $dispatchNow.AddMinutes(-5) -RecordUtc $dispatchNow.AddMinutes(-45)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-grace0' -Fields @{ started_utc = '2026-11-16T11:16:00.0000000Z'; timeout_seconds = 600; turn_end_grace_seconds = 0 } -EventsUtc $dispatchNow.AddSeconds(-5) -RecordUtc $dispatchNow.AddMinutes(-44)
+    # 已結束與異常紀錄
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-ok' -Fields @{ ended_utc = '2026-11-16T11:10:00.0000000Z'; duration_seconds = 600.04; result = 'success'; item_event_count = 12; report = @{ exists = $true; bytes = 10 }; review_report_check = @{ valid = $true; errors = @() } } -RecordUtc $dispatchNow.AddMinutes(-50)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-rejected' -Fields @{ account = @{ name = 'acct-b' }; ended_utc = '2026-11-16T11:20:00.0000000Z'; duration_seconds = 15.7; result = 'rejected'; failure_reason = 'usage-limit'; rejection_kind = 'usage-limit'; item_event_count = 0 } -RecordUtc $dispatchNow.AddMinutes(-40)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-timeout' -Fields @{ ended_utc = '2026-11-16T11:30:00.0000000Z'; duration_seconds = 1800.2; result = 'failed'; failure_reason = 'timeout'; terminated_by_entry = 'timeout' } -RecordUtc $dispatchNow.AddMinutes(-30)
+    New-RunFixture -Root $dispatchMain -Line 'line-bad' -RunKey 'run-corrupt' -RawText '{ "run_key": "run-corrupt", ' -RecordUtc $dispatchNow.AddMinutes(-70)
+    New-RunFixture -Root $dispatchMain -Line 'line-bad' -RunKey 'run-sparse' -RawText '{ "result": "success" }' -RecordUtc $dispatchNow.AddMinutes(-80)
+    New-RunFixture -Root $dispatchMain -Line 'line-bad' -RunKey 'run-minimal' -RawText '{ "started_utc": "2026-11-16T10:00:00Z", "result": "success", "account": "not-an-object", "duration_seconds": "n/a", "item_event_count": 1e30 }' -RecordUtc $dispatchNow.AddMinutes(-90)
+    New-RunFixture -Root $dispatchMain -Line 'line-bad' -RunKey 'run-badtypes' -RawText '{ "started_utc": "2026-11-16T10:00:00Z", "result": "failed", "failure_reason": "timeout", "item_event_count": "2026-01-01T00:00:00Z", "duration_seconds": -5, "timeout_seconds": "x" }' -RecordUtc $dispatchNow.AddMinutes(-91)
+    # 同名紀錄：主 checkout 有已結束的版本，線工作樹留著執行中的舊快照，已結束者優先
+    New-RunFixture -Root $dispatchTree -Line 'line-tree' -RunKey 'run-dup' -Fields @{ started_utc = '2026-11-16T11:55:00.0000000Z' } -EventsUtc $dispatchNow.AddMinutes(-4) -RecordUtc $dispatchNow.AddMinutes(-5)
+    New-RunFixture -Root $dispatchMain -Line 'line-tree' -RunKey 'run-dup' -Fields @{ started_utc = '2026-11-16T11:55:00.0000000Z'; ended_utc = '2026-11-16T11:57:00.0000000Z'; result = 'success' } -RecordUtc $dispatchNow.AddMinutes(-95)
+    $healthPath = Join-Path $tempRoot 'codex-account-health.json'
+    $healthEntries = @(
+        @{ account_name = 'acct-b'; codex_home = 'C:\x'; profile = 'review'; model = 'model-x'; reason_code = 'model-not-supported'; recorded_at_utc = '2026-11-16T00:00:00Z'; expires_at_utc = '2026-11-17T00:00:00Z' },
+        @{ account_name = 'acct-b'; codex_home = 'C:\x'; profile = 'scan'; model = 'model-old'; reason_code = 'model-not-supported'; recorded_at_utc = '2026-11-14T00:00:00Z'; expires_at_utc = '2026-11-15T00:00:00Z' },
+        @{ account_name = 'acct-z'; profile = 'review'; expires_at_utc = '2026-11-17T00:00:00Z' },
+        @{ profile = 'broken' }
+    )
+    [IO.File]::WriteAllText($healthPath, (@{ schema = 'ai-agents.codex-account-health.v1'; entries = $healthEntries } | ConvertTo-Json -Depth 5), $noBom)
+    $fixtureRoots = @($dispatchMain, $dispatchTree)
+    $fixtureFileCount = @(Get-ChildItem -LiteralPath $fixtureRoots -Recurse -File).Count
+    $beforeFiles = @(Get-ChildItem -LiteralPath $fixtureRoots -Recurse -File | ForEach-Object { $_.FullName + '|' + $_.Length + '|' + $_.LastWriteTimeUtc.Ticks }) -join "`n"
+    $summary = Get-DispatchSummary -Roots @($dispatchTree, $dispatchMain, $dispatchEmpty) -AccountNames @('acct-a', 'ACCT-B', 'acct-unused') -HealthPath $healthPath -RunScriptPath $runScript -NowUtc $dispatchNow
+    $byKey = @{}
+    foreach ($item in @($summary.runs)) { $byKey[$item.RunKey] = $item }
+    $order = @($summary.runs | ForEach-Object { $_.RunKey }) -join ','
+    Test-Case D02 { $summary.totalCount -eq 18 -and $null -eq $summary.error -and $order -eq 'run-tree,run-own-limit,run-gap,run-grace0,run-only-silent,run-only-timeout,run-overdue,run-own-long,run-long-alive,run-timeout,run-rejected,run-ok,run-corrupt,run-sparse,run-minimal,run-badtypes,run-dup' }
+    Test-Case D03 { $byKey['run-tree'].State -eq 'running' -and $byKey['run-tree'].LastEventUtc -eq '2026-11-16T11:59:50Z' -and $byKey['run-tree'].StartedUtc -eq '2026-11-16T11:50:00Z' -and $byKey['run-tree'].Account -eq 'acct-a' -and $byKey['run-tree'].Model -eq 'model-x' -and $byKey['run-tree'].TaskType -eq 'review' -and $null -eq $byKey['run-tree'].Result -and $byKey['run-tree'].LimitSource -eq 'default' -and -not ($byKey['run-tree'].PSObject.Properties.Name -contains 'IsQuiet') }
+    Test-Case D04 { $byKey['run-gap'].State -eq 'running' -and $byKey['run-gap'].LastEventUtc -eq '2026-11-16T11:56:40Z' -and $byKey['run-long-alive'].State -eq 'running' -and $byKey['run-own-long'].State -eq 'running' -and $byKey['run-own-long'].LimitSource -eq 'record' }
+    Test-Case D05 { $byKey['run-ok'].State -eq 'ended' -and $byKey['run-ok'].Result -eq 'success' -and $byKey['run-ok'].DurationSeconds -eq 600 -and $byKey['run-ok'].EndedUtc -eq '2026-11-16T11:10:00Z' -and $byKey['run-ok'].ItemEventCount -eq 12 -and $byKey['run-ok'].ReportExists -eq $true -and $byKey['run-ok'].ReviewReportValid -eq $true -and $null -eq $byKey['run-ok'].LastEventUtc }
+    Test-Case D06 { $byKey['run-rejected'].State -eq 'ended' -and $byKey['run-rejected'].Result -eq 'rejected' -and $byKey['run-rejected'].RejectionKind -eq 'usage-limit' -and $byKey['run-rejected'].Account -eq 'acct-b' -and $byKey['run-rejected'].ItemEventCount -eq 0 }
+    Test-Case D07 { $byKey['run-timeout'].State -eq 'ended' -and $byKey['run-timeout'].Result -eq 'failed' -and $byKey['run-timeout'].FailureReason -eq 'timeout' -and $byKey['run-timeout'].TerminatedByEntry -eq 'timeout' }
+    Test-Case D08 { $byKey['run-overdue'].State -eq 'overdue' -and $byKey['run-overdue'].LimitSource -eq 'default' -and $byKey['run-overdue'].LastEventUtc -eq '2026-11-16T11:05:00Z' -and $byKey['run-own-limit'].State -eq 'overdue' -and $byKey['run-own-limit'].LimitSource -eq 'record' -and -not $byKey.ContainsKey('run-abandoned') }
+    Test-Case D19 { $byKey['run-only-timeout'].State -eq 'running' -and $byKey['run-only-timeout'].LimitSource -eq 'record' -and $byKey['run-only-silent'].State -eq 'overdue' -and $byKey['run-only-silent'].LimitSource -eq 'record' -and $byKey['run-grace0'].State -eq 'running' -and $byKey['run-grace0'].LimitSource -eq 'record' }
+    Test-Case D09 { $byKey['run-corrupt'].State -eq 'invalid' -and $byKey['run-corrupt'].Error -match '^執行紀錄無法讀取' -and $byKey['run-corrupt'].LineSlug -eq 'line-bad' }
+    $all = Get-DispatchSummary -Roots @($dispatchTree, $dispatchMain) -AccountNames @() -HealthPath $healthMissing -RunScriptPath $runScript -NowUtc $dispatchNow -EndedLimit 50
+    $allKey = @{}
+    foreach ($item in @($all.runs)) { $allKey[$item.RunKey] = $item }
+    Test-Case D10 { $allKey['run-sparse'].State -eq 'invalid' -and $allKey['run-sparse'].Error -match 'started_utc' -and $allKey['run-minimal'].State -eq 'ended' -and $null -eq $allKey['run-minimal'].Account -and $null -eq $allKey['run-minimal'].DurationSeconds -and $null -eq $allKey['run-minimal'].ItemEventCount -and $allKey['run-badtypes'].State -eq 'ended' -and $allKey['run-badtypes'].Result -eq 'failed' -and $null -eq $allKey['run-badtypes'].ItemEventCount -and $null -eq $allKey['run-badtypes'].DurationSeconds }
+    Test-Case D11 { $byKey['run-tree'].WorkRoot -eq $dispatchTree -and $byKey['run-gap'].WorkRoot -eq $dispatchTree -and $byKey['run-ok'].WorkRoot -eq $dispatchMain -and $allKey['run-dup'].State -eq 'ended' -and $allKey['run-dup'].WorkRoot -eq $dispatchMain -and $allKey['run-dup'].LineSlug -eq 'line-tree' -and @($all.runs | Where-Object { $_.RunKey -eq 'run-dup' }).Count -eq 1 }
+    $accountA = @($summary.accounts | Where-Object { $_.Name -eq 'acct-a' })[0]
+    $accountB = @($summary.accounts | Where-Object { $_.Name -eq 'ACCT-B' })[0]
+    $accountUnused = @($summary.accounts | Where-Object { $_.Name -eq 'acct-unused' })[0]
+    Test-Case D12 { @($summary.accounts).Count -eq 3 -and $accountA.LastResult -eq 'success' -and $accountA.LastEndedUtc -eq '2026-11-16T11:57:00Z' -and @($accountA.Unsupported).Count -eq 0 -and $accountB.LastResult -eq 'rejected' -and $accountB.LastRejectionKind -eq 'usage-limit' -and @($accountB.Unsupported).Count -eq 1 -and $accountB.Unsupported[0].Model -eq 'model-x' -and $accountB.Unsupported[0].Profile -eq 'review' -and $null -eq $accountUnused.LastResult -and @($accountUnused.Unsupported).Count -eq 0 }
+    # 筆數上限只限制最近一個總時限以外的紀錄；執行中與超過時限者不被排擠
+    $limited = Get-DispatchSummary -Roots @($dispatchTree, $dispatchMain) -AccountNames @() -HealthPath $healthMissing -RunScriptPath $runScript -NowUtc $dispatchNow -ReadLimit 1 -EndedLimit 1
+    $limitedKeys = @($limited.runs | ForEach-Object { $_.RunKey })
+    Test-Case D13 { $limited.totalCount -eq 18 -and @('run-tree', 'run-gap', 'run-long-alive', 'run-own-limit', 'run-own-long', 'run-overdue', 'run-only-timeout', 'run-only-silent', 'run-grace0' | Where-Object { $limitedKeys -notcontains $_ }).Count -eq 0 -and $limitedKeys -notcontains 'run-minimal' }
+    $brokenHealth = Join-Path $tempRoot 'broken-health.json'
+    [IO.File]::WriteAllText($brokenHealth, '{ not json', $noBom)
+    $noLimit = Get-DispatchSummary -Roots @($dispatchMain) -AccountNames @('acct-b') -HealthPath $brokenHealth -RunScriptPath (Join-Path $tempRoot 'missing-run.ps1') -NowUtc $dispatchNow
+    $noLimitKey = @{}
+    foreach ($item in @($noLimit.runs)) { $noLimitKey[$item.RunKey] = $item }
+    Test-Case D14 { $null -eq $noLimit.timeoutSeconds -and $null -eq $noLimit.turnEndGraceSeconds -and @($noLimit.warnings).Count -eq 2 -and $noLimitKey['run-overdue'].State -eq 'running' -and $null -eq $noLimitKey['run-overdue'].LimitSource -and $noLimitKey['run-own-limit'].State -eq 'overdue' -and -not $noLimitKey.ContainsKey('run-abandoned') -and $noLimitKey['run-only-silent'].State -eq 'overdue' -and $noLimitKey['run-only-silent'].LimitSource -eq 'record' -and $noLimitKey['run-only-timeout'].State -eq 'running' -and @($noLimit.accounts[0].Unsupported).Count -eq 0 -and $noLimit.accounts[0].LastResult -eq 'rejected' }
+    $dispatchMachine = Join-Path $tempRoot 'machine.json'
+    [IO.File]::WriteAllText($dispatchMachine, (@{ codex_accounts = @(@{ name = 'acct-a'; codex_home = 'C:\x' }) } | ConvertTo-Json -Depth 4), $noBom)
+    $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot "$dispatchMain;$dispatchTree" -ForceWorkRoot $dispatchTree -MachineConfigPath $dispatchMachine -SkipQuota -AsJson
+    $code = $LASTEXITCODE
+    $dispatchJson = ($raw -join "`n") | ConvertFrom-Json
+    Test-Case D15 { $code -eq 0 -and ($raw -join '') -notmatch '[^\u0000-\u007f]' -and $dispatchJson.dispatch.totalCount -eq 18 -and $dispatchJson.dispatch.timeoutSeconds -eq 1800 -and @($dispatchJson.dispatch.accounts).Count -eq 1 -and $dispatchJson.dispatch.accounts[0].Name -eq 'acct-a' -and @($dispatchJson.dispatch.accounts[0].Unsupported).Count -eq 0 -and $null -eq $dispatchJson.dispatch.error -and @($dispatchJson.lines).Count -eq 0 }
+    $rawText = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot "$dispatchMain;$dispatchTree" -MachineConfigPath $dispatchMachine -SkipQuota
+    $textCode = $LASTEXITCODE
+    Test-Case D16 { $textCode -eq 0 -and ($rawText -join "`n") -match '== Dispatch \(18\)' -and ($rawText -join "`n") -match 'line-main' }
+    $afterFiles = @(Get-ChildItem -LiteralPath $fixtureRoots -Recurse -File | ForEach-Object { $_.FullName + '|' + $_.Length + '|' + $_.LastWriteTimeUtc.Ticks }) -join "`n"
+    Test-Case D17 { $beforeFiles -eq $afterFiles -and @(Get-ChildItem -LiteralPath $fixtureRoots -Recurse -File).Count -eq $fixtureFileCount }
+    Test-Case D18 {
+        $numbers = @((ConvertTo-CountOrNull -Value 3), (ConvertTo-CountOrNull -Value 3.5), (ConvertTo-CountOrNull -Value 1e30), (ConvertTo-CountOrNull -Value -1), (ConvertTo-CountOrNull -Value '3'), (ConvertTo-CountOrNull -Value $true), (ConvertTo-CountOrNull -Value ([DateTime]::UtcNow)), (ConvertTo-CountOrNull -Value 0 -Minimum 1))
+        ($numbers[0] -eq 3) -and (@($numbers | Select-Object -Skip 1 | Where-Object { $null -ne $_ }).Count -eq 0) -and $null -eq (ConvertTo-NumberOrNull -Value ([double]::NaN))
     }
     Test-Case C31 { $script:failed -eq 0 }
 }

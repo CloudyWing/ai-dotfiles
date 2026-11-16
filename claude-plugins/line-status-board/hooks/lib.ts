@@ -10,7 +10,7 @@ export const CLEANUP_LIST_LIMIT = 30
 export const CLEANUP_REVIEW_LIMIT = 15
 export const CLEANUP_LINE_LIMIT = 30
 export const MAX_EXTRA_ROOTS = 64
-export const BLOCK_IDS: BlockId[] = ['sessions', 'lines', 'workRoots', 'quota']
+export const BLOCK_IDS: BlockId[] = ['sessions', 'dispatch', 'lines', 'workRoots', 'quota']
 export const STORE_KEY = 'collapsed-blocks'
 export const BAR_WIDTH = 48
 export const BAR_HEIGHT = 4
@@ -25,8 +25,8 @@ export const QUOTA_ALERT_BELOW = QUOTA_WARN_FROM
 export const QUOTA_ALERT_KEY = 'quota-alert'
 export const EXPAND_KEY = 'expanded-sections'
 export const EXPAND_IDS: ExpandId[] = ['stalledLines']
-export const BLOCK_ORDER: BlockId[] = ['sessions', 'quota', 'lines', 'workRoots']
-export const BLOCK_TITLES: Record<BlockId, string> = { sessions: 'Session', quota: 'Codex 額度', lines: '工作線', workRoots: '工作目錄' }
+export const BLOCK_ORDER: BlockId[] = ['sessions', 'dispatch', 'quota', 'lines', 'workRoots']
+export const BLOCK_TITLES: Record<BlockId, string> = { sessions: 'Session', dispatch: '派工', quota: 'Codex 額度', lines: '工作線', workRoots: '工作目錄' }
 export const TONE_HEX: Record<DotTone, string> = { success: '#3fb950', warning: '#d29922', error: '#f85149', inactive: '#808080' }
 export const NAME_SHRINK = 1
 export const NOTE_SHRINK = 8
@@ -150,7 +150,7 @@ export function quotaBarText(percent: number | null): string {
   return '█'.repeat(filled) + '░'.repeat(5 - filled)
 }
 export function countText(id: BlockId, shown: number, total: number): string {
-  const units: Record<BlockId, string> = { sessions: '個', quota: '個帳號', lines: '條', workRoots: '個' }
+  const units: Record<BlockId, string> = { sessions: '個', dispatch: '筆', quota: '個帳號', lines: '條', workRoots: '個' }
   const unit = units[id]
   return `顯示 ${shown} ${unit}，共 ${total} ${unit}`
 }
@@ -163,10 +163,11 @@ export function blockTitleText(id: BlockId, value: BoardBlock | undefined, isCol
   return `${BLOCK_TITLES[id]}${counts ? ' ' + countText(id, counts.shown, counts.total) : ''} ${isCollapsed ? '▸' : '▾'}`
 }
 export function stalledToggleText(count: number, expanded: boolean): string { return `已結束／停擺 ${count} 條 ${expanded ? '▾' : '▸'}` }
-export const ICON_ALT: Record<BlockId, string> = { sessions: 'Session 圖示', quota: 'Codex 額度圖示', lines: '工作線圖示', workRoots: '工作目錄圖示' }
+export const ICON_ALT: Record<BlockId, string> = { sessions: 'Session 圖示', dispatch: '派工圖示', quota: 'Codex 額度圖示', lines: '工作線圖示', workRoots: '工作目錄圖示' }
 export function iconSvg(id: BlockId): string {
   const paths: Record<BlockId, string> = {
     sessions: '<path d="M3 2h8a1.5 1.5 0 0 1 1.5 1.5V8A1.5 1.5 0 0 1 11 9.5H7L4.5 12V9.5H3A1.5 1.5 0 0 1 1.5 8V3.5A1.5 1.5 0 0 1 3 2z"/>',
+    dispatch: '<path d="M1.5 6.5l11-4.5-4 10.5-2-4.5z"/><path d="M6.5 8l6-6"/>',
     quota: '<path d="M2 10a5 5 0 0 1 10 0"/><path d="M7 10l2.5-3.5"/><circle cx="7" cy="10" r="0.8"/>',
     lines: '<circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="10.5" r="1.5"/><circle cx="10" cy="5.5" r="1.5"/><path d="M4 5v4M10 7c0 2.2-2 2.8-5 2.9"/>',
     workRoots: '<path d="M1.5 3.5a1 1 0 0 1 1-1h3L7 4h4.5a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1z"/>'
@@ -194,7 +195,7 @@ export type Session = { cwd?: unknown; isArchived?: boolean; isRunning?: boolean
 export type Line = { LineSlug: string; WorkRoot: string; CheckpointType?: string | null; CheckpointUpdatedUtc?: string | null; NextStepSummary?: string | null; Error?: string | null }
 export type Root = { Path: string; IsLinkedWorktree?: boolean | null; Branch?: string | null; DirtyCount?: number | null; MainAhead?: number | null; MainBehind?: number | null; Upstream?: string | null; UpstreamAhead?: number | null; Error?: string | null }
 export type Quota = { Name: string; State: string; CodexHome?: string | null; Error?: string | null; ErrorKind?: string | null; ErrorReason?: string | null; PrimaryRemaining?: number | null; SecondaryRemaining?: number | null; PrimaryResetsAtLocal?: string | null; SecondaryResetsAtLocal?: string | null; PrimaryWindowMinutes?: number | null }
-export type Document = { scannedRoots: string[]; lines: Line[]; workRoots: Root[]; quota: Quota[]; warnings: string[] }
+export type Document = { scannedRoots: string[]; lines: Line[]; workRoots: Root[]; quota: Quota[]; warnings: string[]; dispatch?: Dispatch | null }
 export type WorktreeEntry = { path: string; isBare: boolean }
 export type GitProbe = { kind: 'failed' } | { kind: 'notRepo' } | { kind: 'repo'; topLevel: string; worktrees: WorktreeEntry[] | null }
 export type CurrentRepo = { name: string; isGit: boolean; roots: string[]; forced: string[] }
@@ -367,7 +368,7 @@ export function parseScriptOutput(stdout: string): Result<Document> {
     const value: unknown = JSON.parse(stdout.slice(start, end + 1))
     if (!isRecord(value) || !Array.isArray(value.scannedRoots)) throw new Error('缺少 scannedRoots')
     if (!value.scannedRoots.every(item => typeof item === 'string') || !Array.isArray(value.lines) || !Array.isArray(value.workRoots) || !Array.isArray(value.quota)) throw new Error('腳本資料格式錯誤')
-    return { ok: true, value: { scannedRoots: value.scannedRoots, lines: value.lines.filter(isLine), workRoots: value.workRoots.filter(isRoot), quota: value.quota.filter(isQuota), warnings: Array.isArray(value.warnings) ? value.warnings.filter((item): item is string => typeof item === 'string') : [] } }
+    return { ok: true, value: { scannedRoots: value.scannedRoots, lines: value.lines.filter(isLine), workRoots: value.workRoots.filter(isRoot), quota: value.quota.filter(isQuota), warnings: Array.isArray(value.warnings) ? value.warnings.filter((item): item is string => typeof item === 'string') : [], dispatch: parseDispatch(value.dispatch) } }
   } catch (error) {
     return { ok: false, error: String(error instanceof Error ? error.message : error).slice(0, 120) }
   }
@@ -512,8 +513,8 @@ export function lowestPrimary(quota: Quota[]): number | null {
   const values = quota.filter(account => account.State === 'ok').map(account => roundPercent(account.PrimaryRemaining)).filter((value): value is number => value !== null)
   return values.length ? Math.min(...values) : null
 }
-export function statusText(running: number | null, lowest: number | null): string | undefined {
-  const parts = [running === null ? '' : `${running} 執行中`, lowest === null ? '' : `額度 ${lowest}%`].filter(Boolean)
+export function statusText(running: number | null, lowest: number | null, waiting = 0): string | undefined {
+  const parts = [waiting > 0 ? `${waiting} 等你` : '', running === null ? '' : `${running} 執行中`, lowest === null ? '' : `額度 ${lowest}%`].filter(Boolean)
   return parts.length ? parts.join(' · ') : undefined
 }
 
@@ -595,7 +596,7 @@ const row = (name: string, fields: Partial<Omit<BoardRow, 'name'>> = {}): BoardR
 const block = (rows: BoardRow[], limit = rows.length, stalledRows: BoardRow[] = []): BoardBlock => ({ rows: rows.slice(0, limit), stalledRows, hiddenCount: Math.max(0, rows.length - limit), errorMessage: null })
 const errorBlock = (message: string): BoardBlock => ({ rows: [], stalledRows: [], hiddenCount: 0, errorMessage: message })
 export function errorSnapshot(message: string): BoardSnapshot {
-  return { sessions: errorBlock(message), lines: errorBlock(message), workRoots: errorBlock(message), quota: errorBlock(message), currentLabel: null, scannedRoots: [] }
+  return { sessions: errorBlock(message), dispatch: errorBlock(message), lines: errorBlock(message), workRoots: errorBlock(message), quota: errorBlock(message), currentLabel: null, scannedRoots: [], waitingCount: 0, dispatchDetail: null }
 }
 const clip = (value: string, limit: number): string => Array.from(value).length > limit ? Array.from(value).slice(0, limit).join('') + '…' : value
 export function loginCommand(codexHome: unknown): string | null {
@@ -636,16 +637,25 @@ export function lineRightText(type: string | null | undefined, timeText: string)
   const label = checkpointLabel(type)
   return [label === 'Dev 回收' || label === '-' ? '' : label, timeText].filter(Boolean).join(' · ')
 }
-export function buildSnapshot(script: Result<Document>, sessions: Result<Session[]>, now: Date, current: CurrentRepo | null = null, branches: ReadonlySet<string> | null = null): BoardSnapshot {
-  if (!script.ok) return { sessions: errorBlock('無法判定掃描範圍'), lines: errorBlock(script.error), workRoots: errorBlock(script.error), quota: errorBlock(script.error), currentLabel: currentLabel(current), scannedRoots: [] }
+export function buildSnapshot(script: Result<Document>, sessions: Result<Session[]>, now: Date, current: CurrentRepo | null = null, branches: ReadonlySet<string> | null = null, waiting: WaitingEntry[] = []): BoardSnapshot {
+  if (!script.ok) return { sessions: errorBlock('無法判定掃描範圍'), dispatch: errorBlock(script.error), lines: errorBlock(script.error), workRoots: errorBlock(script.error), quota: errorBlock(script.error), currentLabel: currentLabel(current), scannedRoots: [], waitingCount: 0, dispatchDetail: null }
   const data = script.value
   const filtered = scopedSessions(script, sessions) ?? []
   const running = new Set(filtered.filter(session => session.isRunning === true).map(session => mapSessionToLine(session, data)).filter((slug): slug is string => slug !== null))
-  const sessionBlock = !sessions.ok ? errorBlock(sessions.error) : block(sortSessionsByActivity(filtered).map(session => {
+  const waitingItems = sessions.ok ? scopedWaiting(filtered, waiting, now.getTime()) : []
+  const activeWaiting = waitingItems.filter(item => item.state === 'active')
+  const waitingBySession = new Map(waitingItems.map(item => [item.entry.sessionId, item]))
+  const activeIds = new Set(activeWaiting.map(item => item.entry.sessionId))
+  const orderedSessions = [...activeWaiting.map(item => item.session), ...sortSessionsByActivity(filtered).filter(session => !session.sessionId || !activeIds.has(session.sessionId))]
+  const sessionBlock = !sessions.ok ? errorBlock(sessions.error) : block(orderedSessions.map(session => {
     const title = session.title || session.name || session.sessionId || '-'
     const line = mapSessionToLine(session, data)
+    const item = session.sessionId ? waitingBySession.get(session.sessionId) : undefined
+    if (item?.state === 'active') return row(title, { dot: 'warning', tag: line || '', right: `${waitingText(item.entry)} · ${relativeTime(item.entry.at, now)}`, rightShrink: true, link: sessionLink(session) })
+    if (item?.state === 'stale') return row(title, { dot: 'inactive', tag: line || '', right: staleWaitingText(item.entry, now), rightShrink: true, link: sessionLink(session) })
     return row(title, { dot: sessionTone(session.isRunning), tag: line || '', right: relativeTime(session.lastActivityAt, now), link: sessionLink(session) })
   }), SESSION_LIMIT)
+  const dispatch = data.dispatch ?? null
   const normalLines: BoardRow[] = []
   const stalledLines: BoardRow[] = []
   const landedContext: LandedContext = { rawLines: data.lines, workRoots: data.workRoots, currentRoots: current?.roots ?? [], branches }
@@ -668,12 +678,273 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
     return row(name, { dot: rootTone(root), right: root.Branch || '-', rightShrink: true, detail: rootDetail(root), isCurrent: current !== null && current.roots.some(path => normalizePath(path) === normalizePath(root.Path)) })
   })
   const quota = data.quota.map(account => {
-    if (account.State === 'unknown') return quotaErrorRow(account)
+    const extra = accountExtra(findDispatchAccount(dispatch, account.Name), now)
+    if (account.State === 'unknown') return { ...quotaErrorRow(account), extra }
     const primary = roundPercent(account.PrimaryRemaining)
     const secondary = roundPercent(account.SecondaryRemaining)
-    return row(account.Name, { dot: quotaDotTone(primary, secondary), right: primary === null ? '-' : `剩 ${primary}%`, bar: { percent: primary, tone: quotaTone(primary), window: windowLabel(account.PrimaryWindowMinutes) }, detail: quotaDetail(secondary, account.SecondaryResetsAtLocal ? time(account.SecondaryResetsAtLocal) : null) })
+    return row(account.Name, { dot: quotaDotTone(primary, secondary), right: primary === null ? '-' : `剩 ${primary}%`, bar: { percent: primary, tone: quotaTone(primary), window: windowLabel(account.PrimaryWindowMinutes) }, detail: quotaDetail(secondary, account.SecondaryResetsAtLocal ? time(account.SecondaryResetsAtLocal) : null), extra })
   })
   const quotaBlock = block(quota)
   if (data.warnings.length) quotaBlock.warning = data.warnings.join(' / ')
-  return { sessions: sessionBlock, lines: block(normalLines, LINE_LIMIT, stalledLines), workRoots: block(roots), quota: quotaBlock, currentLabel: currentLabel(current), scannedRoots: data.scannedRoots }
+  return { sessions: sessionBlock, dispatch: dispatchBlock(dispatch, now), lines: block(normalLines, LINE_LIMIT, stalledLines), workRoots: block(roots), quota: quotaBlock, currentLabel: currentLabel(current), scannedRoots: data.scannedRoots, waitingCount: activeWaiting.length, dispatchDetail: dispatchDetailText(dispatch, waitingDiagnostics(waiting, sessions.ok ? sessions.value : [], now.getTime())) }
+}
+
+export const DISPATCH_ENDED_LIMIT = 5
+export const WAITING_PREFIX = 'waiting:'
+export const SCRIPT_CACHE_KEY = 'script-cache'
+// 等待標示最多保留 24 小時，與淡化舊資料的門檻相同；超過即視為失效並由讀取端刪除。
+export const WAITING_MAX_AGE_MS = DIM_AFTER_MS
+// 寫入時間晚於讀取時間超過一個更新週期，視為時鐘不一致而不採信。
+export const WAITING_FUTURE_TOLERANCE_MS = REFRESH_MS
+export const WAITING_TOOL_NAMES = ['Bash', 'PowerShell', 'Write', 'Edit', 'NotebookEdit', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Agent', 'Skill']
+export type DispatchRun = { RunKey: string; LineSlug: string; State: string; LimitSource?: string | null; DispatchSlug?: string | null; TaskType?: string | null; Profile?: string | null; Account?: string | null; Model?: string | null; WorkRoot?: string | null; StartedUtc?: string | null; EndedUtc?: string | null; LastEventUtc?: string | null; RecordUpdatedUtc?: string | null; DurationSeconds?: number | null; Result?: string | null; FailureReason?: string | null; RejectionKind?: string | null; TerminatedByEntry?: string | null; Error?: string | null }
+export type DispatchUnsupported = { Profile?: string | null; Model?: string | null }
+export type DispatchAccount = { Name: string; LastResult?: string | null; LastFailureReason?: string | null; LastRejectionKind?: string | null; LastEndedUtc?: string | null; Unsupported: DispatchUnsupported[] }
+export type Dispatch = { runs: DispatchRun[]; accounts: DispatchAccount[]; totalCount: number; warnings: string[]; error: string | null; errorDetail?: string | null }
+export type WaitingKind = 'permission' | 'question' | 'plan'
+export type WaitingEntry = { key: string; sessionId: string; callId: string; kind: WaitingKind; tool: string | null; at: number }
+export type ScriptCache = { signature: string; owner: string; at: number; stdout: string }
+
+function isDispatchRun(value: unknown): value is DispatchRun {
+  return isRecord(value) && typeof value.RunKey === 'string' && typeof value.LineSlug === 'string' && typeof value.State === 'string'
+    && optional(value.DurationSeconds, 'number')
+    && ['LimitSource', 'DispatchSlug', 'TaskType', 'Profile', 'Account', 'Model', 'WorkRoot', 'StartedUtc', 'EndedUtc', 'LastEventUtc', 'RecordUpdatedUtc', 'Result', 'FailureReason', 'RejectionKind', 'TerminatedByEntry', 'Error'].every(key => optional(value[key], 'string'))
+}
+function toDispatchAccount(value: unknown): DispatchAccount | null {
+  if (!isRecord(value) || typeof value.Name !== 'string') return null
+  if (!['LastResult', 'LastFailureReason', 'LastRejectionKind', 'LastEndedUtc'].every(key => optional(value[key], 'string'))) return null
+  const text = (item: unknown): string | null => typeof item === 'string' ? item : null
+  const list = Array.isArray(value.Unsupported) ? value.Unsupported : isRecord(value.Unsupported) ? [value.Unsupported] : []
+  return { Name: value.Name, LastResult: text(value.LastResult), LastFailureReason: text(value.LastFailureReason), LastRejectionKind: text(value.LastRejectionKind), LastEndedUtc: text(value.LastEndedUtc),
+    Unsupported: list.filter(isRecord).map(item => ({ Profile: text(item.Profile), Model: text(item.Model) })) }
+}
+export function parseDispatch(value: unknown): Dispatch | null {
+  if (!isRecord(value)) return null
+  const runs = Array.isArray(value.runs) ? value.runs.filter(isDispatchRun) : []
+  const accounts = Array.isArray(value.accounts) ? value.accounts.map(toDispatchAccount).filter((item): item is DispatchAccount => item !== null) : []
+  return { runs, accounts, totalCount: isCount(value.totalCount) ? Math.max(value.totalCount, runs.length) : runs.length,
+    warnings: Array.isArray(value.warnings) ? value.warnings.filter((item): item is string => typeof item === 'string') : [],
+    error: typeof value.error === 'string' && value.error.trim() ? value.error : null,
+    errorDetail: typeof value.errorDetail === 'string' && value.errorDetail.trim() ? value.errorDetail : null }
+}
+
+const TASK_LABELS: Record<string, string> = { review: '審查', test: '測試', advise: '顧問', factcheck: '事實查核', image: '影像' }
+export function dispatchTaskLabel(run: DispatchRun): string {
+  return (run.TaskType && TASK_LABELS[run.TaskType]) || '派工'
+}
+export function durationText(seconds: number | null | undefined): string {
+  if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return ''
+  if (seconds < 60) return `${Math.floor(seconds)} 秒`
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} 分鐘`
+  const minutes = Math.floor((seconds % 3600) / 60)
+  return `${Math.floor(seconds / 3600)} 小時${minutes ? ` ${minutes} 分` : ''}`
+}
+export function rejectionLabel(kind: string | null | undefined): string {
+  return kind === 'usage-limit' ? '額度用完' : kind === 'unauthorized' ? '登入失效' : kind === 'model-not-supported' ? '帳號不支援這個 model' : kind === 'rate-limited' ? '請求過於頻繁' : '服務端拒絕'
+}
+export function failureLabel(reason: string | null | undefined): string {
+  return reason === 'timeout' ? '超過時限' : reason === 'nonzero-exit' ? '執行異常結束' : reason === 'no-last-message' ? '沒有產出結論'
+    : reason === 'report-missing' || reason === 'report-empty' ? '沒有產出報告' : reason === 'launch-failed' ? '無法啟動' : '原因不明'
+}
+export function dispatchResultText(result: string | null | undefined, failureReason: string | null | undefined, rejectionKind: string | null | undefined): string {
+  if (result === 'success') return '完成'
+  if (result === 'rejected') return `被拒絕（${rejectionLabel(rejectionKind || failureReason)}）`
+  if (result === 'failed') return `失敗（${failureLabel(failureReason)}）`
+  return '結果不明'
+}
+export function dispatchResultTone(result: string | null | undefined): DotTone {
+  return result === 'success' ? 'inactive' : result === 'rejected' ? 'warning' : result === 'failed' ? 'error' : 'inactive'
+}
+function elapsedSeconds(value: unknown, now: Date): number | null {
+  const started = toEpochMs(value)
+  return started === null ? null : Math.max(0, (now.getTime() - started) / 1000)
+}
+export function dispatchRow(run: DispatchRun, now: Date): BoardRow {
+  const name = `${run.LineSlug} · ${dispatchTaskLabel(run)}`
+  const account = run.Account || ''
+  if (run.State === 'running') {
+    // 最後事件的時間只作為資訊顯示；長時間推理期間沒有事件屬正常，不以顏色暗示異常。
+    const lastEvent = relativeTime(run.LastEventUtc, now)
+    const detail: DetailSegment[] = [{ text: lastEvent ? `最後事件 ${lastEvent}` : '尚無事件', tone: 'normal' }]
+    if (run.Model) detail.push({ text: ` · ${run.Model}`, tone: 'normal' })
+    const elapsed = durationText(elapsedSeconds(run.StartedUtc, now))
+    return row(name, { tag: account, right: elapsed ? `已跑 ${elapsed}` : '執行中', dot: 'success', detail })
+  }
+  if (run.State === 'overdue') {
+    const started = relativeTime(run.StartedUtc, now)
+    const lastEvent = relativeTime(run.LastEventUtc, now)
+    return row(name, { tag: account, right: started ? `${started}開始` : '', dot: 'error', detail: [{ text: `超過時限仍沒有結果，可能已中斷${lastEvent ? ` · 最後事件 ${lastEvent}` : ''}`, tone: 'attention' }] })
+  }
+  const updated = toEpochMs(run.EndedUtc) ?? toEpochMs(run.RecordUpdatedUtc)
+  const when = relativeTime(updated, now)
+  if (run.State !== 'ended') return row(`${run.LineSlug} · 紀錄無法讀取`, { right: when, dot: 'error', tone: 'error' })
+  const detail: DetailSegment[] = [{ text: dispatchResultText(run.Result, run.FailureReason, run.RejectionKind), tone: run.Result === 'success' ? 'normal' : 'attention' }]
+  const took = durationText(run.DurationSeconds)
+  if (took) detail.push({ text: ` · 耗時 ${took}`, tone: 'normal' })
+  return row(name, { tag: account, right: when, dot: dispatchResultTone(run.Result), detail, tone: updated !== null && updated < now.getTime() - DIM_AFTER_MS ? 'dim' : 'normal' })
+}
+export function dispatchBlock(dispatch: Dispatch | null, now: Date): BoardBlock {
+  if (dispatch === null) return errorBlock('狀態腳本沒有提供派工資料，請更新腳本後重新整理')
+  if (dispatch.error !== null) return errorBlock('派工紀錄無法彙整，請按「重新整理」再試一次')
+  const active = dispatch.runs.filter(run => run.State === 'running' || run.State === 'overdue')
+  const rest = dispatch.runs.filter(run => run.State !== 'running' && run.State !== 'overdue').slice(0, DISPATCH_ENDED_LIMIT)
+  const rows = [...active, ...rest].map(run => dispatchRow(run, now))
+  const result: BoardBlock = { rows, stalledRows: [], hiddenCount: Math.max(0, dispatch.totalCount - rows.length), errorMessage: null }
+  if (dispatch.warnings.length) result.warning = dispatch.warnings.join(' / ')
+  return result
+}
+export function dispatchDetailText(dispatch: Dispatch | null, waiting: WaitingDiagnostic[] = []): string | null {
+  const runs = dispatch?.runs ?? []
+  const error = dispatch?.error ?? null
+  if (!runs.length && error === null && !waiting.length) return null
+  return JSON.stringify({ runs, error, errorDetail: dispatch?.errorDetail ?? null, waiting }, null, 2)
+}
+export function accountExtra(account: DispatchAccount | undefined, now: Date): DetailSegment[] | null {
+  if (!account) return null
+  const result: DetailSegment[] = []
+  if (account.LastResult) {
+    const when = relativeTime(account.LastEndedUtc, now)
+    result.push({ text: `上次派工${dispatchResultText(account.LastResult, account.LastFailureReason, account.LastRejectionKind)}${when ? ` · ${when}` : ''}`, tone: account.LastResult === 'success' ? 'normal' : 'attention' })
+  }
+  if (account.Unsupported.length) {
+    const models = [...new Set(account.Unsupported.map(item => item.Model).filter((item): item is string => !!item))]
+    if (result.length) result.push({ text: ' · ', tone: 'normal' })
+    result.push({ text: models.length && account.Unsupported.every(item => !!item.Model) ? `不支援 ${models.join('、')}` : '有不支援的 model', tone: 'attention' })
+  }
+  return result.length ? result : null
+}
+export function findDispatchAccount(dispatch: Dispatch | null, name: string): DispatchAccount | undefined {
+  return dispatch?.accounts.find(account => account.Name.toLowerCase() === name.toLowerCase())
+}
+
+const STORE_ID = /^[A-Za-z0-9_-]{1,128}$/
+export function waitingSessionPrefix(sessionId: string): string { return `${WAITING_PREFIX}${sessionId}:` }
+export function waitingKey(sessionId: string, callId: string): string | null {
+  return STORE_ID.test(sessionId) && STORE_ID.test(callId) ? waitingSessionPrefix(sessionId) + callId : null
+}
+export function parseWaiting(key: string, value: unknown): WaitingEntry | null {
+  if (!key.startsWith(WAITING_PREFIX) || !isRecord(value)) return null
+  const rest = key.slice(WAITING_PREFIX.length)
+  const separator = rest.indexOf(':')
+  if (separator < 1) return null
+  const sessionId = rest.slice(0, separator)
+  const callId = rest.slice(separator + 1)
+  if (!STORE_ID.test(sessionId) || !STORE_ID.test(callId)) return null
+  if (value.kind !== 'permission' && value.kind !== 'question' && value.kind !== 'plan') return null
+  if (typeof value.at !== 'number' || !Number.isFinite(value.at) || value.at <= 0 || value.at > MAX_DATE_MS) return null
+  return { key, sessionId, callId, kind: value.kind, tool: typeof value.tool === 'string' && WAITING_TOOL_NAMES.includes(value.tool) ? value.tool : null, at: value.at }
+}
+export function waitingText(entry: WaitingEntry): string {
+  return entry.kind === 'question' ? '等你回答' : entry.kind === 'plan' ? '等你核准計畫' : `等你同意${entry.tool ? `：${entry.tool}` : ''}`
+}
+export function waitingKindForTool(tool: string): WaitingKind | null { return tool === 'ExitPlanMode' ? 'plan' : tool === 'AskUserQuestion' ? 'question' : null }
+// Date 可表示的最大毫秒數；超過時無法轉成時間字串。
+const MAX_DATE_MS = 8.64e15
+export function isWaitingExpired(entry: WaitingEntry, nowMs: number): boolean {
+  return nowMs - entry.at > WAITING_MAX_AGE_MS
+}
+// 外掛取不到「使用者已同意權限」的訊號。超過這段時間後，無法分辨是仍在等待，還是已同意而工具仍在執行，因此改為只陳述曾有請求。
+export const PERMISSION_ACTIVE_MS = 5 * 60 * 1000
+// 寫入時間與 lastActivityAt 由不同行程取得，同回合的其他工具結果也可能稍後寫入；一個更新週期內的活動視為同一次請求的前後。
+export const ACTIVITY_TOLERANCE_MS = REFRESH_MS
+export type WaitingState = 'active' | 'stale' | 'hidden'
+export type WaitingReason = 'ok' | 'stale-permission' | 'archived' | 'no-activity-time' | 'activity-after' | 'future' | 'expired' | 'not-running' | 'not-listed'
+export type WaitingVerdict = { state: WaitingState; reason: WaitingReason }
+const PRUNE_REASONS: WaitingReason[] = ['archived', 'activity-after', 'expired', 'not-running']
+// 顯示與否只看寫入時間、Session 是否在清單內且未封存、寫入後有沒有新活動。isRunning 的語意未經驗證，只用來提早移除已超過 PERMISSION_ACTIVE_MS 的權限請求。
+export function waitingVerdict(session: Session | undefined, entry: WaitingEntry, nowMs: number): WaitingVerdict {
+  if (!session) return { state: 'hidden', reason: 'not-listed' }
+  if (session.isArchived === true) return { state: 'hidden', reason: 'archived' }
+  if (entry.at - nowMs > WAITING_FUTURE_TOLERANCE_MS) return { state: 'hidden', reason: 'future' }
+  if (isWaitingExpired(entry, nowMs)) return { state: 'hidden', reason: 'expired' }
+  const activity = toEpochMs(session.lastActivityAt)
+  if (activity === null) return { state: 'hidden', reason: 'no-activity-time' }
+  if (activity > entry.at + ACTIVITY_TOLERANCE_MS) return { state: 'hidden', reason: 'activity-after' }
+  if (entry.kind === 'permission' && nowMs - entry.at > PERMISSION_ACTIVE_MS) {
+    return session.isRunning === false ? { state: 'hidden', reason: 'not-running' } : { state: 'stale', reason: 'stale-permission' }
+  }
+  return { state: 'active', reason: 'ok' }
+}
+export type WaitingItem = { session: Session; entry: WaitingEntry; state: 'active' | 'stale' }
+export function scopedWaiting(sessions: Session[], waiting: WaitingEntry[], nowMs: number): WaitingItem[] {
+  const result: WaitingItem[] = []
+  for (const session of sessions) {
+    if (!session.sessionId) continue
+    const judged = waiting.filter(item => item.sessionId === session.sessionId).map(entry => ({ entry, state: waitingVerdict(session, entry, nowMs).state })).sort((a, b) => a.entry.at - b.entry.at)
+    const pick = judged.find(item => item.state === 'active') ?? judged.find(item => item.state === 'stale')
+    if (pick && pick.state !== 'hidden') result.push({ session, entry: pick.entry, state: pick.state })
+  }
+  return result.sort((a, b) => a.entry.at - b.entry.at)
+}
+export function staleWaitingText(entry: WaitingEntry, now: Date): string {
+  const when = relativeTime(entry.at, now)
+  return `同意請求 ${when}${entry.tool ? `：${entry.tool}` : ''}`
+}
+// 讀取端可刪除的鍵：該 Session 已封存、寫入後已有新活動、逾時、權限請求超過 PERMISSION_ACTIVE_MS 且已不在執行中。不在 Session 清單內的鍵不刪除，清單可能不完整，留到逾時由讀取時移除。自己的鍵交給寫入端處理。
+export function prunableWaitingKeys(waiting: WaitingEntry[], sessions: Session[], selfId: string | null, nowMs: number): string[] {
+  const byId = new Map(sessions.filter(session => typeof session.sessionId === 'string').map(session => [session.sessionId as string, session]))
+  return waiting.filter(entry => {
+    if (entry.sessionId === selfId) return false
+    const session = byId.get(entry.sessionId)
+    if (!session) return false
+    return PRUNE_REASONS.includes(waitingVerdict(session, entry, nowMs).reason)
+  }).map(entry => entry.key)
+}
+export type WaitingDiagnostic = { sessionId: string; title: string | null; kind: WaitingKind; tool: string | null; writtenAt: string; ageSeconds: number; state: WaitingState; reason: WaitingReason; isRunning: unknown; lastActivityAt: unknown }
+export function waitingDiagnostics(waiting: WaitingEntry[], sessions: Session[], nowMs: number): WaitingDiagnostic[] {
+  const byId = new Map(sessions.filter(session => typeof session.sessionId === 'string').map(session => [session.sessionId as string, session]))
+  return [...waiting].sort((a, b) => a.at - b.at).map(entry => {
+    const session = byId.get(entry.sessionId)
+    const verdict = waitingVerdict(session, entry, nowMs)
+    return { sessionId: entry.sessionId, title: session?.title || session?.name || null, kind: entry.kind, tool: entry.tool, writtenAt: new Date(entry.at).toISOString(), ageSeconds: Math.round((nowMs - entry.at) / 1000), state: verdict.state, reason: verdict.reason, isRunning: session ? session.isRunning ?? null : null, lastActivityAt: session ? session.lastActivityAt ?? null : null }
+  })
+}
+export function newWaiting(previous: ReadonlySet<string> | null, current: { session: Session; entry: WaitingEntry; state?: 'active' | 'stale' }[]): { next: Set<string>; added: { title: string; text: string }[] } {
+  const next = new Set<string>()
+  const added: { title: string; text: string }[] = []
+  for (const item of current) {
+    if (item.state === 'stale') continue
+    const signature = `${item.entry.key}@${item.entry.at}`
+    next.add(signature)
+    if (previous !== null && !previous.has(signature)) added.push({ title: item.session.title || item.session.name || item.entry.sessionId, text: waitingText(item.entry) })
+  }
+  return { next, added }
+}
+export function waitingToastText(added: { title: string; text: string }[]): string {
+  if (added.length === 1) return `「${clip(added[0].title, 30)}」${added[0].text}`
+  return `${added.length} 個 Session 在等你：${added.slice(0, 3).map(item => clip(item.title, 30)).join('、')}${added.length > 3 ? '…' : ''}`
+}
+export function parseSelfSessionId(result: unknown): string | null {
+  try {
+    if (!isRecord(result) || result.isError === true) return null
+    let body: unknown = result.structuredContent
+    if (body == null && Array.isArray(result.content)) body = JSON.parse(result.content.filter(item => isRecord(item) && item.type === 'text').map(item => String((item as { text?: unknown }).text ?? '')).join('\n'))
+    return isRecord(body) && typeof body.sessionId === 'string' && STORE_ID.test(body.sessionId) ? body.sessionId : null
+  } catch { return null }
+}
+export type PendingCall = { tool: string; asked: boolean; marked: boolean }
+// PermissionRequest 不帶工具呼叫識別，依工具名稱對應到進行中且尚未標示的呼叫，tool.check 已判為需要詢問者優先。
+// 同一優先層有兩筆以上而無法分辨時不對應，寧可不顯示這次等待，也不寫到錯的呼叫上。
+export function pickPermissionCall(calls: ReadonlyMap<string, PendingCall>, tool: string): string | null {
+  if (waitingKindForTool(tool) !== null) return null
+  const asked: string[] = []
+  const others: string[] = []
+  for (const [id, call] of calls) {
+    if (call.tool !== tool || call.marked) continue
+    if (call.asked) asked.push(id)
+    else others.push(id)
+  }
+  if (asked.length) return asked.length === 1 ? asked[0] : null
+  return others.length === 1 ? others[0] : null
+}
+
+export function scriptSignature(argv: string[]): string {
+  const start = argv.indexOf('-File')
+  return (start < 0 ? argv : argv.slice(start + 1)).join('\u0001')
+}
+export function reusableScriptOutput(value: unknown, signature: string, owner: string, nowMs: number, maxAgeMs: number): { stdout: string; at: number } | null {
+  if (!isRecord(value) || value.signature !== signature || typeof value.owner !== 'string' || value.owner === owner) return null
+  if (typeof value.stdout !== 'string' || typeof value.at !== 'number' || !Number.isFinite(value.at)) return null
+  const age = nowMs - value.at
+  return age >= 0 && age < maxAgeMs ? { stdout: value.stdout, at: value.at } : null
 }

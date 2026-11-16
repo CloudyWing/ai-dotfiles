@@ -1,7 +1,7 @@
 {
   "name": "line-status-board",
-  "version": "0.6.0",
-  "description": "在 Desktop 顯示工作線、Session、工作目錄與 Codex 額度狀態。",
+  "version": "0.7.0",
+  "description": "在 Desktop 顯示 Session、派工、工作線、工作目錄與 Codex 額度狀態。",
   "types": "./types/index.d.ts",
   "userConfig": {
     "workRoots": {
@@ -19,7 +19,7 @@
     "notifySessionDone": {
       "type": "boolean",
       "title": "Session 跑完提醒",
-      "description": "Session 由執行中轉為閒置時顯示提醒。",
+      "description": "Session 由執行中轉為閒置，或開始等你同意、回答或核准計畫時顯示提醒。",
       "default": true
     }
   }

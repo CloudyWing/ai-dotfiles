@@ -136,14 +136,16 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 #### 狀態看板 plugin
 
-`line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示「工作總覽」，依序為 Session、Codex 額度、工作線與工作目錄四個區塊。資料來自 `scripts/Get-LineStatus.ps1 -AsJson` 與 `ccd_session_mgmt.list_sessions`，每 60 秒更新一次，也可按「重新整理」，更新過程不耗用模型 token。掃描範圍為預設清單加上目前 Session 所在的 repo。
+`line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示「工作總覽」，依序為 Session、派工、Codex 額度、工作線與工作目錄五個區塊。資料來自 `scripts/Get-LineStatus.ps1 -AsJson` 與 `ccd_session_mgmt.list_sessions`，每 60 秒更新一次，也可按「重新整理」，更新過程不耗用模型 token。同一組掃描範圍在 60 秒內已由其他 Session 執行過腳本時，定時更新沿用該次結果，「最後更新」顯示該結果產生的時間，資料最舊約為兩個更新週期；按「重新整理」或切換工作目錄時一律重新執行。掃描範圍為預設清單加上目前 Session 所在的 repo。
 
 - 點 Session 列會開啟該 Session。
-- Codex 額度列在帳號登入失效時顯示「登入失效」與該帳號的重新登入命令，達到用量上限時顯示「已達上限」。登入由使用者自行執行。沒有週視窗的帳號，額度列的週額度位置顯示「無週視窗」。
-- 狀態列顯示一行摘要，內容為執行中 Session 數與額度最低帳號的剩餘量。
+- Session 在等你回答提問或核准計畫時排在最前面，黃點標示「等你回答」或「等你核准計畫」與已等待的時間，並跳一次提醒。等你同意工具權限時同樣排在最前面，標示「等你同意」；外掛取不到「已同意」的訊號，超過 5 分鐘後無法分辨仍在等待還是已同意而工具仍在執行，因此改為灰點與「同意請求 N 分鐘前」，不計入狀態列，也不再提醒。只有安裝此 plugin 的 Desktop Session 會回報等待狀態；該 Session 已封存、等待之後已有新的活動，或等待超過 24 小時時不顯示。
+- 派工區塊列出 `scripts/Invoke-CodexRun.ps1` 執行中與最近結束的派工，含線、類型、帳號、已執行時間、最後事件時間、結果與耗時。最後事件的時間只供參考，長時間推理期間沒有事件屬正常。已超過總時限、且最後事件也早於總時限仍沒有結果的派工以紅色標示為可能已中斷。紀錄帶有該次的時限設定時，總時限以紀錄為準（只帶其中一項時另一項取入口預設值），最後事件只要早於回合結束寬限（至少 60 秒）就視為沒有近期事件。最後活動超過 24 小時仍沒有結果的紀錄不再列出。「複製診斷明細」複製派工的完整欄位，以及每個等待項目當下讀到的 `isRunning`、`lastActivityAt` 與判定結果。
+- Codex 額度列在帳號登入失效時顯示「登入失效」與該帳號的重新登入命令，達到用量上限時顯示「已達上限」。登入由使用者自行執行。沒有週視窗的帳號，額度列的週額度位置顯示「無週視窗」。各帳號另顯示最近一次派工的結果，以及 24 小時內被服務端回報不支援的 model。
+- 狀態列顯示一行摘要，內容為等你處理的 Session 數、執行中 Session 數與額度最低帳號的剩餘量。
 - Session 由執行中轉為閒置時跳一次提醒；看板載入後取得的第一次狀態只作為比較基準。
 - 全部帳號的額度剩餘量都低於 20% 時跳一次提醒，提醒文字依各帳號的額度視窗長度標示（例如 5 小時、30 天）。同一視窗只提醒一次，視窗重設後才再提醒。已達上限與登入失效的帳號視同低於門檻；有帳號查詢失敗時不提醒。
-- 清理按鈕呼叫 `scripts/Invoke-WorkOverviewCleanup.ps1`，先列出可清理項目、大小與不能清的原因，按確認後才刪除。看板對工作區檔案的寫入只有清理；提醒狀態存在 plugin 的 store，複製按鈕寫入剪貼簿。
+- 清理按鈕呼叫 `scripts/Invoke-WorkOverviewCleanup.ps1`，先列出可清理項目、大小與不能清的原因，按確認後才刪除。看板對工作區檔案的寫入只有清理；提醒狀態、等待狀態與共用的腳本結果存在 plugin 的 store，複製按鈕寫入剪貼簿。
 
 Setup 的 8b 會安裝並啟用此 plugin，Desktop 開新 Session 時自動開啟 Pane。不執行 Setup 時，可手動安裝：
 
@@ -152,7 +154,7 @@ claude plugin marketplace add ~/.ai-agents/claude-plugins
 claude plugin install line-status-board@ai-agents-local --scope user
 ```
 
-`workRoots` 可設定以分號分隔的掃描位置，空白時使用腳本預設值；`scriptPath` 可指定腳本路徑，空白時自動尋找；`notifySessionDone` 控制 Session 跑完提醒，預設開啟。修改設定後執行 `/reload-plugins`。plugin 需搭配同一 repo 的新版腳本。
+`workRoots` 可設定以分號分隔的掃描位置，空白時使用腳本預設值；`scriptPath` 可指定腳本路徑，空白時自動尋找；`notifySessionDone` 控制 Session 跑完與等你處理的提醒，預設開啟。修改設定後執行 `/reload-plugins`。plugin 需搭配同一 repo 的新版腳本。已安裝的 plugin 直接讀取本 repo 的資料夾，改動落地後新開的 Session 即使用新版，不需重跑 Setup。
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）
 
@@ -280,7 +282,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 
 - `scripts/` 根目錄只放使用者可直接執行的 Verb-Noun `.ps1` 與既有 `.csx` 腳本。
 - `scripts/Get-DispatchProgress.ps1` 唯讀查詢派遣進度，可依 `LineSlug` 或 `DispatchSlug` 篩選；預設顯示未結束與最近 24 小時內結束的項目。
-- `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態與額度。
+- `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態、額度與 `Invoke-CodexRun.ps1` 的執行紀錄。
 - `scripts/Select-DispatchExecutor.ps1` 依任務標註與 `scripts/dispatch/executor-registry.json` 選出派工執行者並輸出 `[派工判定]` 行，唯讀、不呼叫網路。
 - `scripts/New-DispatchInputs.ps1` 產生資源派遣（唯讀）的輸入，一次寫出 Request、`line.json`（不存在時）、prompt 與派遣單，並以 `Invoke-CodexDispatch.ps1 -Operation Dispatch -ValidateOnly` 自檢；自檢失敗時刪除本次建立的檔案，新建的 `line.json` 保留。
 - `scripts/Invoke-CodexRun.ps1` 對一份派遣檔執行一次 `codex exec`，目前用於審查類，啟動前比對帳號目錄的檔位設定檔與 repo 產生檔。帳號由 `machine.json` 登記清單選擇，讀取主 checkout 的 `.local/machine.json`，在線工作樹發動時相同。專案信任的處理見 `skills/codex-dispatch/references/run.md` 的「帳號」章節。
@@ -297,7 +299,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
 - `scripts/tests/Test-CodexRunAll.ps1` 執行 `Invoke-CodexRun.ps1` 的全部測試，不呼叫 Codex 服務端。`scripts/tests/Invoke-CodexRunLive.ps1 -Scenario review|failover` 以真實 Codex 驗證一筆審查與一筆換帳號，加上 `-DryRun` 只列出將執行的內容，不加 `-DryRun` 會呼叫 Codex 服務端並消耗額度。
 - 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
-- `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts` 與 `render.test.tsx` 兩個測試檔，從 `claude-code/testing` 匯入。
+- `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts`、`render.test.tsx` 與 `dispatch.test.tsx` 三個測試檔，從 `claude-code/testing` 匯入，以 `claude plugin test claude-plugins/line-status-board` 執行。
 - `claude-plugins/` 內由工具自動呼叫的 hook 腳本，使用全小寫 kebab-case 命名。
 - `.githooks/` 內為 Git 原生 Hook，由 `Setup-AIGlobalConfig.ps1` 透過 `core.hooksPath` 啟用。
 
