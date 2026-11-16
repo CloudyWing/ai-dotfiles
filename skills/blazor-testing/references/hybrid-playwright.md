@@ -16,7 +16,7 @@
 
 來源：<https://playwright.dev/dotnet/docs/webview2>、<https://learn.microsoft.com/en-us/microsoft-edge/webview2/how-to/playwright>。
 
-片段：WebView2PlaywrightTests.cs（連線與重試）
+片段：WebView2PlaywrightTests.cs（連線與重試）。`GetFreePort` 由專案自備，作法見上方「隔離平行執行」一條。
 
 ```csharp
 using System.Diagnostics;

@@ -25,17 +25,7 @@ policy.allow_implicit_invocation: false
 
 ### 2. 判斷目標編碼
 
-依副檔名與專案框架決定目標編碼，規則同 CLAUDE.md §2 Encoding Strategy：
-
-| 檔案類型 | 目標編碼 |
-| --- | --- |
-| `*.ps1` | UTF-8 **with BOM** |
-| `*.csv` | UTF-8 **with BOM** |
-| `.NET Framework` 的 `*.cs`, `*.vb`, `*.aspx`, `*.master` | UTF-8 **with BOM** |
-| `net4x` 框架的 `*.cshtml` | UTF-8 **with BOM** |
-| 其他所有檔案 | UTF-8 **無 BOM** |
-
-判斷 `*.cshtml` 的框架版本：讀取同專案的 `.csproj`，檢查 `<TargetFramework>` 欄位。`net4x` 為 .NET Framework，其餘（`net5+`、`netcoreapp`）為 .NET Core/ASP.NET Core。
+依副檔名與專案框架決定目標編碼，判定規則以 `instructions.md` §2「Encoding Strategy」為準（含 `*.cshtml` 依 `.csproj` 的 `<TargetFramework>` 判定）。
 
 ### 3. 偵測來源編碼
 

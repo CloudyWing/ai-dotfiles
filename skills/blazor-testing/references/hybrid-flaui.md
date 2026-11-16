@@ -36,7 +36,7 @@ csproj 片段：以 `AssemblyMetadata` 傳入受測 exe 路徑，測試可再用
 </ItemGroup>
 ```
 
-UI 測試專案啟用 ImplicitUsings，套件為 `FlaUI.Core`、`FlaUI.UIA3`、`NUnit`、`NUnit3TestAdapter`、`Microsoft.NET.Test.Sdk`；Playwright 範例另加 `Microsoft.Playwright`，截圖範例另加 `System.Drawing.Common`。本章與 `no-interference.md` 的範例以 FlaUI 5.0.0、Microsoft.Playwright 1.64.1、System.Drawing.Common 10.0.2 建置。
+UI 測試專案啟用 ImplicitUsings，套件為 `FlaUI.Core`、`FlaUI.UIA3`、`NUnit`、`NUnit3TestAdapter`、`Microsoft.NET.Test.Sdk`；Playwright 範例另加 `Microsoft.Playwright`，以 `PrintWindow` 截圖時另加 `System.Drawing.Common`（見 `no-interference.md`）。本章與 `no-interference.md` 的範例以 FlaUI 5.0.0、Microsoft.Playwright 1.64.1、System.Drawing.Common 10.0.2 建置。
 
 路徑以 `$(TargetFramework)` 組成，受測專案與測試專案的 TFM 必須一致。路徑寫死 TFM 時，TFM 變更後路徑失效，見 `../SKILL.md` 的 `## Blazor Hybrid 專屬陷阱`。
 
