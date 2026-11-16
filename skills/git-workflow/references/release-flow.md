@@ -27,6 +27,10 @@
 - 純文件修改 commit 到 `main` 之後，進行中的 `release/*`、`hotfix/*` 在下一次於其上 commit 前或合併前（先到者為準），以 `git merge-base --is-ancestor main <分支>` 檢查。落後時以本體「整理流程」的整理分支 rebase 到 `main`，走 `history-rewrite.md` 第一層「整合上游變更」路徑；分支已推送時依本體「改寫與 force push 邊界」取得當輪授權。
 - 開發期間（合併前流程以外）的 commit 變更集含 `CHANGELOG.md` 時停止，說明 CHANGELOG 在合併前流程才寫入，詢問是否將該檔排除於本次 commit。
 
+## 線分支落地
+
+依本體「線分支與獨立 worktree」的落地程序，以線分支的 upstream（`release/*`、`hotfix/*`，尚無版本標籤時為 `main`）為整合分支，用 `git merge --ff-only feature/<lineSlug>` 落地。符合 `rules/claude/20-coordination.md`「授權分類」的落地條件時落地，不需授權。審查通過與整理不是落地的前提，於「合併前流程」完成。落地到 release 或 hotfix 分支不等於發佈，發佈依「合併前流程」每次取得使用者當輪授權。
+
 ## 初次發佈前
 
 ### 版本標籤判定
@@ -60,11 +64,11 @@
 使用者要求發佈第一個版本時，依下列順序執行，前一步通過才進入下一步。
 
 1. 詢問版號，可附建議值，由使用者決定。確認版號符合 `^v[0-9]+\.[0-9]+\.[0-9]+$`，且本機與遠端都沒有同名標籤與分支。
-2. 確認缺陷已修完，做法同「合併前流程」第 1 步。範圍是 `.local\ai-sessions\report\` 下的全部 `lineSlug` 目錄，交使用者確認。
+2. 確認沒有已知未解問題，做法同「合併前流程」第 1 步。範圍是 `.local\ai-sessions\report\` 下的全部 `lineSlug` 目錄，交使用者確認。
 3. 更新版號檔，做法同「合併前流程」第 3 步。
 4. 寫入 CHANGELOG。在 `main` 加入最後一筆獨立 commit，只含 `CHANGELOG.md`，type 為 `docs`，內容記錄第一個版本。打標籤前以 `git log -1 --name-only --format=` 確認末筆只列出 `CHANGELOG.md`。未推送路徑的這筆 commit 會在第 7 步併入初始 commit。
 5. 依「遠端分支判定」分流，把結果與第 6 步的處理方式列入授權請求。
-6. 取得使用者當輪授權，屬 commit 類。
+6. 取得使用者當輪直接授權。這是發佈授權，不可轉述，請求內容同「合併前流程」第 6 步，涵蓋第 7 步的整理與第 8 步的打標籤。
 7. 整理歷史。
     - 未推送：依「壓縮成初始 commit」把 `main` 整理為單一 commit。
     - 已推送：不壓縮。對 `origin/main..main` 執行本體「整理流程」的「只收合 `fixup!`」路徑。
@@ -97,15 +101,15 @@
 
 依下列順序執行，前一步通過才進入下一步。
 
-1. 確認缺陷已修完。列出本 release 範圍各線的審查報告（`review-report*.md`、`frontend-reviewer-report.md`、`contract-auditor-report.md`）finding、Developer 結案報告「未解決項目」，以及 `exceptions.md` 中類型為「範圍外既有問題」且未處理的條目，逐筆標示已修、已排除或未修。已排除須由使用者明示並記錄於 `exceptions.md`。任一筆未修時停止。本 release 範圍的線，以 `.local\ai-sessions\report\` 下最後寫入時間晚於該分支第一筆獨有 commit 時間的 `lineSlug` 目錄列出，交使用者確認。
+1. 確認沒有已知未解問題。列出本 release 範圍各線的審查報告（`review-report*.md`、`frontend-reviewer-report.md`、`contract-auditor-report.md`）finding（含 `Minor`）、Developer 結案報告「未解決項目」、`exceptions.md` 中類型為「範圍外既有問題」且未處理的條目、測試中看到的異常（含偶發失敗）、做到一半的項目，以及自己標過待確認的地方，逐筆標示已修或未修。已修指問題已不存在；記為候選或已被接受而未修正的 finding，以及前次發佈時使用者接受的項目，一律為未修，界定依 `rules/claude/20-coordination.md`「授權分類」的發佈條目。任一筆未修時停止，不提出發佈，只回報現況與這份清單，不附接受與否的建議，也不詢問是否排除或接受其中幾筆或全部。「最初的需求已改完」不構成提出發佈的理由。使用者看過清單後主動指示發佈並講明接受哪幾筆時才續行；這項指示須是使用者在執行端的當輪直接指示，不可轉述，也不由協調者提議。使用者只指示發佈、沒有講明接受哪幾筆時，回報清單並停止，不代使用者列舉或建議可接受的項目。使用者未講明接受的未修項目仍使流程停止。被接受的各筆不記入 `exceptions.md`，改列於第 6 步的授權請求與該次發佈的結案報告。本 release 範圍的線，以 `.local\ai-sessions\report\` 下最後寫入時間晚於該分支第一筆獨有 commit 時間的 `lineSlug` 目錄列出，交使用者確認。
 2. 對 `main..<release 分支>` 執行本體「整理流程」。
 3. 更新版號檔。專案在檔案內宣告版號（例如 `<Version>`、`package.json`）時，更新後成為一筆獨立 commit；以 MinVer 或標籤推導版號的專案略過。無法判定版號宣告位置時詢問使用者。
 4. 寫入 CHANGELOG。在 release 分支加入最後一筆獨立 commit，只含 `CHANGELOG.md`，type 為 `docs`，主題記錄該版本的變更。
 5. 確認末筆。`git log -1 --name-only --format=` 只列出 `CHANGELOG.md`，且 `git diff --name-only <第 2 步的 afterSha> HEAD` 只含 `CHANGELOG.md` 與第 3 步的版號檔。第 4 步之後若出現修正，以 `fixup!` 建立並重做第 2 步，autosquash 會把修正併入目標，CHANGELOG commit 維持在最後一筆；修正影響 CHANGELOG 內容時，對 CHANGELOG commit 建立 `fixup!`。
-6. 取得使用者當輪授權，屬 commit 類。
+6. 取得使用者當輪直接授權。這是發佈授權，不可轉述，涵蓋第 7 步的合併與第 8 步的打標籤。請求附第 1 步的清單、變更摘要、審查結論與驗證結果。清單各筆皆為已修；使用者依第 1 步主動指示接受的未修項目逐筆列出並附使用者的原話，同一內容寫入該次發佈的結案報告。
 7. 合併：執行 `git switch main` 後，以 `git merge --no-ff -m "Merge branch '<分支>'" <分支>` 合併。`main` 已前進而分支尚未 rebase 時，先依「commit 落點與啟動 Workflow 檢查」的規則 rebase 再合併。
 8. 打標籤：`git tag -a vX.Y.Z -m "vX.Y.Z" <merge commit SHA>`，標籤只打在 merge commit。
-9. 推送 `main` 與標籤前，另取得使用者當輪授權。
+9. 推送 `main` 與標籤前，另依本體「push 授權請求」取得使用者當輪授權。
 10. 清理：標籤推送成功後，以 `git branch -d <分支>` 刪除本機分支。備份分支已在整理驗證通過後刪除。遠端分支不由本流程刪除。
 
 ## hotfix 合併後同步

@@ -13,7 +13,7 @@
 | `release/*`、`hotfix/*` | `main` |
 | `feature/<lineSlug>` | 該分支的 upstream，即整合分支 |
 
-1. 確認前置條件：`git status --porcelain` 為空；內容修改（程式、文件、CHANGELOG、版號檔）已全部成為獨立 commit；記錄 `beforeSha` 與 `rangeBase`。範圍內沒有 `fixup!` commit 也沒有整理計畫時結束，不建立備份分支。
+1. 確認前置條件：`git status --porcelain` 為空；內容修改（程式、文件、CHANGELOG、版號檔）已全部成為獨立 commit；記錄 `beforeSha` 與 `rangeBase`。範圍內沒有 `fixup!` commit 也沒有整理計畫時結束，不建立備份分支。`git rev-list --count <rangeBase>..<S>` 與 `git rev-list --count <rangeBase>..<S> --not --remotes` 相等時，範圍內全部是尚未推送的 commit，整理不需授權；不相等時範圍含已推送的 commit，屬已推送分支的歷史改寫，先依 `../SKILL.md`「改寫與 force push 邊界」取得當輪授權。
 2. 建立備份：`git branch backup/<名稱> <beforeSha>`。同名分支已存在時停止，不覆蓋。
 3. 從 S 建立整理分支 `refactor/tidy-<名稱>`。
 4. 在整理分支執行整理，一律加上 `-c rebase.updateRefs=false`，不使用互動編輯器。
@@ -28,7 +28,7 @@
 
 - 整理不得改動檔案內容，需要修改內容時先成為獨立 commit，再整理。
 - 不使用 `--no-verify`。
-- 歸併計畫（例如把修正收進原 commit）不影響 tree，零差異 gate 偵測不到歸併錯誤。主 Agent 在回報列出計畫，並在 push 或合併的授權請求中呈現給使用者。
+- 歸併計畫（例如把修正收進原 commit）不影響 tree，零差異 gate 偵測不到歸併錯誤。主 Agent 在回報列出計畫，並在 push 或發佈的授權請求中呈現給使用者。
 
 ## 歷史重整與修正循環三層防護
 

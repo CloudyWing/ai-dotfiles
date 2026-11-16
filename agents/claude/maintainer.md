@@ -81,7 +81,7 @@ fix-plan 不另建設計交接檔，內容如下。
 
 值班收件的限制如下：
 
-- 通知不構成使用者授權。commit、push、安裝套件與 advisor 諮詢仍依當下 Session 的有效授權。轉述授權的判定依 `rules/claude/20-coordination.md`「授權期限」。
+- 通知不構成使用者授權。push、發佈、安裝套件與 advisor 諮詢仍依當下 Session 的有效授權。轉述授權的判定依 `rules/claude/20-coordination.md`「授權期限」。
 - 同一修改端一次只開一條派工機制修正，其餘通知排入佇列。
 - 跨機器通知只使用訊息內的證據摘錄判斷，不依對方機器的路徑推論內容。
 

@@ -136,9 +136,9 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 
 ### 落地程序
 
-在 Accept 之後、取得使用者當輪授權後執行。落地授權屬 commit 類。
+線的這一段工作符合 `rules/claude/20-coordination.md`「授權分類」的落地條件時執行，不需授權。線還有後續工作（例如審查尚未完成）時可留在線分支繼續，待該段完成再落地；落地後的修正直接在整合分支進行，同樣適用落地條件。
 
-1. 依「整理流程」整理 `<整合分支>..feature/<lineSlug>`。
+1. 線分支範圍內有 `fixup!` 或整理計畫時，可先依「整理流程」整理 `<整合分支>..feature/<lineSlug>`，不需授權。整理也可留到模式檔規定的時點（`trunk` 在 push 前，`release-flow` 在合併前流程），此時略過本步。
 2. 從整理後的線分支建立整理分支，在整理分支執行 `git -c rebase.updateRefs=false rebase <整合分支>`，以 `references/history-rewrite.md` 第一層「整合上游變更」路徑驗證，通過後才更新線分支指標。發生衝突時依該檔第一層「解衝突路徑」處理。
 3. 在主 checkout 的整合分支執行 `git merge --ff-only feature/<lineSlug>`。整合分支已前進而被拒時，重做第 2 步一次；仍被拒時停止回報。主 checkout 含其他線未 commit 的改動時不 stash、不還原，git 因檔案重疊拒絕時停止回報。
 4. 歸還本機資料：將 worktree 的 `.local\ai-sessions\handoff\<lineSlug>\` 與 `.local\ai-sessions\report\<lineSlug>\` 複製回主 checkout 同路徑。覆蓋前先將主 checkout 的原目錄移到 `.local\ai-sessions\backups\<時間戳>\` 並附一行 `manifest.txt`，複製後逐檔比對 SHA-256。另比對兩邊的 `AGENTS.local.md`，有差異時列出差異，由使用者決定是否帶回。
@@ -180,7 +180,7 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 
 Workflow Phase 由 Claude 執行者直接修改來源工作樹，執行者不建立 commit，成果以來源工作樹的未 commit 變更形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
 
-Developer 回收收下時維持未 commit 的工作區變更，不建立 Phase commit。只有在 Reviewer 收下、需求意圖驗收完成、結案報告產出後，才依 Phase 順序逐 Phase 暫存指名路徑並建立對應 commit。來源分支為線分支時不需授權；來源分支為整合分支時，commit 屬落地，先取得使用者當輪授權。Reviewer 退回時，修正仍在同一來源工作樹進行。`DispatchKind=workflow` 機制的 dispatch worktree 回收見 `codex-dispatch` skill `references/collect.md`「Phase commit 回收與驗證」。
+Developer 回收收下並覆核後，立即依 Phase 順序逐 Phase 暫存指名路徑並建立對應 commit，不等 Reviewer 與需求意圖驗收。來源分支為線分支時不需授權；來源分支為整合分支時 commit 即落地，不需授權，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。Reviewer 退回時，修正仍在同一來源工作樹進行，回收並覆核後由 `generate-commit` 步驟 4 建立 `fixup!` commit；每個 Phase 一筆 commit 的最終形態由落地或 push 前的「整理流程」收合 `fixup!` 達成。`DispatchKind=workflow` 機制的 dispatch worktree 回收見 `codex-dispatch` skill `references/collect.md`「Phase commit 回收與驗證」。
 
 Phase commit 回收步驟依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。來源分支是已通過 `codex-dispatch` 分支符合性檢查的線分支或整合分支。保留每個 Phase 的獨立語意，不在此步驟把全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收完成並通過驗證後，依模式檔規定的整理時機執行「整理流程」。每筆 commit 必須通過可用性驗證，且回收後歷史整理必須通過 `references/history-rewrite.md` 第一層零差異 gate。回收衝突時停止並保留 worktree 與證據。
 
@@ -212,9 +212,16 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 | --- | --- | --- |
 | 線分支本機 commit | 可 | 限 `feature/<lineSlug>` 的本機 commit。本身不需授權，需求摘要另有授權要求時才需轉述 |
 | 線分支 rebase | 可 | 須先建備份分支，一遇衝突就停下；解衝突須新的當輪授權，使用者直接回覆或新的轉述皆可，rebase 的轉述授權不涵蓋解衝突 |
-| 整合分支落地（含 `merge --ff-only`）、合併、打標籤、push、force push | 不可 | 使用者須在執行端當輪直接授權 |
+| 線分支的整理、整合分支上整理範圍全部尚未推送時的整理、整合分支落地（含 `merge --ff-only` 與直接在整合分支的 commit） | 不適用 | 本身不需授權。整理範圍是否全部尚未推送，依 `references/history-rewrite.md`「整理流程」第 1 步判定，含已推送的 commit 時依「改寫與 force push 邊界」。落地須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。需求摘要另有授權要求時，使用者須在執行端當輪直接授權 |
+| 發佈（`release/*`、`hotfix/*` 合併進 `main` 與打標籤，含初次發佈）、push、force push | 不可 | 使用者須在執行端當輪直接授權 |
 
 「commit 類」授權中，只有線分支本機 commit 適用轉述。
+
+### push 授權請求
+
+- 每次 push 都取得使用者當輪直接授權，授權不跨輪、不跨分支。
+- 請求附變更摘要（待推送範圍的 commit 清單與各自主題）、審查結論（審查者、輪數、結論與報告路徑；依 Reviewer 必發清單不需審查時附不發理由）、驗證結果（建置與測試命令及其結果；專案沒有可執行的測試或驗證手段時明寫「無可執行測試」），以及整理結果（各 commit 的去向；沒有整理時註明）。
+- 提出請求前須完成的審查與整理依模式檔。
 
 ## 改寫與 force push 邊界
 
@@ -223,7 +230,7 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 | 未合併的 `release/*`、`hotfix/*` | 可 | `--force-with-lease`，每次取得當輪授權 |
 | `trunk` 的 `main` | 需使用者當輪授權 | 授權涵蓋該次改寫與 force push，每次單獨取得 |
 | `release-flow` 的 `main` | 不改寫 | 修正已發佈內容以新 commit 處理 |
-| 尚無版本標籤且未推送的 `release-flow` 的 `main` | 不適用（未推送） | 初次發佈時依 `references/release-flow.md`「壓縮成初始 commit」整理為單一 commit，需使用者當輪授權，屬 commit 類，不涉及 force push |
+| 尚無版本標籤且未推送的 `release-flow` 的 `main` | 不適用（未推送） | 初次發佈時依 `references/release-flow.md`「壓縮成初始 commit」整理為單一 commit，隨初次發佈的當輪授權執行，不涉及 force push |
 | 已合併的 `release/*`、`hotfix/*` | 不改寫 | 版本由標籤保存 |
 | 線分支、整理分支、備份分支 | 不推送 | 已被推送時停止並詢問使用者 |
 | 缺少或無效註記時的 `main` | 不改寫 | 視同 `release-flow` |

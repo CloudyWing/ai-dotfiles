@@ -43,3 +43,8 @@
 - 派工腳本（`scripts\Invoke-CodexDispatch.ps1` 與 `scripts\dispatch\`、`scripts\Invoke-CodexRun.ps1` 與 `scripts\codex-run\`）、`scripts\` 下其他由 Claude 端呼叫的腳本、`claude-plugins\` 的 hook 與派工測試只支援 pwsh 7，檔首宣告 `#Requires -Version 7.0`。例外是 `scripts\Ensure-AiContextArtifacts.ps1`，檔首沒有版本宣告。
 - `scripts\Setup-AIGlobalConfig.ps1` 同樣只支援 pwsh 7，但檔首維持 `#Requires -Version 5.1`，本體語法維持 5.1 可解析。它在 Windows PowerShell 5.1 啟動時印出 `winget install Microsoft.PowerShell` 安裝指引後以非零結束碼結束，判斷通過後才 dot-source 宣告 `#Requires -Version 7.0` 的模組。寫法見 `powershell` skill「編碼與版本目標」。
 - `.githooks\Update-Docs.ps1` 由 pre-commit 以 `powershell.exe` 執行，檔首為 `#Requires -Version 5.1`，本體須維持 5.1 可解析。
+
+## 8. 主 checkout 即執行環境
+
+- 本 repo 的主 checkout 是各工具全域設定 symlink 的目標，其他專案也直接執行這裡的派工腳本與 hook。改動落地到 `main` 即對所有專案與 Session 生效，不需等 push。
+- 需要使用者重跑 `scripts/Setup-AIGlobalConfig.ps1`、改連結或實測後才能運作的改動不落地，留在線分支，並在回報列出落地前使用者須完成的操作。這是 `rules/claude/20-coordination.md`「授權分類」落地條件第 3 項（落地後整合分支的狀態不會壞掉）在本 repo 的判定方式。

@@ -70,15 +70,15 @@ Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢
 
 1. 分支前置。啟動 Workflow 屬 `git-workflow` 註記的阻擋範圍，先依 `git-workflow` skill「git-workflow 註記與模式載入」確認註記有效。再依該 skill「線分支與獨立 worktree」的適用判定決定直接在整合分支或開線分支；`release-flow` 已有版本標籤且目前位於主分支（`git-workflow` skill「主分支判定」的結果）時停止並詢問版號，尚無版本標籤時主分支即整合分支（見 `references/release-flow.md`「初次發佈前」）。開線分支時執行該節的建立程序並切換 work-root，之後的 `design-accepted` 交接檢查點、派工與回收都使用新 work-root。
 2. 依 `rules/claude/30-dispatch.md` Workflow Phase 的實作分流逐 Phase 呼叫選派入口，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：全部 Phase=<執行者>`，見 `references/implement-routing.md`「Workflow Phase 的判定記錄」），再依本 Skill「Claude 實作路徑」（`references/claude-implement.md`）派生 Developer。
-3. 派生 Developer 並回收結果。單一 Claude 執行者依宣告順序完成全部 Phase，直接修改來源工作樹，不建立 Phase commit。回收依 `references/claude-implement.md`「主 Agent 核對」。回收「收下」後，協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，欄位見 `session-artifacts` skill「需求級成本累計」。
+3. 派生 Developer 並回收結果。單一 Claude 執行者依宣告順序完成全部 Phase，直接修改來源工作樹，執行者不建立 commit。回收依 `references/claude-implement.md`「主 Agent 核對」。回收「收下」後，主 Agent 立即依同檔「Phase commit 回收」逐 Phase 建立 commit，不等審查與需求意圖驗收。協調者另在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，欄位見 `session-artifacts` skill「需求級成本累計」。
 4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的升級結果。回收後仍有殘餘工作時，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
 5. 文件同步。`design.md` §5「使用者文件」子節列有受影響文件時，依 `references/doc-sync.md` 執行一致性檢查、事實修正、最終編輯與事實核對，結果寫入 `report/<lineSlug>/doc-sync-report.md`；子節為「無」時記錄理由後直接進入下一步。
 6. 命中 Reviewer 必發清單時，依 `rules/claude/40-workflow.md` 審查配對決定審查者並直接派出，不詢問使用者。Codex `Reviewer` 依 `codex-dispatch` skill `references/run.md` 發動；Codex 離線時選派入口回傳 `degraded`，改走本 Skill「Sonnet 審查路徑」。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
-7. 審查者以純技術原因退回時（存在未閉合的 `Critical` 或 `Major`），依 `references/claude-implement.md`「審查與修正」由同一執行者重新派生修正；執行者需要更換時依 `references/implement-routing.md`「失敗與升級」處理。修正完成後回到 Developer 回收與審查判定；修正改變了行為、術語或檔名時，對受影響段落重跑第 5 步。審查結果只剩 `Minor` 時不退回，依共同收斂契約順序 1 批次修正或記為候選後進入第 8 步。
+7. 審查者以純技術原因退回時（存在未閉合的 `Critical` 或 `Major`），依 `references/claude-implement.md`「審查與修正」由同一執行者重新派生修正；執行者需要更換時依 `references/implement-routing.md`「失敗與升級」處理。修正完成後回到 Developer 回收與審查判定，修正回收並覆核後立即由 `generate-commit` 步驟 4 建立 `fixup!` commit；修正改變了行為、術語或檔名時，對受影響段落重跑第 5 步。審查結果只剩 `Minor` 時不退回，依共同收斂契約順序 1 批次修正或記為候選後進入第 8 步。
 8. 審查者收下時進入 Analyst 需求意圖驗收。Analyst 讀取 `implement-closure-report.md`、`doc-sync-report.md`（若有）與審查者的報告（`review-report.md`，降級時為 `review-report-claude.md`）。需求意圖驗收完成後輸出 Workflow 結案報告，報告列出文件同步結果（受影響文件與 `doc-sync-report.md` 路徑，無影響時列理由）。
-9. 結案報告完成後執行 Phase commit 回收，完成驗證與報告同步。Phase commit 在線分支上時不需授權；Workflow 直接在整合分支上進行時，commit 屬落地，先取得使用者當輪授權。之後依 `git-workflow` 註記模式進入整理與落地，`trunk` 於 push 前整理，`release-flow` 執行合併前流程；整理、落地、push 與合併都待使用者當輪授權。Accept 之後對尚未推送的 Phase commit 的修正，由 `generate-commit` 步驟 4 建立 `fixup!` commit。
+9. 結案報告完成後，確認本線成果都已成為 commit（Phase commit 與其後的 `fixup!` commit），完成報告同步。之後依 `git-workflow` 註記模式進入整理與落地。線分支的整理與符合 `rules/claude/20-coordination.md`「授權分類」落地條件的落地不需授權；`trunk` 於 push 前完成審查與整理，`release-flow` 於合併前流程整理；push 與發佈待使用者當輪授權。每個 Phase 一筆 commit 的最終形態由整理收合 `fixup!` 達成。Accept 之後對尚未推送的 Phase commit 的修正，由 `generate-commit` 步驟 4 建立 `fixup!` commit。
 
-第 1、2 步是 Design 階段的收尾，第 3 至 5 步屬 Implement，第 6、7 步屬 Review，第 8、9 步屬 Accept。Accept 階段涵蓋 Analyst 需求意圖驗收、Workflow 結案報告、Phase commit 回收，以及依註記模式的整理與落地。
+第 1、2 步是 Design 階段的收尾，第 3 至 5 步屬 Implement，第 6、7 步屬 Review，第 8、9 步屬 Accept。Phase commit 回收在第 3 步收下後執行。Accept 階段涵蓋 Analyst 需求意圖驗收、Workflow 結案報告，以及依註記模式的整理與落地。
 
 ## Sonnet 審查路徑
 
@@ -112,11 +112,11 @@ Workflow 的 Phase 由 Claude subagent 承接時的契約見 `references/claude-
 2. 確認不派生 `Architect`、不做影響範圍盤點、不寫入 `design-accepted` 與 `developer-collected` 交接檢查點，也不派出 `Developer`。
 3. 依 `rules/claude/30-dispatch.md` F1 判準判定實作工作的執行者，照常輸出 `[派工判定]` 行。執行者為主 Agent 小型修改例外，或選派入口選出的 Claude subagent（`references/implement-routing.md`「light 線的實作工作」）。
 4. 撰寫實作驗收契約。Claude subagent 的 `acceptanceCriteria` 與主 Agent 自理的驗收列列出目標檔案絕對路徑、`requirement-summary.md` 絕對路徑與相關「已確定的實作約束」所在位置；每列標註〔需求 #n〕，每個需求編號至少被一列涵蓋（或列於需求摘要的排除項目），並含至少一個建置或測試命令與至少一項負向靜態檢查。驗收契約另含一列「文件同步」，列出受影響使用者文件的絕對路徑與段落標題並標註〔需求 #n〕，無影響時寫「不需要：<理由>」。主 Agent 動手前把驗收列原文寫入同線 `report/<lineSlug>/` 下的檔案，作為回收、審查與需求意圖驗收的比對來源。
-5. 回收時檢查執行端報告與 diff。變更命中 Reviewer 必發清單第 2 項、改動 `library` 公開 API，或本線 UI 線別為 B、C 線時，停止後續實作站點，交 `Analyst` 依 `rules/claude/40-workflow.md`「Workflow 深度」改為 `full`，自 Design 起算。
+5. 回收時檢查執行端報告與 diff。變更命中 Reviewer 必發清單第 2 項、改動 `library` 公開 API，或本線 UI 線別為 B、C 線時，停止後續實作站點，交 `Analyst` 依 `rules/claude/40-workflow.md`「Workflow 深度」改為 `full`，自 Design 起算。未命中時，回收並覆核後立即依 `generate-commit` skill 建立 commit，不等審查與需求意圖驗收；commit 在線分支上時不需授權，直接在整合分支上進行時 commit 即落地，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。其後各步的修正同樣於覆核後立即 commit。
 6. 文件同步。驗收契約的「文件同步」列有受影響文件時，依 `references/doc-sync.md` 執行；該列為「不需要」時直接進入下一步。
 7. 依 `rules/claude/40-workflow.md`「Reviewer 派遣發動判準」的 `light` 調整判定是否發動審查；發動時派遣單依 `references/review-procedures.md`「light 線的 Reviewer 派遣單與回收」。
 8. 交由 `Analyst` 執行需求意圖驗收，逐項比對來源為第 4 步實作驗收契約各列的驗收結果、派工回報（含 Claude subagent 回報、主 Agent 自理時的完成回覆）與 `doc-sync-report.md`（若有）。缺列或缺失時依回收三態退回執行端補齊。
-9. 建立 commit，授權條件與 `full` 的「自動推進鏈」第 9 步相同。commit 在線分支上時不需授權，需求摘要「已確定的實作約束」另有授權要求時依需求摘要；直接在整合分支上進行時，commit 屬落地，先取得使用者當輪授權。
+9. 確認本線成果都已成為 commit。之後的整理、落地、push 與發佈同 `full` 的「自動推進鏈」第 9 步；需求摘要「已確定的實作約束」另有授權要求時依需求摘要。
 
 ## 共同收斂契約
 

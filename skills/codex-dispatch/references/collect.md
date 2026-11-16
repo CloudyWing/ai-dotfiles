@@ -24,7 +24,7 @@ Collect 自動接手在套回前寫入 `<sourceRoot>\.local\ai-sessions\history\
 
 Codex 端不建立 commit，因此 dispatch worktree 的 `HEAD` 在派工全程維持 `baseSha`，實作成果以未 commit 的工作區變更形式存在。回收的輸入是這份工作區差異，不是 commit 區間。
 
-本節的 Workflow Developer 回收屬 `DispatchKind=workflow` 機制，規則層目前沒有呼叫端；Workflow Phase 由 Claude 執行者承接時的回收與 Phase commit 見 `workflow-orchestration` skill「Claude 實作路徑」。保留本機制時，Workflow Developer 的回收收下與 Phase commit 回收是兩個時點。Developer 回收判定為收下時，主 Agent 先將成果套回來源工作樹，維持未 commit 的工作區變更，不建立 Phase commit，並保留 dispatch worktree。Reviewer 退回時，續行仍使用同一個 dispatch worktree 與 thread。只有在 Reviewer 收下、需求意圖驗收完成、結案報告產出且使用者授權 commit 後，才進入 Phase commit 回收。
+本節的 Workflow Developer 回收屬 `DispatchKind=workflow` 機制，規則層目前沒有呼叫端；Workflow Phase 由 Claude 執行者承接時的回收與 Phase commit 見 `workflow-orchestration` skill「Claude 實作路徑」。保留本機制時，Workflow Developer 的回收收下與 Phase commit 回收是兩個時點。Developer 回收判定為收下時，主 Agent 先將成果套回來源工作樹，維持未 commit 的工作區變更，不建立 Phase commit，並保留 dispatch worktree。Reviewer 退回時，續行仍使用同一個 dispatch worktree 與 thread。只有在 Reviewer 收下、需求意圖驗收完成、結案報告產出後，才進入 Phase commit 回收；commit 是否需要授權依 `rules/claude/20-coordination.md`「授權分類」。
 
 `Invoke-CodexDispatch.ps1 -Operation Collect` 依 `Preflight` 的 `worktreeCreated` 分流回收。`true` 時取得 `git diff <baseSha>`、`git diff --cached` 與 `git ls-files --others --exclude-standard`，再合併成完整成果清單。`false` 時不要求 `DispatchRoot` 或 `BaseSha`，改從 Preflight 的 `targetStates` 逐一核對核准輸出檔案，保存非空檔案的長度、最後寫入時間與 SHA-256 證據。direct-write 的結案報告也必須存在且非空。任何必要欄位、檔案證據或報告核對失敗時，腳本以非零結束碼停止，不把空 `baseSha` 當成 Git 基準。
 
@@ -40,7 +40,7 @@ Claude 執行者承接的 Phase 不經本檔的 Collect 與 dispatch worktree。
 
 Phase 回收步驟維持一個 Phase 一個 commit，不以 merge commit 取代 Phase commit，也不在此步驟把全部 Phase squash 成單一 commit。Phase commit 回收完成並通過驗證後，依 `git-workflow` 註記模式規定的整理時機執行該 skill 的「整理流程」。每筆整理後的 commit 必須通過可用性驗證，並通過 `git-workflow` 第一層零差異 gate。任何 commit 回收衝突都停止處理，保留 dispatch worktree、來源狀態與事件證據，交由後續裁決或續行。
 
-Phase commit 回收完成後，依 `git-workflow` skill 的「重整後驗證」節執行驗證，再同步報告與核准交接產物，最後才以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 移除 Workflow Developer dispatch worktree。Reviewer 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物後即可呼叫相同的 `Cleanup` operation。`Cleanup` 失敗時保留 dispatch worktree，不得改用其他方式強制移除。使用者授權 commit 前不得執行 Workflow Developer dispatch worktree 的 `Cleanup`。
+Phase commit 回收完成後，依 `git-workflow` skill 的「重整後驗證」節執行驗證，再同步報告與核准交接產物，最後才以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 移除 Workflow Developer dispatch worktree。Reviewer 與其他資源派遣不產生 Phase commit，直接同步報告與核准交接產物後即可呼叫相同的 `Cleanup` operation。`Cleanup` 失敗時保留 dispatch worktree，不得改用其他方式強制移除。Phase commit 回收完成前不得執行 Workflow Developer dispatch worktree 的 `Cleanup`。
 
 ## 執行端共用作業
 
@@ -90,13 +90,13 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 
 | 判定 | 成立條件 | 後續動作 |
 | --- | --- | --- |
-| 收下 | 產出落點檔案存在且非空，全部驗收條件逐條成立，且沒有任何未補驗的受阻或未執行條件 | Workflow `Developer` 先將成果套回來源工作樹且不建立 Phase commit，保留 dispatch worktree；Reviewer、需求意圖驗收與結案報告完成後進入 Phase commit 回收，授權條件依 `rules/claude/40-workflow.md`「Workflow 自動推進鏈與共同收斂契約」。資源派遣同步報告與核准交接產物後結束 |
+| 收下 | 產出落點檔案存在且非空，全部驗收條件逐條成立，且沒有任何未補驗的受阻或未執行條件 | Workflow `Developer` 先將成果套回來源工作樹且不建立 Phase commit，保留 dispatch worktree；Reviewer、需求意圖驗收與結案報告完成後進入 Phase commit 回收，授權條件依 `rules/claude/20-coordination.md`「授權分類」。資源派遣同步報告與核准交接產物後結束 |
 | 退回 | 任一驗收條件不成立，且原因屬純技術可解，例如格式不符、欄位缺漏或未執行第 5 欄命令 | 一般純技術補件依續 session 契約使用同一個 dispatch worktree resume，帶入未達成條件清單與下一個 `recovery-round`，自動續行且不詢問使用者。完成後回到 Developer 或 Reviewer 站點。額度不足時依 `ScopePlan` 的中止保全流程保存已取得的結論與證據，再由回收端判定是否重新建立 cold-start。 |
 | 升級 | 原因命中 `rules/claude/20-coordination.md` 升級兩道篩的三類拍板判準，或命中共同收斂契約的停止訊號 | 停止派遣，保留 dispatch worktree 與證據，回報未閉合清單與替代方向，等待使用者選擇方向 |
 
 收下後仍有殘餘工作時，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定處置，紀錄與環境成因的處理見本節末「派工後的殘餘工作」。
 
-回收判定成立且不需續 session 時，先完成事件流、thread id、last-message、報告與核准交接產物同步，再以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 執行資源派遣 worktree 清理。Workflow Developer dispatch worktree 僅在使用者授權 commit、Phase commit 回收與驗證完成後執行 `Cleanup`。`Cleanup` 依 `SourceRoot\.local\ai-sessions\history\<lineSlug>\runs\<dispatchSlug>` 驗證 RunRecord 路徑與 line／dispatch／source／execution owner，RunRecord 留在 SourceRoot history，不列入 worktree 檔案保存清單。省略 `EvidencePath` 時採用 RunRecord 引用且位於 dispatch worktree 的既存證據；明列未引用檔案時拒絕並列出可接受清單。RunRecord 或 evidence 路徑越界、owner 不符、保存清單驗證失敗或 worktree 移除失敗時保留 worktree 並回報錯誤。不得改用其他方式強制移除。report 根目錄的 `dispatch-report-<dispatchSlug>.md` 一律同步至來源 report 根目錄，不依賴 `ReportPath` 是否列出；其他未列入保存清單的 report 檔案會阻止移除 worktree。
+回收判定成立且不需續 session 時，先完成事件流、thread id、last-message、報告與核准交接產物同步，再以 `pwsh scripts\Invoke-CodexDispatch.ps1 -Operation Cleanup` 執行資源派遣 worktree 清理。Workflow Developer dispatch worktree 僅在 Phase commit 回收與驗證完成後執行 `Cleanup`。`Cleanup` 依 `SourceRoot\.local\ai-sessions\history\<lineSlug>\runs\<dispatchSlug>` 驗證 RunRecord 路徑與 line／dispatch／source／execution owner，RunRecord 留在 SourceRoot history，不列入 worktree 檔案保存清單。省略 `EvidencePath` 時採用 RunRecord 引用且位於 dispatch worktree 的既存證據；明列未引用檔案時拒絕並列出可接受清單。RunRecord 或 evidence 路徑越界、owner 不符、保存清單驗證失敗或 worktree 移除失敗時保留 worktree 並回報錯誤。不得改用其他方式強制移除。report 根目錄的 `dispatch-report-<dispatchSlug>.md` 一律同步至來源 report 根目錄，不依賴 `ReportPath` 是否列出；其他未列入保存清單的 report 檔案會阻止移除 worktree。
 
 ### 派工後的殘餘工作
 
@@ -182,7 +182,7 @@ Cleanup 驗證同一 dispatchSlug 的所有 RunRecord，保存各輪位於 workt
 | advisor 諮詢報告 | `executionRoot` 的 `report\<lineSlug>\advisor-consult-<dispatchSlug>.md` | `advisor-consult` 的 `Inspect`，依事件流與 last-message 產生 | 同建立者；每次 `Inspect` 覆寫 | 主 Agent 讀取後決定是否採用；`Cleanup` 保存回來源，來源已有不同內容時以目的衝突停止。advisor 執行端不寫入 | Advisor consult resource dispatch |
 | 派遣報告與角色固定報告 | 派遣單第 7 欄落點、角色規則檔指定的同線固定報告 | 執行端；Request 的 `prepare_artifacts` 列入來源既有報告時，`Prepare` 建立執行端副本 | 同建立者；Reviewer 直接覆寫，Frontend Reviewer 與 Contract Auditor 先把前版移入 `history\` 再寫新版 | `Cleanup` 保存 report 根目錄的派遣報告及 `review-report`、`frontend-reviewer-report`、`contract-auditor-report`、`implement-closure-report`、`support-engineer-report`、`cleanup-review` 固定報告。以 RunRecord 啟動時間或 manifest round 判斷新舊並封存另一份；版本不明時後三者封存 worktree 版本並保留來源，前三者保留 worktree 並回報錯誤 | 派遣單契約 |
 | 同線 `exceptions.md` | `report\<lineSlug>\exceptions.md` | 第一個需要記錄的執行端或主 Agent；Request 的 `prepare_artifacts` 列入來源既有檔時，`Prepare` 建立執行端副本 | 執行端與主 Agent 只追加；`Cleanup` 把 worktree 新增的區塊合入來源後以原子取代寫回 | 保留來源既有區塊；worktree 區塊與來源區塊全文相同時不附加，worktree 內重複區塊只附加一次。同標題但內文不同視為不同條目；兩邊標題前內容只含 H1 與空白時相容，來源前文維持不變，其他不一致時停止 | 回收三態判定 |
-| 成果檔案 | dispatch worktree 或 direct-write 目標 | 執行端；Preflight 把來源既有的核准 target 檔帶入 worktree，不覆寫既有檔 | 執行端；`Collect -ApplyCollectedChanges` 套回來源；Workflow 由主 Agent 在使用者授權後 commit | Start 時不存在的核准 target 檔案以 baseline `exists=false` 記錄，回收清單保留該路徑，包含被 gitignore 排除的核准新檔；`Collect -ApplyCollectedChanges` 依來源 drift 檢查套回，新檔搬入、既有檔原子取代、刪除先備份，失敗時倒序回復。核准目錄新增且未被 gitignore 排除的子檔（包含 Start 時不存在的核准目錄）以 add 套回並檢查來源 drift；target 外新增檔列於 `unappliedNewFiles` 並留在 worktree。資源派遣同步核准的交接產物。direct-write 目錄 target 逐檔回傳證據且至少一檔非空 | Phase commit 回收與驗證 |
+| 成果檔案 | dispatch worktree 或 direct-write 目標 | 執行端；Preflight 把來源既有的核准 target 檔帶入 worktree，不覆寫既有檔 | 執行端；`Collect -ApplyCollectedChanges` 套回來源；Workflow 由主 Agent 依 `rules/claude/20-coordination.md`「授權分類」 commit | Start 時不存在的核准 target 檔案以 baseline `exists=false` 記錄，回收清單保留該路徑，包含被 gitignore 排除的核准新檔；`Collect -ApplyCollectedChanges` 依來源 drift 檢查套回，新檔搬入、既有檔原子取代、刪除先備份，失敗時倒序回復。核准目錄新增且未被 gitignore 排除的子檔（包含 Start 時不存在的核准目錄）以 add 套回並檢查來源 drift；target 外新增檔列於 `unappliedNewFiles` 並留在 worktree。資源派遣同步核准的交接產物。direct-write 目錄 target 逐檔回傳證據且至少一檔非空 | Phase commit 回收與驗證 |
 | 套回帳冊 | 來源 `history\<lineSlug>\collect-apply-ledger.json` | `Collect -ApplyCollectedChanges` 在 admission lock 內建立 | 同建立者只追加每次套回的路徑狀態與雜湊 | Preflight 依同線帳冊與來源雜湊辨識 `LineProducedFiles`；Collect 依同 dispatchSlug 的最新套回狀態檢查來源 drift。帳冊無效時停止套回，寫入失敗時回復已套用的檔案 | Phase commit 回收與驗證 |
 | RunRecord 引用的執行證據：ScopePlan、launcher、prompt 傳遞副本與加上指示的 prompt、退出 sidecar、PrepareResult、Dispatch 階段結果、Inspect 結果綁定，以及 advisor evidence pack 的 SHA-256 與 length sidecar | `executionRoot` 的 `history\` | 產生該證據的 operation：PrepareResult 由 `Prepare`、階段結果由 `Dispatch`、其餘由 `Start` 與其 launcher | PrepareResult 由 `Prepare` 依狀態更新；Inspect 結果綁定由 `Inspect`；其餘無 | worktree 派遣由 `Cleanup` 驗證同一 dispatchSlug 的所有 RunRecord，並保存各輪引用的證據回來源。advisor evidence pack 的 `.sha256` 與 `.length` sidecar 由既有 `evidence_pack_path`、`execution_root` 與 `dispatch_slug` 推導 Start 寫入的 `history\evidence-pack-<dispatchSlug>.sha256`、`.length` 路徑，沿用路徑邊界驗證後保存；未新增 RunRecord 欄位 | 事件流取證、完成判定與三出口 |
 | prompt 原始來源 | 呼叫端指定的 `PromptPath`，可位於來源工作樹或 `executionRoot` | 呼叫端（主 Agent 或撰寫 Request 者） | 無；`Start` 只讀取並建立傳遞副本 | RunRecord 記錄原始路徑；位於 dispatch worktree 時由 `Cleanup` 保存回來源，位於來源時原地保留 | Prompt 必備元素 |

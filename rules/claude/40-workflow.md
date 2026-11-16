@@ -70,11 +70,11 @@ Reviewer 回收後，設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/req
 
 ## Workflow 自動推進鏈與共同收斂契約
 
-Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動推進鏈」逐站推進 Developer 派生與回收、文件同步、Reviewer 判定、Analyst 需求意圖驗收、Workflow 結案報告與 Phase commit 回收。各站的階段歸屬與交接檢查點時點見該節。Phase commit 在線分支上時依「授權分類」不需授權；Workflow 直接在整合分支上進行時，commit 屬落地，需使用者當輪授權。回收之後的整理與落地依 `git-workflow` 註記模式。
+Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動推進鏈」逐站推進 Developer 派生與回收、文件同步、Reviewer 判定、Analyst 需求意圖驗收與 Workflow 結案報告。各站的階段歸屬與交接檢查點時點見該節。每批工作回收並覆核後立即建立本機 commit，不等審查與需求意圖驗收；Workflow 直接在整合分支上進行時，commit 即落地，不需授權，須符合「授權分類」的落地條件。結案後的整理、落地、push 與發佈依「授權分類」與 `git-workflow` 註記模式。
 
 自動推進鏈依「連續推進」逐站進行，停頓處置有兩類。
 
-- 授權類停頓：「授權分類」中須當輪直接授權的動作（advisor 諮詢在當下 Session 已授權者除外），等待使用者當輪回覆。轉述授權的判定依「授權期限」。
+- 授權類停頓：「授權分類」中須當輪直接授權的動作（push、發佈等；advisor 諮詢在當下 Session 已授權者除外），等待使用者當輪回覆。整理與符合落地條件的落地不需授權，不在此停頓。轉述授權的判定依「授權期限」。
 - 升級與收斂停止：業務語意缺口、範圍取捨、妥協確認或共同收斂契約的停止訊號，停止相依的派遣，保留證據，回報未閉合清單與替代方向，等待使用者選擇方向；不相依的站點依「遇真問題只停相依部分」繼續。
 
 執行者無法完成工作時依「執行者轉移」處理，不屬收斂停止。

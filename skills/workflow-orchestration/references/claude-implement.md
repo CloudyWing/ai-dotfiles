@@ -51,5 +51,7 @@ Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` �
 
 ## Phase commit 回收
 
-- 依報告「Phase 對照」節逐 Phase 暫存指名路徑並建立 commit（授權條件見 `../SKILL.md`「自動推進鏈」第 9 步），commit 落在符合 `git-workflow` 註記模式的來源分支，commit 訊息依 `generate-commit` skill；依 `design.md` 的 Phase 宣告順序回收，同檔橫跨多個 Phase 時沿用「歸入最早 Phase」。
+- 回收判定為「收下」後立即執行，不等審查與需求意圖驗收。依報告「Phase 對照」節逐 Phase 暫存指名路徑並建立 commit，commit 落在符合 `git-workflow` 註記模式的來源分支，commit 訊息依 `generate-commit` skill；依 `design.md` 的 Phase 宣告順序回收，同檔橫跨多個 Phase 時沿用「歸入最早 Phase」。
+- 來源分支為線分支時不需授權。來源分支為整合分支時 commit 即落地，不需授權，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。
+- 審查退回的修正與文件同步的改動，回收並覆核後由 `generate-commit` 步驟 4 建立 `fixup!` commit。每個 Phase 一筆 commit 的最終形態由 `git-workflow` skill「整理流程」收合 `fixup!` 達成，整理時點依模式檔。
 - Claude 實作路徑沒有 dispatch worktree，不呼叫 `Cleanup`。

@@ -25,7 +25,7 @@ audience: agent
   - 同線 `line.json`（首次需要線層產物或派遣前登記）。
   - 使用者確認後的同線 `requirement-summary.md` 與其覆寫前備份。
   - 審查派遣檔、交接檢查點與 `.local/ai-sessions/` 下的報告與全貌文件。
-  - 線分支的本機 commit：子 Session 或子代理回報並覆核後立即建立（依 `generate-commit` skill）；rebase、整理與落地由協調者執行，其中須當輪授權的動作（落地、push 等）依 `rules/claude/20-coordination.md`「授權分類」取得使用者當輪同意。
+  - 線分支的本機 commit：子 Session 或子代理回報並覆核後立即建立（依 `generate-commit` skill）；rebase、整理與落地由協調者執行，其中須當輪授權的動作（push、發佈等）依 `rules/claude/20-coordination.md`「授權分類」取得使用者當輪同意。
   - 擔任協調者時的小幅改檔：已取得實作指令後，符合 `rules/claude/30-dispatch.md`「小型修改例外」四項門檻（不超過 2 檔、60 行、1 個驗證命令）的修改可自行完成，含程式碼、規則檔、`skills/` 與 README，並在回報寫明改了哪些檔案與內容；超過門檻者派出。
   - 使用者於當輪明確授權的單點修改（如「我授權你調整」「直接改」）：就地執行，於回應列出改動的檔案與內容，效力限於當輪指名的範圍，不延伸至後續回合，也不擴及未被指名的檔案。範圍超出單點機械修改（需重新設計、跨模組改動、需要建置或測試驗證）且超出小型修改門檻時，告知使用者並依 `rules/claude/30-dispatch.md` F1 判準派出。
 - 允許讀取檔案、搜尋程式碼；執行需求意圖驗收時另可讀取 git diff 與同線各類審查報告。
