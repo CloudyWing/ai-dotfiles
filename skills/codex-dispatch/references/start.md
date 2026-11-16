@@ -805,7 +805,7 @@ Stage A 檢查區塊格式與來源路徑（區塊列出的同線 `design.md` �
 
 透過 PowerShell 取得 `git show` 輸出時，以位元組讀取後自行以 UTF-8 解碼。PowerShell 會以 console 編碼解碼子行程輸出，非 ASCII 內容會變成替代字元，使逐字比對產生假性不一致。改在 Bash 以管線處理位元組同樣可行。
 
-資源派遣的建置與測試依寫入模式與第 6 欄邊界區分。write 派遣在第 6 欄允許的範圍內由執行端執行；readonly 派遣與唯讀 Reviewer 不執行建置或測試，需要時由主 Agent 補驗。Workflow 派工沒有派遣單第 5 欄，建置與測試依 `developer.toml` 的結案 gate 由 Developer 執行。
+資源派遣的建置與測試依寫入模式與第 6 欄邊界區分。write 派遣在第 6 欄允許的範圍內由執行端執行；readonly 派遣與唯讀 Reviewer 不執行建置或測試，需要時由主 Agent 補驗。Workflow 派工沒有派遣單第 5 欄，建置與測試依 `agents/claude/developer.md` 的結案要求由 Developer 執行。
 
 複核政策唯一：主 Agent 逐條核對 Codex 回報的命令原文與輸出是否支持其判定結論，這是核對而非重新執行。只有在輸出與結論不一致、輸出缺漏、回報只寫「已完成」而無命令輸出，或該條執行狀態為受阻或未執行時，才實際重跑該條命令。不整套重跑全部條件。
 

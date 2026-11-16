@@ -42,11 +42,14 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 | 角色 | 執行端 | 觸發方式 |
 | --- | --- | --- |
-| Analyst、Developer、Editor、Maintainer | 依所在平台 | Persona，以語意切換 |
+| Analyst、Editor | 依所在平台 | Persona，以語意切換 |
+| Developer、Maintainer | Claude | Persona，以語意切換；Developer 在 Workflow 中由主 Agent 派生 |
 | Architect、Prototyper | Claude | 由主 Agent 派生 |
 | Developer、Refactorer、Support Engineer | Claude subagent（Haiku 或 Sonnet，依執行者登錄表） | 由主 Agent 以 Agent 工具派生，或 Maintainer 派生 Support Engineer |
 | Reviewer、Frontend Reviewer、Contract Auditor | Codex（Codex 離線時降級為 Claude Sonnet subagent） | 由主 Agent 依派遣判準以資源派遣發動 |
 | 測試（煙霧驗證取證）、事實校閱、顧問、影像產生 | Codex | 由主 Agent 依執行者登錄表以資源派遣發動 |
+
+實作類角色（Developer、Maintainer、Support Engineer、Refactorer）只在 Claude 端執行，Codex 端只承接審查、測試取證、事實校閱、顧問與影像產生。
 
 功能線建議在 Claude Code 處理 Analyst 與 Architect，之後的 Developer 與 Reviewer 鏈由主 Agent 在背景發動，不需手動切換平台。bug 由 Maintainer 診斷，實作交由 Support Engineer 完成。
 
@@ -257,8 +260,8 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 ├── docs/                               # Agent／Skill 索引（生成檔）與 ADR（adr/）
 ├── git-global-excludes                 # 機器層 Git 排除清單
 ├── agents/
-│   ├── claude/                         # Persona 與 sub-agent 規則檔（.md 格式）
-│   └── codex/                          # Persona 與執行型 Agent 規則檔（.toml 格式，Claude subagent 承接時同樣讀取）
+│   ├── claude/                         # Persona 與 sub-agent 規則檔（.md 格式），含全部實作類角色
+│   └── codex/                          # 審查類 Agent 規則檔（.toml 格式，Codex 離線時由 Claude Sonnet subagent 同樣讀取）
 ├── claude-plugins/                     # 本機 marketplace、hook 與狀態看板 plugin
 ├── skills/                             # 技能模組（Skill）
 ├── templates/                          # 新專案初始化範本、Demo 外框範本與派工範本

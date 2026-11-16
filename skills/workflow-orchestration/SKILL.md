@@ -7,7 +7,62 @@ policy.allow_implicit_invocation: true
 
 # Workflow 推進與收斂
 
-本 Skill 提供 `Clarify => Design => Implement => Review => Accept` Workflow 的逐站推進步驟、實作分流程序與審查程序（含 Sonnet 審查路徑）、Claude 實作路徑（Haiku 與 Sonnet）、結案前文件同步、`light` 路徑、共同收斂契約的術語定義與驗證分層。有效深度為 `light` 的線依「light 路徑」執行，深度的解析優先序與放寬範圍由 `instructions.md` §1.5「Workflow 深度」規定。角色權責、授權類停頓、升級與收斂停止的判定順序由 `instructions.md` §1.5「Workflow 自動推進鏈與共同收斂契約」規定；交接檢查點的建檔內容依 `instructions.md` §1.4「Workflow 交接檢查點」。執行者由執行者登錄表選出，見 `executor-selection` skill。
+本 Skill 提供 `Clarify => Design => Implement => Review => Accept` Workflow 的需求確認後分派、Design 與 Demo 驗收、逐站推進步驟、實作分流程序與審查程序（含 Sonnet 審查路徑）、Claude 實作路徑（Haiku 與 Sonnet）、結案前文件同步、`light` 路徑、共同收斂契約的術語定義與驗證分層。有效深度為 `light` 的線依「light 路徑」執行，深度的解析優先序與放寬範圍由 `instructions.md` §1.5「Workflow 深度」規定。角色權責、授權類停頓、升級與收斂停止的判定順序由 `instructions.md` §1.5「Workflow 自動推進鏈與共同收斂契約」規定；交接檢查點的建檔內容依 `instructions.md` §1.4「Workflow 交接檢查點」。執行者由執行者登錄表選出，見 `executor-selection` skill。
+
+## 需求確認後的分派
+
+使用者確認需求摘要後，`Analyst` 依下列順序推進。
+
+1. 尚未登記線時，依 `session-artifacts` skill「線登記與 LineContext」登記 `lineSlug` 並建立同線 `line.json`。既有 `requirement-summary.md` 依同 skill「覆寫前備份」備份後，寫入新的來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`，再執行 `check-markdown`。
+2. 涉及畫面的 B／C 線先依 `uiux-baseline` skill「協調者基準準備」完成基準與確認交接；C 線先準備基準再交 `Prototyper`。
+3. A 線與 B 線：
+   - 有效深度為 `light` 時（B 線依升級判定一律為 `full`，因此只會是 A 線），不派生 `Architect`、不做影響範圍盤點，改依「light 路徑」推進。
+   - 有效深度為 `full` 時，需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先依 `executor-selection` skill 以 `-Type survey` 派生 Sonnet 取證者取得影響範圍盤點報告，收下後才派生 `Architect`。需求改變使用者可見的行為、命令、檔名或術語，而需求摘要未列舉使用者文件時，即使影響範圍已列舉，也派生取證者補做使用者文件盤點；盤點報告含「使用者文件引用」節，以本次改動的術語、檔名、命令與被取代的舊名稱為搜尋詞，列出使用者文件中的命中位置。
+   - 以 Agent 工具派生 `Architect`（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），prompt 帶入 `LineContext`、需求摘要的絕對路徑，以及盤點報告的絕對路徑（若有；未提供時 `Architect` 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺。B 線傳入的需求摘要須含區塊清單與初步層級判斷。等待 `Architect` 產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md` 後進入「Design 與 Demo 驗收」。
+4. C 線：先以 Agent 工具派生 `Prototyper`，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），Demo 產出後進入「Design 與 Demo 驗收」。驗收通過並將訪談結果回填需求摘要後，再依第 3 點派生 `Architect`。
+
+## Design 與 Demo 驗收
+
+`Architect` 或 `Prototyper` 回傳後，`Analyst` 自己驗收產出，確認涵蓋需求摘要後再交給使用者。驗收者是 `Analyst` 本身，因為需求摘要的完整表述由 `Analyst` 產生，執行端只拿得到轉述後的版本。
+
+1. 以 Read 工具實讀 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`，或 Demo 目錄 `<work-root>/.local/ai-sessions/ui-demo/<demo-name>/`，不依賴 sub-agent 回傳內容自述。
+2. 逐項核對檢查清單。Design 依下方「Design 驗收檢查清單」，Demo 依 `uiux` skill「Demo 驗收」。
+3. 有任一項不合格時先判定缺漏類型。缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容（例如同步計數、刪除段落、改寫編號或補上明文句）時，交由 Haiku subagent 依 `instructions.md` 實作分流修改（`design.md` 與 Demo 位於 `.local\`，隔離判定視為無他人項目），完成後自動續行同一驗收循環。只剩 `Minor` 的批次修正不計輪，修正後只核對被修正的項目。缺漏涉及重新設計或需求重新解讀時，再次派生 `Architect` 或 `Prototyper`，將具體缺漏清單作為輸入傳入，計為新一輪。
+4. 每輪以完整檢查清單產生結果，保留檢查項目 key、`area-key`（Design 為 `Design/<檢查項目區段>`，Demo 為 `Demo/<檢查項目區段>`）、`problem-key`（檢查清單的完整項目名稱）、嚴重度與證據，依 `instructions.md` 共同收斂判定續行或停止。兩個循環各自保存 `round` 與問題集合。
+5. 沒有未閉合的 `Critical` 或 `Major` 且剩餘 `Minor` 已完成批次修正與核對，或使用者明確表示「目前版本可接受」時結束循環。
+
+嚴重度依檢查項目影響映射。
+
+| 循環 | `Critical` 或等級相當 | `Major` 或等級相當 | `Minor` 或等級相當 |
+| --- | --- | --- | --- |
+| Design | 需求項目、已確定實作約束或必要垂直路徑遺失 | 設計路徑矛盾、必要章節或正負向驗證缺漏 | 路徑、計數、標籤或格式可機械修正，且不改變行為 |
+| Demo | 需求涵蓋的畫面或主要互動遺失、真實寫入或外部副作用 | 主要互動、版面層級或基準對應錯誤、誤刪產品提示、畫面含設計註記、主要替身無樣本依據、清單缺失或未揭露、外框含驗收用欄位、自增區塊或技術待辦、能力超範圍、註解或重設錯誤、流程與來源相反、錯用 app 或未確認正式流程 | 單一可定位路徑或來源標籤筆誤、已揭露但一欄格式缺漏、註解混入模擬限制或待確認項句式不合、說明表欄位或文案標點缺漏，且不改變畫面行為 |
+
+### Design 驗收檢查清單
+
+| 檢查項目 | 判定依據 |
+| --- | --- |
+| 需求覆蓋 | 需求摘要的每一項需求（程式面、功能面）在 §9 是否都有對應 T-code；若被劃入 §8 刻意排除，必須與對話中的排除共識一致 |
+| [REWRITE] 配套 | 每個標 `[REWRITE]` 的 Phase 必須附「移除項目清單」子節，明列哪些既有元素在該 Phase 完成後不應存在 |
+| §6 驗證正負向成對 | 每個 Phase 在 §6 的驗證步驟，正向（新功能存在）與負向（舊結構消失）必須同時具備；[REWRITE] Phase 更不得省略負向 |
+| §1 需求摘要一致性 | §1 的敘述是否與需求摘要等義，未出現 Architect 擅自加入的新目標 |
+| 實作約束承接 | 需求摘要「已確定的實作約束」逐條在 `design.md` 中有對應落點（寫入 §9 的 T-code 描述、§5 影響範圍或技術選型章節）；未承接者必須在 §8 明確列為排除，不接受靜默省略 |
+| §6 驗證步驟可判定性 | 每個 Phase 的 §6 驗證步驟是否具體到第三方可據以判斷通過與否（如「呼叫 X 回傳 200 且資料表 Y 有對應紀錄」）；出現「確認功能正常」「檢查畫面無誤」等無法判定的描述即不合格。設計歧義因此能在 Developer 的淺層探針階段就被撞出 |
+| 使用者文件盤點 | `design.md` §5 含「使用者文件」子節，列出受影響的使用者文件與段落並對應 T-code，或寫明無影響的理由 |
+
+### 循環結束後
+
+驗收結束後（通過或達上限），對 `design.md` §7「已知盲點與未涵蓋情境」或 `Prototyper` 回報的待確認項逐條套用 `instructions.md`「升級兩道篩」，純技術可解者自行吸收或退回執行層，僅將命中升級判準的真問題升級給使用者，並依「遇真問題只停相依部分」只停相依的工作。
+
+Design 驗收向使用者呈現下列內容，`design.md` 是給 Developer 的 AI-optimized 交接檔，不貼全文。
+
+1. 設計文件路徑與一句話摘要，並註明已代為驗收、使用者不需讀全文。
+2. 驗收檢查結果：通過項目、未解決項目（若有）、循環輪數。
+3. 升級過濾結果：需使用者拍板的真問題（若有），以及已自行吸收的項目數。
+4. `Architect` 標注為「建議建立 ADR」的選型項目（若有），連同建檔須由使用者手動觸發 `adr` skill 的說明。
+5. 下一步：Design 驗收通過後，主 Agent 依 `instructions.md`「Workflow Phase 的實作分流」派生 `Developer`，不需手動切換 Persona；未通過時不派生。
+
+Demo 驗收向使用者呈現 Demo 目錄路徑與開啟方式、版面決策說明表、驗收結果與循環輪數，以及需使用者拍板的項目。Demo 確認後，將訪談結果回填需求摘要，再依「需求確認後的分派」第 3 點派生 `Architect`。
 
 ## 自動推進鏈
 
@@ -50,7 +105,7 @@ Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` �
 ### 派生契約
 
 - 以 Agent 工具派生，`subagent_type` 為 `general-purpose`，`model` 為選派結果的 `executor.model`（`haiku` 或 `sonnet`；升級時 `opus`），冷啟動。
-- prompt 含：規則來源 `~/.ai-agents/agents/codex/developer.toml` 全文（in-context 傳入）並宣告適用其「Claude 端承接」節；`design.md` 絕對路徑；`LineContext`，其中 `dispatchLineRoot` 等於 `sourceLineRoot`、`reportLineRoot` 為來源 `report/<lineSlug>`；`requirement-summary.md` 絕對路徑；本批 Phase 清單與各 Phase 的 T-code；報告落點；審查退回後的修正輪另含「前輪未閉合 finding 處置」表（格式見 `references/review-procedures.md`「修正派遣的前輪 finding 處置核對」）與循環標示。
+- prompt 含：規則來源 `~/.ai-agents/agents/claude/developer.md` 全文（in-context 傳入）；`design.md` 絕對路徑；`LineContext`，其中 `dispatchLineRoot` 等於 `sourceLineRoot`、`reportLineRoot` 為來源 `report/<lineSlug>`；`requirement-summary.md` 絕對路徑；本批 Phase 清單與各 Phase 的 T-code；報告落點；審查退回後的修正輪另含「前輪未閉合 finding 處置」表（格式見 `references/review-procedures.md`「修正派遣的前輪 finding 處置核對」）與循環標示。
 - 報告落點固定為 `report/<lineSlug>/implement-closure-report.md`。
 - `design.md` §5 含使用者文件 T-code 時，prompt 另帶 `references/doc-sync.md`「草稿原則」原文。
 - 一次派生涵蓋執行者承接的全部 Phase，依宣告順序逐 Phase 執行與驗證。

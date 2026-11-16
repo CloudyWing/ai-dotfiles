@@ -52,6 +52,8 @@ Slug 使用小寫 kebab-case，能表達需求主題且不含機密資料。寫�
 
 只讀取與需求有明確關聯的來源。不得為了完整性掃描整個專案。
 
+同一條需求線的後續輪次，優先讀取 `<work-root>/.local/ai-sessions/history/<lineSlug>/` 下的上輪報告，並以同線 Developer 結案報告記錄的輪起點 SHA 與回收後的最後一筆 Phase commit（`git diff <輪起點 SHA>..<最後一筆 Phase commit>`）盤點落差，不重掃程式碼；history 或結案報告缺件時才回到上列來源。
+
 ### 4. 證據分級
 
 輸出時必須區分：

@@ -1,7 +1,7 @@
 # Workflow 結案報告：<dispatch-slug>
 
 <!--
-寫入 <work-root>\.local\ai-sessions\report\<line-slug>\implement-closure-report.md。格式定義以 agents\codex\developer.toml「Workflow 結案報告格式」為準。
+寫入 <work-root>\.local\ai-sessions\report\<line-slug>\implement-closure-report.md。格式定義以本範本與 agents\claude\developer.md「結案報告」為準。
 Workflow Collect 驗證下列三項，不符時以非零結束：
 - 「需求對照」節唯一，表格固定 6 欄且每欄非空；狀態限「已交付」「部分交付」「未交付」「排除（design.md §8）」四個字串，排除須含括號內文字。
 - 有選定需求時，表格後緊接一行「範圍外（本輪不要求交付）：#…」，中間不留空行。

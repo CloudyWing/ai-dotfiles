@@ -19,7 +19,7 @@
 | --- | --- | --- | --- | --- |
 | `full` | `Architect`。`design.md` §5「使用者文件」子節，欄位為文件路徑、章節標題、影響原因（對應需求編號）、處置（T-code 或「不需要」加理由）；§9 排入草稿 T-code | Developer 執行者依 T-code | 主 Agent。自動推進鏈 Developer 回收之後、Reviewer 派發之前 | 子節寫「無受影響的使用者文件：<理由>」 |
 | `light` | 主 Agent 在實作驗收契約新增一列「文件同步」，列出受影響文件絕對路徑與段落標題並標註〔需求 #n〕 | 實作執行者（Claude subagent 或主 Agent 自理） | 主 Agent。回收與升級判定之後、審查判定之前 | 該列寫「不需要：<理由>」 |
-| bug 線 | `Maintainer`。fix-plan 與改動計畫的「文件影響」欄 | `Support Engineer` 依計畫 | Claude 端為主 Agent，在 `Support Engineer` 回報並通過 Maintainer 驗收之後。Maintainer 在 Codex 端被叫起時無法派生 Claude subagent，於回報列「文件同步待辦」，由 Claude 端續行 | 欄位寫「無：<理由>」 |
+| bug 線 | `Maintainer`。fix-plan 與改動計畫的「文件影響」欄 | `Support Engineer` 依計畫 | 主 Agent，在 `Support Engineer` 回報並通過 Maintainer 驗收之後 | 欄位寫「無：<理由>」 |
 
 盤點來源為影響範圍盤點報告的「使用者文件引用」節與需求摘要列舉的文件。「使用者文件引用」節以本次改動的術語、檔名、命令與被取代的舊名稱為搜尋詞，列出使用者文件中的命中位置。`Architect` 與 `Maintainer` 不做盤點範圍外的掃描；需求改變使用者可見的行為而沒有盤點來源時，交回協調者補盤點。
 

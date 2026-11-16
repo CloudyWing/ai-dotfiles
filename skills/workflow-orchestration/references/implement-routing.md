@@ -7,11 +7,30 @@
 無 `design.md` 的單一工作，依下列各點派生選派入口選出的 Claude subagent。
 
 - 以 Agent 工具派生，`subagent_type` 為 `general-purpose`，`model` 取自選派入口輸出的 `executor.model`（`haiku` 或 `sonnet`）。
-- prompt 指定規則來源為 `~/.ai-agents/agents/codex/support-engineer.toml`，要求依「分流 A」執行，以 in-context 傳入完整契約欄位。`modificationScope` 為列舉的檔案與符號，`acceptanceCriteria` 為驗證命令加至少 1 項負向檢查。審查退回後的修正輪另傳條件式欄位 `priorFindingDisposition`，值為「前輪未閉合 finding 處置」表（格式見 `review-procedures.md`「修正派遣的前輪 finding 處置核對」），非修正輪不傳。回收時依同一節比對處置集合。
-- Workflow Phase 的規則來源為 `~/.ai-agents/agents/codex/developer.toml`，契約見 `../SKILL.md`「Claude 實作路徑」。
+- prompt 指定規則來源為 `~/.ai-agents/agents/claude/support-engineer.md`，以 in-context 傳入下方「有效範圍契約欄位」的完整欄位。`modificationScope` 為列舉的檔案與符號，`acceptanceCriteria` 為驗證命令加至少 1 項負向檢查。審查退回後的修正輪另傳條件式欄位 `priorFindingDisposition`，值為「前輪未閉合 finding 處置」表（格式見 `review-procedures.md`「修正派遣的前輪 finding 處置核對」），非修正輪不傳。回收時依同一節比對處置集合。
+- Workflow Phase 的規則來源為 `~/.ai-agents/agents/claude/developer.md`，契約見 `../SKILL.md`「Claude 實作路徑」。
 - 驗證未通過時，Haiku 不修正重試，回報命令原文與原始輸出；Sonnet 依 `../SKILL.md`「Sonnet 測試循環」修正。主 Agent 依 `instructions.md`「派工後的殘餘工作」判定殘餘處置。
 - 派生前依 `../SKILL.md`「主 Agent 核對」第 3 項步驟 1 記錄路徑雜湊基準。回收時依該項步驟 2 至 4 取得實際改動路徑集合，核對其落在 `modificationScope` 內。行數以 `git diff HEAD --numstat` 核對已追蹤檔，未追蹤新檔以檔案行數計。並核對驗證命令輸出。超出範圍時退回。
 - Claude subagent 產出的 diff 視為派工產出，適用 Reviewer 必發清單（`instructions.md` 必發清單之後的補充句承擔）。
+
+### 有效範圍契約欄位
+
+`Maintainer` 的 fix-plan 與改動計畫、主 Agent 交給 `Support Engineer` 的任務契約都以下列欄位承載有效範圍。欄位只保存可執行的目前結果，不傳遞完整對話歷史。
+
+- `confirmedGoal`：使用者已確認的目標與預期結果。
+- `effectiveScope`：目前允許修改的檔案、符號、端點或行為範圍。
+- `roundDelta`：使用者本回合新增、縮小、擴大或更正的內容，只描述差異，不取代未受影響的既定範圍。
+- `priorDecisions`：先前已確認的選擇與妥協。沒有先前決策時明記「無」，不自行重建歷史。
+- `exclusions`：使用者明確排除的檔案、操作或情境。沒有排除項目時明記「無」，不以空白表示沒有排除。
+- `searchScope`：允許讀取與搜尋的範圍。使用者未明示讀取限制時填「不限搜尋」。
+- `modificationScope`：允許寫入的範圍，必須明確列出目標檔案、符號、端點或行為。
+- `persistentConstraints`：需要跨回合與交接保留的限制，以及使用者明確解除的條件。
+- `acceptanceCriteria`：來自使用者需求與改動計畫的驗證條件及使用者可見結果，同時列出正向與負向驗證步驟。
+- `contractVersion` 與 `replacesVersion`：目前契約版本，以及更正時取代的版本。更正時以新版本完整重交。
+- `userRequirements` 與 `agentInferences`：分開記錄使用者要求與 Agent 推定；Agent 推定不得升格為使用者要求或修改授權。
+- `priorFindingDisposition`：條件式欄位，只在審查退回後的修正輪必填，值為「前輪未閉合 finding 處置」表。非修正輪不要求此欄位。
+
+使用者明確更新某個欄位時，只更新該欄位，未被更新的目標、排除項目與持續限制原樣保留並持續有效。`searchScope` 與 `modificationScope` 永遠分開判定，不由搜尋範圍推導修改授權。目標、範圍、限制或同一回合的更新順序互相矛盾時，標示衝突並停止，不以較新、較寬或文字位置自行覆蓋。
 
 ## light 線的實作工作
 

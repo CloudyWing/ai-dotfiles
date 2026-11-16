@@ -158,7 +158,7 @@ Codex 端不建立 commit。Workflow `Developer` 的機械 commit 由主 Agent �
 | 已做處置 | 繞道方式或「無」 |
 | 未完成事項 | 仍受阻的工作或「無」 |
 
-值班通知不構成使用者授權，也不屬於協調 Session 轉述；轉述授權的判定依 `instructions.md` §1.5「授權期限」。值班 Session 的收件、登記與分派依 `agents/codex/maintainer.toml`「值班收件」。
+值班通知不構成使用者授權，也不屬於協調 Session 轉述；轉述授權的判定依 `instructions.md` §1.5「授權期限」。值班 Session 的收件、登記與分派依 `agents/claude/maintainer.md`「值班收件」。
 
 ## 保存契約對照
 

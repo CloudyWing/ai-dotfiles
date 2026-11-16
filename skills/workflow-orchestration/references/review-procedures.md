@@ -29,7 +29,7 @@ Reviewer 派遣單第 4 欄依下列規格標示審查循環，循環術語見 `
 
 審查退回後的修正派生，協調者對前輪每一個未閉合 finding 寫明處置，執行端逐條回報結果，回收時機械比對。不要求每輪修完全部 finding。前輪未閉合 ID 為前輪 Reviewer 報告 manifest `findings` 中 `status=open` 的全部 ID，`accepted` 不計。
 
-協調者撰寫處置表，以 in-context 方式隨派生 prompt 傳入：Workflow 放在 Developer 派生 prompt，單一工作放在分流 A 的 `priorFindingDisposition` 欄位，分流 B 放在派遣單第 4 欄並把前輪報告路徑列入「必讀檔案：」區塊。
+協調者撰寫處置表，以 in-context 方式隨派生 prompt 傳入：Workflow 放在 Developer 派生 prompt，單一工作放在 `priorFindingDisposition` 欄位。
 
 ```markdown
 ### 前輪未閉合 finding 處置
@@ -47,7 +47,7 @@ Reviewer 派遣單第 4 欄依下列規格標示審查循環，循環術語見 `
 - `延後`：本輪不修，協調者在同線 `cost-ledger.md` 追加 `候選` 列。只有 `Minor` 可延後。
 - `接受`：取得條件同 `reviewer.toml`「已接受殘餘風險」，必須附 Analyst 或使用者的裁決位置。`Critical` 與 `Major` 的處置只可為 `修正` 或 `接受`。
 
-執行端不改變處置欄的值，並在回報（Workflow 為 `implement-closure-report.md`，單一工作為分流 A 第 5 點的回報，分流 B 為第 7 欄報告）加入下列結果表。「結果」欄限 `已修正`、`依派生處置未動`、`依裁決未動`、`受阻`；`受阻` 在證據欄寫原因。
+執行端不改變處置欄的值，並在回報（Workflow 為 `implement-closure-report.md`，單一工作為 `Support Engineer` 的回報）加入下列結果表。「結果」欄限 `已修正`、`依派生處置未動`、`依裁決未動`、`受阻`；`受阻` 在證據欄寫原因。
 
 ```markdown
 ## 前輪 finding 處置結果
