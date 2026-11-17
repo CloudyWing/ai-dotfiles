@@ -7,7 +7,6 @@ $ErrorActionPreference = 'Stop'
 $scriptPath = (Resolve-Path (Join-Path $PSScriptRoot '..\Select-DispatchExecutor.ps1')).Path
 $registryPath = (Resolve-Path (Join-Path $PSScriptRoot '..\dispatch\executor-registry.json')).Path
 $libraryPath = (Resolve-Path (Join-Path $PSScriptRoot '..\lib\executor-registry.ps1')).Path
-$evidencePath = (Resolve-Path (Join-Path $PSScriptRoot '..\dispatch\dispatch-evidence.ps1')).Path
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('select-executor-' + [guid]::NewGuid().ToString('N'))
 $hostPath = (Get-Process -Id $PID).Path
 $failed = 0
@@ -124,7 +123,7 @@ function New-FixtureRegistry {
         executors       = @(
             [pscustomobject]@{ id = 'alpha'; display = 'Alpha'; platform = 'claude'; model = 'm-alpha'; family = 'claude'; accepts = @('edit'); tags = @('write', 'run'); when = [pscustomobject]@{ E = $true; T = $false }; order = 10; gated = $false }
             [pscustomobject]@{ id = 'bravo'; display = 'Bravo'; platform = 'codex'; profile = 'pb'; family = 'codex'; entry = 'scripts/Invoke-CodexRun.ps1'; profileSettings = [pscustomobject]@{ model = 'big'; effort = 'low'; subagentModel = 'tiny'; subagentEffort = 'low'; fallbackModels = @('mid', 'small') }; accepts = @('check'); tags = @(); when = [pscustomobject]@{}; order = 20; gated = $false }
-            [pscustomobject]@{ id = 'foxtrot'; display = 'Foxtrot'; platform = 'codex'; profile = 'pf'; family = 'codex'; entry = 'scripts/Invoke-CodexDispatch.ps1'; profileSettings = [pscustomobject]@{ model = 'big'; effort = 'high'; subagentModel = 'tiny'; subagentEffort = 'low' }; accepts = @('ask'); tags = @(); when = [pscustomobject]@{}; order = 25; gated = $true }
+            [pscustomobject]@{ id = 'foxtrot'; display = 'Foxtrot'; platform = 'codex'; profile = 'pf'; family = 'codex'; entry = 'scripts/Invoke-Other.ps1'; profileSettings = [pscustomobject]@{ model = 'big'; effort = 'high'; subagentModel = 'tiny'; subagentEffort = 'low' }; accepts = @('ask'); tags = @(); when = [pscustomobject]@{}; order = 25; gated = $true }
             [pscustomobject]@{ id = 'charlie'; display = 'Charlie'; platform = 'claude'; model = 'm-charlie'; family = 'claude'; accepts = @('edit', 'look', 'check', 'probe', 'ask'); tags = @('write', 'run', 'gui'); when = [pscustomobject]@{}; order = 30; gated = $false }
             [pscustomobject]@{ id = 'delta'; display = 'Delta'; platform = 'claude'; model = 'm-delta'; family = 'claude'; accepts = @('edit', 'look', 'check', 'probe'); tags = @('write', 'run', 'net'); when = [pscustomobject]@{}; order = 40; gated = $false }
             [pscustomobject]@{ id = 'golf'; display = 'Golf'; platform = 'claude'; model = 'm-golf'; family = 'claude'; accepts = @('probe'); tags = @('net'); when = [pscustomobject]@{}; order = 45; gated = $false }
@@ -999,9 +998,9 @@ try {
         Assert-Rejected -ArgumentText '-Type survey' -Code 'SelectorRegistryInvalid' -ExpectedExit 3 -Registry $claudeEntry
     }
     Test-Case EN08 {
-        $switchedBack = New-RegistryCopy 'entry-switch-back' { param($r) (Get-ExecutorNode $r 'codex-review').entry = 'scripts/Invoke-CodexDispatch.ps1' }
+        $switchedBack = New-RegistryCopy 'entry-switch-back' { param($r) (Get-ExecutorNode $r 'codex-review').entry = 'scripts/Invoke-Other.ps1' }
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude') -Registry $switchedBack
-        $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'codex-review' -and $r.Json.executor.entry -ceq 'scripts/Invoke-CodexDispatch.ps1' -and $r.Json.dispatchLine -ceq '[派工] 交給 Codex review：審查'
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'codex-review' -and $r.Json.executor.entry -ceq 'scripts/Invoke-Other.ps1' -and $r.Json.dispatchLine -ceq '[派工] 交給 Codex review：審查'
     }
     # 結束碼與 stderr 格式彙整
     Test-Case Z01 {

@@ -1270,14 +1270,6 @@ try {
         Assert-Equal 'RunPathsInvalid' $runMissing.Document.error.code
         Assert-Equal 0 ((Get-Call -Environment $envEv).Count)
     }
-    Test-Case 'E2E-DISPATCH-UNTOUCHED 本線對現行入口目錄 scripts\dispatch 的變更只有登錄表' {
-        $status = @(& git -C $repoRoot status --porcelain -- scripts/dispatch)
-        if ($LASTEXITCODE -ne 0) { throw 'git status 失敗，無法核對 scripts\dispatch 的變更。' }
-        $changed = @($status | ForEach-Object { ([string]$_).Substring(3).Trim('"') } | Sort-Object)
-        $allowed = @('scripts/dispatch/executor-registry.json')
-        $unexpected = @($changed | Where-Object { $allowed -cnotcontains $_ })
-        Assert-Equal 0 ($unexpected.Count) ('scripts\dispatch 有登錄表以外的變更：' + ($unexpected -join ', '))
-    }
 }
 finally {
     [Environment]::SetEnvironmentVariable('FAKE_CODEX_SCENARIO_DIR', $savedScenarioDir)

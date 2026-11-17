@@ -152,6 +152,58 @@ try {
         @($moved | Where-Object { $defined -contains $_ }).Count -eq 0 -and $defined -contains 'Test-AccountLinkPlan' -and $defined -contains 'New-CodexAccount'
     }
 
+    # ---------- 共用程式庫其餘仍使用的函式 ----------
+    Test-Case 'L01 Get-AccountPath 去除結尾分隔符但不改磁碟機根目錄' {
+        $trimmed = Get-AccountPath (Join-Path $tempRoot 'a\b\')
+        $root = [IO.Path]::GetPathRoot($tempRoot)
+        $trimmed -ceq (Join-Path $tempRoot 'a\b') -and (Get-AccountPath $root) -ceq $root
+    }
+    Test-Case 'L02 Get-AccountItemDescription 區分不存在、一般檔案與一般目錄' {
+        $dir = NcNewDir -Name 'desc'
+        $file = Join-Path $dir 'f.txt'
+        [IO.File]::WriteAllText($file, 'x', $utf8NoBom)
+        $missing = Get-AccountItemDescription -Path (Join-Path $dir 'none')
+        $fileDesc = Get-AccountItemDescription -Path $file
+        $dirDesc = Get-AccountItemDescription -Path $dir
+        $missing.kind -ceq 'Missing' -and -not $missing.exists -and $fileDesc.kind -ceq 'File' -and $fileDesc.text -ceq '一般檔案' -and $dirDesc.kind -ceq 'Directory' -and $dirDesc.text -ceq '一般目錄'
+    }
+    if ($canSymlink) { Test-Case 'L03 Get-AccountItemDescription 描述連結的類型與目標' {
+        $dir = NcNewDir -Name 'desc-link'
+        $target = Join-Path $dir 'target.txt'
+        [IO.File]::WriteAllText($target, 'x', $utf8NoBom)
+        $link = Join-Path $dir 'link.txt'
+        $null = New-Item -ItemType SymbolicLink -Path $link -Target $target
+        $desc = Get-AccountItemDescription -Path $link
+        $desc.kind -ceq 'Link' -and $desc.link_type -ceq 'SymbolicLink' -and $desc.text.Contains('LinkType=SymbolicLink') -and $desc.text.Contains('Target=')
+    } }
+    Test-Case 'L04 Get-AccountLinkRepairHint 轉義單引號並同時提示連結與一般項目的處理' {
+        $hint = Get-AccountLinkRepairHint -Path "C:\x\it's"
+        $hint.Contains("it''s") -and $hint.Contains('只刪除連結') -and $hint.Contains('人工移走')
+    }
+    Test-Case 'L05 Set-AccountAtomicFile 建立新檔、以相符的原始內容取代、-WhatIf 不寫入' {
+        $dir = NcNewDir -Name 'atomic'
+        $path = Join-Path $dir 'config.toml'
+        $first = $utf8NoBom.GetBytes('a = 1')
+        $second = $utf8NoBom.GetBytes('a = 2')
+        Set-AccountAtomicFile -Path $path -Bytes $first -Original $null
+        $created = [IO.File]::ReadAllText($path)
+        Set-AccountAtomicFile -Path $path -Bytes $second -Original $first
+        $replaced = [IO.File]::ReadAllText($path)
+        Set-AccountAtomicFile -Path $path -Bytes $first -Original $second -WhatIf *>$null
+        $afterWhatIf = [IO.File]::ReadAllText($path)
+        $leftover = @(Get-ChildItem -LiteralPath $dir -Force | Where-Object { $_.Name -ne 'config.toml' }).Count
+        $created -ceq 'a = 1' -and $replaced -ceq 'a = 2' -and $afterWhatIf -ceq 'a = 2' -and $leftover -eq 0
+    }
+    Test-Case 'L06 Set-AccountAtomicFile 原始內容與現況不符時以 CodexAccountConfigChanged 拒絕且不留暫存檔' {
+        $dir = NcNewDir -Name 'atomic-changed'
+        $path = Join-Path $dir 'config.toml'
+        [IO.File]::WriteAllText($path, 'external', $utf8NoBom)
+        $exception = $null
+        try { Set-AccountAtomicFile -Path $path -Bytes $utf8NoBom.GetBytes('new') -Original $utf8NoBom.GetBytes('old') } catch { $exception = $_.Exception }
+        $leftover = @(Get-ChildItem -LiteralPath $dir -Force | Where-Object { $_.Name -ne 'config.toml' }).Count
+        $null -ne $exception -and [string]$exception.Data['reasonCode'] -ceq 'CodexAccountConfigChanged' -and [IO.File]::ReadAllText($path) -ceq 'external' -and $leftover -eq 0
+    }
+
     # ---------- 預檢無半成品 ----------
     $conflictCases = @(
         @{ id = 'profile-link-type'; setup = { param($e) $other = Join-Path $e.root 'other-profile'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home 'scan.config.toml') -Target $other }; expect = @('連結類型或目標衝突', 'scan.config.toml', 'LinkType=Junction', 'Target=', '預期：LinkType=SymbolicLink') },
