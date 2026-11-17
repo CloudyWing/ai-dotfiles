@@ -15,7 +15,7 @@ scripts\dispatch\executor-registry.json，依固定演算法選出執行者並�
 登錄表的讀取與結構驗證載入同目錄 lib\executor-registry.ps1（產生器、Setup、帳號建立與派工前比對共用同一份）。
 腳本與該檔都不寫檔、不呼叫網路、不讀取環境變數，同輸入與同登錄表的輸出完全相同。
 
-結束碼：0 為 selected；10 為 needs-user-decision；20 為 needs-authorization；22 為 stopped；
+結束碼：0 為 selected；10 為 needs-user-decision；20 為 needs-authorization；21 為 omitted（類型宣告 skippable 且沒有可選候選，含候選因未完成次數達上限而用盡）；22 為 stopped；
 2 為標註無效；3 為登錄表不存在或無效；
 1 為內部錯誤，或 lib\executor-registry.ps1 不存在或無法載入（SelectorRegistryLibraryUnavailable）。
 標註無效與登錄表無效時，stderr 首段格式為「Code：訊息」。
@@ -221,9 +221,9 @@ function Get-ExecutorSelection {
         if ($chosen.Executor.Gated -and -not $IsAuthorized) { $status = 'needs-authorization'; $reason = 'authorization-required' }
         else { $status = 'selected'; $reason = 'best-match' }
     }
-    elseif ($candidates.Count -eq 0) { $status = 'stopped'; $reason = 'no-eligible-executor' }
-    elseif ($hitIncompleteLimit) { $status = 'needs-user-decision'; $reason = 'all-candidates-exhausted' }
-    else { $status = 'stopped'; $reason = 'offline' }
+    elseif ($candidates.Count -eq 0) { $status = $(if ($Registry.Types[$TypeName].Skippable) { 'omitted' } else { 'stopped' }); $reason = 'no-eligible-executor' }
+    elseif ($hitIncompleteLimit) { $status = $(if ($Registry.Types[$TypeName].Skippable) { 'omitted' } else { 'needs-user-decision' }); $reason = 'all-candidates-exhausted' }
+    else { $status = $(if ($Registry.Types[$TypeName].Skippable) { 'omitted' } else { 'stopped' }); $reason = 'offline' }
 
     $considered = @()
     foreach ($executor in @($Registry.Executors)) {
@@ -271,6 +271,7 @@ function Get-DispatchLine {
         'needs-authorization' { '等你授權後交給 {0}' -f $name }
         'needs-user-decision' { '需你決定，目前沒有可交付的執行者' }
         'stopped' { '停止，沒有可用的執行者' }
+        'omitted' { '不執行，沒有可用的執行者，這項工作可以不做' }
     }
     $line = '[派工] {0}：{1}' -f $head, $text
     if (@($Selection.UnmetPreferences).Count -gt 0) {
@@ -297,6 +298,7 @@ function Get-StatusExitCode {
         'selected' { return 0 }
         'needs-user-decision' { return 10 }
         'needs-authorization' { return 20 }
+        'omitted' { return 21 }
         'stopped' { return 22 }
     }
     return 1
@@ -313,6 +315,7 @@ function Get-DescribeDocument {
                 impliedTags   = @($type.ImpliedTags)
                 forbiddenTags = @($type.ForbiddenTags)
                 preferred     = @($type.Preferred)
+                skippable     = [bool]$type.Skippable
             })
     }
     $executorRows = @()

@@ -143,6 +143,12 @@ function ConvertTo-ExecutorRegistry {
         $forbidden = Get-ExecutorRegistryList $node 'forbiddenTags'
         if (-not (Test-ExecutorRegistryArrayProperty $node 'preferred')) { & $fail ('types.{0}.preferred 必須為陣列' -f $name) }
         $preferred = Get-ExecutorRegistryList $node 'preferred'
+        # skippable：選填布林，預設為否。為真時，沒有可選候選的這類工作可以不做。
+        $skippable = $false
+        if ($null -ne $node.PSObject.Properties['skippable']) {
+            if ($node.skippable -isnot [bool]) { & $fail ('types.{0}.skippable 必須為布林' -f $name) }
+            $skippable = [bool]$node.skippable
+        }
         foreach ($removedKey in $removedTypeKeys) { if ($null -ne $node.PSObject.Properties[$removedKey]) { & $fail ('types.{0}.{1} 已移除，優先條件請改用 preferred' -f $name, $removedKey) } }
         foreach ($flag in $required) { if ($flags -notcontains $flag) { & $fail ('types.{0}.requiredFlags 含未知旗標 {1}' -f $name, $flag) } }
         foreach ($tag in $implied) { if ($hard -notcontains $tag) { & $fail ('types.{0}.impliedTags 含未知硬能力 {1}' -f $name, $tag) } }
@@ -158,6 +164,7 @@ function ConvertTo-ExecutorRegistry {
             ImpliedTags   = $implied
             ForbiddenTags = $forbidden
             Preferred     = $preferred
+            Skippable     = $skippable
         }
     }
 

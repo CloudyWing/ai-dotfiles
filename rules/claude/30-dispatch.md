@@ -48,7 +48,7 @@
 4. 整個 Workflow 由各 Phase 選派結果中排序值最大的執行者在同一次派生中依序完成全部 Phase，記為 `Developer 派工：全部 Phase=<執行者>`。理由是同一執行者做完前面的 Phase 後已理解相關程式碼，接著做後面的 Phase 較不易出錯；這個理由只在同一次派生延續脈絡時成立，因此不把 Phase 拆給不同的冷啟動執行者。
 5. 執行者無法完成時依「執行者轉移」處理。轉移後的執行者為冷啟動，以 `developer-collected` 檢查點與已完成 Phase 的成果為輸入，承接剩餘的 Phase。
 
-**執行者轉移**：同一任務有多個符合的執行者時，目前的執行者每發生一次下列情況計為一次未完成：驗收條件未通過、回收退回、審查以未閉合的 `Critical` 或 `Major` 退回、執行者自述無法完成。四種情況合併計次，以同一任務為單位，同一次回收或同一輪審查只計一次；自述無法完成同樣只計一次，不單獨觸發轉移。累計三次未完成時，以 `-Incomplete <執行者 id>:<次數>` 把同一任務內各執行者的未完成次數傳給選派入口，入口略過已達上限者並選出候選清單的下一位。依 `executor-selection` skill「執行者轉移與交接單」整理交接單後轉給下一位，不需使用者拍板，並追加 exceptions「替代方案」。沒有可選的候選且至少一位已達上限時選派入口回傳 `needs-user-decision`，此時停止並回報，由使用者決定。次數上限寫在登錄表 `maxIncomplete`。同一任務全部執行者（含已轉移走的）的未完成次數由 `scripts/Update-ExecutorIncomplete.ps1` 保存在線層產物，協調者每次計次後以 `-Action Add` 更新，呼叫選派入口前以 `-Action Show` 取得 `-Incomplete` 的值，任務收下後以 `-Action Reset` 重設；用法見 `executor-selection` skill「執行者轉移與交接單」。目的是避免換 Session 或轉移後遺失先前執行者的次數而重選已用盡者。同一執行者不以相同條件反覆重派。執行者自述無法完成只當作一次未完成的回報，不採信其自述的原因。成因是否屬執行環境做不到或執行者缺少該任務所需的硬能力，由協調者依證據判定（原始輸出、錯誤訊息，必要時重現）；判定屬實時不計入未完成次數，依「派工後的殘餘工作」判定順序第 1 項修環境或改派；無法判定或查無證據時，照一般未完成計次。
+**執行者轉移**：同一任務有多個符合的執行者時，目前的執行者每發生一次下列情況計為一次未完成：驗收條件未通過、回收退回、審查以未閉合的 `Critical` 或 `Major` 退回、執行者自述無法完成。四種情況合併計次，以同一任務為單位，同一次回收或同一輪審查只計一次；自述無法完成同樣只計一次，不單獨觸發轉移。累計三次未完成時，以 `-Incomplete <執行者 id>:<次數>` 把同一任務內各執行者的未完成次數傳給選派入口，入口略過已達上限者並選出候選清單的下一位。依 `executor-selection` skill「執行者轉移與交接單」整理交接單後轉給下一位，不需使用者拍板，並追加 exceptions「替代方案」。沒有可選的候選且至少一位已達上限時選派入口回傳 `needs-user-decision`，此時停止並回報，由使用者決定；類型宣告 `skippable` 時回傳 `omitted`，依 `executor-selection` skill「狀態處置」不執行該項工作。次數上限寫在登錄表 `maxIncomplete`。同一任務全部執行者（含已轉移走的）的未完成次數由 `scripts/Update-ExecutorIncomplete.ps1` 保存在線層產物，協調者每次計次後以 `-Action Add` 更新，呼叫選派入口前以 `-Action Show` 取得 `-Incomplete` 的值，任務收下後以 `-Action Reset` 重設；用法見 `executor-selection` skill「執行者轉移與交接單」。目的是避免換 Session 或轉移後遺失先前執行者的次數而重選已用盡者。同一執行者不以相同條件反覆重派。執行者自述無法完成只當作一次未完成的回報，不採信其自述的原因。成因是否屬執行環境做不到或執行者缺少該任務所需的硬能力，由協調者依證據判定（原始輸出、錯誤訊息，必要時重現）；判定屬實時不計入未完成次數，依「派工後的殘餘工作」判定順序第 1 項修環境或改派；無法判定或查無證據時，照一般未完成計次。
 
 使用者未明說由哪一端執行時，依上列判定順序處理。
 
@@ -79,19 +79,18 @@
 **離線改派**：執行者只分在線與離線，判定離線的唯一來源是服務端拒絕（usage-limit、401、model not supported，以及尚無 item 進度即遭服務端拒絕的其他錯誤），額度數值不參與。帳號由入口腳本依 `machine.json` `codex_accounts` 登記清單動態選擇與更換，主 Agent 不指定 `-CodexHome`；帳號檢查、換帳號與重新登入命令的處理見 `executor-selection` skill「離線與帳號判定」與 `codex-dispatch` skill `references/recovery.md`。
 
 1. 「全數不可用」只依入口腳本的回報判定：`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable`，或 `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted`。
-2. 全數確認不可用後，依選派入口選出的下一位處置（由同家族執行者審查或提供第二意見、改由 Sonnet 承接事實查核，或停止回報；經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，沒有 Claude 替代者，`fallback.selection` 必為 `stopped`，停止並回報使用者；不含這兩類操作的測試取證本來就不走 Codex，由呼叫端以 `build-test` 標籤選到 Claude 執行者），各狀態的處置見 `executor-selection` skill「狀態處置」。`Invoke-CodexRun.ps1` 已在結果 JSON 的 `fallback.selection` 附上選派入口的輸出，直接採用，不必重新呼叫；`Invoke-CodexDispatch.ps1` 回報後，由主 Agent 把不可用的 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-advisor`）重新呼叫選派入口。不可用的狀態不保存，下一次新的派工照常先選 Codex。
+2. 全數確認不可用後，依選派入口選出的下一位處置（由同家族執行者審查、改由 Sonnet 承接事實查核，或依 `omitted` 與 `stopped` 的處置略過或停止；經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，沒有 Claude 替代者，`fallback.selection` 必為 `stopped`，停止並回報使用者；不含這兩類操作的測試取證本來就不走 Codex，由呼叫端以 `build-test` 標籤選到 Claude 執行者），各狀態的處置見 `executor-selection` skill「狀態處置」。`Invoke-CodexRun.ps1` 已在結果 JSON 的 `fallback.selection` 附上選派入口的輸出，直接採用，不必重新呼叫；`Invoke-CodexDispatch.ps1` 回報後，由主 Agent 把不可用的 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-advisor`）重新呼叫選派入口。不可用的狀態不保存，下一次新的派工照常先選 Codex。
 3. 依選派結果改由其他執行者承接，是登錄表比對的正常結果，不追加 exceptions；在報告或回報中註明實際執行者與原應承接者。主 Agent 不自行頂替，硬能力（桌面控制、影像產生、瀏覽器與登入測試）沒有替代者時停止並回報使用者。
 
 ### advisor consult 的不限階段掛載點
 
 `advisor` 是意見評估角色。`advise` 由 `scripts\Invoke-CodexRun.ps1` 發動，是 evidence-only 的唯讀諮詢，可由 `Analyst`、`Maintainer` 或主 Agent 在任一站作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。evidence pack 的內容、執行端讀取邊界、檔位綁定、hash 檢查、題號檢查與報告落點依 `codex-dispatch` skill「Advisor consult resource dispatch」。
 
-**諮詢分級**：諮詢依適用條件分為下列三類，執行者由登錄表依類型選出，授權要求不同。
+**諮詢類型**：諮詢分為下列兩類，執行者由登錄表依類型選出，授權要求不同。
 
 | 類別 | 適用條件 | 類型與執行者 | 授權 |
 | --- | --- | --- | --- |
-| 一般第二意見 | 方案取捨的另一角度、規則條款自洽性檢查、設計疑點複審 | `type=survey`，冷啟動 Claude Sonnet subagent，輸入為問題與證據檔絕對路徑 | 不需使用者授權 |
-| 高風險決策的跨家族交叉檢查 | 符合任一項即屬高風險決策。改變公開契約、資料結構或安全邊界；不可逆操作（刪除、發版、force push）；Sonnet 第二意見之間結論相左且影響 Phase 方向 | `type=advise`，Codex `advisor`；離線時改由 Sonnet 第二意見接手並標註同家族審查 | 啟動 Codex `advisor` 沿用 `[advisor 諮詢授權]` 與 `advisor_request_source=user-explicit`；Sonnet 接手不需授權 |
+| 高風險決策的跨家族交叉檢查 | 符合任一項即屬高風險決策。改變公開契約、資料結構或安全邊界；不可逆操作（刪除、發版、force push） | `type=advise`，執行者只有 Codex `advisor` | 沿用 `[advisor 諮詢授權]` 與 `advisor_request_source=user-explicit` |
 | 事實查核 | 版本、API 行為、外部規格等須上網查證的事實 | `type=factcheck`，Codex `content`；離線時改由 Sonnet subagent 承接 | 不需使用者授權 |
 
 advisor 只在使用者授權後啟動，派遣檔的 `advisor_request_source` 填 `user-explicit`。主 Agent 判斷值得諮詢時先向使用者提出請求，請求附上當下查詢到的額度供使用者判斷。請求原文固定如下，請求本身不構成授權。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 填寫派遣檔；該授權不延續到其他 Session。

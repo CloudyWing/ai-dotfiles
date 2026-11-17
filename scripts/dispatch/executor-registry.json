@@ -15,7 +15,7 @@
     "generate": { "requiredFlags": [], "impliedTags": ["image-gen"], "forbiddenTags": ["write"] },
     "factcheck": { "requiredFlags": [], "impliedTags": ["web"], "forbiddenTags": ["write"] },
     "review": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "preferred": ["family"] },
-    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "preferred": ["family"] }
+    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "skippable": true }
   },
   "executors": [
     {
@@ -60,7 +60,7 @@
     },
     {
       "id": "sonnet", "display": "Sonnet subagent", "platform": "claude", "model": "sonnet", "family": "claude",
-      "accepts": ["edit", "survey", "review", "factcheck", "test", "advise"], "tags": ["write", "build-test", "web"], "when": {},
+      "accepts": ["edit", "survey", "review", "factcheck", "test"], "tags": ["write", "build-test", "web"], "when": {},
       "order": 50, "gated": false
     },
     {

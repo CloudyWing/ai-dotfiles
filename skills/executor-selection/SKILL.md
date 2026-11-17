@@ -24,12 +24,12 @@ policy.allow_implicit_invocation: true
 | `type` | 內容 |
 | --- | --- |
 | `edit` | 修改專案原始檔（含測試碼）與批次改檔；文件最終編輯（結案前文件同步）以 `E=否`、`T=否` 標註（見 `workflow-orchestration` skill `references/doc-sync.md`） |
-| `survey` | 盤點、跨檔取證、診斷指令、單元測試與建置的執行及回報、一般第二意見、文件一致性檢查（結案前文件同步）。不修改專案原始檔 |
+| `survey` | 盤點、跨檔取證、診斷指令、單元測試與建置的執行及回報、文件一致性檢查（結案前文件同步）。不修改專案原始檔 |
 | `test` | 煙霧驗證的取證，例如 `integration-verify`、`browser-smoke`、`desktop-smoke`、`api-smoke` 的操作與擷取 |
 | `generate` | 影像產生 |
 | `factcheck` | 事實校閱、事實查核與上網查證 |
 | `review` | 審查，含 `Reviewer`、`Frontend Reviewer`、`Contract Auditor`。三者依 `executor.entry` 發動 |
-| `advise` | 顧問諮詢（高風險決策的跨家族交叉檢查） |
+| `advise` | 顧問諮詢（高風險決策的跨家族交叉檢查），只有 Codex `advisor` 受理 |
 
 ### 旗標
 
@@ -48,6 +48,7 @@ Workflow 的判定單位為 `design.md` 的 Phase。E=是代表該 Phase 的每�
 
 - 必要條件：受理該類型、旗標符合執行者的 `when`，以及硬能力。硬能力以 `-Tags` 傳入，與該類型的 `impliedTags` 取聯集後，必須是執行者能力的子集。
 - 優先條件：該類型在登錄表宣告的 `preferred`，任務可用 `-Prefer` 依重要性追加。值為硬能力標籤或 `family`。
+- 類型特徵 `skippable`：登錄表在類型上宣告，表示這類工作沒有可選候選時可以不做。沒有候選時入口回傳 `omitted`，不回傳 `stopped` 或 `needs-user-decision`。未宣告視為否。
 
 | 標籤 | 種類 | 意義 |
 | --- | --- | --- |
@@ -57,10 +58,10 @@ Workflow 的判定單位為 `design.md` 的 Phase。E=是代表該 Phase 的每�
 | `browse` | 硬能力 | 操作瀏覽器，含登入流程 |
 | `desktop-control` | 硬能力 | 控制 Windows 桌面程式、擷取桌面截圖 |
 | `image-gen` | 硬能力 | 產生影像 |
-| `family` | 優先條件 | 執行者家族不等於實作者家族，以 `-ImplementerFamily` 傳入實作者家族。`review` 與 `advise` 預設帶這個優先條件 |
+| `family` | 優先條件 | 執行者家族不等於實作者家族，以 `-ImplementerFamily` 傳入實作者家族。`review` 預設帶這個優先條件 |
 | `gated` | 約束 | 執行者需使用者當輪授權，以 `-Authorized` 表示已取得 |
 
-`review` 與 `advise` 必須提供 `-ImplementerFamily`。Codex 不承擔實作，實作者家族目前恆為 `claude`。
+`review` 必須提供 `-ImplementerFamily`。Codex 不承擔實作，實作者家族目前恆為 `claude`。
 
 ## 選派入口
 
@@ -84,7 +85,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 2. 排序候選：依有效優先條件逐項比較，滿足者在前；第一項相同再比下一項，全部相同時排序值小者在前。結果輸出為 `candidates`。
 3. 依序略過 `-Offline` 列出者（理由 `offline`）與 `-Incomplete` 次數達登錄表 `maxIncomplete` 者（理由 `incomplete-limit`），第一位未被略過者為選中者。被略過者輸出為 `skipped`。
 4. 選中者需授權且未提供 `-Authorized` 時為 `needs-authorization`，否則為 `selected`。選中者未滿足的優先條件輸出為 `unmetPreferences`。
-5. 沒有選中者時：沒有候選為 `stopped`（`no-eligible-executor`）；候選全部被略過且至少一位是因未完成次數達上限為 `needs-user-decision`，其餘被略過者可以是離線；全部只因離線被略過為 `stopped`（`offline`）。
+5. 沒有選中者時：沒有候選為 `stopped`（`no-eligible-executor`）；候選全部被略過且至少一位是因未完成次數達上限為 `needs-user-decision`，其餘被略過者可以是離線；全部只因離線被略過為 `stopped`（`offline`）。類型宣告 `skippable` 時，上述三種情形一律為 `omitted`，`reason` 不變。
 
 ### 判定行的白話對照
 
@@ -106,6 +107,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 | 狀態 `selected` | `交給 <執行者顯示名>` |
 | 狀態 `needs-authorization` | `等你授權後交給 <執行者顯示名>` |
 | 狀態 `needs-user-decision` | `需你決定，目前沒有可交付的執行者` |
+| 狀態 `omitted` | `不執行，沒有可用的執行者，這項工作可以不做` |
 | 狀態 `stopped` | `停止，沒有可用的執行者` |
 | 未滿足優先條件 `family` | `找不到不同模型家族的執行者，改由同家族審查` |
 | 略過理由 `offline`、`incomplete-limit` | `已略過 <id>（離線）`、`已略過 <id>（未完成次數已達上限）` |
@@ -124,9 +126,10 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 | 狀態 | 結束碼 | 主 Agent 處置 |
 | --- | --- | --- |
-| `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch`，依 `executor.entry` 讀取對應流程（`scripts/Invoke-CodexRun.ps1` 時讀 `references/run.md` 並以派遣檔發動，不使用 `New-DispatchInputs.ps1`；`scripts/Invoke-CodexDispatch.ps1` 時讀 `references/start.md`），`profile` 取自 `executor.profile`。`unmetPreferences` 含 `family` 時為同家族審查或同家族第二意見，屬選派的正常結果，不追加 exceptions，在報告註明實際執行者；`advise` 由 Sonnet 以一般第二意見承接時不需 `[advisor 諮詢授權]`。`skipped` 非空時在報告或回報註明原應承接者 |
-| `needs-user-decision` | 10 | 候選全部不可選，且至少一位是因未完成次數達上限被略過；其餘候選可能是離線，不代表也達到上限。停止該任務，依 `skipped` 的理由分開回報：`incomplete-limit` 者附未完成紀錄與證據，`offline` 者附服務端拒絕的證據，由使用者決定 |
+| `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch`，依 `executor.entry` 讀取對應流程（`scripts/Invoke-CodexRun.ps1` 時讀 `references/run.md` 並以派遣檔發動，不使用 `New-DispatchInputs.ps1`；`scripts/Invoke-CodexDispatch.ps1` 時讀 `references/start.md`），`profile` 取自 `executor.profile`。`unmetPreferences` 含 `family` 時為同家族審查，屬選派的正常結果，不追加 exceptions，在報告註明實際執行者。`skipped` 非空時在報告或回報註明原應承接者 |
+| `needs-user-decision` | 10 | 類型未宣告 `skippable`，候選全部不可選，且至少一位是因未完成次數達上限被略過；其餘候選可能是離線，不代表也達到上限。停止該任務，依 `skipped` 的理由分開回報：`incomplete-limit` 者附未完成紀錄與證據，`offline` 者附服務端拒絕的證據，由使用者決定 |
 | `needs-authorization` | 20 | 輸出 `rules/claude/30-dispatch.md` 規定的 `[advisor 諮詢授權]` 請求，等待使用者當輪回覆 |
+| `omitted` | 21 | 類型宣告 `skippable`，且沒有可選候選（全部離線、未完成次數達上限，或沒有執行者受理）。這項工作不執行，協調者依自己的判斷續行，不向使用者提問，也不改由其他執行者頂替；回報註明未執行與 `skipped` 的原因 |
 | `stopped` | 22 | 回報使用者，附 `reason` 與已查範圍，不以其他執行者頂替硬能力 |
 | 標註無效 | 2 | 依 stderr 錯誤碼修正標註後重新呼叫 |
 | 登錄表無效 | 3 | 停止派工，回報錯誤碼與登錄表路徑 |
@@ -138,7 +141,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 - 判定離線的唯一來源是服務端拒絕，額度數值不參與。拒絕包含 usage-limit、401、model not supported、rate limit，以及尚無 item 進度即以未分類錯誤終局失敗者。model not supported 表示該帳號的方案不含檔位設定的 model，停用訂閱的帳號也以此訊息呈現，視為該帳號不可用。
 - 派工時不指定 `-CodexHome`。Dispatch 依 `machine.json` `codex_accounts` 登記順序選第一個可用帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。帳號回報 model not supported 後記入帳號健康狀態檔，24 小時內略過該帳號與檔位 model 的組合。細節見 `codex-dispatch` skill「主 Agent 的帳號切換決策」。
 - 帳號不支援檔位的主要 model 時，`Invoke-CodexRun.ps1` 改用登錄表 `profileSettings.fallbackModels` 中第一個未被記為不支援的備援 model，執行紀錄與結果 JSON 的 `model` 記錄實際使用的 model，`model_source` 記錄它是檔位的主要 model（`primary`）或備援 model（`fallback`）。備援 model 也都不支援時才略過該帳號。
-- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時才手動帶 `-Offline` 呼叫。`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable` 後，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review`、`advise` 由 Sonnet 承接，`generate` 回傳 `stopped`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，結果必為 `stopped`，沒有 Claude 替代者；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Sonnet。
+- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時才手動帶 `-Offline` 呼叫。`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable` 後，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review` 由 Sonnet 承接，`generate` 回傳 `stopped`，宣告 `skippable` 的類型回傳 `omitted`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，結果必為 `stopped`，沒有 Claude 替代者；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Sonnet。
 - 不可用的狀態不保存，也不採信拒絕訊息附的恢復時間。下一次新的派工不帶 `-Offline`，照常先選 Codex，被拒才再換。
 
 ## Claude 取證者派生契約
@@ -192,7 +195,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 ## 擴充登錄表
 
 1. 修改 `scripts/dispatch/executor-registry.json`，新增或調整執行者、類型或優先條件。標籤詞彙合計不超過 8 個，排序值全表唯一。每個 Codex 執行者必填 `entry`，值為相對於 repo 根目錄的入口腳本路徑，格式為 `scripts/<檔名>.ps1`；Claude 執行者不得有此欄位。每個 Codex 執行者另必填 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort` 四個字串），Claude 執行者不得有此欄位。`profileSettings` 另可選填 `fallbackModels`（字串陣列，依序，不得重複、不得含主要 model），供帳號不支援主要 model 時改用。檔位設定檔由這些欄位產生，見步驟 4。
-2. 確認每個類型至少有一位執行者受理，每個 Codex 執行者的 `profile` 在登錄表內唯一，且不在登錄表頂層的 `retiredProfiles`（已退役的檔位名稱）內；`profileSettings.effort` 與 `subagentEffort` 必須在頂層 `codexEfforts` 內。檔位名稱、退役名稱與 effort 允許清單都只存在登錄表，沒有第二份。`platform` 與 `id` 的格式同樣受驗證。登錄表的讀取與結構驗證只寫在 `scripts/lib/executor-registry.ps1`，選派入口、檔位設定檔的產生器、Setup、帳號建立與派工前比對都載入這個檔並呼叫同一組函式，不另有規則；要改驗證規則只改這個檔。類型的 `preferred` 只能列硬能力標籤或 `family`，含 `family` 時呼叫端必須提供 `-ImplementerFamily`；頂層 `maxIncomplete` 為 1 至 999 的整數。已移除的欄位 `crossFamily`、`degradable`、`escalationOnly`、`escalatesTo`、`onOffline` 出現時登錄表無效。
+2. 確認每個類型至少有一位執行者受理，每個 Codex 執行者的 `profile` 在登錄表內唯一，且不在登錄表頂層的 `retiredProfiles`（已退役的檔位名稱）內；`profileSettings.effort` 與 `subagentEffort` 必須在頂層 `codexEfforts` 內。檔位名稱、退役名稱與 effort 允許清單都只存在登錄表，沒有第二份。`platform` 與 `id` 的格式同樣受驗證。登錄表的讀取與結構驗證只寫在 `scripts/lib/executor-registry.ps1`，選派入口、檔位設定檔的產生器、Setup、帳號建立與派工前比對都載入這個檔並呼叫同一組函式，不另有規則；要改驗證規則只改這個檔。類型的 `preferred` 只能列硬能力標籤或 `family`，含 `family` 時呼叫端必須提供 `-ImplementerFamily`；類型的 `skippable` 選填，必須為布林；頂層 `maxIncomplete` 為 1 至 999 的整數。已移除的欄位 `crossFamily`、`degradable`、`escalationOnly`、`escalatesTo`、`onOffline` 出現時登錄表無效。
 3. 執行 `pwsh -NoProfile -File scripts/tests/Test-SelectDispatchExecutor.ps1`，全部通過才算完成。
 4. 修改 `profile` 或 `profileSettings` 後，commit 時 `.githooks/Update-CodexProfiles.ps1` 會重新產生 `scripts/codex-profiles/<檔位>.config.toml` 並暫存；需要提早確認時手動執行 `pwsh -NoProfile -File .githooks\Update-CodexProfiles.ps1`。新增檔位後，各機器重跑 `scripts\Setup-AIGlobalConfig.ps1` 為帳號目錄建立連結；未建立或內容與產生檔不一致時，`Invoke-CodexRun.ps1` 在啟動前停止（`CodexProfileDrift`）。`-Describe` 輸出每個 Codex 執行者的 `profileSettings`（含 `fallbackModels`）。
 5. 修改規則層引用的選派結果（例如本 Skill「各 delegate skill 的標註範例」的預期執行者）時同步更新。

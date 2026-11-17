@@ -53,7 +53,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | Architect、Prototyper | Claude | 由主 Agent 派生 |
 | Developer、Refactorer、Support Engineer | Claude subagent（Haiku 或 Sonnet，依執行者登錄表） | 由主 Agent 以 Agent 工具派生，或 Maintainer 派生 Support Engineer |
 | Reviewer、Frontend Reviewer、Contract Auditor | Codex（Codex 不可用時由執行者登錄表選出的 Claude Sonnet subagent 承接） | 由主 Agent 依派遣判準以資源派遣發動 |
-| 測試（煙霧驗證取證）、事實校閱、顧問、影像產生 | Codex | 由主 Agent 依執行者登錄表以資源派遣發動 |
+| 測試（煙霧驗證取證）、事實校閱、顧問、影像產生 | Codex（顧問只有 Codex 受理） | 由主 Agent 依執行者登錄表以資源派遣發動 |
 
 實作類角色（Developer、Maintainer、Support Engineer、Refactorer）只在 Claude 端執行，Codex 端只承接審查、測試取證、事實校閱、顧問與影像產生。
 

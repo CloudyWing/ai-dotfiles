@@ -242,7 +242,7 @@ try {
     }
     Test-Case D04 {
         $advise = @($describe.Json.types | Where-Object { $_.name -eq 'advise' })[0]
-        (@($advise.preferred) -join ',') -eq 'family' -and $describe.Json.maxIncomplete -eq $registryRaw.maxIncomplete
+        @($advise.preferred).Count -eq 0 -and $advise.skippable -eq $true -and $describe.Json.maxIncomplete -eq $registryRaw.maxIncomplete
     }
     Test-Case D05 {
         $content = @($describe.Json.executors | Where-Object { $_.id -eq 'codex-content' })[0]
@@ -304,7 +304,54 @@ try {
 
     Test-Case P21 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor')
-        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet' -and (@($r.Json.unmetPreferences) -join ',') -eq 'family' -and $r.Json.dispatchLine.Contains('同家族審查')
+        $r.ExitCode -eq 21 -and $r.Json.status -eq 'omitted' -and $r.Json.reason -eq 'offline' -and $null -eq $r.Json.executor -and -not $r.Json.requiresUserDecision
+    }
+
+    Test-Case P21C {
+        # 類型特徵 skippable：只有登錄表宣告的類型得到 omitted，其他類型離線仍是 stopped
+        $advise = @($registryRaw.types.PSObject.Properties | Where-Object { $null -ne $_.Value.PSObject.Properties['skippable'] -and $_.Value.skippable -eq $true } | ForEach-Object { $_.Name })
+        $generate = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content')
+        $browse = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse -Offline codex-scan')
+        ($advise -join ',') -eq 'advise' -and $generate.ExitCode -eq 22 -and $generate.Json.status -eq 'stopped' -and $browse.ExitCode -eq 22 -and $browse.Json.status -eq 'stopped'
+    }
+
+    Test-Case P21D {
+        # 行為來自特徵而不是類型名稱：把 skippable 設到 generate，generate 離線得到 omitted；把 advise 的特徵拿掉，顧問離線回到 stopped
+        $path = New-RegistryCopy 'skippable-moved' { param($r) $r.types.generate | Add-Member -NotePropertyName skippable -NotePropertyValue $true; $r.types.advise.PSObject.Properties.Remove('skippable') }
+        $generate = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content') -Registry $path
+        $advise = Invoke-Selector -Arguments (Split-Args '-Type advise -Offline codex-advisor') -Registry $path
+        $generate.ExitCode -eq 21 -and $generate.Json.status -eq 'omitted' -and $advise.ExitCode -eq 22 -and $advise.Json.status -eq 'stopped'
+    }
+
+    Test-Case P21E {
+        # 判定順序：skippable 類型在線時仍先回 needs-authorization 與 selected；候選因未完成次數達上限而用盡時也是 omitted。
+        # 非 skippable 類型（review）同樣情況維持 needs-user-decision。
+        $unauthorized = Invoke-Selector -Arguments (Split-Args '-Type advise')
+        $authorized = Invoke-Selector -Arguments (Split-Args '-Type advise -Authorized')
+        $exhausted = Invoke-Selector -Arguments ((Split-Args '-Type advise -Authorized') + @('-Incomplete', ('codex-advisor:' + $registryRaw.maxIncomplete)))
+        $reviewLimit = ('codex-review:{0},sonnet:{0},opus:{0}' -f $registryRaw.maxIncomplete)
+        $reviewExhausted = Invoke-Selector -Arguments ((Split-Args '-Type review -ImplementerFamily claude') + @('-Incomplete', $reviewLimit))
+        $unauthorized.ExitCode -eq 20 -and $authorized.ExitCode -eq 0 -and $exhausted.ExitCode -eq 21 -and $exhausted.Json.status -eq 'omitted' -and $exhausted.Json.reason -eq 'all-candidates-exhausted' -and
+        $reviewExhausted.ExitCode -eq 10 -and $reviewExhausted.Json.status -eq 'needs-user-decision'
+    }
+
+    Test-Case P21F {
+        # skippable 為選填布林，未設定時為否；非布林值使登錄表無效
+        $absent = New-RegistryCopy 'skippable-absent' { param($r) $r.types.advise.PSObject.Properties.Remove('skippable') }
+        $falseValue = New-RegistryCopy 'skippable-false' { param($r) $r.types.advise.skippable = $false }
+        $badText = New-RegistryCopy 'skippable-text' { param($r) $r.types.advise.skippable = 'true' }
+        $badNumber = New-RegistryCopy 'skippable-number' { param($r) $r.types.advise.skippable = 1 }
+        $a = Invoke-Selector -Arguments (Split-Args '-Type advise -Offline codex-advisor') -Registry $absent
+        $b = Invoke-Selector -Arguments (Split-Args '-Type advise -Offline codex-advisor') -Registry $falseValue
+        $a.Json.status -eq 'stopped' -and $b.Json.status -eq 'stopped' -and
+        (Assert-Rejected '-Type advise' 'SelectorRegistryInvalid' 3 $badText) -and (Assert-Rejected '-Type advise' 'SelectorRegistryInvalid' 3 $badNumber)
+    }
+
+    Test-Case P21B {
+        # advise 只有 Codex advisor 受理：所有 Claude 執行者都以 type-not-accepted 排除，離線時不選出任何執行者
+        $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor')
+        $claude = @($r.Json.considered | Where-Object { @('haiku', 'sonnet', 'opus') -contains $_.id })
+        $claude.Count -eq 3 -and @($claude | Where-Object { $_.reason -ne 'type-not-accepted' }).Count -eq 0 -and (@($r.Json.candidates) -join ',') -eq 'codex-advisor'
     }
     Test-Case P22 {
         $r = Invoke-Selector -Arguments ((Split-Args '-Type test') + @('-Offline', 'codex-scan,codex-content,codex-review,codex-advisor'))
@@ -354,7 +401,12 @@ try {
         foreach ($case in $generalCases) {
             $first = Invoke-Selector -Arguments (Split-Args $case)
             $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', (@($first.Json.candidates) -join ',')))
-            if ($r.ExitCode -ne 22 -or $r.Json.status -ne 'stopped' -or $r.Json.reason -ne 'offline' -or $null -ne $r.Json.executor) { throw "候選全部離線後仍有執行者：$case" }
+            # 類型宣告 skippable 者回報 omitted（結束碼 21），其餘回報 stopped（結束碼 22）
+            $typeName = ([regex]::Match($case, '-Type (\S+)')).Groups[1].Value
+            $skippable = $null -ne $registryRaw.types.$typeName.PSObject.Properties['skippable'] -and $registryRaw.types.$typeName.skippable -eq $true
+            $expectedStatus = if ($skippable) { 'omitted' } else { 'stopped' }
+            $expectedExit = if ($skippable) { 21 } else { 22 }
+            if ($r.ExitCode -ne $expectedExit -or $r.Json.status -ne $expectedStatus -or $r.Json.reason -ne 'offline' -or $null -ne $r.Json.executor) { throw "候選全部離線後仍有執行者：$case" }
         }
         $true
     }
@@ -382,7 +434,7 @@ try {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test -Offline codex-scan codex-review')
         $r.ExitCode -eq 2 -and $r.StdErr.StartsWith('SelectorParameterBinding') -and $r.StdErr.Contains('-Offline codex-scan,codex-review') -and $r.StdErr -notmatch 'SelectorFlagNotAllowed' -and $r.StdErr -notmatch '旗標 E' -and [string]::IsNullOrWhiteSpace($r.StdOut)
     }
-    Test-Case V20 { Assert-Rejected '-Type advise' 'SelectorFamilyRequired' }
+    Test-Case V20 { Assert-Rejected '-Type review' 'SelectorFamilyRequired' }
     Test-Case V21 {
         # 逗號連接的多值仍正常綁定，多個 -Tags 位置參數同樣回報參數綁定錯誤。
         $ok = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse,desktop-control')
@@ -415,7 +467,7 @@ try {
     Test-Case F05 {
         foreach ($case in @('-Type advise -ImplementerFamily claude', '-Type advise -Authorized -ImplementerFamily claude')) {
             $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', 'codex-advisor'))
-            if ($r.ExitCode -ne 0 -or $r.Json.status -ne 'selected' -or $r.Json.executor.id -ne 'sonnet' -or (@($r.Json.unmetPreferences) -join ',') -ne 'family') { throw "未改由 Sonnet 承接：$case" }
+            if ($r.ExitCode -ne 21 -or $r.Json.status -ne 'omitted' -or $null -ne $r.Json.executor) { throw "顧問離線應回報 omitted 且不選任何執行者：$case" }
         }
         $true
     }
@@ -430,7 +482,7 @@ try {
         $generate.ExitCode -eq 22 -and $generate.Json.status -eq 'stopped' -and
         $factcheck.ExitCode -eq 0 -and $factcheck.Json.executor.id -eq 'sonnet' -and @($factcheck.Json.unmetPreferences).Count -eq 0 -and
         $review.ExitCode -eq 0 -and $review.Json.status -eq 'selected' -and $review.Json.executor.id -eq 'sonnet' -and
-        $advise.ExitCode -eq 0 -and $advise.Json.status -eq 'selected' -and $advise.Json.executor.id -eq 'sonnet' -and (@($advise.Json.unmetPreferences) -join ',') -eq 'family'
+        $advise.ExitCode -eq 21 -and $advise.Json.status -eq 'omitted' -and $null -eq $advise.Json.executor
     }
     Test-Case F23 {
         foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control', '-Type generate')) {
@@ -863,7 +915,7 @@ try {
     }
     Test-Case L06 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor')
-        $r.Json.dispatchLine -ceq '[派工] 交給 Sonnet subagent：提供顧問意見；找不到不同模型家族的執行者，改由同家族審查；已略過 codex-advisor（離線）'
+        $r.Json.dispatchLine -ceq '[派工] 不執行，沒有可用的執行者，這項工作可以不做：提供顧問意見；已略過 codex-advisor（離線）'
     }
     Test-Case L07 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content')
