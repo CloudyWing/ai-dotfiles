@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-09-18
+superseded-by: 0043
 ---
 
 # ADR-0007：預設檔位改用獨立設定檔

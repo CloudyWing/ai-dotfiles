@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0043
 ---
 
 # ADR-0023：派工帳號以 CODEX_HOME 綁定，跨 home 以冷啟動交接

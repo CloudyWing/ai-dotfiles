@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0043
 ---
 
 # ADR-0014：審查者與實作者採跨模型家族配對

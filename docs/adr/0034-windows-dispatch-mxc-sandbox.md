@@ -15,4 +15,4 @@ Windows 上所有派遣類型的新 cold-start 一律以 `windows.sandbox="mxc"`
 
 ## Consequences
 
-網域環境的電腦恢復唯讀類派遣，各電腦使用相同的 sandbox 行為。`mxc` 是否支援禁止讀取路徑，以及沙盒狀態目錄的 Junction 是否仍需要，必須實測確認後才能調整相關規則與建立帳號腳本。
+網域環境的電腦恢復唯讀類派遣，各電腦使用相同的 sandbox 行為。`mxc` 支援禁止讀取路徑，`scripts/tests/Test-CodexRunSandbox.ps1` 以 `codex sandbox` 驗證 `.env`、`*.pem`、`*.key` 與 `secrets.*` 在 `mxc` 下被拒絕讀取。沙盒狀態目錄的 Junction 已不需要，建立帳號腳本不再建立與檢查它。

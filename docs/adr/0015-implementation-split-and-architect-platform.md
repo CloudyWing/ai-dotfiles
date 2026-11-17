@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0042
 ---
 
 # ADR-0015：實作依工作類型分流，Architect 改由 Claude 起草
