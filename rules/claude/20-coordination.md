@@ -11,7 +11,7 @@
 - 子 Session 的 brief 寫明範圍、可改與不可改的檔案、工作位置、完成條件、驗證方式、可用資源、不停下的範圍與回報落點。
 - 子 Session 預設為執行者，依 brief 做一件事；只有子線本身需要完整流程（釐清、設計、實作、審查）時，才由它擔任該線的 `Analyst`。協調者的職責見 `agents/claude/analyst.md`。
 - 線分支每批工作回收並覆核後，協調者立即建立本機 commit（依 `generate-commit` skill），避免成果長時間未提交。子 Session 與子代理不自行 commit。
-- 主 Session 本身過長或走偏時，依「落檔交接」寫入交接物後，由新的主 Session 接手；協調權的移交依「授權期限」。
+- 主 Session 本身過長或走偏時，依「落檔交接」寫入交接物後，由新的主 Session 接手；協調權的移交依「授權期限」。協調者依 `session-artifacts` skill「跨線全貌文件」的建立條件維護跨線全貌文件，位置與接手步驟見同節。
 
 **連續推進**：協調者（含不走 Workflow 的主 Agent 與 Maintainer 的 bug 線）在下一步不需授權、也沒有須使用者拍板的問題時，直接進行下一步，不為確認進度或報告中間結果停下。只在下列情況停下：「授權分類」中須當輪直接授權的動作、升級兩道篩判定須使用者拍板的問題、共同收斂契約的停止訊號。
 
@@ -82,7 +82,7 @@
   - Session 過長或方向走偏，需要改由新 Session 接手時。
   - 需要留存日後翻查的脈絡時。
 
-  交接內容寫入線目錄既有的交接物（需求摘要、設計文件、報告、交接檢查點），不另建格式。壓縮由執行環境依脈絡長度觸發，模型不以壓縮作為交接手段；壓縮後依「Persona 切換」重新載入規則。
+  交接內容寫入線目錄既有的交接物（需求摘要、設計文件、報告、交接檢查點、跨線全貌文件），不另建格式。壓縮由執行環境依脈絡長度觸發，模型不以壓縮作為交接手段；壓縮後依「Persona 切換」重新載入規則。
 - **Workflow 交接檢查點**：`Clarify => Design => Implement => Review => Accept` 流程在「Design 驗收通過」與「每次 Developer 回收完成」兩個節點寫入交接檢查點。檢查點服務「落檔交接」的三種情況；協調者寫完後直接繼續下一站，不因檢查點停下，也不因檢查點改開新 Session。有效深度為 `light` 的線沒有 Design 與 Developer 回收，不適用本檢查點，見「Workflow 深度」。
   1. 確認同線 `requirement-summary.md` 已含全部使用者拍板的需求與實作約束，並保留具體措辭。摘要確認後才在對話中出現的補充約束，須向使用者逐條呈現並取得當輪明確確認，才依 Analyst 的覆寫前備份流程追加落檔；未取得確認者列入未決事項。
   2. 寫入同線 `report/<lineSlug>/handoff-checkpoint.md`（覆寫同名舊檔），必要欄位如下，全部路徑使用絕對路徑：`lineSlug`、`work-root`、檢查點類型（`design-accepted` 或 `developer-collected`）、`requirement-summary.md` 路徑、`design.md` 路徑與 Design 驗收結果、已回收的派遣報告與結案報告路徑及各自的回收三態、下一站（尚未執行的 Developer 派工、文件同步、Reviewer 或需求意圖驗收；Developer 派工記錄執行者（格式見 `workflow-orchestration` skill「自動推進鏈」））、未決事項清單、尚無證據的待解問題（每筆含問題描述與已取得證據的來源位置，無時填「無」）。此檔不寫入 `CONTEXT.local.md`。
