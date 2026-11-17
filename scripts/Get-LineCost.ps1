@@ -100,8 +100,8 @@ function Read-RecordRun {
         task_type = Get-PropertyValue $record 'task_type'
         model = Get-PropertyValue $record 'model'
         account = Get-PropertyValue (Get-PropertyValue $record 'account') 'name'
-        cycle_id = $null
-        cycle_round = $null
+        cycle_id = Get-PropertyValue $record 'cycle_id'
+        cycle_round = $(if ($null -eq (Get-PropertyValue $record 'cycle_round')) { $null } else { [string](Get-PropertyValue $record 'cycle_round') })
         result = Get-PropertyValue $record 'result'
         rejection_kind = Get-PropertyValue $record 'rejection_kind'
         exit_code = Get-PropertyValue $record 'exit_code'
@@ -230,7 +230,7 @@ try {
     if (Test-Path -LiteralPath $ledgerPath -PathType Leaf) {
         foreach ($run in (Read-LedgerRun $ledgerPath $warnings)) {
             if (-not $byRunId.Contains($run.run_id)) { $byRunId[$run.run_id] = $run; continue }
-            # 執行紀錄沒有循環欄位，循環標示取自同 runId 的成本事件列。
+            # Codex 的執行紀錄沒有循環欄位，循環標示取自同 runId 的成本事件列；Claude 的紀錄自帶循環欄位，不受影響。
             $existing = $byRunId[$run.run_id]
             if ($null -eq $existing.cycle_id) { $existing.cycle_id = $run.cycle_id; $existing.cycle_round = $run.cycle_round }
         }

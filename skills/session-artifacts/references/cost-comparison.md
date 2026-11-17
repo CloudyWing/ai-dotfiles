@@ -5,8 +5,8 @@
 ## 適用範圍
 
 - 計算單位是 `Get-LineCost.ps1` 輸出的 `codex.runs` 各列。`cycle_id` 不是 null 的列屬循環內的 run，Codex 端的循環 run 都是審查。
-- M1、M1u 計入 `cycle_id` 不是 null 的全部 run。M2 只計 `platform` 為 `codex` 的 run，M3 以 `platform` 為 `codex` 的 run 為母體。
-- Claude 審查者的執行紀錄沒有 token 用量，不計入 M2、M3；其 `cycle_id` 為 null，也不進 M1、M1u。
+- M1 計入 `cycle_id` 不是 null 的全部 run，M1u 只計其中有 usage 的 run。M2 只計 `platform` 為 `codex` 的 run，M3 以 `platform` 為 `codex` 的 run 為母體。
+- Claude 審查者的執行紀錄沒有 token 用量，不計入 M1u、M2、M3；其 `cycle_id` 取自執行紀錄（派遣檔有 `cycle` 時才非 null），非 null 者進 M1。
 
 ## 名詞
 

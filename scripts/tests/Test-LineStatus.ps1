@@ -62,7 +62,7 @@ try {
     Test-Case C05 { $null -eq (Get-NextStepSummary @('Developer 派工：P1=Codex')) -and $null -eq (Get-NextStepSummary @('P1：E=是、T=是。', 'P2：E=是')) -and $null -eq (Get-NextStepSummary @()) }
 
     $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
-    $top = (& git -C $repo rev-parse --show-toplevel).Trim()
+    $top = [IO.Path]::GetFullPath((& git -C $repo rev-parse --show-toplevel).Trim())
     if ($LASTEXITCODE -ne 0) { throw '無法取得 Git 工作樹' }
     $common = (& git -C $repo rev-parse --git-common-dir).Trim()
     if ($LASTEXITCODE -ne 0) { throw '無法取得 Git 共用目錄' }
@@ -73,7 +73,7 @@ try {
         $worktrees = @(& git -C $repo worktree list --porcelain)
         if ($LASTEXITCODE -ne 0) { throw '無法列出 Git 工作樹' }
         foreach ($entry in $worktrees) {
-            if ($entry -match '^worktree (.+)$' -and -not [string]::Equals($Matches[1], $main, [StringComparison]::OrdinalIgnoreCase)) { $linked = $Matches[1]; break }
+            if ($entry -match '^worktree (.+)$' -and -not [string]::Equals([IO.Path]::GetFullPath($Matches[1]), $main, [StringComparison]::OrdinalIgnoreCase)) { $linked = [IO.Path]::GetFullPath($Matches[1]); break }
         }
     }
     if ($null -eq $linked) { Write-Output 'SKIP C06a 無 linked worktree' }
@@ -112,7 +112,7 @@ try {
     $actual = ($raw -join "`n") | ConvertFrom-Json
     if (-not (Test-Path (Join-Path $env:USERPROFILE '.ai-agents'))) { Write-Output 'SKIP C10 .ai-agents 不存在' }
     else {
-        Test-Case C10 { $LASTEXITCODE -eq 0 -and (-not (Test-Path (Join-Path $env:USERPROFILE '.ai-agents\.claude\worktrees')) -or @($actual.scannedRoots | Where-Object { $_ -like (Join-Path $env:USERPROFILE '.ai-agents\.claude\worktrees\*') }).Count -gt 0) }
+        Test-Case C10 { $LASTEXITCODE -eq 0 -and (@(Get-ChildItem -LiteralPath (Join-Path $env:USERPROFILE '.ai-agents\.claude\worktrees') -Directory -ErrorAction SilentlyContinue).Count -eq 0 -or @($actual.scannedRoots | Where-Object { $_ -like (Join-Path $env:USERPROFILE '.ai-agents\.claude\worktrees\*') }).Count -gt 0) }
         if ($PSScriptRoot -like (Join-Path $env:USERPROFILE '.ai-agents\.claude\worktrees\status-board-p2*')) {
             Test-Case C10Line { @($actual.lines | Where-Object { $_.LineSlug -eq 'status-board-p2' }).Count -gt 0 }
         }

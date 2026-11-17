@@ -58,8 +58,12 @@ function Invoke-SetupProcess {
     $startInfo.CreateNoWindow = $true
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
-    $startInfo.StandardOutputEncoding = [Console]::OutputEncoding
-    $startInfo.StandardErrorEncoding = [Console]::OutputEncoding
+    # 以 CreateNoWindow 啟動的子行程，主控台輸出編碼取系統 OEM 字碼頁，與測試行程目前的 [Console]::OutputEncoding 無關，因此以 OEM 字碼頁解碼。
+    # 系統 OEM 字碼頁取自登錄 OEMCP；使用者文化的 OEMCodePage 會隨區域格式改變，不代表系統值。
+    $oemCodePage = [int](Get-ItemPropertyValue -LiteralPath 'HKLM:\SYSTEM\CurrentControlSet\Control\Nls\CodePage' -Name 'OEMCP')
+    $childEncoding = [System.Text.Encoding]::GetEncoding($oemCodePage)
+    $startInfo.StandardOutputEncoding = $childEncoding
+    $startInfo.StandardErrorEncoding = $childEncoding
     $startInfo.EnvironmentVariables['USERPROFILE'] = $Fixture.UserProfile
     $startInfo.EnvironmentVariables['HOME'] = $Fixture.UserProfile
     $startInfo.EnvironmentVariables['GIT_CONFIG_GLOBAL'] = $Fixture.GitGlobalConfig

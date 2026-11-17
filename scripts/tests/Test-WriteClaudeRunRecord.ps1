@@ -136,6 +136,39 @@ try {
         Assert-Equal 1 $cost.Json.codex.totals.claude_runs_without_usage
         Assert-True (@($cost.Json.warnings | Where-Object { $_ -like '*Claude 審查者*沒有 token 用量*' }).Count -eq 1)
     }
+    Test-Case 'CR-CYCLE 派遣檔有 cycle 時紀錄帶循環欄位，成本腳本據此輸出；無 cycle 時為 null' {
+        Remove-Runs
+        $noCycle = New-OrderFile -Name 'nocycle.md'
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $noCycle, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code $start.Stderr
+        $plain = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-True ($null -eq $plain.cycle_id -and $null -eq $plain.cycle_round -and $null -eq $plain.cycle_role)
+        Write-TestUtf8 -Path $start.Json.report_path -Text $validReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $noCycle, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $end.Code $end.Stderr
+
+        Remove-Runs
+        $withCycle = New-OrderFile -Name 'cycle.md' -Override @{ cycle = [ordered]@{ id = 'cyc-1'; round = 2; role = 'review' } }
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $withCycle, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code $start.Stderr
+        Write-TestUtf8 -Path $start.Json.report_path -Text $validReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $withCycle, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $end.Code $end.Stderr
+        $record = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-Equal 'cyc-1' $record.cycle_id
+        Assert-Equal 2 $record.cycle_round
+        Assert-Equal 'review' $record.cycle_role
+        $workRoot = Join-Path $root 'cost-root-cycle'
+        $costReport = Join-Path $workRoot '.local\ai-sessions\report\line-a'
+        $null = New-Item -ItemType Directory -Path (Join-Path $costReport 'runs'), (Join-Path $workRoot '.local\ai-sessions\handoff\line-a') -Force
+        Write-TestUtf8 -Path (Join-Path $workRoot '.local\ai-sessions\handoff\line-a\line.json') -Text '{"line-slug":"line-a"}'
+        Copy-Item -LiteralPath (Get-Records)[0].FullName -Destination (Join-Path $costReport 'runs')
+        $cost = Invoke-Script $costScript @('-WorkRoot', $workRoot, '-LineSlug', 'line-a')
+        Assert-Equal 0 $cost.Code $cost.Stderr
+        Assert-Equal 'claude' $cost.Json.codex.runs[0].platform
+        Assert-Equal 'cyc-1' $cost.Json.codex.runs[0].cycle_id
+        Assert-Equal '2' ([string]$cost.Json.codex.runs[0].cycle_round)
+    }
     Test-Case 'CR-INVALID-ORDER 派遣檔無效以結束碼 2 拒絕，不建立任何輸出' {
         Remove-Runs
         $bad = New-OrderFile -Name 'bad.md' -Override @{ line_slug = 'Bad_Slug' }

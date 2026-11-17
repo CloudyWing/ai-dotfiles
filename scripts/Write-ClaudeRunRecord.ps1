@@ -179,6 +179,9 @@ try {
             dispatch_slug = $order.dispatch_slug
             task_type = $order.task_type
             profile = $order.profile
+            cycle_id = if ($null -eq $order.cycle) { $null } else { [string]$order.cycle.id }
+            cycle_round = if ($null -eq $order.cycle) { $null } else { [long]$order.cycle.round }
+            cycle_role = if ($null -eq $order.cycle) { $null } else { [string]$order.cycle.role }
             dispatch_file = [ordered]@{ path = $order.dispatch_file_path; sha256 = (Get-RunSha256File -Path $dispatchPath) }
             targets = @($order.targets)
             report_check = [string]$order.task_setting.report_check
