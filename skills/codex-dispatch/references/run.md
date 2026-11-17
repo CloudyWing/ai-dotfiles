@@ -118,7 +118,7 @@
 
 ## 成本列
 
-入口在每次嘗試結束時對同線 `cost-ledger.md` 追加一列 `事件`，含被服務端拒絕而沒有用量的嘗試。成本列寫入失敗（結束碼 1、`stopped`）時該次嘗試沒有成本列，由協調者依 `session-artifacts` skill「需求級成本累計」手寫補上一列。帳號與拒絕種類寫在備註欄，格式為 `exit=…;result=…;task=…;account=…;rejection=…;usage=…`。協調者不需為這些嘗試手寫列。
+入口在每次嘗試結束時對同線 `cost-ledger.md` 追加一列 `事件`，含被服務端拒絕而沒有用量的嘗試。成本列寫入失敗（結束碼 1、`stopped`）時該次嘗試沒有成本列。一條線的成本以 `scripts/Get-LineCost.ps1` 計算。帳號與拒絕種類寫在備註欄，格式為 `exit=…;result=…;task=…;account=…;rejection=…;usage=…`。協調者不需為這些嘗試手寫列。
 
 ## 重跑
 

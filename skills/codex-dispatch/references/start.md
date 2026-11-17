@@ -209,7 +209,7 @@ decision_reason
 
 ### 需求級成本累計
 
-需求級成本累計依 [session-artifacts skill「需求級成本累計」](../../session-artifacts/SKILL.md#需求級成本累計) 辦理。每個經 Dispatch result 綁定，或以 `-RunRecordPath` 解析 RunRecord 的 Inspect，由腳本自動在同線 `cost-ledger.md` 追加一列 `事件`，同一 `runId` 只追加一次；協調者追加其餘列類型。Inspect 輸出含 `costRecord`（`status` 為 `recorded`、`skipped-existing`、`skipped-not-dispatch` 或 `failed`，另含 `error_code`）；`failed` 不改變 Inspect 的成功判定，缺少的列由協調者手寫補上。事件列的耗時是 Inspect 當下減 RunRecord `started_at_utc`，為 Codex 運行時間的上界。
+需求級成本累計依 [session-artifacts skill「需求級成本累計」](../../session-artifacts/SKILL.md#需求級成本累計) 辦理。每個經 Dispatch result 綁定，或以 `-RunRecordPath` 解析 RunRecord 的 Inspect，由腳本自動在同線 `cost-ledger.md` 追加一列 `事件`，同一 `runId` 只追加一次。Inspect 輸出含 `costRecord`（`status` 為 `recorded`、`skipped-existing`、`skipped-not-dispatch` 或 `failed`，另含 `error_code`）；`failed` 不改變 Inspect 的成功判定，該次沒有成本列。一條線的成本以 `scripts/Get-LineCost.ps1` 計算。事件列的耗時是 Inspect 當下減 RunRecord `started_at_utc`，為 Codex 運行時間的上界。
 
 ## Advisor consult resource dispatch
 

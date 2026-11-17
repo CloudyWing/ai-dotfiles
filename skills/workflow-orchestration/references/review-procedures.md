@@ -46,7 +46,6 @@
 4. 回收依 `run.md`「回收」。入口結果 JSON 的欄位改以下列方式取得。
    - `final.review_report_check`：執行 `pwsh -NoProfile -File scripts/Test-CodexReviewReport.ps1 -ReportPath <報告檔>`，以輸出的 `valid` 與 `errors` 判定。
    - `final.source_changed`：審查者結束後以第 2 步的同一命令寫出 `<輸出目錄>\source-state-after.json`，兩個檔案的內容逐字相同為 `false`，`head`、`diff_sha256`、`content_sha256` 任一不同為 `true`。兩個檔案留在輸出目錄作為這次審查的唯讀證據。`source_changed` 為 `false` 只表示 `targets` 的內容與 `HEAD` 沒有變動，不表示審查者沒有寫入其他位置。任一個快照檔缺失或無法讀取時，視為無法證明唯讀，不判為 `false`，不收下這份報告，重新發動。
-   - 成本列：這個路徑沒有執行紀錄與自動追加的成本列，協調者在同線 `cost-ledger.md` 追加一列 `事件（手寫）`，`cycle_role` 為 `review`，欄位見 `session-artifacts` skill「需求級成本累計」。
 5. 收下後同樣把報告複製為同線 `review-report.md`，並把 `## 例外回報` 節的條目併入同線 `exceptions.md`。
 
 ## 循環標示與第 2 輪以上的 Reviewer 派遣單

@@ -51,7 +51,7 @@
 5. 保留舊循環已發生的 run 與成本在原 `cycle_id` 之下，舊循環的 `cycle_round` 不再增加。
 6. 同一 `target-key` 的世代將達 `c3` 時停止。協調者在追加 `循環重啟` 列之前停止，向使用者說明前兩個循環的結束輪次與變動原因，取得使用者確認後才建立 `c3`，防止以重新起算繞過 `max-rounds`。
 
-Sonnet 審查與 Claude 實作路徑沒有 RunRecord，協調者仍在派遣單或派生 prompt 標示循環，並手寫 `循環重啟` 列與 `事件（手寫）` 列。
+Sonnet 審查與 Claude 實作路徑沒有 RunRecord，協調者仍在派遣單或派生 prompt 標示循環，並手寫 `循環重啟` 列。
 
 收斂判定的執行順序與停止門檻見 `rules/claude/40-workflow.md`「Workflow 自動推進鏈與共同收斂契約」。
 

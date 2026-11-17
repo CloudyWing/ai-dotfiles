@@ -91,6 +91,6 @@ Agent 執行任務產生的檔案依用途分為下列七類，存放於固定�
 
 ## 需求級成本累計
 
-成本目標與寫入者、`cost-ledger.v2` 列格式（14 欄與各列類型的填法）及累計程序（預算、累計、重派前比較、到界）見 `references/cost-ledger.md`，寫入或讀取同線 `cost-ledger.md` 時讀取。
+`cost-ledger.v2` 列格式見 `references/cost-ledger.md`，寫入或讀取同線 `cost-ledger.md` 時讀取。一條線的成本以 `scripts/Get-LineCost.ps1` 唯讀計算；`事件` 列由派工腳本追加，`循環重啟` 與 `候選` 列由協調者追加。
 
 成效比對的指標、程序與基準數字見 `references/cost-comparison.md`。
