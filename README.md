@@ -16,6 +16,12 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
    ~\.ai-agents\scripts\Setup-AIGlobalConfig.ps1
    ```
 
+   要確認這台電腦的設定是否齊全、連結是否指向正確位置，而不做任何改動時，加上 `-Check`（不需系統管理員身分，只讀取現況）。輸出逐項的符合、缺少、指向錯誤位置、內容不符與無法判定，最後附統計；全部符合時結束碼為 0，否則為 1。加上 `-AsJson` 改輸出機器可讀的 JSON。檢查項目涵蓋現役連結、工具目錄、斷鍊孤兒、Claude plugin 與 marketplace、舊 hook 註冊、`core.hooksPath`、`core.excludesFile` 與 Codex 檔位設定檔連結；Codex CLI 與版本不在檢查範圍。`-Check` 不能與 `-Force` 或 `-EnableLongPaths` 併用。
+
+   ```powershell
+   ~\.ai-agents\scripts\Setup-AIGlobalConfig.ps1 -Check
+   ```
+
 2. Setup 依序完成下列項目，重跑只補缺少的部分。
    - 建立各工具指向本 repo 的 Symbolic Link，對應位置見 §3。
    - 註冊本機 marketplace `ai-agents-local`，安裝並啟用其中的 plugin（hook 與狀態看板）。
@@ -298,7 +304,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Export-CommentVocabularyCandidates.csx` 唯讀掃描 `.cs`，輸出資料庫註解語彙候選 JSON，由 `database-comment-generator` skill 使用。
 - 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
 - `scripts/tests/Test-CodexRunAll.ps1` 執行 `Invoke-CodexRun.ps1` 的全部測試，不呼叫 Codex 服務端。`scripts/tests/Invoke-CodexRunLive.ps1 -Scenario review|failover` 以真實 Codex 驗證一筆審查與一筆換帳號，加上 `-DryRun` 只列出將執行的內容，不加 `-DryRun` 會呼叫 Codex 服務端並消耗額度。
-- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-TurnGuardHook.ps1`、`Test-DocLocalPathCheck.ps1` 與 `Test-PostEditWriteHook.ps1`（其餘三個 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
+- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-TurnGuardHook.ps1`、`Test-DocLocalPathCheck.ps1` 與 `Test-PostEditWriteHook.ps1`（其餘三個 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）、`Test-SetupCheck.ps1`（Setup 的 `-Check` 唯讀檢查）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
 - hook 的四個 PowerShell 測試經 `claude-plugins/ai-agents-hooks/tests/run-hook.ts` 執行 `hooks/core/` 的判定邏輯，需要 PATH 上有 Node.js 22.18 以上（可直接執行 `.ts`）；Node.js 只用於測試，外掛執行時不需要。
 - `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts`、`render.test.tsx` 與 `dispatch.test.tsx` 三個測試檔，`claude-plugins/ai-agents-hooks/tests/` 有 `register.test.ts`，皆從 `claude-code/testing` 匯入，以 `claude plugin test <plugin 目錄>` 執行。
 - `claude-plugins/` 內的檔案使用全小寫 kebab-case 命名。

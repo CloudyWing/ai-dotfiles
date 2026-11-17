@@ -2,13 +2,15 @@
 
 # ----------------------------------------------------------------
 # Setup-AIGlobalConfig.ps1 - AI 全域設定連結自動化（收斂式安裝 / 含斷鍊清除）
-# 支援 -WhatIf 預覽；只支援 PowerShell 7 以上，於 Windows PowerShell 5.1 啟動時印出安裝指引並以非零結束碼結束。
+# 支援 -WhatIf 預覽與 -Check 唯讀檢查（只回報現況與是否符合預期，不建立、不修改、不刪除）；只支援 PowerShell 7 以上，於 Windows PowerShell 5.1 啟動時印出安裝指引並以非零結束碼結束。
 # ----------------------------------------------------------------
 
 [CmdletBinding(SupportsShouldProcess)]
 param(
     [switch]$Force,
-    [switch]$EnableLongPaths
+    [switch]$EnableLongPaths,
+    [switch]$Check,
+    [switch]$AsJson
 )
 
 Set-StrictMode -Version Latest
@@ -21,6 +23,16 @@ if ($PSVersionTable.PSVersion.Major -lt 7) {
     Write-Error ("Setup-AIGlobalConfig.ps1 只支援 PowerShell 7 以上，目前版本為 {0}。" -f $PSVersionTable.PSVersion) -ErrorAction Continue
     Write-Error "請先安裝 PowerShell 7：winget install Microsoft.PowerShell" -ErrorAction Continue
     Write-Error "安裝後以系統管理員身分開啟 pwsh 重新執行本腳本。" -ErrorAction Continue
+    exit 1
+}
+
+# -Check 是唯讀模式：不接受會改動系統的參數；-AsJson 只輸出 -Check 的結果。
+if ($AsJson -and -not $Check) {
+    Write-Error "-AsJson 只能與 -Check 一起使用。" -ErrorAction Continue
+    exit 1
+}
+if ($Check -and ($Force -or $EnableLongPaths)) {
+    Write-Error "-Check 為唯讀模式，不能與 -Force 或 -EnableLongPaths 一起使用。" -ErrorAction Continue
     exit 1
 }
 
@@ -52,14 +64,14 @@ function Set-WindowsLongPaths {
     }
 }
 
-if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
+if (-not $Check -and [System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
     $longPathPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
     $isAdministrator = $longPathPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     Set-WindowsLongPaths -Enable:$EnableLongPaths -IsAdministrator $isAdministrator
 }
 # 1. 管理員權限檢查
 $currentPrincipal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-if (-not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+if (-not $Check -and -not $currentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
     Write-Error "此腳本必須以『系統管理員身分』執行！" -ErrorAction Continue
     exit 1
 }
@@ -71,13 +83,13 @@ $mainInstructions = Join-Path $configRoot "instructions.md"
 $gitGlobalExcludes = Join-Path $configRoot "git-global-excludes"
 
 # 3. 實體檔案與原始目錄檢查
-if (!(Test-Path $mainInstructions)) {
+if (-not $Check -and !(Test-Path $mainInstructions)) {
     Write-Error "找不到 $mainInstructions" -ErrorAction Continue
     Write-Error "請確認腳本位於 <configRoot>\scripts\ 之下。" -ErrorAction Continue
     exit 1
 }
 
-if (!(Test-Path $gitGlobalExcludes)) {
+if (-not $Check -and !(Test-Path $gitGlobalExcludes)) {
     Write-Error "找不到機器層排除清單 $gitGlobalExcludes" -ErrorAction Continue
     exit 1
 }
@@ -87,8 +99,14 @@ $claudeDir = "$env:USERPROFILE\.claude"
 $codexDir = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { "$env:USERPROFILE\.codex" }
 $agentsDir = "$env:USERPROFILE\.agents"
 foreach ($dir in @($claudeDir, $codexDir, $agentsDir)) {
-    if (!(Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
+    if (-not $Check -and !(Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
 }
+
+# 載入共用模組（只定義函式）：-Check 與執行模式的檔位設定檔段都使用，須在版本判斷之後載入。
+. (Join-Path $PSScriptRoot 'codex-run\45-profile-sync.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
 
 # 5. 連結清單：增減工具改這張表即可。Source 為 configRoot 下相對路徑
 $desired = @(
@@ -100,6 +118,12 @@ $desired = @(
     @{ Link = "$codexDir\agents";     Source = "agents\codex" }
     @{ Link = "$agentsDir\skills";    Source = "skills" }
 )
+
+# 其餘預期狀態：執行模式與 -Check 都讀這幾個值，不另存第二份。
+$expectedHooksPath = '.githooks'
+$claudeMarketplaceRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-plugins'
+# 此路徑用來辨識舊 hook 項目。
+$legacyHookPattern = '*scripts/hooks/post-edit-write-hook.ps1*'
 
 # 斷鍊清除的掃描範圍，含現役與已退役工具根目錄
 $sweepRoots = @(
@@ -252,44 +276,7 @@ function Set-GitGlobalExcludesFile {
     Write-Host "  ✅  core.excludesFile → $configuredValue" -ForegroundColor DarkGreen
 }
 
-# 7. 建立現役連結（逐條收斂）
-Write-Host "`n>>> 正在建立符號連結..." -ForegroundColor Cyan
-foreach ($entry in $desired) {
-    $target = Join-Path $configRoot $entry.Source
-    Set-SymbolicLink -LinkPath $entry.Link -TargetPath $target -Force:$Force
-}
-
-# 8. 清除斷鍊孤兒：只刪「指向 configRoot 但來源已不存在」者；仍能解析的連結保留
-Write-Host "`n>>> 正在清除斷鍊孤兒..." -ForegroundColor Cyan
-$rootPrefix = $configRoot.TrimEnd('\')
-$rootPrefixWithSeparator = $rootPrefix + [System.IO.Path]::DirectorySeparatorChar
-$orphans = foreach ($root in ($sweepRoots | Sort-Object -Unique)) {
-    if (!(Test-Path $root)) { continue }
-    Get-ChildItem -Path $root -Recurse -Depth 3 -Force -ErrorAction SilentlyContinue |
-    Where-Object {
-        if (-not ($_.Attributes -match 'ReparsePoint')) { return $false }
-        $t = if ($_.Target) { $_.Target } else { $_.LinkTarget }
-        $t = ($t -join '')
-        # 路徑分隔符邊界可避免 .ai-agents-backup 被誤判為 .ai-agents 的子路徑，防止清除根目錄外的 link。
-        $isWithinConfigRoot = [System.String]::Equals($t, $rootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
-            $t.StartsWith($rootPrefixWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)
-        if (-not $isWithinConfigRoot) { return $false }
-        -not (Test-Path -LiteralPath $t)   # 僅保留斷鍊者
-    }
-}
-$orphans = @($orphans)
-foreach ($o in $orphans) {
-    $t = if ($o.Target) { $o.Target } else { $o.LinkTarget }
-    Remove-Item -LiteralPath $o.FullName -Force
-    if (-not $WhatIfPreference) {
-        Write-Host "  🧹  已清除斷鍊：$($o.FullName.Replace($env:USERPROFILE, '~'))  ↛  $($t -join '')" -ForegroundColor Magenta
-    }
-}
-if ($orphans.Count -eq 0 -and -not $WhatIfPreference) {
-    Write-Host "  （無斷鍊孤兒）" -ForegroundColor DarkGray
-}
-
-# 8b. 註冊 Claude Code plugin
+# Claude Code plugin 共用函式（執行模式的 8b 與 -Check 共用）
 function Invoke-ClaudeCli {
     param([string[]]$Arguments)
     $claude = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -319,17 +306,84 @@ function Get-ClaudeProperty {
     return $property.Value
 }
 
-$claudeMarketplaceRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-plugins'
-$claudePluginEnabled = $false
-try {
-    if ($null -eq (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue) -or -not (Test-Path -LiteralPath (Join-Path $claudeMarketplaceRoot '.claude-plugin\marketplace.json') -PathType Leaf)) { throw '找不到 claude CLI 或 marketplace 清單，略過 plugin 註冊。' }
-    $manifest = Get-Content -LiteralPath (Join-Path $claudeMarketplaceRoot '.claude-plugin\marketplace.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+function Get-ClaudePluginSpec {
+    param([string]$MarketplaceRoot)
+    $manifest = Get-Content -LiteralPath (Join-Path $MarketplaceRoot '.claude-plugin\marketplace.json') -Raw -Encoding UTF8 | ConvertFrom-Json
     $specs = @()
     foreach ($entry in @($manifest.plugins)) {
         if ($entry.source -isnot [string] -or -not $entry.source.StartsWith('./') -or [string]::IsNullOrWhiteSpace([string]$entry.name)) { throw 'marketplace plugin 的 name 或 source 不正確。' }
-        $specs += [pscustomobject]@{ Name = [string]$entry.name; Id = ([string]$entry.name + '@ai-agents-local'); Directory = (Join-Path $claudeMarketplaceRoot $entry.source.Substring(2)) }
+        $specs += [pscustomobject]@{ Name = [string]$entry.name; Id = ([string]$entry.name + '@ai-agents-local'); Directory = (Join-Path $MarketplaceRoot $entry.source.Substring(2)) }
     }
     if ($specs.Count -eq 0 -or @($specs | Where-Object { $_.Name -eq 'ai-agents-hooks' }).Count -ne 1) { throw 'marketplace plugin 清單為空或缺少 ai-agents-hooks。' }
+    return $specs
+}
+
+# 斷鍊孤兒：指向 configRoot 但來源已不存在的連結（執行模式的 8 與 -Check 共用）
+function Get-BrokenConfigLink {
+    param([string[]]$SweepRoot, [string]$ConfigRoot)
+    $rootPrefix = $ConfigRoot.TrimEnd('\')
+    $rootPrefixWithSeparator = $rootPrefix + [System.IO.Path]::DirectorySeparatorChar
+    $found = foreach ($root in ($SweepRoot | Sort-Object -Unique)) {
+        if (!(Test-Path $root)) { continue }
+        Get-ChildItem -Path $root -Recurse -Depth 3 -Force -ErrorAction SilentlyContinue |
+        Where-Object {
+            if (-not ($_.Attributes -match 'ReparsePoint')) { return $false }
+            $t = if ($_.Target) { $_.Target } else { $_.LinkTarget }
+            $t = ($t -join '')
+            # 路徑分隔符邊界可避免 .ai-agents-backup 被誤判為 .ai-agents 的子路徑，防止清除根目錄外的 link。
+            $isWithinConfigRoot = [System.String]::Equals($t, $rootPrefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+                $t.StartsWith($rootPrefixWithSeparator, [System.StringComparison]::OrdinalIgnoreCase)
+            if (-not $isWithinConfigRoot) { return $false }
+            -not (Test-Path -LiteralPath $t)   # 僅保留斷鍊者
+        }
+    }
+    return @($found)
+}
+
+# -Check：唯讀檢查，用上面的預期狀態比對現況後結束，不進入下方任何會改動系統的步驟。
+if ($Check) {
+    . (Join-Path $PSScriptRoot 'lib\setup-check.ps1')
+    $checkExitCode = Invoke-SetupCheck -Expected @{
+        ConfigRoot        = $configRoot
+        MainInstructions  = $mainInstructions
+        GitExcludesFile   = $gitGlobalExcludes
+        ToolDirectories   = @($claudeDir, $codexDir, $agentsDir)
+        ClaudeDirectory   = $claudeDir
+        Links             = $desired
+        SweepRoots        = $sweepRoots
+        MarketplaceRoot   = $claudeMarketplaceRoot
+        HooksPath         = $expectedHooksPath
+        LegacyHookPattern = $legacyHookPattern
+    } -AsJson:$AsJson
+    exit $checkExitCode
+}
+
+# 7. 建立現役連結（逐條收斂）
+Write-Host "`n>>> 正在建立符號連結..." -ForegroundColor Cyan
+foreach ($entry in $desired) {
+    $target = Join-Path $configRoot $entry.Source
+    Set-SymbolicLink -LinkPath $entry.Link -TargetPath $target -Force:$Force
+}
+
+# 8. 清除斷鍊孤兒：只刪「指向 configRoot 但來源已不存在」者；仍能解析的連結保留
+Write-Host "`n>>> 正在清除斷鍊孤兒..." -ForegroundColor Cyan
+$orphans = @(Get-BrokenConfigLink -SweepRoot $sweepRoots -ConfigRoot $configRoot)
+foreach ($o in $orphans) {
+    $t = if ($o.Target) { $o.Target } else { $o.LinkTarget }
+    Remove-Item -LiteralPath $o.FullName -Force
+    if (-not $WhatIfPreference) {
+        Write-Host "  🧹  已清除斷鍊：$($o.FullName.Replace($env:USERPROFILE, '~'))  ↛  $($t -join '')" -ForegroundColor Magenta
+    }
+}
+if ($orphans.Count -eq 0 -and -not $WhatIfPreference) {
+    Write-Host "  （無斷鍊孤兒）" -ForegroundColor DarkGray
+}
+
+# 8b. 註冊 Claude Code plugin
+$claudePluginEnabled = $false
+try {
+    if ($null -eq (Get-Command claude -CommandType Application -ErrorAction SilentlyContinue) -or -not (Test-Path -LiteralPath (Join-Path $claudeMarketplaceRoot '.claude-plugin\marketplace.json') -PathType Leaf)) { throw '找不到 claude CLI 或 marketplace 清單，略過 plugin 註冊。' }
+    $specs = @(Get-ClaudePluginSpec -MarketplaceRoot $claudeMarketplaceRoot)
     $result = Invoke-ClaudeCli @('plugin', 'validate', $claudeMarketplaceRoot)
     if ($null -eq $result -or $result.ExitCode -ne 0) { throw "marketplace 驗證失敗：$($result.Output)" }
     $claudePluginSpecs = @()
@@ -429,8 +483,7 @@ function Remove-ClaudeLegacyHook {
                 $command = Get-ClaudeProperty $item 'command'
                 $arguments = Get-ClaudeProperty $item 'args'
                 $text = ((@($command) + @($arguments)) -join ' ').Replace('\', '/')
-                # 此路徑用來辨識舊 hook 項目。
-                if ($text -like '*scripts/hooks/post-edit-write-hook.ps1*') { $removed++; $groupRemoved++ } else { $items += $item }
+                if ($text -like $legacyHookPattern) { $removed++; $groupRemoved++ } else { $items += $item }
             }
             if ($items.Count -gt 0 -or $groupRemoved -eq 0) { $itemsProperty.Value = $items; $groups += $group }
         }
@@ -462,12 +515,12 @@ if ($claudePluginEnabled) {
 
 # 9. 設定 Git Hooks 路徑
 Write-Host "`n>>> 正在設定 Git Hooks..." -ForegroundColor Cyan
-if ($PSCmdlet.ShouldProcess("$configRoot", "設定 core.hooksPath → .githooks")) {
-    git -C $configRoot config core.hooksPath .githooks
+if ($PSCmdlet.ShouldProcess("$configRoot", "設定 core.hooksPath → $expectedHooksPath")) {
+    git -C $configRoot config core.hooksPath $expectedHooksPath
     if ($LASTEXITCODE -ne 0) {
         throw "設定 core.hooksPath 失敗，結束碼：$LASTEXITCODE"
     }
-    Write-Host "  ✅  core.hooksPath → .githooks" -ForegroundColor DarkGreen
+    Write-Host "  ✅  core.hooksPath → $expectedHooksPath" -ForegroundColor DarkGreen
 }
 
 # 10. 設定機器層 Git 排除清單
@@ -544,10 +597,6 @@ else {
 # Setup 把各派工帳號目錄的檔位檔建成指向產生檔的 Symbolic Link，並比對現況。
 # 「建立連結」與「比對現況」是 45-profile-sync.ps1 內可分開呼叫的函式（New-CodexProfileAccountLink、Get-CodexProfileAccountState）。
 # 帳號目錄已有一般檔案或指向別處的連結時不覆蓋，只列出狀態與使用者要執行的命令。
-. (Join-Path $PSScriptRoot 'codex-run\45-profile-sync.ps1')
-. (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
-. (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
-. (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
 $profileBlockedCount = 0
 $profileSpecs = @()
 $profileGeneratedDirectory = Get-CodexProfileGeneratedDirectory -RepoRoot $configRoot
