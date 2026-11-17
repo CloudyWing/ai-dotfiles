@@ -1,0 +1,16 @@
+{
+  "servers": [
+    { "name": "mcp-sql-server", "type": "http", "url": "http://127.0.0.1:9800/mcp" },
+    { "name": "mcp-oracle", "type": "http", "url": "http://127.0.0.1:9801/mcp" },
+    { "name": "mcp-elasticsearch", "type": "http", "url": "http://127.0.0.1:9802/mcp" },
+    { "name": "mcp-redis", "type": "http", "url": "http://127.0.0.1:9803/mcp" },
+    { "name": "mcp-mosquitto", "type": "http", "url": "http://127.0.0.1:9820/mcp" },
+    { "name": "mcp-rabbitmq", "type": "http", "url": "http://127.0.0.1:9821/mcp" },
+    { "name": "mcp-mailpit", "type": "http", "url": "http://127.0.0.1:9830/mcp" },
+    { "name": "mcp-reader", "type": "http", "url": "http://127.0.0.1:9840/mcp" },
+    { "name": "mcp-oidc", "type": "http", "url": "http://127.0.0.1:9850/mcp" },
+    { "name": "mcp-api-contract", "type": "http", "url": "http://127.0.0.1:9851/mcp" },
+    { "name": "mcp-docker", "type": "http", "url": "http://127.0.0.1:9860/mcp" },
+    { "name": "infra-lab", "type": "stdio", "command": "wsl.exe", "args": ["-d", "{distro}", "-e", "bash", "{wslRepo}/scripts/mcp.sh"] }
+  ]
+}
