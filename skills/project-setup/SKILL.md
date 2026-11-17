@@ -54,7 +54,7 @@ policy.allow_implicit_invocation: false
 - 本 Skill 只建立或更新 `AGENTS.md` 的宣告區塊，不維護 `GLOSSARY.md` 本體。
 - `glossary` skill 負責術語衝突、使用者確認與詞彙表即時寫入。
 - `ai-context-index` skill 負責依宣告工具產生 `.local/ai-context/` 產物。
-- `adr` skill 負責判斷決策門檻與新增 ADR。
+- `adr` skill 負責判斷決策門檻；建立 ADR 須經使用者同意。
 
 ## 驗證
 

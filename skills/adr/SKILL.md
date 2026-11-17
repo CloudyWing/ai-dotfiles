@@ -1,10 +1,8 @@
 ---
 name: adr
-description: '依決策門檻建立追加式 Architecture Decision Record，管理序號、狀態與被推翻的決策。'
-audience: human
-dispatch: inline
-disable-model-invocation: true
-policy.allow_implicit_invocation: false
+description: 'Use when 要向使用者提出 ADR 候選，或要撰寫、修改 docs/adr/ 下的 Architecture Decision Record 時；依寫入門檻檢核候選、管理序號、狀態與被推翻的決策。'
+audience: agent
+policy.allow_implicit_invocation: true
 ---
 
 # Architecture Decision Record
@@ -13,23 +11,28 @@ policy.allow_implicit_invocation: false
 
 只有下列三條全部成立時才建立 ADR：
 
-1. 決策會影響多個模組、長期行為或公開契約。
-2. 存在需要記錄的替代方案、取捨或風險。
-3. 未來維護者需要知道採用理由才能安全修改系統。
+1. 決策影響跨模組的結構、公開契約或日後會被人修改或推翻的取捨；單一函式、欄位或腳本內部細節不成文。
+2. 當時真的做過這個決定。被捨棄的選項必須是決定當時實際被提出或評估過的做法，並附當時的來源（需求摘要、設計文件的選型章節、報告、commit 訊息或決定當時的對話紀錄），來源須同時顯示該決定與當時的考量。撰寫 ADR 時才想到的替代做法不算；沿用既有做法、當時沒有人提出別的做法者是現況描述，不成文。使用者是決定者，可以陳述當時的決定與考量作為來源；Agent 提問後使用者的答覆若只是在回答提問，而不是陳述一個已經做過的決定，不構成來源。查不到來源時向使用者確認「當時是否做過這個決定、考量是什麼」，確認前不寫，使用者表示沒有這回事或不記得時不成文，不由結果倒推或自行補寫動機。
+3. 提出者具體寫出「維護者可能做出哪一種違反決定的修改」，並已核對現行規則、skill、`AGENTS.md`、程式與其註解都沒有載明足以防止這個修改。寫不出具體的修改，或這些位置已載明時不成文。
 
 任一條不成立時，將決策留在原本的設計文件或程式碼脈絡，不建立 ADR。
 
+## 提出候選
+
+任何 Agent 向使用者提出 ADR 候選前，先自行以上列門檻檢核。提給使用者的每一項必須已附被捨棄的選項、維護者可能做出的違反修改與當時的來源，過不了門檻的不提。路線圖、待辦清單與報告中順手記下的候選只是線索，不是成文依據。
+
 ## 建立規則
 
+- 建檔前必須取得使用者在對話中對該候選的同意，一般回覆即可。未取得同意不得建立檔案。由子代理或子 Session 承接撰寫時，同意由協調者向使用者取得，並在 brief 附上使用者的原話；執行者沒有收到附原話的同意時不得建檔。
 - 先讀取 `docs/adr/` 的檔名，取目前最大四位數序號加一；不存在時從 `0001` 開始。
-- 使用 `~/.ai-agents/templates/adr/0000-template.md` 的 frontmatter，`status` 必須為 `proposed`、`accepted`、`rejected` 或 `superseded` 之一，`date` 填入建立當日日期，格式為 `yyyy-MM-dd`。
+- 使用 `~/.ai-agents/templates/adr/0000-template.md` 的 frontmatter，`status` 為 `accepted` 或 `superseded`，`date` 填決定日，格式為 `yyyy-MM-dd`。補記既有決定時填決定日，並在來源註明是補記。尚未決定的事不成文。
 - 未被推翻的 ADR 刪除 frontmatter 的 `superseded-by` 欄，不保留空值。
-- 正文的 `Context`、`Decision` 與 `Consequences` 各以 1 至 3 句話完成，內容直接記錄決策與可驗證影響。
+- 正文的 `Context`、`Decision` 與 `Consequences` 各以 1 至 3 句話完成，清單項目不計入句數。`Decision` 寫選了什麼、沒選什麼、為什麼，被捨棄的選項以清單列出，每項一句。欄位名稱、門檻數值、函式名稱與表格不寫入，改以路徑指向規則檔、skill 或程式。
 - ADR 採追加式寫入，不覆寫或重排既有 ADR。若舊決策被推翻，建立新序號的 ADR，並只更動舊 ADR 的 frontmatter：`status` 標為 `superseded`，`superseded-by` 填入新 ADR 的四位數序號，正文維持原樣。
-- 已否決的方案以 `status: rejected` 保留，讓後續設計知道它已被評估且不應直接重提。
 
 ## 驗證
 
 - 確認新檔案序號未與既有 ADR 衝突。
 - 確認 frontmatter 有 `status` 與 `date`，且正文每個區段符合 1 至 3 句話限制。
+- 確認 `Decision` 的被捨棄選項與理由都有決定當時的來源，且已寫出維護者可能做出的違反修改。
 - 確認既有 ADR 的正文未被改寫，推翻關係由新 ADR 的正文與舊 ADR 的 `superseded-by` 雙向表達。

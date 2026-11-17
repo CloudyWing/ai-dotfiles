@@ -4,7 +4,6 @@
 
 | Skill | 類型 | 讀者 | 用途 |
 | --- | --- | --- | --- |
-| `adr` | 指令型 | human | 依決策門檻建立追加式 Architecture Decision Record，管理序號、狀態與被推翻的決策。 |
 | `architecture-improvement` | 指令型 | human | 以 Git hotspot 縮小分析範圍，使用 deletion test 篩選改善候選並產出架構改善報告。 |
 | `create-license-and-readme-link` | 指令型 | human | 自動判斷專案屬性並推薦合適的開源授權，建立 LICENSE 檔案並將其連結補入 README.md 中。 |
 | `fix-file-encoding` | 指令型 | human | 偵測並修正檔案亂碼問題，依副檔名轉換至正確目標編碼（Big5/ANSI → UTF-8 系列）。 |
@@ -21,6 +20,7 @@
 
 | Skill | 類型 | 讀者 | 用途 |
 | --- | --- | --- | --- |
+| `adr` | 知識型 | agent | Use when 要向使用者提出 ADR 候選，或要撰寫、修改 docs/adr/ 下的 Architecture Decision Record 時；依寫入門檻檢核候選、管理序號、狀態與被推翻的決策。 |
 | `ai-context-index` | 知識型 | agent | Use when an agent needs to create or update a project AI context index from the tools declared in AGENTS.md. |
 | `ai-profile` | 知識型 | agent | Use when 需要讀取、詢問或寫入專案 AGENTS.local.md 的 AI-PROFILE 區塊鍵（code-style.csharp、project-kind、workflow-depth、git-workflow、manual-root、target.sqlserver、target.sqlserver.compat、target.oracle），或需判定哪些鍵缺少而須一次詢問時。 |
 | `ai-tool-discovery` | 知識型 | agent | Use when the agent is about to explore a project or generate AI support artifacts and needs the local tool inventory or the state and rebuild path of existing .local/ai-context artifacts. |

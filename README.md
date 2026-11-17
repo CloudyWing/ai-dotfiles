@@ -71,7 +71,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | `AGENTS.local.md` | 個人對此專案的偏好覆寫 | 僅影響目前專案，不取代專案共享規範 |
 | `CONTEXT.local.md` | Session 上下文交接 | 可選的本機交接檔；僅記錄跨 session 仍有效的環境前置作業、本機限制與已知陷阱 |
 | `GLOSSARY.md` | 專案專屬業務術語 | 由 `glossary` skill 依使用者確認維護 |
-| `docs/adr/` | Architecture Decision Record | 由 `adr` skill 依決策門檻追加 |
+| `docs/adr/` | Architecture Decision Record | 依 `adr` skill 的決策門檻，經使用者同意後追加 |
 
 `.local/` 與 `*.local.md` 由 Setup 設定的機器層 Git 排除清單排除，不需寫進專案的 `.gitignore`。
 

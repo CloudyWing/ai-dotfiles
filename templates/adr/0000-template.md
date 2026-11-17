@@ -1,6 +1,6 @@
 ---
-status: proposed
-date: <yyyy-MM-dd>
+status: accepted
+date: <yyyy-MM-dd 決定日；補記時填決定日>
 superseded-by: <推翻此決策的 ADR 序號，未被推翻時刪除此欄>
 ---
 
@@ -8,11 +8,13 @@ superseded-by: <推翻此決策的 ADR 序號，未被推翻時刪除此欄>
 
 ## Context
 
-<用 1 至 3 句話描述需要決策的背景與限制。>
+<用 1 至 3 句話描述需要決策的背景與限制。當時的來源：<需求摘要、設計文件、報告、commit 或使用者陳述；補記時註明是補記>。>
 
 ## Decision
 
-<用 1 至 3 句話描述選定方案。>
+<用 1 至 3 句話描述選了什麼與為什麼，被捨棄的選項列為清單，每項一句並附捨棄原因。>
+
+- <被捨棄的選項：捨棄原因>
 
 ## Consequences
 

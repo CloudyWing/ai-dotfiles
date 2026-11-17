@@ -165,6 +165,7 @@ applyTo: "**/*"
 | 撰寫程式碼註解、XML 文件、commit 訊息或 PR 描述，或判定某項資訊該寫入哪份文件 | `doc-placement` |
 | 新增或修改顯示給使用者的文字（UI 文字、副標、提示、Tooltip、空狀態、錯誤訊息，位於 `*.cs`、`*.razor`、`*.xaml`、`*.vue`、`*.ts`、`*.tsx` 或資源檔） | `uiux`（依「使用者可見文字」） |
 | 修改跨模組介面、分層或依賴方向 | `codebase-design` |
+| 向使用者提出 ADR 候選，或撰寫、修改 `docs/adr/` 下的檔案 | `adr` |
 | 撰寫或修改 `instructions.md`、`rules/claude/` 下的規則檔與任何 `SKILL.md` | `writing-for-agents` |
 | 建立、讀取、回收、保存或清理 `.local/ai-sessions/` 交接物與報告 | `session-artifacts` |
 | 讀取、詢問或寫入專案 `AGENTS.local.md` 的 `AI-PROFILE` 鍵，或建立派遣前檢查該區塊 | `ai-profile` |
