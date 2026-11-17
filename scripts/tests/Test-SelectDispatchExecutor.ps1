@@ -484,7 +484,7 @@ try {
     Test-Case M02 {
         # 第一項優先條件的重要性高於第二項：delta 只滿足 net、charlie 只滿足 gui，delta 在前。
         $r = Invoke-Fixture '-Type probe -Offline echo' $fixture
-        $r.Json.executor.id -eq 'delta' -and (@($r.Json.unmetPreferences) -join ',') -eq 'gui' -and $r.Json.dispatchLine -ceq '[派工判定: 登錄表→delta] type=probe 執行者=Delta 未滿足優先條件=gui 略過=echo:offline'
+        $r.Json.executor.id -eq 'delta' -and (@($r.Json.unmetPreferences) -join ',') -eq 'gui' -and $r.Json.dispatchLine -ceq '[派工] 交給 Delta：probe；未滿足優先條件 gui；已略過 echo（離線）'
     }
     Test-Case M03 {
         # 優先條件全部相同時依排序值：delta（40）與 golf（45）都只滿足 net。
@@ -539,18 +539,18 @@ try {
         $r = Invoke-Fixture '-Type check -ImplementerFamily claude -Offline bravo' $fixture
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'charlie' -and (@($r.Json.unmetPreferences) -join ',') -eq 'family' -and
         $r.Json.requiresUserDecision -eq $false -and $null -eq $r.Json.PSObject.Properties['degradations'] -and
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→charlie] type=check 執行者=Charlie 未滿足優先條件=family（同家族審查） 略過=bravo:offline'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Charlie：check；找不到不同模型家族的執行者，改由同家族審查；已略過 bravo（離線）'
     }
     Test-Case U02 {
         # 選派入口不保存不可用狀態：下一次不帶 -Offline 的呼叫仍先選首選。
         $null = Invoke-Fixture '-Type check -ImplementerFamily claude -Offline bravo' $fixture
         $r = Invoke-Fixture '-Type check -ImplementerFamily claude' $fixture
-        $r.Json.executor.id -eq 'bravo' -and @($r.Json.skipped).Count -eq 0 -and $r.Json.dispatchLine -ceq '[派工判定: 登錄表→bravo] type=check 執行者=Bravo'
+        $r.Json.executor.id -eq 'bravo' -and @($r.Json.skipped).Count -eq 0 -and $r.Json.dispatchLine -ceq '[派工] 交給 Bravo：check'
     }
     Test-Case U03 {
         $r = Invoke-Fixture '-Type check -ImplementerFamily claude -Offline bravo,charlie,delta' $fixture
         $r.ExitCode -eq 22 -and $r.Json.status -eq 'stopped' -and $r.Json.reason -eq 'offline' -and $null -eq $r.Json.executor -and $r.Json.requiresUserDecision -eq $false -and
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→停止] type=check 執行者=無 略過=bravo:offline,charlie:offline,delta:offline'
+        $r.Json.dispatchLine -ceq '[派工] 停止，沒有可用的執行者：check；已略過 bravo（離線）、charlie（離線）、delta（離線）'
     }
     Test-Case U04 {
         # 需授權的首選不可用時，下一位不需授權即可承接；首選可用且未授權時仍為待授權。
@@ -574,7 +574,7 @@ try {
         # 達上限即自動換下一位，不需使用者決定。
         $r = Invoke-Fixture '-Type edit -E true -T false -Incomplete alpha:3' $fixture
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'charlie' -and $r.Json.requiresUserDecision -eq $false -and
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→charlie] type=edit E=是 T=否 執行者=Charlie 略過=alpha:incomplete-limit' -and
+        $r.Json.dispatchLine -ceq '[派工] 交給 Charlie：改檔，範圍已列明、不需建置測試；已略過 alpha（未完成次數已達上限）' -and
         @($r.Json.considered | Where-Object { $_.id -eq 'alpha' })[0].reason -eq 'incomplete-limit'
     }
     Test-Case I03 {
@@ -585,7 +585,7 @@ try {
         # 最後一位也達上限：回傳需使用者決定，結束碼 10，沒有執行者。
         $r = Invoke-Fixture '-Type edit -E true -T false -Incomplete alpha:3,charlie:3,delta:3' $fixture
         $r.ExitCode -eq 10 -and $r.Json.status -eq 'needs-user-decision' -and $r.Json.reason -eq 'all-candidates-exhausted' -and $null -eq $r.Json.executor -and $r.Json.requiresUserDecision -eq $true -and
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→需使用者決定] type=edit E=是 T=否 執行者=無 略過=alpha:incomplete-limit,charlie:incomplete-limit,delta:incomplete-limit'
+        $r.Json.dispatchLine -ceq '[派工] 需你決定，目前沒有可交付的執行者：改檔，範圍已列明、不需建置測試；已略過 alpha（未完成次數已達上限）、charlie（未完成次數已達上限）、delta（未完成次數已達上限）'
     }
     Test-Case I05 {
         # 不是候選的執行者的次數不影響結果（E=否時 alpha 不符合 when）。
@@ -843,44 +843,44 @@ try {
     # dispatchLine 格式
     Test-Case L01 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→haiku] type=edit E=是 T=否 執行者=Haiku subagent'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Haiku subagent：改檔，範圍已列明、不需建置測試'
     }
     Test-Case L02 {
         $r = Invoke-Selector -Arguments @('-Type', 'edit', '-E', 'false', '-T', 'true', '-Label', 'P3 重構')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] P3 重構 type=edit E=否 T=是 執行者=Sonnet subagent'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Sonnet subagent：P3 重構，改檔，範圍需自行探索、需要建置測試'
     }
     Test-Case L03 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→codex-review] type=review 執行者=Codex review' -and $r.Json.dispatchLine -notmatch ' E=| T='
+        $r.Json.dispatchLine -ceq '[派工] 交給 Codex review：審查' -and $r.Json.dispatchLine -notmatch ' E=| T='
     }
     Test-Case L04 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude -Offline codex-review')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] type=review 執行者=Sonnet subagent 未滿足優先條件=family（同家族審查） 略過=codex-review:offline'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Sonnet subagent：審查；找不到不同模型家族的執行者，改由同家族審查；已略過 codex-review（離線）'
     }
     Test-Case L05 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→待授權] type=advise 執行者=Codex advisor'
+        $r.Json.dispatchLine -ceq '[派工] 等你授權後交給 Codex advisor：提供顧問意見'
     }
     Test-Case L06 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type advise -ImplementerFamily claude -Offline codex-advisor')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→sonnet] type=advise 執行者=Sonnet subagent 未滿足優先條件=family（同家族審查） 略過=codex-advisor:offline'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Sonnet subagent：提供顧問意見；找不到不同模型家族的執行者，改由同家族審查；已略過 codex-advisor（離線）'
     }
     Test-Case L07 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→停止] type=generate 執行者=無 略過=codex-content:offline'
+        $r.Json.dispatchLine -ceq '[派工] 停止，沒有可用的執行者：產生影像；已略過 codex-content（離線）'
     }
     Test-Case L09 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→codex-scan] type=test 執行者=Codex scan'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Codex scan：測試取證'
     }
 
     Test-Case L10 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→codex-content] type=generate 執行者=Codex content'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Codex content：產生影像'
     }
     Test-Case L11 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck')
-        $r.Json.dispatchLine -ceq '[派工判定: 登錄表→codex-content] type=factcheck 執行者=Codex content'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Codex content：事實查核'
     }
 
     # 登錄表 entry 欄位（審查、事實校閱、影像產生切到新入口，測試取證與顧問維持現行入口）
@@ -932,7 +932,7 @@ try {
     Test-Case EN08 {
         $switchedBack = New-RegistryCopy 'entry-switch-back' { param($r) (Get-ExecutorNode $r 'codex-review').entry = 'scripts/Invoke-CodexDispatch.ps1' }
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude') -Registry $switchedBack
-        $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'codex-review' -and $r.Json.executor.entry -ceq 'scripts/Invoke-CodexDispatch.ps1' -and $r.Json.dispatchLine -ceq '[派工判定: 登錄表→codex-review] type=review 執行者=Codex review'
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'codex-review' -and $r.Json.executor.entry -ceq 'scripts/Invoke-CodexDispatch.ps1' -and $r.Json.dispatchLine -ceq '[派工] 交給 Codex review：審查'
     }
     # 結束碼與 stderr 格式彙整
     Test-Case Z01 {

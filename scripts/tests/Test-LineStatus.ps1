@@ -47,6 +47,7 @@ try {
     . $scriptPath
     Test-Case C04 {
         (Get-NextStepSummary @('Developer 派工：P1=Codex、P2=Codex', 'Reviewer 審查本輪 diff。之後驗收。')) -eq 'Reviewer 審查本輪 diff。' -and
+        (Get-NextStepSummary @('`[派工] 自己做（需要對話脈絡）：P1 規則檔撰寫', '實作 Phase 1 至 9。其餘')) -eq '實作 Phase 1 至 9。' -and
         (Get-NextStepSummary @('`[派工判定: 不派] P1 規則檔撰寫', '實作 Phase 1 至 9。其餘')) -eq '實作 Phase 1 至 9。' -and
         (Get-NextStepSummary @('00. 最新進度：X。下一步派 Y。')) -eq '最新進度：X。' -and
         (Get-NextStepSummary @('P5（instructions.md T023 到 T025）待使用者同意；之後驗收。')) -eq 'P5（instructions.md T023 到 T025）待使用者同意；之後驗收。'
@@ -111,9 +112,9 @@ try {
         else { Write-Output 'SKIP C10Line 非 status-board-p2 worktree' }
     }
     Test-Case C11 { @($actual.scannedRoots | Where-Object { $_ -match 'YunXin' }).Count -eq 0 }
-    $executorLines = @($actual.lines | Where-Object { $_.NextStop -match '^(Developer 派工|派工判定|P\d+[=＝:：])' })
+    $executorLines = @($actual.lines | Where-Object { $_.NextStop -match '^(Developer 派工|派工判定|派工\]|P\d+[=＝:：])' })
     if ($executorLines.Count -eq 0) { Write-Output 'SKIP C12 樣本不足' }
-    else { Test-Case C12 { @($executorLines | Where-Object { $_.NextStepSummary -match '^(Developer 派工|派工判定|P\d+[=＝:：])' }).Count -eq 0 } }
+    else { Test-Case C12 { @($executorLines | Where-Object { $_.NextStepSummary -match '^(Developer 派工|派工判定|派工\]|P\d+[=＝:：])' }).Count -eq 0 } }
     $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot ';' -SkipQuota -AsJson
     $code = $LASTEXITCODE
     $fallback = ($raw -join "`n") | ConvertFrom-Json

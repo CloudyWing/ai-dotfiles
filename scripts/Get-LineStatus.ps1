@@ -302,7 +302,7 @@ function Get-NextStepSummary {
 
     foreach ($part in $Parts) {
         $value = $part -replace '^[`\[\s]+', '' -replace '^\d+[.、)）]\s*', ''
-        if ($value -match '^(Developer 派工|派工判定|P\d+[=＝:：])') { continue }
+        if ($value -match '^(Developer 派工|派工判定|派工\]|P\d+[=＝:：])') { continue }
         $value = ($value -replace '\s+', ' ').Trim()
         if (-not $value) { continue }
         $end = $value.IndexOf('。')

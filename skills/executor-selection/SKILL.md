@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # 派工執行者選派
 
-本 Skill 把「這份工作交給誰」交給資料與腳本判定。執行者清單、受理類型、能力標籤、條件、排序值、優先條件、未完成次數上限與備援 model 只存在登錄表 `scripts/dispatch/executor-registry.json`，選派由 `scripts/Select-DispatchExecutor.ps1` 執行。本 Skill 定義標註語意、入口用法、各狀態的處置與執行者轉移的交接單。是否進入登錄表判定、不派清單、下限三題與小型修改例外由 `rules/claude/30-dispatch.md`「F1 派工判準」規定。
+本 Skill 把「這份工作交給誰」交給資料與腳本判定。執行者清單、受理類型、能力標籤、條件、排序值、優先條件、未完成次數上限與備援 model 只存在登錄表 `scripts/dispatch/executor-registry.json`，選派由 `scripts/Select-DispatchExecutor.ps1` 執行。本 Skill 定義標註語意、入口用法、各狀態的處置與執行者轉移的交接單。是否進入登錄表判定、不派清單、下限三題與小型修改例外由 `rules/claude/30-dispatch.md`「派工判準」規定。
 
 ## 使用時機
 
@@ -74,7 +74,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 - 以逗號連接 `-Tags`、`-Prefer`、`-Offline` 與 `-Incomplete` 的多個值，不含空白，例如 `-Offline codex-scan,codex-content`。`pwsh -File` 與同一行程 `&` 呼叫都適用這個寫法。以空白分隔時，多餘的值會成為位置參數，入口以結束碼 2、錯誤碼 `SelectorParameterBinding` 拒絕。
 - 傳入 `-Incomplete` 的次數為 0 至 999 的整數，同一 id 只能出現一次（重複時即使次數相同也以 `SelectorIncompleteInvalid` 拒絕）。上限 999 與登錄表 `maxIncomplete` 的上限相同。
 - 輸出 stdout 單一 JSON 物件（schema `ai-agents.executor-selection.v1`），欄位含 `status`、`executor`、`unmetPreferences`、`candidates`、`skipped`、`requiresUserDecision`、`reason`、`considered` 與 `dispatchLine`。Codex 執行者的 `executor` 另含 `entry`，值為該執行者使用的入口腳本。
-- 輸出 `dispatchLine` 原文作為本輪的 `[派工判定]` 行，不自行改寫判定值。選中者未滿足優先條件時該行附 `未滿足優先條件=<名稱>`，`family` 寫成 `family（同家族審查）`；有執行者被略過時附 `略過=<id:理由>`。
+- 輸出 `dispatchLine` 原文作為本輪的 `[派工]` 判定行，不自行改寫。該行格式為 `[派工] 交給 <執行者顯示名>：<做什麼>，<條件的白話說明>`，選中者未滿足優先條件或有執行者被略過時，於行尾以分號附白話說明，對照見「判定行的白話對照」。`type`、`E`、`T` 只用於標註與 JSON 欄位，不出現在判定行。
 - 查詢 `-Describe` 取得登錄表目前的類型、旗標需求、優先條件、未完成次數上限與執行者，不做選擇。
 - 選派入口無副作用，只讀登錄表，不寫檔、不呼叫網路、不查額度。離線狀態與未完成次數一律由呼叫端傳入，入口不保存。
 
@@ -85,6 +85,40 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 3. 依序略過 `-Offline` 列出者（理由 `offline`）與 `-Incomplete` 次數達登錄表 `maxIncomplete` 者（理由 `incomplete-limit`），第一位未被略過者為選中者。被略過者輸出為 `skipped`。
 4. 選中者需授權且未提供 `-Authorized` 時為 `needs-authorization`，否則為 `selected`。選中者未滿足的優先條件輸出為 `unmetPreferences`。
 5. 沒有選中者時：沒有候選為 `stopped`（`no-eligible-executor`）；候選全部被略過且至少一位是因未完成次數達上限為 `needs-user-decision`，其餘被略過者可以是離線；全部只因離線被略過為 `stopped`（`offline`）。
+
+### 判定行的白話對照
+
+`dispatchLine` 由選派入口依下表組出，登錄表未列的類型與旗標以原名顯示。
+
+| 項目 | 判定行寫法 |
+| --- | --- |
+| `edit` | 改檔 |
+| `survey` | 盤點取證 |
+| `test` | 測試取證 |
+| `generate` | 產生影像 |
+| `factcheck` | 事實查核 |
+| `review` | 審查 |
+| `advise` | 提供顧問意見 |
+| `E` 為真、`T` 為假 | 範圍已列明、不需建置測試 |
+| `E` 為真、`T` 為真 | 範圍已列明、需要建置測試 |
+| `E` 為假、`T` 為假 | 範圍需自行探索、不需建置測試 |
+| `E` 為假、`T` 為真 | 範圍需自行探索、需要建置測試 |
+| 狀態 `selected` | `交給 <執行者顯示名>` |
+| 狀態 `needs-authorization` | `等你授權後交給 <執行者顯示名>` |
+| 狀態 `needs-user-decision` | `需你決定，目前沒有可交付的執行者` |
+| 狀態 `stopped` | `停止，沒有可用的執行者` |
+| 未滿足優先條件 `family` | `找不到不同模型家族的執行者，改由同家族審查` |
+| 略過理由 `offline`、`incomplete-limit` | `已略過 <id>（離線）`、`已略過 <id>（未完成次數已達上限）` |
+
+範例：`[派工] 交給 Haiku subagent：改檔，範圍已列明、不需建置測試`。有 `-Label` 時，說明置於動詞之前，例如 `[派工] 交給 Sonnet subagent：P3 重構，改檔，範圍需自行探索、需要建置測試`。
+
+主 Agent 自己做時不呼叫入口，判定行為 `[派工] 自己做（<原因>）：<一句話理由>`，原因為下列三種之一。
+
+| 原因 | 適用 |
+| --- | --- |
+| `需要對話脈絡` | 命中 `rules/claude/30-dispatch.md` 的不派清單 |
+| `小改動` | 三題全否或符合小型修改例外 |
+| `難以交代清楚` | 工作需要對話脈絡、無法寫成任務標註，且不會污染主 Agent context |
 
 ### 狀態處置
 

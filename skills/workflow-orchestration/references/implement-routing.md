@@ -36,7 +36,7 @@
 
 有效深度為 `light` 的線沒有 `design.md` 與 Phase，實作工作依單一工作處理。
 
-- 執行者依 `rules/claude/30-dispatch.md` F1 判準以 `-Type edit` 呼叫選派入口選出，使用上節「單一工作的 Claude 承接契約」，或由主 Agent 依小型修改例外自理。
+- 執行者依 `rules/claude/30-dispatch.md` 派工判準以 `-Type edit` 呼叫選派入口選出，使用上節「單一工作的 Claude 承接契約」，或由主 Agent 依小型修改例外自理。
 - 契約的規格來源為同線 `requirement-summary.md`。`acceptanceCriteria` 列出其絕對路徑與相關「已確定的實作約束」所在位置，每列標註〔需求 #n〕，格式見 `../SKILL.md`「light 路徑」第 4 步。
 - 隔離判定與回收核對沿用本檔「Claude 實作 subagent 隔離操作」與上節契約。
 
@@ -55,7 +55,7 @@
 
 ## Workflow Phase 的判定記錄
 
-- `[派工判定]` 使用選派入口輸出的 `dispatchLine`，理由以 `P<n>` 起首。
+- `[派工]` 判定行使用選派入口輸出的 `dispatchLine`，說明以 `P<n>` 起首。
 - 整個 Workflow 由各 Phase 選派結果中排序值最大的執行者單一承接。判定結果寫入 `design-accepted` 檢查點「下一站」欄，格式為 `Developer 派工：全部 Phase=<執行者>；未完成次數：無`（尚無任何未完成時固定寫「無」，不省略）；Phase 中另有主 Agent 執行的規則檔或文件撰寫時，於同一欄逐 Phase 標示，例如 `P1=主 Agent、P2=Sonnet subagent`。
 - 後續檢查點（`developer-collected`）沿用同一欄，更新執行者，並在其後寫入本任務完整的未完成次數（固定一行 `未完成次數：<執行者 id>:<n>,<執行者 id>:<n>`，含已轉移走的執行者，格式與讀寫時點見 `executor-selection` skill「執行者轉移與交接單」）。例如 `Developer 派工：全部 Phase=Sonnet subagent；未完成次數：haiku:3,sonnet:1`。次數以 `；` 接在同一行。「下一站」改為文件同步、Reviewer 或需求意圖驗收之後，這一行仍保留在同一欄，直到任務收下。
 

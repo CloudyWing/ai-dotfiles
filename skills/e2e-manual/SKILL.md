@@ -164,12 +164,12 @@ policy.allow_implicit_invocation: true
 | --- | --- | --- |
 | 撰寫 E2E 測試碼、`ManualRecorder`、測試專案設定 | Claude subagent，預期 Sonnet | `-Type edit -E false -T true -Tags build-test` |
 | 執行網站路徑 E2E（Playwright），取回 `flows/`、`images/` 與測試輸出 | Codex `scan` | `-Type test -Tags browse,build-test` |
-| 執行視窗程式路徑 E2E（FlaUI） | 沙盒能力未驗證，實測前不送沙盒：由使用者在本機主控台執行，或在使用者當輪同意後由 Claude 端執行 | 不派，不呼叫選派入口 |
-| 勾選流程、詢問 `manual-root`、讀圖判定、組裝手冊、套用 `check-markdown` | Claude 端 | 不派 |
+| 執行視窗程式路徑 E2E（FlaUI） | 沙盒能力未驗證，實測前不送沙盒：由使用者在本機主控台執行，或在使用者當輪同意後由 Claude 端執行 | 自己做（需要對話脈絡），不呼叫選派入口 |
+| 勾選流程、詢問 `manual-root`、讀圖判定、組裝手冊、套用 `check-markdown` | Claude 端 | 自己做（需要對話脈絡） |
 
 - 傳入選派入口的標註為上表前兩列，可直接傳給 `scripts/Select-DispatchExecutor.ps1`，分別選出 `sonnet` 與 `codex-scan`。
 - 視窗程式路徑留在本機的原因是 FlaUI 在 Codex 沙盒能否操作元件尚未實測。`desktop-smoke` 已驗證的只有 WPF 建置、`Start-Process` 啟動、`System.Drawing` 截圖與 user32 視窗位置讀取。選派入口遇到含桌面控制標籤的 `test` 會選出 Codex，因此實測並更新本表之前，視窗程式路徑不呼叫選派入口。
-- 輸出視窗程式路徑的判定行 `[派工判定: 不派] FlaUI 沙盒未驗證，依 e2e-manual 派遣分界由使用者主控台或 Claude 端執行`。回報的「FlaUI 沙盒能力」欄固定寫「未驗證」。
+- 輸出視窗程式路徑的判定行 `[派工] 自己做（需要對話脈絡）：FlaUI 沙盒未驗證，依 e2e-manual 派遣分界由使用者主控台或 Claude 端執行`。回報的「FlaUI 沙盒能力」欄固定寫「未驗證」。
 - 網站路徑遇 Codex 離線時，選派入口回傳 `stopped`，停止並回報使用者。使用者可在本機執行同一命令後交回 `flows/` 與 `images/`；不改由 Claude 端代跑。
 - 以可寫入模式派遣 Codex 執行網站 E2E，因為測試會寫出建置輸出與 staging。派遣單第 6 欄的寫入範圍列出測試專案的建置輸出目錄與該功能的 staging 目錄，其餘專案檔維持唯讀。
 - 手冊只由 Claude 端寫入，Codex 派遣不觸及 `manual-root`。

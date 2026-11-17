@@ -14,12 +14,12 @@ policy.allow_implicit_invocation: true
 使用者確認需求摘要後，`Analyst` 依下列順序推進。
 
 1. 尚未登記線時，依 `session-artifacts` skill「線登記與 LineContext」登記 `lineSlug` 並建立同線 `line.json`。既有 `requirement-summary.md` 依同 skill「覆寫前備份」備份後，寫入新的來源 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md`，再執行 `check-markdown`。
-2. 涉及畫面的 B／C 線先依 `uiux-baseline` skill「協調者基準準備」完成基準與確認交接；C 線先準備基準再交 `Prototyper`。
-3. A 線與 B 線：
-   - 有效深度為 `light` 時（B 線依升級判定一律為 `full`，因此只會是 A 線），不派生 `Architect`、不做影響範圍盤點，改依「light 路徑」推進。
+2. UI 線別為「版面規劃」或「先做 Demo」時，先依 `uiux-baseline` skill「協調者基準準備」完成基準與確認交接；「先做 Demo」先準備基準再交 `Prototyper`。
+3. 「無畫面」與「版面規劃」：
+   - 有效深度為 `light` 時（「版面規劃」依升級判定一律為 `full`，因此只會是「無畫面」），不派生 `Architect`、不做影響範圍盤點，改依「light 路徑」推進。
    - 有效深度為 `full` 時，需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先依 `executor-selection` skill 以 `-Type survey` 派生 Sonnet 取證者取得影響範圍盤點報告，收下後才派生 `Architect`。需求改變使用者可見的行為、命令、檔名或術語，而需求摘要未列舉使用者文件時，即使影響範圍已列舉，也派生取證者補做使用者文件盤點；盤點報告含「使用者文件引用」節，以本次改動的術語、檔名、命令與被取代的舊名稱為搜尋詞，列出使用者文件中的命中位置。
-   - 以 Agent 工具派生 `Architect`（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），prompt 帶入 `LineContext`、需求摘要的絕對路徑，以及盤點報告的絕對路徑（若有；未提供時 `Architect` 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺。B 線傳入的需求摘要須含區塊清單與初步層級判斷。等待 `Architect` 產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md` 後進入「Design 與 Demo 驗收」。
-4. C 線：先以 Agent 工具派生 `Prototyper`，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），Demo 產出後進入「Design 與 Demo 驗收」。驗收通過並將訪談結果回填需求摘要後，再依第 3 點派生 `Architect`。
+   - 以 Agent 工具派生 `Architect`（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），prompt 帶入 `LineContext`、需求摘要的絕對路徑，以及盤點報告的絕對路徑（若有；未提供時 `Architect` 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺。「版面規劃」傳入的需求摘要須含區塊清單與初步層級判斷。等待 `Architect` 產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md` 後進入「Design 與 Demo 驗收」。
+4. 「先做 Demo」：先以 Agent 工具派生 `Prototyper`，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），Demo 產出後進入「Design 與 Demo 驗收」。驗收通過並將訪談結果回填需求摘要後，再依第 3 點派生 `Architect`。
 
 ## Design 與 Demo 驗收
 
@@ -111,9 +111,9 @@ Workflow 的 Phase 由 Claude subagent 承接時的契約見 `references/claude-
 
 1. 讀取同線 `requirement-summary.md` 的 `## Workflow 深度` 節取得有效深度，不重新解析。該節不存在時視為 `full`，改依「自動推進鏈」。
 2. 確認不派生 `Architect`、不做影響範圍盤點、不寫入 `design-accepted` 與 `developer-collected` 交接檢查點，也不派出 `Developer`。
-3. 依 `rules/claude/30-dispatch.md` F1 判準判定實作工作的執行者，照常輸出 `[派工判定]` 行。執行者為主 Agent 小型修改例外，或選派入口選出的 Claude subagent（`references/implement-routing.md`「light 線的實作工作」）。
+3. 依 `rules/claude/30-dispatch.md` 派工判準判定實作工作的執行者，照常輸出 `[派工]` 判定行。執行者為主 Agent 小型修改例外，或選派入口選出的 Claude subagent（`references/implement-routing.md`「light 線的實作工作」）。
 4. 撰寫實作驗收契約。Claude subagent 的 `acceptanceCriteria` 與主 Agent 自理的驗收列列出目標檔案絕對路徑、`requirement-summary.md` 絕對路徑與相關「已確定的實作約束」所在位置；每列標註〔需求 #n〕，每個需求編號至少被一列涵蓋（或列於需求摘要的排除項目），並含至少一個建置或測試命令與至少一項負向靜態檢查。驗收契約另含一列「文件同步」，列出受影響使用者文件的絕對路徑與段落標題並標註〔需求 #n〕，無影響時寫「不需要：<理由>」。主 Agent 動手前把驗收列原文寫入同線 `report/<lineSlug>/` 下的檔案，作為回收、審查與需求意圖驗收的比對來源。
-5. 回收時檢查執行端報告與 diff。變更命中 Reviewer 必發清單第 2 項、改動 `library` 公開 API，或本線 UI 線別為 B、C 線時，停止後續實作站點，交 `Analyst` 依 `rules/claude/40-workflow.md`「Workflow 深度」改為 `full`，自 Design 起算。未命中時，回收並覆核後立即依 `generate-commit` skill 建立 commit，不等審查與需求意圖驗收；commit 在線分支上時不需授權，直接在整合分支上進行時 commit 即落地，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。其後各步的修正同樣於覆核後立即 commit。
+5. 回收時檢查執行端報告與 diff。變更命中 Reviewer 必發清單第 2 項、改動 `library` 公開 API，或本線 UI 線別為「版面規劃」或「先做 Demo」時，停止後續實作站點，交 `Analyst` 依 `rules/claude/40-workflow.md`「Workflow 深度」改為 `full`，自 Design 起算。未命中時，回收並覆核後立即依 `generate-commit` skill 建立 commit，不等審查與需求意圖驗收；commit 在線分支上時不需授權，直接在整合分支上進行時 commit 即落地，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。其後各步的修正同樣於覆核後立即 commit。
 6. 文件同步。驗收契約的「文件同步」列有受影響文件時，依 `references/doc-sync.md` 執行；該列為「不需要」時直接進入下一步。
 7. 依 `rules/claude/40-workflow.md`「Reviewer 派遣發動判準」的 `light` 調整判定是否發動審查；發動時派遣單依 `references/review-procedures.md`「light 線的 Reviewer 派遣單與回收」。
 8. 交由 `Analyst` 執行需求意圖驗收，逐項比對來源為第 4 步實作驗收契約各列的驗收結果、派工回報（含 Claude subagent 回報、主 Agent 自理時的完成回覆）與 `doc-sync-report.md`（若有）。缺列或缺失時依回收三態退回執行端補齊。

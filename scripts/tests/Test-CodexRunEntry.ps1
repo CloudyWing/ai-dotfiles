@@ -760,7 +760,7 @@ try {
         Assert-True ($selection.executor.id -cne $reviewId) '下一位不應是被拒絕的執行者'
         Assert-Equal @($reviewId) @($selection.labels.offline)
         Assert-Equal @('family') @($selection.unmetPreferences)
-        Assert-True ($selection.dispatchLine.Contains('同家族審查') -and $selection.dispatchLine.Contains('略過=' + $reviewId + ':offline')) $selection.dispatchLine
+        Assert-True ($selection.dispatchLine.Contains('同家族審查') -and $selection.dispatchLine.Contains('已略過 ' + $reviewId + '（離線）')) $selection.dispatchLine
         Assert-Equal $before (Get-DirectorySnapshot -Root $e33.MachineDirectory) '額度用完不應留下任何狀態檔，下一次派工照常先試 Codex'
     }
     Test-Case 'E2E-NEXT-EXECUTOR-ALL-UNAVAILABLE 全部帳號未登入：結束碼 4、CodexAccountsAllUnavailable，fallback 同樣帶下一位執行者' {

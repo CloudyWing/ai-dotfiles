@@ -4,7 +4,7 @@
 
 ## 使用時機與入口選擇
 
-主 Agent 依 F1 判準判定要派工後載入本 Skill。執行端角色依角色規則檔引用本 Skill 的共用作業節時，只讀取被引用的節。
+主 Agent 依派工判準判定要派工後載入本 Skill。執行端角色依角色規則檔引用本 Skill 的共用作業節時，只讀取被引用的節。
 
 選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時改讀 `run.md`。本檔其餘流程適用於經 `scripts/Invoke-CodexDispatch.ps1` 發動的派遣。
 
@@ -373,7 +373,7 @@ PID 記錄保留於來源工作樹的 `history`，不因 dispatch worktree 移�
 
 ## 腳本介面與執行前提
 
-本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責 F1 路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定；腳本驗證 ScopePlan、advisor evidence-only 邊界、thread relay 與安全中止。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
+本地 session 需能執行 `git` 與 `codex`。機械流程由 `scripts\Invoke-CodexDispatch.ps1` 統一承接，主 Agent 仍負責派工判準的路由、profile 選擇、使用者確認、任務分類、回收三態與升級判定；腳本驗證 ScopePlan、advisor evidence-only 邊界、thread relay 與安全中止。腳本只接受絕對路徑或可在已驗證根目錄內解析的目標路徑，並以 JSON 輸出結果。
 
 | Operation | 主要參數 | 成功輸出 | 致命失敗 |
 | --- | --- | --- | --- |

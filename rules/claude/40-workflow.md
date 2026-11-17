@@ -17,9 +17,9 @@
   3. 專案 `AGENTS.local.md` 的 `workflow-depth` 鍵（讀取依 `ai-profile` skill）。
   4. 由 `project-kind` 推導：`sample` 為 `light`，`library` 與 `application` 為 `full`。
   5. 以上皆缺少時為 `full`。
-- **升級判定**：變更命中 Reviewer 必發清單第 2 項（跨模組介面、分層或依賴方向）、改動 `library` 公開 API（範圍見 `csharp-language-features` skill「公開 API 相容性」），或本線 UI 線別為 B、C 線時，有效深度為 `full`。`light` 實作期間，執行端報告或 diff 顯示命中時，主 Agent 停止後續實作站點，交 `Analyst` 把該節改為 `full`（覆寫前備份沿用需求摘要既有規則）並通知使用者，隨後自 Design 起算；已落地的變更視為現況，由 `Architect` 以現況為盤點對象。
+- **升級判定**：變更命中 Reviewer 必發清單第 2 項（跨模組介面、分層或依賴方向）、改動 `library` 公開 API（範圍見 `csharp-language-features` skill「公開 API 相容性」），或本線 UI 線別為「版面規劃」或「先做 Demo」時，有效深度為 `full`。`light` 實作期間，執行端報告或 diff 顯示命中時，主 Agent 停止後續實作站點，交 `Analyst` 把該節改為 `full`（覆寫前備份沿用需求摘要既有規則）並通知使用者，隨後自 Design 起算；已落地的變更視為現況，由 `Architect` 以現況為盤點對象。
 
-`light` 只減少流程站數。F1 不派清單與登錄表判定、授權分類、advisor 授權、共同收斂契約、審查配對順序 1、Reviewer 必發清單第 2、5 項與 `Developer` 啟動前置條件在兩種深度下相同。
+`light` 只減少流程站數。派工判準的不派清單與登錄表判定、授權分類、advisor 授權、共同收斂契約、審查配對順序 1、Reviewer 必發清單第 2、5 項與 `Developer` 啟動前置條件在兩種深度下相同。
 
 ## Reviewer 派遣發動判準
 
@@ -35,7 +35,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 | 4 | Developer 結案報告有「未解決項目」 |
 | 5 | 本輪改寫了 `instructions.md`、`rules/claude/` 下的規則檔、任何 `SKILL.md` 或 agent 規則檔的機制條款 |
 
-主 Agent 依下限自理完成的改動不屬派遣產出，不套用上列必發清單，只對自己的 diff 做核對。Claude subagent（Haiku、Sonnet、Opus）承接的實作屬派工產出，適用上列必發清單。共同收斂契約判定順序 1 結束循環後的 `Minor` 批次修正，第 1 項不適用，只做建置與測試 gate；沒有改到機制條款時不觸發新一輪審查，觸及第 2 項或改到機制條款（第 5 項）時另發審查，為新循環的第 1 輪。
+主 Agent 依「自己做（小改動）」完成的改動不屬派遣產出，不套用上列必發清單，只對自己的 diff 做核對。Claude subagent（Haiku、Sonnet、Opus）承接的實作屬派工產出，適用上列必發清單。共同收斂契約判定順序 1 結束循環後的 `Minor` 批次修正，第 1 項不適用，只做建置與測試 gate；沒有改到機制條款時不觸發新一輪審查，觸及第 2 項或改到機制條款（第 5 項）時另發審查，為新循環的第 1 輪。
 
 **可不發**：本輪僅改動文件敘述、排版或用詞，未觸及任何機制條款，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
 

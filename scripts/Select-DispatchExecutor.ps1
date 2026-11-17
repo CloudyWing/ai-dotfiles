@@ -6,7 +6,7 @@
 
 .DESCRIPTION
 驗證任務標註（類型、旗標、標籤、優先條件、實作者家族、離線清單、未完成次數），讀取
-scripts\dispatch\executor-registry.json，依固定演算法選出執行者並產生 [派工判定] 行。
+scripts\dispatch\executor-registry.json，依固定演算法選出執行者並產生 [派工] 行。
 
 演算法：受理該類型、硬能力涵蓋有效標籤且條件全部符合的執行者為候選（必要條件）；
 候選依優先條件逐項比較，滿足者在前，第一項相同再比下一項，全部相同時排序值小者在前；
@@ -93,9 +93,13 @@ $script:SelectionSchema = 'ai-agents.executor-selection.v1'
 $script:DescribeSchema = 'ai-agents.executor-describe.v1'
 $script:DeepFlagProvided = $PSBoundParameters.ContainsKey('Deep')
 $script:EscalateFromProvided = $PSBoundParameters.ContainsKey('EscalateFrom')
-# 優先條件 family：執行者家族不等於實作者家族。判定行以括號補上讀者看得懂的說法。
+# 優先條件 family：執行者家族不等於實作者家族。判定行以白話說明。
 $script:FamilyPreference = 'family'
-$script:PreferenceCaptions = @{ family = '同家族審查' }
+$script:PreferenceCaptions = @{ family = '找不到不同模型家族的執行者，改由同家族審查' }
+# 判定行的白話對照（與 executor-selection skill「判定行的白話對照」一致）。登錄表未列的類型與旗標以原名顯示。
+$script:TypeVerbs = @{ edit = '改檔'; survey = '盤點取證'; test = '測試取證'; generate = '產生影像'; factcheck = '事實查核'; review = '審查'; advise = '提供顧問意見' }
+$script:FlagPhrases = @{ 'E=True' = '範圍已列明'; 'E=False' = '範圍需自行探索'; 'T=True' = '需要建置測試'; 'T=False' = '不需建置測試' }
+$script:SkipReasonPhrases = @{ offline = '離線'; 'incomplete-limit' = '未完成次數已達上限' }
 
 # 登錄表的讀取與結構驗證在 lib\executor-registry.ps1，這是本腳本唯一載入的檔案，以本腳本所在位置為基準，
 # 不受呼叫端工作目錄影響。檔案不存在或無法解析時以 SelectorRegistryLibraryUnavailable 結束碼 1 結束。
@@ -246,28 +250,44 @@ function Format-YesNo {
 function Get-DispatchLine {
     param($Selection, [string]$TypeName, $TypeDef, $Flags, [string]$LabelText)
 
-    $judgement = switch ($Selection.Status) {
-        'selected' { '登錄表→{0}' -f $Selection.Executor.Id }
-        'needs-authorization' { '登錄表→待授權' }
-        'needs-user-decision' { '登錄表→需使用者決定' }
-        'stopped' { '登錄表→停止' }
+    $verb = $TypeName
+    if ($script:TypeVerbs.ContainsKey($TypeName)) { $verb = $script:TypeVerbs[$TypeName] }
+    $detail = New-Object 'System.Collections.Generic.List[string]'
+    if (-not [string]::IsNullOrWhiteSpace($LabelText)) { $detail.Add($LabelText.Trim()) }
+    $detail.Add($verb)
+    $phrases = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($flag in @($TypeDef.RequiredFlags)) {
+        $key = '{0}={1}' -f $flag, $Flags[$flag]
+        if ($script:FlagPhrases.ContainsKey($key)) { $phrases.Add($script:FlagPhrases[$key]) }
+        else { $phrases.Add(('{0}={1}' -f $flag, (Format-YesNo $Flags[$flag]))) }
     }
-    $parts = New-Object 'System.Collections.Generic.List[string]'
-    if (-not [string]::IsNullOrWhiteSpace($LabelText)) { $parts.Add($LabelText.Trim()) }
-    $parts.Add(('type={0}' -f $TypeName))
-    foreach ($flag in @($TypeDef.RequiredFlags)) { $parts.Add(('{0}={1}' -f $flag, (Format-YesNo $Flags[$flag]))) }
-    if ($null -ne $Selection.Executor) { $parts.Add(('執行者={0}' -f $Selection.Executor.Display)) }
-    else { $parts.Add('執行者=無') }
+    if ($phrases.Count -gt 0) { $detail.Add($phrases -join '、') }
+    $text = $detail -join '，'
+
+    $name = '無'
+    if ($null -ne $Selection.Executor) { $name = $Selection.Executor.Display }
+    $head = switch ($Selection.Status) {
+        'selected' { '交給 {0}' -f $name }
+        'needs-authorization' { '等你授權後交給 {0}' -f $name }
+        'needs-user-decision' { '需你決定，目前沒有可交付的執行者' }
+        'stopped' { '停止，沒有可用的執行者' }
+    }
+    $line = '[派工] {0}：{1}' -f $head, $text
     if (@($Selection.UnmetPreferences).Count -gt 0) {
         $names = @($Selection.UnmetPreferences | ForEach-Object {
-                if ($script:PreferenceCaptions.ContainsKey($_)) { '{0}（{1}）' -f $_, $script:PreferenceCaptions[$_] } else { $_ }
+                if ($script:PreferenceCaptions.ContainsKey($_)) { $script:PreferenceCaptions[$_] } else { '未滿足優先條件 {0}' -f $_ }
             })
-        $parts.Add(('未滿足優先條件={0}' -f ($names -join ',')))
+        $line += '；' + ($names -join '、')
     }
     if (@($Selection.Skipped).Count -gt 0) {
-        $parts.Add(('略過={0}' -f ((@($Selection.Skipped) | ForEach-Object { '{0}:{1}' -f $_.id, $_.reason }) -join ',')))
+        $items = @($Selection.Skipped | ForEach-Object {
+                $reason = $_.reason
+                if ($script:SkipReasonPhrases.ContainsKey($reason)) { $reason = $script:SkipReasonPhrases[$reason] }
+                '{0}（{1}）' -f $_.id, $reason
+            })
+        $line += '；已略過 ' + ($items -join '、')
     }
-    return ('[派工判定: {0}] {1}' -f $judgement, ($parts -join ' '))
+    return $line
 }
 
 function Get-StatusExitCode {

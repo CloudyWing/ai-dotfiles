@@ -31,7 +31,7 @@ policy.allow_implicit_invocation: true
 
 ## 協調者基準準備
 
-Analyst 在 B／C 線進入設計前、Maintainer 在產出 fix-plan 或改動計畫前準備基準；C 線先準備再交 Prototyper。
+Analyst 在 UI 線別為「版面規劃」或「先做 Demo」而進入設計前、Maintainer 在產出 fix-plan 或改動計畫前準備基準；「先做 Demo」先準備再交 Prototyper。
 
 1. 先選定目標 `app-name` 與 app 來源根，解析同一 `work-root` 的指定 `baseline-path`。檔案存在時實讀「掃描範圍」及「引用方式」，核對 app 身分與實際 `sample-path`。
 2. 缺少基準時依本檔「任務標註」以 `executor-selection` 交 Sonnet 取證者掃描，不需使用者手動觸發。派遣輸入包含選定 app 來源根、基準與樣本輸出位置、同線已驗證的 LineContext、下方既有抽取流程及排除範圍；只產出指定 app 的基準與樣本。

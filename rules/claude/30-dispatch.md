@@ -6,7 +6,7 @@
 
 規則層判斷是否派工，執行者由執行者登錄表選出。登錄表 `scripts/dispatch/executor-registry.json` 是執行者、受理類型、能力標籤、條件、排序值、優先條件、未完成次數上限與備援 model 的唯一來源，選派入口為 `scripts/Select-DispatchExecutor.ps1`，標註語意與狀態處置見 `executor-selection` skill。選出 Codex 執行者後，指令參數、落點、等待、事件流取證、續 session 與回收方式由 `codex-dispatch` skill 提供；選出 Claude 執行者時以 Agent 工具派生，不經 `codex-dispatch`。Codex 端的檔位用途見 `codex-dispatch` skill「檔位用途與新舊對照」，執行者與檔位的對應只存在登錄表。
 
-### F1 派工判準
+### 派工判準
 
 先判定工作是否留在主 Agent，再由登錄表選出執行者。Claude 端在對話、需求釐清、脈絡保管與回收覆核上具唯一可行性，這類工作不派出。
 
@@ -14,9 +14,9 @@
 
 判定依下列順序執行，命中即停止。
 
-1. **不派清單**：對話中的系統設計與方案取捨；bug 根因假設的形成；需求釐清與需求意圖驗收；規則檔與文件的撰寫或改寫；討論脈絡的保管與判斷；帶使用者登入 session 的瀏覽器操作；Artifacts 發布；本流程自行產生的暫存清理。命中時一律由 Claude 主 Agent 處理，輸出「不派」。根因假設的形成與結論維持在主 Agent，取證可依下列判定派出。
-2. **下限三題**：skill 未宣告 `dispatch`、宣告為 `either`，或本輪工作不對應任何 skill 時，主 Agent 依下列三題工作量下限判定是否仍由主 Agent 承接。三題全否時輸出「下限自理」，不進入後續判定。
-3. **灰帶規則**：三題至少一題為是，但工作需要主 Agent 的對話脈絡、無法寫成任務標註交給冷啟動執行者時，會污染主 Agent context 者以 `type=survey` 呼叫選派入口，派生 Sonnet subagent 並帶入主 Agent 整理的完整脈絡；不會污染者由主 Agent 自理，輸出「灰帶→自理」。
+1. **不派清單**：對話中的系統設計與方案取捨；bug 根因假設的形成；需求釐清與需求意圖驗收；規則檔與文件的撰寫或改寫；討論脈絡的保管與判斷；帶使用者登入 session 的瀏覽器操作；Artifacts 發布；本流程自行產生的暫存清理。命中時一律由 Claude 主 Agent 處理，輸出「自己做（需要對話脈絡）」。根因假設的形成與結論維持在主 Agent，取證可依下列判定派出。
+2. **下限三題**：skill 未宣告 `dispatch`、宣告為 `either`，或本輪工作不對應任何 skill 時，主 Agent 依下列三題工作量下限判定是否仍由主 Agent 承接。三題全否時輸出「自己做（小改動）」，不進入後續判定。
+3. **難以交代清楚的工作**：三題至少一題為是，但工作需要主 Agent 的對話脈絡、無法寫成任務標註交給冷啟動執行者時，會污染主 Agent context 者以 `type=survey` 呼叫選派入口，派生 Sonnet subagent 並帶入主 Agent 整理的完整脈絡；不會污染者由主 Agent 自理，輸出「自己做（難以交代清楚）」。
 4. **登錄表判定**：其餘三題至少一題為是的工作，主 Agent 依 `executor-selection` skill「任務標註」標上類型、旗標與標籤，呼叫選派入口，以輸出的 `dispatchLine` 作為判定行，依回傳狀態處置。診斷指令與跨檔掃描直接以 `type=survey` 進入本項，取證者的派生內容見 `executor-selection` skill「Claude 取證者派生契約」。
 
 下限三題為：是否需要執行建置、測試或多步驟命令；目標範圍是否無法事前列舉，需由執行端自行探索；是否為跨多檔的重複性機械改動。單檔、單一關注點、無需建置或測試的樣式或文字調整屬三題全否，不因目標副檔名是程式碼檔而改判。單一命令即可完成且不寫入任何檔案的查詢同樣屬三題全否，判準是命令數與寫入行為，不是檔案涵蓋範圍。
@@ -28,13 +28,13 @@
 3. 預估改動行數（新增與刪除合計）不超過 60 行。
 4. 驗證只需執行 1 個專案既有的建置或測試命令。
 
-「跨多檔」指 3 個檔案以上，因此四項成立時第二、三題亦為否，輸出「下限自理」，由 Claude 主 Agent 自理，結果附驗證命令原文與原始輸出（完整 stdout、stderr 與 exit code）。任一項不符時，第一題依原文判定。
+「跨多檔」指 3 個檔案以上，因此四項成立時第二、三題亦為否，輸出「自己做（小改動）」，由 Claude 主 Agent 自理，結果附驗證命令原文與原始輸出（完整 stdout、stderr 與 exit code）。任一項不符時，第一題依原文判定。
 
 規則檔與文件的撰寫或改寫屬不派清單，即使輸入、限制、驗收條件與產出落點可完整寫成任務標註，也不交給 subagent 或 Codex。例外是結案前文件同步的一致性檢查（`-Type survey`）與最終編輯（`-Type edit -E false -T false`），由 Sonnet subagent 承接，最終編輯依責任編輯規則，程序與理由見 `workflow-orchestration` skill `references/doc-sync.md`。
 
-**主 Agent 自理的範圍**：主 Agent 自理只限小型修改例外（判定行為「下限自理」）與灰帶規則中不會污染主 Agent context 的工作（判定行為「灰帶→自理」），兩者都不需取得使用者同意；其餘進入登錄表判定的工作一律依選派結果派出，不以理由替代派出。
+**主 Agent 自理的範圍**：主 Agent 自理只限小型修改例外（判定行為「自己做（小改動）」）與難以交代清楚的工作中不會污染主 Agent context 者（判定行為「自己做（難以交代清楚）」），兩者都不需取得使用者同意；其餘進入登錄表判定的工作一律依選派結果派出，不以理由替代派出。
 
-**主 Agent 的派工權限**：主 Agent 派工時可依 F1 判準決定是否派工、標註任務並以選派入口選出執行者、撰寫派生 prompt 或派遣單、回收「收下／退回／升級」三態結果。主 Agent 不直接修改程式碼，小型修改例外、灰帶規則的自理與「派工後的殘餘工作」收尾除外；選出 Codex 執行者後不跳過 `codex-dispatch` skill 的機制流程。
+**主 Agent 的派工權限**：主 Agent 派工時可依派工判準決定是否派工、標註任務並以選派入口選出執行者、撰寫派生 prompt 或派遣單、回收「收下／退回／升級」三態結果。主 Agent 不直接修改程式碼，小型修改例外與難以交代清楚的工作的自理與「派工後的殘餘工作」收尾除外；選出 Codex 執行者後不跳過 `codex-dispatch` skill 的機制流程。
 
 **實作分流**：須由主 Agent 以外者執行的實作工作（`type=edit`），含 Workflow 的 Implement 階段，執行者由登錄表依 E、T 旗標選出，旗標定義見 `executor-selection` skill「任務標註」。派生 Claude 實作 subagent 前先載入 `workflow-orchestration` skill，派生契約、驗證失敗處置與回收核對見其 `references/implement-routing.md`。
 
@@ -42,7 +42,7 @@
 
 **Workflow Phase 的實作分流**：判定單位為 `design.md` 的 Phase。
 
-1. 主 Agent 於 Design 驗收通過、寫入 `design-accepted` 檢查點時逐 Phase 以 `-Type edit` 呼叫選派入口，各輸出一行 `[派工判定]`，結果記入該檢查點「下一站」欄，不新增欄位。
+1. 主 Agent 於 Design 驗收通過、寫入 `design-accepted` 檢查點時逐 Phase 以 `-Type edit` 呼叫選派入口，各輸出一行 `[派工]` 判定行，結果記入該檢查點「下一站」欄，不新增欄位。
 2. Phase 單位的 E、T 判定依 `executor-selection` skill「任務標註」。
 3. Phase 目標檔案與他人項目有交集時，停止並回報他人項目與交集路徑。
 4. 整個 Workflow 由各 Phase 選派結果中排序值最大的執行者在同一次派生中依序完成全部 Phase，記為 `Developer 派工：全部 Phase=<執行者>`。理由是同一執行者做完前面的 Phase 後已理解相關程式碼，接著做後面的 Phase 較不易出錯；這個理由只在同一次派生延續脈絡時成立，因此不把 Phase 拆給不同的冷啟動執行者。
@@ -63,7 +63,7 @@
 本節的執行端泛指 Claude subagent 與 Codex 執行端。判定順序如下，命中即停止。
 
 1. 成因屬執行環境做不到時，修環境或改派依登錄表選出的其他執行者，同一成因不以相同條件重派。成因由協調者依證據判定（原始輸出、錯誤訊息，必要時重現），不採信執行端自述的原因；無法判定或查無證據時不適用本項。
-2. 殘餘工作符合小型修改例外四項時由 Claude 收尾（E=是且 T=否為 Haiku subagent，其餘為主 Agent），追加 exceptions「派工後補做」。
+2. 殘餘工作符合小型修改例外四項時由 Claude 收尾（範圍已列明且不需建置測試者為 Haiku subagent，其餘為主 Agent），追加 exceptions「派工後補做」。
 3. 其餘退回執行端。
 
 「主 Agent 的派工權限」的「不直接修改程式碼」不涵蓋小型修改例外自理與本節收尾。紀錄欄位與環境成因的處置見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。

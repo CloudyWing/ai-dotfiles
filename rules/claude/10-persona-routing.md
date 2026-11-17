@@ -24,7 +24,7 @@
 主 Agent 依下列順序判斷路由，不得跳步：
 
 1. **Persona 優先**：命中「Persona 切換」的觸發條件時，立即切換 Persona。
-2. **F1 派工判準次之**：未命中 Persona 時，依「跨平台派工掛載點」的 F1 判準判定本輪工作的執行者，並在動手前輸出單行判定結果，讓使用者看見分工。格式為 `[派工判定: <不派 | 下限自理 | 灰帶→自理 | 登錄表→<執行者 id 或狀態>>] <一句話理由>`；登錄表判定時直接使用選派入口輸出的 `dispatchLine`，不自行改寫判定值。判定行無條件輸出，不因工作看似瑣碎而省略。實作工作的理由須含 `type`、`E=<是|否> T=<是|否>` 與執行者，Workflow 逐 Phase 輸出一行，理由首段含 `P<n>`。主 Agent 只在判定為「不派」、「灰帶→自理」或「下限自理」時自行執行。
+2. **派工判準次之**：未命中 Persona 時，依「跨平台派工掛載點」的派工判準判定本輪工作的執行者，並在動手前輸出單行判定結果，讓使用者看見分工。自己做時格式為 `[派工] 自己做（<需要對話脈絡 | 小改動 | 難以交代清楚>）：<一句話理由>`；交給其他執行者時直接使用選派入口輸出的 `dispatchLine`（格式為 `[派工] 交給 <執行者>：<做什麼>，<條件的白話說明>`），不自行改寫。判定行無條件輸出，不因工作看似瑣碎而省略。實作工作的判定行須含執行者與改檔條件的白話說明（範圍是否已列明、是否需要建置測試），Workflow 逐 Phase 輸出一行，說明首段含 `P<n>`。主 Agent 只在判定為「自己做」時自行執行。
 
 ## Skill 載入紀律的 Claude 端對照
 
@@ -44,7 +44,7 @@
 | Agent | 觸發方式 | 規則來源 |
 | --- | --- | --- |
 | **Architect** | Analyst 完成且使用者確認需求摘要；或使用者明確要求產出設計文件。需求摘要 `## Workflow 深度` 為 `light` 時不派生。派生方式與影響範圍盤點前置見 `workflow-orchestration` skill「需求確認後的分派」 | `~/.ai-agents/agents/claude/architect.md` |
-| **Prototyper** | `Analyst` 判定為 C 線時派生；或使用者明確要求產出 Demo 畫面 | `~/.ai-agents/agents/claude/prototyper.md` |
+| **Prototyper** | `Analyst` 判定為先做 Demo 時派生；或使用者明確要求產出 Demo 畫面 | `~/.ai-agents/agents/claude/prototyper.md` |
 | **Developer** | Design 驗收通過後由主 Agent 依「Workflow Phase 的實作分流」以 Agent 工具派生，不經 Persona 切換；使用者以觸發詞叫起時依「Persona 切換」，由 `Developer` 自行驗證 `design.md` 存在且可讀，缺件時停止並回報，不自行補寫設計 | `~/.ai-agents/agents/claude/developer.md` |
 | **Reviewer** | 主 Agent 依 Reviewer 派遣判準以派遣單發動，或由使用者要求。設計歧義由同線 `Analyst` 依需求摘要原文裁決 | `~/.ai-agents/agents/codex/reviewer.toml` |
 | **Frontend Reviewer** | Developer 完成後或使用者要求 | `~/.ai-agents/agents/codex/frontend-reviewer.toml` |
