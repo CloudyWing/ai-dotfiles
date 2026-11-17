@@ -61,7 +61,7 @@ policy.allow_implicit_invocation: true
 
 校閱完成前，先從呼叫端取得 `LineContext`，驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，並確認 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json` 的 `line-slug` 欄位相符。缺少有效 `LineContext` 或 manifest 時停止固定報告寫入。
 
-校閱完成後，將 human-facing 報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。
+校閱完成後，將 human-facing 報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。經 `scripts/Invoke-CodexRun.ps1` 發動時，改寫入 prompt `報告檔:` 行指定的路徑，不執行下列 Rotation；Rotation 與同線固定報告的寫入由主 Agent 回收時執行（見 `codex-dispatch` skill `references/run.md`「事實校閱與影像產生的回收」）。
 
 ### 寫入前 Rotation（避免覆蓋歷史）
 
@@ -127,8 +127,8 @@ policy.allow_implicit_invocation: true
 
 ## 派遣發動
 
-`fact-check-note` 的派遣歸屬為 `either`。主 Agent 以 `Type=factcheck`，依 `executor-selection` 選出執行者；選出 Codex `content` 時先載入 `codex-dispatch` skill，再建立派遣單並將本文件指定為執行 skill。
+`fact-check-note` 的派遣歸屬為 `either`。主 Agent 以 `Type=factcheck`，依 `executor-selection` 選出執行者；選出 Codex `content` 時先載入 `codex-dispatch` skill，依選派入口輸出的 `executor.entry` 撰寫派遣檔，`task_type` 為 `factcheck`，`role_file` 指定本文件。
 
-派遣單第 6 欄固定寫「唯讀，不得寫入目標文件」。指令契約使用 `--sandbox read-only`，需要官方網路查證時將 `--search` 放在 `exec` 前方。查證結果寫入派遣單第 7 欄指定的報告落點，原始文件維持不變。
+派遣檔 `## 邊界` 寫「唯讀，不得寫入目標文件」。上網查證由入口在 `exec` 前加 `--search`，派遣檔不另外指定。查證結果寫入派遣指定的報告檔，原始文件維持不變。
 
-派遣回收時依派遣單第 5 欄逐條執行判定方式，再依 `codex-dispatch` 的「收下」、「退回」或「升級」三態處理。回報只提供事實層、官方來源與待使用者裁決的條目，不直接改寫目標文件。
+派遣回收時依派遣檔 `## 驗收條件` 逐條判定，再依 `codex-dispatch` 的「收下」、「退回」或「升級」三態處理。回報只提供事實層、官方來源與待使用者裁決的條目，不直接改寫目標文件。

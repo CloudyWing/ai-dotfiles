@@ -61,7 +61,7 @@ try {
         }
         function Invoke-SandboxProbe {
             param($Fixture, [string[]]$Command, [string]$Name)
-            $permissionArgs = @(New-RunPermissionArgument -TaskType review -ExecutionRoot $Fixture.Exec -OutputDirectory $Fixture.Out -AiAgentsRoot $Fixture.Ai -ReportLineRoot $Fixture.Report)
+            $permissionArgs = @(New-RunPermissionArgument -ExecutionRoot $Fixture.Exec -OutputDirectory $Fixture.Out -AiAgentsRoot $Fixture.Ai -ReportLineRoot $Fixture.Report)
             $arguments = New-Object 'System.Collections.Generic.List[string]'
             for ($i = 0; $i -lt $permissionArgs.Count; $i += 2) {
                 if ($permissionArgs[$i + 1].StartsWith('default_permissions=', [StringComparison]::Ordinal)) { continue }

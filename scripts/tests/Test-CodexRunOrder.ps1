@@ -106,9 +106,27 @@ try {
         $path = Write-OrderFile -RawJson (ConvertTo-Json -InputObject $setting -Depth 6)
         $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'required_read' -Script { Read-RunDispatchFile -Path $path }
     }
-    Test-Case 'ORDER-TASK-TYPE task_type 為 advise 以 RunTaskTypeUnsupported 拒絕' {
-        $path = Write-OrderFile -Override @{ task_type = 'advise' }
-        $null = Assert-Throws -Code 'RunTaskTypeUnsupported' -Script { Read-RunDispatchFile -Path $path }
+    Test-Case 'ORDER-TASK-TYPE task_type 為 advise、test 或未知值以 RunTaskTypeUnsupported 拒絕' {
+        foreach ($type in @('advise', 'test', 'Review', 'edit')) {
+            $path = Write-OrderFile -Override @{ task_type = $type } -Name ('type-' + $type + '.md')
+            $null = Assert-Throws -Code 'RunTaskTypeUnsupported' -MessageContains $type -Script { Read-RunDispatchFile -Path $path }
+        }
+    }
+    Test-Case 'ORDER-TASK-SETTING review、factcheck、generate 通過解析並帶出各自的設定' {
+        $expected = @{
+            review = @{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者' }
+            factcheck = @{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者' }
+            generate = @{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者' }
+        }
+        Assert-Equal @('review', 'factcheck', 'generate') @((Get-RunTaskTypeSetting).Keys)
+        foreach ($type in @('review', 'factcheck', 'generate')) {
+            $order = Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = $type; profile = $(if ($type -ceq 'review') { 'review' } else { 'content' }) } -Name ('setting-' + $type + '.md'))
+            Assert-Equal $type $order.task_type
+            foreach ($key in $expected[$type].Keys) {
+                Assert-Equal $expected[$type][$key] $order.task_setting.$key ($type + '.' + $key)
+            }
+            Test-RunPreStart -Order $order -AiAgentsRoot $aiRoot
+        }
     }
     Test-Case 'ORDER-INVALID-SHAPES 結構錯誤逐項以 RunDispatchFileInvalid 拒絕' {
         $null = Assert-Throws -Code 'RunDispatchFileInvalid' -Script { Read-RunDispatchFile -Path (Join-Path $root 'absent.md') }

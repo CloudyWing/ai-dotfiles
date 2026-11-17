@@ -795,6 +795,68 @@ try {
             Assert-True (-not $stdinRole.Contains('以 Reviewer 身分')) 'prompt 不應把所有角色寫成 Reviewer'
         }
     }
+    Test-Case 'E2E-FACTCHECK 事實校閱以同一入口發動：exec 前帶 --search，不做 manifest 檢查，prompt 標「執行者」，成本列記 task=factcheck' {
+        $envFact = New-EntryEnvironment -Name 'task-factcheck'
+        $null = New-TestAccountHome -Root (Join-Path $envFact.Base 'homes') -Name 'acct-a' -Profile 'content' -Model 'model-a'
+        $roleFile = Join-Path $envFact.Exec 'fact-check-note.md'
+        Copy-Item -LiteralPath (Join-Path $repoRoot 'skills\fact-check-note\SKILL.md') -Destination $roleFile
+        Set-Scenario -Environment $envFact -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '校閱完成'; report = "# 事實校閱報告`n`n## ✅ 已查核且未發現問題`n`n範圍：src`n" }
+        $orderFact = New-OrderFile -Environment $envFact -Slug 'factcheck-p1' -Override @{ task_type = 'factcheck'; profile = 'content'; role_file = $roleFile; report_name = 'fact-check-report.md'; cycle = [ordered]@{ id = 'line-a-factcheck'; round = 1; role = 'factcheck' } }
+        $runFact = Invoke-Entry -Environment $envFact -OrderPath $orderFact
+        Assert-Success $runFact
+        Assert-Equal 0 $runFact.ExitCode
+        Assert-Equal 'success' $runFact.Document.status
+        Assert-Equal 'fact-check-report.md' (Split-Path -Leaf $runFact.Document.final.report_path)
+        Assert-True ($null -eq $runFact.Document.final.review_report_check) '事實校閱不應做 manifest 檢查'
+        $execCall = @((Get-Call -Environment $envFact) | Where-Object { $_.subcommand -ceq 'exec' })[0]
+        $execArgs = @($execCall.args)
+        Assert-True ($execArgs -contains '--search') '缺少 --search'
+        Assert-True ([array]::IndexOf($execArgs, '--search') -lt [array]::IndexOf($execArgs, 'exec')) '--search 應在 exec 之前'
+        Assert-True ($execArgs -contains '--profile' -and $execArgs[[array]::IndexOf($execArgs, '--profile') + 1] -ceq 'content') '缺少 --profile content'
+        $stdinFact = Get-Content -LiteralPath (Join-Path $envFact.Scenarios 'stdin-acct-a.txt') -Raw
+        Assert-True ($stdinFact.Contains($roleFile)) 'prompt 未指向角色規則檔'
+        Assert-True (-not $stdinFact.Contains('審查者:')) 'prompt 不應把事實校閱標為審查者'
+        Assert-True (-not $stdinFact.Contains('審查角色')) 'prompt 不應寫成審查角色'
+        $record = Get-Record -Path $runFact.Document.final.record_path
+        Assert-Equal 'factcheck' $record.task_type
+        Assert-True (@($record.permission.read_roots | Where-Object { $_ -like '*generated_images' }).Count -eq 0) '事實校閱不應開放 generated_images'
+        $rows = Get-LedgerDataRow -Path (Join-Path $envFact.ReportRoot 'cost-ledger.md')
+        Assert-Equal 1 ($rows.Count)
+        Assert-True ((Split-LedgerRow -Row $rows[0])[13].Contains('task=factcheck')) '成本列備註應記 task=factcheck'
+    }
+    Test-Case 'E2E-GENERATE 影像產生以同一入口發動：選定帳號的 generated_images 列為可讀（不存在時建立），不帶 --search，不做 manifest 檢查' {
+        $envGen = New-EntryEnvironment -Name 'task-generate'
+        $null = New-TestAccountHome -Root (Join-Path $envGen.Base 'homes') -Name 'acct-a' -Profile 'content' -Model 'model-a'
+        $generatedImages = Join-Path $envGen.HomeA 'generated_images'
+        Assert-True (-not (Test-Path -LiteralPath $generatedImages)) '前置條件：generated_images 尚不存在'
+        Set-Scenario -Environment $envGen -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '影像已產生'; report = "# 影像產生報告`n`n- icon.png`n" }
+        $orderGen = Join-Path $envGen.Exec '.local\ai-sessions\handoff\line-a\generate.md'
+        $orderGen = New-OrderFile -Environment $envGen -Slug 'generate-p1' -FileName 'generate.md' -Override @{ task_type = 'generate'; profile = 'content'; role_file = $orderGen; report_name = 'generate-report.md'; cycle = [ordered]@{ id = 'line-a-generate'; round = 1; role = 'generate' } }
+        $runGen = Invoke-Entry -Environment $envGen -OrderPath $orderGen
+        Assert-Success $runGen
+        Assert-Equal 0 $runGen.ExitCode
+        Assert-Equal 'success' $runGen.Document.status
+        Assert-True ($null -eq $runGen.Document.final.review_report_check) '影像產生不應做 manifest 檢查'
+        Assert-True (Test-Path -LiteralPath $generatedImages -PathType Container) 'generated_images 應已建立'
+        $execArgs = @(@((Get-Call -Environment $envGen) | Where-Object { $_.subcommand -ceq 'exec' })[0].args)
+        Assert-True (-not ($execArgs -contains '--search')) '影像產生不應帶 --search'
+        $filesystem = [string]($execArgs | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
+        Assert-True $filesystem.Contains("'" + $generatedImages + "'={`".`"=`"read`", `"**/.env`"=`"deny`"") ('generated_images 應以附 deny 樣式的 read 子表列出：' + $filesystem)
+        Assert-True (-not $filesystem.Contains("'" + $generatedImages + "'=`"write`"")) 'generated_images 不應可寫'
+        $record = Get-Record -Path $runGen.Document.final.record_path
+        Assert-True (@($record.permission.read_roots) -contains $generatedImages) 'permission.read_roots 應含 generated_images'
+        Assert-Equal 1 (@($record.permission.write_roots).Count) '可寫範圍只有輸出目錄'
+    }
+    Test-Case 'E2E-TASK-TYPE-UNSUPPORTED 尚未切入的 task_type（test、advise）：結束碼 2、RunTaskTypeUnsupported，沒有任何呼叫' {
+        foreach ($type in @('test', 'advise')) {
+            $envType = New-EntryEnvironment -Name ('task-' + $type)
+            $runType = Invoke-Entry -Environment $envType -OrderPath (New-OrderFile -Environment $envType -Override @{ task_type = $type })
+            Assert-Success $runType
+            Assert-Equal 2 $runType.ExitCode
+            Assert-Equal 'RunTaskTypeUnsupported' $runType.Document.error.code
+            Assert-Equal 0 ((Get-Call -Environment $envType).Count)
+        }
+    }
     Test-Case 'E2E-DISPATCH-UNTOUCHED 本線對現行入口目錄 scripts\dispatch 的變更只有登錄表' {
         $status = @(& git -C $repoRoot status --porcelain -- scripts/dispatch)
         if ($LASTEXITCODE -ne 0) { throw 'git status 失敗，無法核對 scripts\dispatch 的變更。' }

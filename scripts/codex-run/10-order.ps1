@@ -1,6 +1,28 @@
 ﻿#Requires -Version 7.0
 # 派遣檔解析與啟動前檢查。依賴 00-common.ps1。
 
+function Get-RunTaskTypeSetting {
+    [CmdletBinding()]
+    param(
+        [string]$TaskType
+    )
+
+    # 新入口受理的 task_type 與各自的差異。不帶參數時回傳全部設定，帶參數且不受理時回傳 $null。
+    # search：在 exec 前加 --search（Codex 的官方查證工具，不開 shell 網路）。
+    # generated_images：把選定帳號 CODEX_HOME 下的 generated_images 列為可讀，影像先產在該處再由 Codex 複製到輸出目錄。
+    # report_check：成功後對報告做的結構檢查，review-manifest 為 Test-RunReviewReport，$null 為只檢查報告存在且非空。
+    # executor_label：prompt 中標明實際執行者那一行的標籤，由執行端照抄到報告。
+    $settings = [ordered]@{
+        review = [pscustomobject]@{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者' }
+        factcheck = [pscustomobject]@{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者' }
+        generate = [pscustomobject]@{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者' }
+    }
+    if (-not $PSBoundParameters.ContainsKey('TaskType')) { return $settings }
+    # OrderedDictionary 的鍵查詢不分大小寫，先以區分大小寫的比對確認受理。
+    if ([string]::IsNullOrEmpty($TaskType) -or @($settings.Keys) -cnotcontains $TaskType) { return $null }
+    return $settings[$TaskType]
+}
+
 function Read-RunDispatchFile {
     [CmdletBinding()]
     param(
@@ -124,8 +146,9 @@ function Read-RunDispatchFile {
     if ($errors.Count -gt 0) {
         throw (New-RunError -Code 'RunDispatchFileInvalid' -Message ('派遣檔無效：' + ($errors -join '；')) -ExitCode 2 -Details @($errors.ToArray()))
     }
-    if ($taskType -cne 'review') {
-        throw (New-RunError -Code 'RunTaskTypeUnsupported' -Message ('task_type 目前只接受 review，收到：' + $taskType) -ExitCode 2)
+    $taskSetting = Get-RunTaskTypeSetting -TaskType $taskType
+    if ($null -eq $taskSetting) {
+        throw (New-RunError -Code 'RunTaskTypeUnsupported' -Message ('task_type 只接受 ' + (@((Get-RunTaskTypeSetting).Keys) -join '、') + '，收到：' + $taskType) -ExitCode 2)
     }
 
     return [pscustomobject]@{
@@ -142,6 +165,7 @@ function Read-RunDispatchFile {
         required_reads = [string[]]@($document.required_reads)
         cycle = $cycle
         dispatch_file_path = $Path
+        task_setting = $taskSetting
     }
 }
 

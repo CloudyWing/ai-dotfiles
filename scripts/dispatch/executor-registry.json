@@ -36,7 +36,7 @@
       "order": 30, "gated": false
     },
     {
-      "id": "codex-content", "display": "Codex content", "platform": "codex", "profile": "content", "family": "codex", "entry": "scripts/Invoke-CodexDispatch.ps1",
+      "id": "codex-content", "display": "Codex content", "platform": "codex", "profile": "content", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
       "profileSettings": { "model": "gpt-6.1-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["generate", "factcheck"], "tags": ["web", "image-gen"], "when": {},
       "order": 35, "gated": false

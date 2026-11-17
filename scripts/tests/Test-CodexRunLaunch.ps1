@@ -86,7 +86,7 @@ try {
         $execRoot = Join-Path $root 'exec dir'
         $outDir = Join-Path $root 'report\runs\review-x-1'
         $reportRoot = Join-Path $root 'report\line-a'
-        $permissionArgs = @(New-RunPermissionArgument -TaskType review -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ReportLineRoot $reportRoot)
+        $permissionArgs = @(New-RunPermissionArgument -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ReportLineRoot $reportRoot)
         $filesystem = [string]($permissionArgs | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
         Test-Case 'PERM-ARGS 權限設定參數含 MXC、預設權限設定與 filesystem' {
             Assert-True ($permissionArgs -contains 'windows.sandbox="mxc"') '缺少 windows.sandbox'
@@ -111,7 +111,7 @@ try {
         }
         Test-Case 'PERM-REPORT-ROOT-UNDER-EXEC report_line_root 在執行目錄之下時不重複加 read，但仍列入權限計畫的 read_roots' {
             $underReport = Join-Path $execRoot 'report\line-a'
-            $underArgs = @(New-RunPermissionArgument -TaskType review -ExecutionRoot $execRoot -OutputDirectory (Join-Path $underReport 'runs\x') -AiAgentsRoot $aiRoot -ReportLineRoot $underReport)
+            $underArgs = @(New-RunPermissionArgument -ExecutionRoot $execRoot -OutputDirectory (Join-Path $underReport 'runs\x') -AiAgentsRoot $aiRoot -ReportLineRoot $underReport)
             $underFs = [string]($underArgs | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
             Assert-True (-not $underFs.Contains("'" + $underReport + "'=")) '在執行目錄之下不應重複加 read'
             $plan = Get-RunPermissionPlan -ExecutionRoot $execRoot -OutputDirectory (Join-Path $underReport 'runs\x') -AiAgentsRoot $aiRoot -ReportLineRoot $underReport
@@ -120,7 +120,7 @@ try {
         Test-Case 'PERM-DUPLICATE-KEYS 可讀根目錄路徑相同時不輸出重複的 TOML 鍵（不分大小寫，含 execution_root 即 ~\.ai-agents）' {
             function Get-FilesystemValue {
                 param([string]$Execution, [string]$Ai, [string]$Report, [string]$Output)
-                $permArgs = @(New-RunPermissionArgument -TaskType review -ExecutionRoot $Execution -OutputDirectory $Output -AiAgentsRoot $Ai -ReportLineRoot $Report)
+                $permArgs = @(New-RunPermissionArgument -ExecutionRoot $Execution -OutputDirectory $Output -AiAgentsRoot $Ai -ReportLineRoot $Report)
                 return [string]($permArgs | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
             }
             function Get-KeyCount {
@@ -172,6 +172,32 @@ try {
             Assert-Equal 0 (@($plain | Where-Object { $_ -like 'model=*' }).Count) '未提供備援 model 時不應有 model 覆寫'
             Assert-Equal ($plain.Count + 2) $override.Count
             $null = Assert-Throws -Code 'RunModelOverrideInvalid' -Script { New-RunExecArgument -ExecutionRoot $execRoot -Profile review -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot -ModelOverride 'bad" x' }
+        }
+        Test-Case 'EXEC-SEARCH -Search 時 --search 緊接在權限設定之後、exec 之前；未指定時不出現' {
+            $last = Join-Path $root 'last.md'
+            $plain = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile content -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot)
+            $search = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile content -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot -Search)
+            Assert-Equal 0 (@($plain | Where-Object { $_ -ceq '--search' }).Count) '未指定時不應有 --search'
+            Assert-Equal 1 (@($search | Where-Object { $_ -ceq '--search' }).Count) '應恰有一個 --search'
+            Assert-Equal ([array]::IndexOf($search, 'exec') - 1) ([array]::IndexOf($search, '--search')) '--search 應緊接在 exec 之前'
+            Assert-Equal ($plain.Count + 1) $search.Count
+        }
+        Test-Case 'PERM-EXTRA-READ-ROOT ExtraReadRoot 以附 deny 樣式的 read 子表列出，不列入可寫範圍；位於已列根目錄之下時不重複' {
+            $extra = Join-Path $root 'acct home\generated_images'
+            $extraArgs = @(New-RunPermissionArgument -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ReportLineRoot $reportRoot -ExtraReadRoot @($extra))
+            $extraFs = [string]($extraArgs | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
+            Assert-True $extraFs.Contains("'" + $extra + "'={`".`"=`"read`", `"**/.env`"=`"deny`"") ('ExtraReadRoot 子表：' + $extraFs)
+            Assert-True (-not $extraFs.Contains("'" + $extra + "'=`"write`"")) 'ExtraReadRoot 不應可寫'
+            Assert-Equal 20 (([regex]::Matches($extraFs, '="deny"')).Count) '多一個可讀根目錄子表，deny 多 5 個'
+            $plan = Get-RunPermissionPlan -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ReportLineRoot $reportRoot -ExtraReadRoot @($extra)
+            Assert-Equal @($execRoot, $aiRoot, $reportRoot, $extra) @($plan.read_roots)
+            Assert-Equal @($outDir) @($plan.write_roots)
+            $noReport = Get-RunPermissionPlan -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ExtraReadRoot @($extra)
+            Assert-Equal @($execRoot, $aiRoot, $extra) @($noReport.read_roots) '未提供 report_line_root 時 ExtraReadRoot 仍列為可讀'
+            $underExec = Join-Path $execRoot 'images'
+            $underFs = [string](@(New-RunPermissionArgument -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ExtraReadRoot @($underExec)) | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
+            Assert-True (-not $underFs.Contains("'" + $underExec + "'=")) '位於執行目錄之下的 ExtraReadRoot 不應重複列出'
+            $null = Assert-Throws -Code 'RunPermissionArgumentInvalid' -Script { Get-RunPermissionPlan -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ExtraReadRoot @('relative\images') }
         }
         Test-Case 'EXEC-ARGS exec 引數順序與 --skip-git-repo-check' {
             $last = Join-Path $root 'last.md'

@@ -87,9 +87,6 @@ function Assert-RunPermissionArgument {
 function Get-RunPermissionPlan {
     [CmdletBinding()]
     param(
-        [ValidateSet('review')]
-        [string]$TaskType = 'review',
-
         [Parameter(Mandatory)]
         [string]$ExecutionRoot,
 
@@ -99,13 +96,18 @@ function Get-RunPermissionPlan {
         [string]$AiAgentsRoot = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.ai-agents'),
 
         # 該線的報告目錄。審查第 2 輪以上要讀前輪報告，因此列入可讀範圍。
-        [string]$ReportLineRoot
+        [string]$ReportLineRoot,
+
+        # 依 task_type 追加的可讀根目錄，例如影像產生時選定帳號的 generated_images。
+        [AllowEmptyCollection()]
+        [string[]]$ExtraReadRoot = @()
     )
 
     $separators = [char[]]@('\', '/')
     $normalized = @()
     $pathList = @($ExecutionRoot, $AiAgentsRoot, $OutputDirectory)
     if (-not [string]::IsNullOrWhiteSpace($ReportLineRoot)) { $pathList += $ReportLineRoot }
+    $pathList += @($ExtraReadRoot | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     foreach ($path in $pathList) {
         if (-not [IO.Path]::IsPathFullyQualified($path)) {
             throw (New-RunError -Code 'RunPermissionArgumentInvalid' -Message ('權限設定的路徑必須是絕對路徑：' + $path) -ExitCode 3)
@@ -118,8 +120,9 @@ function Get-RunPermissionPlan {
     }
     # 路徑相同（不分大小寫）時只保留一份，避免 filesystem 內出現重複的 TOML 鍵。
     $readRoots = New-Object 'System.Collections.Generic.List[string]'
+    # 第 3 項是輸出目錄（可寫），其餘都是可讀根目錄。
     $candidates = @($normalized[0], $normalized[1])
-    if ($normalized.Count -gt 3) { $candidates += $normalized[3] }
+    if ($normalized.Count -gt 3) { $candidates += @($normalized[3..($normalized.Count - 1)]) }
     foreach ($candidate in $candidates) {
         if (@($readRoots | Where-Object { [string]::Equals($_, $candidate, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) { $readRoots.Add($candidate) }
     }
@@ -135,9 +138,6 @@ function Get-RunPermissionPlan {
 function New-RunPermissionArgument {
     [CmdletBinding()]
     param(
-        [ValidateSet('review')]
-        [string]$TaskType = 'review',
-
         [Parameter(Mandatory)]
         [string]$ExecutionRoot,
 
@@ -146,14 +146,17 @@ function New-RunPermissionArgument {
 
         [string]$AiAgentsRoot = (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.ai-agents'),
 
-        [string]$ReportLineRoot
+        [string]$ReportLineRoot,
+
+        [AllowEmptyCollection()]
+        [string[]]$ExtraReadRoot = @()
     )
 
     # 路徑以 TOML literal 鍵（單引號）表達，避免反斜線與 cmd.exe 的引號轉手問題。
     # 禁止讀取的樣式放在 :workspace_roots 之下，相對於 --cd 指定的工作目錄，沙盒行程啟動時列舉一次。
-    # 工作目錄之外的可讀根目錄（~\.ai-agents、report_line_root）以「該目錄為鍵的子表」表達：「.」為 read，並附同一組 deny 樣式。
+    # 工作目錄之外的可讀根目錄（~\.ai-agents、report_line_root、ExtraReadRoot）以「該目錄為鍵的子表」表達：「.」為 read，並附同一組 deny 樣式。
     # 子表寫法經 codex sandbox 實測可使這些目錄內的機密樣式檔被拒；只給 "read" 字串時機密樣式檔可讀。
-    $plan = Get-RunPermissionPlan -TaskType $TaskType -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot
+    $plan = Get-RunPermissionPlan -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot -ExtraReadRoot $ExtraReadRoot
     $entries = New-Object 'System.Collections.Generic.List[string]'
     $entries.Add('":minimal"="read"')
     $entries.Add('glob_scan_max_depth=' + $plan.glob_scan_max_depth)
@@ -205,10 +208,16 @@ function New-RunExecArgument {
         [string]$ReportLineRoot,
 
         # 備援 model。提供時以 -c model= 覆寫檔位設定檔的 model，其餘設定沿用檔位。
-        [string]$ModelOverride
+        [string]$ModelOverride,
+
+        [AllowEmptyCollection()]
+        [string[]]$ExtraReadRoot = @(),
+
+        # 加 --search（Codex 的官方查證工具，不開 shell 網路）。屬父層選項，放在 exec 之前。
+        [switch]$Search
     )
 
-    # 父層選項（--cd、--profile、-c）在 exec 之前；exec 之後為 --json、--output-last-message，prompt 以 - 從 stdin 讀入。
+    # 父層選項（--cd、--profile、-c、--search）在 exec 之前；exec 之後為 --json、--output-last-message，prompt 以 - 從 stdin 讀入。
     $arguments = New-Object 'System.Collections.Generic.List[string]'
     $arguments.Add('--cd')
     $arguments.Add($ExecutionRoot)
@@ -221,7 +230,8 @@ function New-RunExecArgument {
         $arguments.Add('-c')
         $arguments.Add('model="' + $ModelOverride + '"')
     }
-    foreach ($item in (New-RunPermissionArgument -TaskType review -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot)) { $arguments.Add($item) }
+    foreach ($item in (New-RunPermissionArgument -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot -ExtraReadRoot $ExtraReadRoot)) { $arguments.Add($item) }
+    if ($Search) { $arguments.Add('--search') }
     $arguments.Add('exec')
     if (-not $IsGitRepository) { $arguments.Add('--skip-git-repo-check') }
     $arguments.Add('--json')

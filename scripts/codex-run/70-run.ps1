@@ -16,7 +16,8 @@ function New-RunPrompt {
         [AllowNull()][AllowEmptyString()][string]$ReviewerLine
     )
 
-    # 「審查者:」行由審查者照抄到報告「## 總覽」第一行，使報告標明實際執行者與 model。
+    # 「審查者:」（審查以外為「執行者:」）行由執行端照抄到報告「## 總覽」第一行，使報告標明實際執行者與 model。
+    $executorLabel = [string]$Order.task_setting.executor_label
     $lines = @(
         'LineContext'
         ('- lineSlug: ' + $Order.line_slug)
@@ -25,9 +26,9 @@ function New-RunPrompt {
         ('- executionRoot: ' + $Order.execution_root)
         ('輸出目錄: ' + $OutputDirectory)
         ('報告檔: ' + $ReportPath)
-        if (-not [string]::IsNullOrWhiteSpace($ReviewerLine)) { '審查者: ' + $ReviewerLine }
+        if (-not [string]::IsNullOrWhiteSpace($ReviewerLine)) { $executorLabel + ': ' + $ReviewerLine }
         ''
-        ('請依角色規則檔 `' + $Order.role_file + '` 定義的審查角色，先完整讀取該檔，再讀取派遣檔 `' + $Order.dispatch_file_path + '` 依其內容執行。')
+        ('請依角色規則檔 `' + $Order.role_file + '` 定義的角色，先完整讀取該檔，再讀取派遣檔 `' + $Order.dispatch_file_path + '` 依其內容執行。')
     )
     return (($lines -join "`n") + "`n")
 }
@@ -85,7 +86,15 @@ function Invoke-RunAttempt {
     $reportPath = Join-Path $outputDirectory $Order.report_name
     $null = [IO.Directory]::CreateDirectory($outputDirectory)
 
-    $plan = Get-RunPermissionPlan -ExecutionRoot $Order.execution_root -OutputDirectory $outputDirectory -ReportLineRoot $Order.report_line_root
+    # 影像產生把選定帳號的 generated_images 列為可讀（影像先產在該處，再由 Codex 複製到輸出目錄）。
+    # 目錄不存在時先建立，權限設定才有對應的目錄可授權。
+    $extraReadRoots = @()
+    if ($Order.task_setting.generated_images) {
+        $generatedImages = Join-Path $Candidate.codex_home 'generated_images'
+        $null = [IO.Directory]::CreateDirectory($generatedImages)
+        $extraReadRoots += $generatedImages
+    }
+    $plan = Get-RunPermissionPlan -ExecutionRoot $Order.execution_root -OutputDirectory $outputDirectory -ReportLineRoot $Order.report_line_root -ExtraReadRoot $extraReadRoots
     $permission = [ordered]@{ name = $plan.name; read_roots = @($plan.read_roots); write_roots = @($plan.write_roots); deny_patterns = @($plan.deny_patterns) }
     $startedAt = [DateTime]::UtcNow
     $sourceStart = Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot @($Order.report_line_root)
@@ -130,7 +139,8 @@ function Invoke-RunAttempt {
     try { Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8 }
     catch { throw (New-RunError -Code 'RunRecordWriteFailed' -Message ('執行紀錄初稿寫入失敗：' + $_.Exception.Message) -ExitCode 1) }
 
-    $argument = New-RunExecArgument -ExecutionRoot $Order.execution_root -Profile $Order.profile -OutputDirectory $outputDirectory -LastMessagePath $lastMessagePath -IsGitRepository $IsGitRepository -ReportLineRoot $Order.report_line_root -ModelOverride $modelOverride
+    $argument = New-RunExecArgument -ExecutionRoot $Order.execution_root -Profile $Order.profile -OutputDirectory $outputDirectory -LastMessagePath $lastMessagePath -IsGitRepository $IsGitRepository -ReportLineRoot $Order.report_line_root -ModelOverride $modelOverride `
+        -ExtraReadRoot $extraReadRoots -Search:([bool]$Order.task_setting.search)
     $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath -ReviewerLine $reviewerLine
     Write-RunDiagnostic ('[codex-run] 嘗試帳號 ' + $Candidate.name + $(if ($modelSource -ceq 'fallback') { '（備援 model ' + $modelOverride + '）' } else { '' }) + '，runKey ' + $runKey)
     $exitCode = -1
@@ -163,7 +173,7 @@ function Invoke-RunAttempt {
     $failureReason = $judged.failure_reason
     if ($launchFailed) { $result = 'failed'; $failureReason = 'launch-failed' }
     $reviewCheck = $null
-    if ($result -ceq 'success' -and $Order.task_type -ceq 'review') {
+    if ($result -ceq 'success' -and [string]$Order.task_setting.report_check -ceq 'review-manifest') {
         $checked = Test-RunReviewReport -ReportPath $reportPath
         $reviewCheck = [ordered]@{ valid = $checked.valid; errors = @($checked.errors) }
     }

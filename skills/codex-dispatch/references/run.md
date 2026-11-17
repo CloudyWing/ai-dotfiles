@@ -1,22 +1,22 @@
 # 單次執行入口（Invoke-CodexRun）
 
-選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用 `Reviewer`、`Frontend Reviewer` 與 `Contract Auditor`。`executor.entry` 為其他值時依 `start.md`。
+選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用審查（`Reviewer`、`Frontend Reviewer`、`Contract Auditor`）、事實校閱與影像產生。`executor.entry` 為其他值時依 `start.md`。
 
-一次發動是一個 `codex exec` 行程，直接在線工作樹執行。命令在 MXC 沙盒內只能讀取工作目錄、`~\.ai-agents` 與線的報告目錄，只能寫入該次執行的輸出目錄，讀不到 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`。失敗時整筆重跑，沒有續行。
+一次發動是一個 `codex exec` 行程，直接在線工作樹執行。命令在 MXC 沙盒內只能讀取工作目錄、`~\.ai-agents` 與線的報告目錄（影像產生另加選定帳號的 `generated_images`），只能寫入該次執行的輸出目錄，讀不到 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`。失敗時整筆重跑，沒有續行。
 
 本入口不使用 `New-DispatchInputs.ps1`、`New-DispatchOrder.ps1`、Request JSON、Preflight、Prepare、Inspect、Collect 與 Cleanup。本檔自成一體，發動、等待與回收不需要再讀 `start.md`、`execution.md`、`collect.md` 與 `recovery.md`。
 
 ## 發動
 
 1. 寫派遣檔。複製 `templates/dispatch/run-order.md`，存為 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/run-order-<dispatchSlug>.md`，填寫 `## 派遣設定` 的 JSON 區塊與 `## 任務`、`## 驗收條件`、`## 邊界`、`## 回報必備欄位` 四個章節。
-   - `profile` 填選派入口輸出的 `executor.profile`。
-   - `role_file` 填角色規則檔的絕對路徑，審查依角色為 `~\.ai-agents\agents\codex\reviewer.toml`、`frontend-reviewer.toml` 或 `contract-auditor.toml` 展開後的路徑。
+   - `task_type` 填選派時的類型，`profile` 填選派入口輸出的 `executor.profile`。
+   - `role_file` 填角色規則檔的絕對路徑，各類型的值見「依 task_type 的差異」。
    - `execution_root` 填線工作樹根目錄。`report_line_root` 填 `<work-root>/.local/ai-sessions/report/<lineSlug>`，該目錄必須已存在。
-   - `report_name` 填報告檔名，只含檔名，依角色為 `review-report.md`、`frontend-reviewer-report.md` 或 `contract-auditor-report.md`。
+   - `report_name` 填報告檔名，只含檔名，各類型的值見「依 task_type 的差異」。
    - `targets` 列出目標物件的絕對路徑，目錄以結尾反斜線標示。`required_reads` 列出必讀檔，例如 `design.md`、`requirement-summary.md`、結案報告與前輪審查報告。
    - 路徑不得指向 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`，也不得位於工作目錄、`~\.ai-agents` 與線的報告目錄之外。`execution_root`、`report_line_root` 與 `report_name` 不得含 `&`、`|`、`<`、`>`、`^`、`%` 與雙引號。
    - `## 驗收條件` 逐條寫出可判定的條件。需要審查者核對的既有證據，把命令原文與原始輸出檔的路徑寫進該條，並把輸出檔列入 `required_reads`。
-   - `cycle` 填循環標示，`## 任務` 章節第一行另寫 `循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）`。第 2 輪以上把前輪審查報告與修正報告列入 `required_reads`，寫法見 `workflow-orchestration` skill `references/review-procedures.md`。
+   - `cycle` 填循環標示（審查以外的類型可省略），`## 任務` 章節第一行另寫 `循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）`。第 2 輪以上把前輪審查報告與修正報告列入 `required_reads`，寫法見 `workflow-orchestration` skill `references/review-procedures.md`。
 2. 執行入口。以背景命令執行，完成時會收到通知，不輪詢。
 
    ```powershell
@@ -26,6 +26,16 @@
    入口自行選擇派工帳號，不指定 `CODEX_HOME`。帳號登記讀取主 checkout 的 `.local\machine.json`，在線工作樹發動時結果相同。
 
    單次執行的總時限預設 1800 秒，需要調整時加 `-TimeoutSeconds <秒>`。等待與終止的規則見「等待與終止」。
+
+### 依 task_type 的差異
+
+入口依 `task_type` 決定下表最後一欄的差異，其餘流程相同。`task_type` 不在表內時以結束碼 2、`RunTaskTypeUnsupported` 停止，不啟動 Codex。
+
+| `task_type` | `role_file` | `report_name` | 入口的差異 |
+| --- | --- | --- | --- |
+| `review` | `~\.ai-agents\agents\codex\reviewer.toml`、`frontend-reviewer.toml` 或 `contract-auditor.toml` | 依角色為 `review-report.md`、`frontend-reviewer-report.md` 或 `contract-auditor-report.md` | 成功後檢查報告的 Finding manifest，結果在 `final.review_report_check`；prompt 以「審查者:」行標明實際執行者 |
+| `factcheck` | `~\.ai-agents\skills\fact-check-note\SKILL.md` | `fact-check-report.md` | 在 `exec` 前加 `--search`；不做 manifest 檢查，`final.review_report_check` 為 `null` |
+| `generate` | 派遣檔本身（影像產生沒有專屬角色規則檔，任務、驗收條件與輸出規則全寫在派遣檔） | 自訂，例如 `generate-report.md` | 選定帳號的 `<CODEX_HOME>\generated_images` 列為可讀（不存在時入口先建立）。影像先產在該處，`## 任務` 要求 Codex 複製到輸出目錄，並在報告逐一列出影像檔名；不做 manifest 檢查 |
 
 ## 結果
 
@@ -70,6 +80,8 @@
 
 ## 回收
 
+以下「報告是否可用」與「收下後的處理」適用審查。事實校閱與影像產生見「事實校閱與影像產生的回收」。
+
 回收分兩步。先判定這份報告能不能用，再依報告的審查結論決定下一站。
 
 ### 報告是否可用
@@ -105,6 +117,19 @@
 | `pass`，仍有 `status=open` 的 `Minor` | 不再複審。依共同收斂契約判定順序 1，一次批次修正或記為候選 |
 | `pass`，沒有 `open` 的 finding | 進入需求意圖驗收 |
 
+### 事實校閱與影像產生的回收
+
+依序核對下列各項，全部成立為「收下」。任一項不成立時以同一份派遣檔重跑，並在 `## 任務` 補一行指出上一份報告缺少的部分；`source_changed` 為 `true` 的處置同審查。
+
+1. 讀 `final.report_path` 的報告全文，確認報告含派遣檔 `## 回報必備欄位` 要求的各節。事實校閱的報告格式依 `fact-check-note` skill「報告格式」，每個 `❌` 條目附官方依據。
+2. 確認 `final.source_changed` 為 `false`。
+3. 逐條核對派遣檔 `## 驗收條件`。影像產生另確認報告列出的每個影像檔都在輸出目錄內且非空；影像品質由人判斷。
+
+收下後先把報告 `## 例外回報` 節的條目併入同線 `exceptions.md`，再依類型處理。
+
+- 事實校閱：同線 `report/<lineSlug>/fact-check-report.md` 已存在時，先依 `fact-check-note` skill「寫入前 Rotation」改名，再把報告複製為該路徑，接著進入 `apply-fact-check`。
+- 影像產生：把影像從輸出目錄複製到派遣要求的落點。輸出目錄保留原檔。
+
 ## 帳號
 
 - 入口依登記順序選第一個可用帳號。已登入、該檔位的設定檔存在，且檔位的主要 model 或任一備援 model 未被記為該帳號不支援，三項都成立才算可用。全部帳號都被記為不支援時，入口取記錄時間最早的帳號以主要 model 實際嘗試一次。
@@ -126,4 +151,7 @@
 
 ## 切回現行入口
 
-把登錄表 `codex-review` 的 `entry` 改回 `scripts/Invoke-CodexDispatch.ps1` 後，選派結果即指向現行入口。現行入口的 Collect 檢查的是舊格式的審查報告，`reviewer.toml`、`frontend-reviewer.toml` 與 `contract-auditor.toml` 目前只產出新格式，切回時需一併還原三份的報告格式。
+把登錄表對應執行者的 `entry` 改回 `scripts/Invoke-CodexDispatch.ps1` 後，選派結果即指向現行入口。
+
+- `codex-review`：現行入口的 Collect 檢查的是舊格式的審查報告，`reviewer.toml`、`frontend-reviewer.toml` 與 `contract-auditor.toml` 目前只產出新格式，切回時需一併還原三份的報告格式。
+- `codex-content`：事實校閱與影像產生一起切回。`fact-check-note` skill「派遣發動」需一併還原為現行入口的派遣單寫法（唯讀 sandbox、`--search` 由 Request 指定、報告落點為派遣單第 7 欄）。

@@ -90,7 +90,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 | 狀態 | 結束碼 | 主 Agent 處置 |
 | --- | --- | --- |
-| `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch`，依 `executor.entry` 讀取對應流程（`scripts/Invoke-CodexRun.ps1` 且角色為 `Reviewer` 時讀 `references/run.md` 並以派遣檔發動，不使用 `New-DispatchInputs.ps1`；其餘讀 `references/start.md`），`profile` 取自 `executor.profile`。`unmetPreferences` 含 `family` 時為同家族審查或同家族第二意見，屬選派的正常結果，不追加 exceptions，在報告註明實際執行者；`advise` 由 Sonnet 以一般第二意見承接時不需 `[advisor 諮詢授權]`。`skipped` 非空時在報告或回報註明原應承接者 |
+| `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch`，依 `executor.entry` 讀取對應流程（`scripts/Invoke-CodexRun.ps1` 時讀 `references/run.md` 並以派遣檔發動，不使用 `New-DispatchInputs.ps1`；`scripts/Invoke-CodexDispatch.ps1` 時讀 `references/start.md`），`profile` 取自 `executor.profile`。`unmetPreferences` 含 `family` 時為同家族審查或同家族第二意見，屬選派的正常結果，不追加 exceptions，在報告註明實際執行者；`advise` 由 Sonnet 以一般第二意見承接時不需 `[advisor 諮詢授權]`。`skipped` 非空時在報告或回報註明原應承接者 |
 | `needs-user-decision` | 10 | 候選全部不可選，且至少一位是因未完成次數達上限被略過；其餘候選可能是離線，不代表也達到上限。停止該任務，依 `skipped` 的理由分開回報：`incomplete-limit` 者附未完成紀錄與證據，`offline` 者附服務端拒絕的證據，由使用者決定 |
 | `needs-authorization` | 20 | 輸出 `rules/claude/30-dispatch.md` 規定的 `[advisor 諮詢授權]` 請求，等待使用者當輪回覆 |
 | `stopped` | 22 | 回報使用者，附 `reason` 與已查範圍，不以其他執行者頂替硬能力 |

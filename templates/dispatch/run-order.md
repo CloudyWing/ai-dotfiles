@@ -6,7 +6,7 @@
 欄位規則：
 - schema 固定 ai-agents.codex-run-order.v1。
 - line_slug、dispatch_slug 為小寫英數與連字號。
-- task_type 目前只接受 review。
+- task_type 取 review、factcheck 或 generate，各類型的 role_file、report_name 與入口差異見 skills\codex-dispatch\references\run.md「依 task_type 的差異」。
 - profile 取選派入口輸出的 executor.profile；改由 Claude 審查者承接時沿用原值，Claude 審查者不讀這一欄。
 - role_file、execution_root、report_line_root、targets、required_reads 一律為絕對路徑；targets 的目錄以結尾反斜線標示，required_reads 可為空陣列。
 - report_name 只含檔名。報告落在 <report_line_root>\runs\<dispatch_slug>-<runId>\<report_name>。
@@ -49,11 +49,11 @@
 
 ## 邊界
 
-審查類固定唯讀。不得修改目標物件，不得執行建置與測試，不得建立 commit。報告的自驗命令 `scripts/Test-CodexReviewReport.ps1` 不在此限。唯一可寫入的位置是 prompt 指定的輸出目錄，報告檔與例外回報都寫在其中。
+固定唯讀。不得修改目標物件，不得執行建置與測試，不得建立 commit。審查報告的自驗命令 `scripts/Test-CodexReviewReport.ps1` 不在此限。唯一可寫入的位置是 prompt 指定的輸出目錄，報告檔、影像與例外回報都寫在其中。
 
 ## 回報必備欄位
 
-報告含下列內容。
+報告含下列內容。以下為審查的欄位；事實校閱改依 `fact-check-note` skill「報告格式」，影像產生改為逐一列出輸出目錄內的影像檔名與用途，兩者都保留 `## 例外回報`。
 
 - `## 總覽`：審查結論（pass 或 fail）與逐條驗收條件的判定。
 - `## Finding manifest`：唯一一個 json 區塊，格式為 `codex-run.review-findings.v1`，每個 finding 有 `id`、`severity`、`status`、`summary`。

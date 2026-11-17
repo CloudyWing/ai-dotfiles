@@ -1,7 +1,7 @@
 ﻿#Requires -Version 7.0
 <#
 .SYNOPSIS
-對一份派遣檔執行一次一次性的 codex exec（審查類），在 MXC 沙盒的權限設定下直接於線工作樹執行。
+對一份派遣檔執行一次一次性的 codex exec（審查、事實校閱、影像產生），在 MXC 沙盒的權限設定下直接於線工作樹執行。
 
 .DESCRIPTION
 stdout 輸出單一 ASCII 跳脫的 JSON 結果文件，stderr 輸出診斷行。
