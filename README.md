@@ -293,10 +293,12 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/New-DispatchInputs.ps1` 產生資源派遣（唯讀）的輸入，一次寫出 Request、`line.json`（不存在時）、prompt 與派遣單，並以 `Invoke-CodexDispatch.ps1 -Operation Dispatch -ValidateOnly` 自檢；自檢失敗時刪除本次建立的檔案，新建的 `line.json` 保留。
 - `scripts/Invoke-CodexRun.ps1` 對一份派遣檔執行一次 `codex exec`，目前用於審查、事實校閱與影像產生，啟動前比對帳號目錄的檔位設定檔與 repo 產生檔。帳號由 `machine.json` 登記清單選擇，讀取主 checkout 的 `.local/machine.json`，在線工作樹發動時相同。專案信任的處理見 `skills/codex-dispatch/references/run.md` 的「帳號」章節。
 - `scripts/Test-CodexReviewReport.ps1` 檢查審查報告的 finding 清單，`valid` 為 `false` 時結束碼為 1。
+- `scripts/Write-ClaudeRunRecord.ps1` 為 Claude 審查者（subagent）的一次審查在 `runs\` 寫出與 Codex 同位置的執行紀錄：`-Action Start` 保存派生前的來源狀態，`-Action End` 判定 `source_changed` 與報告檢查並補完紀錄；紀錄沒有 token 用量，`Get-LineCost.ps1` 標示後不計入合計。
+- `scripts/Update-ExecutorIncomplete.ps1` 保存同一任務各執行者的未完成次數（`Add`、`Show`、`Reset`），並輸出可直接作為 `Select-DispatchExecutor.ps1 -Incomplete` 的值；選派入口不讀這個檔。
 - `scripts/Get-CodexQuota.ps1` 查詢 Codex 額度，只供顯示與紀錄。
 - `scripts/Invoke-WorkOverviewCleanup.ps1` 列出可清理的 worktree、分支與線層歷史備份，必須指定 `-Root`；預設只列出，以 `-ConfirmPlan` 帶入列出時的 planId 才刪除。
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
-- `scripts/Get-LineCost.ps1` 唯讀彙整一條線的成本並輸出 JSON：`runs\*.record.json` 與 `cost-ledger.md` 事件列的 Codex 執行次數、model、token、結果與耗時；Claude 用量只在以 `-ClaudeSessionId` 或 `-ClaudeTranscriptPath` 指定時重用 `Get-ClaudeSessionUsage.ps1` 計算，否則為 null 並附原因。
+- `scripts/Get-LineCost.ps1` 唯讀彙整一條線的成本並輸出 JSON：`runs\*.record.json`（含 Claude 審查者的紀錄，標示無 token 用量）與 `cost-ledger.md` 事件列的 Codex 執行次數、model、token、結果與耗時；Claude 用量只在以 `-ClaudeSessionId` 或 `-ClaudeTranscriptPath` 指定時重用 `Get-ClaudeSessionUsage.ps1` 計算，否則為 null 並附原因。
 - `scripts/Setup-AIGlobalConfig.ps1` 建立各工具的 symlink 與 Git Hook 設定，見「安裝」與 §3。
 - `scripts/Invoke-CodexDispatch.ps1` 是 Codex 資源派遣的入口，由 `codex-dispatch` skill 呼叫。
 - `scripts/New-DispatchOrder.ps1` 依參數產生派遣單 Markdown 並驗證驗收命令。

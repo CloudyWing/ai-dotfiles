@@ -69,9 +69,9 @@ Demo 驗收向使用者呈現 Demo 目錄路徑與開啟方式、版面決策說
 Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢查點的建檔與建檔內容仍依 `rules/claude/20-coordination.md`「Workflow 交接檢查點」執行，寫完後原 Session 直接繼續。
 
 1. 分支前置。啟動 Workflow 屬 `git-workflow` 註記的阻擋範圍，先依 `git-workflow` skill「git-workflow 註記與模式載入」確認註記有效。再依該 skill「線分支與獨立 worktree」的適用判定決定直接在整合分支或開線分支；`release-flow` 已有版本標籤且目前位於主分支（`git-workflow` skill「主分支判定」的結果）時停止並詢問版號，尚無版本標籤時主分支即整合分支（見 `references/release-flow.md`「初次發佈前」）。開線分支時執行該節的建立程序並切換 work-root，之後的 `design-accepted` 交接檢查點、派工與回收都使用新 work-root。
-2. 依 `rules/claude/30-dispatch.md` Workflow Phase 的實作分流逐 Phase 呼叫選派入口，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：全部 Phase=<執行者>；未完成次數：無`，見 `references/implement-routing.md`「Workflow Phase 的判定記錄」），再依本 Skill「Claude 實作路徑」（`references/claude-implement.md`）派生 Developer。
+2. 依 `rules/claude/30-dispatch.md` Workflow Phase 的實作分流逐 Phase 呼叫選派入口，將結果記入 `design-accepted` 交接檢查點「下一站」欄（格式 `Developer 派工：全部 Phase=<執行者>`，見 `references/implement-routing.md`「Workflow Phase 的判定記錄」），再依本 Skill「Claude 實作路徑」（`references/claude-implement.md`）派生 Developer。
 3. 派生 Developer 並回收結果。單一 Claude 執行者依宣告順序完成全部 Phase，直接修改來源工作樹，執行者不建立 commit。回收依 `references/claude-implement.md`「主 Agent 核對」。回收「收下」後，主 Agent 立即依同檔「Phase commit 回收」逐 Phase 建立 commit，不等審查與需求意圖驗收。
-4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的執行者與本任務完整的未完成次數對照（見 `references/implement-routing.md`「Workflow Phase 的判定記錄」）。回收後仍有殘餘工作時，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
+4. 完成 Developer 回收後寫入 `developer-collected` 交接檢查點，並更新「下一站」欄的執行者（見 `references/implement-routing.md`「Workflow Phase 的判定記錄」）。回收後仍有殘餘工作時，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定處置，紀錄欄位見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
 5. 文件同步。`design.md` §5「使用者文件」子節列有受影響文件時，依 `references/doc-sync.md` 執行一致性檢查、事實修正、最終編輯與事實核對，結果寫入 `report/<lineSlug>/doc-sync-report.md`；子節為「無」時記錄理由後直接進入下一步。
 6. 命中 Reviewer 必發清單時，依 `rules/claude/40-workflow.md` 審查配對決定審查者並直接派出，不詢問使用者。發動方式依本 Skill「審查的發動」，Codex 與 Claude 審查者共用同一份派遣檔。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
 7. 審查者以純技術原因退回時（存在未閉合的 `Critical` 或 `Major`），依 `references/claude-implement.md`「審查與修正」由同一執行者重新派生修正；執行者需要更換時依 `references/implement-routing.md`「未完成與轉移」處理。修正完成後回到 Developer 回收與審查判定，修正回收並覆核後立即由 `generate-commit` 步驟 4 建立 `fixup!` commit；修正改變了行為、術語或檔名時，對受影響段落重跑第 5 步。審查結果只剩 `Minor` 時不退回，依共同收斂契約順序 1 批次修正或記為候選後進入第 8 步。

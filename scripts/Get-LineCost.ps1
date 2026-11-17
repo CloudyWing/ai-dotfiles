@@ -13,6 +13,10 @@ Codex 端取自兩個既有來源，不推算：
 事件列備註的 usage_basis 為 cumulative-no-anchor 時，該列的 token 是 Codex thread 的累計值，
 錨點讀不到而無法換算成增量，因此不計入合計；列仍保留在 runs 中，並在 totals 與 warnings 標示用量不完整。
 
+runs 的每一列有 platform 欄位。Claude 審查者的執行紀錄（Write-ClaudeRunRecord.ps1 寫出，executor_platform 為 claude）同樣列在 codex.runs，
+platform 為 claude，沒有 token 用量：該列計入 run_count、結果與耗時，不計入 token 合計，並使 totals.usage_incomplete 為 true、
+totals.claude_runs_without_usage 為其數量，且在 warnings 列出 run_id。
+
 Claude 端不輸出推算值。線登記資料與執行紀錄都不含 Claude session id，因此預設為 null 並附原因；
 以 -ClaudeSessionId 或 -ClaudeTranscriptPath 指定後，改呼叫 Get-ClaudeSessionUsage.ps1 取得該 session 的用量，
 無法取得的數值輸出 null。
@@ -90,6 +94,7 @@ function Read-RecordRun {
     $usage = Get-PropertyValue $record 'usage'
     return [ordered]@{
         source = 'record'
+        platform = $(if ((Get-PropertyValue $record 'executor_platform') -ceq 'claude') { 'claude' } else { 'codex' })
         run_id = [string]$runId
         dispatch_slug = Get-PropertyValue $record 'dispatch_slug'
         task_type = Get-PropertyValue $record 'task_type'
@@ -134,6 +139,7 @@ function Read-LedgerRun {
         $duration = if ($cells[9] -match '^\d+(\.\d+)?$') { [double]$cells[9] } else { $null }
         $runs.Add([ordered]@{
             source = 'ledger'
+            platform = 'codex'
             run_id = $cells[4]
             dispatch_slug = if ($cells[3] -eq '-') { $null } else { $cells[3] }
             task_type = if ($note.ContainsKey('task')) { $note['task'] } else { $null }
@@ -238,6 +244,11 @@ try {
     if ($unanchored.Count -gt 0) {
         $warnings.Add("續行 run 的用量是累計值且錨點讀不到，未計入合計：$(@($unanchored | ForEach-Object { $_.run_id }) -join ',')")
     }
+    # Claude 審查者的執行紀錄不含 token 用量，列在 runs 中並計入次數與耗時，但 token 合計不含這些列，因此合計不完整。
+    $claudeRuns = @($runs | Where-Object { $_.platform -ceq 'claude' })
+    if ($claudeRuns.Count -gt 0) {
+        $warnings.Add("Claude 審查者的執行紀錄沒有 token 用量，token 合計不含這些列：$(@($claudeRuns | ForEach-Object { $_.run_id }) -join ',')")
+    }
     $results = [ordered]@{}
     foreach ($run in $runs) {
         $key = if ($null -eq $run.result) { 'unknown' } else { [string]$run.result }
@@ -270,7 +281,8 @@ try {
                 runs_with_usage = $countable.Count
                 runs_without_usage = $runs.Count - $withUsage.Count
                 runs_usage_not_counted = $unanchored.Count
-                usage_incomplete = ($unanchored.Count -gt 0)
+                claude_runs_without_usage = $claudeRuns.Count
+                usage_incomplete = ($unanchored.Count -gt 0 -or $claudeRuns.Count -gt 0)
                 input_tokens = Get-NullableSum $countable 'input_tokens'
                 cached_input_tokens = Get-NullableSum $countable 'cached_input_tokens'
                 output_tokens = Get-NullableSum $countable 'output_tokens'

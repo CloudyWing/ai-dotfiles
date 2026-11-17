@@ -70,6 +70,31 @@ function Write-RunJsonAtomic {
     }
 }
 
+function Enter-RunFileLock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path,
+
+        [ValidateRange(1, 600)]
+        [int]$TimeoutSeconds = 20
+    )
+
+    # 以獨占開啟鎖檔取得跨行程的排他鎖，呼叫端在 finally 對回傳的串流 Dispose 以釋放。鎖檔本身不刪除，避免刪除與重新取得之間的競爭。
+    $directory = Split-Path -Parent $Path
+    if (-not [IO.Directory]::Exists($directory)) { $null = [IO.Directory]::CreateDirectory($directory) }
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ($true) {
+        try {
+            return New-Object System.IO.FileStream -ArgumentList @($Path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        }
+        catch [System.IO.IOException] {
+            if ([DateTime]::UtcNow -ge $deadline) { throw (New-RunError -Code 'RunLockTimeout' -Message ('等待排他鎖逾時：' + $Path) -ExitCode 1) }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+}
+
 function Get-RunSha256File {
     [CmdletBinding()]
     param(

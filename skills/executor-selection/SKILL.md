@@ -163,17 +163,14 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 ## 執行者轉移與交接單
 
-執行者未完成工作的計次與轉移條件由 `rules/claude/30-dispatch.md`「執行者轉移」規定。同一任務累計三次未完成時，以 `-Incomplete` 把該任務內各執行者的未完成次數傳給選派入口，例如 `-Incomplete haiku:3`；先前已轉移過的執行者一併列出，例如 `-Incomplete haiku:3,sonnet:3`。入口略過達到登錄表 `maxIncomplete` 的執行者，回傳候選清單的下一位。
+執行者未完成工作的計次與轉移條件由 `rules/claude/30-dispatch.md`「執行者轉移」規定。同一任務累計三次未完成時，把該任務內各執行者的未完成次數（含先前已轉移走的執行者）以 `-Incomplete` 傳給選派入口。入口略過達到登錄表 `maxIncomplete` 的執行者，回傳候選清單的下一位。
 
-- 保存同一任務完整的未完成次數，格式為固定一行 `未完成次數：<執行者 id>:<n>,<執行者 id>:<n>`。列出本任務曾承接的全部執行者，含目前這一位與已轉移走的每一位。任務尚無任何未完成時一律寫成 `未完成次數：無`，不省略這一行；讀到「無」表示全部執行者皆為 0，此時呼叫選派入口不帶 `-Incomplete`。其餘情況冒號之後的內容就是 `-Incomplete` 的參數值，呼叫選派入口時整串帶入，不只帶目前這一位。
-- 寫入這一行於下列落點，不另建計數檔。
-  - Workflow 的 Developer 派工：交接檢查點「下一站」欄，以 `；` 接在 `Developer 派工：全部 Phase=<執行者>` 的同一行，不另起一行。自 `design-accepted` 檢查點起就寫出，此時為 `未完成次數：無`。每次 Developer 回收寫入 `developer-collected` 檢查點時更新。「下一站」改為文件同步、Reviewer 或需求意圖驗收之後，這一行仍保留在同一欄，直到任務收下。
-  - 其餘工作（含審查派遣）：該任務每一次派出的派遣輸入，含重派與轉移後的派出。有派遣檔時寫在派遣檔 `## 任務` 章節；只有派生 prompt 時寫在 prompt，prompt 同時指定回報檔落點（單一工作見 `workflow-orchestration` skill `references/implement-routing.md`「單一工作的 Claude 承接契約」），並要求執行者在回報檔第一行照抄，使這一行留在線的報告目錄。協調者回收時核對回報檔第一行與派出時帶入的對照相同，不同或缺少時依派出時的對照更正該行。以該任務最近一次派出為準。沒有登記線、因而沒有回報檔可寫的工作，由協調者在下一次派出的 prompt 帶入完整對照；中斷後讀不到時依本節的接手條目停止並回報。
-  - 轉移時：另寫入交接單「識別」的「未完成次數」欄與 exceptions「替代方案」條目的「內容」。
-- 更新這一行於回收判定為未完成之後、下一次派出或轉移之前：把該執行者的次數加一，其餘執行者的次數原樣保留。經判定屬環境或硬能力成因而不計者不加。
-- 讀取這一行於接手時（換 Session 或脈絡壓縮之後），先取得完整對照再決定下一步。非 Workflow 的工作若最近一份回報尚未完成回收判定（沒有更晚的派出，任務也未收下），先對該回報做回收判定，未完成時為該執行者加一。這一行寫著「無」時全部執行者皆為 0。任務已派出過而讀不到這一行時不從 0 起算，依同線的回報檔、交接單與 exceptions 條目重建；無法重建時停止並回報。
-- 重設於任務收下之後，換任務從頭起算。任務未收下前不重設，轉移不清除先前執行者的次數。
-- 轉移不需使用者拍板。選派入口回傳 `selected` 時直接轉給下一位，並追加 exceptions「替代方案」，依據含原執行者未完成的原因與證據位置。回傳 `needs-user-decision` 時停止並回報。
+- 保存：次數由 `scripts/Update-ExecutorIncomplete.ps1` 存在 `<work-root>/.local/ai-sessions/report/<lineSlug>/executor-incomplete.json`，使用前同線須已登記（`line.json` 存在且 `line-slug` 相符，一次性工作登記為 `kind` 為 `adhoc` 的線），缺少時腳本以結束碼 2 拒絕；一條線可有多個任務，以 `-Task` 區分（Workflow 的 Developer 派工整體算一個任務）。腳本只保存與輸出，不判斷該不該計次；選派入口維持無副作用，不讀這個檔。交接檢查點、派遣輸入與回報檔不另抄寫次數。
+- 加一次：回收判定為未完成之後、下一次派出或轉移之前執行 `pwsh -NoProfile -File scripts/Update-ExecutorIncomplete.ps1 -Action Add -WorkRoot <work-root> -LineSlug <lineSlug> -Task <任務> -ExecutorId <執行者 id> -Reason <原因類別> -Evidence <證據位置>`。原因類別為 `acceptance-failed`、`collect-returned`、`review-rejected`、`self-reported`。經判定屬環境或硬能力成因而不計者不執行。
+- 取值：呼叫選派入口前以相同的 `-WorkRoot`、`-LineSlug`、`-Task` 執行 `-Action Show`，把輸出的 `incomplete_argument` 原樣作為 `-Incomplete` 的值，內容依執行者 id 排序並含已轉移走的每一位。`pass_incomplete` 為 `false`（全部執行者皆為 0）時不帶 `-Incomplete`。
+- 接手：換 Session 或脈絡壓縮之後，先執行 `-Action Show` 取得完整對照再決定下一步。非 Workflow 的工作若最近一份回報尚未完成回收判定（沒有更晚的派出，任務也未收下），先對該回報做回收判定，未完成時為該執行者加一。任務已派出過卻沒有該任務的紀錄時，依同線的回報檔、交接單與 exceptions 條目確認有無漏記的未完成並補 Add；無法確認時停止並回報，不從 0 起算。
+- 重設：任務收下之後執行 `-Action Reset`，換任務從頭起算。任務未收下前不重設，轉移不清除先前執行者的次數。
+- 轉移不需使用者拍板。選派入口回傳 `selected` 時直接轉給下一位，並追加 exceptions「替代方案」，內容含轉移當下的完整未完成次數對照（取自 `-Action Show` 的 `incomplete_argument`，含已轉移走的每一位），依據含原執行者未完成的原因與證據位置。回傳 `needs-user-decision` 時停止並回報。
 - 整理交接單。由主 Agent 依 `templates/dispatch/escalation-handoff.md` 撰寫，不由未完成的執行者撰寫，落點為 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/escalation-handoff-<序號>.md`，序號自 1 遞增。
 - 傳遞有執行證據且與做法無關的資訊。
 

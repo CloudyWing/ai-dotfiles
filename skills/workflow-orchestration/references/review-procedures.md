@@ -19,15 +19,10 @@
 
 ## Claude 審查者的發動
 
-選派入口選出 Claude 執行者時（Codex 不可用，或 Codex 審查者已達未完成次數上限），依下列步驟發動。派遣檔、角色規則檔與回收步驟與 Codex 審查者相同。
+選派入口選出 Claude 執行者時（Codex 不可用，或 Codex 審查者已達未完成次數上限），依下列步驟發動。派遣檔、角色規則檔與回收步驟與 Codex 審查者相同。執行紀錄由 `scripts/Write-ClaudeRunRecord.ps1` 寫入 `<report_line_root>\runs\`，與 Codex 的 `*.record.json` 同一位置，`scripts/Get-LineCost.ps1` 讀得到這一輪。
 
 1. 沿用或撰寫派遣檔。Codex 被拒絕後改派時沿用同一份派遣檔；直接選出 Claude 執行者時依 `codex-dispatch` skill `references/run.md`「發動」第 1 步撰寫，`profile` 填 `review` 類型 Codex 執行者的檔位（選派入口 `-Describe` 可查），Claude 審查者不讀這一欄。
-2. 建立輸出目錄 `<report_line_root>\runs\<dispatchSlug>-<執行者 id>\`，並以下列命令保存派生前的來源狀態。這個命令呼叫 Codex 入口使用的同一個函式 `Get-RunSourceState`，記錄 `HEAD`、目標相對於 `HEAD` 的差異雜湊與未追蹤檔案的內容雜湊；目標在派生前已有未提交修改或未追蹤檔案時，內容再被改動同樣會使雜湊改變。`<ai-agents 根目錄>` 為 `~\.ai-agents` 展開後的路徑，`-Target` 列出派遣檔 `targets` 的全部路徑。快照只涵蓋 `targets`：審查者寫入 `targets` 以外的檔案，或寫入 `report_line_root` 之內的其他檔案時，這項比對偵測不到，Claude 審查者沒有沙盒限制寫入範圍。命令失敗或 `source-state-before.json` 沒有產生時，排除原因後重新執行，取得快照之前不派生審查者。
-
-   ```powershell
-   pwsh -NoProfile -Command ". '<ai-agents 根目錄>\scripts\codex-run\00-common.ps1'; . '<ai-agents 根目錄>\scripts\codex-run\50-source-state.ps1'; Get-RunSourceState -ExecutionRoot '<execution_root>' -Target @('<target 1>', '<target 2>') -ExcludeRoot @('<report_line_root>') | ConvertTo-Json -Depth 8 -Compress | Set-Content -LiteralPath '<輸出目錄>\source-state-before.json' -Encoding utf8"
-   ```
-
+2. 開始：執行 `pwsh -NoProfile -File scripts/Write-ClaudeRunRecord.ps1 -Action Start -DispatchFile <派遣檔> -ExecutorId <執行者 id>`。腳本驗證派遣檔與執行者、建立輸出目錄、保存派生前的來源狀態（記錄 `HEAD`、目標相對於 `HEAD` 的差異雜湊與未追蹤檔案的內容雜湊），並寫出尚未結束的執行紀錄，紀錄同時記下 Start 當時的派遣檔雜湊、`targets` 與 `report_check` 作為 End 的比對基準；stdout 的 JSON 給出 `output_dir` 與 `report_path`。快照只涵蓋 `targets`：審查者寫入 `targets` 以外的檔案，或寫入 `report_line_root` 之內的其他檔案時，這項比對偵測不到，Claude 審查者沒有沙盒限制寫入範圍。腳本失敗時排除原因後重新執行，取得成功結果之前不派生審查者。同一派遣與執行者已有尚未結束的紀錄時，先對該次執行第 4 步，再重新開始。
 3. 以 Agent 工具派生冷啟動 subagent，`subagent_type` 為 `general-purpose`，`model` 取自選派入口輸出的 `executor.model`。prompt 與入口產生的格式相同，內容如下。
 
    ```text
@@ -36,16 +31,14 @@
    - dispatchLineRoot: <派遣檔所在目錄>
    - reportLineRoot: <report_line_root>
    - executionRoot: <execution_root>
-   輸出目錄: <輸出目錄>
-   報告檔: <輸出目錄>\<report_name>
+   輸出目錄: <output_dir>
+   報告檔: <report_path>
    審查者: <executor.display>；同家族審查
 
    請依角色規則檔 `<role_file>` 定義的審查角色，先完整讀取該檔，再讀取派遣檔 `<派遣檔絕對路徑>` 依其內容執行。
    ```
 
-4. 回收依 `run.md`「回收」。入口結果 JSON 的欄位改以下列方式取得。
-   - `final.review_report_check`：執行 `pwsh -NoProfile -File scripts/Test-CodexReviewReport.ps1 -ReportPath <報告檔>`，以輸出的 `valid` 與 `errors` 判定。
-   - `final.source_changed`：審查者結束後以第 2 步的同一命令寫出 `<輸出目錄>\source-state-after.json`，兩個檔案的內容逐字相同為 `false`，`head`、`diff_sha256`、`content_sha256` 任一不同為 `true`。兩個檔案留在輸出目錄作為這次審查的唯讀證據。`source_changed` 為 `false` 只表示 `targets` 的內容與 `HEAD` 沒有變動，不表示審查者沒有寫入其他位置。任一個快照檔缺失或無法讀取時，視為無法證明唯讀，不判為 `false`，不收下這份報告，重新發動。
+4. 結束：subagent 回報後執行 `pwsh -NoProfile -File scripts/Write-ClaudeRunRecord.ps1 -Action End -DispatchFile <派遣檔> -ExecutorId <執行者 id>`。腳本以 Start 記下的基準（不是目前的派遣檔內容）取得派生後的來源狀態，比對派生前的狀態得出 `source_changed`（`targets` 被刪除也算已變），核對派遣檔雜湊是否仍與 Start 相同，並對報告執行 `Test-CodexReviewReport.ps1` 同一套檢查得出 `review_report_check`，補完執行紀錄。回收依 `run.md`「回收」，入口結果 JSON 的 `final.source_changed` 與 `final.review_report_check` 改取自 End 輸出的同名欄位。`result` 為 `failed` 時不收下，`failure_reason` 為 `source-changed`、`dispatch-changed`、`report-missing` 或 `review-report-invalid`，排除原因後重新發動。`source_changed` 為 `false` 只表示 `targets` 的內容與 `HEAD` 沒有變動，不表示審查者沒有寫入其他位置。紀錄沒有 token 用量，`Get-LineCost.ps1` 在該列標示 `platform` 為 `claude`，不計入 token 合計並於 `warnings` 列出。
 5. 收下後同樣把報告複製為同線 `<report_name>`，並把 `## 例外回報` 節的條目併入同線 `exceptions.md`。
 
 ## 循環標示與第 2 輪以上的 Reviewer 派遣單
