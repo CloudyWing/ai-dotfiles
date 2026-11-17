@@ -15,6 +15,7 @@ result 表示這次審查能否收下（收件資格）；Codex 紀錄的 result
 result 為 success 的條件：來源未變、派遣檔雜湊與 Start 時相同、報告存在且非空，且 Start 時的 report_check 為 review-manifest 時 manifest 有效。
 否則為 failed，failure_reason 為 source-changed、dispatch-changed、report-missing 或 review-report-invalid（依序判定，取第一個成立者）。
 End 時 targets 已被刪除或來源狀態無法計算，視為來源已變：source_changed 為 true、source_state_end 為 null，紀錄照常寫出。
+來源狀態計算拋出例外時，例外訊息寫入紀錄的 source_state_error 並在 stderr 輸出一行，結果判定不變。
 紀錄一律寫出，結束碼 0 為 success，1 為 failed，2 為輸入無效或狀態不允許。End 時派遣檔已無法讀取或驗證時以結束碼 2 拒絕，還原派遣檔後可再次 End。
 同一個 dispatchSlug 與執行者的 Start 與 End 以 runs 目錄內的排他鎖序列化；已有未結束的紀錄時，Start 以結束碼 2 拒絕，先對該次執行 End，再重新 Start。
 紀錄與輸出目錄已存在時不沿用，改用新的 run id 重試，仍碰撞則以結束碼 1 拒絕。
@@ -235,6 +236,7 @@ try {
     # 目標在 Start 之後被刪除或狀態無法計算時，視為來源已變並照常寫出紀錄。
     $sourceChanged = $false
     $sourceEnd = $null
+    $sourceStateError = $null
     try {
         $sourceEnd = Get-RunSourceState -ExecutionRoot ([string]$record['execution_root']) -Target ([string[]]@($record['targets'])) -ExcludeRoot @([string]$record['report_line_root'])
         # 逐欄比對，不依賴 JSON 鍵順序（讀回的紀錄是 hashtable）。
@@ -245,6 +247,8 @@ try {
     catch {
         $sourceEnd = $null
         $sourceChanged = $true
+        $sourceStateError = $_.Exception.Message
+        [Console]::Error.WriteLine('[claude-run-record] 來源狀態計算失敗，視為來源已變：' + $sourceStateError)
     }
     foreach ($target in @($record['targets'])) {
         if (-not ([IO.File]::Exists([string]$target) -or [IO.Directory]::Exists([string]$target))) { $sourceChanged = $true }
@@ -269,6 +273,7 @@ try {
     $record['duration_seconds'] = [Math]::Round(($endedAt - $startedAt).TotalSeconds, 1)
     $record['dispatch_file']['sha256_end'] = $dispatchEndHash
     $record['source_state_end'] = $sourceEnd
+    if ($null -ne $sourceStateError) { $record['source_state_error'] = $sourceStateError }
     $record['source_changed'] = $sourceChanged
     $record['result'] = $result
     $record['failure_reason'] = $failureReason

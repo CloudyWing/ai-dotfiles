@@ -5,7 +5,7 @@ param()
 # Setup-AIGlobalConfig.ps1 -Check 的測試：在暫存的 USERPROFILE 內建立假的全域設定，驗證「全部符合」「缺少」「指向錯誤位置」等判定，
 # 並驗證每次 -Check 執行前後檔案系統（含 git 設定檔）沒有任何變動。
 # 建立檔案的 Symbolic Link 需要系統管理員或開發人員模式；沒有權限時，目錄連結改用 Junction，檔案連結不建立（對應項目視為已知缺少），
-# 「全部符合」的案例則略過。以系統管理員 pwsh 執行可涵蓋全部案例。
+# 「全部符合且結束碼 0」的案例（C01b）以 SKIP 標示未涵蓋。以系統管理員 pwsh 執行可涵蓋全部案例。
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -241,6 +241,76 @@ try {
         Assert-True ($result.Json.allOk -eq ($expectedExit -eq 0)) 'allOk 與結束碼不一致'
         if ($canLink -and $expectedExit -eq 0) { Assert-True ($result.Json.summary.ok -eq $result.Json.summary.total) '統計與項目數不一致' }
         if ($canLink) { Assert-True ($fixture.Unlinked.Count -eq 0) '有權限時所有連結都應建立' }
+        $true
+    }
+
+    # 全部符合且結束碼 0 的路徑需要檔案的 Symbolic Link；沒有權限時以 SKIP 明確標示未涵蓋，不在 C01 的降級斷言中默默略過。
+    Test-Case 'C01b-all-ok-exit-0' {
+        if (-not $canLink) { return 'SKIP' }
+        $fixture = New-Fixture
+        $result = Invoke-CheckRun -Fixture $fixture
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        # 長路徑取決於執行機器的登錄值，不納入判定；其餘項目須全部符合，結束碼依長路徑項目是否符合為 0 或 1。
+        Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @()
+        $longPathOk = @($result.Items | Where-Object { $_.category -ceq 'long-paths' -and $_.status -cne 'ok' }).Count -eq 0
+        $expectedExit = if ($longPathOk) { 0 } else { 1 }
+        Assert-True ($result.Run.ExitCode -eq $expectedExit) ("結束碼應為 $expectedExit，實際 $($result.Run.ExitCode)：" + $result.Run.StdOut)
+        Assert-True ($result.Json.allOk -eq $longPathOk) 'allOk 與長路徑以外的符合狀態不一致'
+        if ($longPathOk) { Assert-True ($result.Json.summary.ok -eq $result.Json.summary.total) '統計與項目數不一致' }
+        $true
+    }
+
+    # 連結判讀的符合與指向錯誤分支以目錄 Junction 涵蓋（與檔案的 Symbolic Link 共用同一段判讀），不需要 Symbolic Link 權限。
+    Test-Case 'C08-link-judgement-without-symlink-privilege' {
+        . (Join-Path $repoRoot 'scripts\lib\setup-check.ps1')
+        $base = Join-Path $tempBase ('c08-' + [guid]::NewGuid().ToString('N'))
+        $targetA = Join-Path $base 'target-a'
+        $targetB = Join-Path $base 'target-b'
+        $null = New-Item -ItemType Directory -Path $targetA, $targetB -Force
+        $junction = Join-Path $base 'link'
+        $null = New-Item -ItemType Junction -Path $junction -Target $targetA
+        $same = Test-SetupCheckLink -Category 'link' -LinkPath $junction -TargetPath $targetA
+        Assert-True ($same.status -ceq 'ok') ('指向預期來源時應為 ok，實際 ' + $same.status + ' ' + $same.detail)
+        $other = Test-SetupCheckLink -Category 'link' -LinkPath $junction -TargetPath $targetB
+        Assert-True ($other.status -ceq 'wrong-target') ('指向其他位置時應為 wrong-target，實際 ' + $other.status)
+        $true
+    }
+
+    # Git 無法啟動時，相關項目回報無法判定，其餘檢查照常完成並輸出單一 JSON。
+    Test-Case 'C09-git-unavailable' {
+        $fixture = New-Fixture
+        $cleanBin = Join-Path $fixture.Root 'bin-no-git'
+        $null = New-Item -ItemType Directory -Path $cleanBin -Force
+        Copy-Item -LiteralPath (Join-Path $fixture.BinDirectory 'claude.cmd') -Destination $cleanBin
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $pwshPath
+        $startInfo.Arguments = (@('-NoProfile', '-NonInteractive', '-File', $setupPath, '-Check', '-AsJson') | ForEach-Object { ConvertTo-ArgumentText -Value $_ }) -join ' '
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $startInfo.EnvironmentVariables['USERPROFILE'] = $fixture.UserProfile
+        $startInfo.EnvironmentVariables['HOME'] = $fixture.UserProfile
+        $startInfo.EnvironmentVariables['PATH'] = (@($cleanBin, (Split-Path -Parent $pwshPath), (Join-Path $env:WINDIR 'System32')) -join ';')
+        [void]$startInfo.EnvironmentVariables.Remove('CODEX_HOME')
+        $process = [System.Diagnostics.Process]::Start($startInfo)
+        try {
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            if (-not $process.WaitForExit(120000)) { try { $process.Kill($true) } catch { }; throw '子程序逾時' }
+            $process.WaitForExit()
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $exitCode = $process.ExitCode
+        }
+        finally { $process.Dispose() }
+        Assert-True ($exitCode -eq 1) ("Git 無法執行時結束碼應為 1，實際 $exitCode：" + $stderr)
+        $json = $stdout | ConvertFrom-Json
+        $hooks = @($json.items | Where-Object { $_.category -ceq 'git-hooks-path' })
+        $excludes = @($json.items | Where-Object { $_.category -ceq 'git-excludes' })
+        Assert-True ($hooks.Count -eq 1 -and $hooks[0].status -ceq 'unknown') 'core.hooksPath 應為無法判定'
+        Assert-True ($excludes.Count -eq 1 -and $excludes[0].status -ceq 'unknown') 'core.excludesFile 應為無法判定'
+        Assert-True (@($json.items | Where-Object { $_.category -ceq 'link' }).Count -eq 7) '其餘檢查項目應照常輸出'
         $true
     }
 

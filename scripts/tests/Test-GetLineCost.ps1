@@ -11,8 +11,8 @@ $utf8 = New-Object System.Text.UTF8Encoding($false)
 function Assert-Equal {
     [CmdletBinding()]
     param(
-        [AllowNull()]$Actual,
-        [AllowNull()]$Expected,
+        [AllowNull()][object]$Actual,
+        [AllowNull()][object]$Expected,
         [Parameter(Mandatory)][string]$Name
     )
     if ("$Actual" -ne "$Expected") { throw "$Name expected [$Expected], got [$Actual]" }
@@ -43,8 +43,8 @@ function Write-Record {
         [Parameter(Mandatory)][string]$Report,
         [Parameter(Mandatory)][string]$RunId,
         [Parameter(Mandatory)][string]$Result,
-        [Parameter(Mandatory)]$Usage,
-        $Duration = 100.5
+        [Parameter(Mandatory)][object]$Usage,
+        [object]$Duration = 100.5
     )
     $record = [ordered]@{
         run_id = $RunId; dispatch_slug = "d-$RunId"; task_type = 'review'; model = 'model-a'

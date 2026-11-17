@@ -597,13 +597,13 @@ function Invoke-ComparisonUnit {
     }
     catch { $extractError = $_.Exception.Message }
 
-    Invoke-Case 'Comparison:自文件標記之後取得 powershell 程式區塊且含 -LedgerRoot 參數' {
+    Invoke-Case 'Comparison:自文件標記之後取得 powershell 程式區塊且含 -WorkRoot 與 -LineCostScript 參數' {
         Assert-Case ($null -eq $extractError) ('取得程式區塊失敗：' + $extractError)
-        Assert-Case ($snippet.StartsWith('param([Parameter(Mandatory)][string]$LedgerRoot)')) '程式區塊應以 LedgerRoot 的 param 開頭'
+        Assert-Case ($snippet.StartsWith('param([Parameter(Mandatory)][string]$WorkRoot, [Parameter(Mandatory)][string]$LineCostScript)')) '程式區塊應以 WorkRoot 與 LineCostScript 的 param 開頭'
     }
 
     $comparisonRoot = Join-Path $script:fixtureRoot 'comparison'
-    $ledgerPath = Join-Path $comparisonRoot 'report\cost-line\cost-ledger.md'
+    $ledgerPath = Join-Path $comparisonRoot '.local\ai-sessions\report\cost-line\cost-ledger.md'
     $header = '| 時間（UTC） | 列類型 | 成本目標 | dispatchSlug | runId | cycle_id | cycle_round | cycle_role | 事件類型 | 耗時（秒） | input | cached_input | output | 備註 |'
     $separator = '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |'
     $legacyRow = New-TestComparisonRow -Kind '事件' -RunId 'run-legacy' -CycleId 'cycle-legacy' -Round '1' -Role 'review' -InputTokens '99999'
@@ -631,7 +631,7 @@ function Invoke-ComparisonUnit {
     try {
         $snippetPath = Join-Path $comparisonRoot 'comparison-snippet.ps1'
         [IO.File]::WriteAllText($snippetPath, $snippet, (New-Object System.Text.UTF8Encoding($true)))
-        $output = @(& { Set-StrictMode -Off; & $snippetPath -LedgerRoot $comparisonRoot } | ForEach-Object { [string]$_ })
+        $output = @(& { Set-StrictMode -Off; & $snippetPath -WorkRoot $comparisonRoot -LineCostScript (Join-Path $scriptsRoot 'Get-LineCost.ps1') } | ForEach-Object { [string]$_ })
     }
     catch { $runError = $_.Exception.Message }
 
@@ -639,23 +639,21 @@ function Invoke-ComparisonUnit {
         Assert-Case ($null -eq $runError) ('執行失敗：' + $runError)
         Assert-Case ($output.Count -ge 6) ('輸出行數不足：' + ($output -join ' / '))
     }
-    Invoke-Case 'Comparison:M1 與 M1u 以全部輪次與有 usage 輪次計算，舊版手寫表與重複 runId 不影響' {
-        Assert-Case ($output -contains 'M1 median = 2 over 3,2,1') ('M1 不符：' + ($output -join ' / '))
-        Assert-Case ($output -contains 'M1u median = 1 over 3,1,1') ('M1u 不符：' + ($output -join ' / '))
+    Invoke-Case 'Comparison:M1 與 M1u 以全部輪次與有 usage 輪次計算，舊版表、非事件列與重複 runId 不影響' {
+        Assert-Case ($output -contains 'M1 median = 2.5 over 3,2') ('M1 不符：' + ($output -join ' / '))
+        Assert-Case ($output -contains 'M1u median = 2 over 3,1') ('M1u 不符：' + ($output -join ' / '))
     }
-    Invoke-Case 'Comparison:M2 合併與各循環比例只計有 usage 的 Codex 事件列' {
+    Invoke-Case 'Comparison:M2 合併與各循環比例只計有 usage 的 Codex run' {
         Assert-Case ($output -contains 'M2 combined = 30.77%') ('M2 合併不符：' + ($output -join ' / '))
         Assert-Case ($output -contains 'M2 cost-line, cycle-a = 44.44%') ('M2 循環 A 不符：' + ($output -join ' / '))
         Assert-Case ($output -contains 'M2 cost-line, cycle-b = 0%') ('M2 循環 B 不符：' + ($output -join ' / '))
-        Assert-Case (@($output | Where-Object { $_.StartsWith('M2 cost-line, cycle-c') -or $_.StartsWith('M2 cost-line, cycle-f') }).Count -eq 0) '手寫列不得出現在 M2'
+        Assert-Case (@($output | Where-Object { $_.StartsWith('M2 cost-line, cycle-c') -or $_.StartsWith('M2 cost-line, cycle-f') }).Count -eq 0) '非事件列不得出現在 M2'
     }
     Invoke-Case 'Comparison:M3 分母含未標記事件列，分子為有 usage 者' {
         Assert-Case ($output -contains 'M3 = 5/6（未標記 1 列）') ('M3 不符：' + ($output -join ' / '))
     }
-    Invoke-Case 'Comparison:M4 取實作循環最大輪次，Claude token 合計只含手寫列且不併入 M2' {
-        Assert-Case ($output -contains 'M4 median = 2 over 2') ('M4 不符：' + ($output -join ' / '))
-        # 同一 subagent 三次通知的總數依序為 5000、8000、12000，三列增量 5000、3000、4000 的和等於最後一次總數；另含 cycle-c 手寫列 700。
-        Assert-Case ($output -contains 'Claude subagent token 合計 = 12700（不併入 M2）') ('Claude token 合計不符：' + ($output -join ' / '))
+    Invoke-Case 'Comparison:輸出不含 M4 與 Claude subagent token 合計' {
+        Assert-Case (@($output | Where-Object { $_.StartsWith('M4') -or $_.StartsWith('Claude subagent') }).Count -eq 0) ('不應輸出 M4 或 Claude token 合計：' + ($output -join ' / '))
     }
 }
 

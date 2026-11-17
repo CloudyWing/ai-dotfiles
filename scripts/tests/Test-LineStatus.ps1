@@ -52,6 +52,13 @@ try {
         (Get-NextStepSummary @('00. 最新進度：X。下一步派 Y。')) -eq '最新進度：X。' -and
         (Get-NextStepSummary @('P5（instructions.md T023 到 T025）待使用者同意；之後驗收。')) -eq 'P5（instructions.md T023 到 T025）待使用者同意；之後驗收。'
     }
+    Test-Case C04b {
+        (Get-NextStepSummary @('派工判定規則已確認，接著整理文件。', '進入下一階段。')) -eq '派工判定規則已確認，接著整理文件。' -and
+        (Get-NextStepSummary @('派工] 後續整理文件。')) -eq '派工] 後續整理文件。' -and
+        (Get-NextStepSummary @('[派工]沒有空白的一般敘述。')) -eq '派工]沒有空白的一般敘述。' -and
+        (Get-NextStepSummary @('1. [派工] 自己做（小改動）：P1', '實作 Phase 1。')) -eq '實作 Phase 1。' -and
+        $null -eq (Get-NextStepSummary @('[派工判定: 不派] P1 規則檔撰寫'))
+    }
     Test-Case C05 { $null -eq (Get-NextStepSummary @('Developer 派工：P1=Codex')) -and $null -eq (Get-NextStepSummary @('P1：E=是、T=是。', 'P2：E=是')) -and $null -eq (Get-NextStepSummary @()) }
 
     $repo = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
@@ -112,9 +119,9 @@ try {
         else { Write-Output 'SKIP C10Line 非 status-board-p2 worktree' }
     }
     Test-Case C11 { @($actual.scannedRoots | Where-Object { $_ -match 'YunXin' }).Count -eq 0 }
-    $executorLines = @($actual.lines | Where-Object { $_.NextStop -match '^(Developer 派工|派工判定|派工\]|P\d+[=＝:：])' })
+    $executorLines = @($actual.lines | Where-Object { $_.NextStop -match '^`?\[(?:派工\] |派工判定: )|^(?:Developer 派工|P\d+[=＝:：])' })
     if ($executorLines.Count -eq 0) { Write-Output 'SKIP C12 樣本不足' }
-    else { Test-Case C12 { @($executorLines | Where-Object { $_.NextStepSummary -match '^(Developer 派工|派工判定|派工\]|P\d+[=＝:：])' }).Count -eq 0 } }
+    else { Test-Case C12 { @($executorLines | Where-Object { $_.NextStepSummary -match '^`?\[(?:派工\] |派工判定: )|^(?:Developer 派工|P\d+[=＝:：])' }).Count -eq 0 } }
     $raw = & $hostPath -NoProfile -ExecutionPolicy Bypass -File $scriptPath -WorkRoot ';' -SkipQuota -AsJson
     $code = $LASTEXITCODE
     $fallback = ($raw -join "`n") | ConvertFrom-Json

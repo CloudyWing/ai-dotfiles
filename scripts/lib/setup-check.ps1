@@ -103,9 +103,14 @@ function Test-SetupCheckLink {
 function Get-SetupCheckGitValue {
     param([string[]]$GitArgument)
 
-    # 回傳 @{ ExitCode; Value }；不寫入任何設定。
-    $output = (& git @GitArgument 2>$null | Out-String).TrimEnd()
-    return @{ ExitCode = $LASTEXITCODE; Value = $output }
+    # 回傳 @{ ExitCode; Value }；不寫入任何設定。Git 無法啟動（例如 PATH 找不到）時 ExitCode 為 -1，交由各呼叫端的 unknown 分支處理。
+    try {
+        $output = (& git @GitArgument 2>$null | Out-String).TrimEnd()
+        return @{ ExitCode = $LASTEXITCODE; Value = $output }
+    }
+    catch {
+        return @{ ExitCode = -1; Value = $_.Exception.Message }
+    }
 }
 
 function Get-SetupCheckLongPathItem {
@@ -250,12 +255,15 @@ function Get-SetupCheckGitItem {
     $configRoot = $Expected.ConfigRoot
     $hooksPath = $Expected.HooksPath
     $isRepo = $false
+    $gitUnavailable = $false
     if (Test-Path -LiteralPath $configRoot -PathType Container) {
         $probe = Get-SetupCheckGitValue -GitArgument @('-C', $configRoot, 'rev-parse', '--git-dir')
         $isRepo = ($probe.ExitCode -eq 0)
+        $gitUnavailable = ($probe.ExitCode -eq -1)
     }
     if (-not $isRepo) {
-        $items.Add((New-SetupCheckItem -Category 'git-hooks-path' -Path $configRoot -Expected $hooksPath -Actual $null -Status 'unknown' -Detail '設定來源目錄不是 git 工作樹，無法讀取 core.hooksPath'))
+        $hooksDetail = if ($gitUnavailable) { '無法執行 git，無法讀取 core.hooksPath' } else { '設定來源目錄不是 git 工作樹，無法讀取 core.hooksPath' }
+        $items.Add((New-SetupCheckItem -Category 'git-hooks-path' -Path $configRoot -Expected $hooksPath -Actual $null -Status 'unknown' -Detail $hooksDetail))
     }
     else {
         $hooks = Get-SetupCheckGitValue -GitArgument @('-C', $configRoot, 'config', '--local', '--get', 'core.hooksPath')

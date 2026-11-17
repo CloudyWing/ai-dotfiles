@@ -244,6 +244,26 @@ try {
         $again = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
         Assert-Equal 0 $again.Code $again.Stderr
     }
+    Test-Case 'CR-END-SOURCE-STATE-ERROR 來源狀態計算拋出例外時，紀錄含 source_state_error、stderr 有診斷行、source_changed 為 true 且紀錄完整寫出' {
+        Remove-Runs
+        Write-TestUtf8 -Path $target -Text 'v1'
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code
+        Write-TestUtf8 -Path $start.Json.report_path -Text $validReport
+        # 把紀錄的 execution_root 改為空字串，使 Get-RunSourceState 的必要參數繫結必然失敗，不改動正式程式。
+        $recordData = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json -AsHashtable
+        $recordData['execution_root'] = ''
+        Write-TestUtf8 -Path $start.Json.record_path -Text ($recordData | ConvertTo-Json -Depth 10)
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
+        Assert-Equal 1 $end.Code $end.Stderr
+        Assert-Equal $true $end.Json.source_changed
+        Assert-Equal 'source-changed' $end.Json.failure_reason
+        Assert-True ($end.Stderr -match '來源狀態計算失敗') ('stderr 缺少診斷行：' + $end.Stderr)
+        $record = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$record.source_state_error)) 'source_state_error 不應為空'
+        Assert-True ($null -ne $record.ended_utc -and $null -eq $record.source_state_end) '紀錄應完整寫出且 source_state_end 為 null'
+        Assert-Equal 'failed' $record.result
+    }
     Test-Case 'CR-END-BASELINE 派遣檔 targets 在 Start 後改指別處時，仍以 Start 的 targets 核對來源' {
         Remove-Runs
         Write-TestUtf8 -Path $target -Text 'v1'
@@ -322,7 +342,10 @@ try {
         $holder = New-Object System.IO.FileStream -ArgumentList @($lockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
         try {
             $common = Join-Path $scriptsRoot 'codex-run\00-common.ps1'
-            $output = @(& pwsh -NoProfile -Command ". '$common'; try { `$null = Enter-RunFileLock -Path '$lockPath' -TimeoutSeconds 1; 'acquired' } catch { `$_.Exception.Data['Code'] + ':' + `$_.Exception.Data['ExitCode'] }" 2>&1)
+            # 路徑以參數傳入暫存腳本，不經字串內插，路徑含單引號等字元時也不受影響。
+            $probeScript = Join-Path $root 'lock-probe.ps1'
+            Write-TestUtf8 -Path $probeScript -Text ("param([string]`$Common, [string]`$LockPath)`n. `$Common`ntry { `$null = Enter-RunFileLock -Path `$LockPath -TimeoutSeconds 1; 'acquired' } catch { `$_.Exception.Data['Code'] + ':' + `$_.Exception.Data['ExitCode'] }`n")
+            $output = @(& pwsh -NoProfile -File $probeScript -Common $common -LockPath $lockPath 2>&1)
             Assert-Equal 'RunLockTimeout:1' (($output | ForEach-Object { [string]$_ }) -join '')
         }
         finally { $holder.Dispose() }

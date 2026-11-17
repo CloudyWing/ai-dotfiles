@@ -301,8 +301,11 @@ function Get-NextStepSummary {
     param([AllowEmptyCollection()][string[]]$Parts)
 
     foreach ($part in $Parts) {
+        # 判定行只接受新格式「[派工] 」與舊格式「[派工判定: 」開頭，一般敘述即使以「派工判定」起頭也不略過。
+        $lead = $part -replace '^\s*(?:\d+[.、)）]\s*)?', ''
+        if ($lead -match '^`?\[(?:派工\] |派工判定: )') { continue }
         $value = $part -replace '^[`\[\s]+', '' -replace '^\d+[.、)）]\s*', ''
-        if ($value -match '^(Developer 派工|派工判定|派工\]|P\d+[=＝:：])') { continue }
+        if ($value -match '^(Developer 派工|P\d+[=＝:：])') { continue }
         $value = ($value -replace '\s+', ' ').Trim()
         if (-not $value) { continue }
         $end = $value.IndexOf('。')

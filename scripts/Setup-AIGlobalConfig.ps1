@@ -102,12 +102,6 @@ foreach ($dir in @($claudeDir, $codexDir, $agentsDir)) {
     if (-not $Check -and !(Test-Path $dir)) { New-Item $dir -ItemType Directory -Force | Out-Null }
 }
 
-# 載入共用模組（只定義函式）：-Check 與執行模式的檔位設定檔段都使用，須在版本判斷之後載入。
-. (Join-Path $PSScriptRoot 'codex-run\45-profile-sync.ps1')
-. (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
-. (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
-. (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
-
 # 5. 連結清單：增減工具改這張表即可。Source 為 configRoot 下相對路徑
 $desired = @(
     @{ Link = "$claudeDir\CLAUDE.md"; Source = "instructions.md" }
@@ -342,6 +336,11 @@ function Get-BrokenConfigLink {
 
 # -Check：唯讀檢查，用上面的預期狀態比對現況後結束，不進入下方任何會改動系統的步驟。
 if ($Check) {
+    # 共用模組（只定義函式）：須在版本判斷之後載入；執行模式在步驟 12 的檔位設定檔段才載入。
+    . (Join-Path $PSScriptRoot 'codex-run\45-profile-sync.ps1')
+    . (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
+    . (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
+    . (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
     . (Join-Path $PSScriptRoot 'lib\setup-check.ps1')
     $checkExitCode = Invoke-SetupCheck -Expected @{
         ConfigRoot        = $configRoot
@@ -592,6 +591,12 @@ else {
         }
     }
 }
+
+# 載入共用模組（只定義函式）：須在版本判斷之後載入。
+. (Join-Path $PSScriptRoot 'codex-run\45-profile-sync.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
+. (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
 
 # 檔位設定檔：登錄表是唯一來源，產生檔放在來源 checkout 的 scripts\codex-profiles（由 pre-commit 產生並進版控）。
 # Setup 把各派工帳號目錄的檔位檔建成指向產生檔的 Symbolic Link，並比對現況。

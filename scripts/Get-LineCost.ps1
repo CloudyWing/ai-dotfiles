@@ -53,7 +53,7 @@ $ErrorActionPreference = 'Stop'
 function Get-PropertyValue {
     [CmdletBinding()]
     param(
-        [AllowNull()]$Object,
+        [AllowNull()][object]$Object,
         [Parameter(Mandatory)][string]$Name
     )
     if ($null -eq $Object) { return $null }
@@ -64,7 +64,7 @@ function Get-PropertyValue {
 
 function ConvertTo-NullableLong {
     [CmdletBinding()]
-    param([AllowNull()]$Value)
+    param([AllowNull()][object]$Value)
     if ($null -eq $Value) { return $null }
     if ($Value -is [int] -or $Value -is [long]) { return [long]$Value }
     return $null
@@ -135,7 +135,7 @@ function Read-LedgerRun {
             $index = $pair.IndexOf('=')
             if ($index -gt 0) { $note[$pair.Substring(0, $index)] = $pair.Substring($index + 1) }
         }
-        $number = { param($Cell) if ($Cell -match '^\d+$') { [long]$Cell } else { $null } }
+        $number = { param([string]$Cell) if ($Cell -match '^\d+$') { [long]$Cell } else { $null } }
         $duration = if ($cells[9] -match '^\d+(\.\d+)?$') { [double]$cells[9] } else { $null }
         $runs.Add([ordered]@{
             source = 'ledger'
@@ -181,7 +181,7 @@ function Get-ClaudeCost {
     $values = @{}
     foreach ($line in $output) { if ("$line" -match '^([^=]+)=(.*)$') { $values[$Matches[1]] = $Matches[2] } }
     $group = {
-        param($Prefix)
+        param([string]$Prefix)
         $result = [ordered]@{ status = $values["${Prefix}_status"] }
         foreach ($name in @('input_tokens', 'cache_write_tokens', 'cache_read_tokens', 'output_tokens')) {
             $text = $values["${Prefix}_$name"]

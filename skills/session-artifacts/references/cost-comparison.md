@@ -1,18 +1,18 @@
 # 降本成效比對方法
 
-本檔定義如何比較收斂規則調整前後的審查循環輪數與成本，用來判斷共同收斂契約的調整是否減少修正加複審的輪數。資料來源 `cost-ledger.md` 的列格式見 `../SKILL.md`「需求級成本累計」。
+本檔定義如何比較收斂規則調整前後的審查循環輪數與成本，用來判斷共同收斂契約的調整是否減少修正加複審的輪數。資料來源是 `scripts/Get-LineCost.ps1` 對每條線輸出的 JSON（schema `ai-agents.line-cost.v1`），欄位見該腳本檔首的說明。
 
 ## 適用範圍
 
-- M1、M1u 計入 Codex 派遣的 `事件` 列與 Claude subagent 路徑的 `事件（手寫）` 列中 `cycle_role=review` 者。
-- M2、M3 只計 Codex 派遣的 `事件` 列。`事件（手寫）` 列另列一行 Claude subagent token 合計，不併入 M2 的分子分母，因為兩者計量單位不同。
-- M4 只計 `事件（手寫）` 列中 `cycle_role=fix` 者，與 M2 分開呈現。
+- 計算單位是 `Get-LineCost.ps1` 輸出的 `codex.runs` 各列。`cycle_id` 不是 null 的列屬循環內的 run，Codex 端的循環 run 都是審查。
+- M1、M1u 計入 `cycle_id` 不是 null 的全部 run。M2 只計 `platform` 為 `codex` 的 run，M3 以 `platform` 為 `codex` 的 run 為母體。
+- Claude 審查者的執行紀錄沒有 token 用量，不計入 M2、M3；其 `cycle_id` 為 null，也不進 M1、M1u。
 
 ## 名詞
 
-- 審查循環：同一 `lineSlug` 下同一 `cycle_id` 的全部 `cycle_role=review` 列。
-- 實作循環：同一 `lineSlug` 下同一 `cycle_id` 的全部 `cycle_role=fix` 列。
-- run 的 input：usage 的 `input_tokens`，含 cached 部分。
+- 審查循環：同一 `lineSlug` 下同一 `cycle_id` 的全部 run。
+- run 的 input：輸出列的 `input_tokens`，含 cached 部分。
+- 有 usage：`input_tokens` 不是 null，且 `usage_basis` 不是 `cumulative-no-anchor`。
 
 ## 指標
 
@@ -20,24 +20,23 @@
 | --- | --- |
 | M1 | 每個審查循環的輪數，取該循環 `cycle_round` 的最大值；各循環取中位數。輪數是流程事實，納入全部列，不要求有 usage。此為主要口徑 |
 | M1u | 每個審查循環中有 usage 的不重複輪次數；各循環取中位數。只作輔助，用來檢查 M1 與 M2 的樣本是否一致 |
-| M2 | 第 2 輪以上占 Reviewer input 的比例，等於有 usage 的 Codex 審查 run 中 `cycle_round>=2` 的 input 總和除以全部 input 總和，跨循環合併；另列各循環個別比例 |
-| M3 | usage 覆蓋率，等於有 usage 的 `事件` 列數除以 `事件` 列數，新舊兩組分別列出 |
-| M4 | 每個實作循環的輪數，取該循環 `cycle_round` 的最大值；各循環取中位數。基準期的實作由 Codex Developer 承接，輪次定義與 Claude subagent 列不可比，M4 只列新資料，不與舊組比較 |
+| M2 | 第 2 輪以上占 Reviewer input 的比例，等於有 usage 的 Codex 循環 run 中 `cycle_round>=2` 的 input 總和除以全部 input 總和，跨循環合併；另列各循環個別比例 |
+| M3 | usage 覆蓋率，等於有 usage 的 Codex run 數除以 Codex run 數，新舊兩組分別列出 |
 
 ## 新資料算法
 
-1. 讀取各線 `report\<lineSlug>\cost-ledger.md` 中 `<!-- cost-ledger.v2 -->` 標記之後的表格，取 `列類型` 為 `事件` 或 `事件（手寫）` 的列，以 `lineSlug` 加 `runId` 去重。
-2. 篩選 `cycle_id` 不是 `-` 的列計算 M1、M1u、M2、M4。`cycle_id` 為 `-` 的 `事件` 列計入 M3 分母，並在結果中列為「未標記」。
-3. `input` 欄為 `-` 的列視為無 usage。
-4. 核對數字時，取該 run 事件流最後一筆 `turn.completed.usage`，續行 run 再減去錨點 run 的同一值（口徑見「口徑說明」）。備註 `usage_basis=cumulative-no-anchor` 的續行列是累計值，計入 M2 前先標出。事件流路徑取 RunRecord 的 `event_stream_path`；該路徑已不存在時，把它相對於 RunRecord `execution_root` 的部分接到 `source_root`，即 Cleanup 保存的副本。
-5. 依「指標」計算 M1、M1u、M2、M3、M4。
+1. 對 `report\` 下每個 `lineSlug` 目錄執行 `Get-LineCost.ps1`，取輸出的 `codex.runs`。同線以 `run_id` 去重已由該腳本完成。
+2. 篩選 `cycle_id` 不是 null 的列計算 M1、M1u、M2。`cycle_id` 為 null 的 Codex run 計入 M3 分母，並在結果中列為「未標記」。
+3. `input_tokens` 為 null 的列視為無 usage。
+4. 核對數字時，取該 run 事件流最後一筆 `turn.completed.usage`，續行 run 再減去錨點 run 的同一值（口徑見「口徑說明」）。`usage_basis` 為 `cumulative-no-anchor` 的續行列是累計值，`Get-LineCost.ps1` 不把它計入合計，M2 與 M3 同樣排除並標出。事件流路徑取 RunRecord 的 `event_stream_path`；該路徑已不存在時，把它相對於 RunRecord `execution_root` 的部分接到 `source_root`，即 Cleanup 保存的副本。
+5. 依「指標」計算 M1、M1u、M2、M3。
 
-下列程式區塊承載上述算法，`-LedgerRoot` 為含 `report\` 的 `.local\ai-sessions` 目錄。可存成暫存檔執行，例如 `pwsh -NoProfile -File <暫存檔> -LedgerRoot '<work-root>\.local\ai-sessions'`。
+下列程式區塊承載上述算法，`-WorkRoot` 為線所在的 work-root，`-LineCostScript` 為 `Get-LineCost.ps1` 的路徑。可存成暫存檔執行，例如 `pwsh -NoProfile -File <暫存檔> -WorkRoot '<work-root>' -LineCostScript '<sourceRoot>\scripts\Get-LineCost.ps1'`。
 
 <!-- new-data-snippet -->
 
 ```powershell
-param([Parameter(Mandatory)][string]$LedgerRoot)
+param([Parameter(Mandatory)][string]$WorkRoot, [Parameter(Mandatory)][string]$LineCostScript)
 $ErrorActionPreference = 'Stop'
 function Get-Median([double[]]$Value) {
     $s = @($Value | Sort-Object)
@@ -51,26 +50,26 @@ function Get-Sum([object[]]$Row) {
     foreach ($r in $Row) { $total += [double]$r.Input }
     return $total
 }
-$ledgers = @(Get-ChildItem -Path (Join-Path $LedgerRoot 'report') -Filter 'cost-ledger.md' -Recurse -File)
-$rows = foreach ($f in $ledgers) {
-    $inV2 = $false
-    foreach ($line in Get-Content -LiteralPath $f.FullName -Encoding UTF8) {
-        if ($line -match '<!-- cost-ledger\.v2 -->') { $inV2 = $true; continue }
-        if (-not $inV2 -or $line -notmatch '^\| ') { continue }
-        $c = @(($line.Trim().Trim('|') -split '(?<!\\)\|') | ForEach-Object { $_.Trim() })
-        if ($c.Count -lt 14 -or $c[1] -notin @('事件', '事件（手寫）')) { continue }
-        [pscustomobject]@{ Line = $f.Directory.Name; Kind = $c[1]; RunId = $c[4]; CycleId = $c[5]; Round = $c[6]; Role = $c[7]; Input = $c[10]; Note = $c[13] }
+$reportRoot = Join-Path (Join-Path (Join-Path $WorkRoot '.local') 'ai-sessions') 'report'
+$rows = foreach ($directory in @(Get-ChildItem -LiteralPath $reportRoot -Directory)) {
+    $json = @(& pwsh -NoProfile -File $LineCostScript -WorkRoot $WorkRoot -LineSlug $directory.Name 2>$null)
+    if ($LASTEXITCODE -ne 0) { continue }
+    foreach ($run in @(($json -join "`n" | ConvertFrom-Json).codex.runs)) {
+        [pscustomobject]@{
+            Line = $directory.Name; Platform = $run.platform; RunId = $run.run_id; CycleId = $run.cycle_id
+            Round = $run.cycle_round; Input = $run.input_tokens; Basis = $run.usage_basis
+            HasUsage = ($null -ne $run.input_tokens -and $run.usage_basis -cne 'cumulative-no-anchor')
+        }
     }
 }
-$unique = @($rows | Sort-Object Line, RunId -Unique)
-$review = @($unique | Where-Object { $_.Role -eq 'review' -and $_.CycleId -ne '-' })
+$cycle = @($rows | Where-Object { $null -ne $_.CycleId })
 $m1 = @(); $m1u = @()
-foreach ($g in @($review | Group-Object Line, CycleId)) {
+foreach ($g in @($cycle | Group-Object Line, CycleId)) {
     $m1 += (@($g.Group | ForEach-Object { [int]$_.Round }) | Measure-Object -Maximum).Maximum
-    $u = @($g.Group | Where-Object { $_.Input -ne '-' } | ForEach-Object { [int]$_.Round } | Sort-Object -Unique).Count
+    $u = @($g.Group | Where-Object { $_.HasUsage } | ForEach-Object { [int]$_.Round } | Sort-Object -Unique).Count
     if ($u -gt 0) { $m1u += $u }
 }
-$codex = @($review | Where-Object { $_.Kind -eq '事件' -and $_.Input -ne '-' })
+$codex = @($cycle | Where-Object { $_.Platform -ceq 'codex' -and $_.HasUsage })
 $all = Get-Sum $codex
 $r2 = Get-Sum @($codex | Where-Object { [int]$_.Round -ge 2 })
 "M1 median = $(Get-Median $m1) over $($m1 -join ',')"
@@ -81,20 +80,14 @@ foreach ($g in @($codex | Group-Object Line, CycleId)) {
     $t2 = Get-Sum @($g.Group | Where-Object { [int]$_.Round -ge 2 })
     "M2 $($g.Name) = $([math]::Round($t2 / $t * 100, 2))%"
 }
-$noAnchor = @($codex | Where-Object { $_.Note -match 'usage_basis=cumulative-no-anchor' })
-"M2 含累計口徑的續行列 = $($noAnchor.Count)（runId：$(@($noAnchor | ForEach-Object { $_.RunId }) -join ',')）"
-$events = @($unique | Where-Object { $_.Kind -eq '事件' })
-$unmarked = @($events | Where-Object { $_.CycleId -eq '-' }).Count
-"M3 = $(@($events | Where-Object { $_.Input -ne '-' }).Count)/$($events.Count)（未標記 $unmarked 列）"
-$fix = @($unique | Where-Object { $_.Kind -eq '事件（手寫）' -and $_.Role -eq 'fix' -and $_.CycleId -ne '-' })
-$m4 = @()
-foreach ($g in @($fix | Group-Object Line, CycleId)) { $m4 += (@($g.Group | ForEach-Object { [int]$_.Round }) | Measure-Object -Maximum).Maximum }
-"M4 median = $(Get-Median $m4) over $($m4 -join ',')"
-$claude = @($unique | Where-Object { $_.Kind -eq '事件（手寫）' -and $_.Input -ne '-' })
-"Claude subagent token 合計 = $(Get-Sum $claude)（不併入 M2）"
+$noAnchor = @($rows | Where-Object { $_.Basis -ceq 'cumulative-no-anchor' })
+"M2 排除的累計口徑續行列 = $($noAnchor.Count)（runId：$(@($noAnchor | ForEach-Object { $_.RunId }) -join ',')）"
+$codexRuns = @($rows | Where-Object { $_.Platform -ceq 'codex' })
+$unmarked = @($codexRuns | Where-Object { $null -eq $_.CycleId }).Count
+"M3 = $(@($codexRuns | Where-Object { $_.HasUsage }).Count)/$($codexRuns.Count)（未標記 $unmarked 列）"
 ```
 
-M3 的分母含 `cycle_id` 為 `-` 的 `事件` 列。
+M3 的分母含 `cycle_id` 為 null 的 Codex run。
 
 ## 舊資料（基準）算法
 
@@ -104,7 +97,7 @@ M3 的分母含 `cycle_id` 為 `-` 的 `事件` 列。
 
 - 每組至少 3 個審查循環才下結論，不足時只列數字並標「樣本不足」。
 - 兩組的 M3 差距超過 20 個百分點時，在結論旁標示 usage 覆蓋不對等。
-- 新組的 `事件（手寫）` 列另列 Claude subagent token 合計，與 M2 分開呈現。
+- Claude 用量取自 `Get-LineCost.ps1` 輸出的 `claude` 欄位（須以 `-ClaudeSessionId` 或 `-ClaudeTranscriptPath` 指定），另列一行，與 M2 分開呈現，不併入 M2。
 - M2 的母體是基準鏈的審查 run，與成本分析「Reviewer 有 77% 的 input 花在第 2 輪以上」的母體（全部 Reviewer run）不同，兩個數字不互相比較。
 
 ## 基準鏈
