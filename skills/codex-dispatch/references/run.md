@@ -1,6 +1,6 @@
 # 單次執行入口（Invoke-CodexRun）
 
-選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，目前只適用 `Reviewer`。`executor.entry` 為其他值時依 `start.md`；`Frontend Reviewer` 與 `Contract Auditor` 不論 `executor.entry` 一律依 `start.md`。
+選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用 `Reviewer`、`Frontend Reviewer` 與 `Contract Auditor`。`executor.entry` 為其他值時依 `start.md`。
 
 一次發動是一個 `codex exec` 行程，直接在線工作樹執行。命令在 MXC 沙盒內只能讀取工作目錄、`~\.ai-agents` 與線的報告目錄，只能寫入該次執行的輸出目錄，讀不到 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`。失敗時整筆重跑，沒有續行。
 
@@ -10,9 +10,9 @@
 
 1. 寫派遣檔。複製 `templates/dispatch/run-order.md`，存為 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/run-order-<dispatchSlug>.md`，填寫 `## 派遣設定` 的 JSON 區塊與 `## 任務`、`## 驗收條件`、`## 邊界`、`## 回報必備欄位` 四個章節。
    - `profile` 填選派入口輸出的 `executor.profile`。
-   - `role_file` 填角色規則檔的絕對路徑，審查為 `~\.ai-agents\agents\codex\reviewer.toml` 展開後的路徑。
+   - `role_file` 填角色規則檔的絕對路徑，審查依角色為 `~\.ai-agents\agents\codex\reviewer.toml`、`frontend-reviewer.toml` 或 `contract-auditor.toml` 展開後的路徑。
    - `execution_root` 填線工作樹根目錄。`report_line_root` 填 `<work-root>/.local/ai-sessions/report/<lineSlug>`，該目錄必須已存在。
-   - `report_name` 填報告檔名，只含檔名，審查填 `review-report.md`。
+   - `report_name` 填報告檔名，只含檔名，依角色為 `review-report.md`、`frontend-reviewer-report.md` 或 `contract-auditor-report.md`。
    - `targets` 列出目標物件的絕對路徑，目錄以結尾反斜線標示。`required_reads` 列出必讀檔，例如 `design.md`、`requirement-summary.md`、結案報告與前輪審查報告。
    - 路徑不得指向 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`，也不得位於工作目錄、`~\.ai-agents` 與線的報告目錄之外。`execution_root`、`report_line_root` 與 `report_name` 不得含 `&`、`|`、`<`、`>`、`^`、`%` 與雙引號。
    - `## 驗收條件` 逐條寫出可判定的條件。需要審查者核對的既有證據，把命令原文與原始輸出檔的路徑寫進該條，並把輸出檔列入 `required_reads`。
@@ -95,7 +95,7 @@
 收下當下先執行下列兩步，不論審查結論為何。
 
 1. 把報告 `## 例外回報` 節的條目併入同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。
-2. 把報告複製為同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/review-report.md`，覆寫既有檔。同線後續 Session、需求意圖驗收與下一輪派遣檔的 `required_reads` 都使用這個路徑。
+2. 把報告複製為同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/<report_name>`，覆寫既有檔。同線後續 Session、需求意圖驗收與下一輪派遣檔的 `required_reads` 都使用這個路徑。
 
 再依報告「總覽」的結論行與 manifest `findings` 決定下一站。結論行與 manifest 不一致時以 manifest 為準，並把不一致記入回收紀錄。
 
@@ -126,4 +126,4 @@
 
 ## 切回現行入口
 
-把登錄表 `codex-review` 的 `entry` 改回 `scripts/Invoke-CodexDispatch.ps1` 後，選派結果即指向現行入口。現行入口的 Collect 檢查的是舊格式的審查報告，`reviewer.toml` 目前只產出新格式，切回時需一併還原 `reviewer.toml` 的報告格式。
+把登錄表 `codex-review` 的 `entry` 改回 `scripts/Invoke-CodexDispatch.ps1` 後，選派結果即指向現行入口。現行入口的 Collect 檢查的是舊格式的審查報告，`reviewer.toml`、`frontend-reviewer.toml` 與 `contract-auditor.toml` 目前只產出新格式，切回時需一併還原三份的報告格式。

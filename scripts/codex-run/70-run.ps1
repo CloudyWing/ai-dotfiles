@@ -27,7 +27,7 @@ function New-RunPrompt {
         ('報告檔: ' + $ReportPath)
         if (-not [string]::IsNullOrWhiteSpace($ReviewerLine)) { '審查者: ' + $ReviewerLine }
         ''
-        ('請以 Reviewer 身分，先完整讀取角色規則檔 `' + $Order.role_file + '`，再讀取派遣檔 `' + $Order.dispatch_file_path + '` 依其內容執行。')
+        ('請依角色規則檔 `' + $Order.role_file + '` 定義的審查角色，先完整讀取該檔，再讀取派遣檔 `' + $Order.dispatch_file_path + '` 依其內容執行。')
     )
     return (($lines -join "`n") + "`n")
 }

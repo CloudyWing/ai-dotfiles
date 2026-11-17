@@ -62,9 +62,9 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 - 「審查者不得是改寫者」與本表並存。順序 1 已使 Claude 改寫的規則檔由 Codex 審查。
 - `Frontend Reviewer` 與 `Contract Auditor` 維持 Codex，Codex 離線時的處置同 `Reviewer`。
 - Codex `Reviewer` 的檔位固定為 `review`，不依檔數或規則檔與否分層。此判定屬規則決定，不需使用者在當下 Session 指定。
-- Codex 不可用時（判定依 `rules/claude/30-dispatch.md`「離線改派」，以服務端拒絕為準），優先條件無法滿足，由選派入口選出的同家族執行者審查，目前為 Sonnet subagent；規則檔機制條款同樣適用。協調者直接依選派結果派出，不等待 Codex 恢復。這是選派的正常結果，不追加 exceptions。選派入口照常回傳 `selected`，並以 `unmetPreferences` 與判定行標示同家族審查。審查流程、派遣檔與報告檔名 `review-report.md` 不因審查者而異，報告 `## 總覽` 第一行寫明審查者，發動方式見 `workflow-orchestration` skill「審查的發動」。
+- Codex 不可用時（判定依 `rules/claude/30-dispatch.md`「離線改派」，以服務端拒絕為準），優先條件無法滿足，由選派入口選出的同家族執行者審查，目前為 Sonnet subagent；規則檔機制條款同樣適用。協調者直接依選派結果派出，不等待 Codex 恢復。這是選派的正常結果，不追加 exceptions。選派入口照常回傳 `selected`，並以 `unmetPreferences` 與判定行標示同家族審查。審查流程、派遣檔與報告檔名（派遣檔的 `report_name`）不因審查者而異，報告 `## 總覽` 第一行寫明審查者，發動方式見 `workflow-orchestration` skill「審查的發動」。
 
-`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動。`Frontend Reviewer` 與 `Contract Auditor` 的同線並行上限為 2，並行判定與 PID 三鍵檢查由 `codex-dispatch` skill 執行；經 `scripts\Invoke-CodexRun.ps1` 發動的 `Reviewer` 不設並行上限。`Frontend Reviewer` 與 `Contract Auditor` 一律經 `scripts\Invoke-CodexDispatch.ps1` 發動，不依選派入口輸出的 `executor.entry`。
+`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，經 `scripts\Invoke-CodexRun.ps1` 發動者不設並行上限。
 
 Reviewer 回收後，設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。Reviewer 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`、同線 `requirement-summary.md`、Developer 結案報告（若有）與前輪報告，不自行修改程式碼、執行建置或測試；第 4 欄的檔案清單與回收程序見 `workflow-orchestration` skill `references/review-procedures.md`「Reviewer 派遣單與回收」。
 

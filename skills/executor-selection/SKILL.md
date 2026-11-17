@@ -28,7 +28,7 @@ policy.allow_implicit_invocation: true
 | `test` | 煙霧驗證的取證，例如 `integration-verify`、`browser-smoke`、`desktop-smoke`、`api-smoke` 的操作與擷取 |
 | `generate` | 影像產生 |
 | `factcheck` | 事實校閱、事實查核與上網查證 |
-| `review` | 審查，含 `Reviewer`、`Frontend Reviewer`、`Contract Auditor`。`executor.entry` 只適用 `Reviewer`；`Frontend Reviewer` 與 `Contract Auditor` 一律經 `scripts/Invoke-CodexDispatch.ps1` 發動 |
+| `review` | 審查，含 `Reviewer`、`Frontend Reviewer`、`Contract Auditor`。三者依 `executor.entry` 發動 |
 | `advise` | 顧問諮詢（高風險決策的跨家族交叉檢查） |
 
 ### 旗標

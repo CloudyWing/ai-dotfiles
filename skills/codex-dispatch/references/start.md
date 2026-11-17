@@ -6,7 +6,7 @@
 
 主 Agent 依 F1 判準判定要派工後載入本 Skill。執行端角色依角色規則檔引用本 Skill 的共用作業節時，只讀取被引用的節。
 
-選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 且角色為 `Reviewer` 時改讀 `run.md`；`Frontend Reviewer` 與 `Contract Auditor` 不論 `executor.entry` 一律依本檔。本檔其餘流程適用於經 `scripts/Invoke-CodexDispatch.ps1` 發動的派遣。
+選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時改讀 `run.md`。本檔其餘流程適用於經 `scripts/Invoke-CodexDispatch.ps1` 發動的派遣。
 
 | 情境 | 入口 | 必要輸入 | 提供方式 |
 | --- | --- | --- | --- |

@@ -195,6 +195,20 @@ try {
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $reportRoot 'runs'))) 'report_line_root 下出現 runs'
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $exec 'runs'))) 'execution_root 下出現 runs'
     }
+    Test-Case 'ORDER-ROLES 三個審查角色的派遣檔都通過解析與啟動前檢查，角色規則檔以輸出目錄與 manifest 為契約' {
+        $agentsDirectory = Join-Path (Split-Path -Parent $scriptsRoot) 'agents\codex'
+        foreach ($role in @(@('reviewer', 'review-report.md'), @('frontend-reviewer', 'frontend-reviewer-report.md'), @('contract-auditor', 'contract-auditor-report.md'))) {
+            $roleCopy = Join-Path $aiRoot ($role[0] + '.toml')
+            Copy-Item -LiteralPath (Join-Path $agentsDirectory ($role[0] + '.toml')) -Destination $roleCopy -Force
+            $order = Read-RunDispatchFile -Path (Write-OrderFile -Override @{ role_file = $roleCopy; report_name = $role[1] } -Name ($role[0] + '.md'))
+            Assert-Equal $role[1] $order.report_name
+            Test-RunPreStart -Order $order -AiAgentsRoot $aiRoot
+            $toml = [IO.File]::ReadAllText($roleCopy)
+            Assert-True ($toml.Contains('輸出目錄')) ($role[0] + '.toml 未宣告寫入範圍為輸出目錄')
+            Assert-True ($toml.Contains('Finding manifest')) ($role[0] + '.toml 未宣告 Finding manifest')
+            Assert-True ($toml.Contains('報告檔:')) ($role[0] + '.toml 未宣告報告檔落點')
+        }
+    }
     Test-Case 'ORDER-NO-LEGACY-REFERENCE 新模組不引用現行模組' {
         $hits = @(Get-ChildItem -LiteralPath $moduleRoot -File | Select-String -Pattern 'scripts/dispatch|dispatch-evidence|common-runtime')
         Assert-Equal 0 ($hits.Count) ('發現引用：' + (@($hits | ForEach-Object { $_.Path + ':' + $_.LineNumber }) -join '; '))

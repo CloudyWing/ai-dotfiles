@@ -75,14 +75,14 @@ Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢
 5. 文件同步。`design.md` §5「使用者文件」子節列有受影響文件時，依 `references/doc-sync.md` 執行一致性檢查、事實修正、最終編輯與事實核對，結果寫入 `report/<lineSlug>/doc-sync-report.md`；子節為「無」時記錄理由後直接進入下一步。
 6. 命中 Reviewer 必發清單時，依 `rules/claude/40-workflow.md` 審查配對決定審查者並直接派出，不詢問使用者。發動方式依本 Skill「審查的發動」，Codex 與 Claude 審查者共用同一份派遣檔。未命中時記錄一句不發理由，直接進入 Analyst 需求意圖驗收。
 7. 審查者以純技術原因退回時（存在未閉合的 `Critical` 或 `Major`），依 `references/claude-implement.md`「審查與修正」由同一執行者重新派生修正；執行者需要更換時依 `references/implement-routing.md`「未完成與轉移」處理。修正完成後回到 Developer 回收與審查判定，修正回收並覆核後立即由 `generate-commit` 步驟 4 建立 `fixup!` commit；修正改變了行為、術語或檔名時，對受影響段落重跑第 5 步。審查結果只剩 `Minor` 時不退回，依共同收斂契約順序 1 批次修正或記為候選後進入第 8 步。
-8. 審查者收下時進入 Analyst 需求意圖驗收。Analyst 讀取 `implement-closure-report.md`、`doc-sync-report.md`（若有）與審查者的報告 `review-report.md`。需求意圖驗收完成後輸出 Workflow 結案報告，報告列出文件同步結果（受影響文件與 `doc-sync-report.md` 路徑，無影響時列理由）。
+8. 審查者收下時進入 Analyst 需求意圖驗收。Analyst 讀取 `implement-closure-report.md`、`doc-sync-report.md`（若有）與審查者的報告（同線 `<report_name>`，檔名見 `codex-dispatch` skill `references/run.md`）。需求意圖驗收完成後輸出 Workflow 結案報告，報告列出文件同步結果（受影響文件與 `doc-sync-report.md` 路徑，無影響時列理由）。
 9. 結案報告完成後，確認本線成果都已成為 commit（Phase commit 與其後的 `fixup!` commit），完成報告同步。之後依 `git-workflow` 註記模式進入整理與落地。線分支的整理與符合 `rules/claude/20-coordination.md`「授權分類」落地條件的落地不需授權；`trunk` 於 push 前完成審查與整理，`release-flow` 於合併前流程整理；push 與發佈待使用者當輪授權。每個 Phase 一筆 commit 的最終形態由整理收合 `fixup!` 達成。Accept 之後對尚未推送的 Phase commit 的修正，由 `generate-commit` 步驟 4 建立 `fixup!` commit。
 
 第 1、2 步是 Design 階段的收尾，第 3 至 5 步屬 Implement，第 6、7 步屬 Review，第 8、9 步屬 Accept。Phase commit 回收在第 3 步收下後執行。Accept 階段涵蓋 Analyst 需求意圖驗收、Workflow 結案報告，以及依註記模式的整理與落地。
 
 ## 審查的發動
 
-審查者由選派入口以 `type=review` 選出。Codex 與 Claude 審查者使用同一份派遣檔、同一份角色規則檔（`agents/codex/reviewer.toml`）與同一套回收步驟，報告一律是同線 `review-report.md`，報告 `## 總覽` 第一行寫明審查者。
+審查者由選派入口以 `type=review` 選出。Codex 與 Claude 審查者使用同一份派遣檔、同一份角色規則檔與同一套回收步驟，報告是同線 `<report_name>`，報告 `## 總覽` 第一行寫明審查者。
 
 1. 撰寫派遣檔 `handoff/<lineSlug>/run-order-<dispatchSlug>.md`，欄位與章節依 `codex-dispatch` skill `references/run.md`「發動」，循環標示見 `references/review-procedures.md`「循環標示與第 2 輪以上的 Reviewer 派遣單」。
 2. 依選出的執行者發動。

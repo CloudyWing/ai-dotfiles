@@ -775,6 +775,26 @@ try {
         Assert-Equal 'claude' $run.Document.fallback.selection.executor.platform
         Assert-Equal 0 ((Get-Call -Environment $e34).Count)
     }
+    Test-Case 'E2E-ROLES Frontend Reviewer 與 Contract Auditor 以同一入口發動：報告依 report_name 落在輸出目錄且通過 manifest 檢查，prompt 指向各自的角色規則檔' {
+        foreach ($role in @(@('frontend-reviewer', 'frontend-reviewer-report.md'), @('contract-auditor', 'contract-auditor-report.md'))) {
+            $envRole = New-EntryEnvironment -Name ('role-' + $role[0])
+            $roleFile = Join-Path $envRole.Exec ($role[0] + '.toml')
+            Copy-Item -LiteralPath (Join-Path $repoRoot ('agents\codex\' + $role[0] + '.toml')) -Destination $roleFile
+            Set-Scenario -Environment $envRole -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+            $orderRole = New-OrderFile -Environment $envRole -Slug ($role[0] + '-p1') -Override @{ role_file = $roleFile; report_name = $role[1] }
+            $runRole = Invoke-Entry -Environment $envRole -OrderPath $orderRole
+            Assert-Success $runRole
+            Assert-Equal 0 $runRole.ExitCode
+            Assert-Equal 'success' $runRole.Document.status
+            Assert-Equal $role[1] (Split-Path -Leaf $runRole.Document.final.report_path)
+            Assert-True (Test-Path -LiteralPath $runRole.Document.final.report_path) ($role[0] + ' 報告不存在')
+            Assert-Equal $true $runRole.Document.final.review_report_check.valid
+            $stdinRole = Get-Content -LiteralPath (Join-Path $envRole.Scenarios 'stdin-acct-a.txt') -Raw
+            Assert-True ($stdinRole.Contains($roleFile)) ('prompt 未指向角色規則檔：' + $stdinRole)
+            Assert-True ($stdinRole.Contains('報告檔: ' + $runRole.Document.final.report_path)) ('prompt 的報告檔行不符：' + $stdinRole)
+            Assert-True (-not $stdinRole.Contains('以 Reviewer 身分')) 'prompt 不應把所有角色寫成 Reviewer'
+        }
+    }
     Test-Case 'E2E-DISPATCH-UNTOUCHED 本線對現行入口目錄 scripts\dispatch 的變更只有登錄表' {
         $status = @(& git -C $repoRoot status --porcelain -- scripts/dispatch)
         if ($LASTEXITCODE -ne 0) { throw 'git status 失敗，無法核對 scripts\dispatch 的變更。' }
