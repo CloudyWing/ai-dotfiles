@@ -199,6 +199,64 @@ try {
             Assert-True (-not $underFs.Contains("'" + $underExec + "'=")) '位於執行目錄之下的 ExtraReadRoot 不應重複列出'
             $null = Assert-Throws -Code 'RunPermissionArgumentInvalid' -Script { Get-RunPermissionPlan -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ExtraReadRoot @('relative\images') }
         }
+        Test-Case 'PERM-BASELINE review、factcheck、generate 的權限計畫與 exec 引數與本線之前逐項相同' {
+            $baseline = [IO.File]::ReadAllText((Join-Path $PSScriptRoot 'codex-run-fixtures\permission-baseline.json'), (New-Object System.Text.UTF8Encoding -ArgumentList @($false)))
+            $ex = 'C:\work\exec'; $od = 'C:\work\report\runs\x-1'; $ai = 'C:\work\ai'; $rl = 'C:\work\report'
+            $actual = [ordered]@{}
+            $actual.plan = Get-RunPermissionPlan -ExecutionRoot $ex -OutputDirectory $od -AiAgentsRoot $ai -ReportLineRoot $rl
+            $actual.plan_extra = Get-RunPermissionPlan -ExecutionRoot $ex -OutputDirectory $od -AiAgentsRoot $ai -ReportLineRoot $rl -ExtraReadRoot @('C:\h\generated_images')
+            $actual.args = New-RunPermissionArgument -ExecutionRoot $ex -OutputDirectory $od -AiAgentsRoot $ai -ReportLineRoot $rl
+            $actual.exec = New-RunExecArgument -ExecutionRoot $ex -Profile review -OutputDirectory $od -LastMessagePath 'C:\work\lm.md' -IsGitRepository $true -AiAgentsRoot $ai -ReportLineRoot $rl
+            $actual.exec_search = New-RunExecArgument -ExecutionRoot $ex -Profile content -OutputDirectory $od -LastMessagePath 'C:\work\lm.md' -IsGitRepository $false -AiAgentsRoot $ai -ReportLineRoot $rl -Search -ExtraReadRoot @('C:\h\generated_images') -ModelOverride m-1
+            Assert-Equal (ConvertTo-Json -InputObject (ConvertFrom-Json -InputObject $baseline) -Depth 8) (ConvertTo-Json -InputObject (ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $actual -Depth 8)) -Depth 8)
+        }
+        Test-Case 'PERM-OUTPUT-ONLY 不開放工作目錄：可讀與可寫根目錄只有輸出目錄，--cd 指向輸出目錄，其他根目錄不出現' {
+            $plan = Get-RunPermissionPlan -ExecutionRoot $outDir -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ReportLineRoot $reportRoot -OutputOnly
+            Assert-Equal @($outDir) @($plan.read_roots)
+            Assert-Equal @($outDir) @($plan.write_roots)
+            $onlyArgs = @(New-RunPermissionArgument -ExecutionRoot $outDir -OutputDirectory $outDir -OutputOnly)
+            $onlyFs = [string]($onlyArgs | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
+            Assert-True $onlyFs.Contains("'" + $outDir + "'=`"write`"") '輸出目錄 write'
+            Assert-Equal 1 ([regex]::Matches($onlyFs, [regex]::Escape("'" + $outDir + "'")).Count) '輸出目錄只出現一次（不可有重複的 TOML 鍵）'
+            Assert-Equal 1 ([regex]::Matches($onlyFs, "'[^']+'=").Count) '只有輸出目錄一個路徑鍵'
+            Assert-True (-not $onlyFs.Contains($execRoot)) '不含工作目錄'
+            Assert-True (-not $onlyFs.Contains($aiRoot)) '不含 ai-agents'
+            Assert-True (-not $onlyFs.Contains($reportRoot)) '不含 report_line_root'
+            $last = Join-Path $root 'last.md'
+            $execArgs = @(New-RunExecArgument -ExecutionRoot $outDir -Profile advisor -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $false -OutputOnly)
+            Assert-Equal @('--cd', $outDir, '--profile', 'advisor') @($execArgs[0..3])
+            Assert-True ($execArgs -contains '--skip-git-repo-check') '輸出目錄不是 git 工作目錄'
+            Assert-Equal 0 (@($execArgs | Where-Object { $_ -ceq '--search' }).Count) '顧問不帶 --search'
+            Assert-True (-not (($execArgs -join ' ').Contains($execRoot))) 'exec 引數不含工作目錄'
+        }
+        Test-Case 'PERM-OUTPUT-ONLY-PROJECT-DOC OutputOnly 只開放輸出目錄往上到專案根目錄之間實際存在的 AGENTS 說明檔為 read，不開放執行根目錄或其所在目錄；專案根目錄以上的說明檔與無 .git 時都不列入' {
+            $proj = New-TestDirectory -Name 'projdoc'
+            $projRoot = Join-Path $proj 'work'
+            $outputDir = Join-Path $projRoot '.local\ai-sessions\report\line-a\runs\advise-1'
+            foreach ($dir in @((Join-Path $projRoot '.git'), $outputDir)) { $null = New-Item -ItemType Directory -Path $dir -Force }
+            Write-TestUtf8 -Path (Join-Path $projRoot 'AGENTS.md') -Text 'project-agents'
+            Write-TestUtf8 -Path (Join-Path $projRoot 'AGENTS.override.md') -Text 'project-override'
+            Write-TestUtf8 -Path (Join-Path $projRoot '.local\AGENTS.md') -Text 'mid-agents'
+            Write-TestUtf8 -Path (Join-Path $projRoot 'CLAUDE.md') -Text 'not-listed'
+            Write-TestUtf8 -Path (Join-Path $proj 'AGENTS.md') -Text 'above-project-root'
+            $plan = Get-RunPermissionPlan -ExecutionRoot $outputDir -OutputDirectory $outputDir -OutputOnly
+            Assert-Equal @($outputDir) @($plan.read_roots)
+            Assert-Equal @((Join-Path $projRoot '.local\AGENTS.md'), (Join-Path $projRoot 'AGENTS.override.md'), (Join-Path $projRoot 'AGENTS.md')) @($plan.read_files)
+            $fs = [string](@(New-RunPermissionArgument -ExecutionRoot $outputDir -OutputDirectory $outputDir -OutputOnly) | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
+            foreach ($file in @($plan.read_files)) { Assert-True $fs.Contains("'" + $file + "'=`"read`"") ($file + ' 應為 read 項') }
+            Assert-True (-not $fs.Contains("'" + $projRoot + "'=")) '不得有執行根目錄本身的路徑鍵'
+            Assert-True (-not $fs.Contains("'" + (Join-Path $projRoot '.local') + "'=")) '不得有說明檔所在目錄的路徑鍵'
+            Assert-True (-not $fs.Contains((Join-Path $proj 'AGENTS.md'))) '專案根目錄以上的說明檔不列入'
+            Assert-True (-not $fs.Contains('CLAUDE.md')) '非 AGENTS 說明檔不列入'
+            Assert-Equal (1 + 3) ([regex]::Matches($fs, "'[^']+'=").Count) '路徑鍵只有輸出目錄與三個說明檔'
+            $noGit = New-TestDirectory -Name 'projdoc-nogit'
+            $noGitOut = Join-Path $noGit 'work\runs\advise-1'
+            $null = New-Item -ItemType Directory -Path $noGitOut -Force
+            Write-TestUtf8 -Path (Join-Path $noGit 'work\AGENTS.md') -Text 'no-git-agents'
+            Assert-Equal 0 (@((Get-RunPermissionPlan -ExecutionRoot $noGitOut -OutputDirectory $noGitOut -OutputOnly).read_files).Count) '找不到 .git 時 Codex 只看工作目錄，不列入上層說明檔'
+            $plain = Get-RunPermissionPlan -ExecutionRoot $execRoot -OutputDirectory $outDir -AiAgentsRoot $aiRoot -ReportLineRoot $reportRoot
+            Assert-True ($null -eq $plain.PSObject.Properties['read_files']) '非 OutputOnly 的計畫不含 read_files'
+        }
         Test-Case 'EXEC-ARGS exec 引數順序與 --skip-git-repo-check' {
             $last = Join-Path $root 'last.md'
             $git = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile review -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot)

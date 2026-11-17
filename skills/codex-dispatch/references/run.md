@@ -1,8 +1,8 @@
 # 單次執行入口（Invoke-CodexRun）
 
-選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用審查（`Reviewer`、`Frontend Reviewer`、`Contract Auditor`）、事實校閱與影像產生。`executor.entry` 為其他值時依 `start.md`。
+選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用審查（`Reviewer`、`Frontend Reviewer`、`Contract Auditor`）、事實校閱、影像產生與顧問諮詢（`advise`）。`executor.entry` 為其他值時依 `start.md`。
 
-一次發動是一個 `codex exec` 行程，直接在線工作樹執行。命令在 MXC 沙盒內只能讀取工作目錄、`~\.ai-agents` 與線的報告目錄（影像產生另加選定帳號的 `generated_images`），只能寫入該次執行的輸出目錄，讀不到 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`。失敗時整筆重跑，沒有續行。
+一次發動是一個 `codex exec` 行程，直接在線工作樹執行。命令在 MXC 沙盒內只能讀取工作目錄、`~\.ai-agents` 與線的報告目錄（影像產生另加選定帳號的 `generated_images`；顧問不開放這些目錄，只能讀寫輸出目錄，另以檔案單位唯讀開放專案說明檔），只能寫入該次執行的輸出目錄，讀不到 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`。失敗時整筆重跑，沒有續行。
 
 本入口不使用 `New-DispatchInputs.ps1`、`New-DispatchOrder.ps1`、Request JSON、Preflight、Prepare、Inspect、Collect 與 Cleanup。本檔自成一體，發動、等待與回收不需要再讀 `start.md`、`execution.md`、`collect.md` 與 `recovery.md`。
 
@@ -11,6 +11,7 @@
 1. 寫派遣檔。複製 `templates/dispatch/run-order.md`，存為 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/run-order-<dispatchSlug>.md`，填寫 `## 派遣設定` 的 JSON 區塊與 `## 任務`、`## 驗收條件`、`## 邊界`、`## 回報必備欄位` 四個章節。
    - `task_type` 填選派時的類型，`profile` 填選派入口輸出的 `executor.profile`。
    - `role_file` 填角色規則檔的絕對路徑，各類型的值見「依 task_type 的差異」。
+   - `advise` 另填 `advisor_request_source`、`evidence_file`、`question_ids`，見「顧問（advise）」；其他類型不得出現這三個鍵。
    - `execution_root` 填線工作樹根目錄。`report_line_root` 填 `<work-root>/.local/ai-sessions/report/<lineSlug>`，該目錄必須已存在。
    - `report_name` 填報告檔名，只含檔名，各類型的值見「依 task_type 的差異」。
    - `targets` 列出目標物件的絕對路徑，目錄以結尾反斜線標示。`required_reads` 列出必讀檔，例如 `design.md`、`requirement-summary.md`、結案報告與前輪審查報告。
@@ -36,6 +37,23 @@
 | `review` | `~\.ai-agents\agents\codex\reviewer.toml`、`frontend-reviewer.toml` 或 `contract-auditor.toml` | 依角色為 `review-report.md`、`frontend-reviewer-report.md` 或 `contract-auditor-report.md` | 成功後檢查報告的 Finding manifest，結果在 `final.review_report_check`；prompt 以「審查者:」行標明實際執行者 |
 | `factcheck` | `~\.ai-agents\skills\fact-check-note\SKILL.md` | `fact-check-report.md` | 在 `exec` 前加 `--search`；不做 manifest 檢查，`final.review_report_check` 為 `null` |
 | `generate` | 派遣檔本身（影像產生沒有專屬角色規則檔，任務、驗收條件與輸出規則全寫在派遣檔） | 自訂，例如 `generate-report.md` | 選定帳號的 `<CODEX_HOME>\generated_images` 列為可讀（不存在時入口先建立）。影像先產在該處，`## 任務` 要求 Codex 複製到輸出目錄，並在報告逐一列出影像檔名；不做 manifest 檢查 |
+| `advise` | 派遣檔本身（顧問沒有角色規則檔） | 自訂，例如 `advice-report.md` | 不開放工作目錄，可讀可寫根目錄只有輸出目錄，另以檔案單位唯讀開放專案說明檔，`--cd` 指向輸出目錄；evidence 全文內嵌 prompt；Codex 的最後訊息由入口存成 `report_name`；結束時檢查報告含每個題號，見「顧問（advise）」 |
+
+`profile` 與 `task_type` 綁定：`advise` 只接受檔位 `advisor`，其他類型不接受檔位 `advisor`，不符時以結束碼 2、`RunTaskProfileMismatch` 停止，不啟動 Codex。
+
+### 顧問（advise）
+
+顧問是 evidence-only 的唯讀諮詢：協調者把問題與證據整理成 evidence pack，顧問只依內嵌內容回答，不讀工作目錄。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用顧問。
+
+- 授權：每次發動都需使用者當輪授權（`rules/claude/30-dispatch.md`「advisor consult 的不限階段掛載點」）。派遣檔的 `advisor_request_source` 必須是 `user-explicit`，缺少或不符時以結束碼 2、`RunAdvisorAuthorizationRequired` 停止，不啟動 Codex。
+- 派遣檔：`evidence_file` 是 evidence pack 的絕對路徑，須位於可讀範圍內，只檢查存在且非空，不驗證內容格式。`question_ids` 是題號的非空陣列，每個題號不含空白。`role_file` 填派遣檔本身，`targets` 填 evidence pack，`required_reads` 必須是空陣列（顧問不讀檔）。`execution_root` 照常填寫，顧問不可讀取。
+- 讀取邊界：`--cd` 指向該次的輸出目錄，可讀根目錄只有輸出目錄，不含 `execution_root`、`report_line_root` 與 `~\.ai-agents`，也不帶 `--search`。Codex 建立 session 時會從輸出目錄往上載入專案的 `AGENTS.override.md` 與 `AGENTS.md`（到含 `.git` 的專案根目錄為止），讀不到會無法啟動，因此入口只把實際存在的這幾個檔案以檔案單位開放為唯讀（執行紀錄 `permission.read_files`），不開放其所在目錄。找不到 `.git` 時 Codex 只看工作目錄，不開放任何上層檔案。顧問需要的其他規則條文由協調者摘錄進 evidence pack。
+- 雜湊：入口讀 evidence pack 並記錄 SHA-256 與長度，全文內嵌 prompt（以 `<<<EVIDENCE-BEGIN ...>>>` 與 `<<<EVIDENCE-END>>>` 包夾）後逐字比對，不一致時以結束碼 2、`RunEvidenceInlineMismatch` 停止，不啟動 Codex。結束時再算一次，與啟動時不同或檔案已不存在，則 `source_changed` 為 `true`，結果為 `failed`、`failure_reason` 為 `source-changed`、結束碼 1（回答齊備也一樣，報告不可信）。換帳號或換 model 重跑前 evidence 已被改或刪除時，以結束碼 2、`RunEvidenceChangedBetweenAttempts` 停止，不以新內容重跑。起訖雜湊與長度在執行紀錄與結果的 `evidence`（`sha256`、`sha256_end`、`bytes`、`inline_verified`）。
+- 報告：入口把 Codex 的最後訊息存成輸出目錄內的 `report_name`。prompt 要求每個題號各用一個標題回答，結束時檢查報告含每一個題號（整個詞比對）。缺少時結果為 `failed`，`failure_reason` 為 `questions-missing`，結束碼 1，入口不自動重跑。只要有非空的報告，不論結果都列出缺少的題號（`final.missing_question_ids`），`final.question_check` 為 `checked`；沒有報告可檢查時 `question_check` 為 `unavailable`，`missing_question_ids` 為 `null`。
+- evidence pack 的內容由協調者負責：每段摘錄附完整絕對路徑、行號範圍與版本識別（commit SHA 或檔案 SHA-256）；每題要求可直接執行的建議（處理位置、主要取捨、驗收方式、假設與推翻條件），聚焦實質處置，不要求因果分析；可能反證寫成可逐條回答的條件。
+- 送出前，協調者先寫下自己的判斷；回收後逐項對照顧問意見，同意或不同意都附理由，以「主 Agent 決定、依據、與顧問意見異同」記錄於同線 `exceptions.md`。顧問只提供另一視角，決策由主 Agent 或使用者作出。
+- 回收：讀 `final.report_path` 全文並逐題核對。`source_changed` 為 `true`（`failure_reason` 為 `source-changed`）時重新整理 evidence pack 後重跑；有缺少的題號時以同一份派遣檔重跑。收下後把報告複製為同線 `<work-root>/.local/ai-sessions/report/<lineSlug>/advisor-consult-<dispatchSlug>.md`。
+- 追問：新增問題、來源或證據時建立新的 evidence pack、新的題號與新的 `dispatch_slug`，不續行，也不併入原派遣的題號。授權不延續到其他 Session，也不依額度縮小題號範圍。
 
 ## 結果
 
@@ -80,7 +98,7 @@
 
 ## 回收
 
-以下「報告是否可用」與「收下後的處理」適用審查。事實校閱與影像產生見「事實校閱與影像產生的回收」。
+以下「報告是否可用」與「收下後的處理」適用審查。事實校閱與影像產生見「事實校閱與影像產生的回收」，顧問見「顧問（advise）」的回收項。
 
 回收分兩步。先判定這份報告能不能用，再依報告的審查結論決定下一站。
 

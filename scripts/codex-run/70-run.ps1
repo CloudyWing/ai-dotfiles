@@ -8,16 +8,82 @@ function Write-RunDiagnostic {
     [Console]::Error.WriteLine($Message)
 }
 
+$script:RunEvidenceBeginPrefix = '<<<EVIDENCE-BEGIN'
+$script:RunEvidenceEndMarker = '<<<EVIDENCE-END>>>'
+
+function Get-RunEvidenceSnapshot {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    # 一次讀入 evidence 檔：位元組長度、SHA-256 與解碼後的全文（去除 BOM）。內嵌與雜湊用同一份位元組，避免兩次讀取之間檔案被改。
+    $bytes = [IO.File]::ReadAllBytes($Path)
+    $text = (New-Object System.Text.UTF8Encoding -ArgumentList @($false)).GetString($bytes)
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+    return [pscustomobject]@{
+        path = $Path
+        bytes = [long]$bytes.Length
+        sha256 = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+        text = $text
+    }
+}
+
+function Test-RunEvidenceInline {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Prompt,
+        [Parameter(Mandatory)][object]$Evidence
+    )
+
+    # 取出 prompt 內嵌的 evidence 區段，與 evidence 檔全文逐字比對。
+    $begin = $Prompt.IndexOf($script:RunEvidenceBeginPrefix, [StringComparison]::Ordinal)
+    if ($begin -lt 0) { return $false }
+    $lineEnd = $Prompt.IndexOf("`n", $begin, [StringComparison]::Ordinal)
+    if ($lineEnd -lt 0) { return $false }
+    $end = $Prompt.LastIndexOf("`n" + $script:RunEvidenceEndMarker, [StringComparison]::Ordinal)
+    if ($end -lt $lineEnd) { return $false }
+    $embedded = $Prompt.Substring($lineEnd + 1, $end - $lineEnd - 1)
+    return $embedded -ceq [string]$Evidence.text
+}
+
+function Get-RunMissingQuestionId {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$ReportPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$QuestionId
+    )
+
+    # 報告須含每一個題號（整個詞，前後不是字母數字、底線或連字號）。報告不存在時全部視為缺少。
+    $text = if ([IO.File]::Exists($ReportPath)) { [IO.File]::ReadAllText($ReportPath, (New-Object System.Text.UTF8Encoding -ArgumentList @($false))) } else { '' }
+    return [string[]]@($QuestionId | Where-Object { $text -cnotmatch ('(?<![A-Za-z0-9_-])' + [regex]::Escape($_) + '(?![A-Za-z0-9_-])') })
+}
+
 function New-RunPrompt {
     param(
         [Parameter(Mandatory)][object]$Order,
         [Parameter(Mandatory)][string]$OutputDirectory,
         [Parameter(Mandatory)][string]$ReportPath,
-        [AllowNull()][AllowEmptyString()][string]$ReviewerLine
+        [AllowNull()][AllowEmptyString()][string]$ReviewerLine,
+        [AllowNull()][object]$Evidence
     )
 
     # 「審查者:」（審查以外為「執行者:」）行由執行端照抄到報告「## 總覽」第一行，使報告標明實際執行者與 model。
     $executorLabel = [string]$Order.task_setting.executor_label
+    if ($Order.task_setting.evidence_only) {
+        # evidence-only：不開放任何檔案，evidence 全文內嵌，最後訊息由入口存成報告檔。
+        $adviseLines = @(
+            'LineContext'
+            ('- lineSlug: ' + $Order.line_slug)
+            ('輸出目錄: ' + $OutputDirectory)
+            ('報告檔: ' + $ReportPath)
+            if (-not [string]::IsNullOrWhiteSpace($ReviewerLine)) { $executorLabel + ': ' + $ReviewerLine }
+            ''
+            '你只依下列 evidence 內容回答，不讀取任何檔案，不執行命令。'
+            '請在最後訊息中，對題號清單的每一個題號各用一個標題（例如 `## <題號>`）回答；入口把最後訊息存成報告檔，並檢查報告含每一個題號。'
+            ('題號: ' + (@($Order.question_ids) -join ', '))
+            ($script:RunEvidenceBeginPrefix + ' sha256=' + $Evidence.sha256 + ' bytes=' + $Evidence.bytes + '>>>')
+        )
+        return (($adviseLines -join "`n") + "`n" + $Evidence.text + "`n" + $script:RunEvidenceEndMarker + "`n")
+    }
     $lines = @(
         'LineContext'
         ('- lineSlug: ' + $Order.line_slug)
@@ -59,7 +125,9 @@ function Invoke-RunAttempt {
         [Parameter(Mandatory)][bool]$IsGitRepository,
         [Parameter(Mandatory)][int]$TimeoutSeconds,
         [Parameter(Mandatory)][int]$TurnEndGraceSeconds,
-        [AllowNull()][AllowEmptyString()][string]$ExecutorDisplay
+        [AllowNull()][AllowEmptyString()][string]$ExecutorDisplay,
+        # 同一次發動第一次嘗試的 evidence 雜湊。之後的嘗試以此為基準，evidence 在嘗試之間被改或被刪時停止，不以新內容重跑。
+        [AllowNull()][AllowEmptyString()][string]$EvidenceBaselineSha256
     )
 
     # 一個帳號搭配一個 model 的一次嘗試，各自有獨立的 runKey、輸出目錄、紀錄與成本列。
@@ -84,6 +152,25 @@ function Invoke-RunAttempt {
     $stderrPath = Join-Path $runsDirectory ($runKey + '.stderr.txt')
     $lastMessagePath = Join-Path $runsDirectory ($runKey + '.last-message.md')
     $reportPath = Join-Path $outputDirectory $Order.report_name
+
+    # evidence-only：先讀 evidence 並組 prompt、比對內嵌內容，不一致時在建立任何檔案之前停止。
+    $evidenceOnly = [bool]$Order.task_setting.evidence_only
+    $evidenceStart = $null
+    $prompt = $null
+    if ($evidenceOnly) {
+        if ([string]::IsNullOrEmpty($EvidenceBaselineSha256)) { $evidenceStart = Get-RunEvidenceSnapshot -Path $Order.evidence_file }
+        else {
+            try { $evidenceStart = Get-RunEvidenceSnapshot -Path $Order.evidence_file }
+            catch { $evidenceStart = $null }
+            if ($null -eq $evidenceStart -or $evidenceStart.sha256 -cne $EvidenceBaselineSha256) {
+                throw (New-RunError -Code 'RunEvidenceChangedBetweenAttempts' -Message ('evidence 在換帳號或換 model 之前已被改動或刪除，已停止，未啟動 Codex：' + $Order.evidence_file) -ExitCode 2)
+            }
+        }
+        $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath -ReviewerLine $reviewerLine -Evidence $evidenceStart
+        if (-not (Test-RunEvidenceInline -Prompt $prompt -Evidence $evidenceStart)) {
+            throw (New-RunError -Code 'RunEvidenceInlineMismatch' -Message ('prompt 內嵌的 evidence 與檔案內容不一致，已停止，未啟動 Codex：' + $Order.evidence_file) -ExitCode 2)
+        }
+    }
     $null = [IO.Directory]::CreateDirectory($outputDirectory)
 
     # 影像產生把選定帳號的 generated_images 列為可讀（影像先產在該處，再由 Codex 複製到輸出目錄）。
@@ -94,10 +181,14 @@ function Invoke-RunAttempt {
         $null = [IO.Directory]::CreateDirectory($generatedImages)
         $extraReadRoots += $generatedImages
     }
-    $plan = Get-RunPermissionPlan -ExecutionRoot $Order.execution_root -OutputDirectory $outputDirectory -ReportLineRoot $Order.report_line_root -ExtraReadRoot $extraReadRoots
+    $workingDirectory = if ($evidenceOnly) { $outputDirectory } else { $Order.execution_root }
+    $plan = Get-RunPermissionPlan -ExecutionRoot $workingDirectory -OutputDirectory $outputDirectory -ReportLineRoot $Order.report_line_root -ExtraReadRoot $extraReadRoots -OutputOnly:$evidenceOnly
     $permission = [ordered]@{ name = $plan.name; read_roots = @($plan.read_roots); write_roots = @($plan.write_roots); deny_patterns = @($plan.deny_patterns) }
+    if ($evidenceOnly) { $permission['read_files'] = @($plan.read_files) }
     $startedAt = [DateTime]::UtcNow
-    $sourceStart = Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot @($Order.report_line_root)
+    # evidence-only 的來源狀態是 evidence 檔的雜湊與長度（不讀工作目錄）；執行期間被改時 source_changed 為 true。
+    $sourceStart = if ($evidenceOnly) { [ordered]@{ evidence_file = $Order.evidence_file; sha256 = $evidenceStart.sha256; bytes = $evidenceStart.bytes } }
+    else { Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot @($Order.report_line_root) }
     $record = [ordered]@{
         schema = 'ai-agents.codex-run-record.v1'
         run_key = $runKey
@@ -136,19 +227,24 @@ function Invoke-RunAttempt {
         review_report_check = $null
         permission = $permission
     }
+    if ($evidenceOnly) {
+        $record['evidence'] = [ordered]@{ path = $Order.evidence_file; sha256 = $evidenceStart.sha256; bytes = $evidenceStart.bytes; inline_verified = $true; sha256_end = $null }
+        $record['missing_question_ids'] = $null
+        $record['question_check'] = $null
+    }
     try { Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8 }
     catch { throw (New-RunError -Code 'RunRecordWriteFailed' -Message ('執行紀錄初稿寫入失敗：' + $_.Exception.Message) -ExitCode 1) }
 
-    $argument = New-RunExecArgument -ExecutionRoot $Order.execution_root -Profile $Order.profile -OutputDirectory $outputDirectory -LastMessagePath $lastMessagePath -IsGitRepository $IsGitRepository -ReportLineRoot $Order.report_line_root -ModelOverride $modelOverride `
-        -ExtraReadRoot $extraReadRoots -Search:([bool]$Order.task_setting.search)
-    $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath -ReviewerLine $reviewerLine
+    $argument = New-RunExecArgument -ExecutionRoot $workingDirectory -Profile $Order.profile -OutputDirectory $outputDirectory -LastMessagePath $lastMessagePath -IsGitRepository ($IsGitRepository -and -not $evidenceOnly) -ReportLineRoot $Order.report_line_root -ModelOverride $modelOverride `
+        -ExtraReadRoot $extraReadRoots -Search:([bool]$Order.task_setting.search) -OutputOnly:$evidenceOnly
+    if (-not $evidenceOnly) { $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath -ReviewerLine $reviewerLine }
     Write-RunDiagnostic ('[codex-run] 嘗試帳號 ' + $Candidate.name + $(if ($modelSource -ceq 'fallback') { '（備援 model ' + $modelOverride + '）' } else { '' }) + '，runKey ' + $runKey)
     $exitCode = -1
     $duration = 0.0
     $launchFailed = $false
     $terminatedBy = $null
     try {
-        $process = Invoke-RunCodexProcess -CodexPath $CodexPath -Argument $argument -Prompt $prompt -CodexHome $Candidate.codex_home -EventStreamPath $eventsPath -StderrPath $stderrPath -WorkingDirectory $Order.execution_root `
+        $process = Invoke-RunCodexProcess -CodexPath $CodexPath -Argument $argument -Prompt $prompt -CodexHome $Candidate.codex_home -EventStreamPath $eventsPath -StderrPath $stderrPath -WorkingDirectory $workingDirectory `
             -LastMessagePath $lastMessagePath -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds
         $exitCode = [int]$process.ExitCode
         $duration = [double]$process.DurationSeconds
@@ -161,17 +257,43 @@ function Invoke-RunAttempt {
         Write-RunDiagnostic ('[codex-run] codex 行程無法啟動：' + $_.Exception.Message)
     }
     $endedAt = [DateTime]::UtcNow
-    $sourceEnd = Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot @($Order.report_line_root)
+    $evidenceEnd = $null
+    if ($evidenceOnly) {
+        # evidence 在執行期間被刪除或無法讀取時不拋例外（否則結束紀錄寫不出來），記為來源已變。
+        try { $evidenceEnd = Get-RunEvidenceSnapshot -Path $Order.evidence_file }
+        catch { $evidenceEnd = $null }
+        $sourceEnd = if ($null -ne $evidenceEnd) { [ordered]@{ evidence_file = $Order.evidence_file; sha256 = $evidenceEnd.sha256; bytes = $evidenceEnd.bytes } }
+        else { [ordered]@{ evidence_file = $Order.evidence_file; sha256 = $null; bytes = $null; unavailable = $true } }
+    }
+    else { $sourceEnd = Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot @($Order.report_line_root) }
     $sourceChanged = (ConvertTo-Json -InputObject $sourceStart -Compress) -cne (ConvertTo-Json -InputObject $sourceEnd -Compress)
 
     if ($terminatedBy -ceq 'timeout') { Write-RunDiagnostic ('[codex-run] 超過總時限 ' + $TimeoutSeconds + ' 秒，已終止 codex 行程樹。') }
     if ($terminatedBy -ceq 'after-turn-end') { Write-RunDiagnostic ('[codex-run] 回合結束後 ' + $TurnEndGraceSeconds + ' 秒 codex 行程仍未結束，已由入口終止，結果依報告判定。') }
     # 被入口終止的行程，結束碼是終止所致，不拿來判讀事件流。
     $evidence = Get-RunEventEvidence -EventStreamPath $eventsPath -StderrPath $stderrPath -ExitCode $(if ($launchFailed -or $null -ne $terminatedBy) { $null } else { $exitCode })
+    # 顧問的報告就是 Codex 的最後訊息，入口把它存成輸出目錄內的 report_name，後續判定與其他類型相同。
+    if ($evidenceOnly -and [IO.File]::Exists($lastMessagePath) -and (New-Object System.IO.FileInfo -ArgumentList @($lastMessagePath)).Length -gt 0) {
+        [IO.File]::Copy($lastMessagePath, $reportPath, $true)
+    }
     $judged = Get-RunResult -ExitCode $exitCode -LastMessagePath $lastMessagePath -ReportPath $reportPath -Evidence $evidence -TimedOut:($terminatedBy -ceq 'timeout') -TerminatedAfterTurnEnd:($terminatedBy -ceq 'after-turn-end')
     $result = $judged.result
     $failureReason = $judged.failure_reason
     if ($launchFailed) { $result = 'failed'; $failureReason = 'launch-failed' }
+    # 題號檢查：只要有報告內容可檢查就列出缺少的題號（不論結果）；沒有報告時為 unavailable，missing_question_ids 為 null。
+    $missingQuestionIds = $null
+    $questionCheck = $null
+    if ($evidenceOnly) {
+        $reportForCheck = New-Object System.IO.FileInfo -ArgumentList @($reportPath)
+        if ($reportForCheck.Exists -and $reportForCheck.Length -gt 0) {
+            $questionCheck = 'checked'
+            $missingQuestionIds = [string[]]@(Get-RunMissingQuestionId -ReportPath $reportPath -QuestionId @($Order.question_ids))
+        }
+        else { $questionCheck = 'unavailable' }
+        if ($result -ceq 'success' -and @($missingQuestionIds).Count -gt 0) { $result = 'failed'; $failureReason = 'questions-missing' }
+        # evidence 在執行期間被改或被刪：不論回答是否齊備，結果為失敗（結束碼非零），報告不可信。
+        if ($result -ceq 'success' -and $sourceChanged) { $result = 'failed'; $failureReason = 'source-changed' }
+    }
     $reviewCheck = $null
     if ($result -ceq 'success' -and [string]$Order.task_setting.report_check -ceq 'review-manifest') {
         $checked = Test-RunReviewReport -ReportPath $reportPath
@@ -209,6 +331,11 @@ function Invoke-RunAttempt {
     $record['last_message'] = [ordered]@{ path = $lastMessagePath; exists = $lastMessageInfo.Exists; empty = (-not $lastMessageInfo.Exists) -or $lastMessageInfo.Length -eq 0 }
     $record['report'] = [ordered]@{ exists = $reportInfo.Exists; bytes = if ($reportInfo.Exists) { $reportInfo.Length } else { 0 } }
     $record['review_report_check'] = $reviewCheck
+    if ($evidenceOnly) {
+        $record['evidence']['sha256_end'] = if ($null -ne $evidenceEnd) { $evidenceEnd.sha256 } else { $null }
+        $record['missing_question_ids'] = $missingQuestionIds
+        $record['question_check'] = $questionCheck
+    }
     try {
         Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8
         $null = Add-RunCostRow -LedgerPath (Join-Path $Order.report_line_root 'cost-ledger.md') -LineSlug $Order.line_slug -DispatchSlug $Order.dispatch_slug -RunId $runId `
@@ -221,7 +348,7 @@ function Invoke-RunAttempt {
 
     $reloginCommand = $null
     if ($evidence.rejection_kind -ceq 'unauthorized') { $reloginCommand = Get-RunReloginCommand -CodexHome $Candidate.codex_home }
-    return [pscustomobject]@{
+    $attemptResult = [ordered]@{
         run_key = $runKey
         account = $Candidate.name
         model = $Candidate.model
@@ -240,6 +367,12 @@ function Invoke-RunAttempt {
         failover_eligible = (Test-RunFailoverEligible -Evidence $evidence)
         health_error = $healthError
     }
+    if ($evidenceOnly) {
+        $attemptResult['evidence'] = $record['evidence']
+        $attemptResult['missing_question_ids'] = $missingQuestionIds
+        $attemptResult['question_check'] = $questionCheck
+    }
+    return [pscustomobject]$attemptResult
 }
 
 function Assert-RunProfileConsistency {
@@ -396,6 +529,7 @@ function Invoke-CodexRunMain {
         $lastAttempt = $null
         $exhausted = $false
         $candidateIndex = 0
+        $evidenceBaseline = $null
         foreach ($candidate in @($selection.candidates)) {
             if ($candidateIndex -gt 0 -and -not $SkipProfileCheck) {
                 Assert-RunProfileConsistency -Profile $order.profile -AccountHome ([string]$candidate.codex_home) -ProfileSourceRoot $profileRoot
@@ -406,7 +540,8 @@ function Invoke-CodexRunMain {
             $settled = $false
             foreach ($model in @($candidate.models)) {
                 $attemptCandidate = [pscustomobject]@{ name = $candidate.name; codex_home = $candidate.codex_home; model = $model; primary_model = $candidate.primary_model }
-                $lastAttempt = Invoke-RunAttempt -Order $order -Candidate $attemptCandidate -CodexPath $codex -MachineConfigPath $machinePath -DispatchSha256 $dispatchSha -IsGitRepository $isGit -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds -ExecutorDisplay $executorDisplay
+                $lastAttempt = Invoke-RunAttempt -Order $order -Candidate $attemptCandidate -CodexPath $codex -MachineConfigPath $machinePath -DispatchSha256 $dispatchSha -IsGitRepository $isGit -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds -ExecutorDisplay $executorDisplay -EvidenceBaselineSha256 $evidenceBaseline
+                if ($order.task_setting.evidence_only -and [string]::IsNullOrEmpty($evidenceBaseline)) { $evidenceBaseline = [string]$lastAttempt.evidence.sha256 }
                 $attempts.Add([ordered]@{
                         run_key = $lastAttempt.run_key
                         account = $lastAttempt.account
@@ -428,6 +563,11 @@ function Invoke-CodexRunMain {
                     source_changed = $lastAttempt.source_changed
                     review_report_check = $lastAttempt.review_report_check
                     relogin_command = $lastAttempt.relogin_command
+                }
+                if ($order.task_setting.evidence_only) {
+                    $final['evidence'] = $lastAttempt.evidence
+                    $final['missing_question_ids'] = $lastAttempt.missing_question_ids
+                    $final['question_check'] = $lastAttempt.question_check
                 }
                 if ($lastAttempt.result -ceq 'rejected' -and $lastAttempt.failover_eligible) {
                     $exhausted = $true

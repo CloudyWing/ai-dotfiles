@@ -12,10 +12,14 @@ function Get-RunTaskTypeSetting {
     # generated_images：把選定帳號 CODEX_HOME 下的 generated_images 列為可讀，影像先產在該處再由 Codex 複製到輸出目錄。
     # report_check：成功後對報告做的結構檢查，review-manifest 為 Test-RunReviewReport，$null 為只檢查報告存在且非空。
     # executor_label：prompt 中標明實際執行者那一行的標籤，由執行端照抄到報告。
+    # evidence_only：資料全文內嵌 prompt、不開放工作目錄（可讀可寫根目錄只有輸出目錄，--cd 指向輸出目錄）、最後訊息存成報告、派遣檔須宣告
+    #   advisor_request_source、evidence_file、question_ids，結束時檢查報告含每個題號。其他類型不得出現這三個鍵。
+    # exclusive_profile：該類型只接受的檔位；$null 表示不限，但不得使用其他類型的專屬檔位。
     $settings = [ordered]@{
-        review = [pscustomobject]@{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者' }
-        factcheck = [pscustomobject]@{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者' }
-        generate = [pscustomobject]@{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者' }
+        review = [pscustomobject]@{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者'; evidence_only = $false; exclusive_profile = $null }
+        factcheck = [pscustomobject]@{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null }
+        generate = [pscustomobject]@{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null }
+        advise = [pscustomobject]@{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $true; exclusive_profile = 'advisor' }
     }
     if (-not $PSBoundParameters.ContainsKey('TaskType')) { return $settings }
     # OrderedDictionary 的鍵查詢不分大小寫，先以區分大小寫的比對確認受理。
@@ -58,8 +62,9 @@ function Read-RunDispatchFile {
     }
 
     $errors = New-Object 'System.Collections.Generic.List[string]'
-    $knownKeys = @('schema', 'line_slug', 'dispatch_slug', 'task_type', 'profile', 'role_file', 'execution_root', 'report_line_root', 'report_name', 'targets', 'required_reads', 'cycle')
-    $requiredKeys = @($knownKeys | Where-Object { $_ -cne 'cycle' })
+    $knownKeys = @('schema', 'line_slug', 'dispatch_slug', 'task_type', 'profile', 'role_file', 'execution_root', 'report_line_root', 'report_name', 'targets', 'required_reads', 'cycle', 'advisor_request_source', 'evidence_file', 'question_ids')
+    $evidenceKeys = @('advisor_request_source', 'evidence_file', 'question_ids')
+    $requiredKeys = @($knownKeys | Where-Object { $_ -cne 'cycle' -and $evidenceKeys -cnotcontains $_ })
     $presentKeys = @($document.PSObject.Properties | ForEach-Object { $_.Name })
     foreach ($key in $presentKeys) {
         if ($knownKeys -cnotcontains $key) { $errors.Add('未知欄位：' + $key) }
@@ -75,7 +80,8 @@ function Read-RunDispatchFile {
     }
     $slugPattern = '^[a-z0-9]+(?:-[a-z0-9]+)*$'
     $schemaValue = Get-FieldValue 'schema'
-    if ($presentKeys -ccontains 'schema' -and $schemaValue -cne 'ai-agents.codex-run-order.v1') {
+    # 型別先檢查：-cne 對陣列是篩選而不是比較，陣列值會被當成不成立而放行。
+    if ($presentKeys -ccontains 'schema' -and ($schemaValue -isnot [string] -or $schemaValue -cne 'ai-agents.codex-run-order.v1')) {
         $errors.Add('schema 必須是 ai-agents.codex-run-order.v1。')
     }
     foreach ($slugField in @('line_slug', 'dispatch_slug')) {
@@ -150,6 +156,43 @@ function Read-RunDispatchFile {
     if ($null -eq $taskSetting) {
         throw (New-RunError -Code 'RunTaskTypeUnsupported' -Message ('task_type 只接受 ' + (@((Get-RunTaskTypeSetting).Keys) -join '、') + '，收到：' + $taskType) -ExitCode 2)
     }
+    # 類型與檔位綁定：專屬檔位只接受對應類型，其他類型不得使用任何類型的專屬檔位。
+    $exclusiveProfiles = @((Get-RunTaskTypeSetting).Values | Where-Object { $null -ne $_.exclusive_profile } | ForEach-Object { [string]$_.exclusive_profile })
+    if ($null -ne $taskSetting.exclusive_profile -and [string]$profile -cne [string]$taskSetting.exclusive_profile) {
+        throw (New-RunError -Code 'RunTaskProfileMismatch' -Message ('task_type ' + $taskType + ' 只接受檔位 ' + $taskSetting.exclusive_profile + '，收到：' + $profile) -ExitCode 2)
+    }
+    if ($null -eq $taskSetting.exclusive_profile -and $exclusiveProfiles -ccontains [string]$profile) {
+        throw (New-RunError -Code 'RunTaskProfileMismatch' -Message ('檔位 ' + $profile + ' 只接受專屬的 task_type，收到：' + $taskType) -ExitCode 2)
+    }
+    if ($taskSetting.evidence_only) {
+        # 授權：顧問每次都要使用者當輪授權，缺少或不是 user-explicit 時停止，不啟動 Codex。
+        $source = Get-FieldValue 'advisor_request_source'
+        if ($presentKeys -cnotcontains 'advisor_request_source' -or $source -isnot [string] -or $source -cne 'user-explicit') {
+            throw (New-RunError -Code 'RunAdvisorAuthorizationRequired' -Message ('task_type ' + $taskType + ' 須由使用者當輪授權：advisor_request_source 必須是 user-explicit。') -ExitCode 2)
+        }
+        $evidenceErrors = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($key in @('evidence_file', 'question_ids')) {
+            if ($presentKeys -cnotcontains $key) { $evidenceErrors.Add('缺少欄位：' + $key) }
+        }
+        $evidenceFile = Get-FieldValue 'evidence_file'
+        if ($presentKeys -ccontains 'evidence_file' -and ($evidenceFile -isnot [string] -or [string]::IsNullOrWhiteSpace($evidenceFile))) { $evidenceErrors.Add('evidence_file 必須是非空字串。') }
+        $questionValue = Get-FieldValue 'question_ids'
+        if ($presentKeys -ccontains 'question_ids') {
+            if ($questionValue -isnot [array] -or @($questionValue).Count -eq 0 -or @($questionValue | Where-Object { $_ -isnot [string] -or [string]::IsNullOrWhiteSpace($_) -or $_ -match '\s' }).Count -gt 0) {
+                $evidenceErrors.Add('question_ids 必須是非空陣列，每個元素是不含空白的非空字串。')
+            }
+        }
+        if (@($document.required_reads).Count -gt 0) { $evidenceErrors.Add('task_type ' + $taskType + ' 不開放讀檔，required_reads 必須是空陣列。') }
+        if ($evidenceErrors.Count -gt 0) {
+            throw (New-RunError -Code 'RunDispatchFileInvalid' -Message ('派遣檔無效：' + ($evidenceErrors -join '；')) -ExitCode 2 -Details @($evidenceErrors.ToArray()))
+        }
+    }
+    else {
+        $strayKeys = @($evidenceKeys | Where-Object { $presentKeys -ccontains $_ })
+        if ($strayKeys.Count -gt 0) {
+            throw (New-RunError -Code 'RunDispatchFileInvalid' -Message ('派遣檔無效：task_type ' + $taskType + ' 不得出現欄位 ' + ($strayKeys -join '、') + '。') -ExitCode 2 -Details @($strayKeys | ForEach-Object { '不適用欄位：' + $_ }))
+        }
+    }
 
     return [pscustomobject]@{
         schema = [string]$schemaValue
@@ -164,6 +207,9 @@ function Read-RunDispatchFile {
         targets = [string[]]@($document.targets)
         required_reads = [string[]]@($document.required_reads)
         cycle = $cycle
+        advisor_request_source = if ($taskSetting.evidence_only) { [string](Get-FieldValue 'advisor_request_source') } else { $null }
+        evidence_file = if ($taskSetting.evidence_only) { [string](Get-FieldValue 'evidence_file') } else { $null }
+        question_ids = if ($taskSetting.evidence_only) { [string[]]@($document.question_ids) } else { [string[]]@() }
         dispatch_file_path = $Path
         task_setting = $taskSetting
     }
@@ -211,6 +257,12 @@ function Test-RunPreStart {
     foreach ($read in @($Order.required_reads)) { $checkedPaths.Add([string]$read) }
     foreach ($target in @($Order.targets)) { $checkedPaths.Add([string]$target) }
     $checkedPaths.Add([string]$Order.dispatch_file_path)
+    if ($Order.task_setting.evidence_only) {
+        # evidence 檔只檢查存在且非空，不驗證內容格式。
+        $evidencePath = [string]$Order.evidence_file
+        $checkedPaths.Add($evidencePath)
+        if ((Test-Absolute $evidencePath) -and [IO.File]::Exists($evidencePath) -and (New-Object System.IO.FileInfo -ArgumentList @($evidencePath)).Length -eq 0) { Add-Problem $evidencePath 'empty' }
+    }
     foreach ($path in $checkedPaths) {
         if (-not (Test-Absolute $path)) { Add-Problem $path 'not-absolute'; continue }
         $exists = [IO.File]::Exists($path) -or [IO.Directory]::Exists($path)

@@ -1,0 +1,87 @@
+{
+  "plan": {
+    "name": "dispatch_review",
+    "read_roots": [
+      "C:\\work\\exec",
+      "C:\\work\\ai",
+      "C:\\work\\report"
+    ],
+    "write_roots": [
+      "C:\\work\\report\\runs\\x-1"
+    ],
+    "deny_patterns": [
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "secrets.*"
+    ],
+    "glob_scan_max_depth": 6
+  },
+  "plan_extra": {
+    "name": "dispatch_review",
+    "read_roots": [
+      "C:\\work\\exec",
+      "C:\\work\\ai",
+      "C:\\work\\report",
+      "C:\\h\\generated_images"
+    ],
+    "write_roots": [
+      "C:\\work\\report\\runs\\x-1"
+    ],
+    "deny_patterns": [
+      ".env",
+      ".env.*",
+      "*.pem",
+      "*.key",
+      "secrets.*"
+    ],
+    "glob_scan_max_depth": 6
+  },
+  "args": [
+    "-c",
+    "windows.sandbox=\"mxc\"",
+    "-c",
+    "default_permissions=\"dispatch_review\"",
+    "-c",
+    "permissions.dispatch_review.filesystem={\":minimal\"=\"read\", glob_scan_max_depth=6, 'C:\\work\\exec'=\"read\", 'C:\\work\\ai'={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}, 'C:\\work\\report'={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}, 'C:\\work\\report\\runs\\x-1'=\"write\", \":workspace_roots\"={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}}"
+  ],
+  "exec": [
+    "--cd",
+    "C:\\work\\exec",
+    "--profile",
+    "review",
+    "-c",
+    "windows.sandbox=\"mxc\"",
+    "-c",
+    "default_permissions=\"dispatch_review\"",
+    "-c",
+    "permissions.dispatch_review.filesystem={\":minimal\"=\"read\", glob_scan_max_depth=6, 'C:\\work\\exec'=\"read\", 'C:\\work\\ai'={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}, 'C:\\work\\report'={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}, 'C:\\work\\report\\runs\\x-1'=\"write\", \":workspace_roots\"={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}}",
+    "exec",
+    "--json",
+    "--output-last-message",
+    "C:\\work\\lm.md",
+    "-"
+  ],
+  "exec_search": [
+    "--cd",
+    "C:\\work\\exec",
+    "--profile",
+    "content",
+    "-c",
+    "model=\"m-1\"",
+    "-c",
+    "windows.sandbox=\"mxc\"",
+    "-c",
+    "default_permissions=\"dispatch_review\"",
+    "-c",
+    "permissions.dispatch_review.filesystem={\":minimal\"=\"read\", glob_scan_max_depth=6, 'C:\\work\\exec'=\"read\", 'C:\\work\\ai'={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}, 'C:\\work\\report'={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}, 'C:\\h\\generated_images'={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}, 'C:\\work\\report\\runs\\x-1'=\"write\", \":workspace_roots\"={\".\"=\"read\", \"**/.env\"=\"deny\", \"**/.env.*\"=\"deny\", \"**/*.pem\"=\"deny\", \"**/*.key\"=\"deny\", \"**/secrets.*\"=\"deny\"}}",
+    "--search",
+    "exec",
+    "--skip-git-repo-check",
+    "--json",
+    "--output-last-message",
+    "C:\\work\\lm.md",
+    "-"
+  ]
+}

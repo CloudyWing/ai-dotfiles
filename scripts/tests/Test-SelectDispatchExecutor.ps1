@@ -883,7 +883,7 @@ try {
         $r.Json.dispatchLine -ceq '[派工] 交給 Codex content：事實查核'
     }
 
-    # 登錄表 entry 欄位（審查、事實校閱、影像產生切到新入口，測試取證與顧問維持現行入口）
+    # 登錄表 entry 欄位（審查、事實校閱、影像產生、顧問切到新入口，測試取證維持現行入口）
     Test-Case EN01 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude')
         $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'codex-review' -and $r.Json.executor.entry -ceq 'scripts/Invoke-CodexRun.ps1' -and $r.Json.executor.profile -ceq 'review'
@@ -891,7 +891,7 @@ try {
     Test-Case EN02 {
         $cases = @(
             @('-Type test', 'codex-scan', 'scripts/Invoke-CodexDispatch.ps1'), @('-Type generate', 'codex-content', 'scripts/Invoke-CodexRun.ps1'),
-            @('-Type factcheck', 'codex-content', 'scripts/Invoke-CodexRun.ps1'), @('-Type advise -ImplementerFamily claude -Authorized', 'codex-advisor', 'scripts/Invoke-CodexDispatch.ps1'))
+            @('-Type factcheck', 'codex-content', 'scripts/Invoke-CodexRun.ps1'), @('-Type advise -ImplementerFamily claude -Authorized', 'codex-advisor', 'scripts/Invoke-CodexRun.ps1'))
         @($cases | Where-Object {
                 $r = Invoke-Selector -Arguments (Split-Args $_[0])
                 -not ($r.ExitCode -eq 0 -and $r.Json.executor.id -ceq $_[1] -and $r.Json.executor.entry -ceq $_[2])

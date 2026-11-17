@@ -3,7 +3,7 @@
 
 function Get-RunLocalFailurePattern {
     # 本地失敗詞彙：命中者視為本機執行失敗，不屬服務端拒絕，不觸發未分類換帳號。
-    return '(?i)\bsandbox\b|\bcommand\s+(?:failed|exited|not\s+found)\b|\bexit(?:ed)?\s+(?:with\s+)?(?:code|status)\b|\bapply_patch\b|\bpatch\s+failed\b|\btool\s+(?:call|execution)\b|\bcodex_core::tools\b|\bENOENT\b|\bEACCES\b|\bEPERM\b|no\s+such\s+file|cannot\s+find\s+(?:the\s+)?(?:path|file)|used\s+by\s+another\s+process|\bfailed\s+to\s+(?:start|launch|spawn)\b|\bspawn\b'
+    return '(?i)\bsandbox\b|\bcommand\s+(?:failed|exited|not\s+found)\b|\bexit(?:ed)?\s+(?:with\s+)?(?:code|status)\b|\bapply_patch\b|\bpatch\s+failed\b|\btool\s+(?:call|execution)\b|\bcodex_core::tools\b|\bENOENT\b|\bEACCES\b|\bEPERM\b|no\s+such\s+file|cannot\s+find\s+(?:the\s+)?(?:path|file)|used\s+by\s+another\s+process|\bfailed\s+to\s+(?:start|launch|spawn)\b|\bspawn\b|\bfailed\s+to\s+load\s+\S+\s+instructions\b'
 }
 
 function Get-RunTerminalFailureEventType {

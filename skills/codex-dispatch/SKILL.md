@@ -15,8 +15,8 @@ policy.allow_implicit_invocation: true
 
 | 階段 | 讀取 | 涵蓋 |
 | --- | --- | --- |
-| 選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1`（審查、事實校閱、影像產生） | `references/run.md`，不讀下列各列 | 派遣檔、發動、結果與結束碼、回收、帳號、成本列、重跑 |
-| 首次派遣：撰寫派遣單、Preflight、Prepare、Start | `references/start.md` | 入口選擇、Dispatch 正式入口、Caller Session 併行准入、派工前的 AI-PROFILE 前置檢查、派工前的 git-workflow 分支符合性檢查、額度與範圍、advisor consult、腳本介面、派遣單、Git 前置探針與 worktree、PID 與並行檢查、模型檔位 |
+| 選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1`（審查、事實校閱、影像產生、顧問） | `references/run.md`，不讀下列各列 | 派遣檔、發動、結果與結束碼、回收、帳號、成本列、重跑 |
+| 首次派遣：撰寫派遣單、Preflight、Prepare、Start | `references/start.md` | 入口選擇、Dispatch 正式入口、Caller Session 併行准入、派工前的 AI-PROFILE 前置檢查、派工前的 git-workflow 分支符合性檢查、額度與範圍、advisor consult（舊入口分支）、腳本介面、派遣單、Git 前置探針與 worktree、PID 與並行檢查、模型檔位 |
 | 等待與續行：等待完成、判定出口、事件流取證、續 session | `references/execution.md`；續行時另讀 `references/recovery.md`「失敗與恢復導引」末段的 ScopePlan hash 紀錄說明 | 中斷保全、三出口、事件流取證、續行與跨介面接手、sandbox 外環境動作、網路能力邊界 |
 | 回收與清理：Collect、回收三態、Phase commit、Cleanup、結案報告 | `references/collect.md`，回收前另讀 `references/recovery.md`「RecoveryPrecheck」與 `references/start.md`「派遣單契約」的「補驗」小節（複核政策） | 歷史派遣 Cleanup 接手、Phase commit、執行端共用作業、回收三態、值班通知、保存契約、結案報告 |
 | 失敗與恢復 | `references/recovery.md`，再讀失敗所在階段的檔案 | 失敗形狀與恢復方式、四種阻塞形狀、RecoveryPrecheck |
@@ -34,7 +34,7 @@ references 內的「上節」「本 Skill 開頭」等位置描述沿用拆分�
 | 失敗與恢復導引 | `references/recovery.md` |
 | 額度與範圍契約 | `references/start.md` |
 | InterruptionSafeguard | `references/execution.md` |
-| Advisor consult resource dispatch | `references/start.md` |
+| Advisor consult resource dispatch | `references/run.md`「顧問（advise）」；舊入口分支見 `references/start.md` |
 | Git 前置探針與 worktree 生命週期 | `references/start.md` |
 | Worktree 安全不變量 | `references/start.md` |
 | Codex 進程 PID 與並行檢查 | `references/start.md` |

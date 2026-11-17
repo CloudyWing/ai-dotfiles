@@ -72,7 +72,7 @@
 
 額度查詢只供顯示與紀錄，不作派工的放行條件，也不參與執行者選擇。主 Agent 不因額度向使用者詢問是否派工或實測，advisor 授權除外。派工腳本不自動查詢額度，由主 Agent 以 `Get-CodexQuota.ps1` 手動查詢，時點為派工前、advisor 諮詢前、結案時，以及按需查詢。查詢失敗、快照過期或視窗重設時記為 unknown，派工照常進行，不推算餘額。
 
-派工範圍由派遣契約明確宣告，額度不改寫範圍。`ScopePlan` 只適用經 `scripts\Invoke-CodexDispatch.ps1` 發動的 Codex 資源派遣與 `advisor-consult`，經 `scripts\Invoke-CodexRun.ps1` 發動的派遣以派遣檔的 `targets` 為範圍，不使用 `ScopePlan`。最小單位固定如下。資源派遣使用派遣單第 3 欄的目標物件，`advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。`selected_units` 等於宣告的全部單位，執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
+派工範圍由派遣契約明確宣告，額度不改寫範圍。`ScopePlan` 只適用經 `scripts\Invoke-CodexDispatch.ps1` 發動的 Codex 資源派遣（含該入口保留的 `advisor-consult` 分支），經 `scripts\Invoke-CodexRun.ps1` 發動的派遣以派遣檔的 `targets` 為範圍，顧問以派遣檔的 `question_ids` 為範圍，不使用 `ScopePlan`。最小單位固定如下。資源派遣使用派遣單第 3 欄的目標物件，舊入口的 `advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。`selected_units` 等於宣告的全部單位，執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
 
 低額度或 unknown 都不縮小範圍、不停止執行中的派工。服務端明確拒絕（例如 usage-limit）時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不重試，不以未執行的單位補寫結論。經 `Invoke-CodexDispatch.ps1` 發動的派工保存 `ScopePlan`，所有派工保存 usage，作為成本紀錄。
 
@@ -84,20 +84,20 @@
 
 ### advisor consult 的不限階段掛載點
 
-`advisor` 是意見評估角色。`advisor-consult` 是 `DispatchKind=resource` 的 evidence-only 資源派遣，可由 `Analyst`、`Maintainer` 或主 Agent 在任一站作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。evidence pack 的內容、執行端讀取邊界、profile 拒絕條件、hash 檢查與報告落點依 `codex-dispatch` skill「Advisor consult resource dispatch」。
+`advisor` 是意見評估角色。`advise` 由 `scripts\Invoke-CodexRun.ps1` 發動，是 evidence-only 的唯讀諮詢，可由 `Analyst`、`Maintainer` 或主 Agent 在任一站作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。evidence pack 的內容、執行端讀取邊界、檔位綁定、hash 檢查、題號檢查與報告落點依 `codex-dispatch` skill「Advisor consult resource dispatch」。
 
 **諮詢分級**：諮詢依適用條件分為下列三類，執行者由登錄表依類型選出，授權要求不同。
 
 | 類別 | 適用條件 | 類型與執行者 | 授權 |
 | --- | --- | --- | --- |
 | 一般第二意見 | 方案取捨的另一角度、規則條款自洽性檢查、設計疑點複審 | `type=survey`，冷啟動 Claude Sonnet subagent，輸入為問題與證據檔絕對路徑 | 不需使用者授權 |
-| 高風險決策的跨家族交叉檢查 | 符合任一項即屬高風險決策。改變公開契約、資料結構或安全邊界；不可逆操作（刪除、發版、force push）；Sonnet 第二意見之間結論相左且影響 Phase 方向 | `type=advise`，Codex `advisor`；離線時改由 Sonnet 第二意見接手並標註同家族審查 | 啟動 Codex `advisor` 沿用 `[advisor 諮詢授權]` 與 `AdvisorRequestSource=user-explicit`；Sonnet 接手不需授權 |
+| 高風險決策的跨家族交叉檢查 | 符合任一項即屬高風險決策。改變公開契約、資料結構或安全邊界；不可逆操作（刪除、發版、force push）；Sonnet 第二意見之間結論相左且影響 Phase 方向 | `type=advise`，Codex `advisor`；離線時改由 Sonnet 第二意見接手並標註同家族審查 | 啟動 Codex `advisor` 沿用 `[advisor 諮詢授權]` 與 `advisor_request_source=user-explicit`；Sonnet 接手不需授權 |
 | 事實查核 | 版本、API 行為、外部規格等須上網查證的事實 | `type=factcheck`，Codex `content`；離線時改由 Sonnet subagent 承接 | 不需使用者授權 |
 
-advisor 只在使用者授權後啟動，以 `AdvisorRequestSource=user-explicit` 傳入。主 Agent 判斷值得諮詢時先向使用者提出請求，請求附上當下查詢到的額度供使用者判斷。請求原文固定如下，請求本身不構成授權。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 派工；該授權不延續到其他 Session。
+advisor 只在使用者授權後啟動，派遣檔的 `advisor_request_source` 填 `user-explicit`。主 Agent 判斷值得諮詢時先向使用者提出請求，請求附上當下查詢到的額度供使用者判斷。請求原文固定如下，請求本身不構成授權。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 填寫派遣檔；該授權不延續到其他 Session。
 
 ```text
 [advisor 諮詢授權] primary 剩餘 <n>%、secondary <剩餘 <m>% 或 無週視窗>；<推理密集點與資料已整理成 evidence pack 的理由>。是否執行 advisor 諮詢？
 ```
 
-授權後使用 evidence pack 的完整問題集，不依額度縮小。授權不略過 service rejection、evidence pack hash、read-only 與 process identity 檢查。
+授權後使用 evidence pack 的完整題號清單，不依額度縮小。授權不略過 service rejection、evidence pack hash 與唯讀邊界檢查。

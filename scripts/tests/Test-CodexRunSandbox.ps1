@@ -60,8 +60,10 @@ try {
             return [pscustomobject]@{ Exec = $exec; OutParent = $outParent; Out = $out; Base = $base; Report = $reportRoot; Ai = $ai }
         }
         function Invoke-SandboxProbe {
-            param($Fixture, [string[]]$Command, [string]$Name)
-            $permissionArgs = @(New-RunPermissionArgument -ExecutionRoot $Fixture.Exec -OutputDirectory $Fixture.Out -AiAgentsRoot $Fixture.Ai -ReportLineRoot $Fixture.Report)
+            param($Fixture, [string[]]$Command, [string]$Name, [switch]$OutputOnly)
+            $permissionArgs = if ($OutputOnly) { @(New-RunPermissionArgument -ExecutionRoot $Fixture.Out -OutputDirectory $Fixture.Out -OutputOnly) }
+            else { @(New-RunPermissionArgument -ExecutionRoot $Fixture.Exec -OutputDirectory $Fixture.Out -AiAgentsRoot $Fixture.Ai -ReportLineRoot $Fixture.Report) }
+            $workingDirectory = if ($OutputOnly) { $Fixture.Out } else { $Fixture.Exec }
             $arguments = New-Object 'System.Collections.Generic.List[string]'
             for ($i = 0; $i -lt $permissionArgs.Count; $i += 2) {
                 if ($permissionArgs[$i + 1].StartsWith('default_permissions=', [StringComparison]::Ordinal)) { continue }
@@ -71,7 +73,7 @@ try {
             foreach ($item in @('sandbox', '--include-managed-config', '--permission-profile', 'dispatch_review', '--', 'cmd.exe', '/d', '/c')) { $arguments.Add($item) }
             foreach ($item in $Command) { $arguments.Add($item) }
             $eventPath = Join-Path $Fixture.Base ($Name + '.out')
-            $result = Invoke-RunCodexProcess -CodexPath $codexPath -Argument @($arguments.ToArray()) -Prompt '' -CodexHome $codexHome -EventStreamPath $eventPath -StderrPath (Join-Path $Fixture.Base ($Name + '.err')) -WorkingDirectory $Fixture.Exec
+            $result = Invoke-RunCodexProcess -CodexPath $codexPath -Argument @($arguments.ToArray()) -Prompt '' -CodexHome $codexHome -EventStreamPath $eventPath -StderrPath (Join-Path $Fixture.Base ($Name + '.err')) -WorkingDirectory $workingDirectory
             $text = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($eventPath)) + [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes((Join-Path $Fixture.Base ($Name + '.err'))))
             return [pscustomobject]@{ ExitCode = [int]$result.ExitCode; Text = $text }
         }
@@ -162,6 +164,39 @@ try {
             $write = Invoke-SandboxProbe -Fixture $execIsAi -Command @('copy', '/y', (Join-Path $execIsAi.Exec 'a.txt'), $target) -Name 'execisai-write-out'
             Assert-Equal 0 $write.ExitCode
             Assert-True (Test-Path -LiteralPath $target) '輸出目錄應可寫'
+        }
+
+        $outputOnly = New-SandboxFixture -Name 'outputonly'
+        Write-TestUtf8 -Path (Join-Path $outputOnly.Out 'in.txt') -Text 'hello-output-only'
+        Write-TestUtf8 -Path (Join-Path $outputOnly.Out '.env') -Text 'SECRET=fixture-out-env'
+        # 專案根目錄（.git 所在）放說明檔與一個同層的一般檔：Codex 啟動時會載入說明檔，同層其他檔案仍須被拒。
+        $null = New-Item -ItemType Directory -Path (Join-Path $outputOnly.Base '.git') -Force
+        Write-TestUtf8 -Path (Join-Path $outputOnly.Base 'AGENTS.md') -Text 'project-agents-content'
+        Write-TestUtf8 -Path (Join-Path $outputOnly.Base 'sibling.txt') -Text 'project-sibling-content'
+        Test-Case 'SANDBOX-OUTPUT-ONLY 不開放工作目錄：輸出目錄可讀可寫，工作目錄、ai-agents、report_line_root 與輸出目錄的上層都讀寫被拒，輸出目錄內的機密樣式檔被拒' {
+            $read = Invoke-SandboxProbe -Fixture $outputOnly -Command @('type', (Join-Path $outputOnly.Out 'in.txt')) -Name 'oo-read-out' -OutputOnly
+            Assert-Equal 0 $read.ExitCode
+            Assert-True $read.Text.Contains('hello-output-only') '讀不到輸出目錄內的檔案'
+            $target = Join-Path $outputOnly.Out 'report.md'
+            $write = Invoke-SandboxProbe -Fixture $outputOnly -Command @('copy', '/y', (Join-Path $outputOnly.Out 'in.txt'), $target) -Name 'oo-write-out' -OutputOnly
+            Assert-Equal 0 $write.ExitCode
+            Assert-True (Test-Path -LiteralPath $target) '輸出目錄內沒有產生檔案'
+            # AGENTS.md 由 Codex 行程自己在啟動時載入（以權限設定的檔案項判定），不經沙盒內的子行程，因此這裡不斷言 cmd 能讀它；
+            # 能否啟動由真實發動驗證。此處只確認開放這個檔案不帶出同層其他檔案，也不使它可寫。
+            $docWrite = Invoke-SandboxProbe -Fixture $outputOnly -Command @('copy', '/y', (Join-Path $outputOnly.Out 'in.txt'), (Join-Path $outputOnly.Base 'AGENTS.md')) -Name 'oo-write-agents' -OutputOnly
+            Assert-True ($docWrite.ExitCode -ne 0) 'AGENTS.md 不得可寫'
+            Assert-Equal 'project-agents-content' ((Get-Content -LiteralPath (Join-Path $outputOnly.Base 'AGENTS.md') -Raw).Trim()) 'AGENTS.md 內容被改'
+            foreach ($denied in @(@((Join-Path $outputOnly.Base 'sibling.txt'), 'project-sibling-content', 'oo-read-sibling'), @((Join-Path $outputOnly.Exec 'a.txt'), 'hello-sandbox', 'oo-read-exec'), @((Join-Path $outputOnly.Report 'previous-report.md'), 'previous-report-content', 'oo-read-report'), @($instructions, 'instructions', 'oo-read-ai'), @((Join-Path $outputOnly.Out '.env'), 'fixture-out-env', 'oo-read-env'))) {
+                $probe = Invoke-SandboxProbe -Fixture $outputOnly -Command @('type', $denied[0]) -Name $denied[2] -OutputOnly
+                Assert-True ($probe.ExitCode -ne 0) ($denied[0] + ' 應被拒絕讀取')
+                Assert-True (-not $probe.Text.Contains($denied[1])) ($denied[0] + ' 的內容外洩')
+            }
+            foreach ($dir in @($outputOnly.Exec, $outputOnly.OutParent, $outputOnly.Report)) {
+                $deniedTarget = Join-Path $dir 'denied-oo'
+                $probe = Invoke-SandboxProbe -Fixture $outputOnly -Command @('md', $deniedTarget) -Name 'oo-write-denied' -OutputOnly
+                Assert-True ($probe.ExitCode -ne 0) ($dir + ' 應被拒絕寫入')
+                Assert-True (-not (Test-Path -LiteralPath $deniedTarget)) ($deniedTarget + ' 竟被建立')
+            }
         }
 
         $inside = New-SandboxFixture -Name 'inside' -OutputUnderExec

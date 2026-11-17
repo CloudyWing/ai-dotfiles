@@ -42,7 +42,7 @@
       "order": 35, "gated": false
     },
     {
-      "id": "codex-advisor", "display": "Codex advisor", "platform": "codex", "profile": "advisor", "family": "codex", "entry": "scripts/Invoke-CodexDispatch.ps1",
+      "id": "codex-advisor", "display": "Codex advisor", "platform": "codex", "profile": "advisor", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
       "profileSettings": { "model": "gpt-6.1-sol", "effort": "high", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["advise"], "tags": [], "when": {},
       "order": 40, "gated": true

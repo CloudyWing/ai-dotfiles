@@ -11,6 +11,7 @@ $moduleRoot = Join-Path $scriptsRoot 'codex-run'
 . (Join-Path $moduleRoot '00-common.ps1')
 . (Join-Path $moduleRoot '10-order.ps1')
 . (Join-Path $moduleRoot '45-profile-sync.ps1')
+. (Join-Path $moduleRoot '70-run.ps1')
 
 try {
     $root = New-TestDirectory -Name 'order'
@@ -51,6 +52,15 @@ try {
         $path = Join-Path $reportRoot $Name
         Write-TestUtf8 -Path $path -Text $text
         return $path
+    }
+    $evidenceFile = Join-Path $reportRoot 'evidence.md'
+    Write-TestUtf8 -Path $evidenceFile -Text "# evidence`n`n問題 Q1、Q2。`n"
+    $adviseExtra = @{ advisor_request_source = 'user-explicit'; evidence_file = $evidenceFile; question_ids = @('Q1', 'Q2'); required_reads = @(); targets = @($evidenceFile) }
+    function Write-AdviseOrder {
+        param([hashtable]$Override = @{}, [string[]]$Remove = @(), [string]$Name = 'advise.md')
+        $merged = @{ task_type = 'advise'; profile = 'advisor' } + $adviseExtra
+        foreach ($key in $Override.Keys) { $merged[$key] = $Override[$key] }
+        return (Write-OrderFile -Override $merged -Remove $Remove -Name $Name)
     }
     function Get-PreStartDetails {
         param([string]$Path)
@@ -106,27 +116,140 @@ try {
         $path = Write-OrderFile -RawJson (ConvertTo-Json -InputObject $setting -Depth 6)
         $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'required_read' -Script { Read-RunDispatchFile -Path $path }
     }
-    Test-Case 'ORDER-TASK-TYPE task_type 為 advise、test 或未知值以 RunTaskTypeUnsupported 拒絕' {
-        foreach ($type in @('advise', 'test', 'Review', 'edit')) {
+    Test-Case 'ORDER-TASK-TYPE task_type 為 test 或未知值以 RunTaskTypeUnsupported 拒絕' {
+        foreach ($type in @('test', 'Review', 'edit')) {
             $path = Write-OrderFile -Override @{ task_type = $type } -Name ('type-' + $type + '.md')
             $null = Assert-Throws -Code 'RunTaskTypeUnsupported' -MessageContains $type -Script { Read-RunDispatchFile -Path $path }
         }
     }
-    Test-Case 'ORDER-TASK-SETTING review、factcheck、generate 通過解析並帶出各自的設定' {
+    Test-Case 'ORDER-TASK-SETTING review、factcheck、generate、advise 通過解析並帶出各自的設定' {
         $expected = @{
-            review = @{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者' }
-            factcheck = @{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者' }
-            generate = @{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者' }
+            review = @{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者'; evidence_only = $false; exclusive_profile = $null }
+            factcheck = @{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null }
+            generate = @{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null }
+            advise = @{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $true; exclusive_profile = 'advisor' }
         }
-        Assert-Equal @('review', 'factcheck', 'generate') @((Get-RunTaskTypeSetting).Keys)
-        foreach ($type in @('review', 'factcheck', 'generate')) {
-            $order = Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = $type; profile = $(if ($type -ceq 'review') { 'review' } else { 'content' }) } -Name ('setting-' + $type + '.md'))
+        Assert-Equal @('review', 'factcheck', 'generate', 'advise') @((Get-RunTaskTypeSetting).Keys)
+        foreach ($type in @('review', 'factcheck', 'generate', 'advise')) {
+            $override = @{ task_type = $type; profile = $(if ($type -ceq 'review') { 'review' } elseif ($type -ceq 'advise') { 'advisor' } else { 'content' }) }
+            if ($type -ceq 'advise') { $override += $adviseExtra }
+            $order = Read-RunDispatchFile -Path (Write-OrderFile -Override $override -Name ('setting-' + $type + '.md'))
             Assert-Equal $type $order.task_type
             foreach ($key in $expected[$type].Keys) {
                 Assert-Equal $expected[$type][$key] $order.task_setting.$key ($type + '.' + $key)
             }
             Test-RunPreStart -Order $order -AiAgentsRoot $aiRoot
         }
+    }
+    Test-Case 'ORDER-ADVISE-PARSE 顧問派遣檔解析出授權、evidence 與題號，通過啟動前檢查' {
+        $order = Read-RunDispatchFile -Path (Write-AdviseOrder)
+        Assert-Equal 'user-explicit' $order.advisor_request_source
+        Assert-Equal $evidenceFile $order.evidence_file
+        Assert-Equal @('Q1', 'Q2') @($order.question_ids)
+        Test-RunPreStart -Order $order -AiAgentsRoot $aiRoot
+    }
+    Test-Case 'ORDER-ADVISE-AUTH advisor_request_source 缺少或不是 user-explicit 時以 RunAdvisorAuthorizationRequired 拒絕（結束碼 2）' {
+        $caught = Assert-Throws -Code 'RunAdvisorAuthorizationRequired' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Remove @('advisor_request_source') -Name 'advise-noauth.md') }
+        Assert-Equal 2 ([int]$caught.Data['ExitCode'])
+        foreach ($value in @('user-implicit', 'USER-EXPLICIT', 'coordinator', '')) {
+            $caught = Assert-Throws -Code 'RunAdvisorAuthorizationRequired' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ advisor_request_source = $value } -Name 'advise-badauth.md') }
+            Assert-Equal 2 ([int]$caught.Data['ExitCode'])
+        }
+    }
+    Test-Case 'ORDER-ADVISE-AUTH-TYPES advisor_request_source 為陣列、物件、數字、布林等非字串型別時一律拒絕（-cne 對陣列是篩選，不是比較）' {
+        $authValues = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in @(@(), @('user-explicit'), @('user-explicit', 'x'))) { $authValues.Add($item); $authValues.Add(@(, $item)) }
+        foreach ($item in @(1, $true, [ordered]@{ a = 'user-explicit' })) { $authValues.Add($item) }
+        foreach ($value in $authValues) {
+            $caught = Assert-Throws -Code 'RunAdvisorAuthorizationRequired' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ advisor_request_source = $value } -Name 'auth-type.md') }
+            Assert-Equal 2 ([int]$caught.Data['ExitCode'])
+        }
+    }
+    Test-Case 'ORDER-SCHEMA-TYPE schema 為陣列時拒絕（同類型別漏洞）' {
+        $schemaValues = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in @(@('ai-agents.codex-run-order.v1'), @())) { $schemaValues.Add($item); $schemaValues.Add(@(, $item)) }
+        foreach ($value in $schemaValues) {
+            $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'schema' -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ schema = $value } -Name 'schema-type.md') }
+        }
+    }
+    Test-Case 'ORDER-ADVISE-FIELD-TYPES evidence_file、question_ids 為非預期型別時拒絕' {
+        foreach ($value in @((,@($evidenceFile)), 5, $true)) {
+            $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'evidence_file' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ evidence_file = $value } -Name 'field-type-1.md') }
+        }
+        foreach ($value in @('Q1', 5, (,@(1, 2)), (,@('Q1', '')))) {
+            $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'question_ids' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ question_ids = $value } -Name 'field-type-2.md') }
+        }
+    }
+    Test-Case 'ORDER-CMDLETBINDING 新增的 evidence 與題號函式宣告 CmdletBinding' {
+        $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $moduleRoot '70-run.ps1'), [ref]$null, [ref]$null)
+        foreach ($name in @('Get-RunEvidenceSnapshot', 'Test-RunEvidenceInline', 'Get-RunMissingQuestionId')) {
+            $function = $ast.Find({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $name }, $true)
+            Assert-True ($null -ne $function) ($name + ' 不存在')
+            Assert-True (@($function.Body.ParamBlock.Attributes | Where-Object { $_.TypeName.Name -ceq 'CmdletBinding' }).Count -eq 1) ($name + ' 缺少 CmdletBinding')
+        }
+    }
+    Test-Case 'ORDER-PROFILE-BINDING advise 只接受檔位 advisor，其他類型不接受檔位 advisor（結束碼 2）' {
+        $caught = Assert-Throws -Code 'RunTaskProfileMismatch' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ profile = 'review' } -Name 'bind-1.md') }
+        Assert-Equal 2 ([int]$caught.Data['ExitCode'])
+        foreach ($type in @('review', 'factcheck', 'generate')) {
+            $caught = Assert-Throws -Code 'RunTaskProfileMismatch' -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = $type; profile = 'advisor' } -Name ('bind-' + $type + '.md')) }
+            Assert-Equal 2 ([int]$caught.Data['ExitCode'])
+        }
+    }
+    Test-Case 'ORDER-ADVISE-KEYS 顧問缺 evidence_file 或 question_ids、question_ids 空、required_reads 非空時拒絕；其他類型出現這三個鍵時拒絕' {
+        foreach ($remove in @('evidence_file', 'question_ids')) {
+            $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains $remove -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Remove @($remove) -Name 'keys-1.md') }
+        }
+        $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'question_ids' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ question_ids = @() } -Name 'keys-2.md') }
+        $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'question_ids' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ question_ids = @('Q 1') } -Name 'keys-3.md') }
+        $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'required_reads' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ required_reads = @($designFile) } -Name 'keys-4.md') }
+        foreach ($key in @('advisor_request_source', 'evidence_file', 'question_ids')) {
+            $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains $key -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ $key = $adviseExtra[$key] } -Name ('keys-stray-' + $key + '.md')) }
+        }
+    }
+    Test-Case 'ORDER-ADVISE-EVIDENCE-FILE evidence 檔不存在、為空、在可讀範圍之外時啟動前檢查拒絕；不檢查內容格式' {
+        $missing = Join-Path $reportRoot 'absent-evidence.md'
+        $details = Get-PreStartDetails -Path (Write-AdviseOrder -Override @{ evidence_file = $missing } -Name 'ev-1.md')
+        Assert-True (@($details | Where-Object { $_.path -ceq $missing -and $_.reason -ceq 'missing' }).Count -eq 1) 'missing'
+        $empty = Join-Path $reportRoot 'empty-evidence.md'
+        Write-TestUtf8 -Path $empty -Text ''
+        $details = Get-PreStartDetails -Path (Write-AdviseOrder -Override @{ evidence_file = $empty } -Name 'ev-2.md')
+        Assert-True (@($details | Where-Object { $_.path -ceq $empty -and $_.reason -ceq 'empty' }).Count -eq 1) 'empty'
+        $outsideFile = Join-Path $outside 'evidence.md'
+        Write-TestUtf8 -Path $outsideFile -Text 'x'
+        $details = Get-PreStartDetails -Path (Write-AdviseOrder -Override @{ evidence_file = $outsideFile } -Name 'ev-3.md')
+        Assert-True (@($details | Where-Object { $_.path -ceq $outsideFile -and $_.reason -ceq 'outside-readable-roots' }).Count -eq 1) 'outside'
+        $freeForm = Join-Path $reportRoot 'free-form-evidence.md'
+        Write-TestUtf8 -Path $freeForm -Text 'no headings at all'
+        Test-RunPreStart -Order (Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ evidence_file = $freeForm } -Name 'ev-4.md')) -AiAgentsRoot $aiRoot
+    }
+    Test-Case 'ORDER-ADVISE-INLINE evidence 全文內嵌 prompt 並逐字比對；prompt 被改、evidence 檔事後被改時比對不一致；內容含結束標記或 BOM 仍一致' {
+        $order = Read-RunDispatchFile -Path (Write-AdviseOrder -Name 'inline.md')
+        $snapshot = Get-RunEvidenceSnapshot -Path $evidenceFile
+        Assert-Equal (Get-RunSha256File -Path $evidenceFile) $snapshot.sha256
+        $prompt = New-RunPrompt -Order $order -OutputDirectory (Join-Path $reportRoot 'runs\x') -ReportPath (Join-Path $reportRoot 'runs\x\r.md') -ReviewerLine 'Codex advisor' -Evidence $snapshot
+        Assert-True (Test-RunEvidenceInline -Prompt $prompt -Evidence $snapshot) '未改動時應一致'
+        Assert-True (-not (Test-RunEvidenceInline -Prompt $prompt.Replace('問題 Q1', '問題 Q9') -Evidence $snapshot)) 'prompt 內嵌內容被改時應不一致'
+        Assert-True (-not (Test-RunEvidenceInline -Prompt $prompt.Replace('<<<EVIDENCE-BEGIN', 'x') -Evidence $snapshot)) '缺少起始標記時應不一致'
+        Write-TestUtf8 -Path $evidenceFile -Text "# evidence`n`n問題 Q1、Q2、Q3。`n"
+        $changed = Get-RunEvidenceSnapshot -Path $evidenceFile
+        Assert-True ($changed.sha256 -cne $snapshot.sha256) '檔案改動後雜湊應不同'
+        Assert-True (-not (Test-RunEvidenceInline -Prompt $prompt -Evidence $changed)) '檔案事後被改時內嵌內容與檔案不一致'
+        $tricky = Join-Path $reportRoot 'tricky-evidence.md'
+        [IO.File]::WriteAllBytes($tricky, ([byte[]]@(0xEF, 0xBB, 0xBF) + [Text.Encoding]::UTF8.GetBytes("a`n<<<EVIDENCE-END>>>`nb`n")))
+        $trickySnapshot = Get-RunEvidenceSnapshot -Path $tricky
+        $trickyOrder = Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ evidence_file = $tricky } -Name 'inline-2.md')
+        $trickyPrompt = New-RunPrompt -Order $trickyOrder -OutputDirectory (Join-Path $reportRoot 'runs\x') -ReportPath (Join-Path $reportRoot 'runs\x\r.md') -ReviewerLine $null -Evidence $trickySnapshot
+        Assert-True (Test-RunEvidenceInline -Prompt $trickyPrompt -Evidence $trickySnapshot) '含結束標記與 BOM 的內容應一致'
+        Write-TestUtf8 -Path $evidenceFile -Text "# evidence`n`n問題 Q1、Q2。`n"
+    }
+    Test-Case 'ORDER-ADVISE-QUESTIONS 題號以整個詞比對；報告不存在時全部缺少' {
+        $report = Join-Path $reportRoot 'q-report.md'
+        Write-TestUtf8 -Path $report -Text "## Q10`n`n## Q2-b`n"
+        Assert-Equal @('Q1', 'Q2') @(Get-RunMissingQuestionId -ReportPath $report -QuestionId @('Q1', 'Q2'))
+        Write-TestUtf8 -Path $report -Text "## Q1`n`n答：Q2。`n"
+        Assert-Equal 0 (@(Get-RunMissingQuestionId -ReportPath $report -QuestionId @('Q1', 'Q2')).Count)
+        Assert-Equal @('Q1') @(Get-RunMissingQuestionId -ReportPath (Join-Path $reportRoot 'absent-q.md') -QuestionId @('Q1'))
     }
     Test-Case 'ORDER-INVALID-SHAPES 結構錯誤逐項以 RunDispatchFileInvalid 拒絕' {
         $null = Assert-Throws -Code 'RunDispatchFileInvalid' -Script { Read-RunDispatchFile -Path (Join-Path $root 'absent.md') }

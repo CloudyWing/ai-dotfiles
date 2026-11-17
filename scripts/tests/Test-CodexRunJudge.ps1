@@ -89,6 +89,14 @@ try {
         $stderrNoExit = Get-Evidence -Name 'stderr-terminal-noexit' -Event @([ordered]@{ type = 'turn.started' }) -Stderr ('2026-11-09T09:02:00Z ERROR codex_core::client: upstream exploded')
         Assert-True ($null -eq $stderrNoExit.rejection_kind)
     }
+    Test-Case 'EVID-LOCAL-INSTRUCTIONS 啟動時載入專案說明檔被本機權限拒絕（零進度）屬本地失敗，不是服務端拒絕、不換帳號；其他零進度的終局失敗維持 unclassified' {
+        $stderrLine = '2026-11-17T12:07:07.255872Z ERROR codex_core::session: Failed to create session: failed to load AGENTS.md instructions for environment `local`: 存取被拒。 (os error 5)'
+        $local = Get-Evidence -Name 'instructions-denied' -Event @() -Stderr $stderrLine -ExitCode 1
+        Assert-True ($null -eq $local.rejection_kind) '本機載入說明檔失敗不應判為拒絕'
+        Assert-True (-not (Test-RunFailoverEligible -Evidence $local)) '不應換帳號'
+        $other = Get-Evidence -Name 'other-zero-progress' -Event @() -Stderr '2026-11-17T12:07:07Z ERROR codex_core::session: Failed to create session: upstream exploded' -ExitCode 1
+        Assert-Equal 'unclassified' $other.rejection_kind
+    }
     Test-Case 'EVID-USAGE 用量取最後一筆有效的 turn.completed，不逐筆加總' {
         $second = [ordered]@{ input_tokens = 2500; cached_input_tokens = 1200; output_tokens = 90 }
         $e = Get-Evidence -Name 'usage-last' -Event @([ordered]@{ type = 'turn.completed'; usage = $usageGood }, [ordered]@{ type = 'turn.completed'; usage = $second })

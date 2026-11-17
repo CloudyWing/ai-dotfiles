@@ -213,6 +213,8 @@ decision_reason
 
 ## Advisor consult resource dispatch
 
+選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時，顧問依 `run.md`「顧問（advise）」，不讀本節。本節描述 `Invoke-CodexDispatch.ps1` 仍保留的顧問分支。
+
 `advisor` 是意見評估角色。`Profile=advisor` 只接受 `TaskType=advisor-consult`、`DispatchKind=resource` 與 `WriteMode=readonly`；Workflow、寫入模式或其他 TaskType 在 Codex 啟動前以 `AdvisorImplementationProfileRejected` 拒絕，`TaskType=advisor-consult` 未搭配 `Profile=advisor` 時以 `AdvisorProfileRequired` 拒絕。
 
 `TaskType=advisor-consult` 使用單一 evidence pack，schema 為 `advisor-consult.evidence.v1`，必須包含目標段落原文摘錄與來源位置、已知結論、待答問題、可能反證與邊界。advisor 執行端只可讀取該 evidence pack，不得探索 repository、讀取其他來源、修改檔案或寫入 report。
@@ -594,7 +596,7 @@ Start 啟動前依 `scripts/dispatch/sandbox-env-denylist.psd1` 移除子程序�
 | `review` | Codex `Reviewer` 審查（`type=review`），不依檔數或規則檔與否分層 |
 | `scan` | 測試（煙霧驗證取證，`type=test`） |
 | `content` | 事實校閱與上網查證（`type=factcheck`）、影像產生（`type=generate`） |
-| `advisor` | 意見評估（`type=advise`），授權與 gate 見「Advisor consult resource dispatch」 |
+| `advisor` | 意見評估（`type=advise`），目前由 `scripts/Invoke-CodexRun.ps1` 發動，見 `run.md`「顧問（advise）」；舊入口分支的授權與 gate 見「Advisor consult resource dispatch」 |
 
 已移除的 `default`、`implement`、`intensive`、`deep-review` 檔位不能續行。續行錨點為這些檔位時，`Start` 在啟動前以 `ResumeProfileRemoved` 拒絕並指名該檔位，`process_started=false`；需要繼續時以新 `dispatchSlug` 冷啟動，改用上表的檔位。`-Profile` 或 Request 的 `profile` 指定這些名稱時，同樣在啟動前拒絕。
 `Inspect` 與 `Collect` 不經檔位白名單，照常讀取舊 RunRecord。統計舊 RunRecord 時依派工角色換算檔位：reviewer 對應 `review`，scan、verify、probe 對應 `scan`，`deep-review` 換算為 `review`；舊 `scan` 紀錄不依任務類型拆分；developer、support 的舊紀錄只供讀取，不換算到現行檔位。

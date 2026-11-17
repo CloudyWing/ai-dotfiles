@@ -8,6 +8,7 @@
 #   last_message  寫入 --output-last-message 指定路徑的文字，null 表示不寫
 #   report        寫入 stdin prompt 中「報告檔:」行指定路徑的文字，null 表示不寫，空字串表示建立空檔
 #   modify_target 執行中追加內容的檔案路徑
+#   delete_target 執行中刪除的檔案路徑
 #   hang_seconds  輸出與檔案都寫完後不結束，睡這麼多秒再以 exit_code 結束（exec 用；本行程的 PID 寫到場景目錄 pid-<名稱>.txt）
 #   mxc           sandbox 子命令的回應，ok 或 fail（預設 ok）
 # exec 時若 stdin prompt 的「輸出目錄:」行對應的執行紀錄（<輸出目錄>.record.json）已存在，複製為場景目錄的
@@ -72,6 +73,9 @@ if ($outputDirectoryMatch.Success) {
 }
 $modifyTarget = Get-ScenarioValue 'modify_target' $null
 if ($null -ne $modifyTarget) { [IO.File]::AppendAllText($modifyTarget, "`nmodified-by-fake-codex", $utf8NoBom) }
+
+$deleteTarget = Get-ScenarioValue 'delete_target' $null
+if ($null -ne $deleteTarget) { Remove-Item -LiteralPath $deleteTarget -Force }
 
 $stdout = [Console]::OpenStandardOutput()
 $eventList = Get-ScenarioValue 'events' @()

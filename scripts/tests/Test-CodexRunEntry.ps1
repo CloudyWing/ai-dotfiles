@@ -847,8 +847,8 @@ try {
         Assert-True (@($record.permission.read_roots) -contains $generatedImages) 'permission.read_roots 應含 generated_images'
         Assert-Equal 1 (@($record.permission.write_roots).Count) '可寫範圍只有輸出目錄'
     }
-    Test-Case 'E2E-TASK-TYPE-UNSUPPORTED 尚未切入的 task_type（test、advise）：結束碼 2、RunTaskTypeUnsupported，沒有任何呼叫' {
-        foreach ($type in @('test', 'advise')) {
+    Test-Case 'E2E-TASK-TYPE-UNSUPPORTED 尚未切入的 task_type（test）：結束碼 2、RunTaskTypeUnsupported，沒有任何呼叫' {
+        foreach ($type in @('test')) {
             $envType = New-EntryEnvironment -Name ('task-' + $type)
             $runType = Invoke-Entry -Environment $envType -OrderPath (New-OrderFile -Environment $envType -Override @{ task_type = $type })
             Assert-Success $runType
@@ -856,6 +856,216 @@ try {
             Assert-Equal 'RunTaskTypeUnsupported' $runType.Document.error.code
             Assert-Equal 0 ((Get-Call -Environment $envType).Count)
         }
+    }
+    function New-AdviseEnvironment {
+        param([string]$Name, [string]$EvidenceText = "# evidence`n`n## Q1`n問題一。`n`n## Q2`n問題二。`n")
+        $envAdv = New-EntryEnvironment -Name $Name
+        $null = New-TestAccountHome -Root (Join-Path $envAdv.Base 'homes') -Name 'acct-a' -Profile 'advisor' -Model 'model-a'
+        $evidencePath = Join-Path $envAdv.ReportRoot 'evidence.md'
+        Write-TestUtf8 -Path $evidencePath -Text $EvidenceText
+        $envAdv | Add-Member -NotePropertyName Evidence -NotePropertyValue $evidencePath
+        return $envAdv
+    }
+    function New-AdviseOrderFile {
+        param($Environment, [hashtable]$Override = @{}, [string]$FileName = 'advise.md')
+        $merged = @{ task_type = 'advise'; profile = 'advisor'; role_file = (Join-Path $Environment.Exec 'role.toml'); report_name = 'advice-report.md'; required_reads = @(); targets = @($Environment.Evidence)
+            advisor_request_source = 'user-explicit'; evidence_file = $Environment.Evidence; question_ids = @('Q1', 'Q2'); cycle = [ordered]@{ id = 'line-a-advise'; round = 1; role = 'advise' } }
+        foreach ($key in $Override.Keys) { $merged[$key] = $Override[$key] }
+        return (New-OrderFile -Environment $Environment -Slug 'advise-p1' -Override $merged -FileName $FileName)
+    }
+    Test-Case 'E2E-ADVISE 顧問以同一入口發動：只開放輸出目錄、evidence 內嵌 prompt、最後訊息存成報告、題號齊備時成功' {
+        $envAdv = New-AdviseEnvironment -Name 'advise-ok'
+        $answer = "## Q1`n建議採 A。`n`n## Q2`n不需要。`n"
+        Set-Scenario -Environment $envAdv -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = $answer }
+        $runAdv = Invoke-Entry -Environment $envAdv -OrderPath (New-AdviseOrderFile -Environment $envAdv)
+        Assert-Success $runAdv
+        Assert-Equal 0 $runAdv.ExitCode
+        Assert-Equal 'success' $runAdv.Document.status
+        Assert-Equal 0 (@($runAdv.Document.final.missing_question_ids).Count)
+        Assert-Equal 'checked' $runAdv.Document.final.question_check
+        Assert-True ($null -eq $runAdv.Document.final.review_report_check) '顧問不做 manifest 檢查'
+        Assert-Equal $false $runAdv.Document.final.source_changed
+        $record = Get-Record -Path $runAdv.Document.final.record_path
+        Assert-Equal $answer ([IO.File]::ReadAllText($runAdv.Document.final.report_path).Replace("`r`n", "`n"))
+        $evidenceBytes = [IO.File]::ReadAllBytes($envAdv.Evidence)
+        $expectedSha = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($evidenceBytes)).ToLowerInvariant()
+        Assert-Equal $expectedSha $record.evidence.sha256
+        Assert-Equal $expectedSha $record.evidence.sha256_end
+        Assert-Equal ([long]$evidenceBytes.Length) ([long]$record.evidence.bytes)
+        Assert-Equal $true $record.evidence.inline_verified
+        Assert-Equal @($record.output_dir) @($record.permission.read_roots)
+        Assert-Equal @($record.output_dir) @($record.permission.write_roots)
+        $execCall = @(@((Get-Call -Environment $envAdv) | Where-Object { $_.subcommand -ceq 'exec' }))
+        Assert-Equal 1 $execCall.Count
+        $execArgs = @($execCall[0].args)
+        Assert-Equal $record.output_dir $execArgs[([array]::IndexOf($execArgs, '--cd') + 1)] '--cd 應指向輸出目錄'
+        Assert-Equal 'advisor' $execArgs[([array]::IndexOf($execArgs, '--profile') + 1)]
+        $filesystem = [string]($execArgs | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
+        # 輸出目錄位於線工作樹之下，因此以路徑鍵判定：filesystem 只有輸出目錄一個路徑鍵，沒有工作目錄與 report_line_root 的鍵。
+        $pathKeys = @([regex]::Matches($filesystem, "'([^']+)'=") | ForEach-Object { $_.Groups[1].Value })
+        Assert-Equal @($record.output_dir) $pathKeys ('權限設定只能有輸出目錄一個路徑鍵：' + $filesystem)
+        Assert-True (-not $filesystem.Contains('.ai-agents')) '權限設定不得含 ~\.ai-agents'
+        Assert-True (-not ($execArgs -contains '--search')) '顧問不帶 --search'
+        $stdinText = [IO.File]::ReadAllText((Join-Path $envAdv.Scenarios 'stdin-acct-a.txt'))
+        Assert-True $stdinText.Contains("## Q1`n問題一。") 'prompt 應內嵌 evidence 全文'
+        Assert-True $stdinText.Contains($expectedSha) 'prompt 應含 evidence 雜湊'
+        Assert-True (-not $stdinText.Contains('executionRoot')) 'prompt 不列出 executionRoot'
+        Assert-True (-not $stdinText.Contains('role.toml')) 'prompt 不要求讀角色規則檔'
+        $rows = @(Get-LedgerDataRow -Path (Join-Path $envAdv.ReportRoot 'cost-ledger.md'))
+        Assert-Equal 1 $rows.Count
+        Assert-True ((Split-LedgerRow -Row $rows[0])[13].Contains('task=advise')) '成本列備註應記 task=advise'
+    }
+    Test-Case 'E2E-ADVISE-PROJECT-DOC 專案根目錄有 AGENTS.md 時，exec 的權限設定含該檔的 read 項，不含執行根目錄本身的鍵，record 記錄 read_files' {
+        $envDoc = New-AdviseEnvironment -Name 'advise-projdoc'
+        $null = New-Item -ItemType Directory -Path (Join-Path $envDoc.Exec '.git') -Force
+        Write-TestUtf8 -Path (Join-Path $envDoc.Exec 'AGENTS.md') -Text 'project-agents'
+        Assert-True ($envDoc.ReportRoot.StartsWith($envDoc.Exec, [StringComparison]::OrdinalIgnoreCase)) '前提：report_line_root 位於執行根目錄之下'
+        Set-Scenario -Environment $envDoc -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = "## Q1`na`n## Q2`nb`n" }
+        $runDoc = Invoke-Entry -Environment $envDoc -OrderPath (New-AdviseOrderFile -Environment $envDoc)
+        Assert-Success $runDoc
+        Assert-Equal 0 $runDoc.ExitCode
+        $recordDoc = Get-Record -Path $runDoc.Document.final.record_path
+        $agentsFile = Join-Path $envDoc.Exec 'AGENTS.md'
+        Assert-Equal @($agentsFile) @($recordDoc.permission.read_files)
+        $execDoc = @(@((Get-Call -Environment $envDoc) | Where-Object { $_.subcommand -ceq 'exec' }))[0]
+        $fsDoc = [string](@($execDoc.args) | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
+        $keysDoc = @([regex]::Matches($fsDoc, "'([^']+)'=") | ForEach-Object { $_.Groups[1].Value })
+        Assert-Equal @($recordDoc.output_dir, $agentsFile) $keysDoc ('路徑鍵只能是輸出目錄與 AGENTS.md：' + $fsDoc)
+        Assert-True (-not $keysDoc.Contains($envDoc.Exec)) '不得有執行根目錄本身的鍵'
+    }
+    Test-Case 'E2E-ADVISE-EVIDENCE-BETWEEN-ATTEMPTS 第一次嘗試被服務端拒絕後 evidence 在換帳號前被改：停止，不以新內容重跑（RunEvidenceChangedBetweenAttempts、結束碼 2）' {
+        $envBt = New-AdviseEnvironment -Name 'advise-between'
+        $null = New-TestAccountHome -Root (Join-Path $envBt.Base 'homes') -Name 'acct-b' -Profile 'advisor' -Model 'model-b'
+        Set-Scenario -Environment $envBt -Account 'acct-a' -Scenario @{ events = $usageLimitEvents; exit_code = 1; modify_target = $envBt.Evidence }
+        Set-Scenario -Environment $envBt -Account 'acct-b' -Scenario @{ events = $successEvents; exit_code = 0; last_message = "## Q1`na`n## Q2`nb`n" }
+        $runBt = Invoke-Entry -Environment $envBt -OrderPath (New-AdviseOrderFile -Environment $envBt)
+        Assert-Success $runBt
+        Assert-Equal 2 $runBt.ExitCode
+        Assert-Equal 'RunEvidenceChangedBetweenAttempts' $runBt.Document.error.code
+        Assert-Equal 1 (@(@((Get-Call -Environment $envBt) | Where-Object { $_.subcommand -ceq 'exec' })).Count) '第二個帳號不得啟動'
+    }
+    Test-Case 'E2E-ADVISE-MISSING-QUESTION 報告缺少題號：結束碼 1、failed、questions-missing、結果列出缺少的題號，不自動重跑' {
+        $envMiss = New-AdviseEnvironment -Name 'advise-miss'
+        Set-Scenario -Environment $envMiss -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = "## Q1`n只回答第一題。`n" }
+        $runMiss = Invoke-Entry -Environment $envMiss -OrderPath (New-AdviseOrderFile -Environment $envMiss)
+        Assert-Success $runMiss
+        Assert-Equal 1 $runMiss.ExitCode
+        Assert-Equal 'failed' $runMiss.Document.status
+        Assert-Equal @('Q2') @($runMiss.Document.final.missing_question_ids)
+        $recordMiss = Get-Record -Path $runMiss.Document.final.record_path
+        Assert-Equal 'questions-missing' $recordMiss.failure_reason
+        Assert-Equal @('Q2') @($recordMiss.missing_question_ids)
+        Assert-Equal 1 (@(@((Get-Call -Environment $envMiss) | Where-Object { $_.subcommand -ceq 'exec' })).Count) '不得自動重跑'
+        Assert-Equal 1 (@($runMiss.Document.attempts).Count)
+    }
+    Test-Case 'E2E-ADVISE-QUESTION-TOKEN 題號比對以整個詞為準（Q1 不被 Q10 滿足）' {
+        $envTok = New-AdviseEnvironment -Name 'advise-token'
+        Set-Scenario -Environment $envTok -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = "## Q10`n其他題。`n## Q2`n回答。`n" }
+        $runTok = Invoke-Entry -Environment $envTok -OrderPath (New-AdviseOrderFile -Environment $envTok)
+        Assert-Success $runTok
+        Assert-Equal 1 $runTok.ExitCode
+        Assert-Equal @('Q1') @($runTok.Document.final.missing_question_ids)
+    }
+    Test-Case 'E2E-ADVISE-SOURCE-CHANGED 執行期間 evidence 檔被改：即使題號齊備也是失敗（結束碼 1、source-changed），source_changed 為 true，起訖雜湊不同，紀錄完整' {
+        $envChg = New-AdviseEnvironment -Name 'advise-changed'
+        Set-Scenario -Environment $envChg -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = "## Q1`na`n## Q2`nb`n"; modify_target = $envChg.Evidence }
+        $runChg = Invoke-Entry -Environment $envChg -OrderPath (New-AdviseOrderFile -Environment $envChg)
+        Assert-Success $runChg
+        Assert-Equal 1 $runChg.ExitCode
+        Assert-Equal 'failed' $runChg.Document.status
+        Assert-Equal $true $runChg.Document.final.source_changed
+        $recordChg = Get-Record -Path $runChg.Document.final.record_path
+        Assert-Equal 'source-changed' $recordChg.failure_reason
+        Assert-Equal 'failed' $recordChg.result
+        Assert-Equal $true $recordChg.source_changed
+        Assert-True ($recordChg.evidence.sha256 -cne $recordChg.evidence.sha256_end) '起訖雜湊應不同'
+        Assert-Equal $recordChg.evidence.sha256 $recordChg.source_state_start.sha256
+        Assert-True ($null -ne $recordChg.ended_utc) '結束紀錄應完整寫出'
+        Assert-Equal 1 (@(@((Get-Call -Environment $envChg) | Where-Object { $_.subcommand -ceq 'exec' })).Count) '不得自動重跑'
+    }
+    Test-Case 'E2E-ADVISE-EVIDENCE-DELETED 執行期間 evidence 檔被刪除：不以未預期錯誤中斷，紀錄完整，結果失敗、source_changed 為 true、結束碼非零' {
+        $envDel = New-AdviseEnvironment -Name 'advise-deleted'
+        Set-Scenario -Environment $envDel -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = "## Q1`na`n## Q2`nb`n"; delete_target = $envDel.Evidence }
+        $runDel = Invoke-Entry -Environment $envDel -OrderPath (New-AdviseOrderFile -Environment $envDel)
+        Assert-Success $runDel
+        Assert-Equal 1 $runDel.ExitCode
+        Assert-Equal 'failed' $runDel.Document.status
+        Assert-True ($null -eq $runDel.Document.error) ('不應是未預期錯誤：' + $runDel.Stdout)
+        Assert-Equal $true $runDel.Document.final.source_changed
+        $recordDel = Get-Record -Path $runDel.Document.final.record_path
+        Assert-Equal 'source-changed' $recordDel.failure_reason
+        Assert-True ($null -eq $recordDel.evidence.sha256_end) '消失時結束雜湊為 null'
+        Assert-Equal $true $recordDel.source_state_end.unavailable
+        Assert-True ($null -ne $recordDel.ended_utc) '結束紀錄應完整寫出'
+        Assert-Equal 1 (@(Get-LedgerDataRow -Path (Join-Path $envDel.ReportRoot 'cost-ledger.md')).Count) '成本列應寫出'
+    }
+    Test-Case 'E2E-ADVISE-QUESTIONS-NONSUCCESS 非成功結果仍列出缺少的題號；沒有報告可檢查時標示 unavailable 且不是空陣列' {
+        $envNs = New-AdviseEnvironment -Name 'advise-nonsuccess'
+        Set-Scenario -Environment $envNs -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 3; last_message = "## Q1`n只答第一題。`n" }
+        $runNs = Invoke-Entry -Environment $envNs -OrderPath (New-AdviseOrderFile -Environment $envNs)
+        Assert-Success $runNs
+        Assert-Equal 1 $runNs.ExitCode
+        $recordNs = Get-Record -Path $runNs.Document.final.record_path
+        Assert-Equal 'nonzero-exit' $recordNs.failure_reason '主要失敗原因保留'
+        Assert-Equal 'checked' $runNs.Document.final.question_check
+        Assert-Equal @('Q2') @($runNs.Document.final.missing_question_ids)
+        $envNone = New-AdviseEnvironment -Name 'advise-noreport'
+        Set-Scenario -Environment $envNone -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 3 }
+        $runNone = Invoke-Entry -Environment $envNone -OrderPath (New-AdviseOrderFile -Environment $envNone)
+        Assert-Success $runNone
+        Assert-Equal 1 $runNone.ExitCode
+        Assert-Equal 'unavailable' $runNone.Document.final.question_check
+        Assert-True ($null -eq $runNone.Document.final.missing_question_ids) '沒有報告可檢查時不得是空陣列'
+    }
+    Test-Case 'E2E-ADVISE-AUTH 缺少或不是 user-explicit 的授權：結束碼 2，沒有任何 codex 呼叫' {
+        foreach ($case in @(@{ Value = $null }, @{ Value = 'user-implicit' })) {
+            $envAuth = New-AdviseEnvironment -Name 'advise-auth'
+            $override = @{ advisor_request_source = $case.Value }
+            $orderAuth = New-AdviseOrderFile -Environment $envAuth -Override $override
+            $runAuth = Invoke-Entry -Environment $envAuth -OrderPath $orderAuth
+            Assert-Success $runAuth
+            Assert-Equal 2 $runAuth.ExitCode
+            Assert-Equal 'RunAdvisorAuthorizationRequired' $runAuth.Document.error.code
+            Assert-Equal 0 ((Get-Call -Environment $envAuth).Count)
+        }
+    }
+    Test-Case 'E2E-ADVISE-AUTH-ARRAY 授權欄位為陣列：結束碼 2、RunAdvisorAuthorizationRequired，沒有任何 codex 呼叫' {
+        $authArrays = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in @(@(), @('user-explicit'))) { $authArrays.Add($item); $authArrays.Add(@(, $item)) }
+        foreach ($value in $authArrays) {
+            $envArr = New-AdviseEnvironment -Name 'advise-auth-array'
+            $runArr = Invoke-Entry -Environment $envArr -OrderPath (New-AdviseOrderFile -Environment $envArr -Override @{ advisor_request_source = $value })
+            Assert-Success $runArr
+            Assert-Equal 2 $runArr.ExitCode
+            Assert-Equal 'RunAdvisorAuthorizationRequired' $runArr.Document.error.code
+            Assert-Equal 0 ((Get-Call -Environment $envArr).Count)
+        }
+    }
+    Test-Case 'E2E-PROFILE-BINDING 類型與檔位不符：結束碼 2、RunTaskProfileMismatch，沒有任何 codex 呼叫' {
+        $envBind = New-AdviseEnvironment -Name 'advise-bind'
+        $runBind = Invoke-Entry -Environment $envBind -OrderPath (New-AdviseOrderFile -Environment $envBind -Override @{ profile = 'review' })
+        Assert-Success $runBind
+        Assert-Equal 2 $runBind.ExitCode
+        Assert-Equal 'RunTaskProfileMismatch' $runBind.Document.error.code
+        $runBind2 = Invoke-Entry -Environment $envBind -OrderPath (New-OrderFile -Environment $envBind -Override @{ profile = 'advisor' } -FileName 'review-advisor.md')
+        Assert-Success $runBind2
+        Assert-Equal 2 $runBind2.ExitCode
+        Assert-Equal 'RunTaskProfileMismatch' $runBind2.Document.error.code
+        Assert-Equal 0 ((Get-Call -Environment $envBind).Count)
+    }
+    Test-Case 'E2E-ADVISE-EVIDENCE-FILE evidence 檔不存在或為空：結束碼 2、RunPathsInvalid，沒有任何 codex 呼叫' {
+        $envEv = New-AdviseEnvironment -Name 'advise-evfile'
+        Write-TestUtf8 -Path $envEv.Evidence -Text ''
+        $runEmpty = Invoke-Entry -Environment $envEv -OrderPath (New-AdviseOrderFile -Environment $envEv)
+        Assert-Success $runEmpty
+        Assert-Equal 2 $runEmpty.ExitCode
+        Assert-Equal 'RunPathsInvalid' $runEmpty.Document.error.code
+        Remove-Item -LiteralPath $envEv.Evidence -Force
+        $runMissing = Invoke-Entry -Environment $envEv -OrderPath (New-AdviseOrderFile -Environment $envEv -FileName 'advise-2.md')
+        Assert-Success $runMissing
+        Assert-Equal 2 $runMissing.ExitCode
+        Assert-Equal 'RunPathsInvalid' $runMissing.Document.error.code
+        Assert-Equal 0 ((Get-Call -Environment $envEv).Count)
     }
     Test-Case 'E2E-DISPATCH-UNTOUCHED 本線對現行入口目錄 scripts\dispatch 的變更只有登錄表' {
         $status = @(& git -C $repoRoot status --porcelain -- scripts/dispatch)
