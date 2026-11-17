@@ -33,6 +33,40 @@ try {
         Assert-Equal 'no-terminal-event' $e.usage.status
         Assert-True (Test-RunFailoverEligible -Evidence $e)
     }
+    Test-Case 'EVID-LIMIT-RESET 從 usage limit 訊息擷取重設時間：原始字串與本地 ISO 時間；解析不出來或非 usage limit 為 null' {
+        $message = "You$([char]0x2019)ve hit your usage limit. Upgrade to Pro (https://example.test/upgrade), visit https://example.test/usage to purchase more credits or try again at Nov 22nd, 2026 5:21 PM."
+        $e = Get-Evidence -Name 'reset' -Event @([ordered]@{ type = 'turn.started' }, [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = $message } })
+        Assert-Equal 'usage-limit' $e.rejection_kind
+        Assert-Equal 'Nov 22nd, 2026 5:21 PM' $e.limit_reset_raw
+        $expected = ([DateTime]::new(2026, 11, 22, 17, 21, 0, [DateTimeKind]::Local)).ToString('yyyy-MM-ddTHH:mm:sszzz', [Globalization.CultureInfo]::InvariantCulture)
+        Assert-Equal $expected $e.limit_reset_local
+        $stderr = Get-Evidence -Name 'reset-stderr' -Event @([ordered]@{ type = 'turn.started' }) -Stderr ('2026-11-09T09:02:00Z ERROR codex_core::client: ' + $message) -ExitCode 1
+        Assert-Equal $expected $stderr.limit_reset_local
+        $none = Get-Evidence -Name 'reset-none' -Event @([ordered]@{ type = 'turn.started' }, [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = 'You hit your usage limit' } })
+        Assert-Equal 'usage-limit' $none.rejection_kind
+        Assert-True ($null -eq $none.limit_reset_raw -and $null -eq $none.limit_reset_local) '訊息沒有重設時間時為 null'
+        $other = Get-Evidence -Name 'reset-other' -Event @([ordered]@{ type = 'turn.started' }, [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = 'unexpected status 401 Unauthorized, try again at Nov 22nd, 2026 5:21 PM' } })
+        Assert-True ($null -eq $other.limit_reset_local) '非 usage limit 不擷取重設時間'
+    }
+    Test-Case 'PARSE-LIMIT-RESET 容忍序數後綴、逗號與 12 小時制，其他寫法與不存在的日期為 null' {
+        $cases = @(
+            @{ text = 'try again at Nov 22nd, 2026 5:21 PM.'; raw = 'Nov 22nd, 2026 5:21 PM'; local = [DateTime]::new(2026, 11, 22, 17, 21, 0) },
+            @{ text = 'or try again at Dec 1st 2026 12:05 AM'; raw = 'Dec 1st 2026 12:05 AM'; local = [DateTime]::new(2026, 12, 1, 0, 5, 0) },
+            @{ text = 'try again at March 3rd, 2027 12:00 PM'; raw = 'March 3rd, 2027 12:00 PM'; local = [DateTime]::new(2027, 3, 3, 12, 0, 0) },
+            @{ text = 'Try again at Jan 2nd, 2027, 9:30 am'; raw = 'Jan 2nd, 2027, 9:30 am'; local = [DateTime]::new(2027, 1, 2, 9, 30, 0) },
+            @{ text = 'try again at Sept. 14th, 2026 11:59 PM'; raw = 'Sept. 14th, 2026 11:59 PM'; local = [DateTime]::new(2026, 9, 14, 23, 59, 0) }
+        )
+        foreach ($case in $cases) {
+            $reset = Get-RunUsageLimitReset -Text $case.text
+            Assert-True ($null -ne $reset) $case.text
+            Assert-Equal $case.raw $reset.raw
+            $localTime = [DateTime]::SpecifyKind($case.local, [DateTimeKind]::Local)
+            Assert-Equal $localTime.ToString('yyyy-MM-ddTHH:mm:sszzz', [Globalization.CultureInfo]::InvariantCulture) $reset.local
+        }
+        foreach ($text in @($null, '', 'try again later', 'try again at 2026-11-22 17:21', 'try again at Nov 22nd 17:21', 'try again at Feb 30th, 2026 5:21 PM', 'try again at Nov 22nd, 2026 13:21 PM', 'try again at in 5 days')) {
+            Assert-True ($null -eq (Get-RunUsageLimitReset -Text $text)) ([string]$text)
+        }
+    }
     Test-Case 'EVID-MODEL-NOT-SUPPORTED model is not supported（含 model metadata 警告項目）' {
         $e = Get-Evidence -Name 'model' -Event @([ordered]@{ type = 'thread.started'; thread_id = 'x' }, $metadataWarning, [ordered]@{ type = 'turn.started' },
             [ordered]@{ type = 'error'; message = $modelMessage }, [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = $modelMessage } })

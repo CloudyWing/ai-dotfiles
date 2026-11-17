@@ -288,6 +288,22 @@ try {
         Assert-Equal @('sandbox', 'exec', 'exec') @($calls | ForEach-Object { $_.subcommand })
         Assert-Equal @($e3.HomeA, $e3.HomeB) @($calls[1].codex_home, $calls[2].codex_home)
     }
+    Test-Case 'E2E-LIMIT-RESET usage limit 訊息帶重設時間時寫進該次嘗試的執行紀錄，沒有時為 null，且不影響換帳號與結果' {
+        $e3r = New-EntryEnvironment -Name 'limit-reset'
+        $resetEvents = @([ordered]@{ type = 'turn.started' }, [ordered]@{ type = 'turn.failed'; error = [ordered]@{ message = "You$([char]0x2019)ve hit your usage limit. try again at Nov 22nd, 2026 5:21 PM." } })
+        Set-Scenario -Environment $e3r -Account 'acct-a' -Scenario @{ events = $resetEvents; exit_code = 1; last_message = $null; report = $null }
+        Set-Scenario -Environment $e3r -Account 'acct-b' -Scenario @{ events = $successEvents; exit_code = 0; last_message = 'ok'; report = (New-ReviewReportText) }
+        $run = Invoke-Entry -Environment $e3r -OrderPath (New-OrderFile -Environment $e3r)
+        Assert-Success $run
+        Assert-Equal 0 $run.ExitCode
+        $attempts = @($run.Document.attempts)
+        Assert-Equal @('rejected', 'success') @($attempts | ForEach-Object { $_.result })
+        $rejected = Get-Content -LiteralPath $attempts[0].record_path -Raw | ConvertFrom-Json
+        $success = Get-Content -LiteralPath $attempts[1].record_path -Raw | ConvertFrom-Json
+        Assert-Equal 'Nov 22nd, 2026 5:21 PM' $rejected.limit_reset_raw
+        Assert-Equal ([DateTime]::new(2026, 11, 22, 17, 21, 0, [DateTimeKind]::Local)).ToString('yyyy-MM-ddTHH:mm:sszzz', [Globalization.CultureInfo]::InvariantCulture) $rejected.limit_reset_local
+        Assert-True ($null -eq $success.limit_reset_raw -and $null -eq $success.limit_reset_local) '成功的嘗試沒有重設時間'
+    }
     Test-Case 'E2E-HEALTH model-not-supported 拒絕後主 checkout 的健康狀態檔含該帳號，第二次發動直接略過該帳號' {
         $e4 = New-EntryEnvironment -Name 'health'
         Set-Scenario -Environment $e4 -Account 'acct-a' -Scenario @{ events = $modelEvents; exit_code = 1; last_message = $null; report = $null }

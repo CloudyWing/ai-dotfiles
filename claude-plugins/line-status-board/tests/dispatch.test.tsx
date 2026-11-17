@@ -98,6 +98,38 @@ test('Z2a account state joins the existing quota rows instead of a new block', (
   expect(accountExtra({ Name: 'x', Unsupported: [] }, now)).toBe(null)
 })
 
+test('quota-reset-display limit-reached account row shows the server reset time only while it is in the future', () => {
+  // 重設時間不含時區，以本地時間解析；測試以本地時間建構 now，避免依賴執行機器的時區。
+  const quotaRow = (nowAt: Date, resetLocal: string | null, kind = 'usage-limit') => {
+    const value = documentWith({ runs: [], accounts: [{ Name: 'acct-a', LastResult: 'rejected', LastRejectionKind: kind, LastLimitResetLocal: resetLocal, LastEndedUtc: nowAt.toISOString(), Unsupported: [] }], totalCount: 0, warnings: [], error: null })
+    value.quota = [{ Name: 'acct-a', State: 'unknown', ErrorKind: 'limit-reached' }]
+    return buildSnapshot({ ok: true, value }, { ok: true, value: [] }, nowAt).quota.rows[0]
+  }
+  const reset = '2026-11-22T17:21:00'
+  expect(segmentsText(quotaRow(new Date(2026, 10, 18, 17, 21), reset).extra)).toBe('上次派工被拒絕（額度用完） · 剛剛 · 重設 11/22 17:21（約 4 天後）')
+  expect(segmentsText(quotaRow(new Date(2026, 10, 22, 14, 21), reset).extra)).toBe('上次派工被拒絕（額度用完） · 剛剛 · 重設 11/22 17:21（約 3 小時後）')
+  expect(segmentsText(quotaRow(new Date(2026, 10, 22, 17, 0), reset).extra)).toBe('上次派工被拒絕（額度用完） · 剛剛 · 重設 11/22 17:21（約 21 分鐘後）')
+  // 沒有重設時間、重設時間已過、無法解析，或拒絕種類不是 usage-limit 時維持原顯示。
+  for (const value of [null, '2026-11-22T17:21:00', 'not a time']) {
+    expect(segmentsText(quotaRow(new Date(2026, 10, 22, 17, 21), value).extra)).toBe('上次派工被拒絕（額度用完） · 剛剛')
+  }
+  expect(segmentsText(quotaRow(new Date(2026, 10, 18, 17, 21), reset, 'rate-limited').extra)).toBe('上次派工被拒絕（請求過於頻繁） · 剛剛')
+  expect(quotaRow(new Date(2026, 10, 18, 17, 21), reset).name).toBe('acct-a · 已達上限')
+  // 邊界：進位到下一個單位。
+  const at = (h: number, m: number) => new Date(2026, 10, 22, h, m)
+  expect(segmentsText(quotaRow(at(16, 22), reset).extra)).toMatch(/（約 59 分鐘後）$/)
+  expect(segmentsText(quotaRow(at(16, 21), reset).extra)).toMatch(/（約 1 小時後）$/)
+  expect(segmentsText(quotaRow(new Date(2026, 10, 21, 18, 21), reset).extra)).toMatch(/（約 23 小時後）$/)
+  expect(segmentsText(quotaRow(new Date(2026, 10, 21, 17, 21), reset).extra)).toMatch(/（約 1 天後）$/)
+  expect(segmentsText(quotaRow(new Date(2026, 10, 21, 17, 51), reset).extra)).toMatch(/（約 1 天後）$/)
+  expect(segmentsText(quotaRow(new Date(2026, 10, 22, 17, 21), reset).extra)).toBe('上次派工被拒絕（額度用完） · 剛剛')
+  // 額度查詢正常、最近一次派工是 usage-limit 時不顯示重設時間。
+  const okValue = documentWith({ runs: [], accounts: [{ Name: 'acct-a', LastResult: 'rejected', LastRejectionKind: 'usage-limit', LastLimitResetLocal: reset, LastEndedUtc: new Date(2026, 10, 18, 17, 21).toISOString(), Unsupported: [] }], totalCount: 0, warnings: [], error: null })
+  okValue.quota = [{ Name: 'acct-a', State: 'ok', PrimaryRemaining: 40 }]
+  expect(segmentsText(buildSnapshot({ ok: true, value: okValue }, { ok: true, value: [] }, new Date(2026, 10, 18, 17, 21)).quota.rows[0].extra)).toBe('上次派工被拒絕（額度用完） · 剛剛')
+  expect(parseDispatch({ runs: [], accounts: [{ Name: 'a', LastLimitResetLocal: 5, Unsupported: [] }] })?.accounts).toEqual([])
+})
+
 const entry = (sessionId: string, kind: WaitingEntry['kind'], at: number, tool: string | null = null, callId = 'toolu_1'): WaitingEntry => ({ key: `waiting:${sessionId}:${callId}`, sessionId, callId, kind, tool, at })
 const nowMs = now.getTime()
 test('Z2a waiting entries parse per tool call and hide internal tool names', () => {

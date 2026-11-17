@@ -348,7 +348,7 @@ exit 0
     New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-grace0' -Fields @{ started_utc = '2026-11-16T11:16:00.0000000Z'; timeout_seconds = 600; turn_end_grace_seconds = 0 } -EventsUtc $dispatchNow.AddSeconds(-5) -RecordUtc $dispatchNow.AddMinutes(-44)
     # 已結束與異常紀錄
     New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-ok' -Fields @{ ended_utc = '2026-11-16T11:10:00.0000000Z'; duration_seconds = 600.04; result = 'success'; item_event_count = 12; report = @{ exists = $true; bytes = 10 }; review_report_check = @{ valid = $true; errors = @() } } -RecordUtc $dispatchNow.AddMinutes(-50)
-    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-rejected' -Fields @{ account = @{ name = 'acct-b' }; ended_utc = '2026-11-16T11:20:00.0000000Z'; duration_seconds = 15.7; result = 'rejected'; failure_reason = 'usage-limit'; rejection_kind = 'usage-limit'; item_event_count = 0 } -RecordUtc $dispatchNow.AddMinutes(-40)
+    New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-rejected' -Fields @{ account = @{ name = 'acct-b' }; ended_utc = '2026-11-16T11:20:00.0000000Z'; duration_seconds = 15.7; result = 'rejected'; failure_reason = 'usage-limit'; rejection_kind = 'usage-limit'; limit_reset_raw = 'Nov 22nd, 2026 5:21 PM'; limit_reset_local = '2026-11-22T17:21:00+08:00'; item_event_count = 0 } -RecordUtc $dispatchNow.AddMinutes(-40)
     New-RunFixture -Root $dispatchMain -Line 'line-main' -RunKey 'run-timeout' -Fields @{ ended_utc = '2026-11-16T11:30:00.0000000Z'; duration_seconds = 1800.2; result = 'failed'; failure_reason = 'timeout'; terminated_by_entry = 'timeout' } -RecordUtc $dispatchNow.AddMinutes(-30)
     New-RunFixture -Root $dispatchMain -Line 'line-bad' -RunKey 'run-corrupt' -RawText '{ "run_key": "run-corrupt", ' -RecordUtc $dispatchNow.AddMinutes(-70)
     New-RunFixture -Root $dispatchMain -Line 'line-bad' -RunKey 'run-sparse' -RawText '{ "result": "success" }' -RecordUtc $dispatchNow.AddMinutes(-80)
@@ -390,6 +390,20 @@ exit 0
     $accountB = @($summary.accounts | Where-Object { $_.Name -eq 'ACCT-B' })[0]
     $accountUnused = @($summary.accounts | Where-Object { $_.Name -eq 'acct-unused' })[0]
     Test-Case D12 { @($summary.accounts).Count -eq 3 -and $accountA.LastResult -eq 'success' -and $accountA.LastEndedUtc -eq '2026-11-16T11:57:00Z' -and @($accountA.Unsupported).Count -eq 0 -and $accountB.LastResult -eq 'rejected' -and $accountB.LastRejectionKind -eq 'usage-limit' -and @($accountB.Unsupported).Count -eq 1 -and $accountB.Unsupported[0].Model -eq 'model-x' -and $accountB.Unsupported[0].Profile -eq 'review' -and $null -eq $accountUnused.LastResult -and @($accountUnused.Unsupported).Count -eq 0 }
+    # 紀錄內的時間帶 +08:00 位移，輸出為同一時刻在本機時區的 ISO 文字。
+    $expectedReset = ([DateTimeOffset]::Parse('2026-11-22T17:21:00+08:00')).LocalDateTime.ToString('yyyy-MM-ddTHH:mm:sszzz', [System.Globalization.CultureInfo]::InvariantCulture)
+    Test-Case D12b { $byKey['run-rejected'].LimitResetLocal -eq $expectedReset -and $null -eq $byKey['run-ok'].LimitResetLocal -and $accountB.LastLimitResetLocal -eq $expectedReset -and $null -eq $accountA.LastLimitResetLocal -and $null -eq $accountUnused.LastLimitResetLocal }
+    # 輸入型別：Z 結尾（UTC）還原為同一時刻的本機時區文字；非字串、空字串與空白為 null。
+    $dispatchReset = Join-Path $tempRoot 'dispatch-reset'
+    $resetInputs = [ordered]@{ 'reset-z' = '2026-11-22T09:21:00Z'; 'reset-number' = 12345; 'reset-empty' = ''; 'reset-blank' = '   '; 'reset-bool' = $true }
+    foreach ($key in $resetInputs.Keys) {
+        New-RunFixture -Root $dispatchReset -Line 'line-reset' -RunKey $key -Fields @{ account = @{ name = 'acct-r' }; ended_utc = '2026-11-16T11:20:00.0000000Z'; result = 'rejected'; failure_reason = 'usage-limit'; rejection_kind = 'usage-limit'; limit_reset_local = $resetInputs[$key] } -RecordUtc $dispatchNow.AddMinutes(-40)
+    }
+    $resetSummary = Get-DispatchSummary -Roots @($dispatchReset) -AccountNames @() -HealthPath $healthMissing -RunScriptPath $runScript -NowUtc $dispatchNow -EndedLimit 50
+    $resetByKey = @{}
+    foreach ($item in @($resetSummary.runs)) { $resetByKey[$item.RunKey] = $item }
+    $expectedZ = ([DateTimeOffset]::Parse('2026-11-22T09:21:00Z')).LocalDateTime.ToString('yyyy-MM-ddTHH:mm:sszzz', [System.Globalization.CultureInfo]::InvariantCulture)
+    Test-Case D12c { $resetByKey['reset-z'].LimitResetLocal -eq $expectedZ -and $null -eq $resetByKey['reset-number'].LimitResetLocal -and $null -eq $resetByKey['reset-empty'].LimitResetLocal -and $null -eq $resetByKey['reset-blank'].LimitResetLocal -and $null -eq $resetByKey['reset-bool'].LimitResetLocal -and $resetByKey['reset-number'].State -eq 'ended' }
     # 筆數上限只限制最近一個總時限以外的紀錄；執行中與超過時限者不被排擠
     $limited = Get-DispatchSummary -Roots @($dispatchTree, $dispatchMain) -AccountNames @() -HealthPath $healthMissing -RunScriptPath $runScript -NowUtc $dispatchNow -ReadLimit 1 -EndedLimit 1
     $limitedKeys = @($limited.runs | ForEach-Object { $_.RunKey })

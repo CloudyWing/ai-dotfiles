@@ -417,6 +417,8 @@ function Invoke-RunAttempt {
     $record['failure_reason'] = $failureReason
     $record['terminated_by_entry'] = $terminatedBy
     $record['rejection_kind'] = $evidence.rejection_kind
+    $record['limit_reset_raw'] = $evidence.limit_reset_raw
+    $record['limit_reset_local'] = $evidence.limit_reset_local
     $record['item_event_count'] = $evidence.item_event_count
     $record['usage'] = $evidence.usage
     $record['last_message'] = [ordered]@{ path = $lastMessagePath; exists = $lastMessageInfo.Exists; empty = (-not $lastMessageInfo.Exists) -or $lastMessageInfo.Length -eq 0 }

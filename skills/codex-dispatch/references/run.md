@@ -91,6 +91,8 @@
 
 執行紀錄的 `timeout_seconds` 與 `turn_end_grace_seconds` 是該次實際套用的總時限與回合結束寬限（秒），在 Codex 啟動前寫出的紀錄初稿就有值，執行中即可讀取。
 
+執行紀錄的 `limit_reset_raw` 與 `limit_reset_local` 只在 `rejection_kind` 為 `usage-limit` 且服務端訊息含「try again at <月> <日>, <年> <時:分> AM/PM」時有值，其餘為 `null`。`limit_reset_raw` 是訊息中的原始時間字串，`limit_reset_local` 是解析後的 ISO 8601 時間。訊息不含時區，入口視為執行機器的本地時間，因此 `limit_reset_local` 帶本機時區位移。月名、日期、時間無法依這個格式解析時兩欄皆為 `null`，不影響拒絕判定、換帳號與結束碼。加入這兩個欄位之前產生的紀錄沒有它們，面板讀到時視為沒有重設時間。訊息不指出是哪一種額度視窗，兩欄只記錄服務端給的重設時間。
+
 每次嘗試的檔案位於 `<report_line_root>\runs\`：輸出目錄 `<runKey>\`、`<runKey>.record.json`、`<runKey>.events.jsonl`、`<runKey>.stderr.txt`、`<runKey>.last-message.md`。
 
 ## 等待與終止

@@ -104,6 +104,27 @@ function Test-RunUsageLimitText {
     return [regex]::IsMatch([string]$Text, '(?i)usage[\s_-]*limit(?:ed|[\s_-]*(?:reached|exceeded)|\b)')
 }
 
+function Get-RunUsageLimitReset {
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+
+    # 服務端的 usage limit 訊息以「try again at Nov 22nd, 2026 5:21 PM」給重設時間，沒有時區，視為執行機器的本地時間。
+    # 只接受英文月名、有無序數後綴與逗號、12 小時制；其他寫法或不存在的日期回傳 $null，不猜測。
+    if ([string]::IsNullOrEmpty($Text)) { return $null }
+    $months = 'Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|June?|July?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?'
+    $match = [regex]::Match($Text, '(?i)\btry\s+again\s+at\s+(?<raw>(?<mon>' + $months + ')\.?\s+(?<day>\d{1,2})(?:st|nd|rd|th)?,?\s+(?<year>\d{4}),?\s+(?<hour>\d{1,2}):(?<minute>\d{2})\s*(?<ampm>[AP]M))\b')
+    if (-not $match.Success) { return $null }
+    $monthNumber = 1 + [array]::IndexOf(@('jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'), $match.Groups['mon'].Value.Substring(0, 3).ToLowerInvariant())
+    $hour = [int]$match.Groups['hour'].Value
+    if ($hour -lt 1 -or $hour -gt 12) { return $null }
+    $hour = $hour % 12
+    if ($match.Groups['ampm'].Value -imatch '^P') { $hour += 12 }
+    try {
+        $local = [DateTime]::new([int]$match.Groups['year'].Value, $monthNumber, [int]$match.Groups['day'].Value, $hour, [int]$match.Groups['minute'].Value, 0, [DateTimeKind]::Local)
+    }
+    catch { return $null }
+    return [pscustomobject]@{ raw = $match.Groups['raw'].Value; local = $local.ToString('yyyy-MM-ddTHH:mm:sszzz', [Globalization.CultureInfo]::InvariantCulture) }
+}
+
 function Test-RunRateLimitText {
     param([AllowNull()][AllowEmptyString()][string]$Text)
 
@@ -142,6 +163,7 @@ function Get-RunEventEvidence {
 
     $itemCount = 0
     $usageLimit = $false
+    $limitReset = $null
     $nonTransientRateLimit = $false
     $accountKinds = New-Object 'System.Collections.Generic.List[string]'
     $lastUsage = $null
@@ -167,7 +189,7 @@ function Get-RunEventEvidence {
         $messageText = Get-RunEventMessageText -EventObject $event
         $accountKind = Get-RunAccountRejectionKind -Text $messageText
         if ($null -ne $accountKind) { $accountKinds.Add($accountKind) }
-        if (Test-RunUsageLimitText -Text $messageText) { $usageLimit = $true }
+        if (Test-RunUsageLimitText -Text $messageText) { $usageLimit = $true; if ($null -eq $limitReset) { $limitReset = Get-RunUsageLimitReset -Text $messageText } }
         elseif (Test-RunRateLimitText -Text $messageText) { $nonTransientRateLimit = $true }
     }
     $lastType = if ($events.Count -gt 0) { [string](Get-RunJsonProperty -Object $events[$events.Count - 1] -Name 'type') } else { $null }
@@ -182,7 +204,7 @@ function Get-RunEventEvidence {
             if ($null -ne $accountKind) { $accountKinds.Add($accountKind) }
             # 只出現在 stderr 的 usage limit 與 rate limit 同樣要被分類。
             $lineMessage = Get-RunErrorStreamLineMessage -Line $errorLine
-            if (Test-RunUsageLimitText -Text $lineMessage) { $usageLimit = $true }
+            if (Test-RunUsageLimitText -Text $lineMessage) { $usageLimit = $true; if ($null -eq $limitReset) { $limitReset = Get-RunUsageLimitReset -Text $lineMessage } }
             elseif (Test-RunRateLimitText -Text $lineMessage) { $nonTransientRateLimit = $true }
         }
     }
@@ -207,6 +229,7 @@ function Get-RunEventEvidence {
     elseif ($itemCount -eq 0 -and $null -ne $terminalMessage -and -not [regex]::IsMatch($terminalMessage, (Get-RunLocalFailurePattern))) { $kind = 'unclassified' }
     # 以 turn.completed 結束的執行不是被拒絕（例如 stderr 中暫時性重連的 401 行）。
     if ($completed) { $kind = $null }
+    if ($kind -cne 'usage-limit') { $limitReset = $null }
 
     $usageStatus = if ($validUsageCount -gt 0) { 'recorded' } elseif ($turnCompletedCount -gt 0) { 'no-usage-field' } else { 'no-terminal-event' }
     $usageResult = [ordered]@{
@@ -225,6 +248,8 @@ function Get-RunEventEvidence {
     $excerpt = if ($null -eq $terminalMessage) { '' } else { $terminalMessage.Substring(0, [Math]::Min(300, $terminalMessage.Length)) }
     return [pscustomobject]@{
         rejection_kind = $kind
+        limit_reset_raw = if ($null -ne $limitReset) { $limitReset.raw } else { $null }
+        limit_reset_local = if ($null -ne $limitReset) { $limitReset.local } else { $null }
         item_event_count = $itemCount
         completed = $completed
         usage = [pscustomobject]$usageResult

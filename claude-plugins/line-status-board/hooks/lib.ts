@@ -678,7 +678,7 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
     return row(name, { dot: rootTone(root), right: root.Branch || '-', rightShrink: true, detail: rootDetail(root), isCurrent: current !== null && current.roots.some(path => normalizePath(path) === normalizePath(root.Path)) })
   })
   const quota = data.quota.map(account => {
-    const extra = accountExtra(findDispatchAccount(dispatch, account.Name), now)
+    const extra = accountExtra(findDispatchAccount(dispatch, account.Name), now, account.State === 'unknown' && account.ErrorKind === 'limit-reached')
     if (account.State === 'unknown') return { ...quotaErrorRow(account), extra }
     const primary = roundPercent(account.PrimaryRemaining)
     const secondary = roundPercent(account.SecondaryRemaining)
@@ -699,7 +699,7 @@ export const WAITING_FUTURE_TOLERANCE_MS = REFRESH_MS
 export const WAITING_TOOL_NAMES = ['Bash', 'PowerShell', 'Write', 'Edit', 'NotebookEdit', 'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch', 'Agent', 'Skill']
 export type DispatchRun = { RunKey: string; LineSlug: string; State: string; LimitSource?: string | null; DispatchSlug?: string | null; TaskType?: string | null; Profile?: string | null; Account?: string | null; Model?: string | null; WorkRoot?: string | null; StartedUtc?: string | null; EndedUtc?: string | null; LastEventUtc?: string | null; RecordUpdatedUtc?: string | null; DurationSeconds?: number | null; Result?: string | null; FailureReason?: string | null; RejectionKind?: string | null; TerminatedByEntry?: string | null; Error?: string | null }
 export type DispatchUnsupported = { Profile?: string | null; Model?: string | null }
-export type DispatchAccount = { Name: string; LastResult?: string | null; LastFailureReason?: string | null; LastRejectionKind?: string | null; LastEndedUtc?: string | null; Unsupported: DispatchUnsupported[] }
+export type DispatchAccount = { Name: string; LastResult?: string | null; LastFailureReason?: string | null; LastRejectionKind?: string | null; LastLimitResetLocal?: string | null; LastEndedUtc?: string | null; Unsupported: DispatchUnsupported[] }
 export type Dispatch = { runs: DispatchRun[]; accounts: DispatchAccount[]; totalCount: number; warnings: string[]; error: string | null; errorDetail?: string | null }
 export type WaitingKind = 'permission' | 'question' | 'plan'
 export type WaitingEntry = { key: string; sessionId: string; callId: string; kind: WaitingKind; tool: string | null; at: number }
@@ -712,10 +712,10 @@ function isDispatchRun(value: unknown): value is DispatchRun {
 }
 function toDispatchAccount(value: unknown): DispatchAccount | null {
   if (!isRecord(value) || typeof value.Name !== 'string') return null
-  if (!['LastResult', 'LastFailureReason', 'LastRejectionKind', 'LastEndedUtc'].every(key => optional(value[key], 'string'))) return null
+  if (!['LastResult', 'LastFailureReason', 'LastRejectionKind', 'LastLimitResetLocal', 'LastEndedUtc'].every(key => optional(value[key], 'string'))) return null
   const text = (item: unknown): string | null => typeof item === 'string' ? item : null
   const list = Array.isArray(value.Unsupported) ? value.Unsupported : isRecord(value.Unsupported) ? [value.Unsupported] : []
-  return { Name: value.Name, LastResult: text(value.LastResult), LastFailureReason: text(value.LastFailureReason), LastRejectionKind: text(value.LastRejectionKind), LastEndedUtc: text(value.LastEndedUtc),
+  return { Name: value.Name, LastResult: text(value.LastResult), LastFailureReason: text(value.LastFailureReason), LastRejectionKind: text(value.LastRejectionKind), LastLimitResetLocal: text(value.LastLimitResetLocal), LastEndedUtc: text(value.LastEndedUtc),
     Unsupported: list.filter(isRecord).map(item => ({ Profile: text(item.Profile), Model: text(item.Model) })) }
 }
 export function parseDispatch(value: unknown): Dispatch | null {
@@ -799,12 +799,30 @@ export function dispatchDetailText(dispatch: Dispatch | null, waiting: WaitingDi
   if (!runs.length && error === null && !waiting.length) return null
   return JSON.stringify({ runs, error, errorDetail: dispatch?.errorDetail ?? null, waiting }, null, 2)
 }
-export function accountExtra(account: DispatchAccount | undefined, now: Date): DetailSegment[] | null {
+const pad2 = (value: number): string => String(value).padStart(2, '0')
+// 重設時間在未來才顯示；已過的時間不顯示，避免把「已過」推論成額度已恢復。
+export function resetText(value: string | null | undefined, now: Date): string {
+  const at = toEpochMs(value)
+  if (at === null || at <= now.getTime()) return ''
+  const date = new Date(at)
+  const diff = at - now.getTime()
+  const minutes = Math.max(1, Math.ceil(diff / 60000))
+  const hours = Math.round(diff / 3600000)
+  // 四捨五入後達到下一個單位的邊界時改用下一個單位，避免「60 分鐘後」「24 小時後」。
+  const left = minutes < 60 ? `${minutes} 分鐘後` : hours < 24 ? `${Math.max(1, hours)} 小時後` : `${Math.max(1, Math.round(diff / 86400000))} 天後`
+  return `重設 ${pad2(date.getMonth() + 1)}/${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}（約 ${left}）`
+}
+export function accountExtra(account: DispatchAccount | undefined, now: Date, showReset = false): DetailSegment[] | null {
   if (!account) return null
   const result: DetailSegment[] = []
   if (account.LastResult) {
     const when = relativeTime(account.LastEndedUtc, now)
     result.push({ text: `上次派工${dispatchResultText(account.LastResult, account.LastFailureReason, account.LastRejectionKind)}${when ? ` · ${when}` : ''}`, tone: account.LastResult === 'success' ? 'normal' : 'attention' })
+  }
+  const reset = showReset && account.LastRejectionKind === 'usage-limit' ? resetText(account.LastLimitResetLocal, now) : ''
+  if (reset) {
+    if (result.length) result.push({ text: ' · ', tone: 'normal' })
+    result.push({ text: reset, tone: 'attention' })
   }
   if (account.Unsupported.length) {
     const models = [...new Set(account.Unsupported.map(item => item.Model).filter((item): item is string => !!item))]

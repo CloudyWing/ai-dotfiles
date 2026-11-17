@@ -835,6 +835,7 @@ function Get-DispatchRunRecord {
         Result            = $null
         FailureReason     = $null
         RejectionKind     = $null
+        LimitResetLocal   = $null
         TerminatedByEntry = $null
         ItemEventCount    = $null
         ReportExists      = $null
@@ -858,6 +859,10 @@ function Get-DispatchRunRecord {
         $run.Result = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'result')
         $run.FailureReason = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'failure_reason')
         $run.RejectionKind = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'rejection_kind')
+        # ConvertFrom-Json 會把 ISO 8601 字串轉成 DateTime，輸出前還原成帶時區位移的 ISO 文字。
+        $limitReset = Get-ObjectValue -Object $record -Name 'limit_reset_local'
+        if ($limitReset -is [datetime]) { if ($limitReset.Kind -eq [DateTimeKind]::Utc) { $limitReset = $limitReset.ToLocalTime() }; $run.LimitResetLocal = $limitReset.ToString('yyyy-MM-ddTHH:mm:sszzz', [System.Globalization.CultureInfo]::InvariantCulture) }
+        elseif ($limitReset -is [string] -and -not [string]::IsNullOrWhiteSpace($limitReset)) { $run.LimitResetLocal = $limitReset }
         $run.TerminatedByEntry = ConvertTo-TextOrNull -Value (Get-ObjectValue -Object $record -Name 'terminated_by_entry')
 
         # 單一欄位型別或數值不符時只略過該欄位，不讓整筆紀錄作廢。
@@ -1077,6 +1082,7 @@ function Get-DispatchSummary {
                 LastResult        = if ($null -ne $lastRun) { $lastRun.Result } else { $null }
                 LastFailureReason = if ($null -ne $lastRun) { $lastRun.FailureReason } else { $null }
                 LastRejectionKind = if ($null -ne $lastRun) { $lastRun.RejectionKind } else { $null }
+                LastLimitResetLocal = if ($null -ne $lastRun) { $lastRun.LimitResetLocal } else { $null }
                 LastEndedUtc      = if ($null -ne $lastRun) { if ($null -eq $lastRun.EndedUtc) { $lastRun.RecordUpdatedUtc } else { $lastRun.EndedUtc } } else { $null }
                 Unsupported       = @($health | Where-Object { [string]::Equals([string]$_.Account, $accountName, [StringComparison]::OrdinalIgnoreCase) } |
                         ForEach-Object { [pscustomobject][ordered]@{ Profile = $_.Profile; Model = $_.Model; ExpiresAtUtc = $_.ExpiresAtUtc } })
