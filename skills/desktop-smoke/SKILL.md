@@ -74,16 +74,18 @@ WPF 或 WinForms 外殼以 BlazorWebView 承載 Blazor 時，畫面內容在 Web
 
 ## 派遣分界
 
-工作拆成 Codex 端的建置與取證，以及 Claude 端的判定。
+工作拆成 Claude 端的建置與啟動、Codex 端以 MCP 工具的臨場操作，以及 Claude 端的判定。
 
 | 工作 | 執行端 | 依據 |
 | --- | --- | --- |
-| 建置、以背景方式啟動 GUI 程式、擷取桌面截圖、讀取視窗位置與可見狀態、執行層級 B 的既有 UI 測試 | 依登錄表選出的 `type=test` 執行者（標註 `-Type test -Tags desktop-control,build-test`，選出 Codex `scan`，write 模式）；Codex 離線時選派入口回傳 `stopped`，停止並回報使用者 | Windows sandbox 實測可用：WPF 建置、Start-Process 啟動、System.Drawing 截圖、user32 GetWindowRect／IsWindowVisible |
-| 判定截圖與視窗狀態是否符合預期、產出手動檢查清單、決定是否進入修正迴圈 | Claude 端 | 需要讀圖比對與需求脈絡 |
-| 需要系統管理員權限的命令（例如 `powercfg /requests`） | 使用者在已提升權限的主控台執行 | 派遣不得提權，Codex 端執行時受阻 |
-| 螢幕錄影、滑鼠與鍵盤輸入注入 | 未驗證，派遣前先做單項探針 | 尚無實測紀錄 |
+| 建置、執行層級 B 的既有 UI 測試專案 | 依派工判準選派：需要建置或測試命令者由選派入口選出的 Claude 執行者在沙盒外承接（建置要寫 `bin`、`obj` 並需要網路），標註 `-Type test -Tags build-test` | 派工判準 |
+| 以背景方式啟動 GUI 程式 | 主 Agent 以背景進程啟動，驗證結束後依 `instructions.md` §1.4「背景進程清理」關閉 | 不派 |
+| 以 FlaUI MCP 附加受測視窗、操作控制項、讀取文字與可見狀態 | 依登錄表選出的 `type=test` 執行者（標註 `-Type test -Tags desktop-control`，選出 Codex `scan`），以 `scripts/Invoke-CodexRun.ps1` 發動，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」；Codex 全數不可用時入口的 `fallback.selection` 為 `stopped`，停止並回報使用者 | 命令沙盒唯讀，MCP 伺服器在沙盒外操作視窗；`windows_attach` 以行程識別碼附加，不列舉其他視窗 |
+| 判定畫面與視窗狀態是否符合預期、產出手動檢查清單、決定是否進入修正迴圈 | Claude 端 | 需要讀圖比對與需求脈絡 |
+| 需要系統管理員權限的命令（例如 `powercfg /requests`） | 使用者在已提升權限的主控台執行 | 派遣不得提權 |
+| 桌面畫面留存（存成檔案的截圖）、螢幕錄影 | Claude 端在沙盒外擷取，或由使用者手動留存 | `windows_screenshot` 只把影像回傳給模型，不存檔；留存方式與座標換算尚未定案 |
 
-派遣單第 5 欄依賴桌面能力的條件以 `[需要:desktop]` 標註。取證程序須宣告 DPI-aware，或在報告記錄顯示器縮放比；DPI-unaware 的 PowerShell 程序取得的截圖與視窗座標會依縮放比虛擬化，像素取樣座標必須換算。
+派遣檔 `## 任務` 寫明受測程式的視窗標題與行程識別碼。需要登入或測試資料時，把測試環境資料檔填入派遣檔 `test_context_file`。要在報告記錄顯示器縮放比時由 Claude 端提供，Codex 端的命令沙盒內看不到沙盒外的行程。
 
 ## 共用規範
 

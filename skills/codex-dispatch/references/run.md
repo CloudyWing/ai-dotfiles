@@ -1,6 +1,6 @@
 # 單次執行入口（Invoke-CodexRun）
 
-選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用審查（`Reviewer`、`Frontend Reviewer`、`Contract Auditor`）、事實校閱、影像產生與顧問諮詢（`advise`）。`executor.entry` 為其他值時依 `start.md`。
+選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用審查（`Reviewer`、`Frontend Reviewer`、`Contract Auditor`）、事實校閱、影像產生、測試取證（`test`）與顧問諮詢（`advise`）。`executor.entry` 為其他值時依 `start.md`。
 
 一次發動是一個 `codex exec` 行程，直接在線工作樹執行。命令在 MXC 沙盒內只能讀取工作目錄、`~\.ai-agents` 與線的報告目錄（影像產生另加選定帳號的 `generated_images`；顧問不開放這些目錄，只能讀寫輸出目錄，另以檔案單位唯讀開放專案說明檔），只能寫入該次執行的輸出目錄，讀不到 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`。失敗時整筆重跑，沒有續行。
 
@@ -12,6 +12,7 @@
    - `task_type` 填選派時的類型，`profile` 填選派入口輸出的 `executor.profile`。
    - `role_file` 填角色規則檔的絕對路徑，各類型的值見「依 task_type 的差異」。
    - `advise` 另填 `advisor_request_source`、`evidence_file`、`question_ids`，見「顧問（advise）」；其他類型不得出現這三個鍵。
+   - `test` 可選填 `test_context_file`，見「測試取證（test）」；其他類型不得出現這個鍵。
    - `execution_root` 填線工作樹根目錄。`report_line_root` 填 `<work-root>/.local/ai-sessions/report/<lineSlug>`，該目錄必須已存在。
    - `report_name` 填報告檔名，只含檔名，各類型的值見「依 task_type 的差異」。
    - `targets` 列出目標物件的絕對路徑，目錄以結尾反斜線標示。`required_reads` 列出必讀檔，例如 `design.md`、`requirement-summary.md`、結案報告與前輪審查報告。
@@ -37,9 +38,25 @@
 | `review` | `~\.ai-agents\agents\codex\reviewer.toml`、`frontend-reviewer.toml` 或 `contract-auditor.toml` | 依角色為 `review-report.md`、`frontend-reviewer-report.md` 或 `contract-auditor-report.md` | 成功後檢查報告的 Finding manifest，結果在 `final.review_report_check`；prompt 以「審查者:」行標明實際執行者 |
 | `factcheck` | `~\.ai-agents\skills\fact-check-note\SKILL.md` | `fact-check-report.md` | 在 `exec` 前加 `--search`；不做 manifest 檢查，`final.review_report_check` 為 `null` |
 | `generate` | 派遣檔本身（影像產生沒有專屬角色規則檔，任務、驗收條件與輸出規則全寫在派遣檔） | 自訂，例如 `generate-report.md` | 選定帳號的 `<CODEX_HOME>\generated_images` 列為可讀（不存在時入口先建立）。影像先產在該處，`## 任務` 要求 Codex 複製到輸出目錄，並在報告逐一列出影像檔名；不做 manifest 檢查 |
+| `test` | 派遣檔本身（測試取證沒有專屬角色規則檔，任務、受測對象、驗收條件與回報欄位全寫在派遣檔） | 自訂，例如 `test-report.md` | 只接受檔位 `scan`；命令沙盒維持唯讀，操作與取證只經檔位設定檔掛上的 MCP 工具；見「測試取證（test）」 |
 | `advise` | 派遣檔本身（顧問沒有角色規則檔） | 自訂，例如 `advice-report.md` | 不開放工作目錄，可讀可寫根目錄只有輸出目錄，另以檔案單位唯讀開放專案說明檔，`--cd` 指向輸出目錄；evidence 全文內嵌 prompt；Codex 的最後訊息由入口存成 `report_name`；結束時檢查報告含每個題號，見「顧問（advise）」 |
 
-`profile` 與 `task_type` 綁定：`advise` 只接受檔位 `advisor`，其他類型不接受檔位 `advisor`，不符時以結束碼 2、`RunTaskProfileMismatch` 停止，不啟動 Codex。
+`profile` 與 `task_type` 綁定：`advise` 只接受檔位 `advisor`，`test` 只接受檔位 `scan`，其他類型不接受這兩個專屬檔位，不符時以結束碼 2、`RunTaskProfileMismatch` 停止，不啟動 Codex。
+
+### 測試取證（test）
+
+測試取證分兩段。建置、還原套件、啟動受測程式與執行可重跑的測試專案（含 `dotnet test` 的 FlaUI 與 Playwright 測試）由 Claude 端在沙盒外完成，不派給 Codex；Codex 只以 MCP 工具臨場操作已啟動的受測對象並取證。網頁用 `playwright`，桌面用 `flaui-mcp`，兩者只在檔位 `scan` 掛上，其他類型不載入。
+
+- 派工前準備（Claude 端）：確認受測對象已啟動且可由 MCP 工具到達（網頁已能開啟，桌面程式視窗已顯示）；需要登入時確認測試環境資料檔存在。入口不檢查受測對象是否已啟動。
+- 派遣檔：`role_file` 填派遣檔本身。受測對象寫在 `## 任務`，網頁寫網址，桌面寫視窗標題與行程識別碼（`windows_attach` 用行程識別碼附加，不列舉其他視窗）。`targets` 只列要比對變動的來源檔或目錄，不含 `bin`、`obj`、記錄檔等受測程式執行時會寫入的位置，否則 `source_changed` 會被誤觸發。
+- `test_context_file`：選填，測試環境資料檔的絕對路徑，固定為 `<work-root>/.local/ai-sessions/test-context/test-context.md`（建立與格式見 `session-artifacts` skill「測試環境資料檔」）。入口檢查路徑形態、檔案存在，並以檔案單位唯讀開放（執行紀錄 `permission.read_files`），不開放其所在目錄，也不受可讀根目錄限制。
+- 檔位設定檔：登錄表 `codex-scan` 的 `profileSettings.mcpServers` 產生 `[mcp_servers.*]` 表，核准模式固定 `approve`（`codex exec` 的核准政策為 `never`，未設定時 MCP 工具被拒），以 `enabled_tools` 只開放需要的工具。`flaui-mcp` 的指令路徑因機器而異，不進產生檔，由帳號目錄 `config.toml` 以 `enabled = false` 提供，`Setup-AIGlobalConfig.ps1` 從 Codex Desktop 的 `config.toml` 只讀取單行字串的 `command` 與 `startup_timeout_sec` 後追加；帳號沒有 `config.toml`、讀不到或編碼不明（非 UTF-8、含 NUL）、來源的 `command` 格式無法確定時，Setup 不寫檔並計入阻塞。帳號缺少時入口以結束碼 2、`CodexMcpConfigMissing` 停止，訊息列出重跑 Setup 的命令。
+- 輸出落點：入口對 Codex 行程設定 `PLAYWRIGHT_MCP_OUTPUT_DIR` 為該次輸出目錄，自動命名的截圖與頁面快照存入其中。`## 任務` 與 prompt 要求截圖不指定檔名，指定檔名的截圖會寫到工作目錄根，`<execution_root>\.playwright-mcp` 不納入來源雜湊，入口在啟動前後各記一次該目錄的檔案狀態，`mcp_stray_output.exists` 為 `true` 且 `files` 列出檔名時，表示這些檔案是本次新增或變動的殘留；先前就存在且沒變動的檔案不算。列舉失敗（例如子目錄沒有存取權限）時派遣照常完成，`mcp_stray_output.state` 為 `indeterminate`、`exists` 為 `null` 並附 `error`，回收時人工檢查該目錄。
+- 桌面截圖：`windows_screenshot` 只把影像回傳給模型，不存檔，不作為留存證據。桌面畫面的留存方式尚未定案，需要留存時由 Claude 端在沙盒外擷取。
+- 紀錄與結果：執行紀錄與 `final` 另含 `mcp_tool_calls`（`completed`、`failed` 次數與用到的伺服器）、`artifacts`（輸出目錄內報告以外的檔案，相對路徑）與 `mcp_stray_output`。不做報告格式檢查，`final.review_report_check` 為 `null`。
+- 回收：讀 `final.report_path` 全文，逐條核對派遣檔 `## 驗收條件`，並以 `mcp_tool_calls.completed` 與 `artifacts` 核對報告宣稱的操作與截圖確實存在；`completed` 為 0 表示沒有實際操作，退回重跑。判讀是否符合預期與修正迴圈決策留在 Claude 端。`source_changed` 與 `mcp_stray_output.exists` 為 `true` 的處置同審查。收下後把輸出目錄內需要保留的截圖複製到 `<work-root>/.local/ai-sessions/screenshots/` 並在報告引用。
+- 網路邊界：命令沙盒內連不到本機服務，API 呼叫與資料回查由 Claude 端執行，不派 `test`。
+- 資料異動：寫入資料的操作依 `integration-verify` 的資料異動安全規範，Claude 端確認後在 `## 任務` 寫明可操作的資料範圍。
 
 ### 顧問（advise）
 
@@ -66,6 +83,7 @@
 | 1 | `stopped`，或沒有 JSON 輸出 | 執行紀錄或成本列寫入失敗，或入口發生未預期的錯誤 | 讀 stderr 的錯誤訊息；報告若已產生仍保留在輸出目錄，排除原因後重跑 |
 | 2 | `stopped` | 派遣檔無效或引用的路徑不合格 | 依 `error.details` 列出的每個路徑與原因修正派遣檔 |
 | 2 | `stopped` | `error.code` 為 `CodexProfileDrift`：實際要使用的帳號的檔位設定檔與主 checkout 的產生檔不一致（內容不同或連結指向他處），或產生檔與登錄表不一致 | 逐行貼到 pwsh 執行 `error.message` 列出的修正命令（重跑 `Update-CodexProfiles.ps1`、重跑 Setup 或移走帳號目錄內的一般檔案後重建連結），再重跑。入口沒有啟動 Codex，也沒有改任何檔案 |
+| 2 | `stopped` | `error.code` 為 `CodexMcpConfigMissing`（`test`）：帳號目錄 `config.toml` 缺少檔位 `scan` 需要的 MCP 伺服器 command | 以 pwsh 執行 `error.message` 列出的 Setup 命令後重跑。入口沒有啟動 Codex，也沒有改任何檔案 |
 | 3 | `stopped` | 非 Windows、找不到 codex，或 MXC 不可用 | 回報使用者，不改用其他沙盒 |
 | 4 | `stopped` | 沒有登記帳號、全部帳號不可用，或候選帳號都被服務端拒絕 | 見「帳號」 |
 
@@ -155,7 +173,7 @@
 - 服務端拒絕且尚無任何進度時，拒絕原因為 model not supported 者改試同一帳號的下一個 model，其餘原因改試下一個帳號。同一帳號的同一個 model 不重送。
 - 拒絕原因為未授權時，PowerShell 版重新登入命令原文轉給使用者。命令在結果 JSON 的 `attempts[].relogin_command`（每次嘗試各一個）與 `final.relogin_command`（最後一次嘗試），其餘嘗試為 `null`，stderr 不輸出。
 - 帳號因登入檔缺少或為空而被略過時，分兩種情形。全部帳號都被略過、結束碼為 4 時，含重新登入命令的略過摘要寫在 `error.message`，stderr 輸出同一則訊息，命令原文轉給使用者。仍有可用帳號時，入口只在 stderr 列出被略過帳號的名稱與原因代碼，沒有重新登入命令，結果 JSON 的 `attempts` 與 `final` 也只含實際嘗試的帳號。
-- 結束碼 4 且 `error.code` 為 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，入口已以該檔位的執行者離線呼叫選派入口，結果在 `fallback`：`unavailable_executor` 是不可用的執行者 id，`selection` 是選派入口的輸出原文。以 `selection.dispatchLine` 作為判定行，依 `selection.status` 與 `executor-selection` skill「狀態處置」處置；選出 Claude 執行者時沿用同一份派遣檔，依 `workflow-orchestration` skill `references/review-procedures.md`「Claude 審查者的發動」派出。`fallback` 為 `null` 時，改以 `-Offline <執行者 id>` 手動呼叫選派入口。入口不保存不可用的狀態，下一次新的派工照常先選 Codex。
+- 結束碼 4 且 `error.code` 為 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，入口已以該檔位的執行者離線呼叫選派入口，結果在 `fallback`：`unavailable_executor` 是不可用的執行者 id，`selection` 是選派入口的輸出原文。以 `selection.dispatchLine` 作為判定行，依 `selection.status` 與 `executor-selection` skill「狀態處置」處置；選出 Claude 執行者時沿用同一份派遣檔，依 `workflow-orchestration` skill `references/review-procedures.md`「Claude 審查者的發動」派出。`test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，`selection.status` 必為 `stopped`，停止並回報使用者。`fallback` 為 `null` 時，改以 `-Offline <執行者 id>` 手動呼叫選派入口。入口不保存不可用的狀態，下一次新的派工照常先選 Codex。
 - 選定帳號後、啟動 Codex 前，入口只讀比對實際要使用的帳號目錄內該檔位的設定檔與主 checkout（`machine.json` 所在 repo）的產生檔（內容相同，CRLF 與 LF 視為相同；若是連結必須指向該產生檔），並確認產生檔等於登錄表預期內容。不一致時以結束碼 2、`CodexProfileDrift` 停止，不改檔，不跳到下一個帳號。換帳號後對新的候選帳號在使用前同樣比對，未使用的候選帳號不一致不阻擋。檔位設定檔的來源是登錄表 `profileSettings`，產生與連結方式見 README §3「Codex profile 檔位設定」。
 - 入口不做專案信任預檢，也不自動補信任。
 
@@ -172,4 +190,5 @@
 把登錄表對應執行者的 `entry` 改回 `scripts/Invoke-CodexDispatch.ps1` 後，選派結果即指向現行入口。
 
 - `codex-review`：現行入口的 Collect 檢查的是舊格式的審查報告，`reviewer.toml`、`frontend-reviewer.toml` 與 `contract-auditor.toml` 目前只產出新格式，切回時需一併還原三份的報告格式。
+- `codex-scan`：現行入口在 dispatch worktree 內以可寫沙盒建置、測試與截圖，不掛 MCP。切回時一併把登錄表 `codex-scan` 的 `build-test` 標籤加回，並還原 `integration-verify`、`browser-smoke`、`desktop-smoke` 與 `api-smoke` 的派遣分界。
 - `codex-content`：事實校閱與影像產生一起切回。`fact-check-note` skill「派遣發動」需一併還原為現行入口的派遣單寫法（唯讀 sandbox、`--search` 由 Request 指定、報告落點為派遣單第 7 欄）。

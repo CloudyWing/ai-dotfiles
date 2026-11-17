@@ -136,6 +136,6 @@ Workflow 的驗證職責按深度分四層，各層不重複執行他層的驗�
 | 淺層探針 | Claude 實作者（Developer） | 對改動的端點或畫面單發確認路徑通 | 每階段完成後，依 `design.md` §6 |
 | 建置與測試 gate | Claude 實作者（Developer） | 建置與既有測試各執行一次 | 結案時一次 |
 | 缺陷審查 | Codex `Reviewer`（Codex 不可用時由選派入口選出的同家族執行者審查） | diff-scoped 靜態審查，不執行測試 | 主 Agent 依 Reviewer 派遣判準與審查配對以派遣單發動 |
-| 完整煙霧 | `integration-verify` skill，取證由 Codex `scan`（`type=test`）執行，判讀在 Claude 端 | 多情境、寫入回查、持久化往返 | 交付節點 |
+| 完整煙霧 | `integration-verify` skill，瀏覽器與桌面的臨場取證由 Codex `scan`（`type=test`，MCP 工具）執行，建置、啟動與 API 取證由 Claude 端執行，判讀在 Claude 端 | 多情境、寫入回查、持久化往返 | 交付節點 |
 
 `integration-verify` 的觸發方式、Reviewer 的動態證據複核條件與需求意圖驗收的歸屬見 `rules/claude/40-workflow.md`「驗證分層與 integration-verify 掛載點」。

@@ -138,7 +138,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 - 判定離線的唯一來源是服務端拒絕，額度數值不參與。拒絕包含 usage-limit、401、model not supported、rate limit，以及尚無 item 進度即以未分類錯誤終局失敗者。model not supported 表示該帳號的方案不含檔位設定的 model，停用訂閱的帳號也以此訊息呈現，視為該帳號不可用。
 - 派工時不指定 `-CodexHome`。Dispatch 依 `machine.json` `codex_accounts` 登記順序選第一個可用帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。帳號回報 model not supported 後記入帳號健康狀態檔，24 小時內略過該帳號與檔位 model 的組合。細節見 `codex-dispatch` skill「主 Agent 的帳號切換決策」。
 - 帳號不支援檔位的主要 model 時，`Invoke-CodexRun.ps1` 改用登錄表 `profileSettings.fallbackModels` 中第一個未被記為不支援的備援 model，執行紀錄與結果 JSON 的 `model` 記錄實際使用的 model，`model_source` 記錄它是檔位的主要 model（`primary`）或備援 model（`fallback`）。備援 model 也都不支援時才略過該帳號。
-- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時才手動帶 `-Offline` 呼叫。`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable` 後，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review`、`advise` 與無 `browse`、`desktop-control` 標籤的 `test` 由 Sonnet 承接，`generate` 與帶上述標籤的 `test` 回傳 `stopped`。
+- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時才手動帶 `-Offline` 呼叫。`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable` 後，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review`、`advise` 由 Sonnet 承接，`generate` 回傳 `stopped`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，結果必為 `stopped`，沒有 Claude 替代者；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Sonnet。
 - 不可用的狀態不保存，也不採信拒絕訊息附的恢復時間。下一次新的派工不帶 `-Offline`，照常先選 Codex，被拒才再換。
 
 ## Claude 取證者派生契約
@@ -153,13 +153,13 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 ## Claude 測試取證者派生契約
 
-`test` 因 Codex 全離線而選出 Sonnet 時，以 Agent 工具派生冷啟動的測試取證者。只有標註不含 `browse`、`desktop-control` 的 `test` 會選出 Sonnet，例如 API 煙霧驗證與單元測試的取證。
+`test` 選出 Sonnet 時，以 Agent 工具派生冷啟動的測試取證者。標註含 `build-test` 的 `test`（例如 API 煙霧驗證、單元測試與可重跑 E2E 的取證）選出 Sonnet，因為 Codex `scan` 檔位只做 MCP 臨場操作（標籤 `browse`、`desktop-control`、`web`），不執行建置與測試命令。標註含 `browse` 或 `desktop-control` 的 `test` 沒有 Claude 替代者。
 
 - 設定 `subagent_type` 為 `general-purpose`、`model` 為 `sonnet`。
 - 寫入 prompt 的內容含 `LineContext`、呼叫端 skill 規定的驗證步驟與命令、目標端點或檔案的絕對路徑、預期結果，以及輸出落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/test-<slug>.md`。
 - 要求逐條回報命令原文、完整 stdout、完整 stderr、exit code 與執行時間，不只回報結論。
 - 限制取證者不修改專案原始檔，不執行 git 寫入命令；需要啟動的背景進程在回報前關閉，刻意保留者附 port 或 PID。
-- 保留判讀與修正迴圈決策在主 Agent，回收時依回收三態判定。不追加 exceptions，在回報中註明原應由 Codex `scan` 承接。
+- 保留判讀與修正迴圈決策在主 Agent，回收時依回收三態判定。不追加 exceptions。
 
 ## 執行者轉移與交接單
 

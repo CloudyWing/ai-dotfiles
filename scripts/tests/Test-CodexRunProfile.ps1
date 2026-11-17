@@ -163,8 +163,289 @@ try {
             $text = Read-CodexProfileFileText -Path $generated
             Assert-True ($null -ne $text) ($node.profile + ' 缺產生檔')
             $lines = @($text -split "`n" | Where-Object { $_ -notmatch '^\s*(#|$)' })
-            Assert-Equal @(('model = "' + $node.profileSettings.model + '"'), ('model_reasoning_effort = "' + $node.profileSettings.effort + '"'), '[agents]', 'enabled = true', ('default_subagent_model = "' + $node.profileSettings.subagentModel + '"'), ('default_subagent_reasoning_effort = "' + $node.profileSettings.subagentEffort + '"')) $lines
+            $expectedLines = @(('model = "' + $node.profileSettings.model + '"'), ('model_reasoning_effort = "' + $node.profileSettings.effort + '"'), '[agents]', 'enabled = true', ('default_subagent_model = "' + $node.profileSettings.subagentModel + '"'), ('default_subagent_reasoning_effort = "' + $node.profileSettings.subagentEffort + '"'))
+            if ($null -ne $node.profileSettings.PSObject.Properties['mcpServers']) {
+                foreach ($server in $node.profileSettings.mcpServers.PSObject.Properties) {
+                    $expectedLines += ('[mcp_servers.' + $server.Name + ']')
+                    if ($null -ne $server.Value.PSObject.Properties['command']) { $expectedLines += ('command = "' + $server.Value.command + '"') }
+                    if ($null -ne $server.Value.PSObject.Properties['args']) { $expectedLines += ('args = [' + ((@($server.Value.args) | ForEach-Object { '"' + $_ + '"' }) -join ', ') + ']') }
+                    if ($null -ne $server.Value.PSObject.Properties['envVars']) { $expectedLines += ('env_vars = [' + ((@($server.Value.envVars) | ForEach-Object { '"' + $_ + '"' }) -join ', ') + ']') }
+                    $expectedLines += @('enabled = true', 'default_tools_approval_mode = "approve"', ('enabled_tools = [' + ((@($server.Value.enabledTools) | ForEach-Object { '"' + $_ + '"' }) -join ', ') + ']'))
+                }
+            }
+            Assert-Equal $expectedLines $lines
         }
+    }
+    function Add-FixtureMcpServer {
+        param($Registry, [int]$Index = 0)
+        $servers = [pscustomobject]@{
+            web = [pscustomobject]@{ command = 'npx'; args = @('-y', 'pkg@latest'); envVars = @('OUT_DIR'); enabledTools = @('nav', 'click') }
+            desk = [pscustomobject]@{ enabledTools = @('attach') }
+        }
+        (Get-FakeCodex -Registry $Registry -Index $Index).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue $servers
+    }
+    Test-Case 'GEN-MCP-SERVERS 登錄表宣告 mcpServers 時只有該檔位多出 [mcp_servers.*] 表（核准固定 approve、省略 command 的伺服器不寫 command），其餘檔位的內容與未宣告時逐位元組相同' {
+        $plain = New-FakeRepo -Name 'mcp-plain'
+        $withMcp = New-FakeRepo -Name 'mcp-with' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        foreach ($root in @($plain, $withMcp)) {
+            $null = Sync-CodexProfileGeneratedFile -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root) -OutputDirectory (Get-CodexProfileGeneratedDirectory -RepoRoot $root)
+        }
+        foreach ($name in @('beta', 'gamma', 'delta')) {
+            Assert-Equal (Get-FileSha -Path (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $plain) ($name + '.config.toml'))) (Get-FileSha -Path (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $withMcp) ($name + '.config.toml'))) ($name + ' 應逐位元組相同')
+        }
+        $alphaPlain = Read-CodexProfileFileText -Path (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $plain) 'alpha.config.toml')
+        $alpha = Read-CodexProfileFileText -Path (Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $withMcp) 'alpha.config.toml')
+        Assert-True (-not $alphaPlain.Contains('mcp_servers')) '未宣告的檔位不得有 mcp_servers'
+        Assert-True ($alpha.StartsWith($alphaPlain)) '宣告後的內容只在原內容之後追加'
+        $lines = @($alpha.Substring($alphaPlain.Length) -split "`n" | Where-Object { $_ -ne '' })
+        Assert-Equal @('[mcp_servers.web]', 'command = "npx"', 'args = ["-y", "pkg@latest"]', 'env_vars = ["OUT_DIR"]', 'enabled = true', 'default_tools_approval_mode = "approve"', 'enabled_tools = ["nav", "click"]',
+            '[mcp_servers.desk]', 'enabled = true', 'default_tools_approval_mode = "approve"', 'enabled_tools = ["attach"]') $lines
+    }
+    Test-Case 'MCP-ACCOUNT-PROVISION Setup 從來源 config.toml 讀取指令後只在帳號 config.toml 檔尾追加 enabled = false 的表；不改既有內容、不複製 env 與其他表、重複執行不再追加、來源缺少時不寫檔' {
+        $root = New-FakeRepo -Name 'mcp-provision' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $spec = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))[0]
+        $workDir = New-TestDirectory -Name 'mcp-provision-homes'
+        $source = Join-Path $workDir 'desktop-config.toml'
+        Write-TestUtf8 -Path $source -Text "[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`nstartup_timeout_sec = 60.0`n`n[mcp_servers.desk.env]`nSECRET_VALUE = 'must-not-copy'`n`n[mcp_servers.web]`ncommand = 'npx'`n"
+        $account = Join-Path $workDir 'acct'
+        $existing = "[windows]`nsandbox = `"mxc`"`n"
+        Write-TestUtf8 -Path (Join-Path $account 'config.toml') -Text $existing
+        $dry = @(Set-CodexMcpAccountConfig -AccountHome $account -Spec $spec -SourceConfigPath $source -WhatIf)
+        Assert-Equal @('would-add') @($dry | ForEach-Object { $_.action })
+        Assert-Equal $existing ([IO.File]::ReadAllText((Join-Path $account 'config.toml'))) '-WhatIf 不寫檔'
+        $first = @(Set-CodexMcpAccountConfig -AccountHome $account -Spec $spec -SourceConfigPath $source)
+        Assert-Equal @('added') @($first | ForEach-Object { $_.action })
+        $text = [IO.File]::ReadAllText((Join-Path $account 'config.toml'))
+        Assert-True ($text.StartsWith($existing)) '既有內容不變'
+        Assert-True ($text.Contains("[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`nstartup_timeout_sec = 60.0`nenabled = false") -and -not $text.Contains("`r")) ('追加的表應沿用原檔的 LF 行尾：' + $text)
+        Assert-True (-not $text.Contains('SECRET_VALUE') -and -not $text.Contains('[mcp_servers.web]')) '不複製 env 與其他伺服器'
+        Assert-Equal 0 (@(Get-CodexMcpAccountConfigFinding -AccountHome $account -Spec $spec).Count)
+        $again = @(Set-CodexMcpAccountConfig -AccountHome $account -Spec $spec -SourceConfigPath $source)
+        Assert-Equal @('ok') @($again | ForEach-Object { $_.action })
+        Assert-Equal $text ([IO.File]::ReadAllText((Join-Path $account 'config.toml'))) '重複執行不再追加'
+        $noSource = Join-Path $workDir 'acct-nosource'
+        Write-TestUtf8 -Path (Join-Path $noSource 'config.toml') -Text $existing
+        $missing = @(Set-CodexMcpAccountConfig -AccountHome $noSource -Spec $spec -SourceConfigPath (Join-Path $workDir 'absent.toml'))
+        Assert-Equal @('source-missing') @($missing | ForEach-Object { $_.action })
+        Assert-Equal $existing ([IO.File]::ReadAllText((Join-Path $noSource 'config.toml'))) '來源缺少時不寫檔'
+        $blocked = Join-Path $workDir 'acct-blocked'
+        Write-TestUtf8 -Path (Join-Path $blocked 'config.toml') -Text "[mcp_servers.desk]`nenabled = false`n"
+        $blockedResult = @(Set-CodexMcpAccountConfig -AccountHome $blocked -Spec $spec -SourceConfigPath $source)
+        Assert-Equal @('blocked') @($blockedResult | ForEach-Object { $_.action })
+        Assert-Equal "[mcp_servers.desk]`nenabled = false`n" ([IO.File]::ReadAllText((Join-Path $blocked 'config.toml'))) '帳號端已有該表時不改'
+    }
+    Test-Case 'MCP-ACCOUNT-PROVISION-FORMAT 追加時保留原檔的 BOM 與 CRLF 行尾，原檔結尾沒有換行時先補一個換行；既有位元組原封不動' {
+        $root = New-FakeRepo -Name 'mcp-format' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $spec = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))[0]
+        $workDir = New-TestDirectory -Name 'mcp-format-homes'
+        $source = Join-Path $workDir 'desktop-config.toml'
+        Write-TestUtf8 -Path $source -Text "[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`n"
+        $account = Join-Path $workDir 'acct'
+        $null = New-Item -ItemType Directory -Path $account -Force
+        $original = [byte[]]@(0xEF, 0xBB, 0xBF) + [Text.Encoding]::UTF8.GetBytes("[windows]`r`nsandbox = `"mxc`"")
+        [IO.File]::WriteAllBytes((Join-Path $account 'config.toml'), $original)
+        $result = @(Set-CodexMcpAccountConfig -AccountHome $account -Spec $spec -SourceConfigPath $source)
+        Assert-Equal @('added') @($result | ForEach-Object { $_.action })
+        $after = [IO.File]::ReadAllBytes((Join-Path $account 'config.toml'))
+        Assert-Equal ([Convert]::ToBase64String($original)) ([Convert]::ToBase64String($after[0..($original.Length - 1)])) '既有位元組（含 BOM）不變'
+        $appended = [Text.Encoding]::UTF8.GetString($after, $original.Length, $after.Length - $original.Length)
+        Assert-Equal "`r`n`r`n[mcp_servers.desk]`r`ncommand = 'C:\tools\desk.exe'`r`nenabled = false`r`n" $appended '追加段沿用 CRLF，並先補結尾換行'
+    }
+    Test-Case 'MCP-ACCOUNT-PROVISION-BLOCKED 帳號 config.toml 已用其他寫法定義該伺服器（表頭帶註解、引號鍵、點分鍵、行內表、父表）時回報 blocked，不寫檔' {
+        $root = New-FakeRepo -Name 'mcp-blocked-forms' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $spec = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))[0]
+        $workDir = New-TestDirectory -Name 'mcp-blocked-homes'
+        $source = Join-Path $workDir 'desktop-config.toml'
+        Write-TestUtf8 -Path $source -Text "[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`n"
+        $forms = @(
+            "[mcp_servers.desk] # 桌面`nenabled = false`n"
+            "[mcp_servers.`"desk`"]`nenabled = false`n"
+            "[ mcp_servers . 'desk' ]`nenabled = false`n"
+            "mcp_servers.desk.enabled = false`n"
+            "mcp_servers.desk = { enabled = false }`n"
+            "[mcp_servers]`ndesk = { enabled = false }`n"
+            "mcp_servers = { desk = { enabled = false } }`n"
+        )
+        $index = 0
+        foreach ($form in $forms) {
+            $index++
+            $account = Join-Path $workDir ('acct-' + $index)
+            Write-TestUtf8 -Path (Join-Path $account 'config.toml') -Text $form
+            $before = Get-FileSha -Path (Join-Path $account 'config.toml')
+            $result = @(Set-CodexMcpAccountConfig -AccountHome $account -Spec $spec -SourceConfigPath $source)
+            Assert-Equal @('blocked') @($result | ForEach-Object { $_.action }) ('寫法 ' + $index + ' 應為 blocked')
+            Assert-Equal $before (Get-FileSha -Path (Join-Path $account 'config.toml')) ('寫法 ' + $index + ' 不得寫檔')
+        }
+        # 表頭帶註解與引號鍵、且表內有 command 的標準寫法視為已有 command，不追加也不報缺少。
+        $okAccount = Join-Path $workDir 'acct-ok'
+        Write-TestUtf8 -Path (Join-Path $okAccount 'config.toml') -Text "[mcp_servers.`"desk`"] # 桌面`ncommand = 'x'`nenabled = false`n"
+        Assert-Equal 0 (@(Get-CodexMcpAccountConfigFinding -AccountHome $okAccount -Spec $spec).Count)
+        Assert-Equal @('ok') @(Set-CodexMcpAccountConfig -AccountHome $okAccount -Spec $spec -SourceConfigPath $source | ForEach-Object { $_.action })
+    }
+    Test-Case 'MCP-ACCOUNT-PROVISION-READ-FAILURE 帳號 config.toml 讀取失敗（被獨佔鎖定）或不是合法 UTF-8 時一律停止：回報 blocked、檔案內容不變、不寫檔' {
+        $root = New-FakeRepo -Name 'mcp-readfail' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $spec = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))[0]
+        $workDir = New-TestDirectory -Name 'mcp-readfail-homes'
+        $source = Join-Path $workDir 'desktop-config.toml'
+        Write-TestUtf8 -Path $source -Text "[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`n"
+        # 獨佔鎖定：以不共用的 FileStream 開啟，讀取丟 IOException。
+        $locked = Join-Path $workDir 'acct-locked'
+        Write-TestUtf8 -Path (Join-Path $locked 'config.toml') -Text "[windows]`nsandbox = `"mxc`"`n"
+        $lockedPath = Join-Path $locked 'config.toml'
+        $stream = [IO.File]::Open($lockedPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        try {
+            Assert-Equal @('desk') @(Get-CodexMcpAccountConfigFinding -AccountHome $locked -Spec $spec) '讀不到時無法確認 command，視為缺少'
+            $result = @(Set-CodexMcpAccountConfig -AccountHome $locked -Spec $spec -SourceConfigPath $source)
+            Assert-Equal @('blocked') @($result | ForEach-Object { $_.action })
+            Assert-True ($result[0].detail.Contains('讀取失敗')) ('訊息應說明讀取失敗：' + $result[0].detail)
+        }
+        finally { $stream.Dispose() }
+        Assert-Equal "[windows]`nsandbox = `"mxc`"`n" ([IO.File]::ReadAllText($lockedPath)) '讀取失敗時檔案內容不變'
+        # 非法 UTF-8：不以替代字元解碼後寫回。
+        $invalid = Join-Path $workDir 'acct-invalid'
+        $null = New-Item -ItemType Directory -Path $invalid -Force
+        $invalidBytes = [byte[]]@(0x5B, 0x61, 0x5D, 0x0A, 0xFF, 0xFE, 0x0A)
+        [IO.File]::WriteAllBytes((Join-Path $invalid 'config.toml'), $invalidBytes)
+        $result = @(Set-CodexMcpAccountConfig -AccountHome $invalid -Spec $spec -SourceConfigPath $source)
+        Assert-Equal @('blocked') @($result | ForEach-Object { $_.action })
+        Assert-Equal ([Convert]::ToBase64String($invalidBytes)) ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $invalid 'config.toml')))) '非法 UTF-8 時檔案位元組不變'
+        # 追加失敗（唯讀檔案）：回報 blocked，不丟例外，內容不變。
+        $readonly = Join-Path $workDir 'acct-readonly'
+        Write-TestUtf8 -Path (Join-Path $readonly 'config.toml') -Text "[windows]`n"
+        $readonlyPath = Join-Path $readonly 'config.toml'
+        [IO.File]::SetAttributes($readonlyPath, [IO.FileAttributes]::ReadOnly)
+        try {
+            $result = @(Set-CodexMcpAccountConfig -AccountHome $readonly -Spec $spec -SourceConfigPath $source)
+            Assert-Equal @('blocked') @($result | ForEach-Object { $_.action })
+        }
+        finally { [IO.File]::SetAttributes($readonlyPath, [IO.FileAttributes]::Normal) }
+        Assert-Equal "[windows]`n" ([IO.File]::ReadAllText($readonlyPath)) '唯讀時內容不變'
+    }
+    Test-Case 'MCP-SETUP-OUTCOME Setup 的帳號處理函式：added、ok 為 success、blocked 與 source-missing 為 warning 並計入阻塞數、-WhatIf 為 info 且不寫檔；沒有需要帳號端 command 的檔位時不產生訊息' {
+        $root = New-FakeRepo -Name 'mcp-outcome' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $specs = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))
+        $workDir = New-TestDirectory -Name 'mcp-outcome-homes'
+        $source = Join-Path $workDir 'desktop-config.toml'
+        Write-TestUtf8 -Path $source -Text "[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`n"
+        $account = Join-Path $workDir 'acct'
+        Write-TestUtf8 -Path (Join-Path $account 'config.toml') -Text "[windows]`n"
+        $dry = Invoke-CodexMcpAccountSetup -AccountName 'acct' -AccountHome $account -Spec $specs -SourceConfigPath $source -WhatIf
+        Assert-Equal 0 $dry.blocked
+        Assert-Equal @('info') @($dry.messages | ForEach-Object { $_.level })
+        Assert-Equal "[windows]`n" ([IO.File]::ReadAllText((Join-Path $account 'config.toml'))) '-WhatIf 不寫檔'
+        $added = Invoke-CodexMcpAccountSetup -AccountName 'acct' -AccountHome $account -Spec $specs -SourceConfigPath $source
+        Assert-Equal 0 $added.blocked
+        Assert-Equal @('success') @($added.messages | ForEach-Object { $_.level })
+        $again = Invoke-CodexMcpAccountSetup -AccountName 'acct' -AccountHome $account -Spec $specs -SourceConfigPath $source
+        Assert-Equal 0 $again.blocked
+        Assert-True ($again.messages[0].level -ceq 'success' -and $again.messages[0].text.Contains('acct') -and $again.messages[0].text.Contains('desk')) '已有 command 時輸出 success 並指出帳號與伺服器'
+        $noSource = Invoke-CodexMcpAccountSetup -AccountName 'acct2' -AccountHome (Join-Path $workDir 'acct2') -Spec $specs -SourceConfigPath (Join-Path $workDir 'absent.toml')
+        Assert-Equal 1 $noSource.blocked '來源缺少計入阻塞'
+        Assert-Equal @('warning') @($noSource.messages | ForEach-Object { $_.level })
+        Assert-True ($noSource.messages[0].text.Contains('acct2')) '訊息指出帳號'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $workDir 'acct2\config.toml'))) '來源缺少時不建立 config.toml'
+        $plainRoot = New-FakeRepo -Name 'mcp-outcome-plain'
+        $plainSpecs = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $plainRoot))
+        $none = Invoke-CodexMcpAccountSetup -AccountName 'acct' -AccountHome $account -Spec $plainSpecs -SourceConfigPath $source
+        Assert-Equal 0 $none.blocked
+        Assert-Equal 0 (@($none.messages).Count)
+    }
+    Test-Case 'MCP-SETUP-WIRING Setup-AIGlobalConfig.ps1 對每個帳號呼叫 Invoke-CodexMcpAccountSetup，並把 blocked 併入阻塞計數、warning 以 Write-Warning 輸出' {
+        $setupText = [IO.File]::ReadAllText((Join-Path $scriptsRoot 'Setup-AIGlobalConfig.ps1'))
+        Assert-True ($setupText.Contains('Invoke-CodexMcpAccountSetup -AccountName $account.name -AccountHome $account.codex_home -Spec $profileSpecs')) 'Setup 未呼叫帳號處理函式'
+        Assert-True ($setupText.Contains('$profileBlockedCount += [int]$mcpOutcome.blocked')) 'Setup 未累加阻塞數'
+        Assert-True ($setupText -match "default \{ Write-Warning \('  ' \+ \`$mcpMessage\.text\) \}") 'Setup 未以 Write-Warning 輸出 warning'
+    }
+    Test-Case 'MCP-ACCOUNT-PROVISION-NO-CONFIG 帳號目錄沒有 config.toml 時不新建只含 MCP 表的檔案：回報 blocked（說明缺少 config.toml），Setup 結果計入阻塞；帳號目錄本身不存在也一樣' {
+        $root = New-FakeRepo -Name 'mcp-noconfig' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $spec = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))[0]
+        $workDir = New-TestDirectory -Name 'mcp-noconfig-homes'
+        $source = Join-Path $workDir 'desktop-config.toml'
+        Write-TestUtf8 -Path $source -Text "[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`n"
+        $emptyHome = Join-Path $workDir 'acct-empty'
+        $null = New-Item -ItemType Directory -Path $emptyHome -Force
+        foreach ($accountDir in @($emptyHome, (Join-Path $workDir 'acct-absent'))) {
+            $result = @(Set-CodexMcpAccountConfig -AccountHome $accountDir -Spec $spec -SourceConfigPath $source)
+            Assert-Equal @('blocked') @($result | ForEach-Object { $_.action })
+            Assert-True ($result[0].detail.Contains('config.toml') -and $result[0].detail.Contains('不存在')) ('訊息應說明缺少 config.toml：' + $result[0].detail)
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountDir 'config.toml'))) '不得新建 config.toml'
+            $outcome = Invoke-CodexMcpAccountSetup -AccountName 'acct' -AccountHome $accountDir -Spec @($spec) -SourceConfigPath $source
+            Assert-Equal 1 $outcome.blocked
+            Assert-Equal @('warning') @($outcome.messages | ForEach-Object { $_.level })
+            Assert-True (-not (Test-Path -LiteralPath (Join-Path $accountDir 'config.toml'))) 'Setup 流程不得新建 config.toml'
+        }
+    }
+    Test-Case 'MCP-ACCOUNT-PROVISION-ENCODING 內容含 NUL 位元組（無 BOM 的 UTF-16 等編碼不明）時回報 blocked、不寫檔；只讀檢查視為缺少' {
+        $root = New-FakeRepo -Name 'mcp-nul' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $spec = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))[0]
+        $workDir = New-TestDirectory -Name 'mcp-nul-homes'
+        $source = Join-Path $workDir 'desktop-config.toml'
+        Write-TestUtf8 -Path $source -Text "[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`n"
+        $account = Join-Path $workDir 'acct'
+        $null = New-Item -ItemType Directory -Path $account -Force
+        $utf16 = [Text.Encoding]::Unicode.GetBytes("[windows]`r`nsandbox = `"mxc`"`r`n")
+        [IO.File]::WriteAllBytes((Join-Path $account 'config.toml'), $utf16)
+        Assert-Equal @('desk') @(Get-CodexMcpAccountConfigFinding -AccountHome $account -Spec $spec)
+        $result = @(Set-CodexMcpAccountConfig -AccountHome $account -Spec $spec -SourceConfigPath $source)
+        Assert-Equal @('blocked') @($result | ForEach-Object { $_.action })
+        Assert-True ($result[0].detail.Contains('NUL')) ('訊息應說明 NUL：' + $result[0].detail)
+        Assert-Equal ([Convert]::ToBase64String($utf16)) ([Convert]::ToBase64String([IO.File]::ReadAllBytes((Join-Path $account 'config.toml')))) '編碼不明時檔案位元組不變'
+    }
+    Test-Case 'MCP-SOURCE-COMMAND-FORMS 來源的 command 只接受單行的基本字串或字面字串；多行字串、值後面還有其他內容、未結束的字串回報 source-missing（說明格式無法確定）且不寫檔' {
+        $root = New-FakeRepo -Name 'mcp-forms' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $spec = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))[0]
+        $workDir = New-TestDirectory -Name 'mcp-forms-homes'
+        $existing = "[windows]`n"
+        $bad = @(
+            "command = `"`"`"C:\tools\desk.exe`"`"`""
+            "command = '''C:\tools\desk.exe'''"
+            "command = 'C:\tools\desk.exe' # 桌面"
+            "command = `"C:\\tools\\desk.exe`" extra"
+            "command = `"C:\\tools\\desk.exe"
+            "command = ['C:\tools\desk.exe']"
+            "command = C:\tools\desk.exe"
+        )
+        $index = 0
+        foreach ($line in $bad) {
+            $index++
+            $source = Join-Path $workDir ('source-' + $index + '.toml')
+            Write-TestUtf8 -Path $source -Text ("[mcp_servers.desk]`n" + $line + "`n")
+            $account = Join-Path $workDir ('acct-bad-' + $index)
+            Write-TestUtf8 -Path (Join-Path $account 'config.toml') -Text $existing
+            $result = @(Set-CodexMcpAccountConfig -AccountHome $account -Spec $spec -SourceConfigPath $source)
+            Assert-Equal @('source-missing') @($result | ForEach-Object { $_.action }) ('來源寫法 ' + $index + ' 應為 source-missing：' + $line)
+            Assert-True ($result[0].detail.Contains('單行')) ('訊息應說明格式：' + $result[0].detail)
+            Assert-Equal $existing ([IO.File]::ReadAllText((Join-Path $account 'config.toml'))) ('來源寫法 ' + $index + ' 不得寫檔')
+        }
+        foreach ($good in @("command = `"C:\\tools\\desk.exe`"", "command = 'C:\tools\desk.exe'")) {
+            $source = Join-Path $workDir 'source-good.toml'
+            Write-TestUtf8 -Path $source -Text ("[mcp_servers.desk]`n" + $good + "`n")
+            $account = Join-Path $workDir ('acct-good-' + [guid]::NewGuid().ToString('N').Substring(0, 6))
+            Write-TestUtf8 -Path (Join-Path $account 'config.toml') -Text $existing
+            $result = @(Set-CodexMcpAccountConfig -AccountHome $account -Spec $spec -SourceConfigPath $source)
+            Assert-Equal @('added') @($result | ForEach-Object { $_.action }) $good
+            Assert-True (([IO.File]::ReadAllText((Join-Path $account 'config.toml'))).Contains($good)) ('command 應原樣複製：' + $good)
+        }
+    }
+    Test-Case 'MCP-ACCOUNT-CONFIG 帳號目錄 config.toml 缺少省略 command 之伺服器的 command 時列出名稱（只讀）；有 command 者、其他檔位不列' {
+        $root = New-FakeRepo -Name 'mcp-account' -Mutate { param($r) Add-FixtureMcpServer -Registry $r }
+        $specs = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $root))
+        Assert-Equal @('desk') @(Get-CodexMcpLocalCommandServer -Spec $specs[0])
+        Assert-Equal 0 (@(Get-CodexMcpLocalCommandServer -Spec $specs[1]).Count)
+        $accounts = New-TestDirectory -Name 'mcp-account-homes'
+        $absent = Join-Path $accounts 'absent'
+        $null = New-Item -ItemType Directory -Path $absent -Force
+        Assert-Equal @('desk') @(Get-CodexMcpAccountConfigFinding -AccountHome $absent -Spec $specs[0])
+        $noCommand = Join-Path $accounts 'no-command'
+        Write-TestUtf8 -Path (Join-Path $noCommand 'config.toml') -Text "[mcp_servers.desk]`nenabled = false`n`n[mcp_servers.other]`ncommand = 'x'`n"
+        Assert-Equal @('desk') @(Get-CodexMcpAccountConfigFinding -AccountHome $noCommand -Spec $specs[0])
+        $ok = Join-Path $accounts 'ok'
+        Write-TestUtf8 -Path (Join-Path $ok 'config.toml') -Text "[windows]`nsandbox = `"mxc`"`n`n[mcp_servers.desk]`ncommand = 'C:\tools\desk.exe'`nenabled = false`n"
+        Assert-Equal 0 (@(Get-CodexMcpAccountConfigFinding -AccountHome $ok -Spec $specs[0]).Count)
+        Assert-Equal 0 (@(Get-CodexMcpAccountConfigFinding -AccountHome $absent -Spec $specs[1]).Count) '沒有 mcpServers 的檔位不檢查'
+        $beforeHash = Get-FileSha -Path (Join-Path $ok 'config.toml')
+        $null = Get-CodexMcpAccountConfigFinding -AccountHome $ok -Spec $specs[0]
+        Assert-Equal $beforeHash (Get-FileSha -Path (Join-Path $ok 'config.toml')) '只讀，不改檔'
     }
     Test-Case 'GEN-RETIRED-FROM-REGISTRY 已退役檔位名稱只來自登錄表 retiredProfiles，腳本內沒有第二份清單' {
         $raw = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($realRegistry)) -Depth 30
@@ -236,7 +517,21 @@ try {
         @{ id = 'platform-case-variant'; message = 'platform'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).platform = 'Codex' } },
         @{ id = 'missing-id'; message = 'id'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).PSObject.Properties.Remove('id') } },
         @{ id = 'newline-id'; message = 'id'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).id = "codex-x`n[evil]" } },
-        @{ id = 'no-efforts-list'; message = 'codexEfforts'; mutate = { param($r) $r.PSObject.Properties.Remove('codexEfforts') } }
+        @{ id = 'no-efforts-list'; message = 'codexEfforts'; mutate = { param($r) $r.PSObject.Properties.Remove('codexEfforts') } },
+        @{ id = 'mcp-not-object'; message = 'mcpServers'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue @('x') } },
+        @{ id = 'mcp-bad-name'; message = 'mcpServers'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ 'Bad Name' = [pscustomobject]@{ enabledTools = @('a') } }) } },
+        @{ id = 'mcp-no-tools'; message = 'enabledTools'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'npx' } }) } },
+        @{ id = 'mcp-empty-tools'; message = 'enabledTools'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'npx'; enabledTools = @() } }) } },
+        @{ id = 'mcp-unknown-key'; message = 'approvalMode'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'npx'; enabledTools = @('a'); approvalMode = 'prompt' } }) } },
+        @{ id = 'mcp-quote-injection'; message = 'command'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'x"; [evil]'; enabledTools = @('a') } }) } },
+        @{ id = 'mcp-machine-path'; message = 'command'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'C:\Users\x\tool.exe'; enabledTools = @('a') } }) } },
+        @{ id = 'mcp-machine-path-forward-slash'; message = 'command'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'C:/Users/x/tool.exe'; enabledTools = @('a') } }) } },
+        @{ id = 'mcp-absolute-path'; message = 'command'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = '/usr/bin/tool'; enabledTools = @('a') } }) } },
+        @{ id = 'mcp-dotdot-path'; message = 'command'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'a/../b'; enabledTools = @('a') } }) } },
+        @{ id = 'mcp-trailing-newline-command'; message = 'command'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = "npx`n"; enabledTools = @('a') } }) } },
+        @{ id = 'mcp-trailing-newline-tool'; message = 'enabledTools'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'npx'; enabledTools = @("a`n") } }) } },
+        @{ id = 'mcp-args-without-command'; message = 'args'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ args = @('-y'); enabledTools = @('a') } }) } },
+        @{ id = 'mcp-duplicate-tool'; message = 'enabledTools'; mutate = { param($r) (Get-FakeCodex -Registry $r -Index 0).profileSettings | Add-Member -NotePropertyName mcpServers -NotePropertyValue ([pscustomobject]@{ web = [pscustomobject]@{ command = 'npx'; enabledTools = @('a', 'a') } }) } }
     )
     foreach ($case in $invalidCases) {
         $caseCopy = $case

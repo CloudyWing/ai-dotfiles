@@ -89,6 +89,7 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
     ├── inputs/
     ├── screenshots/
     ├── style-baselines/
+    ├── test-context/                   # 測試環境資料檔 test-context.md（保留，不進版控）
     └── ui-demo/
 ```
 
@@ -180,8 +181,7 @@ claude plugin install line-status-board@ai-agents-local --scope user
 - 跨平台派工需要在 PATH 上找到 `codex`。桌面版隨附的 `bin\codex.exe` 版本固定在安裝當下，不會隨桌面版更新，不能用於派工。
 - 安裝或更換環境時執行 `codex --version` 確認 CLI 可用；更換機器後先執行 `codex doctor`，確認執行檔、PATH 與本機設定可用。
 - 派工腳本、狀態查詢腳本、Setup 與派工測試都需要 PowerShell 7+（pwsh）。以 Windows PowerShell 5.1 執行時，Setup 印出安裝指引後結束，其餘腳本會被 `#Requires -Version 7.0` 拒絕。
-- 測試的派工需要隔離 worktree 時，來源目錄必須是 Git repo；腳本不會自動 `git init`。
-- 審查、事實校閱、影像產生與顧問的派工由 `scripts/Invoke-CodexRun.ps1` 執行（顧問只開放輸出目錄與專案說明檔 `AGENTS.md`，其餘直接在線工作樹執行），不建立隔離 worktree，需要 Codex 的 MXC 沙盒。偵測不到 MXC 時腳本停止並回報。
+- 審查、事實校閱、影像產生、測試取證與顧問的派工由 `scripts/Invoke-CodexRun.ps1` 執行（顧問只開放輸出目錄與專案說明檔 `AGENTS.md`，測試取證的命令沙盒唯讀、只以 MCP 工具操作已啟動的受測對象，其餘直接在線工作樹執行），不建立隔離 worktree，需要 Codex 的 MXC 沙盒。偵測不到 MXC 時腳本停止並回報。
 
 #### Windows 長路徑
 
@@ -200,7 +200,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 #### Codex profile 檔位設定
 
 1. 派工使用的檔位清單以 `scripts/dispatch/executor-registry.json` 為準，不在本文件另列。現行清單與各檔位的設定用 `pwsh -NoProfile -File scripts\Select-DispatchExecutor.ps1 -Describe` 查詢（各 Codex 執行者的 `profile` 與 `profileSettings`）。派工以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。審查類使用的 `scripts/Invoke-CodexRun.ps1` 不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`；選定帳號後、啟動 Codex 前，另比對實際要使用的帳號的檔位設定檔：必須是指向主 checkout 產生檔的 Symbolic Link 且內容相同（一般檔案即使內容相同也不通過，不允許單機覆寫），入口所在工作樹的登錄表設定也必須已落地到主 checkout。不一致時以結束碼 2（`CodexProfileDrift`）停止，列出每行可直接貼到 pwsh 的修正命令，不自行改檔，也不跳到下一個帳號；所有已登入帳號的檔位檔都缺失時同樣以此方式回報，不會被當成帳號全數不可用；換帳號後對新的候選帳號在使用前再比對一次，未使用的候選帳號不一致不阻擋。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md` 與 `executor-selection` skill。
-2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。這些值寫在 `scripts/dispatch/executor-registry.json` 各 Codex 執行者的 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort`），不手動編輯設定檔。`profileSettings` 另可選填 `fallbackModels`，列出帳號不支援主要 model 時依序改用的 model；`Invoke-CodexRun.ps1` 以 `-c model=` 套用，產生檔只以註解列出這份清單。`effort` 與 `subagentEffort` 必須在登錄表的 `codexEfforts` 清單內（`max` 需要 Codex 0.147 以上，見 §8）。
+2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。這些值寫在 `scripts/dispatch/executor-registry.json` 各 Codex 執行者的 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort`），不手動編輯設定檔。`profileSettings` 另可選填 `fallbackModels`，列出帳號不支援主要 model 時依序改用的 model；`Invoke-CodexRun.ps1` 以 `-c model=` 套用，產生檔只以註解列出這份清單。`profileSettings` 也可選填 `mcpServers`（目前只有測試取證檔位 `scan`：`playwright` 與 `flaui-mcp`），產生檔輸出 `[mcp_servers.*]` 表，核准模式固定 `approve`，以 `enabled_tools` 限制可用工具；省略 `command` 的伺服器（`flaui-mcp`，路徑因機器而異）由 Setup 從 Codex Desktop 的 `config.toml` 讀取 `command` 後，以 `enabled = false` 追加到各派工帳號的 `config.toml`，`-Check` 檢查該項目。`effort` 與 `subagentEffort` 必須在登錄表的 `codexEfforts` 清單內（`max` 需要 Codex 0.147 以上，見 §8）。
 
    ```toml
    model = "<model-id>"
@@ -291,7 +291,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態、額度與 `Invoke-CodexRun.ps1` 的執行紀錄。
 - `scripts/Select-DispatchExecutor.ps1` 依任務標註與 `scripts/dispatch/executor-registry.json` 選出派工執行者並輸出 `[派工]` 判定行，唯讀、不呼叫網路。
 - `scripts/New-DispatchInputs.ps1` 產生資源派遣（唯讀）的輸入，一次寫出 Request、`line.json`（不存在時）、prompt 與派遣單，並以 `Invoke-CodexDispatch.ps1 -Operation Dispatch -ValidateOnly` 自檢；自檢失敗時刪除本次建立的檔案，新建的 `line.json` 保留。
-- `scripts/Invoke-CodexRun.ps1` 對一份派遣檔執行一次 `codex exec`，目前用於審查、事實校閱、影像產生與顧問，啟動前比對帳號目錄的檔位設定檔與 repo 產生檔。帳號由 `machine.json` 登記清單選擇，讀取主 checkout 的 `.local/machine.json`，在線工作樹發動時相同。專案信任的處理見 `skills/codex-dispatch/references/run.md` 的「帳號」章節。
+- `scripts/Invoke-CodexRun.ps1` 對一份派遣檔執行一次 `codex exec`，目前用於審查、事實校閱、影像產生、測試取證與顧問，啟動前比對帳號目錄的檔位設定檔與 repo 產生檔。帳號由 `machine.json` 登記清單選擇，讀取主 checkout 的 `.local/machine.json`，在線工作樹發動時相同。專案信任的處理見 `skills/codex-dispatch/references/run.md` 的「帳號」章節。
 - `scripts/Test-CodexReviewReport.ps1` 檢查審查報告的 finding 清單，`valid` 為 `false` 時結束碼為 1。
 - `scripts/Write-ClaudeRunRecord.ps1` 為 Claude 審查者（subagent）的一次審查在 `runs\` 寫出與 Codex 同位置的執行紀錄：`-Action Start` 保存派生前的來源狀態，`-Action End` 判定 `source_changed` 與報告檢查並補完紀錄；紀錄沒有 token 用量，`Get-LineCost.ps1` 標示後不計入合計。
 - `scripts/Update-ExecutorIncomplete.ps1` 保存同一任務各執行者的未完成次數（`Add`、`Show`、`Reset`），並輸出可直接作為 `Select-DispatchExecutor.ps1 -Incomplete` 的值；選派入口不讀這個檔。

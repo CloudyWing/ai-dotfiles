@@ -26,6 +26,7 @@ $script:SetupCheckCategoryLabel = [ordered]@{
     'codex-machine'         = 'Codex 派工帳號登記'
     'codex-profile-generated' = 'Codex 檔位產生檔'
     'codex-profile-link'    = 'Codex 檔位設定檔連結'
+    'codex-mcp-command'     = 'Codex 帳號的 MCP 指令'
 }
 
 function New-SetupCheckItem {
@@ -360,6 +361,18 @@ function Get-SetupCheckCodexItem {
                 default {
                     $actual = if ($null -ne $state.actual_target) { [string]$state.actual_target } else { [string]$state.kind }
                     $items.Add((New-SetupCheckItem -Category 'codex-profile-link' -Path $path -Expected $state.expected_target -Actual $actual -Status 'wrong-target' -Detail ('帳號 ' + $account.name + '；狀態 ' + $state.state)))
+                }
+            }
+        }
+        # 登錄表宣告 mcpServers 而省略 command 的伺服器：指令由帳號目錄 config.toml 提供（enabled = false），缺少時該檔位載入失敗。
+        foreach ($spec in $specs) {
+            foreach ($serverName in @(Get-CodexMcpLocalCommandServer -Spec $spec)) {
+                $configPath = Join-Path $account.codex_home 'config.toml'
+                if (@(Get-CodexMcpAccountConfigFinding -AccountHome $account.codex_home -Spec $spec) -ccontains $serverName) {
+                    $items.Add((New-SetupCheckItem -Category 'codex-mcp-command' -Path $configPath -Expected ('[mcp_servers.' + $serverName + '] 含 command') -Actual $null -Status 'missing' -Detail ('帳號 ' + $account.name + '；檔位 ' + $spec.Profile + ' 缺少指令，重跑 Setup 補上')))
+                }
+                else {
+                    $items.Add((New-SetupCheckItem -Category 'codex-mcp-command' -Path $configPath -Expected ('[mcp_servers.' + $serverName + '] 含 command') -Actual '有' -Status 'ok' -Detail ('帳號 ' + $account.name)))
                 }
             }
         }

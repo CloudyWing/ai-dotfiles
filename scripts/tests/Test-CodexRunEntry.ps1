@@ -847,8 +847,195 @@ try {
         Assert-True (@($record.permission.read_roots) -contains $generatedImages) 'permission.read_roots 應含 generated_images'
         Assert-Equal 1 (@($record.permission.write_roots).Count) '可寫範圍只有輸出目錄'
     }
-    Test-Case 'E2E-TASK-TYPE-UNSUPPORTED 尚未切入的 task_type（test）：結束碼 2、RunTaskTypeUnsupported，沒有任何呼叫' {
-        foreach ($type in @('test')) {
+    function New-TestTypeEnvironment {
+        param([string]$Name, [string]$Slug = 'test-p1', [hashtable]$Override = @{})
+        $envTest = New-EntryEnvironment -Name $Name
+        $null = New-TestAccountHome -Root (Join-Path $envTest.Base 'homes') -Name 'acct-a' -Profile 'scan' -Model 'model-a'
+        $contextFile = Join-Path $envTest.Base 'main\.local\ai-sessions\test-context\test-context.md'
+        Write-TestUtf8 -Path $contextFile -Text "# 測試環境`n"
+        $orderPath = Join-Path $envTest.Exec '.local\ai-sessions\handoff\line-a\test-order.md'
+        $merged = @{ task_type = 'test'; profile = 'scan'; role_file = $orderPath; report_name = 'test-report.md'; test_context_file = $contextFile; cycle = [ordered]@{ id = 'line-a-test'; round = 1; role = 'test' } }
+        foreach ($key in $Override.Keys) { $merged[$key] = $Override[$key] }
+        $envTest | Add-Member -NotePropertyName ContextFile -NotePropertyValue $contextFile
+        $envTest | Add-Member -NotePropertyName OrderPath -NotePropertyValue (New-OrderFile -Environment $envTest -Slug $Slug -FileName 'test-order.md' -Override $merged)
+        return $envTest
+    }
+    $mcpEvents = @([ordered]@{ type = 'thread.started'; thread_id = 'fx' }, [ordered]@{ type = 'turn.started' },
+        [ordered]@{ type = 'item.completed'; item = [ordered]@{ id = 'i1'; type = 'mcp_tool_call'; server = 'playwright'; tool = 'browser_navigate'; status = 'completed' } },
+        [ordered]@{ type = 'item.completed'; item = [ordered]@{ id = 'i2'; type = 'mcp_tool_call'; server = 'playwright'; tool = 'browser_click'; status = 'failed' } },
+        [ordered]@{ type = 'item.completed'; item = [ordered]@{ id = 'i3'; type = 'mcp_tool_call'; server = 'flaui-mcp'; tool = 'windows_attach'; status = 'completed' } },
+        [ordered]@{ type = 'item.completed'; item = [ordered]@{ type = 'agent_message'; text = 'done' } }, [ordered]@{ type = 'turn.completed'; usage = $usageGood })
+    Test-Case 'E2E-TEST 測試取證以同一入口發動：檔位 scan、命令沙盒唯讀（可寫範圍只有輸出目錄）、測試環境資料檔以檔案單位唯讀開放、PLAYWRIGHT_MCP_OUTPUT_DIR 指向輸出目錄，紀錄含 MCP 呼叫次數與輸出目錄內的截圖' {
+        $envTest = New-TestTypeEnvironment -Name 'task-test'
+        Set-Scenario -Environment $envTest -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n`n- shot.png`n"; output_files = @{ 'shot.png' = 'png'; 'sub\page.yml' = 'yml' } }
+        $runTest = Invoke-Entry -Environment $envTest -OrderPath $envTest.OrderPath
+        Assert-Success $runTest
+        Assert-Equal 0 $runTest.ExitCode
+        Assert-Equal 'success' $runTest.Document.status
+        Assert-True ($null -eq $runTest.Document.final.review_report_check) '測試取證不做 manifest 檢查'
+        $record = Get-Record -Path $runTest.Document.final.record_path
+        Assert-Equal 'test' $record.task_type
+        Assert-Equal 'scan' $record.profile
+        Assert-Equal $envTest.ContextFile $record.test_context_file
+        $execCall = @((Get-Call -Environment $envTest) | Where-Object { $_.subcommand -ceq 'exec' })[0]
+        $execArgs = @($execCall.args)
+        Assert-True ($execArgs -contains '--profile' -and $execArgs[[array]::IndexOf($execArgs, '--profile') + 1] -ceq 'scan') '缺少 --profile scan'
+        Assert-True (-not ($execArgs -contains '--search') -and -not ($execArgs -contains '--sandbox')) '不應帶 --search 或 --sandbox'
+        Assert-Equal $record.output_dir $execCall.playwright_output_dir 'PLAYWRIGHT_MCP_OUTPUT_DIR 應為該次輸出目錄'
+        $filesystem = [string]($execArgs | Where-Object { $_.StartsWith('permissions.dispatch_review.filesystem=', [StringComparison]::Ordinal) })
+        Assert-True $filesystem.Contains("'" + $envTest.ContextFile + "'=`"read`"") ('測試環境資料檔應以檔案單位唯讀開放：' + $filesystem)
+        Assert-True (-not $filesystem.Contains((Split-Path -Parent $envTest.ContextFile) + "'")) '不得開放資料檔所在目錄'
+        Assert-Equal @($record.output_dir) @($record.permission.write_roots) '可寫範圍只有輸出目錄'
+        Assert-Equal @($envTest.ContextFile) @($record.permission.read_files)
+        Assert-Equal 2 ([int]$record.mcp_tool_calls.completed)
+        Assert-Equal 1 ([int]$record.mcp_tool_calls.failed)
+        Assert-Equal @('flaui-mcp', 'playwright') @($record.mcp_tool_calls.servers)
+        Assert-Equal @('shot.png', 'sub/page.yml') @($record.artifacts)
+        Assert-Equal $false $record.mcp_stray_output.exists
+        Assert-Equal $false $record.source_changed
+        Assert-Equal 2 ([int]$runTest.Document.final.mcp_tool_calls.completed)
+        Assert-Equal @('shot.png', 'sub/page.yml') @($runTest.Document.final.artifacts)
+        $stdin = Get-Content -LiteralPath (Join-Path $envTest.Scenarios 'stdin-acct-a.txt') -Raw
+        Assert-True ($stdin.Contains('測試取證規則') -and $stdin.Contains($envTest.ContextFile) -and $stdin.Contains('不指定檔名')) 'prompt 缺測試取證規則或資料檔'
+        Assert-True (-not $stdin.Contains('審查者:')) 'prompt 不應把測試取證標為審查者'
+        $rows = Get-LedgerDataRow -Path (Join-Path $envTest.ReportRoot 'cost-ledger.md')
+        Assert-Equal 1 ($rows.Count)
+        Assert-True ((Split-LedgerRow -Row $rows[0])[13].Contains('task=test')) '成本列備註應記 task=test'
+    }
+    Test-Case 'E2E-TEST-NO-CONTEXT test_context_file 省略時權限計畫不含 read_files，紀錄的 test_context_file 為 null' {
+        $envTest = New-EntryEnvironment -Name 'task-test-noctx'
+        $null = New-TestAccountHome -Root (Join-Path $envTest.Base 'homes') -Name 'acct-a' -Profile 'scan' -Model 'model-a'
+        Set-Scenario -Environment $envTest -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n" }
+        $orderPath = Join-Path $envTest.Exec '.local\ai-sessions\handoff\line-a\test-order.md'
+        $orderPath = New-OrderFile -Environment $envTest -Slug 'test-p2' -FileName 'test-order.md' -Override @{ task_type = 'test'; profile = 'scan'; role_file = $orderPath; report_name = 'test-report.md' }
+        $runTest = Invoke-Entry -Environment $envTest -OrderPath $orderPath
+        Assert-Success $runTest
+        Assert-Equal 0 $runTest.ExitCode
+        $record = Get-Record -Path $runTest.Document.final.record_path
+        Assert-True ($null -eq $record.test_context_file) 'test_context_file 應為 null'
+        Assert-True ($null -eq $record.permission.PSObject.Properties['read_files']) '沒有資料檔時不應有 read_files'
+    }
+    Test-Case 'E2E-TEST-STRAY MCP 把明確檔名的截圖寫到工作目錄根下的 .playwright-mcp 時不誤觸 source_changed，但紀錄標出殘留；工作目錄內其他新增檔案仍判為來源變動' {
+        $envTest = New-TestTypeEnvironment -Name 'task-test-stray' -Slug 'test-p3' -Override @{ }
+        $rootTarget = $envTest.Exec + '\'
+        $orderPath = New-OrderFile -Environment $envTest -Slug 'test-p3' -FileName 'test-order.md' -Override @{ task_type = 'test'; profile = 'scan'; role_file = $envTest.OrderPath; report_name = 'test-report.md'; targets = @($rootTarget) }
+        Set-Scenario -Environment $envTest -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n"; stray_files = @{ '.playwright-mcp\named.png' = 'png' } }
+        $runStray = Invoke-Entry -Environment $envTest -OrderPath $orderPath
+        Assert-Success $runStray
+        Assert-Equal 'success' $runStray.Document.status
+        Assert-Equal $false $runStray.Document.final.source_changed '.playwright-mcp 不納入來源雜湊'
+        Assert-Equal $true $runStray.Document.final.mcp_stray_output.exists
+        Assert-Equal (Join-Path $envTest.Exec '.playwright-mcp') $runStray.Document.final.mcp_stray_output.path
+        Set-Scenario -Environment $envTest -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n"; stray_files = @{ 'notes.txt' = 'x' } }
+        $runOther = Invoke-Entry -Environment $envTest -OrderPath $orderPath
+        Assert-Success $runOther
+        Assert-Equal $true $runOther.Document.final.source_changed '其他新增檔案應判為來源變動'
+    }
+    Test-Case 'E2E-TEST-STRAY-PREEXISTING 啟動前就存在於 .playwright-mcp 的檔案不算本次殘留；本次新增或改動的檔案才標示並列出檔名' {
+        $envTest = New-TestTypeEnvironment -Name 'task-test-stray-old' -Slug 'test-p4'
+        $oldFile = Join-Path $envTest.Exec '.playwright-mcp\old.png'
+        Write-TestUtf8 -Path $oldFile -Text 'old'
+        Set-Scenario -Environment $envTest -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n" }
+        $runClean = Invoke-Entry -Environment $envTest -OrderPath $envTest.OrderPath
+        Assert-Success $runClean
+        Assert-Equal $false $runClean.Document.final.mcp_stray_output.exists '先前殘留的檔案不應被標為本次殘留'
+        Assert-Equal 0 (@($runClean.Document.final.mcp_stray_output.files).Count)
+        Set-Scenario -Environment $envTest -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n"; stray_files = @{ '.playwright-mcp\old.png' = 'changed-content'; '.playwright-mcp\new.png' = 'new' } }
+        $runDirty = Invoke-Entry -Environment $envTest -OrderPath $envTest.OrderPath
+        Assert-Success $runDirty
+        Assert-Equal $true $runDirty.Document.final.mcp_stray_output.exists
+        Assert-Equal @('new.png', 'old.png') @($runDirty.Document.final.mcp_stray_output.files)
+    }
+    Test-Case 'E2E-TEST-STRAY-INDETERMINATE 列舉 .playwright-mcp 失敗（子目錄沒有存取權限）時不讓派遣失敗：結果仍為 success，mcp_stray_output 標示 indeterminate、exists 為 null 並附錯誤' {
+        $envTest = New-TestTypeEnvironment -Name 'task-test-stray-denied' -Slug 'test-p6'
+        $lockedDirectory = Join-Path $envTest.Exec '.playwright-mcp\locked'
+        $null = New-Item -ItemType Directory -Path $lockedDirectory -Force
+        Write-TestUtf8 -Path (Join-Path $lockedDirectory 'hidden.png') -Text 'x'
+        $userName = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $null = & icacls $lockedDirectory /deny ($userName + ':(RD)')
+        $denied = ($LASTEXITCODE -eq 0)
+        try {
+            if (-not $denied) { Write-Output 'SKIP E2E-TEST-STRAY-INDETERMINATE 無法設定目錄存取拒絕'; return }
+            $probe = $false
+            try { $null = [IO.Directory]::GetFiles($lockedDirectory) } catch { $probe = $true }
+            if (-not $probe) { Write-Output 'SKIP E2E-TEST-STRAY-INDETERMINATE 存取拒絕沒有生效（可能以提升權限執行）'; return }
+            Set-Scenario -Environment $envTest -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n" }
+            $run = Invoke-Entry -Environment $envTest -OrderPath $envTest.OrderPath
+            Assert-Success $run
+            Assert-Equal 0 $run.ExitCode
+            Assert-Equal 'success' $run.Document.status
+            $stray = $run.Document.final.mcp_stray_output
+            Assert-Equal 'indeterminate' $stray.state
+            Assert-True ($null -eq $stray.exists) 'exists 應為 null（無法判定）'
+            Assert-True (-not [string]::IsNullOrWhiteSpace([string]$stray.error)) '應附列舉錯誤'
+            Assert-True ($run.Stderr.Contains('無法判定')) ('stderr 應有診斷：' + $run.Stderr)
+            $record = Get-Record -Path $run.Document.final.record_path
+            Assert-Equal 'indeterminate' $record.mcp_stray_output.state
+        }
+        finally { $null = & icacls $lockedDirectory /remove:d $userName }
+    }
+    function New-ScanProfileEnvironment {
+        param([string]$Name, [switch]$WithMcpCommand, [string]$Slug = 'test-p5')
+        # 走派工前比對的路徑（不帶 -SkipProfileCheck）：假 repo 登錄表複製自本 repo，scan 檔位檔（含 MCP 表）複製到兩個帳號目錄。
+        $envScan = New-TestTypeEnvironment -Name $Name -Slug $Slug
+        $profileRoot = New-ProfileRoot -Environment $envScan
+        $generatedScan = Join-Path (Get-CodexProfileGeneratedDirectory -RepoRoot $profileRoot) 'scan.config.toml'
+        foreach ($homePath in @($envScan.HomeA, $envScan.HomeB)) {
+            Copy-Item -LiteralPath $generatedScan -Destination (Join-Path $homePath 'scan.config.toml') -Force
+            if ($WithMcpCommand) { Write-TestUtf8 -Path (Join-Path $homePath 'config.toml') -Text ("[mcp_servers.flaui-mcp]`ncommand = '" + (Join-Path $envScan.Base 'tools\FlaUI.Mcp.exe') + "'`nenabled = false`n") }
+        }
+        $envScan | Add-Member -NotePropertyName ProfileRoot -NotePropertyValue $profileRoot
+        return $envScan
+    }
+    Test-Case 'E2E-TEST-MCP-CONFIG-MISSING 派工前比對路徑：帳號 config.toml 缺少 flaui-mcp 的 command 時結束碼 2、CodexMcpConfigMissing、不啟動 codex、不改檔、不被當成離線（fallback 為 null）' {
+        $envScan = New-ScanProfileEnvironment -Name 'task-test-mcp-missing'
+        Set-Scenario -Environment $envScan -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n" }
+        $before = Get-DirectorySnapshot -Root (Join-Path $envScan.Base 'homes')
+        $run = Invoke-Entry -Environment $envScan -OrderPath $envScan.OrderPath -ProfileSourceRoot $envScan.ProfileRoot -EntryScript (New-LinkShimWrapper -Environment $envScan)
+        Assert-Success $run
+        Assert-Equal 2 $run.ExitCode
+        Assert-Equal 'CodexMcpConfigMissing' $run.Document.error.code
+        Assert-True ($run.Document.error.message.Contains('flaui-mcp') -and $run.Document.error.message.Contains('Setup-AIGlobalConfig.ps1')) ('訊息應指出伺服器與 Setup：' + $run.Document.error.message)
+        Assert-True ($null -eq $run.Document.fallback) '不是離線，不應有 fallback'
+        Assert-Equal 0 ((Get-Call -Environment $envScan).Count) '不應啟動 codex（含 MXC 探針）'
+        Assert-Equal $before (Get-DirectorySnapshot -Root (Join-Path $envScan.Base 'homes')) '不應改任何檔案'
+    }
+    Test-Case 'E2E-TEST-MCP-CONFIG-PRESENT 派工前比對路徑：帳號 config.toml 有 command 時照常啟動並成功；review 不檢查 MCP command' {
+        $envScan = New-ScanProfileEnvironment -Name 'task-test-mcp-present' -WithMcpCommand
+        Set-Scenario -Environment $envScan -Account 'acct-a' -Scenario @{ events = $mcpEvents; exit_code = 0; last_message = '取證完成'; report = "# 測試取證報告`n" }
+        $run = Invoke-Entry -Environment $envScan -OrderPath $envScan.OrderPath -ProfileSourceRoot $envScan.ProfileRoot -EntryScript (New-LinkShimWrapper -Environment $envScan)
+        Assert-Success $run
+        Assert-Equal 0 $run.ExitCode
+        Assert-Equal 'success' $run.Document.status
+        $envReview = New-EntryEnvironment -Name 'review-no-mcp-check'
+        Set-Scenario -Environment $envReview -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $profileRoot = New-ProfileRoot -Environment $envReview
+        $runReview = Invoke-Entry -Environment $envReview -OrderPath (New-OrderFile -Environment $envReview) -ProfileSourceRoot $profileRoot -EntryScript (New-LinkShimWrapper -Environment $envReview)
+        Assert-Success $runReview
+        Assert-Equal 0 $runReview.ExitCode
+    }
+    Test-Case 'E2E-TEST-NO-FALLBACK-SELECTION test 全部候選帳號被服務端拒絕：結束碼 4、fallback.selection 為 stopped（瀏覽器與桌面取證沒有 Claude 替代者），不選出 Sonnet' {
+        $envScan = New-ScanProfileEnvironment -Name 'task-test-no-fallback' -WithMcpCommand
+        Set-Scenario -Environment $envScan -Account 'acct-a' -Scenario @{ events = $usageLimitEvents; exit_code = 1; last_message = $null; report = $null }
+        Set-Scenario -Environment $envScan -Account 'acct-b' -Scenario @{ events = $usageLimitEvents; exit_code = 1; last_message = $null; report = $null }
+        $run = Invoke-Entry -Environment $envScan -OrderPath $envScan.OrderPath -ProfileSourceRoot $envScan.ProfileRoot -EntryScript (New-LinkShimWrapper -Environment $envScan)
+        Assert-Success $run
+        Assert-Equal 4 $run.ExitCode
+        Assert-Equal 'CodexAccountsExhausted' $run.Document.error.code
+        Assert-Equal 'codex-scan' $run.Document.fallback.unavailable_executor
+        Assert-Equal 'stopped' $run.Document.fallback.selection.status
+        Assert-True ($null -eq $run.Document.fallback.selection.PSObject.Properties['executor'] -or $null -eq $run.Document.fallback.selection.executor) 'stopped 不應有選出的執行者'
+    }
+    Test-Case 'E2E-TEST-ENV-SCOPE 其他類型不設定 PLAYWRIGHT_MCP_OUTPUT_DIR，紀錄不含 MCP 欄位' {
+        $reviewExec = @((Get-Call -Environment $e1) | Where-Object { $_.subcommand -ceq 'exec' })[0]
+        Assert-True ([string]::IsNullOrEmpty([string]$reviewExec.playwright_output_dir)) '審查不應帶 PLAYWRIGHT_MCP_OUTPUT_DIR'
+        $record = Get-Record -Path $run1.Document.final.record_path
+        foreach ($field in @('mcp_tool_calls', 'artifacts', 'mcp_stray_output', 'test_context_file')) {
+            Assert-True ($null -eq $record.PSObject.Properties[$field]) ('審查紀錄不應有 ' + $field)
+        }
+    }
+    Test-Case 'E2E-TASK-TYPE-UNSUPPORTED 未受理的 task_type（edit）：結束碼 2、RunTaskTypeUnsupported，沒有任何呼叫' {
+        foreach ($type in @('edit')) {
             $envType = New-EntryEnvironment -Name ('task-' + $type)
             $runType = Invoke-Entry -Environment $envType -OrderPath (New-OrderFile -Environment $envType -Override @{ task_type = $type })
             Assert-Success $runType

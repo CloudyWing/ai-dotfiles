@@ -79,7 +79,7 @@
 **離線改派**：執行者只分在線與離線，判定離線的唯一來源是服務端拒絕（usage-limit、401、model not supported，以及尚無 item 進度即遭服務端拒絕的其他錯誤），額度數值不參與。帳號由入口腳本依 `machine.json` `codex_accounts` 登記清單動態選擇與更換，主 Agent 不指定 `-CodexHome`；帳號檢查、換帳號與重新登入命令的處理見 `executor-selection` skill「離線與帳號判定」與 `codex-dispatch` skill `references/recovery.md`。
 
 1. 「全數不可用」只依入口腳本的回報判定：`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable`，或 `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted`。
-2. 全數確認不可用後，依選派入口選出的下一位處置（由同家族執行者審查或提供第二意見、改由 Sonnet 承接測試取證或事實查核，或停止回報），各狀態的處置見 `executor-selection` skill「狀態處置」。`Invoke-CodexRun.ps1` 已在結果 JSON 的 `fallback.selection` 附上選派入口的輸出，直接採用，不必重新呼叫；`Invoke-CodexDispatch.ps1` 回報後，由主 Agent 把不可用的 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-advisor`）重新呼叫選派入口。不可用的狀態不保存，下一次新的派工照常先選 Codex。
+2. 全數確認不可用後，依選派入口選出的下一位處置（由同家族執行者審查或提供第二意見、改由 Sonnet 承接事實查核，或停止回報；經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，沒有 Claude 替代者，`fallback.selection` 必為 `stopped`，停止並回報使用者；不含這兩類操作的測試取證本來就不走 Codex，由呼叫端以 `build-test` 標籤選到 Claude 執行者），各狀態的處置見 `executor-selection` skill「狀態處置」。`Invoke-CodexRun.ps1` 已在結果 JSON 的 `fallback.selection` 附上選派入口的輸出，直接採用，不必重新呼叫；`Invoke-CodexDispatch.ps1` 回報後，由主 Agent 把不可用的 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-advisor`）重新呼叫選派入口。不可用的狀態不保存，下一次新的派工照常先選 Codex。
 3. 依選派結果改由其他執行者承接，是登錄表比對的正常結果，不追加 exceptions；在報告或回報中註明實際執行者與原應承接者。主 Agent 不自行頂替，硬能力（桌面控制、影像產生、瀏覽器與登入測試）沒有替代者時停止並回報使用者。
 
 ### advisor consult 的不限階段掛載點

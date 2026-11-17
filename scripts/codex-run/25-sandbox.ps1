@@ -137,7 +137,11 @@ function Get-RunPermissionPlan {
         [string[]]$ExtraReadRoot = @(),
 
         # 不開放工作目錄：可讀與可寫根目錄都只有輸出目錄，其餘路徑參數不使用。evidence-only 的顧問使用，--cd 同樣指向輸出目錄。
-        [switch]$OutputOnly
+        [switch]$OutputOnly,
+
+        # 以檔案單位開放唯讀的檔案（例如測試環境資料檔，位於可讀根目錄之外）。不開放其所在目錄。
+        [AllowEmptyCollection()]
+        [string[]]$ReadFile = @()
     )
 
     $separators = [char[]]@('\', '/')
@@ -173,7 +177,26 @@ function Get-RunPermissionPlan {
         glob_scan_max_depth = $script:RunGlobScanMaxDepth
     }
     # OutputOnly 只多開放 Codex 啟動時會載入的專案說明檔（檔案單位的 read），不開放其所在目錄。其他類型的計畫不含此欄位。
-    if ($OutputOnly) { $plan | Add-Member -NotePropertyName read_files -NotePropertyValue ([string[]]@(Get-RunProjectDocFile -StartDirectory $OutputDirectory)) }
+    $explicitReadFiles = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($file in @($ReadFile | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })) {
+        if (-not [IO.Path]::IsPathFullyQualified($file)) {
+            throw (New-RunError -Code 'RunPermissionArgumentInvalid' -Message ('權限設定的路徑必須是絕對路徑：' + $file) -ExitCode 3)
+        }
+        $fullFile = [IO.Path]::GetFullPath($file)
+        if ($fullFile -match "['`"\x00-\x1f]") {
+            throw (New-RunError -Code 'RunPermissionArgumentInvalid' -Message ('權限設定不接受含引號、控制字元的路徑：' + $file) -ExitCode 3)
+        }
+        $explicitReadFiles.Add($fullFile)
+    }
+    # 不含 read_files 欄位的計畫維持原形（只有 OutputOnly 或有明確檔案時才加）。
+    if ($OutputOnly -or $explicitReadFiles.Count -gt 0) {
+        $readFiles = New-Object 'System.Collections.Generic.List[string]'
+        if ($OutputOnly) { foreach ($doc in @(Get-RunProjectDocFile -StartDirectory $OutputDirectory)) { $readFiles.Add($doc) } }
+        foreach ($fullFile in $explicitReadFiles) {
+            if (@($readFiles | Where-Object { [string]::Equals($_, $fullFile, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 0) { $readFiles.Add($fullFile) }
+        }
+        $plan | Add-Member -NotePropertyName read_files -NotePropertyValue ([string[]]@($readFiles.ToArray()))
+    }
     return $plan
 }
 
@@ -193,14 +216,17 @@ function New-RunPermissionArgument {
         [AllowEmptyCollection()]
         [string[]]$ExtraReadRoot = @(),
 
-        [switch]$OutputOnly
+        [switch]$OutputOnly,
+
+        [AllowEmptyCollection()]
+        [string[]]$ReadFile = @()
     )
 
     # 路徑以 TOML literal 鍵（單引號）表達，避免反斜線與 cmd.exe 的引號轉手問題。
     # 禁止讀取的樣式放在 :workspace_roots 之下，相對於 --cd 指定的工作目錄，沙盒行程啟動時列舉一次。
     # 工作目錄之外的可讀根目錄（~\.ai-agents、report_line_root、ExtraReadRoot）以「該目錄為鍵的子表」表達：「.」為 read，並附同一組 deny 樣式。
     # 子表寫法經 codex sandbox 實測可使這些目錄內的機密樣式檔被拒；只給 "read" 字串時機密樣式檔可讀。
-    $plan = Get-RunPermissionPlan -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot -ExtraReadRoot $ExtraReadRoot -OutputOnly:$OutputOnly
+    $plan = Get-RunPermissionPlan -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot -ExtraReadRoot $ExtraReadRoot -OutputOnly:$OutputOnly -ReadFile $ReadFile
     $entries = New-Object 'System.Collections.Generic.List[string]'
     $entries.Add('":minimal"="read"')
     $entries.Add('glob_scan_max_depth=' + $plan.glob_scan_max_depth)
@@ -215,7 +241,7 @@ function New-RunPermissionArgument {
         $emittedRoots.Add($path)
     }
     foreach ($path in $plan.write_roots) { $entries.Add("'" + $path + "'=`"write`"") }
-    if ($OutputOnly) { foreach ($file in @($plan.read_files)) { $entries.Add("'" + $file + "'=`"read`"") } }
+    if ($null -ne $plan.PSObject.Properties['read_files']) { foreach ($file in @($plan.read_files)) { $entries.Add("'" + $file + "'=`"read`"") } }
     $workspaceEntries = New-Object 'System.Collections.Generic.List[string]'
     $workspaceEntries.Add('"."="read"')
     foreach ($denyEntry in $denyEntries) { $workspaceEntries.Add($denyEntry) }
@@ -263,7 +289,10 @@ function New-RunExecArgument {
         [switch]$Search,
 
         # 不開放工作目錄，--cd 指向輸出目錄（ExecutionRoot 參數請傳輸出目錄）。
-        [switch]$OutputOnly
+        [switch]$OutputOnly,
+
+        [AllowEmptyCollection()]
+        [string[]]$ReadFile = @()
     )
 
     # 父層選項（--cd、--profile、-c、--search）在 exec 之前；exec 之後為 --json、--output-last-message，prompt 以 - 從 stdin 讀入。
@@ -279,7 +308,7 @@ function New-RunExecArgument {
         $arguments.Add('-c')
         $arguments.Add('model="' + $ModelOverride + '"')
     }
-    foreach ($item in (New-RunPermissionArgument -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot -ExtraReadRoot $ExtraReadRoot -OutputOnly:$OutputOnly)) { $arguments.Add($item) }
+    foreach ($item in (New-RunPermissionArgument -ExecutionRoot $ExecutionRoot -OutputDirectory $OutputDirectory -AiAgentsRoot $AiAgentsRoot -ReportLineRoot $ReportLineRoot -ExtraReadRoot $ExtraReadRoot -OutputOnly:$OutputOnly -ReadFile $ReadFile)) { $arguments.Add($item) }
     if ($Search) { $arguments.Add('--search') }
     $arguments.Add('exec')
     if (-not $IsGitRepository) { $arguments.Add('--skip-git-repo-check') }

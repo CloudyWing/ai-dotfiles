@@ -890,12 +890,29 @@ try {
     }
     Test-Case EN02 {
         $cases = @(
-            @('-Type test', 'codex-scan', 'scripts/Invoke-CodexDispatch.ps1'), @('-Type generate', 'codex-content', 'scripts/Invoke-CodexRun.ps1'),
+            @('-Type test', 'codex-scan', 'scripts/Invoke-CodexRun.ps1'), @('-Type generate', 'codex-content', 'scripts/Invoke-CodexRun.ps1'),
             @('-Type factcheck', 'codex-content', 'scripts/Invoke-CodexRun.ps1'), @('-Type advise -ImplementerFamily claude -Authorized', 'codex-advisor', 'scripts/Invoke-CodexRun.ps1'))
         @($cases | Where-Object {
                 $r = Invoke-Selector -Arguments (Split-Args $_[0])
                 -not ($r.ExitCode -eq 0 -and $r.Json.executor.id -ceq $_[1] -and $r.Json.executor.entry -ceq $_[2])
             }).Count -eq 0
+    }
+    Test-Case EN09 {
+        # 測試取證：Codex scan 只做 MCP 操作（browse、desktop-control、web），建置與測試命令（build-test）改由 Claude 執行者承接。
+        $browse = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse')
+        $desktop = Invoke-Selector -Arguments (Split-Args '-Type test -Tags desktop-control')
+        $build = Invoke-Selector -Arguments (Split-Args '-Type test -Tags build-test')
+        $browseBuild = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse,build-test')
+        $browse.ExitCode -eq 0 -and $browse.Json.executor.id -ceq 'codex-scan' -and $desktop.ExitCode -eq 0 -and $desktop.Json.executor.id -ceq 'codex-scan' `
+            -and $build.ExitCode -eq 0 -and $build.Json.executor.id -ceq 'sonnet' -and $browseBuild.ExitCode -ne 0 -and $browseBuild.Json.status -ceq 'stopped'
+    }
+    Test-Case EN10 {
+        # 經 Invoke-CodexRun.ps1 的 test 全數離線時，入口以 -Tags browse 重新選派（Get-RunFallbackSelection）：瀏覽器與桌面取證沒有 Claude 替代者，必須是 stopped。
+        $offline = @('-Offline', 'codex-scan,codex-content,codex-review,codex-advisor')
+        $stopped = Invoke-Selector -Arguments ((Split-Args '-Type test -ImplementerFamily claude -Tags browse') + $offline)
+        $desktopStopped = Invoke-Selector -Arguments ((Split-Args '-Type test -ImplementerFamily claude -Tags desktop-control') + $offline)
+        $stopped.ExitCode -ne 0 -and $stopped.Json.status -ceq 'stopped' -and $null -eq $stopped.Json.executor `
+            -and $desktopStopped.ExitCode -ne 0 -and $desktopStopped.Json.status -ceq 'stopped'
     }
     Test-Case EN03 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type survey')

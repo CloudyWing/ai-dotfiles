@@ -10,6 +10,8 @@
 #   modify_target 執行中追加內容的檔案路徑
 #   delete_target 執行中刪除的檔案路徑
 #   hang_seconds  輸出與檔案都寫完後不結束，睡這麼多秒再以 exit_code 結束（exec 用；本行程的 PID 寫到場景目錄 pid-<名稱>.txt）
+#   output_files  依 stdin prompt 的「輸出目錄:」行建立在輸出目錄內的檔案（相對路徑到內容的物件），模擬 MCP 工具把截圖存進輸出目錄
+#   stray_files   建立在 --cd 工作目錄之下的檔案（相對路徑到內容的物件），模擬 MCP 工具把明確檔名的截圖寫到工作目錄根下
 #   mxc           sandbox 子命令的回應，ok 或 fail（預設 ok）
 # exec 時若 stdin prompt 的「輸出目錄:」行對應的執行紀錄（<輸出目錄>.record.json）已存在，複製為場景目錄的
 # record-draft-<名稱>.json，供測試檢查入口在 Codex 結束前寫出的紀錄初稿。
@@ -34,6 +36,7 @@ $call = [ordered]@{
     codex_home = $codexHome
     args = @($args)
     env_names = @(Get-ChildItem Env: | ForEach-Object { $_.Name })
+    playwright_output_dir = $env:PLAYWRIGHT_MCP_OUTPUT_DIR
     stdin_sha256 = [Convert]::ToHexString([System.Security.Cryptography.SHA256]::HashData($stdinBytes)).ToLowerInvariant()
 }
 [IO.File]::AppendAllText((Join-Path $scenarioDir 'calls.jsonl'), (ConvertTo-Json -InputObject $call -Compress -Depth 5) + "`n", $utf8NoBom)
@@ -70,6 +73,23 @@ $outputDirectoryMatch = [regex]::Match($stdinText, '(?m)^輸出目錄: (?<path>.
 if ($outputDirectoryMatch.Success) {
     $draftRecordPath = $outputDirectoryMatch.Groups['path'].Value.TrimEnd('\', '/') + '.record.json'
     if ([IO.File]::Exists($draftRecordPath)) { [IO.File]::Copy($draftRecordPath, (Join-Path $scenarioDir ('record-draft-' + $accountName + '.json')), $true) }
+}
+$outputFiles = Get-ScenarioValue 'output_files' $null
+if ($null -ne $outputFiles -and $outputDirectoryMatch.Success) {
+    foreach ($property in $outputFiles.PSObject.Properties) {
+        $target = Join-Path $outputDirectoryMatch.Groups['path'].Value.TrimEnd('\', '/') $property.Name
+        $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $target))
+        [IO.File]::WriteAllText($target, [string]$property.Value, $utf8NoBom)
+    }
+}
+$strayFiles = Get-ScenarioValue 'stray_files' $null
+$cdIndex = [array]::IndexOf(@($args), '--cd')
+if ($null -ne $strayFiles -and $cdIndex -ge 0) {
+    foreach ($property in $strayFiles.PSObject.Properties) {
+        $target = Join-Path @($args)[$cdIndex + 1] $property.Name
+        $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $target))
+        [IO.File]::WriteAllText($target, [string]$property.Value, $utf8NoBom)
+    }
 }
 $modifyTarget = Get-ScenarioValue 'modify_target' $null
 if ($null -ne $modifyTarget) { [IO.File]::AppendAllText($modifyTarget, "`nmodified-by-fake-codex", $utf8NoBom) }

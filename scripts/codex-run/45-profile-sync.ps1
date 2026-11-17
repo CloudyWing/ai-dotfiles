@@ -114,6 +114,7 @@ function Read-CodexProfileSpec {
             SubagentModel = [string]$executor.ProfileSettings['subagentModel']
             SubagentEffort = [string]$executor.ProfileSettings['subagentEffort']
             FallbackModels = [string[]]@($executor.ProfileSettings['fallbackModels'])
+            McpServers = @($executor.ProfileSettings['mcpServers'].Values)
         }
     }
     if (@($specs).Count -eq 0) {
@@ -146,6 +147,19 @@ function Get-CodexProfileExpectedContent {
         ('default_subagent_model = "' + $Spec.SubagentModel + '"')
         ('default_subagent_reasoning_effort = "' + $Spec.SubagentEffort + '"')
     )
+    # MCP 伺服器：只有登錄表為該檔位宣告 mcpServers 時才輸出，其他檔位的內容不受影響。
+    # 核准模式固定 approve（codex exec 的核准政策為 never，未設定時 MCP 工具被拒）。enabled = true 覆寫帳號 config.toml 以 enabled = false 提供的同名表。
+    $quote = { param($Value) '"' + $Value + '"' }
+    foreach ($server in @(Get-ExecutorRegistryProperty -Object $Spec -Name 'McpServers')) {
+        $lines += ''
+        $lines += ('[mcp_servers.' + $server.Name + ']')
+        if ($null -ne $server.Command) { $lines += ('command = ' + (& $quote $server.Command)) }
+        if (@($server.Args).Count -gt 0) { $lines += ('args = [' + ((@($server.Args) | ForEach-Object { & $quote $_ }) -join ', ') + ']') }
+        if (@($server.EnvVars).Count -gt 0) { $lines += ('env_vars = [' + ((@($server.EnvVars) | ForEach-Object { & $quote $_ }) -join ', ') + ']') }
+        $lines += 'enabled = true'
+        $lines += 'default_tools_approval_mode = "approve"'
+        $lines += ('enabled_tools = [' + ((@($server.EnabledTools) | ForEach-Object { & $quote $_ }) -join ', ') + ']')
+    }
     return (($lines -join "`n") + "`n")
 }
 
@@ -450,4 +464,202 @@ function Test-CodexProfileConsistency {
         }
     }
     return @($findings.ToArray())
+}
+
+function Get-CodexMcpLocalCommandServer {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][object]$Spec)
+
+    # 登錄表為該檔位宣告、但省略 command 的 MCP 伺服器名稱（指令路徑因機器而異，由帳號目錄的 config.toml 提供）。
+    $names = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($server in @(Get-ExecutorRegistryProperty -Object $Spec -Name 'McpServers')) {
+        if ($null -eq $server.Command) { $names.Add([string]$server.Name) }
+    }
+    return [string[]]@($names.ToArray())
+}
+
+function Read-CodexAccountConfigState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    # 讀取帳號目錄的 config.toml（只讀）。回傳 exists、text（不含 BOM）、has_bom、newline（原檔的行尾，沒有換行時為 CRLF）、error。
+    # 檔案不存在（exists = $false）不是錯誤；存在但讀不到或不是合法 UTF-8 時 error 有值，呼叫端不得寫檔。
+    $result = [ordered]@{ exists = $false; text = ''; has_bom = $false; newline = "`r`n"; error = $null }
+    try {
+        if (-not [IO.File]::Exists($Path)) { return [pscustomobject]$result }
+        $result.exists = $true
+        $bytes = [IO.File]::ReadAllBytes($Path)
+        # NUL 位元組表示不是 UTF-8（例如無 BOM 的 UTF-16），編碼不明，不得當成文字處理或寫入。
+        if ([Array]::IndexOf($bytes, [byte]0) -ge 0) { throw '內容含 NUL 位元組，編碼不明（可能是 UTF-16）' }
+        $result.has_bom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+        $offset = if ($result.has_bom) { 3 } else { 0 }
+        $result.text = (New-Object System.Text.UTF8Encoding -ArgumentList @($false, $true)).GetString($bytes, $offset, $bytes.Length - $offset)
+        if ($result.text.Contains("`r`n")) { $result.newline = "`r`n" }
+        elseif ($result.text.Contains("`n")) { $result.newline = "`n" }
+    }
+    catch { $result.error = $_.Exception.Message }
+    return [pscustomobject]$result
+}
+
+function Test-CodexMcpServerMentioned {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Text,
+        [Parameter(Mandatory)][string]$Name
+    )
+
+    # 帳號 config.toml 是否可能已定義該 MCP 伺服器。標準表頭（可帶行尾註解、可引號）、點分鍵、行內表，以及 [mcp_servers] 父表或
+    # mcp_servers = { ... } 內以子鍵定義的寫法都算；無法確定時回傳 $true（呼叫端回報 blocked，不追加以免產生重複表）。
+    $escaped = [regex]::Escape($Name)
+    foreach ($line in ($Text -split "`n")) {
+        $trimmed = $line.Trim()
+        if ($trimmed.StartsWith('#')) { continue }
+        if ($trimmed -match '^\[\s*mcp_servers\s*\]\s*(#.*)?$') { return $true }
+        if ($trimmed -match '^mcp_servers\s*=') { return $true }
+        if ($trimmed -match 'mcp_servers' -and $trimmed -match ('(?<![A-Za-z0-9_-])' + $escaped + '(?![A-Za-z0-9_-])')) { return $true }
+    }
+    return $false
+}
+
+function Get-CodexMcpAccountConfigFinding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$AccountHome,
+        [Parameter(Mandatory)][object]$Spec
+    )
+
+    # 讀取帳號目錄的 config.toml（只讀），回傳該檔位需要而缺少 command 的伺服器名稱。
+    # 檔位檔只放 enabled、核准模式與工具清單，缺少帳號端的 command 時 Codex 載入該檔位設定會失敗（invalid transport）。
+    # 讀不到檔案內容時無法確認 command，視為全部缺少。表頭可帶行尾註解與引號；行內表等其他寫法偵測不到 command，視為缺少。
+    $required = @(Get-CodexMcpLocalCommandServer -Spec $Spec)
+    if ($required.Count -eq 0) { return [string[]]@() }
+    $state = Read-CodexAccountConfigState -Path (Join-Path $AccountHome 'config.toml')
+    if ($null -ne $state.error) { return [string[]]$required }
+    $missing = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($name in $required) {
+        $escaped = [regex]::Escape($name)
+        $header = '^[ \t]*\[[ \t]*mcp_servers[ \t]*\.[ \t]*(?:"' + $escaped + '"|''' + $escaped + '''|' + $escaped + ')[ \t]*\][ \t]*(?:#[^\r\n]*)?\r?\n'
+        $found = $false
+        $table = [regex]::Match($state.text, '(?ms)' + $header + '(?<body>.*?)(?=^[ \t]*\[|\z)')
+        if ($table.Success -and $table.Groups['body'].Value -match '(?m)^[ \t]*command[ \t]*=[ \t]*\S') { $found = $true }
+        if (-not $found) { $missing.Add($name) }
+    }
+    return [string[]]@($missing.ToArray())
+}
+
+function Set-CodexMcpAccountConfig {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$AccountHome,
+        [Parameter(Mandatory)][object]$Spec,
+        # 指令路徑的來源（Codex Desktop 的 config.toml）。只讀，只取登錄表指名之伺服器的 command 與 startup_timeout_sec 兩行。
+        [Parameter(Mandatory)][string]$SourceConfigPath
+    )
+
+    # 檔位檔只啟用 MCP 伺服器，指令路徑因機器而異，由帳號目錄 config.toml 以 enabled = false 提供（其他檔位不會載入它）。
+    # 這個函式會寫使用者的帳號設定檔，任何無法確定的狀態都選擇不寫：帳號 config.toml 讀不到或不是合法 UTF-8、已可能定義該伺服器
+    # （含表頭帶註解、引號鍵、行內表、父表寫法）、來源沒有 command，一律不寫檔。
+    # 只在缺少時於檔尾追加（AppendAllText，原檔的 BOM 與既有內容原封不動，追加段沿用原檔的行尾），一次寫入全部缺少的表。
+    # 回傳每個伺服器的結果：action 為 ok、added、would-add、source-missing 或 blocked，detail 說明原因。
+    $results = New-Object 'System.Collections.Generic.List[object]'
+    $utf8 = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
+    $configPath = Join-Path $AccountHome 'config.toml'
+    $state = Read-CodexAccountConfigState -Path $configPath
+    $missing = @(Get-CodexMcpAccountConfigFinding -AccountHome $AccountHome -Spec $Spec)
+    $sourceText = $null
+    try { if ([IO.File]::Exists($SourceConfigPath)) { $sourceText = [IO.File]::ReadAllText($SourceConfigPath, $utf8) } } catch { $sourceText = $null }
+    $newline = $state.newline
+    $blocks = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($name in @(Get-CodexMcpLocalCommandServer -Spec $Spec)) {
+        if ($missing -cnotcontains $name) {
+            $results.Add([pscustomobject]@{ server = $name; action = 'ok'; detail = '帳號目錄已有 command' })
+            continue
+        }
+        if ($null -ne $state.error) {
+            $results.Add([pscustomobject]@{ server = $name; action = 'blocked'; detail = ($configPath + ' 讀取失敗，Setup 不寫檔：' + $state.error) })
+            continue
+        }
+        if (-not $state.exists) {
+            # 帳號目錄沒有 config.toml：不新建只含 MCP 表的檔案（缺少基礎設定的帳號本來就不會被派工入口選用），維持略過並要求使用者先準備。
+            $results.Add([pscustomobject]@{ server = $name; action = 'blocked'; detail = ($configPath + ' 不存在，Setup 不新建只含 MCP 表的 config.toml；請依 README.md §3 先準備帳號的基礎 config.toml 後重跑 Setup。') })
+            continue
+        }
+        if (Test-CodexMcpServerMentioned -Text $state.text -Name $name) {
+            $results.Add([pscustomobject]@{ server = $name; action = 'blocked'; detail = ($configPath + ' 已有或可能已有 mcp_servers 的 ' + $name + ' 定義，但偵測不到 command，Setup 不改既有內容；請自行補上 command 並設 enabled = false。') })
+            continue
+        }
+        $table = if ($null -ne $sourceText) { [regex]::Match($sourceText, '(?ms)^\[mcp_servers\.' + [regex]::Escape($name) + '\][ \t]*\r?\n(?<body>.*?)(?=^\[|\z)') } else { $null }
+        $commandLine = $null
+        $commandUnusable = $null
+        $timeoutLine = $null
+        if ($null -ne $table -and $table.Success) {
+            $commandMatch = [regex]::Match($table.Groups['body'].Value, '(?m)^[ \t]*command[ \t]*=[ \t]*(?<value>.+?)[ \t]*\r?$')
+            if ($commandMatch.Success) {
+                # 只複製單行的基本字串或字面字串；多行字串（""" 或 '''）、值後面還有其他內容（行尾註解等）無法確定語意，視為來源沒有可用的 command。
+                $commandValue = $commandMatch.Groups['value'].Value
+                if ($commandValue -cmatch '^"(?:[^"\\]|\\.)*"$' -or $commandValue -cmatch "^'[^']*'$") { $commandLine = 'command = ' + $commandValue }
+                else { $commandUnusable = $commandValue }
+            }
+            $timeoutMatch = [regex]::Match($table.Groups['body'].Value, '(?m)^[ \t]*startup_timeout_sec[ \t]*=[ \t]*(?<value>[0-9.]+)[ \t]*\r?$')
+            if ($timeoutMatch.Success) { $timeoutLine = 'startup_timeout_sec = ' + $timeoutMatch.Groups['value'].Value }
+        }
+        if ($null -eq $commandLine -and $null -ne $commandUnusable) {
+            $results.Add([pscustomobject]@{ server = $name; action = 'source-missing'; detail = ($SourceConfigPath + ' 的 [mcp_servers.' + $name + '] command 不是單行的基本字串或字面字串（多行字串或值後面還有其他內容），Setup 無法確定其語意，不複製；請在 ' + $configPath + ' 自行加入該表（command 加 enabled = false）後重跑 Setup。') })
+            continue
+        }
+        if ($null -eq $commandLine) {
+            $results.Add([pscustomobject]@{ server = $name; action = 'source-missing'; detail = ($SourceConfigPath + ' 沒有 [mcp_servers.' + $name + '] 的 command；請先在 Codex Desktop 設定該 MCP 伺服器，或在 ' + $configPath + ' 自行加入該表（command 加 enabled = false）後重跑 Setup。') })
+            continue
+        }
+        $block = @('', ('[mcp_servers.' + $name + ']'), $commandLine)
+        if ($null -ne $timeoutLine) { $block += $timeoutLine }
+        $block += 'enabled = false'
+        $blocks.Add([pscustomobject]@{ name = $name; lines = $block })
+    }
+    if ($blocks.Count -eq 0) { return @($results.ToArray()) }
+    if (-not $PSCmdlet.ShouldProcess($configPath, ('追加 ' + (@($blocks | ForEach-Object { '[mcp_servers.' + $_.name + ']' }) -join '、') + '（enabled = false）'))) {
+        foreach ($block in $blocks) { $results.Add([pscustomobject]@{ server = $block.name; action = 'would-add'; detail = ($configPath + ' 將追加 [mcp_servers.' + $block.name + ']') }) }
+        return @($results.ToArray())
+    }
+    $appendText = ''
+    if ($state.text.Length -gt 0 -and -not $state.text.EndsWith("`n")) { $appendText += $newline }
+    foreach ($block in $blocks) { $appendText += (($block.lines -join $newline) + $newline) }
+    try {
+        [IO.File]::AppendAllText($configPath, $appendText, $utf8)
+    }
+    catch {
+        foreach ($block in $blocks) { $results.Add([pscustomobject]@{ server = $block.name; action = 'blocked'; detail = ($configPath + ' 追加失敗：' + $_.Exception.Message) }) }
+        return @($results.ToArray())
+    }
+    foreach ($block in $blocks) { $results.Add([pscustomobject]@{ server = $block.name; action = 'added'; detail = ($configPath + ' 已追加 [mcp_servers.' + $block.name + ']（enabled = false）') }) }
+    return @($results.ToArray())
+}
+
+function Invoke-CodexMcpAccountSetup {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$AccountName,
+        [Parameter(Mandatory)][string]$AccountHome,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Spec,
+        [Parameter(Mandatory)][string]$SourceConfigPath
+    )
+
+    # Setup 對一個派工帳號處理全部需要帳號端 command 的 MCP 伺服器。回傳 blocked（需要使用者處理的項目數，Setup 併入阻塞計數）與
+    # messages（level 為 info、success 或 warning，text 為輸出內容），輸出由 Setup 負責，本函式不寫主控台。
+    $messages = New-Object 'System.Collections.Generic.List[object]'
+    $blocked = 0
+    foreach ($mcpSpec in @($Spec | Where-Object { @(Get-CodexMcpLocalCommandServer -Spec $_).Count -gt 0 })) {
+        foreach ($result in @(Set-CodexMcpAccountConfig -AccountHome $AccountHome -Spec $mcpSpec -SourceConfigPath $SourceConfigPath -WhatIf:$WhatIfPreference)) {
+            switch ($result.action) {
+                'ok' { $messages.Add([pscustomobject]@{ level = 'success'; text = ('帳號 ' + $AccountName + ' 的 MCP 伺服器 ' + $result.server + ' 已有 command') }) }
+                'added' { $messages.Add([pscustomobject]@{ level = 'success'; text = $result.detail }) }
+                'would-add' { $messages.Add([pscustomobject]@{ level = 'info'; text = $result.detail }) }
+                default {
+                    $messages.Add([pscustomobject]@{ level = 'warning'; text = ('帳號 ' + $AccountName + '：' + $result.detail) })
+                    $blocked++
+                }
+            }
+        }
+    }
+    return [pscustomobject]@{ blocked = $blocked; messages = @($messages.ToArray()) }
 }

@@ -126,6 +126,8 @@ function Remove-Link {
 }
 
 function New-Fixture {
+    param([switch]$WithoutMcpCommand)
+
     $root = Join-Path $tempBase ([guid]::NewGuid().ToString('N'))
     $userProfile = Join-Path $root 'user'
     $configRoot = Join-Path $userProfile '.ai-agents'
@@ -159,6 +161,11 @@ function New-Fixture {
     )
     $unlinked = New-Object 'System.Collections.Generic.List[string]'
     foreach ($link in $links) { New-Link -Path (Join-Path $userProfile $link.Link) -Target (Join-Path $configRoot $link.Source) -Unlinked $unlinked }
+    # 測試取證檔位的 flaui-mcp 指令由帳號目錄 config.toml 提供（enabled = false）；路徑指向測試暫存目錄。
+    if (-not $WithoutMcpCommand) {
+        $mcpConfig = "[mcp_servers.flaui-mcp]`r`ncommand = '" + (Join-Path $root 'tools\FlaUI.Mcp.exe') + "'`r`nstartup_timeout_sec = 60.0`r`nenabled = false`r`n"
+        [IO.File]::WriteAllText((Join-Path $accountHome 'config.toml'), $mcpConfig, (New-Object Text.UTF8Encoding($false)))
+    }
     $profileFiles = @(Get-ChildItem -LiteralPath (Join-Path $configRoot 'scripts\codex-profiles') -Filter '*.config.toml' -File)
     foreach ($profileFile in $profileFiles) { New-Link -Path (Join-Path $accountHome $profileFile.Name) -Target $profileFile.FullName -Unlinked $unlinked }
 
@@ -239,6 +246,7 @@ try {
         Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @()
         Assert-True (@($result.Items | Where-Object { $_.category -ceq 'link' }).Count -eq 7) '現役連結應有 7 項'
         Assert-True (@($result.Items | Where-Object { $_.category -ceq 'codex-profile-link' }).Count -eq $fixture.ProfileCount) '檔位設定檔連結數量與檔位數不同'
+        Assert-True ((Get-ItemByPath -Items $result.Items -Category 'codex-mcp-command' -Suffix 'config.toml').status -ceq 'ok') '帳號 config.toml 有 flaui-mcp 的 command 時 MCP 指令項目應為 ok'
         foreach ($unlinkedPath in $fixture.Unlinked) { Assert-True ((@($result.Items | Where-Object { $_.path -ceq $unlinkedPath })[0]).status -ceq 'missing') ('無法建立的連結應為缺少：' + $unlinkedPath) }
         $expectedExit = if (@($result.Items | Where-Object { $_.status -cne 'ok' }).Count -eq 0) { 0 } else { 1 }
         Assert-True ($result.Run.ExitCode -eq $expectedExit) ("結束碼應為 $expectedExit，實際 $($result.Run.ExitCode)")
@@ -329,6 +337,20 @@ try {
         Assert-True ((Get-ItemByPath -Items $result.Items -Category 'codex-profile-link' -Suffix 'review.config.toml').status -ceq 'missing') 'review.config.toml 應為 missing'
         Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @('link|\skills', 'codex-profile-link|\review.config.toml')
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $fixture.UserProfile '.claude\skills'))) '-Check 不得建立缺少的連結'
+        $true
+    }
+
+    Test-Case 'C10-missing-mcp-command' {
+        $fixture = New-Fixture -WithoutMcpCommand
+        $result = Invoke-CheckRun -Fixture $fixture
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        Assert-True ($result.Run.ExitCode -eq 1) "帳號缺少 MCP command 時結束碼應為 1，實際 $($result.Run.ExitCode)"
+        Assert-True ($result.Json.allOk -eq $false) 'allOk 應為 false'
+        $item = Get-ItemByPath -Items $result.Items -Category 'codex-mcp-command' -Suffix 'config.toml'
+        Assert-True ($item.status -ceq 'missing') ('MCP 指令項目應為 missing，實際 ' + $item.status)
+        Assert-True ($item.expected.Contains('flaui-mcp') -and $item.detail.Contains('test-account')) ('項目應指出伺服器與帳號：' + $item.expected + ' / ' + $item.detail)
+        Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @('codex-mcp-command|\config.toml')
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $fixture.AccountHome 'config.toml'))) '-Check 不得建立 config.toml'
         $true
     }
 

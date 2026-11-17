@@ -18,8 +18,18 @@ Agent 執行任務產生的檔案依用途分為下列七類，存放於固定�
 - **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/<lineSlug>/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<dispatchSlug>.txt` 存入 `history/`。腳本換帳號的摘要檔 `<work-root>/.local/ai-sessions/history/<lineSlug>/dispatch-account-failover-<dispatchSlug>.json` 與衍生 Request `<work-root>/.local/ai-sessions/history/<lineSlug>/dispatch-request-<dispatchSlug>-r<n>.json` 同樣存入 `history/`。
 - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
 - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
-- **需保留非交付**：整合任務素材、截圖、樣式基準與 Demo 畫面分別存入 `<work-root>/.local/ai-sessions/inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/`。
+- **需保留非交付**：整合任務素材、截圖、樣式基準、Demo 畫面與測試環境資料檔分別存入 `<work-root>/.local/ai-sessions/inputs/`、`screenshots/`、`style-baselines/`、`ui-demo/` 與 `test-context/test-context.md`。測試取證的截圖在派遣的輸出目錄內產生，收下後把需要保留的複製到 `screenshots/`。測試環境資料檔的建立與使用見「測試環境資料檔」。
 - **交付產物**：使用者預期交付的資料檔、程式碼與文件存放於專案原本的位置，不放入 `.local/ai-sessions/`。
+
+## 測試環境資料檔
+
+本機 E2E 與測試取證需要登入時，兩端的執行者都讀專案層的 `<work-root>/.local/ai-sessions/test-context/test-context.md`。測試帳號跨線共用，壽命長於任何一條線，因此不放在線目錄。
+
+- 內容：受測程式的啟動方式與網址、測試帳號與密碼（含各帳號的角色與用途）、測試資料的重置方式、不可操作的資料範圍。骨架以 `templates/test-context.md.template` 為準。
+- 保留：屬保留性質，不在任務結束的自動清理範圍，位於 `.local/`，不進版控。
+- 外送：檔案內容會隨執行端讀取送到模型服務端，只放專為測試建立的帳號，不放正式環境或個人帳號。檔名不落在機密檔樣式內，專案自己的 `.env`、`*.pem`、`*.key`、`secrets.*` 仍禁止 Codex 的命令讀取。
+- 建立：Agent 不自行建立帳號，也不把其他來源的帳密抄進來。需要登入而此檔不存在時，依範本在固定位置建立，把能從專案讀到的欄位（啟動命令、網址與連接埠、seed 資料中已有的測試帳號名稱）先填好，密碼欄留空，在對話以可點擊的檔案連結列出該檔與待填欄位後停止，等使用者直接編輯填入密碼並回覆已填妥，Agent 讀檔確認待填欄位都有值再繼續。密碼不經由對話提供。
+- 派工：`test` 派遣把此檔的絕對路徑填入派遣檔 `test_context_file`，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」。
 
 ## 線登記與 LineContext
 

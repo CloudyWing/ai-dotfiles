@@ -231,7 +231,10 @@ function Invoke-RunCodexProcess {
         [int]$TimeoutSeconds = 1800,
 
         [ValidateRange(0, 3600)]
-        [int]$TurnEndGraceSeconds = 60
+        [int]$TurnEndGraceSeconds = 60,
+
+        # 額外設定給 Codex 行程的環境變數（例如 PLAYWRIGHT_MCP_OUTPUT_DIR，由 MCP 伺服器的 env_vars 轉給 MCP 行程）。
+        [hashtable]$ExtraEnvironment = @{}
     )
 
     # 同步執行：啟動、寫 prompt、位元組原樣複製 stdout 與 stderr、等待結束。
@@ -247,6 +250,7 @@ function Invoke-RunCodexProcess {
     # 沙盒內的 git 讀不到使用者家目錄的 .gitconfig 會整個失敗；不讀全域與系統設定，不擴大沙盒可讀範圍。
     $startInfo.EnvironmentVariables['GIT_CONFIG_GLOBAL'] = 'NUL'
     $startInfo.EnvironmentVariables['GIT_CONFIG_NOSYSTEM'] = '1'
+    foreach ($name in @($ExtraEnvironment.Keys)) { $startInfo.EnvironmentVariables[[string]$name] = [string]$ExtraEnvironment[$name] }
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo

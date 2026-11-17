@@ -14,15 +14,17 @@ policy.allow_implicit_invocation: true
 
 ## 派遣分界
 
-工作拆成 Codex 端的取證與 Claude 端的判定，執行者由 `executor-selection` skill 的選派入口選出。
+工作拆成 Claude 端的建置、啟動與 API 取證，Codex 端以 MCP 工具的瀏覽器與桌面臨場操作，以及 Claude 端的判定，執行者由 `executor-selection` skill 的選派入口選出。
 
 | 工作 | 執行端 | 標註 |
 | --- | --- | --- |
-| 啟動服務、執行整合取證（瀏覽器、API、桌面操作）、寫入回查、擷取證據 | Codex `scan` | `-Type test`，依分支 skill 加 `-Tags browse`、`desktop-control` 或 `build-test` |
+| 建置、還原套件、可重跑測試專案的執行、API 呼叫與寫入回查 | 依 `rules/claude/30-dispatch.md` 派工判準選派：需要建置或測試命令者由選派入口選出的 Claude 執行者在沙盒外承接，符合小型修改例外才由主 Agent 自理 | `-Type test -Tags build-test`（API 與測試專案取證） |
+| 啟動受測程式或服務 | 主 Agent 以背景進程啟動，驗證結束後依 `instructions.md` §1.4「背景進程清理」關閉 | 不派 |
+| 瀏覽器與桌面的臨場操作與取證（MCP 工具，需先由 Claude 端啟動受測對象） | Codex `scan`，以 `scripts/Invoke-CodexRun.ps1` 發動，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」 | `-Type test`，依分支 skill 加 `-Tags browse` 或 `desktop-control` |
 | 單元測試與建置（步驟四） | 沿用實作者結案 gate 已執行的原始輸出；無可沿用輸出時派 Sonnet 取證者 | `-Type survey -Tags build-test` |
 | 判斷專案類型與執行環境、確認驗證範圍、判讀證據、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
 
-Codex 離線時，標註不含 `browse`、`desktop-control` 的 `test`（例如 API 煙霧驗證）由選派入口改選 Sonnet，依 `executor-selection` skill「Claude 測試取證者派生契約」派生取證者。帶 `browse` 或 `desktop-control` 標籤的取證，選派入口回傳 `stopped`；瀏覽器、登入與桌面操作的取證沒有替代者，停止並回報使用者，不改由 Claude 端操作。
+標註 `build-test`（例如 API 煙霧驗證）的 `test` 由選派入口選出 Sonnet，依 `executor-selection` skill「Claude 測試取證者派生契約」派生取證者，Codex 的狀態不影響這條路。帶 `browse` 或 `desktop-control` 標籤的取證只走 Codex `scan`，沒有 Claude 替代者：Codex 全數不可用時入口的 `fallback.selection` 為 `stopped`，停止並回報使用者，不改由 Claude 端操作。
 
 ## 行為基準
 

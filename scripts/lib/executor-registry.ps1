@@ -93,7 +93,7 @@ function ConvertTo-ExecutorRegistry {
     # 與 fallbackModels（字串陣列，可為空）的 ordered 字典。
     $registrySchema = 'ai-agents.executor-registry.v1'
     $profileSettingKeys = @('model', 'effort', 'subagentModel', 'subagentEffort')
-    $profileSettingOptionalKeys = @('fallbackModels')
+    $profileSettingOptionalKeys = @('fallbackModels', 'mcpServers')
     $modelPattern = '^[A-Za-z0-9][A-Za-z0-9._-]*$'
     # 已移除的欄位。出現時登錄表無效，避免舊設定被靜默忽略。
     $removedTypeKeys = @('crossFamily', 'degradable')
@@ -211,6 +211,41 @@ function ConvertTo-ExecutorRegistry {
             }
             if (@($fallbackModels | Select-Object -Unique).Count -ne $fallbackModels.Count) { & $fail ('執行者 {0} 的 profileSettings.fallbackModels 有重複' -f $id) }
             $profileSettings['fallbackModels'] = [string[]]@($fallbackModels)
+            # mcpServers：只在該檔位掛上的 MCP 伺服器。選填，鍵為伺服器名稱，值含 enabledTools（必填、非空）與選填的 command、args、envVars。
+            # 省略 command 表示指令路徑因機器而異，由各帳號目錄的 config.toml 以 enabled = false 提供，產生檔只負責啟用、核准與工具清單。
+            # 產生檔固定把核准模式設為 approve（codex exec 的核准政策為 never，未設定時 MCP 工具被拒），不提供其他值。
+            $mcpServers = [ordered]@{}
+            $mcpNode = Get-ExecutorRegistryProperty $settingsNode 'mcpServers'
+            if ($null -ne $mcpNode) {
+                if ($mcpNode -isnot [pscustomobject]) { & $fail ('執行者 {0} 的 profileSettings.mcpServers 必須為物件' -f $id) }
+                # 字元集以 \z 結尾（$ 會放行結尾的換行）；另拒絕磁碟機路徑（含正斜線寫法）、絕對路徑與 .. 路徑節，機器相依的路徑不進登錄表。
+                $mcpTokenPattern = '^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\.\.(?:/|\z))[A-Za-z0-9@._:/=+-]+\z'
+                foreach ($serverProperty in $mcpNode.PSObject.Properties) {
+                    $serverName = $serverProperty.Name
+                    $serverNode = $serverProperty.Value
+                    if ($serverName -cnotmatch '^[a-z0-9][a-z0-9_-]*$') { & $fail ('執行者 {0} 的 mcpServers 名稱 {1} 必須符合 ^[a-z0-9][a-z0-9_-]*$' -f $id, $serverName) }
+                    if ($serverNode -isnot [pscustomobject]) { & $fail ('執行者 {0} 的 mcpServers.{1} 必須為物件' -f $id, $serverName) }
+                    foreach ($serverKey in $serverNode.PSObject.Properties) {
+                        if (@('command', 'args', 'envVars', 'enabledTools') -cnotcontains $serverKey.Name) { & $fail ('執行者 {0} 的 mcpServers.{1} 含未知欄位 {2}' -f $id, $serverName, $serverKey.Name) }
+                    }
+                    $serverCommand = Get-ExecutorRegistryProperty $serverNode 'command'
+                    if ($null -ne $serverCommand -and ($serverCommand -isnot [string] -or $serverCommand -cnotmatch $mcpTokenPattern)) { & $fail ('執行者 {0} 的 mcpServers.{1}.command 必須為符合 {2} 的字串（機器相依的路徑不寫入登錄表，省略此欄位）' -f $id, $serverName, $mcpTokenPattern) }
+                    $serverLists = [ordered]@{}
+                    foreach ($listName in @('args', 'envVars', 'enabledTools')) {
+                        if (-not (Test-ExecutorRegistryArrayProperty $serverNode $listName)) { & $fail ('執行者 {0} 的 mcpServers.{1}.{2} 必須為陣列' -f $id, $serverName, $listName) }
+                        $listValue = Get-ExecutorRegistryList $serverNode $listName
+                        foreach ($listItem in $listValue) {
+                            if ($listItem -isnot [string] -or $listItem -cnotmatch $mcpTokenPattern) { & $fail ('執行者 {0} 的 mcpServers.{1}.{2} 必須為符合 {3} 的字串陣列' -f $id, $serverName, $listName, $mcpTokenPattern) }
+                        }
+                        if (@($listValue | Select-Object -Unique).Count -ne $listValue.Count) { & $fail ('執行者 {0} 的 mcpServers.{1}.{2} 有重複' -f $id, $serverName, $listName) }
+                        $serverLists[$listName] = [string[]]@($listValue)
+                    }
+                    if ($serverLists['enabledTools'].Count -eq 0) { & $fail ('執行者 {0} 的 mcpServers.{1}.enabledTools 不可為空（只開放需要的工具）' -f $id, $serverName) }
+                    if ($null -eq $serverCommand -and $serverLists['args'].Count -gt 0) { & $fail ('執行者 {0} 的 mcpServers.{1} 省略 command 時不得有 args' -f $id, $serverName) }
+                    $mcpServers[$serverName] = [pscustomobject]@{ Name = $serverName; Command = $serverCommand; Args = $serverLists['args']; EnvVars = $serverLists['envVars']; EnabledTools = $serverLists['enabledTools'] }
+                }
+            }
+            $profileSettings['mcpServers'] = $mcpServers
             if ($entry -isnot [string] -or $entry -cnotmatch '^scripts/[A-Za-z0-9._-]+\.ps1$') { & $fail ('執行者 {0} 缺少 entry，或 entry 不符合 ^scripts/[A-Za-z0-9._-]+\.ps1$' -f $id) }
         }
         elseif ($null -ne $node.PSObject.Properties['entry']) {

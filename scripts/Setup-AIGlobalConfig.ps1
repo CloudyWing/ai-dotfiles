@@ -674,6 +674,16 @@ foreach ($account in $machineAccounts) {
         Write-Warning ('  帳號 ' + $account.name + ' 殘留已退役的檔位設定檔：' + $residuePath + '。派工不再讀取，腳本不會刪除；移除命令列在最後。')
         $profileResidueCommands.Add('Remove-Item -LiteralPath ' + (ConvertTo-CodexProfileQuoted -Text $residuePath))
     }
+    # 測試取證檔位的 MCP 伺服器：指令路徑因機器而異，缺少時從 Codex Desktop 的 config.toml 讀取並以 enabled = false 追加到帳號 config.toml。
+    $mcpOutcome = Invoke-CodexMcpAccountSetup -AccountName $account.name -AccountHome $account.codex_home -Spec $profileSpecs -SourceConfigPath (Join-Path ([Environment]::GetFolderPath('UserProfile')) '.codex\config.toml') -WhatIf:$WhatIfPreference
+    foreach ($mcpMessage in @($mcpOutcome.messages)) {
+        switch ($mcpMessage.level) {
+            'success' { Write-Host ('  ✅ ' + $mcpMessage.text) -ForegroundColor DarkGreen }
+            'info' { Write-Host ('  ' + $mcpMessage.text) }
+            default { Write-Warning ('  ' + $mcpMessage.text) }
+        }
+    }
+    $profileBlockedCount += [int]$mcpOutcome.blocked
 }
 if ($machineAccounts.Count -eq 0 -and -not $machineReadFailed) {
     Write-Warning '  沒有登記的派工帳號，未建立檔位設定檔連結。請先以 New-CodexDispatchAccount.ps1 登記帳號。'

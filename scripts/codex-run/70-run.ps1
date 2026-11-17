@@ -57,6 +57,67 @@ function Get-RunMissingQuestionId {
     return [string[]]@($QuestionId | Where-Object { $text -cnotmatch ('(?<![A-Za-z0-9_-])' + [regex]::Escape($_) + '(?![A-Za-z0-9_-])') })
 }
 
+function Get-RunMcpToolCallSummary {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$EventStreamPath)
+
+    # 事件流中已結束的 MCP 工具呼叫次數（item.completed 且 item.type 為 mcp_tool_call），依 item.status 分 completed 與 failed，並列出用到的伺服器。
+    # 事件流不存在或無法解析的行略過。供測試取證確認 Codex 確實以 MCP 工具操作過。
+    $completed = 0
+    $failed = 0
+    $servers = New-Object 'System.Collections.Generic.SortedSet[string]' -ArgumentList @([StringComparer]::Ordinal)
+    if ([IO.File]::Exists($EventStreamPath)) {
+        foreach ($line in [IO.File]::ReadLines($EventStreamPath)) {
+            if ($line.IndexOf('mcp_tool_call', [StringComparison]::Ordinal) -lt 0) { continue }
+            try { $parsed = ConvertFrom-Json -InputObject $line -Depth 20 } catch { continue }
+            if ($parsed -isnot [pscustomobject] -or [string](Get-RunJsonProperty -Object $parsed -Name 'type') -cne 'item.completed') { continue }
+            $item = Get-RunJsonProperty -Object $parsed -Name 'item'
+            if ($item -isnot [pscustomobject] -or [string](Get-RunJsonProperty -Object $item -Name 'type') -cne 'mcp_tool_call') { continue }
+            if ([string](Get-RunJsonProperty -Object $item -Name 'status') -ceq 'completed') { $completed++ } else { $failed++ }
+            $server = [string](Get-RunJsonProperty -Object $item -Name 'server')
+            if (-not [string]::IsNullOrWhiteSpace($server)) { $null = $servers.Add($server) }
+        }
+    }
+    return [ordered]@{ completed = $completed; failed = $failed; servers = [string[]]@($servers) }
+}
+
+function Get-RunDirectoryFileState {
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    # 目錄內全部檔案的相對路徑對「長度|最後寫入時間」，目錄不存在時為空。供比對啟動前後哪些檔案是本次新增或變動。
+    # 列舉失敗（例如子目錄沒有存取權限）不拋例外，回傳 ok = $false 與錯誤訊息，呼叫端標示狀態無法判定，不讓派遣失敗。
+    $state = @{}
+    try {
+        if ([IO.Directory]::Exists($Path)) {
+            $root = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
+            foreach ($file in [IO.Directory]::EnumerateFiles($Path, '*', [IO.SearchOption]::AllDirectories)) {
+                $info = New-Object System.IO.FileInfo -ArgumentList @($file)
+                $state[[IO.Path]::GetFullPath($file).Substring($root.Length + 1).Replace('\', '/')] = [string]$info.Length + '|' + [string]$info.LastWriteTimeUtc.Ticks
+            }
+        }
+    }
+    catch { return [pscustomobject]@{ ok = $false; files = @{}; error = $_.Exception.Message } }
+    return [pscustomobject]@{ ok = $true; files = $state; error = $null }
+}
+
+function Get-RunOutputArtifact {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$OutputDirectory,
+        [Parameter(Mandatory)][string]$ReportName
+    )
+
+    # 輸出目錄內報告以外的檔案（截圖、頁面快照等），以相對於輸出目錄的路徑列出。
+    if (-not [IO.Directory]::Exists($OutputDirectory)) { return [string[]]@() }
+    $root = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\', '/')
+    $files = foreach ($file in [IO.Directory]::EnumerateFiles($OutputDirectory, '*', [IO.SearchOption]::AllDirectories)) {
+        $relative = [IO.Path]::GetFullPath($file).Substring($root.Length + 1).Replace('\', '/')
+        if ($relative -cne $ReportName) { $relative }
+    }
+    return [string[]]@($files | Sort-Object)
+}
+
 function New-RunPrompt {
     param(
         [Parameter(Mandatory)][object]$Order,
@@ -96,6 +157,17 @@ function New-RunPrompt {
         ''
         ('請依角色規則檔 `' + $Order.role_file + '` 定義的角色，先完整讀取該檔，再讀取派遣檔 `' + $Order.dispatch_file_path + '` 依其內容執行。')
     )
+    if ($Order.task_setting.mcp) {
+        # 測試取證：命令唯讀，操作與取證只經 MCP 工具；受測對象由 Claude 端在派工前啟動。
+        $lines += @(
+            ''
+            '測試取證規則：'
+            '- 命令沙盒唯讀，不建置、不啟動或停止受測程式；受測對象已由 Claude 端啟動，只以 MCP 工具（網頁用 playwright，桌面用 flaui-mcp）操作與觀察。'
+            ('- 截圖一律使用工具預設的自動命名，不指定檔名，檔案才會存入輸出目錄 ' + $OutputDirectory + '；報告逐一列出截圖檔名與對應的驗收條件。')
+            '- 桌面操作先以 windows_attach 附加派遣檔指定的視窗，不要列舉桌面上其他視窗。'
+            if (-not [string]::IsNullOrWhiteSpace([string]$Order.test_context_file)) { '- 測試環境資料檔: ' + $Order.test_context_file + '（登入帳號與資料重置方式，只依其內容操作）' }
+        )
+    }
     return (($lines -join "`n") + "`n")
 }
 
@@ -182,13 +254,26 @@ function Invoke-RunAttempt {
         $extraReadRoots += $generatedImages
     }
     $workingDirectory = if ($evidenceOnly) { $outputDirectory } else { $Order.execution_root }
-    $plan = Get-RunPermissionPlan -ExecutionRoot $workingDirectory -OutputDirectory $outputDirectory -ReportLineRoot $Order.report_line_root -ExtraReadRoot $extraReadRoots -OutputOnly:$evidenceOnly
+    # 測試取證：測試環境資料檔以檔案單位開放唯讀；MCP 工具的輸出（Playwright 的自動命名截圖與快照）由環境變數導向輸出目錄，
+    # 殘留在工作目錄根下的 .playwright-mcp 不納入來源雜湊（明確檔名的截圖仍可能寫到那裡，由 mcp_stray_output 記錄）。
+    $readFiles = @()
+    $extraEnvironment = @{}
+    $sourceExcludeRoots = @($Order.report_line_root)
+    $strayMcpOutput = Join-Path $Order.execution_root '.playwright-mcp'
+    if ($Order.task_setting.mcp) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$Order.test_context_file)) { $readFiles = @([string]$Order.test_context_file) }
+        $extraEnvironment['PLAYWRIGHT_MCP_OUTPUT_DIR'] = $outputDirectory
+        $sourceExcludeRoots += $strayMcpOutput
+    }
+    # 啟動前記錄 .playwright-mcp 的檔案狀態，結束時只把本次新增或變動的檔案標為殘留（先前殘留或他人使用的檔案不算）。
+    $strayBefore = if ($Order.task_setting.mcp) { Get-RunDirectoryFileState -Path $strayMcpOutput } else { $null }
+    $plan = Get-RunPermissionPlan -ExecutionRoot $workingDirectory -OutputDirectory $outputDirectory -ReportLineRoot $Order.report_line_root -ExtraReadRoot $extraReadRoots -OutputOnly:$evidenceOnly -ReadFile $readFiles
     $permission = [ordered]@{ name = $plan.name; read_roots = @($plan.read_roots); write_roots = @($plan.write_roots); deny_patterns = @($plan.deny_patterns) }
-    if ($evidenceOnly) { $permission['read_files'] = @($plan.read_files) }
+    if ($null -ne $plan.PSObject.Properties['read_files']) { $permission['read_files'] = @($plan.read_files) }
     $startedAt = [DateTime]::UtcNow
     # evidence-only 的來源狀態是 evidence 檔的雜湊與長度（不讀工作目錄）；執行期間被改時 source_changed 為 true。
     $sourceStart = if ($evidenceOnly) { [ordered]@{ evidence_file = $Order.evidence_file; sha256 = $evidenceStart.sha256; bytes = $evidenceStart.bytes } }
-    else { Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot @($Order.report_line_root) }
+    else { Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot $sourceExcludeRoots }
     $record = [ordered]@{
         schema = 'ai-agents.codex-run-record.v1'
         run_key = $runKey
@@ -232,11 +317,17 @@ function Invoke-RunAttempt {
         $record['missing_question_ids'] = $null
         $record['question_check'] = $null
     }
+    if ($Order.task_setting.mcp) {
+        $record['test_context_file'] = if ([string]::IsNullOrWhiteSpace([string]$Order.test_context_file)) { $null } else { [string]$Order.test_context_file }
+        $record['mcp_tool_calls'] = $null
+        $record['artifacts'] = $null
+        $record['mcp_stray_output'] = $null
+    }
     try { Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8 }
     catch { throw (New-RunError -Code 'RunRecordWriteFailed' -Message ('執行紀錄初稿寫入失敗：' + $_.Exception.Message) -ExitCode 1) }
 
     $argument = New-RunExecArgument -ExecutionRoot $workingDirectory -Profile $Order.profile -OutputDirectory $outputDirectory -LastMessagePath $lastMessagePath -IsGitRepository ($IsGitRepository -and -not $evidenceOnly) -ReportLineRoot $Order.report_line_root -ModelOverride $modelOverride `
-        -ExtraReadRoot $extraReadRoots -Search:([bool]$Order.task_setting.search) -OutputOnly:$evidenceOnly
+        -ExtraReadRoot $extraReadRoots -Search:([bool]$Order.task_setting.search) -OutputOnly:$evidenceOnly -ReadFile $readFiles
     if (-not $evidenceOnly) { $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath -ReviewerLine $reviewerLine }
     Write-RunDiagnostic ('[codex-run] 嘗試帳號 ' + $Candidate.name + $(if ($modelSource -ceq 'fallback') { '（備援 model ' + $modelOverride + '）' } else { '' }) + '，runKey ' + $runKey)
     $exitCode = -1
@@ -245,7 +336,7 @@ function Invoke-RunAttempt {
     $terminatedBy = $null
     try {
         $process = Invoke-RunCodexProcess -CodexPath $CodexPath -Argument $argument -Prompt $prompt -CodexHome $Candidate.codex_home -EventStreamPath $eventsPath -StderrPath $stderrPath -WorkingDirectory $workingDirectory `
-            -LastMessagePath $lastMessagePath -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds
+            -LastMessagePath $lastMessagePath -TimeoutSeconds $TimeoutSeconds -TurnEndGraceSeconds $TurnEndGraceSeconds -ExtraEnvironment $extraEnvironment
         $exitCode = [int]$process.ExitCode
         $duration = [double]$process.DurationSeconds
         $terminatedBy = $process.TerminatedBy
@@ -265,7 +356,7 @@ function Invoke-RunAttempt {
         $sourceEnd = if ($null -ne $evidenceEnd) { [ordered]@{ evidence_file = $Order.evidence_file; sha256 = $evidenceEnd.sha256; bytes = $evidenceEnd.bytes } }
         else { [ordered]@{ evidence_file = $Order.evidence_file; sha256 = $null; bytes = $null; unavailable = $true } }
     }
-    else { $sourceEnd = Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot @($Order.report_line_root) }
+    else { $sourceEnd = Get-RunSourceState -ExecutionRoot $Order.execution_root -Target $Order.targets -ExcludeRoot $sourceExcludeRoots }
     $sourceChanged = (ConvertTo-Json -InputObject $sourceStart -Compress) -cne (ConvertTo-Json -InputObject $sourceEnd -Compress)
 
     if ($terminatedBy -ceq 'timeout') { Write-RunDiagnostic ('[codex-run] 超過總時限 ' + $TimeoutSeconds + ' 秒，已終止 codex 行程樹。') }
@@ -336,6 +427,28 @@ function Invoke-RunAttempt {
         $record['missing_question_ids'] = $missingQuestionIds
         $record['question_check'] = $questionCheck
     }
+    $mcpToolCalls = $null
+    $artifacts = $null
+    $mcpStrayOutput = $null
+    if ($Order.task_setting.mcp) {
+        $mcpToolCalls = Get-RunMcpToolCallSummary -EventStreamPath $eventsPath
+        $artifacts = Get-RunOutputArtifact -OutputDirectory $outputDirectory -ReportName $Order.report_name
+        # 工作目錄根下的 .playwright-mcp 有檔案表示有截圖或快照沒有進輸出目錄（例如指定了明確檔名），回收時把它們移進輸出目錄或回報。
+        $strayAfter = Get-RunDirectoryFileState -Path $strayMcpOutput
+        if ($strayBefore.ok -and $strayAfter.ok) {
+            $strayChanged = @($strayAfter.files.Keys | Where-Object { -not $strayBefore.files.ContainsKey($_) -or $strayBefore.files[$_] -cne $strayAfter.files[$_] } | Sort-Object)
+            $mcpStrayOutput = [ordered]@{ path = $strayMcpOutput; state = 'determined'; exists = ($strayChanged.Count -gt 0); files = [string[]]$strayChanged; error = $null }
+        }
+        else {
+            # 列舉失敗時無法判定是否有本次殘留：exists 為 null，state 為 indeterminate，並記下錯誤，回收時人工檢查該目錄。
+            $strayError = if (-not $strayBefore.ok) { [string]$strayBefore.error } else { [string]$strayAfter.error }
+            Write-RunDiagnostic ('[codex-run] 無法列舉 ' + $strayMcpOutput + '，殘留狀態無法判定：' + $strayError)
+            $mcpStrayOutput = [ordered]@{ path = $strayMcpOutput; state = 'indeterminate'; exists = $null; files = [string[]]@(); error = $strayError }
+        }
+        $record['mcp_tool_calls'] = $mcpToolCalls
+        $record['artifacts'] = $artifacts
+        $record['mcp_stray_output'] = $mcpStrayOutput
+    }
     try {
         Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8
         $null = Add-RunCostRow -LedgerPath (Join-Path $Order.report_line_root 'cost-ledger.md') -LineSlug $Order.line_slug -DispatchSlug $Order.dispatch_slug -RunId $runId `
@@ -366,6 +479,11 @@ function Invoke-RunAttempt {
         relogin_command = $reloginCommand
         failover_eligible = (Test-RunFailoverEligible -Evidence $evidence)
         health_error = $healthError
+    }
+    if ($Order.task_setting.mcp) {
+        $attemptResult['mcp_tool_calls'] = $mcpToolCalls
+        $attemptResult['artifacts'] = $artifacts
+        $attemptResult['mcp_stray_output'] = $mcpStrayOutput
     }
     if ($evidenceOnly) {
         $attemptResult['evidence'] = $record['evidence']
@@ -406,6 +524,27 @@ function Assert-RunProfileConsistency {
     throw (New-RunError -Code 'CodexProfileDrift' -Message ('檔位 ' + $Profile + ' 的設定檔與主 checkout 的產生檔不一致，已停止，未啟動 Codex，未改任何檔案。以下每一行可直接貼到 pwsh 執行，# 開頭為說明：' + [Environment]::NewLine + ($lines -join [Environment]::NewLine)) -ExitCode 2)
 }
 
+function Assert-RunMcpAccountConfig {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Profile,
+        [Parameter(Mandatory)][string]$AccountHome,
+        [Parameter(Mandatory)][string]$ProfileSourceRoot
+    )
+
+    # 測試取證：檔位檔只啟用 MCP 伺服器，指令路徑因機器而異，由帳號目錄 config.toml 提供。缺少時 Codex 載入檔位設定失敗，
+    # 這裡先只讀檢查並以 CodexMcpConfigMissing 停止，不啟動 Codex、不改檔。登錄表讀不到時略過，檔位設定的問題由 Assert-RunProfileConsistency 回報。
+    try {
+        $spec = @(Read-CodexProfileSpec -RegistryPath (Get-CodexProfileRegistryPath -RepoRoot $ProfileSourceRoot) | Where-Object { $_.Profile -ceq $Profile })
+    }
+    catch { return }
+    if ($spec.Count -eq 0) { return }
+    $missing = @(Get-CodexMcpAccountConfigFinding -AccountHome $AccountHome -Spec $spec[0])
+    if ($missing.Count -eq 0) { return }
+    $setupPath = Join-Path $ProfileSourceRoot 'scripts\Setup-AIGlobalConfig.ps1'
+    throw (New-RunError -Code 'CodexMcpConfigMissing' -Message ('帳號目錄 ' + (Join-Path $AccountHome 'config.toml') + ' 缺少 MCP 伺服器 ' + ($missing -join '、') + ' 的 command，檔位 ' + $Profile + ' 無法載入，已停止，未啟動 Codex，未改任何檔案。重跑 Setup 補上（以 pwsh 執行）：' + [Environment]::NewLine + '& ' + (ConvertTo-CodexProfileQuoted -Text $setupPath)) -ExitCode 2)
+}
+
 function Get-RunProfileExecutor {
     param(
         [Parameter(Mandatory)][string]$Profile,
@@ -436,7 +575,11 @@ function Get-RunFallbackSelection {
         $selectorPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Select-DispatchExecutor.ps1'
         if (-not [IO.File]::Exists($selectorPath)) { throw ('找不到選派入口：' + $selectorPath) }
         $hostPath = (Get-Process -Id $PID).Path
-        $output = @(& $hostPath -NoProfile -NonInteractive -File $selectorPath -Type $TaskType -ImplementerFamily claude -Offline $UnavailableExecutorId 2>$null)
+        # 經本入口的 test 只做 MCP 臨場操作（瀏覽器、桌面），這些硬能力沒有 Claude 替代者，帶 browse 標籤使選派入口回傳 stopped。
+        # 不含瀏覽器或桌面操作的測試（build-test）本來就不走本入口，由呼叫端以標籤選到 Claude 執行者。
+        $selectorArguments = @('-Type', $TaskType, '-ImplementerFamily', 'claude', '-Offline', $UnavailableExecutorId)
+        if ($TaskType -ceq 'test') { $selectorArguments += @('-Tags', 'browse') }
+        $output = @(& $hostPath -NoProfile -NonInteractive -File $selectorPath @selectorArguments 2>$null)
         $text = ($output | ForEach-Object { [string]$_ }) -join "`n"
         if ([string]::IsNullOrWhiteSpace($text)) { throw ('選派入口沒有輸出，結束碼 ' + $LASTEXITCODE) }
         return [ordered]@{ unavailable_executor = $UnavailableExecutorId; selection = (ConvertFrom-Json -InputObject $text) }
@@ -518,6 +661,7 @@ function Invoke-CodexRunMain {
         else {
             # 只檢查實際要使用的帳號；換帳號後對新的候選帳號在使用前再檢查，未使用的候選帳號不一致不阻擋。
             Assert-RunProfileConsistency -Profile $order.profile -AccountHome ([string]$selection.candidates[0].codex_home) -ProfileSourceRoot $profileRoot
+            if ($order.task_setting.mcp) { Assert-RunMcpAccountConfig -Profile $order.profile -AccountHome ([string]$selection.candidates[0].codex_home) -ProfileSourceRoot $profileRoot }
         }
         if (-not (Test-RunMxc -CodexPath $codex -CodexHome $selection.candidates[0].codex_home)) {
             throw (New-RunError -Code 'RunMxcUnavailable' -Message '偵測不到 MXC 沙盒（codex sandbox 探針失敗）。新入口不改用其他沙盒，也不在沒有沙盒的情況下啟動 Codex。' -ExitCode 3)
@@ -533,6 +677,7 @@ function Invoke-CodexRunMain {
         foreach ($candidate in @($selection.candidates)) {
             if ($candidateIndex -gt 0 -and -not $SkipProfileCheck) {
                 Assert-RunProfileConsistency -Profile $order.profile -AccountHome ([string]$candidate.codex_home) -ProfileSourceRoot $profileRoot
+                if ($order.task_setting.mcp) { Assert-RunMcpAccountConfig -Profile $order.profile -AccountHome ([string]$candidate.codex_home) -ProfileSourceRoot $profileRoot }
             }
             $candidateIndex++
             # 同一帳號依序嘗試可用的 model：被服務端以 model not supported 拒絕且尚無進度時改試下一個 model，
@@ -563,6 +708,11 @@ function Invoke-CodexRunMain {
                     source_changed = $lastAttempt.source_changed
                     review_report_check = $lastAttempt.review_report_check
                     relogin_command = $lastAttempt.relogin_command
+                }
+                if ($order.task_setting.mcp) {
+                    $final['mcp_tool_calls'] = $lastAttempt.mcp_tool_calls
+                    $final['artifacts'] = $lastAttempt.artifacts
+                    $final['mcp_stray_output'] = $lastAttempt.mcp_stray_output
                 }
                 if ($order.task_setting.evidence_only) {
                     $final['evidence'] = $lastAttempt.evidence

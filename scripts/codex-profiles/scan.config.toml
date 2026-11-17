@@ -6,3 +6,16 @@ model_reasoning_effort = "max"
 enabled = true
 default_subagent_model = "gpt-6-luna"
 default_subagent_reasoning_effort = "max"
+
+[mcp_servers.playwright]
+command = "npx"
+args = ["-y", "@playwright/mcp@latest"]
+env_vars = ["PLAYWRIGHT_MCP_OUTPUT_DIR"]
+enabled = true
+default_tools_approval_mode = "approve"
+enabled_tools = ["browser_navigate", "browser_navigate_back", "browser_snapshot", "browser_click", "browser_hover", "browser_type", "browser_fill_form", "browser_press_key", "browser_select_option", "browser_wait_for", "browser_take_screenshot", "browser_console_messages", "browser_network_requests", "browser_tabs", "browser_close"]
+
+[mcp_servers.flaui-mcp]
+enabled = true
+default_tools_approval_mode = "approve"
+enabled_tools = ["windows_attach", "windows_inspect", "windows_snapshot", "windows_click", "windows_get_text", "windows_screenshot"]

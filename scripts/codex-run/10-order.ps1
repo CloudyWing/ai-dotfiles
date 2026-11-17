@@ -15,11 +15,15 @@ function Get-RunTaskTypeSetting {
     # evidence_only：資料全文內嵌 prompt、不開放工作目錄（可讀可寫根目錄只有輸出目錄，--cd 指向輸出目錄）、最後訊息存成報告、派遣檔須宣告
     #   advisor_request_source、evidence_file、question_ids，結束時檢查報告含每個題號。其他類型不得出現這三個鍵。
     # exclusive_profile：該類型只接受的檔位；$null 表示不限，但不得使用其他類型的專屬檔位。
+    # mcp：測試取證。檔位設定檔掛上 MCP 伺服器（Playwright、FlaUI），入口對 Codex 行程設定 PLAYWRIGHT_MCP_OUTPUT_DIR 為輸出目錄，
+    #   派遣檔可選填 test_context_file（測試環境資料檔，列為檔案單位唯讀），來源雜湊排除 <execution_root>\.playwright-mcp
+    #   （MCP 工具不受命令沙盒約束，明確檔名的截圖仍會寫到工作目錄根下）。命令沙盒維持唯讀。
     $settings = [ordered]@{
-        review = [pscustomobject]@{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者'; evidence_only = $false; exclusive_profile = $null }
-        factcheck = [pscustomobject]@{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null }
-        generate = [pscustomobject]@{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null }
-        advise = [pscustomobject]@{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $true; exclusive_profile = 'advisor' }
+        review = [pscustomobject]@{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
+        factcheck = [pscustomobject]@{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
+        generate = [pscustomobject]@{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
+        test = [pscustomobject]@{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = 'scan'; mcp = $true }
+        advise = [pscustomobject]@{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $true; exclusive_profile = 'advisor'; mcp = $false }
     }
     if (-not $PSBoundParameters.ContainsKey('TaskType')) { return $settings }
     # OrderedDictionary 的鍵查詢不分大小寫，先以區分大小寫的比對確認受理。
@@ -62,9 +66,9 @@ function Read-RunDispatchFile {
     }
 
     $errors = New-Object 'System.Collections.Generic.List[string]'
-    $knownKeys = @('schema', 'line_slug', 'dispatch_slug', 'task_type', 'profile', 'role_file', 'execution_root', 'report_line_root', 'report_name', 'targets', 'required_reads', 'cycle', 'advisor_request_source', 'evidence_file', 'question_ids')
+    $knownKeys = @('schema', 'line_slug', 'dispatch_slug', 'task_type', 'profile', 'role_file', 'execution_root', 'report_line_root', 'report_name', 'targets', 'required_reads', 'cycle', 'advisor_request_source', 'evidence_file', 'question_ids', 'test_context_file')
     $evidenceKeys = @('advisor_request_source', 'evidence_file', 'question_ids')
-    $requiredKeys = @($knownKeys | Where-Object { $_ -cne 'cycle' -and $evidenceKeys -cnotcontains $_ })
+    $requiredKeys = @($knownKeys | Where-Object { $_ -cne 'cycle' -and $_ -cne 'test_context_file' -and $evidenceKeys -cnotcontains $_ })
     $presentKeys = @($document.PSObject.Properties | ForEach-Object { $_.Name })
     foreach ($key in $presentKeys) {
         if ($knownKeys -cnotcontains $key) { $errors.Add('未知欄位：' + $key) }
@@ -194,6 +198,18 @@ function Read-RunDispatchFile {
         }
     }
 
+    $testContextFile = $null
+    if ($presentKeys -ccontains 'test_context_file') {
+        $contextValue = Get-FieldValue 'test_context_file'
+        if (-not $taskSetting.mcp) {
+            throw (New-RunError -Code 'RunDispatchFileInvalid' -Message ('派遣檔無效：task_type ' + $taskType + ' 不得出現欄位 test_context_file。') -ExitCode 2 -Details @('不適用欄位：test_context_file'))
+        }
+        if ($contextValue -isnot [string] -or [string]::IsNullOrWhiteSpace($contextValue)) {
+            throw (New-RunError -Code 'RunDispatchFileInvalid' -Message '派遣檔無效：test_context_file 必須是非空字串。' -ExitCode 2 -Details @('test_context_file 必須是非空字串。'))
+        }
+        $testContextFile = [string]$contextValue
+    }
+
     return [pscustomobject]@{
         schema = [string]$schemaValue
         line_slug = [string](Get-FieldValue 'line_slug')
@@ -210,6 +226,7 @@ function Read-RunDispatchFile {
         advisor_request_source = if ($taskSetting.evidence_only) { [string](Get-FieldValue 'advisor_request_source') } else { $null }
         evidence_file = if ($taskSetting.evidence_only) { [string](Get-FieldValue 'evidence_file') } else { $null }
         question_ids = if ($taskSetting.evidence_only) { [string[]]@($document.question_ids) } else { [string[]]@() }
+        test_context_file = $testContextFile
         dispatch_file_path = $Path
         task_setting = $taskSetting
     }
@@ -262,6 +279,17 @@ function Test-RunPreStart {
         $evidencePath = [string]$Order.evidence_file
         $checkedPaths.Add($evidencePath)
         if ((Test-Absolute $evidencePath) -and [IO.File]::Exists($evidencePath) -and (New-Object System.IO.FileInfo -ArgumentList @($evidencePath)).Length -eq 0) { Add-Problem $evidencePath 'empty' }
+    }
+    # 測試環境資料檔位於專案層固定位置（通常在主 checkout，線工作樹與 ~\.ai-agents 之外），不受可讀根目錄限制，改檢查固定的路徑形態。
+    # 權限設定以檔案單位開放唯讀（見 Get-RunPermissionPlan 的 ReadFile）。
+    if (-not [string]::IsNullOrWhiteSpace([string]$Order.test_context_file)) {
+        $testContextPath = [string]$Order.test_context_file
+        if (-not (Test-Absolute $testContextPath)) { Add-Problem $testContextPath 'not-absolute' }
+        else {
+            if (-not [IO.File]::Exists($testContextPath)) { Add-Problem $testContextPath 'missing' }
+            if ($testContextPath -cnotmatch '[\\/]\.local[\\/]ai-sessions[\\/]test-context[\\/]test-context\.md$') { Add-Problem $testContextPath 'not-test-context-path' }
+            if (-not (Test-RunPathCmdSafe -Path $testContextPath)) { Add-Problem $testContextPath 'unsafe-char' }
+        }
     }
     foreach ($path in $checkedPaths) {
         if (-not (Test-Absolute $path)) { Add-Problem $path 'not-absolute'; continue }
