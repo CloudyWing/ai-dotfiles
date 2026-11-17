@@ -43,7 +43,7 @@
 
 ## 7. PowerShell 版本
 
-- 派工腳本（`scripts\Invoke-CodexDispatch.ps1` 與 `scripts\dispatch\`、`scripts\Invoke-CodexRun.ps1` 與 `scripts\codex-run\`）、`scripts\` 下其他由 Claude 端呼叫的腳本、`claude-plugins\ai-agents-hooks\hooks\lib\` 的 PowerShell 函式庫與派工測試只支援 pwsh 7，檔首宣告 `#Requires -Version 7.0`。例外是 `scripts\Ensure-AiContextArtifacts.ps1`，檔首沒有版本宣告。
+- 派工腳本（`scripts\Invoke-CodexDispatch.ps1` 與 `scripts\dispatch\`、`scripts\Invoke-CodexRun.ps1` 與 `scripts\codex-run\`）、`scripts\` 下其他由 Claude 端呼叫的腳本、`claude-plugins\ai-agents-hooks\hooks\lib\` 的 PowerShell 函式庫與派工測試只支援 pwsh 7，檔首宣告 `#Requires -Version 7.0`。
 - `scripts\Setup-AIGlobalConfig.ps1` 同樣只支援 pwsh 7，但檔首維持 `#Requires -Version 5.1`，本體語法維持 5.1 可解析。它在 Windows PowerShell 5.1 啟動時印出 `winget install Microsoft.PowerShell` 安裝指引後以非零結束碼結束，判斷通過後才 dot-source 宣告 `#Requires -Version 7.0` 的模組。寫法見 `powershell` skill「編碼與版本目標」。
 - `.githooks\Update-Docs.ps1` 由 pre-commit 以 `powershell.exe` 執行，檔首為 `#Requires -Version 5.1`，本體須維持 5.1 可解析。
 

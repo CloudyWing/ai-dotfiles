@@ -131,8 +131,9 @@ try {
                         $node.InvocationOperator -eq [System.Management.Automation.Language.TokenKind]::Dot -and
                         $node.Extent.Text.Contains($moduleName)
                     }, $true))
-            Assert-True ($dotSources.Count -eq 1) ('Setup 應恰有一個 dot-source ' + $moduleName + '，實際 ' + $dotSources.Count)
-            $dotSourceOffsets += [int]$dotSources[0].Extent.StartOffset
+            # 執行模式與 -Check 分支各自載入模組，因此每個模組可有多處 dot-source，全部都必須晚於版本判斷區塊。
+            Assert-True ($dotSources.Count -ge 1) ('Setup 找不到 dot-source ' + $moduleName)
+            $dotSourceOffsets += @($dotSources | ForEach-Object { [int]$_.Extent.StartOffset })
         }
         $adminChecks = @($setupAst.FindAll({
                     param($node)
