@@ -118,7 +118,7 @@ function ConvertTo-ExecutorRegistry {
     if ($allTags.Count -gt $maxTagVocabulary) { & $fail ('標籤詞彙合計 {0} 個，超過上限 {1}' -f $allTags.Count, $maxTagVocabulary) }
     if (@($allTags | Select-Object -Unique).Count -ne $allTags.Count) { & $fail '標籤詞彙有重複' }
 
-    # codexEfforts 是 Codex 檔位 effort 的允許清單（含 max，需 Codex 0.147 以上，見 README §8），retiredProfiles 是已退役的檔位名稱。兩者只放在登錄表。
+    # codexEfforts 是 Codex 檔位 effort 的允許清單（含 max，需 Codex 0.147 以上），retiredProfiles 是已退役的檔位名稱。兩者只放在登錄表。
     $codexEfforts = Get-ExecutorRegistryList $Raw 'codexEfforts'
     if (-not (Test-ExecutorRegistryStringArray $codexEfforts) -or @($codexEfforts | Where-Object { $_ -cnotmatch '^[a-z]+$' }).Count -gt 0) { & $fail 'codexEfforts 必須為小寫英文字串陣列' }
     $retiredProfiles = Get-ExecutorRegistryList $Raw 'retiredProfiles'

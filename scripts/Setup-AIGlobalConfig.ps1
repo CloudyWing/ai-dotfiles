@@ -727,10 +727,10 @@ if ($maxEffortProfiles.Count -eq 0) {
     Write-Host "  ✅ 登錄表未使用需要檢查版本相容性的 max effort。" -ForegroundColor DarkGreen
 }
 elseif ($null -eq $codexVersion) {
-    Write-Warning "  ⚠️ 登錄表含 max effort，但目前無法取得 Codex 版本，請參考 README.md §8「疑難排解」。"
+    Write-Warning "  ⚠️ 登錄表含 max effort，但目前無法取得 Codex 版本，請確認 codex 已安裝且在 PATH 中。"
 }
 elseif ($codexVersion -lt $minimumMaxVersion) {
-    Write-Warning "  ⚠️ Codex $codexVersion 不支援登錄表中的 max effort。請更新至不低於 $minimumMaxVersion 的版本，並參考 README.md §8「疑難排解」。"
+    Write-Warning "  ⚠️ Codex $codexVersion 不支援登錄表中的 max effort。請更新至不低於 $minimumMaxVersion 的版本。"
 }
 else {
     Write-Host "  ✅ Codex $codexVersion 與 max effort 相容。" -ForegroundColor DarkGreen
