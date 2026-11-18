@@ -50,7 +50,7 @@
 - 無法由上述兩組命令證明任一情境時停止，不自行猜測重整類型或補造基準 SHA。
 
 - 來源工作樹必須乾淨。先記錄來源分支、`beforeSha`、tracked 狀態與未追蹤檔案清單，並保存為 history-rewrite 證據。工作樹不乾淨或狀態無法記錄時停止，不開始重整。
-- 從來源分支建立本地拋棄式 `<rewrite-branch>`。分支名稱必須使用 `../SKILL.md` 既有 branch type whitelist 的 `<type>/<short-description>` 格式，`<type>` 只能是 `feature`、`fix`、`refactor`、`hotfix` 或 `release`；`dispatch/*` 不符合本層的拋棄式重整分支要求。該分支不建立 PR，也不直接更新來源分支。
+- 從來源分支建立本地拋棄式 `<rewrite-branch>`。分支名稱必須使用 `../SKILL.md` 既有 branch type whitelist 的 `<type>/<short-description>` 格式，`<type>` 只能是 `feature`、`fix`、`refactor`、`hotfix` 或 `release`。該分支不建立 PR，也不直接更新來源分支。
 - 所有 `rebase`、`squash` 與 `amend` 只能在 `<rewrite-branch>` 執行。完成後記錄整理後的 `afterSha`。`<rewrite-branch>` 的建立、來源工作樹的清潔要求與未追蹤檔案檢查適用於上述兩種情境。
 - 整理過程不得改動檔案內容。內容修改（含 CHANGELOG 與版號檔）須先成為獨立 commit 再整理，否則完整 tree 比對會失敗。「整理流程」第 5 步即本層檢查。
 - 純歷史重排執行完整 tree 比對。先以 `git rev-parse --show-toplevel` 取得 Git repository root，再從該目錄執行下列命令，記錄完整輸出與 `git diff` 的 exit code。
@@ -115,4 +115,4 @@ Git 修正的嚴重度映射如下。
 
 `return-count` 只記錄該 `problem-key` 的 Git 回歸修正次數，初次值為 `0`，每次回歸失敗後增加，不作一般停止條件。全部回歸矩陣列通過時進入回收，回歸矩陣仍是放行門檻。任一前輪 `Critical` 或 `Major` 問題連續兩輪未閉合、同一 `area-key` 連續兩輪出現新的 `Major` 以上問題、修正需要改變需求或已確認設計，或同一循環的 `round` 達到 6 輪時停止，保留回歸矩陣、Git 命令輸出與替代方向。存在未閉合的 `Critical` 或 `Major`，這些問題均屬純技術可解，且未命中上述停止訊號時自動續行下一輪。只剩 `Minor` 列失敗時，以一次批次修正處理後重跑同一份矩陣，不增加 `round`，不為 `Minor` 單獨再開一輪複審。新出現的 Major 在尚未形成停止訊號前依純技術路徑續行；`return-count` 只在回歸失敗後增加，`round` 依一次修正連同其驗收或回歸判定增加一輪，兩者均不提前取代停止訊號判定。
 
-此 `problem-key` 的 Git 修正循環計數與 `codex-dispatch` 回收契約的 `dispatch-return-count` 分開保存、分開判定，不能共用或相互重設。相同目標、相同症狀或同一回歸 assertion 失敗時，不得藉由重新命名分支或改寫 `problem-key` 將計數歸零；變更 key 必須先取得使用者判斷。任一層的觸發條件、判定結果、失敗處置、來源分支、`beforeSha`／`afterSha`、`git diff` exit-code、回歸矩陣逐列結果或 `return-count` 缺漏時，Agent 不得回報成功。
+此 `problem-key` 的 Git 修正循環計數與回收契約（`codex-dispatch` skill `references/collect.md`「回收收斂判定」）的 `dispatch-return-count` 分開保存、分開判定，不能共用或相互重設。相同目標、相同症狀或同一回歸 assertion 失敗時，不得藉由重新命名分支或改寫 `problem-key` 將計數歸零；變更 key 必須先取得使用者判斷。任一層的觸發條件、判定結果、失敗處置、來源分支、`beforeSha`／`afterSha`、`git diff` exit-code、回歸矩陣逐列結果或 `return-count` 缺漏時，Agent 不得回報成功。

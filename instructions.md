@@ -14,7 +14,7 @@ applyTo: "**/*"
 | --- | --- | --- | --- |
 | 規則層 | 決定角色、權責、放行條件、證據門檻、例外升級與不可變前提 | 本檔的全域規則、`rules/claude/` 下的 Claude 端規則、`agents/` 下各 Agent 的角色契約 | 命令參數、路徑、進程識別、檔案搬移與逐步操作配方 |
 | Skill 層 | 提供可執行的工作路徑與失敗恢復導引 | `skills/` 下各 SKILL.md 的時機、正常路徑、輸入、操作順序、產物、下游與恢復方式 | 重新定義角色權責，或複製規則層的全域政策 |
-| 腳本與範本層 | 提供可機械驗證的入口、資料結構與操作契約 | `scripts/` 的 CLI 與 request 入口、欄位驗證、產物信封、事件流、恢復紀錄；`templates/` 的固定結構 | 取代角色判斷、業務語意裁決與需求意圖驗收 |
+| 腳本與範本層 | 提供可機械驗證的入口、資料結構與操作契約 | `scripts/` 的 CLI 與派遣檔入口、欄位驗證、事件流、執行紀錄；`templates/` 的固定結構 | 取代角色判斷、業務語意裁決與需求意圖驗收 |
 
 規則層是判定來源。Skill 層不得以操作步驟重新定義判定來源，Skill 的條文與規則層不一致時以規則層為準。腳本與範本層只保證其可觀測的輸入、輸出與狀態，不保證執行者對業務語意的理解。
 
@@ -121,9 +121,9 @@ applyTo: "**/*"
   - 此規範僅涉及進程關閉，不涉及任何資料異動。破壞性或不可逆的資料操作另依驗證流程的資料異動安全規範處理。
 - **環境清理（Cleanup）**：
   - 本流程建立的拋棄式資源（暫存 clone、測試用目錄、一次性腳本與驗證輸出）一律建在 `<work-root>/.local/ai-sessions/scratch/` 下。清除 `scratch/` 屬暫存清理，不需授權；建在其他位置的資源，刪除時依 `rules/claude/20-coordination.md`「授權分類」處理。
-  - 任務執行完畢時，刪除 `<work-root>/.local/ai-sessions/scratch/` 的全部內容。「任務執行完畢」指主 Agent 完成回收判定之後，不是執行端單一 turn 結束；執行端在自己的 turn 結束時不清理 scratch，否則會刪除主 Agent 回收時要複核的驗證證據。dispatch worktree 內的 `scratch/` 一律不清理，它隨 worktree 移除一併消失。
+  - 任務執行完畢時，刪除 `<work-root>/.local/ai-sessions/scratch/` 的全部內容。「任務執行完畢」指主 Agent 完成回收判定之後，不是執行端單一 turn 結束；執行端在自己的 turn 結束時不清理 scratch，否則會刪除主 Agent 回收時要複核的驗證證據。隔離工作樹內的 `scratch/` 一律不清理，它隨工作樹移除一併消失。
   - 清理由主 Agent 執行，不派工，即使它涉及檔案刪除。清理需要判斷哪些是本輪產物、哪些屬保留清單，該脈絡只有主 Agent 具備；派工時保留清單描述漏項就會刪錯，且刪除不可逆。此例外只涵蓋本流程產生的暫存，不涵蓋任何交付物或目標物件。
-  - 清理 `.local/ai-sessions/handoff/` 的其他項目時，保留每個 `<lineSlug>/` 目錄中的 `line.json`、`requirement-summary.md` 與 `design.md`。這三種線層資料分別保存線歸屬、需求意圖驗收與跨 Session 的設計驗收依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。跨平台派工事件流與 thread id 檔位於 `history/`，不在自動刪除範圍內。
+  - 清理 `.local/ai-sessions/handoff/` 的其他項目時，保留每個 `<lineSlug>/` 目錄中的 `line.json`、`requirement-summary.md` 與 `design.md`。這三種線層資料分別保存線歸屬、需求意圖驗收與跨 Session 的設計驗收依據。`report/`、`history/`、`backups/`、`inputs/`、`screenshots/`、`style-baselines/` 與 `ui-demo/` 屬保留性質，留存與刪除由使用者決定。
 - **Exceptions 紀錄**：目的是留下 Agent 自行決定的紀錄，讓事後能驗證這些選擇是否適當或已走偏。執行層 Agent 發生偏離設計、自行採用假設、採用替代方案、發現範圍外既有問題、未涵蓋決策或繞過授權時，立即將條目追加至 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`。其中「未涵蓋決策」表示需求摘要與對話 context 未提供答案，記錄者拒絕自行拍板並交由上游判斷。完成「派工後補做」的主 Agent 同樣追加條目，觸發條件與欄位填寫見 `rules/claude/30-dispatch.md`「派工後的殘餘工作」。`Maintainer` 作為 bug 線協調者時，診斷中排除的假設由 fix-plan 記錄，不另記 exceptions；未經使用者確認就自行採用的假設、改變的修正方向與擴大的範圍，照常追加條目。寫入前驗證 `lineSlug` 與同線 `line.json` 的 `line-slug` 欄位一致。第一次追加時才建立檔案，不批次累積至結案；純技術可解的命名、分層、實作路徑、測試步驟與交接檔格式不記錄。
 
   條目格式如下：
@@ -174,7 +174,7 @@ applyTo: "**/*"
 
 #### work-root 判定
 
-- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。固定名稱交接檔與報告一律透過 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/` 或 `<work-root>/.local/ai-sessions/report/<lineSlug>/` 定位；`lineSlug` 由協調者依 §1.4「工作產物落點」登記並以 `line.json` 驗證。已帶有 `dispatchSlug` 或時間戳的事件流與 PID 檔案維持既有根目錄形式。
+- **`work-root` 定義（Crucial）**：本輪任務的交接檔、報告檔與 `CONTEXT.local.md` 所屬根目錄。固定名稱交接檔與報告一律透過 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/` 或 `<work-root>/.local/ai-sessions/report/<lineSlug>/` 定位；`lineSlug` 由協調者依 §1.4「工作產物落點」登記並以 `line.json` 驗證。
 - **`task anchor` 定義（Crucial）**：本輪任務判定 `work-root` 的起點，代表使用者真正想處理的範圍。**不得直接以 Agent 執行命令時的 process cwd 作為 `task anchor`**，process cwd 只代表目前 Agent 所在的工作區，不一定等於本輪指定的檔案或子系統。
 - **`task anchor` 判定順序**：
   1. 使用者本輪明確指定的目標，依下列優先序解析：

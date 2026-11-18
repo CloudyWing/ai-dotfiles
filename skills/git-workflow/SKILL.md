@@ -34,8 +34,6 @@ rebase 改寫歷史風險、衝突解決步驟等通用知識不在此複述，�
 | 啟動 Workflow | `workflow-orchestration`「自動推進鏈」第 1 步「分支前置」 | 依「線分支與獨立 worktree」決定直接在整合分支或開線分支 |
 | 建立分支 | 本節 | 執行 `git branch <新分支>`、`git switch -c`、`git worktree add -b` 等建立分支的命令前先確認註記有效，再依「分支策略」命名 |
 
-Workflow 派工前，`codex-dispatch` 另行核對註記與分支符合性，該檢查只讀不建，不建立或切換分支。
-
 缺少註記時，阻擋範圍以外的工作照常進行。整理、rebase、push 與 force push 不屬阻擋範圍，缺少註記時只套用本文件的通用規則（備份、零差異 gate、`--force-with-lease`、當輪授權），不套用任一模式檔；「改寫與 force push 邊界」中 `main` 的處置視同 `release-flow`。
 
 ### 推薦值推導
@@ -76,7 +74,6 @@ Workflow 派工前，`codex-dispatch` 另行核對註記與分支符合性，該
 | 線分支 | `feature/<lineSlug>` | 規則見「線分支與獨立 worktree」 |
 | 整理分支 | `refactor/tidy-<來源分支名，斜線改為連字號>` | 即 `references/history-rewrite.md` 第一層的拋棄式 `<rewrite-branch>` |
 | 備份分支 | `backup/<來源分支名，斜線改為連字號>-before-tidy-<beforeSha 前 7 碼>` | 規則見「整理流程」 |
-| 派遣分支 | `dispatch/<時間戳>-<用途>` | 規則見「dispatch 分支」 |
 
 ### 分支 type whitelist
 
@@ -90,11 +87,7 @@ Workflow 派工前，`codex-dispatch` 另行核對註記與分支符合性，該
 
 分支 `type` 與 commit type 分別依各自白名單判定；`feature` 對應 `feat`，其餘分支名稱依語意對應 commit type。
 
-`dispatch` 與 `backup` 是白名單以外的特殊類別，不建立 PR，也不推送。整理分支使用白名單內的 `refactor`，符合 `references/history-rewrite.md` 第一層對 `<rewrite-branch>` 的 type 要求。
-
-### dispatch 分支
-
-`dispatch` 是 Agent 派工使用的拋棄式分支類別，識別字使用 UTC 時間戳與用途 slug，例如 `dispatch/20260827-171238-design`。時間戳在此類別中用於區分派工實例，分支名稱不受一般日期識別限制。`dispatch` 分支不建立 PR，也不回收到主線歷史；派遣結果依 `codex-dispatch` 的 worktree 回收契約處理。
+`backup` 是白名單以外的特殊類別，不建立 PR，也不推送。整理分支使用白名單內的 `refactor`，符合 `references/history-rewrite.md` 第一層對 `<rewrite-branch>` 的 type 要求。
 
 ### 功能分支命名
 
@@ -121,7 +114,7 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 由 `workflow-orchestration`「自動推進鏈」第 1 步執行。
 
 1. 確認前置條件：註記有效；目前分支是整合分支（整合分支名稱見模式檔）；`git rev-parse --verify -q refs/heads/feature/<lineSlug>` 沒有輸出；目標路徑不存在。線分支已存在且 `git worktree list --porcelain` 列出對應 worktree 時沿用，視為續行；線分支存在但沒有 worktree 時停止回報。
-2. 決定 worktree 路徑為 `<repo 根目錄的上一層>\<repo 目錄名>.wt\<lineSlug>`。放在 repo 之外，與 `.local\ai-sessions\worktrees\` 的派遣 worktree 分開，也縮短路徑。
+2. 決定 worktree 路徑為 `<repo 根目錄的上一層>\<repo 目錄名>.wt\<lineSlug>`。放在 repo 之外，也縮短路徑。
 3. 建立分支與 worktree。
 
     ```powershell
@@ -180,9 +173,9 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 
 Workflow Phase 由 Claude 執行者直接修改來源工作樹，執行者不建立 commit，成果以來源工作樹的未 commit 變更形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
 
-Developer 回收收下並覆核後，立即依 Phase 順序逐 Phase 暫存指名路徑並建立對應 commit，不等 Reviewer 與需求意圖驗收。來源分支為線分支時不需授權；來源分支為整合分支時 commit 即落地，不需授權，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。Reviewer 退回時，修正仍在同一來源工作樹進行，回收並覆核後由 `generate-commit` 步驟 4 建立 `fixup!` commit；每個 Phase 一筆 commit 的最終形態由落地或 push 前的「整理流程」收合 `fixup!` 達成。`DispatchKind=workflow` 機制的 dispatch worktree 回收見 `codex-dispatch` skill `references/collect.md`「Phase commit 回收與驗證」。
+Developer 回收收下並覆核後，立即依 Phase 順序逐 Phase 暫存指名路徑並建立對應 commit，不等 Reviewer 與需求意圖驗收。來源分支為線分支時不需授權；來源分支為整合分支時 commit 即落地，不需授權，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。Reviewer 退回時，修正仍在同一來源工作樹進行，回收並覆核後由 `generate-commit` 步驟 4 建立 `fixup!` commit；每個 Phase 一筆 commit 的最終形態由落地或 push 前的「整理流程」收合 `fixup!` 達成。
 
-Phase commit 回收步驟依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。來源分支是已通過 `codex-dispatch` 分支符合性檢查的線分支或整合分支。保留每個 Phase 的獨立語意，不在此步驟把全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收完成並通過驗證後，依模式檔規定的整理時機執行「整理流程」。每筆 commit 必須通過可用性驗證，且回收後歷史整理必須通過 `references/history-rewrite.md` 第一層零差異 gate。回收衝突時停止並保留 worktree 與證據。
+Phase commit 回收步驟依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。來源分支是符合 `git-workflow` 註記模式的線分支或整合分支，分支前置見 `workflow-orchestration` skill「自動推進鏈」第 1 步。保留每個 Phase 的獨立語意，不在此步驟把全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收完成並通過驗證後，依模式檔規定的整理時機執行「整理流程」。每筆 commit 必須通過可用性驗證，且回收後歷史整理必須通過 `references/history-rewrite.md` 第一層零差異 gate。回收衝突時停止並保留證據。
 
 ### 分組 commit 與 pre-commit hook 的先後順序
 

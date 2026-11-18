@@ -2,7 +2,7 @@
 
 本檔收錄 `cost-ledger.md` 的 `cost-ledger.v2` 列格式。寫入或讀取同線 `cost-ledger.md` 時讀取。成本計算使用 `scripts/Get-LineCost.ps1`，成效比對的指標與基準數字見 `cost-comparison.md`。
 
-成本以 `lineSlug` 識別。`dispatchSlug` 與階段只作追溯資訊，換新 `dispatchSlug`、續行或換階段都不讓同一條線的累計歸零。計算入口為 `pwsh -NoProfile -File scripts/Get-LineCost.ps1 -WorkRoot <work-root> -LineSlug <lineSlug>`，唯讀、輸出 JSON、不寫任何檔案、不自動寫入成本紀錄。腳本彙整 `report\<lineSlug>\runs\*.record.json` 與本檔的 `事件` 列（只採計 runId 不在 RunRecord 中的列），不推算。Claude 用量只在以 `-ClaudeSessionId` 或 `-ClaudeTranscriptPath` 指定時計算（重用 `Get-ClaudeSessionUsage.ps1`），否則為 null 並附原因。
+成本以 `lineSlug` 識別。`dispatchSlug` 與階段只作追溯資訊，換新 `dispatchSlug` 或換階段都不讓同一條線的累計歸零。計算入口為 `pwsh -NoProfile -File scripts/Get-LineCost.ps1 -WorkRoot <work-root> -LineSlug <lineSlug>`，唯讀、輸出 JSON、不寫任何檔案、不自動寫入成本紀錄。腳本彙整 `report\<lineSlug>\runs\*.record.json` 與本檔的 `事件` 列（只採計 runId 不在 RunRecord 中的列），不推算。Claude 用量只在以 `-ClaudeSessionId` 或 `-ClaudeTranscriptPath` 指定時計算（重用 `Get-ClaudeSessionUsage.ps1`），否則為 null 並附原因。
 
 成本紀錄的落點是 `<sourceRoot>\.local\ai-sessions\report\<lineSlug>\cost-ledger.md`，只追加不改寫。`事件` 列由派工腳本自動追加。`循環重啟` 與 `候選` 列由該線協調者（功能線為 `Analyst`，bug 線為 `Maintainer`）手寫，記錄循環識別與 `Minor` 的處置，不屬成本。Codex 執行端只產出事件流，不寫入 `cost-ledger.md`。
 
@@ -18,10 +18,10 @@
 
 | 列類型 | 寫入者 | 填法 |
 | --- | --- | --- |
-| `事件` | 腳本 | 每個經 Dispatch result 綁定，或以 `-RunRecordPath` 解析 RunRecord 的 Inspect 一列（同一 worktree 的續行走後者），同一 `runId` 只追加一次；`dispatchSlug`、`runId`、`cycle_*` 取自 RunRecord，`null` 寫 `-`；事件類型為 `首次`（`requested_thread_id` 為 `null`）或 `續行`；耗時為 Inspect 當下減 `started_at_utc`，是運行時間的上界；三個 token 欄取自該 run 事件流最後一筆 `turn.completed.usage` 的 `input_tokens`、`cached_input_tokens`、`output_tokens`。這個值是 Codex thread 的累計值，續行 run 改寫相對錨點 run（RunRecord `previous_run_id`）的增量，錨點讀不到時寫累計值；沒有 usage 時寫 `-`。備註為 `exit=<結束碼>;result=<completed 或 failed>;task=<task_type>;usage=<status>;usage_basis=<delta、cumulative、cumulative-no-anchor 或 none>`，沒有 usage 時為 `none`；`task` 取自 Inspect 的呼叫參數，以 `-RunRecordPath` 呼叫且未給 `-TaskType` 時為 `unspecified`。`scripts/Invoke-CodexRun.ps1` 於每次嘗試結束時自行追加一列，含被服務端拒絕而沒有用量的嘗試；`runId` 為該次執行 `runKey` 去掉 `<dispatch_slug>-` 前綴後的部分，事件類型固定為 `首次`，備註為 `exit=<結束碼>;result=<success、failed 或 rejected>;task=<task_type>;account=<帳號名稱>;rejection=<種類或 none>;usage=<status>` |
+| `事件` | 腳本 | `scripts/Invoke-CodexRun.ps1` 於每次嘗試結束時自行追加一列，含被服務端拒絕而沒有用量的嘗試；`runId` 為該次執行 `runKey` 去掉 `<dispatch_slug>-` 前綴後的部分，事件類型固定為 `首次`，備註為 `exit=<結束碼>;result=<success、failed 或 rejected>;task=<task_type>;account=<帳號名稱>;rejection=<種類或 none>;usage=<status>` |
 | `循環重啟` | 協調者 | 依 `workflow-orchestration` skill「循環識別與重新起算」 |
 | `候選` | 協調者 | 備註寫「ID=<finding ID 或 C-nnn>；嚴重度=Minor；摘要=…；來源報告=<絕對路徑>」 |
 
 未適用的欄位寫 `-`。儲存格內的 `|` 寫成 `\|`，不換行。
 
-輪數與成本分開判定：`PromptNotDelivered` 等啟動失敗與純格式補件不增加回收輪數（見 `codex-dispatch` skill `references/recovery.md`「回收收斂判定」）。格式補件以同一 `cycle_round` 內的續行表示，跨階段由 `cycle_id` 區分。
+輪數與成本分開判定：純格式補件不增加回收輪數（見 `codex-dispatch` skill `references/collect.md`「回收收斂判定」）。格式補件以同一 `cycle_round` 內的重跑表示，跨階段由 `cycle_id` 區分。

@@ -4,7 +4,7 @@
 
 ## 跨平台派工掛載點
 
-規則層判斷是否派工，執行者由執行者登錄表選出。登錄表 `scripts/dispatch/executor-registry.json` 是執行者、受理類型、能力標籤、條件、排序值、優先條件、未完成次數上限與備援 model 的唯一來源，選派入口為 `scripts/Select-DispatchExecutor.ps1`，標註語意與狀態處置見 `executor-selection` skill。選出 Codex 執行者後，指令參數、落點、等待、事件流取證、續 session 與回收方式由 `codex-dispatch` skill 提供；選出 Claude 執行者時以 Agent 工具派生，不經 `codex-dispatch`。Codex 端的檔位用途見 `codex-dispatch` skill「檔位用途與新舊對照」，執行者與檔位的對應只存在登錄表。
+規則層判斷是否派工，執行者由執行者登錄表選出。登錄表 `scripts/dispatch/executor-registry.json` 是執行者、受理類型、能力標籤、條件、排序值、優先條件、未完成次數上限與備援 model 的唯一來源，選派入口為 `scripts/Select-DispatchExecutor.ps1`，標註語意與狀態處置見 `executor-selection` skill。選出 Codex 執行者後，指令參數、落點、等待與回收方式由 `codex-dispatch` skill 提供；選出 Claude 執行者時以 Agent 工具派生，不經 `codex-dispatch`。Codex 端的檔位用途見 `codex-dispatch` skill「檔位用途」，執行者與檔位的對應只存在登錄表。
 
 ### 派工判準
 
@@ -54,7 +54,7 @@
 
 所有派工的回收覆核均適用以下權限宣告：主 Agent 可自行上網查證外部事實，不受執行端平台限制；不得只讀派遣報告或接受執行端自述，也不以未執行的部分補寫結論。查證證據欄位、保存落點與查證失敗處理依 `codex-dispatch` skill 的回收契約。
 
-「不得只讀派遣報告」的覆核對象是每條驗收條件與其證據是否相符，依 `codex-dispatch` skill 的複核政策逐條核對命令原文與原始輸出。主 Agent 只在下列情形實讀來源或重跑命令：輸出與結論不一致、輸出缺漏、回報只寫已完成，或該條涉及需求摘要的已確定實作約束與設計歧義。符合上列條件以外的來源，不因覆核而整份重讀。需實讀的來源量大時可派覆核取證助手，判定仍由主 Agent 做出（見 `codex-dispatch` skill `references/collect.md`「覆核取證助手」）。
+「不得只讀派遣報告」的覆核對象是每條驗收條件與其證據是否相符，以命令驗證的條件，依 `codex-dispatch` skill `references/collect.md`「回收三態判定」的複核政策逐條核對命令原文與原始輸出。主 Agent 只在下列情形實讀來源或重跑命令：輸出與結論不一致、輸出缺漏、回報只寫已完成，或該條涉及需求摘要的已確定實作約束與設計歧義。符合上列條件以外的來源，不因覆核而整份重讀。需實讀的來源量大時可派覆核取證助手，判定仍由主 Agent 做出（見 `codex-dispatch` skill `references/collect.md`「覆核取證助手」）。
 
 **派工後的殘餘工作**：其中的「第 1 項」指小型修改例外。
 
@@ -72,19 +72,19 @@
 
 額度查詢只供顯示與紀錄，不作派工的放行條件，也不參與執行者選擇。主 Agent 不因額度向使用者詢問是否派工或實測，advisor 授權除外。派工腳本不自動查詢額度，由主 Agent 以 `Get-CodexQuota.ps1` 手動查詢，時點為派工前、advisor 諮詢前、結案時，以及按需查詢。查詢失敗、快照過期或視窗重設時記為 unknown，派工照常進行，不推算餘額。
 
-派工範圍由派遣契約明確宣告，額度不改寫範圍。`ScopePlan` 只適用經 `scripts\Invoke-CodexDispatch.ps1` 發動的 Codex 資源派遣（含該入口保留的 `advisor-consult` 分支），經 `scripts\Invoke-CodexRun.ps1` 發動的派遣以派遣檔的 `targets` 為範圍，顧問以派遣檔的 `question_ids` 為範圍，不使用 `ScopePlan`。最小單位固定如下。資源派遣使用派遣單第 3 欄的目標物件，舊入口的 `advisor-consult` 使用 evidence pack 內依宣告順序排列的問題 ID。`selected_units` 等於宣告的全部單位，執行端不得自行拆分、增加或改變 `selected_units` 與 `deferred_units`。
+派工範圍由派遣契約明確宣告，額度不改寫範圍。派遣檔以 `targets` 的目標物件為範圍，顧問以派遣檔的 `question_ids` 為範圍，執行端不得自行拆分、增加或改變單位。
 
-低額度或 unknown 都不縮小範圍、不停止執行中的派工。服務端明確拒絕（例如 usage-limit）時，執行端保存已確認成果、證據位置與未完成單位，執行狀態記為失敗，不重試，不以未執行的單位補寫結論。經 `Invoke-CodexDispatch.ps1` 發動的派工保存 `ScopePlan`，所有派工保存 usage，作為成本紀錄。
+低額度或 unknown 都不縮小範圍、不停止執行中的派工。服務端明確拒絕（例如 usage-limit）時，尚無進度者由入口依「離線改派」與 `run.md`「帳號」換 model 或帳號，已有進度者該次執行記為失敗，依 `run.md`「重跑」整筆重跑。兩種情況都不以未執行的單位補寫結論。所有派工保存 usage，作為成本紀錄。
 
-**離線改派**：執行者只分在線與離線，判定離線的唯一來源是服務端拒絕（usage-limit、401、model not supported，以及尚無 item 進度即遭服務端拒絕的其他錯誤），額度數值不參與。帳號由入口腳本依 `machine.json` `codex_accounts` 登記清單動態選擇與更換，主 Agent 不指定 `-CodexHome`；帳號檢查、換帳號與重新登入命令的處理見 `executor-selection` skill「離線與帳號判定」與 `codex-dispatch` skill `references/recovery.md`。
+**離線改派**：執行者只分在線與離線，判定離線的唯一來源是服務端拒絕（usage-limit、401、model not supported，以及尚無 item 進度即遭服務端拒絕的其他錯誤），額度數值不參與。帳號由入口腳本依 `machine.json` `codex_accounts` 登記清單動態選擇與更換，主 Agent 不指定 `-CodexHome`；帳號檢查、換帳號與重新登入命令的處理見 `executor-selection` skill「離線與帳號判定」與 `codex-dispatch` skill `references/run.md`「帳號」。
 
-1. 「全數不可用」只依入口腳本的回報判定：`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable`，或 `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted`。
-2. 全數確認不可用後，依選派入口選出的下一位處置（由同家族執行者審查、改由 Sonnet 承接事實查核，或依 `omitted` 與 `stopped` 的處置略過或停止；經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，沒有 Claude 替代者，`fallback.selection` 必為 `stopped`，停止並回報使用者；不含這兩類操作的測試取證本來就不走 Codex，由呼叫端以 `build-test` 標籤選到 Claude 執行者），各狀態的處置見 `executor-selection` skill「狀態處置」。`Invoke-CodexRun.ps1` 已在結果 JSON 的 `fallback.selection` 附上選派入口的輸出，直接採用，不必重新呼叫；`Invoke-CodexDispatch.ps1` 回報後，由主 Agent 把不可用的 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-advisor`）重新呼叫選派入口。不可用的狀態不保存，下一次新的派工照常先選 Codex。
+1. 「全數不可用」只依入口腳本的回報判定：`Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted`。
+2. 全數確認不可用後，依選派入口選出的下一位處置（由同家族執行者審查、改由 Sonnet 承接事實查核，或依 `omitted` 與 `stopped` 的處置略過或停止；經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，沒有 Claude 替代者，`fallback.selection` 必為 `stopped`，停止並回報使用者；不含這兩類操作的測試取證本來就不走 Codex，由呼叫端以 `build-test` 標籤選到 Claude 執行者），各狀態的處置見 `executor-selection` skill「狀態處置」。`Invoke-CodexRun.ps1` 已在結果 JSON 的 `fallback.selection` 附上選派入口的輸出，直接採用，不必重新呼叫。`fallback` 為 `null` 時，由主 Agent 把不可用的 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-scan,codex-content,codex-advisor`）重新呼叫選派入口。不可用的狀態不保存，下一次新的派工照常先選 Codex。
 3. 依選派結果改由其他執行者承接，是登錄表比對的正常結果，不追加 exceptions；在報告或回報中註明實際執行者與原應承接者。主 Agent 不自行頂替，硬能力（桌面控制、影像產生、瀏覽器與登入測試）沒有替代者時停止並回報使用者。
 
 ### advisor consult 的不限階段掛載點
 
-`advisor` 是意見評估角色。`advise` 由 `scripts\Invoke-CodexRun.ps1` 發動，是 evidence-only 的唯讀諮詢，可由 `Analyst`、`Maintainer` 或主 Agent 在任一站作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。evidence pack 的內容、執行端讀取邊界、檔位綁定、hash 檢查、題號檢查與報告落點依 `codex-dispatch` skill「Advisor consult resource dispatch」。
+`advisor` 是意見評估角色。`advise` 由 `scripts\Invoke-CodexRun.ps1` 發動，是 evidence-only 的唯讀諮詢，可由 `Analyst`、`Maintainer` 或主 Agent 在任一站作為詢問討論的對象。適用條件是推理密集，且判斷資料可事先整理成 evidence pack；大量讀寫、掃描、建置、測試與命令執行類工作不使用 advisor。evidence pack 的內容、執行端讀取邊界、檔位綁定、hash 檢查、題號檢查與報告落點依 `codex-dispatch` skill `references/run.md`「顧問（advise）」。
 
 **諮詢類型**：諮詢分為下列兩類，執行者由登錄表依類型選出，授權要求不同。
 

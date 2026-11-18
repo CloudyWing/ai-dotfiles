@@ -30,7 +30,7 @@
 | `browser-smoke` | 知識型 | agent | 瀏覽器煙霧驗證流程。當需要在修改 Web UI、頁面、路由、表單、互動、樣式、響應式版面或前端狀態後使用瀏覽器驗證，或使用者明確要求檢查畫面、console/network error、互動行為與 UI 修正結果時使用。 |
 | `check-markdown` | 知識型 | human | 當要求檢查 Markdown、修正格式或整理文件時使用。依據專案文件平台修正格式與排版問題。 |
 | `codebase-design` | 知識型 | agent | Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。 |
-| `codex-dispatch` | 知識型 | agent | Codex 派工機制：依派工類型建立執行契約、以 codex exec 啟動 Codex、背景等待、取證並回收結果。當需要發動 codex、撰寫派遣單或執行派遣回收判定時使用。 |
+| `codex-dispatch` | 知識型 | agent | Codex 派工機制：依派工類型建立派遣檔、以 Invoke-CodexRun.ps1 啟動 codex exec、等待並回收結果。當需要發動 codex、撰寫派遣檔或執行派遣回收判定時使用。 |
 | `create-dotnet-project` | 知識型 | agent | 建立新的 .NET 方案：詢問 AI-PROFILE 鍵並寫入，以 slnx 格式建立方案、src 與 tests 實體資料夾及 Solution Folder，再依序產生 .editorconfig、.gitignore、.gitattributes 與專案層設定。Use when 使用者要求建立新的 .NET 方案或專案骨架時；既有專案不適用。 |
 | `csharp-aspnetcore` | 知識型 | agent | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式、API 版本控制、SameSite Cookie 與 Server-Sent Events。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
 | `csharp-auth` | 知識型 | agent | ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。 |

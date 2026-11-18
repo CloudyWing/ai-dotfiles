@@ -1,5 +1,5 @@
 ﻿#Requires -Version 7.0
-# 成本帳追加。格式為 cost-ledger.v2（14 欄），與現行派工入口共用同一份檔案。依賴 00-common.ps1。
+# 成本帳追加。格式為 cost-ledger.v2（14 欄）。依賴 00-common.ps1。
 
 function Add-RunLedgerLine {
     [CmdletBinding()]

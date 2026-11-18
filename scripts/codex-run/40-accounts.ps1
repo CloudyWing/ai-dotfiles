@@ -1,7 +1,6 @@
 ﻿#Requires -Version 7.0
 # 帳號登記、登入檢查、檔位 model、健康狀態與帳號選擇。依賴 00-common.ps1。
-# machine.json、codex-account-health.json、codex-account.lock 位於主 checkout 的 .local，
-# 與現行派工入口共用同一份狀態；本檔只實作格式，不載入現行入口的任何程式。
+# machine.json、codex-account-health.json、codex-account.lock 位於主 checkout 的 .local。
 
 function Resolve-RunMachineConfigPath {
     [CmdletBinding()]

@@ -126,7 +126,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 | 狀態 | 結束碼 | 主 Agent 處置 |
 | --- | --- | --- |
-| `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch`，依 `executor.entry` 讀取對應流程（`scripts/Invoke-CodexRun.ps1` 時讀 `references/run.md` 並以派遣檔發動，不使用 `New-DispatchInputs.ps1`；`scripts/Invoke-CodexDispatch.ps1` 時讀 `references/start.md`），`profile` 取自 `executor.profile`。`unmetPreferences` 含 `family` 時為同家族審查，屬選派的正常結果，不追加 exceptions，在報告註明實際執行者。`skipped` 非空時在報告或回報註明原應承接者 |
+| `selected` | 0 | Claude 執行者以 Agent 工具派生，`model` 取自 `executor.model`；Codex 執行者載入 `codex-dispatch`，讀取 `references/run.md` 並以派遣檔發動，`profile` 取自 `executor.profile`。`unmetPreferences` 含 `family` 時為同家族審查，屬選派的正常結果，不追加 exceptions，在報告註明實際執行者。`skipped` 非空時在報告或回報註明原應承接者 |
 | `needs-user-decision` | 10 | 類型未宣告 `skippable`，候選全部不可選，且至少一位是因未完成次數達上限被略過；其餘候選可能是離線，不代表也達到上限。停止該任務，依 `skipped` 的理由分開回報：`incomplete-limit` 者附未完成紀錄與證據，`offline` 者附服務端拒絕的證據，由使用者決定 |
 | `needs-authorization` | 20 | 輸出 `rules/claude/30-dispatch.md` 規定的 `[advisor 諮詢授權]` 請求，等待使用者當輪回覆 |
 | `omitted` | 21 | 類型宣告 `skippable`，且沒有可選候選（全部離線、未完成次數達上限，或沒有執行者受理）。這項工作不執行，協調者依自己的判斷續行，不向使用者提問，也不改由其他執行者頂替；回報註明未執行與 `skipped` 的原因 |
@@ -139,9 +139,9 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 離線的政策由 `rules/claude/30-dispatch.md`「離線改派」規定，本節補充執行方式。
 
 - 判定離線的唯一來源是服務端拒絕，額度數值不參與。拒絕包含 usage-limit、401、model not supported、rate limit，以及尚無 item 進度即以未分類錯誤終局失敗者。model not supported 表示該帳號的方案不含檔位設定的 model，停用訂閱的帳號也以此訊息呈現，視為該帳號不可用。
-- 派工時不指定 `-CodexHome`。Dispatch 依 `machine.json` `codex_accounts` 登記順序選第一個可用帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。帳號回報 model not supported 後記入帳號健康狀態檔，24 小時內略過該帳號與檔位 model 的組合。細節見 `codex-dispatch` skill「主 Agent 的帳號切換決策」。
+- 派工時不指定 `-CodexHome`。`Invoke-CodexRun.ps1` 依 `machine.json` `codex_accounts` 登記順序選第一個可用帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。帳號回報 model not supported 後記入帳號健康狀態檔，24 小時內略過該帳號與檔位 model 的組合。細節見 `codex-dispatch` skill `references/run.md`「帳號」。
 - 帳號不支援檔位的主要 model 時，`Invoke-CodexRun.ps1` 改用登錄表 `profileSettings.fallbackModels` 中第一個未被記為不支援的備援 model，執行紀錄與結果 JSON 的 `model` 記錄實際使用的 model，`model_source` 記錄它是檔位的主要 model（`primary`）或備援 model（`fallback`）。備援 model 也都不支援時才略過該帳號。
-- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時才手動帶 `-Offline` 呼叫。`Invoke-CodexDispatch.ps1` 回報 `CodexAccountsAllUnavailable` 後，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review` 由 Sonnet 承接，`generate` 回傳 `stopped`，宣告 `skippable` 的類型回傳 `omitted`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，結果必為 `stopped`，沒有 Claude 替代者；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Sonnet。
+- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review` 由 Sonnet 承接，`generate` 回傳 `stopped`，宣告 `skippable` 的類型回傳 `omitted`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，結果必為 `stopped`，沒有 Claude 替代者；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Sonnet。
 - 不可用的狀態不保存，也不採信拒絕訊息附的恢復時間。下一次新的派工不帶 `-Offline`，照常先選 Codex，被拒才再換。
 
 ## Claude 取證者派生契約

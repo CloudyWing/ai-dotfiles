@@ -8,13 +8,13 @@
 
 | 名稱 | 機械定義 | 來源 |
 | --- | --- | --- |
-| `round` | 一次修正連同其驗收或回歸判定為一輪，初次執行為第 1 輪。後續續行各增加 1 輪。Review 與實作修正循環以同一 `cycle_id` 的 `cycle_round` 計；其餘循環以各自保存的計數計 | 交接 prompt、回報或回歸紀錄 |
+| `round` | 一次修正連同其驗收或回歸判定為一輪，初次執行為第 1 輪。後續每次修正各增加 1 輪。Review 與實作修正循環以同一 `cycle_id` 的 `cycle_round` 計；其餘循環以各自保存的計數計 | 交接 prompt、回報或回歸紀錄 |
 | `target-key` | 審查或修正對象的短識別，小寫英數與連字號，例如 `c16-move` | 協調者於循環建立時指定 |
-| `cycle_id` | `<target-key>-c<n>`，`c<n>` 為同一 `target-key` 的循環世代，自 `c1` 起算 | 協調者寫入 Request、派遣單或派生 prompt 的循環標示 |
+| `cycle_id` | `<target-key>-c<n>`，`c<n>` 為同一 `target-key` 的循環世代，自 `c1` 起算 | 協調者寫入派遣檔或派生 prompt 的循環標示 |
 | `cycle_round` | 循環內輪次，語意同 `round` | 同 `cycle_id` |
 | `cycle_role` | `review` 為審查，`fix` 為實作或修正 | 同 `cycle_id` |
 | `area-key` | 同一函式或同一節規則的穩定識別。規則文件使用檔案絕對路徑加最近的 Markdown 標題；檢查清單使用所屬循環與檢查項目區段 | 原始檔案標題、函式位置或驗收清單區段 |
-| `problem-key` | 同一問題跨輪次不變的識別。Review 使用 `F-<三位數>`；Design 與 Demo 使用驗收檢查項目 key；派遣回收使用 `dispatchSlug` 加第 5 欄驗收列序號；Git 使用既有 finding ID 或建立時指定的固定 key | Reviewer 報告、驗收清單、派遣單第 5 欄或 Git 修正紀錄 |
+| `problem-key` | 同一問題跨輪次不變的識別。Review 使用 `F-<三位數>`；Design 與 Demo 使用驗收檢查項目 key；派遣回收使用 `dispatchSlug` 加派遣檔 `## 驗收條件` 的列序號；Git 使用既有 finding ID 或建立時指定的固定 key | Reviewer 報告、驗收清單、派遣單第 5 欄或 Git 修正紀錄 |
 | `closed` | 前輪仍未解決的問題，在本輪相同 key 的驗收結果通過，且本輪沒有該 key 的反證 | 本輪完整驗收輸出與證據 |
 | `new-problem` | 本輪問題 key 不在前輪未解決問題集合，且沒有同一 key 的改寫或重新命名 | 前後輪問題集合比對 |
 | `severity` | `Critical`、`Major`、`Minor`。Review 沿用 `reviewer.toml`；其他循環依檢查項目影響映射 | Reviewer 規則或各循環的嚴重度映射 |
@@ -28,13 +28,13 @@
 - 記為候選：協調者在同線 `cost-ledger.md` 追加 `候選` 列，格式見 `session-artifacts` skill「需求級成本累計」。
 - Design 與 Demo 驗收循環的 `Minor` 一律批次修正，不記為候選，因為設計文件與 Demo 是下游直接使用的輸入。
 - 批次修正的 diff 不適用 `rules/claude/40-workflow.md` Reviewer 必發清單第 1 項。只改措辭、標點、格式，或補寫既有規則的說明文字，沒有改到機制條款時，不觸發新一輪審查；觸及第 2 項，或改到規則檔的機制條款（第 5 項）時，依必發清單另發審查，該審查是新循環的第 1 輪，不是原循環的複審。
-- 派遣回收的驗收列與 Git 回歸矩陣仍是放行門檻，全部成立才進入下一站。驗收列的 `Minor` 補件由協調者依小型門檻收尾，超過門檻時退回執行端補件，兩者都不增加 `recovery-round`。Git 回歸矩陣只剩 `Minor` 列失敗時，以一次批次修正處理後重跑同一份矩陣，不增加 `round`，細節見 `git-workflow` skill 第三層。
+- 派遣回收的驗收列與 Git 回歸矩陣仍是放行門檻，全部成立才進入下一站。驗收列的 `Minor` 補件由協調者依小型門檻收尾，超過門檻時退回執行端補件。Git 回歸矩陣只剩 `Minor` 列失敗時，以一次批次修正處理後重跑同一份矩陣，不增加 `round`，細節見 `git-workflow` skill 第三層。
 
 ### 循環識別與重新起算
 
 適用對象為有 `cycle_id` 的 Review 與實作修正循環。Design、Demo、派遣回收與 Git 修正循環的範圍變動依判定順序 5 停止並升級，不套用本節。
 
-協調者在循環建立時指定 `cycle_id`，每一輪在 Request、派遣單第 4 欄或派生 prompt 標示 `cycle_id`、`cycle_round` 與 `cycle_role`。原循環尚未以判定順序 1 結束，且下列任一變動成立時，原循環停止累計，改以新循環從第 1 輪重新起算。
+協調者在循環建立時指定 `cycle_id`，每一輪在派遣檔或派生 prompt 標示 `cycle_id`、`cycle_round` 與 `cycle_role`。原循環尚未以判定順序 1 結束，且下列任一變動成立時，原循環停止累計，改以新循環從第 1 輪重新起算。
 
 | 變動類型 | 判定 |
 | --- | --- |
@@ -55,4 +55,4 @@ Sonnet 審查與 Claude 實作路徑沒有 RunRecord，協調者仍在派遣單�
 
 收斂判定的執行順序與停止門檻見 `rules/claude/40-workflow.md`「Workflow 自動推進鏈與共同收斂契約」。
 
-`RecoveryPrecheck` 未通過的 `PromptNotDelivered` 屬啟動契約錯誤。先修正啟動條件，再重新派遣；此狀態不計入派遣回收計數。純技術的報告欄位缺漏、驗收輸出缺漏與格式錯誤直接進入自動補件路徑，不形成使用者詢問站點。`dispatch-return-count` 與 Git 的 `return-count` 分開保存、分開增加、分開判定，任一循環的成功或續行都不重設另一循環的計數。
+純技術的報告欄位缺漏、驗收輸出缺漏與格式錯誤直接進入自動補件路徑，不形成使用者詢問站點。`dispatch-return-count` 與 Git 的 `return-count` 分開保存、分開增加、分開判定，任一循環的成功或續行都不重設另一循環的計數。

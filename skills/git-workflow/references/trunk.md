@@ -12,7 +12,7 @@
 | --- | --- |
 | `main` | 允許，適用本體「線分支與獨立 worktree」判定為直接在整合分支的工作 |
 | 本線的 `feature/<lineSlug>` | 允許 |
-| 其他分支（`backup/*`、`dispatch/*`、其他線的 `feature/*`）或 detached HEAD | 停止回報，不 commit |
+| 其他分支（`backup/*`、其他線的 `feature/*`）或 detached HEAD | 停止回報，不 commit |
 
 ## 啟動 Workflow 檢查
 

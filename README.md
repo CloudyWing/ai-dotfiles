@@ -185,7 +185,7 @@ claude plugin install line-status-board@ai-agents-local --scope user
 
 #### Windows 長路徑
 
-派工 worktree 內的 NuGet 套件路徑可能超過 260 字元。執行 `Setup-AIGlobalConfig.ps1` 時會檢查 Windows 的 `LongPathsEnabled`，也可在 PowerShell 中查詢：
+線工作樹內的 NuGet 套件路徑可能超過 260 字元。執行 `Setup-AIGlobalConfig.ps1` 時會檢查 Windows 的 `LongPathsEnabled`，也可在 PowerShell 中查詢：
 
 ```powershell
 Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name LongPathsEnabled
@@ -199,7 +199,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 
 #### Codex profile 檔位設定
 
-1. 派工使用的檔位清單以 `scripts/dispatch/executor-registry.json` 為準，不在本文件另列。現行清單與各檔位的設定用 `pwsh -NoProfile -File scripts\Select-DispatchExecutor.ps1 -Describe` 查詢（各 Codex 執行者的 `profile` 與 `profileSettings`）。派工以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。未指定 home 時，`machine.json` 登記清單非空則由腳本依登記順序選第一個可用帳號（已登入、檔位設定檔齊備、專案信任可用，且未被記為不支援該檔位 model），清單為空才預設 `~/.codex`。審查類使用的 `scripts/Invoke-CodexRun.ps1` 不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`；選定帳號後、啟動 Codex 前，另比對實際要使用的帳號的檔位設定檔：必須是指向主 checkout 產生檔的 Symbolic Link 且內容相同（一般檔案即使內容相同也不通過，不允許單機覆寫），入口所在工作樹的登錄表設定也必須已落地到主 checkout。不一致時以結束碼 2（`CodexProfileDrift`）停止，列出每行可直接貼到 pwsh 的修正命令，不自行改檔，也不跳到下一個帳號；所有已登入帳號的檔位檔都缺失時同樣以此方式回報，不會被當成帳號全數不可用；換帳號後對新的候選帳號在使用前再比對一次，未使用的候選帳號不一致不阻擋。Request 必須指定 `profile`；指定 `default`、缺少 `profile` 或設定檔不存在時在啟動前拒絕。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md` 與 `executor-selection` skill。
+1. 派工使用的檔位清單以 `scripts/dispatch/executor-registry.json` 為準，不在本文件另列。現行清單與各檔位的設定用 `pwsh -NoProfile -File scripts\Select-DispatchExecutor.ps1 -Describe` 查詢（各 Codex 執行者的 `profile` 與 `profileSettings`）。派工以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。`scripts/Invoke-CodexRun.ps1` 依 `machine.json` 登記順序選第一個可用帳號（已登入、檔位設定檔齊備，且未被記為不支援該檔位 model），不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`；選定帳號後、啟動 Codex 前，另比對實際要使用的帳號的檔位設定檔：必須是指向主 checkout 產生檔的 Symbolic Link 且內容相同（一般檔案即使內容相同也不通過，不允許單機覆寫），入口所在工作樹的登錄表設定也必須已落地到主 checkout。不一致時以結束碼 2（`CodexProfileDrift`）停止，列出每行可直接貼到 pwsh 的修正命令，不自行改檔，也不跳到下一個帳號；所有已登入帳號的檔位檔都缺失時同樣以此方式回報，不會被當成帳號全數不可用；換帳號後對新的候選帳號在使用前再比對一次，未使用的候選帳號不一致不阻擋。派遣檔的 `profile` 與 `task_type` 不符時在啟動前停止。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md` 與 `executor-selection` skill。
 2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。這些值寫在 `scripts/dispatch/executor-registry.json` 各 Codex 執行者的 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort`），不手動編輯設定檔。`profileSettings` 另可選填 `fallbackModels`，列出帳號不支援主要 model 時依序改用的 model；`Invoke-CodexRun.ps1` 以 `-c model=` 套用，產生檔只以註解列出這份清單。`profileSettings` 也可選填 `mcpServers`（目前只有測試取證檔位 `scan`：`playwright` 與 `flaui-mcp`），產生檔輸出 `[mcp_servers.*]` 表，核准模式固定 `approve`，以 `enabled_tools` 限制可用工具；省略 `command` 的伺服器（`flaui-mcp`，路徑因機器而異）由 Setup 從 Codex Desktop 的 `config.toml` 讀取 `command` 後，以 `enabled = false` 追加到各派工帳號的 `config.toml`，`-Check` 檢查該項目。`effort` 與 `subagentEffort` 必須在登錄表的 `codexEfforts` 清單內（`max` 需要 Codex 0.147 以上，見 §8）。
 
    ```toml
@@ -214,8 +214,8 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 3. 每個檔位的設定寫在各自的 `<檔位>.config.toml`。執行時先載入 Codex home 的 `config.toml`，再疊加所選檔位的設定。`config.toml` 內的 `[profiles.*]` 屬 legacy 格式。
 4. 登錄表是檔位名稱與設定的唯一來源，增減檔位或調整 model 與推理強度只改登錄表。`.githooks/pre-commit` 以 `-FromIndex` 呼叫 `.githooks/Update-CodexProfiles.ps1`，依暫存區內的登錄表產生 `scripts/codex-profiles/<檔位>.config.toml` 並暫存，這些產生檔進版控，檔首註明請勿手改。需要手動重產生時執行 `pwsh -NoProfile -File .githooks\Update-CodexProfiles.ps1`，加 `-Check` 只比對不寫檔。
 5. Setup 只處理帳號目錄：先確認 repo 內的產生檔與登錄表一致（不一致就停止並說明要先重新產生），再對 `machine.json` 登記的每個派工帳號，缺少的檔位檔建成指向本 repo `scripts/codex-profiles/` 同名產生檔的 Symbolic Link，已正確者略過。帳號目錄已有一般檔案或指向別處的連結時，Setup 不覆蓋，列出狀態與要執行的命令，結束碼為 1。不允許單台電腦覆寫檔位設定，要改設定就改登錄表。逐項建立連結時中途失敗，已建立的連結保留（它們是正確狀態），修正原因後重跑 Setup 即可補完。
-6. 沒有登記任何派工帳號時，舊入口 `Invoke-CodexDispatch.ps1` 回退使用 `~/.codex`，而 Setup 不再替 `~/.codex` 建立檔位設定檔。此情形需先以 `scripts\New-CodexDispatchAccount.ps1` 登記派工帳號，或自行在 `~/.codex` 準備檔位設定檔。
-7. `~/.codex` 是 Codex Desktop 自己的目錄。已登記派工帳號且各帳號目錄的連結都已指向 repo 產生檔時，派工不再讀取其中的現行檔位設定檔，Setup 逐檔列出可自行執行的 `Remove-Item -LiteralPath` 命令，不自動刪除。沒有登記派工帳號時，舊入口回退使用這些檔案，不要移除。已退役的檔位名稱列在登錄表的 `retiredProfiles`，這些名稱的殘留檔無論如何都不再被讀取，Setup 同樣逐檔列出移除命令。
+6. 沒有登記任何派工帳號時，`Invoke-CodexRun.ps1` 以結束碼 4 與 `CodexAccountsNotRegistered` 停止，Setup 也不替 `~/.codex` 建立檔位設定檔。此情形需先以 `scripts\New-CodexDispatchAccount.ps1` 登記派工帳號。
+7. `~/.codex` 是 Codex Desktop 自己的目錄。已登記派工帳號且各帳號目錄的連結都已指向 repo 產生檔時，派工不再讀取其中的現行檔位設定檔，Setup 逐檔列出可自行執行的 `Remove-Item -LiteralPath` 命令，不自動刪除。已退役的檔位名稱列在登錄表的 `retiredProfiles`，這些名稱的殘留檔無論如何都不再被讀取，Setup 同樣逐檔列出移除命令。
 
 #### 獨立 Codex 帳號目錄
 
@@ -227,11 +227,11 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 .\scripts\New-CodexDispatchAccount.ps1 -Name account-a
 ```
 
-在 PowerShell 提示字元直接執行。派工時會自動把派遣的專案加入該帳號的信任清單，建立帳號時不必列出專案。`-ProjectPath` 為選填，用於預先信任專案，例如 `-ProjectPath 'C:\Users\<使用者>\.ai-agents'`。
+在 PowerShell 提示字元直接執行。`Invoke-CodexRun.ps1` 不做專案信任預檢，也不自動補信任。`-ProjectPath` 為選填，用於預先信任專案，例如 `-ProjectPath 'C:\Users\<使用者>\.ai-agents'`。
 
-帳號已存在時重跑只補缺少的部分，不覆寫既有設定；之後新增專案不需要重跑。設定不符時，腳本列出問題與修法，不留下做一半的狀態。加上 `-WhatIf` 可預覽而不寫入。建立 Symbolic Link 權限不足時，改以具備建立 Symbolic Link 權限的 PowerShell 重新執行。
+帳號已存在時重跑只補缺少的部分，不覆寫既有設定；之後要預先信任新專案時，以 `-ProjectPath` 重跑。設定不符時，腳本列出問題與修法，不留下做一半的狀態。加上 `-WhatIf` 可預覽而不寫入。建立 Symbolic Link 權限不足時，改以具備建立 Symbolic Link 權限的 PowerShell 重新執行。
 
-`config.toml` 的最小內容為 `[windows]` 段。`[projects.'<小寫的專案絕對路徑>']` 由派工時自動補上，或由 `-ProjectPath` 預先加入。下例為補上一個專案信任後的內容。
+`config.toml` 的最小內容為 `[windows]` 段。`[projects.'<小寫的專案絕對路徑>']` 由 `-ProjectPath` 預先加入。下例為加入一個專案信任後的內容。
 
 ```toml
 [windows]
@@ -287,10 +287,8 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 ## 5. Scripts 與命名慣例
 
 - `scripts/` 根目錄只放使用者可直接執行的 Verb-Noun `.ps1` 與既有 `.csx` 腳本。
-- `scripts/Get-DispatchProgress.ps1` 唯讀查詢派遣進度，可依 `LineSlug` 或 `DispatchSlug` 篩選；預設顯示未結束與最近 24 小時內結束的項目。
 - `scripts/Get-LineStatus.ps1` 唯讀彙整線狀態、Git 狀態、額度與 `Invoke-CodexRun.ps1` 的執行紀錄。
 - `scripts/Select-DispatchExecutor.ps1` 依任務標註與 `scripts/dispatch/executor-registry.json` 選出派工執行者並輸出 `[派工]` 判定行，唯讀、不呼叫網路。
-- `scripts/New-DispatchInputs.ps1` 產生資源派遣（唯讀）的輸入，一次寫出 Request、`line.json`（不存在時）、prompt 與派遣單，並以 `Invoke-CodexDispatch.ps1 -Operation Dispatch -ValidateOnly` 自檢；自檢失敗時刪除本次建立的檔案，新建的 `line.json` 保留。
 - `scripts/Invoke-CodexRun.ps1` 對一份派遣檔執行一次 `codex exec`，目前用於審查、事實校閱、影像產生、測試取證與顧問，啟動前比對帳號目錄的檔位設定檔與 repo 產生檔。帳號由 `machine.json` 登記清單選擇，讀取主 checkout 的 `.local/machine.json`，在線工作樹發動時相同。專案信任的處理見 `skills/codex-dispatch/references/run.md` 的「帳號」章節。
 - `scripts/Test-CodexReviewReport.ps1` 檢查審查報告的 finding 清單，`valid` 為 `false` 時結束碼為 1。
 - `scripts/Write-ClaudeRunRecord.ps1` 為 Claude 審查者（subagent）的一次審查在 `runs\` 寫出與 Codex 同位置的執行紀錄：`-Action Start` 保存派生前的來源狀態，`-Action End` 判定 `source_changed` 與報告檢查並補完紀錄；紀錄沒有 token 用量，`Get-LineCost.ps1` 標示後不計入合計。
@@ -300,14 +298,12 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
 - `scripts/Get-LineCost.ps1` 唯讀彙整一條線的成本並輸出 JSON：`runs\*.record.json`（含 Claude 審查者的紀錄，標示無 token 用量）與 `cost-ledger.md` 事件列的 Codex 執行次數、model、token、結果與耗時；Claude 用量只在以 `-ClaudeSessionId` 或 `-ClaudeTranscriptPath` 指定時重用 `Get-ClaudeSessionUsage.ps1` 計算，否則為 null 並附原因。
 - `scripts/Setup-AIGlobalConfig.ps1` 建立各工具的 symlink 與 Git Hook 設定，見「安裝」與 §3。
-- `scripts/Invoke-CodexDispatch.ps1` 是 Codex 資源派遣的入口，由 `codex-dispatch` skill 呼叫。
-- `scripts/New-DispatchOrder.ps1` 依參數產生派遣單 Markdown 並驗證驗收命令。
 - `scripts/New-CodexDispatchAccount.ps1` 建立派工帳號，見 §3。
 - `scripts/Ensure-AiContextArtifacts.ps1` 依來源指紋決定是否重產 `.local/ai-context/` 的索引產物，並呼叫 `Export-ApiSurface.csx`、`Export-TypeHierarchy.csx` 與 `Export-ProjectGraph.csx`。
 - `scripts/Export-CommentVocabularyCandidates.csx` 唯讀掃描 `.cs`，輸出資料庫註解語彙候選 JSON，由 `database-comment-generator` skill 使用。
-- 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`；派工測試入口位於 `scripts/tests/Test-DispatchRecoveryBinding.ps1`。
+- 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`。
 - `scripts/tests/Test-CodexRunAll.ps1` 執行 `Invoke-CodexRun.ps1` 的全部測試，不呼叫 Codex 服務端。`scripts/tests/Invoke-CodexRunLive.ps1 -Scenario review|failover` 以真實 Codex 驗證一筆審查與一筆換帳號，加上 `-DryRun` 只列出將執行的內容，不加 `-DryRun` 會呼叫 Codex 服務端並消耗額度。
-- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-NewDispatchInputs.ps1`（輸入產生器）、`Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-TurnGuardHook.ps1`、`Test-DocLocalPathCheck.ps1` 與 `Test-PostEditWriteHook.ps1`（其餘三個 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）、`Test-SetupCheck.ps1`（Setup 的 `-Check` 唯讀檢查）與 `Test-DispatchStartHandleInheritance.ps1`（啟動時不繼承呼叫端的標準輸出入 handle）。
+- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-TurnGuardHook.ps1`、`Test-DocLocalPathCheck.ps1` 與 `Test-PostEditWriteHook.ps1`（其餘三個 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-SetupCheck.ps1`（Setup 的 `-Check` 唯讀檢查）。
 - hook 的四個 PowerShell 測試經 `claude-plugins/ai-agents-hooks/tests/run-hook.ts` 執行 `hooks/core/` 的判定邏輯，需要 PATH 上有 Node.js 22.18 以上（可直接執行 `.ts`）；Node.js 只用於測試，外掛執行時不需要。
 - `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts`、`render.test.tsx` 與 `dispatch.test.tsx` 三個測試檔，`claude-plugins/ai-agents-hooks/tests/` 有 `register.test.ts`，皆從 `claude-code/testing` 匯入，以 `claude plugin test <plugin 目錄>` 執行。
 - `claude-plugins/` 內的檔案使用全小寫 kebab-case 命名。

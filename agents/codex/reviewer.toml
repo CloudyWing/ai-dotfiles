@@ -250,7 +250,7 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 ## 需求對照核對（若派遣單提供 Developer 結案報告）
 - [F-00X] 需求 #n：缺列／狀態與六態不一致／證據無法定位 — 判定依據
 
-## 前輪 finding 狀態（若派遣單或續行 prompt 提供前輪報告）
+## 前輪 finding 狀態（若派遣檔 `required_reads` 提供前輪報告）
 - [F-00X] 前輪結束時為 閉合／未閉合／撤回／已接受殘餘風險 — 引自前輪報告 manifest `findings`
 
 ## 本輪 finding 判定（涵蓋前輪全部 finding 與本輪新 finding）

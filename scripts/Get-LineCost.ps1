@@ -7,7 +7,7 @@
 .DESCRIPTION
 Codex 端取自兩個既有來源，不推算：
 1. report\<lineSlug>\runs\*.record.json（Invoke-CodexRun.ps1 的執行紀錄，含 model、結果、耗時與 usage）。
-2. report\<lineSlug>\cost-ledger.md 的 `事件` 列（含舊入口 Invoke-CodexDispatch.ps1 的 Inspect 追加列）。
+2. report\<lineSlug>\cost-ledger.md 的 `事件` 列。
    只採計 runId 不在 1 的紀錄中的列，這些列沒有 model，model 輸出 null。
 
 事件列備註的 usage_basis 為 cumulative-no-anchor 時，該列的 token 是 Codex thread 的累計值，

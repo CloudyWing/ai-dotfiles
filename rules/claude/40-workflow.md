@@ -23,7 +23,7 @@
 
 ## Reviewer 派遣發動判準
 
-Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，不得默默略過，接著進入需求意圖驗收。不發理由的紀錄用於補償「該做的事沒做且無人察覺」的失效模式。派遣單第 6 欄使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit；派遣單第 7 欄的 dispatch 報告檔、執行角色規則檔指定的同線固定報告，以及 `<work-root>/.local/ai-sessions/report/<lineSlug>/exceptions.md`，為經 `scripts\Invoke-CodexDispatch.ps1` 發動的派遣共用的明文寫入例外。經 `scripts\Invoke-CodexRun.ps1` 發動的審查者，以及以 Agent 工具派生的 Claude 審查者，都只能寫入該次審查的輸出目錄，例外寫在報告的 `## 例外回報` 節，由主 Agent 回收後併入 `exceptions.md`。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
+Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 Agent 直接建立派遣單並派出 Reviewer，不詢問使用者。未命中時，主 Agent 以一句話記錄不發理由，不得默默略過，接著進入需求意圖驗收。不發理由的紀錄用於補償「該做的事沒做且無人察覺」的失效模式。派遣檔 `## 邊界` 使用「唯讀」時，「唯讀」定義為不得修改目標物件、不得執行建置與測試、不得建立 commit。經 `scripts\Invoke-CodexRun.ps1` 發動的審查者，以及以 Agent 工具派生的 Claude 審查者，都只能寫入該次審查的輸出目錄，例外寫在報告的 `## 例外回報` 節，由主 Agent 回收後併入 `exceptions.md`。需要完全不寫入任何檔案的任務，另用「不產生任何檔案寫入」描述。
 
 **必發清單（命中任一即發）**：
 
@@ -66,7 +66,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 
 `Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，經 `scripts\Invoke-CodexRun.ps1` 發動者不設並行上限。
 
-Reviewer 回收後，設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。Reviewer 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`、同線 `requirement-summary.md`、Developer 結案報告（若有）與前輪報告，不自行修改程式碼、執行建置或測試；第 4 欄的檔案清單與回收程序見 `workflow-orchestration` skill `references/review-procedures.md`「Reviewer 派遣單與回收」。
+Reviewer 回收後，設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。Reviewer 只讀取派遣檔、指定目標，以及派遣檔 `required_reads` 指定的 `design.md`、同線 `requirement-summary.md`、Developer 結案報告（若有）與前輪報告，不自行修改程式碼、執行建置或測試；`required_reads` 的檔案清單與回收程序見 `workflow-orchestration` skill `references/review-procedures.md`「Reviewer 派遣單與回收」。
 
 ## Workflow 自動推進鏈與共同收斂契約
 

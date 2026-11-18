@@ -14,8 +14,8 @@ policy.allow_implicit_invocation: true
 Agent 執行任務產生的檔案依用途分為下列七類，存放於固定目錄。
 
 - **線層交接檔與固定報告**：線登記資料、需求摘要與設計文件分別存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/line.json`、`<work-root>/.local/ai-sessions/handoff/<lineSlug>/requirement-summary.md` 與 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`。執行者轉移的交接單存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/escalation-handoff-<序號>.md`，轉移前的舊 diff 存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/escalation-prior-diff-<序號>.patch`。Developer 結案、交接檢查點、跨線全貌文件 `coordination-overview.md`（見「跨線全貌文件」）、Reviewer、未解驗證、Frontend Reviewer、Contract Auditor、Architecture Review、Cleanup Review、fact-check、文件同步（`doc-sync-report.md`、`doc-edit-report.md`、`survey-doc-sync-consistency.md`）、`cost-ledger.md` 與例外紀錄存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/`。寫入前依 `instructions.md` §1.4「工作產物落點」取得已驗證的 `LineContext`。
-- **派遣單與報告**：資源派遣單存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/dispatch-order-<dispatchSlug>.md`，回收報告存入 `<work-root>/.local/ai-sessions/report/dispatch-report-<dispatchSlug>.md`。`dispatchSlug` 識別單次派遣，與識別線的 `lineSlug` 分屬不同名稱空間。派遣單屬單次任務交接檔，派遣報告屬人員閱讀的報告。由 `scripts/Invoke-CodexRun.ps1` 發動的派遣，派遣檔存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/run-order-<dispatchSlug>.md`，每次執行的產物存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/runs/`，含輸出目錄 `<runKey>/`（報告在其中）、`<runKey>.record.json`、`<runKey>.events.jsonl`、`<runKey>.stderr.txt` 與 `<runKey>.last-message.md`，屬保留性質。
-- **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/<lineSlug>/` 與 `<work-root>/.local/ai-sessions/backups/`。跨平台派工的事件流 `<work-root>/.local/ai-sessions/history/codex-exec-<yyyyMMdd_HHmmss>.jsonl` 與 thread id 檔 `<work-root>/.local/ai-sessions/history/codex-thread-<dispatchSlug>.txt` 存入 `history/`。腳本換帳號的摘要檔 `<work-root>/.local/ai-sessions/history/<lineSlug>/dispatch-account-failover-<dispatchSlug>.json` 與衍生 Request `<work-root>/.local/ai-sessions/history/<lineSlug>/dispatch-request-<dispatchSlug>-r<n>.json` 同樣存入 `history/`。
+- **派遣檔與報告**：`dispatchSlug` 識別單次派遣，與識別線的 `lineSlug` 分屬不同名稱空間。派遣檔存入 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/run-order-<dispatchSlug>.md`，每次執行的產物存入 `<work-root>/.local/ai-sessions/report/<lineSlug>/runs/`，含輸出目錄 `<runKey>/`（報告在其中）、`<runKey>.record.json`、`<runKey>.events.jsonl`、`<runKey>.stderr.txt` 與 `<runKey>.last-message.md`，屬保留性質。
+- **跨 Session 脈絡紀錄**：耐久的環境前置作業、已知陷阱與覆寫備份分別存入 `CONTEXT.local.md`、`<work-root>/.local/ai-sessions/history/<lineSlug>/` 與 `<work-root>/.local/ai-sessions/backups/`。
 - **專案規範**：換機器仍適用的 `AGENTS.md`、`CLAUDE.md`、`GLOSSARY.md` 與 `docs/adr/` 存放於專案原本的規範位置，不歸入 `.local/`。
 - **過程性可棄**：一次性腳本、終端輸出、日誌與暫存下載存入 `<work-root>/.local/ai-sessions/scratch/`。
 - **需保留非交付**：整合任務素材、截圖、樣式基準、Demo 畫面與測試環境資料檔分別存入 `<work-root>/.local/ai-sessions/inputs/`、`screenshots/`、`style-baselines/`、`ui-demo/` 與 `test-context/test-context.md`。測試取證的截圖在派遣的輸出目錄內產生，收下後把需要保留的複製到 `screenshots/`。測試環境資料檔的建立與使用見「測試環境資料檔」。
@@ -106,7 +106,7 @@ Agent 執行任務產生的檔案依用途分為下列七類，存放於固定�
 - **驗收方向**：各項目的完成判斷依據。
 - **Workflow 深度**：本線的有效深度，解析優先序依 `rules/claude/40-workflow.md`「Workflow 深度」，升級判定在使用者確認需求摘要前完成。
 
-程式面與功能面兩欄各自使用 `## 程式面項目` 與 `## 功能面項目` 二級標題，各出現恰好一次。節內只能是一個 `| # | 項目 | 內容 |` 表格，`#` 欄為純數字編號，兩節合併後不得重複；表格前後不得有說明段落、清單或其他表格，補充說明寫在「需求背景」或其他欄位。沒有項目的一節保留標題，節內只寫一行「無」。驗收方向寫入「內容」欄的完整句子，不另加第四欄，表頭第三欄不得改名。`Architect` 的 `〔需求 #n〕` 標註、Developer 的「需求對照」節與派工腳本的結構核對都以此編號為鍵。寫入後以 `scripts\Invoke-CodexDispatch.ps1` 內的 `Get-RequirementIdsFromSummary` 解析一次，確認回傳的編號與預期一致；解析失敗時依錯誤訊息修正後重新解析。
+程式面與功能面兩欄各自使用 `## 程式面項目` 與 `## 功能面項目` 二級標題，各出現恰好一次。節內只能是一個 `| # | 項目 | 內容 |` 表格，`#` 欄為純數字編號，兩節合併後不得重複；表格前後不得有說明段落、清單或其他表格，補充說明寫在「需求背景」或其他欄位。沒有項目的一節保留標題，節內只寫一行「無」。驗收方向寫入「內容」欄的完整句子，不另加第四欄，表頭第三欄不得改名。`Architect` 的 `〔需求 #n〕` 標註、Developer 的「需求對照」節與主 Agent 的結構核對都以此編號為鍵。
 
 `## Workflow 深度` 節固定為下列三行，深度值只能是 `full` 或 `light`：
 

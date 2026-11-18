@@ -1,10 +1,10 @@
 # 單次執行入口（Invoke-CodexRun）
 
-選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用審查（`Reviewer`、`Frontend Reviewer`、`Contract Auditor`）、事實校閱、影像產生、測試取證（`test`）與顧問諮詢（`advise`）。`executor.entry` 為其他值時依 `start.md`。
+選派入口輸出的 `executor.entry` 為 `scripts/Invoke-CodexRun.ps1` 時依本檔執行，適用審查（`Reviewer`、`Frontend Reviewer`、`Contract Auditor`）、事實校閱、影像產生、測試取證（`test`）與顧問諮詢（`advise`）。
 
 一次發動是一個 `codex exec` 行程，直接在線工作樹執行。命令在 MXC 沙盒內只能讀取工作目錄、`~\.ai-agents` 與線的報告目錄（影像產生另加選定帳號的 `generated_images`；顧問不開放這些目錄，只能讀寫輸出目錄，另以檔案單位唯讀開放專案說明檔），只能寫入該次執行的輸出目錄，讀不到 `.env`、`.env.*`、`*.pem`、`*.key`、`secrets.*`。失敗時整筆重跑，沒有續行。
 
-本入口不使用 `New-DispatchInputs.ps1`、`New-DispatchOrder.ps1`、Request JSON、Preflight、Prepare、Inspect、Collect 與 Cleanup。本檔自成一體，發動、等待與回收不需要再讀 `start.md`、`execution.md`、`collect.md` 與 `recovery.md`。
+本檔自成一體，發動、等待與回收以本檔為準，回收判定的共用部分見 `collect.md`「回收三態判定」。
 
 ## 發動
 
@@ -186,11 +186,3 @@
 ## 重跑
 
 重跑使用同一份派遣檔與同一個 `dispatch_slug`，入口以時間戳與隨機碼區分每次執行，不會覆寫前一次的輸出。逾時的執行已由入口終止並寫入結果，直接重跑。主 Agent 手動終止背景命令時，執行紀錄沒有結束時間，不影響下一次發動。
-
-## 切回現行入口
-
-把登錄表對應執行者的 `entry` 改回 `scripts/Invoke-CodexDispatch.ps1` 後，選派結果即指向現行入口。
-
-- `codex-review`：現行入口的 Collect 檢查的是舊格式的審查報告，`reviewer.toml`、`frontend-reviewer.toml` 與 `contract-auditor.toml` 目前只產出新格式，切回時需一併還原三份的報告格式。
-- `codex-scan`：現行入口在 dispatch worktree 內以可寫沙盒建置、測試與截圖，不掛 MCP。切回時一併把登錄表 `codex-scan` 的 `build-test` 標籤加回，並還原 `integration-verify`、`browser-smoke`、`desktop-smoke` 與 `api-smoke` 的派遣分界。
-- `codex-content`：事實校閱與影像產生一起切回。`fact-check-note` skill「派遣發動」需一併還原為現行入口的派遣單寫法（唯讀 sandbox、`--search` 由 Request 指定、報告落點為派遣單第 7 欄）。

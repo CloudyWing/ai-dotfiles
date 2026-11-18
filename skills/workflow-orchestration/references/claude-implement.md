@@ -22,7 +22,7 @@ Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` �
 
 ## 主 Agent 核對
 
-`Invoke-CodexDispatch.ps1 -Operation Collect -DispatchKind workflow` 不可用於 Claude 實作報告。`scripts/dispatch/collect-contract.ps1` 的 `Invoke-Collect` 除 `Preflight` 之外，必須提供 worktree 的 `DispatchRoot` 與 `BaseSha`，並經 `Resolve-DispatchBaselineBinding` 讀取 dispatch baseline 檔，Claude 實作路徑沒有 dispatch worktree 與 baseline。因此主 Agent（可交覆核取證助手）依 `templates/dispatch/closure-report.md` 註解列出的三項檢查，加上範圍與驗證證據，逐項核對下列六項；修正輪另核對第 7 項。
+主 Agent（可交覆核取證助手）依 `templates/dispatch/closure-report.md` 註解列出的三項檢查，加上範圍與驗證證據，逐項核對下列六項；修正輪另核對第 7 項。
 
 1. 「需求對照」節唯一，表格固定 6 欄且每欄非空，狀態限「已交付」「部分交付」「未交付」「排除（design.md §8）」，欄內 `|` 已跳脫。
 2. 表格涵蓋 `requirement-summary.md` 的全部編號且不重複。部分 Phase 由主 Agent 執行時，主 Agent 執行的需求編號列於表格後緊接的一行 `範圍外（本輪不要求交付）：#…`，中間不留空行；表格與範圍外編號的聯集等於全部編號。
@@ -54,4 +54,3 @@ Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` �
 - 回收判定為「收下」後立即執行，不等審查與需求意圖驗收。依報告「Phase 對照」節逐 Phase 暫存指名路徑並建立 commit，commit 落在符合 `git-workflow` 註記模式的來源分支，commit 訊息依 `generate-commit` skill；依 `design.md` 的 Phase 宣告順序回收，同檔橫跨多個 Phase 時沿用「歸入最早 Phase」。
 - 來源分支為線分支時不需授權。來源分支為整合分支時 commit 即落地，不需授權，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。
 - 審查退回的修正與文件同步的改動，回收並覆核後由 `generate-commit` 步驟 4 建立 `fixup!` commit。每個 Phase 一筆 commit 的最終形態由 `git-workflow` skill「整理流程」收合 `fixup!` 達成，整理時點依模式檔。
-- Claude 實作路徑沒有 dispatch worktree，不呼叫 `Cleanup`。
