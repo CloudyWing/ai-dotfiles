@@ -7,6 +7,9 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $scriptsRoot = Split-Path -Parent $PSScriptRoot
 . (Join-Path $scriptsRoot 'New-CodexDispatchAccount.ps1')
+. (Join-Path $scriptsRoot 'dispatch/common-runtime.ps1')
+. (Join-Path $scriptsRoot 'dispatch/git-baseline.ps1')
+. (Join-Path $scriptsRoot 'dispatch/dispatch-evidence.ps1')
 
 $script:failed = 0
 $script:passed = 0
@@ -204,6 +207,59 @@ try {
         $null -ne $exception -and [string]$exception.Data['reasonCode'] -ceq 'CodexAccountConfigChanged' -and [IO.File]::ReadAllText($path) -ceq 'external' -and $leftover -eq 0
     }
 
+    # ---------- Read-CodexAccountConfiguration（Setup 與 setup-check 的帳號登記讀取）----------
+    function NcReadAccounts {
+        param([string]$MachineJson, [switch]$NoFile)
+        $dir = NcNewDir -Name 'machine'
+        $path = Join-Path $dir 'machine.json'
+        if (-not $NoFile) { [IO.File]::WriteAllText($path, $MachineJson, $utf8NoBom) }
+        $result = $null
+        $exception = $null
+        try { $result = @(Read-CodexAccountConfiguration -MachineConfigPath $path) } catch { $exception = $_.Exception }
+        return [pscustomobject]@{ result = $result; exception = $exception; dir = $dir }
+    }
+    function NcMachineJson {
+        param([object[]]$Accounts, [string]$Schema = 'ai-agents.machine.v1')
+        return (ConvertTo-Json -InputObject ([ordered]@{ schema = $Schema; codex_accounts = @($Accounts) }) -Depth 5)
+    }
+    Test-Case 'R01 Read-CodexAccountConfiguration 合法登記回傳名稱與帳號目錄，檔案不存在或沒有 codex_accounts 時回傳空' {
+        $home1 = NcNewDir -Name 'acct-a'
+        $home2 = NcNewDir -Name 'acct-b'
+        $ok = NcReadAccounts -MachineJson (NcMachineJson -Accounts @([ordered]@{ name = 'unreal-wing'; codex_home = $home1 }, [ordered]@{ name = 'cloudy-wing'; codex_home = $home2 }))
+        $noFile = NcReadAccounts -NoFile
+        $noAccounts = NcReadAccounts -MachineJson '{ "schema": "ai-agents.machine.v1" }'
+        $null -eq $ok.exception -and $ok.result.Count -eq 2 -and $ok.result[0].name -ceq 'unreal-wing' -and $ok.result[0].codex_home -ieq $home1 -and $ok.result[1].name -ceq 'cloudy-wing' -and $null -eq $noFile.exception -and $noFile.result.Count -eq 0 -and $null -eq $noAccounts.exception -and $noAccounts.result.Count -eq 0
+    }
+    $invalidAccountCases = @(
+        @{ id = 'duplicate-name'; build = { param($h) NcMachineJson -Accounts @([ordered]@{ name = 'dup'; codex_home = $h[0] }, [ordered]@{ name = 'dup'; codex_home = $h[1] }) } },
+        @{ id = 'duplicate-home'; build = { param($h) NcMachineJson -Accounts @([ordered]@{ name = 'one'; codex_home = $h[0] }, [ordered]@{ name = 'two'; codex_home = $h[0] }) } },
+        @{ id = 'invalid-name'; build = { param($h) NcMachineJson -Accounts @([ordered]@{ name = 'Bad_Name'; codex_home = $h[0] }) } },
+        @{ id = 'relative-home'; build = { param($h) NcMachineJson -Accounts @([ordered]@{ name = 'rel'; codex_home = 'relative\home' }) } },
+        @{ id = 'missing-home'; build = { param($h) NcMachineJson -Accounts @([ordered]@{ name = 'gone'; codex_home = (Join-Path $h[0] 'not-created') }) } },
+        @{ id = 'extra-property'; build = { param($h) NcMachineJson -Accounts @([ordered]@{ name = 'extra'; codex_home = $h[0]; note = 'x' }) } },
+        @{ id = 'not-array'; build = { param($h) ('{ "schema": "ai-agents.machine.v1", "codex_accounts": { "name": "a" } }') } },
+        @{ id = 'wrong-schema'; build = { param($h) NcMachineJson -Accounts @([ordered]@{ name = 'one'; codex_home = $h[0] }) -Schema 'other.v1' } }
+    )
+    foreach ($invalidCase in $invalidAccountCases) {
+        $invalidId = $invalidCase.id
+        $invalidBuild = $invalidCase.build
+        Test-Case ('R02-' + $invalidId + ' Read-CodexAccountConfiguration 以 CodexAccountConfigurationInvalid 拒絕') {
+            $homes = @((NcNewDir -Name 'acct-x'), (NcNewDir -Name 'acct-y'))
+            $read = NcReadAccounts -MachineJson (& $invalidBuild $homes)
+            $null -ne $read.exception -and $read.exception.Message.StartsWith('CodexAccountConfigurationInvalid：')
+        }
+    }
+    if ($canSymlink) {
+        Test-Case 'R03 Read-CodexAccountConfiguration 帳號目錄含連結時以 CodexAccountConfigurationInvalid 拒絕' {
+            $realHome = NcNewDir -Name 'acct-real'
+            $linkHome = Join-Path (NcNewDir -Name 'acct-link-parent') 'home'
+            $null = New-Item -ItemType SymbolicLink -Path $linkHome -Target $realHome
+            $read = NcReadAccounts -MachineJson (NcMachineJson -Accounts @([ordered]@{ name = 'linked'; codex_home = $linkHome }))
+            $null -ne $read.exception -and $read.exception.Message.StartsWith('CodexAccountConfigurationInvalid：')
+        }
+    }
+    else { Skip-Case 'R03' '沒有建立 Symbolic Link 的權限，無法建立含連結的帳號目錄。' }
+
     # ---------- 預檢無半成品 ----------
     $conflictCases = @(
         @{ id = 'profile-link-type'; setup = { param($e) $other = Join-Path $e.root 'other-profile'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home 'scan.config.toml') -Target $other }; expect = @('連結類型或目標衝突', 'scan.config.toml', 'LinkType=Junction', 'Target=', '預期：LinkType=SymbolicLink') },
@@ -323,7 +379,7 @@ try {
     Test-Case 'T01' {
         $environment = NcNewEnv -Name 'noproject' -MachineDirectory $false
         $run = NcRun -Env $environment -ProjectPath @() -WhatIfRun
-        $null -eq $run.exception -and (@($run.lines | Where-Object { $_.StartsWith('trust（未預先信任專案，派工時自動補上）') }).Count -eq 1) -and -not ($run.lines -join "`n").Contains('派工前請' + '指定專案') -and
+        $null -eq $run.exception -and (@($run.lines | Where-Object { $_.StartsWith('trust（未預先信任專案，須要時以 -ProjectPath 預先加入）') }).Count -eq 1) -and -not ($run.lines -join "`n").Contains('派工前請' + '指定專案') -and
         -not (Test-Path -LiteralPath $environment.account_home) -and -not (Test-Path -LiteralPath $environment.machine_dir)
     }
     Test-Case 'T02' {
@@ -343,7 +399,7 @@ try {
             $configText = [IO.File]::ReadAllText((Join-Path $environment.account_home 'config.toml'), [Text.Encoding]::UTF8)
             $sandboxNames = @('.sandbox', '.sandbox-bin', '.sandbox-secrets', '.sandbox_migration')
             $sandboxPresent = @($sandboxNames | Where-Object { $null -ne (Get-Item -LiteralPath (Join-Path $environment.account_home $_) -Force -ErrorAction SilentlyContinue) })
-            $null -eq $run.exception -and $configText.Contains('[windows]') -and $configText.Contains("sandbox = `"mxc`"") -and -not $configText.Contains('elevated') -and -not $configText.Contains('[projects') -and (@($run.lines | Where-Object { $_.StartsWith('trust（未預先信任專案，派工時自動補上）') }).Count -eq 1) -and (Test-Path -LiteralPath $environment.machine_path) -and
+            $null -eq $run.exception -and $configText.Contains('[windows]') -and $configText.Contains("sandbox = `"mxc`"") -and -not $configText.Contains('elevated') -and -not $configText.Contains('[projects') -and (@($run.lines | Where-Object { $_.StartsWith('trust（未預先信任專案，須要時以 -ProjectPath 預先加入）') }).Count -eq 1) -and (Test-Path -LiteralPath $environment.machine_path) -and
             $sandboxPresent.Count -eq 0 -and (NcListing -Path $environment.account_home) -ceq ((@(@(Get-AccountProfileFileName) | ForEach-Object { $_ + ':link' }) + @('config.toml:file') | Sort-Object) -join '|')
         }
         Test-Case 'T05' {

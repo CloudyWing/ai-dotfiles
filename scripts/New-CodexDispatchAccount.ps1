@@ -223,7 +223,7 @@ function New-CodexAccount {
             if ($status -ceq 'created') { $created.Add([pscustomobject]@{ kind = 'config'; path = $configPath }) }
             Write-AccountStatus 'config' $configPath $status
         } else { Write-AccountStatus 'config' $configPath 'exists' }
-        if ($keys.Count -eq 0) { Write-AccountStatus 'trust（未預先信任專案，派工時自動補上）' $configPath 'skipped' }
+        if ($keys.Count -eq 0) { Write-AccountStatus 'trust（未預先信任專案，須要時以 -ProjectPath 預先加入）' $configPath 'skipped' }
         foreach ($key in $keys) { $status = if ($WhatIfPreference) { 'skipped' } elseif ($config.Missing -contains $key) { 'created' } else { 'exists' }; Write-AccountStatus 'trust' $key $status }
         $step = 'profiles'
         foreach ($profile in $profileFiles) {
