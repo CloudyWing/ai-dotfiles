@@ -19,7 +19,7 @@ export type BoardSnapshot = {
 }
 export type CleanupItem = {
   id: string
-  kind: 'worktree' | 'dispatchWorktree' | 'lineArtifacts' | 'backup'
+  kind: 'worktree' | 'lineArtifacts' | 'backup'
   root: string
   path: string
   name: string

@@ -3,7 +3,7 @@ import { normalizePath, isUnder, filterSessions, mapSessionToLine, parseScriptOu
 import type { Document } from '../hooks/lib'
 import { toWindowsPath, parseWorktreeList, splitRoots, defaultWorkRoots, coversPath, buildWorkRootArgument, buildForceWorkRootArgument, resolveCurrentRepo, orderWorkRoots, currentLabel, remainingBudgetMs, GIT_TIMEOUT_MS, SCRIPT_BUDGET_MS } from '../hooks/lib'
 import type { CurrentRepo } from '../hooks/lib'
-import { isDispatchWorktree, toEpochMs, relativeTime, isStalled, sortSessionsByActivity, checkpointLabel, sessionTone, lineTone, rootTone, numberTone, rootDetail, quotaDetail, segmentsText, normalizeExpanded, toggleExpanded, iconSvg, ICON_ALT, DIVIDER_SVG, dividerText, QUOTA_OK_FROM, QUOTA_WARN_FROM, STALE_MS } from '../hooks/lib'
+import { toEpochMs, relativeTime, isStalled, sortSessionsByActivity, checkpointLabel, sessionTone, lineTone, rootTone, numberTone, rootDetail, quotaDetail, segmentsText, normalizeExpanded, toggleExpanded, iconSvg, ICON_ALT, DIVIDER_SVG, dividerText, QUOTA_OK_FROM, QUOTA_WARN_FROM, STALE_MS } from '../hooks/lib'
 import { BLOCK_IDS, BLOCK_ORDER, BLOCK_TITLES, countText, blockCounts, blockTitleText, stalledToggleText } from '../hooks/lib'
 import { DIM_AFTER_MS, lineNameTone, isLanded, parseFeatureBranches, lineRightText, displayWidth, canShowNote } from '../hooks/lib'
 import { loginCommand, loginDisplayMode, quotaErrorRow, scopedSessions, lowestPrimary, statusText } from '../hooks/lib'
@@ -14,7 +14,7 @@ import { CLEANUP_DELETE_TIMEOUT_MS, CLEANUP_LIST_LIMIT, CLEANUP_LIST_TIMEOUT_MS,
 import { CLEANUP_LINE_LIMIT, closableCleanupLines, closedLineArgument, normalizeClosedLines, toggleClosedLine } from '../hooks/lib'
 import type { CleanupItem } from '../types'
 
-const cleanupItem: CleanupItem = { id: 'one', kind: 'dispatchWorktree', root: 'C:\\root', path: 'C:\\root\\one', name: 'one', lineSlug: 'line-a', category: null, status: 'cleanable', reasons: [], sizeBytes: 1536, fileCount: 3, protectedFileCount: 0, trackedChangeCount: 2, untrackedCount: 4 }
+const cleanupItem: CleanupItem = { id: 'one', kind: 'worktree', root: 'C:\\root', path: 'C:\\root\\one', name: 'one', lineSlug: 'line-a', category: null, status: 'cleanable', reasons: [], sizeBytes: 1536, fileCount: 3, protectedFileCount: 0, trackedChangeCount: 2, untrackedCount: 4 }
 const cleanupDocument = { schema: 'ai-agents.work-overview-cleanup.v1', mode: 'list', generatedAtUtc: '2026-11-08T00:00:00Z', planId: 'plan-id', sessionsKnown: true, items: [cleanupItem], totals: { cleanableCount: 1, cleanableBytes: 1536, needsReviewCount: 0, protectedCount: 0 }, warnings: [], result: null }
 
 test('P7 phase 6 parses cleanup plans and rejects invalid envelopes', () => {
@@ -76,14 +76,11 @@ test('P7 review round 2 only offers unclosed lines that a designation can releas
 test('P7 phase 6 cleanup formats sizes, names, and change counts', () => {
   expect([0, 1536, 1024 ** 2, 1024 ** 3].map(formatBytes)).toEqual(['0 B', '2 KB', '1 MB', '1.0 GB'])
   expect([1023, 1024, 1048575, 1048576, 1073741823, 1073741824].map(formatBytes)).toEqual(['1023 B', '1 KB', '1 MB', '1 MB', '1.0 GB', '1.0 GB'])
-  expect(cleanupItemName(cleanupItem)).toBe('派工 one（line-a）')
+  expect(cleanupItemName(cleanupItem)).toBe('工作目錄 one')
   expect(cleanupItemDetail(cleanupItem)).toBe('未 commit 改動 2 個、未追蹤 4 個；3 個檔案')
   expect(cleanupItemDetail({ ...cleanupItem, trackedChangeCount: null })).toContain('改動數無法取得')
   expect(cleanupItemDetail({ ...cleanupItem, untrackedCount: undefined })).toContain('改動數無法取得')
-  expect(cleanupItemName({ ...cleanupItem, name: 'one（line-a）' })).toBe('派工 one（line-a）')
-  expect(cleanupItemName({ ...cleanupItem, lineSlug: '' })).toBe('派工 one')
   expect(cleanupItemName({ ...cleanupItem, kind: 'lineArtifacts', category: 'history', lineSlug: '', name: 'x' })).toBe('x · 歷史')
-  expect(cleanupItemName({ ...cleanupItem, kind: 'worktree' })).toBe('工作目錄 one')
   expect(cleanupItemName({ ...cleanupItem, kind: 'backup' })).toBe('備份 one')
   expect(cleanupItemName({ ...cleanupItem, kind: 'lineArtifacts', category: 'handoff-extras' })).toBe('line-a · 交接暫存')
   expect([CLEANUP_LIST_TIMEOUT_MS, CLEANUP_DELETE_TIMEOUT_MS]).toEqual([300000, 600000])
@@ -163,10 +160,6 @@ test('P7 phase 3 quota alert deduplicates windows and rearms', () => {
   expect(quotaAlert([low('a', 'T')], null).alert).toBe(true)
 })
 
-test('P5-a1 dispatch worktree boundaries', () => {
-  for (const path of ['C:/Users/X/.ai-agents/.local/ai-sessions/worktrees/dev-dd-1', 'c:/users/x/.ai-agents/.local/AI-Sessions/Worktrees/rev-2/', 'C:/x/.local/ai-sessions/worktrees']) expect(isDispatchWorktree(path)).toBe(true)
-  for (const path of ['C:/x/.local/ai-sessions/worktrees-old/x', 'C:/x/.local/ai-sessions/handoff/x', 'C:/x/.claude/worktrees/a', '', 'relative/path', 'relative/.local/ai-sessions/worktrees/a']) expect(isDispatchWorktree(path)).toBe(false)
-})
 test('P5-b1 to b5 time and ordering', () => {
   const now = new Date('2026-11-05T01:23:10Z')
   const ms = now.getTime()
@@ -307,26 +300,6 @@ test('P7 phase 2 quota optional strings are validated independently', () => {
   if (parsed.ok) expect(parsed.value.quota.map(item => item.Name)).toEqual(['old', 'new'])
 })
 
-test('P5-a2 a3 current repo and arguments exclude dispatch worktrees', () => {
-  const temporary = root + '\\.local\\ai-sessions\\worktrees\\dev-dd-1'
-  const temporary2 = root + '\\.local\\ai-sessions\\worktrees\\rev-2'
-  const worktrees = [root, linked, temporary, temporary2].map(path => ({ path, isBare: false }))
-  const current = resolveCurrentRepo(temporary, { kind: 'repo', topLevel: temporary, worktrees })!
-  expect(current.name).toBe('.ai-agents')
-  expect(current.roots).toEqual([root, linked])
-  expect(current.forced).toEqual([root])
-  expect(buildWorkRootArgument('', 'C:\\Users\\X', current)?.includes('ai-sessions\\worktrees')).toBe(false)
-  expect(buildForceWorkRootArgument(current)?.includes('ai-sessions\\worktrees')).toBe(false)
-})
-test('P5-a4 snapshot excludes dispatch worktrees only from roots', () => {
-  const temporary = root + '\\.local\\ai-sessions\\worktrees\\dev-dd-1'
-  const data = { ...doc, workRoots: [...doc.workRoots, { Path: temporary }, { Path: temporary + '\\nested' }] }
-  const board = buildSnapshot({ ok: true, value: data }, { ok: true, value: [] }, new Date('2026-11-05T01:23:10Z'))
-  expect(board.workRoots.rows.map(item => item.name)).toEqual(['.ai-agents', 'worktree'])
-  expect(board.workRoots.hiddenCount).toBe(0)
-  expect(board.lines.rows.length).toBe(1)
-  expect(data.scannedRoots).toEqual(doc.scannedRoots)
-})
 test('P5 phase 1 remaining time boundaries and stable sorting', () => {
   const now = new Date('2026-11-05T01:23:10Z'), ms = now.getTime()
   for (const [delta, expected] of [[3599000, '59 分鐘前'], [86399000, '23 小時前'], [71 * 3600000, '2 天前'], [30 * 86400000, '30 天前']] as const) expect(relativeTime(ms - delta, now)).toBe(expected)

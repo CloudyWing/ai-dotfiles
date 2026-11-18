@@ -556,15 +556,6 @@ test('H1 repo arguments', options, async ($, on) => {
   expect(argument(scripts(state)[0], '-WorkRoot')).toBe(defaultWorkRoots('C:\\Users\\X').join(';') + ';D:\\Work\\Other;D:\\Work\\Other.wt\\feat;D:\\Work\\Other.wt\\two')
   expect(argument(scripts(state)[0], '-ForceWorkRoot')).toBe('D:\\Work\\Other;D:\\Work\\Other.wt\\feat')
 })
-test('H10 excludes dispatch worktrees from script arguments', options, async ($, on) => {
-  const state = setup(on)
-  state.porcelain = 'worktree D:/Work/Other\n\nworktree D:/Work/Other.wt/feat\n\nworktree D:/Work/Other/.local/ai-sessions/worktrees/dev-dd-1\n\nworktree D:/Work/Other/.local/ai-sessions/worktrees/rev-2\n'
-  await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
-  await finish(state)
-  expect(argument(scripts(state)[0], '-WorkRoot').includes('D:\\Work\\Other.wt\\feat')).toBe(true)
-  expect(argument(scripts(state)[0], '-WorkRoot').includes('ai-sessions\\worktrees')).toBe(false)
-  expect(argument(scripts(state)[0], '-ForceWorkRoot').includes('ai-sessions\\worktrees')).toBe(false)
-})
 test('H2 cwd event', options, async ($, on) => {
   const state = setup(on)
   await $.session.start({ cwd: state.cwd, surface: 'desktop', isInteractive: true })
@@ -754,7 +745,7 @@ test('R9 current repo and sessions', options, async ($, on) => {
   await ui.unmount()
 })
 
-const cleanupEntry: CleanupItem = { id: 'dispatch:one', kind: 'dispatchWorktree', root: 'C:\\one', path: 'C:\\one\\dispatch', name: 'dev-one', lineSlug: 'line-one', category: null, status: 'cleanable', reasons: [], sizeBytes: 1536, fileCount: 5, protectedFileCount: 0, trackedChangeCount: 3, untrackedCount: 2 }
+const cleanupEntry: CleanupItem = { id: 'worktree:one', kind: 'worktree', root: 'C:\\one', path: 'C:\\one\\dispatch', name: 'dev-one', lineSlug: 'line-one', category: null, status: 'cleanable', reasons: [], sizeBytes: 1536, fileCount: 5, protectedFileCount: 0, trackedChangeCount: 3, untrackedCount: 2 }
 const reviewEntry: CleanupItem = { ...cleanupEntry, id: 'review:one', name: 'review', status: 'needs-review', reasons: ['Session 使用中'] }
 const protectedEntry: CleanupItem = { ...cleanupEntry, id: 'protected:one', kind: 'lineArtifacts', status: 'protected', reasons: ['未結案'] }
 const cleanupPlan: CleanupPlan = { schema: 'ai-agents.work-overview-cleanup.v1', mode: 'list', generatedAtUtc: '2026-11-08T00:00:00Z', planId: 'plan-123', sessionsKnown: true, items: [cleanupEntry, reviewEntry, protectedEntry], totals: { cleanableCount: 1, cleanableBytes: 1536, needsReviewCount: 1, protectedCount: 1 }, warnings: [], result: null }
@@ -811,7 +802,7 @@ test('P7 phase 6 lists, confirms, refreshes, and never writes through fs', optio
   expect(state.calls.every(call => !call.argv.includes('-ConfirmPlan'))).toBe(true)
   const texts = (await ui.findAll({ type: 'Text' })).map(item => item.text)
   expect(texts).toContain('可清理 1 項（2 KB）· 待確認 1 項 · 保留 1 項')
-  expect(texts).toContain('派工 dev-one（line-one）')
+  expect(texts).toContain('工作目錄 dev-one')
   expect(texts.some(text => /未 commit 改動 3 個、未追蹤 2 個/.test(text))).toBe(true)
   expect(texts.some(text => /Session 使用中/.test(text))).toBe(true)
   expect(texts.some(text => /保留 1 項：未結案 1 項/.test(text))).toBe(true)

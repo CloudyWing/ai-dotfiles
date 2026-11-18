@@ -119,14 +119,6 @@ function New-ClosedLine {
     (Get-Item -LiteralPath $checkpoint).LastWriteTimeUtc = [DateTime]::UtcNow.AddDays(-30)
 }
 
-function New-RunRecord {
-    [CmdletBinding()]
-    param([string]$WorkRoot, [string]$Slug, [string]$Name, [string]$ExecutionRoot)
-    $path = Join-Path $WorkRoot ".local\ai-sessions\history\$Slug\runs\$Name\run.json"
-    $data = @{ execution_root = $ExecutionRoot; line_slug = $Slug } | ConvertTo-Json -Compress
-    Write-TestFile $path $data
-}
-
 function Get-TreeFingerprint {
     [CmdletBinding()]
     param([string]$Path)
@@ -295,11 +287,8 @@ try {
         $text = [IO.File]::ReadAllText($scriptPath)
         $tokens = $null; $errors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
-        $remove = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Remove-DispatchWorktree' }, $true))
-        Assert-True ($errors.Count -eq 0 -and $remove.Count -eq 1 -and ([regex]::Matches($text, '--force')).Count -eq 1 -and $remove[0].Extent.Text.Contains('--force'))
+        Assert-True ($errors.Count -eq 0 -and ([regex]::Matches($text, '--force')).Count -eq 0)
         Assert-True ($text -notmatch 'branch\s+-D|worktree\s+remove\s+-f|--force\s+--force|Remove-Item[^\r\n]*-Recurse')
-        $calls = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Remove-DispatchWorktree' }, $true))
-        Assert-True ($calls.Count -eq 1 -and $text -match "if \(\`$item\.kind -eq 'dispatchWorktree'\) \{ Remove-DispatchWorktree")
         foreach ($member in @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.InvokeMemberExpressionAst] -and $node.Member.Value -eq 'Delete' }, $true))) {
             $owner = $member.Parent
             while ($null -ne $owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
@@ -326,7 +315,6 @@ try {
     Test-Case F008Static {
         $tokens = $null; $errors = $null
         $ast = [Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors)
-        $text = [IO.File]::ReadAllText($scriptPath)
         $functionOf = {
             param($name)
             $found = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name }, $true))
@@ -334,18 +322,9 @@ try {
             return $found[0]
         }
         $commandsOf = { param($scope) @($scope.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] }, $true) | ForEach-Object { $_.GetCommandName() }) }
-        $confirmCommands = & $commandsOf (& $functionOf 'Confirm-PlannedItem')
-        Assert-True ($confirmCommands -contains 'Clear-ItemCaches' -and $confirmCommands -notcontains 'Clear-PlanCaches') '確認流程每項只能清項目快取，不得清空 RunRecord 快取'
-        $itemClear = (& $functionOf 'Clear-ItemCaches').Extent.Text
-        Assert-True ($itemClear -match 'ReparseCache' -and $itemClear -match 'PidRecordCache' -and $itemClear -notmatch 'RunRecordCache') '項目快取清除須含連結點與 PID 紀錄，且不含 RunRecord'
-        $planClears = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Clear-PlanCaches' }, $true))
-        Assert-True ($planClears.Count -eq 1) 'Clear-PlanCaches 只能在建立計畫時呼叫一次'
-        $owner = $planClears[0].Parent
-        while ($null -ne $owner -and $owner -isnot [Management.Automation.Language.FunctionDefinitionAst]) { $owner = $owner.Parent }
-        Assert-True ($null -ne $owner -and $owner.Name -eq 'Get-CleanupPlan')
-        Assert-True ([regex]::Matches($text, 'RunRecordCache\.Clear\(\)').Count -eq 1) 'RunRecord 快取只能在 Clear-PlanCaches 清除'
-        $pidState = (& $functionOf 'Get-PidState').Extent.Text
-        Assert-True ($pidState -match 'Get-Process -Id' -and $pidState -notmatch 'Cache') 'PID 存活狀態須每次現查，不使用快取'
+        Assert-True ((& $commandsOf (& $functionOf 'Confirm-PlannedItem')) -contains 'Clear-PlanCaches') '確認流程每項都要清除連結點快取'
+        Assert-True ((& $commandsOf (& $functionOf 'Get-CleanupPlan')) -contains 'Clear-PlanCaches') '建立計畫時要清除連結點快取'
+        Assert-True ((& $functionOf 'Clear-PlanCaches').Extent.Text -match 'ReparseCache') '快取清除須含連結點快取'
     }
     Test-Case F007 {
         $gapRoot = Join-Path $tempRoot 'reference-gap-empty-fixture'
@@ -397,7 +376,7 @@ try {
         $presRoot = Join-Path $tempRoot 'preserve-fixture'
         New-ClosedLine $presRoot 'keep'
         $presBase = Join-Path $presRoot '.local\ai-sessions'
-        $preservedNames = @('dispatch-order-x.md', 'dispatch-report-x.md', 'cost-ledger.md')
+        $preservedNames = @('cost-ledger.md')
         foreach ($name in $preservedNames) { Write-TestFile (Join-Path $presBase "handoff\keep\$name") "preserved $name" }
         Write-TestFile (Join-Path $presBase 'handoff\keep\extra.txt') 'extra'
         $onlyPreserved = Join-Path $presBase 'backups\20000101_010101'
@@ -479,23 +458,8 @@ try {
             $row = Get-ItemByPath $result.Value $clean
             Assert-True (-not $result.Value.sessionsKnown -and $row.status -eq 'needs-review' -and ($row.reasons -join '') -match '未取得 Session')
         }
-        $pidFile = Join-Path $repo '.local\ai-sessions\history\codex-pid-k10.txt'
-        $process = Get-Process -Id $PID
-        $pidData = "work-root=$clean`ndispatch-slug=k10`nroot-pid=$PID`nroot-process-name=$($process.ProcessName)`nroot-started-at-utc=$($process.StartTime.ToUniversalTime().ToString('o'))"
-        Write-TestFile $pidFile $pidData
-        Test-Case K10 {
-            $active = Get-ItemByPath (Invoke-Cleanup @($repo, $clean) -Target worktrees).Value $clean
-            Assert-True ($active.status -eq 'needs-review' -and ($active.reasons -join '') -match '派工使用中')
-            Write-TestFile $pidFile "work-root=$clean`ndispatch-slug=k10`nroot-pid=$PID"
-            $unknown = Get-ItemByPath (Invoke-Cleanup @($repo, $clean) -Target worktrees).Value $clean
-            Assert-True (($unknown.reasons -join '') -match '派工使用狀態無法判定')
-            Write-TestFile $pidFile "work-root=$clean`ndispatch-slug=k10`nroot-pid=2147483647`nroot-process-name=missing`nroot-started-at-utc=2000-01-01T00:00:00Z"
-            $ended = Get-ItemByPath (Invoke-Cleanup @($repo, $clean) -Target worktrees).Value $clean
-            Assert-True ($ended.status -eq 'cleanable') ($ended.reasons -join '；')
-        }
-        [IO.File]::Delete($pidFile)
         $outerBlocked = Join-Path $tempRoot 'outer-blocked'
-        $innerBlocked = Join-Path $outerBlocked '.local\ai-sessions\worktrees\inner-blocked'
+        $innerBlocked = Join-Path $outerBlocked '.local\nested\inner-blocked'
         $null = Invoke-TestGit $repo @('worktree', 'add', '-b', 'outer-blocked-branch', $outerBlocked)
         $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $innerBlocked))
         $null = Invoke-TestGit $repo @('worktree', 'add', '--detach', $innerBlocked)
@@ -504,16 +468,15 @@ try {
             Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '內含 1 個無法清理的 worktree')
         }
         $outer = Join-Path $tempRoot 'outer-clean'
-        $inner = Join-Path $outer '.local\ai-sessions\worktrees\inner-clean'
+        $inner = Join-Path $outer '.local\nested\inner-clean'
         $null = Invoke-TestGit $repo @('worktree', 'add', '-b', 'outer-clean-branch', $outer)
         $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $inner))
-        $null = Invoke-TestGit $repo @('worktree', 'add', '--detach', $inner)
+        $null = Invoke-TestGit $repo @('worktree', 'add', '-b', 'inner-clean-branch', $inner)
         New-ClosedLine $repo 'nested'
         New-ClosedLine $outer 'nested'
-        New-RunRecord $outer 'nested' 'inner-clean' $inner
-        Write-TestFile (Join-Path $inner 'large-untracked.txt') ('n' * 10000)
+        Write-TestFile (Join-Path $inner '.local\large.txt') ('n' * 10000)
         Test-Case K11b {
-            $plan = (Invoke-Cleanup @($repo, $outer) -Target worktrees).Value
+            $plan = (Invoke-Cleanup @($repo, $outer, $inner) -Target worktrees).Value
             $outerRow = Get-ItemByPath $plan $outer
             $innerRow = Get-ItemByPath $plan $inner
             Assert-True ($outerRow.status -eq 'cleanable' -and $innerRow.status -eq 'cleanable') (($outerRow.reasons + $innerRow.reasons) -join '；')
@@ -531,74 +494,7 @@ try {
         Write-TestFile (Join-Path $clean '.local\ai-sessions\inputs\keep.txt') 'keep'
         Test-Case K14 { $row = Get-ItemByPath (Invoke-Cleanup @($repo, $clean) -Target worktrees).Value $clean; Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '含需保留素材') }
         New-ClosedLine $repo 'done'
-        $dispatchParent = Join-Path $repo '.local\ai-sessions\worktrees'
-        $null = [IO.Directory]::CreateDirectory($dispatchParent)
-        $dispatches = @{}
-        foreach ($name in @('changes', 'pending', 'no-owner', 'conflict', 'active', 'locked', 'unsaved', 'session', 'broken')) {
-            $path = Join-Path $dispatchParent $name
-            $null = Invoke-TestGit $repo @('worktree', 'add', '--detach', $path)
-            $dispatches[$name] = $path
-            if ($name -notin @('no-owner', 'pending')) { New-RunRecord $repo 'done' $name $path }
-        }
-        Write-TestFile (Join-Path $dispatches['changes'] 'tracked.txt') 'dirty dispatch'
-        Write-TestFile (Join-Path $dispatches['changes'] 'untracked.txt') 'new dispatch'
-        Test-Case K15 {
-            $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['changes']
-            $worktrees = Invoke-TestGit $repo @('worktree', 'list', '--porcelain')
-            Assert-True ($row.status -eq 'cleanable' -and $row.lineSlug -eq 'done' -and $row.trackedChangeCount -eq 1 -and $row.untrackedCount -eq 1) "$(($row.reasons -join '；'))；Git worktrees：$worktrees"
-            $human = Invoke-Cleanup @($repo) -Target worktrees -AsHuman
-            Assert-True ($human.StdOut -match '未 commit 改動 1 個、未追蹤 1 個')
-        }
         Write-TestFile (Join-Path $repo '.local\ai-sessions\handoff\pending\line.json') '{"line-slug":"pending"}'
-        New-RunRecord $repo 'pending' 'pending' $dispatches['pending']
-        Test-Case K16 { $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['pending']; Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '所屬線未結案') }
-        Test-Case K17 { $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['no-owner']; Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '無法判定所屬線') }
-        $conflictPid = Join-Path $repo '.local\ai-sessions\history\codex-pid-conflict.txt'
-        Write-TestFile $conflictPid "dispatch-slug=conflict`nline-slug=pending`nroot-pid=2147483647`nroot-process-name=missing`nroot-started-at-utc=2000-01-01T00:00:00Z"
-        Test-Case K18 { $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['conflict']; Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '所屬線不一致') }
-        $activePid = Join-Path $repo '.local\ai-sessions\history\codex-pid-active.txt'
-        Write-TestFile $activePid "dispatch-slug=active`nline-slug=done`nroot-pid=$PID`nroot-process-name=$($process.ProcessName)`nroot-started-at-utc=$($process.StartTime.ToUniversalTime().ToString('o'))"
-        Test-Case K19 { $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['active']; Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '派工使用中') }
-        $null = Invoke-TestGit $repo @('worktree', 'lock', $dispatches['locked'])
-        Test-Case K20 { $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['locked']; Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '鎖定') }
-        $unsavedReport = Join-Path $dispatches['unsaved'] '.local\ai-sessions\report\done\report.md'
-        Write-TestFile $unsavedReport 'not saved'
-        Write-TestFile (Join-Path $dispatches['unsaved'] '.local\ai-sessions\report\done\large.txt') ('log ' * 100)
-        Test-Case K21 {
-            $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['unsaved']
-            Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '尚未保存回來源')
-            Write-TestFile (Join-Path $repo '.local\ai-sessions\report\done\report.md') 'not saved'
-            $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['unsaved']
-            Assert-True ($row.status -eq 'cleanable') ($row.reasons -join '；')
-        }
-        $unregistered = Join-Path $dispatchParent 'unregistered'
-        $null = [IO.Directory]::CreateDirectory($unregistered)
-        Test-Case K22 { $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $unregistered; Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '未登記為 worktree') }
-        Test-Case K22b {
-            $orphan = Join-Path $dispatches['changes'] '.local\ai-sessions\worktrees\orphan'
-            $orphanFile = Join-Path $orphan 'keep.txt'
-            Write-TestFile $orphanFile 'preserve'
-            try {
-                $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['changes']
-                Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match '未登記為 worktree')
-                Assert-True (Test-Path -LiteralPath $orphanFile)
-            }
-            finally { [IO.File]::Delete($orphanFile); [IO.Directory]::Delete($orphan, $false) }
-        }
-        Test-Case K23 {
-            $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees -Sessions @(@{ cwd = (Join-Path $dispatches['session'] 'inside'); name = 'other' })).Value $dispatches['session']
-            Assert-True ($row.status -eq 'needs-review' -and ($row.reasons -join '') -match 'Session 使用中')
-        }
-        Test-Case K24 {
-            $gitPointer = Join-Path $dispatches['broken'] '.git'
-            $lock = [IO.File]::Open($gitPointer, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
-            try {
-                $row = Get-ItemByPath (Invoke-Cleanup @($repo) -Target worktrees).Value $dispatches['broken']
-                Assert-True ($null -eq $row.trackedChangeCount -and $null -eq $row.untrackedCount)
-                Assert-True ((Invoke-Cleanup @($repo) -Target worktrees -AsHuman).StdOut -match '改動數無法取得')
-            }
-            finally { $lock.Dispose() }
-        }
         Write-TestFile (Join-Path $repo '.local\ai-sessions\history\done\fixture.txt') 'history fixture'
         Write-TestFile (Join-Path $repo '.local\ai-sessions\handoff\done\extra.txt') 'handoff fixture'
         Write-TestFile (Join-Path $repo '.local\ai-sessions\report\done\large.log') ('report fixture ' * 5)
@@ -630,91 +526,40 @@ try {
             $unknownPlan = (Invoke-Cleanup @($repo) -Target lines -Unknown).Value
             Assert-True (@($unknownPlan.items | Where-Object { $_.lineSlug -eq 'done' -and $_.category -eq 'all' -and $_.status -eq 'protected' }).Count -eq 1)
         }
-        $dirty = Join-Path $tempRoot 'dirty'
-        $null = Invoke-TestGit $repo @('worktree', 'add', '-b', 'dirty-branch', $dirty)
-        Write-TestFile (Join-Path $dirty 'tracked.txt') 'uncommitted'
-        $untracked = Join-Path $tempRoot 'untracked'
-        $null = Invoke-TestGit $repo @('worktree', 'add', '-b', 'untracked-branch', $untracked)
-        Write-TestFile (Join-Path $untracked 'untracked.txt') 'untracked'
         Test-Case D08 {
-            $plan = Invoke-Cleanup @($outer) -Target worktrees
+            $plan = Invoke-Cleanup @($outer, $inner) -Target worktrees
             $outerRow = Get-ItemByPath $plan.Value $outer
             $innerRow = Get-ItemByPath $plan.Value $inner
             Assert-True ($outerRow.status -eq 'cleanable' -and $innerRow.status -eq 'cleanable')
-            $result = Invoke-Cleanup @($outer) -Target worktrees -ConfirmPlan $plan.Value.planId
+            $result = Invoke-Cleanup @($outer, $inner) -Target worktrees -ConfirmPlan $plan.Value.planId
             Assert-True ($result.ExitCode -eq 0) $result.StdErr
             $ids = @($result.Value.result.deleted.id)
             Assert-True ([array]::IndexOf($ids, $innerRow.id) -lt [array]::IndexOf($ids, $outerRow.id))
             Assert-True (-not (Test-Path -LiteralPath $inner) -and -not (Test-Path -LiteralPath $outer))
             Assert-True ($result.Value.result.freedBytes -eq $plan.Value.totals.cleanableBytes)
-            Assert-True ([string]::IsNullOrWhiteSpace((Invoke-TestGit $repo @('branch', '--list', 'outer-clean-branch'))))
+            Assert-True ([string]::IsNullOrWhiteSpace((Invoke-TestGit $repo @('branch', '--list', 'outer-clean-branch', 'inner-clean-branch'))))
         }
         Test-Case D08Failure {
             $outerFail = Join-Path $tempRoot 'outer-failure'
-            $innerFail = Join-Path $outerFail '.local\ai-sessions\worktrees\inner-failure'
+            $innerFail = Join-Path $outerFail '.local\nested\inner-failure'
             $null = Invoke-TestGit $repo @('worktree', 'add', '-b', 'outer-failure-branch', $outerFail)
             $null = [IO.Directory]::CreateDirectory((Split-Path -Parent $innerFail))
-            $null = Invoke-TestGit $repo @('worktree', 'add', '--detach', $innerFail)
+            $null = Invoke-TestGit $repo @('worktree', 'add', '-b', 'inner-failure-branch', $innerFail)
             New-ClosedLine $outerFail 'nested'
-            New-RunRecord $outerFail 'nested' 'inner-failure' $innerFail
-            $plan = Invoke-Cleanup @($outerFail) -Target worktrees
+            $lockedFile = Join-Path $innerFail '.local\locked.txt'
+            Write-TestFile $lockedFile 'locked'
+            $plan = Invoke-Cleanup @($outerFail, $innerFail) -Target worktrees
             $outerRow = Get-ItemByPath $plan.Value $outerFail
             $innerRow = Get-ItemByPath $plan.Value $innerFail
-            Assert-True ($outerRow.status -eq 'cleanable' -and $innerRow.status -eq 'cleanable')
-            $lock = [IO.File]::Open((Join-Path $innerFail 'tracked.txt'), [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
+            Assert-True ($outerRow.status -eq 'cleanable' -and $innerRow.status -eq 'cleanable') "計畫列：outer=$($outerRow.status) $($outerRow.reasons -join '；') inner=$($innerRow.status) $($innerRow.reasons -join '；')"
+            $lock = [IO.File]::Open($lockedFile, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::None)
             try {
-                $result = Invoke-Cleanup @($outerFail) -Target worktrees -ConfirmPlan $plan.Value.planId
-                Assert-True ($result.ExitCode -eq 2)
-                Assert-True (@($result.Value.result.failed | Where-Object { $_.id -eq $outerRow.id -and $_.reason -eq '狀態已變更' }).Count -eq 1)
+                $result = Invoke-Cleanup @($outerFail, $innerFail) -Target worktrees -ConfirmPlan $plan.Value.planId
+                Assert-True ($result.ExitCode -eq 2) "結束碼 $($result.ExitCode)：$($result.StdOut) $($result.StdErr)"
+                Assert-True (@($result.Value.result.failed | Where-Object { $_.id -eq $outerRow.id -and $_.reason -eq '狀態已變更' }).Count -eq 1) "失敗清單：$($result.Value.result.failed | ConvertTo-Json -Compress)"
                 Assert-True (Test-Path -LiteralPath $outerFail)
             }
             finally { $lock.Dispose() }
-        }
-        Test-Case D07 {
-            $plan = Invoke-Cleanup @($repo, $dirty, $untracked) -Target worktrees
-            $row = Get-ItemByPath $plan.Value $dispatches['changes']
-            Assert-True ($row.status -eq 'cleanable') ($row.reasons -join '；')
-            $result = Invoke-Cleanup @($repo, $dirty, $untracked) -Target worktrees -ConfirmPlan $plan.Value.planId
-            Assert-True ($result.ExitCode -eq 0) $result.StdErr
-            Assert-True (-not (Test-Path -LiteralPath $dispatches['changes']) -and (Test-Path -LiteralPath (Join-Path $dirty 'tracked.txt')))
-            Assert-True (Test-Path -LiteralPath (Join-Path $untracked 'untracked.txt'))
-            Assert-True ((Invoke-TestGit $repo @('worktree', 'list', '--porcelain')) -notmatch [regex]::Escape($dispatches['changes'].Replace('\', '/')))
-        }
-        Test-Case F008 {
-            $r8 = Join-Path $tempRoot 'f008-main'
-            $null = [IO.Directory]::CreateDirectory($r8)
-            $null = Invoke-TestGit $r8 @('init', '-b', 'main')
-            $null = Invoke-TestGit $r8 @('config', 'user.name', 'Fixture')
-            $null = Invoke-TestGit $r8 @('config', 'user.email', 'fixture@example.invalid')
-            $null = Invoke-TestGit $r8 @('config', 'core.autocrlf', 'false')
-            Write-TestFile (Join-Path $r8 'tracked.txt') 'tracked'
-            Write-TestFile (Join-Path $r8 '.gitignore') ".local/`n"
-            $null = Invoke-TestGit $r8 @('add', '.gitignore', 'tracked.txt')
-            $null = Invoke-TestGit $r8 @('commit', '-m', 'fixture')
-            New-ClosedLine $r8 'done'
-            $parent = Join-Path $r8 '.local\ai-sessions\worktrees'
-            $null = [IO.Directory]::CreateDirectory($parent)
-            $paths = @{}
-            foreach ($name in @('a1', 'a2', 'a3', 'busy')) {
-                $paths[$name] = Join-Path $parent $name
-                $null = Invoke-TestGit $r8 @('worktree', 'add', '--detach', $paths[$name])
-                New-RunRecord $r8 'done' $name $paths[$name]
-            }
-            $self = Get-Process -Id $PID
-            Write-TestFile (Join-Path $r8 '.local\ai-sessions\history\codex-pid-busy.txt') "dispatch-slug=busy`nline-slug=done`nroot-pid=$PID`nroot-process-name=$($self.ProcessName)`nroot-started-at-utc=$($self.StartTime.ToUniversalTime().ToString('o'))"
-            $plan = Invoke-Cleanup @($r8) -Target worktrees
-            foreach ($name in @('a1', 'a2', 'a3')) {
-                $row = Get-ItemByPath $plan.Value $paths[$name]
-                Assert-True ($row.status -eq 'cleanable') "$name 應為可清：$($row.reasons -join '；')"
-            }
-            $busy = Get-ItemByPath $plan.Value $paths['busy']
-            Assert-True ($busy.status -eq 'needs-review' -and ($busy.reasons -join '') -match '派工使用中') '派工中的 worktree 不得列為可清'
-            $result = Invoke-Cleanup @($r8) -Target worktrees -ConfirmPlan $plan.Value.planId -AsHuman -PassVerbose
-            Assert-True ($result.ExitCode -eq 0) "確認刪除應成功：exit $($result.ExitCode) $($result.StdErr)"
-            foreach ($name in @('a1', 'a2', 'a3')) { Assert-True (-not (Test-Path -LiteralPath $paths[$name])) "$name 應已刪除" }
-            Assert-True (Test-Path -LiteralPath $paths['busy']) '派工中的 worktree 必須保留'
-            $loads = [regex]::Matches($result.StdOut + "`n" + $result.StdErr, '載入 RunRecord').Count
-            Assert-True ($loads -eq 1) "確認流程（含計畫建立）RunRecord 只能讀一次，實際 $loads 次"
         }
         Test-Case F003w {
             $gapWorktree = Join-Path $tempRoot 'gap-worktree'
@@ -731,7 +576,7 @@ try {
     catch {
         $script:failed++
         Write-Output "BLOCKED Git 夾具：$($_.Exception.Message)"
-        $expected = @(2..24 | ForEach-Object { 'K{0:D2}' -f $_ }) + @('K11b', 'T024w', 'L01', 'L02', 'L03', 'D07', 'D08', 'D08Failure', 'F003w', 'F008')
+        $expected = @(2..9 | ForEach-Object { 'K{0:D2}' -f $_ }) + @('K11', 'K11b', 'K12', 'K13', 'K14', 'T024w', 'L01', 'L02', 'L03', 'D08', 'D08Failure', 'F003w')
         $unexecuted = @($expected | Where-Object { -not $script:executed.Contains($_) })
         Write-Output "未執行：$($unexecuted -join '、')。"
     }

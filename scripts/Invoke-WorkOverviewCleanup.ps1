@@ -28,8 +28,6 @@ $script:ReservedNames = @('line.json', 'requirement-summary.md', 'design.md')
 $script:ClosedLines = @($ClosedLine | ForEach-Object { $_ -split '[,;]' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 $script:ReferenceGaps = [Collections.Generic.List[string]]::new()
 $script:ReparseCache = [Collections.Generic.Dictionary[string, bool]]::new([StringComparer]::OrdinalIgnoreCase)
-$script:PidRecordCache = @{}
-$script:RunRecordCache = @{}
 
 function Get-FullPath {
     [CmdletBinding()]
@@ -89,18 +87,6 @@ function Clear-PlanCaches {
     param()
 
     $script:ReparseCache.Clear()
-    $script:PidRecordCache.Clear()
-    $script:RunRecordCache.Clear()
-}
-
-function Clear-ItemCaches {
-    [CmdletBinding()]
-    param()
-
-    # 確認流程逐項重新驗證時，只清連結點與 PID 紀錄快取（PID 存活狀態由 Get-PidState 每次現查）。
-    # RunRecord 紀錄不屬於被刪除的對象，整次確認只讀一次。
-    $script:ReparseCache.Clear()
-    $script:PidRecordCache.Clear()
 }
 
 function Get-SafeEntries {
@@ -159,7 +145,7 @@ function Test-PreservedFile {
 
     $relative = [IO.Path]::GetRelativePath($SessionBase, $Path).Replace('/', '\')
     if ($relative -match '(?i)^handoff\\[^\\]+\\(?:line\.json|requirement-summary\.md|design\.md)$') { return $true }
-    return [IO.Path]::GetFileName($Path) -match '(?i)^(?:dispatch-order-.*\.md|dispatch-report-.*\.md|cost-ledger\.md)$'
+    return [IO.Path]::GetFileName($Path) -match '(?i)^cost-ledger\.md$'
 }
 
 function Invoke-Git {
@@ -320,130 +306,6 @@ function Get-LineClosure {
     return [pscustomobject]@{ Closed = ($reasons.Count -eq 0); Reasons = $reasons.ToArray() }
 }
 
-function Get-PidRecords {
-    [CmdletBinding()]
-    param([string[]]$Roots)
-
-    $cacheKey = (@($Roots | Select-Object -Unique) | ForEach-Object { $_.ToLowerInvariant() }) -join '|'
-    if ($script:PidRecordCache.ContainsKey($cacheKey)) { return $script:PidRecordCache[$cacheKey] }
-    $records = [Collections.Generic.List[object]]::new()
-    foreach ($workRoot in @($Roots | Select-Object -Unique)) {
-        $history = Join-Path $workRoot "$script:SessionRoot\history"
-        if (-not (Test-Path -LiteralPath $history -PathType Container)) { continue }
-        if (Test-ReparsePath $history $workRoot) { $records.Add([pscustomobject]@{ Invalid = $true; Data = @{}; Path = $history }); continue }
-        foreach ($file in @(Get-ChildItem -LiteralPath $history -Filter 'codex-pid-*.txt' -File -Force)) {
-            $data = @{}
-            try {
-                if (Test-ReparsePath $file.FullName $workRoot) { throw '連結點' }
-                $stream = [IO.FileStream]::new($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
-                try {
-                    $reader = [IO.StreamReader]::new($stream, [Text.UTF8Encoding]::new($false, $true))
-                    try { $content = $reader.ReadToEnd() } finally { $reader.Dispose() }
-                }
-                finally { $stream.Dispose() }
-                foreach ($line in ($content -split "`r?`n")) { if ($line -match '^([^=]+)=(.*)$') { $data[$Matches[1].Trim()] = $Matches[2].Trim() } }
-                $records.Add([pscustomobject]@{ Invalid = $false; Data = $data; Path = $file.FullName })
-            }
-            catch { $records.Add([pscustomobject]@{ Invalid = $true; Data = @{}; Path = $file.FullName }) }
-        }
-    }
-    $script:PidRecordCache[$cacheKey] = $records.ToArray()
-    return $script:PidRecordCache[$cacheKey]
-}
-
-function Get-PidState {
-    [CmdletBinding()]
-    param([hashtable]$Data)
-
-    foreach ($key in @('root-pid', 'root-process-name', 'root-started-at-utc', 'dispatch-slug')) {
-        if (-not $Data.ContainsKey($key) -or [string]::IsNullOrWhiteSpace($Data[$key])) { return 'unknown' }
-    }
-    $processId = 0
-    $started = [DateTimeOffset]::MinValue
-    if (-not [int]::TryParse($Data['root-pid'], [ref]$processId) -or $processId -le 0 -or -not [DateTimeOffset]::TryParse($Data['root-started-at-utc'], [ref]$started)) { return 'unknown' }
-    $process = Get-Process -Id $processId -ErrorAction SilentlyContinue
-    if ($null -eq $process) { return 'ended' }
-    try {
-        if ([string]::Equals($process.ProcessName, $Data['root-process-name'], [StringComparison]::OrdinalIgnoreCase) -and [Math]::Abs(($process.StartTime.ToUniversalTime() - $started.UtcDateTime).TotalSeconds) -le 2) { return 'active' }
-        return 'ended'
-    }
-    catch { return 'unknown' }
-}
-
-function Get-DispatchUseReasons {
-    [CmdletBinding()]
-    param([string]$Path, [string]$Name, [bool]$IsDispatch, [string[]]$Roots)
-
-    $reasons = [Collections.Generic.List[string]]::new()
-    foreach ($record in @(Get-PidRecords $Roots)) {
-        if ($record.Invalid) { $reasons.Add('派工使用狀態無法判定'); continue }
-        $data = $record.Data
-        $matchesPath = $false
-        if ($data.ContainsKey('work-root') -and -not [string]::IsNullOrWhiteSpace($data['work-root'])) {
-            try { $matchesPath = [string]::Equals((Get-FullPath $data['work-root']), $Path, [StringComparison]::OrdinalIgnoreCase) } catch { $reasons.Add('派工使用狀態無法判定') }
-        }
-        if (-not $matchesPath -and -not ($IsDispatch -and $data.ContainsKey('dispatch-slug') -and $data['dispatch-slug'] -eq $Name)) { continue }
-        switch (Get-PidState $data) {
-            'active' { $reasons.Add("派工使用中（$($data['dispatch-slug'])）") }
-            'unknown' { $reasons.Add('派工使用狀態無法判定') }
-        }
-    }
-    return @($reasons | Select-Object -Unique)
-}
-
-function Get-DispatchOwner {
-    [CmdletBinding()]
-    param([string]$WorkRoot, [string]$Path, [string]$Name)
-
-    $owners = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
-    $invalid = $false
-    $runKey = $WorkRoot.ToLowerInvariant()
-    if (-not $script:RunRecordCache.ContainsKey($runKey)) {
-        Write-Verbose "載入 RunRecord：$WorkRoot"
-        $byRoot = [Collections.Generic.Dictionary[string, Collections.Generic.HashSet[string]]]::new([StringComparer]::OrdinalIgnoreCase)
-        $runInvalid = $false
-        $history = Join-Path $WorkRoot "$script:SessionRoot\history"
-        if (Test-Path -LiteralPath $history -PathType Container) {
-            foreach ($lineDir in @(Get-ChildItem -LiteralPath $history -Directory -Force)) {
-                $runs = Join-Path $lineDir.FullName 'runs'
-                if (-not (Test-Path -LiteralPath $runs -PathType Container)) { continue }
-                if (Test-ReparsePath $runs $WorkRoot) { $runInvalid = $true; continue }
-                foreach ($dispatch in @(Get-ChildItem -LiteralPath $runs -Directory -Force)) {
-                    foreach ($record in @(Get-ChildItem -LiteralPath $dispatch.FullName -Filter '*.json' -File -Force)) {
-                        try {
-                            if (Test-ReparsePath $record.FullName $WorkRoot) { throw '連結點' }
-                            $data = Get-Content -LiteralPath $record.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-                            $executionRoot = Get-PropertyValue $data 'execution_root'
-                            $slug = Get-PropertyValue $data 'line_slug'
-                            if ([string]::IsNullOrWhiteSpace($executionRoot) -or $slug -notmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$') { throw '缺少欄位或線識別無效' }
-                            $rootKey = Get-FullPath $executionRoot
-                            if (-not $byRoot.ContainsKey($rootKey)) { $byRoot[$rootKey] = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase) }
-                            $null = $byRoot[$rootKey].Add($slug)
-                        }
-                        catch { $runInvalid = $true }
-                    }
-                }
-            }
-        }
-        $script:RunRecordCache[$runKey] = [pscustomobject]@{ Invalid = $runInvalid; Owners = $byRoot }
-    }
-    $runCache = $script:RunRecordCache[$runKey]
-    if ($runCache.Invalid) { $invalid = $true }
-    if ($runCache.Owners.ContainsKey($Path)) { foreach ($runSlug in $runCache.Owners[$Path]) { $null = $owners.Add($runSlug) } }
-    foreach ($record in @(Get-PidRecords @($WorkRoot))) {
-        if ($record.Invalid) { $invalid = $true; continue }
-        if ($record.Data.ContainsKey('dispatch-slug') -and $record.Data['dispatch-slug'] -eq $Name) {
-            if (-not $record.Data.ContainsKey('line-slug') -or $record.Data['line-slug'] -notmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$') { $invalid = $true }
-            else { $null = $owners.Add($record.Data['line-slug']) }
-        }
-    }
-    $values = @($owners | Sort-Object)
-    if ($invalid) { return [pscustomobject]@{ Slug = $null; Reason = '所屬線無法判定' } }
-    if ($values.Count -eq 0) { return [pscustomobject]@{ Slug = $null; Reason = '無法判定所屬線' } }
-    if ($values.Count -gt 1) { return [pscustomobject]@{ Slug = $null; Reason = "所屬線不一致（$($values -join '、')）" } }
-    return [pscustomobject]@{ Slug = $values[0]; Reason = $null }
-}
-
 function Test-TextLog {
     [CmdletBinding()]
     param([string]$Path)
@@ -458,25 +320,6 @@ function Test-TextLog {
         return $true
     }
     finally { $stream.Dispose() }
-}
-
-function Get-UnpreservedFiles {
-    [CmdletBinding()]
-    param([string]$Path, [string]$SourceRoot)
-
-    $unpreserved = [Collections.Generic.List[string]]::new()
-    foreach ($area in @('handoff', 'report', 'inputs', 'ui-demo', 'screenshots', 'style-baselines')) {
-        $directory = Join-Path $Path "$script:SessionRoot\$area"
-        $gaps = [Collections.Generic.List[string]]::new()
-        foreach ($entry in @(Get-SafeEntries $directory $Path -Inaccessible $gaps)) {
-            $relative = [IO.Path]::GetRelativePath($Path, $entry.Path)
-            if ($entry.IsLink) { $unpreserved.Add($relative); continue }
-            if ($area -eq 'report' -and (Test-TextLog $entry.Path)) { continue }
-            if (-not (Test-SameFile $entry.Path (Join-Path $SourceRoot $relative) $Path $SourceRoot)) { $unpreserved.Add($relative) }
-        }
-        foreach ($gap in $gaps) { $unpreserved.Add([IO.Path]::GetRelativePath($Path, $gap)) }
-    }
-    return $unpreserved.ToArray()
 }
 
 function Get-ReferenceIndex {
@@ -593,42 +436,22 @@ function Get-WorktreeItems {
     param([string[]]$Roots, [hashtable]$Repositories, [object]$SessionState)
 
     $candidates = [Collections.Generic.List[object]]::new()
-    $registered = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
-    foreach ($rootPath in $Roots) {
-        $repository = $Repositories[$rootPath]
-        if ($null -eq $repository) { continue }
-        foreach ($entry in $repository.Entries) { $registered[$entry.Path] = $entry }
-    }
     foreach ($rootPath in $Roots) {
         $repository = $Repositories[$rootPath]
         if ($null -eq $repository) { continue }
         foreach ($entry in $repository.Entries) {
             if ([string]::Equals($entry.Path, $repository.Main, [StringComparison]::OrdinalIgnoreCase)) { continue }
-            $parent = [IO.Directory]::GetParent($entry.Path)
-            $dispatchParent = Get-FullPath (Join-Path $rootPath "$script:SessionRoot\worktrees")
-            $isDispatch = $null -ne $parent -and [string]::Equals($parent.FullName, $dispatchParent, [StringComparison]::OrdinalIgnoreCase)
-            $isOrdinary = [string]::Equals($entry.Path, $rootPath, [StringComparison]::OrdinalIgnoreCase) -and $entry.Path -notmatch '(?i)[\\/]\.local[\\/]ai-sessions[\\/]worktrees[\\/]'
-            if (-not $isDispatch -and -not $isOrdinary) { continue }
+            if (-not [string]::Equals($entry.Path, $rootPath, [StringComparison]::OrdinalIgnoreCase)) { continue }
             if (@($candidates | Where-Object { $_.entry.Path -eq $entry.Path }).Count -gt 0) { continue }
-            $candidates.Add([pscustomobject]@{ entry = $entry; root = $rootPath; repository = $repository; isDispatch = $isDispatch; registered = $true })
-        }
-        $dispatchParent = Join-Path $rootPath "$script:SessionRoot\worktrees"
-        if ((Test-Path -LiteralPath $dispatchParent -PathType Container) -and -not (Test-ReparsePath $dispatchParent $rootPath)) {
-            foreach ($directory in @(Get-ChildItem -LiteralPath $dispatchParent -Directory -Force)) {
-                $path = Get-FullPath $directory.FullName
-                if ($registered.ContainsKey($path)) { continue }
-                $entry = [pscustomobject]@{ Path = $path; Branch = $null; Locked = $false; Prunable = $false }
-                $candidates.Add([pscustomobject]@{ entry = $entry; root = $rootPath; repository = $repository; isDispatch = $true; registered = $false })
-            }
+            $candidates.Add([pscustomobject]@{ entry = $entry; root = $rootPath; repository = $repository })
         }
     }
     $items = [Collections.Generic.List[object]]::new()
     foreach ($candidate in @($candidates | Sort-Object { $_.entry.Path.Length } -Descending)) {
-        try { $items.Add((Get-WorktreeItem $candidate $items $registered $SessionState)) }
+        try { $items.Add((Get-WorktreeItem $candidate $items $SessionState)) }
         catch {
             $failure = ($_.Exception.Message -split "`r?`n")[0]
-            $kind = if ($candidate.isDispatch) { 'dispatchWorktree' } else { 'worktree' }
-            $items.Add((New-CleanupItem "$($kind.ToLowerInvariant()):$($candidate.entry.Path.ToLowerInvariant())" $kind $candidate.root $candidate.entry.Path ([IO.Path]::GetFileName($candidate.entry.Path)) $null $null 'needs-review' @("無法評估：$failure") @() 0 $null $null $candidate.entry $candidate.repository))
+            $items.Add((New-CleanupItem "worktree:$($candidate.entry.Path.ToLowerInvariant())" 'worktree' $candidate.root $candidate.entry.Path ([IO.Path]::GetFileName($candidate.entry.Path)) $null $null 'needs-review' @("無法評估：$failure") @() 0 $null $null $candidate.entry $candidate.repository))
         }
     }
     return $items.ToArray()
@@ -636,27 +459,21 @@ function Get-WorktreeItems {
 
 function Get-WorktreeItem {
     [CmdletBinding()]
-    param([object]$Candidate, [Collections.Generic.List[object]]$Items, [object]$Registered, [object]$SessionState)
+    param([object]$Candidate, [Collections.Generic.List[object]]$Items, [object]$SessionState)
 
     $entry = $candidate.entry
     $path = $entry.Path
     $name = [IO.Path]::GetFileName($path)
-    $kind = if ($candidate.isDispatch) { 'dispatchWorktree' } else { 'worktree' }
     $reasons = [Collections.Generic.List[string]]::new()
-    $slug = $null
-    if (-not $candidate.registered) { $reasons.Add('未登記為 worktree') }
     if ($entry.Locked) { $reasons.Add('worktree 已鎖定') }
     if ($entry.Prunable -or -not (Test-Path -LiteralPath $path -PathType Container)) { $reasons.Add('worktree 已遺失') }
-    if ((Test-Path -LiteralPath $path) -and (Test-ReparsePath $path $candidate.root) -and $candidate.isDispatch) { $reasons.Add('worktree 路徑為連結點') }
-    $changes = if ($candidate.registered -and (Test-Path -LiteralPath $path -PathType Container)) { Get-WorkingTreeChanges $path } else { [pscustomobject]@{ Tracked = $null; Untracked = $null } }
-    if (-not $candidate.isDispatch) {
-        if ($null -eq $changes.Tracked) { $reasons.Add('改動數無法取得') }
-        else {
-            if ($changes.Tracked -gt 0) { $reasons.Add("未 commit 改動 $($changes.Tracked) 個") }
-            if ($changes.Untracked -gt 0) { $reasons.Add("未追蹤檔案 $($changes.Untracked) 個") }
-        }
-        if ($null -eq $entry.Branch -or $entry.Branch -eq $candidate.repository.MainBranch -or -not $candidate.repository.MergedKnown -or $candidate.repository.Merged -notcontains $entry.Branch) { $reasons.Add('分支未合入主分支或無法判定') }
+    $changes = if (Test-Path -LiteralPath $path -PathType Container) { Get-WorkingTreeChanges $path } else { [pscustomobject]@{ Tracked = $null; Untracked = $null } }
+    if ($null -eq $changes.Tracked) { $reasons.Add('改動數無法取得') }
+    else {
+        if ($changes.Tracked -gt 0) { $reasons.Add("未 commit 改動 $($changes.Tracked) 個") }
+        if ($changes.Untracked -gt 0) { $reasons.Add("未追蹤檔案 $($changes.Untracked) 個") }
     }
+    if ($null -eq $entry.Branch -or $entry.Branch -eq $candidate.repository.MainBranch -or -not $candidate.repository.MergedKnown -or $candidate.repository.Merged -notcontains $entry.Branch) { $reasons.Add('分支未合入主分支或無法判定') }
     if (-not $SessionState.Known) { $reasons.Add('未取得 Session 清單') }
     else {
         foreach ($session in $SessionState.Sessions) {
@@ -666,20 +483,7 @@ function Get-WorktreeItem {
             }
         }
     }
-    $pidRoots = if ($candidate.isDispatch) { @($candidate.root, $path) } else { @($path, $candidate.repository.Main) }
-    foreach ($reason in @(Get-DispatchUseReasons $path $name $candidate.isDispatch $pidRoots)) { $reasons.Add($reason) }
-    if ($candidate.isDispatch -and $candidate.registered) {
-        $owner = Get-DispatchOwner $candidate.root $path $name
-        if ($null -ne $owner.Reason) { $reasons.Add($owner.Reason) }
-        else {
-            $slug = $owner.Slug
-            $closure = Get-LineClosure $candidate.root $slug $candidate.repository $SessionState
-            foreach ($reason in $closure.Reasons) { $reasons.Add("所屬線未結案：$reason") }
-            $missing = @(Get-UnpreservedFiles $path $candidate.root)
-            if ($missing.Count -gt 0) { $reasons.Add("$($missing.Count) 個報告或交接檔尚未保存回來源（例：$($missing[0])）") }
-        }
-    }
-    if (-not $candidate.isDispatch -and (Test-Path -LiteralPath $path -PathType Container)) {
+    if (Test-Path -LiteralPath $path -PathType Container) {
         $handoff = Join-Path $path "$script:SessionRoot\handoff"
         if ((Test-Path -LiteralPath $handoff -PathType Container) -and (Test-ReparsePath $handoff $path)) { $reasons.Add('線交接目錄為連結點') }
         elseif (Test-Path -LiteralPath $handoff -PathType Container) {
@@ -701,21 +505,12 @@ function Get-WorktreeItem {
     $nested = @($candidate.repository.Entries | Where-Object { Test-PathWithin $_.Path $path })
     $blocked = @($nested | Where-Object { $nestedPath = $_.Path; @($items | Where-Object { $_.path -eq $nestedPath -and $_.status -eq 'cleanable' }).Count -eq 0 })
     if ($blocked.Count -gt 0) { $reasons.Add("內含 $($blocked.Count) 個無法清理的 worktree") }
-    $innerWorktrees = Join-Path $path "$script:SessionRoot\worktrees"
-    if (Test-Path -LiteralPath $innerWorktrees -PathType Container) {
-        if (Test-ReparsePath $innerWorktrees $path) { $reasons.Add('內含無法判定的 worktree 目錄') }
-        else {
-            $unregistered = @(Get-ChildItem -LiteralPath $innerWorktrees -Directory -Force | Where-Object { -not $registered.ContainsKey((Get-FullPath $_.FullName)) })
-            if ($unregistered.Count -gt 0) { $reasons.Add("內含 $($unregistered.Count) 個未登記為 worktree 的資料夾") }
-        }
-    }
     $nestedPaths = @($nested | ForEach-Object { $_.Path })
     $gaps = [Collections.Generic.List[string]]::new()
     $files = if (Test-Path -LiteralPath $path) { @(Get-SafeEntries $path $path $nestedPaths -Inaccessible $gaps | Where-Object { -not $_.IsLink }) } else { @() }
     if ($gaps.Count -gt 0) { $reasons.Add((Format-InaccessibleReason $gaps.ToArray() $path)) }
     $status = if ($reasons.Count -eq 0) { 'cleanable' } else { 'needs-review' }
-    $display = if ($null -ne $slug) { "$name（$slug）" } else { $name }
-    return New-CleanupItem "$($kind.ToLowerInvariant()):$($path.ToLowerInvariant())" $kind $candidate.root $path $display $slug $null $status @($reasons | Select-Object -Unique) $files 0 $changes.Tracked $changes.Untracked $entry $candidate.repository
+    return New-CleanupItem "worktree:$($path.ToLowerInvariant())" 'worktree' $candidate.root $path $name $null $null $status @($reasons | Select-Object -Unique) $files 0 $changes.Tracked $changes.Untracked $entry $candidate.repository
 }
 
 function Add-FileCategory {
@@ -763,19 +558,6 @@ function Add-LineArtifacts {
     $historyGaps = [Collections.Generic.List[string]]::new()
     $historyFiles = [Collections.Generic.List[object]]::new()
     foreach ($file in @(Get-SafeEntries (Join-Path $Base "history\$slug") $RootPath -Inaccessible $historyGaps)) { $historyFiles.Add($file) }
-    foreach ($record in @(Get-PidRecords @($RootPath))) {
-        if ($record.Invalid -or -not $record.Data.ContainsKey('line-slug') -or $record.Data['line-slug'] -ne $slug -or -not $record.Data.ContainsKey('root-pid')) { continue }
-        $processId = 0
-        if (-not [int]::TryParse($record.Data['root-pid'], [ref]$processId) -or $processId -le 0 -or $null -ne (Get-Process -Id $processId -ErrorAction SilentlyContinue)) { continue }
-        foreach ($file in @(Get-SafeEntries $record.Path $RootPath)) { $historyFiles.Add($file) }
-        $suffix = [IO.Path]::GetFileNameWithoutExtension($record.Path) -replace '^codex-pid-', ''
-        $eventPath = Join-Path (Split-Path -Parent $record.Path) "codex-exec-$suffix.jsonl"
-        foreach ($file in @(Get-SafeEntries $eventPath $RootPath)) { $historyFiles.Add($file) }
-        if ($record.Data.ContainsKey('dispatch-slug') -and $record.Data['dispatch-slug'] -match '^[a-zA-Z0-9_-]+$') {
-            $thread = Join-Path (Split-Path -Parent $record.Path) "codex-thread-$($record.Data['dispatch-slug']).txt"
-            foreach ($file in @(Get-SafeEntries $thread $RootPath)) { $historyFiles.Add($file) }
-        }
-    }
     Add-FileCategory $Items $RootPath $slug 'history' @($historyFiles | Sort-Object Path -Unique) $ReferenceIndex $historyGaps.ToArray()
     $extraGaps = [Collections.Generic.List[string]]::new()
     $extras = @()
@@ -898,16 +680,6 @@ function Get-CleanupPlan {
     }
 }
 
-function Remove-DispatchWorktree {
-    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
-    param([string]$WorkRoot, [string]$Path)
-
-    if ($PSCmdlet.ShouldProcess($Path, '移除已確認的 dispatch worktree')) {
-        $result = Invoke-Git $WorkRoot @('worktree', 'remove', '--force', $Path)
-        if ($result.ExitCode -ne 0) { throw $result.StdErr.Trim() }
-    }
-}
-
 function Remove-OrdinaryWorktree {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param([string]$WorkRoot, [string]$Path)
@@ -967,16 +739,14 @@ function Confirm-PlannedItem {
     [CmdletBinding()]
     param([object]$Planned, [object]$Plan, [object]$SessionState, [hashtable]$ClosureCache)
 
-    Clear-ItemCaches
-    if ($Planned.kind -in @('worktree', 'dispatchWorktree')) {
+    Clear-PlanCaches
+    if ($Planned.kind -eq 'worktree') {
         $repository = Get-Repository $Planned.root
         if ($null -eq $repository) { throw '狀態已變更' }
         $entry = @($repository.Entries | Where-Object { [string]::Equals($_.Path, $Planned.path, [StringComparison]::OrdinalIgnoreCase) })
         if ($entry.Count -ne 1) { throw '狀態已變更' }
-        $registered = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
-        foreach ($known in $repository.Entries) { $registered[$known.Path] = $known }
-        $candidate = [pscustomobject]@{ entry = $entry[0]; root = $Planned.root; repository = $repository; isDispatch = ($Planned.kind -eq 'dispatchWorktree'); registered = $true }
-        $current = Get-WorktreeItem $candidate ([Collections.Generic.List[object]]::new()) $registered $SessionState
+        $candidate = [pscustomobject]@{ entry = $entry[0]; root = $Planned.root; repository = $repository }
+        $current = Get-WorktreeItem $candidate ([Collections.Generic.List[object]]::new()) $SessionState
         if ($current.id -ne $Planned.id -or $current.status -ne 'cleanable') { throw '狀態已變更' }
         return $current
     }
@@ -1000,13 +770,12 @@ function Remove-CleanupPlan {
     $failedWorktrees = [Collections.Generic.List[string]]::new()
     $closureCache = @{}
     $freed = [long]0
-    $ordered = @($Plan.items | Where-Object { $_.status -eq 'cleanable' -and $_.kind -in @('worktree', 'dispatchWorktree') } | Sort-Object { $_.path.Length } -Descending) + @($Plan.items | Where-Object { $_.status -eq 'cleanable' -and $_.kind -notin @('worktree', 'dispatchWorktree') })
+    $ordered = @($Plan.items | Where-Object { $_.status -eq 'cleanable' -and $_.kind -eq 'worktree' } | Sort-Object { $_.path.Length } -Descending) + @($Plan.items | Where-Object { $_.status -eq 'cleanable' -and $_.kind -ne 'worktree' })
     foreach ($planned in $ordered) {
         try {
-            if ($planned.kind -in @('worktree', 'dispatchWorktree') -and @($failedWorktrees | Where-Object { Test-PathWithin $_ $planned.path }).Count -gt 0) { throw '狀態已變更' }
+            if ($planned.kind -eq 'worktree' -and @($failedWorktrees | Where-Object { Test-PathWithin $_ $planned.path }).Count -gt 0) { throw '狀態已變更' }
             $item = Confirm-PlannedItem $planned $Plan $SessionState $closureCache
-            if ($item.kind -eq 'dispatchWorktree') { Remove-DispatchWorktree $item.root $item.path }
-            elseif ($item.kind -eq 'worktree') { Remove-OrdinaryWorktree $item.repository.Main $item.path }
+            if ($item.kind -eq 'worktree') { Remove-OrdinaryWorktree $item.repository.Main $item.path }
             else {
                 $fileResult = Remove-CleanupFiles $item $Plan.referenceIndex
                 $freed += $fileResult.Bytes
@@ -1022,7 +791,7 @@ function Remove-CleanupPlan {
             }
         }
         catch {
-            if ($planned.kind -in @('worktree', 'dispatchWorktree')) { $failedWorktrees.Add($planned.path) }
+            if ($planned.kind -eq 'worktree') { $failedWorktrees.Add($planned.path) }
             $failed.Add([pscustomobject]@{ id = $planned.id; reason = $_.Exception.Message })
         }
     }
@@ -1041,7 +810,7 @@ function Write-CleanupPlan {
     }
     Write-Output "清理計畫 $($Plan.planId)"
     foreach ($item in $Plan.items) {
-        $detail = if ($item.kind -in @('worktree', 'dispatchWorktree') -and $null -eq $item.trackedChangeCount) { '改動數無法取得' } elseif ($item.kind -in @('worktree', 'dispatchWorktree')) { "未 commit 改動 $($item.trackedChangeCount) 個、未追蹤 $($item.untrackedCount) 個" } else { '' }
+        $detail = if ($item.kind -eq 'worktree' -and $null -eq $item.trackedChangeCount) { '改動數無法取得' } elseif ($item.kind -eq 'worktree') { "未 commit 改動 $($item.trackedChangeCount) 個、未追蹤 $($item.untrackedCount) 個" } else { '' }
         Write-Output ("{0} | {1} | {2} bytes | {3} | {4}" -f $item.name, $item.status, $item.sizeBytes, ($item.reasons -join '；'), $detail)
     }
     if ($null -ne $Plan.result) { Write-Output "已釋放 $($Plan.result.freedBytes) bytes；失敗 $($Plan.result.failed.Count) 項" }

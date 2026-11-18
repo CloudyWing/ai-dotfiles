@@ -214,7 +214,7 @@ export async function scriptFileExists($: Engine, path: string): Promise<boolean
 }
 function isCleanupItem(value: unknown): value is CleanupItem {
   if (!isRecord(value)) return false
-  return typeof value.id === 'string' && ['worktree', 'dispatchWorktree', 'lineArtifacts', 'backup'].includes(String(value.kind))
+  return typeof value.id === 'string' && ['worktree', 'lineArtifacts', 'backup'].includes(String(value.kind))
     && typeof value.root === 'string' && typeof value.path === 'string' && typeof value.name === 'string'
     && (value.lineSlug === null || typeof value.lineSlug === 'string') && (value.category === null || typeof value.category === 'string')
     && ['cleanable', 'needs-review', 'protected'].includes(String(value.status))
@@ -250,9 +250,6 @@ function isQuota(value: unknown): value is Quota {
 export function normalizePath(path: string): string {
   const value = path.replace(/\//g, '\\').toLowerCase()
   return /^[a-z]:\\+$/.test(value) ? value.slice(0, 3) : value.replace(/\\+$/, '')
-}
-export function isDispatchWorktree(path: string): boolean {
-  return isAbsoluteWindowsPath(toWindowsPath(path)) && (normalizePath(path) + '\\').includes('\\.local\\ai-sessions\\worktrees\\')
 }
 
 export function isUnder(path: string, root: string): boolean {
@@ -336,13 +333,13 @@ export function buildForceWorkRootArgument(current: CurrentRepo | null): string 
 export function resolveCurrentRepo(cwd: string | null, probe: GitProbe): CurrentRepo | null {
   if (!cwd || !isAbsoluteWindowsPath(toWindowsPath(cwd)) || probe.kind === 'failed') return null
   const path = toWindowsPath(cwd)
-  if (probe.kind === 'notRepo') return { name: leafName(path), isGit: false, roots: isDispatchWorktree(path) ? [] : [path], forced: isDispatchWorktree(path) ? [] : [path] }
+  if (probe.kind === 'notRepo') return { name: leafName(path), isGit: false, roots: [path], forced: [path] }
   const top = toWindowsPath(probe.topLevel)
   if (!isAbsoluteWindowsPath(top)) return null
   const entries = probe.worktrees || []
   const unique = (paths: string[]) => paths.filter((item, index) => paths.findIndex(other => normalizePath(other) === normalizePath(item)) === index)
-  const roots = unique([...entries.filter(entry => !entry.isBare).map(entry => toWindowsPath(entry.path)), top]).filter(path => !isDispatchWorktree(path))
-  const forced = unique([...(entries[0] && !entries[0].isBare ? [toWindowsPath(entries[0].path)] : []), top]).filter(path => !isDispatchWorktree(path))
+  const roots = unique([...entries.filter(entry => !entry.isBare).map(entry => toWindowsPath(entry.path)), top])
+  const forced = unique([...(entries[0] && !entries[0].isBare ? [toWindowsPath(entries[0].path)] : []), top])
   return { name: leafName(entries[0]?.path || top), isGit: true, roots, forced }
 }
 export function orderWorkRoots(roots: Root[], current: CurrentRepo | null): Root[] {
@@ -451,12 +448,6 @@ export function closableCleanupLines(items: CleanupItem[], designated: string[])
 
 export function cleanupItemName(item: CleanupItem): string {
   if (item.kind === 'worktree') return `工作目錄 ${item.name}`
-  if (item.kind === 'dispatchWorktree') {
-    const slug = item.lineSlug
-    if (!slug) return `派工 ${item.name}`
-    const suffix = `（${slug}）`
-    return `派工 ${item.name.endsWith(suffix) ? item.name.slice(0, -suffix.length) : item.name}${suffix}`
-  }
   if (item.kind === 'backup') return `備份 ${item.name}`
   const label = item.category === 'history' ? '歷史' : item.category === 'handoff-extras' ? '交接暫存' : item.category === 'report-logs' ? '報告大檔' : '工作線'
   return `${item.lineSlug || item.name} · ${label}`
@@ -464,7 +455,7 @@ export function cleanupItemName(item: CleanupItem): string {
 
 export function cleanupItemDetail(item: CleanupItem): string {
   const parts: string[] = []
-  if (item.kind === 'worktree' || item.kind === 'dispatchWorktree') {
+  if (item.kind === 'worktree') {
     parts.push(item.trackedChangeCount == null || item.untrackedCount == null ? '改動數無法取得' : `未 commit 改動 ${item.trackedChangeCount} 個、未追蹤 ${item.untrackedCount} 個`)
   }
   parts.push(item.reasons.length ? item.reasons.join('；') : `${item.fileCount} 個檔案`)
@@ -672,7 +663,7 @@ export function buildSnapshot(script: Result<Document>, sessions: Result<Session
       const target = !running.has(line.LineSlug) && (isStalled(updatedMs, now.getTime()) || isLanded(line, landedContext)) ? stalledLines : normalLines
       target.push(item)
     })
-  const roots = orderWorkRoots(data.workRoots.filter(root => !isDispatchWorktree(root.Path)), current).map(root => {
+  const roots = orderWorkRoots(data.workRoots, current).map(root => {
     const name = leafName(root.Path)
     if (root.Error) return row(`${name} · ${root.Error}`, { tone: 'error', dot: 'error', isCurrent: current !== null && current.roots.some(path => normalizePath(path) === normalizePath(root.Path)) })
     return row(name, { dot: rootTone(root), right: root.Branch || '-', rightShrink: true, detail: rootDetail(root), isCurrent: current !== null && current.roots.some(path => normalizePath(path) === normalizePath(root.Path)) })
