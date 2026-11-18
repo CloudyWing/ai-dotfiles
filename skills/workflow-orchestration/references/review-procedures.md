@@ -11,10 +11,10 @@
 
 ## Reviewer 派遣單與回收
 
-- 讀取範圍：Reviewer Agent 只讀取派遣單、指定目標，以及第 4 欄指定的 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告（若有），依第 5 欄逐條回報驗收結果。
-- 審查 Workflow 實作時，主 Agent 在第 4 欄同時列出 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告三份檔案的絕對路徑，供 Reviewer 執行需求對照核對。
-- 第二輪以後的審查：`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 對同一條線的第二輪以後審查，第 4 欄另列同一角色前輪報告的絕對路徑，審查者依其 `F-<三位數>` finding ID 判定閉合狀態。
-- 派遣輸入一律是派遣檔（`templates/dispatch/run-order.md`），各欄內容寫入派遣檔的對應部分，對應見 `reviewer.toml`「啟動流程」。Codex 審查者的發動與回收依 `codex-dispatch` skill `references/run.md`，Claude 審查者的發動依本檔「Claude 審查者的發動」。本檔其餘各節的「第 N 欄」指派遣檔的對應部分。
+- 讀取範圍：Reviewer Agent 只讀取派遣檔、指定目標，以及 `required_reads` 指定的 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告（若有），依 `## 驗收條件` 逐條回報驗收結果。
+- 審查 Workflow 實作時，主 Agent 在 `required_reads` 同時列出 `design.md`、同線 `requirement-summary.md` 與 Developer 結案報告三份檔案的絕對路徑，供 Reviewer 執行需求對照核對。
+- 第二輪以後的審查：`Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 對同一條線的第二輪以後審查，`required_reads` 另列同一角色前輪報告的絕對路徑，審查者依其 `F-<三位數>` finding ID 判定閉合狀態。
+- 派遣輸入一律是派遣檔（`templates/dispatch/run-order.md`），各項內容見 `reviewer.toml`「啟動流程」。Codex 審查者的發動與回收依 `codex-dispatch` skill `references/run.md`，Claude 審查者的發動依本檔「Claude 審查者的發動」。
 - 回收後：設計歧義由同線 `Analyst` 依 `handoff/<lineSlug>/requirement-summary.md` 原文裁決，裁決前依 `analyst.md` 的 context 完整性自我聲明確認依據來源。
 
 ## Claude 審查者的發動
@@ -43,10 +43,10 @@
 
 ## 循環標示與第 2 輪以上的 Reviewer 派遣單
 
-Reviewer 派遣單第 4 欄依下列規格標示審查循環，循環術語見 `convergence.md`「共同收斂契約」與「循環識別與重新起算」。
+Reviewer 派遣檔依下列規格標示審查循環，循環術語見 `convergence.md`「共同收斂契約」與「循環識別與重新起算」。
 
-- 寫入一行循環標示，格式為 `循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）`。這一行是第 4 欄的一般文字行，不含路徑，放在「必讀檔案：」區塊之外。派遣檔形式把這一行寫在 `## 任務` 章節的第一行，並把同一組值填入 `## 派遣設定` 的 `cycle`。
-- 第 2 輪以上：「必讀檔案：」區塊另列前輪報告與修正派遣報告的絕對路徑。修正派遣報告在 Workflow 為 `report/<lineSlug>/implement-closure-report.md`，在 `light` 線與單一工作為第 4 欄既有的派工回報檔，內含「前輪 finding 處置結果」表。
+- 寫入一行循環標示，格式為 `循環：<cycle_id> 第 <cycle_round> 輪（cycle_role=review）`。這一行寫在 `## 任務` 章節的第一行，不含路徑，並把同一組值填入 `## 派遣設定` 的 `cycle`。
+- 第 2 輪以上：`required_reads` 另列前輪報告與修正派遣報告的絕對路徑。修正派遣報告在 Workflow 為 `report/<lineSlug>/implement-closure-report.md`，在 `light` 線與單一工作為 `required_reads` 既有的派工回報檔，內含「前輪 finding 處置結果」表。
 - 新循環第 1 輪：不列前輪報告。
 
 ## 修正派遣的前輪 finding 處置核對
@@ -97,6 +97,6 @@ Reviewer 派遣單第 4 欄依下列規格標示審查循環，循環術語見 `
 
 有效深度為 `light` 的線發動審查時，派遣單依下列規格撰寫。
 
-- 第 4 欄列出同線 `requirement-summary.md`、實作驗收契約、派工回報與前輪報告（若有）的絕對路徑，不列 `design.md` 與 Developer 結案報告。實作驗收契約依執行者而定：Claude subagent 為派生 prompt 中的 `acceptanceCriteria`，主 Agent 將其原文另存為檔案後列入；主 Agent 自理為完成回覆中逐列標註〔需求 #n〕的驗收列，同樣另存為檔案後列入。
-- Spec 基準為需求摘要與實作驗收契約的驗收列。`agents/codex/reviewer.toml` 已規定未指定設計文件時依派遣單第 4 欄與第 5 欄執行。
+- `required_reads` 列出同線 `requirement-summary.md`、實作驗收契約、派工回報與前輪報告（若有）的絕對路徑，不列 `design.md` 與 Developer 結案報告。實作驗收契約依執行者而定：Claude subagent 為派生 prompt 中的 `acceptanceCriteria`，主 Agent 將其原文另存為檔案後列入；主 Agent 自理為完成回覆中逐列標註〔需求 #n〕的驗收列，同樣另存為檔案後列入。
+- Spec 基準為需求摘要與實作驗收契約的驗收列。`agents/codex/reviewer.toml` 已規定未指定設計文件時依派遣檔 `## 任務` 與 `## 驗收條件` 執行。
 - 回收後的設計歧義由同線 `Analyst` 依需求摘要原文與實作驗收契約的驗收列裁決。

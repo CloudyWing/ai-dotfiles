@@ -12,7 +12,7 @@
 
 - 審查循環：同一 `lineSlug` 下同一 `cycle_id` 的全部 run。
 - run 的 input：輸出列的 `input_tokens`，含 cached 部分。
-- 有 usage：`input_tokens` 不是 null，且 `usage_basis` 不是 `cumulative-no-anchor`。
+- 有 usage：`input_tokens` 不是 null，且 `usage_basis` 不是 `cumulative-no-anchor`（該值出現在成本帳事件列的備註，用量是 thread 累計值）。
 
 ## 指標
 
@@ -28,7 +28,7 @@
 1. 對 `report\` 下每個 `lineSlug` 目錄執行 `Get-LineCost.ps1`，取輸出的 `codex.runs`。同線以 `run_id` 去重已由該腳本完成。
 2. 篩選 `cycle_id` 不是 null 的列計算 M1、M1u、M2。`cycle_id` 為 null 的 Codex run 計入 M3 分母，並在結果中列為「未標記」。
 3. `input_tokens` 為 null 的列視為無 usage。
-4. 核對數字時，取該 run 事件流最後一筆 `turn.completed.usage`，續行 run 再減去錨點 run 的同一值（口徑見「口徑說明」）。`usage_basis` 為 `cumulative-no-anchor` 的續行列是累計值，`Get-LineCost.ps1` 不把它計入合計，M2 與 M3 同樣排除並標出。事件流路徑取 RunRecord 的 `event_stream_path`；該路徑已不存在時，把它相對於 RunRecord `execution_root` 的部分接到 `source_root`，即 Cleanup 保存的副本。
+4. 核對數字時，取該 run 事件流（`<report_line_root>\runs\<runKey>.events.jsonl`）最後一筆 `turn.completed.usage`（口徑見「口徑說明」）。`usage_basis` 為 `cumulative-no-anchor` 的列是累計值，`Get-LineCost.ps1` 不把它計入合計，M2 與 M3 同樣排除並標出。
 5. 依「指標」計算 M1、M1u、M2、M3。
 
 下列程式區塊承載上述算法，`-WorkRoot` 為線所在的 work-root，`-LineCostScript` 為 `Get-LineCost.ps1` 的路徑。可存成暫存檔執行，例如 `pwsh -NoProfile -File <暫存檔> -WorkRoot '<work-root>' -LineCostScript '<sourceRoot>\scripts\Get-LineCost.ps1'`。
@@ -187,6 +187,6 @@ M1u 以有 usage 的輪次數計算，不取有 usage 的最大輪次。
 
 ## 口徑說明
 
-`turn.completed.usage` 是 Codex thread 的累計值。2026-11-10 的真實派遣 `cost-probe`（scan 檔位）驗證如下：首次 run 的事件流只有 1 筆 `turn.completed`，值為 input 1,230,828、cached 1,144,448、output 13,215；同一 thread 續行的 run 只產生 1 個 item（回答 ok），`turn.completed` 卻是 input 1,329,370、cached 1,241,216、output 14,375，比首次 run 還大。因此單一 run 的用量取該事件流最後一筆 `turn.completed.usage`，續行 run 再減去錨點 run 的同一值；上例續行 run 的實際用量為 input 98,542、cached 96,768、output 1,160。
+`turn.completed.usage` 是 Codex thread 的累計值。現行入口每次發動都是新 thread 的單次執行，事件流最後一筆有效的 `turn.completed.usage` 即該 run 的用量，不逐筆加總。同一 thread 續行的歷史 run 則是累計值，2026-11-10 的真實派遣 `cost-probe`（scan 檔位）驗證如下：首次 run 的事件流只有 1 筆 `turn.completed`，值為 input 1,230,828、cached 1,144,448、output 13,215；同一 thread 續行的 run 只產生 1 個 item（回答 ok），`turn.completed` 卻是 input 1,329,370、cached 1,241,216、output 14,375，比首次 run 還大。因此續行 run 的用量須減去錨點 run 的同一值；上例續行 run 的實際用量為 input 98,542、cached 96,768、output 1,160。
 
 基準鏈的審查 run 在 `runs.csv` 全部是 `is_continuation=False` 的冷啟動，每個 slug 一個 run，累計口徑不影響基準的 M2。`runs.csv` 整體有 172 個續行 run，input 合計占全部的 33.3%，這些列是累計值；以 `runs.csv` 計算其他指標時，續行列需先換算為增量。

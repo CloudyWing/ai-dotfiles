@@ -14,7 +14,7 @@
 | `cycle_round` | 循環內輪次，語意同 `round` | 同 `cycle_id` |
 | `cycle_role` | `review` 為審查，`fix` 為實作或修正 | 同 `cycle_id` |
 | `area-key` | 同一函式或同一節規則的穩定識別。規則文件使用檔案絕對路徑加最近的 Markdown 標題；檢查清單使用所屬循環與檢查項目區段 | 原始檔案標題、函式位置或驗收清單區段 |
-| `problem-key` | 同一問題跨輪次不變的識別。Review 使用 `F-<三位數>`；Design 與 Demo 使用驗收檢查項目 key；派遣回收使用 `dispatchSlug` 加派遣檔 `## 驗收條件` 的列序號；Git 使用既有 finding ID 或建立時指定的固定 key | Reviewer 報告、驗收清單、派遣單第 5 欄或 Git 修正紀錄 |
+| `problem-key` | 同一問題跨輪次不變的識別。Review 使用 `F-<三位數>`；Design 與 Demo 使用驗收檢查項目 key；派遣回收使用 `dispatchSlug` 加派遣檔 `## 驗收條件` 的列序號；Git 使用既有 finding ID 或建立時指定的固定 key | Reviewer 報告、驗收清單、派遣檔 `## 驗收條件` 或 Git 修正紀錄 |
 | `closed` | 前輪仍未解決的問題，在本輪相同 key 的驗收結果通過，且本輪沒有該 key 的反證 | 本輪完整驗收輸出與證據 |
 | `new-problem` | 本輪問題 key 不在前輪未解決問題集合，且沒有同一 key 的改寫或重新命名 | 前後輪問題集合比對 |
 | `severity` | `Critical`、`Major`、`Minor`。Review 沿用 `reviewer.toml`；其他循環依檢查項目影響映射 | Reviewer 規則或各循環的嚴重度映射 |
@@ -38,7 +38,7 @@
 
 | 變動類型 | 判定 |
 | --- | --- |
-| 目標 | 下一輪派遣單第 3 欄出現上一輪第 3 欄沒有的路徑。縮小目標不觸發，原循環繼續，被移出目標的 finding 在下一輪標「撤回（目標已移出）」 |
+| 目標 | 下一輪派遣檔 `targets` 出現上一輪 `targets` 沒有的路徑。縮小目標不觸發，原循環繼續，被移出目標的 finding 在下一輪標「撤回（目標已移出）」 |
 | 需求 | `requirement-summary.md` 的程式面或功能面項目，或「已確定的實作約束」被改動 |
 | 方案 | `design.md` 的已確認設計（技術選型、Phase 內容）被改動，或審查裁決改採與原循環不同的方案 |
 
@@ -51,7 +51,7 @@
 5. 保留舊循環已發生的 run 與成本在原 `cycle_id` 之下，舊循環的 `cycle_round` 不再增加。
 6. 同一 `target-key` 的世代將達 `c3` 時停止。協調者在追加 `循環重啟` 列之前停止，向使用者說明前兩個循環的結束輪次與變動原因，取得使用者確認後才建立 `c3`，防止以重新起算繞過 `max-rounds`。
 
-Sonnet 審查與 Claude 實作路徑沒有 RunRecord，協調者仍在派遣單或派生 prompt 標示循環，並手寫 `循環重啟` 列。
+Claude 審查者的執行紀錄由 `scripts/Write-ClaudeRunRecord.ps1` 寫出，循環標示取自派遣檔的 `cycle`。Claude 實作路徑沒有執行紀錄，協調者在派生 prompt 標示循環。`循環重啟` 列在各路徑都由協調者手寫追加。
 
 收斂判定的執行順序與停止門檻見 `rules/claude/40-workflow.md`「Workflow 自動推進鏈與共同收斂契約」。
 
