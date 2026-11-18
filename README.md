@@ -156,9 +156,6 @@ mcp-lab、infra-lab 與 FlaUI.Mcp 都是選用項目。先依下方說明手動�
 | **Skill** | 專門能力模組 | 知識型：AI 自動載入；指令型：使用者以 `/` 呼叫 | 封裝知識規範、可執行任務，支援腳本與資源 |
 | **Agent** | 獨立代理人設定 | 依設定檔觸發或手動指定 | 定義 AI 角色、行為框架與可用工具 |
 
-- 以 `instructions.md` 作為 Claude 與 Codex 共用的主規則檔（Single Rule）；只有 Claude 端需要的 Persona、協調、授權、派工與 Workflow 審查規則放在 `rules/claude/`，每條規則只存在一處。
-- Commit 訊息生成以 `skills/generate-commit/` Skill 形式獨立管理。
-
 ### 平台分工
 
 | 工作 | 執行端 |
