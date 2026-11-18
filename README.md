@@ -344,9 +344,9 @@ trust_level = "trusted"
 
 `[windows]` 段的 `sandbox` 接受 `"mxc"` 與 `"elevated"`，缺少 `[windows]` 段時補上 `"mxc"`。Windows 上新啟動的派工一律以 MXC 執行，由派工腳本指定，不依賴此設定值。
 
-缺少 `config.toml` 的登記帳號在自動選帳號時被略過（原因碼 `TrustConfigMissing`），由建立腳本補齊。
+缺少檔位設定檔（`<檔位>.config.toml`）的登記帳號在自動選帳號時被略過（原因碼 `ProfileConfigMissing`），由 Setup 或建立腳本補齊。
 
-`config.toml` 設定異常的帳號會被略過，全部帳號都不可用時拒絕派工並說明原因。帳號回報檔位 model 不支援（停用訂閱的帳號也以此呈現）時，派工腳本把該帳號與 model 記在 `.local\codex-account-health.json`，24 小時內派工會略過該帳號；所有帳號都被記錄時仍實際嘗試一次。
+未登入的帳號同樣會被略過，全部帳號都不可用時拒絕派工並說明原因。帳號回報檔位 model 不支援（停用訂閱的帳號也以此呈現）時，派工腳本把該帳號與 model 記在 `.local\codex-account-health.json`，24 小時內派工會略過該帳號；所有帳號都被記錄時仍實際嘗試一次。
 
 腳本不執行登入，最後輸出已設定 `CODEX_HOME` 的登入命令，由使用者自行執行。
 
