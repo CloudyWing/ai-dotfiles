@@ -10,7 +10,9 @@ param(
     [switch]$Force,
     [switch]$EnableLongPaths,
     [switch]$Check,
-    [switch]$AsJson
+    [switch]$AsJson,
+    [string]$InfraLabDistro,
+    [string]$InfraLabWslRepo
 )
 
 Set-StrictMode -Version Latest
@@ -33,6 +35,10 @@ if ($AsJson -and -not $Check) {
 }
 if ($Check -and ($Force -or $EnableLongPaths)) {
     Write-Error "-Check 為唯讀模式，不能與 -Force 或 -EnableLongPaths 一起使用。" -ErrorAction Continue
+    exit 1
+}
+if ($Check -and ($InfraLabDistro -or $InfraLabWslRepo)) {
+    Write-Error "-InfraLabDistro 與 -InfraLabWslRepo 只用於登記 infra-lab，不能與 -Check 一起使用。" -ErrorAction Continue
     exit 1
 }
 
@@ -118,6 +124,11 @@ $expectedHooksPath = '.githooks'
 $claudeMarketplaceRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'claude-plugins'
 # 此路徑用來辨識舊 hook 項目。
 $legacyHookPattern = '*scripts/hooks/post-edit-write-hook.ps1*'
+# Claude 使用者層設定：MCP 登記範本、settings.json 共用範本，以及使用者層登記檔與 settings.json 的位置（執行模式的 8d 至 8f 與 -Check 共用）。
+$claudeMcpTemplatePath = Join-Path $configRoot 'templates\claude-mcp-servers.json'
+$claudeSettingsTemplatePath = Join-Path $configRoot 'templates\claude-settings.shared.json'
+$claudeUserMcpPath = Join-Path $env:USERPROFILE '.claude.json'
+$claudeSettingsPath = Join-Path $claudeDir 'settings.json'
 
 # 斷鍊清除的掃描範圍，含現役與已退役工具根目錄
 $sweepRoots = @(
@@ -341,18 +352,23 @@ if ($Check) {
     . (Join-Path $PSScriptRoot 'dispatch\common-runtime.ps1')
     . (Join-Path $PSScriptRoot 'dispatch\git-baseline.ps1')
     . (Join-Path $PSScriptRoot 'dispatch\dispatch-evidence.ps1')
+    . (Join-Path $PSScriptRoot 'lib\claude-user-config.ps1')
     . (Join-Path $PSScriptRoot 'lib\setup-check.ps1')
     $checkExitCode = Invoke-SetupCheck -Expected @{
-        ConfigRoot        = $configRoot
-        MainInstructions  = $mainInstructions
-        GitExcludesFile   = $gitGlobalExcludes
-        ToolDirectories   = @($claudeDir, $codexDir, $agentsDir)
-        ClaudeDirectory   = $claudeDir
-        Links             = $desired
-        SweepRoots        = $sweepRoots
-        MarketplaceRoot   = $claudeMarketplaceRoot
-        HooksPath         = $expectedHooksPath
-        LegacyHookPattern = $legacyHookPattern
+        ConfigRoot           = $configRoot
+        MainInstructions     = $mainInstructions
+        GitExcludesFile      = $gitGlobalExcludes
+        ToolDirectories      = @($claudeDir, $codexDir, $agentsDir)
+        ClaudeDirectory      = $claudeDir
+        Links                = $desired
+        SweepRoots           = $sweepRoots
+        MarketplaceRoot      = $claudeMarketplaceRoot
+        HooksPath            = $expectedHooksPath
+        LegacyHookPattern    = $legacyHookPattern
+        UserMcpPath          = $claudeUserMcpPath
+        McpTemplatePath      = $claudeMcpTemplatePath
+        SettingsPath         = $claudeSettingsPath
+        SettingsTemplatePath = $claudeSettingsTemplatePath
     } -AsJson:$AsJson
     exit $checkExitCode
 }
@@ -512,6 +528,26 @@ if ($claudePluginEnabled) {
     Remove-ClaudeLegacyHook -SettingsPath (Join-Path $claudeDir 'settings.json') -BackupRoot (Join-Path $configRoot '.local\ai-sessions\backups') -WhatIf:$WhatIfPreference
 }
 
+# 8d、8e、8f. Claude 使用者層設定：官方外掛、settings.json 共用範本、MCP 登記。
+# 步驟內容與輸出在 lib\claude-user-config.ps1，這裡只呼叫；各步驟失敗只警告，不中斷其餘步驟，也不改變結束碼（與 8b 相同）。
+# 授權（permissions）與偏好類的設定不在範本內，由使用者自行設定。
+. (Join-Path $PSScriptRoot 'lib\claude-user-config.ps1')
+
+# 8d. 必裝的官方外掛（清單取自 settings 範本 enabledPlugins 中的官方 marketplace 項目）
+Write-Host "`n>>> 正在處理 Claude 官方外掛..." -ForegroundColor Cyan
+try { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath $claudeSettingsTemplatePath -WhatIf:$WhatIfPreference | Out-Null }
+catch { Write-Warning $_.Exception.Message }
+
+# 8e. 套用 settings.json 共用範本（只新增缺少的項目，不覆寫既有值；寫入前備份；尚未安裝的外掛略過其 enabledPlugins 項目）
+Write-Host "`n>>> 正在套用 Claude settings.json 共用範本..." -ForegroundColor Cyan
+try { Invoke-ClaudeSettingsStep -SettingsPath $claudeSettingsPath -TemplatePath $claudeSettingsTemplatePath -BackupRoot (Join-Path $configRoot '.local\ai-sessions\backups') -WhatIf:$WhatIfPreference | Out-Null }
+catch { Write-Warning $_.Exception.Message }
+
+# 8f. 登記 mcp-lab 與 infra-lab 到 Claude Code 使用者層（名稱與範本相同，已存在者不覆寫）
+Write-Host "`n>>> 正在登記 Claude MCP 伺服器..." -ForegroundColor Cyan
+try { Invoke-ClaudeMcpStep -McpTemplatePath $claudeMcpTemplatePath -UserMcpPath $claudeUserMcpPath -InfraLabDistro $InfraLabDistro -InfraLabWslRepo $InfraLabWslRepo -WhatIf:$WhatIfPreference | Out-Null }
+catch { Write-Warning $_.Exception.Message }
+
 # 9. 設定 Git Hooks 路徑
 Write-Host "`n>>> 正在設定 Git Hooks..." -ForegroundColor Cyan
 if ($PSCmdlet.ShouldProcess("$configRoot", "設定 core.hooksPath → $expectedHooksPath")) {
@@ -559,6 +595,9 @@ Write-Host "  - Claude Code skills → $configRootDisplay/skills/"
 Write-Host "  - Claude Code agents → $configRootDisplay/agents/claude/"
 Write-Host "  - Claude Code rules → $configRootDisplay/rules/claude/（只在 Claude 端載入的常駐規則）"
 Write-Host "  - Claude Code plugin 由本機 marketplace 提供，包含 ai-agents-hooks@ai-agents-local 與 line-status-board@ai-agents-local，原始碼位於 $($claudeMarketplaceRoot.Replace($env:USERPROFILE, '~'))"
+Write-Host "  - Claude Code MCP 登記由 Setup 補齊 mcp-lab 的 11 個伺服器與 infra-lab（範本 $configRootDisplay/templates/claude-mcp-servers.json）；已登記但內容與範本不同者只回報不覆寫，新登記的 MCP 需重新啟動 Claude Code 的 Session 才會載入"
+Write-Host "  - infra-lab 經 WSL 啟動，首次登記需加上 -InfraLabDistro <發行版名稱> 與 -InfraLabWslRepo <WSL 內 infra-lab 的路徑>，兩個值取自在 WSL 內執行 task mcp:config 時印出的命令；登記後存於 ~/.claude.json，重跑不需要再提供"
+Write-Host "  - Claude Code settings.json 只套用共用範本（$configRootDisplay/templates/claude-settings.shared.json）中缺少的項目，不覆寫既有值；授權（permissions）與偏好類設定不在範本內，由你自行設定。寫入前的原檔備份在 $configRootDisplay/.local/ai-sessions/backups/"
 Write-Host "  - Codex 透過 ~/.codex/AGENTS.md 符號連結讀取（或以 CODEX_HOME 指定路徑）"
 Write-Host "  - Codex agents → $configRootDisplay/agents/codex/"
 Write-Host "  - Codex skills → ~/.agents/skills/"

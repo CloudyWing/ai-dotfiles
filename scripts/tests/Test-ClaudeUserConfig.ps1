@@ -11,6 +11,7 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 $libPath = Join-Path $repoRoot 'scripts\lib\claude-user-config.ps1'
 $mcpTemplatePath = Join-Path $repoRoot 'templates\claude-mcp-servers.json'
+$settingsTemplatePath = Join-Path $repoRoot 'templates\claude-settings.shared.json'
 $tempBase = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp') ('claude-user-config-' + [guid]::NewGuid().ToString('N'))
 $failed = 0
 $passed = 0
@@ -114,19 +115,14 @@ function New-ExistingRegistrations {
 function New-SettingsTemplateText {
     return @'
 {
-  "model": "opus",
   "theme": "dark",
   "tui": "fullscreen",
-  "permissions": {
-    "allow": ["WebSearch", "Bash(git status *)"],
-    "ask": ["Read(**/.env)"],
-    "deny": ["Read(**/auth.json)"]
-  },
+  "list": ["a", "b"],
   "enabledPlugins": {
     "microsoft-docs@claude-plugins-official": true,
     "ai-agents-hooks@ai-agents-local": true
   },
-  "modelSettings": { "model-a": { "effortLevel": "medium" } }
+  "nested": { "inner": { "level": "x" } }
 }
 '@
 }
@@ -134,12 +130,16 @@ function New-SettingsTemplateText {
 function New-ExistingSettingsText {
     return @'
 {
-  "model": "sonnet",
+  "theme": "light",
+  "model": "user-model",
   "customKey": { "nested": [1, 2, { "deep": true }] },
   "permissions": {
     "allow": ["Bash(echo *)", "WebSearch"],
+    "deny": ["Read(**/auth.json)"],
     "additionalDirectories": ["extra-dir"]
   },
+  "skipDangerousModePermissionPrompt": true,
+  "list": ["z"],
   "enabledPlugins": { "microsoft-docs@claude-plugins-official": false },
   "nothing": null,
   "stamp": "2026-11-18T10:00:00Z",
@@ -149,8 +149,25 @@ function New-ExistingSettingsText {
 '@
 }
 
+function Test-DirectoryHasClaude {
+    param([string]$Directory)
+    foreach ($name in @('claude.exe', 'claude.cmd', 'claude.bat', 'claude.ps1', 'claude')) {
+        if (Test-Path -LiteralPath (Join-Path $Directory $name) -PathType Leaf -ErrorAction SilentlyContinue) { return $true }
+    }
+    return $false
+}
+
+$originalPath = $env:PATH
 try {
     New-Item -ItemType Directory -Path $tempBase -Force | Out-Null
+
+    # 假的 claude：步驟函式以 Get-Command claude 判斷 CLI 是否存在，測試需要在沒裝 Claude Code 的電腦也能跑，且不能呼叫到真實的 CLI。
+    # PATH 移除所有含 claude 執行檔的目錄，只留這個假的；假 claude 被呼叫時以結束碼 99 與錯誤訊息失敗。實際的 CLI 呼叫一律由 Invoke-ClaudeCli 與 Get-ClaudeList 替身取代。
+    $fakeClaudeDirectory = Join-Path $tempBase 'fake-claude-bin'
+    New-Item -ItemType Directory -Path $fakeClaudeDirectory -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $fakeClaudeDirectory 'claude.cmd'), "@echo off`r`necho fake claude must not be called 1>&2`r`nexit /b 99`r`n", (New-Object System.Text.UTF8Encoding($false)))
+    $pathWithoutClaude = @($originalPath -split ';' | Where-Object { $_ -ne '' -and -not (Test-DirectoryHasClaude -Directory $_) })
+    $env:PATH = (@($fakeClaudeDirectory) + $pathWithoutClaude) -join ';'
 
     # ---- 範本讀取與驗證 ----
     $template = $null
@@ -427,6 +444,15 @@ try {
         $result = Install-ClaudeOfficialPlugin -PluginId 'microsoft-docs@claude-plugins-official' -WhatIf
         $result.Status -eq 'whatif' -and $script:CliCalls.Count -eq 0
     }
+    Test-Case 'I07 marketplace add 結束碼非零時立即停止，回報 CLI 原始輸出，不執行 plugin install' {
+        Reset-Stubs
+        $script:ListHandler = { param($Arguments) , @() }
+        $rawOutput = "x Failed to add marketplace`r`nerror: Filename too long`r`nfatal: unable to checkout working tree"
+        $script:CliHandler = { param($Arguments) [pscustomobject]@{ ExitCode = 1; Output = $rawOutput } }.GetNewClosure()
+        $result = Install-ClaudeOfficialPlugin -PluginId 'microsoft-docs@claude-plugins-official'
+        $result.Status -eq 'failed' -and $script:CliCalls.Count -eq 1 -and (Join-Arguments $script:CliCalls[0]) -ceq (Join-Arguments @('plugin', 'marketplace', 'add', 'anthropics/claude-plugins-official')) -and
+        $result.Message.Contains('Filename too long') -and $result.Message.Contains('fatal: unable to checkout working tree') -and @($script:CliCalls | Where-Object { $_ -contains 'install' }).Count -eq 0
+    }
 
     # ---- settings 合併 ----
     function New-SettingsFixture {
@@ -456,15 +482,19 @@ try {
         $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
         $after = (Read-ClaudeSettingsFile -Path $fixture.Settings).Object
         $kept = @($result.Changes | Where-Object { $_.Kind -eq 'kept-differs' })
-        $result.Status -eq 'merged' -and $after.model -ceq 'sonnet' -and $after.theme -ceq 'dark' -and $after.tui -ceq 'fullscreen' -and
+        $result.Status -eq 'merged' -and $after.theme -ceq 'light' -and $after.tui -ceq 'fullscreen' -and $after.model -ceq 'user-model' -and $after.nested.inner.level -ceq 'x' -and
         $after.customKey.nested[2].deep -eq $true -and $after.permissions.additionalDirectories[0] -ceq 'extra-dir' -and
-        @($kept | ForEach-Object { $_.Path }) -contains 'model' -and (($result.Changes | ConvertTo-Json -Depth 4) -notmatch 'sonnet')
+        @($kept | ForEach-Object { $_.Path }) -contains 'theme' -and (($result.Changes | ConvertTo-Json -Depth 4) -notmatch 'light')
     }
-    Test-Case 'S03 permissions 陣列附加且不重複，既有順序不變' {
+    Test-Case 'S03 陣列鍵保留既有內容不合併；permissions 與 skipDangerousModePermissionPrompt 原樣不變，Changes 不含這兩個鍵' {
         $fixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
-        $null = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
+        $before = (Read-ClaudeSettingsFile -Path $fixture.Settings).Object
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
         $after = (Read-ClaudeSettingsFile -Path $fixture.Settings).Object
-        ((@($after.permissions.allow) -join '|') -ceq 'Bash(echo *)|WebSearch|Bash(git status *)') -and ((@($after.permissions.ask) -join '|') -ceq 'Read(**/.env)') -and ((@($after.permissions.deny) -join '|') -ceq 'Read(**/auth.json)')
+        $paths = @($result.Changes | ForEach-Object { $_.Path })
+        ((@($after.list) -join '|') -ceq 'z') -and $paths -contains 'list' -and
+        (Test-ClaudeUserConfigJsonEqual $before.permissions $after.permissions) -and $after.skipDangerousModePermissionPrompt -eq $true -and
+        @($paths | Where-Object { $_ -match '^permissions|^skipDangerousModePermissionPrompt' }).Count -eq 0
     }
     Test-Case 'S04 enabledPlugins 既有的 false 保留，缺少的項目新增' {
         $fixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
@@ -620,6 +650,206 @@ try {
         $map[$openPort] -and -not $map[$closedPort] -and $watch.ElapsedMilliseconds -lt 3000
     }
 
+    # ---- Setup 步驟 8d、8e、8f 的內容（輸出與略過條件） ----
+    function Invoke-Captured {
+        param([scriptblock]$Action)
+        $captured = [pscustomobject]@{ Result = @(); Warnings = @(); Info = @(); Error = $null }
+        try {
+            $stream = @(& $Action 3>&1 6>&1)
+            $captured.Warnings = @($stream | Where-Object { $_ -is [System.Management.Automation.WarningRecord] } | ForEach-Object { $_.Message })
+            $captured.Info = @($stream | Where-Object { $_ -is [System.Management.Automation.InformationRecord] } | ForEach-Object { [string]$_.MessageData })
+            $captured.Result = @($stream | Where-Object { $_ -isnot [System.Management.Automation.WarningRecord] -and $_ -isnot [System.Management.Automation.InformationRecord] })
+        }
+        catch { $captured.Error = $_.Exception.Message }
+        return $captured
+    }
+
+    function Invoke-WithoutClaude {
+        # PATH 只含一個空目錄，使 Get-Command claude 找不到命令。
+        param([scriptblock]$Action)
+        $savedPath = $env:PATH
+        $emptyDirectory = New-TestDirectory
+        try { $env:PATH = $emptyDirectory; return (Invoke-Captured -Action $Action) }
+        finally { $env:PATH = $savedPath }
+    }
+
+    function New-UserMcpFile {
+        param([string[]]$Exclude = @())
+        $directory = New-TestDirectory
+        $path = Join-Path $directory 'claude.json'
+        $existing = New-ExistingRegistrations -Template $template
+        foreach ($name in $Exclude) { $existing.Remove($name) }
+        Write-TestFile $path (@{ mcpServers = $existing } | ConvertTo-Json -Depth 8)
+        return $path
+    }
+
+    Test-Case 'ST01 官方外掛步驟：marketplace 與外掛都缺少時依序 add、install，輸出外掛名稱' {
+        Reset-Stubs
+        $script:ListHandler = { param($Arguments) , @() }
+        $captured = Invoke-Captured { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath $settingsTemplatePath }
+        $null -eq $captured.Error -and $captured.Result.Count -eq 1 -and $captured.Result[0].Status -eq 'installed' -and $script:CliCalls.Count -eq 2 -and (($captured.Info -join "`n") -match 'microsoft-docs@claude-plugins-official')
+    }
+    Test-Case 'ST02 官方外掛步驟：marketplace add 失敗時以警告回報 CLI 原始輸出，不執行 install' {
+        Reset-Stubs
+        $script:ListHandler = { param($Arguments) , @() }
+        $script:CliHandler = { param($Arguments) [pscustomobject]@{ ExitCode = 1; Output = 'Filename too long raw output' } }
+        $captured = Invoke-Captured { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath $settingsTemplatePath }
+        $null -eq $captured.Error -and $captured.Result[0].Status -eq 'failed' -and $script:CliCalls.Count -eq 1 -and (($captured.Warnings -join "`n") -match 'Filename too long raw output')
+    }
+    Test-Case 'ST03 官方外掛步驟：找不到 claude 時擲出例外且零次呼叫；範本不存在時無動作' {
+        Reset-Stubs
+        $noClaude = Invoke-WithoutClaude { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath $settingsTemplatePath }
+        $noTemplate = Invoke-Captured { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath (Join-Path (New-TestDirectory) 'none.json') }
+        $noClaude.Error -match '找不到 claude CLI' -and $script:CliCalls.Count -eq 0 -and $null -eq $noTemplate.Error -and $noTemplate.Result.Count -eq 0
+    }
+    $allPluginsInstalled = {
+        param($Arguments)
+        , @([pscustomobject]@{ id = 'ai-agents-hooks@ai-agents-local'; enabled = $true }, [pscustomobject]@{ id = 'line-status-board@ai-agents-local'; enabled = $true }, [pscustomobject]@{ id = 'microsoft-docs@claude-plugins-official'; enabled = $true })
+    }
+    Test-Case 'F01 PATH 上只有假的 claude：Get-Command 找到的是測試的假命令，不會呼叫到真實的 CLI' {
+        $found = @(Get-Command -Name 'claude' -CommandType Application -All -ErrorAction SilentlyContinue)
+        $found.Count -eq 1 -and $found[0].Source.StartsWith($fakeClaudeDirectory, [StringComparison]::OrdinalIgnoreCase)
+    }
+    Test-Case 'ST04 settings 步驟：不存在時建立並輸出新增路徑；-WhatIf 不寫檔' {
+        Reset-Stubs
+        $script:ListHandler = $allPluginsInstalled
+        $fixture = New-SettingsFixture
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $whatIf = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups -WhatIf }
+        $existedAfterWhatIf = Test-Path -LiteralPath $fixture.Settings
+        $captured = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups }
+        $null -eq $whatIf.Error -and -not $existedAfterWhatIf -and $null -eq $captured.Error -and $captured.Result[0].Status -eq 'created' -and (Test-Path -LiteralPath $fixture.Settings) -and (($captured.Info -join "`n") -match '新增：enabledPlugins')
+    }
+    Test-Case 'ST05 settings 步驟：找不到 claude、範本不存在時擲出例外；資料異常時以警告回報且不寫檔' {
+        Reset-Stubs
+        $script:ListHandler = $allPluginsInstalled
+        $fixture = New-SettingsFixture
+        $noClaude = Invoke-WithoutClaude { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups }
+        $noTemplate = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath (Join-Path $fixture.Directory 'none.json') -BackupRoot $fixture.Backups }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $fixture.Settings) -Force | Out-Null
+        [IO.File]::WriteAllBytes($fixture.Settings, (& $refusedInputs['bom']))
+        $hash = Get-TestHash $fixture.Settings
+        $refused = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups }
+        $noClaude.Error -match '找不到 claude CLI' -and $noTemplate.Error -match '找不到 settings 範本' -and $null -eq $refused.Error -and $refused.Result[0].Status -eq 'refused' -and
+        (($refused.Warnings -join "`n") -match '無法安全合併') -and (Get-TestHash $fixture.Settings) -ceq $hash -and -not (Test-Path -LiteralPath $fixture.Backups)
+    }
+    Test-Case 'ST06 MCP 步驟：只對缺少的項目呼叫 mcp add，輸出登記名稱與重新啟動 Session 的說明' {
+        Reset-Stubs
+        $userMcp = New-UserMcpFile -Exclude @('mcp-docker', 'infra-lab')
+        $captured = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
+        $info = $captured.Info -join "`n"
+        $null -eq $captured.Error -and $script:CliCalls.Count -eq 2 -and @($captured.Result | Where-Object { $_.Status -eq 'added' }).Count -eq 2 -and $info -match 'MCP 登記：mcp-docker' -and $info -match 'MCP 登記：infra-lab' -and
+        $info -match '10 項已登記且與範本相符' -and $info -match '重新啟動 Claude Code'
+    }
+    Test-Case 'ST07 MCP 步驟：infra-lab 缺值時警告 needs-values 且不呼叫；未新登記時不印重新啟動說明' {
+        Reset-Stubs
+        $userMcp = New-UserMcpFile -Exclude @('infra-lab')
+        $captured = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -InfraLabDistro '' -InfraLabWslRepo '' }
+        $null -eq $captured.Error -and $script:CliCalls.Count -eq 0 -and (($captured.Warnings -join "`n") -match '-InfraLabDistro') -and (($captured.Info -join "`n") -notmatch '重新啟動 Claude Code')
+    }
+    Test-Case 'ST08 MCP 步驟：差異只回報不覆寫，警告不含現有值；-WhatIf 零次呼叫' {
+        Reset-Stubs
+        $userMcp = New-UserMcpFile
+        $json = [IO.File]::ReadAllText($userMcp).Replace('9840', '19999')
+        Write-TestFile $userMcp $json
+        $differs = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
+        $emptyMcp = New-UserMcpFile -Exclude ($template | ForEach-Object { $_.Name })
+        $whatIf = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath $emptyMcp -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo -WhatIf }
+        $null -eq $differs.Error -and (($differs.Warnings -join "`n") -match 'claude mcp remove mcp-reader --scope user') -and (($differs.Warnings -join "`n") -notmatch '19999') -and
+        $null -eq $whatIf.Error -and $script:CliCalls.Count -eq 0 -and @($whatIf.Result | Where-Object { $_.Status -eq 'whatif' }).Count -eq 12
+    }
+    Test-Case 'ST09 MCP 步驟：登記檔無法讀取、範本無效或找不到 claude 時擲出例外且零次呼叫；登記檔不存在時全部登記' {
+        Reset-Stubs
+        $directory = New-TestDirectory
+        Write-TestFile (Join-Path $directory 'bad.json') '{ not json'
+        $unreadable = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'bad.json') -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
+        $badTemplate = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath (Join-Path $directory 'none.json') -UserMcpPath (Join-Path $directory 'none-user.json') -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
+        $noClaude = Invoke-WithoutClaude { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none-user.json') -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
+        $zeroCalls = $script:CliCalls.Count -eq 0
+        $fresh = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none-user.json') -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
+        $unreadable.Error -match '無法讀取' -and $badTemplate.Error -match '找不到 MCP 範本' -and $noClaude.Error -match '找不到 claude CLI' -and $zeroCalls -and $script:CliCalls.Count -eq 12 -and @($fresh.Result | Where-Object { $_.Status -eq 'added' }).Count -eq 12
+    }
+
+    # ---- 外掛安裝失敗時 settings.json 不寫入該外掛的 enabledPlugins ----
+    Test-Case 'PL01 外掛未安裝（安裝失敗或略過）時，settings 步驟略過該外掛的 enabledPlugins 並在警告說明原因，其餘項目照常寫入' {
+        Reset-Stubs
+        $script:ListHandler = { param($Arguments) , @([pscustomobject]@{ id = 'ai-agents-hooks@ai-agents-local'; enabled = $true }, [pscustomobject]@{ id = 'line-status-board@ai-agents-local'; enabled = $true }) }
+        $fixture = New-SettingsFixture
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $captured = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups }
+        $written = Read-ClaudeSettingsFile -Path $fixture.Settings
+        $plugins = $written.Object.enabledPlugins
+        $null -eq $captured.Error -and $captured.Result[0].Status -eq 'created' -and $null -ne $plugins.PSObject.Properties['ai-agents-hooks@ai-agents-local'] -and $null -ne $plugins.PSObject.Properties['line-status-board@ai-agents-local'] -and
+        $null -eq $plugins.PSObject.Properties['microsoft-docs@claude-plugins-official'] -and @($captured.Warnings | Where-Object { $_.Contains('microsoft-docs@claude-plugins-official') -and $_.Contains('外掛尚未安裝') }).Count -eq 1 -and
+        @($captured.Result[0].Skipped).Count -eq 1
+    }
+    Test-Case 'PL02 已有 settings.json 且外掛未安裝：既有內容與使用者值不變，只略過該項；重跑（外掛補裝後）才補上' {
+        Reset-Stubs
+        $script:ListHandler = { param($Arguments) , @([pscustomobject]@{ id = 'ai-agents-hooks@ai-agents-local'; enabled = $true }, [pscustomobject]@{ id = 'line-status-board@ai-agents-local'; enabled = $true }) }
+        $fixture = New-SettingsFixture -ExistingText '{"theme":"light","enabledPlugins":{"ai-agents-hooks@ai-agents-local":true,"line-status-board@ai-agents-local":true}}'
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $hash = Get-TestHash $fixture.Settings
+        $first = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups }
+        $afterFirst = Read-ClaudeSettingsFile -Path $fixture.Settings
+        $firstUnchanged = $first.Result[0].Status -eq 'unchanged' -and (Get-TestHash $fixture.Settings) -ceq $hash -and $null -eq $afterFirst.Object.enabledPlugins.PSObject.Properties['microsoft-docs@claude-plugins-official']
+        $script:ListHandler = $allPluginsInstalled
+        $second = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups }
+        $afterSecond = Read-ClaudeSettingsFile -Path $fixture.Settings
+        $firstUnchanged -and $second.Result[0].Status -eq 'merged' -and $afterSecond.Object.enabledPlugins.'microsoft-docs@claude-plugins-official' -eq $true -and $afterSecond.Object.theme -ceq 'light'
+    }
+    Test-Case 'PL03 無法讀取已安裝的外掛清單時，範本內的外掛全部略過並說明原因，不寫入 settings.json' {
+        Reset-Stubs
+        $script:ListHandler = { param($Arguments) throw 'plugin list failed' }
+        $fixture = New-SettingsFixture
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $captured = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups }
+        $null -eq $captured.Error -and @($captured.Result[0].Skipped).Count -eq 3 -and @($captured.Warnings | Where-Object { $_.Contains('無法讀取已安裝的外掛清單') -and $_.Contains('plugin list failed') }).Count -eq 3 -and -not (Test-Path -LiteralPath $fixture.Settings)
+    }
+    Test-Case 'PL04 -WhatIf 預演不做外掛篩選，列出完整的將新增項目' {
+        Reset-Stubs
+        $fixture = New-SettingsFixture
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $captured = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups -WhatIf }
+        $null -eq $captured.Error -and $captured.Result[0].Status -eq 'whatif' -and @($captured.Result[0].Skipped).Count -eq 0 -and $captured.Warnings.Count -eq 0 -and -not (Test-Path -LiteralPath $fixture.Settings)
+    }
+    Test-Case 'PL05 Invoke-ClaudeSettingsApply -ExcludePluginId：排除項目不寫入；全部排除時不建立檔案；未列在範本的識別不影響' {
+        $fixture = New-SettingsFixture
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $partial = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups -ExcludePluginId @('microsoft-docs@claude-plugins-official', 'not-in-template@x')
+        $written = (Read-ClaudeSettingsFile -Path $fixture.Settings).Object
+        $other = New-SettingsFixture
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $other.Template -Force
+        $all = Invoke-ClaudeSettingsApply -SettingsPath $other.Settings -TemplatePath $other.Template -BackupRoot $other.Backups -ExcludePluginId @('ai-agents-hooks@ai-agents-local', 'line-status-board@ai-agents-local', 'microsoft-docs@claude-plugins-official')
+        $partial.Status -eq 'created' -and @($partial.Skipped).Count -eq 1 -and @($written.enabledPlugins.PSObject.Properties).Count -eq 2 -and $all.Status -eq 'unchanged' -and @($all.Skipped).Count -eq 3 -and -not (Test-Path -LiteralPath $other.Settings)
+    }
+
+    # ---- 不支援 -DateKind 的 PowerShell（7.5 以前）不改寫既有的 settings.json ----
+    # 以同名函式替身讓 Test-ClaudeUserConfigDateKindSupported 回傳 false，模擬 7.0 至 7.4。
+    Test-Case 'DK01 不支援 -DateKind 時，改寫既有 settings.json 的步驟回報 refused 並說明需升級 PowerShell，檔案與備份目錄不變' {
+        $fixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $hash = Get-TestHash $fixture.Settings
+        function Test-ClaudeUserConfigDateKindSupported { return $false }
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
+        $result.Status -eq 'refused' -and $result.Message.Contains('7.5') -and $result.Message.Contains('winget upgrade Microsoft.PowerShell') -and (Get-TestHash $fixture.Settings) -ceq $hash -and -not (Test-Path -LiteralPath $fixture.Backups) -and
+        @(Get-ChildItem -LiteralPath (Split-Path -Parent $fixture.Settings) -Filter '*.tmp-*').Count -eq 0
+    }
+    Test-Case 'DK02 不支援 -DateKind 時，settings 步驟以警告輸出升級說明；沒有既有檔案時（不存在改寫風險）仍可建立' {
+        Reset-Stubs
+        $script:ListHandler = $allPluginsInstalled
+        $existing = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $fresh = New-SettingsFixture
+        function Test-ClaudeUserConfigDateKindSupported { return $false }
+        $refused = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $existing.Settings -TemplatePath $existing.Template -BackupRoot $existing.Backups }
+        $created = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fresh.Settings -TemplatePath $fresh.Template -BackupRoot $fresh.Backups }
+        $refused.Result[0].Status -eq 'refused' -and @($refused.Warnings | Where-Object { $_.Contains('PowerShell 7.5') }).Count -eq 1 -and $created.Result[0].Status -eq 'created'
+    }
+    Test-Case 'DK03 支援 -DateKind 的版本（目前執行的 pwsh）不受限：既有 settings.json 照常合併' {
+        $supported = Test-ClaudeUserConfigDateKindSupported
+        $fixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
+        ($supported -and $result.Status -eq 'merged') -or (-not $supported -and $result.Status -eq 'refused')
+    }
+
     # ---- 靜態檢查 ----
     $libText = [IO.File]::ReadAllText($libPath)
     $libBytes = [IO.File]::ReadAllBytes($libPath)
@@ -660,6 +890,9 @@ try {
     Test-Case 'G06 取代 settings.json 使用同目錄暫存檔與覆寫式 Move' {
         $libText -match 'settings\.json\.tmp-' -and $libText -match '\[IO\.File\]::Move\(\$temporaryPath, \$SettingsPath, \$true\)'
     }
+    Test-Case 'G07 lib 沒有針對 permissions 或 skipDangerousModePermissionPrompt 的特殊處理（授權由使用者自行設定）' {
+        $libText -cnotmatch 'permissions|skipDangerousModePermissionPrompt'
+    }
 
     # ---- MCP 範本內容掃描 ----
     $mcpTemplateText = [IO.File]::ReadAllText($mcpTemplatePath)
@@ -672,8 +905,56 @@ try {
         $bytes = [IO.File]::ReadAllBytes($mcpTemplatePath)
         ($placeholders -join ',') -ceq '{distro},{wslRepo}' -and -not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB)
     }
+
+    # ---- settings 共用範本內容掃描 ----
+    # 使用者決定：範本與 Setup 不寫入、不修改 permissions 與 skipDangerousModePermissionPrompt，偏好類的鍵（model、effortLevel、modelSettings、advisorModel）不進範本。
+    $settingsTemplateText = [IO.File]::ReadAllText($settingsTemplatePath)
+    $settingsTemplateRead = Read-ClaudeSettingsFile -Path $settingsTemplatePath
+    function Get-AllPropertyName {
+        param($Node)
+        if (Test-ClaudeUserConfigJsonObject $Node) {
+            foreach ($property in $Node.PSObject.Properties) { $property.Name; Get-AllPropertyName $property.Value }
+        }
+        elseif ($Node -is [array]) { foreach ($item in $Node) { Get-AllPropertyName $item } }
+    }
+    Test-Case 'T03 settings 範本可剖析、無 BOM，頂層只有 enabledPlugins，內容為三個外掛且皆為 true' {
+        $bytes = [IO.File]::ReadAllBytes($settingsTemplatePath)
+        $plugins = $settingsTemplateRead.Object.enabledPlugins
+        $names = @($plugins.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object)
+        $null -eq $settingsTemplateRead.Error -and -not ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB) -and ((@($settingsTemplateRead.Object.PSObject.Properties | ForEach-Object { $_.Name }) -join ',') -ceq 'enabledPlugins') -and
+        ($names -join ',') -ceq 'ai-agents-hooks@ai-agents-local,line-status-board@ai-agents-local,microsoft-docs@claude-plugins-official' -and @($plugins.PSObject.Properties | Where-Object { $_.Value -ne $true }).Count -eq 0
+    }
+    Test-Case 'T04 settings 範本不含授權、偏好與機器專屬的鍵，也不含磁碟機路徑、使用者目錄或權杖樣式' {
+        $forbidden = @('permissions', 'allow', 'ask', 'deny', 'skipDangerousModePermissionPrompt', 'model', 'effortLevel', 'modelSettings', 'advisorModel', 'extraKnownMarketplaces', 'pluginConfigs', 'additionalDirectories', 'hooks', 'env', 'apiKeyHelper')
+        $present = @(Get-AllPropertyName $settingsTemplateRead.Object | Where-Object { $forbidden -ccontains $_ })
+        Assert-True ($present.Count -eq 0) ('範本含不允許的鍵：' + ($present -join ','))
+        $settingsTemplateText -cnotmatch '[A-Za-z]:[\\/]|%USERPROFILE%|/home/|Bearer|[Tt]oken|ghp_|sk-'
+    }
+    Test-Case 'T05 必裝官方外掛只有 microsoft-docs，github 與 context7 不在範本內' {
+        $required = @(Get-ClaudeRequiredOfficialPlugin -TemplatePath $settingsTemplatePath)
+        $required.Count -eq 1 -and $required[0] -ceq 'microsoft-docs@claude-plugins-official' -and $settingsTemplateText -notmatch 'github|context7'
+    }
+    Test-Case 'T06 以真實範本合併：既有的 permissions、skipDangerousModePermissionPrompt、model 與機器專屬鍵原樣不變，Changes 只涉及 enabledPlugins' {
+        $fixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $before = (Read-ClaudeSettingsFile -Path $fixture.Settings).Object
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
+        $after = (Read-ClaudeSettingsFile -Path $fixture.Settings).Object
+        $paths = @($result.Changes | ForEach-Object { $_.Path })
+        $result.Status -eq 'merged' -and (Test-ClaudeSettingsPreserved -Before $before -After $after) -and (Test-ClaudeUserConfigJsonEqual $before.permissions $after.permissions) -and
+        $after.model -ceq 'user-model' -and $after.skipDangerousModePermissionPrompt -eq $true -and $after.enabledPlugins.'microsoft-docs@claude-plugins-official' -eq $false -and
+        @($paths | Where-Object { $_ -notmatch '^enabledPlugins' }).Count -eq 0 -and $paths -contains 'enabledPlugins.ai-agents-hooks@ai-agents-local'
+    }
+    Test-Case 'T07 以真實範本在沒有 settings.json 的環境套用：建立的內容與範本一致，且不含 permissions' {
+        $fixture = New-SettingsFixture
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
+        $written = Read-ClaudeSettingsFile -Path $fixture.Settings
+        $result.Status -eq 'created' -and (Test-ClaudeUserConfigJsonEqual $written.Object $settingsTemplateRead.Object) -and $null -eq $written.Object.PSObject.Properties['permissions']
+    }
 }
 finally {
+    $env:PATH = $originalPath
     if (Test-Path -LiteralPath $tempBase) { Remove-Item -LiteralPath $tempBase -Recurse -Force -ErrorAction SilentlyContinue }
 }
 

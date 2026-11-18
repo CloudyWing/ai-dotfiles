@@ -5,6 +5,11 @@
 # 寫入邊界：MCP 登記只經 Claude CLI 的 mcp add 子命令；使用者層登記檔只做唯讀讀取，且一律以 -AsHashTable 剖析（該檔含僅大小寫不同的鍵）。
 # 檔案寫入只發生在 Invoke-ClaudeSettingsApply（備份、manifest.txt、暫存檔與取代 settings.json）。
 
+function Test-ClaudeUserConfigDateKindSupported {
+    # ConvertFrom-Json 的 -DateKind 由 PowerShell 7.5 加入；之前的版本會把日期樣式的字串轉成 DateTime，序列化時可能改寫格式。
+    return (Get-Command -Name 'ConvertFrom-Json').Parameters.ContainsKey('DateKind')
+}
+
 function ConvertFrom-ClaudeUserConfigJson {
     # 統一的 JSON 剖析：根為陣列時不展開；支援 DateKind 的版本以字串保留日期樣式的值，避免序列化時改寫格式。
     param(
@@ -14,7 +19,7 @@ function ConvertFrom-ClaudeUserConfigJson {
 
     $parameters = @{ InputObject = $Text; NoEnumerate = $true; ErrorAction = 'Stop' }
     if ($AsHashTable) { $parameters['AsHashTable'] = $true }
-    if ((Get-Command -Name 'ConvertFrom-Json').Parameters.ContainsKey('DateKind')) { $parameters['DateKind'] = 'String' }
+    if (Test-ClaudeUserConfigDateKindSupported) { $parameters['DateKind'] = 'String' }
     return ConvertFrom-Json @parameters
 }
 
@@ -377,7 +382,6 @@ function Merge-ClaudeSettingsObject {
         [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[object]]$Changes
     )
 
-    $appendArrayPaths = @('permissions.allow', 'permissions.deny', 'permissions.ask')
     foreach ($templateProperty in $Template.PSObject.Properties) {
         $name = $templateProperty.Name
         $templateValue = $templateProperty.Value
@@ -400,20 +404,6 @@ function Merge-ClaudeSettingsObject {
         elseif ($templateValue -is [array]) {
             if ($existingValue -isnot [array]) {
                 $Changes.Add([pscustomobject]@{ Kind = 'kept-differs'; Path = $childPath })
-            }
-            elseif ($appendArrayPaths -contains $childPath) {
-                $merged = New-Object 'System.Collections.Generic.List[object]'
-                foreach ($item in $existingValue) { $merged.Add($item) }
-                foreach ($item in $templateValue) {
-                    $present = $false
-                    foreach ($current in $merged) {
-                        if (Test-ClaudeUserConfigJsonEqual $current $item) { $present = $true; break }
-                    }
-                    if ($present) { continue }
-                    $merged.Add((Copy-ClaudeUserConfigNode $item))
-                    $Changes.Add([pscustomobject]@{ Kind = 'add'; Path = ('{0}[{1}]' -f $childPath, ($merged.Count - 1)) })
-                }
-                $existingProperty.Value = $merged.ToArray()
             }
             elseif (-not (Test-ClaudeUserConfigJsonEqual $existingValue $templateValue)) {
                 $Changes.Add([pscustomobject]@{ Kind = 'kept-differs'; Path = $childPath })
@@ -475,20 +465,39 @@ function Invoke-ClaudeSettingsApply {
     param(
         [Parameter(Mandatory)][string]$SettingsPath,
         [Parameter(Mandatory)][string]$TemplatePath,
-        [Parameter(Mandatory)][string]$BackupRoot
+        [Parameter(Mandatory)][string]$BackupRoot,
+        [string[]]$ExcludePluginId = @()
     )
 
-    $outcome = { param($Status, $Changes, $BackupPath, $Message) [pscustomobject]@{ Status = $Status; Changes = @($Changes); BackupPath = $BackupPath; Message = $Message } }
+    # ExcludePluginId：本次不套用的 enabledPlugins 項目（例如該外掛本次安裝失敗），結果的 Skipped 列出實際略過的識別。
+    $skippedPlugins = @()
+    $outcome = { param($Status, $Changes, $BackupPath, $Message) [pscustomobject]@{ Status = $Status; Changes = @($Changes); BackupPath = $BackupPath; Message = $Message; Skipped = @($skippedPlugins) } }
 
     $template = Read-ClaudeSettingsFile -Path $TemplatePath
     if (-not $template.Exists -or $null -ne $template.Error) {
         $reason = if (-not $template.Exists) { '不存在' } else { $template.Error }
         return (& $outcome 'failed' @() $null "settings 範本無法使用：$reason")
     }
+    $pluginsProperty = $template.Object.PSObject.Properties['enabledPlugins']
+    if ($ExcludePluginId.Count -gt 0 -and $null -ne $pluginsProperty -and (Test-ClaudeUserConfigJsonObject $pluginsProperty.Value)) {
+        foreach ($excludedId in $ExcludePluginId) {
+            if ($null -ne $pluginsProperty.Value.PSObject.Properties[$excludedId]) {
+                $pluginsProperty.Value.PSObject.Properties.Remove($excludedId)
+                $skippedPlugins += $excludedId
+            }
+        }
+        if (@($pluginsProperty.Value.PSObject.Properties).Count -eq 0) { $template.Object.PSObject.Properties.Remove('enabledPlugins') }
+    }
+    if (@($template.Object.PSObject.Properties).Count -eq 0) {
+        return (& $outcome 'unchanged' @() $null '範本內容已全部略過，沒有要套用的項目')
+    }
 
     $current = Read-ClaudeSettingsFile -Path $SettingsPath
     if ($null -ne $current.Error) {
         return (& $outcome 'refused' @() $null "settings.json 無法安全合併（原因：$($current.Error)），未寫入任何檔案")
+    }
+    if ($current.Exists -and -not (Test-ClaudeUserConfigDateKindSupported)) {
+        return (& $outcome 'refused' @() $null ("目前的 PowerShell {0} 沒有 ConvertFrom-Json 的 -DateKind（PowerShell 7.5 起提供），改寫既有的 settings.json 時無法保證日期樣式的字串不被改變，未寫入任何檔案。請升級到 PowerShell 7.5 以上（winget upgrade Microsoft.PowerShell）後重跑 Setup" -f $PSVersionTable.PSVersion))
     }
 
     try {
@@ -583,8 +592,9 @@ function Get-TcpPortOpenMap {
             $clients[$item] = $client
             $tasks[$item] = $client.ConnectAsync('127.0.0.1', $item)
         }
+        # 連線被拒的埠會使 WaitAll 擲出 AggregateException；各埠的結果在下方逐一以 Task.Status 判定，這裡的例外不需處理。
         try { [void][System.Threading.Tasks.Task]::WaitAll([System.Threading.Tasks.Task[]]@($tasks.Values), $TimeoutMs) }
-        catch { }
+        catch { $null = $_ }
         foreach ($item in $Port) {
             $map[$item] = ($tasks[$item].Status -eq [System.Threading.Tasks.TaskStatus]::RanToCompletion) -and $clients[$item].Connected
         }
@@ -603,4 +613,119 @@ function Test-TcpPortOpen {
     )
 
     return [bool](Get-TcpPortOpenMap -Port @($Port) -TimeoutMs $TimeoutMs)[$Port]
+}
+
+# 以下三個函式是 Setup 步驟 8d、8e、8f 的實際內容：Setup 只負責呼叫並以 try/catch 包住，略過條件以例外回報，輸出與判定在此，使邏輯可在不需系統管理員的測試中驗證。
+
+function Invoke-ClaudeOfficialPluginStep {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$SettingsTemplatePath)
+
+    if ($null -eq (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue)) { throw '找不到 claude CLI，略過官方外掛安裝。' }
+    $pluginIds = @(Get-ClaudeRequiredOfficialPlugin -TemplatePath $SettingsTemplatePath)
+    if ($pluginIds.Count -eq 0) {
+        Write-Host '  官方外掛：範本不存在或沒有必裝的官方外掛，無動作。' -ForegroundColor DarkGray
+        return @()
+    }
+    $results = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($pluginId in $pluginIds) {
+        $result = Install-ClaudeOfficialPlugin -PluginId $pluginId -WhatIf:$WhatIfPreference
+        switch ($result.Status) {
+            'failed' { Write-Warning ("官方外掛 {0} 處理失敗：{1}" -f $pluginId, $result.Message) }
+            'whatif' { Write-Host ("  官方外掛 {0}：預演，未執行" -f $pluginId) }
+            default { Write-Host ("  ✅  官方外掛 {0}：{1}" -f $pluginId, $result.Status) -ForegroundColor DarkGreen }
+        }
+        $results.Add([pscustomobject]@{ PluginId = $pluginId; Status = $result.Status; Message = $result.Message })
+    }
+    return $results.ToArray()
+}
+
+function Invoke-ClaudeSettingsStep {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$SettingsPath,
+        [Parameter(Mandatory)][string]$TemplatePath,
+        [Parameter(Mandatory)][string]$BackupRoot
+    )
+
+    if ($null -eq (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue)) { throw '找不到 claude CLI，略過 settings.json 合併（避免在外掛未安裝時寫入 enabledPlugins）。' }
+    if (-not (Test-Path -LiteralPath $TemplatePath -PathType Leaf)) { throw "找不到 settings 範本 $TemplatePath，略過 settings.json 合併。" }
+
+    # 範本內尚未安裝的外掛（外掛步驟失敗或略過）不寫入 enabledPlugins，避免 settings.json 啟用一個不存在的外掛；重跑 Setup 會在補裝後補上。
+    # 預演時外掛本來就尚未安裝，不做這項篩選，讓預演列出完整的將新增項目。
+    $excludedPluginIds = @()
+    $pluginCheckNote = $null
+    if (-not $WhatIfPreference) {
+        $templateRead = Read-ClaudeSettingsFile -Path $TemplatePath
+        $templatePluginIds = @()
+        if ($templateRead.Exists -and $null -eq $templateRead.Error) {
+            $templatePluginsProperty = $templateRead.Object.PSObject.Properties['enabledPlugins']
+            if ($null -ne $templatePluginsProperty -and (Test-ClaudeUserConfigJsonObject $templatePluginsProperty.Value)) {
+                $templatePluginIds = @($templatePluginsProperty.Value.PSObject.Properties | ForEach-Object { $_.Name })
+            }
+        }
+        if ($templatePluginIds.Count -gt 0) {
+            try {
+                $installedPlugins = Get-ClaudeList @('plugin', 'list', '--json')
+                $installedPluginIds = @(foreach ($installedPlugin in $installedPlugins) { Get-ClaudeProperty $installedPlugin 'id' })
+                $excludedPluginIds = @($templatePluginIds | Where-Object { $installedPluginIds -cnotcontains $_ })
+            }
+            catch {
+                $excludedPluginIds = $templatePluginIds
+                $pluginCheckNote = '無法讀取已安裝的外掛清單（' + $_.Exception.Message + '）'
+            }
+        }
+    }
+    $result = Invoke-ClaudeSettingsApply -SettingsPath $SettingsPath -TemplatePath $TemplatePath -BackupRoot $BackupRoot -ExcludePluginId $excludedPluginIds -WhatIf:$WhatIfPreference
+    foreach ($skippedId in @($result.Skipped)) {
+        $reason = if ($null -ne $pluginCheckNote) { $pluginCheckNote } else { '外掛尚未安裝' }
+        Write-Warning ("settings.json 略過 enabledPlugins 的 {0}：{1}。請先處理上方外掛安裝的失敗訊息，修正後重跑 Setup。" -f $skippedId, $reason)
+    }
+    switch ($result.Status) {
+        'refused' { Write-Warning $result.Message }
+        'failed' { Write-Warning $result.Message }
+        'unchanged' {
+            if (@($result.Skipped).Count -gt 0) { Write-Host '  settings.json：範本內沒有可套用的項目（上方略過的外掛尚未安裝），無變更' -ForegroundColor DarkGray }
+            else { Write-Host '  settings.json：已含範本的共用設定，無變更' -ForegroundColor DarkGray }
+        }
+        'whatif' { Write-Host '  settings.json：預演，未寫入任何檔案' }
+        'created' { Write-Host '  ✅  settings.json：已依範本建立' -ForegroundColor DarkGreen }
+        default { Write-Host '  ✅  settings.json：已合併範本的共用設定（只新增缺少的項目）' -ForegroundColor DarkGreen }
+    }
+    foreach ($change in @($result.Changes)) {
+        if ($change.Kind -eq 'add') { Write-Host ("    新增：{0}" -f $change.Path) }
+        else { Write-Host ("    保留使用者值（與範本不同）：{0}" -f $change.Path) -ForegroundColor DarkGray }
+    }
+    if (-not [string]::IsNullOrEmpty($result.BackupPath)) { Write-Host ("    原檔備份：{0}" -f $result.BackupPath) }
+    return $result
+}
+
+function Invoke-ClaudeMcpStep {
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$McpTemplatePath,
+        [Parameter(Mandatory)][string]$UserMcpPath,
+        [AllowNull()][AllowEmptyString()][string]$InfraLabDistro,
+        [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo
+    )
+
+    if ($null -eq (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue)) { throw '找不到 claude CLI，略過 MCP 登記。' }
+    $template = @(Read-ClaudeMcpTemplate -Path $McpTemplatePath)
+    $registered = Get-ClaudeUserMcpServer -Path $UserMcpPath
+    if ($null -ne $registered.Error) { throw ("使用者層登記檔無法讀取（原因：{0}），略過 MCP 登記。" -f $registered.Error) }
+    $plan = @(Get-ClaudeMcpPlan -Template $template -Existing $registered.Servers -Distro $InfraLabDistro -WslRepo $InfraLabWslRepo)
+    $results = @(Invoke-ClaudeMcpRegister -Plan $plan -WhatIf:$WhatIfPreference)
+    foreach ($result in $results) {
+        switch ($result.Status) {
+            'added' { Write-Host ("  ✅  MCP 登記：{0}" -f $result.Name) -ForegroundColor DarkGreen }
+            'whatif' { Write-Host ("  MCP 登記（預演，未執行）：{0}" -f $result.Name) }
+            'failed' { Write-Warning ("MCP 登記失敗：{0}：{1}" -f $result.Name, $result.Message) }
+            'differs' { Write-Warning $result.Message }
+            'needs-values' { Write-Warning $result.Message }
+        }
+    }
+    $unchangedCount = @($results | Where-Object { $_.Status -eq 'unchanged' }).Count
+    if ($unchangedCount -gt 0) { Write-Host ("  MCP 登記：{0} 項已登記且與範本相符" -f $unchangedCount) -ForegroundColor DarkGray }
+    if (@($results | Where-Object { $_.Status -eq 'added' }).Count -gt 0) { Write-Host '  新登記的 MCP 需要重新啟動 Claude Code 的 Session 才會載入。' }
+    return $results
 }

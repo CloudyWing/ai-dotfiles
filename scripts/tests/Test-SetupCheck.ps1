@@ -48,7 +48,7 @@ function ConvertTo-ArgumentText {
 }
 
 function Invoke-SetupProcess {
-    param([Parameter(Mandatory)][object]$Fixture, [string[]]$Arguments = @('-Check'))
+    param([Parameter(Mandatory)][object]$Fixture, [string[]]$Arguments = @('-Check'), [string[]]$PathDirectories = $null)
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $pwshPath
@@ -68,7 +68,8 @@ function Invoke-SetupProcess {
     $startInfo.EnvironmentVariables['HOME'] = $Fixture.UserProfile
     $startInfo.EnvironmentVariables['GIT_CONFIG_GLOBAL'] = $Fixture.GitGlobalConfig
     $startInfo.EnvironmentVariables['GIT_CONFIG_NOSYSTEM'] = '1'
-    $startInfo.EnvironmentVariables['PATH'] = (@($Fixture.BinDirectory, (Split-Path -Parent $pwshPath), (Split-Path -Parent $gitPath), (Join-Path $env:WINDIR 'System32')) -join ';')
+    $pathDirectoryList = if ($null -ne $PathDirectories) { $PathDirectories } else { @($Fixture.BinDirectory, (Split-Path -Parent $pwshPath), (Split-Path -Parent $gitPath), (Join-Path $env:WINDIR 'System32')) }
+    $startInfo.EnvironmentVariables['PATH'] = ($pathDirectoryList -join ';')
     [void]$startInfo.EnvironmentVariables.Remove('CODEX_HOME')
     $process = [System.Diagnostics.Process]::Start($startInfo)
     try {
@@ -125,6 +126,23 @@ function Remove-Link {
     if ($null -ne $item) { $item.Delete() }
 }
 
+function Set-FixtureMcpServer {
+    param([Parameter(Mandatory)][object]$Fixture, [Parameter(Mandatory)][object[]]$HttpServer)
+
+    # 範本複本與使用者層登記檔（~\.claude.json）使用同一份伺服器清單；登記檔含僅大小寫不同的 projects 鍵，與真實檔案相同。
+    $templateEntries = New-Object 'System.Collections.Generic.List[string]'
+    $registeredEntries = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($server in $HttpServer) {
+        $templateEntries.Add('{ "name": "' + $server.name + '", "type": "http", "url": "' + $server.url + '" }')
+        $registeredEntries.Add('"' + $server.name + '":{"type":"http","url":"' + $server.url + '"}')
+    }
+    $templateEntries.Add('{ "name": "infra-lab", "type": "stdio", "command": "wsl.exe", "args": ["-d", "{distro}", "-e", "bash", "{wslRepo}/scripts/mcp.sh"] }')
+    $registeredEntries.Add('"infra-lab":{"type":"stdio","command":"wsl.exe","args":["-d","Ubuntu-test","-e","bash","/work/infra-lab/scripts/mcp.sh"],"env":{}}')
+    $utf8 = New-Object Text.UTF8Encoding($false)
+    [IO.File]::WriteAllText((Join-Path $Fixture.ConfigRoot 'templates\claude-mcp-servers.json'), ('{ "servers": [' + ($templateEntries -join ',') + '] }'), $utf8)
+    [IO.File]::WriteAllText((Join-Path $Fixture.UserProfile '.claude.json'), ('{"projects":{"X:/p":{},"x:/p":{}},"mcpServers":{' + ($registeredEntries -join ',') + '}}'), $utf8)
+}
+
 function New-Fixture {
     param([switch]$WithoutMcpCommand)
 
@@ -135,7 +153,7 @@ function New-Fixture {
     $binDirectory = Join-Path $root 'bin'
     foreach ($directory in @($configRoot, $accountHome, $binDirectory, (Join-Path $userProfile '.claude'), (Join-Path $userProfile '.codex'), (Join-Path $userProfile '.agents'),
             (Join-Path $configRoot 'skills'), (Join-Path $configRoot 'agents\claude'), (Join-Path $configRoot 'agents\codex'), (Join-Path $configRoot 'rules\claude'),
-            (Join-Path $configRoot 'scripts\dispatch'), (Join-Path $configRoot '.local'))) {
+            (Join-Path $configRoot 'scripts\dispatch'), (Join-Path $configRoot 'templates'), (Join-Path $configRoot '.local'))) {
         $null = New-Item -ItemType Directory -Path $directory -Force
     }
     Set-Content -LiteralPath (Join-Path $configRoot 'instructions.md') -Value 'rules' -Encoding utf8
@@ -169,9 +187,18 @@ function New-Fixture {
     $profileFiles = @(Get-ChildItem -LiteralPath (Join-Path $configRoot 'scripts\codex-profiles') -Filter '*.config.toml' -File)
     foreach ($profileFile in $profileFiles) { New-Link -Path (Join-Path $accountHome $profileFile.Name) -Target $profileFile.FullName -Unlinked $unlinked }
 
-    # 假的 claude CLI：只回答 marketplace 與 plugin 清單查詢，內容與預期狀態一致。
+    # Claude 使用者層設定：settings 範本與 settings.json（內容為範本本身，即共用部分齊備）、MCP 範本與 ~\.claude.json（12 個登記，與範本相符）、假的 wsl.exe。
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'templates\claude-settings.shared.json') -Destination (Join-Path $configRoot 'templates\claude-settings.shared.json')
+    Copy-Item -LiteralPath (Join-Path $repoRoot 'templates\claude-settings.shared.json') -Destination (Join-Path $userProfile '.claude\settings.json')
+    $repoMcpTemplate = Get-Content -LiteralPath (Join-Path $repoRoot 'templates\claude-mcp-servers.json') -Raw | ConvertFrom-Json
+    $httpServers = @($repoMcpTemplate.servers | Where-Object { $_.type -eq 'http' } | ForEach-Object { @{ name = $_.name; url = $_.url } })
+    $fixtureForMcp = [pscustomobject]@{ ConfigRoot = $configRoot; UserProfile = $userProfile }
+    Set-FixtureMcpServer -Fixture $fixtureForMcp -HttpServer $httpServers
+    [IO.File]::WriteAllText((Join-Path $binDirectory 'wsl.cmd'), "@echo off`r`nexit /b 0`r`n", (New-Object Text.UTF8Encoding($false)))
+
+    # 假的 claude CLI：只回答 marketplace 與 plugin 清單查詢，內容與預期狀態一致（含設定範本列為必裝的官方外掛）。
     $manifest = Get-Content -LiteralPath (Join-Path $repoRoot 'claude-plugins\.claude-plugin\marketplace.json') -Raw | ConvertFrom-Json
-    $pluginJson = '[' + ((@($manifest.plugins) | ForEach-Object { '{"id":"' + $_.name + '@ai-agents-local","enabled":true}' }) -join ',') + ']'
+    $pluginJson = '[' + ((@($manifest.plugins) | ForEach-Object { '{"id":"' + $_.name + '@ai-agents-local","enabled":true}' }) + '{"id":"microsoft-docs@claude-plugins-official","enabled":true}' -join ',') + ']'
     $marketplacePath = (Join-Path $repoRoot 'claude-plugins').Replace('\', '\\')
     $cmd = @(
         '@echo off'
@@ -194,11 +221,11 @@ function New-Fixture {
 }
 
 function Invoke-CheckRun {
-    param([Parameter(Mandatory)][object]$Fixture, [string[]]$Arguments = @('-Check', '-AsJson'))
+    param([Parameter(Mandatory)][object]$Fixture, [string[]]$Arguments = @('-Check', '-AsJson'), [string[]]$PathDirectories = $null)
 
     $extra = @($Fixture.GitGlobalConfig)
     $before = Get-TreeSnapshot -Root $Fixture.Root -ExtraFile $extra
-    $run = Invoke-SetupProcess -Fixture $Fixture -Arguments $Arguments
+    $run = Invoke-SetupProcess -Fixture $Fixture -Arguments $Arguments -PathDirectories $PathDirectories
     $after = Get-TreeSnapshot -Root $Fixture.Root -ExtraFile $extra
     $items = @()
     $parsed = $null
@@ -425,6 +452,168 @@ try {
         Assert-True ($force.Run.ExitCode -eq 1 -and $force.Unchanged) '-Check -Force 應被拒絕且不改動檔案'
         $json = Invoke-CheckRun -Fixture $fixture -Arguments @('-AsJson')
         Assert-True ($json.Run.ExitCode -eq 1 -and $json.Unchanged) '單獨 -AsJson 應被拒絕且不改動檔案'
+        $infraLab = Invoke-CheckRun -Fixture $fixture -Arguments @('-Check', '-InfraLabDistro', 'Ubuntu-test')
+        Assert-True ($infraLab.Run.ExitCode -eq 1 -and $infraLab.Unchanged) '-Check -InfraLabDistro 應被拒絕且不改動檔案'
+        $true
+    }
+
+    # ---- Claude 使用者層設定的新類別（前置軟體、MCP 登記、settings.json 共用部分與官方外掛） ----
+    Test-Case 'C11-claude-user-config-categories-all-ok' {
+        $fixture = New-Fixture
+        $result = Invoke-CheckRun -Fixture $fixture
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @()
+        foreach ($name in @('pwsh', 'git', 'claude', 'wsl')) { Assert-True ((Get-ItemByPath -Items $result.Items -Category 'prerequisite' -Suffix $name).status -ceq 'ok') "前置軟體 $name 應為 ok" }
+        $mcp = @($result.Items | Where-Object { $_.category -ceq 'claude-mcp' })
+        Assert-True ($mcp.Count -eq 12 -and @($mcp | Where-Object { $_.status -cne 'ok' }).Count -eq 0) ('claude-mcp 應為 12 項且全為 ok，實際 ' + $mcp.Count)
+        $settings = @($result.Items | Where-Object { $_.category -ceq 'claude-settings' })
+        Assert-True ($settings.Count -eq 1 -and $settings[0].status -ceq 'ok' -and $settings[0].path.EndsWith('settings.json#enabledPlugins')) 'claude-settings 應為 enabledPlugins 一項且為 ok'
+        $plugins = @($result.Items | Where-Object { $_.category -ceq 'plugin' })
+        Assert-True ($plugins.Count -eq 3 -and @($plugins | Where-Object { $_.path -ceq 'microsoft-docs@claude-plugins-official' -and $_.status -ceq 'ok' }).Count -eq 1) 'plugin 應含 microsoft-docs 官方外掛且為 ok'
+        $expectedExit = if (@($result.Items | Where-Object { $_.status -cne 'ok' }).Count -eq 0) { 0 } else { 1 }
+        Assert-True ($result.Run.ExitCode -eq $expectedExit) ("結束碼應為 $expectedExit，實際 $($result.Run.ExitCode)")
+        $true
+    }
+
+    Test-Case 'C12-prerequisite-git-missing' {
+        $fixture = New-Fixture
+        $withoutGit = @($fixture.BinDirectory, (Split-Path -Parent $pwshPath), (Join-Path $env:WINDIR 'System32'))
+        $result = Invoke-CheckRun -Fixture $fixture -PathDirectories $withoutGit
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        $git = Get-ItemByPath -Items $result.Items -Category 'prerequisite' -Suffix 'git'
+        Assert-True ($git.status -ceq 'missing' -and $git.detail.Contains('winget install Git.Git')) ('git 應為缺少並附安裝命令：' + $git.status + ' ' + $git.detail)
+        Assert-True ($result.Run.ExitCode -eq 1 -and $result.Json.allOk -eq $false) '缺少 git 時結束碼應為 1'
+        $true
+    }
+
+    Test-Case 'C13-prerequisite-wsl-missing-nonzero-exit' {
+        $fixture = New-Fixture
+        [IO.File]::WriteAllText((Join-Path $fixture.BinDirectory 'wsl.cmd'), "@echo off`r`nexit /b 1`r`n", (New-Object Text.UTF8Encoding($false)))
+        $result = Invoke-CheckRun -Fixture $fixture
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        $wsl = Get-ItemByPath -Items $result.Items -Category 'prerequisite' -Suffix 'wsl'
+        Assert-True ($wsl.status -ceq 'missing' -and $wsl.detail.Contains('wsl --install')) ('wsl --status 結束碼非零時應為缺少並附補救方式：' + $wsl.status + ' ' + $wsl.detail)
+        Assert-True ($result.Run.ExitCode -eq 1) 'WSL 缺少時結束碼應為 1'
+        $true
+    }
+
+    Test-Case 'C14-claude-cli-missing-keeps-other-checks' {
+        $fixture = New-Fixture
+        $noClaudeBin = Join-Path $fixture.Root 'bin-no-claude'
+        $null = New-Item -ItemType Directory -Path $noClaudeBin -Force
+        Copy-Item -LiteralPath (Join-Path $fixture.BinDirectory 'wsl.cmd') -Destination $noClaudeBin
+        $result = Invoke-CheckRun -Fixture $fixture -PathDirectories @($noClaudeBin, (Split-Path -Parent $pwshPath), (Split-Path -Parent $gitPath), (Join-Path $env:WINDIR 'System32'))
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        $claude = Get-ItemByPath -Items $result.Items -Category 'prerequisite' -Suffix 'claude'
+        Assert-True ($claude.status -ceq 'missing' -and $claude.detail.Contains('winget install Anthropic.ClaudeCode')) 'claude 應為缺少並附安裝命令'
+        Assert-True (@($result.Items | Where-Object { $_.category -ceq 'plugin' }).Count -eq 0) '沒有 claude 時 plugin 項目不輸出'
+        Assert-True (@($result.Items | Where-Object { $_.category -ceq 'claude-mcp' -and $_.status -ceq 'ok' }).Count -eq 12) '不依賴 CLI 的 MCP 檢查應照常進行'
+        Assert-True ($result.Run.ExitCode -eq 1) '缺少 claude 時結束碼應為 1'
+        $true
+    }
+
+    Test-Case 'C15-mcp-missing-and-mismatch' {
+        $fixture = New-Fixture
+        $userMcpPath = Join-Path $fixture.UserProfile '.claude.json'
+        $text = [IO.File]::ReadAllText($userMcpPath)
+        $text = $text.Replace('"mcp-reader":{"type":"http","url":"http://127.0.0.1:9840/mcp"},', '')
+        $text = $text.Replace('"/work/infra-lab/scripts/mcp.sh"', '"/work/infra-lab/scripts/other.sh"')
+        [IO.File]::WriteAllText($userMcpPath, $text, (New-Object Text.UTF8Encoding($false)))
+        $result = Invoke-CheckRun -Fixture $fixture
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動（含 ~\.claude.json）'
+        $reader = Get-ItemByPath -Items $result.Items -Category 'claude-mcp' -Suffix 'mcp-reader'
+        Assert-True ($reader.status -ceq 'missing') ('缺少的登記應為 missing，實際 ' + $reader.status)
+        $infraLab = Get-ItemByPath -Items $result.Items -Category 'claude-mcp' -Suffix 'infra-lab'
+        Assert-True ($infraLab.status -ceq 'mismatch' -and $infraLab.detail.Contains('claude mcp remove infra-lab --scope user') -and -not $infraLab.detail.Contains('other.sh')) ('形狀不符應為 mismatch、附補救命令且不含現有值：' + $infraLab.detail)
+        Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @('claude-mcp|mcp-reader', 'claude-mcp|infra-lab')
+        Assert-True ($result.Run.ExitCode -eq 1) '有登記缺少時結束碼應為 1'
+        $true
+    }
+
+    Test-Case 'C16-user-mcp-file-unreadable-or-missing' {
+        $fixture = New-Fixture
+        $userMcpPath = Join-Path $fixture.UserProfile '.claude.json'
+        [IO.File]::WriteAllText($userMcpPath, '{ not json', (New-Object Text.UTF8Encoding($false)))
+        $unreadable = Invoke-CheckRun -Fixture $fixture
+        Assert-True $unreadable.Unchanged '-Check 執行前後檔案系統有變動'
+        $mcp = @($unreadable.Items | Where-Object { $_.category -ceq 'claude-mcp' })
+        Assert-True ($mcp.Count -eq 1 -and $mcp[0].status -ceq 'unknown' -and $mcp[0].detail.Contains('parse')) ('無法剖析時應為單一 unknown 並附原因類別：' + $mcp.Count)
+        Remove-Item -LiteralPath $userMcpPath -Force
+        $missing = Invoke-CheckRun -Fixture $fixture
+        $mcpMissing = @($missing.Items | Where-Object { $_.category -ceq 'claude-mcp' })
+        Assert-True ($mcpMissing.Count -eq 12 -and @($mcpMissing | Where-Object { $_.status -ceq 'missing' }).Count -eq 12) '登記檔不存在時 12 項應各為 missing'
+        Assert-True (-not (Test-Path -LiteralPath $userMcpPath)) '-Check 不得建立 ~\.claude.json'
+        $true
+    }
+
+    Test-Case 'C17-settings-shared-part' {
+        $fixture = New-Fixture
+        $settingsPath = Join-Path $fixture.UserProfile '.claude\settings.json'
+        $utf8 = New-Object Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText($settingsPath, '{"theme":"light","permissions":{"allow":["x"]}}', $utf8)
+        $lacking = Invoke-CheckRun -Fixture $fixture
+        Assert-True $lacking.Unchanged '-Check 執行前後檔案系統有變動'
+        $item = Get-ItemByPath -Items $lacking.Items -Category 'claude-settings' -Suffix 'settings.json#enabledPlugins'
+        Assert-True ($item.status -ceq 'missing' -and $item.detail.Contains('缺少：enabledPlugins；')) ('整個範本鍵缺少時應為 missing 並列出鍵名：' + $item.detail)
+        Assert-True ($lacking.Run.ExitCode -eq 1) '共用部分缺少時結束碼應為 1'
+
+        [IO.File]::WriteAllText($settingsPath, '{"enabledPlugins":{"ai-agents-hooks@ai-agents-local":true}}', $utf8)
+        $partial = Invoke-CheckRun -Fixture $fixture
+        $partialItem = Get-ItemByPath -Items $partial.Items -Category 'claude-settings' -Suffix 'settings.json#enabledPlugins'
+        Assert-True ($partialItem.status -ceq 'missing' -and $partialItem.detail.Contains('enabledPlugins.microsoft-docs@claude-plugins-official') -and $partialItem.detail.Contains('enabledPlugins.line-status-board@ai-agents-local') -and -not $partialItem.detail.Contains('enabledPlugins.ai-agents-hooks')) ('缺少部分子項目時應只列出缺少的鍵名：' + $partialItem.detail)
+
+        [IO.File]::WriteAllText($settingsPath, '{ not json', $utf8)
+        $unreadable = Invoke-CheckRun -Fixture $fixture
+        $unknown = @($unreadable.Items | Where-Object { $_.category -ceq 'claude-settings' })
+        Assert-True ($unknown.Count -eq 1 -and $unknown[0].status -ceq 'unknown') 'settings.json 無法剖析時應為單一 unknown'
+
+        Remove-Item -LiteralPath $settingsPath -Force
+        $absent = Invoke-CheckRun -Fixture $fixture
+        $single = @($absent.Items | Where-Object { $_.category -ceq 'claude-settings' })
+        Assert-True ($single.Count -eq 1 -and $single[0].status -ceq 'missing') 'settings.json 不存在時應為單一 missing'
+        Assert-True (-not (Test-Path -LiteralPath $settingsPath)) '-Check 不得建立 settings.json'
+
+        Remove-Item -LiteralPath (Join-Path $fixture.ConfigRoot 'templates\claude-settings.shared.json') -Force
+        $noTemplate = Invoke-CheckRun -Fixture $fixture
+        Assert-True (@($noTemplate.Items | Where-Object { $_.category -ceq 'claude-settings' }).Count -eq 0) '範本不存在時 claude-settings 類別不輸出'
+        Assert-True (@($noTemplate.Json.notes | Where-Object { $_.Contains('settings 共用範本不存在') }).Count -eq 1) '範本不存在時應有備註'
+        Assert-True (@($noTemplate.Items | Where-Object { $_.category -ceq 'plugin' }).Count -eq 2) '範本不存在時沒有官方外掛項目'
+        $true
+    }
+
+    Test-Case 'C18-settings-differing-values-are-notes-only' {
+        $fixture = New-Fixture
+        $settingsPath = Join-Path $fixture.UserProfile '.claude\settings.json'
+        [IO.File]::WriteAllText($settingsPath, '{"enabledPlugins":{"ai-agents-hooks@ai-agents-local":true,"line-status-board@ai-agents-local":true,"microsoft-docs@claude-plugins-official":false}}', (New-Object Text.UTF8Encoding($false)))
+        $result = Invoke-CheckRun -Fixture $fixture
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        Assert-True ((Get-ItemByPath -Items $result.Items -Category 'claude-settings' -Suffix 'settings.json#enabledPlugins').status -ceq 'ok') '值與範本不同但鍵存在時共用部分視為齊備'
+        Assert-True (@($result.Json.notes | Where-Object { $_.Contains('enabledPlugins.microsoft-docs@claude-plugins-official') -and $_.Contains('保留你的值') }).Count -eq 1) '與範本不同的項目應列在備註（只列路徑）'
+        $true
+    }
+
+    # mcp-lab 的埠無回應只出現在備註，不產生項目、不影響結束碼。
+    Test-Case 'C19-mcp-lab-port-notes-do-not-affect-exit-code' {
+        $fixture = New-Fixture
+        $openListener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+        $closedListener = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, 0)
+        $openListener.Start(); $closedListener.Start()
+        $openPort = $openListener.LocalEndpoint.Port
+        $closedPort = $closedListener.LocalEndpoint.Port
+        $closedListener.Stop()
+        try {
+            Set-FixtureMcpServer -Fixture $fixture -HttpServer @(@{ name = 'mcp-open-test'; url = ('http://127.0.0.1:' + $openPort + '/mcp') }, @{ name = 'mcp-closed-test'; url = ('http://127.0.0.1:' + $closedPort + '/mcp') })
+            $result = Invoke-CheckRun -Fixture $fixture
+        }
+        finally { $openListener.Stop() }
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        $mcp = @($result.Items | Where-Object { $_.category -ceq 'claude-mcp' })
+        Assert-True ($mcp.Count -eq 3 -and @($mcp | Where-Object { $_.status -cne 'ok' }).Count -eq 0) '埠無回應不應使登記項目失敗'
+        $portNotes = @($result.Json.notes | Where-Object { $_.Contains('個埠無回應') })
+        Assert-True ($portNotes.Count -eq 1 -and $portNotes[0].Contains('mcp-closed-test') -and -not $portNotes[0].Contains('mcp-open-test') -and $portNotes[0].Contains('mcp-lab repo 的 README')) ('備註應只列出無回應的伺服器：' + ($portNotes -join ' / '))
+        Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @()
+        $expectedExit = if (@($result.Items | Where-Object { $_.status -cne 'ok' }).Count -eq 0) { 0 } else { 1 }
+        Assert-True ($result.Run.ExitCode -eq $expectedExit) ("結束碼只取決於項目，應為 $expectedExit，實際 $($result.Run.ExitCode)")
         $true
     }
 }

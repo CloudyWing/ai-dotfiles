@@ -6,8 +6,14 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 $setupPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\Setup-AIGlobalConfig.ps1')).Path
-$moduleNames = @('common-runtime.ps1', 'git-baseline.ps1', 'dispatch-evidence.ps1')
-$modulePaths = @($moduleNames | ForEach-Object { (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot ('..\dispatch\' + $_))).Path })
+$moduleRelativePaths = [ordered]@{
+    'common-runtime.ps1'       = 'dispatch\common-runtime.ps1'
+    'git-baseline.ps1'         = 'dispatch\git-baseline.ps1'
+    'dispatch-evidence.ps1'    = 'dispatch\dispatch-evidence.ps1'
+    'claude-user-config.ps1'   = 'lib\claude-user-config.ps1'
+}
+$moduleNames = @($moduleRelativePaths.Keys)
+$modulePaths = @($moduleNames | ForEach-Object { (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot ('..\' + $moduleRelativePaths[$_]))).Path })
 $windowsPowerShellPath = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $pwshCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
 $pwshPath = if ([string]::IsNullOrWhiteSpace($pwshCommand.Source)) { $pwshCommand.Path } else { $pwshCommand.Source }
@@ -166,6 +172,31 @@ try {
         $setupText = Get-FileTextWithoutBom -Path $setupPath
         Assert-True ($setupText.StartsWith('#Requires -Version 5.1')) 'Setup 檔首必須維持 #Requires -Version 5.1。'
         Assert-True (-not $setupText.Contains('相容 Windows PowerShell 5.1 與 PowerShell 7+')) 'Setup 標頭註解仍宣稱相容 5.1。'
+        $true
+    }
+
+    # 步驟 8d、8e、8f 的內容在 lib\claude-user-config.ps1，Setup 只負責呼叫。執行模式需要系統管理員，無法在測試內執行，
+    # 這裡以語法樹確認接線：三個呼叫依序位於 8c（舊 hook 清理）之後、步驟 9（Git Hooks）之前，各自以 try 包住並傳入 -WhatIf:$WhatIfPreference。
+    Test-Case 'S06-claude-user-config-steps-wired-between-8c-and-9' {
+        $stepNames = @('Invoke-ClaudeOfficialPluginStep', 'Invoke-ClaudeSettingsStep', 'Invoke-ClaudeMcpStep')
+        $setupLines = Get-FileTextWithoutBom -Path $setupPath
+        $hooksStep = $setupAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Remove-ClaudeLegacyHook' }, $true) | Select-Object -First 1
+        Assert-True ($null -ne $hooksStep) 'Setup 找不到 8c 的 Remove-ClaudeLegacyHook 呼叫。'
+        $gitHooksStart = $setupLines.IndexOf('# 9. 設定 Git Hooks 路徑', [StringComparison]::Ordinal)
+        Assert-True ($gitHooksStart -gt 0) 'Setup 找不到步驟 9 的標記。'
+        $previousOffset = [int]$hooksStep.Extent.StartOffset
+        foreach ($stepName in $stepNames) {
+            $calls = @($setupAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq $stepName }, $true))
+            Assert-True ($calls.Count -eq 1) ($stepName + ' 在 Setup 應只呼叫一次，實際 ' + $calls.Count)
+            $call = $calls[0]
+            Assert-True ([int]$call.Extent.StartOffset -gt $previousOffset) ($stepName + ' 必須晚於前一個步驟。')
+            Assert-True ([int]$call.Extent.StartOffset -lt $gitHooksStart) ($stepName + ' 必須早於步驟 9。')
+            Assert-True ($call.Extent.Text.Contains('-WhatIf:$WhatIfPreference')) ($stepName + ' 必須傳入 -WhatIf:$WhatIfPreference。')
+            $tryParent = $call.Parent
+            while ($null -ne $tryParent -and $tryParent -isnot [System.Management.Automation.Language.TryStatementAst]) { $tryParent = $tryParent.Parent }
+            Assert-True ($null -ne $tryParent) ($stepName + ' 必須在 try 區塊內，失敗只警告、不中斷其餘步驟。')
+            $previousOffset = [int]$call.Extent.StartOffset
+        }
         $true
     }
 }

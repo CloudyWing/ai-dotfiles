@@ -10,24 +10,59 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 
 ## 安裝
 
-1. 以系統管理員身分開啟 PowerShell 7（pwsh），在 pwsh 執行 Setup。在 Windows PowerShell 5.1 啟動時，Setup 會印出 `winget install Microsoft.PowerShell` 安裝指引並以非零結束碼結束；不是以系統管理員身分執行時同樣直接結束。加上 `-WhatIf` 可預覽。
+在新的 Windows 電腦依下表由上而下進行。「系統管理員」欄標示該步驟要在以系統管理員身分開啟的 pwsh 執行，「手動」欄標示需要自行登入或操作、無法由 Setup 代勞的部分。
 
-   ```powershell
-   ~\.ai-agents\scripts\Setup-AIGlobalConfig.ps1
-   ```
+| 步驟 | 內容 | 系統管理員 | 手動 |
+| --- | --- | --- | --- |
+| 1 | 安裝 git：`winget install Git.Git` | 否 | 否 |
+| 2 | 安裝 PowerShell 7：`winget install Microsoft.PowerShell`。之後的命令都在 pwsh 執行 | 否 | 否 |
+| 3 | 把本 repo clone 到 `~/.ai-agents`，命令見本文開頭 | 否 | 否 |
+| 4 | 安裝 Claude Code CLI：`winget install Anthropic.ClaudeCode`。安裝後執行 `claude`，依畫面指示登入 | 否 | 登入帳號 |
+| 5 | 啟用 WSL：在系統管理員 pwsh 執行 `wsl --install`，重新開機後建立 Linux 使用者。詳見 [Microsoft 的 WSL 安裝說明](https://learn.microsoft.com/windows/wsl/install) | 是 | 重新開機、建立 Linux 使用者 |
+| 6 | 在 WSL 內安裝 [infra-lab](https://github.com/CloudyWing/infra-lab) 與 [mcp-lab](https://github.com/CloudyWing/mcp-lab)，細節見下方「步驟 6」 | 否 | 依各 repo 的 README 操作 |
+| 7 | 執行 Setup，見下方「步驟 7」 | 是 | 否 |
+| 8 | 以 `-Check` 確認結果，見下方「步驟 8」 | 否 | 否 |
+| 9 | 選用：Codex 派工環境，見下方「步驟 9」 | 視步驟而定 | 登入帳號 |
 
-   要確認這台電腦的設定是否齊全、連結是否指向正確位置，而不做任何改動時，加上 `-Check`（不需系統管理員身分，只讀取現況）。輸出逐項的符合、缺少、指向錯誤位置、內容不符與無法判定，最後附統計；全部符合時結束碼為 0，否則為 1。加上 `-AsJson` 改輸出機器可讀的 JSON。檢查項目涵蓋現役連結、工具目錄、斷鍊孤兒、Claude plugin 與 marketplace、舊 hook 註冊、`core.hooksPath`、`core.excludesFile` 與 Codex 檔位設定檔連結；Codex CLI 與版本不在檢查範圍。`-Check` 不能與 `-Force` 或 `-EnableLongPaths` 併用。
+**步驟 6。** 在 WSL 內依 infra-lab 的 README 取得 repo，於 repo 目錄執行 `task bootstrap`。它依序初始化、檢查、建置 MCP 並印出登記命令，不啟動服務。印出的命令形如 `claude mcp add infra-lab --scope user -- wsl.exe -d <發行版名稱> -e bash <WSL 內 repo 路徑>/scripts/mcp.sh`，記下其中的發行版名稱與 WSL 內 repo 路徑（`bash` 之後去掉 `/scripts/mcp.sh` 的部分），步驟 7 要用。需要再印一次時，在 WSL 內執行 `task mcp:config`。mcp-lab 依其 README 在 WSL 內啟動 11 個 MCP 服務，位址為 `http://127.0.0.1:<埠號>/mcp`。登記 MCP 時不需要服務已在執行，服務可以在步驟 7 之後才啟動。
 
-   ```powershell
-   ~\.ai-agents\scripts\Setup-AIGlobalConfig.ps1 -Check
-   ```
+**步驟 7。** 以系統管理員身分開啟 pwsh 執行 Setup，並帶入步驟 6 記下的兩個值。加上 `-WhatIf` 可預覽，不寫入任何東西。
 
-2. Setup 依序完成下列項目，重跑只補缺少的部分。
-   - 建立各工具指向本 repo 的 Symbolic Link，對應位置見 §3。
-   - 註冊本機 marketplace `ai-agents-local`，安裝並啟用其中的 plugin（hook 與狀態看板）。
-   - 設定本 repo 的 `core.hooksPath` 與機器層 Git 排除清單。
-   - 檢查 Windows 長路徑與 Codex CLI；把各派工帳號目錄的檔位設定檔建成指向 repo 產生檔的 Symbolic Link，已有一般檔案或指向別處的連結時不覆蓋，改列出要執行的命令；其餘缺件印出修復指引。
-3. 需要跨平台派工時，依 §3「Codex CLI 前置需求」安裝 Codex CLI，並依「Codex profile 檔位設定」確認檔位設定檔。派工帳號目錄為選用，見「獨立 Codex 帳號目錄」。
+```powershell
+~\.ai-agents\scripts\Setup-AIGlobalConfig.ps1 -InfraLabDistro <發行版名稱> -InfraLabWslRepo <WSL 內 infra-lab 的路徑>
+```
+
+Setup 依序完成下列項目，重跑只補缺少的部分。
+
+- 建立各工具指向本 repo 的 Symbolic Link，對應位置見 §3。
+- 註冊本機 marketplace `ai-agents-local`，安裝並啟用其中的 plugin（hook 與狀態看板）。
+- 安裝並啟用必裝的官方外掛 `microsoft-docs`。選裝的 `github` 與 `context7` 見 §3「Claude 使用者設定與 MCP 登記」。
+- 把 `templates/claude-settings.shared.json` 套用到 `~/.claude/settings.json`，只新增缺少的項目，不覆寫既有值；寫入前先備份原檔。授權（`permissions`）與偏好設定不在範本內，由你自行設定。
+- 登記 mcp-lab 的 11 個伺服器與 infra-lab 到 Claude Code 使用者層，名稱與範本 `templates/claude-mcp-servers.json` 相同。已登記的項目不會被覆寫，內容與範本不同時只回報。`-InfraLabDistro` 與 `-InfraLabWslRepo` 只在首次登記 infra-lab 時需要，登記後存於 `~/.claude.json`，重跑不必再提供。新登記的 MCP 需要重新啟動 Claude Code 的 Session 才會載入。
+- 設定本 repo 的 `core.hooksPath` 與機器層 Git 排除清單。
+- 檢查 Windows 長路徑與 Codex CLI；把各派工帳號目錄的檔位設定檔建成指向 repo 產生檔的 Symbolic Link，已有一般檔案或指向別處的連結時不覆蓋，改列出要執行的命令；其餘缺件印出修復指引。
+
+在 Windows PowerShell 5.1 啟動時，Setup 會印出 `winget install Microsoft.PowerShell` 安裝指引並以非零結束碼結束；不是以系統管理員身分執行時同樣直接結束。使用者目錄路徑較長時，安裝官方外掛會因 `Filename too long` 失敗，原因是 git 預設不支援過長的路徑。Setup 原樣印出 Claude Code 的輸出，執行 `git config --global core.longpaths true` 後重跑 Setup 即可。
+
+選裝的外掛 `github` 與 `context7` 不由 Setup 安裝，安裝命令見 §3「Claude 使用者設定與 MCP 登記」。`github` 需要在啟動 Claude Code 前設定環境變數 `GITHUB_PERSONAL_ACCESS_TOKEN`，`context7` 的選用金鑰使用環境變數 `CONTEXT7_API_KEY`，兩者都只寫變數名稱，值由你自行保管。
+
+**步驟 8。** 要確認這台電腦的設定是否齊全，而不做任何改動時，加上 `-Check`（不需系統管理員身分，只讀取現況）。輸出逐項的符合、缺少、指向錯誤位置、內容不符與無法判定，最後附統計；全部符合時結束碼為 0，否則為 1。加上 `-AsJson` 改輸出機器可讀的 JSON。`-Check` 不能與 `-Force`、`-EnableLongPaths`、`-InfraLabDistro` 或 `-InfraLabWslRepo` 併用。
+
+```powershell
+~\.ai-agents\scripts\Setup-AIGlobalConfig.ps1 -Check
+```
+
+檢查項目涵蓋下列範圍，Codex CLI 與版本不在檢查範圍。
+
+- 前置軟體：pwsh 7、git、Claude Code CLI 與 WSL。WSL 不存在視為缺少，缺少時輸出補救方式。
+- 現役連結、工具目錄與斷鍊孤兒。
+- Claude plugin 與 marketplace，含必裝的官方外掛 `microsoft-docs`，以及舊 hook 註冊。
+- Claude MCP 登記的 12 個項目，以及 `settings.json` 的共用部分。
+- `core.hooksPath`、`core.excludesFile` 與 Codex 檔位設定檔連結。
+
+mcp-lab 的服務未啟動時，輸出以備註列出無回應的伺服器，不影響項目與結束碼。Claude Code 的登入狀態沒有唯讀的判定方式，不在檢查範圍。
+
+**步驟 9。** 需要跨平台派工時，依 §3「Codex CLI 前置需求」安裝 Codex CLI，並依「Codex profile 檔位設定」確認檔位設定檔。派工帳號為選用，見「獨立 Codex 帳號目錄」。
 
 ---
 
@@ -128,7 +163,43 @@ git clone https://github.com/CloudyWing/ai-dotfiles.git ~/.ai-agents
 | `rules/*.md` | 只在 Claude 端載入的常駐規則，啟動時與 `CLAUDE.md` 一同載入，子代理同樣載入。`rules` 是連結到 `rules/claude/` 的目錄連結；連結缺失或中斷時 Claude Code 不會提示，Persona、授權與派工規則會整組失效，連結缺失時重跑 Setup 即可恢復；連結仍存在但指向其他位置（例如 repo 搬移後）時，Setup 會印出警告並略過，確認後加 `-Force` 重跑才會重建 |
 | `skills/<name>/SKILL.md` | Skills（知識型自動載入；指令型以 `/skill-name` 呼叫） |
 | `agents/*.md` | 全域自訂 Persona 與 Claude 端 sub-agent |
-| `settings.json` | 工具權限與其他使用者設定 |
+| `settings.json` | 使用者設定。Setup 依 `templates/claude-settings.shared.json` 只新增缺少的共用項目，不覆寫既有值，授權與偏好由使用者自行設定，說明見下方「Claude 使用者設定與 MCP 登記」 |
+
+#### Claude 使用者設定與 MCP 登記
+
+Setup 的 Claude 使用者層設定步驟（安裝官方外掛、套用 `settings.json` 範本、登記 MCP）處理 Claude Code 使用者層的設定。範本位於 `templates/`，進版控，只含共用項目，不含授權、偏好、金鑰、權杖與機器專屬路徑。
+
+| 範本 | 內容 | 套用方式 |
+| --- | --- | --- |
+| `templates/claude-settings.shared.json` | `~/.claude/settings.json` 的共用部分，目前為外掛啟用狀態（`ai-agents-hooks`、`line-status-board`、`microsoft-docs`）。必裝官方外掛的清單也取自這份範本 | 合併進 `settings.json` |
+| `templates/claude-mcp-servers.json` | 要登記的 MCP 伺服器，含名稱與位址；infra-lab 的發行版名稱與 WSL 內路徑為佔位符，由 Setup 參數帶入 | `claude mcp add --scope user` |
+
+`settings.json` 的合併規則如下。
+
+- 範本有而檔案沒有的項目新增；檔案已有的值保留，不覆寫，包含 `enabledPlugins` 內你設為 `false` 的外掛。
+- 範本沒有的項目原樣保留，包含授權（`permissions`）、偏好與機器專屬設定。
+- 寫入前先把原檔備份到 `.local/ai-sessions/backups/<時間戳>/settings.json`，同目錄的 `manifest.txt` 以一行記錄這次操作。
+- Setup 輸出新增的項目路徑與備份位置，不印出值，可用來檢視套用前後的差異。加上 `-WhatIf` 只列出將新增的項目，不寫入。
+- 檔案含 BOM、不是 UTF-8、無法剖析為 JSON、根不是物件，或含僅大小寫不同的重複鍵時，Setup 回報原因並且不寫入。
+- 範本內的外掛本次沒有安裝成功時，Setup 略過該外掛的 `enabledPlugins` 項目並說明原因，補裝後重跑 Setup 即可補上。
+- PowerShell 低於 7.5 時，Setup 不改寫既有的 `settings.json`，並提示升級（`winget upgrade Microsoft.PowerShell`），因為這些版本會改變日期樣式字串的格式。
+
+MCP 登記共 12 個，名稱為 `mcp-sql-server`、`mcp-oracle`、`mcp-elasticsearch`、`mcp-redis`、`mcp-mosquitto`、`mcp-rabbitmq`、`mcp-mailpit`、`mcp-reader`、`mcp-oidc`、`mcp-api-contract`、`mcp-docker` 與 `infra-lab`。前 11 個屬 mcp-lab，位址為 `http://127.0.0.1:<埠號>/mcp`，埠號以範本為準；`infra-lab` 經 `wsl.exe` 啟動。範本使用 mcp-lab 的預設埠號，改用其他埠號時，`-Check` 會把該項回報為內容不符。
+
+- 已登記且與範本相符的項目略過，重跑不產生重複登記，也不動你另外加入的 MCP 登記。
+- 名稱已存在但內容與範本不同時，Setup 只回報不覆寫，並且不印出現有內容。要改用範本時，先執行 `claude mcp remove <名稱> --scope user` 再重跑 Setup。
+- 登記只經 `claude mcp add --scope user` 寫入 `~/.claude.json`，不直接改寫該檔。
+- 缺少 `-InfraLabDistro` 或 `-InfraLabWslRepo`，或值含空白與特殊字元時，Setup 略過 infra-lab 並說明補登記的方式，其餘 11 個照常登記。
+
+官方外掛 `microsoft-docs` 為必裝，由 Setup 安裝並啟用。`github` 與 `context7` 為選裝，Setup 不安裝，需要時自行執行下列命令。官方 marketplace `claude-plugins-official` 已由 Setup 加入。
+
+```powershell
+claude plugin install github@claude-plugins-official --scope user
+claude plugin install context7@claude-plugins-official --scope user
+```
+
+- `github` 需要 GitHub 個人存取權杖。啟動 Claude Code 前把它設定到環境變數 `GITHUB_PERSONAL_ACCESS_TOKEN`，外掛設定引用這個名稱。權杖的值不寫進任何進版控的檔案。
+- `context7` 匿名即可使用。要使用自己的方案時，啟動 Claude Code 前設定環境變數 `CONTEXT7_API_KEY`，名稱取自外掛的 README。
 
 #### Claude Code Hook 設定
 
@@ -278,8 +349,8 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 │   └── codex/                          # 審查類 Agent 規則檔（.toml 格式，Codex 離線時由 Claude Sonnet subagent 同樣讀取）
 ├── claude-plugins/                     # 本機 marketplace、hook 與狀態看板 plugin
 ├── skills/                             # 技能模組（Skill）
-├── templates/                          # 新專案初始化範本、Demo 外框範本與派工範本
-└── scripts/                            # 安裝、派工、查詢與索引腳本（dispatch/ 責任檔、lib/ 登錄表讀取與驗證、codex-profiles/ 檔位設定檔產生檔、tests/ 測試）
+├── templates/                          # 新專案初始化範本、Demo 外框範本、派工範本，以及 Claude MCP 登記與 settings.json 共用範本
+└── scripts/                            # 安裝、派工、查詢與索引腳本（dispatch/ 責任檔、lib/ 登錄表讀取與驗證、Claude 使用者層設定與 -Check 模組、codex-profiles/ 檔位設定檔產生檔、tests/ 測試）
 ```
 
 ---
@@ -297,13 +368,14 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Invoke-WorkOverviewCleanup.ps1` 列出可清理的 worktree、分支與線層歷史備份，必須指定 `-Root`；預設只列出，以 `-ConfirmPlan` 帶入列出時的 planId 才刪除。
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
 - `scripts/Get-LineCost.ps1` 唯讀彙整一條線的成本並輸出 JSON：`runs\*.record.json`（含 Claude 審查者的紀錄，標示無 token 用量）與 `cost-ledger.md` 事件列的 Codex 執行次數、model、token、結果與耗時；Claude 用量只在以 `-ClaudeSessionId` 或 `-ClaudeTranscriptPath` 指定時重用 `Get-ClaudeSessionUsage.ps1` 計算，否則為 null 並附原因。
-- `scripts/Setup-AIGlobalConfig.ps1` 建立各工具的 symlink 與 Git Hook 設定，見「安裝」與 §3。
+- `scripts/Setup-AIGlobalConfig.ps1` 建立各工具的 symlink 與 Git Hook 設定，並安裝必裝的官方外掛、套用 `settings.json` 共用範本、登記 Claude MCP，見「安裝」與 §3。
+- `scripts/lib/claude-user-config.ps1` 是 Setup 與 `-Check` 共用的 Claude 使用者層設定模組，包含範本讀取、MCP 登記計畫、`settings.json` 合併、官方外掛安裝，以及 WSL 與連接埠探測；`scripts/lib/setup-check.ps1` 是 `-Check` 的比對與輸出。兩者都只定義函式，只支援 pwsh 7。
 - `scripts/New-CodexDispatchAccount.ps1` 建立派工帳號，見 §3。
 - `scripts/Ensure-AiContextArtifacts.ps1` 依來源指紋決定是否重產 `.local/ai-context/` 的索引產物，並呼叫 `Export-ApiSurface.csx`、`Export-TypeHierarchy.csx` 與 `Export-ProjectGraph.csx`。
 - `scripts/Export-CommentVocabularyCandidates.csx` 唯讀掃描 `.cs`，輸出資料庫註解語彙候選 JSON，由 `database-comment-generator` skill 使用。
 - 內部責任檔、loader 與測試輔助放在子目錄，例如 `scripts/dispatch/` 與 `scripts/tests/`。
 - `scripts/tests/Test-CodexRunAll.ps1` 執行 `Invoke-CodexRun.ps1` 的全部測試，不呼叫 Codex 服務端。`scripts/tests/Invoke-CodexRunLive.ps1 -Scenario review|failover` 以真實 Codex 驗證一筆審查與一筆換帳號，加上 `-DryRun` 只列出將執行的內容，不加 `-DryRun` 會呼叫 Codex 服務端並消耗額度。
-- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-TurnGuardHook.ps1`、`Test-DocLocalPathCheck.ps1` 與 `Test-PostEditWriteHook.ps1`（其餘三個 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）與 `Test-SetupCheck.ps1`（Setup 的 `-Check` 唯讀檢查）。
+- 派工測試只以 PowerShell 7（pwsh）執行，不再執行 Windows PowerShell 5.1。其他測試檔各自獨立執行，位於 `scripts/tests/`，其中包含 `Test-PowerShellHostGuardHook.ps1`（`powershell.exe` 攔截 hook）、`Test-TurnGuardHook.ps1`、`Test-DocLocalPathCheck.ps1` 與 `Test-PostEditWriteHook.ps1`（其餘三個 hook）、`Test-SetupRequiresPwsh7.ps1`（Setup 的版本判斷）、`Test-SetupCheck.ps1`（Setup 的 `-Check` 唯讀檢查）與 `Test-ClaudeUserConfig.ps1`（Claude 使用者層設定模組）。
 - hook 的四個 PowerShell 測試經 `claude-plugins/ai-agents-hooks/tests/run-hook.ts` 執行 `hooks/core/` 的判定邏輯，需要 PATH 上有 Node.js 22.18 以上（可直接執行 `.ts`）；Node.js 只用於測試，外掛執行時不需要。
 - `claude-plugins/line-status-board/tests/` 另有 `lib.test.ts`、`render.test.tsx` 與 `dispatch.test.tsx` 三個測試檔，`claude-plugins/ai-agents-hooks/tests/` 有 `register.test.ts`，皆從 `claude-code/testing` 匯入，以 `claude plugin test <plugin 目錄>` 執行。
 - `claude-plugins/` 內的檔案使用全小寫 kebab-case 命名。

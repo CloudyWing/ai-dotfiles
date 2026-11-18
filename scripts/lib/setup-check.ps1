@@ -2,7 +2,9 @@
 # Setup-AIGlobalConfig.ps1 -Check 的比對與輸出：只讀取現況並與預期比對，不建立、不修改、不刪除任何東西。
 # 由 Setup 在 -Check 時以 dot-source 載入，預期狀態（連結清單、掃描範圍、hooksPath 等）由 Setup 的同一份變數傳入。
 # 本檔使用 Setup 已定義的 Get-BrokenConfigLink、Get-ClaudePluginSpec、Invoke-ClaudeCli、Get-ClaudeList、Get-ClaudeProperty，
-# 以及已載入的檔位設定檔模組函式（Read-CodexProfileSpec、Sync-CodexProfileGeneratedFile、Get-CodexProfileAccountState、Read-CodexAccountConfiguration 等）。
+# 已載入的檔位設定檔模組函式（Read-CodexProfileSpec、Sync-CodexProfileGeneratedFile、Get-CodexProfileAccountState、Read-CodexAccountConfiguration 等），
+# 以及 lib\claude-user-config.ps1 的唯讀函式（Read-ClaudeMcpTemplate、Get-ClaudeUserMcpServer、Get-ClaudeMcpPlan、Get-ClaudeMcpPlanMessage、
+# Read-ClaudeSettingsFile、Get-ClaudeSettingsPlan、Get-ClaudeRequiredOfficialPlugin、Get-WslStatus、Get-TcpPortOpenMap）。不呼叫任何寫入函式。
 
 $script:SetupCheckStatusLabel = @{
     'ok'           = '符合'
@@ -13,6 +15,7 @@ $script:SetupCheckStatusLabel = @{
 }
 
 $script:SetupCheckCategoryLabel = [ordered]@{
+    'prerequisite'          = '前置軟體'
     'long-paths'            = 'Windows 長路徑'
     'config-root'           = '設定來源檔案'
     'tool-dir'              = '工具目錄'
@@ -21,6 +24,8 @@ $script:SetupCheckCategoryLabel = [ordered]@{
     'plugin-marketplace'    = 'Claude plugin marketplace'
     'plugin'                = 'Claude plugin'
     'legacy-hook'           = '舊 hook 註冊'
+    'claude-mcp'            = 'Claude MCP 登記'
+    'claude-settings'       = 'Claude settings.json 共用設定'
     'git-hooks-path'        = 'Git core.hooksPath'
     'git-excludes'          = 'Git core.excludesFile'
     'codex-machine'         = 'Codex 派工帳號登記'
@@ -190,26 +195,37 @@ function Get-SetupCheckPluginItem {
         try { $plugins = Get-ClaudeList @('plugin', 'list', '--json') }
         catch { $pluginReason = $_.Exception.Message }
     }
-    foreach ($spec in $specs) {
+    # 本機 marketplace 的 plugin，加上 settings 範本列為必裝的官方外掛（範本不存在時沒有官方外掛項目）。
+    $pluginIds = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($spec in $specs) { $pluginIds.Add($spec.Id) }
+    $officialReason = $null
+    try { foreach ($officialId in @(Get-ClaudeRequiredOfficialPlugin -TemplatePath $Expected.SettingsTemplatePath)) { $pluginIds.Add($officialId) } }
+    catch { $officialReason = 'settings 範本無法讀取：' + $_.Exception.Message }
+    if ($null -ne $officialReason) {
+        $items.Add((New-SetupCheckItem -Category 'plugin' -Path $Expected.SettingsTemplatePath -Expected '必裝官方外掛清單可讀取' -Actual $null -Status 'unknown' -Detail $officialReason))
+    }
+    foreach ($pluginId in $pluginIds) {
+        $isOfficial = $pluginId.EndsWith('@claude-plugins-official', [System.StringComparison]::OrdinalIgnoreCase)
+        $installHint = if ($isOfficial) { '；重新執行 Setup 會安裝' } else { '' }
         if ($null -ne $pluginReason) {
-            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $spec.Id -Expected 'enabled' -Actual $null -Status 'unknown' -Detail $pluginReason))
+            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual $null -Status 'unknown' -Detail $pluginReason))
             continue
         }
-        $installed = @($plugins | Where-Object { (Get-ClaudeProperty $_ 'id') -eq $spec.Id -or (Get-ClaudeProperty $_ 'name') -eq $spec.Id })
+        $installed = @($plugins | Where-Object { (Get-ClaudeProperty $_ 'id') -eq $pluginId -or (Get-ClaudeProperty $_ 'name') -eq $pluginId })
         if ($installed.Count -eq 0) {
-            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $spec.Id -Expected 'enabled' -Actual $null -Status 'missing' -Detail '未安裝'))
+            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual $null -Status 'missing' -Detail ('未安裝' + $installHint)))
         }
         elseif ($installed.Count -gt 1) {
-            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $spec.Id -Expected 'enabled' -Actual $null -Status 'unknown' -Detail 'plugin 清單含重複識別'))
+            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual $null -Status 'unknown' -Detail 'plugin 清單含重複識別'))
         }
         elseif ((Get-ClaudeProperty $installed[0] 'enabled') -eq $true) {
-            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $spec.Id -Expected 'enabled' -Actual 'enabled' -Status 'ok'))
+            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual 'enabled' -Status 'ok'))
         }
         elseif ((Get-ClaudeProperty $installed[0] 'enabled') -eq $false) {
-            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $spec.Id -Expected 'enabled' -Actual 'disabled' -Status 'missing' -Detail '已安裝但未啟用'))
+            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual 'disabled' -Status 'missing' -Detail ('已安裝但未啟用' + $installHint)))
         }
         else {
-            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $spec.Id -Expected 'enabled' -Actual $null -Status 'unknown' -Detail '無法判定 plugin 啟用狀態'))
+            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual $null -Status 'unknown' -Detail '無法判定 plugin 啟用狀態'))
         }
     }
     return @($items.ToArray())
@@ -380,6 +396,119 @@ function Get-SetupCheckCodexItem {
     return @($items.ToArray())
 }
 
+function Get-SetupCheckPrerequisiteItem {
+    # 前置軟體：pwsh 7、git、Claude Code CLI、WSL。缺少時 detail 附補救方式。登入狀態沒有唯讀的判定方式，不在檢查範圍。
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    $version = $PSVersionTable.PSVersion
+    if ($version.Major -ge 7) {
+        $items.Add((New-SetupCheckItem -Category 'prerequisite' -Path 'pwsh' -Expected '7 以上' -Actual $version.ToString() -Status 'ok'))
+    }
+    else {
+        $items.Add((New-SetupCheckItem -Category 'prerequisite' -Path 'pwsh' -Expected '7 以上' -Actual $version.ToString() -Status 'mismatch' -Detail '安裝 PowerShell 7：winget install Microsoft.PowerShell'))
+    }
+
+    $gitFound = $null -ne (Get-Command -Name 'git' -CommandType Application -ErrorAction SilentlyContinue)
+    if ($gitFound) { $items.Add((New-SetupCheckItem -Category 'prerequisite' -Path 'git' -Expected '可執行' -Actual '找到' -Status 'ok')) }
+    else { $items.Add((New-SetupCheckItem -Category 'prerequisite' -Path 'git' -Expected '可執行' -Actual $null -Status 'missing' -Detail '找不到 git；安裝命令：winget install Git.Git')) }
+
+    $claudeFound = $null -ne (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue)
+    if ($claudeFound) { $items.Add((New-SetupCheckItem -Category 'prerequisite' -Path 'claude' -Expected '可執行' -Actual '找到' -Status 'ok')) }
+    else { $items.Add((New-SetupCheckItem -Category 'prerequisite' -Path 'claude' -Expected '可執行' -Actual $null -Status 'missing' -Detail '找不到 Claude Code CLI；安裝命令：winget install Anthropic.ClaudeCode，安裝後自行登入')) }
+
+    if ((Get-WslStatus) -ceq 'ok') { $items.Add((New-SetupCheckItem -Category 'prerequisite' -Path 'wsl' -Expected 'wsl --status 結束碼 0' -Actual '可用' -Status 'ok')) }
+    else { $items.Add((New-SetupCheckItem -Category 'prerequisite' -Path 'wsl' -Expected 'wsl --status 結束碼 0' -Actual $null -Status 'missing' -Detail '找不到可用的 WSL（找不到 wsl 命令，或 wsl --status 的結束碼非零）；以系統管理員身分執行 wsl --install 並重新開機，詳見 https://learn.microsoft.com/windows/wsl/install')) }
+    return @($items.ToArray())
+}
+
+function Get-SetupCheckClaudeMcpItem {
+    param(
+        [hashtable]$Expected,
+        [System.Collections.Generic.List[string]]$Note
+    )
+
+    $templatePath = $Expected.McpTemplatePath
+    if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
+        $Note.Add('MCP 登記範本不存在（' + $templatePath + '），未檢查 Claude MCP 登記。')
+        return @()
+    }
+    try { $template = @(Read-ClaudeMcpTemplate -Path $templatePath) }
+    catch { return @(New-SetupCheckItem -Category 'claude-mcp' -Path $templatePath -Expected 'MCP 範本可讀取' -Actual $null -Status 'unknown' -Detail $_.Exception.Message) }
+
+    $registered = Get-ClaudeUserMcpServer -Path $Expected.UserMcpPath
+    if ($null -ne $registered.Error) {
+        return @(New-SetupCheckItem -Category 'claude-mcp' -Path $Expected.UserMcpPath -Expected '使用者層登記可讀取' -Actual $null -Status 'unknown' -Detail ('使用者層登記檔無法讀取（原因：' + $registered.Error + '）'))
+    }
+
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    $plan = @(Get-ClaudeMcpPlan -Template $template -Existing $registered.Servers)
+    foreach ($server in $template) {
+        $planItem = @($plan | Where-Object { $_.Name -ceq $server.Name })[0]
+        $expectedText = if ($server.Type -eq 'http') { $server.Url } else { 'stdio，經 ' + $server.Command + ' 啟動' }
+        switch ($planItem.Action) {
+            'unchanged' { $items.Add((New-SetupCheckItem -Category 'claude-mcp' -Path $server.Name -Expected $expectedText -Actual '已登記' -Status 'ok')) }
+            'differs' { $items.Add((New-SetupCheckItem -Category 'claude-mcp' -Path $server.Name -Expected $expectedText -Actual '已登記但與範本不同' -Status 'mismatch' -Detail (Get-ClaudeMcpPlanMessage -Item $planItem))) }
+            default {
+                $detail = if ($server.Type -eq 'http') { '未登記；重新執行 Setup 登記' } else { '未登記；以 -InfraLabDistro 與 -InfraLabWslRepo 重新執行 Setup 登記（值取自 WSL 內 task mcp:config 印出的命令）' }
+                $items.Add((New-SetupCheckItem -Category 'claude-mcp' -Path $server.Name -Expected $expectedText -Actual $null -Status 'missing' -Detail $detail))
+            }
+        }
+    }
+
+    # mcp-lab 服務是否啟動：只對 127.0.0.1 的埠做連線探測，不送請求內容；結果只寫入備註，不影響項目與結束碼。
+    try {
+        $ports = @($template | Where-Object { $_.Type -eq 'http' } | ForEach-Object { ([uri]$_.Url).Port } | Sort-Object -Unique)
+        if ($ports.Count -gt 0) {
+            $openMap = Get-TcpPortOpenMap -Port $ports -TimeoutMs 500
+            $closedNames = @($template | Where-Object { $_.Type -eq 'http' -and -not $openMap[([uri]$_.Url).Port] } | ForEach-Object { $_.Name })
+            if ($closedNames.Count -gt 0) {
+                $Note.Add(('mcp-lab 的 ' + $closedNames.Count + ' 個埠無回應（' + ($closedNames -join '、') + '）；依 mcp-lab repo 的 README 啟動服務。服務未啟動不影響本檢查的結果。'))
+            }
+        }
+    }
+    catch { $Note.Add('mcp-lab 服務的連接埠探測失敗：' + $_.Exception.Message) }
+    return @($items.ToArray())
+}
+
+function Get-SetupCheckClaudeSettingsItem {
+    # settings.json 共用部分：範本的每個頂層鍵一項。與範本值不同的項目由使用者保留，只寫入備註；授權與偏好不在範本內。
+    param(
+        [hashtable]$Expected,
+        [System.Collections.Generic.List[string]]$Note
+    )
+
+    $templatePath = $Expected.SettingsTemplatePath
+    if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
+        $Note.Add('settings 共用範本不存在（' + $templatePath + '），未檢查 settings.json 的共用部分。')
+        return @()
+    }
+    $template = Read-ClaudeSettingsFile -Path $templatePath
+    if ($null -ne $template.Error) {
+        return @(New-SetupCheckItem -Category 'claude-settings' -Path $templatePath -Expected 'settings 範本可讀取' -Actual $null -Status 'unknown' -Detail ('settings 範本無法讀取（原因：' + $template.Error + '）'))
+    }
+    $settings = Read-ClaudeSettingsFile -Path $Expected.SettingsPath
+    if (-not $settings.Exists) {
+        return @(New-SetupCheckItem -Category 'claude-settings' -Path $Expected.SettingsPath -Expected '含範本的共用設定' -Actual $null -Status 'missing' -Detail 'settings.json 不存在；重新執行 Setup 會依範本建立')
+    }
+    if ($null -ne $settings.Error) {
+        return @(New-SetupCheckItem -Category 'claude-settings' -Path $Expected.SettingsPath -Expected '含範本的共用設定' -Actual $null -Status 'unknown' -Detail ('settings.json 無法讀取（原因：' + $settings.Error + '）；Setup 不會改寫無法讀取的 settings.json'))
+    }
+
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    $plan = Get-ClaudeSettingsPlan -Existing $settings.Object -Template $template.Object
+    foreach ($property in $template.Object.PSObject.Properties) {
+        $key = $property.Name
+        $missingPaths = @($plan.Changes | Where-Object { $_.Kind -eq 'add' -and ($_.Path -ceq $key -or $_.Path.StartsWith($key + '.') -or $_.Path.StartsWith($key + '[')) } | ForEach-Object { $_.Path })
+        $itemPath = 'settings.json#' + $key
+        if ($missingPaths.Count -eq 0) { $items.Add((New-SetupCheckItem -Category 'claude-settings' -Path $itemPath -Expected '含範本的設定' -Actual '符合' -Status 'ok')) }
+        else { $items.Add((New-SetupCheckItem -Category 'claude-settings' -Path $itemPath -Expected '含範本的設定' -Actual $null -Status 'missing' -Detail ('缺少：' + ($missingPaths -join '、') + '；重新執行 Setup 套用範本'))) }
+    }
+    $keptPaths = @($plan.Changes | Where-Object { $_.Kind -eq 'kept-differs' } | ForEach-Object { $_.Path })
+    if ($keptPaths.Count -gt 0) {
+        $Note.Add('settings.json 以下項目的值與範本不同，Setup 保留你的值，不視為缺少：' + ($keptPaths -join '、') + '。')
+    }
+    return @($items.ToArray())
+}
+
 function Invoke-SetupCheck {
     [CmdletBinding()]
     param(
@@ -390,6 +519,7 @@ function Invoke-SetupCheck {
     $items = New-Object 'System.Collections.Generic.List[object]'
     $notes = New-Object 'System.Collections.Generic.List[string]'
 
+    foreach ($item in @(Get-SetupCheckPrerequisiteItem)) { $items.Add($item) }
     if ([System.Environment]::OSVersion.Platform -eq [System.PlatformID]::Win32NT) {
         $items.Add((Get-SetupCheckLongPathItem))
     }
@@ -427,6 +557,8 @@ function Invoke-SetupCheck {
 
     foreach ($item in @(Get-SetupCheckPluginItem -Expected $Expected)) { $items.Add($item) }
     $items.Add((Get-SetupCheckLegacyHookItem -Expected $Expected))
+    foreach ($item in @(Get-SetupCheckClaudeMcpItem -Expected $Expected -Note $notes)) { $items.Add($item) }
+    foreach ($item in @(Get-SetupCheckClaudeSettingsItem -Expected $Expected -Note $notes)) { $items.Add($item) }
     foreach ($item in @(Get-SetupCheckGitItem -Expected $Expected)) { $items.Add($item) }
     foreach ($item in @(Get-SetupCheckCodexItem -Expected $Expected -Note $notes)) { $items.Add($item) }
 

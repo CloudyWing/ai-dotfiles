@@ -1,0 +1,7 @@
+{
+  "enabledPlugins": {
+    "ai-agents-hooks@ai-agents-local": true,
+    "line-status-board@ai-agents-local": true,
+    "microsoft-docs@claude-plugins-official": true
+  }
+}
