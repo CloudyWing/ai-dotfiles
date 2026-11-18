@@ -636,7 +636,7 @@ function Set-CodexMcpAccountConfig {
         }
         if (-not $state.exists) {
             # 帳號目錄沒有 config.toml：不新建只含 MCP 表的檔案（缺少基礎設定的帳號本來就不會被派工入口選用），維持略過並要求使用者先準備。
-            $results.Add([pscustomobject]@{ server = $name; action = 'blocked'; detail = ($configPath + ' 不存在，Setup 不新建只含 MCP 表的 config.toml；請依 README.md §3 先準備帳號的基礎 config.toml 後重跑 Setup。') })
+            $results.Add([pscustomobject]@{ server = $name; action = 'blocked'; detail = ($configPath + ' 不存在，Setup 不新建只含 MCP 表的 config.toml；請以 scripts\New-CodexDispatchAccount.ps1 補齊帳號的 config.toml 後重跑 Setup，說明見 README.md「Codex 派工環境」。') })
             continue
         }
         if (Test-CodexMcpServerMentioned -Text $state.text -Name $name) {

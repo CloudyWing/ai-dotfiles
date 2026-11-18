@@ -571,7 +571,7 @@ if ($null -eq $codexCommand) {
     Write-Warning "  ⚠️ 找不到 PATH 上的 codex。"
     Write-Host "  請執行下列指令安裝 Codex CLI："
     Write-Host ('  npm' + ' i -g @openai/codex')
-    Write-Host "  參考 README.md §3「Codex CLI 前置需求」。"
+    Write-Host "  參考 README.md「Codex 派工環境」。"
 }
 else {
     $codexVersionOutput = (& codex --version 2>&1 | Out-String).Trim()
@@ -642,7 +642,7 @@ foreach ($account in $machineAccounts) {
     Write-Host ('  Codex 帳號 ' + $account.name + '：' + $account.codex_home)
     $accountConfigPath = Join-Path $account.codex_home 'config.toml'
     if (-not (Test-Path -LiteralPath $accountConfigPath -PathType Leaf)) {
-        Write-Warning ('  帳號 ' + $account.name + ' 缺少 ' + $accountConfigPath + '。請依 README.md §3 人工準備；基礎 config 必要鍵待使用者驗證。')
+        Write-Warning ('  帳號 ' + $account.name + ' 缺少 ' + $accountConfigPath + '。請以 scripts\New-CodexDispatchAccount.ps1 -Name ' + $account.name + ' 補齊，說明見 README.md「Codex 派工環境」。')
     }
     if ($profileSpecs.Count -eq 0 -or $profileGeneratedStale) { continue }
     $linkResults = @(New-CodexProfileAccountLink -AccountHome $account.codex_home -ProfileDirectory $profileGeneratedDirectory -Spec $profileSpecs -WhatIf:$WhatIfPreference)

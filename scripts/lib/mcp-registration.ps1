@@ -192,7 +192,7 @@ function Set-FlaUIMcpAccountCommand {
     $label = "派工帳號 $AccountName 的設定檔 $configPath"
     $state = Get-FlaUIMcpState -ConfigPath $configPath
     switch ($state.Kind) {
-        'config-missing' { return (& $outcome 'config-missing' "$label 不存在，腳本不建立設定檔，已略過此帳號。請依 README 先準備帳號的基礎 config.toml 後重新執行" $null) }
+        'config-missing' { return (& $outcome 'config-missing' "$label 不存在，腳本不建立設定檔，已略過此帳號。請以 scripts\New-CodexDispatchAccount.ps1 補齊帳號的 config.toml 後重新執行" $null) }
         'unreadable' { return (& $outcome 'blocked' ("$label 讀取失敗，已略過此帳號：" + $state.Error) $null) }
         'ambiguous' { return (& $outcome 'blocked' "$label 已有或可能已有 flaui-mcp 的定義，但偵測不到標準的 [mcp_servers.flaui-mcp] 表，已略過此帳號。請自行確認並設定 command" $null) }
         'present-unsupported' { return (& $outcome 'blocked' "$label 的 [mcp_servers.flaui-mcp] 已有 command，但寫法不是單行字串或值後面有其他內容，無法確定語意，已略過此帳號。請自行修改 command" $null) }
@@ -303,7 +303,7 @@ function Get-FlaUIAccountCheckItem {
         $accountPath = Join-Path $account.codex_home 'config.toml'
         $state = Get-FlaUIMcpState -ConfigPath $accountPath
         $item = switch ($state.Kind) {
-            'config-missing' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'missing' -Expected $expected -Detail ("帳號設定檔 $accountPath 不存在；腳本不建立設定檔，請依 README 先準備帳號的基礎 config.toml") }
+            'config-missing' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'missing' -Expected $expected -Detail ("帳號設定檔 $accountPath 不存在；腳本不建立設定檔，請以 scripts\New-CodexDispatchAccount.ps1 補齊帳號的 config.toml") }
             'unreadable' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'unknown' -Expected $expected -Detail ("帳號設定檔 $accountPath 無法讀取：" + $state.Error) }
             'ambiguous' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'unknown' -Expected $expected -Detail ("帳號設定檔 $accountPath 可能已用其他寫法定義 flaui-mcp，無法判定") }
             'present-unsupported' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'unknown' -Expected $expected -Detail ("帳號設定檔 $accountPath 的 command 寫法無法確定語意") }
