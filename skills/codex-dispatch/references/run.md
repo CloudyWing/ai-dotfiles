@@ -176,7 +176,7 @@
 - 拒絕原因為未授權時，PowerShell 版重新登入命令原文轉給使用者。命令在結果 JSON 的 `attempts[].relogin_command`（每次嘗試各一個）與 `final.relogin_command`（最後一次嘗試），其餘嘗試為 `null`，stderr 不輸出。
 - 帳號因登入檔缺少或為空而被略過時，分兩種情形。全部帳號都被略過、結束碼為 4 時，含重新登入命令的略過摘要寫在 `error.message`，stderr 輸出同一則訊息，命令原文轉給使用者。仍有可用帳號時，入口只在 stderr 列出被略過帳號的名稱與原因代碼，沒有重新登入命令，結果 JSON 的 `attempts` 與 `final` 也只含實際嘗試的帳號。
 - 結束碼 4 且 `error.code` 為 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，入口已以該檔位的執行者離線呼叫選派入口，結果在 `fallback`：`unavailable_executor` 是不可用的執行者 id，`selection` 是選派入口的輸出原文。以 `selection.dispatchLine` 作為判定行，依 `selection.status` 與 `executor-selection` skill「狀態處置」處置；選出 Claude 執行者時沿用同一份派遣檔，依 `workflow-orchestration` skill `references/review-procedures.md`「Claude 審查者的發動」派出。`test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，`selection.status` 必為 `stopped`，停止並回報使用者。`fallback` 只在這兩個錯誤碼有值，`CodexAccountsNotRegistered`、`RunMachineConfigUnresolved` 等其他結束碼 4 的錯誤沒有 `fallback`。`fallback.selection` 的處置不取代重新登入命令的回報：帳號因登入失效被略過時，命令仍依上列各項轉給使用者。`fallback` 為 `null` 時，改以 `-Offline <執行者 id>` 手動呼叫選派入口。入口不保存不可用的狀態，下一次新的派工照常先選 Codex。
-- 選定帳號後、啟動 Codex 前，入口只讀比對實際要使用的帳號目錄內該檔位的設定檔與主 checkout（`machine.json` 所在 repo）的產生檔（內容相同，CRLF 與 LF 視為相同；若是連結必須指向該產生檔），並確認產生檔等於登錄表預期內容。不一致時以結束碼 2、`CodexProfileDrift` 停止，不改檔，不跳到下一個帳號。換帳號後對新的候選帳號在使用前同樣比對，未使用的候選帳號不一致不阻擋。檔位設定檔的來源是登錄表 `profileSettings`，產生與連結方式見 README §3「Codex profile 檔位設定」。
+- 選定帳號後、啟動 Codex 前，入口只讀比對實際要使用的帳號目錄內該檔位的設定檔與主 checkout（`machine.json` 所在 repo）的產生檔（內容相同，CRLF 與 LF 視為相同；若是連結必須指向該產生檔），並確認產生檔等於登錄表預期內容。不一致時以結束碼 2、`CodexProfileDrift` 停止，不改檔，不跳到下一個帳號。換帳號後對新的候選帳號在使用前同樣比對，未使用的候選帳號不一致不阻擋。檔位設定檔的來源是登錄表 `profileSettings`，產生與連結方式見 README「Codex 派工環境」的檔位設定。
 - 入口不做專案信任預檢，也不自動補信任。
 
 ## 成本列

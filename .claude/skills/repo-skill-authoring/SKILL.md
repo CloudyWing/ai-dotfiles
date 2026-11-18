@@ -13,11 +13,11 @@ policy.allow_implicit_invocation: true
 
 | 目的 | 寫入位置 | 散佈範圍 |
 | --- | --- | --- |
-| 所有專案都適用的 skill | `skills/<name>/SKILL.md` | `~/.claude/skills` 與 `~/.agents/skills` 都是指向 repo `skills/` 的 symlink（`README.md` §3），Claude 與 Codex 同時讀到，不需各寫一份 |
+| 所有專案都適用的 skill | `skills/<name>/SKILL.md` | `~/.claude/skills` 與 `~/.agents/skills` 都是指向 repo `skills/` 的 symlink（`README.md`「設定放在哪裡」），Claude 與 Codex 同時讀到，不需各寫一份 |
 | 只在維護本 repo 時適用的 skill | `.claude/skills/<name>/SKILL.md` | 只有在本 repo 內啟動的 Claude Code 會載入。`.gitignore` 排除 `.claude/*`，只放行 `.claude/skills/` |
 
 - 放進 `skills/` 的內容會散佈到使用者的所有專案，寫入前先確認它對其他專案成立。
-- `README.md` §3 記載 Codex 掃描 `~/.agents/skills`，`.claude/skills/` 不在其中。需要 Codex 也遵守的專屬步驟，在 `AGENTS.md` 留指向該檔的一句話。
+- `README.md`「設定放在哪裡」記載 Codex 掃描 `~/.agents/skills`，`.claude/skills/` 不在其中。需要 Codex 也遵守的專屬步驟，在 `AGENTS.md` 留指向該檔的一句話。
 
 ## Frontmatter 與 pre-commit 檢查
 
