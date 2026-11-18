@@ -200,7 +200,7 @@ Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem' -Name
 #### Codex profile 檔位設定
 
 1. 派工使用的檔位清單以 `scripts/dispatch/executor-registry.json` 為準，不在本文件另列。現行清單與各檔位的設定用 `pwsh -NoProfile -File scripts\Select-DispatchExecutor.ps1 -Describe` 查詢（各 Codex 執行者的 `profile` 與 `profileSettings`）。派工以 `--profile <檔位>` 讀取選定 Codex home 內的 `<CodexHome>/<檔位>.config.toml`。`scripts/Invoke-CodexRun.ps1` 依 `machine.json` 登記順序選第一個可用帳號（已登入、檔位設定檔齊備，且未被記為不支援該檔位 model），不檢查專案信任，登記清單為空時停止，不預設 `~/.codex`；選定帳號後、啟動 Codex 前，另比對實際要使用的帳號的檔位設定檔：必須是指向主 checkout 產生檔的 Symbolic Link 且內容相同（一般檔案即使內容相同也不通過，不允許單機覆寫），入口所在工作樹的登錄表設定也必須已落地到主 checkout。不一致時以結束碼 2（`CodexProfileDrift`）停止，列出每行可直接貼到 pwsh 的修正命令，不自行改檔，也不跳到下一個帳號；所有已登入帳號的檔位檔都缺失時同樣以此方式回報，不會被當成帳號全數不可用；換帳號後對新的候選帳號在使用前再比對一次，未使用的候選帳號不一致不阻擋。派遣檔的 `profile` 與 `task_type` 不符時在啟動前停止。執行者與檔位的對應由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md` 與 `executor-selection` skill。
-2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。這些值寫在 `scripts/dispatch/executor-registry.json` 各 Codex 執行者的 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort`），不手動編輯設定檔。`profileSettings` 另可選填 `fallbackModels`，列出帳號不支援主要 model 時依序改用的 model；`Invoke-CodexRun.ps1` 以 `-c model=` 套用，產生檔只以註解列出這份清單。`profileSettings` 也可選填 `mcpServers`（目前只有測試取證檔位 `scan`：`playwright` 與 `flaui-mcp`），產生檔輸出 `[mcp_servers.*]` 表，核准模式固定 `approve`，以 `enabled_tools` 限制可用工具；省略 `command` 的伺服器（`flaui-mcp`，路徑因機器而異）由 Setup 從 Codex Desktop 的 `config.toml` 讀取 `command` 後，以 `enabled = false` 追加到各派工帳號的 `config.toml`，`-Check` 檢查該項目。`effort` 與 `subagentEffort` 必須在登錄表的 `codexEfforts` 清單內（`max` 需要 Codex 0.147 以上，見 §8）。
+2. 設定檔內容為各檔位要使用或覆寫的 Codex 設定，常用鍵如下。這些值寫在 `scripts/dispatch/executor-registry.json` 各 Codex 執行者的 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort`），不手動編輯設定檔。`profileSettings` 另可選填 `fallbackModels`，列出帳號不支援主要 model 時依序改用的 model；`Invoke-CodexRun.ps1` 以 `-c model=` 套用，產生檔只以註解列出這份清單。`profileSettings` 也可選填 `mcpServers`（目前只有測試取證檔位 `scan`：`playwright` 與 `flaui-mcp`），產生檔輸出 `[mcp_servers.*]` 表，核准模式固定 `approve`，以 `enabled_tools` 限制可用工具；省略 `command` 的伺服器（`flaui-mcp`，路徑因機器而異）由 Setup 從 Codex Desktop 的 `config.toml` 讀取 `command` 後，以 `enabled = false` 追加到各派工帳號的 `config.toml`，`-Check` 檢查該項目。`effort` 與 `subagentEffort` 必須在登錄表的 `codexEfforts` 清單內（`max` 需要 Codex 0.147 以上）。
 
    ```toml
    model = "<model-id>"
@@ -378,23 +378,14 @@ flowchart TD
     Maintainer --> Done
 ```
 
-> 功能線：Analyst 收斂需求後由 Architect 設計，設計驗收通過後由主 Agent 依執行者登錄表派生 Claude subagent 進入實作，再以資源派遣發動 Codex 審查（Codex 不可用時由執行者登錄表選出的 Claude Sonnet subagent 承接）。判定為先做 Demo 時，Analyst 先派生 Prototyper 產出 Demo 畫面，驗收並回填需求摘要後再進入 Architect。Refactorer 由 Claude subagent 承接，處理程式碼技術債與語法現代化，每批修改後驗證測試。`architecture-improvement` 是人員明確觸發的 Skill，依 Git hotspot 與 deletion test 縮小候選範圍，先產出候選報告，確認範圍後才進入設計。bug 線：Maintainer 診斷後派生 Support Engineer 執行修正並驗收。
+流程分為四條路徑。
+
+- **功能線**：Analyst 確認需求後交 Architect 設計，實作與審查由主 Agent 派出。需要先看畫面時，先由 Prototyper 產出 Demo。
+- **bug 線**：Maintainer 診斷後派生 Support Engineer 修正並驗收。
+- **技術債清理**：由 Refactorer 處理，每批修改後執行測試。
+- **架構改善**：`architecture-improvement` skill 由人員觸發，先產出候選報告，確認範圍後才進入設計。
 
 ---
-
-## 8. 疑難排解
-
-### `model_reasoning_effort` 版本相容性
-
-Codex 0.130 只接受 `model_reasoning_effort` 為 `none`、`minimal`、`low`、`medium`、`high` 或 `xhigh`。設定為 `max` 時，會在讀取 `config.toml` 階段整份載入失敗，任何子命令皆無法執行。Codex 0.147 已接受 `max`。
-
-若對桌面版隨附 binary 執行 `codex update`，會回傳下列訊息：
-
-```text
-Could not detect the Codex installation method
-```
-
-請改用 npm 全域安裝的 Codex CLI，並以 `codex --version` 確認 PATH 解析到正確的執行檔。
 
 ## License
 
