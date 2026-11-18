@@ -42,19 +42,19 @@
     },
     {
       "id": "codex-review", "display": "Codex review", "platform": "codex", "profile": "review", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
-      "profileSettings": { "model": "gpt-6.1-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max", "fallbackModels": ["gpt-5.6-terra"] },
+      "profileSettings": { "model": "gpt-6.2-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max", "fallbackModels": ["gpt-5.6-terra"] },
       "accepts": ["review"], "tags": [], "when": {},
       "order": 30, "gated": false
     },
     {
       "id": "codex-content", "display": "Codex content", "platform": "codex", "profile": "content", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
-      "profileSettings": { "model": "gpt-6.1-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
+      "profileSettings": { "model": "gpt-6.2-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["generate", "factcheck"], "tags": ["web", "image-gen"], "when": {},
       "order": 35, "gated": false
     },
     {
       "id": "codex-advisor", "display": "Codex advisor", "platform": "codex", "profile": "advisor", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
-      "profileSettings": { "model": "gpt-6.1-sol", "effort": "high", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
+      "profileSettings": { "model": "gpt-6.2-sol", "effort": "high", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["advise"], "tags": [], "when": {},
       "order": 40, "gated": true
     },

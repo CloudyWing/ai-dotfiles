@@ -1,5 +1,5 @@
 # 此檔由 scripts/dispatch/executor-registry.json 的執行者 codex-advisor 產生，請勿手動編輯；修改請改登錄表。
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "high"
 
 [agents]

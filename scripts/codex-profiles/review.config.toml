@@ -1,6 +1,6 @@
 # 此檔由 scripts/dispatch/executor-registry.json 的執行者 codex-review 產生，請勿手動編輯；修改請改登錄表。
 # 備援 model（依序，主要 model 在帳號不被支援時由派工入口改用）：gpt-5.6-terra
-model = "gpt-6.1-sol"
+model = "gpt-6.2-sol"
 model_reasoning_effort = "medium"
 
 [agents]
