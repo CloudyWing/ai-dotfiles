@@ -701,16 +701,13 @@ foreach ($profileSpec in $profileSpecs) {
     $desktopProfilePath = Join-Path $codexDir $profileSpec.FileName
     if ($null -ne (Get-Item -LiteralPath $desktopProfilePath -Force -ErrorAction SilentlyContinue)) { $desktopActivePaths += $desktopProfilePath }
 }
-# 登錄表內現行檔位的檔案：已登記派工帳號且連結都已改接時才可移除；沒有登記派工帳號時，舊入口回退使用這些檔案，不可移除。
+# 登錄表內現行檔位的檔案：派工只讀已登記帳號目錄的連結，不讀這裡的檔案。帳號目錄的連結尚未全部就緒時先保留，其餘情況列出移除命令。
 if ($desktopActivePaths.Count -gt 0) {
     if ($machineReadFailed -or $profileBlockedCount -gt 0) {
         Write-Warning ('  ' + $codexDir + ' 內有現行檔位的設定檔（' + ($desktopActivePaths -join '、') + '）。帳號目錄的連結尚未全部就緒，先不要移除。')
     }
-    elseif ($machineAccounts.Count -eq 0) {
-        Write-Warning ('  ' + $codexDir + ' 內有現行檔位的設定檔（' + ($desktopActivePaths -join '、') + '）。沒有登記派工帳號時，舊入口回退使用這些檔案，請不要移除；要移除前先以 New-CodexDispatchAccount.ps1 登記派工帳號並重跑 Setup。')
-    }
     else {
-        Write-Host ('  ' + $codexDir + ' 內有派工不再讀取的檔位設定檔：' + ($desktopActivePaths -join '、') + '。各帳號目錄的連結都已就緒，可自行移除，命令列在最後。') -ForegroundColor Yellow
+        Write-Host ('  ' + $codexDir + ' 內有派工不讀取的檔位設定檔：' + ($desktopActivePaths -join '、') + '。派工只讀已登記帳號目錄的連結，可自行移除，命令列在最後。') -ForegroundColor Yellow
         foreach ($desktopActivePath in $desktopActivePaths) { $profileResidueCommands.Add('Remove-Item -LiteralPath ' + (ConvertTo-CodexProfileQuoted -Text $desktopActivePath)) }
     }
 }

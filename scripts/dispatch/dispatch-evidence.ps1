@@ -1,18 +1,9 @@
 ﻿#Requires -Version 7.0
 
-function Get-DispatchMachineConfigPath {
-    [CmdletBinding()]
-    param()
-    return Join-Path (Split-Path -Parent $script:DispatchEntryScriptRoot) '.local\machine.json'
-}
-
 function Read-CodexAccountConfiguration {
     [CmdletBinding()]
-    param([string]$MachineConfigPath)
+    param([Parameter(Mandatory)][string]$MachineConfigPath)
 
-    if ([string]::IsNullOrWhiteSpace($MachineConfigPath)) {
-        $MachineConfigPath = Get-DispatchMachineConfigPath
-    }
     if (-not [IO.File]::Exists($MachineConfigPath)) { return @() }
     try {
         $machine = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($MachineConfigPath, [Text.Encoding]::UTF8))
