@@ -211,7 +211,11 @@ function Get-SetupCheckPluginItem {
             continue
         }
         $installed = @($plugins | Where-Object { (Get-ClaudeProperty $_ 'id') -eq $pluginId -or (Get-ClaudeProperty $_ 'name') -eq $pluginId })
-        if ($installed.Count -eq 0) {
+        if ($installed.Count -eq 0 -and $isOfficial -and $Expected.ContainsKey('ClaudeDirectory') -and (Test-ClaudePluginUserDisabled -SettingsPath (Join-Path $Expected.ClaudeDirectory 'settings.json') -PluginId $pluginId)) {
+            # 使用者在 settings.json 把官方外掛設為 false 且尚未安裝：Setup 不會安裝，視為符合。
+            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual 'disabled' -Status 'ok' -Detail '使用者已在 settings.json 的 enabledPlugins 設為 false，Setup 不會安裝'))
+        }
+        elseif ($installed.Count -eq 0) {
             $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual $null -Status 'missing' -Detail ('未安裝' + $installHint)))
         }
         elseif ($installed.Count -gt 1) {
@@ -219,6 +223,10 @@ function Get-SetupCheckPluginItem {
         }
         elseif ((Get-ClaudeProperty $installed[0] 'enabled') -eq $true) {
             $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual 'enabled' -Status 'ok'))
+        }
+        elseif ((Get-ClaudeProperty $installed[0] 'enabled') -eq $false -and $isOfficial -and $Expected.ContainsKey('ClaudeDirectory') -and (Test-ClaudePluginUserDisabled -SettingsPath (Join-Path $Expected.ClaudeDirectory 'settings.json') -PluginId $pluginId)) {
+            # 使用者在 settings.json 把官方外掛設為 false 是他的決定，Setup 不會重新啟用，不算缺少。
+            $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual 'disabled' -Status 'ok' -Detail '你已在 settings.json 的 enabledPlugins 設為 false，Setup 不會啟用'))
         }
         elseif ((Get-ClaudeProperty $installed[0] 'enabled') -eq $false) {
             $items.Add((New-SetupCheckItem -Category 'plugin' -Path $pluginId -Expected 'enabled' -Actual 'disabled' -Status 'missing' -Detail ('已安裝但未啟用' + $installHint)))

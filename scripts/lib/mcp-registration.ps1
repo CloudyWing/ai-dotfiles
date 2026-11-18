@@ -3,8 +3,11 @@
 # 由 Register-McpServer.ps1 在版本判斷之後以 dot-source 載入，只定義函式，不在載入時執行任何動作。
 # 本檔使用 lib\claude-user-config.ps1 的函式（範本讀取、登記計畫、Claude CLI 呼叫、WSL 與連接埠探測），
 # 以及 codex-run\45-profile-sync.ps1 的 Read-CodexAccountConfigState、Test-CodexMcpServerMentioned（讀取 TOML 設定檔的編碼與行尾、判斷伺服器是否可能已被定義）。
-# 寫入邊界：Claude 端只經 claude mcp add（Invoke-ClaudeMcpStep）；Codex 桌面版設定檔只在 Set-FlaUIMcpCommand 內寫入，寫入前備份，
-# 只新增或更新 [mcp_servers.flaui-mcp] 的 command，其餘位元組不變；不建立設定檔，不刪除 .codex 目錄下的任何檔案（暫存檔只在該函式內建立並取代原檔）。
+# 寫入邊界：Claude 端只經 claude mcp add（Invoke-ClaudeMcpStep）；Codex 設定檔只在 Set-FlaUIMcpCommand（桌面版）與 Set-FlaUIMcpAccountCommand（.local\machine.json 登記的派工帳號）內寫入，
+# 兩者都只新增或更新 [mcp_servers.flaui-mcp] 的 command（派工帳號缺少該表時依 Setup 複製的形式追加整張表，含 enabled = false），其餘位元組不變；
+# 每個檔案寫入前各備份一份（同一次執行共用一個備份目錄，以相對路徑區分來源），寫入前確認原檔自讀取後未被改動，設定檔是連結時寫入連結指向的實際檔案；
+# 不建立設定檔，不刪除 .codex 目錄下的任何檔案（暫存檔只在寫入流程內建立並取代原檔）。
+# 派工帳號的清單取自 dispatch\dispatch-evidence.ps1 的 Read-CodexAccountConfiguration，呼叫端須先載入 dispatch\common-runtime.ps1、git-baseline.ps1 與 dispatch-evidence.ps1。
 
 function Get-FlaUIMcpState {
     # 讀取 Codex 桌面版設定檔（只讀），判定 [mcp_servers.flaui-mcp] 的狀態。
@@ -53,18 +56,83 @@ function ConvertTo-FlaUITomlString {
     return '"' + $Value.Replace('\', '\\').Replace('"', '\"') + '"'
 }
 
+function Get-FlaUICommandEdit {
+    # 依 Get-FlaUIMcpState 的狀態計算 command 的改寫結果，只處理表已存在的兩種情形（保留其餘位元組）：
+    # present 只取代值的位置與長度，no-command 在表頭下插入一行。其他狀態回傳 $null（表不存在，由呼叫端決定追加的內容）。
+    # 回傳 Status（unchanged 或 updated）與 NewText。
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)][string]$ExecutablePath
+    )
+
+    if ($State.Kind -eq 'present') {
+        if ([string]::Equals($State.CommandValue, $ExecutablePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return [pscustomobject]@{ Status = 'unchanged'; NewText = $State.Text }
+        }
+        $token = ConvertTo-FlaUITomlString -Value $ExecutablePath -Style $State.ValueStyle
+        return [pscustomobject]@{ Status = 'updated'; NewText = ($State.Text.Substring(0, $State.ValueIndex) + $token + $State.Text.Substring($State.ValueIndex + $State.ValueLength)) }
+    }
+    if ($State.Kind -eq 'no-command') {
+        return [pscustomobject]@{ Status = 'updated'; NewText = $State.Text.Insert($State.HeaderEnd, ('command = ' + (ConvertTo-FlaUITomlString -Value $ExecutablePath) + $State.Newline)) }
+    }
+    return $null
+}
+
+function Invoke-FlaUIConfigWrite {
+    # 寫入流程：備份讀到的原檔位元組、確認原檔未被改動後取代（或原地寫入硬連結）、讀回比對。呼叫端已通過 ShouldProcess，並已決定寫入目標（Resolve-ConfigWriteTarget）。
+    # 回傳 Status（written、changed、failed）、Message、BackupPath。
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$State,
+        [Parameter(Mandatory)][string]$ConfigPath,
+        [Parameter(Mandatory)]$WriteTarget,
+        [Parameter(Mandatory)][string]$NewText,
+        [Parameter(Mandatory)][string]$BackupRoot,
+        [Parameter(Mandatory)]$BackupContext,
+        [Parameter(Mandatory)][string]$BackupRelativePath,
+        [Parameter(Mandatory)][string]$Operation
+    )
+
+    $backupPath = $null
+    try {
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        $bom = [byte[]](0xEF, 0xBB, 0xBF)
+        # 嚴格 UTF-8 解碼的文字重新編碼會得到原檔的位元組（Read-CodexAccountConfigState 對無效位元組與 NUL 不回傳文字）。
+        # 以 if 運算式賦值會把空陣列列舉成 $null（0 位元組的檔案），改為逐步賦值，空檔維持空陣列。
+        [byte[]]$originalBytes = $encoding.GetBytes($State.Text)
+        [byte[]]$newBytes = $encoding.GetBytes($NewText)
+        if ($State.HasBom) { $originalBytes = [byte[]]($bom + $originalBytes); $newBytes = [byte[]]($bom + $newBytes) }
+        $backupPath = Save-ConfigFileBackup -Context $BackupContext -BackupRoot $BackupRoot -RelativePath $BackupRelativePath -Bytes $originalBytes -SourcePath $ConfigPath -Operation $Operation
+        $writeStatus = Write-ConfigFileGuarded -Path $WriteTarget.Path -ExpectedBytes $originalBytes -NewBytes $newBytes -InPlace:$WriteTarget.InPlace
+        if ($writeStatus -ceq 'changed') {
+            return [pscustomobject]@{ Status = 'changed'; Message = "$ConfigPath 在讀取之後被其他程式改動，為避免遺失該次變更，未寫入。確認沒有程式正在寫入該檔後重新執行"; BackupPath = $backupPath }
+        }
+    }
+    catch {
+        return [pscustomobject]@{ Status = 'failed'; Message = ("寫入失敗：{0}" -f $_.Exception.Message); BackupPath = $backupPath }
+    }
+    return [pscustomobject]@{ Status = 'written'; Message = ''; BackupPath = $backupPath }
+}
+
 function Set-FlaUIMcpCommand {
     [CmdletBinding(SupportsShouldProcess)]
     param(
         [Parameter(Mandatory)][string]$ConfigPath,
         [Parameter(Mandatory)][string]$ExecutablePath,
-        [Parameter(Mandatory)][string]$BackupRoot
+        [Parameter(Mandatory)][string]$BackupRoot,
+        # 同一次執行的備份共用一個目錄；省略時本次呼叫自成一個。
+        $BackupContext
     )
 
-    # 回傳 Status：added（新增表）、updated（更新 command）、unchanged、whatif、executable-missing、config-missing、blocked、failed；
+    # 回傳 Status：added（新增表）、updated（更新 command）、unchanged、whatif、invalid-path、executable-missing、config-missing、blocked、unresolved、changed、failed；
     # 只有 added 與 updated 寫入檔案。任何無法確定的狀態一律不寫。
     $outcome = { param($Status, $Message, $BackupPath) [pscustomobject]@{ Status = $Status; Message = $Message; BackupPath = $BackupPath } }
+    if ($null -eq $BackupContext) { $BackupContext = New-ConfigBackupContext }
 
+    if (-not [IO.Path]::IsPathFullyQualified($ExecutablePath)) {
+        return (& $outcome 'invalid-path' "FlaUI.Mcp 的路徑 $ExecutablePath 不是完整的絕對路徑，寫入設定檔會因啟動時的工作目錄不同而找不到，未寫入" $null)
+    }
     if (-not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) {
         return (& $outcome 'executable-missing' "找不到 FlaUI.Mcp 執行檔 $ExecutablePath，未寫入。依 README 取得並解壓後重新執行，或以 -FlaUIPath 指定實際位置" $null)
     }
@@ -76,64 +144,100 @@ function Set-FlaUIMcpCommand {
         'present-unsupported' { return (& $outcome 'blocked' "Codex 桌面版設定檔 $ConfigPath 的 [mcp_servers.flaui-mcp] 已有 command，但寫法不是單行字串或值後面有其他內容，無法確定語意，未寫入。請自行修改 command" $null) }
     }
 
-    $newline = $state.Newline
-    $text = $state.Text
-    $newText = $null
-    $status = $null
-    if ($state.Kind -eq 'present') {
-        if ([string]::Equals($state.CommandValue, $ExecutablePath, [System.StringComparison]::OrdinalIgnoreCase)) {
-            return (& $outcome 'unchanged' 'flaui-mcp 的 command 已是指定的執行檔路徑，未寫入' $null)
-        }
-        $token = ConvertTo-FlaUITomlString -Value $ExecutablePath -Style $state.ValueStyle
-        $newText = $text.Substring(0, $state.ValueIndex) + $token + $text.Substring($state.ValueIndex + $state.ValueLength)
-        $status = 'updated'
+    $edit = Get-FlaUICommandEdit -State $state -ExecutablePath $ExecutablePath
+    if ($null -ne $edit -and $edit.Status -eq 'unchanged') {
+        return (& $outcome 'unchanged' 'flaui-mcp 的 command 已是指定的執行檔路徑，未寫入' $null)
     }
-    elseif ($state.Kind -eq 'no-command') {
-        $newText = $text.Insert($state.HeaderEnd, ('command = ' + (ConvertTo-FlaUITomlString -Value $ExecutablePath) + $newline))
-        $status = 'updated'
-    }
+    if ($null -ne $edit) { $newText = $edit.NewText; $status = $edit.Status }
     else {
+        $newline = $state.Newline
         $append = ''
-        if ($text.Length -gt 0 -and -not $text.EndsWith("`n")) { $append += $newline }
+        if ($state.Text.Length -gt 0 -and -not $state.Text.EndsWith("`n")) { $append += $newline }
         $append += $newline + '[mcp_servers.flaui-mcp]' + $newline + ('command = ' + (ConvertTo-FlaUITomlString -Value $ExecutablePath)) + $newline + 'startup_timeout_sec = 60.0' + $newline
-        $newText = $text + $append
+        $newText = $state.Text + $append
         $status = 'added'
     }
 
+    $writeTarget = Resolve-ConfigWriteTarget -Path $ConfigPath
+    if (-not $writeTarget.Ok) {
+        return (& $outcome 'unresolved' ("Codex 桌面版設定檔 $ConfigPath 的寫入目標無法確定，未寫入：" + $writeTarget.Message) $null)
+    }
     if (-not $PSCmdlet.ShouldProcess($ConfigPath, 'Codex 桌面版設定檔的 flaui-mcp：寫入 command')) {
         return (& $outcome 'whatif' ("預演：將在 $ConfigPath 的 [mcp_servers.flaui-mcp] " + $(if ($status -eq 'added') { '新增 command 與 startup_timeout_sec' } else { '更新 command' }) + '，未寫入任何檔案') $null)
     }
 
-    $backupPath = $null
-    $temporaryPath = $null
-    try {
-        $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-        $backupDirectory = Join-Path $BackupRoot $stamp
-        $suffix = 0
-        while (Test-Path -LiteralPath $backupDirectory) { $suffix++; $backupDirectory = Join-Path $BackupRoot ('{0}_{1}' -f $stamp, $suffix) }
-        New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
-        $backupPath = Join-Path $backupDirectory 'config.toml'
-        Copy-Item -LiteralPath $ConfigPath -Destination $backupPath
-        if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { throw '備份檔寫入後不存在。' }
-        $manifestLine = ((Get-Date -Format o) + " | $ConfigPath | 寫入 Codex 桌面版 flaui-mcp 的 command`n")
-        [IO.File]::WriteAllText((Join-Path $backupDirectory 'manifest.txt'), $manifestLine, (New-Object System.Text.UTF8Encoding($false)))
-
-        $encoding = New-Object System.Text.UTF8Encoding($false)
-        $bodyBytes = $encoding.GetBytes($newText)
-        $bytes = if ($state.HasBom) { [byte[]](0xEF, 0xBB, 0xBF) + $bodyBytes } else { $bodyBytes }
-        $temporaryPath = $ConfigPath + '.tmp-' + [guid]::NewGuid().ToString('N')
-        [IO.File]::WriteAllBytes($temporaryPath, $bytes)
-        [IO.File]::Move($temporaryPath, $ConfigPath, $true)
-        $temporaryPath = $null
-        $written = [IO.File]::ReadAllBytes($ConfigPath)
-        if ([Convert]::ToBase64String($written) -cne [Convert]::ToBase64String($bytes)) { throw '寫入後讀回的內容與預期不同，請以備份還原。' }
-    }
-    catch {
-        if ($null -ne $temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
-        return (& $outcome 'failed' ("寫入失敗：{0}" -f $_.Exception.Message) $backupPath)
-    }
+    $written = Invoke-FlaUIConfigWrite -State $state -ConfigPath $ConfigPath -WriteTarget $writeTarget -NewText $newText -BackupRoot $BackupRoot -BackupContext $BackupContext -BackupRelativePath 'desktop\config.toml' -Operation '寫入 Codex 桌面版 flaui-mcp 的 command'
+    if ($written.Status -ne 'written') { return (& $outcome $written.Status $written.Message $written.BackupPath) }
     $message = if ($status -eq 'added') { "已在 $ConfigPath 新增 [mcp_servers.flaui-mcp]" } else { "已更新 $ConfigPath 的 flaui-mcp command" }
-    return (& $outcome $status $message $backupPath)
+    return (& $outcome $status $message $written.BackupPath)
+}
+
+function Set-FlaUIMcpAccountCommand {
+    # 派工帳號目錄 config.toml 的 flaui-mcp：表已存在時只改 command（其餘位元組含 enabled = false 與 startup_timeout_sec 不變）；
+    # 沒有該表時依 Setup 複製的形式追加整張表（command、startup_timeout_sec 取自來源，並加 enabled = false，由 Get-CodexMcpAccountBlock 組出）。
+    # 回傳 AccountName、Status（added、updated、unchanged、whatif、config-missing、blocked、unresolved、changed、failed）、Message、BackupPath。
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][string]$AccountName,
+        [Parameter(Mandatory)][string]$AccountHome,
+        [Parameter(Mandatory)][string]$ExecutablePath,
+        # 追加整張表時 command 與 startup_timeout_sec 的來源（Codex 桌面版 config.toml）。
+        [Parameter(Mandatory)][string]$SourceConfigPath,
+        [Parameter(Mandatory)][string]$BackupRoot,
+        [Parameter(Mandatory)]$BackupContext
+    )
+
+    $outcome = { param($Status, $Message, $BackupPath) [pscustomobject]@{ AccountName = $AccountName; Status = $Status; Message = $Message; BackupPath = $BackupPath } }
+    $configPath = Join-Path $AccountHome 'config.toml'
+    $label = "派工帳號 $AccountName 的設定檔 $configPath"
+    $state = Get-FlaUIMcpState -ConfigPath $configPath
+    switch ($state.Kind) {
+        'config-missing' { return (& $outcome 'config-missing' "$label 不存在，腳本不建立設定檔，已略過此帳號。請依 README 先準備帳號的基礎 config.toml 後重新執行" $null) }
+        'unreadable' { return (& $outcome 'blocked' ("$label 讀取失敗，已略過此帳號：" + $state.Error) $null) }
+        'ambiguous' { return (& $outcome 'blocked' "$label 已有或可能已有 flaui-mcp 的定義，但偵測不到標準的 [mcp_servers.flaui-mcp] 表，已略過此帳號。請自行確認並設定 command" $null) }
+        'present-unsupported' { return (& $outcome 'blocked' "$label 的 [mcp_servers.flaui-mcp] 已有 command，但寫法不是單行字串或值後面有其他內容，無法確定語意，已略過此帳號。請自行修改 command" $null) }
+    }
+
+    $edit = Get-FlaUICommandEdit -State $state -ExecutablePath $ExecutablePath
+    if ($null -ne $edit -and $edit.Status -eq 'unchanged') {
+        return (& $outcome 'unchanged' "$label 的 flaui-mcp command 已是指定的執行檔路徑，未寫入" $null)
+    }
+    $newText = $null
+    $status = $null
+    if ($null -ne $edit) { $newText = $edit.NewText; $status = $edit.Status }
+    else { $status = 'added' }
+
+    $writeTarget = Resolve-ConfigWriteTarget -Path $configPath
+    if (-not $writeTarget.Ok) {
+        return (& $outcome 'unresolved' ("$label 的寫入目標無法確定，已略過此帳號：" + $writeTarget.Message) $null)
+    }
+    if (-not $PSCmdlet.ShouldProcess($configPath, "派工帳號 $AccountName 的 flaui-mcp：寫入 command")) {
+        return (& $outcome 'whatif' ("預演：將在 $label 的 [mcp_servers.flaui-mcp] " + $(if ($status -eq 'added') { '追加整張表（含 enabled = false）' } else { '更新 command' }) + '，未寫入任何檔案') $null)
+    }
+    if ($status -eq 'added') {
+        $sourceState = Read-CodexAccountConfigState -Path $SourceConfigPath
+        $sourceText = if ($sourceState.exists -and $null -eq $sourceState.error) { $sourceState.text } else { $null }
+        $built = Get-CodexMcpAccountBlock -Name 'flaui-mcp' -SourceText $sourceText -SourceConfigPath $SourceConfigPath -ConfigPath $configPath
+        if ($built.action -ceq 'source-missing') { return (& $outcome 'blocked' ($built.detail + '（已略過此帳號）') $null) }
+        $newText = $state.Text + (ConvertTo-CodexMcpAccountAppendText -ExistingText $state.Text -Newline $state.Newline -Block @(, $built.lines))
+    }
+
+    $written = Invoke-FlaUIConfigWrite -State $state -ConfigPath $configPath -WriteTarget $writeTarget -NewText $newText -BackupRoot $BackupRoot -BackupContext $BackupContext -BackupRelativePath ('accounts\' + $AccountName + '\config.toml') -Operation ("寫入派工帳號 $AccountName 的 flaui-mcp")
+    if ($written.Status -ne 'written') { return (& $outcome $written.Status ("$label：" + $written.Message) $written.BackupPath) }
+    $message = if ($status -eq 'added') { "已在 $configPath 追加 [mcp_servers.flaui-mcp]（enabled = false）" } else { "已更新 $configPath 的 flaui-mcp command" }
+    return (& $outcome $status $message $written.BackupPath)
+}
+
+function Get-FlaUIRegisteredAccount {
+    # .local\machine.json 登記的派工帳號。檔案不存在或沒有 codex_accounts 時為空；登記內容不合法時 Error 有值（原因取自 Read-CodexAccountConfiguration）。
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$MachineConfigPath)
+
+    $result = [pscustomobject]@{ Accounts = @(); Error = $null }
+    if ([string]::IsNullOrWhiteSpace($MachineConfigPath)) { return $result }
+    try { $result.Accounts = @(Read-CodexAccountConfiguration -MachineConfigPath $MachineConfigPath) }
+    catch { $result.Error = $_.Exception.Message }
+    return $result
 }
 
 function New-McpCheckItem {
@@ -167,6 +271,52 @@ function Get-FlaUIMcpCheckItem {
         $Note.Add('FlaUI.Mcp 執行檔不存在於 ' + $ExecutablePath + '；依 README 取得並解壓。執行檔不存在不影響本檢查的結果。')
     }
     return $item
+}
+
+function Get-FlaUIAccountCheckItem {
+    # 各派工帳號的 flaui-mcp command 是否與 Codex 桌面版設定檔的 command 一致（只讀）。不一致、缺少或無法判定都不是 ok，項目名稱帶帳號名稱。
+    # 沒有登記帳號時只在備註說明；登記內容不合法時回傳一個無法判定的項目。
+    [CmdletBinding()]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$MachineConfigPath,
+        [Parameter(Mandatory)][string]$DesktopConfigPath,
+        [Parameter(Mandatory)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$Note
+    )
+
+    $registered = Get-FlaUIRegisteredAccount -MachineConfigPath $MachineConfigPath
+    if ($null -ne $registered.Error) {
+        return @(New-McpCheckItem -Target 'flaui' -Name 'flaui-mcp（派工帳號）' -Status 'unknown' -Expected '派工帳號登記可讀取' -Detail ('派工帳號登記無法讀取：' + $registered.Error))
+    }
+    if ($registered.Accounts.Count -eq 0) {
+        $Note.Add('沒有登記的派工帳號（.local\machine.json 不存在或沒有 codex_accounts），只檢查桌面版，未檢查帳號目錄的 flaui-mcp。')
+        return @()
+    }
+    $desktop = Get-FlaUIMcpState -ConfigPath $DesktopConfigPath
+    $items = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($account in $registered.Accounts) {
+        $name = 'flaui-mcp（派工帳號 ' + $account.name + '）'
+        $expected = '[mcp_servers.flaui-mcp] 的 command 與桌面版相同'
+        if ($desktop.Kind -ne 'present') {
+            $items.Add((New-McpCheckItem -Target 'flaui' -Name $name -Status 'unknown' -Expected $expected -Detail '桌面版設定檔沒有可比對的 flaui-mcp command，無法判定帳號是否一致'))
+            continue
+        }
+        $accountPath = Join-Path $account.codex_home 'config.toml'
+        $state = Get-FlaUIMcpState -ConfigPath $accountPath
+        $item = switch ($state.Kind) {
+            'config-missing' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'missing' -Expected $expected -Detail ("帳號設定檔 $accountPath 不存在；腳本不建立設定檔，請依 README 先準備帳號的基礎 config.toml") }
+            'unreadable' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'unknown' -Expected $expected -Detail ("帳號設定檔 $accountPath 無法讀取：" + $state.Error) }
+            'ambiguous' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'unknown' -Expected $expected -Detail ("帳號設定檔 $accountPath 可能已用其他寫法定義 flaui-mcp，無法判定") }
+            'present-unsupported' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'unknown' -Expected $expected -Detail ("帳號設定檔 $accountPath 的 command 寫法無法確定語意") }
+            'absent' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'missing' -Expected $expected -Detail ("帳號設定檔 $accountPath 沒有 [mcp_servers.flaui-mcp]；執行 Register-McpServer.ps1 -FlaUI 寫入") }
+            'no-command' { New-McpCheckItem -Target 'flaui' -Name $name -Status 'missing' -Expected $expected -Detail ("帳號設定檔 $accountPath 的 [mcp_servers.flaui-mcp] 沒有 command；執行 Register-McpServer.ps1 -FlaUI 寫入") }
+            default {
+                if ([string]::Equals($state.CommandValue, $desktop.CommandValue, [System.StringComparison]::OrdinalIgnoreCase)) { New-McpCheckItem -Target 'flaui' -Name $name -Status 'ok' -Expected $expected }
+                else { New-McpCheckItem -Target 'flaui' -Name $name -Status 'mismatch' -Expected $expected -Detail ('派工帳號 ' + $account.name + ' 的 command 為 ' + $state.CommandValue + '，桌面版為 ' + $desktop.CommandValue + '；執行 Register-McpServer.ps1 -FlaUI 更新帳號') }
+            }
+        }
+        $items.Add($item)
+    }
+    return @($items.ToArray())
 }
 
 function Get-ClaudeMcpCheckItem {
@@ -240,7 +390,9 @@ function Invoke-McpRegistrationCheck {
         [Parameter(Mandatory)][string]$CodexConfigPath,
         [Parameter(Mandatory)][string]$FlaUIPath,
         [AllowNull()][AllowEmptyString()][string]$InfraLabDistro,
-        [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo
+        [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo,
+        # .local\machine.json 的路徑；FlaUI 檢查時一併檢查其 codex_accounts 登記的派工帳號。省略或檔案不存在時只檢查桌面版。
+        [AllowNull()][AllowEmptyString()][string]$MachineConfigPath
     )
 
     $notes = New-Object 'System.Collections.Generic.List[string]'
@@ -249,14 +401,17 @@ function Invoke-McpRegistrationCheck {
     if ($claudeGroups.Count -gt 0) {
         foreach ($item in @(Get-ClaudeMcpCheckItem -Group $claudeGroups -McpTemplatePath $McpTemplatePath -UserMcpPath $UserMcpPath -InfraLabDistro $InfraLabDistro -InfraLabWslRepo $InfraLabWslRepo -Note $notes)) { $items.Add($item) }
     }
-    if ($Target -contains 'flaui') { $items.Add((Get-FlaUIMcpCheckItem -ConfigPath $CodexConfigPath -ExecutablePath $FlaUIPath -Note $notes)) }
+    if ($Target -contains 'flaui') {
+        $items.Add((Get-FlaUIMcpCheckItem -ConfigPath $CodexConfigPath -ExecutablePath $FlaUIPath -Note $notes))
+        foreach ($accountItem in @(Get-FlaUIAccountCheckItem -MachineConfigPath $MachineConfigPath -DesktopConfigPath $CodexConfigPath -Note $notes)) { $items.Add($accountItem) }
+    }
 
     $label = @{ ok = '符合'; missing = '缺少'; mismatch = '內容不符'; unknown = '無法判定' }
     Write-Host "`n>>> MCP 登記唯讀檢查：只讀取現況，不寫入任何檔案。" -ForegroundColor Cyan
     foreach ($group in @('mcp-lab', 'infra-lab', 'flaui', 'claude')) {
         $groupItems = @($items | Where-Object { $_.Target -ceq $group })
         if ($groupItems.Count -eq 0) { continue }
-        Write-Host ("`n" + $(switch ($group) { 'mcp-lab' { 'mcp-lab（Claude Code）' } 'infra-lab' { 'infra-lab（Claude Code）' } 'flaui' { 'FlaUI.Mcp（Codex 桌面版）' } default { 'Claude Code' } })) -ForegroundColor Cyan
+        Write-Host ("`n" + $(switch ($group) { 'mcp-lab' { 'mcp-lab（Claude Code）' } 'infra-lab' { 'infra-lab（Claude Code）' } 'flaui' { 'FlaUI.Mcp（Codex 桌面版與派工帳號）' } default { 'Claude Code' } })) -ForegroundColor Cyan
         foreach ($item in $groupItems) {
             $color = switch ($item.Status) { 'ok' { 'DarkGreen' } 'unknown' { 'Yellow' } default { 'Red' } }
             $line = '  [' + $label[$item.Status] + '] ' + $item.Name
@@ -287,12 +442,16 @@ function Invoke-McpRegistration {
         [Parameter(Mandatory)][string]$FlaUIPath,
         [Parameter(Mandatory)][string]$BackupRoot,
         [AllowNull()][AllowEmptyString()][string]$InfraLabDistro,
-        [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo
+        [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo,
+        # .local\machine.json 的路徑；FlaUI 寫入完成後一併處理其 codex_accounts 登記的派工帳號。省略或檔案不存在時只處理桌面版。
+        [AllowNull()][AllowEmptyString()][string]$MachineConfigPath
     )
 
     $problems = 0
     $claudeResults = @()
     $flauiResult = $null
+    $accountResults = @()
+    $backupContext = New-ConfigBackupContext
     $claudeGroups = @($Target | Where-Object { $_ -ne 'flaui' })
     if ($claudeGroups.Count -gt 0) {
         Write-Host "`n>>> 正在登記 Claude Code 的 MCP 伺服器（$($claudeGroups -join '、')）..." -ForegroundColor Cyan
@@ -310,16 +469,60 @@ function Invoke-McpRegistration {
     }
     if ($Target -contains 'flaui') {
         Write-Host "`n>>> 正在寫入 Codex 桌面版的 flaui-mcp 指令..." -ForegroundColor Cyan
-        $flauiResult = Set-FlaUIMcpCommand -ConfigPath $CodexConfigPath -ExecutablePath $FlaUIPath -BackupRoot $BackupRoot -WhatIf:$WhatIfPreference
+        $flauiResult = Set-FlaUIMcpCommand -ConfigPath $CodexConfigPath -ExecutablePath $FlaUIPath -BackupRoot $BackupRoot -BackupContext $backupContext -WhatIf:$WhatIfPreference
         switch ($flauiResult.Status) {
             { $_ -in @('added', 'updated') } { Write-Host ('  ✅  ' + $flauiResult.Message) -ForegroundColor DarkGreen; if ($flauiResult.BackupPath) { Write-Host ('    原檔備份：' + $flauiResult.BackupPath) } }
             'unchanged' { Write-Host ('  ' + $flauiResult.Message) -ForegroundColor DarkGray }
             'whatif' { Write-Host ('  ' + $flauiResult.Message) }
             default { Write-Warning $flauiResult.Message; $problems++ }
         }
-        if ($flauiResult.Status -in @('added', 'updated', 'whatif')) {
-            Write-Host '  Setup 會把桌面版的 flaui-mcp 指令複製到派工帳號目錄；帳號目錄已有 command 時不會更新，見 README。'
+
+        # 摘要的內容：桌面版的結果與派工帳號的件數。訊息只含路徑、帳號名稱與原因，不印出設定檔的其他內容。
+        $desktopLabel = switch ($flauiResult.Status) { 'added' { '新增' } 'updated' { '更新' } 'unchanged' { '未變更' } 'whatif' { '預覽（未寫入）' } default { '未完成' } }
+        $accountSummary = '派工帳號 未處理'
+        $accountUpdated = 0
+        $accountUnchanged = 0
+        $accountSkipped = 0
+        $accountPreview = 0
+
+        # 派工帳號：桌面版已是指定路徑（寫入、已相符或預演）時才處理，讓帳號與桌面版一致；桌面版沒有完成時不動帳號，避免兩邊分歧。
+        if ($flauiResult.Status -in @('added', 'updated', 'unchanged', 'whatif')) {
+            $registered = Get-FlaUIRegisteredAccount -MachineConfigPath $MachineConfigPath
+            if ($null -ne $registered.Error) {
+                Write-Warning ('派工帳號登記無法讀取，桌面版已處理完成，但全部派工帳號都沒有更新。原因：' + $registered.Error + "。請修正登記檔 ${MachineConfigPath}（主 checkout 的 .local\machine.json）的登記，或補回該帳號目錄，之後重新執行同一個命令。")
+                $accountSummary = '派工帳號 全部略過（登記無法讀取）'
+                $problems++
+            }
+            elseif ($registered.Accounts.Count -eq 0) {
+                Write-Host '  沒有登記的派工帳號（.local\machine.json 不存在或沒有 codex_accounts），只處理桌面版。' -ForegroundColor DarkGray
+                $accountSummary = '派工帳號 沒有登記'
+            }
+            else {
+                Write-Host "`n>>> 正在處理派工帳號的 flaui-mcp 指令..." -ForegroundColor Cyan
+                $accountList = New-Object 'System.Collections.Generic.List[object]'
+                foreach ($account in $registered.Accounts) {
+                    $accountResult = Set-FlaUIMcpAccountCommand -AccountName $account.name -AccountHome $account.codex_home -ExecutablePath $FlaUIPath -SourceConfigPath $CodexConfigPath -BackupRoot $BackupRoot -BackupContext $backupContext -WhatIf:$WhatIfPreference
+                    $accountList.Add($accountResult)
+                    switch ($accountResult.Status) {
+                        { $_ -in @('added', 'updated') } { $accountUpdated++; Write-Host ('  ✅  ' + $accountResult.Message) -ForegroundColor DarkGreen; if ($accountResult.BackupPath) { Write-Host ('    原檔備份：' + $accountResult.BackupPath) } }
+                        'unchanged' { $accountUnchanged++; Write-Host ('  ' + $accountResult.Message) -ForegroundColor DarkGray }
+                        'whatif' { $accountPreview++; Write-Host ('  ' + $accountResult.Message) }
+                        default {
+                            $accountSkipped++
+                            Write-Warning ("派工帳號 $($account.name) 被略過，其他帳號照常處理。原因：" + $accountResult.Message)
+                            $problems++
+                        }
+                    }
+                }
+                $accountResults = @($accountList.ToArray())
+                $accountSummary = if ($WhatIfPreference) { "派工帳號 預覽將更新 $accountPreview、未變更 $accountUnchanged、略過 $accountSkipped" } else { "派工帳號 已更新 $accountUpdated、未變更 $accountUnchanged、略過 $accountSkipped" }
+            }
         }
+        else {
+            Write-Warning '桌面版的 flaui-mcp 沒有完成，派工帳號沒有被更動。請排除上面桌面版的問題後，重新執行同一個命令。'
+        }
+        $summaryPrefix = if ($WhatIfPreference) { 'FlaUI 摘要（預覽，沒有寫入任何檔案）' } else { 'FlaUI 摘要' }
+        Write-Host ("`n${summaryPrefix}：桌面版 $desktopLabel；$accountSummary。") -ForegroundColor $(if ($problems -eq 0) { 'Green' } else { 'Yellow' })
     }
-    return [pscustomobject]@{ Problems = $problems; ClaudeResults = $claudeResults; FlaUIResult = $flauiResult }
+    return [pscustomobject]@{ Problems = $problems; ClaudeResults = $claudeResults; FlaUIResult = $flauiResult; AccountResults = $accountResults }
 }

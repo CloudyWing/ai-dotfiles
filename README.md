@@ -75,9 +75,12 @@ mcp-lab、infra-lab 與 FlaUI.Mcp 各自依下列說明手動安裝，安裝完�
 - 沒有指定任何項目時不做任何寫入，只印出用法。可以在同一個命令指定多項。
 - `-McpLab` 與 `-InfraLab` 把範本 `templates/claude-mcp-servers.json` 的伺服器登記到 Claude Code 使用者層，名稱與範本相同。已存在的登記不會被覆寫，內容與範本不同時只回報；你另外加入的登記不受影響。新登記的 MCP 需要重新啟動 Claude Code 的 Session 才會載入。
 - `-InfraLabDistro` 與 `-InfraLabWslRepo` 只在首次登記 infra-lab 時需要，登記後存於 `~/.claude.json`，重跑不必再提供。
-- `-FlaUI` 把執行檔路徑寫入 Codex 桌面版設定檔 `~/.codex/config.toml` 的 `[mcp_servers.flaui-mcp]` 的 `command`。預設路徑為 `%LOCALAPPDATA%\Programs\FlaUI-MCP\FlaUI.Mcp.exe`，用 `-FlaUIPath` 指定其他路徑。執行檔不存在或設定檔不存在時不寫入並回報，腳本不會建立設定檔。項目不存在時新增（含 `startup_timeout_sec = 60.0`），已存在時只更新 `command` 那一行，其餘內容、編碼與換行不變。寫入前先把原檔備份到 `.local/ai-sessions/backups/<時間戳>/config.toml`，同目錄的 `manifest.txt` 以一行記錄這次操作。
-- 加上 `-WhatIf` 預覽，不寫入任何東西。
-- 加上 `-Check` 唯讀檢查所選項目是否已登記，沒有指定項目時檢查三項全部。infra-lab 另檢查 WSL 是否存在。缺少任一項時結束碼為 1，全部符合為 0。mcp-lab 的服務未啟動、FlaUI.Mcp 執行檔不存在只在備註提示，不影響結束碼。檢查不寫入任何檔案。
+- `-FlaUI` 把執行檔路徑寫入 Codex 桌面版設定檔 `~/.codex/config.toml` 的 `[mcp_servers.flaui-mcp]` 的 `command`，並同步更新 `.local/machine.json` 的 `codex_accounts` 登記的每個派工帳號的 `config.toml`，讓兩邊指向同一個執行檔。預設路徑為 `%LOCALAPPDATA%\Programs\FlaUI-MCP\FlaUI.Mcp.exe`，用 `-FlaUIPath` 指定其他路徑；相對路徑會先依目前的工作目錄轉成絕對路徑，設定檔裡寫的一律是完整路徑。執行檔不存在或桌面版設定檔不存在時不寫入並回報，腳本不會建立設定檔。
+- 桌面版與派工帳號的處理規則相同。`[mcp_servers.flaui-mcp]` 已存在時只更新 `command` 那一行，其餘內容、編碼與換行不變，帳號端原有的 `enabled = false` 與 `startup_timeout_sec` 照舊。桌面版沒有該表時新增（含 `startup_timeout_sec = 60.0`）；派工帳號沒有該表時依 Setup 複製的形式追加整張表，`command` 與 `startup_timeout_sec` 取自桌面版設定，並加上 `enabled = false`。
+- 桌面版沒有完成（設定檔不存在、寫法無法確定等）時不處理派工帳號。單一帳號的 `config.toml` 不存在、讀不到或寫法無法確定時，略過該帳號並指出帳號名稱，其餘帳號照常處理，最後結束碼為 1。沒有登記派工帳號或沒有 `machine.json` 時只處理桌面版，不影響結束碼。`-MachineConfigPath` 可指定其他的帳號登記檔。
+- 每個檔案寫入前各備份一份，同一次執行放在同一個目錄 `.local/ai-sessions/backups/<時間戳>/`，桌面版為 `desktop/config.toml`，帳號為 `accounts/<帳號名稱>/config.toml`，同目錄的 `manifest.txt` 每個檔案記錄一行。取代檔案前會再確認原檔自讀取後沒有被改動（例如 Codex 剛好寫入），改動過就不寫入，回報原因並以結束碼 1 結束，確認沒有程式正在寫入後重新執行即可。設定檔是符號連結時寫入連結指向的實際檔案，連結本身保留；連結指向不存在的位置時不寫入並回報。
+- 加上 `-WhatIf` 預覽，不寫入任何東西，桌面版與帳號的設定檔都不動。
+- 加上 `-Check` 唯讀檢查所選項目是否已登記，沒有指定項目時檢查三項全部。infra-lab 另檢查 WSL 是否存在。FlaUI 另檢查每個派工帳號的 `command` 是否與桌面版相同，不同時指出帳號名稱。缺少任一項或不一致時結束碼為 1，全部符合為 0。mcp-lab 的服務未啟動、FlaUI.Mcp 執行檔不存在只在備註提示，不影響結束碼。檢查不寫入任何檔案。
 
 **mcp-lab。** 來源為 [mcp-lab](https://github.com/CloudyWing/mcp-lab)，以 Docker Compose 執行 11 個 MCP 服務，位址為 `http://127.0.0.1:<固定埠號>/mcp`，安裝在 WSL。前置需求是 WSL 與 Docker。WSL 在系統管理員 pwsh 執行 `wsl --install` 啟用，重新開機後建立 Linux 使用者，詳見 [Microsoft 的 WSL 安裝說明](https://learn.microsoft.com/windows/wsl/install)。Docker 與 mcp-lab 本身的安裝與啟動，依該 repo 的 README 操作。完成後執行 `Register-McpServer.ps1 -McpLab`。登記不需要服務已在執行，服務可以之後才啟動。
 
@@ -94,10 +97,10 @@ mcp-lab、infra-lab 與 FlaUI.Mcp 各自依下列說明手動安裝，安裝完�
 
 下載符合平台的壓縮檔並解壓到任意資料夾，執行檔為 `FlaUI.Mcp.exe`。本 repo 建議解壓到 `%LOCALAPPDATA%\Programs\FlaUI-MCP`，路徑不帶版號，升級時設定不必改。目前使用的版本是 v1.5.0 的 x64 framework-dependent。解壓後的步驟如下。
 
-1. 執行 `Register-McpServer.ps1 -FlaUI`，把執行檔路徑寫入 Codex 桌面版設定。
-2. 執行 Setup（步驟 5），讓各派工帳號目錄取得 FlaUI 的指令。
+1. 執行 `Register-McpServer.ps1 -FlaUI`，把執行檔路徑寫入 Codex 桌面版與各派工帳號的設定。
+2. 之後新登記的派工帳號，由 Setup（步驟 5）從桌面版設定複製 FlaUI 的指令。
 
-Setup 只在派工帳號目錄的 `config.toml` 缺少 `[mcp_servers.flaui-mcp]` 的 `command` 時，才從桌面版設定複製；帳號目錄已有 `command` 時不會更新。FlaUI.Mcp 換了位置之後，先在各派工帳號目錄的 `config.toml` 把該 `command` 改成新路徑。
+Setup 只在派工帳號目錄的 `config.toml` 缺少 `[mcp_servers.flaui-mcp]` 的 `command` 時，才從桌面版設定複製；帳號目錄已有 `command` 時不會更新。FlaUI.Mcp 換了位置之後，重新執行 `Register-McpServer.ps1 -FlaUI`（以 `-FlaUIPath` 指定新路徑），桌面版與各派工帳號會一併更新。
 
 ---
 
@@ -211,17 +214,18 @@ Setup 的官方外掛與 `settings.json` 兩個步驟處理 Claude Code 使用�
 
 `settings.json` 的合併規則如下。
 
-- 範本有而檔案沒有的項目新增；檔案已有的值保留，不覆寫，包含 `enabledPlugins` 內你設為 `false` 的外掛。
+- 範本有而檔案沒有的項目新增；檔案已有的值保留，不覆寫，包含 `enabledPlugins` 內你設為 `false` 的外掛。Setup 的官方外掛步驟同樣尊重這個設定。`enabledPlugins` 內設為 `false` 的官方外掛，Setup 不安裝也不啟用，只在輸出說明你已停用，要使用時自行改回 `true`。
 - 範本沒有的項目原樣保留，包含授權（`permissions`）、偏好與機器專屬設定。
 - 寫入前先把原檔備份到 `.local/ai-sessions/backups/<時間戳>/settings.json`，同目錄的 `manifest.txt` 以一行記錄這次操作。
 - Setup 輸出新增的項目路徑與備份位置，不印出值，可用來檢視套用前後的差異。加上 `-WhatIf` 只列出將新增的項目，不寫入。
 - 檔案含 BOM、不是 UTF-8、無法剖析為 JSON、根不是物件，或含僅大小寫不同的重複鍵時，Setup 回報原因並且不寫入。
+- 取代檔案前會再確認原檔自讀取後沒有被改動（例如執行中的 Claude Code 剛好寫入），改動過就不寫入，Setup 回報原因並以結束碼 1 結束，確認後重跑即可。`settings.json` 是符號連結時寫入連結指向的實際檔案，連結本身保留；連結指向不存在的位置時不寫入，同樣回報並以結束碼 1 結束。
 - 範本內的外掛本次沒有安裝成功時，Setup 略過該外掛的 `enabledPlugins` 項目並說明原因，補裝後重跑 Setup 即可補上。
 - PowerShell 低於 7.5 時，Setup 不改寫既有的 `settings.json`，並提示升級（`winget upgrade Microsoft.PowerShell`），因為這些版本會改變日期樣式字串的格式。
 
 MCP 登記共 12 個，名稱為 `mcp-sql-server`、`mcp-oracle`、`mcp-elasticsearch`、`mcp-redis`、`mcp-mosquitto`、`mcp-rabbitmq`、`mcp-mailpit`、`mcp-reader`、`mcp-oidc`、`mcp-api-contract`、`mcp-docker` 與 `infra-lab`。前 11 個屬 mcp-lab，位址為 `http://127.0.0.1:<埠號>/mcp`，埠號以範本為準；`infra-lab` 經 `wsl.exe` 啟動。範本使用 mcp-lab 的預設埠號，改用其他埠號時，`Register-McpServer.ps1 -Check` 會把該項回報為內容不符。名稱已存在但內容與範本不同時，腳本只回報不覆寫，並且不印出現有內容；要改用範本時，先執行 `claude mcp remove <名稱> --scope user` 再重新執行腳本。登記只經 `claude mcp add --scope user` 寫入 `~/.claude.json`，不直接改寫該檔。缺少 `-InfraLabDistro` 或 `-InfraLabWslRepo`，或值含空白與特殊字元時，腳本略過 infra-lab 並說明補登記的方式。
 
-官方外掛 `microsoft-docs` 為必裝，由 Setup 安裝並啟用。`github` 與 `context7` 為選裝，Setup 不安裝，需要時自行執行下列命令。官方 marketplace `claude-plugins-official` 已由 Setup 加入。
+官方外掛 `microsoft-docs` 為必裝，由 Setup 安裝並啟用；你在 `settings.json` 的 `enabledPlugins` 把它設為 `false` 時除外，Setup 不會重新啟用。`github` 與 `context7` 為選裝，Setup 不安裝，需要時自行執行下列命令。官方 marketplace `claude-plugins-official` 已由 Setup 加入。
 
 ```powershell
 claude plugin install github@claude-plugins-official --scope user
@@ -399,7 +403,7 @@ powershell.exe -NoProfile -Command '$env:CODEX_HOME = ''C:\Users\<使用者>\.co
 - `scripts/Get-ClaudeSessionUsage.ps1` 唯讀彙總主 session 與子代理 transcript 用量，依 `message.id` 去重，分別輸出主 session、子代理與總計三組。
 - `scripts/Get-LineCost.ps1` 唯讀彙整一條線的成本並輸出 JSON：`runs\*.record.json`（含 Claude 審查者的紀錄，標示無 token 用量）與 `cost-ledger.md` 事件列的 Codex 執行次數、model、token、結果與耗時；Claude 用量只在以 `-ClaudeSessionId` 或 `-ClaudeTranscriptPath` 指定時重用 `Get-ClaudeSessionUsage.ps1` 計算，否則為 null 並附原因。
 - `scripts/Setup-AIGlobalConfig.ps1` 建立各工具的 symlink 與 Git Hook 設定，並安裝必裝的官方外掛、套用 `settings.json` 共用範本，見「安裝」與 §3。MCP 伺服器的登記不在 Setup。
-- `scripts/Register-McpServer.ps1` 把 mcp-lab、infra-lab 登記到 Claude Code 使用者層，把 FlaUI.Mcp 的執行檔路徑寫入 Codex 桌面版設定，只寫設定，不安裝，可指定只處理其中幾項，附 `-WhatIf` 與唯讀的 `-Check`，見「安裝」的「MCP 伺服器的安裝與登記」。
+- `scripts/Register-McpServer.ps1` 把 mcp-lab、infra-lab 登記到 Claude Code 使用者層，把 FlaUI.Mcp 的執行檔路徑寫入 Codex 桌面版與各派工帳號的設定，只寫設定，不安裝，可指定只處理其中幾項，附 `-WhatIf` 與唯讀的 `-Check`，見「安裝」的「MCP 伺服器的安裝與登記」。
 - `scripts/lib/claude-user-config.ps1` 是 Setup 與 `Register-McpServer.ps1` 共用的 Claude 使用者層設定模組，包含 Claude CLI 呼叫、範本讀取、MCP 登記計畫、`settings.json` 合併、官方外掛安裝，以及 WSL 與連接埠探測；`scripts/lib/mcp-registration.ps1` 是 `Register-McpServer.ps1` 的登記、FlaUI 設定檔寫入與檢查；`scripts/lib/setup-check.ps1` 是 `Setup-AIGlobalConfig.ps1 -Check` 的比對與輸出。三者都只定義函式，只支援 pwsh 7。
 - `scripts/New-CodexDispatchAccount.ps1` 建立派工帳號，見 §3。
 - `scripts/Ensure-AiContextArtifacts.ps1` 依來源指紋決定是否重產 `.local/ai-context/` 的索引產物，並呼叫 `Export-ApiSurface.csx`、`Export-TypeHierarchy.csx` 與 `Export-ProjectGraph.csx`。

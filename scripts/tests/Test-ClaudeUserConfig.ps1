@@ -15,6 +15,7 @@ $settingsTemplatePath = Join-Path $repoRoot 'templates\claude-settings.shared.js
 $tempBase = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp') ('claude-user-config-' + [guid]::NewGuid().ToString('N'))
 $failed = 0
 $passed = 0
+$skipped = 0
 
 . $libPath
 
@@ -47,6 +48,12 @@ function Test-Case {
     try {
         $output = @(& $Check)
         $result = if ($output.Count -gt 0) { $output[-1] } else { $false }
+        # 測試以 [pscustomobject]@{ Skip = '原因' } 表示環境條件不具備（例如沒有建立符號連結的權限）而略過。
+        if ($result -is [pscustomobject] -and $null -ne $result.PSObject.Properties['Skip']) {
+            $script:skipped++
+            Write-Output "SKIP $Id $($result.Skip)"
+            return
+        }
         if (-not $result) { throw '條件不成立' }
         $script:passed++
         Write-Output "PASS $Id"
@@ -417,15 +424,51 @@ try {
         $result = Install-ClaudeOfficialPlugin -PluginId 'microsoft-docs@claude-plugins-official'
         $result.Status -eq 'unchanged' -and $script:CliCalls.Count -eq 0
     }
-    Test-Case 'I04 已安裝未啟用時只呼叫 enable' {
+    Test-Case 'I04 已安裝未啟用，且 settings.json 沒有把它設為 false（沒有該項目、值為 true 或不是布林 false）時只呼叫 enable' {
         Reset-Stubs
         $script:ListHandler = {
             param($Arguments)
             if ($Arguments -contains 'marketplace') { , @([pscustomobject]@{ name = 'claude-plugins-official' }) }
             else { , @([pscustomobject]@{ id = 'microsoft-docs@claude-plugins-official'; enabled = $false }) }
         }
-        $result = Install-ClaudeOfficialPlugin -PluginId 'microsoft-docs@claude-plugins-official'
-        $result.Status -eq 'enabled' -and $script:CliCalls.Count -eq 1 -and (Join-Arguments $script:CliCalls[0]) -ceq (Join-Arguments @('plugin', 'enable', 'microsoft-docs@claude-plugins-official'))
+        $expected = Join-Arguments @('plugin', 'enable', 'microsoft-docs@claude-plugins-official')
+        $withoutSettings = Install-ClaudeOfficialPlugin -PluginId 'microsoft-docs@claude-plugins-official'
+        $withoutSettingsCalls = @($script:CliCalls | ForEach-Object { Join-Arguments $_ })
+        $verdicts = @()
+        foreach ($settingsText in @('{"theme":"x"}', '{"enabledPlugins":{"other@x":false}}', '{"enabledPlugins":{"microsoft-docs@claude-plugins-official":true}}', '{"enabledPlugins":{"microsoft-docs@claude-plugins-official":"false"}}')) {
+            Reset-Stubs
+            $script:ListHandler = {
+                param($Arguments)
+                if ($Arguments -contains 'marketplace') { , @([pscustomobject]@{ name = 'claude-plugins-official' }) }
+                else { , @([pscustomobject]@{ id = 'microsoft-docs@claude-plugins-official'; enabled = $false }) }
+            }
+            $settingsPath = Join-Path (New-TestDirectory) 'settings.json'
+            Write-TestFile $settingsPath $settingsText
+            $result = Install-ClaudeOfficialPlugin -PluginId 'microsoft-docs@claude-plugins-official' -SettingsPath $settingsPath
+            $verdicts += ($result.Status -eq 'enabled' -and $script:CliCalls.Count -eq 1 -and (Join-Arguments $script:CliCalls[0]) -ceq $expected)
+        }
+        $withoutSettings.Status -eq 'enabled' -and $withoutSettingsCalls.Count -eq 1 -and $withoutSettingsCalls[0] -ceq $expected -and @($verdicts | Where-Object { -not $_ }).Count -eq 0
+    }
+    Test-Case 'I08 settings.json 把官方外掛設為 false（已安裝未啟用）時不執行 enable，回傳 user-disabled，零次 CLI 呼叫' {
+        Reset-Stubs
+        $script:ListHandler = {
+            param($Arguments)
+            if ($Arguments -contains 'marketplace') { , @([pscustomobject]@{ name = 'claude-plugins-official' }) }
+            else { , @([pscustomobject]@{ id = 'microsoft-docs@claude-plugins-official'; enabled = $false }) }
+        }
+        $settingsPath = Join-Path (New-TestDirectory) 'settings.json'
+        Write-TestFile $settingsPath '{"enabledPlugins":{"microsoft-docs@claude-plugins-official":false}}'
+        $hash = Get-TestHash $settingsPath
+        $result = Install-ClaudeOfficialPlugin -PluginId 'microsoft-docs@claude-plugins-official' -SettingsPath $settingsPath
+        $result.Status -eq 'user-disabled' -and $script:CliCalls.Count -eq 0 -and (Get-TestHash $settingsPath) -ceq $hash
+    }
+    Test-Case 'I09 settings.json 把官方外掛設為 false（尚未安裝）時也不安裝、不新增 marketplace，零次 CLI 呼叫' {
+        Reset-Stubs
+        $script:ListHandler = { param($Arguments) , @() }
+        $settingsPath = Join-Path (New-TestDirectory) 'settings.json'
+        Write-TestFile $settingsPath '{"enabledPlugins":{"microsoft-docs@claude-plugins-official":false}}'
+        $result = Install-ClaudeOfficialPlugin -PluginId 'microsoft-docs@claude-plugins-official' -SettingsPath $settingsPath
+        $result.Status -eq 'user-disabled' -and $script:CliCalls.Count -eq 0
     }
     Test-Case 'I05 清單查詢失敗或安裝非零時為 failed 且不再嘗試後續步驟' {
         Reset-Stubs
@@ -615,6 +658,158 @@ try {
         $plan = Get-ClaudeSettingsPlan -Existing $existing -Template $templateObject
         ($existing | ConvertTo-Json -Depth 32 -Compress) -ceq $existingSnapshot -and ($templateObject | ConvertTo-Json -Depth 32 -Compress) -ceq $templateSnapshot -and
         @($plan.Changes | Where-Object { $_.Kind -eq 'add' }).Count -gt 0 -and (Get-ClaudeSettingsPlan -Existing $null -Template $templateObject).Result.theme -ceq 'dark'
+    }
+
+    # ---- 受保護寫入：取代前確認原檔未被改動（GW01、GW02、S17）、連結（GW03 至 GW05、S18、S19）、備份取自讀到的位元組（GW06） ----
+    function Get-TestTemporaryFile {
+        param([string]$Directory)
+        return , @(Get-ChildItem -LiteralPath $Directory -Force | Where-Object { $_.Name -like '*.tmp-*' })
+    }
+    Test-Case 'GW01 Write-ConfigFileGuarded：原檔與讀取時相同才寫入並讀回；不同時回傳 changed，原檔保留改動後的內容，不留暫存檔' {
+        $directory = New-TestDirectory
+        $path = Join-Path $directory 'a.bin'
+        [IO.File]::WriteAllBytes($path, [byte[]](1, 2, 3))
+        $written = Write-ConfigFileGuarded -Path $path -ExpectedBytes ([byte[]](1, 2, 3)) -NewBytes ([byte[]](9, 9))
+        $afterWritten = [Convert]::ToHexString([IO.File]::ReadAllBytes($path))
+        [IO.File]::WriteAllBytes($path, [byte[]](5, 5))
+        $changed = Write-ConfigFileGuarded -Path $path -ExpectedBytes ([byte[]](9, 9)) -NewBytes ([byte[]](7, 7, 7))
+        $written -ceq 'written' -and $afterWritten -ceq '0909' -and $changed -ceq 'changed' -and [Convert]::ToHexString([IO.File]::ReadAllBytes($path)) -ceq '0505' -and (Get-TestTemporaryFile -Directory $directory).Count -eq 0
+    }
+    Test-Case 'GW02 Write-ConfigFileGuarded：預期檔案不存在（建立新檔）時，目標已出現就回傳 changed 且不覆寫；原檔為空檔也能比對' {
+        $directory = New-TestDirectory
+        $path = Join-Path $directory 'new.bin'
+        $created = Write-ConfigFileGuarded -Path $path -ExpectedBytes $null -NewBytes ([byte[]](1))
+        [IO.File]::WriteAllBytes($path, [byte[]](2))
+        $raced = Write-ConfigFileGuarded -Path $path -ExpectedBytes $null -NewBytes ([byte[]](3))
+        $emptyPath = Join-Path $directory 'empty.bin'
+        [IO.File]::WriteAllBytes($emptyPath, [byte[]]@())
+        $fromEmpty = Write-ConfigFileGuarded -Path $emptyPath -ExpectedBytes ([byte[]]@()) -NewBytes ([byte[]](4))
+        $created -ceq 'written' -and $raced -ceq 'changed' -and [Convert]::ToHexString([IO.File]::ReadAllBytes($path)) -ceq '02' -and $fromEmpty -ceq 'written' -and [Convert]::ToHexString([IO.File]::ReadAllBytes($emptyPath)) -ceq '04' -and (Get-TestTemporaryFile -Directory $directory).Count -eq 0
+    }
+    Test-Case 'GW03 Resolve-ConfigWriteTarget：一般檔案為本身；目錄不是可寫入的檔案；硬連結要求原地寫入' {
+        $directory = New-TestDirectory
+        $plain = Join-Path $directory 'plain.txt'
+        [IO.File]::WriteAllBytes($plain, [byte[]](1))
+        $hardLink = Join-Path $directory 'hard.txt'
+        $null = New-Item -ItemType HardLink -Path $hardLink -Target $plain
+        $asPlain = Resolve-ConfigWriteTarget -Path $plain
+        $asDirectory = Resolve-ConfigWriteTarget -Path $directory
+        $asHard = Resolve-ConfigWriteTarget -Path $hardLink
+        $asMissing = Resolve-ConfigWriteTarget -Path (Join-Path $directory 'none.txt')
+        $asPlain.Ok -and $asPlain.Path -ceq $plain -and $asHard.Ok -and $asHard.InPlace -and -not $asDirectory.Ok -and -not $asMissing.Ok
+    }
+    Test-Case 'GW04 Resolve-ConfigWriteTarget 解析連結鏈：相對目標、多層連結、連結指向不存在的目標、無法解析目標的重分析點，後兩者回報不可寫入（以替身模擬 Get-Item，不需要建立符號連結的權限）' {
+        $baseDirectory = Join-Path (New-TestDirectory) 'dot'
+        $linkPath = Join-Path $baseDirectory 'link.toml'
+        $secondLink = Join-Path $baseDirectory 'link2.toml'
+        $realPath = Join-Path $baseDirectory 'real\config.toml'
+        $danglingLink = Join-Path $baseDirectory 'dangling.toml'
+        $opaqueLink = Join-Path $baseDirectory 'opaque.toml'
+        $items = @{
+            $linkPath      = [pscustomobject]@{ PSIsContainer = $false; Attributes = [IO.FileAttributes]::ReparsePoint; LinkType = 'SymbolicLink'; Target = @('real\config.toml') }
+            $secondLink    = [pscustomobject]@{ PSIsContainer = $false; Attributes = [IO.FileAttributes]::ReparsePoint; LinkType = 'SymbolicLink'; Target = @($linkPath) }
+            $realPath      = [pscustomobject]@{ PSIsContainer = $false; Attributes = [IO.FileAttributes]::Archive; LinkType = $null; Target = $null }
+            $danglingLink  = [pscustomobject]@{ PSIsContainer = $false; Attributes = [IO.FileAttributes]::ReparsePoint; LinkType = 'SymbolicLink'; Target = @('gone\config.toml') }
+            $opaqueLink    = [pscustomobject]@{ PSIsContainer = $false; Attributes = [IO.FileAttributes]::ReparsePoint; LinkType = $null; Target = $null }
+        }
+        function Get-Item {
+            param([string]$LiteralPath, [switch]$Force, $ErrorAction)
+            if (-not $items.ContainsKey($LiteralPath)) { throw "not found: $LiteralPath" }
+            return $items[$LiteralPath]
+        }
+        $relative = Resolve-ConfigWriteTarget -Path $linkPath
+        $chained = Resolve-ConfigWriteTarget -Path $secondLink
+        $dangling = Resolve-ConfigWriteTarget -Path $danglingLink
+        $opaque = Resolve-ConfigWriteTarget -Path $opaqueLink
+        $relative.Ok -and $relative.Path -ceq $realPath -and -not $relative.InPlace -and $chained.Ok -and $chained.Path -ceq $realPath -and -not $dangling.Ok -and $dangling.Message.Length -gt 0 -and -not $opaque.Ok -and $opaque.Message.Contains('無法解析目標')
+    }
+    Test-Case 'GW05 Save-ConfigFileBackup：同一個 Context 的各檔案共用一個備份目錄並以相對路徑區分，內容取自傳入的位元組，manifest.txt 每個檔案一行；另一個 Context 取得不同的目錄' {
+        $root = Join-Path (New-TestDirectory) 'backups'
+        $context = New-ConfigBackupContext
+        $first = Save-ConfigFileBackup -Context $context -BackupRoot $root -RelativePath 'desktop\config.toml' -Bytes ([byte[]](1, 2)) -SourcePath 'X:\a\config.toml' -Operation '操作甲'
+        $second = Save-ConfigFileBackup -Context $context -BackupRoot $root -RelativePath 'accounts\acct\config.toml' -Bytes ([byte[]](3)) -SourcePath 'X:\b\config.toml' -Operation '操作乙'
+        $other = New-ConfigBackupContext
+        $third = Save-ConfigFileBackup -Context $other -BackupRoot $root -RelativePath 'settings.json' -Bytes ([byte[]](4)) -SourcePath 'X:\c\settings.json' -Operation '操作丙'
+        $manifest = @(Get-Content -LiteralPath (Join-Path $context.Directory 'manifest.txt'))
+        (Split-Path -Parent (Split-Path -Parent $first)) -ceq $context.Directory -and (Split-Path -Parent (Split-Path -Parent (Split-Path -Parent $second))) -ceq $context.Directory -and
+        [Convert]::ToHexString([IO.File]::ReadAllBytes($first)) -ceq '0102' -and [Convert]::ToHexString([IO.File]::ReadAllBytes($second)) -ceq '03' -and
+        $manifest.Count -eq 2 -and $manifest[0].Contains('X:\a\config.toml') -and $manifest[0].Contains('操作甲') -and $manifest[1].Contains('X:\b\config.toml') -and
+        $other.Directory -cne $context.Directory -and (Split-Path -Parent $third) -ceq $other.Directory
+    }
+    Test-Case 'GW07 Save-ConfigFileBackup 接受 0 位元組（空陣列與 $null）：備份出 0 位元組的檔案並正常記錄 manifest' {
+        $root = Join-Path (New-TestDirectory) 'backups'
+        $context = New-ConfigBackupContext
+        $fromEmpty = Save-ConfigFileBackup -Context $context -BackupRoot $root -RelativePath 'a\config.toml' -Bytes ([byte[]]@()) -SourcePath 'X:\a\config.toml' -Operation '空檔'
+        $fromNull = Save-ConfigFileBackup -Context $context -BackupRoot $root -RelativePath 'b\config.toml' -Bytes $null -SourcePath 'X:\b\config.toml' -Operation '空檔'
+        (Get-Item -LiteralPath $fromEmpty).Length -eq 0 -and (Get-Item -LiteralPath $fromNull).Length -eq 0 -and @(Get-Content -LiteralPath (Join-Path $context.Directory 'manifest.txt')).Count -eq 2
+    }
+    Test-Case 'GW06 備份內容是讀到的位元組：讀取後原檔被改動時，備份仍是讀取時的內容（取代前再由比對攔下）' {
+        $fixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $originalHash = Get-TestHash $fixture.Settings
+        $originalSave = ${function:Save-ConfigFileBackup}
+        function Save-ConfigFileBackup {
+            param($Context, $BackupRoot, $RelativePath, $Bytes, $SourcePath, $Operation)
+            [IO.File]::AppendAllText($SourcePath, "`n", (New-Object System.Text.UTF8Encoding($false)))
+            return (& $originalSave -Context $Context -BackupRoot $BackupRoot -RelativePath $RelativePath -Bytes $Bytes -SourcePath $SourcePath -Operation $Operation)
+        }
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
+        $result.Status -eq 'changed' -and (Get-TestHash $result.BackupPath) -ceq $originalHash
+    }
+    Test-Case 'S17 讀取之後原檔被其他程式改動時不寫入：回報 changed，改動後的內容保留，備份仍是讀取時的內容，不留暫存檔' {
+        $fixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $originalHash = Get-TestHash $fixture.Settings
+        $originalSave = ${function:Save-ConfigFileBackup}
+        function Save-ConfigFileBackup {
+            # 模擬備份之後、取代之前有其他程式寫入（附加一個空白，內容仍是合法的 JSON）。
+            param($Context, $BackupRoot, $RelativePath, $Bytes, $SourcePath, $Operation)
+            $path = & $originalSave -Context $Context -BackupRoot $BackupRoot -RelativePath $RelativePath -Bytes $Bytes -SourcePath $SourcePath -Operation $Operation
+            [IO.File]::AppendAllText($SourcePath, ' ', (New-Object System.Text.UTF8Encoding($false)))
+            return $path
+        }
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
+        $text = [IO.File]::ReadAllText($fixture.Settings)
+        $result.Status -eq 'changed' -and $result.Message.Contains('被其他程式改動') -and $text.EndsWith('} ') -and $text.Contains('"theme": "light"') -and -not $text.Contains('ai-agents-hooks') -and
+        (Get-TestHash $result.BackupPath) -ceq $originalHash -and (Get-TestTemporaryFile -Directory (Split-Path -Parent $fixture.Settings)).Count -eq 0
+    }
+    Test-Case 'S18 settings.json 是符號連結時寫入連結指向的實際檔案：連結仍是連結，目標檔內容更新，備份是目標檔的原內容（沒有建立符號連結的權限時略過）' {
+        $directory = New-TestDirectory
+        $realPath = Join-Path $directory 'dotfiles\settings.json'
+        $linkPath = Join-Path $directory 'claude\settings.json'
+        Write-TestFile $realPath (New-ExistingSettingsText)
+        New-Item -ItemType Directory -Path (Split-Path -Parent $linkPath) -Force | Out-Null
+        try { $null = New-Item -ItemType SymbolicLink -Path $linkPath -Target $realPath -ErrorAction Stop }
+        catch { return [pscustomobject]@{ Skip = '沒有建立符號連結的權限' } }
+        $templatePath = Join-Path $directory 'settings.shared.json'
+        Write-TestFile $templatePath (New-SettingsTemplateText)
+        $originalHash = Get-TestHash $realPath
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $linkPath -TemplatePath $templatePath -BackupRoot (Join-Path $directory 'backups')
+        $linkItem = Get-Item -LiteralPath $linkPath -Force
+        $result.Status -eq 'merged' -and ($linkItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -and (Get-TestHash $realPath) -cne $originalHash -and
+        $null -ne (Read-ClaudeSettingsFile -Path $realPath).Object.enabledPlugins.PSObject.Properties['ai-agents-hooks@ai-agents-local'] -and (Get-TestHash $result.BackupPath) -ceq $originalHash
+    }
+    Test-Case 'S19 settings.json 是硬連結時原地寫入，連結關係保留：另一個名稱看到相同的新內容，備份是原內容' {
+        $directory = New-TestDirectory
+        $realPath = Join-Path $directory 'dotfiles\settings.json'
+        $linkPath = Join-Path $directory 'claude\settings.json'
+        Write-TestFile $realPath (New-ExistingSettingsText)
+        New-Item -ItemType Directory -Path (Split-Path -Parent $linkPath) -Force | Out-Null
+        $null = New-Item -ItemType HardLink -Path $linkPath -Target $realPath
+        $templatePath = Join-Path $directory 'settings.shared.json'
+        Write-TestFile $templatePath (New-SettingsTemplateText)
+        $originalHash = Get-TestHash $realPath
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $linkPath -TemplatePath $templatePath -BackupRoot (Join-Path $directory 'backups')
+        $result.Status -eq 'merged' -and (Get-TestHash $realPath) -ceq (Get-TestHash $linkPath) -and (Get-TestHash $realPath) -cne $originalHash -and [string](Get-Item -LiteralPath $linkPath -Force).LinkType -ceq 'HardLink' -and
+        (Get-TestHash $result.BackupPath) -ceq $originalHash -and (Get-TestTemporaryFile -Directory (Split-Path -Parent $linkPath)).Count -eq 0
+    }
+    Test-Case 'S20 寫入目標無法確定（連結指向不存在的目標等）時回報 unresolved，不備份、不寫入' {
+        $fixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $hash = Get-TestHash $fixture.Settings
+        function Resolve-ConfigWriteTarget {
+            param([string]$Path)
+            return [pscustomobject]@{ Ok = $false; Path = $Path; InPlace = $false; Message = '連結指向不存在的目標' }
+        }
+        $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
+        $result.Status -eq 'unresolved' -and $result.Message.Contains('連結指向不存在的目標') -and (Get-TestHash $fixture.Settings) -ceq $hash -and -not (Test-Path -LiteralPath $fixture.Backups)
     }
 
     # ---- WSL 狀態 ----
@@ -844,6 +1039,57 @@ try {
         $partial.Status -eq 'created' -and @($partial.Skipped).Count -eq 1 -and @($written.enabledPlugins.PSObject.Properties).Count -eq 2 -and $all.Status -eq 'unchanged' -and @($all.Skipped).Count -eq 3 -and -not (Test-Path -LiteralPath $other.Settings)
     }
 
+    # ---- 使用者在 settings.json 把官方外掛設為 false：Setup 不安裝、不啟用，只回報 ----
+    Test-Case 'ST12 官方外掛步驟：settings.json 把外掛設為 false 時不呼叫 CLI（無 enable、無 install），輸出你已停用的說明，結果為 user-disabled；沒有 false 時照常啟用' {
+        Reset-Stubs
+        $script:ListHandler = {
+            param($Arguments)
+            if ($Arguments -contains 'marketplace') { , @([pscustomobject]@{ name = 'claude-plugins-official' }) }
+            else { , @([pscustomobject]@{ id = 'microsoft-docs@claude-plugins-official'; enabled = $false }) }
+        }
+        $disabledPath = Join-Path (New-TestDirectory) 'settings.json'
+        Write-TestFile $disabledPath '{"enabledPlugins":{"microsoft-docs@claude-plugins-official":false}}'
+        $disabled = Invoke-Captured { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath $settingsTemplatePath -SettingsPath $disabledPath }
+        $disabledCalls = $script:CliCalls.Count
+        $enabledPath = Join-Path (New-TestDirectory) 'settings.json'
+        Write-TestFile $enabledPath '{"theme":"x"}'
+        $enabled = Invoke-Captured { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath $settingsTemplatePath -SettingsPath $enabledPath }
+        $null -eq $disabled.Error -and $disabled.Result[0].Status -eq 'user-disabled' -and $disabledCalls -eq 0 -and (($disabled.Info -join "`n") -match '你已在 settings\.json') -and (($disabled.Info -join "`n") -notmatch '✅') -and
+        $null -eq $enabled.Error -and $enabled.Result[0].Status -eq 'enabled' -and $script:CliCalls.Count -eq 1
+    }
+    Test-Case 'PL06 settings 步驟：被使用者設為 false 且未安裝的外掛不算安裝失敗：沒有略過警告，值保持 false，其餘項目照常新增' {
+        Reset-Stubs
+        $script:ListHandler = { param($Arguments) , @([pscustomobject]@{ id = 'ai-agents-hooks@ai-agents-local'; enabled = $true }, [pscustomobject]@{ id = 'line-status-board@ai-agents-local'; enabled = $true }) }
+        $fixture = New-SettingsFixture -ExistingText '{"theme":"light","enabledPlugins":{"microsoft-docs@claude-plugins-official":false}}'
+        Copy-Item -LiteralPath $settingsTemplatePath -Destination $fixture.Template -Force
+        $captured = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups }
+        $after = (Read-ClaudeSettingsFile -Path $fixture.Settings).Object
+        $skippedWarnings = @($captured.Warnings | Where-Object { $_.Contains('microsoft-docs@claude-plugins-official') })
+        $null -eq $captured.Error -and $captured.Result[0].Status -eq 'merged' -and $skippedWarnings.Count -eq 0 -and @($captured.Result[0].Skipped).Count -eq 0 -and
+        $after.enabledPlugins.'microsoft-docs@claude-plugins-official' -eq $false -and $after.enabledPlugins.'ai-agents-hooks@ai-agents-local' -eq $true
+    }
+    Test-Case 'ST13 settings 步驟：讀取後原檔被改動（changed）與寫入目標無法確定（unresolved）都以警告回報原因，結果帶對應狀態' {
+        Reset-Stubs
+        $script:ListHandler = $allPluginsInstalled
+        $changedFixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $unresolvedFixture = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $unresolvedHash = Get-TestHash $unresolvedFixture.Settings
+        $originalSave = ${function:Save-ConfigFileBackup}
+        function Save-ConfigFileBackup {
+            param($Context, $BackupRoot, $RelativePath, $Bytes, $SourcePath, $Operation)
+            $path = & $originalSave -Context $Context -BackupRoot $BackupRoot -RelativePath $RelativePath -Bytes $Bytes -SourcePath $SourcePath -Operation $Operation
+            [IO.File]::AppendAllText($SourcePath, ' ', (New-Object System.Text.UTF8Encoding($false)))
+            return $path
+        }
+        $changed = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $changedFixture.Settings -TemplatePath $changedFixture.Template -BackupRoot $changedFixture.Backups }
+        function Resolve-ConfigWriteTarget {
+            param([string]$Path)
+            return [pscustomobject]@{ Ok = $false; Path = $Path; InPlace = $false; Message = '連結指向不存在的目標' }
+        }
+        $unresolved = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $unresolvedFixture.Settings -TemplatePath $unresolvedFixture.Template -BackupRoot $unresolvedFixture.Backups }
+        $changed.Result[0].Status -eq 'changed' -and (($changed.Warnings -join "`n") -match '被其他程式改動') -and $unresolved.Result[0].Status -eq 'unresolved' -and (($unresolved.Warnings -join "`n") -match '連結指向不存在的目標') -and (Get-TestHash $unresolvedFixture.Settings) -ceq $unresolvedHash
+    }
+
     # ---- 不支援 -DateKind 的 PowerShell（7.5 以前）不改寫既有的 settings.json ----
     # 以同名函式替身讓 Test-ClaudeUserConfigDateKindSupported 回傳 false，模擬 7.0 至 7.4。
     Test-Case 'DK01 不支援 -DateKind 時，改寫既有 settings.json 的步驟回報 refused 並說明需升級 PowerShell，檔案與備份目錄不變' {
@@ -870,6 +1116,18 @@ try {
         $result = Invoke-ClaudeSettingsApply -SettingsPath $fixture.Settings -TemplatePath $fixture.Template -BackupRoot $fixture.Backups
         ($supported -and $result.Status -eq 'merged') -or (-not $supported -and $result.Status -eq 'refused')
     }
+    Test-Case 'DK04 不支援 -DateKind 時，settings.json 已含範本全部項目（不需改寫）回報 unchanged，沒有警告，檔案與備份目錄不變；需要新增項目時才 refused' {
+        Reset-Stubs
+        $script:ListHandler = $allPluginsInstalled
+        $complete = New-SettingsFixture -ExistingText (New-SettingsTemplateText)
+        $needsRewrite = New-SettingsFixture -ExistingText (New-ExistingSettingsText)
+        $hash = Get-TestHash $complete.Settings
+        function Test-ClaudeUserConfigDateKindSupported { return $false }
+        $apply = Invoke-ClaudeSettingsApply -SettingsPath $complete.Settings -TemplatePath $complete.Template -BackupRoot $complete.Backups
+        $step = Invoke-Captured { Invoke-ClaudeSettingsStep -SettingsPath $complete.Settings -TemplatePath $complete.Template -BackupRoot $complete.Backups }
+        $refused = Invoke-ClaudeSettingsApply -SettingsPath $needsRewrite.Settings -TemplatePath $needsRewrite.Template -BackupRoot $needsRewrite.Backups
+        $apply.Status -eq 'unchanged' -and $step.Result[0].Status -eq 'unchanged' -and $step.Warnings.Count -eq 0 -and (Get-TestHash $complete.Settings) -ceq $hash -and -not (Test-Path -LiteralPath $complete.Backups) -and $refused.Status -eq 'refused'
+    }
 
     # ---- 靜態檢查 ----
     $libText = [IO.File]::ReadAllText($libPath)
@@ -893,13 +1151,14 @@ try {
     Test-Case 'G03 lib 不使用連線型的 claude mcp 查詢命令' {
         $libText -notmatch 'claude mcp (list|get)' -and $libText -notmatch "'mcp',\s*'(list|get)'"
     }
-    Test-Case 'G04 寫入檔案的 API 只出現在 Invoke-ClaudeSettingsApply 內' {
-        $apply = Get-FunctionRange -Name 'Invoke-ClaudeSettingsApply'
-        $hits = @($tokens | Where-Object { $_.Text -match 'Set-Content|WriteAllText|WriteAllBytes|Out-File|Add-Content|Move-Item|Remove-Item|Copy-Item|New-Item' })
-        $outside = @($hits | Where-Object { $_.Extent.StartOffset -lt $apply.StartOffset -or $_.Extent.EndOffset -gt $apply.EndOffset })
+    Test-Case 'G04 寫入檔案的 API 只出現在 Invoke-ClaudeSettingsApply 與受保護寫入的兩個函式（Save-ConfigFileBackup、Write-ConfigFileGuarded）內；刪除只針對暫存檔' {
+        $allowed = @('Invoke-ClaudeSettingsApply', 'Save-ConfigFileBackup', 'Write-ConfigFileGuarded') | ForEach-Object { Get-FunctionRange -Name $_ }
+        $hits = @($tokens | Where-Object { $_.Text -match 'Set-Content|WriteAllText|WriteAllBytes|AppendAllText|Out-File|Add-Content|Move-Item|Remove-Item|Copy-Item|New-Item|\bMove\b' })
+        $outside = @($hits | Where-Object { $hit = $_; @($allowed | Where-Object { $hit.Extent.StartOffset -ge $_.StartOffset -and $hit.Extent.EndOffset -le $_.EndOffset }).Count -eq 0 })
         Assert-True ($hits.Count -gt 0) '沒有找到任何寫入 API，檢查失效'
-        Assert-True ($outside.Count -eq 0) ('Invoke-ClaudeSettingsApply 之外的寫入 API：' + (($outside | ForEach-Object { $_.Text + '@' + $_.Extent.StartLineNumber }) -join ','))
-        $true
+        Assert-True ($outside.Count -eq 0) ('允許的函式之外的寫入 API：' + (($outside | ForEach-Object { $_.Text + '@' + $_.Extent.StartLineNumber }) -join ','))
+        $removeLines = @($libText -split "`r?`n" | Where-Object { $_ -match 'Remove-Item|\.Delete\(|\[IO\.File\]::Delete' })
+        $removeLines.Count -eq 1 -and $removeLines[0].Contains('$temporaryPath')
     }
     Test-Case 'G05 .claude.json 字串只出現在 Get-ClaudeUserMcpServer 與檔頭註解' {
         $reader = Get-FunctionRange -Name 'Get-ClaudeUserMcpServer'
@@ -908,8 +1167,10 @@ try {
         Assert-True ($hits.Count -gt 0) '沒有找到 .claude.json 的引用，檢查失效'
         $outside.Count -eq 0
     }
-    Test-Case 'G06 取代 settings.json 使用同目錄暫存檔與覆寫式 Move' {
-        $libText -match 'settings\.json\.tmp-' -and $libText -match '\[IO\.File\]::Move\(\$temporaryPath, \$SettingsPath, \$true\)'
+    Test-Case 'G06 取代檔案使用建在實際目標旁的暫存檔與覆寫式 Move；settings.json 的寫入經過連結解析與取代前比對' {
+        $guard = (Get-FunctionRange -Name 'Write-ConfigFileGuarded').Text
+        $apply = (Get-FunctionRange -Name 'Invoke-ClaudeSettingsApply').Text
+        $guard -match '\$Path \+ ''\.tmp-''' -and $guard -match '\[IO\.File\]::Move\(\$temporaryPath, \$Path, \$true\)' -and $apply -match 'Resolve-ConfigWriteTarget' -and $apply -match 'Write-ConfigFileGuarded' -and $apply -notmatch 'Copy-Item'
     }
     Test-Case 'G07 lib 沒有針對 permissions 或 skipDangerousModePermissionPrompt 的特殊處理（授權由使用者自行設定）' {
         $libText -cnotmatch 'permissions|skipDangerousModePermissionPrompt'
@@ -981,5 +1242,6 @@ finally {
 
 Write-Output "PASSED: $passed"
 Write-Output "FAILED: $failed"
+Write-Output "SKIPPED: $skipped"
 if ($failed -gt 0) { exit 1 }
 exit 0

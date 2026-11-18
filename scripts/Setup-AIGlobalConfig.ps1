@@ -496,12 +496,17 @@ if ($claudePluginEnabled) {
 
 # 8d. 必裝的官方外掛（清單取自 settings 範本 enabledPlugins 中的官方 marketplace 項目）
 Write-Host "`n>>> 正在處理 Claude 官方外掛..." -ForegroundColor Cyan
-try { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath $claudeSettingsTemplatePath -WhatIf:$WhatIfPreference | Out-Null }
+try { Invoke-ClaudeOfficialPluginStep -SettingsTemplatePath $claudeSettingsTemplatePath -SettingsPath $claudeSettingsPath -WhatIf:$WhatIfPreference | Out-Null }
 catch { Write-Warning $_.Exception.Message }
 
 # 8e. 套用 settings.json 共用範本（只新增缺少的項目，不覆寫既有值；寫入前備份；尚未安裝的外掛略過其 enabledPlugins 項目）
 Write-Host "`n>>> 正在套用 Claude settings.json 共用範本..." -ForegroundColor Cyan
-try { Invoke-ClaudeSettingsStep -SettingsPath $claudeSettingsPath -TemplatePath $claudeSettingsTemplatePath -BackupRoot (Join-Path $configRoot '.local\ai-sessions\backups') -WhatIf:$WhatIfPreference | Out-Null }
+# 讀取後檔案被其他程式改動（changed）或寫入目標無法確定（unresolved）時沒有寫入，Setup 在最後以非零結束碼提醒重跑；其他略過與失敗維持只警告。
+$claudeSettingsNotWritten = $false
+try {
+    $claudeSettingsResult = Invoke-ClaudeSettingsStep -SettingsPath $claudeSettingsPath -TemplatePath $claudeSettingsTemplatePath -BackupRoot (Join-Path $configRoot '.local\ai-sessions\backups') -WhatIf:$WhatIfPreference
+    if ($null -ne $claudeSettingsResult -and $claudeSettingsResult.Status -in @('changed', 'unresolved')) { $claudeSettingsNotWritten = $true }
+}
 catch { Write-Warning $_.Exception.Message }
 
 # 9. 設定 Git Hooks 路徑
@@ -742,6 +747,10 @@ if ($profileResidueCommands.Count -gt 0) {
 }
 if ($profileBlockedCount -gt 0) {
     Write-Warning "  ⚠️ Codex 檔位設定檔尚未全部就緒（$profileBlockedCount 項），請依上列訊息處理。"
+    exit 1
+}
+if ($claudeSettingsNotWritten) {
+    Write-Warning '  ⚠️ Claude settings.json 沒有寫入（原因見上方 8e 的警告），請處理後重跑 Setup。'
     exit 1
 }
 Write-Host "  ✅ Codex 檔位設定檔（$(($profileSpecs | ForEach-Object { $_.Profile }) -join '、')）均已指向 repo 產生檔。" -ForegroundColor DarkGreen

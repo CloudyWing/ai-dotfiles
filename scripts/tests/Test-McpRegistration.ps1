@@ -4,7 +4,8 @@ param()
 
 # scripts/Register-McpServer.ps1 與 scripts/lib/mcp-registration.ps1 的測試：
 # Claude 端的登記（只選取的項目、已存在不覆寫、重複執行不重複）、FlaUI.Mcp 寫入 Codex 桌面版設定檔（新增、只改 command、其餘位元組不變、保留編碼與換行、
-# 執行檔或設定檔不存在不寫入、-WhatIf 不寫入）、唯讀檢查，以及腳本本身的選取、用法與結束碼。
+# 執行檔或設定檔不存在不寫入、-WhatIf 不寫入、讀取後被改動不寫入、連結的處理、相對路徑轉成絕對路徑）、同步更新 machine.json 登記的派工帳號、唯讀檢查（含帳號與桌面版一致），以及腳本本身的選取、用法與結束碼。
+# 帳號與 machine.json 都是暫存目錄內的假檔案；執行腳本的輔助函式預設把 -MachineConfigPath 指向暫存目錄，測試不讀寫真實的帳號設定檔。
 # 所有檔案操作都在暫存目錄內進行；腳本以子行程執行時，USERPROFILE、LOCALAPPDATA 與 PATH 都指向暫存目錄與假的 claude，不碰真實的使用者設定與 Claude CLI。
 
 Set-StrictMode -Version Latest
@@ -19,9 +20,13 @@ $pwshPath = if ([string]::IsNullOrWhiteSpace($pwshCommand.Source)) { $pwshComman
 $tempBase = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp') ('mcp-registration-' + [guid]::NewGuid().ToString('N'))
 $failed = 0
 $passed = 0
+$skipped = 0
 
 . (Join-Path $repoRoot 'scripts\lib\claude-user-config.ps1')
 . (Join-Path $repoRoot 'scripts\codex-run\45-profile-sync.ps1')
+. (Join-Path $repoRoot 'scripts\dispatch\common-runtime.ps1')
+. (Join-Path $repoRoot 'scripts\dispatch\git-baseline.ps1')
+. (Join-Path $repoRoot 'scripts\dispatch\dispatch-evidence.ps1')
 . $libPath
 
 # 替身：記錄呼叫並由測試指定回應。
@@ -47,6 +52,12 @@ function Test-Case {
     try {
         $output = @(& $Check)
         $result = if ($output.Count -gt 0) { $output[-1] } else { $false }
+        # 測試以 [pscustomobject]@{ Skip = '原因' } 表示環境條件不具備（例如沒有建立符號連結的權限）而略過。
+        if ($result -is [pscustomobject] -and $null -ne $result.PSObject.Properties['Skip']) {
+            $script:skipped++
+            Write-Output "SKIP $Id $($result.Skip)"
+            return
+        }
         if (-not $result) { throw '條件不成立' }
         $script:passed++
         Write-Output "PASS $Id"
@@ -131,7 +142,11 @@ function New-CodexFixture {
     New-Item -ItemType Directory -Path $directory -Force | Out-Null
     $configPath = Join-Path $directory 'config.toml'
     if ($PSBoundParameters.ContainsKey('Text') -or $PSBoundParameters.ContainsKey('RawBytes')) {
-        $bytes = if ($PSBoundParameters.ContainsKey('RawBytes')) { $RawBytes } elseif ($Bom) { [byte[]](0xEF, 0xBB, 0xBF) + $utf8.GetBytes($Text) } else { $utf8.GetBytes($Text) }
+        # 空字串的位元組是空陣列，if 運算式賦值會把它列舉成 $null，所以逐分支賦值。
+        [byte[]]$bytes = @()
+        if ($PSBoundParameters.ContainsKey('RawBytes')) { $bytes = $RawBytes }
+        elseif ($Bom) { $bytes = [byte[]](0xEF, 0xBB, 0xBF) + $utf8.GetBytes($Text) }
+        else { $bytes = $utf8.GetBytes($Text) }
         [IO.File]::WriteAllBytes($configPath, $bytes)
     }
     [IO.File]::WriteAllBytes((Join-Path $directory 'state.sqlite'), [byte[]](1, 2, 3, 4, 5))
@@ -161,10 +176,44 @@ function Get-TestBytesHex {
     return [Convert]::ToHexString([IO.File]::ReadAllBytes($Path))
 }
 
+function Get-TestTemporaryFile {
+    param([string]$Directory)
+    return , @(Get-ChildItem -LiteralPath $Directory -Force | Where-Object { $_.Name -like '*.tmp-*' })
+}
+
 $crlf = "`r`n"
-$baseConfigLines = @('model = "gpt"', '', '[mcp_servers.playwright]', "command = 'npx'", '', '[projects.''x:\work'']', 'trust_level = "trusted"')
+$baseConfigLines =@('model = "gpt"', '', '[mcp_servers.playwright]', "command = 'npx'", '', '[projects.''x:\work'']', 'trust_level = "trusted"')
 $baseConfig = ($baseConfigLines -join $crlf) + $crlf
 $presentConfig = (@('model = "gpt"', '', '[mcp_servers.flaui-mcp]', "command = 'X:\old\FlaUI.Mcp.exe'", 'startup_timeout_sec = 60.0', '', '[projects.''x:\work'']', 'trust_level = "trusted"') -join $crlf) + $crlf
+# 派工帳號已有 flaui-mcp 表的設定檔：Setup 複製時加入的 enabled = false 與 startup_timeout_sec 不得被改動。
+$accountPresentConfig = (@('model = "gpt"', '', '[mcp_servers.flaui-mcp]', "command = 'X:\old\FlaUI.Mcp.exe'", 'startup_timeout_sec = 90.0', 'enabled = false', '', '[projects.''x:\work'']', 'trust_level = "trusted"') -join $crlf) + $crlf
+
+# 派工帳號夾具：machine.json 與各帳號目錄都在暫存目錄。NoConfig 的帳號只有目錄、沒有 config.toml（登記檔的讀取要求帳號目錄存在）。
+function New-AccountFixture {
+    param([hashtable]$Config = @{}, [string[]]$Name = @('acct-a', 'acct-b'), [string[]]$NoConfig = @())
+    $root = New-TestDirectory
+    $entries = @()
+    $homes = @{}
+    foreach ($accountName in $Name) {
+        $accountHome = Join-Path $root ('.codex-' + $accountName)
+        New-Item -ItemType Directory -Path $accountHome -Force | Out-Null
+        if ($NoConfig -notcontains $accountName) {
+            $text = if ($Config.ContainsKey($accountName)) { $Config[$accountName] } else { $baseConfig }
+            [IO.File]::WriteAllBytes((Join-Path $accountHome 'config.toml'), $utf8.GetBytes($text))
+        }
+        [IO.File]::WriteAllText((Join-Path $accountHome 'sibling.txt'), 'sibling', $utf8)
+        $entries += [ordered]@{ name = $accountName; codex_home = $accountHome }
+        $homes[$accountName] = $accountHome
+    }
+    $machinePath = Join-Path $root 'machine.json'
+    [IO.File]::WriteAllText($machinePath, ([ordered]@{ schema = 'ai-agents.machine.v1'; codex_accounts = @($entries) } | ConvertTo-Json -Depth 5), $utf8)
+    return [pscustomobject]@{ Root = $root; Machine = $machinePath; Homes = $homes; Backups = (Join-Path $root 'backups') }
+}
+
+function Get-AccountConfigPath {
+    param($Fixture, [string]$Name)
+    return (Join-Path $Fixture.Homes[$Name] 'config.toml')
+}
 
 # 子行程：腳本在暫存的 USERPROFILE、LOCALAPPDATA 與只含假 claude 的 PATH 下執行。假 claude 把引數寫入 CALLLOG 並以結束碼 0 結束。
 function ConvertTo-ArgumentText {
@@ -184,8 +233,12 @@ function New-ScriptEnvironment {
 }
 
 function Invoke-RegisterScript {
-    param([Parameter(Mandatory)][object]$Environment, [string[]]$Arguments = @())
+    param([Parameter(Mandatory)][object]$Environment, [string[]]$Arguments = @(), [string]$WorkingDirectory)
+    # 腳本的帳號登記檔預設是 repo 的 .local\machine.json（真實的派工帳號）。測試一律指向暫存目錄內不存在的檔案，
+    # 需要帳號時由案例以 -MachineConfigPath 指定暫存的 machine.json，不會碰到真實的帳號設定檔。
+    if ($Arguments -notcontains '-MachineConfigPath') { $Arguments = @($Arguments) + @('-MachineConfigPath', (Join-Path $Environment.Root 'no-machine.json')) }
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    if (-not [string]::IsNullOrEmpty($WorkingDirectory)) { $startInfo.WorkingDirectory = $WorkingDirectory }
     $startInfo.FileName = $pwshPath
     $startInfo.Arguments = ((@('-NoProfile', '-NonInteractive', '-File', $scriptPath) + $Arguments) | ForEach-Object { ConvertTo-ArgumentText -Value $_ }) -join ' '
     $startInfo.UseShellExecute = $false
@@ -208,7 +261,7 @@ function Invoke-RegisterScript {
         $stderrTask = $process.StandardError.ReadToEndAsync()
         if (-not $process.WaitForExit(120000)) { try { $process.Kill($true) } catch { $null = $_ }; throw '子程序逾時' }
         $process.WaitForExit()
-        return [pscustomobject]@{ ExitCode = $process.ExitCode; StdOut = $stdoutTask.GetAwaiter().GetResult(); StdErr = $stderrTask.GetAwaiter().GetResult() }
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; StdOut = $stdoutTask.GetAwaiter().GetResult(); StdErr = $stderrTask.GetAwaiter().GetResult(); Arguments = @($Arguments) }
     }
     finally { $process.Dispose() }
 }
@@ -237,7 +290,7 @@ try {
         $written = [IO.File]::ReadAllBytes($fixture.Config)
         $expectedText = $baseConfig + $crlf + '[mcp_servers.flaui-mcp]' + $crlf + "command = '" + $fixture.Executable + "'" + $crlf + 'startup_timeout_sec = 60.0' + $crlf
         $prefixSame = [Convert]::ToHexString($written[0..($originalBytes.Length - 1)]) -ceq [Convert]::ToHexString($originalBytes)
-        $manifest = Join-Path (Split-Path -Parent $result.BackupPath) 'manifest.txt'
+        $manifest = Join-Path (Split-Path -Parent (Split-Path -Parent $result.BackupPath)) 'manifest.txt'
         $after = (Get-FileSnapshot -Directory $fixture.Directory) -split "`n" | Where-Object { $_ -notlike '*config.toml*' }
         $result.Status -eq 'added' -and $prefixSame -and (Get-FileText -Path $fixture.Config) -ceq $expectedText -and (Test-Path -LiteralPath $manifest) -and
         (Get-TestBytesHex $result.BackupPath) -ceq [Convert]::ToHexString($originalBytes) -and ($after -join "`n") -ceq $siblingsWithoutConfig -and @(Get-ChildItem -LiteralPath $fixture.Directory -Filter '*.tmp-*').Count -eq 0
@@ -331,6 +384,289 @@ try {
         try { $result = Set-FlaUIMcpCommand -ConfigPath $fixture.Config -ExecutablePath $fixture.Executable -BackupRoot $fixture.Backups }
         finally { Set-ItemProperty -LiteralPath $fixture.Config -Name IsReadOnly -Value $false }
         $result.Status -eq 'failed' -and (Get-TestBytesHex $fixture.Config) -ceq $hash -and @(Get-ChildItem -LiteralPath $fixture.Directory -Filter '*.tmp-*' -Force).Count -eq 0 -and (Test-Path -LiteralPath (Join-Path $fixture.Directory 'state.sqlite'))
+    }
+
+    Test-Case 'FL12 執行檔路徑不是完整的絕對路徑（相對、只有檔名、磁碟機相對）時回報 invalid-path，不寫入、不備份，相對路徑不會被寫進設定檔' {
+        $fixture = New-CodexFixture -Text $baseConfig
+        $hash = Get-TestBytesHex $fixture.Config
+        $statuses = @('.\FlaUI.Mcp.exe', 'FlaUI.Mcp.exe', 'C:FlaUI.Mcp.exe', '..\tools\FlaUI.Mcp.exe') | ForEach-Object { (Set-FlaUIMcpCommand -ConfigPath $fixture.Config -ExecutablePath $_ -BackupRoot $fixture.Backups).Status }
+        @($statuses | Where-Object { $_ -ne 'invalid-path' }).Count -eq 0 -and (Get-TestBytesHex $fixture.Config) -ceq $hash -and -not (Test-Path -LiteralPath $fixture.Backups)
+    }
+    Test-Case 'FL13 讀取之後設定檔被其他程式改動時不寫入：回報 changed，改動後的內容保留，備份是讀取時的內容，不留暫存檔' {
+        $fixture = New-CodexFixture -Text $baseConfig
+        $originalHex = Get-TestBytesHex $fixture.Config
+        $originalSave = ${function:Save-ConfigFileBackup}
+        function Save-ConfigFileBackup {
+            # 模擬備份之後、取代之前有其他程式寫入（例如 Codex 新增專案的信任項目）。
+            param($Context, $BackupRoot, $RelativePath, $Bytes, $SourcePath, $Operation)
+            $path = & $originalSave -Context $Context -BackupRoot $BackupRoot -RelativePath $RelativePath -Bytes $Bytes -SourcePath $SourcePath -Operation $Operation
+            [IO.File]::AppendAllText($SourcePath, "# other-writer`r`n", $utf8)
+            return $path
+        }
+        $result = Set-FlaUIMcpCommand -ConfigPath $fixture.Config -ExecutablePath $fixture.Executable -BackupRoot $fixture.Backups
+        $text = Get-FileText -Path $fixture.Config
+        $result.Status -eq 'changed' -and $result.Message.Contains('被其他程式改動') -and $text.EndsWith("# other-writer`r`n") -and -not $text.Contains('flaui-mcp') -and (Get-TestBytesHex $result.BackupPath) -ceq $originalHex -and (Get-TestTemporaryFile -Directory $fixture.Directory).Count -eq 0
+    }
+    Test-Case 'FL14 設定檔是硬連結時原地寫入，連結關係保留：另一個名稱看到相同的新內容，備份是原內容' {
+        $fixture = New-CodexFixture -Text $presentConfig
+        $dotfiles = Join-Path (Split-Path -Parent $fixture.Directory) 'dotfiles'
+        New-Item -ItemType Directory -Path $dotfiles -Force | Out-Null
+        $linkedName = Join-Path $dotfiles 'config.toml'
+        $null = New-Item -ItemType HardLink -Path $linkedName -Target $fixture.Config
+        $originalHex = Get-TestBytesHex $fixture.Config
+        $result = Set-FlaUIMcpCommand -ConfigPath $fixture.Config -ExecutablePath $fixture.Executable -BackupRoot $fixture.Backups
+        $result.Status -eq 'updated' -and (Get-TestBytesHex $linkedName) -ceq (Get-TestBytesHex $fixture.Config) -and (Get-FileText -Path $linkedName).Contains("command = '" + $fixture.Executable + "'") -and [string](Get-Item -LiteralPath $fixture.Config -Force).LinkType -ceq 'HardLink' -and
+        (Get-TestBytesHex $result.BackupPath) -ceq $originalHex -and (Get-TestTemporaryFile -Directory $fixture.Directory).Count -eq 0
+    }
+    Test-Case 'FL15 設定檔是符號連結時寫入連結指向的實際檔案：連結仍是連結，目標檔更新，備份是目標檔的原內容（沒有建立符號連結的權限時略過）' {
+        $fixture = New-CodexFixture
+        $realDirectory = Join-Path (Split-Path -Parent $fixture.Directory) 'dotfiles'
+        New-Item -ItemType Directory -Path $realDirectory -Force | Out-Null
+        $realPath = Join-Path $realDirectory 'config.toml'
+        [IO.File]::WriteAllBytes($realPath, $utf8.GetBytes($presentConfig))
+        try { $null = New-Item -ItemType SymbolicLink -Path $fixture.Config -Target $realPath -ErrorAction Stop }
+        catch { return [pscustomobject]@{ Skip = '沒有建立符號連結的權限' } }
+        $originalHex = Get-TestBytesHex $realPath
+        $result = Set-FlaUIMcpCommand -ConfigPath $fixture.Config -ExecutablePath $fixture.Executable -BackupRoot $fixture.Backups
+        $result.Status -eq 'updated' -and ((Get-Item -LiteralPath $fixture.Config -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -and (Get-FileText -Path $realPath).Contains("command = '" + $fixture.Executable + "'") -and (Get-TestBytesHex $result.BackupPath) -ceq $originalHex
+    }
+    Test-Case 'FL16 寫入目標無法確定（連結指向不存在的目標等）時回報 unresolved，不備份、不寫入，-WhatIf 同樣回報' {
+        $fixture = New-CodexFixture -Text $baseConfig
+        $hash = Get-TestBytesHex $fixture.Config
+        function Resolve-ConfigWriteTarget {
+            param([string]$Path)
+            return [pscustomobject]@{ Ok = $false; Path = $Path; InPlace = $false; Message = '連結指向不存在的目標' }
+        }
+        $result = Set-FlaUIMcpCommand -ConfigPath $fixture.Config -ExecutablePath $fixture.Executable -BackupRoot $fixture.Backups
+        $whatIf = Set-FlaUIMcpCommand -ConfigPath $fixture.Config -ExecutablePath $fixture.Executable -BackupRoot $fixture.Backups -WhatIf
+        $result.Status -eq 'unresolved' -and $result.Message.Contains('連結指向不存在的目標') -and $whatIf.Status -eq 'unresolved' -and (Get-TestBytesHex $fixture.Config) -ceq $hash -and -not (Test-Path -LiteralPath $fixture.Backups)
+    }
+
+    # ---- 派工帳號：-FlaUI 同時更新 .local\machine.json 登記的帳號 ----
+    Test-Case 'AC01 已有表的帳號只改 command 那一行（enabled = false、startup_timeout_sec 與其餘位元組不變）；沒有表的帳號依 Setup 複製的形式追加整張表（與 Set-CodexMcpAccountConfig 的結果位元組相同）' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $baseConfig }
+        $siblingsBefore = Get-FileSnapshot -Directory $accounts.Root
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+
+        # Setup 的形式：對 acct-b 的原內容副本呼叫 Set-CodexMcpAccountConfig（來源為同一份桌面版設定檔）。
+        $referenceHome = Join-Path (New-TestDirectory) 'reference'
+        New-Item -ItemType Directory -Path $referenceHome -Force | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $referenceHome 'config.toml'), $utf8.GetBytes($baseConfig))
+        $spec = [pscustomobject]@{ McpServers = @([pscustomobject]@{ Name = 'flaui-mcp'; Command = $null }) }
+        $null = @(Set-CodexMcpAccountConfig -AccountHome $referenceHome -Spec $spec -SourceConfigPath $codex.Config)
+
+        $expectedA = $accountPresentConfig.Replace("command = 'X:\old\FlaUI.Mcp.exe'", "command = '" + $codex.Executable + "'")
+        $configA = Get-AccountConfigPath -Fixture $accounts -Name 'acct-a'
+        $configB = Get-AccountConfigPath -Fixture $accounts -Name 'acct-b'
+        $result = $captured.Result[0]
+        $siblingsAfter = (Get-FileSnapshot -Directory $accounts.Root) -split "`n" | Where-Object { $_ -notlike '*config.toml*' -and $_ -notlike '*backups*' -and $_ -notlike '*machine.json*' }
+        $siblingsExpected = $siblingsBefore -split "`n" | Where-Object { $_ -notlike '*config.toml*' -and $_ -notlike '*machine.json*' }
+        $null -eq $captured.Error -and $result.Problems -eq 0 -and @($result.AccountResults | ForEach-Object { $_.Status }) -join ',' -ceq 'updated,added' -and
+        (Get-FileText -Path $configA) -ceq $expectedA -and (Get-TestBytesHex $configB) -ceq (Get-TestBytesHex (Join-Path $referenceHome 'config.toml')) -and
+        (Get-FileText -Path $configB).EndsWith("[mcp_servers.flaui-mcp]$crlf" + "command = '" + $codex.Executable + "'$crlf" + "startup_timeout_sec = 60.0$crlf" + "enabled = false$crlf") -and ($siblingsAfter -join "`n") -ceq ($siblingsExpected -join "`n")
+    }
+    Test-Case 'AC02 備份：桌面版與每個帳號各一份（相對路徑區分來源），同一次執行共用一個備份目錄，內容是寫入前的位元組，manifest.txt 每個檔案一行' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $baseConfig }
+        $before = @{ desktop = (Get-TestBytesHex $codex.Config); a = (Get-TestBytesHex (Get-AccountConfigPath -Fixture $accounts -Name 'acct-a')); b = (Get-TestBytesHex (Get-AccountConfigPath -Fixture $accounts -Name 'acct-b')) }
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $runDirectories = @(Get-ChildItem -LiteralPath $accounts.Backups -Directory)
+        $runDirectory = $runDirectories[0].FullName
+        $manifest = @(Get-Content -LiteralPath (Join-Path $runDirectory 'manifest.txt'))
+        $runDirectories.Count -eq 1 -and (Get-TestBytesHex (Join-Path $runDirectory 'desktop\config.toml')) -ceq $before.desktop -and (Get-TestBytesHex (Join-Path $runDirectory 'accounts\acct-a\config.toml')) -ceq $before.a -and
+        (Get-TestBytesHex (Join-Path $runDirectory 'accounts\acct-b\config.toml')) -ceq $before.b -and $manifest.Count -eq 3 -and @($manifest | Where-Object { $_.Contains($codex.Config) }).Count -eq 1 -and
+        @($manifest | Where-Object { $_.Contains((Get-AccountConfigPath -Fixture $accounts -Name 'acct-a')) }).Count -eq 1 -and $captured.Result[0].FlaUIResult.BackupPath -ceq (Join-Path $runDirectory 'desktop\config.toml')
+    }
+    Test-Case 'AC03 帳號 config.toml 不存在時略過該帳號並回報（不建立檔案），其餘帳號照常更新；問題數為 1' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-b' = $accountPresentConfig } -NoConfig @('acct-a')
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $statuses = @($captured.Result[0].AccountResults | ForEach-Object { $_.Status }) -join ','
+        $null -eq $captured.Error -and $captured.Result[0].Problems -eq 1 -and $statuses -ceq 'config-missing,updated' -and -not (Test-Path -LiteralPath (Get-AccountConfigPath -Fixture $accounts -Name 'acct-a')) -and
+        (Get-FileText -Path (Get-AccountConfigPath -Fixture $accounts -Name 'acct-b')).Contains("command = '" + $codex.Executable + "'") -and (($captured.Warnings -join "`n") -match 'acct-a')
+    }
+    Test-Case 'AC04 帳號 config.toml 讀不到、寫法無法確定（command 後有註解、父表 [mcp_servers]）時各略過該帳號並回報，不寫入、不備份該帳號；其餘帳號照常更新' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Name @('acct-a', 'acct-b', 'acct-c', 'acct-d') -Config @{
+            'acct-a' = "[mcp_servers.flaui-mcp]`r`ncommand = 'X:\old.exe' # note`r`n"
+            'acct-b' = "[mcp_servers]`r`n"
+            'acct-c' = $accountPresentConfig
+            'acct-d' = $baseConfig
+        }
+        [IO.File]::WriteAllBytes((Get-AccountConfigPath -Fixture $accounts -Name 'acct-d'), [byte[]](0x5B, 0xFF, 0xFE, 0x5D))
+        $hashes = @('acct-a', 'acct-b', 'acct-d') | ForEach-Object { Get-TestBytesHex (Get-AccountConfigPath -Fixture $accounts -Name $_) }
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $statuses = @($captured.Result[0].AccountResults | ForEach-Object { $_.Status }) -join ','
+        $after = @('acct-a', 'acct-b', 'acct-d') | ForEach-Object { Get-TestBytesHex (Get-AccountConfigPath -Fixture $accounts -Name $_) }
+        $captured.Result[0].Problems -eq 3 -and $statuses -ceq 'blocked,blocked,updated,blocked' -and ($after -join ',') -ceq ($hashes -join ',') -and (Get-FileText -Path (Get-AccountConfigPath -Fixture $accounts -Name 'acct-c')).Contains("command = '" + $codex.Executable + "'")
+    }
+    Test-Case 'AC05 沒有登記帳號（沒有 machine.json、codex_accounts 為空陣列、沒有 codex_accounts、路徑為空）時只處理桌面版，問題數為 0' {
+        Reset-Stubs
+        $directory = New-TestDirectory
+        $emptyList = Join-Path $directory 'empty.json'
+        [IO.File]::WriteAllText($emptyList, '{"schema":"ai-agents.machine.v1","codex_accounts":[]}', $utf8)
+        $noProperty = Join-Path $directory 'no-property.json'
+        [IO.File]::WriteAllText($noProperty, '{"schema":"ai-agents.machine.v1"}', $utf8)
+        $verdicts = @()
+        foreach ($machine in @((Join-Path $directory 'none.json'), $emptyList, $noProperty, '')) {
+            $codex = New-CodexFixture -Text $baseConfig
+            $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $machine }
+            $verdicts += ($null -eq $captured.Error -and $captured.Result[0].Problems -eq 0 -and $captured.Result[0].FlaUIResult.Status -eq 'added' -and @($captured.Result[0].AccountResults).Count -eq 0)
+        }
+        @($verdicts | Where-Object { -not $_ }).Count -eq 0
+    }
+    Test-Case 'AC06 -WhatIf：桌面版與帳號都不寫入、不備份，結果為 whatif，問題數為 0' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $baseConfig }
+        $snapshot = (Get-FileSnapshot -Directory $accounts.Root) + (Get-FileSnapshot -Directory $codex.Directory)
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine -WhatIf }
+        $statuses = @($captured.Result[0].AccountResults | ForEach-Object { $_.Status }) -join ','
+        $null -eq $captured.Error -and $captured.Result[0].FlaUIResult.Status -eq 'whatif' -and $statuses -ceq 'whatif,whatif' -and $captured.Result[0].Problems -eq 0 -and ((Get-FileSnapshot -Directory $accounts.Root) + (Get-FileSnapshot -Directory $codex.Directory)) -ceq $snapshot -and -not (Test-Path -LiteralPath $accounts.Backups)
+    }
+    Test-Case 'AC07 桌面版沒有完成（設定檔不存在、執行檔不存在）時不處理帳號：帳號檔案不變，問題數只算桌面版的 1' {
+        Reset-Stubs
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $baseConfig }
+        $snapshot = Get-FileSnapshot -Directory $accounts.Root
+        $noDesktop = New-CodexFixture
+        $noExecutable = New-CodexFixture -Text $baseConfig
+        $first = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $noDesktop.Config -FlaUIPath $noDesktop.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $second = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $noExecutable.Config -FlaUIPath (Join-Path $noExecutable.Directory 'none.exe') -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $first.Result[0].Problems -eq 1 -and $second.Result[0].Problems -eq 1 -and @($first.Result[0].AccountResults).Count -eq 0 -and @($second.Result[0].AccountResults).Count -eq 0 -and (Get-FileSnapshot -Directory $accounts.Root) -ceq $snapshot
+    }
+    Test-Case 'AC08 帳號登記檔不合法時桌面版照常處理，帳號全部略過並回報，問題數為 1' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $directory = New-TestDirectory
+        $bad = Join-Path $directory 'machine.json'
+        [IO.File]::WriteAllText($bad, '{ not json', $utf8)
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $bad }
+        $null -eq $captured.Error -and $captured.Result[0].FlaUIResult.Status -eq 'added' -and $captured.Result[0].Problems -eq 1 -and @($captured.Result[0].AccountResults).Count -eq 0 -and (($captured.Warnings -join "`n") -match '派工帳號登記無法讀取')
+    }
+    Test-Case 'AC09 帳號的 config.toml 在讀取之後被改動時不寫該帳號（回報 changed，改動後的內容保留），其餘帳號與桌面版照常寫入，問題數為 1' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $accountPresentConfig }
+        $originalSave = ${function:Save-ConfigFileBackup}
+        function Save-ConfigFileBackup {
+            param($Context, $BackupRoot, $RelativePath, $Bytes, $SourcePath, $Operation)
+            $path = & $originalSave -Context $Context -BackupRoot $BackupRoot -RelativePath $RelativePath -Bytes $Bytes -SourcePath $SourcePath -Operation $Operation
+            if ($RelativePath -like 'accounts\acct-a\*') { [IO.File]::AppendAllText($SourcePath, "# other-writer`r`n", $utf8) }
+            return $path
+        }
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $statuses = @($captured.Result[0].AccountResults | ForEach-Object { $_.Status }) -join ','
+        $textA = Get-FileText -Path (Get-AccountConfigPath -Fixture $accounts -Name 'acct-a')
+        $captured.Result[0].Problems -eq 1 -and $statuses -ceq 'changed,updated' -and $textA.EndsWith("# other-writer`r`n") -and $textA.Contains('X:\old\FlaUI.Mcp.exe') -and
+        (Get-FileText -Path (Get-AccountConfigPath -Fixture $accounts -Name 'acct-b')).Contains("command = '" + $codex.Executable + "'") -and (Get-FileText -Path $codex.Config).Contains("command = '" + $codex.Executable + "'")
+    }
+    Test-Case 'AC10 帳號已是桌面版的路徑時回報 unchanged，不備份、不寫入；重複執行不再追加或改動' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $baseConfig }
+        $first = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $snapshot = (Get-FileSnapshot -Directory $accounts.Root) + (Get-FileSnapshot -Directory $codex.Directory)
+        Start-Sleep -Milliseconds 1100
+        $second = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $statuses = @($second.Result[0].AccountResults | ForEach-Object { $_.Status }) -join ','
+        $first.Result[0].Problems -eq 0 -and $second.Result[0].Problems -eq 0 -and $second.Result[0].FlaUIResult.Status -eq 'unchanged' -and $statuses -ceq 'unchanged,unchanged' -and ((Get-FileSnapshot -Directory $accounts.Root) + (Get-FileSnapshot -Directory $codex.Directory)) -ceq $snapshot
+    }
+    Test-Case 'AC11 桌面版設定檔寫法無法確定（blocked）時不處理帳號；帳號沒有表而來源（桌面版）沒有可複製的 command 時，單一帳號的函式回報 blocked 並不寫入' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text ("[mcp_servers.flaui-mcp]`r`ncommand = 'X:\old.exe' # note`r`n")
+        $accounts = New-AccountFixture -Name @('acct-a')
+        $configA = Get-AccountConfigPath -Fixture $accounts -Name 'acct-a'
+        $hash = Get-TestBytesHex $configA
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $direct = Set-FlaUIMcpAccountCommand -AccountName 'acct-a' -AccountHome $accounts.Homes['acct-a'] -ExecutablePath $codex.Executable -SourceConfigPath (Join-Path (New-TestDirectory) 'none.toml') -BackupRoot $accounts.Backups -BackupContext (New-ConfigBackupContext)
+        $captured.Result[0].FlaUIResult.Status -eq 'blocked' -and @($captured.Result[0].AccountResults).Count -eq 0 -and $direct.Status -eq 'blocked' -and $direct.Message.Contains('沒有 [mcp_servers.flaui-mcp] 的 command') -and (Get-TestBytesHex $configA) -ceq $hash -and -not (Test-Path -LiteralPath $accounts.Backups)
+    }
+
+    Test-Case 'AC12 0 位元組的 config.toml（桌面版與帳號）可備份並追加項目，不以難懂的繫結錯誤失敗；帳號的結果與 Set-CodexMcpAccountConfig 對空檔的結果位元組相同' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text ''
+        $accounts = New-AccountFixture -Name @('acct-a') -Config @{ 'acct-a' = '' }
+        $configA = Get-AccountConfigPath -Fixture $accounts -Name 'acct-a'
+        $emptyBefore = ([IO.File]::ReadAllBytes($codex.Config)).Length -eq 0 -and ([IO.File]::ReadAllBytes($configA)).Length -eq 0
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $referenceHome = Join-Path (New-TestDirectory) 'reference'
+        New-Item -ItemType Directory -Path $referenceHome -Force | Out-Null
+        [IO.File]::WriteAllBytes((Join-Path $referenceHome 'config.toml'), [byte[]]@())
+        $spec = [pscustomobject]@{ McpServers = @([pscustomobject]@{ Name = 'flaui-mcp'; Command = $null }) }
+        $null = @(Set-CodexMcpAccountConfig -AccountHome $referenceHome -Spec $spec -SourceConfigPath $codex.Config)
+        $backups = @(Get-ChildItem -LiteralPath $accounts.Backups -Recurse -File -Filter 'config.toml')
+        $emptyBefore -and $null -eq $captured.Error -and $captured.Result[0].Problems -eq 0 -and $captured.Result[0].FlaUIResult.Status -eq 'added' -and @($captured.Result[0].AccountResults | ForEach-Object { $_.Status }) -join ',' -ceq 'added' -and
+        (Get-FileText -Path $codex.Config).Contains("[mcp_servers.flaui-mcp]") -and (Get-TestBytesHex $configA) -ceq (Get-TestBytesHex (Join-Path $referenceHome 'config.toml')) -and $backups.Count -eq 2 -and @($backups | Where-Object { $_.Length -ne 0 }).Count -eq 0
+    }
+
+    # ---- -FlaUI 的主控台說明與摘要（只比對關鍵字） ----
+    function Get-FlaUIConsole {
+        param($Codex, $Accounts, [switch]$WhatIfRun)
+        if ($WhatIfRun) { return (Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $Codex.Config -FlaUIPath $Codex.Executable -BackupRoot $Accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $Accounts.Machine -WhatIf }) }
+        return (Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $Codex.Config -FlaUIPath $Codex.Executable -BackupRoot $Accounts.Backups -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $Accounts.Machine })
+    }
+    Test-Case 'MS01 桌面版沒有完成時：警告說明派工帳號沒有被更動並要求排除問題後重新執行同一個命令；摘要標示桌面版未完成、帳號未處理' {
+        Reset-Stubs
+        $codex = New-CodexFixture
+        $accounts = New-AccountFixture
+        $captured = Get-FlaUIConsole -Codex $codex -Accounts $accounts
+        $warnings = $captured.Warnings -join "`n"
+        $info = $captured.Info -join "`n"
+        $warnings -match '派工帳號沒有被更動' -and $warnings -match '重新執行同一個命令' -and $info -match 'FlaUI 摘要' -and $info -match '桌面版 未完成' -and $info -match '派工帳號 未處理'
+    }
+    Test-Case 'MS02 派工帳號登記無法讀取（登記的帳號目錄不存在）時：警告寫明原因與目錄、桌面版已處理完成、全部帳號都沒有更新、補救方式；摘要標示全部略過；桌面版仍寫入' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig }
+        $missingHome = $accounts.Homes['acct-b']
+        Remove-Item -LiteralPath $missingHome -Recurse -Force
+        $hashA = Get-TestBytesHex (Get-AccountConfigPath -Fixture $accounts -Name 'acct-a')
+        $captured = Get-FlaUIConsole -Codex $codex -Accounts $accounts
+        $warnings = $captured.Warnings -join "`n"
+        $info = $captured.Info -join "`n"
+        $warnings -match '帳號目錄不存在' -and $warnings.Contains('acct-b') -and $warnings.Contains($missingHome) -and $warnings -match '桌面版已處理完成' -and $warnings -match '全部派工帳號都沒有更新' -and $warnings -match 'machine\.json' -and $warnings -match '重新執行同一個命令' -and
+        $info -match '全部略過' -and (Get-FileText -Path $codex.Config).Contains("command = '" + $codex.Executable + "'") -and (Get-TestBytesHex (Get-AccountConfigPath -Fixture $accounts -Name 'acct-a')) -ceq $hashA -and $captured.Result[0].Problems -eq 1
+    }
+    Test-Case 'MS03 單一帳號被略過（缺 config.toml、無法解析、定義有歧義、寫入前被改動）時：警告指出帳號名稱、原因與其他帳號照常處理；摘要有略過件數；訊息不含設定檔的其他內容' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $secret = 'SECRET-SENTINEL-VALUE'
+        $accounts = New-AccountFixture -Name @('acct-a', 'acct-b', 'acct-c', 'acct-d', 'acct-e') -NoConfig @('acct-a') -Config @{
+            'acct-b' = ("api_key = '$secret'`r`n[mcp_servers.flaui-mcp]`r`ncommand = 'X:\old.exe' # note`r`n")
+            'acct-c' = ("api_key = '$secret'`r`n[mcp_servers]`r`n")
+            'acct-d' = ($accountPresentConfig + "api_key = '$secret'`r`n")
+            'acct-e' = $accountPresentConfig
+        }
+        $originalSave = ${function:Save-ConfigFileBackup}
+        function Save-ConfigFileBackup {
+            param($Context, $BackupRoot, $RelativePath, $Bytes, $SourcePath, $Operation)
+            $path = & $originalSave -Context $Context -BackupRoot $BackupRoot -RelativePath $RelativePath -Bytes $Bytes -SourcePath $SourcePath -Operation $Operation
+            if ($RelativePath -like 'accounts\acct-d\*') { [IO.File]::AppendAllText($SourcePath, "# other-writer`r`n", $utf8) }
+            return $path
+        }
+        $captured = Get-FlaUIConsole -Codex $codex -Accounts $accounts
+        $warnings = $captured.Warnings -join "`n"
+        $info = $captured.Info -join "`n"
+        $everything = $warnings + "`n" + $info
+        $perAccount = @('acct-a', 'acct-b', 'acct-c', 'acct-d') | ForEach-Object { $name = $_; @($captured.Warnings | Where-Object { $_.Contains($name) -and $_.Contains('其他帳號照常處理') }).Count -eq 1 }
+        @($perAccount | Where-Object { -not $_ }).Count -eq 0 -and $warnings -match '不存在' -and $warnings -match '寫法|歧義|可能已有' -and $warnings -match '被其他程式改動' -and $info -match '已更新 1、未變更 0、略過 4' -and -not $everything.Contains($secret) -and $captured.Result[0].Problems -eq 4
+    }
+    Test-Case 'MS04 摘要：新增與更新時桌面版與帳號件數；重複執行為未變更；-WhatIf 標明預覽且帳號為預覽件數；沒有登記帳號時標明沒有登記' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $baseConfig }
+        $preview = Get-FlaUIConsole -Codex $codex -Accounts $accounts -WhatIfRun
+        $first = Get-FlaUIConsole -Codex $codex -Accounts $accounts
+        $second = Get-FlaUIConsole -Codex $codex -Accounts $accounts
+        $codex2 = New-CodexFixture -Text $baseConfig
+        $none = Get-FlaUIConsole -Codex $codex2 -Accounts ([pscustomobject]@{ Machine = (Join-Path (New-TestDirectory) 'none.json'); Backups = (Join-Path (New-TestDirectory) 'backups') })
+        ($preview.Info -join "`n") -match 'FlaUI 摘要（預覽' -and ($preview.Info -join "`n") -match '預覽將更新 2' -and ($first.Info -join "`n") -match '桌面版 新增；派工帳號 已更新 2、未變更 0、略過 0' -and
+        ($second.Info -join "`n") -match '桌面版 未變更；派工帳號 已更新 0、未變更 2、略過 0' -and ($none.Info -join "`n") -match '桌面版 新增；派工帳號 沒有登記'
     }
 
     # ---- 登記（Invoke-McpRegistration） ----
@@ -495,6 +831,54 @@ try {
         $unreadable.Result[0] -eq 1 -and (($unreadable.Info -join "`n") -match '\[無法判定\]') -and $absent.Result[0] -eq 1 -and @([regex]::Matches(($absent.Info -join "`n"), '\[缺少\] mcp-')).Count -eq 11
     }
 
+    # ---- 唯讀檢查：派工帳號的 command 與桌面版一致 ----
+    function New-ConsistentCodex {
+        # 桌面版設定檔的 flaui-mcp command 已是 Executable。
+        $codex = New-CodexFixture -Text $presentConfig.Replace('X:\old\FlaUI.Mcp.exe', 'PLACEHOLDER')
+        [IO.File]::WriteAllText($codex.Config, (Get-FileText -Path $codex.Config).Replace('PLACEHOLDER', $codex.Executable), $utf8)
+        return $codex
+    }
+    Test-Case 'CK07 帳號與桌面版的 command 一致時結束碼 0；不一致時為內容不符、指出帳號名稱並使結束碼為 1；檢查不寫入任何檔案' {
+        Reset-Stubs
+        $codex = New-ConsistentCodex
+        $matching = $accountPresentConfig.Replace('X:\old\FlaUI.Mcp.exe', $codex.Executable)
+        $consistent = New-AccountFixture -Config @{ 'acct-a' = $matching; 'acct-b' = $matching }
+        $inconsistent = New-AccountFixture -Config @{ 'acct-a' = $matching; 'acct-b' = $accountPresentConfig }
+        $snapshot = (Get-FileSnapshot -Directory $consistent.Root) + (Get-FileSnapshot -Directory $inconsistent.Root) + (Get-FileSnapshot -Directory (Split-Path -Parent $codex.Directory))
+        $ok = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $consistent.Machine }
+        $bad = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $inconsistent.Machine }
+        $badText = $bad.Info -join "`n"
+        $okText = $ok.Info -join "`n"
+        $ok.Result[0] -eq 0 -and $okText -match '統計：共 3 項，符合 3、其他 0' -and $bad.Result[0] -eq 1 -and $badText -match '\[內容不符\] flaui-mcp（派工帳號 acct-b）' -and $badText -match 'X:\\old\\FlaUI\.Mcp\.exe' -and $badText -notmatch '\[內容不符\] flaui-mcp（派工帳號 acct-a）' -and
+        ((Get-FileSnapshot -Directory $consistent.Root) + (Get-FileSnapshot -Directory $inconsistent.Root) + (Get-FileSnapshot -Directory (Split-Path -Parent $codex.Directory))) -ceq $snapshot
+    }
+    Test-Case 'CK08 帳號缺少 config.toml、沒有 flaui-mcp 表、表沒有 command 為缺少；寫法無法確定為無法判定；桌面版沒有可比對的 command 時各帳號為無法判定；結束碼皆為 1' {
+        Reset-Stubs
+        $codex = New-ConsistentCodex
+        $accounts = New-AccountFixture -Name @('acct-a', 'acct-b', 'acct-c', 'acct-d') -NoConfig @('acct-a') -Config @{
+            'acct-b' = $baseConfig
+            'acct-c' = "[mcp_servers.flaui-mcp]`r`nstartup_timeout_sec = 60.0`r`n"
+            'acct-d' = "[mcp_servers.flaui-mcp]`r`ncommand = 'X:\old.exe' # note`r`n"
+        }
+        $captured = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $text = $captured.Info -join "`n"
+        $noDesktop = New-CodexFixture -Text $baseConfig
+        $undetermined = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $noDesktop.Config -FlaUIPath $noDesktop.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $accounts.Machine }
+        $captured.Result[0] -eq 1 -and $text -match '\[缺少\] flaui-mcp（派工帳號 acct-a）' -and $text -match '\[缺少\] flaui-mcp（派工帳號 acct-b）' -and $text -match '\[缺少\] flaui-mcp（派工帳號 acct-c）' -and $text -match '\[無法判定\] flaui-mcp（派工帳號 acct-d）' -and
+        $undetermined.Result[0] -eq 1 -and @([regex]::Matches(($undetermined.Info -join "`n"), '\[無法判定\] flaui-mcp（派工帳號')).Count -eq 4
+    }
+    Test-Case 'CK09 沒有登記帳號時只檢查桌面版並在備註說明，結束碼不受影響；登記檔不合法時為無法判定（結束碼 1）' {
+        Reset-Stubs
+        $codex = New-ConsistentCodex
+        $directory = New-TestDirectory
+        $bad = Join-Path $directory 'machine.json'
+        [IO.File]::WriteAllText($bad, '{ not json', $utf8)
+        $none = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath (Join-Path $directory 'none.json') }
+        $omitted = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' }
+        $invalid = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $bad }
+        $none.Result[0] -eq 0 -and (($none.Info -join "`n") -match '備註：沒有登記的派工帳號') -and $omitted.Result[0] -eq 0 -and $invalid.Result[0] -eq 1 -and (($invalid.Info -join "`n") -match '\[無法判定\] flaui-mcp（派工帳號）')
+    }
+
     # ---- 腳本本身（子行程）：選取、用法與結束碼 ----
     Test-Case 'SC01 沒有指定任何項目：不做任何寫入、印出用法、結束碼 1，不呼叫 claude' {
         $environment = New-ScriptEnvironment
@@ -562,6 +946,49 @@ try {
         $run.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $environment.CallLog) -and (Get-TestBytesHex $codex.Config) -ceq $hash
     }
 
+    Test-Case 'SC08 -FlaUIPath 是相對路徑時先轉成絕對路徑（以目前的工作目錄為基準）：設定檔寫入的是完整路徑，-Check 以同一個相對路徑檢查也一致' {
+        $environment = New-ScriptEnvironment
+        $codex = New-CodexFixture -Text $baseConfig
+        $executableDirectory = Split-Path -Parent $codex.Executable
+        $run = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', '.\FlaUI.Mcp.exe', '-BackupRoot', $codex.Backups) -WorkingDirectory $executableDirectory
+        $text = Get-FileText -Path $codex.Config
+        $check = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', '.\FlaUI.Mcp.exe') -WorkingDirectory $executableDirectory
+        $run.ExitCode -eq 0 -and $text.Contains("command = '" + $codex.Executable + "'") -and -not $text.Contains("command = '.\") -and $check.ExitCode -eq 0
+    }
+    Test-Case 'SC09 -FlaUI 同時更新 -MachineConfigPath 登記的帳號：全部完成時結束碼 0；其中一個帳號沒有 config.toml 時其餘照常更新、結束碼 1；沒有登記帳號時結束碼不受影響' {
+        $environment = New-ScriptEnvironment
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $baseConfig }
+        $ok = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', $codex.Executable, '-BackupRoot', $accounts.Backups, '-MachineConfigPath', $accounts.Machine)
+        $accountsUpdated = (Get-FileText -Path (Get-AccountConfigPath -Fixture $accounts -Name 'acct-a')).Contains("command = '" + $codex.Executable + "'") -and (Get-FileText -Path (Get-AccountConfigPath -Fixture $accounts -Name 'acct-b')).Contains("enabled = false")
+
+        $codex2 = New-CodexFixture -Text $baseConfig
+        $partial = New-AccountFixture -Config @{ 'acct-b' = $accountPresentConfig } -NoConfig @('acct-a')
+        $failed = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-CodexConfigPath', $codex2.Config, '-FlaUIPath', $codex2.Executable, '-BackupRoot', $partial.Backups, '-MachineConfigPath', $partial.Machine)
+        $partialUpdated = (Get-FileText -Path (Get-AccountConfigPath -Fixture $partial -Name 'acct-b')).Contains("command = '" + $codex2.Executable + "'")
+
+        $codex3 = New-CodexFixture -Text $baseConfig
+        $none = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-CodexConfigPath', $codex3.Config, '-FlaUIPath', $codex3.Executable, '-BackupRoot', $codex3.Backups)
+        $ok.ExitCode -eq 0 -and $accountsUpdated -and $failed.ExitCode -eq 1 -and $partialUpdated -and -not (Test-Path -LiteralPath (Get-AccountConfigPath -Fixture $partial -Name 'acct-a')) -and $none.ExitCode -eq 0
+    }
+    Test-Case 'SC10 -WhatIf 與 -Check 不寫入帳號設定檔；-Check 帳號不一致時結束碼 1' {
+        $environment = New-ScriptEnvironment
+        $codex = New-CodexFixture -Text $baseConfig
+        $accounts = New-AccountFixture -Config @{ 'acct-a' = $accountPresentConfig; 'acct-b' = $baseConfig }
+        $snapshot = (Get-FileSnapshot -Directory $accounts.Root) + (Get-FileSnapshot -Directory $codex.Directory)
+        $whatIf = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', $codex.Executable, '-BackupRoot', $accounts.Backups, '-MachineConfigPath', $accounts.Machine, '-WhatIf')
+        $check = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', $codex.Executable, '-MachineConfigPath', $accounts.Machine)
+        $whatIf.ExitCode -eq 0 -and $check.ExitCode -eq 1 -and $check.StdOut -match 'acct-a' -and ((Get-FileSnapshot -Directory $accounts.Root) + (Get-FileSnapshot -Directory $codex.Directory)) -ceq $snapshot
+    }
+    Test-Case 'SC11 測試隔離：執行腳本的輔助函式預設把 -MachineConfigPath 指向暫存目錄內不存在的檔案，腳本的預設值（repo 的 .local\machine.json 與其中登記的真實帳號）不會被測試讀到或寫入' {
+        $environment = New-ScriptEnvironment
+        $run = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-FlaUI')
+        $index = [array]::IndexOf($run.Arguments, '-MachineConfigPath')
+        $injected = if ($index -ge 0) { [string]$run.Arguments[$index + 1] } else { '' }
+        $explicit = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-FlaUI', '-MachineConfigPath', 'X:\explicit.json')
+        $index -ge 0 -and $injected.StartsWith($environment.Root, [StringComparison]::OrdinalIgnoreCase) -and -not (Test-Path -LiteralPath $injected) -and @($explicit.Arguments | Where-Object { $_ -ceq '-MachineConfigPath' }).Count -eq 1
+    }
+
     # ---- 靜態檢查 ----
     $scriptText = [IO.File]::ReadAllText($scriptPath)
     $libText = [IO.File]::ReadAllText($libPath)
@@ -585,14 +1012,15 @@ try {
         $pattern = 'Invoke-WebRequest|Invoke-RestMethod|Start-BitsTransfer|DownloadFile|winget|git clone|git pull|Start-Process|docker|task bootstrap|Install-Module|npm i|dotnet tool'
         ($scriptText -cnotmatch $pattern) -and ($libText -cnotmatch $pattern)
     }
-    Test-Case 'G04 寫入檔案的 API 在 lib 只出現在 Set-FlaUIMcpCommand 內；刪除只針對自己建立的暫存檔；不刪除 .codex 目錄下任何其他檔案' {
-        $function = $libAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Set-FlaUIMcpCommand' }, $true) | Select-Object -First 1
-        $writeHits = @($tokens | Where-Object { $_.Text -match 'Set-Content|WriteAllText|WriteAllBytes|Out-File|Add-Content|Move-Item|Copy-Item|New-Item|\bMove\b' })
-        $outside = @($writeHits | Where-Object { $_.Extent.StartOffset -lt $function.Extent.StartOffset -or $_.Extent.EndOffset -gt $function.Extent.EndOffset })
-        Assert-True ($writeHits.Count -gt 0) '沒有找到任何寫入 API，檢查失效'
-        Assert-True ($outside.Count -eq 0) ('Set-FlaUIMcpCommand 之外的寫入 API：' + (($outside | ForEach-Object { $_.Text + '@' + $_.Extent.StartLineNumber }) -join ','))
-        $removeLines = @($libText -split "`r?`n" | Where-Object { $_ -match 'Remove-Item|\.Delete\(|\[IO\.File\]::Delete' })
-        $removeLines.Count -eq 1 -and $removeLines[0].Contains('$temporaryPath')
+    Test-Case 'G04 lib 沒有直接寫檔或刪檔的 API：Codex 設定檔的寫入只經 claude-user-config.ps1 的受保護寫入（Save-ConfigFileBackup、Write-ConfigFileGuarded），寫入入口只有 Set-FlaUIMcpCommand 與 Set-FlaUIMcpAccountCommand（經 Invoke-FlaUIConfigWrite）；不刪除 .codex 目錄下任何檔案' {
+        $writeHits = @($tokens | Where-Object { $_.Text -match 'Set-Content|WriteAllText|WriteAllBytes|AppendAllText|Out-File|Add-Content|Move-Item|Copy-Item|New-Item|Remove-Item|\bMove\b|\.Delete\(|\[IO\.File\]::Delete' })
+        Assert-True ($writeHits.Count -eq 0) ('lib 內的直接寫入或刪除 API：' + (($writeHits | ForEach-Object { $_.Text + '@' + $_.Extent.StartLineNumber }) -join ','))
+        $callers = @($libAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Invoke-FlaUIConfigWrite' }, $true) | ForEach-Object {
+            $parent = $_.Parent
+            while ($null -ne $parent -and $parent -isnot [System.Management.Automation.Language.FunctionDefinitionAst]) { $parent = $parent.Parent }
+            $parent.Name
+        } | Sort-Object -Unique)
+        ($callers -join ',') -ceq 'Set-FlaUIMcpAccountCommand,Set-FlaUIMcpCommand'
     }
     Test-Case 'G05 腳本不引用真實的使用者目錄：路徑只由 $env:USERPROFILE、$env:LOCALAPPDATA 與參數決定' {
         $scriptText -cnotmatch '[A-Za-z]:\\Users' -and $libText -cnotmatch '[A-Za-z]:\\Users' -and $scriptText -cmatch 'LOCALAPPDATA' -and $scriptText -cmatch 'USERPROFILE'
@@ -605,5 +1033,6 @@ finally {
 
 Write-Output "PASSED: $passed"
 Write-Output "FAILED: $failed"
+Write-Output "SKIPPED: $skipped"
 if ($failed -gt 0) { exit 1 }
 exit 0

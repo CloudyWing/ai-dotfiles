@@ -3,7 +3,8 @@
 # 由 Setup-AIGlobalConfig.ps1 與 Register-McpServer.ps1 在版本判斷之後以 dot-source 載入，只定義函式，不在載入時執行任何動作。
 # Claude CLI 的呼叫函式（Invoke-ClaudeCli、Get-ClaudeList、Get-ClaudeProperty）定義在本檔；測試以同名函式替身取代。
 # 寫入邊界：MCP 登記只經 Claude CLI 的 mcp add 子命令；使用者層登記檔只做唯讀讀取，且一律以 -AsHashTable 剖析（該檔含僅大小寫不同的鍵）。
-# 檔案寫入只發生在 Invoke-ClaudeSettingsApply（備份、manifest.txt、暫存檔與取代 settings.json）。
+# 檔案寫入只發生在 Invoke-ClaudeSettingsApply（備份、manifest.txt、暫存檔與取代 settings.json），以及 Register-McpServer.ps1 的 Codex 設定檔寫入；
+# 兩者共用本檔的受保護寫入（Resolve-ConfigWriteTarget、Save-ConfigFileBackup、Write-ConfigFileGuarded）：連結解析到實際目標、備份取自讀到的位元組、取代前確認原檔未被改動。
 
 function Invoke-ClaudeCli {
     param([string[]]$Arguments)
@@ -346,10 +347,17 @@ function Get-ClaudeRequiredOfficialPlugin {
 
 function Install-ClaudeOfficialPlugin {
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][string]$PluginId)
+    # SettingsPath：使用者的 settings.json。enabledPlugins 內該外掛被設為 false 時視為使用者的決定，不安裝也不啟用，回傳 user-disabled。
+    param(
+        [Parameter(Mandatory)][string]$PluginId,
+        [string]$SettingsPath
+    )
 
     $marketplaceName = 'claude-plugins-official'
     $skipped = $false
+    if (-not [string]::IsNullOrEmpty($SettingsPath) -and (Test-ClaudePluginUserDisabled -SettingsPath $SettingsPath -PluginId $PluginId)) {
+        return [pscustomobject]@{ Status = 'user-disabled'; Message = '' }
+    }
     try {
         $marketplaces = Get-ClaudeList @('plugin', 'marketplace', 'list', '--json')
         $marketplaceFound = @($marketplaces | Where-Object { (Get-ClaudeProperty $_ 'name') -eq $marketplaceName }).Count -gt 0
@@ -383,15 +391,150 @@ function Install-ClaudeOfficialPlugin {
     }
 }
 
+function Resolve-ConfigWriteTarget {
+    # 決定要寫入的實際檔案。一般檔案為本身；符號連結（含連結鏈）解析到最後的目標檔案，寫入目標而不是以一般檔案取代連結；
+    # 硬連結（LinkType 為 HardLink）原地寫入以保留連結關係。解析不到目標、目標不是檔案，或是無法解析目標的其他重分析點（例如雲端同步的預留位置）時 Ok 為 $false，Message 說明原因，呼叫端不得寫入。
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+
+    $result = [ordered]@{ Ok = $false; Path = $Path; InPlace = $false; Message = '' }
+    $current = $Path
+    try {
+        for ($hop = 0; $hop -lt 16; $hop++) {
+            $item = Get-Item -LiteralPath $current -Force -ErrorAction Stop
+            if ($item.PSIsContainer) { $result.Message = "$current 是目錄，不是檔案"; return [pscustomobject]$result }
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+                $result.Ok = $true
+                $result.Path = $current
+                $result.InPlace = ([string]$item.LinkType -ceq 'HardLink')
+                return [pscustomobject]$result
+            }
+            $target = @($item.Target) | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) } | Select-Object -First 1
+            if ($null -eq $target) { $result.Message = "$current 是無法解析目標的重分析點"; return [pscustomobject]$result }
+            $targetPath = [string]$target
+            if ($targetPath.StartsWith('\??\')) { $targetPath = $targetPath.Substring(4) }
+            if (-not [IO.Path]::IsPathRooted($targetPath)) { $targetPath = Join-Path (Split-Path -Parent $current) $targetPath }
+            $current = [IO.Path]::GetFullPath($targetPath)
+        }
+        $result.Message = "$Path 的連結層數過多"
+    }
+    catch { $result.Message = "無法解析 $Path 的連結目標：" + $_.Exception.Message }
+    return [pscustomobject]$result
+}
+
+function Test-ConfigBytesEqual {
+    param([AllowNull()][byte[]]$Left, [AllowNull()][byte[]]$Right)
+
+    if ($null -eq $Left -or $null -eq $Right) { return ($null -eq $Left -and $null -eq $Right) }
+    if ($Left.Length -ne $Right.Length) { return $false }
+    return ([Convert]::ToBase64String($Left) -ceq [Convert]::ToBase64String($Right))
+}
+
+function New-ConfigBackupContext {
+    # 一次執行共用一個備份目錄；目錄在第一次備份時才建立。
+    return [pscustomobject]@{ Directory = $null }
+}
+
+function Save-ConfigFileBackup {
+    # 把讀到的原檔位元組寫成備份（不是再從原檔複製，備份內容必為寫入計畫所依據的內容）。RelativePath 標示來源，
+    # 同一個 Context 的各檔案放在同一個備份目錄下，manifest.txt 每個檔案追加一行。回傳備份檔的完整路徑，失敗時丟例外。
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Context,
+        [Parameter(Mandatory)][string]$BackupRoot,
+        [Parameter(Mandatory)][string]$RelativePath,
+        # 0 位元組的原檔也要能備份：空陣列與 $null 都視為空內容。
+        [Parameter(Mandatory)][AllowNull()][AllowEmptyCollection()][byte[]]$Bytes,
+        [Parameter(Mandatory)][string]$SourcePath,
+        [Parameter(Mandatory)][string]$Operation
+    )
+
+    if ($null -eq $Bytes) { $Bytes = [byte[]]@() }
+    if ($null -eq $Context.Directory) {
+        $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+        $backupDirectory = Join-Path $BackupRoot $stamp
+        $suffix = 0
+        while (Test-Path -LiteralPath $backupDirectory) { $suffix++; $backupDirectory = Join-Path $BackupRoot ('{0}_{1}' -f $stamp, $suffix) }
+        New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
+        $Context.Directory = $backupDirectory
+    }
+    $backupPath = Join-Path $Context.Directory $RelativePath
+    $parent = Split-Path -Parent $backupPath
+    if (-not (Test-Path -LiteralPath $parent -PathType Container)) { New-Item -ItemType Directory -Path $parent -Force | Out-Null }
+    [IO.File]::WriteAllBytes($backupPath, $Bytes)
+    if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { throw '備份檔寫入後不存在。' }
+    $manifestLine = ((Get-Date -Format o) + " | $SourcePath | $Operation`n")
+    [IO.File]::AppendAllText((Join-Path $Context.Directory 'manifest.txt'), $manifestLine, (New-Object System.Text.UTF8Encoding($false)))
+    return $backupPath
+}
+
+function Write-ConfigFileGuarded {
+    # 取代檔案前先重讀原檔並與讀取時的位元組比對：不同代表其他程式在這段時間改過它，不寫入，回傳 'changed'。
+    # ExpectedBytes 為 $null 表示預期檔案不存在（建立新檔）：此時目標已存在也回傳 'changed'。
+    # 預設寫暫存檔（建在實際目標旁）後取代；InPlace 時直接覆寫原檔（硬連結）。寫入後讀回比對，不符時丟例外。
+    # 回傳 'written' 或 'changed'；其他失敗丟例外，暫存檔由本函式清除。
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [AllowNull()][byte[]]$ExpectedBytes,
+        [Parameter(Mandatory)][byte[]]$NewBytes,
+        [switch]$InPlace
+    )
+
+    $currentBytes = $null
+    if ([IO.File]::Exists($Path)) { $currentBytes = [IO.File]::ReadAllBytes($Path) }
+    if (-not (Test-ConfigBytesEqual -Left $currentBytes -Right $ExpectedBytes)) { return 'changed' }
+    if ($InPlace) {
+        [IO.File]::WriteAllBytes($Path, $NewBytes)
+    }
+    else {
+        $temporaryPath = $Path + '.tmp-' + [guid]::NewGuid().ToString('N')
+        try {
+            [IO.File]::WriteAllBytes($temporaryPath, $NewBytes)
+            $recheckBytes = $null
+            if ([IO.File]::Exists($Path)) { $recheckBytes = [IO.File]::ReadAllBytes($Path) }
+            if (-not (Test-ConfigBytesEqual -Left $recheckBytes -Right $ExpectedBytes)) { return 'changed' }
+            if ($null -eq $ExpectedBytes) {
+                try { [IO.File]::Move($temporaryPath, $Path, $false) }
+                catch [System.IO.IOException] { if ([IO.File]::Exists($Path)) { return 'changed' }; throw }
+            }
+            else { [IO.File]::Move($temporaryPath, $Path, $true) }
+            $temporaryPath = $null
+        }
+        finally {
+            if ($null -ne $temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
+        }
+    }
+    if (-not (Test-ConfigBytesEqual -Left ([IO.File]::ReadAllBytes($Path)) -Right $NewBytes)) { throw '寫入後讀回的內容與預期不同，請以備份還原。' }
+    return 'written'
+}
+
+function Test-ClaudePluginUserDisabled {
+    # settings.json 的 enabledPlugins 內該外掛被使用者設為 false（只有明確的布林 false 才算）。檔案不存在或無法讀取時為 $false。
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$SettingsPath,
+        [Parameter(Mandatory)][string]$PluginId
+    )
+
+    $settings = Read-ClaudeSettingsFile -Path $SettingsPath
+    if (-not $settings.Exists -or $null -ne $settings.Error) { return $false }
+    $pluginsProperty = $settings.Object.PSObject.Properties['enabledPlugins']
+    if ($null -eq $pluginsProperty -or -not (Test-ClaudeUserConfigJsonObject $pluginsProperty.Value)) { return $false }
+    $pluginProperty = $pluginsProperty.Value.PSObject.Properties[$PluginId]
+    return ($null -ne $pluginProperty -and $pluginProperty.Value -is [bool] -and -not $pluginProperty.Value)
+}
+
 function Read-ClaudeSettingsFile {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Path)
 
-    $result = [pscustomobject]@{ Exists = $false; Object = $null; Error = $null }
+    $result = [pscustomobject]@{ Exists = $false; Object = $null; Error = $null; Bytes = $null }
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $result }
     $result.Exists = $true
     try { $bytes = [IO.File]::ReadAllBytes($Path) }
     catch { $result.Error = 'parse'; return $result }
+    $result.Bytes = $bytes
     if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) { $result.Error = 'bom'; return $result }
     try { $text = (New-Object System.Text.UTF8Encoding($false, $true)).GetString($bytes) }
     catch { $result.Error = 'encoding'; return $result }
@@ -525,15 +668,17 @@ function Invoke-ClaudeSettingsApply {
     if ($null -ne $current.Error) {
         return (& $outcome 'refused' @() $null "settings.json 無法安全合併（原因：$($current.Error)），未寫入任何檔案")
     }
-    if ($current.Exists -and -not (Test-ClaudeUserConfigDateKindSupported)) {
-        return (& $outcome 'refused' @() $null ("目前的 PowerShell {0} 沒有 ConvertFrom-Json 的 -DateKind（PowerShell 7.5 起提供），改寫既有的 settings.json 時無法保證日期樣式的字串不被改變，未寫入任何檔案。請升級到 PowerShell 7.5 以上（winget upgrade Microsoft.PowerShell）後重跑 Setup" -f $PSVersionTable.PSVersion))
-    }
 
     try {
         $plan = Get-ClaudeSettingsPlan -Existing $(if ($current.Exists) { $current.Object } else { $null }) -Template $template.Object
         $changes = @($plan.Changes)
         $additions = @($changes | Where-Object { $_.Kind -eq 'add' })
         if ($current.Exists -and $additions.Count -eq 0) { return (& $outcome 'unchanged' $changes $null '') }
+
+        # 沒有 -DateKind 的版本剖析既有檔案時會把日期樣式的字串轉成 DateTime，序列化時可能改寫格式；只有確定要改寫既有檔案時才拒絕。
+        if ($current.Exists -and -not (Test-ClaudeUserConfigDateKindSupported)) {
+            return (& $outcome 'refused' @() $null ("目前的 PowerShell {0} 沒有 ConvertFrom-Json 的 -DateKind（PowerShell 7.5 起提供），改寫既有的 settings.json 時無法保證日期樣式的字串不被改變，未寫入任何檔案。請升級到 PowerShell 7.5 以上（winget upgrade Microsoft.PowerShell）後重跑 Setup" -f $PSVersionTable.PSVersion))
+        }
 
         $json = $plan.Result | ConvertTo-Json -Depth 32
         $reparsed = ConvertFrom-ClaudeUserConfigJson -Text $json
@@ -546,36 +691,38 @@ function Invoke-ClaudeSettingsApply {
         return (& $outcome 'failed' @() $null ("合併失敗：{0}" -f $_.Exception.Message))
     }
 
+    # 寫入目標：settings.json 是連結時寫入連結指向的實際檔案，不以一般檔案取代連結；解析不到時不寫入。
+    $writePath = $SettingsPath
+    $inPlace = $false
+    if ($current.Exists) {
+        $target = Resolve-ConfigWriteTarget -Path $SettingsPath
+        if (-not $target.Ok) { return (& $outcome 'unresolved' $changes $null ("settings.json 的寫入目標無法確定，未寫入任何檔案：{0}" -f $target.Message)) }
+        $writePath = $target.Path
+        $inPlace = $target.InPlace
+    }
+    elseif ($null -ne (Get-Item -LiteralPath $SettingsPath -Force -ErrorAction SilentlyContinue)) {
+        return (& $outcome 'unresolved' $changes $null 'settings.json 的位置已有項目但不是可讀的檔案（例如指向不存在目標的連結），未寫入任何檔案')
+    }
+
     if (-not $PSCmdlet.ShouldProcess($SettingsPath, '套用 settings 範本')) {
         return (& $outcome 'whatif' $changes $null '預演，未寫入任何檔案')
     }
 
     $backupPath = $null
-    $temporaryPath = $null
     try {
-        $directory = Split-Path -Parent $SettingsPath
+        $directory = Split-Path -Parent $writePath
         if (-not (Test-Path -LiteralPath $directory -PathType Container)) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
 
         if ($current.Exists) {
-            $stamp = Get-Date -Format 'yyyyMMdd_HHmmss'
-            $backupDirectory = Join-Path $BackupRoot $stamp
-            $suffix = 0
-            while (Test-Path -LiteralPath $backupDirectory) { $suffix++; $backupDirectory = Join-Path $BackupRoot ('{0}_{1}' -f $stamp, $suffix) }
-            New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
-            $backupPath = Join-Path $backupDirectory 'settings.json'
-            Copy-Item -LiteralPath $SettingsPath -Destination $backupPath
-            if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf)) { throw '備份檔寫入後不存在。' }
-            $manifestLine = ((Get-Date -Format o) + " | $SettingsPath | 套用 settings 範本`n")
-            [IO.File]::WriteAllText((Join-Path $backupDirectory 'manifest.txt'), $manifestLine, (New-Object System.Text.UTF8Encoding($false)))
+            $backupPath = Save-ConfigFileBackup -Context (New-ConfigBackupContext) -BackupRoot $BackupRoot -RelativePath 'settings.json' -Bytes $current.Bytes -SourcePath $SettingsPath -Operation '套用 settings 範本'
         }
-
-        $temporaryPath = Join-Path $directory ('settings.json.tmp-' + [guid]::NewGuid().ToString('N'))
-        [IO.File]::WriteAllText($temporaryPath, $json, (New-Object System.Text.UTF8Encoding($false)))
-        [IO.File]::Move($temporaryPath, $SettingsPath, $true)
-        $temporaryPath = $null
+        $newBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($json)
+        $writeStatus = Write-ConfigFileGuarded -Path $writePath -ExpectedBytes $current.Bytes -NewBytes $newBytes -InPlace:$inPlace
+        if ($writeStatus -ceq 'changed') {
+            return (& $outcome 'changed' $changes $backupPath 'settings.json 在讀取之後被其他程式改動，為避免遺失該次變更，未寫入。請確認沒有其他 Claude Code 程式正在寫入該檔後重跑 Setup')
+        }
     }
     catch {
-        if ($null -ne $temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
         return (& $outcome 'failed' $changes $backupPath ("寫入失敗：{0}" -f $_.Exception.Message))
     }
     $status = if ($current.Exists) { 'merged' } else { 'created' }
@@ -649,7 +796,11 @@ function Test-TcpPortOpen {
 
 function Invoke-ClaudeOfficialPluginStep {
     [CmdletBinding(SupportsShouldProcess)]
-    param([Parameter(Mandatory)][string]$SettingsTemplatePath)
+    param(
+        [Parameter(Mandatory)][string]$SettingsTemplatePath,
+        # 使用者的 settings.json；enabledPlugins 內被設為 false 的外掛不安裝也不啟用，只回報。
+        [string]$SettingsPath
+    )
 
     if ($null -eq (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue)) { throw '找不到 claude CLI，略過官方外掛安裝。' }
     $pluginIds = @(Get-ClaudeRequiredOfficialPlugin -TemplatePath $SettingsTemplatePath)
@@ -659,10 +810,11 @@ function Invoke-ClaudeOfficialPluginStep {
     }
     $results = New-Object 'System.Collections.Generic.List[object]'
     foreach ($pluginId in $pluginIds) {
-        $result = Install-ClaudeOfficialPlugin -PluginId $pluginId -WhatIf:$WhatIfPreference
+        $result = Install-ClaudeOfficialPlugin -PluginId $pluginId -SettingsPath $SettingsPath -WhatIf:$WhatIfPreference
         switch ($result.Status) {
             'failed' { Write-Warning ("官方外掛 {0} 處理失敗：{1}" -f $pluginId, $result.Message) }
             'whatif' { Write-Host ("  官方外掛 {0}：預演，未執行" -f $pluginId) }
+            'user-disabled' { Write-Host ("  官方外掛 {0}：你已在 settings.json 的 enabledPlugins 設為 false，Setup 不安裝也不啟用；要使用時自行改回 true" -f $pluginId) -ForegroundColor DarkGray }
             default { Write-Host ("  ✅  官方外掛 {0}：{1}" -f $pluginId, $result.Status) -ForegroundColor DarkGreen }
         }
         $results.Add([pscustomobject]@{ PluginId = $pluginId; Status = $result.Status; Message = $result.Message })
@@ -698,11 +850,12 @@ function Invoke-ClaudeSettingsStep {
             try {
                 $installedPlugins = Get-ClaudeList @('plugin', 'list', '--json')
                 $installedPluginIds = @(foreach ($installedPlugin in $installedPlugins) { Get-ClaudeProperty $installedPlugin 'id' })
-                $excludedPluginIds = @($templatePluginIds | Where-Object { $installedPluginIds -cnotcontains $_ })
+                # 使用者在 settings.json 設為 false 的外掛不算安裝失敗：合併不會改它的值，不需要警告。
+                $excludedPluginIds = @($templatePluginIds | Where-Object { $installedPluginIds -cnotcontains $_ -and -not (Test-ClaudePluginUserDisabled -SettingsPath $SettingsPath -PluginId $_) })
             }
             catch {
-                $excludedPluginIds = $templatePluginIds
-                $pluginCheckNote = '無法讀取已安裝的外掛清單（' + $_.Exception.Message + '）'
+                $excludedPluginIds = @($templatePluginIds | Where-Object { -not (Test-ClaudePluginUserDisabled -SettingsPath $SettingsPath -PluginId $_) })
+                $pluginCheckNote ='無法讀取已安裝的外掛清單（' + $_.Exception.Message + '）'
             }
         }
     }
@@ -714,6 +867,8 @@ function Invoke-ClaudeSettingsStep {
     switch ($result.Status) {
         'refused' { Write-Warning $result.Message }
         'failed' { Write-Warning $result.Message }
+        'changed' { Write-Warning $result.Message }
+        'unresolved' { Write-Warning $result.Message }
         'unchanged' {
             if (@($result.Skipped).Count -gt 0) { Write-Host '  settings.json：範本內沒有可套用的項目（上方略過的外掛尚未安裝），無變更' -ForegroundColor DarkGray }
             else { Write-Host '  settings.json：已含範本的共用設定，無變更' -ForegroundColor DarkGray }

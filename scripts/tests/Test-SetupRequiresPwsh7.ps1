@@ -192,11 +192,26 @@ try {
             Assert-True ([int]$call.Extent.StartOffset -gt $previousOffset) ($stepName + ' 必須晚於前一個步驟。')
             Assert-True ([int]$call.Extent.StartOffset -lt $gitHooksStart) ($stepName + ' 必須早於步驟 9。')
             Assert-True ($call.Extent.Text.Contains('-WhatIf:$WhatIfPreference')) ($stepName + ' 必須傳入 -WhatIf:$WhatIfPreference。')
+            if ($stepName -ceq 'Invoke-ClaudeOfficialPluginStep') {
+                Assert-True ($call.Extent.Text.Contains('-SettingsPath $claudeSettingsPath')) ($stepName + ' 必須傳入使用者的 settings.json 路徑，才能辨識使用者停用的外掛。')
+            }
             $tryParent = $call.Parent
             while ($null -ne $tryParent -and $tryParent -isnot [System.Management.Automation.Language.TryStatementAst]) { $tryParent = $tryParent.Parent }
             Assert-True ($null -ne $tryParent) ($stepName + ' 必須在 try 區塊內，失敗只警告、不中斷其餘步驟。')
             $previousOffset = [int]$call.Extent.StartOffset
         }
+        $true
+    }
+
+    # 8e 的結果為 changed（讀取後原檔被改動）或 unresolved（寫入目標無法確定）時 settings.json 沒有寫入，Setup 在最後以非零結束碼提醒重跑。
+    Test-Case 'S08-setup-exits-nonzero-when-settings-not-written' {
+        $setupText = Get-FileTextWithoutBom -Path $setupPath
+        Assert-True ($setupText.Contains('$claudeSettingsResult = Invoke-ClaudeSettingsStep')) '8e 的結果必須存入 $claudeSettingsResult。'
+        Assert-True ($setupText.Contains("-in @('changed', 'unresolved')")) '必須只對 changed 與 unresolved 兩種狀態標記未寫入。'
+        $guard = @($setupAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.IfStatementAst] -and $node.Clauses[0].Item1.Extent.Text -ceq '$claudeSettingsNotWritten' }, $true))
+        Assert-True ($guard.Count -eq 1) '找不到以 $claudeSettingsNotWritten 為條件的結束判斷。'
+        $exitCalls = @($guard[0].FindAll({ param($node) $node -is [System.Management.Automation.Language.ExitStatementAst] }, $true))
+        Assert-True ($exitCalls.Count -eq 1 -and $exitCalls[0].Extent.Text -ceq 'exit 1') '未寫入時必須以 exit 1 結束。'
         $true
     }
 

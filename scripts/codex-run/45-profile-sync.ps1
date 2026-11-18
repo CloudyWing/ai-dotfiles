@@ -547,6 +547,61 @@ function Get-CodexMcpAccountConfigFinding {
     return [string[]]@($missing.ToArray())
 }
 
+function Get-CodexMcpAccountBlock {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        # 來源（Codex Desktop 的 config.toml）的文字；來源不存在或讀不到時為 $null。
+        [AllowNull()][string]$SourceText,
+        [Parameter(Mandatory)][string]$SourceConfigPath,
+        [Parameter(Mandatory)][string]$ConfigPath
+    )
+
+    # 由來源的 [mcp_servers.<名稱>] 組出帳號 config.toml 要追加的表：command 與 startup_timeout_sec 取自來源，並加 enabled = false。
+    # 回傳 action（block 或 source-missing）、detail（source-missing 時說明原因）、lines（表的各行，第一行為空行）。
+    $table = if ($null -ne $SourceText) { [regex]::Match($SourceText, '(?ms)^\[mcp_servers\.' + [regex]::Escape($Name) + '\][ \t]*\r?\n(?<body>.*?)(?=^\[|\z)') } else { $null }
+    $commandLine = $null
+    $commandUnusable = $null
+    $timeoutLine = $null
+    if ($null -ne $table -and $table.Success) {
+        $commandMatch = [regex]::Match($table.Groups['body'].Value, '(?m)^[ \t]*command[ \t]*=[ \t]*(?<value>.+?)[ \t]*\r?$')
+        if ($commandMatch.Success) {
+            # 只複製單行的基本字串或字面字串；多行字串（""" 或 '''）、值後面還有其他內容（行尾註解等）無法確定語意，視為來源沒有可用的 command。
+            $commandValue = $commandMatch.Groups['value'].Value
+            if ($commandValue -cmatch '^"(?:[^"\\]|\\.)*"$' -or $commandValue -cmatch "^'[^']*'$") { $commandLine = 'command = ' + $commandValue }
+            else { $commandUnusable = $commandValue }
+        }
+        $timeoutMatch = [regex]::Match($table.Groups['body'].Value, '(?m)^[ \t]*startup_timeout_sec[ \t]*=[ \t]*(?<value>[0-9.]+)[ \t]*\r?$')
+        if ($timeoutMatch.Success) { $timeoutLine = 'startup_timeout_sec = ' + $timeoutMatch.Groups['value'].Value }
+    }
+    if ($null -eq $commandLine -and $null -ne $commandUnusable) {
+        return [pscustomobject]@{ action = 'source-missing'; lines = [string[]]@(); detail = ($SourceConfigPath + ' 的 [mcp_servers.' + $Name + '] command 不是單行的基本字串或字面字串（多行字串或值後面還有其他內容），Setup 無法確定其語意，不複製；請在 ' + $ConfigPath + ' 自行加入該表（command 加 enabled = false）後重跑 Setup。') }
+    }
+    if ($null -eq $commandLine) {
+        return [pscustomobject]@{ action = 'source-missing'; lines = [string[]]@(); detail = ($SourceConfigPath + ' 沒有 [mcp_servers.' + $Name + '] 的 command；請先在 Codex Desktop 設定該 MCP 伺服器，或在 ' + $ConfigPath + ' 自行加入該表（command 加 enabled = false）後重跑 Setup。') }
+    }
+    $block = @('', ('[mcp_servers.' + $Name + ']'), $commandLine)
+    if ($null -ne $timeoutLine) { $block += $timeoutLine }
+    $block += 'enabled = false'
+    return [pscustomobject]@{ action = 'block'; lines = [string[]]$block; detail = '' }
+}
+
+function ConvertTo-CodexMcpAccountAppendText {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyString()][string]$ExistingText,
+        [Parameter(Mandatory)][string]$Newline,
+        # 每個元素是一個表的各行（Get-CodexMcpAccountBlock 的 lines）。
+        [Parameter(Mandatory)][object[]]$Block
+    )
+
+    # 追加到帳號 config.toml 檔尾的文字：原檔沒有以換行結尾時先補一個換行，各表沿用原檔的行尾。
+    $appendText = ''
+    if ($ExistingText.Length -gt 0 -and -not $ExistingText.EndsWith("`n")) { $appendText += $Newline }
+    foreach ($lines in $Block) { $appendText += ((@($lines) -join $Newline) + $Newline) }
+    return $appendText
+}
+
 function Set-CodexMcpAccountConfig {
     [CmdletBinding(SupportsShouldProcess)]
     param(
@@ -588,42 +643,19 @@ function Set-CodexMcpAccountConfig {
             $results.Add([pscustomobject]@{ server = $name; action = 'blocked'; detail = ($configPath + ' 已有或可能已有 mcp_servers 的 ' + $name + ' 定義，但偵測不到 command，Setup 不改既有內容；請自行補上 command 並設 enabled = false。') })
             continue
         }
-        $table = if ($null -ne $sourceText) { [regex]::Match($sourceText, '(?ms)^\[mcp_servers\.' + [regex]::Escape($name) + '\][ \t]*\r?\n(?<body>.*?)(?=^\[|\z)') } else { $null }
-        $commandLine = $null
-        $commandUnusable = $null
-        $timeoutLine = $null
-        if ($null -ne $table -and $table.Success) {
-            $commandMatch = [regex]::Match($table.Groups['body'].Value, '(?m)^[ \t]*command[ \t]*=[ \t]*(?<value>.+?)[ \t]*\r?$')
-            if ($commandMatch.Success) {
-                # 只複製單行的基本字串或字面字串；多行字串（""" 或 '''）、值後面還有其他內容（行尾註解等）無法確定語意，視為來源沒有可用的 command。
-                $commandValue = $commandMatch.Groups['value'].Value
-                if ($commandValue -cmatch '^"(?:[^"\\]|\\.)*"$' -or $commandValue -cmatch "^'[^']*'$") { $commandLine = 'command = ' + $commandValue }
-                else { $commandUnusable = $commandValue }
-            }
-            $timeoutMatch = [regex]::Match($table.Groups['body'].Value, '(?m)^[ \t]*startup_timeout_sec[ \t]*=[ \t]*(?<value>[0-9.]+)[ \t]*\r?$')
-            if ($timeoutMatch.Success) { $timeoutLine = 'startup_timeout_sec = ' + $timeoutMatch.Groups['value'].Value }
-        }
-        if ($null -eq $commandLine -and $null -ne $commandUnusable) {
-            $results.Add([pscustomobject]@{ server = $name; action = 'source-missing'; detail = ($SourceConfigPath + ' 的 [mcp_servers.' + $name + '] command 不是單行的基本字串或字面字串（多行字串或值後面還有其他內容），Setup 無法確定其語意，不複製；請在 ' + $configPath + ' 自行加入該表（command 加 enabled = false）後重跑 Setup。') })
+        $built = Get-CodexMcpAccountBlock -Name $name -SourceText $sourceText -SourceConfigPath $SourceConfigPath -ConfigPath $configPath
+        if ($built.action -ceq 'source-missing') {
+            $results.Add([pscustomobject]@{ server = $name; action = 'source-missing'; detail = $built.detail })
             continue
         }
-        if ($null -eq $commandLine) {
-            $results.Add([pscustomobject]@{ server = $name; action = 'source-missing'; detail = ($SourceConfigPath + ' 沒有 [mcp_servers.' + $name + '] 的 command；請先在 Codex Desktop 設定該 MCP 伺服器，或在 ' + $configPath + ' 自行加入該表（command 加 enabled = false）後重跑 Setup。') })
-            continue
-        }
-        $block = @('', ('[mcp_servers.' + $name + ']'), $commandLine)
-        if ($null -ne $timeoutLine) { $block += $timeoutLine }
-        $block += 'enabled = false'
-        $blocks.Add([pscustomobject]@{ name = $name; lines = $block })
+        $blocks.Add([pscustomobject]@{ name = $name; lines = $built.lines })
     }
     if ($blocks.Count -eq 0) { return @($results.ToArray()) }
     if (-not $PSCmdlet.ShouldProcess($configPath, ('追加 ' + (@($blocks | ForEach-Object { '[mcp_servers.' + $_.name + ']' }) -join '、') + '（enabled = false）'))) {
         foreach ($block in $blocks) { $results.Add([pscustomobject]@{ server = $block.name; action = 'would-add'; detail = ($configPath + ' 將追加 [mcp_servers.' + $block.name + ']') }) }
         return @($results.ToArray())
     }
-    $appendText = ''
-    if ($state.text.Length -gt 0 -and -not $state.text.EndsWith("`n")) { $appendText += $newline }
-    foreach ($block in $blocks) { $appendText += (($block.lines -join $newline) + $newline) }
+    $appendText = ConvertTo-CodexMcpAccountAppendText -ExistingText $state.text -Newline $newline -Block @($blocks | ForEach-Object { , $_.lines })
     try {
         [IO.File]::AppendAllText($configPath, $appendText, $utf8)
     }

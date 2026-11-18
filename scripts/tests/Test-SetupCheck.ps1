@@ -535,6 +535,50 @@ try {
         Assert-True ($result.Run.ExitCode -eq $expectedExit) ("結束碼只取決於項目，應為 $expectedExit，實際 $($result.Run.ExitCode)")
         $true
     }
+
+    # 使用者在 settings.json 把官方外掛設為 false 是他的決定：Setup 不會重新啟用，檢查不把它列為缺少；沒有這項設定而外掛停用時照舊為缺少。
+    Test-Case 'C21-user-disabled-official-plugin-is-not-missing' {
+        $fixture = New-Fixture
+        $cmdPath = Join-Path $fixture.BinDirectory 'claude.cmd'
+        $cmdText = [IO.File]::ReadAllText($cmdPath)
+        $enabledEntry = '"microsoft-docs@claude-plugins-official","enabled":true'
+        Assert-True ($cmdText.Contains($enabledEntry)) '夾具的假 claude 應列出啟用的官方外掛'
+        [IO.File]::WriteAllText($cmdPath, $cmdText.Replace($enabledEntry, '"microsoft-docs@claude-plugins-official","enabled":false'), (New-Object Text.UTF8Encoding($false)))
+        $notUserDisabled = Invoke-CheckRun -Fixture $fixture
+        $stillMissing = Get-ItemByPath -Items $notUserDisabled.Items -Category 'plugin' -Suffix 'microsoft-docs@claude-plugins-official'
+        Assert-True ($stillMissing.status -ceq 'missing' -and $stillMissing.detail.Contains('已安裝但未啟用')) 'settings.json 沒有設為 false 而外掛停用時應為缺少'
+
+        $settingsPath = Join-Path $fixture.UserProfile '.claude\settings.json'
+        [IO.File]::WriteAllText($settingsPath, '{"enabledPlugins":{"ai-agents-hooks@ai-agents-local":true,"line-status-board@ai-agents-local":true,"microsoft-docs@claude-plugins-official":false}}', (New-Object Text.UTF8Encoding($false)))
+        $userDisabled = Invoke-CheckRun -Fixture $fixture
+        Assert-True $userDisabled.Unchanged '-Check 執行前後檔案系統有變動'
+        $item = Get-ItemByPath -Items $userDisabled.Items -Category 'plugin' -Suffix 'microsoft-docs@claude-plugins-official'
+        Assert-True ($item.status -ceq 'ok' -and $item.actual -ceq 'disabled' -and $item.detail.Contains('你已在 settings.json')) ('使用者設為 false 的官方外掛應為符合：' + $item.status + ' ' + $item.detail)
+        Assert-OthersOk -Fixture $fixture -Items $userDisabled.Items -Except @()
+        $true
+    }
+
+    # 使用者設為 false 且尚未安裝的官方外掛：Setup 不會安裝，-Check 視為符合並說明，不寫「重新執行 Setup 會安裝」；沒有設為 false 時照舊為缺少。
+    Test-Case 'C22-user-disabled-and-not-installed-official-plugin-is-ok' {
+        $fixture = New-Fixture
+        $cmdPath = Join-Path $fixture.BinDirectory 'claude.cmd'
+        $cmdText = [IO.File]::ReadAllText($cmdPath)
+        $entry = ',{"id":"microsoft-docs@claude-plugins-official","enabled":true}'
+        Assert-True ($cmdText.Contains($entry)) '夾具的假 claude 應列出官方外掛'
+        [IO.File]::WriteAllText($cmdPath, $cmdText.Replace($entry, ''), (New-Object Text.UTF8Encoding($false)))
+        $notDisabled = Invoke-CheckRun -Fixture $fixture
+        $missing = Get-ItemByPath -Items $notDisabled.Items -Category 'plugin' -Suffix 'microsoft-docs@claude-plugins-official'
+        Assert-True ($missing.status -ceq 'missing' -and $missing.detail.Contains('重新執行 Setup 會安裝')) '沒有設為 false 且未安裝時應為缺少'
+
+        $settingsPath = Join-Path $fixture.UserProfile '.claude\settings.json'
+        [IO.File]::WriteAllText($settingsPath, '{"enabledPlugins":{"ai-agents-hooks@ai-agents-local":true,"line-status-board@ai-agents-local":true,"microsoft-docs@claude-plugins-official":false}}', (New-Object Text.UTF8Encoding($false)))
+        $userDisabled = Invoke-CheckRun -Fixture $fixture
+        Assert-True $userDisabled.Unchanged '-Check 執行前後檔案系統有變動'
+        $item = Get-ItemByPath -Items $userDisabled.Items -Category 'plugin' -Suffix 'microsoft-docs@claude-plugins-official'
+        Assert-True ($item.status -ceq 'ok' -and $item.detail.Contains('使用者已') -and -not $item.detail.Contains('重新執行 Setup 會安裝')) ('使用者設為 false 且未安裝的官方外掛應為符合：' + $item.status + ' ' + $item.detail)
+        Assert-OthersOk -Fixture $fixture -Items $userDisabled.Items -Except @()
+        $true
+    }
 }
 catch {
     $failed++
