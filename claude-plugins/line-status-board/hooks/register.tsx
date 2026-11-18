@@ -9,7 +9,7 @@ import { EXPAND_KEY, normalizeExpanded, toggleExpanded, stalledToggleText, canSh
 import { LOGIN_COMMAND_MODE, loginDisplayMode, lowestPrimary, scopedSessions, statusText } from './lib'
 import { finishedSessions, finishedToastText, normalizeAlertSignature, quotaAlert, QUOTA_ALERT_KEY } from './lib'
 import { SESSION_OPEN_MODE, sessionOpenTarget, windowLabel } from './lib'
-import { CLEANUP_DELETE_TIMEOUT_MS, CLEANUP_LIST_TIMEOUT_MS, cleanupItemDetail, cleanupItemName, formatBytes, groupCleanupItems, parseCleanupOutput, scriptFileExists } from './lib'
+import { CLEANUP_DELETE_TIMEOUT_MS, CLEANUP_LIST_TIMEOUT_MS, cleanupItemDetail, cleanupItemName, formatBytes, groupCleanupItems, parseCleanupOutput } from './lib'
 import { closableCleanupLines, closedLineArgument, normalizeClosedLines, toggleClosedLine } from './lib'
 import { REFRESH_MS as CACHE_MAX_AGE_MS, SCRIPT_CACHE_KEY, WAITING_PREFIX, isWaitingExpired, newWaiting, parseSelfSessionId, parseWaiting, pickPermissionCall, prunableWaitingKeys, reusableScriptOutput, scopedWaiting, scriptSignature, waitingKey, waitingKindForTool, waitingSessionPrefix, waitingToastText } from './lib'
 import type { PendingCall, WaitingEntry, WaitingKind } from './lib'
@@ -268,6 +268,10 @@ async function copyDispatchDetail($: Engine, text: string | null, surface: Rende
     const result = await $.ui.copy({ text, surface })
     $.ui.toast(result.isCopied ? '已複製派工明細' : `無法複製（${result.reason}）`)
   } catch (error) { $.ui.toast(`無法複製（${message(error)}）`) }
+}
+
+async function scriptFileExists($: Engine, path: string): Promise<boolean> {
+  try { await $.fs.stat(path); return true } catch { return false }
 }
 
 async function cleanupScriptPath($: Engine, options: BoardOptions): Promise<string> {

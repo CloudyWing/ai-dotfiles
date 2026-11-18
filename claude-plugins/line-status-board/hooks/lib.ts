@@ -1,5 +1,4 @@
 import type { BlockId, BoardBlock, BoardRow, BoardSnapshot, CleanupItem, CleanupPlan, DetailSegment, DotTone, ExpandId } from '../types'
-import type { Engine } from 'claude-code'
 
 export const REFRESH_MS = 60000
 export const GIT_TIMEOUT_MS = 3000
@@ -208,9 +207,6 @@ function optional(value: unknown, kind: 'string' | 'number' | 'boolean'): boolea
 }
 function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0
-}
-export async function scriptFileExists($: Engine, path: string): Promise<boolean> {
-  try { await $.fs.stat(path); return true } catch { return false }
 }
 function isCleanupItem(value: unknown): value is CleanupItem {
   if (!isRecord(value)) return false
