@@ -175,10 +175,10 @@ try {
         $true
     }
 
-    # 步驟 8d、8e、8f 的內容在 lib\claude-user-config.ps1，Setup 只負責呼叫。執行模式需要系統管理員，無法在測試內執行，
+    # 步驟 8d、8e 的內容在 lib\claude-user-config.ps1，Setup 只負責呼叫。執行模式需要系統管理員，無法在測試內執行，
     # 這裡以語法樹確認接線：三個呼叫依序位於 8c（舊 hook 清理）之後、步驟 9（Git Hooks）之前，各自以 try 包住並傳入 -WhatIf:$WhatIfPreference。
     Test-Case 'S06-claude-user-config-steps-wired-between-8c-and-9' {
-        $stepNames = @('Invoke-ClaudeOfficialPluginStep', 'Invoke-ClaudeSettingsStep', 'Invoke-ClaudeMcpStep')
+        $stepNames = @('Invoke-ClaudeOfficialPluginStep', 'Invoke-ClaudeSettingsStep')
         $setupLines = Get-FileTextWithoutBom -Path $setupPath
         $hooksStep = $setupAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -ceq 'Remove-ClaudeLegacyHook' }, $true) | Select-Object -First 1
         Assert-True ($null -ne $hooksStep) 'Setup 找不到 8c 的 Remove-ClaudeLegacyHook 呼叫。'
@@ -196,6 +196,18 @@ try {
             while ($null -ne $tryParent -and $tryParent -isnot [System.Management.Automation.Language.TryStatementAst]) { $tryParent = $tryParent.Parent }
             Assert-True ($null -ne $tryParent) ($stepName + ' 必須在 try 區塊內，失敗只警告、不中斷其餘步驟。')
             $previousOffset = [int]$call.Extent.StartOffset
+        }
+        $true
+    }
+
+    # MCP 登記由 Register-McpServer.ps1 處理，Setup 與 -Check 不含任何 MCP 登記、infra-lab 參數或 WSL 檢查。
+    Test-Case 'S07-setup-has-no-mcp-registration' {
+        $parameterNames = @($setupAst.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+        Assert-True (($parameterNames -join ',') -ceq 'Force,EnableLongPaths,Check,AsJson') ('Setup 的參數應只有 Force、EnableLongPaths、Check、AsJson，實際：' + ($parameterNames -join ','))
+        $checkPath = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\lib\setup-check.ps1')).Path
+        foreach ($path in @($setupPath, $checkPath)) {
+            $text = Get-FileTextWithoutBom -Path $path
+            Assert-True ($text -cnotmatch 'Invoke-ClaudeMcpStep|Invoke-ClaudeMcpRegister|InfraLab|claude mcp add|claude-mcp|Get-WslStatus|wsl --') ('不應含 MCP 登記、infra-lab 參數或 WSL 檢查：' + $path)
         }
         $true
     }

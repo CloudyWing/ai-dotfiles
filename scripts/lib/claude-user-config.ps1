@@ -1,9 +1,38 @@
 ﻿#Requires -Version 7.0
 # Claude Code 使用者層設定模組：MCP 登記範本與計畫、官方外掛安裝、settings.json 合併、前置軟體與連接埠探測。
-# 由 Setup-AIGlobalConfig.ps1 在版本判斷之後以 dot-source 載入，只定義函式，不在載入時執行任何動作。
-# 本檔使用 Setup 已定義的 Invoke-ClaudeCli、Get-ClaudeList、Get-ClaudeProperty。
+# 由 Setup-AIGlobalConfig.ps1 與 Register-McpServer.ps1 在版本判斷之後以 dot-source 載入，只定義函式，不在載入時執行任何動作。
+# Claude CLI 的呼叫函式（Invoke-ClaudeCli、Get-ClaudeList、Get-ClaudeProperty）定義在本檔；測試以同名函式替身取代。
 # 寫入邊界：MCP 登記只經 Claude CLI 的 mcp add 子命令；使用者層登記檔只做唯讀讀取，且一律以 -AsHashTable 剖析（該檔含僅大小寫不同的鍵）。
 # 檔案寫入只發生在 Invoke-ClaudeSettingsApply（備份、manifest.txt、暫存檔與取代 settings.json）。
+
+function Invoke-ClaudeCli {
+    param([string[]]$Arguments)
+    $claude = Get-Command claude -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -eq $claude) { return $null }
+    $previousPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $output = & $claude.Source @Arguments 2>&1 | Out-String
+        return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Output = $output }
+    } finally { $ErrorActionPreference = $previousPreference }
+}
+
+function Get-ClaudeList {
+    param([string[]]$Arguments)
+    $result = Invoke-ClaudeCli $Arguments
+    if ($null -eq $result -or $result.ExitCode -ne 0) { throw "Claude CLI 查詢失敗：$($result.Output)" }
+    try { $parsed = ConvertFrom-Json -InputObject $result.Output -ErrorAction Stop } catch { throw "Claude CLI JSON 解析失敗：$($result.Output)" }
+    if ($result.Output.TrimStart() -notmatch '^\[') { throw 'Claude CLI 清單格式不符。' }
+    return ,@($parsed)
+}
+
+function Get-ClaudeProperty {
+    param($Object, [string]$Name)
+    if ($null -eq $Object) { return $null }
+    $property = $Object.PSObject.Properties[$Name]
+    if ($null -eq $property) { return $null }
+    return $property.Value
+}
 
 function Test-ClaudeUserConfigDateKindSupported {
     # ConvertFrom-Json 的 -DateKind 由 PowerShell 7.5 加入；之前的版本會把日期樣式的字串轉成 DateTime，序列化時可能改寫格式。
@@ -262,10 +291,10 @@ function Get-ClaudeMcpPlanMessage {
 
     if ($Item.Action -eq 'differs') {
         $fields = @($Item.DifferingField) -join '、'
-        return "$($Item.Name) 的 $fields 與範本不同，保留現有登記；要改用範本時，先執行 claude mcp remove $($Item.Name) --scope user 再重跑 Setup"
+        return "$($Item.Name) 的 $fields 與範本不同，保留現有登記；要改用範本時，先執行 claude mcp remove $($Item.Name) --scope user 再重新執行登記腳本"
     }
     if ($Item.Action -eq 'needs-values') {
-        return "$($Item.Name) 尚未登記，且缺少或未通過驗證的 -InfraLabDistro、-InfraLabWslRepo；值取自在 WSL 內執行 task mcp:config 時印出的命令，補上兩個參數後重跑 Setup"
+        return "$($Item.Name) 尚未登記，且缺少或未通過驗證的 -InfraLabDistro、-InfraLabWslRepo；值取自在 WSL 內執行 task mcp:config 時印出的命令，補上兩個參數後重新執行登記腳本"
     }
     return ''
 }
@@ -615,7 +644,8 @@ function Test-TcpPortOpen {
     return [bool](Get-TcpPortOpenMap -Port @($Port) -TimeoutMs $TimeoutMs)[$Port]
 }
 
-# 以下三個函式是 Setup 步驟 8d、8e、8f 的實際內容：Setup 只負責呼叫並以 try/catch 包住，略過條件以例外回報，輸出與判定在此，使邏輯可在不需系統管理員的測試中驗證。
+# 以下三個函式是步驟的實際內容：Setup 的官方外掛與 settings.json 兩步、Register-McpServer.ps1 的 Claude MCP 登記各自呼叫並以 try/catch 包住，
+# 略過條件以例外回報，輸出與判定在此，使邏輯可在不需系統管理員的測試中驗證。
 
 function Invoke-ClaudeOfficialPluginStep {
     [CmdletBinding(SupportsShouldProcess)]
@@ -706,11 +736,16 @@ function Invoke-ClaudeMcpStep {
         [Parameter(Mandatory)][string]$McpTemplatePath,
         [Parameter(Mandatory)][string]$UserMcpPath,
         [AllowNull()][AllowEmptyString()][string]$InfraLabDistro,
-        [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo
+        [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo,
+        # 只處理指定的群組：mcp-lab（範本中 type 為 http 的 11 個伺服器）與 infra-lab（stdio 的 infra-lab）；省略時處理範本全部。
+        [ValidateSet('mcp-lab', 'infra-lab')][string[]]$Group = @()
     )
 
     if ($null -eq (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue)) { throw '找不到 claude CLI，略過 MCP 登記。' }
     $template = @(Read-ClaudeMcpTemplate -Path $McpTemplatePath)
+    if ($Group.Count -gt 0) {
+        $template = @($template | Where-Object { ($Group -contains 'mcp-lab' -and $_.Type -eq 'http') -or ($Group -contains 'infra-lab' -and $_.Type -eq 'stdio') })
+    }
     $registered = Get-ClaudeUserMcpServer -Path $UserMcpPath
     if ($null -ne $registered.Error) { throw ("使用者層登記檔無法讀取（原因：{0}），略過 MCP 登記。" -f $registered.Error) }
     $plan = @(Get-ClaudeMcpPlan -Template $template -Existing $registered.Servers -Distro $InfraLabDistro -WslRepo $InfraLabWslRepo)

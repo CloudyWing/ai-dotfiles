@@ -3,7 +3,7 @@
 param()
 
 # scripts/lib/claude-user-config.ps1 的測試：MCP 範本與登記計畫、官方外掛安裝流程、settings.json 合併與保護步驟、WSL 與連接埠探測。
-# 以同名函式替身取代 Setup 定義的 Invoke-ClaudeCli、Get-ClaudeList、Get-ClaudeProperty，所有檔案操作都在暫存目錄內進行，不碰真實的使用者設定。
+# 以同名函式替身取代 lib 定義的 Invoke-ClaudeCli、Get-ClaudeList、Get-ClaudeProperty，所有檔案操作都在暫存目錄內進行，不碰真實的使用者設定。
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -768,6 +768,27 @@ try {
         $zeroCalls = $script:CliCalls.Count -eq 0
         $fresh = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none-user.json') -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
         $unreadable.Error -match '無法讀取' -and $badTemplate.Error -match '找不到 MCP 範本' -and $noClaude.Error -match '找不到 claude CLI' -and $zeroCalls -and $script:CliCalls.Count -eq 12 -and @($fresh.Result | Where-Object { $_.Status -eq 'added' }).Count -eq 12
+    }
+
+    Test-Case 'ST10 MCP 步驟的 -Group：只處理所選群組，未選的伺服器不登記；省略時處理範本全部' {
+        Reset-Stubs
+        $emptyMcp = New-UserMcpFile -Exclude ($template | ForEach-Object { $_.Name })
+        $lab = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath $emptyMcp -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo -Group @('mcp-lab') }
+        $labCalls = $script:CliCalls.Count
+        $labNames = @($script:CliCalls | ForEach-Object { $_[6] })
+        Reset-Stubs
+        $infra = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath $emptyMcp -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo -Group @('infra-lab') }
+        $infraCalls = $script:CliCalls.Count
+        $infraName = $script:CliCalls[0][6]
+        Reset-Stubs
+        $both = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath $emptyMcp -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo -Group @('mcp-lab', 'infra-lab') }
+        $null -eq $lab.Error -and $labCalls -eq 11 -and ($labNames -notcontains 'infra-lab') -and $null -eq $infra.Error -and $infraCalls -eq 1 -and $infraName -ceq 'infra-lab' -and $script:CliCalls.Count -eq 12
+    }
+    Test-Case 'ST11 MCP 步驟的 -Group infra-lab 缺值時警告 needs-values 且不呼叫；已登記的其他伺服器不受影響' {
+        Reset-Stubs
+        $userMcp = New-UserMcpFile -Exclude @('infra-lab')
+        $captured = Invoke-Captured { Invoke-ClaudeMcpStep -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -InfraLabDistro '' -InfraLabWslRepo '' -Group @('infra-lab') }
+        $null -eq $captured.Error -and $script:CliCalls.Count -eq 0 -and @($captured.Result).Count -eq 1 -and $captured.Result[0].Status -eq 'needs-values' -and (($captured.Warnings -join "`n") -match '重新執行登記腳本')
     }
 
     # ---- 外掛安裝失敗時 settings.json 不寫入該外掛的 enabledPlugins ----
