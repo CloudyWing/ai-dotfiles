@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-09
+superseded-by: 0046
 ---
 
 # ADR-0006：派遣正式 operation、薄 adapter 與模組拆分

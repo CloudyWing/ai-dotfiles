@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0046
 ---
 
 # ADR-0022：RunRecord 執行鏈保留失敗嘗試，續行錨點略過所有 launch-failed 紀錄

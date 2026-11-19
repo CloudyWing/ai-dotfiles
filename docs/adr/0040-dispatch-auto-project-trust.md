@@ -1,6 +1,7 @@
 ---
-status: proposed
+status: superseded
 date: 2026-11-14
+superseded-by: 0046
 ---
 
 # ADR-0040：派工時自動補上派工帳號的專案信任

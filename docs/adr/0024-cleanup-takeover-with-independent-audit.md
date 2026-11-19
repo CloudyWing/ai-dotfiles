@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0046
 ---
 
 # ADR-0024：Cleanup 以獨立稽核明示接手，不改寫原 owner

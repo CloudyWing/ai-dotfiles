@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-09
+superseded-by: 0046
 ---
 
 # ADR-0005：續行以程序身分與 failure receipt 保護，不以 ACL evidence 放行

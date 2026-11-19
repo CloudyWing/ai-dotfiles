@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0046
 ---
 
 # ADR-0026：續行的父層選項由錨點 RunRecord 還原並逐欄比對

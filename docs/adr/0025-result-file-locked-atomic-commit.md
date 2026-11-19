@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-11-02
+superseded-by: 0046
 ---
 
 # ADR-0025：派遣結果檔以共用鎖、hash 重讀與原子替換提交
