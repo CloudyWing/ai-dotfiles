@@ -1,6 +1,6 @@
 ---
 name: vue3
-description: 'Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。'
+description: 'Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構、目錄結構與 Vite 的 proxy 及路徑別名設定。當偵測到 Vue 3 專案時自動套用。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
@@ -55,7 +55,6 @@ policy.allow_implicit_invocation: true
 
 ### Composable 原則
 
-- 命名以 `use` 開頭。
 - 回傳值使用具名物件（非陣列），方便解構時重新命名。
 - 回傳的響應式狀態使用 `computed()` 包裝，防止外部直接修改內部 `ref`。
 - 可接受 `ref` 或純值作為參數（使用 `toValue()` 統一處理）。
@@ -67,30 +66,8 @@ policy.allow_implicit_invocation: true
 
 - **預設使用 `ref`**：適用於所有情境，語意統一。
 - `reactive` 僅在物件結構固定且不需要重新賦值時考慮使用。
-- **禁止** `reactive` 整體重新賦值（會斷開響應式追蹤）。
-
-### computed vs watch
-
-| 用途 | 選擇 |
-| --- | --- |
-| 從現有狀態衍生新值 | `computed` |
-| 狀態變更時執行副作用（API 呼叫、DOM 操作） | `watch` / `watchEffect` |
-
-- **禁止**在 `computed` 中執行副作用。
-- `watchEffect` 適合自動追蹤依賴的場景；`watch` 適合需要存取新舊值或控制執行時機的場景。
 
 ## Template 規範
-
-### v-for 必須搭配 key
-
-- `key` 使用唯一且穩定的值（如 `order.id`）。
-- 不使用 index 作為 `key`，元素新增或刪除時會錯亂。
-
-### v-if vs v-show
-
-- `v-if`：條件不常變動，或需要延遲渲染（如 Tab 內容）。
-- `v-show`：頻繁切換顯示/隱藏（如 Toggle）。
-- **禁止** `v-if` 與 `v-for` 並用在同一元素上（`v-if` 優先級較高，Vue 3 中會報警告）。
 
 ### 屬性排序
 
@@ -106,15 +83,6 @@ policy.allow_implicit_invocation: true
 
 - 使用 `@` 對應 `src/` 目錄。
 - `tsconfig.json` 中的 `paths` 必須與 Vite 的 `resolve.alias` 保持同步。
-
-### 環境變數
-
-- 前綴規則：只有 `VITE_` 前綴的變數會暴露給前端程式碼。
-- **禁止**將機密資訊放入前端環境變數（前端程式碼會被打包至 bundle 中，對使用者可見）。
-
-### Build 最佳化
-
-- 第三方套件以 `build.rollupOptions.output.manualChunks` 拆為獨立 chunk（`vendor`，如 `vue`、`vue-router`、`pinia`），利用瀏覽器快取。
 
 ## 目錄結構
 

@@ -60,13 +60,7 @@ policy.allow_implicit_invocation: true
 
 - 使用 Axios 時以 `vi.mock('@/lib/axios', ...)` mock 封裝後的實例，回傳模組的 `default` 為各方法（`get`、`post`、`put`、`delete`）皆是 `vi.fn()` 的物件。
 
-## 斷言最佳實踐
-
-- 使用具體斷言：`toBe`（嚴格相等）、`toEqual`（深度相等）、`toHaveLength`、`toContain`、`toHaveBeenCalledWith`、`toHaveBeenCalledTimes`。
-- 避免模糊斷言：不以 `toBeTruthy()` 驗證具體值；驗證長度用 `toHaveLength`，不寫 `expect(list.length > 0).toBe(true)`。
-
 ## 禁止模式
 
 - 禁止測試實作細節（如透過 `wrapper.vm` 讀取元件內部 ref 的值），改為驗證行為與輸出。
 - 禁止濫用快照測試（`toMatchSnapshot`），UI 頻繁變動時快照會不斷失敗。
-- 禁止不寫斷言的測試。

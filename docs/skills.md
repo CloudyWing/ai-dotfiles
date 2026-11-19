@@ -32,21 +32,21 @@
 | `codebase-design` | 知識型 | agent | Use when 設計或審查模組邊界、Interface、Adapter、依賴方向與可測試性時。 |
 | `codex-dispatch` | 知識型 | agent | Codex 派工機制：依派工類型建立派遣檔、以 Invoke-CodexRun.ps1 啟動 codex exec、等待並回收結果。當需要發動 codex、撰寫派遣檔或執行派遣回收判定時使用。 |
 | `create-dotnet-project` | 知識型 | agent | 建立新的 .NET 方案：詢問 AI-PROFILE 鍵並寫入，以 slnx 格式建立方案、src 與 tests 實體資料夾及 Solution Folder，再依序產生 .editorconfig、.gitignore、.gitattributes 與專案層設定。Use when 使用者要求建立新的 .NET 方案或專案骨架時；既有專案不適用。 |
-| `csharp-aspnetcore` | 知識型 | agent | ASP.NET Core 開發規範：DI Lifetime、HttpClient、回應格式、API 版本控制、SameSite Cookie 與 Server-Sent Events。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
+| `csharp-aspnetcore` | 知識型 | agent | ASP.NET Core 開發規範：端點風格沿用、API 版本控制、Options Pattern 設定讀取、SameSite Cookie 與 Server-Sent Events 的行為陷阱。當偵測到 ASP.NET Core 專案或使用者要求撰寫 API 端點時自動套用。 |
 | `csharp-auth` | 知識型 | agent | ASP.NET Core 認證授權規範：JWT Bearer 驗證參數、OIDC 整合、Claims 慣例與 Policy 授權。當撰寫或修改認證、授權、Token 驗證相關程式碼時自動套用。 |
-| `csharp-background-service` | 知識型 | agent | Background Service 開發規範：BackgroundService、IHostedService、Channel Queue 模式與生命週期管理。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。 |
+| `csharp-background-service` | 知識型 | agent | Background Service 開發規範：IHostedService 預熱的有界條件、Channel Queue 模式、Timer 重疊與回收陷阱、多 instance 排程。當撰寫或審查 .NET 背景工作、排程任務或佇列處理邏輯時自動套用。 |
 | `csharp-comments` | 知識型 | agent | C# 註解風格：單行註解格式、註解用途原則，以及 TODO / UNDONE / HACK 工作清單關鍵字的分類與使用時機。撰寫或檢視 C# 程式碼註解時套用。 |
-| `csharp-di` | 知識型 | agent | .NET 相依性注入進階規範：Generic Host、Keyed Services、Decorator 模式與容器驗證。當撰寫涉及 DI 容器進階配置（多實作、裝飾、非 Web 宿主）的程式碼時自動套用。 |
+| `csharp-di` | 知識型 | agent | .NET 相依性注入規範：Generic Host 的容器建立、服務註冊慣例、Keyed Services 與 Service Locator 禁令。當撰寫涉及 DI 容器配置（多實作、非 Web 宿主）的程式碼時自動套用。 |
 | `csharp-docs` | 知識型 | agent | C# 文件與 XML 註解標準：強制使用標準標籤與用詞規範產生類別與方法的說明。Use when writing, reviewing, or generating XML documentation comments (///) in C# files, or when the user asks to add, fix, or supplement XML docs. |
-| `csharp-error-handling` | 知識型 | agent | C# 例外處理規範：例外設計原則、Guard Clause、全域錯誤處理與 ProblemDetails 回應標準化。當設計例外、撰寫 try-catch 或全域錯誤處理時自動套用。 |
-| `csharp-grpc` | 知識型 | agent | gRPC 服務開發規範：Proto 檔案管理、服務實作、攔截器、錯誤處理與用戶端工廠模式。當偵測到 gRPC 專案或撰寫 .proto、gRPC 服務與用戶端時自動套用。 |
+| `csharp-error-handling` | 知識型 | agent | C# 例外處理規範：業務錯誤的表達方式、Guard Clause 寫法、IExceptionHandler 全域錯誤處理與 ProblemDetails 回應標準化。當設計例外、撰寫 try-catch 或全域錯誤處理時自動套用。 |
+| `csharp-grpc` | 知識型 | agent | gRPC 服務開發規範：Proto 檔案的目錄與命名慣例、服務類別命名、全域錯誤攔截器與用戶端工廠模式。當偵測到 gRPC 專案或撰寫 .proto、gRPC 服務與用戶端時自動套用。 |
 | `csharp-integration-test` | 知識型 | agent | C# 整合測試規範：WebApplicationFactory、Testcontainers、依 AI-PROFILE 目標版本鍵選用資料庫容器映像與相容性層級、資料隔離與認證繞道。當撰寫或修改整合測試（跨資料庫、HTTP 管線、外部相依）時自動套用。 |
 | `csharp-language-features` | 知識型 | agent | Use when 讀取或修改 C# 專案設定、TargetFramework 或 C# 程式碼，需判斷語言特性、非同步、型別選用，或依 project-kind 判斷 ConfigureAwait 與公開 API 相容性時。 |
-| `csharp-linq` | 知識型 | agent | LINQ 查詢規範：物化時機、回傳型別、語法選用與鏈式排版的專案慣例。當撰寫 In-Memory 集合操作或 LINQ to Objects 時自動套用。 |
+| `csharp-linq` | 知識型 | agent | LINQ 查詢規範：回傳型別、語法選用與 Lambda 排版的專案慣例。當撰寫 In-Memory 集合操作或 LINQ to Objects 時自動套用。 |
 | `csharp-mcp-server` | 知識型 | agent | 產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最佳實踐與專案結構規劃。 |
 | `csharp-nrt` | 知識型 | agent | C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告，並列出 EF Core Navigation Property 與 Blazor 元件屬性的例外條件。當專案啟用 NRT 且撰寫或修改型別宣告（含 Blazor 元件的 `.razor.cs` 與 `@code` 區塊）時自動套用。 |
-| `csharp-nunit` | 知識型 | agent | C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。 |
-| `csharp-signalr` | 知識型 | agent | SignalR Hub 開發規範：Hub Lifetime、群組管理、認證整合、錯誤處理與 Scale-Out 策略。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。 |
+| `csharp-nunit` | 知識型 | agent | C# NUnit 測試規範：測試專案與方法命名、AAA 排版、資料驅動、多重斷言、非同步例外驗證的宣告方式與測試接縫。當撰寫或修改 C# 單元測試時自動套用。 |
+| `csharp-signalr` | 知識型 | agent | SignalR Hub 開發規範：方法與事件命名、強型別 Hub、群組命名、JWT Query String 的路徑判斷、路由慣例與 Redis Backplane 的 ChannelPrefix。當撰寫或修改 SignalR Hub 與即時推播功能時自動套用。 |
 | `csharp-silent-defects` | 知識型 | agent | Use when 讀取或修改 C# 程式碼，需要檢查合法且不易在開發環境顯現的執行期、時序、文化、數值、集合順序或資源陷阱時。 |
 | `csharp-style` | 知識型 | agent | C# 程式碼風格規範：依專案 AGENTS.local.md 的 code-style.csharp 註記載入 personal、standard 或 project 風格，並收錄縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的共用細則。撰寫或修改 C# 程式碼時套用。 |
 | `csharp-validation` | 知識型 | agent | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分、必填欄位與繫結來源，以及 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。 |
@@ -71,7 +71,7 @@
 | `merge-data` | 知識型 | human | 多份資料檔整合流程。當需要將兩份以上的資料檔（如 JSON、CSV）合併、補齊闕漏欄位或去重成單一檔案時使用。以 dry-run、筆數核對與抽樣比對降低整合錯誤。 |
 | `messaging` | 知識型 | agent | 訊息佇列開發規範：RabbitMQ 與 MQTT 的命名慣例、冪等消費、重試與 DLQ 策略、MQTT 遺囑與持久 Session、Mosquitto 容器設定、訊息版本演進。當撰寫或修改訊息發佈與消費邏輯時自動套用。 |
 | `openapi-client` | 知識型 | agent | 前後端 API 契約規範：OpenAPI Client 產生策略、Axios 封裝、型別同步與錯誤處理。當撰寫前端 API 呼叫層或同步前後端型別時自動套用。 |
-| `pinia` | 知識型 | agent | Pinia 狀態管理規範：Store 設計、Setup Store 寫法、跨 Store 互動、持久化策略與元件整合。當撰寫或修改 Pinia Store 及其元件整合時自動套用。 |
+| `pinia` | 知識型 | agent | Pinia 狀態管理規範：Setup Store 寫法、命名與職責劃分、跨 Store 互動、$reset、非同步 Action 狀態與持久化策略。當撰寫或修改 Pinia Store 及其元件整合時自動套用。 |
 | `powershell` | 知識型 | agent | PowerShell 腳本撰寫規範：嚴格模式、錯誤處理、參數宣告、Verb-Noun 命名、版本目標與 5.1 相容語法邊界。當撰寫或修改 `*.ps1` / `*.psm1` 腳本時自動套用。 |
 | `redis-caching` | 知識型 | agent | Redis 快取開發規範：Key 命名階層、TTL 策略、Cache-Aside 模式與 StackExchange.Redis 連線管理。當撰寫或修改快取邏輯時自動套用。 |
 | `requirement-context` | 知識型 | agent | 當使用者明確要求盤點需求上下文，或要求從專案文件、程式碼與資料庫查找需求相關背景資訊時使用。 |
@@ -84,7 +84,7 @@
 | `uiux-baseline` | 知識型 | agent | 掃描專案產出樣式基準，抽取色彩、間距、字級、圓角的實際使用值與可整段複用的具名版型模式，並區分已統一慣例與專案內部不一致項。Use when the user asks to build a UI style baseline, inventory a project's existing visual conventions, or when a Demo or layout plan needs a visual reference before being produced. |
 | `vitest` | 知識型 | agent | 前端測試規範：Vitest 設定、Vue 元件測試、Composable 測試、Mock 策略與測試結構。當撰寫或修改前端測試時自動套用。 |
 | `vue-router` | 知識型 | agent | Vue Router 4 開發規範：路由設計、Navigation Guard、動態載入、Meta 型別安全與權限控制。當撰寫或修改路由設定與 Navigation Guard 時自動套用。 |
-| `vue3` | 知識型 | agent | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構與 Vite 建置設定。當偵測到 Vue 3 專案時自動套用。 |
+| `vue3` | 知識型 | agent | Vue 3 開發規範：Composition API、<script setup>、Composable 設計、元件結構、目錄結構與 Vite 的 proxy 及路徑別名設定。當偵測到 Vue 3 專案時自動套用。 |
 | `windows-terminal` | 知識型 | agent | Use when 在 Windows 執行終端機命令，需要處理輸出編碼、中文亂碼或輸出截斷時。 |
 | `workflow-orchestration` | 知識型 | agent | Use when 執行或回收 Clarify => Design => Implement => Review => Accept Workflow（含 workflow-depth 為 light 的線）、判定其共同收斂循環、執行結案前文件同步（含 bug 線），或規劃 Workflow 驗證與交付時。 |
 | `writing-for-agents` | 知識型 | agent | Use when 撰寫或修改全域 Agent 規範、Skill 文件或交接文件，需要控制資訊密度與驗收條件時。 |

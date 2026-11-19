@@ -31,17 +31,10 @@ policy.allow_implicit_invocation: true
 
 ### interface vs type
 
-| 選擇 | 適用情境 |
-| --- | --- |
-| `interface` | 物件形狀定義（API 回應、Props、State）、可擴展的契約 |
-| `type` | 聯合型別、交叉型別、Mapped Types、Utility Types 組合 |
-
 - 同一專案中選定一種作為物件定義的預設，保持一致。
-- **禁止**在 interface 和 type 之間反覆切換同一個型別定義。
 
 ### 禁止 any
 
-- `any` 完全繞過型別檢查，等同關閉 TypeScript。
 - 需要表達「任意型別」時使用 `unknown`，強制呼叫端做型別窄化。
 - 第三方套件缺少型別定義時，優先尋找 `@types/*` 套件；無法取得時，自行撰寫 `.d.ts` 宣告檔。
 
@@ -52,8 +45,6 @@ policy.allow_implicit_invocation: true
 - 允許使用 `as` 的情境：`as const`（常數斷言）、測試程式碼中已知結構的資料。
 
 ## 型別窄化（Type Narrowing）
-
-- 依情境使用 `typeof`、`in` 運算子與 Discriminated Union 窄化型別。
 
 ### Discriminated Union 設計
 
@@ -70,7 +61,6 @@ policy.allow_implicit_invocation: true
 
 ### 函式泛型
 
-- 泛型參數只在需要關聯多個位置的型別時使用，不為了泛型而泛型。
 - 命名：單一參數用 `T`；多參數用有意義的名稱（如 `TInput`、`TOutput`）。
 
 ## Utility Types 常用清單
@@ -87,7 +77,7 @@ policy.allow_implicit_invocation: true
 ## 非同步型別安全
 
 - 非同步函式的回傳型別明確標註（如 `Promise<Order>`）。
-- 單一資源的 API 回應不包 wrapper，成功時的回應內容就是資源型別（如 `api.get<Order>`）；分頁清單使用 `PaginatedResponse<T>`；錯誤回應為 ProblemDetails。型別定義見 `openapi-client` skill「通用型別定義」。
+- API 回應的型別（單一資源、分頁清單、錯誤回應）依 `openapi-client` skill「通用型別定義」。
 
 ## 與 Vue 3 整合
 
@@ -95,8 +85,3 @@ policy.allow_implicit_invocation: true
 
 - 以 `InjectionKey<T>` 的 `Symbol` 作為 key，集中定義於 `keys.ts`。
 - `inject` 的結果可能為 `undefined`，使用前檢查，缺少時拋出錯誤。
-
-### 事件型別
-
-- 事件處理函式的參數標註原生事件型別（如 `MouseEvent`、`Event`）。
-- `event.target` 以 `instanceof`（如 `HTMLInputElement`）窄化後使用。

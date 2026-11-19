@@ -1,17 +1,14 @@
 ---
 name: csharp-di
-description: '.NET 相依性注入進階規範：Generic Host、Keyed Services、Decorator 模式與容器驗證。當撰寫涉及 DI 容器進階配置（多實作、裝飾、非 Web 宿主）的程式碼時自動套用。'
+description: '.NET 相依性注入規範：Generic Host 的容器建立、服務註冊慣例、Keyed Services 與 Service Locator 禁令。當撰寫涉及 DI 容器配置（多實作、非 Web 宿主）的程式碼時自動套用。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
 
-# .NET 相依性注入進階規範
-
-基礎 DI Lifetime 規範參閱 `csharp-aspnetcore` skill。
+# .NET 相依性注入規範
 
 ## Generic Host
 
-- 非 Web 應用程式（Console、Worker Service）使用 `Host.CreateDefaultBuilder()` 或 `Host.CreateApplicationBuilder()` 建立宿主，統一 DI、Configuration、Logging 基礎設施。
 - **禁止**在 Generic Host 應用程式中手動建立 `ServiceCollection` 再 `BuildServiceProvider()`，除非是單元測試場景。
 
 ## 註冊慣例
@@ -23,60 +20,8 @@ policy.allow_implicit_invocation: true
 
 ### 多實作註冊
 
-- 同一介面的多個實作，優先使用 **Keyed Services**（.NET 8+）區分：
-
-```csharp
-builder.Services.AddKeyedScoped<INotificationService, EmailNotificationService>("email");
-builder.Services.AddKeyedScoped<INotificationService, SmsNotificationService>("sms");
-
-// 消費端
-public class OrderController {
-    private readonly INotificationService emailNotifier;
-
-    public OrderController([FromKeyedServices("email")] INotificationService emailNotifier) {
-        this.emailNotifier = emailNotifier;
-    }
-}
-```
-
-- 若需注入所有實作，使用 `IEnumerable<T>` 接收。
-
-## Decorator 模式
-
-- 需要在現有服務外層加入橫切邏輯（如快取、日誌、重試）時，使用 Decorator 模式。
-- 手動註冊 Decorator 時，透過工廠方法取得內層服務：
-
-```csharp
-builder.Services.AddScoped<IProductRepository, ProductRepository>();
-builder.Services.Decorate<IProductRepository, CachedProductRepository>();
-```
-
-- 若未使用 Scrutor 等套件，手動實作：
-
-```csharp
-builder.Services.AddScoped<ProductRepository>();
-builder.Services.AddScoped<IProductRepository>(sp => {
-    ProductRepository inner = sp.GetRequiredService<ProductRepository>();
-    return new CachedProductRepository(inner, sp.GetRequiredService<IMemoryCache>());
-});
-```
-
-## 驗證與診斷
-
-- 開發環境啟用 `ValidateScopes` 與 `ValidateOnBuild`，及早發現 Captive Dependency 與遺漏註冊：
-
-```csharp
-HostApplicationBuilder builder = Host.CreateApplicationBuilder(args);
-
-if (builder.Environment.IsDevelopment()) {
-    builder.Services.BuildServiceProvider(new ServiceProviderOptions {
-        ValidateScopes = true,
-        ValidateOnBuild = true
-    });
-}
-```
+- 同一介面的多個實作，優先使用 **Keyed Services**（.NET 8+）區分。
 
 ## 禁止模式
 
 - **Service Locator**：禁止在業務邏輯中直接呼叫 `IServiceProvider.GetService<T>()`。服務應透過建構函式注入，而非在方法內自行解析。唯一允許的例外是工廠方法與 `BackgroundService` 內的 Scope 建立。
-- **靜態服務存取**：禁止將 `IServiceProvider` 存放於靜態欄位供全域存取（如 `ServiceLocator.Instance`）。

@@ -156,8 +156,3 @@ policy.allow_implicit_invocation: true
   ```
 
 - **禁用 `#region`**。
-
-## .NET 品質檢查
-
-- 實作 `IDisposable` 或 `IAsyncDisposable` 的物件必須在 `using` 區塊或 `try/finally` 中釋放。發現 `new HttpClient()` 時改用 `IHttpClientFactory`。
-- 字串串接迴圈使用 `StringBuilder` 或 `string.Join()`。對 `IEnumerable<T>` 多次執行 `.Count()` 或迴圈時先物化。同步 I/O 優先改用非同步版本。

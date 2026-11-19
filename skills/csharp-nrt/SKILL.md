@@ -120,16 +120,6 @@ public class OrderItem {
 
 撰寫或修改 Blazor 元件（`.razor.cs` 與 `@code` 區塊）的 `[Inject]`、`[Parameter]`、`[SupplyParameterFromForm]`、`[CascadingParameter]` 屬性或欄位宣告時，先讀 `references/blazor.md`。`= default!` 在 Blazor 元件只有該檔表列的兩種情境可用。
 
-### Domain Model
-
-透過建構函式保護不變式 (invariant)，屬性盡量唯讀（`private set`），建構函式以 Guard Clause 驗證參數。
-
-若 Domain Model 同時使用 `required` 屬性，建構函式可標註 `[SetsRequiredMembers]`。
-
-### Record Types
-
-Record 的 positional parameter 天生具備 `required` 語意，不需額外標註。可選屬性另以 `init` 屬性宣告（如 `public string? Phone { get; init; }`）。
-
 ---
 
 ## 集合與 NRT
@@ -191,29 +181,3 @@ if (order is { }) { }
 - 為了消除警告而不加思考地附加 `!`。
 - `FirstOrDefault()!`、`SingleOrDefault()!`：`OrDefault` 語意本身就表示可能為 null，加 `!` 是自相矛盾。應改用 `First()` / `Single()`（確定有值時），或正確處理 null。
 - `(await SomeAsync())!`：若回傳值可能為 null，應處理 null，而非用 `!` 略過。
-
----
-
-## Guard Clause
-
-### `ArgumentNullException.ThrowIfNull`
-
-此方法透過 `[CallerArgumentExpression]` 自動取得參數名稱，不需要傳入 `nameof`。
-
-```csharp
-// ✅ 正確：自動取得參數名
-public void Process(Order order) {
-    ArgumentNullException.ThrowIfNull(order);
-}
-
-// ❌ 多餘：手動傳入 nameof
-public void Process(Order order) {
-    ArgumentNullException.ThrowIfNull(order, nameof(order));
-}
-```
-
-同理，`ArgumentException.ThrowIfNullOrEmpty` 和 `ArgumentException.ThrowIfNullOrWhiteSpace` 也不需要 `nameof`。
-
-### 流程分析 Attributes
-
-自訂的 Try-pattern 或 guard 方法，應搭配 `System.Diagnostics.CodeAnalysis` 下的 attributes，讓編譯器正確推斷 nullability。

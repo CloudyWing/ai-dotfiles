@@ -1,6 +1,6 @@
 ---
 name: csharp-nunit
-description: 'C# NUnit 測試規範：確保單元測試套用 AAA 模式、TestCase 資料驅動與合適的斷言 (Assertions)。當撰寫或修改 C# 單元測試時自動套用。'
+description: 'C# NUnit 測試規範：測試專案與方法命名、AAA 排版、資料驅動、多重斷言、非同步例外驗證的宣告方式與測試接縫。當撰寫或修改 C# 單元測試時自動套用。'
 audience: agent
 policy.allow_implicit_invocation: true
 ---
@@ -17,41 +17,16 @@ policy.allow_implicit_invocation: true
 
 ## 資料驅動測試 (Data-Driven Tests)
 
-- 當測試邏輯相同但輸入輸出不同的大量相似情境時，必須使用資料驅動標籤：
-  - `[TestCase(...)]`：用於簡單的行內資料。
-  - `[TestCaseSource]`：用於複雜的物件圖或須呼叫方法的外部資料來源。
-  - `[Values]` 或 `[Random]`：用於讓測試框架自動生成組合測試。
+- 當測試邏輯相同但輸入輸出不同的大量相似情境時，必須使用資料驅動標籤（`[TestCase]`、`[TestCaseSource]`、`[Values]`）。
 
 ## 斷言 (Assertions)
 
-- 基本判斷：使用 `Assert.That(actual, Is.EqualTo(expected))` 驗證值相等。
-- 例外測試：驗證方法拋出例外時，必須使用 `Assert.Throws<T>()` 或非同步的 `Assert.ThrowsAsync<T>()`。使用 `Assert.ThrowsAsync<T>()` 的測試方法宣告方式依「非同步測試」的非同步例外驗證。
-- 集合測試：優先使用 `CollectionAssert`；字串特定比對優先使用 `StringAssert`。
 - 多重斷言：當單一測試包含多個 Assert 驗證時，優先使用 `using (Assert.EnterMultipleScope())`。
 - 若專案有引進並偏好使用 FluentAssertions 或 Shouldly，則全面改用 Fluent API (例如 `result.Should().BeTrue()`)。
 
-## 隔離與 Mock 設計
-
-- 單一測試方法只驗證一種行為，避免過多 Assert 導致失焦。
-- 利用 **NSubstitute** 作為 Mock 框架，隔離外部依賴，透過介面 (Interface) 來替代實際的資料存取或外部呼叫。
-- 確保所有測試案例互相獨立，可平行不依賴執行順序 (Idempotent)。
-
 ## 非同步測試
 
-- 方法本體含 `await` 的非同步測試宣告為 `async Task`，不使用 `async void`：
-
-```csharp
-[Test]
-public async Task SaveOrderAsync_ValidOrder_PersistsToDatabaseAsync() {
-    IOrderRepository repo = Substitute.For<IOrderRepository>();
-    OrderService sut = new(repo);
-
-    await sut.SaveOrderAsync(new Order { Id = 1 });
-
-    await repo.Received(1).InsertAsync(Arg.Any<Order>());
-}
-```
-
+- 方法本體含 `await` 的非同步測試宣告為 `async Task`，方法名稱以 `Async` 結尾。
 - **非同步例外驗證**：使用 `Assert.ThrowsAsync<T>()`。它是同步呼叫，會等待 lambda 執行完畢並回傳攔截到的例外。測試方法本體沒有其他 `await` 時，宣告為 `public void` 並去掉方法名結尾的 `Async` 後綴。本體沒有 `await` 的 `async Task` 方法屬 C# 編譯器警告 CS1998 的情境，只會多產生一個不需要的狀態機。範例如下：
 
 ```csharp
@@ -64,20 +39,6 @@ public void GetOrderAsync_NotFound_ThrowsKeyNotFoundException() {
     Assert.ThrowsAsync<KeyNotFoundException>(
         async () => await sut.GetOrderAsync(99)
     );
-}
-```
-
-- **非同步 SetUp / TearDown**：方法加上 `async Task` 回傳型別，NUnit 3.0 起原生支援：
-
-```csharp
-[SetUp]
-public async Task SetUpAsync() {
-    db = await DbFixture.CreateAsync();
-}
-
-[TearDown]
-public async Task TearDownAsync() {
-    await db.DisposeAsync();
 }
 ```
 

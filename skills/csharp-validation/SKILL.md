@@ -39,16 +39,6 @@ policy.allow_implicit_invocation: true
 
 ## DataAnnotations 規範
 
-### 常用 Attributes
-
-| Attribute | 用途 |
-| --- | --- |
-| `[Required]` | 必填（搭配 NRT 的 `required` keyword 使用） |
-| `[Compare]` | 兩個屬性值必須一致（如密碼確認） |
-| `[AllowedValues]` | 限制允許的值（.NET 8+） |
-| `[DeniedValues]` | 限制禁止的值（.NET 8+） |
-| `[Length(min, max)]` | 同時限制最小與最大長度（.NET 8+） |
-
 ### ErrorMessage 規範
 
 - 每個驗證 Attribute **必須**提供 `ErrorMessage`，不使用框架預設的英文訊息。
@@ -57,42 +47,9 @@ policy.allow_implicit_invocation: true
 
 ## FluentValidation 規範
 
-### Minimal API 整合
-
-Minimal API 不像 MVC 有自動 Model Validation Filter。需要手動驗證或搭配 Endpoint Filter。
-
-```csharp
-// Endpoint Filter 方式
-public class ValidationFilter<T>(IValidator<T> validator) : IEndpointFilter
-    where T : class {
-    public async ValueTask<object?> InvokeAsync(
-        EndpointFilterInvocationContext context,
-        EndpointFilterDelegate next
-    ) {
-        T? model = context.Arguments.OfType<T>().FirstOrDefault();
-        if (model is null) {
-            return Results.Problem(title: "無效的請求", statusCode: 400);
-        }
-
-        ValidationResult result = await validator.ValidateAsync(model).ConfigureAwait(false);
-        if (!result.IsValid) {
-            return Results.ValidationProblem(result.ToDictionary());
-        }
-
-        return await next(context).ConfigureAwait(false);
-    }
-}
-
-// 使用
-app.MapPost("/api/orders", (CreateOrderRequest request) => { /* ... */ })
-   .AddEndpointFilter<ValidationFilter<CreateOrderRequest>>();
-```
+- Minimal API 沒有 MVC 的自動 Model Validation Filter。以 Endpoint Filter 呼叫 `IValidator<T>` 統一驗證，驗證失敗時回傳 `Results.ValidationProblem(result.ToDictionary())`。
 
 ## ASP.NET Core 整合
-
-### Model State 自動驗證（Controller）
-
-ASP.NET Core MVC 預設啟用 `[ApiController]` 時，Model Validation 失敗會自動回傳 `ValidationProblemDetails`（400）。不需要在每個 Action 中手動檢查 `ModelState.IsValid`。
 
 ### 必填欄位與繫結來源
 

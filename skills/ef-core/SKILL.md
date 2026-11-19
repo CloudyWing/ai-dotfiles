@@ -9,16 +9,9 @@ policy.allow_implicit_invocation: true
 
 ## DbContext Lifetime
 
-- DbContext **必須**註冊為 `Scoped`（`AddDbContext<T>` 預設行為）。
-- **禁止**將 DbContext 注入至 Singleton 服務，會導致 Captive Dependency 與並行存取問題。
 - 若需在 Singleton 或背景服務中使用，必須注入 `IDbContextFactory<T>` 並在使用處建立短生命週期實例（`await using` 搭配 `CreateDbContextAsync`）。
 
 ## 查詢效能
-
-### N+1 問題防範
-
-- 迴圈中對 Navigation Property 的逐筆存取為典型 N+1 模式，必須使用 `Include()` / `ThenInclude()` 預先載入，或改用投影（`Select`）一次取回所需欄位。
-- 禁止在迴圈中呼叫 `SaveChanges()` 或 `SaveChangesAsync()`，應批次處理後統一儲存。
 
 ### AsNoTracking
 
@@ -27,13 +20,12 @@ policy.allow_implicit_invocation: true
 
 ### 投影優先
 
-- 若只需 Entity 的部分欄位，優先使用 `Select()` 投影至 DTO，避免載入整個 Entity。
 - 投影至 DTO、匿名型別或純量時，結果不受變更追蹤。投影結果中包含 Entity 實例時，該 Entity 仍會被追蹤，唯讀查詢仍需加上 `.AsNoTracking()`。
 
 ### 分頁查詢
 
 - 使用 `Skip` / `Take` 前，先以唯一且穩定的欄位排序。非唯一的排序欄位必須以 `ThenBy` 追加 unique key、identity 或 sequence，固定同一資料快照內的順序，避免相同排序值的順序不確定。
-- 唯一排序鍵只固定單一資料快照內的順序，不保證跨請求的資料集合一致。資料新增、刪除或更新排序鍵可能造成 offset 頁面漂移。keyset pagination（seek method）也不等於 snapshot。其排序鍵與 cursor 鍵必須不可變，鍵變更時視為新序列；資料列在 cursor 前後移動仍可能漏列或重複；它只能以前後 cursor 翻相鄰頁，無法任意跳頁。需要固定資料集合時，快照隔離必須涵蓋所有頁面的同一交易範圍，並使用與資料庫相容的隔離層級。
+- 唯一排序鍵只固定單一資料快照內的順序。跨請求的頁面漂移、keyset pagination 的限制與固定資料集合的作法見 `sql-query` skill「分頁查詢」。
 
 ## 全域查詢篩選 (Global Query Filter)
 
@@ -42,9 +34,6 @@ policy.allow_implicit_invocation: true
 
 ## Migration 管理
 
-- Migration 檔案**必須**納入版本控制。
-- **禁止**手動修改已套用至任何環境的 Migration 檔案內容；若需修正已套用的 Migration，建立新的修正 Migration。
-- Migration 名稱應具描述性（如 `AddOrderStatusColumn`），不使用自動產生的時間戳名稱。
 - 資料 Seeding 使用 `HasData()` 方式，不在 Migration 的 `Up()` 方法中直接寫入 SQL Insert。
 
 ## 模型設定
@@ -80,8 +69,6 @@ protected override void ConfigureConventions(ModelConfigurationBuilder configura
 ## 變更追蹤與儲存
 
 - `SaveChangesAsync()` 應在業務操作單元的最外層呼叫一次，不在 Repository 方法內部呼叫（避免破壞 Unit of Work 模式）。
-- 批次新增大量資料時，考慮使用 `AddRangeAsync()` 並控制批次大小，避免單次追蹤過多 Entity。
-
 ### 更新與 EntityState
 
 - 對追蹤中的 Entity 設值但值不變時，`EntityState` 維持 `Unchanged`，不送出 `UPDATE`，`SaveChanges()` 回傳 `0`。`SaveChanges()` 回傳的是整個 context 寫入的狀態項目數，回傳 `0` 不代表更新失敗。只異動單一 Entity 的更新方法可寫成 `context.Entry(entity).State == EntityState.Unchanged || context.SaveChanges() > 0`，避免值不變時誤判為失敗；此寫法在該 Entity 未變更時不會呼叫 `SaveChanges()`，context 還有其他待儲存變更時不適用。
@@ -103,11 +90,6 @@ protected override void ConfigureConventions(ModelConfigurationBuilder configura
 - 透過導覽屬性加入時，追蹤會沿關聯擴散。`main.Subs.Add(sub)` 後 `Add(main)` 會一併追蹤 `sub`；`sub.Main = main` 後 `Add(sub)` 會一併追蹤 `main`。只 `Add(sub)` 而關聯是設在 `main.Subs` 上時，`main` 不會被追蹤。
 - 只追蹤子表並設定外鍵屬性（例如 `sub.MainId`）時，兩端的導覽屬性都不會同步；以 `Find()` 等方式載入主表後才同步。
 - `main.Subs.Remove(sub)` 解除關聯後的結果取決於關聯是否為必要關聯與 `DeleteBehavior`。外鍵可為 `null` 的選擇性關聯預設把外鍵設為 `null`，子表資料保留；必要關聯預設把子表資料視為孤兒刪除；多對多關聯只刪除聯結表的那一列。要刪除子表資料時明確使用 `context.Subs.Remove(sub)`。
-
-## 樂觀並發控制（Optimistic Concurrency）
-
-- 需要防止更新衝突的實體，使用 `[Timestamp]` Attribute（SQL Server `rowversion`）或 `[ConcurrencyCheck]`（任意欄位；Fluent API 為 `IsConcurrencyToken()`）。
-- EF Core 偵測到並發衝突時拋出 `DbUpdateConcurrencyException`，必須明確處理（重試或提示使用者）。
 
 ## Lazy Loading 警告
 
@@ -131,4 +113,3 @@ protected override void ConfigureConventions(ModelConfigurationBuilder configura
 ## 原生 SQL 與 FromSql
 
 - 優先使用 LINQ 查詢；僅在 LINQ 無法表達或效能明確不足時，才使用 `FromSqlInterpolated()` 或 `FromSqlRaw()`。
-- 使用 `FromSqlRaw()` 時，**必須**透過參數化查詢防止 SQL Injection，禁止字串串接。

@@ -13,14 +13,6 @@ policy.allow_implicit_invocation: true
 
 前端的 API Client 與型別定義應盡可能從後端的 OpenAPI（Swagger）規格檔自動產生，而非手動撰寫。
 
-**推薦工具鏈：**
-
-| 工具 | 用途 |
-| --- | --- |
-| `openapi-typescript` | 從 OpenAPI spec 產生 TypeScript 型別定義 |
-| `openapi-fetch` | 搭配 `openapi-typescript` 的型別安全 Fetch Client |
-| NSwag | 從 ASP.NET Core 產生 TypeScript Client（含型別與方法） |
-
 ### 手動撰寫的適用情境
 
 - 後端尚未產出 OpenAPI spec。
@@ -116,5 +108,4 @@ interface ProblemDetails {
 
 ## 檔案上傳
 
-- 檔案上傳使用 `FormData`，設定 `Content-Type: multipart/form-data`。
 - 提供上傳進度回報（`onUploadProgress`）給 UI 層。

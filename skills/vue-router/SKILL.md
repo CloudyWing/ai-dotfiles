@@ -28,8 +28,6 @@ policy.allow_implicit_invocation: true
 
 ### 巢狀路由與 Layout
 
-- 使用巢狀路由搭配 Layout 元件，實現共用佈局（如 Header、Sidebar）。
-- Layout 元件透過 `<RouterView />` 渲染子路由內容。
 - 不同的佈局需求（如登入頁無 Sidebar）透過多個頂層路由群組處理，不在元件內做條件判斷。
 
 ## 動態載入（Lazy Loading）
@@ -37,7 +35,6 @@ policy.allow_implicit_invocation: true
 ### 所有頁面元件必須動態載入
 
 - 頁面元件一律以 `component: () => import('...')` 動態載入，不使用靜態 import（會全部打包進主 bundle）。
-- 動態 import 搭配 Vite 自動實現 Code Splitting，每個路由產生獨立的 chunk。
 - Layout 元件若體積小且所有路由都使用，可選擇靜態 import。
 
 ## Navigation Guard
@@ -53,13 +50,9 @@ policy.allow_implicit_invocation: true
 
 - 以 `declare module 'vue-router'` 擴充 `RouteMeta`，欄位為 `requiresAuth`、`guestOnly`、`roles`（`ReadonlyArray<string>`）與 `title`，皆為選填。型別擴充檔為 `router/types.ts`，檔內需有 `export {}` 使其成為模組。
 - 將 Meta 型別定義放在獨立檔案中，並確保該檔案被 `tsconfig.json` 涵蓋。
-- 定義後，`to.meta.requiresAuth` 等存取具備型別檢查。
-
 ## 程式化導航
 
 - 程式化導航優先使用 `name`，避免硬編碼路徑。
-- 路由參數使用 `params`，查詢條件使用 `query`。
-
 ## 頁面標題
 
 - 在 `router.afterEach` 依 `to.meta.title` 設定 `document.title`，格式為 `<title> | <應用程式名稱>`；沒有 `title` 時只顯示應用程式名稱。

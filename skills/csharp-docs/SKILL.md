@@ -28,22 +28,12 @@ policy.allow_implicit_invocation: true
 `project-kind` 未設定時比照 `application`（非 Web）。鍵為 `library` 時，測試專案與 `IsPackable=false` 的專案依專案層解析視為 `application`。
 
 - `<summary>` 提供一句話的簡短描述，以中文直接描述動作開頭，例如取得、設定或初始化，說明 Why 與 What。
-- `<remarks>`：用於補充詳細資訊、實作細節或上下文。
-- `<see langword>`：用於語言關鍵字（如 `null`, `true`, `false`, `int`, `bool`）。
-- `<c>`：用於行內程式碼片段。
-- `<example>`：提供如何使用該成員的範例。內部應搭配 `<code language="csharp">`。
-- `<see cref>`：用於句子內參照其他型別或成員。
-- `<seealso>`：用於獨立的參照區段。
-- `<inheritdoc/>`：繼承介面或基礎類別的註解。
 
 ## 方法 (Methods)
 
 - `<param>`：描述參數用途（名詞片語，不要寫出資料型別）。
   - 若是布林值，寫法應為：`若要...則為 <see langword="true" />；否則為 <see langword="false" />。`。
-- `<paramref>`：在說明中需要參照參數名稱時使用。
 - `<returns>`：描述回傳值（名詞片語）。若是布林值，描述格式與 `<param>` 類似。
-- `<typeparam>` 與 `<typeparamref>`：用於泛型型別參數。
-
 ## 屬性 (Properties)
 
 - `<summary>` 開頭應為：

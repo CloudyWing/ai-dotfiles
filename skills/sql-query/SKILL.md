@@ -152,8 +152,7 @@ FROM Orders;
 
 ### SQL Injection 防範
 
-- 所有來自應用程式的查詢**必須**使用參數化查詢，禁止字串串接。
-- 預存程序與動態 SQL 內部同樣禁止把外部輸入串接進 SQL 文字。各資料庫的參數化機制見對應專屬節（SQL Server 用 `sp_executesql`，Oracle 用 Bind Variables）。
+- 所有來自應用程式的查詢**必須**使用參數化查詢，禁止字串串接；預存程序與動態 SQL 內部同樣適用（SQL Server 用 `sp_executesql`，Oracle 用 Bind Variables）。
 
 ### 索引友善查詢
 
@@ -172,11 +171,6 @@ FROM Orders;
 - **禁止 `SELECT *`**：必須明確列出所需欄位，減少 I/O 開銷並避免結構變更時的隱性問題。
 - **例外**：`EXISTS (SELECT 1 FROM ...)` 中的子查詢允許使用 `SELECT 1`。
 
-### NULL 處理
-
-- 比較 NULL 使用 `IS NULL` / `IS NOT NULL`，禁止 `= NULL`。
-- 注意 `NOT IN` 與 NULL 值的陷阱：若子查詢可能回傳 NULL，改用 `NOT EXISTS`。子查詢含 NULL 時，`NOT IN` 會回傳空結果。
-
 ### 分頁查詢
 
 - 使用 `OFFSET ... FETCH NEXT` 語法，不使用舊式 `ROW_NUMBER()` 子查詢包裝。版本門檻與低於門檻的替代寫法見 references/sqlserver.md 與 references/oracle.md。
@@ -184,19 +178,13 @@ FROM Orders;
 
 ### 效能注意事項
 
-- **避免巢狀子查詢過深**：超過 2 層的巢狀子查詢應考慮改用 CTE（`WITH`）或暫存資料表提升可讀性與效能。
 - **大量資料操作**：`INSERT`、`UPDATE`、`DELETE` 大量資料列時，應分批處理（如每批 5,000～10,000 筆），避免長時間鎖定與交易日誌暴增。
-- **UNION vs UNION ALL**：若不需要去重，使用 `UNION ALL`，避免不必要的排序開銷。
 
 ---
 
 ## SQL Server 專屬語法（T-SQL）
 
 以下規則**僅適用於 SQL Server**，與共通規範不重疊。
-
-### 動態 SQL 參數化
-
-- 預存程序內部的動態 SQL 必須使用 `sp_executesql` 搭配參數，禁止 `EXEC('SELECT ...' + @input)`。
 
 ### 日期時間型別與區間查詢
 
@@ -286,10 +274,6 @@ SELECT FirstName || ' ' || LastName AS FullName FROM Employees;
 - 加了雙引號的識別字，Oracle 區分大小寫，且之後每次引用都必須完全比對。若建表時寫 `"OrderId"`，後續一律要用 `"OrderId"`；寫成 `OrderId`（未加引號會被折成 `ORDERID`）會找不到欄位。
 - 建議除非有明確理由，避免對識別字加雙引號，以免被迫全程帶引號。
 
-### 動態 SQL 參數化
-
-- 動態 SQL 使用 **Bind Variables**（`:paramName`），禁止字串串接。
-
 ### 分頁查詢
 
 - Oracle 使用 `OFFSET ... FETCH NEXT`（與共通規範的分頁語法相同，版本門檻與替代寫法見 references/oracle.md）：
@@ -312,10 +296,6 @@ CREATE SEQUENCE seq_products START WITH 1 INCREMENT BY 1 NOCACHE;
 INSERT INTO Products (ProductId, ProductName)
 VALUES (seq_products.NEXTVAL, :product_name);
 ```
-
-### 日期與字串轉換
-
-- 日期格式轉換使用 `TO_DATE` / `TO_CHAR`，必須明確指定格式遮罩。
 
 ### Unicode 參數型別（.NET 驅動）
 
@@ -344,20 +324,4 @@ EXEC DBMS_STATS.GATHER_TABLE_STATS(ownname => 'APP', tabname => 'ORDERS');
 ```sql
 SELECT SYSDATE FROM DUAL;
 SELECT seq_products.NEXTVAL FROM DUAL;
-```
-
-### 交易提交範例
-
-- Oracle DML 需顯式 `COMMIT`，程序性批次操作以 `BEGIN ... END;` 包裝並明確提交或回滾：
-
-```plsql
-BEGIN
-    UPDATE Orders SET Status = :new_status
-    WHERE OrderId = :order_id;
-    COMMIT;
-EXCEPTION
-    WHEN OTHERS THEN
-        ROLLBACK;
-        RAISE;
-END;
 ```

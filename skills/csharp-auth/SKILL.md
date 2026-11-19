@@ -60,7 +60,5 @@ public static class ClaimsPrincipalExtensions {
 
 ## 禁止模式
 
-- 禁止自行實作 JWT 簽發與驗證邏輯（自刻 HMAC 比對、手動 Base64 解析 payload 後直接信任內容）。
-- 禁止在前端可見的 Token（Access Token）中放入敏感資料；Token payload 視同公開資訊。
 - 禁止以 `context.User.Identity.IsAuthenticated` 手動判斷取代 `[Authorize]`（繞過 Policy 與 Fallback 機制）。
 - 測試環境繞過認證一律使用測試專用的 AuthenticationHandler（參閱 `csharp-integration-test` skill），禁止在正式程式碼中留「測試後門」旗標。
