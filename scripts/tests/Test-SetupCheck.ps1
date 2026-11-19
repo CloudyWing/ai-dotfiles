@@ -323,7 +323,9 @@ try {
         $expectedExit = if ($longPathOk) { 0 } else { 1 }
         Assert-True ($result.Run.ExitCode -eq $expectedExit) ("結束碼應為 $expectedExit，實際 $($result.Run.ExitCode)：" + $result.Run.StdOut)
         Assert-True ($result.Json.allOk -eq $longPathOk) 'allOk 與長路徑以外的符合狀態不一致'
-        if ($longPathOk) { Assert-True ($result.Json.summary.ok -eq $result.Json.summary.total) '統計與項目數不一致' }
+        # 長路徑取決於執行機器的登錄值。未啟用時上列斷言只驗到結束碼 1，「全部符合且結束碼 0」沒有走到，以 SKIP 如實標示。
+        if (-not $longPathOk) { return 'SKIP: 這台未啟用 Windows 長路徑；其餘項目已驗證全部符合，但結束碼 0 的路徑未涵蓋' }
+        Assert-True ($result.Json.summary.ok -eq $result.Json.summary.total) '統計與項目數不一致'
         $true
     }
 
