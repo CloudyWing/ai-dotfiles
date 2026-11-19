@@ -5,7 +5,9 @@ param()
 # Setup-AIGlobalConfig.ps1 -Check 的測試：在暫存的 USERPROFILE 內建立假的全域設定，驗證「全部符合」「缺少」「指向錯誤位置」等判定，
 # 並驗證每次 -Check 執行前後檔案系統（含 git 設定檔）沒有任何變動。
 # 建立檔案的 Symbolic Link 需要系統管理員或開發人員模式；沒有權限時，目錄連結改用 Junction，檔案連結不建立（對應項目視為已知缺少），
-# 「全部符合且結束碼 0」的案例（C01b）以 SKIP 標示未涵蓋。以系統管理員 pwsh 執行可涵蓋全部案例。
+# 以真實 Symbolic Link 驗證「全部符合且結束碼 0」的案例（C01b）以 SKIP 標示並寫明未涵蓋的部分。
+# C01c 不需要 Symbolic Link 權限：連結一律以 Junction（目錄）與 mount point 型態的重分析點（檔案）建立，不登記派工帳號，涵蓋 -Check 對連結類全部符合與結束碼 0 的路徑。
+# 以系統管理員 pwsh 執行可涵蓋全部案例。
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -25,7 +27,12 @@ function Test-Case {
     try {
         $output = @(& $Check)
         $result = if ($output.Count -gt 0) { $output[-1] } else { $false }
-        if ($result -is [string] -and $result -ceq 'SKIP') { $script:skipped++; Write-Output "SKIP $Id"; return }
+        if ($result -is [string] -and $result.StartsWith('SKIP', [System.StringComparison]::Ordinal)) {
+            $script:skipped++
+            $reason = if ($result.Length -gt 4) { $result.Substring(4) } else { '' }
+            Write-Output "SKIP $Id$reason"
+            return
+        }
         if (-not $result) { throw '條件不成立' }
         $script:passed++
         Write-Output "PASS $Id"
@@ -111,10 +118,25 @@ function Get-TreeSnapshot {
     return (($lines.ToArray() | Sort-Object) -join "`n")
 }
 
-function New-Link {
-    param([string]$Path, [string]$Target, [System.Collections.Generic.List[string]]$Unlinked)
+function New-FileMountPoint {
+    param([Parameter(Mandatory)][string]$Path, [Parameter(Mandatory)][string]$Target)
 
-    # 有權限時一律建 Symbolic Link；沒有權限時，目錄改建 Junction，檔案不建立並記入 Unlinked。
+    # 建立「目標是檔案」的 Junction：mklink /J 不驗證目標的種類，也不需要 Symbolic Link 權限。
+    # New-Item -ItemType Junction 只接受目錄目標，因此改用 mklink。-Check 的連結判讀讀的是 ReparsePoint 屬性與 Target，兩者與真實連結相同。
+    $output = & cmd.exe /d /c mklink /J "$Path" "$Target" 2>&1
+    if ($LASTEXITCODE -ne 0) { throw ('mklink /J 失敗（' + $LASTEXITCODE + '）：' + (@($output) -join ' ')) }
+}
+
+function New-Link {
+    param([string]$Path, [string]$Target, [System.Collections.Generic.List[string]]$Unlinked, [switch]$AsJunction)
+
+    # -AsJunction：不論有無權限，目錄建 Junction、檔案建目標為檔案的 mount point，不需要 Symbolic Link 權限，也不會有無法建立的連結。
+    # 其他情況有權限時一律建 Symbolic Link；沒有權限時，目錄改建 Junction，檔案不建立並記入 Unlinked。
+    if ($AsJunction) {
+        if (Test-Path -LiteralPath $Target -PathType Container) { $null = New-Item -ItemType Junction -Path $Path -Target $Target }
+        else { New-FileMountPoint -Path $Path -Target $Target }
+        return
+    }
     if ($script:canLink) { $null = New-Item -ItemType SymbolicLink -Path $Path -Target $Target; return }
     if (Test-Path -LiteralPath $Target -PathType Container) { $null = New-Item -ItemType Junction -Path $Path -Target $Target; return }
     if ($null -ne $Unlinked) { $Unlinked.Add($Path) }
@@ -127,7 +149,8 @@ function Remove-Link {
 }
 
 function New-Fixture {
-    param([switch]$WithoutMcpCommand)
+    # -AllLinksAsJunction：連結一律以 Junction 與檔案 mount point 建立，且不登記派工帳號（檔位設定檔連結的判讀要求 Symbolic Link，無法以 Junction 替代）。
+    param([switch]$WithoutMcpCommand, [switch]$AllLinksAsJunction)
 
     $root = Join-Path $tempBase ([guid]::NewGuid().ToString('N'))
     $userProfile = Join-Path $root 'user'
@@ -143,7 +166,8 @@ function New-Fixture {
     Set-Content -LiteralPath (Join-Path $configRoot 'git-global-excludes') -Value '.local/' -Encoding utf8
     Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\dispatch\executor-registry.json') -Destination (Join-Path $configRoot 'scripts\dispatch\executor-registry.json')
     Copy-Item -LiteralPath (Join-Path $repoRoot 'scripts\codex-profiles') -Destination (Join-Path $configRoot 'scripts\codex-profiles') -Recurse
-    $machine = [ordered]@{ schema = 'ai-agents.machine.v1'; codex_accounts = @([ordered]@{ name = 'test-account'; codex_home = $accountHome }) }
+    $machine = [ordered]@{ schema = 'ai-agents.machine.v1' }
+    if (-not $AllLinksAsJunction) { $machine['codex_accounts'] = @([ordered]@{ name = 'test-account'; codex_home = $accountHome }) }
     [IO.File]::WriteAllText((Join-Path $configRoot '.local\machine.json'), ($machine | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
 
     & $gitPath -C $configRoot init --quiet
@@ -161,13 +185,14 @@ function New-Fixture {
         @{ Link = '.agents\skills'; Source = 'skills' }
     )
     $unlinked = New-Object 'System.Collections.Generic.List[string]'
-    foreach ($link in $links) { New-Link -Path (Join-Path $userProfile $link.Link) -Target (Join-Path $configRoot $link.Source) -Unlinked $unlinked }
+    foreach ($link in $links) { New-Link -Path (Join-Path $userProfile $link.Link) -Target (Join-Path $configRoot $link.Source) -Unlinked $unlinked -AsJunction:$AllLinksAsJunction }
     # 測試取證檔位的 flaui-mcp 指令由帳號目錄 config.toml 提供（enabled = false）；路徑指向測試暫存目錄。
-    if (-not $WithoutMcpCommand) {
+    if (-not $WithoutMcpCommand -and -not $AllLinksAsJunction) {
         $mcpConfig = "[mcp_servers.flaui-mcp]`r`ncommand = '" + (Join-Path $root 'tools\FlaUI.Mcp.exe') + "'`r`nstartup_timeout_sec = 60.0`r`nenabled = false`r`n"
         [IO.File]::WriteAllText((Join-Path $accountHome 'config.toml'), $mcpConfig, (New-Object Text.UTF8Encoding($false)))
     }
     $profileFiles = @(Get-ChildItem -LiteralPath (Join-Path $configRoot 'scripts\codex-profiles') -Filter '*.config.toml' -File)
+    if ($AllLinksAsJunction) { $profileFiles = @() }
     foreach ($profileFile in $profileFiles) { New-Link -Path (Join-Path $accountHome $profileFile.Name) -Target $profileFile.FullName -Unlinked $unlinked }
 
     # Claude 使用者層設定：settings 範本與 settings.json（內容為範本本身，即共用部分齊備）。MCP 登記與 WSL 不在 Setup 檢查範圍，夾具不建立 MCP 範本、~\.claude.json 與假的 wsl。
@@ -260,14 +285,40 @@ try {
         $true
     }
 
-    # 全部符合且結束碼 0 的路徑需要檔案的 Symbolic Link；沒有權限時以 SKIP 明確標示未涵蓋，不在 C01 的降級斷言中默默略過。
+    # 以真實檔案 Symbolic Link 驗證全部符合且結束碼 0；沒有權限時以 SKIP 明確標示未涵蓋的部分，不在 C01 的降級斷言中默默略過。
+    # 連結類全部符合與結束碼 0 的路徑由 C01c 涵蓋；C01b 在沒有權限時仍未涵蓋的是檔案 Symbolic Link 的建立與讀取，以及派工帳號的檔位設定檔連結。
     Test-Case 'C01b-all-ok-exit-0' {
-        if (-not $canLink) { return 'SKIP' }
+        if (-not $canLink) { return 'SKIP: 沒有 Symbolic Link 權限；未涵蓋檔案 Symbolic Link 的建立與讀取、派工帳號的檔位設定檔連結（連結類全部符合與結束碼 0 由 C01c 涵蓋）' }
         $fixture = New-Fixture
         $result = Invoke-CheckRun -Fixture $fixture
         Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
         # 長路徑取決於執行機器的登錄值，不納入判定；其餘項目須全部符合，結束碼依長路徑項目是否符合為 0 或 1。
         Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @()
+        $longPathOk = @($result.Items | Where-Object { $_.category -ceq 'long-paths' -and $_.status -cne 'ok' }).Count -eq 0
+        $expectedExit = if ($longPathOk) { 0 } else { 1 }
+        Assert-True ($result.Run.ExitCode -eq $expectedExit) ("結束碼應為 $expectedExit，實際 $($result.Run.ExitCode)：" + $result.Run.StdOut)
+        Assert-True ($result.Json.allOk -eq $longPathOk) 'allOk 與長路徑以外的符合狀態不一致'
+        if ($longPathOk) { Assert-True ($result.Json.summary.ok -eq $result.Json.summary.total) '統計與項目數不一致' }
+        $true
+    }
+
+    # 不需要 Symbolic Link 權限：現役連結（含兩個檔案連結）全部以重分析點建立並不登記派工帳號，-Check 應全部符合；結束碼依長路徑項目是否符合為 0 或 1。
+    Test-Case 'C01c-all-ok-exit-0-with-junction-links' {
+        $fixture = New-Fixture -AllLinksAsJunction
+        Assert-True ($fixture.Unlinked.Count -eq 0) '所有連結都應建立'
+        foreach ($fileLink in @('.claude\CLAUDE.md', '.codex\AGENTS.md')) {
+            $created = Get-Item -LiteralPath (Join-Path $fixture.UserProfile $fileLink) -Force
+            Assert-True ([bool]($created.Attributes -band [IO.FileAttributes]::ReparsePoint)) ("$fileLink 應為重分析點")
+            Assert-True ((@($created.Target) -join '').EndsWith('instructions.md', [StringComparison]::OrdinalIgnoreCase)) ("$fileLink 的目標應為 instructions.md")
+        }
+        $result = Invoke-CheckRun -Fixture $fixture
+        Assert-True $result.Unchanged '-Check 執行前後檔案系統有變動'
+        Assert-True ($result.Items.Count -gt 0) ('沒有取得 JSON 結果：' + $result.Run.StdOut + $result.Run.StdErr)
+        Assert-OthersOk -Fixture $fixture -Items $result.Items -Except @()
+        $links = @($result.Items | Where-Object { $_.category -ceq 'link' })
+        Assert-True ($links.Count -eq 7 -and @($links | Where-Object { $_.status -cne 'ok' }).Count -eq 0) '現役連結 7 項應全部符合'
+        Assert-True (@($result.Items | Where-Object { $_.category -like 'codex-*' }).Count -eq 1 -and (Get-ItemByPath -Items $result.Items -Category 'codex-profile-generated' -Suffix 'codex-profiles').status -ceq 'ok') '未登記派工帳號時只應有檔位產生檔一項 Codex 項目'
+        Assert-True (@($result.Json.notes | Where-Object { $_.Contains('沒有登記的派工帳號') }).Count -eq 1) '未登記派工帳號時應有備註'
         $longPathOk = @($result.Items | Where-Object { $_.category -ceq 'long-paths' -and $_.status -cne 'ok' }).Count -eq 0
         $expectedExit = if ($longPathOk) { 0 } else { 1 }
         Assert-True ($result.Run.ExitCode -eq $expectedExit) ("結束碼應為 $expectedExit，實際 $($result.Run.ExitCode)：" + $result.Run.StdOut)
