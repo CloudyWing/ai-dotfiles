@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # 前後端 API 契約規範
 
-## API 契約策略（Crucial）
+## API 契約策略
 
 ### Code Generation 優先
 
@@ -79,7 +79,7 @@ interface ProblemDetails {
 - 這些型別直接對應後端的回應格式。若後端修改回應結構，此處同步更新。
 - 單一資源的回應不包 wrapper，成功時直接回傳資源；分頁清單使用 `PaginatedResponse<T>`；錯誤回應為 ProblemDetails。
 
-## 錯誤處理（Crucial）
+## 錯誤處理
 
 ### API 錯誤型別
 

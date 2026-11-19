@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # 前端 TypeScript 規範
 
-## 嚴格模式（Crucial）
+## 嚴格模式
 
 ### tsconfig.json 基本設定
 
@@ -39,7 +39,7 @@ policy.allow_implicit_invocation: true
 - 同一專案中選定一種作為物件定義的預設，保持一致。
 - **禁止**在 interface 和 type 之間反覆切換同一個型別定義。
 
-### 禁止 any（Crucial）
+### 禁止 any
 
 - `any` 完全繞過型別檢查，等同關閉 TypeScript。
 - 需要表達「任意型別」時使用 `unknown`，強制呼叫端做型別窄化。

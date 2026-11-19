@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # C# 輸入驗證規範
 
-## 驗證層級（Crucial）
+## 驗證層級
 
 輸入驗證分為三個層級，各有職責，不可混淆：
 

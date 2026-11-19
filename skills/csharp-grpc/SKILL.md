@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # gRPC 服務開發規範
 
-## Proto 檔案管理（Crucial）
+## Proto 檔案管理
 
 ### 目錄結構
 
@@ -35,7 +35,7 @@ policy.allow_implicit_invocation: true
 - 服務類別命名以 `GrpcService` 結尾，與 Domain Service 區分。
 - **必須**使用 `ServerCallContext.CancellationToken` 傳入所有非同步操作。
 
-## 錯誤處理（Crucial）
+## 錯誤處理
 
 ### Status Code 對應
 

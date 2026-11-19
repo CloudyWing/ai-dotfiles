@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # ASP.NET Core 認證授權規範
 
-## JWT Bearer 驗證（Crucial）
+## JWT Bearer 驗證
 
 - 有 OIDC Provider（IdP）時，一律設定 `Authority` 走 discovery 文件自動取得 JWKS，**禁止**在程式碼或設定檔中硬編碼簽章金鑰或手動貼上 JWKS 內容。
 - `TokenValidationParameters` 必須明確設定，不依賴預設值：
@@ -31,7 +31,7 @@ builder.Services
 - **ClockSkew**：明確設為 1 分鐘以內，不使用預設的 5 分鐘（過長的容忍值等於延長 Token 有效期）。
 - **僅開發環境**允許 `RequireHttpsMetadata = false`，且必須以環境判斷包住，不得寫死。
 
-## Claims 慣例（Crucial）
+## Claims 慣例
 
 - 設定 `MapInboundClaims = false`，保留 OIDC 標準 claim 名稱（`sub`、`email`、`name`），**禁止**依賴 Microsoft 舊式 SOAP claim URI（`http://schemas.xmlsoap.org/...`）的自動改名。
 - 使用者識別一律取 `sub`，不使用 `NameIdentifier` 與 `sub` 混用；專案內以擴充方法統一取值：

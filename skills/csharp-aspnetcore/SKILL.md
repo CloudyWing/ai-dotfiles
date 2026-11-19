@@ -7,16 +7,10 @@ policy.allow_implicit_invocation: true
 
 # ASP.NET Core 開發規範
 
-## DI Lifetime（Crucial）
+## DI Lifetime
 
-| Lifetime | 適用情境 |
-| --- | --- |
-| `Singleton` | 無狀態、執行緒安全的服務（如 `IOptions<T>`、記憶體快取） |
-| `Scoped` | 每次 HTTP 請求一個實例；**DbContext 必須使用此 Lifetime** |
-| `Transient` | 輕量、無狀態的短暫任務型服務 |
-
-- Scoped 服務只能由 Scoped 或 Transient 消費；注入至 Singleton 將導致 **Captive Dependency**，造成資料隔離失效。
-- 若需在 Singleton 中使用 Scoped 服務，必須透過 `IServiceScopeFactory` 手動建立 Scope。
+- `DbContext` 使用 `Scoped`。
+- Singleton 需要 Scoped 服務時，透過 `IServiceScopeFactory` 建立 Scope，不直接注入。
 
 ## HttpClient
 

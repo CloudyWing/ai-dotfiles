@@ -27,7 +27,7 @@ policy.allow_implicit_invocation: true
 
 僅目標 7+ 的腳本不受此限，允許使用上述語法。
 
-## 嚴格模式與錯誤處理（Crucial）
+## 嚴格模式與錯誤處理
 
 - 腳本開頭必須宣告嚴格模式與錯誤偏好：
 

@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # Pinia 狀態管理規範
 
-## Store 設計原則（Crucial）
+## Store 設計原則
 
 ### Setup Store 優先
 
@@ -50,7 +50,7 @@ UI 狀態（Sidebar 開關、Theme）獨立為 `ui.ts`；以 `index.ts` 統一�
 
 ## 元件中使用 Store
 
-### 解構注意事項（Crucial）
+### 解構注意事項
 
 - State 與 Getter 以 `storeToRefs(store)` 解構，或不解構、直接以 `store.xxx` 存取。直接解構會失去響應式。
 - Action 直接從 store 解構（函式不需要響應式）。

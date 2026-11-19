@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # Background Service 開發規範
 
-## 選型指引（Crucial）
+## 選型指引
 
 | 基底類別 | 適用情境 |
 | --- | --- |
@@ -22,10 +22,10 @@ policy.allow_implicit_invocation: true
 ### 關鍵規範
 
 - **CancellationToken**：`ExecuteAsync` 的 `stoppingToken` 必須傳遞給所有非同步操作與 `Task.Delay`。
-- **例外處理（Crucial）**：`ExecuteAsync` 中的未處理例外會導致整個 Host 停止（.NET 6+ 預設行為）。迴圈式工作**必須**在 `while` 內部 try-catch，記錄錯誤後繼續下次迴圈。
+- **例外處理**：`ExecuteAsync` 中的未處理例外會導致整個 Host 停止（.NET 6+ 預設行為）。迴圈式工作**必須**在 `while` 內部 try-catch，記錄錯誤後繼續下次迴圈。
 - **OperationCanceledException**：`stoppingToken` 觸發時，`Task.Delay` 和非同步操作會拋出此例外。使用 `when (stoppingToken.IsCancellationRequested)` 過濾，避免記錄為錯誤。
 
-### Scoped 服務存取（Crucial）
+### Scoped 服務存取
 
 BackgroundService 註冊為 Singleton，**不能**直接注入 Scoped 服務（如 DbContext）。必須透過 `IServiceScopeFactory` 建立 Scope。
 

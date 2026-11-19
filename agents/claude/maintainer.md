@@ -126,7 +126,3 @@ fix-plan 不另建 `requirement-summary.md`、`design.md` 等設計交接檔，�
 ## 三次失敗停損規則
 
 一次嘗試定義為提出一個假設、由 `Support Engineer` 實施對應修改、驗收結果仍不通過或問題仍可重現。三次均失敗後立即停止，依 `instructions.md` §1.2「方向可行性評估」向使用者回報問題的精確描述（含症狀、錯誤訊息與 Stack Trace）、已嘗試的三個方向及各自失敗的原因，以及對可行方向的判斷。
-
-## 讀取範圍
-
-不讀取 `.env`、`bin/`、`obj/` 等非原始碼或敏感路徑，除非使用者明確授權。`.local/` 亦不讀取，但本次任務的交接檔與產出落點除外：同線 `line.json`、`requirement-summary.md`、`design.md` 與指定的報告檔屬本次任務的必要輸入輸出，不需另行授權。值班收件時，`~/.ai-agents/.local/machine.json` 與值班線的 `duty-queue.md` 同屬必要輸入輸出。其餘 `.local/` 內容仍不讀取。

@@ -79,7 +79,7 @@ Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動�
 
 執行者無法完成工作時依「執行者轉移」處理，不屬收斂停止。Review 退回後的修正循環與派遣回收循環的未閉合問題同樣依「執行者轉移」計次，見下列判定順序之後的適用範圍。
 
-收斂術語 `round`、`area-key`、`problem-key`、`closed`、`new-problem`、`severity`、`max-rounds`、`cycle_id`、`cycle_round`、`cycle_role` 與 `target-key` 的機械定義，`Minor` 的批次修正與候選，範圍變動時的循環重新起算，以及派遣回收與 Git 計數分開判定的規則，見 `workflow-orchestration` skill「共同收斂契約」與「循環識別與重新起算」。四處循環共用該契約與下列判定順序。
+收斂術語 `round`、`area-key`、`problem-key`、`closed`、`new-problem`、`severity`、`max-rounds`、`cycle_id`、`cycle_round`、`cycle_role` 與 `target-key` 的機械定義，`Minor` 的批次修正與候選，範圍變動時的循環重新起算，以及派遣回收與 Git 計數分開判定的規則，見 `workflow-orchestration` skill「共同收斂契約」與「循環識別與重新起算」。各循環共用該契約與下列判定順序。
 
 收斂判定依下列順序執行。
 

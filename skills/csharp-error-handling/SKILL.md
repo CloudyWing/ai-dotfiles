@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # C# 例外處理規範
 
-## 例外設計原則（Crucial）
+## 例外設計原則
 
 ### 何時拋出例外
 
@@ -47,7 +47,7 @@ public class InsufficientBalanceException : InvalidOperationException {
 - 自訂例外命名以 `Exception` 結尾。
 - 攜帶與錯誤直接相關的結構化資料（如上例的 `Required`、`Available`），方便呼叫端判斷處理。
 
-## Guard Clause（Crucial）
+## Guard Clause
 
 方法入口處優先驗證前置條件，驗證失敗立即拋出例外，避免巢狀 if-else。
 
@@ -105,7 +105,7 @@ builder.Services.AddExceptionHandler<BusinessExceptionHandler>();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>(); // 兜底
 ```
 
-## ProblemDetails 標準化（Crucial）
+## ProblemDetails 標準化
 
 所有 API 錯誤回應必須遵循 RFC 9457（ProblemDetails）。
 

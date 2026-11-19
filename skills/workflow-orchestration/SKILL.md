@@ -121,7 +121,7 @@ Workflow 的 Phase 由 Claude subagent 承接時的契約見 `references/claude-
 
 ## 共同收斂契約
 
-四處循環共用的收斂術語機械定義表與「Minor 的批次修正與候選」見 `references/convergence.md`，判定循環收斂、處理 `Minor` 或標示循環時讀取。
+各循環共用的收斂術語機械定義表與「Minor 的批次修正與候選」見 `references/convergence.md`，判定循環收斂、處理 `Minor` 或標示循環時讀取。
 
 ### 循環識別與重新起算
 

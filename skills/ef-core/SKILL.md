@@ -7,13 +7,13 @@ policy.allow_implicit_invocation: true
 
 # Entity Framework Core 開發規範
 
-## DbContext Lifetime（Crucial）
+## DbContext Lifetime
 
 - DbContext **必須**註冊為 `Scoped`（`AddDbContext<T>` 預設行為）。
 - **禁止**將 DbContext 注入至 Singleton 服務，會導致 Captive Dependency 與並行存取問題。
 - 若需在 Singleton 或背景服務中使用，必須注入 `IDbContextFactory<T>` 並在使用處建立短生命週期實例（`await using` 搭配 `CreateDbContextAsync`）。
 
-## 查詢效能（Crucial）
+## 查詢效能
 
 ### N+1 問題防範
 

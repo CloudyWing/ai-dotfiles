@@ -12,7 +12,7 @@ policy.allow_implicit_invocation: true
 ## Dockerfile（.NET 專案）
 
 - **必須**使用多階段建置。建置階段使用 `sdk` 映像檔，執行階段使用 `aspnet` 或 `runtime` 映像檔，build stage 與 final stage **必須使用相同的 .NET 版本號**。
-- **層快取（Crucial）**：逐一 COPY 每個 `.csproj`（含 `.sln`），先 `dotnet restore`，最後才 `COPY . .`。**不可使用 `COPY *.csproj` 通配符**，該語法無法匹配子目錄下的專案檔，會造成 restore 快取層失效或建置失敗。
+- **層快取**：逐一 COPY 每個 `.csproj`（含 `.sln`），先 `dotnet restore`，最後才 `COPY . .`。**不可使用 `COPY *.csproj` 通配符**，該語法無法匹配子目錄下的專案檔，會造成 restore 快取層失效或建置失敗。
 
 ```dockerfile
 COPY ["MySolution.sln", "."]
@@ -23,7 +23,7 @@ COPY . .
 ```
 
 - **ENTRYPOINT DLL 名稱**：DLL 預設與專案檔名相同。若 `.csproj` 有設定 `<AssemblyName>`，則以該值為準，撰寫前應先確認。
-- **非 root 執行（Crucial）**：最終執行階段以 `USER` 指令切換至非特權使用者，禁止以 root 執行容器程序。
+- **非 root 執行**：最終執行階段以 `USER` 指令切換至非特權使用者，禁止以 root 執行容器程序。
 - Dockerfile 所在目錄必須有 `.dockerignore`，至少排除 `**/.git`、`**/bin`、`**/obj`、`**/node_modules`、IDE 個人設定檔。
 - 禁止在正式環境使用 `latest` 標籤，必須指定明確版本號。Alpine 變體需注意 globalization 相容性問題。
 

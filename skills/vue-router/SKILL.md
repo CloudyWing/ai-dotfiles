@@ -32,7 +32,7 @@ policy.allow_implicit_invocation: true
 - Layout 元件透過 `<RouterView />` 渲染子路由內容。
 - 不同的佈局需求（如登入頁無 Sidebar）透過多個頂層路由群組處理，不在元件內做條件判斷。
 
-## 動態載入（Lazy Loading）（Crucial）
+## 動態載入（Lazy Loading）
 
 ### 所有頁面元件必須動態載入
 

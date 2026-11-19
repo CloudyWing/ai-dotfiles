@@ -9,7 +9,7 @@ policy.allow_implicit_invocation: true
 
 消費者的宿主模式（BackgroundService、Scoped 服務存取）參閱 `csharp-background-service` skill，本文件不重複。
 
-## 命名慣例（Crucial）
+## 命名慣例
 
 ### RabbitMQ
 
@@ -29,7 +29,7 @@ policy.allow_implicit_invocation: true
 - 萬用字元僅限訂閱端：`+` 用於單層（如 `plant/sensor/+/telemetry`），`#` 僅允許出現在結尾。
 - Retained message 僅用於「最新狀態」語意的 topic（如裝置上線狀態），事件流 topic 禁用 retain。
 
-## 消費端規範（Crucial）
+## 消費端規範
 
 - **冪等消費**：所有消費者必須可安全重複處理同一訊息。每則訊息帶唯一 `MessageId`，消費端以處理紀錄（DB 或快取）去重；無法去重時，處理邏輯本身必須設計為冪等（如 upsert）。
 - **手動 Ack**：RabbitMQ 消費者關閉 auto-ack，業務處理成功後才 `BasicAck`；處理失敗依重試策略決定 `BasicNack`。

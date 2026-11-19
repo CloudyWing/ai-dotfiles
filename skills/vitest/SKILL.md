@@ -18,7 +18,7 @@ policy.allow_implicit_invocation: true
 - `include` 為 `src/**/*.{test,spec}.{ts,tsx}`；`resolve.alias` 與 `vite.config.ts` 一致。
 - 覆蓋率（`test.coverage`）：`provider` 為 `v8`，`reporter` 為 `text` 與 `html`，`include` 為 `['src/**/*.{ts,vue}']`，`exclude` 為 `['src/**/*.d.ts', 'src/**/*.test.ts', 'src/main.ts']`。
 
-## 測試結構（Crucial）
+## 測試結構
 
 ### AAA 模式
 

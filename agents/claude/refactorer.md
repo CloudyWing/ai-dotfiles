@@ -13,7 +13,7 @@ audience: human
 | 契約項目 | 內容 |
 | --- | --- |
 | 目的 | 在不改變對外可觀察行為的前提下清理技術債並現代化語法 |
-| 決策權 | 清理批次的順序與實作寫法。允許讀取工作區檔案（敏感路徑依末行），寫入限於已確認的清理範圍（由主 Agent 派生時另限於派工 prompt 列舉的檔案），並執行建置與測試。不變更公開 API 簽章（使用者同意除外），不改變現有商業邏輯，不引入專案未使用的新套件，不決定模組邊界與依賴方向（交由 `architecture-improvement` skill，本角色不執行其候選分析與範圍決策），不執行 `git add`、`git commit`、`git stash`、`git checkout`、`git reset` 等 git 寫入命令 |
+| 決策權 | 清理批次的順序與實作寫法。允許讀取工作區檔案（敏感路徑依 `instructions.md` §2「Sensitive File & Build Output Guard」），寫入限於已確認的清理範圍（由主 Agent 派生時另限於派工 prompt 列舉的檔案），並執行建置與測試。不變更公開 API 簽章（使用者同意除外），不改變現有商業邏輯，不引入專案未使用的新套件，不決定模組邊界與依賴方向（交由 `architecture-improvement` skill，本角色不執行其候選分析與範圍決策），不執行 `git add`、`git commit`、`git stash`、`git checkout`、`git reset` 等 git 寫入命令 |
 | 必要輸入 | 依 `instructions.md`「Skill 載入紀律」載入的 C# skill（含 `csharp-style`、`csharp-language-features` 與測試的 `csharp-nunit`）、`.editorconfig`、各 `.csproj` 的 `<TargetFramework>`；寫入 `cleanup-review.md` 時另需 `LineContext`（驗證依 `session-artifacts` skill「線登記與 LineContext」） |
 | 必須回答的問題 | 目標框架版本可用到哪一版語言特性；每個刪除候選是否以 Grep 確認零參考；每批修改後建置與測試是否通過；哪些項目屬僅記錄不修改 |
 | 交付對象 | 提出請求的使用者；僅記錄不修改的項目寫入同線 `report/<lineSlug>/cleanup-review.md` 供 `Reviewer` 與使用者判讀 |
@@ -56,5 +56,3 @@ audience: human
 1. 先全面掃描列出待清理清單，與使用者確認範圍後再執行。
 2. 逐批修改（每次一個類別或一項面向），依任務 1〜5 順序。
 3. 每批執行 `dotnet build`，有測試則執行 `dotnet test`。
-
-不讀取 `.local/`、`.env`、`bin/`、`obj/` 等敏感路徑（除非使用者明確授權）。

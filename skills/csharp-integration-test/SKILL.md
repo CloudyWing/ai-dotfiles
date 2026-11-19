@@ -32,7 +32,7 @@ public class ApiTestFactory : WebApplicationFactory<Program> {
 
 - 環境名稱固定使用 `IntegrationTest`，對應的 `appsettings.IntegrationTest.json` 只放測試專用覆寫，不複製整份設定。
 
-## 外部相依的替身策略（Crucial）
+## 外部相依的替身策略
 
 | 相依 | 策略 |
 | --- | --- |
@@ -63,7 +63,7 @@ public class ApiTestFactory : WebApplicationFactory<Program> {
 - 使用者略過：專案已有容器映像設定時保留不改。新建容器設定時使用參考檔對照表最後一列（最新版本）有映像的固定標籤，不設定 SQL Server 相容性層級，並在 fixture 註解與回覆註明「未確認目標版本」。
 - 既有設定：既有映像或相容性層級與鍵推導的結果不同時，在回覆列出差異，不改寫既有設定。只有本輪本來就要修改容器設定時，才採用推導的結果。
 
-## 資料隔離（Crucial）
+## 資料隔離
 
 - 每個測試自行建立所需資料，**禁止**依賴其他測試留下的資料或共用種子資料的隱含狀態。
 - 測試間清理採 Respawn（依外鍵順序清表）或每 fixture 重建 schema，不逐測試手寫 DELETE。

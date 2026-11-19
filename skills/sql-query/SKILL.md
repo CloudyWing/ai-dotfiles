@@ -150,12 +150,12 @@ SELECT
 FROM Orders;
 ```
 
-### SQL Injection 防範（Crucial）
+### SQL Injection 防範
 
 - 所有來自應用程式的查詢**必須**使用參數化查詢，禁止字串串接。
 - 預存程序與動態 SQL 內部同樣禁止把外部輸入串接進 SQL 文字。各資料庫的參數化機制見對應專屬節（SQL Server 用 `sp_executesql`，Oracle 用 Bind Variables）。
 
-### 索引友善查詢（Crucial）
+### 索引友善查詢
 
 #### 避免破壞索引的寫法
 

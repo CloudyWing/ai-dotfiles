@@ -7,14 +7,14 @@ policy.allow_implicit_invocation: true
 
 # Redis 快取開發規範
 
-## Key 命名（Crucial）
+## Key 命名
 
 - 格式：`<app>:<entity>:<識別值>[:<面向>]`，全小寫、冒號分隔階層。例如 `shop:product:1024`、`shop:product:1024:stock`。
 - 應用程式前綴必填，避免多系統共用 Redis 時互撞。
 - Key 中的識別值必須有界（ID、代碼），**禁止**把使用者輸入的自由文字直接組進 Key。
 - 掃描 Key 一律使用 `SCAN`（`IServer.Keys` 底層即 SCAN），**禁止**在正式環境執行 `KEYS`。
 
-## TTL 策略（Crucial）
+## TTL 策略
 
 - **每個快取 Key 都必須設定 TTL**，禁止無期限快取（配置類長效資料也應設長 TTL 而非永久）。
 - 同類 Key 的 TTL 加入隨機抖動（如基準值 ±10%），避免同時到期造成快取雪崩。
@@ -30,7 +30,7 @@ policy.allow_implicit_invocation: true
 - **穿透防護**：查無資料的結果以短 TTL（如 30〜60 秒）快取空值標記，避免不存在的 ID 反覆打穿到資料庫。
 - `null`、有效的空集合與查無資料標記是不同的結果契約。有效空集合依資料新鮮度使用一般 TTL；查無資料或 `null` 使用短 TTL，且每一種結果都要定義回源與序列化表示，不以空集合推導未授權的補償資料。
 
-## 失效容錯（Crucial）
+## 失效容錯
 
 - 快取故障不得中斷業務：Redis GET、反序列化、連線失敗或逾時時記錄警告並直接回源，**禁止**把 Redis exception 往上拋成 5xx。應用程式自建且由該回源工作成功取得的 lock 或 in-flight 狀態也必須在失敗路徑釋放；`HybridCache` 內部狀態則由 `HybridCache` 自行清理。長時間回源仍須受既定 timeout 與 cancellation token 約束，狀態移除遵守等待者計數或同一 Task 完成條件。
 - 回源路徑必須獨立可用，不得存在「只有快取有、資料來源沒有」的資料。

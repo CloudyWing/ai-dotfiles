@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # SignalR Hub 開發規範
 
-## Hub Lifetime（Crucial）
+## Hub Lifetime
 
 - Hub 實例為 **Transient**：每次用戶端呼叫 Hub 方法時，都會建立新的 Hub 實例。
 - **禁止**在 Hub 中儲存狀態（instance field）。跨呼叫的狀態必須使用外部儲存（如 Redis、資料庫或 `IMemoryCache`）。

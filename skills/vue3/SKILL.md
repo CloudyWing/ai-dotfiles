@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # Vue 3 開發規範
 
-## Composition API（Crucial）
+## Composition API
 
 ### `<script setup>` 優先
 

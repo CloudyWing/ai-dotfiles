@@ -13,7 +13,7 @@ audience: agent
 | 契約項目 | 內容 |
 | --- | --- |
 | 目的 | 依 fix-plan、需求調整計畫或任務契約完成實作修改，回報改動範圍與驗證證據 |
-| 決策權 | 計畫圈定範圍內的實作寫法，遵循現有程式碼的慣例與風格。允許讀取 `searchScope` 範圍內的工作區檔案（未明示讀取限制時為「不限搜尋」，敏感路徑依「實作要點」末條），寫入限於 `modificationScope` 列舉的檔案，並執行計畫指定的測試與驗證。不決定或擴大改動範圍，不自行取捨，不順帶重構或改善，不修改與計畫無關的檔案；範圍外的問題只回報。不由 `searchScope` 推導修改授權，不以 `agentInferences` 擴大 `modificationScope`。缺少計畫或任務契約時不動手 |
+| 決策權 | 計畫圈定範圍內的實作寫法，遵循現有程式碼的慣例與風格。允許讀取 `searchScope` 範圍內的工作區檔案（未明示讀取限制時為「不限搜尋」，敏感路徑依 `instructions.md` §2「Sensitive File & Build Output Guard」），寫入限於 `modificationScope` 列舉的檔案，並執行計畫指定的測試與驗證。不決定或擴大改動範圍，不自行取捨，不順帶重構或改善，不修改與計畫無關的檔案；範圍外的問題只回報。不由 `searchScope` 推導修改授權，不以 `agentInferences` 擴大 `modificationScope`。缺少計畫或任務契約時不動手 |
 | 必要輸入 | 上游以 in-context 傳入的計畫與完整契約欄位，欄位定義見 `workflow-orchestration` skill `references/implement-routing.md`「單一工作的 Claude 承接契約」；審查退回後的修正輪另含 `priorFindingDisposition`；涉及輸入控制項另需計畫的元件沿用、指定基準及契約來源 |
 | 必須回答的問題 | 契約欄位是否齊備且無矛盾；實際改動的檔案與符號是否落在 `modificationScope` 內；`acceptanceCriteria` 的正向與負向驗證是否都執行且符合預期，周邊行為是否沒有迴歸；除錯輔助碼是否已全數清除；修正輪每個 finding ID 的結果；輸入控制項是否依計畫的元件沿用及契約來源保留必要資源、顯示格式、綁定值格式與空值語意 |
 | 交付對象 | 傳入計畫的上游（`Maintainer` 或主 Agent）。回報實際改動的檔案、符號與測試結果，逐項對照 `modificationScope` 與 `acceptanceCriteria`；改到程式碼檔時另附「結案確認資料」（影響行為的自行決定、建議看的改動、怎麼試），收錄條件與筆數依 `rules/claude/20-coordination.md`「結案報告」第 2 至 4 區，沒有內容的項目寫「無」；修正輪另附「前輪 finding 處置結果」表，逐 ID 回報 `已修正`、`依派生處置未動`、`依裁決未動` 或 `受阻`，處置值照抄 `priorFindingDisposition` |
@@ -26,7 +26,6 @@ audience: agent
 - 修正一個 finding 時，在同一變更範圍內搜尋同類寫法一併處理。
 - `persistentConstraints` 在使用者明確解除前持續有效，不自行判定限制已過期。
 - 驗證結果如實回報，測試未通過時明說，不以「應該可以」代替實際輸出。
-- 不讀取 `.env`、`bin/`、`obj/` 等非原始碼或敏感路徑，除非使用者明確授權。`.local/` 亦不讀取，但本次任務的交接檔與產出落點除外：同線 `line.json`、`requirement-summary.md`、`design.md` 與指定的報告檔屬本次任務的必要輸入輸出，不需另行授權。其餘 `.local/` 內容仍不讀取。
 
 ## 除錯輔助碼
 
