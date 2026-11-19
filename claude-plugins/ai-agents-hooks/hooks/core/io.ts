@@ -1,15 +1,8 @@
 // hook 核心邏輯對外的 I/O 介面。register.ts 以引擎的 $ 實作，tests/run-hook.ts 以 node 實作。
 export interface HookIo {
-  /** 讀取文字檔全文。檔案不存在或無法讀取時 reject。 */
-  readText(path: string): Promise<string>
   /** 讀取檔案位元組。檔案不存在或無法讀取時 reject。 */
   readBytes(path: string): Promise<Uint8Array>
-  /** 整檔覆寫，目錄不存在時建立。 */
-  writeText(path: string, text: string): Promise<void>
-  exists(path: string): Promise<boolean>
   isDirectory(path: string): Promise<boolean>
-  /** 列出目錄內的檔案名稱與位元組數。目錄不存在或無法讀取時 reject。 */
-  list(directory: string): Promise<{ name: string; size: number }[]>
   /** 執行外部命令並回傳結束碼。無法啟動時 reject。 */
   run(argv: readonly string[]): Promise<number>
   /** 輸出不送給模型的診斷文字。引擎的 $.ui.log 同步回傳 void。 */
@@ -49,11 +42,6 @@ export function field(value: unknown, name: string): unknown {
 /** 以不分大小寫比較兩個字串，對應 PowerShell 的 -eq。 */
 export function sameText(left: unknown, right: string): boolean {
   return typeof left === 'string' && left.toLowerCase() === right.toLowerCase()
-}
-
-export function joinPath(directory: string, name: string): string {
-  const separator = directory.includes('\\') || !directory.includes('/') ? '\\' : '/'
-  return directory.replace(/[\\/]+$/u, '') + separator + name
 }
 
 /** 對應 [IO.Path]::GetExtension：最後一個分隔符之後的檔名中，最後一個句點起的部分。 */

@@ -240,7 +240,6 @@ hook 由 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `clau
 | --- | --- |
 | `post-edit-write` | 寫入檔案後檢查 BOM 規範，並記錄 `.md` 的格式檢查提示 |
 | `doc-path` | 進版控的 `.md` 含本機磁碟機絕對路徑時提醒改用佔位符或相對路徑，不阻擋寫入 |
-| `turn-guard` | 同一個失敗在同一回合重複發生時提醒 Agent 先說明下次為何會成功，不阻擋工具執行 |
 | `host-guard` | 拒絕直接呼叫 `powershell.exe` 的命令並提示改用 pwsh。其他專案明確需要 5.1 時，在 Claude Code 設定的 `env` 加入 `AI_AGENTS_ALLOW_POWERSHELL51=1` |
 
 ### 狀態看板
