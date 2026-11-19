@@ -72,7 +72,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
   [-Incomplete <執行者 id:次數,執行者 id:次數>] [-Label <說明>] [-RegistryPath <路徑>] [-Describe]
 ```
 
-- 以逗號連接 `-Tags`、`-Prefer`、`-Offline` 與 `-Incomplete` 的多個值，不含空白，例如 `-Offline codex-scan,codex-content`。`pwsh -File` 與同一行程 `&` 呼叫都適用這個寫法。以空白分隔時，多餘的值會成為位置參數，入口以結束碼 2、錯誤碼 `SelectorParameterBinding` 拒絕。
+- 以逗號連接 `-Tags`、`-Prefer`、`-Offline` 與 `-Incomplete` 的多個值，不含空白，例如 `-Offline codex-test,codex-factcheck`。`pwsh -File` 與同一行程 `&` 呼叫都適用這個寫法。以空白分隔時，多餘的值會成為位置參數，入口以結束碼 2、錯誤碼 `SelectorParameterBinding` 拒絕。
 - 傳入 `-Incomplete` 的次數為 0 至 999 的整數，同一 id 只能出現一次（重複時即使次數相同也以 `SelectorIncompleteInvalid` 拒絕）。上限 999 與登錄表 `maxIncomplete` 的上限相同。
 - 輸出 stdout 單一 JSON 物件（schema `ai-agents.executor-selection.v1`），欄位含 `status`、`executor`、`unmetPreferences`、`candidates`、`skipped`、`requiresUserDecision`、`reason`、`considered` 與 `dispatchLine`。Codex 執行者的 `executor` 另含 `entry`，值為該執行者使用的入口腳本。
 - 輸出 `dispatchLine` 原文作為本輪的 `[派工]` 判定行，不自行改寫。該行格式為 `[派工] 交給 <執行者顯示名>：<做什麼>，<條件的白話說明>`，選中者未滿足優先條件或有執行者被略過時，於行尾以分號附白話說明，對照見「判定行的白話對照」。`type`、`E`、`T` 只用於標註與 JSON 欄位，不出現在判定行。
@@ -156,7 +156,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 ## Claude 測試取證者派生契約
 
-`test` 選出 Sonnet 時，以 Agent 工具派生冷啟動的測試取證者。標註含 `build-test` 的 `test`（例如 API 煙霧驗證、單元測試與可重跑 E2E 的取證）選出 Sonnet，因為 Codex `scan` 檔位只做 MCP 臨場操作（標籤 `browse`、`desktop-control`、`web`），不執行建置與測試命令。標註含 `browse` 或 `desktop-control` 的 `test` 沒有 Claude 替代者。
+`test` 選出 Sonnet 時，以 Agent 工具派生冷啟動的測試取證者。標註含 `build-test` 的 `test`（例如 API 煙霧驗證、單元測試與可重跑 E2E 的取證）選出 Sonnet，因為 Codex `test` 檔位只做 MCP 臨場操作（標籤 `browse`、`desktop-control`、`web`），不執行建置與測試命令。標註含 `browse` 或 `desktop-control` 的 `test` 沒有 Claude 替代者。
 
 - 設定 `subagent_type` 為 `general-purpose`、`model` 為 `sonnet`。
 - 寫入 prompt 的內容含 `LineContext`、呼叫端 skill 規定的驗證步驟與命令、目標端點或檔案的絕對路徑、預期結果，以及輸出落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/test-<slug>.md`。

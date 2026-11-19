@@ -352,7 +352,7 @@ function Invoke-Selector {
         throw (New-SelectorError -Code 'SelectorFlagRemoved' -Message '參數 EscalateFrom 已移除，請改以 -Incomplete <執行者 id>:<未完成次數> 傳入，由候選排序決定下一位。' -ExitCode 2)
     }
     if ($null -ne $RemainingArgument -and @($RemainingArgument).Count -gt 0) {
-        throw (New-SelectorError -Code 'SelectorParameterBinding' -Message ('偵測到多餘的位置參數：{0}。-Tags、-Prefer、-Offline 與 -Incomplete 的多個值請以逗號連接且不含空白，例如 -Offline codex-scan,codex-review' -f (@($RemainingArgument) -join ' ')) -ExitCode 2)
+        throw (New-SelectorError -Code 'SelectorParameterBinding' -Message ('偵測到多餘的位置參數：{0}。-Tags、-Prefer、-Offline 與 -Incomplete 的多個值請以逗號連接且不含空白，例如 -Offline codex-test,codex-review' -f (@($RemainingArgument) -join ' ')) -ExitCode 2)
     }
     $path = $RegistryPath
     if ([string]::IsNullOrWhiteSpace($path)) { $path = Join-Path -Path $PSScriptRoot -ChildPath 'dispatch\executor-registry.json' }

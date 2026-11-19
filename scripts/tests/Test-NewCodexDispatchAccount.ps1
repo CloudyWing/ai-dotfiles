@@ -262,9 +262,9 @@ try {
 
     # ---------- 預檢無半成品 ----------
     $conflictCases = @(
-        @{ id = 'profile-link-type'; setup = { param($e) $other = Join-Path $e.root 'other-profile'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home 'scan.config.toml') -Target $other }; expect = @('連結類型或目標衝突', 'scan.config.toml', 'LinkType=Junction', 'Target=', '預期：LinkType=SymbolicLink') },
+        @{ id = 'profile-link-type'; setup = { param($e) $other = Join-Path $e.root 'other-profile'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home 'test.config.toml') -Target $other }; expect = @('連結類型或目標衝突', 'test.config.toml', 'LinkType=Junction', 'Target=', '預期：LinkType=SymbolicLink') },
         @{ id = 'config-link'; setup = { param($e) $other = Join-Path $e.root 'other-config'; $null = New-Item -ItemType Directory -Path $other -Force; $null = New-Item -ItemType Junction -Path (Join-Path $e.account_home 'config.toml') -Target $other }; expect = @('CodexAccountConfigLinked', 'config.toml', 'LinkType=Junction', 'Target=', '預期：一般檔案') },
-        @{ id = 'profile-directory'; setup = { param($e) $null = New-Item -ItemType Directory -Path (Join-Path $e.account_home 'scan.config.toml') -Force }; expect = @('profile 類型錯誤', 'scan.config.toml', '一般目錄', '預期：LinkType=SymbolicLink') }
+        @{ id = 'profile-directory'; setup = { param($e) $null = New-Item -ItemType Directory -Path (Join-Path $e.account_home 'test.config.toml') -Force }; expect = @('profile 類型錯誤', 'test.config.toml', '一般目錄', '預期：LinkType=SymbolicLink') }
     )
     foreach ($conflict in $conflictCases) {
         $conflictId = $conflict.id
@@ -301,10 +301,10 @@ try {
         $null = New-Item -ItemType Directory -Path $environment.account_home -Force
         $other = Join-Path $environment.root 'wrong-target'
         $null = New-Item -ItemType Directory -Path $other -Force
-        $null = New-Item -ItemType Junction -Path (Join-Path $environment.account_home 'scan.config.toml') -Target $other
+        $null = New-Item -ItemType Junction -Path (Join-Path $environment.account_home 'test.config.toml') -Target $other
         $run = NcRun -Env $environment
         $message = [string]$run.exception.Message
-        $message.Contains('LinkType=Junction') -and $message.Contains('Target=' + $other) -and $message.Contains('預期：LinkType=SymbolicLink，Target=' + (Join-Path $environment.source 'scan.config.toml')) -and $message.Contains("(Get-Item -LiteralPath '" + (Join-Path $environment.account_home 'scan.config.toml') + "' -Force).Delete()") -and
+        $message.Contains('LinkType=Junction') -and $message.Contains('Target=' + $other) -and $message.Contains('預期：LinkType=SymbolicLink，Target=' + (Join-Path $environment.source 'test.config.toml')) -and $message.Contains("(Get-Item -LiteralPath '" + (Join-Path $environment.account_home 'test.config.toml') + "' -Force).Delete()") -and
         -not $message.Contains('Remove-Item -Recurse') -and -not $message.Contains('Remove-Item')
     }
     Test-Case 'P03' {
@@ -315,7 +315,7 @@ try {
         $null = New-Item -ItemType Directory -Path (Join-Path $environment.account_home 'review.config.toml') -Force
         $other = Join-Path $environment.root 'x'
         $null = New-Item -ItemType Directory -Path $other -Force
-        $null = New-Item -ItemType Junction -Path (Join-Path $environment.account_home 'scan.config.toml') -Target $other
+        $null = New-Item -ItemType Junction -Path (Join-Path $environment.account_home 'test.config.toml') -Target $other
         $listing = NcListing -Path $environment.account_home
         $conflicts = @(Test-AccountLinkPlan -AccountHome $environment.account_home -Source $environment.source)
         $clean.Count -eq 0 -and $conflicts.Count -eq 2 -and $listing -ceq (NcListing -Path $environment.account_home)

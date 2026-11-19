@@ -168,7 +168,7 @@ policy.allow_implicit_invocation: true
 | 勾選流程、詢問 `manual-root`、讀圖判定、組裝手冊、套用 `check-markdown` | Claude 端 | 自己做（需要對話脈絡） |
 
 - 傳入選派入口的標註為上表前三列，可直接傳給 `scripts/Select-DispatchExecutor.ps1`，`-Type edit` 與 `-Type test -Tags build-test` 都選出 `sonnet`。
-- 建置、還原套件與可重跑的測試專案一律由 Claude 端在沙盒外執行，Codex `scan` 只做 MCP 臨場操作，不承接 `dotnet test`（選派入口對 `build-test` 標籤的 `test` 不選 Codex）。
+- 建置、還原套件與可重跑的測試專案一律由 Claude 端在沙盒外執行，Codex `test` 只做 MCP 臨場操作，不承接 `dotnet test`（選派入口對 `build-test` 標籤的 `test` 不選 Codex）。
 - 手冊只由 Claude 端寫入，Codex 派遣不觸及 `manual-root`。
 
 ## 收尾清理

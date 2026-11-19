@@ -67,7 +67,7 @@
     "--cd",
     "C:\\work\\exec",
     "--profile",
-    "content",
+    "factcheck",
     "-c",
     "model=\"m-1\"",
     "-c",

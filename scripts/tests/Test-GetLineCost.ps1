@@ -98,7 +98,7 @@ try {
     $report = New-Line 'rej-line'
     Write-Record $report 'r1' 'success' ([ordered]@{ status = 'recorded'; input_tokens = 500; cached_input_tokens = 400; output_tokens = 10 })
     Write-Record $report 'r2' 'rejected' ([ordered]@{ status = 'no-terminal-event' })
-    Write-Ledger $report @('| 2026-11-01T00:20:00Z | 事件 | rej-line | old-d | legacy9 | - | - | - | 首次 | 60 | 300 | 100 | 5 | exit=0;result=completed;task=scan;usage=recorded;usage_basis=delta |')
+    Write-Ledger $report @('| 2026-11-01T00:20:00Z | 事件 | rej-line | old-d | legacy9 | - | - | - | 首次 | 60 | 300 | 100 | 5 | exit=0;result=completed;task=test;usage=recorded;usage_basis=delta |')
     $r = Invoke-LineCost @('-WorkRoot', $root, '-LineSlug', 'rej-line')
     Assert-Equal $r.code 0 'rej exit'
     Assert-Equal $r.json.codex.run_count 3 'rej run_count'
@@ -122,9 +122,9 @@ try {
     # 續行的累計用量（cumulative-no-anchor）無法換算增量，不併入合計並標示不完整。
     $report = New-Line 'cont-line'
     Write-Ledger $report @(
-        '| 2026-11-01T01:00:00Z | 事件 | cont-line | d1 | a1 | - | - | - | 首次 | 10 | 1000 | 800 | 50 | exit=0;result=completed;task=scan;usage=recorded;usage_basis=cumulative |',
-        '| 2026-11-01T01:10:00Z | 事件 | cont-line | d1 | a2 | - | - | - | 續行 | 10 | 1500 | 1200 | 80 | exit=0;result=completed;task=scan;usage=recorded;usage_basis=cumulative-no-anchor |',
-        '| 2026-11-01T01:20:00Z | 事件 | cont-line | d1 | a3 | - | - | - | 續行 | 10 | 200 | 100 | 5 | exit=0;result=completed;task=scan;usage=recorded;usage_basis=delta |')
+        '| 2026-11-01T01:00:00Z | 事件 | cont-line | d1 | a1 | - | - | - | 首次 | 10 | 1000 | 800 | 50 | exit=0;result=completed;task=test;usage=recorded;usage_basis=cumulative |',
+        '| 2026-11-01T01:10:00Z | 事件 | cont-line | d1 | a2 | - | - | - | 續行 | 10 | 1500 | 1200 | 80 | exit=0;result=completed;task=test;usage=recorded;usage_basis=cumulative-no-anchor |',
+        '| 2026-11-01T01:20:00Z | 事件 | cont-line | d1 | a3 | - | - | - | 續行 | 10 | 200 | 100 | 5 | exit=0;result=completed;task=test;usage=recorded;usage_basis=delta |')
     $r = Invoke-LineCost @('-WorkRoot', $root, '-LineSlug', 'cont-line')
     Assert-Equal $r.code 0 'cont exit'
     Assert-Equal $r.json.codex.run_count 3 'cont run_count'

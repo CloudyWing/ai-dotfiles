@@ -44,7 +44,7 @@ test('Z2a dispatch rows describe running, overdue, ended and unreadable runs wit
   expect([running.name, running.tag, running.right, running.dot, segmentsText(running.detail)]).toEqual(['line-a · 審查', 'acct-a', '已跑 25 分鐘', 'success', '最後事件 剛剛 · model-x'])
   const longGap = dispatchRow({ ...base, State: 'running', StartedUtc: '2026-11-16T10:30:00Z', LastEventUtc: '2026-11-16T11:40:00Z', Model: null }, now)
   expect([longGap.right, longGap.dot, segmentsText(longGap.detail), longGap.detail?.[0].tone]).toEqual(['已跑 1 小時 30 分', 'success', '最後事件 20 分鐘前', 'normal'])
-  const noEvents = dispatchRow({ ...base, State: 'running', StartedUtc: '2026-11-16T11:59:30Z', TaskType: 'scan', Profile: 'scan' }, now)
+  const noEvents = dispatchRow({ ...base, State: 'running', StartedUtc: '2026-11-16T11:59:30Z', TaskType: 'scan', Profile: 'test' }, now)
   expect([noEvents.name, noEvents.right, segmentsText(noEvents.detail)]).toEqual(['line-a · 派工', '已跑 30 秒', '尚無事件 · model-x'])
   const overdue = dispatchRow({ ...base, State: 'overdue', StartedUtc: '2026-11-16T10:00:00Z', LastEventUtc: '2026-11-16T10:20:00Z' }, now)
   expect([overdue.dot, overdue.right, segmentsText(overdue.detail)]).toEqual(['error', '2 小時前開始', '超過時限仍沒有結果，可能已中斷 · 最後事件 1 小時前'])
@@ -58,7 +58,7 @@ test('Z2a dispatch rows describe running, overdue, ended and unreadable runs wit
   expect([unknown.dot, segmentsText(unknown.detail)]).toEqual(['inactive', '結果不明'])
   const invalid = dispatchRow({ RunKey: 'x', LineSlug: 'line-bad', State: 'invalid', RecordUpdatedUtc: '2026-11-16T11:00:00Z', Error: '執行紀錄無法讀取：x' }, now)
   expect([invalid.name, invalid.dot, invalid.tone, invalid.right]).toEqual(['line-bad · 紀錄無法讀取', 'error', 'error', '1 小時前'])
-  for (const item of [running, longGap, noEvents, overdue, ok, rejected, timeout, unknown, invalid]) expect(JSON.stringify(item)).not.toMatch(/RunKey|\\\\|C:|usage-limit|timeout|scan|review/)
+  for (const item of [running, longGap, noEvents, overdue, ok, rejected, timeout, unknown, invalid]) expect(JSON.stringify(item)).not.toMatch(/RunKey|\\\\|C:|usage-limit|timeout|scan|test|review/)
 })
 test('Z2a result texts follow the action the user can take', () => {
   expect(dispatchResultText('rejected', null, 'unauthorized')).toBe('被拒絕（登入失效）')
@@ -84,7 +84,7 @@ test('Z2a dispatch block lists running and overdue runs first and limits the res
 })
 test('Z2a account state joins the existing quota rows instead of a new block', () => {
   const value = documentWith({ runs: [], accounts: [
-    { Name: 'acct-a', LastResult: 'rejected', LastRejectionKind: 'usage-limit', LastEndedUtc: '2026-11-16T11:00:00Z', Unsupported: [{ Profile: 'review', Model: 'model-x' }, { Profile: 'scan', Model: 'model-x' }] },
+    { Name: 'acct-a', LastResult: 'rejected', LastRejectionKind: 'usage-limit', LastEndedUtc: '2026-11-16T11:00:00Z', Unsupported: [{ Profile: 'review', Model: 'model-x' }, { Profile: 'test', Model: 'model-x' }] },
     { Name: 'acct-b', LastResult: 'success', LastEndedUtc: '2026-11-16T11:59:00Z', Unsupported: [] },
     { Name: 'acct-c', Unsupported: [{ Profile: 'review', Model: null }] }
   ], totalCount: 0, warnings: [], error: null })

@@ -80,7 +80,7 @@ WPF 或 WinForms 外殼以 BlazorWebView 承載 Blazor 時，畫面內容在 Web
 | --- | --- | --- |
 | 建置、執行層級 B 的既有 UI 測試專案 | 依派工判準選派：需要建置或測試命令者由選派入口選出的 Claude 執行者在沙盒外承接（建置要寫 `bin`、`obj` 並需要網路），標註 `-Type test -Tags build-test` | 派工判準 |
 | 以背景方式啟動 GUI 程式 | 主 Agent 以背景進程啟動，驗證結束後依 `instructions.md` §1.4「背景進程清理」關閉 | 不派 |
-| 以 FlaUI MCP 附加受測視窗、操作控制項、讀取文字與可見狀態 | 依登錄表選出的 `type=test` 執行者（標註 `-Type test -Tags desktop-control`，選出 Codex `scan`），以 `scripts/Invoke-CodexRun.ps1` 發動，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」；Codex 全數不可用時入口的 `fallback.selection` 為 `stopped`，停止並回報使用者 | 命令沙盒唯讀，MCP 伺服器在沙盒外操作視窗；`windows_attach` 以行程識別碼附加，不列舉其他視窗 |
+| 以 FlaUI MCP 附加受測視窗、操作控制項、讀取文字與可見狀態 | 依登錄表選出的 `type=test` 執行者（標註 `-Type test -Tags desktop-control`，選出 Codex `test`），以 `scripts/Invoke-CodexRun.ps1` 發動，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」；Codex 全數不可用時入口的 `fallback.selection` 為 `stopped`，停止並回報使用者 | 命令沙盒唯讀，MCP 伺服器在沙盒外操作視窗；`windows_attach` 以行程識別碼附加，不列舉其他視窗 |
 | 判定畫面與視窗狀態是否符合預期、產出手動檢查清單、決定是否進入修正迴圈 | Claude 端 | 需要讀圖比對與需求脈絡 |
 | 需要系統管理員權限的命令（例如 `powercfg /requests`） | 使用者在已提升權限的主控台執行 | 派遣不得提權 |
 | 桌面畫面留存（存成檔案的截圖）、螢幕錄影 | Claude 端在沙盒外擷取，或由使用者手動留存 | `windows_screenshot` 只把影像回傳給模型，不存檔；留存方式與座標換算尚未定案 |

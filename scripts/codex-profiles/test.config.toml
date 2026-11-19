@@ -1,4 +1,4 @@
-# 此檔由 scripts/dispatch/executor-registry.json 的執行者 codex-scan 產生，請勿手動編輯；修改請改登錄表。
+# 此檔由 scripts/dispatch/executor-registry.json 的執行者 codex-test 產生，請勿手動編輯；修改請改登錄表。
 model = "gpt-6.1-terra"
 model_reasoning_effort = "max"
 

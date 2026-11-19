@@ -96,7 +96,7 @@ Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動�
 
 Workflow 驗證四層（淺層探針、建置與測試 gate、缺陷審查、完整煙霧）的執行者、深度與時機見 `workflow-orchestration` skill「驗證分層」。
 
-- `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Developer 結案自動流程。煙霧驗證的瀏覽器與桌面臨場取證由 Codex `scan`（`type=test`，以 MCP 工具操作）執行，建置、可重跑測試專案與 API 取證依派工判準選派，由選派入口選出的 Claude 執行者在沙盒外執行，受測程式由主 Agent 以背景進程啟動並在驗證結束後依 §1.4「背景進程清理」關閉，判讀與修正迴圈決策留在 Claude 端；淺層探針與建置測試 gate 由 Claude 實作者執行，缺陷審查由 Codex `Reviewer` 執行（Codex 不可用時由選派入口選出的同家族執行者審查，目前為 Sonnet subagent）。
+- `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Developer 結案自動流程。煙霧驗證的瀏覽器與桌面臨場取證由 Codex `test`（`type=test`，以 MCP 工具操作）執行，建置、可重跑測試專案與 API 取證依派工判準選派，由選派入口選出的 Claude 執行者在沙盒外執行，受測程式由主 Agent 以背景進程啟動並在驗證結束後依 §1.4「背景進程清理」關閉，判讀與修正迴圈決策留在 Claude 端；淺層探針與建置測試 gate 由 Claude 實作者執行，缺陷審查由 Codex `Reviewer` 執行（Codex 不可用時由選派入口選出的同家族執行者審查，目前為 Sonnet subagent）。
 - Reviewer 不執行測試與動態驗證，正常路徑是讀取 Developer 結案報告附帶的原始輸出並做靜態核對；重跑唯讀命令的條件見 `agents/codex/reviewer.toml`「動態證據複核」。
 - Maintainer 不承擔常規驗證，依進入類型執行 bug 診斷或需求調整；`Support Engineer` 只執行計畫指定的驗證步驟。
 

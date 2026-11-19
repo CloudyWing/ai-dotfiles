@@ -222,7 +222,7 @@ try {
     }
     Test-Case S05 {
         # 檔位名稱不再於腳本內寫死白名單，只由登錄表決定。
-        $text -notmatch 'CodexProfileNames' -and $text -notmatch "'review', 'scan', 'content', 'advisor'"
+        $text -notmatch 'CodexProfileNames' -and $text -notmatch "'review', 'test', 'factcheck', 'advisor'"
     }
 
     # 出貨登錄表：詞彙與 -Describe
@@ -244,10 +244,10 @@ try {
         @($advise.preferred).Count -eq 0 -and $advise.skippable -eq $true -and $describe.Json.maxIncomplete -eq $registryRaw.maxIncomplete
     }
     Test-Case D05 {
-        $content = @($describe.Json.executors | Where-Object { $_.id -eq 'codex-content' })[0]
-        $scan = @($describe.Json.executors | Where-Object { $_.id -eq 'codex-scan' })[0]
+        $factcheckNode = @($describe.Json.executors | Where-Object { $_.id -eq 'codex-factcheck' })[0]
+        $testNode = @($describe.Json.executors | Where-Object { $_.id -eq 'codex-test' })[0]
         $deep = @($describe.Json.executors | Where-Object { $_.id -eq 'codex-deep-review' })
-        $null -ne $content -and (@($content.accepts) -join ',') -eq 'generate,factcheck' -and (@($content.tags) -join ',') -eq 'web,image-gen' -and $deep.Count -eq 0 -and (@($scan.accepts) -join ',') -eq 'test'
+        $null -ne $factcheckNode -and (@($factcheckNode.accepts) -join ',') -eq 'generate,factcheck' -and (@($factcheckNode.tags) -join ',') -eq 'web,image-gen' -and $deep.Count -eq 0 -and (@($testNode.accepts) -join ',') -eq 'test'
     }
     Test-Case D06 {
         # -Describe 輸出每個 Codex 執行者的檔位設定（逐欄等於登錄表），Claude 執行者沒有。
@@ -275,18 +275,18 @@ try {
     Test-Case P04 { Assert-Selected '-Type edit -E false -T true' 'sonnet' }
     Test-Case P05 { Assert-Selected '-Type edit -E true -T false -Tags build-test' 'haiku' }
     Test-Case P06 { Assert-Selected '-Type survey' 'sonnet' }
-    Test-Case P07 { Assert-Selected '-Type test' 'codex-scan' }
-    Test-Case P08 { Assert-Selected '-Type test -Tags browse' 'codex-scan' }
-    Test-Case P09 { Assert-Selected '-Type test -Tags desktop-control' 'codex-scan' }
-    Test-Case P10 { Assert-Selected '-Type generate' 'codex-content' }
-    Test-Case P11 { Assert-Selected '-Type factcheck' 'codex-content' }
+    Test-Case P07 { Assert-Selected '-Type test' 'codex-test' }
+    Test-Case P08 { Assert-Selected '-Type test -Tags browse' 'codex-test' }
+    Test-Case P09 { Assert-Selected '-Type test -Tags desktop-control' 'codex-test' }
+    Test-Case P10 { Assert-Selected '-Type generate' 'codex-factcheck' }
+    Test-Case P11 { Assert-Selected '-Type factcheck' 'codex-factcheck' }
     Test-Case P12 { Assert-Selected '-Type review -ImplementerFamily claude' 'codex-review' }
     Test-Case P14 { Assert-Selected '-Type advise -ImplementerFamily claude' 'codex-advisor' 'needs-authorization' 20 }
     Test-Case P15 { Assert-Selected '-Type advise -Authorized -ImplementerFamily claude' 'codex-advisor' }
     Test-Case P16 { Assert-Selected '-Type review -ImplementerFamily codex' 'sonnet' }
     Test-Case P17 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate')
-        (@($r.Json.labels.tags) -join ',') -eq 'image-gen' -and $r.Json.executor.profile -eq 'content' -and $r.Json.executor.platform -eq 'codex' -and $null -eq $r.Json.executor.PSObject.Properties['model']
+        (@($r.Json.labels.tags) -join ',') -eq 'image-gen' -and $r.Json.executor.profile -eq 'factcheck' -and $r.Json.executor.platform -eq 'codex' -and $null -eq $r.Json.executor.PSObject.Properties['model']
     }
     Test-Case P18 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false')
@@ -294,11 +294,11 @@ try {
     }
     Test-Case P19 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse,desktop-control')
-        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-scan' -and (@($r.Json.labels.tags) -join ',') -eq 'browse,desktop-control'
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-test' -and (@($r.Json.labels.tags) -join ',') -eq 'browse,desktop-control'
     }
     Test-Case P20 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test -Tags web')
-        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-scan' -and @($r.Json.considered | Where-Object { $_.id -eq 'sonnet' })[0].reason -eq 'eligible-lower-priority'
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-test' -and @($r.Json.considered | Where-Object { $_.id -eq 'sonnet' })[0].reason -eq 'eligible-lower-priority'
     }
 
     Test-Case P21 {
@@ -309,15 +309,15 @@ try {
     Test-Case P21C {
         # 類型特徵 skippable：只有登錄表宣告的類型得到 omitted，其他類型離線仍是 stopped
         $advise = @($registryRaw.types.PSObject.Properties | Where-Object { $null -ne $_.Value.PSObject.Properties['skippable'] -and $_.Value.skippable -eq $true } | ForEach-Object { $_.Name })
-        $generate = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content')
-        $browse = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse -Offline codex-scan')
+        $generate = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-factcheck')
+        $browse = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse -Offline codex-test')
         ($advise -join ',') -eq 'advise' -and $generate.ExitCode -eq 22 -and $generate.Json.status -eq 'stopped' -and $browse.ExitCode -eq 22 -and $browse.Json.status -eq 'stopped'
     }
 
     Test-Case P21D {
         # 行為來自特徵而不是類型名稱：把 skippable 設到 generate，generate 離線得到 omitted；把 advise 的特徵拿掉，顧問離線回到 stopped
         $path = New-RegistryCopy 'skippable-moved' { param($r) $r.types.generate | Add-Member -NotePropertyName skippable -NotePropertyValue $true; $r.types.advise.PSObject.Properties.Remove('skippable') }
-        $generate = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content') -Registry $path
+        $generate = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-factcheck') -Registry $path
         $advise = Invoke-Selector -Arguments (Split-Args '-Type advise -Offline codex-advisor') -Registry $path
         $generate.ExitCode -eq 21 -and $generate.Json.status -eq 'omitted' -and $advise.ExitCode -eq 22 -and $advise.Json.status -eq 'stopped'
     }
@@ -353,25 +353,25 @@ try {
         $claude.Count -eq 3 -and @($claude | Where-Object { $_.reason -ne 'type-not-accepted' }).Count -eq 0 -and (@($r.Json.candidates) -join ',') -eq 'codex-advisor'
     }
     Test-Case P22 {
-        $r = Invoke-Selector -Arguments ((Split-Args '-Type test') + @('-Offline', 'codex-scan,codex-content,codex-review,codex-advisor'))
+        $r = Invoke-Selector -Arguments ((Split-Args '-Type test') + @('-Offline', 'codex-test,codex-factcheck,codex-review,codex-advisor'))
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet'
     }
     Test-Case P23 {
-        $r = Invoke-Selector -Arguments ((Split-Args '-Type test -Tags build-test') + @('-Offline', 'codex-scan,codex-content,codex-review,codex-advisor'))
+        $r = Invoke-Selector -Arguments ((Split-Args '-Type test -Tags build-test') + @('-Offline', 'codex-test,codex-factcheck,codex-review,codex-advisor'))
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet'
     }
 
     Test-Case P24 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate')
-        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-content' -and $r.Json.executor.profile -eq 'content'
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-factcheck' -and $r.Json.executor.profile -eq 'factcheck'
     }
     Test-Case P25 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck')
-        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-content' -and $r.Json.executor.profile -eq 'content'
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-factcheck' -and $r.Json.executor.profile -eq 'factcheck'
     }
     Test-Case P26 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test')
-        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-scan' -and @($r.Json.considered | Where-Object { $_.id -eq 'codex-content' })[0].reason -eq 'type-not-accepted'
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -eq 'codex-test' -and @($r.Json.considered | Where-Object { $_.id -eq 'codex-factcheck' })[0].reason -eq 'type-not-accepted'
     }
     Test-Case P27 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test -Tags image-gen')
@@ -430,8 +430,8 @@ try {
     Test-Case V18 { Assert-Rejected '-Type generate -Tags write' 'SelectorTagNotAllowed' }
 
     Test-Case V19 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type test -Offline codex-scan codex-review')
-        $r.ExitCode -eq 2 -and $r.StdErr.StartsWith('SelectorParameterBinding') -and $r.StdErr.Contains('-Offline codex-scan,codex-review') -and $r.StdErr -notmatch 'SelectorFlagNotAllowed' -and $r.StdErr -notmatch '旗標 E' -and [string]::IsNullOrWhiteSpace($r.StdOut)
+        $r = Invoke-Selector -Arguments (Split-Args '-Type test -Offline codex-test codex-review')
+        $r.ExitCode -eq 2 -and $r.StdErr.StartsWith('SelectorParameterBinding') -and $r.StdErr.Contains('-Offline codex-test,codex-review') -and $r.StdErr -notmatch 'SelectorFlagNotAllowed' -and $r.StdErr -notmatch '旗標 E' -and [string]::IsNullOrWhiteSpace($r.StdOut)
     }
     Test-Case V20 { Assert-Rejected '-Type review' 'SelectorFamilyRequired' }
     Test-Case V21 {
@@ -452,15 +452,15 @@ try {
     }
     Test-Case F03 {
         foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control')) {
-            $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', 'codex-scan'))
+            $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', 'codex-test'))
             if ($r.ExitCode -ne 22 -or $r.Json.status -ne 'stopped' -or $r.Json.reason -ne 'offline' -or $null -ne $r.Json.executor) { throw "未停止：$case" }
         }
-        $generate = Invoke-Selector -Arguments ((Split-Args '-Type generate') + @('-Offline', 'codex-content'))
+        $generate = Invoke-Selector -Arguments ((Split-Args '-Type generate') + @('-Offline', 'codex-factcheck'))
         if ($generate.ExitCode -ne 22 -or $generate.Json.status -ne 'stopped' -or $generate.Json.reason -ne 'offline' -or $null -ne $generate.Json.executor) { throw '-Type generate 離線未停止' }
         $true
     }
     Test-Case F04 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck -Offline codex-content')
+        $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck -Offline codex-factcheck')
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'sonnet' -and @($r.Json.unmetPreferences).Count -eq 0
     }
     Test-Case F05 {
@@ -470,7 +470,7 @@ try {
         }
         $true
     }
-    $allCodex = 'codex-scan,codex-content,codex-review,codex-advisor'
+    $allCodex = 'codex-test,codex-factcheck,codex-review,codex-advisor'
     Test-Case F06 {
         $test = Invoke-Selector -Arguments ((Split-Args '-Type test -Tags browse') + @('-Offline', $allCodex))
         $generate = Invoke-Selector -Arguments ((Split-Args '-Type generate') + @('-Offline', $allCodex))
@@ -510,16 +510,16 @@ try {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude -Offline codex-review')
         $reasons = @{}
         foreach ($row in $r.Json.considered) { $reasons[$row.id] = $row.reason }
-        $reasons['codex-review'] -eq 'offline' -and $reasons['sonnet'] -eq 'selected' -and $reasons['codex-content'] -eq 'type-not-accepted'
+        $reasons['codex-review'] -eq 'offline' -and $reasons['sonnet'] -eq 'selected' -and $reasons['codex-factcheck'] -eq 'type-not-accepted'
     }
 
     Test-Case F11 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck -Offline codex-scan')
-        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-content'
+        $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck -Offline codex-test')
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-factcheck'
     }
     Test-Case F12 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-scan')
-        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-content'
+        $r = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-test')
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-factcheck'
     }
 
     # 以下各組使用自建登錄表（New-FixtureRegistry），不依賴出貨登錄表的執行者。
@@ -756,14 +756,14 @@ try {
     }
     Test-Case R06 {
         $retired = [string]@($registryRaw.retiredProfiles)[0]
-        $path = New-RegistryCopy 'profile-retired' { param($r) (Get-ExecutorNode $r 'codex-scan').profile = $retired }
+        $path = New-RegistryCopy 'profile-retired' { param($r) (Get-ExecutorNode $r 'codex-test').profile = $retired }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R07 {
         # 退役名單完全由登錄表的 retiredProfiles 決定：改名單後，原名單內的名稱可用，新名單內的名稱被拒絕。
-        $path = New-RegistryCopy 'retired-custom' { param($r) $r.retiredProfiles = @('zzz-retired'); (Get-ExecutorNode $r 'codex-scan').profile = 'zzz-retired' }
+        $path = New-RegistryCopy 'retired-custom' { param($r) $r.retiredProfiles = @('zzz-retired'); (Get-ExecutorNode $r 'codex-test').profile = 'zzz-retired' }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
-        $path2 = New-RegistryCopy 'retired-custom-ok' { param($r) $r.retiredProfiles = @('zzz-retired'); (Get-ExecutorNode $r 'codex-scan').profile = 'implement' }
+        $path2 = New-RegistryCopy 'retired-custom-ok' { param($r) $r.retiredProfiles = @('zzz-retired'); (Get-ExecutorNode $r 'codex-test').profile = 'implement' }
         $r2 = Invoke-Selector -Arguments (Split-Args '-Describe') -Registry $path2
         $r2.ExitCode -eq 0
     }
@@ -791,7 +791,7 @@ try {
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R16 {
-        $path = New-RegistryCopy 'when-flag' { param($r) (Get-ExecutorNode $r 'codex-scan').when = [pscustomobject]@{ Deep = $true } }
+        $path = New-RegistryCopy 'when-flag' { param($r) (Get-ExecutorNode $r 'codex-test').when = [pscustomobject]@{ Deep = $true } }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R19 {
@@ -803,7 +803,7 @@ try {
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R19B {
-        $path = New-RegistryCopy 'no-effort' { param($r) (Get-ExecutorNode $r 'codex-scan').profileSettings.PSObject.Properties.Remove('effort') }
+        $path = New-RegistryCopy 'no-effort' { param($r) (Get-ExecutorNode $r 'codex-test').profileSettings.PSObject.Properties.Remove('effort') }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R19C {
@@ -811,12 +811,12 @@ try {
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R19D {
-        $path = New-RegistryCopy 'duplicate-profile' { param($r) (Get-ExecutorNode $r 'codex-content').profile = 'review' }
+        $path = New-RegistryCopy 'duplicate-profile' { param($r) (Get-ExecutorNode $r 'codex-factcheck').profile = 'review' }
         Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $path
     }
     Test-Case R19E {
         # 新增檔位只改登錄表即可通過驗證（不再有腳本內白名單）。
-        $path = New-RegistryCopy 'new-profile' { param($r) (Get-ExecutorNode $r 'codex-content').profile = 'content-2' }
+        $path = New-RegistryCopy 'new-profile' { param($r) (Get-ExecutorNode $r 'codex-factcheck').profile = 'factcheck-2' }
         $r = Invoke-Selector -Arguments (Split-Args '-Describe') -Registry $path
         $r.ExitCode -eq 0
     }
@@ -872,7 +872,7 @@ try {
 
     # 決定性
     Test-Case X01 {
-        foreach ($case in @('-Type edit -E true -T false -Label 範例', '-Type review -ImplementerFamily claude -Offline codex-review', '-Type advise -ImplementerFamily claude', '-Type test -Tags browse -Offline codex-scan', '-Type edit -E true -T false -EscalateFrom haiku')) {
+        foreach ($case in @('-Type edit -E true -T false -Label 範例', '-Type review -ImplementerFamily claude -Offline codex-review', '-Type advise -ImplementerFamily claude', '-Type test -Tags browse -Offline codex-test', '-Type edit -E true -T false -EscalateFrom haiku')) {
             $first = Invoke-Selector -Arguments (Split-Args $case)
             $second = Invoke-Selector -Arguments (Split-Args $case)
             if ($first.StdOut -cne $second.StdOut -or $first.ExitCode -ne $second.ExitCode) { throw "輸出不一致：$case" }
@@ -882,8 +882,8 @@ try {
         $a.StdOut -ceq $b.StdOut
     }
     Test-Case X02 {
-        $a = Invoke-Selector -Arguments (Split-Args '-Type survey -Offline codex-scan,codex-review')
-        $b = Invoke-Selector -Arguments (Split-Args '-Type survey -Offline codex-review,codex-scan')
+        $a = Invoke-Selector -Arguments (Split-Args '-Type survey -Offline codex-test,codex-review')
+        $b = Invoke-Selector -Arguments (Split-Args '-Type survey -Offline codex-review,codex-test')
         $a.StdOut -ceq $b.StdOut -or ($a.Json.executor.id -eq $b.Json.executor.id -and $a.ExitCode -eq $b.ExitCode)
     }
     Test-Case X03 {
@@ -917,21 +917,21 @@ try {
         $r.Json.dispatchLine -ceq '[派工] 不執行，沒有可用的執行者，這項工作可以不做：提供顧問意見；已略過 codex-advisor（離線）'
     }
     Test-Case L07 {
-        $r = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-content')
-        $r.Json.dispatchLine -ceq '[派工] 停止，沒有可用的執行者：產生影像；已略過 codex-content（離線）'
+        $r = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-factcheck')
+        $r.Json.dispatchLine -ceq '[派工] 停止，沒有可用的執行者：產生影像；已略過 codex-factcheck（離線）'
     }
     Test-Case L09 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type test')
-        $r.Json.dispatchLine -ceq '[派工] 交給 Codex scan：測試取證'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Codex test：測試取證'
     }
 
     Test-Case L10 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type generate')
-        $r.Json.dispatchLine -ceq '[派工] 交給 Codex content：產生影像'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Codex factcheck：產生影像'
     }
     Test-Case L11 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck')
-        $r.Json.dispatchLine -ceq '[派工] 交給 Codex content：事實查核'
+        $r.Json.dispatchLine -ceq '[派工] 交給 Codex factcheck：事實查核'
     }
 
     # 登錄表 entry 欄位（審查、事實校閱、影像產生、顧問切到新入口，測試取證維持現行入口）
@@ -941,25 +941,25 @@ try {
     }
     Test-Case EN02 {
         $cases = @(
-            @('-Type test', 'codex-scan', 'scripts/Invoke-CodexRun.ps1'), @('-Type generate', 'codex-content', 'scripts/Invoke-CodexRun.ps1'),
-            @('-Type factcheck', 'codex-content', 'scripts/Invoke-CodexRun.ps1'), @('-Type advise -ImplementerFamily claude -Authorized', 'codex-advisor', 'scripts/Invoke-CodexRun.ps1'))
+            @('-Type test', 'codex-test', 'scripts/Invoke-CodexRun.ps1'), @('-Type generate', 'codex-factcheck', 'scripts/Invoke-CodexRun.ps1'),
+            @('-Type factcheck', 'codex-factcheck', 'scripts/Invoke-CodexRun.ps1'), @('-Type advise -ImplementerFamily claude -Authorized', 'codex-advisor', 'scripts/Invoke-CodexRun.ps1'))
         @($cases | Where-Object {
                 $r = Invoke-Selector -Arguments (Split-Args $_[0])
                 -not ($r.ExitCode -eq 0 -and $r.Json.executor.id -ceq $_[1] -and $r.Json.executor.entry -ceq $_[2])
             }).Count -eq 0
     }
     Test-Case EN09 {
-        # 測試取證：Codex scan 只做 MCP 操作（browse、desktop-control、web），建置與測試命令（build-test）改由 Claude 執行者承接。
+        # 測試取證：Codex test 只做 MCP 操作（browse、desktop-control、web），建置與測試命令（build-test）改由 Claude 執行者承接。
         $browse = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse')
         $desktop = Invoke-Selector -Arguments (Split-Args '-Type test -Tags desktop-control')
         $build = Invoke-Selector -Arguments (Split-Args '-Type test -Tags build-test')
         $browseBuild = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse,build-test')
-        $browse.ExitCode -eq 0 -and $browse.Json.executor.id -ceq 'codex-scan' -and $desktop.ExitCode -eq 0 -and $desktop.Json.executor.id -ceq 'codex-scan' `
+        $browse.ExitCode -eq 0 -and $browse.Json.executor.id -ceq 'codex-test' -and $desktop.ExitCode -eq 0 -and $desktop.Json.executor.id -ceq 'codex-test' `
             -and $build.ExitCode -eq 0 -and $build.Json.executor.id -ceq 'sonnet' -and $browseBuild.ExitCode -ne 0 -and $browseBuild.Json.status -ceq 'stopped'
     }
     Test-Case EN10 {
         # 經 Invoke-CodexRun.ps1 的 test 全數離線時，入口以 -Tags browse 重新選派（Get-RunFallbackSelection）：瀏覽器與桌面取證沒有 Claude 替代者，必須是 stopped。
-        $offline = @('-Offline', 'codex-scan,codex-content,codex-review,codex-advisor')
+        $offline = @('-Offline', 'codex-test,codex-factcheck,codex-review,codex-advisor')
         $stopped = Invoke-Selector -Arguments ((Split-Args '-Type test -ImplementerFamily claude -Tags browse') + $offline)
         $desktopStopped = Invoke-Selector -Arguments ((Split-Args '-Type test -ImplementerFamily claude -Tags desktop-control') + $offline)
         $stopped.ExitCode -ne 0 -and $stopped.Json.status -ceq 'stopped' -and $null -eq $stopped.Json.executor `

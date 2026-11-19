@@ -11,7 +11,7 @@
 - role_file、execution_root、report_line_root、targets、required_reads 一律為絕對路徑；targets 的目錄以結尾反斜線標示，required_reads 可為空陣列。
 - report_name 只含檔名。報告落在 <report_line_root>\runs\<dispatch_slug>-<runId>\<report_name>。
 - advisor_request_source、evidence_file、question_ids 只在 task_type 為 advise 時填寫且三者必填，其他類型不得出現；advise 的 profile 固定為 advisor，required_reads 為空陣列，見 skills\codex-dispatch\references\run.md「顧問（advise）」。
-- test_context_file 只在 task_type 為 test 時選填，值為 <work-root>\.local\ai-sessions\test-context\test-context.md 的絕對路徑（檔案必須存在）；test 的 profile 固定為 scan，role_file 填派遣檔本身，受測對象與登入方式寫在「## 任務」，見 skills\codex-dispatch\references\run.md「測試取證（test）」。
+- test_context_file 只在 task_type 為 test 時選填，值為 <work-root>\.local\ai-sessions\test-context\test-context.md 的絕對路徑（檔案必須存在）；test 的 profile 固定為 test，role_file 填派遣檔本身，受測對象與登入方式寫在「## 任務」，見 skills\codex-dispatch\references\run.md「測試取證（test）」。
 - cycle 選填，含 id、round（正整數）、role，寫入成本帳的 cycle 欄位；省略時三欄寫「-」。
 - 不得出現其他鍵，也不得列出 .env、.env.*、*.pem、*.key、secrets.* 等機密樣式檔。
 -->

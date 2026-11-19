@@ -321,7 +321,7 @@ try {
         $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
         Assert-Equal 0 $start.Code
         Write-TestUtf8 -Path $start.Json.report_path -Text "# 報告`n沒有 manifest`n"
-        $changed = New-OrderFile -Name 'order.md' -Override @{ task_type = 'factcheck'; profile = 'content' }
+        $changed = New-OrderFile -Name 'order.md' -Override @{ task_type = 'factcheck'; profile = 'factcheck' }
         try {
             $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $changed, '-ExecutorId', 'sonnet')
             Assert-Equal 1 $end.Code $end.Stderr

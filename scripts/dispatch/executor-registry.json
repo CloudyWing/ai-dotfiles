@@ -6,7 +6,7 @@
   },
   "flags": ["E", "T"],
   "codexEfforts": ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-  "retiredProfiles": ["default", "implement", "intensive", "deep", "deep-review"],
+  "retiredProfiles": ["default", "implement", "intensive", "deep", "deep-review", "scan", "content"],
   "maxIncomplete": 3,
   "types": {
     "edit": { "requiredFlags": ["E", "T"], "impliedTags": ["write"], "forbiddenTags": [] },
@@ -24,7 +24,7 @@
       "order": 10, "gated": false
     },
     {
-      "id": "codex-scan", "display": "Codex scan", "platform": "codex", "profile": "scan", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
+      "id": "codex-test", "display": "Codex test", "platform": "codex", "profile": "test", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
       "profileSettings": {
         "model": "gpt-6.1-terra", "effort": "max", "subagentModel": "gpt-6-luna", "subagentEffort": "max",
         "mcpServers": {
@@ -47,7 +47,7 @@
       "order": 30, "gated": false
     },
     {
-      "id": "codex-content", "display": "Codex content", "platform": "codex", "profile": "content", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
+      "id": "codex-factcheck", "display": "Codex factcheck", "platform": "codex", "profile": "factcheck", "family": "codex", "entry": "scripts/Invoke-CodexRun.ps1",
       "profileSettings": { "model": "gpt-6.2-sol", "effort": "medium", "subagentModel": "gpt-6-luna", "subagentEffort": "max" },
       "accepts": ["generate", "factcheck"], "tags": ["web", "image-gen"], "when": {},
       "order": 35, "gated": false

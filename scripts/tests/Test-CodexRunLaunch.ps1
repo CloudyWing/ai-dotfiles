@@ -175,8 +175,8 @@ try {
         }
         Test-Case 'EXEC-SEARCH -Search 時 --search 緊接在權限設定之後、exec 之前；未指定時不出現' {
             $last = Join-Path $root 'last.md'
-            $plain = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile content -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot)
-            $search = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile content -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot -Search)
+            $plain = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile factcheck -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot)
+            $search = @(New-RunExecArgument -ExecutionRoot $execRoot -Profile factcheck -OutputDirectory $outDir -LastMessagePath $last -IsGitRepository $true -AiAgentsRoot $aiRoot -Search)
             Assert-Equal 0 (@($plain | Where-Object { $_ -ceq '--search' }).Count) '未指定時不應有 --search'
             Assert-Equal 1 (@($search | Where-Object { $_ -ceq '--search' }).Count) '應恰有一個 --search'
             Assert-Equal ([array]::IndexOf($search, 'exec') - 1) ([array]::IndexOf($search, '--search')) '--search 應緊接在 exec 之前'
@@ -207,7 +207,7 @@ try {
             $actual.plan_extra = Get-RunPermissionPlan -ExecutionRoot $ex -OutputDirectory $od -AiAgentsRoot $ai -ReportLineRoot $rl -ExtraReadRoot @('C:\h\generated_images')
             $actual.args = New-RunPermissionArgument -ExecutionRoot $ex -OutputDirectory $od -AiAgentsRoot $ai -ReportLineRoot $rl
             $actual.exec = New-RunExecArgument -ExecutionRoot $ex -Profile review -OutputDirectory $od -LastMessagePath 'C:\work\lm.md' -IsGitRepository $true -AiAgentsRoot $ai -ReportLineRoot $rl
-            $actual.exec_search = New-RunExecArgument -ExecutionRoot $ex -Profile content -OutputDirectory $od -LastMessagePath 'C:\work\lm.md' -IsGitRepository $false -AiAgentsRoot $ai -ReportLineRoot $rl -Search -ExtraReadRoot @('C:\h\generated_images') -ModelOverride m-1
+            $actual.exec_search = New-RunExecArgument -ExecutionRoot $ex -Profile factcheck -OutputDirectory $od -LastMessagePath 'C:\work\lm.md' -IsGitRepository $false -AiAgentsRoot $ai -ReportLineRoot $rl -Search -ExtraReadRoot @('C:\h\generated_images') -ModelOverride m-1
             Assert-Equal (ConvertTo-Json -InputObject (ConvertFrom-Json -InputObject $baseline) -Depth 8) (ConvertTo-Json -InputObject (ConvertFrom-Json -InputObject (ConvertTo-Json -InputObject $actual -Depth 8)) -Depth 8)
         }
         Test-Case 'PERM-OUTPUT-ONLY 不開放工作目錄：可讀與可寫根目錄只有輸出目錄，--cd 指向輸出目錄，其他根目錄不出現' {

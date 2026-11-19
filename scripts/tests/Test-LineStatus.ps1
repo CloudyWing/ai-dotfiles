@@ -360,7 +360,7 @@ exit 0
     $healthPath = Join-Path $tempRoot 'codex-account-health.json'
     $healthEntries = @(
         @{ account_name = 'acct-b'; codex_home = 'C:\x'; profile = 'review'; model = 'model-x'; reason_code = 'model-not-supported'; recorded_at_utc = '2026-11-16T00:00:00Z'; expires_at_utc = '2026-11-17T00:00:00Z' },
-        @{ account_name = 'acct-b'; codex_home = 'C:\x'; profile = 'scan'; model = 'model-old'; reason_code = 'model-not-supported'; recorded_at_utc = '2026-11-14T00:00:00Z'; expires_at_utc = '2026-11-15T00:00:00Z' },
+        @{ account_name = 'acct-b'; codex_home = 'C:\x'; profile = 'test'; model = 'model-old'; reason_code = 'model-not-supported'; recorded_at_utc = '2026-11-14T00:00:00Z'; expires_at_utc = '2026-11-15T00:00:00Z' },
         @{ account_name = 'acct-z'; profile = 'review'; expires_at_utc = '2026-11-17T00:00:00Z' },
         @{ profile = 'broken' }
     )

@@ -222,10 +222,10 @@ try {
         $dir = New-TestDirectory -Name 'models'
         Write-TestUtf8 -Path (Join-Path $dir 'review.config.toml') -Text "model_reasoning_effort = `"high`"`nmodel = `"top-model`" # 註解`n`n[agents]`nmodel = `"agent-model`"`n"
         Assert-Equal 'top-model' (Get-RunProfileModel -CodexHome $dir -Profile 'review')
-        Write-TestUtf8 -Path (Join-Path $dir 'scan.config.toml') -Text "[agents]`nmodel = `"agent-model`"`n"
-        Assert-True ($null -eq (Get-RunProfileModel -CodexHome $dir -Profile 'scan')) '段落內的 model 不應被讀成頂層'
-        Write-TestUtf8 -Path (Join-Path $dir 'content.config.toml') -Text "model = 'literal-model'`n"
-        Assert-Equal 'literal-model' (Get-RunProfileModel -CodexHome $dir -Profile 'content')
+        Write-TestUtf8 -Path (Join-Path $dir 'test.config.toml') -Text "[agents]`nmodel = `"agent-model`"`n"
+        Assert-True ($null -eq (Get-RunProfileModel -CodexHome $dir -Profile 'test')) '段落內的 model 不應被讀成頂層'
+        Write-TestUtf8 -Path (Join-Path $dir 'factcheck.config.toml') -Text "model = 'literal-model'`n"
+        Assert-Equal 'literal-model' (Get-RunProfileModel -CodexHome $dir -Profile 'factcheck')
         Write-TestUtf8 -Path (Join-Path $dir 'advisor.config.toml') -Text "model_reasoning_effort = `"high`"`n"
         Assert-True ($null -eq (Get-RunProfileModel -CodexHome $dir -Profile 'advisor')) 'model_reasoning_effort 不應被誤讀為 model'
         Assert-True ($null -eq (Get-RunProfileModel -CodexHome $dir -Profile 'absent')) '檔案不存在時為 null'

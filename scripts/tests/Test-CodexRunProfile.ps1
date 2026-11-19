@@ -695,11 +695,11 @@ try {
             $path = Join-Path $e.Account 'beta.config.toml'
             $null = New-Item -ItemType SymbolicLink -Path $path -Target $other
             $results = @(New-CodexProfileAccountLink -AccountHome $e.Account -ProfileDirectory $e.Generated -Spec $e.Specs)
-            $scan = @($results | Where-Object { $_.profile -ceq 'beta' })[0]
-            Assert-Equal 'blocked' $scan.action
-            Assert-Equal 'wrong-target' $scan.state
-            Assert-Equal $other $scan.actual_target
-            Assert-True ((@($scan.fix_commands) -join "`n").Contains('Remove-Item -LiteralPath')) '命令應只移除連結本身'
+            $betaResult = @($results | Where-Object { $_.profile -ceq 'beta' })[0]
+            Assert-Equal 'blocked' $betaResult.action
+            Assert-Equal 'wrong-target' $betaResult.state
+            Assert-Equal $other $betaResult.actual_target
+            Assert-True ((@($betaResult.fix_commands) -join "`n").Contains('Remove-Item -LiteralPath')) '命令應只移除連結本身'
             Assert-Equal $other (@((Get-Item -LiteralPath $path -Force).Target) -join '') '連結目標不得改變'
         }
         Test-Case 'LINK-TARGET-MISSING repo 產生檔不存在時不建立連結，action=target-missing' {
@@ -762,10 +762,10 @@ try {
         $path = Join-Path $e.Account 'beta.config.toml'
         $null = New-Item -ItemType Junction -Path $path -Target $elsewhere
         $results = @(New-CodexProfileAccountLink -AccountHome $e.Account -ProfileDirectory $e.Generated -Spec $e.Specs -WhatIf)
-        $scan = @($results | Where-Object { $_.profile -ceq 'beta' })[0]
-        Assert-Equal 'wrong-target' $scan.state
-        Assert-Equal 'blocked' $scan.action
-        Assert-Equal 'Junction' $scan.kind
+        $betaResult = @($results | Where-Object { $_.profile -ceq 'beta' })[0]
+        Assert-Equal 'wrong-target' $betaResult.state
+        Assert-Equal 'blocked' $betaResult.action
+        Assert-Equal 'Junction' $betaResult.kind
         Assert-Equal 'Junction' ([string](Get-Item -LiteralPath $path -Force).LinkType) '連結不得被改動'
     }
     Test-Case 'FIX-LINES 修正命令每個獨立成行、只含命令（說明在 fix_note），Format 後的說明以 # 開頭可整段貼上' {

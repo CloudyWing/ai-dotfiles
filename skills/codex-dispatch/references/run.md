@@ -38,19 +38,19 @@
 | `review` | `~\.ai-agents\agents\codex\reviewer.toml`、`frontend-reviewer.toml` 或 `contract-auditor.toml` | 依角色為 `review-report.md`、`frontend-reviewer-report.md` 或 `contract-auditor-report.md` | 成功後檢查報告的 Finding manifest，結果在 `final.review_report_check`；prompt 以「審查者:」行標明實際執行者 |
 | `factcheck` | `~\.ai-agents\skills\fact-check-note\SKILL.md` | `fact-check-report.md` | 在 `exec` 前加 `--search`；不做 manifest 檢查，`final.review_report_check` 為 `null` |
 | `generate` | 派遣檔本身（影像產生沒有專屬角色規則檔，任務、驗收條件與輸出規則全寫在派遣檔） | 自訂，例如 `generate-report.md` | 選定帳號的 `<CODEX_HOME>\generated_images` 列為可讀（不存在時入口先建立）。影像先產在該處，`## 任務` 要求 Codex 複製到輸出目錄，並在報告逐一列出影像檔名；不做 manifest 檢查 |
-| `test` | 派遣檔本身（測試取證沒有專屬角色規則檔，任務、受測對象、驗收條件與回報欄位全寫在派遣檔） | 自訂，例如 `test-report.md` | 只接受檔位 `scan`；命令沙盒維持唯讀，操作與取證只經檔位設定檔掛上的 MCP 工具；見「測試取證（test）」 |
+| `test` | 派遣檔本身（測試取證沒有專屬角色規則檔，任務、受測對象、驗收條件與回報欄位全寫在派遣檔） | 自訂，例如 `test-report.md` | 只接受檔位 `test`；命令沙盒維持唯讀，操作與取證只經檔位設定檔掛上的 MCP 工具；見「測試取證（test）」 |
 | `advise` | 派遣檔本身（顧問沒有角色規則檔） | 自訂，例如 `advice-report.md` | 不開放工作目錄，可讀可寫根目錄只有輸出目錄，另以檔案單位唯讀開放專案說明檔，`--cd` 指向輸出目錄；evidence 全文內嵌 prompt；Codex 的最後訊息由入口存成 `report_name`；結束時檢查報告含每個題號，見「顧問（advise）」 |
 
-`profile` 與 `task_type` 綁定：`advise` 只接受檔位 `advisor`，`test` 只接受檔位 `scan`，其他類型不接受這兩個專屬檔位，不符時以結束碼 2、`RunTaskProfileMismatch` 停止，不啟動 Codex。
+`profile` 與 `task_type` 綁定：`advise` 只接受檔位 `advisor`，`test` 只接受檔位 `test`，其他類型不接受這兩個專屬檔位，不符時以結束碼 2、`RunTaskProfileMismatch` 停止，不啟動 Codex。
 
 ### 測試取證（test）
 
-測試取證分兩段。建置、還原套件、啟動受測程式與執行可重跑的測試專案（含 `dotnet test` 的 FlaUI 與 Playwright 測試）由 Claude 端在沙盒外完成，不派給 Codex；Codex 只以 MCP 工具臨場操作已啟動的受測對象並取證。網頁用 `playwright`，桌面用 `flaui-mcp`，兩者只在檔位 `scan` 掛上，其他類型不載入。
+測試取證分兩段。建置、還原套件、啟動受測程式與執行可重跑的測試專案（含 `dotnet test` 的 FlaUI 與 Playwright 測試）由 Claude 端在沙盒外完成，不派給 Codex；Codex 只以 MCP 工具臨場操作已啟動的受測對象並取證。網頁用 `playwright`，桌面用 `flaui-mcp`，兩者只在檔位 `test` 掛上，其他類型不載入。
 
 - 派工前準備（Claude 端）：確認受測對象已啟動且可由 MCP 工具到達（網頁已能開啟，桌面程式視窗已顯示）；需要登入時確認測試環境資料檔存在。入口不檢查受測對象是否已啟動。
 - 派遣檔：`role_file` 填派遣檔本身。受測對象寫在 `## 任務`，網頁寫網址，桌面寫視窗標題與行程識別碼（`windows_attach` 用行程識別碼附加，不列舉其他視窗）。`targets` 只列要比對變動的來源檔或目錄，不含 `bin`、`obj`、記錄檔等受測程式執行時會寫入的位置，否則 `source_changed` 會被誤觸發。
 - `test_context_file`：選填，測試環境資料檔的絕對路徑，固定為 `<work-root>/.local/ai-sessions/test-context/test-context.md`（建立與格式見 `session-artifacts` skill「測試環境資料檔」）。入口檢查路徑形態、檔案存在，並以檔案單位唯讀開放（執行紀錄 `permission.read_files`），不開放其所在目錄，也不受可讀根目錄限制。
-- 檔位設定檔：登錄表 `codex-scan` 的 `profileSettings.mcpServers` 產生 `[mcp_servers.*]` 表，核准模式固定 `approve`（`codex exec` 的核准政策為 `never`，未設定時 MCP 工具被拒），以 `enabled_tools` 只開放需要的工具。`flaui-mcp` 的指令路徑因機器而異，不進產生檔，由帳號目錄 `config.toml` 以 `enabled = false` 提供，`Setup-AIGlobalConfig.ps1` 從 Codex Desktop 的 `config.toml` 只讀取單行字串的 `command` 與 `startup_timeout_sec` 後追加；帳號沒有 `config.toml`、讀不到或編碼不明（非 UTF-8、含 NUL）、來源的 `command` 格式無法確定時，Setup 不寫檔並計入阻塞。帳號缺少時入口以結束碼 2、`CodexMcpConfigMissing` 停止，訊息列出重跑 Setup 的命令。
+- 檔位設定檔：登錄表 `codex-test` 的 `profileSettings.mcpServers` 產生 `[mcp_servers.*]` 表，核准模式固定 `approve`（`codex exec` 的核准政策為 `never`，未設定時 MCP 工具被拒），以 `enabled_tools` 只開放需要的工具。`flaui-mcp` 的指令路徑因機器而異，不進產生檔，由帳號目錄 `config.toml` 以 `enabled = false` 提供，`Setup-AIGlobalConfig.ps1` 從 Codex Desktop 的 `config.toml` 只讀取單行字串的 `command` 與 `startup_timeout_sec` 後追加；帳號沒有 `config.toml`、讀不到或編碼不明（非 UTF-8、含 NUL）、來源的 `command` 格式無法確定時，Setup 不寫檔並計入阻塞。帳號缺少時入口以結束碼 2、`CodexMcpConfigMissing` 停止，訊息列出重跑 Setup 的命令。
 - 輸出落點：入口對 Codex 行程設定 `PLAYWRIGHT_MCP_OUTPUT_DIR` 為該次輸出目錄，自動命名的截圖與頁面快照存入其中。`## 任務` 與 prompt 要求截圖不指定檔名，指定檔名的截圖會寫到工作目錄根，`<execution_root>\.playwright-mcp` 不納入來源雜湊，入口在啟動前後各記一次該目錄的檔案狀態，`mcp_stray_output.exists` 為 `true` 且 `files` 列出檔名時，表示這些檔案是本次新增或變動的殘留；先前就存在且沒變動的檔案不算。列舉失敗（例如子目錄沒有存取權限）時派遣照常完成，`mcp_stray_output.state` 為 `indeterminate`、`exists` 為 `null` 並附 `error`，回收時人工檢查該目錄。
 - 桌面截圖：`windows_screenshot` 只把影像回傳給模型，不存檔，不作為留存證據。桌面畫面的留存方式尚未定案，需要留存時由 Claude 端在沙盒外擷取。
 - 紀錄與結果：執行紀錄與 `final` 另含 `mcp_tool_calls`（`completed`、`failed` 次數與用到的伺服器）、`artifacts`（輸出目錄內報告以外的檔案，相對路徑）與 `mcp_stray_output`。不做報告格式檢查，`final.review_report_check` 為 `null`。
@@ -83,7 +83,7 @@
 | 1 | `stopped`，或沒有 JSON 輸出 | 執行紀錄或成本列寫入失敗，或入口發生未預期的錯誤 | 讀 stderr 的錯誤訊息；報告若已產生仍保留在輸出目錄，排除原因後重跑 |
 | 2 | `stopped` | 派遣檔無效或引用的路徑不合格 | 依 `error.details` 列出的每個路徑與原因修正派遣檔 |
 | 2 | `stopped` | `error.code` 為 `CodexProfileDrift`：實際要使用的帳號的檔位設定檔與主 checkout 的產生檔不一致（內容不同或連結指向他處），或產生檔與登錄表不一致 | 逐行貼到 pwsh 執行 `error.message` 列出的修正命令（重跑 `Update-CodexProfiles.ps1`、重跑 Setup 或移走帳號目錄內的一般檔案後重建連結），再重跑。入口沒有啟動 Codex，也沒有改任何檔案 |
-| 2 | `stopped` | `error.code` 為 `CodexMcpConfigMissing`（`test`）：帳號目錄 `config.toml` 缺少檔位 `scan` 需要的 MCP 伺服器 command | 以 pwsh 執行 `error.message` 列出的 Setup 命令後重跑。入口沒有啟動 Codex，也沒有改任何檔案 |
+| 2 | `stopped` | `error.code` 為 `CodexMcpConfigMissing`（`test`）：帳號目錄 `config.toml` 缺少檔位 `test` 需要的 MCP 伺服器 command | 以 pwsh 執行 `error.message` 列出的 Setup 命令後重跑。入口沒有啟動 Codex，也沒有改任何檔案 |
 | 3 | `stopped` | 非 Windows、找不到 codex，或 MXC 不可用 | 回報使用者，不改用其他沙盒 |
 | 4 | `stopped` | 沒有登記帳號、全部帳號不可用，或候選帳號都被服務端拒絕 | 見「帳號」 |
 

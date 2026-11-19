@@ -127,12 +127,12 @@ try {
             review = @{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
             factcheck = @{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
             generate = @{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
-            test = @{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = 'scan'; mcp = $true }
+            test = @{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = 'test'; mcp = $true }
             advise = @{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $true; exclusive_profile = 'advisor'; mcp = $false }
         }
         Assert-Equal @('review', 'factcheck', 'generate', 'test', 'advise') @((Get-RunTaskTypeSetting).Keys)
         foreach ($type in @('review', 'factcheck', 'generate', 'test', 'advise')) {
-            $override = @{ task_type = $type; profile = $(if ($type -ceq 'review') { 'review' } elseif ($type -ceq 'advise') { 'advisor' } elseif ($type -ceq 'test') { 'scan' } else { 'content' }) }
+            $override = @{ task_type = $type; profile = $(if ($type -ceq 'review') { 'review' } elseif ($type -ceq 'advise') { 'advisor' } elseif ($type -ceq 'test') { 'test' } else { 'factcheck' }) }
             if ($type -ceq 'advise') { $override += $adviseExtra }
             $order = Read-RunDispatchFile -Path (Write-OrderFile -Override $override -Name ('setting-' + $type + '.md'))
             Assert-Equal $type $order.task_type
@@ -142,34 +142,34 @@ try {
             Test-RunPreStart -Order $order -AiAgentsRoot $aiRoot
         }
     }
-    Test-Case 'ORDER-TEST-PROFILE-BINDING test 只接受檔位 scan，其他類型不接受檔位 scan（結束碼 2）' {
-        foreach ($profileName in @('review', 'content', 'advisor')) {
+    Test-Case 'ORDER-TEST-PROFILE-BINDING test 只接受檔位 test，其他類型不接受檔位 test（結束碼 2）' {
+        foreach ($profileName in @('review', 'factcheck', 'advisor')) {
             $caught = Assert-Throws -Code 'RunTaskProfileMismatch' -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = $profileName } -Name 'test-bind-1.md') }
             Assert-Equal 2 ([int]$caught.Data['ExitCode'])
         }
         foreach ($type in @('review', 'factcheck', 'generate')) {
-            $caught = Assert-Throws -Code 'RunTaskProfileMismatch' -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = $type; profile = 'scan' } -Name ('test-bind-' + $type + '.md')) }
+            $caught = Assert-Throws -Code 'RunTaskProfileMismatch' -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = $type; profile = 'test' } -Name ('test-bind-' + $type + '.md')) }
             Assert-Equal 2 ([int]$caught.Data['ExitCode'])
         }
-        $caught = Assert-Throws -Code 'RunTaskProfileMismatch' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ profile = 'scan' } -Name 'test-bind-advise.md') }
+        $caught = Assert-Throws -Code 'RunTaskProfileMismatch' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ profile = 'test' } -Name 'test-bind-advise.md') }
         Assert-Equal 2 ([int]$caught.Data['ExitCode'])
     }
     $contextDirectory = Join-Path $root 'main\.local\ai-sessions\test-context'
     $contextFile = Join-Path $contextDirectory 'test-context.md'
     Write-TestUtf8 -Path $contextFile -Text "# 測試環境`n"
     Test-Case 'ORDER-TEST-CONTEXT test_context_file 只限 test：test 解析並通過啟動前檢查（檔案可在可讀根目錄之外），其他類型以 RunDispatchFileInvalid 拒絕' {
-        $order = Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = 'scan'; test_context_file = $contextFile } -Name 'ctx-ok.md')
+        $order = Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = 'test'; test_context_file = $contextFile } -Name 'ctx-ok.md')
         Assert-Equal $contextFile $order.test_context_file
         Test-RunPreStart -Order $order -AiAgentsRoot $aiRoot
-        $noContext = Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = 'scan' } -Name 'ctx-none.md')
+        $noContext = Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = 'test' } -Name 'ctx-none.md')
         Assert-True ($null -eq $noContext.test_context_file) '未填時應為 null'
         foreach ($type in @('review', 'factcheck', 'generate')) {
-            $profileName = if ($type -ceq 'review') { 'review' } else { 'content' }
+            $profileName = if ($type -ceq 'review') { 'review' } else { 'factcheck' }
             $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'test_context_file' -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = $type; profile = $profileName; test_context_file = $contextFile } -Name ('ctx-' + $type + '.md')) }
         }
         $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'test_context_file' -Script { Read-RunDispatchFile -Path (Write-AdviseOrder -Override @{ test_context_file = $contextFile } -Name 'ctx-advise.md') }
         foreach ($value in @('', 5, (,@($contextFile)))) {
-            $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'test_context_file' -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = 'scan'; test_context_file = $value } -Name 'ctx-type.md') }
+            $null = Assert-Throws -Code 'RunDispatchFileInvalid' -MessageContains 'test_context_file' -Script { Read-RunDispatchFile -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = 'test'; test_context_file = $value } -Name 'ctx-type.md') }
         }
     }
     Test-Case 'ORDER-TEST-CONTEXT-PATH test_context_file 的檔名與位置固定為 .local\ai-sessions\test-context\test-context.md，且必須存在；機密樣式檔名與不存在的檔案被拒' {
@@ -185,7 +185,7 @@ try {
             @{ path = 'relative\test-context.md'; reason = 'not-absolute' }
         )
         foreach ($case in $cases) {
-            $details = Get-PreStartDetails -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = 'scan'; test_context_file = $case.path } -Name 'ctx-bad.md')
+            $details = Get-PreStartDetails -Path (Write-OrderFile -Override @{ task_type = 'test'; profile = 'test'; test_context_file = $case.path } -Name 'ctx-bad.md')
             Assert-True (@($details | Where-Object { $_.path -ceq $case.path -and $_.reason -ceq $case.reason }).Count -eq 1) ($case.path + ' 應以 ' + $case.reason + ' 拒絕：' + ((ConvertTo-Json -InputObject $details -Compress)))
         }
     }

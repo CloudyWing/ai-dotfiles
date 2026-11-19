@@ -20,8 +20,8 @@
 | 檔位 | 用途 |
 | --- | --- |
 | `review` | Codex `Reviewer` 審查（`type=review`），不依檔數或規則檔與否分層 |
-| `scan` | 測試（煙霧驗證取證，`type=test`），目前由 `scripts/Invoke-CodexRun.ps1` 發動，以 MCP 工具臨場操作，見 `run.md`「測試取證（test）」；執行者與入口以登錄表為準 |
-| `content` | 事實校閱與上網查證（`type=factcheck`）、影像產生（`type=generate`） |
+| `test` | 測試（煙霧驗證取證，`type=test`），目前由 `scripts/Invoke-CodexRun.ps1` 發動，以 MCP 工具臨場操作，見 `run.md`「測試取證（test）」；執行者與入口以登錄表為準 |
+| `factcheck` | 事實校閱與上網查證（`type=factcheck`）、影像產生（`type=generate`） |
 | `advisor` | 意見評估（`type=advise`），目前由 `scripts/Invoke-CodexRun.ps1` 發動，見 `run.md`「顧問（advise）」 |
 
 ## 額度快照

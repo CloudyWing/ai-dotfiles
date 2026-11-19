@@ -76,7 +76,7 @@ policy.allow_implicit_invocation: true
 
 ## 跨端交接契約
 
-- `fact-check-note` 是交接鏈的查證段。Claude 端單一入口在 G1 取得使用者確認後，以 `Type=factcheck`，依 `executor-selection` 選出執行者（Codex `content` 優先，Codex 離線時為 Sonnet subagent）執行本 Skill；兩種執行者都產出同一份固定報告。
+- `fact-check-note` 是交接鏈的查證段。Claude 端單一入口在 G1 取得使用者確認後，以 `Type=factcheck`，依 `executor-selection` 選出執行者（Codex `factcheck` 優先，Codex 離線時為 Sonnet subagent）執行本 Skill；兩種執行者都產出同一份固定報告。
 - 校閱完成後，上游只將報告寫入 `<work-root>/.local/ai-sessions/report/<lineSlug>/fact-check-report.md`。此固定檔是 `apply-fact-check` 的唯一輸入；下游讀取失敗時停止並回報缺件，不建立替代報告。
 - 回收固定報告後，Claude 端進入 `apply-fact-check`，由其 G2、G3、G4 gate 管理後續使用者裁決。上游不改寫目標文件，也不替下游穿越 gate。
 
@@ -127,7 +127,7 @@ policy.allow_implicit_invocation: true
 
 ## 派遣發動
 
-`fact-check-note` 的派遣歸屬為 `either`。主 Agent 以 `Type=factcheck`，依 `executor-selection` 選出執行者；選出 Codex `content` 時先載入 `codex-dispatch` skill，依選派入口輸出的 `executor.entry` 撰寫派遣檔，`task_type` 為 `factcheck`，`role_file` 指定本文件。
+`fact-check-note` 的派遣歸屬為 `either`。主 Agent 以 `Type=factcheck`，依 `executor-selection` 選出執行者；選出 Codex `factcheck` 時先載入 `codex-dispatch` skill，依選派入口輸出的 `executor.entry` 撰寫派遣檔，`task_type` 為 `factcheck`，`role_file` 指定本文件。
 
 派遣檔 `## 邊界` 寫「唯讀，不得寫入目標文件」。上網查證由入口在 `exec` 前加 `--search`，派遣檔不另外指定。查證結果寫入派遣指定的報告檔，原始文件維持不變。
 

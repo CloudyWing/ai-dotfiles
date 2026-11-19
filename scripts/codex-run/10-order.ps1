@@ -22,7 +22,7 @@ function Get-RunTaskTypeSetting {
         review = [pscustomobject]@{ search = $false; generated_images = $false; report_check = 'review-manifest'; executor_label = '審查者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
         factcheck = [pscustomobject]@{ search = $true; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
         generate = [pscustomobject]@{ search = $false; generated_images = $true; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = $null; mcp = $false }
-        test = [pscustomobject]@{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = 'scan'; mcp = $true }
+        test = [pscustomobject]@{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $false; exclusive_profile = 'test'; mcp = $true }
         advise = [pscustomobject]@{ search = $false; generated_images = $false; report_check = $null; executor_label = '執行者'; evidence_only = $true; exclusive_profile = 'advisor'; mcp = $false }
     }
     if (-not $PSBoundParameters.ContainsKey('TaskType')) { return $settings }
