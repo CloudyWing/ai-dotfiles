@@ -97,7 +97,7 @@ $script:EscalateFromProvided = $PSBoundParameters.ContainsKey('EscalateFrom')
 $script:FamilyPreference = 'family'
 $script:PreferenceCaptions = @{ family = '找不到不同模型家族的執行者，改由同家族審查' }
 # 判定行的白話對照（與 executor-selection skill「判定行的白話對照」一致）。登錄表未列的類型與旗標以原名顯示。
-$script:TypeVerbs = @{ edit = '改檔'; survey = '盤點取證'; test = '測試取證'; generate = '產生影像'; factcheck = '事實查核'; review = '審查'; advise = '提供顧問意見' }
+$script:TypeVerbs = @{ edit = '改檔'; survey = '盤點取證'; design = '設計起草'; test = '測試取證'; generate = '產生影像'; factcheck = '事實查核'; review = '審查'; advise = '提供顧問意見' }
 $script:FlagPhrases = @{ 'E=True' = '範圍已列明'; 'E=False' = '範圍需自行探索'; 'T=True' = '需要建置測試'; 'T=False' = '不需建置測試' }
 $script:SkipReasonPhrases = @{ offline = '離線'; 'incomplete-limit' = '未完成次數已達上限' }
 
@@ -331,7 +331,7 @@ function Get-DescribeDocument {
             order    = $executor.Order
             gated    = $executor.Gated
         }
-        if ($executor.Platform -eq 'claude') { $row['model'] = $executor.Model } else { $row['profile'] = $executor.Profile; $row['entry'] = $executor.Entry; $row['profileSettings'] = $executor.ProfileSettings }
+        if ($executor.Platform -eq 'claude') { $row['model'] = $executor.Model; $row['selfRepair'] = $executor.SelfRepair } else { $row['profile'] = $executor.Profile; $row['entry'] = $executor.Entry; $row['profileSettings'] = $executor.ProfileSettings }
         $executorRows += , $row
     }
     return [ordered]@{
@@ -451,7 +451,7 @@ function Invoke-Selector {
     $executorNode = $null
     if ($null -ne $selection.Executor) {
         $executorNode = [ordered]@{ id = $selection.Executor.Id; display = $selection.Executor.Display; platform = $selection.Executor.Platform }
-        if ($selection.Executor.Platform -eq 'claude') { $executorNode['model'] = $selection.Executor.Model } else { $executorNode['profile'] = $selection.Executor.Profile; $executorNode['entry'] = $selection.Executor.Entry }
+        if ($selection.Executor.Platform -eq 'claude') { $executorNode['model'] = $selection.Executor.Model; $executorNode['selfRepair'] = $selection.Executor.SelfRepair } else { $executorNode['profile'] = $selection.Executor.Profile; $executorNode['entry'] = $selection.Executor.Entry }
         $executorNode['order'] = $selection.Executor.Order
     }
     $document = [ordered]@{

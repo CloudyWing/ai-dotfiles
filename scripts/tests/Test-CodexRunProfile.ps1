@@ -46,7 +46,7 @@ function New-FixtureRegistryObject {
   "maxIncomplete": 3,
   "types": { "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": [] } },
   "executors": [
-    { "id": "claude-one", "display": "Claude one", "platform": "claude", "model": "claude-model", "family": "claude", "accepts": ["survey"], "tags": [], "when": {}, "order": 90, "gated": false }
+    { "id": "claude-one", "display": "Claude one", "platform": "claude", "model": "claude-model", "selfRepair": true, "family": "claude", "accepts": ["survey"], "tags": [], "when": {}, "order": 90, "gated": false }
   ]
 }
 '@

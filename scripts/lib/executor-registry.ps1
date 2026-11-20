@@ -90,7 +90,7 @@ function ConvertTo-ExecutorRegistry {
 
     # 回傳物件：HardTags、Constraint、Flags、CodexEfforts、RetiredProfiles、MaxIncomplete、IncompleteLimit、Types（依登錄表順序的 ordered 字典）、
     # Executors（依 order 排序）、ById。Codex 執行者的 ProfileSettings 是含 model、effort、subagentModel、subagentEffort（字串）
-    # 與 fallbackModels（字串陣列，可為空）的 ordered 字典。
+    # 與 fallbackModels（字串陣列，可為空）的 ordered 字典。Claude 執行者的 SelfRepair 是布林（驗證失敗時可否自行修正重跑），Codex 執行者為 $null。
     $registrySchema = 'ai-agents.executor-registry.v1'
     $profileSettingKeys = @('model', 'effort', 'subagentModel', 'subagentEffort')
     $profileSettingOptionalKeys = @('fallbackModels', 'mcpServers')
@@ -191,6 +191,9 @@ function ConvertTo-ExecutorRegistry {
         $entry = Get-ExecutorRegistryProperty $node 'entry'
         $profileSettings = $null
         if ($platform -ceq 'claude' -and ($model -isnot [string] -or [string]::IsNullOrWhiteSpace($model))) { & $fail ('執行者 {0} 缺少 model' -f $id) }
+        $selfRepair = Get-ExecutorRegistryProperty $node 'selfRepair'
+        if ($platform -ceq 'claude' -and $selfRepair -isnot [bool]) { & $fail ('執行者 {0} 缺少 selfRepair，或 selfRepair 不是布林' -f $id) }
+        if ($platform -ceq 'codex' -and $null -ne $node.PSObject.Properties['selfRepair']) { & $fail ('Codex 執行者 {0} 不得有 selfRepair 欄位' -f $id) }
         if ($platform -ceq 'codex') {
             if ($profile -isnot [string] -or [string]::IsNullOrWhiteSpace($profile)) { & $fail ('執行者 {0} 缺少 profile' -f $id) }
             if ($profile -cnotmatch '^[a-z0-9]+(?:-[a-z0-9]+)*$') { & $fail ('執行者 {0} 的 profile {1} 必須符合 ^[a-z0-9]+(?:-[a-z0-9]+)*$' -f $id, $profile) }
@@ -290,6 +293,7 @@ function ConvertTo-ExecutorRegistry {
                 Display         = $display
                 Platform        = $platform
                 Model           = $model
+                SelfRepair      = $selfRepair
                 Profile         = $profile
                 ProfileSettings = $profileSettings
                 Entry           = $entry

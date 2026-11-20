@@ -11,6 +11,7 @@
   "types": {
     "edit": { "requiredFlags": ["E", "T"], "impliedTags": ["write"], "forbiddenTags": [] },
     "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
+    "design": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
     "test": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
     "generate": { "requiredFlags": [], "impliedTags": ["image-gen"], "forbiddenTags": ["write"] },
     "factcheck": { "requiredFlags": [], "impliedTags": ["web"], "forbiddenTags": ["write"] },
@@ -19,7 +20,7 @@
   },
   "executors": [
     {
-      "id": "haiku", "display": "Haiku subagent", "platform": "claude", "model": "haiku", "family": "claude",
+      "id": "haiku", "display": "Haiku subagent", "platform": "claude", "model": "haiku", "selfRepair": false, "family": "claude",
       "accepts": ["edit"], "tags": ["write", "build-test"], "when": { "E": true, "T": false },
       "order": 10, "gated": false
     },
@@ -59,13 +60,13 @@
       "order": 40, "gated": true
     },
     {
-      "id": "sonnet", "display": "Sonnet subagent", "platform": "claude", "model": "sonnet", "family": "claude",
-      "accepts": ["edit", "survey", "review", "factcheck", "test"], "tags": ["write", "build-test", "web"], "when": {},
+      "id": "sonnet", "display": "Sonnet subagent", "platform": "claude", "model": "sonnet", "selfRepair": true, "family": "claude",
+      "accepts": ["edit", "survey", "design", "review", "factcheck", "test"], "tags": ["write", "build-test", "web"], "when": {},
       "order": 50, "gated": false
     },
     {
-      "id": "opus", "display": "Opus subagent", "platform": "claude", "model": "opus", "family": "claude",
-      "accepts": ["edit", "survey", "review", "factcheck"], "tags": ["write", "build-test", "web"], "when": {},
+      "id": "opus", "display": "Opus subagent", "platform": "claude", "model": "opus", "selfRepair": true, "family": "claude",
+      "accepts": ["edit", "survey", "design", "review", "factcheck"], "tags": ["write", "build-test", "web"], "when": {},
       "order": 90, "gated": false
     }
   ]

@@ -121,13 +121,13 @@ function New-FixtureRegistry {
             ask   = [pscustomobject]@{ requiredFlags = @(); impliedTags = @(); forbiddenTags = @('write'); preferred = @('family') }
         }
         executors       = @(
-            [pscustomobject]@{ id = 'alpha'; display = 'Alpha'; platform = 'claude'; model = 'm-alpha'; family = 'claude'; accepts = @('edit'); tags = @('write', 'run'); when = [pscustomobject]@{ E = $true; T = $false }; order = 10; gated = $false }
+            [pscustomobject]@{ id = 'alpha'; display = 'Alpha'; platform = 'claude'; model = 'm-alpha'; selfRepair = $false; family = 'claude'; accepts = @('edit'); tags = @('write', 'run'); when = [pscustomobject]@{ E = $true; T = $false }; order = 10; gated = $false }
             [pscustomobject]@{ id = 'bravo'; display = 'Bravo'; platform = 'codex'; profile = 'pb'; family = 'codex'; entry = 'scripts/Invoke-CodexRun.ps1'; profileSettings = [pscustomobject]@{ model = 'big'; effort = 'low'; subagentModel = 'tiny'; subagentEffort = 'low'; fallbackModels = @('mid', 'small') }; accepts = @('check'); tags = @(); when = [pscustomobject]@{}; order = 20; gated = $false }
             [pscustomobject]@{ id = 'foxtrot'; display = 'Foxtrot'; platform = 'codex'; profile = 'pf'; family = 'codex'; entry = 'scripts/Invoke-Other.ps1'; profileSettings = [pscustomobject]@{ model = 'big'; effort = 'high'; subagentModel = 'tiny'; subagentEffort = 'low' }; accepts = @('ask'); tags = @(); when = [pscustomobject]@{}; order = 25; gated = $true }
-            [pscustomobject]@{ id = 'charlie'; display = 'Charlie'; platform = 'claude'; model = 'm-charlie'; family = 'claude'; accepts = @('edit', 'look', 'check', 'probe', 'ask'); tags = @('write', 'run', 'gui'); when = [pscustomobject]@{}; order = 30; gated = $false }
-            [pscustomobject]@{ id = 'delta'; display = 'Delta'; platform = 'claude'; model = 'm-delta'; family = 'claude'; accepts = @('edit', 'look', 'check', 'probe'); tags = @('write', 'run', 'net'); when = [pscustomobject]@{}; order = 40; gated = $false }
-            [pscustomobject]@{ id = 'golf'; display = 'Golf'; platform = 'claude'; model = 'm-golf'; family = 'claude'; accepts = @('probe'); tags = @('net'); when = [pscustomobject]@{}; order = 45; gated = $false }
-            [pscustomobject]@{ id = 'echo'; display = 'Echo'; platform = 'claude'; model = 'm-echo'; family = 'claude'; accepts = @('probe'); tags = @('net', 'gui'); when = [pscustomobject]@{}; order = 50; gated = $false }
+            [pscustomobject]@{ id = 'charlie'; display = 'Charlie'; platform = 'claude'; model = 'm-charlie'; selfRepair = $true; family = 'claude'; accepts = @('edit', 'look', 'check', 'probe', 'ask'); tags = @('write', 'run', 'gui'); when = [pscustomobject]@{}; order = 30; gated = $false }
+            [pscustomobject]@{ id = 'delta'; display = 'Delta'; platform = 'claude'; model = 'm-delta'; selfRepair = $true; family = 'claude'; accepts = @('edit', 'look', 'check', 'probe'); tags = @('write', 'run', 'net'); when = [pscustomobject]@{}; order = 40; gated = $false }
+            [pscustomobject]@{ id = 'golf'; display = 'Golf'; platform = 'claude'; model = 'm-golf'; selfRepair = $true; family = 'claude'; accepts = @('probe'); tags = @('net'); when = [pscustomobject]@{}; order = 45; gated = $false }
+            [pscustomobject]@{ id = 'echo'; display = 'Echo'; platform = 'claude'; model = 'm-echo'; selfRepair = $true; family = 'claude'; accepts = @('probe'); tags = @('net', 'gui'); when = [pscustomobject]@{}; order = 50; gated = $false }
         )
     }
     if ($null -ne $Mutate) { & $Mutate $registry }
@@ -267,6 +267,21 @@ try {
         $expected = @($registryRaw.executors | Where-Object { $_.platform -ceq 'codex' } | ForEach-Object { $_.profile })
         $expected.Count -gt 0 -and ($profiles -join ',') -ceq ($expected -join ',')
     }
+    Test-Case D07 {
+        # design 類型：不要求旗標、禁用 write、沒有優先條件、不可略過；受理者依排序為 sonnet、opus。
+        $design = @($describe.Json.types | Where-Object { $_.name -eq 'design' })[0]
+        $acceptors = @($describe.Json.executors | Where-Object { @($_.accepts) -contains 'design' } | ForEach-Object { $_.id })
+        $null -ne $design -and @($design.requiredFlags).Count -eq 0 -and (@($design.forbiddenTags) -join ',') -eq 'write' -and @($design.preferred).Count -eq 0 -and $design.skippable -eq $false -and
+        ($acceptors -join ',') -ceq 'sonnet,opus'
+    }
+    Test-Case D08 {
+        # -Describe 的 Claude 執行者含 selfRepair（haiku 為否，sonnet、opus 為是），Codex 執行者沒有。
+        $byId = @{}
+        foreach ($row in $describe.Json.executors) { $byId[$row.id] = $row }
+        $codexRows = @($describe.Json.executors | Where-Object { $_.platform -eq 'codex' })
+        $byId['haiku'].selfRepair -eq $false -and $byId['sonnet'].selfRepair -eq $true -and $byId['opus'].selfRepair -eq $true -and
+        $codexRows.Count -gt 0 -and @($codexRows | Where-Object { $null -ne $_.PSObject.Properties['selfRepair'] }).Count -eq 0
+    }
 
     # 每類任務的選派
     Test-Case P01 { Assert-Selected '-Type edit -E true -T false' 'haiku' }
@@ -381,11 +396,35 @@ try {
         $r = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude')
         $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -eq 'codex-review' -and @($r.Json.considered).Count -eq @($registryRaw.executors).Count -and @($r.Json.considered | Where-Object { $_.id -eq 'codex-deep-review' }).Count -eq 0
     }
+    Test-Case P29 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Type design')
+        $reasons = @{}
+        foreach ($row in $r.Json.considered) { $reasons[$row.id] = $row.reason }
+        $r.ExitCode -eq 0 -and $r.Json.status -eq 'selected' -and $r.Json.executor.id -ceq 'sonnet' -and -not [string]::IsNullOrWhiteSpace($r.Json.executor.model) -and
+        (@($r.Json.candidates) -join ',') -ceq 'sonnet,opus' -and $reasons['haiku'] -ceq 'type-not-accepted' -and $reasons['codex-review'] -ceq 'type-not-accepted'
+    }
+    Test-Case P30 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Type design -Offline sonnet')
+        $r.ExitCode -eq 0 -and $r.Json.executor.id -ceq 'opus' -and (@($r.Json.skipped | ForEach-Object { $_.id + ':' + $_.reason }) -join ',') -ceq 'sonnet:offline'
+    }
+    Test-Case P31 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Type design -Offline sonnet,opus')
+        $r.ExitCode -eq 22 -and $r.Json.status -eq 'stopped' -and $r.Json.reason -eq 'offline' -and $null -eq $r.Json.executor
+    }
+    Test-Case P32 {
+        # selfRepair 只出現在 Claude 執行者的 executor 節點，值取自登錄表。
+        $haiku = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T false')
+        $sonnetEdit = Invoke-Selector -Arguments (Split-Args '-Type edit -E true -T true')
+        $survey = Invoke-Selector -Arguments (Split-Args '-Type survey')
+        $codex = Invoke-Selector -Arguments (Split-Args '-Type review -ImplementerFamily claude')
+        $haiku.Json.executor.selfRepair -eq $false -and $sonnetEdit.Json.executor.selfRepair -eq $true -and $survey.Json.executor.selfRepair -eq $true -and
+        $codex.Json.executor.id -ceq 'codex-review' -and $null -eq $codex.Json.executor.PSObject.Properties['selfRepair']
+    }
 
     # 出貨登錄表的一般性質（不寫死執行者 id）：沒有離線與未完成時選中候選清單第一位；候選全部離線時停止。
     $generalCases = @(
         '-Type edit -E true -T false', '-Type edit -E true -T true', '-Type edit -E false -T false', '-Type edit -E false -T true',
-        '-Type survey', '-Type test', '-Type generate', '-Type factcheck',
+        '-Type survey', '-Type design', '-Type test', '-Type generate', '-Type factcheck',
         '-Type review -ImplementerFamily claude', '-Type review -ImplementerFamily codex', '-Type advise -Authorized -ImplementerFamily claude'
     )
     Test-Case O01 {
@@ -444,6 +483,8 @@ try {
     Test-Case V22 { Assert-Rejected '-Type review -Deep true -ImplementerFamily claude' 'SelectorFlagRemoved' }
     Test-Case V23 { Assert-Rejected '-Type review -Deep false -ImplementerFamily claude' 'SelectorFlagRemoved' }
     Test-Case V24 { Assert-Rejected '-Type edit -E true -T false -Deep true' 'SelectorFlagRemoved' }
+    Test-Case V25 { Assert-Rejected '-Type design -Tags write' 'SelectorTagNotAllowed' }
+    Test-Case V26 { Assert-Rejected '-Type design -E true' 'SelectorFlagNotAllowed' }
 
     # 離線改派
     Test-Case F01 {
@@ -740,6 +781,13 @@ try {
         }
         $true
     }
+    Test-Case B04 {
+        # 假登錄表的 -Describe：Claude 執行者含 selfRepair，Codex 執行者沒有。
+        $r = Invoke-Selector -Arguments @('-Describe') -Registry $fixture
+        $byId = @{}
+        foreach ($row in $r.Json.executors) { $byId[$row.id] = $row }
+        $r.ExitCode -eq 0 -and $byId['alpha'].selfRepair -eq $false -and $byId['charlie'].selfRepair -eq $true -and $null -eq $byId['bravo'].PSObject.Properties['selfRepair']
+    }
 
     # 登錄表驗證失敗（暫存複本）
     Test-Case R01 {
@@ -869,6 +917,19 @@ try {
         $r3 = Invoke-Selector -Arguments (Split-Args '-Describe') -Registry $path
         $r3.ExitCode -eq 0
     }
+    Test-Case R25 {
+        # Claude 執行者的 selfRepair 缺少或不是布林、Codex 執行者帶有 selfRepair，登錄表一律無效。
+        $missing = New-RegistryCopy 'self-repair-missing' { param($r) [void](Get-ExecutorNode $r 'sonnet').PSObject.Properties.Remove('selfRepair') }
+        $text = New-RegistryCopy 'self-repair-text' { param($r) (Get-ExecutorNode $r 'sonnet').selfRepair = 'true' }
+        $number = New-RegistryCopy 'self-repair-number' { param($r) (Get-ExecutorNode $r 'sonnet').selfRepair = 1 }
+        $nullValue = New-RegistryCopy 'self-repair-null' { param($r) (Get-ExecutorNode $r 'sonnet').selfRepair = $null }
+        $onCodex = New-RegistryCopy 'self-repair-codex' { param($r) (Get-ExecutorNode $r 'codex-review') | Add-Member -NotePropertyName selfRepair -NotePropertyValue $true }
+        (Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $missing) -and (Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $text) -and
+        (Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $number) -and (Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $nullValue) -and
+        (Assert-Rejected '-Type survey' 'SelectorRegistryInvalid' 3 $onCodex) -and
+        # 拒絕原因必須是 selfRepair，避免變體因其他欄位被拒而誤判通過。
+        (@(@($missing, $text, $number, $nullValue, $onCodex) | Where-Object { (Invoke-Selector -Arguments (Split-Args '-Type survey') -Registry $_).StdErr -notmatch 'selfRepair' }).Count -eq 0)
+    }
 
     # 決定性
     Test-Case X01 {
@@ -932,6 +993,14 @@ try {
     Test-Case L11 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type factcheck')
         $r.Json.dispatchLine -ceq '[派工] 交給 Codex factcheck：事實查核'
+    }
+    Test-Case L12 {
+        $r = Invoke-Selector -Arguments (Split-Args '-Type design')
+        $r.Json.dispatchLine -ceq '[派工] 交給 Sonnet subagent：設計起草'
+    }
+    Test-Case L13 {
+        $r = Invoke-Selector -Arguments @('-Type', 'design', '-Label', 'P1 起草')
+        $r.Json.dispatchLine -ceq '[派工] 交給 Sonnet subagent：P1 起草，設計起草'
     }
 
     # 登錄表 entry 欄位（審查、事實校閱、影像產生、顧問切到新入口，測試取證維持現行入口）
