@@ -14,7 +14,7 @@ Select-DispatchExecutor.ps1 不讀這個檔，協調者把本腳本輸出的 inc
 
 stdout 輸出 ASCII 跳脫的 JSON：
 counts：各執行者的次數，依執行者 id 的序數排序，輸出順序固定。
-incomplete_argument：可直接作為 -Incomplete 的值，例如 haiku:3,sonnet:1；沒有任何次數時為 null，此時 pass_incomplete 為 false，呼叫選派入口不必帶 -Incomplete。
+incomplete_argument：可直接作為 -Incomplete 的值，格式為 <執行者 id>:<次數>，多筆以逗號連接；沒有任何次數時為 null，此時 pass_incomplete 為 false，呼叫選派入口不必帶 -Incomplete。
 
 線識別的驗證：handoff\<LineSlug>\line.json 必須存在且其 line-slug 等於 -LineSlug，缺少或不符時以結束碼 2 拒絕；一次性工作也須先登記為 kind 為 adhoc 的線。
 結束碼：0 成功；2 輸入無效；1 其他錯誤。

@@ -31,7 +31,7 @@ Start 或 End。
 派遣檔的絕對路徑（範本為 templates\dispatch\run-order.md），與 Codex 審查者使用同一份。
 
 .PARAMETER ExecutorId
-登錄表內平台為 claude 的執行者 id，例如 sonnet。
+登錄表內平台為 claude 的執行者 id。
 
 .PARAMETER RegistryPath
 執行者登錄表路徑，測試與診斷用。預設為 scripts\dispatch\executor-registry.json。
