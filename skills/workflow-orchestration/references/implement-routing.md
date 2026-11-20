@@ -1,16 +1,17 @@
 # 實作分流程序
 
-本檔收錄實作工作由 Claude subagent（Haiku 或 Sonnet，升級時 Opus）承接時的派生契約、隔離操作與 Workflow Phase 的記錄格式。誰承接由執行者登錄表與選派入口判定，判定流程見 `rules/claude/30-dispatch.md`「實作分流」「Claude 實作 subagent 隔離」「Workflow Phase 的實作分流」與 `executor-selection` skill。
+本檔收錄實作工作由 Claude subagent 承接時的派生契約、隔離操作與 Workflow Phase 的記錄格式。誰承接由執行者登錄表與選派入口判定，判定流程見 `rules/claude/30-dispatch.md`「實作分流」「Claude 實作 subagent 隔離」「Workflow Phase 的實作分流」與 `executor-selection` skill。
 
 ## 單一工作的 Claude 承接契約
 
 無 `design.md` 的單一工作，依下列各點派生選派入口選出的 Claude subagent。
 
-- 以 Agent 工具派生，`subagent_type` 為 `general-purpose`，`model` 取自選派入口輸出的 `executor.model`（`haiku` 或 `sonnet`）。
+- 以 Agent 工具派生，`subagent_type` 為 `general-purpose`，`model` 取自選派入口輸出的 `executor.model`。
+- prompt 另帶選派入口輸出的 `executor.selfRepair` 值。
 - prompt 指定規則來源為 `~/.ai-agents/agents/claude/support-engineer.md`，以 in-context 傳入下方「有效範圍契約欄位」的完整欄位。`modificationScope` 為列舉的檔案與符號，`acceptanceCriteria` 為驗證命令加至少 1 項負向檢查。審查退回後的修正輪另傳條件式欄位 `priorFindingDisposition`，值為「前輪未閉合 finding 處置」表（格式見 `review-procedures.md`「修正派遣的前輪 finding 處置核對」），非修正輪不傳。回收時依同一節比對處置集合。
 - prompt 指定回報檔落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/support-engineer-report.md`，重派時覆寫同名舊檔。未完成次數不寫進 prompt 與回報檔，由協調者以 `scripts/Update-ExecutorIncomplete.ps1` 保存（見 `executor-selection` skill「執行者轉移與交接單」）。工作沒有登記線而無處寫回報檔時不指定落點。
 - Workflow Phase 的規則來源為 `~/.ai-agents/agents/claude/developer.md`，契約見 `claude-implement.md`。
-- 驗證未通過時，Haiku 不修正重試，回報命令原文與原始輸出；Sonnet 依 `claude-implement.md`「Sonnet 測試循環」修正。主 Agent 依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定殘餘處置。
+- 驗證未通過時依 `claude-implement.md`「驗證失敗處置」處置。主 Agent 依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」判定殘餘處置。
 - 派生前依 `claude-implement.md`「主 Agent 核對」第 3 項步驟 1 記錄路徑雜湊基準。回收時依該項步驟 2 至 4 取得實際改動路徑集合，核對其落在 `modificationScope` 內。行數以 `git diff HEAD --numstat` 核對已追蹤檔，未追蹤新檔以檔案行數計。並核對驗證命令輸出。超出範圍時退回。
 
 ### 有效範圍契約欄位
@@ -56,7 +57,7 @@
 ## Workflow Phase 的判定記錄
 
 - `[派工]` 判定行使用選派入口輸出的 `dispatchLine`，說明以 `P<n>` 起首。
-- 整個 Workflow 由各 Phase 選派結果中排序值最大的執行者單一承接。判定結果寫入 `design-accepted` 檢查點「下一站」欄，格式為 `Developer 派工：全部 Phase=<執行者>`；Phase 中另有主 Agent 執行的規則檔或文件撰寫時，於同一欄逐 Phase 標示，例如 `P1=主 Agent、P2=Sonnet subagent`。
+- 整個 Workflow 由各 Phase 選派結果中排序值最大的執行者單一承接。判定結果寫入 `design-accepted` 檢查點「下一站」欄，格式為 `Developer 派工：全部 Phase=<執行者>`；Phase 中另有主 Agent 執行的規則檔或文件撰寫時，於同一欄逐 Phase 標示，例如 `P1=主 Agent、P2=<執行者 id>`。
 - 後續檢查點（`developer-collected`）沿用同一欄，更新執行者。未完成次數不寫入檢查點，接手時以 `scripts/Update-ExecutorIncomplete.ps1 -Action Show` 讀取（見 `executor-selection` skill「執行者轉移與交接單」）。
 
 ## Workflow 不使用隔離工作樹的原因

@@ -17,7 +17,7 @@ audience: human
 | 必要輸入 | 依 `instructions.md`「Skill 載入紀律」載入的 C# skill（含 `csharp-style`、`csharp-language-features` 與測試的 `csharp-nunit`）、`.editorconfig`、各 `.csproj` 的 `<TargetFramework>`；寫入 `cleanup-review.md` 時另需 `LineContext`（驗證依 `session-artifacts` skill「線登記與 LineContext」） |
 | 必須回答的問題 | 目標框架版本可用到哪一版語言特性；每個刪除候選是否以 Grep 確認零參考；每批修改後建置與測試是否通過；哪些項目屬僅記錄不修改 |
 | 交付對象 | 提出請求的使用者；僅記錄不修改的項目寫入同線 `report/<lineSlug>/cleanup-review.md` 供 `Reviewer` 與使用者判讀 |
-| 停止條件 | 需要變更公開 API 簽章時停止並取得使用者同意；測試未通過時停止該批修改；無法判斷目標框架版本時採 Legacy 規則並告知使用者；驗證未通過時，Haiku 承接不自行修正重試，回報命令原文與原始輸出交上游判定，Sonnet 承接依 `workflow-orchestration` skill「Sonnet 測試循環」修正，同一驗證項目連續 3 次失敗即停止回報 |
+| 停止條件 | 需要變更公開 API 簽章時停止並取得使用者同意；測試未通過時停止該批修改；無法判斷目標框架版本時採 Legacy 規則並告知使用者；驗證未通過時，派生 prompt 的 `selfRepair` 為 `false` 者不自行修正重試，回報命令原文與原始輸出交上游判定，其餘依 `workflow-orchestration` skill「驗證失敗處置」修正，同一驗證項目連續 3 次失敗即停止回報 |
 
 規範優先序為 `.editorconfig` 最高，既有專案慣例優先於預設風格。
 

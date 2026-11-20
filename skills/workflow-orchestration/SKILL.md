@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # Workflow 推進與收斂
 
-本 Skill 提供 `Clarify => Design => Implement => Review => Accept` Workflow 的需求確認後分派、Design 與 Demo 驗收、逐站推進步驟、審查的發動、Claude 實作路徑（Haiku 與 Sonnet）、結案前文件同步、`light` 路徑、共同收斂契約的術語定義與驗證分層。有效深度為 `light` 的線依「light 路徑」執行，深度的解析優先序與放寬範圍由 `rules/claude/40-workflow.md`「Workflow 深度」規定。角色權責、授權類停頓、升級與收斂停止的判定順序由 `rules/claude/40-workflow.md`「Workflow 自動推進鏈與共同收斂契約」規定；交接檢查點的建檔內容依 `rules/claude/20-coordination.md`「Workflow 交接檢查點」。執行者由執行者登錄表選出，見 `executor-selection` skill。
+本 Skill 提供 `Clarify => Design => Implement => Review => Accept` Workflow 的需求確認後分派、Design 與 Demo 驗收、逐站推進步驟、審查的發動、Claude 實作路徑、結案前文件同步、`light` 路徑、共同收斂契約的術語定義與驗證分層。有效深度為 `light` 的線依「light 路徑」執行，深度的解析優先序與放寬範圍由 `rules/claude/40-workflow.md`「Workflow 深度」規定。角色權責、授權類停頓、升級與收斂停止的判定順序由 `rules/claude/40-workflow.md`「Workflow 自動推進鏈與共同收斂契約」規定；交接檢查點的建檔內容依 `rules/claude/20-coordination.md`「Workflow 交接檢查點」。執行者由執行者登錄表選出，見 `executor-selection` skill。
 
 ## 需求確認後的分派
 
@@ -17,9 +17,9 @@ policy.allow_implicit_invocation: true
 2. UI 線別為「版面規劃」或「先做 Demo」時，先依 `uiux-baseline` skill「協調者基準準備」完成基準與確認交接；「先做 Demo」先準備基準再交 `Prototyper`。
 3. 「無畫面」與「版面規劃」：
    - 有效深度為 `light` 時（「版面規劃」依升級判定一律為 `full`，因此只會是「無畫面」），不派生 `Architect`、不做影響範圍盤點，改依「light 路徑」推進。
-   - 有效深度為 `full` 時，需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先依 `executor-selection` skill 以 `-Type survey` 派生 Sonnet 取證者取得影響範圍盤點報告，收下後才派生 `Architect`。需求改變使用者可見的行為、命令、檔名或術語，而需求摘要未列舉使用者文件時，即使影響範圍已列舉，也派生取證者補做使用者文件盤點；盤點報告含「使用者文件引用」節，以本次改動的術語、檔名、命令與被取代的舊名稱為搜尋詞，列出使用者文件中的命中位置。
-   - 以 Agent 工具派生 `Architect`（`subagent_type` 為 `Architect`，`model` 為 `sonnet`），prompt 帶入 `LineContext`、需求摘要的絕對路徑，以及盤點報告的絕對路徑（若有；未提供時 `Architect` 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺。「版面規劃」傳入的需求摘要須含區塊清單與初步層級判斷。等待 `Architect` 產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md` 後進入「Design 與 Demo 驗收」。
-4. 「先做 Demo」：先以 Agent 工具派生 `Prototyper`，傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），Demo 產出後進入「Design 與 Demo 驗收」。驗收通過並將訪談結果回填需求摘要後，再依第 3 點派生 `Architect`。
+   - 有效深度為 `full` 時，需求涉及既有程式碼，且需求摘要未以絕對路徑列舉影響範圍時，先依 `executor-selection` skill 以 `-Type survey` 派生取證者取得影響範圍盤點報告，收下後才派生 `Architect`。需求改變使用者可見的行為、命令、檔名或術語，而需求摘要未列舉使用者文件時，即使影響範圍已列舉，也派生取證者補做使用者文件盤點；盤點報告含「使用者文件引用」節，以本次改動的術語、檔名、命令與被取代的舊名稱為搜尋詞，列出使用者文件中的命中位置。
+   - 以 `-Type design` 呼叫選派入口並以輸出的 `dispatchLine` 為本輪判定行，再以 Agent 工具派生 `Architect`（`subagent_type` 為 `Architect`，`model` 取自輸出的 `executor.model`），prompt 帶入 `LineContext`、需求摘要的絕對路徑，以及盤點報告的絕對路徑（若有；未提供時 `Architect` 以需求摘要已列舉的檔案清單為盤點對象）。需求不涉及既有程式碼（全新檔案）時，盤點報告與檔案清單皆可缺。「版面規劃」傳入的需求摘要須含區塊清單與初步層級判斷。等待 `Architect` 產出 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md` 後進入「Design 與 Demo 驗收」。
+4. 「先做 Demo」：先以 `-Type design` 呼叫選派入口，再以 Agent 工具派生 `Prototyper`（`subagent_type` 為 `Prototyper`，`model` 取自輸出的 `executor.model`），傳入需求摘要、畫面清單與 Demo 強度（完整版或精簡版），Demo 產出後進入「Design 與 Demo 驗收」。驗收通過並將訪談結果回填需求摘要後，再依第 3 點派生 `Architect`。
 
 ## Design 與 Demo 驗收
 
@@ -27,7 +27,7 @@ policy.allow_implicit_invocation: true
 
 1. 以 Read 工具實讀 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/design.md`，或 Demo 目錄 `<work-root>/.local/ai-sessions/ui-demo/<demo-name>/`，不依賴 sub-agent 回傳內容自述。
 2. 逐項核對檢查清單。Design 依下方「Design 驗收檢查清單」，Demo 依 `uiux` skill「Demo 驗收」。
-3. 有任一項不合格時先判定缺漏類型。缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容（例如同步計數、刪除段落、改寫編號或補上明文句）時，交由 Haiku subagent 依 `rules/claude/30-dispatch.md` 實作分流修改（`design.md` 與 Demo 位於 `.local\`，隔離判定視為無他人項目），完成後自動續行同一驗收循環。只剩 `Minor` 的批次修正不計輪，修正後只核對被修正的項目。缺漏涉及重新設計或需求重新解讀時，再次派生 `Architect` 或 `Prototyper`，將具體缺漏清單作為輸入傳入，計為新一輪。
+3. 有任一項不合格時先判定缺漏類型。缺漏清單全部是可機械對照的項目，且已指明修改位置與目標內容（例如同步計數、刪除段落、改寫編號或補上明文句）時，依 `rules/claude/30-dispatch.md` 實作分流，以 `-Type edit -E true -T false` 選派的執行者修改（`design.md` 與 Demo 位於 `.local\`，隔離判定視為無他人項目），完成後自動續行同一驗收循環。只剩 `Minor` 的批次修正不計輪，修正後只核對被修正的項目。缺漏涉及重新設計或需求重新解讀時，再次派生 `Architect` 或 `Prototyper`，將具體缺漏清單作為輸入傳入，計為新一輪。
 4. 每輪以完整檢查清單產生結果，保留檢查項目 key、`area-key`（Design 為 `Design/<檢查項目區段>`，Demo 為 `Demo/<檢查項目區段>`）、`problem-key`（檢查清單的完整項目名稱）、嚴重度與證據，依 `rules/claude/40-workflow.md` 共同收斂判定續行或停止。兩個循環各自保存 `round` 與問題集合。
 5. 沒有未閉合的 `Critical` 或 `Major` 且剩餘 `Minor` 已完成批次修正與核對，或使用者明確表示「目前版本可接受」時結束循環。
 
@@ -93,7 +93,7 @@ Design 驗收通過後，主 Agent 依序執行下列自動推進鏈。交接檢
 
 ## Claude 實作路徑
 
-Workflow 的 Phase 由 Claude subagent 承接時的契約見 `references/claude-implement.md`，內含「派生契約」「Sonnet 測試循環」「主 Agent 核對」「收斂計數」「審查與修正」「Phase commit 回收」。派生 Developer 與回收其結果前讀取。
+Workflow 的 Phase 由 Claude subagent 承接時的契約見 `references/claude-implement.md`，內含「派生契約」「驗證失敗處置」「主 Agent 核對」「收斂計數」「審查與修正」「Phase commit 回收」。派生 Developer 與回收其結果前讀取。
 
 ## 文件同步
 

@@ -25,6 +25,7 @@ policy.allow_implicit_invocation: true
 | --- | --- |
 | `edit` | 修改專案原始檔（含測試碼）與批次改檔；文件最終編輯（結案前文件同步）以 `E=否`、`T=否` 標註（見 `workflow-orchestration` skill `references/doc-sync.md`） |
 | `survey` | 盤點、跨檔取證、診斷指令、單元測試與建置的執行及回報、文件一致性檢查（結案前文件同步）。不修改專案原始檔 |
+| `design` | 設計起草：`Architect` 起草 `design.md`、`Prototyper` 起草 Demo 畫面。不修改專案原始檔 |
 | `test` | 煙霧驗證的取證，例如 `integration-verify`、`browser-smoke`、`desktop-smoke`、`api-smoke` 的操作與擷取 |
 | `generate` | 影像產生 |
 | `factcheck` | 事實校閱、事實查核與上網查證 |
@@ -74,7 +75,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 - 以逗號連接 `-Tags`、`-Prefer`、`-Offline` 與 `-Incomplete` 的多個值，不含空白，例如 `-Offline codex-test,codex-factcheck`。`pwsh -File` 與同一行程 `&` 呼叫都適用這個寫法。以空白分隔時，多餘的值會成為位置參數，入口以結束碼 2、錯誤碼 `SelectorParameterBinding` 拒絕。
 - 傳入 `-Incomplete` 的次數為 0 至 999 的整數，同一 id 只能出現一次（重複時即使次數相同也以 `SelectorIncompleteInvalid` 拒絕）。上限 999 與登錄表 `maxIncomplete` 的上限相同。
-- 輸出 stdout 單一 JSON 物件（schema `ai-agents.executor-selection.v1`），欄位含 `status`、`executor`、`unmetPreferences`、`candidates`、`skipped`、`requiresUserDecision`、`reason`、`considered` 與 `dispatchLine`。Codex 執行者的 `executor` 另含 `entry`，值為該執行者使用的入口腳本。
+- 輸出 stdout 單一 JSON 物件（schema `ai-agents.executor-selection.v1`），欄位含 `status`、`executor`、`unmetPreferences`、`candidates`、`skipped`、`requiresUserDecision`、`reason`、`considered` 與 `dispatchLine`。Claude 執行者的 `executor` 含 `model` 與 `selfRepair`（驗證失敗時可否自行修正重跑）；Codex 執行者的 `executor` 含 `profile` 與 `entry`，`entry` 的值為該執行者使用的入口腳本。
 - 輸出 `dispatchLine` 原文作為本輪的 `[派工]` 判定行，不自行改寫。該行格式為 `[派工] 交給 <執行者顯示名>：<做什麼>，<條件的白話說明>`，選中者未滿足優先條件或有執行者被略過時，於行尾以分號附白話說明，對照見「判定行的白話對照」。`type`、`E`、`T` 只用於標註與 JSON 欄位，不出現在判定行。
 - 查詢 `-Describe` 取得登錄表目前的類型、旗標需求、優先條件、未完成次數上限與執行者，不做選擇。
 - 選派入口無副作用，只讀登錄表，不寫檔、不呼叫網路、不查額度。離線狀態與未完成次數一律由呼叫端傳入，入口不保存。
@@ -95,6 +96,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 | --- | --- |
 | `edit` | 改檔 |
 | `survey` | 盤點取證 |
+| `design` | 設計起草 |
 | `test` | 測試取證 |
 | `generate` | 產生影像 |
 | `factcheck` | 事實查核 |
@@ -112,7 +114,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 | 未滿足優先條件 `family` | `找不到不同模型家族的執行者，改由同家族審查` |
 | 略過理由 `offline`、`incomplete-limit` | `已略過 <id>（離線）`、`已略過 <id>（未完成次數已達上限）` |
 
-範例：`[派工] 交給 Haiku subagent：改檔，範圍已列明、不需建置測試`。有 `-Label` 時，說明置於動詞之前，例如 `[派工] 交給 Sonnet subagent：P3 重構，改檔，範圍需自行探索、需要建置測試`。
+範例：`[派工] 交給 <執行者顯示名>：改檔，範圍已列明、不需建置測試`。有 `-Label` 時，說明置於動詞之前，例如 `[派工] 交給 <執行者顯示名>：P3 重構，改檔，範圍需自行探索、需要建置測試`。
 
 主 Agent 自己做時不呼叫入口，判定行為 `[派工] 自己做（<原因>）：<一句話理由>`，原因為下列三種之一。
 
@@ -141,14 +143,14 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 - 判定離線的唯一來源是服務端拒絕，額度數值不參與。拒絕包含 usage-limit、401、model not supported、rate limit，以及尚無 item 進度即以未分類錯誤終局失敗者。model not supported 表示該帳號的方案不含檔位設定的 model，停用訂閱的帳號也以此訊息呈現，視為該帳號不可用。
 - 派工時不指定 `-CodexHome`。`Invoke-CodexRun.ps1` 依 `machine.json` `codex_accounts` 登記順序選第一個可用帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。帳號回報 model not supported 後記入帳號健康狀態檔，24 小時內略過該帳號與檔位 model 的組合。細節見 `codex-dispatch` skill `references/run.md`「帳號」。
 - 帳號不支援檔位的主要 model 時，`Invoke-CodexRun.ps1` 改用登錄表 `profileSettings.fallbackModels` 中第一個未被記為不支援的備援 model，執行紀錄與結果 JSON 的 `model` 記錄實際使用的 model，`model_source` 記錄它是檔位的主要 model（`primary`）或備援 model（`fallback`）。備援 model 也都不支援時才略過該帳號。
-- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review` 由 Sonnet 承接，`generate` 回傳 `stopped`，宣告 `skippable` 的類型回傳 `omitted`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，結果必為 `stopped`，沒有 Claude 替代者；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Sonnet。
+- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review` 由登錄表中受理該類型的 Claude 執行者承接，`generate` 回傳 `stopped`，宣告 `skippable` 的類型回傳 `omitted`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，結果必為 `stopped`，沒有 Claude 替代者；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Claude 執行者。
 - 不可用的狀態不保存，也不採信拒絕訊息附的恢復時間。下一次新的派工不帶 `-Offline`，照常先選 Codex，被拒才再換。
 
 ## Claude 取證者派生契約
 
-`survey` 選出 Sonnet 時，以 Agent 工具派生冷啟動取證者。
+`survey` 選出的 `executor.platform` 為 `claude` 時，以 Agent 工具派生冷啟動取證者。
 
-- 設定 `subagent_type` 為 `general-purpose`、`model` 為 `sonnet`。
+- 設定 `subagent_type` 為 `general-purpose`、`model` 為選派結果的 `executor.model`。
 - 寫入 prompt 的內容含 `LineContext`、目標物件絕對路徑、待答問題、已知證據、待驗假設與可能反證、輸出落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/survey-<slug>.md`。
 - 要求回傳每個結論的來源位置與支持判定的原始摘錄，證據不足時明寫不足之處。
 - 限制取證者唯讀，不修改專案原始檔，不執行 git 寫入命令。
@@ -156,9 +158,9 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 ## Claude 測試取證者派生契約
 
-`test` 選出 Sonnet 時，以 Agent 工具派生冷啟動的測試取證者。標註含 `build-test` 的 `test`（例如 API 煙霧驗證、單元測試與可重跑 E2E 的取證）選出 Sonnet，因為 Codex `test` 檔位只做 MCP 臨場操作（標籤 `browse`、`desktop-control`、`web`），不執行建置與測試命令。標註含 `browse` 或 `desktop-control` 的 `test` 沒有 Claude 替代者。
+`test` 選出的 `executor.platform` 為 `claude` 時，以 Agent 工具派生冷啟動的測試取證者。標註含 `build-test` 的 `test`（例如 API 煙霧驗證、單元測試與可重跑 E2E 的取證）選出 Claude 執行者，因為 Codex `test` 檔位只做 MCP 臨場操作（標籤 `browse`、`desktop-control`、`web`），不執行建置與測試命令。標註含 `browse` 或 `desktop-control` 的 `test` 沒有 Claude 替代者。
 
-- 設定 `subagent_type` 為 `general-purpose`、`model` 為 `sonnet`。
+- 設定 `subagent_type` 為 `general-purpose`、`model` 為選派結果的 `executor.model`。
 - 寫入 prompt 的內容含 `LineContext`、呼叫端 skill 規定的驗證步驟與命令、目標端點或檔案的絕對路徑、預期結果，以及輸出落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/test-<slug>.md`。
 - 要求逐條回報命令原文、完整 stdout、完整 stderr、exit code 與執行時間，不只回報結論。
 - 限制取證者不修改專案原始檔，不執行 git 寫入命令；需要啟動的背景進程在回報前關閉，刻意保留者附 port 或 PID。
@@ -190,22 +192,21 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 - 退回起點時，先以 `git diff` 將舊 diff 存為 `<work-root>/.local/ai-sessions/report/<lineSlug>/escalation-prior-diff-<序號>.patch`，再由新執行者以 `git show <輪起點 SHA>:<path>` 的內容逐檔覆寫範圍內被改動的檔案。Claude subagent 的 git 寫入類命令禁令維持不變。
 - 寫入「無」於沒有通過驗證證據的欄位，不補寫推測。證據位置無法開啟的項目移入「刻意不提供」並註明原因。
 - 保留舊交接單。同線同時只有一份有效交接單，新的轉移以新序號建檔。
-- 取證量大時，半成品是否通過的取證可交 Sonnet 取證者，判定仍由主 Agent 做出。
+- 取證量大時，半成品是否通過的取證可交 `-Type survey` 選出的取證者，判定仍由主 Agent 做出。
 
 ## 擴充登錄表
 
-1. 修改 `scripts/dispatch/executor-registry.json`，新增或調整執行者、類型或優先條件。標籤詞彙合計不超過 8 個，排序值全表唯一。每個 Codex 執行者必填 `entry`，值為相對於 repo 根目錄的入口腳本路徑，格式為 `scripts/<檔名>.ps1`；Claude 執行者不得有此欄位。每個 Codex 執行者另必填 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort` 四個字串），Claude 執行者不得有此欄位。`profileSettings` 另可選填 `fallbackModels`（字串陣列，依序，不得重複、不得含主要 model），供帳號不支援主要 model 時改用。檔位設定檔由這些欄位產生，見步驟 4。
+1. 修改 `scripts/dispatch/executor-registry.json`，新增或調整執行者、類型或優先條件。標籤詞彙合計不超過 8 個，排序值全表唯一。每個 Codex 執行者必填 `entry`，值為相對於 repo 根目錄的入口腳本路徑，格式為 `scripts/<檔名>.ps1`；Claude 執行者不得有此欄位。每個 Codex 執行者另必填 `profileSettings`（`model`、`effort`、`subagentModel`、`subagentEffort` 四個字串），Claude 執行者不得有此欄位。`profileSettings` 另可選填 `fallbackModels`（字串陣列，依序，不得重複、不得含主要 model），供帳號不支援主要 model 時改用。每個 Claude 執行者另必填 `selfRepair`（布林，驗證失敗時可否自行修正重跑），Codex 執行者不得有此欄位。檔位設定檔由 `profileSettings` 的欄位產生，見步驟 4。
 2. 確認每個類型至少有一位執行者受理，每個 Codex 執行者的 `profile` 在登錄表內唯一，且不在登錄表頂層的 `retiredProfiles`（已退役的檔位名稱）內；`profileSettings.effort` 與 `subagentEffort` 必須在頂層 `codexEfforts` 內。檔位名稱、退役名稱與 effort 允許清單都只存在登錄表，沒有第二份。`platform` 與 `id` 的格式同樣受驗證。登錄表的讀取與結構驗證只寫在 `scripts/lib/executor-registry.ps1`，選派入口、檔位設定檔的產生器、Setup、帳號建立與派工前比對都載入這個檔並呼叫同一組函式，不另有規則；要改驗證規則只改這個檔。類型的 `preferred` 只能列硬能力標籤或 `family`，含 `family` 時呼叫端必須提供 `-ImplementerFamily`；類型的 `skippable` 選填，必須為布林；頂層 `maxIncomplete` 為 1 至 999 的整數。已移除的欄位 `crossFamily`、`degradable`、`escalationOnly`、`escalatesTo`、`onOffline` 出現時登錄表無效。
 3. 執行 `pwsh -NoProfile -File scripts/tests/Test-SelectDispatchExecutor.ps1`，全部通過才算完成。
 4. 修改 `profile` 或 `profileSettings` 後，commit 時 `.githooks/Update-CodexProfiles.ps1` 會重新產生 `scripts/codex-profiles/<檔位>.config.toml` 並暫存；需要提早確認時手動執行 `pwsh -NoProfile -File .githooks\Update-CodexProfiles.ps1`。新增檔位後，各機器重跑 `scripts\Setup-AIGlobalConfig.ps1` 為帳號目錄建立連結；未建立或內容與產生檔不一致時，`Invoke-CodexRun.ps1` 在啟動前停止（`CodexProfileDrift`）。`-Describe` 輸出每個 Codex 執行者的 `profileSettings`（含 `fallbackModels`）。
-5. 修改規則層引用的選派結果（例如本 Skill「各 delegate skill 的標註範例」的預期執行者）時同步更新。
 
 ## 各 delegate skill 的標註範例
 
 frontmatter 宣告 `dispatch: delegate` 的 skill 不由主 Agent 自理，改依該 skill「## 任務標註」節呼叫選派入口。
 
-| Skill | 標註 | 預期執行者 |
-| --- | --- | --- |
-| `export-excel` | `-Type edit -E false -T false` | Sonnet |
-| `generate-api-doc` | `-Type edit -E <依控制器與方法是否已逐一列出> -T false -Tags build-test` | E 為真時 Haiku，否則 Sonnet |
-| `uiux-baseline` | `-Type survey` | Sonnet |
+| Skill | 標註 |
+| --- | --- |
+| `export-excel` | `-Type edit -E false -T false` |
+| `generate-api-doc` | `-Type edit -E <依控制器與方法是否已逐一列出> -T false -Tags build-test` |
+| `uiux-baseline` | `-Type survey` |

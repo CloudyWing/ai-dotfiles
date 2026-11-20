@@ -52,8 +52,8 @@
 | **Refactorer** | 使用者明確要求，或屬技術債清理 / 語法現代化。模組邊界與依賴方向交由 `architecture-improvement` skill | `~/.ai-agents/agents/claude/refactorer.md` |
 | **Support Engineer** | 由 `Maintainer` 或主 Agent 依執行者登錄表派生。依 fix-plan、需求調整計畫或任務契約實作，不自行決定改動範圍 | `~/.ai-agents/agents/claude/support-engineer.md` |
 
-上表的規則來源同時是跨平台執行的依據。審查類角色在非其預設平台被叫起時（例如 Codex 離線時由 Claude Sonnet subagent 依 `reviewer.toml` 審查），依此欄的路徑讀取規則檔，不因平台不同而改用簡化規則。
+上表的規則來源同時是跨平台執行的依據。審查類角色在非其預設平台被叫起時（例如 Codex 離線時由選派入口選出的 Claude subagent 依 `reviewer.toml` 審查），依此欄的路徑讀取規則檔，不因平台不同而改用簡化規則。
 
 ## Claude 端 sub-agent 模型指定
 
-Claude 端使用 Agent 工具建立 sub-agent 時，呼叫參數必須指定 `model`。Agent 工具的 `model` 參數只接受模型名稱，不得傳入 `effort` 或 `model_reasoning_effort`；effort 由 agent 自身承載。由執行者登錄表選出的執行者（含搜尋、取證與覆核取證助手），`model` 一律取自選派入口輸出的 `executor.model`。登錄表未收錄的兩個討論層 sub-agent 為 `Prototyper` 與 `Architect`（設計起草），`model` 皆為 `sonnet`。此規則不套用於 Claude Persona、Codex 端 Agent 與 `codex exec` 檔位。
+Claude 端使用 Agent 工具建立 sub-agent 時，呼叫參數必須指定 `model`，值一律取自選派入口輸出的 `executor.model`。由執行者登錄表選出的執行者（含搜尋、取證與覆核取證助手）與以 `-Type design` 選派的 `Architect`、`Prototyper` 都適用。派生 `Developer`、`Support Engineer` 或 `Refactorer` 時，prompt 另帶選派輸出的 `executor.selfRepair` 值，供其判定驗證失敗時可否自行修正。此規則不套用於 Claude Persona、Codex 端 Agent 與 `codex exec` 檔位。

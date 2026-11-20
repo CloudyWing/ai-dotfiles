@@ -1,23 +1,23 @@
 # Claude 實作路徑
 
-本檔收錄 Workflow 的 Phase 由 Claude subagent 承接時的派生契約、測試循環、主 Agent 核對、收斂計數、審查與修正，以及 Phase commit 回收。派生 Developer 與回收其結果前讀取。逐站順序見 `../SKILL.md`「自動推進鏈」。
+本檔收錄 Workflow 的 Phase 由 Claude subagent 承接時的派生契約、驗證失敗處置、主 Agent 核對、收斂計數、審查與修正，以及 Phase commit 回收。派生 Developer 與回收其結果前讀取。逐站順序見 `../SKILL.md`「自動推進鏈」。
 
-Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` 檢查點「下一站」欄），依下列契約執行。Haiku 與 Sonnet 共用本檔，差異列於「Sonnet 測試循環」。
+Workflow 的 Phase 由 Claude subagent 承接（執行者見 `design-accepted` 檢查點「下一站」欄），依下列契約執行。各執行者共用本檔，驗證失敗的處置依選派結果的 `executor.selfRepair`，見「驗證失敗處置」。
 
 ## 派生契約
 
-- 以 Agent 工具派生，`subagent_type` 為 `general-purpose`，`model` 為選派結果的 `executor.model`（`haiku` 或 `sonnet`；升級時 `opus`），冷啟動。
-- prompt 含：規則來源 `~/.ai-agents/agents/claude/developer.md` 全文（in-context 傳入）；`design.md` 絕對路徑；`LineContext`，其中 `dispatchLineRoot` 等於 `sourceLineRoot`、`reportLineRoot` 為來源 `report/<lineSlug>`；`requirement-summary.md` 絕對路徑；本批 Phase 清單與各 Phase 的 T-code；報告落點；審查退回後的修正輪另含「前輪未閉合 finding 處置」表（格式見 `review-procedures.md`「修正派遣的前輪 finding 處置核對」）與循環標示。
+- 以 Agent 工具派生，`subagent_type` 為 `general-purpose`，`model` 為選派結果的 `executor.model`，冷啟動。
+- prompt 含：規則來源 `~/.ai-agents/agents/claude/developer.md` 全文（in-context 傳入）；選派結果的 `executor.selfRepair` 值；`design.md` 絕對路徑；`LineContext`，其中 `dispatchLineRoot` 等於 `sourceLineRoot`、`reportLineRoot` 為來源 `report/<lineSlug>`；`requirement-summary.md` 絕對路徑；本批 Phase 清單與各 Phase 的 T-code；報告落點；審查退回後的修正輪另含「前輪未閉合 finding 處置」表（格式見 `review-procedures.md`「修正派遣的前輪 finding 處置核對」）與循環標示。
 - 報告落點固定為 `report/<lineSlug>/implement-closure-report.md`。
 - `design.md` §5 含使用者文件 T-code 時，prompt 另帶 `doc-sync.md`「草稿原則」原文。
 - 一次派生涵蓋執行者承接的全部 Phase，依宣告順序逐 Phase 執行與驗證。
 - 派生前記錄路徑雜湊基準，派生後再記錄一次，供核對第 3 項使用，步驟見「主 Agent 核對」第 3 項。
 - 禁止 `git add`、`git commit`、`git stash`、`git checkout`、`git reset`，寫入限於本批 Phase 的 T-code 檔案。
 
-## Sonnet 測試循環
+## 驗證失敗處置
 
-- Haiku 驗證失敗時不修復重試，回報命令原文與原始輸出。
-- Sonnet 驗證失敗時可修正後重跑。每次修正前寫出假設（「我認為問題出在 X，因為 Y，所以改 Z」），修改限本 Phase 的 T-code 檔案。
+- 派生 prompt 的 `selfRepair` 為 `false` 時，驗證失敗不修復重試，回報命令原文與原始輸出。
+- 其餘情形（值為 `true`，或未經選派入口派生而沒有此值）驗證失敗可修正後重跑。每次修正前寫出假設（「我認為問題出在 X，因為 Y，所以改 Z」），修改限本 Phase 的 T-code 檔案。
 - 同一驗證項目連續 3 次失敗時停止，於報告「未解決項目」列出命令原文與原始輸出，交主 Agent 依 `implement-routing.md`「未完成與轉移」判定。
 
 ## 主 Agent 核對
