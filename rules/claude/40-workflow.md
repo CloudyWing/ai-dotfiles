@@ -35,7 +35,7 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 | 4 | Developer 結案報告有「未解決項目」 |
 | 5 | 本輪改寫了 `instructions.md`、`rules/claude/` 下的規則檔、任何 `SKILL.md` 或 agent 規則檔的機制條款 |
 
-主 Agent 依「自己做（小改動）」完成的改動不屬派遣產出，不套用上列必發清單，只對自己的 diff 做核對。Claude subagent（Haiku、Sonnet、Opus）承接的實作屬派工產出，適用上列必發清單。共同收斂契約判定順序 1 結束循環後的 `Minor` 批次修正，第 1 項不適用，只做建置與測試 gate；沒有改到機制條款時不觸發新一輪審查，觸及第 2 項或改到機制條款（第 5 項）時另發審查，為新循環的第 1 輪。
+主 Agent 依「自己做（小改動）」完成的改動不屬派遣產出，不套用上列必發清單，只對自己的 diff 做核對。Claude subagent 承接的實作屬派工產出，適用上列必發清單。共同收斂契約判定順序 1 結束循環後的 `Minor` 批次修正，第 1 項不適用，只做建置與測試 gate；沒有改到機制條款時不觸發新一輪審查，觸及第 2 項或改到機制條款（第 5 項）時另發審查，為新循環的第 1 輪。
 
 **可不發**：本輪僅改動文件敘述、排版或用詞，未觸及任何機制條款，且結案報告驗證證據三欄齊備，沒有上述 exception 與未解決項目。
 
@@ -57,12 +57,12 @@ Reviewer 派遣發動由必發清單機械判定。命中必發清單時，主 A
 | 順序 | 變更來源（實作者） | 審查者 |
 | --- | --- | --- |
 | 順序 1 | 規則檔機制條款改寫（`instructions.md`、`rules/claude/` 下的規則檔、任何 `SKILL.md`、agent 規則檔，即必發清單第 5 項） | Codex `Reviewer` |
-| 順序 2 | Claude 家族（主 Agent、Haiku、Sonnet、Opus subagent） | Codex `Reviewer` |
+| 順序 2 | Claude 家族（主 Agent 與 Claude subagent） | Codex `Reviewer` |
 
 - 「審查者不得是改寫者」與本表並存。順序 1 已使 Claude 改寫的規則檔由 Codex 審查。
 - `Frontend Reviewer` 與 `Contract Auditor` 維持 Codex，Codex 離線時的處置同 `Reviewer`。
 - Codex `Reviewer` 的檔位固定為 `review`，不依檔數或規則檔與否分層。此判定屬規則決定，不需使用者在當下 Session 指定。
-- Codex 不可用時（判定依 `rules/claude/30-dispatch.md`「離線改派」，以服務端拒絕為準），優先條件無法滿足，由選派入口選出的同家族執行者審查，目前為 Sonnet subagent；規則檔機制條款同樣適用。協調者直接依選派結果派出，不等待 Codex 恢復。這是選派的正常結果，不追加 exceptions。選派入口照常回傳 `selected`，並以 `unmetPreferences` 與判定行標示同家族審查。審查流程、派遣檔與報告檔名（派遣檔的 `report_name`）不因審查者而異，報告 `## 總覽` 第一行寫明審查者，發動方式見 `workflow-orchestration` skill「審查的發動」。
+- Codex 不可用時（判定依 `rules/claude/30-dispatch.md`「離線改派」，以服務端拒絕為準），優先條件無法滿足，由選派入口選出的同家族執行者審查；規則檔機制條款同樣適用。協調者直接依選派結果派出，不等待 Codex 恢復。這是選派的正常結果，不追加 exceptions。選派入口照常回傳 `selected`，並以 `unmetPreferences` 與判定行標示同家族審查。審查流程、派遣檔與報告檔名（派遣檔的 `report_name`）不因審查者而異，報告 `## 總覽` 第一行寫明審查者，發動方式見 `workflow-orchestration` skill「審查的發動」。
 
 `Reviewer`、`Frontend Reviewer` 與 `Contract Auditor` 都標為唯讀時，可對同一條線同時發動，經 `scripts\Invoke-CodexRun.ps1` 發動者不設並行上限。
 
@@ -96,7 +96,7 @@ Design 驗收通過後，主 Agent 依 `workflow-orchestration` skill「自動�
 
 Workflow 驗證四層（淺層探針、建置與測試 gate、缺陷審查、完整煙霧）的執行者、深度與時機見 `workflow-orchestration` skill「驗證分層」。
 
-- `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Developer 結案自動流程。煙霧驗證的瀏覽器與桌面臨場取證由 Codex `test`（`type=test`，以 MCP 工具操作）執行，建置、可重跑測試專案與 API 取證依派工判準選派，由選派入口選出的 Claude 執行者在沙盒外執行，受測程式由主 Agent 以背景進程啟動並在驗證結束後依 §1.4「背景進程清理」關閉，判讀與修正迴圈決策留在 Claude 端；淺層探針與建置測試 gate 由 Claude 實作者執行，缺陷審查由 Codex `Reviewer` 執行（Codex 不可用時由選派入口選出的同家族執行者審查，目前為 Sonnet subagent）。
+- `integration-verify` 掛載點：於交付節點（feature 整體完成、交付前）執行一次，由使用者手動觸發，不納入 Developer 結案自動流程。煙霧驗證的瀏覽器與桌面臨場取證由 Codex `test`（`type=test`，以 MCP 工具操作）執行，建置、可重跑測試專案與 API 取證依派工判準選派，由選派入口選出的 Claude 執行者在沙盒外執行，受測程式由主 Agent 以背景進程啟動並在驗證結束後依 §1.4「背景進程清理」關閉，判讀與修正迴圈決策留在 Claude 端；淺層探針與建置測試 gate 由 Claude 實作者執行，缺陷審查由 Codex `Reviewer` 執行（Codex 不可用時由選派入口選出的同家族執行者審查）。
 - Reviewer 不執行測試與動態驗證，正常路徑是讀取 Developer 結案報告附帶的原始輸出並做靜態核對；重跑唯讀命令的條件見 `agents/codex/reviewer.toml`「動態證據複核」。
 - Maintainer 不承擔常規驗證，依進入類型執行 bug 診斷或需求調整；`Support Engineer` 只執行計畫指定的驗證步驟。
 

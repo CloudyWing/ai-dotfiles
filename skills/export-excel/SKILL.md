@@ -13,7 +13,6 @@ policy.allow_implicit_invocation: true
 `dispatch: delegate` 的意義為不由主 Agent 自理，依本節標註呼叫 `scripts/Select-DispatchExecutor.ps1`，執行者與標註語意見 `executor-selection` skill。
 
 - 標註：`-Type edit -E false -T false`。
-- 預期執行者：Sonnet subagent。
 
 ## 執行流程
 

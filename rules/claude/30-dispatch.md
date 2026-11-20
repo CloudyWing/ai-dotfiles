@@ -16,7 +16,7 @@
 
 1. **不派清單**：對話中的系統設計與方案取捨；bug 根因假設的形成；需求釐清與需求意圖驗收；規則檔與文件的撰寫或改寫；討論脈絡的保管與判斷；帶使用者登入 session 的瀏覽器操作；Artifacts 發布；本流程自行產生的暫存清理。命中時一律由 Claude 主 Agent 處理，輸出「自己做（需要對話脈絡）」。根因假設的形成與結論維持在主 Agent，取證可依下列判定派出。
 2. **下限三題**：skill 未宣告 `dispatch`、宣告為 `either`，或本輪工作不對應任何 skill 時，主 Agent 依下列三題工作量下限判定是否仍由主 Agent 承接。三題全否時輸出「自己做（小改動）」，不進入後續判定。
-3. **難以交代清楚的工作**：三題至少一題為是，但工作需要主 Agent 的對話脈絡、無法寫成任務標註交給冷啟動執行者時，會污染主 Agent context 者以 `type=survey` 呼叫選派入口，派生 Sonnet subagent 並帶入主 Agent 整理的完整脈絡；不會污染者由主 Agent 自理，輸出「自己做（難以交代清楚）」。
+3. **難以交代清楚的工作**：三題至少一題為是，但工作需要主 Agent 的對話脈絡、無法寫成任務標註交給冷啟動執行者時，會污染主 Agent context 者以 `type=survey` 呼叫選派入口，派生選派入口選出的 Claude subagent 並帶入主 Agent 整理的完整脈絡；不會污染者由主 Agent 自理，輸出「自己做（難以交代清楚）」。
 4. **登錄表判定**：其餘三題至少一題為是的工作，主 Agent 依 `executor-selection` skill「任務標註」標上類型、旗標與標籤，呼叫選派入口，以輸出的 `dispatchLine` 作為判定行，依回傳狀態處置。診斷指令與跨檔掃描直接以 `type=survey` 進入本項，取證者的派生內容見 `executor-selection` skill「Claude 取證者派生契約」。
 
 下限三題為：是否需要執行建置、測試或多步驟命令；目標範圍是否無法事前列舉，需由執行端自行探索；是否為跨多檔的重複性機械改動。單檔、單一關注點、無需建置或測試的樣式或文字調整屬三題全否，不因目標副檔名是程式碼檔而改判。單一命令即可完成且不寫入任何檔案的查詢同樣屬三題全否，判準是命令數與寫入行為，不是檔案涵蓋範圍。
@@ -30,7 +30,7 @@
 
 「跨多檔」指 3 個檔案以上，因此四項成立時第二、三題亦為否，輸出「自己做（小改動）」，由 Claude 主 Agent 自理，結果附驗證命令原文與原始輸出（完整 stdout、stderr 與 exit code）。任一項不符時，第一題依原文判定。
 
-規則檔與文件的撰寫或改寫屬不派清單，即使輸入、限制、驗收條件與產出落點可完整寫成任務標註，也不交給 subagent 或 Codex。例外是結案前文件同步的一致性檢查（`-Type survey`）與最終編輯（`-Type edit -E false -T false`），由 Sonnet subagent 承接，最終編輯依責任編輯規則，程序與理由見 `workflow-orchestration` skill `references/doc-sync.md`。
+規則檔與文件的撰寫或改寫屬不派清單，即使輸入、限制、驗收條件與產出落點可完整寫成任務標註，也不交給 subagent 或 Codex。例外是結案前文件同步的一致性檢查（`-Type survey`）與最終編輯（`-Type edit -E false -T false`），由選派入口選出的 Claude subagent 承接，最終編輯依責任編輯規則，程序與理由見 `workflow-orchestration` skill `references/doc-sync.md`。
 
 **主 Agent 自理的範圍**：主 Agent 自理只限小型修改例外（判定行為「自己做（小改動）」）與難以交代清楚的工作中不會污染主 Agent context 者（判定行為「自己做（難以交代清楚）」），兩者都不需取得使用者同意；其餘進入登錄表判定的工作一律依選派結果派出，不以理由替代派出。
 
@@ -63,7 +63,7 @@
 本節的執行端泛指 Claude subagent 與 Codex 執行端。判定順序如下，命中即停止。
 
 1. 成因屬執行環境做不到時，修環境或改派依登錄表選出的其他執行者，同一成因不以相同條件重派。成因由協調者依證據判定（原始輸出、錯誤訊息，必要時重現），不採信執行端自述的原因；無法判定或查無證據時不適用本項。
-2. 殘餘工作符合小型修改例外四項時由 Claude 收尾（範圍已列明且不需建置測試者為 Haiku subagent，其餘為主 Agent），追加 exceptions「派工後補做」。
+2. 殘餘工作符合小型修改例外四項時由 Claude 收尾（範圍已列明且不需建置測試者為 `-Type edit -E true -T false` 選派的 Claude subagent，其餘為主 Agent），追加 exceptions「派工後補做」。
 3. 其餘退回執行端。
 
 「主 Agent 的派工權限」的「不直接修改程式碼」不涵蓋小型修改例外自理與本節收尾。紀錄欄位與環境成因的處置見 `codex-dispatch` skill `references/collect.md`「派工後的殘餘工作」。
@@ -79,7 +79,7 @@
 **離線改派**：執行者只分在線與離線，判定離線的唯一來源是服務端拒絕（usage-limit、401、model not supported，以及尚無 item 進度即遭服務端拒絕的其他錯誤），額度數值不參與。帳號由入口腳本依 `machine.json` `codex_accounts` 登記清單動態選擇與更換，主 Agent 不指定 `-CodexHome`；帳號檢查、換帳號與重新登入命令的處理見 `executor-selection` skill「離線與帳號判定」與 `codex-dispatch` skill `references/run.md`「帳號」。
 
 1. 「全數不可用」只依入口腳本的回報判定：`Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted`。
-2. 全數確認不可用後，依選派入口選出的下一位處置（由同家族執行者審查、改由 Sonnet 承接事實查核，或依 `omitted` 與 `stopped` 的處置略過或停止；經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，沒有 Claude 替代者，`fallback.selection` 必為 `stopped`，停止並回報使用者；不含這兩類操作的測試取證本來就不走 Codex，由呼叫端以 `build-test` 標籤選到 Claude 執行者），各狀態的處置見 `executor-selection` skill「狀態處置」。`Invoke-CodexRun.ps1` 已在結果 JSON 的 `fallback.selection` 附上選派入口的輸出，直接採用，不必重新呼叫。`fallback` 為 `null` 時，由主 Agent 把不可用的 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-test,codex-factcheck,codex-advisor`）重新呼叫選派入口。不可用的狀態不保存，下一次新的派工照常先選 Codex。
+2. 全數確認不可用後，依選派入口選出的下一位處置（由同家族執行者審查、改由選派入口選出的 Claude 執行者承接事實查核，或依 `omitted` 與 `stopped` 的處置略過或停止；經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，沒有 Claude 替代者，`fallback.selection` 必為 `stopped`，停止並回報使用者；不含這兩類操作的測試取證本來就不走 Codex，由呼叫端以 `build-test` 標籤選到 Claude 執行者），各狀態的處置見 `executor-selection` skill「狀態處置」。`Invoke-CodexRun.ps1` 已在結果 JSON 的 `fallback.selection` 附上選派入口的輸出，直接採用，不必重新呼叫。`fallback` 為 `null` 時，由主 Agent 把不可用的 Codex 執行者以 `-Offline` 傳入（多個 id 以逗號連接，例如 `-Offline codex-test,codex-factcheck,codex-advisor`）重新呼叫選派入口。不可用的狀態不保存，下一次新的派工照常先選 Codex。
 3. 依選派結果改由其他執行者承接，是登錄表比對的正常結果，不追加 exceptions；在報告或回報中註明實際執行者與原應承接者。主 Agent 不自行頂替，硬能力（桌面控制、影像產生、瀏覽器與登入測試）沒有替代者時停止並回報使用者。
 
 ### advisor consult 的不限階段掛載點
@@ -91,7 +91,7 @@
 | 類別 | 適用條件 | 類型與執行者 | 授權 |
 | --- | --- | --- | --- |
 | 高風險決策的跨家族交叉檢查 | 符合任一項即屬高風險決策。改變公開契約、資料結構或安全邊界；不可逆操作（刪除、發版、force push） | `type=advise`，執行者只有 Codex `advisor` | 沿用 `[advisor 諮詢授權]` 與 `advisor_request_source=user-explicit` |
-| 事實查核 | 版本、API 行為、外部規格等須上網查證的事實 | `type=factcheck`，Codex `factcheck`；離線時改由 Sonnet subagent 承接 | 不需使用者授權 |
+| 事實查核 | 版本、API 行為、外部規格等須上網查證的事實 | `type=factcheck`，Codex `factcheck`；離線時改由選派入口選出的 Claude subagent 承接 | 不需使用者授權 |
 
 advisor 只在使用者授權後啟動，派遣檔的 `advisor_request_source` 填 `user-explicit`。主 Agent 判斷值得諮詢時先向使用者提出請求，請求附上當下查詢到的額度供使用者判斷。請求原文固定如下，請求本身不構成授權。使用者在當下 Session 已明確授權「送顧問不必詢問」時，同一 Session 內直接以 `user-explicit` 填寫派遣檔；該授權不延續到其他 Session。
 

@@ -195,7 +195,7 @@ Standards 軸依啟動流程第 5 點選定的審查模式與範圍檢查下列 
 **審查結論門檻**：manifest `findings` 中 `status=open` 的 finding 含任一 Critical 或 Major 時結論為 `fail`；只有 Minor 或沒有 `open` finding 時結論為 `pass`，Minor 仍完整列出。`accepted` 不計入門檻判定。結論依嚴重度判定，不依 finding 數量判定，寫在報告「總覽」的結論行。第 2 輪以上，修正範圍外的 `Minor` 屬候選，不影響結論；結論為 `pass` 且仍有 `Minor` 時，協調者依共同收斂契約判定順序 1 處理。
 **嚴重度分級**：Critical（資料損毀、崩潰、安全漏洞）＞ Major（功能結果錯誤）＞ Minor（僅邊界情境出錯）。
 
-**執行方式**：優先於 session 內派生匿名 subagent（三個 finder 可並行，verifier 單一實例）；環境不支援 subagent 時，退化為單 agent 依序執行三個 finder 再執行 verifier。於 Claude 端以 Claude Sonnet subagent 被叫起且無法再派生 subagent 時，依上述退化路徑單 agent 依序執行。
+**執行方式**：優先於 session 內派生匿名 subagent（三個 finder 可並行，verifier 單一實例）；環境不支援 subagent 時，退化為單 agent 依序執行三個 finder 再執行 verifier。於 Claude 端以 Claude subagent 被叫起且無法再派生 subagent 時，依上述退化路徑單 agent 依序執行。
 
 ## 產出
 

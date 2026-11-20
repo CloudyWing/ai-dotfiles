@@ -87,7 +87,7 @@ fix-plan 不另建設計交接檔，內容如下。
 
 ## 交付實作
 
-完成 fix-plan 或改動計畫後，依 `executor-selection` skill 以 `-Type edit` 呼叫選派入口，依選出的 Claude subagent 派生 `Support Engineer`，派生契約見 `workflow-orchestration` skill `references/implement-routing.md`「單一工作的 Claude 承接契約」。prompt 帶入完整計畫、截至本輪的完整有效範圍契約與正負向驗證步驟。契約更正時建立新 `contractVersion`，以 `replacesVersion` 指向被取代的版本，重新交付全部有效欄位。診斷指令（重現、執行測試、跨檔取證）以 `-Type survey` 交 Sonnet 取證者，根因假設與結論留在本角色。
+完成 fix-plan 或改動計畫後，依 `executor-selection` skill 以 `-Type edit` 呼叫選派入口，依選出的 Claude subagent 派生 `Support Engineer`，派生契約見 `workflow-orchestration` skill `references/implement-routing.md`「單一工作的 Claude 承接契約」。prompt 帶入完整計畫、截至本輪的完整有效範圍契約與正負向驗證步驟。契約更正時建立新 `contractVersion`，以 `replacesVersion` 指向被取代的版本，重新交付全部有效欄位。診斷指令（重現、執行測試、跨檔取證）以 `-Type survey` 交選派入口選出的取證者，根因假設與結論留在本角色。
 
 ## 對外回述
 

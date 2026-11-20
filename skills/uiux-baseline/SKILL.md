@@ -27,14 +27,13 @@ policy.allow_implicit_invocation: true
 `dispatch: delegate` 的意義為不由主 Agent 自理，依本節標註呼叫 `scripts/Select-DispatchExecutor.ps1`，執行者與標註語意見 `executor-selection` skill。
 
 - 標註：`-Type survey`。掃描只寫入 `.local/ai-sessions/style-baselines/` 與樣本輸出位置，不修改專案原始檔。
-- 預期執行者：Sonnet 取證者。
 
 ## 協調者基準準備
 
 Analyst 在 UI 線別為「版面規劃」或「先做 Demo」而進入設計前、Maintainer 在產出 fix-plan 或改動計畫前準備基準；「先做 Demo」先準備再交 Prototyper。
 
 1. 先選定目標 `app-name` 與 app 來源根，解析同一 `work-root` 的指定 `baseline-path`。檔案存在時實讀「掃描範圍」及「引用方式」，核對 app 身分與實際 `sample-path`。
-2. 缺少基準時依本檔「任務標註」以 `executor-selection` 交 Sonnet 取證者掃描，不需使用者手動觸發。派遣輸入包含選定 app 來源根、基準與樣本輸出位置、同線已驗證的 LineContext、下方既有抽取流程及排除範圍；只產出指定 app 的基準與樣本。
+2. 缺少基準時依本檔「任務標註」以 `executor-selection` 交選派入口選出的取證者掃描，不需使用者手動觸發。派遣輸入包含選定 app 來源根、基準與樣本輸出位置、同線已驗證的 LineContext、下方既有抽取流程及排除範圍；只產出指定 app 的基準與樣本。
 3. 成功後實讀回報檔及產物，核對 app-name、基準掃描範圍、實際 baseline-path 與 sample-path。將同一筆路徑及待決策清單交付下游，確認狀態以 in-context 的 `confirmed-choices` 傳遞；消費與確認方式依 `uiux`「基準輸入與確認狀態」。
 4. 派工失敗、缺欄、app 錯配或檔案不可讀時，保留原始錯誤、已查範圍與絕對缺件位置，停止下游。缺代表來源時明列未偵測到，需用該項的正式 Demo、設計或計畫保持阻擋，不以其他 app 或通用值補足。
 

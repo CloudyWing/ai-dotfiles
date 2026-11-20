@@ -162,12 +162,12 @@ policy.allow_implicit_invocation: true
 
 | 工作 | 執行端 | 標註 |
 | --- | --- | --- |
-| 撰寫 E2E 測試碼、`ManualRecorder`、測試專案設定 | Claude subagent，預期 Sonnet | `-Type edit -E false -T true -Tags build-test` |
-| 執行網站路徑 E2E（Playwright 測試專案），取回 `flows/`、`images/` 與測試輸出 | Claude subagent，預期 Sonnet，在沙盒外執行 `dotnet test` | `-Type test -Tags build-test` |
+| 撰寫 E2E 測試碼、`ManualRecorder`、測試專案設定 | Claude subagent | `-Type edit -E false -T true -Tags build-test` |
+| 執行網站路徑 E2E（Playwright 測試專案），取回 `flows/`、`images/` 與測試輸出 | Claude subagent，在沙盒外執行 `dotnet test` | `-Type test -Tags build-test` |
 | 執行視窗程式路徑 E2E（FlaUI 測試專案） | 同上；FlaUI 會操作使用者正在使用的桌面，執行前依 `blazor-testing` skill「與使用者同時使用電腦」取得使用者同意 | `-Type test -Tags build-test` |
 | 勾選流程、詢問 `manual-root`、讀圖判定、組裝手冊、套用 `check-markdown` | Claude 端 | 自己做（需要對話脈絡） |
 
-- 傳入選派入口的標註為上表前三列，可直接傳給 `scripts/Select-DispatchExecutor.ps1`，`-Type edit` 與 `-Type test -Tags build-test` 都選出 `sonnet`。
+- 傳入選派入口的標註為上表前三列，可直接傳給 `scripts/Select-DispatchExecutor.ps1`，`-Type edit` 與 `-Type test -Tags build-test` 都選出 Claude 執行者。
 - 建置、還原套件與可重跑的測試專案一律由 Claude 端在沙盒外執行，Codex `test` 只做 MCP 臨場操作，不承接 `dotnet test`（選派入口對 `build-test` 標籤的 `test` 不選 Codex）。
 - 手冊只由 Claude 端寫入，Codex 派遣不觸及 `manual-root`。
 

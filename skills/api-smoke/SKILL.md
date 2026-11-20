@@ -14,10 +14,10 @@ policy.allow_implicit_invocation: true
 
 | 工作 | 執行端 | 標註 |
 | --- | --- | --- |
-| 啟動服務、執行多情境 API 呼叫、寫入回查、擷取回應與日誌證據 | Claude 取證者（Sonnet subagent） | `-Type test -Tags build-test` |
+| 啟動服務、執行多情境 API 呼叫、寫入回查、擷取回應與日誌證據 | Claude 取證者 | `-Type test -Tags build-test` |
 | 判讀回應是否符合預期、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
 
-API 取證不派 Codex：Codex 的命令沙盒內連不到本機服務，`test` 檔位也只做 MCP 臨場操作。選派入口對 `build-test` 標籤的 `test` 選出 Sonnet，依 `executor-selection` skill「Claude 測試取證者派生契約」派生取證者，判讀留在 Claude 端。
+API 取證不派 Codex：Codex 的命令沙盒內連不到本機服務，`test` 檔位也只做 MCP 臨場操作。選派入口對 `build-test` 標籤的 `test` 選出 Claude 執行者，依 `executor-selection` skill「Claude 測試取證者派生契約」派生取證者，判讀留在 Claude 端。
 
 ## 啟動條件
 
