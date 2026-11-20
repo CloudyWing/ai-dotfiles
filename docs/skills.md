@@ -42,7 +42,7 @@
 | `csharp-grpc` | 知識型 | agent | gRPC 服務開發規範：Proto 檔案的目錄與命名慣例、服務類別命名、全域錯誤攔截器與用戶端工廠模式。當偵測到 gRPC 專案或撰寫 .proto、gRPC 服務與用戶端時自動套用。 |
 | `csharp-integration-test` | 知識型 | agent | C# 整合測試規範：WebApplicationFactory、Testcontainers、依 AI-PROFILE 目標版本鍵選用資料庫容器映像與相容性層級、資料隔離與認證繞道。當撰寫或修改整合測試（跨資料庫、HTTP 管線、外部相依）時自動套用。 |
 | `csharp-language-features` | 知識型 | agent | Use when 讀取或修改 C# 專案設定、TargetFramework 或 C# 程式碼，需判斷語言特性、非同步、型別選用，或依 project-kind 判斷 ConfigureAwait 與公開 API 相容性時。 |
-| `csharp-linq` | 知識型 | agent | LINQ 查詢規範：回傳型別、語法選用與 Lambda 排版的專案慣例。當撰寫 In-Memory 集合操作或 LINQ to Objects 時自動套用。 |
+| `csharp-linq` | 知識型 | agent | LINQ 查詢規範：回傳型別、語法選用與鏈式排版的專案慣例。當撰寫 In-Memory 集合操作或 LINQ to Objects 時自動套用。 |
 | `csharp-mcp-server` | 知識型 | agent | 產生或撰寫 C# MCP (Model Context Protocol) 伺服器時的最佳實踐與專案結構規劃。 |
 | `csharp-nrt` | 知識型 | agent | C# Nullable Reference Types 規範：依類別用途選擇正確的屬性宣告策略，禁止用假預設值消除警告，並列出 EF Core Navigation Property 與 Blazor 元件屬性的例外條件。當專案啟用 NRT 且撰寫或修改型別宣告（含 Blazor 元件的 `.razor.cs` 與 `@code` 區塊）時自動套用。 |
 | `csharp-nunit` | 知識型 | agent | C# NUnit 測試規範：測試專案與方法命名、AAA 排版、資料驅動、多重斷言、非同步例外驗證的宣告方式與測試接縫。當撰寫或修改 C# 單元測試時自動套用。 |

@@ -34,6 +34,7 @@ policy.allow_implicit_invocation: true
 - `<param>`：描述參數用途（名詞片語，不要寫出資料型別）。
   - 若是布林值，寫法應為：`若要...則為 <see langword="true" />；否則為 <see langword="false" />。`。
 - `<returns>`：描述回傳值（名詞片語）。若是布林值，描述格式與 `<param>` 類似。
+
 ## 屬性 (Properties)
 
 - `<summary>` 開頭應為：

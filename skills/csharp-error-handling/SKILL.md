@@ -7,7 +7,7 @@ policy.allow_implicit_invocation: true
 
 # C# 例外處理規範
 
-## 例外類型選用
+## 業務錯誤的表達
 
 - 可預期的業務錯誤（如「餘額不足」「庫存不足」）：依專案慣例，使用自訂例外或 Result Pattern，不使用 `Exception` 基底類別。
 - **禁止** `throw new Exception("...")`（太籠統，呼叫端無法精確捕捉）。

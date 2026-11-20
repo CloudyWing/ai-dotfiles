@@ -25,7 +25,7 @@ policy.allow_implicit_invocation: true
 - **預設 Cache-Aside**：讀取先查快取，未命中查資料來源後回填。寫入時**失效（刪除）對應 Key**，不採「寫入時更新快取值」（雙寫易產生不一致）。
 - 高併發熱點 Key 的回源需防擊穿：優先使用 `Microsoft.Extensions.Caching.Hybrid` 的 `HybridCache`（ASP.NET Core 文件自 .NET 9 起收錄，內建 stampede 防護與 L1/L2 兩層）；未使用 HybridCache 時以 per-key 鎖或單飛（single-flight）模式限制同時回源數。
 - 自建回源協調時，每個 Key 維持 single-flight。互斥鎖本身不構成 single-flight，成功取得 lock 後必須重新檢查快取，或讓所有請求共用同一個 in-flight `Task`。
-- 只有成功取得 lock 的工作可以釋放該 lock，釋放寫在包覆回源工作的 `try` / `finally`；取消或例外發生在 `WaitAsync` 成功返回前時不釋放。per-key 狀態在仍有等待者時不移除。
+- 只有成功取得 lock 的工作可以釋放該 lock，釋放寫在包覆回源工作的 `try` / `finally`；取消或例外發生在 `WaitAsync` 成功返回前時不釋放。per-key 狀態在仍有等待者時不移除；改用共用 in-flight `Task` 時，只在該 `Task` 完成後移除。
 - `HybridCache` 內部的 in-flight 狀態由 `HybridCache` 擁有與清理，呼叫端不以自建 lock 清除或釋放。
 - **穿透防護**：查無資料的結果以短 TTL（如 30〜60 秒）快取空值標記，避免不存在的 ID 反覆打穿到資料庫。
 - `null`、有效的空集合與查無資料標記是不同的結果契約。有效空集合依資料新鮮度使用一般 TTL；查無資料或 `null` 使用短 TTL，且每一種結果都要定義回源與序列化表示，不以空集合推導未授權的補償資料。

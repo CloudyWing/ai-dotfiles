@@ -70,6 +70,7 @@ protected override void ConfigureConventions(ModelConfigurationBuilder configura
 ## 變更追蹤與儲存
 
 - `SaveChangesAsync()` 應在業務操作單元的最外層呼叫一次，不在 Repository 方法內部呼叫（避免破壞 Unit of Work 模式）。
+
 ### 更新與 EntityState
 
 - 對追蹤中的 Entity 設值但值不變時，`EntityState` 維持 `Unchanged`，不送出 `UPDATE`，`SaveChanges()` 回傳 `0`。`SaveChanges()` 回傳的是整個 context 寫入的狀態項目數，回傳 `0` 不代表更新失敗。只異動單一 Entity 的更新方法可寫成 `context.Entry(entity).State == EntityState.Unchanged || context.SaveChanges() > 0`，避免值不變時誤判為失敗；此寫法在該 Entity 未變更時不會呼叫 `SaveChanges()`，context 還有其他待儲存變更時不適用。

@@ -53,6 +53,7 @@ policy.allow_implicit_invocation: true
 - DTO 禁止使用 `List<T> { get; set; }`，避免同時暴露具體型別與可替換屬性。
 - 方法參數偏好 `IEnumerable<T>`，需要索引時使用 `IReadOnlyList<T>`，不要求呼叫端傳入 `List<T>`。
 - `private` 與 `internal` 方法若不需要替換實作或跨 assembly 的抽象契約，可依 CA1859 回傳實際集合型別，讓編譯器保留具體型別資訊；`public`、`protected` 與提供給外部 assembly 的 `internal` 契約仍使用最窄介面。
+
 ## Nullable Value Types 與 NRT
 
 - 對 `Nullable<T>` Value Types 檢查是否有值時，優先使用 `.HasValue`。

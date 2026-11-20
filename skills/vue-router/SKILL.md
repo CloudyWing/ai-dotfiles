@@ -50,9 +50,11 @@ policy.allow_implicit_invocation: true
 
 - 以 `declare module 'vue-router'` 擴充 `RouteMeta`，欄位為 `requiresAuth`、`guestOnly`、`roles`（`ReadonlyArray<string>`）與 `title`，皆為選填。型別擴充檔為 `router/types.ts`，檔內需有 `export {}` 使其成為模組。
 - 將 Meta 型別定義放在獨立檔案中，並確保該檔案被 `tsconfig.json` 涵蓋。
+
 ## 程式化導航
 
 - 程式化導航優先使用 `name`，避免硬編碼路徑。
+
 ## 頁面標題
 
 - 在 `router.afterEach` 依 `to.meta.title` 設定 `document.title`，格式為 `<title> | <應用程式名稱>`；沒有 `title` 時只顯示應用程式名稱。

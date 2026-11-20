@@ -47,7 +47,7 @@ policy.allow_implicit_invocation: true
 
 ## FluentValidation 規範
 
-- Minimal API 沒有 MVC 的自動 Model Validation Filter。以 Endpoint Filter 呼叫 `IValidator<T>` 統一驗證，驗證失敗時回傳 `Results.ValidationProblem(result.ToDictionary())`。
+- Minimal API 使用 FluentValidation 時，以 Endpoint Filter 呼叫 `IValidator<T>` 統一驗證，驗證失敗時回傳 `Results.ValidationProblem(result.ToDictionary())`。.NET 10 起內建的 `AddValidation()` 只處理 DataAnnotations，不會執行 FluentValidation 的規則。
 
 ## ASP.NET Core 整合
 
