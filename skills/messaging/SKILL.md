@@ -21,7 +21,7 @@ policy.allow_implicit_invocation: true
 | Dead Letter Queue | 原 Queue 名稱加 `.dlq` 後綴 | `notification.order-created.dlq` |
 
 - Exchange 型別預設使用 `topic`，僅在明確一對一場景使用 `direct`。
-- 禁止使用預設 Exchange（空字串）發佈業務訊息。
+- 禁止使用預設 Exchange（空字串）發佈業務訊息。預設 Exchange 以佇列名稱為 routing key 直送該佇列，且不允許 bind 與 unbind，發佈端因此綁死佇列名稱，無法再以 binding 加掛其他消費者。
 
 ### MQTT
 

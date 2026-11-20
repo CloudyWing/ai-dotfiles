@@ -12,14 +12,14 @@ policy.allow_implicit_invocation: true
 修改 C# 程式碼前先判斷目標框架與語言版本：
 
 - **Legacy .NET Framework**：若為 .NET Framework，例如 v4.7.2，語法上限為 C# 7.3，不使用 C# 8.0 以上特性，例如 `using var`、`switch` 運算式、Records 與 Nullable Reference Types。
-- **Modern .NET**：Core、5+ 或更新版本可使用相容的現代 C# 特性。依賴注入使用傳統建構函式，不使用 Primary Constructors。
+- **Modern .NET**：Core、5+ 或更新版本可使用相容的現代 C# 特性。依賴注入使用傳統建構函式，不使用 Primary Constructors；Primary Constructors 容易省略參數驗證，並混淆參數、欄位與屬性的界線，只用於 record。
 - **明示 LangVersion**：`.csproj` 或 `Directory.Build.props` 明示 `<LangVersion>` 時，語言版本以其為準，優先於由 `<TargetFramework>` 推論的預設版本；兩者不一致時依 `<LangVersion>` 判斷可用特性。
 
 ## Async / Await
 
 - 依 `ai-profile` skill 的 `project-kind` 與「專案層解析」決定是否加上 `.ConfigureAwait(false)`。`library` 的非同步呼叫加上；`application` 與 `sample` 不加；未設定時不強制，沿用同專案既有寫法。
 - 避免 Sync-over-Async。同步介面必須呼叫非同步邏輯時，視情況使用 `.GetAwaiter().GetResult()`，不使用 `.Result` 或 `.Wait()`。
-- 方法只轉發另一個 Task 結果時，直接回傳該 Task，例如 `return DoSomethingAsync();`，不增加多餘的 `async` / `await` 狀態機。
+- 方法只轉發另一個 Task 結果時，直接回傳該 Task，例如 `return DoSomethingAsync();`，不增加多餘的 `async` / `await` 狀態機。該呼叫位於 `using` 範圍內時保留 `async` / `await`，否則資源會在 Task 完成前釋放（分析器 CA2025）。
 - 回傳 Task 且未宣告 `async` 的方法，以 `Task.FromException()` 傳遞例外，不使用 `throw`。
 
 ## 公開 API 相容性
@@ -41,7 +41,7 @@ policy.allow_implicit_invocation: true
 - 字串比較明確指定比較規則，例如 `StringComparison.OrdinalIgnoreCase`。
 - 時間型別遵循專案既有慣例。專案統一使用 `DateTime` 時維持該型別，統一使用 `DateTimeOffset` 時維持該型別。新建程式碼沒有既有慣例時優先使用 `DateTimeOffset`。
 - 同一專案內的 `DateTime` 不混用 `Local`、`Utc` 與 `Unspecified`。
-- 空字串使用空字串文字，不使用 `string.Empty`。
+- 空字串使用空字串文字 `""`，不使用 `string.Empty`，理由是可讀性。
 
 ## Collection Type Selection
 

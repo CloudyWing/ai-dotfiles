@@ -25,7 +25,7 @@ policy.allow_implicit_invocation: true
 
 - 共用實例定義於 `lib/axios.ts` 並以 default export 匯出。`baseURL` 取 `import.meta.env.VITE_API_BASE_URL`，未設定時為 `/api`。
 - 明確設定 `timeout`（如 30 秒；Axios 預設不逾時），預設標頭 `Content-Type` 為 `application/json`。
-- Request Interceptor 在有 Token 時注入 `Authorization: Bearer <token>`；Response Interceptor 在 401 時以 `window.location.href = '/login'` 整頁導向登入頁，不在 `lib/axios.ts` 匯入 Router。兩者的錯誤處理都以 `Promise.reject(error)` 把錯誤交還呼叫端，不吞掉錯誤。
+- Request Interceptor 在有 Token 時注入 `Authorization: Bearer <token>`；Response Interceptor 在 401 時以 `window.location.href = '/login'` 整頁導向登入頁，不在 `lib/axios.ts` 匯入 Router。Router 的 Guard 會使用 Store，Store 又呼叫 `apiClient`，匯入 Router 會形成循環相依。兩者的錯誤處理都以 `Promise.reject(error)` 把錯誤交還呼叫端，不吞掉錯誤。
 
 ### Axios 規範
 

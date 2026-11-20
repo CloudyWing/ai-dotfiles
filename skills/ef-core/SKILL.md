@@ -34,7 +34,8 @@ policy.allow_implicit_invocation: true
 
 ## Migration 管理
 
-- 資料 Seeding 使用 `HasData()` 方式，不在 Migration 的 `Up()` 方法中直接寫入 SQL Insert。
+- 固定且不依賴資料庫狀態的參考資料（如代碼表）使用 `HasData()`，由 Migration 依模型變更計算新增、更新與刪除，不在 `Up()` 方法中直接寫入 SQL Insert。
+- 其餘初始資料（測試資料、依賴資料庫狀態、主鍵由資料庫產生、量大或非固定值）在 EF Core 9 以上使用 `UseSeeding` 與 `UseAsyncSeeding`；`HasData()` 的資料會寫入 Migration 快照，且主鍵必須明確指定。
 
 ## 模型設定
 

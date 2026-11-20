@@ -20,7 +20,7 @@ policy.allow_implicit_invocation: true
 
 - 使用 `syntax = "proto3"`；日期時間欄位使用 `google.protobuf.Timestamp`（需 `import "google/protobuf/timestamp.proto";`）。
 - **必須**指定 `csharp_namespace`，避免產生的 C# 程式碼落入預設命名空間。
-- **必須**指定 `package`，含版本號（如 `myapp.v1`）。
+- **必須**指定 `package`，含版本號（如 `myapp.v1`）。服務位址由 package 與服務名稱組成，帶版本號才能讓 `v1` 與 `v2` 並存，發佈破壞性變更時舊用戶端仍可呼叫 `v1`。
 - 欄位命名使用 snake_case（Protobuf 慣例，Code Generator 會轉為 PascalCase）。
 - Request / Response 訊息以 RPC 方法名稱為前綴，避免命名衝突。
 

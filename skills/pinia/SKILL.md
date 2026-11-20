@@ -60,8 +60,6 @@ Setup Store 不像 Options Store 自帶 `$reset()`，必須手動實作：把所
 
 - **僅持久化必要的最小資料**（如 Token、使用者偏好），不持久化完整的業務資料。
 - 敏感資料（如完整使用者資訊）不放 `localStorage`。
-- Token 使用 `localStorage`（跨分頁持久）；UI 偏好可用 `sessionStorage`。
-
 ## 測試
 
 - Store 測試聚焦 Action 的業務邏輯，不測試 Pinia 框架本身的響應式行為。

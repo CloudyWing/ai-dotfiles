@@ -155,4 +155,4 @@ policy.allow_implicit_invocation: true
   ];
   ```
 
-- **禁用 `#region`**。
+- **禁用 `#region`**。`#region` 的用途是隱藏不需關注的細節，實務上容易被濫用，閱讀時會忽略摺疊起來的內容。

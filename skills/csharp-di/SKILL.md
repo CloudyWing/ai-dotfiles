@@ -9,14 +9,14 @@ policy.allow_implicit_invocation: true
 
 ## Generic Host
 
-- **禁止**在 Generic Host 應用程式中手動建立 `ServiceCollection` 再 `BuildServiceProvider()`，除非是單元測試場景。
+- **禁止**在 Generic Host 應用程式中手動建立 `ServiceCollection` 再 `BuildServiceProvider()`，除非是單元測試場景。手動建立會產生第二個容器，Singleton 服務被重複建立（分析器 ASP0000）。
 
 ## 註冊慣例
 
 ### 介面與實作分離
 
-- 註冊服務時**必須**以介面為服務型別，具體實作為實作型別。
-- 禁止直接註冊具體類別（除非該類別本身就是最終消費端，如 `BackgroundService`）。
+- 服務需要抽換實作，或測試需要替身時，以介面為服務型別、具體實作為實作型別註冊。
+- 沒有上述需求的服務可直接註冊具體類別，不為註冊而新增介面。
 
 ### 多實作註冊
 
