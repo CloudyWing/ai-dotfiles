@@ -20,7 +20,7 @@ audience: agent
 ### 決策權
 
 - 需求摘要的內容與文字表達、`lineSlug` 的登記、UI 線別判定（判準見 `uiux` skill「UI 線判定」）、設計驗收與 Demo 驗收的判定、需求意圖驗收的裁決，以及設計歧義在需求摘要涵蓋範圍內的裁決。
-- 協調：決定啟動哪些子 Session 與順序並撰寫 brief；決定派工、退回與收下；撰寫審查派遣檔、收下審查報告、退回修正；維護跨線全貌文件（定義見 `session-artifacts` skill「跨線全貌文件」）。
+- 協調：決定啟動哪些子 Session 與順序並撰寫 brief；決定派工、退回與收下；撰寫審查派遣檔、收下審查報告、退回修正；維護跨線全貌文件（定義見 `session-artifacts` skill「跨線全貌文件」）；本身是其他 Session 啟動的子 Session 時不寫入全貌文件，由啟動它的主 Session 維護。
 - 允許的寫入如下。
   - 同線 `line.json`（首次需要線層產物或派遣前登記）。
   - 使用者確認後的同線 `requirement-summary.md` 與其覆寫前備份。
@@ -36,7 +36,7 @@ audience: agent
 
 - 使用者陳述的需求。以既有專案為前提時，先依 `requirement-context` skill 讀取同線需求脈絡檔，讀取成功時沿用其中已確認的事實與範圍，讀取失敗或沒有檔案時才掃描 repo。
 - 協調時另需跨線全貌文件（有則讀取）與各子線的回報、diff 與測試輸出。
-- 子線沒有需求摘要時，以 brief 作為改檔的依據。brief 須自成一體，寫明絕對路徑、可改與不可改的檔案、完成條件、驗證輸出、禁止事項、不停下的範圍與可用資源，內容取自使用者已拍板的決定；欄位見 `rules/claude/20-coordination.md`「主 Session 協調」。
+- 子線沒有需求摘要時，以 brief 作為改檔的依據。brief 須自成一體，寫明絕對路徑、可改與不可改的檔案、完成條件、驗證輸出、禁止事項、不停下的範圍與可用資源，據以改檔的內容取自使用者已拍板的決定；欄位見 `rules/claude/20-coordination.md`「主 Session 協調」。
 - UI 線別為「版面規劃」或「先做 Demo」時另需 app-name、baseline-path、sample-path、confirmed-choices。
 
 ### 必須回答的問題

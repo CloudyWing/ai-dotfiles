@@ -103,7 +103,7 @@ applyTo: "**/*"
 - **狀態儲存（State Handoff）**：`CONTEXT.local.md` 為**可選**的本機交接檔，不屬於 §2「Config Hierarchy」的規則覆寫層，僅用於保存**耐久且跨 Session 仍有價值**的資訊，例如環境前置作業、本機路徑差異、已知陷阱、易踩雷設定。**不預設承載當前進度、短期 TODO 或本輪實作清單**。發現這類耐久資訊時即寫入，採用 `~/.ai-agents/templates/CONTEXT.local.md.template` 的標準化結構。
 - **狀態延續（Session Resume）**：接手新任務或重開 Session 時，若 `CONTEXT.local.md` 存在則優先讀取，直接沿用其中的耐久資訊，主動跳過已記錄的錯誤路徑與重複前置作業。若不存在，不得因此阻斷 Workflow 或延後執行；直接依其餘交接物（如 `design.md`、報告檔）繼續工作。
 - **工作產物落點（Artifact Placement）**：Agent 執行任務產生的檔案依用途存放於固定目錄，不散落於 process cwd 或系統暫存目錄。各類產物的分類、路徑與命名依 `session-artifacts` skill「產物分類與落點」。下列線層門檻常駐於本節：
-  - **線層登記**：協調者在首次需要建立線層產物或發動派遣前登記 `lineSlug`，登記不代表需求已確認。需求線（`line.json` 的 `kind` 為 `workflow`，缺少時視同）由 `Analyst` 登記；不屬任何需求線的一次性取證（`kind` 為 `adhoc`）由負責該任務的主 Agent、`Analyst` 或 `Maintainer` 登記。`requirement-summary.md` 只在使用者確認需求摘要後寫入。同線沒有需求摘要時，只能發動唯讀資源派遣，或依協調者撰寫的 brief 派出改檔工作；brief 的內容須取自使用者已拍板的決定，欄位見 `rules/claude/20-coordination.md`「主 Session 協調」。
+  - **線層登記**：協調者在首次需要建立線層產物或發動派遣前登記 `lineSlug`，登記不代表需求已確認。需求線（`line.json` 的 `kind` 為 `workflow`，缺少時視同）由 `Analyst` 登記；不屬任何需求線的一次性取證（`kind` 為 `adhoc`）由負責該任務的主 Agent、`Analyst` 或 `Maintainer` 登記。`requirement-summary.md` 只在使用者確認需求摘要後寫入。同線沒有需求摘要時，只能發動唯讀資源派遣，或依協調者撰寫的 brief 派出改檔工作；brief 據以改檔的內容須取自使用者已拍板的決定，協調者的推論另段標明，欄位見 `rules/claude/20-coordination.md`「主 Session 協調」。
   - **線脈絡驗證**：固定名稱交接檔或報告的寫入者必須取得已驗證的 `LineContext`；缺少 `lineSlug` 時停止寫入並交由上游建立線脈絡。
 - **腳本改寫安全（Script Rewrite Safety）**：用腳本或批次指令大量改寫檔案時，優先採「讀來源、寫新檔」，不原地覆寫輸入檔，使來源檔本身即為還原依據。當下列條件同時成立時，改寫前必須先將受影響的既有檔案複製到 `<work-root>/.local/ai-sessions/backups/<時間戳>/`（保留原始相對路徑），並附一行 `manifest.txt` 記錄該次操作：
   - 透過腳本或批次指令改檔，而非單次 `Edit` / `Write` 工具操作。

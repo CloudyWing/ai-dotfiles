@@ -213,8 +213,14 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 ### push 授權請求
 
 - 每次 push 都取得使用者當輪直接授權，授權不跨輪、不跨分支。
-- 請求附變更摘要（待推送範圍的 commit 清單與各自主題）、審查結論（審查者、輪數、結論與報告路徑；依 Reviewer 必發清單不需審查時附不發理由）、驗證結果（建置與測試命令及其結果；專案沒有可執行的測試或驗證手段時明寫「無可執行測試」）、整理結果（各 commit 的去向；沒有整理時註明），以及未解事項（範圍與重複時的處置依 `rules/claude/20-coordination.md`「授權分類」的 push 條；沒有時寫「無」）。
+- 請求附變更摘要（待推送範圍的 commit 清單、各自主題與來源的線或 Session；一併推送標籤時另列每個標籤的名稱與 `git rev-parse --verify refs/tags/<標籤>` 取得的物件 ID）、審查結論（審查者、輪數、結論與報告路徑；依 Reviewer 必發清單不需審查時附不發理由）、驗證結果（建置與測試命令及其結果；專案沒有可執行的測試或驗證手段時明寫「無可執行測試」）、整理結果（各 commit 的去向；沒有整理時註明），以及未解事項（範圍與重複時的處置依 `rules/claude/20-coordination.md`「授權分類」的 push 條；沒有時寫「無」）。
 - 提出請求前須完成的審查與整理依模式檔。
+- 執行 push 前重新取得待推送範圍，與授權請求列出的內容逐筆相同才推送；不同時不推送，重新提出請求。
+  - 分支先以 `git rev-parse --verify refs/heads/<分支>` 取得分支尖端的完整 SHA，再以 `git log <遠端追蹤分支>..<尖端 SHA>` 取得 commit 清單。遠端沒有對應分支時，以該尖端 SHA 將推送的全部 commit 為範圍。
+  - 標籤以 `git rev-parse --verify refs/tags/<標籤>` 取得物件 ID，與請求列出的物件 ID 比對。標籤一律寫完整的 `refs/tags/<標籤>`，避免簡稱解析到同名的其他 ref。
+- 推送分支時以上一步取得的分支尖端 SHA 指定來源，寫成 `git push --no-follow-tags origin <尖端 SHA>:refs/heads/<分支>`，不寫成 `git push origin <分支>`。commit 清單與推送來源取自同一次取得的尖端 SHA。分支名稱在推送當下才解析，核對之後落地的 commit 會隨同推出；指定 SHA 則只推到核對過的那一筆。推送後以 `git rev-parse <遠端追蹤分支>` 確認遠端位置等於該 SHA。
+- 推送標籤時以核對過的物件 ID 指定來源，寫成 `git push --no-follow-tags origin <物件 ID>:refs/tags/<標籤>`，每個標籤各推一次。
+- 上列命令都加 `--no-follow-tags`，使 `push.followTags` 設定不會附帶推出請求沒有列出的標籤。
 
 ## 改寫與 force push 邊界
 
@@ -229,7 +235,7 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 | 缺少或無效註記時的 `main` | 不改寫 | 視同 `release-flow` |
 
 - 每次 force push 都需使用者在執行端當輪直接授權，協調 Session 轉述不適用。一般 push 的授權不涵蓋 force push，授權不跨輪、不跨分支。
-- 一律使用 `git push --force-with-lease=<ref>:<遠端預期 SHA> origin <branch>`，不使用 `--force`。
+- 一律使用 `git push --no-follow-tags --force-with-lease=<ref>:<遠端預期 SHA> origin <改寫後 SHA>:refs/heads/<branch>`，不使用 `--force`。推送來源以授權請求列出的改寫後 SHA 指定，理由同「push 授權請求」。
 - 授權請求固定格式為 `[force push 授權] 分支=<名稱>；遠端目前=<sha>；改寫後=<sha>；備份=<備份分支或 SHA>；理由=<一句話>`。
 - lease 失敗（遠端已被更新）時停止回報，不重試，也不改用 `--force`。
 

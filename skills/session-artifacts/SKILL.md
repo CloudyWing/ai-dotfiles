@@ -70,7 +70,7 @@ Agent 執行任務產生的檔案依用途分為下列七類，存放於固定�
 - **固定 slug 的登記**：`coordination` 是保留給全貌文件的 slug，需求線登記時不使用。`handoff/coordination/` 與其 `line.json` 已存在時沿用，不依「線登記與 LineContext」的遞增規則改用 `coordination-2`，否則接手者會另建一份而遺棄原檔。目錄存在但缺少 `line.json` 時補寫 `line.json` 後沿用。`line.json` 的 `line-slug` 不是 `coordination`，或 `kind` 不是 `adhoc` 時，停止並回報使用者，不另建其他目錄。目錄不存在時才登記。
 - **保留**：檔案屬同線報告，依 `instructions.md` §1.4 的保留清單保留，不在自動清理範圍。
 - **範本**：`templates/coordination-overview.md.template`，區塊標題與表頭固定，不增減區塊。建立實際文件時刪除範本內的全部註解。
-- **維護者**：協調者手動維護，不設腳本或檢查。
+- **維護者**：由啟動各線的主 Session 手動維護，不設腳本或檢查。擔任該線 `Analyst` 的子 Session 不寫入，分工見 `rules/claude/20-coordination.md`「主 Session 協調」。
 
 四個區塊的內容與更新方式如下。
 
