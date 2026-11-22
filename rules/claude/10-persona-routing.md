@@ -56,4 +56,4 @@
 
 ## Claude 端 sub-agent 模型指定
 
-Claude 端使用 Agent 工具建立 sub-agent 時，呼叫參數必須指定 `model`，值一律取自選派入口輸出的 `executor.model`。由執行者登錄表選出的執行者（含搜尋、取證與覆核取證助手）與以 `-Type design` 選派的 `Architect`、`Prototyper` 都適用。派生 `Developer`、`Support Engineer` 或 `Refactorer` 時，prompt 另帶選派輸出的 `executor.selfRepair` 值，供其判定驗證失敗時可否自行修正。此規則不套用於 Claude Persona、Codex 端 Agent 與 `codex exec` 檔位。
+Claude 端使用 Agent 工具建立 sub-agent 時，呼叫參數必須指定 `model`，值一律取自選派入口輸出的 `executor.model`。由執行者登錄表選出的執行者（含搜尋、取證與覆核取證助手）與以 `-Type design` 選派的 `Architect`、`Prototyper` 都適用。派生 `Refactorer` 時，prompt 另帶選派輸出的 `executor.selfRepair` 值，供其判定驗證失敗時可否自行修正。此規則不套用於 Claude Persona、Codex 端 Agent 與 `codex exec` 檔位。
