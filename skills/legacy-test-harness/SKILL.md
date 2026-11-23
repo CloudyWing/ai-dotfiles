@@ -1,6 +1,6 @@
 ---
 name: legacy-test-harness
-description: 'Use when 建立原專案外部測試專案，評估舊 .NET 專案的單元或元件測試，或判讀測試結果與版本追溯資料。'
+description: 'Use when 建立不進原專案版控的外部測試專案，評估舊 .NET 專案的單元或元件測試，或判讀測試結果與版本追溯資料。'
 audience: human
 dispatch: split
 ---
@@ -9,11 +9,11 @@ dispatch: split
 
 ## 範圍與邊界
 
-本 Skill 指引在原專案之外建立測試專案，以單元或元件粒度驗證商業邏輯，降低修改一處後造成其他行為回歸的風險。採盡力而為原則，依可驗證的行為選擇可行測試層級。測試數量與程式碼覆蓋率不作為驗收條件。
+本 Skill 指引建立不進原專案版控的測試專案（以下稱外部測試專案），以單元或元件粒度驗證商業邏輯，降低修改一處後造成其他行為回歸的風險。採盡力而為原則，依可驗證的行為選擇可行測試層級。測試數量與程式碼覆蓋率不作為驗收條件。
 
 HTTP、UI 與資料庫的黑箱整合測試分別交由 [csharp-integration-test](../csharp-integration-test/SKILL.md)、[api-smoke](../api-smoke/SKILL.md) 與 [browser-smoke](../browser-smoke/SKILL.md)。單元測試的 NUnit 寫法參照 [csharp-nunit](../csharp-nunit/SKILL.md)。
 
-評估階段只讀取核准範圍內的原專案檔案，不修改原專案，也不安裝或還原套件。測試專案建立在原專案 Repository 之外，可使用獨立 Repository 或本機目錄。需要安裝或還原套件時，先交由協調者取得當輪授權。
+評估階段只讀取核准範圍內的原專案檔案，不修改原專案，也不安裝或還原套件。測試專案不進原專案的版控，位置依「外部測試專案與原專案保護」決定。需要安裝或還原套件時，先交由協調者取得當輪授權。
 
 ## 評估與測試計畫
 
@@ -31,11 +31,15 @@ HTTP、UI 與資料庫的黑箱整合測試分別交由 [csharp-integration-test
 
 ## 外部測試專案與原專案保護
 
-1. 將測試專案放在原 Repository 之外，並依被測程式的 .NET 版本選擇相容的 Target Framework 與 Runner。
-2. 依版本同步需求、建置條件與來源可用性，選擇 `ProjectReference` 或建置後的 DLL。測試計畫需記錄所選引用方式與被測版本識別資料。
-3. 保持原專案版控內所有追蹤檔案不變，範圍包含原始碼、`.csproj`、`.sln` 與設定檔。原專案目錄中只允許建置產生的 `bin`、`obj` 輸出。
-4. 使用 `InternalsVisibleTo`、修改原專案 Interface、加入 Adapter，或其他要求修改原專案的做法時，停止該標的的測試規劃，記錄為未覆蓋與原因。
-5. 以原專案的 `git status --porcelain --untracked-files=all`、`git diff HEAD --` 與 `git diff --cached --` 留存狀態證據。追蹤檔案有任何變更，或 `bin`、`obj` 以外出現新檔時，原專案保護檢查不通過。
+1. 測試專案的預設位置是 `<原專案 Repository 根目錄>/.local/tests/<測試專案名稱>/`。建立前確認下列兩項，都成立時把這個位置交給協調者向使用者確認，並說明 `.local` 下的檔案沒有版控紀錄，在原專案執行清除被忽略檔案的命令（例如 `git clean -fdx`）會刪除它們。任一項不成立，或使用者不採用預設位置時，改放原 Repository 之外由使用者指定的目錄。使用者尚未指定目錄時暫停建立，由協調者請使用者指定。
+   - 在原專案 Repository 根目錄執行 `git check-ignore -q .local/tests/<測試專案名稱>/`，代入名稱後的路徑作為唯一的引數。Exit Code 為 `0` 表示這個位置被 Git 忽略。
+   - 原專案 Repository 根目錄沒有專案檔（`*.csproj`、`*.vbproj`、`*.fsproj`）。根目錄的專案可能把 `.local` 下的原始碼納入自己的建置。
+2. 測試專案放在原專案目錄內時，在測試專案目錄放置自己的 `Directory.Build.props` 與 `Directory.Build.targets`，內容可以只有空的 `<Project />`。MSBuild 的預設搜尋由專案位置往上找這兩個檔案，找到第一個就停止，原專案上層的同名檔因此不套用到測試專案。建置命令或環境以 `DirectoryBuildPropsPath`、`DirectoryBuildTargetsPath` 指定匯入路徑時，預設搜尋不適用，建置測試專案時不設定這兩個屬性；環境已設定而無法取消時暫停建立，回報協調者。建置時發現測試專案仍受原專案的其他設定影響（例如 `Directory.Packages.props`、`global.json`、`nuget.config`），且無法在測試專案目錄內排除時，改放原 Repository 之外。
+3. 依被測程式的 .NET 版本選擇相容的 Target Framework 與 Runner。
+4. 依版本同步需求、建置條件與來源可用性，選擇 `ProjectReference` 或建置後的 DLL。測試計畫需記錄所選引用方式與被測版本識別資料。
+5. 保持原專案版控內所有追蹤檔案不變，範圍包含原始碼、`.csproj`、`.sln` 與設定檔。原專案目錄中只允許新增建置產生的 `bin`、`obj` 輸出，以及位於被 Git 忽略的 `.local` 下的測試專案。
+6. 使用 `InternalsVisibleTo`、修改原專案 Interface、加入 Adapter，或其他要求修改原專案的做法時，停止該標的的測試規劃，記錄為未覆蓋與原因。
+7. 以原專案的 `git status --porcelain --untracked-files=all`、`git diff HEAD --` 與 `git diff --cached --` 留存狀態證據。追蹤檔案有任何變更，或狀態輸出列出 `bin`、`obj` 以外的新檔時，原專案保護檢查不通過。被 Git 忽略的 `.local` 不會出現在狀態輸出。原專案的追蹤檔案標記為 `assume-unchanged` 或 `skip-worktree` 時，它的工作樹變更可能不出現在這三個命令的輸出，屬這項檢查的已知限制。
 
 ## 相依替換技術
 

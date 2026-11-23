@@ -1,6 +1,7 @@
 ---
-status: accepted
+status: superseded
 date: 2026-10-13
+superseded-by: 0048
 ---
 
 # ADR-0008：外部測試專案的引用方式與原專案不侵入邊界

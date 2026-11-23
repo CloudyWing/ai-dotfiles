@@ -4,6 +4,7 @@
 
 - 原專案 Repository：`<絕對路徑>`
 - 外部測試專案：`<絕對路徑>`
+- 位置確認：`<原專案 .local 下：git check-ignore 的 Exit Code、Repository 根目錄有無專案檔、使用者的確認 | 原 Repository 之外：使用者指定的原因>`
 - 測試層級：`<單元 | 元件>`
 - 回歸風險與選取依據：`<本次修改範圍、近期常改區域或連帶影響風險>`
 - 本計畫交由整合測試 Skill 的行為：`<HTTP、UI、資料庫黑箱情境或無>`
@@ -53,4 +54,4 @@
 - `git status --porcelain --untracked-files=all`：`<完整輸出或無輸出>`
 - `git diff HEAD --`：`<完整輸出或無差異>`
 - `git diff --cached --`：`<完整輸出或無差異>`
-- 判定：`<追蹤檔案無變更，且原專案目錄內新增項目僅為 bin、obj | 不通過及原因>`
+- 判定：`<追蹤檔案無變更，且狀態輸出列出的新增項目僅為 bin、obj | 不通過及原因>`
