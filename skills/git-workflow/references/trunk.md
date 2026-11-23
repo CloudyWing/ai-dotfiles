@@ -26,7 +26,7 @@
 
 ## 尚未推送前的修正
 
-修正尚未推送的 commit 時，由 `generate-commit` 步驟 4 建立 `fixup!` commit，不另建獨立的修正 commit。
+修正尚未推送的 commit 時，依 `generate-commit` 步驟 4 判定。判定為 `fixup!` 時建立 `fixup!` commit，不另建獨立的修正 commit。判定為一般 commit 時依該步驟建立一般 commit。
 
 ## push 前整理與檢查
 

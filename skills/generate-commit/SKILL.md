@@ -76,10 +76,13 @@ Commit 2：<commit message>
 | 條件 | 處置 |
 | --- | --- |
 | U 為空，或所有 `T(f)` 為空 | 一般 commit，並說明原因（沒有未推送的修正對象，或無法判定是否已推送） |
-| 所有檔案的 `T(f)` 都是同一個 SHA X | 自動以 `git commit --fixup=X` 建立 `fixup!` commit，不詢問 |
+| 任一 `T(f)` 指向不屬本線的 commit | 一般 commit，type 依「分類判定基準」，並說明該目標屬其他線或歸屬無法確認 |
+| 所有檔案的 `T(f)` 都是同一個 SHA X，且 X 屬本線 | 自動以 `git commit --fixup=X` 建立 `fixup!` commit，不詢問 |
 | 有多筆候選，即 `T(f)` 指向不同 SHA，或部分檔案有 `T(f)`、部分為空 | 詢問使用者：依目標拆成多筆 `fixup!` commit、選定單一目標，或全部改為一般 commit |
 | 修正對象已推送，即最近修改該檔的 commit 不在 U | 一般 commit，type 依「分類判定基準」 |
 
+- 本線的 commit 指本線協調者建立或收下的 commit，含交接前的協調 Session 所建立者。無法確認歸屬的 commit 視為不屬本線。目的是避免修正在整理時被收進其他線已覆核的 commit。
+- 上表由上而下判定，命中即停止。
 - 建立前以 `git cat-file -e X^{commit}` 確認目標存在，失敗時重新判定。
 - `fixup!` commit 的訊息由 git 產生，格式為 `fixup! <目標主題>`，不套用 Type Whitelist、Subject Rules 與 Body Rules。
 - hook 拒絕時回報 hook 輸出並停止，禁止以 `--no-verify` 略過 hook。

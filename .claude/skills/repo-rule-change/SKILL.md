@@ -15,7 +15,7 @@ Agent 規則檔在 `agents/claude/*.md` 與 `agents/codex/*.toml`。改完逐項
 
 1. 引用清查，被改的章節標題、條目名稱或檔名，可能被其他規則檔以「」或 `§` 引用。以 `rg -n "<被改的字串>" instructions.md rules agents skills README.md docs/adr` 搜尋，逐處確認引用仍成立。
 2. Persona 增減、Agent 檔增減或改名、symlink、目錄、腳本清單或 plugin 的改動，依 `AGENTS.md` §5 同步 `$personaAgents`、`README.md` 與 `scripts/Setup-AIGlobalConfig.ps1`。
-3. 機制條款改寫必須審查，審查者不得是改寫者。發動判準與派遣單前置見 `rules/claude/40-workflow.md`「Reviewer 派遣發動判準」與 `workflow-orchestration` skill `references/review-procedures.md`，不在此重述。
+3. 機制條款改寫必須審查，審查者不得是改寫者，符合「重複條文移除例外」的 `Minor` 批次修正除外。發動判準與派遣單前置見 `rules/claude/40-workflow.md`「Reviewer 派遣發動判準」與 `workflow-orchestration` skill `references/review-procedures.md`，不在此重述。
 
 ## Codex agent TOML 格式
 

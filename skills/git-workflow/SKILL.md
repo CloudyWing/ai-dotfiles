@@ -173,7 +173,7 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 
 Workflow Phase 由 Claude 執行者直接修改來源工作樹，執行者不建立 commit，成果以來源工作樹的未 commit 變更形式存在。Phase commit 以 Phase 為單位回收，一個 Phase 一個 commit。主 Agent 依結案報告「Phase 對照」節記載的逐 Phase 檔案清單分組，重整為每個 Phase 恰有一筆 commit；每筆訊息依 `generate-commit` skill 產生，且符合其 type、subject 與 body 規範。
 
-Developer 回收收下並覆核後，立即依 Phase 順序逐 Phase 暫存指名路徑並建立對應 commit，不等 Reviewer 與需求意圖驗收。來源分支為線分支時不需授權；來源分支為整合分支時 commit 即落地，不需授權，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。Reviewer 退回時，修正仍在同一來源工作樹進行，回收並覆核後由 `generate-commit` 步驟 4 建立 `fixup!` commit；每個 Phase 一筆 commit 的最終形態由落地或 push 前的「整理流程」收合 `fixup!` 達成。
+Developer 回收收下並覆核後，立即依 Phase 順序逐 Phase 暫存指名路徑並建立對應 commit，不等 Reviewer 與需求意圖驗收。來源分支為線分支時不需授權；來源分支為整合分支時 commit 即落地，不需授權，須符合 `rules/claude/20-coordination.md`「授權分類」的落地條件。Reviewer 退回時，修正仍在同一來源工作樹進行，回收並覆核後依 `generate-commit` 步驟 4 判定並建立 commit；判定為 `fixup!` 者，每個 Phase 一筆 commit 的最終形態由落地或 push 前的「整理流程」收合 `fixup!` 達成，判定為一般 commit 者保留為獨立的修正 commit。
 
 Phase commit 回收步驟依 Phase 順序將各 Phase 的差異套用至來源分支並建立對應 commit。來源分支是符合 `git-workflow` 註記模式的線分支或整合分支，分支前置見 `workflow-orchestration` skill「自動推進鏈」第 1 步。保留每個 Phase 的獨立語意，不在此步驟把全部 Phase squash 成單一 commit，也不以 merge commit 取代 Phase commit。回收完成並通過驗證後，依模式檔規定的整理時機執行「整理流程」。每筆 commit 必須通過可用性驗證，且回收後歷史整理必須通過 `references/history-rewrite.md` 第一層零差異 gate。回收衝突時停止並保留證據。
 
@@ -218,9 +218,10 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 - 執行 push 前重新取得待推送範圍，與授權請求列出的內容逐筆相同才推送；不同時不推送，重新提出請求。
   - 分支先以 `git rev-parse --verify refs/heads/<分支>` 取得分支尖端的完整 SHA，再以 `git log <遠端追蹤分支>..<尖端 SHA>` 取得 commit 清單。遠端沒有對應分支時，以該尖端 SHA 將推送的全部 commit 為範圍。
   - 標籤以 `git rev-parse --verify refs/tags/<標籤>` 取得物件 ID，與請求列出的物件 ID 比對。標籤一律寫完整的 `refs/tags/<標籤>`，避免簡稱解析到同名的其他 ref。
-- 推送分支時以上一步取得的分支尖端 SHA 指定來源，寫成 `git push --no-follow-tags origin <尖端 SHA>:refs/heads/<分支>`，不寫成 `git push origin <分支>`。commit 清單與推送來源取自同一次取得的尖端 SHA。分支名稱在推送當下才解析，核對之後落地的 commit 會隨同推出；指定 SHA 則只推到核對過的那一筆。推送後以 `git rev-parse <遠端追蹤分支>` 確認遠端位置等於該 SHA。
-- 推送標籤時以核對過的物件 ID 指定來源，寫成 `git push --no-follow-tags origin <物件 ID>:refs/tags/<標籤>`，每個標籤各推一次。
+- 推送分支時以上一步取得的分支尖端 SHA 指定來源，寫成 `git push --no-follow-tags --recurse-submodules=check origin <尖端 SHA>:refs/heads/<分支>`，不寫成 `git push origin <分支>`。commit 清單與推送來源取自同一次取得的尖端 SHA。分支名稱在推送當下才解析，核對之後落地的 commit 會隨同推出；指定 SHA 則只推到核對過的那一筆。推送後以 `git rev-parse <遠端追蹤分支>` 確認遠端位置等於該 SHA。
+- 推送標籤時以核對過的物件 ID 指定來源，寫成 `git push --no-follow-tags --recurse-submodules=check origin <物件 ID>:refs/tags/<標籤>`，每個標籤各推一次。
 - 上列命令都加 `--no-follow-tags`，使 `push.followTags` 設定不會附帶推出請求沒有列出的標籤。
+- 上列命令都加 `--recurse-submodules=check`，使 `push.recurseSubmodules` 設定不會另外推送 submodule 的 commit，同時保留 Git 既有的檢查。Git 因 submodule 的 commit 尚未推送而中止時停止，先在該 submodule 的 repo 另外提出授權請求並完成推送，再重新提出本次請求。這項檢查依本機的 submodule 物件與遠端追蹤 ref 判斷，本機缺少兩者之一時 Git 不檢查，推送成功不代表 submodule 的 commit 已在遠端。
 
 ## 改寫與 force push 邊界
 
@@ -235,7 +236,7 @@ Rebase 或解衝突完成後，先確認重整後的 Phase commit 數量與專�
 | 缺少或無效註記時的 `main` | 不改寫 | 視同 `release-flow` |
 
 - 每次 force push 都需使用者在執行端當輪直接授權，協調 Session 轉述不適用。一般 push 的授權不涵蓋 force push，授權不跨輪、不跨分支。
-- 一律使用 `git push --no-follow-tags --force-with-lease=<ref>:<遠端預期 SHA> origin <改寫後 SHA>:refs/heads/<branch>`，不使用 `--force`。推送來源以授權請求列出的改寫後 SHA 指定，理由同「push 授權請求」。
+- 一律使用 `git push --no-follow-tags --recurse-submodules=check --force-with-lease=<ref>:<遠端預期 SHA> origin <改寫後 SHA>:refs/heads/<branch>`，不使用 `--force`。推送來源以授權請求列出的改寫後 SHA 指定，理由同「push 授權請求」。
 - 授權請求固定格式為 `[force push 授權] 分支=<名稱>；遠端目前=<sha>；改寫後=<sha>；備份=<備份分支或 SHA>；理由=<一句話>`。
 - lease 失敗（遠端已被更新）時停止回報，不重試，也不改用 `--force`。
 
