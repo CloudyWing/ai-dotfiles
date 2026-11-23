@@ -24,12 +24,12 @@
 
 - 純文件修改指變更檔案全部符合 `*.md`、`docs/**`、`LICENSE*`，且不含 `CHANGELOG.md`。
 - `main` 上的變更含非純文件檔案時，commit 停止並詢問版號，處置與啟動 Workflow 相同。
-- 純文件修改 commit 到 `main` 之後，進行中的 `release/*`、`hotfix/*` 在下一次於其上 commit 前或合併前（先到者為準），以 `git merge-base --is-ancestor main <分支>` 檢查。落後時以本體「整理流程」的整理分支 rebase 到 `main`，走 `history-rewrite.md` 第一層「整合上游變更」路徑；分支已推送時依本體「改寫與 force push 邊界」取得當輪授權。
+- 純文件修改 commit 到 `main` 之後，進行中的 `release/*`、`hotfix/*` 在下一次於其上 commit 前或合併前（先到者為準），以 `git merge-base --is-ancestor main <分支>` 檢查。落後時以本體「整理流程」的整理分支 rebase 到 `main`，走 `history-rewrite.md` 第一層「整合上游變更」路徑；分支範圍內有 `fixup!` commit 時，先依本體「整理流程」收合再 rebase；分支已推送時依本體「改寫與 force push 邊界」取得當輪授權。
 - 開發期間（合併前流程以外）的 commit 變更集含 `CHANGELOG.md` 時停止，說明 CHANGELOG 在合併前流程才寫入，詢問是否將該檔排除於本次 commit。
 
 ## 線分支落地
 
-依本體「線分支與獨立 worktree」的落地程序，以線分支的 upstream（`release/*`、`hotfix/*`，尚無版本標籤時為 `main`）為整合分支，用 `git merge --ff-only feature/<lineSlug>` 落地。符合 `rules/claude/20-coordination.md`「授權分類」的落地條件時落地，不需授權。審查通過與整理不是落地的前提，於「合併前流程」完成。落地到 release 或 hotfix 分支不等於發佈，發佈依「合併前流程」每次取得使用者當輪授權。
+依本體「線分支與獨立 worktree」的落地程序，以線分支的 upstream（`release/*`、`hotfix/*`，尚無版本標籤時為 `main`）為整合分支，用 `git merge --ff-only feature/<lineSlug>` 落地。符合 `rules/claude/20-coordination.md`「授權分類」的落地條件時落地，不需授權。審查通過與整理不是落地的前提，於「合併前流程」完成；線分支範圍內有 `fixup!` commit 時，依落地程序第 1 步在落地前收合。落地到 release 或 hotfix 分支不等於發佈，發佈依「合併前流程」每次取得使用者當輪授權。
 
 ## 初次發佈前
 
@@ -84,7 +84,7 @@
 
 前置條件如下，任一項不符時停止回報。
 
-- `git status --porcelain` 沒有輸出。
+- `git status --porcelain --untracked-files=all` 沒有輸出。
 - 本機分支只有 `main`，且 `git worktree list --porcelain` 只列出主 checkout。其他分支與 worktree 以壓縮前的歷史為基底，壓縮後會與 `main` 失去共同祖先，所以有其他分支或 worktree 時列出清單，由使用者決定先落地或刪除。
 - 「遠端分支判定」為未推送。
 - 以 `git ls-remote --heads origin` 列出遠端的其他分支（沒有 `origin` 時略過）。有任何分支時列出清單並停止，由使用者決定先刪除、落地或接受它們與新 `main` 失去共同祖先。這項只影響能否壓縮，不改變「遠端分支判定」的結果。
@@ -92,10 +92,10 @@
 1. 記錄 `beforeSha` 為 `git rev-parse main` 的輸出。
 2. 建立備份：`git branch backup/main-before-initial-squash-<beforeSha 前 7 碼> <beforeSha>`。同名分支已存在時停止，不覆蓋。
 3. 建立整理分支並提交。執行 `git checkout --orphan refactor/tidy-main` 保留目前的 index 與工作樹，再以 `git commit -F <訊息檔>` 建立無父 commit，記錄 `afterSha`。訊息依 `generate-commit` skill「初始 commit」的固定格式。hook 照常執行，不使用 `--no-verify`。
-4. 驗證。以 `history-rewrite.md` 第一層「純歷史重排」的完整 tree 比對確認 `beforeSha` 與 `afterSha` 沒有檔案內容差異，`git rev-list --count <afterSha>` 輸出 `1`，且 `git status --porcelain` 沒有輸出。hook 已暫存的改動會讓完整 tree 比對失敗；hook 留下未暫存或未追蹤的改動時，`git status --porcelain` 會有輸出，同樣判定失敗。
+4. 驗證。以 `history-rewrite.md` 第一層「純歷史重排」的完整 tree 比對確認 `beforeSha` 與 `afterSha` 沒有檔案內容差異，`git rev-list --count <afterSha>` 輸出 `1`，且 `git status --porcelain --untracked-files=all` 沒有輸出。hook 已暫存的改動會讓完整 tree 比對失敗；hook 留下未暫存或未追蹤的改動時，`git status --porcelain --untracked-files=all` 會有輸出，同樣判定失敗。
 5. 執行本體「重整後驗證」。
-6. 更新 `main`：執行 `git switch main`，再確認一次 `git status --porcelain` 沒有輸出（切換會觸發 post-checkout hook），通過後才執行 `git reset --hard <afterSha>`，再以 `git branch -D refactor/tidy-main` 刪除整理分支。有輸出時不執行 reset，停止回報。第 4、5 步任一失敗時不切換、不刪除，保留 `main`、備份分支、整理分支與證據。
-7. 首次推送成功，且 `git rev-parse origin/main` 等於 `afterSha` 後，才以 `git branch -D` 刪除備份分支。尚未推送時保留備份分支，在回報中列出名稱。
+6. 更新 `main`：在整理分支上依 `history-rewrite.md` 第一層「更新來源分支指標」切回 `main` 並更新，不使用 `git reset --hard`。再依第一層「刪除重整建立的分支」刪除整理分支，預期 SHA 為 `afterSha`。第 4、5 步任一失敗時不更新、不切換、不刪除，保留 `main`、備份分支、整理分支與證據。
+7. 首次推送成功，且 `git rev-parse origin/main` 等於 `afterSha` 後，才依 `history-rewrite.md` 第一層「刪除重整建立的分支」刪除備份分支，預期 SHA 為 `beforeSha`。尚未推送時保留備份分支，在回報中列出名稱。
 
 ## 合併前流程
 
@@ -105,7 +105,9 @@
 2. 對 `main..<release 分支>` 執行本體「整理流程」。
 3. 更新版號檔。專案在檔案內宣告版號（例如 `<Version>`、`package.json`）時，更新後成為一筆獨立 commit；以 MinVer 或標籤推導版號的專案略過。無法判定版號宣告位置時詢問使用者。
 4. 寫入 CHANGELOG。在 release 分支加入最後一筆獨立 commit，只含 `CHANGELOG.md`，type 為 `docs`，主題記錄該版本的變更。
-5. 確認末筆。`git log -1 --name-only --format=` 只列出 `CHANGELOG.md`，且 `git diff --name-only <第 2 步的 afterSha> HEAD` 只含 `CHANGELOG.md` 與第 3 步的版號檔。第 4 步之後若出現修正，以 `fixup!` 建立並重做第 2 步，autosquash 會把修正併入目標，CHANGELOG commit 維持在最後一筆；修正影響 CHANGELOG 內容時，對 CHANGELOG commit 建立 `fixup!`。
+5. 確認末筆。`git log -1 --name-only --format=` 只列出 `CHANGELOG.md`，且 `git diff --name-only <第 2 步的 afterSha> HEAD` 只含 `CHANGELOG.md` 與第 3 步的版號檔。第 4 步之後若出現修正，先把變更分成兩組，`CHANGELOG.md` 一組，其餘檔案一組，各自依 `generate-commit` 步驟 4 判定並建立 commit，再重做第 2 步。分組後其餘檔案的修正與 CHANGELOG commit 沒有共同的檔案，排到它之前不會衝突。
+    - 其餘檔案的一組判定為 `fixup!` 時，autosquash 把修正併入目標。判定為一般 commit 時，第 2 步以 todo 檔路徑把該筆排到第 4 步的 CHANGELOG commit 之前，被它越過的只有僅含 `CHANGELOG.md` 的 commit。
+    - `CHANGELOG.md` 一組判定為 `fixup!` 時，autosquash 把修正併入目標，目標是只含 `CHANGELOG.md` 的 commit。判定為一般 commit 時（例如 CHANGELOG commit 已推送），該筆留在 CHANGELOG commit 之後，不重排，分支末端是連續數筆只含 `CHANGELOG.md` 的 commit。
 6. 取得使用者當輪直接授權。這是發佈授權，不可轉述，涵蓋第 7 步的合併與第 8 步的打標籤。請求附第 1 步的清單、變更摘要、審查結論與驗證結果。清單各筆皆為已修；使用者依第 1 步主動指示接受的未修項目逐筆列出並附使用者的原話，同一內容寫入該次發佈的結案報告。
 7. 合併：執行 `git switch main` 後，以 `git merge --no-ff -m "Merge branch '<分支>'" <分支>` 合併。`main` 已前進而分支尚未 rebase 時，先依「commit 落點與啟動 Workflow 檢查」的規則 rebase 再合併。
 8. 打標籤：`git tag -a vX.Y.Z -m "vX.Y.Z" <merge commit SHA>`，標籤只打在 merge commit。
@@ -119,7 +121,7 @@ hotfix 合併到 `main` 後，偵測進行中的 release 分支，即本機 `ref
 | 偵測結果 | 處置 |
 | --- | --- |
 | 沒有 | 回報「無進行中的 release 分支，略過同步」，不建立分支 |
-| 一個 | 將該分支 rebase 到 `main`，以本體「整理流程」的整理分支執行並走 `history-rewrite.md` 第一層「整合上游變更」路徑；已推送時依本體「改寫與 force push 邊界」取得當輪授權；衝突時停止回報 |
+| 一個 | 將該分支 rebase 到 `main`，以本體「整理流程」的整理分支執行並走 `history-rewrite.md` 第一層「整合上游變更」路徑；分支範圍內有 `fixup!` commit 時，先依本體「整理流程」收合再 rebase；已推送時依本體「改寫與 force push 邊界」取得當輪授權；衝突時停止回報 |
 | 多個 | 列出並詢問使用者，不自行選擇 |
 
 ## 改寫與 force push

@@ -22,7 +22,7 @@
 
 ## 線分支落地
 
-依本體「線分支與獨立 worktree」的落地程序，以 `main` 為整合分支，用 `git merge --ff-only feature/<lineSlug>` 落地。符合 `rules/claude/20-coordination.md`「授權分類」的落地條件時落地，不需授權。審查通過與整理不是落地的前提，於 push 前完成。
+依本體「線分支與獨立 worktree」的落地程序，以 `main` 為整合分支，用 `git merge --ff-only feature/<lineSlug>` 落地。符合 `rules/claude/20-coordination.md`「授權分類」的落地條件時落地，不需授權。審查通過與整理不是落地的前提，於 push 前完成；線分支範圍內有 `fixup!` commit 時，依落地程序第 1 步在落地前收合。
 
 ## 尚未推送前的修正
 
@@ -31,7 +31,7 @@
 ## push 前整理與檢查
 
 - 確認 `origin/main..main` 中依 Reviewer 必發清單需要審查的變更已審查通過，即沒有未閉合的 `Critical` 或 `Major`，剩餘 `Minor` 已批次修正或記為候選。未通過時不請求 push。
-- 每次 push 前，對 `origin/main..main` 執行本體「整理流程」的「只收合 `fixup!`」路徑（`rebase -i --autosquash`），並把整理結果列入 push 授權請求。整理不需授權。範圍內沒有 `fixup!` 時不整理。
+- 每次 push 前，對 `origin/main..main` 執行本體「整理流程」的「只收合 `fixup!`」路徑，並把整理結果列入 push 授權請求。整理不需授權。範圍內沒有 `fixup!` 時不整理。
 - 確認 `git log origin/main..main --format=%s` 沒有以 `fixup! `、`squash! `、`amend! ` 開頭的行，並在整理後的最終內容上確認測試通過，再依本體「push 授權請求」請求 push 授權。
 - `origin/main` 不存在（沒有遠端）時本節不適用。
 

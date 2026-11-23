@@ -69,22 +69,29 @@ Commit 2：<commit message>
 
 對每一組要 commit 的檔案，判定修正對象是否為尚未推送的 commit。與步驟 3 的拆分並用時，每組各自判定。
 
-- 取 `rangeBase`：依 `git-workflow` skill「整理流程」的 `rangeBase` 表，由目前分支決定。無法解析時視為無候選。
+- 取 `rangeBase`：依 `git-workflow` skill「整理流程」的 `rangeBase` 表，由目前分支決定。無法解析時（含參照與目前分支的共同祖先不只一個）視為無候選。
 - 取候選範圍 U：`git rev-list <rangeBase>..HEAD --not --remotes --no-merges`。
-- 取每個已追蹤檔案 f 的最近修改者 `T(f)`：`git log -1 --format=%H --no-merges <rangeBase>..HEAD --not --remotes -- <f>`。未追蹤的新檔 `T(f)` 為空。
+- 取每個已追蹤檔案 f 的最近修改者：`git log -1 --format=%H --no-merges <rangeBase>..HEAD --not --remotes -- <f>`。未追蹤的新檔沒有最近修改者。
+- 由最近修改者決定目標 `T(f)`。最近修改者的第一行不以 `fixup! `、`squash! ` 或 `amend! ` 開頭時，`T(f)` 是最近修改者本身。第一行符合 `fixup! <40 碼完整 SHA>` 格式時，`T(f)` 是該 SHA 所指的 commit，使新的修正與既有的修正指向同一個目標。沒有最近修改者時 `T(f)` 為空。
+- 任一檔案符合下列任一情況時，該組改為一般 commit，type 依「分類判定基準」，並說明原因，不進入下表。目的是避免新的修正接在以主題比對或目標不明的修正之後，跟著它收進另一筆 commit。
+  - 最近修改者的第一行以上述三種前綴開頭，而不符合 `fixup! <40 碼完整 SHA>` 格式，例如以主題指定目標的舊 `fixup!` commit。
+  - 最近修改者是符合格式的 `fixup!` commit，而它不屬本線。
+  - 該 SHA 所指的 commit 不在 U，或其第一行以上述三種前綴開頭。
 
 | 條件 | 處置 |
 | --- | --- |
 | U 為空，或所有 `T(f)` 為空 | 一般 commit，並說明原因（沒有未推送的修正對象，或無法判定是否已推送） |
 | 任一 `T(f)` 指向不屬本線的 commit | 一般 commit，type 依「分類判定基準」，並說明該目標屬其他線或歸屬無法確認 |
-| 所有檔案的 `T(f)` 都是同一個 SHA X，且 X 屬本線 | 自動以 `git commit --fixup=X` 建立 `fixup!` commit，不詢問 |
+| 所有檔案的 `T(f)` 都是同一個 SHA X，且 X 屬本線 | 自動建立以 X 為目標的 `fixup!` commit，不詢問 |
 | 有多筆候選，即 `T(f)` 指向不同 SHA，或部分檔案有 `T(f)`、部分為空 | 詢問使用者：依目標拆成多筆 `fixup!` commit、選定單一目標，或全部改為一般 commit |
 | 修正對象已推送，即最近修改該檔的 commit 不在 U | 一般 commit，type 依「分類判定基準」 |
 
 - 本線的 commit 指本線協調者建立或收下的 commit，含交接前的協調 Session 所建立者。無法確認歸屬的 commit 視為不屬本線。目的是避免修正在整理時被收進其他線已覆核的 commit。
 - 上表由上而下判定，命中即停止。
-- 建立前以 `git cat-file -e X^{commit}` 確認目標存在，失敗時重新判定。
-- `fixup!` commit 的訊息由 git 產生，格式為 `fixup! <目標主題>`，不套用 Type Whitelist、Subject Rules 與 Body Rules。
+- 建立前以 `git rev-parse --verify X^{commit}` 取得目標的 40 碼完整 SHA，失敗時重新判定。
+- `fixup!` commit 的訊息第一行固定為 `fixup! <目標的 40 碼完整 SHA>`，SHA 之後不接其他文字。空一行後以目標 commit 的主題作為 Body，供閱讀歷史時辨識目標。訊息以 `git commit -F` 傳入，不使用 `git commit --fixup`。這種訊息不套用 Type Whitelist、Subject Rules 與 Body Rules。
+- autosquash 依第一行的 SHA 找到目標，範圍內有主題相同的 commit 時仍收進指定的那一筆。目標的第一行一律不以 `fixup! `、`squash! ` 或 `amend! ` 開頭。同一目標有多筆修正時，每一筆都直接指向該目標，autosquash 依建立順序把它們收進目標。
+- 目標被改寫後 SHA 改變，autosquash 找不到目標。收合時機與找不到目標時的處理依 `git-workflow` skill `references/history-rewrite.md`「整理流程」。
 - hook 拒絕時回報 hook 輸出並停止，禁止以 `--no-verify` 略過 hook。
 - 完成後輸出目標 SHA 與主題，並說明該 commit 會在 `git-workflow`「整理流程」收進目標。
 
@@ -92,7 +99,7 @@ Commit 2：<commit message>
 
 ### 5. 執行 Commit
 
-步驟 4 判定為 `fixup!` 的組別以 `git commit --fixup=<SHA>` 取代訊息產生，staging 規則不變。
+步驟 4 判定為 `fixup!` 的組別使用步驟 4 規定的訊息，不依下方規範產生訊息，staging 規則不變。
 
 確定範圍後，**先 stage 範圍內的檔案**（`git add <files>`），再依下方規範產生訊息並 commit，不需另外詢問確認：
 
@@ -119,7 +126,7 @@ Commit 執行完畢後，輸出最終的 commit 訊息內容（含本次自動�
 
 下列兩種訊息使用固定格式，不屬 Type Whitelist。其他訊息一律依 Pattern。
 
-- `fixup!` commit：由 `git commit --fixup=<SHA>` 產生，見步驟 4。
+- `fixup!` commit：第一行為 `fixup! <目標的 40 碼完整 SHA>`，見步驟 4。
 - merge commit：固定為 `Merge branch '<分支>'`，只用於 `git-workflow` 的 `release-flow` 合併前流程，以 `git merge --no-ff -m` 傳入。
 
 Type Whitelist 維持下列九項。
