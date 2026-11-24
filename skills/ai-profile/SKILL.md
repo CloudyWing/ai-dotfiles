@@ -12,7 +12,14 @@ policy.allow_implicit_invocation: true
 
 ## 區塊格式
 
-`AGENTS.local.md` 位於專案根目錄。Git 專案為 `git rev-parse --show-toplevel` 的目錄，非 Git 專案為 work-root。檔案編碼為 UTF-8 無 BOM，以成對的完整獨立行標記保存鍵值，例如：
+`AI-PROFILE` 區塊只從專案根目錄的 `AGENTS.local.md` 讀取與寫入，每個專案只有這一份。專案根目錄依下列方式判定。
+
+- Git 專案：`git worktree list --porcelain` 輸出中第一筆 `worktree` 行的目錄，即主工作樹的根目錄。在主工作樹內它等於 `git rev-parse --show-toplevel` 的目錄；在連結的 worktree 內兩者不同，仍以主工作樹為準。第一筆含 `bare` 行時，repo 沒有主工作樹，改用 `git rev-parse --show-toplevel` 的目錄。
+- 非 Git 專案：work-root。
+
+專案根目錄以外的 `AGENTS.local.md`（子資料夾的同名檔、連結 worktree 根目錄的複本）含 `AI-PROFILE` 區塊時，不讀取也不寫入該區塊，不以其中的值補足專案根目錄缺少的鍵。本 Session 第一次遇到這種檔案時告知使用者一次，內容為該檔的路徑與實際採用的檔案路徑；無法向使用者提問的執行端改寫入報告。
+
+檔案編碼為 UTF-8 無 BOM，以成對的完整獨立行標記保存鍵值，例如：
 
 ```text
 <!-- AI-PROFILE:BEGIN -->
@@ -43,12 +50,12 @@ project-kind: library
 | `project-kind` | `library`、`application`、`sample` | `ai-profile` | 專案含 `instructions.md` §1.5 work-root 判定所列的技術棧根標記 | `generate-readme-zh-tw` 的專案分類；`integration-verify` 步驟一的套件判定與 `sample` 深度；`e2e-manual` 的啟動條件判定 | 詢問並附「推薦答案偵測」的推薦答案；未回答時各消費端採其未設定處置 |
 | `workflow-depth` | `full`、`light` | `workflow-orchestration` | 進入 Workflow 時 | 不阻擋 | 不詢問；依 `rules/claude/40-workflow.md`「Workflow 深度」由 `project-kind` 推導 |
 | `git-workflow` | `trunk`、`release-flow` | `git-workflow` | 專案位於 Git repo | commit、啟動 Workflow、建立分支 | 詢問並附 `git-workflow` skill「推薦值推導」的推薦答案；各值的語意由該 skill 定義 |
-| `manual-root` | 路徑格式：非空單行，相對專案根目錄的路徑或絕對路徑 | `e2e-manual` | 使用者明確要求 `e2e-manual` 產出操作手冊，且 `project-kind` 為 `application` | `e2e-manual` 寫入 `<manual-root>` 下的操作手冊與圖；E2E 的撰寫與執行不阻擋 | 只在 `e2e-manual` 首次啟動時詢問（必答），附推薦答案 `docs/manual`；不列入「一次問完」 |
+| `manual-root` | 路徑格式：非空單行，相對目前工作樹根目錄的路徑或絕對路徑 | `e2e-manual` | 使用者明確要求 `e2e-manual` 產出操作手冊，且 `project-kind` 為 `application` | `e2e-manual` 寫入 `<manual-root>` 下的操作手冊與圖；E2E 的撰寫與執行不阻擋 | 只在 `e2e-manual` 首次啟動時詢問（必答），附推薦答案 `docs/manual`；不列入「一次問完」 |
 | `target.sqlserver` | `2012`、`2014`、`2016`、`2017`、`2019`、`2022`、`2025` | `sql-query` | 專案相依 SQL Server 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 SQL Server 專用 SQL | 撰寫、修改或產生涉及 SQL Server 的原生 SQL、`FromSql*`、EF Core 對 SQL Server 的查詢與 provider 設定，以及整合測試的資料庫容器映像與相容性設定（SQL Server） | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |
 | `target.sqlserver.compat` | `90`、`100`、`110`、`120`、`130`、`140`、`150`、`160`、`170` | `sql-query` | `target.sqlserver` 已設定 | 不阻擋 | 不獨立詢問；視為 `target.sqlserver` 對應的預設相容性層級（對照見 `sql-query` 的 `references/sqlserver.md`） |
 | `target.oracle` | `11g`、`12cR1`、`12cR2`、`18c`、`19c`、`21c`、`23ai`、`26ai` | `sql-query` | 專案相依 Oracle 用戶端或 EF Core provider（偵測清單見 `sql-query`「目標版本」的「適用偵測」），或本輪工作要撰寫 Oracle 專用 SQL | 撰寫、修改或產生涉及 Oracle 的原生 SQL、`FromSql*`、EF Core 對 Oracle 的查詢與 provider 設定，以及整合測試的資料庫容器映像與相容性設定（Oracle） | 詢問（必答），附 `sql-query`「目標版本」的推薦答案；使用者明確略過時依該節的「未確認目標版本」處置；值的語意由該 skill 定義 |
 
-鍵缺少的判定為 `AGENTS.local.md` 不存在、沒有 `AI-PROFILE` 區塊，或區塊內沒有該鍵。
+鍵缺少的判定為專案根目錄的 `AGENTS.local.md` 不存在、沒有 `AI-PROFILE` 區塊，或區塊內沒有該鍵。
 
 ## project-kind
 
@@ -81,7 +88,7 @@ project-kind: library
 
 ### 取值與路徑解析
 
-- 值為單行路徑。相對路徑以 `AGENTS.local.md` 所在的專案根目錄為基準；絕對路徑原樣使用。
+- 值為單行路徑。相對路徑以目前工作樹的根目錄為基準（Git 專案為 `git rev-parse --show-toplevel` 的目錄，非 Git 專案為 work-root），使手冊寫入正在工作的那個工作樹；絕對路徑原樣使用。
 - 專案不適合把文件放進 repo 時（例如 repo 的 `docs/` 另有用途），填 repo 外的絕對路徑。路徑在 repo 外時，手冊與圖不進版控。
 - 目錄不存在時由 `e2e-manual` 在寫入手冊時建立。
 
@@ -107,7 +114,7 @@ project-kind: library
 無法向使用者提問的執行端（例如 Codex 派遣）依下列方式處理：
 
 - 停止阻擋範圍涵蓋當前工作的缺少鍵所對應的工作，不寫入區塊、不猜測、不改用其他值。
-- 在報告寫明缺少的鍵名、被停止的工作與 `AGENTS.local.md` 的絕對路徑；格式錯誤時指出錯誤位置。
+- 在報告寫明缺少的鍵名、被停止的工作與專案根目錄 `AGENTS.local.md` 的絕對路徑；格式錯誤時指出錯誤位置。
 - 列出缺少但不阻擋當前工作的鍵，標示「未設定」與所採的未設定處置，照常工作。
 - 完成不依賴缺少鍵的其他工作。
 
@@ -115,16 +122,16 @@ project-kind: library
 
 ## 本機排除
 
-`AGENTS.local.md` 與鍵登錄表負責的 skill 指定的本機檔案（目前為 `csharp-style` 的 `.local/ai-context/csharp-style-project.md`）屬個人本機資料，寫入前先確認不會被團隊看到。Git 專案逐項執行下列檢查：
+`AGENTS.local.md` 與鍵登錄表負責的 skill 指定的本機檔案（目前為 `csharp-style` 的 `.local/ai-context/csharp-style-project.md`）屬個人本機資料，寫入前先確認不會被團隊看到。`AGENTS.local.md` 的檢查在專案根目錄執行，命令寫成 `git -C <專案根目錄> ...`，`<path>` 為 `AGENTS.local.md`；在連結的 worktree 內直接傳入主工作樹的路徑時，git 會因路徑在目前工作樹之外而失敗。其他本機檔案位於目前工作樹，在目前工作樹檢查。Git 專案逐項執行下列檢查：
 
 1. 執行 `git ls-files --error-unmatch <path>`。命令成功代表檔案已被追蹤，停止寫入並提示使用者先處理追蹤狀態，不宣稱已隱藏。
 2. 執行 `git check-ignore -q <path>`。命令成功代表已被排除，直接寫入。
-3. 未追蹤且未排除時，將路徑追加至 `git rev-parse --git-common-dir` 所指目錄下的 `info/exclude`，再以 `git check-ignore -q <path>` 確認生效後寫入。此做法同時適用於 worktree。
+3. 未追蹤且未排除時，將路徑追加至 `git rev-parse --path-format=absolute --git-common-dir` 所指目錄下的 `info/exclude`（不加 `--path-format=absolute` 時輸出可能是相對於命令執行目錄的路徑），再以 `git check-ignore -q <path>` 確認生效後寫入。此做法同時適用於 worktree。
 
 非 Git 專案照常寫入本機路徑，並在回應中說明此專案沒有 Git 排除機制。本機排除只防止檔案進入版控，不提供存取權限控制。
 
 ## 寫入
 
-1. `AGENTS.local.md` 不存在時，以 `~/.ai-agents/templates/AGENTS.local.md.template` 建立。
+1. 專案根目錄的 `AGENTS.local.md` 不存在時，以 `~/.ai-agents/templates/AGENTS.local.md.template` 在專案根目錄建立。
 2. 寫入前重新讀取檔案，與解析時的內容比對；內容已變動時停止，重新讀取後再處理，不覆寫其他工作的修改。
 3. 已有區塊時只插入或修改本輪收到的各鍵所在行；沒有區塊時，在檔尾追加完整區塊。區塊外內容與其他鍵全部保留，本輪的全部鍵在一次寫入中完成。

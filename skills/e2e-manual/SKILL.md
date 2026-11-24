@@ -86,7 +86,7 @@ policy.allow_implicit_invocation: true
 - 一個功能一個檔。流程依勾選表格的順序編為流程一、流程二。
 - 讀者為使用該軟體的人。主體內容不出現 Playwright、FlaUI、Locator、NUnit 等測試術語，測試資訊只放在最後的「維護資訊」節。
 - 每個步驟都含編號、操作、截圖、預期結果四項。
-- `manual-root` 為相對路徑時，以 `AGENTS.local.md` 所在的專案根目錄為基準；目錄不存在時建立。
+- `manual-root` 為相對路徑時，以目前工作樹的根目錄為基準（見 `ai-profile` skill「manual-root」）；目錄不存在時建立。
 - 產出後套用 `check-markdown`。
 
 固定結構範本：

@@ -123,7 +123,7 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 
     `--track` 讓線分支的 upstream 指向整合分支，`git rev-parse --abbrev-ref feature/<lineSlug>@{upstream}` 可讀回整合分支名稱。
 4. 確認本機排除：在新 worktree 執行 `git check-ignore -q .local/ai-sessions`，失敗時停止回報，不寫入任何 `.local` 內容。
-5. 複製本機資料到新 worktree：`AGENTS.local.md`、`.local\machine.json`（存在時，派工腳本與其測試讀取帳號登記）、`.local\ai-context\`（存在時）、`.local\ai-sessions\handoff\<lineSlug>\`、`.local\ai-sessions\report\<lineSlug>\`。複製後逐檔比對 SHA-256，不一致時停止，以 `git worktree remove "<路徑>"`（不加 `--force`）移除本次建立的 worktree 並回報。
+5. 複製本機資料到新 worktree：`AGENTS.local.md`、`.local\machine.json`（存在時，派工腳本與其測試讀取帳號登記）、`.local\ai-context\`（存在時）、`.local\ai-sessions\handoff\<lineSlug>\`、`.local\ai-sessions\report\<lineSlug>\`。複製後逐檔比對 SHA-256，不一致時停止，以 `git worktree remove "<路徑>"`（不加 `--force`）移除本次建立的 worktree 並回報。`AI-PROFILE` 的讀寫位置依 `ai-profile` skill「區塊格式」判定。該位置是主工作樹那一份時，`AGENTS.local.md` 的複本只供 `AI-PROFILE` 區塊以外的內容使用，線進行中不讀寫複本的區塊。
 6. 切換 work-root：該 worktree 根目錄成為本線的 work-root，之後的 `LineContext`、交接檢查點與派遣 `sourceRoot` 都使用新 work-root。主 checkout 的同線目錄保留原樣，不再寫入。
 7. 保持線分支不推送。遠端已有同名分支（`git ls-remote --heads origin feature/<lineSlug>` 有輸出）且需要改寫其歷史時，停止並詢問使用者。
 
@@ -134,7 +134,7 @@ Phase 數 >= 2 的 Workflow 線在 Design 驗收後依交接檢查點開新 Sess
 1. 線分支範圍內有 `fixup!` commit 時，先依「整理流程」整理 `<整合分支>..feature/<lineSlug>`，是否需要授權依該流程第 1 步的判定。整理以線分支與整合分支的 merge-base 為基準（該流程的 `rangeBase`），整合分支已前進時不在本步納入上游變更。第 2 步的 rebase 會改寫目標的 SHA，`fixup!` 須在其前收合。範圍內只有整理計畫、沒有 `fixup!` commit 時，整理可在本步執行，也可留到模式檔規定的時點（`trunk` 在 push 前，`release-flow` 在合併前流程），此時略過本步。
 2. `git merge-base --is-ancestor <整合分支> feature/<lineSlug>` 的 exit code 為 `0` 時，線分支已包含整合分支，略過本步，直接執行第 3 步。exit code 不是 `0` 時，從整理後的線分支建立整理分支，在整理分支執行 `git -c rebase.updateRefs=false rebase <整合分支>`，以 `references/history-rewrite.md` 第一層「整合上游變更」路徑驗證，通過後依該檔第一層「更新來源分支指標」更新線分支，再依「刪除重整建立的分支」刪除本步建立的分支。發生衝突時依該檔第一層「解衝突路徑」處理。
 3. 在主 checkout 先確認 `git branch --show-current` 是整合分支，不是時停止回報，不切換分支，此時主 checkout 可能有進行中的整理。確認後執行 `git merge --ff-only feature/<lineSlug>`。整合分支已前進而被拒時，重做第 2 步一次；仍被拒時停止回報。主 checkout 含其他線未 commit 的改動時不 stash、不還原，git 因檔案重疊拒絕時停止回報。
-4. 歸還本機資料：將 worktree 的 `.local\ai-sessions\handoff\<lineSlug>\` 與 `.local\ai-sessions\report\<lineSlug>\` 複製回主 checkout 同路徑。覆蓋前先將主 checkout 的原目錄移到 `.local\ai-sessions\backups\<時間戳>\` 並附一行 `manifest.txt`，複製後逐檔比對 SHA-256。另比對兩邊的 `AGENTS.local.md`，有差異時列出差異，由使用者決定是否帶回。
+4. 歸還本機資料：將 worktree 的 `.local\ai-sessions\handoff\<lineSlug>\` 與 `.local\ai-sessions\report\<lineSlug>\` 複製回主 checkout 同路徑。覆蓋前先將主 checkout 的原目錄移到 `.local\ai-sessions\backups\<時間戳>\` 並附一行 `manifest.txt`，複製後逐檔比對 SHA-256。另比對兩邊的 `AGENTS.local.md` 在 `AI-PROFILE` 區塊以外的內容，有差異時列出差異，由使用者決定是否帶回。`AI-PROFILE` 的讀寫位置是主工作樹那一份時，區塊以主工作樹為準，不比對也不帶回；讀寫位置是線工作樹那一份時（repo 沒有主工作樹），區塊一併比對，有差異時同樣列出差異，由使用者決定是否帶回。
 5. 執行 `git worktree remove "<路徑>"`（不加 `--force`，有未提交內容時 git 會拒絕，此時停止回報），再執行 `git branch -d feature/<lineSlug>`。
 
 ## Pull Request 規範
