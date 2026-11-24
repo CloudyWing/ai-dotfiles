@@ -155,6 +155,7 @@ applyTo: "**/*"
 | 編輯 `stores/**`、含 `defineStore` 的檔案 | 追加 `pinia` |
 | 編輯 `*.spec.ts`、`*.test.ts` | 追加 `vitest` |
 | 編輯 `*.sql` | `sql-query` |
+| 需要資料表結構資訊（欄位、型別、索引、關聯或說明），例如撰寫或審查涉及資料表的 SQL、ORM 對應或資料存取程式碼 | `database-schema-context`（依「按需查表」判定是否使用快照） |
 | 編輯 `Dockerfile`、`compose.yml`、`compose.yaml` | `docker` |
 | 撰寫程式碼註解、XML 文件、commit 訊息或 PR 描述，或判定某項資訊該寫入哪份文件 | `doc-placement` |
 | 新增或修改顯示給使用者的文字（UI 文字、副標、提示、Tooltip、空狀態、錯誤訊息，位於 `*.cs`、`*.razor`、`*.xaml`、`*.vue`、`*.ts`、`*.tsx` 或資源檔） | `uiux`（依「使用者可見文字」） |

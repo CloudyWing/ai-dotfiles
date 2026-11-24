@@ -51,7 +51,7 @@
 | `csharp-style` | 知識型 | agent | C# 程式碼風格規範：依專案 AGENTS.local.md 的 code-style.csharp 註記載入 personal、standard 或 project 風格，並收錄縮寫大小寫、泛型型別參數、成員排序、空行、換行、三元運算子等 .editorconfig 無法約束的共用細則。撰寫或修改 C# 程式碼時套用。 |
 | `csharp-validation` | 知識型 | agent | C# 輸入驗證規範：DataAnnotations、FluentValidation 選型、驗證層級劃分、必填欄位與繫結來源，以及 ASP.NET Core 整合策略。當撰寫 Request 驗證或設計輸入檢核時自動套用。 |
 | `database-comment-generator` | 知識型 | agent | Use when the user asks to build or update a source-backed database comment vocabulary, or to generate reviewable table and column comment SQL from approved terms and a SchemaExporter snapshot. |
-| `database-schema-context` | 知識型 | agent | Use when the user asks to export or inspect database schema context, use an existing offline schema snapshot, or check database schema changes with SchemaExporter. |
+| `database-schema-context` | 知識型 | agent | Use when the user asks to export or inspect database schema context, use an existing offline schema snapshot, or check database schema changes with SchemaExporter, or when the agent itself needs table structure (columns, types, indexes, relationships, descriptions) while writing or reviewing SQL, ORM mappings or data-access code. |
 | `desktop-smoke` | 知識型 | agent | Windows 桌面應用煙霧驗證流程。當需要在修改 WinForm 或 WPF 應用後驗證行為，或使用者要求測試桌面程式、檢查視窗程式的互動與畫面時使用。 |
 | `doc-editing` | 知識型 | agent | Use when 修改技術筆記、規格文件或 Markdown 文件，需要保留內容、查閱事實與維持文件結構時。 |
 | `doc-placement` | 知識型 | agent | Use when 撰寫或修改會進版控的 .md 文件（README、docs、AGENTS.md、規則檔）、程式碼註解、XML 文件、commit 訊息或 PR 描述，需要判定讀者與資訊落點，或要寫入本機路徑、內部代碼、實作細節與設計經過時。 |
