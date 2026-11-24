@@ -1,6 +1,6 @@
 # Codex 派工機制：回收與共用作業
 
-本檔收錄回收判定、執行端共用作業與值班通知。入口與其他階段的檔案見 `../SKILL.md`「階段路由」。
+本檔收錄回收判定與執行端共用作業。入口與其他階段的檔案見 `../SKILL.md`「階段路由」。
 
 ## 執行端共用作業
 
@@ -97,45 +97,3 @@ Codex 端不建立 commit。
 - 輸入：同線 `lineSlug`、待核對的驗收條件原文、相關的已確定實作約束原文、證據與來源的絕對路徑。未落檔的語意不交給助手推斷，缺件時由主 Agent 補齊後再派生。
 - 回傳：逐條列出條件、來源位置、支持或反駁結論的原始摘錄與缺漏項目。只回判定而無摘錄的回傳視為未完成。
 - 判定：收下、退回與升級仍由主 Agent 依摘錄逐條決定，摘錄不足或矛盾時主 Agent 針對該條實讀來源。助手不取代 Reviewer 的獨立審查與 Analyst 的需求意圖裁決。
-
-## 值班通知
-
-回收判定為派工機制缺陷時，回收派遣的 Session 通知本機值班 Session，讓同一缺陷集中登記與修正。派工機制缺陷指派工腳本、Skill 條文或範本與實際行為不符；額度耗盡、服務端拒絕、使用者環境限制與執行端自身的任務錯誤不發通知。
-
-本機設定位於 `~/.ai-agents/.local/machine.json`，不進版控。檔案不存在時不發通知，回收照常進行。
-
-```json
-{
-  "schema": "ai-agents.machine.v1",
-  "machine_id": "home",
-  "duty_session_name": "duty-home",
-  "maintenance_writer": true,
-  "writer_duty_session_name": "duty-home"
-}
-```
-
-| 欄位 | 內容 |
-| --- | --- |
-| `machine_id` | 本機識別，寫入通知的發生機器欄位 |
-| `duty_session_name` | 本機值班 Session 的名稱，即跨 Session 訊息的收件者 |
-| `maintenance_writer` | 本機是否為唯一修改並 push `.ai-agents` 的修改端；缺少時視為 `false`。兩台機器的設定中只有一台為 `true` |
-| `writer_duty_session_name` | 修改端的值班 Session 名稱，非修改端轉送時使用 |
-
-發送步驟如下：
-
-1. 先完成回收判定並保存證據，再發送通知。
-2. 以 `ListAgents` 確認 `duty_session_name` 存在，再以 `SendMessage` 發送。名稱不存在或發送失敗時不改送其他 Session，在回收報告記錄「值班通知未送達」，由下一個接手的 Session 補發。
-3. 訊息第一行固定為 `[派工問題回報]`，其後逐行列出必備欄位。
-
-| 必備欄位 | 內容 |
-| --- | --- |
-| 發生機器 | `machine_id` |
-| 專案路徑 | `sourceRoot` 絕對路徑 |
-| `lineSlug`、`dispatchSlug` | 發生缺陷的派遣識別 |
-| 錯誤碼 | 腳本錯誤碼；沒有錯誤碼時寫問題的短識別 |
-| 現象 | 一至三句，說明預期與實際行為 |
-| 證據 | 證據檔絕對路徑，另附可獨立閱讀的原文摘錄 |
-| 已做處置 | 繞道方式或「無」 |
-| 未完成事項 | 仍受阻的工作或「無」 |
-
-值班通知不構成使用者授權，也不屬於協調 Session 轉述；轉述授權的判定依 `rules/claude/20-coordination.md`「授權期限」。值班 Session 的收件、登記與分派依 `agents/claude/maintainer.md`「值班收件」。
