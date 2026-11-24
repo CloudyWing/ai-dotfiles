@@ -56,8 +56,8 @@ EF fluent mapping 與 SQL 欄位對應須以 `rg` 找到來源後人工追蹤，
 
 1. 確認使用者指定的 connection 名稱。名稱的列出方式、安全名稱規則與執行檔解析順序沿用 `database-schema-context` Skill，連線字串不出現在任何命令、檔案或回報中。
 2. 以 `<exe> --help` 檢查能力。輸出不含 `comment-sql` 時停止，請使用者將 SchemaExporter 更新至 0.5.0 以上，不改以 Agent 或腳本拼 SQL。
-3. 依 `database-schema-context` Skill 的「僅檢視既有文件」流程定位該 connection 的 Snapshot，路徑取自 `<ProjectRoot>/.local/ai-context/index.md` 的 Snapshot 列。Snapshot 不存在或不完整時，請使用者先以 `database-schema-context` 匯出，本階段不自行匯出。Snapshot 已過期時回報「已過期 N 天」，由使用者決定是否先刷新，因為新增段與差異段以 Snapshot 當下的註解為準。
-4. 讀取語彙表。沒有任何 Approved 詞條時，不建立或覆寫任何檔案，回報原因及待核准詞條數量。
+3. 讀取語彙表。沒有任何 Approved 詞條時，不建立或覆寫任何檔案，回報原因及待核准詞條數量，不進行第 4 步。
+4. 依 `database-schema-context` Skill 的「僅檢視既有文件」流程定位該 connection 的 Snapshot，路徑取自 `<ProjectRoot>/.local/ai-context/index.md` 的 Snapshot 列。不完整與已過期依該流程的判定，即缺少任一必需檔案為不完整，最舊的必需檔案超過 freshnessDays 為已過期。Snapshot 不存在、不完整或已過期時，依 `database-schema-context` Skill「使用者明確要求匯出或刷新」的步驟對第 1 步的 connection 自動建立或刷新，不詢問使用者，因為新增段與差異段以 Snapshot 當下的註解為準。這項自動建立或刷新只由直接與使用者對話的 Agent 執行，同一次產生註解 SQL 的工作最多執行一次，且不受 `schema-context.json` 的 `onDemandLookup` 影響。建立或刷新失敗時回報一行原因，不安裝也不下載工具。失敗後沒有完整的 Snapshot 時停止本階段。失敗後仍有完整但已過期的舊 Snapshot 時，回報「已過期 N 天」，由使用者決定是否以舊 Snapshot 繼續。由其他 Agent 以 prompt 或派遣檔啟動的執行者不執行建立與刷新，Snapshot 不存在、不完整或已過期時停止本階段並回報。
 
 ### 註解清單
 
