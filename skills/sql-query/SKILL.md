@@ -166,6 +166,45 @@ FROM Orders;
 - `LIKE` 的前綴萬用字元（`LIKE '%keyword'`）無法使用索引，應盡量避免。
 - 若需全文搜尋，建議使用 Full-Text Search 而非 `LIKE '%...%'`。
 
+### 保守寫法的查證
+
+下表的寫法常在沒有查證時為了保險加上，代價是索引失效、多餘的排序，或蓋掉 JOIN 條件的錯誤。新寫的查詢使用這些寫法之前，先查對應的事實，依查到的結果判定。
+
+- 結構的事實（欄位型別、是否 `NOT NULL`、主鍵、唯一鍵、外鍵）依序取自 Schema 快照（依 `database-schema-context`「按需查表」）與資料庫的資料字典。
+- 資料內容的事實（例如值是否帶有多餘空白）依序取自資料庫的實際資料與程式的寫入路徑。寫入路徑只在看得出帶有該內容的值會寫入欄位時才算證據，寫入前沒有呼叫去空白函式不算。
+- 前一個來源查不到時才使用下一個，全部查不到即屬無法確認。
+
+| 保守寫法 | 要查的事實 | 判定 |
+| --- | --- | --- |
+| 對條件或 JOIN 的欄位加 `TRIM`、`RTRIM`、`LTRIM` | 資料庫種類與比對兩邊的型別 | 依「尾端空白的比對規則」 |
+| 對條件或 JOIN 的欄位加 `NVL`、`ISNULL`、`COALESCE` | 欄位是否 `NOT NULL`，以及欄位所在的資料表是否位於 `OUTER JOIN` 會補 NULL 的那一側 | 欄位 `NOT NULL` 且不在會補 NULL 的那一側時不加。其餘情況欄位在查詢中可能為 NULL，需求要把 NULL 當成某個值時，改寫成不包住欄位且結果相同的條件，例如 `(Status = 'N' OR Status IS NULL)` |
+| `DISTINCT` | 各資料表的主鍵或唯一鍵，以及每個 JOIN 是一對一或一對多 | 依鍵判定結果不會重複時不加。結果出現重複時先確認 JOIN 條件是否缺漏，不以 `DISTINCT` 蓋掉。需求本身要去重複時照常使用 |
+| `LEFT JOIN` | JOIN 的方向、關聯欄位是否 `NOT NULL`、外鍵約束是否啟用且已驗證既有資料、`ON` 是否另有篩選條件 | 下列四項都成立時用 `INNER JOIN`。JOIN 從外鍵所在的資料表連向被參照的資料表。關聯欄位 `NOT NULL`。外鍵約束已啟用且已驗證既有資料。`ON` 只有該外鍵的等值條件。任一項不成立時對應資料可能不存在，需求要保留沒有對應的資料列就用 `LEFT JOIN` |
+| 把型別轉換加在欄位那一側，例如 `TO_CHAR(col) = :p`、`TO_NUMBER(col) = :p`、`CONVERT(varchar, col) = @p` | 欄位型別，以及需求要的是哪一種型別的比對 | 需求要的比對與欄位型別相同，且參數值都能轉成該型別時，在 SQL 把轉換放在參數那一側，例如 `col = TO_NUMBER(:p)`。需求要的比對與欄位型別不同時（例如數值欄位要以文字比對 `01`），兩種寫法的結果不同，保留欄位側的轉換 |
+
+- 無法確認對應的事實時不加，並在回覆註明哪一項事實未確認、因此沒有加上哪一種寫法。
+- 本節約束新寫的查詢與新增的條件。同檔或同專案的既有查詢使用這些寫法，不構成新查詢跟著使用的理由。既有查詢的寫法不主動移除。
+
+#### 尾端空白的比對規則
+
+SQL Server 比較字串時先把兩邊補空白到等長，`char` 與 `varchar` 都一樣，尾端空白不影響 `=` 的結果，因此不為尾端空白對欄位加 `RTRIM` 或 `TRIM`。`LIKE` 不補空白，是例外。依據為 [= (String comparison or assignment)](https://learn.microsoft.com/sql/t-sql/language-elements/string-comparison-assignment)。
+
+Oracle 只有在比對的兩邊都是 `CHAR`、`NCHAR`、文字常值或 `USER` 的回傳值時才補空白比對，任一邊是 `VARCHAR2` 或 `NVARCHAR2` 時不補空白，尾端空白會使比對不相等。依據為 [Data Type Comparison Rules](https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/Data-Type-Comparison-Rules.html)。`CHAR` 欄位的值會補空白到宣告長度，判定如下。
+
+| Oracle 的比對情況 | 是否去空白 |
+| --- | --- |
+| `VARCHAR2` 欄位與繫結參數、文字常值或 `VARCHAR2` 欄位 | 不加 |
+| `CHAR` 欄位與 `CHAR` 欄位或文字常值 | 不加 |
+| `CHAR(1)` 欄位 | 不加 |
+| `CHAR(n>1)` 欄位與以 `VARCHAR2` 型別傳入的繫結參數，或與 `VARCHAR2` 欄位 | 對尾端空白無意義的那一側加 `RTRIM` 或 `TRIM`，判定見表後說明 |
+
+- .NET 的 ODP.NET 字串參數預設以 `VARCHAR2` 型別傳入，屬上表最後一列。
+- 上表最後一列依需求判定每一側的尾端空白有沒有意義，只對尾端空白無意義的那一側去空白。`CHAR` 欄位的尾端空白來自補到宣告長度時，對欄位去空白。比對值的尾端空白也無意義時，連同比對值一起去空白。兩側的尾端空白都有意義時不去空白。
+- 全空白的值去空白後為 NULL。需要比對全空白值時不適用去空白，依需求另行處理。
+- 依上表判定為需要的去空白，是「避免破壞索引的寫法」中禁止對欄位套用函式的例外。
+- `VARCHAR2` 欄位只有在資料確有多餘空白的證據時才去空白，證據的來源與認定依本節開頭資料內容的事實一項。
+- `CHAR(n>1)` 欄位的去空白造成索引失效而有效能問題時，依「Function-Based Index」建立索引，或把欄位改為 `VARCHAR2`，由專案決定。不把欄位長度寫進 SQL（例如 `CAST(:p AS CHAR(10))`），欄位長度變更時這種查詢會查不到資料且不報錯。
+
 ### SELECT 規範
 
 - **禁止 `SELECT *`**：必須明確列出所需欄位，減少 I/O 開銷並避免結構變更時的隱性問題。
@@ -304,7 +343,7 @@ VALUES (seq_products.NEXTVAL, :product_name);
 
 ### Function-Based Index
 
-條件欄位被函式包住（例如 `UPPER(TRIM(STATUS)) = 'A'`）時，原欄位的 B-Tree 索引對不上運算式。資料本身乾淨時直接比對原欄位；無法改寫條件時，對運算式建立 Function-Based Index：
+條件欄位被函式包住（例如 `UPPER(TRIM(STATUS)) = 'A'`）時，原欄位的 B-Tree 索引對不上運算式。是否需要包住欄位先依共通規範「保守寫法的查證」判定，不需要時直接比對原欄位；需要而無法改寫條件時，對運算式建立 Function-Based Index：
 
 ```sql
 CREATE INDEX IX_ORDERS_STATUS_UPPER
