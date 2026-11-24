@@ -27,6 +27,12 @@
       - 殘留修正依使用者的處置改寫，見「殘留修正」。
     - 檢查 todo 檔，全部符合才套用，不符時重寫。底稿的每一筆 commit 在 todo 檔恰好出現一次。每個 `fixup` 行往上第一個不是 `fixup` 的行是 `pick`，且該行的 commit 是這筆修正的目標；目標以底稿的分組與使用者對殘留修正的處置為準。目的是避免目標已改為 `drop` 的修正被收進前一筆 commit，這種錯誤不改變 tree，第 5 步偵測不到。
     - 套用。執行 `git -c "sequence.editor=cp '<todo 檔絕對路徑>'" -c rebase.updateRefs=false rebase -i --no-autosquash <rangeBase>`。`--no-autosquash` 使 git 不再重排已排好的 todo 檔。各 commit 的去向寫入回報。
+    - 核對訊息。套用完成後，核對有 `fixup` 行併入的每一筆 commit，沒有這種 commit 時略過本項。目的是避免修正併入後，原訊息仍描述修正前的內容。
+      - 對象是 todo 檔中其後緊接 `fixup` 行的 `pick` 行。套用後 `git log --reverse --format=%H <rangeBase>..HEAD` 的輸出，依序對應 todo 檔中未改為 `drop` 的 `pick` 行，據此取得各對象在整理分支上的 SHA。輸出的筆數與這些 `pick` 行的筆數不同時無法對應，停止。範圍內其他 commit 的訊息不核對。
+      - 以 `git show <SHA>` 取得對象收合後的訊息與 diff，逐句對照。訊息的標題或 Body 有句子與該 diff 相反，或描述的改動已不在該 diff 內時，該筆為不符。修正併入的內容沒有被訊息提到，不算不符。
+      - 不符時只改寫或刪除不符的句子，其餘句子逐字保留，不重新產生整則訊息。改寫後的內容只取自該筆的 diff。標題不符時改寫標題，不刪除。改寫後的句子須符合 `generate-commit` skill 的 Subject Rules 與 Body Rules 的 Format，逐字保留的句子維持原樣，即使它原本不符該格式；Body 沒有剩餘的條列時，移除 Body 與其前的空行。
+      - 有不符的 commit 時再套用一次。以 `git log --reverse --format="pick %H" <rangeBase>..HEAD` 的輸出為 todo 檔，在每一筆不符的 `pick` 行之後加上 `exec git commit --amend -F <訊息檔>`，以「套用」的命令執行。這次套用不改變任何一筆的檔案內容，第 5 步的 `afterSha` 取這次套用完成後的 `HEAD`。
+      - 回報列出核對過的每一筆與結果，不符者附修改前與修改後的句子。
     - 以 `-c sequence.editor=...` 指定 todo 編輯器，不使用 `GIT_SEQUENCE_EDITOR` 環境變數前綴。`sequence.editor` 的值由 git 交給其內建 shell 執行，同一行命令在 PowerShell 與 Git Bash 都可直接使用。
     - rebase 沒有完成就停下時（衝突、`exec` 行的命令失敗、git 拒絕 todo 檔的內容）停止。`git rebase --abort` 會重設 index 與工作樹，因此只在 `git status --porcelain --untracked-files=all` 為空時執行，執行後依「停止時的處置」重新取得狀態。`git status --porcelain --untracked-files=all` 有輸出時不執行 abort，rebase 維持在進行中，由使用者決定；衝突一律屬於這種情況。整合上游變更的 rebase 發生衝突時可依第一層「解衝突路徑」處理。
 5. 執行第一層零差異 gate。第 4 步以 `rangeBase` 為基準，`upstreamBeforeSha` 與 `upstreamAfterSha` 都是 `rangeBase`，屬純歷史重排，`afterSha` 與 `beforeSha` 的完整 tree 必須相同。`git log <rangeBase>..<afterSha> --format=%s` 有以 `fixup! `、`squash! ` 或 `amend! ` 開頭的行時，本步不通過。
@@ -39,7 +45,7 @@
 - 整理不得改動檔案內容，需要修改內容時先成為獨立 commit，再整理。
 - 不使用 `--no-verify`。
 - 本流程沒有續行。任何一步停止後，下一次整理從第 1 步重新開始，重新取得 `beforeSha`、`rangeBase` 與已推送狀態的判定，不沿用前一次的整理分支、備份分支、底稿與 todo 檔。目的是避免停止期間分支、工作樹或遠端狀態改變後，仍依舊的判定改寫歷史。
-- 歸併計畫（例如把修正收進原 commit）不影響 tree，零差異 gate 偵測不到歸併錯誤。主 Agent 在回報列出計畫，並在 push 或發佈的授權請求中呈現給使用者。
+- 歸併計畫（例如把修正收進原 commit）與第 4 步「核對訊息」的訊息修改都不影響 tree，零差異 gate 偵測不到歸併錯誤與訊息錯誤。主 Agent 在回報列出計畫與訊息修改，並在 push 或發佈的授權請求中呈現給使用者。
 
 ### 停止時的處置
 
