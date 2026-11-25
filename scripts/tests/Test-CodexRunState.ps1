@@ -151,6 +151,122 @@ try {
         Assert-True ($null -eq $outsideOnly.head) 'repo 外的目標不記 HEAD'
     }
 
+    # ---------- 工作樹盤點 ----------
+    function Get-InventorySection {
+        param([string]$Text, [string]$Title)
+        $match = [regex]::Match($Text, '(?ms)^## ' + [regex]::Escape($Title) + "`n`n(.*?)(?=`n`n## |\z)")
+        if (-not $match.Success) { throw ('盤點檔缺少節：' + $Title) }
+        return $match.Groups[1].Value.TrimEnd("`n")
+    }
+    $inventoryBase = New-TestDirectory -Name 'inventory'
+    $invRepo = New-TestGitRepository -Directory $inventoryBase
+    $invSrc = Join-Path $invRepo.Root 'src'
+    Write-TestUtf8 -Path (Join-Path $invSrc 'a.txt') -Text "alpha`n"
+    Write-TestUtf8 -Path (Join-Path $invSrc '.env') -Text "SECRET=original-value`n"
+    Write-TestUtf8 -Path (Join-Path $invSrc 'Secrets.JSON') -Text "{upper-original}`n"
+    $null = Invoke-TestGit -WorkingDirectory $invRepo.Root -Argument @('add', '-A')
+    $null = Invoke-TestGit -WorkingDirectory $invRepo.Root -Argument @('commit', '-q', '-m', 'add src')
+    $invHead = (@(Invoke-TestGit -WorkingDirectory $invRepo.Root -Argument @('rev-parse', 'HEAD'))[0]).Trim()
+    Write-TestUtf8 -Path (Join-Path $invSrc 'a.txt') -Text "alpha changed`n"
+    Write-TestUtf8 -Path (Join-Path $invSrc '.env') -Text "SECRET=changed-value`n"
+    Write-TestUtf8 -Path (Join-Path $invSrc 'Secrets.JSON') -Text "{upper-changed-value}`n"
+    Write-TestUtf8 -Path (Join-Path $invSrc 'staged.txt') -Text "staged new`n"
+    $null = Invoke-TestGit -WorkingDirectory $invRepo.Root -Argument @('add', 'src/staged.txt')
+    Write-TestUtf8 -Path (Join-Path $invSrc 'untracked.txt') -Text "untracked new`n"
+    Write-TestUtf8 -Path (Join-Path $invSrc 'cert.pfx') -Text "pfx-secret-content`n"
+    Write-TestUtf8 -Path (Join-Path $invSrc 'report-dir\x.json') -Text '{}'
+    Write-TestUtf8 -Path (Join-Path $invRepo.Root 'readme.txt') -Text "outside targets change`n"
+    $invOutside = New-TestDirectory -Name 'inventory-outside'
+    Write-TestUtf8 -Path (Join-Path $invOutside 'o.txt') -Text "outside`n"
+    $invTargets = @(($invSrc + '\'), ($invOutside + '\'))
+    $invPath = Join-Path $inventoryBase 'out\worktree-inventory.md'
+
+    Test-Case 'INVENTORY-GIT 已修改、已暫存、未追蹤與 repo 外的目標各列在對應節；機密樣式檔名照列但內容不進差異內容；回傳雜湊等於檔案雜湊；無 BOM、無 CR' {
+        $result = Write-RunWorktreeInventory -ExecutionRoot $invRepo.Root -Target $invTargets -OutputPath $invPath -ExcludeRoot @((Join-Path $invSrc 'report-dir'))
+        Assert-Equal $invPath $result.path
+        Assert-Equal $invHead $result.head
+        Assert-Equal (Get-RunSha256File -Path $invPath) $result.sha256
+        Assert-True ($result.sha256 -cmatch '^[0-9a-f]{64}$') 'sha256 應為小寫十六進位'
+        $bytes = [IO.File]::ReadAllBytes($invPath)
+        Assert-Equal ([long]$bytes.Length) $result.bytes
+        Assert-True (-not ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)) '不應有 BOM'
+        Assert-True (-not ($bytes -contains [byte]13)) '不應含 CR'
+        $text = [Text.Encoding]::UTF8.GetString($bytes)
+        Assert-True $text.StartsWith("# 工作樹盤點`n`n- schema: ai-agents.worktree-inventory.v1`n- repository: " + $invRepo.Root + "`n- head: " + $invHead + "`n- generated_utc: ") '標頭格式'
+        Assert-True ([regex]::IsMatch($text, '- generated_utc: \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z\n')) 'generated_utc 應為 ISO 8601 UTC'
+        $titles = @([regex]::Matches($text, '(?m)^## (.+)$') | ForEach-Object { $_.Groups[1].Value })
+        Assert-Equal @('相對 HEAD 的變更', '已暫存', '未追蹤', 'repository 外的目標', '差異內容') $titles
+        $changes = Get-InventorySection -Text $text -Title '相對 HEAD 的變更'
+        Assert-True ($changes.Contains("M`tsrc/a.txt") -and $changes.Contains("A`tsrc/staged.txt") -and $changes.Contains("M`tsrc/.env") -and $changes.Contains("M`tsrc/Secrets.JSON")) ('相對 HEAD 的變更：' + $changes)
+        Assert-True (-not $changes.Contains('readme.txt')) '目標範圍外的變更不應列入'
+        $staged = Get-InventorySection -Text $text -Title '已暫存'
+        Assert-Equal "A`tsrc/staged.txt" $staged
+        $untracked = Get-InventorySection -Text $text -Title '未追蹤'
+        Assert-True ($untracked.Contains('src/untracked.txt') -and -not $untracked.Contains('src/untracked.txt（')) ('未追蹤：' + $untracked)
+        Assert-True ($untracked.Contains('src/cert.pfx（機密樣式，不提供內容）')) '機密樣式的未追蹤檔應標註'
+        Assert-True (-not $untracked.Contains('report-dir')) '排除目錄內的檔案不應列入未追蹤'
+        Assert-Equal ($invOutside + '\') (Get-InventorySection -Text $text -Title 'repository 外的目標')
+        $diffContent = Get-InventorySection -Text $text -Title '差異內容'
+        Assert-True ($diffContent.Contains('+alpha changed') -and $diffContent.Contains('+staged new')) '差異內容應含一般檔的變更'
+        Assert-True (-not $text.Contains('changed-value') -and -not $text.Contains('original-value') -and -not $text.Contains('pfx-secret-content') -and -not $text.Contains('upper-changed-value') -and -not $text.Contains('upper-original')) '機密樣式檔（含大寫檔名的已追蹤檔）的內容不應出現在盤點檔'
+        Assert-True (-not $diffContent.Contains('src/.env') -and -not $diffContent.Contains('Secrets.JSON')) '機密樣式檔不應出現在差異內容'
+    }
+    Test-Case 'INVENTORY-EMPTY 目標在 repo 內但沒有任何變更時，各 git 節為（無），repository 外的目標節為（無）' {
+        $cleanRepo = New-TestGitRepository -Directory (New-TestDirectory -Name 'inventory-clean')
+        $cleanPath = Join-Path (Split-Path -Parent $cleanRepo.Root) 'inv.md'
+        $null = Write-RunWorktreeInventory -ExecutionRoot $cleanRepo.Root -Target @(($cleanRepo.Root + '\')) -OutputPath $cleanPath
+        $text = [IO.File]::ReadAllText($cleanPath)
+        foreach ($title in @('相對 HEAD 的變更', '已暫存', '未追蹤', 'repository 外的目標', '差異內容')) { Assert-Equal '（無）' (Get-InventorySection -Text $text -Title $title) $title }
+    }
+    Test-Case 'INVENTORY-NO-COMMIT 沒有 HEAD 時 head 記 no-commit，已暫存以 A 列出，差異內容寫固定說明，未追蹤照列' {
+        $emptyBase = New-TestDirectory -Name 'inventory-nocommit'
+        $null = Invoke-TestGit -WorkingDirectory $emptyBase -Argument @('init', '-q', '-b', 'main')
+        Write-TestUtf8 -Path (Join-Path $emptyBase 'src\x.txt') -Text "x`n"
+        Write-TestUtf8 -Path (Join-Path $emptyBase 'src\y.txt') -Text "y`n"
+        $null = Invoke-TestGit -WorkingDirectory $emptyBase -Argument @('add', 'src/x.txt')
+        $emptyPath = Join-Path $emptyBase 'out\inv.md'
+        $result = Write-RunWorktreeInventory -ExecutionRoot $emptyBase -Target @((Join-Path $emptyBase 'src\')) -OutputPath $emptyPath
+        Assert-Equal 'no-commit' $result.head
+        $text = [IO.File]::ReadAllText($emptyPath)
+        Assert-True $text.Contains("`n- head: no-commit`n") 'head 欄位'
+        Assert-Equal "A`tsrc/x.txt" (Get-InventorySection -Text $text -Title '已暫存')
+        Assert-Equal "A`tsrc/x.txt" (Get-InventorySection -Text $text -Title '相對 HEAD 的變更')
+        Assert-Equal 'src/y.txt' (Get-InventorySection -Text $text -Title '未追蹤')
+        Assert-Equal 'HEAD 不存在，已暫存與未追蹤的目標整份視為新增，直接讀取檔案。' (Get-InventorySection -Text $text -Title '差異內容')
+    }
+    Test-Case 'INVENTORY-NON-REPO 執行目錄不是 git repo 或目標全在 repo 外時，repository 與 head 為無，git 各節為（無），仍寫出檔案' {
+        $nonRepoPath = Join-Path $inventoryBase 'out\non-repo.md'
+        $result = Write-RunWorktreeInventory -ExecutionRoot $plain -Target @(($plain + '\')) -OutputPath $nonRepoPath
+        Assert-Equal '無' $result.head
+        $text = [IO.File]::ReadAllText($nonRepoPath)
+        Assert-True $text.Contains("`n- repository: 無`n- head: 無`n") 'repository 與 head 應為無'
+        foreach ($title in @('相對 HEAD 的變更', '已暫存', '未追蹤', '差異內容')) { Assert-Equal '（無）' (Get-InventorySection -Text $text -Title $title) $title }
+        Assert-Equal ($plain + '\') (Get-InventorySection -Text $text -Title 'repository 外的目標')
+        $outsideOnlyPath = Join-Path $inventoryBase 'out\outside-only.md'
+        $result2 = Write-RunWorktreeInventory -ExecutionRoot $invRepo.Root -Target @(($invOutside + '\')) -OutputPath $outsideOnlyPath
+        Assert-Equal '無' $result2.head
+        Assert-True ([IO.File]::ReadAllText($outsideOnlyPath).Contains("`n- repository: 無`n")) '目標全在 repo 外時 repository 為無'
+    }
+    Test-Case 'INVENTORY-GIT-FAILED git 命令失敗（索引損毀）時丟出 RunWorktreeInventoryFailed，訊息含命令與 stderr，不留下盤點檔' {
+        $badRepo = New-TestGitRepository -Directory (New-TestDirectory -Name 'inventory-bad')
+        Write-TestUtf8 -Path (Join-Path $badRepo.Root 'src\a.txt') -Text "a`n"
+        $null = Invoke-TestGit -WorkingDirectory $badRepo.Root -Argument @('add', '-A')
+        [IO.File]::WriteAllBytes((Join-Path $badRepo.Root '.git\index'), [byte[]]@(1, 2, 3, 4, 5, 6, 7, 8))
+        $badPath = Join-Path (Split-Path -Parent $badRepo.Root) 'out\bad.md'
+        $caught = Assert-Throws -Code 'RunWorktreeInventoryFailed' -Script { $null = Write-RunWorktreeInventory -ExecutionRoot $badRepo.Root -Target @((Join-Path $badRepo.Root 'src\')) -OutputPath $badPath }
+        Assert-True ($caught.Message.Contains('git diff HEAD')) ('訊息應含命令參數：' + $caught.Message)
+        Assert-True ($caught.Message.Contains('結束碼')) ('訊息應含結束碼：' + $caught.Message)
+        Assert-True (-not (Test-Path -LiteralPath $badPath)) '失敗時不應留下盤點檔'
+    }
+    Test-Case 'INVENTORY-GIT-STDERR Invoke-RunGitBytes 另回傳 stderr 文字，既有 ExitCode 與 Bytes 不變' {
+        $failure = Invoke-RunGitBytes -WorkingDirectory $invRepo.Root -Argument @('rev-parse', '--verify', 'no-such-ref')
+        Assert-True ($failure.ExitCode -ne 0) '應失敗'
+        Assert-True (-not [string]::IsNullOrWhiteSpace($failure.Stderr)) 'stderr 應有文字'
+        $ok = Invoke-RunGitBytes -WorkingDirectory $invRepo.Root -Argument @('rev-parse', 'HEAD')
+        Assert-Equal 0 $ok.ExitCode
+        Assert-Equal $invHead ([Text.Encoding]::UTF8.GetString($ok.Bytes).Trim())
+    }
+
     # ---------- 成本列 ----------
     Test-Case 'LEDGER-NEW 新檔含標題、標記行、表頭與恰 14 欄的事件列' {
         $ledger = Join-Path $root 'ledger\line-a\cost-ledger.md'

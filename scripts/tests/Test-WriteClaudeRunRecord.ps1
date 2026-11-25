@@ -396,6 +396,71 @@ try {
         Assert-Equal 4 @(Get-Records).Count
         Assert-Equal 4 @(Get-ChildItem -LiteralPath (Join-Path $reportRoot 'runs') -Directory).Count
     }
+    Test-Case 'CR-INVENTORY 審查的 Start 在輸出目錄產生工作樹盤點檔，stdout 與紀錄記錄路徑與雜湊，End 填 sha256_end 且不影響結果' {
+        Remove-Runs
+        Write-TestUtf8 -Path $target -Text 'v1'
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code $start.Stderr
+        $inventoryPath = Join-Path $start.Json.output_dir 'worktree-inventory.md'
+        Assert-Equal $inventoryPath $start.Json.worktree_inventory_path
+        Assert-True ([IO.File]::Exists($inventoryPath)) '盤點檔不存在'
+        $text = [IO.File]::ReadAllText($inventoryPath)
+        Assert-True ($text.StartsWith("# 工作樹盤點`n") -and $text.Contains('- schema: ai-agents.worktree-inventory.v1')) '盤點檔標頭'
+        $draft = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-Equal $inventoryPath $draft.worktree_inventory.path
+        Assert-Equal (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant() $draft.worktree_inventory.sha256
+        Assert-Equal ([long](Get-Item -LiteralPath $inventoryPath).Length) ([long]$draft.worktree_inventory.bytes)
+        Assert-True ($null -eq $draft.worktree_inventory.sha256_end) '初稿的 sha256_end 應為 null'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $validReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $end.Code $end.Stderr
+        Assert-Equal 'success' $end.Json.result
+        $record = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-Equal $record.worktree_inventory.sha256 $record.worktree_inventory.sha256_end
+    }
+    Test-Case 'CR-INVENTORY-END-DELETED 盤點檔在 End 前被刪除時 sha256_end 為 null，結果不受影響' {
+        Remove-Runs
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code $start.Stderr
+        [IO.File]::Delete($start.Json.worktree_inventory_path)
+        Write-TestUtf8 -Path $start.Json.report_path -Text $validReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $end.Code $end.Stderr
+        Assert-Equal 'success' $end.Json.result
+        $record = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-True ($null -eq $record.worktree_inventory.sha256_end) 'sha256_end 應為 null'
+    }
+    Test-Case 'CR-INVENTORY-NON-REVIEW 非審查類型的 Start 不產生盤點檔，stdout 與紀錄都沒有盤點欄位' {
+        Remove-Runs
+        $factOrder = New-OrderFile -Name 'fact-order.md' -Override @{ task_type = 'factcheck'; profile = 'factcheck'; dispatch_slug = 'fact-p1'; report_name = 'fact-report.md' }
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $factOrder, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code $start.Stderr
+        Assert-True ($null -eq $start.Json.PSObject.Properties['worktree_inventory_path']) 'stdout 不應含 worktree_inventory_path'
+        $record = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-Equal 'factcheck' $record.task_type
+        Assert-True ($null -eq $record.PSObject.Properties['worktree_inventory']) '紀錄不應含 worktree_inventory'
+        Assert-True (-not [IO.File]::Exists((Join-Path $start.Json.output_dir 'worktree-inventory.md'))) '不應產生盤點檔'
+    }
+    Test-Case 'CR-INVENTORY-FAILED 盤點產生失敗（索引損毀）時 Start 以結束碼 1 拒絕，不寫紀錄、不留下盤點檔' {
+        Remove-Runs
+        $gitBase = New-TestDirectory -Name 'claude-record-git'
+        $gitRepo = New-TestGitRepository -Directory $gitBase
+        Write-TestUtf8 -Path (Join-Path $gitRepo.Root 'src\a.txt') -Text "a`n"
+        $null = Invoke-TestGit -WorkingDirectory $gitRepo.Root -Argument @('add', '-A')
+        [IO.File]::WriteAllBytes((Join-Path $gitRepo.Root '.git\index'), [byte[]]@(1, 2, 3, 4, 5, 6, 7, 8))
+        $badReportRoot = Join-Path $gitBase 'report\line-a'
+        $null = New-Item -ItemType Directory -Path $badReportRoot -Force
+        $badRole = Join-Path $gitRepo.Root 'reviewer.toml'
+        Write-TestUtf8 -Path $badRole -Text 'role'
+        $badOrder = New-OrderFile -Name 'bad-order.md' -Override @{ dispatch_slug = 'bad-p1'; role_file = $badRole; execution_root = $gitRepo.Root; report_line_root = $badReportRoot; targets = @((Join-Path $gitRepo.Root 'src\a.txt')) }
+        $badOrderInRoot = Join-Path $badReportRoot 'bad-order.md'
+        Copy-Item -LiteralPath $badOrder -Destination $badOrderInRoot
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $badOrderInRoot, '-ExecutorId', 'sonnet')
+        Assert-Equal 1 $start.Code $start.Stderr
+        Assert-True ($start.Stderr -like '*RunWorktreeInventoryFailed*') ('stderr：' + $start.Stderr)
+        Assert-Equal 0 @(Get-ChildItem -LiteralPath $badReportRoot -Recurse -Filter '*.record.json' -File -ErrorAction SilentlyContinue).Count
+        Assert-Equal 0 @(Get-ChildItem -LiteralPath $badReportRoot -Recurse -Filter 'worktree-inventory.md' -File -ErrorAction SilentlyContinue).Count
+    }
 }
 finally {
     $exitCode = Complete-TestRun

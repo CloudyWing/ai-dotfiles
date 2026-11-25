@@ -237,6 +237,41 @@ try {
         Assert-True (-not $run1.Stdout.Contains("`n")) 'stdout 應為單行 JSON'
         Assert-True (-not [regex]::IsMatch($run1.Stdout, '[^\x00-\x7F]')) 'stdout 應為 ASCII'
     }
+    Test-Case 'E2E-INVENTORY 審查在啟動 Codex 前於輸出目錄產生工作樹盤點檔：prompt 的報告檔行之後、審查者行之前列出路徑，紀錄含檔案的雜湊、長度、head 與結束雜湊' {
+        $record = Get-Record -Path $run1.Document.final.record_path
+        $inventoryPath = Join-Path $record.output_dir 'worktree-inventory.md'
+        Assert-True (Test-Path -LiteralPath $inventoryPath -PathType Leaf) '盤點檔不存在'
+        $stdin = Get-Content -LiteralPath (Join-Path $e1.Scenarios 'stdin-acct-a.txt') -Raw
+        $line = '工作樹盤點檔: ' + $inventoryPath
+        Assert-True ($stdin.Contains("`n" + $line + "`n")) ('prompt 缺盤點檔行：' + $stdin)
+        $reportIndex = $stdin.IndexOf('報告檔: ')
+        $inventoryIndex = $stdin.IndexOf($line)
+        $reviewerIndex = $stdin.IndexOf('審查者: ')
+        Assert-True ($reportIndex -ge 0 -and $reportIndex -lt $inventoryIndex) '盤點檔行應在報告檔行之後'
+        Assert-True ($reviewerIndex -lt 0 -or $inventoryIndex -lt $reviewerIndex) '盤點檔行應在審查者行之前'
+        $inventory = $record.worktree_inventory
+        Assert-Equal $inventoryPath $inventory.path
+        Assert-Equal (Get-RunSha256File -Path $inventoryPath) $inventory.sha256
+        Assert-Equal $inventory.sha256 $inventory.sha256_end
+        Assert-Equal ([long](Get-Item -LiteralPath $inventoryPath).Length) ([long]$inventory.bytes)
+        Assert-Equal $record.source_state_start.head $inventory.head
+        $text = [IO.File]::ReadAllText($inventoryPath)
+        Assert-True ($text.StartsWith("# 工作樹盤點`n") -and $text.Contains('- schema: ai-agents.worktree-inventory.v1')) '盤點檔標頭'
+        Assert-True ($text.Contains('src/a.txt')) '盤點檔應列出審查目標內的檔案'
+    }
+    Test-Case 'E2E-INVENTORY-FAILED 盤點產生失敗（索引損毀）：結束碼 1、RunWorktreeInventoryFailed、沒有 exec 呼叫、沒有盤點檔' {
+        $envBad = New-EntryEnvironment -Name 'inventory-failed'
+        Set-Scenario -Environment $envBad -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
+        $indexPath = (@(Invoke-TestGit -WorkingDirectory $envBad.Exec -Argument @('rev-parse', '--git-path', 'index'))[0]).Trim()
+        if (-not [IO.Path]::IsPathRooted($indexPath)) { $indexPath = Join-Path $envBad.Exec $indexPath }
+        [IO.File]::WriteAllBytes($indexPath, [byte[]]@(1, 2, 3, 4, 5, 6, 7, 8))
+        $runBad = Invoke-Entry -Environment $envBad -OrderPath (New-OrderFile -Environment $envBad)
+        Assert-Success $runBad
+        Assert-Equal 1 $runBad.ExitCode
+        Assert-Equal 'RunWorktreeInventoryFailed' $runBad.Document.error.code
+        Assert-Equal 0 (@(@((Get-Call -Environment $envBad) | Where-Object { $_.subcommand -ceq 'exec' })).Count) 'Codex 不應啟動'
+        Assert-Equal 0 (@(Get-ChildItem -LiteralPath $envBad.ReportRoot -Recurse -Filter 'worktree-inventory.md' -File).Count) '不應留下盤點檔'
+    }
 
     # ---------- linked worktree 沒有 .local\machine.json ----------
     Test-Case 'E2E-LINKED-WORKTREE 入口位於沒有 machine.json 的 linked worktree 時，從主 checkout 選得到帳號' {
@@ -721,6 +756,8 @@ try {
         Assert-Equal 1 (@($execCalls[1].args | Where-Object { $_ -match ('^model="?' + [regex]::Escape($fb) + '"?$') }).Count) '備援 model 的嘗試應帶 -c model=<備援 model>'
         $stdin = Get-Content -LiteralPath (Join-Path $e30.Scenarios 'stdin-acct-a.txt') -Raw
         Assert-True ($stdin.Contains('審查者: ' + [string]$reviewNode.display + '；model: ' + $fb + '（備援）')) ('prompt 未註明實際 model：' + $stdin)
+        $inventoryLineIndex = $stdin.IndexOf('工作樹盤點檔: ' + (Join-Path $records[1].output_dir 'worktree-inventory.md'))
+        Assert-True ($stdin.IndexOf('報告檔: ') -ge 0 -and $stdin.IndexOf('報告檔: ') -lt $inventoryLineIndex -and $inventoryLineIndex -lt $stdin.IndexOf('審查者: ')) '盤點檔行應在報告檔行之後、審查者行之前'
         $health = Get-Content -LiteralPath $e30.Health -Raw | ConvertFrom-Json
         Assert-Equal @($primary) @($health.entries | ForEach-Object { $_.model }) '健康狀態檔應只記錄被拒絕的主要 model'
         # 第二次發動：主要 model 已記為不支援，直接以備援 model 嘗試，不再試主要 model。
@@ -833,7 +870,10 @@ try {
         Assert-True ($stdinFact.Contains($roleFile)) 'prompt 未指向角色規則檔'
         Assert-True (-not $stdinFact.Contains('審查者:')) 'prompt 不應把事實校閱標為審查者'
         Assert-True (-not $stdinFact.Contains('審查角色')) 'prompt 不應寫成審查角色'
+        Assert-True (-not $stdinFact.Contains('工作樹盤點檔: ')) 'prompt 不應含工作樹盤點檔行'
         $record = Get-Record -Path $runFact.Document.final.record_path
+        Assert-True ($null -eq $record.PSObject.Properties['worktree_inventory']) '事實校閱的紀錄不應含 worktree_inventory'
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $record.output_dir 'worktree-inventory.md'))) '事實校閱不應產生盤點檔'
         Assert-Equal 'factcheck' $record.task_type
         Assert-True (@($record.permission.read_roots | Where-Object { $_ -like '*generated_images' }).Count -eq 0) '事實校閱不應開放 generated_images'
         $rows = Get-LedgerDataRow -Path (Join-Path $envFact.ReportRoot 'cost-ledger.md')
@@ -914,6 +954,8 @@ try {
         $stdin = Get-Content -LiteralPath (Join-Path $envTest.Scenarios 'stdin-acct-a.txt') -Raw
         Assert-True ($stdin.Contains('測試取證規則') -and $stdin.Contains($envTest.ContextFile) -and $stdin.Contains('不指定檔名')) 'prompt 缺測試取證規則或資料檔'
         Assert-True (-not $stdin.Contains('審查者:')) 'prompt 不應把測試取證標為審查者'
+        Assert-True (-not $stdin.Contains('工作樹盤點檔: ')) 'prompt 不應含工作樹盤點檔行'
+        Assert-True ($null -eq $record.PSObject.Properties['worktree_inventory']) '測試取證的紀錄不應含 worktree_inventory'
         $rows = Get-LedgerDataRow -Path (Join-Path $envTest.ReportRoot 'cost-ledger.md')
         Assert-Equal 1 ($rows.Count)
         Assert-True ((Split-LedgerRow -Row $rows[0])[13].Contains('task=test')) '成本列備註應記 task=test'

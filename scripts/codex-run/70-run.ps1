@@ -124,7 +124,9 @@ function New-RunPrompt {
         [Parameter(Mandatory)][string]$OutputDirectory,
         [Parameter(Mandatory)][string]$ReportPath,
         [AllowNull()][AllowEmptyString()][string]$ReviewerLine,
-        [AllowNull()][object]$Evidence
+        [AllowNull()][object]$Evidence,
+        # 審查在沙盒外產生的工作樹盤點檔路徑；空值時 prompt 不列該行。
+        [AllowNull()][AllowEmptyString()][string]$WorktreeInventoryPath
     )
 
     # 「審查者:」（審查以外為「執行者:」）行由執行端照抄到報告「## 總覽」第一行，使報告標明實際執行者與 model。
@@ -153,6 +155,7 @@ function New-RunPrompt {
         ('- executionRoot: ' + $Order.execution_root)
         ('輸出目錄: ' + $OutputDirectory)
         ('報告檔: ' + $ReportPath)
+        if (-not [string]::IsNullOrWhiteSpace($WorktreeInventoryPath)) { '工作樹盤點檔: ' + $WorktreeInventoryPath }
         if (-not [string]::IsNullOrWhiteSpace($ReviewerLine)) { $executorLabel + ': ' + $ReviewerLine }
         ''
         ('請依角色規則檔 `' + $Order.role_file + '` 定義的角色，先完整讀取該檔，再讀取派遣檔 `' + $Order.dispatch_file_path + '` 依其內容執行。')
@@ -265,6 +268,11 @@ function Invoke-RunAttempt {
         $extraEnvironment['PLAYWRIGHT_MCP_OUTPUT_DIR'] = $outputDirectory
         $sourceExcludeRoots += $strayMcpOutput
     }
+    # 審查：沙盒內的 git 命令取不到工作樹與索引，盤點改由入口在沙盒外產生並寫成輸出目錄內的檔案，審查者只讀這份檔案。產生失敗時錯誤往外拋，Codex 不啟動。
+    $worktreeInventory = $null
+    if (-not $evidenceOnly -and [string]$Order.task_type -ceq 'review') {
+        $worktreeInventory = Write-RunWorktreeInventory -ExecutionRoot $Order.execution_root -Target @($Order.targets) -OutputPath (Join-Path $outputDirectory 'worktree-inventory.md') -ExcludeRoot $sourceExcludeRoots
+    }
     # 啟動前記錄 .playwright-mcp 的檔案狀態，結束時只把本次新增或變動的檔案標為殘留（先前殘留或他人使用的檔案不算）。
     $strayBefore = if ($Order.task_setting.mcp) { Get-RunDirectoryFileState -Path $strayMcpOutput } else { $null }
     $plan = Get-RunPermissionPlan -ExecutionRoot $workingDirectory -OutputDirectory $outputDirectory -ReportLineRoot $Order.report_line_root -ExtraReadRoot $extraReadRoots -OutputOnly:$evidenceOnly -ReadFile $readFiles
@@ -317,6 +325,9 @@ function Invoke-RunAttempt {
         $record['missing_question_ids'] = $null
         $record['question_check'] = $null
     }
+    if ($null -ne $worktreeInventory) {
+        $record['worktree_inventory'] = [ordered]@{ path = $worktreeInventory.path; sha256 = $worktreeInventory.sha256; bytes = $worktreeInventory.bytes; head = $worktreeInventory.head; sha256_end = $null }
+    }
     if ($Order.task_setting.mcp) {
         $record['test_context_file'] = if ([string]::IsNullOrWhiteSpace([string]$Order.test_context_file)) { $null } else { [string]$Order.test_context_file }
         $record['mcp_tool_calls'] = $null
@@ -328,7 +339,10 @@ function Invoke-RunAttempt {
 
     $argument = New-RunExecArgument -ExecutionRoot $workingDirectory -Profile $Order.profile -OutputDirectory $outputDirectory -LastMessagePath $lastMessagePath -IsGitRepository ($IsGitRepository -and -not $evidenceOnly) -ReportLineRoot $Order.report_line_root -ModelOverride $modelOverride `
         -ExtraReadRoot $extraReadRoots -Search:([bool]$Order.task_setting.search) -OutputOnly:$evidenceOnly -ReadFile $readFiles
-    if (-not $evidenceOnly) { $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath -ReviewerLine $reviewerLine }
+    if (-not $evidenceOnly) {
+        $inventoryPath = if ($null -ne $worktreeInventory) { [string]$worktreeInventory.path } else { '' }
+        $prompt = New-RunPrompt -Order $Order -OutputDirectory $outputDirectory -ReportPath $reportPath -ReviewerLine $reviewerLine -WorktreeInventoryPath $inventoryPath
+    }
     Write-RunDiagnostic ('[codex-run] 嘗試帳號 ' + $Candidate.name + $(if ($modelSource -ceq 'fallback') { '（備援 model ' + $modelOverride + '）' } else { '' }) + '，runKey ' + $runKey)
     $exitCode = -1
     $duration = 0.0
@@ -412,6 +426,11 @@ function Invoke-RunAttempt {
     $record['duration_seconds'] = $duration
     $record['source_state_end'] = $sourceEnd
     $record['source_changed'] = $sourceChanged
+    if ($null -ne $worktreeInventory) {
+        # 盤點檔在執行期間被改或被刪時只記錄不一致（sha256_end 與 sha256 不同或為 null），不改變結果判定。
+        $inventoryEnd = try { if ([IO.File]::Exists($worktreeInventory.path)) { Get-RunSha256File -Path $worktreeInventory.path } else { $null } } catch { $null }
+        $record['worktree_inventory']['sha256_end'] = $inventoryEnd
+    }
     $record['exit_code'] = if ($launchFailed) { $null } else { $exitCode }
     $record['result'] = $result
     $record['failure_reason'] = $failureReason

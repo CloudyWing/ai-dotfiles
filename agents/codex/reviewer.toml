@@ -21,7 +21,7 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 
 ## 啟動流程
 
-1. 讀取派遣輸入。派遣 prompt 含 `LineContext` 區塊、`輸出目錄:` 行、`報告檔:` 行與 `審查者:` 行，並指向一份含 `## 派遣設定` 的派遣檔。由 `scripts/Invoke-CodexRun.ps1` 發動與於 Claude 端以 Agent 工具派生時，prompt 都是這個格式。完整讀取該派遣檔，取得下列八項內容。
+1. 讀取派遣輸入。派遣 prompt 含 `LineContext` 區塊、`輸出目錄:` 行、`報告檔:` 行、`工作樹盤點檔:` 行與 `審查者:` 行，並指向一份含 `## 派遣設定` 的派遣檔。由 `scripts/Invoke-CodexRun.ps1` 發動與於 Claude 端以 Agent 工具派生時，prompt 都是這個格式。完整讀取該派遣檔，取得下列八項內容。
    - 標題：派遣檔第一個標題。
    - `task_type`：`## 派遣設定` 的值，須為 `review`。
    - `targets`：`## 派遣設定` 的目標物件。
@@ -35,15 +35,18 @@ Standards 與 Spec 各由獨立 sub-agent 執行。兩軸不得共用未驗證�
 2. 從派遣 prompt 取得 `LineContext` 的 `lineSlug`、`dispatchLineRoot` 與 `reportLineRoot`。驗證 `lineSlug` 符合 `^[a-z0-9]+(?:-[a-z0-9]+)*$`，且 `<dispatchLineRoot>/line.json` 的 `line-slug` 欄位相符。缺少 `LineContext`、`line.json` 或欄位不符時停止，不得以預設值、時間戳或 dispatch slug 代替。
 3. 確認審查輸入：`task_type` 為 `review`，`## 邊界` 為唯讀邊界，其餘各項依步驟 1 取得且非空。
 4. 若 `required_reads` 指定 `design.md`，讀取其完整內容並擷取對應驗收資料。若未指定設計文件，依 `## 任務` 與 `## 驗收條件` 執行，不自行補猜需求。`required_reads` 列出 Developer 結案報告時，必須同時實讀 `required_reads` 列出的同線 `requirement-summary.md` 與該結案報告全文；兩者任一未列出或讀取失敗時停止並回報缺件，不略過需求對照核對。`required_reads` 列出前輪審查報告時，實讀其全部 finding ID，讀取失敗時同樣停止。
-5. 固定審查基準（fixed point preflight）：先執行 `git rev-parse HEAD` 並記錄審查時點 SHA，再確認派遣單是否明文指定 commit range，依下列模式選用：
+5. 固定審查基準（fixed point preflight）：先執行 `git rev-parse HEAD` 並記錄審查時點 SHA（repository 沒有 commit 而失敗時，審查時點 SHA 記為 `no-commit`，不算 Git 命令失敗），再確認派遣單是否明文指定 commit range，依下列模式選用：
    - Git 路徑限定：Git 命令一律在執行端的工作目錄執行，即 `LineContext` 的 `executionRoot`，不以 `git -C` 指向其他目錄。本步驟與後續所有 `git diff`、`git ls-files` 一律在 `--` 之後列出 `targets` 中位於該工作目錄 repository 內的路徑作為 pathspec，絕對路徑改寫為相對於工作目錄的路徑。不執行不帶 pathspec 的 `git diff` 或 `git ls-files`。只輸出檔名與統計、不輸出檔案內容的 `git diff --stat`、`--name-only`、`--name-status` 不受此限，`## 驗收條件` 載明的這類命令照常執行。`targets` 路徑位於 repository 外或被 Git 忽略時，不交給 Git，改為直接讀取檔案內容，並在報告記錄該目標未經 Git 狀態盤點。`targets` 全部路徑都在 repository 外時，跳過 Git 狀態盤點，不因此停止。
    - 機密檔保護：檔名符合 `.env`、`.env.*`、`*.pfx`、`*.pem`、`*.key`、`secrets.*` 的檔案，以檔名判定，不得讀取內容或輸出其 diff；`targets` 列出此類檔案時，只回報檔名與 Git 狀態代碼，並在品質備註標示未審查內容。其他設定檔（例如 `appsettings*.json`）可正常審查，但報告與工具輸出引用其內容時，鍵名含 `Password`、`Secret`、`ConnectionString`、`ApiKey`、`Token` 的值一律以 `***` 取代。
-   - 工作樹狀態盤點：審查的工作目錄可能唯讀，兩種模式都以下列不寫入工作樹的命令取得已修改、已暫存與未追蹤目標的清單與變更內容；這些命令在唯讀與可寫的工作目錄得到相同結果。
-     1. `git ls-files -m -o --exclude-standard -- <targets pathspec>`：逐檔列出相對索引已修改（含已刪除）與未追蹤且未被忽略的目標物件。
-     2. `git diff --cached --name-status HEAD -- <targets pathspec>`：列出已暫存的變更。每行為狀態、TAB、路徑；重新命名與複製為狀態加相似度（如 `R100`）、TAB、舊路徑、TAB、新路徑。重新命名與複製的偵測要求新舊路徑同在 pathspec 內，舊路徑在 pathspec 外時，新路徑的狀態為 `A`。
-     3. 對步驟 1、2 列出的每個路徑（重新命名與複製取新路徑），以 `git ls-tree --name-only HEAD -- <path>` 判定 HEAD 是否有該路徑。輸出為空表示 HEAD 沒有，結束碼仍為 0。
-     4. HEAD 沒有該路徑者（已暫存新增、重新命名與複製後的新路徑、以 `git add -N` 登記的路徑、未追蹤檔案）不執行 `git show HEAD:<path>`，直接讀取工作樹檔案，整份視為新增內容納入審查。重新命名與複製另以 `git show HEAD:<舊路徑>` 取得舊路徑的 HEAD 內容作對照。
-     5. HEAD 有該路徑者，以 `git show HEAD:<path>` 取得 HEAD 內容，直接讀取工作樹檔案取得目前內容，兩者比對即為未提交的變更內容。目前內容不存在者為已刪除（含已暫存的刪除），只呈現 HEAD 內容；兩者相同者無實際變更。
+   - 工作樹狀態盤點：已修改、已暫存與未追蹤目標的清單與變更內容，以派遣 prompt `工作樹盤點檔:` 行指定的檔案為準。該檔由派工入口在沙盒外產生。沙盒內需要工作樹或索引的 git 命令（`git status`、`git diff --cached`、不帶兩個 revision 的 `git diff`、`git ls-files -m`、`git ls-files -o`）結果不可靠，兩種模式都不執行。
+     1. 完整讀取盤點檔，依 `head` 的值處置。
+        - `無`：全部 `targets` 都不在 repository 內，依第 4 項直接讀取檔案，不比對審查時點 SHA。
+        - `no-commit`：repository 沒有 commit，審查時點 SHA 也須為 `no-commit`，不同時停止並回報兩個值。各節列出的路徑整份視為新增，不執行 `git show HEAD:<path>`。
+        - SHA：與審查時點 SHA 不同時停止，回報兩個值。
+     2. 「相對 HEAD 的變更」與「已暫存」兩節每行為狀態、TAB、路徑；重新命名與複製為狀態加相似度（如 `R100`）、TAB、舊路徑、TAB、新路徑。重新命名與複製的偵測要求新舊路徑同在 pathspec 內，舊路徑在 pathspec 外時，新路徑的狀態為 `A`。「未追蹤」一節每行為一個相對路徑，機密樣式檔另附「（機密樣式，不提供內容）」。三節列出的路徑是有未提交變更的目標，「已暫存」一節標示其中已暫存者。
+     3. 「差異內容」一節是相對 HEAD 的變更內容，已排除機密樣式檔。新增路徑、未追蹤檔案與重新命名後的新路徑直接讀取工作樹檔案，整份視為新增內容納入審查。需要 HEAD 內容對照時以 `git show HEAD:<path>` 取得，重新命名與複製另以 `git show HEAD:<舊路徑>` 取得舊路徑的 HEAD 內容。
+     4. 「repository 外的目標」一節的路徑直接讀取檔案，並在報告記錄該目標未經 Git 狀態盤點。
+     5. 派遣 prompt 有 `工作樹盤點檔:` 行但檔案讀取失敗時，停止並回報盤點檔路徑與錯誤。派遣 prompt 沒有該行時（例如使用者直接在 Codex 端觸發審查），逐一以 `git ls-tree --name-only HEAD -- <path>` 判定 HEAD 是否有該目標（輸出為空表示沒有，結束碼仍為 0）。HEAD 有者以 `git show HEAD:<path>` 與直接讀取的檔案內容比對，兩者相同者無實際變更，目前內容不存在者為已刪除；HEAD 沒有者整份視為新增。目錄型目標以 `git ls-tree -r --name-only HEAD -- <dir>` 列出 HEAD 中的檔案，再直接列舉目錄內的檔案，對兩者的聯集逐檔套用上述判定。報告品質備註註明未取得工作樹盤點，無法區分已暫存與未暫存，也無法排除被 Git 忽略的檔案。
    - 有指定 commit range 時，採 diff-scoped 模式。Standards 的審查範圍唯一來自派遣單及其指定的 commit range；依該 range 執行 `git diff <commit-range> -- <targets pathspec>`，再依 `targets` 與 `## 邊界` 限制目標與邊界，並以「工作樹狀態盤點」納入已進版控的工作樹與 staged 變更及未追蹤目標物件。未追蹤且位於 `targets` 的目標物件須直接讀取並納入審查。
    - 未指定 commit range 時，採全檔模式。Standards 以 `targets` 目標物件的目前內容與工作樹狀態為基準，直接讀取目標物件，並以「工作樹狀態盤點」納入 staged、unstaged 與未追蹤狀態；缺少 commit range 不得停止 Standards 審查。
    - diff-scoped 模式的 diff 為空時，停止 Standards 缺陷審查並回報空 diff；全檔模式不使用空 diff 作為停止條件。兩種模式的 Spec 軸均執行「既有實作判定複核」。任一 Git 命令失敗時停止並回報命令與錯誤；失敗以結束碼非 0 判定，結束碼 0 時 stderr 的 warning（例如無法存取使用者層級的 git 設定）不算失敗。

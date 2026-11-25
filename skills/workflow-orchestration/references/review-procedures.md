@@ -22,7 +22,7 @@
 選派入口選出 Claude 執行者時（Codex 不可用，或 Codex 審查者已達未完成次數上限），依下列步驟發動。派遣檔、角色規則檔與回收步驟與 Codex 審查者相同。執行紀錄由 `scripts/Write-ClaudeRunRecord.ps1` 寫入 `<report_line_root>\runs\`，與 Codex 的 `*.record.json` 同一位置，`scripts/Get-LineCost.ps1` 讀得到這一輪。
 
 1. 沿用或撰寫派遣檔。Codex 被拒絕後改派時沿用同一份派遣檔；直接選出 Claude 執行者時依 `codex-dispatch` skill `references/run.md`「發動」第 1 步撰寫，`profile` 填 `review` 類型 Codex 執行者的檔位（選派入口 `-Describe` 可查），Claude 審查者不讀這一欄。
-2. 開始：執行 `pwsh -NoProfile -File scripts/Write-ClaudeRunRecord.ps1 -Action Start -DispatchFile <派遣檔> -ExecutorId <執行者 id>`。腳本驗證派遣檔與執行者、建立輸出目錄、保存派生前的來源狀態（記錄 `HEAD`、目標相對於 `HEAD` 的差異雜湊與未追蹤檔案的內容雜湊），並寫出尚未結束的執行紀錄，紀錄同時記下 Start 當時的派遣檔雜湊、`targets` 與 `report_check` 作為 End 的比對基準；stdout 的 JSON 給出 `output_dir` 與 `report_path`。快照只涵蓋 `targets`：審查者寫入 `targets` 以外的檔案，或寫入 `report_line_root` 之內的其他檔案時，這項比對偵測不到，Claude 審查者沒有沙盒限制寫入範圍。腳本失敗時排除原因後重新執行，取得成功結果之前不派生審查者。同一派遣與執行者已有尚未結束的紀錄時，先對該次執行第 4 步，再重新開始。
+2. 開始：執行 `pwsh -NoProfile -File scripts/Write-ClaudeRunRecord.ps1 -Action Start -DispatchFile <派遣檔> -ExecutorId <執行者 id>`。腳本驗證派遣檔與執行者、建立輸出目錄、保存派生前的來源狀態（記錄 `HEAD`、目標相對於 `HEAD` 的差異雜湊與未追蹤檔案的內容雜湊），並寫出尚未結束的執行紀錄，紀錄同時記下 Start 當時的派遣檔雜湊、`targets` 與 `report_check` 作為 End 的比對基準；stdout 的 JSON 給出 `output_dir` 與 `report_path`。`review` 另在輸出目錄寫出工作樹盤點檔，stdout 以 `worktree_inventory_path` 給出路徑，內容與 Codex 入口產生的相同（見 `codex-dispatch` skill `references/run.md`「沙盒內的 git」）。快照只涵蓋 `targets`：審查者寫入 `targets` 以外的檔案，或寫入 `report_line_root` 之內的其他檔案時，這項比對偵測不到，Claude 審查者沒有沙盒限制寫入範圍。腳本失敗時排除原因後重新執行，取得成功結果之前不派生審查者。同一派遣與執行者已有尚未結束的紀錄時，先對該次執行第 4 步，再重新開始。
 3. 以 Agent 工具派生冷啟動 subagent，`subagent_type` 為 `general-purpose`，`model` 取自選派入口輸出的 `executor.model`。prompt 與入口產生的格式相同，內容如下。
 
    ```text
@@ -33,6 +33,7 @@
    - executionRoot: <execution_root>
    輸出目錄: <output_dir>
    報告檔: <report_path>
+   工作樹盤點檔: <worktree_inventory_path>
    審查者: <executor.display>；同家族審查
 
    請依角色規則檔 `<role_file>` 定義的審查角色，先完整讀取該檔，再讀取派遣檔 `<派遣檔絕對路徑>` 依其內容執行。
