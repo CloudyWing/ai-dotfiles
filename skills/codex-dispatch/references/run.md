@@ -106,7 +106,7 @@
 
 入口對 Codex 行程設定 `GIT_CONFIG_GLOBAL=NUL` 與 `GIT_CONFIG_NOSYSTEM=1`，沙盒內的 git 不讀全域與系統設定。沙盒不授權使用者家目錄的 `.gitconfig`，未設定時 git 在讀取設定檔時整個失敗。
 
-沙盒內只使用以 commit 或 tree 為對象的 git 命令。需要工作樹或索引的命令在沙盒內結果不可靠，在主 checkout 會以 `fatal: this operation must be run in a work tree` 失敗。
+沙盒內只使用以 commit 或 tree 為對象的 git 命令。需要工作樹或索引的命令在沙盒內結果不可靠，在主 checkout 與連結 worktree 都會以 `fatal: this operation must be run in a work tree` 失敗。
 
 | 可用 | 不使用 |
 | --- | --- |
