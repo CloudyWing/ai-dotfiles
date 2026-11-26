@@ -268,10 +268,23 @@ function Invoke-RunAttempt {
         $extraEnvironment['PLAYWRIGHT_MCP_OUTPUT_DIR'] = $outputDirectory
         $sourceExcludeRoots += $strayMcpOutput
     }
-    # 審查：沙盒內的 git 命令取不到工作樹與索引，盤點改由入口在沙盒外產生並寫成輸出目錄內的檔案，審查者只讀這份檔案。產生失敗時錯誤往外拋，Codex 不啟動。
+    # 審查：沙盒內的 git 命令取不到工作樹與索引，盤點改由入口在沙盒外產生並寫成輸出目錄內的檔案，審查者只讀這份檔案。
+    # 只有 RunWorktreeInventoryFailed 不停止審查：記錄警告後續行，prompt 不帶盤點檔行，審查者依角色規則走替代路徑；其他錯誤照舊往外拋。
     $worktreeInventory = $null
-    if (-not $evidenceOnly -and [string]$Order.task_type -ceq 'review') {
-        $worktreeInventory = Write-RunWorktreeInventory -ExecutionRoot $Order.execution_root -Target @($Order.targets) -OutputPath (Join-Path $outputDirectory 'worktree-inventory.md') -ExcludeRoot $sourceExcludeRoots
+    $inventoryError = $null
+    $inventoryAttempted = (-not $evidenceOnly -and [string]$Order.task_type -ceq 'review')
+    if ($inventoryAttempted) {
+        $inventoryFile = Join-Path $outputDirectory 'worktree-inventory.md'
+        try {
+            $worktreeInventory = Write-RunWorktreeInventory -ExecutionRoot $Order.execution_root -Target @($Order.targets) -OutputPath $inventoryFile -ExcludeRoot $sourceExcludeRoots
+        }
+        catch {
+            if (-not ($_.Exception.Data.Contains('Code') -and [string]$_.Exception.Data['Code'] -ceq 'RunWorktreeInventoryFailed')) { throw }
+            $inventoryError = $_.Exception.Message
+            $worktreeInventory = $null
+            if ([IO.File]::Exists($inventoryFile)) { [IO.File]::Delete($inventoryFile) }
+            Write-RunDiagnostic ('[codex-run] 工作樹盤點檔產生失敗，審查照常啟動且 prompt 不帶盤點檔：' + $inventoryError)
+        }
     }
     # 啟動前記錄 .playwright-mcp 的檔案狀態，結束時只把本次新增或變動的檔案標為殘留（先前殘留或他人使用的檔案不算）。
     $strayBefore = if ($Order.task_setting.mcp) { Get-RunDirectoryFileState -Path $strayMcpOutput } else { $null }
@@ -326,7 +339,10 @@ function Invoke-RunAttempt {
         $record['question_check'] = $null
     }
     if ($null -ne $worktreeInventory) {
-        $record['worktree_inventory'] = [ordered]@{ path = $worktreeInventory.path; sha256 = $worktreeInventory.sha256; bytes = $worktreeInventory.bytes; head = $worktreeInventory.head; sha256_end = $null }
+        $record['worktree_inventory'] = [ordered]@{ path = $worktreeInventory.path; sha256 = $worktreeInventory.sha256; bytes = $worktreeInventory.bytes; head = $worktreeInventory.head; sha256_end = $null; error = $null }
+    }
+    elseif ($inventoryAttempted) {
+        $record['worktree_inventory'] = [ordered]@{ path = $null; sha256 = $null; bytes = $null; head = $null; sha256_end = $null; error = $inventoryError }
     }
     if ($Order.task_setting.mcp) {
         $record['test_context_file'] = if ([string]::IsNullOrWhiteSpace([string]$Order.test_context_file)) { $null } else { [string]$Order.test_context_file }
@@ -427,7 +443,7 @@ function Invoke-RunAttempt {
     $record['source_state_end'] = $sourceEnd
     $record['source_changed'] = $sourceChanged
     if ($null -ne $worktreeInventory) {
-        # 盤點檔在執行期間被改或被刪時只記錄不一致（sha256_end 與 sha256 不同或為 null），不改變結果判定。
+        # 盤點檔在執行期間被改或被刪時只記錄不一致（sha256_end 與 sha256 不同或為 null），不改變結果判定。盤點產生失敗時 path 為 null，不計算。
         $inventoryEnd = try { if ([IO.File]::Exists($worktreeInventory.path)) { Get-RunSha256File -Path $worktreeInventory.path } else { $null } } catch { $null }
         $record['worktree_inventory']['sha256_end'] = $inventoryEnd
     }

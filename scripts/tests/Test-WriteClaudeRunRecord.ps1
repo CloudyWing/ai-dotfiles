@@ -411,6 +411,8 @@ try {
         Assert-Equal (Get-FileHash -LiteralPath $inventoryPath -Algorithm SHA256).Hash.ToLowerInvariant() $draft.worktree_inventory.sha256
         Assert-Equal ([long](Get-Item -LiteralPath $inventoryPath).Length) ([long]$draft.worktree_inventory.bytes)
         Assert-True ($null -eq $draft.worktree_inventory.sha256_end) '初稿的 sha256_end 應為 null'
+        Assert-True ($null -ne $draft.worktree_inventory.PSObject.Properties['error'] -and $null -eq $draft.worktree_inventory.error) '成功時 error 應為 null'
+        Assert-True ($null -eq $start.Json.PSObject.Properties['worktree_inventory_error']) '成功時 stdout 不應含 worktree_inventory_error'
         Write-TestUtf8 -Path $start.Json.report_path -Text $validReport
         $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
         Assert-Equal 0 $end.Code $end.Stderr
@@ -441,7 +443,7 @@ try {
         Assert-True ($null -eq $record.PSObject.Properties['worktree_inventory']) '紀錄不應含 worktree_inventory'
         Assert-True (-not [IO.File]::Exists((Join-Path $start.Json.output_dir 'worktree-inventory.md'))) '不應產生盤點檔'
     }
-    Test-Case 'CR-INVENTORY-FAILED 盤點產生失敗（索引損毀）時 Start 以結束碼 1 拒絕，不寫紀錄、不留下盤點檔' {
+    Test-Case 'CR-INVENTORY-FAILED 盤點產生失敗（索引損毀）時 Start 不停止：結束碼 0、紀錄記下錯誤、stdout 帶 worktree_inventory_error、沒有盤點檔，End 的 sha256_end 為 null 且結果不因此失敗' {
         Remove-Runs
         $gitBase = New-TestDirectory -Name 'claude-record-git'
         $gitRepo = New-TestGitRepository -Directory $gitBase
@@ -456,10 +458,46 @@ try {
         $badOrderInRoot = Join-Path $badReportRoot 'bad-order.md'
         Copy-Item -LiteralPath $badOrder -Destination $badOrderInRoot
         $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $badOrderInRoot, '-ExecutorId', 'sonnet')
-        Assert-Equal 1 $start.Code $start.Stderr
-        Assert-True ($start.Stderr -like '*RunWorktreeInventoryFailed*') ('stderr：' + $start.Stderr)
-        Assert-Equal 0 @(Get-ChildItem -LiteralPath $badReportRoot -Recurse -Filter '*.record.json' -File -ErrorAction SilentlyContinue).Count
+        Assert-Equal 0 $start.Code $start.Stderr
+        Assert-True ($start.Stderr -like '*工作樹盤點檔產生失敗*') ('stderr 缺警告：' + $start.Stderr)
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$start.Json.worktree_inventory_error)) 'stdout 的 worktree_inventory_error 應非空'
+        Assert-True ($null -eq $start.Json.PSObject.Properties['worktree_inventory_path']) 'stdout 不應含 worktree_inventory_path'
+        Assert-True ([IO.File]::Exists($start.Json.record_path)) '紀錄應存在'
+        $draft = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$draft.worktree_inventory.error)) '紀錄的 worktree_inventory.error 應非空'
+        Assert-Equal $start.Json.worktree_inventory_error $draft.worktree_inventory.error
+        Assert-True ($null -eq $draft.worktree_inventory.path) 'path 應為 null'
         Assert-Equal 0 @(Get-ChildItem -LiteralPath $badReportRoot -Recurse -Filter 'worktree-inventory.md' -File -ErrorAction SilentlyContinue).Count
+        Write-TestUtf8 -Path $start.Json.report_path -Text $validReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $badOrderInRoot, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $end.Code ('End：' + $end.Stderr)
+        Assert-Equal 'success' $end.Json.result
+        $record = Get-Content -LiteralPath $start.Json.record_path -Raw | ConvertFrom-Json
+        Assert-True ($null -ne $record.ended_utc) 'End 應補完紀錄'
+        Assert-True ($null -eq $record.worktree_inventory.path -and $null -eq $record.worktree_inventory.sha256_end) 'End 後 path 與 sha256_end 應為 null'
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$record.worktree_inventory.error)) 'End 後 error 應保留'
+    }
+    Test-Case 'CR-INVENTORY-OTHER-ERROR 盤點步驟丟出 RunWorktreeInventoryFailed 以外的錯誤（其他 Code 或沒有 Code）時，Start 照舊失敗：結束碼 1、stderr 有原錯誤、不寫紀錄' {
+        Remove-Runs
+        # 複製腳本與模組到暫存位置，在複本的 50-source-state.ps1 末尾以同名函式覆寫盤點步驟；Start 的 catch 判斷式仍是產品碼本身。
+        $copyScripts = Join-Path (New-TestDirectory -Name 'claude-record-copy') 'scripts'
+        $null = New-Item -ItemType Directory -Path (Join-Path $copyScripts 'dispatch') -Force
+        Copy-Item -LiteralPath $recordScript -Destination $copyScripts
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'codex-run') -Destination (Join-Path $copyScripts 'codex-run') -Recurse
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'lib') -Destination (Join-Path $copyScripts 'lib') -Recurse
+        Copy-Item -LiteralPath (Join-Path $scriptsRoot 'dispatch\executor-registry.json') -Destination (Join-Path $copyScripts 'dispatch\executor-registry.json')
+        $copyState = Join-Path $copyScripts 'codex-run\50-source-state.ps1'
+        $originalState = [IO.File]::ReadAllText($copyState)
+        $copyRecordScript = Join-Path $copyScripts 'Write-ClaudeRunRecord.ps1'
+        foreach ($variant in @('coded', 'plain')) {
+            $override = if ($variant -ceq 'coded') { "throw (New-RunError -Code 'ClaudeTestOtherFailure' -Message 'injected-other-coded' -ExitCode 1)" } else { "throw 'injected-other-plain'" }
+            [IO.File]::WriteAllText($copyState, $originalState + "`nfunction Write-RunWorktreeInventory { " + $override + " }`n", (New-Object System.Text.UTF8Encoding -ArgumentList @($true)))
+            $start = Invoke-Script $copyRecordScript @('-Action', 'Start', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
+            Assert-Equal 1 $start.Code ($variant + '：' + $start.Stderr)
+            Assert-True ($start.Stderr -like ('*injected-other-' + $variant + '*')) ($variant + ' stderr：' + $start.Stderr)
+            Assert-True ($start.Stderr -notlike '*工作樹盤點檔產生失敗*') ($variant + '：不應走吞下路徑的警告')
+            Assert-Equal 0 @(Get-Records).Count ($variant + '：不應寫出紀錄')
+        }
     }
 }
 finally {

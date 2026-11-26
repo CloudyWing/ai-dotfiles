@@ -253,13 +253,14 @@ try {
         Assert-Equal $inventoryPath $inventory.path
         Assert-Equal (Get-RunSha256File -Path $inventoryPath) $inventory.sha256
         Assert-Equal $inventory.sha256 $inventory.sha256_end
+        Assert-True ($null -eq $inventory.error) '成功時 error 應為 null'
         Assert-Equal ([long](Get-Item -LiteralPath $inventoryPath).Length) ([long]$inventory.bytes)
         Assert-Equal $record.source_state_start.head $inventory.head
         $text = [IO.File]::ReadAllText($inventoryPath)
         Assert-True ($text.StartsWith("# 工作樹盤點`n") -and $text.Contains('- schema: ai-agents.worktree-inventory.v1')) '盤點檔標頭'
         Assert-True ($text.Contains('src/a.txt')) '盤點檔應列出審查目標內的檔案'
     }
-    Test-Case 'E2E-INVENTORY-FAILED 盤點產生失敗（索引損毀）：結束碼 1、RunWorktreeInventoryFailed、沒有 exec 呼叫、沒有盤點檔' {
+    Test-Case 'E2E-INVENTORY-FAILED 盤點產生失敗（索引損毀）：不停止審查，Codex 照常啟動，prompt 不帶盤點檔行，紀錄記下錯誤，stderr 有警告，沒有盤點檔' {
         $envBad = New-EntryEnvironment -Name 'inventory-failed'
         Set-Scenario -Environment $envBad -Account 'acct-a' -Scenario @{ events = $successEvents; exit_code = 0; last_message = '審查完成'; report = (New-ReviewReportText) }
         $indexPath = (@(Invoke-TestGit -WorkingDirectory $envBad.Exec -Argument @('rev-parse', '--git-path', 'index'))[0]).Trim()
@@ -267,10 +268,39 @@ try {
         [IO.File]::WriteAllBytes($indexPath, [byte[]]@(1, 2, 3, 4, 5, 6, 7, 8))
         $runBad = Invoke-Entry -Environment $envBad -OrderPath (New-OrderFile -Environment $envBad)
         Assert-Success $runBad
-        Assert-Equal 1 $runBad.ExitCode
-        Assert-Equal 'RunWorktreeInventoryFailed' $runBad.Document.error.code
-        Assert-Equal 0 (@(@((Get-Call -Environment $envBad) | Where-Object { $_.subcommand -ceq 'exec' })).Count) 'Codex 不應啟動'
+        Assert-Equal 1 @(@((Get-Call -Environment $envBad) | Where-Object { $_.subcommand -ceq 'exec' })).Count 'Codex 應照常啟動'
+        $stdinBad = Get-Content -LiteralPath (Join-Path $envBad.Scenarios 'stdin-acct-a.txt') -Raw
+        Assert-True (-not $stdinBad.Contains('工作樹盤點檔:')) ('prompt 不應帶盤點檔行：' + $stdinBad)
+        $recordBad = Get-Record -Path $runBad.Document.final.record_path
+        Assert-True (-not [string]::IsNullOrWhiteSpace([string]$recordBad.worktree_inventory.error)) '紀錄的 worktree_inventory.error 應非空'
+        # error 是底層 git 命令失敗的訊息：含 git 命令參數與「結束碼 <數字>」，不只是錯誤代碼前綴。
+        Assert-True ([string]$recordBad.worktree_inventory.error -match 'git \S+.* 結束碼 \d+') ('error 內容：' + $recordBad.worktree_inventory.error)
+        Assert-True ($null -eq $recordBad.worktree_inventory.path) 'path 應為 null'
+        Assert-True ($null -eq $recordBad.worktree_inventory.sha256_end) 'sha256_end 應為 null'
         Assert-Equal 0 (@(Get-ChildItem -LiteralPath $envBad.ReportRoot -Recurse -Filter 'worktree-inventory.md' -File).Count) '不應留下盤點檔'
+        Assert-True ($runBad.Stderr.Contains('工作樹盤點檔產生失敗')) ('stderr 缺警告：' + $runBad.Stderr)
+    }
+    Test-Case 'E2E-INVENTORY-OTHER-ERROR 盤點步驟丟出 RunWorktreeInventoryFailed 以外的錯誤（其他 Code 或沒有 Code）時，Invoke-RunAttempt 照舊往外拋，不吞下也不繼續啟動' {
+        $envOther = New-EntryEnvironment -Name 'inventory-other-error'
+        $orderOther = New-OrderFile -Environment $envOther
+        $candidate = [pscustomobject]@{ name = 'acct-a'; codex_home = $envOther.HomeA; model = 'm'; primary_model = 'm' }
+        foreach ($variant in @('coded', 'plain')) {
+            $caught = & {
+                # 子範圍內載入產品碼並以同名函式覆寫盤點步驟，離開範圍後覆寫即消失；非吞下路徑一律在盤點呼叫處往外拋，後續函式不會被呼叫。
+                foreach ($module in @('10-order.ps1', '45-profile-sync.ps1', '70-run.ps1')) { . (Join-Path $moduleRoot $module) }
+                $injected = if ($variant -ceq 'coded') { New-RunError -Code 'RunInjectedOtherFailure' -Message 'injected-other-coded' -ExitCode 1 } else { [InvalidOperationException]::new('injected-other-plain') }
+                function Write-RunWorktreeInventory { throw $injected }
+                $order = Read-RunDispatchFile -Path $orderOther
+                try {
+                    $null = Invoke-RunAttempt -Order $order -Candidate $candidate -CodexPath 'codex-not-launched' -MachineConfigPath 'machine-not-used' -DispatchSha256 'x' -IsGitRepository $true -TimeoutSeconds 5 -TurnEndGraceSeconds 1 -ExecutorDisplay '' -EvidenceBaselineSha256 ''
+                    $null
+                }
+                catch { $_.Exception }
+            }
+            Assert-True ($null -ne $caught) ($variant + '：錯誤被吞下，沒有往外拋')
+            Assert-True ($caught.Message.Contains('injected-other-' + $variant)) ($variant + '：往外拋的應是原錯誤：' + $caught.Message)
+            if ($variant -ceq 'coded') { Assert-Equal 'RunInjectedOtherFailure' ([string]$caught.Data['Code']) } else { Assert-True (-not $caught.Data.Contains('Code')) 'plain 不應有 Code' }
+        }
     }
 
     # ---------- linked worktree 沒有 .local\machine.json ----------

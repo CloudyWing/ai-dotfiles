@@ -81,7 +81,6 @@
 | 0 | `success` | Codex 正常結束且報告存在 | 進入「回收」。`error` 非空時表示健康狀態檔寫入失敗，不影響本次結果，把訊息回報使用者 |
 | 1 | `failed` 或 `rejected` | 執行失敗（含逾時，執行紀錄的 `failure_reason` 為 `timeout`），或服務端拒絕時已有進度 | 讀 `final.stderr_path` 與 `final.events_path` 判斷原因後整筆重跑 |
 | 1 | `stopped`，或沒有 JSON 輸出 | 執行紀錄或成本列寫入失敗，或入口發生未預期的錯誤 | 讀 stderr 的錯誤訊息；報告若已產生仍保留在輸出目錄，排除原因後重跑 |
-| 1 | `stopped` | `error.code` 為 `RunWorktreeInventoryFailed`（`review`）：沙盒外產生工作樹盤點檔的 git 命令失敗，例如目標位於 submodule 內 | 讀 `error.message` 的命令與 stderr，排除原因後重跑。入口沒有啟動 Codex |
 | 2 | `stopped` | 派遣檔無效或引用的路徑不合格 | 依 `error.details` 列出的每個路徑與原因修正派遣檔 |
 | 2 | `stopped` | `error.code` 為 `CodexProfileDrift`：實際要使用的帳號的檔位設定檔與主 checkout 的產生檔不一致（內容不同或連結指向他處），或產生檔與登錄表不一致 | 逐行貼到 pwsh 執行 `error.message` 列出的修正命令（重跑 `Update-CodexProfiles.ps1`、重跑 Setup 或移走帳號目錄內的一般檔案後重建連結），再重跑。入口沒有啟動 Codex，也沒有改任何檔案 |
 | 2 | `stopped` | `error.code` 為 `CodexMcpConfigMissing`（`test`）：帳號目錄 `config.toml` 缺少檔位 `test` 需要的 MCP 伺服器 command | 以 pwsh 執行 `error.message` 列出的 Setup 命令後重跑。入口沒有啟動 Codex，也沒有改任何檔案 |
@@ -113,7 +112,7 @@
 | --- | --- |
 | `git rev-parse`、`git log`、`git show <rev>:<path>`、`git diff <rev> <rev>`、`git ls-tree` | `git status`、`git diff --cached`、`git diff`（比對工作樹）、`git diff HEAD`、`git ls-files -m`、`git ls-files -o` |
 
-審查（`review`）需要的工作樹狀態由入口在沙盒外產生。入口於啟動 Codex 前寫出輸出目錄內的 `worktree-inventory.md`，prompt 以 `工作樹盤點檔:` 行指出路徑。盤點檔記錄 HEAD，並分節列出相對 HEAD 的變更、已暫存、未追蹤、repository 外的目標與差異內容，差異內容排除機密樣式檔。執行紀錄的 `worktree_inventory` 記錄盤點檔的 `sha256` 與執行結束時的 `sha256_end`。盤點檔產生失敗時，入口以 `RunWorktreeInventoryFailed` 停止，不啟動 Codex。改派 Claude 審查者時，盤點檔由 `scripts/Write-ClaudeRunRecord.ps1 -Action Start` 以同一個函式產生。Reviewer 的盤點步驟見 `agents/codex/reviewer.toml`「啟動流程」第 5 點。
+審查（`review`）需要的工作樹狀態由入口在沙盒外產生。入口於啟動 Codex 前寫出輸出目錄內的 `worktree-inventory.md`，prompt 以 `工作樹盤點檔:` 行指出路徑。盤點檔記錄 HEAD，並分節列出相對 HEAD 的變更、已暫存、未追蹤、repository 外的目標與差異內容，差異內容排除機密樣式檔。執行紀錄的 `worktree_inventory` 記錄盤點檔的 `sha256`、執行結束時的 `sha256_end` 與 `error`。盤點的 git 命令失敗時（例如目標位於 submodule 內），入口在 stderr 印出警告，`error` 記錄錯誤訊息，`path` 與各雜湊為 `null`，prompt 不帶 `工作樹盤點檔:` 行，Codex 照常啟動，審查者改走沒有盤點檔時的替代路徑。改派 Claude 審查者時，盤點檔由 `scripts/Write-ClaudeRunRecord.ps1 -Action Start` 以同一個函式產生。Reviewer 的盤點步驟見 `agents/codex/reviewer.toml`「啟動流程」第 5 點。
 
 沙盒內的 git 可能於 stderr 印出無法存取使用者層級 git 設定的 warning，結束碼為 0 時不算失敗，以結束碼判定成敗。
 
@@ -130,7 +129,7 @@
 1. 讀 `final.report_path` 的報告全文，確認報告含派遣檔 `## 回報必備欄位` 要求的各節，且 `## 總覽` 第一行的審查者與實際執行者相符。
 2. 確認 `final.review_report_check.valid` 為 `true`。
 3. 確認 `final.source_changed` 為 `false`。
-4. 確認執行紀錄 `<runKey>.record.json` 的 `worktree_inventory.sha256_end` 等於 `sha256`。審查的執行紀錄由入口與 `scripts/Write-ClaudeRunRecord.ps1` 寫入，都含這個欄位，缺少時視為不成立。
+4. 確認執行紀錄 `<runKey>.record.json` 的 `worktree_inventory`：`error` 為 `null` 時 `sha256_end` 等於 `sha256`；`error` 非 `null` 時，報告品質備註註明未取得工作樹盤點，回報時把 `error` 的內容轉給使用者。審查的執行紀錄由入口與 `scripts/Write-ClaudeRunRecord.ps1` 寫入，都含這個欄位，缺少時視為不成立。
 5. 逐條核對派遣檔 `## 驗收條件`：報告對每一條都有判定，判定引用的檔案與行號存在，且內容支持該判定。只在判定與引用內容不一致、引用位置不存在，或該條涉及需求摘要的已確定實作約束時，才實讀來源複核。
 
 任一項不成立時依下表處置。
@@ -138,7 +137,8 @@
 | 情形 | 判定 | 處置 |
 | --- | --- | --- |
 | 報告缺節、`review_report_check.valid` 為 `false`、驗收條件缺判定或引用無法定位 | 退回 | 以同一份派遣檔重跑，並在 `## 任務` 補一行指出上一份報告缺少的部分。`errors` 會指出不合格的 finding 與欄位 |
-| `worktree_inventory` 缺少，或 `sha256_end` 與 `sha256` 不同 | 退回 | 審查依據的盤點檔在執行中被改動，以同一份派遣檔重跑 |
+| `worktree_inventory` 缺少，或 `error` 為 `null` 而 `sha256_end` 與 `sha256` 不同 | 退回 | 審查依據的盤點檔在執行中被改動，以同一份派遣檔重跑 |
+| `worktree_inventory.error` 非 `null`，報告品質備註沒有註明未取得工作樹盤點 | 退回 | 以同一份派遣檔重跑，並在 `## 任務` 補一行指出審查者應走沒有盤點檔時的替代路徑 |
 | `source_changed` 為 `true`，改動來自本 Session | 退回 | 停止改動目標後重跑 |
 | `source_changed` 為 `true`，改動來源不明 | 升級 | 回報使用者，不採用該報告 |
 | 報告指出設計歧義，或判定需要改變需求摘要與已確認設計 | 升級 | 交同線 `Analyst` 依需求摘要原文裁決，裁決不了時交使用者 |

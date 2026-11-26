@@ -21,9 +21,10 @@ End 時 targets 已被刪除或來源狀態無法計算，視為來源已變：s
 紀錄與輸出目錄已存在時不沿用，改用新的 run id 重試，仍碰撞則以結束碼 1 拒絕。
 來源快照只涵蓋派遣檔 targets，不涵蓋 targets 以外的寫入，Claude 審查者沒有沙盒限制寫入範圍。
 
-審查類型的 Start 另在輸出目錄寫出 worktree-inventory.md（由 Write-RunWorktreeInventory 產生），紀錄加 worktree_inventory（path、sha256、bytes、head、sha256_end），End 時填 sha256_end，不影響 result。盤點產生失敗時 Start 不寫紀錄。
+審查類型的 Start 另在輸出目錄寫出 worktree-inventory.md（由 Write-RunWorktreeInventory 產生），紀錄加 worktree_inventory（path、sha256、bytes、head、sha256_end、error），End 時 path 非 null 才填 sha256_end，不影響 result。
+盤點產生失敗（RunWorktreeInventoryFailed）時 Start 不停止：stderr 輸出一行警告，紀錄的 worktree_inventory 為 path、sha256、bytes、head、sha256_end 皆 null 且 error 為錯誤訊息，stdout 不帶 worktree_inventory_path 而帶 worktree_inventory_error，結束碼 0；其他錯誤照舊往外拋。
 
-stdout 輸出 ASCII 跳脫的 JSON（action、run_key、record_path、output_dir、report_path，Start 另有 model，審查類型另有 worktree_inventory_path；End 另有 result、failure_reason、source_changed、dispatch_changed、review_report_check）。
+stdout 輸出 ASCII 跳脫的 JSON（action、run_key、record_path、output_dir、report_path，Start 另有 model，審查類型另有 worktree_inventory_path 或（盤點失敗時）worktree_inventory_error；End 另有 result、failure_reason、source_changed、dispatch_changed、review_report_check）。
 診斷與錯誤寫 stderr。
 
 .PARAMETER Action
@@ -169,10 +170,22 @@ try {
         $recordPath = Join-Path $runsDirectory ($runKey + '.record.json')
         $reportPath = Join-Path $outputDirectory $order.report_name
         $null = [IO.Directory]::CreateDirectory($outputDirectory)
-        # 審查：Claude 審查者同樣讀入口產生的工作樹盤點檔。產生失敗時錯誤往外拋，不寫紀錄。
+        # 審查：Claude 審查者同樣讀入口產生的工作樹盤點檔。只有 RunWorktreeInventoryFailed 不停止 Start：警告後續行並在紀錄記下錯誤，其他錯誤照舊往外拋。
         $worktreeInventory = $null
-        if ($order.task_type -ceq 'review') {
-            $worktreeInventory = Write-RunWorktreeInventory -ExecutionRoot $order.execution_root -Target @($order.targets) -OutputPath (Join-Path $outputDirectory 'worktree-inventory.md') -ExcludeRoot @($order.report_line_root)
+        $inventoryError = $null
+        $inventoryAttempted = ($order.task_type -ceq 'review')
+        if ($inventoryAttempted) {
+            $inventoryFile = Join-Path $outputDirectory 'worktree-inventory.md'
+            try {
+                $worktreeInventory = Write-RunWorktreeInventory -ExecutionRoot $order.execution_root -Target @($order.targets) -OutputPath $inventoryFile -ExcludeRoot @($order.report_line_root)
+            }
+            catch {
+                if (-not ($_.Exception.Data.Contains('Code') -and [string]$_.Exception.Data['Code'] -ceq 'RunWorktreeInventoryFailed')) { throw }
+                $inventoryError = $_.Exception.Message
+                $worktreeInventory = $null
+                if ([IO.File]::Exists($inventoryFile)) { [IO.File]::Delete($inventoryFile) }
+                [Console]::Error.WriteLine('[claude-run-record] 工作樹盤點檔產生失敗，Start 照常完成且不提供盤點檔：' + $inventoryError)
+            }
         }
         $startedAt = [DateTime]::UtcNow
         $sourceStart = Get-RunSourceState -ExecutionRoot $order.execution_root -Target $order.targets -ExcludeRoot @($order.report_line_root)
@@ -223,8 +236,12 @@ try {
         }
         $startOutput = [ordered]@{ action = 'Start'; run_key = $runKey; record_path = $recordPath; output_dir = $outputDirectory; report_path = $reportPath; model = $executor.Model }
         if ($null -ne $worktreeInventory) {
-            $record['worktree_inventory'] = [ordered]@{ path = $worktreeInventory.path; sha256 = $worktreeInventory.sha256; bytes = $worktreeInventory.bytes; head = $worktreeInventory.head; sha256_end = $null }
+            $record['worktree_inventory'] = [ordered]@{ path = $worktreeInventory.path; sha256 = $worktreeInventory.sha256; bytes = $worktreeInventory.bytes; head = $worktreeInventory.head; sha256_end = $null; error = $null }
             $startOutput['worktree_inventory_path'] = $worktreeInventory.path
+        }
+        elseif ($inventoryAttempted) {
+            $record['worktree_inventory'] = [ordered]@{ path = $null; sha256 = $null; bytes = $null; head = $null; sha256_end = $null; error = $inventoryError }
+            $startOutput['worktree_inventory_error'] = $inventoryError
         }
         Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8
         $lock.Dispose()
@@ -296,9 +313,12 @@ try {
     $record['review_report_check'] = $reviewCheck
     if ($record.Contains('worktree_inventory') -and $record['worktree_inventory'] -is [System.Collections.IDictionary]) {
         # 盤點檔在執行期間被改或被刪時只記錄不一致（sha256_end 與 sha256 不同或為 null），不影響 result。
-        $inventoryPath = [string]$record['worktree_inventory']['path']
-        $inventoryEnd = try { if ([IO.File]::Exists($inventoryPath)) { Get-RunSha256File -Path $inventoryPath } else { $null } } catch { $null }
-        $record['worktree_inventory']['sha256_end'] = $inventoryEnd
+        # 盤點產生失敗時 path 為 null，sha256_end 維持 null。
+        if ($null -ne $record['worktree_inventory']['path']) {
+            $inventoryPath = [string]$record['worktree_inventory']['path']
+            $inventoryEnd = try { if ([IO.File]::Exists($inventoryPath)) { Get-RunSha256File -Path $inventoryPath } else { $null } } catch { $null }
+            $record['worktree_inventory']['sha256_end'] = $inventoryEnd
+        }
     }
     Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8
     $lock.Dispose()
