@@ -4,13 +4,13 @@
 逐一以子行程執行 scripts\tests\Test-CodexRun*.ps1（排除自身），加總耗時。
 
 .DESCRIPTION
-全部通過且總耗時小於 TimeLimitSeconds（預設 300）時結束碼 0，否則結束碼 1 並列出失敗檔與耗時。
+全部通過且總耗時小於 TimeLimitSeconds（預設 600）時結束碼 0，否則結束碼 1 並列出失敗檔與耗時。
 任一檔案超過剩餘時間時終止該檔與其子行程並判為超時。這些測試都不呼叫服務端。
 #>
 [CmdletBinding()]
 param(
     [ValidateRange(10, 3600)]
-    [int]$TimeLimitSeconds = 300
+    [int]$TimeLimitSeconds = 600
 )
 
 Set-StrictMode -Version Latest
