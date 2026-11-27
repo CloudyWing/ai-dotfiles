@@ -36,7 +36,7 @@ AI 看不到桌面視窗，實際能做到的程度取決於環境提供的工�
 
 ### 層級 A：環境提供桌面 UI 操作工具
 
-當前環境若提供桌面 UI 操作工具（如基於 FlaUI 的 MCP server 所暴露的工具），優先使用，比照 `browser-smoke` 操作瀏覽器的方式：
+當前環境若提供桌面 UI 操作工具（如基於 FlaUI 的 MCP server 所暴露的工具），優先使用，比照 `browser-smoke` 操作瀏覽器的方式。Claude 端的 FlaUI.Mcp 工具由 `scripts/Register-McpServer.ps1 -FlaUI` 登記到 Claude 使用者層後才會出現。
 
 - 讀取 UI Tree，定位本次修改相關的控制項。
 - 走完整段操作流程（如開啟視窗 → 輸入 → 觸發動作 → 確認結果），而非只點單一控制項。
@@ -72,6 +72,51 @@ WPF 或 WinForms 外殼以 BlazorWebView 承載 Blazor 時，畫面內容在 Web
 - 撰寫可重跑的測試：完整寫法與細節依 `blazor-testing` skill。
 - 與使用者同時使用電腦：預設以 UIA pattern 與 CDP 操作並以 `PrintWindow` 截圖，不搶前景；必要的真實輸入與隔離選項依 `blazor-testing` skill 的 `## 與使用者同時使用電腦`。
 
+## Claude 端桌面截圖留存
+
+FlaUI.Mcp 的 `windows_screenshot` 只把影像回傳給模型，不存檔，且擷取的是視窗所在的螢幕區域，視窗被其他視窗遮住時回傳的是上層視窗的內容，工具不報錯。判讀畫面與留存證據都以下列配方的輸出為準。Claude 端的取證者需要留存桌面畫面時，在 PowerShell 7 執行下列配方，以 `PrintWindow` 擷取指定標題的視窗並存成 PNG，視窗被其他視窗遮住時內容仍正確。
+
+- 輸入：視窗標題（取自 `windows_snapshot` 或 `Get-Process` 的 `MainWindowTitle`；封裝應用如小算盤的標題在 `ApplicationFrameHost` 行程上）與輸出 PNG 的絕對路徑。
+- 輸出：PNG 檔，以及 stdout 的路徑、寬高與 SHA-256，報告「截圖」表照抄這三項並附命令原文與 exit code。
+- `FindWindow` 的類別名稱傳 `[NullString]::Value`。PowerShell 會把 `$null` 轉成空字串傳給 `string` 參數，類別名稱變成 `""` 而找不到視窗。
+
+```powershell
+param([string]$WindowTitle, [string]$OutputPath)
+Add-Type -AssemblyName System.Drawing
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WinCapture {
+    [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern IntPtr FindWindow(string cls, string title);
+    [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r);
+    [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint flags);
+}
+'@
+[void][WinCapture]::SetProcessDPIAware()
+$handle = [WinCapture]::FindWindow([NullString]::Value, $WindowTitle)
+if ($handle -eq [IntPtr]::Zero) { Write-Error ('找不到視窗：' + $WindowTitle); exit 1 }
+$rect = New-Object WinCapture+RECT
+[void][WinCapture]::GetWindowRect($handle, [ref]$rect)
+$width = $rect.Right - $rect.Left; $height = $rect.Bottom - $rect.Top
+$bitmap = New-Object System.Drawing.Bitmap -ArgumentList $width, $height
+$graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+$hdc = $graphics.GetHdc()
+$ok = [WinCapture]::PrintWindow($handle, $hdc, 2)
+$graphics.ReleaseHdc($hdc)
+if ($ok) { $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png) }
+$graphics.Dispose(); $bitmap.Dispose()
+if (-not $ok) { Write-Error 'PrintWindow 失敗'; exit 1 }
+Write-Output ('path=' + $OutputPath)
+Write-Output ('size=' + $width + 'x' + $height)
+Write-Output ('sha256=' + (Get-FileHash -LiteralPath $OutputPath -Algorithm SHA256).Hash)
+```
+
+`PrintWindow` 的旗標 `2`（`PW_RENDERFULLCONTENT`）已對 Windows 11 的小算盤（封裝應用）實測，擷取出完整視窗內容。`PrintWindow` 回傳失敗時配方以結束碼 1 結束，不改用其他擷取方式，取證者依 `executor-selection` skill「Claude 測試取證者派生契約」回報 `blocked: screenshot-unavailable`。
+
+封裝應用（如 Windows 11 的小算盤）的最上層視窗屬於 `ApplicationFrameHost` 行程。`windows_attach` 以應用本身的行程（如 `CalculatorApp`）附加會回傳 no UIA-visible windows，改以 `processName` 為 `ApplicationFrameHost` 附加，再以回傳清單中標題相符的視窗 handle 操作。
+
 ## 派遣分界
 
 工作拆成 Claude 端的建置與啟動、Codex 端以 MCP 工具的臨場操作，以及 Claude 端的判定。
@@ -80,7 +125,7 @@ WPF 或 WinForms 外殼以 BlazorWebView 承載 Blazor 時，畫面內容在 Web
 | --- | --- | --- |
 | 建置、執行層級 B 的既有 UI 測試專案 | 依派工判準選派：需要建置或測試命令者由選派入口選出的 Claude 執行者在沙盒外承接（建置要寫 `bin`、`obj` 並需要網路），標註 `-Type test -Tags build-test` | 派工判準 |
 | 以背景方式啟動 GUI 程式 | 主 Agent 以背景進程啟動，驗證結束後依 `instructions.md` §1.4「背景進程清理」關閉 | 不派 |
-| 以 FlaUI MCP 附加受測視窗、操作控制項、讀取文字與可見狀態 | 依登錄表選出的 `type=test` 執行者（標註 `-Type test -Tags desktop-control`，選出 Codex `test`），以 `scripts/Invoke-CodexRun.ps1` 發動，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」；Codex 全數不可用時入口的 `fallback.selection` 為 `stopped`，停止並回報使用者 | 命令沙盒唯讀，MCP 伺服器在沙盒外操作視窗；`windows_attach` 以行程識別碼附加，不列舉其他視窗 |
+| 以 FlaUI MCP 附加受測視窗、操作控制項、讀取文字與可見狀態 | 依登錄表選出的 `type=test` 執行者（標註 `-Type test -Tags desktop-control`，選出 Codex `test`），以 `scripts/Invoke-CodexRun.ps1` 發動，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」；Codex 全數不可用時入口的 `fallback.selection` 選出 Sonnet，依 `executor-selection` skill「Claude 測試取證者派生契約」的「瀏覽器與桌面操作」承接，截圖依「Claude 端桌面截圖留存」 | 命令沙盒唯讀，MCP 伺服器在沙盒外操作視窗；`windows_attach` 以行程識別碼附加，不列舉其他視窗 |
 | 判定畫面與視窗狀態是否符合預期、產出手動檢查清單、決定是否進入修正迴圈 | Claude 端 | 需要讀圖比對與需求脈絡 |
 | 需要系統管理員權限的命令（例如 `powercfg /requests`） | 使用者在已提升權限的主控台執行 | 派遣不得提權 |
 | 桌面畫面留存（存成檔案的截圖）、螢幕錄影 | Claude 端在沙盒外擷取，或由使用者手動留存 | `windows_screenshot` 只把影像回傳給模型，不存檔；留存方式與座標換算尚未定案 |

@@ -15,10 +15,10 @@ policy.allow_implicit_invocation: true
 | 工作 | 執行端 | 標註 |
 | --- | --- | --- |
 | 建置專案（需要建置命令時依派工判準選派），啟動或沿用本機服務並確認頁面可由瀏覽器開啟 | 建置由選派入口選出的 Claude 執行者承接；啟動由主 Agent 以背景進程執行，驗證結束後依 `instructions.md` §1.4「背景進程清理」關閉 | 建置 `-Type test -Tags build-test`，啟動不派 |
-| 以 Playwright MCP 開啟頁面、執行操作流程（含以測試帳號登入）、擷取截圖與 console、network 證據 | Codex `test` | `-Type test -Tags browse`，以 `scripts/Invoke-CodexRun.ps1` 發動，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」 |
+| 以 Playwright MCP 開啟頁面、執行操作流程（含以測試帳號登入）、擷取截圖與 console、network 證據 | Codex `test` 優先；Codex 不可用時由選派入口選出的 Sonnet 承接 | `-Type test -Tags browse`，以 `scripts/Invoke-CodexRun.ps1` 發動，見 `codex-dispatch` skill `references/run.md`「測試取證（test）」 |
 | 判讀截圖與證據是否符合預期、決定是否進入修正迴圈、產出報告 | Claude 端 | 不派 |
 
-需要使用者本人已登入的瀏覽器 session 時屬 `rules/claude/30-dispatch.md` 不派清單，由 Claude 端操作。Codex 全數不可用時入口的 `fallback.selection` 為 `stopped`，停止並回報使用者，不改由 Claude 端代替 Codex 執行取證。
+需要使用者本人已登入的瀏覽器 session 時屬 `rules/claude/30-dispatch.md` 不派清單，由 Claude 端操作。Sonnet 承接時依 `executor-selection` skill「Claude 測試取證者派生契約」的「瀏覽器與桌面操作」，登入流程限於該節的登入測試邊界。
 
 ## 啟動條件
 
@@ -44,7 +44,7 @@ policy.allow_implicit_invocation: true
    - 若需啟動服務，使用專案既有 script，例如 `npm run dev`、`pnpm dev`、`yarn dev`、`dotnet run`。
    - 不新增套件、不改 `.env`，也不讀取 `.env` 內容。若缺少帳號、測試資料或外部服務，明確回報阻塞條件。
 3. **使用瀏覽器檢查頁面**：
-   - 優先使用當前環境提供的 Browser / browser-use / in-app browser 工具。
+   - 優先使用當前環境提供的 Browser / browser-use / in-app browser 工具。這一步派給執行者時，工具範圍依「派遣分界」與 `executor-selection` skill「Claude 測試取證者派生契約」。
    - 若無 Browser 工具，但專案已有 Playwright 或 Cypress 指令，可執行既有 smoke / e2e 測試。
    - 若兩者皆不可用，回報無法完成瀏覽器驗證，改提供可手動確認的步驟。
 4. **檢查基礎健康狀態**：

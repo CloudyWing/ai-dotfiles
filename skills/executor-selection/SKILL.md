@@ -56,8 +56,8 @@ Workflow 的判定單位為 `design.md` 的 Phase。E=是代表該 Phase 的每�
 | `write` | 硬能力 | 修改專案原始檔。`.local/ai-sessions/` 下的報告與暫存不算。只允許 `edit` 使用 |
 | `build-test` | 硬能力 | 執行建置與測試命令 |
 | `web` | 硬能力 | 上網查證 |
-| `browse` | 硬能力 | 操作瀏覽器，含登入流程 |
-| `desktop-control` | 硬能力 | 控制 Windows 桌面程式、擷取桌面截圖 |
+| `browse` | 硬能力 | 操作瀏覽器，含登入流程。只允許 `test` 使用 |
+| `desktop-control` | 硬能力 | 控制 Windows 桌面程式、擷取桌面截圖。只允許 `test` 使用 |
 | `image-gen` | 硬能力 | 產生影像 |
 | `family` | 優先條件 | 執行者家族不等於實作者家族，以 `-ImplementerFamily` 傳入實作者家族。`review` 預設帶這個優先條件 |
 | `gated` | 約束 | 執行者需使用者當輪授權，以 `-Authorized` 表示已取得 |
@@ -143,7 +143,7 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 - 判定離線的唯一來源是服務端拒絕，額度數值不參與。拒絕包含 usage-limit、401、model not supported、rate limit，以及尚無 item 進度即以未分類錯誤終局失敗者。model not supported 表示該帳號的方案不含檔位設定的 model，停用訂閱的帳號也以此訊息呈現，視為該帳號不可用。
 - 派工時不指定 `-CodexHome`。`Invoke-CodexRun.ps1` 依 `machine.json` `codex_accounts` 登記順序選第一個可用帳號，遭服務端拒絕且尚無 item 進度時自動改試下一個帳號，重試只限換帳號，同一帳號不重送。帳號回報 model not supported 後記入帳號健康狀態檔，24 小時內略過該帳號與檔位 model 的組合。細節見 `codex-dispatch` skill `references/run.md`「帳號」。
 - 帳號不支援檔位的主要 model 時，`Invoke-CodexRun.ps1` 改用登錄表 `profileSettings.fallbackModels` 中第一個未被記為不支援的備援 model，執行紀錄與結果 JSON 的 `model` 記錄實際使用的 model，`model_source` 記錄它是檔位的主要 model（`primary`）或備援 model（`fallback`）。備援 model 也都不支援時才略過該帳號。
-- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review` 由登錄表中受理該類型的 Claude 執行者承接，`generate` 回傳 `stopped`，宣告 `skippable` 的類型回傳 `omitted`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，結果必為 `stopped`，沒有 Claude 替代者；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Claude 執行者。
+- `Invoke-CodexRun.ps1` 回報 `CodexAccountsAllUnavailable` 或 `CodexAccountsExhausted` 時，結果 JSON 的 `fallback.selection` 已是選派入口以該執行者離線重新選出的結果，直接依其 `status` 與 `dispatchLine` 處置；`fallback` 為 `null` 時，由主 Agent 把不可用的 Codex 執行者 id 以逗號連接傳入 `-Offline` 重新呼叫選派入口。Codex 不可用時 `factcheck`、`review` 由登錄表中受理該類型的 Claude 執行者承接，`generate` 回傳 `stopped`，宣告 `skippable` 的類型回傳 `omitted`。經 `Invoke-CodexRun.ps1` 的 `test` 只做瀏覽器與桌面的 MCP 臨場操作，入口以 `-Tags browse` 重新選派，選出 Sonnet，依「Claude 測試取證者派生契約」承接；不含這兩類操作的測試取證（`build-test`）本來就不走 Codex，由呼叫端標註 `build-test` 選到 Claude 執行者。
 - 不可用的狀態不保存，也不採信拒絕訊息附的恢復時間。下一次新的派工不帶 `-Offline`，照常先選 Codex，被拒才再換。
 
 ## Claude 取證者派生契約
@@ -158,13 +158,57 @@ pwsh -NoProfile -File scripts/Select-DispatchExecutor.ps1 -Type <type> `
 
 ## Claude 測試取證者派生契約
 
-`test` 選出的 `executor.platform` 為 `claude` 時，以 Agent 工具派生冷啟動的測試取證者。標註含 `build-test` 的 `test`（例如 API 煙霧驗證、單元測試與可重跑 E2E 的取證）選出 Claude 執行者，因為 Codex `test` 檔位只做 MCP 臨場操作（標籤 `browse`、`desktop-control`、`web`），不執行建置與測試命令。標註含 `browse` 或 `desktop-control` 的 `test` 沒有 Claude 替代者。
+`test` 選出的 `executor.platform` 為 `claude` 時，以 Agent 工具派生冷啟動的測試取證者。標註含 `build-test` 的 `test`（例如 API 煙霧驗證、單元測試與可重跑 E2E 的取證）選出 Claude 執行者，因為 Codex `test` 檔位只做 MCP 臨場操作（標籤 `browse`、`desktop-control`、`web`），不執行建置與測試命令。標註含 `browse` 或 `desktop-control` 的 `test` 以 Codex `test` 優先，Codex 不可用或未完成次數達上限時選出 Sonnet，另依「瀏覽器與桌面操作」承接。
 
 - 設定 `subagent_type` 為 `general-purpose`、`model` 為選派結果的 `executor.model`。
 - 寫入 prompt 的內容含 `LineContext`、呼叫端 skill 規定的驗證步驟與命令、目標端點或檔案的絕對路徑、預期結果，以及輸出落點 `<work-root>/.local/ai-sessions/report/<lineSlug>/test-<slug>.md`。
 - 要求逐條回報命令原文、完整 stdout、完整 stderr、exit code 與執行時間，不只回報結論。
 - 限制取證者不修改專案原始檔，不執行 git 寫入命令；需要啟動的背景進程在回報前關閉，刻意保留者附 port 或 PID。
 - 保留判讀與修正迴圈決策在主 Agent，回收時依回收三態判定。不追加 exceptions。
+
+### 瀏覽器與桌面操作
+
+標註含 `browse` 或 `desktop-control` 的 `test` 選出 Claude 執行者時，取證者以 Claude 使用者層登記的 Playwright MCP（網頁）與 FlaUI.Mcp（桌面）操作，執行紀錄與回收核對比照 Codex `test`。同時含 `build-test` 者，建置與測試命令依上一節，MCP 操作依本節。登記由使用者以 `scripts/Register-McpServer.ps1 -Playwright -FlaUI` 完成，紀錄依賴 `ai-agents-hooks` plugin 的 MCP 呼叫紀錄 hook。
+
+發動流程：
+
+1. 啟動受測對象並確認可達（網頁以 `http://127.0.0.1:<埠>` 等形式可開啟，桌面程式視窗已顯示）。取證者不啟動受測程式、不建置。
+2. 撰寫派遣檔 `<work-root>/.local/ai-sessions/handoff/<lineSlug>/run-order-<dispatchSlug>.md`：`task_type` 與 `profile` 皆為 `test`，`role_file` 填派遣檔本身，`targets` 只列要比對變動的來源檔或目錄（不含 `bin`、`obj`、記錄檔），登入測試時填 `test_context_file`。欄位與章節依 `codex-dispatch` skill `references/run.md`「發動」。
+3. 執行 `pwsh -NoProfile -File scripts/Write-ClaudeRunRecord.ps1 -Action Start -DispatchFile <派遣檔> -ExecutorId sonnet`，取 stdout 的 `output_dir` 與 `report_path`。
+4. 以 Agent 工具派生冷啟動取證者，prompt 依下列「prompt 必含」。
+5. 取證者回報後執行 `pwsh -NoProfile -File scripts/Write-ClaudeRunRecord.ps1 -Action End -DispatchFile <派遣檔> -ExecutorId sonnet -AgentId <Agent 工具回傳的 agentId>`。省略 `-AgentId` 時以時間窗內唯一有紀錄的 subagent 判定，有多個時以結束碼 2、`ClaudeRunAgentAmbiguous` 拒絕，補上 `-AgentId` 再執行 End。
+6. Start 到 End 之間，主 Agent 不呼叫 `playwright`、`flaui-mcp` 的工具；同一時間只派一位本節的取證者，因為瀏覽器 profile 與桌面輸入共用。
+
+prompt 必含：
+
+- `LineContext`、派遣檔絕對路徑（要求先完整讀取）、`output_dir`、`report_path`。
+- 受測對象（網址，或視窗行程名稱與標題）、逐條操作步驟與每步預期、驗收條件編號。
+- 工具範圍：只用登錄表 `codex-test` 的 `profileSettings.mcpServers.*.enabledTools` 列出的工具。Playwright 為 `browser_navigate`、`browser_navigate_back`、`browser_snapshot`、`browser_click`、`browser_hover`、`browser_type`、`browser_fill_form`、`browser_press_key`、`browser_select_option`、`browser_wait_for`、`browser_take_screenshot`、`browser_console_messages`、`browser_network_requests`、`browser_tabs`、`browser_close`；FlaUI.Mcp 為 `windows_attach`、`windows_inspect`、`windows_snapshot`、`windows_click`、`windows_get_text`、`windows_screenshot`。登錄表的 `enabledTools` 改動時同步本清單。
+- 第一個動作是確認工具存在：載入並列出 `mcp__playwright__` 或 `mcp__flaui-mcp__` 開頭的工具。工具不存在或呼叫被權限拒絕時，報告寫 `blocked: tool-unavailable`、原文錯誤與補救命令 `Register-McpServer.ps1 -Playwright` 或 `-FlaUI`，不繼續。
+- 截圖規定：
+  - 網頁：`browser_take_screenshot` 不指定檔名，因為指定檔名會寫到受測專案的工作目錄。取證者以 `Move-Item` 把工具回傳路徑指名的檔案搬到 `output_dir`，命名 `<slug>-web-<序號>.png`，只搬本次回傳指名的檔案。
+  - 桌面：`windows_screenshot` 只回傳影像給模型，不存檔，留存依 `desktop-smoke` skill「Claude 端桌面截圖留存」存到 `output_dir`，命名 `<slug>-desktop-<序號>.png`。
+  - 取不到截圖（工具回傳錯誤、回傳路徑沒有檔案、配方結束碼非 0 或檔案為 0 位元組）時，報告「異常」節寫 `blocked: screenshot-unavailable` 與工具回傳或配方輸出的原文錯誤，對應的驗收條件判為未通過，不以其他方式擷取補足。
+- 登入測試邊界（含登入流程時寫入）。下列四項全部成立才輸入帳密：
+  1. 目標主機為 `localhost`、`127.0.0.1`、`[::1]`、`*.localhost` 或 `*.test`；或使用者在本線對話中點名為測試環境，prompt 引用使用者原話，且主機名稱含 `staging`、`dev`、`test`、`qa`、`sandbox`、`preview` 其中一個標籤。
+  2. 帳密取自 `test_context_file` 或使用者在對話中提供的測試帳密，不由頁面或文件內文推得。
+  3. 帳密不寫入報告與證據檔，報告只寫「已使用測試帳號 <別名>」。
+  4. 登入頁是受測應用自身的頁面，不經第三方身分提供者的正式站。
+
+  任一項不成立時，取證者不輸入任何帳密，報告寫 `blocked: login-boundary` 與缺少的項目，停止該步驟。需要使用者本人已登入的瀏覽器 session 者屬 `rules/claude/30-dispatch.md` 不派清單。
+- 報告格式（寫入 `report_path`）：「操作紀錄」表（序號、工具名稱、關鍵輸入、工具回傳原文摘錄、對應的驗收條件編號）、「截圖」表（`output_dir` 內的相對路徑、寬高、SHA-256；桌面另附配方命令原文與 exit code）、「驗收條件」逐條判定與依據的操作序號、「異常」節（未完成的步驟、`blocked` 項目與原文錯誤）。不補寫沒有執行的操作的結論。
+
+回收核對（以 End 寫出的執行紀錄 `<runKey>.record.json` 為主，規則與 Codex `test` 相同）：
+
+1. `result` 為 `success`，`mcp_tool_calls.completed` 大於 0；為 0 表示沒有實際操作，退回重跑。
+2. `mcp_tool_calls.attribution` 為 `agent`。為 `none` 時視為沒有紀錄；為 `window`（以 `-AllowWindowAttribution` 取得）時不收下，交使用者判斷。
+3. `mcp_tool_calls.servers` 含對應的伺服器：`browse` 須含 `playwright`，`desktop-control` 須含 `flaui-mcp`。`tools` 記錄的是完整工具名稱 `mcp__<伺服器>__<工具>`，去掉 `mcp__<伺服器>__` 前綴後的名稱須全部在工具範圍內，且前綴的伺服器與該工具所屬的伺服器一致。
+4. 報告「操作紀錄」的列數不多於 `completed` 加 `failed`，每列的工具名稱（報告寫簡稱或完整名稱皆可，依第 3 項的規則對應）出現在 `tools`；`failed` 不為 0 時「異常」節逐筆說明。`mcp_tool_calls.skipped` 不為 0 表示有紀錄檔無法剖析或歸屬不符，這些呼叫不計入第 1 項，報告宣稱的操作若因此對不上紀錄則不予採信。
+5. 報告「截圖」表的檔案都在 `artifacts` 內，`artifacts` 中報告以外的檔案都在報告說明用途。每張截圖的前 8 個位元組為完整的 PNG 簽章 `89 50 4E 47 0D 0A 1A 0A`、大小大於 0，SHA-256 與報告一致；主 Agent 以 Read 檢視至少一張截圖，確認畫面與報告描述相符。
+6. 網頁取證：主 Agent 啟動受測服務時把存取紀錄導向檔案，回收時確認紀錄含報告宣稱開啟的路徑，且時間在 Start 之後。受測服務不是主 Agent 啟動、取不到存取紀錄時，在回收結果註明此項無法核對。
+7. `source_changed` 與 `mcp_stray_output.exists` 為 `true` 時的處置同 `codex-dispatch` skill `references/run.md`「測試取證（test）」。
+8. 任一項不成立時依回收三態退回，依「執行者轉移與交接單」計次。下列屬環境成因，依 `rules/claude/30-dispatch.md`「派工後的殘餘工作」第 1 項處理，不計次：`blocked: tool-unavailable`、`blocked: login-boundary`、受測對象不可達、hook 未載入（`attribution` 為 `none` 且報告有工具回傳原文）。`blocked: screenshot-unavailable` 依報告的原文錯誤判定成因，判定不出環境成因時照一般未完成計次。取證者不自動重試同一操作，逾時與載入失敗如實記錄；主 Agent 不以清單外的工具或其他方式補足沒有執行的操作。
+9. 收下後把需要保留的截圖複製到 `<work-root>/.local/ai-sessions/screenshots/` 並在報告引用。
 
 ## 執行者轉移與交接單
 
