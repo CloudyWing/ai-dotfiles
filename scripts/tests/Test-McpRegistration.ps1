@@ -17,7 +17,7 @@ $libPath = Join-Path $repoRoot 'scripts\lib\mcp-registration.ps1'
 $mcpTemplatePath = Join-Path $repoRoot 'templates\claude-mcp-servers.json'
 $pwshCommand = Get-Command -Name 'pwsh' -ErrorAction Stop
 $pwshPath = if ([string]::IsNullOrWhiteSpace($pwshCommand.Source)) { $pwshCommand.Path } else { $pwshCommand.Source }
-$tempBase = Join-Path (Join-Path $env:LOCALAPPDATA 'Temp') ('mcp-registration-' + [guid]::NewGuid().ToString('N'))
+$tempBase = Join-Path ([IO.Path]::GetTempPath()) ('mcp-registration-' + [guid]::NewGuid().ToString('N'))
 $failed = 0
 $passed = 0
 $skipped = 0
@@ -127,9 +127,15 @@ function New-ExistingRegistrations {
 }
 
 function New-UserMcpFile {
-    param([string[]]$Exclude = @())
+    # IncludeFixedStdio（預設開）：登記檔含固定形狀的 playwright 與 flaui-mcp；-Exclude 可依名稱移除。
+    # FlaUICommand 是 flaui-mcp 登記的 command，需要與被測執行檔路徑一致時由案例指定；PlaywrightDir 是 playwright 登記的輸出目錄。
+    param([string[]]$Exclude = @(), [bool]$IncludeFixedStdio = $true, [string]$FlaUICommand = 'X:\placeholder\FlaUI.Mcp.exe', [string]$PlaywrightDir = $script:testPlaywrightDir)
     $path = Join-Path (New-TestDirectory) 'claude.json'
     $existing = New-ExistingRegistrations -Template $script:template
+    if ($IncludeFixedStdio) {
+        $existing['playwright'] = [ordered]@{ type = 'stdio'; command = 'cmd'; args = @('/c', 'npx', '-y', '@playwright/mcp@latest'); env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $PlaywrightDir } }
+        $existing['flaui-mcp'] = [ordered]@{ type = 'stdio'; command = $FlaUICommand; args = @(); env = [ordered]@{} }
+    }
     foreach ($name in $Exclude) { $existing.Remove($name) }
     [IO.File]::WriteAllText($path, (@{ mcpServers = $existing } | ConvertTo-Json -Depth 8), $utf8)
     return $path
@@ -233,7 +239,7 @@ function New-ScriptEnvironment {
 }
 
 function Invoke-RegisterScript {
-    param([Parameter(Mandatory)][object]$Environment, [string[]]$Arguments = @(), [string]$WorkingDirectory)
+    param([Parameter(Mandatory)][object]$Environment, [string[]]$Arguments = @(), [string]$WorkingDirectory, [switch]$UnsetLocalAppData)
     # 腳本的帳號登記檔預設是 repo 的 .local\machine.json（真實的派工帳號）。測試一律指向暫存目錄內不存在的檔案，
     # 需要帳號時由案例以 -MachineConfigPath 指定暫存的 machine.json，不會碰到真實的帳號設定檔。
     if ($Arguments -notcontains '-MachineConfigPath') { $Arguments = @($Arguments) + @('-MachineConfigPath', (Join-Path $Environment.Root 'no-machine.json')) }
@@ -252,6 +258,7 @@ function Invoke-RegisterScript {
     $startInfo.EnvironmentVariables['USERPROFILE'] = $Environment.UserProfile
     $startInfo.EnvironmentVariables['HOME'] = $Environment.UserProfile
     $startInfo.EnvironmentVariables['LOCALAPPDATA'] = $Environment.LocalAppData
+    if ($UnsetLocalAppData) { [void]$startInfo.EnvironmentVariables.Remove('LOCALAPPDATA') }
     $startInfo.EnvironmentVariables['CLAUDE_CALL_LOG'] = $Environment.CallLog
     $startInfo.EnvironmentVariables['PATH'] = (@($Environment.Bin, (Split-Path -Parent $pwshPath), (Join-Path $env:WINDIR 'System32')) -join ';')
     foreach ($name in @('CODEX_HOME', 'CLAUDE_CONFIG_DIR')) { [void]$startInfo.EnvironmentVariables.Remove($name) }
@@ -279,6 +286,16 @@ try {
 
     $script:template = @(Read-ClaudeMcpTemplate -Path $mcpTemplatePath)
     $template = $script:template
+
+    # Playwright MCP 的預設輸出目錄為 <LocalAppData>\ai-agents\playwright-mcp。測試一律以 -LocalAppData 注入夾具目錄，不讀真實 %LOCALAPPDATA%。
+    # 連結的 worktree 夾具：.git 是檔案；預設輸出目錄與它無關。
+    $script:testLocalAppData = Join-Path $tempBase 'localappdata'
+    $testLocalAppData = $script:testLocalAppData
+    $script:testPlaywrightDir = Join-Path $testLocalAppData 'ai-agents\playwright-mcp'
+    $testPlaywrightDir = $script:testPlaywrightDir
+    $testWorktreeRoot = Join-Path $tempBase 'repo-worktree'
+    New-Item -ItemType Directory -Path $testWorktreeRoot -Force | Out-Null
+    [IO.File]::WriteAllText((Join-Path $testWorktreeRoot '.git'), 'gitdir: X:\main\.git\worktrees\x', $utf8)
 
     # ---- FlaUI：寫入 Codex 桌面版設定檔 ----
     Test-Case 'FL01 項目不存在時在檔尾新增，含 command 與 startup_timeout_sec；原有位元組不變，原檔備份與 manifest 存在，同目錄其他檔案不變' {
@@ -687,23 +704,24 @@ try {
         $expected = @('mcp', 'add', '--transport', 'stdio', '--scope', 'user', 'infra-lab', '--', 'wsl.exe', '-d', $infraLabDistro, '-e', 'bash', ($infraLabRepo + '/scripts/mcp.sh'))
         $null -eq $captured.Error -and $script:CliCalls.Count -eq 1 -and (Join-Arguments $script:CliCalls[0]) -ceq (Join-Arguments $expected) -and $captured.Result[0].Problems -eq 0
     }
-    Test-Case 'RG03 只選 FlaUI：不呼叫 claude，寫入桌面版設定檔；未選的 Claude 項目不被處理' {
+    Test-Case 'RG03 只選 FlaUI：寫入桌面版設定檔，並對 Claude 使用者層呼叫一次 mcp add flaui-mcp（路徑同桌面版）；未選的 Claude 項目（mcp-lab、infra-lab、playwright）不被處理' {
         Reset-Stubs
-        $userMcp = New-UserMcpFile -Exclude ($template | ForEach-Object { $_.Name })
+        $userMcp = New-UserMcpFile -Exclude (@($template | ForEach-Object { $_.Name }) + @('playwright', 'flaui-mcp'))
         $codex = New-CodexFixture -Text $baseConfig
         $captured = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' }
-        $null -eq $captured.Error -and $script:CliCalls.Count -eq 0 -and $captured.Result[0].FlaUIResult.Status -eq 'added' -and (Get-FileText -Path $codex.Config).Contains("command = '" + $codex.Executable + "'") -and $captured.Result[0].Problems -eq 0
+        $expectedCall = @('mcp', 'add', '--transport', 'stdio', '--scope', 'user', 'flaui-mcp', '--', $codex.Executable)
+        $null -eq $captured.Error -and $script:CliCalls.Count -eq 1 -and (Join-Arguments $script:CliCalls[0]) -ceq (Join-Arguments $expectedCall) -and $captured.Result[0].FlaUIResult.Status -eq 'added' -and (Get-FileText -Path $codex.Config).Contains("command = '" + $codex.Executable + "'") -and $captured.Result[0].Problems -eq 0
     }
-    Test-Case 'RG04 三項全選：重複執行不產生重複登記（第二次零次 mcp add、FlaUI unchanged）' {
+    Test-Case 'RG04 四項全選：重複執行不產生重複登記（第一次 14 次 mcp add：11 個 http、infra-lab、playwright、flaui-mcp 各一；第二次零次、FlaUI unchanged）' {
         Reset-Stubs
-        $emptyMcp = New-UserMcpFile -Exclude ($template | ForEach-Object { $_.Name })
+        $emptyMcp = New-UserMcpFile -Exclude (@($template | ForEach-Object { $_.Name }) + @('playwright', 'flaui-mcp'))
         $codex = New-CodexFixture -Text $baseConfig
-        $first = Invoke-Captured { Invoke-McpRegistration -Target @('mcp-lab', 'infra-lab', 'flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $emptyMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
+        $first = Invoke-Captured { Invoke-McpRegistration -Target @('mcp-lab', 'infra-lab', 'flaui', 'playwright') -McpTemplatePath $mcpTemplatePath -UserMcpPath $emptyMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo -LocalAppData $testLocalAppData }
         $firstCalls = $script:CliCalls.Count
         $script:CliCalls.Clear()
-        $fullMcp = New-UserMcpFile
-        $second = Invoke-Captured { Invoke-McpRegistration -Target @('mcp-lab', 'infra-lab', 'flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $fullMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
-        $firstCalls -eq 12 -and $script:CliCalls.Count -eq 0 -and $second.Result[0].FlaUIResult.Status -eq 'unchanged' -and $first.Result[0].Problems -eq 0 -and $second.Result[0].Problems -eq 0
+        $fullMcp = New-UserMcpFile -FlaUICommand $codex.Executable
+        $second = Invoke-Captured { Invoke-McpRegistration -Target @('mcp-lab', 'infra-lab', 'flaui', 'playwright') -McpTemplatePath $mcpTemplatePath -UserMcpPath $fullMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo -LocalAppData $testLocalAppData }
+        $firstCalls -eq 14 -and $script:CliCalls.Count -eq 0 -and $second.Result[0].FlaUIResult.Status -eq 'unchanged' -and $first.Result[0].Problems -eq 0 -and $second.Result[0].Problems -eq 0
     }
     Test-Case 'RG05 已存在的其他登記不被覆寫：內容與範本不同只回報（不算問題、不呼叫 add、警告不含現有值）' {
         Reset-Stubs
@@ -714,23 +732,25 @@ try {
         $captured = Invoke-Captured { Invoke-McpRegistration -Target @('mcp-lab') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' }
         $null -eq $captured.Error -and $script:CliCalls.Count -eq 0 -and $captured.Result[0].Problems -eq 0 -and (($captured.Warnings -join "`n") -match 'claude mcp remove mcp-reader --scope user') -and (($captured.Warnings -join "`n") -notmatch '19999')
     }
-    Test-Case 'RG06 問題計入結束碼：infra-lab 缺值、FlaUI 執行檔不存在、桌面版設定檔不存在、mcp add 失敗各算一個問題' {
+    Test-Case 'RG06 問題計入結束碼：infra-lab 缺值、FlaUI 執行檔不存在（Claude 步驟略過、不重複計數）、桌面版設定檔不存在（Claude 步驟仍登記）、mcp add 失敗各算一個問題' {
         Reset-Stubs
-        $userMcp = New-UserMcpFile -Exclude ($template | ForEach-Object { $_.Name })
+        $userMcp = New-UserMcpFile -Exclude (@($template | ForEach-Object { $_.Name }) + @('playwright', 'flaui-mcp'))
         $codex = New-CodexFixture
         $noValues = Invoke-Captured { Invoke-McpRegistration -Target @('infra-lab') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' }
         $noExe = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath (Join-Path $codex.Directory 'none.exe') -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' }
+        $callsAfterNoExe = $script:CliCalls.Count
         $noConfig = Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' }
+        $callsAfterNoConfig = $script:CliCalls.Count
         $script:CliHandler = { param($Arguments) [pscustomobject]@{ ExitCode = 1; Output = 'boom' } }
         $addFails = Invoke-Captured { Invoke-McpRegistration -Target @('infra-lab') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo }
-        $noValues.Result[0].Problems -eq 1 -and $noExe.Result[0].Problems -eq 1 -and $noConfig.Result[0].Problems -eq 1 -and $addFails.Result[0].Problems -eq 1 -and -not (Test-Path -LiteralPath $codex.Config)
+        $noValues.Result[0].Problems -eq 1 -and $noExe.Result[0].Problems -eq 1 -and $callsAfterNoExe -eq 0 -and $noConfig.Result[0].Problems -eq 1 -and $callsAfterNoConfig -eq 1 -and $addFails.Result[0].Problems -eq 1 -and -not (Test-Path -LiteralPath $codex.Config)
     }
-    Test-Case 'RG07 -WhatIf：零次 mcp add，FlaUI 不寫入、不備份' {
+    Test-Case 'RG07 -WhatIf：零次 mcp add（含 playwright 與 flaui-mcp 的 Claude 登記），FlaUI 不寫入、不備份' {
         Reset-Stubs
-        $userMcp = New-UserMcpFile -Exclude ($template | ForEach-Object { $_.Name })
+        $userMcp = New-UserMcpFile -Exclude (@($template | ForEach-Object { $_.Name }) + @('playwright', 'flaui-mcp'))
         $codex = New-CodexFixture -Text $baseConfig
         $hash = Get-TestBytesHex $codex.Config
-        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('mcp-lab', 'infra-lab', 'flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo -WhatIf }
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('mcp-lab', 'infra-lab', 'flaui', 'playwright') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro $infraLabDistro -InfraLabWslRepo $infraLabRepo -LocalAppData $testLocalAppData -WhatIf }
         $null -eq $captured.Error -and $script:CliCalls.Count -eq 0 -and $captured.Result[0].FlaUIResult.Status -eq 'whatif' -and (Get-TestBytesHex $codex.Config) -ceq $hash -and -not (Test-Path -LiteralPath $codex.Backups) -and $captured.Result[0].Problems -eq 0
     }
     Test-Case 'RG08 選 infra-lab 但 WSL 不存在：警告後仍登記（只寫設定），不算問題；只選 mcp-lab 時不檢查 WSL' {
@@ -762,23 +782,23 @@ try {
     }
 
     # ---- 唯讀檢查（Invoke-McpRegistrationCheck） ----
-    Test-Case 'CK01 三項全部登記且 WSL 可用：結束碼 0；檢查不寫入任何檔案（Claude 登記檔與桌面版設定檔雜湊不變）' {
+    Test-Case 'CK01 四項全部登記（含 Claude 端的 playwright 與 flaui-mcp）且 WSL 可用：結束碼 0；檢查不寫入任何檔案（Claude 登記檔與桌面版設定檔雜湊不變）' {
         Reset-Stubs
-        $userMcp = New-UserMcpFile
         $codex = New-CodexFixture -Text $presentConfig.Replace('X:\old\FlaUI.Mcp.exe', 'PLACEHOLDER')
+        $userMcp = New-UserMcpFile -FlaUICommand $codex.Executable
         [IO.File]::WriteAllText($codex.Config, (Get-FileText -Path $codex.Config).Replace('PLACEHOLDER', $codex.Executable), $utf8)
         $hashes = (Get-TestBytesHex $userMcp) + (Get-TestBytesHex $codex.Config)
         $snapshot = Get-FileSnapshot -Directory (Split-Path -Parent $codex.Directory)
-        $captured = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('mcp-lab', 'infra-lab', 'flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' }
+        $captured = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('mcp-lab', 'infra-lab', 'flaui', 'playwright') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -LocalAppData $testLocalAppData }
         $null -eq $captured.Error -and $captured.Result[0] -eq 0 -and $script:CliCalls.Count -eq 0 -and ((Get-TestBytesHex $userMcp) + (Get-TestBytesHex $codex.Config)) -ceq $hashes -and (Get-FileSnapshot -Directory (Split-Path -Parent $codex.Directory)) -ceq $snapshot
     }
-    Test-Case 'CK02 缺少登記時結束碼 1 並指出缺哪一項與補救方式：mcp-lab 缺一個、infra-lab 未登記、FlaUI 項目不存在' {
+    Test-Case 'CK02 缺少登記時結束碼 1 並指出缺哪一項與補救方式：mcp-lab 缺一個、infra-lab 未登記、playwright 未登記、FlaUI 項目不存在' {
         Reset-Stubs
-        $userMcp = New-UserMcpFile -Exclude @('mcp-reader', 'infra-lab')
+        $userMcp = New-UserMcpFile -Exclude @('mcp-reader', 'infra-lab', 'playwright')
         $codex = New-CodexFixture -Text $baseConfig
-        $captured = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('mcp-lab', 'infra-lab', 'flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' }
+        $captured = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('mcp-lab', 'infra-lab', 'flaui', 'playwright') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -LocalAppData $testLocalAppData }
         $text = $captured.Info -join "`n"
-        $captured.Result[0] -eq 1 -and $text -match '\[缺少\] mcp-reader.*Register-McpServer\.ps1 -McpLab' -and $text -match '\[缺少\] infra-lab.*-InfraLabDistro' -and $text -match '\[缺少\] flaui-mcp.*Register-McpServer\.ps1 -FlaUI'
+        $captured.Result[0] -eq 1 -and $text -match '\[缺少\] mcp-reader.*Register-McpServer\.ps1 -McpLab' -and $text -match '\[缺少\] infra-lab.*-InfraLabDistro' -and $text -match '\[缺少\] flaui-mcp.*Register-McpServer\.ps1 -FlaUI' -and $text -match '\[缺少\] playwright（Claude Code）.*Register-McpServer\.ps1 -Playwright'
     }
     Test-Case 'CK03 mcp-lab 服務未啟動只在備註提示，不影響結束碼；登記全部相符時結束碼為 0' {
         Reset-Stubs
@@ -844,12 +864,13 @@ try {
         $matching = $accountPresentConfig.Replace('X:\old\FlaUI.Mcp.exe', $codex.Executable)
         $consistent = New-AccountFixture -Config @{ 'acct-a' = $matching; 'acct-b' = $matching }
         $inconsistent = New-AccountFixture -Config @{ 'acct-a' = $matching; 'acct-b' = $accountPresentConfig }
+        $claudeRegistered = New-UserMcpFile -FlaUICommand $codex.Executable
         $snapshot = (Get-FileSnapshot -Directory $consistent.Root) + (Get-FileSnapshot -Directory $inconsistent.Root) + (Get-FileSnapshot -Directory (Split-Path -Parent $codex.Directory))
-        $ok = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $consistent.Machine }
-        $bad = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path (New-TestDirectory) 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $inconsistent.Machine }
+        $ok = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $claudeRegistered -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $consistent.Machine }
+        $bad = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $claudeRegistered -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $inconsistent.Machine }
         $badText = $bad.Info -join "`n"
         $okText = $ok.Info -join "`n"
-        $ok.Result[0] -eq 0 -and $okText -match '統計：共 3 項，符合 3、其他 0' -and $bad.Result[0] -eq 1 -and $badText -match '\[內容不符\] flaui-mcp（派工帳號 acct-b）' -and $badText -match 'X:\\old\\FlaUI\.Mcp\.exe' -and $badText -notmatch '\[內容不符\] flaui-mcp（派工帳號 acct-a）' -and
+        $ok.Result[0] -eq 0 -and $okText -match '統計：共 4 項，符合 4、其他 0' -and $bad.Result[0] -eq 1 -and $badText -match '\[內容不符\] flaui-mcp（派工帳號 acct-b）' -and $badText -match 'X:\\old\\FlaUI\.Mcp\.exe' -and $badText -notmatch '\[內容不符\] flaui-mcp（派工帳號 acct-a）' -and
         ((Get-FileSnapshot -Directory $consistent.Root) + (Get-FileSnapshot -Directory $inconsistent.Root) + (Get-FileSnapshot -Directory (Split-Path -Parent $codex.Directory))) -ceq $snapshot
     }
     Test-Case 'CK08 帳號缺少 config.toml、沒有 flaui-mcp 表、表沒有 command 為缺少；寫法無法確定為無法判定；桌面版沒有可比對的 command 時各帳號為無法判定；結束碼皆為 1' {
@@ -873,10 +894,275 @@ try {
         $directory = New-TestDirectory
         $bad = Join-Path $directory 'machine.json'
         [IO.File]::WriteAllText($bad, '{ not json', $utf8)
-        $none = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath (Join-Path $directory 'none.json') }
-        $omitted = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' }
+        $claudeRegistered = New-UserMcpFile -FlaUICommand $codex.Executable
+        $none = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $claudeRegistered -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath (Join-Path $directory 'none.json') }
+        $omitted = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $claudeRegistered -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' }
         $invalid = Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath (Join-Path $directory 'none.json') -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -MachineConfigPath $bad }
         $none.Result[0] -eq 0 -and (($none.Info -join "`n") -match '備註：沒有登記的派工帳號') -and $omitted.Result[0] -eq 0 -and $invalid.Result[0] -eq 1 -and (($invalid.Info -join "`n") -match '\[無法判定\] flaui-mcp（派工帳號）')
+    }
+
+    # ---- Playwright MCP（Claude Code 使用者層） ----
+    $playwrightArguments = @('mcp', 'add', '-e', ('PLAYWRIGHT_MCP_OUTPUT_DIR=' + $testPlaywrightDir), '--transport', 'stdio', '--scope', 'user', 'playwright', '--', 'cmd', '/c', 'npx', '-y', '@playwright/mcp@latest')
+    function Invoke-PlaywrightRegistration {
+        param([string]$UserMcp, [string]$OutputDir = '', [string]$LocalAppData = $script:testLocalAppData, [switch]$WhatIfRun, [string[]]$Target = @('playwright'))
+        $codex = New-CodexFixture -Text $baseConfig
+        if ($WhatIfRun) { return (Invoke-Captured { Invoke-McpRegistration -Target $Target -McpTemplatePath $mcpTemplatePath -UserMcpPath $UserMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' -PlaywrightOutputDir $OutputDir -LocalAppData $LocalAppData -WhatIf }) }
+        return (Invoke-Captured { Invoke-McpRegistration -Target $Target -McpTemplatePath $mcpTemplatePath -UserMcpPath $UserMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' -PlaywrightOutputDir $OutputDir -LocalAppData $LocalAppData })
+    }
+    function Invoke-PlaywrightCheck {
+        param([string]$UserMcp, [string]$OutputDir = '', [string]$LocalAppData = $script:testLocalAppData)
+        $codex = New-CodexFixture -Text $baseConfig
+        return (Invoke-Captured { Invoke-McpRegistrationCheck -Target @('playwright') -McpTemplatePath $mcpTemplatePath -UserMcpPath $UserMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' -PlaywrightOutputDir $OutputDir -LocalAppData $LocalAppData })
+    }
+    Test-Case 'PW01 未登記時以假 claude 收到一次 mcp add：引數序逐項等於 mcp add -e PLAYWRIGHT_MCP_OUTPUT_DIR=<dir> --transport stdio --scope user playwright -- cmd /c npx -y @playwright/mcp@latest；沒有問題；不碰 Codex 設定檔' {
+        Reset-Stubs
+        $userMcp = New-UserMcpFile -Exclude @('playwright')
+        $captured = Invoke-PlaywrightRegistration -UserMcp $userMcp
+        $null -eq $captured.Error -and $script:CliCalls.Count -eq 1 -and (Join-Arguments $script:CliCalls[0]) -ceq (Join-Arguments $playwrightArguments) -and $captured.Result[0].Problems -eq 0 -and @($captured.Result[0].ClaudeFixedStdioResults | ForEach-Object { $_.Status }) -join ',' -ceq 'added' -and $script:WslCalls -eq 0
+    }
+    Test-Case 'PW02 已登記且相同：零次 mcp add（重跑不重複）；沒有問題' {
+        Reset-Stubs
+        $captured = Invoke-PlaywrightRegistration -UserMcp (New-UserMcpFile)
+        $null -eq $captured.Error -and $script:CliCalls.Count -eq 0 -and $captured.Result[0].Problems -eq 0 -and @($captured.Result[0].ClaudeFixedStdioResults | ForEach-Object { $_.Status }) -join ',' -ceq 'unchanged'
+    }
+    Test-Case 'PW03 已登記但 command、args、env 各自不同：不覆寫（零次呼叫），不算問題，警告指出欄位且不印出現有值' {
+        Reset-Stubs
+        $bad = @()
+        $secret = 'SECRET-SENTINEL-DIR'
+        $variants = [ordered]@{
+            command = { param($e) $e['command'] = 'npx' }
+            args    = { param($e) $e['args'] = @('/c', 'npx', '-y', '@playwright/mcp@0.0.1') }
+            env     = { param($e) $e['env'] = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = ('D:\' + $secret) } }
+        }
+        foreach ($key in $variants.Keys) {
+            $userMcp = New-UserMcpFile -Exclude @('playwright')
+            $document = ConvertFrom-Json -InputObject ([IO.File]::ReadAllText($userMcp)) -AsHashTable
+            $entry = [ordered]@{ type = 'stdio'; command = 'cmd'; args = @('/c', 'npx', '-y', '@playwright/mcp@latest'); env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $testPlaywrightDir } }
+            & $variants[$key] $entry
+            $document['mcpServers']['playwright'] = $entry
+            [IO.File]::WriteAllText($userMcp, ($document | ConvertTo-Json -Depth 8), $utf8)
+            $captured = Invoke-PlaywrightRegistration -UserMcp $userMcp
+            $warnings = $captured.Warnings -join "`n"
+            if ($script:CliCalls.Count -ne 0 -or $captured.Result[0].Problems -ne 0 -or $warnings -notmatch ('playwright 的 ' + $key) -or $warnings.Contains($secret)) { $bad += $key }
+            Reset-Stubs
+        }
+        $bad.Count -eq 0
+    }
+    Test-Case 'PW04 -WhatIf：零次 mcp add，結果為預演，沒有問題' {
+        Reset-Stubs
+        $captured = Invoke-PlaywrightRegistration -UserMcp (New-UserMcpFile -Exclude @('playwright')) -WhatIfRun
+        $null -eq $captured.Error -and $script:CliCalls.Count -eq 0 -and $captured.Result[0].Problems -eq 0 -and @($captured.Result[0].ClaudeFixedStdioResults | ForEach-Object { $_.Status }) -join ',' -ceq 'whatif'
+    }
+    Test-Case 'PW05 輸出目錄含禁用字元（&）或不是絕對路徑：不呼叫 claude，各算一個問題並指出原因' {
+        Reset-Stubs
+        $ampersand = Invoke-PlaywrightRegistration -UserMcp (New-UserMcpFile -Exclude @('playwright')) -OutputDir 'D:\a&b'
+        $relative = Invoke-PlaywrightRegistration -UserMcp (New-UserMcpFile -Exclude @('playwright')) -OutputDir 'out\dir'
+        $script:CliCalls.Count -eq 0 -and $ampersand.Result[0].Problems -eq 1 -and $relative.Result[0].Problems -eq 1 -and (($ampersand.Warnings -join "`n") -match '輸出目錄') -and (($relative.Warnings -join "`n") -match '輸出目錄')
+    }
+    Test-Case 'PW06 Resolve-PlaywrightOutputDir：未指定時回傳 <LocalAppData>\ai-agents\playwright-mcp；指定時用指定值；LocalAppData 未設定或空白時回傳錯誤並指向 -PlaywrightOutputDir（指定目錄時不受影響）；無效路徑回傳錯誤' {
+        $default = Resolve-PlaywrightOutputDir -OutputDir '' -LocalAppData $testLocalAppData
+        $explicit = Resolve-PlaywrightOutputDir -OutputDir 'D:\Shared\playwright-out' -LocalAppData $testLocalAppData
+        $unset = Resolve-PlaywrightOutputDir -OutputDir '' -LocalAppData ''
+        $blank = Resolve-PlaywrightOutputDir -OutputDir '' -LocalAppData '   '
+        $explicitWithoutLocalAppData = Resolve-PlaywrightOutputDir -OutputDir 'D:\Shared\playwright-out' -LocalAppData ''
+        $invalid = Resolve-PlaywrightOutputDir -OutputDir 'D:\bad"dir' -LocalAppData $testLocalAppData
+        $relativeLocalAppData = Resolve-PlaywrightOutputDir -OutputDir '' -LocalAppData 'rel\appdata'
+        $default.Ok -and $default.Path -ceq $testPlaywrightDir -and $explicit.Ok -and $explicit.Path -ceq 'D:\Shared\playwright-out' -and
+        -not $unset.Ok -and $unset.Message.Contains('LOCALAPPDATA') -and $unset.Message.Contains('-PlaywrightOutputDir') -and -not $blank.Ok -and
+        $explicitWithoutLocalAppData.Ok -and $explicitWithoutLocalAppData.Path -ceq 'D:\Shared\playwright-out' -and -not $invalid.Ok -and -not $relativeLocalAppData.Ok
+    }
+    Test-Case 'PW07 從連結的 worktree 執行且未指定輸出目錄：照常登記一次，-e PLAYWRIGHT_MCP_OUTPUT_DIR= 的值為注入的 LocalAppData 路徑，沒有問題；LocalAppData 未設定且未指定時不呼叫 claude，算一個問題，警告指向 -PlaywrightOutputDir' {
+        Reset-Stubs
+        $userMcp = New-UserMcpFile -Exclude @('playwright')
+        Push-Location -LiteralPath $testWorktreeRoot
+        try { $fromWorktree = Invoke-PlaywrightRegistration -UserMcp $userMcp }
+        finally { Pop-Location }
+        $callsFromWorktree = $script:CliCalls.Count
+        $registeredDirectory = if ($callsFromWorktree -eq 1) { @($script:CliCalls[0]) } else { @() }
+        Reset-Stubs
+        $withoutLocalAppData = Invoke-PlaywrightRegistration -UserMcp $userMcp -LocalAppData ''
+        $callsFromWorktree -eq 1 -and $fromWorktree.Result[0].Problems -eq 0 -and ($registeredDirectory -contains ('PLAYWRIGHT_MCP_OUTPUT_DIR=' + $testPlaywrightDir)) -and
+        $script:CliCalls.Count -eq 0 -and $withoutLocalAppData.Result[0].Problems -eq 1 -and (($withoutLocalAppData.Warnings -join "`n") -match '-PlaywrightOutputDir')
+    }
+    Test-Case 'PW08 Claude 端前置失敗只計一個問題並略過其後的 Claude 步驟：登記檔無法讀取時 mcp-lab 加 playwright 為 1、只選 playwright 為 1；找不到 claude 時為 1；零次呼叫' {
+        Reset-Stubs
+        $bad = Join-Path (New-TestDirectory) 'claude.json'
+        [IO.File]::WriteAllText($bad, '{ not json', $utf8)
+        $both = Invoke-PlaywrightRegistration -UserMcp $bad -Target @('mcp-lab', 'playwright')
+        $only = Invoke-PlaywrightRegistration -UserMcp $bad
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = (New-TestDirectory)
+            $noClaude = Invoke-PlaywrightRegistration -UserMcp (New-UserMcpFile -Exclude @('playwright'))
+        }
+        finally { $env:PATH = $savedPath }
+        $script:CliCalls.Count -eq 0 -and $both.Result[0].Problems -eq 1 -and $only.Result[0].Problems -eq 1 -and $noClaude.Result[0].Problems -eq 1 -and (($noClaude.Warnings -join "`n") -match '找不到 claude CLI')
+    }
+    Test-Case 'PW09 mcp add 結束碼非零時該項為 failed、算一個問題，不重試；其餘項目照常處理' {
+        Reset-Stubs
+        $script:CliHandler = { param($Arguments) [pscustomobject]@{ ExitCode = 1; Output = 'boom' } }
+        $captured = Invoke-PlaywrightRegistration -UserMcp (New-UserMcpFile -Exclude @('playwright'))
+        $script:CliCalls.Count -eq 1 -and $captured.Result[0].Problems -eq 1 -and @($captured.Result[0].ClaudeFixedStdioResults | ForEach-Object { $_.Status }) -join ',' -ceq 'failed'
+    }
+    Test-Case 'PW10 -Check：登記相符為 ok（結束碼 0，不寫檔）；未登記為缺少；command、args、env 不同為內容不符；登記檔無法讀取為無法判定；LocalAppData 未設定且未指定輸出目錄為無法判定；結束碼皆為 1' {
+        Reset-Stubs
+        $ok = New-UserMcpFile
+        $hash = Get-TestBytesHex $ok
+        $okRun = Invoke-PlaywrightCheck -UserMcp $ok
+        $missing = Invoke-PlaywrightCheck -UserMcp (New-UserMcpFile -Exclude @('playwright'))
+        $otherDirectory = Invoke-PlaywrightCheck -UserMcp (New-UserMcpFile -PlaywrightDir 'D:\Other\out')
+        $bad = Join-Path (New-TestDirectory) 'claude.json'
+        [IO.File]::WriteAllText($bad, '{ not json', $utf8)
+        $unreadable = Invoke-PlaywrightCheck -UserMcp $bad
+        $noLocalAppData = Invoke-PlaywrightCheck -UserMcp $ok -LocalAppData ''
+        $okRun.Result[0] -eq 0 -and (($okRun.Info -join "`n") -match '\[符合\] playwright（Claude Code）') -and (Get-TestBytesHex $ok) -ceq $hash -and $script:CliCalls.Count -eq 0 -and
+        $missing.Result[0] -eq 1 -and (($missing.Info -join "`n") -match '\[缺少\] playwright（Claude Code）.*-Playwright') -and
+        $otherDirectory.Result[0] -eq 1 -and (($otherDirectory.Info -join "`n") -match '\[內容不符\] playwright（Claude Code）.*env') -and
+        $unreadable.Result[0] -eq 1 -and (($unreadable.Info -join "`n") -match '\[無法判定\] playwright（Claude Code）') -and
+        $noLocalAppData.Result[0] -eq 1 -and (($noLocalAppData.Info -join "`n") -match '\[無法判定\] playwright（Claude Code）.*-PlaywrightOutputDir')
+    }
+    Test-Case 'PW14 -Check：type、command、env 為單元素陣列或錯誤型別（物件、數字）時判為內容不符並指出欄位，不誤判為符合，也不寫檔' {
+        Reset-Stubs
+        $override = {
+            param([string]$Name, [hashtable]$Fields)
+            $path = New-UserMcpFile
+            $document = ConvertFrom-Json -InputObject (Get-FileText -Path $path) -AsHashtable -Depth 10
+            foreach ($key in $Fields.Keys) { $document['mcpServers'][$Name][$key] = $Fields[$key] }
+            [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject $document -Depth 10), $utf8)
+            return $path
+        }
+        $envValue = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $script:testPlaywrightDir }
+        $cases = [ordered]@{
+            typeArray  = @{ type = @('stdio') }
+            typeNumber = @{ type = 5 }
+            commandArr = @{ command = @('cmd') }
+            commandObj = @{ command = [ordered]@{ path = 'cmd' } }
+            envArray   = @{ env = @($envValue) }
+            envNumber  = @{ env = 7 }
+        }
+        $bad = @()
+        foreach ($key in $cases.Keys) {
+            $field = ($cases[$key].Keys | Select-Object -First 1)
+            $path = & $override 'playwright' $cases[$key]
+            $hash = Get-TestBytesHex $path
+            $run = Invoke-PlaywrightCheck -UserMcp $path
+            $text = $run.Info -join "`n"
+            if ($run.Result[0] -ne 1 -or $text -notmatch ('\[內容不符\] playwright（Claude Code）.*' + $field) -or $text -match '\[符合\] playwright' -or (Get-TestBytesHex $path) -cne $hash) { $bad += $key }
+        }
+        $bad.Count -eq 0 -and $script:CliCalls.Count -eq 0
+    }
+    Test-Case 'PW11 -Check在 npx 不在 PATH 時加備註「找不到 npx」，結束碼不受影響（登記相符時仍為 0）' {
+        Reset-Stubs
+        $ok = New-UserMcpFile
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = (New-TestDirectory)
+            $noNpx = Invoke-PlaywrightCheck -UserMcp $ok
+        }
+        finally { $env:PATH = $savedPath }
+        $noNpx.Result[0] -eq 0 -and (($noNpx.Info -join "`n") -match '備註：找不到 npx；Playwright MCP 啟動時會失敗。腳本不安裝 Node\.js')
+    }
+    Test-Case 'PW12 漂移檢查：登記內容的 npx 引數（-y @playwright/mcp@latest）與登錄表 codex-test 的 playwright 設定相同；codex-test 的 playwright 仍有 PLAYWRIGHT_MCP_OUTPUT_DIR 環境變數' {
+        $registry = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\dispatch\executor-registry.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        $codexTest = @($registry.executors | Where-Object { $_.id -ceq 'codex-test' })[0]
+        $codexPlaywright = $codexTest.profileSettings.mcpServers.playwright
+        $definition = Get-PlaywrightMcpDefinition -OutputDir $testPlaywrightDir
+        $definition.Args[1] -ceq $codexPlaywright.command -and (@($definition.Args | Select-Object -Skip 2) -join ' ') -ceq (@($codexPlaywright.args) -join ' ') -and @($codexPlaywright.envVars) -contains 'PLAYWRIGHT_MCP_OUTPUT_DIR' -and
+        $definition.Command -ceq 'cmd' -and $definition.Args[0] -ceq '/c' -and $definition.Env['PLAYWRIGHT_MCP_OUTPUT_DIR'] -ceq $testPlaywrightDir
+    }
+    Test-Case 'PW13 範本不被改動：Read-ClaudeMcpTemplate 仍回傳 12 個伺服器且不含 playwright 與 flaui-mcp；Invoke-ClaudeMcpStep 的 Group 驗證集合仍是 mcp-lab、infra-lab' {
+        $names = @(Read-ClaudeMcpTemplate -Path $mcpTemplatePath | ForEach-Object { $_.Name })
+        $groupAttribute = @((Get-Command Invoke-ClaudeMcpStep).Parameters['Group'].Attributes | Where-Object { $_ -is [System.Management.Automation.ValidateSetAttribute] })[0]
+        $names.Count -eq 12 -and $names -cnotcontains 'playwright' -and $names -cnotcontains 'flaui-mcp' -and (@($groupAttribute.ValidValues) -join ',') -ceq 'mcp-lab,infra-lab'
+    }
+
+    # ---- FlaUI.Mcp（Claude Code 使用者層） ----
+    function Invoke-FlaUIClaudeRegistration {
+        param($Codex, [string]$UserMcp, [string]$ExecutablePath, [switch]$WhatIfRun)
+        if ([string]::IsNullOrEmpty($ExecutablePath)) { $ExecutablePath = $Codex.Executable }
+        if ($WhatIfRun) { return (Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $UserMcp -CodexConfigPath $Codex.Config -FlaUIPath $ExecutablePath -BackupRoot $Codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' -WhatIf }) }
+        return (Invoke-Captured { Invoke-McpRegistration -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $UserMcp -CodexConfigPath $Codex.Config -FlaUIPath $ExecutablePath -BackupRoot $Codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' })
+    }
+    Test-Case 'FC01 flaui-mcp 已登記且與 -FlaUIPath 相同：零次 mcp add（重跑不重複）、沒有問題；路徑不同時不覆寫（零次呼叫、不算問題、警告指出 command 不同且不印出現有路徑）' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $same = Invoke-FlaUIClaudeRegistration -Codex $codex -UserMcp (New-UserMcpFile -FlaUICommand $codex.Executable)
+        $sameCalls = $script:CliCalls.Count
+        $codex2 = New-CodexFixture -Text $baseConfig
+        $different = Invoke-FlaUIClaudeRegistration -Codex $codex2 -UserMcp (New-UserMcpFile -FlaUICommand 'X:\SECRET-OLD-PATH\FlaUI.Mcp.exe')
+        $sameCalls -eq 0 -and $same.Result[0].Problems -eq 0 -and @($same.Result[0].ClaudeFixedStdioResults | ForEach-Object { $_.Status }) -join ',' -ceq 'unchanged' -and
+        $script:CliCalls.Count -eq 0 -and $different.Result[0].Problems -eq 0 -and (($different.Warnings -join "`n") -match 'flaui-mcp 的 command') -and -not (($different.Warnings -join "`n") -match 'SECRET-OLD-PATH')
+    }
+    Test-Case 'FC02 FlaUI 執行檔不存在：Claude 步驟略過並印一行說明（零次 mcp add），問題數維持 1（只由 Codex 步驟計）；-FlaUIPath 不是完整的絕對路徑時同樣略過' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $missing = Invoke-FlaUIClaudeRegistration -Codex $codex -UserMcp (New-UserMcpFile -Exclude @('flaui-mcp')) -ExecutablePath (Join-Path $codex.Directory 'none.exe')
+        $relative = Invoke-FlaUIClaudeRegistration -Codex $codex -UserMcp (New-UserMcpFile -Exclude @('flaui-mcp')) -ExecutablePath '.\FlaUI.Mcp.exe'
+        $script:CliCalls.Count -eq 0 -and $missing.Result[0].Problems -eq 1 -and $relative.Result[0].Problems -eq 1 -and (($missing.Info -join "`n") -match '略過 Claude Code 使用者層的 flaui-mcp 登記') -and (($relative.Info -join "`n") -match '略過 Claude Code 使用者層的 flaui-mcp 登記')
+    }
+    Test-Case 'FC03 Codex 桌面版設定檔不存在不阻擋 Claude 步驟：仍登記 flaui-mcp（一次 mcp add），問題數為 1（只由桌面版設定檔缺失計）' {
+        Reset-Stubs
+        $codex = New-CodexFixture
+        $captured = Invoke-FlaUIClaudeRegistration -Codex $codex -UserMcp (New-UserMcpFile -Exclude @('flaui-mcp'))
+        $script:CliCalls.Count -eq 1 -and $captured.Result[0].FlaUIResult.Status -eq 'config-missing' -and $captured.Result[0].Problems -eq 1 -and @($captured.Result[0].ClaudeFixedStdioResults | ForEach-Object { $_.Status }) -join ',' -ceq 'added' -and -not (Test-Path -LiteralPath $codex.Config)
+    }
+    Test-Case 'FC04 整個 Claude 端前置失敗只計一個問題：只選 FlaUI 且登記檔無法讀取、或找不到 claude 時問題數為 1，桌面版仍照常寫入，零次 mcp add' {
+        Reset-Stubs
+        $bad = Join-Path (New-TestDirectory) 'claude.json'
+        [IO.File]::WriteAllText($bad, '{ not json', $utf8)
+        $codex = New-CodexFixture -Text $baseConfig
+        $unreadable = Invoke-FlaUIClaudeRegistration -Codex $codex -UserMcp $bad
+        $codex2 = New-CodexFixture -Text $baseConfig
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = (New-TestDirectory)
+            $noClaude = Invoke-FlaUIClaudeRegistration -Codex $codex2 -UserMcp (New-UserMcpFile -Exclude @('flaui-mcp'))
+        }
+        finally { $env:PATH = $savedPath }
+        $script:CliCalls.Count -eq 0 -and $unreadable.Result[0].Problems -eq 1 -and $unreadable.Result[0].FlaUIResult.Status -in @('added', 'updated') -and $noClaude.Result[0].Problems -eq 1 -and $noClaude.Result[0].FlaUIResult.Status -in @('added', 'updated') -and (($noClaude.Warnings -join "`n") -match '找不到 claude CLI')
+    }
+    Test-Case 'FC05 flaui-mcp 的 -FlaUIPath 含禁用字元（&）：不呼叫 claude，invalid-path 算一個問題並指出原因；-WhatIf 零次呼叫' {
+        Reset-Stubs
+        $directory = Join-Path (New-TestDirectory) 'a&b'
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        $executable = Join-Path $directory 'FlaUI.Mcp.exe'
+        [IO.File]::WriteAllBytes($executable, [byte[]](77, 90))
+        $codex = New-CodexFixture -Text $baseConfig
+        $invalid = Invoke-FlaUIClaudeRegistration -Codex $codex -UserMcp (New-UserMcpFile -Exclude @('flaui-mcp')) -ExecutablePath $executable
+        $invalidCalls = $script:CliCalls.Count
+        $codex2 = New-CodexFixture -Text $baseConfig
+        $whatIf = Invoke-FlaUIClaudeRegistration -Codex $codex2 -UserMcp (New-UserMcpFile -Exclude @('flaui-mcp')) -WhatIfRun
+        $invalidCalls -eq 0 -and $invalid.Result[0].Problems -eq 1 -and (($invalid.Warnings -join "`n") -match '絕對路徑或含有不允許的字元') -and $script:CliCalls.Count -eq 0 -and $whatIf.Result[0].Problems -eq 0 -and @($whatIf.Result[0].ClaudeFixedStdioResults | ForEach-Object { $_.Status }) -join ',' -ceq 'whatif'
+    }
+    Test-Case 'FC07 順序：Claude 端的 flaui-mcp 登記在 Codex 端的 FlaUI 步驟（含 FlaUI 摘要）之後，且在 mcp-lab、infra-lab 之後' {
+        Reset-Stubs
+        $codex = New-CodexFixture -Text $baseConfig
+        $userMcp = New-UserMcpFile -Exclude (@($template | ForEach-Object { $_.Name }) + @('flaui-mcp'))
+        $captured = Invoke-Captured { Invoke-McpRegistration -Target @('mcp-lab', 'flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $userMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -BackupRoot $codex.Backups -InfraLabDistro '' -InfraLabWslRepo '' }
+        $info = $captured.Info -join "`n"
+        $labIndex = $info.IndexOf('正在登記 Claude Code 的 MCP 伺服器（mcp-lab）')
+        $codexIndex = $info.IndexOf('正在寫入 Codex 桌面版的 flaui-mcp 指令')
+        $summaryIndex = $info.IndexOf('FlaUI 摘要')
+        $claudeFlauiIndex = $info.IndexOf('正在登記 Claude Code 的 MCP 伺服器（flaui-mcp）')
+        $labIndex -ge 0 -and $codexIndex -gt $labIndex -and $summaryIndex -gt $codexIndex -and $claudeFlauiIndex -gt $summaryIndex -and $script:CliCalls.Count -eq 12 -and $captured.Result[0].Problems -eq 0
+    }
+    Test-Case 'FC06 -Check 的 flaui-mcp（Claude Code）：登記相符為 ok；未登記為缺少；command 不同為內容不符；登記檔無法讀取為無法判定；結束碼不符時為 1' {
+        Reset-Stubs
+        $codex = New-ConsistentCodex
+        $check = {
+            param($UserMcp)
+            Invoke-Captured { Invoke-McpRegistrationCheck -Target @('flaui') -McpTemplatePath $mcpTemplatePath -UserMcpPath $UserMcp -CodexConfigPath $codex.Config -FlaUIPath $codex.Executable -InfraLabDistro '' -InfraLabWslRepo '' }
+        }
+        $ok = & $check (New-UserMcpFile -FlaUICommand $codex.Executable)
+        $missing = & $check (New-UserMcpFile -Exclude @('flaui-mcp'))
+        $mismatch = & $check (New-UserMcpFile -FlaUICommand 'X:\other\FlaUI.Mcp.exe')
+        $bad = Join-Path (New-TestDirectory) 'claude.json'
+        [IO.File]::WriteAllText($bad, '{ not json', $utf8)
+        $unreadable = & $check $bad
+        $ok.Result[0] -eq 0 -and (($ok.Info -join "`n") -match '\[符合\] flaui-mcp（Claude Code）') -and (($ok.Info -join "`n") -match 'FlaUI\.Mcp（Codex 桌面版、派工帳號與 Claude Code）') -and
+        $missing.Result[0] -eq 1 -and (($missing.Info -join "`n") -match '\[缺少\] flaui-mcp（Claude Code）.*-FlaUI') -and
+        $mismatch.Result[0] -eq 1 -and (($mismatch.Info -join "`n") -match '\[內容不符\] flaui-mcp（Claude Code）.*command') -and -not (($mismatch.Info -join "`n") -match 'X:\\other') -and
+        $unreadable.Result[0] -eq 1 -and (($unreadable.Info -join "`n") -match '\[無法判定\] flaui-mcp（Claude Code）')
     }
 
     # ---- 腳本本身（子行程）：選取、用法與結束碼 ----
@@ -884,7 +1170,7 @@ try {
         $environment = New-ScriptEnvironment
         $before = Get-FileSnapshot -Directory $environment.Root
         $run = Invoke-RegisterScript -Environment $environment
-        $run.ExitCode -eq 1 -and $run.StdOut.Contains('Register-McpServer.ps1') -and $run.StdOut.Contains('-McpLab') -and (Get-FileSnapshot -Directory $environment.Root) -ceq $before -and -not (Test-Path -LiteralPath $environment.CallLog)
+        $run.ExitCode -eq 1 -and $run.StdOut.Contains('Register-McpServer.ps1') -and $run.StdOut.Contains('-McpLab') -and $run.StdOut.Contains('-Playwright') -and (Get-FileSnapshot -Directory $environment.Root) -ceq $before -and -not (Test-Path -LiteralPath $environment.CallLog)
     }
     Test-Case 'SC02 -McpLab：以假 claude 收到 11 次 mcp add（名稱與位址與範本相同），沒有其他呼叫；未選的 infra-lab 與 FlaUI 不處理' {
         $environment = New-ScriptEnvironment
@@ -905,15 +1191,18 @@ try {
         $run.ExitCode -eq 0 -and $calls.Count -eq 1 -and $calls[0] -match '^mcp add --transport stdio --scope user infra-lab -- wsl\.exe -d Ubuntu-test -e bash /work/infra-lab/scripts/mcp\.sh\s*$' -and
         $missingValues.ExitCode -eq 1 -and -not (Test-Path -LiteralPath $noValues.CallLog) -and $orphan.ExitCode -eq 1
     }
-    Test-Case 'SC04 -FlaUI 以 -CodexConfigPath 與 -FlaUIPath 寫入暫存設定檔：結束碼 0；執行檔不存在時結束碼 1 且不寫入；-FlaUIPath 沒有 -FlaUI 時被拒絕；不呼叫 claude' {
+    Test-Case 'SC04 -FlaUI 以 -CodexConfigPath 與 -FlaUIPath 寫入暫存設定檔：結束碼 0 且對假 claude 收到一次 mcp add flaui-mcp；執行檔不存在時結束碼 1、不寫入、不呼叫 claude；-FlaUIPath 沒有 -FlaUI 時被拒絕、不呼叫 claude' {
         $environment = New-ScriptEnvironment
         $codex = New-CodexFixture -Text $baseConfig
         $hash = Get-TestBytesHex $codex.Config
         $missingExe = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', (Join-Path $codex.Directory 'none.exe'))
         $unchangedAfterMissing = (Get-TestBytesHex $codex.Config) -ceq $hash
+        $noCallAfterMissing = -not (Test-Path -LiteralPath $environment.CallLog)
         $ok = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', $codex.Executable, '-BackupRoot', $codex.Backups)
+        $callsAfterOk = @(Get-Content -LiteralPath $environment.CallLog).Count
         $orphan = Invoke-RegisterScript -Environment $environment -Arguments @('-McpLab', '-FlaUIPath', $codex.Executable)
-        $missingExe.ExitCode -eq 1 -and $unchangedAfterMissing -and $ok.ExitCode -eq 0 -and (Get-FileText -Path $codex.Config).Contains("command = '" + $codex.Executable + "'") -and $orphan.ExitCode -eq 1 -and -not (Test-Path -LiteralPath $environment.CallLog)
+        $calls = @(Get-Content -LiteralPath $environment.CallLog)
+        $missingExe.ExitCode -eq 1 -and $unchangedAfterMissing -and $noCallAfterMissing -and $callsAfterOk -eq 1 -and $ok.ExitCode -eq 0 -and (Get-FileText -Path $codex.Config).Contains("command = '" + $codex.Executable + "'") -and $orphan.ExitCode -eq 1 -and $calls.Count -eq 1 -and $calls[0] -match ('^mcp add --transport stdio --scope user flaui-mcp -- ' + [regex]::Escape($codex.Executable) + '\s*$')
     }
     Test-Case 'SC05 -FlaUI 的預設路徑為 %LOCALAPPDATA%\Programs\FlaUI-MCP\FlaUI.Mcp.exe：該檔存在時寫入暫存的使用者目錄 .codex\config.toml' {
         $environment = New-ScriptEnvironment
@@ -925,9 +1214,10 @@ try {
         New-Item -ItemType Directory -Path $codexDirectory -Force | Out-Null
         [IO.File]::WriteAllBytes((Join-Path $codexDirectory 'config.toml'), $utf8.GetBytes($baseConfig))
         $run = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-BackupRoot', (Join-Path $environment.Root 'backups'))
-        $run.ExitCode -eq 0 -and (Get-FileText -Path (Join-Path $codexDirectory 'config.toml')).Contains("command = '" + $defaultExe + "'")
+        $calls = @(Get-Content -LiteralPath $environment.CallLog)
+        $run.ExitCode -eq 0 -and (Get-FileText -Path (Join-Path $codexDirectory 'config.toml')).Contains("command = '" + $defaultExe + "'") -and $calls.Count -eq 1 -and $calls[0].Contains('flaui-mcp -- ' + $defaultExe)
     }
-    Test-Case 'SC06 -Check：沒有指定項目時檢查三項全部；缺少登記時結束碼 1 且不寫入任何檔案、不呼叫 claude；指定項目時只檢查該項' {
+    Test-Case 'SC06 -Check：沒有指定項目時檢查四項全部（含 playwright）；缺少登記時結束碼 1 且不寫入任何檔案、不呼叫 claude；指定項目時只檢查該項' {
         $environment = New-ScriptEnvironment
         $codexDirectory = Join-Path $environment.UserProfile '.codex'
         New-Item -ItemType Directory -Path $codexDirectory -Force | Out-Null
@@ -936,7 +1226,7 @@ try {
         $all = Invoke-RegisterScript -Environment $environment -Arguments @('-Check')
         $flauiOnly = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-FlaUI')
         $after = Get-FileSnapshot -Directory $environment.Root
-        $all.ExitCode -eq 1 -and $all.StdOut -match 'flaui-mcp' -and $all.StdOut -match 'mcp-sql-server' -and $flauiOnly.ExitCode -eq 1 -and $flauiOnly.StdOut -notmatch 'mcp-sql-server' -and $before -ceq $after -and -not (Test-Path -LiteralPath $environment.CallLog)
+        $all.ExitCode -eq 1 -and $all.StdOut -match 'flaui-mcp' -and $all.StdOut -match 'mcp-sql-server' -and $all.StdOut -match 'playwright' -and $flauiOnly.StdOut -notmatch 'playwright' -and $flauiOnly.ExitCode -eq 1 -and $flauiOnly.StdOut -notmatch 'mcp-sql-server' -and $before -ceq $after -and -not (Test-Path -LiteralPath $environment.CallLog)
     }
     Test-Case 'SC07 -WhatIf：以假 claude 零次呼叫，桌面版設定檔不變，結束碼 0' {
         $environment = New-ScriptEnvironment
@@ -952,8 +1242,11 @@ try {
         $executableDirectory = Split-Path -Parent $codex.Executable
         $run = Invoke-RegisterScript -Environment $environment -Arguments @('-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', '.\FlaUI.Mcp.exe', '-BackupRoot', $codex.Backups) -WorkingDirectory $executableDirectory
         $text = Get-FileText -Path $codex.Config
+        $calls = @(Get-Content -LiteralPath $environment.CallLog)
+        # 假 claude 不寫登記檔：以檔案模擬 Claude 端已登記為絕對路徑，-Check 以同一個相對路徑檢查時 Codex 與 Claude 兩端都一致。
+        [IO.File]::WriteAllText((Join-Path $environment.UserProfile '.claude.json'), ([ordered]@{ mcpServers = [ordered]@{ 'flaui-mcp' = [ordered]@{ type = 'stdio'; command = $codex.Executable; args = @(); env = [ordered]@{} } } } | ConvertTo-Json -Depth 8), $utf8)
         $check = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-FlaUI', '-CodexConfigPath', $codex.Config, '-FlaUIPath', '.\FlaUI.Mcp.exe') -WorkingDirectory $executableDirectory
-        $run.ExitCode -eq 0 -and $text.Contains("command = '" + $codex.Executable + "'") -and -not $text.Contains("command = '.\") -and $check.ExitCode -eq 0
+        $run.ExitCode -eq 0 -and $text.Contains("command = '" + $codex.Executable + "'") -and -not $text.Contains("command = '.\") -and $calls.Count -eq 1 -and $calls[0].Contains('flaui-mcp -- ' + $codex.Executable) -and $check.ExitCode -eq 0
     }
     Test-Case 'SC09 -FlaUI 同時更新 -MachineConfigPath 登記的帳號：全部完成時結束碼 0；其中一個帳號沒有 config.toml 時其餘照常更新、結束碼 1；沒有登記帳號時結束碼不受影響' {
         $environment = New-ScriptEnvironment
@@ -987,6 +1280,85 @@ try {
         $injected = if ($index -ge 0) { [string]$run.Arguments[$index + 1] } else { '' }
         $explicit = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-FlaUI', '-MachineConfigPath', 'X:\explicit.json')
         $index -ge 0 -and $injected.StartsWith($environment.Root, [StringComparison]::OrdinalIgnoreCase) -and -not (Test-Path -LiteralPath $injected) -and @($explicit.Arguments | Where-Object { $_ -ceq '-MachineConfigPath' }).Count -eq 1
+    }
+
+    Test-Case 'SC12 -Playwright 與 -PlaywrightOutputDir：以假 claude 收到一次 mcp add（輸出目錄為指定值，相對路徑先轉成絕對路徑）；沒有 -Playwright 時 -PlaywrightOutputDir 被拒絕且不呼叫；-WhatIf 零次呼叫' {
+        $environment = New-ScriptEnvironment
+        $outputDirectory = Join-Path $environment.Root 'pw-out'
+        $run = Invoke-RegisterScript -Environment $environment -Arguments @('-Playwright', '-PlaywrightOutputDir', $outputDirectory)
+        $calls = @(Get-Content -LiteralPath $environment.CallLog)
+        $expectedPattern = '^mcp add -e PLAYWRIGHT_MCP_OUTPUT_DIR=' + [regex]::Escape($outputDirectory) + ' --transport stdio --scope user playwright -- cmd /c npx -y @playwright/mcp@latest\s*$'
+
+        $relativeEnvironment = New-ScriptEnvironment
+        $relativeRun = Invoke-RegisterScript -Environment $relativeEnvironment -Arguments @('-Playwright', '-PlaywrightOutputDir', '.\rel-out') -WorkingDirectory $relativeEnvironment.Root
+        $relativeCalls = @(Get-Content -LiteralPath $relativeEnvironment.CallLog)
+
+        $orphanEnvironment = New-ScriptEnvironment
+        $orphan = Invoke-RegisterScript -Environment $orphanEnvironment -Arguments @('-McpLab', '-PlaywrightOutputDir', $outputDirectory)
+
+        $whatIfEnvironment = New-ScriptEnvironment
+        $whatIf = Invoke-RegisterScript -Environment $whatIfEnvironment -Arguments @('-Playwright', '-PlaywrightOutputDir', $outputDirectory, '-WhatIf')
+        $run.ExitCode -eq 0 -and $calls.Count -eq 1 -and $calls[0] -match $expectedPattern -and
+        $relativeRun.ExitCode -eq 0 -and $relativeCalls.Count -eq 1 -and $relativeCalls[0].Contains('PLAYWRIGHT_MCP_OUTPUT_DIR=' + (Join-Path $relativeEnvironment.Root 'rel-out')) -and
+        $orphan.ExitCode -eq 1 -and -not (Test-Path -LiteralPath $orphanEnvironment.CallLog) -and
+        $whatIf.ExitCode -eq 0 -and -not (Test-Path -LiteralPath $whatIfEnvironment.CallLog)
+    }
+    Test-Case 'SC13 -Check -Playwright：未登記時結束碼 1；使用者層登記檔有相符的 playwright 時結束碼 0；不呼叫 claude、不寫入任何檔案' {
+        $environment = New-ScriptEnvironment
+        $outputDirectory = Join-Path $environment.Root 'pw-out'
+        $before = Get-FileSnapshot -Directory $environment.Root
+        $missing = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-Playwright', '-PlaywrightOutputDir', $outputDirectory)
+        $missingUnchanged = $before -ceq (Get-FileSnapshot -Directory $environment.Root)
+        $registered = [ordered]@{ mcpServers = [ordered]@{ playwright = [ordered]@{ type = 'stdio'; command = 'cmd'; args = @('/c', 'npx', '-y', '@playwright/mcp@latest'); env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $outputDirectory } } } }
+        [IO.File]::WriteAllText((Join-Path $environment.UserProfile '.claude.json'), ($registered | ConvertTo-Json -Depth 8), $utf8)
+        $ok = Invoke-RegisterScript -Environment $environment -Arguments @('-Check', '-Playwright', '-PlaywrightOutputDir', $outputDirectory)
+        $missing.ExitCode -eq 1 -and $missingUnchanged -and $missing.StdOut -match '\[缺少\] playwright' -and $ok.ExitCode -eq 0 -and $ok.StdOut -match '\[符合\] playwright' -and -not (Test-Path -LiteralPath $environment.CallLog)
+    }
+
+    Test-Case 'PW15 LocalAppData 指向目前工作階段沒有的磁碟機：Resolve-PlaywrightOutputDir 不丟例外，由路徑驗證判定（語法上完整的路徑照常回傳，PowerShell provider 路徑回傳錯誤）；登記與 -Check 同樣不中斷' {
+        $missingDrive = $null
+        foreach ($code in 90..68) {
+            $letter = [string][char]$code
+            if (-not (Test-Path -LiteralPath ($letter + ':\'))) { $missingDrive = $letter; break }
+        }
+        if ($null -eq $missingDrive) { return [pscustomobject]@{ Skip = '沒有未使用的磁碟機代號' } }
+        $unmappedAppData = $missingDrive + ':\appdata'
+        $thrown = $false
+        $unmapped = $null
+        try { $unmapped = Resolve-PlaywrightOutputDir -OutputDir '' -LocalAppData $unmappedAppData } catch { $thrown = $true }
+        $providerPath = Resolve-PlaywrightOutputDir -OutputDir '' -LocalAppData 'HKLM:\Software'
+        Reset-Stubs
+        $registered = Invoke-PlaywrightRegistration -UserMcp (New-UserMcpFile -Exclude @('playwright')) -LocalAppData $unmappedAppData
+        $checked = Invoke-PlaywrightCheck -UserMcp (New-UserMcpFile -Exclude @('playwright')) -LocalAppData $unmappedAppData
+        -not $thrown -and $unmapped.Ok -and $unmapped.Path -ceq ($unmappedAppData + '\ai-agents\playwright-mcp') -and -not $providerPath.Ok -and $providerPath.Message.Length -gt 0 -and
+        $null -eq $registered.Error -and $registered.Result[0].Problems -eq 0 -and $script:CliCalls.Count -eq 1 -and
+        $null -eq $checked.Error -and $checked.Result[0] -eq 1 -and (($checked.Info -join "`n") -match '\[缺少\] playwright（Claude Code）')
+    }
+    Test-Case 'SC14 LOCALAPPDATA 未設定時只影響需要它的目標：-Playwright 加 -PlaywrightOutputDir 照常登記一次；-McpLab 不受影響；-Playwright 未指定目錄與 -FlaUI 未指定路徑各自結束碼 1、不呼叫 claude 並指向對應參數；-FlaUI 加 -FlaUIPath 不需要它' {
+        $withDirectoryEnvironment = New-ScriptEnvironment
+        $outputDirectory = Join-Path $withDirectoryEnvironment.Root 'pw-out'
+        $withDirectory = Invoke-RegisterScript -Environment $withDirectoryEnvironment -Arguments @('-Playwright', '-PlaywrightOutputDir', $outputDirectory) -UnsetLocalAppData
+        $withDirectoryCalls = @(Get-Content -LiteralPath $withDirectoryEnvironment.CallLog)
+
+        $mcpLabEnvironment = New-ScriptEnvironment
+        $mcpLab = Invoke-RegisterScript -Environment $mcpLabEnvironment -Arguments @('-McpLab') -UnsetLocalAppData
+        $mcpLabCalls = @(Get-Content -LiteralPath $mcpLabEnvironment.CallLog)
+
+        $noDirectoryEnvironment = New-ScriptEnvironment
+        $noDirectory = Invoke-RegisterScript -Environment $noDirectoryEnvironment -Arguments @('-Playwright') -UnsetLocalAppData
+
+        $noFlaUIPathEnvironment = New-ScriptEnvironment
+        $noFlaUIPath = Invoke-RegisterScript -Environment $noFlaUIPathEnvironment -Arguments @('-FlaUI') -UnsetLocalAppData
+
+        $explicitFlaUIEnvironment = New-ScriptEnvironment
+        $codex = New-CodexFixture -Text $baseConfig
+        $explicitFlaUI = Invoke-RegisterScript -Environment $explicitFlaUIEnvironment -Arguments @('-FlaUI', '-FlaUIPath', $codex.Executable, '-CodexConfigPath', $codex.Config, '-BackupRoot', $codex.Backups) -UnsetLocalAppData
+
+        $withDirectory.ExitCode -eq 0 -and $withDirectoryCalls.Count -eq 1 -and $withDirectoryCalls[0].Contains('PLAYWRIGHT_MCP_OUTPUT_DIR=' + $outputDirectory) -and
+        $mcpLab.ExitCode -eq 0 -and $mcpLabCalls.Count -eq 11 -and
+        $noDirectory.ExitCode -eq 1 -and -not (Test-Path -LiteralPath $noDirectoryEnvironment.CallLog) -and (($noDirectory.StdOut + $noDirectory.StdErr) -match '-PlaywrightOutputDir') -and
+        $noFlaUIPath.ExitCode -eq 1 -and -not (Test-Path -LiteralPath $noFlaUIPathEnvironment.CallLog) -and (($noFlaUIPath.StdOut + $noFlaUIPath.StdErr) -match '-FlaUIPath') -and
+        $explicitFlaUI.ExitCode -eq 0
     }
 
     # ---- 靜態檢查 ----
@@ -1024,6 +1396,13 @@ try {
     }
     Test-Case 'G05 腳本不引用真實的使用者目錄：路徑只由 $env:USERPROFILE、$env:LOCALAPPDATA 與參數決定' {
         $scriptText -cnotmatch '[A-Za-z]:\\Users' -and $libText -cnotmatch '[A-Za-z]:\\Users' -and $scriptText -cmatch 'LOCALAPPDATA' -and $scriptText -cmatch 'USERPROFILE'
+    }
+    Test-Case 'G06 Invoke-ClaudeFixedStdioMcpStep 不直接啟動任何外部程式：沒有 & 或 . 呼叫運算子、沒有 claude 與 Start-Process 命令，登記只經 Invoke-ClaudeMcpRegister（其呼叫 Invoke-ClaudeCli）' {
+        $function = @($libAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Invoke-ClaudeFixedStdioMcpStep' }, $true))[0]
+        $commands = @($function.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+        $names = @($commands | ForEach-Object { $_.GetCommandName() })
+        $operators = @($commands | Where-Object { $_.InvocationOperator -ne [System.Management.Automation.Language.TokenKind]::Unknown })
+        $null -ne $function -and $operators.Count -eq 0 -and $names -cnotcontains 'claude' -and $names -cnotcontains 'Start-Process' -and $names -cnotcontains 'Invoke-ClaudeCli' -and $names -ccontains 'Invoke-ClaudeMcpRegister'
     }
 }
 finally {

@@ -1,5 +1,5 @@
 ﻿#Requires -Version 7.0
-# Claude Code 使用者層設定模組：MCP 登記範本與計畫、官方外掛安裝、settings.json 合併、前置軟體與連接埠探測。
+# Claude Code 使用者層設定模組：MCP 登記範本與計畫（含不經範本的固定形狀 stdio 登記計畫）、官方外掛安裝、settings.json 合併、前置軟體與連接埠探測。
 # 由 Setup-AIGlobalConfig.ps1 與 Register-McpServer.ps1 在版本判斷之後以 dot-source 載入，只定義函式，不在載入時執行任何動作。
 # Claude CLI 的呼叫函式（Invoke-ClaudeCli、Get-ClaudeList、Get-ClaudeProperty）定義在本檔；測試以同名函式替身取代。
 # 寫入邊界：MCP 登記只經 Claude CLI 的 mcp add 子命令；使用者層登記檔只做唯讀讀取，且一律以 -AsHashTable 剖析（該檔含僅大小寫不同的鍵）。
@@ -193,11 +193,12 @@ function Test-ClaudeMcpInfraLabValue {
 
 function Get-ClaudeMcpEntryValue {
     # 取使用者層登記項目的欄位值；項目不是物件或欄位不存在時回傳 $null。
+    # 以 `,` 包一層再回傳，避免管線把單元素陣列展開成單一值、把 [] 展開成 $null，使型別檢查看到的是檔案裡的原始型別。
     param($Entry, [string]$Name)
 
     if ($Entry -isnot [System.Collections.IDictionary]) { return $null }
     if (-not $Entry.Contains($Name)) { return $null }
-    return $Entry[$Name]
+    return , $Entry[$Name]
 }
 
 function Get-ClaudeMcpStdioArguments {
@@ -286,9 +287,109 @@ function Get-ClaudeMcpPlan {
     return $plan.ToArray()
 }
 
+function Test-ClaudeMcpLocalPath {
+    # 固定形狀的 stdio 登記（Get-ClaudeFixedStdioMcpPlan）會把路徑交給 claude 命令列：須為完整的 Windows 絕對路徑，
+    # 且不含引號、命令分隔與展開用字元（" ' & | < > ^ % ! ;、反引號）與控制字元，長度不超過 260。理由同 Test-ClaudeMcpInfraLabValue（claude 可能是 .cmd 外殼）。
+    # 空白允許，由 PowerShell 以單一引數傳遞。
+    [CmdletBinding()]
+    param([AllowNull()][AllowEmptyString()][string]$Path)
+
+    if ([string]::IsNullOrEmpty($Path) -or $Path.Length -gt 260) { return $false }
+    if (-not [IO.Path]::IsPathFullyQualified($Path)) { return $false }
+    if ($Path -cmatch '["''&|<>^%!;`\x00-\x1f\x7f]') { return $false }
+    return $true
+}
+
+function Get-ClaudeFixedStdioMcpPlan {
+    # 固定形狀的 stdio 登記計畫（Playwright MCP 與 FlaUI.Mcp）：不經範本，內容由呼叫端提供的定義決定。
+    # Definition 欄位：Name、Command、Args（字串陣列）、Env（有序 hashtable 或 $null）、CommandMatch（cmd-leaf：命令的檔名為 cmd 或 cmd.exe；path：不分大小寫比對完整路徑）、
+    #   PathValues（登記時須通過 Test-ClaudeMcpLocalPath 的路徑，含 Command 與 Env 內的路徑值）。
+    # Existing 為 Get-ClaudeUserMcpServer 的 Servers。回傳單一計畫項目，欄位與 Get-ClaudeMcpPlan 相同（Name、Action、DifferingField、Arguments），可直接交給 Invoke-ClaudeMcpRegister。
+    # Action：add；invalid-path（名稱不存在且路徑驗證未通過，不呼叫 claude）；unchanged；differs（已存在但 type、command、args、env 任一不同，保留現有登記）。
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Definition,
+        [AllowNull()]$Existing
+    )
+
+    $name = $Definition.Name
+    $exists = ($null -ne $Existing) -and ($Existing -is [System.Collections.IDictionary]) -and $Existing.Contains($name)
+    $differing = New-Object 'System.Collections.Generic.List[string]'
+    $action = 'unchanged'
+    $arguments = $null
+
+    if (-not $exists) {
+        $pathsValid = $true
+        foreach ($pathValue in @($Definition.PathValues)) {
+            if (-not (Test-ClaudeMcpLocalPath -Path $pathValue)) { $pathsValid = $false }
+        }
+        if ($pathsValid) {
+            $action = 'add'
+            # -e 之後緊接 --transport：伺服器名稱不得直接接在 --env 之後。
+            $arguments = @('mcp', 'add')
+            if ($null -ne $Definition.Env) {
+                foreach ($key in $Definition.Env.Keys) { $arguments += @('-e', ('{0}={1}' -f $key, $Definition.Env[$key])) }
+            }
+            $arguments += @('--transport', 'stdio', '--scope', 'user', $name, '--', $Definition.Command)
+            $arguments += @($Definition.Args)
+        }
+        else { $action = 'invalid-path' }
+    }
+    else {
+        $entry = $Existing[$name]
+        $entryType = Get-ClaudeMcpEntryValue $entry 'type'
+        $entryCommand = Get-ClaudeMcpEntryValue $entry 'command'
+        # args 為 [] 的登記（claude mcp add 對無引數的伺服器就是這樣存）取得空陣列，與欄位不存在（$null）分開。
+        $entryArgs = Get-ClaudeMcpEntryValue $entry 'args'
+        $entryEnv = Get-ClaudeMcpEntryValue $entry 'env'
+        if ($entryType -isnot [string] -or $entryType -cne 'stdio') { $differing.Add('type') }
+
+        $commandMatches = $false
+        if ($entryCommand -is [string]) {
+            if ($Definition.CommandMatch -ceq 'cmd-leaf') {
+                $leaf = $entryCommand.Replace('/', '\').Split('\')[-1]
+                $commandMatches = ($leaf -ieq 'cmd') -or ($leaf -ieq 'cmd.exe')
+            }
+            else { $commandMatches = ($entryCommand -ieq $Definition.Command) }
+        }
+        if (-not $commandMatches) { $differing.Add('command') }
+
+        $expectedArgs = @($Definition.Args)
+        # 預期沒有引數時，登記的 args 缺少或為 [] 都視為相符。
+        $argsMatch = ($expectedArgs.Count -eq 0 -and $null -eq $entryArgs) -or (($entryArgs -is [array]) -and ($entryArgs.Count -eq $expectedArgs.Count))
+        if ($argsMatch) {
+            for ($i = 0; $i -lt $expectedArgs.Count; $i++) {
+                if ($entryArgs[$i] -isnot [string] -or $entryArgs[$i] -cne $expectedArgs[$i]) { $argsMatch = $false }
+            }
+        }
+        if (-not $argsMatch) { $differing.Add('args') }
+
+        if ($null -ne $Definition.Env) {
+            $envMatch = $entryEnv -is [System.Collections.IDictionary]
+            if ($envMatch) {
+                foreach ($key in $Definition.Env.Keys) {
+                    if (-not $entryEnv.Contains($key) -or $entryEnv[$key] -isnot [string] -or $entryEnv[$key] -ine $Definition.Env[$key]) { $envMatch = $false }
+                }
+            }
+            if (-not $envMatch) { $differing.Add('env') }
+        }
+        if ($differing.Count -gt 0) { $action = 'differs' }
+    }
+    return [pscustomobject]@{
+        Name           = $name
+        Action         = $action
+        DifferingField = $differing.ToArray()
+        Arguments      = $arguments
+    }
+}
+
 function Get-ClaudeMcpPlanMessage {
-    # differs 與 needs-values 的固定說明文字，不印出現有值（現有值可能含使用者加入的權杖）。
+    # differs、needs-values 與 invalid-path 的固定說明文字，不印出現有值（現有值可能含使用者加入的權杖）。
     param([Parameter(Mandatory)]$Item)
+
+    if ($Item.Action -eq 'invalid-path') {
+        return "$($Item.Name) 尚未登記，且要寫入的路徑不是完整的絕對路徑或含有不允許的字元（引號、& | < > ^ % ! ;、反引號、控制字元），未呼叫 claude；改用不含這些字元的完整路徑後重新執行登記腳本"
+    }
 
     if ($Item.Action -eq 'differs') {
         $fields = @($Item.DifferingField) -join '、'

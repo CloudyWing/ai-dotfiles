@@ -1,9 +1,9 @@
 ﻿#Requires -Version 7.0
-# MCP 登記腳本（Register-McpServer.ps1）的實際內容：mcp-lab 與 infra-lab 登記到 Claude Code 使用者層，FlaUI.Mcp 的指令寫入 Codex 桌面版設定檔，以及三者的唯讀檢查。
+# MCP 登記腳本（Register-McpServer.ps1）的實際內容：mcp-lab、infra-lab 與 Playwright MCP 登記到 Claude Code 使用者層，FlaUI.Mcp 的指令寫入 Codex 桌面版設定檔並登記到 Claude Code 使用者層，以及各項的唯讀檢查。
 # 由 Register-McpServer.ps1 在版本判斷之後以 dot-source 載入，只定義函式，不在載入時執行任何動作。
 # 本檔使用 lib\claude-user-config.ps1 的函式（範本讀取、登記計畫、Claude CLI 呼叫、WSL 與連接埠探測），
 # 以及 codex-run\45-profile-sync.ps1 的 Read-CodexAccountConfigState、Test-CodexMcpServerMentioned（讀取 TOML 設定檔的編碼與行尾、判斷伺服器是否可能已被定義）。
-# 寫入邊界：Claude 端只經 claude mcp add（Invoke-ClaudeMcpStep）；Codex 設定檔只在 Set-FlaUIMcpCommand（桌面版）與 Set-FlaUIMcpAccountCommand（.local\machine.json 登記的派工帳號）內寫入，
+# 寫入邊界：Claude 端只經 claude mcp add（Invoke-ClaudeMcpStep 與 Invoke-ClaudeFixedStdioMcpStep）；Codex 設定檔只在 Set-FlaUIMcpCommand（桌面版）與 Set-FlaUIMcpAccountCommand（.local\machine.json 登記的派工帳號）內寫入，
 # 兩者都只新增或更新 [mcp_servers.flaui-mcp] 的 command（派工帳號缺少該表時依 Setup 複製的形式追加整張表，含 enabled = false），其餘位元組不變；
 # 每個檔案寫入前各備份一份（同一次執行共用一個備份目錄，以相對路徑區分來源），寫入前確認原檔自讀取後未被改動，設定檔是連結時寫入連結指向的實際檔案；
 # 不建立設定檔，不刪除 .codex 目錄下的任何檔案（暫存檔只在寫入流程內建立並取代原檔）。
@@ -319,6 +319,119 @@ function Get-FlaUIAccountCheckItem {
     return @($items.ToArray())
 }
 
+function Get-PlaywrightMcpDefinition {
+    # Playwright MCP 在 Claude Code 使用者層的登記內容（單一常數來源）。命令與引數與 Codex test 檔位（登錄表 codex-test 的 playwright）相同，沿用 @playwright/mcp@latest；
+    # 原生 Windows 的 npx 是批次檔，以 cmd /c 啟動使 CLI 不論是否直接啟動批次檔都能執行。輸出目錄以環境變數 PLAYWRIGHT_MCP_OUTPUT_DIR 設定，避免自動命名的檔案落在受測專案的根目錄。
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$OutputDir)
+
+    return [pscustomobject]@{
+        Name         = 'playwright'
+        Command      = 'cmd'
+        Args         = @('/c', 'npx', '-y', '@playwright/mcp@latest')
+        Env          = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $OutputDir }
+        CommandMatch = 'cmd-leaf'
+        PathValues   = @($OutputDir)
+    }
+}
+
+function Get-FlaUIClaudeMcpDefinition {
+    # FlaUI.Mcp 在 Claude Code 使用者層的登記內容：命令為 -FlaUIPath 解析後的絕對路徑（與 Codex 設定檔同一個路徑），無引數、無環境變數（已安裝的 FlaUI.Mcp 為 stdio）。
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$ExecutablePath)
+
+    return [pscustomobject]@{
+        Name         = 'flaui-mcp'
+        Command      = $ExecutablePath
+        Args         = @()
+        Env          = $null
+        CommandMatch = 'path'
+        PathValues   = @($ExecutablePath)
+    }
+}
+
+function Resolve-PlaywrightOutputDir {
+    # 決定 PLAYWRIGHT_MCP_OUTPUT_DIR。OutputDir 有值時以它為準；省略時預設為 <LocalAppData>\ai-agents\playwright-mcp（LocalAppData 省略時讀 %LOCALAPPDATA%）。
+    # mcp-lab 與 Playwright MCP 是給這台電腦所有專案共用的工具，產物放機器層級，與 %LOCALAPPDATA%\ai-agents\mcp-calls\ 同一慣例；
+    # 專案的 .local 是給 Agent 自身使用的，不放這兩個 MCP 的產物，也因此預設值不隨 repo 或連結的 worktree 變動。
+    # LocalAppData 未設定或空白且未指定 OutputDir 時回傳錯誤。路徑須通過 Test-ClaudeMcpLocalPath。回傳 Ok、Path、Message。
+    [CmdletBinding()]
+    param(
+        [AllowNull()][AllowEmptyString()][string]$OutputDir,
+        [AllowNull()][AllowEmptyString()][string]$LocalAppData = $env:LOCALAPPDATA
+    )
+
+    $result = [pscustomobject]@{ Ok = $false; Path = $null; Message = '' }
+    if ([string]::IsNullOrWhiteSpace($OutputDir)) {
+        if ([string]::IsNullOrWhiteSpace($LocalAppData)) {
+            $result.Message = '環境變數 LOCALAPPDATA 未設定或為空白，無法決定預設輸出目錄。以 -PlaywrightOutputDir 明示完整的絕對路徑後重新執行'
+            return $result
+        }
+        # 以 Combine 組路徑，不經 PowerShell provider 解析；LocalAppData 指向目前工作階段沒有的磁碟機時，也由下方的路徑驗證判定。
+        $OutputDir = [IO.Path]::Combine($LocalAppData, 'ai-agents\playwright-mcp')
+    }
+    if (-not (Test-ClaudeMcpLocalPath -Path $OutputDir)) {
+        $result.Message = 'Playwright MCP 的輸出目錄不是完整的絕對路徑或含有不允許的字元（引號、& | < > ^ % ! ;、反引號、控制字元）；改用不含這些字元的完整路徑'
+        return $result
+    }
+    $result.Ok = $true
+    $result.Path = $OutputDir
+    return $result
+}
+function Get-ClaudeFixedStdioCheckItem {
+    # 固定形狀 stdio 登記（playwright、flaui-mcp）在 Claude Code 使用者層的唯讀檢查項目。Registered 為 Get-ClaudeUserMcpServer 的回傳值。
+    # 狀態：ok、missing（未登記，或要寫入的路徑無效）、mismatch（已登記但內容與預期不同，不印出現有值）、unknown（登記檔無法讀取）。
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]$Definition,
+        [Parameter(Mandatory)]$Registered,
+        [Parameter(Mandatory)][string]$Target,
+        [Parameter(Mandatory)][string]$ItemName,
+        [Parameter(Mandatory)][string]$Expected,
+        [Parameter(Mandatory)][string]$RegisterHint
+    )
+
+    if ($null -ne $Registered.Error) {
+        return (New-McpCheckItem -Target $Target -Name $ItemName -Status 'unknown' -Expected $Expected -Detail ('使用者層登記檔無法讀取（原因：' + $Registered.Error + '）'))
+    }
+    $planItem = Get-ClaudeFixedStdioMcpPlan -Definition $Definition -Existing $Registered.Servers
+    switch ($planItem.Action) {
+        'unchanged' { return (New-McpCheckItem -Target $Target -Name $ItemName -Status 'ok' -Expected $Expected) }
+        'differs' { return (New-McpCheckItem -Target $Target -Name $ItemName -Status 'mismatch' -Expected $Expected -Detail (Get-ClaudeMcpPlanMessage -Item $planItem)) }
+        'invalid-path' { return (New-McpCheckItem -Target $Target -Name $ItemName -Status 'missing' -Expected $Expected -Detail ('未登記；' + (Get-ClaudeMcpPlanMessage -Item $planItem))) }
+        default { return (New-McpCheckItem -Target $Target -Name $ItemName -Status 'missing' -Expected $Expected -Detail ('未登記；' + $RegisterHint)) }
+    }
+}
+
+function Invoke-ClaudeFixedStdioMcpStep {
+    # 固定形狀 stdio 登記（Playwright MCP、FlaUI.Mcp）到 Claude Code 使用者層：只經 Invoke-ClaudeMcpRegister（claude mcp add），已存在不覆寫。
+    # 前置失敗（找不到 claude CLI、登記檔無法讀取）以例外回報，由呼叫端計為問題；各項結果的 Status 為 added、whatif、unchanged、differs、invalid-path、failed。
+    [CmdletBinding(SupportsShouldProcess)]
+    param(
+        [Parameter(Mandatory)][object[]]$Definition,
+        [Parameter(Mandatory)][string]$UserMcpPath
+    )
+
+    if ($null -eq (Get-Command -Name 'claude' -CommandType Application -ErrorAction SilentlyContinue)) { throw '找不到 claude CLI，略過 MCP 登記。' }
+    $registered = Get-ClaudeUserMcpServer -Path $UserMcpPath
+    if ($null -ne $registered.Error) { throw ("使用者層登記檔無法讀取（原因：{0}），略過 MCP 登記。" -f $registered.Error) }
+    $plan = @(foreach ($item in $Definition) { Get-ClaudeFixedStdioMcpPlan -Definition $item -Existing $registered.Servers })
+    $results = @(Invoke-ClaudeMcpRegister -Plan $plan -WhatIf:$WhatIfPreference)
+    foreach ($result in $results) {
+        switch ($result.Status) {
+            'added' { Write-Host ("  ✅  MCP 登記：{0}" -f $result.Name) -ForegroundColor DarkGreen }
+            'whatif' { Write-Host ("  MCP 登記（預演，未執行）：{0}" -f $result.Name) }
+            'failed' { Write-Warning ("MCP 登記失敗：{0}：{1}" -f $result.Name, $result.Message) }
+            'differs' { Write-Warning $result.Message }
+            'invalid-path' { Write-Warning $result.Message }
+        }
+    }
+    $unchangedNames = @($results | Where-Object { $_.Status -eq 'unchanged' } | ForEach-Object { $_.Name })
+    if ($unchangedNames.Count -gt 0) { Write-Host ("  MCP 登記：{0} 已登記且與預期相符" -f ($unchangedNames -join '、')) -ForegroundColor DarkGray }
+    if (@($results | Where-Object { $_.Status -eq 'added' }).Count -gt 0) { Write-Host '  新登記的 MCP 需要重新啟動 Claude Code 的 Session 才會載入。' }
+    return $results
+}
+
 function Get-ClaudeMcpCheckItem {
     # Claude Code 使用者層的 MCP 登記（只讀）。Group 為 mcp-lab 與 infra-lab 的子集。
     # mcp-lab 服務是否啟動只對 127.0.0.1 的埠做連線探測，不送請求內容，結果只寫入備註；infra-lab 選取時另檢查 WSL 是否存在。
@@ -384,34 +497,57 @@ function Invoke-McpRegistrationCheck {
     # 唯讀檢查：回報所選項目是否已登記，不寫入任何檔案。全部符合回傳 0，否則回傳 1；備註（服務未啟動、執行檔不存在）不影響結果。
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)][ValidateSet('mcp-lab', 'infra-lab', 'flaui')][string[]]$Target,
+        [Parameter(Mandatory)][ValidateSet('mcp-lab', 'infra-lab', 'flaui', 'playwright')][string[]]$Target,
         [Parameter(Mandatory)][string]$McpTemplatePath,
         [Parameter(Mandatory)][string]$UserMcpPath,
         [Parameter(Mandatory)][string]$CodexConfigPath,
-        [Parameter(Mandatory)][string]$FlaUIPath,
+        # 只在 Target 含 flaui 時使用；沒有選 flaui 時呼叫端可傳空字串。
+        [Parameter(Mandatory)][AllowEmptyString()][string]$FlaUIPath,
         [AllowNull()][AllowEmptyString()][string]$InfraLabDistro,
         [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo,
         # .local\machine.json 的路徑；FlaUI 檢查時一併檢查其 codex_accounts 登記的派工帳號。省略或檔案不存在時只檢查桌面版。
-        [AllowNull()][AllowEmptyString()][string]$MachineConfigPath
+        [AllowNull()][AllowEmptyString()][string]$MachineConfigPath,
+        # Playwright MCP 的輸出目錄（絕對路徑）；省略時依 Resolve-PlaywrightOutputDir 取預設值 <LocalAppData>\ai-agents\playwright-mcp。LocalAppData 供測試注入，省略時讀 %LOCALAPPDATA%。
+        [AllowNull()][AllowEmptyString()][string]$PlaywrightOutputDir,
+        [AllowNull()][AllowEmptyString()][string]$LocalAppData = $env:LOCALAPPDATA
     )
 
     $notes = New-Object 'System.Collections.Generic.List[string]'
     $items = New-Object 'System.Collections.Generic.List[object]'
-    $claudeGroups = @($Target | Where-Object { $_ -ne 'flaui' })
+    $claudeGroups = @($Target | Where-Object { $_ -notin @('flaui', 'playwright') })
     if ($claudeGroups.Count -gt 0) {
         foreach ($item in @(Get-ClaudeMcpCheckItem -Group $claudeGroups -McpTemplatePath $McpTemplatePath -UserMcpPath $UserMcpPath -InfraLabDistro $InfraLabDistro -InfraLabWslRepo $InfraLabWslRepo -Note $notes)) { $items.Add($item) }
     }
+    $registeredFixed = $null
+    if ($Target -contains 'flaui' -or $Target -contains 'playwright') { $registeredFixed = Get-ClaudeUserMcpServer -Path $UserMcpPath }
     if ($Target -contains 'flaui') {
         $items.Add((Get-FlaUIMcpCheckItem -ConfigPath $CodexConfigPath -ExecutablePath $FlaUIPath -Note $notes))
         foreach ($accountItem in @(Get-FlaUIAccountCheckItem -MachineConfigPath $MachineConfigPath -DesktopConfigPath $CodexConfigPath -Note $notes)) { $items.Add($accountItem) }
+        $items.Add((Get-ClaudeFixedStdioCheckItem -Definition (Get-FlaUIClaudeMcpDefinition -ExecutablePath $FlaUIPath) -Registered $registeredFixed -Target 'flaui' -ItemName 'flaui-mcp（Claude Code）' `
+                    -Expected ('stdio，command 為 ' + $FlaUIPath) -RegisterHint '執行 Register-McpServer.ps1 -FlaUI 登記（Claude Code 使用者層）'))
+    }
+    if ($Target -contains 'playwright') {
+        $playwrightName = 'playwright（Claude Code）'
+        $resolved = Resolve-PlaywrightOutputDir -OutputDir $PlaywrightOutputDir -LocalAppData $LocalAppData
+        if (-not $resolved.Ok) {
+            $items.Add((New-McpCheckItem -Target 'playwright' -Name $playwrightName -Status 'unknown' -Expected '輸出目錄可決定' -Detail $resolved.Message))
+        }
+        else {
+            $definition = Get-PlaywrightMcpDefinition -OutputDir $resolved.Path
+            $items.Add((Get-ClaudeFixedStdioCheckItem -Definition $definition -Registered $registeredFixed -Target 'playwright' -ItemName $playwrightName `
+                        -Expected ('stdio，經 cmd /c npx -y @playwright/mcp@latest 啟動，輸出目錄為 ' + $resolved.Path) -RegisterHint '執行 Register-McpServer.ps1 -Playwright 登記'))
+        }
+        if ($null -eq (Get-Command -Name 'npx' -ErrorAction SilentlyContinue)) {
+            $notes.Add('找不到 npx；Playwright MCP 啟動時會失敗。腳本不安裝 Node.js')
+        }
     }
 
     $label = @{ ok = '符合'; missing = '缺少'; mismatch = '內容不符'; unknown = '無法判定' }
     Write-Host "`n>>> MCP 登記唯讀檢查：只讀取現況，不寫入任何檔案。" -ForegroundColor Cyan
-    foreach ($group in @('mcp-lab', 'infra-lab', 'flaui', 'claude')) {
+    foreach ($group in @('mcp-lab', 'infra-lab', 'flaui', 'playwright', 'claude')) {
         $groupItems = @($items | Where-Object { $_.Target -ceq $group })
         if ($groupItems.Count -eq 0) { continue }
-        Write-Host ("`n" + $(switch ($group) { 'mcp-lab' { 'mcp-lab（Claude Code）' } 'infra-lab' { 'infra-lab（Claude Code）' } 'flaui' { 'FlaUI.Mcp（Codex 桌面版與派工帳號）' } default { 'Claude Code' } })) -ForegroundColor Cyan
+        Write-Host ("`n" + $(switch ($group) { 'mcp-lab' { 'mcp-lab（Claude Code）' } 'infra-lab' { 'infra-lab（Claude Code）' } 'flaui' { 'FlaUI.Mcp（Codex 桌面版、派工帳號與 Claude Code）' } 'playwright' { 'Playwright MCP（Claude Code）' } default { 'Claude Code' } })) -ForegroundColor Cyan
         foreach ($item in $groupItems) {
             $color = switch ($item.Status) { 'ok' { 'DarkGreen' } 'unknown' { 'Yellow' } default { 'Red' } }
             $line = '  [' + $label[$item.Status] + '] ' + $item.Name
@@ -435,24 +571,31 @@ function Invoke-McpRegistration {
     # differs（已登記但與範本不同）只回報、保留現有登記，不算問題；失敗、缺值、FlaUI 執行檔或設定檔不存在、設定檔寫法無法確定算問題。
     [CmdletBinding(SupportsShouldProcess)]
     param(
-        [Parameter(Mandatory)][ValidateSet('mcp-lab', 'infra-lab', 'flaui')][string[]]$Target,
+        [Parameter(Mandatory)][ValidateSet('mcp-lab', 'infra-lab', 'flaui', 'playwright')][string[]]$Target,
         [Parameter(Mandatory)][string]$McpTemplatePath,
         [Parameter(Mandatory)][string]$UserMcpPath,
         [Parameter(Mandatory)][string]$CodexConfigPath,
-        [Parameter(Mandatory)][string]$FlaUIPath,
+        # 只在 Target 含 flaui 時使用；沒有選 flaui 時呼叫端可傳空字串。
+        [Parameter(Mandatory)][AllowEmptyString()][string]$FlaUIPath,
         [Parameter(Mandatory)][string]$BackupRoot,
         [AllowNull()][AllowEmptyString()][string]$InfraLabDistro,
         [AllowNull()][AllowEmptyString()][string]$InfraLabWslRepo,
         # .local\machine.json 的路徑；FlaUI 寫入完成後一併處理其 codex_accounts 登記的派工帳號。省略或檔案不存在時只處理桌面版。
-        [AllowNull()][AllowEmptyString()][string]$MachineConfigPath
+        [AllowNull()][AllowEmptyString()][string]$MachineConfigPath,
+        # Playwright MCP 的輸出目錄（絕對路徑）；省略時依 Resolve-PlaywrightOutputDir 取預設值 <LocalAppData>\ai-agents\playwright-mcp。LocalAppData 供測試注入，省略時讀 %LOCALAPPDATA%。
+        [AllowNull()][AllowEmptyString()][string]$PlaywrightOutputDir,
+        [AllowNull()][AllowEmptyString()][string]$LocalAppData = $env:LOCALAPPDATA
     )
 
     $problems = 0
     $claudeResults = @()
+    $fixedStdioResults = @()
     $flauiResult = $null
     $accountResults = @()
     $backupContext = New-ConfigBackupContext
-    $claudeGroups = @($Target | Where-Object { $_ -ne 'flaui' })
+    # Claude 端的前置失敗（找不到 claude CLI、登記檔無法讀取）整個 Claude 端只計一個問題，之後的 Claude 步驟略過。
+    $claudeFailed = $false
+    $claudeGroups = @($Target | Where-Object { $_ -notin @('flaui', 'playwright') })
     if ($claudeGroups.Count -gt 0) {
         Write-Host "`n>>> 正在登記 Claude Code 的 MCP 伺服器（$($claudeGroups -join '、')）..." -ForegroundColor Cyan
         try {
@@ -465,8 +608,10 @@ function Invoke-McpRegistration {
         catch {
             Write-Warning $_.Exception.Message
             $problems++
+            $claudeFailed = $true
         }
     }
+
     if ($Target -contains 'flaui') {
         Write-Host "`n>>> 正在寫入 Codex 桌面版的 flaui-mcp 指令..." -ForegroundColor Cyan
         $flauiResult = Set-FlaUIMcpCommand -ConfigPath $CodexConfigPath -ExecutablePath $FlaUIPath -BackupRoot $BackupRoot -BackupContext $backupContext -WhatIf:$WhatIfPreference
@@ -524,5 +669,38 @@ function Invoke-McpRegistration {
         $summaryPrefix = if ($WhatIfPreference) { 'FlaUI 摘要（預覽，沒有寫入任何檔案）' } else { 'FlaUI 摘要' }
         Write-Host ("`n${summaryPrefix}：桌面版 $desktopLabel；$accountSummary。") -ForegroundColor $(if ($problems -eq 0) { 'Green' } else { 'Yellow' })
     }
-    return [pscustomobject]@{ Problems = $problems; ClaudeResults = $claudeResults; FlaUIResult = $flauiResult; AccountResults = $accountResults }
+    # Playwright MCP 與 FlaUI.Mcp 的 Claude 使用者層登記，在 mcp-lab、infra-lab 與 Codex 端的 FlaUI 步驟之後執行。
+    $fixedDefinitions = New-Object 'System.Collections.Generic.List[object]'
+    if ($Target -contains 'playwright') {
+        $resolvedOutput = Resolve-PlaywrightOutputDir -OutputDir $PlaywrightOutputDir -LocalAppData $LocalAppData
+        if ($resolvedOutput.Ok) { $fixedDefinitions.Add((Get-PlaywrightMcpDefinition -OutputDir $resolvedOutput.Path)) }
+        else {
+            Write-Warning ('Playwright MCP 未登記：' + $resolvedOutput.Message)
+            $problems++
+        }
+    }
+    if ($Target -contains 'flaui') {
+        # 執行檔存在且路徑為完整的絕對路徑時才登記；缺失或路徑無效已由下方 Codex 步驟計一個問題，這裡略過並說明，不重複計數。
+        # Codex 桌面版設定檔不存在不阻擋這個步驟（只使用 Claude 的人仍可登記）。
+        if ([IO.Path]::IsPathFullyQualified($FlaUIPath) -and (Test-Path -LiteralPath $FlaUIPath -PathType Leaf)) { $fixedDefinitions.Add((Get-FlaUIClaudeMcpDefinition -ExecutablePath $FlaUIPath)) }
+        else { Write-Host "`n>>> FlaUI.Mcp 的執行檔不存在或路徑不是完整的絕對路徑，略過 Claude Code 使用者層的 flaui-mcp 登記（問題由上方的 Codex 步驟回報）。" -ForegroundColor Yellow }
+    }
+    if ($fixedDefinitions.Count -gt 0) {
+        if ($claudeFailed) {
+            Write-Host "`n>>> Claude Code 的 MCP 前置步驟已失敗（上方警告），略過 Playwright MCP 與 FlaUI.Mcp 的 Claude 端登記。" -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "`n>>> 正在登記 Claude Code 的 MCP 伺服器（$((@($fixedDefinitions | ForEach-Object { $_.Name })) -join '、')）..." -ForegroundColor Cyan
+            try {
+                $fixedStdioResults = @(Invoke-ClaudeFixedStdioMcpStep -Definition $fixedDefinitions.ToArray() -UserMcpPath $UserMcpPath -WhatIf:$WhatIfPreference)
+                $problems += @($fixedStdioResults | Where-Object { $_.Status -in @('failed', 'invalid-path') }).Count
+            }
+            catch {
+                Write-Warning $_.Exception.Message
+                $problems++
+                $claudeFailed = $true
+            }
+        }
+    }
+    return [pscustomobject]@{ Problems = $problems; ClaudeResults = $claudeResults; ClaudeFixedStdioResults = $fixedStdioResults; FlaUIResult = $flauiResult; AccountResults = $accountResults }
 }

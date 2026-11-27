@@ -1234,6 +1234,148 @@ try {
         $written = Read-ClaudeSettingsFile -Path $fixture.Settings
         $result.Status -eq 'created' -and (Test-ClaudeUserConfigJsonEqual $written.Object $settingsTemplateRead.Object) -and $null -eq $written.Object.PSObject.Properties['permissions']
     }
+
+    # ---- 固定形狀的 stdio 登記計畫（Playwright MCP、FlaUI.Mcp）：不經範本 ----
+    $fixedOutputDir = 'D:\Work\ai agents\.local\ai-sessions\scratch\playwright-mcp'
+    $playwrightDefinition = [pscustomobject]@{
+        Name = 'playwright'; Command = 'cmd'; Args = @('/c', 'npx', '-y', '@playwright/mcp@latest')
+        Env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $fixedOutputDir }; CommandMatch = 'cmd-leaf'; PathValues = @($fixedOutputDir)
+    }
+    $flauiExecutable = 'D:\Tools\FlaUI-MCP\FlaUI.Mcp.exe'
+    $flauiDefinition = [pscustomobject]@{ Name = 'flaui-mcp'; Command = $flauiExecutable; Args = @(); Env = $null; CommandMatch = 'path'; PathValues = @($flauiExecutable) }
+    function New-PlaywrightEntry {
+        param([hashtable]$Override = @{})
+        $entry = [ordered]@{ type = 'stdio'; command = 'cmd'; args = @('/c', 'npx', '-y', '@playwright/mcp@latest'); env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $fixedOutputDir } }
+        foreach ($key in $Override.Keys) { $entry[$key] = $Override[$key] }
+        return $entry
+    }
+    Test-Case 'LP01 Test-ClaudeMcpLocalPath：完整的絕對路徑（含空白）通過；相對路徑、磁碟機相對、空值、過長、含引號與命令分隔字元、控制字元都不通過' {
+        $good = @('D:\Work\ai agents\x', 'C:\Users\someone\.local\scratch\playwright-mcp', '\\server\share\dir')
+        $bad = @($null, '', '.\x', 'x', 'C:x', 'D:\a&b', 'D:\a|b', 'D:\a<b', 'D:\a>b', 'D:\a^b', 'D:\a%b', 'D:\a!b', 'D:\a;b', 'D:\a"b', "D:\a'b", 'D:\a`b', "D:\a`nb", "D:\a`tb", ('D:\' + ('x' * 260)))
+        $goodOk = @($good | Where-Object { -not (Test-ClaudeMcpLocalPath -Path $_) }).Count -eq 0
+        $badRejected = @($bad | Where-Object { Test-ClaudeMcpLocalPath -Path $_ }).Count -eq 0
+        $goodOk -and $badRejected
+    }
+    Test-Case 'FS01 playwright 未登記且路徑有效：add，引數序為 mcp add -e PLAYWRIGHT_MCP_OUTPUT_DIR=<dir> --transport stdio --scope user playwright -- cmd /c npx -y @playwright/mcp@latest' {
+        $item = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{}
+        $expected = @('mcp', 'add', '-e', ('PLAYWRIGHT_MCP_OUTPUT_DIR=' + $fixedOutputDir), '--transport', 'stdio', '--scope', 'user', 'playwright', '--', 'cmd', '/c', 'npx', '-y', '@playwright/mcp@latest')
+        $item.Name -ceq 'playwright' -and $item.Action -ceq 'add' -and @($item.DifferingField).Count -eq 0 -and (@($item.Arguments) -join [char]0) -ceq ($expected -join [char]0) -and
+        (Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing $null).Action -ceq 'add'
+    }
+    Test-Case 'FS02 playwright 已登記且 type、command（cmd 或 cmd.exe，路徑前綴與大小寫不拘）、args、env 都相同：unchanged' {
+        $same = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = (New-PlaywrightEntry) }
+        $exe = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = (New-PlaywrightEntry -Override @{ command = 'C:\Windows\System32\CMD.EXE' }) }
+        $envCase = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = (New-PlaywrightEntry -Override @{ env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $fixedOutputDir.ToUpperInvariant() } }) }
+        $same.Action -ceq 'unchanged' -and $null -eq $same.Arguments -and $exe.Action -ceq 'unchanged' -and $envCase.Action -ceq 'unchanged'
+    }
+    Test-Case 'FS03 playwright 的 type、command、args、env 各自不同：differs，DifferingField 只列不同的欄位，不給 Arguments，也不覆寫' {
+        $cases = [ordered]@{
+            type    = @{ type = 'http' }
+            command = @{ command = 'npx' }
+            args    = @{ args = @('/c', 'npx', '-y', '@playwright/mcp@0.0.1') }
+            argsLen = @{ args = @('/c', 'npx', '-y') }
+            env     = @{ env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = 'D:\other' } }
+            envNone = @{ env = [ordered]@{} }
+        }
+        $bad = @()
+        foreach ($key in $cases.Keys) {
+            $item = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = (New-PlaywrightEntry -Override $cases[$key]) }
+            $field = if ($key -ceq 'argsLen') { 'args' } elseif ($key -ceq 'envNone') { 'env' } else { $key }
+            if ($item.Action -cne 'differs' -or (@($item.DifferingField) -join ',') -cne $field -or $null -ne $item.Arguments) { $bad += $key }
+        }
+        $result = @(Invoke-ClaudeMcpRegister -Plan @(Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = (New-PlaywrightEntry -Override @{ env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = 'D:\secret-token-dir' } }) }))
+        $bad.Count -eq 0 -and $result[0].Status -ceq 'differs' -and $result[0].Message.Contains('env') -and -not $result[0].Message.Contains('secret-token-dir')
+    }
+    Test-Case 'FS04 既有項目的欄位型別不符（不是物件、args 不是陣列、env 不是物件）視為 differs，不覆寫' {
+        $notObject = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = 'stdio' }
+        $argsString = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = (New-PlaywrightEntry -Override @{ args = '/c npx' }) }
+        $envString = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = (New-PlaywrightEntry -Override @{ env = 'x' }) }
+        $notObject.Action -ceq 'differs' -and $argsString.Action -ceq 'differs' -and $envString.Action -ceq 'differs' -and (@($notObject.DifferingField) -join ',') -ceq 'type,command,args,env'
+    }
+    Test-Case 'FS05 名稱不存在且路徑含禁用字元或不是絕對路徑：invalid-path，沒有 Arguments，交給 Invoke-ClaudeMcpRegister 時不呼叫 claude 且訊息指出原因' {
+        Reset-Stubs
+        $badDirectory = $playwrightDefinition.PSObject.Copy()
+        $badDirectory.Env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = 'D:\a&b' }
+        $badDirectory.PathValues = @('D:\a&b')
+        $relative = $flauiDefinition.PSObject.Copy()
+        $relative.Command = '.\FlaUI.Mcp.exe'
+        $relative.PathValues = @('.\FlaUI.Mcp.exe')
+        $plan = @((Get-ClaudeFixedStdioMcpPlan -Definition $badDirectory -Existing @{}), (Get-ClaudeFixedStdioMcpPlan -Definition $relative -Existing @{}))
+        $results = @(Invoke-ClaudeMcpRegister -Plan $plan)
+        $plan[0].Action -ceq 'invalid-path' -and $plan[1].Action -ceq 'invalid-path' -and $null -eq $plan[0].Arguments -and $script:CliCalls.Count -eq 0 -and
+        $results[0].Status -ceq 'invalid-path' -and $results[0].Message.Contains('絕對路徑') -and $results[1].Status -ceq 'invalid-path'
+    }
+    Test-Case 'FS06 invalid-path 只在名稱不存在時判定：已登記的項目不驗證要寫入的路徑，依欄位比對為 unchanged 或 differs' {
+        $badDirectory = $playwrightDefinition.PSObject.Copy()
+        $badDirectory.Env = [ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = 'D:\a&b' }
+        $badDirectory.PathValues = @('D:\a&b')
+        $item = Get-ClaudeFixedStdioMcpPlan -Definition $badDirectory -Existing @{ playwright = (New-PlaywrightEntry) }
+        $item.Action -ceq 'differs' -and (@($item.DifferingField) -join ',') -ceq 'env'
+    }
+    Test-Case 'FS07 Invoke-ClaudeMcpRegister 以固定形狀計畫呼叫 claude 一次：引數與計畫相同；結束碼非零時為 failed 且不重試' {
+        Reset-Stubs
+        $plan = @(Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{})
+        $added = @(Invoke-ClaudeMcpRegister -Plan $plan)
+        $callsAfterAdd = $script:CliCalls.Count
+        $firstCall = @($script:CliCalls[0]) -join [char]0
+        $script:CliCalls.Clear()
+        $script:CliHandler = { param($Arguments) [pscustomobject]@{ ExitCode = 1; Output = 'boom' } }
+        $failed = @(Invoke-ClaudeMcpRegister -Plan $plan)
+        $added[0].Status -ceq 'added' -and $callsAfterAdd -eq 1 -and $firstCall -ceq (@($plan[0].Arguments) -join [char]0) -and $failed[0].Status -ceq 'failed' -and $script:CliCalls.Count -eq 1
+    }
+    Test-Case 'FS08 flaui-mcp：未登記為 add，引數序為 mcp add --transport stdio --scope user flaui-mcp -- <path>（無 -e、無額外引數）' {
+        $item = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{}
+        $expected = @('mcp', 'add', '--transport', 'stdio', '--scope', 'user', 'flaui-mcp', '--', $flauiExecutable)
+        $item.Action -ceq 'add' -and (@($item.Arguments) -join [char]0) -ceq ($expected -join [char]0)
+    }
+    Test-Case 'FS09 flaui-mcp 已登記：路徑不分大小寫相同且無 args 為 unchanged；command 不同、多出 args、type 不同為 differs 且列出對應欄位' {
+        $entry = { param([hashtable]$Override = @{}) $value = [ordered]@{ type = 'stdio'; command = $flauiExecutable; args = @(); env = [ordered]@{} }; foreach ($key in $Override.Keys) { $value[$key] = $Override[$key] }; $value }
+        $same = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = (& $entry) }
+        $upper = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = (& $entry @{ command = $flauiExecutable.ToUpperInvariant() }) }
+        $otherPath = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = (& $entry @{ command = 'D:\Other\FlaUI.Mcp.exe' }) }
+        $extraArgs = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = (& $entry @{ args = @('--x') }) }
+        $httpType = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = (& $entry @{ type = 'http' }) }
+        $extraEnv = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = (& $entry @{ env = [ordered]@{ EXTRA = '1' } }) }
+        $noArgsKey = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = [ordered]@{ type = 'stdio'; command = $flauiExecutable } }
+        $same.Action -ceq 'unchanged' -and $noArgsKey.Action -ceq 'unchanged' -and $upper.Action -ceq 'unchanged' -and $otherPath.Action -ceq 'differs' -and (@($otherPath.DifferingField) -join ',') -ceq 'command' -and
+        $extraArgs.Action -ceq 'differs' -and (@($extraArgs.DifferingField) -join ',') -ceq 'args' -and $httpType.Action -ceq 'differs' -and (@($httpType.DifferingField) -join ',') -ceq 'type' -and $extraEnv.Action -ceq 'unchanged'
+    }
+    Test-Case 'FS10 flaui-mcp 的 command 含空白時 add 的引數仍是單一元素；不影響範本計畫：Get-ClaudeMcpPlan 與 Read-ClaudeMcpTemplate 的行為不變（範本仍只有 12 個伺服器且不含 playwright 與 flaui-mcp）' {
+        $spaced = $flauiDefinition.PSObject.Copy()
+        $spaced.Command = 'D:\Program Files\FlaUI MCP\FlaUI.Mcp.exe'
+        $spaced.PathValues = @($spaced.Command)
+        $item = Get-ClaudeFixedStdioMcpPlan -Definition $spaced -Existing @{}
+        $names = @(Read-ClaudeMcpTemplate -Path $mcpTemplatePath | ForEach-Object { $_.Name })
+        $item.Action -ceq 'add' -and @($item.Arguments)[-1] -ceq 'D:\Program Files\FlaUI MCP\FlaUI.Mcp.exe' -and $names.Count -eq 12 -and $names -cnotcontains 'playwright' -and $names -cnotcontains 'flaui-mcp'
+    }
+    Test-Case 'FS11 type、command、env 為單元素陣列、物件或數字時一律 differs 並列出該欄位（不因管線展開誤判為相符）；args 為 [] 的 flaui-mcp 仍為 unchanged' {
+        $cases = [ordered]@{
+            typeArray  = @{ Override = @{ type = @('stdio') }; Field = 'type' }
+            typeObject = @{ Override = @{ type = [ordered]@{ value = 'stdio' } }; Field = 'type' }
+            typeNumber = @{ Override = @{ type = 5 }; Field = 'type' }
+            cmdArray   = @{ Override = @{ command = @('cmd') }; Field = 'command' }
+            cmdObject  = @{ Override = @{ command = [ordered]@{ value = 'cmd' } }; Field = 'command' }
+            cmdNumber  = @{ Override = @{ command = 7 }; Field = 'command' }
+            envArray   = @{ Override = @{ env = @([ordered]@{ PLAYWRIGHT_MCP_OUTPUT_DIR = $fixedOutputDir }) }; Field = 'env' }
+            envNumber  = @{ Override = @{ env = 7 }; Field = 'env' }
+            envEmpty   = @{ Override = @{ env = @() }; Field = 'env' }
+        }
+        $bad = @()
+        foreach ($key in $cases.Keys) {
+            $item = Get-ClaudeFixedStdioMcpPlan -Definition $playwrightDefinition -Existing @{ playwright = (New-PlaywrightEntry -Override $cases[$key].Override) }
+            if ($item.Action -cne 'differs' -or (@($item.DifferingField) -join ',') -cne $cases[$key].Field -or $null -ne $item.Arguments) { $bad += $key }
+        }
+        $flauiArray = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = [ordered]@{ type = @('stdio'); command = @($flauiExecutable); args = @(); env = [ordered]@{} } }
+        $flauiEmptyArgs = Get-ClaudeFixedStdioMcpPlan -Definition $flauiDefinition -Existing @{ 'flaui-mcp' = [ordered]@{ type = 'stdio'; command = $flauiExecutable; args = @(); env = [ordered]@{} } }
+        $bad.Count -eq 0 -and $flauiArray.Action -ceq 'differs' -and (@($flauiArray.DifferingField) -join ',') -ceq 'type,command' -and $flauiEmptyArgs.Action -ceq 'unchanged'
+    }
+    Test-Case 'FS12 範本計畫（Get-ClaudeMcpPlan）同樣依原始型別判定：http 的 type 或 url、infra-lab 的 type 或 command 為單元素陣列時 differs' {
+        $httpServer = @($template | Where-Object { $_.Type -eq 'http' })[0]
+        $infra = @($template | Where-Object { $_.Name -ceq 'infra-lab' })[0]
+        $http = @(Get-ClaudeMcpPlan -Template @($httpServer) -Existing @{ $httpServer.Name = [ordered]@{ type = @('http'); url = @($httpServer.Url) } })[0]
+        $stdio = @(Get-ClaudeMcpPlan -Template @($infra) -Existing @{ 'infra-lab' = [ordered]@{ type = @('stdio'); command = @('wsl.exe'); args = @('-d', 'Ubuntu', '-e', 'bash', '/home/u/repo/scripts/mcp.sh') } } -Distro '' -WslRepo '')[0]
+        $http.Action -ceq 'differs' -and (@($http.DifferingField) -join ',') -ceq 'type,url' -and $stdio.Action -ceq 'differs' -and (@($stdio.DifferingField) -contains 'type') -and (@($stdio.DifferingField) -contains 'command')
+    }
 }
 finally {
     $env:PATH = $originalPath
