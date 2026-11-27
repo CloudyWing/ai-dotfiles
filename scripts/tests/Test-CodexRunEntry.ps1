@@ -1102,8 +1102,8 @@ try {
         Assert-Success $runReview
         Assert-Equal 0 $runReview.ExitCode
     }
-    Test-Case 'E2E-TEST-NO-FALLBACK-SELECTION test 全部候選帳號被服務端拒絕：結束碼 4、fallback.selection 為 stopped（瀏覽器與桌面取證沒有 Claude 替代者），不選出 Sonnet' {
-        $envTest = New-ScanProfileEnvironment -Name 'task-test-no-fallback' -WithMcpCommand
+    Test-Case 'E2E-TEST-FALLBACK-SELECTS-SONNET test 全部候選帳號被服務端拒絕：結束碼 4、fallback.selection 為 selected 且執行者為 sonnet（瀏覽器與桌面取證由 Sonnet 以 MCP 工具承接）' {
+        $envTest = New-ScanProfileEnvironment -Name 'task-test-fallback-sonnet' -WithMcpCommand
         Set-Scenario -Environment $envTest -Account 'acct-a' -Scenario @{ events = $usageLimitEvents; exit_code = 1; last_message = $null; report = $null }
         Set-Scenario -Environment $envTest -Account 'acct-b' -Scenario @{ events = $usageLimitEvents; exit_code = 1; last_message = $null; report = $null }
         $run = Invoke-Entry -Environment $envTest -OrderPath $envTest.OrderPath -ProfileSourceRoot $envTest.ProfileRoot -EntryScript (New-LinkShimWrapper -Environment $envTest)
@@ -1111,8 +1111,8 @@ try {
         Assert-Equal 4 $run.ExitCode
         Assert-Equal 'CodexAccountsExhausted' $run.Document.error.code
         Assert-Equal 'codex-test' $run.Document.fallback.unavailable_executor
-        Assert-Equal 'stopped' $run.Document.fallback.selection.status
-        Assert-True ($null -eq $run.Document.fallback.selection.PSObject.Properties['executor'] -or $null -eq $run.Document.fallback.selection.executor) 'stopped 不應有選出的執行者'
+        Assert-Equal 'selected' $run.Document.fallback.selection.status
+        Assert-Equal 'sonnet' $run.Document.fallback.selection.executor.id
     }
     Test-Case 'E2E-TEST-ENV-SCOPE 其他類型不設定 PLAYWRIGHT_MCP_OUTPUT_DIR，紀錄不含 MCP 欄位' {
         $reviewExec = @((Get-Call -Environment $e1) | Where-Object { $_.subcommand -ceq 'exec' })[0]

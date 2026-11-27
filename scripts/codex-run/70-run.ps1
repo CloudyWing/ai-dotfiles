@@ -81,43 +81,6 @@ function Get-RunMcpToolCallSummary {
     return [ordered]@{ completed = $completed; failed = $failed; servers = [string[]]@($servers) }
 }
 
-function Get-RunDirectoryFileState {
-    [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$Path)
-
-    # 目錄內全部檔案的相對路徑對「長度|最後寫入時間」，目錄不存在時為空。供比對啟動前後哪些檔案是本次新增或變動。
-    # 列舉失敗（例如子目錄沒有存取權限）不拋例外，回傳 ok = $false 與錯誤訊息，呼叫端標示狀態無法判定，不讓派遣失敗。
-    $state = @{}
-    try {
-        if ([IO.Directory]::Exists($Path)) {
-            $root = [IO.Path]::GetFullPath($Path).TrimEnd('\', '/')
-            foreach ($file in [IO.Directory]::EnumerateFiles($Path, '*', [IO.SearchOption]::AllDirectories)) {
-                $info = New-Object System.IO.FileInfo -ArgumentList @($file)
-                $state[[IO.Path]::GetFullPath($file).Substring($root.Length + 1).Replace('\', '/')] = [string]$info.Length + '|' + [string]$info.LastWriteTimeUtc.Ticks
-            }
-        }
-    }
-    catch { return [pscustomobject]@{ ok = $false; files = @{}; error = $_.Exception.Message } }
-    return [pscustomobject]@{ ok = $true; files = $state; error = $null }
-}
-
-function Get-RunOutputArtifact {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)][string]$OutputDirectory,
-        [Parameter(Mandatory)][string]$ReportName
-    )
-
-    # 輸出目錄內報告以外的檔案（截圖、頁面快照等），以相對於輸出目錄的路徑列出。
-    if (-not [IO.Directory]::Exists($OutputDirectory)) { return [string[]]@() }
-    $root = [IO.Path]::GetFullPath($OutputDirectory).TrimEnd('\', '/')
-    $files = foreach ($file in [IO.Directory]::EnumerateFiles($OutputDirectory, '*', [IO.SearchOption]::AllDirectories)) {
-        $relative = [IO.Path]::GetFullPath($file).Substring($root.Length + 1).Replace('\', '/')
-        if ($relative -cne $ReportName) { $relative }
-    }
-    return [string[]]@($files | Sort-Object)
-}
-
 function New-RunPrompt {
     param(
         [Parameter(Mandatory)][object]$Order,
@@ -612,7 +575,7 @@ function Get-RunFallbackSelection {
         $selectorPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'Select-DispatchExecutor.ps1'
         if (-not [IO.File]::Exists($selectorPath)) { throw ('找不到選派入口：' + $selectorPath) }
         $hostPath = (Get-Process -Id $PID).Path
-        # 經本入口的 test 只做 MCP 臨場操作（瀏覽器、桌面），這些硬能力沒有 Claude 替代者，帶 browse 標籤使選派入口回傳 stopped。
+        # 經本入口的 test 只做 MCP 臨場操作（瀏覽器、桌面）。Codex 離線時帶 browse 標籤使選派入口選出 Sonnet（Sonnet 同時具 browse 與 desktop-control），由 Sonnet 以 MCP 工具承接。
         # 不含瀏覽器或桌面操作的測試（build-test）本來就不走本入口，由呼叫端以標籤選到 Claude 執行者。
         $selectorArguments = @('-Type', $TaskType, '-ImplementerFamily', 'claude', '-Offline', $UnavailableExecutorId)
         if ($TaskType -ceq 'test') { $selectorArguments += @('-Tags', 'browse') }

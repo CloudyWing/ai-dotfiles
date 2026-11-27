@@ -499,6 +499,336 @@ try {
             Assert-Equal 0 @(Get-Records).Count ($variant + '：不應寫出紀錄')
         }
     }
+
+    # ---- 測試取證（task_type 為 test）：MCP 工具呼叫的結構化紀錄 ----
+    $testReport = "# 測試取證報告`n`n| 序號 | 工具 |`n| --- | --- |`n| 1 | browser_navigate |`n"
+    function New-TestOrderFile {
+        [CmdletBinding()]
+        param([string]$Name = 'order-test.md', [hashtable]$Override = @{})
+        $merged = @{ task_type = 'test'; profile = 'test'; dispatch_slug = 'test-p1'; report_name = 'test-report.md' }
+        foreach ($key in $Override.Keys) { $merged[$key] = $Override[$key] }
+        return (New-OrderFile -Name $Name -Override $merged)
+    }
+    function New-McpCallFile {
+        # 與 ai-agents-hooks 寫下的紀錄檔同格式：<根>\<agent 目錄>\<tool_use_id>.json。
+        param([string]$Root, [string]$Agent, [string]$Id, [string]$Tool = 'mcp__playwright__browser_click', [string]$Status = 'completed', [Nullable[DateTime]]$Time)
+        $stamp = if ($null -eq $Time) { [DateTime]::UtcNow } else { [DateTime]$Time }
+        $server = ($Tool -replace '^mcp__(.+?)__.*$', '$1')
+        $agentValue = if ($Agent -ceq '_main') { $null } else { $Agent }
+        $directory = Join-Path $Root $Agent
+        $null = New-Item -ItemType Directory -Path $directory -Force
+        $document = [ordered]@{ schema = 'ai-agents.mcp-call.v1'; session_id = 's1'; agent_id = $agentValue; agent_type = 'general-purpose'; tool_use_id = $Id; tool_name = $Tool; server = $server; status = $Status; ts_utc = $stamp.ToUniversalTime().ToString('o'); duration_ms = 5 }
+        if ($Status -ceq 'failed') { $document['is_interrupt'] = $false }
+        Write-TestUtf8 -Path (Join-Path $directory ($Id + '.json')) -Text ($document | ConvertTo-Json -Depth 4)
+    }
+    function Start-TestRun {
+        param([string]$OrderPath)
+        Remove-Runs
+        Write-TestUtf8 -Path $target -Text 'v1'
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $OrderPath, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code $start.Stderr
+        return $start
+    }
+    function Get-RecordOf { param($Start) return (Get-Content -LiteralPath $Start.Json.record_path -Raw | ConvertFrom-Json) }
+
+    Test-Case 'CR-TEST-OK test 類型的 Start 與 End：紀錄含 mcp_tool_calls（completed、failed、servers、tools、attribution、calls、skipped）、artifacts（含截圖、不含報告）、mcp_stray_output；時間窗內唯一 agent 自動採用；已採用的呼叫紀錄檔 End 後刪除' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-ok'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        $draft = Get-RecordOf $start
+        Assert-True ($null -eq $draft.mcp_tool_calls -and $null -eq $draft.artifacts -and $null -eq $draft.mcp_stray_output) 'Start 的草稿三欄應為 null'
+        Assert-Equal 'test' $draft.task_type
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'tu1' -Tool 'mcp__playwright__browser_navigate'
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'tu2' -Tool 'mcp__playwright__browser_click'
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'tu3' -Tool 'mcp__playwright__browser_click' -Status 'failed'
+        Write-TestUtf8 -Path (Join-Path $start.Json.output_dir 'shot-web-1.png') -Text 'png'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot)
+        Assert-Equal 0 $end.Code $end.Stderr
+        Assert-Equal 'success' $end.Json.result
+        Assert-Equal 2 $end.Json.mcp_tool_calls.completed
+        $record = Get-RecordOf $start
+        $calls = $record.mcp_tool_calls
+        Assert-Equal 2 $calls.completed
+        Assert-Equal 1 $calls.failed
+        Assert-Equal 'playwright' (@($calls.servers) -join ',')
+        Assert-Equal 'mcp__playwright__browser_click,mcp__playwright__browser_navigate' (@($calls.tools) -join ',')
+        Assert-Equal 'agent' $calls.attribution
+        Assert-Equal 3 @($calls.calls).Count
+        Assert-Equal 0 $calls.skipped
+        foreach ($field in @('ts_utc', 'tool_name', 'status')) { Assert-True ($null -ne $calls.calls[0].PSObject.Properties[$field]) ('calls 缺少欄位 ' + $field) }
+        Assert-Equal 'shot-web-1.png' (@($record.artifacts) -join ',')
+        Assert-Equal $false $record.mcp_stray_output.exists
+        Assert-Equal 'determined' $record.mcp_stray_output.state
+        Assert-Equal 0 @(Get-ChildItem -LiteralPath (Join-Path $callRoot 'agent-a') -File).Count '已採用的呼叫紀錄檔應刪除'
+    }
+    Test-Case 'CR-TEST-AGENT 給 -AgentId 只取該 agent（其他 agent 的檔案不採用也不刪除）；agent id 含路徑字元時結束碼 2' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-agent'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'a1'
+        New-McpCallFile -Root $callRoot -Agent 'agent-b' -Id 'b1'
+        New-McpCallFile -Root $callRoot -Agent 'agent-b' -Id 'b2' -Tool 'mcp__flaui-mcp__windows_click'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $bad = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', '..\agent-b')
+        Assert-Equal 2 $bad.Code $bad.Stderr
+        Assert-True ($null -eq (Get-RecordOf $start).ended_utc) '拒絕後紀錄應維持未結束'
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', 'agent-b')
+        Assert-Equal 0 $end.Code $end.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-Equal 2 $calls.completed
+        Assert-Equal 'flaui-mcp,playwright' (@($calls.servers) -join ',')
+        Assert-Equal 'agent' $calls.attribution
+        Assert-Equal 1 @(Get-ChildItem -LiteralPath (Join-Path $callRoot 'agent-a') -File).Count '未採用的 agent 的檔案不動'
+        Assert-Equal 0 @(Get-ChildItem -LiteralPath (Join-Path $callRoot 'agent-b') -File).Count
+    }
+    Test-Case 'CR-TEST-AMBIGUOUS 省略 -AgentId 且多個 agent 在時間窗內都有紀錄：結束碼 2、訊息列出候選、紀錄維持未結束、呼叫紀錄檔都在；補 -AgentId 後可 End' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-ambiguous'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'a1'
+        New-McpCallFile -Root $callRoot -Agent 'agent-b' -Id 'b1'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $refused = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot)
+        Assert-Equal 2 $refused.Code $refused.Stderr
+        Assert-True ($refused.Stderr.Contains('ClaudeRunAgentAmbiguous') -and $refused.Stderr.Contains('agent-a') -and $refused.Stderr.Contains('agent-b')) ('訊息應列出候選：' + $refused.Stderr)
+        Assert-True ($null -eq (Get-RecordOf $start).ended_utc) '紀錄應維持未結束'
+        Assert-Equal 2 (@(Get-ChildItem -LiteralPath $callRoot -Recurse -File).Count) '呼叫紀錄檔不應被刪除'
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', 'agent-a')
+        Assert-Equal 0 $end.Code $end.Stderr
+        Assert-Equal 1 (Get-RecordOf $start).mcp_tool_calls.completed
+    }
+    Test-Case 'CR-TEST-WINDOW 時間窗之外的紀錄檔不計入也不刪除，且不造成歧義（Start 之前、End 之後的紀錄）' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-window'
+        $testOrder = New-TestOrderFile
+        New-McpCallFile -Root $callRoot -Agent 'agent-old' -Id 'old1' -Time ([DateTime]::UtcNow.AddHours(-1))
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'a1'
+        New-McpCallFile -Root $callRoot -Agent 'agent-future' -Id 'f1' -Time ([DateTime]::UtcNow.AddHours(1))
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot)
+        Assert-Equal 0 $end.Code $end.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-Equal 1 $calls.completed
+        Assert-Equal 'agent' $calls.attribution
+        Assert-True ([IO.File]::Exists((Join-Path $callRoot 'agent-old\old1.json')) -and [IO.File]::Exists((Join-Path $callRoot 'agent-future\f1.json'))) '時間窗外的檔案不應被刪除'
+    }
+    Test-Case 'CR-TEST-NONE 沒有任何呼叫紀錄檔（根目錄不存在或為空）：completed 與 failed 為 0、servers 為空、attribution 為 none，result 仍依既有條件判定為 success' {
+        $testOrder = New-TestOrderFile
+        $missingRoot = Join-Path (New-TestDirectory -Name 'mcp-calls-none') 'does-not-exist'
+        $start = Start-TestRun -OrderPath $testOrder
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $missingRoot)
+        Assert-Equal 0 $end.Code $end.Stderr
+        Assert-Equal 'success' $end.Json.result
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-True ($calls.completed -eq 0 -and $calls.failed -eq 0 -and @($calls.servers).Count -eq 0 -and @($calls.tools).Count -eq 0 -and @($calls.calls).Count -eq 0 -and $calls.attribution -ceq 'none') '應為零呼叫與 none'
+        $emptyRoot = New-TestDirectory -Name 'mcp-calls-empty'
+        $start2 = Start-TestRun -OrderPath $testOrder
+        Write-TestUtf8 -Path $start2.Json.report_path -Text $testReport
+        $end2 = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $emptyRoot)
+        Assert-Equal 0 $end2.Code $end2.Stderr
+        Assert-Equal 'none' (Get-RecordOf $start2).mcp_tool_calls.attribution
+    }
+    Test-Case 'CR-TEST-MAIN 只有 _main 的紀錄時預設為 none（不採用）；加 -AllowWindowAttribution 才為 window 並採用、刪除該些檔案' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-main'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent '_main' -Id 'm1'
+        New-McpCallFile -Root $callRoot -Agent '_main' -Id 'm2'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $endDefault = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot)
+        Assert-Equal 0 $endDefault.Code $endDefault.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-True ($calls.completed -eq 0 -and $calls.attribution -ceq 'none') '預設不採用 _main'
+        Assert-Equal 2 @(Get-ChildItem -LiteralPath (Join-Path $callRoot '_main') -File).Count
+        $start2 = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent '_main' -Id 'm3'
+        Write-TestUtf8 -Path $start2.Json.report_path -Text $testReport
+        $endWindow = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AllowWindowAttribution')
+        Assert-Equal 0 $endWindow.Code $endWindow.Stderr
+        $windowCalls = (Get-RecordOf $start2).mcp_tool_calls
+        Assert-True ($windowCalls.completed -eq 1 -and $windowCalls.attribution -ceq 'window') ('應為 window 且只計時間窗內的 1 筆：' + ($windowCalls | ConvertTo-Json -Compress))
+        Assert-True (-not [IO.File]::Exists((Join-Path $callRoot '_main\m3.json'))) '採用的檔案應刪除'
+    }
+    Test-Case 'CR-TEST-MAIN-ID 明示 -AgentId 為 _main（含大小寫不同）：結束碼 2、訊息為 ClaudeRunAgentIdReserved 並指向 -AllowWindowAttribution、紀錄維持未結束、_main 的檔案不動；改用 -AllowWindowAttribution 才取得 window' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-main-id'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent '_main' -Id 'm1'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        foreach ($id in @('_main', '_MAIN')) {
+            $refused = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', $id)
+            Assert-Equal 2 $refused.Code $refused.Stderr
+            Assert-True ($refused.Stderr.Contains('ClaudeRunAgentIdReserved') -and $refused.Stderr.Contains('-AllowWindowAttribution')) ('訊息應說明 _main 的取得方式：' + $refused.Stderr)
+            Assert-True ($null -eq (Get-RecordOf $start).ended_utc) '拒絕後紀錄應維持未結束'
+            Assert-Equal 1 @(Get-ChildItem -LiteralPath (Join-Path $callRoot '_main') -File).Count '拒絕時 _main 的檔案不動'
+        }
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AllowWindowAttribution')
+        Assert-Equal 0 $end.Code $end.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-True ($calls.completed -eq 1 -and $calls.attribution -ceq 'window') ('應為 window：' + ($calls | ConvertTo-Json -Compress))
+    }
+    Test-Case 'CR-TEST-MAIN-ID-NOROOT 紀錄根目錄不存在時，明示 -AgentId 為 _main 仍以 ClaudeRunAgentIdReserved（結束碼 2）拒絕，紀錄維持未結束' {
+        $callRoot = Join-Path (New-TestDirectory -Name 'mcp-calls-noroot') 'absent'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $refused = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', '_main')
+        Assert-Equal 2 $refused.Code $refused.Stderr
+        Assert-True ($refused.Stderr.Contains('ClaudeRunAgentIdReserved')) ('應為保留 id 拒絕：' + $refused.Stderr)
+        Assert-True ($null -eq (Get-RecordOf $start).ended_utc) '拒絕後紀錄應維持未結束'
+    }
+    Test-Case 'CR-TEST-ARRAY-AGENT 紀錄檔的 agent_id 為單元素陣列時不展開成字串：計入 skipped，不採用也不刪除' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-array-agent'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'arr'
+        $path = Join-Path $callRoot 'agent-a\arr.json'
+        $document = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+        $document['agent_id'] = @('agent-a')
+        Write-TestUtf8 -Path $path -Text ($document | ConvertTo-Json -Depth 4)
+        Assert-True ((Get-Content -LiteralPath $path -Raw) -match '"agent_id":\s*\[') '前置：agent_id 應寫成陣列'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', 'agent-a')
+        Assert-Equal 0 $end.Code $end.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-True ($calls.completed -eq 0 -and $calls.skipped -eq 1) ('陣列 agent_id 應計入 skipped：' + ($calls | ConvertTo-Json -Compress))
+        Assert-True ([IO.File]::Exists($path)) '未採用的檔案不刪除'
+    }
+    Test-Case 'CR-TEST-ARRAY-FIELDS 紀錄檔的 status、tool_name、server、ts_utc 任一為單元素陣列時計入 skipped；名為 _MAIN 的目錄不參與自動歸屬' {
+        foreach ($field in @('status', 'tool_name', 'server', 'ts_utc')) {
+            $callRoot = New-TestDirectory -Name ('mcp-calls-array-' + $field.Replace('_', '-'))
+            $testOrder = New-TestOrderFile
+            $start = Start-TestRun -OrderPath $testOrder
+            New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'arr'
+            $path = Join-Path $callRoot 'agent-a\arr.json'
+            $document = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+            $document[$field] = @([string]$document[$field])
+            Write-TestUtf8 -Path $path -Text ($document | ConvertTo-Json -Depth 4)
+            Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+            $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', 'agent-a')
+            Assert-Equal 0 $end.Code $end.Stderr
+            $calls = (Get-RecordOf $start).mcp_tool_calls
+            Assert-True ($calls.completed -eq 0 -and $calls.skipped -eq 1) ($field + ' 為陣列時應計入 skipped：' + ($calls | ConvertTo-Json -Compress))
+        }
+        $callRoot = New-TestDirectory -Name 'mcp-calls-upper-main'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent '_MAIN' -Id 'upper'
+        $path = Join-Path $callRoot '_MAIN\upper.json'
+        $document = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json -AsHashtable
+        $document['agent_id'] = '_MAIN'
+        Write-TestUtf8 -Path $path -Text ($document | ConvertTo-Json -Depth 4)
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot)
+        Assert-Equal 0 $end.Code $end.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-True ($calls.attribution -cne 'agent' -and $calls.completed -eq 0) ('_MAIN 不應被當作 agent：' + ($calls | ConvertTo-Json -Compress))
+    }
+    Test-Case 'CR-TEST-ARRAY-ROOT 紀錄檔根層為單元素陣列時計入 skipped，不採用也不刪除' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-array-root'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'root'
+        $path = Join-Path $callRoot 'agent-a\root.json'
+        Write-TestUtf8 -Path $path -Text ('[' + (Get-Content -LiteralPath $path -Raw) + ']')
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', 'agent-a')
+        Assert-Equal 0 $end.Code $end.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-True ($calls.completed -eq 0 -and $calls.skipped -eq 1) ('根層陣列應計入 skipped：' + ($calls | ConvertTo-Json -Compress))
+        Assert-True ([IO.File]::Exists($path)) '未採用的檔案不刪除'
+    }
+    Test-Case 'CR-TEST-DIRMISMATCH 檔案內的 agent_id 與所在目錄不符（agent 目錄內是別的 agent、_main 目錄內有 agent_id）：計入 skipped，不計入 completed、failed、servers，也不刪除' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-dirmismatch'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'good'
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'wrong'
+        New-McpCallFile -Root $callRoot -Agent '_main' -Id 'mainwrong'
+        foreach ($entry in @(@{ Path = (Join-Path $callRoot 'agent-a\wrong.json'); Agent = 'agent-b' }, @{ Path = (Join-Path $callRoot '_main\mainwrong.json'); Agent = 'agent-c' })) {
+            $document = Get-Content -LiteralPath $entry.Path -Raw | ConvertFrom-Json -AsHashtable
+            $document['agent_id'] = $entry.Agent
+            Write-TestUtf8 -Path $entry.Path -Text ($document | ConvertTo-Json -Depth 4)
+        }
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AgentId', 'agent-a')
+        Assert-Equal 0 $end.Code $end.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-True ($calls.completed -eq 1 -and $calls.failed -eq 0 -and $calls.skipped -eq 1 -and $calls.attribution -ceq 'agent') ('只應採用目錄與 agent_id 相符的 1 筆：' + ($calls | ConvertTo-Json -Compress))
+        Assert-True ([IO.File]::Exists((Join-Path $callRoot 'agent-a\wrong.json'))) '不符的檔案不刪除'
+        Assert-True (-not [IO.File]::Exists((Join-Path $callRoot 'agent-a\good.json'))) '採用的檔案應刪除'
+        # 省略 -AgentId：agent 目錄只剩不符的檔案時沒有可歸屬的紀錄；_main 內帶 agent_id 的檔案同樣不採用為 window。
+        $start2 = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'wrong2'
+        New-McpCallFile -Root $callRoot -Agent '_main' -Id 'mainwrong2'
+        foreach ($entry in @(@{ Path = (Join-Path $callRoot 'agent-a\wrong2.json'); Agent = 'agent-b' }, @{ Path = (Join-Path $callRoot '_main\mainwrong2.json'); Agent = 'agent-c' })) {
+            $document = Get-Content -LiteralPath $entry.Path -Raw | ConvertFrom-Json -AsHashtable
+            $document['agent_id'] = $entry.Agent
+            Write-TestUtf8 -Path $entry.Path -Text ($document | ConvertTo-Json -Depth 4)
+        }
+        Write-TestUtf8 -Path $start2.Json.report_path -Text $testReport
+        $end2 = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot, '-AllowWindowAttribution')
+        Assert-Equal 0 $end2.Code $end2.Stderr
+        $calls2 = (Get-RecordOf $start2).mcp_tool_calls
+        Assert-True ($calls2.completed -eq 0 -and $calls2.attribution -ceq 'none' -and $calls2.skipped -ge 2) ('時間窗內不符的檔案不得歸為 agent 或 window：' + ($calls2 | ConvertTo-Json -Compress))
+        Assert-True ([IO.File]::Exists((Join-Path $callRoot '_main\mainwrong2.json'))) '不符的檔案不刪除'
+    }
+    Test-Case 'CR-TEST-SKIPPED 無法剖析、欄位缺少或時間不可解析的呼叫紀錄檔：略過並計入 skipped，不計入 completed 與 failed，也不刪除' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-skipped'
+        $testOrder = New-TestOrderFile
+        $start = Start-TestRun -OrderPath $testOrder
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'ok1'
+        $directory = Join-Path $callRoot 'agent-a'
+        Write-TestUtf8 -Path (Join-Path $directory 'broken.json') -Text '{ not json'
+        Write-TestUtf8 -Path (Join-Path $directory 'nofield.json') -Text '{"schema":"ai-agents.mcp-call.v1","tool_name":"mcp__playwright__x"}'
+        Write-TestUtf8 -Path (Join-Path $directory 'badtime.json') -Text '{"tool_name":"mcp__playwright__x","server":"playwright","status":"completed","ts_utc":"not-a-time"}'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $testOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot)
+        Assert-Equal 0 $end.Code $end.Stderr
+        $calls = (Get-RecordOf $start).mcp_tool_calls
+        Assert-True ($calls.completed -eq 1 -and $calls.failed -eq 0 -and $calls.skipped -eq 3) ('應 completed 1、skipped 3：' + ($calls | ConvertTo-Json -Compress))
+        Assert-True ([IO.File]::Exists((Join-Path $directory 'broken.json'))) '略過的檔案不應被刪除'
+    }
+    Test-Case 'CR-TEST-STRAY .playwright-mcp 在 Start 與 End 之間新增或變動的檔案記入 mcp_stray_output（先前殘留的不算）；該目錄不納入來源雜湊，不使 result 失敗' {
+        $projectRoot = Join-Path (New-TestDirectory -Name 'stray-project') 'proj'
+        $null = New-Item -ItemType Directory -Path (Join-Path $projectRoot '.playwright-mcp') -Force
+        Write-TestUtf8 -Path (Join-Path $projectRoot 'page.html') -Text '<html></html>'
+        Write-TestUtf8 -Path (Join-Path $projectRoot '.playwright-mcp\old.png') -Text 'old'
+        $strayRole = Join-Path $projectRoot 'role.toml'
+        Write-TestUtf8 -Path $strayRole -Text 'role'
+        $strayOrder = New-TestOrderFile -Name 'order-stray.md' -Override @{ execution_root = $projectRoot; targets = @($projectRoot); role_file = $strayRole }
+        Remove-Runs
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $strayOrder, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code $start.Stderr
+        Write-TestUtf8 -Path (Join-Path $projectRoot '.playwright-mcp\new.png') -Text 'new'
+        Write-TestUtf8 -Path $start.Json.report_path -Text $testReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $strayOrder, '-ExecutorId', 'sonnet', '-McpCallRoot', (Join-Path (New-TestDirectory -Name 'stray-calls') 'none'))
+        Assert-Equal 0 $end.Code $end.Stderr
+        Assert-Equal 'success' $end.Json.result
+        Assert-Equal $false $end.Json.source_changed
+        $stray = (Get-RecordOf $start).mcp_stray_output
+        Assert-True ($stray.exists -eq $true -and $stray.state -ceq 'determined' -and (@($stray.files) -join ',') -ceq 'new.png') ('應只記新增的 new.png：' + ($stray | ConvertTo-Json -Compress))
+    }
+    Test-Case 'CR-TEST-NONTEST 非 test 類型（review）的紀錄三個新鍵為 null，不讀取呼叫紀錄；review 的 End 不受 -McpCallRoot 影響' {
+        $callRoot = New-TestDirectory -Name 'mcp-calls-review'
+        New-McpCallFile -Root $callRoot -Agent 'agent-a' -Id 'r1'
+        Remove-Runs
+        Write-TestUtf8 -Path $target -Text 'v1'
+        $start = Invoke-Script $recordScript @('-Action', 'Start', '-DispatchFile', $order, '-ExecutorId', 'sonnet')
+        Assert-Equal 0 $start.Code $start.Stderr
+        Write-TestUtf8 -Path $start.Json.report_path -Text $validReport
+        $end = Invoke-Script $recordScript @('-Action', 'End', '-DispatchFile', $order, '-ExecutorId', 'sonnet', '-McpCallRoot', $callRoot)
+        Assert-Equal 0 $end.Code $end.Stderr
+        $record = Get-RecordOf $start
+        foreach ($field in @('mcp_tool_calls', 'artifacts', 'mcp_stray_output')) {
+            Assert-True ($null -ne $record.PSObject.Properties[$field]) ('審查紀錄應有欄位 ' + $field)
+            Assert-True ($null -eq $record.$field) ($field + ' 應為 null')
+        }
+        Assert-True ($null -eq $end.Json.PSObject.Properties['mcp_tool_calls']) '審查的 End 輸出不應含 mcp_tool_calls'
+        Assert-True ([IO.File]::Exists((Join-Path $callRoot 'agent-a\r1.json'))) '審查不應刪除呼叫紀錄檔'
+    }
 }
 finally {
     $exitCode = Complete-TestRun

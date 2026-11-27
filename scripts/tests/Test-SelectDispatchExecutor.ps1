@@ -271,7 +271,7 @@ try {
         # design 類型：不要求旗標、禁用 write、沒有優先條件、不可略過；受理者依排序為 sonnet、opus。
         $design = @($describe.Json.types | Where-Object { $_.name -eq 'design' })[0]
         $acceptors = @($describe.Json.executors | Where-Object { @($_.accepts) -contains 'design' } | ForEach-Object { $_.id })
-        $null -ne $design -and @($design.requiredFlags).Count -eq 0 -and (@($design.forbiddenTags) -join ',') -eq 'write' -and @($design.preferred).Count -eq 0 -and $design.skippable -eq $false -and
+        $null -ne $design -and @($design.requiredFlags).Count -eq 0 -and (@($design.forbiddenTags) -join ',') -eq 'write,browse,desktop-control' -and @($design.preferred).Count -eq 0 -and $design.skippable -eq $false -and
         ($acceptors -join ',') -ceq 'sonnet,opus'
     }
     Test-Case D08 {
@@ -322,11 +322,11 @@ try {
     }
 
     Test-Case P21C {
-        # 類型特徵 skippable：只有登錄表宣告的類型得到 omitted，其他類型離線仍是 stopped
+        # 類型特徵 skippable：只有登錄表宣告的類型得到 omitted，其他沒有替代者的類型離線仍是 stopped；test 的瀏覽器標籤離線時由 sonnet 承接
         $advise = @($registryRaw.types.PSObject.Properties | Where-Object { $null -ne $_.Value.PSObject.Properties['skippable'] -and $_.Value.skippable -eq $true } | ForEach-Object { $_.Name })
         $generate = Invoke-Selector -Arguments (Split-Args '-Type generate -Offline codex-factcheck')
         $browse = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse -Offline codex-test')
-        ($advise -join ',') -eq 'advise' -and $generate.ExitCode -eq 22 -and $generate.Json.status -eq 'stopped' -and $browse.ExitCode -eq 22 -and $browse.Json.status -eq 'stopped'
+        ($advise -join ',') -eq 'advise' -and $generate.ExitCode -eq 22 -and $generate.Json.status -eq 'stopped' -and $browse.ExitCode -eq 0 -and $browse.Json.status -eq 'selected' -and $browse.Json.executor.id -ceq 'sonnet'
     }
 
     Test-Case P21D {
@@ -494,7 +494,7 @@ try {
     Test-Case F03 {
         foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control')) {
             $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', 'codex-test'))
-            if ($r.ExitCode -ne 22 -or $r.Json.status -ne 'stopped' -or $r.Json.reason -ne 'offline' -or $null -ne $r.Json.executor) { throw "未停止：$case" }
+            if ($r.ExitCode -ne 0 -or $r.Json.status -ne 'selected' -or $r.Json.executor.id -cne 'sonnet') { throw "codex-test 離線時未選出 sonnet：$case" }
         }
         $generate = Invoke-Selector -Arguments ((Split-Args '-Type generate') + @('-Offline', 'codex-factcheck'))
         if ($generate.ExitCode -ne 22 -or $generate.Json.status -ne 'stopped' -or $generate.Json.reason -ne 'offline' -or $null -ne $generate.Json.executor) { throw '-Type generate 離線未停止' }
@@ -518,17 +518,19 @@ try {
         $factcheck = Invoke-Selector -Arguments ((Split-Args '-Type factcheck') + @('-Offline', $allCodex))
         $review = Invoke-Selector -Arguments ((Split-Args '-Type review -ImplementerFamily claude') + @('-Offline', $allCodex))
         $advise = Invoke-Selector -Arguments ((Split-Args '-Type advise -ImplementerFamily claude') + @('-Offline', $allCodex))
-        $test.ExitCode -eq 22 -and $test.Json.status -eq 'stopped' -and
+        $test.ExitCode -eq 0 -and $test.Json.status -eq 'selected' -and $test.Json.executor.id -ceq 'sonnet' -and
         $generate.ExitCode -eq 22 -and $generate.Json.status -eq 'stopped' -and
         $factcheck.ExitCode -eq 0 -and $factcheck.Json.executor.id -eq 'sonnet' -and @($factcheck.Json.unmetPreferences).Count -eq 0 -and
         $review.ExitCode -eq 0 -and $review.Json.status -eq 'selected' -and $review.Json.executor.id -eq 'sonnet' -and
         $advise.ExitCode -eq 21 -and $advise.Json.status -eq 'omitted' -and $null -eq $advise.Json.executor
     }
     Test-Case F23 {
-        foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control', '-Type generate')) {
+        foreach ($case in @('-Type test -Tags browse', '-Type test -Tags desktop-control')) {
             $r = Invoke-Selector -Arguments ((Split-Args $case) + @('-Offline', $allCodex))
-            if ($r.ExitCode -ne 22 -or $r.Json.status -ne 'stopped' -or $null -ne $r.Json.executor) { throw "全 Codex 離線時未停止：$case" }
+            if ($r.ExitCode -ne 0 -or $r.Json.status -ne 'selected' -or $r.Json.executor.id -cne 'sonnet') { throw "全 Codex 離線時未選出 sonnet：$case" }
         }
+        $generate = Invoke-Selector -Arguments ((Split-Args '-Type generate') + @('-Offline', $allCodex))
+        if ($generate.ExitCode -ne 22 -or $generate.Json.status -ne 'stopped' -or $null -ne $generate.Json.executor) { throw '全 Codex 離線時 generate 未停止' }
         $true
     }
     Test-Case F07 {
@@ -1018,21 +1020,59 @@ try {
             }).Count -eq 0
     }
     Test-Case EN09 {
-        # 測試取證：Codex test 只做 MCP 操作（browse、desktop-control、web），建置與測試命令（build-test）改由 Claude 執行者承接。
+        # 測試取證：Codex test 優先承接 MCP 操作（browse、desktop-control、web）；建置與測試命令（build-test）、
+        # 以及 browse 加 build-test 的組合（Codex 不具 build-test）由 sonnet 承接。
         $browse = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse')
         $desktop = Invoke-Selector -Arguments (Split-Args '-Type test -Tags desktop-control')
         $build = Invoke-Selector -Arguments (Split-Args '-Type test -Tags build-test')
         $browseBuild = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse,build-test')
         $browse.ExitCode -eq 0 -and $browse.Json.executor.id -ceq 'codex-test' -and $desktop.ExitCode -eq 0 -and $desktop.Json.executor.id -ceq 'codex-test' `
-            -and $build.ExitCode -eq 0 -and $build.Json.executor.id -ceq 'sonnet' -and $browseBuild.ExitCode -ne 0 -and $browseBuild.Json.status -ceq 'stopped'
+            -and $build.ExitCode -eq 0 -and $build.Json.executor.id -ceq 'sonnet' -and $browseBuild.ExitCode -eq 0 -and $browseBuild.Json.status -ceq 'selected' -and $browseBuild.Json.executor.id -ceq 'sonnet'
     }
-    Test-Case EN10 {
-        # 經 Invoke-CodexRun.ps1 的 test 全數離線時，入口以 -Tags browse 重新選派（Get-RunFallbackSelection）：瀏覽器與桌面取證沒有 Claude 替代者，必須是 stopped。
+    Test-Case EN15 {
+        # 經 Invoke-CodexRun.ps1 的 test 全數離線時，入口以 -Tags browse 重新選派（Get-RunFallbackSelection）：Sonnet 同時具 browse 與 desktop-control，選出 sonnet。
         $offline = @('-Offline', 'codex-test,codex-factcheck,codex-review,codex-advisor')
-        $stopped = Invoke-Selector -Arguments ((Split-Args '-Type test -ImplementerFamily claude -Tags browse') + $offline)
-        $desktopStopped = Invoke-Selector -Arguments ((Split-Args '-Type test -ImplementerFamily claude -Tags desktop-control') + $offline)
-        $stopped.ExitCode -ne 0 -and $stopped.Json.status -ceq 'stopped' -and $null -eq $stopped.Json.executor `
-            -and $desktopStopped.ExitCode -ne 0 -and $desktopStopped.Json.status -ceq 'stopped'
+        $browse = Invoke-Selector -Arguments ((Split-Args '-Type test -ImplementerFamily claude -Tags browse') + $offline)
+        $desktop = Invoke-Selector -Arguments ((Split-Args '-Type test -ImplementerFamily claude -Tags desktop-control') + $offline)
+        $browse.ExitCode -eq 0 -and $browse.Json.status -ceq 'selected' -and $browse.Json.executor.id -ceq 'sonnet' `
+            -and $desktop.ExitCode -eq 0 -and $desktop.Json.status -ceq 'selected' -and $desktop.Json.executor.id -ceq 'sonnet'
+    }
+    Test-Case EN11 {
+        # codex-test 離線：browse 與 desktop-control 各選出 sonnet，considered 的 codex-test 為 offline，dispatchLine 標明已略過 codex-test。
+        foreach ($tag in @('browse', 'desktop-control')) {
+            $r = Invoke-Selector -Arguments (Split-Args ('-Type test -Tags ' + $tag + ' -Offline codex-test'))
+            $reasons = @{}
+            foreach ($row in $r.Json.considered) { $reasons[$row.id] = $row.reason }
+            if ($r.ExitCode -ne 0 -or $r.Json.status -cne 'selected' -or $r.Json.executor.id -cne 'sonnet') { throw "未選出 sonnet：$tag" }
+            if ($reasons['codex-test'] -cne 'offline' -or $reasons['sonnet'] -cne 'selected') { throw "considered 不符：$tag" }
+            if (-not $r.Json.dispatchLine.Contains('已略過 codex-test（離線）')) { throw "dispatchLine 缺少略過說明：$tag" }
+        }
+        $true
+    }
+    Test-Case EN12 {
+        # 同一任務 codex-test 未完成達上限：轉給 sonnet；Codex 具備且可用時仍以 Codex 為優先。
+        $moved = Invoke-Selector -Arguments (Split-Args '-Type test -Tags browse -Incomplete codex-test:3')
+        $first = Invoke-Selector -Arguments (Split-Args '-Type test -Tags desktop-control')
+        $moved.ExitCode -eq 0 -and $moved.Json.status -ceq 'selected' -and $moved.Json.executor.id -ceq 'sonnet' -and $first.Json.executor.id -ceq 'codex-test'
+    }
+    Test-Case EN13 {
+        # 七種非 test 類型帶 browse 或 desktop-control 一律以 SelectorTagNotAllowed、結束碼 2 拒絕，標籤語意只留給 test。
+        $cases = @('-Type edit -E true -T false', '-Type survey', '-Type design', '-Type generate', '-Type factcheck', '-Type review -ImplementerFamily claude', '-Type advise -ImplementerFamily claude')
+        $bad = @()
+        foreach ($case in $cases) {
+            foreach ($tag in @('browse', 'desktop-control')) {
+                if (-not (Assert-Rejected ($case + ' -Tags ' + $tag) 'SelectorTagNotAllowed')) { $bad += ($case + ' / ' + $tag) }
+            }
+        }
+        if ($bad.Count -gt 0) { throw ('未被拒絕：' + ($bad -join '；')) }
+        $true
+    }
+    Test-Case EN14 {
+        # 登錄表：sonnet 具兩個標籤且排序值大於 codex-test，test 維持禁用 write。
+        $sonnet = Get-ExecutorNode $registryRaw 'sonnet'
+        $codexTest = Get-ExecutorNode $registryRaw 'codex-test'
+        @($sonnet.tags) -contains 'browse' -and @($sonnet.tags) -contains 'desktop-control' -and $sonnet.order -gt $codexTest.order -and
+        (@($registryRaw.types.test.forbiddenTags) -join ',') -ceq 'write' -and @($sonnet.accepts) -contains 'test'
     }
     Test-Case EN03 {
         $r = Invoke-Selector -Arguments (Split-Args '-Type survey')

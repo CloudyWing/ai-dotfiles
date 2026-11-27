@@ -2,6 +2,8 @@ import type { Engine, Register } from 'claude-code'
 import type { HookIo } from './core/io'
 import { docPathReminder } from './core/doc-path'
 import { hostGuardDenyReason } from './core/host-guard'
+import { WATCHED_MCP_TOOL_PATTERN, writeMcpCallRecord } from './core/mcp-call-record'
+import type { McpCallKind } from './core/mcp-call-record'
 import { postEditWriteMessages } from './core/post-edit-write'
 
 const EDIT_TOOLS = /^(Edit|Write)$/
@@ -21,7 +23,8 @@ function ioOf($: Engine): HookIo {
       try { return (await $.fs.stat(path)).kind === 'dir' } catch { return false }
     },
     run: async argv => (await $.process.run(argv, { timeoutMs: GIT_TIMEOUT_MS })).exitCode,
-    log: text => { $.ui.log(text, { to: 'debug' }) }
+    log: text => { $.ui.log(text, { to: 'debug' }) },
+    writeText: (path, text) => $.fs.write(path, text)
   }
 }
 
@@ -37,6 +40,14 @@ async function docPath($: Engine, input: unknown): Promise<string | undefined> {
 
 async function postEditWrite($: Engine, input: unknown): Promise<void> {
   await postEditWriteMessages(ioOf($), input)
+}
+
+// 受控 MCP 伺服器（Playwright、FlaUI.Mcp）的工具呼叫，每次寫一個紀錄檔到 %LOCALAPPDATA%\ai-agents\mcp-calls\<agent_id 或 _main>\。
+// LOCALAPPDATA 未設定、事件不屬於受控伺服器或寫入失敗時不寫入，也不影響工具結果。
+async function recordMcpCall($: Engine, input: unknown, kind: McpCallKind): Promise<void> {
+  let root: string | undefined
+  try { root = await $.env.get('LOCALAPPDATA') } catch { root = undefined }
+  await writeMcpCallRecord(ioOf($), root, input, kind, new Date().toISOString())
 }
 
 function withContext<Result extends { additionalContext?: string[] }>(result: Result, text: string | undefined): Result {
@@ -59,5 +70,15 @@ export const register: Register = on => {
   on('classic.PostToolUse', { tool_name: EDIT_TOOLS }, async ($, e, next) => {
     const reminder = await docPath($, e)
     return withContext(await next(e), reminder)
+  })
+
+  on('classic.PostToolUse', { tool_name: WATCHED_MCP_TOOL_PATTERN }, async ($, e, next) => {
+    await recordMcpCall($, e, 'completed')
+    return next(e)
+  })
+
+  on('classic.PostToolUseFailure', { tool_name: WATCHED_MCP_TOOL_PATTERN }, async ($, e, next) => {
+    await recordMcpCall($, e, 'failed')
+    return next(e)
   })
 }

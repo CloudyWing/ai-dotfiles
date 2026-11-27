@@ -1,7 +1,7 @@
 ﻿#Requires -Version 7.0
 <#
 .SYNOPSIS
-為 Claude 執行者（以 Agent 工具派生的 subagent）的一次審查寫出執行紀錄，與 Invoke-CodexRun.ps1 的紀錄放在同一個 runs 目錄。
+為 Claude 執行者（以 Agent 工具派生的 subagent）的一次審查或測試取證寫出執行紀錄，與 Invoke-CodexRun.ps1 的紀錄放在同一個 runs 目錄。
 
 .DESCRIPTION
 Claude 沒有入口行程可記錄，因此由協調者在派生前後各呼叫一次。
@@ -24,7 +24,14 @@ End 時 targets 已被刪除或來源狀態無法計算，視為來源已變：s
 審查類型的 Start 另在輸出目錄寫出 worktree-inventory.md（由 Write-RunWorktreeInventory 產生），紀錄加 worktree_inventory（path、sha256、bytes、head、sha256_end、error），End 時 path 非 null 才填 sha256_end，不影響 result。
 盤點產生失敗（RunWorktreeInventoryFailed）時 Start 不停止：stderr 輸出一行警告，紀錄的 worktree_inventory 為 path、sha256、bytes、head、sha256_end 皆 null 且 error 為錯誤訊息，stdout 不帶 worktree_inventory_path 而帶 worktree_inventory_error，結束碼 0；其他錯誤照舊往外拋。
 
-stdout 輸出 ASCII 跳脫的 JSON（action、run_key、record_path、output_dir、report_path，Start 另有 model，審查類型另有 worktree_inventory_path 或（盤點失敗時）worktree_inventory_error；End 另有 result、failure_reason、source_changed、dispatch_changed、review_report_check）。
+測試取證類型（task_type 為 test，經 Playwright MCP 或 FlaUI.Mcp 操作）的紀錄另有三個欄位，欄位名稱與 Codex 的 test 紀錄相同，其他類型為 null：
+mcp_tool_calls（completed、failed、servers，另有 Claude 專有的 tools、attribution、calls、skipped）、artifacts（輸出目錄內報告以外的檔案）、mcp_stray_output（工作目錄根下 .playwright-mcp 在 Start 與 End 之間新增或變動的檔案）。
+mcp_tool_calls 取自 ai-agents-hooks 在每次 MCP 工具呼叫寫下的紀錄檔（<LOCALAPPDATA>\ai-agents\mcp-calls\<agent id 或 _main>\<tool_use_id>.json，只含歸屬與結果狀態，不含工具輸入輸出），
+只取時間在 started_utc 到本次 End 時間之間者，歸屬依 -AgentId；省略 -AgentId 時採用時間窗內唯一有紀錄的 agent，有多個時以結束碼 2（ClaudeRunAgentAmbiguous）拒絕、紀錄維持未結束，補 -AgentId 後重跑 End。
+沒有任何紀錄檔時 completed 與 failed 為 0、attribution 為 none，不改變 result，由回收規則退回。-AllowWindowAttribution 是退路：沒有任何 agent 有紀錄時改取主執行緒（_main）的紀錄，attribution 為 window，只靠時間窗歸屬。
+紀錄寫出之後刪除已採用的呼叫紀錄檔；Start 記下 .playwright-mcp 的檔案狀態，來源狀態雜湊排除該目錄。
+
+stdout 輸出 ASCII 跳脫的 JSON（action、run_key、record_path、output_dir、report_path，Start 另有 model，審查類型另有 worktree_inventory_path 或（盤點失敗時）worktree_inventory_error；End 另有 result、failure_reason、source_changed、dispatch_changed、review_report_check，測試取證另有 mcp_tool_calls 摘要）。
 診斷與錯誤寫 stderr。
 
 .PARAMETER Action
@@ -41,6 +48,15 @@ Start 或 End。
 
 .PARAMETER AiAgentsRoot
 派遣檔 role_file 可位於其下的根目錄，測試與診斷用。預設為使用者目錄下的 .ai-agents。
+
+.PARAMETER AgentId
+End 時使用，測試取證類型的取證者 agent id（Agent 工具結果的 agentId）。省略時由呼叫紀錄的時間窗判定。不可為 _main（主執行緒的紀錄目錄），否則以結束碼 2（ClaudeRunAgentIdReserved）拒絕、紀錄維持未結束；主執行緒的紀錄只能經 -AllowWindowAttribution 取得。
+
+.PARAMETER McpCallRoot
+MCP 工具呼叫紀錄檔的根目錄，測試用。預設為 <LOCALAPPDATA>\ai-agents\mcp-calls。
+
+.PARAMETER AllowWindowAttribution
+End 時使用，只作退路：沒有任何 agent 有呼叫紀錄時改取主執行緒（_main）在時間窗內的紀錄，attribution 為 window。
 #>
 [CmdletBinding()]
 param(
@@ -56,7 +72,13 @@ param(
 
     [string]$RegistryPath,
 
-    [string]$AiAgentsRoot
+    [string]$AiAgentsRoot,
+
+    [string]$AgentId,
+
+    [string]$McpCallRoot,
+
+    [switch]$AllowWindowAttribution
 )
 
 Set-StrictMode -Version Latest
@@ -64,7 +86,7 @@ $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding -ArgumentList @($false)
 
 $moduleRoot = Join-Path $PSScriptRoot 'codex-run'
-foreach ($module in @('00-common.ps1', '10-order.ps1', '35-review-check.ps1', '45-profile-sync.ps1', '50-source-state.ps1')) {
+foreach ($module in @('00-common.ps1', '10-order.ps1', '35-review-check.ps1', '45-profile-sync.ps1', '50-source-state.ps1', '55-mcp-evidence.ps1')) {
     . (Join-Path $moduleRoot $module)
 }
 
@@ -188,7 +210,17 @@ try {
             }
         }
         $startedAt = [DateTime]::UtcNow
-        $sourceStart = Get-RunSourceState -ExecutionRoot $order.execution_root -Target $order.targets -ExcludeRoot @($order.report_line_root)
+        # 測試取證：Playwright MCP 的檔案可能寫到工作目錄根下的 .playwright-mcp（明確檔名或登記未設輸出目錄時），不納入來源雜湊，另以 mcp_stray_output 記錄 Start 與 End 之間新增或變動的檔案。
+        $isTest = ($order.task_type -ceq 'test')
+        $sourceExclude = @($order.report_line_root)
+        $strayState = $null
+        if ($isTest) {
+            $strayMcpOutput = Join-Path $order.execution_root '.playwright-mcp'
+            $sourceExclude += $strayMcpOutput
+            $strayBefore = Get-RunDirectoryFileState -Path $strayMcpOutput
+            $strayState = [ordered]@{ path = $strayMcpOutput; ok = $strayBefore.ok; files = $strayBefore.files; error = $strayBefore.error }
+        }
+        $sourceStart = Get-RunSourceState -ExecutionRoot $order.execution_root -Target $order.targets -ExcludeRoot $sourceExclude
         $record = [ordered]@{
             schema = 'ai-agents.claude-run-record.v1'
             executor_platform = 'claude'
@@ -233,7 +265,11 @@ try {
             report = $null
             review_report_check = $null
             permission = $null
+            mcp_tool_calls = $null
+            artifacts = $null
+            mcp_stray_output = $null
         }
+        if ($isTest) { $record['mcp_stray_state_start'] = $strayState }
         $startOutput = [ordered]@{ action = 'Start'; run_key = $runKey; record_path = $recordPath; output_dir = $outputDirectory; report_path = $reportPath; model = $executor.Model }
         if ($null -ne $worktreeInventory) {
             $record['worktree_inventory'] = [ordered]@{ path = $worktreeInventory.path; sha256 = $worktreeInventory.sha256; bytes = $worktreeInventory.bytes; head = $worktreeInventory.head; sha256_end = $null; error = $null }
@@ -269,8 +305,42 @@ try {
     $sourceChanged = $false
     $sourceEnd = $null
     $sourceStateError = $null
+    $isTest = ([string]$record['task_type'] -ceq 'test')
+    $strayMcpOutput = $null
+    $sourceExclude = @([string]$record['report_line_root'])
+    if ($isTest) {
+        $strayMcpOutput = [IO.Path]::Combine([string]$record['execution_root'], '.playwright-mcp')
+        $sourceExclude += $strayMcpOutput
+    }
+
+    # 測試取證：MCP 工具呼叫彙整。多個 agent 在時間窗內都有紀錄而未指定 -AgentId 時在這裡以結束碼 2 拒絕，紀錄維持未結束。
+    $mcpToolCalls = $null
+    $adoptedCallFiles = @()
+    $artifacts = $null
+    $mcpStrayOutput = $null
+    if ($isTest) {
+        if ([string]::IsNullOrWhiteSpace($McpCallRoot) -and -not [string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { $McpCallRoot = Join-Path $env:LOCALAPPDATA 'ai-agents\mcp-calls' }
+        $callSummary = Get-ClaudeMcpToolCallSummary -CallRoot $McpCallRoot -StartedUtc (ConvertTo-UtcDateTime -Value $record['started_utc']) -EndedUtc $endedAt -AgentId $AgentId -AllowWindowAttribution:$AllowWindowAttribution
+        $mcpToolCalls = $callSummary.Summary
+        $adoptedCallFiles = @($callSummary.AdoptedFiles)
+        $artifacts = Get-RunOutputArtifact -OutputDirectory ([string]$record['output_dir']) -ReportName ([IO.Path]::GetFileName([string]$record['report_path']))
+        $strayBefore = if ($record.Contains('mcp_stray_state_start') -and $record['mcp_stray_state_start'] -is [System.Collections.IDictionary]) { $record['mcp_stray_state_start'] } else { $null }
+        $strayAfter = Get-RunDirectoryFileState -Path $strayMcpOutput
+        if ($null -ne $strayBefore -and $strayBefore['ok'] -eq $true -and $strayBefore['files'] -is [System.Collections.IDictionary] -and $strayAfter.ok) {
+            $beforeFiles = $strayBefore['files']
+            $strayChanged = @($strayAfter.files.Keys | Where-Object { -not $beforeFiles.Contains($_) -or [string]$beforeFiles[$_] -cne [string]$strayAfter.files[$_] } | Sort-Object)
+            $mcpStrayOutput = [ordered]@{ path = $strayMcpOutput; state = 'determined'; exists = ($strayChanged.Count -gt 0); files = [string[]]$strayChanged; error = $null }
+        }
+        else {
+            # 列舉失敗或 Start 沒有可比對的基準時無法判定是否有本次殘留：exists 為 null，state 為 indeterminate，回收時人工檢查該目錄。
+            $strayError = if ($null -eq $strayBefore) { 'Start 沒有記下 .playwright-mcp 的檔案狀態' } elseif ($strayBefore['ok'] -ne $true) { [string]$strayBefore['error'] } else { [string]$strayAfter.error }
+            [Console]::Error.WriteLine('[claude-run-record] 無法判定 ' + $strayMcpOutput + ' 的殘留狀態：' + $strayError)
+            $mcpStrayOutput = [ordered]@{ path = $strayMcpOutput; state = 'indeterminate'; exists = $null; files = [string[]]@(); error = $strayError }
+        }
+    }
+
     try {
-        $sourceEnd = Get-RunSourceState -ExecutionRoot ([string]$record['execution_root']) -Target ([string[]]@($record['targets'])) -ExcludeRoot @([string]$record['report_line_root'])
+        $sourceEnd = Get-RunSourceState -ExecutionRoot ([string]$record['execution_root']) -Target ([string[]]@($record['targets'])) -ExcludeRoot $sourceExclude
         # 逐欄比對，不依賴 JSON 鍵順序（讀回的紀錄是 hashtable）。
         foreach ($key in @('mode', 'head', 'diff_sha256', 'content_sha256')) {
             if ([string]$record['source_state_start'][$key] -cne [string]$sourceEnd.$key) { $sourceChanged = $true }
@@ -311,6 +381,11 @@ try {
     $record['failure_reason'] = $failureReason
     $record['report'] = [ordered]@{ exists = $reportInfo.Exists; bytes = if ($reportInfo.Exists) { $reportInfo.Length } else { 0 } }
     $record['review_report_check'] = $reviewCheck
+    if ($isTest) {
+        $record['mcp_tool_calls'] = $mcpToolCalls
+        $record['artifacts'] = $artifacts
+        $record['mcp_stray_output'] = $mcpStrayOutput
+    }
     if ($record.Contains('worktree_inventory') -and $record['worktree_inventory'] -is [System.Collections.IDictionary]) {
         # 盤點檔在執行期間被改或被刪時只記錄不一致（sha256_end 與 sha256 不同或為 null），不影響 result。
         # 盤點產生失敗時 path 為 null，sha256_end 維持 null。
@@ -321,12 +396,19 @@ try {
         }
     }
     Write-RunJsonAtomic -Path $recordPath -InputObject $record -Depth 8
+    # 已採用的呼叫紀錄檔內容已在紀錄的 calls，紀錄寫出之後刪除，避免累積；刪除失敗只警告。未採用的其他 agent 的檔案不動。
+    foreach ($adoptedFile in $adoptedCallFiles) {
+        try { [IO.File]::Delete($adoptedFile) }
+        catch { [Console]::Error.WriteLine('[claude-run-record] 無法刪除已採用的呼叫紀錄檔 ' + $adoptedFile + '：' + $_.Exception.Message) }
+    }
     $lock.Dispose()
     $lock = $null
-    [Console]::Out.WriteLine((ConvertTo-AsciiJson -InputObject ([ordered]@{
-                    action = 'End'; run_key = $record['run_key']; record_path = $recordPath; output_dir = $record['output_dir']; report_path = $reportPath
-                    result = $result; failure_reason = $failureReason; source_changed = $sourceChanged; dispatch_changed = $dispatchChanged; review_report_check = $reviewCheck
-                }) -Depth 6 -Compress))
+    $endOutput = [ordered]@{
+        action = 'End'; run_key = $record['run_key']; record_path = $recordPath; output_dir = $record['output_dir']; report_path = $reportPath
+        result = $result; failure_reason = $failureReason; source_changed = $sourceChanged; dispatch_changed = $dispatchChanged; review_report_check = $reviewCheck
+    }
+    if ($isTest) { $endOutput['mcp_tool_calls'] = [ordered]@{ completed = $mcpToolCalls.completed; failed = $mcpToolCalls.failed; servers = $mcpToolCalls.servers; attribution = $mcpToolCalls.attribution } }
+    [Console]::Out.WriteLine((ConvertTo-AsciiJson -InputObject $endOutput -Depth 6 -Compress))
     exit $(if ($result -ceq 'success') { 0 } else { 1 })
 }
 catch {

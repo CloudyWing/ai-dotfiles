@@ -1,6 +1,7 @@
 // 測試用轉接器：以 node 執行 hooks/core 的邏輯，輸入輸出比照命令型 hook（stdin 為事件 JSON，stdout 為 hook 回應）。
 // 只供 scripts/tests 下的測試使用，不是外掛執行期的一部分。用法：node --no-warnings tests/run-hook.ts <模式>
-import { readFileSync, statSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
 import { registerHooks } from 'node:module'
 import { spawnSync } from 'node:child_process'
 import type { HookIo } from '../hooks/core/io'
@@ -24,7 +25,11 @@ const io: HookIo = {
     if (result.error !== undefined || result.status === null) throw result.error ?? new Error('process failed')
     return result.status
   },
-  log: text => { process.stdout.write(text + '\n') }
+  log: text => { process.stdout.write(text + '\n') },
+  writeText: async (path, text) => {
+    mkdirSync(dirname(path), { recursive: true })
+    writeFileSync(path, text, 'utf8')
+  }
 }
 
 // 比照命令型 hook 的輸出：單一 JSON 物件，純 ASCII、不帶 BOM，非 ASCII 字元以 \uXXXX 跳脫。
@@ -56,6 +61,14 @@ if (mode === 'host-guard') {
 } else if (mode === 'post-edit-write') {
   const { postEditWriteMessages } = await import('../hooks/core/post-edit-write')
   await postEditWriteMessages(io, input)
+} else if (mode === 'mcp-call') {
+  // 輸入為 { event, kind: 'completed' | 'failed', now? }；LOCALAPPDATA 取自本程序的環境變數（未設定時不寫入）。
+  // 輸出為 { written: 寫入的完整路徑或 null }，檔案內容由測試自行讀取。
+  const { writeMcpCallRecord } = await import('../hooks/core/mcp-call-record')
+  const kindValue = property(input, 'kind')
+  const nowValue = property(input, 'now')
+  const written = await writeMcpCallRecord(io, process.env['LOCALAPPDATA'], property(input, 'event'), kindValue === 'failed' ? 'failed' : 'completed', typeof nowValue === 'string' ? nowValue : new Date().toISOString())
+  emit({ written: written ?? null })
 } else if (mode === 'lib-parity') {
   // 輸入為 [{ kind: 'find' | 'excluded', input: string }]，輸出為各筆結果的陣列，供與 PowerShell 函式庫比對。
   const { findLocalPathViolations, isLocalPathExcludedFile } = await import('../hooks/core/doc-path')

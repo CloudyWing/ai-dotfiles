@@ -9,14 +9,14 @@
   "retiredProfiles": ["default", "implement", "intensive", "deep", "deep-review", "scan", "content"],
   "maxIncomplete": 3,
   "types": {
-    "edit": { "requiredFlags": ["E", "T"], "impliedTags": ["write"], "forbiddenTags": [] },
-    "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
-    "design": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
+    "edit": { "requiredFlags": ["E", "T"], "impliedTags": ["write"], "forbiddenTags": ["browse", "desktop-control"] },
+    "survey": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write", "browse", "desktop-control"] },
+    "design": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write", "browse", "desktop-control"] },
     "test": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"] },
-    "generate": { "requiredFlags": [], "impliedTags": ["image-gen"], "forbiddenTags": ["write"] },
-    "factcheck": { "requiredFlags": [], "impliedTags": ["web"], "forbiddenTags": ["write"] },
-    "review": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "preferred": ["family"] },
-    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write"], "skippable": true }
+    "generate": { "requiredFlags": [], "impliedTags": ["image-gen"], "forbiddenTags": ["write", "browse", "desktop-control"] },
+    "factcheck": { "requiredFlags": [], "impliedTags": ["web"], "forbiddenTags": ["write", "browse", "desktop-control"] },
+    "review": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write", "browse", "desktop-control"], "preferred": ["family"] },
+    "advise": { "requiredFlags": [], "impliedTags": [], "forbiddenTags": ["write", "browse", "desktop-control"], "skippable": true }
   },
   "executors": [
     {
@@ -61,7 +61,7 @@
     },
     {
       "id": "sonnet", "display": "Sonnet subagent", "platform": "claude", "model": "sonnet", "selfRepair": true, "family": "claude",
-      "accepts": ["edit", "survey", "design", "review", "factcheck", "test"], "tags": ["write", "build-test", "web"], "when": {},
+      "accepts": ["edit", "survey", "design", "review", "factcheck", "test"], "tags": ["write", "build-test", "web", "browse", "desktop-control"], "when": {},
       "order": 50, "gated": false
     },
     {

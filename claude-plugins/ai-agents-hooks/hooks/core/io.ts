@@ -7,6 +7,8 @@ export interface HookIo {
   run(argv: readonly string[]): Promise<number>
   /** 輸出不送給模型的診斷文字。引擎的 $.ui.log 同步回傳 void。 */
   log(text: string): void
+  /** 寫入整個檔案內容，檔案與其上層目錄不存在時建立。寫入失敗時 reject。 */
+  writeText(path: string, text: string): Promise<void>
 }
 
 // 空白字元一律採 .NET 的定義（Char.IsWhiteSpace 與 .NET regex 的 \s，兩者相同）：

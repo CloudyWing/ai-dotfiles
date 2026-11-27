@@ -4,11 +4,12 @@ import type { On } from 'claude-code'
 
 const DOC = 'C:\\repo\\docs\\a.md'
 
-type World = { files: Map<string, string>; logs: string[]; gitCalls: string[][] }
+type World = { files: Map<string, string>; writes: Map<string, string>; logs: string[]; gitCalls: string[][] }
 
 // 以記憶體模擬 $.fs、$.process.run 與 $.ui.log；目錄只認 C:\repo\docs。
 function world(on: On, gitExitCode = 1): World {
-  const state: World = { files: new Map(), logs: [], gitCalls: [] }
+  const state: World = { files: new Map(), writes: new Map(), logs: [], gitCalls: [] }
+  on('fs.write', (_$, e) => { state.writes.set(e.path, e.text); return { value: undefined } })
   on('fs.read', (_$, e) => {
     const text = state.files.get(e.path)
     if (text === undefined) return { deny: 'missing' }
@@ -20,6 +21,7 @@ function world(on: On, gitExitCode = 1): World {
   on('tool.call', () => ({ result: {} }))
   // 引擎的 settings hook 不存在，classic 事件由測試回答空結果。
   on('classic.PostToolUse', () => ({}))
+  on('classic.PostToolUseFailure', () => ({}))
   return state
 }
 
@@ -69,4 +71,50 @@ test('R05 post-edit-write 的訊息只寫入 debug log，不送給模型', async
   expect(state.logs[0]).toBe('[post-edit-write hook] C:\\repo\\docs\\b.md was written. Please run check-markdown skill to verify Markdown formatting.')
   expect(state.logs.some(line => line.includes('forbidden full-width dash'))).toBe(true)
   expect(state.logs.some(line => line.includes('has unexpected UTF-8 BOM'))).toBe(true)
+})
+const LOCAL = 'C:\\Local'
+const CALL_ROOT = LOCAL + '\\ai-agents\\mcp-calls'
+
+test('R06 受控 MCP 工具成功時寫一個呼叫紀錄：路徑為 <LOCALAPPDATA>\\ai-agents\\mcp-calls\\<agent_id>\\<tool_use_id>.json，內容含伺服器、狀態與歸屬', async ($, on) => {
+  mock.env(on, { LOCALAPPDATA: LOCAL })
+  const state = world(on)
+  const result = await $.classic.PostToolUse({ session_id: 's1', agent_id: 'agent-1', agent_type: 'general-purpose', tool_name: 'mcp__playwright__browser_click', tool_input: { ref: 'e1', text: 'password-secret' }, tool_response: { content: 'password-secret' }, tool_use_id: 'tu_1', duration_ms: 12, mcp_server: { name: 'playwright', source: 'user' } })
+  expect(result.additionalContext ?? []).toEqual([])
+  expect([...state.writes.keys()]).toEqual([CALL_ROOT + '\\agent-1\\tu_1.json'])
+  const record = JSON.parse(state.writes.get(CALL_ROOT + '\\agent-1\\tu_1.json') ?? '{}')
+  expect(record.schema).toBe('ai-agents.mcp-call.v1')
+  expect(record.server).toBe('playwright')
+  expect(record.status).toBe('completed')
+  expect(record.agent_id).toBe('agent-1')
+  expect(record.tool_name).toBe('mcp__playwright__browser_click')
+  expect(state.writes.get(CALL_ROOT + '\\agent-1\\tu_1.json')).not.toContain('password')
+})
+
+test('R07 受控 MCP 工具失敗時（PostToolUseFailure）寫 failed 紀錄並帶 is_interrupt；主執行緒的呼叫寫入 _main 目錄；flaui-mcp 同樣受控', async ($, on) => {
+  mock.env(on, { LOCALAPPDATA: LOCAL })
+  const state = world(on)
+  await $.classic.PostToolUseFailure({ session_id: 's1', tool_name: 'mcp__flaui-mcp__windows_click', tool_input: { ref: 'x' }, error: 'boom', tool_use_id: 'tu_2', is_interrupt: false })
+  const record = JSON.parse(state.writes.get(CALL_ROOT + '\\_main\\tu_2.json') ?? '{}')
+  expect(record.status).toBe('failed')
+  expect(record.is_interrupt).toBe(false)
+  expect(record.agent_id).toBe(null)
+  expect(record.server).toBe('flaui-mcp')
+})
+
+test('R08 非受控伺服器與工具、agent_id 或 tool_use_id 含路徑字元時不寫入', async ($, on) => {
+  mock.env(on, { LOCALAPPDATA: LOCAL })
+  const state = world(on)
+  await $.classic.PostToolUse({ session_id: 's1', agent_id: 'agent-1', tool_name: 'mcp__other__tool', tool_input: {}, tool_response: {}, tool_use_id: 'tu_3' })
+  await $.classic.PostToolUse({ session_id: 's1', tool_name: 'Bash', tool_input: {}, tool_response: {}, tool_use_id: 'tu_4' })
+  await $.classic.PostToolUse({ session_id: 's1', agent_id: '..\\evil', tool_name: 'mcp__playwright__browser_click', tool_input: {}, tool_response: {}, tool_use_id: 'tu_5' })
+  await $.classic.PostToolUse({ session_id: 's1', agent_id: 'agent-1', tool_name: 'mcp__playwright__browser_click', tool_input: {}, tool_response: {}, tool_use_id: '../tu_6' })
+  expect(state.writes.size).toBe(0)
+})
+
+test('R09 沒有 LOCALAPPDATA 時不寫入，hook 不改變工具結果', async ($, on) => {
+  mock.env(on, {})
+  const state = world(on)
+  const result = await $.classic.PostToolUse({ session_id: 's1', agent_id: 'agent-1', tool_name: 'mcp__playwright__browser_type', tool_input: { text: 'password-secret' }, tool_response: {}, tool_use_id: 'tu_7' })
+  expect(result.additionalContext ?? []).toEqual([])
+  expect(state.writes.size).toBe(0)
 })
