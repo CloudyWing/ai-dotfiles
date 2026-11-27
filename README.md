@@ -71,19 +71,21 @@ claude plugin install context7@claude-plugins-official --scope user
 
 ### MCP 伺服器的安裝與登記
 
-mcp-lab、infra-lab 與 FlaUI.Mcp 都是選用項目。先依下方說明手動安裝，再執行 `Register-McpServer.ps1` 登記。腳本只寫設定，不下載、不安裝、不啟動服務，不需要系統管理員身分。
+mcp-lab、infra-lab、FlaUI.Mcp 與 Playwright MCP 都是選用項目。先依下方說明手動安裝，再執行 `Register-McpServer.ps1` 登記。腳本只寫設定，不下載、不安裝、不啟動服務，不需要系統管理員身分。
 
 ```powershell
 ~\.ai-agents\scripts\Register-McpServer.ps1 -McpLab
 ~\.ai-agents\scripts\Register-McpServer.ps1 -InfraLab -InfraLabDistro <發行版名稱> -InfraLabWslRepo <WSL 內 infra-lab 的路徑>
 ~\.ai-agents\scripts\Register-McpServer.ps1 -FlaUI
+~\.ai-agents\scripts\Register-McpServer.ps1 -Playwright
 ```
 
 - 可以在同一個命令指定多項。沒有指定任何項目時只印出用法。
-- `-McpLab` 與 `-InfraLab` 登記到 Claude Code 使用者層。已存在的登記不會被覆寫，內容與範本不同時只回報。要改用範本時，先執行 `claude mcp remove <名稱> --scope user` 再重新執行腳本。新登記的 MCP 在重新啟動 Claude Code 的 Session 後載入。
-- `-FlaUI` 把執行檔路徑寫入 Codex 桌面版設定檔與每個已登記派工帳號的設定檔，寫入前備份。預設路徑為 `%LOCALAPPDATA%\Programs\FlaUI-MCP\FlaUI.Mcp.exe`，用 `-FlaUIPath` 指定其他路徑。
+- 四項都會登記到 Claude Code 使用者層。已存在的登記不會被覆寫，內容與腳本要寫入的不同時只回報，例如改了 `-FlaUIPath` 或 `-PlaywrightOutputDir`。要改用新內容時，先執行 `claude mcp remove <名稱> --scope user` 再重新執行腳本。新登記的 MCP 在重新啟動 Claude Code 的 Session 後載入。
+- `-FlaUI` 把執行檔路徑寫入 Codex 桌面版設定檔與每個已登記派工帳號的設定檔，寫入前備份，再以同一個路徑登記到 Claude Code 使用者層（名稱 `flaui-mcp`）。預設路徑為 `%LOCALAPPDATA%\Programs\FlaUI-MCP\FlaUI.Mcp.exe`，用 `-FlaUIPath` 指定其他路徑。
+- `-Playwright` 把 Playwright MCP（`@playwright/mcp@latest`，與 Codex 測試檔位相同）登記到 Claude Code 使用者層，截圖輸出目錄預設為 `%LOCALAPPDATA%\ai-agents\playwright-mcp`，給這台電腦上的所有專案共用；要改用其他目錄時以 `-PlaywrightOutputDir` 指定。前置需要 Node.js 20 以上（`npx`），預設使用 Google Chrome，瀏覽器的安裝方式見 [Playwright MCP 的安裝說明](https://playwright.dev/mcp/installation)。本機沒有符合的套件版本時，`npx` 會先把套件安裝到 npm 快取再執行。
 - 加上 `-WhatIf` 預覽，不寫入任何東西。
-- 加上 `-Check` 唯讀檢查，沒有指定項目時檢查三項全部。缺少任一項或派工帳號與桌面版的路徑不一致時結束碼為 1。
+- 加上 `-Check` 唯讀檢查，沒有指定項目時檢查 mcp-lab、infra-lab、FlaUI.Mcp 與 Playwright MCP 四項。缺少任一項或派工帳號與桌面版的路徑不一致時結束碼為 1。
 
 **mcp-lab。** 來源為 [mcp-lab](https://github.com/CloudyWing/mcp-lab)，以 Docker Compose 執行 11 個 MCP 服務，安裝在 WSL。
 
@@ -108,8 +110,8 @@ mcp-lab、infra-lab 與 FlaUI.Mcp 都是選用項目。先依下方說明手動�
 
 1. 確認已安裝 Codex 桌面版，且 `~/.codex/config.toml` 已存在。`-FlaUI` 不會建立這個檔。
 2. 下載符合平台的壓縮檔，解壓到 `%LOCALAPPDATA%\Programs\FlaUI-MCP`。路徑不帶版號，升級時設定不必改。
-3. 執行 `Register-McpServer.ps1 -FlaUI`。
-4. 之後每次新建派工帳號，或 FlaUI.Mcp 換了位置（以 `-FlaUIPath` 指定新路徑），都重新執行一次，桌面版與各派工帳號會一併更新。
+3. 執行 `Register-McpServer.ps1 -FlaUI`。Claude Code 端的登記在重新啟動 Session 後載入。
+4. 之後每次新建派工帳號，或 FlaUI.Mcp 換了位置（以 `-FlaUIPath` 指定新路徑），都重新執行一次，桌面版與各派工帳號會一併更新。換了位置時，Claude Code 端的 `flaui-mcp` 登記不會跟著更新，先執行 `claude mcp remove flaui-mcp --scope user` 再重新執行。
 
 ### Codex 派工環境
 
@@ -162,7 +164,9 @@ mcp-lab、infra-lab 與 FlaUI.Mcp 都是選用項目。先依下方說明手動�
 | --- | --- |
 | 需求釐清、設計、實作、bug 診斷與修正 | Claude（Persona，或由主 Agent 派生的 subagent） |
 | 審查 | Codex；Codex 不可用時由 Claude subagent 承接 |
-| 測試取證、事實校閱、顧問、影像產生 | Codex |
+| 測試取證的瀏覽器與桌面操作 | Codex；Codex 不可用時由 Claude subagent 以 Playwright MCP 與 FlaUI.Mcp 承接 |
+| 事實校閱 | Codex；Codex 不可用時由 Claude subagent 承接 |
+| 顧問、影像產生 | Codex |
 
 功能線在 Claude Code 與 Analyst 討論需求即可，後續的設計、實作與審查由主 Agent 發動，不需手動切換平台。執行者由 `scripts/dispatch/executor-registry.json` 決定，規則見 `rules/claude/30-dispatch.md`。
 
@@ -221,6 +225,7 @@ mcp-lab、infra-lab 與 FlaUI.Mcp 都是選用項目。先依下方說明手動�
 | `rules/*.md` | 只在 Claude 端載入的常駐規則，連結到 `rules/claude/`。連結缺失時 Claude Code 不會提示，Persona、授權與派工規則會整組失效，重跑 Setup 即可恢復 |
 | `skills/<name>/SKILL.md` | Skills（知識型自動載入；指令型以 `/skill-name` 呼叫） |
 | `agents/*.md` | 全域自訂 Persona 與 Claude 端 sub-agent |
+| `~/.claude.json`（家目錄） | Claude Code 的使用者層 MCP 登記，由 `Register-McpServer.ps1` 經 `claude mcp add --scope user` 寫入 |
 | `settings.json` | 使用者設定。Setup 只新增 `templates/claude-settings.shared.json` 內缺少的共用項目，你已設定的值（含設為 `false` 的外掛）一律保留 |
 
 ### Codex — `~/.codex/`（或 `$CODEX_HOME`）
@@ -241,6 +246,7 @@ hook 由 plugin `ai-agents-hooks@ai-agents-local` 提供，原始碼位於 `clau
 | `post-edit-write` | 寫入檔案後檢查 BOM 規範，並記錄 `.md` 的格式檢查提示 |
 | `doc-path` | 進版控的 `.md` 含本機磁碟機絕對路徑時提醒改用佔位符或相對路徑，不阻擋寫入 |
 | `host-guard` | 拒絕直接呼叫 `powershell.exe` 的命令並提示改用 pwsh。其他專案明確需要 5.1 時，在 Claude Code 設定的 `env` 加入 `AI_AGENTS_ALLOW_POWERSHELL51=1` |
+| `mcp-call-record` | Playwright MCP 與 FlaUI.Mcp 的每次工具呼叫寫一筆紀錄到 `%LOCALAPPDATA%\ai-agents\mcp-calls\`，只記工具名稱、成功或失敗與時間，不記輸入與回傳內容。Claude 測試取證的執行紀錄以此統計呼叫次數 |
 
 ### 狀態看板
 
@@ -284,7 +290,7 @@ plugin `line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示
 | 腳本 | 用途 |
 | --- | --- |
 | `Setup-AIGlobalConfig.ps1` | 建立各工具的連結、安裝 plugin、套用 `settings.json` 共用範本、設定 Git Hook；`-Check` 唯讀檢查 |
-| `Register-McpServer.ps1` | 登記 mcp-lab、infra-lab 與 FlaUI.Mcp；`-Check` 唯讀檢查 |
+| `Register-McpServer.ps1` | 登記 mcp-lab、infra-lab、FlaUI.Mcp 與 Playwright MCP；`-Check` 唯讀檢查 |
 | `New-CodexDispatchAccount.ps1` | 建立並登記 Codex 派工帳號 |
 
 **派工**
@@ -294,7 +300,7 @@ plugin `line-status-board@ai-agents-local` 在 Claude Desktop 側邊 Pane 顯示
 | `Select-DispatchExecutor.ps1` | 依任務標註與登錄表選出派工執行者 |
 | `Invoke-CodexRun.ps1` | 依一份派遣檔執行一次 Codex 派工 |
 | `Test-CodexReviewReport.ps1` | 檢查審查報告的格式 |
-| `Write-ClaudeRunRecord.ps1` | 為 Claude 審查者寫出執行紀錄 |
+| `Write-ClaudeRunRecord.ps1` | 為 Claude 審查者與瀏覽器、桌面的測試取證者寫出執行紀錄 |
 | `Update-ExecutorIncomplete.ps1` | 保存各執行者的未完成次數 |
 | `Get-CodexQuota.ps1` | 查詢 Codex 額度，只供顯示與紀錄 |
 
